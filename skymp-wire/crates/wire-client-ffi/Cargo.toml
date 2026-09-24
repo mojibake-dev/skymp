@@ -1,0 +1,23 @@
+[package]
+name = "wire-client-ffi"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+description = "cdylib the Skyrim Platform client loads. Owns all network bytes on the client. unsafe allowed here, reviewed."
+
+[lib]
+name = "skymp_wire"
+crate-type = ["cdylib"]
+
+[dependencies]
+wire-schema = { path = "../wire-schema" }
+wire-transport = { path = "../wire-transport" }
+
+[build-dependencies]
+cbindgen = "0.27"
+
+[lints]
+workspace = true
+
+[lints.rust]
+unsafe_code = "allow"   # FFI crate. Every unsafe block carries a SAFETY comment.

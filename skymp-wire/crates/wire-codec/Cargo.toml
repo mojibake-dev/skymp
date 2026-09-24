@@ -1,0 +1,17 @@
+[package]
+name = "wire-codec"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+description = "The only bytes-to-Message path. Total: never panics on any input."
+
+[dependencies]
+wire-schema = { path = "../wire-schema" }
+postcard.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

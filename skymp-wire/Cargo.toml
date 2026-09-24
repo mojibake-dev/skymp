@@ -1,0 +1,51 @@
+# skymp-wire workspace. Nothing here is built yet; M0 builds it. Versions are
+# placeholders to be pinned on first `cargo update` (record the pin in an ADR
+# note if it differs from these majors).
+[workspace]
+resolver = "2"
+members = [
+  "crates/wire-schema",
+  "crates/wire-codec",
+  "crates/wire-validate",
+  "crates/wire-transport",
+  "crates/wire-bridge",
+  "crates/wire-client-ffi",
+  "difftest",
+]
+exclude = ["fuzz"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"   # standalone crates only; combined works follow the subproject they link into (ADR-014)
+rust-version = "1.80"
+
+[workspace.dependencies]
+serde = { version = "1", default-features = false, features = ["derive"] }
+postcard = { version = "1", default-features = false, features = ["experimental-derive"] }
+heapless = { version = "0.8", features = ["serde"] }
+thiserror = "2"
+renet = "2"
+renet_netcode = "1"
+cxx = "1"
+proptest = "1"
+arbitrary = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# These lints are the rules in .claude/rules/rust.md made mechanical.
+[workspace.lints.rust]
+unsafe_code = "forbid"          # overridden to "allow" only in wire-bridge and wire-client-ffi
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+indexing_slicing = "deny"
+as_conversions = "deny"
+arithmetic_side_effects = "deny"
+
+[profile.release]
+overflow-checks = true
+debug = 1

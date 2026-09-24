@@ -1,0 +1,12 @@
+# Hand-written session: two clients, a legal movement, an illegal one, a hit.
+# The legacy stack and the wire stack must emit the same normalized outputs.
+id: smoke
+clients: [c1, c2]
+steps:
+  - { at_ms: 0,    client: c1, Hello: { schema_version: 1, client_build: 1, mod_hashes: [1, 2], name: "c1" } }
+  - { at_ms: 0,    client: c2, Hello: { schema_version: 1, client_build: 1, mod_hashes: [1, 2], name: "c2" } }
+  - { at_ms: 100,  client: c1, Movement: { seq: 1, actor: 20, transform: { x: 0, y: 0, z: 0, yaw: 0, pitch: 0 }, run: false, sneak: false } }
+  - { at_ms: 116,  client: c1, Movement: { seq: 2, actor: 20, transform: { x: 30, y: 0, z: 0, yaw: 0, pitch: 0 }, run: true, sneak: false } }
+  # Replayed sequence number: both stacks must reject with E_VAL_SEQ_REPLAY (or the legacy equivalent, normalized).
+  - { at_ms: 132,  client: c1, Movement: { seq: 2, actor: 20, transform: { x: 60, y: 0, z: 0, yaw: 0, pitch: 0 }, run: true, sneak: false } }
+  - { at_ms: 500,  client: c2, Hit: { seq: 1, attacker: 21, target: 20, weapon: 4660, power_attack: false, client_time_ms: 480 } }

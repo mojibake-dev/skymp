@@ -1,0 +1,23 @@
+[package]
+name = "wire-bridge"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+description = "cxx bridge: the C++ server calls poll/send and receives decoded structs. unsafe allowed here, reviewed."
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+wire-schema = { path = "../wire-schema" }
+wire-transport = { path = "../wire-transport" }
+cxx.workspace = true
+
+[build-dependencies]
+cxx-build = "1"
+
+[lints]
+workspace = true
+
+[lints.rust]
+unsafe_code = "allow"   # FFI crate. Every unsafe block carries a SAFETY comment.

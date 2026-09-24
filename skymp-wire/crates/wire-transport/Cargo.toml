@@ -1,0 +1,17 @@
+[package]
+name = "wire-transport"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+description = "renet + netcode transport for the skymp wire (ADR-011). Only crate that names renet."
+
+[dependencies]
+wire-schema = { path = "../wire-schema" }
+wire-codec = { path = "../wire-codec" }
+wire-validate = { path = "../wire-validate" }
+renet.workspace = true            # channels, fragmentation, connection management
+renet_netcode.workspace = true    # netcode 1.02: encrypted, signed, connect tokens
+thiserror.workspace = true
+
+[lints]
+workspace = true

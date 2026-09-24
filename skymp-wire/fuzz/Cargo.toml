@@ -1,0 +1,34 @@
+[package]
+name = "wire-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+wire-schema = { path = "../crates/wire-schema" }
+wire-codec = { path = "../crates/wire-codec" }
+wire-validate = { path = "../crates/wire-validate" }
+wire-transport = { path = "../crates/wire-transport" }
+
+[[bin]]
+name = "codec_decode"
+path = "fuzz_targets/codec_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "validate"
+path = "fuzz_targets/validate.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "transport_ingest"
+path = "fuzz_targets/transport_ingest.rs"
+test = false
+doc = false

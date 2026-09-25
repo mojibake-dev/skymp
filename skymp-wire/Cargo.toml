@@ -1,6 +1,5 @@
-# skymp-wire workspace. Nothing here is built yet; M0 builds it. Versions are
-# placeholders to be pinned on first `cargo update` (record the pin in an ADR
-# note if it differs from these majors).
+# skymp-wire workspace. Dependency majors are pinned per ADR-015; Cargo.lock
+# holds the exact versions.
 [workspace]
 resolver = "2"
 members = [
@@ -16,16 +15,17 @@ exclude = ["fuzz"]
 
 [workspace.package]
 edition = "2021"
+publish = false   # path dependencies inside the workspace; nothing here goes to crates.io
 license = "MIT"   # standalone crates only; combined works follow the subproject they link into (ADR-014)
-rust-version = "1.80"
+rust-version = "1.88"   # cxx 1.0.202 needs it
 
 [workspace.dependencies]
 serde = { version = "1", default-features = false, features = ["derive"] }
-postcard = { version = "1", default-features = false, features = ["experimental-derive"] }
-heapless = { version = "0.8", features = ["serde"] }
+postcard = { version = "1.1", default-features = false, features = ["heapless", "experimental-derive"] }  # heapless feature: MaxSize impls for heapless types (ADR-015)
+heapless = { version = "0.7", features = ["serde"] }  # 0.7 is the version postcard 1.1 binds to (ADR-015)
 thiserror = "2"
 renet = "2"
-renet_netcode = "1"
+renet_netcode = "2"
 cxx = "1"
 proptest = "1"
 arbitrary = { version = "1", features = ["derive"] }

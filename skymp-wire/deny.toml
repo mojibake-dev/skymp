@@ -1,4 +1,10 @@
 # cargo-deny configuration. `cargo deny check` runs in CI for skymp-wire.
+[graph]
+# Only the targets we ship to. Target-specific dependencies of other
+# platforms (for example heapless 0.7's atomic-polyfill for cores without
+# atomics) are not part of our graph.
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "aarch64-apple-darwin"]
+
 [advisories]
 version = 2
 yanked = "deny"
@@ -10,3 +16,5 @@ allow = ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib", "Un
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Path dependencies inside this workspace carry no version on purpose.
+allow-wildcard-paths = true

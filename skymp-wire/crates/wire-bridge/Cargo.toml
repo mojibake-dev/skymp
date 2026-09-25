@@ -2,6 +2,7 @@
 name = "wire-bridge"
 version = "0.0.1"
 edition.workspace = true
+publish.workspace = true
 license.workspace = true
 description = "cxx bridge: the C++ server calls poll/send and receives decoded structs. unsafe allowed here, reviewed."
 
@@ -16,8 +17,15 @@ cxx.workspace = true
 [build-dependencies]
 cxx-build = "1"
 
-[lints]
-workspace = true
-
 [lints.rust]
 unsafe_code = "allow"   # FFI crate. Every unsafe block carries a SAFETY comment.
+missing_docs = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+indexing_slicing = "deny"
+as_conversions = "deny"
+arithmetic_side_effects = "deny"

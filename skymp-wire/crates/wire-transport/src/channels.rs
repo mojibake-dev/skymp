@@ -3,17 +3,22 @@
 
 use wire_schema::Message;
 
-/// Channel ids, stable.
+/// Session, ownership, inventory, quests, chat, snippets: order matters.
 pub const RELIABLE_ORDERED: u8 = 0;
+/// Effects, container deltas, hits: must arrive, order does not matter.
 pub const RELIABLE_UNORDERED: u8 = 1;
+/// Movement, animation events, aim: newest wins, losses are fine.
 pub const UNRELIABLE: u8 = 2;
+/// Every channel, for polling loops.
 pub const ALL: [u8; 3] = [RELIABLE_ORDERED, RELIABLE_UNORDERED, UNRELIABLE];
 
 /// Which channel a message family rides.
 pub fn for_message(msg: &Message) -> u8 {
     match msg {
         Message::Movement(_) => UNRELIABLE,
-        Message::Hit(_) | Message::HostedActor(_) | Message::InventoryApply { .. } => RELIABLE_UNORDERED,
+        Message::Hit(_) | Message::HostedActor(_) | Message::InventoryApply { .. } => {
+            RELIABLE_UNORDERED
+        }
         _ => RELIABLE_ORDERED,
     }
 }

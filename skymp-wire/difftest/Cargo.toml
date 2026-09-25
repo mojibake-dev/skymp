@@ -4,7 +4,7 @@ version = "0.0.1"
 edition.workspace = true
 publish.workspace = true
 license.workspace = true
-description = "Replays a session into the C++ core and the Rust edge and diffs what comes out (ADR-010)."
+description = "Replays a session into the legacy stack and the Rust edge and diffs what comes out (ADR-010)."
 
 [dependencies]
 wire-schema = { path = "../crates/wire-schema" }

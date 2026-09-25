@@ -190,4 +190,30 @@ impl Message {
     /// Hard cap on the encoded size of any message, derived from the types.
     /// `wire-codec` refuses inputs longer than this before decoding.
     pub const MAX_ENCODED_LEN: usize = <Message as MaxSize>::POSTCARD_MAX_SIZE;
+
+    /// The variant's name, stable, for logs and the differential harness.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Message::Hello(_) => "Hello",
+            Message::Welcome { .. } => "Welcome",
+            Message::Refuse { .. } => "Refuse",
+            Message::Movement(_) => "Movement",
+            Message::Hit(_) => "Hit",
+            Message::HostedActor(_) => "HostedActor",
+            Message::InventoryApply { .. } => "InventoryApply",
+            Message::HostGrant { .. } => "HostGrant",
+            Message::HostRelease { .. } => "HostRelease",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_are_the_variant_identifiers() {
+        assert_eq!(Message::Refuse { reason: 0 }.name(), "Refuse");
+        assert_eq!(Message::HostGrant { cell: FormId(1) }.name(), "HostGrant");
+    }
 }

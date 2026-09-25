@@ -97,6 +97,17 @@ pub enum RejectKind {
     Direction,
 }
 
+impl std::fmt::Display for RejectKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RejectKind::Decode(e) => write!(f, "{e}"),
+            RejectKind::Validate(r) => write!(f, "{r}"),
+            RejectKind::Limit => f.write_str("E_TX_LIMIT"),
+            RejectKind::Direction => f.write_str("E_TX_DIRECTION"),
+        }
+    }
+}
+
 /// Stable numeric reason codes: the `u16` carried by `Message::Refuse` and by
 /// the bridge's `WireEvent.reason`. Decode failures are 1xx, validation 2xx,
 /// transport 3xx. Append only; the match is exhaustive on purpose so a new

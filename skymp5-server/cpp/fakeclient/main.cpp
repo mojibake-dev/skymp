@@ -6,9 +6,13 @@
 //   smoke (default): connect, log in with a profile id, wait for our actor,
 //     send a few movement updates near the spawn, AddItem through a console
 //     command, answer SpSnippets, and exit 0.
-//   --script FILE: after the login handshake, replay JSON lines of the form
-//     {"at_ms": N, "send": {...legacy message json...}, "reliable": true};
-//     difftest's legacy driver feeds this.
+//   --script FILE: after the login handshake, replay JSON lines, one per step,
+//     each with "at_ms" (milliseconds since the script started) and one of:
+//       "move": {"dx", "dy", "dz", "runMode"}   an UpdateMovement at spawn + offset
+//       "send": {...legacy message json...}      sent as is; the strings
+//                "{{idx}}" and "{{worldOrCell}}" become this client's numbers
+//     plus an optional "reliable" (default true). difftest's legacy driver
+//     writes these; the events on stdout are its evidence.
 // Output: one JSON object per line on stdout, {"event": ...}. Exit 0 on
 // success, 1 on any failure or timeout. thuum Track W step 8 (docs/WIRE.md).
 #include "Config.h"
@@ -200,9 +204,11 @@ nlohmann::json LoginMessage(int profileId)
            { "contentJsonDump", content.dump() } };
 }
 
-nlohmann::json MovementMessage(const Client& c, float dx)
+nlohmann::json MovementMessage(const Client& c, float dx, float dy = 0.f,
+                               float dz = 0.f,
+                               const std::string& runMode = "Walking")
 {
-  const std::array<float, 3> p{ c.pos[0] + dx, c.pos[1], c.pos[2] };
+  const std::array<float, 3> p{ c.pos[0] + dx, c.pos[1] + dy, c.pos[2] + dz };
   return { { "t", static_cast<int>(MsgType::UpdateMovement) },
            { "idx", *c.myIdx },
            { "data",
@@ -212,7 +218,7 @@ nlohmann::json MovementMessage(const Client& c, float dx)
                { "direction", 0.0 },
                { "healthPercentage", 1.0 },
                { "speed", 0.0 },
-               { "runMode", "Walking" },
+               { "runMode", runMode },
                { "isInJumpState", false },
                { "isSneaking", false },
                { "isBlocking", false },
@@ -270,6 +276,15 @@ bool ParseOptions(int argc, char** argv, Options& o)
   return true;
 }
 
+void ReplaceAll(std::string& text, const std::string& from,
+                const std::string& to)
+{
+  for (size_t pos = text.find(from); pos != std::string::npos;
+       pos = text.find(from, pos + to.size())) {
+    text.replace(pos, from.size(), to);
+  }
+}
+
 int RunScript(Client& c, const Options& o)
 {
   std::ifstream in(o.script);
@@ -284,7 +299,7 @@ int RunScript(Client& c, const Options& o)
       continue;
     }
     auto step = nlohmann::json::parse(line, nullptr, false);
-    if (step.is_discarded() || !step.contains("send")) {
+    if (step.is_discarded() || !(step.contains("send") || step.contains("move"))) {
       Emit({ { "event", "error" }, { "error", "bad script line" } });
       return 1;
     }
@@ -297,7 +312,24 @@ int RunScript(Client& c, const Options& o)
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    c.Send(step["send"], step.value("reliable", true));
+    const bool reliable = step.value("reliable", true);
+    if (step.contains("move")) {
+      const auto& m = step["move"];
+      c.Send(MovementMessage(c, m.value("dx", 0.f), m.value("dy", 0.f),
+                             m.value("dz", 0.f),
+                             m.value("runMode", std::string("Walking"))),
+             false);
+      continue;
+    }
+    std::string raw = step["send"].dump();
+    ReplaceAll(raw, "\"{{idx}}\"", std::to_string(*c.myIdx));
+    ReplaceAll(raw, "\"{{worldOrCell}}\"", std::to_string(c.worldOrCell));
+    auto msg = nlohmann::json::parse(raw, nullptr, false);
+    if (msg.is_discarded()) {
+      Emit({ { "event", "error" }, { "error", "bad send after substitution" } });
+      return 1;
+    }
+    c.Send(msg, reliable);
   }
   c.Settle(o.settleMs);
   return c.failed ? 1 : 0;

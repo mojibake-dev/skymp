@@ -90,7 +90,11 @@ server-build:
       if [ -n "${SKYRIM_DATA_URL:-}" ]; then
         mkdir -p skyrim_data_files
         for f in Skyrim.esm Update.esm Dawnguard.esm HearthFires.esm Dragonborn.esm; do
-          wget -q -O "skyrim_data_files/$f" "$SKYRIM_DATA_URL/$f"
+          if ! wget -q -O "skyrim_data_files/$f" "$SKYRIM_DATA_URL/$f"; then
+            echo "$f not available at SKYRIM_DATA_URL: building without master files, ctest will be skipped"
+            rm -rf skyrim_data_files
+            break
+          fi
         done
       else
         echo "SKYRIM_DATA_URL unset: building without master files, ctest will be skipped"

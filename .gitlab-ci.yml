@@ -104,3 +104,8 @@ server-build:
     - echo "vcpkg $VCPKG_URL @ $VCPKG_COMMIT"
     - docker build -f ci/server.Dockerfile --build-arg "VCPKG_URL=$VCPKG_URL" --build-arg "VCPKG_COMMIT=$VCPKG_COMMIT" -t "skymp-server:parity-$CI_COMMIT_SHORT_SHA" .
     - docker tag "skymp-server:parity-$CI_COMMIT_SHORT_SHA" skymp-server:parity
+    # Ship to the sky-ci registry sky-srv pulls from (10.10.70.12:5000).
+    - docker tag "skymp-server:parity-$CI_COMMIT_SHORT_SHA" "localhost:5000/skymp-server:parity-$CI_COMMIT_SHORT_SHA"
+    - docker tag "skymp-server:parity-$CI_COMMIT_SHORT_SHA" localhost:5000/skymp-server:parity
+    - docker push "localhost:5000/skymp-server:parity-$CI_COMMIT_SHORT_SHA"
+    - docker push localhost:5000/skymp-server:parity

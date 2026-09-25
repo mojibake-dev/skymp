@@ -1,0 +1,39 @@
+# Fork-only: the Windows client and Skyrim Platform build for branch parity,
+# reusing upstream's composite action unchanged (ADR-016). Upstream's own
+# pr-windows-flatrim.yml watches main; this file is the same job pointed at
+# parity so `just build-client` in the thuum superproject has a `dist`
+# artifact to download. Nothing here is meant for upstream.
+name: Parity Windows Flatrim (AE/SE)
+
+on:
+  push:
+    branches: [ parity ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUILD_TYPE: Release
+  VCPKG_BINARY_SOURCES: 'clear;nuget,GitHub,readwrite'
+  VCPKG_FEATURE_FLAGS: 'manifests'
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: 'true'
+      - uses: ./.github/actions/pr_base
+        with:
+          DESCRIPTION: 'Flatrim'
+          SKYRIM_VR_FLAG: OFF
+          SP_NEXUS_ARTIFACT_NAME: Skyrim Platform %SP_VERSION%
+          DEPLOY_BRANCH: ""
+          DIST_ARTIFACT_NAME: dist
+          SERVER_DIST_ARTIFACT_NAME: server-dist
+          SKYMP5_PATCHES_PAT: ${{ secrets.SKYMP5_PATCHES_PAT }}
+          NUGET_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

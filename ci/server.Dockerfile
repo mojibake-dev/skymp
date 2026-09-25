@@ -16,6 +16,9 @@ ARG VCPKG_URL=https://github.com/microsoft/vcpkg.git
 ARG VCPKG_COMMIT
 
 FROM ${DEPS_IMAGE} AS skymp-parity-builder
+# ARGs declared before FROM are visible only to FROM; redeclare inside the stage.
+ARG VCPKG_URL
+ARG VCPKG_COMMIT
 WORKDIR /src
 COPY --chown=skymp:skymp . .
 # WORKDIR created /src as root; the build user must own the directory itself

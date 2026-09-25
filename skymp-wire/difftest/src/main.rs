@@ -654,8 +654,12 @@ fn replay(d: &mut dyn Driver, s: &Session) -> Result<serde_json::Value, DiffErro
 /// The part of an output the diff looks at. In M0 that is the per-step
 /// outcomes: the wire edge has no core behind it yet, so `server_to_client`
 /// and `db` join the comparison when the bridged server exists (M1).
-/// Reasons are wire-only detail and never compared; declared divergences
-/// replace the legacy side's outcome for their step.
+/// Reasons are wire-only detail and never compared. A step with a declared
+/// divergence is expected to differ: on the legacy side the actual outcome
+/// must equal the declaration, and then both sides carry the marker
+/// `declared:<outcome>` so the diff treats the step as matched; a legacy
+/// outcome that contradicts its declaration stays as it is and fails the
+/// diff, which is the point of declaring.
 fn comparable(out: &serde_json::Value, session: &Session, legacy: bool) -> serde_json::Value {
     let mut steps = out
         .get("steps")
@@ -665,18 +669,20 @@ fn comparable(out: &serde_json::Value, session: &Session, legacy: bool) -> serde
         for st in list.iter_mut() {
             if let Some(obj) = st.as_object_mut() {
                 obj.remove("reason");
-                if legacy {
-                    let i = obj
-                        .get("i")
-                        .and_then(|i| i.as_u64())
-                        .and_then(|i| usize::try_from(i).ok());
-                    if let Some(div) = i
-                        .and_then(|i| session.steps.get(i))
-                        .and_then(|s| s.divergence)
-                    {
+                let i = obj
+                    .get("i")
+                    .and_then(|i| i.as_u64())
+                    .and_then(|i| usize::try_from(i).ok());
+                if let Some(div) = i
+                    .and_then(|i| session.steps.get(i))
+                    .and_then(|s| s.divergence)
+                {
+                    let declared = div.legacy.as_str();
+                    let actual = obj.get("outcome").and_then(|o| o.as_str()).unwrap_or("");
+                    if !legacy || actual == declared {
                         obj.insert(
                             "outcome".into(),
-                            serde_json::Value::String(div.legacy.as_str().into()),
+                            serde_json::Value::String(format!("declared:{declared}")),
                         );
                     }
                 }
@@ -883,19 +889,30 @@ mod tests {
         let out = serde_json::json!({ "steps": [ { "i": 4, "client": "c1", "message": "Movement", "outcome": "rejected", "reason": "E_VAL_SEQ_REPLAY" } ], "server_to_client": {}, "db": null });
         let wire_side = comparable(&out, &s, false);
         let legacy_side = comparable(&out, &s, true);
+        // smoke.yaml declares that the legacy server accepts the replayed seq:
+        // the wire side is marked, the legacy side only when it agrees.
         assert_eq!(
             wire_side
                 .pointer("/steps/0/outcome")
                 .and_then(|v| v.as_str()),
-            Some("rejected")
+            Some("declared:accepted")
         );
         assert!(wire_side.pointer("/steps/0/reason").is_none());
-        // smoke.yaml declares that the legacy server accepts the replayed seq.
         assert_eq!(
             legacy_side
                 .pointer("/steps/0/outcome")
                 .and_then(|v| v.as_str()),
-            Some("accepted")
+            Some("rejected")
         );
+        let agreeing = serde_json::json!({ "steps": [ { "i": 4, "client": "c1", "message": "Movement", "outcome": "accepted" } ] });
+        assert_eq!(
+            comparable(&agreeing, &s, true)
+                .pointer("/steps/0/outcome")
+                .and_then(|v| v.as_str()),
+            Some("declared:accepted")
+        );
+        // an undeclared step is compared as is
+        let plain = serde_json::json!({ "steps": [ { "i": 2, "client": "c1", "message": "Movement", "outcome": "accepted" } ] });
+        assert_eq!(comparable(&plain, &s, true), comparable(&plain, &s, false));
     }
 }

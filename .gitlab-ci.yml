@@ -1,0 +1,98 @@
+# GitLab CI for the skymp fork, branch parity (ADR-016). Runs only on the
+# dedicated sky-ci runner (tag `sky`, docker executor with the host socket).
+# Rust jobs cover skymp-wire; the server job builds the C++ server the
+# upstream way, entirely inside `docker build`, and runs T0 there.
+#
+# Upstream's own GitHub workflows keep running on the public mirror; this
+# file is ours and lives only on parity.
+
+stages: [image, wire, server]
+
+variables:
+  GIT_SUBMODULE_STRATEGY: none
+  RUST_CI_IMAGE: thuum/rust-ci:latest
+  FUZZ_SECONDS: "120"
+
+# Build the Rust CI image on the runner host's daemon; persists across jobs
+# (pull policy if-not-present). Rebuilt when its Dockerfile changes or on a
+# schedule.
+rust-image:
+  stage: image
+  tags: [sky]
+  image: docker:27
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - changes: [skymp-wire/ci/Dockerfile]
+  script:
+    - docker build -t "$RUST_CI_IMAGE" skymp-wire/ci
+
+.wire:
+  tags: [sky]
+  image: $RUST_CI_IMAGE
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - changes: [skymp-wire/**/*]
+  cache:
+    key: wire-cargo
+    paths: [skymp-wire/target/, .cargo/registry/]
+  variables:
+    CARGO_HOME: $CI_PROJECT_DIR/.cargo
+  before_script:
+    - cd skymp-wire
+
+# The gate CLAUDE.md calls `just wire-test`: tests, clippy with the deny set,
+# cargo-deny, and the committed C header must match a fresh cbindgen run.
+wire-test:
+  extends: .wire
+  stage: wire
+  script:
+    - cargo test --workspace --all-features
+    - cargo clippy --workspace --all-targets --all-features -- -D warnings
+    - cargo deny check
+    - (cd crates/wire-client-ffi && cbindgen --config cbindgen.toml --crate wire-client-ffi --output /tmp/skymp_wire.h && diff -u include/skymp_wire.h /tmp/skymp_wire.h)
+
+# Bounded fuzzing per push; the nightly schedule sets FUZZ_SECONDS to an hour.
+# A crash leaves its input under fuzz/artifacts as a job artifact.
+wire-fuzz:
+  extends: .wire
+  stage: wire
+  parallel:
+    matrix:
+      - TARGET: [codec_decode, validate, transport_ingest]
+  script:
+    - cargo +nightly fuzz run "$TARGET" -- -max_total_time="$FUZZ_SECONDS"
+  artifacts:
+    when: on_failure
+    paths: [skymp-wire/fuzz/artifacts/]
+    expire_in: 1 month
+
+# C++ server, the upstream way, inside one docker build (ci/server.Dockerfile
+# stacks on upstream's Dockerfile stages). T0 runs inside the build when the
+# master .esm files are present; without them the build says so and skips
+# ctest. Slow; runs on merge requests, parity pushes outside skymp-wire, and
+# the schedule.
+server-build:
+  stage: server
+  tags: [sky]
+  image: docker:27
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "parity"
+      changes:
+        - "**/*"
+        - "!skymp-wire/**/*"
+  script:
+    - |
+      if [ -n "${SKYRIM_DATA_URL:-}" ]; then
+        mkdir -p skyrim_data_files
+        for f in Skyrim.esm Update.esm Dawnguard.esm HearthFires.esm Dragonborn.esm; do
+          wget -q -O "skyrim_data_files/$f" "$SKYRIM_DATA_URL/$f"
+        done
+      else
+        echo "SKYRIM_DATA_URL unset: building without master files, ctest will be skipped"
+      fi
+    - docker build -f ci/server.Dockerfile -t "skymp-server:parity-$CI_COMMIT_SHORT_SHA" .
+    - docker tag "skymp-server:parity-$CI_COMMIT_SHORT_SHA" skymp-server:parity

@@ -16,4 +16,7 @@ steps:
   # Track W step 8 and removed if the fakeclient proves otherwise.
   - { at_ms: 132,  client: c1, Movement: { seq: 2, actor: 20, transform: { x: 60, y: 0, z: 0, yaw: 0, pitch: 0 }, run: true, sneak: false },
       divergence: { legacy: accept } }
-  - { at_ms: 500,  client: c2, Hit: { seq: 1, attacker: 21, target: 20, weapon: 4660, power_attack: false, client_time_ms: 480 } }
+  # The legacy driver has no translation for a hit yet (the fakeclient sends
+  # movement and console commands); declared until it does.
+  - { at_ms: 500,  client: c2, Hit: { seq: 1, attacker: 21, target: 20, weapon: 4660, power_attack: false, client_time_ms: 480 },
+      divergence: { legacy: unsupported } }

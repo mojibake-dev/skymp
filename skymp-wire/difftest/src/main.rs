@@ -69,6 +69,8 @@ struct Divergence {
 enum Outcome {
     Accept,
     Reject,
+    /// The legacy driver has no translation for this message yet.
+    Unsupported,
 }
 
 impl Outcome {
@@ -76,6 +78,7 @@ impl Outcome {
         match self {
             Outcome::Accept => "accepted",
             Outcome::Reject => "rejected",
+            Outcome::Unsupported => "unsupported",
         }
     }
 }
@@ -109,30 +112,296 @@ trait Driver {
     fn stop(&mut self) -> Result<(), DiffError>;
 }
 
-/// Legacy driver: speaks RakNet to the unmodified C++ server through the
-/// fork's `fakeclient`. Lands with Track W step 8; until then it reports
-/// itself unavailable and the CLI self-diffs.
-struct Legacy;
+/// Legacy driver: the fork's headless `fakeclient` against the unmodified
+/// C++ server. `DIFFTEST_FAKECLIENT` names the binary (or the stub under
+/// difftest/tools for tests), `DIFFTEST_LEGACY_ADDR` the server (default
+/// 127.0.0.1:7777). Each session client becomes one fakeclient run with a
+/// script of moves relative to its spawn; the outcome of a move is what the
+/// server sent back, the echoed update (accepted) or a Teleport2 correction
+/// (rejected). `Hello` is the login the fakeclient performs by itself. `Hit`
+/// has no legacy translation yet and is reported as unsupported; sessions
+/// declare that divergence.
+struct Legacy {
+    fakeclient: PathBuf,
+    host: String,
+    port: u16,
+    order: Vec<String>,
+    scripts: BTreeMap<String, Vec<LegacyStep>>,
+}
+
+struct LegacyStep {
+    index: usize,
+    at_ms: u64,
+    message: &'static str,
+    kind: LegacyKind,
+}
+
+enum LegacyKind {
+    Login,
+    Move {
+        dx: f32,
+        dy: f32,
+        dz: f32,
+        run: bool,
+    },
+    Unsupported,
+}
+
+const MSG_UPDATE_MOVEMENT: i64 = 2;
+const MSG_TELEPORT2: i64 = 31;
+
+impl Legacy {
+    fn new() -> Self {
+        Self {
+            fakeclient: PathBuf::new(),
+            host: "127.0.0.1".into(),
+            port: 7777,
+            order: Vec::new(),
+            scripts: BTreeMap::new(),
+        }
+    }
+
+    fn script_text(steps: &[LegacyStep]) -> String {
+        let mut out = String::new();
+        for st in steps {
+            if let LegacyKind::Move { dx, dy, dz, run } = st.kind {
+                let line = serde_json::json!({
+                    "at_ms": st.at_ms,
+                    "move": { "dx": dx, "dy": dy, "dz": dz, "runMode": if run { "Running" } else { "Walking" } },
+                });
+                out.push_str(&line.to_string());
+                out.push('\n');
+            }
+        }
+        out
+    }
+
+    fn run_client(
+        &self,
+        client: &str,
+        profile_id: usize,
+        steps: &[LegacyStep],
+    ) -> Result<Vec<serde_json::Value>, DiffError> {
+        let dir = std::env::temp_dir().join(format!("difftest-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).map_err(|e| DiffError::Io(e.to_string()))?;
+        let script = dir.join(format!("{client}.jsonl"));
+        std::fs::write(&script, Self::script_text(steps))
+            .map_err(|e| DiffError::Io(e.to_string()))?;
+        let output = std::process::Command::new(&self.fakeclient)
+            .args([
+                "--host",
+                &self.host,
+                "--port",
+                &self.port.to_string(),
+                "--profile-id",
+                &profile_id.to_string(),
+                "--settle-ms",
+                "1500",
+            ])
+            .arg("--script")
+            .arg(&script)
+            .output()
+            .map_err(|e| {
+                DiffError::Driver(
+                    "legacy",
+                    format!("spawn {}: {e}", self.fakeclient.display()),
+                )
+            })?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let events: Vec<serde_json::Value> = stdout
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+        if !output.status.success() {
+            let last = events.last().map(|v| v.to_string()).unwrap_or_default();
+            return Err(DiffError::Driver(
+                "legacy",
+                format!("fakeclient for {client} exited {}: {last}", output.status),
+            ));
+        }
+        Ok(events)
+    }
+
+    /// Outcomes for one client's steps from its fakeclient events.
+    fn outcomes(
+        client: &str,
+        steps: &[LegacyStep],
+        events: &[serde_json::Value],
+    ) -> Vec<StepRecord> {
+        let has_actor = events
+            .iter()
+            .any(|e| e.get("event").and_then(|v| v.as_str()) == Some("actor"));
+        let mut records: Vec<StepRecord> = steps
+            .iter()
+            .map(|st| StepRecord {
+                i: st.index,
+                client: client.to_string(),
+                message: st.message,
+                outcome: match st.kind {
+                    LegacyKind::Login => {
+                        if has_actor {
+                            Outcome::Accept.as_str()
+                        } else {
+                            Outcome::Reject.as_str()
+                        }
+                    }
+                    LegacyKind::Move { .. } => "lost",
+                    LegacyKind::Unsupported => Outcome::Unsupported.as_str(),
+                },
+                reason: None,
+            })
+            .collect();
+        // Moves resolve in order of their `sent` events; an echo with the same
+        // position accepts, a Teleport2 rejects the most recent unresolved move.
+        let move_positions: Vec<usize> = steps
+            .iter()
+            .enumerate()
+            .filter(|(_, st)| matches!(st.kind, LegacyKind::Move { .. }))
+            .map(|(i, _)| i)
+            .collect();
+        let mut sent_pos: Vec<(usize, Vec<f64>)> = Vec::new();
+        let mut next_move = move_positions.iter().copied();
+        for ev in events {
+            let kind = ev.get("event").and_then(|v| v.as_str()).unwrap_or("");
+            let msg = ev.get("msg").cloned().unwrap_or(serde_json::Value::Null);
+            let t = msg.get("t").and_then(|v| v.as_i64()).unwrap_or(-1);
+            if kind == "sent" && t == MSG_UPDATE_MOVEMENT {
+                if let Some(slot) = next_move.next() {
+                    let pos = msg
+                        .pointer("/data/pos")
+                        .and_then(|p| p.as_array())
+                        .map(|a| a.iter().filter_map(|x| x.as_f64()).collect())
+                        .unwrap_or_default();
+                    sent_pos.push((slot, pos));
+                }
+            } else if kind == "message" && t == MSG_UPDATE_MOVEMENT {
+                let pos: Vec<f64> = msg
+                    .pointer("/data/pos")
+                    .and_then(|p| p.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_f64()).collect())
+                    .unwrap_or_default();
+                let hit = sent_pos
+                    .iter()
+                    .find(|(slot, sp)| {
+                        records
+                            .get(*slot)
+                            .map(|r| r.outcome == "lost")
+                            .unwrap_or(false)
+                            && sp.len() == 3
+                            && pos.len() == 3
+                            && sp.iter().zip(pos.iter()).all(|(a, b)| (a - b).abs() < 0.5)
+                    })
+                    .map(|(slot, _)| *slot);
+                if let Some(slot) = hit {
+                    if let Some(r) = records.get_mut(slot) {
+                        r.outcome = Outcome::Accept.as_str();
+                    }
+                }
+            } else if kind == "message" && t == MSG_TELEPORT2 {
+                let last = sent_pos
+                    .iter()
+                    .rev()
+                    .find(|(slot, _)| {
+                        records
+                            .get(*slot)
+                            .map(|r| r.outcome == "lost")
+                            .unwrap_or(false)
+                    })
+                    .map(|(slot, _)| *slot);
+                if let Some(slot) = last {
+                    if let Some(r) = records.get_mut(slot) {
+                        r.outcome = Outcome::Reject.as_str();
+                        r.reason = Some("Teleport2".into());
+                    }
+                }
+            }
+        }
+        records
+    }
+}
 
 impl Driver for Legacy {
     fn name(&self) -> &'static str {
         "legacy"
     }
+
     fn start(&mut self) -> Result<(), DiffError> {
-        Err(DiffError::Driver(
-            "legacy",
-            "fakeclient not available yet (Track W step 8)".into(),
-        ))
-    }
-    fn connect(&mut self, _c: &str) -> Result<(), DiffError> {
+        let Some(bin) = std::env::var_os("DIFFTEST_FAKECLIENT") else {
+            return Err(DiffError::Driver(
+                "legacy",
+                "DIFFTEST_FAKECLIENT unset (path to the fork's fakeclient; Track W step 8)".into(),
+            ));
+        };
+        self.fakeclient = PathBuf::from(bin);
+        if let Ok(addr) = std::env::var("DIFFTEST_LEGACY_ADDR") {
+            let (h, p) = addr.rsplit_once(':').ok_or_else(|| {
+                DiffError::Driver("legacy", "DIFFTEST_LEGACY_ADDR must be host:port".into())
+            })?;
+            self.host = h.to_string();
+            self.port = p
+                .parse()
+                .map_err(|_| DiffError::Driver("legacy", "DIFFTEST_LEGACY_ADDR port".into()))?;
+        }
         Ok(())
     }
-    fn send(&mut self, _i: usize, _c: &str, _at: u64, _m: &Message) -> Result<(), DiffError> {
+
+    fn connect(&mut self, client: &str) -> Result<(), DiffError> {
+        self.order.push(client.to_string());
+        self.scripts.insert(client.to_string(), Vec::new());
         Ok(())
     }
+
+    fn send(
+        &mut self,
+        index: usize,
+        client: &str,
+        at_ms: u64,
+        message: &Message,
+    ) -> Result<(), DiffError> {
+        let kind = match message {
+            Message::Hello(_) => LegacyKind::Login,
+            Message::Movement(m) => LegacyKind::Move {
+                dx: m.transform.x,
+                dy: m.transform.y,
+                dz: m.transform.z,
+                run: m.run,
+            },
+            _ => LegacyKind::Unsupported,
+        };
+        let steps = self
+            .scripts
+            .get_mut(client)
+            .ok_or_else(|| DiffError::Driver("legacy", format!("{client}: not connected")))?;
+        steps.push(LegacyStep {
+            index,
+            at_ms,
+            message: message.name(),
+            kind,
+        });
+        Ok(())
+    }
+
     fn outputs(&mut self) -> Result<serde_json::Value, DiffError> {
-        Ok(serde_json::Value::Null)
+        let mut steps: Vec<StepRecord> = Vec::new();
+        let mut to_client: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (i, client) in self.order.iter().enumerate() {
+            let client_steps = self.scripts.get(client).map(Vec::as_slice).unwrap_or(&[]);
+            let events = self.run_client(client, i.saturating_add(1), client_steps)?;
+            steps.extend(Legacy::outcomes(client, client_steps, &events));
+            let received: Vec<String> = events
+                .iter()
+                .filter(|e| e.get("event").and_then(|v| v.as_str()) == Some("message"))
+                .filter_map(|e| e.pointer("/msg/t").and_then(|t| t.as_i64()))
+                .map(|t| format!("t{t}"))
+                .collect();
+            to_client.insert(client.clone(), received);
+        }
+        steps.sort_by_key(|r| r.i);
+        Ok(
+            serde_json::json!({ "steps": steps, "server_to_client": to_client, "db": serde_json::Value::Null }),
+        )
     }
+
     fn stop(&mut self) -> Result<(), DiffError> {
         Ok(())
     }
@@ -382,12 +651,18 @@ fn replay(d: &mut dyn Driver, s: &Session) -> Result<serde_json::Value, DiffErro
     Ok(out)
 }
 
-/// The part of an output the diff looks at: outcomes without wire-only
-/// detail, with declared divergences applied to the legacy side.
+/// The part of an output the diff looks at. In M0 that is the per-step
+/// outcomes: the wire edge has no core behind it yet, so `server_to_client`
+/// and `db` join the comparison when the bridged server exists (M1).
+/// Reasons are wire-only detail and never compared; declared divergences
+/// replace the legacy side's outcome for their step.
 fn comparable(out: &serde_json::Value, session: &Session, legacy: bool) -> serde_json::Value {
-    let mut v = out.clone();
-    if let Some(steps) = v.get_mut("steps").and_then(|s| s.as_array_mut()) {
-        for st in steps.iter_mut() {
+    let mut steps = out
+        .get("steps")
+        .cloned()
+        .unwrap_or(serde_json::Value::Array(Vec::new()));
+    if let Some(list) = steps.as_array_mut() {
+        for st in list.iter_mut() {
             if let Some(obj) = st.as_object_mut() {
                 obj.remove("reason");
                 if legacy {
@@ -408,14 +683,14 @@ fn comparable(out: &serde_json::Value, session: &Session, legacy: bool) -> serde
             }
         }
     }
-    v
+    serde_json::json!({ "steps": steps })
 }
 
 fn run(path: PathBuf) -> Result<String, DiffError> {
     let session = load_session(&path)?;
     let mut wire = Wire::new();
     let a = replay(&mut wire, &session)?;
-    let mut legacy = Legacy;
+    let mut legacy = Legacy::new();
     match legacy.start() {
         Ok(()) => {
             let b = replay(&mut legacy, &session)?;
@@ -520,10 +795,90 @@ mod tests {
         assert_eq!(reason, "E_VAL_SEQ_REPLAY");
     }
 
+    fn stub_available() -> bool {
+        std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
     #[test]
-    fn self_diff_is_identical_and_divergences_apply_to_legacy_only() {
+    fn self_diff_and_legacy_over_the_stub() {
+        // Both paths of run() read the same environment variable, so they run
+        // in one test, in order: without a legacy driver, then with the stub.
+        std::env::remove_var("DIFFTEST_FAKECLIENT");
         let verdict = run(smoke_path()).expect("run");
         assert!(verdict.contains("identical (wire self-diff"), "{verdict}");
+        if stub_available() {
+            let stub = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tools/fakeclient-stub.py");
+            std::env::set_var("DIFFTEST_FAKECLIENT", &stub);
+            let verdict = run(smoke_path()).expect("run with the stub");
+            std::env::remove_var("DIFFTEST_FAKECLIENT");
+            assert!(verdict.contains("identical (wire vs legacy)"), "{verdict}");
+        }
+    }
+
+    #[test]
+    fn legacy_outcomes_from_events() {
+        let steps = vec![
+            LegacyStep {
+                index: 0,
+                at_ms: 0,
+                message: "Hello",
+                kind: LegacyKind::Login,
+            },
+            LegacyStep {
+                index: 2,
+                at_ms: 100,
+                message: "Movement",
+                kind: LegacyKind::Move {
+                    dx: 0.0,
+                    dy: 0.0,
+                    dz: 0.0,
+                    run: false,
+                },
+            },
+            LegacyStep {
+                index: 3,
+                at_ms: 116,
+                message: "Movement",
+                kind: LegacyKind::Move {
+                    dx: 9000.0,
+                    dy: 0.0,
+                    dz: 0.0,
+                    run: true,
+                },
+            },
+            LegacyStep {
+                index: 5,
+                at_ms: 500,
+                message: "Hit",
+                kind: LegacyKind::Unsupported,
+            },
+        ];
+        let events: Vec<serde_json::Value> = vec![
+            serde_json::json!({"event": "actor", "idx": 1}),
+            serde_json::json!({"event": "sent", "msg": {"t": 2, "idx": 1, "data": {"pos": [10.0, 20.0, 30.0]}}}),
+            serde_json::json!({"event": "message", "msg": {"t": 2, "idx": 1, "data": {"pos": [10.0, 20.0, 30.0]}}}),
+            serde_json::json!({"event": "sent", "msg": {"t": 2, "idx": 1, "data": {"pos": [9010.0, 20.0, 30.0]}}}),
+            serde_json::json!({"event": "message", "msg": {"t": 31, "idx": 1}}),
+        ];
+        let out = Legacy::outcomes("c1", &steps, &events);
+        let outcomes: Vec<(usize, &str)> = out.iter().map(|r| (r.i, r.outcome)).collect();
+        assert_eq!(
+            outcomes,
+            vec![
+                (0, "accepted"),
+                (2, "accepted"),
+                (3, "rejected"),
+                (5, "unsupported")
+            ]
+        );
+    }
+
+    #[test]
+    fn divergences_apply_to_legacy_only() {
         let s = load_session(&smoke_path()).expect("session");
         let out = serde_json::json!({ "steps": [ { "i": 4, "client": "c1", "message": "Movement", "outcome": "rejected", "reason": "E_VAL_SEQ_REPLAY" } ], "server_to_client": {}, "db": null });
         let wire_side = comparable(&out, &s, false);

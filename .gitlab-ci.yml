@@ -66,11 +66,12 @@ wire-fuzz:
     paths: [skymp-wire/fuzz/artifacts/]
     expire_in: 1 month
 
-# C++ server, the upstream way, inside one docker build (ci/server.Dockerfile
-# stacks on upstream's Dockerfile stages). T0 runs inside the build when the
-# master .esm files are present; without them the build says so and skips
-# ctest. Slow; runs on merge requests, parity pushes outside skymp-wire, and
-# the schedule.
+# C++ server, the upstream way, inside one docker build: ci/server.Dockerfile
+# starts from upstream's published skymp-vcpkg-deps image (tag pinned from
+# misc/github_env_linux) so nothing of vcpkg is rebuilt. T0 runs inside the
+# build when the master .esm files are present; without them the build says
+# so and skips ctest. Runs on merge requests, parity pushes outside
+# skymp-wire, and the schedule.
 server-build:
   stage: server
   tags: [sky]

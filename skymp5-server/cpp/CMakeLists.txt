@@ -31,8 +31,11 @@ endif()
 if(NOT EMSCRIPTEN)
   file(GLOB_RECURSE src "fakeclient/*")
   add_executable(fakeclient ${src})
-  target_link_libraries(fakeclient PUBLIC mp_common)
-  target_link_libraries(fakeclient PUBLIC server_guest_lib) # messages need Inventory.cpp
+  # Static libraries, GNU ld: messages needs Inventory::Entry from
+  # server_guest_lib and server_guest_lib needs messages, and nothing in this
+  # binary pulls Inventory.o first (the unit binary does, by accident). Listing
+  # the pair twice is CMake's documented answer for static cycles.
+  target_link_libraries(fakeclient PUBLIC mp_common messages server_guest_lib messages server_guest_lib)
   apply_default_settings(TARGETS fakeclient)
   list(APPEND VCPKG_DEPENDENT fakeclient)
   add_custom_command(TARGET fakeclient POST_BUILD

@@ -14,21 +14,23 @@ variables:
   FUZZ_SECONDS: "120"
 
 # Build the Rust CI image on the runner host's daemon; persists across jobs
-# (pull policy if-not-present). Rebuilt when its Dockerfile changes or on a
-# schedule.
+# (pull policy if-not-present). Runs on every wire change: with the layers
+# cached on the host it takes seconds, and the wire jobs below need it to
+# exist before they start (a missing image is a runner configuration error).
 rust-image:
   stage: image
   tags: [sky]
   image: docker:27
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
-    - changes: [skymp-wire/ci/Dockerfile]
+    - changes: [skymp-wire/**/*]
   script:
     - docker build -t "$RUST_CI_IMAGE" skymp-wire/ci
 
 .wire:
   tags: [sky]
   image: $RUST_CI_IMAGE
+  needs: [rust-image]
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
     - changes: [skymp-wire/**/*]

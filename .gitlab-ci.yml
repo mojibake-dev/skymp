@@ -99,5 +99,8 @@ server-build:
       else
         echo "SKYRIM_DATA_URL unset: building without master files, ctest will be skipped"
       fi
-    - docker build -f ci/server.Dockerfile -t "skymp-server:parity-$CI_COMMIT_SHORT_SHA" .
+    - VCPKG_URL=$(git config -f .gitmodules submodule.vcpkg.url)
+    - VCPKG_COMMIT=$(git ls-tree HEAD vcpkg | awk '{print $3}')
+    - echo "vcpkg $VCPKG_URL @ $VCPKG_COMMIT"
+    - docker build -f ci/server.Dockerfile --build-arg "VCPKG_URL=$VCPKG_URL" --build-arg "VCPKG_COMMIT=$VCPKG_COMMIT" -t "skymp-server:parity-$CI_COMMIT_SHORT_SHA" .
     - docker tag "skymp-server:parity-$CI_COMMIT_SHORT_SHA" skymp-server:parity

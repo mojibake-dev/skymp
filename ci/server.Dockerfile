@@ -9,6 +9,11 @@
 
 ARG DEPS_IMAGE=skymp/skymp-vcpkg-deps:733f2d5
 ARG RUNTIME_IMAGE=skymp/skymp-runtime-base:733f2d5
+# vcpkg is a submodule that upstream's .dockerignore keeps out of the context;
+# upstream's own builder stage clones it at the pinned commit, so does this one.
+# The CI job passes both from .gitmodules and `git ls-tree HEAD vcpkg`.
+ARG VCPKG_URL=https://github.com/microsoft/vcpkg.git
+ARG VCPKG_COMMIT
 
 FROM ${DEPS_IMAGE} AS skymp-parity-builder
 WORKDIR /src
@@ -18,6 +23,12 @@ COPY --chown=skymp:skymp . .
 USER root
 RUN chown skymp:skymp /src
 USER skymp
+RUN if [ ! -f vcpkg/scripts/buildsystems/vcpkg.cmake ]; then \
+      test -n "$VCPKG_COMMIT" || { echo 'VCPKG_COMMIT build-arg is required'; exit 1; }; \
+      rm -rf vcpkg && git init -q vcpkg \
+      && git -C vcpkg fetch -q --depth 1 "$VCPKG_URL" "$VCPKG_COMMIT" \
+      && git -C vcpkg checkout -q FETCH_HEAD; \
+    fi
 # Unit tests read their data directory from the UNIT_DATA_DIR CMake option
 # (unit/TestUtils.cpp GetDataDir); the hash and dist-contents checks run only
 # with CI=true in the environment (unit/EspmTest.cpp, unit/DistContentsTest.cpp).

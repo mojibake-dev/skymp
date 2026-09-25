@@ -6,6 +6,10 @@ publish.workspace = true
 license.workspace = true
 description = "renet + netcode transport for the skymp wire (ADR-011). Only crate that names renet."
 
+[features]
+# Exposes `harness`, the renet ingestion harness the fuzz crate drives. Test surface only.
+harness = []
+
 [dependencies]
 wire-schema = { path = "../wire-schema" }
 wire-codec = { path = "../wire-codec" }

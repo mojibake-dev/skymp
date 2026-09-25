@@ -13,7 +13,8 @@ arbitrary = { version = "1", features = ["derive"] }
 wire-schema = { path = "../crates/wire-schema" }
 wire-codec = { path = "../crates/wire-codec" }
 wire-validate = { path = "../crates/wire-validate" }
-wire-transport = { path = "../crates/wire-transport" }
+wire-transport = { path = "../crates/wire-transport", features = ["harness"] }
+heapless = { version = "0.7", features = ["serde"] }
 
 [[bin]]
 name = "codec_decode"

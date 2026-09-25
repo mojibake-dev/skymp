@@ -23,6 +23,25 @@ if(WIN32)
 endif()
 
 #
+# fakeclient: headless client for the legacy protocol, Linux-capable (thuum,
+# Track W step 8). Same link line as MpClientPlugin, no game dependency; the
+# binary is copied next to the server so misc/tests can spawn ./fakeclient.
+#
+
+if(NOT EMSCRIPTEN)
+  file(GLOB_RECURSE src "fakeclient/*")
+  add_executable(fakeclient ${src})
+  target_link_libraries(fakeclient PUBLIC mp_common)
+  target_link_libraries(fakeclient PUBLIC server_guest_lib) # messages need Inventory.cpp
+  apply_default_settings(TARGETS fakeclient)
+  list(APPEND VCPKG_DEPENDENT fakeclient)
+  add_custom_command(TARGET fakeclient POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/dist/server"
+    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:fakeclient>" "${CMAKE_BINARY_DIR}/dist/server/fakeclient"
+    COMMENT "fakeclient placed next to the server for integration tests")
+endif()
+
+#
 # messages
 #
 

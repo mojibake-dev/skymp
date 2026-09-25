@@ -13,6 +13,10 @@ ARG RUNTIME_IMAGE=skymp/skymp-runtime-base:733f2d5
 FROM ${DEPS_IMAGE} AS skymp-parity-builder
 WORKDIR /src
 COPY --chown=skymp:skymp . .
+# WORKDIR created /src as root; the build user must own the directory itself
+# (sed -i and the build tree write there), exactly as upstream's Dockerfile does.
+USER root
+RUN chown skymp:skymp /src
 USER skymp
 # Unit tests read their data directory from the UNIT_DATA_DIR CMake option
 # (unit/TestUtils.cpp GetDataDir); the hash and dist-contents checks run only

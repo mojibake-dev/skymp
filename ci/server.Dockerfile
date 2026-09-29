@@ -45,5 +45,7 @@ RUN if [ -f skyrim_data_files/Skyrim.esm ]; then \
 FROM ${RUNTIME_IMAGE} AS skymp-server
 WORKDIR /srv/skymp
 COPY --from=skymp-parity-builder --chown=skymp:skymp /src/build/dist/server /srv/skymp
+# WORKDIR created /srv/skymp as root; the server dumps its settings into its cwd.
+RUN chown skymp:skymp /srv/skymp
 USER skymp
 CMD ["sh", "-c", "ls /srv/skymp && echo 'entrypoint is set from launch_server in M0 Track S1'"]

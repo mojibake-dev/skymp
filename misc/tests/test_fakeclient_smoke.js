@@ -22,6 +22,12 @@ const runFakeclient = () => new Promise((resolve) => {
 });
 
 const main = async () => {
+  if (process.platform === "win32") {
+    // T2 runs on Linux (sky-srv, docs/LAB.md); dist/server/fakeclient has no
+    // .exe suffix on Windows and the Windows workflow only proves the client.
+    console.log("fakeclient smoke is Linux-only; skipping on win32");
+    return;
+  }
   const { code, out } = await runFakeclient();
   const events = out.trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
   const actor = events.find((e) => e.event === "actor");

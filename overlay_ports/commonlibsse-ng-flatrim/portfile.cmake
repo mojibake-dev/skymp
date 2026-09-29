@@ -9,6 +9,7 @@ vcpkg_from_github(
       patches/02-variable-make_members_public.patch
       patches/03-stackframe-uncomment_top_args.patch
       patches/04-extradatalist-make_members_public.patch
+      patches/05-address-library-v5.patch
 )
 
 vcpkg_configure_cmake(

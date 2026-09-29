@@ -1,0 +1,110 @@
+Address Library format 5 (Skyrim 1.7.x) beside the packed formats, on the
+CharmedBaryon tree skymp pins. The reader follows the layout an MIT fork of the
+same base implemented (github.com/Zzyxz/CommonLibSSE-NG, commits 352ba75c and
+73041d57, 2026-08-22): u32 format, u32 version[4], char name[64], u32 pointer
+size, u32 data format, u32 count, then one u32 RVA per ID with index = ID and
+0 = absent; to be confirmed against the versionlibdb.h in the library download
+before merge. thuum branch skyrim-1.7, docs/DECISIONS.md ADR-018.
+
+--- a/include/REL/ID.h
++++ b/include/REL/ID.h
+@@ -181,12 +181,8 @@
+                     });
+ 
+             bool failed = false;
+-            if (it == _id2offset.end()) {
+-                failed = true;
+-            } else if SKYRIM_REL_VR_CONSTEXPR (Module::IsVR()) {
+-                if (it->id != a_id) {
+-                    failed = true;
+-                }
++            if (it == _id2offset.end() || it->id != a_id || it->offset == 0) {
++                failed = true;  // absent, or present with no address in this version (format 5)
+             }
+             if (failed) {
+                 stl::report_and_fail(
+@@ -249,10 +245,39 @@
+         class header_t
+         {
+         public:
++            // Address Library format 5 (the Skyrim 1.7.x releases): a fixed
++            // header and a flat table of one 32-bit RVA per ID, index = ID,
++            // 0 = no address in this version. Read beside the packed
++            // format 1/2 files; layout to be confirmed against the
++            // versionlibdb.h shipped with the library (thuum ADR-018).
++            static constexpr std::int32_t kFormat5 = 5;
++
+             void read(istream_t &a_in, std::uint8_t a_formatVersion)
+             {
+                 std::int32_t format{};
+                 a_in.readin(format);
++                _format = format;
++                if (format == kFormat5) {
++                    std::int32_t version[4]{};
++                    a_in.readin(version);
++                    a_in.ignore(64);  // executable name, fixed width
++                    std::int32_t pointerSize{};
++                    std::int32_t dataFormat{};
++                    a_in.readin(pointerSize);
++                    a_in.readin(dataFormat);
++                    a_in.readin(_addressCount);
++                    _pointerSize = pointerSize;
++                    if (dataFormat != 0 || pointerSize != static_cast<std::int32_t>(sizeof(void*)) || _addressCount <= 0) {
++                        stl::report_and_fail(
++                                std::format(
++                                        "Unsupported address library v5 layout: data format {}, pointer size {}, {} addresses"sv,
++                                        dataFormat, pointerSize, _addressCount));
++                    }
++                    for (std::size_t i = 0; i < std::extent_v<decltype(version)>; ++i) {
++                        _version[i] = static_cast<std::uint16_t>(version[i]);
++                    }
++                    return;
++                }
+                 if (format != a_formatVersion) {
+                     stl::report_and_fail(
+                             std::format(
+@@ -278,6 +303,8 @@
+             }
+ 
+             [[nodiscard]] std::size_t address_count() const noexcept { return static_cast<std::size_t>(_addressCount); }
++
++            [[nodiscard]] std::int32_t format() const noexcept { return _format; }
+ 
+             [[nodiscard]] std::uint64_t pointer_size() const noexcept { return static_cast<std::uint64_t>(_pointerSize); }
+ 
+@@ -285,6 +312,7 @@
+ 
+         private:
+             Version      _version;
++            std::int32_t _format{0};
+             std::int32_t _pointerSize{0};
+             std::int32_t _addressCount{0};
+         };
+@@ -330,6 +358,16 @@
+ 
+         bool unpack_file(istream_t &a_in, header_t a_header, bool a_failOnError)
+         {
++            if (a_header.format() == header_t::kFormat5) {
++                // already in ID order; a zero RVA stays zero and id2offset refuses it
++                std::uint64_t id = 0;
++                for (auto& mapping: _id2offset) {
++                    std::uint32_t rva{};
++                    a_in.readin(rva);
++                    mapping = { id++, rva };
++                }
++                return true;
++            }
+             std::uint8_t type = 0;
+             std::uint64_t id = 0;
+             std::uint64_t offset = 0;
+--- a/src/REL/ID.cpp
++++ b/src/REL/ID.cpp
+@@ -103,7 +103,7 @@
+ 				return stl::report_and_error("version mismatch"sv, a_failOnError);
+ 			}
+ 
+-			auto mapname = L"CommonLibSSEOffsets-v2-"s;
++			auto mapname = header.format() == header_t::kFormat5 ? L"CommonLibSSEOffsets-v5-"s : L"CommonLibSSEOffsets-v2-"s;
+ 			mapname += a_version.wstring();
+ 			const auto byteSize = static_cast<std::size_t>(header.address_count()) * sizeof(mapping_t);
+ 			if (_mmap.open(mapname, byteSize)) {

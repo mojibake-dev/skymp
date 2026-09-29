@@ -3,7 +3,7 @@ CharmedBaryon tree skymp pins. The reader follows the layout an MIT fork of the
 same base implemented (github.com/Zzyxz/CommonLibSSE-NG, commits 352ba75c and
 73041d57, 2026-08-22): u32 format, u32 version[4], char name[64], u32 pointer
 size, u32 data format, u32 count, then one u32 RVA per ID with index = ID and
-0 = absent; to be confirmed against the versionlibdb.h in the library download
+0 = absent; to be confirmed against the versionlibdb.h in the library download.
 before merge. thuum branch skyrim-1.7, docs/DECISIONS.md ADR-018.
 
 --- a/include/REL/ID.h
@@ -108,3 +108,14 @@ before merge. thuum branch skyrim-1.7, docs/DECISIONS.md ADR-018.
  			mapname += a_version.wstring();
  			const auto byteSize = static_cast<std::size_t>(header.address_count()) * sizeof(mapping_t);
  			if (_mmap.open(mapname, byteSize)) {
+--- a/include/SKSE/Version.h
++++ b/include/SKSE/Version.h
+@@ -31,6 +31,8 @@
+ 	constexpr REL::Version RUNTIME_SSE_1_6_659(1, 6, 659, 0);
+ 	constexpr REL::Version RUNTIME_SSE_1_6_678(1, 6, 678, 0);
+ 	constexpr REL::Version RUNTIME_SSE_1_6_1330(1, 5, 1330, 0);
++	constexpr REL::Version RUNTIME_SSE_1_6_1170(1, 6, 1170, 0);
++	constexpr REL::Version RUNTIME_SSE_1_7_104(1, 7, 104, 0);
+ 	constexpr auto         RUNTIME_SSE_LATEST_AE = RUNTIME_SSE_1_6_1330;
+ 	constexpr auto         RUNTIME_SSE_LATEST_SE = RUNTIME_SSE_1_5_97;
+ 	constexpr auto         RUNTIME_SSE_LATEST = RUNTIME_SSE_LATEST_AE;

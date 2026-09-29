@@ -5,8 +5,9 @@
 
 extern espm::Loader& GetEspmLoader();
 
-// These tests depend on the files shipped with Skyrim SE (pre-AE update).
-// See README.md in project root for details.
+// The hash check accepts any data set libespm knows (Utils.cpp,
+// kKnownHashcodes): upstream's pre-AE CI files or the lab's current Steam
+// files. The other tests here hold for both.
 
 TEST_CASE("Hash check", "[espm]")
 {
@@ -19,7 +20,13 @@ TEST_CASE("Hash check", "[espm]")
   for (const auto& [filename, info] : hashes) {
     DYNAMIC_SECTION(filename << " checksum and size test")
     {
-      REQUIRE(espm::utils::GetCorrectHashcode(filename) == info.crc32);
+      const char* dataSet =
+        espm::utils::DescribeKnownHashcode(filename, info.crc32);
+      INFO(filename << " crc32 0x" << std::hex << info.crc32
+                    << " is not in any known data set");
+      REQUIRE(dataSet != nullptr);
+      spdlog::info("{}: crc32 {:#x} belongs to data set '{}'", filename,
+                   info.crc32, dataSet);
     }
   }
 }

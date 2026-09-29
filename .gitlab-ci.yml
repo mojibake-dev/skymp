@@ -53,6 +53,25 @@ wire-test:
     - cargo deny check
     - (cd crates/wire-client-ffi && cbindgen --config cbindgen.toml --crate wire-client-ffi --output /tmp/skymp_wire.h && diff -u include/skymp_wire.h /tmp/skymp_wire.h)
 
+# A Linux difftest binary plus the session files, for sky-srv: `just test-proto`
+# runs it inside the server image next to the fakeclient (docs/WIRE.md, Track W
+# step 8). Also runs when only this file changes, so the artifact exists before
+# the next wire change; the Rust image is then already on sky-ci.
+difftest-build:
+  extends: .wire
+  stage: wire
+  needs: [{ job: rust-image, optional: true }]
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - changes: [skymp-wire/**/*, .gitlab-ci.yml]
+  script:
+    - cargo build --release -p difftest
+    - mkdir -p ../difftest-dist && cp target/release/difftest ../difftest-dist/ && cp -r difftest/sessions ../difftest-dist/
+  artifacts:
+    name: difftest-$CI_COMMIT_SHORT_SHA
+    paths: [difftest-dist/]
+    expire_in: 30 days
+
 # Bounded fuzzing per push; the nightly schedule sets FUZZ_SECONDS to an hour.
 # A crash leaves its input under fuzz/artifacts as a job artifact.
 wire-fuzz:

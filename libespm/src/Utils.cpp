@@ -52,18 +52,48 @@ uint32_t CalculateHashcode(const void* readBuffer, size_t length)
   return ZlibGetCRC32Checksum(readBuffer, length);
 }
 
-const std::map<std::string, uint32_t> kCorrectHashcode{
-  { "Skyrim.esm", 0xaf75991dUL },
-  { "Update.esm", 0x17ab5e20UL },
-  { "Dawnguard.esm", 0xcc81e5d8UL },
-  { "HearthFires.esm", 0xbad9393aUL },
-  { "Dragonborn.esm", 0xeb10e82UL }
-};
+// One CRC32 per master file and game data set. Upstream's CI data set is the
+// pre-AE Skyrim SE files; the thuum lab (docs/LAB.md) runs the files a current
+// Steam install ships, so both sets are known and the test accepts either.
+// Adding a set means adding a row here with the game version it came from.
+const std::map<std::string, std::vector<std::pair<uint32_t, const char*>>>
+  kKnownHashcodes{
+    { "Skyrim.esm",
+      { { 0xaf75991dUL, "SE pre-AE (upstream CI set)" },
+        { 0xcb135ed1UL, "AE 1.7.104.0 (thuum lab, 2026-09-29)" } } },
+    { "Update.esm",
+      { { 0x17ab5e20UL, "SE pre-AE (upstream CI set)" },
+        { 0x2207cf03UL, "AE 1.7.104.0 (thuum lab, 2026-09-29)" } } },
+    { "Dawnguard.esm",
+      { { 0xcc81e5d8UL, "SE pre-AE (upstream CI set)" },
+        { 0x6cec879aUL, "AE 1.7.104.0 (thuum lab, 2026-09-29)" } } },
+    { "HearthFires.esm",
+      { { 0xbad9393aUL, "SE pre-AE (upstream CI set)" },
+        { 0x1eabc985UL, "AE 1.7.104.0 (thuum lab, 2026-09-29)" } } },
+    { "Dragonborn.esm",
+      { { 0xeb10e82UL, "SE pre-AE (upstream CI set)" },
+        { 0xe4a4f6eaUL, "AE 1.7.104.0 (thuum lab, 2026-09-29)" } } }
+  };
 
 uint32_t GetCorrectHashcode(const std::string& fileName)
 {
-  auto iter = kCorrectHashcode.find(fileName);
-  return iter == kCorrectHashcode.end() ? 0 : iter->second;
+  auto iter = kKnownHashcodes.find(fileName);
+  return iter == kKnownHashcodes.end() ? 0 : iter->second.front().first;
+}
+
+const char* DescribeKnownHashcode(const std::string& fileName,
+                                  uint32_t hashcode)
+{
+  auto iter = kKnownHashcodes.find(fileName);
+  if (iter == kKnownHashcodes.end()) {
+    return nullptr;
+  }
+  for (const auto& [crc, dataSet] : iter->second) {
+    if (crc == hashcode) {
+      return dataSet;
+    }
+  }
+  return nullptr;
 }
 
 uint32_t GetMappedId(uint32_t id, const IdMapping& mapping) noexcept

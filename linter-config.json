@@ -21,34 +21,67 @@
     {
       "name": "CRLF",
       "export": "CrlfCheck",
-      "modes": ["gha", "manual"],
+      "modes": [
+        "gha",
+        "manual"
+      ],
       "options": {
         "textOnly": true,
-        "excludePaths": ["/third_party/", "/skymp5-scripts/", "/overlay_ports/rsm-bsa/", "/overlay_ports/libxml2/"]
+        "excludePaths": [
+          "/third_party/",
+          "/skymp5-scripts/",
+          "/overlay_ports/rsm-bsa/",
+          "/overlay_ports/libxml2/"
+        ]
       }
     },
     {
       "name": "Linelint",
       "export": "LinelintCheck",
-      "modes": ["hook", "gha", "manual"],
+      "modes": [
+        "hook",
+        "gha",
+        "manual"
+      ],
       "options": {
         "textOnly": true,
-        "excludePaths": ["/third_party/", "/skymp5-scripts/", "/overlay_ports/rsm-bsa/", "/overlay_ports/libxml2/"]
+        "excludePaths": [
+          "/third_party/",
+          "/skymp5-scripts/",
+          "/overlay_ports/rsm-bsa/",
+          "/overlay_ports/libxml2/"
+        ]
       }
     },
     {
       "name": "ClangFormat",
       "export": "ClangFormatCheck",
-      "modes": ["hook", "gha", "manual"],
+      "modes": [
+        "hook",
+        "gha",
+        "manual"
+      ],
       "options": {
-        "extensions": [".cpp", ".h", ".hpp", ".cxx", ".cc"],
-        "excludePaths": ["/overlay_ports/"]
+        "extensions": [
+          ".cpp",
+          ".h",
+          ".hpp",
+          ".cxx",
+          ".cc"
+        ],
+        "excludePaths": [
+          "/overlay_ports/",
+          "/skymp-wire/"
+        ]
       }
     },
     {
       "name": "SP Const Enums",
       "export": "CodegenCheck",
-      "modes": ["gha", "manual"],
+      "modes": [
+        "gha",
+        "manual"
+      ],
       "options": {
         "command": "bash skyrim-platform/tools/const_enum_extractor/run.sh",
         "inputFile": "skyrim-platform/src/platform_se/codegen/convert-files/skyrimPlatform.ts",
@@ -58,7 +91,10 @@
     {
       "name": "SP Types (Definitions)",
       "export": "CodegenCheck",
-      "modes": ["gha", "manual"],
+      "modes": [
+        "gha",
+        "manual"
+      ],
       "options": {
         "command": "bash skyrim-platform/tools/ts_converter/run.sh",
         "inputFile": "skyrim-platform/src/platform_se/codegen/convert-files/Definitions.txt",
@@ -68,7 +104,10 @@
     {
       "name": "SP Types (FunctionsDump)",
       "export": "CodegenCheck",
-      "modes": ["gha", "manual"],
+      "modes": [
+        "gha",
+        "manual"
+      ],
       "options": {
         "command": "bash skyrim-platform/tools/ts_converter/run.sh",
         "inputFile": "skyrim-platform/src/platform_se/codegen/convert-files/FunctionsDump.txt",
@@ -78,11 +117,21 @@
     {
       "name": "Server/Client Message Pairs",
       "export": "PairedFilesCheck",
-      "modes": ["hook", "gha", "manual"],
+      "modes": [
+        "hook",
+        "gha",
+        "manual"
+      ],
       "options": {
         "dirs": [
-          { "path": "skymp5-server/cpp/messages", "ext": ".h" },
-          { "path": "skymp5-client/src/services/messages", "ext": ".ts" }
+          {
+            "path": "skymp5-server/cpp/messages",
+            "ext": ".h"
+          },
+          {
+            "path": "skymp5-client/src/services/messages",
+            "ext": ".ts"
+          }
         ],
         "exclude": [
           "anyMessage.ts",

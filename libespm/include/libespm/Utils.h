@@ -21,6 +21,10 @@ std::string ToString(GroupType type);
 bool IsItem(Type type) noexcept;
 uint32_t CalculateHashcode(const void* readBuffer, size_t length);
 uint32_t GetCorrectHashcode(const std::string& fileName);
+// The data set a master file's CRC32 belongs to (see kKnownHashcodes), or
+// nullptr when no known set has it.
+const char* DescribeKnownHashcode(const std::string& fileName,
+                                  uint32_t hashcode);
 uint32_t GetMappedId(uint32_t id, const IdMapping& mapping) noexcept;
 std::wstring ReadWstring(const uint8_t* ptr);
 Property::Type GetElementType(Property::Type arrayType);

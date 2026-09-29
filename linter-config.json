@@ -31,7 +31,8 @@
           "/third_party/",
           "/skymp5-scripts/",
           "/overlay_ports/rsm-bsa/",
-          "/overlay_ports/libxml2/"
+          "/overlay_ports/libxml2/",
+          "/skymp-wire/"
         ]
       }
     },
@@ -49,7 +50,8 @@
           "/third_party/",
           "/skymp5-scripts/",
           "/overlay_ports/rsm-bsa/",
-          "/overlay_ports/libxml2/"
+          "/overlay_ports/libxml2/",
+          "/skymp-wire/"
         ]
       }
     },

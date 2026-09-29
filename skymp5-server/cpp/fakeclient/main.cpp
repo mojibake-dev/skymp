@@ -8,8 +8,9 @@
 //     command, answer SpSnippets, and exit 0.
 //   --script FILE: after the login handshake, replay JSON lines, one per step,
 //     each with "at_ms" (milliseconds since the script started) and one of:
-//       "move": {"dx", "dy", "dz", "runMode"}   an UpdateMovement at spawn + offset
-//       "send": {...legacy message json...}      sent as is; the strings
+//       "move": {"dx", "dy", "dz", "runMode"}   an UpdateMovement at spawn +
+//       offset "send": {...legacy message json...}      sent as is; the
+//       strings
 //                "{{idx}}" and "{{worldOrCell}}" become this client's numbers
 //     plus an optional "reliable" (default true). difftest's legacy driver
 //     writes these; the events on stdout are its evidence.
@@ -299,7 +300,8 @@ int RunScript(Client& c, const Options& o)
       continue;
     }
     auto step = nlohmann::json::parse(line, nullptr, false);
-    if (step.is_discarded() || !(step.contains("send") || step.contains("move"))) {
+    if (step.is_discarded() ||
+        !(step.contains("send") || step.contains("move"))) {
       Emit({ { "event", "error" }, { "error", "bad script line" } });
       return 1;
     }
@@ -326,7 +328,8 @@ int RunScript(Client& c, const Options& o)
     ReplaceAll(raw, "\"{{worldOrCell}}\"", std::to_string(c.worldOrCell));
     auto msg = nlohmann::json::parse(raw, nullptr, false);
     if (msg.is_discarded()) {
-      Emit({ { "event", "error" }, { "error", "bad send after substitution" } });
+      Emit(
+        { { "event", "error" }, { "error", "bad send after substitution" } });
       return 1;
     }
     c.Send(msg, reliable);
@@ -343,8 +346,10 @@ int main(int argc, char** argv)
     return 2;
   }
   Client c;
-  const std::string password = std::string(kNetworkingPasswordPrefix) + o.password;
-  c.cl = Networking::CreateClient(o.host.c_str(), o.port, o.timeoutMs, password.c_str());
+  const std::string password =
+    std::string(kNetworkingPasswordPrefix) + o.password;
+  c.cl = Networking::CreateClient(o.host.c_str(), o.port, o.timeoutMs,
+                                  password.c_str());
 
   if (!c.WaitFor(o.timeoutMs, [&] { return c.cl->IsConnected(); })) {
     Emit({ { "event", "error" }, { "error", "connect timed out" } });

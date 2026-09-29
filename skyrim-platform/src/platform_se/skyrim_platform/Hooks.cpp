@@ -90,7 +90,14 @@ void BindNativeMethod(RE::BSScript::Internal::VirtualMachine* thisArg,
     hook::internal::GetAllocationBase(reinterpret_cast<void*>(realFunc));
   uintptr_t funcOffset = realFunc - moduleBase;
 
-  auto skse = (uintptr_t)GetModuleHandleA("skse64_1_6_1170.dll");
+  // The SKSE runtime DLL is named after the game version it was built for
+  // (skse64_1_6_1170.dll, skse64_1_7_104.dll); derive it from the running
+  // executable instead of pinning one version here.
+  const auto gameVersion = REL::Module::get().version();
+  const std::string skseDll =
+    fmt::format("skse64_{}_{}_{}.dll", gameVersion.major(),
+                gameVersion.minor(), gameVersion.patch());
+  auto skse = (uintptr_t)GetModuleHandleA(skseDll.c_str());
 
   uintptr_t isLongSignature =
     moduleBase == skse ? *reinterpret_cast<uint8_t*>(raw + 0x58) : 0;

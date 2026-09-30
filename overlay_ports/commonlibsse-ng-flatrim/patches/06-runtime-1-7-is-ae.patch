@@ -1,0 +1,24 @@
+Skyrim 1.7.x is an Anniversary Edition runtime. The pinned CommonLib classifies
+the running game by its minor version and only 1.6 counted as AE, so 1.7.104
+fell through to SE and the library loader looked for version-1-7-104-0.bin in
+format 1 (Skyrim Platform: "ID.h(215): failed to open address library file",
+seen on the lab client 2026-09-30). thuum branch skyrim-1.7, ADR-018.
+
+--- a/include/REL/Module.h
++++ b/include/REL/Module.h
+@@ -169,6 +169,7 @@
+ 						_instance._runtime = Runtime::VR;
+ 						break;
+ 					case 6:
++					case 7:  // the 1.7.x releases are Anniversary Edition builds (versionlib-*.bin, format 5)
+ 						_instance._runtime = Runtime::AE;
+ 						break;
+ 					default:
+@@ -340,6 +341,7 @@
+ 						_runtime = Runtime::VR;
+ 						break;
+ 					case 6:
++					case 7:  // the 1.7.x releases are Anniversary Edition builds (versionlib-*.bin, format 5)
+ 						_runtime = Runtime::AE;
+ 						break;
+ 					default:

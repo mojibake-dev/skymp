@@ -11,6 +11,7 @@ vcpkg_from_github(
       patches/04-extradatalist-make_members_public.patch
       patches/05-address-library-v5.patch
       patches/06-runtime-1-7-is-ae.patch
+      patches/07-skyrimvm-impl-1-7.patch
 )
 
 vcpkg_configure_cmake(

@@ -1,0 +1,47 @@
+SkyrimVM's VM implementation pointer sits at 0x210 in the 1.7.x releases, not
+0x200: two event sinks were added ahead of it. Static evidence from the analyzed
+1.7.104 program (thuum ghidra/notes/skyrimvm-1-7-104.md): FUN_1409cb800,
+FUN_1409c94f0 and FUN_1401e6640 all read the ref-counted VM at singleton+0x210.
+GetImpl() picks the offset by the running version; VirtualMachine::GetSingleton
+uses it. thuum branch skyrim-1.7, ADR-018.
+
+--- a/include/RE/S/SkyrimVM.h
++++ b/include/RE/S/SkyrimVM.h
+@@ -17,6 +17,7 @@
+ #include "RE/P/Profiler.h"
+ #include "RE/S/SavePatcher.h"
+ #include "RE/S/SimpleAllocMemoryPagePolicy.h"
++#include "REL/Module.h"
+ #include "RE/S/SkyrimScriptObjectBindPolicy.h"
+ #include "RE/S/SkyrimScriptStore.h"
+ 
+@@ -211,6 +212,18 @@
+ 
+ 		static SkyrimVM* GetSingleton();
+ 
++		// The VM implementation pointer moved from 0200 to 0210 in the 1.7.x
++		// releases (two event sinks were added ahead of it): three functions in the
++		// analyzed 1.7.104 binary take the ref-counted VM at singleton+0x210
++		// (thuum ghidra/notes/skyrimvm-1-7-104.md). Callers use this instead of
++		// `impl` so one build serves 1.6 and 1.7.
++		[[nodiscard]] BSTSmartPointer<BSScript::IVirtualMachine>& GetImpl() noexcept
++		{
++			const auto version = REL::Module::get().version();
++			const std::uintptr_t offset = (version[0] == 1 && version[1] >= 7) ? 0x210 : 0x200;
++			return *reinterpret_cast<BSTSmartPointer<BSScript::IVirtualMachine>*>(reinterpret_cast<std::uintptr_t>(this) + offset);
++		}
++
+ 		bool QueuePostRenderCall(const BSTSmartPointer<SkyrimScript::DelayFunctor>& a_functor);
+ 		void RelayEvent(VMHandle handle, BSFixedString* event, BSScript::IFunctionArguments* args, ISendEventFilter* optionalFilter);
+ 		void SendAndRelayEvent(VMHandle handle, BSFixedString* event, BSScript::IFunctionArguments* args, ISendEventFilter* optionalFilter);
+--- a/src/RE/V/VirtualMachine.cpp
++++ b/src/RE/V/VirtualMachine.cpp
+@@ -11,7 +11,7 @@
+ 			VirtualMachine* VirtualMachine::GetSingleton()
+ 			{
+ 				auto vm = SkyrimVM::GetSingleton();
+-				return vm ? static_cast<VirtualMachine*>(vm->impl.get()) : nullptr;
++				return vm ? static_cast<VirtualMachine*>(vm->GetImpl().get()) : nullptr;
+ 			}
+ 		}
+ 	}

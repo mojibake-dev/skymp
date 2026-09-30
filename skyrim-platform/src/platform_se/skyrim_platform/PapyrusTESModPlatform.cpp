@@ -933,7 +933,7 @@ void TESModPlatform::Update()
   }
 
   auto vm = RE::SkyrimVM::GetSingleton();
-  if (!vm || !vm->impl) {
+  if (!vm || !vm->GetImpl()) {
     return console->Print("VM was nullptr");
   }
 
@@ -950,7 +950,7 @@ void TESModPlatform::Update()
     // dependencies (like Actor.pex) is missing
     FixedString className("TESModPlatform");
     FixedString funcName("Add");
-    vm->impl->DispatchStaticCall(className, funcName, &args, functor);
+    vm->GetImpl()->DispatchStaticCall(className, funcName, &args, functor);
   } catch (std::exception& e) {
     // We are not interested in crashing the game thread, so just printing
     static std::once_flag flag;

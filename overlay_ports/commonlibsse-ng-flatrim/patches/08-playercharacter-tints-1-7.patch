@@ -1,0 +1,69 @@
+The 1.7.x releases carry the player's tint array 8 bytes further down than
+1.6.1170: GetNumTints and GetTintMask in the analyzed 1.7.104 binary read its
+data at this+0xB20 and its count at this+0xB30, where 1.6.629 through 1.6.1170
+kept the overlay-list pointer, so GetTintList took the tint count for that
+pointer and Skyrim Platform's PushTintMask faulted at 0x32 (sky-c1, 2026-10-01,
+Frida first-chance trace; thuum ghidra/notes/playercharacter-tints-1-7-104.md,
+docs/verbs/appearance.md). The overlay pointer is taken to follow the array at
+0xB38, a HYPOTHESIS until a run shows tints applying. thuum branch skyrim-1.7,
+ADR-018.
+
+--- a/src/RE/P/PlayerCharacter.cpp
++++ b/src/RE/P/PlayerCharacter.cpp
+@@ -123,6 +123,30 @@
+ 		using func_t = decltype(&PlayerCharacter::GetNumTints);
+ 		REL::Relocation<func_t> func{ Offset::PlayerCharacter::GetNumTints };
+ 		return func(this, a_tintType);
++	}
++
++	namespace
++	{
++		// The 1.7.x releases carry the player's tint array 8 bytes further down:
++		// GetNumTints and GetTintMask in the analyzed 1.7.104 binary read its data
++		// at this+0xB20 and its count at this+0xB30, where 1.6.629 through 1.6.1170
++		// kept the overlay-list pointer (thuum ghidra/notes/playercharacter-tints-
++		// 1-7-104.md). The overlay pointer is taken to follow the array as before.
++		inline bool PlayerIs17() noexcept
++		{
++			const auto version = REL::Module::get().version();
++			return version[0] == 1 && version[1] >= 7;
++		}
++
++		inline BSTArray<TintMask*>*& PlayerOverlayTintMasks(PlayerCharacter* a_self) noexcept
++		{
++			return PlayerIs17() ? REL::RelocateMember<BSTArray<TintMask*>*>(a_self, 0xB38) : REL::RelocateMemberIfNewer<BSTArray<TintMask*>*>(SKSE::RUNTIME_SSE_1_6_629, a_self, 0xB28, 0xB30);
++		}
++
++		inline BSTArray<TintMask*>& PlayerTintMasks(PlayerCharacter* a_self) noexcept
++		{
++			return PlayerIs17() ? REL::RelocateMember<BSTArray<TintMask*>>(a_self, 0xB20) : REL::RelocateMemberIfNewer<BSTArray<TintMask*>>(SKSE::RUNTIME_SSE_1_6_629, a_self, 0xB10, 0xB18);
++		}
+ 	}
+ 
+ 	TintMask* PlayerCharacter::GetOverlayTintMask(TintMask* a_original)
+@@ -130,12 +154,12 @@
+ 		if SKYRIM_REL_VR_CONSTEXPR (REL::Module::IsVR()) {
+ 			return nullptr;
+ 		} else {
+-			auto* tryOverlayTintMasks = REL::RelocateMemberIfNewer<BSTArray<TintMask*>*>(SKSE::RUNTIME_SSE_1_6_629, this, 0xB28, 0xB30);
++			auto* tryOverlayTintMasks = PlayerOverlayTintMasks(this);
+ 			if (!tryOverlayTintMasks) {
+ 				return nullptr;
+ 			}
+ 
+-			auto& tintMasksValue = REL::RelocateMemberIfNewer<BSTArray<TintMask*>>(SKSE::RUNTIME_SSE_1_6_629, this, 0xB10, 0xB18);
++			auto& tintMasksValue = PlayerTintMasks(this);
+ 			for (std::uint32_t i = 0; i < tintMasksValue.size(); ++i) {
+ 				if (tintMasksValue[i] == a_original) {
+ 					return i < tryOverlayTintMasks->size() ? (*tryOverlayTintMasks)[i] : nullptr;
+@@ -151,8 +175,8 @@
+ 		if SKYRIM_REL_VR_CONSTEXPR (REL::Module::IsVR()) {
+ 			return nullptr;
+ 		} else {
+-			auto* tryOverlayTintMasks = REL::RelocateMemberIfNewer<BSTArray<TintMask*>*>(SKSE::RUNTIME_SSE_1_6_629, this, 0xB28, 0xB30);
+-			return tryOverlayTintMasks ? tryOverlayTintMasks : &REL::RelocateMemberIfNewer<BSTArray<TintMask*>>(SKSE::RUNTIME_SSE_1_6_629, this, 0xB10, 0xB18);
++			auto* tryOverlayTintMasks = PlayerOverlayTintMasks(this);
++			return tryOverlayTintMasks ? tryOverlayTintMasks : &PlayerTintMasks(this);
+ 		}
+ 	}
+ 

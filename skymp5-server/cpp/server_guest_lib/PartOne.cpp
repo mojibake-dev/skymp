@@ -38,8 +38,7 @@ void PartOneSendTargetWrapper::Send(Networking::UserId targetUserId,
 
   PartOne::GetMessageSerializerInstance().Serialize(message, stream);
 
-  Send(targetUserId,
-       reinterpret_cast<Networking::PacketData>(stream.data()),
+  Send(targetUserId, reinterpret_cast<Networking::PacketData>(stream.data()),
        stream.size(), reliable);
 }
 

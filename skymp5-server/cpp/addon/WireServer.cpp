@@ -67,8 +67,7 @@ public:
     try {
       rust::Str json(text, textLength); // checks UTF-8, throws if not
       if (uint16_t code = server->send(client, json, reliable)) {
-        LogRefusal(code,
-                   std::string(text, std::min<size_t>(textLength, 160)));
+        LogRefusal(code, std::string(text, std::min<size_t>(textLength, 160)));
       }
     } catch (const std::invalid_argument&) {
       LogRefusal(400, "not UTF-8");
@@ -124,8 +123,7 @@ private:
         }
         // The guid the TypeScript login reads through getUserGuid
         const std::string guid = fmt::format("wire-{:016x}", ev.client);
-        onPacket(state, userId,
-                 Networking::PacketType::ServerSideUserConnect,
+        onPacket(state, userId, Networking::PacketType::ServerSideUserConnect,
                  reinterpret_cast<Networking::PacketData>(guid.data()),
                  guid.size());
         return;
@@ -138,8 +136,7 @@ private:
         spdlog::info("WireServer: user {} left ({})", userId,
                      std::string(ev.detail));
         onPacket(state, userId,
-                 Networking::PacketType::ServerSideUserDisconnect, nullptr,
-                 0);
+                 Networking::PacketType::ServerSideUserDisconnect, nullptr, 0);
         Free(userId);
         return;
       }
@@ -174,8 +171,8 @@ private:
     auto& n = refused[code];
     ++n;
     if (n == 1 || n % 1000 == 0) {
-      spdlog::error("WireServer: send refused with code {} (x{}): {}", code,
-                    n, what);
+      spdlog::error("WireServer: send refused with code {} (x{}): {}", code, n,
+                    what);
     }
   }
 
@@ -209,8 +206,7 @@ private:
 
   uint64_t ClientOf(Networking::UserId userId) const
   {
-    if (userId >= clientsByUser.size() ||
-        clientsByUser[userId] == kNoClient) {
+    if (userId >= clientsByUser.size() || clientsByUser[userId] == kNoClient) {
       throw std::runtime_error("User with id " + std::to_string(userId) +
                                " doesn't exist");
     }

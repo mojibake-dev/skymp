@@ -14,3 +14,15 @@ steps:
   - {client: c1, at_ms: 600, send: {t: 12, data: {commandName: AddItem, args: [20, 77495, 1]}}}
   - {client: c2, at_ms: 0, move: {dy: 30}}
   - {client: c2, at_ms: 150, move: {dy: 60}}
+divergences:
+  # c1 starts first and leaves about a second before c2. The C++ fakeclient
+  # returns from main without closing its RakNet connection, so the legacy
+  # server learns of the departure only on RakNet's timeout, after c2 is gone.
+  # The Rust fakeclient closes; netcode's disconnect packets reach the wire
+  # server at once, and it destroys c1's actor for c2 while c2 still settles.
+  # Same server logic, faster departure detection. (T2, 2026-10-02.)
+  - client: c2
+    msg: {t: 25, idx: 2}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

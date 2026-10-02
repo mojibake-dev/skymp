@@ -14,6 +14,11 @@
 //! exit code, what it sent, and the multiset of messages it received. The
 //! relays whose count depends on timing (UpdateMovement, UpdateAnimation,
 //! UpdateAnimVariables by default) compare as "received at least one".
+//! A session may declare divergences: a message one client receives a
+//! different number of times on each stack, with the reason. Declarations
+//! apply legacy against wire only and are reviewed like validator changes;
+//! one that stops occurring is itself a difference, so it cannot outlive
+//! its cause.
 //!
 //! Environment: `DIFFTEST_LEGACY_FAKECLIENT` (or the older
 //! `DIFFTEST_FAKECLIENT`) and `DIFFTEST_LEGACY_ADDR` (default
@@ -43,6 +48,27 @@ struct Session {
     #[serde(default = "default_volatile")]
     volatile: Vec<u8>,
     steps: Vec<Step>,
+    /// Expected differences between the legacy and the wire stack.
+    #[serde(default)]
+    divergences: Vec<Divergence>,
+}
+
+/// A message one client receives `legacy` times on the legacy stack and
+/// `wire` times on the wire stack, for `reason`.
+#[derive(Debug, Deserialize)]
+struct Divergence {
+    client: String,
+    /// The message as received, compared in canonical form.
+    msg: Value,
+    legacy: i64,
+    wire: i64,
+    reason: String,
+}
+
+impl Divergence {
+    fn key(&self) -> String {
+        canonical(&self.msg).to_string()
+    }
 }
 
 fn default_volatile() -> Vec<u8> {
@@ -121,6 +147,17 @@ fn load_session(path: &Path) -> Result<Session, DiffError> {
         }
         if st.r#move.is_some() == st.send.is_some() {
             return Err(DiffError::Session(format!("a step for {} needs exactly one of move, send", st.client)));
+        }
+    }
+    for d in &s.divergences {
+        if !s.clients.contains_key(d.client.as_str()) {
+            return Err(DiffError::Session(format!("divergence for unknown client {}", d.client)));
+        }
+        if d.legacy == d.wire || d.legacy < 0 || d.wire < 0 {
+            return Err(DiffError::Session(format!("divergence {} for {}: counts must differ and be >= 0", d.key(), d.client)));
+        }
+        if d.reason.trim().is_empty() {
+            return Err(DiffError::Session(format!("divergence {} for {} has no reason", d.key(), d.client)));
         }
     }
     Ok(s)
@@ -262,9 +299,20 @@ fn normalized(stack: &Stack, s: &Session, tag: &str) -> Result<BTreeMap<String, 
         .collect())
 }
 
-/// Lines describing every difference; empty when identical.
-fn diff(a_name: &str, a: &BTreeMap<String, Value>, b_name: &str, b: &BTreeMap<String, Value>) -> Vec<String> {
+/// What a comparison found: differences, and the declared divergences that
+/// occurred as declared.
+#[derive(Debug, Default)]
+struct Outcome {
+    differences: Vec<String>,
+    declared: Vec<String>,
+}
+
+/// Every difference between two runs; `declared` (legacy against wire
+/// only, `a` legacy and `b` wire) moves the expected ones aside.
+fn diff(a_name: &str, a: &BTreeMap<String, Value>, b_name: &str, b: &BTreeMap<String, Value>, declared: &[Divergence]) -> Outcome {
     let mut out = Vec::new();
+    let mut expected = Vec::new();
+    let mut used = vec![false; declared.len()];
     let names: BTreeSet<&String> = a.keys().chain(b.keys()).collect();
     for name in names {
         let (x, y) = (a.get(name).unwrap_or(&Value::Null), b.get(name).unwrap_or(&Value::Null));
@@ -282,31 +330,60 @@ fn diff(a_name: &str, a: &BTreeMap<String, Value>, b_name: &str, b: &BTreeMap<St
             m
         };
         let (lx, ly) = (list(x), list(y));
-        for (msg, n) in &lx {
-            let m = ly.get(msg).copied().unwrap_or(0);
-            if *n != m {
-                out.push(format!("{name}: {msg} x{n} on {a_name}, x{m} on {b_name}"));
+        let msgs: BTreeSet<&String> = lx.keys().chain(ly.keys()).collect();
+        for msg in msgs {
+            let (n, m) = (lx.get(msg).copied().unwrap_or(0), ly.get(msg).copied().unwrap_or(0));
+            if n == m {
+                continue;
             }
-        }
-        for (msg, m) in &ly {
-            if !lx.contains_key(msg) {
-                out.push(format!("{name}: {msg} x0 on {a_name}, x{m} on {b_name}"));
+            let line = format!("{name}: {msg} x{n} on {a_name}, x{m} on {b_name}");
+            match declared
+                .iter()
+                .position(|d| d.client == *name && d.key() == *msg && d.legacy == n && d.wire == m)
+            {
+                Some(i) => {
+                    if let Some(u) = used.get_mut(i) {
+                        *u = true;
+                    }
+                    let reason = declared.get(i).map_or("", |d| d.reason.trim());
+                    expected.push(format!("{line} (declared: {reason})"));
+                }
+                None => out.push(line),
             }
         }
     }
-    out
+    for (d, u) in declared.iter().zip(&used) {
+        if !u {
+            out.push(format!(
+                "{}: declared divergence {} (x{} on {a_name}, x{} on {b_name}) did not occur as declared",
+                d.client,
+                d.key(),
+                d.legacy,
+                d.wire
+            ));
+        }
+    }
+    Outcome { differences: out, declared: expected }
 }
 
 fn run(path: &Path) -> Result<(bool, String), DiffError> {
     let s = load_session(path)?;
     let legacy = env_stack("legacy", &["DIFFTEST_LEGACY_FAKECLIENT", "DIFFTEST_FAKECLIENT"], "DIFFTEST_LEGACY_ADDR", "127.0.0.1:7777")?;
     let wire = env_stack("wire", &["DIFFTEST_WIRE_FAKECLIENT"], "DIFFTEST_WIRE_ADDR", "127.0.0.1:7778")?;
-    let (a, b, what) = match (legacy, wire) {
-        (Some(l), Some(w)) => (normalized(&l, &s, "a")?, normalized(&w, &s, "a")?, "legacy against wire".to_string()),
+    let (a, b, what, names, declared) = match (legacy, wire) {
+        (Some(l), Some(w)) => (
+            normalized(&l, &s, "a")?,
+            normalized(&w, &s, "a")?,
+            "legacy against wire".to_string(),
+            ("legacy", "wire"),
+            s.divergences.as_slice(),
+        ),
         (Some(one), None) | (None, Some(one)) => (
             normalized(&one, &s, "a")?,
             normalized(&one, &s, "b")?,
             format!("{} against itself (determinism)", one.name),
+            ("first", "second"),
+            &[][..],
         ),
         (None, None) => {
             return Err(DiffError::Session(
@@ -314,13 +391,17 @@ fn run(path: &Path) -> Result<(bool, String), DiffError> {
             ))
         }
     };
-    let lines = diff("first", &a, "second", &b);
-    let verdict = if lines.is_empty() {
-        format!("session {}: {what}: identical ({} clients)", s.id, a.len())
+    let o = diff(names.0, &a, names.1, &b, declared);
+    let mut verdict = if o.differences.is_empty() {
+        format!("session {}: {what}: identical ({} clients, {} declared divergences)", s.id, a.len(), o.declared.len())
     } else {
-        format!("session {}: {what}: {} differences\n{}", s.id, lines.len(), lines.join("\n"))
+        format!("session {}: {what}: {} differences\n{}", s.id, o.differences.len(), o.differences.join("\n"))
     };
-    Ok((lines.is_empty(), verdict))
+    for line in &o.declared {
+        verdict.push('\n');
+        verdict.push_str(line);
+    }
+    Ok((o.differences.is_empty(), verdict))
 }
 
 fn main() -> std::process::ExitCode {
@@ -390,15 +471,64 @@ mod tests {
         let s = load_session(&smoke_path()).expect("parse");
         let a = normalized(&stack(stub()), &s, "t1").expect("run");
         let b = normalized(&stack(stub()), &s, "t2").expect("run");
-        assert!(diff("a", &a, "b", &b).is_empty(), "{:?}", diff("a", &a, "b", &b));
+        let same = diff("a", &a, "b", &b, &[]);
+        assert!(same.differences.is_empty(), "{:?}", same.differences);
         assert_eq!(a["c1"]["rc"], 0);
         assert!(a["c1"]["actor"].is_object());
         // a stack that relays nothing and answers AddItem with an extra message
         std::env::set_var("FAKECLIENT_STUB_VARIANT", "1");
         let c = normalized(&stack(stub()), &s, "t3").expect("run");
         std::env::remove_var("FAKECLIENT_STUB_VARIANT");
-        let lines = diff("a", &a, "c", &c);
+        let lines = diff("a", &a, "c", &c, &[]).differences;
         assert!(!lines.is_empty());
         assert!(lines.iter().any(|l| l.contains("relays_seen")), "{lines:?}");
+    }
+
+    fn one_client(received: &[&str]) -> BTreeMap<String, Value> {
+        let mut m = BTreeMap::new();
+        m.insert("c2".to_string(), json!({"rc": 0, "received": received}));
+        m
+    }
+
+    fn destroy_c1(legacy: i64, wire: i64) -> Divergence {
+        Divergence { client: "c2".into(), msg: json!({"t": 25, "idx": 2}), legacy, wire, reason: "departure detection".into() }
+    }
+
+    #[test]
+    fn a_declared_divergence_is_set_aside_and_must_occur() {
+        let legacy = one_client(&[]);
+        let wire = one_client(&[r#"{"idx":2,"t":25}"#]);
+        // undeclared: a difference
+        let o = diff("legacy", &legacy, "wire", &wire, &[]);
+        assert_eq!(o.differences.len(), 1, "{:?}", o.differences);
+        // declared with the observed counts: set aside, with its reason
+        let o = diff("legacy", &legacy, "wire", &wire, &[destroy_c1(0, 1)]);
+        assert!(o.differences.is_empty(), "{:?}", o.differences);
+        assert_eq!(o.declared.len(), 1);
+        assert!(o.declared[0].contains("departure detection"), "{:?}", o.declared);
+        // declared, but the stacks agree now: the stale declaration fails
+        let o = diff("legacy", &wire, "wire", &wire, &[destroy_c1(0, 1)]);
+        assert_eq!(o.differences.len(), 1, "{:?}", o.differences);
+        assert!(o.differences[0].contains("did not occur"), "{:?}", o.differences);
+        // declared with other counts: both the difference and the stale declaration
+        let o = diff("legacy", &legacy, "wire", &wire, &[destroy_c1(0, 2)]);
+        assert_eq!(o.differences.len(), 2, "{:?}", o.differences);
+    }
+
+    #[test]
+    fn divergence_declarations_are_checked_at_load() {
+        let dir = std::env::temp_dir().join(format!("difftest-load-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let base = "id: t\nclients:\n  c1: {profile_id: 1}\nsteps:\n  - {client: c1, move: {dx: 1}}\n";
+        for (bad, why) in [
+            ("divergences:\n  - {client: c9, msg: {t: 25}, legacy: 0, wire: 1, reason: r}\n", "unknown client"),
+            ("divergences:\n  - {client: c1, msg: {t: 25}, legacy: 1, wire: 1, reason: r}\n", "counts must differ"),
+            ("divergences:\n  - {client: c1, msg: {t: 25}, legacy: 0, wire: 1, reason: ' '}\n", "no reason"),
+        ] {
+            let path = dir.join("s.yaml");
+            std::fs::write(&path, format!("{base}{bad}")).expect("write");
+            let err = load_session(&path).expect_err(why).to_string();
+            assert!(err.contains(why), "{err}");
+        }
     }
 }

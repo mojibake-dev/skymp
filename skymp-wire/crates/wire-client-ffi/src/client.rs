@@ -202,6 +202,19 @@ impl WireClient {
         }
     }
 
+    /// Take the oldest pending event, if any.
+    pub fn pop(&self) -> Option<ClientEvent> {
+        let mut inbox = self.inbox.lock().ok()?;
+        let ev = inbox.events.pop_front()?;
+        inbox.bytes = inbox.bytes.saturating_sub(event_size(&ev));
+        Some(ev)
+    }
+
+    /// How many events are waiting.
+    pub fn pending(&self) -> usize {
+        self.inbox.lock().map(|i| i.events.len()).unwrap_or(0)
+    }
+
     /// Recognize SkyMP JSON from the game, check it, queue it for the
     /// network thread.
     pub fn send_json(&self, json: &str, reliable: bool) -> Result<(), SendError> {
@@ -250,11 +263,16 @@ impl Drop for WireClient {
     }
 }
 
+/// What an event counts against the inbox's byte cap.
+fn event_size(ev: &ClientEvent) -> usize {
+    ev.json.len().saturating_add(ev.error.len()).saturating_add(64)
+}
+
 fn push(inbox: &Mutex<Inbox>, ev: ClientEvent, cap: usize) -> bool {
     let Ok(mut inbox) = inbox.lock() else {
         return false;
     };
-    let size = ev.json.len().saturating_add(ev.error.len()).saturating_add(64);
+    let size = event_size(&ev);
     if ev.kind == PacketKind::Message && inbox.bytes.saturating_add(size) > cap {
         return false;
     }

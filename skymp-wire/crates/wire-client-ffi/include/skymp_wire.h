@@ -12,7 +12,10 @@
 /**
  * The callback `Tick` calls once per event: packet type, content and its
  * length, an error text (never null), and the caller's state. Null is
- * allowed and means "drop the events".
+ * allowed and means "drop the events". It may unwind: Skyrim Platform calls
+ * into JavaScript from it and raises a script's exception as a C++ one,
+ * which passes through `Tick` to its caller, as it did through the C++
+ * plugin (hence `C-unwind`).
  */
 typedef void (*OnPacket)(int32_t, const char*, size_t, const char*, void*);
 
@@ -41,7 +44,11 @@ void DestroyClient(void);
 bool IsConnected(void);
 
 /**
- * Deliver every pending event to `on_packet`, oldest first.
+ * Deliver the pending events to `on_packet`, oldest first: at most the
+ * ones waiting when the call starts, one at a time with no lock held, so
+ * the callback may call Send or DestroyClient, and if it unwinds, the
+ * events after the one it was handling stay queued for the next Tick, as
+ * they stayed in RakNet's queue.
  *
  * # Safety
  * `on_packet` is null or a function with the [`OnPacket`] signature;

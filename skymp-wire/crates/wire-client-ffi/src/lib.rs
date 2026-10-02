@@ -23,8 +23,11 @@ use client::{ClientEvent, Options, WireClient};
 
 /// The callback `Tick` calls once per event: packet type, content and its
 /// length, an error text (never null), and the caller's state. Null is
-/// allowed and means "drop the events".
-pub type OnPacket = Option<extern "C" fn(i32, *const c_char, usize, *const c_char, *mut c_void)>;
+/// allowed and means "drop the events". It may unwind: Skyrim Platform calls
+/// into JavaScript from it and raises a script's exception as a C++ one,
+/// which passes through `Tick` to its caller, as it did through the C++
+/// plugin (hence `C-unwind`).
+pub type OnPacket = Option<extern "C-unwind" fn(i32, *const c_char, usize, *const c_char, *mut c_void)>;
 
 static STATE: Mutex<Option<WireClient>> = Mutex::new(None);
 
@@ -135,27 +138,33 @@ pub extern "C" fn IsConnected() -> bool {
     })
 }
 
-/// Deliver every pending event to `on_packet`, oldest first.
+/// Deliver the pending events to `on_packet`, oldest first: at most the
+/// ones waiting when the call starts, one at a time with no lock held, so
+/// the callback may call Send or DestroyClient, and if it unwinds, the
+/// events after the one it was handling stay queued for the next Tick, as
+/// they stayed in RakNet's queue.
 ///
 /// # Safety
 /// `on_packet` is null or a function with the [`OnPacket`] signature;
 /// `state` is passed back to it untouched.
 #[no_mangle]
 #[allow(non_snake_case)]
-pub unsafe extern "C" fn Tick(on_packet: OnPacket, state: *mut c_void) {
+pub unsafe extern "C-unwind" fn Tick(on_packet: OnPacket, state: *mut c_void) {
     let Some(on_packet) = on_packet else {
         return;
     };
-    let mut events: Vec<ClientEvent> = Vec::new();
-    guard("Tick", (), || {
-        if let Ok(s) = STATE.lock() {
-            if let Some(c) = s.as_ref() {
-                c.drain(&mut events);
-            }
-        }
+    let waiting = guard("Tick", 0, || {
+        STATE
+            .lock()
+            .ok()
+            .and_then(|s| s.as_ref().map(WireClient::pending))
+            .unwrap_or(0)
     });
-    // the lock is released: the callback may call Send or DestroyClient
-    for ev in events {
+    for _ in 0..waiting {
+        let next: Option<ClientEvent> = guard("Tick", None, || STATE.lock().ok().and_then(|s| s.as_ref().and_then(WireClient::pop)));
+        let Some(ev) = next else {
+            break;
+        };
         if !ev.error.is_empty() {
             log(&format!("event {:?}: {}", ev.kind, ev.error));
         }
@@ -231,7 +240,7 @@ mod tests {
 
     static SEEN: StdMutex<Vec<(i32, String, String)>> = StdMutex::new(Vec::new());
 
-    extern "C" fn record(kind: i32, content: *const c_char, len: usize, error: *const c_char, _: *mut c_void) {
+    extern "C-unwind" fn record(kind: i32, content: *const c_char, len: usize, error: *const c_char, _: *mut c_void) {
         // SAFETY: Tick passes content with len readable bytes and a NUL-terminated error.
         let content = unsafe { std::slice::from_raw_parts(content.cast::<u8>(), len) };
         // SAFETY: as above.
@@ -239,6 +248,10 @@ mod tests {
         if let Ok(mut seen) = SEEN.lock() {
             seen.push((kind, String::from_utf8_lossy(content).into_owned(), error));
         }
+    }
+
+    extern "C-unwind" fn explode(_: i32, _: *const c_char, _: usize, _: *const c_char, _: *mut c_void) {
+        panic!("a JavaScript handler threw");
     }
 
     #[test]
@@ -287,6 +300,42 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(got, 2, "{inbound:?}");
+
+        // A handler that throws unwinds through Tick to the caller; the
+        // events after it wait for the next Tick, and the plugin keeps
+        // working.
+        let client = inbound
+            .iter()
+            .find_map(|e| match e {
+                wire_transport::Inbound::Connected { client } => Some(*client),
+                _ => None,
+            })
+            .expect("connected");
+        for idx in [7, 8] {
+            let msg = wire_json::recognize(&format!(r#"{{"t":25,"idx":{idx}}}"#)).expect("DestroyActor");
+            server.send(client, &msg).expect("send");
+        }
+        let mut queued = 0;
+        for _ in 0..500 {
+            server.poll(Duration::from_millis(10), &mut inbound);
+            queued = STATE.lock().map(|s| s.as_ref().map_or(0, WireClient::pending)).unwrap_or(0);
+            if queued >= 2 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(queued, 2, "both DestroyActor messages arrived");
+        // SAFETY: explode has the OnPacket signature.
+        let thrown = std::panic::catch_unwind(|| unsafe { Tick(Some(explode), std::ptr::null_mut()) });
+        assert!(thrown.is_err(), "the handler's unwind reached the caller");
+        assert!(IsConnected(), "the plugin survives a throwing handler");
+        SEEN.lock().expect("seen").clear();
+        // SAFETY: record has the OnPacket signature.
+        unsafe { Tick(Some(record), std::ptr::null_mut()) };
+        let seen = SEEN.lock().expect("seen").clone();
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert!(seen[0].1.contains(r#""idx":8"#), "{seen:?}");
+
         DestroyClient();
         assert!(!IsConnected());
         assert!(!MpCommonGetVersion().is_null());

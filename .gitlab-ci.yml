@@ -106,6 +106,8 @@ server-build:
       changes:
         - "**/*"
         - "!skymp-wire/**/*"
+    # the M1 port branches build the server with the wire on every push
+    - if: $CI_COMMIT_BRANCH =~ /^m1-/
   script:
     - |
       if [ -n "${SKYRIM_DATA_URL:-}" ]; then
@@ -123,10 +125,13 @@ server-build:
     - VCPKG_URL=$(git config -f .gitmodules submodule.vcpkg.url)
     - VCPKG_COMMIT=$(git ls-tree HEAD vcpkg | awk '{print $3}')
     - echo "vcpkg $VCPKG_URL @ $VCPKG_COMMIT"
-    - docker build -f ci/server.Dockerfile --build-arg "VCPKG_URL=$VCPKG_URL" --build-arg "VCPKG_COMMIT=$VCPKG_COMMIT" -t "skymp-server:parity-$CI_COMMIT_SHORT_SHA" .
-    - docker tag "skymp-server:parity-$CI_COMMIT_SHORT_SHA" skymp-server:parity
+    # Tagged by branch: parity is what sky-srv's compose runs; a port branch
+    # (m1-wire) ships beside it as skymp-server:m1-wire and never replaces it.
+    - TAG="$CI_COMMIT_REF_SLUG"
+    - docker build -f ci/server.Dockerfile --build-arg "VCPKG_URL=$VCPKG_URL" --build-arg "VCPKG_COMMIT=$VCPKG_COMMIT" -t "skymp-server:$TAG-$CI_COMMIT_SHORT_SHA" .
+    - docker tag "skymp-server:$TAG-$CI_COMMIT_SHORT_SHA" "skymp-server:$TAG"
     # Ship to the sky-ci registry sky-srv pulls from (10.10.70.12:5000).
-    - docker tag "skymp-server:parity-$CI_COMMIT_SHORT_SHA" "localhost:5000/skymp-server:parity-$CI_COMMIT_SHORT_SHA"
-    - docker tag "skymp-server:parity-$CI_COMMIT_SHORT_SHA" localhost:5000/skymp-server:parity
-    - docker push "localhost:5000/skymp-server:parity-$CI_COMMIT_SHORT_SHA"
-    - docker push localhost:5000/skymp-server:parity
+    - docker tag "skymp-server:$TAG-$CI_COMMIT_SHORT_SHA" "localhost:5000/skymp-server:$TAG-$CI_COMMIT_SHORT_SHA"
+    - docker tag "skymp-server:$TAG-$CI_COMMIT_SHORT_SHA" "localhost:5000/skymp-server:$TAG"
+    - docker push "localhost:5000/skymp-server:$TAG-$CI_COMMIT_SHORT_SHA"
+    - docker push "localhost:5000/skymp-server:$TAG"

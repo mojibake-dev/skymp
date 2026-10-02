@@ -1,4 +1,5 @@
-// thuum: the headless fakeclient against this server over real RakNet.
+// thuum: the headless fakeclient against this server over the wire (ADR-019:
+// the Rust fakeclient, the Rust edge behind WireServer).
 // Connect, log in as profile 1, move, AddItem through a console command,
 // then check what the server recorded. Serves as `just test-proto` (T2) and
 // as the smoke of difftest's legacy driver (docs/WIRE.md).

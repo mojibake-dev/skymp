@@ -72,6 +72,11 @@ if(NOT EMSCRIPTEN)
   endif()
 
   target_link_libraries(${PROJECT_NAME} PRIVATE mp_common server_guest_lib localization-provider)
+
+  # The network edge (thuum ADR-019): the Rust bridge behind WireServer.cpp.
+  include(${CMAKE_SOURCE_DIR}/cmake/wire.cmake)
+  target_link_libraries(${PROJECT_NAME} PRIVATE wire_bridge_cxx)
+
   list(APPEND VCPKG_DEPENDENT ${PROJECT_NAME})
   apply_default_settings(TARGETS ${PROJECT_NAME})
 endif()

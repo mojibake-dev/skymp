@@ -22,27 +22,8 @@ if(WIN32)
   add_dependencies(skyrim-platform MpClientPlugin)
 endif()
 
-#
-# fakeclient: headless client for the legacy protocol, Linux-capable (thuum,
-# Track W step 8). Same link line as MpClientPlugin, no game dependency; the
-# binary is copied next to the server so misc/tests can spawn ./fakeclient.
-#
-
-if(NOT EMSCRIPTEN)
-  file(GLOB_RECURSE src "fakeclient/*")
-  add_executable(fakeclient ${src})
-  # Static libraries, GNU ld: messages needs Inventory::Entry from
-  # server_guest_lib and server_guest_lib needs messages, and nothing in this
-  # binary pulls Inventory.o first (the unit binary does, by accident). Listing
-  # the pair twice is CMake's documented answer for static cycles.
-  target_link_libraries(fakeclient PUBLIC mp_common messages server_guest_lib messages server_guest_lib)
-  apply_default_settings(TARGETS fakeclient)
-  list(APPEND VCPKG_DEPENDENT fakeclient)
-  add_custom_command(TARGET fakeclient POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/dist/server"
-    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:fakeclient>" "${CMAKE_BINARY_DIR}/dist/server/fakeclient"
-    COMMENT "fakeclient placed next to the server for integration tests")
-endif()
+# fakeclient: the Rust one (skymp-wire/crates/wire-fakeclient), built and
+# placed in dist/server by cmake/wire.cmake (thuum ADR-019).
 
 #
 # messages

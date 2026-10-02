@@ -11,6 +11,7 @@
 #include "PacketHistoryWrapper.h"
 #include "PapyrusUtils.h"
 #include "ScampServerListener.h"
+#include "WireServer.h"
 #include "condition_functions/ConditionFunctionFactory.h"
 #include "formulas/DamageMultConditionalFormula.h"
 #include "formulas/DamageMultFormula.h"
@@ -341,13 +342,15 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
     }
 
     auto espm = new espm::Loader(pluginPaths);
+    // The wire (thuum ADR-019): the password travels in the netcode connect
+    // token's user data, without RakNet's "7_" version prefix; the version
+    // gate is netcode's protocol id.
     std::string password = serverSettings.contains("password")
-      ? std::string(kNetworkingPasswordPrefix) +
-        static_cast<std::string>(serverSettings["password"])
-      : std::string(kNetworkingPasswordPrefix);
-    auto realServer =
-      Networking::CreateServer(listenHost.c_str(), listenPort, maxPlayers,
-                               password.data(), promRegistry);
+      ? static_cast<std::string>(serverSettings["password"])
+      : std::string();
+    auto realServer = CreateWireServer(listenHost.c_str(), listenPort,
+                                       maxPlayers, password.data(),
+                                       promRegistry);
 
     static_assert(kMockServerIdx == 1);
     server = Networking::CreateCombinedServer({ realServer, serverMock });

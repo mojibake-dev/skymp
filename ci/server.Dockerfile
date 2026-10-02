@@ -32,6 +32,19 @@ RUN if [ ! -f vcpkg/scripts/buildsystems/vcpkg.cmake ]; then \
       && git -C vcpkg fetch -q --depth 1 "$VCPKG_URL" "$VCPKG_COMMIT" \
       && git -C vcpkg checkout -q FETCH_HEAD; \
     fi
+# Rust for skymp-wire (thuum ADR-019): corrosion runs cargo inside the CMake
+# build, and corrosion_add_cxxbridge wants the cxxbridge CLI at exactly the
+# cxx version the workspace locks. Installed under /opt/rust for the build
+# user; the runtime image needs none of it (the bridge links statically into
+# scam_native.node, the fakeclient is a static-std binary).
+USER root
+ENV RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=/opt/rust/cargo PATH=/opt/rust/cargo/bin:$PATH
+RUN (command -v curl >/dev/null || (apt-get update && apt-get install -y --no-install-recommends curl ca-certificates)) \
+ && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable --component clippy,rustfmt \
+ && cargo install --locked cxxbridge-cmd --version 1.0.202 \
+ && rm -rf /opt/rust/cargo/registry \
+ && chown -R skymp:skymp /opt/rust
+USER skymp
 # Unit tests read their data directory from the UNIT_DATA_DIR CMake option
 # (unit/TestUtils.cpp GetDataDir); the hash and dist-contents checks run only
 # with CI=true in the environment (unit/EspmTest.cpp, unit/DistContentsTest.cpp).

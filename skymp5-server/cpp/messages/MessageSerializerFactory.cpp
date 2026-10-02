@@ -11,10 +11,17 @@
 #include <stdexcept>
 
 namespace {
+// Messages leave the core as 0x86 + JSON (thuum ADR-019): the network edge
+// is Rust (skymp-wire), which recognizes this JSON, validates it and puts its
+// own encoding on the wire. The JSON is what JsonOutputArchive writes, the
+// form the edge renders inbound messages in too.
 void Serialize(const IMessageBase& message, SLNet::BitStream& outputStream)
 {
+  nlohmann::json j;
+  message.WriteJson(j);
+  const std::string text = j.dump();
   outputStream.Write(static_cast<uint8_t>(Networking::MinPacketId));
-  message.WriteBinary(outputStream);
+  outputStream.Write(text.data(), static_cast<unsigned int>(text.size()));
 }
 
 template <class Message>
@@ -128,37 +135,10 @@ MessageSerializer::MessageSerializer(
 void MessageSerializer::Serialize(const char* jsonContent,
                                   SLNet::BitStream& outputStream)
 {
-  // TODO(#2257): perf: think if JsValue should be used directly
-
-  simdjson::dom::parser sjParser;
-  // TODO(#2257): logging and write raw instead of throwing exception
-  auto parsedJson = sjParser.parse(jsonContent, strlen(jsonContent));
-
-  // TODO(#2257): logging and write raw instead of throwing exception
-  auto tResult = parsedJson.get_object().at_key("t").get_uint64();
-  if (auto err = tResult.error()) {
-    throw std::runtime_error(
-      fmt::format("failed to read 't' of a message, simdjson error: {}",
-                  simdjson::error_message(err)));
-  }
-
-  auto index = static_cast<size_t>(tResult.value_unsafe());
-  if (index >= serializerFns.size()) {
-    // TODO(#2257): logging
-    outputStream.Write(static_cast<uint8_t>(Networking::MinPacketId));
-    outputStream.Write(jsonContent, strlen(jsonContent));
-    return;
-  }
-
-  auto serializerFn = serializerFns[index];
-  if (!serializerFn) {
-    // TODO(#2257): logging
-    outputStream.Write(static_cast<uint8_t>(Networking::MinPacketId));
-    outputStream.Write(jsonContent, strlen(jsonContent));
-    return;
-  }
-
-  serializerFn(parsedJson.value(), outputStream);
+  // JSON in, JSON out (thuum ADR-019): the edge recognizes it.
+  outputStream.Write(static_cast<uint8_t>(Networking::MinPacketId));
+  outputStream.Write(jsonContent,
+                     static_cast<unsigned int>(strlen(jsonContent)));
 }
 
 void MessageSerializer::Serialize(const IMessageBase& message,
@@ -177,23 +157,23 @@ std::optional<DeserializeResult> MessageSerializer::Deserialize(
 
   auto headerByte = rawMessageJsonOrBinary[1];
   if (headerByte == '{') {
-    std::string s(reinterpret_cast<const char*>(rawMessageJsonOrBinary) + 1,
-                  length - 1);
-    spdlog::trace(
-      "MessageSerializer::Deserialize - Encountered JSON message {}", s);
-    // TODO(#2257): try to pass JSON in advance, avoid parsing each time
-    for (auto fn : deserializerFns) {
-      if (fn) {
-        auto result = fn(rawMessageJsonOrBinary, length);
-        if (result) {
-          spdlog::trace("MessageSerializer::Deserialize - Deserialized");
-          return result;
-        }
-      }
+    // Read "t" once and hand the message to its own reader, instead of
+    // offering it to every reader in turn (each of which parsed it again).
+    simdjson::dom::parser sjParser;
+    auto parsed = sjParser.parse(
+      reinterpret_cast<const char*>(rawMessageJsonOrBinary) + 1, length - 1);
+    if (parsed.error()) {
+      spdlog::trace("MessageSerializer::Deserialize - JSON does not parse");
+      return std::nullopt;
     }
-    spdlog::trace("MessageSerializer::Deserialize - Failed to deserialize, "
-                  "falling back to PacketParser.cpp");
-    return std::nullopt;
+    auto t = parsed.value_unsafe().at_key("t").get_uint64();
+    if (t.error() || t.value_unsafe() >= deserializerFns.size() ||
+        !deserializerFns[t.value_unsafe()]) {
+      spdlog::trace("MessageSerializer::Deserialize - no reader for this "
+                    "JSON, falling back to PacketParser.cpp");
+      return std::nullopt;
+    }
+    return deserializerFns[t.value_unsafe()](rawMessageJsonOrBinary, length);
   }
 
   if (headerByte >= deserializerFns.size()) {

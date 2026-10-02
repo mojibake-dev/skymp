@@ -98,7 +98,16 @@ private:
   void SendPapyrusOnHitEvent(MpActor* aggressor, MpObjectReference* target,
                              const HitData& hitData);
 
-  // Returns user's actor if there is attached one
+  // The actor at idx if this user may update it (its own actor, or an NPC
+  // it hosts); otherwise logs, sends HostStop where that applies, and
+  // returns nullptr.
+  MpActor* ActorUpdatableBy(uint32_t idx, Networking::UserId userId);
+
+  // The message, as received, to every user listening to the actor.
+  void RelayToListeners(MpActor& actor, Networking::PacketData data,
+                        size_t length, bool reliable);
+
+  // ActorUpdatableBy, then RelayToListeners. Returns the actor or nullptr.
   MpActor* SendToNeighbours(uint32_t idx, Networking::UserId userId,
                             Networking::PacketData data, size_t length,
                             bool reliable);

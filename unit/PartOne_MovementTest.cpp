@@ -133,3 +133,40 @@ TEST_CASE("UpdateMovement", "[PartOne]")
                            m.j["idx"] == 0 && m.reliable && m.userId == 1;
                        }) != partOne.Messages().end());
 }
+
+TEST_CASE("A movement the server rejects reaches no neighbour", "[PartOne]")
+{
+  // thuum docs/verbs/validation.md, Movement: validate, then relay
+  PartOne partOne;
+
+  for (int i = 0; i < 2; ++i) {
+    DoConnect(partOne, i);
+    partOne.CreateActor(i + 0xff000ABC, { 1.f, 2.f, 3.f }, 180.f, 0x3c);
+    partOne.SetUserActor(i, i + 0xff000ABC);
+    auto m = jMovement;
+    m["idx"] = i;
+    DoMessage(partOne, i, m);
+  }
+
+  // User 0's actor jumps 5000 units in one message: MovementValidation
+  // rejects jumps of 4096 or more and snaps the sender back
+  partOne.Messages().clear();
+  auto jump = jMovement;
+  jump["idx"] = 0;
+  jump["data"]["pos"] = { 5001.f, -1.f, 1.f };
+  DoMessage(partOne, 0, jump);
+
+  bool relayed = false;
+  bool snappedBack = false;
+  for (auto& m : partOne.Messages()) {
+    const int t = m.j.value("t", 0);
+    if (t == static_cast<int>(MsgType::UpdateMovement)) {
+      relayed = true;
+    }
+    if (m.userId == 0 && t == static_cast<int>(MsgType::Teleport2)) {
+      snappedBack = true;
+    }
+  }
+  REQUIRE(snappedBack);
+  REQUIRE_FALSE(relayed);
+}

@@ -36,10 +36,8 @@ uint32_t LongToNormal(uint64_t longFormId)
 }
 }
 
-MpActor* ActionListener::SendToNeighbours(uint32_t idx,
-                                          Networking::UserId userId,
-                                          Networking::PacketData data,
-                                          size_t length, bool reliable)
+MpActor* ActionListener::ActorUpdatableBy(uint32_t idx,
+                                          Networking::UserId userId)
 {
   MpActor* myActor = partOne.serverState.ActorByUser(userId);
   // The old behavior is doing nothing in that case. This is covered by tests
@@ -85,13 +83,30 @@ MpActor* ActionListener::SendToNeighbours(uint32_t idx,
     }
   }
 
-  for (auto listener : actor->GetActorListeners()) {
+  return actor;
+}
+
+void ActionListener::RelayToListeners(MpActor& actor,
+                                      Networking::PacketData data,
+                                      size_t length, bool reliable)
+{
+  for (auto listener : actor.GetActorListeners()) {
     auto targetuserId = partOne.serverState.UserByActor(listener);
     if (targetuserId != Networking::InvalidUserId) {
       partOne.GetSendTarget().Send(targetuserId, data, length, reliable);
     }
   }
+}
 
+MpActor* ActionListener::SendToNeighbours(uint32_t idx,
+                                          Networking::UserId userId,
+                                          Networking::PacketData data,
+                                          size_t length, bool reliable)
+{
+  MpActor* actor = ActorUpdatableBy(idx, userId);
+  if (actor) {
+    RelayToListeners(*actor, data, length, reliable);
+  }
   return actor;
 }
 
@@ -116,7 +131,9 @@ void ActionListener::OnCustomPacket(const RawMessageData& rawMsgData,
 void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
                                       const UpdateMovementMessage& msg)
 {
-  auto actor = SendToNeighbours(msg.idx, rawMsgData);
+  // Validate, then relay: a move the server rejects must not reach the
+  // neighbours (thuum docs/verbs/validation.md, Movement)
+  auto actor = ActorUpdatableBy(msg.idx, rawMsgData.userId);
   if (actor) {
     bool teleportFlag = actor->GetTeleportFlag();
     actor->SetTeleportFlag(false);
@@ -142,6 +159,9 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
           rawMsgData.userId, actor, espmFiles)) {
       return;
     }
+
+    RelayToListeners(*actor, rawMsgData.unparsed, rawMsgData.unparsedLength,
+                     false);
 
     if (!msg.data.isBlocking) {
       actor->IncreaseBlockCount();

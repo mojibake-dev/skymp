@@ -7,6 +7,7 @@
 #include <chrono>
 #include <deque>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -44,7 +45,7 @@ public:
              unsigned short maxConnections, const char* password,
              std::shared_ptr<prometheus::Registry> promRegistry)
     : server(Bind(listenAddress, port, maxConnections, password))
-    , clientsByUser(maxConnections, kNoClient)
+    , clientsByUser(maxConnections)
     , connectedClientsGauge{
       promRegistry,
       "skymp_server_connected_clients_count",
@@ -107,13 +108,15 @@ public:
   }
 
 private:
-  static constexpr uint64_t kNoClient = 0;
-
   void Dispatch(const skymp::wire::WireEvent& ev, OnPacket onPacket,
                 void* state)
   {
     switch (ev.kind) {
       case skymp::wire::EventKind::Connected: {
+        if (Find(ev.client) != Networking::InvalidUserId) {
+          spdlog::error("WireServer: client {:x} connected twice", ev.client);
+          return;
+        }
         const Networking::UserId userId = Allocate(ev.client);
         if (userId == Networking::InvalidUserId) {
           spdlog::error("WireServer: no free user id for client {:x}",
@@ -135,9 +138,16 @@ private:
         }
         spdlog::info("WireServer: user {} left ({})", userId,
                      std::string(ev.detail));
+        // The id stays valid during the callback (the core may still ask
+        // for its ip) and is freed after it, even if the core throws.
+        struct FreeAfter
+        {
+          WireServer* self;
+          Networking::UserId userId;
+          ~FreeAfter() { self->Free(userId); }
+        } freeAfter{ this, userId };
         onPacket(state, userId,
                  Networking::PacketType::ServerSideUserDisconnect, nullptr, 0);
-        Free(userId);
         return;
       }
       case skymp::wire::EventKind::Message: {
@@ -176,10 +186,12 @@ private:
     }
   }
 
+  // Any u64 is a valid netcode client id, 0 included: a slot is free when
+  // it holds no id, never when it holds a particular one.
   Networking::UserId Allocate(uint64_t client)
   {
     for (size_t i = 0; i < clientsByUser.size(); ++i) {
-      if (clientsByUser[i] == kNoClient) {
+      if (!clientsByUser[i]) {
         clientsByUser[i] = client;
         return static_cast<Networking::UserId>(i);
       }
@@ -190,7 +202,7 @@ private:
   Networking::UserId Find(uint64_t client) const
   {
     for (size_t i = 0; i < clientsByUser.size(); ++i) {
-      if (clientsByUser[i] == client) {
+      if (clientsByUser[i] == client) { // an empty slot never matches
         return static_cast<Networking::UserId>(i);
       }
     }
@@ -200,21 +212,21 @@ private:
   void Free(Networking::UserId userId)
   {
     if (userId < clientsByUser.size()) {
-      clientsByUser[userId] = kNoClient;
+      clientsByUser[userId].reset();
     }
   }
 
   uint64_t ClientOf(Networking::UserId userId) const
   {
-    if (userId >= clientsByUser.size() || clientsByUser[userId] == kNoClient) {
+    if (userId >= clientsByUser.size() || !clientsByUser[userId]) {
       throw std::runtime_error("User with id " + std::to_string(userId) +
                                " doesn't exist");
     }
-    return clientsByUser[userId];
+    return *clientsByUser[userId];
   }
 
   rust::Box<skymp::wire::Server> server;
-  std::vector<uint64_t> clientsByUser;
+  std::vector<std::optional<uint64_t>> clientsByUser;
   std::deque<skymp::wire::WireEvent> pending;
   std::string buffer;
   std::map<uint16_t, uint64_t> rejected;

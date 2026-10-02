@@ -3,6 +3,15 @@
 # pr-windows-flatrim.yml watches main; this file is the same job pointed at
 # parity so `just build-client` in the thuum superproject has a `dist`
 # artifact to download. Nothing here is meant for upstream.
+#
+# vcpkg binary cache: pr_base points the "GitHub" NuGet source at upstream's
+# feed (skyrim-multiplayer), which this fork's token can read but not write,
+# and the fork's patched CommonLibSSE-NG port is never in it, so every run
+# rebuilt that port (about 10 minutes). Packages this workflow builds go to a
+# files cache (https://learn.microsoft.com/vcpkg/reference/binarycaching)
+# kept between runs by actions/cache; upstream's feed stays a read source.
+# vcpkg keys every archive by its ABI hash (port files, triplet, compiler),
+# so an old cache can only miss, never serve a wrong binary.
 name: Parity Windows Flatrim (AE/SE)
 
 on:
@@ -16,7 +25,7 @@ concurrency:
 
 env:
   BUILD_TYPE: Release
-  VCPKG_BINARY_SOURCES: 'clear;nuget,GitHub,readwrite'
+  VCPKG_BINARY_SOURCES: 'clear;files,C:/vcpkg-bincache,readwrite;nuget,GitHub,read'
   VCPKG_FEATURE_FLAGS: 'manifests'
 
 jobs:
@@ -27,6 +36,21 @@ jobs:
         with:
           fetch-depth: 1
           submodules: 'true'
+      # The newest cache this branch (or the default branch) saved.
+      - name: Restore the vcpkg binary cache
+        uses: actions/cache/restore@v6
+        with:
+          path: C:/vcpkg-bincache
+          key: vcpkg-bincache-windows-${{ github.run_id }}
+          restore-keys: vcpkg-bincache-windows-
+      - name: Count cached vcpkg packages
+        id: vcpkg-cache-before
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force C:/vcpkg-bincache | Out-Null
+          $n = @(Get-ChildItem C:/vcpkg-bincache -Recurse -File -Filter *.zip).Count
+          Write-Host "vcpkg binary cache: $n packages restored"
+          "count=$n" >> $env:GITHUB_OUTPUT
       - uses: ./.github/actions/pr_base
         with:
           DESCRIPTION: 'Flatrim'
@@ -37,3 +61,19 @@ jobs:
           SERVER_DIST_ARTIFACT_NAME: server-dist
           SKYMP5_PATCHES_PAT: ${{ secrets.SKYMP5_PATCHES_PAT }}
           NUGET_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # vcpkg builds during configure, so a run that fails later (tests) still
+      # has new packages worth keeping; a cancelled run may hold a partial one.
+      - name: Count cached vcpkg packages after the build
+        id: vcpkg-cache-after
+        if: success() || failure()
+        shell: pwsh
+        run: |
+          $n = @(Get-ChildItem C:/vcpkg-bincache -Recurse -File -Filter *.zip).Count
+          Write-Host "vcpkg binary cache: $n packages after the build"
+          "count=$n" >> $env:GITHUB_OUTPUT
+      - name: Save the vcpkg binary cache
+        if: (success() || failure()) && steps.vcpkg-cache-after.outputs.count != steps.vcpkg-cache-before.outputs.count
+        uses: actions/cache/save@v6
+        with:
+          path: C:/vcpkg-bincache
+          key: vcpkg-bincache-windows-${{ github.run_id }}

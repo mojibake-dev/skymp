@@ -603,8 +603,15 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
       if (GetParent() && GetParent()->HasEspm()) {
         EnsureTemplateChainEvaluated(GetParent()->GetEspm(),
                                      Mode::NoRequestSave);
+        // The game files give the base values; the percentages are the
+        // actor's own state and come from the record, or every restart
+        // heals every actor (thuum docs/verbs/attributes.md)
+        const ActorValues recorded = changeForm.actorValues;
         changeForm.actorValues = GetBaseActorValues(
           GetParent(), GetBaseId(), GetRaceId(), changeForm.templateChain);
+        changeForm.actorValues.healthPercentage = recorded.healthPercentage;
+        changeForm.actorValues.magickaPercentage = recorded.magickaPercentage;
+        changeForm.actorValues.staminaPercentage = recorded.staminaPercentage;
       }
     },
     Mode::NoRequestSave);

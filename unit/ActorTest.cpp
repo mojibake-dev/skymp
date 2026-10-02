@@ -1,5 +1,8 @@
+#include "GetBaseActorValues.h"
 #include "TestUtils.hpp"
 #include <catch2/catch_all.hpp>
+
+PartOne& GetPartOne();
 
 TEST_CASE(
   "Actor appearance, equipment and isRaceMenuOpen properties should present "
@@ -64,6 +67,39 @@ TEST_CASE("Actor should load be able to load appearance, equipment, "
   REQUIRE(actor.GetChangeForm().spawnPoint.rot == NiPoint3{ 1, 2, 4 });
   REQUIRE(actor.GetChangeForm().spawnDelay == 8.0f);
   REQUIRE(actor.GetChangeForm().consoleCommandsAllowed == true);
+}
+
+TEST_CASE("Attribute percentages survive a reload with the game files loaded",
+          "[Actor]")
+{
+  // thuum docs/verbs/attributes.md: with the master files loaded,
+  // ApplyChangeForm refreshes the base values from them; the percentages
+  // are the actor's state and must come from the record, or every server
+  // restart heals every actor.
+  PartOne& running = GetPartOne();
+  REQUIRE(running.worldState.HasEspm());
+  running.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
+  auto& actor = running.worldState.GetFormAt<MpActor>(0xff000000);
+  actor.SetPercentages({ 0.5f, 0.25f, 0.75f });
+  const MpChangeForm saved = actor.GetChangeForm();
+  REQUIRE(saved.actorValues.healthPercentage == 0.5f);
+
+  // The restarted server: a fresh world reading the saved record, as
+  // AttachSaveStorage does for each player character at start
+  PartOne& restarted = GetPartOne();
+  restarted.worldState.LoadChangeForm(saved, restarted.CreateFormCallbacks());
+  auto& loaded = restarted.worldState.GetFormAt<MpActor>(0xff000000);
+  const ActorValues values = loaded.GetChangeForm().actorValues;
+  REQUIRE(values.healthPercentage == 0.5f);
+  REQUIRE(values.magickaPercentage == 0.25f);
+  REQUIRE(values.staminaPercentage == 0.75f);
+
+  // The base values still come from the game files
+  const BaseActorValues base =
+    GetBaseActorValues(&restarted.worldState, loaded.GetBaseId(),
+                       loaded.GetRaceId(), loaded.GetTemplateChain());
+  REQUIRE(values.health == base.health);
+  REQUIRE(values.healRate == base.healRate);
 }
 
 TEST_CASE("Actor factions in changeForm", "[Actor]")

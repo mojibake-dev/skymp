@@ -249,6 +249,13 @@ public:
   template <class T>
   SimdJsonInputArchive& Serialize(std::optional<T>& output)
   {
+    // JsonOutputArchive writes an empty optional inside an array as null
+    // (SpSnippetMessage::arguments); read it back as empty, so this reader
+    // takes everything that writer produces.
+    if (input.is_null()) {
+      output.reset();
+      return *this;
+    }
     T outputItem;
     SimdJsonInputArchive itemArchive(input);
     itemArchive.Serialize(outputItem);

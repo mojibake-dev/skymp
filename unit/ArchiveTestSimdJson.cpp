@@ -393,4 +393,23 @@ TEST_CASE("SimdJsonArchive variant - extended types and edge cases",
             std::get<std::variant<std::string, double>>(nested)) == 2.71);
 }
 
+TEST_CASE("SimdJsonArchive reads empty optionals inside arrays",
+          "[Archives] [Serialization]")
+{
+  // JsonOutputArchive writes an empty optional array element as null
+  // (SpSnippetMessage::arguments); the reader must take it back as empty.
+  using Element = std::optional<std::variant<bool, double, std::string>>;
+  std::vector<Element> written{ std::nullopt, 1.5, std::nullopt,
+                                std::string("x"), false };
+
+  JsonOutputArchive ar;
+  ar.Serialize("arguments", written);
+  REQUIRE(nlohmann::to_string(ar.j["arguments"]) ==
+          "[null,1.5,null,\"x\",false]");
+
+  auto read = ParseWithSimdInputArchive<std::vector<Element>>(
+    nlohmann::to_string(ar.j["arguments"]));
+  REQUIRE(read == written);
+}
+
 // TODO(#2250): test structures such as set or list?

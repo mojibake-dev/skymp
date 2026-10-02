@@ -1,0 +1,36 @@
+# difftest movement-reject (M1 validation, thuum docs/verbs/validation.md,
+# Movement): c1 sends one move the server must reject, a jump of 5000 units
+# (MovementValidation takes under 4096 per message), and both stacks snap c1
+# back with Teleport2. The legacy server relayed the rejected move to every
+# listener, c1 itself included, before validating it; the fixed server
+# validates first and relays nothing. UpdateMovement compares exactly here
+# (not as presence), so the relayed jump shows as a count.
+#
+# Timing (DIFFTEST_CLIENT_GAP_MS 1500): c2 joins before c1's jump and moves
+# once more after it, and c1 leaves first, so c2 also sees c1's departure the
+# way smoke declares it.
+id: movement-reject
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+volatile: [3, 24]
+steps:
+  - {client: c1, at_ms: 3000, move: {dx: 5000}}
+  - {client: c2, at_ms: 0, move: {dy: 30}}
+  - {client: c2, at_ms: 2500, move: {dy: 60}}
+divergences:
+  - client: c1
+    msg: {t: 2, idx: 2}
+    legacy: 1
+    wire: 0
+    reason: the rejected jump echoed back to its sender; the fixed server validates before relaying
+  - client: c2
+    msg: {t: 2, idx: 2}
+    legacy: 1
+    wire: 0
+    reason: the rejected jump relayed to the neighbour; the fixed server validates before relaying
+  - client: c2
+    msg: {t: 25, idx: 2}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

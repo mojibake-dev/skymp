@@ -14,10 +14,11 @@
 //! exit code, what it sent, and the multiset of messages it received. The
 //! relays whose count depends on timing (UpdateMovement, UpdateAnimation,
 //! UpdateAnimVariables by default) compare as "received at least one".
-//! A session may declare divergences: a message one client receives a
-//! different number of times on each stack, with the reason. Declarations
-//! apply legacy against wire only and are reviewed like validator changes;
-//! one that stops occurring is itself a difference, so it cannot outlive
+//! A session may declare divergences: the messages one client receives
+//! that match a pattern (every field the pattern names, equal; the rest
+//! free), counted on each stack, with the reason. Declarations apply legacy
+//! against wire only and are reviewed like validator changes; one that
+//! stops occurring as declared is itself a difference, so it cannot outlive
 //! its cause.
 //!
 //! Environment: `DIFFTEST_LEGACY_FAKECLIENT` (or the older
@@ -53,12 +54,13 @@ struct Session {
     divergences: Vec<Divergence>,
 }
 
-/// A message one client receives `legacy` times on the legacy stack and
-/// `wire` times on the wire stack, for `reason`.
+/// Messages one client receives that match `msg`, `legacy` times on the
+/// legacy stack and `wire` times on the wire stack in all, for `reason`.
 #[derive(Debug, Deserialize)]
 struct Divergence {
     client: String,
-    /// The message as received, compared in canonical form.
+    /// A pattern: every field it names must be equal (recursively for
+    /// objects, in canonical form); fields it leaves out are free.
     msg: Value,
     legacy: i64,
     wire: i64,
@@ -68,6 +70,25 @@ struct Divergence {
 impl Divergence {
     fn key(&self) -> String {
         canonical(&self.msg).to_string()
+    }
+
+    /// The received messages (canonical JSON text, as `normalize` lists
+    /// them) this declaration covers.
+    fn matching<'a>(&self, received: &'a BTreeMap<String, i64>) -> Vec<&'a String> {
+        let want = canonical(&self.msg);
+        received
+            .keys()
+            .filter(|text| serde_json::from_str::<Value>(text).is_ok_and(|got| covers(&want, &got)))
+            .collect()
+    }
+}
+
+/// True when every field of `want` is in `got` with an equal value
+/// (objects recursively); arrays and scalars compare whole.
+fn covers(want: &Value, got: &Value) -> bool {
+    match (want, got) {
+        (Value::Object(w), Value::Object(g)) => w.iter().all(|(k, v)| g.get(k).is_some_and(|gv| covers(v, gv))),
+        _ => want == got,
     }
 }
 
@@ -329,26 +350,40 @@ fn diff(a_name: &str, a: &BTreeMap<String, Value>, b_name: &str, b: &BTreeMap<St
             }
             m
         };
-        let (lx, ly) = (list(x), list(y));
+        let (mut lx, mut ly) = (list(x), list(y));
+        // Declared divergences first: what a declaration covers, counted on
+        // each side, must be exactly the declared counts; then it is set
+        // aside and the rest compares message by message.
+        for (d, u) in declared.iter().zip(used.iter_mut()) {
+            if d.client != *name {
+                continue;
+            }
+            let (mx, my): (Vec<String>, Vec<String>) = (
+                d.matching(&lx).into_iter().cloned().collect(),
+                d.matching(&ly).into_iter().cloned().collect(),
+            );
+            let n: i64 = mx.iter().filter_map(|k| lx.get(k)).sum();
+            let m: i64 = my.iter().filter_map(|k| ly.get(k)).sum();
+            if n == d.legacy && m == d.wire {
+                *u = true;
+                expected.push(format!(
+                    "{name}: {} x{n} on {a_name}, x{m} on {b_name} (declared: {})",
+                    d.key(),
+                    d.reason.trim()
+                ));
+                for k in mx {
+                    lx.remove(&k);
+                }
+                for k in my {
+                    ly.remove(&k);
+                }
+            }
+        }
         let msgs: BTreeSet<&String> = lx.keys().chain(ly.keys()).collect();
         for msg in msgs {
             let (n, m) = (lx.get(msg).copied().unwrap_or(0), ly.get(msg).copied().unwrap_or(0));
-            if n == m {
-                continue;
-            }
-            let line = format!("{name}: {msg} x{n} on {a_name}, x{m} on {b_name}");
-            match declared
-                .iter()
-                .position(|d| d.client == *name && d.key() == *msg && d.legacy == n && d.wire == m)
-            {
-                Some(i) => {
-                    if let Some(u) = used.get_mut(i) {
-                        *u = true;
-                    }
-                    let reason = declared.get(i).map_or("", |d| d.reason.trim());
-                    expected.push(format!("{line} (declared: {reason})"));
-                }
-                None => out.push(line),
+            if n != m {
+                out.push(format!("{name}: {msg} x{n} on {a_name}, x{m} on {b_name}"));
             }
         }
     }
@@ -513,6 +548,21 @@ mod tests {
         // declared with other counts: both the difference and the stale declaration
         let o = diff("legacy", &legacy, "wire", &wire, &[destroy_c1(0, 2)]);
         assert_eq!(o.differences.len(), 2, "{:?}", o.differences);
+    }
+
+    #[test]
+    fn a_declaration_is_a_pattern_and_counts_every_match() {
+        // two different relayed moves of idx 2 on legacy, none on the wire
+        let legacy = one_client(&[r#"{"data":{"pos":[1,2,3]},"idx":2,"t":2}"#, r#"{"data":{"pos":[5001,2,3]},"idx":2,"t":2}"#, r#"{"idx":3,"t":2}"#]);
+        let wire = one_client(&[r#"{"idx":3,"t":2}"#]);
+        let relayed = Divergence { client: "c2".into(), msg: json!({"t": 2, "idx": 2}), legacy: 2, wire: 0, reason: "validate before relay".into() };
+        let o = diff("legacy", &legacy, "wire", &wire, &[relayed]);
+        assert!(o.differences.is_empty(), "{:?}", o.differences);
+        assert_eq!(o.declared.len(), 1, "{:?}", o.declared);
+        // a nested field narrows the pattern to one of them
+        let one = Divergence { client: "c2".into(), msg: json!({"t": 2, "data": {"pos": [5001, 2, 3]}}), legacy: 1, wire: 0, reason: "the rejected jump".into() };
+        let o = diff("legacy", &legacy, "wire", &wire, &[one]);
+        assert_eq!(o.differences.len(), 1, "the other idx 2 move still differs: {:?}", o.differences);
     }
 
     #[test]

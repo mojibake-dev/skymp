@@ -20,6 +20,13 @@ if(NOT EMSCRIPTEN)
   find_package(unofficial-node-addon-api REQUIRED)
 endif()
 
+# The network edge (thuum ADR-019): the Rust crates through corrosion. Included
+# here, before cpp/, so its targets exist for cpp/ (MpClientPlugin.dll on
+# Windows) and its generated headers are GENERATED in the addon's directory.
+if(NOT EMSCRIPTEN)
+  include(${CMAKE_SOURCE_DIR}/cmake/wire.cmake)
+endif()
+
 # Add C++ part of the server (except cpp/addon)
 add_subdirectory(cpp)
 
@@ -74,7 +81,6 @@ if(NOT EMSCRIPTEN)
   target_link_libraries(${PROJECT_NAME} PRIVATE mp_common server_guest_lib localization-provider)
 
   # The network edge (thuum ADR-019): the Rust bridge behind WireServer.cpp.
-  include(${CMAKE_SOURCE_DIR}/cmake/wire.cmake)
   target_link_libraries(${PROJECT_NAME} PRIVATE wire_bridge_cxx)
 
   list(APPEND VCPKG_DEPENDENT ${PROJECT_NAME})

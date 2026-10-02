@@ -9,7 +9,9 @@ include(${CMAKE_SOURCE_DIR}/cmake/apply_default_settings.cmake)
 #
 
 if(WIN32)
-  include(${CMAKE_SOURCE_DIR}/cmake/wire.cmake)
+  # cmake/wire.cmake is included by skymp5-server/CMakeLists.txt before this
+  # directory: the cxx bridge's generated headers are GENERATED only in the
+  # directory that includes it, which must be the addon's.
   add_custom_target(MpClientPlugin ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>"
     COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:skymp_wire-shared>" "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/MpClientPlugin.dll"

@@ -1,0 +1,21 @@
+[package]
+name = "wire-fakeclient"
+version = "0.0.1"
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "The headless lab client on the wire: the C++ fakeclient's command line and event lines, built on the client DLL's own Rust code (ADR-019)."
+
+[[bin]]
+name = "fakeclient"
+path = "src/main.rs"
+
+[dependencies]
+wire-client-ffi = { path = "../wire-client-ffi" }   # the WireClient the game's DLL runs
+serde_json.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+wire-bridge = { path = "../wire-bridge" }   # the mock server in tests/ is the bridge the C++ core uses

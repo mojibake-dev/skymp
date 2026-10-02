@@ -4,11 +4,9 @@ version = "0.0.1"
 edition.workspace = true
 publish.workspace = true
 license.workspace = true
-description = "Replays a session into the legacy stack and the Rust edge and diffs what comes out (ADR-010)."
+description = "Replays a session through the legacy stack and the wire stack and diffs what the clients saw (ADR-010, ADR-019)."
 
 [dependencies]
-wire-schema = { path = "../crates/wire-schema" }
-wire-transport = { path = "../crates/wire-transport" }
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true

@@ -4,14 +4,19 @@ version = "0.0.1"
 edition.workspace = true
 publish.workspace = true
 license.workspace = true
-description = "cdylib the Skyrim Platform client loads. Owns all network bytes on the client. unsafe allowed here, reviewed."
+description = "The client half of the wire: MpClientPlugin.dll's seven C exports over renet, with its own network thread (ADR-019). unsafe allowed here, reviewed."
 
 [lib]
+# The cdylib ships as Data/SKSE/Plugins/MpClientPlugin.dll (Skyrim Platform
+# loads it by that path); the rlib is what the Rust fakeclient links, so T2
+# runs the same client code the game does.
 name = "skymp_wire"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 wire-schema = { path = "../wire-schema" }
+wire-json = { path = "../wire-json" }
+wire-validate = { path = "../wire-validate" }
 wire-transport = { path = "../wire-transport" }
 
 [lints.rust]

@@ -37,9 +37,10 @@ struct Input {
 
 fuzz_target!(|input: Input| {
     let limits = Limits::default();
-    // Everything renet may legitimately hold: three receive channels, three
-    // send channels, plus the harness and the input itself.
-    let allowance = limits.channel_memory_bytes * 6 + 16 * 1024 * 1024;
+    // Everything renet may legitimately hold: three receive channels sized
+    // for what clients send, three send channels sized for what the server
+    // sends, plus the harness and the input itself.
+    let allowance = limits.client_channel_memory_bytes * 3 + limits.server_channel_memory_bytes * 3 + 16 * 1024 * 1024;
     let mut h = IngestHarness::new(&limits);
     let mut ticks = input.ticks.iter().copied().chain(std::iter::repeat(16));
     for packet in &input.packets {

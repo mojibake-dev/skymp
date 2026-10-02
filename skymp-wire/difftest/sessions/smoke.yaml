@@ -1,22 +1,16 @@
-# Hand-written session: two clients, legal movement, a replayed sequence
-# number, a hit. Each step is a wire_schema::Message, externally tagged.
-# The legacy stack and the wire stack must emit the same normalized outputs
-# except where a step declares a divergence, which is reviewed like a
-# validator change (docs/WIRE.md).
+# difftest smoke (M1): two clients log in from the clean world, walk near the
+# spawn, one adds an item through the console command path. The legacy stack
+# (RakNet server, C++ fakeclient) and the wire stack (bridged server, Rust
+# fakeclient) must leave every client with the same view: logged in at the
+# same spot, the same messages received (relays as presence), the same exit.
 id: smoke
-clients: [c1, c2]
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
 steps:
-  - { at_ms: 0,    client: c1, Hello: { schema_version: 1, client_build: 1, mod_hashes: [1, 2], name: "c1" } }
-  - { at_ms: 0,    client: c2, Hello: { schema_version: 1, client_build: 1, mod_hashes: [1, 2], name: "c2" } }
-  - { at_ms: 100,  client: c1, Movement: { seq: 1, actor: 20, transform: { x: 0, y: 0, z: 0, yaw: 0, pitch: 0 }, run: false, sneak: false } }
-  - { at_ms: 116,  client: c1, Movement: { seq: 2, actor: 20, transform: { x: 30, y: 0, z: 0, yaw: 0, pitch: 0 }, run: true, sneak: false } }
-  # Replayed sequence number: the wire rejects it with E_VAL_SEQ_REPLAY. The
-  # legacy C++ server has no sequence check on movement and accepts it; that
-  # is the declared divergence, to be confirmed against the real server in
-  # Track W step 8 and removed if the fakeclient proves otherwise.
-  - { at_ms: 132,  client: c1, Movement: { seq: 2, actor: 20, transform: { x: 60, y: 0, z: 0, yaw: 0, pitch: 0 }, run: true, sneak: false },
-      divergence: { legacy: accept } }
-  # The legacy driver has no translation for a hit yet (the fakeclient sends
-  # movement and console commands); declared until it does.
-  - { at_ms: 500,  client: c2, Hit: { seq: 1, attacker: 21, target: 20, weapon: 4660, power_attack: false, client_time_ms: 480 },
-      divergence: { legacy: unsupported } }
+  - {client: c1, at_ms: 0, move: {dx: 30}}
+  - {client: c1, at_ms: 150, move: {dx: 60, runMode: Running}}
+  - {client: c1, at_ms: 300, move: {dx: 90}}
+  - {client: c1, at_ms: 600, send: {t: 12, data: {commandName: AddItem, args: [20, 77495, 1]}}}
+  - {client: c2, at_ms: 0, move: {dy: 30}}
+  - {client: c2, at_ms: 150, move: {dy: 60}}

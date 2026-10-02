@@ -79,7 +79,7 @@ wire-fuzz:
   stage: wire
   parallel:
     matrix:
-      - TARGET: [codec_decode, validate, transport_ingest]
+      - TARGET: [codec_decode, validate, transport_ingest, json_recognize]
   script:
     - cargo +nightly fuzz run "$TARGET" -- -max_total_time="$FUZZ_SECONDS"
   artifacts:

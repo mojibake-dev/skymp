@@ -26,6 +26,7 @@ use renet_netcode::{
 use wire_schema::Message;
 use wire_validate::{ClientGuard, Reject};
 
+pub use channels::Delivery;
 use limits::{ByteBudget, Limits};
 
 /// Transport-level failures, distinct from decode and validation failures so
@@ -95,6 +96,9 @@ pub enum RejectKind {
     Limit,
     /// A message whose direction is server-to-client arrived from a client.
     Direction,
+    /// The connect token's user data did not carry the server's password;
+    /// the connection is dropped before the server ever sees it.
+    Password,
 }
 
 impl std::fmt::Display for RejectKind {
@@ -104,6 +108,7 @@ impl std::fmt::Display for RejectKind {
             RejectKind::Validate(r) => write!(f, "{r}"),
             RejectKind::Limit => f.write_str("E_TX_LIMIT"),
             RejectKind::Direction => f.write_str("E_TX_DIRECTION"),
+            RejectKind::Password => f.write_str("E_TX_PASSWORD"),
         }
     }
 }
@@ -127,28 +132,54 @@ pub fn reason_code(kind: &RejectKind) -> u16 {
         RejectKind::Validate(Reject::SeqReplay) => 206,
         RejectKind::Limit => 301,
         RejectKind::Direction => 302,
+        RejectKind::Password => 303,
     }
 }
 
-/// True for the message families a client may send. Everything else arriving
-/// from a client is rejected as [`RejectKind::Direction`] before validation.
+/// True for the messages a client may send (the schema's direction table).
+/// Everything else arriving from a client is rejected as
+/// [`RejectKind::Direction`] before validation.
 pub fn client_may_send(msg: &Message) -> bool {
     matches!(
-        msg,
-        Message::Hello(_) | Message::Movement(_) | Message::Hit(_) | Message::HostedActor(_)
+        msg.direction(),
+        wire_schema::Direction::ClientToServer | wire_schema::Direction::Both
     )
 }
 
-/// True for the message families a server may send; the client drops the rest.
+/// True for the messages a server may send; the client drops the rest.
 pub fn server_may_send(msg: &Message) -> bool {
     matches!(
-        msg,
-        Message::Welcome { .. }
-            | Message::Refuse { .. }
-            | Message::InventoryApply { .. }
-            | Message::HostGrant { .. }
-            | Message::HostRelease { .. }
+        msg.direction(),
+        wire_schema::Direction::ServerToClient | wire_schema::Direction::Both
     )
+}
+
+/// A message encoded once, cheap to clone and to send to many clients.
+#[derive(Clone, Debug)]
+pub struct Encoded {
+    bytes: Bytes,
+    default_channel: u8,
+}
+
+impl Encoded {
+    /// Encode `msg` (inside its byte cap, or `Encode`).
+    pub fn new(msg: &Message) -> Result<Self, TransportError> {
+        let bytes = wire_codec::encode(msg).map_err(|_| TransportError::Encode)?;
+        Ok(Self {
+            bytes: Bytes::from(bytes),
+            default_channel: channels::for_message(msg),
+        })
+    }
+
+    /// Encoded length in bytes.
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    /// True for an empty encoding, which no message has.
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
 }
 
 /// netcode protocol id: the ASCII tag `SKYMPW` in the high bytes and
@@ -170,6 +201,20 @@ fn ms(dt: Duration) -> u64 {
     u64::try_from(dt.as_millis()).unwrap_or(u64::MAX)
 }
 
+/// How a server binds: limits, authentication, and the password clients
+/// must carry in their connect token's user data (none in the lab).
+pub struct Options {
+    /// Resource bounds.
+    pub limits: Limits,
+    /// Token checking.
+    pub auth: token::Auth,
+    /// The server's password, if it has one.
+    pub password: Option<String>,
+    /// Addresses clients use to reach this server, when they differ from the
+    /// bound one (a container behind NAT); a secure token must name one.
+    pub public_addresses: Vec<SocketAddr>,
+}
+
 /// Server-side transport. Owns the renet server, the netcode transport, and
 /// one [`ClientGuard`] plus byte budget per connection.
 pub struct Server {
@@ -177,6 +222,7 @@ pub struct Server {
     transport: NetcodeServerTransport,
     guards: HashMap<u64, (ClientGuard, ByteBudget)>,
     limits: Limits,
+    password: Option<[u8; token::USER_DATA_BYTES]>,
     now_ms: u64,
     local_addr: SocketAddr,
     unsecure: bool,
@@ -192,6 +238,27 @@ impl Server {
         limits: Limits,
         auth: token::Auth,
     ) -> Result<Self, TransportError> {
+        Self::bind_with(
+            addr,
+            Options {
+                limits,
+                auth,
+                password: None,
+                public_addresses: Vec::new(),
+            },
+        )
+    }
+
+    /// Bind with every option. `max_clients` above netcode's ceiling is
+    /// clamped to it.
+    pub fn bind_with(addr: SocketAddr, options: Options) -> Result<Self, TransportError> {
+        let Options {
+            mut limits,
+            auth,
+            password,
+            public_addresses,
+        } = options;
+        limits.max_clients = limits.max_clients.clamp(1, limits::NETCODE_MAX_CLIENTS);
         let socket = UdpSocket::bind(addr).map_err(|_| TransportError::Bind)?;
         let local_addr = socket.local_addr().map_err(|_| TransportError::Bind)?;
         let (authentication, unsecure) = match auth {
@@ -200,11 +267,15 @@ impl Server {
                 (ServerAuthentication::Secure { private_key }, false)
             }
         };
+        let mut addresses = public_addresses;
+        if !addresses.contains(&local_addr) {
+            addresses.push(local_addr);
+        }
         let config = ServerConfig {
             current_time: unix_now(),
             max_clients: limits.max_clients,
             protocol_id: protocol_id(),
-            public_addresses: vec![local_addr],
+            public_addresses: addresses,
             authentication,
         };
         let transport =
@@ -215,11 +286,19 @@ impl Server {
             transport,
             guards: HashMap::new(),
             limits,
+            password: password
+                .filter(|p| !p.is_empty())
+                .map(|p| token::password_user_data(&p)),
             now_ms: 0,
             local_addr,
             unsecure,
             io_errors: 0,
         })
+    }
+
+    /// The address a client connects from, while it is connected.
+    pub fn client_addr(&self, client: u64) -> Option<SocketAddr> {
+        self.transport.client_addr(client)
     }
 
     /// The address the socket is bound to.
@@ -253,20 +332,34 @@ impl Server {
         while let Some(event) = self.renet.get_event() {
             match event {
                 ServerEvent::ClientConnected { client_id } => {
+                    if let Some(want) = &self.password {
+                        if self.transport.user_data(client_id).as_ref() != Some(want) {
+                            self.renet.disconnect(client_id);
+                            out.push(Inbound::Rejected {
+                                client: client_id,
+                                reject: RejectKind::Password,
+                            });
+                            continue;
+                        }
+                    }
                     self.guards.insert(client_id, Default::default());
                     out.push(Inbound::Connected { client: client_id });
                 }
                 ServerEvent::ClientDisconnected { client_id, reason } => {
-                    self.guards.remove(&client_id);
-                    out.push(Inbound::Disconnected {
-                        client: client_id,
-                        reason: reason.to_string(),
-                    });
+                    // a client refused for its password never got a guard and is not announced
+                    if self.guards.remove(&client_id).is_some() {
+                        out.push(Inbound::Disconnected {
+                            client: client_id,
+                            reason: reason.to_string(),
+                        });
+                    }
                 }
             }
         }
         for client in self.renet.clients_id() {
-            let (guard, budget) = self.guards.entry(client).or_default();
+            let Some((guard, budget)) = self.guards.get_mut(&client) else {
+                continue; // refused at connect, disconnect pending
+            };
             for channel in channels::ALL {
                 while let Some(bytes) = self.renet.receive_message(client, channel) {
                     out.push(ingest(
@@ -287,17 +380,40 @@ impl Server {
     /// maps to. `Limit` means the channel is full; the caller decides whether
     /// that client is worth keeping.
     pub fn send(&mut self, client: u64, msg: &Message) -> Result<(), TransportError> {
+        self.send_with(client, msg, Delivery::Default)
+    }
+
+    /// Encode and queue one message with the sender's choice of delivery.
+    pub fn send_with(
+        &mut self,
+        client: u64,
+        msg: &Message,
+        delivery: Delivery,
+    ) -> Result<(), TransportError> {
+        let encoded = Encoded::new(msg)?;
+        self.send_encoded(client, &encoded, delivery)
+    }
+
+    /// Queue an already encoded message: the fan-out path, which encodes once
+    /// and sends the same bytes to many clients.
+    pub fn send_encoded(
+        &mut self,
+        client: u64,
+        encoded: &Encoded,
+        delivery: Delivery,
+    ) -> Result<(), TransportError> {
         if !self.renet.is_connected(client) {
             return Err(TransportError::NoClient);
         }
-        let mut buf = [0u8; Message::MAX_ENCODED_LEN];
-        let bytes = wire_codec::encode(msg, &mut buf).map_err(|_| TransportError::Encode)?;
-        let channel = channels::for_message(msg);
-        if !self.renet.can_send_message(client, channel, bytes.len()) {
+        let channel = match delivery {
+            Delivery::Default => encoded.default_channel,
+            Delivery::Reliable => channels::RELIABLE_ORDERED,
+            Delivery::Unreliable => channels::UNRELIABLE,
+        };
+        if !self.renet.can_send_message(client, channel, encoded.bytes.len()) {
             return Err(TransportError::Limit);
         }
-        self.renet
-            .send_message(client, channel, Bytes::copy_from_slice(bytes));
+        self.renet.send_message(client, channel, encoded.bytes.clone());
         Ok(())
     }
 
@@ -315,7 +431,7 @@ fn ingest(
     limits: &Limits,
     now_ms: u64,
 ) -> Inbound {
-    if bytes.len() > limits.max_packet
+    if bytes.len() > limits.max_from_client
         || !budget.charge(now_ms, bytes.len(), limits.bytes_per_s_per_client)
     {
         return Inbound::Rejected {
@@ -342,6 +458,23 @@ fn ingest(
     }
 }
 
+/// How a client's connection ended, in netcode's terms without naming netcode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientEnd {
+    /// The server refused the handshake (full, or a bad token).
+    Denied,
+    /// The handshake or the connection timed out.
+    TimedOut,
+    /// The server closed the connection.
+    ByServer,
+    /// This side closed it.
+    ByClient,
+    /// The connect token expired before the handshake finished.
+    TokenExpired,
+    /// renet dropped the connection (a channel overflowed, a malformed packet).
+    Transport,
+}
+
 /// Client-side transport, used by `wire-client-ffi` and by difftest's wire driver.
 pub struct Client {
     renet: RenetClient,
@@ -350,12 +483,24 @@ pub struct Client {
     now_ms: u64,
     rejected: u64,
     io_errors: u64,
+    guard: ClientGuard,
 }
 
 impl Client {
     /// Connect to `server` with a token from [`token`]. An empty token means
     /// an unsecure connection, which only a lab server accepts.
     pub fn connect(server: SocketAddr, tok: token::ConnectToken) -> Result<Self, TransportError> {
+        Self::connect_with(server, tok, None)
+    }
+
+    /// Connect, carrying the server's password in the token's user data when
+    /// the connection is unsecure (a secure token carries what its issuer put
+    /// there).
+    pub fn connect_with(
+        server: SocketAddr,
+        tok: token::ConnectToken,
+        password: Option<&str>,
+    ) -> Result<Self, TransportError> {
         let bind: SocketAddr = if server.is_ipv4() {
             "0.0.0.0:0"
         } else {
@@ -370,7 +515,7 @@ impl Client {
                 protocol_id: protocol_id(),
                 client_id,
                 server_addr: server,
-                user_data: None,
+                user_data: password.map(token::password_user_data),
             }
         } else {
             let connect_token = renet_netcode::ConnectToken::read(&mut tok.0.as_slice())
@@ -388,7 +533,27 @@ impl Client {
             now_ms: 0,
             rejected: 0,
             io_errors: 0,
+            guard: ClientGuard::default(),
         })
+    }
+
+    /// Why the connection ended, once it has.
+    pub fn end(&self) -> Option<ClientEnd> {
+        use renet_netcode::NetcodeDisconnectReason as D;
+        if let Some(r) = self.transport.disconnect_reason() {
+            return Some(match r {
+                D::ConnectionDenied => ClientEnd::Denied,
+                D::ConnectTokenExpired => ClientEnd::TokenExpired,
+                D::ConnectionTimedOut
+                | D::ConnectionResponseTimedOut
+                | D::ConnectionRequestTimedOut => ClientEnd::TimedOut,
+                D::DisconnectedByClient => ClientEnd::ByClient,
+                D::DisconnectedByServer => ClientEnd::ByServer,
+            });
+        }
+        self.renet
+            .is_disconnected()
+            .then_some(ClientEnd::Transport)
     }
 
     /// True once the handshake completed.
@@ -420,12 +585,18 @@ impl Client {
         }
         for channel in channels::ALL {
             while let Some(bytes) = self.renet.receive_message(channel) {
-                if bytes.len() > self.limits.max_packet {
+                if bytes.len() > self.limits.max_from_server {
                     self.rejected = self.rejected.saturating_add(1);
                     continue;
                 }
                 match wire_codec::decode(&bytes) {
-                    Ok(msg) if server_may_send(&msg) => out.push(msg),
+                    Ok(msg)
+                        if server_may_send(&msg)
+                            && wire_validate::validate(&msg, &mut self.guard, self.now_ms)
+                                .is_ok() =>
+                    {
+                        out.push(msg)
+                    }
                     _ => self.rejected = self.rejected.saturating_add(1),
                 }
             }
@@ -437,14 +608,17 @@ impl Client {
 
     /// Encode and queue one message on the channel its family maps to.
     pub fn send(&mut self, msg: &Message) -> Result<(), TransportError> {
-        let mut buf = [0u8; Message::MAX_ENCODED_LEN];
-        let bytes = wire_codec::encode(msg, &mut buf).map_err(|_| TransportError::Encode)?;
-        let channel = channels::for_message(msg);
+        self.send_with(msg, Delivery::Default)
+    }
+
+    /// Encode and queue one message with the sender's choice of delivery.
+    pub fn send_with(&mut self, msg: &Message, delivery: Delivery) -> Result<(), TransportError> {
+        let bytes = wire_codec::encode(msg).map_err(|_| TransportError::Encode)?;
+        let channel = channels::for_send(msg, delivery);
         if !self.renet.can_send_message(channel, bytes.len()) {
             return Err(TransportError::Limit);
         }
-        self.renet
-            .send_message(channel, Bytes::copy_from_slice(bytes));
+        self.renet.send_message(channel, Bytes::from(bytes));
         Ok(())
     }
 
@@ -491,6 +665,7 @@ mod tests {
             RejectKind::Validate(Reject::SeqReplay),
             RejectKind::Limit,
             RejectKind::Direction,
+            RejectKind::Password,
         ];
         let mut codes: Vec<u16> = kinds.iter().map(reason_code).collect();
         codes.sort_unstable();
@@ -710,6 +885,152 @@ mod tests {
             .iter()
             .all(|e| !matches!(e, Inbound::Connected { .. })));
         assert_eq!(server.client_count(), 0);
+    }
+
+    fn connect_pair(password: Option<&str>, client_password: Option<&str>) -> (Server, Client, Vec<Inbound>, Vec<Message>) {
+        let localhost: SocketAddr = "127.0.0.1:0".parse().expect("literal");
+        let server = Server::bind_with(
+            localhost,
+            Options {
+                limits: Limits::default(),
+                auth: token::Auth::Unsecure,
+                password: password.map(String::from),
+                public_addresses: Vec::new(),
+            },
+        )
+        .expect("bind");
+        let client = Client::connect_with(
+            server.local_addr(),
+            token::ConnectToken(Vec::new()),
+            client_password,
+        )
+        .expect("connect");
+        (server, client, Vec::new(), Vec::new())
+    }
+
+    #[test]
+    fn the_password_gate() {
+        let (mut server, mut client, mut events, mut inbox) = connect_pair(Some("lab"), Some("lab"));
+        assert!(
+            pump(&mut server, &mut client, &mut events, &mut inbox, |ev, _, _| ev
+                .iter()
+                .any(|e| matches!(e, Inbound::Connected { .. }))),
+            "the right password connects"
+        );
+
+        let (mut server, mut client, mut events, mut inbox) = connect_pair(Some("lab"), Some("nope"));
+        assert!(
+            pump(&mut server, &mut client, &mut events, &mut inbox, |ev, _, _| ev
+                .iter()
+                .any(|e| matches!(e, Inbound::Rejected { reject: RejectKind::Password, .. }))),
+            "a wrong password is refused"
+        );
+        assert!(events.iter().all(|e| !matches!(e, Inbound::Connected { .. })));
+        let mut ended = false;
+        for _ in 0..200 {
+            client.poll(Duration::from_millis(10), &mut inbox);
+            server.poll(Duration::from_millis(10), &mut events);
+            if client.end().is_some() {
+                ended = true;
+                break;
+            }
+            sleep(Duration::from_millis(10));
+        }
+        assert!(ended, "the refused client learns its connection ended");
+        assert!(events.iter().all(|e| !matches!(e, Inbound::Disconnected { .. })), "never announced, never mourned");
+
+        let (mut server, mut client, mut events, mut inbox) = connect_pair(Some("lab"), None);
+        assert!(
+            pump(&mut server, &mut client, &mut events, &mut inbox, |ev, _, _| ev
+                .iter()
+                .any(|e| matches!(e, Inbound::Rejected { reject: RejectKind::Password, .. }))),
+            "no password is refused"
+        );
+    }
+
+    fn skymp_movement() -> Message {
+        Message::UpdateMovement(wire_schema::skymp::UpdateMovement {
+            idx: 3,
+            data: wire_schema::skymp::MovementData {
+                world_or_cell: 0x3c,
+                pos: [133857.0, -61130.0, 14662.0],
+                run_mode: "Running".try_into().unwrap_or_default(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn skymp_messages_both_ways_and_a_large_one_in_fragments() {
+        let (mut server, mut client, mut events, mut inbox) = connect_pair(None, None);
+        assert!(pump(&mut server, &mut client, &mut events, &mut inbox, |ev, _, c| c.is_connected()
+            && ev.iter().any(|e| matches!(e, Inbound::Connected { .. }))));
+        let id = match events.iter().find(|e| matches!(e, Inbound::Connected { .. })) {
+            Some(Inbound::Connected { client }) => *client,
+            _ => unreachable!("checked above"),
+        };
+        events.clear();
+
+        client.send_with(&skymp_movement(), Delivery::Unreliable).expect("send");
+        let login = wire_json::recognize(r#"{"t":1,"contentJsonDump":"{}"}"#).expect("json");
+        client.send_with(&login, Delivery::Reliable).expect("send");
+        assert!(pump(&mut server, &mut client, &mut events, &mut inbox, |ev, _, _| ev
+            .iter()
+            .filter(|e| matches!(e, Inbound::Message { .. }))
+            .count()
+            >= 2));
+
+        // a client may not send what only the server sends
+        client
+            .send_with(&Message::DestroyActor(wire_schema::skymp::DestroyActor::default()), Delivery::Reliable)
+            .expect("send");
+        assert!(pump(&mut server, &mut client, &mut events, &mut inbox, |ev, _, _| ev
+            .iter()
+            .any(|e| matches!(e, Inbound::Rejected { reject: RejectKind::Direction, .. }))));
+
+        // a CreateActor of ~120 KiB: an inventory of 1000 named stacks, fragmented by renet
+        let mut inv = wire_schema::skymp::Inventory::default();
+        for i in 0..1000u32 {
+            let _ = inv.entries.push(wire_schema::skymp::Entry {
+                base_id: i,
+                count: 1,
+                name: Some("Iron Sword of Testing, Very Long Name, Fine".repeat(2).as_str().try_into().unwrap_or_default()),
+                ..Default::default()
+            });
+        }
+        let big = Message::CreateActor(wire_schema::skymp::CreateActor {
+            idx: 9,
+            is_me: true,
+            props: wire_schema::skymp::CreateActorProps {
+                inventory: Some(inv),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let len = wire_codec::encode(&big).expect("encode").len();
+        assert!(len > 64 * 1024, "{len}");
+        server.send_with(id, &big, Delivery::Reliable).expect("send");
+        assert!(pump(&mut server, &mut client, &mut events, &mut inbox, |_, inbox, _| inbox
+            .iter()
+            .any(|m| matches!(m, Message::CreateActor(_)))));
+        assert!(inbox.contains(&big));
+        assert_eq!(client.rejected(), 0);
+
+        // the server ends it; the client is told why
+        server.disconnect(id);
+        let mut end = None;
+        for _ in 0..200 {
+            client.poll(Duration::from_millis(10), &mut inbox);
+            server.poll(Duration::from_millis(10), &mut events);
+            end = client.end();
+            if end.is_some() {
+                break;
+            }
+            sleep(Duration::from_millis(10));
+        }
+        assert_eq!(end, Some(ClientEnd::ByServer));
+        assert_eq!(server.client_addr(id), None);
     }
 
     /// Writes real renet packets into the transport_ingest corpus. Run by hand:

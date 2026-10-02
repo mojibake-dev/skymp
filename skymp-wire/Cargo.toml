@@ -4,11 +4,14 @@
 resolver = "2"
 members = [
   "crates/wire-schema",
+  "crates/wire-json",
+  "crates/wire-legacy",
   "crates/wire-codec",
   "crates/wire-validate",
   "crates/wire-transport",
   "crates/wire-bridge",
   "crates/wire-client-ffi",
+  "crates/wire-fakeclient",
   "difftest",
 ]
 exclude = ["fuzz"]
@@ -20,16 +23,15 @@ license = "MIT"   # standalone crates only; combined works follow the subproject
 rust-version = "1.88"   # cxx 1.0.202 needs it
 
 [workspace.dependencies]
-serde = { version = "1", default-features = false, features = ["derive"] }
-postcard = { version = "1.1", default-features = false, features = ["heapless", "experimental-derive"] }  # heapless feature: MaxSize impls for heapless types (ADR-015)
-heapless = { version = "0.7", features = ["serde"] }  # 0.7 is the version postcard 1.1 binds to (ADR-015)
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }  # alloc: bounded types are heap backed (ADR-019)
+postcard = { version = "1.1", default-features = false, features = ["alloc"] }  # alloc: to_allocvec for heap-backed bounded types (ADR-019)
 thiserror = "2"
 renet = "2"
 renet_netcode = "2"
 cxx = "1"
 proptest = "1"
 arbitrary = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }  # parse floats correctly rounded, as JSON.parse and simdjson do (found by fuzz/validate)
 serde_yaml = "0.9"
 
 # These lints are the rules in .claude/rules/rust.md made mechanical.

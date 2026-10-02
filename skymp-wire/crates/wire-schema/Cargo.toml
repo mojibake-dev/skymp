@@ -6,10 +6,16 @@ publish.workspace = true
 license.workspace = true
 description = "Message types for the skymp wire. The contract lives here (ADR-012)."
 
+[features]
+# Arbitrary impls for every wire type, for the fuzz targets (fuzz/).
+arbitrary = ["dep:arbitrary"]
+
 [dependencies]
 serde.workspace = true
+arbitrary = { workspace = true, optional = true }
+
+[dev-dependencies]
 postcard.workspace = true
-heapless.workspace = true
 
 [lints]
 workspace = true

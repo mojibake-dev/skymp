@@ -12,7 +12,6 @@ thiserror.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-heapless.workspace = true
 
 [lints]
 workspace = true

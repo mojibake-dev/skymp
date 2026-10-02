@@ -50,3 +50,18 @@ pub fn issue(
     token.write(&mut bytes).map_err(|_| TransportError::Token)?;
     Ok(ConnectToken(bytes))
 }
+
+/// Bytes of netcode user data a connect token carries.
+pub const USER_DATA_BYTES: usize = renet_netcode::NETCODE_USER_DATA_BYTES;
+
+/// The server password as connect-token user data: its UTF-8 bytes, zero
+/// padded, cut at [`USER_DATA_BYTES`]. Where RakNet carried "7_" + password
+/// (ADR-019); the version half of that gate is netcode's protocol id now.
+pub fn password_user_data(password: &str) -> [u8; USER_DATA_BYTES] {
+    let mut out = [0u8; USER_DATA_BYTES];
+    for (slot, b) in out.iter_mut().zip(password.as_bytes()) {
+        *slot = *b;
+    }
+    out
+}
+

@@ -1,302 +1,393 @@
-//! The bridge the C++ server links against (via corrosion in CMake). C++
-//! sees `WireEvent`s with already decoded, already validated payloads and
-//! never a byte of network input. Deleting `Networking.cpp`, `PacketParser`,
-//! and the RakNet dependency is part of the PR that lands this.
+//! The server half of the wire, for the C++ core (ADR-019). The core polls
+//! for events and sends messages; both directions are SkyMP's JSON, rendered
+//! and recognized here, so the core keeps its own JSON path (the
+//! MessageSerializer's simdjson reader and nlohmann writer) and never sees a
+//! byte a client sent. skymp5-server's WireServer (an `IServer`) is the only
+//! caller; it hands the core `0x86 + JSON` exactly as PacketParser already
+//! accepts it.
 //!
-//! Flag bits in `WireEvent.flags`: for Movement, [`FLAG_RUN`] and
-//! [`FLAG_SNEAK`]; for Hit, [`FLAG_POWER_ATTACK`]. `WireEvent.reason` is a
-//! `wire_transport::reason_code` for Rejected events and zero otherwise.
+//! The core's sends are recognized, direction-checked, validated and encoded
+//! here. A broadcast loop sends the same text to many clients, so the last
+//! encoding is kept and reused while the text repeats.
 
-use std::time::Duration;
+use std::collections::BTreeMap;
+use std::net::{IpAddr, SocketAddr};
+use std::time::Instant;
 
-/// Movement: the actor is running.
-pub const FLAG_RUN: u32 = 1;
-/// Movement: the actor is sneaking.
-pub const FLAG_SNEAK: u32 = 2;
-/// Hit: the swing was a power attack.
-pub const FLAG_POWER_ATTACK: u32 = 1;
+use wire_schema::Message;
+use wire_transport::{limits::Limits, token, Delivery, Encoded, Inbound, TransportError};
 
 #[cxx::bridge(namespace = "skymp::wire")]
 mod ffi {
-    /// Kinds the C++ side switches on. Payload is decoded into the fields
-    /// that apply; the rest are zero. Extend by appending variants.
+    /// What a polled event is.
     #[derive(Debug)]
     enum EventKind {
-        /// A client completed the handshake.
+        /// A client finished the handshake (and passed the password).
         Connected,
         /// A client left or timed out.
         Disconnected,
-        /// `Message::Hello`; name and mod hashes come through accessors (M1).
-        Hello,
-        /// `Message::Movement`: seq, actor, transform, flags.
-        Movement,
-        /// `Message::Hit`: seq, actor (the attacker), target, weapon, flags.
-        Hit,
-        /// `Message::HostedActor`: actor, transform, health, payload index.
-        HostedActor,
-        /// A dropped packet; `reason` holds the code.
+        /// A recognized, validated SkyMP message; `json` holds it.
+        Message,
+        /// A refused packet or connection; `reason` and `detail` say why.
+        /// Never acted on, only counted and logged.
         Rejected,
     }
 
-    /// Position and rotation in engine units, as decoded.
-    #[derive(Debug)]
-    struct Transform {
-        /// World x.
-        x: f32,
-        /// World y.
-        y: f32,
-        /// World z.
-        z: f32,
-        /// Heading, radians.
-        yaw: f32,
-        /// Look pitch, radians.
-        pitch: f32,
-    }
-
-    /// Flattened event. Variable-length payloads (inventory deltas, names)
-    /// are fetched with the accessor functions below rather than copied
-    /// into every event.
+    /// One polled event.
     #[derive(Debug)]
     struct WireEvent {
-        /// Transport-assigned client id.
-        client: u64,
-        /// What this event is.
+        /// What it is.
         kind: EventKind,
-        /// Message sequence number, when the message has one.
-        seq: u32,
-        /// Primary actor form id (mover, attacker, hosted NPC).
-        actor: u32,
-        /// Secondary form id (hit target).
-        target: u32,
-        /// Weapon form id for hits.
-        weapon: u32,
-        /// Transform for movement and hosted actors.
-        transform: Transform,
-        /// Health for hosted actors.
-        health: f32,
-        /// Flag bits per kind; see the crate docs.
-        flags: u32,
-        /// Reason code for Rejected, else 0.
+        /// The transport's id for the client.
+        client: u64,
+        /// SkyMP MsgType for messages, else 0.
+        msg_type: u8,
+        /// SkyMP JSON for messages, else empty.
+        json: String,
+        /// Reason code for rejections, else 0.
         reason: u16,
-        /// Index into the bridge's per-poll payload arena for accessors.
-        payload: u32,
+        /// For logs: why it was rejected, or why the client left.
+        detail: String,
+    }
+
+    /// How to bind.
+    #[derive(Debug)]
+    struct BindOptions {
+        /// Address to listen on, for example "0.0.0.0".
+        listen_host: String,
+        /// UDP port.
+        port: u16,
+        /// Connections at once (clamped to netcode's 1024).
+        max_clients: u32,
+        /// The server password clients must carry; empty for none.
+        password: String,
     }
 
     extern "Rust" {
         type Server;
-        /// Errors surface to C++ as `rust::Error` (cxx maps Result to exceptions).
-        fn wire_server_bind(addr: &str, lab_unsecure: bool) -> Result<Box<Server>>;
-        fn poll(self: &mut Server, dt_ms: u64, out: &mut Vec<WireEvent>);
-        fn send_inventory_apply(
-            self: &mut Server,
-            client: u64,
-            owner: u32,
-            item: u32,
-            count: i32,
-        ) -> bool;
-        fn send_host_grant(self: &mut Server, client: u64, cell: u32) -> bool;
-        fn send_host_release(self: &mut Server, client: u64, cell: u32) -> bool;
-        /// Accessor for the Nth inventory delta of a HostedActor event.
-        fn inventory_delta(
-            self: &Server,
-            payload: u32,
-            n: u32,
-            item: &mut u32,
-            count: &mut i32,
-        ) -> bool;
+        /// Bind the socket and start the transport. Lab authentication
+        /// (unsecure netcode tokens) is the only kind before the token
+        /// issuer exists; the password gate still applies.
+        fn wire_server_bind(options: &BindOptions) -> Result<Box<Server>>;
+        /// Advance the transport by the time since the last poll and append
+        /// every event to `out`.
+        fn poll(self: &mut Server, out: &mut Vec<WireEvent>);
+        /// Send SkyMP JSON to a client. Returns 0, or the reason code it was
+        /// refused for (a 4xx code is the JSON's, 2xx the validator's, 3xx
+        /// the transport's, 101 the message's byte cap).
+        fn send(self: &mut Server, client: u64, json: &str, reliable: bool) -> u16;
+        /// Drop a client; it sees the server close the connection.
+        fn disconnect(self: &mut Server, client: u64);
+        /// The client's IP address, or an empty string once it is gone.
+        fn client_ip(self: &Server, client: u64) -> String;
+        /// Connected clients now.
+        fn client_count(self: &Server) -> usize;
+        /// Counters, as JSON, for the server's metrics and logs.
+        fn stats_json(self: &Server) -> String;
     }
 }
 
-/// Bridge-side server: transport plus a per-poll arena for variable payloads.
+pub use ffi::{BindOptions, EventKind, WireEvent};
+
+/// The bridge's server: the transport, the last encoding, and counters.
 pub struct Server {
     inner: wire_transport::Server,
-    arena: Vec<wire_schema::HostedActorState>,
+    last_poll: Instant,
+    last_sent: Option<(String, Encoded)>,
+    sent: u64,
+    refused: BTreeMap<u16, u64>,
+    rejected: BTreeMap<u16, u64>,
 }
 
-fn wire_server_bind(addr: &str, lab_unsecure: bool) -> Result<Box<Server>, BindError> {
-    // TODO(M0): the Secure key comes from the server's key file, never a literal.
-    let auth = if lab_unsecure {
-        wire_transport::token::Auth::Unsecure
-    } else {
-        wire_transport::token::Auth::Secure {
-            private_key: [0; 32],
-        }
-    };
-    let addr: std::net::SocketAddr = addr.parse().map_err(|_| BindError::Addr)?;
-    let inner = wire_transport::Server::bind(addr, Default::default(), auth)
-        .map_err(|_| BindError::Bind)?;
-    Ok(Box::new(Server {
-        inner,
-        arena: Vec::new(),
-    }))
-}
-
-/// Bind failures crossing to C++.
+/// Bind failures crossing to C++ (as exceptions).
 #[derive(Debug)]
 pub enum BindError {
-    /// The address string did not parse as `ip:port`.
-    Addr,
+    /// The listen host did not parse as an IP address.
+    Addr(String),
     /// The transport could not bind the socket.
-    Bind,
+    Bind(String),
 }
 
 impl std::fmt::Display for BindError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BindError::Addr => f.write_str("E_BRIDGE_ADDR"),
-            BindError::Bind => f.write_str("E_BRIDGE_BIND"),
+            BindError::Addr(a) => write!(f, "E_BRIDGE_ADDR: {a}"),
+            BindError::Bind(e) => write!(f, "E_BRIDGE_BIND: {e}"),
         }
+    }
+}
+
+/// Bind with SkyMP's settings.
+pub fn wire_server_bind(options: &BindOptions) -> Result<Box<Server>, BindError> {
+    let ip: IpAddr = options
+        .listen_host
+        .parse()
+        .map_err(|_| BindError::Addr(options.listen_host.clone()))?;
+    let limits = Limits {
+        max_clients: usize::try_from(options.max_clients).unwrap_or(usize::MAX),
+        ..Limits::default()
+    };
+    let inner = wire_transport::Server::bind_with(
+        SocketAddr::new(ip, options.port),
+        wire_transport::Options {
+            limits,
+            auth: token::Auth::Unsecure,
+            password: Some(options.password.clone()),
+            public_addresses: Vec::new(),
+        },
+    )
+    .map_err(|e| BindError::Bind(e.to_string()))?;
+    Ok(Box::new(Server {
+        inner,
+        last_poll: Instant::now(),
+        last_sent: None,
+        sent: 0,
+        refused: BTreeMap::new(),
+        rejected: BTreeMap::new(),
+    }))
+}
+
+/// Reason codes for sends refused before the transport: the JSON's (4xx).
+fn json_code(e: &wire_json::JsonError) -> u16 {
+    use wire_json::JsonError as J;
+    match e {
+        J::Syntax(_) => 401,
+        J::NoType => 402,
+        J::UnknownType(_) => 403,
+        J::Shape(_) => 404,
+        J::NoForm(_) => 405,
+        J::NonFinite => 406,
+        J::TooLong { .. } => 407,
+    }
+}
+
+fn transport_code(e: &TransportError) -> u16 {
+    match e {
+        TransportError::Encode => 101,
+        TransportError::Limit => 301,
+        TransportError::NoClient => 304,
+        TransportError::Bind => 305,
+        TransportError::Token => 306,
     }
 }
 
 impl Server {
-    fn poll(&mut self, dt_ms: u64, out: &mut Vec<ffi::WireEvent>) {
-        self.arena.clear();
+    /// See the bridge declaration.
+    pub fn poll(&mut self, out: &mut Vec<WireEvent>) {
+        let now = Instant::now();
+        let dt = now.saturating_duration_since(self.last_poll);
+        self.last_poll = now;
         let mut events = Vec::new();
-        self.inner.poll(Duration::from_millis(dt_ms), &mut events);
+        self.inner.poll(dt, &mut events);
         for ev in events {
-            out.push(flatten(ev, &mut self.arena));
-        }
-    }
-
-    fn send_inventory_apply(&mut self, client: u64, owner: u32, item: u32, count: i32) -> bool {
-        use wire_schema::{FormId, ItemDelta, Message};
-        let msg = Message::InventoryApply {
-            owner: FormId(owner),
-            delta: ItemDelta {
-                item: FormId(item),
-                count,
-            },
-        };
-        self.inner.send(client, &msg).is_ok()
-    }
-
-    fn send_host_grant(&mut self, client: u64, cell: u32) -> bool {
-        self.inner
-            .send(
-                client,
-                &wire_schema::Message::HostGrant {
-                    cell: wire_schema::FormId(cell),
+            out.push(match ev {
+                Inbound::Connected { client } => event(ffi::EventKind::Connected, client),
+                Inbound::Disconnected { client, reason } => WireEvent {
+                    detail: reason,
+                    ..event(ffi::EventKind::Disconnected, client)
                 },
-            )
-            .is_ok()
-    }
-
-    fn send_host_release(&mut self, client: u64, cell: u32) -> bool {
-        self.inner
-            .send(
-                client,
-                &wire_schema::Message::HostRelease {
-                    cell: wire_schema::FormId(cell),
+                Inbound::Message { client, msg } => match wire_json::render(&msg) {
+                    Ok(json) => WireEvent {
+                        msg_type: msg.msg_type().unwrap_or(0),
+                        json,
+                        ..event(ffi::EventKind::Message, client)
+                    },
+                    // an M0 message has no JSON form: the core cannot take it
+                    Err(e) => self.rejection(client, json_code(&e), e.to_string()),
                 },
-            )
-            .is_ok()
+                Inbound::Rejected { client, reject } => {
+                    self.rejection(client, wire_transport::reason_code(&reject), reject.to_string())
+                }
+            });
+        }
     }
 
-    fn inventory_delta(&self, payload: u32, n: u32, item: &mut u32, count: &mut i32) -> bool {
-        let Some(state) = usize::try_from(payload)
-            .ok()
-            .and_then(|i| self.arena.get(i))
-        else {
-            return false;
+    fn rejection(&mut self, client: u64, reason: u16, detail: String) -> WireEvent {
+        let n = self.rejected.entry(reason).or_insert(0);
+        *n = n.saturating_add(1);
+        WireEvent {
+            reason,
+            detail,
+            ..event(ffi::EventKind::Rejected, client)
+        }
+    }
+
+    fn encode(&mut self, json: &str) -> Result<Encoded, u16> {
+        if let Some((text, enc)) = &self.last_sent {
+            if text == json {
+                return Ok(enc.clone());
+            }
+        }
+        let msg: Message = wire_json::recognize(json).map_err(|e| json_code(&e))?;
+        if !wire_transport::server_may_send(&msg) {
+            return Err(302);
+        }
+        let mut guard = wire_validate::ClientGuard::default();
+        wire_validate::validate(&msg, &mut guard, 0).map_err(|r| {
+            wire_transport::reason_code(&wire_transport::RejectKind::Validate(r))
+        })?;
+        let enc = Encoded::new(&msg).map_err(|e| transport_code(&e))?;
+        self.last_sent = Some((json.to_string(), enc.clone()));
+        Ok(enc)
+    }
+
+    /// See the bridge declaration.
+    pub fn send(&mut self, client: u64, json: &str, reliable: bool) -> u16 {
+        let delivery = if reliable {
+            Delivery::Reliable
+        } else {
+            Delivery::Unreliable
         };
-        let Some(d) = usize::try_from(n)
-            .ok()
-            .and_then(|i| state.inventory_delta.get(i))
-        else {
-            return false;
-        };
-        *item = d.item.0;
-        *count = d.count;
-        true
-    }
-}
-
-fn transform(t: &wire_schema::Transform) -> ffi::Transform {
-    ffi::Transform {
-        x: t.x,
-        y: t.y,
-        z: t.z,
-        yaw: t.yaw,
-        pitch: t.pitch,
-    }
-}
-
-fn flatten(
-    ev: wire_transport::Inbound,
-    arena: &mut Vec<wire_schema::HostedActorState>,
-) -> ffi::WireEvent {
-    use wire_schema::Message;
-    use wire_transport::{reason_code, Inbound, RejectKind};
-    let mut e = ffi::WireEvent {
-        client: 0,
-        kind: ffi::EventKind::Rejected,
-        seq: 0,
-        actor: 0,
-        target: 0,
-        weapon: 0,
-        transform: ffi::Transform {
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-            yaw: 0.0,
-            pitch: 0.0,
-        },
-        health: 0.0,
-        flags: 0,
-        reason: 0,
-        payload: u32::MAX,
-    };
-    match ev {
-        Inbound::Connected { client } => {
-            e.client = client;
-            e.kind = ffi::EventKind::Connected;
-        }
-        Inbound::Disconnected { client, .. } => {
-            e.client = client;
-            e.kind = ffi::EventKind::Disconnected;
-        }
-        Inbound::Rejected { client, reject } => {
-            e.client = client;
-            e.kind = ffi::EventKind::Rejected;
-            e.reason = reason_code(&reject);
-        }
-        Inbound::Message { client, msg } => {
-            e.client = client;
-            match msg {
-                Message::Hello(_) => e.kind = ffi::EventKind::Hello,
-                Message::Movement(m) => {
-                    e.kind = ffi::EventKind::Movement;
-                    e.seq = m.seq;
-                    e.actor = m.actor.0;
-                    e.transform = transform(&m.transform);
-                    e.flags =
-                        (if m.run { FLAG_RUN } else { 0 }) | (if m.sneak { FLAG_SNEAK } else { 0 });
-                }
-                Message::Hit(h) => {
-                    e.kind = ffi::EventKind::Hit;
-                    e.seq = h.seq;
-                    e.actor = h.attacker.0;
-                    e.target = h.target.0;
-                    e.weapon = h.weapon.0;
-                    e.flags = if h.power_attack { FLAG_POWER_ATTACK } else { 0 };
-                }
-                Message::HostedActor(s) => {
-                    e.kind = ffi::EventKind::HostedActor;
-                    e.actor = s.actor.0;
-                    e.health = s.health;
-                    e.transform = transform(&s.transform);
-                    e.payload = u32::try_from(arena.len()).unwrap_or(u32::MAX);
-                    arena.push(s);
-                }
-                _ => {
-                    // The transport already rejects these by direction; this
-                    // arm exists because the enum is non-exhaustive.
-                    e.kind = ffi::EventKind::Rejected;
-                    e.reason = reason_code(&RejectKind::Direction);
-                }
+        let result = self
+            .encode(json)
+            .and_then(|enc| self.inner.send_encoded(client, &enc, delivery).map_err(|e| transport_code(&e)));
+        match result {
+            Ok(()) => {
+                self.sent = self.sent.saturating_add(1);
+                0
+            }
+            Err(code) => {
+                let n = self.refused.entry(code).or_insert(0);
+                *n = n.saturating_add(1);
+                code
             }
         }
     }
-    e
+
+    /// See the bridge declaration.
+    pub fn disconnect(&mut self, client: u64) {
+        self.inner.disconnect(client);
+    }
+
+    /// See the bridge declaration.
+    pub fn client_ip(&self, client: u64) -> String {
+        self.inner
+            .client_addr(client)
+            .map(|a| a.ip().to_string())
+            .unwrap_or_default()
+    }
+
+    /// See the bridge declaration.
+    pub fn client_count(&self) -> usize {
+        self.inner.client_count()
+    }
+
+    /// See the bridge declaration.
+    pub fn stats_json(&self) -> String {
+        let map = |m: &BTreeMap<u16, u64>| {
+            m.iter()
+                .map(|(k, v)| format!("\"{k}\":{v}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        format!(
+            "{{\"clients\":{},\"io_errors\":{},\"sent\":{},\"send_refused\":{{{}}},\"inbound_rejected\":{{{}}}}}",
+            self.inner.client_count(),
+            self.inner.io_errors(),
+            self.sent,
+            map(&self.refused),
+            map(&self.rejected)
+        )
+    }
+
+    /// The bound address (tests; the C++ side knows its port).
+    pub fn local_addr(&self) -> SocketAddr {
+        self.inner.local_addr()
+    }
+}
+
+fn event(kind: ffi::EventKind, client: u64) -> WireEvent {
+    WireEvent {
+        kind,
+        client,
+        msg_type: 0,
+        json: String::new(),
+        reason: 0,
+        detail: String::new(),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::panic, clippy::expect_used, clippy::indexing_slicing)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use wire_transport::Client;
+
+    fn bind(password: &str) -> Box<Server> {
+        wire_server_bind(&BindOptions {
+            listen_host: "127.0.0.1".into(),
+            port: 0,
+            max_clients: 100,
+            password: password.into(),
+        })
+        .expect("bind")
+    }
+
+    fn pump(server: &mut Server, client: &mut Client, out: &mut Vec<WireEvent>, inbox: &mut Vec<Message>, mut done: impl FnMut(&[WireEvent], &[Message]) -> bool) -> bool {
+        for _ in 0..500 {
+            client.poll(Duration::from_millis(10), inbox);
+            server.poll(out);
+            if done(out, inbox) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
+    #[test]
+    fn the_core_sees_skymp_json_and_sends_it() {
+        let mut server = bind("");
+        let mut client =
+            Client::connect(server.local_addr(), token::ConnectToken(Vec::new())).expect("connect");
+        let (mut out, mut inbox) = (Vec::new(), Vec::new());
+        assert!(pump(&mut server, &mut client, &mut out, &mut inbox, |o, _| o
+            .iter()
+            .any(|e| e.kind == EventKind::Connected)));
+        let id = out.iter().find(|e| e.kind == EventKind::Connected).map(|e| e.client).expect("id");
+        assert_eq!(server.client_ip(id), "127.0.0.1");
+
+        // a client's UpdateMovement arrives as the JSON PacketParser takes
+        let mv = wire_json::recognize(r#"{"t":2,"idx":0,"data":{"worldOrCell":60,"pos":[1,2,3],"rot":[0,0,0],"direction":0,"healthPercentage":1,"speed":0,"runMode":"Standing","isInJumpState":false,"isSneaking":false,"isBlocking":false,"isWeapDrawn":false,"isDead":false}}"#).expect("json");
+        client.send_with(&mv, Delivery::Unreliable).expect("send");
+        out.clear();
+        assert!(pump(&mut server, &mut client, &mut out, &mut inbox, |o, _| o
+            .iter()
+            .any(|e| e.kind == EventKind::Message)));
+        let m = out.iter().find(|e| e.kind == EventKind::Message).expect("message");
+        assert_eq!(m.msg_type, 2);
+        assert!(m.json.starts_with('{') && m.json.contains("\"runMode\":\"Standing\""), "{}", m.json);
+
+        // the core's CreateActor goes out, twice from one encoding (the cache)
+        let create = r#"{"t":33,"idx":0,"isMe":true,"transform":{"worldOrCell":60,"pos":[1,2,3],"rot":[0,0,0]},"props":{},"customPropsJsonDumps":[]}"#;
+        assert_eq!(server.send(id, create, true), 0);
+        assert_eq!(server.send(id, create, true), 0);
+        assert!(pump(&mut server, &mut client, &mut out, &mut inbox, |_, i| i
+            .iter()
+            .filter(|m| matches!(m, Message::CreateActor(_)))
+            .count()
+            == 2));
+
+        // what the core may not send, or cannot spell, is refused with a code
+        assert_eq!(server.send(id, r#"{"t":6,"data":{"caster":1,"target":2,"isSecondActivation":false}}"#, true), 302, "Activate is client to server");
+        assert_eq!(server.send(id, "{", true), 401);
+        assert_eq!(server.send(id, r#"{"t":99}"#, true), 403);
+        assert_eq!(server.send(id, r#"{"t":25}"#, true), 404);
+        assert_eq!(server.send(id + 1, r#"{"t":25,"idx":1}"#, true), 304, "no such client");
+        let stats = server.stats_json();
+        assert!(stats.contains("\"sent\":2") && stats.contains("\"302\":1"), "{stats}");
+    }
+
+    #[test]
+    fn a_wrong_password_is_a_rejection_not_a_connection() {
+        let mut server = bind("secret");
+        let mut client = Client::connect_with(server.local_addr(), token::ConnectToken(Vec::new()), Some("wrong"))
+            .expect("connect");
+        let (mut out, mut inbox) = (Vec::new(), Vec::new());
+        assert!(pump(&mut server, &mut client, &mut out, &mut inbox, |o, _| o
+            .iter()
+            .any(|e| e.kind == EventKind::Rejected && e.reason == 303)));
+        assert!(out.iter().all(|e| e.kind != EventKind::Connected));
+    }
 }

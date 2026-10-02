@@ -1,0 +1,19 @@
+[package]
+name = "wire-legacy"
+version = "0.0.1"
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Reads SkyMP's RakNet-era binary messages into wire-schema types. Test tooling for captures and difftest; never on a live network path."
+
+[dependencies]
+wire-schema = { path = "../wire-schema" }
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+wire-codec = { path = "../wire-codec" }
+wire-json = { path = "../wire-json" }
+
+[lints]
+workspace = true

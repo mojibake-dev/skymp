@@ -10,11 +10,11 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
-wire-schema = { path = "../crates/wire-schema" }
+wire-schema = { path = "../crates/wire-schema", features = ["arbitrary"] }
 wire-codec = { path = "../crates/wire-codec" }
 wire-validate = { path = "../crates/wire-validate" }
 wire-transport = { path = "../crates/wire-transport", features = ["harness"] }
-heapless = { version = "0.7", features = ["serde"] }
+wire-json = { path = "../crates/wire-json" }
 
 [[bin]]
 name = "codec_decode"
@@ -33,3 +33,10 @@ name = "transport_ingest"
 path = "fuzz_targets/transport_ingest.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "json_recognize"
+path = "fuzz_targets/json_recognize.rs"
+test = false
+doc = false
+

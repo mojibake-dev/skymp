@@ -6,8 +6,15 @@
 //! pure: time comes in as `now_ms` from the caller's clock, and nothing here
 //! can panic on any input (checked arithmetic throughout, fuzzed by
 //! `fuzz/validate`).
+//!
+//! The SkyMP family (ADR-019) gets the checks every message shares: every
+//! float finite, wherever it sits, and positions inside the world. It gets no
+//! new rate rules: the port keeps SkyMP's behavior, and the transport's byte
+//! budget per client already bounds what any client can push; per-verb rules
+//! come with the verbs.
 
-use wire_schema::{Message, Transform};
+use wire_schema::finite::all_finite;
+use wire_schema::{skymp, Message, Transform};
 
 /// Rejection reasons. Stable names; append only.
 #[derive(Debug, thiserror::Error, PartialEq, Eq, Clone, Copy)]
@@ -150,6 +157,13 @@ impl ReplayWindow {
     }
 }
 
+fn check_pos(pos: &skymp::Vec3) -> Result<(), Reject> {
+    if pos.iter().any(|v| v.abs() > WORLD_ABS_MAX) {
+        return Err(Reject::OutOfWorld);
+    }
+    Ok(())
+}
+
 fn check_transform(t: &Transform) -> Result<(), Reject> {
     let vals = [t.x, t.y, t.z, t.yaw, t.pitch];
     if vals.iter().any(|v| !v.is_finite()) {
@@ -202,9 +216,34 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
             }
             Ok(())
         }
-        // Server-to-client messages arriving from a client are shape-valid
-        // but semantically impossible; the transport rejects them by direction.
-        _ => Ok(()),
+        Message::UpdateMovement(m) => {
+            if !all_finite(m) {
+                return Err(Reject::NonFinite);
+            }
+            check_pos(&m.data.pos)
+        }
+        Message::Teleport(m) => {
+            if !all_finite(m) {
+                return Err(Reject::NonFinite);
+            }
+            check_pos(&m.pos)
+        }
+        Message::Teleport2(m) => {
+            if !all_finite(m) {
+                return Err(Reject::NonFinite);
+            }
+            check_pos(&m.pos)
+        }
+        // Everything else: the checks all messages share. A server-to-client
+        // message arriving from a client is shape-valid here; the transport
+        // rejects it by direction before it gets this far.
+        other => {
+            if all_finite(other) {
+                Ok(())
+            } else {
+                Err(Reject::NonFinite)
+            }
+        }
     }
 }
 
@@ -247,13 +286,13 @@ mod tests {
         Message::Hello(Hello {
             schema_version: v,
             client_build: 1,
-            mod_hashes: heapless::Vec::new(),
-            name: heapless::String::new(),
+            mod_hashes: wire_schema::bounded::Vec::new(),
+            name: wire_schema::bounded::String::new(),
         })
     }
 
     fn hosted(health: f32, counts: &[i32]) -> Message {
-        let mut inv = heapless::Vec::new();
+        let mut inv = wire_schema::bounded::Vec::new();
         for c in counts {
             let _ = inv.push(ItemDelta {
                 item: FormId(1),
@@ -383,6 +422,67 @@ mod tests {
             Err(Reject::SeqReplay),
             "first slot outside it"
         );
+    }
+
+    fn skymp_movement(x: f32, speed: f32) -> Message {
+        Message::UpdateMovement(skymp::UpdateMovement {
+            t: skymp::MsgT,
+            idx: 1,
+            data: skymp::MovementData {
+                pos: [x, 0.0, 0.0],
+                speed,
+                ..Default::default()
+            },
+        })
+    }
+
+    #[test]
+    fn skymp_movement_both_ways() {
+        let mut g = ClientGuard::default();
+        assert_eq!(validate(&skymp_movement(133857.0, 300.0), &mut g, 0), Ok(()));
+        assert_eq!(
+            validate(&skymp_movement(f32::NAN, 0.0), &mut g, 0),
+            Err(Reject::NonFinite)
+        );
+        assert_eq!(
+            validate(&skymp_movement(0.0, f32::INFINITY), &mut g, 0),
+            Err(Reject::NonFinite),
+            "any float, not only the position"
+        );
+        assert_eq!(
+            validate(&skymp_movement(2.0e6, 0.0), &mut g, 0),
+            Err(Reject::OutOfWorld)
+        );
+        // no rate rule: SkyMP's own behavior, bounded by the transport's byte budget
+        for _ in 0..1000 {
+            assert_eq!(validate(&skymp_movement(1.0, 0.0), &mut g, 0), Ok(()));
+        }
+    }
+
+    #[test]
+    fn every_skymp_float_is_checked() {
+        let mut g = ClientGuard::default();
+        let ok = Message::ChangeValues(skymp::ChangeValues {
+            data: skymp::ChangeValuesData {
+                health: Some(0.5),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        assert_eq!(validate(&ok, &mut g, 0), Ok(()));
+        let bad = Message::ChangeValues(skymp::ChangeValues {
+            data: skymp::ChangeValuesData {
+                health: Some(f32::NAN),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        assert_eq!(validate(&bad, &mut g, 0), Err(Reject::NonFinite));
+        let shot = Message::PlayerBowShot(skymp::PlayerBowShot {
+            power: f32::NEG_INFINITY,
+            ..Default::default()
+        });
+        assert_eq!(validate(&shot, &mut g, 0), Err(Reject::NonFinite));
     }
 
     #[test]

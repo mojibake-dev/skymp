@@ -19,6 +19,10 @@ def emit(obj):
 
 
 def main(argv):
+    # FAKECLIENT_STUB_VARIANT=1: a stack that relays nothing and answers an
+    # AddItem with an extra message, so difftest's tests see a difference.
+    import os
+    variant = os.environ.get("FAKECLIENT_STUB_VARIANT") == "1"
     args = dict(zip(argv[1::2], argv[2::2]))
     script = args.get("--script")
     profile = int(args.get("--profile-id", "1"))
@@ -40,11 +44,14 @@ def main(argv):
                     far = abs(m.get("dx", 0)) > 4096 or abs(m.get("dy", 0)) > 4096 or abs(m.get("dz", 0)) > 4096
                     if far:
                         emit({"event": "message", "msg": {"t": MSG_TELEPORT2, "idx": profile, "pos": SPAWN}})
-                    else:
+                        received += 1
+                    elif not variant:
                         emit({"event": "message", "msg": msg})
-                    received += 1
+                        received += 1
                 elif "send" in step:
                     emit({"event": "sent", "msg": step["send"]})
+                    if variant:
+                        emit({"event": "message", "msg": {"t": 28, "inventory": {"entries": []}}})
     emit({"event": "done", "received": received, "rc": 0})
     return 0
 

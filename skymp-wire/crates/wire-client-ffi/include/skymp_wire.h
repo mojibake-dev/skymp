@@ -5,150 +5,68 @@
 
 #include <stdarg.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 
 /**
- * A slot that was not filled.
+ * The callback `Tick` calls once per event: packet type, content and its
+ * length, an error text (never null), and the caller's state. Null is
+ * allowed and means "drop the events".
  */
-#define KIND_NONE 0
+typedef void (*OnPacket)(int32_t, const char*, size_t, const char*, void*);
 
 /**
- * `Message::Welcome`.
+ * The version string. Nothing in skymp5-client reads it; it marks the wire.
  */
-#define KIND_WELCOME 1
+const char *MpCommonGetVersion(void);
 
 /**
- * `Message::Refuse`; `reason` is set.
- */
-#define KIND_REFUSE 2
-
-/**
- * `Message::InventoryApply`; `actor` is the owner, `target` the item,
- * `count` the signed count.
- */
-#define KIND_INVENTORY_APPLY 3
-
-/**
- * `Message::HostGrant`; `actor` is the cell.
- */
-#define KIND_HOST_GRANT 4
-
-/**
- * `Message::HostRelease`; `actor` is the cell.
- */
-#define KIND_HOST_RELEASE 5
-
-/**
- * Opaque client handle.
- */
-typedef struct Client Client;
-
-/**
- * Event view handed to C++. Mirrors wire-bridge's flattening; keep in sync.
- */
-typedef struct SkympWireEvent {
-  /**
-   * One of the `KIND_*` constants.
-   */
-  uint32_t kind;
-  /**
-   * Message sequence number, when the message has one.
-   */
-  uint32_t seq;
-  /**
-   * Primary form id (owner, cell).
-   */
-  uint32_t actor;
-  /**
-   * Secondary form id (item).
-   */
-  uint32_t target;
-  /**
-   * Weapon form id.
-   */
-  uint32_t weapon;
-  /**
-   * World x.
-   */
-  float x;
-  /**
-   * World y.
-   */
-  float y;
-  /**
-   * World z.
-   */
-  float z;
-  /**
-   * Heading, radians.
-   */
-  float yaw;
-  /**
-   * Look pitch, radians.
-   */
-  float pitch;
-  /**
-   * Flag bits per kind.
-   */
-  uint32_t flags;
-  /**
-   * Signed item count for inventory events.
-   */
-  int32_t count;
-  /**
-   * Reason code for `KIND_REFUSE`, else 0.
-   */
-  uint16_t reason;
-} SkympWireEvent;
-
-/**
- * Connect to `addr` (NUL-terminated `ip:port`) with a token of `token_len`
- * bytes. Returns null on failure. Caller frees with `skymp_wire_disconnect`.
+ * Start connecting to `host:port`, replacing any client that exists.
+ * Progress arrives through `Tick`.
  *
  * # Safety
- * `addr` must be a valid NUL-terminated string; `token` must point to
- * `token_len` readable bytes. Neither is retained after return.
+ * `host` is null or a valid NUL-terminated string, borrowed for the call.
  */
-struct Client *skymp_wire_connect(const char *addr, const uint8_t *token, uintptr_t token_len);
+void CreateClient(const char *host, uint16_t port);
 
 /**
- * Advance by `dt_ms` and fill `out` with up to `cap` events, oldest first.
- * Returns the count written. Events not returned this call are returned
- * next call.
- *
- * # Safety
- * `client` must come from `skymp_wire_connect` and not yet be disconnected;
- * `out` must point to `cap` writable `SkympWireEvent`s.
+ * Disconnect and forget the client.
  */
-uintptr_t skymp_wire_poll(struct Client *client,
-                          uint64_t dt_ms,
-                          struct SkympWireEvent *out,
-                          uintptr_t cap);
+void DestroyClient(void);
 
 /**
- * Send a movement sample. Returns false if the client is gone.
- *
- * # Safety
- * `client` must be a live handle from `skymp_wire_connect`.
+ * True while the connection is up.
  */
-bool skymp_wire_send_movement(struct Client *client,
-                              uint32_t seq,
-                              uint32_t actor,
-                              float x,
-                              float y,
-                              float z,
-                              float yaw,
-                              float pitch,
-                              bool run,
-                              bool sneak);
+bool IsConnected(void);
 
 /**
- * Disconnect and free. `client` is invalid after this call.
+ * Deliver every pending event to `on_packet`, oldest first.
  *
  * # Safety
- * `client` must come from `skymp_wire_connect` and must not be used afterwards.
+ * `on_packet` is null or a function with the [`OnPacket`] signature;
+ * `state` is passed back to it untouched.
  */
-void skymp_wire_disconnect(struct Client *client);
+void Tick(OnPacket on_packet, void *state);
+
+/**
+ * Send one SkyMP message, given as its JSON (what skymp5-client's
+ * networking service passes).
+ *
+ * # Safety
+ * `json` is null or a valid NUL-terminated string, borrowed for the call.
+ */
+void Send(const char *json, bool reliable);
+
+/**
+ * Send raw bytes. Nothing in skymp5-client emits a raw send; for the
+ * export's sake, bytes that are SkyMP JSON (with or without the 0x86 packet
+ * id in front) are sent as `Send` would, anything else is refused.
+ *
+ * # Safety
+ * `data` points to `size` readable bytes (or is null with `size` 0),
+ * borrowed for the call.
+ */
+void SendRaw(const void *data, size_t size, bool reliable);
 
 #endif  /* SKYMP_WIRE_H */

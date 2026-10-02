@@ -1,0 +1,16 @@
+[package]
+name = "wire-json"
+version = "0.0.1"
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "SkyMP's JSON form at the in-process edge: render a decoded message for the C++ core or skymp5-client, recognize theirs (ADR-019)."
+
+[dependencies]
+wire-schema = { path = "../wire-schema" }
+serde.workspace = true
+serde_json.workspace = true   # the JSON both in-process consumers already speak
+thiserror.workspace = true
+
+[lints]
+workspace = true

@@ -18,5 +18,8 @@ renet.workspace = true            # channels, fragmentation, connection manageme
 renet_netcode.workspace = true    # netcode 1.02: encrypted, signed, connect tokens
 thiserror.workspace = true
 
+[dev-dependencies]
+wire-json = { path = "../wire-json" }   # the loopback tests build SkyMP messages from their JSON
+
 [lints]
 workspace = true

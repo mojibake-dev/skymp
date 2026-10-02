@@ -6,18 +6,31 @@
 //! processed; that cap lives at the host firewall until the transport grows a
 //! hook for it (docs/WIRE.md records the gap).
 
-/// Transport limits. Defaults are for a 64-player server; tune per gamemode.
+/// netcode's own ceiling on connections (renetcode's NETCODE_MAX_CLIENTS,
+/// private there; it panics above it, so the transport clamps to it).
+pub const NETCODE_MAX_CLIENTS: usize = 1024;
+
+/// Transport limits. Defaults suit a lab or a 100-player server; tune per
+/// gamemode. Client-to-server numbers are tight (that is the attack
+/// surface); server-to-client ones are generous (the server is ours).
 #[derive(Debug, Clone)]
 pub struct Limits {
-    /// Connections the transport accepts at once.
+    /// Connections the transport accepts at once; at most
+    /// [`NETCODE_MAX_CLIENTS`].
     pub max_clients: usize,
-    /// Largest reassembled message handed to the decoder; larger than
-    /// `Message::MAX_ENCODED_LEN` is never legitimate.
-    pub max_packet: usize,
-    /// Bytes a channel may hold unacknowledged per connection: the queue
-    /// depth. A reliable channel that fills disconnects the client; an
-    /// unreliable one drops new messages (renet semantics).
-    pub channel_memory_bytes: usize,
+    /// Largest reassembled message a server accepts from a client. The
+    /// largest legal one is UpdateEquipment or CustomEvent at 256 KiB.
+    pub max_from_client: usize,
+    /// Largest reassembled message a client accepts from the server:
+    /// `Message::MAX_ENCODED_LEN`.
+    pub max_from_server: usize,
+    /// Bytes a client-to-server channel may hold unacknowledged per
+    /// connection: the queue depth on both ends. A reliable channel that
+    /// fills disconnects the client; an unreliable one drops new messages
+    /// (renet semantics).
+    pub client_channel_memory_bytes: usize,
+    /// The same for server-to-client channels; room for a 4 MiB message.
+    pub server_channel_memory_bytes: usize,
     /// Resend interval for reliable channels, milliseconds.
     pub resend_ms: u64,
     /// Bytes the transport may emit per tick per connection.
@@ -30,12 +43,14 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            max_clients: 64,
-            max_packet: wire_schema::Message::MAX_ENCODED_LEN,
-            channel_memory_bytes: 5 * 1024 * 1024,
+            max_clients: 128,
+            max_from_client: 256 * 1024,
+            max_from_server: wire_schema::Message::MAX_ENCODED_LEN,
+            client_channel_memory_bytes: 2 * 1024 * 1024,
+            server_channel_memory_bytes: 16 * 1024 * 1024,
             resend_ms: 300,
-            bytes_per_tick: 60_000,
-            bytes_per_s_per_client: 64 * 1024,
+            bytes_per_tick: 256 * 1024,
+            bytes_per_s_per_client: 256 * 1024,
         }
     }
 }

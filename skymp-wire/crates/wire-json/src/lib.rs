@@ -307,6 +307,67 @@ mod tests {
         }
     }
 
+    fn fixtures_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures")
+    }
+
+    /// The shared JSON contract: every fixture recognizes and renders back
+    /// to the same JSON. The C++ core's unit test (unit/WireJsonContractTest)
+    /// reads the same files through ReadJson and WriteJson and must do the
+    /// same, so the two sides agree on every message's shape.
+    #[test]
+    fn fixtures_round_trip() {
+        let mut n = 0;
+        let mut types = std::collections::BTreeSet::new();
+        for entry in std::fs::read_dir(fixtures_dir()).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let m = recognize(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            types.insert(m.msg_type());
+            let again: Value = serde_json::from_str(&render(&m).unwrap_or_default()).unwrap_or(Value::Null);
+            let want: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+            assert_eq!(again, want, "{}", path.display());
+            n += 1;
+        }
+        assert!(n >= 66, "{n} fixtures");
+        assert_eq!(types.len(), 33, "every SkyMP type has fixtures");
+    }
+
+    /// Writes the fixtures: two per SkyMP type, from arbitrary values with
+    /// fixed seeds, finite floats only. Run by hand when the schema grows:
+    /// `cargo test -p wire-json -- --ignored write_fixtures`.
+    #[test]
+    #[ignore]
+    #[allow(clippy::arithmetic_side_effects, clippy::as_conversions)]
+    fn write_fixtures() {
+        use arbitrary::{Arbitrary, Unstructured};
+        let dir = fixtures_dir();
+        std::fs::create_dir_all(&dir).unwrap_or_default();
+        macro_rules! each {
+            ($($t:literal $name:ident),*) => {
+                $(
+                    let mut written = 0;
+                    let mut seed: u64 = $t;
+                    while written < 2 {
+                        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                        let bytes: Vec<u8> = (0..4096u64).map(|i| ((seed.wrapping_add(i).wrapping_mul(0x9E3779B97F4A7C15)) >> 56) as u8).collect();
+                        let mut u = Unstructured::new(&bytes);
+                        let Ok(v) = skymp::$name::arbitrary(&mut u) else { continue };
+                        let m = Message::$name(v);
+                        let Ok(text) = render(&m) else { continue }; // non-finite: try another seed
+                        let pretty = serde_json::to_string_pretty(&serde_json::from_str::<Value>(&text).unwrap_or(Value::Null)).unwrap_or_default();
+                        std::fs::write(dir.join(format!("{:02}-{}-{}.json", $t, stringify!($name), written)), pretty + "\n").unwrap_or_default();
+                        written += 1;
+                    }
+                )*
+            };
+        }
+        skymp_family!(each);
+    }
+
     #[test]
     fn every_skymp_type_has_a_json_form() {
         macro_rules! each {

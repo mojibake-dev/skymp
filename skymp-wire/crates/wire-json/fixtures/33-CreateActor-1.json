@@ -1,0 +1,178 @@
+{
+  "animation": {
+    "animEventName": "9",
+    "numChanges": 2987619799
+  },
+  "baseId": 3223487461,
+  "customPropsJsonDumps": [
+    {
+      "propName": "{\u0019",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    }
+  ],
+  "idx": 3425538033,
+  "isMe": false,
+  "props": {
+    "healRate": -1.1745227514891086e-16,
+    "isDisabled": true,
+    "isHarvested": true,
+    "lastAnimation": "\u0015",
+    "magicka": 1.1322948694214574e-6,
+    "magickaPercentage": 2.909485912608056e+22,
+    "setNodeScale": [
+      {
+        "nodeName": "",
+        "scale": 1.809169153808673e+21
+      },
+      {
+        "nodeName": "\u0000",
+        "scale": 1.4229535453534872e+35
+      },
+      {
+        "nodeName": "\u0018",
+        "scale": -9.558268739666112e-29
+      },
+      {
+        "nodeName": "/",
+        "scale": -7.6284032869277e-15
+      },
+      {
+        "nodeName": "F",
+        "scale": -0.6269972324371338
+      },
+      {
+        "nodeName": "]",
+        "scale": -50467992240128.0
+      },
+      {
+        "nodeName": "t\u0012",
+        "scale": -9.140897978773885e-32
+      },
+      {
+        "nodeName": ")",
+        "scale": -1.794374571875303e-18
+      },
+      {
+        "nodeName": "@",
+        "scale": -0.00014828842540737242
+      },
+      {
+        "nodeName": "W",
+        "scale": -11984427008.0
+      },
+      {
+        "nodeName": "n\r",
+        "scale": -8.700078776416121e-35
+      },
+      {
+        "nodeName": "$",
+        "scale": -6.733328542157639e-21
+      }
+    ],
+    "setNodeTextureSet": [
+      {
+        "nodeName": "\u000b",
+        "textureSetId": 2229684394
+      },
+      {
+        "nodeName": "\"",
+        "textureSetId": 2617073601
+      },
+      {
+        "nodeName": ":",
+        "textureSetId": 2987685592
+      },
+      {
+        "nodeName": "Q",
+        "textureSetId": 3391852015
+      },
+      {
+        "nodeName": "h\u0006",
+        "textureSetId": 2145469092
+      },
+      {
+        "nodeName": "\u001d",
+        "textureSetId": 2532858299
+      },
+      {
+        "nodeName": "4",
+        "textureSetId": 2903470546
+      }
+    ]
+  },
+  "refrId": 12180949249987638357,
+  "t": 33,
+  "transform": {
+    "pos": [
+      4.258672760764498e+17,
+      -3137002274816.0,
+      367144544.0
+    ],
+    "rot": [
+      -10786.7294921875,
+      1.25791597366333,
+      -0.000036831817851634696
+    ],
+    "worldOrCell": 3812926984
+  }
+}

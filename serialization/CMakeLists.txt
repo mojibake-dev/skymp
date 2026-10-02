@@ -9,9 +9,6 @@ target_include_directories(serialization PUBLIC ${CMAKE_CURRENT_LIST_DIR}/src)
 
 apply_default_settings(TARGETS serialization)
 
-find_package(slikenet CONFIG REQUIRED)
-target_link_libraries(serialization PUBLIC SLikeNet)
-
 find_package(simdjson CONFIG REQUIRED)
 target_link_libraries(serialization PUBLIC simdjson::simdjson)
 

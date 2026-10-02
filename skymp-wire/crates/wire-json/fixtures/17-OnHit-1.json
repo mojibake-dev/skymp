@@ -1,0 +1,13 @@
+{
+  "data": {
+    "aggressor": 3290859753,
+    "isBashAttack": false,
+    "isHitBlocked": true,
+    "isPowerAttack": true,
+    "isSneakAttack": true,
+    "projectile": 3055057371,
+    "source": 798093908,
+    "target": 2819189709
+  },
+  "t": 17
+}

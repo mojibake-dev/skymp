@@ -1,0 +1,118 @@
+{
+  "data": {
+    "craftInputObjects": {
+      "entries": [
+        {
+          "baseId": 2583387583,
+          "count": 309646904,
+          "enchantmentId": 3358165997,
+          "poisonId": 2499172281,
+          "soul": 125,
+          "wornLeft": true
+        },
+        {
+          "baseId": 2263304619,
+          "count": 4267754020,
+          "health": 2.0021046953261891e-25,
+          "name": "",
+          "poisonId": 2162312358,
+          "soul": 105,
+          "worn": true,
+          "wornLeft": true
+        },
+        {
+          "baseId": 275960885,
+          "count": 2313899438,
+          "health": -1.1044770155340327e-19,
+          "maxCharge": 25165008207872.0,
+          "poisonCount": 2229618601
+        },
+        {
+          "baseId": 966523998,
+          "chargePercent": -5.610023664847998e+19,
+          "count": 2987619799,
+          "poisonId": 865466201,
+          "removeEnchantmentOnUnequip": true
+        },
+        {
+          "baseId": 2280213164,
+          "chargePercent": 6.591407281097972e-11,
+          "count": 6472485,
+          "poisonId": 2179155367,
+          "removeEnchantmentOnUnequip": true
+        },
+        {
+          "baseId": 3577190906,
+          "chargePercent": 9.232005860348242e+36,
+          "count": 1320161651,
+          "poisonId": 3492910069,
+          "removeEnchantmentOnUnequip": true
+        },
+        {
+          "baseId": 595978056,
+          "count": 2633916353,
+          "maxCharge": -6.489886394406828e+28,
+          "poisonId": 2145469349
+        },
+        {
+          "baseId": 3543504632,
+          "chargePercent": 5.717775665706623e+35,
+          "count": 1286475633,
+          "poisonId": 3442446835,
+          "removeEnchantmentOnUnequip": true
+        },
+        {
+          "baseId": 562292038,
+          "chargePercent": -174643.703125,
+          "count": 2600230335,
+          "poisonId": 478011201,
+          "removeEnchantmentOnUnequip": true
+        },
+        {
+          "baseId": 1875981204,
+          "count": 3897207565,
+          "maxCharge": 0.004821703303605318,
+          "poisonCount": 1791700367
+        },
+        {
+          "baseId": 528605764,
+          "chargePercent": -10786.4794921875,
+          "count": 2566544317,
+          "poisonId": 427547967,
+          "removeEnchantmentOnUnequip": true
+        },
+        {
+          "baseId": 1842295186,
+          "chargePercent": 1.2462468491884277e-26,
+          "count": 3863521547,
+          "poisonId": 1741237133,
+          "removeEnchantmentOnUnequip": true
+        },
+        {
+          "baseId": 3139272672,
+          "count": 882308953,
+          "maxCharge": -3.510242174560062e-34,
+          "poisonCount": 3054991835
+        },
+        {
+          "baseId": 1808608912,
+          "chargePercent": 7.725563193495697e-28,
+          "count": 3829835529,
+          "poisonId": 1707551115,
+          "removeEnchantmentOnUnequip": true
+        },
+        {
+          "baseId": 3105586398,
+          "chargePercent": 1.1191562062052878e+20,
+          "count": 848622935,
+          "poisonId": 3004528601,
+          "removeEnchantmentOnUnequip": true
+        }
+      ]
+    },
+    "resultObjectId": 124373804,
+    "t": 13,
+    "workbench": 2195998376
+  },
+  "t": 13
+}

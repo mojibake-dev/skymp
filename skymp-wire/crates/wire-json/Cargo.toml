@@ -12,5 +12,9 @@ serde.workspace = true
 serde_json.workspace = true   # the JSON both in-process consumers already speak
 thiserror.workspace = true
 
+[dev-dependencies]
+wire-schema = { path = "../wire-schema", features = ["arbitrary"] }   # the fixture generator
+arbitrary.workspace = true
+
 [lints]
 workspace = true

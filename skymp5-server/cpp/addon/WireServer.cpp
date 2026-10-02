@@ -3,6 +3,7 @@
 #include "MinPacketId.h"
 #include "wire_bridge_cxx/lib.h"
 
+#include <algorithm>
 #include <chrono>
 #include <deque>
 #include <map>

@@ -2,11 +2,6 @@
 
 constexpr auto kMaxPlayers = MAX_PLAYERS;
 
-// This value should be increased each time messaging protocol changes
-// regardless of is it a major or minor change. Every change is considered
-// incompatible to keep protocol versions system maintainable.
-constexpr auto kMessagingProtocolVersion = "7_";
-
-// Users with kMessagingProtocolVersion different to server's one must not be
-// able to connect. So we use this value as SLikeNet password by default.
-constexpr auto kNetworkingPasswordPrefix = kMessagingProtocolVersion;
+// The messaging protocol's version gate is netcode's protocol id, derived
+// from skymp-wire's SCHEMA_VERSION (thuum ADR-019); RakNet's password prefix
+// ("7_") went with RakNet.

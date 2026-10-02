@@ -52,6 +52,7 @@ if(BUILD_UNIT_TESTS AND NOT EMSCRIPTEN)
     SKYRIM_DIR=\"${SKYRIM_DIR}\"
     UNIT_DATA_DIR=\"${UNIT_DATA_DIR}\"
     DIST_DIR=\"${CMAKE_BINARY_DIR}/dist\"
+    WIRE_FIXTURES_DIR=\"${CMAKE_SOURCE_DIR}/skymp-wire/crates/wire-json/fixtures\"
   )
 
   if(WIN32)

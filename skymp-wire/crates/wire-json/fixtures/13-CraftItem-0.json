@@ -1,0 +1,78 @@
+{
+  "data": {
+    "craftInputObjects": {
+      "entries": [
+        {
+          "baseId": 1892824214,
+          "count": 3914050831,
+          "name": "=",
+          "soul": 121
+        },
+        {
+          "baseId": 1808609168,
+          "count": 3829835529,
+          "maxCharge": 0.000018356071450398304,
+          "poisonCount": 1724328331
+        },
+        {
+          "baseId": 461233728,
+          "chargePercent": -41.13076400756836,
+          "count": 2499172281,
+          "poisonId": 360175931,
+          "removeEnchantmentOnUnequip": true
+        },
+        {
+          "baseId": 1774923150,
+          "chargePercent": 4.788956311622877e-29,
+          "count": 3796149511,
+          "poisonId": 1690642313,
+          "removeEnchantmentOnUnequip": true
+        },
+        {
+          "baseId": 3071900636,
+          "count": 814936917,
+          "maxCharge": -1.3475862681925137e-36,
+          "poisonCount": 2987619799
+        },
+        {
+          "baseId": 1741236876,
+          "chargePercent": 2.9683009705721203e-30,
+          "count": 3762463493,
+          "poisonId": 1640179079,
+          "removeEnchantmentOnUnequip": true
+        },
+        {
+          "baseId": 3038214618,
+          "chargePercent": 4.2812787198315725e+17,
+          "count": 781250899,
+          "poisonId": 2937156565,
+          "removeEnchantmentOnUnequip": true
+        },
+        {
+          "baseId": 57001768,
+          "count": 2094940065,
+          "maxCharge": -2979263744.0,
+          "poisonCount": 4267688227
+        },
+        {
+          "baseId": 3004528344,
+          "chargePercent": 2.647486345982771e+16,
+          "count": 747564881,
+          "poisonId": 2903470547,
+          "removeEnchantmentOnUnequip": true
+        },
+        {
+          "baseId": 23315494,
+          "chargePercent": -7.684131278593454e-15,
+          "count": 2061254047,
+          "poisonId": 4217224993,
+          "removeEnchantmentOnUnequip": true
+        }
+      ]
+    },
+    "resultObjectId": 1337004916,
+    "t": 13,
+    "workbench": 1505435007
+  },
+  "t": 13
+}

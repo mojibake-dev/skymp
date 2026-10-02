@@ -932,6 +932,7 @@ dependencies = [
 name = "wire-json"
 version = "0.0.1"
 dependencies = [
+ "arbitrary",
  "serde",
  "serde_json",
  "thiserror",

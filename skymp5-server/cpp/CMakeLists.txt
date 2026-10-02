@@ -3,18 +3,18 @@ enable_testing()
 include(${CMAKE_SOURCE_DIR}/cmake/apply_default_settings.cmake)
 
 #
-# MpClientPlugin
+# MpClientPlugin.dll: the Rust client (thuum ADR-019), skymp-wire's
+# wire-client-ffi cdylib with the seven C exports Skyrim Platform calls, built
+# by cmake/wire.cmake and copied to where dev_service picks it up.
 #
 
 if(WIN32)
-  file(GLOB_RECURSE src "client/*")
-  list(APPEND src "${CMAKE_SOURCE_DIR}/.clang-format")
-  add_library(MpClientPlugin SHARED ${src})
-  target_link_libraries(MpClientPlugin PUBLIC mp_common)
-  target_link_libraries(MpClientPlugin PUBLIC server_guest_lib) # For Inventory.cpp, required by messages
-  set_target_properties(MpClientPlugin PROPERTIES OUTPUT_NAME "MpClientPlugin")
-  apply_default_settings(TARGETS MpClientPlugin)
-  list(APPEND VCPKG_DEPENDENT MpClientPlugin)
+  include(${CMAKE_SOURCE_DIR}/cmake/wire.cmake)
+  add_custom_target(MpClientPlugin ALL
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>"
+    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:skymp_wire-shared>" "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/MpClientPlugin.dll"
+    COMMENT "MpClientPlugin.dll from skymp-wire")
+  add_dependencies(MpClientPlugin cargo-build_skymp_wire)
 
   # Not mistake that skyrim-platform depends on MpClientPlugin
   # skyrim-platform is a logical target that invokes dev_service
@@ -102,7 +102,6 @@ find_package(spdlog CONFIG REQUIRED)
 
 find_package(simdjson CONFIG REQUIRED)
 
-find_package(slikenet CONFIG REQUIRED)
 
 find_package(ZLIB REQUIRED)
 
@@ -127,7 +126,6 @@ foreach(target ${VCPKG_DEPENDENT})
   target_link_libraries(${target} PUBLIC spdlog::spdlog)
   target_link_libraries(${target} PUBLIC simdjson::simdjson)
 
-  target_link_libraries(${target} PUBLIC SLikeNet)
 
   target_link_libraries(${target} PUBLIC antigo::antigo)
 

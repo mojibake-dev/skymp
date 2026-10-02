@@ -34,13 +34,13 @@ void PartOneSendTargetWrapper::Send(Networking::UserId targetUserId,
 void PartOneSendTargetWrapper::Send(Networking::UserId targetUserId,
                                     const IMessageBase& message, bool reliable)
 {
-  SLNet::BitStream stream;
+  std::string stream;
 
   PartOne::GetMessageSerializerInstance().Serialize(message, stream);
 
   Send(targetUserId,
-       reinterpret_cast<Networking::PacketData>(stream.GetData()),
-       stream.GetNumberOfBytesUsed(), reliable);
+       reinterpret_cast<Networking::PacketData>(stream.data()),
+       stream.size(), reliable);
 }
 
 class FakeSendTarget : public Networking::ISendTarget
@@ -535,7 +535,7 @@ void PartOne::NotifyGamemodeApiStateChanged(
     msg.updateNeighborFunctions.push_back(updateNeighborFunctionsEntry);
   }
 
-  SLNet::BitStream stream;
+  std::string stream;
   GetMessageSerializerInstance().Serialize(msg, stream);
 
   if (pImpl->enableGamemodeDataUpdatesBroadcast) {
@@ -546,8 +546,8 @@ void PartOne::NotifyGamemodeApiStateChanged(
       Networking::UserId userId = static_cast<Networking::UserId>(i);
       if (serverState.IsConnected(userId)) {
         currentSendTarget.Send(
-          userId, reinterpret_cast<Networking::PacketData>(stream.GetData()),
-          stream.GetNumberOfBytesUsed(), true);
+          userId, reinterpret_cast<Networking::PacketData>(stream.data()),
+          stream.size(), true);
       }
     }
   } else {
@@ -558,8 +558,8 @@ void PartOne::NotifyGamemodeApiStateChanged(
   }
 
   pImpl->gamemodeApiState = newState;
-  pImpl->updateGamemodeDataMsg.resize(stream.GetNumberOfBytesUsed());
-  std::copy(stream.GetData(), stream.GetData() + stream.GetNumberOfBytesUsed(),
+  pImpl->updateGamemodeDataMsg.resize(stream.size());
+  std::copy(stream.data(), stream.data() + stream.size(),
             pImpl->updateGamemodeDataMsg.begin());
 }
 
@@ -667,7 +667,7 @@ FormCallbacks PartOne::CreateFormCallbacks()
 
   FormCallbacks::SendToUserFn sendToUser =
     [this, st](MpActor* actor, const IMessageBase& message, bool reliable) {
-      SLNet::BitStream stream;
+      std::string stream;
       GetMessageSerializerInstance().Serialize(message, stream);
 
       auto targetuserId = st->UserByActor(actor);
@@ -675,15 +675,15 @@ FormCallbacks PartOne::CreateFormCallbacks()
           st->disconnectingUserId != targetuserId) {
         pImpl->sendTarget->Send(
           targetuserId,
-          reinterpret_cast<Networking::PacketData>(stream.GetData()),
-          stream.GetNumberOfBytesUsed(), reliable);
+          reinterpret_cast<Networking::PacketData>(stream.data()),
+          stream.size(), reliable);
       }
     };
 
   FormCallbacks::SendToUserDeferredFn sendToUserDeferred =
     [this, st](MpActor* actor, const IMessageBase& message, bool reliable,
                int deferredChannelId, bool overwritePreviousChannelMessages) {
-      SLNet::BitStream stream;
+      std::string stream;
       GetMessageSerializerInstance().Serialize(message, stream);
 
       if (deferredChannelId < 0 || deferredChannelId >= 100) {
@@ -707,9 +707,9 @@ FormCallbacks PartOne::CreateFormCallbacks()
 
       DeferredMessage deferredMessage;
       deferredMessage.packetData = {
-        reinterpret_cast<const Networking::PacketData>(stream.GetData()),
-        reinterpret_cast<const Networking::PacketData>(stream.GetData()) +
-          stream.GetNumberOfBytesUsed()
+        reinterpret_cast<const Networking::PacketData>(stream.data()),
+        reinterpret_cast<const Networking::PacketData>(stream.data()) +
+          stream.size()
       };
       deferredMessage.packetReliable = reliable;
       deferredMessage.actorIdExpected = actor->GetFormId();

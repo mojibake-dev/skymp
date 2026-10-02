@@ -1,0 +1,26 @@
+{
+  "data": {
+    "direction": 2.968349306899826e-30,
+    "healthPercentage": -3.510242174560062e-34,
+    "isBlocking": true,
+    "isDead": true,
+    "isInJumpState": false,
+    "isSneaking": true,
+    "isWeapDrawn": true,
+    "pos": [
+      0.0002975267998408526,
+      -8.641754867255713e-9,
+      1.0085075136112565e-12
+    ],
+    "rot": [
+      -2.9144527669391204e-17,
+      3.38649075638595e-21,
+      -3.996163009419124e-25
+    ],
+    "runMode": "",
+    "speed": 9.070243424570745e-39,
+    "worldOrCell": 3223487718
+  },
+  "idx": 1219038061,
+  "t": 2
+}

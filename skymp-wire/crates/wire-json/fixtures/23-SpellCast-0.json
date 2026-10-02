@@ -1,0 +1,47 @@
+{
+  "data": {
+    "actorAnimationVariables": {
+      "booleans": [
+        40
+      ],
+      "floats": [
+        100,
+        2,
+        160,
+        63,
+        221,
+        123,
+        25,
+        184,
+        86,
+        244,
+        146
+      ],
+      "integers": [
+        207,
+        109,
+        11,
+        169,
+        71,
+        230,
+        132,
+        34,
+        192,
+        95,
+        253,
+        155,
+        57,
+        215
+      ]
+    },
+    "aimAngle": 8.406633200139487e+30,
+    "aimHeading": -2.4865650230340635e+26,
+    "caster": 1387533944,
+    "castingSource": -111428321,
+    "interruptCast": true,
+    "isDualCasting": false,
+    "spell": 1151731817,
+    "target": 3408760817
+  },
+  "t": 23
+}

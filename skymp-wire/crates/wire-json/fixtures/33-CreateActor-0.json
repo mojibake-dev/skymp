@@ -1,0 +1,155 @@
+{
+  "animation": {
+    "animEventName": "7",
+    "numChanges": 2953933781
+  },
+  "baseId": 3189801699,
+  "customPropsJsonDumps": [
+    {
+      "propName": "y\u0017",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    },
+    {
+      "propName": "",
+      "propValueJsonDump": ""
+    }
+  ],
+  "idx": 1269632881,
+  "isMe": false,
+  "props": {
+    "healRate": -7.231921808723526e-18,
+    "isDisabled": true,
+    "lastAnimation": "\u0014",
+    "magicka": 6.98334545745638e-8,
+    "setNodeScale": [
+      {
+        "nodeName": "",
+        "scale": 4.726198145432612e+23
+      },
+      {
+        "nodeName": "\u0004",
+        "scale": 3.7094179476167283e+37
+      },
+      {
+        "nodeName": "\u001b",
+        "scale": -2.4874647101060714e-26
+      },
+      {
+        "nodeName": "2",
+        "scale": -5.024843388601319e-13
+      },
+      {
+        "nodeName": "I",
+        "scale": -41.13174057006836
+      },
+      {
+        "nodeName": "`",
+        "scale": -3300596199194624.0
+      },
+      {
+        "nodeName": "w\u0016",
+        "scale": -5.9244208104041836e-30
+      },
+      {
+        "nodeName": "-",
+        "scale": -4.698091005956434e-16
+      },
+      {
+        "nodeName": "D",
+        "scale": -0.03869713097810745
+      },
+      {
+        "nodeName": "[",
+        "scale": -3136934903808.0
+      },
+      {
+        "nodeName": "r\u0010",
+        "scale": -5.6647241743438966e-33
+      },
+      {
+        "nodeName": "'",
+        "scale": -1.1044770155340327e-19
+      },
+      {
+        "nodeName": ">",
+        "scale": -9.148349818133283e-6
+      },
+      {
+        "nodeName": "U",
+        "scale": -740605184.0
+      },
+      {
+        "nodeName": "m\u000b",
+        "scale": -5.390345072770055e-36
+      },
+      {
+        "nodeName": "\"",
+        "scale": -4.1751133625047126e-22
+      }
+    ],
+    "staminaPercentage": -165.53089904785156
+  },
+  "refrId": 12036268904311485011,
+  "t": 33,
+  "transform": {
+    "pos": [
+      -5.337359724209766e+16,
+      6256757047296.0,
+      -184098592.0
+    ],
+    "rot": [
+      21508.708984375,
+      -0.6309034824371338,
+      0.00007342428580159321
+    ],
+    "worldOrCell": 1657022088
+  }
+}

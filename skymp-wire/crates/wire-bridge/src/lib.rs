@@ -53,7 +53,8 @@ mod ffi {
     /// How to bind.
     #[derive(Debug)]
     struct BindOptions {
-        /// Address to listen on, for example "0.0.0.0".
+        /// Address to listen on: an IP literal, a host name, or empty for
+        /// every interface (SkyMP's default when `listenHost` is unset).
         listen_host: String,
         /// UDP port.
         port: u16,
@@ -117,12 +118,31 @@ impl std::fmt::Display for BindError {
     }
 }
 
+/// The address to bind: every interface for an empty host, as RakNet's
+/// socket did; an IP literal as given; otherwise the name's first IPv4
+/// address (or its first address at all).
+fn listen_ip(host: &str) -> Result<IpAddr, BindError> {
+    let host = host.trim();
+    if host.is_empty() {
+        return Ok(IpAddr::from([0u8, 0, 0, 0]));
+    }
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return Ok(ip);
+    }
+    let addrs: Vec<SocketAddr> = std::net::ToSocketAddrs::to_socket_addrs(&(host, 0u16))
+        .map_err(|_| BindError::Addr(host.to_string()))?
+        .collect();
+    addrs
+        .iter()
+        .find(|a| a.is_ipv4())
+        .or_else(|| addrs.first())
+        .map(SocketAddr::ip)
+        .ok_or_else(|| BindError::Addr(host.to_string()))
+}
+
 /// Bind with SkyMP's settings.
 pub fn wire_server_bind(options: &BindOptions) -> Result<Box<Server>, BindError> {
-    let ip: IpAddr = options
-        .listen_host
-        .parse()
-        .map_err(|_| BindError::Addr(options.listen_host.clone()))?;
+    let ip = listen_ip(&options.listen_host)?;
     let limits = Limits {
         max_clients: usize::try_from(options.max_clients).unwrap_or(usize::MAX),
         ..Limits::default()
@@ -377,6 +397,16 @@ mod tests {
         assert_eq!(server.send(id + 1, r#"{"t":25,"idx":1}"#, true), 304, "no such client");
         let stats = server.stats_json();
         assert!(stats.contains("\"sent\":2") && stats.contains("\"302\":1"), "{stats}");
+    }
+
+    #[test]
+    fn listen_hosts_as_skymp_settings_give_them() {
+        assert_eq!(listen_ip("").ok(), Some(IpAddr::from([0u8, 0, 0, 0])), "unset means every interface");
+        assert_eq!(listen_ip("127.0.0.1").ok(), Some(IpAddr::from([127u8, 0, 0, 1])));
+        assert_eq!(listen_ip("localhost").ok().map(|ip| ip.is_loopback()), Some(true));
+        assert!(listen_ip("no-such-host.invalid").is_err());
+        let s = wire_server_bind(&BindOptions { listen_host: String::new(), port: 0, max_clients: 4, password: String::new() });
+        assert!(s.is_ok());
     }
 
     #[test]

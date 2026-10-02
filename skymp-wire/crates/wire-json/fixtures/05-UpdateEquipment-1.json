@@ -1,0 +1,39 @@
+{
+  "data": {
+    "inv": {
+      "entries": [
+        {
+          "baseId": 376953147,
+          "count": 2398114484,
+          "health": -4.698091005956434e-16,
+          "name": "[",
+          "soul": 151
+        },
+        {
+          "baseId": 2313899438,
+          "count": 40158503,
+          "maxCharge": 25165008207872.0,
+          "poisonCount": 2229618601
+        },
+        {
+          "baseId": 966523998,
+          "chargePercent": -5.610023664847998e+19,
+          "count": 2987685335,
+          "poisonId": 865466201,
+          "removeEnchantmentOnUnequip": true
+        },
+        {
+          "baseId": 2280213420,
+          "chargePercent": 6.591407281097972e-11,
+          "count": 6472485,
+          "poisonId": 2179155367,
+          "removeEnchantmentOnUnequip": true
+        }
+      ]
+    },
+    "numChanges": 3341388524,
+    "rightSpell": 292803895
+  },
+  "idx": 4284531236,
+  "t": 5
+}

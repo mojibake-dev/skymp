@@ -30,6 +30,19 @@ corrosion_import_crate(
 
 corrosion_add_cxxbridge(wire_bridge_cxx CRATE wire_bridge FILES lib.rs)
 
+if(MSVC)
+  # The Windows build links the static C runtime (cmake/apply_default_settings,
+  # triplet x64-windows-sp): the Rust code, the C++ that cc-rs builds for the
+  # crates, and the cxx glue must use it too, or MSVC refuses the mixed link.
+  foreach(wire_target wire_bridge skymp_wire)
+    if(TARGET ${wire_target})
+      corrosion_add_target_rustflags(${wire_target} "-Ctarget-feature=+crt-static")
+    endif()
+  endforeach()
+  set_target_properties(wire_bridge_cxx PROPERTIES
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 if(NOT WIN32)
   # lab-api's `server: fakeclient` steps and `just test-proto` run it from the
   # server image, next to the server

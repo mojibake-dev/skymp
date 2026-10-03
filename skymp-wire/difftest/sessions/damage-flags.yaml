@@ -1,0 +1,21 @@
+# difftest damage-flags (M1 validation, thuum docs/verbs/damage-flags.md): c1
+# and c2 are new characters (profiles 9 and 10, actors 0xff000002 and
+# 0xff000003: see melee-reach); c2 steps 50 units off the spawn and c1 sends a
+# bare-handed hit on it flagged as a power attack, with no power attack among
+# its animation events. Both servers take the hit; the legacy server doubles
+# its damage on the client's word, the fixed one hits as a plain attack, so
+# the health c2 is told differs.
+id: damage-flags
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 3500, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 500, isBashAttack: false, isHitBlocked: false, isPowerAttack: true, isSneakAttack: false, projectile: 0}}}
+  - {client: c2, at_ms: 0, move: {dx: 50}}
+  - {client: c2, at_ms: 3500, move: {dx: 60}}
+divergences:
+  - client: c2
+    msg: {t: 25, idx: 2}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

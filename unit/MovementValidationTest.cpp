@@ -80,3 +80,40 @@ TEST_CASE(
                           { "worldOrCell", 0x3c } });
   REQUIRE(partOne.Messages()[0].userId == 0);
 }
+
+TEST_CASE("A player beyond its ground speed budget is sent back",
+          "[MovementValidation]")
+{
+  // thuum docs/verbs/movement-speed.md: two 1000 unit moves at once fit the
+  // 2048 unit burst, a third does not; another user's actor is not charged
+  PartOne& partOne = GetPartOne();
+
+  DoConnect(partOne, 0);
+  partOne.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
+  partOne.SetUserActor(0, 0xff000000);
+  partOne.CreateActor(0xff000001, { 0, 0, 0 }, 0, 0x3c);
+
+  auto& actor = partOne.worldState.GetFormAt<MpActor>(0xff000000);
+  auto& npc = partOne.worldState.GetFormAt<MpActor>(0xff000001);
+
+  const auto move = [&](MpActor& who) {
+    return MovementValidation::Validate(
+      partOne, { 0, 0, 0 }, { 0, 0, 0 }, FormDesc::Tamriel(), { 1000, 0, 50 },
+      FormDesc::Tamriel(), 0, &who, { "Skyrim.esm" });
+  };
+
+  partOne.Messages().clear();
+  REQUIRE(move(actor));
+  REQUIRE(move(actor));
+  REQUIRE(partOne.Messages().empty());
+  REQUIRE(!move(actor));
+  REQUIRE(partOne.Messages().size() == 1);
+  REQUIRE(partOne.Messages()[0].j["t"] ==
+          static_cast<int>(MsgType::Teleport2));
+
+  partOne.Messages().clear();
+  for (int i = 0; i < 5; ++i) {
+    REQUIRE(move(npc));
+  }
+  REQUIRE(partOne.Messages().empty());
+}

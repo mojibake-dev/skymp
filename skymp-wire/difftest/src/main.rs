@@ -83,11 +83,14 @@ impl Divergence {
     }
 }
 
-/// True when every field of `want` is in `got` with an equal value
-/// (objects recursively); arrays and scalars compare whole.
+/// True when every field of `want` is in `got` with an equal value (objects
+/// recursively), and every element of a `want` array is covered by some
+/// element of the `got` array ("an inventory holding this item"); scalars
+/// compare whole.
 fn covers(want: &Value, got: &Value) -> bool {
     match (want, got) {
         (Value::Object(w), Value::Object(g)) => w.iter().all(|(k, v)| g.get(k).is_some_and(|gv| covers(v, gv))),
+        (Value::Array(w), Value::Array(g)) => w.iter().all(|wv| g.iter().any(|gv| covers(wv, gv))),
         _ => want == got,
     }
 }
@@ -563,6 +566,14 @@ mod tests {
         let one = Divergence { client: "c2".into(), msg: json!({"t": 2, "data": {"pos": [5001, 2, 3]}}), legacy: 1, wire: 0, reason: "the rejected jump".into() };
         let o = diff("legacy", &legacy, "wire", &wire, &[one]);
         assert_eq!(o.differences.len(), 1, "the other idx 2 move still differs: {:?}", o.differences);
+    }
+
+    #[test]
+    fn a_pattern_array_needs_each_element_somewhere() {
+        let inv = json!({"t": 28, "inventory": {"entries": [{"baseId": 15, "count": 140}, {"baseId": 437195, "count": 1}]}});
+        assert!(covers(&json!({"t": 28, "inventory": {"entries": [{"baseId": 437195}]}}), &inv));
+        assert!(!covers(&json!({"t": 28, "inventory": {"entries": [{"baseId": 437196}]}}), &inv));
+        assert!(covers(&json!({"t": 28}), &inv));
     }
 
     #[test]

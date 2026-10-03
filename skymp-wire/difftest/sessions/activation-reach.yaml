@@ -1,0 +1,28 @@
+# difftest activation-reach (M1 validation, thuum docs/verbs/activation-reach.md):
+# c1 activates the Canis Root plant 1509 units from the spawn (reference
+# 0x0005355D, 341341; thuum lab/esm.py on the lab's Skyrim.esm). The legacy
+# server harvests it from there: c1 is told the plant is harvested, gets the
+# OpenContainer the harvest uses, and an inventory holding the root
+# (CanisRoot01, 437195). The fixed server refuses an activation from beyond
+# reach and sends none of it.
+id: activation-reach
+clients:
+  c1: {profile_id: 9}
+steps:
+  - {client: c1, at_ms: 3000, send: {t: 6, data: {caster: 20, target: 341341, isSecondActivation: false}}}
+divergences:
+  - client: c1
+    msg: {t: 7, refrId: 341341, propName: isHarvested}
+    legacy: 1
+    wire: 0
+    reason: a far activation harvested the plant on the legacy server; refused beyond reach on the fixed one
+  - client: c1
+    msg: {t: 21, target: 341341}
+    legacy: 1
+    wire: 0
+    reason: the harvest's OpenContainer; refused beyond reach on the fixed server
+  - client: c1
+    msg: {t: 28, inventory: {entries: [{baseId: 437195}]}}
+    legacy: 1
+    wire: 0
+    reason: the harvested root in c1's inventory; refused beyond reach on the fixed server

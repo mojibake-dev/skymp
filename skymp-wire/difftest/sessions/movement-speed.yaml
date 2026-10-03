@@ -6,7 +6,9 @@
 # fit, the third does not (448 left plus a few ms of refill), and neither do
 # the two after it, measured from where the server holds c1; each refused
 # move is snapped back with Teleport2 and not relayed. UpdateMovement
-# compares exactly here (not as presence), so the relays show as counts.
+# compares exactly here (not as presence), so the relays show as counts. On
+# the legacy server c1 really reaches 4000 units north, so the forms near the
+# spawn leave its view and three near there enter it (2026-10-03).
 #
 # Timing (DIFFTEST_CLIENT_GAP_MS 1500) as movement-reject: c2 joins before
 # c1's moves and outlives c1, so c2 also sees c1's departure the way smoke
@@ -40,6 +42,26 @@ divergences:
     legacy: 5
     wire: 2
     reason: c1's moves relayed to the neighbour; the fixed server relays only the two within the budget
+  - client: c1
+    msg: {t: 25}
+    legacy: 19
+    wire: 0
+    reason: on the legacy server c1 crossed 4000 units north and nineteen forms near the spawn left its view; the fixed server held it near 1600 units
+  - client: c1
+    msg: {t: 33, refrId: 537766}
+    legacy: 1
+    wire: 0
+    reason: a form near where the legacy server let c1 go; the fixed server held c1 back
+  - client: c1
+    msg: {t: 33, refrId: 537767}
+    legacy: 1
+    wire: 0
+    reason: a form near where the legacy server let c1 go; the fixed server held c1 back
+  - client: c1
+    msg: {t: 33, refrId: 537768}
+    legacy: 1
+    wire: 0
+    reason: a form near where the legacy server let c1 go; the fixed server held c1 back
   - client: c2
     msg: {t: 25, idx: 2}
     legacy: 0

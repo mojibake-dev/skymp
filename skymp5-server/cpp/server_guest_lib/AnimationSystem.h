@@ -16,6 +16,11 @@ public:
   void Init(WorldState* worldState);
   void Process(MpActor* actor, const AnimationData& animData);
   void ClearInfo(MpActor* actor);
+
+  // When the actor last started a power attack (any attackPowerStart event
+  // its client sent), the epoch if never: thuum docs/verbs/damage-flags.md
+  std::chrono::steady_clock::time_point GetLastPowerAttackStartTime(
+    const MpActor& actor) const;
   void SetWeaponStaminaModifiers(
     std::unordered_map<std::string, float>&& modifiers);
 
@@ -43,6 +48,7 @@ private:
 
   AnimationCallbacks animationCallbacks;
   AnimationTimePoints lastAttackReleaseAnimationTimePoints;
+  AnimationTimePoints lastPowerAttackStartTimePoints;
   WorldState* worldState = nullptr;
   bool hasSweetpie = false;
 };

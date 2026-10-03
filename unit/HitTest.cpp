@@ -304,3 +304,77 @@ TEST_CASE("A melee hit on a player from beyond reach does nothing", "[Hit]")
   DoDisconnect(p, 0);
   DoDisconnect(p, 1);
 }
+
+namespace {
+// Damage stays fixed; what the formula was told is what the test reads.
+class FlagRecordingFormula : public IDamageFormula
+{
+public:
+  explicit FlagRecordingFormula(std::shared_ptr<HitData> seen_)
+    : seen(std::move(seen_))
+  {
+  }
+
+  [[nodiscard]] float CalculateDamage(const MpActor&, const MpActor&,
+                                      const HitData& hitData) const override
+  {
+    *seen = hitData;
+    return 1.f;
+  }
+
+  [[nodiscard]] float CalculateDamage(const MpActor&, const MpActor&,
+                                      const SpellCastData&) const override
+  {
+    return 1.f;
+  }
+
+private:
+  std::shared_ptr<HitData> seen;
+};
+}
+
+TEST_CASE("A player's power and sneak flags count only when the server saw "
+          "them",
+          "[Hit]")
+{
+  // thuum docs/verbs/damage-flags.md: a power attack needs a power attack's
+  // start among the attacker's animation events within three seconds, a
+  // sneak attack the attacker's own sneaking state; otherwise the flag is
+  // dropped and the hit lands as a plain one
+  PartOne& p = GetPartOne();
+  auto seen = std::make_shared<HitData>();
+  p.SetDamageFormula(std::make_unique<FlagRecordingFormula>(seen));
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, 0xff000000);
+  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
+
+  RawMessageData rawMsgData;
+  rawMsgData.userId = 0;
+  const auto hit = [&](bool power, bool sneak) {
+    ac.SetLastHitTime(0xff000000, std::chrono::steady_clock::now() - 10s);
+    HitMessage hitMsg;
+    hitMsg.data.aggressor = 0x14;
+    hitMsg.data.target = 0x14;
+    hitMsg.data.source = 0x1f4; // bare hands
+    hitMsg.data.isPowerAttack = power;
+    hitMsg.data.isSneakAttack = sneak;
+    *seen = HitData();
+    p.GetActionListener().OnHit(rawMsgData, hitMsg);
+    return *seen;
+  };
+
+  REQUIRE(!hit(true, false).isPowerAttack);
+  AnimationData powerAttack;
+  powerAttack.animEventName = "attackPowerStartForward";
+  p.animationSystem.Process(&ac, powerAttack);
+  REQUIRE(hit(true, false).isPowerAttack);
+
+  REQUIRE(!hit(false, true).isSneakAttack);
+  ac.SetAnimationVariableBool(AnimationVariableBool::kVariable_IsSneaking,
+                              true);
+  REQUIRE(hit(false, true).isSneakAttack);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}

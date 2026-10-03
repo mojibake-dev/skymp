@@ -47,7 +47,14 @@ void AnimationSystem::Init(WorldState* pWorldState)
 
 void AnimationSystem::Process(MpActor* actor, const AnimationData& animData)
 {
+  // every power attack variant starts with this, whatever the hands and the
+  // direction (attackPowerStartForward, attackPowerStart_2HMSprint, ...)
+  static const CIString kPowerAttackStart = "attackPowerStart";
   CIString s = animData.animEventName.data();
+  if (s.compare(0, kPowerAttackStart.size(), kPowerAttackStart) == 0) {
+    lastPowerAttackStartTimePoints[actor->GetFormId()] =
+      std::chrono::steady_clock::now();
+  }
   auto it = animationCallbacks.find(s);
   if (it == animationCallbacks.end()) {
     return;
@@ -58,6 +65,17 @@ void AnimationSystem::Process(MpActor* actor, const AnimationData& animData)
 void AnimationSystem::ClearInfo(MpActor* actor)
 {
   lastAttackReleaseAnimationTimePoints.erase(actor->GetFormId());
+  lastPowerAttackStartTimePoints.erase(actor->GetFormId());
+}
+
+std::chrono::steady_clock::time_point
+AnimationSystem::GetLastPowerAttackStartTime(const MpActor& actor) const
+{
+  auto it = lastPowerAttackStartTimePoints.find(actor.GetFormId());
+  if (it == lastPowerAttackStartTimePoints.end()) {
+    return std::chrono::steady_clock::time_point();
+  }
+  return it->second;
 }
 
 std::chrono::steady_clock::time_point

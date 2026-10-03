@@ -1285,6 +1285,32 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
   const bool isUnarmed = IsUnarmedAttack(hitData.source);
 
   if (equipment.inv.HasItem(hitData.source) || isUnarmed) {
+    // thuum docs/verbs/damage-flags.md. The client says whether its hit was a
+    // power attack (twice the damage) and a sneak attack (1.3 times); a
+    // player keeps a flag only when the server saw it: a power attack's start
+    // among its animation events within the last three seconds, and its own
+    // sneaking state from its movement. A flag the server cannot back is
+    // dropped and the hit lands as a plain one.
+    if (aggressor == myActor) {
+      constexpr auto kPowerAttackWindow = std::chrono::seconds(3);
+      if (hitData.isPowerAttack &&
+          std::chrono::steady_clock::now() -
+              partOne.animationSystem.GetLastPowerAttackStartTime(*aggressor) >
+            kPowerAttackWindow) {
+        spdlog::warn("ActionListener::OnHit - E_HIT_POWER: {:x} claims a "
+                     "power attack it did not start; hit as a plain one",
+                     aggressor->GetFormId());
+        hitData.isPowerAttack = false;
+      }
+      if (hitData.isSneakAttack &&
+          !aggressor->GetAnimationVariableBool("IsSneaking")) {
+        spdlog::warn("ActionListener::OnHit - E_HIT_SNEAK: {:x} claims a "
+                     "sneak attack while not sneaking; hit as a plain one",
+                     aggressor->GetFormId());
+        hitData.isSneakAttack = false;
+      }
+    }
+
     // Player against player only: the bound's body extents are a humanoid's
     // (creatures' are larger), and a hosted NPC's scale is its own record's
     MpActor* targetActor = targetRef->AsActor();

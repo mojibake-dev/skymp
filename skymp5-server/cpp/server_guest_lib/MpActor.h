@@ -3,7 +3,6 @@
 #include "Appearance.h"
 #include "Equipment.h"
 #include "GetBaseActorValues.h"
-#include "MovementBudget.h"
 #include "MpObjectReference.h"
 #include "libespm/espm.h"
 #include <map>
@@ -172,9 +171,6 @@ public:
   void DropItem(const uint32_t baseId, const Inventory::Entry& entry);
   void SetIsBlockActive(bool isBlockActive);
   bool IsBlockActive() const;
-
-  // the ground speed budget of a player's own movement (runtime only)
-  MovementBudget& GetMovementBudget();
   NiPoint3 GetViewDirection() const;
   void IncreaseBlockCount() noexcept;
   void ResetBlockCount() noexcept;

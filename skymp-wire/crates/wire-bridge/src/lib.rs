@@ -10,6 +10,8 @@
 //! here. A broadcast loop sends the same text to many clients, so the last
 //! encoding is kept and reused while the text repeats.
 
+pub mod rules;
+
 use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Instant;

@@ -113,6 +113,10 @@ public:
   float CalculateDamage(const MpActor& aggressor, const MpActor& target,
                         const HitData& hitData) const;
 
+  // Charge a player's actor a move of `ground` units over the ground; true
+  // when its budget covers it (thuum docs/verbs/movement-speed.md)
+  bool SpendMovementBudget(uint32_t actorFormId, float ground);
+
   float CalculateDamage(const MpActor& aggressor, const MpActor& target,
                         const SpellCastData& spellCastData) const;
 

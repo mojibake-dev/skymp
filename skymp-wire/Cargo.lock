@@ -894,6 +894,7 @@ version = "0.0.1"
 dependencies = [
  "cxx",
  "wire-json",
+ "wire-rules",
  "wire-schema",
  "wire-transport",
  "wire-validate",
@@ -948,6 +949,13 @@ dependencies = [
  "wire-codec",
  "wire-json",
  "wire-schema",
+]
+
+[[package]]
+name = "wire-rules"
+version = "0.0.1"
+dependencies = [
+ "proptest",
 ]
 
 [[package]]

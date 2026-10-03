@@ -1,4 +1,5 @@
 #include "PartOne.h"
+#include "wire_bridge_cxx/rules.h"
 #include <array>
 #include <cassert>
 #include <chrono>
@@ -70,6 +71,11 @@ public:
 struct PartOne::Impl
 {
   simdjson::dom::parser parser;
+
+  // every player actor's ground speed budget (thuum
+  // docs/verbs/movement-speed.md; the rule is Rust's, ADR-020)
+  rust::Box<skymp::rules::MovementBudgets> movementBudgets =
+    skymp::rules::new_movement_budgets();
   espm::Loader* espm = nullptr;
 
   std::function<void(PartOneSendTargetWrapper* sendTarget,
@@ -1038,4 +1044,13 @@ MessageSerializer& PartOne::GetMessageSerializerInstance()
   static auto g_serializer =
     MessageSerializerFactory::CreateMessageSerializer();
   return *g_serializer;
+}
+
+bool PartOne::SpendMovementBudget(uint32_t actorFormId, float ground)
+{
+  const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now().time_since_epoch())
+                       .count();
+  return pImpl->movementBudgets->spend(actorFormId, ground,
+                                       static_cast<uint64_t>(nowMs));
 }

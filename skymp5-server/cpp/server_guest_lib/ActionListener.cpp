@@ -22,6 +22,7 @@
 #include "libespm/RACE.h"
 #include "libespm/WEAP.h"
 #include "script_objects/EspmGameObject.h"
+#include "wire_bridge_cxx/rules.h"
 #include <algorithm>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
@@ -234,26 +235,22 @@ void ActionListener::OnUpdateAnimation(const RawMessageData& rawMsgData,
 }
 
 namespace {
-// thuum docs/verbs/character-creation.md. The race menu offers the races
-// whose RACE record has the Playable flag (UESP, "Skyrim Mod:Mod File
-// Format/RACE"), so a client may change its race there only to one of them.
-// The race the server already records for the actor stays allowed, so an
-// actor a gamemode gave another race can still use the menu. Without game
-// files there is nothing to check against.
+// thuum docs/verbs/character-creation.md: the facts the race rule needs; the
+// rule is Rust's (skymp-wire wire-rules appearance, ADR-020)
 bool IsAllowedRace(PartOne& partOne, const MpActor& actor, uint32_t raceId)
 {
-  if (!partOne.HasEspm()) {
-    return true;
+  skymp::rules::RaceFacts facts{};
+  facts.has_game_files = partOne.HasEspm();
+  if (facts.has_game_files) {
+    auto recorded = actor.GetAppearance();
+    facts.is_recorded_race = recorded && recorded->raceId == raceId;
+    auto race = espm::Convert<espm::RACE>(
+      partOne.GetEspm().GetBrowser().LookupById(raceId).rec);
+    facts.is_playable_race = race &&
+      (race->GetData(partOne.worldState.GetEspmCache()).flags &
+       espm::RACE::kPlayable);
   }
-  if (auto recorded = actor.GetAppearance();
-      recorded && recorded->raceId == raceId) {
-    return true;
-  }
-  auto race = espm::Convert<espm::RACE>(
-    partOne.GetEspm().GetBrowser().LookupById(raceId).rec);
-  return race &&
-    (race->GetData(partOne.worldState.GetEspmCache()).flags &
-     espm::RACE::kPlayable);
+  return skymp::rules::race_allowed(facts);
 }
 }
 
@@ -500,20 +497,10 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
 }
 
 namespace {
-// thuum docs/verbs/activation-reach.md. The game picks what the player can
-// activate along a ray from the eye: fActivatePickLength:Interface (180) plus
-// fActivatePickRadius (16), the defaults in the 1.7.104 executable (Ghidra),
-// read in the running game too (thuum lab run 20261003-070107). The client
-// can edit its INI, so the server enforces its own bound: the game's reach,
-// plus room for the eye above the feet and the third-person shoulder offset
-// (the server measures from the actor's position, at its feet), plus the
-// target's own size, since the pick lands on its surface and the server knows
-// its origin.
-constexpr float kActivationPickLength = 180.f;
-constexpr float kActivationPickRadius = 16.f;
-constexpr float kActivationBodySlack = 256.f;
-
-float ActivationReach(MpObjectReference& target)
+// thuum docs/verbs/activation-reach.md: the target's size, for the reach rule
+// in Rust (skymp-wire wire-rules activation, ADR-020): the farthest point of
+// its base record's bounds, times the reference's scale
+float ActivationTargetSize(MpObjectReference& target)
 {
   float size = 0.f;
   if (auto worldState = target.GetParent();
@@ -529,8 +516,7 @@ float ActivationReach(MpObjectReference& target)
       size *= espm::GetData<espm::REFR>(target.GetFormId(), worldState).scale;
     }
   }
-  return kActivationPickLength + kActivationPickRadius + kActivationBodySlack +
-    size;
+  return size;
 }
 }
 
@@ -575,12 +561,13 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
   if (!msg.data.isSecondActivation &&
       caster.GetCellOrWorld() == targetPtr->GetCellOrWorld()) {
     const float distance = (caster.GetPos() - targetPtr->GetPos()).Length();
-    const float reach = ActivationReach(*targetPtr);
-    if (distance > reach) {
+    const auto verdict = skymp::rules::activation_within_reach(
+      distance, ActivationTargetSize(*targetPtr));
+    if (!verdict.allowed) {
       spdlog::warn("ActionListener::OnActivate - E_ACTIVATE_REACH: {:x} "
                    "activates {:x} from {:.0f} units, reach {:.0f}; refused",
                    caster.GetFormId(), targetPtr->GetFormId(), distance,
-                   reach);
+                   verdict.bound);
       return;
     }
   }
@@ -1118,25 +1105,10 @@ bool ShouldBeBlocked(const MpActor& aggressor, const MpActor& target)
 }
 
 namespace {
-// thuum docs/verbs/melee-reach.md. A swing lands on the target whose center
-// lies within the attacker's reach plus both actors' forward body extents
-// (the engine's pick), or that a sphere cast from the attacker's eye meets
-// when the pick finds nothing (ghidra/notes/melee-reach-1-7-104.md). Reach is
-// the attacker's scale times fCombatBashReach (a bash), fCombatDistance times
-// the weapon's reach, or the race's unarmed reach; the server takes the
-// largest the attacker's equipment allows, since the bash flag is the
-// client's claim. The eye cast is fObjectHitWeaponReach (150) plus
-// fHitCasterSizeSmall (12), executable defaults read live in the lab, the
-// longest cast. The forward extent is half the actor's bound length (28,
-// read live) times its scale. Positions reach the server every 130 ms per
-// actor (skymp5-client sendInputsService.ts), so the bound leaves room for
-// two actors moving at sprint speed since their last report.
-constexpr float kMeleeEyeCastReach = 150.f + 12.f;
-constexpr float kMeleeForwardExtent = 14.f;
-constexpr float kMeleeStaleSlack = 256.f;
-
-// refScale and the base record's height are 1 for player characters; the
-// race's height for the actor's sex is the rest of the engine's GetScale
+// thuum docs/verbs/melee-reach.md: the facts the melee reach rule needs; the
+// rule is Rust's (skymp-wire wire-rules melee, ADR-020). A player's scale is
+// its race's height for its sex (refScale and the base record's height are 1
+// for player characters).
 float PlayerScale(const MpActor& actor, WorldState& worldState)
 {
   auto appearance = actor.GetAppearance();
@@ -1145,14 +1117,14 @@ float PlayerScale(const MpActor& actor, WorldState& worldState)
     .height[isFemale ? 1 : 0];
 }
 
-std::optional<float> MeleeReachBound(const MpActor& aggressor,
-                                     const MpActor& target,
-                                     WorldState& worldState)
+std::optional<skymp::rules::MeleeFacts> MeleeFacts(const MpActor& aggressor,
+                                                   const MpActor& target,
+                                                   WorldState& worldState)
 {
   try {
     auto& browser = worldState.GetEspm().GetBrowser();
     auto& cache = worldState.GetEspmCache();
-    float weaponReach = 0.f;
+    skymp::rules::MeleeFacts facts{};
     for (const auto& entry : aggressor.GetEquipment().inv.entries) {
       if (entry.GetWorn() == Inventory::Worn::None) {
         continue;
@@ -1161,29 +1133,24 @@ std::optional<float> MeleeReachBound(const MpActor& aggressor,
         espm::Convert<espm::WEAP>(browser.LookupById(entry.baseId).rec);
       auto dnam = weapon ? weapon->GetData(cache).weapDNAM : nullptr;
       if (dnam) {
-        weaponReach = std::max(weaponReach, dnam->reach);
+        facts.weapon_reach = std::max(facts.weapon_reach, dnam->reach);
       }
     }
-    const float combatDistance =
+    facts.distance = (aggressor.GetPos() - target.GetPos()).Length();
+    facts.combat_distance =
       espm::GetData<espm::GMST>(espm::GMST::kFCombatDistance, &worldState)
         .value;
-    const float bashReach =
+    facts.bash_reach =
       espm::GetData<espm::GMST>(espm::GMST::kFCombatBashReach, &worldState)
         .value;
-    const float unarmedReach =
+    facts.unarmed_reach =
       espm::GetData<espm::RACE>(aggressor.GetRaceId(), &worldState)
         .unarmedReach;
-    const float aggressorScale = PlayerScale(aggressor, worldState);
-    const float reach = std::max(
-      aggressorScale *
-        std::max({ bashReach, combatDistance * weaponReach, unarmedReach }),
-      kMeleeEyeCastReach);
-    return reach +
-      kMeleeForwardExtent *
-      (aggressorScale + PlayerScale(target, worldState)) +
-      kMeleeStaleSlack;
+    facts.aggressor_scale = PlayerScale(aggressor, worldState);
+    facts.target_scale = PlayerScale(target, worldState);
+    return facts;
   } catch (std::exception& e) {
-    spdlog::warn("MeleeReachBound - {:x} on {:x}: {}; reach not checked",
+    spdlog::warn("MeleeFacts - {:x} on {:x}: {}; reach not checked",
                  aggressor.GetFormId(), target.GetFormId(), e.what());
     return std::nullopt;
   }
@@ -1285,30 +1252,37 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
   const bool isUnarmed = IsUnarmedAttack(hitData.source);
 
   if (equipment.inv.HasItem(hitData.source) || isUnarmed) {
-    // thuum docs/verbs/damage-flags.md. The client says whether its hit was a
-    // power attack (twice the damage) and a sneak attack (1.3 times); a
-    // player keeps a flag only when the server saw it: a power attack's start
-    // among its animation events within the last three seconds, and its own
-    // sneaking state from its movement. A flag the server cannot back is
-    // dropped and the hit lands as a plain one.
-    if (aggressor == myActor) {
-      constexpr auto kPowerAttackWindow = std::chrono::seconds(3);
-      if (hitData.isPowerAttack &&
-          std::chrono::steady_clock::now() -
-              partOne.animationSystem.GetLastPowerAttackStartTime(*aggressor) >
-            kPowerAttackWindow) {
+    // thuum docs/verbs/damage-flags.md: the facts the flag rule needs; the
+    // rule is Rust's (skymp-wire wire-rules damage, ADR-020)
+    if (aggressor == myActor &&
+        (hitData.isPowerAttack || hitData.isSneakAttack)) {
+      const auto lastPowerStart =
+        partOne.animationSystem.GetLastPowerAttackStartTime(*aggressor);
+      skymp::rules::FlagFacts facts{};
+      facts.claims_power = hitData.isPowerAttack;
+      facts.claims_sneak = hitData.isSneakAttack;
+      facts.saw_power_start =
+        lastPowerStart != std::chrono::steady_clock::time_point();
+      facts.since_power_start_ms = facts.saw_power_start
+        ? static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() - lastPowerStart)
+              .count())
+        : 0;
+      facts.is_sneaking = aggressor->GetAnimationVariableBool("IsSneaking");
+      const auto kept = skymp::rules::backed_flags(facts);
+      if (hitData.isPowerAttack && !kept.power) {
         spdlog::warn("ActionListener::OnHit - E_HIT_POWER: {:x} claims a "
                      "power attack it did not start; hit as a plain one",
                      aggressor->GetFormId());
-        hitData.isPowerAttack = false;
       }
-      if (hitData.isSneakAttack &&
-          !aggressor->GetAnimationVariableBool("IsSneaking")) {
+      if (hitData.isSneakAttack && !kept.sneak) {
         spdlog::warn("ActionListener::OnHit - E_HIT_SNEAK: {:x} claims a "
                      "sneak attack while not sneaking; hit as a plain one",
                      aggressor->GetFormId());
-        hitData.isSneakAttack = false;
       }
+      hitData.isPowerAttack = kept.power;
+      hitData.isSneakAttack = kept.sneak;
     }
 
     // Player against player only: the bound's body extents are a humanoid's
@@ -1318,16 +1292,16 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
         partOne.serverState.UserByActor(targetActor) !=
           Networking::InvalidUserId &&
         !IsBowOrCrossbowShot(hitData, &partOne.worldState)) {
-      const std::optional<float> bound =
-        MeleeReachBound(*aggressor, *targetActor, partOne.worldState);
-      const float distance =
-        (aggressor->GetPos() - targetActor->GetPos()).Length();
-      if (bound && distance > *bound) {
-        spdlog::warn("ActionListener::OnHit - E_HIT_REACH: {:x} hits {:x} "
-                     "from {:.0f} units, reach {:.0f}; refused",
-                     aggressor->GetFormId(), targetActor->GetFormId(),
-                     distance, *bound);
-        return;
+      if (auto facts =
+            MeleeFacts(*aggressor, *targetActor, partOne.worldState)) {
+        const auto verdict = skymp::rules::melee_within_reach(*facts);
+        if (!verdict.allowed) {
+          spdlog::warn("ActionListener::OnHit - E_HIT_REACH: {:x} hits {:x} "
+                       "from {:.0f} units, reach {:.0f}; refused",
+                       aggressor->GetFormId(), targetActor->GetFormId(),
+                       facts->distance, verdict.bound);
+          return;
+        }
       }
     }
     OnWeaponHit(aggressor, targetRef, hitData, isUnarmed);

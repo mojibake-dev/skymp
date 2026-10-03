@@ -45,8 +45,7 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
   if (isMe) {
     const float ground =
       std::hypot(newPos.x - currentPos.x, newPos.y - currentPos.y);
-    if (!actor->GetMovementBudget().Spend(ground,
-                                          MovementBudget::Clock::now())) {
+    if (!partOne.SpendMovementBudget(actor->GetFormId(), ground)) {
       spdlog::warn("MovementValidation - E_MOVE_SPEED: {:x} moved {:.0f} "
                    "units over the ground beyond its budget; snapped back",
                    actor->GetFormId(), ground);

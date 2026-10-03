@@ -8,6 +8,7 @@ members = [
   "crates/wire-legacy",
   "crates/wire-codec",
   "crates/wire-validate",
+  "crates/wire-rules",
   "crates/wire-transport",
   "crates/wire-bridge",
   "crates/wire-client-ffi",

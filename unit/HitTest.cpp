@@ -245,3 +245,62 @@ TEST_CASE("checking weapon cooldown", "[Hit]")
   p.DestroyActor(0xff000000);
   DoDisconnect(p, 0);
 }
+
+TEST_CASE("A melee hit on a player from beyond reach does nothing", "[Hit]")
+{
+  // thuum docs/verbs/melee-reach.md: an iron sword (reach 1.0) on a Nord
+  // (height 1.03) reaches max(141 * 1.03, 162) = 162, plus both forward
+  // extents (14 * 1.03 each) and 256 for stale positions: about 447 units.
+  // Player against player only: a target no user plays keeps the old bound.
+  PartOne& p = GetPartOne();
+  DoConnect(p, 0);
+  DoConnect(p, 1);
+  const uint32_t aggressor = 0xff000000;
+  const uint32_t target = 0xff000001;
+  const uint32_t npc = 0xff000002;
+  p.CreateActor(aggressor, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, aggressor);
+  p.CreateActor(target, { 400, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(1, target);
+  p.CreateActor(npc, { 0, 2000, 0 }, 0, 0x3c);
+  auto& acAggressor = p.worldState.GetFormAt<MpActor>(aggressor);
+
+  const uint32_t ironSword = 0x00012eb7;
+  acAggressor.AddItem(ironSword, 1);
+  Equipment eq;
+  eq.inv.entries.push_back(Inventory::Entry(ironSword, 1, kExtraWornTrue));
+  acAggressor.SetEquipment(eq);
+
+  RawMessageData rawMsgData;
+  rawMsgData.userId = 0;
+  const auto hitFrom = [&](uint32_t victimId, NiPoint3 pos) {
+    auto& victim = p.worldState.GetFormAt<MpActor>(victimId);
+    victim.SetPos(pos);
+    ActorValues full;
+    full.healthPercentage = 1.f;
+    full.magickaPercentage = 1.f;
+    full.staminaPercentage = 1.f;
+    victim.SetPercentages(full);
+    // no weapon cooldown or splash window between the cases
+    for (uint32_t id : { target, npc }) {
+      acAggressor.SetLastHitTime(id, std::chrono::steady_clock::now() - 10s);
+    }
+    HitMessage hitMsg;
+    hitMsg.data.aggressor = 0x14;
+    hitMsg.data.target = victimId;
+    hitMsg.data.source = ironSword;
+    p.GetActionListener().OnHit(rawMsgData, hitMsg);
+    return victim.GetChangeForm().actorValues.healthPercentage < 1.f;
+  };
+
+  REQUIRE(hitFrom(target, { 400, 0, 0 }));
+  REQUIRE(!hitFrom(target, { 500, 0, 0 }));
+  REQUIRE(!hitFrom(target, { 2000, 0, 0 }));
+  REQUIRE(hitFrom(npc, { 0, 2000, 0 }));
+
+  p.DestroyActor(aggressor);
+  p.DestroyActor(target);
+  p.DestroyActor(npc);
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+}

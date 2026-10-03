@@ -49,6 +49,9 @@ public:
 
   struct Data
   {
+    // DATA's body heights (bytes 16 and 20: male, female; UESP, "Skyrim
+    // Mod:Mod File Format/RACE"), a factor of an actor's scale
+    float height[2] = { 1.f, 1.f };
     uint32_t flags = 0;
     float startingHealth = 0.f;
     float startingMagicka = 0.f;

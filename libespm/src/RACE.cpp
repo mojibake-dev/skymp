@@ -12,6 +12,8 @@ RACE::Data RACE::GetData(
     this,
     [&](const char* type, uint32_t size, const char* data) {
       if (!std::memcmp(type, "DATA", 4)) {
+        result.height[0] = *reinterpret_cast<const float*>(data + 16);
+        result.height[1] = *reinterpret_cast<const float*>(data + 20);
         result.flags = *reinterpret_cast<const uint32_t*>(data + 32);
         result.startingHealth = *reinterpret_cast<const float*>(data + 36);
         result.startingMagicka = *reinterpret_cast<const float*>(data + 40);

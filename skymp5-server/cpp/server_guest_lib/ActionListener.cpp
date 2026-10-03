@@ -17,11 +17,15 @@
 #include "gamemode_events/UpdateAppearanceAttemptEvent.h"
 #include "gamemode_events/UpdateEquipmentAttemptEvent.h"
 #include "libespm/Convert.h"
+#include "libespm/GMST.h"
 #include "libespm/ObjectBounds.h"
 #include "libespm/RACE.h"
+#include "libespm/WEAP.h"
 #include "script_objects/EspmGameObject.h"
+#include <algorithm>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
+#include <optional>
 #include <spdlog/spdlog.h>
 #include <unordered_set>
 
@@ -1113,6 +1117,79 @@ bool ShouldBeBlocked(const MpActor& aggressor, const MpActor& target)
 }
 }
 
+namespace {
+// thuum docs/verbs/melee-reach.md. A swing lands on the target whose center
+// lies within the attacker's reach plus both actors' forward body extents
+// (the engine's pick), or that a sphere cast from the attacker's eye meets
+// when the pick finds nothing (ghidra/notes/melee-reach-1-7-104.md). Reach is
+// the attacker's scale times fCombatBashReach (a bash), fCombatDistance times
+// the weapon's reach, or the race's unarmed reach; the server takes the
+// largest the attacker's equipment allows, since the bash flag is the
+// client's claim. The eye cast is fObjectHitWeaponReach (150) plus
+// fHitCasterSizeSmall (12), executable defaults read live in the lab, the
+// longest cast. The forward extent is half the actor's bound length (28,
+// read live) times its scale. Positions reach the server every 130 ms per
+// actor (skymp5-client sendInputsService.ts), so the bound leaves room for
+// two actors moving at sprint speed since their last report.
+constexpr float kMeleeEyeCastReach = 150.f + 12.f;
+constexpr float kMeleeForwardExtent = 14.f;
+constexpr float kMeleeStaleSlack = 256.f;
+
+// refScale and the base record's height are 1 for player characters; the
+// race's height for the actor's sex is the rest of the engine's GetScale
+float PlayerScale(const MpActor& actor, WorldState& worldState)
+{
+  auto appearance = actor.GetAppearance();
+  const bool isFemale = appearance && appearance->isFemale;
+  return espm::GetData<espm::RACE>(actor.GetRaceId(), &worldState)
+    .height[isFemale ? 1 : 0];
+}
+
+std::optional<float> MeleeReachBound(const MpActor& aggressor,
+                                     const MpActor& target,
+                                     WorldState& worldState)
+{
+  try {
+    auto& browser = worldState.GetEspm().GetBrowser();
+    auto& cache = worldState.GetEspmCache();
+    float weaponReach = 0.f;
+    for (const auto& entry : aggressor.GetEquipment().inv.entries) {
+      if (entry.GetWorn() == Inventory::Worn::None) {
+        continue;
+      }
+      auto weapon =
+        espm::Convert<espm::WEAP>(browser.LookupById(entry.baseId).rec);
+      auto dnam = weapon ? weapon->GetData(cache).weapDNAM : nullptr;
+      if (dnam) {
+        weaponReach = std::max(weaponReach, dnam->reach);
+      }
+    }
+    const float combatDistance =
+      espm::GetData<espm::GMST>(espm::GMST::kFCombatDistance, &worldState)
+        .value;
+    const float bashReach =
+      espm::GetData<espm::GMST>(espm::GMST::kFCombatBashReach, &worldState)
+        .value;
+    const float unarmedReach =
+      espm::GetData<espm::RACE>(aggressor.GetRaceId(), &worldState)
+        .unarmedReach;
+    const float aggressorScale = PlayerScale(aggressor, worldState);
+    const float reach = std::max(
+      aggressorScale *
+        std::max({ bashReach, combatDistance * weaponReach, unarmedReach }),
+      kMeleeEyeCastReach);
+    return reach +
+      kMeleeForwardExtent *
+      (aggressorScale + PlayerScale(target, worldState)) +
+      kMeleeStaleSlack;
+  } catch (std::exception& e) {
+    spdlog::warn("MeleeReachBound - {:x} on {:x}: {}; reach not checked",
+                 aggressor.GetFormId(), target.GetFormId(), e.what());
+    return std::nullopt;
+  }
+}
+}
+
 void ActionListener::OnHit(const RawMessageData& rawMsgData,
                            const HitMessage& msg)
 {
@@ -1208,6 +1285,25 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
   const bool isUnarmed = IsUnarmedAttack(hitData.source);
 
   if (equipment.inv.HasItem(hitData.source) || isUnarmed) {
+    // Player against player only: the bound's body extents are a humanoid's
+    // (creatures' are larger), and a hosted NPC's scale is its own record's
+    MpActor* targetActor = targetRef->AsActor();
+    if (aggressor == myActor && targetActor &&
+        partOne.serverState.UserByActor(targetActor) !=
+          Networking::InvalidUserId &&
+        !IsBowOrCrossbowShot(hitData, &partOne.worldState)) {
+      const std::optional<float> bound =
+        MeleeReachBound(*aggressor, *targetActor, partOne.worldState);
+      const float distance =
+        (aggressor->GetPos() - targetActor->GetPos()).Length();
+      if (bound && distance > *bound) {
+        spdlog::warn("ActionListener::OnHit - E_HIT_REACH: {:x} hits {:x} "
+                     "from {:.0f} units, reach {:.0f}; refused",
+                     aggressor->GetFormId(), targetActor->GetFormId(),
+                     distance, *bound);
+        return;
+      }
+    }
     OnWeaponHit(aggressor, targetRef, hitData, isUnarmed);
     return;
   }

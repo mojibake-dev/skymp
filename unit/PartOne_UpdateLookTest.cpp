@@ -4,6 +4,8 @@
 
 using Catch::Matchers::ContainsSubstring;
 
+PartOne& GetPartOne();
+
 TEST_CASE("SetRaceMenuOpen failures", "[PartOne]")
 {
 
@@ -147,4 +149,69 @@ TEST_CASE("UpdateAppearance2", "[PartOne]")
   REQUIRE(
     nlohmann::json::parse(partOne.worldState.GetFormAt<MpActor>(0xff000ABC)
                             .GetAppearanceAsJson()) == jAppearance["data"]);
+}
+
+TEST_CASE("The race menu accepts only a race it offers", "[PartOne][espm]")
+{
+  // thuum docs/verbs/character-creation.md: NordRace has the Playable flag in
+  // Skyrim.esm, DremoraRace and ElderRace do not (thuum lab/esm.py on the
+  // lab's files).
+  constexpr uint32_t kNordRace = 0x13746;
+  constexpr uint32_t kDremoraRace = 0x131f0;
+  constexpr uint32_t kElderRace = 0x67cd8;
+
+  auto& partOne = GetPartOne();
+  DoConnect(partOne, 0);
+  partOne.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
+  partOne.SetUserActor(0, 0xff000000);
+  DoConnect(partOne, 1);
+  partOne.CreateActor(0xff000001, { 100, 0, 0 }, 0, 0x3c);
+  partOne.SetUserActor(1, 0xff000001);
+  auto& ac = partOne.worldState.GetFormAt<MpActor>(0xff000000);
+
+  const auto choose = [&](uint32_t raceId) {
+    auto msg = jAppearance;
+    msg["idx"] = ac.GetIdx();
+    msg["data"]["raceId"] = raceId;
+    partOne.Messages().clear();
+    DoMessage(partOne, 0, msg);
+  };
+  const auto relayed = [&] {
+    return std::count_if(
+      partOne.Messages().begin(), partOne.Messages().end(), [](auto& m) {
+        return m.j["t"] == MsgType::UpdateAppearance && m.userId == 1;
+      });
+  };
+
+  partOne.SetRaceMenuOpen(0xff000000, true);
+  choose(kDremoraRace);
+  REQUIRE(ac.GetAppearance() == nullptr);
+  REQUIRE(ac.IsRaceMenuOpen());
+  REQUIRE(relayed() == 0);
+
+  choose(kNordRace);
+  REQUIRE(ac.GetAppearance()->raceId == kNordRace);
+  REQUIRE(!ac.IsRaceMenuOpen());
+  REQUIRE(relayed() == 1);
+
+  // A race the server set (a gamemode's choice) stays allowed in the menu;
+  // another race the menu does not offer is still refused.
+  auto dremora = *ac.GetAppearance();
+  dremora.raceId = kDremoraRace;
+  ac.SetAppearance(&dremora);
+  partOne.SetRaceMenuOpen(0xff000000, true);
+  choose(kElderRace);
+  REQUIRE(ac.GetAppearance()->raceId == kDremoraRace);
+  REQUIRE(ac.IsRaceMenuOpen());
+  REQUIRE(relayed() == 0);
+
+  choose(kDremoraRace);
+  REQUIRE(ac.GetAppearance()->raceId == kDremoraRace);
+  REQUIRE(!ac.IsRaceMenuOpen());
+  REQUIRE(relayed() == 1);
+
+  DoDisconnect(partOne, 0);
+  DoDisconnect(partOne, 1);
+  partOne.DestroyActor(0xff000000);
+  partOne.DestroyActor(0xff000001);
 }

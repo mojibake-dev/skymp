@@ -16,7 +16,9 @@
 #include "gamemode_events/EatItemEvent.h"
 #include "gamemode_events/UpdateAppearanceAttemptEvent.h"
 #include "gamemode_events/UpdateEquipmentAttemptEvent.h"
+#include "libespm/Convert.h"
 #include "libespm/ObjectBounds.h"
+#include "libespm/RACE.h"
 #include "script_objects/EspmGameObject.h"
 #include <fmt/format.h>
 #include <fmt/ranges.h>
@@ -227,6 +229,30 @@ void ActionListener::OnUpdateAnimation(const RawMessageData& rawMsgData,
   targetActor->SetLastAnimEvent(msg.data);
 }
 
+namespace {
+// thuum docs/verbs/character-creation.md. The race menu offers the races
+// whose RACE record has the Playable flag (UESP, "Skyrim Mod:Mod File
+// Format/RACE"), so a client may change its race there only to one of them.
+// The race the server already records for the actor stays allowed, so an
+// actor a gamemode gave another race can still use the menu. Without game
+// files there is nothing to check against.
+bool IsAllowedRace(PartOne& partOne, const MpActor& actor, uint32_t raceId)
+{
+  if (!partOne.HasEspm()) {
+    return true;
+  }
+  if (auto recorded = actor.GetAppearance();
+      recorded && recorded->raceId == raceId) {
+    return true;
+  }
+  auto race = espm::Convert<espm::RACE>(
+    partOne.GetEspm().GetBrowser().LookupById(raceId).rec);
+  return race &&
+    (race->GetData(partOne.worldState.GetEspmCache()).flags &
+     espm::RACE::kPlayable);
+}
+}
+
 void ActionListener::OnUpdateAppearance(const RawMessageData& rawMsgData,
                                         const UpdateAppearanceMessage& msg)
 {
@@ -235,7 +261,16 @@ void ActionListener::OnUpdateAppearance(const RawMessageData& rawMsgData,
     return;
   }
 
-  const bool isAllowed = actor->IsRaceMenuOpen();
+  const bool isRaceMenuOpen = actor->IsRaceMenuOpen();
+  const bool isAllowed =
+    isRaceMenuOpen && IsAllowedRace(partOne, *actor, msg.data->raceId);
+
+  if (isRaceMenuOpen && !isAllowed) {
+    spdlog::warn("ActionListener::OnUpdateAppearance - E_APPEARANCE_RACE: "
+                 "{:x} chose race {:x}, which the race menu does not offer; "
+                 "refused",
+                 actor->GetFormId(), msg.data->raceId);
+  }
 
   if (isAllowed) {
     actor->SetRaceMenuOpen(false);
@@ -463,12 +498,13 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
 namespace {
 // thuum docs/verbs/activation-reach.md. The game picks what the player can
 // activate along a ray from the eye: fActivatePickLength:Interface (180) plus
-// fActivatePickRadius (16), the defaults in the 1.7.104 executable
-// (Ghidra, HYPOTHESIS until read in a running game). The client can edit its
-// INI, so the server enforces its own bound: the game's reach, plus room for
-// the eye above the feet and the third-person shoulder offset (the server
-// measures from the actor's position, at its feet), plus the target's own
-// size, since the pick lands on its surface and the server knows its origin.
+// fActivatePickRadius (16), the defaults in the 1.7.104 executable (Ghidra),
+// read in the running game too (thuum lab run 20261003-070107). The client
+// can edit its INI, so the server enforces its own bound: the game's reach,
+// plus room for the eye above the feet and the third-person shoulder offset
+// (the server measures from the actor's position, at its feet), plus the
+// target's own size, since the pick lands on its surface and the server knows
+// its origin.
 constexpr float kActivationPickLength = 180.f;
 constexpr float kActivationPickRadius = 16.f;
 constexpr float kActivationBodySlack = 256.f;

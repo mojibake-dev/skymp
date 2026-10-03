@@ -363,6 +363,50 @@ TEST_CASE("Activate PurpleMountainFlower in Whiterun", "[PartOne][espm]")
   partOne.DestroyActor(0xff000000);
 }
 
+TEST_CASE("An activation from beyond reach harvests nothing",
+          "[PartOne][espm]")
+{
+  // thuum docs/verbs/activation-reach.md: the same flower as above, first
+  // from 2500 units away (refused), then from beside it (harvested). The
+  // actor starts beside it so the reference is loaded either way.
+  auto& partOne = GetPartOne();
+  partOne.Messages().clear();
+
+  DoConnect(partOne, 0);
+  const NiPoint3 beside = { 22572, -8634, -3597 };
+  partOne.CreateActor(0xff000000, beside, 0, 0x1a26f);
+  partOne.SetUserActor(0, 0xff000000);
+  auto& ac = partOne.worldState.GetFormAt<MpActor>(0xff000000);
+  ac.RemoveAllItems();
+
+  const auto refrId = 0x0100122a;
+  auto& ref = partOne.worldState.GetFormAt<MpObjectReference>(refrId);
+  REQUIRE(!ref.IsHarvested());
+
+  const auto activate = [&] {
+    DoMessage(partOne, 0,
+              nlohmann::json{ { "t", MsgType::Activate },
+                              { "data",
+                                { { "caster", 0x14 },
+                                  { "target", refrId },
+                                  { "isSecondActivation", false } } } });
+    partOne.Tick();
+  };
+
+  ac.SetPos(beside + NiPoint3{ 2500, 0, 0 });
+  activate();
+  REQUIRE(!ref.IsHarvested());
+  REQUIRE(ac.GetInventory().GetTotalItemCount() == 0);
+
+  ac.SetPos(beside);
+  activate();
+  REQUIRE(ref.IsHarvested());
+  REQUIRE(ac.GetInventory().GetTotalItemCount() == 1);
+
+  DoDisconnect(partOne, 0);
+  partOne.DestroyActor(0xff000000);
+}
+
 TEST_CASE("BarrelFood01 PutItem/TakeItem", "[PartOne][espm]")
 {
   auto& partOne = GetPartOne();

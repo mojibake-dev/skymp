@@ -16,6 +16,7 @@
 #include "gamemode_events/EatItemEvent.h"
 #include "gamemode_events/UpdateAppearanceAttemptEvent.h"
 #include "gamemode_events/UpdateEquipmentAttemptEvent.h"
+#include "libespm/ObjectBounds.h"
 #include "script_objects/EspmGameObject.h"
 #include <fmt/format.h>
 #include <fmt/ranges.h>
@@ -459,6 +460,40 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   updateEquipmentAttemptEvent.Fire(actor->GetParent());
 }
 
+namespace {
+// thuum docs/verbs/activation-reach.md. The game picks what the player can
+// activate along a ray from the eye: fActivatePickLength:Interface (180) plus
+// fActivatePickRadius (16), the defaults in the 1.7.104 executable
+// (Ghidra, HYPOTHESIS until read in a running game). The client can edit its
+// INI, so the server enforces its own bound: the game's reach, plus room for
+// the eye above the feet and the third-person shoulder offset (the server
+// measures from the actor's position, at its feet), plus the target's own
+// size, since the pick lands on its surface and the server knows its origin.
+constexpr float kActivationPickLength = 180.f;
+constexpr float kActivationPickRadius = 16.f;
+constexpr float kActivationBodySlack = 256.f;
+
+float ActivationReach(MpObjectReference& target)
+{
+  float size = 0.f;
+  if (auto worldState = target.GetParent();
+      worldState && worldState->HasEspm()) {
+    auto& browser = worldState->GetEspm().GetBrowser();
+    if (auto base = browser.LookupById(target.GetBaseId()).rec) {
+      if (auto bounds =
+            espm::GetObjectBounds(base, worldState->GetEspmCache())) {
+        size = espm::BoundsRadius(*bounds);
+      }
+    }
+    if (target.IsEspmForm() && !target.AsActor()) {
+      size *= espm::GetData<espm::REFR>(target.GetFormId(), worldState).scale;
+    }
+  }
+  return kActivationPickLength + kActivationPickRadius + kActivationBodySlack +
+    size;
+}
+}
+
 void ActionListener::OnActivate(const RawMessageData& rawMsgData,
                                 const ActivateMessage& msg)
 {
@@ -488,12 +523,31 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
   if (!targetPtr)
     return;
 
+  MpObjectReference& caster = msg.data.caster == 0x14
+    ? *ac
+    : partOne.worldState.GetFormAt<MpObjectReference>(
+        static_cast<uint32_t>(msg.data.caster));
+
+  // A client's first activation must be within reach; closing a container
+  // (the second activation) is not checked, so nobody is left holding one.
+  // Across cells or worlds a distance means nothing: Activate's own check
+  // refuses that, with its own error.
+  if (!msg.data.isSecondActivation &&
+      caster.GetCellOrWorld() == targetPtr->GetCellOrWorld()) {
+    const float distance = (caster.GetPos() - targetPtr->GetPos()).Length();
+    const float reach = ActivationReach(*targetPtr);
+    if (distance > reach) {
+      spdlog::warn("ActionListener::OnActivate - E_ACTIVATE_REACH: {:x} "
+                   "activates {:x} from {:.0f} units, reach {:.0f}; refused",
+                   caster.GetFormId(), targetPtr->GetFormId(), distance,
+                   reach);
+      return;
+    }
+  }
+
   constexpr bool kDefaultProcessingOnlyFalse = false;
-  targetPtr->Activate(
-    msg.data.caster == 0x14 ? *ac
-                            : partOne.worldState.GetFormAt<MpObjectReference>(
-                                static_cast<uint32_t>(msg.data.caster)),
-    kDefaultProcessingOnlyFalse, msg.data.isSecondActivation);
+  targetPtr->Activate(caster, kDefaultProcessingOnlyFalse,
+                      msg.data.isSecondActivation);
   if (hosterId) {
     auto actor =
       std::dynamic_pointer_cast<MpActor>(partOne.worldState.LookupFormById(

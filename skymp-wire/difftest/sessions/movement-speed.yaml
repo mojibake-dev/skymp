@@ -1,0 +1,47 @@
+# difftest movement-speed (M1 validation, thuum docs/verbs/movement-speed.md):
+# c1 sends five moves of 800 units each, 50 ms apart (16000 units a second;
+# each under the 4096 a message the server already bounds). The legacy server
+# takes and relays all five. The fixed server charges each move to c1's
+# ground speed budget (2048 units, refilled at 660 a second): the first two
+# fit, the third does not (448 left plus a few ms of refill), and neither do
+# the two after it, measured from where the server holds c1; each refused
+# move is snapped back with Teleport2 and not relayed. UpdateMovement
+# compares exactly here (not as presence), so the relays show as counts.
+#
+# Timing (DIFFTEST_CLIENT_GAP_MS 1500) as movement-reject: c2 joins before
+# c1's moves and outlives c1, so c2 also sees c1's departure the way smoke
+# declares it.
+id: movement-speed
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+volatile: [3, 24]
+steps:
+  - {client: c1, at_ms: 3000, move: {dy: 800}}
+  - {client: c1, at_ms: 3050, move: {dy: 1600}}
+  - {client: c1, at_ms: 3100, move: {dy: 2400}}
+  - {client: c1, at_ms: 3150, move: {dy: 3200}}
+  - {client: c1, at_ms: 3200, move: {dy: 4000}}
+  - {client: c2, at_ms: 0, move: {dx: 30}}
+  - {client: c2, at_ms: 2500, move: {dx: 60}}
+divergences:
+  - client: c1
+    msg: {t: 31}
+    legacy: 0
+    wire: 3
+    reason: the three moves beyond c1's ground speed budget snapped back on the fixed server; taken on the legacy one
+  - client: c1
+    msg: {t: 2, idx: 2}
+    legacy: 5
+    wire: 2
+    reason: c1's moves echoed back to it; the fixed server relays only the two within the budget
+  - client: c2
+    msg: {t: 2, idx: 2}
+    legacy: 5
+    wire: 2
+    reason: c1's moves relayed to the neighbour; the fixed server relays only the two within the budget
+  - client: c2
+    msg: {t: 25, idx: 2}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

@@ -15,6 +15,16 @@ steps:
   - {client: c2, at_ms: 3500, move: {dx: 60}}
 divergences:
   - client: c2
+    msg: {t: 16, data: {health: 0.92576003074646}}
+    legacy: 1
+    wire: 0
+    reason: the legacy server doubled the bare-handed hit on the client's power attack flag (7.4 percent of c2's health)
+  - client: c2
+    msg: {t: 16, data: {health: 0.96288001537323}}
+    legacy: 0
+    wire: 1
+    reason: the fixed server dropped the flag it saw no power attack for and hit as a plain attack (3.7 percent)
+  - client: c2
     msg: {t: 25, idx: 2}
     legacy: 0
     wire: 1

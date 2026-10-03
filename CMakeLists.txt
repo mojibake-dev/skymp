@@ -72,6 +72,12 @@ else()
 endif()
 
 cmake_minimum_required(VERSION 3.19)
+# The Rust bridge's generated glue (corrosion_add_cxxbridge in
+# cmake/wire.cmake) is used by server_guest_lib and unit in other directories
+# (thuum ADR-020): let GENERATED sources cross directories.
+if(POLICY CMP0118)
+  cmake_policy(SET CMP0118 NEW)
+endif()
 project(skymp)
 enable_testing()
 

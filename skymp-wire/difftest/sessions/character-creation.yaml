@@ -1,0 +1,36 @@
+# difftest character-creation (M1 validation, thuum
+# docs/verbs/character-creation.md): c1 logs in as a new character (profile 9
+# has none in the clean world), so the server opens its race menu, and c1
+# answers with DremoraRace (78320), a race the menu does not offer (no
+# Playable flag in Skyrim.esm; thuum lab/esm.py). The legacy server takes it:
+# it records the look, closes the menu, and relays the look to every listener,
+# c1 itself included. The fixed server refuses it: the menu stays open and
+# nothing is relayed.
+#
+# Timing (DIFFTEST_CLIENT_GAP_MS 1500) as movement-reject: c2 joins before
+# c1's choice and outlives c1, so c2 also sees c1's departure the way smoke
+# declares it.
+id: character-creation
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 3000, send: {t: 4, idx: "{{idx}}", data: {isFemale: false, raceId: 78320, weight: 50, skinColor: 0, hairColor: 0, headpartIds: [], headTextureSetId: 0, options: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], presets: [0, 0, 0, 0], tints: [], name: difftest}}}
+  - {client: c2, at_ms: 0, move: {dy: 30}}
+  - {client: c2, at_ms: 2500, move: {dy: 60}}
+divergences:
+  - client: c1
+    msg: {t: 4, data: {raceId: 78320}}
+    legacy: 1
+    wire: 0
+    reason: a race the menu does not offer, taken and echoed back on the legacy server; refused on the fixed one
+  - client: c2
+    msg: {t: 4, data: {raceId: 78320}}
+    legacy: 1
+    wire: 0
+    reason: the same look relayed to the neighbour; refused on the fixed server
+  - client: c2
+    msg: {t: 25, idx: 2}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

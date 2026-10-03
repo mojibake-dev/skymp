@@ -1,0 +1,33 @@
+# difftest melee-reach (M1 validation, thuum docs/verbs/melee-reach.md): c1
+# and c2 are new characters (profiles 9 and 10), so their actors are
+# 0xff000002 and 0xff000003: the server's ids start at 0xff000000
+# (WorldState nextId) and the clean world holds two characters. c2 walks 2000
+# units north of the spawn, then c1 sends a bare-handed OnHit (source 500, the
+# server's unarmed id) on c2's actor (4278190083) from the spawn. The legacy
+# server takes it, its only bound being 4096 units, and tells c2 its new
+# health (ChangeValues). The fixed server refuses a player's melee hit on a
+# player beyond reach (about 447 units for a Nord, whatever it holds: the
+# bound takes the bash reach too).
+#
+# Timing (DIFFTEST_CLIENT_GAP_MS 1500) as movement-reject: c2 joins and walks
+# before c1's hit and outlives c1, so c2 also sees c1's departure the way smoke
+# declares it.
+id: melee-reach
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 3500, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 500, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
+  - {client: c2, at_ms: 0, move: {dy: 2000}}
+  - {client: c2, at_ms: 3500, move: {dy: 2010}}
+divergences:
+  - client: c2
+    msg: {t: 16}
+    legacy: 1
+    wire: 0
+    reason: a bare-handed hit from 2000 units lowered c2's health on the legacy server; refused beyond reach on the fixed one
+  - client: c2
+    msg: {t: 25, idx: 2}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

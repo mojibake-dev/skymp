@@ -54,25 +54,31 @@ uint32_t CalculateHashcode(const void* readBuffer, size_t length)
 
 // One CRC32 per master file and game data set. Upstream's CI data set is the
 // pre-AE Skyrim SE files; the thuum lab (docs/LAB.md) runs the files a current
-// Steam install ships, so both sets are known and the test accepts either.
+// Steam install ships and, since thuum ADR-022, those of 1.6.1170 (Steam's own
+// depots for that build), so every set is known and the test accepts any.
 // Adding a set means adding a row here with the game version it came from.
 const std::map<std::string, std::vector<std::pair<uint32_t, const char*>>>
   kKnownHashcodes{
     { "Skyrim.esm",
       { { 0xaf75991dUL, "SE pre-AE (upstream CI set)" },
-        { 0xcb135ed1UL, "AE 1.7.104.0 (thuum lab, 2026-09-29)" } } },
+        { 0xcb135ed1UL, "AE 1.7.104.0 (thuum lab, 2026-09-29)" },
+        { 0x24bb49cdUL, "AE 1.6.1170.0 (thuum lab, 2026-10-04)" } } },
     { "Update.esm",
       { { 0x17ab5e20UL, "SE pre-AE (upstream CI set)" },
-        { 0x2207cf03UL, "AE 1.7.104.0 (thuum lab, 2026-09-29)" } } },
+        { 0x2207cf03UL, "AE 1.7.104.0 (thuum lab, 2026-09-29)" },
+        { 0xe6ba88bbUL, "AE 1.6.1170.0 (thuum lab, 2026-10-04)" } } },
     { "Dawnguard.esm",
       { { 0xcc81e5d8UL, "SE pre-AE (upstream CI set)" },
-        { 0x6cec879aUL, "AE 1.7.104.0 (thuum lab, 2026-09-29)" } } },
+        { 0x6cec879aUL, "AE 1.7.104.0 (thuum lab, 2026-09-29)" },
+        { 0xd399544aUL, "AE 1.6.1170.0 (thuum lab, 2026-10-04)" } } },
     { "HearthFires.esm",
       { { 0xbad9393aUL, "SE pre-AE (upstream CI set)" },
-        { 0x1eabc985UL, "AE 1.7.104.0 (thuum lab, 2026-09-29)" } } },
+        { 0x1eabc985UL, "AE 1.7.104.0 (thuum lab, 2026-09-29)" },
+        { 0xa1ec149bUL, "AE 1.6.1170.0 (thuum lab, 2026-10-04)" } } },
     { "Dragonborn.esm",
       { { 0xeb10e82UL, "SE pre-AE (upstream CI set)" },
-        { 0xe4a4f6eaUL, "AE 1.7.104.0 (thuum lab, 2026-09-29)" } } }
+        { 0xe4a4f6eaUL, "AE 1.7.104.0 (thuum lab, 2026-09-29)" },
+        { 0x1120165cUL, "AE 1.6.1170.0 (thuum lab, 2026-10-04)" } } }
   };
 
 uint32_t GetCorrectHashcode(const std::string& fileName)

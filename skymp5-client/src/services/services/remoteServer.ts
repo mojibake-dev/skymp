@@ -98,6 +98,13 @@ const unequipIronHelmet = () => {
   }
 };
 
+// SkyMP's rotations are degrees (the client sends ObjectReference.GetAngleX,
+// Y and Z); TESModPlatform.moveRefrToPosition hands them to the engine's
+// TESObjectREFR::MoveTo_Impl, which stores radians (CommonLibSSE-NG
+// TESObjectREFR.cpp: GetAngleZ returns data.angle.z unconverted). A
+// teleport to 180 faced 233.24 degrees (180 radians) in thuum's lab.
+const degreesToRadians = (degrees: number) => degrees * Math.PI / 180;
+
 export class RemoteServer extends ClientListener {
   constructor(private sp: Sp, private controller: CombinedController) {
     super();
@@ -265,9 +272,9 @@ export class RemoteServer extends ClientListener {
           msg.pos[0],
           msg.pos[1],
           msg.pos[2],
-          msg.rot[0],
-          msg.rot[1],
-          msg.rot[2],
+          degreesToRadians(msg.rot[0]),
+          degreesToRadians(msg.rot[1]),
+          degreesToRadians(msg.rot[2]),
         );
       };
       const actor = Actor.from(refr);
@@ -500,9 +507,9 @@ export class RemoteServer extends ClientListener {
                 msg.transform.pos[0],
                 msg.transform.pos[1],
                 msg.transform.pos[2],
-                msg.transform.rot[0],
-                msg.transform.rot[1],
-                msg.transform.rot[2],
+                degreesToRadians(msg.transform.rot[0]),
+                degreesToRadians(msg.transform.rot[1]),
+                degreesToRadians(msg.transform.rot[2]),
               );
               await Utility.wait(1);
               const pl = Game.getPlayer();

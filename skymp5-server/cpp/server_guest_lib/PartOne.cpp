@@ -243,8 +243,7 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
     // CreateActor loads the save (thuum docs/verbs/time.md)
     if (pImpl->gameTimeBroadcast) {
       pImpl->sendTarget->Send(
-        userId, ToMessage(pImpl->gameClock->login(userId, UnixNowMs())),
-        true);
+        userId, ToMessage(pImpl->gameClock->login(userId, UnixNowMs())), true);
     }
 
     actor.ForceSubscriptionsUpdate();
@@ -1114,8 +1113,8 @@ void PartOne::TickGameTime()
     const auto userId = static_cast<Networking::UserId>(i);
     if (serverState.ActorByUser(userId) &&
         pImpl->gameClock->resync_due(userId, nowMs)) {
-      pImpl->sendTarget->Send(
-        userId, ToMessage(pImpl->gameClock->now(nowMs)), true);
+      pImpl->sendTarget->Send(userId, ToMessage(pImpl->gameClock->now(nowMs)),
+                              true);
     }
   }
 }

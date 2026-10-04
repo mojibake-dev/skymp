@@ -35,8 +35,8 @@ TEST_CASE("A player hears the game clock at login, ahead of their own "
   partOne.SetUserActor(0, 0xff000ABC);
 
   REQUIRE(partOne.Messages().size() == 2);
-  auto clock = dynamic_cast<SetGameTimeMessage*>(
-    partOne.Messages().at(0).message.get());
+  auto clock =
+    dynamic_cast<SetGameTimeMessage*>(partOne.Messages().at(0).message.get());
   REQUIRE(clock);
   REQUIRE(partOne.Messages().at(0).reliable);
   REQUIRE(partOne.Messages().at(0).userId == 0);

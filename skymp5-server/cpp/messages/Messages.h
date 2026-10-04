@@ -18,6 +18,7 @@
 #include "OpenContainerMessage.h"
 #include "PlayerBowShotMessage.h"
 #include "PutItemMessage.h"
+#include "RestIntentMessage.h"
 #include "SetGameTimeMessage.h"
 #include "SetInventoryMessage.h"
 #include "SetRaceMenuOpenMessage.h"
@@ -68,4 +69,5 @@
   REGISTER_MESSAGE(UpdateAppearanceMessage)                                   \
   REGISTER_MESSAGE(UpdateGameModeDataMessage)                                 \
   REGISTER_MESSAGE(CreateActorMessage)                                        \
-  REGISTER_MESSAGE(SetGameTimeMessage)
+  REGISTER_MESSAGE(SetGameTimeMessage)                                        \
+  REGISTER_MESSAGE(RestIntentMessage)

@@ -21,6 +21,7 @@ import { OpenContainerMessage } from "./openContainerMessage";
 import { PlayerBowShotMessage } from "./playerBowShotMessage";
 import { PutItemMessage } from "./putItemMessage";
 import { SetGameTimeMessage } from "./setGameTimeMessage";
+import { RestIntentMessage } from "./restIntentMessage";
 import { SetInventoryMessage } from "./setInventoryMessage";
 import { SetRaceMenuOpenMessage } from "./setRaceMenuOpenMessage";
 import { SpSnippetMessage } from "./spSnippetMessage";
@@ -62,6 +63,7 @@ export type AnyMessage = ActivateMessage
     | DestroyActorMessage
     | SetRaceMenuOpenMessage
     | SetGameTimeMessage
+    | RestIntentMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage
     | UpdatePropertyMessage

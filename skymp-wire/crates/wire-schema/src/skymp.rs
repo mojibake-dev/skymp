@@ -3,10 +3,12 @@
 //! skymp5-server/cpp/messages and the payload types in server_guest_lib.
 //! This file is the contract the C++ core and skymp5-client keep speaking
 //! in-process; on the wire the same structs travel as postcard. MsgTypes 1
-//! to 33 are SkyMP's; thuum appends its own after them (34, SetGameTime).
+//! to 33 are SkyMP's; thuum appends its own after them (34, SetGameTime; 35,
+//! RestIntent).
 //!
-//! Directions are SkyMP's: twelve types only travel client to server, thirteen
-//! (fourteen with SetGameTime) only server to client, eight both ways (the server relays a client's
+//! Directions are SkyMP's: twelve types (thirteen with RestIntent) only travel
+//! client to server, thirteen (fourteen with SetGameTime) only server to
+//! client, eight both ways (the server relays a client's
 //! UpdateMovement, UpdateAnimation, UpdateAppearance, UpdateEquipment,
 //! SpellCast and UpdateAnimVariables to its neighbours, and sends its own
 //! CustomPacket and ChangeValues). Rungs are the ones SkyMP gives them today;
@@ -978,5 +980,24 @@ wire_struct! {
         pub days_passed: f32,
         /// TimeScale: game seconds per real second.
         pub time_scale: f32,
+    }
+}
+
+wire_struct! {
+    /// MsgType 35, thuum's (docs/verbs/rest.md, ADR-021 decision 2). Client
+    /// to server, reliable: the player waited or slept, for the game hours
+    /// the engine counted across the Sleep/Wait menu (R1 intent). The server
+    /// checks the hours, that the player is alive and out of a fight, and
+    /// computes the recovery itself (R0); the shared clock does not move. Not
+    /// idempotent: each one is a rest. Reason codes: `E_VAL_NONFINITE`,
+    /// `E_VAL_RANGE` (hours 1 to 24, the menu's range), `E_VAL_RATE`.
+    pub struct RestIntent {
+        /// `"t": 35`.
+        #[serde(default)]
+        pub t: MsgT<35>,
+        /// Game hours rested.
+        pub hours: f32,
+        /// A sleep in a bed rather than a wait.
+        pub sleep: bool,
     }
 }

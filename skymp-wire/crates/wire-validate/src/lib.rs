@@ -48,7 +48,7 @@ pub const WORLD_ABS_MAX: f32 = 1.0e6;
 
 /// Per-client state the validator needs: sequence tracking and token buckets.
 /// Owned by the transport layer, one per connection.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct ClientGuard {
     /// Highest movement `seq` accepted; meaningful once `movement_primed`.
     pub last_movement_seq: u32,
@@ -61,6 +61,22 @@ pub struct ClientGuard {
     pub hit_budget: TokenBucket,
     /// Replay window for hit `seq`, which may legally arrive out of order.
     pub hit_window: ReplayWindow,
+    /// Budget for rests: the Sleep/Wait menu takes seconds per rest, so two
+    /// at once and one a second after that only ever stops a flood.
+    pub rest_budget: TokenBucket,
+}
+
+impl Default for ClientGuard {
+    fn default() -> Self {
+        Self {
+            last_movement_seq: 0,
+            movement_primed: false,
+            movement_budget: TokenBucket::default(),
+            hit_budget: TokenBucket::default(),
+            hit_window: ReplayWindow::default(),
+            rest_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
+        }
+    }
 }
 
 /// Minimal token bucket with checked arithmetic. Refill is driven by the
@@ -193,6 +209,16 @@ fn check_game_time(m: &skymp::SetGameTime) -> Result<(), Reject> {
     }
 }
 
+/// A rest's hours: the Sleep/Wait menu's range, one hour to a day
+/// (docs/verbs/rest.md; UESP, Skyrim:Health, "the hour minimum").
+fn check_rest(m: &skymp::RestIntent) -> Result<(), Reject> {
+    if (1.0..=24.0).contains(&m.hours) {
+        Ok(())
+    } else {
+        Err(Reject::Range)
+    }
+}
+
 /// Validate one inbound message against the client's guard state.
 /// `Ok(())` means "well-formed and within rate"; ownership is checked later.
 pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(), Reject> {
@@ -257,6 +283,16 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
                 return Err(Reject::NonFinite);
             }
             check_game_time(m)
+        }
+        Message::RestIntent(m) => {
+            if !all_finite(m) {
+                return Err(Reject::NonFinite);
+            }
+            check_rest(m)?;
+            if !guard.rest_budget.take(now_ms) {
+                return Err(Reject::Rate);
+            }
+            Ok(())
         }
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
@@ -542,6 +578,26 @@ mod tests {
         assert_eq!(validate(&game_time(7, 17, 8.0, 1.0, f32::INFINITY), &mut g, 0), Err(Reject::NonFinite));
     }
 
+    fn rest(hours: f32) -> Message {
+        Message::RestIntent(skymp::RestIntent { hours, sleep: false, ..Default::default() })
+    }
+
+    #[test]
+    fn rest_both_ways() {
+        let mut g = ClientGuard::default();
+        assert_eq!(validate(&rest(1.0), &mut g, 0), Ok(()));
+        assert_eq!(validate(&rest(24.0), &mut g, 0), Ok(()));
+        // two at once, then one a second
+        assert_eq!(validate(&rest(8.0), &mut g, 0), Err(Reject::Rate));
+        assert_eq!(validate(&rest(8.0), &mut g, 1_000), Ok(()));
+        for bad in [0.0, 0.99, 24.01, -1.0, 1e9] {
+            assert_eq!(validate(&rest(bad), &mut ClientGuard::default(), 0), Err(Reject::Range), "{bad}");
+        }
+        for odd in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(validate(&rest(odd), &mut ClientGuard::default(), 0), Err(Reject::NonFinite), "{odd}");
+        }
+    }
+
     #[test]
     fn replay_window_edges() {
         let mut w = ReplayWindow::default();
@@ -600,6 +656,12 @@ mod tests {
         fn hosted_never_panics(health in any::<f32>(), counts in proptest::collection::vec(any::<i32>(), 0..=cap::INVENTORY_DELTA)) {
             let mut g = ClientGuard::default();
             let _ = validate(&hosted(health, &counts), &mut g, 0);
+        }
+
+        #[test]
+        fn rest_is_accepted_exactly_in_range(hours in -30.0f32..60.0) {
+            let want = if (1.0..=24.0).contains(&hours) { Ok(()) } else { Err(Reject::Range) };
+            prop_assert_eq!(validate(&rest(hours), &mut ClientGuard::default(), 0), want);
         }
 
         #[test]

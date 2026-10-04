@@ -1,0 +1,27 @@
+# difftest hostility (M1, thuum docs/verbs/hostility-sync.md, ADR-023): c1
+# and c2 are new characters (profiles 9 and 10, actors 0xff000002 and
+# 0xff000003: see melee-reach); c2 steps 50 units off the spawn and c1 hits
+# it bare-handed twice, 2 s apart. Both servers take both hits. The fixed
+# server tells c2's game once that c1 is hostile: an SpSnippet calling
+# Actor.StartCombat on c1's form, aimed at c2's own player (0x14 on that
+# client). The second hit is the same fight. The legacy server tells nobody.
+id: hostility
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 3500, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 500, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
+  - {client: c1, at_ms: 5500, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 500, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
+  - {client: c2, at_ms: 0, move: {dx: 50}}
+  - {client: c2, at_ms: 3500, move: {dx: 60}}
+divergences:
+  - client: c2
+    msg: {t: 30, class: Actor, function: StartCombat, selfId: 4278190082, arguments: [{formId: 20, type: Actor}]}
+    legacy: 0
+    wire: 1
+    reason: the fixed server tells the victim's game of the fight once (hostility sync); the legacy server has none
+  - client: c2
+    msg: {t: 25, idx: 2}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

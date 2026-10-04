@@ -315,6 +315,81 @@ TEST_CASE("A melee hit on a player from beyond reach does nothing", "[Hit]")
   DoDisconnect(p, 1);
 }
 
+TEST_CASE("The first hit of a fight between players tells the victim's game",
+          "[Hit]")
+{
+  // thuum docs/verbs/hostility-sync.md (ADR-023): the victim's user gets
+  // Actor.StartCombat on the attacker's form, aimed at its own player (0x14
+  // on that client). Hits under 10 s apart are one fight; a hit after a
+  // longer pause begins another; a hit on a target no user plays tells
+  // nobody.
+  PartOne& p = GetPartOne();
+  DoConnect(p, 0);
+  DoConnect(p, 1);
+  const uint32_t aggressor = 0xff000000;
+  const uint32_t target = 0xff000001;
+  const uint32_t npc = 0xff000002;
+  p.CreateActor(aggressor, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, aggressor);
+  p.CreateActor(target, { 0, 100, 0 }, 0, 0x3c);
+  p.SetUserActor(1, target);
+  p.CreateActor(npc, { 0, 120, 0 }, 0, 0x3c);
+  auto& acAggressor = p.worldState.GetFormAt<MpActor>(aggressor);
+
+  const uint32_t ironSword = 0x00012eb7;
+  acAggressor.AddItem(ironSword, 1);
+  Equipment eq;
+  eq.inv.entries.push_back(Inventory::Entry(ironSword, 1, kExtraWornTrue));
+  acAggressor.SetEquipment(eq);
+
+  RawMessageData rawMsgData;
+  rawMsgData.userId = 0;
+  // The StartCombat snippets one hit on victimId sends
+  const auto hit = [&](uint32_t victimId) {
+    p.Messages().clear();
+    HitMessage hitMsg;
+    hitMsg.data.aggressor = 0x14;
+    hitMsg.data.target = victimId;
+    hitMsg.data.source = ironSword;
+    p.GetActionListener().OnHit(rawMsgData, hitMsg);
+    p.Tick(); // snippets are deferred
+    std::vector<nlohmann::json> notices;
+    for (auto& m : p.Messages()) {
+      if (m.j["t"] == MsgType::SpSnippet && m.j["function"] == "StartCombat") {
+        REQUIRE(m.userId == 1);
+        notices.push_back(m.j);
+      }
+    }
+    return notices;
+  };
+
+  const auto first = hit(target);
+  REQUIRE(first.size() == 1);
+  REQUIRE(first[0]["class"] == "Actor");
+  REQUIRE(first[0]["selfId"] == aggressor);
+  REQUIRE(first[0]["arguments"] ==
+          nlohmann::json::array(
+            { nlohmann::json{ { "formId", 0x14 }, { "type", "Actor" } } }));
+
+  // 3 s later: the same fight
+  acAggressor.SetLastHitTime(target, std::chrono::steady_clock::now() - 3s);
+  REQUIRE(hit(target).empty());
+
+  // after a pause past the quiet window: a new fight
+  acAggressor.SetLastHitTime(target, std::chrono::steady_clock::now() - 11s);
+  REQUIRE(hit(target).size() == 1);
+
+  // nobody plays the NPC
+  acAggressor.SetLastHitTime(target, std::chrono::steady_clock::now() - 11s);
+  REQUIRE(hit(npc).empty());
+
+  p.DestroyActor(aggressor);
+  p.DestroyActor(target);
+  p.DestroyActor(npc);
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+}
+
 namespace {
 // Damage stays fixed; what the formula was told is what the test reads.
 class FlagRecordingFormula : public IDamageFormula

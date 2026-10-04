@@ -1580,6 +1580,11 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
 
   auto& targetActor = *targetActorPtr;
 
+  // Read before this hit is recorded: hostility sync asks whether this hit
+  // begins a fight
+  const auto previousHitOnTarget =
+    aggressor->GetLastHitTime(targetActor.GetFormId());
+
   const auto lastHitTimeAnyTarget = aggressor->GetLastHitTime(std::nullopt);
   const std::chrono::duration<float> timePassedAnyTarget =
     currentHitTime - lastHitTimeAnyTarget;
@@ -1724,6 +1729,54 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
     "percentage now: {2}, base health: {4})",
     hitData.target, damage, currentActorValues.healthPercentage,
     healthPercentage, outBaseHealth);
+
+  NotifyHostility(*aggressor, targetActor, previousHitOnTarget,
+                  currentHitTime);
+}
+
+// thuum docs/verbs/hostility-sync.md (ADR-023): the attacker's engine marks
+// the victim an enemy when its hit lands, but the victim's engine never sees
+// that hit. On the first hit of a fight between two players, the Rust rule
+// says so, and the victim's game starts combat between its figure of the
+// attacker and its own player (0x14 on that client). The engine then refuses
+// the victim a wait or a sleep with the attacker near, as it does the
+// attacker.
+void ActionListener::NotifyHostility(
+  MpActor& aggressor, MpActor& target,
+  std::chrono::steady_clock::time_point previousHitOnTarget,
+  std::chrono::steady_clock::time_point now)
+{
+  const bool hasPreviousHit =
+    previousHitOnTarget != std::chrono::steady_clock::time_point();
+
+  skymp::rules::HostilityFacts facts{};
+  facts.aggressor_is_player =
+    partOne.serverState.UserByActor(&aggressor) != Networking::InvalidUserId;
+  facts.target_is_player =
+    partOne.serverState.UserByActor(&target) != Networking::InvalidUserId;
+  facts.same_actor = &aggressor == &target;
+  facts.has_previous_hit = hasPreviousHit;
+  facts.since_previous_hit_ms = hasPreviousHit
+    ? static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+          now - previousHitOnTarget)
+          .count())
+    : 0;
+  if (!skymp::rules::hostility_notify(facts)) {
+    return;
+  }
+
+  SpSnippetObjectArgument player;
+  player.formId = 0x14;
+  player.type = "Actor";
+  const std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+    args{ player };
+  SpSnippet("Actor", "StartCombat", args, aggressor.GetFormId())
+    .Execute(&target, SpSnippetMode::kNoReturnResult);
+  spdlog::info("ActionListener::OnWeaponHit - hostility: {:x} hit {:x}, a "
+               "fight begins; the victim's game is told",
+               aggressor.GetFormId(), target.GetFormId());
 }
 
 void ActionListener::SendPapyrusOnHitEvent(MpActor* aggressor,

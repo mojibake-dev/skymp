@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, appearance, clock, damage, melee, movement, rest};
+use wire_rules::{activation, appearance, clock, damage, hostility, melee, movement, rest};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -99,6 +99,22 @@ mod ffi {
         two_hand_axe: f32,
     }
 
+    /// What the core knows about a hit it accepted, for hostility sync
+    /// (thuum docs/verbs/hostility-sync.md).
+    #[derive(Debug)]
+    struct HostilityFacts {
+        /// A user plays the attacker.
+        aggressor_is_player: bool,
+        /// A user plays the victim.
+        target_is_player: bool,
+        /// The attacker hit itself.
+        same_actor: bool,
+        /// The attacker had hit this victim before.
+        has_previous_hit: bool,
+        /// Milliseconds since that hit (0 when there was none).
+        since_previous_hit_ms: u64,
+    }
+
     /// The hit flags the server keeps.
     #[derive(Debug)]
     struct Flags {
@@ -183,6 +199,9 @@ mod ffi {
         /// A kept sneak attack's damage multiplier for a weapon of
         /// `anim_type` (the WEAP record's DNAM animation type).
         fn sneak_mult(anim_type: u8, mults: &SneakMults) -> f32;
+        /// Whether an accepted hit tells the victim's game that the attacker
+        /// is hostile: the first hit of a fight between two players.
+        fn hostility_notify(facts: &HostilityFacts) -> bool;
         /// TES3MP's rest switches from server-settings.json's `rest` block.
         type RestSettings;
         /// The switches from the block as JSON text (`{}` for both on); the
@@ -220,7 +239,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{ConeFacts, FlagFacts, Flags, GameTime, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, SneakMults, Verdict};
+pub use ffi::{ConeFacts, FlagFacts, Flags, GameTime, HostilityFacts, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, SneakMults, Verdict};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -307,6 +326,15 @@ fn sneak_mult(anim_type: u8, m: &SneakMults) -> f32 {
             two_hand_axe: m.two_hand_axe,
         },
     )
+}
+
+fn hostility_notify(f: &HostilityFacts) -> bool {
+    hostility::notify_victim(hostility::HitFacts {
+        aggressor_is_player: f.aggressor_is_player,
+        target_is_player: f.target_is_player,
+        same_actor: f.same_actor,
+        since_previous_hit_ms: f.has_previous_hit.then_some(f.since_previous_hit_ms),
+    })
 }
 
 fn rest_after(r: &Regen, hours: f32) -> f32 {
@@ -437,6 +465,21 @@ mod tests {
         assert!(new_rest_settings(r#"{"allowWait": "no"}"#).is_err());
         let half = Regen { percentage: 0.5, rate: 0.7, rate_mult: 1.0 };
         assert!((rest_after(&half, 1.0) - 0.5252).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_bridge_passes_hostility_through() {
+        let facts = |has_previous_hit, since_previous_hit_ms| HostilityFacts {
+            aggressor_is_player: true,
+            target_is_player: true,
+            same_actor: false,
+            has_previous_hit,
+            since_previous_hit_ms,
+        };
+        assert!(hostility_notify(&facts(false, 0)));
+        assert!(!hostility_notify(&facts(true, 3_000)));
+        assert!(hostility_notify(&facts(true, rest::COMBAT_QUIET_MS)));
+        assert!(!hostility_notify(&HostilityFacts { same_actor: true, ..facts(false, 0) }));
     }
 
     #[test]

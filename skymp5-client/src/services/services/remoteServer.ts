@@ -602,7 +602,7 @@ export class RemoteServer extends ClientListener {
                 }
                 : undefined,
               loadOrder,
-              { minutes: 0, seconds: 0, hours: this.controller.lookupListener(TimeService).getTime().newGameHourValue }
+              this.controller.lookupListener(TimeService).getLoginTime()
             );
             once('update', () => {
               applyPcInv();

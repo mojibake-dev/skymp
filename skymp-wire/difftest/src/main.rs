@@ -19,7 +19,8 @@
 //! free), counted on each stack, with the reason. Declarations apply legacy
 //! against wire only and are reviewed like validator changes; one that
 //! stops occurring as declared is itself a difference, so it cannot outlive
-//! its cause.
+//! its cause. Divergences every client of every session shows are declared
+//! once, in `divergences.yaml` (compiled in), and apply to each client.
 //!
 //! Environment: `DIFFTEST_LEGACY_FAKECLIENT` (or the older
 //! `DIFFTEST_FAKECLIENT`) and `DIFFTEST_LEGACY_ADDR` (default
@@ -56,7 +57,7 @@ struct Session {
 
 /// Messages one client receives that match `msg`, `legacy` times on the
 /// legacy stack and `wire` times on the wire stack in all, for `reason`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct Divergence {
     client: String,
     /// A pattern: every field it names must be equal (recursively for
@@ -93,6 +94,39 @@ fn covers(want: &Value, got: &Value) -> bool {
         (Value::Array(w), Value::Array(g)) => w.iter().all(|wv| g.iter().any(|gv| covers(wv, gv))),
         _ => want == got,
     }
+}
+
+/// The divergences every client of every session shows: `divergences.yaml`.
+const COMMON_DIVERGENCES: &str = include_str!("../divergences.yaml");
+
+/// A common divergence: a [`Divergence`] for every client.
+#[derive(Debug, Deserialize)]
+struct CommonDivergence {
+    msg: Value,
+    legacy: i64,
+    wire: i64,
+    reason: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CommonFile {
+    divergences: Vec<CommonDivergence>,
+}
+
+/// The session's own declarations and the common ones, one per client.
+fn declarations(s: &Session) -> Result<Vec<Divergence>, DiffError> {
+    let common: CommonFile =
+        serde_yaml::from_str(COMMON_DIVERGENCES).map_err(|e| DiffError::Session(format!("divergences.yaml: {e}")))?;
+    let mut all = s.divergences.clone();
+    for (client, _) in clients(s)? {
+        for c in &common.divergences {
+            if c.legacy == c.wire || c.legacy < 0 || c.wire < 0 || c.reason.trim().is_empty() {
+                return Err(DiffError::Session(format!("divergences.yaml: {} needs differing counts >= 0 and a reason", canonical(&c.msg))));
+            }
+            all.push(Divergence { client: client.clone(), msg: c.msg.clone(), legacy: c.legacy, wire: c.wire, reason: c.reason.clone() });
+        }
+    }
+    Ok(all)
 }
 
 fn default_volatile() -> Vec<u8> {
@@ -414,14 +448,14 @@ fn run(path: &Path) -> Result<(bool, String), DiffError> {
             normalized(&w, &s, "a")?,
             "legacy against wire".to_string(),
             ("legacy", "wire"),
-            s.divergences.as_slice(),
+            declarations(&s)?,
         ),
         (Some(one), None) | (None, Some(one)) => (
             normalized(&one, &s, "a")?,
             normalized(&one, &s, "b")?,
             format!("{} against itself (determinism)", one.name),
             ("first", "second"),
-            &[][..],
+            Vec::new(),
         ),
         (None, None) => {
             return Err(DiffError::Session(
@@ -429,7 +463,7 @@ fn run(path: &Path) -> Result<(bool, String), DiffError> {
             ))
         }
     };
-    let o = diff(names.0, &a, names.1, &b, declared);
+    let o = diff(names.0, &a, names.1, &b, &declared);
     let mut verdict = if o.differences.is_empty() {
         format!("session {}: {what}: identical ({} clients, {} declared divergences)", s.id, a.len(), o.declared.len())
     } else {
@@ -591,5 +625,25 @@ mod tests {
             let err = load_session(&path).expect_err(why).to_string();
             assert!(err.contains(why), "{err}");
         }
+    }
+
+    #[test]
+    fn common_divergences_apply_to_every_client() {
+        let s = load_session(&smoke_path()).expect("smoke");
+        let all = declarations(&s).expect("declarations");
+        let own = s.divergences.len();
+        let common: CommonFile = serde_yaml::from_str(COMMON_DIVERGENCES).expect("divergences.yaml");
+        assert!(!common.divergences.is_empty());
+        assert_eq!(all.len(), own + 2 * common.divergences.len(), "two clients in smoke");
+        let clock: Vec<&Divergence> = all.iter().filter(|d| d.msg == json!({"t": 34})).collect();
+        assert_eq!(clock.iter().map(|d| d.client.as_str()).collect::<Vec<_>>(), ["c1", "c2"]);
+        // a client that heard the clock once on the wire and never on legacy
+        // matches; heard twice, it is a difference
+        let a = BTreeMap::from([("c1".to_string(), json!({"received": []}))]);
+        let once = BTreeMap::from([("c1".to_string(), json!({"received": [r#"{"day":1,"t":34}"#]}))]);
+        let twice = BTreeMap::from([("c1".to_string(), json!({"received": [r#"{"day":1,"t":34}"#, r#"{"day":1,"t":34}"#]}))]);
+        let mine: Vec<Divergence> = clock.iter().filter(|d| d.client == "c1").map(|d| (*d).clone()).collect();
+        assert!(diff("legacy", &a, "wire", &once, &mine).differences.is_empty());
+        assert!(!diff("legacy", &a, "wire", &twice, &mine).differences.is_empty());
     }
 }

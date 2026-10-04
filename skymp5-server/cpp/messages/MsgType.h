@@ -40,5 +40,8 @@ enum class MsgType : uint8_t
   UpdateGamemodeData = 32,
   CreateActor = 33,
 
+  // thuum's, appended after SkyMP's (skymp-wire wire-schema)
+  SetGameTime = 34,
+
   Max
 };

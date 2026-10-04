@@ -18,6 +18,7 @@ import { ChangeValuesMessage } from "../messages/changeValuesMessage";
 import { CreateActorMessage } from "../messages/createActorMessage";
 import { DestroyActorMessage } from "../messages/destroyActorMessage";
 import { SetRaceMenuOpenMessage } from "../messages/setRaceMenuOpenMessage";
+import { SetGameTimeMessage } from "../messages/setGameTimeMessage";
 import { SpSnippetMessage } from "../messages/spSnippetMessage";
 import { TeleportMessage } from "../messages/teleportMessage";
 import { UpdateAnimationMessage } from "../messages/updateAnimationMessage";
@@ -76,6 +77,7 @@ type EventTypes = {
     'updatePropertyMessage': [ConnectionMessage<UpdatePropertyMessage>],
     'deathStateContainerMessage': [ConnectionMessage<DeathStateContainerMessage>],
     'teleportMessage2': [ConnectionMessage<TeleportMessage2>],
+    'setGameTimeMessage': [ConnectionMessage<SetGameTimeMessage>],
     'customPacketMessage': [ConnectionMessage<CustomPacketMessage>]
 
     'browserWindowLoaded': [BrowserWindowLoadedEvent],

@@ -37,6 +37,9 @@ pub enum Reject {
     /// A sequence number already accepted, or too old to be checked.
     #[error("E_VAL_SEQ_REPLAY")]
     SeqReplay,
+    /// A field outside its legal range (a calendar field, a negative rate).
+    #[error("E_VAL_RANGE")]
+    Range,
 }
 
 /// World bounds in engine units. Tamriel's worldspace fits comfortably; a
@@ -175,6 +178,21 @@ fn check_transform(t: &Transform) -> Result<(), Reject> {
     Ok(())
 }
 
+/// The engine's calendar: twelve months from 0, days from 1 (31 at most),
+/// an hour below 24, and no negative day count or rate.
+fn check_game_time(m: &skymp::SetGameTime) -> Result<(), Reject> {
+    let in_range = m.month <= 11
+        && (1..=31).contains(&m.day)
+        && (0.0..24.0).contains(&m.hour)
+        && m.days_passed >= 0.0
+        && m.time_scale >= 0.0;
+    if in_range {
+        Ok(())
+    } else {
+        Err(Reject::Range)
+    }
+}
+
 /// Validate one inbound message against the client's guard state.
 /// `Ok(())` means "well-formed and within rate"; ownership is checked later.
 pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(), Reject> {
@@ -233,6 +251,12 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
                 return Err(Reject::NonFinite);
             }
             check_pos(&m.pos)
+        }
+        Message::SetGameTime(m) => {
+            if !all_finite(m) {
+                return Err(Reject::NonFinite);
+            }
+            check_game_time(m)
         }
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
@@ -485,6 +509,39 @@ mod tests {
         assert_eq!(validate(&shot, &mut g, 0), Err(Reject::NonFinite));
     }
 
+    fn game_time(month: u32, day: u32, hour: f32, days_passed: f32, time_scale: f32) -> Message {
+        Message::SetGameTime(skymp::SetGameTime {
+            year: 201,
+            month,
+            day,
+            hour,
+            days_passed,
+            time_scale,
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn game_time_both_ways() {
+        let mut g = ClientGuard::default();
+        for ok in [game_time(7, 17, 8.0, 1.0, 20.0), game_time(0, 1, 0.0, 0.0, 0.0), game_time(11, 31, 23.99, 1e6, 1.0)] {
+            assert_eq!(validate(&ok, &mut g, 0), Ok(()));
+        }
+        for bad in [
+            game_time(12, 1, 8.0, 1.0, 20.0),
+            game_time(7, 0, 8.0, 1.0, 20.0),
+            game_time(7, 32, 8.0, 1.0, 20.0),
+            game_time(7, 17, 24.0, 1.0, 20.0),
+            game_time(7, 17, -0.5, 1.0, 20.0),
+            game_time(7, 17, 8.0, -1.0, 20.0),
+            game_time(7, 17, 8.0, 1.0, -20.0),
+        ] {
+            assert_eq!(validate(&bad, &mut g, 0), Err(Reject::Range), "{bad:?}");
+        }
+        assert_eq!(validate(&game_time(7, 17, f32::NAN, 1.0, 20.0), &mut g, 0), Err(Reject::NonFinite));
+        assert_eq!(validate(&game_time(7, 17, 8.0, 1.0, f32::INFINITY), &mut g, 0), Err(Reject::NonFinite));
+    }
+
     #[test]
     fn replay_window_edges() {
         let mut w = ReplayWindow::default();
@@ -543,6 +600,25 @@ mod tests {
         fn hosted_never_panics(health in any::<f32>(), counts in proptest::collection::vec(any::<i32>(), 0..=cap::INVENTORY_DELTA)) {
             let mut g = ClientGuard::default();
             let _ = validate(&hosted(health, &counts), &mut g, 0);
+        }
+
+        #[test]
+        fn game_time_is_accepted_exactly_in_range(
+            month in 0u32..16, day in 0u32..40, hour in -2.0f32..26.0,
+            days_passed in -10.0f32..1e7, time_scale in -5.0f32..100.0,
+        ) {
+            let mut g = ClientGuard::default();
+            let legal = month <= 11 && (1..=31).contains(&day) && (0.0..24.0).contains(&hour)
+                && days_passed >= 0.0 && time_scale >= 0.0;
+            let want = if legal { Ok(()) } else { Err(Reject::Range) };
+            prop_assert_eq!(validate(&game_time(month, day, hour, days_passed, time_scale), &mut g, 0), want);
+        }
+
+        #[test]
+        fn game_time_never_panics(year in any::<u32>(), month in any::<u32>(), day in any::<u32>(),
+            hour in any::<f32>(), days_passed in any::<f32>(), time_scale in any::<f32>()) {
+            let m = Message::SetGameTime(skymp::SetGameTime { year, month, day, hour, days_passed, time_scale, ..Default::default() });
+            let _ = validate(&m, &mut ClientGuard::default(), 0);
         }
 
         #[test]

@@ -5,9 +5,10 @@
 //!
 //! Two families share the enum. The M0 variants (ids 0 to 8) are the
 //! authority model's messages, reserved until its verbs land. The SkyMP
-//! variants (ids 9 to 41, id = MsgType + 8) are SkyMP's own protocol, ported
-//! field for field in [`skymp`]; their JSON form is what the C++ core and
-//! skymp5-client exchange in-process (`wire-json`).
+//! variants (ids 9 to 42, id = MsgType + 8) are SkyMP's own protocol, ported
+//! field for field in [`skymp`], and the MsgTypes thuum appends after
+//! SkyMP's 33; their JSON form is what the C++ core and skymp5-client
+//! exchange in-process (`wire-json`).
 //!
 //! Capacities are named constants in [`cap`], chosen from the game; every
 //! message has a byte cap in [`Message::max_len`], which the codec checks
@@ -31,7 +32,7 @@ use bounded::{String, Vec};
 
 /// Bump when any variant changes shape. It is part of netcode's protocol id,
 /// so peers built against another schema never complete a handshake.
-pub const SCHEMA_VERSION: u16 = 2;
+pub const SCHEMA_VERSION: u16 = 3;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -345,6 +346,8 @@ pub enum Message {
     UpdateGamemodeData(skymp::UpdateGamemodeData),
     /// 41, MsgType 33. See [`skymp::CreateActor`].
     CreateActor(skymp::CreateActor),
+    /// 42, MsgType 34 (thuum). See [`skymp::SetGameTime`].
+    SetGameTime(skymp::SetGameTime),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -373,7 +376,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 42] = [
+const TABLE: [Row; 43] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -416,10 +419,11 @@ const TABLE: [Row; 42] = [
     row("Teleport2", 31, 64, S2C),
     row("UpdateGamemodeData", 32, 4 * MIB, S2C),
     row("CreateActor", 33, 2 * MIB, S2C),
+    row("SetGameTime", 34, 32, S2C),
 ];
 
 /// Wire ids in use: one past the last variant.
-pub const WIRE_IDS: u32 = 42;
+pub const WIRE_IDS: u32 = 43;
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -486,6 +490,7 @@ impl Message {
             Message::Teleport2(_) => 39,
             Message::UpdateGamemodeData(_) => 40,
             Message::CreateActor(_) => 41,
+            Message::SetGameTime(_) => 42,
         }
     }
 
@@ -548,8 +553,9 @@ mod tests {
         );
         assert_eq!(Message::Refuse { reason: 1 }.msg_type(), None);
         assert_eq!(name_of_msg_type(33), Some("CreateActor"));
+        assert_eq!(name_of_msg_type(34), Some("SetGameTime"));
         assert_eq!(name_of_msg_type(0), None);
-        assert_eq!(name_of_msg_type(34), None);
+        assert_eq!(name_of_msg_type(35), None);
     }
 
     #[test]
@@ -560,6 +566,15 @@ mod tests {
             Message::UpdateMovement(skymp::UpdateMovement::default()),
             Message::DeathStateContainer(skymp::DeathStateContainer::default()),
             Message::CreateActor(skymp::CreateActor::default()),
+            Message::SetGameTime(skymp::SetGameTime {
+                year: u32::MAX,
+                month: 11,
+                day: 31,
+                hour: 23.9,
+                days_passed: 1.0e9,
+                time_scale: 20.0,
+                ..Default::default()
+            }),
         ];
         for m in samples {
             let bytes = postcard::to_allocvec(&m).unwrap_or_default();

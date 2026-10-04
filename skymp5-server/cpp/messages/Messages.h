@@ -19,6 +19,7 @@
 #include "PlayerBowShotMessage.h"
 #include "PutItemMessage.h"
 #include "SetInventoryMessage.h"
+#include "SetGameTimeMessage.h"
 #include "SetRaceMenuOpenMessage.h"
 #include "SpSnippetMessage.h"
 #include "SpellCastMessage.h"
@@ -66,4 +67,5 @@
   REGISTER_MESSAGE(UpdateAnimVariablesMessage)                                \
   REGISTER_MESSAGE(UpdateAppearanceMessage)                                   \
   REGISTER_MESSAGE(UpdateGameModeDataMessage)                                 \
-  REGISTER_MESSAGE(CreateActorMessage)
+  REGISTER_MESSAGE(CreateActorMessage)                                        \
+  REGISTER_MESSAGE(SetGameTimeMessage)

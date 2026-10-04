@@ -1,0 +1,13 @@
+# Divergences every client of every session shows, legacy against wire,
+# declared once instead of in each session file. Reviewed like validator
+# changes. Each entry applies to every client with the counts given, and one
+# that stops occurring as declared is a difference, as a session's own is.
+divergences:
+  # thuum docs/verbs/time.md (ADR-021): the server's game clock. The wire
+  # server tells each player the time at login (SetGameTime, MsgType 34) and
+  # again every 60 s; every session is shorter than that. The legacy server
+  # has no clock and no such message.
+  - msg: {t: 34}
+    legacy: 0
+    wire: 1
+    reason: the game clock at login (SetGameTime, thuum ADR-021); the legacy server has none

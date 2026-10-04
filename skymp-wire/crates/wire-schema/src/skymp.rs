@@ -2,10 +2,11 @@
 //! order and under the JSON keys of the C++ `Serialize(Archive&)` lists in
 //! skymp5-server/cpp/messages and the payload types in server_guest_lib.
 //! This file is the contract the C++ core and skymp5-client keep speaking
-//! in-process; on the wire the same structs travel as postcard.
+//! in-process; on the wire the same structs travel as postcard. MsgTypes 1
+//! to 33 are SkyMP's; thuum appends its own after them (34, SetGameTime).
 //!
 //! Directions are SkyMP's: twelve types only travel client to server, thirteen
-//! only server to client, eight both ways (the server relays a client's
+//! (fourteen with SetGameTime) only server to client, eight both ways (the server relays a client's
 //! UpdateMovement, UpdateAnimation, UpdateAppearance, UpdateEquipment,
 //! SpellCast and UpdateAnimVariables to its neighbours, and sends its own
 //! CustomPacket and ChangeValues). Rungs are the ones SkyMP gives them today;
@@ -949,5 +950,32 @@ wire_struct! {
         pub animation: Option<AnimationData>,
         /// Dead state.
         pub is_dead: Option<bool>,
+    }
+}
+
+wire_struct! {
+    /// MsgType 34, thuum's (docs/verbs/time.md, ADR-021). Server to client,
+    /// reliable: the world's game clock (R0 output) as the engine's six time
+    /// globals hold it. Sent at login, ahead of the player's own CreateActor
+    /// on the same ordered channel, and every 60 s after. Idempotent: it
+    /// replaces. Reason codes: `E_VAL_NONFINITE`, `E_VAL_RANGE` (month 0 to
+    /// 11, day 1 to 31, hour at least 0 and below 24, daysPassed and
+    /// timeScale at least 0).
+    pub struct SetGameTime {
+        /// `"t": 34`.
+        #[serde(default)]
+        pub t: MsgT<34>,
+        /// GameYear.
+        pub year: u32,
+        /// GameMonth, from 0 (Morning Star).
+        pub month: u32,
+        /// GameDay, from 1.
+        pub day: u32,
+        /// GameHour.
+        pub hour: f32,
+        /// GameDaysPassed.
+        pub days_passed: f32,
+        /// TimeScale: game seconds per real second.
+        pub time_scale: f32,
     }
 }

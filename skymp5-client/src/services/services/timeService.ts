@@ -1,6 +1,8 @@
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { ConnectionMessage } from "../events/connectionMessage";
 import { SetGameTimeMessage } from "../messages/setGameTimeMessage";
+import { MenuOpenEvent } from "skyrimPlatform";
+import { MsgType } from "../../messages";
 import { logError } from "../../logging";
 
 // The engine's time globals in Skyrim.esm (thuum lab/esm.py, 2026-10-03)
@@ -10,6 +12,9 @@ const gameDayId = 0x37;
 const gameHourId = 0x38;
 const gameDaysPassedId = 0x39;
 const timeScaleId = 0x3a;
+
+// RE::SleepWaitMenu::MENU_NAME (CommonLibSSE-NG include/RE/S/SleepWaitMenu.h)
+const sleepWaitMenu = "Sleep/Wait Menu";
 
 const msPerHour = 60 * 60 * 1000;
 const oneMinute = 1 / 60; // in hours
@@ -28,11 +33,25 @@ const dayCountTolerance = 0.01;
 // day count carries the hour the same way (whole days plus the hour over 24),
 // so it runs on unbroken across midnight and is what the two are compared by.
 // Before the server has said anything, the engine's clock is left alone.
+//
+// A rest (thuum docs/verbs/rest.md) is the player's own: the Sleep/Wait menu
+// runs the engine's clock ahead, and the correction holds off while the menu
+// is open. After it closes, the whole hours the engine is ahead are the rest,
+// reported to the server, which grants its recovery; then the clock is
+// corrected as always. Only a Sleep/Wait menu counts, so a fast travel's
+// hours are corrected without a rest.
 export class TimeService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
         controller.on("update", () => this.onUpdate());
+        controller.on("menuOpen", (e) => this.onMenuOpen(e));
         controller.emitter.on("setGameTimeMessage", (e) => this.onSetGameTimeMessage(e));
+    }
+
+    private onMenuOpen(event: MenuOpenEvent) {
+        if (event.name === sleepWaitMenu) {
+            this.restMenuSeen = true;
+        }
     }
 
     // The server's time of day now, whole hours, minutes and seconds, for
@@ -65,6 +84,9 @@ export class TimeService extends ClientListener {
         if (!this.clock) {
             return;
         }
+        if (this.sp.Ui.isMenuOpen(sleepWaitMenu)) {
+            return; // a rest in progress; it is read when the menu closes
+        }
         const message = this.clock.message;
 
         const global = (id: number) => this.sp.GlobalVariable.from(this.sp.Game.getFormEx(id));
@@ -90,6 +112,19 @@ export class TimeService extends ClientListener {
         const targetDays = message.daysPassed + elapsedHours / 24;
         if (targetHours >= 48) {
             return;
+        }
+
+        if (this.restMenuSeen) {
+            this.restMenuSeen = false;
+            const hours = Math.round((gameDaysPassed.getValue() - targetDays) * 24);
+            if (hours >= 1) {
+                // a sleep when the player is still in the bed it slept in
+                const sleep = !!this.sp.Game.getPlayer()?.getFurnitureReference();
+                this.controller.emitter.emit("sendMessage", {
+                    message: { t: MsgType.RestIntent, hours: Math.min(hours, 24), sleep },
+                    reliability: "reliable",
+                });
+            }
         }
 
         const onMessageDate = gameYear.getValue() === message.year
@@ -129,4 +164,5 @@ export class TimeService extends ClientListener {
 
     private clock?: { message: SetGameTimeMessage, receivedAt: number };
     private lastTimeUpd = 0;
+    private restMenuSeen = false;
 }

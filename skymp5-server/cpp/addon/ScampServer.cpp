@@ -306,6 +306,12 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
                  partOne->worldState.isPapyrusHotReloadEnabled ? "enabled"
                                                                : "disabled");
 
+    // The game clock (thuum docs/verbs/time.md): server-settings.json `time`,
+    // every key optional; a bad value stops the server here, named
+    partOne->SetGameTimeSettings(serverSettings.contains("time")
+                                   ? serverSettings.at("time").dump()
+                                   : std::string("{}"));
+
     if (serverSettings["dataDir"] != nullptr) {
       dataDir = serverSettings["dataDir"];
     } else {

@@ -46,16 +46,30 @@ VarValue PapyrusUtility::WaitMenuMode(VarValue self,
   return WaitHelper(self, "WaitMenuMode", arguments);
 }
 
-//! In original game this was game hours. We use minutes.
-constexpr double fHourSeconds = 60.0;
+namespace {
+// The server's game clock (thuum docs/verbs/time.md), through WorldState
+GameTimeNow GameTimeOf(IPapyrusCompatibilityPolicy& policy)
+{
+  auto worldState = policy.GetWorldState();
+  if (!worldState || !worldState->gameTime) {
+    throw std::runtime_error("no game clock");
+  }
+  return worldState->gameTime();
+}
+}
 
+//! Game hours, at the server clock's time scale: a game hour is
+//! 3600 / TimeScale real seconds (180 at the game's 20)
 VarValue PapyrusUtility::WaitGameTime(VarValue self,
                                       const std::vector<VarValue>& arguments)
 {
   std::vector<VarValue> modArguments = arguments;
-  if (modArguments.size())
-    modArguments[0] =
-      VarValue(static_cast<double>(modArguments[0]) * fHourSeconds);
+  if (modArguments.size()) {
+    const double timeScale = GameTimeOf(*compatibilityPolicy).timeScale;
+    const double secondsPerHour = 3600.0 / (timeScale > 0 ? timeScale : 1.0);
+    modArguments[0] = VarValue(
+      static_cast<double>(modArguments[0].CastToFloat()) * secondsPerHour);
+  }
   return WaitHelper(self, "WaitGameTime", modArguments);
 }
 
@@ -66,16 +80,13 @@ VarValue PapyrusUtility::IsInMenuMode(VarValue self,
   return VarValue(false);
 }
 
-const auto startDay =
-  std::chrono::floor<std::chrono::years>(std::chrono::system_clock::now());
-/*! This will return days from the start of the year. In original game it
- * returns number of passed game days */
+//! Game days passed, as the GameDaysPassed global holds it: the server
+//! clock's
 VarValue PapyrusUtility::GetCurrentGameTime(
   VarValue self, const std::vector<VarValue>& arguments)
 {
-  return VarValue(std::chrono::duration<double, std::ratio<86400, 1>>(
-                    std::chrono::system_clock::now() - startDay)
-                    .count());
+  return VarValue(
+    static_cast<double>(GameTimeOf(*compatibilityPolicy).daysPassed));
 }
 
 //! Using placeholder until we need it to return something real

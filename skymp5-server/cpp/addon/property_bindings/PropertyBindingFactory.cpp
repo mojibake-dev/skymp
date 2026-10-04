@@ -7,6 +7,7 @@
 #include "ConsoleCommandsAllowedBinding.h"
 #include "CustomPropertyBinding.h"
 #include "EquipmentBinding.h"
+#include "GameTimeBinding.h"
 #include "IdxBinding.h"
 #include "InventoryBinding.h"
 #include "IsDeadBinding.h"
@@ -36,6 +37,7 @@ PropertyBindingFactory::CreateStandardPropertyBindings()
   result["appearance"] = std::make_shared<AppearanceBinding>();
   result["baseDesc"] = std::make_shared<BaseDescBinding>();
   result["equipment"] = std::make_shared<EquipmentBinding>();
+  result["gameTime"] = std::make_shared<GameTimeBinding>();
   result["inventory"] = std::make_shared<InventoryBinding>();
   result["isDead"] = std::make_shared<IsDeadBinding>();
   result["isDisabled"] = std::make_shared<IsDisabledBinding>();

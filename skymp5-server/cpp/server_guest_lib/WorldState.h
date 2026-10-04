@@ -39,6 +39,18 @@ class ISaveStorage;
 class IScriptStorage;
 class GameModeEvent;
 
+// The game clock at one instant, as the engine's six time globals hold it
+// (thuum docs/verbs/time.md). PartOne computes it in Rust.
+struct GameTimeNow
+{
+  uint32_t year = 0;
+  uint32_t month = 0; // from 0, Morning Star
+  uint32_t day = 1;   // from 1
+  float hour = 0.f;
+  float daysPassed = 0.f;
+  float timeScale = 0.f;
+};
+
 class WorldState
 {
   friend class MpObjectReference;
@@ -245,6 +257,10 @@ public:
     lastMovUpdateByIdx;
 
   bool isPapyrusHotReloadEnabled = false;
+
+  // The server's game clock now (thuum ADR-021), installed by PartOne;
+  // Papyrus's time natives read it.
+  std::function<GameTimeNow()> gameTime;
 
   bool npcEnabled = false;
   std::unordered_map<std::string, NpcSettingsEntry> npcSettings;

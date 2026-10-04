@@ -117,6 +117,14 @@ public:
   // when its budget covers it (thuum docs/verbs/movement-speed.md)
   bool SpendMovementBudget(uint32_t actorFormId, float ground);
 
+  // The server's game clock (thuum docs/verbs/time.md, ADR-021) from
+  // server-settings.json's `time` block as JSON text ("{}" for every
+  // default); throws naming the bad key. From then on each player hears the
+  // clock at login, ahead of their own CreateActor, and every 60 s after;
+  // ScampServer always calls it, as it switches on gamemode data broadcasts.
+  void SetGameTimeSettings(const std::string& timeSettingsJson);
+  GameTimeNow GetGameTime() const;
+
   float CalculateDamage(const MpActor& aggressor, const MpActor& target,
                         const SpellCastData& spellCastData) const;
 
@@ -156,6 +164,7 @@ private:
   void InitActionListener();
 
   void TickPacketHistoryPlaybacks();
+  void TickGameTime();
   void TickDeferredMessages();
 
   std::string SignJavaScriptSources(const std::string& src) const;

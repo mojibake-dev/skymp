@@ -10,6 +10,7 @@
 #include "CustomPacketMessage.h"
 #include "DestroyActorMessage.h"
 #include "HostStopMessage.h"
+#include "SetGameTimeMessage.h"
 #include "SetRaceMenuOpenMessage.h"
 #include "UpdateGameModeDataMessage.h"
 
@@ -18,6 +19,28 @@
 #include "MessageSerializerFactory.h"
 #include "OpenSSLSigner.h"
 #include "PacketParser.h"
+
+namespace {
+// The wall clock, Unix milliseconds: the game clock is a function of it
+int64_t UnixNowMs()
+{
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+           std::chrono::system_clock::now().time_since_epoch())
+    .count();
+}
+
+SetGameTimeMessage ToMessage(const skymp::rules::GameTime& t)
+{
+  SetGameTimeMessage message;
+  message.year = t.year;
+  message.month = t.month;
+  message.day = t.day;
+  message.hour = t.hour;
+  message.daysPassed = t.days_passed;
+  message.timeScale = t.time_scale;
+  return message;
+}
+}
 
 PartOneSendTargetWrapper::PartOneSendTargetWrapper(
   Networking::ISendTarget& underlyingSendTarget_)
@@ -76,6 +99,13 @@ struct PartOne::Impl
   // docs/verbs/movement-speed.md; the rule is Rust's, ADR-020)
   rust::Box<skymp::rules::MovementBudgets> movementBudgets =
     skymp::rules::new_movement_budgets();
+
+  // the server's game clock (thuum docs/verbs/time.md; Rust's, ADR-020 and
+  // ADR-021); players hear it once SetGameTimeSettings has run
+  rust::Box<skymp::rules::GameClock> gameClock =
+    skymp::rules::new_game_clock("{}");
+  bool gameTimeBroadcast = false;
+
   espm::Loader* espm = nullptr;
 
   std::function<void(PartOneSendTargetWrapper* sendTarget,
@@ -152,6 +182,7 @@ void PartOne::Tick()
 {
   TickPacketHistoryPlaybacks();
   TickDeferredMessages();
+  TickGameTime();
   worldState.Tick();
 }
 
@@ -207,6 +238,14 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
     actor.RemoveFromGridAndUnsubscribeAll();
 
     serverState.actorsMap.Set(userId, &actor);
+
+    // The clock first, so the client knows the time before its own
+    // CreateActor loads the save (thuum docs/verbs/time.md)
+    if (pImpl->gameTimeBroadcast) {
+      pImpl->sendTarget->Send(
+        userId, ToMessage(pImpl->gameClock->login(userId, UnixNowMs())),
+        true);
+    }
 
     actor.ForceSubscriptionsUpdate();
 
@@ -463,6 +502,7 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
         }
         this_->serverState.Disconnect(userId);
         this_->serverState.disconnectingUserId = Networking::InvalidUserId;
+        this_->pImpl->gameClock->forget(userId);
       });
 
       this_->serverState.disconnectingUserId = userId;
@@ -761,6 +801,8 @@ void PartOne::Init()
   pImpl.reset(new Impl);
   pImpl->logger.reset(new spdlog::logger{ "empty logger" });
 
+  worldState.gameTime = [this] { return GetGameTime(); };
+
   pImpl->onSubscribe = [this](PartOneSendTargetWrapper* sendTarget,
                               MpObjectReference* emitter,
                               MpObjectReference* listener) {
@@ -1044,6 +1086,38 @@ MessageSerializer& PartOne::GetMessageSerializerInstance()
   static auto g_serializer =
     MessageSerializerFactory::CreateMessageSerializer();
   return *g_serializer;
+}
+
+void PartOne::SetGameTimeSettings(const std::string& timeSettingsJson)
+{
+  pImpl->gameClock = skymp::rules::new_game_clock(timeSettingsJson);
+  pImpl->gameTimeBroadcast = true;
+  auto t = GetGameTime();
+  spdlog::info("PartOne::SetGameTimeSettings - game time now year {}, month "
+               "{}, day {}, hour {:.3f}, days passed {:.3f}, time scale {}",
+               t.year, t.month, t.day, t.hour, t.daysPassed, t.timeScale);
+}
+
+GameTimeNow PartOne::GetGameTime() const
+{
+  auto t = pImpl->gameClock->now(UnixNowMs());
+  return { t.year, t.month, t.day, t.hour, t.days_passed, t.time_scale };
+}
+
+void PartOne::TickGameTime()
+{
+  if (!pImpl->gameTimeBroadcast) {
+    return;
+  }
+  const auto nowMs = UnixNowMs();
+  for (size_t i = 0, n = serverState.maxConnectedId; i <= n; ++i) {
+    const auto userId = static_cast<Networking::UserId>(i);
+    if (serverState.ActorByUser(userId) &&
+        pImpl->gameClock->resync_due(userId, nowMs)) {
+      pImpl->sendTarget->Send(
+        userId, ToMessage(pImpl->gameClock->now(nowMs)), true);
+    }
+  }
 }
 
 bool PartOne::SpendMovementBudget(uint32_t actorFormId, float ground)

@@ -200,3 +200,71 @@ TEST_CASE("MoveTo", "[Papyrus][ObjectReference]")
     REQUIRE(it != messages.end());
   }
 }
+
+// thuum docs/NATIVES.md, decided 2026-10-04: the ledger's stubs made real.
+
+TEST_CASE("EnableNoWait and DisableNoWait set the reference's state",
+          "[Papyrus][ObjectReference]")
+{
+  PartOne partOne;
+  PapyrusObjectReference papyrusObjectReference;
+  auto& refr = CreateMpObjectReference(partOne, 0xff000000);
+  papyrusObjectReference.DisableNoWait(refr.ToVarValue(), {});
+  REQUIRE(refr.IsDisabled());
+  papyrusObjectReference.EnableNoWait(refr.ToVarValue(), {});
+  REQUIRE(!refr.IsDisabled());
+}
+
+TEST_CASE("GetParentCell finds an exterior reference's cell by its grid",
+          "[Papyrus][ObjectReference][espm]")
+{
+  // Skyrim.esm's REFR 0x5355D stands at (133556.8, -62608.9) in Tamriel, in
+  // CELL 0xBBD2, whose XCLC grid is (32, -16): read with a walk of the
+  // plugin's groups. y floors to -16, where truncating would give -15.
+  PartOne& partOne = GetPartOne();
+  PapyrusObjectReference papyrusObjectReference;
+  auto& refr = partOne.worldState.GetFormAt<MpObjectReference>(0x5355d);
+  auto cell = GetRecordPtr(papyrusObjectReference.GetParentCell(
+    refr.ToVarValue(), {}));
+  REQUIRE(cell.rec);
+  REQUIRE(cell.rec->GetType() == "CELL");
+  REQUIRE(cell.ToGlobalId(cell.rec->GetId()) == 0x0000bbd2);
+}
+
+TEST_CASE("PlaceAtMe with an explosion asks the reference's listeners to "
+          "draw it",
+          "[Papyrus][ObjectReference][espm]")
+{
+  // An explosion leaves nothing behind for the server to keep; the clients
+  // that see the reference draw it. Skyrim.esm: EXPL 0x10FBE9
+  // (ExplosionFireBoltExpert01), REFR 0x5355D in Tamriel.
+  PartOne& partOne = GetPartOne();
+  DoConnect(partOne, 0);
+  partOne.CreateActor(0xff000abc, { 133556.8f, -62608.9f, 14487.5f }, 0,
+                      0x3c);
+  partOne.SetUserActor(0, 0xff000abc);
+  auto& refr = partOne.worldState.GetFormAt<MpObjectReference>(0x5355d);
+  refr.ForceSubscriptionsUpdate(); // the actor nearby becomes a listener
+  partOne.Messages().clear();
+
+  PapyrusObjectReference papyrusObjectReference;
+  auto explosion = VarValue(std::make_shared<EspmGameObject>(
+    partOne.worldState.GetEspm().GetBrowser().LookupById(0x10fbe9)));
+  papyrusObjectReference.PlaceAtMe(
+    refr.ToVarValue(),
+    { explosion, VarValue(1), VarValue(false), VarValue(false) });
+  partOne.Tick();
+
+  auto& messages = partOne.Messages();
+  auto it = std::find_if(messages.begin(), messages.end(), [](auto& m) {
+    return m.j["t"] == MsgType::SpSnippet && m.j["function"] == "PlaceAtMe";
+  });
+  REQUIRE(it != messages.end());
+  REQUIRE(it->userId == 0);
+  REQUIRE(it->j["class"] == "ObjectReference");
+  REQUIRE(it->j["selfId"] == 0x5355d);
+  REQUIRE(it->j["arguments"].size() == 4);
+
+  partOne.DestroyActor(0xff000abc);
+  DoDisconnect(partOne, 0);
+}

@@ -28,10 +28,14 @@ VarValue PapyrusGame::EnablePlayerControls(
                                        compatibilityPolicy, self, arguments);
 }
 
+// A misc stat lives in the player's own save and stats menu; the server keeps
+// none, so the player's client counts it (R2; thuum docs/NATIVES.md, decided
+// 2026-10-04)
 VarValue PapyrusGame::IncrementStat(VarValue self,
                                     const std::vector<VarValue>& arguments)
 {
-  return VarValue::None();
+  return ExecuteSpSnippetAndGetPromise(GetName(), "IncrementStat",
+                                       compatibilityPolicy, self, arguments);
 }
 
 namespace {

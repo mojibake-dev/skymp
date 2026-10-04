@@ -1,4 +1,5 @@
 #include "PapyrusObjectReference.h"
+#include <cmath>
 
 #include "FormCallbacks.h"
 #include "LeveledListUtils.h"
@@ -50,16 +51,46 @@ VarValue PapyrusObjectReference::SetScale(
   return VarValue::None();
 }
 
+namespace {
+// Enable and Disable, and their NoWait twins: the server's state changes at
+// once either way (nothing here waits for a fade), and the listeners' clients
+// run the same function, which fades or not (thuum docs/NATIVES.md, decided
+// 2026-10-04)
+VarValue SetEnabled(const char* className, const char* funcName, bool enable,
+                    VarValue self, const std::vector<VarValue>& arguments)
+{
+  auto selfRefr = GetFormPtr<MpObjectReference>(self);
+  if (selfRefr) {
+    if (enable) {
+      selfRefr->Enable();
+    } else {
+      selfRefr->Disable();
+    }
+  }
+
+  if (selfRefr && selfRefr->IsEspmForm() && !selfRefr->AsActor()) {
+    auto serializedArgs = SpSnippetFunctionGen::SerializeArguments(
+      arguments, selfRefr->GetParent());
+    for (auto listener : selfRefr->GetActorListeners()) {
+      SpSnippet(className, funcName, serializedArgs, selfRefr->GetFormId())
+        .Execute(listener, SpSnippetMode::kNoReturnResult);
+    }
+  }
+
+  return VarValue::None();
+}
+}
+
 VarValue PapyrusObjectReference::EnableNoWait(
   VarValue self, const std::vector<VarValue>& arguments)
 {
-  return VarValue::None();
+  return SetEnabled(GetName(), "EnableNoWait", true, self, arguments);
 }
 
 VarValue PapyrusObjectReference::DisableNoWait(
   VarValue self, const std::vector<VarValue>& arguments)
 {
-  return VarValue::None();
+  return SetEnabled(GetName(), "DisableNoWait", false, self, arguments);
 }
 
 namespace {
@@ -346,19 +377,6 @@ VarValue PapyrusObjectReference::GetAnimationVariableBool(
   return VarValue(false);
 }
 
-// namespace {
-// void PlaceAtMeSpSnippet(MpObjectReference* self,
-//                         const std::vector<VarValue>& arguments)
-//{
-//   auto funcName = "PlaceAtMe";
-//   auto serializedArgs = SpSnippetFunctionGen::SerializeArguments(arguments);
-//   for (auto listener : self->GetActorListeners()) {
-//     SpSnippet("ObjectReference", funcName, serializedArgs,
-//     self->GetFormId())
-//       .Execute(listener, SpSnippetMode::kNoReturnResult);
-//   }
-// }
-// }
 
 VarValue PapyrusObjectReference::PlaceAtMe(
   VarValue self, const std::vector<VarValue>& arguments)
@@ -378,16 +396,20 @@ VarValue PapyrusObjectReference::PlaceAtMe(
     return VarValue::None();
   }
 
+  // An explosion leaves nothing behind for the server to keep, so the clients
+  // that see this reference draw it (R2; thuum docs/NATIVES.md, decided
+  // 2026-10-04). Upstream left this off ("sp snippet fails ATM"); its draft
+  // serialized the arguments without the world, which the form argument
+  // needs, as Enable's snippet does. The client side is unconfirmed until a
+  // lab run.
   bool isExplosion = akFormToPlace.rec->GetType() == "EXPL";
   if (isExplosion) {
-    spdlog::warn(
-      "PapyrusObjectReference::PlaceAtMe - explosion is not supported yet");
-    // Well sp snippet fails ATM. and I don't want to overpollute clients and
-    // network with those placeatme s for now
-
-    // PlaceAtMeSpSnippet(selfRefr, arguments);
-
-    // TODO: return pseudo-reference or even create real server-side form?
+    auto serializedArgs = SpSnippetFunctionGen::SerializeArguments(
+      arguments, selfRefr->GetParent());
+    for (auto listener : selfRefr->GetActorListeners()) {
+      SpSnippet(GetName(), "PlaceAtMe", serializedArgs, selfRefr->GetFormId())
+        .Execute(listener, SpSnippetMode::kNoReturnResult);
+    }
     return VarValue::None();
   }
 
@@ -442,43 +464,13 @@ VarValue PapyrusObjectReference::SetAngle(
 VarValue PapyrusObjectReference::Enable(VarValue self,
                                         const std::vector<VarValue>& arguments)
 {
-  auto selfRefr = GetFormPtr<MpObjectReference>(self);
-  if (selfRefr) {
-    selfRefr->Enable();
-  }
-
-  if (selfRefr && selfRefr->IsEspmForm() && !selfRefr->AsActor()) {
-    auto funcName = "Enable";
-    auto serializedArgs = SpSnippetFunctionGen::SerializeArguments(
-      arguments, selfRefr->GetParent());
-    for (auto listener : selfRefr->GetActorListeners()) {
-      SpSnippet(GetName(), funcName, serializedArgs, selfRefr->GetFormId())
-        .Execute(listener, SpSnippetMode::kNoReturnResult);
-    }
-  }
-
-  return VarValue::None();
+  return SetEnabled(GetName(), "Enable", true, self, arguments);
 }
 
 VarValue PapyrusObjectReference::Disable(
   VarValue self, const std::vector<VarValue>& arguments)
 {
-  auto selfRefr = GetFormPtr<MpObjectReference>(self);
-  if (selfRefr) {
-    selfRefr->Disable();
-  }
-
-  if (selfRefr && selfRefr->IsEspmForm() && !selfRefr->AsActor()) {
-    auto funcName = "Disable";
-    auto serializedArgs = SpSnippetFunctionGen::SerializeArguments(
-      arguments, selfRefr->GetParent());
-    for (auto listener : selfRefr->GetActorListeners()) {
-      SpSnippet(GetName(), funcName, serializedArgs, selfRefr->GetFormId())
-        .Execute(listener, SpSnippetMode::kNoReturnResult);
-    }
-  }
-
-  return VarValue::None();
+  return SetEnabled(GetName(), "Disable", false, self, arguments);
 }
 
 VarValue PapyrusObjectReference::Delete(VarValue self,
@@ -828,9 +820,20 @@ VarValue PapyrusObjectReference::GetParentCell(VarValue self,
     if (lookupRes.rec == nullptr) {
       spdlog::warn("GetParentCell - nullptr cell/world found");
     } else if (lookupRes.rec->GetType() == espm::WRLD::kType) {
-      // TODO: support. at least you can use WRLD + x/y to find exterior cell
-      spdlog::warn(
-        "GetParentCell - exterior cells are not supported at this moment");
+      // the exterior cell at the reference's grid square: 4096 units a side,
+      // counted from the world's origin, so negative positions floor (thuum
+      // docs/NATIVES.md, decided 2026-10-04)
+      const NiPoint3& pos = selfRefr->GetPos();
+      const auto gridX = static_cast<int16_t>(std::floor(pos.x / 4096.f));
+      const auto gridY = static_cast<int16_t>(std::floor(pos.y / 4096.f));
+      auto cell =
+        selfRefr->GetParent()->GetEspm().GetBrowser().FindExteriorCell(
+          cellOrWorld, gridX, gridY);
+      if (cell.rec) {
+        return VarValue(std::make_shared<EspmGameObject>(cell));
+      }
+      spdlog::warn("GetParentCell - no exterior cell at {}, {} in {:x}",
+                   gridX, gridY, cellOrWorld);
     } else if (lookupRes.rec->GetType() == espm::CELL::kType) {
       return VarValue(std::make_shared<EspmGameObject>(lookupRes));
     } else {

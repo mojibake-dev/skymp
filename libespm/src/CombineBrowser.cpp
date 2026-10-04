@@ -81,6 +81,23 @@ std::pair<const RecordHeader**, size_t> CombineBrowser::FindNavMeshes(
   return { nullptr, 0 };
 }
 
+LookupResult CombineBrowser::FindExteriorCell(uint32_t worldSpaceId,
+                                              int16_t gridX,
+                                              int16_t gridY) const noexcept
+{
+  for (size_t i = pImpl->numSources; i-- > 0;) {
+    auto& src = pImpl->sources[i];
+    const uint32_t rawWorldId = utils::GetMappedId(worldSpaceId, *src.toRaw);
+    if (rawWorldId >= 0xff000000) {
+      continue;
+    }
+    if (auto rec = src.br->FindExteriorCell(rawWorldId, gridX, gridY)) {
+      return LookupResult(this, rec, static_cast<uint8_t>(i));
+    }
+  }
+  return LookupResult();
+}
+
 std::vector<const std::vector<const RecordHeader*>*>
 CombineBrowser::GetRecordsByType(const char* type) const
 {

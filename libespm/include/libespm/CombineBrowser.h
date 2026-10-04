@@ -24,6 +24,12 @@ public:
   std::pair<const RecordHeader**, size_t> FindNavMeshes(
     uint32_t worldSpaceId, CellOrGridPos cellOrGridPos) const noexcept;
 
+  // The exterior CELL of a worldspace (a load-order id) at a grid square,
+  // from the last file in the load order that has it; default constructed
+  // LookupResult when none does
+  LookupResult FindExteriorCell(uint32_t worldSpaceId, int16_t gridX,
+                                int16_t gridY) const noexcept;
+
   std::vector<const std::vector<const RecordHeader*>*> GetRecordsByType(
     const char* type) const;
 

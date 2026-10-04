@@ -20,6 +20,10 @@ public:
   const RecordHeader* LookupById(uint32_t formId) const noexcept;
   std::pair<const RecordHeader**, size_t> FindNavMeshes(
     uint32_t worldSpaceId, CellOrGridPos cellOrGridPos) const noexcept;
+  // The exterior CELL of a worldspace at a grid square (its XCLC), this
+  // file's own ids; nullptr when the file has none there
+  const RecordHeader* FindExteriorCell(uint32_t worldSpaceId, int16_t gridX,
+                                       int16_t gridY) const noexcept;
   const std::vector<const RecordHeader*>& GetRecordsByType(
     const char* type) const;
   const std::vector<const RecordHeader*>& GetRecordsAtPos(uint32_t cellOrWorld,

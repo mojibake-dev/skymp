@@ -14,6 +14,7 @@
 #include "libespm/QUST.h"
 #include "libespm/REFR.h"
 #include "libespm/RecordHeader.h"
+#include "libespm/RecordHeaderAccess.h"
 #include "libespm/RefrKey.h"
 #include "libespm/WRLD.h"
 #include <cstring>
@@ -36,6 +37,7 @@ struct Browser::Impl
   uint32_t fiDataSizeOverride = 0;
   std::unordered_map<uint32_t, const RecordHeader*> recById;
   std::unordered_map<uint64_t, std::vector<const RecordHeader*>> navmeshes;
+  std::unordered_map<uint64_t, const RecordHeader*> exteriorCells;
   std::unordered_map<uint64_t, std::vector<const RecordHeader*>>
     cellOrWorldChildren;
   std::unordered_map<const GroupHeader*, const GroupDataInternal*>
@@ -99,6 +101,17 @@ const RecordHeader* Browser::LookupById(uint32_t formId) const noexcept
     return nullptr;
   }
   return it->second;
+}
+
+const RecordHeader* Browser::FindExteriorCell(uint32_t worldSpaceId,
+                                              int16_t gridX,
+                                              int16_t gridY) const noexcept
+{
+  CellOrGridPos pos;
+  pos.pos.x = gridX;
+  pos.pos.y = gridY;
+  auto it = pImpl->exteriorCells.find(NavMeshKey(worldSpaceId, pos));
+  return it == pImpl->exteriorCells.end() ? nullptr : it->second;
 }
 
 std::pair<const RecordHeader**, size_t> Browser::FindNavMeshes(
@@ -283,6 +296,30 @@ bool Browser::ReadAny(const GroupStack* parentGrStack)
 
     if (utils::Is<espm::CELL>(t)) {
       pImpl->cells.push_back(recHeader);
+
+      // an exterior cell: its worldspace (the WORLD_CHILDREN group above it)
+      // and its grid square (XCLC: x and y as int32; UESP, "Skyrim Mod:Mod
+      // File Format/CELL")
+      bool hasGrid = false;
+      int32_t gridX = 0, gridY = 0;
+      RecordHeaderAccess::IterateFields(
+        recHeader,
+        [&](const char* type, uint32_t size, const char* data) {
+          if (!std::memcmp(type, "XCLC", 4) && size >= 8) {
+            std::memcpy(&gridX, data, 4);
+            std::memcpy(&gridY, data + 4, 4);
+            hasGrid = true;
+          }
+        },
+        pImpl->dummyCache);
+      uint32_t worldId = 0;
+      const auto world = GetExteriorWorldGroup(*this, recHeader);
+      if (hasGrid && world && world->GetParentWRLD(worldId)) {
+        CellOrGridPos pos;
+        pos.pos.x = static_cast<int16_t>(gridX);
+        pos.pos.y = static_cast<int16_t>(gridY);
+        pImpl->exteriorCells[NavMeshKey(worldId, pos)] = recHeader;
+      }
     }
 
     pImpl->pos += sizeof(RecordHeader) + *pDataSize;

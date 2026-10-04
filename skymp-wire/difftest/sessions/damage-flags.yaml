@@ -25,6 +25,11 @@ divergences:
     wire: 1
     reason: the fixed server dropped the flag it saw no power attack for and hit as a plain attack (3.7 percent)
   - client: c2
+    msg: {t: 30, class: Actor, function: StartCombat, selfId: 4278190082, arguments: [{formId: 20, type: Actor}]}
+    legacy: 0
+    wire: 1
+    reason: c1's hit begins a fight; the fixed server tells c2's game (thuum docs/verbs/hostility-sync.md), the legacy server has no hostility sync
+  - client: c2
     msg: {t: 25, idx: 2}
     legacy: 0
     wire: 1

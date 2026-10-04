@@ -23,6 +23,11 @@ divergences:
     legacy: 0
     wire: 1
     reason: a rest after the fight window; the fixed server grants its recovery (thuum docs/verbs/rest.md), the legacy one has no RestIntent
+  - client: c1
+    msg: {t: 30, class: Actor, function: StartCombat, selfId: 4278190083, arguments: [{formId: 20, type: Actor}]}
+    legacy: 0
+    wire: 1
+    reason: c2's hit begins a fight; the fixed server tells c1's game (thuum docs/verbs/hostility-sync.md), the legacy server has no hostility sync
   - client: c2
     msg: {t: 25, idx: 2}
     legacy: 0

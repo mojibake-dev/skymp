@@ -1,6 +1,7 @@
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { ConnectionMessage } from "../events/connectionMessage";
 import { SetGameTimeMessage } from "../messages/setGameTimeMessage";
+import { logError } from "../../logging";
 
 // The engine's time globals in Skyrim.esm (thuum lab/esm.py, 2026-10-03)
 const gameYearId = 0x35;
@@ -12,12 +13,21 @@ const timeScaleId = 0x3a;
 
 const msPerHour = 60 * 60 * 1000;
 const oneMinute = 1 / 60; // in hours
+// Day counts are whole days apart when they are wrong (a save's, a fast
+// travel's); this is far above single precision's spacing near 16,000 days
+const dayCountTolerance = 0.01;
 
 // Renders the server's game clock (thuum docs/verbs/time.md, ADR-021). The
-// server owns the date, the hour and the time scale and says them at login
-// and every 60 s; between corrections the engine runs its own clock at the
-// server's TimeScale. Before the server has said anything, the engine's
-// clock is left alone.
+// server owns the date, the hour, the day count and the time scale and says
+// them at login and every 60 s. Between corrections the engine runs its own
+// clock at the server's TimeScale, rolling the date at midnight itself.
+//
+// The engine rebuilds GameDaysPassed every frame from a day count of its own
+// plus GameHour / 24, so a SetValue on that global lasts one frame; the day
+// count is set through TESModPlatform.SetGameDaysPassed instead. The server's
+// day count carries the hour the same way (whole days plus the hour over 24),
+// so it runs on unbroken across midnight and is what the two are compared by.
+// Before the server has said anything, the engine's clock is left alone.
 export class TimeService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -28,11 +38,11 @@ export class TimeService extends ClientListener {
     // The server's time of day now, whole hours, minutes and seconds, for
     // the save the client loads at login; undefined before the server said.
     public getLoginTime(): { hours: number, minutes: number, seconds: number } | undefined {
-        const target = this.target();
-        if (!target) {
+        if (!this.clock) {
             return undefined;
         }
-        const totalSeconds = Math.floor(target.hour * 3600);
+        const hour = Math.min(this.clock.message.hour + this.elapsedHours(this.clock), 24 - 1 / 3600);
+        const totalSeconds = Math.floor(hour * 3600);
         return {
             hours: Math.floor(totalSeconds / 3600),
             minutes: Math.floor(totalSeconds / 60) % 60,
@@ -45,35 +55,17 @@ export class TimeService extends ClientListener {
         this.lastTimeUpd = 0; // render it on the next update
     }
 
-    // The latest message advanced by the real time since it came: the hour
-    // and the days passed move, the date stays. Past a midnight the date is
-    // the next message's business (a minute away at most), so there is no
-    // target until it comes.
-    private target() {
-        if (!this.clock) {
-            return undefined;
-        }
-        const { message, receivedAt } = this.clock;
-        const elapsedHours = Math.max(0, Date.now() - receivedAt) / msPerHour * message.timeScale;
-        const hour = message.hour + elapsedHours;
-        if (hour >= 24) {
-            return undefined;
-        }
-        return {
-            year: message.year,
-            month: message.month,
-            day: message.day,
-            hour,
-            daysPassed: message.daysPassed + elapsedHours / 24,
-            timeScale: message.timeScale,
-        };
+    // Game hours since the message came: the real time since, at its time
+    // scale
+    private elapsedHours(clock: { message: SetGameTimeMessage, receivedAt: number }) {
+        return Math.max(0, Date.now() - clock.receivedAt) / msPerHour * clock.message.timeScale;
     }
 
     private every2seconds() {
-        const target = this.target();
-        if (!target) {
+        if (!this.clock) {
             return;
         }
+        const message = this.clock.message;
 
         const global = (id: number) => this.sp.GlobalVariable.from(this.sp.Game.getFormEx(id));
         const gameYear = global(gameYearId);
@@ -86,25 +78,44 @@ export class TimeService extends ClientListener {
             return;
         }
 
-        const dateDiffers = gameYear.getValue() !== target.year
-            || gameMonth.getValue() !== target.month
-            || gameDay.getValue() !== target.day;
-        if (dateDiffers || Math.abs(gameHour.getValue() - target.hour) >= oneMinute) {
-            gameYear.setValue(target.year);
-            gameMonth.setValue(target.month);
-            gameDay.setValue(target.day);
-            gameHour.setValue(target.hour);
+        if (timeScale.getValue() !== Math.fround(message.timeScale)) {
+            timeScale.setValue(message.timeScale);
         }
 
-        // The engine's own GameDaysPassed stops advancing in real time past
-        // about 64 days (single precision), so the server's is written
-        // whenever the two part by a game minute
-        if (Math.abs(gameDaysPassed.getValue() - target.daysPassed) >= oneMinute / 24) {
-            gameDaysPassed.setValue(target.daysPassed);
+        // Hours since midnight of the message's day: past 24 a midnight has
+        // gone by since it came. Past 48 the date is the next message's
+        // business (it is a minute away), so nothing is touched.
+        const elapsedHours = this.elapsedHours(this.clock);
+        const targetHours = message.hour + elapsedHours;
+        const targetDays = message.daysPassed + elapsedHours / 24;
+        if (targetHours >= 48) {
+            return;
         }
 
-        if (timeScale.getValue() !== Math.fround(target.timeScale)) {
-            timeScale.setValue(target.timeScale);
+        const onMessageDate = gameYear.getValue() === message.year
+            && gameMonth.getValue() === message.month
+            && gameDay.getValue() === message.day;
+        if (Math.abs(gameDaysPassed.getValue() - targetDays) < dayCountTolerance) {
+            // The day count is in step, so the engine is on the message's
+            // date or has rolled past its midnight once
+            const engineHours = onMessageDate ? gameHour.getValue() : gameHour.getValue() + 24;
+            if (Math.abs(engineHours - targetHours) < oneMinute) {
+                return;
+            }
+        }
+
+        // The message's date and the hour since its midnight: an hour past 24
+        // has the engine's next clock step roll the date itself (the day, the
+        // month and year at their ends, its day count, the Days Passed stat).
+        // The day count goes last, as it is set against the hour.
+        gameYear.setValue(message.year);
+        gameMonth.setValue(message.month);
+        gameDay.setValue(message.day);
+        gameHour.setValue(targetHours);
+        try {
+            this.sp.callNative("TESModPlatform", "SetGameDaysPassed", undefined, targetDays);
+        } catch (e) {
+            logError(this, "TESModPlatform.SetGameDaysPassed failed", e);
         }
     }
 

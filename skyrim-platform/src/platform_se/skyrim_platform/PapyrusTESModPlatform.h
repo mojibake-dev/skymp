@@ -92,6 +92,11 @@ void ResetContainer(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
 void CloseMenu(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                std::string_view name);
 
+// Sets the engine's day count so that GameDaysPassed reads daysPassed and
+// runs on from it (thuum docs/verbs/time.md)
+void SetGameDaysPassed(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
+                       float daysPassed);
+
 void BlockPapyrusEvents(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                         bool blocked);
 

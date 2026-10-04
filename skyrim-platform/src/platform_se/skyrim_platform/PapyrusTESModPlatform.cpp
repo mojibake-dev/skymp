@@ -5,7 +5,9 @@
 #include "NullPointerException.h"
 
 #include <RE/B/BSPointerHandle.h>
+#include <RE/C/Calendar.h>
 #include <RE/N/NiPoint3.h>
+#include <RE/T/TESGlobal.h>
 #include <REL/Relocation.h>
 
 extern CallNativeApi::NativeCallRequirements g_nativeCallRequirements;
@@ -990,6 +992,25 @@ void TESModPlatform::CloseMenu(IVM* vm, StackID stackId,
     name, RE::UI_MESSAGE_TYPE::kHide, nullptr);
 }
 
+// The engine's clock step rebuilds GameDaysPassed every frame as GameHour /
+// 24 plus Calendar::rawDaysPassed (CommonLibSSE-NG Calendar.h; the step is
+// Address Library 36291 on 1.7.104, read in Ghidra: HYPOTHESIS until the lab
+// confirms it), so a script's SetValue on the global lasts one frame. This
+// sets the day count the step builds from, so the global reads daysPassed
+// and runs on from it; the next midnight the engine crosses adds one to it
+// as before.
+void TESModPlatform::SetGameDaysPassed(IVM* vm, StackID stackId,
+                                       RE::StaticFunctionTag*,
+                                       float daysPassed)
+{
+  auto calendar = RE::Calendar::GetSingleton();
+  if (!calendar || !calendar->gameHour || !calendar->gameDaysPassed) {
+    return;
+  }
+  calendar->rawDaysPassed = daysPassed - calendar->gameHour->value / 24.f;
+  calendar->gameDaysPassed->value = daysPassed;
+}
+
 bool TESModPlatform::Register(IVM* vm)
 {
   TESModPlatform::onPapyrusUpdate = onPapyrusUpdate;
@@ -1131,6 +1152,11 @@ bool TESModPlatform::Register(IVM* vm)
     new RE::BSScript::NativeFunction<true, decltype(CloseMenu), void,
                                      RE::StaticFunctionTag*, std::string_view>(
       "CloseMenu", "TESModPlatform", CloseMenu));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SetGameDaysPassed), void,
+                                     RE::StaticFunctionTag*, float>(
+      "SetGameDaysPassed", "TESModPlatform", SetGameDaysPassed));
 
   static LoadGameEvent loadGameEvent;
 

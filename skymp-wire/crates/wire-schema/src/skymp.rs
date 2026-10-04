@@ -973,7 +973,8 @@ wire_struct! {
         pub day: u32,
         /// GameHour.
         pub hour: f32,
-        /// GameDaysPassed.
+        /// GameDaysPassed: whole days plus the hour over 24, as the engine
+        /// counts them.
         pub days_passed: f32,
         /// TimeScale: game seconds per real second.
         pub time_scale: f32,

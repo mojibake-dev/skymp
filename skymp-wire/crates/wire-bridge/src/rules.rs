@@ -258,7 +258,8 @@ mod tests {
         assert!(new_game_clock("{}").is_ok());
         let Ok(mut c) = new_game_clock("{}") else { return };
         let t = c.login(3, epoch);
-        assert_eq!((t.year, t.month, t.day, t.hour, t.days_passed, t.time_scale), (201, 7, 17, 8.0, 1.0, 20.0));
+        assert_eq!((t.year, t.month, t.day, t.hour, t.time_scale), (201, 7, 17, 8.0, 20.0));
+        assert!((t.days_passed - (1.0 + 8.0 / 24.0)).abs() < 1e-6);
         assert!(!c.resync_due(3, epoch + 1));
         assert!(c.resync_due(3, epoch + clock::RESYNC_MS));
         c.forget(3);

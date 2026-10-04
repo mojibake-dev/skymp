@@ -9,6 +9,13 @@
 //! CommonLibSSE-NG's Calendar::DAYS_IN_MONTH (include/RE/C/Calendar.h:12-24):
 //! no leap years, so a year is 365 days from any date. Real-time mode is
 //! SkyMP's own mapping (skymp5-client timeService.ts), moved to the server.
+//!
+//! Days passed follow the engine's convention: whole days plus the hour over
+//! 24, so the weekday (uint(GameDaysPassed) % 7, Calendar.cpp:62-65) turns at
+//! midnight. The engine builds it that way: its Calendar constructor adds
+//! GameHour / 24 to GameDaysPassed, and its clock step rebuilds the global
+//! every frame as a day count plus GameHour / 24 (Address Library 36289 and
+//! 36291 on 1.7.104, read in Ghidra; thuum docs/verbs/time.md).
 
 use std::collections::HashMap;
 
@@ -24,7 +31,6 @@ const DAYS_IN_YEAR: u64 = 365;
 pub const RESYNC_MS: i64 = 60_000;
 
 const MS_PER_HOUR: f64 = 3_600_000.0;
-const MS_PER_DAY: f64 = 86_400_000.0;
 
 /// The clock at one instant, as the engine's six time globals hold it.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -37,7 +43,7 @@ pub struct GameTime {
     pub day: u32,
     /// GameHour, at least 0 and below 24.
     pub hour: f32,
-    /// GameDaysPassed.
+    /// GameDaysPassed: whole days plus the hour over 24.
     pub days_passed: f32,
     /// TimeScale: game seconds per real second.
     pub time_scale: f32,
@@ -66,7 +72,8 @@ pub struct Start {
     pub day: u32,
     /// GameHour.
     pub hour: f64,
-    /// GameDaysPassed.
+    /// GameDaysPassed at midnight of the start day; the clock adds the hour
+    /// over 24, as the engine's Calendar does.
     pub days_passed: f64,
 }
 
@@ -166,10 +173,9 @@ impl Clock {
 
     /// The clock at `now_ms`, Unix milliseconds.
     pub fn now(&self, now_ms: i64) -> GameTime {
-        let elapsed_ms = ms_as_f64(now_ms.saturating_sub(self.epoch_ms).max(0));
         match self.settings.mode {
-            Mode::Game => self.game(elapsed_ms),
-            Mode::RealTimeOfDay => self.real(now_ms, elapsed_ms),
+            Mode::Game => self.game(ms_as_f64(now_ms.saturating_sub(self.epoch_ms).max(0))),
+            Mode::RealTimeOfDay => self.real(now_ms),
         }
     }
 
@@ -185,25 +191,28 @@ impl Clock {
             month,
             day,
             hour: below_24(hour),
-            days_passed: narrow(s.days_passed + elapsed_hours / 24.0),
+            days_passed: narrow(s.days_passed + total_hours / 24.0),
             time_scale: narrow(self.settings.time_scale),
         }
     }
 
-    fn real(&self, now_ms: i64, elapsed_ms: f64) -> GameTime {
+    fn real(&self, now_ms: i64) -> GameTime {
         let offset_ms = rounded_ms(self.settings.utc_offset_hours * MS_PER_HOUR);
-        let t = DateTime::<Utc>::from_timestamp_millis(now_ms.saturating_add(offset_ms)).unwrap_or_default();
+        let local = |ms: i64| DateTime::<Utc>::from_timestamp_millis(ms.saturating_add(offset_ms)).unwrap_or_default();
+        let t = local(now_ms);
         let hour = f64::from(t.hour())
             + f64::from(t.minute()) / 60.0
             + f64::from(t.second()) / 3600.0
             + f64::from(t.timestamp_subsec_millis()) / MS_PER_HOUR;
+        // whole days since the epoch's date, both in the offset's time zone
+        let days = t.date_naive().signed_duration_since(local(self.epoch_ms).date_naive()).num_days().max(0);
         GameTime {
             // SkyMP's year mapping: 2020 was 4E 199
             year: u32::try_from(t.year().saturating_sub(2020).saturating_add(199)).unwrap_or(0),
             month: t.month0(),
             day: t.day(),
             hour: below_24(hour),
-            days_passed: narrow(self.settings.start.days_passed + elapsed_ms / MS_PER_DAY),
+            days_passed: narrow(self.settings.start.days_passed + ms_as_f64(days) + hour / 24.0),
             time_scale: 1.0,
         }
     }
@@ -318,7 +327,9 @@ mod tests {
     fn at_the_epoch_it_reads_skyrim_esm_and_holds_before_it() {
         let c = clock("{}");
         let t = at(&c, 0);
-        assert_eq!((t.year, t.month, t.day, t.hour, t.days_passed, t.time_scale), (201, 7, 17, 8.0, 1.0, 20.0));
+        assert_eq!((t.year, t.month, t.day, t.hour, t.time_scale), (201, 7, 17, 8.0, 20.0));
+        // day 1 plus 08:00, as the engine's Calendar constructor makes it
+        assert!((t.days_passed - (1.0 + 8.0 / 24.0)).abs() < 1e-6);
         assert_eq!(at(&c, -DAY_MS), t);
     }
 
@@ -328,7 +339,7 @@ mod tests {
         // three real minutes at 20 is one game hour
         let t = at(&c, 3 * 60_000);
         assert_eq!((t.day, t.hour), (17, 9.0));
-        assert!((t.days_passed - (1.0 + 1.0 / 24.0)).abs() < 1e-6);
+        assert!((t.days_passed - (1.0 + 9.0 / 24.0)).abs() < 1e-6);
         // 30 real seconds is 10 game minutes
         let t = at(&c, 30_000);
         assert!((t.hour - (8.0 + 10.0 / 60.0)).abs() < 1e-5);
@@ -350,7 +361,7 @@ mod tests {
         // a whole Tamriel year later it is the same date again
         let t = at(&c, 365 * DAY_MS / 20);
         assert_eq!((t.year, t.month, t.day, t.hour), (202, 7, 17, 8.0));
-        assert!((t.days_passed - 366.0).abs() < 1e-3);
+        assert!((t.days_passed - (366.0 + 8.0 / 24.0)).abs() < 1e-3);
     }
 
     #[test]
@@ -378,6 +389,11 @@ mod tests {
         let c = clock(r#"{"mode": "realTimeOfDay", "utcOffsetHours": -1}"#);
         let t = at(&c, 0);
         assert_eq!((t.month, t.day, t.hour), (9, 2, 23.0));
+        assert!((t.days_passed - (1.0 + 23.0 / 24.0)).abs() < 1e-6);
+        // the next midnight adds a whole day
+        let t = at(&c, 2 * HOUR_MS);
+        assert_eq!((t.day, t.hour), (3, 1.0));
+        assert!((t.days_passed - (2.0 + 1.0 / 24.0)).abs() < 1e-6);
     }
 
     #[test]
@@ -423,6 +439,17 @@ mod tests {
             prop_assert!(t.month < 12);
             prop_assert!(t.day >= 1 && Some(t.day) <= DAYS_IN_MONTH.get(usize::try_from(t.month).unwrap()).copied());
             prop_assert!(t.days_passed >= 1.0);
+        }
+
+        #[test]
+        fn days_passed_carry_the_hour_as_the_engine_s_do(after_ms in 0i64..(4 * 365 * DAY_MS)) {
+            // the fraction of a day is the hour over 24; f32 spacing near 30,000
+            // days is about 0.002 days
+            let t = at(&clock("{}"), after_ms);
+            let fraction = f64::from(t.days_passed).fract();
+            let hour_part = f64::from(t.hour) / 24.0;
+            let gap = (fraction - hour_part).abs();
+            prop_assert!(!(0.004..=0.996).contains(&gap), "{} days at hour {}", t.days_passed, t.hour);
         }
 
         #[test]

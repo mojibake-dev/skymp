@@ -10,6 +10,7 @@
 using Catch::Matchers::ContainsSubstring;
 
 extern espm::Loader& GetEspmLoader();
+PartOne& GetPartOne();
 
 namespace {
 
@@ -224,8 +225,8 @@ TEST_CASE("GetParentCell finds an exterior reference's cell by its grid",
   PartOne& partOne = GetPartOne();
   PapyrusObjectReference papyrusObjectReference;
   auto& refr = partOne.worldState.GetFormAt<MpObjectReference>(0x5355d);
-  auto cell = GetRecordPtr(papyrusObjectReference.GetParentCell(
-    refr.ToVarValue(), {}));
+  auto cell =
+    GetRecordPtr(papyrusObjectReference.GetParentCell(refr.ToVarValue(), {}));
   REQUIRE(cell.rec);
   REQUIRE(cell.rec->GetType() == "CELL");
   REQUIRE(cell.ToGlobalId(cell.rec->GetId()) == 0x0000bbd2);
@@ -240,8 +241,7 @@ TEST_CASE("PlaceAtMe with an explosion asks the reference's listeners to "
   // (ExplosionFireBoltExpert01), REFR 0x5355D in Tamriel.
   PartOne& partOne = GetPartOne();
   DoConnect(partOne, 0);
-  partOne.CreateActor(0xff000abc, { 133556.8f, -62608.9f, 14487.5f }, 0,
-                      0x3c);
+  partOne.CreateActor(0xff000abc, { 133556.8f, -62608.9f, 14487.5f }, 0, 0x3c);
   partOne.SetUserActor(0, 0xff000abc);
   auto& refr = partOne.worldState.GetFormAt<MpObjectReference>(0x5355d);
   refr.ForceSubscriptionsUpdate(); // the actor nearby becomes a listener

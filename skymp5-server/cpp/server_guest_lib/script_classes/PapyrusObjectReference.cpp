@@ -377,7 +377,6 @@ VarValue PapyrusObjectReference::GetAnimationVariableBool(
   return VarValue(false);
 }
 
-
 VarValue PapyrusObjectReference::PlaceAtMe(
   VarValue self, const std::vector<VarValue>& arguments)
 {
@@ -832,8 +831,8 @@ VarValue PapyrusObjectReference::GetParentCell(VarValue self,
       if (cell.rec) {
         return VarValue(std::make_shared<EspmGameObject>(cell));
       }
-      spdlog::warn("GetParentCell - no exterior cell at {}, {} in {:x}",
-                   gridX, gridY, cellOrWorld);
+      spdlog::warn("GetParentCell - no exterior cell at {}, {} in {:x}", gridX,
+                   gridY, cellOrWorld);
     } else if (lookupRes.rec->GetType() == espm::CELL::kType) {
       return VarValue(std::make_shared<EspmGameObject>(lookupRes));
     } else {

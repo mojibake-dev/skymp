@@ -20,6 +20,10 @@
 #include <simdjson.h>
 #include <spdlog/logger.h>
 
+namespace skymp::rules {
+struct RestSettings; // wire-bridge's (thuum ADR-020), opaque here
+}
+
 using ProfileId = int32_t;
 class ActionListener;
 class MessageSerializer;
@@ -124,6 +128,12 @@ public:
   // ScampServer always calls it, as it switches on gamemode data broadcasts.
   void SetGameTimeSettings(const std::string& timeSettingsJson);
   GameTimeNow GetGameTime() const;
+
+  // TES3MP's rest switches (thuum docs/verbs/rest.md) from
+  // server-settings.json's `rest` block as JSON text ("{}" for both on);
+  // throws naming the bad key. The rest rule asks them for every rest.
+  void SetRestSettings(const std::string& restSettingsJson);
+  const skymp::rules::RestSettings& GetRestSettings() const;
 
   float CalculateDamage(const MpActor& aggressor, const MpActor& target,
                         const SpellCastData& spellCastData) const;

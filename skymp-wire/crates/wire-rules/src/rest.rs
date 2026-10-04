@@ -10,6 +10,10 @@
 //! circumstances, 142.86 s of regeneration being "well under the hour minimum
 //! of waiting or sleeping".
 
+use serde::Deserialize;
+
+use crate::clock::SettingsError;
+
 /// The wait menu's range in game hours: an hour at the least, a day at most.
 pub const MIN_HOURS: f32 = 1.0;
 /// See [`MIN_HOURS`].
@@ -26,11 +30,40 @@ pub const COMBAT_QUIET_MS: u64 = 10_000;
 /// measures which one with a lowered rate.
 pub const REGEN_SECONDS_PER_HOUR: f32 = 3_600.0;
 
+/// TES3MP's rest switches, from server-settings.json's `rest` block: its
+/// allowWait and allowBedRest (CoreScripts 0.8.1 scripts/config.lua), the
+/// latter as `allowSleep`, since Skyrim has no wilderness sleep to switch.
+/// Both on, as TES3MP ships them, unless a server turns one off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct Switches {
+    /// Players may wait.
+    pub allow_wait: bool,
+    /// Players may sleep in a bed.
+    pub allow_sleep: bool,
+}
+
+impl Default for Switches {
+    fn default() -> Self {
+        Self { allow_wait: true, allow_sleep: true }
+    }
+}
+
+impl Switches {
+    /// The switches from the `rest` block's JSON text (`{}` for both on); the
+    /// error names a bad or unknown key.
+    pub fn from_json(text: &str) -> Result<Self, SettingsError> {
+        serde_json::from_str(text).map_err(|e| SettingsError(e.to_string()))
+    }
+}
+
 /// What the server knows about a player's rest.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RestFacts {
     /// The hours the client says its player rested.
     pub hours: f32,
+    /// A sleep in a bed rather than a wait.
+    pub sleep: bool,
     /// The server holds the player dead.
     pub is_dead: bool,
     /// Milliseconds since the last hit the player dealt or took, if any.
@@ -42,6 +75,8 @@ pub struct RestFacts {
 pub enum Refusal {
     /// Hours outside the menu's range, or not a number.
     Hours,
+    /// The server switched this kind of rest off.
+    Off,
     /// The player is dead.
     Dead,
     /// A hit within [`COMBAT_QUIET_MS`].
@@ -49,9 +84,12 @@ pub enum Refusal {
 }
 
 /// Whether the server lets a rest through, and why not when it does not.
-pub fn check(f: RestFacts) -> Result<(), Refusal> {
+pub fn check(f: RestFacts, switches: Switches) -> Result<(), Refusal> {
     if !(MIN_HOURS..=MAX_HOURS).contains(&f.hours) {
         return Err(Refusal::Hours);
+    }
+    if !(if f.sleep { switches.allow_sleep } else { switches.allow_wait }) {
+        return Err(Refusal::Off);
     }
     if f.is_dead {
         return Err(Refusal::Dead);
@@ -91,19 +129,37 @@ mod tests {
     use proptest::prelude::*;
 
     const fn facts(hours: f32, dead: bool, since: Option<u64>) -> RestFacts {
-        RestFacts { hours, is_dead: dead, since_last_hit_ms: since }
+        RestFacts { hours, sleep: false, is_dead: dead, since_last_hit_ms: since }
+    }
+
+    fn on() -> Switches {
+        Switches::default()
     }
 
     #[test]
     fn the_menu_range_alive_and_quiet() {
-        assert_eq!(check(facts(1.0, false, None)), Ok(()));
-        assert_eq!(check(facts(24.0, false, Some(10_000))), Ok(()));
-        assert_eq!(check(facts(0.5, false, None)), Err(Refusal::Hours));
-        assert_eq!(check(facts(24.01, false, None)), Err(Refusal::Hours));
-        assert_eq!(check(facts(f32::NAN, false, None)), Err(Refusal::Hours));
-        assert_eq!(check(facts(f32::INFINITY, false, None)), Err(Refusal::Hours));
-        assert_eq!(check(facts(2.0, true, None)), Err(Refusal::Dead));
-        assert_eq!(check(facts(2.0, false, Some(9_999))), Err(Refusal::Fighting));
+        assert_eq!(check(facts(1.0, false, None), on()), Ok(()));
+        assert_eq!(check(facts(24.0, false, Some(10_000)), on()), Ok(()));
+        assert_eq!(check(facts(0.5, false, None), on()), Err(Refusal::Hours));
+        assert_eq!(check(facts(24.01, false, None), on()), Err(Refusal::Hours));
+        assert_eq!(check(facts(f32::NAN, false, None), on()), Err(Refusal::Hours));
+        assert_eq!(check(facts(f32::INFINITY, false, None), on()), Err(Refusal::Hours));
+        assert_eq!(check(facts(2.0, true, None), on()), Err(Refusal::Dead));
+        assert_eq!(check(facts(2.0, false, Some(9_999)), on()), Err(Refusal::Fighting));
+    }
+
+    #[test]
+    fn the_switches_turn_one_kind_off() {
+        let no_wait = Switches::from_json(r#"{"allowWait": false}"#).unwrap_or_default();
+        let sleep = RestFacts { sleep: true, ..facts(8.0, false, None) };
+        assert_eq!(check(facts(8.0, false, None), no_wait), Err(Refusal::Off));
+        assert_eq!(check(sleep, no_wait), Ok(()));
+        let no_sleep = Switches::from_json(r#"{"allowSleep": false}"#).unwrap_or_default();
+        assert_eq!(check(sleep, no_sleep), Err(Refusal::Off));
+        assert_eq!(check(facts(8.0, false, None), no_sleep), Ok(()));
+        assert_eq!(Switches::from_json("{}").ok(), Some(on()));
+        assert!(Switches::from_json(r#"{"allowWildernessRest": true}"#).is_err());
+        assert!(Switches::from_json(r#"{"allowWait": 1}"#).is_err());
     }
 
     #[test]
@@ -146,7 +202,7 @@ mod tests {
 
         #[test]
         fn in_range_quiet_living_rests_pass(hours in MIN_HOURS..=MAX_HOURS, since in COMBAT_QUIET_MS..u64::MAX) {
-            prop_assert_eq!(check(facts(hours, false, Some(since))), Ok(()));
+            prop_assert_eq!(check(facts(hours, false, Some(since)), on()), Ok(()));
         }
     }
 }

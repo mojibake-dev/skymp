@@ -650,6 +650,8 @@ const char* RestRefusalName(skymp::rules::RestRefusal refusal)
   switch (refusal) {
     case skymp::rules::RestRefusal::Hours:
       return "E_REST_HOURS";
+    case skymp::rules::RestRefusal::Off:
+      return "E_REST_OFF";
     case skymp::rules::RestRefusal::Dead:
       return "E_REST_DEAD";
     case skymp::rules::RestRefusal::Fighting:
@@ -681,6 +683,7 @@ void ActionListener::OnRestIntent(const RawMessageData& rawMsgData,
 
   skymp::rules::RestFacts facts{};
   facts.hours = msg.hours;
+  facts.sleep = msg.sleep;
   facts.is_dead = actor->IsDead();
   facts.has_hit = hasHit;
   facts.since_last_hit_ms = hasHit
@@ -688,7 +691,8 @@ void ActionListener::OnRestIntent(const RawMessageData& rawMsgData,
         std::chrono::duration_cast<std::chrono::milliseconds>(now - lastHit)
           .count())
     : 0;
-  const auto refusal = skymp::rules::rest_check(facts);
+  const auto refusal =
+    skymp::rules::rest_check(partOne.GetRestSettings(), facts);
   if (refusal != skymp::rules::RestRefusal::Allowed) {
     return spdlog::info("{}: user {} actor {:x} rest of {} h refused",
                         RestRefusalName(refusal), rawMsgData.userId,

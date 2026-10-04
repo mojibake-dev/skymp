@@ -110,6 +110,8 @@ mod ffi {
     struct RestFacts {
         /// The game hours the client says its player rested.
         hours: f32,
+        /// A sleep in a bed rather than a wait.
+        sleep: bool,
         /// The core holds the player dead.
         is_dead: bool,
         /// The player dealt or took a hit the core saw.
@@ -125,6 +127,8 @@ mod ffi {
         Allowed,
         /// Hours outside the menu's 1 to 24, or not a number.
         Hours,
+        /// The server switched this kind of rest off.
+        Off,
         /// The player is dead.
         Dead,
         /// A hit within the last 10 s.
@@ -155,8 +159,13 @@ mod ffi {
         fn melee_within_cone(facts: &ConeFacts) -> Verdict;
         /// The hit flags the server keeps.
         fn backed_flags(facts: &FlagFacts) -> Flags;
+        /// TES3MP's rest switches from server-settings.json's `rest` block.
+        type RestSettings;
+        /// The switches from the block as JSON text (`{}` for both on); the
+        /// error names the bad key.
+        fn new_rest_settings(settings_json: &str) -> Result<Box<RestSettings>>;
         /// Whether a player's rest is let through, and why not.
-        fn rest_check(facts: &RestFacts) -> RestRefusal;
+        fn rest_check(settings: &RestSettings, facts: &RestFacts) -> RestRefusal;
         /// An attribute's percentage after a rest of `hours`.
         fn rest_after(regen: &Regen, hours: f32) -> f32;
 
@@ -238,14 +247,24 @@ fn backed_flags(f: &FlagFacts) -> Flags {
     Flags { power: kept.power, sneak: kept.sneak }
 }
 
-fn rest_check(f: &RestFacts) -> RestRefusal {
-    match rest::check(rest::RestFacts {
+/// TES3MP's rest switches (wire-rules rest).
+pub struct RestSettings(rest::Switches);
+
+fn new_rest_settings(settings_json: &str) -> Result<Box<RestSettings>, clock::SettingsError> {
+    rest::Switches::from_json(settings_json).map(|s| Box::new(RestSettings(s)))
+}
+
+fn rest_check(settings: &RestSettings, f: &RestFacts) -> RestRefusal {
+    let facts = rest::RestFacts {
         hours: f.hours,
+        sleep: f.sleep,
         is_dead: f.is_dead,
         since_last_hit_ms: f.has_hit.then_some(f.since_last_hit_ms),
-    }) {
+    };
+    match rest::check(facts, settings.0) {
         Ok(()) => RestRefusal::Allowed,
         Err(rest::Refusal::Hours) => RestRefusal::Hours,
+        Err(rest::Refusal::Off) => RestRefusal::Off,
         Err(rest::Refusal::Dead) => RestRefusal::Dead,
         Err(rest::Refusal::Fighting) => RestRefusal::Fighting,
     }
@@ -352,12 +371,20 @@ mod tests {
 
     #[test]
     fn the_bridge_passes_the_rest_through() {
-        let facts = |hours, is_dead, has_hit, since_last_hit_ms| RestFacts { hours, is_dead, has_hit, since_last_hit_ms };
-        assert_eq!(rest_check(&facts(8.0, false, false, 0)), RestRefusal::Allowed);
-        assert_eq!(rest_check(&facts(8.0, false, true, 10_000)), RestRefusal::Allowed);
-        assert_eq!(rest_check(&facts(8.0, false, true, 3_000)), RestRefusal::Fighting);
-        assert_eq!(rest_check(&facts(0.5, false, false, 0)), RestRefusal::Hours);
-        assert_eq!(rest_check(&facts(8.0, true, false, 0)), RestRefusal::Dead);
+        let facts = |hours, is_dead, has_hit, since_last_hit_ms| RestFacts { hours, sleep: false, is_dead, has_hit, since_last_hit_ms };
+        let on = new_rest_settings("{}");
+        assert!(on.is_ok());
+        let Ok(on) = on else { return };
+        assert_eq!(rest_check(&on, &facts(8.0, false, false, 0)), RestRefusal::Allowed);
+        assert_eq!(rest_check(&on, &facts(8.0, false, true, 10_000)), RestRefusal::Allowed);
+        assert_eq!(rest_check(&on, &facts(8.0, false, true, 3_000)), RestRefusal::Fighting);
+        assert_eq!(rest_check(&on, &facts(0.5, false, false, 0)), RestRefusal::Hours);
+        assert_eq!(rest_check(&on, &facts(8.0, true, false, 0)), RestRefusal::Dead);
+        let no_wait = new_rest_settings(r#"{"allowWait": false}"#);
+        assert!(no_wait.is_ok());
+        let Ok(no_wait) = no_wait else { return };
+        assert_eq!(rest_check(&no_wait, &facts(8.0, false, false, 0)), RestRefusal::Off);
+        assert!(new_rest_settings(r#"{"allowWait": "no"}"#).is_err());
         let half = Regen { percentage: 0.5, rate: 0.7, rate_mult: 1.0 };
         assert!((rest_after(&half, 1.0) - 0.752).abs() < 1e-5);
     }

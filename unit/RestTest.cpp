@@ -27,12 +27,13 @@ MpActor& HalfPlayer(PartOne& p)
   return ac;
 }
 
-void Rest(PartOne& p, float hours)
+void Rest(PartOne& p, float hours, bool sleep = false)
 {
   RawMessageData rawMsgData;
   rawMsgData.userId = 0;
   RestIntentMessage msg;
   msg.hours = hours;
+  msg.sleep = sleep;
   p.GetActionListener().OnRestIntent(rawMsgData, msg);
 }
 
@@ -110,4 +111,28 @@ TEST_CASE("A rest is refused outside the menu's hours, while dead, or right "
   REQUIRE(dead.IsDead());
   REQUIRE(dead.GetChangeForm().actorValues.healthPercentage < 1.f);
   Leave(p);
+}
+
+TEST_CASE("A server's rest switches turn waiting or sleeping off", "[Rest]")
+{
+  PartOne& p = GetPartOne();
+  // the shared PartOne gets its defaults back however this case ends
+  struct Restore
+  {
+    PartOne& p;
+    ~Restore() { p.SetRestSettings("{}"); }
+  } restore{ p };
+  p.SetRestSettings(R"({"allowWait": false})");
+  auto& ac = HalfPlayer(p);
+  const auto health = [&] {
+    return ac.GetChangeForm().actorValues.healthPercentage;
+  };
+
+  Rest(p, 8.f);
+  REQUIRE(health() == 0.5f);
+  Rest(p, 8.f, true);
+  REQUIRE(health() == 1.f);
+  Leave(p);
+
+  REQUIRE_THROWS(p.SetRestSettings(R"({"allowWildernessRest": true})"));
 }

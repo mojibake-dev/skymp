@@ -106,6 +106,11 @@ struct PartOne::Impl
     skymp::rules::new_game_clock("{}");
   bool gameTimeBroadcast = false;
 
+  // TES3MP's rest switches (thuum docs/verbs/rest.md): server-settings.json's
+  // `rest` block, both on unless a server turns one off
+  rust::Box<skymp::rules::RestSettings> restSettings =
+    skymp::rules::new_rest_settings("{}");
+
   espm::Loader* espm = nullptr;
 
   std::function<void(PartOneSendTargetWrapper* sendTarget,
@@ -1095,6 +1100,17 @@ void PartOne::SetGameTimeSettings(const std::string& timeSettingsJson)
   spdlog::info("PartOne::SetGameTimeSettings - game time now year {}, month "
                "{}, day {}, hour {:.3f}, days passed {:.3f}, time scale {}",
                t.year, t.month, t.day, t.hour, t.daysPassed, t.timeScale);
+}
+
+void PartOne::SetRestSettings(const std::string& restSettingsJson)
+{
+  pImpl->restSettings = skymp::rules::new_rest_settings(restSettingsJson);
+  spdlog::info("PartOne::SetRestSettings - {}", restSettingsJson);
+}
+
+const skymp::rules::RestSettings& PartOne::GetRestSettings() const
+{
+  return *pImpl->restSettings;
 }
 
 GameTimeNow PartOne::GetGameTime() const

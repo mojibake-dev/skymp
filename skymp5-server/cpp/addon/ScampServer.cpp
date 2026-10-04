@@ -311,6 +311,10 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
     partOne->SetGameTimeSettings(serverSettings.contains("time")
                                    ? serverSettings.at("time").dump()
                                    : std::string("{}"));
+    // TES3MP's rest switches (thuum docs/verbs/rest.md): `rest`, the same way
+    partOne->SetRestSettings(serverSettings.contains("rest")
+                               ? serverSettings.at("rest").dump()
+                               : std::string("{}"));
 
     if (serverSettings["dataDir"] != nullptr) {
       dataDir = serverSettings["dataDir"];

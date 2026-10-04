@@ -47,3 +47,5 @@ Function BlockPapyrusEvents(Bool block) global native
 ObjectReference Function CreateReferenceAtLocation(Form baseForm, Cell cell, WorldSpace world, Float posX, Float posY, Float posZ, Float rotX, Float rotY, Float rotZ, Bool persist) global native
 
 Function CloseMenu(string name) global native
+
+Function SetGameDaysPassed(Float daysPassed) global native

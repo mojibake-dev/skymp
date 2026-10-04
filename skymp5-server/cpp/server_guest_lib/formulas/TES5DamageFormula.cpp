@@ -5,6 +5,8 @@
 #include "SpellCastData.h"
 #include "WorldState.h"
 #include "libespm/espm.h"
+#include "wire_bridge_cxx/rules.h"
+#include <limits>
 
 namespace internal {
 
@@ -32,6 +34,7 @@ private:
 private:
   [[nodiscard]] float GetBaseWeaponDamage() const;
   [[nodiscard]] float CalcWeaponRating() const;
+  [[nodiscard]] float CalcSneakMultiplier() const;
   [[nodiscard]] float CalcArmorRatingComponent(
     const Inventory::Entry& opponentEquipmentEntry) const;
   [[nodiscard]] float CalcOpponentArmorRating() const;
@@ -140,6 +143,34 @@ float TES5DamageFormulaImpl::CalcArmorDamagePenalty() const
                      maxArmorRating));
 }
 
+// The game's base sneak attack multiplier for the weapon's type, from its
+// settings in the master files (thuum docs/verbs/sneak-damage.md; upstream's
+// TODO GM-613); the Rust rule picks it, and keeps SkyMP's 1.3 for a type the
+// game names no setting for
+float TES5DamageFormulaImpl::CalcSneakMultiplier() const
+{
+  uint8_t animType = 0; // hand to hand
+  if (!IsUnarmedAttack(hitData.source)) {
+    const auto weapon =
+      espm::GetData<espm::WEAP>(hitData.source, espmProvider);
+    animType = weapon.weapDNAM
+      ? static_cast<uint8_t>(weapon.weapDNAM->animType)
+      : std::numeric_limits<uint8_t>::max();
+  }
+  const auto setting = [&](uint32_t id) {
+    return espm::GetData<espm::GMST>(id, espmProvider).value;
+  };
+  skymp::rules::SneakMults mults{};
+  mults.hand = setting(espm::GMST::kFCombatSneakHandMult);
+  mults.one_hand_sword = setting(espm::GMST::kFCombatSneak1HSwordMult);
+  mults.one_hand_dagger = setting(espm::GMST::kFCombatSneak1HDaggerMult);
+  mults.one_hand_axe = setting(espm::GMST::kFCombatSneak1HAxeMult);
+  mults.one_hand_mace = setting(espm::GMST::kFCombatSneak1HMaceMult);
+  mults.two_hand_sword = setting(espm::GMST::kFCombatSneak2HSwordMult);
+  mults.two_hand_axe = setting(espm::GMST::kFCombatSneak2HAxeMult);
+  return skymp::rules::sneak_mult(animType, mults);
+}
+
 float TES5DamageFormulaImpl::CalculateDamage() const
 {
   const float incomingDamage = DetermineDamageFromSource(hitData.source);
@@ -158,8 +189,7 @@ float TES5DamageFormulaImpl::CalculateDamage() const
   }
 
   if (hitData.isSneakAttack) {
-    // TODO(GM-613): get from GameSettings
-    damage *= 1.3f;
+    damage *= CalcSneakMultiplier();
   }
 
   return damage;

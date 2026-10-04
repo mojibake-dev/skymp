@@ -134,3 +134,41 @@ TEST_CASE("Formula is race-dependent for unarmed attack",
   p.DestroyActor(0xff000000);
   DoDisconnect(p, 0);
 }
+
+TEST_CASE("A sneak attack's multiplier is the game's for the weapon type",
+          "[TES5DamageFormula]")
+{
+  // thuum docs/verbs/sneak-damage.md: Skyrim.esm's fCombatSneak1HDaggerMult
+  // and fCombatSneak1HSwordMult are 3, fCombatSneakHandMult 2 (lab/esm.py,
+  // 2026-10-04); SkyMP's formula applied a flat 1.3
+  PartOne& p = GetPartOne();
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, 0xff000000);
+  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
+  ac.SetEquipment(Equipment());
+
+  const auto damage = [&](uint32_t source, bool sneak) {
+    HitData hitData;
+    hitData.target = 0x14;
+    hitData.aggressor = 0x14;
+    hitData.source = source;
+    hitData.isSneakAttack = sneak;
+    TES5DamageFormula formula{};
+    return formula.CalculateDamage(ac, ac, hitData);
+  };
+
+  const uint32_t ironDagger = 0x0001397E, ironSword = 0x00012EB7,
+                 unarmed = 0x1F4;
+  REQUIRE_THAT(
+    damage(ironDagger, true),
+    Catch::Matchers::WithinAbs(damage(ironDagger, false) * 3.f, 1e-4));
+  REQUIRE_THAT(
+    damage(ironSword, true),
+    Catch::Matchers::WithinAbs(damage(ironSword, false) * 3.f, 1e-4));
+  REQUIRE_THAT(damage(unarmed, true),
+               Catch::Matchers::WithinAbs(damage(unarmed, false) * 2.f, 1e-4));
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}

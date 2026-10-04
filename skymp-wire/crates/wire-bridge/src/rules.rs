@@ -78,6 +78,27 @@ mod ffi {
         is_sneaking: bool,
     }
 
+    /// The game's base sneak attack multipliers by weapon type (Skyrim.esm's
+    /// fCombatSneak*Mult settings) as the core read them; 0 for one it could
+    /// not read.
+    #[derive(Debug)]
+    struct SneakMults {
+        /// fCombatSneakHandMult.
+        hand: f32,
+        /// fCombatSneak1HSwordMult.
+        one_hand_sword: f32,
+        /// fCombatSneak1HDaggerMult.
+        one_hand_dagger: f32,
+        /// fCombatSneak1HAxeMult.
+        one_hand_axe: f32,
+        /// fCombatSneak1HMaceMult.
+        one_hand_mace: f32,
+        /// fCombatSneak2HSwordMult.
+        two_hand_sword: f32,
+        /// fCombatSneak2HAxeMult.
+        two_hand_axe: f32,
+    }
+
     /// The hit flags the server keeps.
     #[derive(Debug)]
     struct Flags {
@@ -159,6 +180,9 @@ mod ffi {
         fn melee_within_cone(facts: &ConeFacts) -> Verdict;
         /// The hit flags the server keeps.
         fn backed_flags(facts: &FlagFacts) -> Flags;
+        /// A kept sneak attack's damage multiplier for a weapon of
+        /// `anim_type` (the WEAP record's DNAM animation type).
+        fn sneak_mult(anim_type: u8, mults: &SneakMults) -> f32;
         /// TES3MP's rest switches from server-settings.json's `rest` block.
         type RestSettings;
         /// The switches from the block as JSON text (`{}` for both on); the
@@ -196,7 +220,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{ConeFacts, FlagFacts, Flags, GameTime, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, Verdict};
+pub use ffi::{ConeFacts, FlagFacts, Flags, GameTime, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, SneakMults, Verdict};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -268,6 +292,21 @@ fn rest_check(settings: &RestSettings, f: &RestFacts) -> RestRefusal {
         Err(rest::Refusal::Dead) => RestRefusal::Dead,
         Err(rest::Refusal::Fighting) => RestRefusal::Fighting,
     }
+}
+
+fn sneak_mult(anim_type: u8, m: &SneakMults) -> f32 {
+    damage::sneak_mult(
+        anim_type,
+        damage::SneakMults {
+            hand: m.hand,
+            one_hand_sword: m.one_hand_sword,
+            one_hand_dagger: m.one_hand_dagger,
+            one_hand_axe: m.one_hand_axe,
+            one_hand_mace: m.one_hand_mace,
+            two_hand_sword: m.two_hand_sword,
+            two_hand_axe: m.two_hand_axe,
+        },
+    )
 }
 
 fn rest_after(r: &Regen, hours: f32) -> f32 {
@@ -364,6 +403,17 @@ mod tests {
             is_sneaking: true,
         });
         assert!(!kept.power && kept.sneak);
+        let skyrim = SneakMults {
+            hand: 2.0,
+            one_hand_sword: 3.0,
+            one_hand_dagger: 3.0,
+            one_hand_axe: 3.0,
+            one_hand_mace: 3.0,
+            two_hand_sword: 2.0,
+            two_hand_axe: 2.0,
+        };
+        assert!((sneak_mult(1, &skyrim) - 3.0).abs() < 1e-6);
+        assert!((sneak_mult(7, &skyrim) - 1.3).abs() < 1e-6);
         let mut b = new_movement_budgets();
         assert!(b.spend(7, 2048.0, 0));
         assert!(!b.spend(7, 1.0, 0));

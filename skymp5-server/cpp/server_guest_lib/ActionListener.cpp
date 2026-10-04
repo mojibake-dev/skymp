@@ -1155,6 +1155,31 @@ std::optional<skymp::rules::MeleeFacts> MeleeFacts(const MpActor& aggressor,
     return std::nullopt;
   }
 }
+
+// thuum docs/verbs/hit-cone.md: the facts the hit cone rule needs; the rule
+// is Rust's (skymp-wire wire-rules melee, ADR-020). Headings are degrees, as
+// the core records them.
+skymp::rules::ConeFacts ConeFacts(const MpActor& aggressor,
+                                  const MpActor& target, bool power,
+                                  WorldState& worldState)
+{
+  skymp::rules::ConeFacts facts{};
+  facts.heading = aggressor.GetAngle().z;
+  const NiPoint3 offset = target.GetPos() - aggressor.GetPos();
+  facts.dx = offset.x;
+  facts.dy = offset.y;
+  facts.power = power;
+  facts.target_dead = target.IsDead();
+  try {
+    facts.widest_strike_angle =
+      espm::GetData<espm::RACE>(aggressor.GetRaceId(), &worldState)
+        .widestStrikeAngle;
+  } catch (std::exception& e) {
+    spdlog::warn("ConeFacts - {:x}: {}; the race's attacks not read",
+                 aggressor.GetFormId(), e.what());
+  }
+  return facts;
+}
 }
 
 void ActionListener::OnHit(const RawMessageData& rawMsgData,
@@ -1302,6 +1327,16 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
                        facts->distance, verdict.bound);
           return;
         }
+      }
+      const auto cone = ConeFacts(*aggressor, *targetActor,
+                                  hitData.isPowerAttack, partOne.worldState);
+      const auto coneVerdict = skymp::rules::melee_within_cone(cone);
+      if (!coneVerdict.allowed) {
+        spdlog::warn("ActionListener::OnHit - E_HIT_CONE: {:x} hits {:x} "
+                     "outside {:.0f} degrees of its heading {:.0f}; refused",
+                     aggressor->GetFormId(), targetActor->GetFormId(),
+                     coneVerdict.bound, cone.heading);
+        return;
       }
     }
     OnWeaponHit(aggressor, targetRef, hitData, isUnarmed);

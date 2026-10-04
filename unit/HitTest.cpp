@@ -252,6 +252,9 @@ TEST_CASE("A melee hit on a player from beyond reach does nothing", "[Hit]")
   // (height 1.03) reaches max(141 * 1.03, 162) = 162, plus both forward
   // extents (14 * 1.03 each) and 256 for stale positions: about 447 units.
   // Player against player only: a target no user plays keeps the old bound.
+  // The aggressor faces north (+y) and every target stands on its heading,
+  // so the hit cone (thuum docs/verbs/hit-cone.md) never decides here; the
+  // NPC behind it shows the cone is a player-on-player rule too.
   PartOne& p = GetPartOne();
   DoConnect(p, 0);
   DoConnect(p, 1);
@@ -260,9 +263,9 @@ TEST_CASE("A melee hit on a player from beyond reach does nothing", "[Hit]")
   const uint32_t npc = 0xff000002;
   p.CreateActor(aggressor, { 0, 0, 0 }, 0, 0x3c);
   p.SetUserActor(0, aggressor);
-  p.CreateActor(target, { 400, 0, 0 }, 0, 0x3c);
+  p.CreateActor(target, { 0, 400, 0 }, 0, 0x3c);
   p.SetUserActor(1, target);
-  p.CreateActor(npc, { 0, 2000, 0 }, 0, 0x3c);
+  p.CreateActor(npc, { 0, -2000, 0 }, 0, 0x3c);
   auto& acAggressor = p.worldState.GetFormAt<MpActor>(aggressor);
 
   const uint32_t ironSword = 0x00012eb7;
@@ -293,10 +296,17 @@ TEST_CASE("A melee hit on a player from beyond reach does nothing", "[Hit]")
     return victim.GetChangeForm().actorValues.healthPercentage < 1.f;
   };
 
-  REQUIRE(hitFrom(target, { 400, 0, 0 }));
-  REQUIRE(!hitFrom(target, { 500, 0, 0 }));
-  REQUIRE(!hitFrom(target, { 2000, 0, 0 }));
-  REQUIRE(hitFrom(npc, { 0, 2000, 0 }));
+  REQUIRE(hitFrom(target, { 0, 400, 0 }));
+  REQUIRE(!hitFrom(target, { 0, 500, 0 }));
+  REQUIRE(!hitFrom(target, { 0, 2000, 0 }));
+  REQUIRE(hitFrom(npc, { 0, -2000, 0 }));
+
+  // thuum docs/verbs/hit-cone.md: within reach but behind the aggressor
+  // (180 degrees off its heading, past any bound: 95 for a Nord, 80 for a
+  // race without attack data, 145 for a Nord's sweep) the hit is refused;
+  // 30 degrees off, where the lab's swings landed, it lands
+  REQUIRE(!hitFrom(target, { 0, -100, 0 }));
+  REQUIRE(hitFrom(target, { 50, 86.6f, 0 }));
 
   p.DestroyActor(aggressor);
   p.DestroyActor(target);

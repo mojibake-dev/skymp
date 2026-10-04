@@ -45,6 +45,24 @@ mod ffi {
         target_scale: f32,
     }
 
+    /// What the core knows about the direction of a player's melee hit on a
+    /// player (thuum docs/verbs/hit-cone.md).
+    #[derive(Debug)]
+    struct ConeFacts {
+        /// The attacker's heading as the core records it, degrees.
+        heading: f32,
+        /// Target minus attacker, east, units.
+        dx: f32,
+        /// Target minus attacker, north, units.
+        dy: f32,
+        /// The widest ATKD strike angle of the attacker's race, 0 for none.
+        widest_strike_angle: f32,
+        /// The hit is a power attack, as the core kept the flag.
+        power: bool,
+        /// The target is dead.
+        target_dead: bool,
+    }
+
     /// What the core knows about a player's hit flags.
     #[derive(Debug)]
     struct FlagFacts {
@@ -95,6 +113,9 @@ mod ffi {
         fn race_allowed(facts: &RaceFacts) -> bool;
         /// Whether a player's melee hit on a player is within reach.
         fn melee_within_reach(facts: &MeleeFacts) -> Verdict;
+        /// Whether a player's melee hit on a player is within the attacker's
+        /// cone (the bound in degrees off its heading).
+        fn melee_within_cone(facts: &ConeFacts) -> Verdict;
         /// The hit flags the server keeps.
         fn backed_flags(facts: &FlagFacts) -> Flags;
 
@@ -125,7 +146,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{FlagFacts, Flags, GameTime, MeleeFacts, RaceFacts, Verdict};
+pub use ffi::{ConeFacts, FlagFacts, Flags, GameTime, MeleeFacts, RaceFacts, Verdict};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -152,6 +173,17 @@ fn melee_within_reach(f: &MeleeFacts) -> Verdict {
         unarmed_reach: f.unarmed_reach,
         aggressor_scale: f.aggressor_scale,
         target_scale: f.target_scale,
+    }))
+}
+
+fn melee_within_cone(f: &ConeFacts) -> Verdict {
+    verdict(melee::within_cone(melee::ConeFacts {
+        heading: f.heading,
+        dx: f.dx,
+        dy: f.dy,
+        widest_strike_angle: f.widest_strike_angle,
+        power: f.power,
+        target_dead: f.target_dead,
     }))
 }
 
@@ -238,6 +270,15 @@ mod tests {
             target_scale: 1.03,
         });
         assert!(!v.allowed);
+        let behind = melee_within_cone(&ConeFacts {
+            heading: 180.0,
+            dx: 0.0,
+            dy: 120.0,
+            widest_strike_angle: 50.0,
+            power: false,
+            target_dead: false,
+        });
+        assert!(!behind.allowed && (behind.bound - 95.0).abs() < 1e-4);
         let kept = backed_flags(&FlagFacts {
             claims_power: true,
             claims_sneak: true,

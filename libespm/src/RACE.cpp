@@ -1,5 +1,6 @@
 #include "libespm/RACE.h"
 #include "libespm/RecordHeaderAccess.h"
+#include <algorithm>
 #include <cstring>
 
 namespace espm {
@@ -25,6 +26,11 @@ RACE::Data RACE::GetData(
         result.unarmedReach = *reinterpret_cast<const float*>(data + 100);
       } else if (!std::memcmp(type, "SPLO", 4)) {
         result.spells.emplace(*reinterpret_cast<const uint32_t*>(data));
+      } else if (!std::memcmp(type, "ATKD", 4) && size >= 24) {
+        // strike angle: bytes 20 to 23 of ATKD (UESP; CommonLibSSE-NG
+        // BGSAttackData::AttackData's order)
+        result.widestStrikeAngle = std::max(
+          result.widestStrikeAngle, *reinterpret_cast<const float*>(data + 20));
       }
     },
     compressedFieldsCache);

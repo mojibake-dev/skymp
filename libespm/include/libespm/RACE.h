@@ -61,6 +61,9 @@ public:
     float staminaRegen = 0.f;
     float unarmedDamage = 0.f;
     float unarmedReach = 0.f;
+    // the widest strike angle among the race's attacks (ATKD; the half angle
+    // of the engine's hit cone per attack), 0 for a race with none
+    float widestStrikeAngle = 0.f;
 
     std::set<uint32_t> spells = {};
   };

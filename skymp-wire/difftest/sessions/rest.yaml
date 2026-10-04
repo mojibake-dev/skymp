@@ -5,7 +5,9 @@
 # an hour at 5 s, inside the 10 s after the hit: the legacy server has no
 # RestIntent and the fixed one refuses a fight, so neither answers. c1 rests
 # again at 16 s: the fixed server restores it to full and tells it
-# (ChangeValues); the legacy server cannot.
+# (ChangeValues); the legacy server cannot. c2 steps aside at 17 s so it
+# outlives c1 and sees c1 leave, as in every other session (with its last
+# step at 3.5 s, c2 left first and c1 saw it go).
 id: rest
 clients:
   c1: {profile_id: 9}
@@ -14,6 +16,7 @@ steps:
   - {client: c2, at_ms: 3500, send: {t: 17, data: {aggressor: 20, target: 4278190082, source: 500, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
   - {client: c1, at_ms: 5000, send: {t: 35, hours: 1, sleep: false}}
   - {client: c1, at_ms: 16000, send: {t: 35, hours: 1, sleep: false}}
+  - {client: c2, at_ms: 17000, move: {dx: 1, dy: 0}}
 divergences:
   - client: c1
     msg: {t: 16, data: {health: 1, magicka: 1, stamina: 1}}

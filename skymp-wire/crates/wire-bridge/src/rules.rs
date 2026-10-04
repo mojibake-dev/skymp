@@ -1,8 +1,8 @@
 //! The game rules for the C++ core (thuum ADR-020): the core gathers the
 //! facts from its world model and asks; wire-rules decides. Plain values both
-//! ways, and the movement budgets live here.
+//! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, appearance, damage, melee, movement};
+use wire_rules::{activation, appearance, clock, damage, melee, movement};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -69,6 +69,24 @@ mod ffi {
         sneak: bool,
     }
 
+    /// The game clock at one instant, as the engine's six time globals hold
+    /// it (thuum docs/verbs/time.md).
+    #[derive(Debug)]
+    struct GameTime {
+        /// GameYear.
+        year: u32,
+        /// GameMonth, from 0.
+        month: u32,
+        /// GameDay, from 1.
+        day: u32,
+        /// GameHour, at least 0 and below 24.
+        hour: f32,
+        /// GameDaysPassed.
+        days_passed: f32,
+        /// TimeScale.
+        time_scale: f32,
+    }
+
     extern "Rust" {
         /// A client's first activation of a target `distance` units away,
         /// `target_size` being its bounds' farthest point times its scale.
@@ -89,10 +107,25 @@ mod ffi {
         fn spend(self: &mut MovementBudgets, actor: u32, ground: f32, now_ms: u64) -> bool;
         /// Drop an actor's budget.
         fn forget(self: &mut MovementBudgets, actor: u32);
+
+        /// The server's game clock and who has heard it.
+        type GameClock;
+        /// A clock from server-settings.json's `time` block as JSON text
+        /// (`{}` for every default); the error names the bad key.
+        fn new_game_clock(settings_json: &str) -> Result<Box<GameClock>>;
+        /// The clock at `now_ms`, Unix milliseconds.
+        fn now(self: &GameClock, now_ms: i64) -> GameTime;
+        /// A player logs in and hears the clock.
+        fn login(self: &mut GameClock, user: u32, now_ms: i64) -> GameTime;
+        /// Whether a logged-in player is due to hear it again; a true
+        /// answer counts as heard.
+        fn resync_due(self: &mut GameClock, user: u32, now_ms: i64) -> bool;
+        /// A player left.
+        fn forget(self: &mut GameClock, user: u32);
     }
 }
 
-pub use ffi::{FlagFacts, Flags, MeleeFacts, RaceFacts, Verdict};
+pub use ffi::{FlagFacts, Flags, GameTime, MeleeFacts, RaceFacts, Verdict};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -150,6 +183,43 @@ impl MovementBudgets {
     }
 }
 
+/// The server's game clock (wire-rules clock).
+#[derive(Debug)]
+pub struct GameClock(clock::Clock);
+
+fn new_game_clock(settings_json: &str) -> Result<Box<GameClock>, clock::SettingsError> {
+    clock::Clock::from_json(settings_json).map(|c| Box::new(GameClock(c)))
+}
+
+fn game_time(t: clock::GameTime) -> GameTime {
+    GameTime {
+        year: t.year,
+        month: t.month,
+        day: t.day,
+        hour: t.hour,
+        days_passed: t.days_passed,
+        time_scale: t.time_scale,
+    }
+}
+
+impl GameClock {
+    fn now(&self, now_ms: i64) -> GameTime {
+        game_time(self.0.now(now_ms))
+    }
+
+    fn login(&mut self, user: u32, now_ms: i64) -> GameTime {
+        game_time(self.0.login(user, now_ms))
+    }
+
+    fn resync_due(&mut self, user: u32, now_ms: i64) -> bool {
+        self.0.resync_due(user, now_ms)
+    }
+
+    fn forget(&mut self, user: u32) {
+        self.0.forget(user);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,5 +249,19 @@ mod tests {
         let mut b = new_movement_budgets();
         assert!(b.spend(7, 2048.0, 0));
         assert!(!b.spend(7, 1.0, 0));
+    }
+
+    #[test]
+    fn the_bridge_passes_the_clock_through() {
+        // 2026-10-03T00:00:00Z, the default epoch: Skyrim.esm's start
+        let epoch = 1_790_985_600_000;
+        assert!(new_game_clock("{}").is_ok());
+        let Ok(mut c) = new_game_clock("{}") else { return };
+        let t = c.login(3, epoch);
+        assert_eq!((t.year, t.month, t.day, t.hour, t.days_passed, t.time_scale), (201, 7, 17, 8.0, 1.0, 20.0));
+        assert!(!c.resync_due(3, epoch + 1));
+        assert!(c.resync_due(3, epoch + clock::RESYNC_MS));
+        c.forget(3);
+        assert!(new_game_clock(r#"{"timeScale": 0}"#).is_err());
     }
 }

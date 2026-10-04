@@ -34,6 +34,7 @@ proptest = "1"
 arbitrary = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }  # parse floats correctly rounded, as JSON.parse and simdjson do (found by fuzz/validate)
 serde_yaml = "0.9"
+chrono = { version = "0.4", default-features = false, features = ["alloc"] }  # no clock: time comes in from the caller
 
 # These lints are the rules in .claude/rules/rust.md made mechanical.
 [workspace.lints.rust]

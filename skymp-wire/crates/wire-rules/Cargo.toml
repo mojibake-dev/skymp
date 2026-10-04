@@ -4,9 +4,13 @@ version = "0.0.1"
 edition.workspace = true
 publish.workspace = true
 license.workspace = true
-description = "Game-semantics validation (thuum ADR-020): the server's rules over facts its world model gathers. Pure; no I/O, no state outside its own types."
+description = "Game rules (thuum ADR-020): the server's rules over facts its world model gathers, and its game clock (ADR-021). Pure; no I/O, no state outside its own types."
 
 [dependencies]
+serde = { workspace = true, features = ["std"] }
+serde_json.workspace = true
+thiserror.workspace = true
+chrono.workspace = true   # RFC 3339 epochs and the real-time mode's UTC calendar
 
 [dev-dependencies]
 proptest.workspace = true

@@ -1,11 +1,12 @@
-//! Game-semantics validation (thuum ADR-020). The C++ world model gathers
-//! the facts a rule needs (positions, game records, equipment, animation
-//! events) and asks here; the rule, its constants and any state it keeps
-//! live in Rust. Each function is a decision over plain numbers, so its tests
+//! Game rules (thuum ADR-020). The C++ world model gathers the facts a rule
+//! needs (positions, game records, equipment, animation events, the wall
+//! clock) and asks here; the rule, its constants and any state it keeps live
+//! in Rust. Each function is a decision over plain numbers, so its tests
 //! need no server. The verb docs under thuum docs/verbs/ hold the sources.
 
 pub mod activation;
 pub mod appearance;
+pub mod clock;
 pub mod damage;
 pub mod melee;
 pub mod movement;

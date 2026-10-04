@@ -10,6 +10,7 @@ pub mod clock;
 pub mod damage;
 pub mod melee;
 pub mod movement;
+pub mod rest;
 
 /// A decision and the bound it was made against, for the server's log.
 #[derive(Debug, Clone, Copy, PartialEq)]

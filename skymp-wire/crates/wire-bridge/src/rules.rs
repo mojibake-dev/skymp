@@ -386,7 +386,7 @@ mod tests {
         assert_eq!(rest_check(&no_wait, &facts(8.0, false, false, 0)), RestRefusal::Off);
         assert!(new_rest_settings(r#"{"allowWait": "no"}"#).is_err());
         let half = Regen { percentage: 0.5, rate: 0.7, rate_mult: 1.0 };
-        assert!((rest_after(&half, 1.0) - 0.752).abs() < 1e-5);
+        assert!((rest_after(&half, 1.0) - 0.5252).abs() < 1e-5);
     }
 
     #[test]

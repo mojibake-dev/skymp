@@ -24,11 +24,15 @@ pub const MAX_HOURS: f32 = 24.0;
 /// which only the client can see. A choice, not an engine number.
 pub const COMBAT_QUIET_MS: u64 = 10_000;
 
-/// Game seconds in a game hour. HYPOTHESIS: the engine regenerates over a
-/// rest's game seconds rather than their real-time equivalent at the time
-/// scale; both restore fully at the base rates, and rest.md's Dynamic plan
-/// measures which one with a lowered rate.
-pub const REGEN_SECONDS_PER_HOUR: f32 = 3_600.0;
+/// Seconds of regeneration the engine gives a rest per game hour, measured at
+/// time scale 20, the default (thuum docs/verbs/rest.md): with HealRateMult
+/// at 1 percent, a wait gained 0.0252 of health in an hour and 0.0506 in two
+/// (run 20261004-095556), against a real-time rate of 0.007 percent a second
+/// (run 20261004-100002). Neither a rest's game seconds (3,600) nor their
+/// real-time equivalent (180). At time scale 10 the engine gave about 457 a
+/// game hour (run 20261004-100415): a dependence on the time scale this
+/// constant does not follow yet.
+pub const REGEN_SECONDS_PER_HOUR: f32 = 360.0;
 
 /// TES3MP's rest switches, from server-settings.json's `rest` block: its
 /// allowWait and allowBedRest (CoreScripts 0.8.1 scripts/config.lua), the
@@ -171,10 +175,12 @@ mod tests {
     }
 
     #[test]
-    fn the_dynamic_plan_s_lowered_rate() {
-        // rest.md: HealRateMult 1 percent, an hour from half health
+    fn the_engine_s_lowered_rate() {
+        // rest.md, the measured runs: HealRateMult 1 percent from half health
+        // gains 0.0252 in an hour and 0.0504 in two
         let lowered = Regen { percentage: 0.5, rate: 0.7, rate_mult: 1.0 };
-        assert!((after_rest(lowered, 1.0) - 0.752).abs() < 1e-5);
+        assert!((after_rest(lowered, 1.0) - 0.5252).abs() < 1e-5);
+        assert!((after_rest(lowered, 2.0) - 0.5504).abs() < 1e-5);
     }
 
     #[test]

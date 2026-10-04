@@ -10,8 +10,9 @@ PartOne& GetPartOne();
 
 // thuum docs/verbs/rest.md: a player waits or sleeps for themselves; the
 // server checks the rest (R1) and gives the player each attribute's
-// regeneration over the rested hours (R0), the hours in game seconds
-// (HYPOTHESIS until the verb's Dynamic plan measures the engine's base).
+// regeneration over the rested hours (R0): 360 seconds of it a game hour, as
+// the engine gives at time scale 20 (measured, runs 20261004-095556 and
+// 20261004-100002).
 
 namespace {
 constexpr uint32_t kActor = 0xff000abc;
@@ -45,7 +46,7 @@ void Leave(PartOne& p)
 
 float Expected(float rate, float rateMult, float hours)
 {
-  return std::min(1.f, 0.5f + rate * rateMult / 10000.f * 3600.f * hours);
+  return std::min(1.f, 0.5f + rate * rateMult / 10000.f * 360.f * hours);
 }
 }
 

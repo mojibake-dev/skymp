@@ -165,6 +165,12 @@ void PacketParser::TransformPacketIntoAction(Networking::UserId userId,
         actionListener.OnPlayerBowShot(rawMsgData, *message);
         break;
       }
+      case MsgType::RestIntent: {
+        auto message =
+          reinterpret_cast<RestIntentMessage*>(result->message.get());
+        actionListener.OnRestIntent(rawMsgData, *message);
+        return;
+      }
       default: {
         spdlog::error("PacketParser.cpp doesn't implement MsgType {}",
                       static_cast<int64_t>(result->msgType));

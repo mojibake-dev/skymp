@@ -644,6 +644,79 @@ void ActionListener::OnTakeItem(const RawMessageData& rawMsgData,
   ref.TakeItem(*actor, entry);
 }
 
+namespace {
+const char* RestRefusalName(skymp::rules::RestRefusal refusal)
+{
+  switch (refusal) {
+    case skymp::rules::RestRefusal::Hours:
+      return "E_REST_HOURS";
+    case skymp::rules::RestRefusal::Dead:
+      return "E_REST_DEAD";
+    case skymp::rules::RestRefusal::Fighting:
+      return "E_REST_FIGHTING";
+    default:
+      return "E_REST";
+  }
+}
+}
+
+// A player waited or slept (thuum docs/verbs/rest.md, ADR-021 decision 2):
+// the shared clock does not move; the server checks the rest (R1) and gives
+// the player its recovery (R0), each attribute's regeneration over the rested
+// hours at the rates CropRegeneration judges by.
+void ActionListener::OnRestIntent(const RawMessageData& rawMsgData,
+                                  const RestIntentMessage& msg)
+{
+  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!actor) {
+    return spdlog::warn("OnRestIntent - no actor for user {}",
+                        rawMsgData.userId);
+  }
+
+  // the last hit the player dealt or took, as the server saw it
+  const auto now = std::chrono::steady_clock::now();
+  const auto lastHit = std::max(actor->GetLastHitTime(std::nullopt),
+                                actor->GetLastHitTakenTime());
+  const bool hasHit = lastHit != std::chrono::steady_clock::time_point{};
+
+  skymp::rules::RestFacts facts{};
+  facts.hours = msg.hours;
+  facts.is_dead = actor->IsDead();
+  facts.has_hit = hasHit;
+  facts.since_last_hit_ms = hasHit
+    ? static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - lastHit)
+          .count())
+    : 0;
+  const auto refusal = skymp::rules::rest_check(facts);
+  if (refusal != skymp::rules::RestRefusal::Allowed) {
+    return spdlog::info("{}: user {} actor {:x} rest of {} h refused",
+                        RestRefusalName(refusal), rawMsgData.userId,
+                        actor->GetFormId(), msg.hours);
+  }
+
+  const auto after = [&](float percentage, RegenRate r) {
+    skymp::rules::Regen regen{};
+    regen.percentage = percentage;
+    regen.rate = r.rate;
+    regen.rate_mult = r.rateMult;
+    return skymp::rules::rest_after(regen, msg.hours);
+  };
+  ActorValues values = actor->GetActorValues();
+  values.healthPercentage =
+    after(values.healthPercentage, GetHealthRegenRate(actor));
+  values.magickaPercentage =
+    after(values.magickaPercentage, GetMagickaRegenRate(actor));
+  values.staminaPercentage =
+    after(values.staminaPercentage, GetStaminaRegenRate(actor));
+  actor->NetSetPercentages(values, nullptr, std::nullopt);
+  spdlog::info("Rest: user {} actor {:x} {} {} h, percentages now {} {} {}",
+               rawMsgData.userId, actor->GetFormId(),
+               msg.sleep ? "slept" : "waited", msg.hours,
+               values.healthPercentage, values.magickaPercentage,
+               values.staminaPercentage);
+}
+
 void ActionListener::OnDropItem(const RawMessageData& rawMsgData,
                                 const DropItemMessage& msg)
 {
@@ -1640,6 +1713,7 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
     currentActorValues, aggressor,
     std::vector<espm::ActorValue>{ espm::ActorValue::Health });
   aggressor->SetLastHitTime(targetActor.GetFormId(), currentHitTime);
+  targetActor.SetLastHitTakenTime(currentHitTime);
 
   spdlog::debug(
     "OnWeaponHit - Target {0:x} is hit by {1} damage. Percentage was: {3}, "

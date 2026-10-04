@@ -55,6 +55,7 @@ struct MpActor::Impl
   std::chrono::steady_clock::time_point lastAttributesUpdateTimePoint;
   std::vector<std::pair<uint32_t, std::chrono::steady_clock::time_point>>
     lastHitTimesLRU;
+  std::chrono::steady_clock::time_point lastHitTakenTimePoint;
   using RestorationTimePoints =
     std::unordered_map<espm::ActorValue,
                        std::chrono::steady_clock::time_point>;
@@ -778,6 +779,17 @@ std::chrono::steady_clock::time_point MpActor::GetLastHitTime(
     }
   }
   return std::chrono::steady_clock::time_point();
+}
+
+std::chrono::steady_clock::time_point MpActor::GetLastHitTakenTime() const
+{
+  return pImpl->lastHitTakenTimePoint;
+}
+
+void MpActor::SetLastHitTakenTime(
+  std::chrono::steady_clock::time_point timePoint)
+{
+  pImpl->lastHitTakenTimePoint = timePoint;
 }
 
 void MpActor::SetLastAttributesPercentagesUpdate(

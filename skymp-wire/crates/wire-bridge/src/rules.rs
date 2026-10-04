@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, appearance, clock, damage, melee, movement};
+use wire_rules::{activation, appearance, clock, damage, melee, movement, rest};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -105,6 +105,43 @@ mod ffi {
         time_scale: f32,
     }
 
+    /// What the core knows about a player's rest (thuum docs/verbs/rest.md).
+    #[derive(Debug)]
+    struct RestFacts {
+        /// The game hours the client says its player rested.
+        hours: f32,
+        /// The core holds the player dead.
+        is_dead: bool,
+        /// The player dealt or took a hit the core saw.
+        has_hit: bool,
+        /// Milliseconds since the last such hit (0 when there was none).
+        since_last_hit_ms: u64,
+    }
+
+    /// Why a rest is refused, `Allowed` when it is let through.
+    #[derive(Debug)]
+    enum RestRefusal {
+        /// Let through.
+        Allowed,
+        /// Hours outside the menu's 1 to 24, or not a number.
+        Hours,
+        /// The player is dead.
+        Dead,
+        /// A hit within the last 10 s.
+        Fighting,
+    }
+
+    /// One attribute as the core's CropRegeneration takes it.
+    #[derive(Debug)]
+    struct Regen {
+        /// The current percentage, 0 to 1.
+        percentage: f32,
+        /// The regeneration rate, percent of the maximum a second.
+        rate: f32,
+        /// The rate multiplier, percent.
+        rate_mult: f32,
+    }
+
     extern "Rust" {
         /// A client's first activation of a target `distance` units away,
         /// `target_size` being its bounds' farthest point times its scale.
@@ -118,6 +155,10 @@ mod ffi {
         fn melee_within_cone(facts: &ConeFacts) -> Verdict;
         /// The hit flags the server keeps.
         fn backed_flags(facts: &FlagFacts) -> Flags;
+        /// Whether a player's rest is let through, and why not.
+        fn rest_check(facts: &RestFacts) -> RestRefusal;
+        /// An attribute's percentage after a rest of `hours`.
+        fn rest_after(regen: &Regen, hours: f32) -> f32;
 
         /// Every player actor's ground speed budget.
         type MovementBudgets;
@@ -146,7 +187,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{ConeFacts, FlagFacts, Flags, GameTime, MeleeFacts, RaceFacts, Verdict};
+pub use ffi::{ConeFacts, FlagFacts, Flags, GameTime, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, Verdict};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -195,6 +236,23 @@ fn backed_flags(f: &FlagFacts) -> Flags {
         is_sneaking: f.is_sneaking,
     });
     Flags { power: kept.power, sneak: kept.sneak }
+}
+
+fn rest_check(f: &RestFacts) -> RestRefusal {
+    match rest::check(rest::RestFacts {
+        hours: f.hours,
+        is_dead: f.is_dead,
+        since_last_hit_ms: f.has_hit.then_some(f.since_last_hit_ms),
+    }) {
+        Ok(()) => RestRefusal::Allowed,
+        Err(rest::Refusal::Hours) => RestRefusal::Hours,
+        Err(rest::Refusal::Dead) => RestRefusal::Dead,
+        Err(rest::Refusal::Fighting) => RestRefusal::Fighting,
+    }
+}
+
+fn rest_after(r: &Regen, hours: f32) -> f32 {
+    rest::after_rest(rest::Regen { percentage: r.percentage, rate: r.rate, rate_mult: r.rate_mult }, hours)
 }
 
 /// Every player actor's ground speed budget (wire-rules movement).
@@ -290,6 +348,18 @@ mod tests {
         let mut b = new_movement_budgets();
         assert!(b.spend(7, 2048.0, 0));
         assert!(!b.spend(7, 1.0, 0));
+    }
+
+    #[test]
+    fn the_bridge_passes_the_rest_through() {
+        let facts = |hours, is_dead, has_hit, since_last_hit_ms| RestFacts { hours, is_dead, has_hit, since_last_hit_ms };
+        assert_eq!(rest_check(&facts(8.0, false, false, 0)), RestRefusal::Allowed);
+        assert_eq!(rest_check(&facts(8.0, false, true, 10_000)), RestRefusal::Allowed);
+        assert_eq!(rest_check(&facts(8.0, false, true, 3_000)), RestRefusal::Fighting);
+        assert_eq!(rest_check(&facts(0.5, false, false, 0)), RestRefusal::Hours);
+        assert_eq!(rest_check(&facts(8.0, true, false, 0)), RestRefusal::Dead);
+        let half = Regen { percentage: 0.5, rate: 0.7, rate_mult: 1.0 };
+        assert!((rest_after(&half, 1.0) - 0.752).abs() < 1e-5);
     }
 
     #[test]

@@ -52,6 +52,9 @@ public:
   virtual void OnPlayerBowShot(const RawMessageData& rawMsgData,
                                const PlayerBowShotMessage& msg);
 
+  virtual void OnRestIntent(const RawMessageData& rawMsgData,
+                            const RestIntentMessage& msg);
+
   virtual void OnFinishSpSnippet(const RawMessageData& rawMsgData,
                                  const FinishSpSnippetMessage& msg);
 

@@ -134,6 +134,10 @@ public:
   std::chrono::steady_clock::time_point GetLastAttributesPercentagesUpdate();
   std::chrono::steady_clock::time_point GetLastHitTime(
     std::optional<uint32_t> targetId) const;
+  // The last hit this actor took, as the server saw it (an epoch time point
+  // when none): with the hits it dealt, the rest rule's sign of a fight.
+  std::chrono::steady_clock::time_point GetLastHitTakenTime() const;
+  void SetLastHitTakenTime(std::chrono::steady_clock::time_point timePoint);
   size_t CountRecentHits(std::chrono::duration<float> timeWindow) const;
 
   void SetLastAttributesPercentagesUpdate(

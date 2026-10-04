@@ -65,48 +65,63 @@ float CropRegeneration(float newAttributeValue, float secondsAfterLastRegen,
   return newAttributeValue;
 }
 
-float CropHealthRegeneration(float newAttributeValue,
-                             float secondsAfterLastRegen, MpActor* actor)
+RegenRate GetHealthRegenRate(MpActor* actor)
 {
   const BaseActorValues baseValues = GetValues(actor);
   const ActorValues& actorValues = actor->GetActorValues();
-  const float rate = std::max(baseValues.healRate, actorValues.healRate);
-  const float rateMult =
-    std::max(baseValues.healRateMult, actorValues.healRateMult);
-  const float oldPercentage = actorValues.healthPercentage;
+  return { std::max(baseValues.healRate, actorValues.healRate),
+           std::max(baseValues.healRateMult, actorValues.healRateMult) };
+}
+
+RegenRate GetMagickaRegenRate(MpActor* actor)
+{
+  const BaseActorValues baseValues = GetValues(actor);
+  const ActorValues& actorValues = actor->GetActorValues();
+  return { std::max(baseValues.magickaRate, actorValues.magickaRate),
+           std::max(baseValues.magickaRateMult, actorValues.magickaRateMult) };
+}
+
+RegenRate GetStaminaRegenRate(MpActor* actor)
+{
+  const BaseActorValues baseValues = GetValues(actor);
+  const ActorValues& actorValues = actor->GetActorValues();
+  return { actor->IsBlockActive()
+             ? actorValues.staminaRate
+             : std::max(baseValues.staminaRate, actorValues.staminaRate),
+           std::max(baseValues.staminaRateMult, actorValues.staminaRateMult) };
+}
+
+float CropHealthRegeneration(float newAttributeValue,
+                             float secondsAfterLastRegen, MpActor* actor)
+{
+  const RegenRate r = GetHealthRegenRate(actor);
+  const ActorValues& actorValues = actor->GetActorValues();
   const bool hasActiveMagicEffects = !actor->GetActiveMagicEffects().Empty();
-  return CropRegeneration(newAttributeValue, secondsAfterLastRegen, rate,
-                          rateMult, oldPercentage, hasActiveMagicEffects);
+  return CropRegeneration(newAttributeValue, secondsAfterLastRegen, r.rate,
+                          r.rateMult, actorValues.healthPercentage,
+                          hasActiveMagicEffects);
 }
 
 float CropMagickaRegeneration(float newAttributeValue,
                               float secondsAfterLastRegen, MpActor* actor)
 {
-  const BaseActorValues baseValues = GetValues(actor);
+  const RegenRate r = GetMagickaRegenRate(actor);
   const ActorValues& actorValues = actor->GetActorValues();
-  const float rate = std::max(baseValues.magickaRate, actorValues.magickaRate);
-  const float rateMult =
-    std::max(baseValues.magickaRateMult, actorValues.magickaRateMult);
-  const float oldPercentage = actorValues.magickaPercentage;
   const bool hasActiveMagicEffects = !actor->GetActiveMagicEffects().Empty();
-  return CropRegeneration(newAttributeValue, secondsAfterLastRegen, rate,
-                          rateMult, oldPercentage, hasActiveMagicEffects);
+  return CropRegeneration(newAttributeValue, secondsAfterLastRegen, r.rate,
+                          r.rateMult, actorValues.magickaPercentage,
+                          hasActiveMagicEffects);
 }
 
 float CropStaminaRegeneration(float newAttributeValue,
                               float secondsAfterLastRegen, MpActor* actor)
 {
-  const BaseActorValues baseValues = GetValues(actor);
+  const RegenRate r = GetStaminaRegenRate(actor);
   const ActorValues& actorValues = actor->GetActorValues();
-  const float rate = actor->IsBlockActive()
-    ? actorValues.staminaRate
-    : std::max(baseValues.staminaRate, actorValues.staminaRate);
-  const float rateMult =
-    std::max(baseValues.staminaRateMult, actorValues.staminaRateMult);
-  const float oldPercentage = actorValues.staminaPercentage;
   const bool hasActiveMagicEffects = !actor->GetActiveMagicEffects().Empty();
-  return CropRegeneration(newAttributeValue, secondsAfterLastRegen, rate,
-                          rateMult, oldPercentage, hasActiveMagicEffects);
+  return CropRegeneration(newAttributeValue, secondsAfterLastRegen, r.rate,
+                          r.rateMult, actorValues.staminaPercentage,
+                          hasActiveMagicEffects);
 }
 
 float CropPeriodAfterLastRegen(float secondsAfterLastRegen,

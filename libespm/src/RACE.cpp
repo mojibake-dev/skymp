@@ -27,10 +27,17 @@ RACE::Data RACE::GetData(
       } else if (!std::memcmp(type, "SPLO", 4)) {
         result.spells.emplace(*reinterpret_cast<const uint32_t*>(data));
       } else if (!std::memcmp(type, "ATKD", 4) && size >= 24) {
-        // strike angle: bytes 20 to 23 of ATKD (UESP; CommonLibSSE-NG
-        // BGSAttackData::AttackData's order)
-        result.widestStrikeAngle = std::max(
-          result.widestStrikeAngle, *reinterpret_cast<const float*>(data + 20));
+        // attack angle and strike angle: bytes 16 and 20 of ATKD (UESP;
+        // CommonLibSSE-NG BGSAttackData::AttackData's order). Forward attacks
+        // only: Update.esm's mounted side attacks (attackStart_MC_*: attack
+        // angle 90 or -90, strike 85) aim a rider's cone to its side, and
+        // mounted combat is not ruled yet
+        const float attackAngle = *reinterpret_cast<const float*>(data + 16);
+        if (attackAngle == 0.f) {
+          result.widestStrikeAngle =
+            std::max(result.widestStrikeAngle,
+                     *reinterpret_cast<const float*>(data + 20));
+        }
       }
     },
     compressedFieldsCache);

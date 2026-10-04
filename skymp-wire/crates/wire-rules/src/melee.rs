@@ -51,8 +51,11 @@ pub struct ConeFacts {
     pub dx: f32,
     /// Target minus attacker, north.
     pub dy: f32,
-    /// The widest strike angle among the attacker race's attacks (RACE ATKD;
-    /// 50 for the playable races but DarkElfRace's 35), 0 for none.
+    /// The widest strike angle among the attacker race's forward attacks
+    /// (RACE ATKD with an attack angle of 0; 50 for the playable races but
+    /// DarkElfRace's 35), 0 for none. Update.esm's mounted side attacks
+    /// (attack angle 90 or -90, strike 85) are left out: mounted combat is
+    /// M7.
     pub widest_strike_angle: f32,
     /// The hit is a power attack, as the server kept the flag
     /// (docs/verbs/damage-flags.md).

@@ -198,15 +198,14 @@ TEST_CASE("A rest at a bed just activated is a sleep: the bed works again "
   };
 
   REQUIRE(activate(0));
-  REQUIRE(activate(0));  // its occupant may use it again
-  REQUIRE(!activate(1)); // another player may not while it is held
+  REQUIRE(activate(0)); // the same player may use it again
+  REQUIRE(activate(1)); // and so may another: a vanilla bed seats no one
 
   p.Messages().clear();
   Rest(p, 1.f, false); // the client's flag says a wait; the server knows
   REQUIRE(ac.GetChangeForm().actorValues.healthPercentage == 1.f);
   REQUIRE(restedGrants() == 1);
-  REQUIRE(ac.GetLastBed().first == 0);
-  REQUIRE(activate(1)); // the rest released the bed
+  REQUIRE(ac.GetLastBed().first == 0); // the rest forgot the bed
 
   // the other player walks off; a rest 1400 units from the bed is a wait
   other.SetPos({ 117820, -79000, 10997 });

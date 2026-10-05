@@ -1541,6 +1541,15 @@ void MpObjectReference::ProcessActivateNormal(
     // SendOpenContainer being used to activate the object
     // TODO: rename SendOpenContainer to SendActivate
     activationSource.SendOpenContainer(GetFormId());
+  } else if (t == "FURN" && actorActivator && IsSleepFurniture()) {
+    // thuum docs/verbs/sleep.md: a vanilla bed opens the sleep menu and never
+    // seats the player, so there is nothing to occupy; two players may sleep
+    // in one bed, each in its own game. The player's next rest is a sleep if
+    // it comes soon, at this bed.
+    // SendOpenContainer being used to activate the object
+    // TODO: rename SendOpenContainer to SendActivate
+    activationSource.SendOpenContainer(GetFormId());
+    actorActivator->SetLastBed(GetFormId(), std::chrono::steady_clock::now());
   } else if (t == "FURN" && actorActivator) {
 
     constexpr float kOccupationReach = 256.f;
@@ -1554,13 +1563,6 @@ void MpObjectReference::ProcessActivateNormal(
       // SendOpenContainer being used to activate the object
       // TODO: rename SendOpenContainer to SendActivate
       activationSource.SendOpenContainer(GetFormId());
-
-      // thuum docs/verbs/sleep.md: the player's next rest is a sleep if it
-      // comes soon, at this bed
-      if (IsSleepFurniture()) {
-        actorActivator->SetLastBed(GetFormId(),
-                                   std::chrono::steady_clock::now());
-      }
 
       this->occupant = actorActivator;
 
@@ -1684,17 +1686,7 @@ bool MpObjectReference::CheckIfObjectCanStartOccupyThis(
     auto base = loader.GetBrowser().LookupById(GetBaseId());
     auto t = base.rec->GetType();
     auto actorActivator = activationSource.AsActor();
-    if (t == "FURN" && actorActivator && IsSleepFurniture()) {
-      // thuum docs/verbs/sleep.md: a vanilla bed opens the sleep menu
-      // without seating the player, so the client never sends the second
-      // activation that would end its occupancy; its occupant activating it
-      // again wants another sleep
-      spdlog::info("MpObjectReference::ProcessActivate {:x} - occupant is "
-                   "already this object (activationSource = {:x}), a bed: "
-                   "allowed again",
-                   GetFormId(), activationSource.GetFormId());
-      return true;
-    } else if (t == "FURN" && actorActivator) {
+    if (t == "FURN" && actorActivator) {
       spdlog::info("MpObjectReference::ProcessActivate {:x} - occupant is "
                    "already this object (activationSource = {:x}). Blocking "
                    "because it's FURN",
@@ -1725,16 +1717,6 @@ bool MpObjectReference::IsSleepFurniture() const
   return furniture &&
     (furniture->GetData(worldState->GetEspmCache()).activeMarkers &
      espm::FURN::kCanSleep);
-}
-
-void MpObjectReference::ReleaseOccupant(const MpObjectReference& actor)
-{
-  if (!this->occupant || this->occupant != &actor) {
-    return;
-  }
-  this->occupant->RemoveEventSink(this->occupantDestroySink);
-  this->occupant->RemoveEventSink(this->occupantDisableSink);
-  this->occupant = nullptr;
 }
 
 void MpObjectReference::RemoveFromGridAndUnsubscribeAll()

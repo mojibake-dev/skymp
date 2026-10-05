@@ -742,11 +742,7 @@ void ActionListener::OnRestIntent(const RawMessageData& rawMsgData,
     after(values.staminaPercentage, GetStaminaRegenRate(actor));
   actor->NetSetPercentages(values, nullptr, std::nullopt);
 
-  // the bed's use is over: release it, as the client's second activation
-  // would have, and forget it
-  if (bed) {
-    bed->ReleaseOccupant(*actor);
-  }
+  // the bed's use is over: forget it
   actor->SetLastBed(0, {});
   const uint64_t restedMs =
     skymp::rules::rested_ms(slept, partOne.GetGameTime().timeScale);

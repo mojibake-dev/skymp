@@ -120,9 +120,6 @@ public:
                         bool isSecondActivation = false);
   // A FURN the engine lets the player sleep in (thuum docs/verbs/sleep.md)
   bool IsSleepFurniture() const;
-  // Ends `actor`'s occupancy of this furniture, as its second activation
-  // would; nothing when another actor or none occupies it
-  void ReleaseOccupant(const MpObjectReference& actor);
   virtual void Disable();
   virtual void Enable();
 

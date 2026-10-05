@@ -1,0 +1,27 @@
+# difftest map-markers (M1, thuum docs/verbs/map-markers.md): c1 and c2 are
+# new characters (profiles 9 and 10, actors 0xff000002 and 0xff000003: see
+# melee-reach), both at the spawn. At 2 s c1 reports a discovered location
+# of type 23 (kClearing, the type of Skyrim.esm REFR 0x00016223, the marker
+# nearest the spawn; lab/esm.py); at 3 s it reports type 60, which is no
+# location's (kTotalLocationTypes), so the wire stack's validator refuses it
+# (E_VAL_RANGE). Neither answers the client: the fixed server finds and
+# records the marker, or logs E_MARKER_NONE with the nearest one's distance,
+# and shows a player's markers only at its next login, which no session
+# reaches (the ctest MapMarkersTest and the T3 scenario a-map-markers cover
+# that). The legacy server has no MapMarkerDiscovered. So the stacks must
+# agree on everything: the new message changes nothing a client receives in
+# the session. c2 steps aside at 4 s so it outlives c1, as in every session.
+id: map-markers
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 2000, send: {t: 36, markerType: 23, canTravel: true}}
+  - {client: c1, at_ms: 3000, send: {t: 36, markerType: 60, canTravel: true}}
+  - {client: c2, at_ms: 4000, move: {dx: 1, dy: 0}}
+divergences:
+  - client: c2
+    msg: {t: 25, idx: 2}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

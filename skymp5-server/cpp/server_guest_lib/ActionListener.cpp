@@ -790,8 +790,9 @@ namespace {
 // "MapMarker", lab/esm.py, 2026-10-05).
 constexpr uint32_t kMapMarkerBase = 0x00000010;
 
-// A record header's Deleted flag (UESP, "Skyrim Mod:Mod File Format",
-// record flags).
+// A record header's Deleted flag (CommonLibSSE-NG include/RE/T/TESForm.h:62,
+// RecordFlags kDeleted = 1 << 5; TESObjectREFR.h:171 the same for
+// references; UESP, "Skyrim Mod:Mod File Format", record flags).
 constexpr uint32_t kRecordDeleted = 0x00000020;
 
 // The master files' map markers of a type around the player, by reference

@@ -7,10 +7,14 @@
 //! position. The nearest within range is the one; none within range refuses
 //! the report.
 
-/// How far from the player a discovered marker may lie. HYPOTHESIS: the
-/// engine's discovery distance is not measured yet (the verb doc's Dynamic
-/// plan, step 1), so this bound is generous; a refusal logs the nearest
-/// candidate's distance, which is the measurement.
+/// How far from the player a discovered marker may lie. Measured (thuum run
+/// 20261005-222458): the engine discovered the clearing REFR 0x00016223
+/// with the player 2000 units off in x-y and not at 3000, and the server
+/// measured the report at 1947 units. The bound stays generous on purpose:
+/// a refusal loses a legitimate discovery from the player's map (a location
+/// with a wider discovery radius than a clearing's, a stale position), while
+/// a loose bound only lets a client claim markers near where the server
+/// already holds it. A refusal logs the nearest candidate's distance.
 pub const DISCOVERY_RANGE: f32 = 8000.0;
 
 /// A marker of the reported type in the player's worldspace, from the

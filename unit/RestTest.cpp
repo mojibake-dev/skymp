@@ -39,6 +39,29 @@ void Rest(PartOne& p, float hours, bool sleep = false)
   p.GetActionListener().OnRestIntent(rawMsgData, msg);
 }
 
+// thuum docs/verbs/sleep.md: the hunters' camp bedroll southwest of the
+// lab spawn, Skyrim.esm REFR 0x000B3184 at (117786, -81333, 10997) in
+// Tamriel, unowned and touched by no DLC master (lab/esm.py, 2026-10-04)
+constexpr uint32_t kBed = 0x000B3184;
+const NiPoint3 kAtBed{ 117786, -81400, 10997 };
+
+// Whether the user's activation of the bed was let through to its game
+bool ActivateBed(PartOne& p, Networking::UserId user)
+{
+  p.Messages().clear();
+  RawMessageData raw;
+  raw.userId = user;
+  ActivateMessage msg;
+  msg.data.caster = 0x14;
+  msg.data.target = kBed;
+  msg.data.isSecondActivation = false;
+  p.GetActionListener().OnActivate(raw, msg);
+  auto& m = p.Messages();
+  return std::any_of(m.begin(), m.end(), [&](auto& x) {
+    return x.userId == user && x.j["t"] == MsgType::OpenContainer;
+  });
+}
+
 void Leave(PartOne& p)
 {
   p.DestroyActor(kActor);
@@ -132,7 +155,13 @@ TEST_CASE("A server's rest switches turn waiting or sleeping off", "[Rest]")
 
   Rest(p, 8.f);
   REQUIRE(health() == 0.5f);
+  // thuum docs/verbs/sleep.md: the client's flag does not make a sleep
   Rest(p, 8.f, true);
+  REQUIRE(health() == 0.5f);
+  // a rest at a bed the player just activated does, and sleeping stays on
+  ac.SetPos(kAtBed);
+  REQUIRE(ActivateBed(p, 0));
+  Rest(p, 8.f);
   REQUIRE(health() == 1.f);
   Leave(p);
 
@@ -143,34 +172,19 @@ TEST_CASE("A rest at a bed just activated is a sleep: the bed works again "
           "and Rested is granted; a wait away from it grants nothing",
           "[Rest]")
 {
-  // thuum docs/verbs/sleep.md, at the hunters' camp bedroll southwest of the
-  // lab spawn: Skyrim.esm REFR 0x000B3184 at (117786, -81333, 10997) in
-  // Tamriel, unowned, touched by no DLC master (lab/esm.py, 2026-10-04).
-  // Rested is Skyrim.esm SPEL 0x000FB981.
-  constexpr uint32_t kBed = 0x000B3184;
+  // thuum docs/verbs/sleep.md, at the hunters' camp bedroll; Rested is
+  // Skyrim.esm SPEL 0x000FB981
   constexpr uint32_t kOther = 0xff000abd;
   PartOne& p = GetPartOne();
   auto& ac = HalfPlayer(p);
-  ac.SetPos({ 117786, -81400, 10997 });
+  ac.SetPos(kAtBed);
   DoConnect(p, 1);
   p.CreateActor(kOther, { 117820, -81400, 10997 }, 0, 0x3c);
   p.SetUserActor(1, kOther);
   auto& other = p.worldState.GetFormAt<MpActor>(kOther);
 
-  // whether the user's activation of the bed was let through to its game
   const auto activate = [&](Networking::UserId user) {
-    p.Messages().clear();
-    RawMessageData raw;
-    raw.userId = user;
-    ActivateMessage msg;
-    msg.data.caster = 0x14;
-    msg.data.target = kBed;
-    msg.data.isSecondActivation = false;
-    p.GetActionListener().OnActivate(raw, msg);
-    auto& m = p.Messages();
-    return std::any_of(m.begin(), m.end(), [&](auto& x) {
-      return x.userId == user && x.j["t"] == MsgType::OpenContainer;
-    });
+    return ActivateBed(p, user);
   };
   // the Rested grants user 0 received
   const auto restedGrants = [&] {

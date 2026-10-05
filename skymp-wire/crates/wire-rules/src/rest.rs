@@ -127,10 +127,87 @@ pub fn after_rest(r: Regen, hours: f32) -> f32 {
     (start + gained).min(1.0)
 }
 
+/// A rest is a sleep when the player activated a bed no longer ago than this
+/// (thuum docs/verbs/sleep.md): the bed opens the sleep menu at once, and a
+/// 24-hour sleep runs about 24 s.
+pub const BED_WINDOW_MS: u64 = 120_000;
+
+/// ... and stands no farther from that bed than this: SkyMP's furniture
+/// occupancy reach (MpObjectReference, kOccupationReach).
+pub const BED_REACH: f32 = 256.0;
+
+/// Game hours the Rested bonus lasts (UESP, Skyrim:Beds: "for eight in-game
+/// hours").
+pub const RESTED_GAME_HOURS: f32 = 8.0;
+
+/// What the server knows about a player's last bed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BedFacts {
+    /// Milliseconds since the player's last allowed bed activation, if any.
+    pub since_bed_activation_ms: Option<u64>,
+    /// The player's distance to that bed, in units.
+    pub distance_to_bed: f32,
+}
+
+/// Whether a rest was a sleep. The server decides from its own facts; the
+/// client's flag comes from a furniture test vanilla beds never pass.
+#[must_use]
+pub fn slept(f: BedFacts) -> bool {
+    f.since_bed_activation_ms.is_some_and(|ms| ms <= BED_WINDOW_MS)
+        && f.distance_to_bed.is_finite()
+        && f.distance_to_bed <= BED_REACH
+}
+
+/// How long the Rested bonus a sleep earns lasts, in real milliseconds at the
+/// clock's `time_scale` (game seconds a real one); none after a wait, and none
+/// at a time scale that is not a positive number. M1 has no owned beds and no
+/// marriage, so a sleep earns Rested, never Well Rested or Lover's Comfort.
+#[must_use]
+pub fn rested_ms(slept: bool, time_scale: f32) -> Option<u64> {
+    if !slept || !time_scale.is_finite() || time_scale <= 0.0 {
+        return None;
+    }
+    let ms = f64::from(RESTED_GAME_HOURS) * 3_600_000.0 / f64::from(time_scale);
+    if !(1.0..=f64::from(u32::MAX)).contains(&ms) {
+        return None;
+    }
+    #[allow(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_sign_loss)] // range checked above
+    Some(ms as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    const fn bed(since: Option<u64>, distance: f32) -> BedFacts {
+        BedFacts { since_bed_activation_ms: since, distance_to_bed: distance }
+    }
+
+    #[test]
+    fn a_rest_at_a_bed_just_activated_is_a_sleep() {
+        assert!(slept(bed(Some(0), 0.0)));
+        assert!(slept(bed(Some(30_000), 100.0)));
+        assert!(slept(bed(Some(BED_WINDOW_MS), BED_REACH)));
+    }
+
+    #[test]
+    fn a_rest_without_a_bed_or_away_from_it_is_a_wait() {
+        assert!(!slept(bed(None, 0.0)));
+        assert!(!slept(bed(Some(BED_WINDOW_MS + 1), 0.0)));
+        assert!(!slept(bed(Some(1_000), BED_REACH + 1.0)));
+        assert!(!slept(bed(Some(1_000), f32::NAN)));
+    }
+
+    #[test]
+    fn a_sleep_earns_eight_game_hours_of_rested() {
+        // eight game hours at time scale 20: 24 real minutes (UESP)
+        assert_eq!(rested_ms(true, 20.0), Some(1_440_000));
+        assert_eq!(rested_ms(true, 10.0), Some(2_880_000));
+        assert_eq!(rested_ms(false, 20.0), None);
+        assert_eq!(rested_ms(true, 0.0), None);
+        assert_eq!(rested_ms(true, f32::NAN), None);
+    }
 
     const fn facts(hours: f32, dead: bool, since: Option<u64>) -> RestFacts {
         RestFacts { hours, sleep: false, is_dead: dead, since_last_hit_ms: since }

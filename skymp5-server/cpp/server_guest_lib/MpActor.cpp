@@ -56,6 +56,11 @@ struct MpActor::Impl
   std::vector<std::pair<uint32_t, std::chrono::steady_clock::time_point>>
     lastHitTimesLRU;
   std::chrono::steady_clock::time_point lastHitTakenTimePoint;
+  // thuum docs/verbs/sleep.md: the last bed this player activated (0 when
+  // none since its last rest) and when, and the Rested bonus's grant
+  uint32_t lastBedId = 0;
+  std::chrono::steady_clock::time_point lastBedTimePoint;
+  uint64_t restedGrant = 0;
   using RestorationTimePoints =
     std::unordered_map<espm::ActorValue,
                        std::chrono::steady_clock::time_point>;
@@ -779,6 +784,29 @@ std::chrono::steady_clock::time_point MpActor::GetLastHitTime(
     }
   }
   return std::chrono::steady_clock::time_point();
+}
+
+void MpActor::SetLastBed(uint32_t bedId,
+                         std::chrono::steady_clock::time_point timePoint)
+{
+  pImpl->lastBedId = bedId;
+  pImpl->lastBedTimePoint = timePoint;
+}
+
+std::pair<uint32_t, std::chrono::steady_clock::time_point>
+MpActor::GetLastBed() const
+{
+  return { pImpl->lastBedId, pImpl->lastBedTimePoint };
+}
+
+uint64_t MpActor::NextRestedGrant()
+{
+  return ++pImpl->restedGrant;
+}
+
+uint64_t MpActor::GetRestedGrant() const
+{
+  return pImpl->restedGrant;
 }
 
 std::chrono::steady_clock::time_point MpActor::GetLastHitTakenTime() const

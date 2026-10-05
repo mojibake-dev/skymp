@@ -98,6 +98,8 @@ private:
   void OnWeaponHit(MpActor* aggressor, MpObjectReference* targetRef,
                    HitData hitData, bool isUnarmed);
 
+  void GrantRested(MpActor& actor, uint64_t durationMs);
+
   void NotifyHostility(
     MpActor& aggressor, MpActor& target,
     std::chrono::steady_clock::time_point previousHitOnTarget,

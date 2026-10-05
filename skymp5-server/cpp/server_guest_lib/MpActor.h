@@ -138,6 +138,15 @@ public:
   // when none): with the hits it dealt, the rest rule's sign of a fight.
   std::chrono::steady_clock::time_point GetLastHitTakenTime() const;
   void SetLastHitTakenTime(std::chrono::steady_clock::time_point timePoint);
+  // thuum docs/verbs/sleep.md: the last bed this player activated and when
+  // (a bed id of 0 when none since its last rest), and the Rested bonus's
+  // grant, which its timed removal checks
+  void SetLastBed(uint32_t bedId,
+                  std::chrono::steady_clock::time_point timePoint);
+  std::pair<uint32_t, std::chrono::steady_clock::time_point> GetLastBed()
+    const;
+  uint64_t NextRestedGrant();
+  uint64_t GetRestedGrant() const;
   size_t CountRecentHits(std::chrono::duration<float> timeWindow) const;
 
   void SetLastAttributesPercentagesUpdate(

@@ -1,4 +1,5 @@
 #include "ActionListener.h"
+#include "ActivateMessage.h"
 #include "GetBaseActorValues.h"
 #include "RestIntentMessage.h"
 #include "TestUtils.hpp"
@@ -136,4 +137,73 @@ TEST_CASE("A server's rest switches turn waiting or sleeping off", "[Rest]")
   Leave(p);
 
   REQUIRE_THROWS(p.SetRestSettings(R"({"allowWildernessRest": true})"));
+}
+
+TEST_CASE("A rest at a bed just activated is a sleep: the bed works again "
+          "and Rested is granted; a wait away from it grants nothing",
+          "[Rest]")
+{
+  // thuum docs/verbs/sleep.md, at the hunters' camp bedroll southwest of the
+  // lab spawn: Skyrim.esm REFR 0x000B3184 at (117786, -81333, 10997) in
+  // Tamriel, unowned, touched by no DLC master (lab/esm.py, 2026-10-04).
+  // Rested is Skyrim.esm SPEL 0x000FB981.
+  constexpr uint32_t kBed = 0x000B3184;
+  constexpr uint32_t kOther = 0xff000abd;
+  PartOne& p = GetPartOne();
+  auto& ac = HalfPlayer(p);
+  ac.SetPos({ 117786, -81400, 10997 });
+  DoConnect(p, 1);
+  p.CreateActor(kOther, { 117820, -81400, 10997 }, 0, 0x3c);
+  p.SetUserActor(1, kOther);
+  auto& other = p.worldState.GetFormAt<MpActor>(kOther);
+
+  // whether the user's activation of the bed was let through to its game
+  const auto activate = [&](Networking::UserId user) {
+    p.Messages().clear();
+    RawMessageData raw;
+    raw.userId = user;
+    ActivateMessage msg;
+    msg.data.caster = 0x14;
+    msg.data.target = kBed;
+    msg.data.isSecondActivation = false;
+    p.GetActionListener().OnActivate(raw, msg);
+    auto& m = p.Messages();
+    return std::any_of(m.begin(), m.end(), [&](auto& x) {
+      return x.userId == user && x.j["t"] == MsgType::OpenContainer;
+    });
+  };
+  // the Rested grants user 0 received
+  const auto restedGrants = [&] {
+    p.Tick(); // snippets are deferred
+    auto& m = p.Messages();
+    return std::count_if(m.begin(), m.end(), [](auto& x) {
+      return x.userId == 0 && x.j["t"] == MsgType::SpSnippet &&
+        x.j["function"] == "AddSpell" &&
+        x.j["arguments"][0]["formId"] == 0x000FB981;
+    });
+  };
+
+  REQUIRE(activate(0));
+  REQUIRE(activate(0));  // its occupant may use it again
+  REQUIRE(!activate(1)); // another player may not while it is held
+
+  p.Messages().clear();
+  Rest(p, 1.f, false); // the client's flag says a wait; the server knows
+  REQUIRE(ac.GetChangeForm().actorValues.healthPercentage == 1.f);
+  REQUIRE(restedGrants() == 1);
+  REQUIRE(ac.GetLastBed().first == 0);
+  REQUIRE(activate(1)); // the rest released the bed
+
+  // the other player walks off; a rest 1400 units from the bed is a wait
+  other.SetPos({ 117820, -79000, 10997 });
+  REQUIRE(activate(0));
+  ac.SetPercentages({ 0.5f, 0.5f, 0.5f });
+  ac.SetPos({ 117786, -80000, 10997 });
+  p.Messages().clear();
+  Rest(p, 1.f, true); // nor does the client's flag make it a sleep
+  REQUIRE(restedGrants() == 0);
+
+  p.DestroyActor(kOther);
+  DoDisconnect(p, 1);
+  Leave(p);
 }

@@ -19,6 +19,7 @@
 #include "gamemode_events/TakeItemEvent.h"
 #include "libespm/CompressedFieldsCache.h"
 #include "libespm/Convert.h"
+#include "libespm/FURN.h"
 #include "libespm/GroupUtils.h"
 #include "libespm/Utils.h"
 #include "papyrus-vm/Reader.h"
@@ -1554,6 +1555,13 @@ void MpObjectReference::ProcessActivateNormal(
       // TODO: rename SendOpenContainer to SendActivate
       activationSource.SendOpenContainer(GetFormId());
 
+      // thuum docs/verbs/sleep.md: the player's next rest is a sleep if it
+      // comes soon, at this bed
+      if (IsSleepFurniture()) {
+        actorActivator->SetLastBed(GetFormId(),
+                                   std::chrono::steady_clock::now());
+      }
+
       this->occupant = actorActivator;
 
       this->occupantDestroySink.reset(
@@ -1676,7 +1684,17 @@ bool MpObjectReference::CheckIfObjectCanStartOccupyThis(
     auto base = loader.GetBrowser().LookupById(GetBaseId());
     auto t = base.rec->GetType();
     auto actorActivator = activationSource.AsActor();
-    if (t == "FURN" && actorActivator) {
+    if (t == "FURN" && actorActivator && IsSleepFurniture()) {
+      // thuum docs/verbs/sleep.md: a vanilla bed opens the sleep menu
+      // without seating the player, so the client never sends the second
+      // activation that would end its occupancy; its occupant activating it
+      // again wants another sleep
+      spdlog::info("MpObjectReference::ProcessActivate {:x} - occupant is "
+                   "already this object (activationSource = {:x}), a bed: "
+                   "allowed again",
+                   GetFormId(), activationSource.GetFormId());
+      return true;
+    } else if (t == "FURN" && actorActivator) {
       spdlog::info("MpObjectReference::ProcessActivate {:x} - occupant is "
                    "already this object (activationSource = {:x}). Blocking "
                    "because it's FURN",
@@ -1694,6 +1712,29 @@ bool MpObjectReference::CheckIfObjectCanStartOccupyThis(
                "another object and is nearby (activationSource = {:x})",
                GetFormId(), activationSource.GetFormId());
   return false;
+}
+
+bool MpObjectReference::IsSleepFurniture() const
+{
+  auto worldState = GetParent();
+  if (!worldState) {
+    return false;
+  }
+  const auto base = worldState->GetEspm().GetBrowser().LookupById(GetBaseId());
+  const auto furniture = espm::Convert<espm::FURN>(base.rec);
+  return furniture &&
+    (furniture->GetData(worldState->GetEspmCache()).activeMarkers &
+     espm::FURN::kCanSleep);
+}
+
+void MpObjectReference::ReleaseOccupant(const MpObjectReference& actor)
+{
+  if (!this->occupant || this->occupant != &actor) {
+    return;
+  }
+  this->occupant->RemoveEventSink(this->occupantDestroySink);
+  this->occupant->RemoveEventSink(this->occupantDisableSink);
+  this->occupant = nullptr;
 }
 
 void MpObjectReference::RemoveFromGridAndUnsubscribeAll()

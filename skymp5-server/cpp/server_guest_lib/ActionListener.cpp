@@ -20,12 +20,14 @@
 #include "libespm/GMST.h"
 #include "libespm/ObjectBounds.h"
 #include "libespm/RACE.h"
+#include "libespm/SPEL.h"
 #include "libespm/WEAP.h"
 #include "script_objects/EspmGameObject.h"
 #include "wire_bridge_cxx/rules.h"
 #include <algorithm>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
+#include <limits>
 #include <optional>
 #include <spdlog/spdlog.h>
 #include <unordered_set>
@@ -681,9 +683,31 @@ void ActionListener::OnRestIntent(const RawMessageData& rawMsgData,
                                 actor->GetLastHitTakenTime());
   const bool hasHit = lastHit != std::chrono::steady_clock::time_point{};
 
+  // thuum docs/verbs/sleep.md: a sleep is the server's call, from the bed
+  // the player last activated; the client's flag comes from a furniture test
+  // vanilla beds never pass
+  const auto [bedId, bedAt] = actor->GetLastBed();
+  std::shared_ptr<MpObjectReference> bed;
+  if (bedId) {
+    bed = std::dynamic_pointer_cast<MpObjectReference>(
+      partOne.worldState.LookupFormById(bedId));
+  }
+  skymp::rules::BedFacts bedFacts{};
+  bedFacts.has_bed = bed != nullptr;
+  bedFacts.since_bed_activation_ms = bed
+    ? static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - bedAt)
+          .count())
+    : 0;
+  bedFacts.distance_to_bed =
+    bed && bed->GetCellOrWorld() == actor->GetCellOrWorld()
+    ? (bed->GetPos() - actor->GetPos()).Length()
+    : std::numeric_limits<float>::infinity();
+  const bool slept = skymp::rules::rest_slept(bedFacts);
+
   skymp::rules::RestFacts facts{};
   facts.hours = msg.hours;
-  facts.sleep = msg.sleep;
+  facts.sleep = slept;
   facts.is_dead = actor->IsDead();
   facts.has_hit = hasHit;
   facts.since_last_hit_ms = hasHit
@@ -714,11 +738,63 @@ void ActionListener::OnRestIntent(const RawMessageData& rawMsgData,
   values.staminaPercentage =
     after(values.staminaPercentage, GetStaminaRegenRate(actor));
   actor->NetSetPercentages(values, nullptr, std::nullopt);
-  spdlog::info("Rest: user {} actor {:x} {} {} h, percentages now {} {} {}",
+
+  // the bed's use is over: release it, as the client's second activation
+  // would have, and forget it
+  if (bed) {
+    bed->ReleaseOccupant(*actor);
+  }
+  actor->SetLastBed(0, {});
+  const uint64_t restedMs =
+    skymp::rules::rested_ms(slept, partOne.GetGameTime().timeScale);
+  if (restedMs > 0) {
+    GrantRested(*actor, restedMs);
+  }
+
+  spdlog::info("Rest: user {} actor {:x} {} {} h, percentages now {} {} {}{}",
                rawMsgData.userId, actor->GetFormId(),
-               msg.sleep ? "slept" : "waited", msg.hours,
-               values.healthPercentage, values.magickaPercentage,
-               values.staminaPercentage);
+               slept ? "slept" : "waited", msg.hours, values.healthPercentage,
+               values.magickaPercentage, values.staminaPercentage,
+               restedMs > 0 ? fmt::format(", Rested for {} s", restedMs / 1000)
+                            : std::string());
+}
+
+namespace {
+void SendSpellSnippet(MpActor& actor, const char* function, uint32_t spellId)
+{
+  SpSnippetObjectArgument spell;
+  spell.formId = spellId;
+  spell.type = "Spell";
+  std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+    args{ spell };
+  if (std::string_view(function) == "AddSpell") {
+    args.push_back(false); // abVerbose
+  }
+  SpSnippet("Actor", function, args, actor.GetFormId())
+    .Execute(&actor, SpSnippetMode::kNoReturnResult);
+}
+}
+
+// thuum docs/verbs/sleep.md: SkyMP's client blocks the game's own Papyrus
+// events, so the script that grants a sleep's bonus never runs. The server
+// grants Rested, and takes it back after its eight game hours unless a later
+// sleep granted it again.
+void ActionListener::GrantRested(MpActor& actor, uint64_t durationMs)
+{
+  const uint64_t grant = actor.NextRestedGrant();
+  SendSpellSnippet(actor, "AddSpell", espm::SPEL::kRested);
+  WorldState& worldState = partOne.worldState;
+  const uint32_t actorId = actor.GetFormId();
+  worldState.SetTimer(std::chrono::milliseconds(durationMs))
+    .Then([&worldState, actorId, grant](Viet::Void) {
+      const auto& form = worldState.LookupFormById(actorId);
+      MpActor* target = form ? form->AsActor() : nullptr;
+      if (!target || target->GetRestedGrant() != grant) {
+        return;
+      }
+      SendSpellSnippet(*target, "RemoveSpell", espm::SPEL::kRested);
+    });
 }
 
 void ActionListener::OnDropItem(const RawMessageData& rawMsgData,

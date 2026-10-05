@@ -10,6 +10,13 @@ class SPEL final : public RecordHeader
 public:
   static constexpr auto kType = "SPEL";
 
+  // The sleep bonuses in Skyrim.esm (thuum lab/esm.py, 2026-10-04;
+  // docs/verbs/sleep.md): Rested for any bed, Well Rested for an owned one,
+  // Lover's Comfort near a spouse (UESP, Skyrim:Beds)
+  static constexpr uint32_t kRested = 0x000FB981;
+  static constexpr uint32_t kWellRested = 0x000FB984;
+  static constexpr uint32_t kMarriageRested = 0x000CDA1D;
+
   enum class SpellType
   {
     Spell = 0x00,

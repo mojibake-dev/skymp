@@ -99,6 +99,18 @@ mod ffi {
         two_hand_axe: f32,
     }
 
+    /// What the core knows about a player's last bed (thuum
+    /// docs/verbs/sleep.md).
+    #[derive(Debug)]
+    struct BedFacts {
+        /// The player activated a bed since its last rest.
+        has_bed: bool,
+        /// Milliseconds since that activation (0 without one).
+        since_bed_activation_ms: u64,
+        /// The player's distance to that bed, in units.
+        distance_to_bed: f32,
+    }
+
     /// What the core knows about a hit it accepted, for hostility sync
     /// (thuum docs/verbs/hostility-sync.md).
     #[derive(Debug)]
@@ -211,6 +223,11 @@ mod ffi {
         fn rest_check(settings: &RestSettings, facts: &RestFacts) -> RestRefusal;
         /// An attribute's percentage after a rest of `hours`.
         fn rest_after(regen: &Regen, hours: f32) -> f32;
+        /// Whether a rest was a sleep, from the server's own bed facts.
+        fn rest_slept(facts: &BedFacts) -> bool;
+        /// Real milliseconds the Rested bonus of a rest lasts at the
+        /// clock's `time_scale`; 0 when it earns none.
+        fn rested_ms(slept: bool, time_scale: f32) -> u64;
 
         /// Every player actor's ground speed budget.
         type MovementBudgets;
@@ -239,7 +256,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{ConeFacts, FlagFacts, Flags, GameTime, HostilityFacts, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, SneakMults, Verdict};
+pub use ffi::{BedFacts, ConeFacts, FlagFacts, Flags, GameTime, HostilityFacts, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, SneakMults, Verdict};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -335,6 +352,17 @@ fn hostility_notify(f: &HostilityFacts) -> bool {
         same_actor: f.same_actor,
         since_previous_hit_ms: f.has_previous_hit.then_some(f.since_previous_hit_ms),
     })
+}
+
+fn rest_slept(f: &BedFacts) -> bool {
+    rest::slept(rest::BedFacts {
+        since_bed_activation_ms: f.has_bed.then_some(f.since_bed_activation_ms),
+        distance_to_bed: f.distance_to_bed,
+    })
+}
+
+fn rested_ms(slept: bool, time_scale: f32) -> u64 {
+    rest::rested_ms(slept, time_scale).unwrap_or(0)
 }
 
 fn rest_after(r: &Regen, hours: f32) -> f32 {
@@ -465,6 +493,16 @@ mod tests {
         assert!(new_rest_settings(r#"{"allowWait": "no"}"#).is_err());
         let half = Regen { percentage: 0.5, rate: 0.7, rate_mult: 1.0 };
         assert!((rest_after(&half, 1.0) - 0.5252).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_bridge_passes_sleep_through() {
+        let bed = |has_bed, since_bed_activation_ms, distance_to_bed| BedFacts { has_bed, since_bed_activation_ms, distance_to_bed };
+        assert!(rest_slept(&bed(true, 5_000, 80.0)));
+        assert!(!rest_slept(&bed(false, 0, 0.0)));
+        assert!(!rest_slept(&bed(true, 5_000, 900.0)));
+        assert_eq!(rested_ms(true, 20.0), 1_440_000);
+        assert_eq!(rested_ms(false, 20.0), 0);
     }
 
     #[test]

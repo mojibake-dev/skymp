@@ -8,6 +8,7 @@
 #include "FormDesc.h"
 #include "Inventory.h"
 #include "LocationalData.h"
+#include "MapMarker.h"
 #include "NiPoint3.h"
 #include "Quest.h"
 #include <cstdint>
@@ -128,6 +129,9 @@ public:
   // Used for Quest (QUST) synchronization
   std::optional<std::vector<Quest>> quests;
 
+  // Map markers the player discovered (thuum docs/verbs/map-markers.md)
+  std::optional<std::vector<MapMarker>> mapMarkers;
+
   // Please update 'ActorTest.cpp' when adding new Actor-related rows
 
   DynamicFields dynamicFields;
@@ -142,7 +146,7 @@ public:
       equipment.ToJson(), actorValues.ToTuple(), healthRespawnPercentage,
       magickaRespawnPercentage, staminaRespawnPercentage, spawnPoint,
       dynamicFields, spawnDelay, learnedSpells, templateChain, lastAnimation,
-      setNodeTextureSet, setNodeScale, displayName);
+      setNodeTextureSet, setNodeScale, displayName, mapMarkers);
   }
 
   static nlohmann::json ToJson(const MpChangeFormREFR& changeForm);

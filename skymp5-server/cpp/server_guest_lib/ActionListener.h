@@ -55,6 +55,10 @@ public:
   virtual void OnRestIntent(const RawMessageData& rawMsgData,
                             const RestIntentMessage& msg);
 
+  // thuum docs/verbs/map-markers.md
+  virtual void OnMapMarkerDiscovered(const RawMessageData& rawMsgData,
+                                     const MapMarkerDiscoveredMessage& msg);
+
   virtual void OnFinishSpSnippet(const RawMessageData& rawMsgData,
                                  const FinishSpSnippetMessage& msg);
 
@@ -99,6 +103,9 @@ private:
                    HitData hitData, bool isUnarmed);
 
   void GrantRested(MpActor& actor, uint64_t durationMs);
+  // thuum docs/verbs/map-markers.md: AddToMap on its client for each marker
+  // the player has discovered
+  void SendMapMarkers(MpActor& actor);
 
   void NotifyHostility(MpActor& aggressor, MpActor& target,
                        std::chrono::steady_clock::time_point now);

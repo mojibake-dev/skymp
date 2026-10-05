@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, appearance, clock, damage, hostility, melee, movement, rest};
+use wire_rules::{activation, appearance, clock, damage, hostility, markers, melee, movement, rest};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -123,6 +123,32 @@ mod ffi {
         same_actor: bool,
     }
 
+    /// A map marker of the reported type in the player's worldspace, from
+    /// the master files (thuum docs/verbs/map-markers.md).
+    #[derive(Debug)]
+    struct MarkerCandidate {
+        /// The marker reference's form id.
+        refr_id: u32,
+        /// Its position.
+        x: f32,
+        /// Its position.
+        y: f32,
+        /// Its position.
+        z: f32,
+    }
+
+    /// The marker a discovery means, or none within range; the nearest
+    /// candidate's distance either way (infinite without one).
+    #[derive(Debug)]
+    struct MarkerChoice {
+        /// A candidate lies within the discovery range.
+        found: bool,
+        /// The nearest candidate's form id; 0 without one.
+        refr_id: u32,
+        /// The nearest candidate's distance from the player.
+        distance: f32,
+    }
+
     /// Two player actors in a fight, the lower form id first.
     #[derive(Debug)]
     struct FightPair {
@@ -239,6 +265,15 @@ mod ffi {
         /// clock's `time_scale`; 0 when it earns none.
         fn rested_ms(slept: bool, time_scale: f32) -> u64;
 
+        /// The marker a discovery reported at the player's position means:
+        /// the nearest candidate within the discovery range.
+        fn map_marker_discovered(x: f32, y: f32, z: f32, candidates: &[MarkerCandidate]) -> MarkerChoice;
+        /// A recorded marker's travel flag after another report of it.
+        fn map_marker_travel_after(recorded: bool, reported: bool) -> bool;
+        /// How far from the player a discovered marker may lie, so the core
+        /// knows how many grid cells to gather candidates from.
+        fn map_marker_range() -> f32;
+
         /// The fights between players going on (thuum ADR-023).
         type Fights;
         /// No fights.
@@ -284,7 +319,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{BedFacts, ConeFacts, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, SneakMults, Verdict};
+pub use ffi::{BedFacts, ConeFacts, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, SneakMults, Verdict};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -414,6 +449,21 @@ impl Fights {
     fn forget(&mut self, actor: u32) {
         self.0.forget(actor);
     }
+}
+
+fn map_marker_discovered(x: f32, y: f32, z: f32, candidates: &[MarkerCandidate]) -> MarkerChoice {
+    let cs: Vec<markers::Candidate> =
+        candidates.iter().map(|c| markers::Candidate { refr_id: c.refr_id, x: c.x, y: c.y, z: c.z }).collect();
+    let got = markers::discovered(x, y, z, &cs);
+    MarkerChoice { found: got.found, refr_id: got.refr_id, distance: got.distance }
+}
+
+fn map_marker_travel_after(recorded: bool, reported: bool) -> bool {
+    markers::travel_after(recorded, reported)
+}
+
+const fn map_marker_range() -> f32 {
+    markers::DISCOVERY_RANGE
 }
 
 fn rest_slept(f: &BedFacts) -> bool {

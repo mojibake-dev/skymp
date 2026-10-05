@@ -112,6 +112,16 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm)
     res["factions"] = { { "entries", factionsJson } };
   }
 
+  // thuum docs/verbs/map-markers.md; absent in older records, read as none
+  if (changeForm.mapMarkers.has_value() && !changeForm.mapMarkers->empty()) {
+    auto mapMarkersJson = nlohmann::json::array();
+    for (const auto& marker : *changeForm.mapMarkers) {
+      mapMarkersJson.push_back({ { "formDesc", marker.refr.ToString() },
+                                 { "canTravel", marker.canTravel } });
+    }
+    res["mapMarkers"] = { { "entries", mapMarkersJson } };
+  }
+
   return res;
 }
 
@@ -154,6 +164,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
   static const JsonPointer setNodeScale("setNodeScale");
   static const JsonPointer displayName("displayName");
   static const JsonPointer factions("factions");
+  static const JsonPointer mapMarkers("mapMarkers");
   static const JsonPointer healthRespawnPercentage("healthRespawnPercentage");
   static const JsonPointer magickaRespawnPercentage(
     "magickaRespawnPercentage");
@@ -378,6 +389,25 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
     }
 
     res.factions = factions;
+  }
+
+  if (element.at_pointer(mapMarkers.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, mapMarkers, &jTmp);
+    static const JsonPointer entries("entries");
+    static const JsonPointer canTravel("canTravel");
+
+    std::vector<simdjson::dom::element> parsedEntries;
+    ReadVector(jTmp, entries, &parsedEntries);
+
+    std::vector<MapMarker> markers(parsedEntries.size());
+    for (size_t i = 0; i != parsedEntries.size(); ++i) {
+      const char* tmp;
+      ReadEx(parsedEntries[i], formDesc, &tmp);
+      markers[i].refr = FormDesc::FromString(tmp);
+      ReadEx(parsedEntries[i], canTravel, &markers[i].canTravel);
+    }
+    res.mapMarkers = markers;
   }
 
   return res;

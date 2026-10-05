@@ -20,7 +20,9 @@
 #include "libespm/GMST.h"
 #include "libespm/ObjectBounds.h"
 #include "libespm/RACE.h"
+#include "libespm/REFR.h"
 #include "libespm/SPEL.h"
+#include "libespm/Utils.h"
 #include "libespm/WEAP.h"
 #include "script_objects/EspmGameObject.h"
 #include "wire_bridge_cxx/rules.h"
@@ -28,6 +30,7 @@
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 #include <limits>
+#include <map>
 #include <optional>
 #include <spdlog/spdlog.h>
 #include <unordered_set>
@@ -172,6 +175,13 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
 
     RelayToListeners(*actor, rawMsgData.unparsed, rawMsgData.unparsedLength,
                      false);
+
+    // thuum docs/verbs/map-markers.md: the first movement after a login
+    // means the player's own world is up, so its map can be shown
+    if (actor == partOne.serverState.ActorByUser(rawMsgData.userId) &&
+        actor->TakeMapMarkersPending()) {
+      SendMapMarkers(*actor);
+    }
 
     if (!msg.data.isBlocking) {
       actor->IncreaseBlockCount();
@@ -773,6 +783,139 @@ void SendSpellSnippet(MpActor& actor, const char* function, uint32_t spellId)
   SpSnippet("Actor", function, args, actor.GetFormId())
     .Execute(&actor, SpSnippetMode::kNoReturnResult);
 }
+}
+
+namespace {
+// The STAT every map marker reference places (Skyrim.esm 0x00000010
+// "MapMarker", lab/esm.py, 2026-10-05).
+constexpr uint32_t kMapMarkerBase = 0x00000010;
+
+// A record header's Deleted flag (UESP, "Skyrim Mod:Mod File Format",
+// record flags).
+constexpr uint32_t kRecordDeleted = 0x00000020;
+
+// The master files' map markers of a type around the player, by reference
+// id; a later file's record of the same reference replaces an earlier one's.
+// libespm keys references by position over 4096, truncated (Browser.cpp), so
+// the scan covers the cells the discovery range reaches, plus one.
+std::vector<skymp::rules::MarkerCandidate> MapMarkersNear(
+  WorldState& worldState, const MpActor& actor, uint16_t markerType)
+{
+  const auto& br = worldState.GetEspm().GetBrowser();
+  auto& cache = worldState.GetEspmCache();
+  const uint32_t world = actor.GetCellOrWorld().ToFormId(worldState.espmFiles);
+  const NiPoint3& pos = actor.GetPos();
+  const auto cell = [](float v) { return static_cast<int16_t>(v / 4096); };
+  const int16_t reach =
+    static_cast<int16_t>(skymp::rules::map_marker_range() / 4096) + 1;
+  const int16_t cx = cell(pos.x);
+  const int16_t cy = cell(pos.y);
+
+  std::map<uint32_t, skymp::rules::MarkerCandidate> found;
+  for (size_t i = 0; i < worldState.espmFiles.size(); ++i) {
+    const auto* combMapping = br.GetCombMapping(i);
+    const auto* rawMapping = br.GetRawMapping(i);
+    const uint32_t localWorld = espm::utils::GetMappedId(world, *rawMapping);
+    for (int16_t x = cx - reach; x <= cx + reach; ++x) {
+      for (int16_t y = cy - reach; y <= cy + reach; ++y) {
+        auto records = br.GetRecordsAtPos(localWorld, x, y);
+        for (const auto* rec : *records[i]) {
+          if (rec->GetType() != "REFR") {
+            continue;
+          }
+          const auto* refr = reinterpret_cast<const espm::REFR*>(rec);
+          const auto data = refr->GetData(cache);
+          if (!data.loc ||
+              espm::utils::GetMappedId(data.baseId, *combMapping) !=
+                kMapMarkerBase) {
+            continue;
+          }
+          const uint32_t id =
+            espm::utils::GetMappedId(rec->GetId(), *combMapping);
+          if ((rec->GetFlags() & kRecordDeleted) ||
+              static_cast<uint16_t>(data.mapMarkerType) != markerType) {
+            found.erase(id);
+            continue;
+          }
+          skymp::rules::MarkerCandidate c{};
+          c.refr_id = id;
+          c.x = data.loc->pos[0];
+          c.y = data.loc->pos[1];
+          c.z = data.loc->pos[2];
+          found[id] = c;
+        }
+      }
+    }
+  }
+
+  std::vector<skymp::rules::MarkerCandidate> res;
+  res.reserve(found.size());
+  for (const auto& [id, c] : found) {
+    res.push_back(c);
+  }
+  return res;
+}
+}
+
+// thuum docs/verbs/map-markers.md: the client says only that its engine
+// discovered a location of a type. The server finds which marker that was
+// from the master files and the player's position, and records it on the
+// player; a refusal logs the nearest candidate's distance, which is how the
+// lab measures the engine's discovery range.
+void ActionListener::OnMapMarkerDiscovered(
+  const RawMessageData& rawMsgData, const MapMarkerDiscoveredMessage& msg)
+{
+  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!actor) {
+    return spdlog::warn("OnMapMarkerDiscovered - no actor for user {}",
+                        rawMsgData.userId);
+  }
+  WorldState& worldState = partOne.worldState;
+  if (!worldState.HasEspm()) {
+    return spdlog::warn("OnMapMarkerDiscovered - no master files");
+  }
+
+  const auto candidates = MapMarkersNear(worldState, *actor, msg.markerType);
+  const NiPoint3& pos = actor->GetPos();
+  const auto choice = skymp::rules::map_marker_discovered(
+    pos.x, pos.y, pos.z,
+    rust::Slice<const skymp::rules::MarkerCandidate>(candidates.data(),
+                                                     candidates.size()));
+  if (!choice.found) {
+    return spdlog::info(
+      "E_MARKER_NONE: user {} actor {:x} discovered a location of type {}, "
+      "no marker of it in range (nearest {:x} at {} units)",
+      rawMsgData.userId, actor->GetFormId(), msg.markerType, choice.refr_id,
+      choice.distance);
+  }
+
+  const bool changed = actor->RecordMapMarker(
+    FormDesc::FromFormId(choice.refr_id, worldState.espmFiles), msg.canTravel);
+  spdlog::info("MapMarker: user {} actor {:x} discovered {:x} (type {}, {} "
+               "units{}){}",
+               rawMsgData.userId, actor->GetFormId(), choice.refr_id,
+               msg.markerType, choice.distance,
+               msg.canTravel ? ", fast travel" : "",
+               changed ? "" : ", already recorded");
+}
+
+// thuum docs/verbs/map-markers.md: show the player's recorded markers on its
+// client's map, Papyrus ObjectReference.AddToMap with each marker as self
+void ActionListener::SendMapMarkers(MpActor& actor)
+{
+  const auto markers = actor.GetMapMarkers();
+  for (const auto& marker : markers) {
+    std::vector<std::optional<
+      std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+      args{ marker.canTravel };
+    SpSnippet("ObjectReference", "AddToMap", args,
+              marker.refr.ToFormId(partOne.worldState.espmFiles))
+      .Execute(&actor, SpSnippetMode::kNoReturnResult);
+  }
+  if (!markers.empty()) {
+    spdlog::info("MapMarker: actor {:x} shown its {} markers after a login",
+                 actor.GetFormId(), markers.size());
+  }
 }
 
 // thuum docs/verbs/sleep.md: SkyMP's client blocks the game's own Papyrus

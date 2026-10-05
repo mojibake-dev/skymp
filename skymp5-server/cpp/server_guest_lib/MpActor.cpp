@@ -23,6 +23,7 @@
 #include "libespm/espm.h"
 #include "papyrus-vm/Utils.h"
 #include "script_objects/EspmGameObject.h"
+#include "wire_bridge_cxx/rules.h"
 #include <NiPoint3.h>
 #include <TimeUtils.h>
 #include <algorithm>
@@ -32,6 +33,7 @@
 #include <optional>
 #include <random>
 #include <string>
+#include <utility>
 
 #include "ChangeValuesMessage.h"
 #include "TeleportMessage.h"
@@ -61,6 +63,8 @@ struct MpActor::Impl
   uint32_t lastBedId = 0;
   std::chrono::steady_clock::time_point lastBedTimePoint;
   uint64_t restedGrant = 0;
+  // thuum docs/verbs/map-markers.md: the login's markers not sent yet
+  bool mapMarkersPending = false;
   using RestorationTimePoints =
     std::unordered_map<espm::ActorValue,
                        std::chrono::steady_clock::time_point>;
@@ -807,6 +811,51 @@ uint64_t MpActor::NextRestedGrant()
 uint64_t MpActor::GetRestedGrant() const
 {
   return pImpl->restedGrant;
+}
+
+std::vector<MapMarker> MpActor::GetMapMarkers() const
+{
+  const auto& markers = ChangeForm().mapMarkers;
+  return markers ? *markers : std::vector<MapMarker>();
+}
+
+bool MpActor::RecordMapMarker(const FormDesc& refr, bool canTravel)
+{
+  const auto& recorded = ChangeForm().mapMarkers;
+  if (recorded) {
+    for (const auto& marker : *recorded) {
+      if (marker.refr == refr &&
+          skymp::rules::map_marker_travel_after(marker.canTravel, canTravel) ==
+            marker.canTravel) {
+        return false;
+      }
+    }
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    if (!changeForm.mapMarkers) {
+      changeForm.mapMarkers.emplace();
+    }
+    auto& markers = *changeForm.mapMarkers;
+    for (auto& marker : markers) {
+      if (marker.refr == refr) {
+        marker.canTravel =
+          skymp::rules::map_marker_travel_after(marker.canTravel, canTravel);
+        return;
+      }
+    }
+    markers.push_back(MapMarker{ refr, canTravel });
+  });
+  return true;
+}
+
+void MpActor::SetMapMarkersPending(bool pending)
+{
+  pImpl->mapMarkersPending = pending;
+}
+
+bool MpActor::TakeMapMarkersPending()
+{
+  return std::exchange(pImpl->mapMarkersPending, false);
 }
 
 std::chrono::steady_clock::time_point MpActor::GetLastHitTakenTime() const

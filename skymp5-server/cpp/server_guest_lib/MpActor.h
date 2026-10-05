@@ -3,6 +3,7 @@
 #include "Appearance.h"
 #include "Equipment.h"
 #include "GetBaseActorValues.h"
+#include "MapMarker.h"
 #include "MpObjectReference.h"
 #include "libespm/espm.h"
 #include <map>
@@ -147,6 +148,15 @@ public:
     const;
   uint64_t NextRestedGrant();
   uint64_t GetRestedGrant() const;
+  // thuum docs/verbs/map-markers.md: the map markers this player discovered,
+  // kept in its change form; recording one again keeps the wider travel
+  // flag, and returns whether anything changed. The pending flag is set at
+  // login and taken by the first movement after it, when the client's world
+  // is up to show them.
+  std::vector<MapMarker> GetMapMarkers() const;
+  bool RecordMapMarker(const FormDesc& refr, bool canTravel);
+  void SetMapMarkersPending(bool pending);
+  bool TakeMapMarkersPending();
   size_t CountRecentHits(std::chrono::duration<float> timeWindow) const;
 
   void SetLastAttributesPercentagesUpdate(

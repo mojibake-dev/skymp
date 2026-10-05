@@ -261,6 +261,10 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
 
     actor.ForceSubscriptionsUpdate();
 
+    // thuum docs/verbs/map-markers.md: show the player's discovered markers
+    // once its client's world is up (the first movement after this)
+    actor.SetMapMarkersPending(true);
+
     // We do the same in MpActor::ApplyChangeForm for non-player characters
     if (actor.IsDead() && !actor.IsRespawning()) {
       spdlog::info("PartOne::SetUserActor {} {:x} - respawning dead actor",

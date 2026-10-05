@@ -64,6 +64,10 @@ pub struct ClientGuard {
     /// Budget for rests: the Sleep/Wait menu takes seconds per rest, so two
     /// at once and one a second after that only ever stops a flood.
     pub rest_budget: TokenBucket,
+    /// Budget for map marker discoveries: a player finds a location now and
+    /// then, a few at once at most, so four at once and one a second after
+    /// that only ever stops a flood.
+    pub marker_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -75,6 +79,7 @@ impl Default for ClientGuard {
             hit_budget: TokenBucket::default(),
             hit_window: ReplayWindow::default(),
             rest_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
+            marker_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
         }
     }
 }
@@ -219,6 +224,21 @@ fn check_rest(m: &skymp::RestIntent) -> Result<(), Reject> {
     }
 }
 
+/// The last location type a discovery can carry: the engine's MARKER_TYPE
+/// runs from kNone (0) to kDLC02CastleKarstaag (59); kTotalLocationTypes and
+/// the door, quest target, player-set and you-are-here markers after it are
+/// never discovered (CommonLibSSE-NG include/RE/E/ExtraMapMarker.h:9-79).
+pub const MARKER_TYPE_MAX: u16 = 59;
+
+/// A discovery's marker type: a location's (docs/verbs/map-markers.md).
+fn check_marker(m: &skymp::MapMarkerDiscovered) -> Result<(), Reject> {
+    if m.marker_type <= MARKER_TYPE_MAX {
+        Ok(())
+    } else {
+        Err(Reject::Range)
+    }
+}
+
 /// Validate one inbound message against the client's guard state.
 /// `Ok(())` means "well-formed and within rate"; ownership is checked later.
 pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(), Reject> {
@@ -290,6 +310,13 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
             }
             check_rest(m)?;
             if !guard.rest_budget.take(now_ms) {
+                return Err(Reject::Rate);
+            }
+            Ok(())
+        }
+        Message::MapMarkerDiscovered(m) => {
+            check_marker(m)?;
+            if !guard.marker_budget.take(now_ms) {
                 return Err(Reject::Rate);
             }
             Ok(())
@@ -598,6 +625,24 @@ mod tests {
         }
     }
 
+    fn marker(marker_type: u16) -> Message {
+        Message::MapMarkerDiscovered(skymp::MapMarkerDiscovered { marker_type, can_travel: true, ..Default::default() })
+    }
+
+    #[test]
+    fn marker_both_ways() {
+        let mut g = ClientGuard::default();
+        for t in [0, 1, 5, MARKER_TYPE_MAX] {
+            assert_eq!(validate(&marker(t), &mut g, 0), Ok(()), "{t}");
+        }
+        // four at once, then one a second
+        assert_eq!(validate(&marker(1), &mut g, 0), Err(Reject::Rate));
+        assert_eq!(validate(&marker(1), &mut g, 1_000), Ok(()));
+        for bad in [60, 61, 64, 65, u16::MAX] {
+            assert_eq!(validate(&marker(bad), &mut ClientGuard::default(), 0), Err(Reject::Range), "{bad}");
+        }
+    }
+
     #[test]
     fn replay_window_edges() {
         let mut w = ReplayWindow::default();
@@ -656,6 +701,12 @@ mod tests {
         fn hosted_never_panics(health in any::<f32>(), counts in proptest::collection::vec(any::<i32>(), 0..=cap::INVENTORY_DELTA)) {
             let mut g = ClientGuard::default();
             let _ = validate(&hosted(health, &counts), &mut g, 0);
+        }
+
+        #[test]
+        fn marker_is_accepted_exactly_for_location_types(t in any::<u16>()) {
+            let want = if t <= MARKER_TYPE_MAX { Ok(()) } else { Err(Reject::Range) };
+            prop_assert_eq!(validate(&marker(t), &mut ClientGuard::default(), 0), want);
         }
 
         #[test]

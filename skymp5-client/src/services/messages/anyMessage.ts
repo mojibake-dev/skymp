@@ -22,6 +22,7 @@ import { PlayerBowShotMessage } from "./playerBowShotMessage";
 import { PutItemMessage } from "./putItemMessage";
 import { SetGameTimeMessage } from "./setGameTimeMessage";
 import { RestIntentMessage } from "./restIntentMessage";
+import { MapMarkerDiscoveredMessage } from "./mapMarkerDiscoveredMessage";
 import { SetInventoryMessage } from "./setInventoryMessage";
 import { SetRaceMenuOpenMessage } from "./setRaceMenuOpenMessage";
 import { SpSnippetMessage } from "./spSnippetMessage";
@@ -64,6 +65,7 @@ export type AnyMessage = ActivateMessage
     | SetRaceMenuOpenMessage
     | SetGameTimeMessage
     | RestIntentMessage
+    | MapMarkerDiscoveredMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage
     | UpdatePropertyMessage

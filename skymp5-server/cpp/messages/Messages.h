@@ -14,6 +14,7 @@
 #include "HostMessage.h"
 #include "HostStartMessage.h"
 #include "HostStopMessage.h"
+#include "MapMarkerDiscoveredMessage.h"
 #include "OnEquipMessage.h"
 #include "OpenContainerMessage.h"
 #include "PlayerBowShotMessage.h"
@@ -70,4 +71,5 @@
   REGISTER_MESSAGE(UpdateGameModeDataMessage)                                 \
   REGISTER_MESSAGE(CreateActorMessage)                                        \
   REGISTER_MESSAGE(SetGameTimeMessage)                                        \
-  REGISTER_MESSAGE(RestIntentMessage)
+  REGISTER_MESSAGE(RestIntentMessage)                                         \
+  REGISTER_MESSAGE(MapMarkerDiscoveredMessage)

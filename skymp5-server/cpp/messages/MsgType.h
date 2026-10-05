@@ -43,6 +43,7 @@ enum class MsgType : uint8_t
   // thuum's, appended after SkyMP's (skymp-wire wire-schema)
   SetGameTime = 34,
   RestIntent = 35,
+  MapMarkerDiscovered = 36,
 
   Max
 };

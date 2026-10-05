@@ -4,9 +4,10 @@
 //! This file is the contract the C++ core and skymp5-client keep speaking
 //! in-process; on the wire the same structs travel as postcard. MsgTypes 1
 //! to 33 are SkyMP's; thuum appends its own after them (34, SetGameTime; 35,
-//! RestIntent).
+//! RestIntent; 36, MapMarkerDiscovered).
 //!
-//! Directions are SkyMP's: twelve types (thirteen with RestIntent) only travel
+//! Directions are SkyMP's: twelve types (fourteen with RestIntent and
+//! MapMarkerDiscovered) only travel
 //! client to server, thirteen (fourteen with SetGameTime) only server to
 //! client, eight both ways (the server relays a client's
 //! UpdateMovement, UpdateAnimation, UpdateAppearance, UpdateEquipment,
@@ -999,5 +1000,25 @@ wire_struct! {
         pub hours: f32,
         /// A sleep in a bed rather than a wait.
         pub sleep: bool,
+    }
+}
+
+wire_struct! {
+    /// MsgType 36, thuum's (docs/verbs/map-markers.md). Client to server,
+    /// reliable: the player's engine discovered a location (Skyrim
+    /// Platform's `locationDiscovery`), of this marker type, with or without
+    /// fast travel (R1 intent). The client does not say which marker: the
+    /// server finds the nearest of that type to the player in the master
+    /// files, checks the range, and records it on the player (R0).
+    /// Idempotent per marker. Reason codes: `E_VAL_RANGE` (a type no
+    /// location uses), `E_VAL_RATE`.
+    pub struct MapMarkerDiscovered {
+        /// `"t": 36`.
+        #[serde(default)]
+        pub t: MsgT<36>,
+        /// The engine's MARKER_TYPE (CommonLibSSE-NG ExtraMapMarker.h).
+        pub marker_type: u16,
+        /// Fast travel allowed to it (MapMarkerData kCanTravelTo).
+        pub can_travel: bool,
     }
 }

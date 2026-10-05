@@ -121,10 +121,15 @@ mod ffi {
         target_is_player: bool,
         /// The attacker hit itself.
         same_actor: bool,
-        /// The attacker had hit this victim before.
-        has_previous_hit: bool,
-        /// Milliseconds since that hit (0 when there was none).
-        since_previous_hit_ms: u64,
+    }
+
+    /// Two player actors in a fight, the lower form id first.
+    #[derive(Debug)]
+    struct FightPair {
+        /// The lower actor form id.
+        a: u32,
+        /// The higher actor form id.
+        b: u32,
     }
 
     /// The hit flags the server keeps.
@@ -167,6 +172,8 @@ mod ffi {
         has_hit: bool,
         /// Milliseconds since the last such hit (0 when there was none).
         since_last_hit_ms: u64,
+        /// The player is in a fight with another player.
+        in_fight: bool,
     }
 
     /// Why a rest is refused, `Allowed` when it is let through.
@@ -211,9 +218,12 @@ mod ffi {
         /// A kept sneak attack's damage multiplier for a weapon of
         /// `anim_type` (the WEAP record's DNAM animation type).
         fn sneak_mult(anim_type: u8, mults: &SneakMults) -> f32;
-        /// Whether an accepted hit tells the victim's game that the attacker
-        /// is hostile: the first hit of a fight between two players.
-        fn hostility_notify(facts: &HostilityFacts) -> bool;
+        /// Whether an accepted hit is one between two players.
+        fn hostility_between_players(facts: &HostilityFacts) -> bool;
+        /// Whether two players stand farther apart than the engine's
+        /// "enemies nearby" range where they are (`interior`); players in
+        /// different cells or worlds pass an infinite distance.
+        fn hostility_apart(distance: f32, interior: bool) -> bool;
         /// TES3MP's rest switches from server-settings.json's `rest` block.
         type RestSettings;
         /// The switches from the block as JSON text (`{}` for both on); the
@@ -228,6 +238,24 @@ mod ffi {
         /// Real milliseconds the Rested bonus of a rest lasts at the
         /// clock's `time_scale`; 0 when it earns none.
         fn rested_ms(slept: bool, time_scale: f32) -> u64;
+
+        /// The fights between players going on (thuum ADR-023).
+        type Fights;
+        /// No fights.
+        fn new_fights() -> Box<Fights>;
+        /// An accepted hit between two players at `now_ms` (a monotonic
+        /// clock): true when it begins a fight, so the victim's game is to
+        /// be told.
+        fn hit(self: &mut Fights, aggressor: u32, victim: u32, now_ms: u64) -> bool;
+        /// The pairs fighting, for the core to measure.
+        fn pairs(self: &Fights) -> Vec<FightPair>;
+        /// The core's measure of a pair now: true when the fight is over (a
+        /// minute without a hit, or apart for a few seconds), which forgets it.
+        fn check(self: &mut Fights, a: u32, b: u32, apart: bool, now_ms: u64) -> bool;
+        /// Whether the actor is in a fight.
+        fn in_fight(self: &Fights, actor: u32) -> bool;
+        /// The actor is gone: its fights end without a notice.
+        fn forget(self: &mut Fights, actor: u32);
 
         /// Every player actor's ground speed budget.
         type MovementBudgets;
@@ -256,7 +284,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{BedFacts, ConeFacts, FlagFacts, Flags, GameTime, HostilityFacts, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, SneakMults, Verdict};
+pub use ffi::{BedFacts, ConeFacts, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, SneakMults, Verdict};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -320,6 +348,7 @@ fn rest_check(settings: &RestSettings, f: &RestFacts) -> RestRefusal {
         sleep: f.sleep,
         is_dead: f.is_dead,
         since_last_hit_ms: f.has_hit.then_some(f.since_last_hit_ms),
+        in_fight: f.in_fight,
     };
     match rest::check(facts, settings.0) {
         Ok(()) => RestRefusal::Allowed,
@@ -345,13 +374,46 @@ fn sneak_mult(anim_type: u8, m: &SneakMults) -> f32 {
     )
 }
 
-fn hostility_notify(f: &HostilityFacts) -> bool {
-    hostility::notify_victim(hostility::HitFacts {
+fn hostility_between_players(f: &HostilityFacts) -> bool {
+    hostility::between_players(hostility::HitFacts {
         aggressor_is_player: f.aggressor_is_player,
         target_is_player: f.target_is_player,
         same_actor: f.same_actor,
-        since_previous_hit_ms: f.has_previous_hit.then_some(f.since_previous_hit_ms),
     })
+}
+
+fn hostility_apart(distance: f32, interior: bool) -> bool {
+    hostility::apart(distance, interior)
+}
+
+/// The fights between players going on (wire-rules hostility).
+#[derive(Debug, Default)]
+pub struct Fights(hostility::Fights);
+
+fn new_fights() -> Box<Fights> {
+    Box::default()
+}
+
+impl Fights {
+    fn hit(&mut self, aggressor: u32, victim: u32, now_ms: u64) -> bool {
+        self.0.hit(aggressor, victim, now_ms)
+    }
+
+    fn pairs(&self) -> Vec<FightPair> {
+        self.0.pairs().into_iter().map(|(a, b)| FightPair { a, b }).collect()
+    }
+
+    fn check(&mut self, a: u32, b: u32, apart: bool, now_ms: u64) -> bool {
+        self.0.check(a, b, apart, now_ms)
+    }
+
+    fn in_fight(&self, actor: u32) -> bool {
+        self.0.in_fight(actor)
+    }
+
+    fn forget(&mut self, actor: u32) {
+        self.0.forget(actor);
+    }
 }
 
 fn rest_slept(f: &BedFacts) -> bool {
@@ -477,7 +539,7 @@ mod tests {
 
     #[test]
     fn the_bridge_passes_the_rest_through() {
-        let facts = |hours, is_dead, has_hit, since_last_hit_ms| RestFacts { hours, sleep: false, is_dead, has_hit, since_last_hit_ms };
+        let facts = |hours, is_dead, has_hit, since_last_hit_ms| RestFacts { hours, sleep: false, is_dead, has_hit, since_last_hit_ms, in_fight: false };
         let on = new_rest_settings("{}");
         assert!(on.is_ok());
         let Ok(on) = on else { return };
@@ -507,17 +569,22 @@ mod tests {
 
     #[test]
     fn the_bridge_passes_hostility_through() {
-        let facts = |has_previous_hit, since_previous_hit_ms| HostilityFacts {
-            aggressor_is_player: true,
-            target_is_player: true,
-            same_actor: false,
-            has_previous_hit,
-            since_previous_hit_ms,
-        };
-        assert!(hostility_notify(&facts(false, 0)));
-        assert!(!hostility_notify(&facts(true, 3_000)));
-        assert!(hostility_notify(&facts(true, rest::COMBAT_QUIET_MS)));
-        assert!(!hostility_notify(&HostilityFacts { same_actor: true, ..facts(false, 0) }));
+        let players = HostilityFacts { aggressor_is_player: true, target_is_player: true, same_actor: false };
+        assert!(hostility_between_players(&players));
+        assert!(!hostility_between_players(&HostilityFacts { same_actor: true, ..players }));
+        assert!(hostility_apart(hostility::EXTERIOR_RANGE + 1.0, false));
+        assert!(!hostility_apart(hostility::INTERIOR_RANGE, true));
+        let mut f = new_fights();
+        assert!(f.hit(1, 2, 0));
+        assert!(!f.hit(2, 1, 1_000));
+        assert_eq!(f.pairs().iter().map(|p| (p.a, p.b)).collect::<Vec<_>>(), vec![(1, 2)]);
+        assert!(f.in_fight(2));
+        assert!(!f.check(1, 2, false, 2_000));
+        assert!(f.check(1, 2, false, 1_000 + hostility::FIGHT_QUIET_MS));
+        assert!(!f.in_fight(1));
+        f.hit(3, 4, 0);
+        f.forget(4);
+        assert!(f.pairs().is_empty());
     }
 
     #[test]

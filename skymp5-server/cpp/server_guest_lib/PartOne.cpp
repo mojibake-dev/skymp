@@ -19,6 +19,9 @@
 #include "MessageSerializerFactory.h"
 #include "OpenSSLSigner.h"
 #include "PacketParser.h"
+#include "SpSnippet.h"
+#include "libespm/CELL.h"
+#include <spdlog/spdlog.h>
 
 namespace {
 // The wall clock, Unix milliseconds: the game clock is a function of it
@@ -111,6 +114,10 @@ struct PartOne::Impl
   rust::Box<skymp::rules::RestSettings> restSettings =
     skymp::rules::new_rest_settings("{}");
 
+  // the fights between players (thuum docs/verbs/hostility-sync.md, ADR-023)
+  rust::Box<skymp::rules::Fights> fights = skymp::rules::new_fights();
+  std::chrono::steady_clock::time_point lastFightsTick;
+
   espm::Loader* espm = nullptr;
 
   std::function<void(PartOneSendTargetWrapper* sendTarget,
@@ -188,6 +195,7 @@ void PartOne::Tick()
   TickPacketHistoryPlaybacks();
   TickDeferredMessages();
   TickGameTime();
+  TickFightsEverySecond();
   worldState.Tick();
 }
 
@@ -1131,6 +1139,74 @@ void PartOne::TickGameTime()
         pImpl->gameClock->resync_due(userId, nowMs)) {
       pImpl->sendTarget->Send(userId, ToMessage(pImpl->gameClock->now(nowMs)),
                               true);
+    }
+  }
+}
+
+skymp::rules::Fights& PartOne::GetFights()
+{
+  return *pImpl->fights;
+}
+
+void PartOne::TickFightsEverySecond()
+{
+  const auto now = std::chrono::steady_clock::now();
+  if (now - pImpl->lastFightsTick < std::chrono::seconds(1)) {
+    return;
+  }
+  pImpl->lastFightsTick = now;
+  TickFights(static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      now.time_since_epoch())
+      .count()));
+}
+
+namespace {
+// `client`'s game ends its figure's combat (thuum ADR-023): Papyrus
+// Actor.StopCombatAlarm on the figure stops its combat, its alarm and its
+// anger at the player (thuum ghidra/notes/hostility-1-7-104.md)
+void StopCombatOnClient(MpActor& client, uint32_t figureId)
+{
+  const std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+    noArgs;
+  SpSnippet("Actor", "StopCombatAlarm", noArgs, figureId)
+    .Execute(&client, SpSnippetMode::kNoReturnResult);
+}
+}
+
+void PartOne::TickFights(uint64_t nowMs)
+{
+  // a player of a pair, while a user plays it
+  const auto player = [&](uint32_t formId) -> MpActor* {
+    const auto& form = worldState.LookupFormById(formId);
+    MpActor* actor = form ? form->AsActor() : nullptr;
+    return actor && serverState.UserByActor(actor) != Networking::InvalidUserId
+      ? actor
+      : nullptr;
+  };
+  for (const auto& pair : pImpl->fights->pairs()) {
+    MpActor* a = player(pair.a);
+    MpActor* b = player(pair.b);
+    if (!a || !b) {
+      pImpl->fights->forget(a ? pair.b : pair.a);
+      continue;
+    }
+    bool apart = true;
+    if (a->GetCellOrWorld() == b->GetCellOrWorld()) {
+      const auto cell = worldState.GetEspm().GetBrowser().LookupById(
+        a->GetCellOrWorld().ToFormId(worldState.espmFiles));
+      const bool interior =
+        cell.rec && cell.rec->GetType() == espm::CELL::kType;
+      apart = skymp::rules::hostility_apart(
+        (a->GetPos() - b->GetPos()).Length(), interior);
+    }
+    if (pImpl->fights->check(pair.a, pair.b, apart, nowMs)) {
+      StopCombatOnClient(*a, pair.b);
+      StopCombatOnClient(*b, pair.a);
+      spdlog::info("PartOne::TickFights - hostility: the fight between {:x} "
+                   "and {:x} is over ({}); both games are told",
+                   pair.a, pair.b, apart ? "apart" : "a minute quiet");
     }
   }
 }

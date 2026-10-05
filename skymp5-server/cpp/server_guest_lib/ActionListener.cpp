@@ -715,6 +715,9 @@ void ActionListener::OnRestIntent(const RawMessageData& rawMsgData,
         std::chrono::duration_cast<std::chrono::milliseconds>(now - lastHit)
           .count())
     : 0;
+  // thuum ADR-023: no rest in a fight with another player, however long ago
+  // its last hit, until it ends (a minute quiet, or walked apart)
+  facts.in_fight = partOne.GetFights().in_fight(actor->GetFormId());
   const auto refusal =
     skymp::rules::rest_check(partOne.GetRestSettings(), facts);
   if (refusal != skymp::rules::RestRefusal::Allowed) {
@@ -1656,11 +1659,6 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
 
   auto& targetActor = *targetActorPtr;
 
-  // Read before this hit is recorded: hostility sync asks whether this hit
-  // begins a fight
-  const auto previousHitOnTarget =
-    aggressor->GetLastHitTime(targetActor.GetFormId());
-
   const auto lastHitTimeAnyTarget = aggressor->GetLastHitTime(std::nullopt);
   const std::chrono::duration<float> timePassedAnyTarget =
     currentHitTime - lastHitTimeAnyTarget;
@@ -1806,39 +1804,34 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
     hitData.target, damage, currentActorValues.healthPercentage,
     healthPercentage, outBaseHealth);
 
-  NotifyHostility(*aggressor, targetActor, previousHitOnTarget,
-                  currentHitTime);
+  NotifyHostility(*aggressor, targetActor, currentHitTime);
 }
 
 // thuum docs/verbs/hostility-sync.md (ADR-023): the attacker's engine marks
 // the victim an enemy when its hit lands, but the victim's engine never sees
-// that hit. On the first hit of a fight between two players, the Rust rule
-// says so, and the victim's game starts combat between its figure of the
+// that hit. When a hit between two players begins a fight (the Rust rule's
+// fights table), the victim's game starts combat between its figure of the
 // attacker and its own player (0x14 on that client). The engine then refuses
 // the victim a wait or a sleep with the attacker near, as it does the
-// attacker.
-void ActionListener::NotifyHostility(
-  MpActor& aggressor, MpActor& target,
-  std::chrono::steady_clock::time_point previousHitOnTarget,
-  std::chrono::steady_clock::time_point now)
+// attacker; PartOne::TickFights ends the fight on both games.
+void ActionListener::NotifyHostility(MpActor& aggressor, MpActor& target,
+                                     std::chrono::steady_clock::time_point now)
 {
-  const bool hasPreviousHit =
-    previousHitOnTarget != std::chrono::steady_clock::time_point();
-
   skymp::rules::HostilityFacts facts{};
   facts.aggressor_is_player =
     partOne.serverState.UserByActor(&aggressor) != Networking::InvalidUserId;
   facts.target_is_player =
     partOne.serverState.UserByActor(&target) != Networking::InvalidUserId;
   facts.same_actor = &aggressor == &target;
-  facts.has_previous_hit = hasPreviousHit;
-  facts.since_previous_hit_ms = hasPreviousHit
-    ? static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-          now - previousHitOnTarget)
-          .count())
-    : 0;
-  if (!skymp::rules::hostility_notify(facts)) {
+  if (!skymp::rules::hostility_between_players(facts)) {
+    return;
+  }
+  const auto nowMs = static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      now.time_since_epoch())
+      .count());
+  if (!partOne.GetFights().hit(aggressor.GetFormId(), target.GetFormId(),
+                               nowMs)) {
     return;
   }
 

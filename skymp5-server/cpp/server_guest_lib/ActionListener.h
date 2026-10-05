@@ -100,10 +100,8 @@ private:
 
   void GrantRested(MpActor& actor, uint64_t durationMs);
 
-  void NotifyHostility(
-    MpActor& aggressor, MpActor& target,
-    std::chrono::steady_clock::time_point previousHitOnTarget,
-    std::chrono::steady_clock::time_point now);
+  void NotifyHostility(MpActor& aggressor, MpActor& target,
+                       std::chrono::steady_clock::time_point now);
 
   void SendPapyrusOnHitEvent(MpActor* aggressor, MpObjectReference* target,
                              const HitData& hitData);

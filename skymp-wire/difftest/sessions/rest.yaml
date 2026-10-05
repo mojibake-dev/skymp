@@ -1,18 +1,21 @@
 # difftest rest (M1, thuum docs/verbs/rest.md): c1 and c2 are new characters
 # (profiles 9 and 10, actors 0xff000002 and 0xff000003: see melee-reach),
-# both at the spawn. c2 sends a bare-handed hit on c1 at 3.5 s; standing on
+# both at the spawn. c1 rests an hour at 2 s, before any fight: the fixed
+# server restores it to full and tells it (ChangeValues); the legacy server
+# has no RestIntent. c2 sends a bare-handed hit on c1 at 3.5 s; standing on
 # each other passes the cone, and both servers lower c1's health. c1 rests
-# an hour at 5 s, inside the 10 s after the hit: the legacy server has no
-# RestIntent and the fixed one refuses a fight, so neither answers. c1 rests
-# again at 16 s: the fixed server restores it to full and tells it
-# (ChangeValues); the legacy server cannot. c2 steps aside at 17 s so it
-# outlives c1 and sees c1 leave, as in every other session (with its last
-# step at 3.5 s, c2 left first and c1 saw it go).
+# again at 5 s and at 16 s: the fixed server refuses both, the first inside
+# the 10 s after the hit and the second in the fight, which lasts a minute
+# without a hit unless the players walk apart (thuum ADR-023); the legacy
+# server cannot answer. c2 steps aside at 17 s so it outlives c1 and sees c1
+# leave, as in every other session (with its last step at 3.5 s, c2 left
+# first and c1 saw it go).
 id: rest
 clients:
   c1: {profile_id: 9}
   c2: {profile_id: 10}
 steps:
+  - {client: c1, at_ms: 2000, send: {t: 35, hours: 1, sleep: false}}
   - {client: c2, at_ms: 3500, send: {t: 17, data: {aggressor: 20, target: 4278190082, source: 500, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
   - {client: c1, at_ms: 5000, send: {t: 35, hours: 1, sleep: false}}
   - {client: c1, at_ms: 16000, send: {t: 35, hours: 1, sleep: false}}
@@ -22,7 +25,7 @@ divergences:
     msg: {t: 16, data: {health: 1, magicka: 1, stamina: 1}}
     legacy: 0
     wire: 1
-    reason: a rest after the fight window; the fixed server grants its recovery (thuum docs/verbs/rest.md), the legacy one has no RestIntent
+    reason: a rest before any fight; the fixed server grants its recovery (thuum docs/verbs/rest.md), the legacy one has no RestIntent
   - client: c1
     msg: {t: 30, class: Actor, function: StartCombat, selfId: 4278190083, arguments: [{formId: 20, type: Actor}]}
     legacy: 0

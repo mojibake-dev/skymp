@@ -72,6 +72,10 @@ pub struct RestFacts {
     pub is_dead: bool,
     /// Milliseconds since the last hit the player dealt or took, if any.
     pub since_last_hit_ms: Option<u64>,
+    /// The player is in a fight with another player (wire-rules hostility):
+    /// one that has not yet gone a minute without a hit or seen them walk
+    /// apart.
+    pub in_fight: bool,
 }
 
 /// Why a rest is refused.
@@ -83,7 +87,8 @@ pub enum Refusal {
     Off,
     /// The player is dead.
     Dead,
-    /// A hit within [`COMBAT_QUIET_MS`].
+    /// A hit within [`COMBAT_QUIET_MS`], or a fight with another player
+    /// going on.
     Fighting,
 }
 
@@ -98,7 +103,7 @@ pub fn check(f: RestFacts, switches: Switches) -> Result<(), Refusal> {
     if f.is_dead {
         return Err(Refusal::Dead);
     }
-    if matches!(f.since_last_hit_ms, Some(ms) if ms < COMBAT_QUIET_MS) {
+    if f.in_fight || matches!(f.since_last_hit_ms, Some(ms) if ms < COMBAT_QUIET_MS) {
         return Err(Refusal::Fighting);
     }
     Ok(())
@@ -210,7 +215,13 @@ mod tests {
     }
 
     const fn facts(hours: f32, dead: bool, since: Option<u64>) -> RestFacts {
-        RestFacts { hours, sleep: false, is_dead: dead, since_last_hit_ms: since }
+        RestFacts { hours, sleep: false, is_dead: dead, since_last_hit_ms: since, in_fight: false }
+    }
+
+    #[test]
+    fn a_player_in_a_fight_cannot_rest_however_long_ago_its_last_hit() {
+        let f = RestFacts { in_fight: true, ..facts(8.0, false, Some(45_000)) };
+        assert_eq!(check(f, on()), Err(Refusal::Fighting));
     }
 
     fn on() -> Switches {

@@ -315,14 +315,16 @@ TEST_CASE("A melee hit on a player from beyond reach does nothing", "[Hit]")
   DoDisconnect(p, 1);
 }
 
-TEST_CASE("The first hit of a fight between players tells the victim's game",
+TEST_CASE("A fight between players: its first hit tells the victim's game, "
+          "and it ends a minute quiet or walked apart, on both games",
           "[Hit]")
 {
-  // thuum docs/verbs/hostility-sync.md (ADR-023): the victim's user gets
+  // thuum docs/verbs/hostility-sync.md (ADR-023 and its amendment, Eli
+  // 2026-10-05: "60 seconds OR walk apart"). The victim's user gets
   // Actor.StartCombat on the attacker's form, aimed at its own player (0x14
-  // on that client). Hits under 10 s apart are one fight; a hit after a
-  // longer pause begins another; a hit on a target no user plays tells
-  // nobody.
+  // on that client); when the fight ends both users get
+  // Actor.StopCombatAlarm on their figure of the other. A hit on a target no
+  // user plays begins nothing.
   PartOne& p = GetPartOne();
   DoConnect(p, 0);
   DoConnect(p, 1);
@@ -335,6 +337,7 @@ TEST_CASE("The first hit of a fight between players tells the victim's game",
   p.SetUserActor(1, target);
   p.CreateActor(npc, { 0, 120, 0 }, 0, 0x3c);
   auto& acAggressor = p.worldState.GetFormAt<MpActor>(aggressor);
+  auto& acTarget = p.worldState.GetFormAt<MpActor>(target);
 
   const uint32_t ironSword = 0x00012eb7;
   acAggressor.AddItem(ironSword, 1);
@@ -342,45 +345,71 @@ TEST_CASE("The first hit of a fight between players tells the victim's game",
   eq.inv.entries.push_back(Inventory::Entry(ironSword, 1, kExtraWornTrue));
   acAggressor.SetEquipment(eq);
 
+  // the snippets of `function` the users received since the last clear
+  const auto snippets = [&](const char* function) {
+    p.Tick(); // snippets are deferred
+    std::vector<std::pair<Networking::UserId, nlohmann::json>> out;
+    for (auto& m : p.Messages()) {
+      if (m.j["t"] == MsgType::SpSnippet && m.j["function"] == function) {
+        out.emplace_back(m.userId, m.j);
+      }
+    }
+    return out;
+  };
   RawMessageData rawMsgData;
   rawMsgData.userId = 0;
-  // The StartCombat snippets one hit on victimId sends
   const auto hit = [&](uint32_t victimId) {
     p.Messages().clear();
+    // no weapon cooldown or splash window between the hits
+    acAggressor.SetLastHitTime(victimId,
+                               std::chrono::steady_clock::now() - 3s);
     HitMessage hitMsg;
     hitMsg.data.aggressor = 0x14;
     hitMsg.data.target = victimId;
     hitMsg.data.source = ironSword;
     p.GetActionListener().OnHit(rawMsgData, hitMsg);
-    p.Tick(); // snippets are deferred
-    std::vector<nlohmann::json> notices;
-    for (auto& m : p.Messages()) {
-      if (m.j["t"] == MsgType::SpSnippet && m.j["function"] == "StartCombat") {
-        REQUIRE(m.userId == 1);
-        notices.push_back(m.j);
-      }
-    }
-    return notices;
+    return snippets("StartCombat");
+  };
+  const auto nowMs = [] {
+    return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch())
+        .count());
+  };
+  const auto stops = [&](uint64_t atMs) {
+    p.Messages().clear();
+    p.TickFights(atMs);
+    return snippets("StopCombatAlarm");
   };
 
   const auto first = hit(target);
   REQUIRE(first.size() == 1);
-  REQUIRE(first[0]["class"] == "Actor");
-  REQUIRE(first[0]["selfId"] == aggressor);
-  REQUIRE(first[0]["arguments"] ==
+  REQUIRE(first[0].first == 1);
+  REQUIRE(first[0].second["class"] == "Actor");
+  REQUIRE(first[0].second["selfId"] == aggressor);
+  REQUIRE(first[0].second["arguments"] ==
           nlohmann::json::array(
             { nlohmann::json{ { "formId", 0x14 }, { "type", "Actor" } } }));
+  REQUIRE(hit(target).empty()); // the same fight
+  REQUIRE(p.GetFights().in_fight(target));
 
-  // 3 s later: the same fight
-  acAggressor.SetLastHitTime(target, std::chrono::steady_clock::now() - 3s);
-  REQUIRE(hit(target).empty());
+  // half a minute quiet: still on; a minute: over, on both games
+  REQUIRE(stops(nowMs() + 30'000).empty());
+  const auto over = stops(nowMs() + 61'000);
+  REQUIRE(over.size() == 2);
+  for (auto& [user, j] : over) {
+    REQUIRE(j["selfId"] == (user == 0 ? target : aggressor));
+  }
+  REQUIRE(!p.GetFights().in_fight(target));
 
-  // after a pause past the quiet window: a new fight
-  acAggressor.SetLastHitTime(target, std::chrono::steady_clock::now() - 11s);
+  // the next hit begins a new fight; walking apart ends it
   REQUIRE(hit(target).size() == 1);
+  acTarget.SetPos({ 0, 5000, 0 });
+  const auto t0 = nowMs();
+  REQUIRE(stops(t0).empty()); // apart since now
+  REQUIRE(stops(t0 + 6'000).size() == 2);
 
   // nobody plays the NPC
-  acAggressor.SetLastHitTime(target, std::chrono::steady_clock::now() - 11s);
   REQUIRE(hit(npc).empty());
 
   p.DestroyActor(aggressor);

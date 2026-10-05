@@ -135,6 +135,13 @@ public:
   void SetRestSettings(const std::string& restSettingsJson);
   const skymp::rules::RestSettings& GetRestSettings() const;
 
+  // The fights between players going on (thuum docs/verbs/hostility-sync.md,
+  // ADR-023; the rule and its state are Rust's, ADR-020). A hit between two
+  // players begins or keeps one; TickFights ends those that went a minute
+  // without a hit or whose players walked apart, and tells both games.
+  skymp::rules::Fights& GetFights();
+  void TickFights(uint64_t nowMs);
+
   float CalculateDamage(const MpActor& aggressor, const MpActor& target,
                         const SpellCastData& spellCastData) const;
 
@@ -175,6 +182,7 @@ private:
 
   void TickPacketHistoryPlaybacks();
   void TickGameTime();
+  void TickFightsEverySecond();
   void TickDeferredMessages();
 
   std::string SignJavaScriptSources(const std::string& src) const;

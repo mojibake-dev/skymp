@@ -221,3 +221,35 @@ TEST_CASE("A rest at a bed just activated is a sleep: the bed works again "
   DoDisconnect(p, 1);
   Leave(p);
 }
+
+TEST_CASE("A player in a fight with another player cannot rest until it "
+          "ends",
+          "[Rest]")
+{
+  // thuum ADR-023 and its amendment: a fight ends a minute without a hit or
+  // with the players apart; until then the server refuses a rest, however
+  // long ago its last hit
+  constexpr uint32_t kOther = 0xff000abe;
+  PartOne& p = GetPartOne();
+  auto& ac = HalfPlayer(p);
+  DoConnect(p, 1);
+  p.CreateActor(kOther, { 50, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(1, kOther);
+  const auto nowMs = static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch())
+      .count());
+
+  REQUIRE(p.GetFights().hit(kOther, kActor, nowMs - 45'000));
+  Rest(p, 1.f);
+  REQUIRE(ac.GetChangeForm().actorValues.healthPercentage == 0.5f);
+
+  p.TickFights(nowMs + 16'000); // a minute after its last hit
+  REQUIRE(!p.GetFights().in_fight(kActor));
+  Rest(p, 1.f);
+  REQUIRE(ac.GetChangeForm().actorValues.healthPercentage == 1.f);
+
+  p.DestroyActor(kOther);
+  DoDisconnect(p, 1);
+  Leave(p);
+}

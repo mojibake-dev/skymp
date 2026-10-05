@@ -22,6 +22,7 @@
 
 namespace skymp::rules {
 struct RestSettings; // wire-bridge's (thuum ADR-020), opaque here
+struct Fights;       // wire-bridge's (thuum ADR-023), opaque here
 }
 
 using ProfileId = int32_t;

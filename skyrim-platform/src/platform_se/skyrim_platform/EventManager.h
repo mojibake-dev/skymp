@@ -1,5 +1,6 @@
 #pragma once
 #include "EventHandler.h"
+#include <map>
 
 struct EventHandle
 {
@@ -49,14 +50,19 @@ struct CallbackObject
   bool runOnce = false;
 };
 
-using CallbackObjMap = robin_hood::unordered_map<uintptr_t, CallbackObject>;
+// Ordered by uid, which Subscribe hands out in increasing order, so an event
+// calls its callbacks in the order they subscribed, as an EventEmitter does.
+// A hash map called them in hash order: two once('update') callbacks queued
+// in one frame could run newest first (thuum, run
+// 20261006-183431-x-give-trace: skymp5-client applied the player's newer
+// inventory, then the older one, and took back the item just given).
+using CallbackObjMap = std::map<uintptr_t, CallbackObject>;
 
 struct EventState
 {
   explicit EventState(const std::optional<SinkObject>& sinkObj_)
     : sinkObj(sinkObj_)
   {
-    callbacks.reserve(5);
   }
 
   std::optional<SinkObject> sinkObj;

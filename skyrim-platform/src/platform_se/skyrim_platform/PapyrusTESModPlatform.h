@@ -97,6 +97,13 @@ void CloseMenu(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
 void SetGameDaysPassed(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                        float daysPassed);
 
+// The player's favorites as (form id, hotkey) pairs, hotkey -1 for none, and
+// marking one with a hotkey, -1 for none (thuum docs/verbs/favorites.md)
+std::vector<int32_t> GetFavorites(IVM* vm, StackID stackId,
+                                  RE::StaticFunctionTag*);
+bool SetFavorite(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
+                 RE::TESForm* form, int32_t hotkey);
+
 void BlockPapyrusEvents(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                         bool blocked);
 

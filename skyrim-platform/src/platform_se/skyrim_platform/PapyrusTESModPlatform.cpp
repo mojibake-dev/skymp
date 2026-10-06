@@ -6,6 +6,10 @@
 
 #include <RE/B/BSPointerHandle.h>
 #include <RE/C/Calendar.h>
+#include <RE/E/ExtraHotkey.h>
+#include <RE/I/InventoryChanges.h>
+#include <RE/I/InventoryEntryData.h>
+#include <RE/M/MagicFavorites.h>
 #include <RE/N/NiPoint3.h>
 #include <RE/T/TESGlobal.h>
 #include <REL/Relocation.h>
@@ -1011,6 +1015,160 @@ void TESModPlatform::SetGameDaysPassed(IVM* vm, StackID stackId,
   calendar->gameDaysPassed->value = daysPassed;
 }
 
+namespace {
+// thuum docs/verbs/favorites.md. An item is a favorite when an extra list of
+// its inventory entry carries ExtraHotkey (InventoryEntryData::IsFavorited);
+// its slot is 0 to 7, the unbound -1 kept as 0xff in the byte
+// (CommonLibSSE-NG include/RE/E/ExtraHotkey.h).
+RE::ExtraHotkey* FindHotkey(RE::InventoryEntryData* entry)
+{
+  if (!entry || !entry->extraLists) {
+    return nullptr;
+  }
+  for (auto* xList : *entry->extraLists) {
+    if (auto* xHotkey =
+          xList ? xList->GetByType<RE::ExtraHotkey>() : nullptr) {
+      return xHotkey;
+    }
+  }
+  return nullptr;
+}
+
+int32_t SlotOf(const RE::ExtraHotkey& xHotkey)
+{
+  const auto raw = xHotkey.hotkey.underlying();
+  return raw <= 7 ? static_cast<int32_t>(raw) : -1;
+}
+
+RE::InventoryEntryData* EntryOf(RE::InventoryChanges* changes,
+                                RE::TESForm* form)
+{
+  if (!changes || !changes->entryList) {
+    return nullptr;
+  }
+  for (auto* entry : *changes->entryList) {
+    if (entry && entry->object == form) {
+      return entry;
+    }
+  }
+  return nullptr;
+}
+}
+
+// Magic is a favorite when MagicFavorites' spells holds it; the key bound to
+// slot i is hotkeys[i] (CommonLibSSE-NG include/RE/M/MagicFavorites.h; how
+// SKSE's Game.GetHotkeyBoundObject reads it).
+std::vector<int32_t> TESModPlatform::GetFavorites(IVM* vm, StackID stackId,
+                                                  RE::StaticFunctionTag*)
+{
+  std::vector<int32_t> out;
+  auto player = RE::PlayerCharacter::GetSingleton();
+  if (!player) {
+    return out;
+  }
+  if (auto changes = player->GetInventoryChanges();
+      changes && changes->entryList) {
+    for (auto* entry : *changes->entryList) {
+      if (auto* xHotkey = FindHotkey(entry); xHotkey && entry->object) {
+        out.push_back(static_cast<int32_t>(entry->object->GetFormID()));
+        out.push_back(SlotOf(*xHotkey));
+      }
+    }
+  }
+  if (auto favorites = RE::MagicFavorites::GetSingleton()) {
+    for (auto* form : favorites->spells) {
+      if (!form) {
+        continue;
+      }
+      int32_t slot = -1;
+      for (uint32_t i = 0; i < favorites->hotkeys.size(); ++i) {
+        if (favorites->hotkeys[i] == form) {
+          slot = static_cast<int32_t>(i);
+          break;
+        }
+      }
+      out.push_back(static_cast<int32_t>(form->GetFormID()));
+      out.push_back(slot);
+    }
+  }
+  return out;
+}
+
+// Marks a favorite of the player: an item it holds (the engine's
+// InventoryChanges::SetFavorite on the entry's first extra list, which the
+// engine creates when there is none: HYPOTHESIS until a-favorites) or a
+// spell or shout it knows (Actor::HasSpell or HasShout, then
+// MagicFavorites::SetFavorite). Then binds `hotkey`, 0 to 7, unbinding that
+// key from any other favorite first, as the favorites menu does; -1 binds
+// none. False when the player holds no such item or does not know the magic.
+bool TESModPlatform::SetFavorite(IVM* vm, StackID stackId,
+                                 RE::StaticFunctionTag*, RE::TESForm* form,
+                                 int32_t hotkey)
+{
+  auto player = RE::PlayerCharacter::GetSingleton();
+  auto favorites = RE::MagicFavorites::GetSingleton();
+  if (!player || !form || hotkey < -1 || hotkey > 7) {
+    return false;
+  }
+  auto changes = player->GetInventoryChanges();
+
+  const bool isSpell = form->Is(RE::FormType::Spell);
+  const bool isMagic = isSpell || form->Is(RE::FormType::Shout);
+  RE::InventoryEntryData* entry = nullptr;
+  if (isMagic) {
+    const bool knows = isSpell ? player->HasSpell(form->As<RE::SpellItem>())
+                               : player->HasShout(form->As<RE::TESShout>());
+    if (!favorites || !knows) {
+      return false;
+    }
+    const auto& spells = favorites->spells;
+    if (std::find(spells.begin(), spells.end(), form) == spells.end()) {
+      favorites->SetFavorite(form);
+    }
+  } else {
+    entry = EntryOf(changes, form);
+    if (!entry) {
+      return false;
+    }
+    if (!FindHotkey(entry)) {
+      auto* xList = entry->extraLists && !entry->extraLists->empty()
+        ? entry->extraLists->front()
+        : nullptr;
+      changes->SetFavorite(entry, xList);
+    }
+  }
+  if (hotkey < 0) {
+    return true;
+  }
+
+  // the key leaves whatever held it, and the magic leaves its old key
+  if (favorites) {
+    for (uint32_t i = 0; i < favorites->hotkeys.size(); ++i) {
+      if (static_cast<int32_t>(i) == hotkey || favorites->hotkeys[i] == form) {
+        favorites->hotkeys[i] = nullptr;
+      }
+    }
+  }
+  if (changes && changes->entryList) {
+    for (auto* other : *changes->entryList) {
+      auto* xHotkey = other != entry ? FindHotkey(other) : nullptr;
+      if (xHotkey && SlotOf(*xHotkey) == hotkey) {
+        xHotkey->hotkey = RE::ExtraHotkey::Hotkey::kUnbound;
+      }
+    }
+  }
+
+  if (isMagic) {
+    if (favorites &&
+        static_cast<uint32_t>(hotkey) < favorites->hotkeys.size()) {
+      favorites->hotkeys[static_cast<uint32_t>(hotkey)] = form;
+    }
+  } else if (auto* xHotkey = FindHotkey(entry)) {
+    xHotkey->hotkey = static_cast<RE::ExtraHotkey::Hotkey>(hotkey);
+  }
+  return true;
+}
+
 bool TESModPlatform::Register(IVM* vm)
 {
   TESModPlatform::onPapyrusUpdate = onPapyrusUpdate;
@@ -1157,6 +1315,18 @@ bool TESModPlatform::Register(IVM* vm)
     new RE::BSScript::NativeFunction<true, decltype(SetGameDaysPassed), void,
                                      RE::StaticFunctionTag*, float>(
       "SetGameDaysPassed", "TESModPlatform", SetGameDaysPassed));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(GetFavorites),
+                                     std::vector<int32_t>,
+                                     RE::StaticFunctionTag*>(
+      "GetFavorites", "TESModPlatform", GetFavorites));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SetFavorite), bool,
+                                     RE::StaticFunctionTag*, RE::TESForm*,
+                                     int32_t>("SetFavorite", "TESModPlatform",
+                                              SetFavorite));
 
   static LoadGameEvent loadGameEvent;
 

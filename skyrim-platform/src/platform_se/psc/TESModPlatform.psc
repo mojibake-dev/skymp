@@ -49,3 +49,9 @@ ObjectReference Function CreateReferenceAtLocation(Form baseForm, Cell cell, Wor
 Function CloseMenu(string name) global native
 
 Function SetGameDaysPassed(Float daysPassed) global native
+
+; thuum docs/verbs/favorites.md: the player's favorites as (form id, hotkey) pairs,
+; hotkey -1 for none; and marking one with a hotkey (-1 for none)
+Int[] Function GetFavorites() global native
+
+Bool Function SetFavorite(Form form, Int hotkey) global native

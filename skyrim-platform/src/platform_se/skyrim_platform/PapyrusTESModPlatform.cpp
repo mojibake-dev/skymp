@@ -1095,8 +1095,9 @@ std::vector<int32_t> TESModPlatform::GetFavorites(IVM* vm, StackID stackId,
 }
 
 // Marks a favorite of the player: an item it holds (the engine's
-// InventoryChanges::SetFavorite on the entry's first extra list, which the
-// engine creates when there is none: HYPOTHESIS until a-favorites) or a
+// InventoryChanges::SetFavorite on the entry's first extra list, or none,
+// confirmed for an item without extra data by a-favorites on 1.7.104 and
+// 1.6.1170, runs 20261006-083811 and -094342) or a
 // spell or shout it knows (Actor::HasSpell or HasShout, then
 // MagicFavorites::SetFavorite). Then binds `hotkey`, 0 to 7, unbinding that
 // key from any other favorite first, as the favorites menu does; -1 binds

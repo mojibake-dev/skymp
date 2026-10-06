@@ -15,7 +15,10 @@ PartOne& GetPartOne();
 // an item sold since left out.
 
 namespace {
+// one actor per test case: the test server is shared, and an actor's
+// inventory outlives DestroyActor between cases
 constexpr uint32_t kActor = 0xff000fa5;
+constexpr uint32_t kActorLogin = 0xff000fa6;
 
 // Skyrim.esm, from the lab's record scans: WEAP 0x0001397E IronDagger and
 // 0x00013989 SteelSword (lab/labapi guests.yaml items), SPEL 0x00012FCD
@@ -29,13 +32,13 @@ constexpr uint32_t kTamriel = 0x0000003c;
 
 using Entries = std::vector<std::pair<uint32_t, int>>;
 
-MpActor& Player(PartOne& p)
+MpActor& Player(PartOne& p, uint32_t actorId)
 {
   DoConnect(p, 0);
-  p.CreateActor(kActor, { 0, 0, 0 }, 0, kTamriel);
-  p.SetUserActor(0, kActor);
+  p.CreateActor(actorId, { 0, 0, 0 }, 0, kTamriel);
+  p.SetUserActor(0, actorId);
   p.Messages().clear();
-  return p.worldState.GetFormAt<MpActor>(kActor);
+  return p.worldState.GetFormAt<MpActor>(actorId);
 }
 
 void Report(PartOne& p, const Entries& entries)
@@ -98,9 +101,9 @@ std::vector<Entries> Sent(PartOne& p)
   return out;
 }
 
-void Leave(PartOne& p)
+void Leave(PartOne& p, uint32_t actorId)
 {
-  p.DestroyActor(kActor);
+  p.DestroyActor(actorId);
   DoDisconnect(p, 0);
 }
 }
@@ -110,7 +113,7 @@ TEST_CASE("A favorites report keeps held items and magic, drops the rest, "
           "[Favorites]")
 {
   PartOne& p = GetPartOne();
-  auto& ac = Player(p);
+  auto& ac = Player(p, kActor);
   ac.AddItem(kIronDagger, 1);
 
   // the steel sword is not held, Tamriel is no item, and an FF form was made
@@ -131,7 +134,7 @@ TEST_CASE("A favorites report keeps held items and magic, drops the rest, "
   Report(p, {});
   REQUIRE(Recorded(p, ac).empty());
 
-  Leave(p);
+  Leave(p, kActor);
 }
 
 TEST_CASE("A login sends the favorites after the first movement, without an "
@@ -139,12 +142,12 @@ TEST_CASE("A login sends the favorites after the first movement, without an "
           "[Favorites]")
 {
   PartOne& p = GetPartOne();
-  auto& ac = Player(p);
+  auto& ac = Player(p, kActorLogin);
   ac.AddItem(kIronDagger, 1);
   Report(p, { { kIronDagger, 2 }, { kFlames, 0 } });
 
   // nothing is sent until a login, and a login waits for the first movement
-  p.SetUserActor(0, kActor);
+  p.SetUserActor(0, kActorLogin);
   p.Messages().clear();
   REQUIRE(Sent(p).empty());
   Stand(p);
@@ -152,13 +155,15 @@ TEST_CASE("A login sends the favorites after the first movement, without an "
           std::vector<Entries>{ { { kIronDagger, 2 }, { kFlames, 0 } } });
 
   // the dagger sold, the next login leaves it out
-  ac.RemoveItem(kIronDagger, 1, nullptr);
-  p.SetUserActor(0, kActor);
+  ac.RemoveItem(kIronDagger, ac.GetInventory().GetItemCount(kIronDagger),
+                nullptr);
+  REQUIRE(ac.GetInventory().GetItemCount(kIronDagger) == 0);
+  p.SetUserActor(0, kActorLogin);
   p.Messages().clear();
   Stand(p);
   REQUIRE(Sent(p) == std::vector<Entries>{ { { kFlames, 0 } } });
 
-  Leave(p);
+  Leave(p, kActorLogin);
 }
 
 TEST_CASE("The change form keeps a player's favorites, and older records "

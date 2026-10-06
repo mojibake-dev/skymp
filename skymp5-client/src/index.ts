@@ -15,6 +15,7 @@ import { SinglePlayerService } from './services/services/singlePlayerService';
 import { SpApiInteractor } from './services/spApiInteractor';
 import { TimeService } from "./services/services/timeService";
 import { MapMarkersService } from "./services/services/mapMarkersService";
+import { IngredientEffectsService } from "./services/services/ingredientEffectsService";
 import { SpVersionCheckService } from "./services/services/spVersionCheckService";
 import { ConsoleCommandsService } from "./services/services/consoleCommandsService";
 import { LastInvService } from "./services/services/lastInvService";
@@ -77,6 +78,7 @@ const main = () => {
       new SkympClient(sp, controller),
       new TimeService(sp, controller),
       new MapMarkersService(sp, controller),
+      new IngredientEffectsService(sp, controller),
       new SpVersionCheckService(sp, controller),
       new ConsoleCommandsService(sp, controller),
       new LastInvService(sp, controller),

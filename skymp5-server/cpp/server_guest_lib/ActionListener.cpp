@@ -177,13 +177,15 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
                      false);
 
     // thuum docs/verbs/map-markers.md: the first movement after a login
-    // means the player's own world is up, so its map can be shown, and what
-    // it learned of its ingredients taught again
-    // (docs/verbs/learned-effects.md)
+    // means the player's own world is up, so its map can be shown, what it
+    // learned of its ingredients taught again
+    // (docs/verbs/learned-effects.md), and its favorites marked again
+    // (docs/verbs/favorites.md)
     if (actor == partOne.serverState.ActorByUser(rawMsgData.userId) &&
         actor->TakeMapMarkersPending()) {
       SendMapMarkers(*actor);
       SendIngredientEffects(*actor);
+      SendFavorites(*actor);
     }
 
     if (!msg.data.isBlocking) {
@@ -995,6 +997,109 @@ void ActionListener::SendIngredientEffects(MpActor& actor)
                  "a login",
                  actor.GetFormId(), sent);
   }
+}
+
+namespace {
+// thuum docs/verbs/favorites.md: what the server knows of a favorite's form.
+// Magic is a SPEL or SHOU in the master files; an item counts while the
+// player holds it; a form made in a session (the FF range) or without a
+// record is nothing to keep.
+skymp::rules::FavoriteKind FavoriteKindOf(WorldState& worldState,
+                                          MpActor& actor, uint32_t formId)
+{
+  using Kind = skymp::rules::FavoriteKind;
+  if (formId >= 0xff000000) {
+    return Kind::Other;
+  }
+  const auto lookup = worldState.GetEspm().GetBrowser().LookupById(formId);
+  if (!lookup.rec) {
+    return Kind::Other;
+  }
+  const auto type = lookup.rec->GetType();
+  if (type == "SPEL" || type == "SHOU") {
+    return Kind::Magic;
+  }
+  return actor.GetInventory().GetItemCount(formId) > 0 ? Kind::HeldItem
+                                                       : Kind::MissingItem;
+}
+
+// The favorites the rule keeps of `entries`, as (form id, hotkey)
+std::vector<skymp::rules::FavoriteEntry> KeptFavorites(
+  WorldState& worldState, MpActor& actor,
+  const std::vector<std::pair<uint32_t, int8_t>>& entries)
+{
+  std::vector<skymp::rules::FavoriteFacts> facts;
+  facts.reserve(entries.size());
+  for (const auto& [formId, hotkey] : entries) {
+    facts.push_back(skymp::rules::FavoriteFacts{
+      formId, hotkey, FavoriteKindOf(worldState, actor, formId) });
+  }
+  const auto kept = skymp::rules::favorites_kept(
+    rust::Slice<const skymp::rules::FavoriteFacts>(facts.data(),
+                                                   facts.size()));
+  return std::vector<skymp::rules::FavoriteEntry>(kept.begin(), kept.end());
+}
+}
+
+// thuum docs/verbs/favorites.md: the player's favorites after a menu where
+// they change closed. Items count while the player holds them; magic is
+// recorded as reported (the server's spell list lacks the starting spells,
+// race powers and shouts its engine knows, and the client marks magic only
+// when its engine knows it); anything else is dropped. A kept report
+// replaces the record.
+void ActionListener::OnFavorites(const RawMessageData& rawMsgData,
+                                 const FavoritesMessage& msg)
+{
+  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!actor) {
+    return spdlog::warn("OnFavorites - no actor for user {}",
+                        rawMsgData.userId);
+  }
+  WorldState& worldState = partOne.worldState;
+  if (!worldState.HasEspm()) {
+    return spdlog::warn("OnFavorites - no master files");
+  }
+
+  std::vector<std::pair<uint32_t, int8_t>> reported;
+  reported.reserve(msg.entries.size());
+  for (const auto& entry : msg.entries) {
+    reported.emplace_back(entry.form, entry.hotkey);
+  }
+  std::vector<Favorite> favorites;
+  for (const auto& entry : KeptFavorites(worldState, *actor, reported)) {
+    favorites.push_back(Favorite{
+      FormDesc::FromFormId(entry.form, worldState.espmFiles), entry.hotkey });
+  }
+  const size_t keptCount = favorites.size();
+  const bool changed = actor->SetFavorites(std::move(favorites));
+  spdlog::info("Favorites: user {} actor {:x} keeps {} of {} reported{}",
+               rawMsgData.userId, actor->GetFormId(), keptCount,
+               msg.entries.size(), changed ? "" : ", unchanged");
+}
+
+// thuum docs/verbs/favorites.md: the record, through the same rule (an item
+// sold since is left out), for the client's engine to mark
+void ActionListener::SendFavorites(MpActor& actor)
+{
+  WorldState& worldState = partOne.worldState;
+  const auto recorded = actor.GetFavorites();
+  if (recorded.empty() || !worldState.HasEspm()) {
+    return;
+  }
+  std::vector<std::pair<uint32_t, int8_t>> entries;
+  entries.reserve(recorded.size());
+  for (const auto& favorite : recorded) {
+    entries.emplace_back(favorite.form.ToFormId(worldState.espmFiles),
+                         favorite.hotkey);
+  }
+  FavoritesMessage message;
+  for (const auto& entry : KeptFavorites(worldState, actor, entries)) {
+    message.entries.push_back(
+      FavoritesMessage::Entry{ entry.form, entry.hotkey });
+  }
+  actor.SendToUser(message, true);
+  spdlog::info("Favorites: actor {:x} sent {} of {} recorded after a login",
+               actor.GetFormId(), message.entries.size(), recorded.size());
 }
 
 // thuum docs/verbs/sleep.md: SkyMP's client blocks the game's own Papyrus

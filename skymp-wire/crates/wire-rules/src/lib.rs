@@ -9,6 +9,7 @@ pub mod appearance;
 pub mod clock;
 pub mod damage;
 pub mod effects;
+pub mod favorites;
 pub mod hostility;
 pub mod markers;
 pub mod melee;

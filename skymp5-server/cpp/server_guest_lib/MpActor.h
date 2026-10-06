@@ -2,6 +2,7 @@
 #include "AnimationData.h"
 #include "Appearance.h"
 #include "Equipment.h"
+#include "Favorite.h"
 #include "GetBaseActorValues.h"
 #include "IngredientEffects.h"
 #include "MapMarker.h"
@@ -166,6 +167,10 @@ public:
   bool RecordIngredientEffects(const FormDesc& ingredient, uint8_t mask);
   std::pair<uint32_t, std::chrono::steady_clock::time_point> GetLastEaten()
     const;
+  // thuum docs/verbs/favorites.md: the player's favorites, kept in its change
+  // form; a kept report replaces them (returns whether anything changed)
+  std::vector<Favorite> GetFavorites() const;
+  bool SetFavorites(std::vector<Favorite> favorites);
   size_t CountRecentHits(std::chrono::duration<float> timeWindow) const;
 
   void SetLastAttributesPercentagesUpdate(

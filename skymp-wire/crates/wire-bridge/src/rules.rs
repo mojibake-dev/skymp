@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, appearance, clock, damage, effects, hostility, markers, melee, movement, rest};
+use wire_rules::{activation, appearance, clock, damage, effects, favorites, hostility, markers, melee, movement, rest};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -149,6 +149,40 @@ mod ffi {
         distance: f32,
     }
 
+    /// What the core knows of a reported favorite's form (thuum
+    /// docs/verbs/favorites.md).
+    #[derive(Debug)]
+    enum FavoriteKind {
+        /// An item the player holds in the core's inventory.
+        HeldItem,
+        /// An item the player does not hold.
+        MissingItem,
+        /// A spell or a shout in the master files.
+        Magic,
+        /// Anything else.
+        Other,
+    }
+
+    /// A reported favorite and what the core knows of its form.
+    #[derive(Debug)]
+    struct FavoriteFacts {
+        /// The form id.
+        form: u32,
+        /// -1 for none, 0 to 7 for the keys 1 to 8.
+        hotkey: i8,
+        /// What the form is to the core.
+        kind: FavoriteKind,
+    }
+
+    /// A favorite to record.
+    #[derive(Debug)]
+    struct FavoriteEntry {
+        /// The form id.
+        form: u32,
+        /// -1 for none, 0 to 7.
+        hotkey: i8,
+    }
+
     /// Two player actors in a fight, the lower form id first.
     #[derive(Debug)]
     struct FightPair {
@@ -279,6 +313,9 @@ mod ffi {
         fn ingredient_effects_kept(ate_same: bool, has_eat: bool, since_eat_ms: u64) -> bool;
         /// The recorded mask after a kept report.
         fn ingredient_effects_union(recorded: u8, reported: u8) -> u8;
+        /// The favorites a report keeps, in its order: held items and magic,
+        /// the first entry per form, the first claim per key, at most 128.
+        fn favorites_kept(report: &[FavoriteFacts]) -> Vec<FavoriteEntry>;
 
         /// The fights between players going on (thuum ADR-023).
         type Fights;
@@ -325,7 +362,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{BedFacts, ConeFacts, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, SneakMults, Verdict};
+pub use ffi::{BedFacts, ConeFacts, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, SneakMults, Verdict};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -480,6 +517,22 @@ const fn ingredient_effects_union(recorded: u8, reported: u8) -> u8 {
     effects::union(recorded, reported)
 }
 
+fn favorites_kept(report: &[FavoriteFacts]) -> Vec<FavoriteEntry> {
+    let facts: Vec<(favorites::Entry, favorites::Kind)> = report
+        .iter()
+        .map(|f| {
+            let kind = match f.kind {
+                FavoriteKind::HeldItem => favorites::Kind::HeldItem,
+                FavoriteKind::MissingItem => favorites::Kind::MissingItem,
+                FavoriteKind::Magic => favorites::Kind::Magic,
+                _ => favorites::Kind::Other,
+            };
+            (favorites::Entry { form: f.form, hotkey: f.hotkey }, kind)
+        })
+        .collect();
+    favorites::kept(&facts).into_iter().map(|e| FavoriteEntry { form: e.form, hotkey: e.hotkey }).collect()
+}
+
 fn rest_slept(f: &BedFacts) -> bool {
     rest::slept(rest::BedFacts {
         since_bed_activation_ms: f.has_bed.then_some(f.since_bed_activation_ms),
@@ -629,6 +682,18 @@ mod tests {
         assert!(!rest_slept(&bed(true, 5_000, 900.0)));
         assert_eq!(rested_ms(true, 20.0), 1_440_000);
         assert_eq!(rested_ms(false, 20.0), 0);
+    }
+
+    #[test]
+    fn the_bridge_passes_favorites_through() {
+        let f = |form, hotkey, kind| FavoriteFacts { form, hotkey, kind };
+        let got = favorites_kept(&[
+            f(1, 0, FavoriteKind::HeldItem),
+            f(2, 1, FavoriteKind::MissingItem),
+            f(3, 1, FavoriteKind::Magic),
+            f(4, -1, FavoriteKind::Other),
+        ]);
+        assert_eq!(got.iter().map(|e| (e.form, e.hotkey)).collect::<Vec<_>>(), vec![(1, 0), (3, 1)]);
     }
 
     #[test]

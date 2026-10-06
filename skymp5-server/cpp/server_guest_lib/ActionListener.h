@@ -64,6 +64,10 @@ public:
     const RawMessageData& rawMsgData,
     const IngredientEffectsKnownMessage& msg);
 
+  // thuum docs/verbs/favorites.md
+  virtual void OnFavorites(const RawMessageData& rawMsgData,
+                           const FavoritesMessage& msg);
+
   virtual void OnFinishSpSnippet(const RawMessageData& rawMsgData,
                                  const FinishSpSnippetMessage& msg);
 
@@ -114,6 +118,9 @@ private:
   // thuum docs/verbs/learned-effects.md: Ingredient.LearnEffect on its client
   // for each effect the player has learned
   void SendIngredientEffects(MpActor& actor);
+  // thuum docs/verbs/favorites.md: the player's favorites, for its client's
+  // engine to mark
+  void SendFavorites(MpActor& actor);
 
   void NotifyHostility(MpActor& aggressor, MpActor& target,
                        std::chrono::steady_clock::time_point now);

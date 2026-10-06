@@ -134,6 +134,17 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm)
     res["ingredientEffects"] = { { "entries", effectsJson } };
   }
 
+  // thuum docs/verbs/favorites.md; absent in older records, read as none
+  if (changeForm.favorites.has_value() && !changeForm.favorites->empty()) {
+    auto favoritesJson = nlohmann::json::array();
+    for (const auto& entry : *changeForm.favorites) {
+      favoritesJson.push_back(
+        { { "formDesc", entry.form.ToString() },
+          { "hotkey", static_cast<int>(entry.hotkey) } });
+    }
+    res["favorites"] = { { "entries", favoritesJson } };
+  }
+
   return res;
 }
 
@@ -178,6 +189,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
   static const JsonPointer factions("factions");
   static const JsonPointer mapMarkers("mapMarkers");
   static const JsonPointer ingredientEffects("ingredientEffects");
+  static const JsonPointer favorites("favorites");
   static const JsonPointer healthRespawnPercentage("healthRespawnPercentage");
   static const JsonPointer magickaRespawnPercentage(
     "magickaRespawnPercentage");
@@ -442,6 +454,28 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
       effects[i].mask = static_cast<uint8_t>(maskTmp & 0x0f);
     }
     res.ingredientEffects = effects;
+  }
+
+  if (element.at_pointer(favorites.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, favorites, &jTmp);
+    static const JsonPointer entries("entries");
+    static const JsonPointer hotkey("hotkey");
+
+    std::vector<simdjson::dom::element> parsedEntries;
+    ReadVector(jTmp, entries, &parsedEntries);
+
+    std::vector<Favorite> kept(parsedEntries.size());
+    for (size_t i = 0; i != parsedEntries.size(); ++i) {
+      const char* tmp;
+      ReadEx(parsedEntries[i], formDesc, &tmp);
+      kept[i].form = FormDesc::FromString(tmp);
+      int32_t hotkeyTmp = -1;
+      ReadEx(parsedEntries[i], hotkey, &hotkeyTmp);
+      kept[i].hotkey =
+        hotkeyTmp >= 0 && hotkeyTmp <= 7 ? static_cast<int8_t>(hotkeyTmp) : -1;
+    }
+    res.favorites = kept;
   }
 
   return res;

@@ -905,6 +905,23 @@ MpActor::GetLastEaten() const
   return { pImpl->lastEatenId, pImpl->lastEatenTimePoint };
 }
 
+std::vector<Favorite> MpActor::GetFavorites() const
+{
+  const auto& favorites = ChangeForm().favorites;
+  return favorites ? *favorites : std::vector<Favorite>();
+}
+
+bool MpActor::SetFavorites(std::vector<Favorite> favorites)
+{
+  if (favorites == GetFavorites()) {
+    return false;
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    changeForm.favorites = std::move(favorites);
+  });
+  return true;
+}
+
 std::chrono::steady_clock::time_point MpActor::GetLastHitTakenTime() const
 {
   return pImpl->lastHitTakenTimePoint;

@@ -5,6 +5,7 @@
 #include "DynamicFields.h"
 #include "Equipment.h"
 #include "Faction.h"
+#include "Favorite.h"
 #include "FormDesc.h"
 #include "IngredientEffects.h"
 #include "Inventory.h"
@@ -137,6 +138,9 @@ public:
   // docs/verbs/learned-effects.md)
   std::optional<std::vector<IngredientEffects>> ingredientEffects;
 
+  // The player's favorites (thuum docs/verbs/favorites.md)
+  std::optional<std::vector<Favorite>> favorites;
+
   // Please update 'ActorTest.cpp' when adding new Actor-related rows
 
   DynamicFields dynamicFields;
@@ -152,7 +156,7 @@ public:
       magickaRespawnPercentage, staminaRespawnPercentage, spawnPoint,
       dynamicFields, spawnDelay, learnedSpells, templateChain, lastAnimation,
       setNodeTextureSet, setNodeScale, displayName, mapMarkers,
-      ingredientEffects);
+      ingredientEffects, favorites);
   }
 
   static nlohmann::json ToJson(const MpChangeFormREFR& changeForm);

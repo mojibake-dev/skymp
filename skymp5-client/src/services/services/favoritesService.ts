@@ -1,21 +1,23 @@
 import { MenuCloseEvent } from "skyrimPlatform";
 import { MsgType } from "../../messages";
-import { logError, logTrace } from "../../logging";
+import { logError } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
 import { FavoriteEntry, FavoritesMessage } from "../messages/favoritesMessage";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { isBaseReset } from "../../sync/inventory";
+import { isBadMenuShown } from "../../sync/equipment";
 
 // thuum docs/verbs/favorites.md: the items and magic a player marked as
-// favorites, and their hotkeys, survive a login. After the inventory, magic
-// or favorites menu closes, the engine's favorites are read once
-// (TESModPlatform.GetFavorites) and reported when they changed. After a
-// login the server sends its record; an item can be missing from the
-// inventory at first (the client re-applies the server's inventory on a 5 s
-// timer, remoteServer.ts), so each entry the engine refuses
-// (TESModPlatform.SetFavorite answers false) is tried again every second for
-// a minute, and no report goes out until then, so a half-marked list never
-// replaces the record.
+// favorites, and their hotkeys, survive a login. The service keeps the list
+// the player wants: the server's record after a login, then the engine's own
+// each time the inventory, magic or favorites menu closes, which is reported
+// when it changed. SkyMP rebuilds the player's inventory now and then (the
+// first sync after a login empties and refills it, sync/inventory.ts
+// resetBase; applyEquipment empties it at a login), and an item's mark goes
+// with its entry (a-favorites, runs 20261006-055012 and -070238: the dagger's
+// mark lost after a relaunch, Flames kept). So every two seconds, outside
+// those menus, the marks the engine lost are put back: items the player
+// holds and magic it knows (TESModPlatform.SetFavorite refuses the rest).
 export class FavoritesService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -25,13 +27,15 @@ export class FavoritesService extends ClientListener {
     }
 
     private onMenuClose(e: MenuCloseEvent) {
-        if (FavoritesService.menus.indexOf(e.name) === -1 || this.pending.length > 0) {
+        if (FavoritesService.menus.indexOf(e.name) === -1) {
             return;
         }
         const entries = this.read();
         if (!entries) {
             return;
         }
+        // what the player just left in the menu is what it wants
+        this.desired = entries;
         const key = FavoritesService.keyOf(entries);
         if (key === this.lastKey) {
             return;
@@ -44,41 +48,31 @@ export class FavoritesService extends ClientListener {
     }
 
     private onFavoritesMessage(e: ConnectionMessage<FavoritesMessage>) {
-        this.pending = e.message.entries.slice();
-        this.pendingUntil = Date.now() + 60000;
+        this.desired = e.message.entries.slice();
         // the server's record counts as sent: it is not echoed back
-        this.lastKey = FavoritesService.keyOf(e.message.entries);
+        this.lastKey = FavoritesService.keyOf(this.desired);
     }
 
     private onUpdate() {
-        if (this.pending.length === 0 || Date.now() - this.lastTry < 1000) {
+        if (this.desired.length === 0 || Date.now() - this.lastCheck < 2000) {
             return;
         }
-        // The first inventory apply of a game session empties the player's
-        // inventory and adds the server's again (sync/inventory.ts
-        // resetBase): an item marked before it lost its mark with the entry
-        // (a-favorites, run 20261006-055012). Marks wait for it; the minute
-        // of retries counts from then.
+        this.lastCheck = Date.now();
         const player = this.sp.Game.getPlayer();
-        if (!player || !isBaseReset(player)) {
-            this.pendingUntil = Date.now() + 60000;
+        if (!player || !isBaseReset(player) || isBadMenuShown()) {
             return;
         }
-        this.lastTry = Date.now();
-        const left: FavoriteEntry[] = [];
-        for (const entry of this.pending) {
-            if (!this.mark(entry)) {
-                left.push(entry);
+        const current = this.read();
+        if (!current) {
+            return;
+        }
+        const have: Record<string, boolean> = {};
+        current.forEach((x) => { have[x.form + ":" + x.hotkey] = true; });
+        this.desired.forEach((entry) => {
+            if (!have[entry.form + ":" + entry.hotkey]) {
+                this.mark(entry);
             }
-        }
-        if (left.length > 0 && Date.now() < this.pendingUntil) {
-            this.pending = left;
-            return;
-        }
-        if (left.length > 0) {
-            logTrace(this, "Favorites the engine never took:", left.map((x) => x.form.toString(16)).join(","));
-        }
-        this.pending = [];
+        });
     }
 
     private mark(entry: FavoriteEntry): boolean {
@@ -116,8 +110,7 @@ export class FavoritesService extends ClientListener {
     // the menus where a player marks favorites or binds their keys
     private static readonly menus = ["InventoryMenu", "MagicMenu", "FavoritesMenu"];
 
-    private pending: FavoriteEntry[] = [];
-    private pendingUntil = 0;
-    private lastTry = 0;
+    private desired: FavoriteEntry[] = [];
+    private lastCheck = 0;
     private lastKey = "";
 }

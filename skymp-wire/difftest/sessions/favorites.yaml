@@ -1,0 +1,27 @@
+# difftest favorites (M1, thuum docs/verbs/favorites.md): c1 and c2 are new
+# characters (profiles 9 and 10, actors 0xff000002 and 0xff000003: see
+# melee-reach), both at the spawn. At 2 s c1 reports Skyrim.esm WEAP
+# 0x0001397E (IronDagger) and SPEL 0x00012FCD (Flames, a starting spell of
+# the Player NPC_; lab/esm.py) both on key 3, which the wire stack's
+# validator refuses (E_VAL_RANGE); at 2.5 s it reports Flames alone on key
+# 1, which the fixed server records and answers nothing to; at 3 s a hotkey
+# of 9, refused again (E_VAL_RANGE). The legacy server has no Favorites, so
+# the stacks must agree on everything: the new message changes nothing a
+# client receives in the session (the ctest FavoritesTest and the T3
+# scenario a-favorites cover the record and its return after a login). c2
+# steps aside at 4 s so it outlives c1, as in every session.
+id: favorites
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 2000, send: {t: 38, entries: [{form: 80254, hotkey: 2}, {form: 77773, hotkey: 2}]}}
+  - {client: c1, at_ms: 2500, send: {t: 38, entries: [{form: 77773, hotkey: 0}]}}
+  - {client: c1, at_ms: 3000, send: {t: 38, entries: [{form: 77773, hotkey: 9}]}}
+  - {client: c2, at_ms: 4000, move: {dx: 1, dy: 0}}
+divergences:
+  - client: c2
+    msg: {t: 25, idx: 2}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

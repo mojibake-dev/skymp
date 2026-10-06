@@ -141,6 +141,10 @@ public:
   // The player's favorites (thuum docs/verbs/favorites.md)
   std::optional<std::vector<Favorite>> favorites;
 
+  // The player's RaceMenu look, its preset JSON as RaceMenu saved it (thuum
+  // docs/verbs/racemenu-sync.md)
+  std::optional<std::string> raceMenuPreset;
+
   // Please update 'ActorTest.cpp' when adding new Actor-related rows
 
   DynamicFields dynamicFields;
@@ -156,7 +160,7 @@ public:
       magickaRespawnPercentage, staminaRespawnPercentage, spawnPoint,
       dynamicFields, spawnDelay, learnedSpells, templateChain, lastAnimation,
       setNodeTextureSet, setNodeScale, displayName, mapMarkers,
-      ingredientEffects, favorites);
+      ingredientEffects, favorites, raceMenuPreset);
   }
 
   static nlohmann::json ToJson(const MpChangeFormREFR& changeForm);

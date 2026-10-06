@@ -171,6 +171,11 @@ public:
   // form; a kept report replaces them (returns whether anything changed)
   std::vector<Favorite> GetFavorites() const;
   bool SetFavorites(std::vector<Favorite> favorites);
+  // thuum docs/verbs/racemenu-sync.md: the player's RaceMenu look, its preset
+  // JSON, kept in its change form; empty when none (returns whether anything
+  // changed)
+  std::string GetRaceMenuPreset() const;
+  bool SetRaceMenuPreset(std::string preset);
   size_t CountRecentHits(std::chrono::duration<float> timeWindow) const;
 
   void SetLastAttributesPercentagesUpdate(

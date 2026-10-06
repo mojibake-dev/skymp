@@ -189,6 +189,12 @@ void PacketParser::TransformPacketIntoAction(Networking::UserId userId,
         actionListener.OnFavorites(rawMsgData, *message);
         return;
       }
+      case MsgType::RaceMenuPreset: {
+        auto message =
+          reinterpret_cast<RaceMenuPresetMessage*>(result->message.get());
+        actionListener.OnRaceMenuPreset(rawMsgData, *message);
+        return;
+      }
       default: {
         spdlog::error("PacketParser.cpp doesn't implement MsgType {}",
                       static_cast<int64_t>(result->msgType));

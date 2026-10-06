@@ -68,6 +68,10 @@ public:
   virtual void OnFavorites(const RawMessageData& rawMsgData,
                            const FavoritesMessage& msg);
 
+  // thuum docs/verbs/racemenu-sync.md
+  virtual void OnRaceMenuPreset(const RawMessageData& rawMsgData,
+                                const RaceMenuPresetMessage& msg);
+
   virtual void OnFinishSpSnippet(const RawMessageData& rawMsgData,
                                  const FinishSpSnippetMessage& msg);
 
@@ -121,6 +125,9 @@ private:
   // thuum docs/verbs/favorites.md: the player's favorites, for its client's
   // engine to mark
   void SendFavorites(MpActor& actor);
+  // thuum docs/verbs/racemenu-sync.md: the player's RaceMenu look, for its
+  // own client to apply after a login
+  void SendRaceMenuPreset(MpActor& actor);
 
   void NotifyHostility(MpActor& aggressor, MpActor& target,
                        std::chrono::steady_clock::time_point now);

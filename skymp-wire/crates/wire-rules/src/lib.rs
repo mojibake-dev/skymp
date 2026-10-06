@@ -14,6 +14,7 @@ pub mod hostility;
 pub mod markers;
 pub mod melee;
 pub mod movement;
+pub mod racemenu;
 pub mod rest;
 
 /// A decision and the bound it was made against, for the server's log.

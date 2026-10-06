@@ -922,6 +922,23 @@ bool MpActor::SetFavorites(std::vector<Favorite> favorites)
   return true;
 }
 
+std::string MpActor::GetRaceMenuPreset() const
+{
+  const auto& preset = ChangeForm().raceMenuPreset;
+  return preset ? *preset : std::string();
+}
+
+bool MpActor::SetRaceMenuPreset(std::string preset)
+{
+  if (preset == GetRaceMenuPreset()) {
+    return false;
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    changeForm.raceMenuPreset = std::move(preset);
+  });
+  return true;
+}
+
 std::chrono::steady_clock::time_point MpActor::GetLastHitTakenTime() const
 {
   return pImpl->lastHitTakenTimePoint;

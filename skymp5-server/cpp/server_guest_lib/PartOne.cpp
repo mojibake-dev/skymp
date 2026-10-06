@@ -10,6 +10,7 @@
 #include "CustomPacketMessage.h"
 #include "DestroyActorMessage.h"
 #include "HostStopMessage.h"
+#include "RaceMenuPresetMessage.h"
 #include "SetGameTimeMessage.h"
 #include "SetRaceMenuOpenMessage.h"
 #include "UpdateGameModeDataMessage.h"
@@ -939,6 +940,18 @@ void PartOne::Init()
     message.transform.worldOrCell = worldOrCell;
 
     sendTarget->Send(listenerUserId, message, true);
+
+    // thuum docs/verbs/racemenu-sync.md: a player's RaceMenu look comes with
+    // its figure, after CreateActor on the same ordered channel; its own
+    // client gets it after its login instead (ActionListener)
+    if (emitterAsActor && !isMe && hasUser) {
+      if (auto preset = emitterAsActor->GetRaceMenuPreset(); !preset.empty()) {
+        RaceMenuPresetMessage presetMessage;
+        presetMessage.actor = emitterAsActor->GetFormId();
+        presetMessage.preset = std::move(preset);
+        sendTarget->Send(listenerUserId, presetMessage, true);
+      }
+    }
   };
 
   pImpl->onUnsubscribe = [this](PartOneSendTargetWrapper* sendTarget,

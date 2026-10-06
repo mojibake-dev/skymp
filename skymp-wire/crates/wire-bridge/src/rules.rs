@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, appearance, clock, damage, effects, favorites, hostility, markers, melee, movement, rest};
+use wire_rules::{activation, appearance, clock, damage, effects, favorites, hostility, markers, melee, movement, racemenu, rest};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -316,6 +316,9 @@ mod ffi {
         /// The favorites a report keeps, in its order: held items and magic,
         /// the first entry per form, the first claim per key, at most 128.
         fn favorites_kept(report: &[FavoriteFacts]) -> Vec<FavoriteEntry>;
+        /// Whether a RaceMenu preset is one the server records: a JSON
+        /// object, not nested past what a preset needs.
+        fn racemenu_preset_ok(preset: &str) -> bool;
 
         /// The fights between players going on (thuum ADR-023).
         type Fights;
@@ -515,6 +518,10 @@ fn ingredient_effects_kept(ate_same: bool, has_eat: bool, since_eat_ms: u64) -> 
 
 const fn ingredient_effects_union(recorded: u8, reported: u8) -> u8 {
     effects::union(recorded, reported)
+}
+
+fn racemenu_preset_ok(preset: &str) -> bool {
+    racemenu::preset_ok(preset)
 }
 
 fn favorites_kept(report: &[FavoriteFacts]) -> Vec<FavoriteEntry> {

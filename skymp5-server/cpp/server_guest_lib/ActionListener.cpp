@@ -179,13 +179,15 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     // thuum docs/verbs/map-markers.md: the first movement after a login
     // means the player's own world is up, so its map can be shown, what it
     // learned of its ingredients taught again
-    // (docs/verbs/learned-effects.md), and its favorites marked again
-    // (docs/verbs/favorites.md)
+    // (docs/verbs/learned-effects.md), its favorites marked again
+    // (docs/verbs/favorites.md), and its RaceMenu look applied again
+    // (docs/verbs/racemenu-sync.md)
     if (actor == partOne.serverState.ActorByUser(rawMsgData.userId) &&
         actor->TakeMapMarkersPending()) {
       SendMapMarkers(*actor);
       SendIngredientEffects(*actor);
       SendFavorites(*actor);
+      SendRaceMenuPreset(*actor);
     }
 
     if (!msg.data.isBlocking) {
@@ -1100,6 +1102,62 @@ void ActionListener::SendFavorites(MpActor& actor)
   actor.SendToUser(message, true);
   spdlog::info("Favorites: actor {:x} sent {} of {} recorded after a login",
                actor.GetFormId(), message.entries.size(), recorded.size());
+}
+
+// thuum docs/verbs/racemenu-sync.md: the player's RaceMenu look after the
+// race menu closed. The server cannot check a look against the engine, so it
+// records it bounded (a JSON object, within the wire's capacity) and hands it
+// to every client that shows the player; a new client gets it with the
+// player's figure (PartOne's onSubscribe).
+void ActionListener::OnRaceMenuPreset(const RawMessageData& rawMsgData,
+                                      const RaceMenuPresetMessage& msg)
+{
+  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!actor) {
+    return spdlog::warn("OnRaceMenuPreset - no actor for user {}",
+                        rawMsgData.userId);
+  }
+  if (!skymp::rules::racemenu_preset_ok(rust::Str(msg.preset))) {
+    return spdlog::info("RaceMenu: user {} actor {:x} preset of {} bytes "
+                        "refused (not a bounded JSON object)",
+                        rawMsgData.userId, actor->GetFormId(),
+                        msg.preset.size());
+  }
+  if (!actor->SetRaceMenuPreset(msg.preset)) {
+    return spdlog::info("RaceMenu: user {} actor {:x} preset unchanged",
+                        rawMsgData.userId, actor->GetFormId());
+  }
+  RaceMenuPresetMessage out;
+  out.actor = actor->GetFormId();
+  out.preset = msg.preset;
+  size_t sent = 0;
+  for (auto listener : actor->GetActorListeners()) {
+    if (listener == actor ||
+        partOne.serverState.UserByActor(listener) ==
+          Networking::InvalidUserId) {
+      continue;
+    }
+    listener->SendToUser(out, true);
+    ++sent;
+  }
+  spdlog::info("RaceMenu: user {} actor {:x} recorded a preset of {} bytes, "
+               "sent to {} other players",
+               rawMsgData.userId, actor->GetFormId(), msg.preset.size(), sent);
+}
+
+void ActionListener::SendRaceMenuPreset(MpActor& actor)
+{
+  auto preset = actor.GetRaceMenuPreset();
+  if (preset.empty()) {
+    return;
+  }
+  RaceMenuPresetMessage message;
+  message.actor = actor.GetFormId();
+  message.preset = std::move(preset);
+  actor.SendToUser(message, true);
+  spdlog::info("RaceMenu: actor {:x} sent its preset of {} bytes after a "
+               "login",
+               actor.GetFormId(), message.preset.size());
 }
 
 // thuum docs/verbs/sleep.md: SkyMP's client blocks the game's own Papyrus

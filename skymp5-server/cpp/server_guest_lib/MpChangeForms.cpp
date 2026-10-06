@@ -145,6 +145,12 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm)
     res["favorites"] = { { "entries", favoritesJson } };
   }
 
+  // thuum docs/verbs/racemenu-sync.md; absent in older records, read as none
+  if (changeForm.raceMenuPreset.has_value() &&
+      !changeForm.raceMenuPreset->empty()) {
+    res["raceMenuPreset"] = *changeForm.raceMenuPreset;
+  }
+
   return res;
 }
 
@@ -190,6 +196,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
   static const JsonPointer mapMarkers("mapMarkers");
   static const JsonPointer ingredientEffects("ingredientEffects");
   static const JsonPointer favorites("favorites");
+  static const JsonPointer raceMenuPreset("raceMenuPreset");
   static const JsonPointer healthRespawnPercentage("healthRespawnPercentage");
   static const JsonPointer magickaRespawnPercentage(
     "magickaRespawnPercentage");
@@ -476,6 +483,13 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
         hotkeyTmp >= 0 && hotkeyTmp <= 7 ? static_cast<int8_t>(hotkeyTmp) : -1;
     }
     res.favorites = kept;
+  }
+
+  if (element.at_pointer(raceMenuPreset.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    const char* tmp;
+    ReadEx(element, raceMenuPreset, &tmp);
+    res.raceMenuPreset = tmp;
   }
 
   return res;

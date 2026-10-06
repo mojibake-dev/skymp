@@ -76,6 +76,11 @@ pub struct ClientGuard {
     /// or favorites menu that changed them, so four at once and one a second
     /// after that only ever stops a flood.
     pub favorites_budget: TokenBucket,
+    /// Budget for RaceMenu presets: one per closing of the race menu that
+    /// changed the look, each up to 192 KiB, so two at once and one a second
+    /// after that only ever stops a flood (the transport's byte budget
+    /// bounds the bytes).
+    pub preset_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -90,6 +95,7 @@ impl Default for ClientGuard {
             marker_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
             effects_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             favorites_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
+            preset_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
         }
     }
 }
@@ -267,6 +273,16 @@ fn check_effects(m: &skymp::IngredientEffectsKnown) -> Result<(), Reject> {
 /// (CommonLibSSE-NG include/RE/E/ExtraHotkey.h).
 pub const HOTKEYS: core::ops::RangeInclusive<i8> = -1..=7;
 
+/// A RaceMenu preset, either way: not empty (docs/verbs/racemenu-sync.md).
+/// From a client it is also its own ([`validate`]); the JSON's shape is the
+/// server's rule (wire-rules `racemenu`), past the capacity the type holds.
+fn check_preset(m: &skymp::RaceMenuPreset) -> Result<(), Reject> {
+    if m.preset.is_empty() {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
 /// A favorites report: every hotkey in [`HOTKEYS`], no key bound twice, no
 /// form listed twice (docs/verbs/favorites.md).
 fn check_favorites(m: &skymp::Favorites) -> Result<(), Reject> {
@@ -289,18 +305,14 @@ fn check_favorites(m: &skymp::Favorites) -> Result<(), Reject> {
     Ok(())
 }
 
-/// Validate one inbound message against the client's guard state.
+/// Validate one inbound message from a client against its guard state: the
+/// message's shape ([`validate_server`]'s rules) and then what only a
+/// server's view of a client adds, replay order and rate budgets.
 /// `Ok(())` means "well-formed and within rate"; ownership is checked later.
 pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(), Reject> {
+    validate_server(msg)?;
     match msg {
-        Message::Hello(h) => {
-            if h.schema_version != wire_schema::SCHEMA_VERSION {
-                return Err(Reject::SchemaVersion);
-            }
-            Ok(())
-        }
         Message::Movement(m) => {
-            check_transform(&m.transform)?;
             if guard.movement_primed && m.seq <= guard.last_movement_seq {
                 return Err(Reject::SeqReplay);
             }
@@ -320,6 +332,44 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
             }
             Ok(())
         }
+        Message::RestIntent(_) => take(&mut guard.rest_budget, now_ms),
+        Message::MapMarkerDiscovered(_) => take(&mut guard.marker_budget, now_ms),
+        Message::IngredientEffectsKnown(_) => take(&mut guard.effects_budget, now_ms),
+        Message::Favorites(_) => take(&mut guard.favorites_budget, now_ms),
+        Message::RaceMenuPreset(m) => {
+            // a client sends its own look; the server names whose it sends
+            if m.actor != 0 {
+                return Err(Reject::Range);
+            }
+            take(&mut guard.preset_budget, now_ms)
+        }
+        _ => Ok(()),
+    }
+}
+
+fn take(budget: &mut TokenBucket, now_ms: u64) -> Result<(), Reject> {
+    if budget.take(now_ms) {
+        Ok(())
+    } else {
+        Err(Reject::Rate)
+    }
+}
+
+/// Validate one message by its shape alone: what holds whichever side sent
+/// it, without a client's rate budgets or replay state, which guard a server
+/// against its clients ([`validate`]). A client checks what its server sends
+/// with this, and the server checks what it is about to send.
+pub fn validate_server(msg: &Message) -> Result<(), Reject> {
+    match msg {
+        Message::Hello(h) => {
+            if h.schema_version != wire_schema::SCHEMA_VERSION {
+                return Err(Reject::SchemaVersion);
+            }
+            Ok(())
+        }
+        Message::Movement(m) => check_transform(&m.transform),
+        // replay order and rate are all a hit is checked for ([`validate`])
+        Message::Hit(_) => Ok(()),
         Message::HostedActor(s) => {
             check_transform(&s.transform)?;
             if !s.health.is_finite() {
@@ -358,33 +408,12 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
             if !all_finite(m) {
                 return Err(Reject::NonFinite);
             }
-            check_rest(m)?;
-            if !guard.rest_budget.take(now_ms) {
-                return Err(Reject::Rate);
-            }
-            Ok(())
+            check_rest(m)
         }
-        Message::MapMarkerDiscovered(m) => {
-            check_marker(m)?;
-            if !guard.marker_budget.take(now_ms) {
-                return Err(Reject::Rate);
-            }
-            Ok(())
-        }
-        Message::IngredientEffectsKnown(m) => {
-            check_effects(m)?;
-            if !guard.effects_budget.take(now_ms) {
-                return Err(Reject::Rate);
-            }
-            Ok(())
-        }
-        Message::Favorites(m) => {
-            check_favorites(m)?;
-            if !guard.favorites_budget.take(now_ms) {
-                return Err(Reject::Rate);
-            }
-            Ok(())
-        }
+        Message::MapMarkerDiscovered(m) => check_marker(m),
+        Message::IngredientEffectsKnown(m) => check_effects(m),
+        Message::Favorites(m) => check_favorites(m),
+        Message::RaceMenuPreset(m) => check_preset(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
         // rejects it by direction before it gets this far.
@@ -742,6 +771,33 @@ mod tests {
         for b in bad {
             assert_eq!(validate(&favorites(b), &mut ClientGuard::default(), 0), Err(Reject::Range), "{b:?}");
         }
+    }
+
+    fn preset(actor: u32, text: &str) -> Message {
+        Message::RaceMenuPreset(skymp::RaceMenuPreset {
+            actor,
+            preset: text.try_into().unwrap_or_default(),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn presets_both_ways() {
+        assert_eq!(validate(&preset(0, "{}"), &mut ClientGuard::default(), 0), Ok(()));
+        // another player's look, or none, from a client
+        assert_eq!(validate(&preset(0xff00_0001, "{}"), &mut ClientGuard::default(), 0), Err(Reject::Range));
+        assert_eq!(validate(&preset(0, ""), &mut ClientGuard::default(), 0), Err(Reject::Range));
+        let mut g = ClientGuard::default();
+        for _ in 0..2 {
+            assert_eq!(validate(&preset(0, "{}"), &mut g, 0), Ok(()));
+        }
+        assert_eq!(validate(&preset(0, "{}"), &mut g, 0), Err(Reject::Rate));
+        assert_eq!(validate(&preset(0, "{}"), &mut g, 1_000), Ok(()));
+        // from the server: whose look it is, and a burst at a login is fine
+        for _ in 0..16 {
+            assert_eq!(validate_server(&preset(0xff00_0001, "{}")), Ok(()));
+        }
+        assert_eq!(validate_server(&preset(0xff00_0001, "")), Err(Reject::Range));
     }
 
     #[test]

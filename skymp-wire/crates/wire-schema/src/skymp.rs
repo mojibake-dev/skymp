@@ -5,12 +5,12 @@
 //! in-process; on the wire the same structs travel as postcard. MsgTypes 1
 //! to 33 are SkyMP's; thuum appends its own after them (34, SetGameTime; 35,
 //! RestIntent; 36, MapMarkerDiscovered; 37, IngredientEffectsKnown; 38,
-//! Favorites).
+//! Favorites; 39, RaceMenuPreset).
 //!
 //! Directions are SkyMP's: twelve types (fifteen with RestIntent,
 //! MapMarkerDiscovered and IngredientEffectsKnown) only travel
 //! client to server, thirteen (fourteen with SetGameTime) only server to
-//! client, eight (nine with Favorites) both ways (the server relays a client's
+//! client, eight (ten with Favorites and RaceMenuPreset) both ways (the server relays a client's
 //! UpdateMovement, UpdateAnimation, UpdateAppearance, UpdateEquipment,
 //! SpellCast and UpdateAnimVariables to its neighbours, and sends its own
 //! CustomPacket and ChangeValues). Rungs are the ones SkyMP gives them today;
@@ -1070,5 +1070,28 @@ wire_struct! {
         pub t: MsgT<38>,
         /// The favorites.
         pub entries: Vec<FavoriteEntry, { cap::FAVORITES }>,
+    }
+}
+
+wire_struct! {
+    /// MsgType 39, thuum's (docs/verbs/racemenu-sync.md). Both directions,
+    /// reliable. Client to server: the player's look as RaceMenu saves it
+    /// (its preset file, JSON text), after the race menu closed and it
+    /// changed; `actor` is 0 (R2: recorded, bounded, not validated against
+    /// the engine). Server to client: the look of the player `actor` names
+    /// (a server id), after a login to its own client and to every client
+    /// that gets that player's figure, which RaceMenu then applies.
+    /// Idempotent: a later preset replaces the earlier one. Reason codes,
+    /// client to server: `E_VAL_RANGE` (an actor other than 0, an empty
+    /// preset), `E_VAL_RATE`.
+    pub struct RaceMenuPreset {
+        /// `"t": 39`.
+        #[serde(default)]
+        pub t: MsgT<39>,
+        /// The player whose look this is: 0 from a client (its own), a
+        /// server id from the server.
+        pub actor: u32,
+        /// The preset, RaceMenu's JSON.
+        pub preset: String<{ cap::RACEMENU_PRESET }>,
     }
 }

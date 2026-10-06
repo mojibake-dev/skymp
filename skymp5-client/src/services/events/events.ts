@@ -20,6 +20,7 @@ import { DestroyActorMessage } from "../messages/destroyActorMessage";
 import { SetRaceMenuOpenMessage } from "../messages/setRaceMenuOpenMessage";
 import { SetGameTimeMessage } from "../messages/setGameTimeMessage";
 import { FavoritesMessage } from "../messages/favoritesMessage";
+import { RaceMenuPresetMessage } from "../messages/raceMenuPresetMessage";
 import { SpSnippetMessage } from "../messages/spSnippetMessage";
 import { TeleportMessage } from "../messages/teleportMessage";
 import { UpdateAnimationMessage } from "../messages/updateAnimationMessage";
@@ -80,6 +81,7 @@ type EventTypes = {
     'teleportMessage2': [ConnectionMessage<TeleportMessage2>],
     'setGameTimeMessage': [ConnectionMessage<SetGameTimeMessage>],
     'favoritesMessage': [ConnectionMessage<FavoritesMessage>],
+    'raceMenuPresetMessage': [ConnectionMessage<RaceMenuPresetMessage>],
     'customPacketMessage': [ConnectionMessage<CustomPacketMessage>]
 
     'browserWindowLoaded': [BrowserWindowLoadedEvent],

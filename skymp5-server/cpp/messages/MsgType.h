@@ -46,6 +46,7 @@ enum class MsgType : uint8_t
   MapMarkerDiscovered = 36,
   IngredientEffectsKnown = 37,
   Favorites = 38,
+  RaceMenuPreset = 39,
 
   Max
 };

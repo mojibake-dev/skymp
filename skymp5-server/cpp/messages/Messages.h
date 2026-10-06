@@ -21,6 +21,7 @@
 #include "OpenContainerMessage.h"
 #include "PlayerBowShotMessage.h"
 #include "PutItemMessage.h"
+#include "RaceMenuPresetMessage.h"
 #include "RestIntentMessage.h"
 #include "SetGameTimeMessage.h"
 #include "SetInventoryMessage.h"
@@ -76,4 +77,5 @@
   REGISTER_MESSAGE(RestIntentMessage)                                         \
   REGISTER_MESSAGE(MapMarkerDiscoveredMessage)                                \
   REGISTER_MESSAGE(IngredientEffectsKnownMessage)                             \
-  REGISTER_MESSAGE(FavoritesMessage)
+  REGISTER_MESSAGE(FavoritesMessage)                                          \
+  REGISTER_MESSAGE(RaceMenuPresetMessage)

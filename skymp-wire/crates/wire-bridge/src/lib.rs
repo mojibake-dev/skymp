@@ -244,8 +244,7 @@ impl Server {
         if !wire_transport::server_may_send(&msg) {
             return Err(302);
         }
-        let mut guard = wire_validate::ClientGuard::default();
-        wire_validate::validate(&msg, &mut guard, 0).map_err(|r| {
+        wire_validate::validate_server(&msg).map_err(|r| {
             wire_transport::reason_code(&wire_transport::RejectKind::Validate(r))
         })?;
         let enc = Encoded::new(&msg).map_err(|e| transport_code(&e))?;

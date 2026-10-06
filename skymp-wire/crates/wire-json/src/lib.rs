@@ -69,7 +69,8 @@ macro_rules! skymp_family {
             24 UpdateAnimVariables, 25 DestroyActor, 26 HostStart, 27 HostStop,
             28 SetInventory, 29 SetRaceMenuOpen, 30 SpSnippet, 31 Teleport2,
             32 UpdateGamemodeData, 33 CreateActor, 34 SetGameTime, 35 RestIntent,
-            36 MapMarkerDiscovered, 37 IngredientEffectsKnown, 38 Favorites
+            36 MapMarkerDiscovered, 37 IngredientEffectsKnown, 38 Favorites,
+            39 RaceMenuPreset
         }
     };
 }
@@ -333,8 +334,8 @@ mod tests {
             assert_eq!(again, want, "{}", path.display());
             n += 1;
         }
-        assert!(n >= 76, "{n} fixtures");
-        assert_eq!(types.len(), 38, "every SkyMP type has fixtures");
+        assert!(n >= 78, "{n} fixtures");
+        assert_eq!(types.len(), 39, "every SkyMP type has fixtures");
     }
 
     /// Writes the fixtures: two per SkyMP type, from arbitrary values with

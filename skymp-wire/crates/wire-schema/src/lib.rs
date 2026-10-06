@@ -5,7 +5,7 @@
 //!
 //! Two families share the enum. The M0 variants (ids 0 to 8) are the
 //! authority model's messages, reserved until its verbs land. The SkyMP
-//! variants (ids 9 to 46, id = MsgType + 8) are SkyMP's own protocol, ported
+//! variants (ids 9 to 47, id = MsgType + 8) are SkyMP's own protocol, ported
 //! field for field in [`skymp`], and the MsgTypes thuum appends after
 //! SkyMP's 33; their JSON form is what the C++ core and skymp5-client
 //! exchange in-process (`wire-json`).
@@ -32,7 +32,7 @@ use bounded::{String, Vec};
 
 /// Bump when any variant changes shape. It is part of netcode's protocol id,
 /// so peers built against another schema never complete a handshake.
-pub const SCHEMA_VERSION: u16 = 7;
+pub const SCHEMA_VERSION: u16 = 8;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -82,6 +82,10 @@ pub mod cap {
     pub const RUN_MODE: usize = 32;
     /// A custom packet, JSON text.
     pub const CUSTOM_PACKET_JSON: usize = 1024 * 1024;
+    /// A RaceMenu preset, JSON text (docs/verbs/racemenu-sync.md): under the
+    /// transport's 256 KiB from a client, until a sculpted preset measured in
+    /// the lab sets it.
+    pub const RACEMENU_PRESET: usize = 192 * 1024;
     /// A gamemode event name.
     pub const EVENT_NAME: usize = 256;
     /// Arguments of one gamemode event.
@@ -359,6 +363,8 @@ pub enum Message {
     IngredientEffectsKnown(skymp::IngredientEffectsKnown),
     /// 46, MsgType 38 (thuum). See [`skymp::Favorites`].
     Favorites(skymp::Favorites),
+    /// 47, MsgType 39 (thuum). See [`skymp::RaceMenuPreset`].
+    RaceMenuPreset(skymp::RaceMenuPreset),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -387,7 +393,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 47] = [
+const TABLE: [Row; 48] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -435,10 +441,11 @@ const TABLE: [Row; 47] = [
     row("MapMarkerDiscovered", 36, 16, C2S),
     row("IngredientEffectsKnown", 37, 16, C2S),
     row("Favorites", 38, KIB, Both),
+    row("RaceMenuPreset", 39, 200 * KIB, Both),
 ];
 
 /// Wire ids in use: one past the last variant.
-pub const WIRE_IDS: u32 = 47;
+pub const WIRE_IDS: u32 = 48;
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -510,6 +517,7 @@ impl Message {
             Message::MapMarkerDiscovered(_) => 44,
             Message::IngredientEffectsKnown(_) => 45,
             Message::Favorites(_) => 46,
+            Message::RaceMenuPreset(_) => 47,
         }
     }
 
@@ -577,8 +585,9 @@ mod tests {
         assert_eq!(name_of_msg_type(36), Some("MapMarkerDiscovered"));
         assert_eq!(name_of_msg_type(37), Some("IngredientEffectsKnown"));
         assert_eq!(name_of_msg_type(38), Some("Favorites"));
+        assert_eq!(name_of_msg_type(39), Some("RaceMenuPreset"));
         assert_eq!(name_of_msg_type(0), None);
-        assert_eq!(name_of_msg_type(39), None);
+        assert_eq!(name_of_msg_type(40), None);
     }
 
     #[test]
@@ -607,6 +616,11 @@ mod tests {
                     .collect::<alloc::vec::Vec<_>>()
                     .try_into()
                     .unwrap_or_default(),
+                ..Default::default()
+            }),
+            Message::RaceMenuPreset(skymp::RaceMenuPreset {
+                actor: u32::MAX,
+                preset: "x".repeat(cap::RACEMENU_PRESET).try_into().unwrap_or_default(),
                 ..Default::default()
             }),
         ];

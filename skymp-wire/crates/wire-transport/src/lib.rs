@@ -484,7 +484,6 @@ pub struct Client {
     now_ms: u64,
     rejected: u64,
     io_errors: u64,
-    guard: ClientGuard,
 }
 
 impl Client {
@@ -534,7 +533,6 @@ impl Client {
             now_ms: 0,
             rejected: 0,
             io_errors: 0,
-            guard: ClientGuard::default(),
         })
     }
 
@@ -593,7 +591,7 @@ impl Client {
                 match wire_codec::decode(&bytes) {
                     Ok(msg)
                         if server_may_send(&msg)
-                            && wire_validate::validate(&msg, &mut self.guard, self.now_ms)
+                            && wire_validate::validate_server(&msg)
                                 .is_ok() =>
                     {
                         out.push(msg)

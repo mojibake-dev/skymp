@@ -6,33 +6,33 @@
 SaveFile_::RefID SaveFile_::RefID::CreateRefId(SaveFile& parentSaveFile,
                                                uint32_t formId)
 {
-  RefID res;
-
-  const auto countWas = parentSaveFile.formIDArrayCount;
-  const size_t n = countWas + 1;
-  uint32_t* newFormIDArray = new uint32_t[n];
-
-  memcpy(newFormIDArray, parentSaveFile.formIDArray.data(), countWas);
-  newFormIDArray[countWas] = formId;
-
-  parentSaveFile.formIDArray = { newFormIDArray, newFormIDArray + n };
-  parentSaveFile.formIDArrayCount = countWas + 1;
-
-  // fix offset
-  parentSaveFile.fileLocationTable.unknownTable3Offset += 4;
+  // A form by its index in the save's formIDArray (RefID type 0; uesp.net:
+  // the index starts at 1, 0 meaning form 0). An entry already there is
+  // reused; a new one goes at the end, and the tables after the array move
+  // by its four bytes. (It used to copy countWas bytes of the old array
+  // instead of countWas entries, and leaked the copy; nothing called it.)
+  uint32_t index = 0;
+  if (const int64_t found = parentSaveFile.FindIndexInFormIdArray(formId);
+      found >= 0) {
+    index = static_cast<uint32_t>(found) + 1;
+  } else {
+    parentSaveFile.formIDArray.push_back(formId);
+    parentSaveFile.formIDArrayCount =
+      static_cast<uint32_t>(parentSaveFile.formIDArray.size());
+    parentSaveFile.fileLocationTable.unknownTable3Offset += 4;
+    index = parentSaveFile.formIDArrayCount;
+  }
 
   // 255 => 00 00 FF
   // 256 => 00 01 00
   // 65536 => error
-  const auto index =
-    countWas + 1; // as uesp.net says, formIDArray index starts in 1
   if (index >= 65536)
     throw std::runtime_error("too many elements was in FormIDArray (" +
-                             std::to_string(countWas) + ")");
+                             std::to_string(index - 1) + ")");
+  RefID res;
   res.byte0 = 0;
   res.byte1 = (index / 256) % 256;
   res.byte2 = index % 256;
-
   return res;
 }
 

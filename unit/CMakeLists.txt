@@ -31,7 +31,7 @@ if(BUILD_UNIT_TESTS AND NOT EMSCRIPTEN)
   find_package(Catch2 CONFIG REQUIRED)
   target_link_libraries(unit PRIVATE Catch2::Catch2)
 
-  target_link_libraries(unit PUBLIC server_guest_lib espm)
+  target_link_libraries(unit PUBLIC server_guest_lib espm savefile)
   if(TARGET platform_lib)
     target_link_libraries(unit PUBLIC platform_lib)
   endif()

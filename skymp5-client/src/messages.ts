@@ -39,5 +39,6 @@ export enum MsgType {
   SetGameTime = 34,
   RestIntent = 35,
   MapMarkerDiscovered = 36,
-  IngredientEffectsKnown = 37
+  IngredientEffectsKnown = 37,
+  Favorites = 38
 }

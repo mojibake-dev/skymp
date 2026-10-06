@@ -24,6 +24,7 @@ import { SetGameTimeMessage } from "./setGameTimeMessage";
 import { RestIntentMessage } from "./restIntentMessage";
 import { MapMarkerDiscoveredMessage } from "./mapMarkerDiscoveredMessage";
 import { IngredientEffectsKnownMessage } from "./ingredientEffectsKnownMessage";
+import { FavoritesMessage } from "./favoritesMessage";
 import { SetInventoryMessage } from "./setInventoryMessage";
 import { SetRaceMenuOpenMessage } from "./setRaceMenuOpenMessage";
 import { SpSnippetMessage } from "./spSnippetMessage";
@@ -68,6 +69,7 @@ export type AnyMessage = ActivateMessage
     | RestIntentMessage
     | MapMarkerDiscoveredMessage
     | IngredientEffectsKnownMessage
+    | FavoritesMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage
     | UpdatePropertyMessage

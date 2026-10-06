@@ -4,12 +4,13 @@
 //! This file is the contract the C++ core and skymp5-client keep speaking
 //! in-process; on the wire the same structs travel as postcard. MsgTypes 1
 //! to 33 are SkyMP's; thuum appends its own after them (34, SetGameTime; 35,
-//! RestIntent; 36, MapMarkerDiscovered; 37, IngredientEffectsKnown).
+//! RestIntent; 36, MapMarkerDiscovered; 37, IngredientEffectsKnown; 38,
+//! Favorites).
 //!
 //! Directions are SkyMP's: twelve types (fifteen with RestIntent,
 //! MapMarkerDiscovered and IngredientEffectsKnown) only travel
 //! client to server, thirteen (fourteen with SetGameTime) only server to
-//! client, eight both ways (the server relays a client's
+//! client, eight (nine with Favorites) both ways (the server relays a client's
 //! UpdateMovement, UpdateAnimation, UpdateAppearance, UpdateEquipment,
 //! SpellCast and UpdateAnimVariables to its neighbours, and sends its own
 //! CustomPacket and ChangeValues). Rungs are the ones SkyMP gives them today;
@@ -1039,5 +1040,35 @@ wire_struct! {
         pub ingredient: u32,
         /// Known effects, bits 0 to 3.
         pub mask: u8,
+    }
+}
+
+wire_struct! {
+    /// One favorite (docs/verbs/favorites.md): an item or a spell or shout,
+    /// and the hotkey bound to it.
+    pub struct FavoriteEntry {
+        /// The form id, as the sender knows it.
+        pub form: u32,
+        /// -1 for no hotkey, 0 to 7 for the keys 1 to 8 (CommonLibSSE-NG
+        /// include/RE/E/ExtraHotkey.h).
+        pub hotkey: i8,
+    }
+}
+
+wire_struct! {
+    /// MsgType 38, thuum's (docs/verbs/favorites.md). Both directions,
+    /// reliable. Client to server: the player's favorites, the whole list,
+    /// after the inventory, magic or favorites menu closed and the list
+    /// changed (R2: the server keeps items the player holds, records magic
+    /// unvalidated, drops the rest; R0 record). Server to client: the record
+    /// after a login, which the client's engine marks. Idempotent. Reason
+    /// codes, client to server: `E_VAL_RANGE` (a hotkey outside -1 to 7, a
+    /// key or a form twice), `E_VAL_RATE`.
+    pub struct Favorites {
+        /// `"t": 38`.
+        #[serde(default)]
+        pub t: MsgT<38>,
+        /// The favorites.
+        pub entries: Vec<FavoriteEntry, { cap::FAVORITES }>,
     }
 }

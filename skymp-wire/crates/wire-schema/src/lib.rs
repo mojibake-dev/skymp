@@ -5,7 +5,7 @@
 //!
 //! Two families share the enum. The M0 variants (ids 0 to 8) are the
 //! authority model's messages, reserved until its verbs land. The SkyMP
-//! variants (ids 9 to 45, id = MsgType + 8) are SkyMP's own protocol, ported
+//! variants (ids 9 to 46, id = MsgType + 8) are SkyMP's own protocol, ported
 //! field for field in [`skymp`], and the MsgTypes thuum appends after
 //! SkyMP's 33; their JSON form is what the C++ core and skymp5-client
 //! exchange in-process (`wire-json`).
@@ -32,7 +32,7 @@ use bounded::{String, Vec};
 
 /// Bump when any variant changes shape. It is part of netcode's protocol id,
 /// so peers built against another schema never complete a handshake.
-pub const SCHEMA_VERSION: u16 = 6;
+pub const SCHEMA_VERSION: u16 = 7;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -59,6 +59,9 @@ pub mod cap {
     pub const INVENTORY: usize = 4096;
     /// Spells one actor knows.
     pub const SPELLS: usize = 2048;
+    /// Favorites one player keeps, items and magic: far past what the
+    /// inventory and magic menus show a player at once.
+    pub const FAVORITES: usize = 128;
     /// Leveled templates one NPC resolves through.
     pub const TEMPLATE_CHAIN: usize = 64;
     /// Node overrides on one reference.
@@ -354,6 +357,8 @@ pub enum Message {
     MapMarkerDiscovered(skymp::MapMarkerDiscovered),
     /// 45, MsgType 37 (thuum). See [`skymp::IngredientEffectsKnown`].
     IngredientEffectsKnown(skymp::IngredientEffectsKnown),
+    /// 46, MsgType 38 (thuum). See [`skymp::Favorites`].
+    Favorites(skymp::Favorites),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -382,7 +387,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 46] = [
+const TABLE: [Row; 47] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -429,10 +434,11 @@ const TABLE: [Row; 46] = [
     row("RestIntent", 35, 16, C2S),
     row("MapMarkerDiscovered", 36, 16, C2S),
     row("IngredientEffectsKnown", 37, 16, C2S),
+    row("Favorites", 38, KIB, Both),
 ];
 
 /// Wire ids in use: one past the last variant.
-pub const WIRE_IDS: u32 = 46;
+pub const WIRE_IDS: u32 = 47;
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -503,6 +509,7 @@ impl Message {
             Message::RestIntent(_) => 43,
             Message::MapMarkerDiscovered(_) => 44,
             Message::IngredientEffectsKnown(_) => 45,
+            Message::Favorites(_) => 46,
         }
     }
 
@@ -569,8 +576,9 @@ mod tests {
         assert_eq!(name_of_msg_type(35), Some("RestIntent"));
         assert_eq!(name_of_msg_type(36), Some("MapMarkerDiscovered"));
         assert_eq!(name_of_msg_type(37), Some("IngredientEffectsKnown"));
+        assert_eq!(name_of_msg_type(38), Some("Favorites"));
         assert_eq!(name_of_msg_type(0), None);
-        assert_eq!(name_of_msg_type(38), None);
+        assert_eq!(name_of_msg_type(39), None);
     }
 
     #[test]
@@ -593,6 +601,14 @@ mod tests {
             Message::RestIntent(skymp::RestIntent { hours: 24.0, sleep: true, ..Default::default() }),
             Message::MapMarkerDiscovered(skymp::MapMarkerDiscovered { marker_type: 59, can_travel: true, ..Default::default() }),
             Message::IngredientEffectsKnown(skymp::IngredientEffectsKnown { ingredient: 0x0003_4cdd, mask: 0x0f, ..Default::default() }),
+            Message::Favorites(skymp::Favorites {
+                entries: (0..cap::FAVORITES)
+                    .map(|i| skymp::FavoriteEntry { form: u32::MAX - u32::try_from(i).unwrap_or(0), hotkey: if i < 8 { i8::try_from(i).unwrap_or(-1) } else { -1 } })
+                    .collect::<alloc::vec::Vec<_>>()
+                    .try_into()
+                    .unwrap_or_default(),
+                ..Default::default()
+            }),
         ];
         for m in samples {
             let bytes = postcard::to_allocvec(&m).unwrap_or_default();

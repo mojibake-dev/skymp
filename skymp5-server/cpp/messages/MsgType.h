@@ -45,6 +45,7 @@ enum class MsgType : uint8_t
   RestIntent = 35,
   MapMarkerDiscovered = 36,
   IngredientEffectsKnown = 37,
+  Favorites = 38,
 
   Max
 };

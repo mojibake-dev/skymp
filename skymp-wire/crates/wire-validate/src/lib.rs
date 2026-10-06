@@ -72,6 +72,10 @@ pub struct ClientGuard {
     /// player can eat a few in a row from the menu, so eight at once and two
     /// a second after that only ever stops a flood.
     pub effects_budget: TokenBucket,
+    /// Budget for favorites reports: one per closing of the inventory, magic
+    /// or favorites menu that changed them, so four at once and one a second
+    /// after that only ever stops a flood.
+    pub favorites_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -85,6 +89,7 @@ impl Default for ClientGuard {
             rest_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
             marker_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
             effects_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
+            favorites_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
         }
     }
 }
@@ -258,6 +263,32 @@ fn check_effects(m: &skymp::IngredientEffectsKnown) -> Result<(), Reject> {
     }
 }
 
+/// The hotkeys a favorite can hold: -1 for none, 0 to 7 for the keys 1 to 8
+/// (CommonLibSSE-NG include/RE/E/ExtraHotkey.h).
+pub const HOTKEYS: core::ops::RangeInclusive<i8> = -1..=7;
+
+/// A favorites report: every hotkey in [`HOTKEYS`], no key bound twice, no
+/// form listed twice (docs/verbs/favorites.md).
+fn check_favorites(m: &skymp::Favorites) -> Result<(), Reject> {
+    let mut keys = 0u8;
+    for (i, e) in m.entries.iter().enumerate() {
+        if !HOTKEYS.contains(&e.hotkey) {
+            return Err(Reject::Range);
+        }
+        if let Ok(k) = u32::try_from(e.hotkey) {
+            let bit = 1u8.checked_shl(k).unwrap_or(0);
+            if bit == 0 || keys & bit != 0 {
+                return Err(Reject::Range);
+            }
+            keys |= bit;
+        }
+        if m.entries.iter().take(i).any(|f| f.form == e.form) {
+            return Err(Reject::Range);
+        }
+    }
+    Ok(())
+}
+
 /// Validate one inbound message against the client's guard state.
 /// `Ok(())` means "well-formed and within rate"; ownership is checked later.
 pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(), Reject> {
@@ -343,6 +374,13 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::IngredientEffectsKnown(m) => {
             check_effects(m)?;
             if !guard.effects_budget.take(now_ms) {
+                return Err(Reject::Rate);
+            }
+            Ok(())
+        }
+        Message::Favorites(m) => {
+            check_favorites(m)?;
+            if !guard.favorites_budget.take(now_ms) {
                 return Err(Reject::Rate);
             }
             Ok(())
@@ -673,6 +711,39 @@ mod tests {
         }
     }
 
+    fn favorites(entries: &[(u32, i8)]) -> Message {
+        Message::Favorites(skymp::Favorites {
+            entries: entries
+                .iter()
+                .map(|&(form, hotkey)| skymp::FavoriteEntry { form, hotkey })
+                .collect::<std::vec::Vec<_>>()
+                .try_into()
+                .unwrap_or_default(),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn favorites_both_ways() {
+        let every_key: std::vec::Vec<(u32, i8)> = (0u8..8).map(|k| (0x0001_0000 + u32::from(k), i8::try_from(k).unwrap_or(-1))).collect();
+        let fine: [&[(u32, i8)]; 4] = [&[], &[(0x0001_397e, 2)], &[(0x0001_397e, -1), (0x0001_2fcd, -1)], &every_key];
+        for ok in fine {
+            assert_eq!(validate(&favorites(ok), &mut ClientGuard::default(), 0), Ok(()), "{ok:?}");
+        }
+        // four at once, then one a second
+        let mut g = ClientGuard::default();
+        for _ in 0..4 {
+            assert_eq!(validate(&favorites(&[]), &mut g, 0), Ok(()));
+        }
+        assert_eq!(validate(&favorites(&[]), &mut g, 0), Err(Reject::Rate));
+        assert_eq!(validate(&favorites(&[]), &mut g, 1_000), Ok(()));
+        // a hotkey out of range, a key twice, a form twice
+        let bad: [&[(u32, i8)]; 6] = [&[(1, 8)], &[(1, -2)], &[(1, i8::MAX)], &[(1, 3), (2, 3)], &[(1, -1), (1, 2)], &[(1, -1), (2, -1), (1, -1)]];
+        for b in bad {
+            assert_eq!(validate(&favorites(b), &mut ClientGuard::default(), 0), Err(Reject::Range), "{b:?}");
+        }
+    }
+
     #[test]
     fn marker_both_ways() {
         let mut g = ClientGuard::default();
@@ -751,6 +822,24 @@ mod tests {
         fn effects_are_accepted_exactly_within_four_bits(m in any::<u8>()) {
             let want = if m & !EFFECT_BITS == 0 { Ok(()) } else { Err(Reject::Range) };
             prop_assert_eq!(validate(&effects(m), &mut ClientGuard::default(), 0), want);
+        }
+
+        #[test]
+        fn favorites_are_accepted_exactly_when_keys_are_legal_and_unique_and_forms_unique(
+            entries in proptest::collection::vec((0u32..24, prop_oneof![3 => -1i8..=7, 1 => any::<i8>()]), 0..24),
+        ) {
+            let mut keys = std::collections::BTreeSet::new();
+            let mut forms = std::collections::BTreeSet::new();
+            let legal = entries.iter().all(|&(form, key)| {
+                HOTKEYS.contains(&key) && (key < 0 || keys.insert(key)) && forms.insert(form)
+            });
+            let want = if legal { Ok(()) } else { Err(Reject::Range) };
+            prop_assert_eq!(validate(&favorites(&entries), &mut ClientGuard::default(), 0), want);
+        }
+
+        #[test]
+        fn favorites_never_panic(entries in proptest::collection::vec((any::<u32>(), any::<i8>()), 0..=cap::FAVORITES)) {
+            let _ = validate(&favorites(&entries), &mut ClientGuard::default(), 0);
         }
 
         #[test]

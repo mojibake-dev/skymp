@@ -9,6 +9,7 @@
 #include "DeathStateContainerMessage.h"
 #include "DestroyActorMessage.h"
 #include "DropItemMessage.h"
+#include "FavoritesMessage.h"
 #include "FinishSpSnippetMessage.h"
 #include "HitMessage.h"
 #include "HostMessage.h"
@@ -74,4 +75,5 @@
   REGISTER_MESSAGE(SetGameTimeMessage)                                        \
   REGISTER_MESSAGE(RestIntentMessage)                                         \
   REGISTER_MESSAGE(MapMarkerDiscoveredMessage)                                \
-  REGISTER_MESSAGE(IngredientEffectsKnownMessage)
+  REGISTER_MESSAGE(IngredientEffectsKnownMessage)                             \
+  REGISTER_MESSAGE(FavoritesMessage)

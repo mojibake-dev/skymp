@@ -1,0 +1,26 @@
+# difftest learned-effects (M1, thuum docs/verbs/learned-effects.md): c1 and
+# c2 are new characters (profiles 9 and 10, actors 0xff000002 and 0xff000003:
+# see melee-reach), both at the spawn. At 2 s c1 reports knowing the first
+# effect of Skyrim.esm INGR 0x0004B0BA (Wheat; lab/esm.py) without having
+# eaten it: the fixed server refuses (E_EFFECTS_NO_EAT, its own log); at 3 s
+# it reports a mask past the fourth effect, which the wire stack's validator
+# refuses (E_VAL_RANGE). Neither answers the client, and the legacy server has
+# no IngredientEffectsKnown, so the stacks must agree on everything: the new
+# message changes nothing a client receives in the session (the ctest
+# LearnedEffectsTest and the T3 scenario a-learned-effects cover a kept
+# report and its teaching after a login). c2 steps aside at 4 s so it
+# outlives c1, as in every session.
+id: learned-effects
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 2000, send: {t: 37, ingredient: 307386, mask: 1}}
+  - {client: c1, at_ms: 3000, send: {t: 37, ingredient: 307386, mask: 16}}
+  - {client: c2, at_ms: 4000, move: {dx: 1, dy: 0}}
+divergences:
+  - client: c2
+    msg: {t: 25, idx: 2}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

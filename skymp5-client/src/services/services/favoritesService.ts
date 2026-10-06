@@ -4,6 +4,7 @@ import { logError, logTrace } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
 import { FavoriteEntry, FavoritesMessage } from "../messages/favoritesMessage";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
+import { isBaseReset } from "../../sync/inventory";
 
 // thuum docs/verbs/favorites.md: the items and magic a player marked as
 // favorites, and their hotkeys, survive a login. After the inventory, magic
@@ -51,6 +52,16 @@ export class FavoritesService extends ClientListener {
 
     private onUpdate() {
         if (this.pending.length === 0 || Date.now() - this.lastTry < 1000) {
+            return;
+        }
+        // The first inventory apply of a game session empties the player's
+        // inventory and adds the server's again (sync/inventory.ts
+        // resetBase): an item marked before it lost its mark with the entry
+        // (a-favorites, run 20261006-055012). Marks wait for it; the minute
+        // of retries counts from then.
+        const player = this.sp.Game.getPlayer();
+        if (!player || !isBaseReset(player)) {
+            this.pendingUntil = Date.now() + 60000;
             return;
         }
         this.lastTry = Date.now();

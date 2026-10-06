@@ -320,6 +320,15 @@ const basesReset = (): Set<number> => {
   return storage["basesReset"] as Set<number>;
 };
 
+// Whether the first apply of a game session has emptied this reference's
+// inventory and laid the server's in again (resetBase below). Anything
+// attached to an inventory entry before that (a favorite's mark) is thrown
+// away with the entry (thuum docs/verbs/favorites.md).
+export const isBaseReset = (refr: ObjectReference): boolean => {
+  const base = refr.getBaseObject();
+  return basesReset().has(base ? base.getFormID() : 0);
+};
+
 const resetBase = (refr: ObjectReference): void => {
   const base = refr.getBaseObject();
   const baseId = base ? base.getFormID() : 0;

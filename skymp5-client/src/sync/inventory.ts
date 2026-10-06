@@ -433,7 +433,12 @@ export const applyInventory = (
         e.maxCharge ? e.maxCharge : 0,
         !!e.removeEnchantmentOnUnequip,
         e.chargePercent ? e.chargePercent : 0,
-        e.name ? cropName(e.name) : f.getName(),
+        // Only a name the server records: any name makes addItemEx build an
+        // extra list (ExtraTextDisplayData, no ExtraCount) that the engine
+        // counts as one item, so 3 Wheat showed as "Wheat" and "Wheat (2)"
+        // (thuum playtest seven). extrasEqual ignores names, so the diff
+        // does not change.
+        e.name ? cropName(e.name) : "",
         e.soul ? e.soul : 0,
         e.poisonId ? Potion.from(Game.getFormEx(e.poisonId)) : null,
         e.poisonCount ? e.poisonCount : 0

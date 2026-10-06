@@ -14,6 +14,7 @@
 #include "HostMessage.h"
 #include "HostStartMessage.h"
 #include "HostStopMessage.h"
+#include "IngredientEffectsKnownMessage.h"
 #include "MapMarkerDiscoveredMessage.h"
 #include "OnEquipMessage.h"
 #include "OpenContainerMessage.h"
@@ -72,4 +73,5 @@
   REGISTER_MESSAGE(CreateActorMessage)                                        \
   REGISTER_MESSAGE(SetGameTimeMessage)                                        \
   REGISTER_MESSAGE(RestIntentMessage)                                         \
-  REGISTER_MESSAGE(MapMarkerDiscoveredMessage)
+  REGISTER_MESSAGE(MapMarkerDiscoveredMessage)                                \
+  REGISTER_MESSAGE(IngredientEffectsKnownMessage)

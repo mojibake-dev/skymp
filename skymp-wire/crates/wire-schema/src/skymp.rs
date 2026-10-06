@@ -4,10 +4,10 @@
 //! This file is the contract the C++ core and skymp5-client keep speaking
 //! in-process; on the wire the same structs travel as postcard. MsgTypes 1
 //! to 33 are SkyMP's; thuum appends its own after them (34, SetGameTime; 35,
-//! RestIntent; 36, MapMarkerDiscovered).
+//! RestIntent; 36, MapMarkerDiscovered; 37, IngredientEffectsKnown).
 //!
-//! Directions are SkyMP's: twelve types (fourteen with RestIntent and
-//! MapMarkerDiscovered) only travel
+//! Directions are SkyMP's: twelve types (fifteen with RestIntent,
+//! MapMarkerDiscovered and IngredientEffectsKnown) only travel
 //! client to server, thirteen (fourteen with SetGameTime) only server to
 //! client, eight both ways (the server relays a client's
 //! UpdateMovement, UpdateAnimation, UpdateAppearance, UpdateEquipment,
@@ -1020,5 +1020,24 @@ wire_struct! {
         pub marker_type: u16,
         /// Fast travel allowed to it (MapMarkerData kCanTravelTo).
         pub can_travel: bool,
+    }
+}
+
+wire_struct! {
+    /// MsgType 37, thuum's (docs/verbs/learned-effects.md). Client to server,
+    /// reliable: after the player ate an ingredient, the effects its engine
+    /// now knows of it (R2, bounded): bit i set when effect i is known. The
+    /// server keeps the report only when it saw that player eat that
+    /// ingredient just before, and only ever adds effects (R0 record).
+    /// Idempotent. Reason codes: `E_VAL_RANGE` (a bit past the fourth
+    /// effect), `E_VAL_RATE`.
+    pub struct IngredientEffectsKnown {
+        /// `"t": 37`.
+        #[serde(default)]
+        pub t: MsgT<37>,
+        /// The INGR's form id, as the client knows it.
+        pub ingredient: u32,
+        /// Known effects, bits 0 to 3.
+        pub mask: u8,
     }
 }

@@ -38,5 +38,6 @@ export enum MsgType {
   // thuum's, appended after SkyMP's (skymp-wire wire-schema)
   SetGameTime = 34,
   RestIntent = 35,
-  MapMarkerDiscovered = 36
+  MapMarkerDiscovered = 36,
+  IngredientEffectsKnown = 37
 }

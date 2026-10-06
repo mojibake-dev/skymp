@@ -44,6 +44,7 @@ enum class MsgType : uint8_t
   SetGameTime = 34,
   RestIntent = 35,
   MapMarkerDiscovered = 36,
+  IngredientEffectsKnown = 37,
 
   Max
 };

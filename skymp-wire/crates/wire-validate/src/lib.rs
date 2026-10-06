@@ -68,6 +68,10 @@ pub struct ClientGuard {
     /// then, a few at once at most, so four at once and one a second after
     /// that only ever stops a flood.
     pub marker_budget: TokenBucket,
+    /// Budget for ingredient effect reports: one per ingredient eaten, and a
+    /// player can eat a few in a row from the menu, so eight at once and two
+    /// a second after that only ever stops a flood.
+    pub effects_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -80,6 +84,7 @@ impl Default for ClientGuard {
             hit_window: ReplayWindow::default(),
             rest_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
             marker_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
+            effects_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
         }
     }
 }
@@ -239,6 +244,20 @@ fn check_marker(m: &skymp::MapMarkerDiscovered) -> Result<(), Reject> {
     }
 }
 
+/// The bits an ingredient's known effects can use: an ingredient has four
+/// effects (CommonLibSSE-NG include/RE/I/IngredientItem.h, knownEffectFlags).
+pub const EFFECT_BITS: u8 = 0x0f;
+
+/// An ingredient effects report's mask: no bit past the fourth effect
+/// (docs/verbs/learned-effects.md).
+fn check_effects(m: &skymp::IngredientEffectsKnown) -> Result<(), Reject> {
+    if m.mask & !EFFECT_BITS == 0 {
+        Ok(())
+    } else {
+        Err(Reject::Range)
+    }
+}
+
 /// Validate one inbound message against the client's guard state.
 /// `Ok(())` means "well-formed and within rate"; ownership is checked later.
 pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(), Reject> {
@@ -317,6 +336,13 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::MapMarkerDiscovered(m) => {
             check_marker(m)?;
             if !guard.marker_budget.take(now_ms) {
+                return Err(Reject::Rate);
+            }
+            Ok(())
+        }
+        Message::IngredientEffectsKnown(m) => {
+            check_effects(m)?;
+            if !guard.effects_budget.take(now_ms) {
                 return Err(Reject::Rate);
             }
             Ok(())
@@ -629,6 +655,24 @@ mod tests {
         Message::MapMarkerDiscovered(skymp::MapMarkerDiscovered { marker_type, can_travel: true, ..Default::default() })
     }
 
+    fn effects(mask: u8) -> Message {
+        Message::IngredientEffectsKnown(skymp::IngredientEffectsKnown { ingredient: 0x0003_4cdd, mask, ..Default::default() })
+    }
+
+    #[test]
+    fn effects_both_ways() {
+        let mut g = ClientGuard::default();
+        for m in [0x00, 0x01, 0x05, 0x0f, 0x08, 0x0e, 0x02, 0x04] {
+            assert_eq!(validate(&effects(m), &mut g, 0), Ok(()), "{m:#x}");
+        }
+        // eight at once, then two a second
+        assert_eq!(validate(&effects(1), &mut g, 0), Err(Reject::Rate));
+        assert_eq!(validate(&effects(1), &mut g, 1_000), Ok(()));
+        for bad in [0x10, 0x1f, 0x80, 0xff] {
+            assert_eq!(validate(&effects(bad), &mut ClientGuard::default(), 0), Err(Reject::Range), "{bad:#x}");
+        }
+    }
+
     #[test]
     fn marker_both_ways() {
         let mut g = ClientGuard::default();
@@ -701,6 +745,12 @@ mod tests {
         fn hosted_never_panics(health in any::<f32>(), counts in proptest::collection::vec(any::<i32>(), 0..=cap::INVENTORY_DELTA)) {
             let mut g = ClientGuard::default();
             let _ = validate(&hosted(health, &counts), &mut g, 0);
+        }
+
+        #[test]
+        fn effects_are_accepted_exactly_within_four_bits(m in any::<u8>()) {
+            let want = if m & !EFFECT_BITS == 0 { Ok(()) } else { Err(Reject::Range) };
+            prop_assert_eq!(validate(&effects(m), &mut ClientGuard::default(), 0), want);
         }
 
         #[test]

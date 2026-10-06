@@ -1159,8 +1159,15 @@ bool TESModPlatform::SetFavorite(IVM* vm, StackID stackId,
   }
 
   if (isMagic) {
-    if (favorites &&
-        static_cast<uint32_t>(hotkey) < favorites->hotkeys.size()) {
+    if (favorites) {
+      // A fresh save's hotkey array is empty until a key is first bound
+      // (a-favorites, run 20261006-050741: Flames marked but no key read
+      // back), and SKSE's own SetHotkey refuses an index past its size.
+      // Grow it to the eight keys first, empty slots null as an unbound
+      // key leaves them; BSTArray allocates on the game's heap.
+      if (favorites->hotkeys.size() < 8) {
+        favorites->hotkeys.resize(8, static_cast<RE::TESForm*>(nullptr));
+      }
       favorites->hotkeys[static_cast<uint32_t>(hotkey)] = form;
     }
   } else if (auto* xHotkey = FindHotkey(entry)) {

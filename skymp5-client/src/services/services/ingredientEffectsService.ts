@@ -34,11 +34,13 @@ export class IngredientEffectsService extends ClientListener {
             return;
         }
         const now = Date.now();
-        for (const [id, until] of this.watching) {
+        // Map.forEach, not for..of: the client's TypeScript target cannot
+        // iterate a Map (TS2802); deleting the current entry is allowed
+        this.watching.forEach((until, id) => {
             const ingredient = this.sp.Ingredient.from(this.sp.Game.getFormEx(id));
             if (!ingredient) {
                 this.watching.delete(id);
-                continue;
+                return;
             }
             let mask = 0;
             for (let i = 0; i < 4; ++i) {
@@ -57,7 +59,7 @@ export class IngredientEffectsService extends ClientListener {
             if (now >= until) {
                 this.watching.delete(id);
             }
-        }
+        });
     }
 
     // ingredient form id -> watch until (ms since epoch)

@@ -55,3 +55,12 @@ Function SetGameDaysPassed(Float daysPassed) global native
 Int[] Function GetFavorites() global native
 
 Bool Function SetFavorite(Form form, Int hotkey) global native
+
+; thuum docs/verbs/racemenu-sync.md: RaceMenu's Preset interface version, 0 when
+; RaceMenu is not loaded; an actor's look saved to, or loaded from,
+; Data\SKSE\Plugins\CharGen\Exported\<name>.jslot (name: letters, digits, - and _)
+Int Function RaceMenuPresetVersion() global native
+
+Bool Function SaveRaceMenuPreset(Actor actor, String name) global native
+
+Bool Function LoadRaceMenuPreset(Actor actor, String name) global native

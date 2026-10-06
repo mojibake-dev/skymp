@@ -6,6 +6,7 @@
 #include "Equipment.h"
 #include "Faction.h"
 #include "FormDesc.h"
+#include "IngredientEffects.h"
 #include "Inventory.h"
 #include "LocationalData.h"
 #include "MapMarker.h"
@@ -132,6 +133,10 @@ public:
   // Map markers the player discovered (thuum docs/verbs/map-markers.md)
   std::optional<std::vector<MapMarker>> mapMarkers;
 
+  // Ingredient effects the player learned (thuum
+  // docs/verbs/learned-effects.md)
+  std::optional<std::vector<IngredientEffects>> ingredientEffects;
+
   // Please update 'ActorTest.cpp' when adding new Actor-related rows
 
   DynamicFields dynamicFields;
@@ -146,7 +151,8 @@ public:
       equipment.ToJson(), actorValues.ToTuple(), healthRespawnPercentage,
       magickaRespawnPercentage, staminaRespawnPercentage, spawnPoint,
       dynamicFields, spawnDelay, learnedSpells, templateChain, lastAnimation,
-      setNodeTextureSet, setNodeScale, displayName, mapMarkers);
+      setNodeTextureSet, setNodeScale, displayName, mapMarkers,
+      ingredientEffects);
   }
 
   static nlohmann::json ToJson(const MpChangeFormREFR& changeForm);

@@ -122,6 +122,18 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm)
     res["mapMarkers"] = { { "entries", mapMarkersJson } };
   }
 
+  // thuum docs/verbs/learned-effects.md; absent in older records, read as
+  // none
+  if (changeForm.ingredientEffects.has_value() &&
+      !changeForm.ingredientEffects->empty()) {
+    auto effectsJson = nlohmann::json::array();
+    for (const auto& entry : *changeForm.ingredientEffects) {
+      effectsJson.push_back({ { "formDesc", entry.ingredient.ToString() },
+                              { "mask", static_cast<uint32_t>(entry.mask) } });
+    }
+    res["ingredientEffects"] = { { "entries", effectsJson } };
+  }
+
   return res;
 }
 
@@ -165,6 +177,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
   static const JsonPointer displayName("displayName");
   static const JsonPointer factions("factions");
   static const JsonPointer mapMarkers("mapMarkers");
+  static const JsonPointer ingredientEffects("ingredientEffects");
   static const JsonPointer healthRespawnPercentage("healthRespawnPercentage");
   static const JsonPointer magickaRespawnPercentage(
     "magickaRespawnPercentage");
@@ -408,6 +421,27 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
       ReadEx(parsedEntries[i], canTravel, &markers[i].canTravel);
     }
     res.mapMarkers = markers;
+  }
+
+  if (element.at_pointer(ingredientEffects.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, ingredientEffects, &jTmp);
+    static const JsonPointer entries("entries");
+    static const JsonPointer mask("mask");
+
+    std::vector<simdjson::dom::element> parsedEntries;
+    ReadVector(jTmp, entries, &parsedEntries);
+
+    std::vector<IngredientEffects> effects(parsedEntries.size());
+    for (size_t i = 0; i != parsedEntries.size(); ++i) {
+      const char* tmp;
+      ReadEx(parsedEntries[i], formDesc, &tmp);
+      effects[i].ingredient = FormDesc::FromString(tmp);
+      uint32_t maskTmp = 0;
+      ReadEx(parsedEntries[i], mask, &maskTmp);
+      effects[i].mask = static_cast<uint8_t>(maskTmp & 0x0f);
+    }
+    res.ingredientEffects = effects;
   }
 
   return res;

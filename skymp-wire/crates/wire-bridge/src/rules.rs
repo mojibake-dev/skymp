@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, appearance, clock, damage, hostility, markers, melee, movement, rest};
+use wire_rules::{activation, appearance, clock, damage, effects, hostility, markers, melee, movement, rest};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -273,6 +273,12 @@ mod ffi {
         /// How far from the player a discovered marker may lie, so the core
         /// knows how many grid cells to gather candidates from.
         fn map_marker_range() -> f32;
+        /// Whether an ingredient effects report is kept: the player ate that
+        /// same ingredient (`ate_same`), `since_eat_ms` ago (`has_eat` false
+        /// when it ate none).
+        fn ingredient_effects_kept(ate_same: bool, has_eat: bool, since_eat_ms: u64) -> bool;
+        /// The recorded mask after a kept report.
+        fn ingredient_effects_union(recorded: u8, reported: u8) -> u8;
 
         /// The fights between players going on (thuum ADR-023).
         type Fights;
@@ -464,6 +470,14 @@ fn map_marker_travel_after(recorded: bool, reported: bool) -> bool {
 
 const fn map_marker_range() -> f32 {
     markers::DISCOVERY_RANGE
+}
+
+fn ingredient_effects_kept(ate_same: bool, has_eat: bool, since_eat_ms: u64) -> bool {
+    effects::kept(ate_same, has_eat.then_some(since_eat_ms))
+}
+
+const fn ingredient_effects_union(recorded: u8, reported: u8) -> u8 {
+    effects::union(recorded, reported)
 }
 
 fn rest_slept(f: &BedFacts) -> bool {

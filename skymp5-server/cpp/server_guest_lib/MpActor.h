@@ -3,6 +3,7 @@
 #include "Appearance.h"
 #include "Equipment.h"
 #include "GetBaseActorValues.h"
+#include "IngredientEffects.h"
 #include "MapMarker.h"
 #include "MpObjectReference.h"
 #include "libespm/espm.h"
@@ -157,6 +158,14 @@ public:
   bool RecordMapMarker(const FormDesc& refr, bool canTravel);
   void SetMapMarkersPending(bool pending);
   bool TakeMapMarkersPending();
+  // thuum docs/verbs/learned-effects.md: the ingredient effects this player
+  // learned, kept in its change form (recording only adds bits, and returns
+  // whether anything changed), and the last ingredient it ate and when (0
+  // when none), which a report must follow
+  std::vector<IngredientEffects> GetIngredientEffects() const;
+  bool RecordIngredientEffects(const FormDesc& ingredient, uint8_t mask);
+  std::pair<uint32_t, std::chrono::steady_clock::time_point> GetLastEaten()
+    const;
   size_t CountRecentHits(std::chrono::duration<float> timeWindow) const;
 
   void SetLastAttributesPercentagesUpdate(

@@ -65,6 +65,9 @@ struct MpActor::Impl
   uint64_t restedGrant = 0;
   // thuum docs/verbs/map-markers.md: the login's markers not sent yet
   bool mapMarkersPending = false;
+  // thuum docs/verbs/learned-effects.md: the last ingredient eaten and when
+  uint32_t lastEatenId = 0;
+  std::chrono::steady_clock::time_point lastEatenTimePoint;
   using RestorationTimePoints =
     std::unordered_map<espm::ActorValue,
                        std::chrono::steady_clock::time_point>;
@@ -858,6 +861,50 @@ bool MpActor::TakeMapMarkersPending()
   return std::exchange(pImpl->mapMarkersPending, false);
 }
 
+std::vector<IngredientEffects> MpActor::GetIngredientEffects() const
+{
+  const auto& effects = ChangeForm().ingredientEffects;
+  return effects ? *effects : std::vector<IngredientEffects>();
+}
+
+bool MpActor::RecordIngredientEffects(const FormDesc& ingredient, uint8_t mask)
+{
+  // what is recorded for it now (no entry counts as nothing known)
+  uint8_t recordedMask = 0;
+  if (const auto& recorded = ChangeForm().ingredientEffects) {
+    for (const auto& entry : *recorded) {
+      if (entry.ingredient == ingredient) {
+        recordedMask = entry.mask;
+      }
+    }
+  }
+  const uint8_t newMask =
+    skymp::rules::ingredient_effects_union(recordedMask, mask);
+  if (newMask == recordedMask) {
+    return false;
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    if (!changeForm.ingredientEffects) {
+      changeForm.ingredientEffects.emplace();
+    }
+    auto& effects = *changeForm.ingredientEffects;
+    for (auto& entry : effects) {
+      if (entry.ingredient == ingredient) {
+        entry.mask = newMask;
+        return;
+      }
+    }
+    effects.push_back(IngredientEffects{ ingredient, newMask });
+  });
+  return true;
+}
+
+std::pair<uint32_t, std::chrono::steady_clock::time_point>
+MpActor::GetLastEaten() const
+{
+  return { pImpl->lastEatenId, pImpl->lastEatenTimePoint };
+}
+
 std::chrono::steady_clock::time_point MpActor::GetLastHitTakenTime() const
 {
   return pImpl->lastHitTakenTimePoint;
@@ -1158,6 +1205,13 @@ void MpActor::EatItem(uint32_t baseId, espm::Type t)
 {
   bool isIngredient = t == "INGR";
   bool isAlchemyItem = t == "ALCH";
+
+  // thuum docs/verbs/learned-effects.md: a report of what the eat taught
+  // must follow it
+  if (isIngredient) {
+    pImpl->lastEatenId = baseId;
+    pImpl->lastEatenTimePoint = std::chrono::steady_clock::now();
+  }
 
   EatItemEvent eatItemEvent(this, baseId, isIngredient, isAlchemyItem);
   eatItemEvent.Fire(GetParent());

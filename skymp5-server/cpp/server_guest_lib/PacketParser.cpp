@@ -177,6 +177,12 @@ void PacketParser::TransformPacketIntoAction(Networking::UserId userId,
         actionListener.OnMapMarkerDiscovered(rawMsgData, *message);
         return;
       }
+      case MsgType::IngredientEffectsKnown: {
+        auto message = reinterpret_cast<IngredientEffectsKnownMessage*>(
+          result->message.get());
+        actionListener.OnIngredientEffectsKnown(rawMsgData, *message);
+        return;
+      }
       default: {
         spdlog::error("PacketParser.cpp doesn't implement MsgType {}",
                       static_cast<int64_t>(result->msgType));

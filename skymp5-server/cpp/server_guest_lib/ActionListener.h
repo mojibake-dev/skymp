@@ -59,6 +59,11 @@ public:
   virtual void OnMapMarkerDiscovered(const RawMessageData& rawMsgData,
                                      const MapMarkerDiscoveredMessage& msg);
 
+  // thuum docs/verbs/learned-effects.md
+  virtual void OnIngredientEffectsKnown(
+    const RawMessageData& rawMsgData,
+    const IngredientEffectsKnownMessage& msg);
+
   virtual void OnFinishSpSnippet(const RawMessageData& rawMsgData,
                                  const FinishSpSnippetMessage& msg);
 
@@ -106,6 +111,9 @@ private:
   // thuum docs/verbs/map-markers.md: AddToMap on its client for each marker
   // the player has discovered
   void SendMapMarkers(MpActor& actor);
+  // thuum docs/verbs/learned-effects.md: Ingredient.LearnEffect on its client
+  // for each effect the player has learned
+  void SendIngredientEffects(MpActor& actor);
 
   void NotifyHostility(MpActor& aggressor, MpActor& target,
                        std::chrono::steady_clock::time_point now);

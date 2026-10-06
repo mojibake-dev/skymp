@@ -177,10 +177,13 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
                      false);
 
     // thuum docs/verbs/map-markers.md: the first movement after a login
-    // means the player's own world is up, so its map can be shown
+    // means the player's own world is up, so its map can be shown, and what
+    // it learned of its ingredients taught again
+    // (docs/verbs/learned-effects.md)
     if (actor == partOne.serverState.ActorByUser(rawMsgData.userId) &&
         actor->TakeMapMarkersPending()) {
       SendMapMarkers(*actor);
+      SendIngredientEffects(*actor);
     }
 
     if (!msg.data.isBlocking) {
@@ -916,6 +919,81 @@ void ActionListener::SendMapMarkers(MpActor& actor)
   if (!markers.empty()) {
     spdlog::info("MapMarker: actor {:x} shown its {} markers after a login",
                  actor.GetFormId(), markers.size());
+  }
+}
+
+// thuum docs/verbs/learned-effects.md: after the player ate an ingredient,
+// its client reports the effects its engine now knows of it. The server keeps
+// the report only when it saw that player eat that ingredient just before,
+// and the record only grows.
+void ActionListener::OnIngredientEffectsKnown(
+  const RawMessageData& rawMsgData, const IngredientEffectsKnownMessage& msg)
+{
+  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!actor) {
+    return spdlog::warn("OnIngredientEffectsKnown - no actor for user {}",
+                        rawMsgData.userId);
+  }
+  WorldState& worldState = partOne.worldState;
+  if (!worldState.HasEspm()) {
+    return spdlog::warn("OnIngredientEffectsKnown - no master files");
+  }
+  const auto lookup =
+    worldState.GetEspm().GetBrowser().LookupById(msg.ingredient);
+  if (!lookup.rec || lookup.rec->GetType() != "INGR") {
+    return spdlog::info("E_EFFECTS_FORM: user {} actor {:x} reported "
+                        "effects of {:x}, which is no ingredient",
+                        rawMsgData.userId, actor->GetFormId(), msg.ingredient);
+  }
+
+  const auto [eatenId, eatenAt] = actor->GetLastEaten();
+  const bool hasEat = eatenId != 0;
+  const uint64_t sinceEatMs = hasEat
+    ? static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - eatenAt)
+          .count())
+    : 0;
+  if (!skymp::rules::ingredient_effects_kept(eatenId == msg.ingredient, hasEat,
+                                             sinceEatMs)) {
+    return spdlog::info("E_EFFECTS_NO_EAT: user {} actor {:x} reported "
+                        "effects {:#x} of {:x}, last ate {:x} {} ms ago",
+                        rawMsgData.userId, actor->GetFormId(), msg.mask,
+                        msg.ingredient, eatenId, sinceEatMs);
+  }
+
+  const bool changed = actor->RecordIngredientEffects(
+    FormDesc::FromFormId(msg.ingredient, worldState.espmFiles), msg.mask);
+  spdlog::info("IngredientEffects: user {} actor {:x} knows {:#x} of {:x}{}",
+               rawMsgData.userId, actor->GetFormId(), msg.mask, msg.ingredient,
+               changed ? "" : ", already recorded");
+}
+
+// thuum docs/verbs/learned-effects.md: teach the player's recorded effects to
+// its client's engine, Papyrus Ingredient.LearnEffect with the ingredient as
+// self, one per effect
+void ActionListener::SendIngredientEffects(MpActor& actor)
+{
+  size_t sent = 0;
+  for (const auto& entry : actor.GetIngredientEffects()) {
+    const uint32_t ingredientId =
+      entry.ingredient.ToFormId(partOne.worldState.espmFiles);
+    for (int i = 0; i < 4; ++i) {
+      if (!(entry.mask & (1 << i))) {
+        continue;
+      }
+      std::vector<std::optional<
+        std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+        args{ static_cast<double>(i) };
+      SpSnippet("Ingredient", "LearnEffect", args, ingredientId)
+        .Execute(&actor, SpSnippetMode::kNoReturnResult);
+      ++sent;
+    }
+  }
+  if (sent > 0) {
+    spdlog::info("IngredientEffects: actor {:x} taught its {} effects after "
+                 "a login",
+                 actor.GetFormId(), sent);
   }
 }
 

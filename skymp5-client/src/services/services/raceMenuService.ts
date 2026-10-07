@@ -65,6 +65,10 @@ export class RaceMenuService extends ClientListener {
         if (player) {
             this.hairColorOnRaceMenuForm(player);
             player.sendModEvent("RSM_RequestTintSave", "", 0);
+            // the face as the menu opens, so a preset the menu loads shows
+            // as a change (see onMenuClose)
+            const open = this.save(player, "thuum-open");
+            this.openKey = open ? this.sliderKey(open) : undefined;
         }
     }
 
@@ -106,11 +110,18 @@ export class RaceMenuService extends ClientListener {
         // the menu loaded, and it is applied again the way the sync applies
         // a look, so what is saved and sent is the preset as its author made
         // it. A face shaped by hand matches no file and stays as it is.
+        // Only a preset the menu loaded in this session: the face's sliders
+        // match a file now and did not as the menu opened. A face that
+        // already matched (the preset loaded in an earlier menu) is being
+        // edited, and the file, which carries no body morphs, must not come
+        // back over the body sliders set in this menu (lab, 2026-10-07: the
+        // body sliders reverted as the menu closed).
         const imported = this.importedPreset(preset);
-        if (imported && this.load(player, this.myId(), imported.text)) {
+        if (imported && this.sliderKey(preset) !== this.openKey && this.load(player, this.myId(), imported.text)) {
             logTrace(this, "applied the preset", imported.name, "again after RaceMenu's menu loaded it");
             preset = this.save(player, "thuum-self") ?? preset;
         }
+        this.openKey = undefined;
         if (preset === this.lastSent) {
             return;
         }
@@ -380,6 +391,9 @@ export class RaceMenuService extends ClientListener {
     // failed on, so each failure is logged once
     private failed = new Map<number, string>();
     private lastSent = "";
+    // the face's slider key as the race menu opened (sliderKey), for the
+    // menu's close
+    private openKey: string | undefined = undefined;
     private lastCheck = 0;
     // the player's own CreateActor came, and RaceMenu's additions are still
     // to be taken off it

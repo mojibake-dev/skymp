@@ -65,6 +65,9 @@ struct MpActor::Impl
   uint64_t restedGrant = 0;
   // thuum docs/verbs/map-markers.md: the login's markers not sent yet
   bool mapMarkersPending = false;
+  // thuum docs/verbs/racemenu-sync.md: the server opened the race menu and
+  // the RaceMenu look from it has not come yet
+  bool raceMenuLookDue = false;
   // thuum docs/verbs/learned-effects.md: the last ingredient eaten and when
   uint32_t lastEatenId = 0;
   std::chrono::steady_clock::time_point lastEatenTimePoint;
@@ -231,6 +234,9 @@ std::optional<AnimationData> MpActor::GetLastAnimEvent() const
 
 void MpActor::SetRaceMenuOpen(bool isOpen)
 {
+  if (isOpen) {
+    pImpl->raceMenuLookDue = true;
+  }
   EditChangeForm(
     [&](MpChangeForm& changeForm) { changeForm.isRaceMenuOpen = isOpen; });
 }
@@ -630,6 +636,11 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
     Mode::NoRequestSave);
   ReapplyMagicEffects();
 
+  // a race menu the record keeps open is shown again at the login
+  if (ChangeForm().isRaceMenuOpen) {
+    pImpl->raceMenuLookDue = true;
+  }
+
   // We do the same in PartOne::SetUserActor for player characters
   if (IsDead() && !IsRespawning()) {
     spdlog::info("MpActor::ApplyChangeForm {:x} - respawning dead actor",
@@ -937,6 +948,11 @@ bool MpActor::SetRaceMenuPreset(std::string preset)
     changeForm.raceMenuPreset = std::move(preset);
   });
   return true;
+}
+
+bool MpActor::TakeRaceMenuLookDue()
+{
+  return std::exchange(pImpl->raceMenuLookDue, false);
 }
 
 std::chrono::steady_clock::time_point MpActor::GetLastHitTakenTime() const

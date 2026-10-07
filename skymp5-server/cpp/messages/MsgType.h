@@ -47,6 +47,7 @@ enum class MsgType : uint8_t
   IngredientEffectsKnown = 37,
   Favorites = 38,
   RaceMenuPreset = 39,
+  ActorValues = 40,
 
   Max
 };

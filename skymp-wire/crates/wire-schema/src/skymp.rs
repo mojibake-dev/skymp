@@ -5,12 +5,12 @@
 //! in-process; on the wire the same structs travel as postcard. MsgTypes 1
 //! to 33 are SkyMP's; thuum appends its own after them (34, SetGameTime; 35,
 //! RestIntent; 36, MapMarkerDiscovered; 37, IngredientEffectsKnown; 38,
-//! Favorites; 39, RaceMenuPreset).
+//! Favorites; 39, RaceMenuPreset; 40, ActorValues).
 //!
 //! Directions are SkyMP's: twelve types (fifteen with RestIntent,
 //! MapMarkerDiscovered and IngredientEffectsKnown) only travel
 //! client to server, thirteen (fourteen with SetGameTime) only server to
-//! client, eight (ten with Favorites and RaceMenuPreset) both ways (the server relays a client's
+//! client, eight (eleven with Favorites, RaceMenuPreset and ActorValues) both ways (the server relays a client's
 //! UpdateMovement, UpdateAnimation, UpdateAppearance, UpdateEquipment,
 //! SpellCast and UpdateAnimVariables to its neighbours, and sends its own
 //! CustomPacket and ChangeValues). Rungs are the ones SkyMP gives them today;
@@ -1093,5 +1093,69 @@ wire_struct! {
         pub actor: u32,
         /// The preset, RaceMenu's JSON.
         pub preset: String<{ cap::RACEMENU_PRESET }>,
+    }
+}
+
+wire_struct! {
+    /// One actor value's base (docs/verbs/actor-values.md).
+    pub struct ActorValueBase {
+        /// The actor value, 0 to 163 (CommonLibSSE-NG
+        /// include/RE/A/ActorValues.h).
+        pub av: u8,
+        /// Its base value.
+        pub base: f32,
+    }
+}
+
+wire_struct! {
+    /// One skill's progress (CommonLibSSE-NG include/RE/P/PlayerCharacter.h,
+    /// PlayerSkills::Data::SkillData).
+    pub struct SkillProgress {
+        /// 0 to 17 (PlayerSkills::Skills).
+        pub skill: u8,
+        /// The skill's level as its progress counts it.
+        pub level: f32,
+        /// Experience toward the next level.
+        pub xp: f32,
+        /// Experience the next level needs.
+        pub threshold: f32,
+    }
+}
+
+wire_struct! {
+    /// How many times a skill was made legendary.
+    pub struct LegendarySkill {
+        /// 0 to 17.
+        pub skill: u8,
+        /// Times made legendary.
+        pub count: u16,
+    }
+}
+
+wire_struct! {
+    /// MsgType 40, thuum's (docs/verbs/actor-values.md). Both directions,
+    /// reliable. Client to server: the player's whole snapshot after a skill
+    /// or level increase (R2: recorded within bounds, not validated). Server
+    /// to client: the record after a login, and after a value the server set
+    /// (R0), which the client's engine applies. Idempotent: a later snapshot
+    /// replaces the earlier one. Reason codes: `E_VAL_RANGE` (an actor value
+    /// past 163 or listed twice, a skill past 17 or listed twice),
+    /// `E_VAL_NONFINITE`, `E_VAL_RATE` (client to server).
+    pub struct ActorValues {
+        /// `"t": 40`.
+        #[serde(default)]
+        pub t: MsgT<40>,
+        /// Base values, each actor value once.
+        pub bases: Vec<ActorValueBase, { cap::ACTOR_VALUES }>,
+        /// Skills' progress, each skill once.
+        pub skills: Vec<SkillProgress, { cap::SKILLS }>,
+        /// The character's experience toward the next level.
+        pub xp: f32,
+        /// Experience the next level needs.
+        pub threshold: f32,
+        /// The character level.
+        pub level: u16,
+        /// Skills made legendary.
+        pub legendary: Vec<LegendarySkill, { cap::SKILLS }>,
     }
 }

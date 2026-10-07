@@ -5,7 +5,7 @@
 //!
 //! Two families share the enum. The M0 variants (ids 0 to 8) are the
 //! authority model's messages, reserved until its verbs land. The SkyMP
-//! variants (ids 9 to 47, id = MsgType + 8) are SkyMP's own protocol, ported
+//! variants (ids 9 to 48, id = MsgType + 8) are SkyMP's own protocol, ported
 //! field for field in [`skymp`], and the MsgTypes thuum appends after
 //! SkyMP's 33; their JSON form is what the C++ core and skymp5-client
 //! exchange in-process (`wire-json`).
@@ -32,7 +32,7 @@ use bounded::{String, Vec};
 
 /// Bump when any variant changes shape. It is part of netcode's protocol id,
 /// so peers built against another schema never complete a handshake.
-pub const SCHEMA_VERSION: u16 = 8;
+pub const SCHEMA_VERSION: u16 = 9;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -86,6 +86,11 @@ pub mod cap {
     /// transport's 256 KiB from a client, until a sculpted preset measured in
     /// the lab sets it.
     pub const RACEMENU_PRESET: usize = 192 * 1024;
+    /// Actor values the engine has (CommonLibSSE-NG
+    /// include/RE/A/ActorValues.h, 0 to 163).
+    pub const ACTOR_VALUES: usize = 164;
+    /// Skills in the player's progress (PlayerSkills::Skills::kTotal).
+    pub const SKILLS: usize = 18;
     /// A gamemode event name.
     pub const EVENT_NAME: usize = 256;
     /// Arguments of one gamemode event.
@@ -365,6 +370,8 @@ pub enum Message {
     Favorites(skymp::Favorites),
     /// 47, MsgType 39 (thuum). See [`skymp::RaceMenuPreset`].
     RaceMenuPreset(skymp::RaceMenuPreset),
+    /// 48, MsgType 40 (thuum). See [`skymp::ActorValues`].
+    ActorValues(skymp::ActorValues),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -393,7 +400,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 48] = [
+const TABLE: [Row; 49] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -442,10 +449,11 @@ const TABLE: [Row; 48] = [
     row("IngredientEffectsKnown", 37, 16, C2S),
     row("Favorites", 38, KIB, Both),
     row("RaceMenuPreset", 39, 200 * KIB, Both),
+    row("ActorValues", 40, 2 * KIB, Both),
 ];
 
 /// Wire ids in use: one past the last variant.
-pub const WIRE_IDS: u32 = 48;
+pub const WIRE_IDS: u32 = 49;
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -518,6 +526,7 @@ impl Message {
             Message::IngredientEffectsKnown(_) => 45,
             Message::Favorites(_) => 46,
             Message::RaceMenuPreset(_) => 47,
+            Message::ActorValues(_) => 48,
         }
     }
 
@@ -586,8 +595,9 @@ mod tests {
         assert_eq!(name_of_msg_type(37), Some("IngredientEffectsKnown"));
         assert_eq!(name_of_msg_type(38), Some("Favorites"));
         assert_eq!(name_of_msg_type(39), Some("RaceMenuPreset"));
+        assert_eq!(name_of_msg_type(40), Some("ActorValues"));
         assert_eq!(name_of_msg_type(0), None);
-        assert_eq!(name_of_msg_type(40), None);
+        assert_eq!(name_of_msg_type(41), None);
     }
 
     #[test]
@@ -621,6 +631,27 @@ mod tests {
             Message::RaceMenuPreset(skymp::RaceMenuPreset {
                 actor: u32::MAX,
                 preset: "x".repeat(cap::RACEMENU_PRESET).try_into().unwrap_or_default(),
+                ..Default::default()
+            }),
+            Message::ActorValues(skymp::ActorValues {
+                bases: (0..cap::ACTOR_VALUES)
+                    .map(|i| skymp::ActorValueBase { av: u8::try_from(i).unwrap_or(u8::MAX), base: f32::MAX })
+                    .collect::<alloc::vec::Vec<_>>()
+                    .try_into()
+                    .unwrap_or_default(),
+                skills: (0..cap::SKILLS)
+                    .map(|i| skymp::SkillProgress { skill: u8::try_from(i).unwrap_or(u8::MAX), level: f32::MAX, xp: f32::MAX, threshold: f32::MAX })
+                    .collect::<alloc::vec::Vec<_>>()
+                    .try_into()
+                    .unwrap_or_default(),
+                xp: f32::MAX,
+                threshold: f32::MAX,
+                level: u16::MAX,
+                legendary: (0..cap::SKILLS)
+                    .map(|i| skymp::LegendarySkill { skill: u8::try_from(i).unwrap_or(u8::MAX), count: u16::MAX })
+                    .collect::<alloc::vec::Vec<_>>()
+                    .try_into()
+                    .unwrap_or_default(),
                 ..Default::default()
             }),
         ];

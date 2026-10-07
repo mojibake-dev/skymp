@@ -21,6 +21,7 @@ import { SetRaceMenuOpenMessage } from "../messages/setRaceMenuOpenMessage";
 import { SetGameTimeMessage } from "../messages/setGameTimeMessage";
 import { FavoritesMessage } from "../messages/favoritesMessage";
 import { RaceMenuPresetMessage } from "../messages/raceMenuPresetMessage";
+import { ActorValuesMessage } from "../messages/actorValuesMessage";
 import { SpSnippetMessage } from "../messages/spSnippetMessage";
 import { TeleportMessage } from "../messages/teleportMessage";
 import { UpdateAnimationMessage } from "../messages/updateAnimationMessage";
@@ -82,6 +83,7 @@ type EventTypes = {
     'setGameTimeMessage': [ConnectionMessage<SetGameTimeMessage>],
     'favoritesMessage': [ConnectionMessage<FavoritesMessage>],
     'raceMenuPresetMessage': [ConnectionMessage<RaceMenuPresetMessage>],
+    'actorValuesMessage': [ConnectionMessage<ActorValuesMessage>],
     'customPacketMessage': [ConnectionMessage<CustomPacketMessage>]
 
     'browserWindowLoaded': [BrowserWindowLoadedEvent],

@@ -26,6 +26,7 @@ import { MapMarkerDiscoveredMessage } from "./mapMarkerDiscoveredMessage";
 import { IngredientEffectsKnownMessage } from "./ingredientEffectsKnownMessage";
 import { FavoritesMessage } from "./favoritesMessage";
 import { RaceMenuPresetMessage } from "./raceMenuPresetMessage";
+import { ActorValuesMessage } from "./actorValuesMessage";
 import { SetInventoryMessage } from "./setInventoryMessage";
 import { SetRaceMenuOpenMessage } from "./setRaceMenuOpenMessage";
 import { SpSnippetMessage } from "./spSnippetMessage";
@@ -72,6 +73,7 @@ export type AnyMessage = ActivateMessage
     | IngredientEffectsKnownMessage
     | FavoritesMessage
     | RaceMenuPresetMessage
+    | ActorValuesMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage
     | UpdatePropertyMessage

@@ -1,5 +1,6 @@
 #pragma once
 #include "ActivateMessage.h"
+#include "ActorValuesMessage.h"
 #include "ChangeValuesMessage.h"
 #include "ConsoleCommandMessage.h"
 #include "CraftItemMessage.h"
@@ -78,4 +79,5 @@
   REGISTER_MESSAGE(MapMarkerDiscoveredMessage)                                \
   REGISTER_MESSAGE(IngredientEffectsKnownMessage)                             \
   REGISTER_MESSAGE(FavoritesMessage)                                          \
-  REGISTER_MESSAGE(RaceMenuPresetMessage)
+  REGISTER_MESSAGE(RaceMenuPresetMessage)                                     \
+  REGISTER_MESSAGE(ActorValuesMessage)

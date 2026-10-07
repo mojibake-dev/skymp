@@ -81,6 +81,10 @@ pub struct ClientGuard {
     /// after that only ever stops a flood (the transport's byte budget
     /// bounds the bytes).
     pub preset_budget: TokenBucket,
+    /// Budget for actor value snapshots: one per skill or level increase,
+    /// which come a few at once (a level-up after a skill-up), so eight at
+    /// once and two a second after that only ever stops a flood.
+    pub actor_values_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -96,6 +100,7 @@ impl Default for ClientGuard {
             effects_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             favorites_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
             preset_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
+            actor_values_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
         }
     }
 }
@@ -273,6 +278,41 @@ fn check_effects(m: &skymp::IngredientEffectsKnown) -> Result<(), Reject> {
 /// (CommonLibSSE-NG include/RE/E/ExtraHotkey.h).
 pub const HOTKEYS: core::ops::RangeInclusive<i8> = -1..=7;
 
+/// An actor values snapshot, either way (docs/verbs/actor-values.md): every
+/// number finite, each actor value below 164 and each skill below 18 listed
+/// once. The values' own bounds are the server's rule (wire-rules
+/// `actor_values`), which knows what the server holds.
+fn check_actor_values(m: &skymp::ActorValues) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    let mut avs = [false; wire_schema::cap::ACTOR_VALUES];
+    for b in m.bases.iter() {
+        let slot = avs.get_mut(usize::from(b.av)).ok_or(Reject::Range)?;
+        if *slot {
+            return Err(Reject::Range);
+        }
+        *slot = true;
+    }
+    let mut skills = [false; wire_schema::cap::SKILLS];
+    for s in m.skills.iter() {
+        let slot = skills.get_mut(usize::from(s.skill)).ok_or(Reject::Range)?;
+        if *slot {
+            return Err(Reject::Range);
+        }
+        *slot = true;
+    }
+    let mut legendary = [false; wire_schema::cap::SKILLS];
+    for l in m.legendary.iter() {
+        let slot = legendary.get_mut(usize::from(l.skill)).ok_or(Reject::Range)?;
+        if *slot {
+            return Err(Reject::Range);
+        }
+        *slot = true;
+    }
+    Ok(())
+}
+
 /// A RaceMenu preset, either way: not empty (docs/verbs/racemenu-sync.md).
 /// From a client it is also its own ([`validate`]); the JSON's shape is the
 /// server's rule (wire-rules `racemenu`), past the capacity the type holds.
@@ -343,6 +383,7 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
             }
             take(&mut guard.preset_budget, now_ms)
         }
+        Message::ActorValues(_) => take(&mut guard.actor_values_budget, now_ms),
         _ => Ok(()),
     }
 }
@@ -414,6 +455,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::IngredientEffectsKnown(m) => check_effects(m),
         Message::Favorites(m) => check_favorites(m),
         Message::RaceMenuPreset(m) => check_preset(m),
+        Message::ActorValues(m) => check_actor_values(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
         // rejects it by direction before it gets this far.
@@ -800,6 +842,53 @@ mod tests {
         assert_eq!(validate_server(&preset(0xff00_0001, "")), Err(Reject::Range));
     }
 
+    fn actor_values(avs: &[u8], skills: &[u8], legendary: &[u8], base: f32) -> Message {
+        Message::ActorValues(skymp::ActorValues {
+            bases: avs
+                .iter()
+                .map(|&av| skymp::ActorValueBase { av, base })
+                .collect::<std::vec::Vec<_>>()
+                .try_into()
+                .unwrap_or_default(),
+            skills: skills
+                .iter()
+                .map(|&skill| skymp::SkillProgress { skill, level: 15.0, xp: 0.0, threshold: 10.0 })
+                .collect::<std::vec::Vec<_>>()
+                .try_into()
+                .unwrap_or_default(),
+            xp: 0.0,
+            threshold: 75.0,
+            level: 1,
+            legendary: legendary
+                .iter()
+                .map(|&skill| skymp::LegendarySkill { skill, count: 1 })
+                .collect::<std::vec::Vec<_>>()
+                .try_into()
+                .unwrap_or_default(),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn actor_values_both_ways() {
+        assert_eq!(validate_server(&actor_values(&[6, 24, 163], &[0, 17], &[3], 15.0)), Ok(()));
+        for bad in [
+            actor_values(&[164], &[], &[], 1.0),
+            actor_values(&[6, 6], &[], &[], 1.0),
+            actor_values(&[], &[18], &[], 1.0),
+            actor_values(&[], &[2, 2], &[], 1.0),
+            actor_values(&[], &[], &[18], 1.0),
+        ] {
+            assert_eq!(validate_server(&bad), Err(Reject::Range), "{bad:?}");
+        }
+        assert_eq!(validate_server(&actor_values(&[24], &[], &[], f32::NAN)), Err(Reject::NonFinite));
+        let mut g = ClientGuard::default();
+        for _ in 0..8 {
+            assert_eq!(validate(&actor_values(&[6], &[], &[], 1.0), &mut g, 0), Ok(()));
+        }
+        assert_eq!(validate(&actor_values(&[6], &[], &[], 1.0), &mut g, 0), Err(Reject::Rate));
+    }
+
     #[test]
     fn marker_both_ways() {
         let mut g = ClientGuard::default();
@@ -914,6 +1003,28 @@ mod tests {
         fn presets_never_panic(actor in any::<u32>(), text in ".{0,256}") {
             let _ = validate(&preset(actor, &text), &mut ClientGuard::default(), 0);
             let _ = validate_server(&preset(actor, &text));
+        }
+
+        #[test]
+        fn actor_values_are_accepted_exactly_when_indices_are_in_range_and_unique(
+            avs in proptest::collection::vec(0u8..=170, 0..12),
+            skills in proptest::collection::vec(0u8..=20, 0..6),
+        ) {
+            let m = actor_values(&avs, &skills, &[], 1.0);
+            let unique = |v: &[u8]| v.iter().enumerate().all(|(i, x)| !v.iter().take(i).any(|y| y == x));
+            let ok = avs.iter().all(|&a| usize::from(a) < cap::ACTOR_VALUES)
+                && skills.iter().all(|&s| usize::from(s) < cap::SKILLS)
+                && unique(&avs) && unique(&skills);
+            prop_assert_eq!(validate_server(&m), if ok { Ok(()) } else { Err(Reject::Range) });
+        }
+
+        #[test]
+        fn actor_values_never_panic(
+            avs in proptest::collection::vec(any::<u8>(), 0..=cap::ACTOR_VALUES),
+            skills in proptest::collection::vec(any::<u8>(), 0..=cap::SKILLS),
+            base in any::<f32>(),
+        ) {
+            let _ = validate(&actor_values(&avs, &skills, &skills, base), &mut ClientGuard::default(), 0);
         }
 
         #[test]

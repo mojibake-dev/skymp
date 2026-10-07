@@ -4,6 +4,7 @@ import { MsgType } from "../../messages";
 import { logError, logTrace } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
 import { RaceMenuPresetMessage } from "../messages/raceMenuPresetMessage";
+import { CreateActorMessage } from "../messages/createActorMessage";
 import { remoteIdToLocalId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { RemoteServer } from "./remoteServer";
@@ -22,6 +23,12 @@ const APPLY_ALL = -1;
 // load (0x801 in RaceMenu.esp)
 const PLAYER_HAIR_COLOR = 0x801;
 
+// The parts of a preset only RaceMenu gives a look, which a reset leaves out:
+// node overrides, skin overrides, node transforms and body morphs (top-level
+// sections of RaceMenu's preset file), and the sculpt and RaceMenu's own
+// sliders (morphs.sculpt, morphs.custom)
+const RACEMENU_ONLY = ["overrides", "skinOverrides", "transforms", "bodyMorphs"];
+
 // thuum docs/verbs/racemenu-sync.md: a player's RaceMenu look follows its
 // character. When the race menu closes, the player's look is saved through
 // RaceMenu's own Papyrus natives (CharGen.SaveCharacterPreset) and sent if it
@@ -39,6 +46,7 @@ export class RaceMenuService extends ClientListener {
         super();
         this.controller.on("menuClose", (e) => this.onMenuClose(e));
         this.controller.emitter.on("raceMenuPresetMessage", (e) => this.onPresetMessage(e));
+        this.controller.emitter.on("createActorMessage", (e) => this.onCreateActor(e));
         this.controller.on("update", () => this.onUpdate());
     }
 
@@ -72,16 +80,44 @@ export class RaceMenuService extends ClientListener {
         this.failed.delete(actor);
     }
 
+    // A CreateActor starts that actor afresh: the server sends its current
+    // look right after (with a figure, or once the player's own world is up
+    // after a login), so what the service knew of it is dropped. The
+    // player's own game may still hold RaceMenu's additions from before, a
+    // reconnect inside one game showing a look the server never had (lab,
+    // 2026-10-07: an orc wearing the last session's sculpt), so those are
+    // taken off before anything of the server's is applied to the player.
+    private onCreateActor(e: ConnectionMessage<CreateActorMessage>) {
+        const id = e.message.refrId;
+        if (typeof id !== "number") {
+            return;
+        }
+        this.wanted.delete(id);
+        this.applied.delete(id);
+        this.failed.delete(id);
+        if (e.message.isMe) {
+            // nothing the server has not sent since counts as sent
+            this.lastSent = "";
+            this.resetPending = true;
+        }
+    }
+
     private onUpdate() {
-        if (this.wanted.size === 0 || Date.now() - this.lastCheck < 2000) {
+        if ((this.wanted.size === 0 && !this.resetPending) || Date.now() - this.lastCheck < 2000) {
             return;
         }
         this.lastCheck = Date.now();
         if (!this.available()) {
             return;
         }
+        if (this.resetPending && this.resetPlayer()) {
+            this.resetPending = false;
+        }
         const me = this.myId();
         this.wanted.forEach((preset, actor) => {
+            if (actor === me && this.resetPending) {
+                return; // the reset first, tried again on the next pass
+            }
             const target = actor === me
                 ? this.sp.Game.getPlayer()
                 : this.sp.Actor.from(this.sp.Game.getFormEx(remoteIdToLocalId(actor)));
@@ -138,6 +174,39 @@ export class RaceMenuService extends ClientListener {
         return loaded;
     }
 
+    // RaceMenu's load erases an actor's sculpt, its own sliders, overrides
+    // and transforms before it applies a preset's (PresetInterface
+    // ApplyPresetData), so the player's look saved and loaded back without
+    // those parts drops what RaceMenu added and keeps the face SkyMP gave it
+    private resetPlayer(): boolean {
+        const player = this.sp.Game.getPlayer();
+        if (!player) {
+            return false;
+        }
+        const saved = this.save(player, "thuum-reset");
+        if (!saved) {
+            return false;
+        }
+        let look: Record<string, unknown>;
+        try {
+            look = JSON.parse(saved);
+        } catch (err) {
+            logError(this, "RaceMenu saved a look that is not JSON", err);
+            return false;
+        }
+        RACEMENU_ONLY.forEach((part) => delete look[part]);
+        const morphs = look["morphs"];
+        if (morphs && typeof morphs === "object") {
+            (morphs as Record<string, unknown>)["sculpt"] = null;
+            (morphs as Record<string, unknown>)["custom"] = null;
+        }
+        const reset = this.load(player, this.myId(), JSON.stringify(look));
+        if (reset) {
+            logTrace(this, "took RaceMenu's additions off the player before its record");
+        }
+        return reset;
+    }
+
     private available(): boolean {
         if (this.raceMenu === undefined) {
             const enabled = this.sp.settings["skymp5-client"]["raceMenuSync"] !== false;
@@ -172,5 +241,8 @@ export class RaceMenuService extends ClientListener {
     private failed = new Map<number, string>();
     private lastSent = "";
     private lastCheck = 0;
+    // the player's own CreateActor came, and RaceMenu's additions are still
+    // to be taken off it
+    private resetPending = false;
     private raceMenu: boolean | undefined = undefined;
 }

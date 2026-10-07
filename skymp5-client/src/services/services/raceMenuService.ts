@@ -8,20 +8,30 @@ import { remoteIdToLocalId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { RemoteServer } from "./remoteServer";
 
-// RaceMenu's export folder, where TESModPlatform's RaceMenu natives save and
-// load a preset by name, relative to the game's folder as RaceMenu's own UI
-// writes it
-const EXPORTED = "Data/SKSE/Plugins/CharGen/Exported/";
+// RaceMenu's preset folder under the game's folder: CharGen's
+// SaveCharacterPreset and LoadCharacterPresetEx save and load
+// SKSE\Plugins\CharGen\Presets\<name>.jslot in the game's data (RaceMenu's
+// scripts\source\chargen.psc)
+const PRESETS = "Data/SKSE/Plugins/CharGen/Presets/";
+
+// LoadCharacterPresetEx's flags: every part of a preset, the script's own
+// default (0xFFFFFFFF)
+const APPLY_ALL = -1;
+
+// RaceMenu's hair color form, which its own LoadPreset hands to the player's
+// load (0x801 in RaceMenu.esp)
+const PLAYER_HAIR_COLOR = 0x801;
 
 // thuum docs/verbs/racemenu-sync.md: a player's RaceMenu look follows its
 // character. When the race menu closes, the player's look is saved through
-// RaceMenu (TESModPlatform.SaveRaceMenuPreset) and sent if it changed. The
-// server hands back the player's own after a login and every other player's
-// with its figure, which RaceMenu loads (LoadRaceMenuPreset). A figure is
-// built again on a new base when its appearance changes, so every two seconds
-// a look is applied again to an actor whose base it was not applied to yet.
-// Nothing happens without RaceMenu (TESModPlatform.RaceMenuPresetVersion 0,
-// as on 1.7.104) or with `raceMenuSync: false` in skymp5-client's settings.
+// RaceMenu's own Papyrus natives (CharGen.SaveCharacterPreset) and sent if it
+// changed. The server hands back the player's own after a login and every
+// other player's with its figure, which RaceMenu loads
+// (CharGen.LoadCharacterPresetEx). A figure is built again on a new base when
+// its appearance changes, so every two seconds a look is applied again to an
+// actor whose base it was not applied to yet. Nothing happens without
+// RaceMenu (no CharGen natives, as on 1.7.104) or with `raceMenuSync: false`
+// in skymp5-client's settings.
 export class RaceMenuService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -87,43 +97,59 @@ export class RaceMenuService extends ClientListener {
         });
     }
 
+    // RaceMenu's save answers nothing; the file it leaves is the answer
     private save(actor: Actor, name: string): string | undefined {
-        if (this.sp.callNative("TESModPlatform", "SaveRaceMenuPreset", undefined, actor, name) !== true) {
-            return undefined;
-        }
+        const path = PRESETS + name + ".jslot";
         try {
-            return fs.readFileSync(EXPORTED + name + ".jslot", "utf8");
+            fs.mkdirSync(PRESETS, { recursive: true });
+            fs.rmSync(path, { force: true });
+            this.sp.callNative("CharGen", "SaveCharacterPreset", undefined, actor, name);
+            return fs.readFileSync(path, "utf8");
         } catch (err) {
-            logError(this, "reading the saved RaceMenu preset failed", err);
+            logError(this, "saving the RaceMenu preset failed", err);
             return undefined;
         }
     }
 
+    // The player's own look loads as RaceMenu's LoadPreset loads it: with
+    // RaceMenu's hair color form, then RSM_RequestTintSave so RaceMenu's
+    // scripts take in what changed. A figure's hair color is its appearance's.
     private load(actor: Actor, id: number, preset: string): boolean {
         const name = "thuum-" + id.toString(16);
         try {
-            fs.mkdirSync(EXPORTED, { recursive: true });
-            fs.writeFileSync(EXPORTED + name + ".jslot", preset, "utf8");
+            fs.mkdirSync(PRESETS, { recursive: true });
+            fs.writeFileSync(PRESETS + name + ".jslot", preset, "utf8");
         } catch (err) {
             logError(this, "writing a RaceMenu preset failed", err);
             return false;
         }
-        return this.sp.callNative("TESModPlatform", "LoadRaceMenuPreset", undefined, actor, name) === true;
+        const isPlayer = id === this.myId();
+        const hairColor = isPlayer ? this.sp.Game.getFormFromFile(PLAYER_HAIR_COLOR, "RaceMenu.esp") : null;
+        const loaded = this.sp.callNative("CharGen", "LoadCharacterPresetEx", undefined, actor, name, hairColor, APPLY_ALL) === true;
+        if (loaded && isPlayer) {
+            actor.sendModEvent("RSM_RequestTintSave", "", 0);
+        }
+        return loaded;
     }
 
     private available(): boolean {
         if (this.raceMenu === undefined) {
             const enabled = this.sp.settings["skymp5-client"]["raceMenuSync"] !== false;
-            const version = this.sp.callNative("TESModPlatform", "RaceMenuPresetVersion", undefined) as number;
-            // asked until RaceMenu answers: skee may hand over its interfaces
-            // after the client's first frames
-            if (!enabled) {
-                this.raceMenu = false;
-            } else if (version > 0) {
-                this.raceMenu = true;
-            }
+            this.raceMenu = enabled && this.hasCharGen();
         }
-        return this.raceMenu === true;
+        return this.raceMenu;
+    }
+
+    // RaceMenu's natives are bound before the game reaches its main menu, so
+    // one answer holds for the session
+    private hasCharGen(): boolean {
+        try {
+            this.sp.callNative("CharGen", "IsExternalEnabled", undefined);
+            return true;
+        } catch (err) {
+            logTrace(this, "no RaceMenu: CharGen's natives are not there", err);
+            return false;
+        }
     }
 
     private myId(): number {

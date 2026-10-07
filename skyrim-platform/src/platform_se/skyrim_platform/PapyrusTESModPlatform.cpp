@@ -3,7 +3,6 @@
 #include "ConsoleApi.h"
 #include "ExceptionPrinter.h"
 #include "NullPointerException.h"
-#include "RaceMenuInterface.h"
 
 #include <RE/B/BSPointerHandle.h>
 #include <RE/C/Calendar.h>
@@ -1179,87 +1178,6 @@ bool TESModPlatform::SetFavorite(IVM* vm, StackID stackId,
 }
 
 namespace {
-// RaceMenu's Preset interface, asked of skee (thuum docs/verbs/
-// racemenu-sync.md). Null when RaceMenu is not loaded, as on 1.7.104, where
-// SKSE refuses skee64.dll 0.4.20.0; asked again until it answers.
-RaceMenu::IPresetInterface* RaceMenuPresets()
-{
-  static RaceMenu::IPresetInterface* presets = nullptr;
-  if (presets) {
-    return presets;
-  }
-  auto messaging = SKSE::GetMessagingInterface();
-  if (!messaging) {
-    return nullptr;
-  }
-  RaceMenu::InterfaceExchangeMessage message;
-  messaging->Dispatch(
-    RaceMenu::InterfaceExchangeMessage::kMessage_ExchangeInterface, &message,
-    sizeof(RaceMenu::InterfaceExchangeMessage*), "skee");
-  if (message.interfaceMap) {
-    presets = static_cast<RaceMenu::IPresetInterface*>(
-      message.interfaceMap->QueryInterface("Preset"));
-  }
-  return presets;
-}
-
-// A preset's file name: letters, digits, '-' and '_', so a caller names a
-// file in RaceMenu's Exported folder and nothing outside it
-bool IsPresetName(std::string_view name)
-{
-  if (name.empty() || name.size() > 64) {
-    return false;
-  }
-  return std::all_of(name.begin(), name.end(), [](char c) {
-    return std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_';
-  });
-}
-}
-
-int32_t TESModPlatform::RaceMenuPresetVersion(IVM* vm, StackID stackId,
-                                              RE::StaticFunctionTag*)
-{
-  auto presets = RaceMenuPresets();
-  return presets ? static_cast<int32_t>(presets->GetVersion()) : 0;
-}
-
-// RaceMenu's own UI saves under Data\ through a plain file and loads the same
-// file through the game's resources, without Data\ (RaceMenu's public source,
-// skee64/PapyrusCharGen.cpp); SavePreset there answers false even when it
-// wrote the file, so the file is what counts.
-bool TESModPlatform::SaveRaceMenuPreset(IVM* vm, StackID stackId,
-                                        RE::StaticFunctionTag*,
-                                        RE::Actor* actor,
-                                        std::string_view name)
-{
-  auto presets = RaceMenuPresets();
-  if (!presets || !actor || !IsPresetName(name)) {
-    return false;
-  }
-  const std::string path =
-    "Data\\SKSE\\Plugins\\CharGen\\Exported\\" + std::string(name) + ".jslot";
-  std::error_code ec;
-  std::filesystem::remove(path, ec);
-  presets->SavePreset(path.c_str(), nullptr, actor);
-  return std::filesystem::exists(path, ec);
-}
-
-bool TESModPlatform::LoadRaceMenuPreset(IVM* vm, StackID stackId,
-                                        RE::StaticFunctionTag*,
-                                        RE::Actor* actor,
-                                        std::string_view name)
-{
-  auto presets = RaceMenuPresets();
-  if (!presets || !actor || !IsPresetName(name)) {
-    return false;
-  }
-  const std::string path =
-    "SKSE\\Plugins\\CharGen\\Exported\\" + std::string(name) + ".jslot";
-  return presets->LoadPreset(path.c_str(), nullptr, actor,
-                             RaceMenu::IPresetInterface::kPresetApplyAll);
-}
-
-namespace {
 // thuum docs/verbs/actor-values.md: the engine's actor values
 // (CommonLibSSE-NG include/RE/A/ActorValues.h, kTotal) and the player's
 // skills in its progress (PlayerCharacter.h, PlayerSkills::Skills::kTotal)
@@ -1527,23 +1445,6 @@ bool TESModPlatform::Register(IVM* vm)
                                      RE::StaticFunctionTag*, RE::TESForm*,
                                      int32_t>("SetFavorite", "TESModPlatform",
                                               SetFavorite));
-
-  vm->BindNativeMethod(
-    new RE::BSScript::NativeFunction<true, decltype(RaceMenuPresetVersion),
-                                     int32_t, RE::StaticFunctionTag*>(
-      "RaceMenuPresetVersion", "TESModPlatform", RaceMenuPresetVersion));
-
-  vm->BindNativeMethod(
-    new RE::BSScript::NativeFunction<true, decltype(SaveRaceMenuPreset), bool,
-                                     RE::StaticFunctionTag*, RE::Actor*,
-                                     std::string_view>(
-      "SaveRaceMenuPreset", "TESModPlatform", SaveRaceMenuPreset));
-
-  vm->BindNativeMethod(
-    new RE::BSScript::NativeFunction<true, decltype(LoadRaceMenuPreset), bool,
-                                     RE::StaticFunctionTag*, RE::Actor*,
-                                     std::string_view>(
-      "LoadRaceMenuPreset", "TESModPlatform", LoadRaceMenuPreset));
 
   vm->BindNativeMethod(
     new RE::BSScript::NativeFunction<true, decltype(GetActorValueBases),

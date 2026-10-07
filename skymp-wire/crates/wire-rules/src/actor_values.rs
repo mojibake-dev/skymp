@@ -162,6 +162,190 @@ pub fn login_applied(record: &Snapshot, report: &Snapshot) -> bool {
         })
 }
 
+/// The actor values' Papyrus names by index, as the game resolves them: each
+/// a Skyrim.esm AVIF editor ID less its "AV", which SKSE's
+/// ActorValueInfo.GetActorValueInfoByName finds at the form the game lists
+/// at that index (thuum run 20261007-022013-x-racemenu-probe2, steps 025 and
+/// 026). None where the lab confirmed no name: 24 of the 164 (thuum
+/// docs/verbs/actor-values.md).
+pub const NAMES: [Option<&str>; ACTOR_VALUES] = [
+    Some("Aggression"),               // 0
+    Some("Confidence"),               // 1
+    Some("Energy"),                   // 2
+    Some("Morality"),                 // 3
+    Some("Mood"),                     // 4
+    Some("Assistance"),               // 5
+    Some("OneHanded"),                // 6
+    Some("TwoHanded"),                // 7
+    Some("Marksman"),                 // 8
+    Some("Block"),                    // 9
+    Some("Smithing"),                 // 10
+    Some("HeavyArmor"),               // 11
+    Some("LightArmor"),               // 12
+    Some("Pickpocket"),               // 13
+    Some("Lockpicking"),              // 14
+    Some("Sneak"),                    // 15
+    Some("Alchemy"),                  // 16
+    Some("Speechcraft"),              // 17
+    Some("Alteration"),               // 18
+    Some("Conjuration"),              // 19
+    Some("Destruction"),              // 20
+    None,                             // 21
+    Some("Restoration"),              // 22
+    Some("Enchanting"),               // 23
+    Some("Health"),                   // 24
+    Some("Magicka"),                  // 25
+    Some("Stamina"),                  // 26
+    Some("HealRate"),                 // 27
+    Some("MagickaRate"),              // 28
+    Some("StaminaRate"),              // 29
+    Some("SpeedMult"),                // 30
+    Some("InventoryWeight"),          // 31
+    Some("CarryWeight"),              // 32
+    Some("CritChance"),               // 33
+    Some("MeleeDamage"),              // 34
+    Some("UnarmedDamage"),            // 35
+    Some("Mass"),                     // 36
+    None,                             // 37
+    Some("VoiceRate"),                // 38
+    Some("DamageResist"),             // 39
+    Some("PoisonResist"),             // 40
+    Some("FireResist"),               // 41
+    Some("ElectricResist"),           // 42
+    Some("FrostResist"),              // 43
+    Some("MagicResist"),              // 44
+    None,                             // 45
+    Some("PerceptionCondition"),      // 46
+    Some("EnduranceCondition"),       // 47
+    Some("LeftAttackCondition"),      // 48
+    Some("RightAttackCondition"),     // 49
+    Some("LeftMobilityCondition"),    // 50
+    Some("RightMobilityCondition"),   // 51
+    Some("BrainCondition"),           // 52
+    Some("Paralysis"),                // 53
+    Some("Invisibility"),             // 54
+    Some("NightEye"),                 // 55
+    Some("DetectLifeRange"),          // 56
+    None,                             // 57
+    None,                             // 58
+    Some("IgnoreCrippledLimbs"),      // 59
+    Some("Fame"),                     // 60
+    Some("Infamy"),                   // 61
+    Some("JumpingBonus"),             // 62
+    None,                             // 63
+    None,                             // 64
+    Some("ArmorPerks"),               // 65
+    Some("ShieldPerks"),              // 66
+    None,                             // 67
+    Some("Variable01"),               // 68
+    Some("Variable02"),               // 69
+    Some("Variable03"),               // 70
+    None,                             // 71
+    None,                             // 72
+    Some("Variable06"),               // 73
+    Some("Variable07"),               // 74
+    Some("Variable08"),               // 75
+    Some("Variable09"),               // 76
+    Some("Variable10"),               // 77
+    Some("BowSpeedBonus"),            // 78
+    Some("FavorActive"),              // 79
+    Some("FavorsPerDay"),             // 80
+    Some("FavorsPerDayTimer"),        // 81
+    None,                             // 82
+    Some("AbsorbChance"),             // 83
+    Some("Blindness"),                // 84
+    None,                             // 85
+    Some("ShoutRecoveryMult"),        // 86
+    Some("BowStaggerBonus"),          // 87
+    Some("Telekinesis"),              // 88
+    Some("FavorPointsBonus"),         // 89
+    Some("LastBribedIntimidated"),    // 90
+    Some("LastFlattered"),            // 91
+    None,                             // 92
+    Some("BypassVendorStolenCheck"),  // 93
+    Some("BypassVendorKeywordCheck"), // 94
+    Some("WaitingForPlayer"),         // 95
+    Some("OneHandedMod"),             // 96
+    Some("TwoHandedMod"),             // 97
+    Some("MarksmanMod"),              // 98
+    Some("BlockMod"),                 // 99
+    None,                             // 100
+    Some("HeavyArmorMod"),            // 101
+    Some("LightArmorMod"),            // 102
+    Some("PickPocketMod"),            // 103
+    Some("LockpickingMod"),           // 104
+    Some("SneakMod"),                 // 105
+    Some("AlchemyMod"),               // 106
+    Some("SpeechcraftMod"),           // 107
+    Some("AlterationMod"),            // 108
+    Some("ConjurationMod"),           // 109
+    Some("DestructionMod"),           // 110
+    Some("IllusionMod"),              // 111
+    Some("RestorationMod"),           // 112
+    Some("EnchantingMod"),            // 113
+    Some("OneHandedSkillAdvance"),    // 114
+    Some("TwoHandedSkillAdvance"),    // 115
+    Some("MarksmanSkillAdvance"),     // 116
+    Some("BlockSkillAdvance"),        // 117
+    Some("SmithingSkillAdvance"),     // 118
+    Some("HeavyArmorSkillAdvance"),   // 119
+    Some("LightArmorSkillAdvance"),   // 120
+    Some("PickPocketSkillAdvance"),   // 121
+    Some("LockpickingSkillAdvance"),  // 122
+    Some("SneakSkillAdvance"),        // 123
+    Some("AlchemySkillAdvance"),      // 124
+    Some("SpeechcraftSkillAdvance"),  // 125
+    Some("AlterationSkillAdvance"),   // 126
+    Some("ConjurationSkillAdvance"),  // 127
+    Some("DestructionSkillAdvance"),  // 128
+    Some("IllusionSkillAdvance"),     // 129
+    Some("RestorationSkillAdvance"),  // 130
+    Some("EnchantingSkillAdvance"),   // 131
+    Some("LeftWeaponSpeedMult"),      // 132
+    Some("DragonSouls"),              // 133
+    Some("CombatHealthRegenMult"),    // 134
+    Some("OneHandedPowerMod"),        // 135
+    None,                             // 136
+    Some("MarksmanPowerMod"),         // 137
+    Some("BlockPowerMod"),            // 138
+    Some("SmithingPowerMod"),         // 139
+    Some("HeavyArmorPowerMod"),       // 140
+    Some("LightArmorPowerMod"),       // 141
+    Some("PickPocketPowerMod"),       // 142
+    Some("LockpickingPowerMod"),      // 143
+    Some("SneakPowerMod"),            // 144
+    Some("AlchemyPowerMod"),          // 145
+    Some("SpeechcraftPowerMod"),      // 146
+    Some("AlterationPowerMod"),       // 147
+    Some("ConjurationPowerMod"),      // 148
+    None,                             // 149
+    Some("IllusionPowerMod"),         // 150
+    Some("RestorationPowerMod"),      // 151
+    Some("EnchantingPowerMod"),       // 152
+    Some("DragonRend"),               // 153
+    Some("AttackDamageMult"),         // 154
+    None,                             // 155
+    None,                             // 156
+    None,                             // 157
+    None,                             // 158
+    None,                             // 159
+    None,                             // 160
+    None,                             // 161
+    None,                             // 162
+    Some("ReflectDamage"),            // 163
+];
+
+/// The actor value a Papyrus name names, ASCII case ignored as the server
+/// compares names (papyrus-vm CIString, the core's ConvertToAV); None for a
+/// name the table does not hold.
+#[must_use]
+pub fn index_of(name: &str) -> Option<u8> {
+    NAMES
+        .iter()
+        .position(|n| n.is_some_and(|n| n.eq_ignore_ascii_case(name)))
+        .and_then(|i| u8::try_from(i).ok())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,5 +436,27 @@ mod tests {
         let (after, still) = merge(&snapshot(&[]), &snapshot(&[(6, 20.0)]), &[(9, 40.0)]);
         assert_eq!(after.bases, vec![(6, 20.0), (9, 40.0)]);
         assert_eq!(still, vec![(9, 40.0)]);
+    }
+
+    #[test]
+    fn names_resolve_as_the_game_lists_them() {
+        assert_eq!(index_of("Health"), Some(24));
+        assert_eq!(index_of("health"), Some(24));
+        assert_eq!(index_of("OneHanded"), Some(6));
+        assert_eq!(index_of("Enchanting"), Some(23));
+        assert_eq!(index_of("CarryWeight"), Some(32));
+        assert_eq!(index_of("Mysticism"), None); // its editor ID's name finds nothing
+        assert_eq!(index_of(""), None);
+        assert_eq!(index_of("NoSuchValue"), None);
+        assert_eq!(NAMES.iter().filter(|n| n.is_some()).count(), 140);
+    }
+
+    #[test]
+    fn every_name_finds_its_own_index() {
+        for (i, n) in NAMES.iter().enumerate() {
+            if let Some(n) = n {
+                assert_eq!(index_of(n).map(usize::from), Some(i), "{n}");
+            }
+        }
     }
 }

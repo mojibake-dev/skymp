@@ -64,3 +64,14 @@ Int Function RaceMenuPresetVersion() global native
 Bool Function SaveRaceMenuPreset(Actor actor, String name) global native
 
 Bool Function LoadRaceMenuPreset(Actor actor, String name) global native
+
+; thuum docs/verbs/actor-values.md: the player's 164 base values by actor value;
+; one set; and its progress as xp, threshold, level, per skill level, xp and
+; threshold, per skill its legendary count, read and written
+Float[] Function GetActorValueBases() global native
+
+Bool Function SetActorValueBase(Int av, Float base) global native
+
+Float[] Function GetPlayerProgress() global native
+
+Bool Function SetPlayerProgress(Float[] progress) global native

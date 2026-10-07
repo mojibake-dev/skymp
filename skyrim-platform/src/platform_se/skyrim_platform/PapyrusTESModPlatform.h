@@ -116,6 +116,19 @@ bool SaveRaceMenuPreset(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
 bool LoadRaceMenuPreset(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                         RE::Actor* actor, std::string_view name);
 
+// The player's actor values and progress (thuum docs/verbs/actor-values.md):
+// its 164 base values by actor value; one set; and its progress as xp,
+// threshold, level, per skill level, xp and threshold, per skill its
+// legendary count, read and written
+std::vector<float> GetActorValueBases(IVM* vm, StackID stackId,
+                                      RE::StaticFunctionTag*);
+bool SetActorValueBase(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
+                       int32_t av, float base);
+std::vector<float> GetPlayerProgress(IVM* vm, StackID stackId,
+                                     RE::StaticFunctionTag*);
+bool SetPlayerProgress(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
+                       std::vector<float> progress);
+
 void BlockPapyrusEvents(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                         bool blocked);
 

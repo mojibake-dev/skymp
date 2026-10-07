@@ -1259,6 +1259,116 @@ bool TESModPlatform::LoadRaceMenuPreset(IVM* vm, StackID stackId,
                              RaceMenu::IPresetInterface::kPresetApplyAll);
 }
 
+namespace {
+// thuum docs/verbs/actor-values.md: the engine's actor values
+// (CommonLibSSE-NG include/RE/A/ActorValues.h, kTotal) and the player's
+// skills in its progress (PlayerCharacter.h, PlayerSkills::Skills::kTotal)
+constexpr size_t kActorValues = static_cast<size_t>(RE::ActorValue::kTotal);
+constexpr size_t kSkills =
+  static_cast<size_t>(RE::PlayerCharacter::PlayerSkills::Data::Skill::kTotal);
+// GetPlayerProgress' layout: xp, threshold, level, then per skill its level,
+// xp and threshold, then per skill its legendary count
+constexpr size_t kProgressLength = 3 + kSkills * 3 + kSkills;
+
+RE::PlayerCharacter::PlayerSkills::Data* PlayerSkillData()
+{
+  auto player = RE::PlayerCharacter::GetSingleton();
+  if (!player) {
+    return nullptr;
+  }
+  auto skills = player->GetInfoRuntimeData().skills;
+  return skills ? skills->data : nullptr;
+}
+}
+
+std::vector<float> TESModPlatform::GetActorValueBases(IVM* vm, StackID stackId,
+                                                      RE::StaticFunctionTag*)
+{
+  auto player = RE::PlayerCharacter::GetSingleton();
+  if (!player) {
+    return {};
+  }
+  auto owner = player->AsActorValueOwner();
+  std::vector<float> out(kActorValues);
+  for (size_t i = 0; i < kActorValues; ++i) {
+    out[i] = owner->GetBaseActorValue(static_cast<RE::ActorValue>(i));
+  }
+  return out;
+}
+
+bool TESModPlatform::SetActorValueBase(IVM* vm, StackID stackId,
+                                       RE::StaticFunctionTag*, int32_t av,
+                                       float base)
+{
+  auto player = RE::PlayerCharacter::GetSingleton();
+  if (!player || av < 0 || static_cast<size_t>(av) >= kActorValues ||
+      !std::isfinite(base)) {
+    return false;
+  }
+  player->AsActorValueOwner()->SetBaseActorValue(
+    static_cast<RE::ActorValue>(av), base);
+  return true;
+}
+
+std::vector<float> TESModPlatform::GetPlayerProgress(IVM* vm, StackID stackId,
+                                                     RE::StaticFunctionTag*)
+{
+  auto player = RE::PlayerCharacter::GetSingleton();
+  auto data = PlayerSkillData();
+  if (!player || !data) {
+    return {};
+  }
+  std::vector<float> out;
+  out.reserve(kProgressLength);
+  out.push_back(data->xp);
+  out.push_back(data->levelThreshold);
+  out.push_back(static_cast<float>(player->GetLevel()));
+  for (size_t i = 0; i < kSkills; ++i) {
+    out.push_back(data->skills[i].level);
+    out.push_back(data->skills[i].xp);
+    out.push_back(data->skills[i].levelThreshold);
+  }
+  for (size_t i = 0; i < kSkills; ++i) {
+    out.push_back(static_cast<float>(data->legendaryLevels[i]));
+  }
+  return out;
+}
+
+// Writes the progress GetPlayerProgress reads, and the level on the player's
+// base (ACTOR_BASE_DATA::level, TESActorBaseData.h:69). HYPOTHESIS until
+// a-actor-values: the Stats menu and the next skill use follow the written
+// experience, and the level is the console's SetLevel's.
+bool TESModPlatform::SetPlayerProgress(IVM* vm, StackID stackId,
+                                       RE::StaticFunctionTag*,
+                                       std::vector<float> progress)
+{
+  auto player = RE::PlayerCharacter::GetSingleton();
+  auto data = PlayerSkillData();
+  auto base = player ? player->GetActorBase() : nullptr;
+  if (!player || !data || !base || progress.size() != kProgressLength ||
+      !std::all_of(progress.begin(), progress.end(),
+                   [](float v) { return std::isfinite(v) && v >= 0.f; })) {
+    return false;
+  }
+  const float level = progress[2];
+  if (level < 1.f || level > 65535.f) {
+    return false;
+  }
+  data->xp = progress[0];
+  data->levelThreshold = progress[1];
+  for (size_t i = 0; i < kSkills; ++i) {
+    data->skills[i].level = progress[3 + i * 3];
+    data->skills[i].xp = progress[3 + i * 3 + 1];
+    data->skills[i].levelThreshold = progress[3 + i * 3 + 2];
+  }
+  for (size_t i = 0; i < kSkills; ++i) {
+    data->legendaryLevels[i] =
+      static_cast<uint32_t>(progress[3 + kSkills * 3 + i]);
+  }
+  base->actorData.level = static_cast<uint16_t>(level);
+  return true;
+}
+
 bool TESModPlatform::Register(IVM* vm)
 {
   TESModPlatform::onPapyrusUpdate = onPapyrusUpdate;
@@ -1434,6 +1544,29 @@ bool TESModPlatform::Register(IVM* vm)
                                      RE::StaticFunctionTag*, RE::Actor*,
                                      std::string_view>(
       "LoadRaceMenuPreset", "TESModPlatform", LoadRaceMenuPreset));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(GetActorValueBases),
+                                     std::vector<float>,
+                                     RE::StaticFunctionTag*>(
+      "GetActorValueBases", "TESModPlatform", GetActorValueBases));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SetActorValueBase), bool,
+                                     RE::StaticFunctionTag*, int32_t, float>(
+      "SetActorValueBase", "TESModPlatform", SetActorValueBase));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(GetPlayerProgress),
+                                     std::vector<float>,
+                                     RE::StaticFunctionTag*>(
+      "GetPlayerProgress", "TESModPlatform", GetPlayerProgress));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SetPlayerProgress), bool,
+                                     RE::StaticFunctionTag*,
+                                     std::vector<float>>(
+      "SetPlayerProgress", "TESModPlatform", SetPlayerProgress));
 
   static LoadGameEvent loadGameEvent;
 

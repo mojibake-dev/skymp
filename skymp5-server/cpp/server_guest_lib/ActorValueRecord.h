@@ -27,6 +27,11 @@ struct ActorValueRecord
     {
       return lhs.ToTuple() == rhs.ToTuple();
     }
+
+    friend bool operator<(const Skill& lhs, const Skill& rhs)
+    {
+      return lhs.ToTuple() < rhs.ToTuple();
+    }
   };
 
   std::vector<std::pair<uint8_t, float>> bases;
@@ -45,5 +50,12 @@ struct ActorValueRecord
                          const ActorValueRecord& rhs)
   {
     return lhs.ToTuple() == rhs.ToTuple();
+  }
+
+  // the change form compares its fields as a tuple
+  friend bool operator<(const ActorValueRecord& lhs,
+                        const ActorValueRecord& rhs)
+  {
+    return lhs.ToTuple() < rhs.ToTuple();
   }
 };

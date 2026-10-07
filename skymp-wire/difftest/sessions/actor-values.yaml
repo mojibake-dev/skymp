@@ -1,0 +1,25 @@
+# difftest actor-values (M1, thuum docs/verbs/actor-values.md): c1 and c2 are
+# new characters (profiles 9 and 10, actors 0xff000002 and 0xff000003: see
+# melee-reach), both at the spawn. At 2 s c1 reports a snapshot within bounds
+# (One-Handed 16, Health 110, level 2), which the fixed server records and
+# answers nothing to; at 2.5 s one naming actor value 164, which the wire
+# stack's validator refuses (E_VAL_RANGE); at 3 s one listing a skill twice,
+# refused again. A snapshot goes to no other player, and the legacy server
+# has no ActorValues, so the stacks must agree on everything (the ctest
+# ActorValuesTest and the T3 scenario cover the record and the login). c2
+# steps aside at 4 s so it outlives c1, as in every session.
+id: actor-values
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 2000, send: {t: 40, bases: [{av: 6, base: 16.0}, {av: 24, base: 110.0}], skills: [{skill: 0, level: 16.0, xp: 1.0, threshold: 10.0}], xp: 5.0, threshold: 75.0, level: 2, legendary: []}}
+  - {client: c1, at_ms: 2500, send: {t: 40, bases: [{av: 164, base: 1.0}], skills: [], xp: 5.0, threshold: 75.0, level: 2, legendary: []}}
+  - {client: c1, at_ms: 3000, send: {t: 40, bases: [], skills: [{skill: 1, level: 15.0, xp: 0.0, threshold: 10.0}, {skill: 1, level: 15.0, xp: 0.0, threshold: 10.0}], xp: 5.0, threshold: 75.0, level: 2, legendary: []}}
+  - {client: c2, at_ms: 4000, move: {dx: 1, dy: 0}}
+divergences:
+  - client: c2
+    msg: {t: 25, idx: 2}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

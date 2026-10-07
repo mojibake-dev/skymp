@@ -180,14 +180,16 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     // means the player's own world is up, so its map can be shown, what it
     // learned of its ingredients taught again
     // (docs/verbs/learned-effects.md), its favorites marked again
-    // (docs/verbs/favorites.md), and its RaceMenu look applied again
-    // (docs/verbs/racemenu-sync.md)
+    // (docs/verbs/favorites.md), its RaceMenu look applied again
+    // (docs/verbs/racemenu-sync.md), and its actor values and progress
+    // (docs/verbs/actor-values.md)
     if (actor == partOne.serverState.ActorByUser(rawMsgData.userId) &&
         actor->TakeMapMarkersPending()) {
       SendMapMarkers(*actor);
       SendIngredientEffects(*actor);
       SendFavorites(*actor);
       SendRaceMenuPreset(*actor);
+      SendActorValues(*actor);
     }
 
     if (!msg.data.isBlocking) {
@@ -1158,6 +1160,152 @@ void ActionListener::SendRaceMenuPreset(MpActor& actor)
   spdlog::info("RaceMenu: actor {:x} sent its preset of {} bytes after a "
                "login",
                actor.GetFormId(), message.preset.size());
+}
+
+namespace {
+// thuum docs/verbs/actor-values.md: the record and the message as the rule
+// takes them
+skymp::rules::AvSnapshot ToAvSnapshot(const ActorValueRecord& record)
+{
+  skymp::rules::AvSnapshot out{};
+  for (const auto& [av, base] : record.bases) {
+    out.bases.push_back(skymp::rules::AvBase{ av, base });
+  }
+  for (const auto& skill : record.skills) {
+    out.skills.push_back(skymp::rules::AvSkill{ skill.skill, skill.level,
+                                                skill.xp, skill.threshold });
+  }
+  out.xp = record.xp;
+  out.threshold = record.threshold;
+  out.level = record.level;
+  for (const auto& [skill, count] : record.legendary) {
+    out.legendary.push_back(skymp::rules::AvLegendary{ skill, count });
+  }
+  return out;
+}
+
+ActorValueRecord ToRecord(const ActorValuesMessage& msg)
+{
+  ActorValueRecord out;
+  for (const auto& base : msg.bases) {
+    out.bases.emplace_back(base.av, base.base);
+  }
+  for (const auto& skill : msg.skills) {
+    out.skills.push_back(ActorValueRecord::Skill{ skill.skill, skill.level,
+                                                  skill.xp, skill.threshold });
+  }
+  out.xp = msg.xp;
+  out.threshold = msg.threshold;
+  out.level = msg.level;
+  for (const auto& legendary : msg.legendary) {
+    out.legendary.emplace_back(legendary.skill, legendary.count);
+  }
+  return out;
+}
+
+ActorValueRecord ToRecord(const skymp::rules::AvSnapshot& snapshot)
+{
+  ActorValueRecord out;
+  for (const auto& base : snapshot.bases) {
+    out.bases.emplace_back(base.av, base.base);
+  }
+  for (const auto& skill : snapshot.skills) {
+    out.skills.push_back(ActorValueRecord::Skill{ skill.skill, skill.level,
+                                                  skill.xp, skill.threshold });
+  }
+  out.xp = snapshot.xp;
+  out.threshold = snapshot.threshold;
+  out.level = snapshot.level;
+  for (const auto& legendary : snapshot.legendary) {
+    out.legendary.emplace_back(legendary.skill, legendary.count);
+  }
+  return out;
+}
+
+std::vector<skymp::rules::AvBase> ToAvBases(
+  const std::vector<std::pair<uint8_t, float>>& values)
+{
+  std::vector<skymp::rules::AvBase> out;
+  out.reserve(values.size());
+  for (const auto& [av, base] : values) {
+    out.push_back(skymp::rules::AvBase{ av, base });
+  }
+  return out;
+}
+}
+
+// thuum docs/verbs/actor-values.md: the player's actor values and progress
+// after a skill or level increase. Recorded within bounds (R2; wire-rules
+// actor_values), except a value the server set that the report does not
+// carry yet; after a login, not until a report shows the login's record
+// applied.
+void ActionListener::OnActorValues(const RawMessageData& rawMsgData,
+                                   const ActorValuesMessage& msg)
+{
+  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!actor) {
+    return spdlog::warn("OnActorValues - no actor for user {}",
+                        rawMsgData.userId);
+  }
+  const auto report = ToAvSnapshot(ToRecord(msg));
+  const auto held = ToAvBases(actor->GetHeldActorValues());
+  const rust::Slice<const skymp::rules::AvBase> heldSlice(held.data(),
+                                                          held.size());
+  if (!skymp::rules::actor_values_report_ok(report, heldSlice)) {
+    return spdlog::info("ActorValues: user {} actor {:x} report refused "
+                        "(out of bounds)",
+                        rawMsgData.userId, actor->GetFormId());
+  }
+  const auto record = actor->GetActorValueRecord();
+  if (actor->IsActorValuesLoginPending()) {
+    if (record &&
+        !skymp::rules::actor_values_login_applied(ToAvSnapshot(*record),
+                                                  report)) {
+      return spdlog::info("ActorValues: user {} actor {:x} report before "
+                          "the login's record was applied, not taken",
+                          rawMsgData.userId, actor->GetFormId());
+    }
+    actor->SetActorValuesLoginPending(false);
+  }
+  const auto merged = skymp::rules::actor_values_merge(
+    ToAvSnapshot(record.value_or(ActorValueRecord{})), report, heldSlice);
+  std::vector<std::pair<uint8_t, float>> stillHeld;
+  for (const auto& h : merged.held) {
+    stillHeld.emplace_back(h.av, h.base);
+  }
+  actor->SetHeldActorValues(std::move(stillHeld));
+  const bool changed = actor->SetActorValueRecord(ToRecord(merged.record));
+  spdlog::info("ActorValues: user {} actor {:x} recorded {} bases, level "
+               "{}{}",
+               rawMsgData.userId, actor->GetFormId(), msg.bases.size(),
+               msg.level, changed ? "" : ", unchanged");
+}
+
+void ActionListener::SendActorValues(MpActor& actor)
+{
+  const auto record = actor.GetActorValueRecord();
+  if (!record) {
+    return;
+  }
+  ActorValuesMessage message;
+  for (const auto& [av, base] : record->bases) {
+    message.bases.push_back(ActorValuesMessage::Base{ av, base });
+  }
+  for (const auto& skill : record->skills) {
+    message.skills.push_back(ActorValuesMessage::Skill{
+      skill.skill, skill.level, skill.xp, skill.threshold });
+  }
+  message.xp = record->xp;
+  message.threshold = record->threshold;
+  message.level = record->level;
+  for (const auto& [skill, count] : record->legendary) {
+    message.legendary.push_back(ActorValuesMessage::Legendary{ skill, count });
+  }
+  actor.SetActorValuesLoginPending(true);
+  actor.SendToUser(message, true);
+  spdlog::info("ActorValues: actor {:x} sent {} bases, level {} after a "
+               "login",
+               actor.GetFormId(), message.bases.size(), message.level);
 }
 
 // thuum docs/verbs/sleep.md: SkyMP's client blocks the game's own Papyrus

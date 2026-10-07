@@ -68,6 +68,11 @@ struct MpActor::Impl
   // thuum docs/verbs/learned-effects.md: the last ingredient eaten and when
   uint32_t lastEatenId = 0;
   std::chrono::steady_clock::time_point lastEatenTimePoint;
+  // thuum docs/verbs/actor-values.md: values the server set that the
+  // client has not reported yet, and whether the record a login sent waits
+  // for a report that shows it applied
+  std::vector<std::pair<uint8_t, float>> heldActorValues;
+  bool actorValuesLoginPending = false;
   using RestorationTimePoints =
     std::unordered_map<espm::ActorValue,
                        std::chrono::steady_clock::time_point>;
@@ -920,6 +925,43 @@ bool MpActor::SetFavorites(std::vector<Favorite> favorites)
     changeForm.favorites = std::move(favorites);
   });
   return true;
+}
+
+std::optional<ActorValueRecord> MpActor::GetActorValueRecord() const
+{
+  return ChangeForm().actorValueRecord;
+}
+
+bool MpActor::SetActorValueRecord(ActorValueRecord record)
+{
+  if (GetActorValueRecord() == record) {
+    return false;
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    changeForm.actorValueRecord = std::move(record);
+  });
+  return true;
+}
+
+const std::vector<std::pair<uint8_t, float>>& MpActor::GetHeldActorValues()
+  const
+{
+  return pImpl->heldActorValues;
+}
+
+void MpActor::SetHeldActorValues(std::vector<std::pair<uint8_t, float>> held)
+{
+  pImpl->heldActorValues = std::move(held);
+}
+
+bool MpActor::IsActorValuesLoginPending() const
+{
+  return pImpl->actorValuesLoginPending;
+}
+
+void MpActor::SetActorValuesLoginPending(bool pending)
+{
+  pImpl->actorValuesLoginPending = pending;
 }
 
 std::string MpActor::GetRaceMenuPreset() const

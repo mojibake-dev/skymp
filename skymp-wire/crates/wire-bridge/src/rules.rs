@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, appearance, clock, damage, effects, favorites, hostility, markers, melee, movement, racemenu, rest};
+use wire_rules::{activation, actor_values, appearance, clock, damage, effects, favorites, hostility, markers, melee, movement, racemenu, rest};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -183,6 +183,63 @@ mod ffi {
         hotkey: i8,
     }
 
+    /// One actor value's base (thuum docs/verbs/actor-values.md).
+    #[derive(Debug, Clone)]
+    struct AvBase {
+        /// 0 to 163.
+        av: u8,
+        /// Its base value.
+        base: f32,
+    }
+
+    /// One skill's progress.
+    #[derive(Debug, Clone)]
+    struct AvSkill {
+        /// 0 to 17.
+        skill: u8,
+        /// The skill's level as its progress counts it.
+        level: f32,
+        /// Experience toward the next level.
+        xp: f32,
+        /// Experience the next level needs.
+        threshold: f32,
+    }
+
+    /// How many times a skill was made legendary.
+    #[derive(Debug, Clone)]
+    struct AvLegendary {
+        /// 0 to 17.
+        skill: u8,
+        /// Times made legendary.
+        count: u16,
+    }
+
+    /// A player's actor values and progress.
+    #[derive(Debug, Clone)]
+    struct AvSnapshot {
+        /// Base values, each actor value once.
+        bases: Vec<AvBase>,
+        /// Skills' progress.
+        skills: Vec<AvSkill>,
+        /// The character's experience toward the next level.
+        xp: f32,
+        /// Experience the next level needs.
+        threshold: f32,
+        /// The character level.
+        level: u16,
+        /// Skills made legendary.
+        legendary: Vec<AvLegendary>,
+    }
+
+    /// The record after a report, and the server's values still held.
+    #[derive(Debug)]
+    struct AvMerge {
+        /// The new record.
+        record: AvSnapshot,
+        /// The values the server set that the client has not reported yet.
+        held: Vec<AvBase>,
+    }
+
     /// Two player actors in a fight, the lower form id first.
     #[derive(Debug)]
     struct FightPair {
@@ -319,6 +376,13 @@ mod ffi {
         /// Whether a RaceMenu preset is one the server records: a JSON
         /// object, not nested past what a preset needs.
         fn racemenu_preset_ok(preset: &str) -> bool;
+        /// Whether an actor values report is within bounds, given the
+        /// values the server holds (thuum docs/verbs/actor-values.md).
+        fn actor_values_report_ok(report: &AvSnapshot, held: &[AvBase]) -> bool;
+        /// The record after a kept report, and the holds still standing.
+        fn actor_values_merge(record: &AvSnapshot, report: &AvSnapshot, held: &[AvBase]) -> AvMerge;
+        /// Whether a report shows the record a login sent as applied.
+        fn actor_values_login_applied(record: &AvSnapshot, report: &AvSnapshot) -> bool;
 
         /// The fights between players going on (thuum ADR-023).
         type Fights;
@@ -365,7 +429,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{BedFacts, ConeFacts, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, SneakMults, Verdict};
+pub use ffi::{AvBase, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, ConeFacts, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, SneakMults, Verdict};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -522,6 +586,54 @@ const fn ingredient_effects_union(recorded: u8, reported: u8) -> u8 {
 
 fn racemenu_preset_ok(preset: &str) -> bool {
     racemenu::preset_ok(preset)
+}
+
+fn av_snapshot(s: &AvSnapshot) -> actor_values::Snapshot {
+    actor_values::Snapshot {
+        bases: s.bases.iter().map(|b| (b.av, b.base)).collect(),
+        skills: s
+            .skills
+            .iter()
+            .map(|k| actor_values::SkillProgress { skill: k.skill, level: k.level, xp: k.xp, threshold: k.threshold })
+            .collect(),
+        xp: s.xp,
+        threshold: s.threshold,
+        level: s.level,
+        legendary: s.legendary.iter().map(|l| (l.skill, l.count)).collect(),
+    }
+}
+
+fn av_bases(bases: &[(u8, f32)]) -> Vec<AvBase> {
+    bases.iter().map(|&(av, base)| AvBase { av, base }).collect()
+}
+
+fn actor_values_report_ok(report: &AvSnapshot, held: &[AvBase]) -> bool {
+    let held: Vec<(u8, f32)> = held.iter().map(|h| (h.av, h.base)).collect();
+    actor_values::report_ok(&av_snapshot(report), &held)
+}
+
+fn actor_values_merge(record: &AvSnapshot, report: &AvSnapshot, held: &[AvBase]) -> AvMerge {
+    let held: Vec<(u8, f32)> = held.iter().map(|h| (h.av, h.base)).collect();
+    let (merged, still) = actor_values::merge(&av_snapshot(record), &av_snapshot(report), &held);
+    AvMerge {
+        record: AvSnapshot {
+            bases: av_bases(&merged.bases),
+            skills: merged
+                .skills
+                .iter()
+                .map(|k| AvSkill { skill: k.skill, level: k.level, xp: k.xp, threshold: k.threshold })
+                .collect(),
+            xp: merged.xp,
+            threshold: merged.threshold,
+            level: merged.level,
+            legendary: merged.legendary.iter().map(|&(skill, count)| AvLegendary { skill, count }).collect(),
+        },
+        held: av_bases(&still),
+    }
+}
+
+fn actor_values_login_applied(record: &AvSnapshot, report: &AvSnapshot) -> bool {
+    actor_values::login_applied(&av_snapshot(record), &av_snapshot(report))
 }
 
 fn favorites_kept(report: &[FavoriteFacts]) -> Vec<FavoriteEntry> {

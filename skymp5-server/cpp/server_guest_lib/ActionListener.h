@@ -72,6 +72,10 @@ public:
   virtual void OnRaceMenuPreset(const RawMessageData& rawMsgData,
                                 const RaceMenuPresetMessage& msg);
 
+  // thuum docs/verbs/actor-values.md
+  virtual void OnActorValues(const RawMessageData& rawMsgData,
+                             const ActorValuesMessage& msg);
+
   virtual void OnFinishSpSnippet(const RawMessageData& rawMsgData,
                                  const FinishSpSnippetMessage& msg);
 
@@ -128,6 +132,10 @@ private:
   // thuum docs/verbs/racemenu-sync.md: the player's RaceMenu look, for its
   // own client to apply after a login
   void SendRaceMenuPreset(MpActor& actor);
+  // thuum docs/verbs/actor-values.md: the player's actor values and
+  // progress, for its client's engine to apply after a login; the record is
+  // held until a report shows it applied
+  void SendActorValues(MpActor& actor);
 
   void NotifyHostility(MpActor& aggressor, MpActor& target,
                        std::chrono::steady_clock::time_point now);

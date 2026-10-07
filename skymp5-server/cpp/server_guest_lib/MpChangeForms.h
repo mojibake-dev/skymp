@@ -1,5 +1,6 @@
 #pragma once
 #include "ActiveMagicEffectsMap.h"
+#include "ActorValueRecord.h"
 #include "ActorValues.h"
 #include "Appearance.h"
 #include "DynamicFields.h"
@@ -145,6 +146,10 @@ public:
   // docs/verbs/racemenu-sync.md)
   std::optional<std::string> raceMenuPreset;
 
+  // The player's actor values and progress (thuum
+  // docs/verbs/actor-values.md)
+  std::optional<ActorValueRecord> actorValueRecord;
+
   // Please update 'ActorTest.cpp' when adding new Actor-related rows
 
   DynamicFields dynamicFields;
@@ -160,7 +165,7 @@ public:
       magickaRespawnPercentage, staminaRespawnPercentage, spawnPoint,
       dynamicFields, spawnDelay, learnedSpells, templateChain, lastAnimation,
       setNodeTextureSet, setNodeScale, displayName, mapMarkers,
-      ingredientEffects, favorites, raceMenuPreset);
+      ingredientEffects, favorites, raceMenuPreset, actorValueRecord);
   }
 
   static nlohmann::json ToJson(const MpChangeFormREFR& changeForm);

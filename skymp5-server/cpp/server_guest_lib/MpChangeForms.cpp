@@ -151,6 +151,31 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm)
     res["raceMenuPreset"] = *changeForm.raceMenuPreset;
   }
 
+  // thuum docs/verbs/actor-values.md; absent in older records, read as none
+  if (changeForm.actorValueRecord.has_value()) {
+    const auto& record = *changeForm.actorValueRecord;
+    auto bases = nlohmann::json::array();
+    for (const auto& [av, base] : record.bases) {
+      bases.push_back({ { "av", av }, { "base", base } });
+    }
+    auto skills = nlohmann::json::array();
+    for (const auto& skill : record.skills) {
+      skills.push_back({ { "skill", skill.skill },
+                         { "level", skill.level },
+                         { "xp", skill.xp },
+                         { "threshold", skill.threshold } });
+    }
+    auto legendary = nlohmann::json::array();
+    for (const auto& [skill, count] : record.legendary) {
+      legendary.push_back({ { "skill", skill }, { "count", count } });
+    }
+    res["actorValueRecord"] = {
+      { "bases", bases },        { "skills", skills },
+      { "xp", record.xp },       { "threshold", record.threshold },
+      { "level", record.level }, { "legendary", legendary }
+    };
+  }
+
   return res;
 }
 
@@ -197,6 +222,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
   static const JsonPointer ingredientEffects("ingredientEffects");
   static const JsonPointer favorites("favorites");
   static const JsonPointer raceMenuPreset("raceMenuPreset");
+  static const JsonPointer actorValueRecord("actorValueRecord");
   static const JsonPointer healthRespawnPercentage("healthRespawnPercentage");
   static const JsonPointer magickaRespawnPercentage(
     "magickaRespawnPercentage");
@@ -490,6 +516,57 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
     const char* tmp;
     ReadEx(element, raceMenuPreset, &tmp);
     res.raceMenuPreset = tmp;
+  }
+
+  if (element.at_pointer(actorValueRecord.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, actorValueRecord, &jTmp);
+    static const JsonPointer bases("bases"), skills("skills"),
+      legendary("legendary"), av("av"), base("base"), skill("skill"),
+      level("level"), xp("xp"), threshold("threshold"), count("count");
+    ActorValueRecord record;
+
+    std::vector<simdjson::dom::element> parsed;
+    ReadVector(jTmp, bases, &parsed);
+    for (auto& entry : parsed) {
+      uint32_t avTmp = 0;
+      double baseTmp = 0;
+      ReadEx(entry, av, &avTmp);
+      ReadEx(entry, base, &baseTmp);
+      record.bases.emplace_back(static_cast<uint8_t>(avTmp),
+                                static_cast<float>(baseTmp));
+    }
+    parsed.clear();
+    ReadVector(jTmp, skills, &parsed);
+    for (auto& entry : parsed) {
+      uint32_t skillTmp = 0;
+      double levelTmp = 0, xpTmp = 0, thresholdTmp = 0;
+      ReadEx(entry, skill, &skillTmp);
+      ReadEx(entry, level, &levelTmp);
+      ReadEx(entry, xp, &xpTmp);
+      ReadEx(entry, threshold, &thresholdTmp);
+      record.skills.push_back(ActorValueRecord::Skill{
+        static_cast<uint8_t>(skillTmp), static_cast<float>(levelTmp),
+        static_cast<float>(xpTmp), static_cast<float>(thresholdTmp) });
+    }
+    parsed.clear();
+    ReadVector(jTmp, legendary, &parsed);
+    for (auto& entry : parsed) {
+      uint32_t skillTmp = 0, countTmp = 0;
+      ReadEx(entry, skill, &skillTmp);
+      ReadEx(entry, count, &countTmp);
+      record.legendary.emplace_back(static_cast<uint8_t>(skillTmp),
+                                    static_cast<uint16_t>(countTmp));
+    }
+    double xpTmp = 0, thresholdTmp = 0;
+    uint32_t levelTmp = 1;
+    ReadEx(jTmp, xp, &xpTmp);
+    ReadEx(jTmp, threshold, &thresholdTmp);
+    ReadEx(jTmp, level, &levelTmp);
+    record.xp = static_cast<float>(xpTmp);
+    record.threshold = static_cast<float>(thresholdTmp);
+    record.level = static_cast<uint16_t>(levelTmp);
+    res.actorValueRecord = record;
   }
 
   return res;

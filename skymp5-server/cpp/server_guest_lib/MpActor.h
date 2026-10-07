@@ -1,4 +1,5 @@
 #pragma once
+#include "ActorValueRecord.h"
 #include "AnimationData.h"
 #include "Appearance.h"
 #include "Equipment.h"
@@ -176,6 +177,16 @@ public:
   // changed)
   std::string GetRaceMenuPreset() const;
   bool SetRaceMenuPreset(std::string preset);
+  // thuum docs/verbs/actor-values.md: the player's actor values and
+  // progress, kept in its change form (returns whether anything changed);
+  // the values the server set that its client has not reported yet; and
+  // whether the record a login sent waits for a report that shows it applied
+  std::optional<ActorValueRecord> GetActorValueRecord() const;
+  bool SetActorValueRecord(ActorValueRecord record);
+  const std::vector<std::pair<uint8_t, float>>& GetHeldActorValues() const;
+  void SetHeldActorValues(std::vector<std::pair<uint8_t, float>> held);
+  bool IsActorValuesLoginPending() const;
+  void SetActorValuesLoginPending(bool pending);
   size_t CountRecentHits(std::chrono::duration<float> timeWindow) const;
 
   void SetLastAttributesPercentagesUpdate(

@@ -1,0 +1,202 @@
+#include "ActionListener.h"
+#include "ActorValuesMessage.h"
+#include "MpChangeForms.h"
+#include "TestUtils.hpp"
+#include "UpdateMovementMessage.h"
+#include <catch2/catch_all.hpp>
+#include <simdjson.h>
+
+PartOne& GetPartOne();
+
+// thuum docs/verbs/actor-values.md: a player's client reports its actor
+// values and progress after a skill or level increase. The server records a
+// report within bounds, holds a value it set until a report carries it, sends
+// the record after every login, and holds that record until a report shows
+// it applied.
+
+namespace {
+// one actor per test case: the test server is shared
+constexpr uint32_t kActor = 0xff000fc1;
+constexpr uint32_t kActorLogin = 0xff000fc2;
+constexpr uint32_t kActorHeld = 0xff000fc3;
+constexpr uint32_t kTamriel = 0x0000003c;
+
+// the engine's actor values (CommonLibSSE-NG include/RE/A/ActorValues.h)
+constexpr uint8_t kOneHanded = 6;
+constexpr uint8_t kTwoHanded = 7;
+constexpr uint8_t kHealth = 24;
+
+MpActor& Player(PartOne& p, uint32_t actorId)
+{
+  DoConnect(p, 0);
+  p.CreateActor(actorId, { 0, 0, 0 }, 0, kTamriel);
+  p.SetUserActor(0, actorId);
+  p.Messages().clear();
+  return p.worldState.GetFormAt<MpActor>(actorId);
+}
+
+ActorValuesMessage Snapshot(std::vector<std::pair<uint8_t, float>> bases,
+                            uint16_t level)
+{
+  ActorValuesMessage msg;
+  for (const auto& [av, base] : bases) {
+    msg.bases.push_back(ActorValuesMessage::Base{ av, base });
+  }
+  msg.skills.push_back(ActorValuesMessage::Skill{ 0, 15.f, 2.f, 10.f });
+  msg.xp = 10.f;
+  msg.threshold = 75.f;
+  msg.level = level;
+  return msg;
+}
+
+void Report(PartOne& p, const ActorValuesMessage& msg)
+{
+  RawMessageData raw;
+  raw.userId = 0;
+  p.GetActionListener().OnActorValues(raw, msg);
+}
+
+std::vector<std::pair<uint8_t, float>> RecordedBases(MpActor& ac)
+{
+  const auto record = ac.GetActorValueRecord();
+  return record ? record->bases : std::vector<std::pair<uint8_t, float>>();
+}
+
+// The player's own movement report, standing at the origin
+void Stand(PartOne& p)
+{
+  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
+  RawMessageData raw;
+  raw.userId = 0;
+  raw.unparsed = unparsed;
+  raw.unparsedLength = sizeof(unparsed);
+  UpdateMovementMessage msg;
+  msg.idx = 0;
+  msg.data.pos = { 0, 0, 0 };
+  msg.data.rot = { 0, 0, 0 };
+  msg.data.isInJumpState = false;
+  msg.data.isWeapDrawn = false;
+  msg.data.isBlocking = false;
+  msg.data.worldOrCell = kTamriel;
+  msg.data.runMode = "Standing";
+  p.GetActionListener().OnUpdateMovement(raw, msg);
+}
+
+// The ActorValues messages user 0 received since the last clear, each as
+// its level
+std::vector<uint16_t> SentLevels(PartOne& p)
+{
+  std::vector<uint16_t> out;
+  for (auto& m : p.Messages()) {
+    if (m.userId == 0 && m.j["t"] == MsgType::ActorValues) {
+      out.push_back(m.j["level"].get<uint16_t>());
+    }
+  }
+  return out;
+}
+
+void Leave(PartOne& p, uint32_t actorId)
+{
+  p.DestroyActor(actorId);
+  DoDisconnect(p, 0);
+}
+}
+
+TEST_CASE("A report within bounds is recorded, one out of bounds is not",
+          "[ActorValues]")
+{
+  PartOne& p = GetPartOne();
+  auto& ac = Player(p, kActor);
+
+  Report(p, Snapshot({ { kOneHanded, 16.f }, { kHealth, 110.f } }, 2));
+  REQUIRE(RecordedBases(ac) ==
+          std::vector<std::pair<uint8_t, float>>{ { kOneHanded, 16.f },
+                                                  { kHealth, 110.f } });
+  REQUIRE(ac.GetActorValueRecord()->level == 2);
+
+  // a skill past play's ceiling, and a level of 0
+  Report(p, Snapshot({ { kOneHanded, 101.f } }, 2));
+  Report(p, Snapshot({ { kOneHanded, 17.f } }, 0));
+  REQUIRE(RecordedBases(ac) ==
+          std::vector<std::pair<uint8_t, float>>{ { kOneHanded, 16.f },
+                                                  { kHealth, 110.f } });
+
+  Leave(p, kActor);
+}
+
+TEST_CASE("A login sends the record and holds it until a report shows it "
+          "applied",
+          "[ActorValues]")
+{
+  PartOne& p = GetPartOne();
+  auto& ac = Player(p, kActorLogin);
+  Report(p, Snapshot({ { kOneHanded, 40.f } }, 12));
+
+  p.SetUserActor(0, kActorLogin);
+  p.Messages().clear();
+  REQUIRE(SentLevels(p).empty());
+  Stand(p);
+  REQUIRE(SentLevels(p) == std::vector<uint16_t>{ 12 });
+
+  // a fresh session's values, reported before the record was applied
+  Report(p, Snapshot({ { kOneHanded, 15.f } }, 1));
+  REQUIRE(RecordedBases(ac) ==
+          std::vector<std::pair<uint8_t, float>>{ { kOneHanded, 40.f } });
+
+  // applied, and One-Handed raised since by play
+  Report(p, Snapshot({ { kOneHanded, 41.f } }, 12));
+  REQUIRE(RecordedBases(ac) ==
+          std::vector<std::pair<uint8_t, float>>{ { kOneHanded, 41.f } });
+
+  Leave(p, kActorLogin);
+}
+
+TEST_CASE("A value the server set holds until a report carries it",
+          "[ActorValues]")
+{
+  PartOne& p = GetPartOne();
+  auto& ac = Player(p, kActorHeld);
+  Report(p, Snapshot({ { kTwoHanded, 15.f } }, 1));
+
+  // the server sets Two-Handed to 50 (as a native would)
+  ac.SetHeldActorValues({ { kTwoHanded, 50.f } });
+  Report(p, Snapshot({ { kTwoHanded, 15.f } }, 1));
+  REQUIRE(RecordedBases(ac) ==
+          std::vector<std::pair<uint8_t, float>>{ { kTwoHanded, 50.f } });
+  REQUIRE(!ac.GetHeldActorValues().empty());
+
+  Report(p, Snapshot({ { kTwoHanded, 50.f } }, 1));
+  REQUIRE(ac.GetHeldActorValues().empty());
+  REQUIRE(RecordedBases(ac) ==
+          std::vector<std::pair<uint8_t, float>>{ { kTwoHanded, 50.f } });
+
+  Leave(p, kActorHeld);
+}
+
+TEST_CASE("The change form keeps a player's actor values, and older records "
+          "read as none",
+          "[ActorValues]")
+{
+  MpChangeForm changeForm;
+  changeForm.recType = MpChangeForm::ACHR;
+  ActorValueRecord record;
+  record.bases = { { kOneHanded, 40.f }, { kHealth, 150.5f } };
+  record.skills = { ActorValueRecord::Skill{ 0, 40.f, 3.5f, 120.f } };
+  record.xp = 42.f;
+  record.threshold = 300.f;
+  record.level = 12;
+  record.legendary = { { 2, 1 } };
+  changeForm.actorValueRecord = record;
+
+  simdjson::dom::parser parser;
+  const std::string dump = MpChangeForm::ToJson(changeForm).dump();
+  auto element = parser.parse(dump).value();
+  REQUIRE(MpChangeForm::JsonToChangeForm(element).actorValueRecord ==
+          changeForm.actorValueRecord);
+
+  const std::string older = MpChangeForm::ToJson(MpChangeForm()).dump();
+  REQUIRE(older.find("actorValueRecord") == std::string::npos);
+  auto olderElement = parser.parse(older).value();
+  REQUIRE(!MpChangeForm::JsonToChangeForm(olderElement)
+             .actorValueRecord.has_value());
+}

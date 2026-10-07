@@ -75,8 +75,25 @@ export class RaceMenuService extends ClientListener {
         if (!player) {
             return;
         }
-        const preset = this.save(player, "thuum-self");
-        if (!preset || preset === this.lastSent) {
+        let preset = this.save(player, "thuum-self");
+        if (!preset) {
+            return;
+        }
+        // A preset loaded through RaceMenu's own menu arrives through its
+        // sliders: the skin tone loses its alpha and lands on another color,
+        // and a head part of a type the vanilla menu has no slider for (the
+        // ear of Eli's race) is dropped (lab, 2026-10-07: tint 0 88B1C6 at
+        // 1.0 and no ear from the menu's load; A9C5D8 at 0.94 with the ear
+        // from CharGen's). The player's sculpt and sliders identify the file
+        // the menu loaded, and it is applied again the way the sync applies
+        // a look, so what is saved and sent is the preset as its author made
+        // it. A face shaped by hand matches no file and stays as it is.
+        const imported = this.importedPreset(preset);
+        if (imported && this.load(player, this.myId(), imported.text)) {
+            logTrace(this, "applied the preset", imported.name, "again after RaceMenu's menu loaded it");
+            preset = this.save(player, "thuum-self") ?? preset;
+        }
+        if (preset === this.lastSent) {
             return;
         }
         this.lastSent = preset;
@@ -154,6 +171,42 @@ export class RaceMenuService extends ClientListener {
                 logError(this, "RaceMenu did not load the look of", actor.toString(16), "onto", where);
             }
         });
+    }
+
+    // The preset file in RaceMenu's folder whose morphs (the sculpt, its
+    // sliders, the face presets and options) equal the saved look's: the one
+    // the menu just loaded, or undefined. The sync's own files (thuum-*) are
+    // not presets.
+    private importedPreset(saved: string): { name: string; text: string } | undefined {
+        let morphs: string;
+        try {
+            morphs = JSON.stringify(JSON.parse(saved)["morphs"] ?? null);
+        } catch (err) {
+            return undefined;
+        }
+        if (morphs === "null") {
+            return undefined;
+        }
+        let files: string[];
+        try {
+            files = fs.readdirSync(PRESETS);
+        } catch (err) {
+            return undefined;
+        }
+        for (const file of files) {
+            if (!file.toLowerCase().endsWith(".jslot") || file.startsWith("thuum-")) {
+                continue;
+            }
+            try {
+                const text = fs.readFileSync(PRESETS + file, "utf8");
+                if (JSON.stringify(JSON.parse(text)["morphs"] ?? null) === morphs) {
+                    return { name: file.slice(0, -".jslot".length), text };
+                }
+            } catch (err) {
+                // a file that is no preset is not the one
+            }
+        }
+        return undefined;
     }
 
     // RaceMenu's save answers nothing; the file it leaves is the answer

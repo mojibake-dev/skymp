@@ -5,6 +5,7 @@
 //! need no server. The verb docs under thuum docs/verbs/ hold the sources.
 
 pub mod activation;
+pub mod actor_values;
 pub mod appearance;
 pub mod clock;
 pub mod damage;

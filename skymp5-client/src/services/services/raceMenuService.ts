@@ -27,11 +27,13 @@ const PLAYER_HAIR_COLOR = 0x801;
 // RaceMenu's own Papyrus natives (CharGen.SaveCharacterPreset) and sent if it
 // changed. The server hands back the player's own after a login and every
 // other player's with its figure, which RaceMenu loads
-// (CharGen.LoadCharacterPresetEx). A figure is built again on a new base when
-// its appearance changes, so every two seconds a look is applied again to an
-// actor whose base it was not applied to yet. Nothing happens without
-// RaceMenu (no CharGen natives, as on 1.7.104) or with `raceMenuSync: false`
-// in skymp5-client's settings.
+// (CharGen.LoadCharacterPresetEx). RaceMenu writes a look to the actor's base
+// (head parts, morphs, tints, the sculpt) and to the reference itself
+// (overrides, transforms, body morphs), and a figure is built again, on a new
+// base, when its appearance changes; so every two seconds a look is applied
+// again to a reference or base it was not applied to yet. Nothing happens
+// without RaceMenu (no CharGen natives, as on 1.7.104) or with
+// `raceMenuSync: false` in skymp5-client's settings.
 export class RaceMenuService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -67,6 +69,7 @@ export class RaceMenuService extends ClientListener {
         }
         this.wanted.set(actor, preset);
         this.applied.delete(actor);
+        this.failed.delete(actor);
     }
 
     private onUpdate() {
@@ -86,13 +89,16 @@ export class RaceMenuService extends ClientListener {
                 return; // that player's figure is not in this game now
             }
             const base = target.getBaseObject();
-            const baseId = base ? base.getFormID() : 0;
-            if (this.applied.get(actor) === baseId) {
+            const where = target.getFormID().toString(16) + " on base " + (base ? base.getFormID() : 0).toString(16);
+            if (this.applied.get(actor) === where) {
                 return;
             }
             if (this.load(target, actor, preset)) {
-                this.applied.set(actor, baseId);
-                logTrace(this, "applied the RaceMenu look of", actor.toString(16), "to", target.getFormID().toString(16));
+                this.applied.set(actor, where);
+                logTrace(this, "applied the RaceMenu look of", actor.toString(16), "to", where);
+            } else if (this.failed.get(actor) !== where) {
+                this.failed.set(actor, where);
+                logError(this, "RaceMenu did not load the look of", actor.toString(16), "onto", where);
             }
         });
     }
@@ -158,8 +164,12 @@ export class RaceMenuService extends ClientListener {
 
     // the player whose look it is (its server id) -> the preset the server sent
     private wanted = new Map<number, string>();
-    // the player whose look it is -> the base form id it was last applied to
-    private applied = new Map<number, number>();
+    // the player whose look it is -> the reference and base it was last
+    // applied to
+    private applied = new Map<number, string>();
+    // the player whose look it is -> the reference and base a load last
+    // failed on, so each failure is logged once
+    private failed = new Map<number, string>();
     private lastSent = "";
     private lastCheck = 0;
     private raceMenu: boolean | undefined = undefined;

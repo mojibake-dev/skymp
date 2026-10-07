@@ -149,6 +149,19 @@ pub fn merge(record: &Snapshot, report: &Snapshot, held: &[(u8, f32)]) -> (Snaps
     (out, still)
 }
 
+/// Whether a report shows the record a login sent as applied: the level at
+/// least the record's, and every recorded base at least the record's value
+/// (play only raises them). A report from before the client applied the
+/// record carries the race's values a fresh session starts on, and is not
+/// taken; the record holds until one is.
+#[must_use]
+pub fn login_applied(record: &Snapshot, report: &Snapshot) -> bool {
+    report.level >= record.level
+        && record.bases.iter().all(|&(av, base)| {
+            report.bases.iter().any(|&(a, v)| a == av && v >= base - APPLIED_WITHIN)
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,6 +228,23 @@ mod tests {
         let (after, still) = merge(&after, &snapshot(&[(6, 20.0), (7, 50.0)]), &still);
         assert_eq!(after.bases, vec![(6, 20.0), (7, 50.0)]);
         assert!(still.is_empty());
+    }
+
+    #[test]
+    fn a_login_record_holds_until_a_report_reaches_it() {
+        let mut record = snapshot(&[(6, 40.0), (24, 150.0)]);
+        record.level = 12;
+        // a fresh session's values, reported before the record was applied
+        let fresh = snapshot(&[(6, 15.0), (24, 100.0)]);
+        assert!(!login_applied(&record, &fresh));
+        // applied, and One-Handed raised since by play
+        let mut after = snapshot(&[(6, 41.0), (24, 150.0)]);
+        after.level = 12;
+        assert!(login_applied(&record, &after));
+        // a recorded value the report does not carry
+        let mut missing = snapshot(&[(6, 41.0)]);
+        missing.level = 12;
+        assert!(!login_applied(&record, &missing));
     }
 
     #[test]

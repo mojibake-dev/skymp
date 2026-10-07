@@ -899,6 +899,24 @@ mod tests {
         }
 
         #[test]
+        fn presets_are_accepted_exactly_when_not_empty_and_from_a_client_its_own(
+            actor in prop_oneof![1 => Just(0u32), 1 => any::<u32>()],
+            text in "[ -~]{0,64}",
+        ) {
+            let m = preset(actor, &text);
+            let shape = if text.is_empty() { Err(Reject::Range) } else { Ok(()) };
+            prop_assert_eq!(validate_server(&m), shape);
+            let from_client = shape.and(if actor == 0 { Ok(()) } else { Err(Reject::Range) });
+            prop_assert_eq!(validate(&m, &mut ClientGuard::default(), 0), from_client);
+        }
+
+        #[test]
+        fn presets_never_panic(actor in any::<u32>(), text in ".{0,256}") {
+            let _ = validate(&preset(actor, &text), &mut ClientGuard::default(), 0);
+            let _ = validate_server(&preset(actor, &text));
+        }
+
+        #[test]
         fn marker_is_accepted_exactly_for_location_types(t in any::<u16>()) {
             let want = if t <= MARKER_TYPE_MAX { Ok(()) } else { Err(Reject::Range) };
             prop_assert_eq!(validate(&marker(t), &mut ClientGuard::default(), 0), want);

@@ -1,4 +1,4 @@
-import { Actor, MenuCloseEvent } from "skyrimPlatform";
+import { Actor, MenuCloseEvent, MenuOpenEvent } from "skyrimPlatform";
 import * as fs from "fs";
 import { MsgType } from "../../messages";
 import { logError, logTrace } from "../../logging";
@@ -44,10 +44,27 @@ const RACEMENU_ONLY = ["overrides", "skinOverrides", "transforms", "bodyMorphs"]
 export class RaceMenuService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
+        this.controller.on("menuOpen", (e) => this.onMenuOpen(e));
         this.controller.on("menuClose", (e) => this.onMenuClose(e));
         this.controller.emitter.on("raceMenuPresetMessage", (e) => this.onPresetMessage(e));
         this.controller.emitter.on("createActorMessage", (e) => this.onCreateActor(e));
         this.controller.on("update", () => this.onUpdate());
+    }
+
+    // RaceMenu puts its own saved copy of the player's hair color and tints
+    // back on as its menu initializes (racemenu.psc OnMenuInitialized:
+    // LoadTints, LoadHair), and after a login that copy is the login save's
+    // unless RaceMenu took in the look this service loaded. Asking it to save
+    // the current look as the menu opens keeps the menu on that look (lab,
+    // 2026-10-07: the hair color changed as the race menu opened).
+    private onMenuOpen(e: MenuOpenEvent) {
+        if (e.name !== "RaceSex Menu" || !this.available()) {
+            return;
+        }
+        const player = this.sp.Game.getPlayer();
+        if (player) {
+            player.sendModEvent("RSM_RequestTintSave", "", 0);
+        }
     }
 
     private onMenuClose(e: MenuCloseEvent) {

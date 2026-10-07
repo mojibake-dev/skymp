@@ -59,6 +59,17 @@ void OnSendEventEnter(GumInvocationContext* ic)
             name[3] == skyui_name[3]) {
           blockEvents = false;
           break;
+        } else if (!strnicmp(name, "RaceMenu", 8)) {
+          // RaceMenu's menu is glued to the game by its scripts (RaceMenu,
+          // RaceMenuBase, RaceMenuLoad and its slider plugins such as
+          // RaceMenuMorphsCBBE): the menu's tint, hair color and body morph
+          // sliders reach the actor through their mod events
+          // (OnTintColorChange, OnHairColorChange and the rest). Blocked,
+          // the sliders do nothing and a preset loaded in the menu lands
+          // half applied (thuum docs/verbs/racemenu-sync.md, 2026-10-07).
+          // Like SkyUI's, these scripts run UI, not game state.
+          blockEvents = false;
+          break;
         } else if (!stricmp(name, "defaultDisableHavokOnLoad")) {
           // Maybe worth unblocking events only for this script, not for all
           blockEvents = false;

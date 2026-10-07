@@ -2,6 +2,7 @@
 #include "MpChangeForms.h"
 #include "RaceMenuPresetMessage.h"
 #include "TestUtils.hpp"
+#include "UpdateAppearanceMessage.h"
 #include "UpdateMovementMessage.h"
 #include <catch2/catch_all.hpp>
 #include <simdjson.h>
@@ -10,9 +11,10 @@ PartOne& GetPartOne();
 
 // thuum docs/verbs/racemenu-sync.md: a player's client reports its RaceMenu
 // look, the preset RaceMenu saved, after the race menu closed. The server
-// records it when it is a bounded JSON object, hands it to every other player
-// that shows the player, sends it with the player's figure to a client that
-// gets the figure later, and sends the player its own after every login.
+// takes one look per race menu it opened (as it takes an appearance), records
+// it when it is a bounded JSON object, hands it to every other player that
+// shows the player, sends it with the player's figure to a client that gets
+// the figure later, and sends the player its own after every login.
 
 namespace {
 // one actor per test case: the test server is shared
@@ -21,18 +23,34 @@ constexpr uint32_t kActorOther = 0xff000fb2;
 constexpr uint32_t kActorLogin = 0xff000fb3;
 constexpr uint32_t kActorLate = 0xff000fb4;
 constexpr uint32_t kActorLateOther = 0xff000fb5;
+constexpr uint32_t kActorGate = 0xff000fb6;
+constexpr uint32_t kActorGateOther = 0xff000fb7;
 constexpr uint32_t kTamriel = 0x0000003c;
 
 const std::string kPreset =
   R"({"version": {"formatVersion": 3}, "headParts": [], "actor": {}})";
 
+// A player in the race menu the server opens for a new character
 MpActor& Player(PartOne& p, Networking::UserId user, uint32_t actorId)
 {
   DoConnect(p, user);
   p.CreateActor(actorId, { 0, 0, 0 }, 0, kTamriel);
   p.SetUserActor(user, actorId);
+  p.SetRaceMenuOpen(actorId, true);
   p.Messages().clear();
   return p.worldState.GetFormAt<MpActor>(actorId);
+}
+
+// The player's appearance report, which closes the race menu
+void Dress(PartOne& p, Networking::UserId user)
+{
+  RawMessageData raw;
+  raw.userId = user;
+  UpdateAppearanceMessage msg;
+  msg.idx = 0;
+  msg.data = Appearance();
+  msg.data->raceId = 0x00013746; // NordRace
+  p.GetActionListener().OnUpdateAppearance(raw, msg);
 }
 
 void Report(PartOne& p, Networking::UserId user, const std::string& preset)
@@ -177,4 +195,59 @@ TEST_CASE("The change form keeps a player's preset, and older records read "
   auto olderElement = parser.parse(older).value();
   REQUIRE(
     !MpChangeForm::JsonToChangeForm(olderElement).raceMenuPreset.has_value());
+}
+
+TEST_CASE("A look is taken once per race menu the server opened, before or "
+          "after the appearance that closes it, and not otherwise",
+          "[RaceMenuPreset]")
+{
+  PartOne& p = GetPartOne();
+  auto& ac = Player(p, 0, kActorGate);
+  Player(p, 1, kActorGateOther);
+  const std::string second = R"({"version": {"formatVersion": 3}, "a": 1})";
+  const std::string third = R"({"version": {"formatVersion": 3}, "a": 2})";
+
+  // the look first, then the appearance
+  Report(p, 0, kPreset);
+  REQUIRE(ac.GetRaceMenuPreset() == kPreset);
+  REQUIRE(ac.IsRaceMenuOpen());
+  Dress(p, 0);
+  REQUIRE(!ac.IsRaceMenuOpen());
+
+  // a look from a race menu the player opened itself is refused
+  p.Messages().clear();
+  Report(p, 0, second);
+  REQUIRE(ac.GetRaceMenuPreset() == kPreset);
+  REQUIRE(Sent(p, 1).empty());
+
+  // the appearance first, then the look
+  p.SetRaceMenuOpen(kActorGate, true);
+  Dress(p, 0);
+  REQUIRE(!ac.IsRaceMenuOpen());
+  p.Messages().clear();
+  Report(p, 0, second);
+  REQUIRE(ac.GetRaceMenuPreset() == second);
+  REQUIRE(
+    Sent(p, 1) ==
+    std::vector<std::pair<uint32_t, std::string>>{ { kActorGate, second } });
+
+  // one look per opening: a second one is refused
+  p.Messages().clear();
+  Report(p, 0, third);
+  REQUIRE(ac.GetRaceMenuPreset() == second);
+  REQUIRE(Sent(p, 1).empty());
+
+  // a record that keeps the menu open shows it again at a login, so a look
+  // is due again
+  p.SetRaceMenuOpen(kActorGate, true);
+  Report(p, 0, third);
+  REQUIRE(ac.GetRaceMenuPreset() == third);
+  auto changeForm = ac.GetChangeForm();
+  REQUIRE(changeForm.isRaceMenuOpen);
+  ac.ApplyChangeForm(changeForm);
+  Report(p, 0, kPreset);
+  REQUIRE(ac.GetRaceMenuPreset() == kPreset);
+
+  Leave(p, 1, kActorGateOther);
+  Leave(p, 0, kActorGate);
 }

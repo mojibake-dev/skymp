@@ -187,6 +187,12 @@ public:
   void SetHeldActorValues(std::vector<std::pair<uint8_t, float>> held);
   bool IsActorValuesLoginPending() const;
   void SetActorValuesLoginPending(bool pending);
+  // The server takes a RaceMenu look only from a race menu it opened, the
+  // rule SkyMP keeps for an appearance (ActionListener::OnUpdateAppearance):
+  // one look per opening, whether it comes before or after the appearance
+  // that closes the menu, and one per login while the record keeps the menu
+  // open. Answers whether one is due and takes it.
+  bool TakeRaceMenuLookDue();
   size_t CountRecentHits(std::chrono::duration<float> timeWindow) const;
 
   void SetLastAttributesPercentagesUpdate(

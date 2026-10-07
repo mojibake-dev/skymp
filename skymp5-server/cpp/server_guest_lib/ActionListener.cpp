@@ -1107,10 +1107,12 @@ void ActionListener::SendFavorites(MpActor& actor)
 }
 
 // thuum docs/verbs/racemenu-sync.md: the player's RaceMenu look after the
-// race menu closed. The server cannot check a look against the engine, so it
-// records it bounded (a JSON object, within the wire's capacity) and hands it
-// to every client that shows the player; a new client gets it with the
-// player's figure (PartOne's onSubscribe).
+// race menu closed. It is taken only from a race menu the server opened, as
+// SkyMP takes an appearance (OnUpdateAppearance), so a look and its hair
+// color change together or not at all. The server cannot check a look
+// against the engine, so it records it bounded (a JSON object, within the
+// wire's capacity) and hands it to every client that shows the player; a new
+// client gets it with the player's figure (PartOne's onSubscribe).
 void ActionListener::OnRaceMenuPreset(const RawMessageData& rawMsgData,
                                       const RaceMenuPresetMessage& msg)
 {
@@ -1118,6 +1120,13 @@ void ActionListener::OnRaceMenuPreset(const RawMessageData& rawMsgData,
   if (!actor) {
     return spdlog::warn("OnRaceMenuPreset - no actor for user {}",
                         rawMsgData.userId);
+  }
+  if (!actor->TakeRaceMenuLookDue()) {
+    return spdlog::info("RaceMenu: user {} actor {:x} preset of {} bytes "
+                        "refused (E_RACEMENU_CLOSED: the server did not open "
+                        "the race menu)",
+                        rawMsgData.userId, actor->GetFormId(),
+                        msg.preset.size());
   }
   if (!skymp::rules::racemenu_preset_ok(rust::Str(msg.preset))) {
     return spdlog::info("RaceMenu: user {} actor {:x} preset of {} bytes "

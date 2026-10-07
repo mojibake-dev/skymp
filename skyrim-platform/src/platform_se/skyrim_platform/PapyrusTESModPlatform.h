@@ -104,18 +104,6 @@ std::vector<int32_t> GetFavorites(IVM* vm, StackID stackId,
 bool SetFavorite(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                  RE::TESForm* form, int32_t hotkey);
 
-// RaceMenu's look as a preset file (thuum docs/verbs/racemenu-sync.md):
-// the version of RaceMenu's Preset interface, 0 when RaceMenu is not
-// loaded; an actor's look saved to, or loaded from,
-// Data\SKSE\Plugins\CharGen\Exported\<name>.jslot, false when RaceMenu is
-// not loaded or the name is not letters, digits, '-' and '_'
-int32_t RaceMenuPresetVersion(IVM* vm, StackID stackId,
-                              RE::StaticFunctionTag*);
-bool SaveRaceMenuPreset(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
-                        RE::Actor* actor, std::string_view name);
-bool LoadRaceMenuPreset(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
-                        RE::Actor* actor, std::string_view name);
-
 void BlockPapyrusEvents(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                         bool blocked);
 

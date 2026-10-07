@@ -1,0 +1,31 @@
+# difftest racemenu (M1, thuum docs/verbs/racemenu-sync.md): c1 and c2 are new
+# characters (profiles 9 and 10, actors 0xff000002 and 0xff000003: see
+# melee-reach), both at the spawn. At 2 s c1 reports a preset, a JSON object,
+# which the fixed server records and hands to c2, the other player that shows
+# c1 (MsgType 39 naming actor 0xff000002); at 2.5 s a preset naming another
+# actor, which the wire stack's validator refuses (E_VAL_RANGE: a client
+# sends only its own); at 3 s a preset that is no JSON object, which the
+# server's rule refuses (wire-rules racemenu), so nothing more reaches c2.
+# The legacy server has no RaceMenuPreset, so the one preset c2 receives is
+# the declared divergence. c2 steps aside at 4 s so it outlives c1, as in
+# every session.
+id: racemenu
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 2000, send: {t: 39, actor: 0, preset: "{\"version\": {\"formatVersion\": 3}}"}}
+  - {client: c1, at_ms: 2500, send: {t: 39, actor: 4278190083, preset: "{}"}}
+  - {client: c1, at_ms: 3000, send: {t: 39, actor: 0, preset: "[]"}}
+  - {client: c2, at_ms: 4000, move: {dx: 1, dy: 0}}
+divergences:
+  - client: c2
+    msg: {t: 25, idx: 2}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout
+  - client: c2
+    msg: {t: 39, actor: 4278190082}
+    legacy: 0
+    wire: 1
+    reason: the fixed server hands c1's recorded RaceMenu look to c2; the legacy server has no RaceMenuPreset

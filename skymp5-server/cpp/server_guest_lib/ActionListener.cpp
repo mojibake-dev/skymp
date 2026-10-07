@@ -1119,16 +1119,17 @@ void ActionListener::OnRaceMenuPreset(const RawMessageData& rawMsgData,
     return spdlog::warn("OnRaceMenuPreset - no actor for user {}",
                         rawMsgData.userId);
   }
+  if (!skymp::rules::racemenu_preset_ok(rust::Str(msg.preset))) {
+    return spdlog::info("RaceMenu: user {} actor {:x} preset of {} bytes "
+                        "refused (not a bounded JSON object)",
+                        rawMsgData.userId, actor->GetFormId(),
+                        msg.preset.size());
+  }
+  // a look that is no look does not use up the opening
   if (!actor->TakeRaceMenuLookDue()) {
     return spdlog::info("RaceMenu: user {} actor {:x} preset of {} bytes "
                         "refused (E_RACEMENU_CLOSED: the server did not open "
                         "the race menu)",
-                        rawMsgData.userId, actor->GetFormId(),
-                        msg.preset.size());
-  }
-  if (!skymp::rules::racemenu_preset_ok(rust::Str(msg.preset))) {
-    return spdlog::info("RaceMenu: user {} actor {:x} preset of {} bytes "
-                        "refused (not a bounded JSON object)",
                         rawMsgData.userId, actor->GetFormId(),
                         msg.preset.size());
   }

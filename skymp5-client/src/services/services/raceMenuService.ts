@@ -63,8 +63,26 @@ export class RaceMenuService extends ClientListener {
         }
         const player = this.sp.Game.getPlayer();
         if (player) {
+            this.hairColorOnRaceMenuForm(player);
             player.sendModEvent("RSM_RequestTintSave", "", 0);
         }
+    }
+
+    // RaceMenu's SaveHair keeps a hair color as the player's own only when
+    // it sits on RaceMenu's form 0x801; a color on any other form reads as
+    // "not custom", and LoadHair at the menu's initialization then puts the
+    // race palette's color on instead (lab, 2026-10-07: the hair went blonde
+    // as the menu opened). SkyMP's appearance apply puts the hair color on a
+    // form of its own, so the color moves onto 0x801 before RaceMenu saves.
+    private hairColorOnRaceMenuForm(player: Actor) {
+        const base = this.sp.ActorBase.from(player.getBaseObject());
+        const form = this.sp.ColorForm.from(this.sp.Game.getFormFromFile(PLAYER_HAIR_COLOR, "RaceMenu.esp"));
+        const current = base ? base.getHairColor() : null;
+        if (!base || !form || !current || current.getFormID() === form.getFormID()) {
+            return;
+        }
+        form.setColor(current.getColor());
+        base.setHairColor(form);
     }
 
     private onMenuClose(e: MenuCloseEvent) {

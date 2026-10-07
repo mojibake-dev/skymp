@@ -41,11 +41,15 @@ MpActor& Player(PartOne& p, Networking::UserId user, uint32_t actorId)
   return p.worldState.GetFormAt<MpActor>(actorId);
 }
 
-// The player's appearance report, which closes the race menu
+// The player's appearance report, which closes the race menu (the raw
+// packet it forwards to the neighbours is an empty object, as Stand's)
 void Dress(PartOne& p, Networking::UserId user)
 {
+  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
   RawMessageData raw;
   raw.userId = user;
+  raw.unparsed = unparsed;
+  raw.unparsedLength = sizeof(unparsed);
   UpdateAppearanceMessage msg;
   msg.idx = 0;
   msg.data = Appearance();

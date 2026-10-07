@@ -173,18 +173,16 @@ export class RaceMenuService extends ClientListener {
         });
     }
 
-    // The preset file in RaceMenu's folder whose morphs (the sculpt, its
-    // sliders, the face presets and options) equal the saved look's: the one
-    // the menu just loaded, or undefined. The sync's own files (thuum-*) are
-    // not presets.
+    // The preset file in RaceMenu's folder whose face sliders equal the
+    // saved look's: the one the menu just loaded, or undefined. The sync's
+    // own files (thuum-*) are not presets. Compared: the game's face morphs
+    // and presets (morphs.default) and RaceMenu's own sliders (morphs.custom,
+    // as a name to value map), each value to three places; the sculpt is
+    // left out, since RaceMenu's save drops a vertex the sculpt did not
+    // move and so never writes the file's block back as it was.
     private importedPreset(saved: string): { name: string; text: string } | undefined {
-        let morphs: string;
-        try {
-            morphs = JSON.stringify(JSON.parse(saved)["morphs"] ?? null);
-        } catch (err) {
-            return undefined;
-        }
-        if (morphs === "null") {
+        const key = this.sliderKey(saved);
+        if (key === undefined) {
             return undefined;
         }
         let files: string[];
@@ -199,7 +197,7 @@ export class RaceMenuService extends ClientListener {
             }
             try {
                 const text = fs.readFileSync(PRESETS + file, "utf8");
-                if (JSON.stringify(JSON.parse(text)["morphs"] ?? null) === morphs) {
+                if (this.sliderKey(text) === key) {
                     return { name: file.slice(0, -".jslot".length), text };
                 }
             } catch (err) {
@@ -207,6 +205,30 @@ export class RaceMenuService extends ClientListener {
             }
         }
         return undefined;
+    }
+
+    // A look's face sliders as one comparable string, or undefined for a
+    // look without RaceMenu's own sliders (a face shaped in the vanilla menu
+    // matches no preset file by design)
+    private sliderKey(text: string): string | undefined {
+        let morphs: Record<string, unknown>;
+        try {
+            morphs = JSON.parse(text)["morphs"] ?? {};
+        } catch (err) {
+            return undefined;
+        }
+        const custom = morphs["custom"];
+        if (!Array.isArray(custom) || custom.length === 0) {
+            return undefined;
+        }
+        const round = (v: unknown) => typeof v === "number" ? v.toFixed(3) : String(v);
+        const def = (morphs["default"] ?? {}) as Record<string, unknown>;
+        const list = (v: unknown) => Array.isArray(v) ? v.map(round).join(",") : "";
+        const sliders = custom
+            .map((c) => `${(c as Record<string, unknown>)["name"]}=${round((c as Record<string, unknown>)["value"])}`)
+            .sort()
+            .join(";");
+        return `${list(def["morphs"])}|${list(def["presets"])}|${sliders}`;
     }
 
     // RaceMenu's save answers nothing; the file it leaves is the answer

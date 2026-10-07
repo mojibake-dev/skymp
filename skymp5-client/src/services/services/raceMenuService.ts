@@ -183,6 +183,7 @@ export class RaceMenuService extends ClientListener {
         if (!player) {
             return false;
         }
+        this.dropTransforms(player);
         const saved = this.save(player, "thuum-reset");
         if (!saved) {
             return false;
@@ -205,6 +206,35 @@ export class RaceMenuService extends ClientListener {
             logTrace(this, "took RaceMenu's additions off the player before its record");
         }
         return reset;
+    }
+
+    // RaceMenu's load erases an actor's transforms from its records but
+    // leaves the skeleton as drawn (NiTransformInterface
+    // Impl_RemoveAllReferenceTransforms erases the actor's entry, and
+    // SetTransforms recomputes only the nodes an entry still lists; lab,
+    // 2026-10-07: a head kept its 1.3 after the reset). So each key but
+    // RaceMenu's "internal" comes off node by node first and the node is
+    // updated from its base, through NiOverride's own calls (0.4.20.0
+    // nioverride.psc: GetNodeTransformNames, GetNodeTransformKeys, the
+    // RemoveNodeTransform* four, UpdateNodeTransform)
+    private dropTransforms(player: Actor) {
+        const base = this.sp.ActorBase.from(player.getBaseObject());
+        const female = base !== null && base.getSex() === 1;
+        const removals = ["RemoveNodeTransformPosition", "RemoveNodeTransformScale",
+            "RemoveNodeTransformScaleMode", "RemoveNodeTransformRotation"];
+        [false, true].forEach((firstPerson) => {
+            const nodes = this.sp.callNative("NiOverride", "GetNodeTransformNames", undefined,
+                player, firstPerson, female) as string[] | null;
+            (nodes || []).forEach((node) => {
+                const keys = this.sp.callNative("NiOverride", "GetNodeTransformKeys", undefined,
+                    player, firstPerson, female, node) as string[] | null;
+                (keys || []).filter((key) => key !== "internal").forEach((key) => {
+                    removals.forEach((fn) => this.sp.callNative("NiOverride", fn, undefined,
+                        player, firstPerson, female, node, key));
+                });
+                this.sp.callNative("NiOverride", "UpdateNodeTransform", undefined, player, firstPerson, female, node);
+            });
+        });
     }
 
     private available(): boolean {

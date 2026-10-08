@@ -301,3 +301,77 @@ TEST_CASE("SetAV, ModAV and ForceAV run through the server's actor value "
   p.DestroyActor(0xff000000);
   DoDisconnect(p, 0);
 }
+
+TEST_CASE("RemoveItem, Enable, Kill, Resurrect, SetPos, SetAngle and MoveTo "
+          "run through the server's own paths",
+          "[ConsoleCommand][espm]")
+{
+  PartOne& p = GetPartOne();
+  p.worldState.enableConsoleCommandsForAll = true;
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, 0xff000000);
+  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
+  p.CreateActor(0xff000001, { 500, 600, 70 }, 90, 0x3c);
+  auto& other = p.worldState.GetFormAt<MpActor>(0xff000001);
+  ac.RemoveAllItems();
+
+  // RemoveItem takes back part of what AddItem gave
+  p.Messages().clear();
+  Send(p, "additem", { int64_t(0x14), int64_t(0x12eb7), int64_t(5) });
+  Send(p, "removeitem", { int64_t(0x14), int64_t(0x12eb7), int64_t(3) });
+  p.Tick();
+  REQUIRE(ac.GetInventory().GetItemCount(0x12eb7) == 2);
+  REQUIRE(Lines(p) ==
+          std::vector<std::pair<std::string, bool>>{
+            { "additem done", false }, { "removeitem done", false } });
+
+  // SetPos and SetAngle change one axis of the caller, through a teleport
+  p.Messages().clear();
+  Send(p, "setpos", { int64_t(0x14), std::string("X"), int64_t(100) });
+  Send(p, "setangle",
+       { int64_t(0x14), std::string("z"), std::string("45.5") });
+  REQUIRE(ac.GetPos().x == 100.f);
+  REQUIRE(ac.GetPos().y == 0.f);
+  REQUIRE(ac.GetAngle().z == 45.5f);
+  Send(p, "setpos", { int64_t(0x14), std::string("w"), int64_t(1) });
+  p.Tick();
+  REQUIRE(Lines(p) ==
+          std::vector<std::pair<std::string, bool>>{
+            { "setpos done", false },
+            { "setangle done", false },
+            { "Failed: the axis is X, Y or Z", true } });
+  REQUIRE(ac.GetPos().x == 100.f);
+
+  // MoveTo goes to the named reference
+  Send(p, "moveto", { int64_t(0x14), int64_t(0xff000001) });
+  REQUIRE(ac.GetPos().x == 500.f);
+  REQUIRE(ac.GetPos().y == 600.f);
+  REQUIRE(ac.GetPos().z == 70.f);
+
+  // Kill, then Resurrect where it fell; each refuses the state it needs
+  p.Messages().clear();
+  Send(p, "kill", { int64_t(0xff000001) });
+  REQUIRE(other.IsDead());
+  Send(p, "kill", { int64_t(0xff000001) });
+  Send(p, "resurrect", { int64_t(0xff000001) });
+  REQUIRE(!other.IsDead());
+  Send(p, "resurrect", { int64_t(0xff000001) });
+  p.Tick();
+  REQUIRE(Lines(p) ==
+          std::vector<std::pair<std::string, bool>>{
+            { "kill done", false },
+            { "Failed: already dead", true },
+            { "resurrect done", false },
+            { "Failed: not dead", true } });
+
+  // Enable after Disable, on a reference the server made
+  Send(p, "disable", { int64_t(0xff000001) });
+  REQUIRE(other.IsDisabled());
+  Send(p, "enable", { int64_t(0xff000001) });
+  REQUIRE(!other.IsDisabled());
+
+  p.DestroyActor(0xff000001);
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}

@@ -69,18 +69,18 @@ const fn cmd(name: &'static str, short: &'static str, class: Class, rank: Rank, 
 /// set"; the ranks await Eli's review). `mp` is SkyMP's own.
 pub const TABLE: [Command; 28] = [
     cmd("additem", "", Class::Server, Rank::Admin, true),
-    cmd("removeitem", "", Class::Server, Rank::Admin, false),
+    cmd("removeitem", "", Class::Server, Rank::Admin, true),
     cmd("equipitem", "", Class::Server, Rank::Admin, true),
     cmd("placeatme", "", Class::Server, Rank::Admin, true),
     cmd("disable", "", Class::Server, Rank::Admin, true),
-    cmd("enable", "", Class::Server, Rank::Admin, false),
+    cmd("enable", "", Class::Server, Rank::Admin, true),
     cmd("mp", "", Class::Server, Rank::Admin, true),
     cmd("centeroncell", "coc", Class::Server, Rank::Moderator, false),
-    cmd("moveto", "", Class::Server, Rank::Moderator, false),
-    cmd("setpos", "", Class::Server, Rank::Moderator, false),
-    cmd("setangle", "", Class::Server, Rank::Moderator, false),
-    cmd("kill", "", Class::Server, Rank::Moderator, false),
-    cmd("resurrect", "", Class::Server, Rank::Moderator, false),
+    cmd("moveto", "", Class::Server, Rank::Moderator, true),
+    cmd("setpos", "", Class::Server, Rank::Moderator, true),
+    cmd("setangle", "", Class::Server, Rank::Moderator, true),
+    cmd("kill", "", Class::Server, Rank::Moderator, true),
+    cmd("resurrect", "", Class::Server, Rank::Moderator, true),
     cmd("setactorvalue", "setav", Class::Server, Rank::Admin, true),
     cmd("modactorvalue", "modav", Class::Server, Rank::Admin, true),
     cmd("forceactorvalue", "forceav", Class::Server, Rank::Admin, true),
@@ -187,6 +187,9 @@ mod tests {
     #[test]
     fn listed_commands_the_server_does_not_run_yet_say_so() {
         assert_eq!(decide("coc", Rank::Owner), Decision::NotServed);
+        assert_eq!(decide("kill", Rank::Moderator), Decision::Run);
+        assert_eq!(decide("setpos", Rank::Player), Decision::RankTooLow);
+        assert_eq!(decide("removeitem", Rank::Moderator), Decision::RankTooLow);
         assert_eq!(decide("coc", Rank::Player), Decision::RankTooLow);
         assert_eq!(decide("tfc", Rank::Owner), Decision::ClientOnly);
         assert_eq!(decide("set", Rank::Owner), Decision::NotServed);

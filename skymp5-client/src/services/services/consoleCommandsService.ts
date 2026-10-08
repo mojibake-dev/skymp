@@ -16,7 +16,8 @@ enum CmdArgument {
     Float,
 }
 
-type CmdName = "additem" | "equipitem" | "placeatme" | "disable" | "mp" | "setav" | "modav" | "forceav";
+type CmdName = "additem" | "equipitem" | "placeatme" | "disable" | "mp" | "setav" | "modav" | "forceav"
+    | "removeitem" | "enable" | "kill" | "resurrect" | "setpos" | "setangle" | "moveto";
 
 export class ConsoleCommandsService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
@@ -43,6 +44,17 @@ export class ConsoleCommandsService extends ClientListener {
         schemas.set("setav", [CmdArgument.ObjectReference, CmdArgument.String, CmdArgument.Float]);
         schemas.set("modav", [CmdArgument.ObjectReference, CmdArgument.String, CmdArgument.Float]);
         schemas.set("forceav", [CmdArgument.ObjectReference, CmdArgument.String, CmdArgument.Float]);
+        // the server's own paths (console-commands.md, "Commands, first
+        // set"): the inventory, references, death and position verbs. Kill
+        // may name a killer, Resurrect an animation flag and MoveTo offsets,
+        // so their argument counts vary (immuneSchema)
+        schemas.set("removeitem", [CmdArgument.ObjectReference, CmdArgument.BaseForm, CmdArgument.Int]);
+        schemas.set("enable", [CmdArgument.ObjectReference]);
+        schemas.set("kill", [CmdArgument.ObjectReference, CmdArgument.ObjectReference]);
+        schemas.set("resurrect", [CmdArgument.ObjectReference, CmdArgument.Int]);
+        schemas.set("setpos", [CmdArgument.ObjectReference, CmdArgument.String, CmdArgument.Float]);
+        schemas.set("setangle", [CmdArgument.ObjectReference, CmdArgument.String, CmdArgument.Float]);
+        schemas.set("moveto", [CmdArgument.ObjectReference, CmdArgument.ObjectReference]);
         return schemas;
     }
 
@@ -153,12 +165,11 @@ export class ConsoleCommandsService extends ClientListener {
     // one name per engine command (Skyrim Platform matches the long or the
     // short name); the server's table knows both
     private static readonly serverOnlyCommands = [
-        "removeitem", "enable", "coc", "moveto", "setpos", "setangle", "kill",
-        "resurrect", "setlevel", "advskill", "tim", "tgm", "tcl", "set",
+        "coc", "setlevel", "advskill", "tim", "tgm", "tcl", "set",
         "save", "load", "savegame", "loadgame",
     ];
 
     private readonly schemas: Map<CmdName, CmdArgument[]>;
-    private readonly immuneSchema = ["mp"];
+    private readonly immuneSchema = ["mp", "kill", "resurrect", "moveto"];
     private readonly nonVanilaCommands = ["mp"];
 }

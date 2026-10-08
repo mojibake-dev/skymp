@@ -202,6 +202,146 @@ void ExecuteActorValue(MpActor& caller, const char* how,
   }
 }
 
+// The reference a command names: the caller for the player (0x14) or no
+// selection (0), else the server's reference of that id
+MpObjectReference& ReferenceOf(MpActor& caller, int64_t id)
+{
+  const auto targetId = static_cast<uint32_t>(id);
+  if (targetId == 0x14 || targetId == 0) {
+    return caller;
+  }
+  return caller.GetParent()->GetFormAt<MpObjectReference>(targetId);
+}
+
+MpActor& ActorOf(MpActor& caller, int64_t id)
+{
+  const auto targetId = static_cast<uint32_t>(id);
+  if (targetId == 0x14 || targetId == 0) {
+    return caller;
+  }
+  return caller.GetParent()->GetFormAt<MpActor>(targetId);
+}
+
+void ExecuteRemoveItem(MpActor& caller,
+                       const std::vector<ConsoleCommands::Argument>& args)
+{
+  MpObjectReference& target = ReferenceOf(caller, args.at(0).GetInteger());
+  const auto itemId = static_cast<uint32_t>(args.at(1).GetInteger());
+  const auto count = static_cast<int32_t>(args.at(2).GetInteger());
+  auto& br = caller.GetParent()->GetEspm().GetBrowser();
+  PapyrusObjectReference papyrusObjectReference;
+  auto aItem =
+    VarValue(std::make_shared<EspmGameObject>(br.LookupById(itemId)));
+  (void)papyrusObjectReference.RemoveItem(
+    target.ToVarValue(),
+    { aItem, VarValue(count), VarValue(false), VarValue::None() });
+}
+
+// Enable, as Disable: references the server created and actors
+void ExecuteEnable(MpActor& caller,
+                   const std::vector<ConsoleCommands::Argument>& args)
+{
+  MpObjectReference& target = ReferenceOf(caller, args.at(0).GetInteger());
+  if (target.GetFormId() < 0xff000000 &&
+      dynamic_cast<MpActor*>(&target) == nullptr) {
+    throw std::runtime_error("only references the server made, and actors");
+  }
+  target.Enable();
+}
+
+// Kill: the server's death (docs/verbs/hostility-sync.md and m0-death), the
+// killer the second reference when the console names one
+void ExecuteKill(MpActor& caller,
+                 const std::vector<ConsoleCommands::Argument>& args)
+{
+  MpActor& target = ActorOf(caller, args.at(0).GetInteger());
+  MpActor* killer =
+    args.size() > 1 ? &ActorOf(caller, args.at(1).GetInteger()) : nullptr;
+  if (target.IsDead()) {
+    throw std::runtime_error("already dead");
+  }
+  target.Kill(killer);
+}
+
+// Resurrect: up again where it fell (the server's respawn without the
+// teleport to the spawn point)
+void ExecuteResurrect(MpActor& caller,
+                      const std::vector<ConsoleCommands::Argument>& args)
+{
+  MpActor& target = ActorOf(caller, args.at(0).GetInteger());
+  if (!target.IsDead()) {
+    throw std::runtime_error("not dead");
+  }
+  target.Respawn(false);
+}
+
+// The axis a console command names: X, Y or Z, case aside
+int AxisOf(const ConsoleCommands::Argument& argument)
+{
+  const std::string& axis = argument.GetString();
+  if (axis.size() == 1) {
+    switch (axis[0]) {
+      case 'x':
+      case 'X':
+        return 0;
+      case 'y':
+      case 'Y':
+        return 1;
+      case 'z':
+      case 'Z':
+        return 2;
+    }
+  }
+  throw std::runtime_error("the axis is X, Y or Z");
+}
+
+// SetPos and SetAngle: one axis of the reference's position or rotation
+// (degrees, as the console types them). An actor moves and turns through the
+// server's teleport, which its game applies (skymp5-client remoteServer.ts
+// turns a teleport's degrees into the engine's radians); any other reference
+// through the Papyrus natives SetPosition and SetAngle, which take all three.
+void ExecuteSetPos(MpActor& caller,
+                   const std::vector<ConsoleCommands::Argument>& args,
+                   bool angle)
+{
+  MpObjectReference& target = ReferenceOf(caller, args.at(0).GetInteger());
+  const int axis = AxisOf(args.at(1));
+  const double value = NumberOf(args.at(2));
+  NiPoint3 pos = target.GetPos();
+  NiPoint3 rot = target.GetAngle();
+  NiPoint3& v = angle ? rot : pos;
+  (axis == 0 ? v.x : axis == 1 ? v.y : v.z) = static_cast<float>(value);
+  if (auto* actor = dynamic_cast<MpActor*>(&target)) {
+    actor->Teleport(LocationalData{ pos, rot, actor->GetCellOrWorld() });
+    return;
+  }
+  PapyrusObjectReference papyrusObjectReference;
+  const std::vector<VarValue> xyz{ VarValue(static_cast<double>(v.x)),
+                                   VarValue(static_cast<double>(v.y)),
+                                   VarValue(static_cast<double>(v.z)) };
+  if (angle) {
+    (void)papyrusObjectReference.SetAngle(target.ToVarValue(), xyz);
+  } else {
+    (void)papyrusObjectReference.SetPosition(target.ToVarValue(), xyz);
+  }
+}
+
+// MoveTo: to the named reference, through the Papyrus native (a teleport
+// the server makes for an actor)
+void ExecuteMoveTo(MpActor& caller,
+                   const std::vector<ConsoleCommands::Argument>& args)
+{
+  MpObjectReference& target = ReferenceOf(caller, args.at(0).GetInteger());
+  MpObjectReference& destination =
+    caller.GetParent()->GetFormAt<MpObjectReference>(
+      static_cast<uint32_t>(args.at(1).GetInteger()));
+  PapyrusObjectReference papyrusObjectReference;
+  (void)papyrusObjectReference.MoveTo(target.ToVarValue(),
+                                      { destination.ToVarValue(),
+                                        VarValue(0.0), VarValue(0.0),
+                                        VarValue(0.0), VarValue(true) });
+}
+
 // every player an owner when the server says so (the lab), else the rank the
 // player's record keeps
 uint8_t RankOf(const MpActor& me)
@@ -251,6 +391,20 @@ void ConsoleCommands::Execute(
       ExecuteDisable(me, args);
     } else if (!Utils::stricmp(name, "Mp")) {
       ExecuteMp(me, args);
+    } else if (!Utils::stricmp(name, "RemoveItem")) {
+      ExecuteRemoveItem(me, args);
+    } else if (!Utils::stricmp(name, "Enable")) {
+      ExecuteEnable(me, args);
+    } else if (!Utils::stricmp(name, "Kill")) {
+      ExecuteKill(me, args);
+    } else if (!Utils::stricmp(name, "Resurrect")) {
+      ExecuteResurrect(me, args);
+    } else if (!Utils::stricmp(name, "SetPos")) {
+      ExecuteSetPos(me, args, false);
+    } else if (!Utils::stricmp(name, "SetAngle")) {
+      ExecuteSetPos(me, args, true);
+    } else if (!Utils::stricmp(name, "MoveTo")) {
+      ExecuteMoveTo(me, args);
     } else if (!Utils::stricmp(name, "SetAV") ||
                !Utils::stricmp(name, "SetActorValue")) {
       ExecuteActorValue(me, "set", args);

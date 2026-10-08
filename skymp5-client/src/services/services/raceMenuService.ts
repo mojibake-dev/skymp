@@ -53,10 +53,14 @@ export class RaceMenuService extends ClientListener {
 
     // RaceMenu puts its own saved copy of the player's hair color and tints
     // back on as its menu initializes (racemenu.psc OnMenuInitialized:
-    // LoadTints, LoadHair), and after a login that copy is the login save's
-    // unless RaceMenu took in the look this service loaded. Asking it to save
-    // the current look as the menu opens keeps the menu on that look (lab,
-    // 2026-10-07: the hair color changed as the race menu opened).
+    // LoadTints, LoadHair). That copy is taken when this service loads the
+    // player's look after a login (load: RSM_RequestTintSave), so it is the
+    // look the server holds. No copy is asked for here: the race menu has
+    // already reset the tints and hair color to the race's defaults when
+    // this event arrives, and a save then made RaceMenu put the defaults back
+    // (x-racemenu-done-probe 20261008-224646: the skin tone at the race's
+    // default with the menu open, Eli's playtest eleven: hair and skin
+    // "back to the nord colors" after a Done with no change).
     private onMenuOpen(e: MenuOpenEvent) {
         if (e.name !== "RaceSex Menu" || !this.available()) {
             return;
@@ -67,7 +71,6 @@ export class RaceMenuService extends ClientListener {
             // actor's race, so it is the base's before anything is read
             this.alignRace();
             this.hairColorOnRaceMenuForm(player);
-            player.sendModEvent("RSM_RequestTintSave", "", 0);
             // Nothing is re-applied here. The "almost right" face at the
             // open (Eli, 2026-10-07 21:3x: darker, palette hair, the
             // unsculpted shape) was the race's head and mouth parts

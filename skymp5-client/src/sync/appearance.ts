@@ -93,7 +93,15 @@ export const applyTints = (actor: Actor | null, appearance: Appearance): void =>
     throw new Error("null appearance has been passed to applyTints");
   }
 
-  const tints = appearance.tints.filter((t) => isVisible(t.argb));
+  // thuum docs/verbs/racemenu-sync.md: every recorded layer, in its
+  // recorded order, the invisible ones too, as the game itself holds them.
+  // Only the visible ones made a short list (rotfern: 6 of her race's 30),
+  // and RaceMenu keeps a player's tints by their place in that list: the
+  // race menu rebuilds the race's full list as it opens, RaceMenu put its
+  // copy back by place, and her lips, nose and tone landed in the wrong
+  // layers or not at all (playtest eleven; x-racemenu-done-probe
+  // 20261008-224646: 6 layers after the login, 30 blank ones in the menu)
+  const tints = appearance.tints;
 
   const raceWarPaintRegex = /.*Head.+WarPaint.*/;
   const uniWarPaintRegex = /.*HeadWarPaint.*/;

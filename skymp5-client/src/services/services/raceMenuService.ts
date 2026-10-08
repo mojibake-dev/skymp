@@ -93,6 +93,14 @@ export class RaceMenuService extends ClientListener {
         if (e.name !== "RaceSex Menu" || !this.available()) {
             return;
         }
+        // The vanilla menu commits its own slider state after the close
+        // event (Eli, 2026-10-07: the look saved here was the preset's, the
+        // face on his seat went back to the menu's stale tone and shape),
+        // so the save, the re-apply and the send wait a moment for it.
+        this.sp.Utility.wait(0.25).then(() => this.afterMenuClose());
+    }
+
+    private afterMenuClose() {
         const player = this.sp.Game.getPlayer();
         if (!player) {
             return;

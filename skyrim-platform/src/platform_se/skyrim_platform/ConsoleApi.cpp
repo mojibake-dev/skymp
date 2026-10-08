@@ -223,8 +223,18 @@ ParseCommandResult ParseCommand(std::string command)
     command.erase(0, pos + delimiterSpase.length());
   }
 
-  if (command.size() >= 1)
-    res.params.push_back(command);
+  // the last word: the command's name when it took no parameter (a command
+  // typed alone, "tgm" or "player.kill", never met a space above and was
+  // read as a parameter of an empty name, which matched no replaced command,
+  // so neither the replacement nor the game's own handler ran; thuum lab,
+  // x-console-probe 20261008-120316)
+  if (command.size() >= 1) {
+    if (res.commandName.empty()) {
+      res.commandName = command;
+    } else {
+      res.params.push_back(command);
+    }
+  }
 
   return res;
 }

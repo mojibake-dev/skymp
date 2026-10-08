@@ -394,6 +394,15 @@ TEST_CASE("RemoveItem, Enable, Kill, Resurrect, SetPos, SetAngle and MoveTo "
   REQUIRE(ac.GetPos().y == 600.f);
   REQUIRE(ac.GetPos().z == 70.f);
 
+  // `moveto player` with another reference selected brings it to the
+  // caller: the console passes "player" as 0
+  ac.Teleport(
+    LocationalData{ { 10, 20, 30 }, { 0, 0, 0 }, ac.GetCellOrWorld() });
+  Send(p, "moveto", { int64_t(0xff000001), int64_t(0) });
+  REQUIRE(other.GetPos().x == 10.f);
+  REQUIRE(other.GetPos().y == 20.f);
+  REQUIRE(other.GetPos().z == 30.f);
+
   // Kill, then Resurrect where it fell; each refuses the state it needs
   p.Messages().clear();
   Send(p, "kill", { int64_t(0xff000001) });

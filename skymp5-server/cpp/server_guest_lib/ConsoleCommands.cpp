@@ -336,14 +336,15 @@ void ExecuteSetPos(MpActor& caller,
 }
 
 // MoveTo: to the named reference, through the Papyrus native (a teleport
-// the server makes for an actor)
+// the server makes for an actor). `moveto player` names the caller: Skyrim
+// Platform reads the word "player" as a hex id and passes 0
+// (x-moveto-probe 20261008-225615: "Form with id 0x0 doesn't exist")
 void ExecuteMoveTo(MpActor& caller,
                    const std::vector<ConsoleCommands::Argument>& args)
 {
   MpObjectReference& target = ReferenceOf(caller, args.at(0).GetInteger());
   MpObjectReference& destination =
-    caller.GetParent()->GetFormAt<MpObjectReference>(
-      static_cast<uint32_t>(args.at(1).GetInteger()));
+    ReferenceOf(caller, args.at(1).GetInteger());
   PapyrusObjectReference papyrusObjectReference;
   (void)papyrusObjectReference.MoveTo(target.ToVarValue(),
                                       { destination.ToVarValue(),

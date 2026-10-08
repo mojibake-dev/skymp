@@ -276,10 +276,20 @@ TEST_CASE("SetAV, ModAV and ForceAV run through the server's actor value "
   Send(p, "modav",
        { int64_t(0x14), std::string("marksman"), std::string("2.5") });
   p.Tick();
-  REQUIRE(ac.GetRecordedActorValueBase(8) == std::optional<float>(47.5f));
+  // SetAV sets the record's base (R0); ModAV changes a permanent modifier,
+  // which the player's own game keeps (docs/verbs/actor-values.md), so the
+  // base stays and the native runs there
+  REQUIRE(ac.GetRecordedActorValueBase(8) == std::optional<float>(45.f));
   REQUIRE(Lines(p) ==
           std::vector<std::pair<std::string, bool>>{
             { "setav done", false }, { "modav done", false } });
+  std::vector<std::string> snippets;
+  for (auto& m : p.Messages()) {
+    if (m.userId == 0 && m.j["t"] == MsgType::SpSnippet) {
+      snippets.push_back(m.j["function"].get<std::string>());
+    }
+  }
+  REQUIRE(snippets == std::vector<std::string>{ "ModActorValue" });
 
   // a value that is no number, or not a finite one, fails with a line and
   // changes nothing
@@ -296,7 +306,7 @@ TEST_CASE("SetAV, ModAV and ForceAV run through the server's actor value "
   REQUIRE(Lines(p) ==
           std::vector<std::pair<std::string, bool>>(
             4, { "Failed: the value is not a number", true }));
-  REQUIRE(ac.GetRecordedActorValueBase(8) == std::optional<float>(47.5f));
+  REQUIRE(ac.GetRecordedActorValueBase(8) == std::optional<float>(45.f));
 
   p.DestroyActor(0xff000000);
   DoDisconnect(p, 0);

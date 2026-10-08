@@ -68,6 +68,23 @@ export class RaceMenuService extends ClientListener {
             this.alignRace();
             this.hairColorOnRaceMenuForm(player);
             player.sendModEvent("RSM_RequestTintSave", "", 0);
+            // The vanilla menu rebuilds the head from the base's vanilla
+            // data as it opens and knows nothing of what RaceMenu layered
+            // on it (the sculpt, its own sliders, the hair color on its
+            // form): the player sees an "almost right" face, darker and
+            // with the race palette's hair, until a preset is loaded again
+            // (Eli, 2026-10-07 21:3x). So the player's recorded look goes
+            // back on once the menu has built itself, and the menu starts
+            // where the player left off.
+            const look = this.lastSent || this.wanted.get(this.myId());
+            if (look) {
+                this.sp.Utility.wait(0.5).then(() => {
+                    const p = this.sp.Game.getPlayer();
+                    if (p && this.sp.Ui.isMenuOpen("RaceSex Menu") && this.load(p, this.myId(), look)) {
+                        logTrace(this, "the player's look is back on under the open race menu");
+                    }
+                });
+            }
         }
     }
 

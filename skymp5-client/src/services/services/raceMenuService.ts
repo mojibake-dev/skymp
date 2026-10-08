@@ -68,27 +68,15 @@ export class RaceMenuService extends ClientListener {
             this.alignRace();
             this.hairColorOnRaceMenuForm(player);
             player.sendModEvent("RSM_RequestTintSave", "", 0);
-            // The vanilla menu rebuilds the head from the base's vanilla
-            // data as it opens and knows nothing of what RaceMenu layered
-            // on it (the sculpt, its own sliders, the hair color on its
-            // form): the player sees an "almost right" face, darker and
-            // with the race palette's hair, until a preset is loaded again
-            // (Eli, 2026-10-07 21:3x). So the player's recorded look goes
-            // back on once the menu has built itself, and the menu starts
-            // where the player left off. Measured with the menu open (lab,
-            // 23:27, both records right): the node carried FemaleHeadNord
-            // and the Nord mouth under her other parts, and a game-time
-            // wait never fires while the race menu holds the game, so the
-            // wait is the menu-mode one (real time, Utility.WaitMenuMode).
-            const look = this.lastSent || this.wanted.get(this.myId());
-            if (look) {
-                this.sp.Utility.waitMenuMode(0.5).then(() => {
-                    const p = this.sp.Game.getPlayer();
-                    if (p && this.sp.Ui.isMenuOpen("RaceSex Menu") && this.load(p, this.myId(), look)) {
-                        logTrace(this, "the player's look is back on under the open race menu");
-                    }
-                });
-            }
+            // Nothing is re-applied here. The "almost right" face at the
+            // open (Eli, 2026-10-07 21:3x: darker, palette hair, the
+            // unsculpted shape) was the race's head and mouth parts
+            // carrying no gender flag, so the menu's rebuild took the Nord
+            // ones and RaceMenu's sculpt found no host; fixed in the
+            // plugin (rotfern.esp 790d3b6c). Loading the recorded look
+            // back at the open, tried in c4eebeeb and 482a331f, wiped the
+            // tint layers RaceMenu's own save does not carry (the lips and
+            // the nose, lab 2026-10-08 00:26), so it is gone.
         }
     }
 
@@ -114,34 +102,25 @@ export class RaceMenuService extends ClientListener {
             return;
         }
         // The vanilla menu commits its own slider state AFTER this event
-        // (Eli, 2026-10-07: the look saved here was the preset's, the face
-        // on his seat went back to the menu's stale tone and shape), and
-        // that commit writes the Face and Mouth parts its sliders held from
-        // the menu's open over the parts a preset loaded in the menu set
-        // (lab, 21:1x: both records came out with FemaleHeadNord and the
-        // Nord mouth under the preset's ear, hair, eyes and tints). So the
-        // look is read now, while it is still RaceMenu's, and put back over
-        // the commit a moment later: what the menu showed at Done is what
-        // the player, the record and every figure get.
-        const player = this.sp.Game.getPlayer();
-        const look = player ? this.save(player, "thuum-close") : undefined;
-        this.sp.Utility.wait(0.25).then(() => this.afterMenuClose(look));
+        // (Eli, 2026-10-07: the look saved at the event was the preset's,
+        // the face on his seat went back to the menu's stale tone and
+        // shape), so the save and the send wait a moment for it: the
+        // record is RaceMenu's state once the menu is fully closed. The
+        // commit writing the Nord head and mouth over a menu-loaded preset
+        // (lab, 21:1x) was the race's parts carrying no gender flag, fixed
+        // in the plugin; loading a look back over the commit (77400a0d)
+        // wiped the tint layers RaceMenu's own save does not carry, so
+        // nothing is loaded here.
+        this.sp.Utility.wait(0.25).then(() => this.afterMenuClose());
     }
 
-    private afterMenuClose(look: string | undefined) {
+    private afterMenuClose() {
         const player = this.sp.Game.getPlayer();
-        if (!player || !look) {
+        if (!player) {
             return;
         }
-        let preset = look;
-        if (this.load(player, this.myId(), look)) {
-            // RaceMenu may reorder what it writes back; the record is what
-            // it saves after its own load, the same way a figure's is read
-            preset = this.save(player, "thuum-self") ?? look;
-        } else {
-            logError(this, "RaceMenu did not load the player's own look back after the menu; the record carries it anyway");
-        }
-        if (preset === this.lastSent) {
+        const preset = this.save(player, "thuum-self");
+        if (!preset || preset === this.lastSent) {
             return;
         }
         this.lastSent = preset;

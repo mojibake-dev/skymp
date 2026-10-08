@@ -258,6 +258,11 @@ public:
 
   bool GetConsoleCommandsAllowedFlag() const;
   void SetConsoleCommandsAllowedFlag(bool newValue);
+  // thuum docs/verbs/console-commands.md: the player's staff rank (0 player,
+  // 1 moderator, 2 admin, 3 owner): the recorded one, else admin when
+  // consoleCommandsAllowed is set, else player
+  uint8_t GetStaffRank() const;
+  void SetStaffRank(uint8_t rank);
 
   void EquipBestWeapon();
 

@@ -8,6 +8,7 @@ pub mod activation;
 pub mod actor_values;
 pub mod appearance;
 pub mod clock;
+pub mod console;
 pub mod damage;
 pub mod effects;
 pub mod favorites;

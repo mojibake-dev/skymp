@@ -11,9 +11,12 @@ enum CmdArgument {
     BaseForm,
     Int,
     String,
+    // a number the console may type with a fraction: the wire's console
+    // argument is an integer or a string, so a fraction travels as its text
+    Float,
 }
 
-type CmdName = "additem" | "equipitem" | "placeatme" | "disable" | "mp";
+type CmdName = "additem" | "equipitem" | "placeatme" | "disable" | "mp" | "setav" | "modav" | "forceav";
 
 export class ConsoleCommandsService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
@@ -21,6 +24,9 @@ export class ConsoleCommandsService extends ClientListener {
         this.schemas = ConsoleCommandsService.createSchemas();
         this.setupMpCommand();
         this.setupVanilaCommands();
+        this.controller.emitter.on("consoleOutputMessage", (e) => {
+            this.sp.printConsole(e.message.text);
+        });
     }
 
     private static createSchemas() {
@@ -30,6 +36,12 @@ export class ConsoleCommandsService extends ClientListener {
         schemas.set("placeatme", [CmdArgument.ObjectReference, CmdArgument.BaseForm]);
         schemas.set("disable", [CmdArgument.ObjectReference]);
         schemas.set("mp", [CmdArgument.ObjectReference, CmdArgument.String]);
+        // thuum docs/verbs/console-commands.md: the server's actor value
+        // natives (docs/verbs/actor-values.md); Skyrim Platform passes an
+        // actor value's name as a string and a float as a number
+        schemas.set("setav", [CmdArgument.ObjectReference, CmdArgument.String, CmdArgument.Float]);
+        schemas.set("modav", [CmdArgument.ObjectReference, CmdArgument.String, CmdArgument.Float]);
+        schemas.set("forceav", [CmdArgument.ObjectReference, CmdArgument.String, CmdArgument.Float]);
         return schemas;
     }
 
@@ -80,6 +92,11 @@ export class ConsoleCommandsService extends ClientListener {
                     case CmdArgument.ObjectReference:
                         args[i] = localIdToRemoteId(parseInt(`${args[i]}`));
                         break;
+                    case CmdArgument.Float:
+                        if (typeof args[i] === "number" && !Number.isInteger(args[i])) {
+                            args[i] = `${args[i]}`;
+                        }
+                        break;
                 }
             }
 
@@ -101,8 +118,7 @@ export class ConsoleCommandsService extends ClientListener {
                 reliability: "reliable"
             });
 
-            // Meant to be shown to user, not for logging
-            this.sp.printConsole("sent");
+            // the server answers with the line to print (ConsoleOutput)
             return false;
         };
     }

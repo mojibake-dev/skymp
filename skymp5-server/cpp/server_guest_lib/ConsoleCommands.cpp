@@ -1,10 +1,14 @@
 #include "ConsoleCommands.h"
+#include "ConsoleOutputMessage.h"
 #include "MpActor.h"
 #include "WorldState.h"
 #include "papyrus-vm/Utils.h"
 #include "script_classes/PapyrusActor.h"
 #include "script_classes/PapyrusObjectReference.h"
 #include "script_objects/EspmGameObject.h"
+#include "wire_bridge_cxx/rules.h"
+#include <cmath>
+#include <string>
 
 ConsoleCommands::Argument::Argument()
 {
@@ -55,27 +59,9 @@ const std::string& ConsoleCommands::Argument::GetString() const
 
 namespace {
 
-void EnsureAdmin(const MpActor& me)
-{
-  if (auto worldState = me.GetParent()) {
-    if (worldState->enableConsoleCommandsForAll) {
-      spdlog::trace("Bypassing EnsureAdmin check: enableConsoleCommandsForAll "
-                    "set to true");
-      return;
-    }
-  }
-
-  bool isAdmin = me.GetConsoleCommandsAllowedFlag();
-  if (!isAdmin) {
-    throw std::runtime_error("Not enough permissions to use this command");
-  }
-}
-
 void ExecuteAddItem(MpActor& caller,
                     const std::vector<ConsoleCommands::Argument>& args)
 {
-  EnsureAdmin(caller);
-
   const auto targetId = static_cast<uint32_t>(args.at(0).GetInteger());
   const auto itemId = static_cast<uint32_t>(args.at(1).GetInteger());
   const auto count = static_cast<int32_t>(args.at(2).GetInteger());
@@ -98,8 +84,6 @@ void ExecuteAddItem(MpActor& caller,
 void ExecuteEquipItem(MpActor& caller,
                       const std::vector<ConsoleCommands::Argument>& args)
 {
-  EnsureAdmin(caller);
-
   const auto targetId = static_cast<uint32_t>(args.at(0).GetInteger());
   const auto itemId = static_cast<uint32_t>(args.at(1).GetInteger());
 
@@ -122,8 +106,6 @@ void ExecuteEquipItem(MpActor& caller,
 void ExecutePlaceAtMe(MpActor& caller,
                       const std::vector<ConsoleCommands::Argument>& args)
 {
-  EnsureAdmin(caller);
-
   const auto targetId = static_cast<uint32_t>(args.at(0).GetInteger());
   const auto baseFormId = static_cast<uint32_t>(args.at(1).GetInteger());
 
@@ -147,8 +129,6 @@ void ExecutePlaceAtMe(MpActor& caller,
 void ExecuteDisable(MpActor& caller,
                     const std::vector<ConsoleCommands::Argument>& args)
 {
-  EnsureAdmin(caller);
-
   const auto targetId = static_cast<uint32_t>(args.at(0).GetInteger());
 
   MpObjectReference& target = (targetId == 0x14)
@@ -170,24 +150,123 @@ void ExecuteMp(MpActor& caller,
     return ExecuteDisable(caller, args);
   }
 }
+
+// A typed number: an integer as the wire carries one, or the text of one the
+// console typed with a fraction. Anything else, or a value that is not finite,
+// fails the command with one line.
+double NumberOf(const ConsoleCommands::Argument& argument)
+{
+  double value = 0;
+  if (argument.IsInteger()) {
+    value = static_cast<double>(argument.GetInteger());
+  } else {
+    const std::string& text = argument.GetString();
+    size_t used = 0;
+    try {
+      value = std::stod(text, &used);
+    } catch (std::exception&) {
+      used = 0;
+    }
+    if (used == 0 || used != text.size()) {
+      throw std::runtime_error("the value is not a number");
+    }
+  }
+  if (!std::isfinite(value)) {
+    throw std::runtime_error("the value is not a number");
+  }
+  return value;
 }
 
+// thuum docs/verbs/console-commands.md: SetAV, ModAV and ForceAV through the
+// server's own actor value natives (docs/verbs/actor-values.md: R0 on a
+// player). Arguments as Skyrim Platform passes a replaced command's: the
+// selected reference (0 or the player for the caller), the actor value's
+// name, the value (a number, or its text when the console typed a fraction).
+void ExecuteActorValue(MpActor& caller, const char* how,
+                       const std::vector<ConsoleCommands::Argument>& args)
+{
+  const auto targetId = static_cast<uint32_t>(args.at(0).GetInteger());
+  MpActor& target = (targetId == 0x14 || targetId == 0)
+    ? caller
+    : caller.GetParent()->GetFormAt<MpActor>(targetId);
+  const std::string& name = args.at(1).GetString();
+  const double value = NumberOf(args.at(2));
+  PapyrusActor papyrusActor;
+  const std::vector<VarValue> arguments{ VarValue(name), VarValue(value) };
+  if (!Utils::stricmp(how, "set")) {
+    (void)papyrusActor.SetActorValue(target.ToVarValue(), arguments);
+  } else if (!Utils::stricmp(how, "mod")) {
+    (void)papyrusActor.ModActorValue(target.ToVarValue(), arguments);
+  } else {
+    (void)papyrusActor.ForceActorValue(target.ToVarValue(), arguments);
+  }
+}
+
+// every player an owner when the server says so (the lab), else the rank the
+// player's record keeps
+uint8_t RankOf(const MpActor& me)
+{
+  if (auto worldState = me.GetParent()) {
+    if (worldState->enableConsoleCommandsForAll) {
+      return 3;
+    }
+  }
+  return me.GetStaffRank();
+}
+
+void Reply(MpActor& caller, std::string text, bool refused)
+{
+  ConsoleOutputMessage out;
+  out.text = std::move(text);
+  out.refused = refused;
+  caller.SendToUser(out, true);
+}
+}
+
+// thuum docs/verbs/console-commands.md: the server's table (wire-rules
+// console) decides whether the caller's rank may run the command and whether
+// the server runs it; the caller's console prints the server's line either
+// way (ConsoleOutput). A command that fails prints why.
 void ConsoleCommands::Execute(
   MpActor& me, const std::string& consoleCommandName,
   const std::vector<ConsoleCommands::Argument>& args)
 {
-  if (!Utils::stricmp(consoleCommandName.data(), "AddItem")) {
-    ExecuteAddItem(me, args);
-  } else if (!Utils::stricmp(consoleCommandName.data(), "EquipItem")) {
-    ExecuteEquipItem(me, args);
-  } else if (!Utils::stricmp(consoleCommandName.data(), "PlaceAtMe")) {
-    ExecutePlaceAtMe(me, args);
-  } else if (!Utils::stricmp(consoleCommandName.data(), "Disable")) {
-    ExecuteDisable(me, args);
-  } else if (!Utils::stricmp(consoleCommandName.data(), "Mp")) {
-    ExecuteMp(me, args);
-  } else {
-    throw std::runtime_error("Unknown command name '" + consoleCommandName +
-                             "'");
+  const auto decision =
+    skymp::rules::console_decide(rust::Str(consoleCommandName), RankOf(me));
+  if (decision != skymp::rules::ConsoleDecision::Run) {
+    const std::string line(skymp::rules::console_refusal_line(decision));
+    spdlog::info("ConsoleCommands: {:x} ran '{}': {}", me.GetFormId(),
+                 consoleCommandName, line);
+    return Reply(me, line, true);
   }
+  try {
+    const char* name = consoleCommandName.data();
+    if (!Utils::stricmp(name, "AddItem")) {
+      ExecuteAddItem(me, args);
+    } else if (!Utils::stricmp(name, "EquipItem")) {
+      ExecuteEquipItem(me, args);
+    } else if (!Utils::stricmp(name, "PlaceAtMe")) {
+      ExecutePlaceAtMe(me, args);
+    } else if (!Utils::stricmp(name, "Disable")) {
+      ExecuteDisable(me, args);
+    } else if (!Utils::stricmp(name, "Mp")) {
+      ExecuteMp(me, args);
+    } else if (!Utils::stricmp(name, "SetAV") ||
+               !Utils::stricmp(name, "SetActorValue")) {
+      ExecuteActorValue(me, "set", args);
+    } else if (!Utils::stricmp(name, "ModAV") ||
+               !Utils::stricmp(name, "ModActorValue")) {
+      ExecuteActorValue(me, "mod", args);
+    } else if (!Utils::stricmp(name, "ForceAV") ||
+               !Utils::stricmp(name, "ForceActorValue")) {
+      ExecuteActorValue(me, "force", args);
+    } else {
+      return Reply(me, "The server does not run this command yet", true);
+    }
+  } catch (std::exception& e) {
+    spdlog::info("ConsoleCommands: {:x} ran '{}' and it failed: {}",
+                 me.GetFormId(), consoleCommandName, e.what());
+    return Reply(me, std::string("Failed: ") + e.what(), true);
+  }
+  Reply(me, consoleCommandName + " done", false);
 }

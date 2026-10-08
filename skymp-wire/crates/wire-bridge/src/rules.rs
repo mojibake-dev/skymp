@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, clock, damage, effects, favorites, hostility, markers, melee, movement, racemenu, rest};
+use wire_rules::{activation, actor_values, appearance, clock, console, damage, effects, favorites, hostility, markers, melee, movement, racemenu, rest};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -231,6 +231,24 @@ mod ffi {
         legendary: Vec<AvLegendary>,
     }
 
+    /// What the server does with a console command a player sent (thuum
+    /// docs/verbs/console-commands.md).
+    #[derive(Debug, Clone, Copy)]
+    enum ConsoleDecision {
+        /// Run it.
+        Run,
+        /// The caller's rank is below the command's.
+        RankTooLow,
+        /// Nobody may run it.
+        Refused,
+        /// Listed, not run by the server yet.
+        NotServed,
+        /// A client-only command.
+        ClientOnly,
+        /// Not in the table.
+        Unknown,
+    }
+
     /// A form a RaceMenu look names (thuum ADR-026): its plugin and its id
     /// within it.
     #[derive(Debug, Clone)]
@@ -428,6 +446,11 @@ mod ffi {
         /// Whether a RaceMenu preset is one the server records: a JSON
         /// object, not nested past what a preset needs.
         fn racemenu_preset_ok(preset: &str) -> bool;
+        /// thuum docs/verbs/console-commands.md: what the server does with a
+        /// command a caller of a staff rank (0 to 3) sent.
+        fn console_decide(name: &str, rank: u8) -> ConsoleDecision;
+        /// The line the caller's console prints for a decision other than Run.
+        fn console_refusal_line(decision: ConsoleDecision) -> String;
         /// thuum ADR-026: what a look says of the vanilla appearance.
         fn racemenu_look_facts(preset: &str) -> LookAppearance;
         /// thuum ADR-026: the appearance's head parts a look implies.
@@ -490,7 +513,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, ConeFacts, DerivedParts, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, SneakMults, Verdict};
+pub use ffi::{AvBase, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, ConeFacts, ConsoleDecision, DerivedParts, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, SneakMults, Verdict};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -647,6 +670,33 @@ const fn ingredient_effects_union(recorded: u8, reported: u8) -> u8 {
 
 fn racemenu_preset_ok(preset: &str) -> bool {
     racemenu::preset_ok(preset)
+}
+
+fn console_decision(d: console::Decision) -> ConsoleDecision {
+    match d {
+        console::Decision::Run => ConsoleDecision::Run,
+        console::Decision::RankTooLow => ConsoleDecision::RankTooLow,
+        console::Decision::Refused => ConsoleDecision::Refused,
+        console::Decision::NotServed => ConsoleDecision::NotServed,
+        console::Decision::ClientOnly => ConsoleDecision::ClientOnly,
+        console::Decision::Unknown => ConsoleDecision::Unknown,
+    }
+}
+
+fn console_decide(name: &str, rank: u8) -> ConsoleDecision {
+    console_decision(console::decide(name, console::Rank::from_number(rank)))
+}
+
+fn console_refusal_line(decision: ConsoleDecision) -> String {
+    let d = match decision {
+        ConsoleDecision::Run => console::Decision::Run,
+        ConsoleDecision::RankTooLow => console::Decision::RankTooLow,
+        ConsoleDecision::Refused => console::Decision::Refused,
+        ConsoleDecision::NotServed => console::Decision::NotServed,
+        ConsoleDecision::ClientOnly => console::Decision::ClientOnly,
+        _ => console::Decision::Unknown,
+    };
+    console::refusal_line(d).to_owned()
 }
 
 fn look_ref(r: Option<&racemenu::FormRef>) -> LookRef {

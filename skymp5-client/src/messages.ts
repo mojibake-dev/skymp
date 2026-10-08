@@ -42,5 +42,6 @@ export enum MsgType {
   IngredientEffectsKnown = 37,
   Favorites = 38,
   RaceMenuPreset = 39,
-  ActorValues = 40
+  ActorValues = 40,
+  ConsoleOutput = 41
 }

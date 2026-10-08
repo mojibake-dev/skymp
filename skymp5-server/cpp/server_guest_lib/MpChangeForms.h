@@ -150,6 +150,12 @@ public:
   // docs/verbs/actor-values.md)
   std::optional<ActorValueRecord> actorValueRecord;
 
+  // The player's staff rank for console commands (thuum
+  // docs/verbs/console-commands.md; TES3MP's: 0 player, 1 moderator, 2
+  // admin, 3 owner); absent in older records, where consoleCommandsAllowed
+  // reads as admin and anything else as player
+  std::optional<uint8_t> staffRank;
+
   // Please update 'ActorTest.cpp' when adding new Actor-related rows
 
   DynamicFields dynamicFields;
@@ -165,7 +171,8 @@ public:
       magickaRespawnPercentage, staminaRespawnPercentage, spawnPoint,
       dynamicFields, spawnDelay, learnedSpells, templateChain, lastAnimation,
       setNodeTextureSet, setNodeScale, displayName, mapMarkers,
-      ingredientEffects, favorites, raceMenuPreset, actorValueRecord);
+      ingredientEffects, favorites, raceMenuPreset, actorValueRecord,
+      staffRank);
   }
 
   static nlohmann::json ToJson(const MpChangeFormREFR& changeForm);

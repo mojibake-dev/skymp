@@ -48,6 +48,7 @@ enum class MsgType : uint8_t
   Favorites = 38,
   RaceMenuPreset = 39,
   ActorValues = 40,
+  ConsoleOutput = 41,
 
   Max
 };

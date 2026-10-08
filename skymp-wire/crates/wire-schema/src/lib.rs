@@ -5,7 +5,7 @@
 //!
 //! Two families share the enum. The M0 variants (ids 0 to 8) are the
 //! authority model's messages, reserved until its verbs land. The SkyMP
-//! variants (ids 9 to 48, id = MsgType + 8) are SkyMP's own protocol, ported
+//! variants (ids 9 to 49, id = MsgType + 8) are SkyMP's own protocol, ported
 //! field for field in [`skymp`], and the MsgTypes thuum appends after
 //! SkyMP's 33; their JSON form is what the C++ core and skymp5-client
 //! exchange in-process (`wire-json`).
@@ -32,7 +32,7 @@ use bounded::{String, Vec};
 
 /// Bump when any variant changes shape. It is part of netcode's protocol id,
 /// so peers built against another schema never complete a handshake.
-pub const SCHEMA_VERSION: u16 = 9;
+pub const SCHEMA_VERSION: u16 = 10;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -99,6 +99,8 @@ pub mod cap {
     pub const EVENT_ARG_JSON: usize = 64 * 1024;
     /// A console command name.
     pub const CONSOLE_COMMAND: usize = 64;
+    /// A console reply's line (thuum docs/verbs/console-commands.md).
+    pub const CONSOLE_OUTPUT: usize = 1024;
     /// Arguments of one console command.
     pub const CONSOLE_ARGS: usize = 32;
     /// One console command argument.
@@ -372,6 +374,8 @@ pub enum Message {
     RaceMenuPreset(skymp::RaceMenuPreset),
     /// 48, MsgType 40 (thuum). See [`skymp::ActorValues`].
     ActorValues(skymp::ActorValues),
+    /// 49, MsgType 41 (thuum). See [`skymp::ConsoleOutput`].
+    ConsoleOutput(skymp::ConsoleOutput),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -400,7 +404,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 49] = [
+const TABLE: [Row; 50] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -450,10 +454,11 @@ const TABLE: [Row; 49] = [
     row("Favorites", 38, KIB, Both),
     row("RaceMenuPreset", 39, 200 * KIB, Both),
     row("ActorValues", 40, 2 * KIB, Both),
+    row("ConsoleOutput", 41, 2 * KIB, S2C),
 ];
 
 /// Wire ids in use: one past the last variant.
-pub const WIRE_IDS: u32 = 49;
+pub const WIRE_IDS: u32 = 50;
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -527,6 +532,7 @@ impl Message {
             Message::Favorites(_) => 46,
             Message::RaceMenuPreset(_) => 47,
             Message::ActorValues(_) => 48,
+            Message::ConsoleOutput(_) => 49,
         }
     }
 
@@ -596,8 +602,9 @@ mod tests {
         assert_eq!(name_of_msg_type(38), Some("Favorites"));
         assert_eq!(name_of_msg_type(39), Some("RaceMenuPreset"));
         assert_eq!(name_of_msg_type(40), Some("ActorValues"));
+        assert_eq!(name_of_msg_type(41), Some("ConsoleOutput"));
         assert_eq!(name_of_msg_type(0), None);
-        assert_eq!(name_of_msg_type(41), None);
+        assert_eq!(name_of_msg_type(42), None);
     }
 
     #[test]
@@ -652,6 +659,11 @@ mod tests {
                     .collect::<alloc::vec::Vec<_>>()
                     .try_into()
                     .unwrap_or_default(),
+                ..Default::default()
+            }),
+            Message::ConsoleOutput(skymp::ConsoleOutput {
+                text: "x".repeat(cap::CONSOLE_OUTPUT).try_into().unwrap_or_default(),
+                refused: true,
                 ..Default::default()
             }),
         ];

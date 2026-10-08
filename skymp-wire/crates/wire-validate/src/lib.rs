@@ -456,6 +456,10 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::Favorites(m) => check_favorites(m),
         Message::RaceMenuPreset(m) => check_preset(m),
         Message::ActorValues(m) => check_actor_values(m),
+        // thuum docs/verbs/console-commands.md: the server's own line, its
+        // length bounded at decode (cap::CONSOLE_OUTPUT); the transport
+        // refuses it from a client by direction
+        Message::ConsoleOutput(_) => Ok(()),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
         // rejects it by direction before it gets this far.

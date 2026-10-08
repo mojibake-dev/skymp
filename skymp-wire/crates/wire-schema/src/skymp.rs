@@ -5,12 +5,12 @@
 //! in-process; on the wire the same structs travel as postcard. MsgTypes 1
 //! to 33 are SkyMP's; thuum appends its own after them (34, SetGameTime; 35,
 //! RestIntent; 36, MapMarkerDiscovered; 37, IngredientEffectsKnown; 38,
-//! Favorites; 39, RaceMenuPreset; 40, ActorValues).
+//! Favorites; 39, RaceMenuPreset; 40, ActorValues; 41, ConsoleOutput).
 //!
 //! Directions are SkyMP's: twelve types (fifteen with RestIntent,
 //! MapMarkerDiscovered and IngredientEffectsKnown) only travel
 //! client to server, thirteen (fourteen with SetGameTime) only server to
-//! client, eight (eleven with Favorites, RaceMenuPreset and ActorValues) both ways (the server relays a client's
+//! client (fifteen with ConsoleOutput), eight (eleven with Favorites, RaceMenuPreset and ActorValues) both ways (the server relays a client's
 //! UpdateMovement, UpdateAnimation, UpdateAppearance, UpdateEquipment,
 //! SpellCast and UpdateAnimVariables to its neighbours, and sends its own
 //! CustomPacket and ChangeValues). Rungs are the ones SkyMP gives them today;
@@ -1157,5 +1157,22 @@ wire_struct! {
         pub level: u16,
         /// Skills made legendary.
         pub legendary: Vec<LegendarySkill, { cap::SKILLS }>,
+    }
+}
+
+wire_struct! {
+    /// MsgType 41 (thuum, docs/verbs/console-commands.md). Server to client,
+    /// reliable: the line a console command the player sent prints in its
+    /// console, the game's own wording where it prints one, or why the
+    /// server refused it. No validation beyond its capacity: the server
+    /// writes it, and the transport refuses it from a client by direction.
+    pub struct ConsoleOutput {
+        /// `"t": 41`.
+        #[serde(default)]
+        pub t: MsgT<41>,
+        /// The line.
+        pub text: String<{ cap::CONSOLE_OUTPUT }>,
+        /// The server refused the command.
+        pub refused: bool,
     }
 }

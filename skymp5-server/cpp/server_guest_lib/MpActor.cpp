@@ -1,7 +1,7 @@
 #include "MpActor.h"
 #include "ActiveMagicEffectsMap.h"
-#include "ActorValuesMessage.h"
 #include "ActorValues.h"
+#include "ActorValuesMessage.h"
 #include "ChangeFormGuard.h"
 #include "CropRegeneration.h"
 #include "EvaluateTemplate.h"
@@ -156,6 +156,22 @@ void MpActor::SetConsoleCommandsAllowedFlag(bool newValue)
 {
   EditChangeForm([&](MpChangeForm& changeForm) {
     changeForm.consoleCommandsAllowed = newValue;
+  });
+}
+
+uint8_t MpActor::GetStaffRank() const
+{
+  const auto& changeForm = ChangeForm();
+  if (changeForm.staffRank.has_value()) {
+    return *changeForm.staffRank;
+  }
+  return changeForm.consoleCommandsAllowed ? 2 : 0;
+}
+
+void MpActor::SetStaffRank(uint8_t rank)
+{
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    changeForm.staffRank = static_cast<uint8_t>(rank > 3 ? 3 : rank);
   });
 }
 

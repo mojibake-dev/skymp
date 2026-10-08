@@ -145,6 +145,11 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm)
     res["favorites"] = { { "entries", favoritesJson } };
   }
 
+  // thuum docs/verbs/console-commands.md; absent in older records
+  if (changeForm.staffRank.has_value()) {
+    res["staffRank"] = *changeForm.staffRank;
+  }
+
   // thuum docs/verbs/racemenu-sync.md; absent in older records, read as none
   if (changeForm.raceMenuPreset.has_value() &&
       !changeForm.raceMenuPreset->empty()) {
@@ -222,6 +227,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
   static const JsonPointer ingredientEffects("ingredientEffects");
   static const JsonPointer favorites("favorites");
   static const JsonPointer raceMenuPreset("raceMenuPreset");
+  static const JsonPointer staffRank("staffRank");
   static const JsonPointer actorValueRecord("actorValueRecord");
   static const JsonPointer healthRespawnPercentage("healthRespawnPercentage");
   static const JsonPointer magickaRespawnPercentage(
@@ -509,6 +515,13 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
         hotkeyTmp >= 0 && hotkeyTmp <= 7 ? static_cast<int8_t>(hotkeyTmp) : -1;
     }
     res.favorites = kept;
+  }
+
+  if (element.at_pointer(staffRank.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    uint32_t tmp = 0;
+    ReadEx(element, staffRank, &tmp);
+    res.staffRank = static_cast<uint8_t>(tmp > 3 ? 3 : tmp);
   }
 
   if (element.at_pointer(raceMenuPreset.GetData()).error() ==

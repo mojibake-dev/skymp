@@ -75,10 +75,14 @@ export class RaceMenuService extends ClientListener {
             // with the race palette's hair, until a preset is loaded again
             // (Eli, 2026-10-07 21:3x). So the player's recorded look goes
             // back on once the menu has built itself, and the menu starts
-            // where the player left off.
+            // where the player left off. Measured with the menu open (lab,
+            // 23:27, both records right): the node carried FemaleHeadNord
+            // and the Nord mouth under her other parts, and a game-time
+            // wait never fires while the race menu holds the game, so the
+            // wait is the menu-mode one (real time, Utility.WaitMenuMode).
             const look = this.lastSent || this.wanted.get(this.myId());
             if (look) {
-                this.sp.Utility.wait(0.5).then(() => {
+                this.sp.Utility.waitMenuMode(0.5).then(() => {
                     const p = this.sp.Game.getPlayer();
                     if (p && this.sp.Ui.isMenuOpen("RaceSex Menu") && this.load(p, this.myId(), look)) {
                         logTrace(this, "the player's look is back on under the open race menu");

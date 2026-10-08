@@ -58,11 +58,15 @@ Bool Function SetFavorite(Form form, Int hotkey) global native
 
 ; thuum docs/verbs/actor-values.md: the player's 164 base values by actor value;
 ; one set; and its progress as xp, threshold, level, per skill level, xp and
-; threshold, per skill its legendary count, read and written
+; threshold, per skill its legendary count, read whole and written one skill,
+; then the player's own experience and level, at a time (callNative takes no
+; array argument)
 Float[] Function GetActorValueBases() global native
 
 Bool Function SetActorValueBase(Int av, Float base) global native
 
 Float[] Function GetPlayerProgress() global native
 
-Bool Function SetPlayerProgress(Float[] progress) global native
+Bool Function SetPlayerSkill(Int skill, Float level, Float xp, Float threshold, Int legendary) global native
+
+Bool Function SetPlayerExperience(Float xp, Float threshold, Int level) global native

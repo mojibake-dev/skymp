@@ -27,6 +27,7 @@
 #include "script_objects/EspmGameObject.h"
 #include "wire_bridge_cxx/rules.h"
 #include <algorithm>
+#include <cctype>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 #include <limits>
@@ -275,6 +276,143 @@ bool IsAllowedRace(PartOne& partOne, const MpActor& actor, uint32_t raceId)
 }
 }
 
+namespace {
+// thuum ADR-026: a RaceMenu look is the one record of a character's face; the
+// appearance's head parts, hair colour, weight and face texture set follow
+// it. Race, sex, skin and tints stay the appearance's: a look carries no
+// race, and RaceMenu's save carries only the tint layers it set itself.
+enum class LookVerdict
+{
+  kDerived,    // the appearance the look implies
+  kRefused,    // a part the server lacks or the race may not wear
+  kNotJudged,  // no game files, or no appearance to derive into
+};
+
+// "<plugin>|<id>" to a form id in the server's load order (full plugins;
+// light plugins come with the light-plugins verb, docs/PLAN.md); 0 for a
+// plugin the server does not load
+uint32_t LookFormId(const PartOne& partOne, const skymp::rules::LookRef& ref)
+{
+  const std::string plugin(ref.plugin);
+  const auto& files = partOne.worldState.espmFiles;
+  for (size_t i = 0; i < files.size() && i < 0xff; ++i) {
+    if (files[i].size() == plugin.size() &&
+        std::equal(files[i].begin(), files[i].end(), plugin.begin(),
+                   [](char a, char b) {
+                     return std::tolower(static_cast<unsigned char>(a)) ==
+                       std::tolower(static_cast<unsigned char>(b));
+                   })) {
+      return (static_cast<uint32_t>(i) << 24) | (ref.id & 0x00ffffff);
+    }
+  }
+  return 0;
+}
+
+skymp::rules::LookPartFacts HeadPartFacts(PartOne& partOne, uint32_t formId,
+                                          uint32_t raceId)
+{
+  skymp::rules::LookPartFacts facts{};
+  facts.form = 0;
+  facts.valid_for_race = false;
+  if (!formId) {
+    return facts;
+  }
+  auto& browser = partOne.GetEspm().GetBrowser();
+  auto& cache = partOne.worldState.GetEspmCache();
+  const auto part = browser.LookupById(formId);
+  const auto hdpt = espm::Convert<espm::HDPT>(part.rec);
+  if (!hdpt) {
+    return facts;
+  }
+  const auto data = hdpt->GetData(cache);
+  facts.form = formId;
+  for (uint32_t extra : data.extraParts) {
+    facts.extras.push_back(part.ToGlobalId(extra));
+  }
+  if (!data.validRaces) {
+    facts.valid_for_race = true; // the record gives no answer
+    return facts;
+  }
+  const auto list = browser.LookupById(part.ToGlobalId(data.validRaces));
+  if (const auto flst = espm::Convert<espm::FLST>(list.rec)) {
+    for (uint32_t race : flst->GetData(cache).formIds) {
+      if (list.ToGlobalId(race) == raceId) {
+        facts.valid_for_race = true;
+        break;
+      }
+    }
+  }
+  return facts;
+}
+
+LookVerdict AppearanceFromLook(PartOne& partOne, const Appearance& current,
+                               const std::string& look, Appearance& out)
+{
+  if (!partOne.HasEspm()) {
+    return LookVerdict::kNotJudged;
+  }
+  const auto facts = skymp::rules::racemenu_look_facts(rust::Str(look));
+  if (!facts.ok) {
+    return LookVerdict::kRefused;
+  }
+  std::vector<skymp::rules::LookPartFacts> parts;
+  for (const auto& ref : facts.parts) {
+    parts.push_back(
+      HeadPartFacts(partOne, LookFormId(partOne, ref), current.raceId));
+  }
+  const auto derived = skymp::rules::racemenu_derived_head_parts(
+    rust::Slice<const skymp::rules::LookPartFacts>(parts.data(),
+                                                   parts.size()));
+  if (!derived.ok) {
+    return LookVerdict::kRefused;
+  }
+  out = current;
+  if (!parts.empty()) {
+    out.headpartIds.assign(derived.parts.begin(), derived.parts.end());
+  }
+  if (facts.has_hair_color) {
+    out.hairColor = static_cast<int32_t>(facts.hair_color);
+  }
+  if (facts.has_weight) {
+    out.weight = facts.weight;
+  }
+  if (facts.has_head_texture) {
+    if (const uint32_t texture = LookFormId(partOne, facts.head_texture);
+        texture &&
+        partOne.GetEspm().GetBrowser().LookupById(texture).rec &&
+        partOne.GetEspm().GetBrowser().LookupById(texture).rec->GetType() ==
+          "TXST") {
+      out.headTextureSetId = texture;
+    }
+  }
+  return LookVerdict::kDerived;
+}
+
+// the player's derived appearance to everyone who sees it but the player,
+// whose own game already wears it
+void SendAppearanceToOthers(PartOne& partOne, MpActor& actor,
+                            const Appearance& appearance)
+{
+  UpdateAppearanceMessage out;
+  out.idx = actor.GetIdx();
+  out.data = appearance;
+  for (auto listener : actor.GetActorListeners()) {
+    if (listener == &actor ||
+        partOne.serverState.UserByActor(listener) ==
+          Networking::InvalidUserId) {
+      continue;
+    }
+    listener->SendToUser(out, true);
+  }
+}
+
+bool SameAppearanceParts(const Appearance& a, const Appearance& b)
+{
+  return a.headpartIds == b.headpartIds && a.hairColor == b.hairColor &&
+    a.weight == b.weight && a.headTextureSetId == b.headTextureSetId;
+}
+}
+
 void ActionListener::OnUpdateAppearance(const RawMessageData& rawMsgData,
                                         const UpdateAppearanceMessage& msg)
 {
@@ -296,8 +434,23 @@ void ActionListener::OnUpdateAppearance(const RawMessageData& rawMsgData,
 
   if (isAllowed) {
     actor->SetRaceMenuOpen(false);
-    actor->SetAppearance(&msg.data.value());
-    SendToNeighbours(msg.idx, rawMsgData, true);
+    // thuum ADR-026: the appearance follows the player's recorded look,
+    // whichever of the two a menu's close sends first
+    Appearance derived;
+    const std::string look = actor->GetRaceMenuPreset();
+    if (!look.empty() &&
+        AppearanceFromLook(partOne, msg.data.value(), look, derived) ==
+          LookVerdict::kDerived &&
+        !SameAppearanceParts(derived, msg.data.value())) {
+      actor->SetAppearance(&derived);
+      SendAppearanceToOthers(partOne, *actor, derived);
+      spdlog::info("RaceMenu: actor {:x} appearance follows its look "
+                   "(ADR-026): {} head parts",
+                   actor->GetFormId(), derived.headpartIds.size());
+    } else {
+      actor->SetAppearance(&msg.data.value());
+      SendToNeighbours(msg.idx, rawMsgData, true);
+    }
   }
 
   UpdateAppearanceAttemptEvent updateAppearanceAttemptEvent(
@@ -1127,6 +1280,20 @@ void ActionListener::OnRaceMenuPreset(const RawMessageData& rawMsgData,
                         rawMsgData.userId, actor->GetFormId(),
                         msg.preset.size());
   }
+  // thuum ADR-026: a look whose head parts the server lacks or the race may
+  // not wear is no look either, and does not use up the opening
+  Appearance derived;
+  LookVerdict verdict = LookVerdict::kNotJudged;
+  if (auto current = actor->GetAppearance()) {
+    verdict = AppearanceFromLook(partOne, *current, msg.preset, derived);
+  }
+  if (verdict == LookVerdict::kRefused) {
+    return spdlog::info("RaceMenu: user {} actor {:x} preset of {} bytes "
+                        "refused (E_RACEMENU_PARTS: a head part the server "
+                        "lacks or the race may not wear, ADR-026)",
+                        rawMsgData.userId, actor->GetFormId(),
+                        msg.preset.size());
+  }
   // a look that is no look does not use up the opening
   if (!actor->TakeRaceMenuLookDue()) {
     return spdlog::info("RaceMenu: user {} actor {:x} preset of {} bytes "
@@ -1155,6 +1322,16 @@ void ActionListener::OnRaceMenuPreset(const RawMessageData& rawMsgData,
   spdlog::info("RaceMenu: user {} actor {:x} recorded a preset of {} bytes, "
                "sent to {} other players",
                rawMsgData.userId, actor->GetFormId(), msg.preset.size(), sent);
+  if (verdict == LookVerdict::kDerived) {
+    auto current = actor->GetAppearance();
+    if (current && !SameAppearanceParts(derived, *current)) {
+      actor->SetAppearance(&derived);
+      SendAppearanceToOthers(partOne, *actor, derived);
+      spdlog::info("RaceMenu: actor {:x} appearance follows its look "
+                   "(ADR-026): {} head parts",
+                   actor->GetFormId(), derived.headpartIds.size());
+    }
+  }
 }
 
 void ActionListener::SendRaceMenuPreset(MpActor& actor)

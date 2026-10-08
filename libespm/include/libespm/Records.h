@@ -15,6 +15,7 @@
 #include "FLST.h"
 #include "FURN.h"
 #include "GMST.h"
+#include "HDPT.h"
 #include "INGR.h"
 #include "KYWD.h"
 #include "LCTN.h"

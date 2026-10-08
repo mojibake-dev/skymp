@@ -25,6 +25,9 @@ constexpr uint32_t kActorLate = 0xff000fb4;
 constexpr uint32_t kActorLateOther = 0xff000fb5;
 constexpr uint32_t kActorGate = 0xff000fb6;
 constexpr uint32_t kActorGateOther = 0xff000fb7;
+constexpr uint32_t kActorDerive = 0xff000fb8;
+constexpr uint32_t kActorRefuse = 0xff000fb9;
+constexpr uint32_t kActorLookFirst = 0xff000fba;
 constexpr uint32_t kTamriel = 0x0000003c;
 
 const std::string kPreset =
@@ -254,4 +257,82 @@ TEST_CASE("A look is taken once per race menu the server opened, before or "
 
   Leave(p, 1, kActorGateOther);
   Leave(p, 0, kActorGate);
+}
+
+// thuum ADR-026: the look is the one record of a character's face. Its head
+// parts, each followed by the extra parts its record lists, its hair colour
+// and weight become the appearance's; a part the race may not wear refuses
+// the look. Skyrim.esm's parts as the lab's server read them on 2026-10-08
+// (hdpt-check): MaleMouthHumanoidDefault 0x051631, MaleHeadNord 0x05162F,
+// HairMaleNord01 0x051507 bringing its hairline 0x051505; MaleHeadNord's
+// valid races (FLST 0x0A8033) hold NordRace 0x013746 and not 0x013745.
+namespace {
+const std::string kNordLook = R"({"actor": {"hairColor": 6185079, "weight": 50},
+  "headParts": [{"formIdentifier": "Skyrim.esm|051631", "type": 0},
+                {"formIdentifier": "Skyrim.esm|05162F", "type": 1},
+                {"formIdentifier": "Skyrim.esm|051507", "type": 3}]})";
+
+void DressAs(PartOne& p, Networking::UserId user, uint32_t raceId)
+{
+  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
+  RawMessageData raw;
+  raw.userId = user;
+  raw.unparsed = unparsed;
+  raw.unparsedLength = sizeof(unparsed);
+  UpdateAppearanceMessage msg;
+  msg.idx = 0;
+  msg.data = Appearance();
+  msg.data->raceId = raceId;
+  p.GetActionListener().OnUpdateAppearance(raw, msg);
+}
+}
+
+TEST_CASE("A look's head parts, hair colour and weight become the "
+          "appearance's",
+          "[RaceMenu][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& ac = Player(p, 0, kActorDerive);
+  DressAs(p, 0, 0x00013746);
+  Report(p, 0, kNordLook);
+  REQUIRE(ac.GetRaceMenuPreset() == kNordLook);
+  auto appearance = ac.GetAppearance();
+  REQUIRE(appearance);
+  REQUIRE(appearance->headpartIds ==
+          std::vector<uint32_t>{ 0x051631, 0x05162f, 0x051507, 0x051505 });
+  REQUIRE(appearance->hairColor == 0x5e6077);
+  REQUIRE(appearance->weight == 50.f);
+  REQUIRE(appearance->raceId == 0x00013746);
+  p.DestroyActor(kActorDerive);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("A look with a head part its race may not wear is refused and "
+          "keeps the opening",
+          "[RaceMenu][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& ac = Player(p, 0, kActorRefuse);
+  DressAs(p, 0, 0x00013745);
+  Report(p, 0, kNordLook);
+  REQUIRE(ac.GetRaceMenuPreset().empty());
+  REQUIRE(ac.GetAppearance()->headpartIds.empty());
+  Report(p, 0, kPreset);
+  REQUIRE(ac.GetRaceMenuPreset() == kPreset);
+  p.DestroyActor(kActorRefuse);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("An appearance that comes after the look follows the look",
+          "[RaceMenu][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& ac = Player(p, 0, kActorLookFirst);
+  Report(p, 0, kNordLook);
+  REQUIRE(ac.GetRaceMenuPreset() == kNordLook);
+  DressAs(p, 0, 0x00013746);
+  REQUIRE(ac.GetAppearance()->headpartIds ==
+          std::vector<uint32_t>{ 0x051631, 0x05162f, 0x051507, 0x051505 });
+  p.DestroyActor(kActorLookFirst);
+  DoDisconnect(p, 0);
 }

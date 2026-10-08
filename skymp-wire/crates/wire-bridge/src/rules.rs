@@ -231,6 +231,58 @@ mod ffi {
         legendary: Vec<AvLegendary>,
     }
 
+    /// A form a RaceMenu look names (thuum ADR-026): its plugin and its id
+    /// within it.
+    #[derive(Debug, Clone)]
+    struct LookRef {
+        /// The plugin's file name.
+        plugin: String,
+        /// The form's id within the plugin, 24 bits.
+        id: u32,
+    }
+
+    /// What a look says of the vanilla appearance; `ok` false for text that
+    /// is no look.
+    #[derive(Debug, Clone)]
+    struct LookAppearance {
+        /// The text is a look.
+        ok: bool,
+        /// Head parts in the look's order.
+        parts: Vec<LookRef>,
+        /// The look carries a hair colour.
+        has_hair_color: bool,
+        /// 0xRRGGBB.
+        hair_color: u32,
+        /// The look carries a weight.
+        has_weight: bool,
+        /// 0 to 100.
+        weight: f32,
+        /// The look carries the face's texture set.
+        has_head_texture: bool,
+        /// The face's texture set.
+        head_texture: LookRef,
+    }
+
+    /// What the core knows of one head part a look names.
+    #[derive(Debug, Clone)]
+    struct LookPartFacts {
+        /// Its form id in the server's load order; 0 when none.
+        form: u32,
+        /// Its valid-race list holds the appearance's race (true without a list).
+        valid_for_race: bool,
+        /// The extra parts it lists.
+        extras: Vec<u32>,
+    }
+
+    /// The appearance's head parts a look implies; `ok` false refuses the look.
+    #[derive(Debug, Clone)]
+    struct DerivedParts {
+        /// The look's parts are all known and valid for the race.
+        ok: bool,
+        /// Each part followed by its extras, each once.
+        parts: Vec<u32>,
+    }
+
     /// The record after a report, and the server's values still held.
     #[derive(Debug)]
     struct AvMerge {
@@ -376,6 +428,10 @@ mod ffi {
         /// Whether a RaceMenu preset is one the server records: a JSON
         /// object, not nested past what a preset needs.
         fn racemenu_preset_ok(preset: &str) -> bool;
+        /// thuum ADR-026: what a look says of the vanilla appearance.
+        fn racemenu_look_facts(preset: &str) -> LookAppearance;
+        /// thuum ADR-026: the appearance's head parts a look implies.
+        fn racemenu_derived_head_parts(parts: &[LookPartFacts]) -> DerivedParts;
         /// Whether an actor values report is within bounds, given the
         /// values the server holds (thuum docs/verbs/actor-values.md).
         fn actor_values_report_ok(report: &AvSnapshot, held: &[AvBase]) -> bool;
@@ -434,7 +490,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, ConeFacts, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, SneakMults, Verdict};
+pub use ffi::{AvBase, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, ConeFacts, DerivedParts, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, SneakMults, Verdict};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -591,6 +647,49 @@ const fn ingredient_effects_union(recorded: u8, reported: u8) -> u8 {
 
 fn racemenu_preset_ok(preset: &str) -> bool {
     racemenu::preset_ok(preset)
+}
+
+fn look_ref(r: Option<&racemenu::FormRef>) -> LookRef {
+    r.map_or_else(
+        || LookRef { plugin: String::new(), id: 0 },
+        |r| LookRef { plugin: r.plugin.clone(), id: r.id },
+    )
+}
+
+fn racemenu_look_facts(preset: &str) -> LookAppearance {
+    match racemenu::look_facts(preset) {
+        Some(f) => LookAppearance {
+            ok: true,
+            parts: f.parts.iter().map(|p| look_ref(Some(p))).collect(),
+            has_hair_color: f.hair_color.is_some(),
+            hair_color: f.hair_color.unwrap_or(0),
+            has_weight: f.weight.is_some(),
+            weight: f.weight.unwrap_or(0.0),
+            has_head_texture: f.head_texture.is_some(),
+            head_texture: look_ref(f.head_texture.as_ref()),
+        },
+        None => LookAppearance {
+            ok: false,
+            parts: Vec::new(),
+            has_hair_color: false,
+            hair_color: 0,
+            has_weight: false,
+            weight: 0.0,
+            has_head_texture: false,
+            head_texture: look_ref(None),
+        },
+    }
+}
+
+fn racemenu_derived_head_parts(parts: &[LookPartFacts]) -> DerivedParts {
+    let facts: Vec<racemenu::PartFacts> = parts
+        .iter()
+        .map(|p| racemenu::PartFacts { form: p.form, valid_for_race: p.valid_for_race, extras: p.extras.clone() })
+        .collect();
+    match racemenu::derived_head_parts(&facts) {
+        Some(parts) => DerivedParts { ok: true, parts },
+        None => DerivedParts { ok: false, parts: Vec::new() },
+    }
 }
 
 fn av_snapshot(s: &AvSnapshot) -> actor_values::Snapshot {

@@ -166,16 +166,21 @@ export class RaceMenuService extends ClientListener {
     }
 
     private onUpdate() {
-        if ((this.wanted.size === 0 && !this.resetPending) || Date.now() - this.lastCheck < 2000) {
+        if (Date.now() - this.lastCheck < 2000) {
             return;
         }
         this.lastCheck = Date.now();
-        if (!this.available()) {
+        // every pass, not only with the reset: at the reset's pass the base
+        // may not have the appearance's race yet (SkyMP applies it on the
+        // tick after CreateActor), and never behind a loading screen
+        if (!this.resetPending && !this.sp.Ui.isMenuOpen("Loading Menu")) {
+            this.alignRace();
+        }
+        if (!this.available() || (this.wanted.size === 0 && !this.resetPending)) {
             return;
         }
         if (this.resetPending && this.resetPlayer()) {
             this.resetPending = false;
-            this.alignRace();
         }
         const me = this.myId();
         this.wanted.forEach((preset, actor) => {
@@ -303,9 +308,12 @@ export class RaceMenuService extends ClientListener {
     // builds its menu's sliders for that race and composes the player's own
     // face under it (probe 20261008-001656: actor an Orc, base rotfern, no
     // rotfern sliders, the face wrong on its own seat and right on the
-    // other). Done here, once the player's world is up, after the login
-    // reset and before the server's look is applied: a SetRace on the tick
-    // after loadGame froze the game (lab, 2026-10-07).
+    // other). Done from the update pass once the player's world is up and
+    // the login reset is through, never on the tick after loadGame, where a
+    // SetRace froze the game (lab, 2026-10-07). Measured: Actor.SetRace
+    // moves the actor's pointer mid-world (probe 20261008-015301), and a
+    // fresh loadGame loads it right; a reconnect inside one game is where
+    // the two part.
     private alignRace() {
         const player = this.sp.Game.getPlayer();
         const base = player ? this.sp.ActorBase.from(player.getBaseObject()) : null;

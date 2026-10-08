@@ -30,31 +30,21 @@ export class LoadOrderVerificationService extends ClientListener {
     return settingsService.getServerMods()
       .then((serverMods) => {
         this.printModOrder('Server load order:', serverMods);
-        if (clientMods.length < serverMods.length) {
-          throw new Error(`Missing some server mods. Server has ${serverMods.length}, we have ${clientMods.length}`);
+        // thuum docs/verbs/light-plugins.md: the engine numbers full and
+        // light plugins apart, each in load order, so each kind is compared
+        // with its own; a server that marks none is all full, as before
+        const serverFull = serverMods.filter((m) => m.light !== true);
+        const serverLight = serverMods.filter((m) => m.light === true);
+        const clientLight = serverLight.length > 0 ? this.getClientLightMods() : [];
+        if (serverLight.length > 0) {
+          this.printModOrder('Client light plugins:', clientLight);
         }
-        if (clientMods.length > serverMods.length) {
-          this.updateText(
-            'LOAD ORDER WARNING: you have more mods than server!\n(or could not receive server mod list)\nCheck console for details.',
-            [255, 255, 0, 1], 5,
-          );
-        }
-        let fail = [];
-        for (let i = 0; i < serverMods.length; ++i) {
-          // Need case-insensitive check for 1.6+
-          if (
-            clientMods[i].filename.toLowerCase() !== serverMods[i].filename.toLowerCase() ||
-            clientMods[i].size !== serverMods[i].size ||
-            clientMods[i].crc32 !== serverMods[i].crc32
-          ) {
-            fail.push(i);
-            printConsole(`${i}-th mod (numbered from 0) does not match.`);
-            printConsole(`Server has ${JSON.stringify(serverMods[i])}`);
-            printConsole(`We have ${JSON.stringify(clientMods[i])}`);
-          }
-        }
+        const fail = [
+          ...this.compareMods('', clientMods, serverFull),
+          ...this.compareMods('light ', clientLight, serverLight),
+        ];
         if (fail.length !== 0) {
-          throw new Error('Load order check failed! Indices: ' + JSON.stringify(fail));
+          throw new Error('Load order check failed! ' + JSON.stringify(fail));
         }
       })
       .catch((err) => {
@@ -122,6 +112,42 @@ export class LoadOrderVerificationService extends ClientListener {
   private getClientMods() {
     return this.enumerateClientMods(Game.getModCount, Game.getModName);
   };
+
+  // SKSE's light plugin list, in the engine's light numbering order
+  private getClientLightMods() {
+    return this.enumerateClientMods(Game.getLightModCount, Game.getLightModName);
+  };
+
+  // The client's plugins of one kind against the server's: each of the
+  // server's, by index, by name (case aside), size and CRC32. More on the
+  // client is a warning for full plugins; a light plugin past the server's
+  // last takes a number the server never uses.
+  private compareMods(kind: string, clientMods: Mod[], serverMods: Mod[]): string[] {
+    const fail: string[] = [];
+    if (clientMods.length < serverMods.length) {
+      fail.push(`missing ${kind}plugins: server has ${serverMods.length}, we have ${clientMods.length}`);
+    }
+    if (kind === '' && clientMods.length > serverMods.length) {
+      this.updateText(
+        'LOAD ORDER WARNING: you have more mods than server!\n(or could not receive server mod list)\nCheck console for details.',
+        [255, 255, 0, 1], 5,
+      );
+    }
+    for (let i = 0; i < Math.min(serverMods.length, clientMods.length); ++i) {
+      // Need case-insensitive check for 1.6+
+      if (
+        clientMods[i].filename.toLowerCase() !== serverMods[i].filename.toLowerCase() ||
+        clientMods[i].size !== serverMods[i].size ||
+        clientMods[i].crc32 !== serverMods[i].crc32
+      ) {
+        fail.push(`${kind}${i}`);
+        printConsole(`${i}-th ${kind}mod (numbered from 0) does not match.`);
+        printConsole(`Server has ${JSON.stringify(serverMods[i])}`);
+        printConsole(`We have ${JSON.stringify(clientMods[i])}`);
+      }
+    }
+    return fail;
+  }
 
   private printModOrder(header: string, order: Mod[]) {
     printConsole(header);

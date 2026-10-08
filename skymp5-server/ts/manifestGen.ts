@@ -7,7 +7,24 @@ interface ManifestModEntry {
   filename: string;
   crc32: number;
   size: number;
+  // a plugin the engine loads as light: numbered apart from full plugins
+  // (thuum docs/verbs/light-plugins.md); absent on archives
+  light?: boolean;
 }
+
+// TES4's record flags sit at bytes 8 to 11 of a plugin; 1 << 9 (kSmallFile,
+// CommonLibSSE-NG include/RE/T/TESFile.h:48) makes it light, as an .esl
+// extension does
+const isLightPlugin = (espmName: string, buf: Uint8Array): boolean => {
+  if (espmName.toLowerCase().endsWith(".esl")) {
+    return true;
+  }
+  if (buf.length < 12) {
+    return false;
+  }
+  const flags = buf[8] | (buf[9] << 8) | (buf[10] << 16) | (buf[11] << 24);
+  return (flags & (1 << 9)) !== 0;
+};
 
 interface Manifest {
   versionMajor: number;
@@ -16,7 +33,7 @@ interface Manifest {
 }
 
 const getBsaNameByEspmName = (espmName: string) => {
-  if (espmName.endsWith(".esp") || espmName.endsWith(".esm")) {
+  if (espmName.endsWith(".esp") || espmName.endsWith(".esm") || espmName.endsWith(".esl")) {
     const nameNoExt = espmName.split(".").slice(0, -1).join(".");
     return nameNoExt + ".bsa";
   }
@@ -44,6 +61,7 @@ export const generateManifest = (settings: Settings): void => {
       crc32: crc32.buf(buf),
       filename: espmName,
       size: buf.length,
+      light: isLightPlugin(espmName, buf),
     });
 
     const bsaName = getBsaNameByEspmName(espmName);

@@ -515,6 +515,23 @@ mod tests {
     }
 
     #[test]
+    fn every_session_parses() {
+        // a session T2 would refuse on sky-srv fails here first
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sessions");
+        let mut n = 0;
+        for entry in std::fs::read_dir(&dir).expect("sessions") {
+            let path = entry.expect("entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
+                continue;
+            }
+            let s = load_session(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            clients(&s).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            n += 1;
+        }
+        assert!(n >= 16, "{n} sessions");
+    }
+
+    #[test]
     fn smoke_session_parses_and_scripts() {
         let s = load_session(&smoke_path()).expect("parse");
         assert_eq!(s.id, "smoke");

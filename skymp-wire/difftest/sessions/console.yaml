@@ -1,0 +1,45 @@
+# difftest console (M1, thuum docs/verbs/console-commands.md): c1 and c2 are
+# new characters (profiles 9 and 10, actors 0xff000002 and 0xff000003: see
+# melee-reach), both at the spawn. The lab server runs with
+# enableConsoleCommandsForAll: every caller is allowed on the legacy stack
+# and an owner on the wire stack. At 2 s c1 sends `player.additem f 10` as
+# Skyrim Platform passes it (the selected reference 0x14, the base form 0xF,
+# Gold001, the count): both stacks give c1 ten gold, and the wire stack
+# also answers with the line "additem done". At 2.5 s c1 sends `save` by
+# name alone, as skymp5-client sends a command the server never runs: the
+# legacy server throws on a name it does not know and answers nothing; the
+# wire stack's table refuses it with a line. At 3 s c1 sends `player.setav
+# marksman 40`: the legacy server does not know the name; the wire stack
+# runs the server's SetActorValue on c1, which holds the value for c1's
+# first actor value report (no record yet, so no message), and answers
+# "setav done". c2 steps aside at 4 s so it outlives c1, as in every session.
+id: console
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 2000, send: {t: 12, data: {t: 12, commandName: additem, args: [20, 15, 10]}}}
+  - {client: c1, at_ms: 2500, send: {t: 12, data: {t: 12, commandName: save, args: []}}}
+  - {client: c1, at_ms: 3000, send: {t: 12, data: {t: 12, commandName: setav, args: [20, Marksman, 40]}}}
+  - {client: c2, at_ms: 4000, move: {dx: 1, dy: 0}}
+divergences:
+  - client: c1
+    msg: {t: 41, text: "additem done", refused: false}
+    legacy: 0
+    wire: 1
+    reason: the server answers every console command with a line (ConsoleOutput, thuum docs/verbs/console-commands.md); the legacy server prints nothing back
+  - client: c1
+    msg: {t: 41, text: "The server owns the world: this command is not available", refused: true}
+    legacy: 0
+    wire: 1
+    reason: a save is refused with a line by the server's table (wire-rules console); the legacy server throws on the unknown name and answers nothing
+  - client: c1
+    msg: {t: 41, text: "setav done", refused: false}
+    legacy: 0
+    wire: 1
+    reason: SetAV runs through the server's actor value natives on the wire stack (docs/verbs/actor-values.md); the legacy server does not know the command
+  - client: c2
+    msg: {t: 25, idx: 2}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

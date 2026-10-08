@@ -24,6 +24,7 @@ export class ConsoleCommandsService extends ClientListener {
         this.schemas = ConsoleCommandsService.createSchemas();
         this.setupMpCommand();
         this.setupVanilaCommands();
+        this.setupServerOnlyCommands();
         this.controller.emitter.on("consoleOutputMessage", (e) => {
             this.sp.printConsole(e.message.text);
         });
@@ -74,6 +75,32 @@ export class ConsoleCommandsService extends ClientListener {
         logTrace(this, `Vanila commands set up`);
     }
 
+    // thuum docs/verbs/console-commands.md: commands whose effect only the
+    // server may make, which it does not run yet or never runs (a save or a
+    // load). The game never runs them here: Skyrim Platform runs a replaced
+    // command's own handler only when execute returns true (ConsoleApi.cpp,
+    // ConsoleComand_Execute). The client sends the name alone; the server's
+    // table (wire-rules console) decides and answers with the line to print.
+    private setupServerOnlyCommands() {
+        ConsoleCommandsService.serverOnlyCommands.forEach((commandName) => {
+            const command = this.sp.findConsoleCommand(commandName);
+            if (command === null) {
+                logError(this, `command`, commandName, `was null in setupServerOnlyCommands`);
+                return;
+            }
+            command.execute = () => {
+                this.controller.emitter.emit("sendMessage", {
+                    message: {
+                        t: MsgType.ConsoleCommand,
+                        data: { commandName, args: [] }
+                    },
+                    reliability: "reliable"
+                });
+                return false;
+            };
+        });
+    }
+
     private getCommandExecutor(commandName: CmdName): (...args: unknown[]) => boolean {
         return (...args: unknown[]) => {
             // TODO: handle possible exceptions in this function
@@ -122,6 +149,14 @@ export class ConsoleCommandsService extends ClientListener {
             return false;
         };
     }
+
+    // one name per engine command (Skyrim Platform matches the long or the
+    // short name); the server's table knows both
+    private static readonly serverOnlyCommands = [
+        "removeitem", "enable", "coc", "moveto", "setpos", "setangle", "kill",
+        "resurrect", "setlevel", "advskill", "tim", "tgm", "tcl", "set",
+        "save", "load", "savegame", "loadgame",
+    ];
 
     private readonly schemas: Map<CmdName, CmdArgument[]>;
     private readonly immuneSchema = ["mp"];

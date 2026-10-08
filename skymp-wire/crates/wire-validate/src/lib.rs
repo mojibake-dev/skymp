@@ -85,6 +85,13 @@ pub struct ClientGuard {
     /// which come a few at once (a level-up after a skill-up), so eight at
     /// once and two a second after that only ever stops a flood.
     pub actor_values_budget: TokenBucket,
+    /// Budget for console commands (thuum docs/verbs/console-commands.md):
+    /// a player types them, a few at once at most (a batch file runs
+    /// several), so four at once and one a second after that only ever
+    /// stops a flood. The name, the caller's rank and the arguments are the
+    /// server's decision (wire-rules `console`), which answers every command
+    /// it gets with a line.
+    pub console_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -101,6 +108,7 @@ impl Default for ClientGuard {
             favorites_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
             preset_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
             actor_values_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
+            console_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
         }
     }
 }
@@ -384,6 +392,7 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
             take(&mut guard.preset_budget, now_ms)
         }
         Message::ActorValues(_) => take(&mut guard.actor_values_budget, now_ms),
+        Message::ConsoleCommand(_) => take(&mut guard.console_budget, now_ms),
         _ => Ok(()),
     }
 }
@@ -817,6 +826,26 @@ mod tests {
         for b in bad {
             assert_eq!(validate(&favorites(b), &mut ClientGuard::default(), 0), Err(Reject::Range), "{b:?}");
         }
+    }
+
+    fn console(name: &str) -> Message {
+        Message::ConsoleCommand(skymp::ConsoleCommand {
+            data: skymp::ConsoleCommandData { command_name: name.try_into().unwrap_or_default(), ..Default::default() },
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn console_commands_four_at_once_then_one_a_second() {
+        let mut g = ClientGuard::default();
+        for name in ["additem", "save", "nosuchcommand", "setav"] {
+            assert_eq!(validate(&console(name), &mut g, 0), Ok(()), "{name}");
+        }
+        assert_eq!(validate(&console("additem"), &mut g, 0), Err(Reject::Rate));
+        assert_eq!(validate(&console("additem"), &mut g, 1_000), Ok(()));
+        assert_eq!(validate(&console("additem"), &mut g, 1_000), Err(Reject::Rate));
+        // the server's own view of a message carries no rate
+        assert_eq!(validate_server(&console("additem")), Ok(()));
     }
 
     fn preset(actor: u32, text: &str) -> Message {

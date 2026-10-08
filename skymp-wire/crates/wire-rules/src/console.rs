@@ -67,7 +67,7 @@ const fn cmd(name: &'static str, short: &'static str, class: Class, rank: Rank, 
 
 /// The first set (thuum docs/verbs/console-commands.md, "Commands, first
 /// set"; the ranks await Eli's review). `mp` is SkyMP's own.
-pub const TABLE: [Command; 27] = [
+pub const TABLE: [Command; 28] = [
     cmd("additem", "", Class::Server, Rank::Admin, true),
     cmd("removeitem", "", Class::Server, Rank::Admin, false),
     cmd("equipitem", "", Class::Server, Rank::Admin, true),
@@ -89,6 +89,9 @@ pub const TABLE: [Command; 27] = [
     cmd("toggleimmortalmode", "tim", Class::Server, Rank::Admin, false),
     cmd("togglegodmode", "tgm", Class::Server, Rank::Admin, false),
     cmd("togglecollision", "tcl", Class::Server, Rank::Admin, false),
+    // `set <global> to <value>`: the server owns the clock's globals (ADR-021);
+    // which others it owns waits for the first verb that needs one
+    cmd("set", "", Class::Server, Rank::Admin, false),
     cmd("togglefreecamera", "tfc", Class::Client, Rank::Player, false),
     cmd("togglemenus", "tm", Class::Client, Rank::Player, false),
     cmd("save", "", Class::Refused, Rank::Owner, false),
@@ -186,6 +189,7 @@ mod tests {
         assert_eq!(decide("coc", Rank::Owner), Decision::NotServed);
         assert_eq!(decide("coc", Rank::Player), Decision::RankTooLow);
         assert_eq!(decide("tfc", Rank::Owner), Decision::ClientOnly);
+        assert_eq!(decide("set", Rank::Owner), Decision::NotServed);
         assert_eq!(decide("whatever", Rank::Owner), Decision::Unknown);
         assert!(!refusal_line(Decision::NotServed).is_empty());
         assert!(refusal_line(Decision::Run).is_empty());

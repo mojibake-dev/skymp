@@ -24,6 +24,7 @@
 #include "RespawnPercentagesBinding.h"
 #include "SpawnDelayBinding.h"
 #include "SpawnPointBinding.h"
+#include "StaffRankBinding.h"
 #include "TemplateChainBinding.h"
 #include "TypeBinding.h"
 #include "WorldOrCellDescBinding.h"
@@ -55,6 +56,7 @@ PropertyBindingFactory::CreateStandardPropertyBindings()
   result["idx"] = std::make_shared<IdxBinding>();
   result["consoleCommandsAllowed"] =
     std::make_shared<ConsoleCommandsAllowedBinding>();
+  result["staffRank"] = std::make_shared<StaffRankBinding>();
   result["spawnDelay"] = std::make_shared<SpawnDelayBinding>();
   result["templateChain"] = std::make_shared<TemplateChainBinding>();
   result["lastAnimEvent"] = std::make_shared<LastAnimEventBinding>();

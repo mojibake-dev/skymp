@@ -82,22 +82,22 @@ export class ActorValuesService extends ClientListener {
                     this.sp.callNative("TESModPlatform", "SetActorValueBase", undefined, b.av, b.base);
                 }
             });
-            const progress = new Array<number>(PROGRESS_LENGTH).fill(0);
-            progress[0] = m.xp;
-            progress[1] = m.threshold;
-            progress[2] = m.level;
-            const read = this.sp.callNative("TESModPlatform", "GetPlayerProgress", undefined) as number[];
-            for (let i = 0; i < SKILLS; ++i) {
-                // a skill the record does not name keeps the engine's own
-                const own = m.skills.find((s) => s.skill === i);
-                progress[3 + i * 3] = own ? own.level : read[3 + i * 3];
-                progress[3 + i * 3 + 1] = own ? own.xp : read[3 + i * 3 + 1];
-                progress[3 + i * 3 + 2] = own ? own.threshold : read[3 + i * 3 + 2];
-                const legendary = m.legendary.find((l) => l.skill === i);
-                progress[3 + SKILLS * 3 + i] = legendary ? legendary.count : 0;
+            // one skill at a time: callNative takes no array argument
+            // (Skyrim Platform's Sp3NativeValueCasts reads an array as a game
+            // object). A skill the record does not name keeps the engine's own.
+            let refused = 0;
+            m.skills.forEach((own) => {
+                const legendary = m.legendary.find((l) => l.skill === own.skill);
+                if (this.sp.callNative("TESModPlatform", "SetPlayerSkill", undefined, own.skill, own.level, own.xp,
+                    own.threshold, legendary ? legendary.count : 0) !== true) {
+                    refused++;
+                }
+            });
+            if (this.sp.callNative("TESModPlatform", "SetPlayerExperience", undefined, m.xp, m.threshold, m.level) !== true) {
+                refused++;
             }
-            if (this.sp.callNative("TESModPlatform", "SetPlayerProgress", undefined, progress) !== true) {
-                logError(this, "SetPlayerProgress refused the server's record");
+            if (refused > 0) {
+                logError(this, "the game refused", refused, "parts of the server's record");
             }
             logTrace(this, "applied the server's actor values: level", m.level, "bases", m.bases.length);
         } catch (err) {

@@ -320,15 +320,20 @@ bool ConsoleComand_Execute(const RE::SCRIPT_PARAMETER* paramInfo,
             if (!paramInfo)
               break;
 
-            Napi::Value arg = GetTypedArg(env, paramInfo[i].paramType.get(),
-                                          parseCommandResult.params[i]);
-
+            // a parameter this cannot convert (a type it does not know, or a
+            // name no form has) goes to the replacement as the typed text: it
+            // threw before, so the replacement never ran and the command did
+            // nothing at all, a refusal included (thuum lab, `save
+            // thuumprobe` in x-console-probe 20261008-120316)
+            Napi::Value arg;
+            try {
+              arg = GetTypedArg(env, paramInfo[i].paramType.get(),
+                                parseCommandResult.params[i]);
+            } catch (const std::exception&) {
+              arg = env.Undefined();
+            }
             if (arg.IsUndefined()) {
-              auto err = " typeId " +
-                std::to_string((uint32_t)paramInfo[i].paramType.get()) +
-                " not yet supported";
-
-              throw std::runtime_error(err.data());
+              arg = Napi::String::New(env, parseCommandResult.params[i]);
             }
             args.push_back(arg);
           }

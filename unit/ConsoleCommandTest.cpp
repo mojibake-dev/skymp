@@ -109,14 +109,16 @@ TEST_CASE("AddItem doesn't execute for non-privilleged users",
   msg.data.commandName = "additem";
   msg.data.args = { int64_t(0x14), int64_t(0x12eb7), int64_t(0x108) };
   // thuum docs/verbs/console-commands.md: the refusal is the caller's
-  // console line, not an exception, and nothing is added
+  // console line, not an exception, and nothing is added (the shared test
+  // world may hand this actor items an earlier test left: compare)
+  const auto before = ac.GetInventory().GetItemCount(0x12eb7);
   p.Messages().clear();
   p.GetActionListener().OnConsoleCommand(msgData, msg);
   p.Tick();
   REQUIRE(Lines(p) ==
           std::vector<std::pair<std::string, bool>>{
             { "Not enough permissions to use this command", true } });
-  REQUIRE(ac.GetInventory().GetItemCount(0x12eb7) == 0);
+  REQUIRE(ac.GetInventory().GetItemCount(0x12eb7) == before);
 
   p.DestroyActor(0xff000000);
   DoDisconnect(p, 0);

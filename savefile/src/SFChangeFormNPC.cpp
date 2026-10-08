@@ -77,11 +77,14 @@ std::pair<uint32_t, std::vector<uint8_t>> SaveFile_::ChangeFormNPC_::ToBinary()
 
     Write(ss, uint8_t(1));
 
-    Write(ss, face->options.size());
+    // the game reads both counts as 4 bytes (a real save: [u32 19][19
+    // floats][u32 4][4 u32]); size_t wrote 8 and the game misread the rest of
+    // the record, the gender after it included (thuum, apocrypha 2026-10-07)
+    Write(ss, uint32_t(face->options.size()));
     for (auto& op : face->options)
       Write(ss, op);
 
-    Write(ss, face->presets.size());
+    Write(ss, uint32_t(face->presets.size()));
     for (auto& pr : face->presets)
       Write(ss, pr);
 

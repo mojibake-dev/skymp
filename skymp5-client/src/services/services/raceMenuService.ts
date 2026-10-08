@@ -68,10 +68,6 @@ export class RaceMenuService extends ClientListener {
             this.alignRace();
             this.hairColorOnRaceMenuForm(player);
             player.sendModEvent("RSM_RequestTintSave", "", 0);
-            // the face as the menu opens, so a preset the menu loads shows
-            // as a change (see onMenuClose)
-            const open = this.save(player, "thuum-open");
-            this.openKey = open ? this.sliderKey(open) : undefined;
         }
     }
 
@@ -96,43 +92,34 @@ export class RaceMenuService extends ClientListener {
         if (e.name !== "RaceSex Menu" || !this.available()) {
             return;
         }
-        // The vanilla menu commits its own slider state after the close
-        // event (Eli, 2026-10-07: the look saved here was the preset's, the
-        // face on his seat went back to the menu's stale tone and shape),
-        // so the save, the re-apply and the send wait a moment for it.
-        this.sp.Utility.wait(0.25).then(() => this.afterMenuClose());
+        // The vanilla menu commits its own slider state AFTER this event
+        // (Eli, 2026-10-07: the look saved here was the preset's, the face
+        // on his seat went back to the menu's stale tone and shape), and
+        // that commit writes the Face and Mouth parts its sliders held from
+        // the menu's open over the parts a preset loaded in the menu set
+        // (lab, 21:1x: both records came out with FemaleHeadNord and the
+        // Nord mouth under the preset's ear, hair, eyes and tints). So the
+        // look is read now, while it is still RaceMenu's, and put back over
+        // the commit a moment later: what the menu showed at Done is what
+        // the player, the record and every figure get.
+        const player = this.sp.Game.getPlayer();
+        const look = player ? this.save(player, "thuum-close") : undefined;
+        this.sp.Utility.wait(0.25).then(() => this.afterMenuClose(look));
     }
 
-    private afterMenuClose() {
+    private afterMenuClose(look: string | undefined) {
         const player = this.sp.Game.getPlayer();
-        if (!player) {
+        if (!player || !look) {
             return;
         }
-        let preset = this.save(player, "thuum-self");
-        if (!preset) {
-            return;
+        let preset = look;
+        if (this.load(player, this.myId(), look)) {
+            // RaceMenu may reorder what it writes back; the record is what
+            // it saves after its own load, the same way a figure's is read
+            preset = this.save(player, "thuum-self") ?? look;
+        } else {
+            logError(this, "RaceMenu did not load the player's own look back after the menu; the record carries it anyway");
         }
-        // A preset loaded through RaceMenu's own menu arrives through its
-        // sliders: the skin tone loses its alpha and lands on another color,
-        // and a head part of a type the vanilla menu has no slider for (the
-        // ear of Eli's race) is dropped (lab, 2026-10-07: tint 0 88B1C6 at
-        // 1.0 and no ear from the menu's load; A9C5D8 at 0.94 with the ear
-        // from CharGen's). The player's sculpt and sliders identify the file
-        // the menu loaded, and it is applied again the way the sync applies
-        // a look, so what is saved and sent is the preset as its author made
-        // it. A face shaped by hand matches no file and stays as it is.
-        // Only a preset the menu loaded in this session: the face's sliders
-        // match a file now and did not as the menu opened. A face that
-        // already matched (the preset loaded in an earlier menu) is being
-        // edited, and the file, which carries no body morphs, must not come
-        // back over the body sliders set in this menu (lab, 2026-10-07: the
-        // body sliders reverted as the menu closed).
-        const imported = this.importedPreset(preset);
-        if (imported && this.sliderKey(preset) !== this.openKey && this.load(player, this.myId(), imported.text)) {
-            logTrace(this, "applied the preset", imported.name, "again after RaceMenu's menu loaded it");
-            preset = this.save(player, "thuum-self") ?? preset;
-        }
-        this.openKey = undefined;
         if (preset === this.lastSent) {
             return;
         }
@@ -220,64 +207,6 @@ export class RaceMenuService extends ClientListener {
                 logError(this, "RaceMenu did not load the look of", actor.toString(16), "onto", where);
             }
         });
-    }
-
-    // The preset file in RaceMenu's folder whose face sliders equal the
-    // saved look's: the one the menu just loaded, or undefined. The sync's
-    // own files (thuum-*) are not presets. Compared: the game's face morphs
-    // and presets (morphs.default) and RaceMenu's own sliders (morphs.custom,
-    // as a name to value map), each value to three places; the sculpt is
-    // left out, since RaceMenu's save drops a vertex the sculpt did not
-    // move and so never writes the file's block back as it was.
-    private importedPreset(saved: string): { name: string; text: string } | undefined {
-        const key = this.sliderKey(saved);
-        if (key === undefined) {
-            return undefined;
-        }
-        let files: string[];
-        try {
-            files = fs.readdirSync(PRESETS);
-        } catch (err) {
-            return undefined;
-        }
-        for (const file of files) {
-            if (!file.toLowerCase().endsWith(".jslot") || file.startsWith("thuum-")) {
-                continue;
-            }
-            try {
-                const text = fs.readFileSync(PRESETS + file, "utf8");
-                if (this.sliderKey(text) === key) {
-                    return { name: file.slice(0, -".jslot".length), text };
-                }
-            } catch (err) {
-                // a file that is no preset is not the one
-            }
-        }
-        return undefined;
-    }
-
-    // A look's face sliders as one comparable string, or undefined for a
-    // look without RaceMenu's own sliders (a face shaped in the vanilla menu
-    // matches no preset file by design)
-    private sliderKey(text: string): string | undefined {
-        let morphs: Record<string, unknown>;
-        try {
-            morphs = JSON.parse(text)["morphs"] ?? {};
-        } catch (err) {
-            return undefined;
-        }
-        const custom = morphs["custom"];
-        if (!Array.isArray(custom) || custom.length === 0) {
-            return undefined;
-        }
-        const round = (v: unknown) => typeof v === "number" ? v.toFixed(3) : String(v);
-        const def = (morphs["default"] ?? {}) as Record<string, unknown>;
-        const list = (v: unknown) => Array.isArray(v) ? v.map(round).join(",") : "";
-        const sliders = custom
-            .map((c) => `${(c as Record<string, unknown>)["name"]}=${round((c as Record<string, unknown>)["value"])}`)
-            .sort()
-            .join(";");
-        return `${list(def["morphs"])}|${list(def["presets"])}|${sliders}`;
     }
 
     // RaceMenu's save answers nothing; the file it leaves is the answer
@@ -452,9 +381,6 @@ export class RaceMenuService extends ClientListener {
     // failed on, so each failure is logged once
     private failed = new Map<number, string>();
     private lastSent = "";
-    // the face's slider key as the race menu opened (sliderKey), for the
-    // menu's close
-    private openKey: string | undefined = undefined;
     private lastCheck = 0;
     // the player's own CreateActor came, and RaceMenu's additions are still
     // to be taken off it

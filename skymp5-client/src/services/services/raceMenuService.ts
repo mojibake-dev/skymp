@@ -175,6 +175,7 @@ export class RaceMenuService extends ClientListener {
         }
         if (this.resetPending && this.resetPlayer()) {
             this.resetPending = false;
+            this.alignRace();
         }
         const me = this.myId();
         this.wanted.forEach((preset, actor) => {
@@ -293,6 +294,28 @@ export class RaceMenuService extends ClientListener {
             actor.sendModEvent("RSM_RequestTintSave", "", 0);
         }
         return loaded;
+    }
+
+    // The player's actor race pointer follows its base's, through the game's
+    // own live race change (Actor.SetRace, what the vampire scripts use).
+    // SkyMP's appearance apply changes the base's race only, and an actor
+    // that loaded as another race keeps it until a reload: RaceMenu then
+    // builds its menu's sliders for that race and composes the player's own
+    // face under it (probe 20261008-001656: actor an Orc, base rotfern, no
+    // rotfern sliders, the face wrong on its own seat and right on the
+    // other). Done here, once the player's world is up, after the login
+    // reset and before the server's look is applied: a SetRace on the tick
+    // after loadGame froze the game (lab, 2026-10-07).
+    private alignRace() {
+        const player = this.sp.Game.getPlayer();
+        const base = player ? this.sp.ActorBase.from(player.getBaseObject()) : null;
+        const want = base ? base.getRace() : null;
+        const have = player ? player.getRace() : null;
+        if (!player || !want || (have && have.getFormID() === want.getFormID())) {
+            return;
+        }
+        player.setRace(want);
+        logTrace(this, "the actor's race follows its base's", want.getFormID().toString(16));
     }
 
     // RaceMenu's load erases an actor's sculpt, its own sliders, overrides

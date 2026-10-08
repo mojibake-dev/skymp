@@ -247,14 +247,14 @@ export class RaceMenuService extends ClientListener {
     // scripts take in what changed. A figure's hair color is its appearance's.
     private load(actor: Actor, id: number, preset: string): boolean {
         const name = "thuum-" + id.toString(16);
+        const isPlayer = id === this.myId();
         try {
             fs.mkdirSync(PRESETS, { recursive: true });
-            fs.writeFileSync(PRESETS + name + ".jslot", preset, "utf8");
+            fs.writeFileSync(PRESETS + name + ".jslot", isPlayer ? this.withoutTints(preset) : preset, "utf8");
         } catch (err) {
             logError(this, "writing a RaceMenu preset failed", err);
             return false;
         }
-        const isPlayer = id === this.myId();
         const hairColor = isPlayer ? this.sp.Game.getFormFromFile(PLAYER_HAIR_COLOR, "RaceMenu.esp") : null;
         const loaded = this.sp.callNative("CharGen", "LoadCharacterPresetEx", undefined, actor, name, hairColor, APPLY_ALL) === true;
         if (loaded && isPlayer) {
@@ -266,6 +266,25 @@ export class RaceMenuService extends ClientListener {
             logTrace(this, "the player's look applied:", this.lookSummary(preset));
         }
         return loaded;
+    }
+
+    // The player's own look loads without its tint list. RaceMenu's load
+    // puts a preset's tints on the player by place in the player's list
+    // (skee PresetInterface.cpp ApplyPresetData: tintMasks.GetNthItem of
+    // each tint's index), and a look saved before the whole-list apply
+    // numbers its layers from the short list: rotfern's lips and nose went
+    // on a second time, at 4 and 5 beside their own 6 and 7
+    // (x-racemenu-done-probe 20261008-234126). The player's tints are its
+    // appearance's (ADR-026 left them there), whole and in the race's
+    // order since 5746fa9a; a figure takes none from a look either way.
+    private withoutTints(preset: string): string {
+        try {
+            const look = JSON.parse(preset) as Record<string, unknown>;
+            delete look["tintInfo"];
+            return JSON.stringify(look, null, 3);
+        } catch (err) {
+            return preset;
+        }
     }
 
     // The player's actor race pointer follows its base's, through the game's

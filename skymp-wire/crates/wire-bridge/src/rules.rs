@@ -383,6 +383,11 @@ mod ffi {
         fn actor_values_merge(record: &AvSnapshot, report: &AvSnapshot, held: &[AvBase]) -> AvMerge;
         /// Whether a report shows the record a login sent as applied.
         fn actor_values_login_applied(record: &AvSnapshot, report: &AvSnapshot) -> bool;
+        /// An actor value's index from its Papyrus name, case aside; -1 for
+        /// a name the lab confirmed no index for (thuum docs/verbs/actor-values.md).
+        fn actor_value_index(name: &str) -> i16;
+        /// Whether the server may set an actor value's base to a value (R0).
+        fn actor_values_set_ok(av: u8, value: f32) -> bool;
 
         /// The fights between players going on (thuum ADR-023).
         type Fights;
@@ -634,6 +639,14 @@ fn actor_values_merge(record: &AvSnapshot, report: &AvSnapshot, held: &[AvBase])
 
 fn actor_values_login_applied(record: &AvSnapshot, report: &AvSnapshot) -> bool {
     actor_values::login_applied(&av_snapshot(record), &av_snapshot(report))
+}
+
+fn actor_value_index(name: &str) -> i16 {
+    actor_values::index_of(name).map_or(-1, i16::from)
+}
+
+fn actor_values_set_ok(av: u8, value: f32) -> bool {
+    actor_values::set_ok(av, value)
 }
 
 fn favorites_kept(report: &[FavoriteFacts]) -> Vec<FavoriteEntry> {

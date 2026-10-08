@@ -187,6 +187,18 @@ public:
   void SetHeldActorValues(std::vector<std::pair<uint8_t, float>> held);
   bool IsActorValuesLoginPending() const;
   void SetActorValuesLoginPending(bool pending);
+  // A base the server sets (R0: a Papyrus native, the gamemode): recorded,
+  // held until the player's report carries it, and sent to the player.
+  // Before the player's first report there is no record to send: the value
+  // waits in the hold and enters the record with that report, which is then
+  // sent back. False when wire-rules refuses the value (actor_values_set_ok).
+  bool SetActorValueBaseByServer(uint8_t av, float value);
+  // The base the server knows for an actor value: the record's, else a value
+  // it set and holds; none before either
+  std::optional<float> GetRecordedActorValueBase(uint8_t av) const;
+  // The record to the player, as after a login but without waiting for a
+  // report to show it applied
+  void SendActorValueRecord();
   // The server takes a RaceMenu look only from a race menu it opened, the
   // rule SkyMP keeps for an appearance (ActionListener::OnUpdateAppearance):
   // one look per opening, whether it comes before or after the appearance

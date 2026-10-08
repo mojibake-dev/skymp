@@ -1,5 +1,6 @@
 #include "MpActor.h"
 #include "ActiveMagicEffectsMap.h"
+#include "ActorValuesMessage.h"
 #include "ActorValues.h"
 #include "ChangeFormGuard.h"
 #include "CropRegeneration.h"
@@ -975,6 +976,78 @@ void MpActor::SetActorValuesLoginPending(bool pending)
   pImpl->actorValuesLoginPending = pending;
 }
 
+bool MpActor::SetActorValueBaseByServer(uint8_t av, float value)
+{
+  if (!skymp::rules::actor_values_set_ok(av, value)) {
+    return false;
+  }
+  auto held = GetHeldActorValues();
+  auto heldIt = std::find_if(held.begin(), held.end(),
+                             [&](const auto& h) { return h.first == av; });
+  if (heldIt != held.end()) {
+    heldIt->second = value;
+  } else {
+    held.emplace_back(av, value);
+  }
+  SetHeldActorValues(std::move(held));
+
+  auto record = GetActorValueRecord();
+  if (!record) {
+    return true; // enters the record with the player's first report
+  }
+  auto& bases = record->bases;
+  auto baseIt = std::find_if(bases.begin(), bases.end(),
+                             [&](const auto& b) { return b.first == av; });
+  if (baseIt != bases.end()) {
+    baseIt->second = value;
+  } else {
+    bases.emplace_back(av, value);
+  }
+  SetActorValueRecord(std::move(*record));
+  SendActorValueRecord();
+  return true;
+}
+
+std::optional<float> MpActor::GetRecordedActorValueBase(uint8_t av) const
+{
+  if (auto record = GetActorValueRecord()) {
+    for (const auto& [a, base] : record->bases) {
+      if (a == av) {
+        return base;
+      }
+    }
+  }
+  for (const auto& [a, value] : GetHeldActorValues()) {
+    if (a == av) {
+      return value;
+    }
+  }
+  return std::nullopt;
+}
+
+void MpActor::SendActorValueRecord()
+{
+  const auto record = GetActorValueRecord();
+  if (!record) {
+    return;
+  }
+  ActorValuesMessage message;
+  for (const auto& [av, base] : record->bases) {
+    message.bases.push_back(ActorValuesMessage::Base{ av, base });
+  }
+  for (const auto& skill : record->skills) {
+    message.skills.push_back(ActorValuesMessage::Skill{
+      skill.skill, skill.level, skill.xp, skill.threshold });
+  }
+  message.xp = record->xp;
+  message.threshold = record->threshold;
+  message.level = record->level;
+  for (const auto& [skill, count] : record->legendary) {
+    message.legendary.push_back(ActorValuesMessage::Legendary{ skill, count });
+  }
+  SendToUser(message, true);
+}
+
 std::string MpActor::GetRaceMenuPreset() const
 {
   const auto& preset = ChangeForm().raceMenuPreset;
@@ -1824,7 +1897,24 @@ BaseActorValues MpActor::GetBaseValues()
 
 BaseActorValues MpActor::GetMaximumValues()
 {
-  return GetBaseValues();
+  // thuum docs/verbs/actor-values.md: a player's recorded base health,
+  // magicka and stamina (the engine's own, raised by level-ups) are the
+  // maximum its percentages count against; the race's and the base NPC's
+  // values before the first record. CommonLibSSE-NG include/RE/A/
+  // ActorValues.h: kHealth 24, kMagicka 25, kStamina 26.
+  BaseActorValues values = GetBaseValues();
+  if (auto health = GetRecordedActorValueBase(24); health && *health > 0.f) {
+    values.health = *health;
+  }
+  if (auto magicka = GetRecordedActorValueBase(25);
+      magicka && *magicka > 0.f) {
+    values.magicka = *magicka;
+  }
+  if (auto stamina = GetRecordedActorValueBase(26);
+      stamina && *stamina > 0.f) {
+    values.stamina = *stamina;
+  }
+  return values;
 }
 
 void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)

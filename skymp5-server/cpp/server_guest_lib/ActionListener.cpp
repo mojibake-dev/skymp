@@ -1283,12 +1283,18 @@ void ActionListener::OnActorValues(const RawMessageData& rawMsgData,
   for (const auto& h : merged.held) {
     stillHeld.emplace_back(h.av, h.base);
   }
+  const bool holding = !stillHeld.empty();
   actor->SetHeldActorValues(std::move(stillHeld));
   const bool changed = actor->SetActorValueRecord(ToRecord(merged.record));
   spdlog::info("ActorValues: user {} actor {:x} recorded {} bases, level "
                "{}{}",
                rawMsgData.userId, actor->GetFormId(), msg.bases.size(),
                msg.level, changed ? "" : ", unchanged");
+  if (holding) {
+    // values the server set that this report does not carry: the record
+    // goes back so the player's game applies them
+    actor->SendActorValueRecord();
+  }
 }
 
 void ActionListener::SendActorValues(MpActor& actor)
@@ -1297,25 +1303,11 @@ void ActionListener::SendActorValues(MpActor& actor)
   if (!record) {
     return;
   }
-  ActorValuesMessage message;
-  for (const auto& [av, base] : record->bases) {
-    message.bases.push_back(ActorValuesMessage::Base{ av, base });
-  }
-  for (const auto& skill : record->skills) {
-    message.skills.push_back(ActorValuesMessage::Skill{
-      skill.skill, skill.level, skill.xp, skill.threshold });
-  }
-  message.xp = record->xp;
-  message.threshold = record->threshold;
-  message.level = record->level;
-  for (const auto& [skill, count] : record->legendary) {
-    message.legendary.push_back(ActorValuesMessage::Legendary{ skill, count });
-  }
   actor.SetActorValuesLoginPending(true);
-  actor.SendToUser(message, true);
+  actor.SendActorValueRecord();
   spdlog::info("ActorValues: actor {:x} sent {} bases, level {} after a "
                "login",
-               actor.GetFormId(), message.bases.size(), message.level);
+               actor.GetFormId(), record->bases.size(), record->level);
 }
 
 // thuum docs/verbs/sleep.md: SkyMP's client blocks the game's own Papyrus

@@ -23,6 +23,24 @@ public:
   VarValue DamageActorValue(VarValue self,
                             const std::vector<VarValue>& arguments);
 
+  // thuum docs/verbs/actor-values.md: on a player, R0 against the server's
+  // record; on any other actor, Health, Magicka and Stamina from the server's
+  // values and the rest delegated to the host as SetActorValue always was
+  VarValue GetActorValue(VarValue self,
+                         const std::vector<VarValue>& arguments);
+
+  VarValue GetBaseActorValue(VarValue self,
+                             const std::vector<VarValue>& arguments);
+
+  VarValue GetActorValueMax(VarValue self,
+                            const std::vector<VarValue>& arguments);
+
+  VarValue ModActorValue(VarValue self,
+                         const std::vector<VarValue>& arguments);
+
+  VarValue ForceActorValue(VarValue self,
+                           const std::vector<VarValue>& arguments);
+
   VarValue IsEquipped(VarValue self, const std::vector<VarValue>& arguments);
 
   VarValue GetActorValuePercentage(VarValue self,

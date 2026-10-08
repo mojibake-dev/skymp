@@ -3,6 +3,7 @@
 #include "MpChangeForms.h"
 #include "TestUtils.hpp"
 #include "UpdateMovementMessage.h"
+#include "script_classes/PapyrusActor.h"
 #include <catch2/catch_all.hpp>
 #include <simdjson.h>
 
@@ -19,12 +20,15 @@ namespace {
 constexpr uint32_t kActor = 0xff000fc1;
 constexpr uint32_t kActorLogin = 0xff000fc2;
 constexpr uint32_t kActorHeld = 0xff000fc3;
+constexpr uint32_t kActorNative = 0xff000fc4;
+constexpr uint32_t kActorFresh = 0xff000fc5;
 constexpr uint32_t kTamriel = 0x0000003c;
 
 // the engine's actor values (CommonLibSSE-NG include/RE/A/ActorValues.h)
 constexpr uint8_t kOneHanded = 6;
 constexpr uint8_t kTwoHanded = 7;
 constexpr uint8_t kHealth = 24;
+constexpr uint8_t kArchery = 8;
 
 MpActor& Player(PartOne& p, uint32_t actorId)
 {
@@ -199,4 +203,95 @@ TEST_CASE("The change form keeps a player's actor values, and older records "
   auto olderElement = parser.parse(older).value();
   REQUIRE(!MpChangeForm::JsonToChangeForm(olderElement)
              .actorValueRecord.has_value());
+}
+
+// The server's Papyrus natives on a player (R0): read the record, set a
+// base, hold it against a stale report and send the record to the player.
+// Names resolve as the lab confirmed them (wire-rules actor_values::NAMES).
+TEST_CASE("A player's actor value natives read and set the server's record",
+          "[ActorValues][Papyrus]")
+{
+  PartOne& p = GetPartOne();
+  auto& ac = Player(p, kActorNative);
+  PapyrusActor papyrus;
+  Report(p, Snapshot({ { kOneHanded, 20.f }, { kHealth, 150.f } }, 3));
+
+  REQUIRE(static_cast<double>(papyrus.GetBaseActorValue(
+            ac.ToVarValue(), { VarValue("onehanded") })) == 20.0);
+  REQUIRE(static_cast<double>(papyrus.GetActorValue(
+            ac.ToVarValue(), { VarValue("OneHanded") })) == 20.0);
+  // the recorded base health is the maximum the percentage counts against
+  REQUIRE(static_cast<double>(papyrus.GetActorValueMax(
+            ac.ToVarValue(), { VarValue("Health") })) == 150.0);
+
+  // SetActorValue: recorded, held, sent
+  p.Messages().clear();
+  papyrus.SetActorValue(ac.ToVarValue(),
+                        { VarValue("Archery"), VarValue(45.f) });
+  REQUIRE(static_cast<double>(papyrus.GetBaseActorValue(
+            ac.ToVarValue(), { VarValue("Archery") })) == 45.0);
+  REQUIRE(ac.GetHeldActorValues() ==
+          std::vector<std::pair<uint8_t, float>>{ { kArchery, 45.f } });
+  REQUIRE(SentLevels(p) == std::vector<uint16_t>{ 3 });
+
+  // a stale report does not take it back, and the record goes back again
+  p.Messages().clear();
+  Report(p, Snapshot({ { kOneHanded, 21.f }, { kArchery, 15.f } }, 3));
+  REQUIRE(static_cast<double>(papyrus.GetBaseActorValue(
+            ac.ToVarValue(), { VarValue("Archery") })) == 45.0);
+  REQUIRE(SentLevels(p) == std::vector<uint16_t>{ 3 });
+
+  // the report that carries it ends the hold
+  Report(p, Snapshot({ { kOneHanded, 21.f }, { kArchery, 45.f } }, 3));
+  REQUIRE(ac.GetHeldActorValues().empty());
+
+  // ModActorValue adds to the base; a skill may pass play's ceiling
+  papyrus.ModActorValue(ac.ToVarValue(),
+                        { VarValue("Archery"), VarValue(60.f) });
+  REQUIRE(static_cast<double>(papyrus.GetBaseActorValue(
+            ac.ToVarValue(), { VarValue("Archery") })) == 105.0);
+
+  // ForceActorValue on Health moves the current value within the maximum
+  papyrus.ForceActorValue(ac.ToVarValue(),
+                          { VarValue("Health"), VarValue(75.f) });
+  REQUIRE(ac.GetChangeForm().actorValues.healthPercentage == 0.5f);
+
+  // a name the lab confirmed no index for changes nothing on the record
+  const auto before = ac.GetActorValueRecord();
+  papyrus.SetActorValue(ac.ToVarValue(),
+                        { VarValue("Mysticism"), VarValue(10.f) });
+  REQUIRE(ac.GetActorValueRecord() == before);
+  REQUIRE(static_cast<double>(papyrus.GetBaseActorValue(
+            ac.ToVarValue(), { VarValue("Mysticism") })) == 0.0);
+
+  Leave(p, kActorNative);
+}
+
+TEST_CASE("A value set before the player's first report enters the record "
+          "with that report",
+          "[ActorValues][Papyrus]")
+{
+  PartOne& p = GetPartOne();
+  auto& ac = Player(p, kActorFresh);
+  PapyrusActor papyrus;
+
+  // no record yet: nothing to send, the value waits in the hold
+  papyrus.SetActorValue(ac.ToVarValue(),
+                        { VarValue("Archery"), VarValue(30.f) });
+  REQUIRE(!ac.GetActorValueRecord());
+  REQUIRE(SentLevels(p).empty());
+  REQUIRE(static_cast<double>(papyrus.GetBaseActorValue(
+            ac.ToVarValue(), { VarValue("Archery") })) == 30.0);
+  // a skill the server knows no base for yet
+  REQUIRE(static_cast<double>(papyrus.GetBaseActorValue(
+            ac.ToVarValue(), { VarValue("Sneak") })) == 0.0);
+
+  // the first report: recorded with the held value, and sent back
+  Report(p, Snapshot({ { kArchery, 15.f }, { kOneHanded, 15.f } }, 1));
+  REQUIRE(RecordedBases(ac) ==
+          std::vector<std::pair<uint8_t, float>>{ { kArchery, 30.f },
+                                                  { kOneHanded, 15.f } });
+  REQUIRE(SentLevels(p) == std::vector<uint16_t>{ 1 });
+
+  Leave(p, kActorFresh);
 }

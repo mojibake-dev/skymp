@@ -7,7 +7,10 @@
 
 #include "EvaluateTemplate.h"
 #include "papyrus-vm/CIString.h"
+#include "wire_bridge_cxx/rules.h"
 #include <algorithm>
+#include <set>
+#include <string>
 
 namespace {
 espm::ActorValue ConvertToAV(CIString actorValueName)
@@ -22,6 +25,96 @@ espm::ActorValue ConvertToAV(CIString actorValueName)
     return espm::ActorValue::Magicka;
   }
   return espm::ActorValue::None;
+}
+
+// thuum docs/verbs/actor-values.md: an actor value's index from its Papyrus
+// name as the lab confirmed it (wire-rules actor_values::NAMES); -1 for any
+// other name
+int ActorValueIndex(const VarValue& name)
+{
+  const char* s = static_cast<const char*>(name);
+  return skymp::rules::actor_value_index(rust::Str(s ? s : ""));
+}
+
+// CommonLibSSE-NG include/RE/A/ActorValues.h: kHealth 24, kMagicka 25,
+// kStamina 26, the three the server keeps as percentages of a maximum
+espm::ActorValue Attribute(int index)
+{
+  switch (index) {
+    case 24:
+      return espm::ActorValue::Health;
+    case 25:
+      return espm::ActorValue::Magicka;
+    case 26:
+      return espm::ActorValue::Stamina;
+    default:
+      return espm::ActorValue::None;
+  }
+}
+
+float AttributeOf(const ActorValues& values, espm::ActorValue av)
+{
+  switch (av) {
+    case espm::ActorValue::Health:
+      return values.health;
+    case espm::ActorValue::Magicka:
+      return values.magicka;
+    case espm::ActorValue::Stamina:
+      return values.stamina;
+    default:
+      return 0.f;
+  }
+}
+
+float PercentageOf(const ActorValues& values, espm::ActorValue av)
+{
+  switch (av) {
+    case espm::ActorValue::Health:
+      return values.healthPercentage;
+    case espm::ActorValue::Magicka:
+      return values.magickaPercentage;
+    case espm::ActorValue::Stamina:
+      return values.staminaPercentage;
+    default:
+      return 0.f;
+  }
+}
+
+// a base the server does not know: none recorded yet for a player, or any
+// value but the three attributes on another actor. 0, logged once per name
+// and native
+VarValue Unknown(const char* native, const VarValue& name)
+{
+  static std::set<std::string> logged;
+  const char* s = static_cast<const char*>(name);
+  std::string key = std::string(native) + ":" + (s ? s : "");
+  if (logged.insert(key).second) {
+    spdlog::info("Actor.{}: the server holds no value for '{}' on this "
+                 "actor; 0 (thuum docs/verbs/actor-values.md)",
+                 native, s ? s : "");
+  }
+  return VarValue(0.f);
+}
+
+// the base the server knows for an actor value on an actor: a player's
+// record (or a value the server set and holds), else Health, Magicka or
+// Stamina from the race's and the base NPC's values
+std::optional<float> KnownBase(MpActor& actor, int index)
+{
+  if (index < 0) {
+    return std::nullopt;
+  }
+  if (actor.IsCreatedAsPlayer()) {
+    if (auto base =
+          actor.GetRecordedActorValueBase(static_cast<uint8_t>(index))) {
+      return base;
+    }
+  }
+  const auto attribute = Attribute(index);
+  if (attribute != espm::ActorValue::None) {
+    return AttributeOf(actor.GetBaseValues(), attribute);
+  }
+  return std::nullopt;
 }
 }
 
@@ -82,31 +175,177 @@ VarValue PapyrusActor::RestoreActorValue(
   return VarValue();
 }
 
+namespace {
+// SetActorValue's path before the actor-values verb, kept for every actor
+// but a player and for names the lab confirmed no index for: the host's game
+// runs the native (R2, its result not recorded). SpSnippet helps scripted
+// draugrs attack (their Aggression), nothing more.
+void DelegateToHost(const char* className, const char* function,
+                    MpActor& actor, const std::vector<VarValue>& arguments)
+{
+  spdlog::warn("{} executes locally at this moment. Results will not "
+               "affect server calculations",
+               function);
+  auto it = actor.GetParent()->hosters.find(actor.GetFormId());
+  auto serializedArgs =
+    SpSnippetFunctionGen::SerializeArguments(arguments, actor.GetParent());
+  // spsnippet don't support auto sending to host. so determining current
+  // hoster explicitly
+  SpSnippet(className, function, serializedArgs, actor.GetFormId())
+    .Execute(it == actor.GetParent()->hosters.end()
+               ? &actor
+               : &actor.GetParent()->GetFormAt<MpActor>(it->second),
+             SpSnippetMode::kNoReturnResult);
+}
+
+void RequireArguments(const char* native,
+                      const std::vector<VarValue>& arguments, size_t count)
+{
+  if (arguments.size() < count) {
+    throw std::runtime_error(fmt::format(
+      "Papyrus Actor.{}: wrong argument count", native));
+  }
+}
+}
+
+// thuum docs/verbs/actor-values.md: on a player the server sets the base
+// (R0): recorded, held against the player's stale reports, sent to its game.
+// The Creation Kit wiki's SetActorValue sets the base (HYPOTHESIS until the
+// a-actor-values scenario reads it back through the game's own natives).
 VarValue PapyrusActor::SetActorValue(VarValue self,
                                      const std::vector<VarValue>& arguments)
 {
+  RequireArguments("SetActorValue", arguments, 2);
   if (auto actor = GetFormPtr<MpActor>(self)) {
-
-    // TODO: fix that at least for important AVs like attributes
-    // SpSnippet impl helps scripted draugrs attack, nothing more (Aggression
-    // var)
-    spdlog::warn("SetActorValue executes locally at this moment. Results will "
-                 "not affect server calculations");
-
-    auto it = actor->GetParent()->hosters.find(actor->GetFormId());
-
-    auto serializedArgs =
-      SpSnippetFunctionGen::SerializeArguments(arguments, actor->GetParent());
-
-    // spsnippet don't support auto sending to host. so determining current
-    // hoster explicitly
-    SpSnippet(GetName(), "SetActorValue", serializedArgs, actor->GetFormId())
-      .Execute(it == actor->GetParent()->hosters.end()
-                 ? actor
-                 : &actor->GetParent()->GetFormAt<MpActor>(it->second),
-               SpSnippetMode::kNoReturnResult);
+    const int index = ActorValueIndex(arguments[0]);
+    const float value = static_cast<double>(arguments[1]);
+    if (actor->IsCreatedAsPlayer() && index >= 0) {
+      if (!actor->SetActorValueBaseByServer(static_cast<uint8_t>(index),
+                                            value)) {
+        spdlog::info("Actor.SetActorValue: {} for actor value {} of {:x} "
+                     "refused (wire-rules actor_values_set_ok)",
+                     value, index, actor->GetFormId());
+      }
+      return VarValue();
+    }
+    DelegateToHost(GetName(), "SetActorValue", *actor, arguments);
   }
   return VarValue();
+}
+
+// On a player, the base plus the change (R0); the Creation Kit wiki's
+// ModActorValue changes the base the same way (HYPOTHESIS until the
+// scenario reads it back). Before the player's first report the server knows
+// no base for a skill and changes nothing.
+VarValue PapyrusActor::ModActorValue(VarValue self,
+                                     const std::vector<VarValue>& arguments)
+{
+  RequireArguments("ModActorValue", arguments, 2);
+  if (auto actor = GetFormPtr<MpActor>(self)) {
+    const int index = ActorValueIndex(arguments[0]);
+    const float delta = static_cast<double>(arguments[1]);
+    if (actor->IsCreatedAsPlayer() && index >= 0) {
+      auto base = KnownBase(*actor, index);
+      if (!base) {
+        Unknown("ModActorValue", arguments[0]);
+        return VarValue();
+      }
+      actor->SetActorValueBaseByServer(static_cast<uint8_t>(index),
+                                       *base + delta);
+      return VarValue();
+    }
+    DelegateToHost(GetName(), "ModActorValue", *actor, arguments);
+  }
+  return VarValue();
+}
+
+// The current value. Health, Magicka and Stamina: the server's percentage
+// moved to the value within the maximum, as Restore and Damage move it, on
+// any actor (R0). Any other value on a player: the server records bases
+// only, so the base is set (HYPOTHESIS: the game's ForceActorValue leaves
+// the base; until the scenario reads it, the record keeps one number).
+VarValue PapyrusActor::ForceActorValue(VarValue self,
+                                       const std::vector<VarValue>& arguments)
+{
+  RequireArguments("ForceActorValue", arguments, 2);
+  if (auto actor = GetFormPtr<MpActor>(self)) {
+    const int index = ActorValueIndex(arguments[0]);
+    const float value = static_cast<double>(arguments[1]);
+    const auto attribute = Attribute(index);
+    if (attribute != espm::ActorValue::None) {
+      const float maximum = AttributeOf(actor->GetMaximumValues(), attribute);
+      const float current =
+        maximum * PercentageOf(actor->GetChangeForm().actorValues, attribute);
+      if (value > current) {
+        actor->RestoreActorValue(attribute, value - current);
+      } else if (value < current) {
+        actor->DamageActorValue(attribute, current - value);
+      }
+      return VarValue();
+    }
+    if (actor->IsCreatedAsPlayer() && index >= 0) {
+      actor->SetActorValueBaseByServer(static_cast<uint8_t>(index), value);
+      return VarValue();
+    }
+    DelegateToHost(GetName(), "ForceActorValue", *actor, arguments);
+  }
+  return VarValue();
+}
+
+// The current value: Health, Magicka and Stamina as the server's percentage
+// of the maximum; any other value, the base the server knows (it records
+// no modifiers).
+VarValue PapyrusActor::GetActorValue(VarValue self,
+                                     const std::vector<VarValue>& arguments)
+{
+  RequireArguments("GetActorValue", arguments, 1);
+  if (auto actor = GetFormPtr<MpActor>(self)) {
+    const int index = ActorValueIndex(arguments[0]);
+    const auto attribute = Attribute(index);
+    if (attribute != espm::ActorValue::None) {
+      return VarValue(
+        AttributeOf(actor->GetMaximumValues(), attribute) *
+        PercentageOf(actor->GetChangeForm().actorValues, attribute));
+    }
+    if (auto base = KnownBase(*actor, index)) {
+      return VarValue(*base);
+    }
+    return Unknown("GetActorValue", arguments[0]);
+  }
+  return VarValue(0.f);
+}
+
+VarValue PapyrusActor::GetBaseActorValue(
+  VarValue self, const std::vector<VarValue>& arguments)
+{
+  RequireArguments("GetBaseActorValue", arguments, 1);
+  if (auto actor = GetFormPtr<MpActor>(self)) {
+    if (auto base = KnownBase(*actor, ActorValueIndex(arguments[0]))) {
+      return VarValue(*base);
+    }
+    return Unknown("GetBaseActorValue", arguments[0]);
+  }
+  return VarValue(0.f);
+}
+
+// Health, Magicka and Stamina: the maximum their percentages count against
+// (a player's recorded base); any other value, its base.
+VarValue PapyrusActor::GetActorValueMax(
+  VarValue self, const std::vector<VarValue>& arguments)
+{
+  RequireArguments("GetActorValueMax", arguments, 1);
+  if (auto actor = GetFormPtr<MpActor>(self)) {
+    const int index = ActorValueIndex(arguments[0]);
+    const auto attribute = Attribute(index);
+    if (attribute != espm::ActorValue::None) {
+      return VarValue(AttributeOf(actor->GetMaximumValues(), attribute));
+    }
+    if (auto base = KnownBase(*actor, index)) {
+      return VarValue(*base);
+    }
+    return Unknown("GetActorValueMax", arguments[0]);
+  }
+  return VarValue(0.f);
 }
 
 VarValue PapyrusActor::DamageActorValue(VarValue self,
@@ -764,6 +1003,11 @@ void PapyrusActor::Register(
   AddMethod(vm, "RestoreActorValue", &PapyrusActor::RestoreActorValue);
   AddMethod(vm, "SetActorValue", &PapyrusActor::SetActorValue);
   AddMethod(vm, "DamageActorValue", &PapyrusActor::DamageActorValue);
+  AddMethod(vm, "GetActorValue", &PapyrusActor::GetActorValue);
+  AddMethod(vm, "GetBaseActorValue", &PapyrusActor::GetBaseActorValue);
+  AddMethod(vm, "GetActorValueMax", &PapyrusActor::GetActorValueMax);
+  AddMethod(vm, "ModActorValue", &PapyrusActor::ModActorValue);
+  AddMethod(vm, "ForceActorValue", &PapyrusActor::ForceActorValue);
   AddMethod(vm, "IsEquipped", &PapyrusActor::IsEquipped);
   AddMethod(vm, "GetActorValuePercentage",
             &PapyrusActor::GetActorValuePercentage);

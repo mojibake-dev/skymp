@@ -162,6 +162,17 @@ pub fn login_applied(record: &Snapshot, report: &Snapshot) -> bool {
         })
 }
 
+/// Whether the server may set an actor value's base to a value (a Papyrus
+/// native or the gamemode, R0): an actor value below [`ACTOR_VALUES`] and a
+/// finite value within ±[`BASE_MAX`], the bound any recorded base keeps. A
+/// skill past [`SKILL_MAX`] is the server's to set, as the game's own
+/// SetActorValue allows; the player's next report carries it under the hold
+/// ([`report_ok`], [`merge`]).
+#[must_use]
+pub fn set_ok(av: u8, value: f32) -> bool {
+    usize::from(av) < ACTOR_VALUES && value.is_finite() && value.abs() <= BASE_MAX
+}
+
 /// The actor values' Papyrus names by index, as the game resolves them: each
 /// a Skyrim.esm AVIF editor ID less its "AV", which SKSE's
 /// ActorValueInfo.GetActorValueInfoByName finds at the form the game lists
@@ -449,6 +460,26 @@ mod tests {
         assert_eq!(index_of(""), None);
         assert_eq!(index_of("NoSuchValue"), None);
         assert_eq!(NAMES.iter().filter(|n| n.is_some()).count(), 140);
+    }
+
+    #[test]
+    fn the_server_sets_any_finite_base_within_the_record_bound() {
+        assert!(set_ok(6, 150.0)); // a skill past play's ceiling: the server's to set
+        assert!(set_ok(24, 250.0));
+        assert!(set_ok(163, -5.0));
+        assert!(set_ok(0, BASE_MAX));
+        assert!(!set_ok(164, 1.0));
+        assert!(!set_ok(6, f32::NAN));
+        assert!(!set_ok(6, f32::INFINITY));
+        assert!(!set_ok(32, BASE_MAX * 2.0));
+    }
+
+    #[test]
+    fn a_value_the_server_set_past_the_ceiling_passes_the_next_report() {
+        let held = [(6u8, 150.0f32)];
+        assert!(set_ok(6, 150.0));
+        assert!(report_ok(&snapshot(&[(6, 150.0)]), &held));
+        assert!(!report_ok(&snapshot(&[(6, 150.0)]), &[]));
     }
 
     #[test]

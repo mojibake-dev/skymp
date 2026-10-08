@@ -27,8 +27,14 @@ export class ActorValuesService extends ClientListener {
         this.controller.emitter.on("actorValuesMessage", (e) => this.onActorValuesMessage(e));
     }
 
+    // A loading screen closing also reports: after a login it is the first
+    // moment the player's values are its own, so the server holds a record
+    // of every player seconds into its session (the server's natives read
+    // it), not only after the first skill increase. Unchanged values send
+    // nothing (lastKey); a report before the login's record was applied is
+    // refused by the server and harmless.
     private onMenuClose(e: MenuCloseEvent) {
-        if (e.name === "LevelUp Menu" || e.name === "StatsMenu") {
+        if (e.name === "LevelUp Menu" || e.name === "StatsMenu" || e.name === "Loading Menu") {
             this.report();
         }
     }

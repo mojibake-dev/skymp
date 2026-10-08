@@ -244,6 +244,18 @@ TEST_CASE("Console commands follow the caller's staff rank",
       { "Unknown command", true } });
   REQUIRE(ac.GetInventory().GetItemCount(0x12eb7) == 1);
 
+  // with every player an owner by the server's setting, a rank the
+  // gamemode recorded still wins
+  p.worldState.enableConsoleCommandsForAll = true;
+  ac.SetStaffRank(0);
+  p.Messages().clear();
+  Send(p, "additem", { int64_t(0x14), int64_t(0x12eb7), int64_t(1) });
+  REQUIRE(Lines(p) ==
+          std::vector<std::pair<std::string, bool>>{
+            { "Not enough permissions to use this command", true } });
+  REQUIRE(ac.GetInventory().GetItemCount(0x12eb7) == 1);
+  ac.SetStaffRank(2);
+
   // the rank survives in the change form
   simdjson::dom::parser parser;
   const std::string dump = MpChangeForm::ToJson(ac.GetChangeForm()).dump();

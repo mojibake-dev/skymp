@@ -168,6 +168,11 @@ uint8_t MpActor::GetStaffRank() const
   return changeForm.consoleCommandsAllowed ? 2 : 0;
 }
 
+std::optional<uint8_t> MpActor::GetRecordedStaffRank() const
+{
+  return ChangeForm().staffRank;
+}
+
 void MpActor::SetStaffRank(uint8_t rank)
 {
   EditChangeForm([&](MpChangeForm& changeForm) {

@@ -262,6 +262,7 @@ public:
   // 1 moderator, 2 admin, 3 owner): the recorded one, else admin when
   // consoleCommandsAllowed is set, else player
   uint8_t GetStaffRank() const;
+  std::optional<uint8_t> GetRecordedStaffRank() const;
   void SetStaffRank(uint8_t rank);
 
   void EquipBestWeapon();

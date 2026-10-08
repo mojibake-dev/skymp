@@ -342,10 +342,15 @@ void ExecuteMoveTo(MpActor& caller,
                                         VarValue(0.0), VarValue(true) });
 }
 
-// every player an owner when the server says so (the lab), else the rank the
-// player's record keeps
+// The rank the gamemode recorded for the player wins; without one, every
+// player is an owner when the server says so (enableConsoleCommandsForAll,
+// the lab's setting), else the record's fallback (consoleCommandsAllowed
+// reads as admin, anything else as player)
 uint8_t RankOf(const MpActor& me)
 {
+  if (auto recorded = me.GetRecordedStaffRank()) {
+    return *recorded;
+  }
   if (auto worldState = me.GetParent()) {
     if (worldState->enableConsoleCommandsForAll) {
       return 3;

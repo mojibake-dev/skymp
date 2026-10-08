@@ -63,6 +63,9 @@ export class RaceMenuService extends ClientListener {
         }
         const player = this.sp.Game.getPlayer();
         if (player) {
+            // the menu builds its race, head part and slider lists from the
+            // actor's race, so it is the base's before anything is read
+            this.alignRace();
             this.hairColorOnRaceMenuForm(player);
             player.sendModEvent("RSM_RequestTintSave", "", 0);
             // the face as the menu opens, so a preset the menu loads shows
@@ -201,6 +204,9 @@ export class RaceMenuService extends ClientListener {
             if (!target) {
                 return; // that player's figure is not in this game now
             }
+            if (actor === me && !this.raceAligned(target)) {
+                return; // the actor's race first (alignRace, from the next pass), then the look
+            }
             const base = target.getBaseObject();
             const where = target.getFormID().toString(16) + " on base " + (base ? base.getFormID() : 0).toString(16);
             if (this.applied.get(actor) === where) {
@@ -322,16 +328,32 @@ export class RaceMenuService extends ClientListener {
     // moves the actor's pointer mid-world (probe 20261008-015301), and a
     // fresh loadGame loads it right; a reconnect inside one game is where
     // the two part.
-    private alignRace() {
+    private alignRace(): boolean {
         const player = this.sp.Game.getPlayer();
-        const base = player ? this.sp.ActorBase.from(player.getBaseObject()) : null;
+        if (!player || this.raceAligned(player)) {
+            return false;
+        }
+        const base = this.sp.ActorBase.from(player.getBaseObject());
         const want = base ? base.getRace() : null;
-        const have = player ? player.getRace() : null;
-        if (!player || !want || (have && have.getFormID() === want.getFormID())) {
-            return;
+        if (!want) {
+            return false;
         }
         player.setRace(want);
+        // the player's own look goes on again under the new race: a head part
+        // of the look that is not valid for the old race did not land (lab,
+        // 2026-10-07: the own face node wore FemaleHeadNord while the look
+        // said RotfernChildHead, the figure on the other seat had it right)
+        this.applied.delete(this.myId());
         logTrace(this, "the actor's race follows its base's", want.getFormID().toString(16));
+        return true;
+    }
+
+    // the player's actor race pointer equals its base's race
+    private raceAligned(player: Actor): boolean {
+        const base = this.sp.ActorBase.from(player.getBaseObject());
+        const want = base ? base.getRace() : null;
+        const have = player.getRace();
+        return !!want && !!have && have.getFormID() === want.getFormID();
     }
 
     // RaceMenu's load erases an actor's sculpt, its own sliders, overrides

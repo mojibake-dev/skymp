@@ -114,8 +114,11 @@ bool SetActorValueBase(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                        int32_t av, float base);
 std::vector<float> GetPlayerProgress(IVM* vm, StackID stackId,
                                      RE::StaticFunctionTag*);
-bool SetPlayerProgress(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
-                       std::vector<float> progress);
+bool SetPlayerSkill(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
+                    int32_t skill, float level, float xp, float threshold,
+                    int32_t legendary);
+bool SetPlayerExperience(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
+                         float xp, float threshold, int32_t level);
 
 void BlockPapyrusEvents(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                         bool blocked);

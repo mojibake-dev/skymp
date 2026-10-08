@@ -1252,37 +1252,48 @@ std::vector<float> TESModPlatform::GetPlayerProgress(IVM* vm, StackID stackId,
   return out;
 }
 
-// Writes the progress GetPlayerProgress reads, and the level on the player's
-// base (ACTOR_BASE_DATA::level, TESActorBaseData.h:69). HYPOTHESIS until
-// a-actor-values: the Stats menu and the next skill use follow the written
-// experience, and the level is the console's SetLevel's.
-bool TESModPlatform::SetPlayerProgress(IVM* vm, StackID stackId,
-                                       RE::StaticFunctionTag*,
-                                       std::vector<float> progress)
+// Write what GetPlayerProgress reads, one skill or the player's own
+// experience at a time: Skyrim Platform's callNative passes booleans,
+// numbers, strings and game objects, and takes an array for a game object
+// (Sp3NativeValueCasts.cpp, JsValueToNativeValue), so an array argument never
+// arrives (thuum lab, x-av2-probe 20261008-110553). The level goes on the
+// player's base (ACTOR_BASE_DATA::level, TESActorBaseData.h:69). HYPOTHESIS
+// until a-actor-values: the Stats menu and the next skill use follow the
+// written experience, and the level is the console's SetLevel's.
+bool TESModPlatform::SetPlayerSkill(IVM* vm, StackID stackId,
+                                    RE::StaticFunctionTag*, int32_t skill,
+                                    float level, float xp, float threshold,
+                                    int32_t legendary)
+{
+  auto data = PlayerSkillData();
+  if (!data || skill < 0 || static_cast<size_t>(skill) >= kSkills ||
+      legendary < 0 || !std::isfinite(level) || !std::isfinite(xp) ||
+      !std::isfinite(threshold) || level < 0.f || xp < 0.f ||
+      threshold < 0.f) {
+    return false;
+  }
+  auto& s = data->skills[skill];
+  s.level = level;
+  s.xp = xp;
+  s.levelThreshold = threshold;
+  data->legendaryLevels[skill] = static_cast<uint32_t>(legendary);
+  return true;
+}
+
+bool TESModPlatform::SetPlayerExperience(IVM* vm, StackID stackId,
+                                         RE::StaticFunctionTag*, float xp,
+                                         float threshold, int32_t level)
 {
   auto player = RE::PlayerCharacter::GetSingleton();
   auto data = PlayerSkillData();
   auto base = player ? player->GetActorBase() : nullptr;
-  if (!player || !data || !base || progress.size() != kProgressLength ||
-      !std::all_of(progress.begin(), progress.end(),
-                   [](float v) { return std::isfinite(v) && v >= 0.f; })) {
+  if (!player || !data || !base || !std::isfinite(xp) ||
+      !std::isfinite(threshold) || xp < 0.f || threshold < 0.f || level < 1 ||
+      level > 65535) {
     return false;
   }
-  const float level = progress[2];
-  if (level < 1.f || level > 65535.f) {
-    return false;
-  }
-  data->xp = progress[0];
-  data->levelThreshold = progress[1];
-  for (size_t i = 0; i < kSkills; ++i) {
-    data->skills[i].level = progress[3 + i * 3];
-    data->skills[i].xp = progress[3 + i * 3 + 1];
-    data->skills[i].levelThreshold = progress[3 + i * 3 + 2];
-  }
-  for (size_t i = 0; i < kSkills; ++i) {
-    data->legendaryLevels[i] =
-      static_cast<uint32_t>(progress[3 + kSkills * 3 + i]);
-  }
+  data->xp = xp;
+  data->levelThreshold = threshold;
   base->actorData.level = static_cast<uint16_t>(level);
   return true;
 }
@@ -1464,10 +1475,16 @@ bool TESModPlatform::Register(IVM* vm)
       "GetPlayerProgress", "TESModPlatform", GetPlayerProgress));
 
   vm->BindNativeMethod(
-    new RE::BSScript::NativeFunction<true, decltype(SetPlayerProgress), bool,
-                                     RE::StaticFunctionTag*,
-                                     std::vector<float>>(
-      "SetPlayerProgress", "TESModPlatform", SetPlayerProgress));
+    new RE::BSScript::NativeFunction<true, decltype(SetPlayerSkill), bool,
+                                     RE::StaticFunctionTag*, int32_t, float,
+                                     float, float, int32_t>(
+      "SetPlayerSkill", "TESModPlatform", SetPlayerSkill));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SetPlayerExperience), bool,
+                                     RE::StaticFunctionTag*, float, float,
+                                     int32_t>(
+      "SetPlayerExperience", "TESModPlatform", SetPlayerExperience));
 
   static LoadGameEvent loadGameEvent;
 

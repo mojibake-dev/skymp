@@ -39,8 +39,7 @@ std::string EditorIdAt(uint32_t formId)
   if (!res.rec) {
     return "";
   }
-  const char* editorId =
-    res.rec->GetEditorId(loader.GetBrowser().GetCache());
+  const char* editorId = res.rec->GetEditorId(loader.GetBrowser().GetCache());
   return editorId ? editorId : "";
 }
 
@@ -115,7 +114,7 @@ TEST_CASE("Form descriptors name light plugins' forms by file",
   REQUIRE_THROWS(FormDesc::FromFormId(0xfe002800, files));
 
   // without light flags every file is full, as before the verb
-  const EspmFileList unflagged(loader.GetFileNames(), {});
+  const EspmFileList unflagged(loader.GetFileNames(), std::vector<bool>());
   REQUIRE(FormDesc::FromFormId(0x02000800, unflagged) ==
           FormDesc(0x800, "After.esp"));
   REQUIRE(FormDesc(0x800, "Small.esl").ToFormId(unflagged) == 0x03000800);

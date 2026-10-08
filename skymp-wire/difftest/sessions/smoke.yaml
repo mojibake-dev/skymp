@@ -26,3 +26,12 @@ divergences:
     legacy: 0
     wire: 1
     reason: departure detection, graceful close on the wire against RakNet's timeout
+  # thuum docs/verbs/console-commands.md: the server answers every console
+  # command with a line (ConsoleOutput, MsgType 41), here the AddItem c1
+  # sends; the legacy server prints nothing back. (T2 on m1-console,
+  # 2026-10-08.)
+  - client: c1
+    msg: {t: 41, text: "AddItem done", refused: false}
+    legacy: 0
+    wire: 1
+    reason: the server answers every console command with a line (ConsoleOutput); the legacy server prints nothing back

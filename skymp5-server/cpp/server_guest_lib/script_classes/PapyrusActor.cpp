@@ -202,8 +202,8 @@ void RequireArguments(const char* native,
                       const std::vector<VarValue>& arguments, size_t count)
 {
   if (arguments.size() < count) {
-    throw std::runtime_error(fmt::format(
-      "Papyrus Actor.{}: wrong argument count", native));
+    throw std::runtime_error(
+      fmt::format("Papyrus Actor.{}: wrong argument count", native));
   }
 }
 }
@@ -233,42 +233,40 @@ VarValue PapyrusActor::SetActorValue(VarValue self,
   return VarValue();
 }
 
-// On a player, the base plus the change (R0); the Creation Kit wiki's
-// ModActorValue changes the base the same way (HYPOTHESIS until the
-// scenario reads it back). Before the player's first report the server knows
-// no base for a skill and changes nothing.
+// ModActorValue changes a permanent modifier, never the base: the game's
+// own native on the player raised Sneak's current and maximum from 30 to 35
+// and left its base at 30, and Health's from 150 to 160 on a base of 150
+// (thuum lab, x-av-probe 20261008-101643; docs/verbs/actor-values.md). The
+// server records bases only, so on a player the native runs in the player's
+// own game (R2: its result is the game's, kept for the session, not in the
+// record); on any other actor, the host's, as before.
 VarValue PapyrusActor::ModActorValue(VarValue self,
                                      const std::vector<VarValue>& arguments)
 {
   RequireArguments("ModActorValue", arguments, 2);
   if (auto actor = GetFormPtr<MpActor>(self)) {
-    const int index = ActorValueIndex(arguments[0]);
-    const float delta = static_cast<double>(arguments[1]);
-    if (actor->IsCreatedAsPlayer() && index >= 0) {
-      auto base = KnownBase(*actor, index);
-      if (!base) {
-        Unknown("ModActorValue", arguments[0]);
-        return VarValue();
-      }
-      actor->SetActorValueBaseByServer(static_cast<uint8_t>(index),
-                                       *base + delta);
-      return VarValue();
-    }
     DelegateToHost(GetName(), "ModActorValue", *actor, arguments);
   }
   return VarValue();
 }
 
-// The current value. Health, Magicka and Stamina: the server's percentage
-// moved to the value within the maximum, as Restore and Damage move it, on
-// any actor (R0). Any other value on a player: the server records bases
-// only, so the base is set (HYPOTHESIS: the game's ForceActorValue leaves
-// the base; until the scenario reads it, the record keeps one number).
+// ForceActorValue sets the current value through the same permanent
+// modifier, the base untouched: the game's own native left Sneak's base at
+// 30 with its current at 40, and Health's base at 150 with its current and
+// maximum at 50 (x-av-probe 20261008-101643). On a player it runs in the
+// player's own game (R2, as ModActorValue). On any other actor, Health,
+// Magicka and Stamina move the server's percentage within the maximum, as
+// Restore and Damage do (R0, SkyMP's own model for those three); anything
+// else runs in the host's game.
 VarValue PapyrusActor::ForceActorValue(VarValue self,
                                        const std::vector<VarValue>& arguments)
 {
   RequireArguments("ForceActorValue", arguments, 2);
   if (auto actor = GetFormPtr<MpActor>(self)) {
+    if (actor->IsCreatedAsPlayer()) {
+      DelegateToHost(GetName(), "ForceActorValue", *actor, arguments);
+      return VarValue();
+    }
     const int index = ActorValueIndex(arguments[0]);
     const float value = static_cast<double>(arguments[1]);
     const auto attribute = Attribute(index);
@@ -281,10 +279,6 @@ VarValue PapyrusActor::ForceActorValue(VarValue self,
       } else if (value < current) {
         actor->DamageActorValue(attribute, current - value);
       }
-      return VarValue();
-    }
-    if (actor->IsCreatedAsPlayer() && index >= 0) {
-      actor->SetActorValueBaseByServer(static_cast<uint8_t>(index), value);
       return VarValue();
     }
     DelegateToHost(GetName(), "ForceActorValue", *actor, arguments);
@@ -330,8 +324,8 @@ VarValue PapyrusActor::GetBaseActorValue(
 
 // Health, Magicka and Stamina: the maximum their percentages count against
 // (a player's recorded base); any other value, its base.
-VarValue PapyrusActor::GetActorValueMax(
-  VarValue self, const std::vector<VarValue>& arguments)
+VarValue PapyrusActor::GetActorValueMax(VarValue self,
+                                        const std::vector<VarValue>& arguments)
 {
   RequireArguments("GetActorValueMax", arguments, 1);
   if (auto actor = GetFormPtr<MpActor>(self)) {

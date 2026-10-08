@@ -160,21 +160,13 @@ export const applyAppearance = (appearance: Appearance): ActorBase => {
 };
 
 export const applyAppearanceToPlayer = (appearance: Appearance): void => {
-  // The actor's own race pointer follows the appearance's race, through the
-  // game's live race change (Actor.SetRace, what the vampire scripts use):
-  // setNpcRace below changes the base only, and a player whose actor loaded
-  // as another race keeps it until a reload. RaceMenu builds its menu's
-  // slider list from the actor's race (thuum docs/verbs/racemenu-sync.md,
-  // probe 20261008-001656: actor an Orc, base rotfern, no rotfern sliders).
-  const player = Game.getPlayer() as Actor;
-  const race = Race.from(Game.getFormEx(appearance.raceId));
-  const actorRace = player.getRace();
-  if (race && (!actorRace || actorRace.getFormID() !== race.getFormID())) {
-    player.setRace(race);
-  }
+  // The base only: the actor's own race pointer is aligned with it later,
+  // by RaceMenuService once the player's world is up (a SetRace here, on
+  // the tick after loadGame, froze the game and left a mixed race on the
+  // actor; lab, 2026-10-07)
   applyAppearanceCommon(
     appearance,
-    ActorBase.from(player.getBaseObject()) as ActorBase,
+    ActorBase.from((Game.getPlayer() as Actor).getBaseObject()) as ActorBase,
   );
   applyTints(null, appearance);
   (Game.getPlayer() as Actor).queueNiNodeUpdate();

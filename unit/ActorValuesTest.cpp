@@ -89,6 +89,18 @@ void Stand(PartOne& p)
 
 // The ActorValues messages user 0 received since the last clear, each as
 // its level
+// the Papyrus functions the server sent user 0 to run in its own game
+std::vector<std::string> Snippets(PartOne& p)
+{
+  std::vector<std::string> out;
+  for (auto& m : p.Messages()) {
+    if (m.userId == 0 && m.j["t"] == MsgType::SpSnippet) {
+      out.push_back(m.j["function"].get<std::string>());
+    }
+  }
+  return out;
+}
+
 std::vector<uint16_t> SentLevels(PartOne& p)
 {
   std::vector<uint16_t> out;
@@ -254,16 +266,21 @@ TEST_CASE("A player's actor value natives read and set the server's record",
              3));
   REQUIRE(ac.GetHeldActorValues().empty());
 
-  // ModActorValue adds to the base; a skill may pass play's ceiling
+  // ModActorValue and ForceActorValue change a permanent modifier in the
+  // game, never the base (x-av-probe 20261008-101643): on a player each runs
+  // in the player's own game, and the record keeps its bases and the
+  // server its percentages
+  p.Messages().clear();
   papyrus.ModActorValue(ac.ToVarValue(),
                         { VarValue("Marksman"), VarValue(60.f) });
-  REQUIRE(static_cast<double>(papyrus.GetBaseActorValue(
-            ac.ToVarValue(), { VarValue("Marksman") })) == 105.0);
-
-  // ForceActorValue on Health moves the current value within the maximum
   papyrus.ForceActorValue(ac.ToVarValue(),
                           { VarValue("Health"), VarValue(75.f) });
-  REQUIRE(ac.GetChangeForm().actorValues.healthPercentage == 0.5f);
+  REQUIRE(static_cast<double>(papyrus.GetBaseActorValue(
+            ac.ToVarValue(), { VarValue("Marksman") })) == 45.0);
+  REQUIRE(ac.GetChangeForm().actorValues.healthPercentage == 1.f);
+  p.Tick(); // snippets go out deferred
+  REQUIRE(Snippets(p) ==
+          std::vector<std::string>{ "ModActorValue", "ForceActorValue" });
 
   // a name the lab confirmed no index for changes nothing on the record
   const auto before = ac.GetActorValueRecord();

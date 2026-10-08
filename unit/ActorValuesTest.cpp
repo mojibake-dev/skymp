@@ -236,14 +236,22 @@ TEST_CASE("A player's actor value natives read and set the server's record",
   REQUIRE(SentLevels(p) == std::vector<uint16_t>{ 3 });
 
   // a stale report does not take it back, and the record goes back again
+  // (a report is the client's whole snapshot, Health included: wire-rules
+  // actor_values::merge keeps nothing of the record but the holds)
   p.Messages().clear();
-  Report(p, Snapshot({ { kOneHanded, 21.f }, { kArchery, 15.f } }, 3));
+  Report(
+    p,
+    Snapshot({ { kOneHanded, 21.f }, { kArchery, 15.f }, { kHealth, 150.f } },
+             3));
   REQUIRE(static_cast<double>(papyrus.GetBaseActorValue(
             ac.ToVarValue(), { VarValue("Marksman") })) == 45.0);
   REQUIRE(SentLevels(p) == std::vector<uint16_t>{ 3 });
 
   // the report that carries it ends the hold
-  Report(p, Snapshot({ { kOneHanded, 21.f }, { kArchery, 45.f } }, 3));
+  Report(
+    p,
+    Snapshot({ { kOneHanded, 21.f }, { kArchery, 45.f }, { kHealth, 150.f } },
+             3));
   REQUIRE(ac.GetHeldActorValues().empty());
 
   // ModActorValue adds to the base; a skill may pass play's ceiling

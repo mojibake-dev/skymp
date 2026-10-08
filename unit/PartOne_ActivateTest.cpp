@@ -7,6 +7,16 @@ using Catch::Matchers::ContainsSubstring;
 
 extern espm::Loader& GetEspmLoader();
 
+// The reloot tests below harvest or empty a reference, check it stays so,
+// then wait for the reloot. The reloot runs on a wall-clock timer, so the
+// window must outlast everything the test does between the harvest and its
+// check: 25 to 30 ms did not under the Windows coverage run (every line
+// instrumented, the suite 14 times slower), where the timer fired inside the
+// test's own Tick and "Activate torch" failed at its first IsHarvested check
+// (thuum, fork Windows runs 37728917244 and 37743653008, 2026-10-08).
+constexpr auto kRelootWindow = std::chrono::milliseconds(1000);
+constexpr auto kRelootWait = kRelootWindow + std::chrono::milliseconds(250);
+
 class FakeDamageFormula : public IDamageFormula
 {
 public:
@@ -251,7 +261,7 @@ TEST_CASE("Activate WRDoorMainGate01 in Whiterun", "[PartOne][espm]")
   partOne.Messages().clear();
   auto refrId = 0x1b1f3;
   auto& ref = partOne.worldState.GetFormAt<MpObjectReference>(refrId);
-  ref.SetRelootTime(std::chrono::milliseconds(30));
+  ref.SetRelootTime(kRelootWindow);
   DoMessage(partOne, 0,
             nlohmann::json{ { "t", MsgType::Activate },
                             { "data",
@@ -277,7 +287,7 @@ TEST_CASE("Activate WRDoorMainGate01 in Whiterun", "[PartOne][espm]")
   REQUIRE(ac.GetCellOrWorld() == FormDesc::Tamriel());
 
   partOne.Messages().clear();
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  std::this_thread::sleep_for(kRelootWait);
   partOne.Tick();
 
   REQUIRE(ref.IsOpen() == false);
@@ -312,7 +322,7 @@ TEST_CASE("Activate PurpleMountainFlower in Whiterun", "[PartOne][espm]")
   partOne.Messages().clear();
 
   auto& ref = partOne.worldState.GetFormAt<MpObjectReference>(refrId);
-  ref.SetRelootTime(std::chrono::milliseconds(25));
+  ref.SetRelootTime(kRelootWindow);
 
   REQUIRE(!ref.IsHarvested());
 
@@ -350,7 +360,7 @@ TEST_CASE("Activate PurpleMountainFlower in Whiterun", "[PartOne][espm]")
   REQUIRE(ref.IsHarvested());
 
   partOne.Messages().clear();
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  std::this_thread::sleep_for(kRelootWait);
 
   partOne.Tick();
   REQUIRE(!ref.IsHarvested());
@@ -412,7 +422,7 @@ TEST_CASE("BarrelFood01 PutItem/TakeItem", "[PartOne][espm]")
   auto& partOne = GetPartOne();
   auto refrId = 0x20570;
   auto& ref = partOne.worldState.GetFormAt<MpObjectReference>(refrId);
-  ref.SetRelootTime(std::chrono::milliseconds(25));
+  ref.SetRelootTime(kRelootWindow);
 
   REQUIRE(ref.GetInventory().IsEmpty());
 
@@ -503,7 +513,7 @@ TEST_CASE("BarrelFood01 PutItem/TakeItem", "[PartOne][espm]")
 
     REQUIRE(ref.GetInventory().IsEmpty() == true);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    std::this_thread::sleep_for(kRelootWait);
     partOne.Tick();
 
     REQUIRE(ref.GetInventory().IsEmpty() == false);
@@ -603,7 +613,7 @@ TEST_CASE("Activate torch", "[espm][PartOne]")
   partOne.Messages().clear();
 
   auto& ref = partOne.worldState.GetFormAt<MpObjectReference>(refrId);
-  ref.SetRelootTime(std::chrono::milliseconds(25));
+  ref.SetRelootTime(kRelootWindow);
 
   REQUIRE(!ref.IsHarvested());
 
@@ -639,7 +649,7 @@ TEST_CASE("Activate torch", "[espm][PartOne]")
   REQUIRE(ref.IsHarvested());
 
   partOne.Messages().clear();
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  std::this_thread::sleep_for(kRelootWait);
 
   partOne.Tick();
   REQUIRE(!ref.IsHarvested());

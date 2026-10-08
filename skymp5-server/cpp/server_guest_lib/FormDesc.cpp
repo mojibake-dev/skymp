@@ -138,8 +138,8 @@ FormDesc FormDesc::FromFormId(uint32_t formId, const EspmFileList& files)
                              std::to_string(formId));
   }
   res.file = files[position];
-  res.shortFormId = files.IsLight(position) ? (formId & 0x00000fff)
-                                            : (formId & 0x00ffffff);
+  res.shortFormId =
+    files.IsLight(position) ? (formId & 0x00000fff) : (formId & 0x00ffffff);
   return res;
 }
 

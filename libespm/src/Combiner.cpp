@@ -60,7 +60,8 @@ std::unique_ptr<espm::CombineBrowser> Combiner::Combine()
     for (auto& c : extension) {
       c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
-    src.light = (tes4->GetFlags() & kSmallFileFlag) != 0 || extension == ".esl";
+    src.light =
+      (tes4->GetFlags() & kSmallFileFlag) != 0 || extension == ".esl";
     if (src.light) {
       if (numLight > 0x0fff) {
         throw CombineError("more than 4096 light plugins");

@@ -267,7 +267,8 @@ TEST_CASE("A look is taken once per race menu the server opened, before or "
 // HairMaleNord01 0x051507 bringing its hairline 0x051505; MaleHeadNord's
 // valid races (FLST 0x0A8033) hold NordRace 0x013746 and not 0x013745.
 namespace {
-const std::string kNordLook = R"({"actor": {"hairColor": 6185079, "weight": 50},
+const std::string kNordLook =
+  R"({"actor": {"hairColor": 6185079, "weight": 50},
   "headParts": [{"formIdentifier": "Skyrim.esm|051631", "type": 0},
                 {"formIdentifier": "Skyrim.esm|05162F", "type": 1},
                 {"formIdentifier": "Skyrim.esm|051507", "type": 3}]})";

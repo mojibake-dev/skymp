@@ -12,8 +12,7 @@ class PapyrusUtils
 {
 public:
   static Napi::Value GetJsObjectFromPapyrusObject(
-    Napi::Env env, const VarValue& value,
-    const EspmFileList& espmFilenames)
+    Napi::Env env, const VarValue& value, const EspmFileList& espmFilenames)
   {
     auto ptr = static_cast<IGameObject*>(value);
     if (!ptr) {
@@ -49,8 +48,7 @@ public:
   }
 
   static Napi::Value GetJsValueFromPapyrusValue(
-    Napi::Env env, const VarValue& value,
-    const EspmFileList& espmFilenames)
+    Napi::Env env, const VarValue& value, const EspmFileList& espmFilenames)
   {
     if (value.promise) {
       Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);

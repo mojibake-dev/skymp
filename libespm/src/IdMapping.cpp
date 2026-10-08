@@ -20,8 +20,7 @@ void IdMapping::Set(File from, File to) noexcept
 uint32_t IdMapping::Map(uint32_t id) const noexcept
 {
   const uint32_t top = id >> 24;
-  const Target& target =
-    top == 0xfe ? light[(id >> 12) & 0x0fff] : full[top];
+  const Target& target = top == 0xfe ? light[(id >> 12) & 0x0fff] : full[top];
   const uint32_t local = top == 0xfe ? (id & 0x00000fff) : (id & 0x00ffffff);
   if (target.index == kNone) {
     return 0xff000000 | (id & 0x00ffffff);

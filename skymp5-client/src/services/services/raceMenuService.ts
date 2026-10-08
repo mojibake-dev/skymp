@@ -226,6 +226,22 @@ export class RaceMenuService extends ClientListener {
         });
     }
 
+    // what a look carries of RaceMenu's own layer, for the trace: sculpt
+    // hosts with their vertex counts, RaceMenu slider count, head parts
+    private lookSummary(preset: string): string {
+        try {
+            const look = JSON.parse(preset) as Record<string, unknown>;
+            const morphs = (look["morphs"] ?? {}) as Record<string, unknown>;
+            const sculpt = Array.isArray(morphs["sculpt"]) ? (morphs["sculpt"] as Record<string, unknown>[]) : [];
+            const hosts = sculpt.map((h) => `${h["host"]}:${Array.isArray(h["data"]) ? (h["data"] as unknown[]).length : 0}`).join(",");
+            const custom = Array.isArray(morphs["custom"]) ? (morphs["custom"] as unknown[]).length : 0;
+            const parts = Array.isArray(look["headParts"]) ? (look["headParts"] as Record<string, unknown>[]).map((p) => p["formIdentifier"]).join(",") : "";
+            return `sculpt [${hosts || "none"}] custom ${custom} parts [${parts}]`;
+        } catch (err) {
+            return "not JSON";
+        }
+    }
+
     // RaceMenu's save answers nothing; the file it leaves is the answer
     private save(actor: Actor, name: string): string | undefined {
         const path = PRESETS + name + ".jslot";
@@ -257,6 +273,11 @@ export class RaceMenuService extends ClientListener {
         const loaded = this.sp.callNative("CharGen", "LoadCharacterPresetEx", undefined, actor, name, hairColor, APPLY_ALL) === true;
         if (loaded && isPlayer) {
             actor.sendModEvent("RSM_RequestTintSave", "", 0);
+            // RaceMenu's apply erases the actor's sculpt and slider entries
+            // before it writes the look's (PresetInterface ApplyPresetData),
+            // so what each apply carried is the record of what the next
+            // head rebuild gets (docs/verbs/racemenu-sync.md, 2026-10-07)
+            logTrace(this, "the player's look applied:", this.lookSummary(preset));
         }
         return loaded;
     }

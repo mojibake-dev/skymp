@@ -449,13 +449,15 @@ void ExecuteCenterOnCell(PartOne& partOne, MpActor& caller,
     partOne.PermitJump(caller.GetFormId(), cell->cellOrWorld, cell->gridX,
                        cell->gridY);
   }
-  spdlog::info("ConsoleCommands: {:x} goes to {} ({} {:x}{}); its jump there "
-               "is permitted",
+  // which of the two the console sent is a lab observation (the verb doc)
+  spdlog::info("ConsoleCommands: {:x} goes to {} ({} {:x}{}), named by {}; "
+               "its jump there is permitted",
                caller.GetFormId(), cell->editorId,
                cell->interior ? "interior" : "worldspace", cell->cellOrWorld,
                cell->interior
                  ? std::string()
-                 : fmt::format(" square ({}, {})", cell->gridX, cell->gridY));
+                 : fmt::format(" square ({}, {})", cell->gridX, cell->gridY),
+               named.IsInteger() ? "form id" : "text");
   const std::vector<std::optional<
     std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
     snippetArgs{ cell->editorId };

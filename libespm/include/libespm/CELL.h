@@ -28,6 +28,11 @@ public:
   };
 
   Data GetData(CompressedFieldsCache& cache) const noexcept;
+
+  // An exterior cell's grid square (XCLC: x and y as int32; UESP, "Skyrim
+  // Mod:Mod File Format/CELL"); false for a cell without one
+  bool GetGrid(int32_t& outX, int32_t& outY,
+               CompressedFieldsCache& cache) const noexcept;
 };
 
 }

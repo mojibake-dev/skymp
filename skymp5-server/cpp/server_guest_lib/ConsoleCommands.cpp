@@ -1,13 +1,22 @@
 #include "ConsoleCommands.h"
 #include "ConsoleOutputMessage.h"
 #include "MpActor.h"
+#include "PartOne.h"
+#include "SpSnippet.h"
 #include "WorldState.h"
+#include "libespm/CELL.h"
+#include "libespm/GroupUtils.h"
+#include "libespm/Utils.h"
+#include "papyrus-vm/CIString.h"
 #include "papyrus-vm/Utils.h"
 #include "script_classes/PapyrusActor.h"
 #include "script_classes/PapyrusObjectReference.h"
 #include "script_objects/EspmGameObject.h"
 #include "wire_bridge_cxx/rules.h"
 #include <cmath>
+#include <fmt/format.h>
+#include <limits>
+#include <optional>
 #include <string>
 
 ConsoleCommands::Argument::Argument()
@@ -342,6 +351,118 @@ void ExecuteMoveTo(MpActor& caller,
                                         VarValue(0.0), VarValue(true) });
 }
 
+// thuum docs/verbs/console-commands.md, COC: a cell as the server's load
+// order has it: its editor id, which the game's COC takes, and where a jump
+// there lands (an interior cell, or an exterior cell's worldspace and grid
+// square)
+struct NamedCell
+{
+  std::string editorId;
+  bool interior = true;
+  uint32_t cellOrWorld = 0;
+  int16_t gridX = 0;
+  int16_t gridY = 0;
+};
+
+std::optional<NamedCell> CellOf(const espm::CombineBrowser& br,
+                                espm::CompressedFieldsCache& cache,
+                                const espm::LookupResult& found)
+{
+  if (!found.rec || !espm::utils::Is<espm::CELL>(found.rec->GetType())) {
+    return std::nullopt;
+  }
+  NamedCell cell;
+  const char* editorId = found.rec->GetEditorId(cache);
+  cell.editorId = editorId ? editorId : "";
+  if (cell.editorId.empty()) {
+    return std::nullopt;
+  }
+  // an interior cell sits in the CELL group, an exterior one under its
+  // worldspace (UESP, "Skyrim Mod:Mod File Format", Groups)
+  const auto worldGroup = espm::GetExteriorWorldGroup(br, found.rec);
+  if (!worldGroup) {
+    cell.cellOrWorld = found.ToGlobalId(found.rec->GetId());
+    return cell;
+  }
+  uint32_t rawWorld = 0;
+  int32_t x = 0, y = 0;
+  if (!worldGroup->GetParentWRLD(rawWorld) ||
+      !reinterpret_cast<const espm::CELL*>(found.rec)->GetGrid(x, y, cache) ||
+      x < std::numeric_limits<int16_t>::min() ||
+      x > std::numeric_limits<int16_t>::max() ||
+      y < std::numeric_limits<int16_t>::min() ||
+      y > std::numeric_limits<int16_t>::max()) {
+    return std::nullopt;
+  }
+  cell.interior = false;
+  cell.cellOrWorld = found.ToGlobalId(rawWorld);
+  cell.gridX = static_cast<int16_t>(x);
+  cell.gridY = static_cast<int16_t>(y);
+  return cell;
+}
+
+// The cell with an editor id, case aside, as the game's console finds one;
+// the last file in the load order that has a cell of that name wins
+std::optional<NamedCell> CellNamed(WorldState& worldState,
+                                   const std::string& name)
+{
+  const auto& br = worldState.GetEspm().GetBrowser();
+  auto& cache = worldState.GetEspmCache();
+  const CIString wanted(name.begin(), name.end());
+  for (const auto& found : br.GetDistinctRecordsByType("CELL")) {
+    const char* editorId = found.rec->GetEditorId(cache);
+    if (editorId && CIString(editorId) == wanted) {
+      return CellOf(br, cache, found);
+    }
+  }
+  return std::nullopt;
+}
+
+// CenterOnCell (COC): the caller's own game goes to the cell as its console
+// would (the engine picks the spot), and the server permits that one jump
+// (its movement bounds refuse any other cell change) and records where the
+// game lands. The cell comes as Skyrim Platform passes a replaced command's
+// parameter: the typed name, or the form id the game found for it (its
+// ConsoleApi.cpp GetTypedArg); either way the server's load order must know
+// the cell. The selected reference is ignored, as the game's COC ignores it.
+void ExecuteCenterOnCell(PartOne& partOne, MpActor& caller,
+                         const std::vector<ConsoleCommands::Argument>& args)
+{
+  if (args.size() < 2) {
+    throw std::runtime_error("COC needs a cell's name");
+  }
+  const auto& named = args[1];
+  WorldState& worldState = *caller.GetParent();
+  const auto cell = named.IsInteger()
+    ? CellOf(worldState.GetEspm().GetBrowser(), worldState.GetEspmCache(),
+             worldState.GetEspm().GetBrowser().LookupById(
+               static_cast<uint32_t>(named.GetInteger())))
+    : CellNamed(worldState, named.GetString());
+  if (!cell) {
+    throw std::runtime_error(
+      named.IsInteger() ? fmt::format("no cell {:x}", named.GetInteger())
+                        : "no cell named " + named.GetString());
+  }
+  if (cell->interior) {
+    partOne.PermitJump(caller.GetFormId(), cell->cellOrWorld);
+  } else {
+    partOne.PermitJump(caller.GetFormId(), cell->cellOrWorld, cell->gridX,
+                       cell->gridY);
+  }
+  spdlog::info("ConsoleCommands: {:x} goes to {} ({} {:x}{}); its jump there "
+               "is permitted",
+               caller.GetFormId(), cell->editorId,
+               cell->interior ? "interior" : "worldspace", cell->cellOrWorld,
+               cell->interior
+                 ? std::string()
+                 : fmt::format(" square ({}, {})", cell->gridX, cell->gridY));
+  const std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+    snippetArgs{ cell->editorId };
+  SpSnippet("Debug", "CenterOnCell", snippetArgs)
+    .Execute(&caller, SpSnippetMode::kNoReturnResult);
+}
+
 // The rank the gamemode recorded for the player wins; without one, every
 // player is an owner when the server says so (enableConsoleCommandsForAll,
 // the lab's setting), else the record's fallback (consoleCommandsAllowed
@@ -373,7 +494,7 @@ void Reply(MpActor& caller, std::string text, bool refused)
 // the server runs it; the caller's console prints the server's line either
 // way (ConsoleOutput). A command that fails prints why.
 void ConsoleCommands::Execute(
-  MpActor& me, const std::string& consoleCommandName,
+  PartOne& partOne, MpActor& me, const std::string& consoleCommandName,
   const std::vector<ConsoleCommands::Argument>& args)
 {
   const auto decision =
@@ -410,6 +531,9 @@ void ConsoleCommands::Execute(
       ExecuteSetPos(me, args, true);
     } else if (!Utils::stricmp(name, "MoveTo")) {
       ExecuteMoveTo(me, args);
+    } else if (!Utils::stricmp(name, "COC") ||
+               !Utils::stricmp(name, "CenterOnCell")) {
+      ExecuteCenterOnCell(partOne, me, args);
     } else if (!Utils::stricmp(name, "SetAV") ||
                !Utils::stricmp(name, "SetActorValue")) {
       ExecuteActorValue(me, "set", args);

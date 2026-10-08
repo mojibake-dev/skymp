@@ -199,6 +199,15 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       actor->ResetBlockCount();
     }
 
+    // a jump the server permitted (thuum docs/verbs/console-commands.md,
+    // COC) may land in another cell: the record moves there as a teleport
+    // moves it, and SetPos below attaches it to that cell's grid
+    const auto newCellOrWorld =
+      FormDesc::FromFormId(msg.data.worldOrCell, espmFiles);
+    if (newCellOrWorld != actor->GetCellOrWorld()) {
+      actor->SetCellOrWorldObsolete(newCellOrWorld);
+    }
+
     actor->SetPos(
       NiPoint3{ msg.data.pos[0], msg.data.pos[1], msg.data.pos[2] },
       SetPosMode::CalledByUpdateMovement);
@@ -283,9 +292,9 @@ namespace {
 // race, and RaceMenu's save carries only the tint layers it set itself.
 enum class LookVerdict
 {
-  kDerived,    // the appearance the look implies
-  kRefused,    // a part the server lacks or the race may not wear
-  kNotJudged,  // no game files, or no appearance to derive into
+  kDerived,   // the appearance the look implies
+  kRefused,   // a part the server lacks or the race may not wear
+  kNotJudged, // no game files, or no appearance to derive into
 };
 
 // "<plugin>|<id>" to a form id in the server's load order, light plugins
@@ -378,8 +387,7 @@ LookVerdict AppearanceFromLook(PartOne& partOne, const Appearance& current,
   }
   if (facts.has_head_texture) {
     if (const uint32_t texture = LookFormId(partOne, facts.head_texture);
-        texture &&
-        partOne.GetEspm().GetBrowser().LookupById(texture).rec &&
+        texture && partOne.GetEspm().GetBrowser().LookupById(texture).rec &&
         partOne.GetEspm().GetBrowser().LookupById(texture).rec->GetType() ==
           "TXST") {
       out.headTextureSetId = texture;
@@ -1604,7 +1612,7 @@ void ActionListener::OnConsoleCommand(const RawMessageData& rawMsgData,
     for (size_t i = 0; i < msg.data.args.size(); i++) {
       consoleArgs[i] = ConsoleCommands::Argument(msg.data.args[i]);
     }
-    ConsoleCommands::Execute(*me, msg.data.commandName, consoleArgs);
+    ConsoleCommands::Execute(partOne, *me, msg.data.commandName, consoleArgs);
   }
 }
 

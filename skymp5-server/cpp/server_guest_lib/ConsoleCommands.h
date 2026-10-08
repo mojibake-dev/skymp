@@ -6,6 +6,7 @@
 #include <vector>
 
 class MpActor;
+class PartOne;
 
 namespace ConsoleCommands {
 class Argument
@@ -35,6 +36,7 @@ private:
   std::variant<int64_t, std::string> data;
 };
 
-void Execute(MpActor& me, const std::string& consoleCommandName,
+void Execute(PartOne& partOne, MpActor& me,
+             const std::string& consoleCommandName,
              const std::vector<ConsoleCommands::Argument>& args);
 }

@@ -4,6 +4,7 @@
 #include "ConsoleCommandMessage.h"
 #include "MpChangeForms.h"
 #include "PacketParser.h"
+#include "UpdateMovementMessage.h"
 #include <simdjson.h>
 
 using Catch::Matchers::ContainsSubstring;
@@ -45,6 +46,26 @@ void Send(PartOne& p, const std::string& name,
   msg.data.commandName = name;
   msg.data.args = std::move(args);
   p.GetActionListener().OnConsoleCommand(msgData, msg);
+}
+
+// The player's own movement report from a cell or worldspace
+void Report(PartOne& p, MpActor& me, uint32_t worldOrCell, const NiPoint3& pos)
+{
+  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
+  RawMessageData raw;
+  raw.userId = 0;
+  raw.unparsed = unparsed;
+  raw.unparsedLength = sizeof(unparsed);
+  UpdateMovementMessage msg;
+  msg.idx = me.GetIdx();
+  msg.data.pos = { pos.x, pos.y, pos.z };
+  msg.data.rot = { 0, 0, 0 };
+  msg.data.isInJumpState = false;
+  msg.data.isWeapDrawn = false;
+  msg.data.isBlocking = false;
+  msg.data.worldOrCell = worldOrCell;
+  msg.data.runMode = "Standing";
+  p.GetActionListener().OnUpdateMovement(raw, msg);
 }
 }
 
@@ -226,13 +247,13 @@ TEST_CASE("Console commands follow the caller's staff rank",
           std::vector<std::pair<std::string, bool>>{
             { "Not enough permissions to use this command", true } });
 
-  // an admin may; a save is nobody's; COC is listed, not run yet; a name
-  // the table does not know is unknown
+  // an admin may; a save is nobody's; SetLevel is listed, not run yet; a
+  // name the table does not know is unknown
   ac.SetStaffRank(2);
   p.Messages().clear();
   Send(p, "additem", { int64_t(0x14), int64_t(0x12eb7), int64_t(1) });
   Send(p, "save", { int64_t(0), std::string("x") });
-  Send(p, "coc", { int64_t(0), int64_t(0x3c) });
+  Send(p, "setlevel", { int64_t(0), int64_t(5) });
   Send(p, "nosuchcommand", {});
   p.Tick();
   REQUIRE(
@@ -396,6 +417,106 @@ TEST_CASE("RemoveItem, Enable, Kill, Resurrect, SetPos, SetAngle and MoveTo "
   REQUIRE(!other.IsDisabled());
 
   p.DestroyActor(0xff000001);
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+// thuum docs/verbs/console-commands.md, COC (an admin's, Eli 2026-10-08):
+// the caller's own game goes to a cell the server knows, and the server
+// takes that one jump and records where the game landed. Skyrim.esm:
+// Riverwood is Tamriel's square (4, -12), its inn the interior 0x133c6
+// (thuum lab/esm.py)
+TEST_CASE("COC sends an admin's game to a cell the server knows and takes "
+          "that one jump",
+          "[ConsoleCommand][espm]")
+{
+  PartOne& p = GetPartOne();
+  const bool forAll = p.worldState.enableConsoleCommandsForAll;
+  p.worldState.enableConsoleCommandsForAll = false;
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, 0xff000000);
+  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
+  const auto& files = p.worldState.espmFiles;
+
+  // the cells user 0's game was told to go to, and the times it was sent
+  // back
+  const auto sentTo = [&] {
+    std::vector<std::string> out;
+    for (auto& m : p.Messages()) {
+      if (m.userId == 0 && m.j["t"] == MsgType::SpSnippet &&
+          m.j["class"] == "Debug" && m.j["function"] == "CenterOnCell" &&
+          m.j["selfId"] == 0) {
+        out.push_back(m.j["arguments"][0].get<std::string>());
+      }
+    }
+    return out;
+  };
+  const auto sentBack = [&] {
+    int n = 0;
+    for (auto& m : p.Messages()) {
+      n += m.userId == 0 && m.j["t"] == MsgType::Teleport2;
+    }
+    return n;
+  };
+
+  // a moderator may not; an admin's COC needs a cell the server knows
+  ac.SetStaffRank(1);
+  p.Messages().clear();
+  Send(p, "coc", { int64_t(0), std::string("riverwood") });
+  ac.SetStaffRank(2);
+  Send(p, "coc", { int64_t(0), std::string("nosuchcell") });
+  Send(p, "coc", { int64_t(0), int64_t(0x3c) });
+  Send(p, "coc", { int64_t(0) });
+  p.Tick();
+  REQUIRE(Lines(p) ==
+          std::vector<std::pair<std::string, bool>>{
+            { "Not enough permissions to use this command", true },
+            { "Failed: no cell named nosuchcell", true },
+            { "Failed: no cell 3c", true },
+            { "Failed: COC needs a cell's name", true } });
+  REQUIRE(sentTo().empty());
+
+  // Riverwood by its name, case aside: the game is told the name as the
+  // file has it
+  p.Messages().clear();
+  Send(p, "coc", { int64_t(0), std::string("riverwood") });
+  p.Tick();
+  REQUIRE(Lines(p) ==
+          std::vector<std::pair<std::string, bool>>{ { "coc done", false } });
+  REQUIRE(sentTo() == std::vector<std::string>{ "Riverwood" });
+
+  // a report from the loading screen (no cell) and one far from Riverwood
+  // are dropped, the player not sent back; then the landing is taken
+  p.Messages().clear();
+  Report(p, ac, 0, { 0, 0, 0 });
+  Report(p, ac, 0x3c, { 100000, 100000, 0 });
+  REQUIRE(sentBack() == 0);
+  REQUIRE(ac.GetPos() == NiPoint3{ 0, 0, 0 });
+  Report(p, ac, 0x3c, { 18432, -47104, 500 });
+  REQUIRE(ac.GetPos() == NiPoint3{ 18432, -47104, 500 });
+  REQUIRE(ac.GetCellOrWorld() == FormDesc::Tamriel());
+  REQUIRE(sentBack() == 0);
+
+  // that was the one jump: the next is sent back
+  Report(p, ac, 0x3c, { 0, 0, 0 });
+  REQUIRE(sentBack() == 1);
+  REQUIRE(ac.GetPos() == NiPoint3{ 18432, -47104, 500 });
+
+  // the inn by the form id the game found for its name: the record moves
+  // into the interior cell with the player
+  p.Messages().clear();
+  Send(p, "coc", { int64_t(0), int64_t(0x133c6) });
+  p.Tick();
+  REQUIRE(Lines(p) ==
+          std::vector<std::pair<std::string, bool>>{ { "coc done", false } });
+  REQUIRE(sentTo() == std::vector<std::string>{ "RiverwoodSleepingGiantInn" });
+  Report(p, ac, 0x133c6, { 10, 20, 30 });
+  REQUIRE(ac.GetCellOrWorld().ToFormId(files) == 0x133c6);
+  REQUIRE(ac.GetPos() == NiPoint3{ 10, 20, 30 });
+  REQUIRE(sentBack() == 0);
+
+  p.worldState.enableConsoleCommandsForAll = forAll;
   p.DestroyActor(0xff000000);
   DoDisconnect(p, 0);
 }

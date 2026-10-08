@@ -249,6 +249,19 @@ mod ffi {
         Unknown,
     }
 
+    /// What a move a player's actor made means for the jump the server
+    /// permitted it (thuum docs/verbs/console-commands.md, COC).
+    #[derive(Debug, Clone, Copy)]
+    enum JumpCheck {
+        /// No jump is permitted: the move is judged as any other.
+        NoPermit,
+        /// The permitted jump: it passes, and the permit ends.
+        Landed,
+        /// A jump is permitted and this move is not it: drop it without
+        /// sending the player back.
+        Waiting,
+    }
+
     /// A form a RaceMenu look names (thuum ADR-026): its plugin and its id
     /// within it.
     #[derive(Debug, Clone)]
@@ -493,8 +506,16 @@ mod ffi {
         /// Charge `actor` a move of `ground` units at `now_ms` (a monotonic
         /// clock); true when it fits.
         fn spend(self: &mut MovementBudgets, actor: u32, ground: f32, now_ms: u64) -> bool;
-        /// Drop an actor's budget.
+        /// Drop an actor's budget and permitted jump.
         fn forget(self: &mut MovementBudgets, actor: u32);
+        /// thuum docs/verbs/console-commands.md, COC: permit `actor` one
+        /// jump into an interior cell until a minute after `now_ms`.
+        fn permit_jump_interior(self: &mut MovementBudgets, actor: u32, cell: u32, now_ms: u64);
+        /// The same into an exterior cell: its worldspace and grid square.
+        fn permit_jump_exterior(self: &mut MovementBudgets, actor: u32, world: u32, x: i16, y: i16, now_ms: u64);
+        /// Judge a move of `actor`'s that the bounds refuse (another cell,
+        /// or a jump) against its permit; a landing ends the permit.
+        fn check_jump(self: &mut MovementBudgets, actor: u32, cell_or_world: u32, x: f32, y: f32, now_ms: u64) -> JumpCheck;
 
         /// The server's game clock and who has heard it.
         type GameClock;
@@ -513,7 +534,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, ConeFacts, ConsoleDecision, DerivedParts, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, SneakMults, Verdict};
+pub use ffi::{AvBase, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, ConeFacts, ConsoleDecision, DerivedParts, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, SneakMults, Verdict};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -845,6 +866,22 @@ impl MovementBudgets {
     fn forget(&mut self, actor: u32) {
         self.0.forget(actor);
     }
+
+    fn permit_jump_interior(&mut self, actor: u32, cell: u32, now_ms: u64) {
+        self.0.permit_jump(actor, movement::Landing::Interior(cell), now_ms);
+    }
+
+    fn permit_jump_exterior(&mut self, actor: u32, world: u32, x: i16, y: i16, now_ms: u64) {
+        self.0.permit_jump(actor, movement::Landing::Exterior { world, x, y }, now_ms);
+    }
+
+    fn check_jump(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, now_ms: u64) -> JumpCheck {
+        match self.0.check_jump(actor, cell_or_world, x, y, now_ms) {
+            movement::JumpCheck::NoPermit => JumpCheck::NoPermit,
+            movement::JumpCheck::Landed => JumpCheck::Landed,
+            movement::JumpCheck::Waiting => JumpCheck::Waiting,
+        }
+    }
 }
 
 /// The server's game clock (wire-rules clock).
@@ -933,6 +970,13 @@ mod tests {
         let mut b = new_movement_budgets();
         assert!(b.spend(7, 2048.0, 0));
         assert!(!b.spend(7, 1.0, 0));
+        // COC's permit: Riverwood's square of Tamriel, then its inn
+        b.permit_jump_exterior(7, 0x3c, 4, -12, 0);
+        assert_eq!(b.check_jump(7, 0x3c, 0.0, 0.0, 1), JumpCheck::Waiting);
+        assert_eq!(b.check_jump(7, 0x3c, 18_432.0, -47_104.0, 2), JumpCheck::Landed);
+        assert_eq!(b.check_jump(7, 0x3c, 18_432.0, -47_104.0, 3), JumpCheck::NoPermit);
+        b.permit_jump_interior(7, 0x133c6, 0);
+        assert_eq!(b.check_jump(7, 0x133c6, 1.0, 2.0, 4), JumpCheck::Landed);
     }
 
     #[test]

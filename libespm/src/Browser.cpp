@@ -298,20 +298,10 @@ bool Browser::ReadAny(const GroupStack* parentGrStack)
       pImpl->cells.push_back(recHeader);
 
       // an exterior cell: its worldspace (the WORLD_CHILDREN group above it)
-      // and its grid square (XCLC: x and y as int32; UESP, "Skyrim Mod:Mod
-      // File Format/CELL")
-      bool hasGrid = false;
+      // and its grid square
       int32_t gridX = 0, gridY = 0;
-      RecordHeaderAccess::IterateFields(
-        recHeader,
-        [&](const char* type, uint32_t size, const char* data) {
-          if (!std::memcmp(type, "XCLC", 4) && size >= 8) {
-            std::memcpy(&gridX, data, 4);
-            std::memcpy(&gridY, data + 4, 4);
-            hasGrid = true;
-          }
-        },
-        pImpl->dummyCache);
+      const bool hasGrid = reinterpret_cast<const CELL*>(recHeader)->GetGrid(
+        gridX, gridY, pImpl->dummyCache);
       uint32_t worldId = 0;
       const auto world = GetExteriorWorldGroup(*this, recHeader);
       if (hasGrid && world && world->GetParentWRLD(worldId)) {

@@ -122,6 +122,24 @@ public:
   // when its budget covers it (thuum docs/verbs/movement-speed.md)
   bool SpendMovementBudget(uint32_t actorFormId, float ground);
 
+  // thuum docs/verbs/console-commands.md, COC: let a player's actor make one
+  // jump into a cell the server named, within a minute: an interior cell,
+  // or an exterior one by its worldspace and grid square
+  void PermitJump(uint32_t actorFormId, uint32_t cellId);
+  void PermitJump(uint32_t actorFormId, uint32_t worldId, int16_t gridX,
+                  int16_t gridY);
+
+  // What a move the bounds refuse (another cell, or a jump) means for the
+  // actor's permitted jump; the rule is Rust's (wire-rules movement)
+  enum class JumpCheck
+  {
+    NoPermit, // none: judged as any other move
+    Landed,   // the jump: it passes, once
+    Waiting   // one waits and this is not it: dropped, no snap back
+  };
+  JumpCheck CheckJump(uint32_t actorFormId, uint32_t cellOrWorld, float x,
+                      float y);
+
   // The server's game clock (thuum docs/verbs/time.md, ADR-021) from
   // server-settings.json's `time` block as JSON text ("{}" for every
   // default); throws naming the bad key. From then on each player hears the

@@ -33,6 +33,15 @@ int64_t UnixNowMs()
     .count();
 }
 
+// A monotonic clock in milliseconds, for the movement rule
+uint64_t SteadyNowMs()
+{
+  return static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch())
+      .count());
+}
+
 SetGameTimeMessage ToMessage(const skymp::rules::GameTime& t)
 {
   SetGameTimeMessage message;
@@ -1230,9 +1239,32 @@ void PartOne::TickFights(uint64_t nowMs)
 
 bool PartOne::SpendMovementBudget(uint32_t actorFormId, float ground)
 {
-  const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                       std::chrono::steady_clock::now().time_since_epoch())
-                       .count();
-  return pImpl->movementBudgets->spend(actorFormId, ground,
-                                       static_cast<uint64_t>(nowMs));
+  return pImpl->movementBudgets->spend(actorFormId, ground, SteadyNowMs());
+}
+
+void PartOne::PermitJump(uint32_t actorFormId, uint32_t cellId)
+{
+  pImpl->movementBudgets->permit_jump_interior(actorFormId, cellId,
+                                               SteadyNowMs());
+}
+
+void PartOne::PermitJump(uint32_t actorFormId, uint32_t worldId, int16_t gridX,
+                         int16_t gridY)
+{
+  pImpl->movementBudgets->permit_jump_exterior(actorFormId, worldId, gridX,
+                                               gridY, SteadyNowMs());
+}
+
+PartOne::JumpCheck PartOne::CheckJump(uint32_t actorFormId,
+                                      uint32_t cellOrWorld, float x, float y)
+{
+  switch (pImpl->movementBudgets->check_jump(actorFormId, cellOrWorld, x, y,
+                                             SteadyNowMs())) {
+    case skymp::rules::JumpCheck::Landed:
+      return JumpCheck::Landed;
+    case skymp::rules::JumpCheck::Waiting:
+      return JumpCheck::Waiting;
+    default:
+      return JumpCheck::NoPermit;
+  }
 }

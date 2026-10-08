@@ -6,6 +6,7 @@
 #include "TeleportMessage2.h"
 #include <cmath>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <spdlog/spdlog.h>
 #include <string>
 
@@ -35,8 +36,38 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
     return false;
   };
 
+  // thuum docs/verbs/console-commands.md, COC: a move the bounds below refuse
+  // may be the one jump the server permitted, which passes; while that jump
+  // waits, a move that is not it (a report from the loading screen) is
+  // dropped without sending the player back. Nothing when none waits.
+  const auto permittedJump = [&]() -> std::optional<bool> {
+    if (!isMe) {
+      return std::nullopt;
+    }
+    const uint32_t cellOrWorld = newCellOrWorld.ToFormId(espmFiles);
+    switch (
+      partOne.CheckJump(actor->GetFormId(), cellOrWorld, newPos.x, newPos.y)) {
+      case PartOne::JumpCheck::Landed:
+        spdlog::info("MovementValidation: {:x} made its permitted jump to "
+                     "{:x} at ({:.0f}, {:.0f}, {:.0f})",
+                     actor->GetFormId(), cellOrWorld, newPos.x, newPos.y,
+                     newPos.z);
+        return true;
+      case PartOne::JumpCheck::Waiting:
+        spdlog::info("MovementValidation: {:x} reported {:x} at ({:.0f}, "
+                     "{:.0f}) while its permitted jump waits; dropped",
+                     actor->GetFormId(), cellOrWorld, newPos.x, newPos.y);
+        return false;
+      default:
+        return std::nullopt;
+    }
+  };
+
   if (currentCellOrWorld != newCellOrWorld ||
       (currentPos - newPos).SqrLength() >= kSqrMaxDistance) {
+    if (const auto jump = permittedJump()) {
+      return *jump;
+    }
     return snapBack();
   }
 
@@ -46,6 +77,9 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
     const float ground =
       std::hypot(newPos.x - currentPos.x, newPos.y - currentPos.y);
     if (!partOne.SpendMovementBudget(actor->GetFormId(), ground)) {
+      if (const auto jump = permittedJump()) {
+        return *jump;
+      }
       spdlog::warn("MovementValidation - E_MOVE_SPEED: {:x} moved {:.0f} "
                    "units over the ground beyond its budget; snapped back",
                    actor->GetFormId(), ground);

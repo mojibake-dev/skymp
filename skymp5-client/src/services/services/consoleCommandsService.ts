@@ -17,7 +17,7 @@ enum CmdArgument {
 }
 
 type CmdName = "additem" | "equipitem" | "placeatme" | "disable" | "mp" | "setav" | "modav" | "forceav"
-    | "removeitem" | "enable" | "kill" | "resurrect" | "setpos" | "setangle" | "moveto";
+    | "removeitem" | "enable" | "kill" | "resurrect" | "setpos" | "setangle" | "moveto" | "coc";
 
 export class ConsoleCommandsService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
@@ -55,6 +55,10 @@ export class ConsoleCommandsService extends ClientListener {
         schemas.set("setpos", [CmdArgument.ObjectReference, CmdArgument.String, CmdArgument.Float]);
         schemas.set("setangle", [CmdArgument.ObjectReference, CmdArgument.String, CmdArgument.Float]);
         schemas.set("moveto", [CmdArgument.ObjectReference, CmdArgument.ObjectReference]);
+        // COC: the cell as Skyrim Platform passes it, the typed name or the
+        // form id the game found for that name; the server permits the jump
+        // and has this game make it (Debug.CenterOnCell)
+        schemas.set("coc", [CmdArgument.ObjectReference, CmdArgument.String]);
         return schemas;
     }
 
@@ -165,7 +169,7 @@ export class ConsoleCommandsService extends ClientListener {
     // one name per engine command (Skyrim Platform matches the long or the
     // short name); the server's table knows both
     private static readonly serverOnlyCommands = [
-        "coc", "setlevel", "advskill", "tim", "tgm", "tcl", "set",
+        "setlevel", "advskill", "tim", "tgm", "tcl", "set",
         "save", "load", "savegame", "loadgame",
     ];
 

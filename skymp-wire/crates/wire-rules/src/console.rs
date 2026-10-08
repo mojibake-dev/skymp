@@ -14,7 +14,8 @@ pub enum Rank {
     Player = 0,
     /// Moves players, kills and revives.
     Moderator = 1,
-    /// Changes inventories, references, actor values and the clock.
+    /// Changes inventories, references, actor values and the clock, and
+    /// goes to a cell by its name (COC).
     Admin = 2,
     /// Everything an admin may, and ranks.
     Owner = 3,
@@ -36,8 +37,10 @@ impl Rank {
 /// How a command runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
-    /// The server runs it against its own state (R0); the clients see the
-    /// result through the verbs that carry that state.
+    /// The server runs it against its own state (R0), and the clients see
+    /// the result through the verbs that carry that state; or, for COC, the
+    /// caller's own game runs it where the server said and the server
+    /// judges the landing (R1, the movement rule's permitted jump).
     Server,
     /// The player's own view only (R3): the client never sends it.
     Client,
@@ -66,7 +69,8 @@ const fn cmd(name: &'static str, short: &'static str, class: Class, rank: Rank, 
 }
 
 /// The first set (thuum docs/verbs/console-commands.md, "Commands, first
-/// set"; the ranks await Eli's review). `mp` is SkyMP's own.
+/// set"; COC is an admin's by Eli's word, 2026-10-08, the other ranks await
+/// his review). `mp` is SkyMP's own.
 pub const TABLE: [Command; 28] = [
     cmd("additem", "", Class::Server, Rank::Admin, true),
     cmd("removeitem", "", Class::Server, Rank::Admin, true),
@@ -75,7 +79,7 @@ pub const TABLE: [Command; 28] = [
     cmd("disable", "", Class::Server, Rank::Admin, true),
     cmd("enable", "", Class::Server, Rank::Admin, true),
     cmd("mp", "", Class::Server, Rank::Admin, true),
-    cmd("centeroncell", "coc", Class::Server, Rank::Moderator, false),
+    cmd("centeroncell", "coc", Class::Server, Rank::Admin, true),
     cmd("moveto", "", Class::Server, Rank::Moderator, true),
     cmd("setpos", "", Class::Server, Rank::Moderator, true),
     cmd("setangle", "", Class::Server, Rank::Moderator, true),
@@ -175,6 +179,10 @@ mod tests {
         assert_eq!(decide("additem", Rank::Player), Decision::RankTooLow);
         assert_eq!(decide("setav", Rank::Admin), Decision::Run);
         assert_eq!(decide("modav", Rank::Player), Decision::RankTooLow);
+        // anyone with admin may COC (Eli, 2026-10-08)
+        assert_eq!(decide("coc", Rank::Admin), Decision::Run);
+        assert_eq!(decide("CenterOnCell", Rank::Owner), Decision::Run);
+        assert_eq!(decide("coc", Rank::Moderator), Decision::RankTooLow);
     }
 
     #[test]
@@ -186,7 +194,7 @@ mod tests {
 
     #[test]
     fn listed_commands_the_server_does_not_run_yet_say_so() {
-        assert_eq!(decide("coc", Rank::Owner), Decision::NotServed);
+        assert_eq!(decide("setlevel", Rank::Owner), Decision::NotServed);
         assert_eq!(decide("kill", Rank::Moderator), Decision::Run);
         assert_eq!(decide("setpos", Rank::Player), Decision::RankTooLow);
         assert_eq!(decide("removeitem", Rank::Moderator), Decision::RankTooLow);

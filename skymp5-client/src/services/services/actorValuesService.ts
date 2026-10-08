@@ -25,6 +25,7 @@ export class ActorValuesService extends ClientListener {
         this.controller.on("levelIncrease", () => this.report());
         this.controller.on("menuClose", (e) => this.onMenuClose(e));
         this.controller.emitter.on("actorValuesMessage", (e) => this.onActorValuesMessage(e));
+        this.controller.on("update", () => this.onUpdate());
     }
 
     // A loading screen closing also reports: after a login it is the first
@@ -55,8 +56,25 @@ export class ActorValuesService extends ClientListener {
         });
     }
 
+    // The server's record is applied on the next update: Skyrim Platform
+    // refuses TESModPlatform's natives outside the Papyrus VM's context, where
+    // a network message's handler runs ("can't be called in this context",
+    // CallNativeApi.cpp; thuum lab, x-av2-probe 20261008-102852). The newest
+    // record wins.
     private onActorValuesMessage(e: ConnectionMessage<ActorValuesMessage>) {
-        const m = e.message;
+        this.pending = e.message;
+    }
+
+    private onUpdate() {
+        const m = this.pending;
+        if (m === undefined) {
+            return;
+        }
+        this.pending = undefined;
+        this.apply(m);
+    }
+
+    private apply(m: ActorValuesMessage) {
         try {
             const current = this.sp.callNative("TESModPlatform", "GetActorValueBases", undefined) as number[];
             m.bases.forEach((b) => {
@@ -116,4 +134,5 @@ export class ActorValuesService extends ClientListener {
     }
 
     private lastKey = "";
+    private pending: ActorValuesMessage | undefined = undefined;
 }

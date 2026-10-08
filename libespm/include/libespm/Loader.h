@@ -41,6 +41,9 @@ public:
   const CombineBrowser& GetBrowser() const noexcept;
 
   std::vector<std::string> GetFileNames() const noexcept;
+  // per file, in load order: it loads as a light plugin (thuum
+  // docs/verbs/light-plugins.md)
+  std::vector<bool> GetLightFlags() const noexcept;
 
   struct FileInfo
   {

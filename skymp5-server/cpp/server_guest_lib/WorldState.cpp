@@ -87,7 +87,7 @@ void WorldState::AttachEspm(espm::Loader* espm_,
   espm = espm_;
   formCallbacksFactory = formCallbacksFactory_;
   espmCache.reset(new espm::CompressedFieldsCache);
-  espmFiles = espm->GetFileNames();
+  espmFiles = EspmFileList(espm->GetFileNames(), espm->GetLightFlags());
 }
 
 void WorldState::AttachSaveStorage(
@@ -1158,9 +1158,13 @@ bool WorldState::IsNpcAllowed(uint32_t refrId) const noexcept
   return false;
 }
 
+// the load order position of the file a form belongs to (light plugins
+// numbered as the engine numbers them); past the last file for none
 uint32_t WorldState::GetFileIdx(uint32_t formId) const noexcept
 {
-  return formId >> 24;
+  const int position = FormDesc::FilePosition(formId, espmFiles);
+  return position < 0 ? static_cast<uint32_t>(espmFiles.size())
+                      : static_cast<uint32_t>(position);
 }
 
 void WorldState::SetNpcSettings(

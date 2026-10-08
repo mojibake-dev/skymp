@@ -288,21 +288,21 @@ enum class LookVerdict
   kNotJudged,  // no game files, or no appearance to derive into
 };
 
-// "<plugin>|<id>" to a form id in the server's load order (full plugins;
-// light plugins come with the light-plugins verb, docs/PLAN.md); 0 for a
-// plugin the server does not load
+// "<plugin>|<id>" to a form id in the server's load order, light plugins
+// numbered as the engine numbers them (thuum docs/verbs/light-plugins.md);
+// 0 for a plugin the server does not load
 uint32_t LookFormId(const PartOne& partOne, const skymp::rules::LookRef& ref)
 {
   const std::string plugin(ref.plugin);
   const auto& files = partOne.worldState.espmFiles;
-  for (size_t i = 0; i < files.size() && i < 0xff; ++i) {
+  for (size_t i = 0; i < files.size(); ++i) {
     if (files[i].size() == plugin.size() &&
         std::equal(files[i].begin(), files[i].end(), plugin.begin(),
                    [](char a, char b) {
                      return std::tolower(static_cast<unsigned char>(a)) ==
                        std::tolower(static_cast<unsigned char>(b));
                    })) {
-      return (static_cast<uint32_t>(i) << 24) | (ref.id & 0x00ffffff);
+      return FormDesc(ref.id & 0x00ffffff, files[i]).ToFormId(files);
     }
   }
   return 0;

@@ -53,6 +53,16 @@ const CombineBrowser& Loader::GetBrowser() const noexcept
   return *combineBrowser;
 }
 
+std::vector<bool> Loader::GetLightFlags() const noexcept
+{
+  std::vector<bool> res;
+  res.reserve(filePaths.size());
+  for (size_t i = 0; i < filePaths.size(); ++i) {
+    res.push_back(combineBrowser && combineBrowser->IsLight(i));
+  }
+  return res;
+}
+
 std::vector<std::string> Loader::GetFileNames() const noexcept
 {
   std::vector<std::string> res;

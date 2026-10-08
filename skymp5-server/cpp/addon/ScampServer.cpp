@@ -1263,7 +1263,9 @@ Napi::Value ScampServer::GetDescFromId(const Napi::CallbackInfo& info)
 {
   try {
     auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
-    auto espmFileNames = partOne->GetEspm().GetFileNames();
+    // light plugins numbered as the engine numbers them
+    // (thuum docs/verbs/light-plugins.md)
+    const auto& espmFileNames = partOne->worldState.espmFiles;
     auto formDesc = FormDesc::FromFormId(formId, espmFileNames);
 
     return Napi::String::New(info.Env(), formDesc.ToString());
@@ -1277,7 +1279,7 @@ Napi::Value ScampServer::GetIdFromDesc(const Napi::CallbackInfo& info)
   try {
     auto formDescStr = NapiHelper::ExtractString(info[0], "formDesc");
     auto formDesc = FormDesc::FromString(formDescStr);
-    auto espmFileNames = partOne->GetEspm().GetFileNames();
+    const auto& espmFileNames = partOne->worldState.espmFiles;
 
     return Napi::Number::New(info.Env(), formDesc.ToFormId(espmFileNames));
   } catch (std::exception& e) {

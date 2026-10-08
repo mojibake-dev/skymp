@@ -42,6 +42,11 @@ public:
   const IdMapping* GetCombMapping(size_t fileIndex) const noexcept;
   const IdMapping* GetRawMapping(size_t fileIndex) const noexcept;
 
+  // Whether the file at a load order position loads as a light plugin (its
+  // TES4 flag kSmallFile, 1 << 9, or an .esl; CommonLibSSE-NG
+  // include/RE/T/TESFile.h:48 and :63); false past the last file
+  bool IsLight(size_t fileIndex) const noexcept;
+
   // CompressedFieldsCache is not logically related to Combiner, this method is
   // added for usability
   espm::CompressedFieldsCache& GetCache() const noexcept;
@@ -56,6 +61,7 @@ private:
     Browser* br = nullptr;
     std::string fileName;
     std::unique_ptr<espm::IdMapping> toComb, toRaw;
+    bool light = false;
   };
 
   struct Impl

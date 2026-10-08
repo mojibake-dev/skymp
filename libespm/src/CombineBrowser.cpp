@@ -163,6 +163,11 @@ const IdMapping* CombineBrowser::GetRawMapping(size_t fileIndex) const noexcept
   return pImpl->sources[fileIndex].toRaw.get();
 }
 
+bool CombineBrowser::IsLight(size_t fileIndex) const noexcept
+{
+  return fileIndex < pImpl->numSources && pImpl->sources[fileIndex].light;
+}
+
 CompressedFieldsCache& CombineBrowser::GetCache() const noexcept
 {
   return pImpl->cache;

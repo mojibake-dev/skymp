@@ -28,6 +28,7 @@ constexpr uint32_t kTamriel = 0x0000003c;
 constexpr uint8_t kOneHanded = 6;
 constexpr uint8_t kTwoHanded = 7;
 constexpr uint8_t kHealth = 24;
+// Archery: its Papyrus name is Marksman (wire-rules actor_values::NAMES)
 constexpr uint8_t kArchery = 8;
 
 MpActor& Player(PartOne& p, uint32_t actorId)
@@ -227,9 +228,9 @@ TEST_CASE("A player's actor value natives read and set the server's record",
   // SetActorValue: recorded, held, sent
   p.Messages().clear();
   papyrus.SetActorValue(ac.ToVarValue(),
-                        { VarValue("Archery"), VarValue(45.f) });
+                        { VarValue("Marksman"), VarValue(45.f) });
   REQUIRE(static_cast<double>(papyrus.GetBaseActorValue(
-            ac.ToVarValue(), { VarValue("Archery") })) == 45.0);
+            ac.ToVarValue(), { VarValue("Marksman") })) == 45.0);
   REQUIRE(ac.GetHeldActorValues() ==
           std::vector<std::pair<uint8_t, float>>{ { kArchery, 45.f } });
   REQUIRE(SentLevels(p) == std::vector<uint16_t>{ 3 });
@@ -238,7 +239,7 @@ TEST_CASE("A player's actor value natives read and set the server's record",
   p.Messages().clear();
   Report(p, Snapshot({ { kOneHanded, 21.f }, { kArchery, 15.f } }, 3));
   REQUIRE(static_cast<double>(papyrus.GetBaseActorValue(
-            ac.ToVarValue(), { VarValue("Archery") })) == 45.0);
+            ac.ToVarValue(), { VarValue("Marksman") })) == 45.0);
   REQUIRE(SentLevels(p) == std::vector<uint16_t>{ 3 });
 
   // the report that carries it ends the hold
@@ -247,9 +248,9 @@ TEST_CASE("A player's actor value natives read and set the server's record",
 
   // ModActorValue adds to the base; a skill may pass play's ceiling
   papyrus.ModActorValue(ac.ToVarValue(),
-                        { VarValue("Archery"), VarValue(60.f) });
+                        { VarValue("Marksman"), VarValue(60.f) });
   REQUIRE(static_cast<double>(papyrus.GetBaseActorValue(
-            ac.ToVarValue(), { VarValue("Archery") })) == 105.0);
+            ac.ToVarValue(), { VarValue("Marksman") })) == 105.0);
 
   // ForceActorValue on Health moves the current value within the maximum
   papyrus.ForceActorValue(ac.ToVarValue(),
@@ -277,11 +278,11 @@ TEST_CASE("A value set before the player's first report enters the record "
 
   // no record yet: nothing to send, the value waits in the hold
   papyrus.SetActorValue(ac.ToVarValue(),
-                        { VarValue("Archery"), VarValue(30.f) });
+                        { VarValue("Marksman"), VarValue(30.f) });
   REQUIRE(!ac.GetActorValueRecord());
   REQUIRE(SentLevels(p).empty());
   REQUIRE(static_cast<double>(papyrus.GetBaseActorValue(
-            ac.ToVarValue(), { VarValue("Archery") })) == 30.0);
+            ac.ToVarValue(), { VarValue("Marksman") })) == 30.0);
   // a skill the server knows no base for yet
   REQUIRE(static_cast<double>(papyrus.GetBaseActorValue(
             ac.ToVarValue(), { VarValue("Sneak") })) == 0.0);

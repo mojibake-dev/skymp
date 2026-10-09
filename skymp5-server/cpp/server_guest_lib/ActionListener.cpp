@@ -2597,11 +2597,14 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
   aggressor->SetLastHitTime(targetActor.GetFormId(), currentHitTime);
   targetActor.SetLastHitTakenTime(currentHitTime);
 
-  spdlog::debug(
-    "OnWeaponHit - Target {0:x} is hit by {1} damage. Percentage was: {3}, "
-    "percentage now: {2}, base health: {4})",
-    hitData.target, damage, currentActorValues.healthPercentage,
-    healthPercentage, outBaseHealth);
+  // thuum docs/verbs/marksman.md: the server's own damage for every weapon
+  // hit, at info as OnSpellHit's, so a lab run can tell it from what the
+  // victim's game reports afterwards
+  spdlog::info("OnWeaponHit - {:x} hits {:x} with {:x} for {} damage: "
+               "health {} -> {} of base {}",
+               aggressor->GetFormId(), hitData.target, hitData.source, damage,
+               healthPercentage, currentActorValues.healthPercentage,
+               outBaseHealth);
 
   NotifyHostility(*aggressor, targetActor, currentHitTime);
 }

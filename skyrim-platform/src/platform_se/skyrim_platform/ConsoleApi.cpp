@@ -325,10 +325,15 @@ bool ConsoleComand_Execute(const RE::SCRIPT_PARAMETER* paramInfo,
             // threw before, so the replacement never ran and the command did
             // nothing at all, a refusal included (thuum lab, `save
             // thuumprobe` in x-console-probe 20261008-120316)
+            // and a word past the command's own parameters (SkyMP's `mp`
+            // rides an engine command's table: `mp tp 2`) goes as its text,
+            // never read against the table beyond its end
             Napi::Value arg;
             try {
-              arg = GetTypedArg(env, paramInfo[i].paramType.get(),
-                                parseCommandResult.params[i]);
+              arg = i < item.second.numArgs
+                ? GetTypedArg(env, paramInfo[i].paramType.get(),
+                              parseCommandResult.params[i])
+                : env.Undefined();
             } catch (const std::exception&) {
               arg = env.Undefined();
             }

@@ -106,8 +106,9 @@ server-build:
       changes:
         - "**/*"
         - "!skymp-wire/**/*"
-    # the M1 port branches build the server with the wire on every push
-    - if: $CI_COMMIT_BRANCH =~ /^m1-/
+    # a milestone's branches (m1-*, m2-*, ...) build the server with the
+    # wire on every push (the M2 ones had only their wire jobs, 2026-10-09)
+    - if: $CI_COMMIT_BRANCH =~ /^m[0-9]+-/
   script:
     - |
       if [ -n "${SKYRIM_DATA_URL:-}" ]; then
@@ -160,7 +161,7 @@ client-build:
       when: never
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "parity"
-    - if: $CI_COMMIT_BRANCH =~ /^m1-/
+    - if: $CI_COMMIT_BRANCH =~ /^m[0-9]+-/
   script:
     - New-Item -ItemType Directory -Force D:/vcpkg-bincache, skyrim_data_files | Out-Null
     - |

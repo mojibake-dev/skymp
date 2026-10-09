@@ -140,6 +140,15 @@ public:
   JumpCheck CheckJump(uint32_t actorFormId, uint32_t cellOrWorld, float x,
                       float y);
 
+  // thuum docs/verbs/movement-speed.md, arrivals: the server moved a player's
+  // actor itself (MpActor::Teleport), to (x, y) in cellOrWorld; until its game
+  // reports from there, or ten seconds pass, its reports from elsewhere were
+  // sent before the move. CheckArrival judges any report against that.
+  void ExpectArrival(uint32_t actorFormId, uint32_t cellOrWorld, float x,
+                     float y);
+  JumpCheck CheckArrival(uint32_t actorFormId, uint32_t cellOrWorld, float x,
+                         float y);
+
   // The server's game clock (thuum docs/verbs/time.md, ADR-021) from
   // server-settings.json's `time` block as JSON text ("{}" for every
   // default); throws naming the bad key. From then on each player hears the

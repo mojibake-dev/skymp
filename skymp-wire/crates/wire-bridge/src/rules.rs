@@ -516,6 +516,13 @@ mod ffi {
         /// Judge a move of `actor`'s that the bounds refuse (another cell,
         /// or a jump) against its permit; a landing ends the permit.
         fn check_jump(self: &mut MovementBudgets, actor: u32, cell_or_world: u32, x: f32, y: f32, now_ms: u64) -> JumpCheck;
+        /// The server moved `actor` itself, to (x, y) in `cell_or_world`:
+        /// its reports from elsewhere were sent before the move until one
+        /// comes from there, or ten seconds pass.
+        fn expect_arrival(self: &mut MovementBudgets, actor: u32, cell_or_world: u32, x: f32, y: f32, now_ms: u64);
+        /// Judge any report of `actor`'s against the arrival the server
+        /// expects; the arrival ends the wait.
+        fn check_arrival(self: &mut MovementBudgets, actor: u32, cell_or_world: u32, x: f32, y: f32, now_ms: u64) -> JumpCheck;
 
         /// The server's game clock and who has heard it.
         type GameClock;
@@ -876,11 +883,23 @@ impl MovementBudgets {
     }
 
     fn check_jump(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, now_ms: u64) -> JumpCheck {
-        match self.0.check_jump(actor, cell_or_world, x, y, now_ms) {
-            movement::JumpCheck::NoPermit => JumpCheck::NoPermit,
-            movement::JumpCheck::Landed => JumpCheck::Landed,
-            movement::JumpCheck::Waiting => JumpCheck::Waiting,
-        }
+        jump_check(self.0.check_jump(actor, cell_or_world, x, y, now_ms))
+    }
+
+    fn expect_arrival(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, now_ms: u64) {
+        self.0.expect_arrival(actor, cell_or_world, x, y, now_ms);
+    }
+
+    fn check_arrival(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, now_ms: u64) -> JumpCheck {
+        jump_check(self.0.check_arrival(actor, cell_or_world, x, y, now_ms))
+    }
+}
+
+fn jump_check(c: movement::JumpCheck) -> JumpCheck {
+    match c {
+        movement::JumpCheck::NoPermit => JumpCheck::NoPermit,
+        movement::JumpCheck::Landed => JumpCheck::Landed,
+        movement::JumpCheck::Waiting => JumpCheck::Waiting,
     }
 }
 
@@ -977,6 +996,12 @@ mod tests {
         assert_eq!(b.check_jump(7, 0x3c, 18_432.0, -47_104.0, 3), JumpCheck::NoPermit);
         b.permit_jump_interior(7, 0x133c6, 0);
         assert_eq!(b.check_jump(7, 0x133c6, 1.0, 2.0, 4), JumpCheck::Landed);
+        // a teleport the server made: a report from before it is dropped,
+        // the arrival ends the wait
+        b.expect_arrival(7, 0x3c, 500.0, 500.0, 10);
+        assert_eq!(b.check_arrival(7, 0x3c, 0.0, 0.0, 11), JumpCheck::Waiting);
+        assert_eq!(b.check_arrival(7, 0x3c, 510.0, 490.0, 12), JumpCheck::Landed);
+        assert_eq!(b.check_arrival(7, 0x3c, 0.0, 0.0, 13), JumpCheck::NoPermit);
     }
 
     #[test]

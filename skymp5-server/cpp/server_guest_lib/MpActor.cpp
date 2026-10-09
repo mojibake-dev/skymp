@@ -1781,6 +1781,11 @@ void MpActor::Teleport(const LocationalData& position)
   SetCellOrWorldObsolete(position.cellOrWorldDesc);
   SetPos(position.pos);
   SetAngle(position.rot);
+
+  // the movement reports its game sent before this arrive after it; the
+  // next one tells the movement rule to wait for the arrival (thuum
+  // docs/verbs/movement-speed.md, ActionListener::OnUpdateMovement)
+  SetTeleportFlag(true);
 }
 
 void MpActor::SetSpawnPoint(const LocationalData& position)

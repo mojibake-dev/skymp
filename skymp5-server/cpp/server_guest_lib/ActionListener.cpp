@@ -149,8 +149,17 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
   // neighbours (thuum docs/verbs/validation.md, Movement)
   auto actor = ActorUpdatableBy(msg.idx, rawMsgData.userId);
   if (actor) {
-    bool teleportFlag = actor->GetTeleportFlag();
+    // a teleport the server made (MpActor::Teleport sets the flag): the
+    // player's reports from anywhere else were sent before it, so the
+    // movement rule waits for one from where the server put it (thuum
+    // docs/verbs/movement-speed.md, arrivals). Upstream sent the next report
+    // back with a snap back (kInfinityPos) and a second stale report then
+    // took the record back: a server teleport landed a little, or not at
+    // all (Eli's playtest twelve, MoveTo). A hosted actor keeps upstream's.
+    const bool teleportFlag = actor->GetTeleportFlag();
     actor->SetTeleportFlag(false);
+    const bool isPlayersOwn =
+      partOne.serverState.ActorByUser(rawMsgData.userId) == actor;
 
     static const NiPoint3 kInfinityPos = {
       std::numeric_limits<float>::infinity(),
@@ -164,9 +173,15 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     const auto& currentRot = actor->GetAngle();
     const auto& currentCellOrWorld = actor->GetCellOrWorld();
 
+    if (teleportFlag && isPlayersOwn) {
+      partOne.ExpectArrival(actor->GetFormId(),
+                            currentCellOrWorld.ToFormId(espmFiles),
+                            currentPos.x, currentPos.y);
+    }
+
     if (!MovementValidation::Validate(
           partOne, currentPos, currentRot, currentCellOrWorld,
-          teleportFlag
+          teleportFlag && !isPlayersOwn
             ? kInfinityPos
             : NiPoint3{ msg.data.pos[0], msg.data.pos[1], msg.data.pos[2] },
           FormDesc::FromFormId(msg.data.worldOrCell, espmFiles),

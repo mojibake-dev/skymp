@@ -1255,16 +1255,38 @@ void PartOne::PermitJump(uint32_t actorFormId, uint32_t worldId, int16_t gridX,
                                                gridY, SteadyNowMs());
 }
 
+namespace {
+PartOne::JumpCheck ToJumpCheck(skymp::rules::JumpCheck c)
+{
+  switch (c) {
+    case skymp::rules::JumpCheck::Landed:
+      return PartOne::JumpCheck::Landed;
+    case skymp::rules::JumpCheck::Waiting:
+      return PartOne::JumpCheck::Waiting;
+    default:
+      return PartOne::JumpCheck::NoPermit;
+  }
+}
+}
+
 PartOne::JumpCheck PartOne::CheckJump(uint32_t actorFormId,
                                       uint32_t cellOrWorld, float x, float y)
 {
-  switch (pImpl->movementBudgets->check_jump(actorFormId, cellOrWorld, x, y,
-                                             SteadyNowMs())) {
-    case skymp::rules::JumpCheck::Landed:
-      return JumpCheck::Landed;
-    case skymp::rules::JumpCheck::Waiting:
-      return JumpCheck::Waiting;
-    default:
-      return JumpCheck::NoPermit;
-  }
+  return ToJumpCheck(pImpl->movementBudgets->check_jump(
+    actorFormId, cellOrWorld, x, y, SteadyNowMs()));
+}
+
+void PartOne::ExpectArrival(uint32_t actorFormId, uint32_t cellOrWorld,
+                            float x, float y)
+{
+  pImpl->movementBudgets->expect_arrival(actorFormId, cellOrWorld, x, y,
+                                         SteadyNowMs());
+}
+
+PartOne::JumpCheck PartOne::CheckArrival(uint32_t actorFormId,
+                                         uint32_t cellOrWorld, float x,
+                                         float y)
+{
+  return ToJumpCheck(pImpl->movementBudgets->check_arrival(
+    actorFormId, cellOrWorld, x, y, SteadyNowMs()));
 }

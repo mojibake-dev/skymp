@@ -5,7 +5,8 @@
 //! sustained speed above the game's does not. Height is free: falls are the
 //! engine's. And the one jump the server permits (docs/verbs/console-commands.md,
 //! COC): another cell, or farther than a move may go, once, where the server
-//! named.
+//! named. And the arrival after a teleport the server made itself: the
+//! player's reports from anywhere else were sent before the move.
 
 use std::collections::HashMap;
 
@@ -21,6 +22,13 @@ pub const JUMP_WAIT_MS: u64 = 60_000;
 /// An exterior cell's side, units: the grid the server keeps references on
 /// (libespm Browser.cpp files a reference under its position over 4096).
 pub const CELL_SIDE: f32 = 4096.0;
+/// How long the server waits, after it moved a player's actor itself (a
+/// teleport: MoveTo, SetPos, `mp tp`, a respawn), for that player's game to
+/// report from where it was put.
+pub const ARRIVAL_WAIT_MS: u64 = 10_000;
+/// How near the place the server put it a report must come from to count
+/// as the arrival, units over the ground.
+pub const ARRIVAL_RADIUS: f32 = 256.0;
 
 /// One actor's budget.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -97,16 +105,28 @@ fn near_square(at: f32, square: i16) -> bool {
     at >= start - CELL_SIDE && at < start + 2.0 * CELL_SIDE
 }
 
-/// What a move a player's actor made means for its permitted jump.
+/// What a move a player's actor made means for its permitted jump, or for
+/// the arrival the server expects after its own teleport.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JumpCheck {
-    /// No jump is permitted: the move is judged as any other.
+    /// Nothing permitted or expected: the move is judged as any other.
     NoPermit,
-    /// The permitted jump: it passes, and the permit ends.
+    /// The permitted jump, or the arrival: it passes, and that ends.
     Landed,
-    /// A jump is permitted and this move is not it (a report from the
-    /// loading screen, say): drop it without sending the player back.
+    /// One waits and this move is not it (a report from the loading screen,
+    /// or sent before the server's teleport): drop it without sending the
+    /// player back.
     Waiting,
+}
+
+/// Where the server put a player's actor itself, which its game has not
+/// reported from yet, and until when that is waited for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Arrival {
+    cell_or_world: u32,
+    x: f32,
+    y: f32,
+    until_ms: u64,
 }
 
 /// Every player actor's budget and permitted jump, by form id. Runtime
@@ -115,6 +135,7 @@ pub enum JumpCheck {
 pub struct Budgets {
     by_actor: HashMap<u32, Budget>,
     jumps: HashMap<u32, (Landing, u64)>,
+    arrivals: HashMap<u32, Arrival>,
 }
 
 impl Budgets {
@@ -147,10 +168,40 @@ impl Budgets {
         JumpCheck::Landed
     }
 
-    /// Drop an actor's budget and permit (it left, or was destroyed).
+    /// The server moved `actor` itself, to (x, y) in `cell_or_world`, at
+    /// `now_ms`: until its game reports from there, or `ARRIVAL_WAIT_MS`
+    /// passes, its reports from anywhere else were sent before the move. A
+    /// later teleport replaces it.
+    pub fn expect_arrival(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, now_ms: u64) {
+        self.arrivals.insert(actor, Arrival { cell_or_world, x, y, until_ms: now_ms.saturating_add(ARRIVAL_WAIT_MS) });
+    }
+
+    /// Judge any report of `actor`'s, from (x, y) in `cell_or_world` at
+    /// `now_ms`, against the arrival the server expects: Landed from within
+    /// `ARRIVAL_RADIUS` of it (that ends it), Waiting from elsewhere (drop
+    /// the report), NoPermit when none is expected or the wait ran out.
+    pub fn check_arrival(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, now_ms: u64) -> JumpCheck {
+        let Some(&a) = self.arrivals.get(&actor) else {
+            return JumpCheck::NoPermit;
+        };
+        if now_ms > a.until_ms {
+            self.arrivals.remove(&actor);
+            return JumpCheck::NoPermit;
+        }
+        let near = x.is_finite() && y.is_finite() && (x - a.x).hypot(y - a.y) <= ARRIVAL_RADIUS;
+        if cell_or_world != a.cell_or_world || !near {
+            return JumpCheck::Waiting;
+        }
+        self.arrivals.remove(&actor);
+        JumpCheck::Landed
+    }
+
+    /// Drop an actor's budget, permit and expected arrival (it left, or was
+    /// destroyed).
     pub fn forget(&mut self, actor: u32) {
         self.by_actor.remove(&actor);
         self.jumps.remove(&actor);
+        self.arrivals.remove(&actor);
     }
 }
 
@@ -248,6 +299,38 @@ mod tests {
         assert_eq!(all.check_jump(1, INN, 0.0, 0.0, JUMP_WAIT_MS), JumpCheck::Waiting);
         all.forget(1);
         assert_eq!(all.check_jump(1, TAMRIEL, 4.5 * CELL_SIDE, -11.5 * CELL_SIDE, 1), JumpCheck::NoPermit);
+    }
+
+    #[test]
+    fn a_teleport_the_server_made_waits_for_its_arrival() {
+        let mut all = Budgets::default();
+        assert_eq!(all.check_arrival(1, TAMRIEL, 0.0, 0.0, 0), JumpCheck::NoPermit);
+        all.expect_arrival(1, TAMRIEL, 1_000.0, 2_000.0, 0);
+        // the reports sent before the move, from the old place, nearby or
+        // not, and from the loading screen (no cell), are dropped
+        assert_eq!(all.check_arrival(1, TAMRIEL, 300.0, 2_000.0, 10), JumpCheck::Waiting);
+        assert_eq!(all.check_arrival(1, TAMRIEL, 1_300.0, 2_000.0, 20), JumpCheck::Waiting);
+        assert_eq!(all.check_arrival(1, 0, 1_000.0, 2_000.0, 30), JumpCheck::Waiting);
+        assert_eq!(all.check_arrival(1, TAMRIEL, f32::NAN, 2_000.0, 40), JumpCheck::Waiting);
+        // another actor expects nothing
+        assert_eq!(all.check_arrival(2, TAMRIEL, 300.0, 2_000.0, 50), JumpCheck::NoPermit);
+        // the arrival, within the radius, once
+        assert_eq!(all.check_arrival(1, TAMRIEL, 1_100.0, 2_150.0, 60), JumpCheck::Landed);
+        assert_eq!(all.check_arrival(1, TAMRIEL, 300.0, 2_000.0, 70), JumpCheck::NoPermit);
+    }
+
+    #[test]
+    fn an_arrival_waits_ten_seconds_and_the_last_teleport_counts() {
+        let mut all = Budgets::default();
+        all.expect_arrival(1, INN, 0.0, 0.0, 0);
+        assert_eq!(all.check_arrival(1, INN, 900.0, 0.0, ARRIVAL_WAIT_MS.saturating_add(1)), JumpCheck::NoPermit);
+        all.expect_arrival(1, INN, 0.0, 0.0, 0);
+        all.expect_arrival(1, TAMRIEL, 5_000.0, 5_000.0, 0);
+        assert_eq!(all.check_arrival(1, INN, 0.0, 0.0, 1), JumpCheck::Waiting);
+        assert_eq!(all.check_arrival(1, TAMRIEL, 5_000.0, 5_000.0, 2), JumpCheck::Landed);
+        all.expect_arrival(1, INN, 0.0, 0.0, 0);
+        all.forget(1);
+        assert_eq!(all.check_arrival(1, TAMRIEL, 9.0, 9.0, 1), JumpCheck::NoPermit);
     }
 
     #[test]

@@ -49,6 +49,49 @@ TEST_CASE("Formula takes weapon damage into account", "[TES5DamageFormula]")
   DoDisconnect(p, 0);
 }
 
+// thuum docs/verbs/marksman.md: a bow's or crossbow's arrow adds its own
+// damage to the weapon's. Skyrim.esm: LongBow 0x3B562 deals 6, IronArrow
+// 0x1397D 8 (thuum lab/esm.py, 2026-10-09)
+TEST_CASE("A bow's hit adds the damage of the arrow its shooter has equipped",
+          "[TES5DamageFormula]")
+{
+  PartOne& p = GetPartOne();
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, 0xff000000);
+  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
+
+  const uint32_t longBow = 0x0003b562;
+  const uint32_t ironArrow = 0x0001397d;
+  const uint32_t ironDagger = 0x0001397e;
+  HitData hitData;
+  hitData.target = 0x14;
+  hitData.aggressor = 0x14;
+  hitData.source = longBow;
+  TES5DamageFormula formula{};
+
+  Equipment eq;
+  eq.inv.entries.push_back(Inventory::Entry(longBow, 1, kExtraWornTrue));
+  eq.inv.entries.push_back(Inventory::Entry(ironArrow, 10, kExtraWornTrue));
+  ac.SetEquipment(eq);
+  REQUIRE(formula.CalculateDamage(ac, ac, hitData) == 14.0f);
+
+  // no arrow equipped: the bow's own
+  eq.inv.entries[1] = Inventory::Entry(ironArrow, 10, kExtraWornFalse);
+  ac.SetEquipment(eq);
+  REQUIRE(formula.CalculateDamage(ac, ac, hitData) == 6.0f);
+
+  // an arrow adds to a bow only
+  eq.inv.entries[1] = Inventory::Entry(ironArrow, 10, kExtraWornTrue);
+  eq.inv.entries.push_back(Inventory::Entry(ironDagger, 1, kExtraWornTrue));
+  ac.SetEquipment(eq);
+  hitData.source = ironDagger;
+  REQUIRE(formula.CalculateDamage(ac, ac, hitData) == 4.0f);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
 TEST_CASE("Damage is reduced based on target's armor", "[TES5DamageFormula]")
 {
   PartOne& p = GetPartOne();

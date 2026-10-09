@@ -6,6 +6,7 @@
 #include "WorldState.h"
 #include "libespm/espm.h"
 #include "wire_bridge_cxx/rules.h"
+#include <cmath>
 #include <limits>
 
 namespace internal {
@@ -34,6 +35,7 @@ private:
 private:
   [[nodiscard]] float GetBaseWeaponDamage() const;
   [[nodiscard]] float CalcWeaponRating() const;
+  [[nodiscard]] float GetArrowDamage() const;
   [[nodiscard]] float CalcSneakMultiplier() const;
   [[nodiscard]] float CalcArmorRatingComponent(
     const Inventory::Entry& opponentEquipmentEntry) const;
@@ -68,7 +70,34 @@ float TES5DamageFormulaImpl::GetBaseWeaponDamage() const
 float TES5DamageFormulaImpl::CalcWeaponRating() const
 {
   // TODO(#457): take other components into account
-  return GetBaseWeaponDamage();
+  return GetBaseWeaponDamage() + GetArrowDamage();
+}
+
+// thuum docs/verbs/marksman.md: a bow's or crossbow's arrow adds its own
+// damage to the weapon's (UESP, "Skyrim:Damage"): the arrow the aggressor
+// has equipped, as the server records its equipment, the one its shot loosed;
+// how the draw's power scales it is not measured yet
+float TES5DamageFormulaImpl::GetArrowDamage() const
+{
+  const auto weapData =
+    espm::GetData<espm::WEAP>(hitData.source, espmProvider);
+  if (!weapData.weapDNAM ||
+      (weapData.weapDNAM->animType != espm::WEAP::AnimType::Bow &&
+       weapData.weapDNAM->animType != espm::WEAP::AnimType::Crossbow)) {
+    return 0.f;
+  }
+  for (auto& entry : aggressor.GetEquipment().inv.entries) {
+    if (entry.GetWorn() == Inventory::Worn::None) {
+      continue;
+    }
+    auto lookup =
+      espmProvider->GetEspm().GetBrowser().LookupById(entry.baseId);
+    if (auto ammo = espm::Convert<espm::AMMO>(lookup.rec)) {
+      const float damage = ammo->GetData(espmProvider->GetEspmCache()).damage;
+      return std::isfinite(damage) && damage > 0.f ? damage : 0.f;
+    }
+  }
+  return 0.f;
 }
 
 float TES5DamageFormulaImpl::CalcMagicEffects(const Effects& effects) const

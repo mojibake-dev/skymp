@@ -149,6 +149,19 @@ public:
   JumpCheck CheckArrival(uint32_t actorFormId, uint32_t cellOrWorld, float x,
                          float y);
 
+  // thuum docs/verbs/marksman.md: a player loosed an arrow from `weapon`,
+  // standing at `from`; a later hit with that weapon claims it, once, if its
+  // arrow can have reached the target since (wire-rules ranged)
+  void RecordShot(uint32_t actorFormId, uint32_t weapon, const NiPoint3& from);
+  enum class ShotCheck
+  {
+    Claimed, // a recorded shot covers the hit, and is used up
+    NoShot,  // no unused shot of that weapon in the window
+    TooFar   // shots wait, but none can have reached the target yet
+  };
+  ShotCheck ClaimShot(uint32_t actorFormId, uint32_t weapon,
+                      const NiPoint3& target);
+
   // The server's game clock (thuum docs/verbs/time.md, ADR-021) from
   // server-settings.json's `time` block as JSON text ("{}" for every
   // default); throws naming the bad key. From then on each player hears the

@@ -113,6 +113,11 @@ struct PartOne::Impl
   rust::Box<skymp::rules::MovementBudgets> movementBudgets =
     skymp::rules::new_movement_budgets();
 
+  // every player actor's recent bow and crossbow shots (thuum
+  // docs/verbs/marksman.md; Rust's, ADR-020)
+  rust::Box<skymp::rules::RangedShots> rangedShots =
+    skymp::rules::new_ranged_shots();
+
   // the server's game clock (thuum docs/verbs/time.md; Rust's, ADR-020 and
   // ADR-021); players hear it once SetGameTimeSettings has run
   rust::Box<skymp::rules::GameClock> gameClock =
@@ -1289,4 +1294,25 @@ PartOne::JumpCheck PartOne::CheckArrival(uint32_t actorFormId,
 {
   return ToJumpCheck(pImpl->movementBudgets->check_arrival(
     actorFormId, cellOrWorld, x, y, SteadyNowMs()));
+}
+
+void PartOne::RecordShot(uint32_t actorFormId, uint32_t weapon,
+                         const NiPoint3& from)
+{
+  pImpl->rangedShots->record(actorFormId, weapon, from.x, from.y, from.z,
+                             SteadyNowMs());
+}
+
+PartOne::ShotCheck PartOne::ClaimShot(uint32_t actorFormId, uint32_t weapon,
+                                      const NiPoint3& target)
+{
+  switch (pImpl->rangedShots->claim(actorFormId, weapon, target.x, target.y,
+                                    target.z, SteadyNowMs())) {
+    case skymp::rules::ShotCheck::Claimed:
+      return ShotCheck::Claimed;
+    case skymp::rules::ShotCheck::TooFar:
+      return ShotCheck::TooFar;
+    default:
+      return ShotCheck::NoShot;
+  }
 }

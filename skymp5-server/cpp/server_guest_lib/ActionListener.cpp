@@ -28,6 +28,7 @@
 #include "wire_bridge_cxx/rules.h"
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 #include <limits>
@@ -36,6 +37,7 @@
 #include <spdlog/spdlog.h>
 #include <unordered_set>
 
+#include "ArrowShotMessage.h"
 #include "CustomPacketMessage.h"
 #include "HostStartMessage.h"
 #include "HostStopMessage.h"
@@ -1586,7 +1588,45 @@ void ActionListener::OnPlayerBowShot(const RawMessageData& rawMsgData,
       ac->GetFormId(), msg.ammoId);
   }
 
+  // thuum docs/verbs/marksman.md: a shot from the bow the player holds with
+  // an arrow it has equipped, as the server records its equipment; anything
+  // else changes nothing
+  const auto worn = [&](uint32_t baseId) {
+    for (auto& entry : ac->GetEquipment().inv.entries) {
+      if (entry.baseId == baseId && entry.GetWorn() != Inventory::Worn::None) {
+        return true;
+      }
+    }
+    return false;
+  };
+  if (!worn(msg.weaponId) || !worn(msg.ammoId)) {
+    return spdlog::warn("ActionListener::OnPlayerBowShot - E_SHOT_EQUIPMENT: "
+                        "{:x} shot {:x} from {:x}, which its equipment does "
+                        "not hold; refused",
+                        ac->GetFormId(), msg.ammoId, msg.weaponId);
+  }
+
   ac->RemoveItem(msg.ammoId, 1, nullptr);
+
+  // the shot waits for its hit (one), and each neighbour's game draws the
+  // arrow from the shooter's figure
+  partOne.RecordShot(ac->GetFormId(), msg.weaponId, ac->GetPos());
+  ArrowShotMessage relay;
+  relay.idx = ac->GetIdx();
+  relay.weaponId = msg.weaponId;
+  relay.ammoId = msg.ammoId;
+  relay.power = msg.power;
+  relay.aimAngle = msg.aimAngle;
+  relay.aimHeading = msg.aimHeading;
+  for (auto listener : ac->GetActorListeners()) {
+    if (listener != ac) {
+      listener->GetActorToSendTo().SendToUser(relay, true);
+    }
+  }
+  spdlog::info("ActionListener::OnPlayerBowShot - {:x} shot {:x} from {:x}, "
+               "power {:.2f}, aim {:.3f} heading {:.3f}",
+               ac->GetFormId(), msg.ammoId, msg.weaponId, msg.power,
+               msg.aimAngle, msg.aimHeading);
 }
 
 void ActionListener::OnFinishSpSnippet(const RawMessageData& rawMsgData,
@@ -1827,18 +1867,28 @@ float CalculateCurrentHealthPercentage(const MpActor& actor, float damage,
   const uint32_t raceId = actor.GetRaceId();
   WorldState* espmProvider = actor.GetParent();
 
-  const float baseHealth =
+  // the actor's recorded maximum when it has one (thuum
+  // docs/verbs/actor-values.md: a player's base health, raised by level-ups),
+  // the race's and the base NPC's otherwise
+  float baseHealth =
     GetBaseActorValues(espmProvider, baseId, raceId, actor.GetTemplateChain())
       .health;
+  if (auto recorded = actor.GetRecordedActorValueBase(24);
+      recorded && std::isfinite(*recorded) && *recorded > 0.f) {
+    baseHealth = *recorded;
+  }
 
   if (outBaseHealth) {
     *outBaseHealth = baseHealth;
   }
 
+  if (!std::isfinite(baseHealth) || baseHealth <= 0.f ||
+      !std::isfinite(damage)) {
+    return healthPercentage;
+  }
   const float damagePercentage = damage / baseHealth;
   const float currentHealthPercentage = healthPercentage - damagePercentage;
 
-  /// TODO add check for nan and inf!
   return currentHealthPercentage <= 0.f ? 0.f : currentHealthPercentage;
 }
 
@@ -2223,6 +2273,24 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
                      "outside {:.0f} degrees of its heading {:.0f}; refused",
                      aggressor->GetFormId(), targetActor->GetFormId(),
                      coneVerdict.bound, cone.heading);
+        return;
+      }
+    }
+    // thuum docs/verbs/marksman.md: a player's arrow hits only as a shot the
+    // server recorded, and once (a hosted actor's shots are its host's
+    // game's, M3)
+    if (aggressor == myActor &&
+        IsBowOrCrossbowShot(hitData, &partOne.worldState)) {
+      const auto claim = partOne.ClaimShot(
+        aggressor->GetFormId(), hitData.source, targetRef->GetPos());
+      if (claim != PartOne::ShotCheck::Claimed) {
+        spdlog::warn("ActionListener::OnHit - {}: {:x} hits {:x} with {:x} "
+                     "{:.0f} units away; refused",
+                     claim == PartOne::ShotCheck::TooFar ? "E_HIT_RANGE"
+                                                         : "E_HIT_NO_SHOT",
+                     aggressor->GetFormId(), targetRef->GetFormId(),
+                     hitData.source,
+                     (targetRef->GetPos() - aggressor->GetPos()).Length());
         return;
       }
     }

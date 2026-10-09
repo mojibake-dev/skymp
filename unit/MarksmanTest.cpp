@@ -2,8 +2,10 @@
 #include <catch2/catch_all.hpp>
 #include <chrono>
 
+#include "ActionListener.h"
 #include "ActorValueRecord.h"
 #include "HitMessage.h"
+#include "PacketParser.h"
 #include "PlayerBowShotMessage.h"
 
 PartOne& GetPartOne();

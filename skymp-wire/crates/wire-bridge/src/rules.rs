@@ -273,6 +273,32 @@ mod ffi {
         TooFar,
     }
 
+    /// A ranged hit's claim and, when claimed, its shot's draw power (0 to
+    /// 1, the factor on the hit's damage; 0 otherwise).
+    #[derive(Debug, Clone, Copy)]
+    struct ShotClaim {
+        /// Claimed, or why not.
+        check: ShotCheck,
+        /// The claimed shot's draw power.
+        power: f32,
+    }
+
+    /// A shot as its shooter loosed it: the weapon, the draw power (0 to 1)
+    /// and where the shooter stood.
+    #[derive(Debug, Clone, Copy)]
+    struct ShotFacts {
+        /// The bow or crossbow.
+        weapon: u32,
+        /// The draw power.
+        power: f32,
+        /// Where the shooter stood.
+        x: f32,
+        /// Where the shooter stood.
+        y: f32,
+        /// Where the shooter stood.
+        z: f32,
+    }
+
     /// A form a RaceMenu look names (thuum ADR-026): its plugin and its id
     /// within it.
     #[derive(Debug, Clone)]
@@ -539,12 +565,11 @@ mod ffi {
         type RangedShots;
         /// No shots yet.
         fn new_ranged_shots() -> Box<RangedShots>;
-        /// `actor` loosed an arrow from `weapon`, standing at (x, y, z), at
-        /// `now_ms` (a monotonic clock).
-        fn record(self: &mut RangedShots, actor: u32, weapon: u32, x: f32, y: f32, z: f32, now_ms: u64);
+        /// `actor` loosed `shot` at `now_ms` (a monotonic clock).
+        fn record(self: &mut RangedShots, actor: u32, shot: ShotFacts, now_ms: u64);
         /// A hit by `actor` with `weapon` on a target at (x, y, z): claims
         /// the oldest unused shot whose arrow can have reached it.
-        fn claim(self: &mut RangedShots, actor: u32, weapon: u32, x: f32, y: f32, z: f32, now_ms: u64) -> ShotCheck;
+        fn claim(self: &mut RangedShots, actor: u32, weapon: u32, x: f32, y: f32, z: f32, now_ms: u64) -> ShotClaim;
         /// The actor is gone: its shots with it.
         fn forget(self: &mut RangedShots, actor: u32);
 
@@ -565,7 +590,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, ConeFacts, ConsoleDecision, DerivedParts, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, SneakMults, Verdict};
+pub use ffi::{AvBase, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, ConeFacts, ConsoleDecision, DerivedParts, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, Verdict};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -936,15 +961,16 @@ fn new_ranged_shots() -> Box<RangedShots> {
 }
 
 impl RangedShots {
-    fn record(&mut self, actor: u32, weapon: u32, x: f32, y: f32, z: f32, now_ms: u64) {
-        self.0.record(actor, weapon, x, y, z, now_ms);
+    fn record(&mut self, actor: u32, shot: ShotFacts, now_ms: u64) {
+        let ShotFacts { weapon, power, x, y, z } = shot;
+        self.0.record(actor, ranged::ShotFacts { weapon, power, x, y, z }, now_ms);
     }
 
-    fn claim(&mut self, actor: u32, weapon: u32, x: f32, y: f32, z: f32, now_ms: u64) -> ShotCheck {
+    fn claim(&mut self, actor: u32, weapon: u32, x: f32, y: f32, z: f32, now_ms: u64) -> ShotClaim {
         match self.0.claim(actor, weapon, x, y, z, now_ms) {
-            ranged::ShotCheck::Claimed => ShotCheck::Claimed,
-            ranged::ShotCheck::NoShot => ShotCheck::NoShot,
-            ranged::ShotCheck::TooFar => ShotCheck::TooFar,
+            ranged::ShotCheck::Claimed { power } => ShotClaim { check: ShotCheck::Claimed, power },
+            ranged::ShotCheck::NoShot => ShotClaim { check: ShotCheck::NoShot, power: 0.0 },
+            ranged::ShotCheck::TooFar => ShotClaim { check: ShotCheck::TooFar, power: 0.0 },
         }
     }
 
@@ -1057,13 +1083,15 @@ mod tests {
     #[test]
     fn the_bridge_passes_shots_through() {
         let mut s = new_ranged_shots();
-        assert_eq!(s.claim(7, 0x3b562, 100.0, 0.0, 0.0, 0), ShotCheck::NoShot);
-        s.record(7, 0x3b562, 0.0, 0.0, 0.0, 0);
-        assert_eq!(s.claim(7, 0x3b562, 9_000.0, 0.0, 0.0, 10), ShotCheck::TooFar);
-        assert_eq!(s.claim(7, 0x3b562, 100.0, 0.0, 0.0, 10), ShotCheck::Claimed);
-        s.record(7, 0x3b562, 0.0, 0.0, 0.0, 20);
+        assert_eq!(s.claim(7, 0x3b562, 100.0, 0.0, 0.0, 0).check, ShotCheck::NoShot);
+        s.record(7, ShotFacts { weapon: 0x3b562, power: 0.5, x: 0.0, y: 0.0, z: 0.0 }, 0);
+        assert_eq!(s.claim(7, 0x3b562, 9_000.0, 0.0, 0.0, 10).check, ShotCheck::TooFar);
+        let claim = s.claim(7, 0x3b562, 100.0, 0.0, 0.0, 10);
+        assert_eq!(claim.check, ShotCheck::Claimed);
+        assert!((claim.power - 0.5).abs() < f32::EPSILON);
+        s.record(7, ShotFacts { weapon: 0x3b562, power: 1.0, x: 0.0, y: 0.0, z: 0.0 }, 20);
         s.forget(7);
-        assert_eq!(s.claim(7, 0x3b562, 100.0, 0.0, 0.0, 30), ShotCheck::NoShot);
+        assert_eq!(s.claim(7, 0x3b562, 100.0, 0.0, 0.0, 30).check, ShotCheck::NoShot);
     }
 
     #[test]

@@ -1296,23 +1296,35 @@ PartOne::JumpCheck PartOne::CheckArrival(uint32_t actorFormId,
     actorFormId, cellOrWorld, x, y, SteadyNowMs()));
 }
 
-void PartOne::RecordShot(uint32_t actorFormId, uint32_t weapon,
+void PartOne::RecordShot(uint32_t actorFormId, uint32_t weapon, float power,
                          const NiPoint3& from)
 {
-  pImpl->rangedShots->record(actorFormId, weapon, from.x, from.y, from.z,
-                             SteadyNowMs());
+  skymp::rules::ShotFacts shot{};
+  shot.weapon = weapon;
+  shot.power = power;
+  shot.x = from.x;
+  shot.y = from.y;
+  shot.z = from.z;
+  pImpl->rangedShots->record(actorFormId, shot, SteadyNowMs());
 }
 
-PartOne::ShotCheck PartOne::ClaimShot(uint32_t actorFormId, uint32_t weapon,
+PartOne::ShotClaim PartOne::ClaimShot(uint32_t actorFormId, uint32_t weapon,
                                       const NiPoint3& target)
 {
-  switch (pImpl->rangedShots->claim(actorFormId, weapon, target.x, target.y,
-                                    target.z, SteadyNowMs())) {
+  const auto claim = pImpl->rangedShots->claim(
+    actorFormId, weapon, target.x, target.y, target.z, SteadyNowMs());
+  ShotClaim res;
+  res.power = claim.power;
+  switch (claim.check) {
     case skymp::rules::ShotCheck::Claimed:
-      return ShotCheck::Claimed;
+      res.check = ShotCheck::Claimed;
+      break;
     case skymp::rules::ShotCheck::TooFar:
-      return ShotCheck::TooFar;
+      res.check = ShotCheck::TooFar;
+      break;
     default:
-      return ShotCheck::NoShot;
+      res.check = ShotCheck::NoShot;
+      break;
   }
+  return res;
 }

@@ -1610,7 +1610,7 @@ void ActionListener::OnPlayerBowShot(const RawMessageData& rawMsgData,
 
   // the shot waits for its hit (one), and each neighbour's game draws the
   // arrow from the shooter's figure
-  partOne.RecordShot(ac->GetFormId(), msg.weaponId, ac->GetPos());
+  partOne.RecordShot(ac->GetFormId(), msg.weaponId, msg.power, ac->GetPos());
   ArrowShotMessage relay;
   relay.idx = ac->GetIdx();
   relay.weaponId = msg.weaponId;
@@ -2278,23 +2278,27 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
     }
     // thuum docs/verbs/marksman.md: a player's arrow hits only as a shot the
     // server recorded, and once (a hosted actor's shots are its host's
-    // game's, M3)
+    // game's, M3), at its draw power: the engine scales a player's arrow's
+    // damage by the power once, at launch (the re-analyst's read of
+    // Projectile::Launch, 2026-10-09)
+    float damageMult = 1.f;
     if (aggressor == myActor &&
         IsBowOrCrossbowShot(hitData, &partOne.worldState)) {
       const auto claim = partOne.ClaimShot(
         aggressor->GetFormId(), hitData.source, targetRef->GetPos());
-      if (claim != PartOne::ShotCheck::Claimed) {
-        spdlog::warn("ActionListener::OnHit - {}: {:x} hits {:x} with {:x} "
-                     "{:.0f} units away; refused",
-                     claim == PartOne::ShotCheck::TooFar ? "E_HIT_RANGE"
-                                                         : "E_HIT_NO_SHOT",
-                     aggressor->GetFormId(), targetRef->GetFormId(),
-                     hitData.source,
-                     (targetRef->GetPos() - aggressor->GetPos()).Length());
+      if (claim.check != PartOne::ShotCheck::Claimed) {
+        spdlog::warn(
+          "ActionListener::OnHit - {}: {:x} hits {:x} with {:x} "
+          "{:.0f} units away; refused",
+          claim.check == PartOne::ShotCheck::TooFar ? "E_HIT_RANGE"
+                                                    : "E_HIT_NO_SHOT",
+          aggressor->GetFormId(), targetRef->GetFormId(), hitData.source,
+          (targetRef->GetPos() - aggressor->GetPos()).Length());
         return;
       }
+      damageMult = claim.power;
     }
-    OnWeaponHit(aggressor, targetRef, hitData, isUnarmed);
+    OnWeaponHit(aggressor, targetRef, hitData, isUnarmed, damageMult);
     return;
   }
 
@@ -2445,7 +2449,8 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
 
 void ActionListener::OnWeaponHit(MpActor* aggressor,
                                  MpObjectReference* targetRef, HitData hitData,
-                                 [[maybe_unused]] bool isUnarmed)
+                                 [[maybe_unused]] bool isUnarmed,
+                                 float damageMult)
 {
   const auto currentHitTime = std::chrono::steady_clock::now();
 
@@ -2580,8 +2585,9 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
     }
   }
 
-  float damage = partOne.CalculateDamage(*aggressor, targetActor, hitData);
-  damage = damage < 0.f ? 0.f : damage;
+  float damage =
+    partOne.CalculateDamage(*aggressor, targetActor, hitData) * damageMult;
+  damage = damage < 0.f || !std::isfinite(damage) ? 0.f : damage;
   float outBaseHealth = 0.f;
   currentActorValues.healthPercentage = CalculateCurrentHealthPercentage(
     targetActor, damage, healthPercentage, &outBaseHealth);

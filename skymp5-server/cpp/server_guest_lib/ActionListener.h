@@ -116,8 +116,10 @@ public:
 private:
   void OnSpellHit(MpActor* aggressor, MpObjectReference* targetRef,
                   const HitData& hitData);
+  // damageMult: a claimed arrow's draw power (thuum docs/verbs/marksman.md),
+  // 1 for every other hit
   void OnWeaponHit(MpActor* aggressor, MpObjectReference* targetRef,
-                   HitData hitData, bool isUnarmed);
+                   HitData hitData, bool isUnarmed, float damageMult = 1.f);
 
   void GrantRested(MpActor& actor, uint64_t durationMs);
   // thuum docs/verbs/map-markers.md: AddToMap on its client for each marker

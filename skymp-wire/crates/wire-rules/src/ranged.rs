@@ -2,16 +2,18 @@
 //! crossbow hit counts only when it claims a shot the server recorded for
 //! that aggressor and weapon: unused, younger than an arrow's longest
 //! flight, and from where the target is no farther than the arrow can have
-//! flown since, allowing for the shot's own delivery. One hit per shot. The
-//! flight is the shooter's game's (R1): the server bounds it and never
-//! simulates it.
+//! flown since, allowing for the shot's own delivery. One hit per shot, at
+//! the shot's draw power. The flight is the shooter's game's (R1): the
+//! server bounds it and never simulates it.
 
 use std::collections::{HashMap, VecDeque};
 
-/// The fastest arrow in the lab's masters, with half again for what a bow
-/// or the draw may add (not measured; the verb doc's HYPOTHESIS): Dawnguard's
-/// steel bolt flies at 5400 units a second (its PROJ), a bow's arrows at 3600
-/// (thuum lab/esm.py over the 1.6.1170 masters, 2026-10-09).
+/// The fastest arrow in the lab's masters, with half again for the
+/// shooter's own run: Dawnguard's steel bolt flies at 5400 units a second
+/// (its PROJ), a bow's arrows at 3600 (thuum lab/esm.py over the 1.6.1170
+/// masters, 2026-10-09). The draw and the bow only slow an arrow (both of
+/// their multipliers are at most 1), and the player's own horizontal speed is
+/// added at launch (the re-analyst's read, docs/verbs/marksman.md).
 pub const MAX_ARROW_SPEED: f32 = 5400.0 * 1.5;
 
 /// How long a shot waits for its hit: an arrow's PROJ range is 60000 units,
@@ -39,17 +41,39 @@ pub const MAX_SHOTS: usize = 16;
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Shot {
     weapon: u32,
+    power: f32,
     at_ms: u64,
     x: f32,
     y: f32,
     z: f32,
 }
 
+/// A shot as its shooter loosed it: the weapon, the draw power (0 to 1) and
+/// where the shooter stood.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShotFacts {
+    /// The bow or crossbow.
+    pub weapon: u32,
+    /// The draw power.
+    pub power: f32,
+    /// Where the shooter stood.
+    pub x: f32,
+    /// Where the shooter stood.
+    pub y: f32,
+    /// Where the shooter stood.
+    pub z: f32,
+}
+
 /// A ranged hit's claim.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ShotCheck {
-    /// A recorded shot covers the hit, and is used up.
-    Claimed,
+    /// A recorded shot covers the hit, and is used up: the hit counts at the
+    /// shot's draw power, 0 to 1 (the engine scales a player's arrow's
+    /// damage by it once, at launch).
+    Claimed {
+        /// The shot's draw power.
+        power: f32,
+    },
     /// No unused shot of that weapon within the window.
     NoShot,
     /// Shots of that weapon wait, but none can have reached the target yet.
@@ -63,24 +87,27 @@ pub struct Shots {
 }
 
 impl Shots {
-    /// `actor` loosed an arrow from `weapon`, standing at (x, y, z), at
-    /// `now_ms` (a monotonic clock). A position that is not a number is
-    /// not recorded, so its hit is refused.
-    pub fn record(&mut self, actor: u32, weapon: u32, x: f32, y: f32, z: f32, now_ms: u64) {
-        if !(x.is_finite() && y.is_finite() && z.is_finite()) {
+    /// `actor` loosed `shot` at `now_ms` (a monotonic clock). A position or
+    /// a power that is not a number is not recorded, so its hit is refused;
+    /// a power outside 0 to 1 is held to it (the validator refuses one
+    /// already).
+    pub fn record(&mut self, actor: u32, shot: ShotFacts, now_ms: u64) {
+        let ShotFacts { weapon, power, x, y, z } = shot;
+        if !(x.is_finite() && y.is_finite() && z.is_finite() && power.is_finite()) {
             return;
         }
+        let power = power.clamp(0.0, 1.0);
         let shots = self.per_actor.entry(actor).or_default();
         shots.retain(|s| now_ms.saturating_sub(s.at_ms) <= SHOT_WINDOW_MS);
         if shots.len() >= MAX_SHOTS {
             shots.pop_front();
         }
-        shots.push_back(Shot { weapon, at_ms: now_ms, x, y, z });
+        shots.push_back(Shot { weapon, power, at_ms: now_ms, x, y, z });
     }
 
     /// A hit by `actor` with `weapon` on a target at (x, y, z), at `now_ms`:
     /// claims the oldest unused shot of that weapon whose arrow can have
-    /// reached the target since.
+    /// reached the target since, and answers its power.
     pub fn claim(&mut self, actor: u32, weapon: u32, x: f32, y: f32, z: f32, now_ms: u64) -> ShotCheck {
         let Some(shots) = self.per_actor.get_mut(&actor) else {
             return ShotCheck::NoShot;
@@ -109,11 +136,8 @@ impl Shots {
                 break;
             }
         }
-        match found {
-            Some(i) => {
-                shots.remove(i);
-                ShotCheck::Claimed
-            }
+        match found.and_then(|i| shots.remove(i)) {
+            Some(shot) => ShotCheck::Claimed { power: shot.power },
             None if any => ShotCheck::TooFar,
             None => ShotCheck::NoShot,
         }
@@ -132,69 +156,73 @@ mod tests {
     const BOW: u32 = 0x3b562;
     const OTHER_BOW: u32 = 0x13985;
 
+    fn shot(weapon: u32, power: f32, x: f32, y: f32, z: f32) -> ShotFacts {
+        ShotFacts { weapon, power, x, y, z }
+    }
+
     #[test]
     fn a_hit_without_a_shot_is_refused() {
         let mut s = Shots::default();
         assert_eq!(s.claim(1, BOW, 100.0, 0.0, 0.0, 0), ShotCheck::NoShot);
-        s.record(2, BOW, 0.0, 0.0, 0.0, 0);
+        s.record(2, shot(BOW, 1.0, 0.0, 0.0, 0.0), 0);
         assert_eq!(s.claim(1, BOW, 100.0, 0.0, 0.0, 10), ShotCheck::NoShot);
-        s.record(1, OTHER_BOW, 0.0, 0.0, 0.0, 0);
+        s.record(1, shot(OTHER_BOW, 1.0, 0.0, 0.0, 0.0), 0);
         assert_eq!(s.claim(1, BOW, 100.0, 0.0, 0.0, 10), ShotCheck::NoShot);
     }
 
     #[test]
     fn a_shot_covers_one_hit() {
         let mut s = Shots::default();
-        s.record(1, BOW, 0.0, 0.0, 0.0, 1_000);
-        assert_eq!(s.claim(1, BOW, 600.0, 0.0, 50.0, 1_200), ShotCheck::Claimed);
+        s.record(1, shot(BOW, 1.0, 0.0, 0.0, 0.0), 1_000);
+        assert_eq!(s.claim(1, BOW, 600.0, 0.0, 50.0, 1_200), ShotCheck::Claimed { power: 1.0 });
         assert_eq!(s.claim(1, BOW, 600.0, 0.0, 50.0, 1_300), ShotCheck::NoShot);
     }
 
     #[test]
     fn a_hit_farther_than_the_arrow_can_have_flown_waits_for_the_time() {
         let mut s = Shots::default();
-        s.record(1, BOW, 0.0, 0.0, 0.0, 0);
+        s.record(1, shot(BOW, 1.0, 0.0, 0.0, 0.0), 0);
         // 0.1 s, and the skew's 0.3: at most 3240 + 256 units
         assert_eq!(s.claim(1, BOW, 6_000.0, 0.0, 0.0, 100), ShotCheck::TooFar);
         // 0.5 s: 6480 + 256
-        assert_eq!(s.claim(1, BOW, 6_000.0, 0.0, 0.0, 500), ShotCheck::Claimed);
+        assert_eq!(s.claim(1, BOW, 6_000.0, 0.0, 0.0, 500), ShotCheck::Claimed { power: 1.0 });
     }
 
     #[test]
     fn a_shot_resent_once_still_covers_its_hit() {
         let mut s = Shots::default();
         // the shot and its hit arrive together: 300 units in no time
-        s.record(1, BOW, 0.0, 0.0, 0.0, 1_000);
-        assert_eq!(s.claim(1, BOW, 0.0, 300.0, 0.0, 1_000), ShotCheck::Claimed);
+        s.record(1, shot(BOW, 1.0, 0.0, 0.0, 0.0), 1_000);
+        assert_eq!(s.claim(1, BOW, 0.0, 300.0, 0.0, 1_000), ShotCheck::Claimed { power: 1.0 });
         // the skew's own reach, 2430 + 256 units, and no farther
-        s.record(1, BOW, 0.0, 0.0, 0.0, 2_000);
+        s.record(1, shot(BOW, 1.0, 0.0, 0.0, 0.0), 2_000);
         assert_eq!(s.claim(1, BOW, 2_800.0, 0.0, 0.0, 2_000), ShotCheck::TooFar);
-        assert_eq!(s.claim(1, BOW, 2_600.0, 0.0, 0.0, 2_000), ShotCheck::Claimed);
+        assert_eq!(s.claim(1, BOW, 2_600.0, 0.0, 0.0, 2_000), ShotCheck::Claimed { power: 1.0 });
     }
 
     #[test]
     fn a_shot_lapses_after_the_longest_flight() {
         let mut s = Shots::default();
-        s.record(1, BOW, 0.0, 0.0, 0.0, 0);
+        s.record(1, shot(BOW, 1.0, 0.0, 0.0, 0.0), 0);
         assert_eq!(s.claim(1, BOW, 100.0, 0.0, 0.0, SHOT_WINDOW_MS + 1), ShotCheck::NoShot);
-        s.record(1, BOW, 0.0, 0.0, 0.0, 0);
-        assert_eq!(s.claim(1, BOW, 100.0, 0.0, 0.0, SHOT_WINDOW_MS), ShotCheck::Claimed);
+        s.record(1, shot(BOW, 1.0, 0.0, 0.0, 0.0), 0);
+        assert_eq!(s.claim(1, BOW, 100.0, 0.0, 0.0, SHOT_WINDOW_MS), ShotCheck::Claimed { power: 1.0 });
     }
 
     #[test]
     fn the_oldest_reaching_shot_is_claimed_first_and_a_full_quiver_drops_the_oldest() {
         let mut s = Shots::default();
-        s.record(1, BOW, 0.0, 0.0, 0.0, 0);
-        s.record(1, BOW, 5_000.0, 0.0, 0.0, 50);
+        s.record(1, shot(BOW, 1.0, 0.0, 0.0, 0.0), 0);
+        s.record(1, shot(BOW, 1.0, 5_000.0, 0.0, 0.0), 50);
         // only the second reaches a target next to it yet
-        assert_eq!(s.claim(1, BOW, 5_100.0, 0.0, 0.0, 60), ShotCheck::Claimed);
-        assert_eq!(s.claim(1, BOW, 100.0, 0.0, 0.0, 70), ShotCheck::Claimed);
+        assert_eq!(s.claim(1, BOW, 5_100.0, 0.0, 0.0, 60), ShotCheck::Claimed { power: 1.0 });
+        assert_eq!(s.claim(1, BOW, 100.0, 0.0, 0.0, 70), ShotCheck::Claimed { power: 1.0 });
         assert_eq!(s.claim(1, BOW, 100.0, 0.0, 0.0, 80), ShotCheck::NoShot);
         for (_, t) in (0..=MAX_SHOTS).zip(100_u64..) {
-            s.record(1, BOW, 0.0, 0.0, 0.0, t);
+            s.record(1, shot(BOW, 1.0, 0.0, 0.0, 0.0), t);
         }
         let mut claimed = 0;
-        while s.claim(1, BOW, 0.0, 0.0, 0.0, 200) == ShotCheck::Claimed {
+        while matches!(s.claim(1, BOW, 0.0, 0.0, 0.0, 200), ShotCheck::Claimed { .. }) {
             claimed += 1;
         }
         assert_eq!(claimed, MAX_SHOTS);
@@ -203,17 +231,33 @@ mod tests {
     #[test]
     fn positions_that_are_not_numbers_claim_nothing() {
         let mut s = Shots::default();
-        s.record(1, BOW, f32::NAN, 0.0, 0.0, 0);
+        s.record(1, shot(BOW, 1.0, f32::NAN, 0.0, 0.0), 0);
         assert_eq!(s.claim(1, BOW, 0.0, 0.0, 0.0, 10), ShotCheck::NoShot);
-        s.record(1, BOW, 0.0, 0.0, 0.0, 0);
+        s.record(1, shot(BOW, 1.0, 0.0, 0.0, 0.0), 0);
         assert_eq!(s.claim(1, BOW, f32::INFINITY, 0.0, 0.0, 10), ShotCheck::NoShot);
-        assert_eq!(s.claim(1, BOW, 0.0, 0.0, 0.0, 10), ShotCheck::Claimed);
+        assert_eq!(s.claim(1, BOW, 0.0, 0.0, 0.0, 10), ShotCheck::Claimed { power: 1.0 });
+    }
+
+    #[test]
+    fn a_hit_counts_at_its_shots_power() {
+        let mut s = Shots::default();
+        // a half draw's arrow, then a full draw's, each claimed by its own hit
+        s.record(1, shot(BOW, 0.35, 0.0, 0.0, 0.0), 0);
+        s.record(1, shot(BOW, 1.0, 0.0, 0.0, 0.0), 10);
+        assert_eq!(s.claim(1, BOW, 100.0, 0.0, 0.0, 20), ShotCheck::Claimed { power: 0.35 });
+        assert_eq!(s.claim(1, BOW, 100.0, 0.0, 0.0, 30), ShotCheck::Claimed { power: 1.0 });
+        // a power outside 0 to 1 is held to it; one that is not a number is
+        // not a shot
+        s.record(1, shot(BOW, 4.0, 0.0, 0.0, 0.0), 40);
+        assert_eq!(s.claim(1, BOW, 100.0, 0.0, 0.0, 50), ShotCheck::Claimed { power: 1.0 });
+        s.record(1, shot(BOW, f32::NAN, 0.0, 0.0, 0.0), 60);
+        assert_eq!(s.claim(1, BOW, 100.0, 0.0, 0.0, 70), ShotCheck::NoShot);
     }
 
     #[test]
     fn a_forgotten_actor_has_no_shots() {
         let mut s = Shots::default();
-        s.record(1, BOW, 0.0, 0.0, 0.0, 0);
+        s.record(1, shot(BOW, 1.0, 0.0, 0.0, 0.0), 0);
         s.forget(1);
         assert_eq!(s.claim(1, BOW, 0.0, 0.0, 0.0, 10), ShotCheck::NoShot);
     }

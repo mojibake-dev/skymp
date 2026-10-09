@@ -149,17 +149,24 @@ public:
   JumpCheck CheckArrival(uint32_t actorFormId, uint32_t cellOrWorld, float x,
                          float y);
 
-  // thuum docs/verbs/marksman.md: a player loosed an arrow from `weapon`,
-  // standing at `from`; a later hit with that weapon claims it, once, if its
-  // arrow can have reached the target since (wire-rules ranged)
-  void RecordShot(uint32_t actorFormId, uint32_t weapon, const NiPoint3& from);
+  // thuum docs/verbs/marksman.md: a player loosed an arrow from `weapon` at
+  // draw `power`, standing at `from`; a later hit with that weapon claims
+  // it, once, if its arrow can have reached the target since (wire-rules
+  // ranged), and counts at the shot's power
+  void RecordShot(uint32_t actorFormId, uint32_t weapon, float power,
+                  const NiPoint3& from);
   enum class ShotCheck
   {
     Claimed, // a recorded shot covers the hit, and is used up
     NoShot,  // no unused shot of that weapon in the window
     TooFar   // shots wait, but none can have reached the target yet
   };
-  ShotCheck ClaimShot(uint32_t actorFormId, uint32_t weapon,
+  struct ShotClaim
+  {
+    ShotCheck check = ShotCheck::NoShot;
+    float power = 0.f; // the claimed shot's draw power, 0 to 1
+  };
+  ShotClaim ClaimShot(uint32_t actorFormId, uint32_t weapon,
                       const NiPoint3& target);
 
   // The server's game clock (thuum docs/verbs/time.md, ADR-021) from

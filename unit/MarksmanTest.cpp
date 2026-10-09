@@ -51,14 +51,14 @@ MpActor& Range(PartOne& p, bool equipped)
   return shooter;
 }
 
-void Shoot(PartOne& p)
+void Shoot(PartOne& p, float power = 1.f)
 {
   RawMessageData raw;
   raw.userId = 0;
   PlayerBowShotMessage shot;
   shot.weaponId = kLongBow;
   shot.ammoId = kIronArrow;
-  shot.power = 1.f;
+  shot.power = power;
   shot.aimAngle = 0.125f;
   shot.aimHeading = 1.5f;
   p.GetActionListener().OnPlayerBowShot(raw, shot);
@@ -167,6 +167,24 @@ TEST_CASE("A player's arrow hits only as a recorded shot, once, against the "
   ArrowHits(p, shooter);
   REQUIRE(target.GetChangeForm().actorValues.healthPercentage ==
           Catch::Approx(0.9f));
+
+  Leave(p);
+}
+
+TEST_CASE("A player's arrow hits at its shot's draw power", "[Marksman][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& shooter = Range(p, true);
+  auto& target = p.worldState.GetFormAt<MpActor>(kTarget);
+  ActorValueRecord record;
+  record.bases = { { 24, 250.f } };
+  REQUIRE(target.SetActorValueRecord(record));
+
+  // a half draw: half the test's damage formula's 25 out of 250
+  Shoot(p, 0.5f);
+  ArrowHits(p, shooter);
+  REQUIRE(target.GetChangeForm().actorValues.healthPercentage ==
+          Catch::Approx(0.95f));
 
   Leave(p);
 }

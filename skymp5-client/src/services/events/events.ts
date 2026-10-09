@@ -23,6 +23,7 @@ import { FavoritesMessage } from "../messages/favoritesMessage";
 import { RaceMenuPresetMessage } from "../messages/raceMenuPresetMessage";
 import { ActorValuesMessage } from "../messages/actorValuesMessage";
 import { ConsoleOutputMessage } from "../messages/consoleOutputMessage";
+import { ArrowShotMessage } from "../messages/arrowShotMessage";
 import { SpSnippetMessage } from "../messages/spSnippetMessage";
 import { TeleportMessage } from "../messages/teleportMessage";
 import { UpdateAnimationMessage } from "../messages/updateAnimationMessage";
@@ -86,6 +87,7 @@ type EventTypes = {
     'raceMenuPresetMessage': [ConnectionMessage<RaceMenuPresetMessage>],
     'actorValuesMessage': [ConnectionMessage<ActorValuesMessage>],
     'consoleOutputMessage': [ConnectionMessage<ConsoleOutputMessage>],
+    'arrowShotMessage': [ConnectionMessage<ArrowShotMessage>],
     'customPacketMessage': [ConnectionMessage<CustomPacketMessage>]
 
     'browserWindowLoaded': [BrowserWindowLoadedEvent],

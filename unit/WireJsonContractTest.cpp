@@ -45,5 +45,5 @@ TEST_CASE("Every wire fixture reads and writes back unchanged",
     REQUIRE(written == nlohmann::json::parse(text));
     ++checked;
   }
-  REQUIRE(checked >= 82);
+  REQUIRE(checked >= 84);
 }

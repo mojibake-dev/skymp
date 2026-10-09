@@ -92,6 +92,17 @@ pub struct ClientGuard {
     /// server's decision (wire-rules `console`), which answers every command
     /// it gets with a line.
     pub console_budget: TokenBucket,
+    /// Budget for bow and crossbow shots (thuum docs/verbs/marksman.md): a
+    /// bow is drawn for most of a second before each arrow, so four at once
+    /// and two a second after that only ever stops a flood; the server's
+    /// ranged rule matches each hit to one shot.
+    pub shot_budget: TokenBucket,
+    /// Budget for SkyMP's hit reports (OnHit), the player's own and its
+    /// hosted actors': a sweep strikes several targets at once and a host
+    /// reports for every actor it runs, so thirty-two at once and sixteen a
+    /// second after that only ever stops a flood; each hit's rules are the
+    /// server's.
+    pub on_hit_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -109,6 +120,8 @@ impl Default for ClientGuard {
             preset_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
             actor_values_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             console_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
+            shot_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 2, last_refill_ms: 0 },
+            on_hit_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 16, last_refill_ms: 0 },
         }
     }
 }
@@ -245,6 +258,16 @@ fn check_game_time(m: &skymp::SetGameTime) -> Result<(), Reject> {
 
 /// A rest's hours: the Sleep/Wait menu's range, one hour to a day
 /// (docs/verbs/rest.md; UESP, Skyrim:Health, "the hour minimum").
+/// A bow shot's draw power (0 to 1) and aim pitch (a quarter turn either
+/// way, radians), thuum docs/verbs/marksman.md.
+fn check_bow_shot(m: &skymp::PlayerBowShot) -> Result<(), Reject> {
+    if (0.0..=1.0).contains(&m.power) && (-core::f32::consts::FRAC_PI_2..=core::f32::consts::FRAC_PI_2).contains(&m.aim_angle) {
+        Ok(())
+    } else {
+        Err(Reject::Range)
+    }
+}
+
 fn check_rest(m: &skymp::RestIntent) -> Result<(), Reject> {
     if (1.0..=24.0).contains(&m.hours) {
         Ok(())
@@ -393,6 +416,8 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         }
         Message::ActorValues(_) => take(&mut guard.actor_values_budget, now_ms),
         Message::ConsoleCommand(_) => take(&mut guard.console_budget, now_ms),
+        Message::PlayerBowShot(_) => take(&mut guard.shot_budget, now_ms),
+        Message::OnHit(_) => take(&mut guard.on_hit_budget, now_ms),
         _ => Ok(()),
     }
 }
@@ -465,6 +490,12 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::Favorites(m) => check_favorites(m),
         Message::RaceMenuPreset(m) => check_preset(m),
         Message::ActorValues(m) => check_actor_values(m),
+        Message::PlayerBowShot(m) => {
+            if !all_finite(m) {
+                return Err(Reject::NonFinite);
+            }
+            check_bow_shot(m)
+        }
         // thuum docs/verbs/console-commands.md: the server's own line, its
         // length bounded at decode (cap::CONSOLE_OUTPUT); the transport
         // refuses it from a client by direction
@@ -846,6 +877,47 @@ mod tests {
         assert_eq!(validate(&console("additem"), &mut g, 1_000), Err(Reject::Rate));
         // the server's own view of a message carries no rate
         assert_eq!(validate_server(&console("additem")), Ok(()));
+    }
+
+    fn shot(power: f32, aim_angle: f32) -> Message {
+        Message::PlayerBowShot(skymp::PlayerBowShot { weapon_id: 0x3b562, ammo_id: 0x1397d, power, aim_angle, ..Default::default() })
+    }
+
+    #[test]
+    fn a_bow_shot_carries_a_draw_and_an_aim_within_bounds() {
+        let mut g = ClientGuard::default();
+        assert_eq!(validate(&shot(1.0, 0.3), &mut g, 0), Ok(()));
+        assert_eq!(validate(&shot(0.0, -1.5), &mut g, 0), Ok(()));
+        for (power, aim) in [(1.5, 0.0), (-0.1, 0.0), (0.5, 2.0), (0.5, -2.0)] {
+            assert_eq!(validate(&shot(power, aim), &mut ClientGuard::default(), 0), Err(Reject::Range), "{power} {aim}");
+        }
+        assert_eq!(validate(&shot(f32::NAN, 0.0), &mut ClientGuard::default(), 0), Err(Reject::NonFinite));
+        assert_eq!(validate(&shot(1.0, f32::INFINITY), &mut ClientGuard::default(), 0), Err(Reject::NonFinite));
+    }
+
+    #[test]
+    fn shots_four_at_once_then_two_a_second() {
+        let mut g = ClientGuard::default();
+        for _ in 0..4 {
+            assert_eq!(validate(&shot(1.0, 0.0), &mut g, 0), Ok(()));
+        }
+        assert_eq!(validate(&shot(1.0, 0.0), &mut g, 0), Err(Reject::Rate));
+        assert_eq!(validate(&shot(1.0, 0.0), &mut g, 1_000), Ok(()));
+        assert_eq!(validate(&shot(1.0, 0.0), &mut g, 1_000), Ok(()));
+        assert_eq!(validate(&shot(1.0, 0.0), &mut g, 1_000), Err(Reject::Rate));
+    }
+
+    #[test]
+    fn hit_reports_thirty_two_at_once_then_sixteen_a_second() {
+        let hit = Message::OnHit(skymp::OnHit::default());
+        let mut g = ClientGuard::default();
+        for _ in 0..32 {
+            assert_eq!(validate(&hit, &mut g, 0), Ok(()));
+        }
+        assert_eq!(validate(&hit, &mut g, 0), Err(Reject::Rate));
+        assert_eq!(validate(&hit, &mut g, 1_000), Ok(()));
+        // the server's own view of a message carries no rate
+        assert_eq!(validate_server(&hit), Ok(()));
     }
 
     fn preset(actor: u32, text: &str) -> Message {

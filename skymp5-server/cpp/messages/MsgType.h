@@ -49,6 +49,7 @@ enum class MsgType : uint8_t
   RaceMenuPreset = 39,
   ActorValues = 40,
   ConsoleOutput = 41,
+  ArrowShot = 42,
 
   Max
 };

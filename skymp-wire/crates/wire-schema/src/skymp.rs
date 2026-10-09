@@ -733,7 +733,7 @@ wire_struct! {
 
 wire_struct! {
     /// MsgType 22. Client to server, reliable: the player loosed an arrow
-    /// (R1 intent). Not idempotent.
+    /// (R1 intent; thuum docs/verbs/marksman.md). Not idempotent.
     pub struct PlayerBowShot {
         /// `"t": 22`.
         #[serde(default)]
@@ -746,6 +746,36 @@ wire_struct! {
         pub power: f32,
         /// Aimed at the sun (the engine's quirk).
         pub is_sun_gazing: bool,
+        /// Aim pitch when the arrow left, radians (the engine's
+        /// Actor::GetAimAngle), within a quarter turn either way.
+        pub aim_angle: f32,
+        /// Aim heading when the arrow left, radians (Actor::GetAimHeading).
+        pub aim_heading: f32,
+    }
+}
+
+wire_struct! {
+    /// MsgType 42 (thuum, docs/verbs/marksman.md). Server to client,
+    /// reliable: a neighbour's shot the server took, for the receiving game
+    /// to launch the arrow from that player's figure. The shooter's game made
+    /// the shot (R1) and the server checked it; the figure's arrow is drawn,
+    /// its damage the server's.
+    pub struct ArrowShot {
+        /// `"t": 42`.
+        #[serde(default)]
+        pub t: MsgT<42>,
+        /// The shooter, as CreateActor named it.
+        pub idx: u32,
+        /// Bow form id.
+        pub weapon_id: u32,
+        /// Arrow form id.
+        pub ammo_id: u32,
+        /// Draw power, 0 to 1.
+        pub power: f32,
+        /// Aim pitch, radians.
+        pub aim_angle: f32,
+        /// Aim heading, radians.
+        pub aim_heading: f32,
     }
 }
 

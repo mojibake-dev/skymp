@@ -1,9 +1,14 @@
-import { Ammo, Game, PlayerBowShotEvent, WeaponType } from "skyrimPlatform";
+import { Actor, Ammo, Game, PlayerBowShotEvent, WeaponType } from "skyrimPlatform";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { MsgType } from "../../messages";
 import { getEquipment } from "../../sync/equipment";
 import { QueryBlockSetInventoryEvent } from "../events/queryBlockSetInventoryEvent";
 import { logError, logTrace } from "../../logging";
+
+// Skyrim Platform's shot event with the aim the fork adds to it
+// (skyrim-platform EventHandler.cpp, TESPlayerBowShotEvent); the published
+// typings this client builds against predate the two fields
+type BowShotWithAim = PlayerBowShotEvent & { aimAngle?: number, aimHeading?: number };
 
 export class PlayerBowShotService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
@@ -49,17 +54,39 @@ export class PlayerBowShotService extends ClientListener {
         }
     }
 
-    private onPlayerBowShot(e: PlayerBowShotEvent) {
+    // The shot and its aim as the arrow left (thuum docs/verbs/marksman.md):
+    // reliable, as the wire's contract says, since the server takes an arrow
+    // for each and lets each arrow's hit through once
+    private onPlayerBowShot(e: BowShotWithAim) {
+        const aimHeading = e.aimHeading ?? 0;
         this.controller.emitter.emit("sendMessage", {
             message: {
                 t: MsgType.PlayerBowShot,
                 weaponId: e.weapon.getFormID(),
                 ammoId: e.ammo.getFormID(),
                 power: e.power,
-                isSunGazing: e.isSunGazing || false
+                isSunGazing: e.isSunGazing || false,
+                aimAngle: PlayerBowShotService.pitch(e.aimAngle ?? 0),
+                aimHeading: Number.isFinite(aimHeading) ? aimHeading : 0
             },
-            reliability: "unreliable"
+            reliability: "reliable"
         });
+    }
+
+    // A pitch within the quarter turn the server's validator allows
+    private static pitch(radians: number): number {
+        return Number.isFinite(radians) ? Math.max(-Math.PI / 2, Math.min(Math.PI / 2, radians)) : 0;
+    }
+
+    // A crossbow's aim, which Skyrim Platform's shot event does not carry: as
+    // CommonLibSSE-NG's Actor::GetAimAngle and GetAimHeading read it, the
+    // behavior graph's aim while aiming, the actor's own angles otherwise
+    private aimOf(actor: Actor): { aimAngle: number, aimHeading: number } {
+        const rad = Math.PI / 180;
+        const aiming = actor.getAnimationVariableBool("bAimActive");
+        const aimAngle = aiming ? -actor.getAnimationVariableFloat("aimPitchCurrent") : actor.getAngleX() * rad;
+        const aimHeading = actor.getAngleZ() * rad - actor.getAnimationVariableFloat("aimHeadingCurrent");
+        return { aimAngle: PlayerBowShotService.pitch(aimAngle), aimHeading: Number.isFinite(aimHeading) ? aimHeading : 0 };
     }
 
     private onPlayerCrossbowShot() {
@@ -100,9 +127,10 @@ export class PlayerBowShotService extends ClientListener {
                 weaponId: crossbow.getFormID(),
                 ammoId: equippedAmmoEntries[0].baseId,
                 isSunGazing: false,
-                power: 1.0
+                power: 1.0,
+                ...this.aimOf(actor)
             },
-            reliability: "unreliable"
+            reliability: "reliable"
         });
 
         // Fixes race condition when the server removes an item faster than local crossbow does that: -1 total

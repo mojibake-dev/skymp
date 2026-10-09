@@ -28,6 +28,7 @@ import { FavoritesMessage } from "./favoritesMessage";
 import { RaceMenuPresetMessage } from "./raceMenuPresetMessage";
 import { ActorValuesMessage } from "./actorValuesMessage";
 import { ConsoleOutputMessage } from "./consoleOutputMessage";
+import { ArrowShotMessage } from "./arrowShotMessage";
 import { SetInventoryMessage } from "./setInventoryMessage";
 import { SetRaceMenuOpenMessage } from "./setRaceMenuOpenMessage";
 import { SpSnippetMessage } from "./spSnippetMessage";
@@ -76,6 +77,7 @@ export type AnyMessage = ActivateMessage
     | RaceMenuPresetMessage
     | ActorValuesMessage
     | ConsoleOutputMessage
+    | ArrowShotMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage
     | UpdatePropertyMessage

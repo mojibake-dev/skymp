@@ -1084,28 +1084,41 @@ EventResult EventHandler::ProcessEvent(
   auto shotPower = event->shotPower;
   auto isSunGazing = event->isSunGazing;
 
-  SkyrimPlatform::GetSingleton()->AddUpdateTask(
-    [weaponId, ammoId, shotPower, isSunGazing](Napi::Env env) {
-      auto obj = Napi::Object::New(env);
+  // the aim as the arrow leaves, read now as for a spell cast (thuum
+  // docs/verbs/marksman.md; CommonLibSSE-NG Actor::GetAimAngle and
+  // GetAimHeading read the behavior graph's aim while the bow is drawn)
+  float aimAngle = 0.f;
+  float aimHeading = 0.f;
+  if (auto player = RE::PlayerCharacter::GetSingleton()) {
+    aimAngle = player->GetAimAngle();
+    aimHeading = player->GetAimHeading();
+  }
 
-      auto weapon = RE::TESForm::LookupByID<RE::TESObjectWEAP>(weaponId);
-      auto ammo = RE::TESForm::LookupByID<RE::TESAmmo>(ammoId);
+  SkyrimPlatform::GetSingleton()->AddUpdateTask([weaponId, ammoId, shotPower,
+                                                 isSunGazing, aimAngle,
+                                                 aimHeading](Napi::Env env) {
+    auto obj = Napi::Object::New(env);
 
-      if (!weapon && weaponId != 0) {
-        return;
-      }
+    auto weapon = RE::TESForm::LookupByID<RE::TESObjectWEAP>(weaponId);
+    auto ammo = RE::TESForm::LookupByID<RE::TESAmmo>(ammoId);
 
-      if (!ammo && ammoId != 0) {
-        return;
-      }
+    if (!weapon && weaponId != 0) {
+      return;
+    }
 
-      AddObjProperty(&obj, "weapon", weapon, "Weapon");
-      AddObjProperty(&obj, "ammo", ammo, "Ammo");
-      AddObjProperty(&obj, "power", shotPower);
-      AddObjProperty(&obj, "isSunGazing", isSunGazing);
+    if (!ammo && ammoId != 0) {
+      return;
+    }
 
-      SendEvent("playerBowShot", obj);
-    });
+    AddObjProperty(&obj, "weapon", weapon, "Weapon");
+    AddObjProperty(&obj, "ammo", ammo, "Ammo");
+    AddObjProperty(&obj, "power", shotPower);
+    AddObjProperty(&obj, "isSunGazing", isSunGazing);
+    AddObjProperty(&obj, "aimAngle", aimAngle);
+    AddObjProperty(&obj, "aimHeading", aimHeading);
+
+    SendEvent("playerBowShot", obj);
+  });
 
   return EventResult::kContinue;
 }

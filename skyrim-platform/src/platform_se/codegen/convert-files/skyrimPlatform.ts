@@ -371,6 +371,8 @@ export interface PlayerBowShotEvent {
   ammo: Ammo
   power: number
   isSunGazing: boolean
+  aimAngle: number
+  aimHeading: number
 }
 
 export interface FastTravelEnd {

@@ -43,5 +43,6 @@ export enum MsgType {
   Favorites = 38,
   RaceMenuPreset = 39,
   ActorValues = 40,
-  ConsoleOutput = 41
+  ConsoleOutput = 41,
+  ArrowShot = 42
 }

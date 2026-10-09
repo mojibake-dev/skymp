@@ -1,6 +1,7 @@
 #pragma once
 #include "ActivateMessage.h"
 #include "ActorValuesMessage.h"
+#include "ArrowShotMessage.h"
 #include "ChangeValuesMessage.h"
 #include "ConsoleCommandMessage.h"
 #include "ConsoleOutputMessage.h"
@@ -82,4 +83,5 @@
   REGISTER_MESSAGE(FavoritesMessage)                                          \
   REGISTER_MESSAGE(RaceMenuPresetMessage)                                     \
   REGISTER_MESSAGE(ActorValuesMessage)                                        \
-  REGISTER_MESSAGE(ConsoleOutputMessage)
+  REGISTER_MESSAGE(ConsoleOutputMessage)                                      \
+  REGISTER_MESSAGE(ArrowShotMessage)

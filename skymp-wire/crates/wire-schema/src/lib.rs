@@ -32,7 +32,7 @@ use bounded::{String, Vec};
 
 /// Bump when any variant changes shape. It is part of netcode's protocol id,
 /// so peers built against another schema never complete a handshake.
-pub const SCHEMA_VERSION: u16 = 10;
+pub const SCHEMA_VERSION: u16 = 11;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -376,6 +376,8 @@ pub enum Message {
     ActorValues(skymp::ActorValues),
     /// 49, MsgType 41 (thuum). See [`skymp::ConsoleOutput`].
     ConsoleOutput(skymp::ConsoleOutput),
+    /// 50, MsgType 42 (thuum). See [`skymp::ArrowShot`].
+    ArrowShot(skymp::ArrowShot),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -404,7 +406,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 50] = [
+const TABLE: [Row; 51] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -455,10 +457,11 @@ const TABLE: [Row; 50] = [
     row("RaceMenuPreset", 39, 200 * KIB, Both),
     row("ActorValues", 40, 2 * KIB, Both),
     row("ConsoleOutput", 41, 2 * KIB, S2C),
+    row("ArrowShot", 42, 64, S2C),
 ];
 
 /// Wire ids in use: one past the last variant.
-pub const WIRE_IDS: u32 = 50;
+pub const WIRE_IDS: u32 = 51;
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -533,6 +536,7 @@ impl Message {
             Message::RaceMenuPreset(_) => 47,
             Message::ActorValues(_) => 48,
             Message::ConsoleOutput(_) => 49,
+            Message::ArrowShot(_) => 50,
         }
     }
 
@@ -603,8 +607,9 @@ mod tests {
         assert_eq!(name_of_msg_type(39), Some("RaceMenuPreset"));
         assert_eq!(name_of_msg_type(40), Some("ActorValues"));
         assert_eq!(name_of_msg_type(41), Some("ConsoleOutput"));
+        assert_eq!(name_of_msg_type(42), Some("ArrowShot"));
         assert_eq!(name_of_msg_type(0), None);
-        assert_eq!(name_of_msg_type(42), None);
+        assert_eq!(name_of_msg_type(43), None);
     }
 
     #[test]

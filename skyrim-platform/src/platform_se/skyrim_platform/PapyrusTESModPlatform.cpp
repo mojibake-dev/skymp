@@ -11,8 +11,11 @@
 #include <RE/I/InventoryEntryData.h>
 #include <RE/M/MagicFavorites.h>
 #include <RE/N/NiPoint3.h>
+#include <RE/P/Projectile.h>
 #include <RE/T/TESGlobal.h>
 #include <REL/Relocation.h>
+#include <algorithm>
+#include <cmath>
 
 extern CallNativeApi::NativeCallRequirements g_nativeCallRequirements;
 
@@ -1015,6 +1018,41 @@ void TESModPlatform::SetGameDaysPassed(IVM* vm, StackID stackId,
   calendar->gameDaysPassed->value = daysPassed;
 }
 
+// thuum docs/verbs/marksman.md. The origin as the four-argument
+// Projectile::LaunchArrow finds it (CommonLibSSE-NG
+// src/RE/P/Projectile.cpp:296-322), the angles the shooter's aim (pitch,
+// heading, radians, as Skyrim Platform's spell launch takes them, MagicApi),
+// the power the shooter's draw
+bool TESModPlatform::LaunchArrow(IVM* vm, StackID stackId,
+                                 RE::StaticFunctionTag*, RE::Actor* shooter,
+                                 RE::TESObjectWEAP* weapon, RE::TESAmmo* ammo,
+                                 float power, float aimAngle, float aimHeading)
+{
+  if (!shooter || !weapon || !ammo || !std::isfinite(power) ||
+      !std::isfinite(aimAngle) || !std::isfinite(aimHeading)) {
+    return false;
+  }
+  RE::NiAVObject* fireNode = nullptr;
+  if (const auto process = shooter->GetActorRuntimeData().currentProcess) {
+    const auto& biped = shooter->GetBiped2();
+    fireNode = weapon->IsCrossbow() ? process->GetMagicNode(biped)
+                                    : process->GetWeaponNode(biped);
+  } else {
+    fireNode = weapon->GetFireNode(shooter->Get3D2());
+  }
+  RE::NiPoint3 origin =
+    fireNode ? fireNode->world.translate : shooter->GetPosition();
+  if (!fireNode) {
+    origin.z += 96.0f;
+  }
+  const RE::Projectile::ProjectileRot angles{ aimAngle, aimHeading };
+  RE::Projectile::LaunchData data(shooter, origin, angles, ammo, weapon);
+  data.power = std::clamp(power, 0.f, 1.f);
+  RE::ProjectileHandle handle{};
+  RE::Projectile::Launch(&handle, data);
+  return true;
+}
+
 namespace {
 // thuum docs/verbs/favorites.md. An item is a favorite when an extra list of
 // its inventory entry carries ExtraHotkey (InventoryEntryData::IsFavorited);
@@ -1444,6 +1482,12 @@ bool TESModPlatform::Register(IVM* vm)
     new RE::BSScript::NativeFunction<true, decltype(SetGameDaysPassed), void,
                                      RE::StaticFunctionTag*, float>(
       "SetGameDaysPassed", "TESModPlatform", SetGameDaysPassed));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<
+      true, decltype(LaunchArrow), bool, RE::StaticFunctionTag*, RE::Actor*,
+      RE::TESObjectWEAP*, RE::TESAmmo*, float, float, float>(
+      "LaunchArrow", "TESModPlatform", LaunchArrow));
 
   vm->BindNativeMethod(
     new RE::BSScript::NativeFunction<true, decltype(GetFavorites),

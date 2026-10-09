@@ -97,6 +97,15 @@ void CloseMenu(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
 void SetGameDaysPassed(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                        float daysPassed);
 
+// A neighbour's arrow, launched from its figure along its shooter's aim
+// (thuum docs/verbs/marksman.md): the figure's weapon node, a crossbow's
+// magic node, as CommonLibSSE-NG's Projectile::LaunchArrow finds it, with
+// the draw's power; false when an argument is missing or not a number
+bool LaunchArrow(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
+                 RE::Actor* shooter, RE::TESObjectWEAP* weapon,
+                 RE::TESAmmo* ammo, float power, float aimAngle,
+                 float aimHeading);
+
 // The player's favorites as (form id, hotkey) pairs, hotkey -1 for none, and
 // marking one with a hotkey, -1 for none (thuum docs/verbs/favorites.md)
 std::vector<int32_t> GetFavorites(IVM* vm, StackID stackId,

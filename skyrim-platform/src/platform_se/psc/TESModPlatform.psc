@@ -70,3 +70,7 @@ Float[] Function GetPlayerProgress() global native
 Bool Function SetPlayerSkill(Int skill, Float level, Float xp, Float threshold, Int legendary) global native
 
 Bool Function SetPlayerExperience(Float xp, Float threshold, Int level) global native
+
+; thuum docs/verbs/marksman.md: a neighbour's arrow, launched from its figure
+; along its shooter's aim (pitch and heading, radians) with its draw's power
+Bool Function LaunchArrow(Actor shooter, Weapon weapon, Ammo ammo, Float power, Float aimAngle, Float aimHeading) global native

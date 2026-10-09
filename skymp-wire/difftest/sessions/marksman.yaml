@@ -1,0 +1,76 @@
+# difftest marksman (M2, thuum docs/verbs/marksman.md): c1 and c2 are new
+# characters (profiles 9 and 10, actors 0xff000002 and 0xff000003: see
+# melee-reach), c2 50 units off the spawn. The lab server runs with
+# enableConsoleCommandsForAll (see console), so c1 gives itself Skyrim.esm's
+# LongBow (0x3B562, 243042) and ten IronArrow (0x1397D, 80253) at 2 s and
+# 2.3 s, and wears both at 2.6 s (UpdateEquipment as its game reports it;
+# both stacks take it, the items being in its inventory). At 3 s c1 shoots
+# (PlayerBowShot with its aim): both stacks take an arrow; the fixed one also
+# tells c2 the shot to draw (ArrowShot). At 3.2 s the arrow hits c2: both
+# stacks take the hit, the fixed one with the arrow's damage (8) on the bow's
+# (6), so the health c2 is told differs. At 4.2 s c1 claims a second hit
+# from the same arrow, past the bow's 0.77 s hit cooldown (its DNAM speed
+# 1.0): the legacy server takes it, the fixed one refuses it (E_HIT_NO_SHOT).
+# At 4.5 s c1 shoots from a HuntingBow (0x13985, 80261) it does not hold: the
+# legacy server takes an arrow for it, the fixed one refuses the shot
+# (E_SHOT_EQUIPMENT). c2 steps again at 3.5 s of its own (5 s of c1's), so
+# it outlives c1, as in every session. The numbers are the first run's
+# (2026-10-09, fork m2-marksman 9a376816): the legacy server's hits take
+# 5.568 percent of c2's health each, the fixed server's one hit 12.992,
+# the bow's 6 and the arrow's 8 against the bow's alone (14/6). c1 starts
+# with the new character's kit (23 iron arrows and a long bow among it).
+id: marksman
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 2000, send: {t: 12, data: {t: 12, commandName: additem, args: [20, 243042, 1]}}}
+  - {client: c1, at_ms: 2300, send: {t: 12, data: {t: 12, commandName: additem, args: [20, 80253, 10]}}}
+  - {client: c1, at_ms: 2600, send: {t: 5, idx: 2, data: {inv: {entries: [{baseId: 243042, count: 1, worn: true}, {baseId: 80253, count: 10, worn: true}]}, numChanges: 1}}}
+  - {client: c1, at_ms: 3000, send: {t: 22, weaponId: 243042, ammoId: 80253, power: 1, isSunGazing: false, aimAngle: 0.125, aimHeading: 1.5}}
+  - {client: c1, at_ms: 3200, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 243042, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
+  - {client: c1, at_ms: 4200, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 243042, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
+  - {client: c1, at_ms: 4500, send: {t: 22, weaponId: 80261, ammoId: 80253, power: 1, isSunGazing: false, aimAngle: 0.125, aimHeading: 1.5}}
+  - {client: c2, at_ms: 0, move: {dx: 50}}
+  - {client: c2, at_ms: 3500, move: {dx: 60}}
+divergences:
+  - client: c1
+    msg: {t: 41, text: "additem done", refused: false}
+    legacy: 0
+    wire: 2
+    reason: the server answers every console command with a line (ConsoleOutput, thuum docs/verbs/console-commands.md); the legacy server prints nothing back
+  - client: c2
+    msg: {t: 42}
+    legacy: 0
+    wire: 1
+    reason: the fixed server tells a shooter's neighbours each shot it took, to draw the arrow from the shooter's figure (ArrowShot); the legacy server tells no one
+  - client: c2
+    msg: {t: 30, class: Actor, function: StartCombat, selfId: 4278190082, arguments: [{formId: 20, type: Actor}]}
+    legacy: 0
+    wire: 1
+    reason: c1's hit begins a fight; the fixed server tells c2's game (thuum docs/verbs/hostility-sync.md), the legacy server has no hostility sync
+  - client: c2
+    msg: {t: 25, idx: 2}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout
+  - client: c2
+    msg: {t: 16, data: {health: 0.944320023059845}}
+    legacy: 1
+    wire: 0
+    reason: the legacy server's first hit counts the bow's damage alone (6), 5.6 percent of c2's health
+  - client: c2
+    msg: {t: 16, data: {health: 0.8886400461196899}}
+    legacy: 1
+    wire: 0
+    reason: the legacy server takes a second hit from the same arrow once the bow's cooldown passes; the fixed server refuses it (E_HIT_NO_SHOT, one hit per shot)
+  - client: c2
+    msg: {t: 16, data: {health: 0.8700799942016602}}
+    legacy: 0
+    wire: 1
+    reason: the fixed server's one hit counts the bow's damage and the arrow's (6 and 8, docs/verbs/marksman.md), 13 percent
+  - client: c1
+    msg: {t: 28, inventory: {entries: [{baseId: 10, count: 10}, {baseId: 15, count: 140}, {baseId: 77382, count: 1}, {baseId: 77385, count: 1}, {baseId: 77387, count: 1}, {baseId: 77389, count: 1}, {baseId: 77494, count: 1}, {baseId: 77495, count: 1}, {baseId: 79760, count: 1}, {baseId: 80253, count: 31}, {baseId: 80254, count: 1}, {baseId: 120044, count: 2}, {baseId: 236362, count: 2}, {baseId: 243042, count: 2}, {baseId: 256733, count: 5}, {baseId: 256736, count: 5}, {baseId: 256741, count: 5}, {baseId: 256810, count: 1}, {baseId: 256819, count: 1}, {baseId: 1017598, count: 1}]}}
+    legacy: 1
+    wire: 0
+    reason: the legacy server takes an arrow (31 left) for a shot from a hunting bow c1 does not hold; the fixed server refuses the shot (E_SHOT_EQUIPMENT) and takes nothing

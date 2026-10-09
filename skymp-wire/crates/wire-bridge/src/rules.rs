@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, clock, console, damage, effects, favorites, hostility, markers, melee, movement, racemenu, rest};
+use wire_rules::{activation, actor_values, appearance, clock, console, damage, effects, favorites, hostility, markers, melee, movement, racemenu, ranged, rest};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -260,6 +260,17 @@ mod ffi {
         /// A jump is permitted and this move is not it: drop it without
         /// sending the player back.
         Waiting,
+    }
+
+    /// A ranged hit's claim on its shot (thuum docs/verbs/marksman.md).
+    #[derive(Debug, Clone, Copy)]
+    enum ShotCheck {
+        /// A recorded shot covers the hit, and is used up.
+        Claimed,
+        /// No unused shot of that weapon in the window: refuse the hit.
+        NoShot,
+        /// Shots wait, but none can have reached the target yet: refuse.
+        TooFar,
     }
 
     /// A form a RaceMenu look names (thuum ADR-026): its plugin and its id
@@ -524,6 +535,19 @@ mod ffi {
         /// expects; the arrival ends the wait.
         fn check_arrival(self: &mut MovementBudgets, actor: u32, cell_or_world: u32, x: f32, y: f32, now_ms: u64) -> JumpCheck;
 
+        /// Every player actor's recent bow and crossbow shots.
+        type RangedShots;
+        /// No shots yet.
+        fn new_ranged_shots() -> Box<RangedShots>;
+        /// `actor` loosed an arrow from `weapon`, standing at (x, y, z), at
+        /// `now_ms` (a monotonic clock).
+        fn record(self: &mut RangedShots, actor: u32, weapon: u32, x: f32, y: f32, z: f32, now_ms: u64);
+        /// A hit by `actor` with `weapon` on a target at (x, y, z): claims
+        /// the oldest unused shot whose arrow can have reached it.
+        fn claim(self: &mut RangedShots, actor: u32, weapon: u32, x: f32, y: f32, z: f32, now_ms: u64) -> ShotCheck;
+        /// The actor is gone: its shots with it.
+        fn forget(self: &mut RangedShots, actor: u32);
+
         /// The server's game clock and who has heard it.
         type GameClock;
         /// A clock from server-settings.json's `time` block as JSON text
@@ -541,7 +565,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, ConeFacts, ConsoleDecision, DerivedParts, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, SneakMults, Verdict};
+pub use ffi::{AvBase, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, ConeFacts, ConsoleDecision, DerivedParts, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, SneakMults, Verdict};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -903,6 +927,32 @@ fn jump_check(c: movement::JumpCheck) -> JumpCheck {
     }
 }
 
+/// Every player actor's recent bow and crossbow shots (wire-rules ranged).
+#[derive(Debug, Default)]
+pub struct RangedShots(ranged::Shots);
+
+fn new_ranged_shots() -> Box<RangedShots> {
+    Box::default()
+}
+
+impl RangedShots {
+    fn record(&mut self, actor: u32, weapon: u32, x: f32, y: f32, z: f32, now_ms: u64) {
+        self.0.record(actor, weapon, x, y, z, now_ms);
+    }
+
+    fn claim(&mut self, actor: u32, weapon: u32, x: f32, y: f32, z: f32, now_ms: u64) -> ShotCheck {
+        match self.0.claim(actor, weapon, x, y, z, now_ms) {
+            ranged::ShotCheck::Claimed => ShotCheck::Claimed,
+            ranged::ShotCheck::NoShot => ShotCheck::NoShot,
+            ranged::ShotCheck::TooFar => ShotCheck::TooFar,
+        }
+    }
+
+    fn forget(&mut self, actor: u32) {
+        self.0.forget(actor);
+    }
+}
+
 /// The server's game clock (wire-rules clock).
 #[derive(Debug)]
 pub struct GameClock(clock::Clock);
@@ -1002,6 +1052,18 @@ mod tests {
         assert_eq!(b.check_arrival(7, 0x3c, 0.0, 0.0, 11), JumpCheck::Waiting);
         assert_eq!(b.check_arrival(7, 0x3c, 510.0, 490.0, 12), JumpCheck::Landed);
         assert_eq!(b.check_arrival(7, 0x3c, 0.0, 0.0, 13), JumpCheck::NoPermit);
+    }
+
+    #[test]
+    fn the_bridge_passes_shots_through() {
+        let mut s = new_ranged_shots();
+        assert_eq!(s.claim(7, 0x3b562, 100.0, 0.0, 0.0, 0), ShotCheck::NoShot);
+        s.record(7, 0x3b562, 0.0, 0.0, 0.0, 0);
+        assert_eq!(s.claim(7, 0x3b562, 9_000.0, 0.0, 0.0, 10), ShotCheck::TooFar);
+        assert_eq!(s.claim(7, 0x3b562, 100.0, 0.0, 0.0, 10), ShotCheck::Claimed);
+        s.record(7, 0x3b562, 0.0, 0.0, 0.0, 20);
+        s.forget(7);
+        assert_eq!(s.claim(7, 0x3b562, 100.0, 0.0, 0.0, 30), ShotCheck::NoShot);
     }
 
     #[test]

@@ -2,8 +2,9 @@
 //! crossbow hit counts only when it claims a shot the server recorded for
 //! that aggressor and weapon: unused, younger than an arrow's longest
 //! flight, and from where the target is no farther than the arrow can have
-//! flown since. One hit per shot. The flight is the shooter's game's (R1):
-//! the server bounds it and never simulates it.
+//! flown since, allowing for the shot's own delivery. One hit per shot. The
+//! flight is the shooter's game's (R1): the server bounds it and never
+//! simulates it.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -22,6 +23,14 @@ pub const SHOT_WINDOW_MS: u64 = 17_000;
 /// age (a movement report every 130 ms, at a horse's sprint) and the
 /// target's size.
 pub const RANGE_SLACK: f32 = 256.0;
+
+/// How much the time between a shot's arrival and its hit's can understate
+/// the arrow's flight, milliseconds. Both ride the client's one ordered
+/// channel, so a shot lost on the way is resent after 300 ms (wire-transport
+/// `Limits::resend_ms`) while its hit, sent later, waits behind it and
+/// arrives with it. One resend is allowed: a hit within about 2700 units
+/// never waits on time, and a shot lost twice may lose a far hit.
+pub const DELIVERY_SKEW_MS: u64 = 300;
 
 /// Shots kept per actor; a quiver loosed faster than its hits arrive drops
 /// the oldest.
@@ -87,8 +96,11 @@ impl Shots {
                 continue;
             }
             any = true;
-            // within the window, which fits a u16 of milliseconds
-            let flown_ms = now_ms.saturating_sub(s.at_ms).min(SHOT_WINDOW_MS);
+            // within the window and the skew, which fit a u16 of milliseconds
+            let flown_ms = now_ms
+                .saturating_sub(s.at_ms)
+                .min(SHOT_WINDOW_MS)
+                .saturating_add(DELIVERY_SKEW_MS);
             let flown_s = f32::from(u16::try_from(flown_ms).unwrap_or(u16::MAX)) / 1000.0;
             let reach = MAX_ARROW_SPEED * flown_s + RANGE_SLACK;
             let (dx, dy, dz) = (x - s.x, y - s.y, z - s.z);
@@ -142,10 +154,22 @@ mod tests {
     fn a_hit_farther_than_the_arrow_can_have_flown_waits_for_the_time() {
         let mut s = Shots::default();
         s.record(1, BOW, 0.0, 0.0, 0.0, 0);
-        // 0.1 s: at most 810 + 256 units
-        assert_eq!(s.claim(1, BOW, 3_000.0, 0.0, 0.0, 100), ShotCheck::TooFar);
-        // 0.5 s: 4050 + 256
-        assert_eq!(s.claim(1, BOW, 3_000.0, 0.0, 0.0, 500), ShotCheck::Claimed);
+        // 0.1 s, and the skew's 0.3: at most 3240 + 256 units
+        assert_eq!(s.claim(1, BOW, 6_000.0, 0.0, 0.0, 100), ShotCheck::TooFar);
+        // 0.5 s: 6480 + 256
+        assert_eq!(s.claim(1, BOW, 6_000.0, 0.0, 0.0, 500), ShotCheck::Claimed);
+    }
+
+    #[test]
+    fn a_shot_resent_once_still_covers_its_hit() {
+        let mut s = Shots::default();
+        // the shot and its hit arrive together: 300 units in no time
+        s.record(1, BOW, 0.0, 0.0, 0.0, 1_000);
+        assert_eq!(s.claim(1, BOW, 0.0, 300.0, 0.0, 1_000), ShotCheck::Claimed);
+        // the skew's own reach, 2430 + 256 units, and no farther
+        s.record(1, BOW, 0.0, 0.0, 0.0, 2_000);
+        assert_eq!(s.claim(1, BOW, 2_800.0, 0.0, 0.0, 2_000), ShotCheck::TooFar);
+        assert_eq!(s.claim(1, BOW, 2_600.0, 0.0, 0.0, 2_000), ShotCheck::Claimed);
     }
 
     #[test]

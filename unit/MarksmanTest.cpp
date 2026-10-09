@@ -28,8 +28,9 @@ const auto kWorn = [] {
 }();
 
 // The shooter (user 0) at the origin and its neighbour (user 1) 300 units
-// north, both in Tamriel; the shooter holds the long bow and ten iron arrows,
-// equipped when `equipped`
+// north, both in Tamriel; the shooter is given the long bow and ten iron
+// arrows (on top of the arrows its base starts with), equipped when
+// `equipped`
 MpActor& Range(PartOne& p, bool equipped)
 {
   DoConnect(p, 0);
@@ -102,11 +103,12 @@ TEST_CASE("A shot from a held bow takes an arrow and reaches the neighbours",
 {
   PartOne& p = GetPartOne();
   auto& shooter = Range(p, true);
+  const auto arrows = shooter.GetInventory().GetItemCount(kIronArrow);
   p.Messages().clear();
 
   Shoot(p);
 
-  REQUIRE(shooter.GetInventory().GetItemCount(kIronArrow) == 9);
+  REQUIRE(shooter.GetInventory().GetItemCount(kIronArrow) == arrows - 1);
   // the neighbour's game is told the shot to draw; the shooter's is not
   const auto relays = Relays(p);
   REQUIRE(relays.size() == 1);
@@ -126,11 +128,12 @@ TEST_CASE("A shot from a bow the player does not hold changes nothing",
 {
   PartOne& p = GetPartOne();
   auto& shooter = Range(p, false);
+  const auto arrows = shooter.GetInventory().GetItemCount(kIronArrow);
   p.Messages().clear();
 
   Shoot(p);
 
-  REQUIRE(shooter.GetInventory().GetItemCount(kIronArrow) == 10);
+  REQUIRE(shooter.GetInventory().GetItemCount(kIronArrow) == arrows);
   REQUIRE(Relays(p).empty());
 
   Leave(p);
@@ -152,7 +155,9 @@ TEST_CASE("A player's arrow hits only as a recorded shot, once, against the "
   ArrowHits(p, shooter);
   REQUIRE(target.GetChangeForm().actorValues.healthPercentage == 1.f);
 
-  // the shot, then its hit: the test's damage formula's 25 out of 250
+  // the shot, then its hit, arriving together as after a resend (300 units
+  // in no time, within the rule's skew): the test's damage formula's 25 out
+  // of 250
   Shoot(p);
   ArrowHits(p, shooter);
   REQUIRE(target.GetChangeForm().actorValues.healthPercentage ==

@@ -459,6 +459,22 @@ void ExecuteCenterOnCell(PartOne& partOne, MpActor& caller,
     .Execute(&caller, SpSnippetMode::kNoReturnResult);
 }
 
+// ToggleCollision (TCL, an admin's; thuum docs/verbs/console-commands.md,
+// M1.1, Eli 2026-10-09): the caller's own game toggles its player's
+// collision, as its console would (Debug.ToggleCollisions, sent as COC's
+// Debug.CenterOnCell is). The state is the game's alone: the server models
+// no collision, and its movement rule bounds every move's speed as before.
+void ExecuteToggleCollision(MpActor& caller)
+{
+  spdlog::info("ConsoleCommands: {:x} toggles its game's collision",
+               caller.GetFormId());
+  const std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+    none;
+  SpSnippet("Debug", "ToggleCollisions", none)
+    .Execute(&caller, SpSnippetMode::kNoReturnResult);
+}
+
 // The rank the gamemode recorded for the player wins; without one, every
 // player is an owner when the server says so (enableConsoleCommandsForAll,
 // the lab's setting), else the record's fallback (consoleCommandsAllowed
@@ -627,6 +643,9 @@ void ConsoleCommands::Execute(
     } else if (!Utils::stricmp(name, "COC") ||
                !Utils::stricmp(name, "CenterOnCell")) {
       ExecuteCenterOnCell(partOne, me, args);
+    } else if (!Utils::stricmp(name, "TCL") ||
+               !Utils::stricmp(name, "ToggleCollision")) {
+      ExecuteToggleCollision(me);
     } else if (!Utils::stricmp(name, "SetAV") ||
                !Utils::stricmp(name, "SetActorValue")) {
       ExecuteActorValue(me, "set", args);

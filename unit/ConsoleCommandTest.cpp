@@ -530,6 +530,69 @@ TEST_CASE("COC sends an admin's game to a cell the server knows and takes "
   DoDisconnect(p, 0);
 }
 
+// thuum docs/verbs/console-commands.md, TCL (M1.1, an admin's, Eli
+// 2026-10-09): the caller's own game toggles its collision, sent as COC's
+// snippet is; the console sends the name alone, as for every command the
+// client routes by name
+TEST_CASE("TCL has an admin's own game toggle its collision",
+          "[ConsoleCommand]")
+{
+  PartOne& p = GetPartOne();
+  const bool forAll = p.worldState.enableConsoleCommandsForAll;
+  p.worldState.enableConsoleCommandsForAll = false;
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, 0xff000000);
+  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
+
+  // the times user 0's game was told to toggle its collision
+  const auto toggles = [&] {
+    int n = 0;
+    for (auto& m : p.Messages()) {
+      n += m.userId == 0 && m.j["t"] == MsgType::SpSnippet &&
+        m.j["class"] == "Debug" && m.j["function"] == "ToggleCollisions" &&
+        m.j["selfId"] == 0 && m.j["arguments"].empty();
+    }
+    return n;
+  };
+
+  // a moderator may not
+  ac.SetStaffRank(1);
+  p.Messages().clear();
+  Send(p, "tcl", {});
+  p.Tick();
+  REQUIRE(Lines(p) ==
+          std::vector<std::pair<std::string, bool>>{
+            { "Not enough permissions to use this command", true } });
+  REQUIRE(toggles() == 0);
+
+  // an admin's, by the short name and the long one
+  ac.SetStaffRank(2);
+  p.Messages().clear();
+  Send(p, "tcl", {});
+  Send(p, "ToggleCollision", {});
+  p.Tick();
+  REQUIRE(Lines(p) ==
+          std::vector<std::pair<std::string, bool>>{
+            { "tcl done", false }, { "ToggleCollision done", false } });
+  REQUIRE(toggles() == 2);
+
+  // god mode and immortality wait for M2's damage authority
+  p.Messages().clear();
+  Send(p, "tgm", {});
+  Send(p, "tim", {});
+  p.Tick();
+  REQUIRE(Lines(p) ==
+          std::vector<std::pair<std::string, bool>>{
+            { "The server does not run this command yet", true },
+            { "The server does not run this command yet", true } });
+  REQUIRE(toggles() == 0);
+
+  p.worldState.enableConsoleCommandsForAll = forAll;
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
 // thuum docs/verbs/console-commands.md: TES3MP's player commands on SkyMP's
 // `mp` (Eli, 2026-10-08): `mp list` names the players online by number (the
 // profile id), `mp tp <n>` brings that player to the caller and `mp tpto

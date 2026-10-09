@@ -529,3 +529,114 @@ TEST_CASE("COC sends an admin's game to a cell the server knows and takes "
   p.DestroyActor(0xff000000);
   DoDisconnect(p, 0);
 }
+
+// thuum docs/verbs/console-commands.md: TES3MP's player commands on SkyMP's
+// `mp` (Eli, 2026-10-08): `mp list` names the players online by number (the
+// profile id), `mp tp <n>` brings that player to the caller and `mp tpto
+// <n>` takes the caller to it, through the server's teleport wherever the
+// two are; the list is everyone's, the teleports a moderator's
+TEST_CASE("mp list names the players online, mp tp brings one and mp tpto "
+          "goes to one",
+          "[ConsoleCommand][espm]")
+{
+  PartOne& p = GetPartOne();
+  const bool forAll = p.worldState.enableConsoleCommandsForAll;
+  p.worldState.enableConsoleCommandsForAll = false;
+  DoConnect(p, 0);
+  DoConnect(p, 1);
+  p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c, 1);
+  p.SetUserActor(0, 0xff000000);
+  p.CreateActor(0xff000001, { 50, 60, 7 }, 90, 0x133c6, 2);
+  p.SetUserActor(1, 0xff000001);
+  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
+  auto& other = p.worldState.GetFormAt<MpActor>(0xff000001);
+  const auto& files = p.worldState.espmFiles;
+
+  // a player may list, not teleport
+  ac.SetStaffRank(0);
+  p.Messages().clear();
+  Send(p, "mp", { int64_t(0), std::string("list") });
+  Send(p, "mp", { int64_t(0), std::string("tp"), int64_t(2) });
+  p.Tick();
+  REQUIRE(Lines(p) ==
+          std::vector<std::pair<std::string, bool>>{
+            { "1 (no name) (you) (ff000000) in 3c:Skyrim.esm", false },
+            { "2 (no name) (ff000001) in 133c6:Skyrim.esm", false },
+            { "mp list done", false },
+            { "Not enough permissions to use this command", true } });
+  REQUIRE(other.GetCellOrWorld().ToFormId(files) == 0x133c6);
+
+  // a moderator goes to player 2, in another cell, and later brings it
+  ac.SetStaffRank(1);
+  p.Messages().clear();
+  Send(p, "mp", { int64_t(0), std::string("tpto"), int64_t(2) });
+  REQUIRE(ac.GetCellOrWorld().ToFormId(files) == 0x133c6);
+  REQUIRE(ac.GetPos() == NiPoint3{ 50, 60, 7 });
+  ac.Teleport(
+    LocationalData{ { 300, 400, 5 }, { 0, 0, 0 }, FormDesc::Tamriel() });
+  Send(p, "mp", { int64_t(0), std::string("tp"), std::string("2") });
+  REQUIRE(other.GetCellOrWorld() == FormDesc::Tamriel());
+  REQUIRE(other.GetPos() == NiPoint3{ 300, 400, 5 });
+  // nobody by that number, or the caller's own
+  Send(p, "mp", { int64_t(0), std::string("tp"), int64_t(9) });
+  Send(p, "mp", { int64_t(0), std::string("tpto"), int64_t(1) });
+  p.Tick();
+  REQUIRE(Lines(p) ==
+          std::vector<std::pair<std::string, bool>>{
+            { "mp tpto done", false },
+            { "mp tp done", false },
+            { "Failed: no player 9 online", true },
+            { "Failed: that number is yours", true } });
+  // the player brought hears who brought it
+  bool told = false;
+  for (auto& m : p.Messages()) {
+    told |= m.userId == 1 && m.j["t"] == MsgType::ConsoleOutput &&
+      m.j["text"] == "(no name) brought you to them";
+  }
+  REQUIRE(told);
+
+  p.worldState.enableConsoleCommandsForAll = forAll;
+  p.DestroyActor(0xff000001);
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 1);
+  DoDisconnect(p, 0);
+}
+
+// thuum docs/verbs/movement-speed.md, arrivals: a teleport the server makes
+// is not undone by the movement reports the player's game sent before it
+// (Eli's playtest twelve: MoveTo moved a player a little, or not at all)
+TEST_CASE("A teleport the server makes is not undone by the reports sent "
+          "before it",
+          "[ConsoleCommand][espm]")
+{
+  PartOne& p = GetPartOne();
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, 0xff000000);
+  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
+  const auto sentBack = [&] {
+    int n = 0;
+    for (auto& m : p.Messages()) {
+      n += m.userId == 0 && m.j["t"] == MsgType::Teleport2;
+    }
+    return n;
+  };
+
+  ac.Teleport(
+    LocationalData{ { 800, 0, 0 }, { 0, 0, 0 }, FormDesc::Tamriel() });
+  p.Messages().clear();
+  // two reports from before the teleport, near enough to pass as moves
+  Report(p, ac, 0x3c, { 10, 0, 0 });
+  Report(p, ac, 0x3c, { 20, 0, 0 });
+  REQUIRE(ac.GetPos() == NiPoint3{ 800, 0, 0 });
+  REQUIRE(sentBack() == 0);
+  // the arrival, and moves from there as ever
+  Report(p, ac, 0x3c, { 805, 0, 0 });
+  REQUIRE(ac.GetPos() == NiPoint3{ 805, 0, 0 });
+  Report(p, ac, 0x3c, { 850, 0, 0 });
+  REQUIRE(ac.GetPos() == NiPoint3{ 850, 0, 0 });
+  REQUIRE(sentBack() == 0);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}

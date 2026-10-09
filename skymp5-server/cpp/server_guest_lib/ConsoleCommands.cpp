@@ -13,6 +13,8 @@
 #include "script_classes/PapyrusObjectReference.h"
 #include "script_objects/EspmGameObject.h"
 #include "wire_bridge_cxx/rules.h"
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <fmt/format.h>
 #include <limits>
@@ -148,15 +150,6 @@ void ExecuteDisable(MpActor& caller,
   if (target.GetFormId() >= 0xff000000 ||
       dynamic_cast<MpActor*>(&target) != nullptr) {
     target.Disable();
-  }
-}
-
-void ExecuteMp(MpActor& caller,
-               const std::vector<ConsoleCommands::Argument>& args)
-{
-  auto subcmd = args.at(1).GetString();
-  if (!Utils::stricmp(subcmd.data(), "disable")) {
-    return ExecuteDisable(caller, args);
   }
 }
 
@@ -490,6 +483,90 @@ void Reply(MpActor& caller, std::string text, bool refused)
   out.refused = refused;
   caller.SendToUser(out, true);
 }
+
+// The player online with a number (its profile id; `mp list` shows them)
+MpActor& PlayerOnline(PartOne& partOne, MpActor& caller,
+                      const ConsoleCommands::Argument& argument)
+{
+  const double number = NumberOf(argument);
+  if (number < 0 || number > std::numeric_limits<int32_t>::max() ||
+      number != std::floor(number)) {
+    throw std::runtime_error("a player's number is a whole number");
+  }
+  const auto profileId = static_cast<int32_t>(number);
+  for (uint32_t actorId :
+       caller.GetParent()->GetActorsByProfileId(profileId)) {
+    const auto& form = caller.GetParent()->LookupFormById(actorId);
+    auto* actor = form ? form->AsActor() : nullptr;
+    if (actor &&
+        partOne.serverState.UserByActor(actor) != Networking::InvalidUserId) {
+      return *actor;
+    }
+  }
+  throw std::runtime_error(fmt::format("no player {} online", profileId));
+}
+
+std::string NameOf(const MpActor& actor)
+{
+  const auto appearance = actor.GetAppearance();
+  return appearance && !appearance->name.empty() ? appearance->name
+                                                 : std::string("(no name)");
+}
+
+LocationalData WhereIs(const MpActor& actor)
+{
+  return LocationalData{ actor.GetPos(), actor.GetAngle(),
+                         actor.GetCellOrWorld() };
+}
+
+// SkyMP's own `mp`, with TES3MP's player commands (thuum
+// docs/verbs/console-commands.md; TES3MP CoreScripts commandHandler.lua
+// /teleport and /teleportto, logicHandler.lua TeleportToPlayer): `mp list`
+// names every player online by its number, `mp tp <n>` brings that player
+// to the caller and `mp tpto <n>` takes the caller to it. The server makes
+// each teleport, wherever the two are: no figure in the caller's game is
+// needed, as the console's own MoveTo needs one.
+void ExecuteMp(PartOne& partOne, MpActor& caller,
+               const std::vector<ConsoleCommands::Argument>& args)
+{
+  const std::string& sub = args.at(1).GetString();
+  if (!Utils::stricmp(sub.data(), "disable")) {
+    return ExecuteDisable(caller, args);
+  }
+  if (!Utils::stricmp(sub.data(), "list")) {
+    for (size_t i = 0, n = partOne.serverState.maxConnectedId; i <= n; ++i) {
+      MpActor* actor =
+        partOne.serverState.ActorByUser(static_cast<Networking::UserId>(i));
+      if (!actor) {
+        continue;
+      }
+      Reply(caller,
+            fmt::format("{} {}{} ({:x}) in {}", actor->GetProfileId(),
+                        NameOf(*actor), actor == &caller ? " (you)" : "",
+                        actor->GetFormId(),
+                        actor->GetCellOrWorld().ToString()),
+            false);
+    }
+    return;
+  }
+  if (!Utils::stricmp(sub.data(), "tp") ||
+      !Utils::stricmp(sub.data(), "tpto")) {
+    MpActor& other = PlayerOnline(partOne, caller, args.at(2));
+    if (&other == &caller) {
+      throw std::runtime_error("that number is yours");
+    }
+    const bool bring = !Utils::stricmp(sub.data(), "tp");
+    MpActor& moved = bring ? other : caller;
+    MpActor& anchor = bring ? caller : other;
+    moved.Teleport(WhereIs(anchor));
+    if (bring) {
+      Reply(other, fmt::format("{} brought you to them", NameOf(caller)),
+            false);
+    }
+    return;
+  }
+  throw std::runtime_error("mp knows list, tp <n>, tpto <n> and disable");
+}
 }
 
 // thuum docs/verbs/console-commands.md: the server's table (wire-rules
@@ -500,12 +577,25 @@ void ConsoleCommands::Execute(
   PartOne& partOne, MpActor& me, const std::string& consoleCommandName,
   const std::vector<ConsoleCommands::Argument>& args)
 {
+  // `mp <sub>`: TES3MP's player commands have their own rows (and ranks)
+  // in the table; any other `mp` is judged as `mp`
+  std::string judged = consoleCommandName;
+  if (!Utils::stricmp(consoleCommandName.data(), "mp") && args.size() > 1 &&
+      args[1].IsString()) {
+    std::string sub = "mp " + args[1].GetString();
+    std::transform(sub.begin(), sub.end(), sub.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    if (skymp::rules::console_decide(rust::Str(sub), RankOf(me)) !=
+        skymp::rules::ConsoleDecision::Unknown) {
+      judged = sub;
+    }
+  }
   const auto decision =
-    skymp::rules::console_decide(rust::Str(consoleCommandName), RankOf(me));
+    skymp::rules::console_decide(rust::Str(judged), RankOf(me));
   if (decision != skymp::rules::ConsoleDecision::Run) {
     const std::string line(skymp::rules::console_refusal_line(decision));
-    spdlog::info("ConsoleCommands: {:x} ran '{}': {}", me.GetFormId(),
-                 consoleCommandName, line);
+    spdlog::info("ConsoleCommands: {:x} ran '{}': {}", me.GetFormId(), judged,
+                 line);
     return Reply(me, line, true);
   }
   try {
@@ -519,7 +609,7 @@ void ConsoleCommands::Execute(
     } else if (!Utils::stricmp(name, "Disable")) {
       ExecuteDisable(me, args);
     } else if (!Utils::stricmp(name, "Mp")) {
-      ExecuteMp(me, args);
+      ExecuteMp(partOne, me, args);
     } else if (!Utils::stricmp(name, "RemoveItem")) {
       ExecuteRemoveItem(me, args);
     } else if (!Utils::stricmp(name, "Enable")) {
@@ -554,5 +644,5 @@ void ConsoleCommands::Execute(
                  me.GetFormId(), consoleCommandName, e.what());
     return Reply(me, std::string("Failed: ") + e.what(), true);
   }
-  Reply(me, consoleCommandName + " done", false);
+  Reply(me, judged + " done", false);
 }

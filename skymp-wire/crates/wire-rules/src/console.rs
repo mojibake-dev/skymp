@@ -70,8 +70,12 @@ const fn cmd(name: &'static str, short: &'static str, class: Class, rank: Rank, 
 
 /// The first set (thuum docs/verbs/console-commands.md, "Commands, first
 /// set"; COC is an admin's by Eli's word, 2026-10-08, the other ranks await
-/// his review). `mp` is SkyMP's own.
-pub const TABLE: [Command; 28] = [
+/// his review). `mp` is SkyMP's own, and carries TES3MP's player commands
+/// (Eli, 2026-10-08; TES3MP CoreScripts commandHandler.lua /teleport,
+/// /teleportto, moderators'): `mp list` names the players online by number,
+/// `mp tp <n>` brings that player to the caller, `mp tpto <n>` takes the
+/// caller to it, through the server's teleport wherever the two are.
+pub const TABLE: [Command; 31] = [
     cmd("additem", "", Class::Server, Rank::Admin, true),
     cmd("removeitem", "", Class::Server, Rank::Admin, true),
     cmd("equipitem", "", Class::Server, Rank::Admin, true),
@@ -79,6 +83,9 @@ pub const TABLE: [Command; 28] = [
     cmd("disable", "", Class::Server, Rank::Admin, true),
     cmd("enable", "", Class::Server, Rank::Admin, true),
     cmd("mp", "", Class::Server, Rank::Admin, true),
+    cmd("mp list", "", Class::Server, Rank::Player, true),
+    cmd("mp tp", "", Class::Server, Rank::Moderator, true),
+    cmd("mp tpto", "", Class::Server, Rank::Moderator, true),
     cmd("centeroncell", "coc", Class::Server, Rank::Admin, true),
     cmd("moveto", "", Class::Server, Rank::Moderator, true),
     cmd("setpos", "", Class::Server, Rank::Moderator, true),
@@ -179,6 +186,14 @@ mod tests {
         assert_eq!(decide("additem", Rank::Player), Decision::RankTooLow);
         assert_eq!(decide("setav", Rank::Admin), Decision::Run);
         assert_eq!(decide("modav", Rank::Player), Decision::RankTooLow);
+        // TES3MP's player commands on `mp`: the list for everyone, the
+        // teleports a moderator's; any other `mp` an admin's
+        assert_eq!(decide("mp list", Rank::Player), Decision::Run);
+        assert_eq!(decide("mp tp", Rank::Moderator), Decision::Run);
+        assert_eq!(decide("MP TPTO", Rank::Moderator), Decision::Run);
+        assert_eq!(decide("mp tp", Rank::Player), Decision::RankTooLow);
+        assert_eq!(decide("mp", Rank::Moderator), Decision::RankTooLow);
+        assert_eq!(decide("mp nosuch", Rank::Owner), Decision::Unknown);
         // anyone with admin may COC (Eli, 2026-10-08)
         assert_eq!(decide("coc", Rank::Admin), Decision::Run);
         assert_eq!(decide("CenterOnCell", Rank::Owner), Decision::Run);

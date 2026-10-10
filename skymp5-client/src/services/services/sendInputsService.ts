@@ -68,9 +68,11 @@ export class SendInputsService extends ClientListener {
 
         // Send OnEquip for any equips including spell tomes, potions, ingredients
         // Otherwise, the server won't trigger spell learn, potion drink, ingredient eat and Papyrus scripts
+        // thuum docs/verbs/magic-effects.md: reliable, since a lost one left
+        // a potion drunk in this game that the server never consumed
         this.controller.emitter.emit("sendMessage", {
             message: { t: MsgType.OnEquip, baseId: event.baseObj.getFormID() },
-            reliability: "unreliable"
+            reliability: "reliable"
         });
     }
 

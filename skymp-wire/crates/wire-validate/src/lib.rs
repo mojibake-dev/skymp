@@ -110,6 +110,12 @@ pub struct ClientGuard {
     /// stops a flood; the server's casts rule matches each spell hit to a
     /// cast.
     pub cast_budget: TokenBucket,
+    /// Budget for equip reports (OnEquip): a potion's drink, a book's read
+    /// and every item a player puts on go through it (thuum
+    /// docs/verbs/magic-effects.md), and a player's hotkeys or an outfit
+    /// can send a row at once, so sixteen at once and eight a second after
+    /// that only ever stops a flood.
+    pub equip_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -130,6 +136,7 @@ impl Default for ClientGuard {
             shot_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 2, last_refill_ms: 0 },
             on_hit_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 16, last_refill_ms: 0 },
             cast_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 4, last_refill_ms: 0 },
+            equip_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 8, last_refill_ms: 0 },
         }
     }
 }
@@ -442,6 +449,7 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::PlayerBowShot(_) => take(&mut guard.shot_budget, now_ms),
         Message::OnHit(_) => take(&mut guard.on_hit_budget, now_ms),
         Message::SpellCast(_) => take(&mut guard.cast_budget, now_ms),
+        Message::OnEquip(_) => take(&mut guard.equip_budget, now_ms),
         _ => Ok(()),
     }
 }
@@ -1063,6 +1071,22 @@ mod tests {
             assert_eq!(validate(&actor_values(&[6], &[], &[], 1.0), &mut g, 0), Ok(()));
         }
         assert_eq!(validate(&actor_values(&[6], &[], &[], 1.0), &mut g, 0), Err(Reject::Rate));
+    }
+
+    #[test]
+    fn equips_have_a_budget_that_only_stops_a_flood() {
+        use wire_schema::skymp::OnEquip;
+        let drink = Message::OnEquip(OnEquip { base_id: 0x3eadd, ..OnEquip::default() });
+        let mut g = ClientGuard::default();
+        for _ in 0..16 {
+            assert_eq!(validate(&drink, &mut g, 0), Ok(()));
+        }
+        assert_eq!(validate(&drink, &mut g, 0), Err(Reject::Rate));
+        // a second later, eight more
+        for _ in 0..8 {
+            assert_eq!(validate(&drink, &mut g, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&drink, &mut g, 1_000), Err(Reject::Rate));
     }
 
     #[test]

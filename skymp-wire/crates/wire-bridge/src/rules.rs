@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, clock, console, damage, effects, favorites, hostility, markers, melee, movement, racemenu, ranged, rest};
+use wire_rules::{activation, actor_values, appearance, casts, clock, console, damage, effects, favorites, hostility, markers, melee, movement, racemenu, ranged, rest};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -299,6 +299,74 @@ mod ffi {
         z: f32,
     }
 
+    /// How a spell is cast (the record's SPIT casting type; thuum
+    /// docs/verbs/spell-cast.md).
+    #[derive(Debug, Clone, Copy)]
+    enum CastKind {
+        /// One release, one projectile or one touch.
+        FireAndForget,
+        /// A stream held while the hand casts.
+        Concentration,
+    }
+
+    /// A cast as its caster's game made it.
+    #[derive(Debug, Clone, Copy)]
+    struct CastFacts {
+        /// The spell.
+        spell: u32,
+        /// The hand or slot: 0 left, 1 right, 2 voice, 3 instant.
+        hand: u8,
+        /// Fire-and-forget or concentration.
+        kind: CastKind,
+        /// Whether the spell hits an area.
+        area: bool,
+        /// How far from the caster its hit can be, units (its projectile's
+        /// range, from the records).
+        reach: f32,
+        /// Where the caster stood.
+        x: f32,
+        /// Where the caster stood.
+        y: f32,
+        /// Where the caster stood.
+        z: f32,
+    }
+
+    /// A spell hit as the caster's game reported it.
+    #[derive(Debug, Clone, Copy)]
+    struct CastHit {
+        /// The spell.
+        spell: u32,
+        /// The target's form id.
+        target: u32,
+        /// Where the target stands.
+        x: f32,
+        /// Where the target stands.
+        y: f32,
+        /// Where the target stands.
+        z: f32,
+    }
+
+    /// A spell hit's claim on its cast.
+    #[derive(Debug, Clone, Copy)]
+    enum CastCheck {
+        /// A recorded cast covers the hit.
+        Claimed,
+        /// No cast of that spell covers it: refuse.
+        NoCast,
+        /// Casts wait, but the target is beyond their reach: refuse.
+        TooFar,
+    }
+
+    /// A spell hit's claim and, when claimed, the factor on the spell's
+    /// magnitude (1 for a fire-and-forget hit, seconds for a stream's).
+    #[derive(Debug, Clone, Copy)]
+    struct CastClaim {
+        /// Claimed, or why not.
+        check: CastCheck,
+        /// The factor on the magnitude.
+        scale: f32,
+    }
+
     /// A form a RaceMenu look names (thuum ADR-026): its plugin and its id
     /// within it.
     #[derive(Debug, Clone)]
@@ -573,6 +641,21 @@ mod ffi {
         /// The actor is gone: its shots with it.
         fn forget(self: &mut RangedShots, actor: u32);
 
+        /// Every player actor's recent spell casts and open streams.
+        type SpellCasts;
+        /// No casts yet.
+        fn new_spell_casts() -> Box<SpellCasts>;
+        /// `actor` began a cast at `now_ms` (a monotonic clock).
+        fn start(self: &mut SpellCasts, actor: u32, facts: CastFacts, now_ms: u64);
+        /// `actor`'s stream in `hand` ended.
+        fn end(self: &mut SpellCasts, actor: u32, hand: u8);
+        /// Whether `actor` holds a stream open in `hand`.
+        fn is_open(self: &SpellCasts, actor: u32, hand: u8) -> bool;
+        /// A spell hit by `actor`: claims a cast that covers it.
+        fn claim(self: &mut SpellCasts, actor: u32, hit: CastHit, now_ms: u64) -> CastClaim;
+        /// The actor is gone: its casts and streams with it.
+        fn forget(self: &mut SpellCasts, actor: u32);
+
         /// The server's game clock and who has heard it.
         type GameClock;
         /// A clock from server-settings.json's `time` block as JSON text
@@ -590,7 +673,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, ConeFacts, ConsoleDecision, DerivedParts, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, Verdict};
+pub use ffi::{AvBase, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, Verdict};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -979,6 +1062,47 @@ impl RangedShots {
     }
 }
 
+/// Every player actor's recent spell casts and open streams (wire-rules
+/// casts).
+#[derive(Debug, Default)]
+pub struct SpellCasts(casts::Casts);
+
+fn new_spell_casts() -> Box<SpellCasts> {
+    Box::default()
+}
+
+impl SpellCasts {
+    fn start(&mut self, actor: u32, facts: CastFacts, now_ms: u64) {
+        let CastFacts { spell, hand, kind, area, reach, x, y, z } = facts;
+        let kind = match kind {
+            CastKind::Concentration => casts::CastKind::Concentration,
+            _ => casts::CastKind::FireAndForget,
+        };
+        self.0.start(actor, casts::CastFacts { spell, hand, kind, area, reach, x, y, z }, now_ms);
+    }
+
+    fn end(&mut self, actor: u32, hand: u8) {
+        self.0.end(actor, hand);
+    }
+
+    fn is_open(&self, actor: u32, hand: u8) -> bool {
+        self.0.is_open(actor, hand)
+    }
+
+    fn claim(&mut self, actor: u32, hit: CastHit, now_ms: u64) -> CastClaim {
+        let CastHit { spell, target, x, y, z } = hit;
+        match self.0.claim(actor, casts::CastHit { spell, target, x, y, z }, now_ms) {
+            casts::CastCheck::Claimed { scale } => CastClaim { check: CastCheck::Claimed, scale },
+            casts::CastCheck::NoCast => CastClaim { check: CastCheck::NoCast, scale: 0.0 },
+            casts::CastCheck::TooFar => CastClaim { check: CastCheck::TooFar, scale: 0.0 },
+        }
+    }
+
+    fn forget(&mut self, actor: u32) {
+        self.0.forget(actor);
+    }
+}
+
 /// The server's game clock (wire-rules clock).
 #[derive(Debug)]
 pub struct GameClock(clock::Clock);
@@ -1078,6 +1202,24 @@ mod tests {
         assert_eq!(b.check_arrival(7, 0x3c, 0.0, 0.0, 11), JumpCheck::Waiting);
         assert_eq!(b.check_arrival(7, 0x3c, 510.0, 490.0, 12), JumpCheck::Landed);
         assert_eq!(b.check_arrival(7, 0x3c, 0.0, 0.0, 13), JumpCheck::NoPermit);
+    }
+
+    #[test]
+    fn the_bridge_passes_casts_through() {
+        let mut c = new_spell_casts();
+        let flames = CastFacts { spell: 0x12fcd, hand: 1, kind: CastKind::Concentration, area: false, reach: 1_000.0, x: 0.0, y: 0.0, z: 0.0 };
+        let on = |t| CastHit { spell: 0x12fcd, target: 2, x: 150.0, y: 0.0, z: t };
+        assert_eq!(c.claim(7, on(0.0), 0).check, CastCheck::NoCast);
+        c.start(7, flames, 0);
+        assert!(c.is_open(7, 1));
+        let claim = c.claim(7, on(0.0), 200);
+        assert_eq!(claim.check, CastCheck::Claimed);
+        assert!((claim.scale - 0.2).abs() < f32::EPSILON);
+        assert_eq!(c.claim(7, on(5_000.0), 300).check, CastCheck::TooFar);
+        c.end(7, 1);
+        assert!(!c.is_open(7, 1));
+        c.forget(7);
+        assert_eq!(c.claim(7, on(0.0), 400).check, CastCheck::NoCast);
     }
 
     #[test]

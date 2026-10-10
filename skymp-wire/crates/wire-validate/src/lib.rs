@@ -103,6 +103,13 @@ pub struct ClientGuard {
     /// second after that only ever stops a flood; each hit's rules are the
     /// server's.
     pub on_hit_budget: TokenBucket,
+    /// Budget for spell casts and their ends (thuum docs/verbs/spell-cast.md):
+    /// a cast charges before it goes (Firebolt's SPIT charge time is half a
+    /// second) and a stream's start and end are two messages, from two hands
+    /// at once, so eight at once and four a second after that only ever
+    /// stops a flood; the server's casts rule matches each spell hit to a
+    /// cast.
+    pub cast_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -122,6 +129,7 @@ impl Default for ClientGuard {
             console_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
             shot_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 2, last_refill_ms: 0 },
             on_hit_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 16, last_refill_ms: 0 },
+            cast_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 4, last_refill_ms: 0 },
         }
     }
 }
@@ -262,6 +270,21 @@ fn check_game_time(m: &skymp::SetGameTime) -> Result<(), Reject> {
 /// way, radians), thuum docs/verbs/marksman.md.
 fn check_bow_shot(m: &skymp::PlayerBowShot) -> Result<(), Reject> {
     if (0.0..=1.0).contains(&m.power) && (-core::f32::consts::FRAC_PI_2..=core::f32::consts::FRAC_PI_2).contains(&m.aim_angle) {
+        Ok(())
+    } else {
+        Err(Reject::Range)
+    }
+}
+
+/// thuum docs/verbs/spell-cast.md: a cast names a spell, comes from a hand
+/// or slot SkyMP knows (0 left, 1 right, 2 voice, 3 instant), and aims within
+/// a quarter turn of level, as a bow shot does.
+fn check_spell_cast(m: &skymp::SpellCast) -> Result<(), Reject> {
+    let d = &m.data;
+    if d.spell != 0
+        && (0..=3).contains(&d.casting_source)
+        && (-core::f32::consts::FRAC_PI_2..=core::f32::consts::FRAC_PI_2).contains(&d.aim_angle)
+    {
         Ok(())
     } else {
         Err(Reject::Range)
@@ -418,6 +441,7 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::ConsoleCommand(_) => take(&mut guard.console_budget, now_ms),
         Message::PlayerBowShot(_) => take(&mut guard.shot_budget, now_ms),
         Message::OnHit(_) => take(&mut guard.on_hit_budget, now_ms),
+        Message::SpellCast(_) => take(&mut guard.cast_budget, now_ms),
         _ => Ok(()),
     }
 }
@@ -495,6 +519,12 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
                 return Err(Reject::NonFinite);
             }
             check_bow_shot(m)
+        }
+        Message::SpellCast(m) => {
+            if !all_finite(m) {
+                return Err(Reject::NonFinite);
+            }
+            check_spell_cast(m)
         }
         // thuum docs/verbs/console-commands.md: the server's own line, its
         // length bounded at decode (cap::CONSOLE_OUTPUT); the transport
@@ -893,6 +923,37 @@ mod tests {
         }
         assert_eq!(validate(&shot(f32::NAN, 0.0), &mut ClientGuard::default(), 0), Err(Reject::NonFinite));
         assert_eq!(validate(&shot(1.0, f32::INFINITY), &mut ClientGuard::default(), 0), Err(Reject::NonFinite));
+    }
+
+    fn spell_cast(spell: u32, casting_source: i32, aim_angle: f32) -> Message {
+        Message::SpellCast(skymp::SpellCast {
+            data: skymp::SpellCastData { spell, casting_source, aim_angle, ..Default::default() },
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn a_cast_names_a_spell_a_known_hand_and_an_aim_within_bounds() {
+        let mut g = ClientGuard::default();
+        assert_eq!(validate(&spell_cast(0x12fcd, 1, 0.3), &mut g, 0), Ok(()));
+        assert_eq!(validate(&spell_cast(0x12fcd, 3, -1.5), &mut g, 0), Ok(()));
+        for (spell, source, aim) in [(0, 1, 0.0), (0x12fcd, 4, 0.0), (0x12fcd, -1, 0.0), (0x12fcd, 0, 2.0)] {
+            assert_eq!(validate(&spell_cast(spell, source, aim), &mut ClientGuard::default(), 0), Err(Reject::Range), "{spell} {source} {aim}");
+        }
+        assert_eq!(validate(&spell_cast(0x12fcd, 1, f32::NAN), &mut ClientGuard::default(), 0), Err(Reject::NonFinite));
+    }
+
+    #[test]
+    fn casts_eight_at_once_then_four_a_second() {
+        let mut g = ClientGuard::default();
+        for _ in 0..8 {
+            assert_eq!(validate(&spell_cast(0x12fcd, 1, 0.0), &mut g, 0), Ok(()));
+        }
+        assert_eq!(validate(&spell_cast(0x12fcd, 1, 0.0), &mut g, 0), Err(Reject::Rate));
+        for _ in 0..4 {
+            assert_eq!(validate(&spell_cast(0x12fcd, 1, 0.0), &mut g, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&spell_cast(0x12fcd, 1, 0.0), &mut g, 1_000), Err(Reject::Rate));
     }
 
     #[test]

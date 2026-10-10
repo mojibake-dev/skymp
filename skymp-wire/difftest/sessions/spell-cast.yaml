@@ -14,7 +14,10 @@
 # 4 s c1 ends the stream (both relay the end), and its hit at 4.3 s is
 # refused by the fixed server (no open stream) and counted by the legacy
 # one. c2 steps again at 4 s of its own (5.5 s of c1's), so it outlives c1,
-# as in every session.
+# as in every session. The numbers are the first run's (T2 2026-10-10, fork
+# m2-spell 3aef8c78): c2's base health is 100, so the legacy server's four
+# hits leave 0.92, 0.84, 0.76 and 0.68, and the fixed server's two leave 0.98
+# and 0.96; both relay the start and the end to c2.
 id: spell-cast
 clients:
   c1: {profile_id: 9}
@@ -35,3 +38,38 @@ divergences:
     legacy: 0
     wire: 1
     reason: departure detection, graceful close on the wire against RakNet's timeout
+  - client: c2
+    msg: {t: 30, class: Actor, function: StartCombat, selfId: 4278190082, snippetIdx: 4294967295, arguments: [{formId: 20, type: Actor}]}
+    legacy: 0
+    wire: 1
+    reason: c1's spell hit begins a fight; the fixed server tells c2's game (thuum docs/verbs/hostility-sync.md), the legacy server has no hostility sync
+  - client: c2
+    msg: {t: 16, idx: 64, data: {health: 0.9200000166893005}}
+    legacy: 1
+    wire: 0
+    reason: the legacy server counts a spell hit with no cast as a whole second of Flames (8); the fixed server refuses it (E_SPELL_NO_CAST)
+  - client: c2
+    msg: {t: 16, idx: 64, data: {health: 0.8400000333786011}}
+    legacy: 1
+    wire: 0
+    reason: the legacy server counts the stream's first reported hit as a whole second of Flames
+  - client: c2
+    msg: {t: 16, idx: 64, data: {health: 0.7600000500679016}}
+    legacy: 1
+    wire: 0
+    reason: the legacy server counts the stream's second reported hit as a whole second of Flames
+  - client: c2
+    msg: {t: 16, idx: 64, data: {health: 0.6800000667572021}}
+    legacy: 1
+    wire: 0
+    reason: the legacy server counts a hit after the stream's end; the fixed server refuses it (no open stream)
+  - client: c2
+    msg: {t: 16, idx: 64, data: {health: 0.9800000190734863}}
+    legacy: 0
+    wire: 1
+    reason: the fixed server counts the stream's first hit by the time it held its target, at most 250 ms (2 of Flames' 8 a second)
+  - client: c2
+    msg: {t: 16, idx: 64, data: {health: 0.9600000381469727}}
+    legacy: 0
+    wire: 1
+    reason: the fixed server counts the stream's second hit the same way, 400 ms after the first and so the 250 ms cap again

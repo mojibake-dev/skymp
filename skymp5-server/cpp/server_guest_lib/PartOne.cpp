@@ -542,6 +542,9 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           // a departing caster's streams end with it (thuum
           // docs/verbs/spell-cast.md)
           this_->pImpl->spellCasts->forget(actor->GetFormId());
+          // TGM and TIM are the session's (thuum docs/verbs/god-mode.md)
+          actor->SetGodMode(false);
+          actor->SetImmortal(false);
         }
         this_->serverState.Disconnect(userId);
         this_->serverState.disconnectingUserId = Networking::InvalidUserId;

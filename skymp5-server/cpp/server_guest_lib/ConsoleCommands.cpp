@@ -475,6 +475,34 @@ void ExecuteToggleCollision(MpActor& caller)
     .Execute(&caller, SpSnippetMode::kNoReturnResult);
 }
 
+// ToggleGodMode (TGM) and ToggleImmortalMode (TIM), an admin's (thuum
+// docs/verbs/god-mode.md, M2): the server's flags for the caller's session,
+// which its damage, arrow and death rules read; TGM also sets the caller's
+// own game's god mode (Debug.SetGodMode), for what that game computes
+// itself (magicka, stamina, encumbrance). The line says the state set.
+std::string ExecuteToggleGodMode(MpActor& caller)
+{
+  const bool on = !caller.IsGodMode();
+  caller.SetGodMode(on);
+  spdlog::info("ConsoleCommands: {:x} god mode {}", caller.GetFormId(),
+               on ? "on" : "off");
+  const std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+    args{ on };
+  SpSnippet("Debug", "SetGodMode", args)
+    .Execute(&caller, SpSnippetMode::kNoReturnResult);
+  return on ? "god mode on" : "god mode off";
+}
+
+std::string ExecuteToggleImmortalMode(MpActor& caller)
+{
+  const bool on = !caller.IsImmortal();
+  caller.SetImmortal(on);
+  spdlog::info("ConsoleCommands: {:x} immortal mode {}", caller.GetFormId(),
+               on ? "on" : "off");
+  return on ? "immortal mode on" : "immortal mode off";
+}
+
 // The rank the gamemode recorded for the player wins; without one, every
 // player is an owner when the server says so (enableConsoleCommandsForAll,
 // the lab's setting), else the record's fallback (consoleCommandsAllowed
@@ -646,6 +674,13 @@ void ConsoleCommands::Execute(
     } else if (!Utils::stricmp(name, "TCL") ||
                !Utils::stricmp(name, "ToggleCollision")) {
       ExecuteToggleCollision(me);
+    } else if (!Utils::stricmp(name, "TGM") ||
+               !Utils::stricmp(name, "ToggleGodMode")) {
+      return Reply(me, judged + " done: " + ExecuteToggleGodMode(me), false);
+    } else if (!Utils::stricmp(name, "TIM") ||
+               !Utils::stricmp(name, "ToggleImmortalMode")) {
+      return Reply(me, judged + " done: " + ExecuteToggleImmortalMode(me),
+                   false);
     } else if (!Utils::stricmp(name, "SetAV") ||
                !Utils::stricmp(name, "SetActorValue")) {
       ExecuteActorValue(me, "set", args);

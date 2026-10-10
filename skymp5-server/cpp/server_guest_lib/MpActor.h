@@ -278,6 +278,14 @@ public:
   // CTDA), each MGEF id as the load order numbers it; empty for none
   static std::vector<espm::Effects::Effect> EffectsOf(WorldState* worldState,
                                                       uint32_t source);
+  // thuum docs/verbs/god-mode.md: TGM and TIM, the server's flags for the
+  // player's session (cleared at its departure). A god actor takes no
+  // damage from another actor and spends no arrow; an immortal actor's
+  // health stops at one point instead of reaching nothing
+  bool IsGodMode() const noexcept;
+  void SetGodMode(bool on) noexcept;
+  bool IsImmortal() const noexcept;
+  void SetImmortal(bool on) noexcept;
   // MagicEffects to `listener`'s player: the effects running on this actor,
   // for a game that first sees it (MpObjectReference::Subscribe)
   void SendMagicEffectsTo(MpActor& listener);
@@ -300,6 +308,10 @@ public:
   std::optional<AnimationData> GetLastAnimEvent() const;
 
 private:
+  // thuum docs/verbs/god-mode.md: `healthPercentage`, or one point for an
+  // immortal actor whose health would reach nothing
+  float ImmortalHealth(float healthPercentage);
+
   // thuum docs/verbs/magic-effects.md: Health, Magicka and Stamina moved by
   // `deltas` (points, against the maximum before the change, `maxBefore`,
   // and the maximum after it), each only where `touched`; a kill, if any,

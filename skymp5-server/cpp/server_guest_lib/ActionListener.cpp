@@ -1606,7 +1606,10 @@ void ActionListener::OnPlayerBowShot(const RawMessageData& rawMsgData,
                         ac->GetFormId(), msg.ammoId, msg.weaponId);
   }
 
-  ac->RemoveItem(msg.ammoId, 1, nullptr);
+  if (!ac->IsGodMode()) {
+    // thuum docs/verbs/god-mode.md: TGM, unlimited arrows
+    ac->RemoveItem(msg.ammoId, 1, nullptr);
+  }
 
   // the shot waits for its hit (one), and each neighbour's game draws the
   // arrow from the shooter's figure
@@ -2629,6 +2632,11 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
   float damage =
     partOne.CalculateDamage(*aggressor, targetActor, hitData) * damageMult;
   damage = damage < 0.f || !std::isfinite(damage) ? 0.f : damage;
+  if (targetActor.IsGodMode()) {
+    // thuum docs/verbs/god-mode.md: TGM, no damage taken; the fight still
+    // begins below
+    damage = 0.f;
+  }
   float outBaseHealth = 0.f;
   currentActorValues.healthPercentage = CalculateCurrentHealthPercentage(
     targetActor, damage, healthPercentage, &outBaseHealth);

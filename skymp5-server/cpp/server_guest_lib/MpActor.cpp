@@ -101,6 +101,10 @@ struct MpActor::Impl
   std::vector<std::pair<uint32_t, MpObjectReference*>> droppedItemsQueue;
   std::optional<AnimationData> animationData;
 
+  // thuum docs/verbs/god-mode.md: TGM and TIM for the session
+  bool godMode = false;
+  bool immortal = false;
+
   // this is a hot fix attempt to make permanent restoration potions work
   std::chrono::system_clock::time_point nextRestorationTime{};
 };
@@ -696,8 +700,13 @@ void MpActor::SetPercentage(espm::ActorValue av, float percentage)
     return;
   }
   if (av == espm::ActorValue::Health && percentage <= 0.f) {
-    Kill(nullptr);
-    return;
+    if (pImpl->immortal) {
+      // thuum docs/verbs/god-mode.md: TIM, one point left instead of death
+      percentage = 1.f / std::max(GetMaximumValues().health, 1.f);
+    } else {
+      Kill(nullptr);
+      return;
+    }
   }
   EditChangeForm([&](MpChangeForm& changeForm) {
     switch (av) {
@@ -726,12 +735,13 @@ void MpActor::SetPercentages(const ActorValues& actorValues,
   if (IsDead() || pImpl->isRespawning) {
     return;
   }
-  if (actorValues.healthPercentage == 0.f) {
+  const float health = ImmortalHealth(actorValues.healthPercentage);
+  if (health == 0.f) {
     Kill(aggressor);
     return;
   }
   EditChangeForm([&](MpChangeForm& changeForm) {
-    changeForm.actorValues.healthPercentage = actorValues.healthPercentage;
+    changeForm.actorValues.healthPercentage = health;
     changeForm.actorValues.magickaPercentage = actorValues.magickaPercentage;
     changeForm.actorValues.staminaPercentage = actorValues.staminaPercentage;
   });
@@ -791,8 +801,20 @@ void MpActor::NetSetPercentages(
   const ActorValues& actorValues, MpActor* aggressor,
   const std::optional<std::vector<espm::ActorValue>>& avFilter)
 {
-  NetSendChangeValues(actorValues, avFilter);
-  SetPercentages(actorValues, aggressor);
+  // an immortal actor's game hears its one point, never nothing, which its
+  // own game would take for a death (thuum docs/verbs/god-mode.md)
+  ActorValues values = actorValues;
+  values.healthPercentage = ImmortalHealth(values.healthPercentage);
+  NetSendChangeValues(values, avFilter);
+  SetPercentages(values, aggressor);
+}
+
+float MpActor::ImmortalHealth(float healthPercentage)
+{
+  if (!pImpl->immortal || healthPercentage > 0.f) {
+    return healthPercentage;
+  }
+  return 1.f / std::max(GetMaximumValues().health, 1.f);
 }
 
 std::chrono::steady_clock::time_point
@@ -2275,17 +2297,19 @@ std::optional<std::vector<RunningEffect>> RunningEffectsOf(
 // Each change's points by Health, Magicka and Stamina (CommonLibSSE-NG
 // include/RE/A/ActorValues.h: kHealth 24, kMagicka 25, kStamina 26); a
 // change of any other actor value counts through GetEffectModifier where
-// it matters (the regeneration rates)
+// it matters (the regeneration rates). A god actor (thuum
+// docs/verbs/god-mode.md) loses nothing of a current value, while a buff's
+// maximum still moves.
 template <class Changes>
 void SumAttributeChanges(const Changes& changes, std::array<float, 3>& deltas,
-                         std::array<bool, 3>& touched)
+                         std::array<bool, 3>& touched, bool god)
 {
   for (const auto& c : changes) {
     const int i = c.av == 24 ? 0 : c.av == 25 ? 1 : c.av == 26 ? 2 : -1;
     if (i < 0) {
       continue;
     }
-    deltas[i] += c.current + c.modifier;
+    deltas[i] += (god && c.current < 0.f ? 0.f : c.current) + c.modifier;
     touched[i] = true;
   }
 }
@@ -2591,10 +2615,10 @@ void MpActor::ApplyEffects(uint32_t source,
       *facts, scale, caster,
       stream ? skymp::rules::EffectArrival::Stream
              : skymp::rules::EffectArrival::Once);
-    SumAttributeChanges(applied.changes, deltas, touched);
+    SumAttributeChanges(applied.changes, deltas, touched, pImpl->godMode);
     if (applied.has_entry) {
       SumAttributeChanges(skymp::rules::admit_effect(entries, applied.entry),
-                          deltas, touched);
+                          deltas, touched, pImpl->godMode);
     } else if (!applied.changes.empty() && !stream) {
       // an effect without duration: shown once (a stream's hits show
       // through the caster's figure's stream instead)
@@ -2641,7 +2665,7 @@ void MpActor::AdvanceEffects(float dtSeconds)
     [&](MpChangeForm& changeForm) { changeForm.runningEffects = running; });
   std::array<float, 3> deltas{};
   std::array<bool, 3> touched{};
-  SumAttributeChanges(changes, deltas, touched);
+  SumAttributeChanges(changes, deltas, touched, pImpl->godMode);
   ApplyAttributeDeltas(deltas, touched, maxBefore, 0);
   if (entries.size() != entriesBefore) {
     // an effect ended: every game drops it (each counts the seconds down
@@ -2658,6 +2682,26 @@ void MpActor::SendMagicEffectsTo(MpActor& listener)
   }
   const auto entries = EffectEntriesOf(ChangeForm(), worldState->espmFiles);
   listener.SendToUser(MagicEffectsOf(GetIdx(), entries, {}), true);
+}
+
+bool MpActor::IsGodMode() const noexcept
+{
+  return pImpl->godMode;
+}
+
+void MpActor::SetGodMode(bool on) noexcept
+{
+  pImpl->godMode = on;
+}
+
+bool MpActor::IsImmortal() const noexcept
+{
+  return pImpl->immortal;
+}
+
+void MpActor::SetImmortal(bool on) noexcept
+{
+  pImpl->immortal = on;
 }
 
 bool MpActor::HasRunningEffects() const

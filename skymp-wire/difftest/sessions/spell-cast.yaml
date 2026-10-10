@@ -1,0 +1,37 @@
+# difftest spell-cast (M2, thuum docs/verbs/spell-cast.md): c1 and c2 are new
+# characters (profiles 9 and 10, actors 0xff000002 and 0xff000003: see
+# melee-reach), c2 50 units off the spawn. A new character knows Flames
+# (Skyrim.esm SPEL 0x12FCD, 77773, concentration, 8 a second) from the
+# Player record's spell list, so c1 wears it in its right hand at 2 s
+# (UpdateEquipment as its game reports it; both stacks take it). At 2.5 s c1
+# reports a Flames hit on c2 with no cast: the legacy server counts it, the
+# fixed one refuses it (E_SPELL_NO_CAST). At 3 s c1 starts the stream
+# (SpellCast, castingSource 1, the right hand; both stacks relay it to c2),
+# and its hits at 3.4 s and 3.8 s each count the time since the stream's
+# last counted one on the fixed server, at most 250 ms (the gaps are 400 ms,
+# so each counts the cap whatever the network's jitter: 2 of Flames' 8),
+# where the legacy server counts each report as a whole second of it. At
+# 4 s c1 ends the stream (both relay the end), and its hit at 4.3 s is
+# refused by the fixed server (no open stream) and counted by the legacy
+# one. c2 steps again at 4 s of its own (5.5 s of c1's), so it outlives c1,
+# as in every session.
+id: spell-cast
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 2000, send: {t: 5, idx: 2, data: {inv: {entries: []}, rightSpell: 77773}, numChanges: 1}}
+  - {client: c1, at_ms: 2500, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 77773, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
+  - {client: c1, at_ms: 3000, send: {t: 23, data: {caster: 20, target: 4278190083, spell: 77773, isDualCasting: false, interruptCast: false, castingSource: 1, aimAngle: 0, aimHeading: 0, actorAnimationVariables: {booleans: [], floats: [], integers: []}}}}
+  - {client: c1, at_ms: 3400, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 77773, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
+  - {client: c1, at_ms: 3800, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 77773, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
+  - {client: c1, at_ms: 4000, send: {t: 23, data: {caster: 20, target: 4278190083, spell: 77773, isDualCasting: false, interruptCast: true, castingSource: 1, aimAngle: 0, aimHeading: 0, actorAnimationVariables: {booleans: [], floats: [], integers: []}}}}
+  - {client: c1, at_ms: 4300, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 77773, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
+  - {client: c2, at_ms: 0, move: {dx: 50}}
+  - {client: c2, at_ms: 4000, move: {dx: 60}}
+divergences:
+  - client: c2
+    msg: {t: 25, idx: 2}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

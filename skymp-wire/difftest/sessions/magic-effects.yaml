@@ -13,8 +13,10 @@
 # legacy server drinks it as a heal (its magnitude restored) and has c2's
 # game drink it too; the fixed server takes the poison and applies nothing.
 # c2 steps again at 3.5 s of its own (5 s of c1's), so it outlives c1, as in
-# every session. The divergences besides the departure and the console's
-# lines are declared from the first run.
+# every session. The numbers are the first run's (T2 2026-10-10, fork
+# m2-effects a9da1873): c1 starts at full health, so the legacy server's
+# fortify and its poison "heal" each send it health 1, and the fixed
+# server's fortify sends it once (the value moves with the maximum).
 id: magic-effects
 clients:
   c1: {profile_id: 9}
@@ -37,3 +39,28 @@ divergences:
     legacy: 0
     wire: 1
     reason: departure detection, graceful close on the wire against RakNet's timeout
+  - client: c1
+    msg: {t: 16, idx: 2, data: {health: 1}}
+    legacy: 2
+    wire: 1
+    reason: the legacy server restores the fortify's 20 at once and drinks the poison as a heal, a health message each; the fixed server's fortify moves the value with the maximum, one message, and a poison is not drunk
+  - client: c1
+    msg: {t: 43, idx: 2, effects: [{effect: 256755, source: 256754, magnitude: 20, remaining: 60}]}
+    legacy: 0
+    wire: 1
+    reason: the fixed server tells every game that sees c1 its running effects (MagicEffects, thuum docs/verbs/magic-effects.md), its own included; the legacy server has no such message
+  - client: c2
+    msg: {t: 43, idx: 2, effects: [{effect: 256755, source: 256754, magnitude: 20, remaining: 60}]}
+    legacy: 0
+    wire: 1
+    reason: c2's game hears c1's fortify the same way, to show its shader on c1's figure
+  - client: c2
+    msg: {t: 30, class: Actor, function: EquipItem, selfId: 4278190082, snippetIdx: 4294967295, arguments: [{formId: 256754, type: Potion}, false, false]}
+    legacy: 1
+    wire: 0
+    reason: the legacy server has c2's game drink c1's fortify on c1's figure; the fixed server shows it through MagicEffects instead
+  - client: c2
+    msg: {t: 30, class: Actor, function: EquipItem, selfId: 4278190082, snippetIdx: 4294967295, arguments: [{formId: 239012, type: Potion}, false, false]}
+    legacy: 1
+    wire: 0
+    reason: the legacy server has c2's game drink c1's poison on c1's figure too; the fixed server applies no poison by drinking

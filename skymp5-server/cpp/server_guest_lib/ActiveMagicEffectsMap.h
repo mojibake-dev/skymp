@@ -5,6 +5,8 @@
 #include <optional>
 #include <simdjson.h>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 class ActiveMagicEffectsMap
 {
@@ -28,6 +30,11 @@ public:
   }
 
   std::vector<espm::Effects::Effect> GetAllEffects() const noexcept;
+
+  // thuum docs/verbs/magic-effects.md: every entry with its actor value and
+  // end time as kept in memory (the JSON's end time goes through a "%c"
+  // string, which does not read back reliably)
+  std::vector<std::pair<espm::ActorValue, Entry>> GetEntries() const;
 
   std::optional<std::reference_wrapper<const Entry>> Get(
     espm::ActorValue actorValue) const noexcept;

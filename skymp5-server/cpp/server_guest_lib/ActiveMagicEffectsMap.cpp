@@ -95,3 +95,9 @@ bool ActiveMagicEffectsMap::Empty() const noexcept
 {
   return effects.empty();
 }
+
+std::vector<std::pair<espm::ActorValue, ActiveMagicEffectsMap::Entry>>
+ActiveMagicEffectsMap::GetEntries() const
+{
+  return { effects.begin(), effects.end() };
+}

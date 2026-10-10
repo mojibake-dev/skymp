@@ -106,8 +106,13 @@ impl Shots {
     }
 
     /// A hit by `actor` with `weapon` on a target at (x, y, z), at `now_ms`:
-    /// claims the oldest unused shot of that weapon whose arrow can have
-    /// reached the target since, and answers its power.
+    /// claims the newest unused shot of that weapon whose arrow can have
+    /// reached the target since, and answers its power. Newest, because a
+    /// shot that missed stays unclaimed until its window ends, and a later
+    /// hit must not take its power (b-marksman 20261010-082114: a half
+    /// draw's hit claimed a full-draw shot that had hit nothing); two arrows
+    /// in flight at once that land out of order swap shots, both at their
+    /// own draws' powers near enough.
     pub fn claim(&mut self, actor: u32, weapon: u32, x: f32, y: f32, z: f32, now_ms: u64) -> ShotCheck {
         let Some(shots) = self.per_actor.get_mut(&actor) else {
             return ShotCheck::NoShot;
@@ -118,7 +123,7 @@ impl Shots {
         }
         let mut any = false;
         let mut found = None;
-        for (i, s) in shots.iter().enumerate() {
+        for (i, s) in shots.iter().enumerate().rev() {
             if s.weapon != weapon {
                 continue;
             }
@@ -210,13 +215,14 @@ mod tests {
     }
 
     #[test]
-    fn the_oldest_reaching_shot_is_claimed_first_and_a_full_quiver_drops_the_oldest() {
+    fn the_newest_reaching_shot_is_claimed_first_and_a_full_quiver_drops_the_oldest() {
         let mut s = Shots::default();
         s.record(1, shot(BOW, 1.0, 0.0, 0.0, 0.0), 0);
         s.record(1, shot(BOW, 1.0, 5_000.0, 0.0, 0.0), 50);
-        // only the second reaches a target next to it yet
-        assert_eq!(s.claim(1, BOW, 5_100.0, 0.0, 0.0, 60), ShotCheck::Claimed { power: 1.0 });
-        assert_eq!(s.claim(1, BOW, 100.0, 0.0, 0.0, 70), ShotCheck::Claimed { power: 1.0 });
+        // a target next to the first shot's spot that only the first reaches
+        // in time: the second is newer but too far
+        assert_eq!(s.claim(1, BOW, 100.0, 0.0, 0.0, 60), ShotCheck::Claimed { power: 1.0 });
+        assert_eq!(s.claim(1, BOW, 5_100.0, 0.0, 0.0, 70), ShotCheck::Claimed { power: 1.0 });
         assert_eq!(s.claim(1, BOW, 100.0, 0.0, 0.0, 80), ShotCheck::NoShot);
         for (_, t) in (0..=MAX_SHOTS).zip(100_u64..) {
             s.record(1, shot(BOW, 1.0, 0.0, 0.0, 0.0), t);
@@ -239,13 +245,22 @@ mod tests {
     }
 
     #[test]
+    fn a_shot_that_missed_does_not_take_a_later_hits_power() {
+        let mut s = Shots::default();
+        // a full draw that hits nothing, then a half draw that hits
+        s.record(1, shot(BOW, 1.0, 0.0, 0.0, 0.0), 0);
+        s.record(1, shot(BOW, 0.35, 0.0, 0.0, 0.0), 10_000);
+        assert_eq!(s.claim(1, BOW, 250.0, 0.0, 0.0, 10_100), ShotCheck::Claimed { power: 0.35 });
+    }
+
+    #[test]
     fn a_hit_counts_at_its_shots_power() {
         let mut s = Shots::default();
-        // a half draw's arrow, then a full draw's, each claimed by its own hit
+        // a half draw's arrow and its hit, then a full draw's and its hit
         s.record(1, shot(BOW, 0.35, 0.0, 0.0, 0.0), 0);
-        s.record(1, shot(BOW, 1.0, 0.0, 0.0, 0.0), 10);
         assert_eq!(s.claim(1, BOW, 100.0, 0.0, 0.0, 20), ShotCheck::Claimed { power: 0.35 });
-        assert_eq!(s.claim(1, BOW, 100.0, 0.0, 0.0, 30), ShotCheck::Claimed { power: 1.0 });
+        s.record(1, shot(BOW, 1.0, 0.0, 0.0, 0.0), 1_000);
+        assert_eq!(s.claim(1, BOW, 100.0, 0.0, 0.0, 1_020), ShotCheck::Claimed { power: 1.0 });
         // a power outside 0 to 1 is held to it; one that is not a number is
         // not a shot
         s.record(1, shot(BOW, 4.0, 0.0, 0.0, 0.0), 40);

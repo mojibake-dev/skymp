@@ -568,7 +568,7 @@ mod ffi {
         /// `actor` loosed `shot` at `now_ms` (a monotonic clock).
         fn record(self: &mut RangedShots, actor: u32, shot: ShotFacts, now_ms: u64);
         /// A hit by `actor` with `weapon` on a target at (x, y, z): claims
-        /// the oldest unused shot whose arrow can have reached it.
+        /// the newest unused shot whose arrow can have reached it.
         fn claim(self: &mut RangedShots, actor: u32, weapon: u32, x: f32, y: f32, z: f32, now_ms: u64) -> ShotClaim;
         /// The actor is gone: its shots with it.
         fn forget(self: &mut RangedShots, actor: u32);

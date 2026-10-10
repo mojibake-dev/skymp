@@ -2516,16 +2516,12 @@ void MpActor::ReapplyMagicEffects()
     const auto& files = worldState->espmFiles;
     auto entries = EffectEntriesOf(ChangeForm(), files);
     const auto now = std::chrono::system_clock::now();
-    for (const auto& j : ChangeForm().activeMagicEffects.ToJson()) {
+    for (const auto& [av, legacy] :
+         ChangeForm().activeMagicEffects.GetEntries()) {
       try {
-        espm::Effects::Effect effect;
-        effect.effectId = j.at("effectId").get<uint32_t>();
-        effect.magnitude = j.at("magnitude").get<float>();
-        effect.duration = j.at("duration").get<uint32_t>();
-        const auto endTime = Viet::TimeUtils::SystemTimeFrom(
-          j.at("endTime").get<std::string>());
+        const espm::Effects::Effect& effect = legacy.data;
         const float remaining =
-          std::chrono::duration<float>(endTime - now).count();
+          std::chrono::duration<float>(legacy.endTime - now).count();
         if (remaining <= 0.f) {
           continue;
         }

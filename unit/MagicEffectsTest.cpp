@@ -8,6 +8,7 @@
 #include "libespm/ALCH.h"
 #include "libespm/espm.h"
 #include <catch2/catch_all.hpp>
+#include <optional>
 #include <simdjson.h>
 
 PartOne& GetPartOne();
@@ -96,6 +97,41 @@ TEST_CASE("A Fortify Health raises the maximum while it runs and gives it "
   REQUIRE(actor.GetMaximumValues().health == Catch::Approx(100.f));
   REQUIRE(Health(actor) == Catch::Approx(0.7f));
   REQUIRE(!actor.HasRunningEffects());
+  Leave(p);
+}
+
+// The actor's own game hears its effects (every actor listens to itself):
+// a set with the fortify and its 60 s, then an empty set at its end
+TEST_CASE("The games that see an actor hear its running effects",
+          "[MagicEffects][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& actor = Drinker(p, 1.f);
+  auto last = [&]() -> std::optional<nlohmann::json> {
+    std::optional<nlohmann::json> found;
+    for (auto& m : p.Messages()) {
+      if (m.userId == 0 && m.j.contains("t") && m.j["t"] == 43) {
+        REQUIRE(m.reliable);
+        found = m.j;
+      }
+    }
+    return found;
+  };
+
+  p.Messages().clear();
+  Drink(p, actor, 0x3EAF2);
+  auto set = last();
+  REQUIRE(set);
+  REQUIRE((*set)["effects"].size() == 1);
+  REQUIRE((*set)["effects"][0]["effect"] == 0x3EAF3);
+  REQUIRE((*set)["effects"][0]["remaining"].get<float>() ==
+          Catch::Approx(60.f));
+
+  p.Messages().clear();
+  actor.AdvanceEffects(61.f);
+  set = last();
+  REQUIRE(set);
+  REQUIRE((*set)["effects"].empty());
   Leave(p);
 }
 

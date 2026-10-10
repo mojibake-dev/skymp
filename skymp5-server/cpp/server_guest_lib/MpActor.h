@@ -273,6 +273,9 @@ public:
   // The running buffs' sum on `av`: the temporary modifier the maximum and
   // the regeneration rates count
   float GetEffectModifier(espm::ActorValue av) const;
+  // MagicEffects to `listener`'s player: the effects running on this actor,
+  // for a game that first sees it (MpObjectReference::Subscribe)
+  void SendMagicEffectsTo(MpActor& listener);
 
   bool GetConsoleCommandsAllowedFlag() const;
   void SetConsoleCommandsAllowedFlag(bool newValue);

@@ -39,6 +39,7 @@
 #include <utility>
 
 #include "ChangeValuesMessage.h"
+#include "MagicEffectsMessage.h"
 #include "TeleportMessage.h"
 #include "UpdateEquipmentMessage.h"
 
@@ -2481,6 +2482,28 @@ void SumAttributeChanges(const Changes& changes, std::array<float, 3>& deltas,
     touched[i] = true;
   }
 }
+
+// The running effects as MagicEffects, and `shownOnce` (effects applied at
+// once, 0 seconds left) beside them
+MagicEffectsMessage MagicEffectsOf(
+  uint32_t idx, const rust::Vec<skymp::rules::EffectEntry>& entries,
+  const std::vector<MagicEffectsMessage::Effect>& shownOnce)
+{
+  MagicEffectsMessage msg;
+  msg.idx = idx;
+  for (const auto& e : entries) {
+    MagicEffectsMessage::Effect effect;
+    effect.effect = e.facts.effect;
+    effect.source = e.facts.source;
+    effect.magnitude = e.facts.magnitude;
+    effect.remaining = std::max(e.facts.duration_s - e.elapsed_s, 0.f);
+    msg.effects.push_back(effect);
+  }
+  for (const auto& effect : shownOnce) {
+    msg.effects.push_back(effect);
+  }
+  return msg;
+}
 }
 
 void MpActor::ApplyEffects(uint32_t source,
@@ -2494,6 +2517,8 @@ void MpActor::ApplyEffects(uint32_t source,
   const auto& files = worldState->espmFiles;
   const BaseActorValues maxBefore = GetMaximumValues();
   auto entries = EffectEntriesOf(ChangeForm(), files);
+  const size_t entriesBefore = entries.size();
+  std::vector<MagicEffectsMessage::Effect> shownOnce;
   std::array<float, 3> deltas{};
   std::array<bool, 3> touched{};
   for (const auto& effect : effects) {
@@ -2513,8 +2538,17 @@ void MpActor::ApplyEffects(uint32_t source,
     if (applied.has_entry) {
       SumAttributeChanges(skymp::rules::admit_effect(entries, applied.entry),
                           deltas, touched);
+    } else if (!applied.changes.empty() && !stream) {
+      // an effect without duration: shown once (a stream's hits show
+      // through the caster's figure's stream instead)
+      MagicEffectsMessage::Effect once;
+      once.effect = facts->effect;
+      once.source = source;
+      once.magnitude = facts->magnitude * scale;
+      shownOnce.push_back(once);
     }
   }
+  const bool setChanged = entries.size() != entriesBefore;
   auto running = RunningEffectsOf(entries, files);
   EditChangeForm(
     [&](MpChangeForm& changeForm) { changeForm.runningEffects = running; });
@@ -2522,6 +2556,10 @@ void MpActor::ApplyEffects(uint32_t source,
     worldState->TrackEffects(GetFormId());
   }
   ApplyAttributeDeltas(deltas, touched, maxBefore, caster);
+  if (setChanged || !shownOnce.empty()) {
+    SendMessageToActorListeners(MagicEffectsOf(GetIdx(), entries, shownOnce),
+                                true);
+  }
 }
 
 void MpActor::AdvanceEffects(float dtSeconds)
@@ -2539,6 +2577,7 @@ void MpActor::AdvanceEffects(float dtSeconds)
   const auto& files = worldState->espmFiles;
   const BaseActorValues maxBefore = GetMaximumValues();
   auto entries = EffectEntriesOf(ChangeForm(), files);
+  const size_t entriesBefore = entries.size();
   const auto changes = skymp::rules::advance_effects(entries, dtSeconds);
   auto running = RunningEffectsOf(entries, files);
   EditChangeForm(
@@ -2547,6 +2586,21 @@ void MpActor::AdvanceEffects(float dtSeconds)
   std::array<bool, 3> touched{};
   SumAttributeChanges(changes, deltas, touched);
   ApplyAttributeDeltas(deltas, touched, maxBefore, 0);
+  if (entries.size() != entriesBefore) {
+    // an effect ended: every game drops it (each counts the seconds down
+    // itself, so a running one needs no message)
+    SendMessageToActorListeners(MagicEffectsOf(GetIdx(), entries, {}), true);
+  }
+}
+
+void MpActor::SendMagicEffectsTo(MpActor& listener)
+{
+  WorldState* worldState = GetParent();
+  if (!worldState || !HasRunningEffects()) {
+    return;
+  }
+  const auto entries = EffectEntriesOf(ChangeForm(), worldState->espmFiles);
+  listener.SendToUser(MagicEffectsOf(GetIdx(), entries, {}), true);
 }
 
 bool MpActor::HasRunningEffects() const

@@ -8,6 +8,7 @@
 #include "libespm/ALCH.h"
 #include "libespm/espm.h"
 #include <catch2/catch_all.hpp>
+#include <chrono>
 #include <optional>
 #include <simdjson.h>
 
@@ -149,6 +150,41 @@ TEST_CASE("A poison is not drunk", "[MagicEffects][espm]")
   p.GetActionListener().OnEquip(raw, msg);
   REQUIRE(Health(actor) == Catch::Approx(0.5f));
   REQUIRE(!actor.HasRunningEffects());
+  Leave(p);
+}
+
+// An older record's legacy effect (FortifyHealRate01's AlchFortifyHealRate
+// 0x3EB06, a peak value modifier with Recover on the health regeneration
+// multiplier, actor value 155: 50 for 300 s, 100 s left) and the
+// multiplier the legacy path set (base times mult times 4, a patch)
+TEST_CASE("An older record's legacy effect becomes a running one with the "
+          "time it has left",
+          "[MagicEffects][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& actor = Drinker(p, 1.f);
+  MpChangeForm changeForm = actor.GetChangeForm();
+  ActiveMagicEffectsMap::Entry legacy;
+  legacy.data.effectId = 0x3EB06;
+  legacy.data.magnitude = 50.f;
+  legacy.data.duration = 300;
+  legacy.endTime =
+    std::chrono::system_clock::now() + std::chrono::seconds(100);
+  changeForm.activeMagicEffects.Add(static_cast<espm::ActorValue>(155),
+                                    legacy);
+  changeForm.actorValues.healRateMult = 600.f;
+  actor.ApplyChangeForm(changeForm);
+
+  REQUIRE(actor.GetChangeForm().activeMagicEffects.Empty());
+  REQUIRE(actor.HasRunningEffects());
+  const auto& running = *actor.GetChangeForm().runningEffects;
+  REQUIRE(running.size() == 1);
+  REQUIRE(running[0].effect == FormDesc::FromString("3eb06:Skyrim.esm"));
+  REQUIRE(running[0].elapsedS == Catch::Approx(200.f).margin(5.f));
+  REQUIRE(actor.GetEffectModifier(
+            espm::ActorValue::HealRateMult_or_CombatHealthRegenMultMod) ==
+          Catch::Approx(50.f));
+  REQUIRE(actor.GetChangeForm().actorValues.healRateMult < 600.f);
   Leave(p);
 }
 

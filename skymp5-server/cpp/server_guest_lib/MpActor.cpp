@@ -2145,184 +2145,6 @@ void MpActor::SetActorValue(espm::ActorValue actorValue, float value)
   });
 }
 
-// TODO: only used in legacy MGEF implementation, remove when MGEF is rewritten
-void MpActor::SetActorValues(const ActorValues& actorValues)
-{
-  NetSendChangeValues(actorValues, std::nullopt);
-  EditChangeForm(
-    [&](MpChangeForm& changeForm) { changeForm.actorValues = actorValues; });
-}
-
-void MpActor::ApplyMagicEffect(espm::Effects::Effect& effect, bool hasSweetpie,
-                               bool durationOverriden)
-{
-  WorldState* worldState = GetParent();
-  auto data = espm::GetData<espm::MGEF>(effect.effectId, worldState).data;
-
-  if (data.effectType == espm::MGEF::EffectType::CureDisease) {
-    spdlog::trace("Curing all diseases");
-    auto spells = ChangeForm().learnedSpells.GetLearnedSpells();
-    for (auto spellId : spells) {
-      auto spellData = espm::GetData<espm::SPEL>(spellId, worldState);
-      if (spellData.spellItem->type == espm::SPEL::SpellType::Disease) {
-        spdlog::trace("Curing disease {:x}", spellId);
-        RemoveSpell(spellId);
-      }
-    }
-    return;
-  }
-
-  const espm::ActorValue av = data.primaryAV;
-  const espm::MGEF::EffectType type = data.effectType;
-  spdlog::trace("Actor value in ApplyMagicEffect(): {}",
-                static_cast<std::underlying_type_t<espm::ActorValue>>(av));
-
-  const bool isValue = av == espm::ActorValue::Health ||
-    av == espm::ActorValue::Stamina || av == espm::ActorValue::Magicka;
-  const bool isRate = av == espm::ActorValue::HealRate ||
-    av == espm::ActorValue::StaminaRate || av == espm::ActorValue::MagickaRate;
-  const bool isMult =
-    av == espm::ActorValue::HealRateMult_or_CombatHealthRegenMultMod ||
-    av == espm::ActorValue::StaminaRateMult ||
-    av == espm::ActorValue::MagickaRateMult_or_CombatHealthRegenMultPowerMod;
-
-  if (isValue) { // other types are unsupported
-    if (hasSweetpie) {
-      // this coefficient (workaround) has been added for sake of game
-      // balance and because of disability to restrict players use potions
-      // often on client side
-      constexpr float kMagnitudeCoeff = 100.f;
-      RestoreActorValuePatched(this, av, effect.magnitude * kMagnitudeCoeff);
-    } else {
-      RestoreActorValuePatched(this, av, effect.magnitude);
-    }
-  }
-
-  if (isRate || isMult) {
-    MpChangeForm changeForm = GetChangeForm();
-    BaseActorValues baseValues = GetBaseActorValues(
-      GetParent(), GetBaseId(), GetRaceId(), changeForm.templateChain);
-    const ActiveMagicEffectsMap& activeEffects = changeForm.activeMagicEffects;
-    const float baseValue = baseValues.GetValue(av);
-    const uint32_t formId = GetFormId();
-    auto now = std::chrono::system_clock::now();
-    std::chrono::system_clock::time_point endTime;
-    std::chrono::milliseconds duration;
-    if (durationOverriden) {
-      std::optional effect = GetChangeForm().activeMagicEffects.Get(av);
-      if (!effect.has_value()) {
-        spdlog::error(
-          "MpActor with formId {:x} has no magic effect affecting "
-          "actor value {}",
-          GetFormId(),
-          static_cast<std::underlying_type_t<espm::ActorValue>>(av));
-        return;
-      }
-      endTime = effect.value().get().endTime;
-      duration =
-        std::chrono::duration_cast<std::chrono::milliseconds>(endTime - now);
-    } else {
-      endTime =
-        now + Viet::TimeUtils::To<std::chrono::milliseconds>(effect.duration);
-      duration =
-        Viet::TimeUtils::To<std::chrono::milliseconds>(effect.duration);
-    }
-    uint32_t timerId;
-    worldState->SetEffectTimer(duration, &timerId)
-      .Then([formId, actorValue = av, worldState](Viet::Void) {
-        auto& actor = worldState->GetFormAt<MpActor>(formId);
-        actor.RemoveMagicEffect(actorValue);
-      });
-
-    ActiveMagicEffectsMap::Entry entry{ timerId, effect, endTime };
-    if (activeEffects.Has(av)) {
-      const ActiveMagicEffectsMap::Entry& entry =
-        activeEffects.Get(av).value().get();
-      worldState->RemoveEffectTimer(entry.timerId);
-    }
-    EditChangeForm([av, pEntry = &entry](MpChangeForm& changeForm) {
-      changeForm.activeMagicEffects.Add(av, *pEntry);
-    });
-    if (isRate) {
-      SetActorValue(av, effect.magnitude);
-    } else {
-      float mult = 1.f;
-      if (type == espm::MGEF::EffectType::PeakValueMod) {
-        mult = MathUtils::PercentToMultPos(effect.magnitude);
-      }
-
-      if (type == espm::MGEF::EffectType::ValueMod) {
-        mult = MathUtils::PercentToMultNeg(effect.magnitude);
-      }
-      if (MathUtils::IsNearlyEqual(1.f, mult)) {
-        spdlog::error(
-          "Unknown espm::MGEF::EffectType: {}",
-          static_cast<std::underlying_type_t<espm::MGEF::EffectType>>(type));
-      }
-      spdlog::trace("Final multiplicator is {}", mult);
-      // TODO: proper fix (or effects system) instead of monkey-patching 4x
-      // higher mult
-      // https://github.com/skyrim-multiplayer/skymp/pull/1852
-      spdlog::trace("The result of baseValue * mult is: {}*{}={}", baseValue,
-                    mult, baseValue * (mult * 4));
-      SetActorValue(av, baseValue * (mult * 4));
-    }
-  }
-}
-
-void MpActor::ApplyMagicEffects(std::vector<espm::Effects::Effect>& effects,
-                                bool hasSweetpie, bool durationOverriden)
-{
-  for (auto& effect : effects) {
-    ApplyMagicEffect(effect, hasSweetpie, durationOverriden);
-  }
-}
-
-void MpActor::RemoveMagicEffect(const espm::ActorValue actorValue)
-{
-  try {
-    const ActorValues baseActorValues = GetBaseActorValues(
-      GetParent(), GetBaseId(), GetRaceId(), ChangeForm().templateChain);
-    const float baseActorValue = baseActorValues.GetValue(actorValue);
-    SetActorValue(actorValue, baseActorValue);
-    EditChangeForm([actorValue](MpChangeForm& changeForm) {
-      changeForm.activeMagicEffects.Remove(actorValue);
-    });
-  } catch (std::exception& e) {
-    spdlog::error("MpActor::RemoveMagicEffect {:x} - {}", GetFormId(),
-                  e.what());
-  }
-}
-
-void MpActor::RemoveAllMagicEffects()
-{
-  try {
-    const ActorValues baseActorValues = GetBaseActorValues(
-      GetParent(), GetBaseId(), GetRaceId(), ChangeForm().templateChain);
-    SetActorValues(baseActorValues);
-    EditChangeForm(
-      [](MpChangeForm& changeForm) { changeForm.activeMagicEffects.Clear(); });
-  } catch (std::exception& e) {
-    spdlog::error("MpActor::RemoveAllMagicEffects {:x} - {}", GetFormId(),
-                  e.what());
-  }
-}
-
-void MpActor::ReapplyMagicEffects()
-{
-  // TODO: Implement range-based for loop for MagicEffectsMap
-  std::vector<espm::Effects::Effect> activeEffects =
-    GetChangeForm().activeMagicEffects.GetAllEffects();
-  if (activeEffects.empty()) {
-    return;
-  }
-  const std::vector<std::string>& modFiles = GetParent()->espmFiles;
-  const bool hasSweetpie = std::any_of(
-    modFiles.begin(), modFiles.end(),
-    [](std::string_view fileName) { return fileName == "SweetPie.esp"; });
-  ApplyMagicEffects(activeEffects, hasSweetpie, true);
-}
-
 namespace {
 // thuum docs/verbs/magic-effects.md: an item's or a spell's effect as the
 // effect rule takes it, from its MGEF record (libespm MGEF: the archetype,
@@ -2489,6 +2311,236 @@ MagicEffectsMessage MagicEffectsOf(
   }
   return msg;
 }
+}
+
+// TODO: only used in legacy MGEF implementation, remove when MGEF is rewritten
+void MpActor::SetActorValues(const ActorValues& actorValues)
+{
+  NetSendChangeValues(actorValues, std::nullopt);
+  EditChangeForm(
+    [&](MpChangeForm& changeForm) { changeForm.actorValues = actorValues; });
+}
+
+void MpActor::ApplyMagicEffect(espm::Effects::Effect& effect, bool hasSweetpie,
+                               bool durationOverriden)
+{
+  WorldState* worldState = GetParent();
+  auto data = espm::GetData<espm::MGEF>(effect.effectId, worldState).data;
+
+  if (data.effectType == espm::MGEF::EffectType::CureDisease) {
+    spdlog::trace("Curing all diseases");
+    auto spells = ChangeForm().learnedSpells.GetLearnedSpells();
+    for (auto spellId : spells) {
+      auto spellData = espm::GetData<espm::SPEL>(spellId, worldState);
+      if (spellData.spellItem->type == espm::SPEL::SpellType::Disease) {
+        spdlog::trace("Curing disease {:x}", spellId);
+        RemoveSpell(spellId);
+      }
+    }
+    return;
+  }
+
+  const espm::ActorValue av = data.primaryAV;
+  const espm::MGEF::EffectType type = data.effectType;
+  spdlog::trace("Actor value in ApplyMagicEffect(): {}",
+                static_cast<std::underlying_type_t<espm::ActorValue>>(av));
+
+  const bool isValue = av == espm::ActorValue::Health ||
+    av == espm::ActorValue::Stamina || av == espm::ActorValue::Magicka;
+  const bool isRate = av == espm::ActorValue::HealRate ||
+    av == espm::ActorValue::StaminaRate || av == espm::ActorValue::MagickaRate;
+  const bool isMult =
+    av == espm::ActorValue::HealRateMult_or_CombatHealthRegenMultMod ||
+    av == espm::ActorValue::StaminaRateMult ||
+    av == espm::ActorValue::MagickaRateMult_or_CombatHealthRegenMultPowerMod;
+
+  if (isValue) { // other types are unsupported
+    if (hasSweetpie) {
+      // this coefficient (workaround) has been added for sake of game
+      // balance and because of disability to restrict players use potions
+      // often on client side
+      constexpr float kMagnitudeCoeff = 100.f;
+      RestoreActorValuePatched(this, av, effect.magnitude * kMagnitudeCoeff);
+    } else {
+      RestoreActorValuePatched(this, av, effect.magnitude);
+    }
+  }
+
+  if (isRate || isMult) {
+    MpChangeForm changeForm = GetChangeForm();
+    BaseActorValues baseValues = GetBaseActorValues(
+      GetParent(), GetBaseId(), GetRaceId(), changeForm.templateChain);
+    const ActiveMagicEffectsMap& activeEffects = changeForm.activeMagicEffects;
+    const float baseValue = baseValues.GetValue(av);
+    const uint32_t formId = GetFormId();
+    auto now = std::chrono::system_clock::now();
+    std::chrono::system_clock::time_point endTime;
+    std::chrono::milliseconds duration;
+    if (durationOverriden) {
+      std::optional effect = GetChangeForm().activeMagicEffects.Get(av);
+      if (!effect.has_value()) {
+        spdlog::error(
+          "MpActor with formId {:x} has no magic effect affecting "
+          "actor value {}",
+          GetFormId(),
+          static_cast<std::underlying_type_t<espm::ActorValue>>(av));
+        return;
+      }
+      endTime = effect.value().get().endTime;
+      duration =
+        std::chrono::duration_cast<std::chrono::milliseconds>(endTime - now);
+    } else {
+      endTime =
+        now + Viet::TimeUtils::To<std::chrono::milliseconds>(effect.duration);
+      duration =
+        Viet::TimeUtils::To<std::chrono::milliseconds>(effect.duration);
+    }
+    uint32_t timerId;
+    worldState->SetEffectTimer(duration, &timerId)
+      .Then([formId, actorValue = av, worldState](Viet::Void) {
+        auto& actor = worldState->GetFormAt<MpActor>(formId);
+        actor.RemoveMagicEffect(actorValue);
+      });
+
+    ActiveMagicEffectsMap::Entry entry{ timerId, effect, endTime };
+    if (activeEffects.Has(av)) {
+      const ActiveMagicEffectsMap::Entry& entry =
+        activeEffects.Get(av).value().get();
+      worldState->RemoveEffectTimer(entry.timerId);
+    }
+    EditChangeForm([av, pEntry = &entry](MpChangeForm& changeForm) {
+      changeForm.activeMagicEffects.Add(av, *pEntry);
+    });
+    if (isRate) {
+      SetActorValue(av, effect.magnitude);
+    } else {
+      float mult = 1.f;
+      if (type == espm::MGEF::EffectType::PeakValueMod) {
+        mult = MathUtils::PercentToMultPos(effect.magnitude);
+      }
+
+      if (type == espm::MGEF::EffectType::ValueMod) {
+        mult = MathUtils::PercentToMultNeg(effect.magnitude);
+      }
+      if (MathUtils::IsNearlyEqual(1.f, mult)) {
+        spdlog::error(
+          "Unknown espm::MGEF::EffectType: {}",
+          static_cast<std::underlying_type_t<espm::MGEF::EffectType>>(type));
+      }
+      spdlog::trace("Final multiplicator is {}", mult);
+      // TODO: proper fix (or effects system) instead of monkey-patching 4x
+      // higher mult
+      // https://github.com/skyrim-multiplayer/skymp/pull/1852
+      spdlog::trace("The result of baseValue * mult is: {}*{}={}", baseValue,
+                    mult, baseValue * (mult * 4));
+      SetActorValue(av, baseValue * (mult * 4));
+    }
+  }
+}
+
+void MpActor::ApplyMagicEffects(std::vector<espm::Effects::Effect>& effects,
+                                bool hasSweetpie, bool durationOverriden)
+{
+  for (auto& effect : effects) {
+    ApplyMagicEffect(effect, hasSweetpie, durationOverriden);
+  }
+}
+
+void MpActor::RemoveMagicEffect(const espm::ActorValue actorValue)
+{
+  try {
+    const ActorValues baseActorValues = GetBaseActorValues(
+      GetParent(), GetBaseId(), GetRaceId(), ChangeForm().templateChain);
+    const float baseActorValue = baseActorValues.GetValue(actorValue);
+    SetActorValue(actorValue, baseActorValue);
+    EditChangeForm([actorValue](MpChangeForm& changeForm) {
+      changeForm.activeMagicEffects.Remove(actorValue);
+    });
+  } catch (std::exception& e) {
+    spdlog::error("MpActor::RemoveMagicEffect {:x} - {}", GetFormId(),
+                  e.what());
+  }
+}
+
+void MpActor::RemoveAllMagicEffects()
+{
+  try {
+    const ActorValues baseActorValues = GetBaseActorValues(
+      GetParent(), GetBaseId(), GetRaceId(), ChangeForm().templateChain);
+    SetActorValues(baseActorValues);
+    EditChangeForm(
+      [](MpChangeForm& changeForm) { changeForm.activeMagicEffects.Clear(); });
+  } catch (std::exception& e) {
+    spdlog::error("MpActor::RemoveAllMagicEffects {:x} - {}", GetFormId(),
+                  e.what());
+  }
+}
+
+void MpActor::ReapplyMagicEffects()
+{
+  // thuum docs/verbs/magic-effects.md: an older record's legacy effects (one
+  // per actor value: a regeneration potion's, with its end time) become
+  // running effects with the time they have left; the rates and multipliers
+  // the legacy path set go back to the game files' (the running buffs' sum
+  // counts them now), and the legacy map is cleared. Then the actor's
+  // running effects resume, after a restart as after a migration.
+  WorldState* worldState = GetParent();
+  if (!worldState) {
+    return;
+  }
+  if (!ChangeForm().activeMagicEffects.Empty()) {
+    const auto& files = worldState->espmFiles;
+    auto entries = EffectEntriesOf(ChangeForm(), files);
+    const auto now = std::chrono::system_clock::now();
+    for (const auto& j : ChangeForm().activeMagicEffects.ToJson()) {
+      try {
+        espm::Effects::Effect effect;
+        effect.effectId = j.at("effectId").get<uint32_t>();
+        effect.magnitude = j.at("magnitude").get<float>();
+        effect.duration = j.at("duration").get<uint32_t>();
+        const auto endTime = Viet::TimeUtils::SystemTimeFrom(
+          j.at("endTime").get<std::string>());
+        const float remaining =
+          std::chrono::duration<float>(endTime - now).count();
+        if (remaining <= 0.f) {
+          continue;
+        }
+        const auto facts =
+          EffectFactsOf(worldState, effect.effectId, effect);
+        if (!facts) {
+          continue;
+        }
+        auto applied = skymp::rules::apply_effect(
+          *facts, 1.f, 0, skymp::rules::EffectArrival::Once);
+        if (!applied.has_entry) {
+          continue;
+        }
+        applied.entry.elapsed_s =
+          std::max(applied.entry.facts.duration_s - remaining, 0.f);
+        // its changes are not made again: the legacy path made them, in its
+        // own way, which the reset below undoes
+        std::ignore = skymp::rules::admit_effect(entries, applied.entry);
+      } catch (std::exception& e) {
+        spdlog::warn("MpActor::ReapplyMagicEffects {:x} - {}", GetFormId(),
+                     e.what());
+      }
+    }
+    auto running = RunningEffectsOf(entries, files);
+    const BaseActorValues base = GetBaseValues();
+    EditChangeForm([&](MpChangeForm& changeForm) {
+      changeForm.runningEffects = running;
+      changeForm.activeMagicEffects.Clear();
+      changeForm.actorValues.healRate = base.healRate;
+      changeForm.actorValues.magickaRate = base.magickaRate;
+      changeForm.actorValues.staminaRate = base.staminaRate;
+      changeForm.actorValues.healRateMult = base.healRateMult;
+      changeForm.actorValues.magickaRateMult = base.magickaRateMult;
+      changeForm.actorValues.staminaRateMult = base.staminaRateMult;
+    });
+  }
+  if (HasRunningEffects()) {
+    worldState->TrackEffects(GetFormId());
+  }
 }
 
 void MpActor::ApplyEffects(uint32_t source,

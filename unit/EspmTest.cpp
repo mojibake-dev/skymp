@@ -622,6 +622,31 @@ TEST_CASE("MGEF parsing", "[espm]")
   REQUIRE(data.data.primaryAV == espm::ActorValue::DamageResist);
 }
 
+// thuum docs/verbs/magic-effects.md: Skyrim.esm as thuum lab/esm.py read it
+// (2026-10-10): Sparks' and Frostbite's dual effects, the healing potion's
+// shader and art
+TEST_CASE("MGEF second actor value, its weight, hit shader and art",
+          "[espm]")
+{
+  MyEspmProvider provider;
+  auto shock = espm::GetData<espm::MGEF>(0x13CAB, &provider).data;
+  REQUIRE(shock.effectType == espm::MGEF::EffectType::Dual);
+  REQUIRE(shock.primaryAV == espm::ActorValue::Health);
+  REQUIRE(shock.secondaryAV == espm::ActorValue::Magicka);
+  REQUIRE(shock.secondAVWeight == 1.f);
+  REQUIRE(shock.hitShader == 0x57C67); // ShockFXShader
+
+  auto frost = espm::GetData<espm::MGEF>(0x13CAA, &provider).data;
+  REQUIRE(frost.secondaryAV == espm::ActorValue::Stamina);
+
+  auto heal = espm::GetData<espm::MGEF>(0x3EB15, &provider).data;
+  REQUIRE(heal.effectType == espm::MGEF::EffectType::ValueMod);
+  REQUIRE(heal.secondaryAV == espm::ActorValue::None);
+  REQUIRE(heal.hitShader == 0x12FD9);    // HealFXS
+  REQUIRE(heal.hitEffectArt == 0x3F1B4); // HealTargetFX
+  REQUIRE(heal.IsFlagSet(espm::MGEF::Flags::NoDuration));
+}
+
 TEST_CASE("isFood flag is not set for heal potion", "[espm]")
 {
   MyEspmProvider provider;

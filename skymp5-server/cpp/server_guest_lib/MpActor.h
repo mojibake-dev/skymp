@@ -273,6 +273,11 @@ public:
   // The running buffs' sum on `av`: the temporary modifier the maximum and
   // the regeneration rates count
   float GetEffectModifier(espm::ActorValue av) const;
+  // The effect list of a record that carries one (a potion, a poison, a
+  // spell, an enchantment, a scroll, an ingredient: EFID, EFIT and their
+  // CTDA), each MGEF id as the load order numbers it; empty for none
+  static std::vector<espm::Effects::Effect> EffectsOf(WorldState* worldState,
+                                                      uint32_t source);
   // MagicEffects to `listener`'s player: the effects running on this actor,
   // for a game that first sees it (MpObjectReference::Subscribe)
   void SendMagicEffectsTo(MpActor& listener);

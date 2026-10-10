@@ -40,8 +40,8 @@ float Health(MpActor& actor)
 
 void Drink(PartOne& p, MpActor& actor, uint32_t potion)
 {
-  const auto effects = espm::GetData<espm::ALCH>(potion, &p.worldState).effects;
-  actor.ApplyEffects(potion, effects, 1.f, 0, false);
+  actor.ApplyEffects(potion, MpActor::EffectsOf(&p.worldState, potion), 1.f,
+                     0, false);
 }
 
 void Leave(PartOne& p)

@@ -2543,6 +2543,26 @@ void MpActor::ReapplyMagicEffects()
   }
 }
 
+std::vector<espm::Effects::Effect> MpActor::EffectsOf(WorldState* worldState,
+                                                     uint32_t source)
+{
+  if (!worldState || !worldState->HasEspm()) {
+    return {};
+  }
+  const auto lookup = worldState->GetEspm().GetBrowser().LookupById(source);
+  if (!lookup.rec) {
+    return {};
+  }
+  auto effects = espm::Effects(lookup.rec)
+                   .GetData(worldState->GetEspmCache())
+                   .effects;
+  for (auto& effect : effects) {
+    // an id inside a record counts against that file's masters
+    effect.effectId = lookup.ToGlobalId(effect.effectId);
+  }
+  return effects;
+}
+
 void MpActor::ApplyEffects(uint32_t source,
                            const std::vector<espm::Effects::Effect>& effects,
                            float scale, uint32_t caster, bool stream)

@@ -2465,9 +2465,9 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
   try {
     const auto spell =
       espm::GetData<espm::SPEL>(hitData.source, &partOne.worldState);
-    effects = spell.effects;
     stream = spell.spellItem &&
       spell.spellItem->castType == espm::SPEL::CastType::Concentration;
+    effects = MpActor::EffectsOf(&partOne.worldState, hitData.source);
   } catch (std::exception& e) {
     spdlog::warn("OnSpellHit - spell {:x}: {}", hitData.source, e.what());
     return;

@@ -48,6 +48,7 @@ void EatItemEvent::OnFireSuccess(WorldState* worldState)
   // records through the effect rule. The drinker's own game drinks it too,
   // so its reports from before the drink are not taken for a while: a stale
   // fall would undo the restore
-  actor->ApplyEffects(baseId, data.effects, 1.f, 0, false);
+  actor->ApplyEffects(baseId, MpActor::EffectsOf(worldState, baseId), 1.f,
+                      0, false);
   actor->UpdateNextRestorationTime(std::chrono::seconds{ 5 });
 }

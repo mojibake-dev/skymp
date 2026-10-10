@@ -14,6 +14,7 @@
 #include "MapMarker.h"
 #include "NiPoint3.h"
 #include "Quest.h"
+#include "RunningEffect.h"
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -156,6 +157,11 @@ public:
   // reads as admin and anything else as player
   std::optional<uint8_t> staffRank;
 
+  // The effects running on the actor, each with the seconds it has run
+  // (thuum docs/verbs/magic-effects.md); absent in older records, which keep
+  // their legacy per-actor-value effects in activeMagicEffects
+  std::optional<std::vector<RunningEffect>> runningEffects;
+
   // Please update 'ActorTest.cpp' when adding new Actor-related rows
 
   DynamicFields dynamicFields;
@@ -172,7 +178,7 @@ public:
       dynamicFields, spawnDelay, learnedSpells, templateChain, lastAnimation,
       setNodeTextureSet, setNodeScale, displayName, mapMarkers,
       ingredientEffects, favorites, raceMenuPreset, actorValueRecord,
-      staffRank);
+      staffRank, runningEffects);
   }
 
   static nlohmann::json ToJson(const MpChangeFormREFR& changeForm);

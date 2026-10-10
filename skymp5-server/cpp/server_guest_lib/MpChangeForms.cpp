@@ -134,6 +134,33 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm)
     res["ingredientEffects"] = { { "entries", effectsJson } };
   }
 
+  // thuum docs/verbs/magic-effects.md; absent in older records, read as
+  // none. A caster is written only when there is one: an empty FormDesc
+  // would read back as 0xff000000
+  if (changeForm.runningEffects.has_value() &&
+      !changeForm.runningEffects->empty()) {
+    auto entries = nlohmann::json::array();
+    for (const auto& e : *changeForm.runningEffects) {
+      nlohmann::json j = { { "effect", e.effect.ToString() },
+                           { "source", e.source.ToString() },
+                           { "kind", e.kind },
+                           { "av", e.av },
+                           { "secondAv", e.secondAv },
+                           { "secondWeight", e.secondWeight },
+                           { "magnitude", e.magnitude },
+                           { "durationS", e.durationS },
+                           { "elapsedS", e.elapsedS },
+                           { "recover", e.recover },
+                           { "detrimental", e.detrimental },
+                           { "noDuration", e.noDuration } };
+      if (e.caster.shortFormId != 0 || !e.caster.file.empty()) {
+        j["caster"] = e.caster.ToString();
+      }
+      entries.push_back(j);
+    }
+    res["runningEffects"] = { { "entries", entries } };
+  }
+
   // thuum docs/verbs/favorites.md; absent in older records, read as none
   if (changeForm.favorites.has_value() && !changeForm.favorites->empty()) {
     auto favoritesJson = nlohmann::json::array();
@@ -228,6 +255,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
   static const JsonPointer favorites("favorites");
   static const JsonPointer raceMenuPreset("raceMenuPreset");
   static const JsonPointer staffRank("staffRank");
+  static const JsonPointer runningEffects("runningEffects");
   static const JsonPointer actorValueRecord("actorValueRecord");
   static const JsonPointer healthRespawnPercentage("healthRespawnPercentage");
   static const JsonPointer magickaRespawnPercentage(
@@ -493,6 +521,46 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
       effects[i].mask = static_cast<uint8_t>(maskTmp & 0x0f);
     }
     res.ingredientEffects = effects;
+  }
+
+  if (element.at_pointer(runningEffects.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, runningEffects, &jTmp);
+    static const JsonPointer entries("entries"), effect("effect"),
+      source("source"), caster("caster"), kind("kind"), av("av"),
+      secondAv("secondAv"), secondWeight("secondWeight"),
+      magnitude("magnitude"), durationS("durationS"), elapsedS("elapsedS"),
+      recover("recover"), detrimental("detrimental"),
+      noDuration("noDuration");
+
+    std::vector<simdjson::dom::element> parsedEntries;
+    ReadVector(jTmp, entries, &parsedEntries);
+
+    std::vector<RunningEffect> running(parsedEntries.size());
+    for (size_t i = 0; i != parsedEntries.size(); ++i) {
+      auto& e = running[i];
+      const char* tmp;
+      ReadEx(parsedEntries[i], effect, &tmp);
+      e.effect = FormDesc::FromString(tmp);
+      ReadEx(parsedEntries[i], source, &tmp);
+      e.source = FormDesc::FromString(tmp);
+      if (parsedEntries[i].at_pointer(caster.GetData()).error() ==
+          simdjson::error_code::SUCCESS) {
+        ReadEx(parsedEntries[i], caster, &tmp);
+        e.caster = FormDesc::FromString(tmp);
+      }
+      ReadEx(parsedEntries[i], kind, &e.kind);
+      ReadEx(parsedEntries[i], av, &e.av);
+      ReadEx(parsedEntries[i], secondAv, &e.secondAv);
+      ReadEx(parsedEntries[i], secondWeight, &e.secondWeight);
+      ReadEx(parsedEntries[i], magnitude, &e.magnitude);
+      ReadEx(parsedEntries[i], durationS, &e.durationS);
+      ReadEx(parsedEntries[i], elapsedS, &e.elapsedS);
+      ReadEx(parsedEntries[i], recover, &e.recover);
+      ReadEx(parsedEntries[i], detrimental, &e.detrimental);
+      ReadEx(parsedEntries[i], noDuration, &e.noDuration);
+    }
+    res.runningEffects = running;
   }
 
   if (element.at_pointer(favorites.GetData()).error() ==

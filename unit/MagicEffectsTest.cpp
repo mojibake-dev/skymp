@@ -177,7 +177,10 @@ TEST_CASE("An older record's legacy effect becomes a running one with the "
 
   REQUIRE(actor.GetChangeForm().activeMagicEffects.Empty());
   REQUIRE(actor.HasRunningEffects());
-  const auto& running = *actor.GetChangeForm().runningEffects;
+  // GetChangeForm gives a copy: keep it while reading into it
+  const MpChangeForm after = actor.GetChangeForm();
+  REQUIRE(after.runningEffects);
+  const auto& running = *after.runningEffects;
   REQUIRE(running.size() == 1);
   REQUIRE(running[0].effect == FormDesc::FromString("3eb06:Skyrim.esm"));
   REQUIRE(running[0].elapsedS == Catch::Approx(200.f).margin(5.f));

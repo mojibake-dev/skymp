@@ -17,9 +17,11 @@ using namespace std::chrono_literals;
 // server recorded: a fire-and-forget cast once, a stream by the time it held
 // its target; every cast and its end reach the neighbours reliably.
 // Skyrim.esm (thuum lab/esm.py, 2026-10-10): Firebolt 0x12FD0 (SPIT casting
-// type 1, fire-and-forget), Flames 0x12FCD (casting type 2, concentration).
-// The test's damage formula deals 25 for any hit (PartOne_ActivateTest.cpp),
-// against the victim's recorded 250: a fire-and-forget hit leaves 0.9.
+// type 1, fire-and-forget; FireDamageFFAimed 25), Flames 0x12FCD (casting
+// type 2, concentration; FireDamageConcAimed 8 a second). A spell's damage
+// comes from its records through the effect rule (thuum
+// docs/verbs/magic-effects.md), against the victim's recorded 250: a
+// Firebolt hit leaves 0.9.
 namespace {
 constexpr uint32_t kFirebolt = 0x00012fd0;
 constexpr uint32_t kFlames = 0x00012fcd;
@@ -144,11 +146,11 @@ TEST_CASE("A stream counts the time it held its target, until its end",
   Cast(p, kFlames, false);
   std::this_thread::sleep_for(120ms);
   SpellHits(p, kFlames);
-  // 25 a second for 0.12 s to 0.25 s (a slow test machine): 3 to 6.25 of
-  // 250, never the whole 25 a report used to count
+  // 8 a second for 0.12 s to 0.25 s (a slow test machine): 0.96 to 2 of
+  // 250, never the whole 8 a report used to count
   const float afterTick = Health(p);
-  REQUIRE(afterTick <= 1.f - 2.5f / 250.f);
-  REQUIRE(afterTick >= 1.f - 6.25f / 250.f);
+  REQUIRE(afterTick <= 1.f - 0.9f / 250.f);
+  REQUIRE(afterTick >= 1.f - 2.05f / 250.f);
 
   // its end, even with the hand changed since: no more hits
   Equipment eq;

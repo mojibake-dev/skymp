@@ -2455,33 +2455,33 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
     return; // Not an actor, damage calculation is not needed
   }
 
-  auto targetActorValues = targetActorPtr->GetChangeForm().actorValues;
+  // thuum docs/verbs/magic-effects.md: the spell's effects run through the
+  // effect rule at the claim's scale: a stream's hit counts its seconds at
+  // once (spell-cast's claim), a fire-and-forget spell's effects by their
+  // records; every value they touch, not Health alone (shock's Magicka,
+  // frost's Stamina), and the ones with a duration keep running
+  std::vector<espm::Effects::Effect> effects;
+  bool stream = false;
+  try {
+    const auto spell =
+      espm::GetData<espm::SPEL>(hitData.source, &partOne.worldState);
+    effects = spell.effects;
+    stream = spell.spellItem &&
+      spell.spellItem->castType == espm::SPEL::CastType::Concentration;
+  } catch (std::exception& e) {
+    spdlog::warn("OnSpellHit - spell {:x}: {}", hitData.source, e.what());
+    return;
+  }
+  const float scale =
+    std::isfinite(magnitudeScale) && magnitudeScale > 0.f ? magnitudeScale : 0.f;
+  targetActorPtr->ApplyEffects(hitData.source, effects, scale,
+                               aggressor->GetFormId(), stream);
 
-  SpellCastData spellCastData{ aggressor->GetFormId(),
-                               targetActorPtr->GetFormId(),
-                               hitData.source,
-                               false,
-                               false,
-                               SpellType::Left };
-
-  float damage =
-    partOne.CalculateDamage(*aggressor, *targetActorPtr, spellCastData) *
-    magnitudeScale;
-  damage = damage <= 0.f || !std::isfinite(damage) ? 0.f : damage;
-
-  targetActorValues.healthPercentage = CalculateCurrentHealthPercentage(
-    *targetActorPtr, damage, targetActorValues.healthPercentage, nullptr);
-
-  static const auto kHealthAvFilter =
-    std::vector<espm::ActorValue>{ espm::ActorValue::Health };
-
-  targetActorPtr->NetSetPercentages(targetActorValues, aggressor,
-                                    kHealthAvFilter);
-
-  spdlog::info("OnSpellHit - Target {0:x} is hit by {1:x} spell on {2} "
-               "damage (the magnitude times {4}). By caster: {3:x})",
-               spellCastData.target, spellCastData.spell, damage,
-               spellCastData.caster, magnitudeScale);
+  spdlog::info("OnSpellHit - Target {0:x} is hit by {1:x} spell at {2} times "
+               "its magnitudes ({3}). By caster: {4:x}",
+               targetActorPtr->GetFormId(), hitData.source, scale,
+               stream ? "a stream's seconds" : "once",
+               aggressor->GetFormId());
 
   // a spell hit begins a fight as a weapon's does (ADR-023)
   NotifyHostility(*aggressor, *targetActorPtr,

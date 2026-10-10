@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, casts, clock, console, damage, effects, favorites, hostility, markers, melee, movement, racemenu, ranged, rest};
+use wire_rules::{activation, actor_values, appearance, casts, clock, console, damage, effects, favorites, hostility, magic, markers, melee, movement, racemenu, ranged, rest};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -297,6 +297,88 @@ mod ffi {
         y: f32,
         /// Where the shooter stood.
         z: f32,
+    }
+
+    /// How an effect changes its actor values (the MGEF archetype; thuum
+    /// docs/verbs/magic-effects.md).
+    #[derive(Debug, Clone, Copy)]
+    enum EffectKind {
+        /// Archetype 0, value modifier.
+        Value,
+        /// Archetype 34, peak value modifier.
+        PeakValue,
+        /// Archetype 5, dual value modifier.
+        DualValue,
+    }
+
+    /// How an effect arrives.
+    #[derive(Debug, Clone, Copy)]
+    enum EffectArrival {
+        /// A drink, a poisoned hit, a fire-and-forget spell's hit.
+        Once,
+        /// A concentration spell's hit, counting the seconds it held.
+        Stream,
+    }
+
+    /// One effect of an item or a spell, as the records give it.
+    #[derive(Debug, Clone, Copy)]
+    struct EffectFacts {
+        /// The MGEF.
+        effect: u32,
+        /// The potion, poison, spell or enchantment that carries it.
+        source: u32,
+        /// The archetype.
+        kind: EffectKind,
+        /// The primary actor value.
+        av: u32,
+        /// A dual modifier's second actor value, u32::MAX for none.
+        second_av: u32,
+        /// The second value's share of the magnitude.
+        second_weight: f32,
+        /// The item's magnitude for this effect.
+        magnitude: f32,
+        /// The item's duration for this effect, seconds; 0 for none.
+        duration_s: f32,
+        /// MGEF flag Recover.
+        recover: bool,
+        /// MGEF flag Detrimental.
+        detrimental: bool,
+        /// MGEF flag NoDuration.
+        no_duration: bool,
+    }
+
+    /// A change to one actor value: `current` moves the value alone,
+    /// `modifier` the temporary modifier (the maximum and the value).
+    #[derive(Debug, Clone, Copy)]
+    struct AvChange {
+        /// The actor value.
+        av: u32,
+        /// The change to the current value alone.
+        current: f32,
+        /// The change to the temporary modifier.
+        modifier: f32,
+    }
+
+    /// A running effect, as the change form keeps it.
+    #[derive(Debug, Clone, Copy)]
+    struct EffectEntry {
+        /// The facts it was applied with, its magnitude scaled.
+        facts: EffectFacts,
+        /// Who applied it, 0 for none.
+        caster: u32,
+        /// Seconds it has run.
+        elapsed_s: f32,
+    }
+
+    /// What one applied effect did at once, and what keeps running.
+    #[derive(Debug, Clone)]
+    struct EffectApplied {
+        /// The changes made now.
+        changes: Vec<AvChange>,
+        /// Whether `entry` keeps running.
+        has_entry: bool,
+        /// The running entry, when `has_entry`.
+        entry: EffectEntry,
     }
 
     /// How a spell is cast (the record's SPIT casting type; thuum
@@ -641,6 +723,16 @@ mod ffi {
         /// The actor is gone: its shots with it.
         fn forget(self: &mut RangedShots, actor: u32);
 
+        /// Applies one effect at `scale` times its magnitude, cast by
+        /// `caster` (wire-rules magic::apply).
+        fn apply_effect(facts: EffectFacts, scale: f32, caster: u32, arrival: EffectArrival) -> EffectApplied;
+        /// Runs `entries` for `dt_s` seconds: their changes; ended entries
+        /// are removed.
+        fn advance_effects(entries: &mut Vec<EffectEntry>, dt_s: f32) -> Vec<AvChange>;
+        /// Adds `entry` to `entries` within the bound: a displaced buff's
+        /// return comes back.
+        fn admit_effect(entries: &mut Vec<EffectEntry>, entry: EffectEntry) -> Vec<AvChange>;
+
         /// Every player actor's recent spell casts and open streams.
         type SpellCasts;
         /// No casts yet.
@@ -673,7 +765,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, Verdict};
+pub use ffi::{AvBase, AvChange, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, Verdict};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -1062,6 +1154,70 @@ impl RangedShots {
     }
 }
 
+fn to_magic_facts(f: EffectFacts) -> magic::EffectFacts {
+    let EffectFacts { effect, source, kind, av, second_av, second_weight, magnitude, duration_s, recover, detrimental, no_duration } = f;
+    let kind = match kind {
+        EffectKind::PeakValue => magic::EffectKind::PeakValue,
+        EffectKind::DualValue => magic::EffectKind::DualValue,
+        _ => magic::EffectKind::Value,
+    };
+    let second_av = if second_av == u32::MAX { None } else { Some(second_av) };
+    magic::EffectFacts { effect, source, kind, av, second_av, second_weight, magnitude, duration_s, recover, detrimental, no_duration }
+}
+
+fn from_magic_facts(f: magic::EffectFacts) -> EffectFacts {
+    let magic::EffectFacts { effect, source, kind, av, second_av, second_weight, magnitude, duration_s, recover, detrimental, no_duration } = f;
+    let kind = match kind {
+        magic::EffectKind::Value => EffectKind::Value,
+        magic::EffectKind::PeakValue => EffectKind::PeakValue,
+        magic::EffectKind::DualValue => EffectKind::DualValue,
+    };
+    EffectFacts { effect, source, kind, av, second_av: second_av.unwrap_or(u32::MAX), second_weight, magnitude, duration_s, recover, detrimental, no_duration }
+}
+
+fn to_magic_entry(e: &EffectEntry) -> magic::EffectEntry {
+    magic::EffectEntry { facts: to_magic_facts(e.facts), caster: e.caster, elapsed_s: e.elapsed_s }
+}
+
+fn from_magic_entry(e: &magic::EffectEntry) -> EffectEntry {
+    EffectEntry { facts: from_magic_facts(e.facts), caster: e.caster, elapsed_s: e.elapsed_s }
+}
+
+fn from_magic_changes(changes: &[magic::AvChange]) -> Vec<AvChange> {
+    changes.iter().map(|c| AvChange { av: c.av, current: c.current, modifier: c.modifier }).collect()
+}
+
+fn apply_effect(facts: EffectFacts, scale: f32, caster: u32, arrival: EffectArrival) -> EffectApplied {
+    let arrival = match arrival {
+        EffectArrival::Stream => magic::Arrival::Stream,
+        _ => magic::Arrival::Once,
+    };
+    let applied = magic::apply(to_magic_facts(facts), scale, caster, arrival);
+    let changes = from_magic_changes(&applied.changes);
+    match applied.entry {
+        Some(e) => EffectApplied { changes, has_entry: true, entry: from_magic_entry(&e) },
+        None => EffectApplied { changes, has_entry: false, entry: EffectEntry { facts, caster, elapsed_s: 0.0 } },
+    }
+}
+
+/// Runs a magic rule over the entries the C++ change form holds, writing
+/// them back.
+fn with_entries(entries: &mut Vec<EffectEntry>, run: impl FnOnce(&mut Vec<magic::EffectEntry>) -> Vec<magic::AvChange>) -> Vec<AvChange> {
+    let mut ours: Vec<magic::EffectEntry> = entries.iter().map(to_magic_entry).collect();
+    let changes = run(&mut ours);
+    *entries = ours.iter().map(from_magic_entry).collect();
+    from_magic_changes(&changes)
+}
+
+fn advance_effects(entries: &mut Vec<EffectEntry>, dt_s: f32) -> Vec<AvChange> {
+    with_entries(entries, |ours| magic::advance(ours, dt_s))
+}
+
+fn admit_effect(entries: &mut Vec<EffectEntry>, entry: EffectEntry) -> Vec<AvChange> {
+    let entry = to_magic_entry(&entry);
+    with_entries(entries, |ours| magic::admit(ours, entry))
+}
+
 /// Every player actor's recent spell casts and open streams (wire-rules
 /// casts).
 #[derive(Debug, Default)]
@@ -1202,6 +1358,41 @@ mod tests {
         assert_eq!(b.check_arrival(7, 0x3c, 0.0, 0.0, 11), JumpCheck::Waiting);
         assert_eq!(b.check_arrival(7, 0x3c, 510.0, 490.0, 12), JumpCheck::Landed);
         assert_eq!(b.check_arrival(7, 0x3c, 0.0, 0.0, 13), JumpCheck::NoPermit);
+    }
+
+    #[test]
+    fn the_bridge_passes_effects_through() {
+        // DB03Poison's AlchDamageHealthDuration: 6 a second for 10 s, Health
+        let poison = EffectFacts {
+            effect: 0x10aa4a,
+            source: 0x58cfb,
+            kind: EffectKind::Value,
+            av: 24,
+            second_av: u32::MAX,
+            second_weight: 0.0,
+            magnitude: 6.0,
+            duration_s: 10.0,
+            recover: false,
+            detrimental: true,
+            no_duration: false,
+        };
+        let applied = apply_effect(poison, 1.0, 7, EffectArrival::Once);
+        assert!(applied.changes.is_empty());
+        assert!(applied.has_entry);
+        let mut entries = Vec::new();
+        assert!(admit_effect(&mut entries, applied.entry).is_empty());
+        let hurt: f32 = advance_effects(&mut entries, 4.0).iter().map(|c| c.current).sum();
+        assert!((hurt + 24.0).abs() < 1e-3);
+        assert_eq!(entries.first().map(|e| e.caster), Some(7));
+        let rest: f32 = advance_effects(&mut entries, 10.0).iter().map(|c| c.current).sum();
+        assert!((rest + 36.0).abs() < 1e-3);
+        assert!(entries.is_empty());
+        // a stream's hit counts at once, the second value at its weight
+        let shock = EffectFacts { kind: EffectKind::DualValue, second_av: 25, second_weight: 0.5, magnitude: 8.0, duration_s: 1.0, ..poison };
+        let hit = apply_effect(shock, 0.25, 7, EffectArrival::Stream);
+        assert!(!hit.has_entry);
+        let magicka: f32 = hit.changes.iter().filter(|c| c.av == 25).map(|c| c.current).sum();
+        assert!((magicka + 1.0).abs() < 1e-3);
     }
 
     #[test]

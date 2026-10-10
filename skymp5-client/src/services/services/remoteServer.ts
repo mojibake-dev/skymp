@@ -11,6 +11,7 @@ import {
   WorldSpace,
   on, // TODO: use this.controller.on instead
   once, // TODO: use this.controller.once instead
+  Spell,
   storage, // TODO: use this.sp.storage instead
 } from 'skyrimPlatform';
 
@@ -965,7 +966,11 @@ export class RemoteServer extends ClientListener {
         return;
       }
 
-      const spell = ac.getEquippedSpell(msg.data.castingSource);
+      // thuum docs/verbs/spell-cast.md: the spell the server relayed (it
+      // relays only a cast of a spell the caster has equipped), not what
+      // this game's figure holds by now, which its equipment's own message
+      // sets and can lag the cast
+      const spell = Spell.from(Game.getFormEx(msg.data.spell));
       if (spell) {
         castSpellImmediate(ac.getFormID(), msg.data.castingSource, spell.getFormID(), remoteIdToLocalId(msg.data.target),
           msg.data.aimAngle, msg.data.aimHeading, actorAnimationVariables);

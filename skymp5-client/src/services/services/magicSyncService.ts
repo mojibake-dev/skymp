@@ -1,5 +1,5 @@
 // TODO: refactor this out
-import { localIdToRemoteId, remoteIdToLocalId } from "../../view/worldViewMisc";
+import { localIdToRemoteId } from "../../view/worldViewMisc";
 
 // @ts-expect-error (TODO: Remove in 2.10.0)
 import { SpellCastEvent, Actor, printConsole, Game, getAnimationVariablesFromActor, ActorAnimationVariables, SpellType, SlotType, EquippedItemType } from 'skyrimPlatform'
@@ -65,23 +65,34 @@ export class MagicSyncService extends ClientListener {
             reliability: "reliable"
         });
 
-        this.lastSpellCastEventMsg = msg;
+        // thuum docs/verbs/spell-cast.md: the stop below hooks the player's
+        // own graph only, so only the player's own casts wait for one, a hand
+        // each (MagicSystem::CastingSource, CommonLibSSE-NG
+        // include/RE/M/MagicSystem.h:23-29: 0 left, 1 right). One slot for
+        // every caster let a figure's cast in this game (castSpellImmediate)
+        // or the other hand's take the player's stop.
+        if (event.caster.getFormID() === this.playerId) {
+            this.lastCastByHand.set(msg.castingSource, msg);
+        }
     }
 
     private onSendAnimationEventLeave(ctx: { animEventName: string, animationSucceeded: boolean }) {
-
-        if (!this.lastSpellCastEventMsg || !this.isInteraptSpellCastAnim(ctx.animEventName)) {
+        const hand = this.handOfEquippedAnim(ctx.animEventName);
+        const cast = hand === null ? undefined : this.lastCastByHand.get(hand);
+        if (hand === null || !cast) {
             return;
         }
+        this.lastCastByHand.delete(hand);
 
         this.controller.once('update', () => {
-            if (!this.lastSpellCastEventMsg || this.lastSpellCastEventMsg.interruptCast) {
-                return;
-            }
-
-            let msg: SpellCastMsgData = this.lastSpellCastEventMsg;
-            msg.interruptCast = true;
-            msg.actorAnimationVariables = this.getAnimationVariablesFromActorConverted(remoteIdToLocalId(this.lastSpellCastEventMsg.caster));
+            // the player's own graph: its server id has no figure in its own
+            // game, so remoteIdToLocalId(caster) answered 0 and the stop died
+            // reading 0's variables (x-spell-state 20261010-103607, c1.log)
+            const msg: SpellCastMsgData = {
+                ...cast,
+                interruptCast: true,
+                actorAnimationVariables: this.getAnimationVariablesFromActorConverted(this.playerId),
+            };
 
             this.controller.emitter.emit("sendMessage", {
                 message: { t: MsgType.SpellCast, data: msg },
@@ -131,9 +142,16 @@ export class MagicSyncService extends ClientListener {
         return animVarsData;
     }
 
-    private isInteraptSpellCastAnim(animEventName: string): boolean {
+    // the hand a cast's end returns to its equipped state, or null
+    private handOfEquippedAnim(animEventName: string): number | null {
         const eventName = animEventName.toLowerCase();
-        return eventName === "mlh_equipped_event" || eventName === "mrh_equipped_event";
+        if (eventName === "mlh_equipped_event") {
+            return 0;
+        }
+        if (eventName === "mrh_equipped_event") {
+            return 1;
+        }
+        return null;
     };
 
     private isSpellCastAnim(animEventName: string): boolean {
@@ -176,6 +194,6 @@ export class MagicSyncService extends ClientListener {
 
     private playerId = 0x14;
     private sendUpdateAnimationVariablesRateMs = 500;
-    private lastSpellCastEventMsg: SpellCastMsgData | null = null;
+    private lastCastByHand = new Map<number, SpellCastMsgData>();
     private lastSendUpdateAnimationVariables: number = 0;
 }

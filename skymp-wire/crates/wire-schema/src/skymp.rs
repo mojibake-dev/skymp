@@ -780,6 +780,38 @@ wire_struct! {
 }
 
 wire_struct! {
+    /// One effect running on an actor, as MagicEffects carries it (thuum
+    /// docs/verbs/magic-effects.md).
+    pub struct MagicEffect {
+        /// The effect's MGEF form id.
+        pub effect: u32,
+        /// The potion, poison, spell or enchantment that carries it.
+        pub source: u32,
+        /// Its magnitude, scaled as the server applied it.
+        pub magnitude: f32,
+        /// Seconds left; 0 for an effect without duration, shown once.
+        pub remaining: f32,
+    }
+}
+
+wire_struct! {
+    /// MsgType 43 (thuum, docs/verbs/magic-effects.md). Server to client,
+    /// reliable: the effects running on an actor (R0), whenever they change
+    /// and in full when a client first sees the actor, for each game to show
+    /// them (the effect's hit shader and art on that actor for the seconds
+    /// left). Idempotent: each replaces the actor's set.
+    pub struct MagicEffects {
+        /// `"t": 43`.
+        #[serde(default)]
+        pub t: MsgT<43>,
+        /// The actor, as CreateActor named it.
+        pub idx: u32,
+        /// Its running effects.
+        pub effects: Vec<MagicEffect, { cap::MAGIC_EFFECTS }>,
+    }
+}
+
+wire_struct! {
     /// SpellCastMessage's `data`.
     pub struct SpellCastData {
         /// Who casts.

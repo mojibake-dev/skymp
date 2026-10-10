@@ -530,6 +530,16 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         // length bounded at decode (cap::CONSOLE_OUTPUT); the transport
         // refuses it from a client by direction
         Message::ConsoleOutput(_) => Ok(()),
+        // thuum docs/verbs/magic-effects.md: the server's own effect set, at
+        // most MAGIC_EFFECTS entries (bounded at decode); the transport
+        // refuses it from a client by direction, and its numbers are finite
+        Message::MagicEffects(m) => {
+            if all_finite(m) {
+                Ok(())
+            } else {
+                Err(Reject::NonFinite)
+            }
+        }
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
         // rejects it by direction before it gets this far.
@@ -1053,6 +1063,22 @@ mod tests {
             assert_eq!(validate(&actor_values(&[6], &[], &[], 1.0), &mut g, 0), Ok(()));
         }
         assert_eq!(validate(&actor_values(&[6], &[], &[], 1.0), &mut g, 0), Err(Reject::Rate));
+    }
+
+    #[test]
+    fn a_magic_effects_set_with_a_number_that_is_not_finite_is_refused() {
+        use wire_schema::skymp::{MagicEffect, MagicEffects};
+        // DB03Poison's effect, 3.5 s into its 10 (thuum docs/verbs/magic-effects.md)
+        let set = |remaining: f32| {
+            let mut m = MagicEffects { idx: 64, ..MagicEffects::default() };
+            let entry = MagicEffect { effect: 0x10aa4a, source: 0x58cfb, magnitude: 6.0, remaining };
+            if m.effects.push(entry).is_err() {
+                return Message::MagicEffects(MagicEffects::default());
+            }
+            Message::MagicEffects(m)
+        };
+        assert_eq!(validate_server(&set(6.5)), Ok(()));
+        assert_eq!(validate_server(&set(f32::NAN)), Err(Reject::NonFinite));
     }
 
     #[test]

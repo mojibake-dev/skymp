@@ -13,6 +13,7 @@
 #include "DestroyActorMessage.h"
 #include "DropItemMessage.h"
 #include "FavoritesMessage.h"
+#include "MagicEffectsMessage.h"
 #include "FinishSpSnippetMessage.h"
 #include "HitMessage.h"
 #include "HostMessage.h"
@@ -84,4 +85,5 @@
   REGISTER_MESSAGE(RaceMenuPresetMessage)                                     \
   REGISTER_MESSAGE(ActorValuesMessage)                                        \
   REGISTER_MESSAGE(ConsoleOutputMessage)                                      \
-  REGISTER_MESSAGE(ArrowShotMessage)
+  REGISTER_MESSAGE(ArrowShotMessage)                                          \
+  REGISTER_MESSAGE(MagicEffectsMessage)

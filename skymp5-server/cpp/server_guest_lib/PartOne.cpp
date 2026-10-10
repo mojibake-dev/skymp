@@ -1325,8 +1325,11 @@ namespace {
 // spell's casting type (SPEL SPIT), whether any of its effects has an area,
 // and its reach, the longest range among its effects' projectiles (MGEF DATA
 // 0x48, PROJ DATA 0x0C). A spell that launches none (a touch, a self spell)
-// reaches kTouchReach units, a bound, not a measurement (HYPOTHESIS until the
-// lab measures a touch spell's hit)
+// reaches kTouchReach units, a chosen bound, unmeasured: in the five masters
+// every hostile spell delivered by touch or at a target actor is, by its
+// editor id, a creature's attack, a trap's, a perk's, an enchantment's or a
+// daedra banishing's, none cast from a player's hand (thuum lab scan,
+// 2026-10-10), so the bound is for mods'
 constexpr float kTouchReach = 512.f;
 
 skymp::rules::CastFacts CastFactsFor(WorldState& worldState, uint32_t spell,

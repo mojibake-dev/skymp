@@ -124,9 +124,12 @@ TEST_CASE("TGM and TIM are an admin's, and TGM tells the caller's own game",
   god.SetStaffRank(2);
   p.Messages().clear();
   Console(p, 1, "tgm");
+  // a snippet goes out on the next tick (SendToUserDeferred)
+  p.Tick();
   REQUIRE(god.IsGodMode());
   REQUIRE(setGodMode(true) == 1);
   Console(p, 1, "ToggleGodMode");
+  p.Tick();
   REQUIRE(!god.IsGodMode());
   REQUIRE(setGodMode(false) == 1);
 

@@ -2207,7 +2207,28 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
   const auto equipment = aggressor->GetEquipment();
 
   if (isSourceSpell && equipment.IsSpellEquipped(hitData.source)) {
-    OnSpellHit(aggressor, targetRef, hitData);
+    // thuum docs/verbs/spell-cast.md: a player's spell hits only as a cast
+    // the server recorded: a fire-and-forget cast once (an area spell's
+    // targets once each), a stream by the time it held its target (a hosted
+    // actor's casts are its host's game's, M3)
+    float magnitudeScale = 1.f;
+    if (aggressor == myActor) {
+      const auto claim =
+        partOne.ClaimCast(aggressor->GetFormId(), hitData.source,
+                          targetRef->GetFormId(), targetRef->GetPos());
+      if (claim.check != PartOne::CastCheck::Claimed) {
+        spdlog::warn(
+          "ActionListener::OnHit - {}: {:x} hits {:x} with spell "
+          "{:x} {:.0f} units away; refused",
+          claim.check == PartOne::CastCheck::TooFar ? "E_SPELL_RANGE"
+                                                    : "E_SPELL_NO_CAST",
+          aggressor->GetFormId(), targetRef->GetFormId(), hitData.source,
+          (targetRef->GetPos() - aggressor->GetPos()).Length());
+        return;
+      }
+      magnitudeScale = claim.scale;
+    }
+    OnSpellHit(aggressor, targetRef, hitData, magnitudeScale);
     return;
   }
 
@@ -2365,6 +2386,21 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
     return;
   }
 
+  // thuum docs/verbs/spell-cast.md: the hand the cast comes from (the
+  // validator holds castingSource to 0 to 3)
+  const auto hand =
+    static_cast<uint8_t>(std::clamp(spellCastData.castingSource, 0, 3));
+
+  // A cast's end ends that hand's stream whatever the hand holds by now (it
+  // used to need the spell still equipped, so a changed hand lost the stop),
+  // and reaches every screen (reliable: a lost end left an observer's figure
+  // casting, playtest six's Flames)
+  if (spellCastData.interruptCast) {
+    partOne.EndCast(caster->GetFormId(), hand);
+    SendToNeighbours(myActor->idx, rawMsgData, true);
+    return;
+  }
+
   const auto equipment = caster->GetEquipment();
 
   if (equipment.IsSpellEquipped(spellCastData.spell) == false) {
@@ -2374,11 +2410,11 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
     return;
   }
 
-  SendToNeighbours(myActor->idx, rawMsgData);
-
-  if (spellCastData.interruptCast) {
-    return;
-  }
+  // the cast waits for its hit (a stream stays open until its end), and
+  // every screen draws it
+  partOne.StartCast(caster->GetFormId(), spellCastData.spell, hand,
+                    caster->GetPos());
+  SendToNeighbours(myActor->idx, rawMsgData, true);
 
   auto& browser = partOne.worldState.GetEspm().GetBrowser();
 
@@ -2410,7 +2446,7 @@ void ActionListener::OnUnknown(const RawMessageData& rawMsgData)
 
 void ActionListener::OnSpellHit(MpActor* aggressor,
                                 MpObjectReference* targetRef,
-                                const HitData& hitData)
+                                const HitData& hitData, float magnitudeScale)
 {
   SendPapyrusOnHitEvent(aggressor, targetRef, hitData);
 
@@ -2429,8 +2465,9 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
                                SpellType::Left };
 
   float damage =
-    partOne.CalculateDamage(*aggressor, *targetActorPtr, spellCastData);
-  damage = damage <= 0.f ? 0.f : damage;
+    partOne.CalculateDamage(*aggressor, *targetActorPtr, spellCastData) *
+    magnitudeScale;
+  damage = damage <= 0.f || !std::isfinite(damage) ? 0.f : damage;
 
   targetActorValues.healthPercentage = CalculateCurrentHealthPercentage(
     *targetActorPtr, damage, targetActorValues.healthPercentage, nullptr);
@@ -2442,9 +2479,13 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
                                     kHealthAvFilter);
 
   spdlog::info("OnSpellHit - Target {0:x} is hit by {1:x} spell on {2} "
-               "damage. By caster: {3:x})",
+               "damage (the magnitude times {4}). By caster: {3:x})",
                spellCastData.target, spellCastData.spell, damage,
-               spellCastData.caster);
+               spellCastData.caster, magnitudeScale);
+
+  // a spell hit begins a fight as a weapon's does (ADR-023)
+  NotifyHostility(*aggressor, *targetActorPtr,
+                  std::chrono::steady_clock::now());
 }
 
 void ActionListener::OnWeaponHit(MpActor* aggressor,

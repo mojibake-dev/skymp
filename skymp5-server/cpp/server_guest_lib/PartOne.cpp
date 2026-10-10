@@ -1,5 +1,6 @@
 #include "PartOne.h"
 #include "wire_bridge_cxx/rules.h"
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <chrono>
@@ -22,6 +23,9 @@
 #include "PacketParser.h"
 #include "SpSnippet.h"
 #include "libespm/CELL.h"
+#include "libespm/MGEF.h"
+#include "libespm/PROJ.h"
+#include "libespm/SPEL.h"
 #include <spdlog/spdlog.h>
 
 namespace {
@@ -117,6 +121,11 @@ struct PartOne::Impl
   // docs/verbs/marksman.md; Rust's, ADR-020)
   rust::Box<skymp::rules::RangedShots> rangedShots =
     skymp::rules::new_ranged_shots();
+
+  // every player actor's recent spell casts and open streams (thuum
+  // docs/verbs/spell-cast.md; Rust's, ADR-020)
+  rust::Box<skymp::rules::SpellCasts> spellCasts =
+    skymp::rules::new_spell_casts();
 
   // the server's game clock (thuum docs/verbs/time.md; Rust's, ADR-020 and
   // ADR-021); players hear it once SetGameTimeSettings has run
@@ -530,6 +539,9 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           // TODO: apply dependency inversion here: connection handling code
           // should not depend on animation system
           this_->animationSystem.ClearInfo(actor);
+          // a departing caster's streams end with it (thuum
+          // docs/verbs/spell-cast.md)
+          this_->pImpl->spellCasts->forget(actor->GetFormId());
         }
         this_->serverState.Disconnect(userId);
         this_->serverState.disconnectingUserId = Networking::InvalidUserId;
@@ -1306,6 +1318,100 @@ void PartOne::RecordShot(uint32_t actorFormId, uint32_t weapon, float power,
   shot.y = from.y;
   shot.z = from.z;
   pImpl->rangedShots->record(actorFormId, shot, SteadyNowMs());
+}
+
+namespace {
+// thuum docs/verbs/spell-cast.md: what the records say of a cast: the
+// spell's casting type (SPEL SPIT), whether any of its effects has an area,
+// and its reach, the longest range among its effects' projectiles (MGEF DATA
+// 0x48, PROJ DATA 0x0C). A spell that launches none (a touch, a self spell)
+// reaches kTouchReach units, a bound, not a measurement (HYPOTHESIS until the
+// lab measures a touch spell's hit)
+constexpr float kTouchReach = 512.f;
+
+skymp::rules::CastFacts CastFactsFor(WorldState& worldState, uint32_t spell,
+                                     uint8_t hand, const NiPoint3& from)
+{
+  skymp::rules::CastFacts facts{};
+  facts.spell = spell;
+  facts.hand = hand;
+  facts.kind = skymp::rules::CastKind::FireAndForget;
+  facts.area = false;
+  facts.reach = kTouchReach;
+  facts.x = from.x;
+  facts.y = from.y;
+  facts.z = from.z;
+  try {
+    const auto data = espm::GetData<espm::SPEL>(spell, &worldState);
+    if (data.spellItem &&
+        data.spellItem->castType == espm::SPEL::CastType::Concentration) {
+      facts.kind = skymp::rules::CastKind::Concentration;
+    }
+    float reach = 0.f;
+    for (const auto& effect : data.effects) {
+      if (effect.effectItem && effect.effectItem->areaOfEffect > 0) {
+        facts.area = true;
+      }
+      if (effect.effectFormId == 0) {
+        continue;
+      }
+      const auto mgef =
+        espm::GetData<espm::MGEF>(effect.effectFormId, &worldState);
+      if (mgef.data.projectile == 0) {
+        continue;
+      }
+      const auto proj =
+        espm::GetData<espm::PROJ>(mgef.data.projectile, &worldState);
+      reach = std::max(reach, proj.range);
+    }
+    if (reach > 0.f) {
+      facts.reach = reach;
+    }
+  } catch (std::exception& e) {
+    spdlog::warn("CastFactsFor - {:x}: {}; cast as fire-and-forget within {} "
+                 "units",
+                 spell, e.what(), kTouchReach);
+  }
+  return facts;
+}
+}
+
+void PartOne::StartCast(uint32_t actorFormId, uint32_t spell, uint8_t hand,
+                        const NiPoint3& from)
+{
+  pImpl->spellCasts->start(
+    actorFormId, CastFactsFor(worldState, spell, hand, from), SteadyNowMs());
+}
+
+void PartOne::EndCast(uint32_t actorFormId, uint8_t hand)
+{
+  pImpl->spellCasts->end(actorFormId, hand);
+}
+
+PartOne::CastClaim PartOne::ClaimCast(uint32_t actorFormId, uint32_t spell,
+                                      uint32_t target, const NiPoint3& at)
+{
+  skymp::rules::CastHit hit{};
+  hit.spell = spell;
+  hit.target = target;
+  hit.x = at.x;
+  hit.y = at.y;
+  hit.z = at.z;
+  const auto claim = pImpl->spellCasts->claim(actorFormId, hit, SteadyNowMs());
+  CastClaim res;
+  res.scale = claim.scale;
+  switch (claim.check) {
+    case skymp::rules::CastCheck::Claimed:
+      res.check = CastCheck::Claimed;
+      break;
+    case skymp::rules::CastCheck::TooFar:
+      res.check = CastCheck::TooFar;
+      break;
+    default:
+      res.check = CastCheck::NoCast;
+      break;
+  }
+  return res;
 }
 
 PartOne::ShotClaim PartOne::ClaimShot(uint32_t actorFormId, uint32_t weapon,

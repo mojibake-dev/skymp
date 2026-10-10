@@ -169,6 +169,30 @@ public:
   ShotClaim ClaimShot(uint32_t actorFormId, uint32_t weapon,
                       const NiPoint3& target);
 
+  // thuum docs/verbs/spell-cast.md: an actor began casting `spell` from
+  // `hand` (0 left, 1 right, 2 voice, 3 instant), standing at `from`: a
+  // fire-and-forget cast waits for its hit, a concentration one opens in
+  // that hand (wire-rules casts); its kind, area and reach come from the
+  // records
+  void StartCast(uint32_t actorFormId, uint32_t spell, uint8_t hand,
+                 const NiPoint3& from);
+  // the stream in `hand` ended
+  void EndCast(uint32_t actorFormId, uint8_t hand);
+  enum class CastCheck
+  {
+    Claimed, // a recorded cast covers the hit
+    NoCast,  // no cast of that spell covers it
+    TooFar   // casts wait, but the target is beyond their reach
+  };
+  struct CastClaim
+  {
+    CastCheck check = CastCheck::NoCast;
+    float scale = 0.f; // the factor on the spell's magnitude
+  };
+  // a spell hit by the actor on `target` standing at `at`
+  CastClaim ClaimCast(uint32_t actorFormId, uint32_t spell, uint32_t target,
+                      const NiPoint3& at);
+
   // The server's game clock (thuum docs/verbs/time.md, ADR-021) from
   // server-settings.json's `time` block as JSON text ("{}" for every
   // default); throws naming the bad key. From then on each player hears the

@@ -1,0 +1,39 @@
+# difftest magic-effects (M2, thuum docs/verbs/magic-effects.md): c1 and c2
+# are new characters (profiles 9 and 10, actors 0xff000002 and 0xff000003:
+# see melee-reach), c2 50 units off the spawn. The lab server runs with
+# enableConsoleCommandsForAll (see console), so c1 gives itself Skyrim.esm's
+# FortifyHealth01 (ALCH 0x3EAF2, 256754: AlchFortifyHealth, a peak value
+# modifier with Recover, 20 for 60 s) and a Weak Poison (DamageHealth01, ALCH
+# 0x3A5A4, 239012: AlchDamageHealth 15, flagged a poison; both read with
+# thuum lab/esm.py) at 2 s and 2.3 s. At 3 s c1 drinks the fortify (OnEquip,
+# as its game reports a drink): the legacy server restores 20 health at once
+# and has c2's game drink it on c1's figure (an SpSnippet EquipItem); the
+# fixed server raises c1's maximum by 20 for a minute and tells every game
+# that sees c1 the effect (MagicEffects). At 3.5 s c1 equips the poison: the
+# legacy server drinks it as a heal (its magnitude restored) and has c2's
+# game drink it too; the fixed server takes the poison and applies nothing.
+# c2 steps again at 3.5 s of its own (5 s of c1's), so it outlives c1, as in
+# every session. The divergences besides the departure and the console's
+# lines are declared from the first run.
+id: magic-effects
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 2000, send: {t: 12, data: {t: 12, commandName: additem, args: [20, 256754, 1]}}}
+  - {client: c1, at_ms: 2300, send: {t: 12, data: {t: 12, commandName: additem, args: [20, 239012, 1]}}}
+  - {client: c1, at_ms: 3000, send: {t: 11, baseId: 256754}}
+  - {client: c1, at_ms: 3500, send: {t: 11, baseId: 239012}}
+  - {client: c2, at_ms: 0, move: {dx: 50}}
+  - {client: c2, at_ms: 3500, move: {dx: 60}}
+divergences:
+  - client: c1
+    msg: {t: 41, text: "additem done", refused: false}
+    legacy: 0
+    wire: 2
+    reason: the server answers every console command with a line (ConsoleOutput, thuum docs/verbs/console-commands.md); the legacy server prints nothing back
+  - client: c2
+    msg: {t: 25, idx: 2}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

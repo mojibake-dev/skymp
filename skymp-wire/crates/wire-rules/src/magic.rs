@@ -210,6 +210,25 @@ pub fn advance(entries: &mut Vec<EffectEntry>, dt_s: f32) -> Vec<AvChange> {
     out
 }
 
+/// The temporary modifier the running buffs in `entries` put on `av`: what
+/// the maximum (Health, Magicka, Stamina) and the regeneration rates count
+/// while they run.
+pub fn modifier(entries: &[EffectEntry], av: u32) -> f32 {
+    entries
+        .iter()
+        .filter(|e| buffs(&e.facts))
+        .map(|e| {
+            let amount = e.facts.magnitude * sign(&e.facts);
+            let primary = if e.facts.av == av { amount } else { 0.0 };
+            let second = match (e.facts.kind, e.facts.second_av) {
+                (EffectKind::DualValue, Some(second)) if second == av => amount * e.facts.second_weight,
+                _ => 0.0,
+            };
+            primary + second
+        })
+        .sum()
+}
+
 /// Adds `entry` to `entries`, keeping at most MAX_EFFECTS: past the bound the
 /// oldest entry of the same effect and source goes, or else the oldest of
 /// all. A buff that goes this way gives its modifier back: those changes are
@@ -320,6 +339,23 @@ mod tests {
         assert!(near(entries.first().map(EffectEntry::remaining_s).unwrap_or(-1.0), 1.0));
         assert_eq!(total(&advance(&mut entries, 2.0), HEALTH), (0.0, -20.0));
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn the_running_buffs_sum_into_the_modifier() {
+        let mut fortify = facts(EffectKind::PeakValue, 20.0, 60.0);
+        fortify.recover = true;
+        let mut poison = facts(EffectKind::Value, 6.0, 10.0);
+        poison.detrimental = true;
+        let mut entries = Vec::new();
+        for f in [fortify, fortify, poison] {
+            if let Some(e) = apply(f, 1.0, 0, Arrival::Once).entry {
+                admit(&mut entries, e);
+            }
+        }
+        // two fortifies count, the flowing poison does not
+        assert!(near(modifier(&entries, HEALTH), 40.0));
+        assert!(near(modifier(&entries, MAGICKA), 0.0));
     }
 
     #[test]

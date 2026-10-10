@@ -732,6 +732,8 @@ mod ffi {
         /// Adds `entry` to `entries` within the bound: a displaced buff's
         /// return comes back.
         fn admit_effect(entries: &mut Vec<EffectEntry>, entry: EffectEntry) -> Vec<AvChange>;
+        /// The temporary modifier the running buffs put on `av`.
+        fn effect_modifier(entries: &Vec<EffectEntry>, av: u32) -> f32;
 
         /// Every player actor's recent spell casts and open streams.
         type SpellCasts;
@@ -1218,6 +1220,13 @@ fn admit_effect(entries: &mut Vec<EffectEntry>, entry: EffectEntry) -> Vec<AvCha
     with_entries(entries, |ours| magic::admit(ours, entry))
 }
 
+// cxx passes a C++ rust::Vec by reference as &Vec
+#[allow(clippy::ptr_arg)]
+fn effect_modifier(entries: &Vec<EffectEntry>, av: u32) -> f32 {
+    let ours: Vec<magic::EffectEntry> = entries.iter().map(to_magic_entry).collect();
+    magic::modifier(&ours, av)
+}
+
 /// Every player actor's recent spell casts and open streams (wire-rules
 /// casts).
 #[derive(Debug, Default)]
@@ -1384,6 +1393,7 @@ mod tests {
         let hurt: f32 = advance_effects(&mut entries, 4.0).iter().map(|c| c.current).sum();
         assert!((hurt + 24.0).abs() < 1e-3);
         assert_eq!(entries.first().map(|e| e.caster), Some(7));
+        assert!(effect_modifier(&entries, 24).abs() < 1e-6);
         let rest: f32 = advance_effects(&mut entries, 10.0).iter().map(|c| c.current).sum();
         assert!((rest + 36.0).abs() < 1e-3);
         assert!(entries.is_empty());

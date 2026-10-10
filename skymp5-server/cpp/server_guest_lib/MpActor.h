@@ -9,6 +9,7 @@
 #include "MapMarker.h"
 #include "MpObjectReference.h"
 #include "libespm/espm.h"
+#include <array>
 #include <map>
 #include <memory>
 #include <optional>
@@ -256,6 +257,23 @@ public:
   void RemoveAllMagicEffects();
   void ReapplyMagicEffects();
 
+  // thuum docs/verbs/magic-effects.md: the effect rule (wire-rules magic)
+  // over the actor's running effects, kept in its change form. `source`'s
+  // effects (its record's list) apply at `scale` times their magnitudes,
+  // by `caster` (0 for none); `stream` for a concentration spell's hit,
+  // which counts at once. Archetypes other than value, peak value and dual
+  // value modifiers are left alone.
+  void ApplyEffects(uint32_t source,
+                    const std::vector<espm::Effects::Effect>& effects,
+                    float scale, uint32_t caster, bool stream);
+  // Runs the actor's effects for `dtSeconds` of server time (WorldState's
+  // effects tick)
+  void AdvanceEffects(float dtSeconds);
+  bool HasRunningEffects() const;
+  // The running buffs' sum on `av`: the temporary modifier the maximum and
+  // the regeneration rates count
+  float GetEffectModifier(espm::ActorValue av) const;
+
   bool GetConsoleCommandsAllowedFlag() const;
   void SetConsoleCommandsAllowedFlag(bool newValue);
   // thuum docs/verbs/console-commands.md: the player's staff rank (0 player,
@@ -274,6 +292,14 @@ public:
   std::optional<AnimationData> GetLastAnimEvent() const;
 
 private:
+  // thuum docs/verbs/magic-effects.md: Health, Magicka and Stamina moved by
+  // `deltas` (points, against the maximum before the change, `maxBefore`,
+  // and the maximum after it), each only where `touched`; a kill, if any,
+  // by `caster`
+  void ApplyAttributeDeltas(const std::array<float, 3>& deltas,
+                            const std::array<bool, 3>& touched,
+                            const BaseActorValues& maxBefore, uint32_t caster);
+
   struct Impl;
   std::shared_ptr<Impl> pImpl;
   bool factionsLoaded = false;

@@ -92,6 +92,10 @@ public:
 
   void Tick();
 
+  // thuum docs/verbs/magic-effects.md: an actor whose effects run is advanced
+  // on every Tick until none is left (MpActor::AdvanceEffects)
+  void TrackEffects(uint32_t actorFormId);
+
   void RequestReloot(MpObjectReference& ref,
                      std::chrono::system_clock::duration time);
 
@@ -296,6 +300,7 @@ private:
                 std::stringstream* optionalOutTrace = nullptr);
   void TickSaveStorage(const std::chrono::system_clock::time_point& now);
   void TickTimers(const std::chrono::system_clock::time_point& now);
+  void TickEffects(const std::chrono::system_clock::time_point& now);
   [[nodiscard]] bool NpcSourceFilesOverriden() const noexcept;
   [[nodiscard]] bool IsNpcAllowed(uint32_t refrId) const noexcept;
   [[nodiscard]] uint32_t GetFileIdx(uint32_t formId) const noexcept;

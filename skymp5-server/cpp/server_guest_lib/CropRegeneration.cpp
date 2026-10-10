@@ -65,30 +65,41 @@ float CropRegeneration(float newAttributeValue, float secondsAfterLastRegen,
   return newAttributeValue;
 }
 
+// thuum docs/verbs/magic-effects.md: each rate and multiplier plus the
+// running buffs on it (a Fortify Health Regeneration while it runs)
 RegenRate GetHealthRegenRate(MpActor* actor)
 {
   const BaseActorValues baseValues = GetValues(actor);
   const ActorValues& actorValues = actor->GetActorValues();
-  return { std::max(baseValues.healRate, actorValues.healRate),
-           std::max(baseValues.healRateMult, actorValues.healRateMult) };
+  return { std::max(baseValues.healRate, actorValues.healRate) +
+             actor->GetEffectModifier(espm::ActorValue::HealRate),
+           std::max(baseValues.healRateMult, actorValues.healRateMult) +
+             actor->GetEffectModifier(
+               espm::ActorValue::HealRateMult_or_CombatHealthRegenMultMod) };
 }
 
 RegenRate GetMagickaRegenRate(MpActor* actor)
 {
   const BaseActorValues baseValues = GetValues(actor);
   const ActorValues& actorValues = actor->GetActorValues();
-  return { std::max(baseValues.magickaRate, actorValues.magickaRate),
-           std::max(baseValues.magickaRateMult, actorValues.magickaRateMult) };
+  return { std::max(baseValues.magickaRate, actorValues.magickaRate) +
+             actor->GetEffectModifier(espm::ActorValue::MagickaRate),
+           std::max(baseValues.magickaRateMult, actorValues.magickaRateMult) +
+             actor->GetEffectModifier(
+               espm::ActorValue::
+                 MagickaRateMult_or_CombatHealthRegenMultPowerMod) };
 }
 
 RegenRate GetStaminaRegenRate(MpActor* actor)
 {
   const BaseActorValues baseValues = GetValues(actor);
   const ActorValues& actorValues = actor->GetActorValues();
-  return { actor->IsBlockActive()
-             ? actorValues.staminaRate
-             : std::max(baseValues.staminaRate, actorValues.staminaRate),
-           std::max(baseValues.staminaRateMult, actorValues.staminaRateMult) };
+  return { (actor->IsBlockActive()
+              ? actorValues.staminaRate
+              : std::max(baseValues.staminaRate, actorValues.staminaRate)) +
+             actor->GetEffectModifier(espm::ActorValue::StaminaRate),
+           std::max(baseValues.staminaRateMult, actorValues.staminaRateMult) +
+             actor->GetEffectModifier(espm::ActorValue::StaminaRateMult) };
 }
 
 float CropHealthRegeneration(float newAttributeValue,

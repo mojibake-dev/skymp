@@ -21,6 +21,7 @@
 #include <fmt/ranges.h>
 #include <iterator>
 #include <optional>
+#include <set>
 #include <save_storages/AsyncSaveStorage.h> // UpsertFailedException
 #include <save_storages/ISaveStorage.h>
 #include <unordered_map>
@@ -58,6 +59,10 @@ struct WorldState::Impl
   std::array<std::shared_ptr<std::vector<uint32_t>>, 0x100>
     allFormsByModIndexCache;
   std::vector<uint32_t> attachEspmRecordFailures;
+  // thuum docs/verbs/magic-effects.md: actors with running effects and when
+  // they were last advanced
+  std::set<uint32_t> actorsWithEffects;
+  std::optional<std::chrono::system_clock::time_point> lastEffectsTick;
 };
 
 WorldState::WorldState()
@@ -153,6 +158,48 @@ void WorldState::Tick()
   const auto now = std::chrono::system_clock::now();
   TickSaveStorage(now);
   TickTimers(now);
+  TickEffects(now);
+}
+
+void WorldState::TrackEffects(uint32_t actorFormId)
+{
+  pImpl->actorsWithEffects.insert(actorFormId);
+}
+
+void WorldState::TickEffects(const std::chrono::system_clock::time_point& now)
+{
+  // a quarter second between advances: a running effect's steps are a
+  // second's share each (wire-rules magic), and this keeps the change forms
+  // the effects edit from being written every frame
+  constexpr auto kEffectsTick = std::chrono::milliseconds(250);
+  if (pImpl->lastEffectsTick && now - *pImpl->lastEffectsTick < kEffectsTick) {
+    return;
+  }
+  const float dtSeconds = pImpl->lastEffectsTick
+    ? std::chrono::duration<float>(now - *pImpl->lastEffectsTick).count()
+    : 0.f;
+  pImpl->lastEffectsTick = now;
+  if (dtSeconds <= 0.f) {
+    return;
+  }
+  // a long pause (a stalled server) counts at most two seconds, so a
+  // stall does not land a poison's whole course at once
+  const float dt = std::min(dtSeconds, 2.f);
+  const std::vector<uint32_t> ids(pImpl->actorsWithEffects.begin(),
+                                  pImpl->actorsWithEffects.end());
+  for (uint32_t id : ids) {
+    const auto& form = LookupFormByIdNoLoad(id);
+    MpActor* actor = form ? form->AsActor() : nullptr;
+    if (!actor || !actor->HasRunningEffects()) {
+      pImpl->actorsWithEffects.erase(id);
+      continue;
+    }
+    try {
+      actor->AdvanceEffects(dt);
+    } catch (std::exception& e) {
+      spdlog::error("WorldState::TickEffects {:x} - {}", id, e.what());
+    }
+  }
 }
 
 void WorldState::LoadChangeForm(const MpChangeForm& changeForm,

@@ -27,6 +27,7 @@
 #include "NAVM.h"
 #include "NPC_.h"
 #include "OTFT.h"
+#include "PROJ.h"
 #include "RACE.h"
 #include "REFR.h"
 #include "SCRL.h"

@@ -21,6 +21,10 @@ MGEF::Data MGEF::GetData(
         result.data.primaryAV = ActorValue(
           *reinterpret_cast<const std::underlying_type_t<ActorValue>*>(data +
                                                                        0x44));
+        if (size >= 0x4C) {
+          std::memcpy(&result.data.projectile, data + 0x48,
+                      sizeof(result.data.projectile));
+        }
       }
     },
     compressedFieldsCache);

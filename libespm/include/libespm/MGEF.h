@@ -90,6 +90,10 @@ public:
     Flags flags;
     ActorValue primaryAV = espm::ActorValue::None;
     EffectType effectType;
+    // the projectile (PROJ) the effect launches, 0 for none: DATA 0x48
+    // (UESP "Skyrim Mod:Mod File Format/MGEF", after the effect type at 0x40
+    // and the primary actor value at 0x44; thuum docs/verbs/spell-cast.md)
+    uint32_t projectile = 0;
 
     [[nodiscard]] inline bool IsFlagSet(Flags flag) const
     {

@@ -564,26 +564,11 @@ bool MpActor::OnEquip(uint32_t baseId)
 
   bool spellLearned = false;
   if (isIngredient || isPotion) {
+    // thuum docs/verbs/magic-effects.md: observers see a drink's effects
+    // through MagicEffects, as every effect, and no longer through the
+    // drinker's figure drinking it in their games (which also had a poison
+    // "drunk" there)
     EatItem(baseId, recordType);
-
-    std::vector<std::optional<
-      std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
-      spSnippetArgs;
-
-    SpSnippetObjectArgument spSnippetObjectArgument;
-    spSnippetObjectArgument.formId = baseId;
-    spSnippetObjectArgument.type = isIngredient ? "Ingredient" : "Potion";
-
-    spSnippetArgs.push_back(spSnippetObjectArgument);
-    spSnippetArgs.push_back(false);
-    spSnippetArgs.push_back(false);
-
-    for (auto listener : GetActorListeners()) {
-      if (listener != this) {
-        SpSnippet("Actor", "EquipItem", spSnippetArgs, GetFormId())
-          .Execute(listener, SpSnippetMode::kNoReturnResult);
-      }
-    }
   } else if (isBook) {
     spellLearned = ReadBook(baseId);
   }

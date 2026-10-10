@@ -69,7 +69,7 @@ divergences:
     wire: 1
     reason: the fixed server counts the stream's first hit by the time it held its target, at most 250 ms (2 of Flames' 8 a second)
   - client: c2
-    msg: {t: 16, idx: 64, data: {health: 0.9600000381469727}}
+    msg: {t: 16, idx: 64, data: {health: 0.9599999785423279}}
     legacy: 0
     wire: 1
-    reason: the fixed server counts the stream's second hit the same way, 400 ms after the first and so the 250 ms cap again
+    reason: the fixed server counts the stream's second hit the same way, 400 ms after the first and so the 250 ms cap again (since magic-effects the damage goes through the effect rule, (98 - 2) / 100, the f32 nearest 0.96, where the old path's 0.98 - 0.02 landed one step above it)

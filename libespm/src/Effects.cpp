@@ -43,6 +43,10 @@ Effects::Data Effects::GetData(
         eff.duration = *reinterpret_cast<const uint32_t*>(data + 8);
         effectIndex++;
         orderFlag = true;
+      } else if (!std::memcmp(type, "CTDA", 4) && effectIndex > 0 &&
+                 orderFlag) {
+        // a condition after an EFIT gates that effect
+        result.effects[effectIndex - 1].hasConditions = true;
       }
       if (!isValid) {
         auto name = parent->GetEditorId(compressedFieldsCache);

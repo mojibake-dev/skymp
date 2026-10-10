@@ -2497,6 +2497,10 @@ void MpActor::ApplyEffects(uint32_t source,
   std::array<float, 3> deltas{};
   std::array<bool, 3> touched{};
   for (const auto& effect : effects) {
+    if (effect.hasConditions) {
+      // until the server evaluates conditions: a perk's extras stay out
+      continue;
+    }
     const auto facts = EffectFactsOf(worldState, source, effect);
     if (!facts) {
       continue;

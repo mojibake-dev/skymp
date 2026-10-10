@@ -2,7 +2,7 @@
 
 #include "MpActor.h"
 #include "WorldState.h"
-#include <unordered_set>
+#include <chrono>
 #include <vector>
 
 EatItemEvent::EatItemEvent(MpActor* actor_, uint32_t baseId_,
@@ -32,16 +32,22 @@ std::string EatItemEvent::GetArgumentsJsonArray() const
 
 void EatItemEvent::OnFireSuccess(WorldState* worldState)
 {
-  std::vector<espm::Effects::Effect> effects;
-  if (isAlchemyItem) {
-    effects = espm::GetData<espm::ALCH>(baseId, worldState).effects;
-  } else if (isIngredient) {
-    // effects = espm::GetData<espm::INGR>(baseId, worldState).effects;
-  } else {
+  if (!isAlchemyItem) {
+    // an ingredient's effects are a later slice (thuum
+    // docs/verbs/magic-effects.md; learned-effects records what it teaches)
     return;
   }
-  std::unordered_set<std::string> modFiles = { worldState->espmFiles.begin(),
-                                               worldState->espmFiles.end() };
-  bool hasSweetpie = modFiles.count("SweetPie.esp");
-  actor->ApplyMagicEffects(effects, hasSweetpie);
+  const auto data = espm::GetData<espm::ALCH>(baseId, worldState);
+  if (data.isPoison) {
+    // a poison goes on a weapon, not into the one who holds it: its server
+    // side is a later step of thuum docs/verbs/magic-effects.md (the legacy
+    // path restored the drinker by the poison's magnitude)
+    return;
+  }
+  // thuum docs/verbs/magic-effects.md: a drink's effects run by their
+  // records through the effect rule. The drinker's own game drinks it too,
+  // so its reports from before the drink are not taken for a while: a stale
+  // fall would undo the restore
+  actor->ApplyEffects(baseId, data.effects, 1.f, 0, false);
+  actor->UpdateNextRestorationTime(std::chrono::seconds{ 5 });
 }

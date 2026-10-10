@@ -1,6 +1,8 @@
+#include "ActionListener.h"
 #include "ActorValueRecord.h"
 #include "MpActor.h"
 #include "MpChangeForms.h"
+#include "OnEquipMessage.h"
 #include "TestUtils.hpp"
 #include "WorldState.h"
 #include "libespm/ALCH.h"
@@ -93,6 +95,23 @@ TEST_CASE("A Fortify Health raises the maximum while it runs and gives it "
   actor.AdvanceEffects(61.f);
   REQUIRE(actor.GetMaximumValues().health == Catch::Approx(100.f));
   REQUIRE(Health(actor) == Catch::Approx(0.7f));
+  REQUIRE(!actor.HasRunningEffects());
+  Leave(p);
+}
+
+// DamageHealth01 0x3A5A4, a Weak Poison (AlchDamageHealth 15, ENIT poison):
+// the legacy path drank it and restored 15
+TEST_CASE("A poison is not drunk", "[MagicEffects][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& actor = Drinker(p, 0.5f);
+  actor.AddItem(0x3A5A4, 1);
+  RawMessageData raw;
+  raw.userId = 0;
+  OnEquipMessage msg;
+  msg.baseId = 0x3A5A4;
+  p.GetActionListener().OnEquip(raw, msg);
+  REQUIRE(Health(actor) == Catch::Approx(0.5f));
   REQUIRE(!actor.HasRunningEffects());
   Leave(p);
 }

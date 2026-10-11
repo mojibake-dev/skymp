@@ -2960,7 +2960,9 @@ void ActionListener::NotifyStagger(MpActor& aggressor, MpActor& target,
   stagger.idx = target.GetIdx();
   stagger.data.animEventName = "staggerStart";
   stagger.data.numChanges = ++serverAnimations;
-  target.SendMessageToActorListeners(stagger, true);
+  for (auto* listener : target.GetActorListeners()) {
+    listener->SendToUser(stagger, true);
+  }
   spdlog::info("ActionListener::OnWeaponHit - stagger: {:x}'s {} on {:x} "
                "staggers it by {}",
                aggressor.GetFormId(),

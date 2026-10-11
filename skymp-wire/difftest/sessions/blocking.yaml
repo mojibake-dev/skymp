@@ -1,0 +1,63 @@
+# difftest blocking (M2, thuum docs/verbs/blocking.md): c1 and c2 are new
+# characters (profiles 9 and 10, actors 0xff000002 and 0xff000003: see
+# melee-reach). c2 steps 50 units east of the spawn turned to face c1, who
+# stays at the spawn facing its start angle (72, server-settings
+# startPoints); a `move` keeps the spawn's heading, so c2's step is sent
+# whole with heading 270. c1 hits c2 bare-handed twice, 2 s apart, inside
+# its own cone and reach:
+# - the first hit claims a block while c2 is not blocking: the legacy server
+#   takes the attacker's word and deals a tenth of the hit; the fixed server
+#   reads no block in its records and deals the whole hit;
+# - c2 then raises its block (blockStart among its animation events, then a
+#   step with isBlocking) and the second hit claims none: the legacy server
+#   blocks by its own 1 radian test and deals a tenth again; the fixed server
+#   blocks by its records (c1 inside c2's 35 degrees) and stops the engine's
+#   share for an empty-handed block (thuum ghidra/notes/block-formula.md, ID
+#   26425): fBlockWeaponBase's 0.3 plus a term in the attacker's weapon
+#   damage, which is 0 for Unarmed (Skyrim.esm WEAP 0x1F4, DATA damage 0,
+#   thuum lab/esm.py 2026-10-10), so it deals 70 percent of the hit.
+# The hit is 3.712 percent of c2's health (damage-flags). c2 lowers its
+# block at 6 s of its own (7.5 s of c1's), so it outlives c1, as in every
+# session.
+id: blocking
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 3500, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 500, isBashAttack: false, isHitBlocked: true, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
+  - {client: c1, at_ms: 5500, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 500, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
+  - {client: c2, at_ms: 0, send: {t: 2, idx: "{{idx}}", data: {worldOrCell: "{{worldOrCell}}", pos: [133907, -61130, 14662], rot: [0, 0, 270], direction: 0, healthPercentage: 1, speed: 0, runMode: Standing, isInJumpState: false, isSneaking: false, isBlocking: false, isWeapDrawn: false, isDead: false}}}
+  - {client: c2, at_ms: 2800, send: {t: 3, idx: "{{idx}}", data: {animEventName: blockStart, numChanges: 1}}}
+  - {client: c2, at_ms: 3000, send: {t: 2, idx: "{{idx}}", data: {worldOrCell: "{{worldOrCell}}", pos: [133907, -61130, 14662], rot: [0, 0, 270], direction: 0, healthPercentage: 1, speed: 0, runMode: Standing, isInJumpState: false, isSneaking: false, isBlocking: true, isWeapDrawn: false, isDead: false}}}
+  - {client: c2, at_ms: 6000, send: {t: 3, idx: "{{idx}}", data: {animEventName: blockStop, numChanges: 2}}}
+divergences:
+  - client: c2
+    msg: {t: 16, data: {health: 0.996288}}
+    legacy: 1
+    wire: 0
+    reason: the legacy server took c1's claimed block on c2, who was not blocking, and dealt a tenth of the hit (0.37 percent)
+  - client: c2
+    msg: {t: 16, data: {health: 0.96288}}
+    legacy: 0
+    wire: 1
+    reason: the fixed server's records show no block, so the claimed one deals the whole hit (3.7 percent)
+  - client: c2
+    msg: {t: 16, data: {health: 0.992576}}
+    legacy: 1
+    wire: 0
+    reason: the legacy server blocked the second hit by its own 1 radian test and dealt a tenth again
+  - client: c2
+    msg: {t: 16, data: {health: 0.936896}}
+    legacy: 0
+    wire: 1
+    reason: the fixed server blocked the second hit by its records, which c1's game did not claim, and stopped the engine's empty-handed share, 0.3 (70 percent of 3.712 dealt)
+  - client: c2
+    msg: {t: 30, class: Actor, function: StartCombat, selfId: 4278190082, arguments: [{formId: 20, type: Actor}]}
+    legacy: 0
+    wire: 1
+    reason: c1's first hit begins a fight; the fixed server tells c2's game once (thuum docs/verbs/hostility-sync.md), the legacy server has no hostility sync
+  - client: c2
+    msg: {t: 25, idx: 2}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

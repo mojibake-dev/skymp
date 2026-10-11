@@ -2946,6 +2946,21 @@ void ActionListener::NotifyStagger(MpActor& aggressor, MpActor& target,
     args{ player, static_cast<double>(magnitude), source };
   SpSnippet("TESModPlatform", "Stagger", args, 0)
     .Execute(&target, SpSnippetMode::kNoReturnResult);
+
+  // every game that sees the victim plays the stagger on its figure: the
+  // engine's stagger in the victim's own game is an action its client never
+  // hears as an animation event (b-stagger 20261011-213039: IsStaggering in
+  // that game, no staggerStart among its events), so the server relays the
+  // event as the victim's own (deathService lets a relayed staggerStart
+  // through; the victim's client draws no figure of itself). Its numChanges
+  // stays clear of the victim's own counter, which a figure compares for
+  // equality only (sync/animation.ts applyAnimation).
+  static uint32_t serverAnimations = 0x40000000;
+  UpdateAnimationMessage stagger;
+  stagger.idx = target.GetIdx();
+  stagger.data.animEventName = "staggerStart";
+  stagger.data.numChanges = ++serverAnimations;
+  target.SendMessageToActorListeners(stagger, true);
   spdlog::info("ActionListener::OnWeaponHit - stagger: {:x}'s {} on {:x} "
                "staggers it by {}",
                aggressor.GetFormId(),

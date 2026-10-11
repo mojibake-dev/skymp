@@ -112,6 +112,18 @@ std::vector<double> Staggers(PartOne& p)
   return out;
 }
 
+// how many staggerStart events for the victim's figure a user was sent (the
+// server's relay to every game that sees the victim)
+int Relayed(PartOne& p, Networking::UserId user)
+{
+  int n = 0;
+  for (auto& m : p.Messages()) {
+    n += m.userId == user && m.j["t"] == MsgType::UpdateAnimation &&
+      m.j["data"]["animEventName"] == "staggerStart";
+  }
+  return n;
+}
+
 void Leave(PartOne& p)
 {
   p.DestroyActor(kVictim);
@@ -132,6 +144,8 @@ TEST_CASE("A power attack staggers a player by the engine's formula",
   const auto staggers = Staggers(p);
   REQUIRE(staggers.size() == 1);
   REQUIRE(staggers[0] == Catch::Approx(0.24).margin(1e-5));
+  // and the attacker's game, which sees the victim, plays it on the figure
+  REQUIRE(Relayed(p, 0) == 1);
   Leave(p);
 }
 
@@ -142,6 +156,7 @@ TEST_CASE("A plain swing staggers nobody", "[Stagger][espm]")
   Start(p, "attackStart");
   Hit(p, false, false);
   REQUIRE(Staggers(p).empty());
+  REQUIRE(Relayed(p, 0) == 0);
   Leave(p);
 }
 

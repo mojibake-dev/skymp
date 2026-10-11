@@ -12,8 +12,8 @@
 # the start). The fixed server staggers c2: 0.75 x 1.0 / (1 x 1.0 x 2.5),
 # less (2.5 - 2.1) x 0.15, is 0.24 (fStaggerPlayerMassMult 2.5,
 # fStaggerMassOffsetBase 2.1, the offset's multiplier the executable's
-# 0.15), told to
-# c2's game as TESModPlatform.Stagger(the player, 0.24, c1's figure); the
+# 0.15), told to c2's game as TESModPlatform.Stagger(the player, 0.24,
+# c1's figure) and relayed to c1's as c2's own staggerStart; the
 # legacy server staggers nobody. c2 steps again at 3.5 s of its own (5 s of
 # c1's), so it outlives c1, as in every session. Declared from the formula
 # before the run, to be checked against it.
@@ -39,6 +39,11 @@ divergences:
     legacy: 0
     wire: 1
     reason: the fixed server staggers c2 by the engine's formula for c1's forward power attack with an Iron Sword (thuum docs/verbs/stagger.md), in c2's own game; the legacy server has no stagger
+  - client: c1
+    msg: {t: 3, data: {animEventName: staggerStart}}
+    legacy: 0
+    wire: 1
+    reason: the fixed server relays the stagger to every game that sees c2, c1's included, as c2's own animation (the engine's stagger in c2's game is an action its client never hears as an event)
   - client: c2
     msg: {t: 30, class: Actor, function: StartCombat, selfId: 4278190082, arguments: [{formId: 20, type: Actor}]}
     legacy: 0

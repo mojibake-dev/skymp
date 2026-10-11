@@ -2238,9 +2238,21 @@ rust::Vec<skymp::rules::EffectEntry> EffectEntriesOf(
   return entries;
 }
 
+// The server's wall clock in Unix milliseconds, what a running effect's
+// asOfMs counts against: the world's clock (thuum ADR-021)
+uint64_t WallNowMs()
+{
+  return static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch())
+      .count());
+}
+
+// The rule's entries as the change form keeps them, their seconds run
+// counted as of `asOfMs`
 std::optional<std::vector<RunningEffect>> RunningEffectsOf(
   const rust::Vec<skymp::rules::EffectEntry>& entries,
-  const std::vector<std::string>& files)
+  const std::vector<std::string>& files, uint64_t asOfMs)
 {
   if (entries.empty()) {
     return std::nullopt;
@@ -2264,6 +2276,7 @@ std::optional<std::vector<RunningEffect>> RunningEffectsOf(
     r.magnitude = e.facts.magnitude;
     r.durationS = e.facts.duration_s;
     r.elapsedS = e.elapsed_s;
+    r.asOfMs = asOfMs;
     r.recover = e.facts.recover;
     r.detrimental = e.facts.detrimental;
     r.noDuration = e.facts.no_duration;
@@ -2521,7 +2534,7 @@ void MpActor::ReapplyMagicEffects()
                      e.what());
       }
     }
-    auto running = RunningEffectsOf(entries, files);
+    auto running = RunningEffectsOf(entries, files, WallNowMs());
     const BaseActorValues base = GetBaseValues();
     EditChangeForm([&](MpChangeForm& changeForm) {
       changeForm.runningEffects = running;
@@ -2534,9 +2547,43 @@ void MpActor::ReapplyMagicEffects()
       changeForm.actorValues.staminaRateMult = base.staminaRateMult;
     });
   }
+  if (!HasRunningEffects()) {
+    return;
+  }
+  // The world's clock runs while the server is down (thuum ADR-021), and so
+  // do the effects: they run on by the time since they were last counted
+  // (an older record's, written before that time was kept, from now). An
+  // effect that ended meanwhile gives back what it gave; a poison's course
+  // lands at once, as it would have.
+  uint64_t asOfMs = 0;
+  for (const auto& r : *ChangeForm().runningEffects) {
+    asOfMs = std::max(asOfMs, r.asOfMs);
+  }
+  const uint64_t nowMs = WallNowMs();
+  if (asOfMs != 0 && nowMs > asOfMs) {
+    AdvanceEffects(static_cast<float>(nowMs - asOfMs) / 1000.f);
+  }
   if (HasRunningEffects()) {
     worldState->TrackEffects(GetFormId());
   }
+}
+
+std::vector<MpActor::RunningEffectView> MpActor::GetRunningEffects() const
+{
+  std::vector<RunningEffectView> res;
+  WorldState* worldState = GetParent();
+  if (!worldState || !HasRunningEffects()) {
+    return res;
+  }
+  for (const auto& e : EffectEntriesOf(ChangeForm(), worldState->espmFiles)) {
+    RunningEffectView view;
+    view.effect = e.facts.effect;
+    view.source = e.facts.source;
+    view.magnitude = e.facts.magnitude;
+    view.secondsLeft = std::max(e.facts.duration_s - e.elapsed_s, 0.f);
+    res.push_back(view);
+  }
+  return res;
 }
 
 std::vector<espm::Effects::Effect> MpActor::EffectsOf(WorldState* worldState,
@@ -2602,7 +2649,7 @@ void MpActor::ApplyEffects(uint32_t source,
     }
   }
   const bool setChanged = entries.size() != entriesBefore;
-  auto running = RunningEffectsOf(entries, files);
+  auto running = RunningEffectsOf(entries, files, WallNowMs());
   EditChangeForm(
     [&](MpChangeForm& changeForm) { changeForm.runningEffects = running; });
   if (running) {
@@ -2632,7 +2679,7 @@ void MpActor::AdvanceEffects(float dtSeconds)
   auto entries = EffectEntriesOf(ChangeForm(), files);
   const size_t entriesBefore = entries.size();
   const auto changes = skymp::rules::advance_effects(entries, dtSeconds);
-  auto running = RunningEffectsOf(entries, files);
+  auto running = RunningEffectsOf(entries, files, WallNowMs());
   EditChangeForm(
     [&](MpChangeForm& changeForm) { changeForm.runningEffects = running; });
   std::array<float, 3> deltas{};

@@ -150,6 +150,7 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm)
                            { "magnitude", e.magnitude },
                            { "durationS", e.durationS },
                            { "elapsedS", e.elapsedS },
+                           { "asOf", e.asOfMs },
                            { "recover", e.recover },
                            { "detrimental", e.detrimental },
                            { "noDuration", e.noDuration } };
@@ -530,7 +531,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
       source("source"), caster("caster"), kind("kind"), av("av"),
       secondAv("secondAv"), secondWeight("secondWeight"),
       magnitude("magnitude"), durationS("durationS"), elapsedS("elapsedS"),
-      recover("recover"), detrimental("detrimental"),
+      asOf("asOf"), recover("recover"), detrimental("detrimental"),
       noDuration("noDuration");
 
     std::vector<simdjson::dom::element> parsedEntries;
@@ -556,6 +557,11 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
       ReadEx(parsedEntries[i], magnitude, &e.magnitude);
       ReadEx(parsedEntries[i], durationS, &e.durationS);
       ReadEx(parsedEntries[i], elapsedS, &e.elapsedS);
+      // absent in records written before it was kept
+      if (parsedEntries[i].at_pointer(asOf.GetData()).error() ==
+          simdjson::error_code::SUCCESS) {
+        ReadEx(parsedEntries[i], asOf, &e.asOfMs);
+      }
       ReadEx(parsedEntries[i], recover, &e.recover);
       ReadEx(parsedEntries[i], detrimental, &e.detrimental);
       ReadEx(parsedEntries[i], noDuration, &e.noDuration);

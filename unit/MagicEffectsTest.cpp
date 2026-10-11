@@ -191,9 +191,57 @@ TEST_CASE("An older record's legacy effect becomes a running one with the "
   Leave(p);
 }
 
+// thuum ADR-021: the world's clock runs while the server is down, and so do
+// the effects. A record whose Fortify Health (FortifyHealth01's
+// AlchFortifyHealth, 20 for 60 s) had run 10 s when it was written 30 s ago
+// loads with 40 s run; one written two minutes ago, at 60 of 120, loads with
+// it ended, the maximum and the value given back: 40 of 100
+TEST_CASE("A record's running effects run on through the server's downtime",
+          "[MagicEffects][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& actor = Drinker(p, 1.f);
+  const auto nowMs = static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch())
+      .count());
+
+  RunningEffect fortify;
+  fortify.effect = FormDesc::FromString("3eaf3:Skyrim.esm");
+  fortify.source = FormDesc::FromString("3eaf2:Skyrim.esm");
+  fortify.kind = 1;
+  fortify.av = 24;
+  fortify.magnitude = 20.f;
+  fortify.durationS = 60.f;
+  fortify.elapsedS = 10.f;
+  fortify.recover = true;
+
+  MpChangeForm changeForm = actor.GetChangeForm();
+  fortify.asOfMs = nowMs - 30000;
+  changeForm.runningEffects = std::vector<RunningEffect>{ fortify };
+  actor.ApplyChangeForm(changeForm);
+  REQUIRE(actor.HasRunningEffects());
+  const auto running = actor.GetRunningEffects();
+  REQUIRE(running.size() == 1);
+  REQUIRE(running[0].effect == 0x3EAF3);
+  REQUIRE(running[0].secondsLeft == Catch::Approx(20.f).margin(2.f));
+  REQUIRE(actor.GetMaximumValues().health == Catch::Approx(120.f));
+
+  changeForm = actor.GetChangeForm();
+  fortify.asOfMs = nowMs - 120000;
+  changeForm.runningEffects = std::vector<RunningEffect>{ fortify };
+  changeForm.actorValues.healthPercentage = 0.5f;
+  actor.ApplyChangeForm(changeForm);
+  REQUIRE(!actor.HasRunningEffects());
+  REQUIRE(actor.GetRunningEffects().empty());
+  REQUIRE(actor.GetMaximumValues().health == Catch::Approx(100.f));
+  REQUIRE(Health(actor) == Catch::Approx(0.4f));
+  Leave(p);
+}
+
 // thuum docs/verbs/magic-effects.md: an actor's running effects outlast a
-// restart in its change form, each with the seconds it has run; a caster is
-// kept only when there is one
+// restart in its change form, each with the seconds it has run as of a
+// moment on the wall clock; a caster is kept only when there is one
 TEST_CASE("The change form keeps an actor's running effects, and older "
           "records read as none",
           "[MagicEffects]")
@@ -213,6 +261,7 @@ TEST_CASE("The change form keeps an actor's running effects, and older "
   poison.magnitude = 6.f;
   poison.durationS = 10.f;
   poison.elapsedS = 3.5f;
+  poison.asOfMs = 1760140800123;
   poison.detrimental = true;
 
   RunningEffect fortify;

@@ -266,10 +266,21 @@ public:
   void ApplyEffects(uint32_t source,
                     const std::vector<espm::Effects::Effect>& effects,
                     float scale, uint32_t caster, bool stream);
-  // Runs the actor's effects for `dtSeconds` of server time (WorldState's
-  // effects tick)
+  // Runs the actor's effects for `dtSeconds` of the server's wall clock
+  // (WorldState's effects tick; at a load, the time since the record's)
   void AdvanceEffects(float dtSeconds);
   bool HasRunningEffects() const;
+  // One running effect as a gamemode reads it (mp.get(actor,
+  // "runningEffects")): its MGEF, its source, its magnitude and the
+  // seconds it has left
+  struct RunningEffectView
+  {
+    uint32_t effect = 0;
+    uint32_t source = 0;
+    float magnitude = 0.f;
+    float secondsLeft = 0.f;
+  };
+  std::vector<RunningEffectView> GetRunningEffects() const;
   // The running buffs' sum on `av`: the temporary modifier the maximum and
   // the regeneration rates count
   float GetEffectModifier(espm::ActorValue av) const;

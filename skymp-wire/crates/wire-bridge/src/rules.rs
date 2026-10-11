@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, casts, clock, console, damage, effects, favorites, hostility, magic, markers, melee, movement, racemenu, ranged, rest};
+use wire_rules::{activation, actor_values, appearance, block, casts, clock, console, damage, effects, favorites, hostility, magic, markers, melee, movement, racemenu, ranged, rest};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -76,6 +76,48 @@ mod ffi {
         since_power_start_ms: u64,
         /// The core holds the attacker sneaking.
         is_sneaking: bool,
+    }
+
+    /// thuum docs/verbs/blocking.md: the game's block settings (Skyrim.esm's
+    /// GMSTs as the core read them) and the two the doc tags HYPOTHESIS.
+    #[derive(Debug)]
+    struct BlockSettings {
+        /// fShieldBaseFactor.
+        shield_base: f32,
+        /// fShieldScalingFactor, percent per armor point.
+        shield_scaling: f32,
+        /// fBlockWeaponBase.
+        weapon_base: f32,
+        /// fBlockWeaponScaling, percent per point of weapon damage.
+        weapon_scaling: f32,
+        /// The skill's factor, percent per Block point over 100.
+        skill_factor: f32,
+        /// fBlockPowerAttackMult.
+        power_attack_mult: f32,
+        /// The most a block stops, 0 to 1.
+        max_share: f32,
+    }
+
+    /// What the server knows about a hit on a target that may be blocking.
+    #[derive(Debug)]
+    struct BlockFacts {
+        /// The target's recorded block is up.
+        blocking: bool,
+        /// Radians between the target's view and the direction to the
+        /// attacker.
+        facing_angle: f32,
+        /// An arrow or a bolt.
+        ranged: bool,
+        /// The target holds a shield.
+        shield: bool,
+        /// The shield's base armor rating.
+        shield_rating: f32,
+        /// The attacker's weapon's base damage.
+        weapon_damage: f32,
+        /// The target's Block skill.
+        block_skill: f32,
+        /// A power attack, as damage-flags backed it.
+        power: bool,
     }
 
     /// The game's base sneak attack multipliers by weapon type (Skyrim.esm's
@@ -605,6 +647,9 @@ mod ffi {
         /// A kept sneak attack's damage multiplier for a weapon of
         /// `anim_type` (the WEAP record's DNAM animation type).
         fn sneak_mult(anim_type: u8, mults: &SneakMults) -> f32;
+        /// thuum docs/verbs/blocking.md: the share of a hit's damage the
+        /// target's block stops (0 when it is not blocked).
+        fn blocked_share(settings: &BlockSettings, facts: &BlockFacts) -> f32;
         /// Whether an accepted hit is one between two players.
         fn hostility_between_players(facts: &HostilityFacts) -> bool;
         /// Whether two players stand farther apart than the engine's
@@ -767,7 +812,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, AvChange, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, Verdict};
+pub use ffi::{AvBase, AvChange, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, Verdict};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -853,6 +898,30 @@ fn sneak_mult(anim_type: u8, m: &SneakMults) -> f32 {
             one_hand_mace: m.one_hand_mace,
             two_hand_sword: m.two_hand_sword,
             two_hand_axe: m.two_hand_axe,
+        },
+    )
+}
+
+fn blocked_share(s: &BlockSettings, f: &BlockFacts) -> f32 {
+    block::blocked_share(
+        &block::BlockSettings {
+            shield_base: s.shield_base,
+            shield_scaling: s.shield_scaling,
+            weapon_base: s.weapon_base,
+            weapon_scaling: s.weapon_scaling,
+            skill_factor: s.skill_factor,
+            power_attack_mult: s.power_attack_mult,
+            max_share: s.max_share,
+        },
+        &block::BlockFacts {
+            blocking: f.blocking,
+            facing_angle: f.facing_angle,
+            ranged: f.ranged,
+            shield: f.shield,
+            shield_rating: f.shield_rating,
+            weapon_damage: f.weapon_damage,
+            block_skill: f.block_skill,
+            power: f.power,
         },
     )
 }

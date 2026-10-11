@@ -2030,17 +2030,99 @@ bool CanHit(const MpActor& actor, const HitData& hitData,
     fmt::format("Cannot get weapon speed from source: {0:x}", hitData.source));
 }
 
-bool ShouldBeBlocked(const MpActor& aggressor, const MpActor& target)
+// thuum docs/verbs/blocking.md: the game's block settings, Skyrim.esm's
+// GMSTs, and the two the doc tags HYPOTHESIS until the engine's own code
+// settles them: UESP's skill factor (1.5, against fBlockSkillMult's 2.0)
+// and UESP's cap (85 percent, against fBlockMax's 0.7)
+skymp::rules::BlockSettings BlockSettingsOf(WorldState& worldState)
 {
-  NiPoint3 targetViewDirection = target.GetViewDirection();
-  NiPoint3 aggressorDirection = aggressor.GetPos() - target.GetPos();
-  if (targetViewDirection * aggressorDirection <= 0) {
-    return false;
+  const auto setting = [&](uint32_t id) {
+    return espm::GetData<espm::GMST>(id, &worldState).value;
+  };
+  skymp::rules::BlockSettings s{};
+  s.shield_base = setting(espm::GMST::kFShieldBaseFactor);
+  s.shield_scaling = setting(espm::GMST::kFShieldScalingFactor);
+  s.weapon_base = setting(espm::GMST::kFBlockWeaponBase);
+  s.weapon_scaling = setting(espm::GMST::kFBlockWeaponScaling);
+  s.skill_factor = 1.5f;
+  s.power_attack_mult = setting(espm::GMST::kFBlockPowerAttackMult);
+  s.max_share = 0.85f;
+  return s;
+}
+
+// The base armor rating of the shield the target holds, if it holds one: a
+// worn ARMO with the shield's biped slot (BGSBipedObjectForm::
+// BipedObjectSlot::kShield, 1 << 9, CommonLibSSE-NG
+// include/RE/B/BGSBipedObjectForm.h:22; BOD2, else BODT). The record's
+// equip slot is no shield test (thuum scratchpad m2-survey.md).
+std::optional<float> HeldShieldRating(const MpActor& target,
+                                      WorldState& worldState)
+{
+  constexpr uint32_t kShieldSlot = 1u << 9;
+  auto& browser = worldState.GetEspm().GetBrowser();
+  for (const auto& entry : target.GetEquipment().inv.entries) {
+    if (entry.GetWorn() == Inventory::Worn::None) {
+      continue;
+    }
+    const auto res = browser.LookupById(entry.baseId);
+    if (!res.rec || res.rec->GetType() != espm::ARMO::kType) {
+      continue;
+    }
+    const auto data = espm::GetData<espm::ARMO>(entry.baseId, &worldState);
+    const uint32_t slots =
+      data.bod2.present ? data.bod2.bodyPartFlags : data.bodt.bodyPartFlags;
+    if (slots & kShieldSlot) {
+      return static_cast<float>(data.baseRatingX100) / 100.f;
+    }
   }
-  float angle =
-    std::acos((targetViewDirection * aggressorDirection) /
-              (targetViewDirection.Length() * aggressorDirection.Length()));
-  return angle < 1;
+  return std::nullopt;
+}
+
+// thuum docs/verbs/blocking.md: the share of the hit's damage the target's
+// block stops, from the server's own records (R0, wire-rules block): its
+// recorded block, its facing against the attacker (the angle between its
+// view and the direction to the attacker, as the server always measured
+// it), an arrow or a bolt (a bow's bash is a melee hit), a shield, the
+// attacker's weapon damage, the target's Block skill (the actor-values
+// record; 0 without one), the power attack damage-flags backed
+float BlockedShare(const MpActor& aggressor, const MpActor& target,
+                   const HitData& hitData, WorldState& worldState)
+{
+  skymp::rules::BlockFacts f{};
+  f.blocking = target.IsBlockActive();
+  if (!f.blocking) {
+    return 0.f;
+  }
+  const NiPoint3 view = target.GetViewDirection();
+  const NiPoint3 toAggressor = aggressor.GetPos() - target.GetPos();
+  const float lengths = view.Length() * toAggressor.Length();
+  f.facing_angle = lengths > 0.f
+    ? std::acos(std::clamp((view * toAggressor) / lengths, -1.f, 1.f))
+    : std::numeric_limits<float>::quiet_NaN();
+  const auto source =
+    worldState.GetEspm().GetBrowser().LookupById(hitData.source);
+  if (source.rec && source.rec->GetType() == espm::WEAP::kType) {
+    const auto weap = espm::GetData<espm::WEAP>(hitData.source, &worldState);
+    if (weap.weapDNAM) {
+      const auto anim = weap.weapDNAM->animType;
+      f.ranged = (anim == espm::WEAP::AnimType::Bow ||
+                  anim == espm::WEAP::AnimType::Crossbow) &&
+        !hitData.isBashAttack;
+    }
+    if (weap.weapData) {
+      f.weapon_damage = static_cast<float>(weap.weapData->damage);
+    }
+  }
+  if (const auto rating = HeldShieldRating(target, worldState)) {
+    f.shield = true;
+    f.shield_rating = *rating;
+  }
+  f.block_skill =
+    target
+      .GetRecordedActorValueBase(static_cast<uint8_t>(espm::ActorValue::Block))
+      .value_or(0.f);
+  f.power = hitData.isPowerAttack;
+  return skymp::rules::blocked_share(BlockSettingsOf(worldState), f);
 }
 }
 
@@ -2498,9 +2580,25 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
 {
   const auto currentHitTime = std::chrono::steady_clock::now();
 
+  auto* targetActorPtr = targetRef ? targetRef->AsActor() : nullptr;
+
+  // thuum docs/verbs/blocking.md: whether the hit was blocked is the
+  // server's, from its own records (wire-rules block), never the attacker's
+  // game's verdict, which saw the target's block a round trip late; scripts
+  // hear the server's (OnHit's abHitBlocked)
+  const float blockedShare = targetActorPtr
+    ? BlockedShare(*aggressor, *targetActorPtr, hitData, partOne.worldState)
+    : 0.f;
+  if (hitData.isHitBlocked != (blockedShare > 0.f)) {
+    spdlog::info("OnWeaponHit - {:x} hits {:x}: blocked {} in the attacker's "
+                 "game, {} by the server's records",
+                 aggressor->GetFormId(), hitData.target, hitData.isHitBlocked,
+                 blockedShare > 0.f);
+  }
+  hitData.isHitBlocked = blockedShare > 0.f;
+
   SendPapyrusOnHitEvent(aggressor, targetRef, hitData);
 
-  auto* targetActorPtr = targetRef ? targetRef->AsActor() : nullptr;
   if (!targetActorPtr) {
     return; // Not an actor, damage calculation is not needed
   }
@@ -2582,55 +2680,9 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
 
   float healthPercentage = currentActorValues.healthPercentage;
 
-  if (targetActor.IsBlockActive()) {
-    if (ShouldBeBlocked(*aggressor, targetActor)) {
-      bool isRemoteBowAttack = false;
-
-      auto sourceLookupResult =
-        targetActor.GetParent()->GetEspm().GetBrowser().LookupById(
-          hitData.source);
-      if (sourceLookupResult.rec &&
-          sourceLookupResult.rec->GetType() == espm::WEAP::kType) {
-        auto weapData =
-          espm::GetData<espm::WEAP>(hitData.source, targetActor.GetParent());
-        if (weapData.weapDNAM) {
-          if (weapData.weapDNAM->animType == espm::WEAP::AnimType::Bow ||
-              weapData.weapDNAM->animType == espm::WEAP::AnimType::Crossbow) {
-            if (!hitData.isBashAttack) {
-              isRemoteBowAttack = true;
-            }
-          }
-        }
-      }
-
-      bool isBlockingByShield = false;
-
-      auto targetActorEquipmentEntries =
-        targetActor.GetEquipment().inv.entries;
-      for (auto& entry : targetActorEquipmentEntries) {
-        if (entry.GetWorn() != Inventory::Worn::None) {
-          auto res =
-            targetActor.GetParent()->GetEspm().GetBrowser().LookupById(
-              entry.baseId);
-          if (res.rec && res.rec->GetType() == espm::ARMO::kType) {
-            auto data =
-              espm::GetData<espm::ARMO>(entry.baseId, targetActor.GetParent());
-            bool isShield = data.equipSlotId > 0;
-            if (isShield) {
-              isBlockingByShield = isShield;
-            }
-          }
-        }
-      }
-
-      if (!isRemoteBowAttack || isBlockingByShield) {
-        hitData.isHitBlocked = true;
-      }
-    }
-  }
-
-  float damage =
-    partOne.CalculateDamage(*aggressor, targetActor, hitData) * damageMult;
+  // a block's share is the rule's (the formula counts no block)
+  float damage = partOne.CalculateDamage(*aggressor, targetActor, hitData) *
+    damageMult * (1.f - blockedShare);
   damage = damage < 0.f || !std::isfinite(damage) ? 0.f : damage;
   if (targetActor.IsGodMode()) {
     // thuum docs/verbs/god-mode.md: TGM, no damage taken; the fight still
@@ -2655,11 +2707,11 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
   // thuum docs/verbs/marksman.md: the server's own damage for every weapon
   // hit, at info as OnSpellHit's, so a lab run can tell it from what the
   // victim's game reports afterwards
-  spdlog::info("OnWeaponHit - {:x} hits {:x} with {:x} for {} damage: "
-               "health {} -> {} of base {}",
+  spdlog::info("OnWeaponHit - {:x} hits {:x} with {:x} for {} damage "
+               "(blocked share {}): health {} -> {} of base {}",
                aggressor->GetFormId(), hitData.target, hitData.source, damage,
-               healthPercentage, currentActorValues.healthPercentage,
-               outBaseHealth);
+               blockedShare, healthPercentage,
+               currentActorValues.healthPercentage, outBaseHealth);
 
   NotifyHostility(*aggressor, targetActor, currentHitTime);
 }

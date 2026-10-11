@@ -11,6 +11,7 @@
 #include "MpObjectReference.h"
 #include "MsgType.h"
 #include "Overloaded.h"
+#include "ShoutSnippets.h"
 #include "WorldState.h"
 #include "gamemode_events/CustomEvent.h"
 #include "gamemode_events/EatItemEvent.h"
@@ -199,8 +200,9 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     // learned of its ingredients taught again
     // (docs/verbs/learned-effects.md), its favorites marked again
     // (docs/verbs/favorites.md), its RaceMenu look applied again
-    // (docs/verbs/racemenu-sync.md), and its actor values and progress
-    // (docs/verbs/actor-values.md)
+    // (docs/verbs/racemenu-sync.md), its actor values and progress
+    // (docs/verbs/actor-values.md), and its shouts and words of power
+    // (docs/verbs/shouts.md)
     if (actor == partOne.serverState.ActorByUser(rawMsgData.userId) &&
         actor->TakeMapMarkersPending()) {
       SendMapMarkers(*actor);
@@ -208,6 +210,7 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       SendFavorites(*actor);
       SendRaceMenuPreset(*actor);
       SendActorValues(*actor);
+      SendShoutRecord(*actor);
     }
 
     if (!msg.data.isBlocking) {

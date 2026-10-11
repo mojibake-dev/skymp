@@ -2,6 +2,7 @@
 #include "ConsoleOutputMessage.h"
 #include "MpActor.h"
 #include "PartOne.h"
+#include "ShoutSnippets.h"
 #include "SpSnippet.h"
 #include "WorldState.h"
 #include "libespm/CELL.h"
@@ -494,6 +495,36 @@ std::string ExecuteToggleGodMode(MpActor& caller)
   return on ? "god mode on" : "god mode off";
 }
 
+// TeachWord, UnlockWord and AddShout, an admin's (thuum docs/verbs/shouts.md,
+// M2): the server's record of what the target knows of shouts (R0), then the
+// target's own game told the same. Typed in a game's console they used to
+// change that game alone (x-shout-probe 20261011-060059); skymp5-client
+// sends them here now. The line says whether the record grew.
+std::string ExecuteShoutEntry(
+  MpActor& caller, MpActor::ShoutEntry kind,
+  const std::vector<ConsoleCommands::Argument>& args)
+{
+  MpActor& target = ActorOf(caller, args.at(0).GetInteger());
+  const auto formId = static_cast<uint32_t>(args.at(1).GetInteger());
+  auto& worldState = *caller.GetParent();
+  const bool shout = kind == MpActor::ShoutEntry::Shout;
+  const auto lookup = worldState.GetEspm().GetBrowser().LookupById(formId);
+  if (!lookup.rec || !(lookup.rec->GetType() == (shout ? "SHOU" : "WOOP"))) {
+    throw std::runtime_error(
+      fmt::format("{:x} is no {}", formId, shout ? "shout" : "word of power"));
+  }
+  const bool added = target.RecordShoutEntry(
+    kind, FormDesc::FromFormId(formId, worldState.espmFiles));
+  SendShoutEntry(target, kind, formId);
+  spdlog::info(
+    "ConsoleCommands: {:x} {} {:x} for {:x} ({})", caller.GetFormId(),
+    shout ? "added the shout"
+          : (kind == MpActor::ShoutEntry::WordKnown ? "taught" : "unlocked"),
+    formId, target.GetFormId(), added ? "recorded" : "already recorded");
+  return fmt::format("{:x} {}", formId,
+                     added ? "recorded" : "already recorded");
+}
+
 std::string ExecuteToggleImmortalMode(MpActor& caller)
 {
   const bool on = !caller.IsImmortal();
@@ -680,6 +711,23 @@ void ConsoleCommands::Execute(
     } else if (!Utils::stricmp(name, "TIM") ||
                !Utils::stricmp(name, "ToggleImmortalMode")) {
       return Reply(me, judged + " done: " + ExecuteToggleImmortalMode(me),
+                   false);
+    } else if (!Utils::stricmp(name, "TeachWord")) {
+      return Reply(
+        me,
+        judged + " done: " +
+          ExecuteShoutEntry(me, MpActor::ShoutEntry::WordKnown, args),
+        false);
+    } else if (!Utils::stricmp(name, "UnlockWord")) {
+      return Reply(
+        me,
+        judged + " done: " +
+          ExecuteShoutEntry(me, MpActor::ShoutEntry::WordUnlocked, args),
+        false);
+    } else if (!Utils::stricmp(name, "AddShout")) {
+      return Reply(me,
+                   judged + " done: " +
+                     ExecuteShoutEntry(me, MpActor::ShoutEntry::Shout, args),
                    false);
     } else if (!Utils::stricmp(name, "SetAV") ||
                !Utils::stricmp(name, "SetActorValue")) {

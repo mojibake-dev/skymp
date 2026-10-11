@@ -134,6 +134,15 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm)
     res["ingredientEffects"] = { { "entries", effectsJson } };
   }
 
+  // thuum docs/verbs/shouts.md; absent in older records, read as none
+  if (changeForm.shoutRecord.has_value() && !changeForm.shoutRecord->Empty()) {
+    res["shoutRecord"] = {
+      { "shouts", ToStringArray(changeForm.shoutRecord->shouts) },
+      { "wordsKnown", ToStringArray(changeForm.shoutRecord->wordsKnown) },
+      { "wordsUnlocked", ToStringArray(changeForm.shoutRecord->wordsUnlocked) }
+    };
+  }
+
   // thuum docs/verbs/magic-effects.md; absent in older records, read as
   // none. A caster is written only when there is one: an empty FormDesc
   // would read back as 0xff000000
@@ -253,6 +262,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
   static const JsonPointer factions("factions");
   static const JsonPointer mapMarkers("mapMarkers");
   static const JsonPointer ingredientEffects("ingredientEffects");
+  static const JsonPointer shoutRecord("shoutRecord");
   static const JsonPointer favorites("favorites");
   static const JsonPointer raceMenuPreset("raceMenuPreset");
   static const JsonPointer staffRank("staffRank");
@@ -522,6 +532,24 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
       effects[i].mask = static_cast<uint8_t>(maskTmp & 0x0f);
     }
     res.ingredientEffects = effects;
+  }
+
+  if (element.at_pointer(shoutRecord.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, shoutRecord, &jTmp);
+    static const JsonPointer shouts("shouts"), wordsKnown("wordsKnown"),
+      wordsUnlocked("wordsUnlocked");
+    ShoutRecord record;
+    std::vector<std::string> data;
+    ReadVector(jTmp, shouts, &data);
+    record.shouts = ToFormDescsArray(data);
+    data.clear();
+    ReadVector(jTmp, wordsKnown, &data);
+    record.wordsKnown = ToFormDescsArray(data);
+    data.clear();
+    ReadVector(jTmp, wordsUnlocked, &data);
+    record.wordsUnlocked = ToFormDescsArray(data);
+    res.shoutRecord = record;
   }
 
   if (element.at_pointer(runningEffects.GetData()).error() ==

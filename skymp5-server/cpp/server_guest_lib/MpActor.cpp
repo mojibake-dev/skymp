@@ -948,6 +948,38 @@ bool MpActor::RecordIngredientEffects(const FormDesc& ingredient, uint8_t mask)
   return true;
 }
 
+ShoutRecord MpActor::GetShoutRecord() const
+{
+  const auto& record = ChangeForm().shoutRecord;
+  return record ? *record : ShoutRecord();
+}
+
+bool MpActor::RecordShoutEntry(ShoutEntry kind, const FormDesc& form)
+{
+  const auto listOf = [kind](ShoutRecord& record) -> std::vector<FormDesc>& {
+    switch (kind) {
+      case ShoutEntry::Shout:
+        return record.shouts;
+      case ShoutEntry::WordKnown:
+        return record.wordsKnown;
+      default:
+        return record.wordsUnlocked;
+    }
+  };
+  ShoutRecord current = GetShoutRecord();
+  auto& list = listOf(current);
+  if (std::find(list.begin(), list.end(), form) != list.end()) {
+    return false;
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    if (!changeForm.shoutRecord) {
+      changeForm.shoutRecord.emplace();
+    }
+    listOf(*changeForm.shoutRecord).push_back(form);
+  });
+  return true;
+}
+
 std::pair<uint32_t, std::chrono::steady_clock::time_point>
 MpActor::GetLastEaten() const
 {

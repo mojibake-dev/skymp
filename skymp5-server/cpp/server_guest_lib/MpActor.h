@@ -8,6 +8,7 @@
 #include "IngredientEffects.h"
 #include "MapMarker.h"
 #include "MpObjectReference.h"
+#include "ShoutRecord.h"
 #include "libespm/espm.h"
 #include <array>
 #include <map>
@@ -167,6 +168,18 @@ public:
   // when none), which a report must follow
   std::vector<IngredientEffects> GetIngredientEffects() const;
   bool RecordIngredientEffects(const FormDesc& ingredient, uint8_t mask);
+
+  // thuum docs/verbs/shouts.md: what the player knows of shouts, the
+  // server's record (R0)
+  enum class ShoutEntry
+  {
+    Shout,
+    WordKnown,
+    WordUnlocked
+  };
+  ShoutRecord GetShoutRecord() const;
+  // Adds the form to the record's list; false when it was there already
+  bool RecordShoutEntry(ShoutEntry kind, const FormDesc& form);
   std::pair<uint32_t, std::chrono::steady_clock::time_point> GetLastEaten()
     const;
   // thuum docs/verbs/favorites.md: the player's favorites, kept in its change

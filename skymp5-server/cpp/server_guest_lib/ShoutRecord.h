@@ -28,4 +28,9 @@ struct ShoutRecord
   {
     return lhs.ToTuple() == rhs.ToTuple();
   }
+
+  friend bool operator<(const ShoutRecord& lhs, const ShoutRecord& rhs)
+  {
+    return lhs.ToTuple() < rhs.ToTuple();
+  }
 };

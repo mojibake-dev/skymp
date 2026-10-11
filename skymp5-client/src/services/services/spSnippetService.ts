@@ -200,11 +200,19 @@ export class SpSnippetService extends ClientListener {
     );
   };
 
+  // A global Skyrim Platform does not bind (its own TESModPlatform natives are
+  // not in the dump its bindings come from) is called by name through
+  // callNative, which needs the .psc declaration and the update context
+  // snippets run in (thuum docs/verbs/stagger.md: TESModPlatform.Stagger,
+  // b-stagger 20261011-084217 found the snippet failing without it)
   private async runStatic(snippet: SpSnippetMessage): Promise<unknown> {
     const papyrusClass = this.spAny[snippet.class];
-    return await papyrusClass[snippet.function](
-      ...snippet.arguments.map((arg) => this.deserializeArg(arg)),
-    );
+    const args = snippet.arguments.map((arg) => this.deserializeArg(arg));
+    const f = papyrusClass ? papyrusClass[snippet.function] : undefined;
+    if (typeof f === "function") {
+      return await f.apply(papyrusClass, args);
+    }
+    return this.sp.callNative(snippet.class, snippet.function, undefined, ...args);
   };
 
   private spAny: Record<string, any>;

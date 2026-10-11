@@ -5,6 +5,7 @@ import { FormType, HitEvent, storage } from "skyrimPlatform";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { MsgType } from "../../messages";
 import { Hit } from "../messages/hitMessage";
+import { shoutGate } from "./shoutService";
 
 export class HitService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
@@ -62,10 +63,19 @@ export class HitService extends ClientListener {
             this.recentMagicHits.set(aggressorId, now);
         }
 
-        this.controller.emitter.emit("sendMessage", {
-            message: { t: MsgType.OnHit, data: this.getHitData(e) },
+        const data = this.getHitData(e);
+        const send = () => this.controller.emitter.emit("sendMessage", {
+            message: { t: MsgType.OnHit, data },
             reliability: "reliable"
         });
+
+        // thuum docs/verbs/shouts.md: the player's spell hits after a
+        // shout's release wait for the shout's report (shoutService)
+        if (isSpell && aggressor === 0x14 && shoutGate.pending) {
+            shoutGate.held.push(send);
+            return;
+        }
+        send();
     }
 
     private getHitData(e: HitEvent): Hit {

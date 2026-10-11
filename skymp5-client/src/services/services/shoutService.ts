@@ -14,6 +14,23 @@ import { ClientListener, CombinedController, Sp } from "./clientListener";
 // once the game has set it, find the variation among the equipped shout's
 // three and report a cast from the voice (castingSource 2) with that
 // variation's spell, which the server judges against its record.
+//
+// The player's spell hits wait while a report is due: the shout's spell
+// hits on the frames after the release, and a hit the server sees before
+// its shout has no cast to claim (spell-cast's claim). Both go reliable on
+// one ordered channel, so a hit sent after the report reaches the server
+// after it. HitService asks the gate before it sends.
+export const shoutGate = {
+    pending: false,
+    held: [] as Array<() => void>,
+};
+
+const releaseHeld = () => {
+    shoutGate.pending = false;
+    const held = shoutGate.held.splice(0);
+    held.forEach((send) => send());
+};
+
 export class ShoutService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -27,6 +44,7 @@ export class ShoutService extends ClientListener {
             leave: () => {
                 if (Date.now() - this.shoutStartedAt <= ShoutService.chargeMs) {
                     this.releasedAt = Date.now();
+                    shoutGate.pending = true;
                 }
                 this.shoutStartedAt = 0;
             },
@@ -41,6 +59,7 @@ export class ShoutService extends ClientListener {
         const shout = player ? player.getEquippedShout() : null;
         if (!player || !shout) {
             this.releasedAt = 0;
+            releaseHeld();
             return;
         }
         const recovery = this.sp.callNative("Actor", "GetVoiceRecoveryTime", player) as number;
@@ -48,6 +67,7 @@ export class ShoutService extends ClientListener {
             if (Date.now() - this.releasedAt > ShoutService.readMs) {
                 logError(this, "E_SHOUT_UNREAD: no voice recovery", ShoutService.readMs, "ms after the release of", shout.getFormID().toString(16));
                 this.releasedAt = 0;
+                releaseHeld();
             }
             return;
         }
@@ -56,13 +76,15 @@ export class ShoutService extends ClientListener {
         const spell = variation === null ? null : this.sp.callNative("Shout", "GetNthSpell", shout, variation) as Form | null;
         if (variation === null || !spell) {
             logError(this, "E_SHOUT_UNREAD: a recovery of", recovery, "s names no variation of", shout.getFormID().toString(16));
+            releaseHeld();
             return;
         }
-        logTrace(this, "shout", shout.getFormID().toString(16), "variation", variation, "recovery", recovery);
+        logTrace(this, "shout", shout.getFormID().toString(16), "variation", variation, "recovery", recovery, "hits held", shoutGate.held.length);
         this.controller.emitter.emit("sendMessage", {
             message: { t: MsgType.SpellCast, data: this.castOf(spell.getFormID()) },
             reliability: "reliable",
         });
+        releaseHeld();
     }
 
     // The variation whose recovery the game set: the one whose recovery

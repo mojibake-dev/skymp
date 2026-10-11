@@ -94,7 +94,10 @@ export class MagicEffectsService extends ClientListener {
         for (const m of msg.modifiers ?? []) {
             want.set(m.av, m.amount);
         }
-        const avs = new Set<number>([...this.held.keys(), ...want.keys()]);
+        // the client targets ES5 (tsconfig.json): no spread of an iterator
+        const avs = new Set<number>();
+        this.held.forEach((_amount, av) => avs.add(av));
+        want.forEach((_amount, av) => avs.add(av));
         avs.forEach((av) => {
             const target = want.get(av) ?? 0;
             const delta = target - (this.held.get(av) ?? 0);

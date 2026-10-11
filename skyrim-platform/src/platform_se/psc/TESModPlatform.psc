@@ -71,6 +71,14 @@ Bool Function SetPlayerSkill(Int skill, Float level, Float xp, Float threshold, 
 
 Bool Function SetPlayerExperience(Float xp, Float threshold, Int level) global native
 
+; thuum docs/verbs/magic-effects.md: while blocked, the player's own game
+; applies no effect of a potion, a food or a poison to the player (the
+; server's effects stand alone); and a server buff's change on one of the
+; player's actor values, as ModActorValue makes it
+Function SetPotionEffectsBlocked(Bool blocked) global native
+
+Bool Function ModPlayerActorValue(Int av, Float delta) global native
+
 ; thuum docs/verbs/marksman.md: a neighbour's arrow, launched from its figure
 ; along its shooter's aim (pitch and heading, radians) with its draw's power
 Bool Function LaunchArrow(Actor shooter, Weapon weapon, Ammo ammo, Float power, Float aimAngle, Float aimHeading) global native

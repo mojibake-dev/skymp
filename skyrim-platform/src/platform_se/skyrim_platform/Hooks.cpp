@@ -1,5 +1,6 @@
 #include "Hooks.h"
 #include "EventHandler.h"
+#include "PapyrusTESModPlatform.h"
 #include <mutex>
 
 namespace hook::internal {
@@ -53,6 +54,39 @@ struct OnConsoleVPrint
 void InstallOnConsoleVPrintHook()
 {
   Hooks::write_thunk_call<OnConsoleVPrint>(Offsets::Hooks::VPrint.address());
+}
+
+/**
+ * thuum docs/verbs/magic-effects.md: while skymp5-client blocks them
+ * (TESModPlatform.SetPotionEffectsBlocked), the player's own game applies
+ * no effect of an alchemy item (a potion, a food, a poison: AlchemyItem's
+ * spell type is kAlchemy) to the player: MagicTarget::AddTarget (vfunc 01,
+ * CommonLibSSE-NG include/RE/M/MagicTarget.h:78) refuses it, and the
+ * server's effects stand alone (its ChangeValues, and the buffs its
+ * MagicEffects carries). The player's MagicTarget vtable is the fifth of
+ * PlayerCharacter's: TESObjectREFR has four (VTABLE_TESObjectREFR) and
+ * Actor's MagicTarget base follows them (include/RE/A/Actor.h:126), as
+ * VTABLE_Actor's ten count.
+ */
+struct PlayerAddTarget
+{
+  static bool thunk(RE::MagicTarget* a_this,
+                    RE::MagicTarget::AddTargetData& a_data)
+  {
+    if (TESModPlatform::ArePotionEffectsBlocked() && a_data.magicItem &&
+        a_data.magicItem->GetSpellType() ==
+          RE::MagicSystem::SpellType::kAlchemy) {
+      return false;
+    }
+    return func(a_this, a_data);
+  }
+  static inline REL::Relocation<decltype(thunk)> func;
+};
+
+void InstallPlayerAddTargetHook()
+{
+  REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_PlayerCharacter[4] };
+  PlayerAddTarget::func = vtbl.write_vfunc(0x1, PlayerAddTarget::thunk);
 }
 
 void BindNativeMethod(RE::BSScript::Internal::VirtualMachine* thisArg,
@@ -132,6 +166,7 @@ void Hooks::Install()
   // InstallOnFrameUpdateHook();
   InstallOnConsoleVPrintHook();
   HookVirtualMachineBind();
+  InstallPlayerAddTargetHook();
 
   logger::info("CommonLib hooks installed.");
 }

@@ -31,6 +31,9 @@ struct
   std::recursive_mutex m;
 } share;
 std::atomic<bool> papyrusEventsBlocked;
+// thuum docs/verbs/magic-effects.md: the player's own game applies no drink
+// of its own while skymp5-client says so
+std::atomic<bool> potionEffectsBlocked;
 
 struct
 {
@@ -1276,6 +1279,32 @@ bool TESModPlatform::SetActorValueBase(IVM* vm, StackID stackId,
   return true;
 }
 
+void TESModPlatform::SetPotionEffectsBlocked(IVM* vm, StackID stackId,
+                                             RE::StaticFunctionTag*,
+                                             bool blocked)
+{
+  potionEffectsBlocked = blocked;
+}
+
+bool TESModPlatform::ArePotionEffectsBlocked()
+{
+  return potionEffectsBlocked;
+}
+
+bool TESModPlatform::ModPlayerActorValue(IVM* vm, StackID stackId,
+                                         RE::StaticFunctionTag*, int32_t av,
+                                         float delta)
+{
+  auto player = RE::PlayerCharacter::GetSingleton();
+  if (!player || av < 0 || static_cast<size_t>(av) >= kActorValues ||
+      !std::isfinite(delta)) {
+    return false;
+  }
+  player->AsActorValueOwner()->ModActorValue(static_cast<RE::ActorValue>(av),
+                                             delta);
+  return true;
+}
+
 std::vector<float> TESModPlatform::GetPlayerProgress(IVM* vm, StackID stackId,
                                                      RE::StaticFunctionTag*)
 {
@@ -1539,6 +1568,16 @@ bool TESModPlatform::Register(IVM* vm)
                                      RE::StaticFunctionTag*, float, float,
                                      int32_t>(
       "SetPlayerExperience", "TESModPlatform", SetPlayerExperience));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SetPotionEffectsBlocked),
+                                     void, RE::StaticFunctionTag*, bool>(
+      "SetPotionEffectsBlocked", "TESModPlatform", SetPotionEffectsBlocked));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(ModPlayerActorValue), bool,
+                                     RE::StaticFunctionTag*, int32_t, float>(
+      "ModPlayerActorValue", "TESModPlatform", ModPlayerActorValue));
 
   static LoadGameEvent loadGameEvent;
 

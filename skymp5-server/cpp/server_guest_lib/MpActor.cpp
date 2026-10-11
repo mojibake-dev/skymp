@@ -31,6 +31,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <set>
 #include <functional>
 #include <limits>
 #include <optional>
@@ -2305,12 +2306,39 @@ void SumAttributeChanges(const Changes& changes, std::array<float, 3>& deltas,
 
 // The running effects as MagicEffects, and `shownOnce` (effects applied at
 // once, 0 seconds left) beside them
+// The sums the running buffs in `entries` put on each actor value they
+// touch, by actor value, those at 0 left out (wire-rules magic::modifier)
+std::vector<MagicEffectsMessage::Modifier> EffectModifiersOf(
+  const rust::Vec<skymp::rules::EffectEntry>& entries)
+{
+  constexpr uint32_t kNoSecond = std::numeric_limits<uint32_t>::max();
+  std::set<uint32_t> avs;
+  for (const auto& e : entries) {
+    avs.insert(e.facts.av);
+    if (e.facts.second_av != kNoSecond) {
+      avs.insert(e.facts.second_av);
+    }
+  }
+  std::vector<MagicEffectsMessage::Modifier> res;
+  for (uint32_t av : avs) {
+    const float amount = skymp::rules::effect_modifier(entries, av);
+    if (amount != 0.f) {
+      MagicEffectsMessage::Modifier modifier;
+      modifier.av = av;
+      modifier.amount = amount;
+      res.push_back(modifier);
+    }
+  }
+  return res;
+}
+
 MagicEffectsMessage MagicEffectsOf(
   uint32_t idx, const rust::Vec<skymp::rules::EffectEntry>& entries,
   const std::vector<MagicEffectsMessage::Effect>& shownOnce)
 {
   MagicEffectsMessage msg;
   msg.idx = idx;
+  msg.modifiers = EffectModifiersOf(entries);
   for (const auto& e : entries) {
     MagicEffectsMessage::Effect effect;
     effect.effect = e.facts.effect;
@@ -2618,6 +2646,7 @@ void MpActor::ApplyEffects(uint32_t source,
   const BaseActorValues maxBefore = GetMaximumValues();
   auto entries = EffectEntriesOf(ChangeForm(), files);
   const size_t entriesBefore = entries.size();
+  const auto modifiersBefore = EffectModifiersOf(entries);
   std::vector<MagicEffectsMessage::Effect> shownOnce;
   std::array<float, 3> deltas{};
   std::array<bool, 3> touched{};
@@ -2648,18 +2677,23 @@ void MpActor::ApplyEffects(uint32_t source,
       shownOnce.push_back(once);
     }
   }
-  const bool setChanged = entries.size() != entriesBefore;
+  // a buff replaced at the bound keeps the count but moves the sums
+  const bool setChanged = entries.size() != entriesBefore ||
+    EffectModifiersOf(entries) != modifiersBefore;
   auto running = RunningEffectsOf(entries, files, WallNowMs());
   EditChangeForm(
     [&](MpChangeForm& changeForm) { changeForm.runningEffects = running; });
   if (running) {
     worldState->TrackEffects(GetFormId());
   }
-  ApplyAttributeDeltas(deltas, touched, maxBefore, caster);
+  // the set and its sums first, then the values: on the one ordered
+  // channel, the actor's own game moves its maximum before it takes the
+  // percentage, as the server did
   if (setChanged || !shownOnce.empty()) {
     SendMessageToActorListeners(MagicEffectsOf(GetIdx(), entries, shownOnce),
                                 true);
   }
+  ApplyAttributeDeltas(deltas, touched, maxBefore, caster);
 }
 
 void MpActor::AdvanceEffects(float dtSeconds)
@@ -2685,12 +2719,13 @@ void MpActor::AdvanceEffects(float dtSeconds)
   std::array<float, 3> deltas{};
   std::array<bool, 3> touched{};
   SumAttributeChanges(changes, deltas, touched);
-  ApplyAttributeDeltas(deltas, touched, maxBefore, 0);
   if (entries.size() != entriesBefore) {
     // an effect ended: every game drops it (each counts the seconds down
-    // itself, so a running one needs no message)
+    // itself, so a running one needs no message), before the values, as in
+    // ApplyEffects
     SendMessageToActorListeners(MagicEffectsOf(GetIdx(), entries, {}), true);
   }
+  ApplyAttributeDeltas(deltas, touched, maxBefore, 0);
 }
 
 void MpActor::SendMagicEffectsTo(MpActor& listener)

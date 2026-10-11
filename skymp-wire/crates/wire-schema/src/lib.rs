@@ -32,7 +32,7 @@ use bounded::{String, Vec};
 
 /// Bump when any variant changes shape. It is part of netcode's protocol id,
 /// so peers built against another schema never complete a handshake.
-pub const SCHEMA_VERSION: u16 = 12;
+pub const SCHEMA_VERSION: u16 = 13;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -94,6 +94,9 @@ pub mod cap {
     /// Effects running on one actor (thuum docs/verbs/magic-effects.md:
     /// wire-rules magic::MAX_EFFECTS).
     pub const MAGIC_EFFECTS: usize = 32;
+    /// Actor values one actor's running buffs touch: two per effect at most
+    /// (a dual value modifier's second).
+    pub const EFFECT_MODIFIERS: usize = 2 * MAGIC_EFFECTS;
     /// A gamemode event name.
     pub const EVENT_NAME: usize = 256;
     /// Arguments of one gamemode event.

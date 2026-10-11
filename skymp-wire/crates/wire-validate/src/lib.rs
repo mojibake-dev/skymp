@@ -539,13 +539,17 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         // refuses it from a client by direction
         Message::ConsoleOutput(_) => Ok(()),
         // thuum docs/verbs/magic-effects.md: the server's own effect set, at
-        // most MAGIC_EFFECTS entries (bounded at decode); the transport
-        // refuses it from a client by direction, and its numbers are finite
+        // most MAGIC_EFFECTS entries and EFFECT_MODIFIERS sums (bounded at
+        // decode); the transport refuses it from a client by direction, its
+        // numbers are finite and each sum names an actor value the engine
+        // has
         Message::MagicEffects(m) => {
-            if all_finite(m) {
-                Ok(())
-            } else {
+            if !all_finite(m) {
                 Err(Reject::NonFinite)
+            } else if m.modifiers.iter().any(|x| usize::try_from(x.av).map_or(true, |av| av >= wire_schema::cap::ACTOR_VALUES)) {
+                Err(Reject::Range)
+            } else {
+                Ok(())
             }
         }
         // Everything else: the checks all messages share. A server-to-client
@@ -1103,6 +1107,23 @@ mod tests {
         };
         assert_eq!(validate_server(&set(6.5)), Ok(()));
         assert_eq!(validate_server(&set(f32::NAN)), Err(Reject::NonFinite));
+    }
+
+    #[test]
+    fn a_magic_effects_sum_names_an_actor_value_the_engine_has() {
+        use wire_schema::skymp::{EffectModifier, MagicEffects};
+        // FortifyHealth05's 100 on Health (actor value 24)
+        let sum = |av: u32, amount: f32| {
+            let mut m = MagicEffects { idx: 64, ..MagicEffects::default() };
+            if m.modifiers.push(EffectModifier { av, amount }).is_err() {
+                return Message::MagicEffects(MagicEffects::default());
+            }
+            Message::MagicEffects(m)
+        };
+        assert_eq!(validate_server(&sum(24, 100.0)), Ok(()));
+        assert_eq!(validate_server(&sum(163, -20.0)), Ok(()));
+        assert_eq!(validate_server(&sum(164, 100.0)), Err(Reject::Range));
+        assert_eq!(validate_server(&sum(24, f32::INFINITY)), Err(Reject::NonFinite));
     }
 
     #[test]

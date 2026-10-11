@@ -102,7 +102,10 @@ TEST_CASE("A Fortify Health raises the maximum while it runs and gives it "
 }
 
 // The actor's own game hears its effects (every actor listens to itself):
-// a set with the fortify and its 60 s, then an empty set at its end
+// a set with the fortify and its 60 s and the fortify's 20 on Health (actor
+// value 24), then an empty set at its end; each before the ChangeValues of
+// the same change, so that game moves its maximum before it takes the
+// percentage
 TEST_CASE("The games that see an actor hear its running effects",
           "[MagicEffects][espm]")
 {
@@ -118,6 +121,16 @@ TEST_CASE("The games that see an actor hear its running effects",
     }
     return found;
   };
+  auto firstOf = [&](int t) {
+    size_t i = 0;
+    for (auto& m : p.Messages()) {
+      if (m.userId == 0 && m.j.contains("t") && m.j["t"] == t) {
+        return i;
+      }
+      ++i;
+    }
+    return i;
+  };
 
   p.Messages().clear();
   Drink(p, actor, 0x3EAF2);
@@ -127,12 +140,21 @@ TEST_CASE("The games that see an actor hear its running effects",
   REQUIRE((*set)["effects"][0]["effect"] == 0x3EAF3);
   REQUIRE((*set)["effects"][0]["remaining"].get<float>() ==
           Catch::Approx(60.f));
+  REQUIRE((*set)["modifiers"].size() == 1);
+  REQUIRE((*set)["modifiers"][0]["av"] == 24);
+  REQUIRE((*set)["modifiers"][0]["amount"].get<float>() ==
+          Catch::Approx(20.f));
+  REQUIRE(firstOf(43) < firstOf(16));
+  REQUIRE(firstOf(16) < p.Messages().size());
 
   p.Messages().clear();
   actor.AdvanceEffects(61.f);
   set = last();
   REQUIRE(set);
   REQUIRE((*set)["effects"].empty());
+  REQUIRE((*set)["modifiers"].empty());
+  REQUIRE(firstOf(43) < firstOf(16));
+  REQUIRE(firstOf(16) < p.Messages().size());
   Leave(p);
 }
 

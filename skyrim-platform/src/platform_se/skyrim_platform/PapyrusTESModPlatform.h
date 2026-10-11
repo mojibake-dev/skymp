@@ -141,6 +141,12 @@ bool ArePotionEffectsBlocked();
 bool ModPlayerActorValue(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                          int32_t av, float delta);
 
+// The server's stagger in this game (thuum docs/verbs/stagger.md): the
+// engine's own start of a stagger on `target` at `magnitude` from `source`,
+// as a hit's reaction calls it; false where it was not called
+bool Stagger(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
+             RE::Actor* target, float magnitude, RE::Actor* source);
+
 void BlockPapyrusEvents(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                         bool blocked);
 

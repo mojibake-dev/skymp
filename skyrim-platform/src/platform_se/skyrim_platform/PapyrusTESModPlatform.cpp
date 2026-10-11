@@ -1305,6 +1305,28 @@ bool TESModPlatform::ModPlayerActorValue(IVM* vm, StackID stackId,
   return true;
 }
 
+// The engine's start of a stagger, Address Library ID 37710 on 1.6.1170
+// (thuum ghidra/notes/block-formula.md, read under the ID 1.7.104 shares:
+// void(Actor* target, float magnitude, Actor* source), HYPOTHESIS until the
+// lab): refused while the target is staggered, restrained or in ragdoll, the
+// stagger perk entry points applied, the magnitude clamped to 1, the graph's
+// staggerMagnitude and staggerDirection set, ActionStaggerStart performed,
+// the target marked staggered. CommonLibSSE-NG names no SE id for it, so it
+// is called on AE runtimes only (thuum ADR-025's 1.6.1170).
+bool TESModPlatform::Stagger(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
+                             RE::Actor* target, float magnitude,
+                             RE::Actor* source)
+{
+  if (!target || !std::isfinite(magnitude) || magnitude <= 0.f ||
+      !REL::Module::IsAE()) {
+    return false;
+  }
+  using func_t = void(RE::Actor*, float, RE::Actor*);
+  REL::Relocation<func_t> func{ REL::ID(37710) };
+  func(target, magnitude, source);
+  return true;
+}
+
 std::vector<float> TESModPlatform::GetPlayerProgress(IVM* vm, StackID stackId,
                                                      RE::StaticFunctionTag*)
 {
@@ -1578,6 +1600,12 @@ bool TESModPlatform::Register(IVM* vm)
     new RE::BSScript::NativeFunction<true, decltype(ModPlayerActorValue), bool,
                                      RE::StaticFunctionTag*, int32_t, float>(
       "ModPlayerActorValue", "TESModPlatform", ModPlayerActorValue));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(Stagger), bool,
+                                     RE::StaticFunctionTag*, RE::Actor*, float,
+                                     RE::Actor*>("Stagger", "TESModPlatform",
+                                                 Stagger));
 
   static LoadGameEvent loadGameEvent;
 

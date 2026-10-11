@@ -79,6 +79,10 @@ Function SetPotionEffectsBlocked(Bool blocked) global native
 
 Bool Function ModPlayerActorValue(Int av, Float delta) global native
 
+; thuum docs/verbs/stagger.md: the engine's own stagger of target at
+; magnitude from source, as a hit's reaction starts it (the server's verdict)
+Bool Function Stagger(Actor target, Float magnitude, Actor source) global native
+
 ; thuum docs/verbs/marksman.md: a neighbour's arrow, launched from its figure
 ; along its shooter's aim (pitch and heading, radians) with its draw's power
 Bool Function LaunchArrow(Actor shooter, Weapon weapon, Ammo ammo, Float power, Float aimAngle, Float aimHeading) global native

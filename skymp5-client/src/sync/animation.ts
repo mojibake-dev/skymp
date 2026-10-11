@@ -33,6 +33,13 @@ const allowedIdles = new Array<[number, string]>();
 const refsWithDefaultAnimsDisabled = new Set<number>();
 const allowedAnims = new Set<string>();
 
+// thuum docs/verbs/stagger.md: a figure's staggerStart relayed from its own
+// player's game, which staggered at the server's word; deathService refuses
+// every other staggerStart on a figure (this game's own verdict on a hit)
+const relayedStaggers = new Set<number>();
+export const takeRelayedStagger = (refrId: number): boolean =>
+  relayedStaggers.delete(refrId);
+
 const actorSitAnimsLowerCase = [
   'idlestoolenterplayer',
   'idlestoolenter',
@@ -175,6 +182,10 @@ export const applyAnimation = (
     if (animEventNameLowerCase.includes("attack")) {
       allowedAnims.add(refr.getFormID() + ":" + anim.animEventName);
     }
+  }
+
+  if (animEventNameLowerCase === "staggerstart") {
+    relayedStaggers.add(refr.getFormID());
   }
 
   Debug.sendAnimationEvent(refr, anim.animEventName);

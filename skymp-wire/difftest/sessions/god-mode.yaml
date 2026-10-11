@@ -11,8 +11,11 @@
 # mode was reached): the legacy server takes the hit's damage from c1; the
 # fixed server takes none and still begins the fight (StartCombat to c1's
 # game). c2 steps west at 4 s of its own (5.5 s of c1's), so it outlives c1,
-# as in every session. The divergences besides the departure are declared
-# from the first run.
+# as in every session. The divergences are declared from the run with this
+# layout (T2 2026-10-10, fork m2-god b376d8e1): c1 hears its god mode
+# (SetGodMode), the fight (StartCombat on c2's actor, 4278190083) and the
+# console's line; the legacy server sends c1 the hit's 3.7 percent, the
+# fixed server its health unchanged.
 id: god-mode
 clients:
   c1: {profile_id: 9}
@@ -28,3 +31,28 @@ divergences:
     legacy: 0
     wire: 1
     reason: departure detection, graceful close on the wire against RakNet's timeout
+  - client: c1
+    msg: {t: 41, text: "tgm done: god mode on", refused: false}
+    legacy: 0
+    wire: 1
+    reason: the fixed server serves TGM for an owner and answers with the state it set (thuum docs/verbs/god-mode.md); the legacy server does not know the command
+  - client: c1
+    msg: {t: 30, class: Debug, function: SetGodMode, selfId: 0, arguments: [true]}
+    legacy: 0
+    wire: 1
+    reason: the fixed server puts c1's own game in god mode too (Debug.SetGodMode by SpSnippet), so its magicka and stamina spending follow the flag
+  - client: c1
+    msg: {t: 30, class: Actor, function: StartCombat, selfId: 4278190083, arguments: [{formId: 20, type: Actor}]}
+    legacy: 0
+    wire: 1
+    reason: c2's hit on god-mode c1 still begins the fight (hostility sync, thuum ADR-023); the legacy server has none
+  - client: c1
+    msg: {t: 16, idx: 2, data: {health: 0.96288001537323}}
+    legacy: 1
+    wire: 0
+    reason: the legacy server takes the bare-handed hit's 3.7 percent from c1
+  - client: c1
+    msg: {t: 16, idx: 2, data: {health: 1}}
+    legacy: 0
+    wire: 1
+    reason: the fixed server takes nothing from god-mode c1 and sends it its health unchanged

@@ -25,6 +25,11 @@ public:
   // thuum docs/verbs/blocking.md
   std::chrono::steady_clock::time_point GetLastBashStartTime(
     const MpActor& actor) const;
+  // The last attack the actor started (an attackStart, attackPowerStart,
+  // bashStart or bashPowerStart event, the name its race's ATKE gives it,
+  // in lower case), empty if none: its stagger offset is that attack's
+  // (thuum docs/verbs/stagger.md)
+  std::string GetLastAttackStartName(const MpActor& actor) const;
   void SetWeaponStaminaModifiers(
     std::unordered_map<std::string, float>&& modifiers);
 
@@ -54,6 +59,7 @@ private:
   AnimationTimePoints lastAttackReleaseAnimationTimePoints;
   AnimationTimePoints lastPowerAttackStartTimePoints;
   AnimationTimePoints lastBashStartTimePoints;
+  std::unordered_map<uint32_t, std::string> lastAttackStartNames;
   WorldState* worldState = nullptr;
   bool hasSweetpie = false;
 };

@@ -2,7 +2,7 @@ import { Actor } from "skyrimPlatform";
 import { ApplyDeathStateEvent } from "../events/applyDeathStateEvent";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { RespawnNeededError } from "../../lib/errors";
-import { AnimationEventName } from "../../sync/animation";
+import { AnimationEventName, takeRelayedStagger } from "../../sync/animation";
 import { RagdollService } from "./ragdollService";
 
 export class DeathService extends ClientListener {
@@ -42,10 +42,16 @@ export class DeathService extends ClientListener {
     );
   }
 
+  // A figure staggers only by its own player's relayed stagger, which the
+  // server imposed there (thuum docs/verbs/stagger.md); this game's engine's
+  // own stagger of a figure is its verdict on a hit, refused
   private hookDisableStagger() {
     this.sp.hooks.sendAnimationEvent.add(
       {
         enter(ctx) {
+          if (takeRelayedStagger(ctx.selfId)) {
+            return;
+          }
           ctx.animEventName = "";
         },
         leave() { },

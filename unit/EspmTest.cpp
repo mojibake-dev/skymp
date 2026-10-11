@@ -366,6 +366,8 @@ TEST_CASE("Loads Weapon", "[espm]")
   REQUIRE(npc->GetData(cache).weapData->damage == 7);
   REQUIRE(npc->GetData(cache).weapData->value == 25);
   REQUIRE(npc->GetData(cache).weapData->weight == 9.f);
+  // thuum docs/verbs/stagger.md: DNAM's stagger (thuum lab/esm.py)
+  REQUIRE(npc->GetData(cache).stagger == 0.75f);
 }
 
 TEST_CASE("Loads NPC factions", "[espm]")
@@ -523,12 +525,34 @@ TEST_CASE("espm::GetData wrapper is able to get record data", "[espm]")
   REQUIRE(abs(data.healRegen - 0.7f) < std::numeric_limits<float>::epsilon());
 }
 
+TEST_CASE("A race's mass and its attacks' stagger offsets", "[espm]")
+{
+  // thuum docs/verbs/stagger.md: NordRace (0x13746) as thuum lab/esm.py
+  // read Skyrim.esm (2026-10-10)
+  MyEspmProvider provider;
+  constexpr uint32_t kNordRace = 0x00013746;
+  auto data = espm::GetData<espm::RACE>(kNordRace, &provider);
+  REQUIRE(data.baseMass == 1.f);
+  REQUIRE(data.attackStaggerOffsets.at("attackstart") == 0.f);
+  REQUIRE(data.attackStaggerOffsets.at("attackpowerstartforward") == 1.f);
+  REQUIRE(data.attackStaggerOffsets.at("attackpowerstartinplace") == 1.f);
+  REQUIRE(data.attackStaggerOffsets.at("bashstart") == 0.5f);
+  REQUIRE(data.attackStaggerOffsets.at("bashpowerstart") == 1.5f);
+}
+
 TEST_CASE("GMST parsing", "[espm]")
 {
   MyEspmProvider provider;
   REQUIRE(
     espm::GetData<espm::GMST>(espm::GMST::kFMaxArmorRating, &provider).value ==
     80);
+  // an integer setting (thuum docs/verbs/stagger.md)
+  REQUIRE(
+    espm::GetData<espm::GMST>(espm::GMST::kIStaggerAttackChance, &provider)
+      .intValue == 50);
+  REQUIRE(
+    espm::GetData<espm::GMST>(espm::GMST::kFStaggerPlayerMassMult, &provider)
+      .value == 2.5f);
 }
 
 TEST_CASE("ARMO parsing", "[espm]")

@@ -34,10 +34,24 @@ public:
   static constexpr uint32_t kFBlockPowerAttackMult = 0x0004E609;
   static constexpr uint32_t kFArmorRatingBase = 0x0001A157;
   static constexpr uint32_t kFArmorRatingMax = 0x0001A158;
+  // The stagger settings Skyrim.esm sets (thuum lab/esm.py find GMST
+  // Stagger, 2026-10-10; Update, Dawnguard and Dragonborn set none; thuum
+  // docs/verbs/stagger.md); the others keep the executable's defaults
+  static constexpr uint32_t kFStaggerPlayerMassMult = 0x000C3CBC;
+  static constexpr uint32_t kFStaggerMassOffsetBase = 0x000E6C4E;
+  static constexpr uint32_t kFStaggerMin = 0x000D33A3;
+  static constexpr uint32_t kFStaggerBlockBase = 0x00055A99;
+  static constexpr uint32_t kFStaggerBlockMult = 0x0003189C;
+  static constexpr uint32_t kFStaggerBlockAttackShieldBase = 0x0004E50B;
+  static constexpr uint32_t kFStaggerBlockAttackShieldMult = 0x00055A98;
+  static constexpr uint32_t kFStaggerBlockingMult = 0x00015BDD;
+  static constexpr uint32_t kIStaggerAttackChance = 0x0010B0DE;
 
   struct Data
   {
     float value = 0.f;
+    // the same four bytes for an integer setting (an "i" name)
+    int32_t intValue = 0;
   };
 
   Data GetData(CompressedFieldsCache& compressedFieldsCache) const noexcept;

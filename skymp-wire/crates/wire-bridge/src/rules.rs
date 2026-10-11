@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, block, casts, clock, console, damage, effects, favorites, hostility, magic, markers, melee, movement, racemenu, ranged, rest, shouts};
+use wire_rules::{activation, actor_values, appearance, block, casts, clock, console, damage, effects, favorites, hostility, magic, markers, melee, movement, racemenu, ranged, rest, shouts, stagger};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -132,6 +132,94 @@ mod ffi {
         block_skill: f32,
         /// A power attack, as damage-flags backed it.
         power: bool,
+    }
+
+    /// thuum docs/verbs/stagger.md: the game's stagger settings (Skyrim.esm's
+    /// GMSTs as the core read them, the executable's defaults where the
+    /// masters set none), and the server's own playerAlwaysStaggered.
+    #[derive(Debug)]
+    struct StaggerSettings {
+        /// fStaggerMassMult.
+        mass_mult: f32,
+        /// fStaggerMassBase.
+        mass_base: f32,
+        /// fStaggerMassOffsetBase.
+        mass_offset_base: f32,
+        /// fStaggerMassOffsetMult.
+        mass_offset_mult: f32,
+        /// fStaggerPlayerMassMult.
+        player_mass_mult: f32,
+        /// fStaggerAttackBase (a bash's).
+        bash_base: f32,
+        /// fStaggerAttackMult (a bash's, per point of Block).
+        bash_mult: f32,
+        /// fStaggerShieldMult.
+        shield_mult: f32,
+        /// fStagger1WeapMult.
+        one_hand_mult: f32,
+        /// fStagger2WeapMult.
+        two_hand_mult: f32,
+        /// fStaggerRunningMult.
+        running_mult: f32,
+        /// fStaggerRecoilingMult.
+        recoiling_mult: f32,
+        /// fStaggerBlockingMult.
+        blocking_mult: f32,
+        /// fStaggerBlockBase.
+        block_base: f32,
+        /// fStaggerBlockMult.
+        block_mult: f32,
+        /// fStaggerBlockAttackShieldBase.
+        block_shield_base: f32,
+        /// fStaggerBlockAttackShieldMult.
+        block_shield_mult: f32,
+        /// fStaggerMin.
+        min: f32,
+        /// iStaggerAttackChance, percent.
+        attack_chance: u8,
+        /// bPlayerAlwaysStaggered:Combat, the server's.
+        player_always_staggered: bool,
+    }
+
+    /// What the server knows about a hit that may stagger its victim.
+    #[derive(Debug)]
+    struct StaggerFacts {
+        /// A bash, as damage-flags backed it.
+        bash: bool,
+        /// The attacker's weapon's stagger (1 without a weapon).
+        weapon_stagger: f32,
+        /// The attack's staggerOffset (its race's ATKD).
+        stagger_offset: f32,
+        /// A bow's or a crossbow's shot.
+        ranged: bool,
+        /// The attacker's BowStaggerBonus (actor value 87).
+        bow_stagger_bonus: f32,
+        /// The attacker's Block.
+        attacker_block: f32,
+        /// The attacker bashes with a shield.
+        attacker_shield: bool,
+        /// Its weapon is two-handed, a bow or a crossbow.
+        attacker_two_handed: bool,
+        /// It bashes with nothing in hand.
+        attacker_unarmed: bool,
+        /// The victim's Mass (actor value 36).
+        victim_mass: f32,
+        /// The victim is a player.
+        victim_is_player: bool,
+        /// The victim runs.
+        victim_running: bool,
+        /// The victim recoils.
+        victim_recoiling: bool,
+        /// The victim's recorded block is up.
+        victim_blocking: bool,
+        /// The victim's Block.
+        victim_block: f32,
+        /// Its shield's rating, or its drawn weapon's type value, or 0.
+        victim_block_rating: f32,
+        /// The hit was blocked (blocking's verdict).
+        blocked: bool,
+        /// The hit dealt damage.
+        dealt_damage: bool,
     }
 
     /// The game's base sneak attack multipliers by weapon type (Skyrim.esm's
@@ -699,6 +787,9 @@ mod ffi {
         /// thuum docs/verbs/blocking.md: the share of a hit's damage the
         /// target's block stops (0 when it is not blocked).
         fn blocked_share(settings: &BlockSettings, facts: &BlockFacts) -> f32;
+        /// thuum docs/verbs/stagger.md: the stagger the victim's game plays
+        /// (0 for none; at most 1); `roll` is 0 to 99, the caller's.
+        fn stagger_magnitude(settings: &StaggerSettings, facts: &StaggerFacts, roll: u8) -> f32;
         /// Whether an accepted hit is one between two players.
         fn hostility_between_players(facts: &HostilityFacts) -> bool;
         /// Whether two players stand farther apart than the engine's
@@ -871,7 +962,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, AvChange, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, Verdict, VoiceFacts, VoiceRefusal};
+pub use ffi::{AvBase, AvChange, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, Verdict, VoiceFacts, VoiceRefusal};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -988,6 +1079,54 @@ fn blocked_share(s: &BlockSettings, f: &BlockFacts) -> f32 {
             block_skill: f.block_skill,
             power: f.power,
         },
+    )
+}
+
+fn stagger_magnitude(s: &StaggerSettings, f: &StaggerFacts, roll: u8) -> f32 {
+    stagger::stagger(
+        &stagger::StaggerSettings {
+            mass_mult: s.mass_mult,
+            mass_base: s.mass_base,
+            mass_offset_base: s.mass_offset_base,
+            mass_offset_mult: s.mass_offset_mult,
+            player_mass_mult: s.player_mass_mult,
+            bash_base: s.bash_base,
+            bash_mult: s.bash_mult,
+            shield_mult: s.shield_mult,
+            one_hand_mult: s.one_hand_mult,
+            two_hand_mult: s.two_hand_mult,
+            running_mult: s.running_mult,
+            recoiling_mult: s.recoiling_mult,
+            blocking_mult: s.blocking_mult,
+            block_base: s.block_base,
+            block_mult: s.block_mult,
+            block_shield_base: s.block_shield_base,
+            block_shield_mult: s.block_shield_mult,
+            min: s.min,
+            attack_chance: s.attack_chance,
+            player_always_staggered: s.player_always_staggered,
+        },
+        &stagger::StaggerFacts {
+            bash: f.bash,
+            weapon_stagger: f.weapon_stagger,
+            stagger_offset: f.stagger_offset,
+            ranged: f.ranged,
+            bow_stagger_bonus: f.bow_stagger_bonus,
+            attacker_block: f.attacker_block,
+            attacker_shield: f.attacker_shield,
+            attacker_two_handed: f.attacker_two_handed,
+            attacker_unarmed: f.attacker_unarmed,
+            victim_mass: f.victim_mass,
+            victim_is_player: f.victim_is_player,
+            victim_running: f.victim_running,
+            victim_recoiling: f.victim_recoiling,
+            victim_blocking: f.victim_blocking,
+            victim_block: f.victim_block,
+            victim_block_rating: f.victim_block_rating,
+            blocked: f.blocked,
+            dealt_damage: f.dealt_damage,
+        },
+        roll,
     )
 }
 

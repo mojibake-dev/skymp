@@ -5,6 +5,9 @@
 #include "MpActor.h"
 #include "WorldState.h"
 #include "libespm/espm.h"
+#include <algorithm>
+#include <array>
+#include <cctype>
 #include <unordered_map>
 
 AnimationSystem::AnimationSystem()
@@ -62,6 +65,22 @@ void AnimationSystem::Process(MpActor* actor, const AnimationData& animData)
     lastBashStartTimePoints[actor->GetFormId()] =
       std::chrono::steady_clock::now();
   }
+  // the attack itself, by its race's name for it (thuum
+  // docs/verbs/stagger.md): the start events the masters' ATKE name
+  // (attackStart, attackStartLeftHand, AttackStartH2HRight,
+  // attackPowerStartForward, bashStart, bashPowerStart, ...)
+  static const std::array<CIString, 4> kAttackStarts = {
+    "attackStart", "attackPowerStart", "bashStart", "bashPowerStart"
+  };
+  for (const auto& prefix : kAttackStarts) {
+    if (s.compare(0, prefix.size(), prefix) == 0) {
+      std::string name(animData.animEventName.data());
+      std::transform(name.begin(), name.end(), name.begin(),
+                     [](unsigned char c) { return std::tolower(c); });
+      lastAttackStartNames[actor->GetFormId()] = std::move(name);
+      break;
+    }
+  }
   auto it = animationCallbacks.find(s);
   if (it == animationCallbacks.end()) {
     return;
@@ -74,6 +93,13 @@ void AnimationSystem::ClearInfo(MpActor* actor)
   lastAttackReleaseAnimationTimePoints.erase(actor->GetFormId());
   lastPowerAttackStartTimePoints.erase(actor->GetFormId());
   lastBashStartTimePoints.erase(actor->GetFormId());
+  lastAttackStartNames.erase(actor->GetFormId());
+}
+
+std::string AnimationSystem::GetLastAttackStartName(const MpActor& actor) const
+{
+  auto it = lastAttackStartNames.find(actor.GetFormId());
+  return it == lastAttackStartNames.end() ? std::string() : it->second;
 }
 
 std::chrono::steady_clock::time_point AnimationSystem::GetLastBashStartTime(

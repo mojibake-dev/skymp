@@ -493,3 +493,40 @@ TEST_CASE("A player's power and sneak flags count only when the server saw "
   p.DestroyActor(0xff000000);
   DoDisconnect(p, 0);
 }
+
+TEST_CASE("A player's bash flag counts only after its bashStart", "[Hit]")
+{
+  // thuum docs/verbs/blocking.md: a bash is kept as a power attack is, by
+  // its start among the attacker's animation events (bashStart; its hit 951
+  // ms later in x-block-probe 20261011-021114)
+  PartOne& p = GetPartOne();
+  auto seen = std::make_shared<HitData>();
+  p.SetDamageFormula(std::make_unique<FlagRecordingFormula>(seen));
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, 0xff000000);
+  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
+
+  RawMessageData rawMsgData;
+  rawMsgData.userId = 0;
+  const auto bash = [&] {
+    ac.SetLastHitTime(0xff000000, std::chrono::steady_clock::now() - 10s);
+    HitMessage hitMsg;
+    hitMsg.data.aggressor = 0x14;
+    hitMsg.data.target = 0x14;
+    hitMsg.data.source = 0x1f4; // bare hands
+    hitMsg.data.isBashAttack = true;
+    *seen = HitData();
+    p.GetActionListener().OnHit(rawMsgData, hitMsg);
+    return *seen;
+  };
+
+  REQUIRE(!bash().isBashAttack);
+  AnimationData bashStart;
+  bashStart.animEventName = "bashStart";
+  p.animationSystem.Process(&ac, bashStart);
+  REQUIRE(bash().isBashAttack);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}

@@ -21,6 +21,10 @@ public:
   // its client sent), the epoch if never: thuum docs/verbs/damage-flags.md
   std::chrono::steady_clock::time_point GetLastPowerAttackStartTime(
     const MpActor& actor) const;
+  // When the actor last started a bash (bashStart), the epoch if never:
+  // thuum docs/verbs/blocking.md
+  std::chrono::steady_clock::time_point GetLastBashStartTime(
+    const MpActor& actor) const;
   void SetWeaponStaminaModifiers(
     std::unordered_map<std::string, float>&& modifiers);
 
@@ -49,6 +53,7 @@ private:
   AnimationCallbacks animationCallbacks;
   AnimationTimePoints lastAttackReleaseAnimationTimePoints;
   AnimationTimePoints lastPowerAttackStartTimePoints;
+  AnimationTimePoints lastBashStartTimePoints;
   WorldState* worldState = nullptr;
   bool hasSweetpie = false;
 };

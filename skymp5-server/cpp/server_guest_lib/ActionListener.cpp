@@ -2327,9 +2327,18 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
     // thuum docs/verbs/damage-flags.md: the facts the flag rule needs; the
     // rule is Rust's (skymp-wire wire-rules damage, ADR-020)
     if (aggressor == myActor &&
-        (hitData.isPowerAttack || hitData.isSneakAttack)) {
+        (hitData.isPowerAttack || hitData.isSneakAttack ||
+         hitData.isBashAttack)) {
       const auto lastPowerStart =
         partOne.animationSystem.GetLastPowerAttackStartTime(*aggressor);
+      const auto lastBashStart =
+        partOne.animationSystem.GetLastBashStartTime(*aggressor);
+      const auto sinceMs = [](std::chrono::steady_clock::time_point t) {
+        return static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t)
+            .count());
+      };
       skymp::rules::FlagFacts facts{};
       facts.claims_power = hitData.isPowerAttack;
       facts.claims_sneak = hitData.isSneakAttack;
@@ -2342,6 +2351,13 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
               .count())
         : 0;
       facts.is_sneaking = aggressor->GetAnimationVariableBool("IsSneaking");
+      // thuum docs/verbs/blocking.md: a bash as a power attack is, by its
+      // start among the attacker's animation events
+      facts.claims_bash = hitData.isBashAttack;
+      facts.saw_bash_start =
+        lastBashStart != std::chrono::steady_clock::time_point();
+      facts.since_bash_start_ms =
+        facts.saw_bash_start ? sinceMs(lastBashStart) : 0;
       const auto kept = skymp::rules::backed_flags(facts);
       if (hitData.isPowerAttack && !kept.power) {
         spdlog::warn("ActionListener::OnHit - E_HIT_POWER: {:x} claims a "
@@ -2353,8 +2369,14 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
                      "sneak attack while not sneaking; hit as a plain one",
                      aggressor->GetFormId());
       }
+      if (hitData.isBashAttack && !kept.bash) {
+        spdlog::warn("ActionListener::OnHit - E_HIT_BASH: {:x} claims a bash "
+                     "it did not start; hit as a plain one",
+                     aggressor->GetFormId());
+      }
       hitData.isPowerAttack = kept.power;
       hitData.isSneakAttack = kept.sneak;
+      hitData.isBashAttack = kept.bash;
     }
 
     // Player against player only: the bound's body extents are a humanoid's

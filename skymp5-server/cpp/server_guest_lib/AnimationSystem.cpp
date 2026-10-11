@@ -55,6 +55,13 @@ void AnimationSystem::Process(MpActor* actor, const AnimationData& animData)
     lastPowerAttackStartTimePoints[actor->GetFormId()] =
       std::chrono::steady_clock::now();
   }
+  // a bash's start (x-block-probe 20261011-021114: bashStart, its hit 951
+  // ms later; thuum docs/verbs/blocking.md)
+  static const CIString kBashStart = "bashStart";
+  if (s.compare(0, kBashStart.size(), kBashStart) == 0) {
+    lastBashStartTimePoints[actor->GetFormId()] =
+      std::chrono::steady_clock::now();
+  }
   auto it = animationCallbacks.find(s);
   if (it == animationCallbacks.end()) {
     return;
@@ -66,6 +73,17 @@ void AnimationSystem::ClearInfo(MpActor* actor)
 {
   lastAttackReleaseAnimationTimePoints.erase(actor->GetFormId());
   lastPowerAttackStartTimePoints.erase(actor->GetFormId());
+  lastBashStartTimePoints.erase(actor->GetFormId());
+}
+
+std::chrono::steady_clock::time_point AnimationSystem::GetLastBashStartTime(
+  const MpActor& actor) const
+{
+  auto it = lastBashStartTimePoints.find(actor.GetFormId());
+  if (it == lastBashStartTimePoints.end()) {
+    return std::chrono::steady_clock::time_point();
+  }
+  return it->second;
 }
 
 std::chrono::steady_clock::time_point

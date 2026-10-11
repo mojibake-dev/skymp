@@ -76,6 +76,12 @@ mod ffi {
         since_power_start_ms: u64,
         /// The core holds the attacker sneaking.
         is_sneaking: bool,
+        /// The client says bash.
+        claims_bash: bool,
+        /// Whether the attacker ever started a bash.
+        saw_bash_start: bool,
+        /// Milliseconds since that start (0 when there was none).
+        since_bash_start_ms: u64,
     }
 
     /// thuum docs/verbs/blocking.md: the game's block settings (Skyrim.esm's
@@ -576,6 +582,8 @@ mod ffi {
         power: bool,
         /// Sneak attack kept.
         sneak: bool,
+        /// Bash kept (thuum docs/verbs/blocking.md).
+        bash: bool,
     }
 
     /// The game clock at one instant, as the engine's six time globals hold
@@ -867,8 +875,10 @@ fn backed_flags(f: &FlagFacts) -> Flags {
         claims_sneak: f.claims_sneak,
         since_power_start_ms: f.saw_power_start.then_some(f.since_power_start_ms),
         is_sneaking: f.is_sneaking,
+        claims_bash: f.claims_bash,
+        since_bash_start_ms: f.saw_bash_start.then_some(f.since_bash_start_ms),
     });
-    Flags { power: kept.power, sneak: kept.sneak }
+    Flags { power: kept.power, sneak: kept.sneak, bash: kept.bash }
 }
 
 /// TES3MP's rest switches (wire-rules rest).
@@ -1419,8 +1429,11 @@ mod tests {
             saw_power_start: false,
             since_power_start_ms: 0,
             is_sneaking: true,
+            claims_bash: true,
+            saw_bash_start: true,
+            since_bash_start_ms: 951,
         });
-        assert!(!kept.power && kept.sneak);
+        assert!(!kept.power && kept.sneak && kept.bash);
         let skyrim = SneakMults {
             hand: 2.0,
             one_hand_sword: 3.0,

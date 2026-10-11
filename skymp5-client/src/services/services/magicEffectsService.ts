@@ -27,7 +27,17 @@ export class MagicEffectsService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
         this.controller.emitter.on("magicEffectsMessage", (e) => this.onMagicEffects(e));
+        this.controller.emitter.on("connectionAccepted", () => this.onConnectionAccepted());
         this.controller.once("update", () => this.blockEngineDrinks());
+    }
+
+    // A login, a reconnect's included, sets the player's base values from
+    // its CreateActor (remoteServer.ts, the isMe props), which drops what
+    // this game held of the server's buffs (x-restart-effects-probe
+    // 20261011-021833: the maximum 200 before a server restart, 100 after
+    // the reconnect); the login's MagicEffects then puts them back whole
+    private onConnectionAccepted() {
+        this.held.clear();
     }
 
     private enabled(): boolean {

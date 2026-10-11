@@ -646,6 +646,25 @@ TEST_CASE("MGEF second actor value, its weight, hit shader and art", "[espm]")
   REQUIRE(heal.IsFlagSet(espm::MGEF::Flags::NoDuration));
 }
 
+// thuum docs/verbs/shouts.md: Skyrim.esm as thuum lab/esm.py read it
+// (2026-10-10): Unrelenting Force's three variations, each a word, a spell
+// and a recovery in seconds
+TEST_CASE("SHOU variations", "[espm]")
+{
+  MyEspmProvider provider;
+  auto shout = espm::GetData<espm::SHOU>(0x13E07, &provider);
+  REQUIRE(shout.count == 3);
+  REQUIRE(shout.variations[0].word == 0x13E22);
+  REQUIRE(shout.variations[1].word == 0x13E23);
+  REQUIRE(shout.variations[2].word == 0x13E24);
+  REQUIRE(shout.variations[0].spell == 0x13E09);
+  REQUIRE(shout.variations[1].spell == 0x13F39);
+  REQUIRE(shout.variations[2].spell == 0x13F3A);
+  REQUIRE(shout.variations[0].recovery == 15.f);
+  REQUIRE(shout.variations[1].recovery == 20.f);
+  REQUIRE(shout.variations[2].recovery == 45.f);
+}
+
 TEST_CASE("isFood flag is not set for heal potion", "[espm]")
 {
   MyEspmProvider provider;

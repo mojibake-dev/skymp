@@ -168,8 +168,8 @@ TEST_CASE("A god actor takes no damage from an arrow or a poison, and a god "
   REQUIRE(Health(god) == Catch::Approx(1.f));
 
   // a buff still moves the maximum
-  god.ApplyEffects(0x3EAF2, MpActor::EffectsOf(&p.worldState, 0x3EAF2), 1.f,
-                   0, false);
+  god.ApplyEffects(0x3EAF2, MpActor::EffectsOf(&p.worldState, 0x3EAF2), 1.f, 0,
+                   false);
   REQUIRE(god.GetMaximumValues().health == Catch::Approx(120.f));
 
   const auto arrows = shooter.GetInventory().GetItemCount(kIronArrow);

@@ -11,7 +11,8 @@ using namespace std::chrono_literals;
 // thuum docs/verbs/blocking.md: whether a hit was blocked, and the share of
 // its damage the block stops, are the server's (wire-rules block): the
 // target's recorded block and its facing, a shield for an arrow, the game's
-// formula; the attacker's own verdict is not read. Skyrim.esm (thuum
+// formula (thuum ghidra/notes/block-formula.md); the attacker's own verdict
+// is not read. Skyrim.esm (thuum
 // lab/esm.py, 2026-10-10): ArmorIronShield 0x12EB6 (BOD2 0x200, the shield's
 // slot; rating 20), IronSword 0x12EB7, LongBow 0x3B562. The test's damage
 // formula deals 25 for any hit (PartOne_ActivateTest.cpp), against the

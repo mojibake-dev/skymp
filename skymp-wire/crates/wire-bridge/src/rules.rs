@@ -79,7 +79,8 @@ mod ffi {
     }
 
     /// thuum docs/verbs/blocking.md: the game's block settings (Skyrim.esm's
-    /// GMSTs as the core read them) and the two the doc tags HYPOTHESIS.
+    /// GMSTs as the core read them, the executable's default where the
+    /// masters set none).
     #[derive(Debug)]
     struct BlockSettings {
         /// fShieldBaseFactor.
@@ -90,11 +91,13 @@ mod ffi {
         weapon_base: f32,
         /// fBlockWeaponScaling, percent per point of weapon damage.
         weapon_scaling: f32,
-        /// The skill's factor, percent per Block point over 100.
-        skill_factor: f32,
+        /// fArmorRatingBase.
+        rating_base: f32,
+        /// fArmorRatingMax.
+        rating_max: f32,
         /// fBlockPowerAttackMult.
         power_attack_mult: f32,
-        /// The most a block stops, 0 to 1.
+        /// fPlayerMaxResistance over 100.
         max_share: f32,
     }
 
@@ -103,15 +106,20 @@ mod ffi {
     struct BlockFacts {
         /// The target's recorded block is up.
         blocking: bool,
-        /// Radians between the target's view and the direction to the
-        /// attacker.
-        facing_angle: f32,
+        /// The target's heading, degrees.
+        heading: f32,
+        /// The attacker's offset from the target, x.
+        dx: f32,
+        /// The attacker's offset from the target, y.
+        dy: f32,
         /// An arrow or a bolt.
         ranged: bool,
         /// The target holds a shield.
         shield: bool,
-        /// The shield's base armor rating.
+        /// The shield record's armor rating.
         shield_rating: f32,
+        /// The target's ShieldPerks (actor value 66).
+        shield_perks: f32,
         /// The attacker's weapon's base damage.
         weapon_damage: f32,
         /// The target's Block skill.
@@ -909,16 +917,20 @@ fn blocked_share(s: &BlockSettings, f: &BlockFacts) -> f32 {
             shield_scaling: s.shield_scaling,
             weapon_base: s.weapon_base,
             weapon_scaling: s.weapon_scaling,
-            skill_factor: s.skill_factor,
+            rating_base: s.rating_base,
+            rating_max: s.rating_max,
             power_attack_mult: s.power_attack_mult,
             max_share: s.max_share,
         },
         &block::BlockFacts {
             blocking: f.blocking,
-            facing_angle: f.facing_angle,
+            heading: f.heading,
+            dx: f.dx,
+            dy: f.dy,
             ranged: f.ranged,
             shield: f.shield,
             shield_rating: f.shield_rating,
+            shield_perks: f.shield_perks,
             weapon_damage: f.weapon_damage,
             block_skill: f.block_skill,
             power: f.power,

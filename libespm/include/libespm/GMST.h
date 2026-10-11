@@ -31,9 +31,9 @@ public:
   static constexpr uint32_t kFShieldScalingFactor = 0x0003189B;
   static constexpr uint32_t kFBlockWeaponBase = 0x00045C4F;
   static constexpr uint32_t kFBlockWeaponScaling = 0x00045C50;
-  static constexpr uint32_t kFBlockSkillMult = 0x0001A16A;
-  static constexpr uint32_t kFBlockMax = 0x0001A169;
   static constexpr uint32_t kFBlockPowerAttackMult = 0x0004E609;
+  static constexpr uint32_t kFArmorRatingBase = 0x0001A157;
+  static constexpr uint32_t kFArmorRatingMax = 0x0001A158;
 
   struct Data
   {

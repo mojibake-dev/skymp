@@ -2030,23 +2030,25 @@ bool CanHit(const MpActor& actor, const HitData& hitData,
     fmt::format("Cannot get weapon speed from source: {0:x}", hitData.source));
 }
 
-// thuum docs/verbs/blocking.md: the game's block settings, Skyrim.esm's
-// GMSTs, and the two the doc tags HYPOTHESIS until the engine's own code
-// settles them: UESP's skill factor (1.5, against fBlockSkillMult's 2.0)
-// and UESP's cap (85 percent, against fBlockMax's 0.7)
+// thuum docs/verbs/blocking.md: the game's block settings as the engine
+// reads them (thuum ghidra/notes/block-formula.md, ID 26425): Skyrim.esm's
+// GMSTs, and fPlayerMaxResistance's executable default, 85, which the
+// masters do not set (lab/esm.py, 2026-10-10)
 skymp::rules::BlockSettings BlockSettingsOf(WorldState& worldState)
 {
   const auto setting = [&](uint32_t id) {
     return espm::GetData<espm::GMST>(id, &worldState).value;
   };
+  constexpr float kPlayerMaxResistance = 85.f;
   skymp::rules::BlockSettings s{};
   s.shield_base = setting(espm::GMST::kFShieldBaseFactor);
   s.shield_scaling = setting(espm::GMST::kFShieldScalingFactor);
   s.weapon_base = setting(espm::GMST::kFBlockWeaponBase);
   s.weapon_scaling = setting(espm::GMST::kFBlockWeaponScaling);
-  s.skill_factor = 1.5f;
+  s.rating_base = setting(espm::GMST::kFArmorRatingBase);
+  s.rating_max = setting(espm::GMST::kFArmorRatingMax);
   s.power_attack_mult = setting(espm::GMST::kFBlockPowerAttackMult);
-  s.max_share = 0.85f;
+  s.max_share = kPlayerMaxResistance / 100.f;
   return s;
 }
 
@@ -2080,11 +2082,11 @@ std::optional<float> HeldShieldRating(const MpActor& target,
 
 // thuum docs/verbs/blocking.md: the share of the hit's damage the target's
 // block stops, from the server's own records (R0, wire-rules block): its
-// recorded block, its facing against the attacker (the angle between its
-// view and the direction to the attacker, as the server always measured
-// it), an arrow or a bolt (a bow's bash is a melee hit), a shield, the
-// attacker's weapon damage, the target's Block skill (the actor-values
-// record; 0 without one), the power attack damage-flags backed
+// recorded block, its heading against the attacker's position (the engine
+// tests the block's cone in yaw only), an arrow or a bolt (a bow's bash is
+// a melee hit), a shield, the attacker's weapon damage, the target's Block
+// and ShieldPerks (the actor-values record; 0 without one), the power
+// attack damage-flags backed
 float BlockedShare(const MpActor& aggressor, const MpActor& target,
                    const HitData& hitData, WorldState& worldState)
 {
@@ -2093,12 +2095,9 @@ float BlockedShare(const MpActor& aggressor, const MpActor& target,
   if (!f.blocking) {
     return 0.f;
   }
-  const NiPoint3 view = target.GetViewDirection();
-  const NiPoint3 toAggressor = aggressor.GetPos() - target.GetPos();
-  const float lengths = view.Length() * toAggressor.Length();
-  f.facing_angle = lengths > 0.f
-    ? std::acos(std::clamp((view * toAggressor) / lengths, -1.f, 1.f))
-    : std::numeric_limits<float>::quiet_NaN();
+  f.heading = target.GetAngle().z;
+  f.dx = aggressor.GetPos().x - target.GetPos().x;
+  f.dy = aggressor.GetPos().y - target.GetPos().y;
   const auto source =
     worldState.GetEspm().GetBrowser().LookupById(hitData.source);
   if (source.rec && source.rec->GetType() == espm::WEAP::kType) {
@@ -2121,6 +2120,11 @@ float BlockedShare(const MpActor& aggressor, const MpActor& target,
     target
       .GetRecordedActorValueBase(static_cast<uint8_t>(espm::ActorValue::Block))
       .value_or(0.f);
+  // ShieldPerks, actor value 66 (CommonLibSSE-NG
+  // include/RE/A/ActorValues.h:74), the engine's term beside the skill
+  constexpr uint8_t kShieldPerks = 66;
+  f.shield_perks =
+    target.GetRecordedActorValueBase(kShieldPerks).value_or(0.f);
   f.power = hitData.isPowerAttack;
   return skymp::rules::blocked_share(BlockSettingsOf(worldState), f);
 }

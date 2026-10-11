@@ -1,7 +1,9 @@
 #include "libespm/RACE.h"
 #include "libespm/RecordHeaderAccess.h"
 #include <algorithm>
+#include <cctype>
 #include <cstring>
+#include <optional>
 
 namespace espm {
 
@@ -9,6 +11,7 @@ RACE::Data RACE::GetData(
   CompressedFieldsCache& compressedFieldsCache) const noexcept
 {
   Data result;
+  std::optional<float> pendingStaggerOffset;
   RecordHeaderAccess::IterateFields(
     this,
     [&](const char* type, uint32_t size, const char* data) {
@@ -24,6 +27,7 @@ RACE::Data RACE::GetData(
         result.staminaRegen = *reinterpret_cast<const float*>(data + 92);
         result.unarmedDamage = *reinterpret_cast<const float*>(data + 96);
         result.unarmedReach = *reinterpret_cast<const float*>(data + 100);
+        result.baseMass = *reinterpret_cast<const float*>(data + 52);
       } else if (!std::memcmp(type, "SPLO", 4)) {
         result.spells.emplace(*reinterpret_cast<const uint32_t*>(data));
       } else if (!std::memcmp(type, "ATKD", 4) && size >= 24) {
@@ -38,6 +42,16 @@ RACE::Data RACE::GetData(
             std::max(result.widestStrikeAngle,
                      *reinterpret_cast<const float*>(data + 20));
         }
+        pendingStaggerOffset.reset();
+        if (size >= 28) {
+          pendingStaggerOffset = *reinterpret_cast<const float*>(data + 24);
+        }
+      } else if (!std::memcmp(type, "ATKE", 4) && pendingStaggerOffset) {
+        std::string event(data, strnlen(data, size));
+        std::transform(event.begin(), event.end(), event.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        result.attackStaggerOffsets[event] = *pendingStaggerOffset;
+        pendingStaggerOffset.reset();
       }
     },
     compressedFieldsCache);

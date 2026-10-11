@@ -1,6 +1,8 @@
 #pragma once
 #include "RecordHeader.h"
+#include <map>
 #include <set>
+#include <string>
 
 #pragma pack(push, 1)
 
@@ -65,6 +67,12 @@ public:
     // attack angle of 0; the half angle of the engine's hit cone per
     // attack), 0 for a race with none
     float widestStrikeAngle = 0.f;
+    // DATA's base mass (byte 52; actor value Mass, 1 for the playable races)
+    float baseMass = 1.f;
+    // each attack's stagger offset (ATKD byte 24) by the event the ATKE
+    // after it names, lower case: an attack's stagger scales with it, 0 for
+    // a plain swing in the masters (thuum docs/verbs/stagger.md)
+    std::map<std::string, float> attackStaggerOffsets = {};
 
     std::set<uint32_t> spells = {};
   };

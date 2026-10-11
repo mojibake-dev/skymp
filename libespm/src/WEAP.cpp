@@ -15,6 +15,10 @@ WEAP::Data WEAP::GetData(
         result.weapData = reinterpret_cast<const WeapData*>(data);
       } else if (!std::memcmp(type, "DNAM", 4)) {
         result.weapDNAM = reinterpret_cast<const DNAM*>(data);
+        constexpr uint32_t kStaggerOffset = 0x60;
+        if (dataSize >= kStaggerOffset + sizeof(float)) {
+          std::memcpy(&result.stagger, data + kStaggerOffset, sizeof(float));
+        }
       }
     },
     compressedFieldsCache);

@@ -144,6 +144,10 @@ private:
 
   void NotifyHostility(MpActor& aggressor, MpActor& target,
                        std::chrono::steady_clock::time_point now);
+  // thuum docs/verbs/stagger.md: after a hit's damage, the stagger the
+  // engine's rule gives it, played in the victim's game
+  void NotifyStagger(MpActor& aggressor, MpActor& target,
+                     const HitData& hitData, bool dealtDamage);
 
   void SendPapyrusOnHitEvent(MpActor* aggressor, MpObjectReference* target,
                              const HitData& hitData);

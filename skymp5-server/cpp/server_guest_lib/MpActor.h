@@ -180,6 +180,9 @@ public:
   ShoutRecord GetShoutRecord() const;
   // Adds the form to the record's list; false when it was there already
   bool RecordShoutEntry(ShoutEntry kind, const FormDesc& form);
+  // Whether the record's list holds the form (a form id in the server's
+  // load order)
+  bool HasShoutEntry(ShoutEntry kind, uint32_t formId) const;
   std::pair<uint32_t, std::chrono::steady_clock::time_point> GetLastEaten()
     const;
   // thuum docs/verbs/favorites.md: the player's favorites, kept in its change

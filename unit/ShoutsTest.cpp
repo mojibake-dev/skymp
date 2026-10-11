@@ -1,4 +1,5 @@
 #include "ActionListener.h"
+#include "ActorValueRecord.h"
 #include "ConsoleCommandMessage.h"
 #include "MpChangeForms.h"
 #include "TestUtils.hpp"
@@ -15,20 +16,78 @@ PartOne& GetPartOne();
 // tell the target's own game (Game.TeachWord, Game.UnlockWord,
 // Actor.AddShout by SpSnippet), the record survives in the change form, and
 // after every login the server teaches it again (on the first movement).
+// A shout the player's game reports (a cast from the voice with the
+// variation's spell) stands when the record holds the shout and every word
+// up to the variation unlocked and the last shout's recovery has run out
+// (wire-rules shouts); an accepted one starts the next recovery, waits for
+// its hits as a cast does, and is relayed to nobody.
 // Skyrim.esm (thuum lab/esm.py, 2026-10-10): UnrelentingForceShout SHOU
-// 0x13E07, its first word WOOP 0x13E22.
+// 0x13E07, its first word WOOP 0x13E22, its variations' spells 0x13E09 and
+// 0x13F39 (recovery 15 and 20 s); Flames 0x12FCD, no shout's.
 namespace {
 constexpr uint32_t kActor = 0xff000abe;
 constexpr uint32_t kShout = 0x00013e07;
 constexpr uint32_t kWord = 0x00013e22;
+constexpr uint32_t kFus = 0x00013e09;
+constexpr uint32_t kFusRo = 0x00013f39;
+constexpr uint32_t kFlames = 0x00012fcd;
 
-MpActor& Player(PartOne& p)
+MpActor& Player(PartOne& p, uint32_t actorId = kActor)
 {
   DoConnect(p, 0);
-  p.CreateActor(kActor, { 0, 0, 0 }, 0, 0x3c);
-  p.SetUserActor(0, kActor);
+  p.CreateActor(actorId, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, actorId);
   p.Messages().clear();
-  return p.worldState.GetFormAt<MpActor>(kActor);
+  return p.worldState.GetFormAt<MpActor>(actorId);
+}
+
+// A player whose voice slot holds Unrelenting Force, and whose record holds
+// it with its first word unlocked when `recorded`. Each test shouts as an
+// actor of its own: a recovery outlives its actor's session.
+MpActor& Shouter(PartOne& p, uint32_t actorId, bool recorded)
+{
+  auto& ac = Player(p, actorId);
+  if (recorded) {
+    REQUIRE(ac.RecordShoutEntry(MpActor::ShoutEntry::Shout,
+                                FormDesc::FromString("13e07:Skyrim.esm")));
+    REQUIRE(ac.RecordShoutEntry(MpActor::ShoutEntry::WordUnlocked,
+                                FormDesc::FromString("13e22:Skyrim.esm")));
+  }
+  Equipment eq;
+  eq.voiceSpell = kShout;
+  ac.SetEquipment(eq);
+  return ac;
+}
+
+// a cast from the voice, as skymp5-client's shoutService reports a shout
+void Shout(PartOne& p, uint32_t spell)
+{
+  DoMessage(
+    p, 0,
+    nlohmann::json{ { "t", static_cast<int>(MsgType::SpellCast) },
+                    { "data",
+                      { { "caster", 0x14 },
+                        { "target", 0 },
+                        { "spell", spell },
+                        { "isDualCasting", false },
+                        { "interruptCast", false },
+                        { "castingSource", 2 },
+                        { "aimAngle", 0.f },
+                        { "aimHeading", 0.f },
+                        { "actorAnimationVariables",
+                          { { "booleans", nlohmann::json::array() },
+                            { "floats", nlohmann::json::array() },
+                            { "integers", nlohmann::json::array() } } } } } });
+}
+
+// how many casts anyone was sent since the last clear
+int RelayedCasts(PartOne& p)
+{
+  int n = 0;
+  for (auto& m : p.Messages()) {
+    n += m.j["t"] == MsgType::SpellCast;
+  }
+  return n;
 }
 
 // the player's console: `<name> <0x14> <form>`, as skymp5-client sends it
@@ -88,9 +147,9 @@ bool Contains(const std::vector<std::string>& told, const std::string& line)
   return std::find(told.begin(), told.end(), line) != told.end();
 }
 
-void Leave(PartOne& p)
+void Leave(PartOne& p, uint32_t actorId = kActor)
 {
-  p.DestroyActor(kActor);
+  p.DestroyActor(actorId);
   DoDisconnect(p, 0);
 }
 }
@@ -186,4 +245,87 @@ TEST_CASE("The change form keeps a player's shouts and words, and older "
   const std::string olderDump = older.dump();
   auto olderElement = parser.parse(olderDump).value();
   REQUIRE(!MpChangeForm::JsonToChangeForm(olderElement).shoutRecord);
+}
+
+TEST_CASE("A shout the record holds stands once per recovery, waits for its "
+          "hit and reaches nobody",
+          "[Shouts][espm]")
+{
+  constexpr uint32_t kShouter = 0xff000ac0;
+  PartOne& p = GetPartOne();
+  auto& ac = Shouter(p, kShouter, true);
+  Shout(p, kFus);
+  REQUIRE(RelayedCasts(p) == 0);
+  const auto left = p.VoiceRecoveryLeftMs(kShouter);
+  REQUIRE(left > 14000);
+  REQUIRE(left <= 15000);
+  // its hit counts, once
+  REQUIRE(p.ClaimCast(kShouter, kFus, kActor, { 0, 50, 0 }).check ==
+          PartOne::CastCheck::Claimed);
+
+  // again at once, with a ShoutRecoveryMult (actor value 86) that would make
+  // its recovery 45 s: refused, the recovery left as it was
+  ActorValueRecord record;
+  record.bases = { { 86, 3.f } };
+  REQUIRE(ac.SetActorValueRecord(record));
+  Shout(p, kFus);
+  REQUIRE(p.VoiceRecoveryLeftMs(kShouter) <= left);
+  REQUIRE(RelayedCasts(p) == 0);
+  Leave(p, kShouter);
+}
+
+TEST_CASE("A shout the record does not back is refused", "[Shouts][espm]")
+{
+  PartOne& p = GetPartOne();
+  {
+    // two words with only the first unlocked; a spell no variation's
+    constexpr uint32_t kShouter = 0xff000ac1;
+    Shouter(p, kShouter, true);
+    Shout(p, kFusRo);
+    Shout(p, kFlames);
+    REQUIRE(p.VoiceRecoveryLeftMs(kShouter) == 0);
+    REQUIRE(p.ClaimCast(kShouter, kFusRo, kActor, { 0, 50, 0 }).check ==
+            PartOne::CastCheck::NoCast);
+    Leave(p, kShouter);
+  }
+  {
+    // a shout in the voice slot the record lacks
+    constexpr uint32_t kShouter = 0xff000ac2;
+    Shouter(p, kShouter, false);
+    Shout(p, kFus);
+    REQUIRE(p.VoiceRecoveryLeftMs(kShouter) == 0);
+    Leave(p, kShouter);
+  }
+}
+
+TEST_CASE("A shout in the voice slot is the player's only when the record "
+          "holds it",
+          "[Shouts][espm]")
+{
+  constexpr uint32_t kShouter = 0xff000ac3;
+  PartOne& p = GetPartOne();
+  auto& ac = Player(p, kShouter);
+  const auto equip = [&] {
+    DoMessage(p, 0,
+              nlohmann::json{
+                { "t", MsgType::UpdateEquipment },
+                { "idx", ac.GetIdx() },
+                { "data",
+                  { { "numChanges", 1 },
+                    { "voiceSpell", kShout },
+                    { "inv", { { "entries", nlohmann::json::array() } } } } } });
+  };
+  // not recorded: refused, and the player's game loses it
+  equip();
+  REQUIRE(Contains(Told(p), "Actor.RemoveShout 13e07"));
+  REQUIRE(!ac.GetEquipment().voiceSpell);
+
+  // recorded: taken
+  REQUIRE(ac.RecordShoutEntry(MpActor::ShoutEntry::Shout,
+                              FormDesc::FromString("13e07:Skyrim.esm")));
+  p.Messages().clear();
+  equip();
+  REQUIRE(!Contains(Told(p), "Actor.RemoveShout 13e07"));
+  REQUIRE(ac.GetEquipment().voiceSpell == kShout);
+  Leave(p, kShouter);
 }

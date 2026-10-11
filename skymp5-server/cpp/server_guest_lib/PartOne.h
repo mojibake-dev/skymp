@@ -193,6 +193,30 @@ public:
   CastClaim ClaimCast(uint32_t actorFormId, uint32_t spell, uint32_t target,
                       const NiPoint3& at);
 
+  // thuum docs/verbs/shouts.md: what the server knows of a shout a player's
+  // game reported, and its verdict (wire-rules shouts); an accepted shout
+  // starts its recovery on the server's clock, which a reconnect does not
+  // end
+  struct VoiceFacts
+  {
+    bool shoutEquipped = false; // the voice slot holds a shout it recorded
+    uint8_t variation = 0;      // the spell's place among the variations
+    uint8_t wordsUnlocked = 0;  // bit i: the record unlocked word i
+    float recoverySeconds = 0.f;
+    float recoveryMult = 1.f;
+  };
+  enum class VoiceCheck
+  {
+    Accepted,
+    NoShout,       // the voice slot holds no shout the record has
+    NotAVariation, // the spell is none of the shout's
+    WordLocked,    // a word up to the variation is not unlocked
+    Recovering     // the last shout's recovery runs
+  };
+  VoiceCheck Shout(uint32_t actorFormId, const VoiceFacts& facts);
+  // how long the actor's voice recovery runs, ms (0 when none)
+  uint64_t VoiceRecoveryLeftMs(uint32_t actorFormId) const;
+
   // The server's game clock (thuum docs/verbs/time.md, ADR-021) from
   // server-settings.json's `time` block as JSON text ("{}" for every
   // default); throws naming the bad key. From then on each player hears the

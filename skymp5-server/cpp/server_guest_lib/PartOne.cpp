@@ -127,6 +127,10 @@ struct PartOne::Impl
   rust::Box<skymp::rules::SpellCasts> spellCasts =
     skymp::rules::new_spell_casts();
 
+  // every player actor's voice recovery (thuum docs/verbs/shouts.md; Rust's,
+  // ADR-020)
+  rust::Box<skymp::rules::Voices> voices = skymp::rules::new_voices();
+
   // the server's game clock (thuum docs/verbs/time.md; Rust's, ADR-020 and
   // ADR-021); players hear it once SetGameTimeSettings has run
   rust::Box<skymp::rules::GameClock> gameClock =
@@ -1418,6 +1422,34 @@ PartOne::CastClaim PartOne::ClaimCast(uint32_t actorFormId, uint32_t spell,
       break;
   }
   return res;
+}
+
+PartOne::VoiceCheck PartOne::Shout(uint32_t actorFormId,
+                                   const VoiceFacts& facts)
+{
+  skymp::rules::VoiceFacts f{};
+  f.shout_equipped = facts.shoutEquipped;
+  f.variation = facts.variation;
+  f.words_unlocked = facts.wordsUnlocked;
+  f.recovery_s = facts.recoverySeconds;
+  f.recovery_mult = facts.recoveryMult;
+  switch (pImpl->voices->shout(actorFormId, f, SteadyNowMs())) {
+    case skymp::rules::VoiceRefusal::Accepted:
+      return VoiceCheck::Accepted;
+    case skymp::rules::VoiceRefusal::NotAVariation:
+      return VoiceCheck::NotAVariation;
+    case skymp::rules::VoiceRefusal::WordLocked:
+      return VoiceCheck::WordLocked;
+    case skymp::rules::VoiceRefusal::Recovering:
+      return VoiceCheck::Recovering;
+    default:
+      return VoiceCheck::NoShout;
+  }
+}
+
+uint64_t PartOne::VoiceRecoveryLeftMs(uint32_t actorFormId) const
+{
+  return pImpl->voices->recovery_left_ms(actorFormId, SteadyNowMs());
 }
 
 PartOne::ShotClaim PartOne::ClaimShot(uint32_t actorFormId, uint32_t weapon,

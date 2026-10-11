@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, block, casts, clock, console, damage, effects, favorites, hostility, magic, markers, melee, movement, racemenu, ranged, rest};
+use wire_rules::{activation, actor_values, appearance, block, casts, clock, console, damage, effects, favorites, hostility, magic, markers, melee, movement, racemenu, ranged, rest, shouts};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -636,6 +636,39 @@ mod ffi {
         Fighting,
     }
 
+    /// What the core knows about a shout a player's game reported (thuum
+    /// docs/verbs/shouts.md).
+    #[derive(Debug)]
+    struct VoiceFacts {
+        /// The voice slot holds a shout the player's record has.
+        shout_equipped: bool,
+        /// The cast spell's place among the shout's variations, 0 to 2, or
+        /// anything else for none.
+        variation: u8,
+        /// The record's unlocked words among the shout's three, bit i for
+        /// word i.
+        words_unlocked: u8,
+        /// The variation's recovery time, seconds.
+        recovery_s: f32,
+        /// The shouter's ShoutRecoveryMult (1 without a record).
+        recovery_mult: f32,
+    }
+
+    /// Why a shout is refused, `Accepted` when it stands.
+    #[derive(Debug)]
+    enum VoiceRefusal {
+        /// The shout stands.
+        Accepted,
+        /// The voice slot holds no shout the record has.
+        NoShout,
+        /// The spell is none of the shout's variations.
+        NotAVariation,
+        /// A word up to the variation is not unlocked in the record.
+        WordLocked,
+        /// The last shout's recovery has not run out.
+        Recovering,
+    }
+
     /// One attribute as the core's CropRegeneration takes it.
     #[derive(Debug)]
     struct Regen {
@@ -811,6 +844,16 @@ mod ffi {
         /// The actor is gone: its casts and streams with it.
         fn forget(self: &mut SpellCasts, actor: u32);
 
+        /// Every player's voice: when its last accepted shout's recovery ends.
+        type Voices;
+        /// No shouts yet.
+        fn new_voices() -> Box<Voices>;
+        /// The verdict on `actor`'s shout at `now_ms` (a monotonic clock);
+        /// an accepted one starts its recovery.
+        fn shout(self: &mut Voices, actor: u32, facts: &VoiceFacts, now_ms: u64) -> VoiceRefusal;
+        /// How long `actor`'s recovery runs from `now_ms`, 0 when none.
+        fn recovery_left_ms(self: &Voices, actor: u32, now_ms: u64) -> u64;
+
         /// The server's game clock and who has heard it.
         type GameClock;
         /// A clock from server-settings.json's `time` block as JSON text
@@ -828,7 +871,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, AvChange, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, Verdict};
+pub use ffi::{AvBase, AvChange, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, Verdict, VoiceFacts, VoiceRefusal};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -1359,6 +1402,37 @@ impl SpellCasts {
     }
 }
 
+/// Every player's voice (wire-rules shouts).
+#[derive(Debug, Default)]
+pub struct Voices(shouts::Voices);
+
+fn new_voices() -> Box<Voices> {
+    Box::default()
+}
+
+impl Voices {
+    fn shout(&mut self, actor: u32, f: &VoiceFacts, now_ms: u64) -> VoiceRefusal {
+        let facts = shouts::VoiceFacts {
+            shout_equipped: f.shout_equipped,
+            variation: f.variation,
+            words_unlocked: [f.words_unlocked & 1 != 0, f.words_unlocked & 2 != 0, f.words_unlocked & 4 != 0],
+            recovery_s: f.recovery_s,
+            recovery_mult: f.recovery_mult,
+        };
+        match self.0.shout(actor, &facts, now_ms) {
+            shouts::VoiceRefusal::Accepted => VoiceRefusal::Accepted,
+            shouts::VoiceRefusal::NoShout => VoiceRefusal::NoShout,
+            shouts::VoiceRefusal::NotAVariation => VoiceRefusal::NotAVariation,
+            shouts::VoiceRefusal::WordLocked => VoiceRefusal::WordLocked,
+            shouts::VoiceRefusal::Recovering => VoiceRefusal::Recovering,
+        }
+    }
+
+    fn recovery_left_ms(&self, actor: u32, now_ms: u64) -> u64 {
+        self.0.recovery_left_ms(actor, now_ms)
+    }
+}
+
 /// The server's game clock (wire-rules clock).
 #[derive(Debug)]
 pub struct GameClock(clock::Clock);
@@ -1515,6 +1589,21 @@ mod tests {
         assert!(!c.is_open(7, 1));
         c.forget(7);
         assert_eq!(c.claim(7, on(0.0), 400).check, CastCheck::NoCast);
+    }
+
+    #[test]
+    fn the_bridge_passes_shouts_through() {
+        let mut v = new_voices();
+        // Unrelenting Force's second variation with its first two words
+        let two = VoiceFacts { shout_equipped: true, variation: 1, words_unlocked: 0b011, recovery_s: 20.0, recovery_mult: 1.0 };
+        assert_eq!(v.shout(7, &VoiceFacts { words_unlocked: 0b010, ..two }, 0), VoiceRefusal::WordLocked);
+        assert_eq!(v.shout(7, &VoiceFacts { variation: 2, ..two }, 0), VoiceRefusal::WordLocked);
+        assert_eq!(v.shout(7, &VoiceFacts { variation: 7, ..two }, 0), VoiceRefusal::NotAVariation);
+        assert_eq!(v.shout(7, &VoiceFacts { shout_equipped: false, ..two }, 0), VoiceRefusal::NoShout);
+        assert_eq!(v.shout(7, &two, 0), VoiceRefusal::Accepted);
+        assert_eq!(v.recovery_left_ms(7, 5_000), 15_000);
+        assert_eq!(v.shout(7, &two, 5_000), VoiceRefusal::Recovering);
+        assert_eq!(v.shout(7, &two, 20_000), VoiceRefusal::Accepted);
     }
 
     #[test]

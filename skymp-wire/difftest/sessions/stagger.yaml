@@ -1,0 +1,51 @@
+# difftest stagger (M2, thuum docs/verbs/stagger.md): c1 and c2 are new
+# characters (profiles 9 and 10, actors 0xff000002 and 0xff000003: see
+# melee-reach), both of the player's race, NordRace. The lab server runs
+# with enableConsoleCommandsForAll (see console), so c1 gives itself an Iron
+# Sword (Skyrim.esm 0x12EB7, 77495: stagger 0.75, thuum lab/esm.py) at 1.5 s
+# and reports it worn at 2 s (an UpdateEquipment, as its game reports an
+# equip; the server takes a weapon hit only from a weapon it holds worn).
+# c2 steps 50 units east of the spawn, inside c1's cone and reach. At 3 s
+# c1's game starts a forward power attack (attackPowerStartForward, NordRace
+# ATKD stagger offset 1.0) and at 3.5 s hits c2 with the power flag. Both
+# servers take the hit as a power attack (the fixed one backs the flag by
+# the start). The fixed server staggers c2: 0.75 x 1.0 / (1 x 1.0 x 2.5),
+# less (2.5 - 2.1) x 0.15, is 0.24 (fStaggerPlayerMassMult 2.5,
+# fStaggerMassOffsetBase 2.1, the offset's multiplier the executable's
+# 0.15), told to
+# c2's game as TESModPlatform.Stagger(the player, 0.24, c1's figure); the
+# legacy server staggers nobody. c2 steps again at 3.5 s of its own (5 s of
+# c1's), so it outlives c1, as in every session. Declared from the formula
+# before the run, to be checked against it.
+id: stagger
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 1500, send: {t: 12, data: {t: 12, commandName: additem, args: [20, 77495, 1]}}}
+  - {client: c1, at_ms: 2000, send: {t: 5, idx: "{{idx}}", data: {inv: {entries: [{baseId: 77495, count: 1, worn: true}]}, numChanges: 1}}}
+  - {client: c1, at_ms: 3000, send: {t: 3, idx: "{{idx}}", data: {animEventName: attackPowerStartForward, numChanges: 1}}}
+  - {client: c1, at_ms: 3500, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 77495, isBashAttack: false, isHitBlocked: false, isPowerAttack: true, isSneakAttack: false, projectile: 0}}}
+  - {client: c2, at_ms: 0, move: {dx: 50}}
+  - {client: c2, at_ms: 3500, move: {dx: 60}}
+divergences:
+  - client: c1
+    msg: {t: 41, text: "additem done", refused: false}
+    legacy: 0
+    wire: 1
+    reason: the server answers every console command with a line (ConsoleOutput, thuum docs/verbs/console-commands.md); the legacy server prints nothing back
+  - client: c2
+    msg: {t: 30, class: TESModPlatform, function: Stagger, selfId: 0, arguments: [{formId: 20, type: Actor}, 0.24, {formId: 4278190082, type: Actor}]}
+    legacy: 0
+    wire: 1
+    reason: the fixed server staggers c2 by the engine's formula for c1's forward power attack with an Iron Sword (thuum docs/verbs/stagger.md), in c2's own game; the legacy server has no stagger
+  - client: c2
+    msg: {t: 30, class: Actor, function: StartCombat, selfId: 4278190082, arguments: [{formId: 20, type: Actor}]}
+    legacy: 0
+    wire: 1
+    reason: c1's hit begins a fight; the fixed server tells c2's game (thuum docs/verbs/hostility-sync.md), the legacy server has no hostility sync
+  - client: c2
+    msg: {t: 25, idx: 2}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

@@ -82,12 +82,13 @@ RegenRate GetMagickaRegenRate(MpActor* actor)
 {
   const BaseActorValues baseValues = GetValues(actor);
   const ActorValues& actorValues = actor->GetActorValues();
-  return { std::max(baseValues.magickaRate, actorValues.magickaRate) +
-             actor->GetEffectModifier(espm::ActorValue::MagickaRate),
-           std::max(baseValues.magickaRateMult, actorValues.magickaRateMult) +
-             actor->GetEffectModifier(
-               espm::ActorValue::
-                 MagickaRateMult_or_CombatHealthRegenMultPowerMod) };
+  return {
+    std::max(baseValues.magickaRate, actorValues.magickaRate) +
+      actor->GetEffectModifier(espm::ActorValue::MagickaRate),
+    std::max(baseValues.magickaRateMult, actorValues.magickaRateMult) +
+      actor->GetEffectModifier(
+        espm::ActorValue::MagickaRateMult_or_CombatHealthRegenMultPowerMod)
+  };
 }
 
 RegenRate GetStaminaRegenRate(MpActor* actor)

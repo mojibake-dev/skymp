@@ -1,7 +1,6 @@
 #include "RunningEffectsBinding.h"
 
-Napi::Value RunningEffectsBinding::Get(Napi::Env env,
-                                       ScampServer& scampServer,
+Napi::Value RunningEffectsBinding::Get(Napi::Env env, ScampServer& scampServer,
                                        uint32_t formId)
 {
   auto& partOne = scampServer.GetPartOne();

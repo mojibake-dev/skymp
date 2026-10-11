@@ -31,11 +31,11 @@
 #include <array>
 #include <atomic>
 #include <chrono>
-#include <set>
 #include <functional>
 #include <limits>
 #include <optional>
 #include <random>
+#include <set>
 #include <string>
 #include <utility>
 
@@ -2542,8 +2542,7 @@ void MpActor::ReapplyMagicEffects()
         if (remaining <= 0.f) {
           continue;
         }
-        const auto facts =
-          EffectFactsOf(worldState, effect.effectId, effect);
+        const auto facts = EffectFactsOf(worldState, effect.effectId, effect);
         if (!facts) {
           continue;
         }
@@ -2615,7 +2614,7 @@ std::vector<MpActor::RunningEffectView> MpActor::GetRunningEffects() const
 }
 
 std::vector<espm::Effects::Effect> MpActor::EffectsOf(WorldState* worldState,
-                                                     uint32_t source)
+                                                      uint32_t source)
 {
   if (!worldState || !worldState->HasEspm()) {
     return {};
@@ -2624,9 +2623,8 @@ std::vector<espm::Effects::Effect> MpActor::EffectsOf(WorldState* worldState,
   if (!lookup.rec) {
     return {};
   }
-  auto effects = espm::Effects(lookup.rec)
-                   .GetData(worldState->GetEspmCache())
-                   .effects;
+  auto effects =
+    espm::Effects(lookup.rec).GetData(worldState->GetEspmCache()).effects;
   for (auto& effect : effects) {
     // an id inside a record counts against that file's masters
     effect.effectId = lookup.ToGlobalId(effect.effectId);
@@ -2659,10 +2657,10 @@ void MpActor::ApplyEffects(uint32_t source,
     if (!facts) {
       continue;
     }
-    const auto applied = skymp::rules::apply_effect(
-      *facts, scale, caster,
-      stream ? skymp::rules::EffectArrival::Stream
-             : skymp::rules::EffectArrival::Once);
+    const auto applied =
+      skymp::rules::apply_effect(*facts, scale, caster,
+                                 stream ? skymp::rules::EffectArrival::Stream
+                                        : skymp::rules::EffectArrival::Once);
     SumAttributeChanges(applied.changes, deltas, touched);
     if (applied.has_entry) {
       SumAttributeChanges(skymp::rules::admit_effect(entries, applied.entry),

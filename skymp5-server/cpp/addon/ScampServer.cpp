@@ -315,6 +315,12 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
     partOne->SetRestSettings(serverSettings.contains("rest")
                                ? serverSettings.at("rest").dump()
                                : std::string("{}"));
+    // the spells that teleport their caster (thuum
+    // docs/verbs/cast-teleport.md): `castTeleports`, the same way
+    partOne->SetCastTeleportSettings(
+      serverSettings.contains("castTeleports")
+        ? serverSettings.at("castTeleports").dump()
+        : std::string("[]"));
 
     if (serverSettings["dataDir"] != nullptr) {
       dataDir = serverSettings["dataDir"];

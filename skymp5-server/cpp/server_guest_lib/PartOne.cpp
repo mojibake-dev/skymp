@@ -138,6 +138,11 @@ struct PartOne::Impl
   rust::Box<skymp::rules::RestSettings> restSettings =
     skymp::rules::new_rest_settings("{}");
 
+  // the spells the server names as teleports (thuum
+  // docs/verbs/cast-teleport.md): server-settings.json's `castTeleports`
+  rust::Box<skymp::rules::CastTeleports> castTeleports =
+    skymp::rules::new_cast_teleports("[]");
+
   // the fights between players (thuum docs/verbs/hostility-sync.md, ADR-023)
   rust::Box<skymp::rules::Fights> fights = skymp::rules::new_fights();
   std::chrono::steady_clock::time_point lastFightsTick;
@@ -1306,6 +1311,35 @@ PartOne::JumpCheck PartOne::CheckArrival(uint32_t actorFormId,
 {
   return ToJumpCheck(pImpl->movementBudgets->check_arrival(
     actorFormId, cellOrWorld, x, y, SteadyNowMs()));
+}
+
+void PartOne::SetCastTeleportSettings(const std::string& castTeleportsJson)
+{
+  pImpl->castTeleports = skymp::rules::new_cast_teleports(castTeleportsJson);
+  spdlog::info("PartOne::SetCastTeleportSettings - {}", castTeleportsJson);
+}
+
+float PartOne::TeleportReach(uint32_t spellFormId) const
+{
+  // a spell as the settings name it: its FormDesc (form id within its
+  // plugin, and the plugin), so a change of load order keeps it
+  const auto desc = FormDesc::FromFormId(spellFormId, worldState.espmFiles);
+  return pImpl->castTeleports->teleport_reach(desc.shortFormId, desc.file);
+}
+
+void PartOne::PermitCastJump(uint32_t actorFormId, uint32_t cellOrWorld,
+                             const NiPoint3& from, float reach)
+{
+  pImpl->movementBudgets->permit_cast_jump(
+    actorFormId, cellOrWorld, from.x, from.y, from.z, reach, SteadyNowMs());
+}
+
+PartOne::JumpCheck PartOne::CheckCastJump(uint32_t actorFormId,
+                                          uint32_t cellOrWorld,
+                                          const NiPoint3& at)
+{
+  return ToJumpCheck(pImpl->movementBudgets->check_cast_jump(
+    actorFormId, cellOrWorld, at.x, at.y, at.z, SteadyNowMs()));
 }
 
 void PartOne::RecordShot(uint32_t actorFormId, uint32_t weapon, float power,

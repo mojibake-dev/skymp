@@ -149,6 +149,20 @@ public:
   JumpCheck CheckArrival(uint32_t actorFormId, uint32_t cellOrWorld, float x,
                          float y);
 
+  // thuum docs/verbs/cast-teleport.md: the spells server-settings.json's
+  // `castTeleports` names as teleports (a JSON list, "[]" for none; a bad
+  // entry stops the server here, named), each spell's reach (negative for a
+  // spell the server names no teleport), and the one jump a player's actor
+  // may make after casting one: to within `reach` of `from`, where it stood,
+  // in cellOrWorld, for a few seconds; CheckCastJump judges a move the
+  // bounds refuse against it (Landed or NoPermit; the rule is Rust's)
+  void SetCastTeleportSettings(const std::string& castTeleportsJson);
+  float TeleportReach(uint32_t spellFormId) const;
+  void PermitCastJump(uint32_t actorFormId, uint32_t cellOrWorld,
+                      const NiPoint3& from, float reach);
+  JumpCheck CheckCastJump(uint32_t actorFormId, uint32_t cellOrWorld,
+                          const NiPoint3& at);
+
   // thuum docs/verbs/marksman.md: a player loosed an arrow from `weapon` at
   // draw `power`, standing at `from`; a later hit with that weapon claims
   // it, once, if its arrow can have reached the target since (wire-rules

@@ -62,6 +62,16 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
       return std::nullopt;
     }
     const uint32_t cellOrWorld = newCellOrWorld.ToFormId(espmFiles);
+    // thuum docs/verbs/cast-teleport.md: the jump a teleport spell's cast
+    // permits, within its reach of where the caster stood
+    if (partOne.CheckCastJump(actor->GetFormId(), cellOrWorld, newPos) ==
+        PartOne::JumpCheck::Landed) {
+      spdlog::info("MovementValidation: {:x} made its cast teleport's jump to "
+                   "{:x} at ({:.0f}, {:.0f}, {:.0f})",
+                   actor->GetFormId(), cellOrWorld, newPos.x, newPos.y,
+                   newPos.z);
+      return true;
+    }
     switch (
       partOne.CheckJump(actor->GetFormId(), cellOrWorld, newPos.x, newPos.y)) {
       case PartOne::JumpCheck::Landed:

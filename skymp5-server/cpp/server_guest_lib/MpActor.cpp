@@ -35,6 +35,7 @@
 #include <limits>
 #include <optional>
 #include <random>
+#include <set>
 #include <string>
 #include <utility>
 
@@ -2260,9 +2261,21 @@ rust::Vec<skymp::rules::EffectEntry> EffectEntriesOf(
   return entries;
 }
 
+// The server's wall clock in Unix milliseconds, what a running effect's
+// asOfMs counts against: the world's clock (thuum ADR-021)
+uint64_t WallNowMs()
+{
+  return static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch())
+      .count());
+}
+
+// The rule's entries as the change form keeps them, their seconds run
+// counted as of `asOfMs`
 std::optional<std::vector<RunningEffect>> RunningEffectsOf(
   const rust::Vec<skymp::rules::EffectEntry>& entries,
-  const std::vector<std::string>& files)
+  const std::vector<std::string>& files, uint64_t asOfMs)
 {
   if (entries.empty()) {
     return std::nullopt;
@@ -2286,6 +2299,7 @@ std::optional<std::vector<RunningEffect>> RunningEffectsOf(
     r.magnitude = e.facts.magnitude;
     r.durationS = e.facts.duration_s;
     r.elapsedS = e.elapsed_s;
+    r.asOfMs = asOfMs;
     r.recover = e.facts.recover;
     r.detrimental = e.facts.detrimental;
     r.noDuration = e.facts.no_duration;
@@ -2316,12 +2330,39 @@ void SumAttributeChanges(const Changes& changes, std::array<float, 3>& deltas,
 
 // The running effects as MagicEffects, and `shownOnce` (effects applied at
 // once, 0 seconds left) beside them
+// The sums the running buffs in `entries` put on each actor value they
+// touch, by actor value, those at 0 left out (wire-rules magic::modifier)
+std::vector<MagicEffectsMessage::Modifier> EffectModifiersOf(
+  const rust::Vec<skymp::rules::EffectEntry>& entries)
+{
+  constexpr uint32_t kNoSecond = std::numeric_limits<uint32_t>::max();
+  std::set<uint32_t> avs;
+  for (const auto& e : entries) {
+    avs.insert(e.facts.av);
+    if (e.facts.second_av != kNoSecond) {
+      avs.insert(e.facts.second_av);
+    }
+  }
+  std::vector<MagicEffectsMessage::Modifier> res;
+  for (uint32_t av : avs) {
+    const float amount = skymp::rules::effect_modifier(entries, av);
+    if (amount != 0.f) {
+      MagicEffectsMessage::Modifier modifier;
+      modifier.av = av;
+      modifier.amount = amount;
+      res.push_back(modifier);
+    }
+  }
+  return res;
+}
+
 MagicEffectsMessage MagicEffectsOf(
   uint32_t idx, const rust::Vec<skymp::rules::EffectEntry>& entries,
   const std::vector<MagicEffectsMessage::Effect>& shownOnce)
 {
   MagicEffectsMessage msg;
   msg.idx = idx;
+  msg.modifiers = EffectModifiersOf(entries);
   for (const auto& e : entries) {
     MagicEffectsMessage::Effect effect;
     effect.effect = e.facts.effect;
@@ -2525,8 +2566,7 @@ void MpActor::ReapplyMagicEffects()
         if (remaining <= 0.f) {
           continue;
         }
-        const auto facts =
-          EffectFactsOf(worldState, effect.effectId, effect);
+        const auto facts = EffectFactsOf(worldState, effect.effectId, effect);
         if (!facts) {
           continue;
         }
@@ -2545,7 +2585,7 @@ void MpActor::ReapplyMagicEffects()
                      e.what());
       }
     }
-    auto running = RunningEffectsOf(entries, files);
+    auto running = RunningEffectsOf(entries, files, WallNowMs());
     const BaseActorValues base = GetBaseValues();
     EditChangeForm([&](MpChangeForm& changeForm) {
       changeForm.runningEffects = running;
@@ -2558,13 +2598,47 @@ void MpActor::ReapplyMagicEffects()
       changeForm.actorValues.staminaRateMult = base.staminaRateMult;
     });
   }
+  if (!HasRunningEffects()) {
+    return;
+  }
+  // The world's clock runs while the server is down (thuum ADR-021), and so
+  // do the effects: they run on by the time since they were last counted
+  // (an older record's, written before that time was kept, from now). An
+  // effect that ended meanwhile gives back what it gave; a poison's course
+  // lands at once, as it would have.
+  uint64_t asOfMs = 0;
+  for (const auto& r : *ChangeForm().runningEffects) {
+    asOfMs = std::max(asOfMs, r.asOfMs);
+  }
+  const uint64_t nowMs = WallNowMs();
+  if (asOfMs != 0 && nowMs > asOfMs) {
+    AdvanceEffects(static_cast<float>(nowMs - asOfMs) / 1000.f);
+  }
   if (HasRunningEffects()) {
     worldState->TrackEffects(GetFormId());
   }
 }
 
+std::vector<MpActor::RunningEffectView> MpActor::GetRunningEffects() const
+{
+  std::vector<RunningEffectView> res;
+  WorldState* worldState = GetParent();
+  if (!worldState || !HasRunningEffects()) {
+    return res;
+  }
+  for (const auto& e : EffectEntriesOf(ChangeForm(), worldState->espmFiles)) {
+    RunningEffectView view;
+    view.effect = e.facts.effect;
+    view.source = e.facts.source;
+    view.magnitude = e.facts.magnitude;
+    view.secondsLeft = std::max(e.facts.duration_s - e.elapsed_s, 0.f);
+    res.push_back(view);
+  }
+  return res;
+}
+
 std::vector<espm::Effects::Effect> MpActor::EffectsOf(WorldState* worldState,
-                                                     uint32_t source)
+                                                      uint32_t source)
 {
   if (!worldState || !worldState->HasEspm()) {
     return {};
@@ -2573,9 +2647,8 @@ std::vector<espm::Effects::Effect> MpActor::EffectsOf(WorldState* worldState,
   if (!lookup.rec) {
     return {};
   }
-  auto effects = espm::Effects(lookup.rec)
-                   .GetData(worldState->GetEspmCache())
-                   .effects;
+  auto effects =
+    espm::Effects(lookup.rec).GetData(worldState->GetEspmCache()).effects;
   for (auto& effect : effects) {
     // an id inside a record counts against that file's masters
     effect.effectId = lookup.ToGlobalId(effect.effectId);
@@ -2595,6 +2668,7 @@ void MpActor::ApplyEffects(uint32_t source,
   const BaseActorValues maxBefore = GetMaximumValues();
   auto entries = EffectEntriesOf(ChangeForm(), files);
   const size_t entriesBefore = entries.size();
+  const auto modifiersBefore = EffectModifiersOf(entries);
   std::vector<MagicEffectsMessage::Effect> shownOnce;
   std::array<float, 3> deltas{};
   std::array<bool, 3> touched{};
@@ -2607,10 +2681,10 @@ void MpActor::ApplyEffects(uint32_t source,
     if (!facts) {
       continue;
     }
-    const auto applied = skymp::rules::apply_effect(
-      *facts, scale, caster,
-      stream ? skymp::rules::EffectArrival::Stream
-             : skymp::rules::EffectArrival::Once);
+    const auto applied =
+      skymp::rules::apply_effect(*facts, scale, caster,
+                                 stream ? skymp::rules::EffectArrival::Stream
+                                        : skymp::rules::EffectArrival::Once);
     SumAttributeChanges(applied.changes, deltas, touched, pImpl->godMode);
     if (applied.has_entry) {
       SumAttributeChanges(skymp::rules::admit_effect(entries, applied.entry),
@@ -2625,18 +2699,23 @@ void MpActor::ApplyEffects(uint32_t source,
       shownOnce.push_back(once);
     }
   }
-  const bool setChanged = entries.size() != entriesBefore;
-  auto running = RunningEffectsOf(entries, files);
+  // a buff replaced at the bound keeps the count but moves the sums
+  const bool setChanged = entries.size() != entriesBefore ||
+    EffectModifiersOf(entries) != modifiersBefore;
+  auto running = RunningEffectsOf(entries, files, WallNowMs());
   EditChangeForm(
     [&](MpChangeForm& changeForm) { changeForm.runningEffects = running; });
   if (running) {
     worldState->TrackEffects(GetFormId());
   }
-  ApplyAttributeDeltas(deltas, touched, maxBefore, caster);
+  // the set and its sums first, then the values: on the one ordered
+  // channel, the actor's own game moves its maximum before it takes the
+  // percentage, as the server did
   if (setChanged || !shownOnce.empty()) {
     SendMessageToActorListeners(MagicEffectsOf(GetIdx(), entries, shownOnce),
                                 true);
   }
+  ApplyAttributeDeltas(deltas, touched, maxBefore, caster);
 }
 
 void MpActor::AdvanceEffects(float dtSeconds)
@@ -2656,18 +2735,19 @@ void MpActor::AdvanceEffects(float dtSeconds)
   auto entries = EffectEntriesOf(ChangeForm(), files);
   const size_t entriesBefore = entries.size();
   const auto changes = skymp::rules::advance_effects(entries, dtSeconds);
-  auto running = RunningEffectsOf(entries, files);
+  auto running = RunningEffectsOf(entries, files, WallNowMs());
   EditChangeForm(
     [&](MpChangeForm& changeForm) { changeForm.runningEffects = running; });
   std::array<float, 3> deltas{};
   std::array<bool, 3> touched{};
   SumAttributeChanges(changes, deltas, touched, pImpl->godMode);
-  ApplyAttributeDeltas(deltas, touched, maxBefore, 0);
   if (entries.size() != entriesBefore) {
     // an effect ended: every game drops it (each counts the seconds down
-    // itself, so a running one needs no message)
+    // itself, so a running one needs no message), before the values, as in
+    // ApplyEffects
     SendMessageToActorListeners(MagicEffectsOf(GetIdx(), entries, {}), true);
   }
+  ApplyAttributeDeltas(deltas, touched, maxBefore, 0);
 }
 
 void MpActor::SendMagicEffectsTo(MpActor& listener)

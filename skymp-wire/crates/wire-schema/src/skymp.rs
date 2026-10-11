@@ -795,11 +795,27 @@ wire_struct! {
 }
 
 wire_struct! {
+    /// What an actor's running buffs add to one actor value (thuum
+    /// docs/verbs/magic-effects.md): the sum the actor's own game holds on
+    /// that value while they run, which is how the server's buffs reach the
+    /// player's own game (its engine applies no drink of its own).
+    pub struct EffectModifier {
+        /// The actor value (CommonLibSSE-NG include/RE/A/ActorValues.h).
+        pub av: u32,
+        /// The running buffs' sum on it.
+        pub amount: f32,
+    }
+}
+
+wire_struct! {
     /// MsgType 43 (thuum, docs/verbs/magic-effects.md). Server to client,
     /// reliable: the effects running on an actor (R0), whenever they change
     /// and in full when a client first sees the actor, for each game to show
     /// them (the effect's hit shader and art on that actor for the seconds
-    /// left). Idempotent: each replaces the actor's set.
+    /// left), and the sums its running buffs put on its actor values, which
+    /// the actor's own game holds. Idempotent: each replaces the actor's set.
+    /// Sent before the ChangeValues of the same change, on the same ordered
+    /// channel, so a game moves its maximum before it takes the percentage.
     pub struct MagicEffects {
         /// `"t": 43`.
         #[serde(default)]
@@ -808,6 +824,10 @@ wire_struct! {
         pub idx: u32,
         /// Its running effects.
         pub effects: Vec<MagicEffect, { cap::MAGIC_EFFECTS }>,
+        /// Its running buffs' sums, one per actor value they touch (none for
+        /// a value they leave at 0).
+        #[serde(default)]
+        pub modifiers: Vec<EffectModifier, { cap::EFFECT_MODIFIERS }>,
     }
 }
 

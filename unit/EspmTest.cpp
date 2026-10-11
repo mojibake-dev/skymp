@@ -625,8 +625,7 @@ TEST_CASE("MGEF parsing", "[espm]")
 // thuum docs/verbs/magic-effects.md: Skyrim.esm as thuum lab/esm.py read it
 // (2026-10-10): Sparks' and Frostbite's dual effects, the healing potion's
 // shader and art
-TEST_CASE("MGEF second actor value, its weight, hit shader and art",
-          "[espm]")
+TEST_CASE("MGEF second actor value, its weight, hit shader and art", "[espm]")
 {
   MyEspmProvider provider;
   auto shock = espm::GetData<espm::MGEF>(0x13CAB, &provider).data;

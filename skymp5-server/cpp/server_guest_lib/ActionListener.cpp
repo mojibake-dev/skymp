@@ -2475,16 +2475,16 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
     spdlog::warn("OnSpellHit - spell {:x}: {}", hitData.source, e.what());
     return;
   }
-  const float scale =
-    std::isfinite(magnitudeScale) && magnitudeScale > 0.f ? magnitudeScale : 0.f;
+  const float scale = std::isfinite(magnitudeScale) && magnitudeScale > 0.f
+    ? magnitudeScale
+    : 0.f;
   targetActorPtr->ApplyEffects(hitData.source, effects, scale,
                                aggressor->GetFormId(), stream);
 
   spdlog::info("OnSpellHit - Target {0:x} is hit by {1:x} spell at {2} times "
                "its magnitudes ({3}). By caster: {4:x}",
                targetActorPtr->GetFormId(), hitData.source, scale,
-               stream ? "a stream's seconds" : "once",
-               aggressor->GetFormId());
+               stream ? "a stream's seconds" : "once", aggressor->GetFormId());
 
   // a spell hit begins a fight as a weapon's does (ADR-023)
   NotifyHostility(*aggressor, *targetActorPtr,

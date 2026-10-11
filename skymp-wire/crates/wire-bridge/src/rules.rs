@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, casts, clock, console, damage, effects, favorites, hostility, markers, melee, movement, racemenu, ranged, rest};
+use wire_rules::{activation, actor_values, appearance, casts, clock, console, damage, effects, favorites, hostility, markers, melee, movement, racemenu, ranged, rest, teleports};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -628,6 +628,25 @@ mod ffi {
         /// Judge any report of `actor`'s against the arrival the server
         /// expects; the arrival ends the wait.
         fn check_arrival(self: &mut MovementBudgets, actor: u32, cell_or_world: u32, x: f32, y: f32, now_ms: u64) -> JumpCheck;
+        /// thuum docs/verbs/cast-teleport.md: `actor` cast a teleport at
+        /// `now_ms`, standing at (x, y, z) in `cell_or_world`: one jump to
+        /// within `reach` of there is permitted for a few seconds.
+        #[allow(clippy::too_many_arguments)]
+        fn permit_cast_jump(self: &mut MovementBudgets, actor: u32, cell_or_world: u32, x: f32, y: f32, z: f32, reach: f32, now_ms: u64);
+        /// Judge a move of `actor`'s that the bounds refuse against its cast
+        /// jump: Landed within reach (that ends it), else NoPermit.
+        fn check_cast_jump(self: &mut MovementBudgets, actor: u32, cell_or_world: u32, x: f32, y: f32, z: f32, now_ms: u64) -> JumpCheck;
+
+        /// thuum docs/verbs/cast-teleport.md: the spells server-settings.json's
+        /// `castTeleports` names as teleports, each with its reach.
+        type CastTeleports;
+        /// The list from the block as JSON text (`[]` for none); the error
+        /// names the bad entry.
+        fn new_cast_teleports(settings_json: &str) -> Result<Box<CastTeleports>>;
+        /// The reach of the spell `short_id` in `file` (a FormDesc's
+        /// parts), or a negative number when the server names it no
+        /// teleport.
+        fn teleport_reach(self: &CastTeleports, short_id: u32, file: &str) -> f32;
 
         /// Every player actor's recent bow and crossbow shots.
         type RangedShots;
@@ -1025,6 +1044,28 @@ impl MovementBudgets {
     fn check_arrival(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, now_ms: u64) -> JumpCheck {
         jump_check(self.0.check_arrival(actor, cell_or_world, x, y, now_ms))
     }
+
+    #[allow(clippy::too_many_arguments)]
+    fn permit_cast_jump(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, z: f32, reach: f32, now_ms: u64) {
+        self.0.permit_cast_jump(actor, cell_or_world, x, y, z, reach, now_ms);
+    }
+
+    fn check_cast_jump(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, z: f32, now_ms: u64) -> JumpCheck {
+        jump_check(self.0.check_cast_jump(actor, cell_or_world, x, y, z, now_ms))
+    }
+}
+
+/// The spells the server names as teleports (wire-rules teleports).
+pub struct CastTeleports(teleports::CastTeleports);
+
+fn new_cast_teleports(settings_json: &str) -> Result<Box<CastTeleports>, clock::SettingsError> {
+    teleports::CastTeleports::from_json(settings_json).map(|t| Box::new(CastTeleports(t)))
+}
+
+impl CastTeleports {
+    fn teleport_reach(&self, short_id: u32, file: &str) -> f32 {
+        self.0.reach_of(short_id, file).unwrap_or(-1.0)
+    }
 }
 
 fn jump_check(c: movement::JumpCheck) -> JumpCheck {
@@ -1202,6 +1243,20 @@ mod tests {
         assert_eq!(b.check_arrival(7, 0x3c, 0.0, 0.0, 11), JumpCheck::Waiting);
         assert_eq!(b.check_arrival(7, 0x3c, 510.0, 490.0, 12), JumpCheck::Landed);
         assert_eq!(b.check_arrival(7, 0x3c, 0.0, 0.0, 13), JumpCheck::NoPermit);
+        // a cast teleport's jump: within its reach of the cast, once
+        b.permit_cast_jump(7, 0x3c, 0.0, -300.0, 12.0, 3_000.0, 20);
+        assert_eq!(b.check_cast_jump(7, 0x3c, 0.0, 4_000.0, 12.0, 21), JumpCheck::NoPermit);
+        assert_eq!(b.check_cast_jump(7, 0x3c, 0.0, 2_000.0, 12.0, 22), JumpCheck::Landed);
+        assert_eq!(b.check_cast_jump(7, 0x3c, 0.0, 2_000.0, 12.0, 23), JumpCheck::NoPermit);
+    }
+
+    #[test]
+    fn the_bridge_names_cast_teleports() {
+        let named = new_cast_teleports(r#"[{"spell": "a86df:LostGrimoire.esp", "reach": 3000}]"#);
+        assert!(named.as_ref().is_ok_and(|t| (t.teleport_reach(0xa86df, "LostGrimoire.esp") - 3000.0).abs() < 1e-3));
+        assert!(named.as_ref().is_ok_and(|t| t.teleport_reach(0x12fd0, "Skyrim.esm") < 0.0));
+        assert!(new_cast_teleports("[]").is_ok_and(|t| t.teleport_reach(0xa86df, "LostGrimoire.esp") < 0.0));
+        assert!(new_cast_teleports(r#"[{"spell": "a86df", "reach": 3000}]"#).is_err());
     }
 
     #[test]

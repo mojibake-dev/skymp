@@ -20,6 +20,7 @@ pub mod movement;
 pub mod racemenu;
 pub mod ranged;
 pub mod rest;
+pub mod teleports;
 
 /// A decision and the bound it was made against, for the server's log.
 #[derive(Debug, Clone, Copy, PartialEq)]

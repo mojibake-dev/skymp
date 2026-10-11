@@ -5,8 +5,10 @@
 //! sustained speed above the game's does not. Height is free: falls are the
 //! engine's. And the one jump the server permits (docs/verbs/console-commands.md,
 //! COC): another cell, or farther than a move may go, once, where the server
-//! named. And the arrival after a teleport the server made itself: the
-//! player's reports from anywhere else were sent before the move.
+//! named. And a cast teleport's (docs/verbs/cast-teleport.md): once, within
+//! the spell's reach of where its caster stood at the cast. And the arrival
+//! after a teleport the server made itself: the player's reports from
+//! anywhere else were sent before the move.
 
 use std::collections::HashMap;
 
@@ -29,6 +31,15 @@ pub const ARRIVAL_WAIT_MS: u64 = 10_000;
 /// How near the place the server put it a report must come from to count
 /// as the arrival, units over the ground.
 pub const ARRIVAL_RADIUS: f32 = 256.0;
+/// How long a cast teleport's jump waits for its caster's game to report
+/// the landing: the engine places the spell's marker, the mod's script
+/// moves the player (Lost Grimoire's waits 0.12 s first), and the next
+/// movement report carries it. HYPOTHESIS until x-teleport-probe measures
+/// the time from the cast to the landing (docs/verbs/cast-teleport.md).
+pub const CAST_JUMP_WAIT_MS: u64 = 5_000;
+/// Slack on a cast jump's landing, units: the cast position's age and the
+/// marker's placement on the ground, as a spell hit's (casts::RANGE_SLACK).
+pub const CAST_JUMP_SLACK: f32 = 256.0;
 
 /// One actor's budget.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -129,12 +140,25 @@ struct Arrival {
     until_ms: u64,
 }
 
+/// Where a cast teleport may land: within `reach` and the slack of where its
+/// caster stood at the cast, in that cell or worldspace, until `until_ms`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CastJump {
+    cell_or_world: u32,
+    x: f32,
+    y: f32,
+    z: f32,
+    reach: f32,
+    until_ms: u64,
+}
+
 /// Every player actor's budget and permitted jump, by form id. Runtime
 /// only: after a restart or a login a budget starts full, with no jump.
 #[derive(Debug, Default)]
 pub struct Budgets {
     by_actor: HashMap<u32, Budget>,
     jumps: HashMap<u32, (Landing, u64)>,
+    cast_jumps: HashMap<u32, CastJump>,
     arrivals: HashMap<u32, Arrival>,
 }
 
@@ -165,6 +189,43 @@ impl Budgets {
             return JumpCheck::Waiting;
         }
         self.jumps.remove(&actor);
+        JumpCheck::Landed
+    }
+
+    /// `actor` cast a teleport at `now_ms`, standing at (x, y, z) in
+    /// `cell_or_world`: one jump to within `reach` of there (and the slack)
+    /// is permitted until CAST_JUMP_WAIT_MS later; a later cast replaces it.
+    /// A cast whose position or reach is not a finite number permits nothing.
+    #[allow(clippy::too_many_arguments)]
+    pub fn permit_cast_jump(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, z: f32, reach: f32, now_ms: u64) {
+        if !(x.is_finite() && y.is_finite() && z.is_finite() && reach.is_finite()) {
+            self.cast_jumps.remove(&actor);
+            return;
+        }
+        let until_ms = now_ms.saturating_add(CAST_JUMP_WAIT_MS);
+        self.cast_jumps.insert(actor, CastJump { cell_or_world, x, y, z, reach: reach.max(0.0), until_ms });
+    }
+
+    /// Judge a move of `actor`'s that the bounds refuse, to (x, y, z) in
+    /// `cell_or_world` at `now_ms`, against its cast jump: Landed within the
+    /// reach and slack of the cast, in its cell or worldspace (that ends the
+    /// jump); NoPermit otherwise, so the move is judged as any other (no
+    /// loading screen to wait through, unlike COC). The wait running out
+    /// ends the jump.
+    pub fn check_cast_jump(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, z: f32, now_ms: u64) -> JumpCheck {
+        let Some(&j) = self.cast_jumps.get(&actor) else {
+            return JumpCheck::NoPermit;
+        };
+        if now_ms > j.until_ms {
+            self.cast_jumps.remove(&actor);
+            return JumpCheck::NoPermit;
+        }
+        let (dx, dy, dz) = (x - j.x, y - j.y, z - j.z);
+        let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+        if cell_or_world != j.cell_or_world || !distance.is_finite() || distance > j.reach + CAST_JUMP_SLACK {
+            return JumpCheck::NoPermit;
+        }
+        self.cast_jumps.remove(&actor);
         JumpCheck::Landed
     }
 
@@ -201,6 +262,7 @@ impl Budgets {
     pub fn forget(&mut self, actor: u32) {
         self.by_actor.remove(&actor);
         self.jumps.remove(&actor);
+        self.cast_jumps.remove(&actor);
         self.arrivals.remove(&actor);
     }
 }
@@ -208,6 +270,57 @@ impl Budgets {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // thuum docs/verbs/cast-teleport.md: Lost Grimoire's Teleportation cast
+    // from (0, -300, 12) on lab-spawn's mountain (the Tamriel worldspace,
+    // 0x3C) with a reach of 3000
+    const TAMRIEL_ID: u32 = 0x3c;
+
+    #[test]
+    fn a_cast_jump_lands_once_within_reach_of_the_cast() {
+        let mut all = Budgets::default();
+        assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 0.0, 2_000.0, 12.0, 0), JumpCheck::NoPermit);
+        all.permit_cast_jump(1, TAMRIEL_ID, 0.0, -300.0, 12.0, 3_000.0, 1_000);
+        // another actor's jump is its own
+        assert_eq!(all.check_cast_jump(2, TAMRIEL_ID, 0.0, 2_000.0, 12.0, 1_200), JumpCheck::NoPermit);
+        // 2300 units off and 400 down: within 3000 and the slack
+        assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 0.0, 2_000.0, -388.0, 1_500), JumpCheck::Landed);
+        // once
+        assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 0.0, 2_000.0, -388.0, 1_600), JumpCheck::NoPermit);
+    }
+
+    #[test]
+    fn a_cast_jump_beyond_reach_elsewhere_or_late_is_any_other_move() {
+        let mut all = Budgets::default();
+        all.permit_cast_jump(1, TAMRIEL_ID, 0.0, -300.0, 12.0, 3_000.0, 0);
+        // beyond 3000 and the slack: judged as any move, the jump still waits
+        assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 0.0, 3_000.0, 12.0, 100), JumpCheck::NoPermit);
+        // another cell or worldspace
+        assert_eq!(all.check_cast_jump(1, 0x1_3a8f, 0.0, 0.0, 0.0, 200), JumpCheck::NoPermit);
+        // within reach, now: lands
+        assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 0.0, 2_900.0, 12.0, 300), JumpCheck::Landed);
+        // the wait runs out
+        all.permit_cast_jump(1, TAMRIEL_ID, 0.0, -300.0, 12.0, 3_000.0, 0);
+        assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 0.0, 0.0, 12.0, CAST_JUMP_WAIT_MS.saturating_add(1)), JumpCheck::NoPermit);
+        assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 0.0, 0.0, 12.0, 1), JumpCheck::NoPermit);
+    }
+
+    #[test]
+    fn a_later_cast_replaces_the_jump_and_nonsense_permits_nothing() {
+        let mut all = Budgets::default();
+        all.permit_cast_jump(1, TAMRIEL_ID, 0.0, -300.0, 12.0, 3_000.0, 0);
+        all.permit_cast_jump(1, TAMRIEL_ID, 10_000.0, 10_000.0, 0.0, 500.0, 10);
+        assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 0.0, 2_000.0, 12.0, 20), JumpCheck::NoPermit);
+        assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 10_400.0, 10_000.0, 0.0, 30), JumpCheck::Landed);
+        all.permit_cast_jump(1, TAMRIEL_ID, f32::NAN, 0.0, 0.0, 3_000.0, 40);
+        assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 0.0, 0.0, 0.0, 50), JumpCheck::NoPermit);
+        all.permit_cast_jump(1, TAMRIEL_ID, 0.0, 0.0, 0.0, f32::INFINITY, 60);
+        assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 0.0, 0.0, 0.0, 70), JumpCheck::NoPermit);
+        all.permit_cast_jump(1, TAMRIEL_ID, 0.0, 0.0, 0.0, 3_000.0, 80);
+        assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, f32::NAN, 0.0, 0.0, 90), JumpCheck::NoPermit);
+        all.forget(1);
+        assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 0.0, 0.0, 0.0, 100), JumpCheck::NoPermit);
+    }
 
     #[test]
     fn the_budget_holds_a_burst_and_refills_at_the_top_speed() {

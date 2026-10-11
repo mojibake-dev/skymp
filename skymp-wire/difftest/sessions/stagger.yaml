@@ -13,7 +13,10 @@
 # less (2.5 - 2.1) x 0.15, is 0.24 (fStaggerPlayerMassMult 2.5,
 # fStaggerMassOffsetBase 2.1, the offset's multiplier the executable's
 # 0.15), told to c2's game as TESModPlatform.Stagger(the player, 0.24,
-# c1's figure) and relayed to c1's as c2's own staggerStart; the
+# c1's figure) and relayed as c2's own staggerStart to every game that sees
+# c2, c1's and c2's own (an actor listens to itself, MpObjectReference.cpp
+# MoveOnGrid's self-subscription), so UpdateAnimation (t 3) is compared here
+# message by message, not as presence (difftest's default volatile list); the
 # legacy server staggers nobody. c2 steps again at 3.5 s of its own (5 s of
 # c1's), so it outlives c1, as in every session. Declared from the formula
 # before the run, to be checked against it.
@@ -21,6 +24,7 @@ id: stagger
 clients:
   c1: {profile_id: 9}
   c2: {profile_id: 10}
+volatile: [2, 24]
 steps:
   - {client: c1, at_ms: 1500, send: {t: 12, data: {t: 12, commandName: additem, args: [20, 77495, 1]}}}
   - {client: c1, at_ms: 2000, send: {t: 5, idx: "{{idx}}", data: {inv: {entries: [{baseId: 77495, count: 1, worn: true}]}, numChanges: 1}}}
@@ -44,6 +48,11 @@ divergences:
     legacy: 0
     wire: 1
     reason: the fixed server relays the stagger to every game that sees c2, c1's included, as c2's own animation (the engine's stagger in c2's game is an action its client never hears as an event)
+  - client: c2
+    msg: {t: 3, data: {animEventName: staggerStart}}
+    legacy: 0
+    wire: 1
+    reason: the same relay reaches c2's own game, which listens to itself and draws no figure of itself
   - client: c2
     msg: {t: 30, class: Actor, function: StartCombat, selfId: 4278190082, arguments: [{formId: 20, type: Actor}]}
     legacy: 0

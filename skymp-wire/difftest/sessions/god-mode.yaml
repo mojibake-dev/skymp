@@ -1,23 +1,27 @@
 # difftest god-mode (M2, thuum docs/verbs/god-mode.md): c1 and c2 are new
 # characters (profiles 9 and 10, actors 0xff000002 and 0xff000003: see
 # melee-reach). The lab server runs with enableConsoleCommandsForAll (see
-# console), so every player is an owner. At 2 s c1 types tgm: the legacy
-# server does not know it; the fixed server sets c1's god mode, tells c1's
-# game (Debug.SetGodMode) and answers with the state. c2 steps 50 units off
-# the spawn at 1 s of its own (2.5 s of c1's) and hits c1 bare-handed at 2 s
-# of its own (3.5 s of c1's): the legacy server takes the hit's damage from
-# c1; the fixed server takes none and still begins the fight. c2 steps again
-# at 4 s of its own (5.5 s of c1's), so it outlives c1, as in every session.
-# The divergences besides the departure are declared from the first run.
+# console), so every player is an owner. c1 steps 50 units east of the spawn
+# at 1 s, and at 2 s types tgm: the legacy server does not know it; the fixed
+# server sets c1's god mode, tells c1's game (Debug.SetGodMode) and answers
+# with the state. c2 hits c1 bare-handed from the spawn at 2 s of its own
+# (3.5 s of c1's), hostility's layout mirrored (the spawn faces the 50 units
+# east, so the hit cone takes the hit; the first draw of this session had c2
+# step east and swing at c1 behind it, which the cone refused before god
+# mode was reached): the legacy server takes the hit's damage from c1; the
+# fixed server takes none and still begins the fight (StartCombat to c1's
+# game). c2 steps west at 4 s of its own (5.5 s of c1's), so it outlives c1,
+# as in every session. The divergences besides the departure are declared
+# from the first run.
 id: god-mode
 clients:
   c1: {profile_id: 9}
   c2: {profile_id: 10}
 steps:
+  - {client: c1, at_ms: 1000, move: {dx: 50}}
   - {client: c1, at_ms: 2000, send: {t: 12, data: {t: 12, commandName: tgm, args: []}}}
-  - {client: c2, at_ms: 1000, move: {dx: 50}}
   - {client: c2, at_ms: 2000, send: {t: 17, data: {aggressor: 20, target: 4278190082, source: 500, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
-  - {client: c2, at_ms: 4000, move: {dx: 60}}
+  - {client: c2, at_ms: 4000, move: {dx: -60}}
 divergences:
   - client: c2
     msg: {t: 25, idx: 2}

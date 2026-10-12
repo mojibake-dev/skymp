@@ -701,3 +701,78 @@ TEST_CASE("A teleport the server makes is not undone by the reports sent "
   p.DestroyActor(0xff000000);
   DoDisconnect(p, 0);
 }
+
+// thuum docs/verbs/cast-teleport.md: AddSpell is an admin's, the spell in the
+// target's learned spells on the server and the target's game told; Firebolt
+// (Skyrim.esm 0x12FD0, thuum lab/esm.py, as b-god) is no new character's
+TEST_CASE("AddSpell writes an admin's spell to the server's record and tells "
+          "the player's game",
+          "[ConsoleCommand][espm]")
+{
+  constexpr uint32_t kFirebolt = 0x12fd0;
+  constexpr uint32_t kIronSword = 0x12eb7;
+  PartOne& p = GetPartOne();
+  const bool forAll = p.worldState.enableConsoleCommandsForAll;
+  p.worldState.enableConsoleCommandsForAll = false;
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, 0xff000000);
+  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
+  REQUIRE(!ac.IsSpellLearned(kFirebolt));
+
+  // the spells user 0's game was told to learn since the last clear
+  const auto taught = [&] {
+    std::vector<uint32_t> out;
+    for (auto& m : p.Messages()) {
+      if (m.userId == 0 && m.j["t"] == MsgType::SpSnippet &&
+          m.j["class"] == "Actor" && m.j["function"] == "AddSpell") {
+        out.push_back(m.j["arguments"][0]["formId"].get<uint32_t>());
+      }
+    }
+    return out;
+  };
+
+  // a moderator may not
+  ac.SetStaffRank(1);
+  p.Messages().clear();
+  Send(p, "addspell", { int64_t{ 0x14 }, int64_t{ kFirebolt } });
+  p.Tick();
+  REQUIRE(Lines(p) ==
+          std::vector<std::pair<std::string, bool>>{
+            { "Not enough permissions to use this command", true } });
+  REQUIRE(!ac.IsSpellLearned(kFirebolt));
+  REQUIRE(taught().empty());
+
+  // an admin's: recorded, and the game told
+  ac.SetStaffRank(2);
+  p.Messages().clear();
+  Send(p, "AddSpell", { int64_t{ 0x14 }, int64_t{ kFirebolt } });
+  p.Tick();
+  REQUIRE(Lines(p) ==
+          std::vector<std::pair<std::string, bool>>{
+            { "AddSpell done: 12fd0 recorded", false } });
+  REQUIRE(ac.IsSpellLearned(kFirebolt));
+  REQUIRE(taught() == std::vector<uint32_t>{ kFirebolt });
+
+  // again: the record does not grow, and the game is told again
+  p.Messages().clear();
+  Send(p, "addspell", { int64_t{ 0x14 }, int64_t{ kFirebolt } });
+  p.Tick();
+  REQUIRE(Lines(p) ==
+          std::vector<std::pair<std::string, bool>>{
+            { "addspell done: 12fd0 already recorded", false } });
+  REQUIRE(taught() == std::vector<uint32_t>{ kFirebolt });
+
+  // a form that is no spell is refused, and nothing is told
+  p.Messages().clear();
+  Send(p, "addspell", { int64_t{ 0x14 }, int64_t{ kIronSword } });
+  p.Tick();
+  REQUIRE(Lines(p) ==
+          std::vector<std::pair<std::string, bool>>{
+            { "Failed: 12eb7 is no spell", true } });
+  REQUIRE(taught().empty());
+
+  p.worldState.enableConsoleCommandsForAll = forAll;
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}

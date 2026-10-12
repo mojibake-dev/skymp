@@ -18,7 +18,7 @@ enum CmdArgument {
 
 type CmdName = "additem" | "equipitem" | "placeatme" | "disable" | "mp" | "setav" | "modav" | "forceav"
     | "removeitem" | "enable" | "kill" | "resurrect" | "setpos" | "setangle" | "moveto" | "coc"
-    | "teachword" | "unlockword" | "addshout";
+    | "teachword" | "unlockword" | "addshout" | "addspell";
 
 export class ConsoleCommandsService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
@@ -65,6 +65,9 @@ export class ConsoleCommandsService extends ClientListener {
         schemas.set("teachword", [CmdArgument.ObjectReference, CmdArgument.BaseForm]);
         schemas.set("unlockword", [CmdArgument.ObjectReference, CmdArgument.BaseForm]);
         schemas.set("addshout", [CmdArgument.ObjectReference, CmdArgument.BaseForm]);
+        // thuum docs/verbs/cast-teleport.md: a learned spell is the server's
+        // record too
+        schemas.set("addspell", [CmdArgument.ObjectReference, CmdArgument.BaseForm]);
         return schemas;
     }
 

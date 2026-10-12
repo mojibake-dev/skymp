@@ -525,6 +525,40 @@ std::string ExecuteShoutEntry(
                      added ? "recorded" : "already recorded");
 }
 
+// AddSpell, an admin's (thuum docs/verbs/cast-teleport.md, M2): the spell in
+// the target's learned spells on the server (R0), as the server's own
+// Actor.AddSpell, then the target's own game told the same. Typed in a
+// game's console it used to teach that game alone, and the server then
+// refused the spell in a hand. The line says whether the record grew.
+std::string ExecuteAddSpell(MpActor& caller,
+                            const std::vector<ConsoleCommands::Argument>& args)
+{
+  MpActor& target = ActorOf(caller, args.at(0).GetInteger());
+  const auto formId = static_cast<uint32_t>(args.at(1).GetInteger());
+  const auto lookup =
+    caller.GetParent()->GetEspm().GetBrowser().LookupById(formId);
+  if (!lookup.rec || !(lookup.rec->GetType() == "SPEL")) {
+    throw std::runtime_error(fmt::format("{:x} is no spell", formId));
+  }
+  const bool added = !target.IsSpellLearned(formId);
+  if (added) {
+    target.AddSpell(formId);
+  }
+  SpSnippetObjectArgument spell;
+  spell.formId = formId;
+  spell.type = "Spell";
+  const std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+    snippetArgs{ spell, false }; // abVerbose
+  SpSnippet("Actor", "AddSpell", snippetArgs, target.GetFormId())
+    .Execute(&target, SpSnippetMode::kNoReturnResult);
+  spdlog::info("ConsoleCommands: {:x} added the spell {:x} for {:x} ({})",
+               caller.GetFormId(), formId, target.GetFormId(),
+               added ? "recorded" : "already recorded");
+  return fmt::format("{:x} {}", formId,
+                     added ? "recorded" : "already recorded");
+}
+
 std::string ExecuteToggleImmortalMode(MpActor& caller)
 {
   const bool on = !caller.IsImmortal();
@@ -729,6 +763,8 @@ void ConsoleCommands::Execute(
                    judged + " done: " +
                      ExecuteShoutEntry(me, MpActor::ShoutEntry::Shout, args),
                    false);
+    } else if (!Utils::stricmp(name, "AddSpell")) {
+      return Reply(me, judged + " done: " + ExecuteAddSpell(me, args), false);
     } else if (!Utils::stricmp(name, "SetAV") ||
                !Utils::stricmp(name, "SetActorValue")) {
       ExecuteActorValue(me, "set", args);

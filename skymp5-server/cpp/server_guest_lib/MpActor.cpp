@@ -567,6 +567,21 @@ bool MpActor::OnEquip(uint32_t baseId)
     return false;
   }
 
+  // thuum docs/verbs/poison.md: what arrives when a player puts a poison on
+  // a weapon (the game's own box, which the lab cannot answer:
+  // x-poison-probe2), for playtest fourteen's traced check
+  if (isPotion) {
+    try {
+      if (espm::GetData<espm::ALCH>(baseId, GetParent()).isPoison) {
+        spdlog::info("MpActor::OnEquip {:x} - poison {:x} equipped (held {})",
+                     GetFormId(), baseId, GetInventory().GetItemCount(baseId));
+      }
+    } catch (std::exception& e) {
+      spdlog::warn("MpActor::OnEquip {:x} - {:x}: {}", GetFormId(), baseId,
+                   e.what());
+    }
+  }
+
   bool spellLearned = false;
   if (isIngredient || isPotion) {
     // thuum docs/verbs/magic-effects.md: observers see a drink's effects

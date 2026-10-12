@@ -1391,6 +1391,12 @@ skymp::rules::CastFacts CastFactsFor(WorldState& worldState, uint32_t spell,
         data.spellItem->castType == espm::SPEL::CastType::Concentration) {
       facts.kind = skymp::rules::CastKind::Concentration;
     }
+    // an id inside a record counts against that file's masters, so a
+    // plugin's own effect and projectile are found through the record that
+    // names them (thuum docs/verbs/spell-cast.md, playtest fourteen: Lost
+    // Grimoire's effect 05xxxxxx in its file is 0B in the load order)
+    auto& browser = worldState.GetEspm().GetBrowser();
+    const auto spellLookup = browser.LookupById(spell);
     float reach = 0.f;
     for (const auto& effect : data.effects) {
       if (effect.effectItem && effect.effectItem->areaOfEffect > 0) {
@@ -1399,13 +1405,14 @@ skymp::rules::CastFacts CastFactsFor(WorldState& worldState, uint32_t spell,
       if (effect.effectFormId == 0) {
         continue;
       }
-      const auto mgef =
-        espm::GetData<espm::MGEF>(effect.effectFormId, &worldState);
+      const uint32_t mgefId = spellLookup.ToGlobalId(effect.effectFormId);
+      const auto mgef = espm::GetData<espm::MGEF>(mgefId, &worldState);
       if (mgef.data.projectile == 0) {
         continue;
       }
-      const auto proj =
-        espm::GetData<espm::PROJ>(mgef.data.projectile, &worldState);
+      const auto proj = espm::GetData<espm::PROJ>(
+        browser.LookupById(mgefId).ToGlobalId(mgef.data.projectile),
+        &worldState);
       reach = std::max(reach, proj.range);
     }
     if (reach > 0.f) {

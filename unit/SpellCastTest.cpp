@@ -163,3 +163,29 @@ TEST_CASE("A stream counts the time it held its target, until its end",
   REQUIRE(Health(p) == Catch::Approx(afterTick));
   Leave(p);
 }
+
+// thuum docs/verbs/spell-cast.md, playtest fourteen: a plugin spell reaches
+// by its own effect's projectile, whose ids inside the records count the
+// plugin's masters. Dragonborn.esm (thuum lab/esm.py, 2026-10-12):
+// DLC2LightningStormRightHand_Miraak, 0x0203D5C2 in its file and 0x0403D5C2
+// in the tests' load order, is a concentration spell (40 a second) whose own
+// effect DLC2ShockDamageMassConcAimed_Miraak (0x0203D5C3, a dual value
+// modifier on health) launches Skyrim.esm's ShockBoltConMassiveAim (range
+// 6144). Read as load-order ids, its effect was not found and the spell fell
+// back to a touch spell's 512 units, so a target 2000 units off took nothing.
+TEST_CASE("A plugin spell reaches by its own effect's projectile",
+          "[SpellCast][espm]")
+{
+  constexpr uint32_t kMiraakStorm = 0x0403d5c2;
+  PartOne& p = GetPartOne();
+  Duel(p, kMiraakStorm);
+  p.worldState.GetFormAt<MpActor>(kTarget).SetPos({ 0, 2000, 0 });
+
+  Cast(p, kMiraakStorm, false);
+  std::this_thread::sleep_for(120ms);
+  SpellHits(p, kMiraakStorm);
+  REQUIRE(Health(p) < 1.f);
+
+  Cast(p, kMiraakStorm, true);
+  Leave(p);
+}

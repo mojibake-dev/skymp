@@ -9,17 +9,23 @@
 # itself the spell (AddSpell, an admin's): the wire stack records it and
 # tells c1's game (Actor.AddSpell), the legacy stack does not know the
 # command. At 2 s c1 reports the spell in its right hand (UpdateEquipment):
-# the wire stack takes it, the record holding it, and relays it. At 3 s c1
-# casts it (SpellCast, castingSource 1, the right hand, at a place): the
-# wire stack records the cast, permits the jump and relays nothing (no
-# neighbour's game may launch it from c1's figure and run the mod's script
-# on its own player). At 3.3 s c1 lands 3000 units north, the cast's jump,
-# which the wire stack takes as the permitted jump and the legacy stack as
-# any move under 4096 units. At 5 s c1 moves 2500 units east with no cast:
-# the wire stack has no permit left and the move is beyond c1's ground
-# budget (2048 units), so it is sent back (Teleport2) and not relayed; the
-# legacy stack takes it. c2 steps again at 6 s of its own (7.5 s of c1's),
-# so it outlives c1, as in every session.
+# the wire stack takes it, the record holding it, and relays it; the legacy
+# stack refuses a spell c1 never learned (upstream #2665: c1's inventory sent
+# again, Actor.RemoveSpell). At 2.5 s c1 moves 3000 units north with no
+# cast: the wire stack sends it back (Teleport2: beyond the 2048-unit ground
+# budget, no permit), the legacy stack takes it as any move under 4096. At
+# 3 s c1 casts the spell (SpellCast, castingSource 1, the right hand, at a
+# place): the wire stack records the cast where it holds c1, permits the
+# jump and relays nothing (no neighbour's game may launch it from c1's
+# figure and run the mod's script on its own player); the legacy stack
+# relays nothing either, the spell in no slot of c1's (the first run,
+# 2026-10-12). At 3.3 s c1 lands 3000 units north, the cast's jump, which
+# the wire stack takes as the permitted jump; on the legacy stack c1 is
+# already there. So both stacks end with c1 at the same place, and the
+# forms that enter and leave its view are the same on both (the first run's
+# order, the refused move after the jump, left the legacy stack's c1 2500
+# units east, and 32 forms apart). c2 steps again at 5 s of its own (6.5 s
+# of c1's), so it outlives c1, as in every session.
 id: teleports
 clients:
   c1: {profile_id: 9}
@@ -27,12 +33,47 @@ clients:
 steps:
   - {client: c1, at_ms: 1500, send: {t: 12, data: {t: 12, commandName: addspell, args: [20, 185239263]}}}
   - {client: c1, at_ms: 2000, send: {t: 5, idx: "{{idx}}", data: {inv: {entries: []}, rightSpell: 185239263, numChanges: 1}}}
+  - {client: c1, at_ms: 2500, move: {dy: 3000}}
   - {client: c1, at_ms: 3000, send: {t: 23, data: {caster: 20, target: 0, spell: 185239263, isDualCasting: false, interruptCast: false, castingSource: 1, aimAngle: 0, aimHeading: 0, actorAnimationVariables: {booleans: [], floats: [], integers: []}}}}
   - {client: c1, at_ms: 3300, move: {dy: 3000}}
-  - {client: c1, at_ms: 5000, move: {dx: 2500, dy: 3000}}
   - {client: c2, at_ms: 0, move: {dx: 50}}
-  - {client: c2, at_ms: 6000, move: {dx: 60}}
+  - {client: c2, at_ms: 5000, move: {dx: 60}}
 divergences:
+  - client: c1
+    msg: {t: 41, text: "addspell done: b0a86df recorded", refused: false}
+    legacy: 0
+    wire: 1
+    reason: an owner's AddSpell writes the server's record of learned spells and answers with a line (thuum docs/verbs/cast-teleport.md); the legacy server does not know the command
+  - client: c1
+    msg: {t: 30, class: Actor, function: AddSpell, arguments: [{formId: 185239263, type: Spell}, false]}
+    legacy: 0
+    wire: 1
+    reason: the recorded spell is told to c1's own game
+  - client: c1
+    msg: {t: 5, data: {rightSpell: 185239263}}
+    legacy: 0
+    wire: 1
+    reason: the wire stack takes the learned spell in the right hand and relays it, c1's own game included (it listens to itself); the legacy stack refuses it
+  - client: c2
+    msg: {t: 5, data: {rightSpell: 185239263}}
+    legacy: 0
+    wire: 1
+    reason: the same relay reaches c2
+  - client: c1
+    msg: {t: 30, class: Actor, function: RemoveSpell, arguments: [{formId: 185239263, type: Spell}]}
+    legacy: 1
+    wire: 0
+    reason: the legacy stack refuses a spell c1 never learned and takes it from c1's game (upstream #2665)
+  - client: c1
+    msg: {t: 28, inventory: {entries: [{baseId: 10, count: 10}, {baseId: 15, count: 140}, {baseId: 77382, count: 1}, {baseId: 77385, count: 1}, {baseId: 77387, count: 1}, {baseId: 77389, count: 1}, {baseId: 77494, count: 1}, {baseId: 77495, count: 1}, {baseId: 79760, count: 1}, {baseId: 80253, count: 23}, {baseId: 80254, count: 1}, {baseId: 120044, count: 2}, {baseId: 236362, count: 2}, {baseId: 243042, count: 1}, {baseId: 256733, count: 5}, {baseId: 256736, count: 5}, {baseId: 256741, count: 5}, {baseId: 256810, count: 1}, {baseId: 256819, count: 1}, {baseId: 1017598, count: 1}]}}
+    legacy: 1
+    wire: 0
+    reason: the legacy stack's refusal of the spell sends c1 its inventory again (upstream #2665)
+  - client: c1
+    msg: {t: 31}
+    legacy: 0
+    wire: 1
+    reason: the move with no cast goes beyond c1's ground budget and the wire stack sends it back (Teleport2); the cast's jump after it is the permitted jump and stands; the legacy stack takes both
   - client: c2
     msg: {t: 25, idx: 2}
     legacy: 0

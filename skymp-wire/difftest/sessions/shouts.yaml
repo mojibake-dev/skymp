@@ -1,0 +1,133 @@
+# difftest shouts (M2, thuum docs/verbs/shouts.md): c1 and c2 are new
+# characters (profiles 9 and 10, actors 0xff000002 and 0xff000003: see
+# melee-reach), c2 50 units off the spawn. The lab server runs with
+# enableConsoleCommandsForAll (see console), so both are owners on the wire
+# stack. At 0.5 s of its own c2 types tgm (god-mode's session): the wire
+# stack keeps c2's health whole whatever lands, so no health message moves
+# with a damage effect's ticks, whose values ride the effect clock's timing
+# (the first run, 2026-10-11: Fire Breath's first word is a one-second
+# effect in Dragonborn.esm's override of VoiceFireBreath1, EFIT 50 over 1 s,
+# dealt in four timed ticks). At 1.5 s c1 adds itself Fire Breath (Skyrim.esm
+# SHOU 0x3F9EA, 260586) and at 1.7 s unlocks its first word, Yol (WOOP
+# 0x20E17, 134679), which the wire stack records and tells c1's game
+# (Actor.AddShout, Game.UnlockWord) and the legacy stack does not know. At
+# 2 s c1 reports the shout in its voice slot (UpdateEquipment): the wire
+# stack takes it, the record holding it, and relays it; the legacy stack
+# refuses a voice form the actor never learned as a spell (upstream #2665:
+# the player's inventory sent again, Actor.RemoveSpell). At 3 s c1 shouts
+# one word (a cast from the voice, castingSource 2, with VoiceFireBreath1,
+# SPEL 0x3F9EB, 260587: recovery 30 s), and at 3.5 s its fire hits c2: the
+# wire stack takes the shout and counts its hit, which admits the fire's
+# one-second effect on c2 (the effect set sent to both games, then emptied
+# when it ends) and begins a fight; at 4 s c1 shouts again, inside the
+# recovery, and at 4.5 s hits again: the wire stack refuses the shout
+# (E_SHOUT_RECOVERY) and so the hit (E_SPELL_NO_CAST), so no second effect.
+# The legacy stack counts neither hit: the spell is in no slot of c1's. c2
+# steps again at 5 s of its own (6.5 s of c1's), so it outlives c1, as in
+# every session. The legacy stack's inventory resend is the first run's.
+# The fire's damage itself is b-shout's to check (thuum lab/scenarios: the
+# server's number on real clients, 0.505 after one word). Health messages
+# (ChangeValues, t 16) are compared as presence only: in god mode the wire
+# stack still sends c2 its unchanged health at each of the effect's timed
+# ticks (four or five, by the clock: T2 2026-10-11 22:40), so c1 punches c2
+# bare-handed at 2.5 s (god-mode's layout mirrored: c2 50 units east of the
+# spawn, in the cone) to give both stacks a health message for c2: the
+# legacy stack the punch's damage, the wire stack c2's health unchanged.
+id: shouts
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+volatile: [2, 3, 24, 16]
+steps:
+  - {client: c1, at_ms: 1500, send: {t: 12, data: {t: 12, commandName: addshout, args: [20, 260586]}}}
+  - {client: c1, at_ms: 1700, send: {t: 12, data: {t: 12, commandName: unlockword, args: [20, 134679]}}}
+  - {client: c1, at_ms: 2000, send: {t: 5, idx: "{{idx}}", data: {inv: {entries: []}, voiceSpell: 260586, numChanges: 1}}}
+  - {client: c1, at_ms: 2500, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 500, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
+  - {client: c1, at_ms: 3000, send: {t: 23, data: {caster: 20, target: 0, spell: 260587, isDualCasting: false, interruptCast: false, castingSource: 2, aimAngle: 0, aimHeading: 0, actorAnimationVariables: {booleans: [], floats: [], integers: []}}}}
+  - {client: c1, at_ms: 3500, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 260587, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
+  - {client: c1, at_ms: 4000, send: {t: 23, data: {caster: 20, target: 0, spell: 260587, isDualCasting: false, interruptCast: false, castingSource: 2, aimAngle: 0, aimHeading: 0, actorAnimationVariables: {booleans: [], floats: [], integers: []}}}}
+  - {client: c1, at_ms: 4500, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 260587, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
+  - {client: c2, at_ms: 0, move: {dx: 50}}
+  - {client: c2, at_ms: 500, send: {t: 12, data: {t: 12, commandName: tgm, args: []}}}
+  - {client: c2, at_ms: 5000, move: {dx: 60}}
+divergences:
+  - client: c1
+    msg: {t: 41, text: "addshout done: 3f9ea recorded", refused: false}
+    legacy: 0
+    wire: 1
+    reason: an owner's AddShout writes the server's record and answers with a line (thuum docs/verbs/shouts.md); the legacy server does not know the command
+  - client: c1
+    msg: {t: 41, text: "unlockword done: 20e17 recorded", refused: false}
+    legacy: 0
+    wire: 1
+    reason: an owner's UnlockWord writes the server's record and answers with a line; the legacy server does not know the command
+  - client: c1
+    msg: {t: 30, class: Actor, function: AddShout, arguments: [{formId: 260586, type: Shout}]}
+    legacy: 0
+    wire: 1
+    reason: the recorded shout is told to c1's own game
+  - client: c1
+    msg: {t: 30, class: Game, function: UnlockWord, arguments: [{formId: 134679, type: WordOfPower}]}
+    legacy: 0
+    wire: 1
+    reason: the recorded word is told to c1's own game
+  - client: c1
+    msg: {t: 5, data: {voiceSpell: 260586}}
+    legacy: 0
+    wire: 1
+    reason: the wire stack takes a shout in the voice slot that the record holds and relays it, c1's own game included (it listens to itself); the legacy stack refuses it
+  - client: c2
+    msg: {t: 5, data: {voiceSpell: 260586}}
+    legacy: 0
+    wire: 1
+    reason: the same relay reaches c2
+  - client: c1
+    msg: {t: 30, class: Actor, function: RemoveSpell, arguments: [{formId: 260586, type: Spell}]}
+    legacy: 1
+    wire: 0
+    reason: the legacy stack refuses a voice form c1 never learned as a spell and takes it from c1's game (upstream #2665)
+  - client: c1
+    msg: {t: 28, inventory: {entries: [{baseId: 10, count: 10}, {baseId: 15, count: 140}, {baseId: 77382, count: 1}, {baseId: 77385, count: 1}, {baseId: 77387, count: 1}, {baseId: 77389, count: 1}, {baseId: 77494, count: 1}, {baseId: 77495, count: 1}, {baseId: 79760, count: 1}, {baseId: 80253, count: 23}, {baseId: 80254, count: 1}, {baseId: 120044, count: 2}, {baseId: 236362, count: 2}, {baseId: 243042, count: 1}, {baseId: 256733, count: 5}, {baseId: 256736, count: 5}, {baseId: 256741, count: 5}, {baseId: 256810, count: 1}, {baseId: 256819, count: 1}, {baseId: 1017598, count: 1}]}}
+    legacy: 1
+    wire: 0
+    reason: the legacy stack's refusal of the voice slot sends c1 its inventory again (upstream #2665)
+  - client: c1
+    msg: {t: 43, effects: [{effect: 134678, magnitude: 50, remaining: 1, source: 260587}]}
+    legacy: 0
+    wire: 1
+    reason: the wire stack takes the first shout and counts its hit, admitting VoiceFireBreathEffect1 (MGEF 0x20E16) on c2 for its second (Dragonborn.esm's override of the spell), which every game that sees c2 is told
+  - client: c1
+    msg: {t: 43}
+    legacy: 0
+    wire: 1
+    reason: the effect set again, empty, when the effect ends (a message is matched by the first declaration that covers it, so this one takes the end alone); the refused second shout's hit admits nothing
+  - client: c2
+    msg: {t: 43, effects: [{effect: 134678, magnitude: 50, remaining: 1, source: 260587}]}
+    legacy: 0
+    wire: 1
+    reason: the same effect set reaches c2's own game
+  - client: c2
+    msg: {t: 43}
+    legacy: 0
+    wire: 1
+    reason: the effect set's end, in c2's own game
+  - client: c2
+    msg: {t: 41, text: "tgm done: god mode on", refused: false}
+    legacy: 0
+    wire: 1
+    reason: c2's tgm keeps its health whole on the wire stack (docs/verbs/god-mode.md); the legacy server does not know it
+  - client: c2
+    msg: {t: 30, class: Debug, function: SetGodMode, selfId: 0, arguments: [true]}
+    legacy: 0
+    wire: 1
+    reason: the wire stack puts c2's own game in god mode too
+  - client: c2
+    msg: {t: 30, class: Actor, function: StartCombat, selfId: 4278190082, arguments: [{formId: 20, type: Actor}]}
+    legacy: 0
+    wire: 1
+    reason: the counted hit begins a fight; the wire stack tells c2's game (thuum docs/verbs/hostility-sync.md)
+  - client: c2
+    msg: {t: 25, idx: 2}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

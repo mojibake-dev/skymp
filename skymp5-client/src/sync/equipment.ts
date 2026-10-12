@@ -3,6 +3,7 @@ import {
   Ammo,
   Game,
   ObjectReference,
+  Shout,
   Spell,
   Ui,
   setInventory,
@@ -37,8 +38,14 @@ export const getEquipedSpell = (
       return spell ? spell.getFormID() : 0;
     }
     case SpellType.Voice: {
+      // thuum docs/verbs/shouts.md: the voice slot holds a power (a spell)
+      // or a shout, which getEquippedSpell does not return
       const spell = actor.getEquippedSpell(SpellType.Voice);
-      return spell ? spell.getFormID() : 0;
+      if (spell) {
+        return spell.getFormID();
+      }
+      const shout = actor.getEquippedShout();
+      return shout ? shout.getFormID() : 0;
     }
     case SpellType.Instant: {
       const spell = actor.getEquippedSpell(SpellType.Instant);
@@ -100,13 +107,27 @@ export const syncSpellEquipment = (
   spellBaseId: number | undefined,
   spellType: SpellType,
 ) => {
+  // a shout goes to the voice slot by its own call (thuum
+  // docs/verbs/shouts.md)
+  const isVoice = spellType === SpellType.Voice;
   if (spellBaseId !== undefined && spellBaseId > 0) {
-    ac.equipSpell(Spell.from(Game.getFormEx(spellBaseId)), spellType);
+    const form = Game.getFormEx(spellBaseId);
+    const shout = isVoice ? Shout.from(form) : null;
+    if (shout) {
+      ac.equipShout(shout);
+    } else {
+      ac.equipSpell(Spell.from(form), spellType);
+    }
   } else {
     const equipedSpell = ac.getEquippedSpell(spellType);
 
     if (equipedSpell) {
       ac.unequipSpell(equipedSpell, spellType);
+    }
+
+    const equipedShout = isVoice ? ac.getEquippedShout() : null;
+    if (equipedShout) {
+      ac.unequipShout(equipedShout);
     }
   }
 };

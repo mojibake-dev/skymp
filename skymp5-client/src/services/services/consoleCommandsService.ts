@@ -17,7 +17,8 @@ enum CmdArgument {
 }
 
 type CmdName = "additem" | "equipitem" | "placeatme" | "disable" | "mp" | "setav" | "modav" | "forceav"
-    | "removeitem" | "enable" | "kill" | "resurrect" | "setpos" | "setangle" | "moveto" | "coc";
+    | "removeitem" | "enable" | "kill" | "resurrect" | "setpos" | "setangle" | "moveto" | "coc"
+    | "teachword" | "unlockword" | "addshout";
 
 export class ConsoleCommandsService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
@@ -59,6 +60,11 @@ export class ConsoleCommandsService extends ClientListener {
         // form id the game found for that name; the server permits the jump
         // and has this game make it (Debug.CenterOnCell)
         schemas.set("coc", [CmdArgument.ObjectReference, CmdArgument.String]);
+        // thuum docs/verbs/shouts.md: what a player knows of shouts is the
+        // server's record; typed here they used to change this game alone
+        schemas.set("teachword", [CmdArgument.ObjectReference, CmdArgument.BaseForm]);
+        schemas.set("unlockword", [CmdArgument.ObjectReference, CmdArgument.BaseForm]);
+        schemas.set("addshout", [CmdArgument.ObjectReference, CmdArgument.BaseForm]);
         return schemas;
     }
 

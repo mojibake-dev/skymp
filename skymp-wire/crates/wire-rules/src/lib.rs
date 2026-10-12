@@ -22,6 +22,7 @@ pub mod movement;
 pub mod racemenu;
 pub mod ranged;
 pub mod rest;
+pub mod shouts;
 pub mod stagger;
 pub mod teleports;
 

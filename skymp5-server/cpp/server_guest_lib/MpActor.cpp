@@ -963,6 +963,55 @@ bool MpActor::RecordIngredientEffects(const FormDesc& ingredient, uint8_t mask)
   return true;
 }
 
+ShoutRecord MpActor::GetShoutRecord() const
+{
+  const auto& record = ChangeForm().shoutRecord;
+  return record ? *record : ShoutRecord();
+}
+
+namespace {
+template <class Record>
+auto& ShoutListOf(Record& record, MpActor::ShoutEntry kind)
+{
+  switch (kind) {
+    case MpActor::ShoutEntry::Shout:
+      return record.shouts;
+    case MpActor::ShoutEntry::WordKnown:
+      return record.wordsKnown;
+    default:
+      return record.wordsUnlocked;
+  }
+}
+}
+
+bool MpActor::RecordShoutEntry(ShoutEntry kind, const FormDesc& form)
+{
+  const ShoutRecord current = GetShoutRecord();
+  const auto& list = ShoutListOf(current, kind);
+  if (std::find(list.begin(), list.end(), form) != list.end()) {
+    return false;
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    if (!changeForm.shoutRecord) {
+      changeForm.shoutRecord.emplace();
+    }
+    ShoutListOf(*changeForm.shoutRecord, kind).push_back(form);
+  });
+  return true;
+}
+
+bool MpActor::HasShoutEntry(ShoutEntry kind, uint32_t formId) const
+{
+  const auto& record = ChangeForm().shoutRecord;
+  auto* worldState = GetParent();
+  if (!record || !worldState) {
+    return false;
+  }
+  const auto& list = ShoutListOf(*record, kind);
+  const auto form = FormDesc::FromFormId(formId, worldState->espmFiles);
+  return std::find(list.begin(), list.end(), form) != list.end();
+}
+
 std::pair<uint32_t, std::chrono::steady_clock::time_point>
 MpActor::GetLastEaten() const
 {

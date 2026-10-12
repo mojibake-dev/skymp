@@ -15,6 +15,7 @@
 #include "NiPoint3.h"
 #include "Quest.h"
 #include "RunningEffect.h"
+#include "ShoutRecord.h"
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -162,6 +163,11 @@ public:
   // their legacy per-actor-value effects in activeMagicEffects
   std::optional<std::vector<RunningEffect>> runningEffects;
 
+  // The shouts the player has and the words of power it knows and has
+  // unlocked (thuum docs/verbs/shouts.md); absent in older records, read as
+  // none
+  std::optional<ShoutRecord> shoutRecord;
+
   // Please update 'ActorTest.cpp' when adding new Actor-related rows
 
   DynamicFields dynamicFields;
@@ -178,7 +184,7 @@ public:
       dynamicFields, spawnDelay, learnedSpells, templateChain, lastAnimation,
       setNodeTextureSet, setNodeScale, displayName, mapMarkers,
       ingredientEffects, favorites, raceMenuPreset, actorValueRecord,
-      staffRank, runningEffects);
+      staffRank, runningEffects, shoutRecord);
   }
 
   static nlohmann::json ToJson(const MpChangeFormREFR& changeForm);

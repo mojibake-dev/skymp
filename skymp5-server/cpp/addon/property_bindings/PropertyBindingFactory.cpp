@@ -23,6 +23,7 @@
 #include "ProfileIdBinding.h"
 #include "RespawnPercentagesBinding.h"
 #include "RunningEffectsBinding.h"
+#include "ShoutsBinding.h"
 #include "SpawnDelayBinding.h"
 #include "SpawnPointBinding.h"
 #include "StaffRankBinding.h"
@@ -63,6 +64,7 @@ PropertyBindingFactory::CreateStandardPropertyBindings()
   result["lastAnimEvent"] = std::make_shared<LastAnimEventBinding>();
   result["respawnPercentages"] = std::make_shared<RespawnPercentagesBinding>();
   result["runningEffects"] = std::make_shared<RunningEffectsBinding>();
+  result["shouts"] = std::make_shared<ShoutsBinding>();
   return result;
 }
 

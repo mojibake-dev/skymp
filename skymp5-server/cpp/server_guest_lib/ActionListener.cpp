@@ -11,6 +11,7 @@
 #include "MpObjectReference.h"
 #include "MsgType.h"
 #include "Overloaded.h"
+#include "ShoutSnippets.h"
 #include "WorldState.h"
 #include "gamemode_events/CustomEvent.h"
 #include "gamemode_events/EatItemEvent.h"
@@ -21,6 +22,7 @@
 #include "libespm/ObjectBounds.h"
 #include "libespm/RACE.h"
 #include "libespm/REFR.h"
+#include "libespm/SHOU.h"
 #include "libespm/SPEL.h"
 #include "libespm/Utils.h"
 #include "libespm/WEAP.h"
@@ -200,8 +202,9 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     // learned of its ingredients taught again
     // (docs/verbs/learned-effects.md), its favorites marked again
     // (docs/verbs/favorites.md), its RaceMenu look applied again
-    // (docs/verbs/racemenu-sync.md), and its actor values and progress
-    // (docs/verbs/actor-values.md)
+    // (docs/verbs/racemenu-sync.md), its actor values and progress
+    // (docs/verbs/actor-values.md), and its shouts and words of power
+    // (docs/verbs/shouts.md)
     if (actor == partOne.serverState.ActorByUser(rawMsgData.userId) &&
         actor->TakeMapMarkersPending()) {
       SendMapMarkers(*actor);
@@ -209,6 +212,7 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       SendFavorites(*actor);
       SendRaceMenuPreset(*actor);
       SendActorValues(*actor);
+      SendShoutRecord(*actor);
     }
 
     if (!msg.data.isBlocking) {
@@ -484,6 +488,93 @@ void ActionListener::OnUpdateAppearance(const RawMessageData& rawMsgData,
   updateAppearanceAttemptEvent.Fire(actor->GetParent());
 }
 
+namespace {
+// thuum docs/verbs/shouts.md: the shout in a voice slot, if it holds one (a
+// SHOU; the slot can also hold a power, a SPEL)
+std::optional<uint32_t> VoiceShout(const Equipment& equipment,
+                                   WorldState& worldState)
+{
+  if (!equipment.voiceSpell || !*equipment.voiceSpell) {
+    return std::nullopt;
+  }
+  const auto res =
+    worldState.GetEspm().GetBrowser().LookupById(*equipment.voiceSpell);
+  if (!res.rec || res.rec->GetType() != espm::SHOU::kType) {
+    return std::nullopt;
+  }
+  return *equipment.voiceSpell;
+}
+
+// What the server knows of a shout an actor's game reported (wire-rules
+// shouts): the shout recorded, the spell's place among its variations
+// (SHOU's SNAM), the words the record unlocked, and the variation's
+// recovery with ShoutRecoveryMult, the actor value 86 (CommonLibSSE-NG
+// include/RE/A/ActorValues.h:94) as the actor-values record and the
+// running effects have it, 1 without either
+PartOne::VoiceFacts VoiceFactsOf(const MpActor& actor, uint32_t shout,
+                                 uint32_t spell, WorldState& worldState)
+{
+  constexpr uint8_t kNone = 3;
+  PartOne::VoiceFacts f;
+  f.shoutEquipped = actor.HasShoutEntry(MpActor::ShoutEntry::Shout, shout);
+  f.variation = kNone;
+  const auto res = worldState.GetEspm().GetBrowser().LookupById(shout);
+  const auto data = espm::GetData<espm::SHOU>(shout, &worldState);
+  for (uint32_t i = 0; i < data.count; ++i) {
+    const auto& variation = data.variations[i];
+    if (actor.HasShoutEntry(MpActor::ShoutEntry::WordUnlocked,
+                            res.ToGlobalId(variation.word))) {
+      f.wordsUnlocked |= static_cast<uint8_t>(1u << i);
+    }
+    if (f.variation == kNone && res.ToGlobalId(variation.spell) == spell) {
+      f.variation = static_cast<uint8_t>(i);
+      f.recoverySeconds = variation.recovery;
+    }
+  }
+  f.recoveryMult =
+    actor
+      .GetRecordedActorValueBase(
+        static_cast<uint8_t>(espm::ActorValue::ShoutRecoveryMult))
+      .value_or(1.f) +
+    actor.GetEffectModifier(espm::ActorValue::ShoutRecoveryMult);
+  return f;
+}
+
+// Whether `spell` is a variation of the shout in the voice slot
+bool IsVoiceVariation(const Equipment& equipment, uint32_t spell,
+                      WorldState& worldState)
+{
+  const auto shout = VoiceShout(equipment, worldState);
+  if (!shout) {
+    return false;
+  }
+  const auto res = worldState.GetEspm().GetBrowser().LookupById(*shout);
+  const auto data = espm::GetData<espm::SHOU>(*shout, &worldState);
+  for (uint32_t i = 0; i < data.count; ++i) {
+    if (res.ToGlobalId(data.variations[i].spell) == spell) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const char* VoiceRefusalCode(PartOne::VoiceCheck check)
+{
+  switch (check) {
+    case PartOne::VoiceCheck::NoShout:
+      return "E_SHOUT_UNKNOWN";
+    case PartOne::VoiceCheck::NotAVariation:
+      return "E_SHOUT_SPELL";
+    case PartOne::VoiceCheck::WordLocked:
+      return "E_SHOUT_WORD";
+    case PartOne::VoiceCheck::Recovering:
+      return "E_SHOUT_RECOVERY";
+    default:
+      return "accepted";
+  }
+}
+}
+
 void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
                                        const UpdateEquipmentMessage& msg)
 {
@@ -529,10 +620,17 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     spellIdsToRemove[static_cast<size_t>(SpellSlotId::Right)] = rightSpell;
   }
 
-  if (voiceSpell > 0 && !actor->IsSpellLearned(voiceSpell)) {
+  // thuum docs/verbs/shouts.md: the voice slot holds a power or a shout; a
+  // shout is the player's when the server's record has it (the console's
+  // AddShout for an admin), and one it lacks leaves the player's game
+  const bool voiceIsShout = VoiceShout(data, partOne.worldState).has_value();
+  if (voiceSpell > 0 &&
+      !(voiceIsShout
+          ? actor->HasShoutEntry(MpActor::ShoutEntry::Shout, voiceSpell)
+          : actor->IsSpellLearned(voiceSpell))) {
     spdlog::warn("ActionListener::OnUpdateEquipment {:x} - rejected equipment "
-                 "update: spell {:x} is not learned",
-                 actorFormId, voiceSpell);
+                 "update: {} {:x} is not learned",
+                 actorFormId, voiceIsShout ? "shout" : "spell", voiceSpell);
     isAllowed = false;
     spellIdsToRemove[static_cast<size_t>(SpellSlotId::Voice)] = voiceSpell;
   }
@@ -633,18 +731,22 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   } else {
     actor->SendInventoryUpdate();
 
-    for (uint32_t spellId : spellIdsToRemove) {
+    for (size_t slot = 0; slot < spellIdsToRemove.size(); ++slot) {
+      const uint32_t spellId = spellIdsToRemove[slot];
       if (spellId == 0) {
         continue;
       }
+      const bool shout =
+        slot == static_cast<size_t>(SpellSlotId::Voice) && voiceIsShout;
       SpSnippetObjectArgument spellArg;
       spellArg.formId = spellId;
-      spellArg.type = "Spell";
+      spellArg.type = shout ? "Shout" : "Spell";
       std::vector<std::optional<
         std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
         args;
       args.push_back(spellArg);
-      SpSnippet("Actor", "RemoveSpell", args, actor->GetFormId())
+      SpSnippet("Actor", shout ? "RemoveShout" : "RemoveSpell", args,
+                actor->GetFormId())
         .Execute(actor, SpSnippetMode::kNoReturnResult);
     }
 
@@ -2457,7 +2559,12 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
 
   const auto equipment = aggressor->GetEquipment();
 
-  if (isSourceSpell && equipment.IsSpellEquipped(hitData.source)) {
+  // a player's shout hits with its variation's spell (thuum
+  // docs/verbs/shouts.md), claimed against the shout the server accepted
+  if (isSourceSpell &&
+      (equipment.IsSpellEquipped(hitData.source) ||
+       (aggressor == myActor &&
+        IsVoiceVariation(equipment, hitData.source, partOne.worldState)))) {
     // thuum docs/verbs/spell-cast.md: a player's spell hits only as a cast
     // the server recorded: a fire-and-forget cast once (an area spell's
     // targets once each), a stream by the time it held its target (a hosted
@@ -2675,6 +2782,36 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
   }
 
   const auto equipment = caster->GetEquipment();
+
+  // thuum docs/verbs/shouts.md: a player's shout comes from the voice with
+  // a shout in the voice slot, and the shouts rule judges it against the
+  // server's record. An accepted one starts its recovery and waits for its
+  // hits as a cast does; it is relayed to nobody: observers' games play the
+  // figure's shoutStart from the animation relay already (x-shout-probe2),
+  // and a shout's effect on another player is a later slice
+  if (const auto shout = VoiceShout(equipment, partOne.worldState);
+      shout && hand == 2 && caster == myActor) {
+    const auto facts = VoiceFactsOf(*caster, *shout, spellCastData.spell,
+                                    partOne.worldState);
+    const auto check = partOne.Shout(caster->GetFormId(), facts);
+    if (check != PartOne::VoiceCheck::Accepted) {
+      spdlog::warn("ActionListener::OnSpellCast - {}: {:x} shouts {:x} "
+                   "with spell {:x} (variation {}, words unlocked {:#b}); "
+                   "refused",
+                   VoiceRefusalCode(check), caster->GetFormId(), *shout,
+                   spellCastData.spell, facts.variation,
+                   facts.wordsUnlocked);
+      return;
+    }
+    partOne.StartCast(caster->GetFormId(), spellCastData.spell, hand,
+                      caster->GetPos());
+    spdlog::info("ActionListener::OnSpellCast - {:x} shouts {:x}, variation "
+                 "{} (spell {:x}); recovers in {:.1f} s",
+                 caster->GetFormId(), *shout, facts.variation,
+                 spellCastData.spell,
+                 partOne.VoiceRecoveryLeftMs(caster->GetFormId()) / 1000.0);
+    return;
+  }
 
   if (equipment.IsSpellEquipped(spellCastData.spell) == false) {
     spdlog::info("ActionListener::OnSpellCast - spell {0:x} not "

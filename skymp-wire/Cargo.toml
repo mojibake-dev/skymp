@@ -33,7 +33,8 @@ cxx = "1"
 proptest = "1"
 arbitrary = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }  # parse floats correctly rounded, as JSON.parse and simdjson do (found by fuzz/validate)
-serde_yaml = "0.9"
+serde-saphyr = "1"  # difftest's session files: a maintained, panic-free YAML parser (RUSTSEC-2024-0449: serde_yaml's unsafe-libyaml is unmaintained)
+indexmap = { version = "2", features = ["serde"] }  # difftest's clients in their run order; already in the graph
 chrono = { version = "0.4", default-features = false, features = ["alloc"] }  # no clock: time comes in from the caller
 
 # These lints are the rules in .claude/rules/rust.md made mechanical.

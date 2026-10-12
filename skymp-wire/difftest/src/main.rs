@@ -45,7 +45,7 @@ use serde_json::{json, Value};
 struct Session {
     id: String,
     /// Client name to its options, in run order.
-    clients: serde_yaml::Mapping,
+    clients: indexmap::IndexMap<String, ClientOpts>,
     /// MsgTypes compared as presence only.
     #[serde(default = "default_volatile")]
     volatile: Vec<u8>,
@@ -116,7 +116,7 @@ struct CommonFile {
 /// The session's own declarations and the common ones, one per client.
 fn declarations(s: &Session) -> Result<Vec<Divergence>, DiffError> {
     let common: CommonFile =
-        serde_yaml::from_str(COMMON_DIVERGENCES).map_err(|e| DiffError::Session(format!("divergences.yaml: {e}")))?;
+        serde_saphyr::from_str(COMMON_DIVERGENCES).map_err(|e| DiffError::Session(format!("divergences.yaml: {e}")))?;
     let mut all = s.divergences.clone();
     for (client, _) in clients(s)? {
         for c in &common.divergences {
@@ -133,7 +133,7 @@ fn default_volatile() -> Vec<u8> {
     vec![2, 3, 24]
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct ClientOpts {
     profile_id: i64,
 }
@@ -198,7 +198,7 @@ fn env_stack(name: &'static str, bin_vars: &[&str], addr_var: &str, default_addr
 
 fn load_session(path: &Path) -> Result<Session, DiffError> {
     let text = std::fs::read_to_string(path).map_err(|e| DiffError::Io(format!("{}: {e}", path.display())))?;
-    let s: Session = serde_yaml::from_str(&text).map_err(|e| DiffError::Session(e.to_string()))?;
+    let s: Session = serde_saphyr::from_str(&text).map_err(|e| DiffError::Session(e.to_string()))?;
     for st in &s.steps {
         if !s.clients.contains_key(st.client.as_str()) {
             return Err(DiffError::Session(format!("step for unknown client {}", st.client)));
@@ -222,14 +222,7 @@ fn load_session(path: &Path) -> Result<Session, DiffError> {
 }
 
 fn clients(s: &Session) -> Result<Vec<(String, ClientOpts)>, DiffError> {
-    s.clients
-        .iter()
-        .map(|(k, v)| {
-            let name = k.as_str().ok_or_else(|| DiffError::Session("client names are strings".into()))?;
-            let opts: ClientOpts = serde_yaml::from_value(v.clone()).map_err(|e| DiffError::Session(format!("{name}: {e}")))?;
-            Ok((name.to_string(), opts))
-        })
-        .collect()
+    Ok(s.clients.iter().map(|(name, opts)| (name.clone(), opts.clone())).collect())
 }
 
 fn script(s: &Session, client: &str) -> String {
@@ -649,7 +642,7 @@ mod tests {
         let s = load_session(&smoke_path()).expect("smoke");
         let all = declarations(&s).expect("declarations");
         let own = s.divergences.len();
-        let common: CommonFile = serde_yaml::from_str(COMMON_DIVERGENCES).expect("divergences.yaml");
+        let common: CommonFile = serde_saphyr::from_str(COMMON_DIVERGENCES).expect("divergences.yaml");
         assert!(!common.divergences.is_empty());
         assert_eq!(all.len(), own + 2 * common.divergences.len(), "two clients in smoke");
         let clock: Vec<&Divergence> = all.iter().filter(|d| d.msg == json!({"t": 34})).collect();

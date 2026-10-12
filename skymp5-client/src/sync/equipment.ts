@@ -64,18 +64,23 @@ const filterWorn = (inv: Inventory): Inventory => {
 };
 
 const removeUnnecessaryExtra = (inv: Inventory, ignoreAmmo: boolean): Inventory => {
+  // thuum docs/verbs/marksman.md (playtest thirteen): a figure holding arrows
+  // fires one of its own when its relayed bow attack releases, beside the
+  // arrow the server's ArrowShot launches along the shooter's aim and draw
+  // (x-double-arrow2 20261012-022726: two Projectile::Launch calls in the
+  // watcher's game for one shot, the engine's own and Skyrim Platform's).
+  // So a figure holds no arrows: its bow draws empty, and only the relayed
+  // arrow flies. The player keeps its own, as many as it has.
   return {
-    entries: inv.entries.map((x) => {
-      const r: Entry = JSON.parse(JSON.stringify(x));
-      r.chargePercent = r.maxCharge;
-      if (ignoreAmmo) {
-        r.count = Ammo.from(Game.getFormEx(x.baseId)) ? r.count : 1;
-      } else {
-        r.count = Ammo.from(Game.getFormEx(x.baseId)) ? 1000 : 1;
-      }
-      delete r.name;
-      return r;
-    }),
+    entries: inv.entries
+      .filter((x) => ignoreAmmo || !Ammo.from(Game.getFormEx(x.baseId)))
+      .map((x) => {
+        const r: Entry = JSON.parse(JSON.stringify(x));
+        r.chargePercent = r.maxCharge;
+        r.count = ignoreAmmo && Ammo.from(Game.getFormEx(x.baseId)) ? r.count : 1;
+        delete r.name;
+        return r;
+      }),
   };
 };
 

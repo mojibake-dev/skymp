@@ -70,6 +70,16 @@ void OnSendEventEnter(GumInvocationContext* ic)
           // Like SkyUI's, these scripts run UI, not game state.
           blockEvents = false;
           break;
+        } else if (!stricmp(name, "GRIM_ALT_TeleportationMarker")) {
+          // Lost Grimoire's Teleportation (thuum docs/verbs/cast-teleport.md):
+          // the marker its cast places moves the caster onto itself when it
+          // loads (thuum docs/MODS.md). It exists only in the caster's game,
+          // since the server relays no teleport cast, and the server takes
+          // the jump within the spell's reach of the cast (R1). Blocked, the
+          // cast spends its magicka and moves nobody (x-teleport-probe2
+          // 20261012-071906).
+          blockEvents = false;
+          break;
         } else if (!stricmp(name, "defaultDisableHavokOnLoad")) {
           // Maybe worth unblocking events only for this script, not for all
           blockEvents = false;

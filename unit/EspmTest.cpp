@@ -366,6 +366,8 @@ TEST_CASE("Loads Weapon", "[espm]")
   REQUIRE(npc->GetData(cache).weapData->damage == 7);
   REQUIRE(npc->GetData(cache).weapData->value == 25);
   REQUIRE(npc->GetData(cache).weapData->weight == 9.f);
+  // thuum docs/verbs/stagger.md: DNAM's stagger (thuum lab/esm.py)
+  REQUIRE(npc->GetData(cache).stagger == 0.75f);
 }
 
 TEST_CASE("Loads NPC factions", "[espm]")
@@ -523,12 +525,34 @@ TEST_CASE("espm::GetData wrapper is able to get record data", "[espm]")
   REQUIRE(abs(data.healRegen - 0.7f) < std::numeric_limits<float>::epsilon());
 }
 
+TEST_CASE("A race's mass and its attacks' stagger offsets", "[espm]")
+{
+  // thuum docs/verbs/stagger.md: NordRace (0x13746) as thuum lab/esm.py
+  // read Skyrim.esm (2026-10-10)
+  MyEspmProvider provider;
+  constexpr uint32_t kNordRace = 0x00013746;
+  auto data = espm::GetData<espm::RACE>(kNordRace, &provider);
+  REQUIRE(data.baseMass == 1.f);
+  REQUIRE(data.attackStaggerOffsets.at("attackstart") == 0.f);
+  REQUIRE(data.attackStaggerOffsets.at("attackpowerstartforward") == 1.f);
+  REQUIRE(data.attackStaggerOffsets.at("attackpowerstartinplace") == 1.f);
+  REQUIRE(data.attackStaggerOffsets.at("bashstart") == 0.5f);
+  REQUIRE(data.attackStaggerOffsets.at("bashpowerstart") == 1.5f);
+}
+
 TEST_CASE("GMST parsing", "[espm]")
 {
   MyEspmProvider provider;
   REQUIRE(
     espm::GetData<espm::GMST>(espm::GMST::kFMaxArmorRating, &provider).value ==
     80);
+  // an integer setting (thuum docs/verbs/stagger.md)
+  REQUIRE(
+    espm::GetData<espm::GMST>(espm::GMST::kIStaggerAttackChance, &provider)
+      .intValue == 50);
+  REQUIRE(
+    espm::GetData<espm::GMST>(espm::GMST::kFStaggerPlayerMassMult, &provider)
+      .value == 2.5f);
 }
 
 TEST_CASE("ARMO parsing", "[espm]")
@@ -620,6 +644,30 @@ TEST_CASE("MGEF parsing", "[espm]")
   MyEspmProvider provider;
   auto data = espm::GetData<espm::MGEF>(0x51B15, &provider);
   REQUIRE(data.data.primaryAV == espm::ActorValue::DamageResist);
+}
+
+// thuum docs/verbs/magic-effects.md: Skyrim.esm as thuum lab/esm.py read it
+// (2026-10-10): Sparks' and Frostbite's dual effects, the healing potion's
+// shader and art
+TEST_CASE("MGEF second actor value, its weight, hit shader and art", "[espm]")
+{
+  MyEspmProvider provider;
+  auto shock = espm::GetData<espm::MGEF>(0x13CAB, &provider).data;
+  REQUIRE(shock.effectType == espm::MGEF::EffectType::Dual);
+  REQUIRE(shock.primaryAV == espm::ActorValue::Health);
+  REQUIRE(shock.secondaryAV == espm::ActorValue::Magicka);
+  REQUIRE(shock.secondAVWeight == 1.f);
+  REQUIRE(shock.hitShader == 0x57C67); // ShockFXShader
+
+  auto frost = espm::GetData<espm::MGEF>(0x13CAA, &provider).data;
+  REQUIRE(frost.secondaryAV == espm::ActorValue::Stamina);
+
+  auto heal = espm::GetData<espm::MGEF>(0x3EB15, &provider).data;
+  REQUIRE(heal.effectType == espm::MGEF::EffectType::ValueMod);
+  REQUIRE(heal.secondaryAV == espm::ActorValue::None);
+  REQUIRE(heal.hitShader == 0x12FD9);    // HealFXS
+  REQUIRE(heal.hitEffectArt == 0x3F1B4); // HealTargetFX
+  REQUIRE(heal.IsFlagSet(espm::MGEF::Flags::NoDuration));
 }
 
 TEST_CASE("isFood flag is not set for heal potion", "[espm]")

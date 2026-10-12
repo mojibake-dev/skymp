@@ -5,12 +5,20 @@
 //! and its own sneaking state from its movement. A flag the server cannot
 //! back is dropped and the hit lands as a plain one.
 //!
+//! A bash (thuum docs/verbs/blocking.md) is kept the same way: a bash's
+//! start (bashStart) among the attacker's animation events within the last
+//! three seconds; x-block-probe 20261011-021114 measured 951 ms from a
+//! bashStart to its hit.
+//!
 //! A kept sneak attack is worth the game's base multiplier for the weapon's
 //! type, from its settings (thuum docs/verbs/sneak-damage.md), not SkyMP's
 //! flat 1.3.
 
 /// How long after a power attack's start its hit may come.
 pub const POWER_ATTACK_WINDOW_MS: u64 = 3_000;
+/// How long after a bash's start its hit may come: the power attack's room
+/// (951 ms measured, x-block-probe 20261011-021114).
+pub const BASH_WINDOW_MS: u64 = 3_000;
 
 /// What the server knows about a player's hit and its claims.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +31,10 @@ pub struct FlagFacts {
     pub since_power_start_ms: Option<u64>,
     /// The server holds the attacker sneaking.
     pub is_sneaking: bool,
+    /// The client says bash.
+    pub claims_bash: bool,
+    /// Milliseconds since the attacker's last bash start, if any.
+    pub since_bash_start_ms: Option<u64>,
 }
 
 /// The flags the server keeps.
@@ -32,12 +44,15 @@ pub struct Flags {
     pub power: bool,
     /// Sneak attack.
     pub sneak: bool,
+    /// Bash.
+    pub bash: bool,
 }
 
 /// The flags a hit keeps.
 pub fn backed_flags(f: FlagFacts) -> Flags {
     let saw_power = matches!(f.since_power_start_ms, Some(ms) if ms <= POWER_ATTACK_WINDOW_MS);
-    Flags { power: f.claims_power && saw_power, sneak: f.claims_sneak && f.is_sneaking }
+    let saw_bash = matches!(f.since_bash_start_ms, Some(ms) if ms <= BASH_WINDOW_MS);
+    Flags { power: f.claims_power && saw_power, sneak: f.claims_sneak && f.is_sneaking, bash: f.claims_bash && saw_bash }
 }
 
 /// SkyMP's flat sneak attack multiplier, kept for a weapon type the game names
@@ -93,7 +108,24 @@ mod tests {
     use super::*;
 
     const fn facts(power: bool, sneak: bool, since: Option<u64>, sneaking: bool) -> FlagFacts {
-        FlagFacts { claims_power: power, claims_sneak: sneak, since_power_start_ms: since, is_sneaking: sneaking }
+        FlagFacts {
+            claims_power: power,
+            claims_sneak: sneak,
+            since_power_start_ms: since,
+            is_sneaking: sneaking,
+            claims_bash: false,
+            since_bash_start_ms: None,
+        }
+    }
+
+    #[test]
+    fn a_bash_flag_needs_a_recent_bash_start() {
+        let bash = |since: Option<u64>| backed_flags(FlagFacts { claims_bash: true, since_bash_start_ms: since, ..facts(false, false, None, false) });
+        assert!(!bash(None).bash);
+        assert!(bash(Some(951)).bash);
+        assert!(!bash(Some(3_001)).bash);
+        let unclaimed = FlagFacts { since_bash_start_ms: Some(10), ..facts(false, false, None, false) };
+        assert!(!backed_flags(unclaimed).bash);
     }
 
     #[test]

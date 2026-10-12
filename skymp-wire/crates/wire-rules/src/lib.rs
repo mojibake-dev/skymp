@@ -5,6 +5,7 @@
 //! need no server. The verb docs under thuum docs/verbs/ hold the sources.
 
 pub mod activation;
+pub mod block;
 pub mod actor_values;
 pub mod appearance;
 pub mod casts;
@@ -14,12 +15,14 @@ pub mod damage;
 pub mod effects;
 pub mod favorites;
 pub mod hostility;
+pub mod magic;
 pub mod markers;
 pub mod melee;
 pub mod movement;
 pub mod racemenu;
 pub mod ranged;
 pub mod rest;
+pub mod stagger;
 pub mod teleports;
 
 /// A decision and the bound it was made against, for the server's log.

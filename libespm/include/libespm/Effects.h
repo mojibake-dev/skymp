@@ -22,6 +22,10 @@ public:
     float magnitude = 0.f;
     uint32_t areaOfEffect = 0;
     uint32_t duration = 0;
+    // thuum docs/verbs/magic-effects.md: whether conditions (CTDA, after the
+    // effect's EFIT) gate it, as a perk's extras are gated (Firebolt's
+    // PerkIntenseFlamesConfDownFFAimed); the server does not evaluate them yet
+    bool hasConditions = false;
   };
 
   struct Data

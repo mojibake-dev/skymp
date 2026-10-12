@@ -71,7 +71,8 @@ const fn cmd(name: &'static str, short: &'static str, class: Class, rank: Rank, 
 /// The first set (thuum docs/verbs/console-commands.md, "Commands, first
 /// set"; the ranks approved by Eli, 2026-10-08, COC an admin's by his word;
 /// TCL served since 2026-10-09, M1.1: the caller's own game toggles its
-/// collision). `mp` is SkyMP's own, and carries TES3MP's player commands
+/// collision; TGM and TIM since 2026-10-10, M2: the server's god and
+/// immortal flags, thuum docs/verbs/god-mode.md). `mp` is SkyMP's own, and carries TES3MP's player commands
 /// (Eli, 2026-10-08; TES3MP CoreScripts commandHandler.lua /teleport,
 /// /teleportto, moderators'): `mp list` names the players online by number,
 /// `mp tp <n>` brings that player to the caller, `mp tpto <n>` takes the
@@ -98,8 +99,8 @@ pub const TABLE: [Command; 31] = [
     cmd("forceactorvalue", "forceav", Class::Server, Rank::Admin, true),
     cmd("setlevel", "", Class::Server, Rank::Admin, false),
     cmd("advancepcskill", "advskill", Class::Server, Rank::Admin, false),
-    cmd("toggleimmortalmode", "tim", Class::Server, Rank::Admin, false),
-    cmd("togglegodmode", "tgm", Class::Server, Rank::Admin, false),
+    cmd("toggleimmortalmode", "tim", Class::Server, Rank::Admin, true),
+    cmd("togglegodmode", "tgm", Class::Server, Rank::Admin, true),
     cmd("togglecollision", "tcl", Class::Server, Rank::Admin, true),
     // `set <global> to <value>`: the server owns the clock's globals (ADR-021);
     // which others it owns waits for the first verb that needs one
@@ -217,8 +218,9 @@ mod tests {
         assert_eq!(decide("coc", Rank::Player), Decision::RankTooLow);
         assert_eq!(decide("tfc", Rank::Owner), Decision::ClientOnly);
         assert_eq!(decide("set", Rank::Owner), Decision::NotServed);
-        assert_eq!(decide("tgm", Rank::Owner), Decision::NotServed);
-        assert_eq!(decide("tim", Rank::Owner), Decision::NotServed);
+        assert_eq!(decide("tgm", Rank::Admin), Decision::Run);
+        assert_eq!(decide("ToggleImmortalMode", Rank::Admin), Decision::Run);
+        assert_eq!(decide("tim", Rank::Moderator), Decision::RankTooLow);
         assert_eq!(decide("whatever", Rank::Owner), Decision::Unknown);
         assert!(!refusal_line(Decision::NotServed).is_empty());
         assert!(refusal_line(Decision::Run).is_empty());

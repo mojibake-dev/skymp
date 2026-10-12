@@ -50,6 +50,7 @@ enum class MsgType : uint8_t
   ActorValues = 40,
   ConsoleOutput = 41,
   ArrowShot = 42,
+  MagicEffects = 43,
 
   Max
 };

@@ -28,15 +28,19 @@
 #include <NiPoint3.h>
 #include <TimeUtils.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <random>
+#include <set>
 #include <string>
 #include <utility>
 
 #include "ChangeValuesMessage.h"
+#include "MagicEffectsMessage.h"
 #include "TeleportMessage.h"
 #include "UpdateEquipmentMessage.h"
 
@@ -97,6 +101,10 @@ struct MpActor::Impl
   uint32_t blockActiveCount = 0;
   std::vector<std::pair<uint32_t, MpObjectReference*>> droppedItemsQueue;
   std::optional<AnimationData> animationData;
+
+  // thuum docs/verbs/god-mode.md: TGM and TIM for the session
+  bool godMode = false;
+  bool immortal = false;
 
   // this is a hot fix attempt to make permanent restoration potions work
   std::chrono::system_clock::time_point nextRestorationTime{};
@@ -561,26 +569,11 @@ bool MpActor::OnEquip(uint32_t baseId)
 
   bool spellLearned = false;
   if (isIngredient || isPotion) {
+    // thuum docs/verbs/magic-effects.md: observers see a drink's effects
+    // through MagicEffects, as every effect, and no longer through the
+    // drinker's figure drinking it in their games (which also had a poison
+    // "drunk" there)
     EatItem(baseId, recordType);
-
-    std::vector<std::optional<
-      std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
-      spSnippetArgs;
-
-    SpSnippetObjectArgument spSnippetObjectArgument;
-    spSnippetObjectArgument.formId = baseId;
-    spSnippetObjectArgument.type = isIngredient ? "Ingredient" : "Potion";
-
-    spSnippetArgs.push_back(spSnippetObjectArgument);
-    spSnippetArgs.push_back(false);
-    spSnippetArgs.push_back(false);
-
-    for (auto listener : GetActorListeners()) {
-      if (listener != this) {
-        SpSnippet("Actor", "EquipItem", spSnippetArgs, GetFormId())
-          .Execute(listener, SpSnippetMode::kNoReturnResult);
-      }
-    }
   } else if (isBook) {
     spellLearned = ReadBook(baseId);
   }
@@ -708,8 +701,13 @@ void MpActor::SetPercentage(espm::ActorValue av, float percentage)
     return;
   }
   if (av == espm::ActorValue::Health && percentage <= 0.f) {
-    Kill(nullptr);
-    return;
+    if (pImpl->immortal) {
+      // thuum docs/verbs/god-mode.md: TIM, one point left instead of death
+      percentage = 1.f / std::max(GetMaximumValues().health, 1.f);
+    } else {
+      Kill(nullptr);
+      return;
+    }
   }
   EditChangeForm([&](MpChangeForm& changeForm) {
     switch (av) {
@@ -738,12 +736,13 @@ void MpActor::SetPercentages(const ActorValues& actorValues,
   if (IsDead() || pImpl->isRespawning) {
     return;
   }
-  if (actorValues.healthPercentage == 0.f) {
+  const float health = ImmortalHealth(actorValues.healthPercentage);
+  if (health == 0.f) {
     Kill(aggressor);
     return;
   }
   EditChangeForm([&](MpChangeForm& changeForm) {
-    changeForm.actorValues.healthPercentage = actorValues.healthPercentage;
+    changeForm.actorValues.healthPercentage = health;
     changeForm.actorValues.magickaPercentage = actorValues.magickaPercentage;
     changeForm.actorValues.staminaPercentage = actorValues.staminaPercentage;
   });
@@ -803,8 +802,20 @@ void MpActor::NetSetPercentages(
   const ActorValues& actorValues, MpActor* aggressor,
   const std::optional<std::vector<espm::ActorValue>>& avFilter)
 {
-  NetSendChangeValues(actorValues, avFilter);
-  SetPercentages(actorValues, aggressor);
+  // an immortal actor's game hears its one point, never nothing, which its
+  // own game would take for a death (thuum docs/verbs/god-mode.md)
+  ActorValues values = actorValues;
+  values.healthPercentage = ImmortalHealth(values.healthPercentage);
+  NetSendChangeValues(values, avFilter);
+  SetPercentages(values, aggressor);
+}
+
+float MpActor::ImmortalHealth(float healthPercentage)
+{
+  if (!pImpl->immortal || healthPercentage > 0.f) {
+    return healthPercentage;
+  }
+  return 1.f / std::max(GetMaximumValues().health, 1.f);
 }
 
 std::chrono::steady_clock::time_point
@@ -1940,6 +1951,11 @@ BaseActorValues MpActor::GetMaximumValues()
       stamina && *stamina > 0.f) {
     values.stamina = *stamina;
   }
+  // thuum docs/verbs/magic-effects.md: and the running buffs on each (a
+  // Fortify Health's 20 while it runs)
+  values.health += GetEffectModifier(espm::ActorValue::Health);
+  values.magicka += GetEffectModifier(espm::ActorValue::Magicka);
+  values.stamina += GetEffectModifier(espm::ActorValue::Stamina);
   return values;
 }
 
@@ -2152,6 +2168,216 @@ void MpActor::SetActorValue(espm::ActorValue actorValue, float value)
   });
 }
 
+namespace {
+// thuum docs/verbs/magic-effects.md: an item's or a spell's effect as the
+// effect rule takes it, from its MGEF record (libespm MGEF: the archetype,
+// the actor values, the second's weight, the flags) and the item's own
+// magnitude and duration; none for an archetype the rule leaves alone
+std::optional<skymp::rules::EffectFacts> EffectFactsOf(
+  WorldState* worldState, uint32_t source, const espm::Effects::Effect& effect)
+{
+  espm::MGEF::DATA mgef;
+  try {
+    mgef = espm::GetData<espm::MGEF>(effect.effectId, worldState).data;
+  } catch (std::exception& e) {
+    spdlog::warn("EffectFactsOf - effect {:x} of {:x}: {}", effect.effectId,
+                 source, e.what());
+    return std::nullopt;
+  }
+  skymp::rules::EffectFacts facts{};
+  switch (mgef.effectType) {
+    case espm::MGEF::EffectType::ValueMod:
+      facts.kind = skymp::rules::EffectKind::Value;
+      break;
+    case espm::MGEF::EffectType::PeakValueMod:
+      facts.kind = skymp::rules::EffectKind::PeakValue;
+      break;
+    case espm::MGEF::EffectType::Dual:
+      facts.kind = skymp::rules::EffectKind::DualValue;
+      break;
+    default:
+      return std::nullopt;
+  }
+  if (mgef.primaryAV == espm::ActorValue::None) {
+    return std::nullopt;
+  }
+  constexpr uint32_t kNoSecond = std::numeric_limits<uint32_t>::max();
+  facts.effect = effect.effectId;
+  facts.source = source;
+  facts.av = static_cast<uint32_t>(mgef.primaryAV);
+  facts.second_av = facts.kind == skymp::rules::EffectKind::DualValue &&
+      mgef.secondaryAV != espm::ActorValue::None
+    ? static_cast<uint32_t>(mgef.secondaryAV)
+    : kNoSecond;
+  facts.second_weight = mgef.secondAVWeight;
+  facts.magnitude = effect.magnitude;
+  facts.duration_s = static_cast<float>(effect.duration);
+  facts.recover = mgef.IsFlagSet(espm::MGEF::Flags::Recover);
+  facts.detrimental = mgef.IsFlagSet(espm::MGEF::Flags::Detrimental);
+  facts.no_duration = mgef.IsFlagSet(espm::MGEF::Flags::NoDuration);
+  return facts;
+}
+
+bool IsNoForm(const FormDesc& desc)
+{
+  return desc.shortFormId == 0 && desc.file.empty();
+}
+
+// The change form's running effects as the rule's entries; one whose
+// plugin is no longer loaded is dropped
+rust::Vec<skymp::rules::EffectEntry> EffectEntriesOf(
+  const MpChangeForm& changeForm, const std::vector<std::string>& files)
+{
+  rust::Vec<skymp::rules::EffectEntry> entries;
+  if (!changeForm.runningEffects) {
+    return entries;
+  }
+  constexpr uint32_t kNoSecond = std::numeric_limits<uint32_t>::max();
+  for (const auto& r : *changeForm.runningEffects) {
+    try {
+      skymp::rules::EffectEntry e{};
+      e.facts.effect = r.effect.ToFormId(files);
+      e.facts.source = r.source.ToFormId(files);
+      e.facts.kind = r.kind == 1 ? skymp::rules::EffectKind::PeakValue
+        : r.kind == 2            ? skymp::rules::EffectKind::DualValue
+                                 : skymp::rules::EffectKind::Value;
+      e.facts.av = static_cast<uint32_t>(r.av);
+      e.facts.second_av =
+        r.secondAv < 0 ? kNoSecond : static_cast<uint32_t>(r.secondAv);
+      e.facts.second_weight = r.secondWeight;
+      e.facts.magnitude = r.magnitude;
+      e.facts.duration_s = r.durationS;
+      e.facts.recover = r.recover;
+      e.facts.detrimental = r.detrimental;
+      e.facts.no_duration = r.noDuration;
+      e.caster = IsNoForm(r.caster) ? 0 : r.caster.ToFormId(files);
+      e.elapsed_s = r.elapsedS;
+      entries.push_back(e);
+    } catch (std::exception& ex) {
+      spdlog::warn("EffectEntriesOf - dropping {}: {}", r.effect.ToString(),
+                   ex.what());
+    }
+  }
+  return entries;
+}
+
+// The server's wall clock in Unix milliseconds, what a running effect's
+// asOfMs counts against: the world's clock (thuum ADR-021)
+uint64_t WallNowMs()
+{
+  return static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch())
+      .count());
+}
+
+// The rule's entries as the change form keeps them, their seconds run
+// counted as of `asOfMs`
+std::optional<std::vector<RunningEffect>> RunningEffectsOf(
+  const rust::Vec<skymp::rules::EffectEntry>& entries,
+  const std::vector<std::string>& files, uint64_t asOfMs)
+{
+  if (entries.empty()) {
+    return std::nullopt;
+  }
+  constexpr uint32_t kNoSecond = std::numeric_limits<uint32_t>::max();
+  std::vector<RunningEffect> running;
+  running.reserve(entries.size());
+  for (const auto& e : entries) {
+    RunningEffect r;
+    r.effect = FormDesc::FromFormId(e.facts.effect, files);
+    r.source = FormDesc::FromFormId(e.facts.source, files);
+    r.caster = e.caster ? FormDesc::FromFormId(e.caster, files) : FormDesc();
+    r.kind = e.facts.kind == skymp::rules::EffectKind::PeakValue ? 1
+      : e.facts.kind == skymp::rules::EffectKind::DualValue      ? 2
+                                                                 : 0;
+    r.av = static_cast<int32_t>(e.facts.av);
+    r.secondAv = e.facts.second_av == kNoSecond
+      ? -1
+      : static_cast<int32_t>(e.facts.second_av);
+    r.secondWeight = e.facts.second_weight;
+    r.magnitude = e.facts.magnitude;
+    r.durationS = e.facts.duration_s;
+    r.elapsedS = e.elapsed_s;
+    r.asOfMs = asOfMs;
+    r.recover = e.facts.recover;
+    r.detrimental = e.facts.detrimental;
+    r.noDuration = e.facts.no_duration;
+    running.push_back(std::move(r));
+  }
+  return running;
+}
+
+// Each change's points by Health, Magicka and Stamina (CommonLibSSE-NG
+// include/RE/A/ActorValues.h: kHealth 24, kMagicka 25, kStamina 26); a
+// change of any other actor value counts through GetEffectModifier where
+// it matters (the regeneration rates). A god actor (thuum
+// docs/verbs/god-mode.md) loses nothing of a current value, while a buff's
+// maximum still moves.
+template <class Changes>
+void SumAttributeChanges(const Changes& changes, std::array<float, 3>& deltas,
+                         std::array<bool, 3>& touched, bool god)
+{
+  for (const auto& c : changes) {
+    const int i = c.av == 24 ? 0 : c.av == 25 ? 1 : c.av == 26 ? 2 : -1;
+    if (i < 0) {
+      continue;
+    }
+    deltas[i] += (god && c.current < 0.f ? 0.f : c.current) + c.modifier;
+    touched[i] = true;
+  }
+}
+
+// The running effects as MagicEffects, and `shownOnce` (effects applied at
+// once, 0 seconds left) beside them
+// The sums the running buffs in `entries` put on each actor value they
+// touch, by actor value, those at 0 left out (wire-rules magic::modifier)
+std::vector<MagicEffectsMessage::Modifier> EffectModifiersOf(
+  const rust::Vec<skymp::rules::EffectEntry>& entries)
+{
+  constexpr uint32_t kNoSecond = std::numeric_limits<uint32_t>::max();
+  std::set<uint32_t> avs;
+  for (const auto& e : entries) {
+    avs.insert(e.facts.av);
+    if (e.facts.second_av != kNoSecond) {
+      avs.insert(e.facts.second_av);
+    }
+  }
+  std::vector<MagicEffectsMessage::Modifier> res;
+  for (uint32_t av : avs) {
+    const float amount = skymp::rules::effect_modifier(entries, av);
+    if (amount != 0.f) {
+      MagicEffectsMessage::Modifier modifier;
+      modifier.av = av;
+      modifier.amount = amount;
+      res.push_back(modifier);
+    }
+  }
+  return res;
+}
+
+MagicEffectsMessage MagicEffectsOf(
+  uint32_t idx, const rust::Vec<skymp::rules::EffectEntry>& entries,
+  const std::vector<MagicEffectsMessage::Effect>& shownOnce)
+{
+  MagicEffectsMessage msg;
+  msg.idx = idx;
+  msg.modifiers = EffectModifiersOf(entries);
+  for (const auto& e : entries) {
+    MagicEffectsMessage::Effect effect;
+    effect.effect = e.facts.effect;
+    effect.source = e.facts.source;
+    effect.magnitude = e.facts.magnitude;
+    effect.remaining = std::max(e.facts.duration_s - e.elapsed_s, 0.f);
+    msg.effects.push_back(effect);
+  }
+  for (const auto& effect : shownOnce) {
+    msg.effects.push_back(effect);
+  }
+  return msg;
+}
+}
+
 // TODO: only used in legacy MGEF implementation, remove when MGEF is rewritten
 void MpActor::SetActorValues(const ActorValues& actorValues)
 {
@@ -2317,17 +2543,300 @@ void MpActor::RemoveAllMagicEffects()
 
 void MpActor::ReapplyMagicEffects()
 {
-  // TODO: Implement range-based for loop for MagicEffectsMap
-  std::vector<espm::Effects::Effect> activeEffects =
-    GetChangeForm().activeMagicEffects.GetAllEffects();
-  if (activeEffects.empty()) {
+  // thuum docs/verbs/magic-effects.md: an older record's legacy effects (one
+  // per actor value: a regeneration potion's, with its end time) become
+  // running effects with the time they have left; the rates and multipliers
+  // the legacy path set go back to the game files' (the running buffs' sum
+  // counts them now), and the legacy map is cleared. Then the actor's
+  // running effects resume, after a restart as after a migration.
+  WorldState* worldState = GetParent();
+  if (!worldState) {
     return;
   }
-  const std::vector<std::string>& modFiles = GetParent()->espmFiles;
-  const bool hasSweetpie = std::any_of(
-    modFiles.begin(), modFiles.end(),
-    [](std::string_view fileName) { return fileName == "SweetPie.esp"; });
-  ApplyMagicEffects(activeEffects, hasSweetpie, true);
+  if (!ChangeForm().activeMagicEffects.Empty()) {
+    const auto& files = worldState->espmFiles;
+    auto entries = EffectEntriesOf(ChangeForm(), files);
+    const auto now = std::chrono::system_clock::now();
+    for (const auto& [av, legacy] :
+         ChangeForm().activeMagicEffects.GetEntries()) {
+      try {
+        const espm::Effects::Effect& effect = legacy.data;
+        const float remaining =
+          std::chrono::duration<float>(legacy.endTime - now).count();
+        if (remaining <= 0.f) {
+          continue;
+        }
+        const auto facts = EffectFactsOf(worldState, effect.effectId, effect);
+        if (!facts) {
+          continue;
+        }
+        auto applied = skymp::rules::apply_effect(
+          *facts, 1.f, 0, skymp::rules::EffectArrival::Once);
+        if (!applied.has_entry) {
+          continue;
+        }
+        applied.entry.elapsed_s =
+          std::max(applied.entry.facts.duration_s - remaining, 0.f);
+        // its changes are not made again: the legacy path made them, in its
+        // own way, which the reset below undoes
+        std::ignore = skymp::rules::admit_effect(entries, applied.entry);
+      } catch (std::exception& e) {
+        spdlog::warn("MpActor::ReapplyMagicEffects {:x} - {}", GetFormId(),
+                     e.what());
+      }
+    }
+    auto running = RunningEffectsOf(entries, files, WallNowMs());
+    const BaseActorValues base = GetBaseValues();
+    EditChangeForm([&](MpChangeForm& changeForm) {
+      changeForm.runningEffects = running;
+      changeForm.activeMagicEffects.Clear();
+      changeForm.actorValues.healRate = base.healRate;
+      changeForm.actorValues.magickaRate = base.magickaRate;
+      changeForm.actorValues.staminaRate = base.staminaRate;
+      changeForm.actorValues.healRateMult = base.healRateMult;
+      changeForm.actorValues.magickaRateMult = base.magickaRateMult;
+      changeForm.actorValues.staminaRateMult = base.staminaRateMult;
+    });
+  }
+  if (!HasRunningEffects()) {
+    return;
+  }
+  // The world's clock runs while the server is down (thuum ADR-021), and so
+  // do the effects: they run on by the time since they were last counted
+  // (an older record's, written before that time was kept, from now). An
+  // effect that ended meanwhile gives back what it gave; a poison's course
+  // lands at once, as it would have.
+  uint64_t asOfMs = 0;
+  for (const auto& r : *ChangeForm().runningEffects) {
+    asOfMs = std::max(asOfMs, r.asOfMs);
+  }
+  const uint64_t nowMs = WallNowMs();
+  if (asOfMs != 0 && nowMs > asOfMs) {
+    AdvanceEffects(static_cast<float>(nowMs - asOfMs) / 1000.f);
+  }
+  if (HasRunningEffects()) {
+    worldState->TrackEffects(GetFormId());
+  }
+}
+
+std::vector<MpActor::RunningEffectView> MpActor::GetRunningEffects() const
+{
+  std::vector<RunningEffectView> res;
+  WorldState* worldState = GetParent();
+  if (!worldState || !HasRunningEffects()) {
+    return res;
+  }
+  for (const auto& e : EffectEntriesOf(ChangeForm(), worldState->espmFiles)) {
+    RunningEffectView view;
+    view.effect = e.facts.effect;
+    view.source = e.facts.source;
+    view.magnitude = e.facts.magnitude;
+    view.secondsLeft = std::max(e.facts.duration_s - e.elapsed_s, 0.f);
+    res.push_back(view);
+  }
+  return res;
+}
+
+std::vector<espm::Effects::Effect> MpActor::EffectsOf(WorldState* worldState,
+                                                      uint32_t source)
+{
+  if (!worldState || !worldState->HasEspm()) {
+    return {};
+  }
+  const auto lookup = worldState->GetEspm().GetBrowser().LookupById(source);
+  if (!lookup.rec) {
+    return {};
+  }
+  auto effects =
+    espm::Effects(lookup.rec).GetData(worldState->GetEspmCache()).effects;
+  for (auto& effect : effects) {
+    // an id inside a record counts against that file's masters
+    effect.effectId = lookup.ToGlobalId(effect.effectId);
+  }
+  return effects;
+}
+
+void MpActor::ApplyEffects(uint32_t source,
+                           const std::vector<espm::Effects::Effect>& effects,
+                           float scale, uint32_t caster, bool stream)
+{
+  WorldState* worldState = GetParent();
+  if (!worldState || IsDead()) {
+    return;
+  }
+  const auto& files = worldState->espmFiles;
+  const BaseActorValues maxBefore = GetMaximumValues();
+  auto entries = EffectEntriesOf(ChangeForm(), files);
+  const size_t entriesBefore = entries.size();
+  const auto modifiersBefore = EffectModifiersOf(entries);
+  std::vector<MagicEffectsMessage::Effect> shownOnce;
+  std::array<float, 3> deltas{};
+  std::array<bool, 3> touched{};
+  for (const auto& effect : effects) {
+    if (effect.hasConditions) {
+      // until the server evaluates conditions: a perk's extras stay out
+      continue;
+    }
+    const auto facts = EffectFactsOf(worldState, source, effect);
+    if (!facts) {
+      continue;
+    }
+    const auto applied =
+      skymp::rules::apply_effect(*facts, scale, caster,
+                                 stream ? skymp::rules::EffectArrival::Stream
+                                        : skymp::rules::EffectArrival::Once);
+    SumAttributeChanges(applied.changes, deltas, touched, pImpl->godMode);
+    if (applied.has_entry) {
+      SumAttributeChanges(skymp::rules::admit_effect(entries, applied.entry),
+                          deltas, touched, pImpl->godMode);
+    } else if (!applied.changes.empty() && !stream) {
+      // an effect without duration: shown once (a stream's hits show
+      // through the caster's figure's stream instead)
+      MagicEffectsMessage::Effect once;
+      once.effect = facts->effect;
+      once.source = source;
+      once.magnitude = facts->magnitude * scale;
+      shownOnce.push_back(once);
+    }
+  }
+  // a buff replaced at the bound keeps the count but moves the sums
+  const bool setChanged = entries.size() != entriesBefore ||
+    EffectModifiersOf(entries) != modifiersBefore;
+  auto running = RunningEffectsOf(entries, files, WallNowMs());
+  EditChangeForm(
+    [&](MpChangeForm& changeForm) { changeForm.runningEffects = running; });
+  if (running) {
+    worldState->TrackEffects(GetFormId());
+  }
+  // the set and its sums first, then the values: on the one ordered
+  // channel, the actor's own game moves its maximum before it takes the
+  // percentage, as the server did
+  if (setChanged || !shownOnce.empty()) {
+    SendMessageToActorListeners(MagicEffectsOf(GetIdx(), entries, shownOnce),
+                                true);
+  }
+  ApplyAttributeDeltas(deltas, touched, maxBefore, caster);
+}
+
+void MpActor::AdvanceEffects(float dtSeconds)
+{
+  WorldState* worldState = GetParent();
+  if (!worldState || !HasRunningEffects()) {
+    return;
+  }
+  if (IsDead()) {
+    // a death ends the effects; the respawn restores the attributes
+    EditChangeForm(
+      [&](MpChangeForm& changeForm) { changeForm.runningEffects.reset(); });
+    return;
+  }
+  const auto& files = worldState->espmFiles;
+  const BaseActorValues maxBefore = GetMaximumValues();
+  auto entries = EffectEntriesOf(ChangeForm(), files);
+  const size_t entriesBefore = entries.size();
+  const auto changes = skymp::rules::advance_effects(entries, dtSeconds);
+  auto running = RunningEffectsOf(entries, files, WallNowMs());
+  EditChangeForm(
+    [&](MpChangeForm& changeForm) { changeForm.runningEffects = running; });
+  std::array<float, 3> deltas{};
+  std::array<bool, 3> touched{};
+  SumAttributeChanges(changes, deltas, touched, pImpl->godMode);
+  if (entries.size() != entriesBefore) {
+    // an effect ended: every game drops it (each counts the seconds down
+    // itself, so a running one needs no message), before the values, as in
+    // ApplyEffects
+    SendMessageToActorListeners(MagicEffectsOf(GetIdx(), entries, {}), true);
+  }
+  ApplyAttributeDeltas(deltas, touched, maxBefore, 0);
+}
+
+void MpActor::SendMagicEffectsTo(MpActor& listener)
+{
+  WorldState* worldState = GetParent();
+  if (!worldState || !HasRunningEffects()) {
+    return;
+  }
+  const auto entries = EffectEntriesOf(ChangeForm(), worldState->espmFiles);
+  listener.SendToUser(MagicEffectsOf(GetIdx(), entries, {}), true);
+}
+
+bool MpActor::IsGodMode() const noexcept
+{
+  return pImpl->godMode;
+}
+
+void MpActor::SetGodMode(bool on) noexcept
+{
+  pImpl->godMode = on;
+}
+
+bool MpActor::IsImmortal() const noexcept
+{
+  return pImpl->immortal;
+}
+
+void MpActor::SetImmortal(bool on) noexcept
+{
+  pImpl->immortal = on;
+}
+
+bool MpActor::HasRunningEffects() const
+{
+  const auto& running = ChangeForm().runningEffects;
+  return running && !running->empty();
+}
+
+float MpActor::GetEffectModifier(espm::ActorValue av) const
+{
+  WorldState* worldState = GetParent();
+  if (!worldState || !HasRunningEffects()) {
+    return 0.f;
+  }
+  const auto entries = EffectEntriesOf(ChangeForm(), worldState->espmFiles);
+  return skymp::rules::effect_modifier(entries, static_cast<uint32_t>(av));
+}
+
+void MpActor::ApplyAttributeDeltas(const std::array<float, 3>& deltas,
+                                   const std::array<bool, 3>& touched,
+                                   const BaseActorValues& maxBefore,
+                                   uint32_t caster)
+{
+  if (!touched[0] && !touched[1] && !touched[2]) {
+    return;
+  }
+  const BaseActorValues maxAfter = GetMaximumValues();
+  ActorValues values = GetChangeForm().actorValues;
+  std::vector<espm::ActorValue> avs;
+  // a buff's change moves the value with the maximum: the points against
+  // the maximum before, the share against the maximum after
+  auto move = [](float& percentage, float before, float after, float delta) {
+    if (before <= 0.f || after <= 0.f) {
+      return;
+    }
+    percentage = std::clamp((percentage * before + delta) / after, 0.f, 1.f);
+  };
+  if (touched[0]) {
+    move(values.healthPercentage, maxBefore.health, maxAfter.health,
+         deltas[0]);
+    avs.push_back(espm::ActorValue::Health);
+  }
+  if (touched[1]) {
+    move(values.magickaPercentage, maxBefore.magicka, maxAfter.magicka,
+         deltas[1]);
+    avs.push_back(espm::ActorValue::Magicka);
+  }
+  if (touched[2]) {
+    move(values.staminaPercentage, maxBefore.stamina, maxAfter.stamina,
+         deltas[2]);
+    avs.push_back(espm::ActorValue::Stamina);
+  }
+  MpActor* aggressor = nullptr;
+  if (caster) {
+    if (const auto& form = GetParent()->LookupFormByIdNoLoad(caster)) {
+      aggressor = form->AsActor();
+    }
+  }
+  NetSetPercentages(values, aggressor, avs);
 }
 
 std::array<std::optional<Inventory::Entry>, 2> MpActor::GetEquippedWeapon()

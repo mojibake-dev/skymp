@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, casts, clock, console, damage, effects, favorites, hostility, markers, melee, movement, racemenu, ranged, rest, teleports};
+use wire_rules::{activation, actor_values, appearance, block, casts, clock, console, damage, effects, favorites, hostility, magic, markers, melee, movement, racemenu, ranged, rest, stagger, teleports};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -76,6 +76,150 @@ mod ffi {
         since_power_start_ms: u64,
         /// The core holds the attacker sneaking.
         is_sneaking: bool,
+        /// The client says bash.
+        claims_bash: bool,
+        /// Whether the attacker ever started a bash.
+        saw_bash_start: bool,
+        /// Milliseconds since that start (0 when there was none).
+        since_bash_start_ms: u64,
+    }
+
+    /// thuum docs/verbs/blocking.md: the game's block settings (Skyrim.esm's
+    /// GMSTs as the core read them, the executable's default where the
+    /// masters set none).
+    #[derive(Debug)]
+    struct BlockSettings {
+        /// fShieldBaseFactor.
+        shield_base: f32,
+        /// fShieldScalingFactor, percent per armor point.
+        shield_scaling: f32,
+        /// fBlockWeaponBase.
+        weapon_base: f32,
+        /// fBlockWeaponScaling, percent per point of weapon damage.
+        weapon_scaling: f32,
+        /// fArmorRatingBase.
+        rating_base: f32,
+        /// fArmorRatingMax.
+        rating_max: f32,
+        /// fBlockPowerAttackMult.
+        power_attack_mult: f32,
+        /// fPlayerMaxResistance over 100.
+        max_share: f32,
+    }
+
+    /// What the server knows about a hit on a target that may be blocking.
+    #[derive(Debug)]
+    struct BlockFacts {
+        /// The target's recorded block is up.
+        blocking: bool,
+        /// The target's heading, degrees.
+        heading: f32,
+        /// The attacker's offset from the target, x.
+        dx: f32,
+        /// The attacker's offset from the target, y.
+        dy: f32,
+        /// An arrow or a bolt.
+        ranged: bool,
+        /// The target holds a shield.
+        shield: bool,
+        /// The shield record's armor rating.
+        shield_rating: f32,
+        /// The target's ShieldPerks (actor value 66).
+        shield_perks: f32,
+        /// The attacker's weapon's base damage.
+        weapon_damage: f32,
+        /// The target's Block skill.
+        block_skill: f32,
+        /// A power attack, as damage-flags backed it.
+        power: bool,
+    }
+
+    /// thuum docs/verbs/stagger.md: the game's stagger settings (Skyrim.esm's
+    /// GMSTs as the core read them, the executable's defaults where the
+    /// masters set none), and the server's own playerAlwaysStaggered.
+    #[derive(Debug)]
+    struct StaggerSettings {
+        /// fStaggerMassMult.
+        mass_mult: f32,
+        /// fStaggerMassBase.
+        mass_base: f32,
+        /// fStaggerMassOffsetBase.
+        mass_offset_base: f32,
+        /// fStaggerMassOffsetMult.
+        mass_offset_mult: f32,
+        /// fStaggerPlayerMassMult.
+        player_mass_mult: f32,
+        /// fStaggerAttackBase (a bash's).
+        bash_base: f32,
+        /// fStaggerAttackMult (a bash's, per point of Block).
+        bash_mult: f32,
+        /// fStaggerShieldMult.
+        shield_mult: f32,
+        /// fStagger1WeapMult.
+        one_hand_mult: f32,
+        /// fStagger2WeapMult.
+        two_hand_mult: f32,
+        /// fStaggerRunningMult.
+        running_mult: f32,
+        /// fStaggerRecoilingMult.
+        recoiling_mult: f32,
+        /// fStaggerBlockingMult.
+        blocking_mult: f32,
+        /// fStaggerBlockBase.
+        block_base: f32,
+        /// fStaggerBlockMult.
+        block_mult: f32,
+        /// fStaggerBlockAttackShieldBase.
+        block_shield_base: f32,
+        /// fStaggerBlockAttackShieldMult.
+        block_shield_mult: f32,
+        /// fStaggerMin.
+        min: f32,
+        /// iStaggerAttackChance, percent.
+        attack_chance: u8,
+        /// bPlayerAlwaysStaggered:Combat, the server's.
+        player_always_staggered: bool,
+    }
+
+    /// What the server knows about a hit that may stagger its victim.
+    #[derive(Debug)]
+    struct StaggerFacts {
+        /// A bash, as damage-flags backed it.
+        bash: bool,
+        /// The attacker's weapon's stagger (1 without a weapon).
+        weapon_stagger: f32,
+        /// The attack's staggerOffset (its race's ATKD).
+        stagger_offset: f32,
+        /// A bow's or a crossbow's shot.
+        ranged: bool,
+        /// The attacker's BowStaggerBonus (actor value 87).
+        bow_stagger_bonus: f32,
+        /// The attacker's Block.
+        attacker_block: f32,
+        /// The attacker bashes with a shield.
+        attacker_shield: bool,
+        /// Its weapon is two-handed, a bow or a crossbow.
+        attacker_two_handed: bool,
+        /// It bashes with nothing in hand.
+        attacker_unarmed: bool,
+        /// The victim's Mass (actor value 36).
+        victim_mass: f32,
+        /// The victim is a player.
+        victim_is_player: bool,
+        /// The victim runs.
+        victim_running: bool,
+        /// The victim recoils.
+        victim_recoiling: bool,
+        /// The victim's recorded block is up.
+        victim_blocking: bool,
+        /// The victim's Block.
+        victim_block: f32,
+        /// Its shield's rating, or its drawn weapon's type value, or 0.
+        victim_block_rating: f32,
+        /// The hit was blocked (blocking's verdict).
+        blocked: bool,
+        /// The hit dealt damage.
+        dealt_damage: bool,
     }
 
     /// The game's base sneak attack multipliers by weapon type (Skyrim.esm's
@@ -299,6 +443,88 @@ mod ffi {
         z: f32,
     }
 
+    /// How an effect changes its actor values (the MGEF archetype; thuum
+    /// docs/verbs/magic-effects.md).
+    #[derive(Debug, Clone, Copy)]
+    enum EffectKind {
+        /// Archetype 0, value modifier.
+        Value,
+        /// Archetype 34, peak value modifier.
+        PeakValue,
+        /// Archetype 5, dual value modifier.
+        DualValue,
+    }
+
+    /// How an effect arrives.
+    #[derive(Debug, Clone, Copy)]
+    enum EffectArrival {
+        /// A drink, a poisoned hit, a fire-and-forget spell's hit.
+        Once,
+        /// A concentration spell's hit, counting the seconds it held.
+        Stream,
+    }
+
+    /// One effect of an item or a spell, as the records give it.
+    #[derive(Debug, Clone, Copy)]
+    struct EffectFacts {
+        /// The MGEF.
+        effect: u32,
+        /// The potion, poison, spell or enchantment that carries it.
+        source: u32,
+        /// The archetype.
+        kind: EffectKind,
+        /// The primary actor value.
+        av: u32,
+        /// A dual modifier's second actor value, u32::MAX for none.
+        second_av: u32,
+        /// The second value's share of the magnitude.
+        second_weight: f32,
+        /// The item's magnitude for this effect.
+        magnitude: f32,
+        /// The item's duration for this effect, seconds; 0 for none.
+        duration_s: f32,
+        /// MGEF flag Recover.
+        recover: bool,
+        /// MGEF flag Detrimental.
+        detrimental: bool,
+        /// MGEF flag NoDuration.
+        no_duration: bool,
+    }
+
+    /// A change to one actor value: `current` moves the value alone,
+    /// `modifier` the temporary modifier (the maximum and the value).
+    #[derive(Debug, Clone, Copy)]
+    struct AvChange {
+        /// The actor value.
+        av: u32,
+        /// The change to the current value alone.
+        current: f32,
+        /// The change to the temporary modifier.
+        modifier: f32,
+    }
+
+    /// A running effect, as the change form keeps it.
+    #[derive(Debug, Clone, Copy)]
+    struct EffectEntry {
+        /// The facts it was applied with, its magnitude scaled.
+        facts: EffectFacts,
+        /// Who applied it, 0 for none.
+        caster: u32,
+        /// Seconds it has run.
+        elapsed_s: f32,
+    }
+
+    /// What one applied effect did at once, and what keeps running.
+    #[derive(Debug, Clone)]
+    struct EffectApplied {
+        /// The changes made now.
+        changes: Vec<AvChange>,
+        /// Whether `entry` keeps running.
+        has_entry: bool,
+        /// The running entry, when `has_entry`.
+        entry: EffectEntry,
+    }
+
     /// How a spell is cast (the record's SPIT casting type; thuum
     /// docs/verbs/spell-cast.md).
     #[derive(Debug, Clone, Copy)]
@@ -444,6 +670,8 @@ mod ffi {
         power: bool,
         /// Sneak attack kept.
         sneak: bool,
+        /// Bash kept (thuum docs/verbs/blocking.md).
+        bash: bool,
     }
 
     /// The game clock at one instant, as the engine's six time globals hold
@@ -523,6 +751,12 @@ mod ffi {
         /// A kept sneak attack's damage multiplier for a weapon of
         /// `anim_type` (the WEAP record's DNAM animation type).
         fn sneak_mult(anim_type: u8, mults: &SneakMults) -> f32;
+        /// thuum docs/verbs/blocking.md: the share of a hit's damage the
+        /// target's block stops (0 when it is not blocked).
+        fn blocked_share(settings: &BlockSettings, facts: &BlockFacts) -> f32;
+        /// thuum docs/verbs/stagger.md: the stagger the victim's game plays
+        /// (0 for none; at most 1); `roll` is 0 to 99, the caller's.
+        fn stagger_magnitude(settings: &StaggerSettings, facts: &StaggerFacts, roll: u8) -> f32;
         /// Whether an accepted hit is one between two players.
         fn hostility_between_players(facts: &HostilityFacts) -> bool;
         /// Whether two players stand farther apart than the engine's
@@ -660,6 +894,18 @@ mod ffi {
         /// The actor is gone: its shots with it.
         fn forget(self: &mut RangedShots, actor: u32);
 
+        /// Applies one effect at `scale` times its magnitude, cast by
+        /// `caster` (wire-rules magic::apply).
+        fn apply_effect(facts: EffectFacts, scale: f32, caster: u32, arrival: EffectArrival) -> EffectApplied;
+        /// Runs `entries` for `dt_s` seconds: their changes; ended entries
+        /// are removed.
+        fn advance_effects(entries: &mut Vec<EffectEntry>, dt_s: f32) -> Vec<AvChange>;
+        /// Adds `entry` to `entries` within the bound: a displaced buff's
+        /// return comes back.
+        fn admit_effect(entries: &mut Vec<EffectEntry>, entry: EffectEntry) -> Vec<AvChange>;
+        /// The temporary modifier the running buffs put on `av`.
+        fn effect_modifier(entries: &Vec<EffectEntry>, av: u32) -> f32;
+
         /// Every player actor's recent spell casts and open streams.
         type SpellCasts;
         /// No casts yet.
@@ -692,7 +938,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, Verdict};
+pub use ffi::{AvBase, AvChange, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, Verdict};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -739,8 +985,10 @@ fn backed_flags(f: &FlagFacts) -> Flags {
         claims_sneak: f.claims_sneak,
         since_power_start_ms: f.saw_power_start.then_some(f.since_power_start_ms),
         is_sneaking: f.is_sneaking,
+        claims_bash: f.claims_bash,
+        since_bash_start_ms: f.saw_bash_start.then_some(f.since_bash_start_ms),
     });
-    Flags { power: kept.power, sneak: kept.sneak }
+    Flags { power: kept.power, sneak: kept.sneak, bash: kept.bash }
 }
 
 /// TES3MP's rest switches (wire-rules rest).
@@ -779,6 +1027,82 @@ fn sneak_mult(anim_type: u8, m: &SneakMults) -> f32 {
             two_hand_sword: m.two_hand_sword,
             two_hand_axe: m.two_hand_axe,
         },
+    )
+}
+
+fn blocked_share(s: &BlockSettings, f: &BlockFacts) -> f32 {
+    block::blocked_share(
+        &block::BlockSettings {
+            shield_base: s.shield_base,
+            shield_scaling: s.shield_scaling,
+            weapon_base: s.weapon_base,
+            weapon_scaling: s.weapon_scaling,
+            rating_base: s.rating_base,
+            rating_max: s.rating_max,
+            power_attack_mult: s.power_attack_mult,
+            max_share: s.max_share,
+        },
+        &block::BlockFacts {
+            blocking: f.blocking,
+            heading: f.heading,
+            dx: f.dx,
+            dy: f.dy,
+            ranged: f.ranged,
+            shield: f.shield,
+            shield_rating: f.shield_rating,
+            shield_perks: f.shield_perks,
+            weapon_damage: f.weapon_damage,
+            block_skill: f.block_skill,
+            power: f.power,
+        },
+    )
+}
+
+fn stagger_magnitude(s: &StaggerSettings, f: &StaggerFacts, roll: u8) -> f32 {
+    stagger::stagger(
+        &stagger::StaggerSettings {
+            mass_mult: s.mass_mult,
+            mass_base: s.mass_base,
+            mass_offset_base: s.mass_offset_base,
+            mass_offset_mult: s.mass_offset_mult,
+            player_mass_mult: s.player_mass_mult,
+            bash_base: s.bash_base,
+            bash_mult: s.bash_mult,
+            shield_mult: s.shield_mult,
+            one_hand_mult: s.one_hand_mult,
+            two_hand_mult: s.two_hand_mult,
+            running_mult: s.running_mult,
+            recoiling_mult: s.recoiling_mult,
+            blocking_mult: s.blocking_mult,
+            block_base: s.block_base,
+            block_mult: s.block_mult,
+            block_shield_base: s.block_shield_base,
+            block_shield_mult: s.block_shield_mult,
+            min: s.min,
+            attack_chance: s.attack_chance,
+            player_always_staggered: s.player_always_staggered,
+        },
+        &stagger::StaggerFacts {
+            bash: f.bash,
+            weapon_stagger: f.weapon_stagger,
+            stagger_offset: f.stagger_offset,
+            ranged: f.ranged,
+            bow_stagger_bonus: f.bow_stagger_bonus,
+            attacker_block: f.attacker_block,
+            attacker_shield: f.attacker_shield,
+            attacker_two_handed: f.attacker_two_handed,
+            attacker_unarmed: f.attacker_unarmed,
+            victim_mass: f.victim_mass,
+            victim_is_player: f.victim_is_player,
+            victim_running: f.victim_running,
+            victim_recoiling: f.victim_recoiling,
+            victim_blocking: f.victim_blocking,
+            victim_block: f.victim_block,
+            victim_block_rating: f.victim_block_rating,
+            blocked: f.blocked,
+            dealt_damage: f.dealt_damage,
+        },
+        roll,
     )
 }
 
@@ -1103,6 +1427,77 @@ impl RangedShots {
     }
 }
 
+fn to_magic_facts(f: EffectFacts) -> magic::EffectFacts {
+    let EffectFacts { effect, source, kind, av, second_av, second_weight, magnitude, duration_s, recover, detrimental, no_duration } = f;
+    let kind = match kind {
+        EffectKind::PeakValue => magic::EffectKind::PeakValue,
+        EffectKind::DualValue => magic::EffectKind::DualValue,
+        _ => magic::EffectKind::Value,
+    };
+    let second_av = if second_av == u32::MAX { None } else { Some(second_av) };
+    magic::EffectFacts { effect, source, kind, av, second_av, second_weight, magnitude, duration_s, recover, detrimental, no_duration }
+}
+
+fn from_magic_facts(f: magic::EffectFacts) -> EffectFacts {
+    let magic::EffectFacts { effect, source, kind, av, second_av, second_weight, magnitude, duration_s, recover, detrimental, no_duration } = f;
+    let kind = match kind {
+        magic::EffectKind::Value => EffectKind::Value,
+        magic::EffectKind::PeakValue => EffectKind::PeakValue,
+        magic::EffectKind::DualValue => EffectKind::DualValue,
+    };
+    EffectFacts { effect, source, kind, av, second_av: second_av.unwrap_or(u32::MAX), second_weight, magnitude, duration_s, recover, detrimental, no_duration }
+}
+
+fn to_magic_entry(e: &EffectEntry) -> magic::EffectEntry {
+    magic::EffectEntry { facts: to_magic_facts(e.facts), caster: e.caster, elapsed_s: e.elapsed_s }
+}
+
+fn from_magic_entry(e: &magic::EffectEntry) -> EffectEntry {
+    EffectEntry { facts: from_magic_facts(e.facts), caster: e.caster, elapsed_s: e.elapsed_s }
+}
+
+fn from_magic_changes(changes: &[magic::AvChange]) -> Vec<AvChange> {
+    changes.iter().map(|c| AvChange { av: c.av, current: c.current, modifier: c.modifier }).collect()
+}
+
+fn apply_effect(facts: EffectFacts, scale: f32, caster: u32, arrival: EffectArrival) -> EffectApplied {
+    let arrival = match arrival {
+        EffectArrival::Stream => magic::Arrival::Stream,
+        _ => magic::Arrival::Once,
+    };
+    let applied = magic::apply(to_magic_facts(facts), scale, caster, arrival);
+    let changes = from_magic_changes(&applied.changes);
+    match applied.entry {
+        Some(e) => EffectApplied { changes, has_entry: true, entry: from_magic_entry(&e) },
+        None => EffectApplied { changes, has_entry: false, entry: EffectEntry { facts, caster, elapsed_s: 0.0 } },
+    }
+}
+
+/// Runs a magic rule over the entries the C++ change form holds, writing
+/// them back.
+fn with_entries(entries: &mut Vec<EffectEntry>, run: impl FnOnce(&mut Vec<magic::EffectEntry>) -> Vec<magic::AvChange>) -> Vec<AvChange> {
+    let mut ours: Vec<magic::EffectEntry> = entries.iter().map(to_magic_entry).collect();
+    let changes = run(&mut ours);
+    *entries = ours.iter().map(from_magic_entry).collect();
+    from_magic_changes(&changes)
+}
+
+fn advance_effects(entries: &mut Vec<EffectEntry>, dt_s: f32) -> Vec<AvChange> {
+    with_entries(entries, |ours| magic::advance(ours, dt_s))
+}
+
+fn admit_effect(entries: &mut Vec<EffectEntry>, entry: EffectEntry) -> Vec<AvChange> {
+    let entry = to_magic_entry(&entry);
+    with_entries(entries, |ours| magic::admit(ours, entry))
+}
+
+// cxx passes a C++ rust::Vec by reference as &Vec
+#[allow(clippy::ptr_arg)]
+fn effect_modifier(entries: &Vec<EffectEntry>, av: u32) -> f32 {
+    let ours: Vec<magic::EffectEntry> = entries.iter().map(to_magic_entry).collect();
+    magic::modifier(&ours, av)
+}
+
 /// Every player actor's recent spell casts and open streams (wire-rules
 /// casts).
 #[derive(Debug, Default)]
@@ -1214,8 +1609,11 @@ mod tests {
             saw_power_start: false,
             since_power_start_ms: 0,
             is_sneaking: true,
+            claims_bash: true,
+            saw_bash_start: true,
+            since_bash_start_ms: 951,
         });
-        assert!(!kept.power && kept.sneak);
+        assert!(!kept.power && kept.sneak && kept.bash);
         let skyrim = SneakMults {
             hand: 2.0,
             one_hand_sword: 3.0,
@@ -1257,6 +1655,42 @@ mod tests {
         assert!(named.as_ref().is_ok_and(|t| t.teleport_reach(0x12fd0, "Skyrim.esm") < 0.0));
         assert!(new_cast_teleports("[]").is_ok_and(|t| t.teleport_reach(0xa86df, "LostGrimoire.esp") < 0.0));
         assert!(new_cast_teleports(r#"[{"spell": "a86df", "reach": 3000}]"#).is_err());
+    }
+
+    #[test]
+    fn the_bridge_passes_effects_through() {
+        // DB03Poison's AlchDamageHealthDuration: 6 a second for 10 s, Health
+        let poison = EffectFacts {
+            effect: 0x10aa4a,
+            source: 0x58cfb,
+            kind: EffectKind::Value,
+            av: 24,
+            second_av: u32::MAX,
+            second_weight: 0.0,
+            magnitude: 6.0,
+            duration_s: 10.0,
+            recover: false,
+            detrimental: true,
+            no_duration: false,
+        };
+        let applied = apply_effect(poison, 1.0, 7, EffectArrival::Once);
+        assert!(applied.changes.is_empty());
+        assert!(applied.has_entry);
+        let mut entries = Vec::new();
+        assert!(admit_effect(&mut entries, applied.entry).is_empty());
+        let hurt: f32 = advance_effects(&mut entries, 4.0).iter().map(|c| c.current).sum();
+        assert!((hurt + 24.0).abs() < 1e-3);
+        assert_eq!(entries.first().map(|e| e.caster), Some(7));
+        assert!(effect_modifier(&entries, 24).abs() < 1e-6);
+        let rest: f32 = advance_effects(&mut entries, 10.0).iter().map(|c| c.current).sum();
+        assert!((rest + 36.0).abs() < 1e-3);
+        assert!(entries.is_empty());
+        // a stream's hit counts at once, the second value at its weight
+        let shock = EffectFacts { kind: EffectKind::DualValue, second_av: 25, second_weight: 0.5, magnitude: 8.0, duration_s: 1.0, ..poison };
+        let hit = apply_effect(shock, 0.25, 7, EffectArrival::Stream);
+        assert!(!hit.has_entry);
+        let magicka: f32 = hit.changes.iter().filter(|c| c.av == 25).map(|c| c.current).sum();
+        assert!((magicka + 1.0).abs() < 1e-3);
     }
 
     #[test]

@@ -110,6 +110,12 @@ pub struct ClientGuard {
     /// stops a flood; the server's casts rule matches each spell hit to a
     /// cast.
     pub cast_budget: TokenBucket,
+    /// Budget for equip reports (OnEquip): a potion's drink, a book's read
+    /// and every item a player puts on go through it (thuum
+    /// docs/verbs/magic-effects.md), and a player's hotkeys or an outfit
+    /// can send a row at once, so sixteen at once and eight a second after
+    /// that only ever stops a flood.
+    pub equip_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -130,6 +136,7 @@ impl Default for ClientGuard {
             shot_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 2, last_refill_ms: 0 },
             on_hit_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 16, last_refill_ms: 0 },
             cast_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 4, last_refill_ms: 0 },
+            equip_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 8, last_refill_ms: 0 },
         }
     }
 }
@@ -442,6 +449,7 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::PlayerBowShot(_) => take(&mut guard.shot_budget, now_ms),
         Message::OnHit(_) => take(&mut guard.on_hit_budget, now_ms),
         Message::SpellCast(_) => take(&mut guard.cast_budget, now_ms),
+        Message::OnEquip(_) => take(&mut guard.equip_budget, now_ms),
         _ => Ok(()),
     }
 }
@@ -530,6 +538,20 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         // length bounded at decode (cap::CONSOLE_OUTPUT); the transport
         // refuses it from a client by direction
         Message::ConsoleOutput(_) => Ok(()),
+        // thuum docs/verbs/magic-effects.md: the server's own effect set, at
+        // most MAGIC_EFFECTS entries and EFFECT_MODIFIERS sums (bounded at
+        // decode); the transport refuses it from a client by direction, its
+        // numbers are finite and each sum names an actor value the engine
+        // has
+        Message::MagicEffects(m) => {
+            if !all_finite(m) {
+                Err(Reject::NonFinite)
+            } else if m.modifiers.iter().any(|x| usize::try_from(x.av).map_or(true, |av| av >= wire_schema::cap::ACTOR_VALUES)) {
+                Err(Reject::Range)
+            } else {
+                Ok(())
+            }
+        }
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
         // rejects it by direction before it gets this far.
@@ -1053,6 +1075,55 @@ mod tests {
             assert_eq!(validate(&actor_values(&[6], &[], &[], 1.0), &mut g, 0), Ok(()));
         }
         assert_eq!(validate(&actor_values(&[6], &[], &[], 1.0), &mut g, 0), Err(Reject::Rate));
+    }
+
+    #[test]
+    fn equips_have_a_budget_that_only_stops_a_flood() {
+        use wire_schema::skymp::OnEquip;
+        let drink = Message::OnEquip(OnEquip { base_id: 0x3eadd, ..OnEquip::default() });
+        let mut g = ClientGuard::default();
+        for _ in 0..16 {
+            assert_eq!(validate(&drink, &mut g, 0), Ok(()));
+        }
+        assert_eq!(validate(&drink, &mut g, 0), Err(Reject::Rate));
+        // a second later, eight more
+        for _ in 0..8 {
+            assert_eq!(validate(&drink, &mut g, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&drink, &mut g, 1_000), Err(Reject::Rate));
+    }
+
+    #[test]
+    fn a_magic_effects_set_with_a_number_that_is_not_finite_is_refused() {
+        use wire_schema::skymp::{MagicEffect, MagicEffects};
+        // DB03Poison's effect, 3.5 s into its 10 (thuum docs/verbs/magic-effects.md)
+        let set = |remaining: f32| {
+            let mut m = MagicEffects { idx: 64, ..MagicEffects::default() };
+            let entry = MagicEffect { effect: 0x10aa4a, source: 0x58cfb, magnitude: 6.0, remaining };
+            if m.effects.push(entry).is_err() {
+                return Message::MagicEffects(MagicEffects::default());
+            }
+            Message::MagicEffects(m)
+        };
+        assert_eq!(validate_server(&set(6.5)), Ok(()));
+        assert_eq!(validate_server(&set(f32::NAN)), Err(Reject::NonFinite));
+    }
+
+    #[test]
+    fn a_magic_effects_sum_names_an_actor_value_the_engine_has() {
+        use wire_schema::skymp::{EffectModifier, MagicEffects};
+        // FortifyHealth05's 100 on Health (actor value 24)
+        let sum = |av: u32, amount: f32| {
+            let mut m = MagicEffects { idx: 64, ..MagicEffects::default() };
+            if m.modifiers.push(EffectModifier { av, amount }).is_err() {
+                return Message::MagicEffects(MagicEffects::default());
+            }
+            Message::MagicEffects(m)
+        };
+        assert_eq!(validate_server(&sum(24, 100.0)), Ok(()));
+        assert_eq!(validate_server(&sum(163, -20.0)), Ok(()));
+        assert_eq!(validate_server(&sum(164, 100.0)), Err(Reject::Range));
+        assert_eq!(validate_server(&sum(24, f32::INFINITY)), Err(Reject::NonFinite));
     }
 
     #[test]

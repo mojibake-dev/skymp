@@ -94,6 +94,15 @@ public:
     // (UESP "Skyrim Mod:Mod File Format/MGEF", after the effect type at 0x40
     // and the primary actor value at 0x44; thuum docs/verbs/spell-cast.md)
     uint32_t projectile = 0;
+    // thuum docs/verbs/magic-effects.md, the same layout, checked against
+    // the masters with thuum lab/esm.py: a dual value modifier's second
+    // actor value (0x58, None for none) and its share of the magnitude
+    // (0x3C); the hit shader (EFSH, 0x20) and the hit effect art (ARTO,
+    // 0x60) an effect shows on its target, 0 for none
+    ActorValue secondaryAV = espm::ActorValue::None;
+    float secondAVWeight = 0.f;
+    uint32_t hitShader = 0;
+    uint32_t hitEffectArt = 0;
 
     [[nodiscard]] inline bool IsFlagSet(Flags flag) const
     {

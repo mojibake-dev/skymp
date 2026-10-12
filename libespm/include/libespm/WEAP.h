@@ -49,6 +49,11 @@ public:
   {
     const WeapData* weapData = nullptr;
     const DNAM* weapDNAM = nullptr;
+    // DNAM's stagger, the float at 0x60 of its 100 bytes (UESP, "Skyrim
+    // Mod:Mod File Format/WEAP"; Skyrim.esm's Iron Sword 0.75, thuum
+    // lab/esm.py 2026-10-10), 0 when the field is shorter: an attack's
+    // stagger scales with it (thuum docs/verbs/stagger.md)
+    float stagger = 0.f;
   };
 
   Data GetData(CompressedFieldsCache& compressedFieldsCache) const noexcept;

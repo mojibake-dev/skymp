@@ -1,0 +1,58 @@
+# difftest god-mode (M2, thuum docs/verbs/god-mode.md): c1 and c2 are new
+# characters (profiles 9 and 10, actors 0xff000002 and 0xff000003: see
+# melee-reach). The lab server runs with enableConsoleCommandsForAll (see
+# console), so every player is an owner. c1 steps 50 units east of the spawn
+# at 1 s, and at 2 s types tgm: the legacy server does not know it; the fixed
+# server sets c1's god mode, tells c1's game (Debug.SetGodMode) and answers
+# with the state. c2 hits c1 bare-handed from the spawn at 2 s of its own
+# (3.5 s of c1's), hostility's layout mirrored (the spawn faces the 50 units
+# east, so the hit cone takes the hit; the first draw of this session had c2
+# step east and swing at c1 behind it, which the cone refused before god
+# mode was reached): the legacy server takes the hit's damage from c1; the
+# fixed server takes none and still begins the fight (StartCombat to c1's
+# game). c2 steps west at 4 s of its own (5.5 s of c1's), so it outlives c1,
+# as in every session. The divergences are declared from the run with this
+# layout (T2 2026-10-10, fork m2-god b376d8e1): c1 hears its god mode
+# (SetGodMode), the fight (StartCombat on c2's actor, 4278190083) and the
+# console's line; the legacy server sends c1 the hit's 3.7 percent, the
+# fixed server its health unchanged.
+id: god-mode
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 1000, move: {dx: 50}}
+  - {client: c1, at_ms: 2000, send: {t: 12, data: {t: 12, commandName: tgm, args: []}}}
+  - {client: c2, at_ms: 2000, send: {t: 17, data: {aggressor: 20, target: 4278190082, source: 500, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
+  - {client: c2, at_ms: 4000, move: {dx: -60}}
+divergences:
+  - client: c2
+    msg: {t: 25, idx: 2}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout
+  - client: c1
+    msg: {t: 41, text: "tgm done: god mode on", refused: false}
+    legacy: 0
+    wire: 1
+    reason: the fixed server serves TGM for an owner and answers with the state it set (thuum docs/verbs/god-mode.md); the legacy server does not know the command
+  - client: c1
+    msg: {t: 30, class: Debug, function: SetGodMode, selfId: 0, arguments: [true]}
+    legacy: 0
+    wire: 1
+    reason: the fixed server puts c1's own game in god mode too (Debug.SetGodMode by SpSnippet), so its magicka and stamina spending follow the flag
+  - client: c1
+    msg: {t: 30, class: Actor, function: StartCombat, selfId: 4278190083, arguments: [{formId: 20, type: Actor}]}
+    legacy: 0
+    wire: 1
+    reason: c2's hit on god-mode c1 still begins the fight (hostility sync, thuum ADR-023); the legacy server has none
+  - client: c1
+    msg: {t: 16, idx: 2, data: {health: 0.96288001537323}}
+    legacy: 1
+    wire: 0
+    reason: the legacy server takes the bare-handed hit's 3.7 percent from c1
+  - client: c1
+    msg: {t: 16, idx: 2, data: {health: 1}}
+    legacy: 0
+    wire: 1
+    reason: the fixed server takes nothing from god-mode c1 and sends it its health unchanged

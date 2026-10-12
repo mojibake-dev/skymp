@@ -212,10 +212,9 @@ float TES5DamageFormulaImpl::CalculateDamage() const
     damage *= 2.f;
   }
 
-  if (hitData.isHitBlocked) {
-    // TODO(#460): implement correct block formula
-    damage *= 0.1f;
-  }
+  // a block's share is the server's block rule's (thuum
+  // docs/verbs/blocking.md, wire-rules block), applied in
+  // ActionListener::OnWeaponHit; it was a tenth here (TODO #460)
 
   if (hitData.isSneakAttack) {
     damage *= CalcSneakMultiplier();

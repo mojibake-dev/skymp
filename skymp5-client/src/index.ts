@@ -56,6 +56,7 @@ import { BlockedAnimationsService } from "./services/services/blockedAnimationsS
 import { WorldView } from "./view/worldView";
 import { KeyboardEventsService } from "./services/services/keyboardEventsService";
 import { MagicSyncService } from "./services/services/magicSyncService";
+import { MagicEffectsService } from "./services/services/magicEffectsService";
 import { ProfilingService } from "./services/services/profilingService";
 import { SettingsService } from "./services/services/settingsService";
 import { SweetCameraEnforcementService } from "./services/services/sweetCameraEnforcementService";
@@ -126,6 +127,7 @@ const main = () => {
       new WorldView(sp, controller),
       new KeyboardEventsService(sp, controller),
       new MagicSyncService(sp, controller),
+      new MagicEffectsService(sp, controller),
       new ProfilingService(sp, controller),
       new SweetTaffyNicknamesService(sp, controller),
       new ServerJsVerificationService(sp, controller)

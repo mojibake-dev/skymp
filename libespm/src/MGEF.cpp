@@ -25,6 +25,23 @@ MGEF::Data MGEF::GetData(
           std::memcpy(&result.data.projectile, data + 0x48,
                       sizeof(result.data.projectile));
         }
+        if (size >= 0x40) {
+          std::memcpy(&result.data.secondAVWeight, data + 0x3C,
+                      sizeof(result.data.secondAVWeight));
+        }
+        if (size >= 0x24) {
+          std::memcpy(&result.data.hitShader, data + 0x20,
+                      sizeof(result.data.hitShader));
+        }
+        if (size >= 0x5C) {
+          std::underlying_type_t<ActorValue> second = 0;
+          std::memcpy(&second, data + 0x58, sizeof(second));
+          result.data.secondaryAV = ActorValue(second);
+        }
+        if (size >= 0x64) {
+          std::memcpy(&result.data.hitEffectArt, data + 0x60,
+                      sizeof(result.data.hitEffectArt));
+        }
       }
     },
     compressedFieldsCache);

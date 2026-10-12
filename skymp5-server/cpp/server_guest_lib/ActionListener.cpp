@@ -34,6 +34,7 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <random>
 #include <spdlog/spdlog.h>
 #include <unordered_set>
 
@@ -1606,7 +1607,10 @@ void ActionListener::OnPlayerBowShot(const RawMessageData& rawMsgData,
                         ac->GetFormId(), msg.ammoId, msg.weaponId);
   }
 
-  ac->RemoveItem(msg.ammoId, 1, nullptr);
+  if (!ac->IsGodMode()) {
+    // thuum docs/verbs/god-mode.md: TGM, unlimited arrows
+    ac->RemoveItem(msg.ammoId, 1, nullptr);
+  }
 
   // the shot waits for its hit (one), and each neighbour's game draws the
   // arrow from the shooter's figure
@@ -2027,17 +2031,264 @@ bool CanHit(const MpActor& actor, const HitData& hitData,
     fmt::format("Cannot get weapon speed from source: {0:x}", hitData.source));
 }
 
-bool ShouldBeBlocked(const MpActor& aggressor, const MpActor& target)
+// thuum docs/verbs/blocking.md: the game's block settings as the engine
+// reads them (thuum ghidra/notes/block-formula.md, ID 26425): Skyrim.esm's
+// GMSTs, and fPlayerMaxResistance's executable default, 85, which the
+// masters do not set (lab/esm.py, 2026-10-10)
+skymp::rules::BlockSettings BlockSettingsOf(WorldState& worldState)
 {
-  NiPoint3 targetViewDirection = target.GetViewDirection();
-  NiPoint3 aggressorDirection = aggressor.GetPos() - target.GetPos();
-  if (targetViewDirection * aggressorDirection <= 0) {
-    return false;
+  const auto setting = [&](uint32_t id) {
+    return espm::GetData<espm::GMST>(id, &worldState).value;
+  };
+  constexpr float kPlayerMaxResistance = 85.f;
+  skymp::rules::BlockSettings s{};
+  s.shield_base = setting(espm::GMST::kFShieldBaseFactor);
+  s.shield_scaling = setting(espm::GMST::kFShieldScalingFactor);
+  s.weapon_base = setting(espm::GMST::kFBlockWeaponBase);
+  s.weapon_scaling = setting(espm::GMST::kFBlockWeaponScaling);
+  s.rating_base = setting(espm::GMST::kFArmorRatingBase);
+  s.rating_max = setting(espm::GMST::kFArmorRatingMax);
+  s.power_attack_mult = setting(espm::GMST::kFBlockPowerAttackMult);
+  s.max_share = kPlayerMaxResistance / 100.f;
+  return s;
+}
+
+// The base armor rating of the shield the target holds, if it holds one: a
+// worn ARMO with the shield's biped slot (BGSBipedObjectForm::
+// BipedObjectSlot::kShield, 1 << 9, CommonLibSSE-NG
+// include/RE/B/BGSBipedObjectForm.h:22; BOD2, else BODT). The record's
+// equip slot is no shield test (thuum scratchpad m2-survey.md).
+std::optional<float> HeldShieldRating(const MpActor& target,
+                                      WorldState& worldState)
+{
+  constexpr uint32_t kShieldSlot = 1u << 9;
+  auto& browser = worldState.GetEspm().GetBrowser();
+  for (const auto& entry : target.GetEquipment().inv.entries) {
+    if (entry.GetWorn() == Inventory::Worn::None) {
+      continue;
+    }
+    const auto res = browser.LookupById(entry.baseId);
+    if (!res.rec || res.rec->GetType() != espm::ARMO::kType) {
+      continue;
+    }
+    const auto data = espm::GetData<espm::ARMO>(entry.baseId, &worldState);
+    const uint32_t slots =
+      data.bod2.present ? data.bod2.bodyPartFlags : data.bodt.bodyPartFlags;
+    if (slots & kShieldSlot) {
+      return static_cast<float>(data.baseRatingX100) / 100.f;
+    }
   }
-  float angle =
-    std::acos((targetViewDirection * aggressorDirection) /
-              (targetViewDirection.Length() * aggressorDirection.Length()));
-  return angle < 1;
+  return std::nullopt;
+}
+
+// thuum docs/verbs/blocking.md: the share of the hit's damage the target's
+// block stops, from the server's own records (R0, wire-rules block): its
+// recorded block, its heading against the attacker's position (the engine
+// tests the block's cone in yaw only), an arrow or a bolt (a bow's bash is
+// a melee hit), a shield, the attacker's weapon damage, the target's Block
+// and ShieldPerks (the actor-values record; 0 without one), the power
+// attack damage-flags backed
+float BlockedShare(const MpActor& aggressor, const MpActor& target,
+                   const HitData& hitData, WorldState& worldState)
+{
+  skymp::rules::BlockFacts f{};
+  f.blocking = target.IsBlockActive();
+  if (!f.blocking) {
+    return 0.f;
+  }
+  f.heading = target.GetAngle().z;
+  f.dx = aggressor.GetPos().x - target.GetPos().x;
+  f.dy = aggressor.GetPos().y - target.GetPos().y;
+  const auto source =
+    worldState.GetEspm().GetBrowser().LookupById(hitData.source);
+  if (source.rec && source.rec->GetType() == espm::WEAP::kType) {
+    const auto weap = espm::GetData<espm::WEAP>(hitData.source, &worldState);
+    if (weap.weapDNAM) {
+      const auto anim = weap.weapDNAM->animType;
+      f.ranged = (anim == espm::WEAP::AnimType::Bow ||
+                  anim == espm::WEAP::AnimType::Crossbow) &&
+        !hitData.isBashAttack;
+    }
+    if (weap.weapData) {
+      f.weapon_damage = static_cast<float>(weap.weapData->damage);
+    }
+  }
+  if (const auto rating = HeldShieldRating(target, worldState)) {
+    f.shield = true;
+    f.shield_rating = *rating;
+  }
+  f.block_skill =
+    target
+      .GetRecordedActorValueBase(static_cast<uint8_t>(espm::ActorValue::Block))
+      .value_or(0.f);
+  // ShieldPerks, actor value 66 (CommonLibSSE-NG
+  // include/RE/A/ActorValues.h:74), the engine's term beside the skill
+  constexpr uint8_t kShieldPerks = 66;
+  f.shield_perks =
+    target.GetRecordedActorValueBase(kShieldPerks).value_or(0.f);
+  f.power = hitData.isPowerAttack;
+  return skymp::rules::blocked_share(BlockSettingsOf(worldState), f);
+}
+
+// thuum docs/verbs/stagger.md: the game's stagger settings as the engine
+// reads them (thuum ghidra/notes/block-formula.md): Skyrim.esm's GMSTs, and
+// the executable's defaults where the masters set none (the notes' table:
+// fStaggerMassMult 1, fStaggerMassBase 0, fStaggerMassOffsetMult 0.15,
+// fStaggerAttackBase 0.5, fStaggerAttackMult 0.01, fStaggerShieldMult 1,
+// fStagger1WeapMult 0.2, fStagger2WeapMult 0.5, fStaggerRunningMult 1.5,
+// fStaggerRecoilingMult 1.5); bPlayerAlwaysStaggered:Combat is an INI
+// setting, true by default, and the server's here
+skymp::rules::StaggerSettings StaggerSettingsOf(WorldState& worldState)
+{
+  const auto setting = [&](uint32_t id) {
+    return espm::GetData<espm::GMST>(id, &worldState);
+  };
+  skymp::rules::StaggerSettings s{};
+  s.mass_mult = 1.f;
+  s.mass_base = 0.f;
+  s.mass_offset_base = setting(espm::GMST::kFStaggerMassOffsetBase).value;
+  s.mass_offset_mult = 0.15f;
+  s.player_mass_mult = setting(espm::GMST::kFStaggerPlayerMassMult).value;
+  s.bash_base = 0.5f;
+  s.bash_mult = 0.01f;
+  s.shield_mult = 1.f;
+  s.one_hand_mult = 0.2f;
+  s.two_hand_mult = 0.5f;
+  s.running_mult = 1.5f;
+  s.recoiling_mult = 1.5f;
+  s.blocking_mult = setting(espm::GMST::kFStaggerBlockingMult).value;
+  s.block_base = setting(espm::GMST::kFStaggerBlockBase).value;
+  s.block_mult = setting(espm::GMST::kFStaggerBlockMult).value;
+  s.block_shield_base =
+    setting(espm::GMST::kFStaggerBlockAttackShieldBase).value;
+  s.block_shield_mult =
+    setting(espm::GMST::kFStaggerBlockAttackShieldMult).value;
+  s.min = setting(espm::GMST::kFStaggerMin).value;
+  s.attack_chance = static_cast<uint8_t>(
+    std::clamp(setting(espm::GMST::kIStaggerAttackChance).intValue, 0, 100));
+  s.player_always_staggered = true;
+  return s;
+}
+
+// The weapon worn in the actor's right hand, if any
+std::optional<espm::WEAP::Data> RightHandWeapon(const MpActor& actor,
+                                                WorldState& worldState)
+{
+  auto& browser = worldState.GetEspm().GetBrowser();
+  for (const auto& entry : actor.GetEquipment().inv.entries) {
+    if (entry.GetWorn() != Inventory::Worn::Right) {
+      continue;
+    }
+    const auto res = browser.LookupById(entry.baseId);
+    if (res.rec && res.rec->GetType() == espm::WEAP::kType) {
+      return espm::GetData<espm::WEAP>(entry.baseId, &worldState);
+    }
+  }
+  return std::nullopt;
+}
+
+// A drawn weapon's value against a stagger when its holder blocks without a
+// shield (ID 18093, the executable's defaults: fStagger1WeapAR 10 for a
+// one-handed sword, axe or mace, fStaggerDaggerAR 5, fStagger2WeapAR 15,
+// fStaggerBowAR 5 for a bow or a crossbow, else 0)
+float DrawnWeaponStaggerValue(const MpActor& actor, WorldState& worldState)
+{
+  if (!actor.GetAnimationVariableBool("_skymp_isWeapDrawn")) {
+    return 0.f;
+  }
+  const auto weapon = RightHandWeapon(actor, worldState);
+  if (!weapon || !weapon->weapDNAM) {
+    return 0.f;
+  }
+  switch (weapon->weapDNAM->animType) {
+    case espm::WEAP::AnimType::OneHandSword:
+    case espm::WEAP::AnimType::OneHandAxe:
+    case espm::WEAP::AnimType::OneHandMace:
+      return 10.f;
+    case espm::WEAP::AnimType::OneHandDagger:
+      return 5.f;
+    case espm::WEAP::AnimType::TwoHandSword:
+    case espm::WEAP::AnimType::TwoHandAxe:
+      return 15.f;
+    case espm::WEAP::AnimType::Bow:
+    case espm::WEAP::AnimType::Crossbow:
+      return 5.f;
+    default:
+      return 0.f;
+  }
+}
+
+// thuum docs/verbs/stagger.md: the facts the stagger rule needs, from the
+// server's records: the attacker's weapon and the attack it started (its
+// race's ATKD by name), the victim's race's mass, block and Block (the
+// actor-values record; 0 without one, as blocking's), whether it is a
+// player. The victim's running and recoiling are not recorded (false).
+skymp::rules::StaggerFacts StaggerFactsOf(
+  const MpActor& aggressor, const MpActor& target, const HitData& hitData,
+  const std::string& attackName, bool targetIsPlayer, bool dealtDamage,
+  WorldState& worldState)
+{
+  skymp::rules::StaggerFacts f{};
+  f.bash = hitData.isBashAttack;
+  f.weapon_stagger = 1.f;
+  bool twoHanded = false;
+  bool armed = false;
+  auto& browser = worldState.GetEspm().GetBrowser();
+  const auto source = browser.LookupById(hitData.source);
+  if (source.rec && source.rec->GetType() == espm::WEAP::kType) {
+    const auto weap = espm::GetData<espm::WEAP>(hitData.source, &worldState);
+    f.weapon_stagger = weap.stagger;
+    if (weap.weapDNAM) {
+      const auto anim = weap.weapDNAM->animType;
+      armed = anim != espm::WEAP::AnimType::Other;
+      twoHanded = anim == espm::WEAP::AnimType::TwoHandSword ||
+        anim == espm::WEAP::AnimType::TwoHandAxe ||
+        anim == espm::WEAP::AnimType::Bow ||
+        anim == espm::WEAP::AnimType::Crossbow;
+      f.ranged = (anim == espm::WEAP::AnimType::Bow ||
+                  anim == espm::WEAP::AnimType::Crossbow) &&
+        !hitData.isBashAttack;
+    }
+  }
+  const auto race =
+    espm::GetData<espm::RACE>(aggressor.GetRaceId(), &worldState);
+  const auto offset = race.attackStaggerOffsets.find(attackName);
+  f.stagger_offset =
+    offset == race.attackStaggerOffsets.end() ? 0.f : offset->second;
+  // BowStaggerBonus, actor value 87 (CommonLibSSE-NG
+  // include/RE/A/ActorValues.h:95)
+  constexpr uint8_t kBowStaggerBonus = 87;
+  f.bow_stagger_bonus =
+    aggressor.GetRecordedActorValueBase(kBowStaggerBonus).value_or(0.f);
+  f.attacker_block =
+    aggressor
+      .GetRecordedActorValueBase(static_cast<uint8_t>(espm::ActorValue::Block))
+      .value_or(0.f);
+  f.attacker_shield = HeldShieldRating(aggressor, worldState).has_value();
+  f.attacker_two_handed = twoHanded;
+  f.attacker_unarmed = !armed && !f.attacker_shield;
+
+  // Mass, actor value 36 (include/RE/A/ActorValues.h:44): the record's,
+  // else the race's base
+  constexpr uint8_t kMass = 36;
+  f.victim_mass = target.GetRecordedActorValueBase(kMass).value_or(
+    espm::GetData<espm::RACE>(target.GetRaceId(), &worldState).baseMass);
+  f.victim_is_player = targetIsPlayer;
+  f.victim_running = false;
+  f.victim_recoiling = false;
+  f.victim_blocking = target.IsBlockActive();
+  f.victim_block =
+    target
+      .GetRecordedActorValueBase(static_cast<uint8_t>(espm::ActorValue::Block))
+      .value_or(0.f);
+  if (const auto rating = HeldShieldRating(target, worldState)) {
+    f.victim_block_rating = *rating;
+  } else {
+    f.victim_block_rating = DrawnWeaponStaggerValue(target, worldState);
+  }
+  f.blocked = hitData.isHitBlocked;
+  f.dealt_damage = dealtDamage;
+  return f;
 }
 }
 
@@ -2238,9 +2489,18 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
     // thuum docs/verbs/damage-flags.md: the facts the flag rule needs; the
     // rule is Rust's (skymp-wire wire-rules damage, ADR-020)
     if (aggressor == myActor &&
-        (hitData.isPowerAttack || hitData.isSneakAttack)) {
+        (hitData.isPowerAttack || hitData.isSneakAttack ||
+         hitData.isBashAttack)) {
       const auto lastPowerStart =
         partOne.animationSystem.GetLastPowerAttackStartTime(*aggressor);
+      const auto lastBashStart =
+        partOne.animationSystem.GetLastBashStartTime(*aggressor);
+      const auto sinceMs = [](std::chrono::steady_clock::time_point t) {
+        return static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t)
+            .count());
+      };
       skymp::rules::FlagFacts facts{};
       facts.claims_power = hitData.isPowerAttack;
       facts.claims_sneak = hitData.isSneakAttack;
@@ -2253,6 +2513,13 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
               .count())
         : 0;
       facts.is_sneaking = aggressor->GetAnimationVariableBool("IsSneaking");
+      // thuum docs/verbs/blocking.md: a bash as a power attack is, by its
+      // start among the attacker's animation events
+      facts.claims_bash = hitData.isBashAttack;
+      facts.saw_bash_start =
+        lastBashStart != std::chrono::steady_clock::time_point();
+      facts.since_bash_start_ms =
+        facts.saw_bash_start ? sinceMs(lastBashStart) : 0;
       const auto kept = skymp::rules::backed_flags(facts);
       if (hitData.isPowerAttack && !kept.power) {
         spdlog::warn("ActionListener::OnHit - E_HIT_POWER: {:x} claims a "
@@ -2264,8 +2531,14 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
                      "sneak attack while not sneaking; hit as a plain one",
                      aggressor->GetFormId());
       }
+      if (hitData.isBashAttack && !kept.bash) {
+        spdlog::warn("ActionListener::OnHit - E_HIT_BASH: {:x} claims a bash "
+                     "it did not start; hit as a plain one",
+                     aggressor->GetFormId());
+      }
       hitData.isPowerAttack = kept.power;
       hitData.isSneakAttack = kept.sneak;
+      hitData.isBashAttack = kept.bash;
     }
 
     // Player against player only: the bound's body extents are a humanoid's
@@ -2475,33 +2748,33 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
     return; // Not an actor, damage calculation is not needed
   }
 
-  auto targetActorValues = targetActorPtr->GetChangeForm().actorValues;
+  // thuum docs/verbs/magic-effects.md: the spell's effects run through the
+  // effect rule at the claim's scale: a stream's hit counts its seconds at
+  // once (spell-cast's claim), a fire-and-forget spell's effects by their
+  // records; every value they touch, not Health alone (shock's Magicka,
+  // frost's Stamina), and the ones with a duration keep running
+  std::vector<espm::Effects::Effect> effects;
+  bool stream = false;
+  try {
+    const auto spell =
+      espm::GetData<espm::SPEL>(hitData.source, &partOne.worldState);
+    stream = spell.spellItem &&
+      spell.spellItem->castType == espm::SPEL::CastType::Concentration;
+    effects = MpActor::EffectsOf(&partOne.worldState, hitData.source);
+  } catch (std::exception& e) {
+    spdlog::warn("OnSpellHit - spell {:x}: {}", hitData.source, e.what());
+    return;
+  }
+  const float scale = std::isfinite(magnitudeScale) && magnitudeScale > 0.f
+    ? magnitudeScale
+    : 0.f;
+  targetActorPtr->ApplyEffects(hitData.source, effects, scale,
+                               aggressor->GetFormId(), stream);
 
-  SpellCastData spellCastData{ aggressor->GetFormId(),
-                               targetActorPtr->GetFormId(),
-                               hitData.source,
-                               false,
-                               false,
-                               SpellType::Left };
-
-  float damage =
-    partOne.CalculateDamage(*aggressor, *targetActorPtr, spellCastData) *
-    magnitudeScale;
-  damage = damage <= 0.f || !std::isfinite(damage) ? 0.f : damage;
-
-  targetActorValues.healthPercentage = CalculateCurrentHealthPercentage(
-    *targetActorPtr, damage, targetActorValues.healthPercentage, nullptr);
-
-  static const auto kHealthAvFilter =
-    std::vector<espm::ActorValue>{ espm::ActorValue::Health };
-
-  targetActorPtr->NetSetPercentages(targetActorValues, aggressor,
-                                    kHealthAvFilter);
-
-  spdlog::info("OnSpellHit - Target {0:x} is hit by {1:x} spell on {2} "
-               "damage (the magnitude times {4}). By caster: {3:x})",
-               spellCastData.target, spellCastData.spell, damage,
-               spellCastData.caster, magnitudeScale);
+  spdlog::info("OnSpellHit - Target {0:x} is hit by {1:x} spell at {2} times "
+               "its magnitudes ({3}). By caster: {4:x}",
+               targetActorPtr->GetFormId(), hitData.source, scale,
+               stream ? "a stream's seconds" : "once", aggressor->GetFormId());
 
   // a spell hit begins a fight as a weapon's does (ADR-023)
   NotifyHostility(*aggressor, *targetActorPtr,
@@ -2515,9 +2788,25 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
 {
   const auto currentHitTime = std::chrono::steady_clock::now();
 
+  auto* targetActorPtr = targetRef ? targetRef->AsActor() : nullptr;
+
+  // thuum docs/verbs/blocking.md: whether the hit was blocked is the
+  // server's, from its own records (wire-rules block), never the attacker's
+  // game's verdict, which saw the target's block a round trip late; scripts
+  // hear the server's (OnHit's abHitBlocked)
+  const float blockedShare = targetActorPtr
+    ? BlockedShare(*aggressor, *targetActorPtr, hitData, partOne.worldState)
+    : 0.f;
+  if (hitData.isHitBlocked != (blockedShare > 0.f)) {
+    spdlog::info("OnWeaponHit - {:x} hits {:x}: blocked {} in the attacker's "
+                 "game, {} by the server's records",
+                 aggressor->GetFormId(), hitData.target, hitData.isHitBlocked,
+                 blockedShare > 0.f);
+  }
+  hitData.isHitBlocked = blockedShare > 0.f;
+
   SendPapyrusOnHitEvent(aggressor, targetRef, hitData);
 
-  auto* targetActorPtr = targetRef ? targetRef->AsActor() : nullptr;
   if (!targetActorPtr) {
     return; // Not an actor, damage calculation is not needed
   }
@@ -2599,56 +2888,15 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
 
   float healthPercentage = currentActorValues.healthPercentage;
 
-  if (targetActor.IsBlockActive()) {
-    if (ShouldBeBlocked(*aggressor, targetActor)) {
-      bool isRemoteBowAttack = false;
-
-      auto sourceLookupResult =
-        targetActor.GetParent()->GetEspm().GetBrowser().LookupById(
-          hitData.source);
-      if (sourceLookupResult.rec &&
-          sourceLookupResult.rec->GetType() == espm::WEAP::kType) {
-        auto weapData =
-          espm::GetData<espm::WEAP>(hitData.source, targetActor.GetParent());
-        if (weapData.weapDNAM) {
-          if (weapData.weapDNAM->animType == espm::WEAP::AnimType::Bow ||
-              weapData.weapDNAM->animType == espm::WEAP::AnimType::Crossbow) {
-            if (!hitData.isBashAttack) {
-              isRemoteBowAttack = true;
-            }
-          }
-        }
-      }
-
-      bool isBlockingByShield = false;
-
-      auto targetActorEquipmentEntries =
-        targetActor.GetEquipment().inv.entries;
-      for (auto& entry : targetActorEquipmentEntries) {
-        if (entry.GetWorn() != Inventory::Worn::None) {
-          auto res =
-            targetActor.GetParent()->GetEspm().GetBrowser().LookupById(
-              entry.baseId);
-          if (res.rec && res.rec->GetType() == espm::ARMO::kType) {
-            auto data =
-              espm::GetData<espm::ARMO>(entry.baseId, targetActor.GetParent());
-            bool isShield = data.equipSlotId > 0;
-            if (isShield) {
-              isBlockingByShield = isShield;
-            }
-          }
-        }
-      }
-
-      if (!isRemoteBowAttack || isBlockingByShield) {
-        hitData.isHitBlocked = true;
-      }
-    }
-  }
-
-  float damage =
-    partOne.CalculateDamage(*aggressor, targetActor, hitData) * damageMult;
+  // a block's share is the rule's (the formula counts no block)
+  float damage = partOne.CalculateDamage(*aggressor, targetActor, hitData) *
+    damageMult * (1.f - blockedShare);
   damage = damage < 0.f || !std::isfinite(damage) ? 0.f : damage;
+  if (targetActor.IsGodMode()) {
+    // thuum docs/verbs/god-mode.md: TGM, no damage taken; the fight still
+    // begins below
+    damage = 0.f;
+  }
   float outBaseHealth = 0.f;
   currentActorValues.healthPercentage = CalculateCurrentHealthPercentage(
     targetActor, damage, healthPercentage, &outBaseHealth);
@@ -2667,13 +2915,79 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
   // thuum docs/verbs/marksman.md: the server's own damage for every weapon
   // hit, at info as OnSpellHit's, so a lab run can tell it from what the
   // victim's game reports afterwards
-  spdlog::info("OnWeaponHit - {:x} hits {:x} with {:x} for {} damage: "
-               "health {} -> {} of base {}",
+  spdlog::info("OnWeaponHit - {:x} hits {:x} with {:x} for {} damage "
+               "(blocked share {}): health {} -> {} of base {}",
                aggressor->GetFormId(), hitData.target, hitData.source, damage,
-               healthPercentage, currentActorValues.healthPercentage,
-               outBaseHealth);
+               blockedShare, healthPercentage,
+               currentActorValues.healthPercentage, outBaseHealth);
 
   NotifyHostility(*aggressor, targetActor, currentHitTime);
+  // the engine's reaction skips a hit that killed
+  if (currentActorValues.healthPercentage > 0.f) {
+    NotifyStagger(*aggressor, targetActor, hitData, damage > 0.f);
+  }
+}
+
+// thuum docs/verbs/stagger.md: the stagger the engine's own rule gives the
+// hit (wire-rules stagger), played in the victim's game through the engine's
+// start (TESModPlatform.Stagger, ID 37710) with the server's magnitude and
+// the attacker's figure as its source; the victim's client relays the
+// stagger's animation as any of its events. The victim's game never sees the
+// hit, so it cannot stagger by itself.
+void ActionListener::NotifyStagger(MpActor& aggressor, MpActor& target,
+                                   const HitData& hitData, bool dealtDamage)
+{
+  const auto targetUser = partOne.serverState.UserByActor(&target);
+  if (targetUser == Networking::InvalidUserId) {
+    return; // a hosted actor's host game reacts to its own hits
+  }
+  const std::string attackName =
+    partOne.animationSystem.GetLastAttackStartName(aggressor);
+  thread_local std::mt19937 rng{ std::random_device{}() };
+  const auto roll =
+    static_cast<uint8_t>(std::uniform_int_distribution<int>(0, 99)(rng));
+  const float magnitude = skymp::rules::stagger_magnitude(
+    StaggerSettingsOf(partOne.worldState),
+    StaggerFactsOf(aggressor, target, hitData, attackName, true, dealtDamage,
+                   partOne.worldState),
+    roll);
+  if (magnitude <= 0.f) {
+    return;
+  }
+
+  SpSnippetObjectArgument player;
+  player.formId = 0x14;
+  player.type = "Actor";
+  SpSnippetObjectArgument source;
+  source.formId = aggressor.GetFormId();
+  source.type = "Actor";
+  const std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+    args{ player, static_cast<double>(magnitude), source };
+  SpSnippet("TESModPlatform", "Stagger", args, 0)
+    .Execute(&target, SpSnippetMode::kNoReturnResult);
+
+  // every game that sees the victim plays the stagger on its figure: the
+  // engine's stagger in the victim's own game is an action its client never
+  // hears as an animation event (b-stagger 20261011-213039: IsStaggering in
+  // that game, no staggerStart among its events), so the server relays the
+  // event as the victim's own (deathService lets a relayed staggerStart
+  // through; the victim's client draws no figure of itself). Its numChanges
+  // stays clear of the victim's own counter, which a figure compares for
+  // equality only (sync/animation.ts applyAnimation).
+  static uint32_t serverAnimations = 0x40000000;
+  UpdateAnimationMessage stagger;
+  stagger.idx = target.GetIdx();
+  stagger.data.animEventName = "staggerStart";
+  stagger.data.numChanges = ++serverAnimations;
+  for (auto* listener : target.GetActorListeners()) {
+    listener->SendToUser(stagger, true);
+  }
+  spdlog::info("ActionListener::OnWeaponHit - stagger: {:x}'s {} on {:x} "
+               "staggers it by {}",
+               aggressor.GetFormId(),
+               attackName.empty() ? std::string("hit") : attackName,
+               target.GetFormId(), magnitude);
 }
 
 // thuum docs/verbs/hostility-sync.md (ADR-023): the attacker's engine marks

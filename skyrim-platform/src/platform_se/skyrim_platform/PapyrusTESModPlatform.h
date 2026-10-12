@@ -129,6 +129,24 @@ bool SetPlayerSkill(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
 bool SetPlayerExperience(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                          float xp, float threshold, int32_t level);
 
+// The server's magic effects in the player's own game (thuum
+// docs/verbs/magic-effects.md): while blocked, its engine applies no effect
+// of a potion, a food or a poison to the player (refused at the player's
+// MagicTarget::AddTarget, Hooks.cpp), and the server's buffs reach its actor
+// values through ModPlayerActorValue (ActorValueOwner::ModActorValue, the
+// change Papyrus ModActorValue makes)
+void SetPotionEffectsBlocked(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
+                             bool blocked);
+bool ArePotionEffectsBlocked();
+bool ModPlayerActorValue(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
+                         int32_t av, float delta);
+
+// The server's stagger in this game (thuum docs/verbs/stagger.md): the
+// engine's own start of a stagger on `target` at `magnitude` from `source`,
+// as a hit's reaction calls it; false where it was not called
+bool Stagger(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
+             RE::Actor* target, float magnitude, RE::Actor* source);
+
 void BlockPapyrusEvents(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                         bool blocked);
 

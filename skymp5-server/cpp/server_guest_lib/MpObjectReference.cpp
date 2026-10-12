@@ -1007,6 +1007,11 @@ void MpObjectReference::Subscribe(MpObjectReference* emitter,
 
   if (!hasPrimitive) {
     emitter->callbacks->subscribe(emitter, listener);
+    // thuum docs/verbs/magic-effects.md: a game that first sees an actor
+    // hears the effects already running on it, after the actor's creation
+    if (actorEmitter && actorListener && actorEmitter != actorListener) {
+      actorEmitter->SendMagicEffectsTo(*actorListener);
+    }
   }
 
   if (hasPrimitive) {

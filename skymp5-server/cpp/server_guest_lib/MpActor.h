@@ -9,6 +9,7 @@
 #include "MapMarker.h"
 #include "MpObjectReference.h"
 #include "libespm/espm.h"
+#include <array>
 #include <map>
 #include <memory>
 #include <optional>
@@ -256,6 +257,50 @@ public:
   void RemoveAllMagicEffects();
   void ReapplyMagicEffects();
 
+  // thuum docs/verbs/magic-effects.md: the effect rule (wire-rules magic)
+  // over the actor's running effects, kept in its change form. `source`'s
+  // effects (its record's list) apply at `scale` times their magnitudes,
+  // by `caster` (0 for none); `stream` for a concentration spell's hit,
+  // which counts at once. Archetypes other than value, peak value and dual
+  // value modifiers are left alone.
+  void ApplyEffects(uint32_t source,
+                    const std::vector<espm::Effects::Effect>& effects,
+                    float scale, uint32_t caster, bool stream);
+  // Runs the actor's effects for `dtSeconds` of the server's wall clock
+  // (WorldState's effects tick; at a load, the time since the record's)
+  void AdvanceEffects(float dtSeconds);
+  bool HasRunningEffects() const;
+  // One running effect as a gamemode reads it (mp.get(actor,
+  // "runningEffects")): its MGEF, its source, its magnitude and the
+  // seconds it has left
+  struct RunningEffectView
+  {
+    uint32_t effect = 0;
+    uint32_t source = 0;
+    float magnitude = 0.f;
+    float secondsLeft = 0.f;
+  };
+  std::vector<RunningEffectView> GetRunningEffects() const;
+  // The running buffs' sum on `av`: the temporary modifier the maximum and
+  // the regeneration rates count
+  float GetEffectModifier(espm::ActorValue av) const;
+  // The effect list of a record that carries one (a potion, a poison, a
+  // spell, an enchantment, a scroll, an ingredient: EFID, EFIT and their
+  // CTDA), each MGEF id as the load order numbers it; empty for none
+  static std::vector<espm::Effects::Effect> EffectsOf(WorldState* worldState,
+                                                      uint32_t source);
+  // thuum docs/verbs/god-mode.md: TGM and TIM, the server's flags for the
+  // player's session (cleared at its departure). A god actor takes no
+  // damage from another actor and spends no arrow; an immortal actor's
+  // health stops at one point instead of reaching nothing
+  bool IsGodMode() const noexcept;
+  void SetGodMode(bool on) noexcept;
+  bool IsImmortal() const noexcept;
+  void SetImmortal(bool on) noexcept;
+  // MagicEffects to `listener`'s player: the effects running on this actor,
+  // for a game that first sees it (MpObjectReference::Subscribe)
+  void SendMagicEffectsTo(MpActor& listener);
+
   bool GetConsoleCommandsAllowedFlag() const;
   void SetConsoleCommandsAllowedFlag(bool newValue);
   // thuum docs/verbs/console-commands.md: the player's staff rank (0 player,
@@ -274,6 +319,18 @@ public:
   std::optional<AnimationData> GetLastAnimEvent() const;
 
 private:
+  // thuum docs/verbs/god-mode.md: `healthPercentage`, or one point for an
+  // immortal actor whose health would reach nothing
+  float ImmortalHealth(float healthPercentage);
+
+  // thuum docs/verbs/magic-effects.md: Health, Magicka and Stamina moved by
+  // `deltas` (points, against the maximum before the change, `maxBefore`,
+  // and the maximum after it), each only where `touched`; a kill, if any,
+  // by `caster`
+  void ApplyAttributeDeltas(const std::array<float, 3>& deltas,
+                            const std::array<bool, 3>& touched,
+                            const BaseActorValues& maxBefore, uint32_t caster);
+
   struct Impl;
   std::shared_ptr<Impl> pImpl;
   bool factionsLoaded = false;

@@ -31,6 +31,9 @@ struct
   std::recursive_mutex m;
 } share;
 std::atomic<bool> papyrusEventsBlocked;
+// thuum docs/verbs/magic-effects.md: the player's own game applies no drink
+// of its own while skymp5-client says so
+std::atomic<bool> potionEffectsBlocked;
 
 struct
 {
@@ -1276,6 +1279,54 @@ bool TESModPlatform::SetActorValueBase(IVM* vm, StackID stackId,
   return true;
 }
 
+void TESModPlatform::SetPotionEffectsBlocked(IVM* vm, StackID stackId,
+                                             RE::StaticFunctionTag*,
+                                             bool blocked)
+{
+  potionEffectsBlocked = blocked;
+}
+
+bool TESModPlatform::ArePotionEffectsBlocked()
+{
+  return potionEffectsBlocked;
+}
+
+bool TESModPlatform::ModPlayerActorValue(IVM* vm, StackID stackId,
+                                         RE::StaticFunctionTag*, int32_t av,
+                                         float delta)
+{
+  auto player = RE::PlayerCharacter::GetSingleton();
+  if (!player || av < 0 || static_cast<size_t>(av) >= kActorValues ||
+      !std::isfinite(delta)) {
+    return false;
+  }
+  player->AsActorValueOwner()->ModActorValue(static_cast<RE::ActorValue>(av),
+                                             delta);
+  return true;
+}
+
+// The engine's start of a stagger, Address Library ID 37710 on 1.6.1170
+// (thuum ghidra/notes/block-formula.md, read under the ID 1.7.104 shares:
+// void(Actor* target, float magnitude, Actor* source), HYPOTHESIS until the
+// lab): refused while the target is staggered, restrained or in ragdoll, the
+// stagger perk entry points applied, the magnitude clamped to 1, the graph's
+// staggerMagnitude and staggerDirection set, ActionStaggerStart performed,
+// the target marked staggered. CommonLibSSE-NG names no SE id for it, so it
+// is called on AE runtimes only (thuum ADR-025's 1.6.1170).
+bool TESModPlatform::Stagger(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
+                             RE::Actor* target, float magnitude,
+                             RE::Actor* source)
+{
+  if (!target || !std::isfinite(magnitude) || magnitude <= 0.f ||
+      !REL::Module::IsAE()) {
+    return false;
+  }
+  using func_t = void(RE::Actor*, float, RE::Actor*);
+  REL::Relocation<func_t> func{ REL::ID(37710) };
+  func(target, magnitude, source);
+  return true;
+}
+
 std::vector<float> TESModPlatform::GetPlayerProgress(IVM* vm, StackID stackId,
                                                      RE::StaticFunctionTag*)
 {
@@ -1539,6 +1590,22 @@ bool TESModPlatform::Register(IVM* vm)
                                      RE::StaticFunctionTag*, float, float,
                                      int32_t>(
       "SetPlayerExperience", "TESModPlatform", SetPlayerExperience));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SetPotionEffectsBlocked),
+                                     void, RE::StaticFunctionTag*, bool>(
+      "SetPotionEffectsBlocked", "TESModPlatform", SetPotionEffectsBlocked));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(ModPlayerActorValue), bool,
+                                     RE::StaticFunctionTag*, int32_t, float>(
+      "ModPlayerActorValue", "TESModPlatform", ModPlayerActorValue));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(Stagger), bool,
+                                     RE::StaticFunctionTag*, RE::Actor*, float,
+                                     RE::Actor*>("Stagger", "TESModPlatform",
+                                                 Stagger));
 
   static LoadGameEvent loadGameEvent;
 

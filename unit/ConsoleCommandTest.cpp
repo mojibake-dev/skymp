@@ -577,16 +577,14 @@ TEST_CASE("TCL has an admin's own game toggle its collision",
             { "tcl done", false }, { "ToggleCollision done", false } });
   REQUIRE(toggles() == 2);
 
-  // god mode and immortality wait for M2's damage authority
+  // god mode and immortality toggle no collision (GodModeTest)
   p.Messages().clear();
   Send(p, "tgm", {});
   Send(p, "tim", {});
   p.Tick();
-  REQUIRE(Lines(p) ==
-          std::vector<std::pair<std::string, bool>>{
-            { "The server does not run this command yet", true },
-            { "The server does not run this command yet", true } });
   REQUIRE(toggles() == 0);
+  ac.SetGodMode(false);
+  ac.SetImmortal(false);
 
   p.worldState.enableConsoleCommandsForAll = forAll;
   p.DestroyActor(0xff000000);

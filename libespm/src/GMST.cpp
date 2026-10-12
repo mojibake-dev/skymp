@@ -13,6 +13,7 @@ GMST::Data GMST::GetData(
     [&](const char* type, uint32_t size, const char* data) {
       if (!std::memcmp(type, "DATA", 4)) {
         result.value = *reinterpret_cast<const float*>(data);
+        result.intValue = *reinterpret_cast<const int32_t*>(data);
       }
     },
     compressedFieldsCache);

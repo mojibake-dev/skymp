@@ -1,4 +1,4 @@
-import { Actor, Form, Game, Shout } from "skyrimPlatform";
+import { Actor, Form, Game, Shout, Spell } from "skyrimPlatform";
 import { MsgType } from "../../messages";
 import { logError, logTrace } from "../../logging";
 import { SpellCastMsgData } from "../messages/spellCastMessage";
@@ -55,6 +55,17 @@ export class ShoutService extends ClientListener {
         if (this.releasedAt === 0) {
             return;
         }
+        try {
+            this.readRelease();
+        } catch (err) {
+            // a throw here used to drop the report silently, every frame
+            logError(this, "E_SHOUT_REPORT", err);
+            this.releasedAt = 0;
+            releaseHeld();
+        }
+    }
+
+    private readRelease() {
         const player = Game.getPlayer();
         const shout = player ? player.getEquippedShout() : null;
         if (!player || !shout) {
@@ -73,7 +84,14 @@ export class ShoutService extends ClientListener {
         }
         this.releasedAt = 0;
         const variation = this.variationOf(shout, player, recovery);
-        const spell = variation === null ? null : this.sp.callNative("Shout", "GetNthSpell", shout, variation) as Form | null;
+        // the typed binding first: with callNative's game object the report
+        // traced and nothing was sent (b-shout 20261012-020313,
+        // x-shout-console 20261012-020808; HYPOTHESIS: that object has no
+        // Form methods, so getFormID threw); callNative only as a fallback
+        let spell: Spell | null = variation === null ? null : shout.getNthSpell(variation);
+        if (!spell && variation !== null) {
+            spell = Spell.from(this.sp.callNative("Shout", "GetNthSpell", shout, variation) as Form | null);
+        }
         if (variation === null || !spell) {
             logError(this, "E_SHOUT_UNREAD: a recovery of", recovery, "s names no variation of", shout.getFormID().toString(16));
             releaseHeld();

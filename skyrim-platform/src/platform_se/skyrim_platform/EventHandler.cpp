@@ -1345,8 +1345,30 @@ EventResult EventHandler::ProcessEvent(
   const auto casterId = event->object ? event->object->GetFormID() : 0;
   const auto spellId = event->spell;
 
-  SkyrimPlatform::GetSingleton()->AddUpdateTask([casterId,
-                                                 spellId](Napi::Env env) {
+  // thuum docs/verbs/spell-cast.md (playtest thirteen): the event names no
+  // hand, and with the same spell in both hands the right one used to win,
+  // so a left-hand cast was reported, relayed and stopped as the right
+  // one's (the other screen's figure streamed from its right hand and never
+  // stopped). Which hand casts this spell is read now, while it casts, from
+  // each hand's caster (MagicCaster's currentSpell and state,
+  // CommonLibSSE-NG include/RE/M/MagicCaster.h:29-41, :89-90)
+  bool leftCasting = false;
+  bool rightCasting = false;
+  if (auto* actor = event->object ? event->object->As<RE::Actor>() : nullptr) {
+    const auto casting = [&](RE::MagicSystem::CastingSource source) {
+      auto* magicCaster = actor->GetMagicCaster(source);
+      return magicCaster && magicCaster->currentSpell &&
+        magicCaster->currentSpell->GetFormID() == spellId &&
+        (magicCaster->state == RE::MagicCaster::State::kCharging ||
+         magicCaster->state == RE::MagicCaster::State::kCasting);
+    };
+    leftCasting = casting(RE::MagicSystem::CastingSource::kLeftHand);
+    rightCasting = casting(RE::MagicSystem::CastingSource::kRightHand);
+  }
+
+  SkyrimPlatform::GetSingleton()->AddUpdateTask([casterId, spellId,
+                                                 leftCasting, rightCasting](
+                                                  Napi::Env env) {
     auto obj = Napi::Object::New(env);
 
     auto* caster = RE::TESForm::LookupByID<RE::Actor>(casterId);
@@ -1389,8 +1411,14 @@ EventResult EventHandler::ProcessEvent(
 
     auto castingSource = RE::MagicSystem::CastingSource::kLeftHand;
 
-    if (isRightHand) {
+    // the same spell in both hands: the hand that was casting it
+    const bool leftOfBoth =
+      isLeftHand && isRightHand && leftCasting && !rightCasting;
+
+    if (isRightHand && !leftOfBoth) {
       castingSource = RE::MagicSystem::CastingSource::kRightHand;
+    } else if (leftOfBoth) {
+      castingSource = RE::MagicSystem::CastingSource::kLeftHand;
     } else if (isVoise) {
       castingSource = RE::MagicSystem::CastingSource::kOther;
     } else if (isInstant) {

@@ -25,6 +25,8 @@
 # The legacy stack counts neither hit: the spell is in no slot of c1's. c2
 # steps again at 5 s of its own (6.5 s of c1's), so it outlives c1, as in
 # every session. The legacy stack's inventory resend is the first run's.
+# The fire's damage itself is b-shout's to check (thuum lab/scenarios: the
+# server's number on real clients, 0.505 after one word).
 id: shouts
 clients:
   c1: {profile_id: 9}

@@ -104,6 +104,18 @@ Napi::Value MagicApi::CastSpellImmediate(const Napi::CallbackInfo& info)
       auto* magicTarget =
         RE::TESForm::LookupByID<RE::TESObjectREFR>(magicTargetFormId);
 
+      // thuum docs/verbs/magic-effects.md: a spell on its caster (Self
+      // delivery, CommonLibSSE-NG MagicSystem.h:41) is cast on the actor
+      // itself, so its look shows on that actor in this game, as it did on
+      // the caster in the caster's (x-self-visuals: Invisibility, Oakflesh
+      // and Candlelight drew nothing on the figure, the cast's target being
+      // none); what it does to values stays the server's
+      if (pSpell->data.delivery == RE::MagicSystem::Delivery::kSelf) {
+        magicCaster->CastSpellImmediate(pSpell, false, pActor, 1.0f, false,
+                                        0.0f, pActor);
+        return;
+      }
+
       if (pSpell->GetCastingType() ==
           RE::MagicSystem::CastingType::kConcentration) {
 

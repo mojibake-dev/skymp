@@ -1,4 +1,4 @@
-import { EffectShader, Game, MagicEffect, ObjectReference } from "skyrimPlatform";
+import { Actor, EffectShader, Game, MagicEffect, ObjectReference, Spell } from "skyrimPlatform";
 import { logError, logTrace } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
 import { MagicEffectsMessage } from "../messages/magicEffectsMessage";
@@ -93,6 +93,40 @@ export class MagicEffectsService extends ClientListener {
             }
         });
         this.shown.set(key, now);
+        this.dispelEnded(own, refr, msg);
+    }
+
+    // thuum docs/verbs/self-cast.md: a figure's Self spell runs in this game
+    // too (the relayed cast casts it on the figure, so its own look shows),
+    // on this game's clock; when the server's set no longer holds a spell
+    // of the figure's, the copy here is dispelled, so it never outlives the
+    // caster's (playtest fifteen: Invisibility's look stayed on the figure
+    // after its player waited). This game's own player is the engine's.
+    private dispelEnded(own: boolean, refr: ObjectReference, msg: MagicEffectsMessage) {
+        const key = refr.getFormID();
+        const sourcesNow = new Set<number>();
+        for (const effect of msg.effects) {
+            sourcesNow.add(effect.source);
+        }
+        const sourcesBefore = this.sources.get(key);
+        this.sources.set(key, sourcesNow);
+        if (own || !sourcesBefore) {
+            return;
+        }
+        const actor = Actor.from(refr);
+        if (!actor) {
+            return;
+        }
+        sourcesBefore.forEach((source) => {
+            if (sourcesNow.has(source)) {
+                return;
+            }
+            const spell = Spell.from(Game.getFormEx(source));
+            if (spell) {
+                actor.dispelSpell(spell);
+                logTrace(this, "dispelled", source.toString(16), "from the figure", key.toString(16));
+            }
+        });
     }
 
     // The player's actor values take the server's buff sums: each moves by
@@ -139,6 +173,9 @@ export class MagicEffectsService extends ClientListener {
     private static readonly epsilon = 1e-4;
 
     private shown = new Map<number, Set<number>>();
+    // the sources (spells, potions) of each actor's running effects, as the
+    // server last sent them
+    private sources = new Map<number, Set<number>>();
     // what this game holds of the server's buff sums, by actor value
     private held = new Map<number, number>();
 }

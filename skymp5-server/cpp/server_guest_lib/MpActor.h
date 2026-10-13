@@ -11,6 +11,7 @@
 #include "ShoutRecord.h"
 #include "libespm/espm.h"
 #include <array>
+#include <initializer_list>
 #include <map>
 #include <memory>
 #include <optional>
@@ -310,6 +311,13 @@ public:
   // The running buffs' sum on `av`: the temporary modifier the maximum and
   // the regeneration rates count
   float GetEffectModifier(espm::ActorValue av) const;
+  // Whether a running effect's MGEF is of `type` (thuum
+  // docs/verbs/self-cast.md: an ethereal actor takes no damage)
+  bool HasRunningEffectOfType(espm::MGEF::EffectType type) const;
+  // Ends the running effects whose MGEF is of one of `types` before their
+  // time, a buff's modifier given back, every game told; whether any ended
+  bool EndRunningEffectsOfTypes(
+    std::initializer_list<espm::MGEF::EffectType> types);
   // The effect list of a record that carries one (a potion, a poison, a
   // spell, an enchantment, a scroll, an ingredient: EFID, EFIT and their
   // CTDA), each MGEF id as the load order numbers it; empty for none

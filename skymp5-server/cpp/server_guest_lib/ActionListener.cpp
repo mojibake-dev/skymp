@@ -558,6 +558,41 @@ PartOne::VoiceFacts VoiceFactsOf(const MpActor& actor, uint32_t shout,
   return f;
 }
 
+// thuum docs/verbs/self-cast.md: an invisible or ethereal actor's own act
+// (an attack, a cast) ends that state on the server, as the engine ends it
+// in its game (HYPOTHESIS until the lab reads the engine's)
+void EndConcealment(MpActor& actor)
+{
+  if (actor.EndRunningEffectsOfTypes({ espm::MGEF::EffectType::Invisibility,
+                                       espm::MGEF::EffectType::Etherealize })) {
+    spdlog::info("ActionListener - {:x} acts: its invisibility and ethereal "
+                 "state end",
+                 actor.GetFormId());
+  }
+}
+
+// thuum docs/verbs/self-cast.md: a fire-and-forget spell of Self delivery
+// (a shout's included) runs its effects on its caster on the server, as a
+// drink's do: the server holds them and their time, every game sees them
+void RunSelfSpell(WorldState& worldState, MpActor& caster, uint32_t spellId)
+{
+  try {
+    const auto spell = espm::GetData<espm::SPEL>(spellId, &worldState);
+    if (!spell.spellItem ||
+        spell.spellItem->delivery != espm::SPEL::Delivery::Self ||
+        spell.spellItem->castType != espm::SPEL::CastType::FireAndForget) {
+      return;
+    }
+    caster.ApplyEffects(spellId, MpActor::EffectsOf(&worldState, spellId),
+                        1.f, caster.GetFormId(), false);
+    spdlog::info("ActionListener - {:x} casts {:x} on itself: its effects run "
+                 "on the server",
+                 caster.GetFormId(), spellId);
+  } catch (std::exception& e) {
+    spdlog::warn("ActionListener - self spell {:x}: {}", spellId, e.what());
+  }
+}
+
 // Whether `spell` is a variation of the shout in the voice slot
 bool IsVoiceVariation(const Equipment& equipment, uint32_t spell,
                       WorldState& worldState)
@@ -1043,6 +1078,12 @@ void ActionListener::OnRestIntent(const RawMessageData& rawMsgData,
                         RestRefusalName(refusal), rawMsgData.userId,
                         actor->GetFormId(), msg.hours);
   }
+
+  // thuum docs/verbs/self-cast.md: the rest runs the player's magic effects
+  // for its time, so one of a minute ends in any rest, as in the player's
+  // game (playtest fifteen's Invisibility); first, so a buff's end moves the
+  // maximum before the rest's percentages
+  actor->AdvanceEffects(skymp::rules::rest_effect_seconds(msg.hours));
 
   const auto after = [&](float percentage, RegenRate r) {
     skymp::rules::Regen regen{};
@@ -2832,6 +2873,8 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
                  caster->GetFormId(), *shout, facts.variation,
                  spellCastData.spell,
                  partOne.VoiceRecoveryLeftMs(caster->GetFormId()) / 1000.0);
+    EndConcealment(*caster);
+    RunSelfSpell(partOne.worldState, *caster, spellCastData.spell);
     RelayCast(*caster, *myActor, spellCastData);
     return;
   }
@@ -2847,6 +2890,8 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
   // every screen draws it
   partOne.StartCast(caster->GetFormId(), spellCastData.spell, hand,
                     caster->GetPos());
+  EndConcealment(*caster);
+  RunSelfSpell(partOne.worldState, *caster, spellCastData.spell);
 
   // thuum docs/verbs/cast-teleport.md: a spell the server names as a
   // teleport moves its caster in the caster's own game (the engine places
@@ -2928,6 +2973,17 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
   const float scale = std::isfinite(magnitudeScale) && magnitudeScale > 0.f
     ? magnitudeScale
     : 0.f;
+  // thuum docs/verbs/self-cast.md: an ethereal target takes nothing from
+  // another's spell (a heal from another included, for now)
+  if (aggressor != targetActorPtr &&
+      targetActorPtr->HasRunningEffectOfType(
+        espm::MGEF::EffectType::Etherealize)) {
+    spdlog::info("OnSpellHit - {:x}'s {:x} reaches {:x}, which is ethereal: "
+                 "nothing applied",
+                 aggressor->GetFormId(), hitData.source,
+                 targetActorPtr->GetFormId());
+    return;
+  }
   targetActorPtr->ApplyEffects(hitData.source, effects, scale,
                                aggressor->GetFormId(), stream);
 
@@ -3057,6 +3113,17 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
     // begins below
     damage = 0.f;
   }
+  // thuum docs/verbs/self-cast.md: an attack ends its attacker's
+  // invisibility and ethereal state, and an ethereal target takes nothing
+  // (no damage, no poison's dose, no stagger)
+  EndConcealment(*aggressor);
+  const bool ethereal =
+    targetActor.HasRunningEffectOfType(espm::MGEF::EffectType::Etherealize);
+  if (ethereal) {
+    spdlog::info("OnWeaponHit - {:x} hits {:x}, which is ethereal: no damage",
+                 aggressor->GetFormId(), targetActor.GetFormId());
+    damage = 0.f;
+  }
   float outBaseHealth = 0.f;
   currentActorValues.healthPercentage = CalculateCurrentHealthPercentage(
     targetActor, damage, healthPercentage, &outBaseHealth);
@@ -3088,7 +3155,8 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
   // as caster, and spends a dose; the attacker's game is told its inventory,
   // so its ExtraPoison agrees. HYPOTHESIS: the game spends a dose on a
   // blocked hit as well (unmeasured)
-  if (const auto poison = aggressor->SpendPoisonDose(hitData.source)) {
+  if (const auto poison =
+        ethereal ? std::nullopt : aggressor->SpendPoisonDose(hitData.source)) {
     const auto effects = MpActor::EffectsOf(&partOne.worldState, *poison);
     targetActor.ApplyEffects(*poison, effects, 1.f, aggressor->GetFormId(),
                              false);
@@ -3098,8 +3166,9 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
                  targetActor.GetFormId());
   }
 
-  // the engine's reaction skips a hit that killed
-  if (currentActorValues.healthPercentage > 0.f) {
+  // the engine's reaction skips a hit that killed, and one on an ethereal
+  // target
+  if (currentActorValues.healthPercentage > 0.f && !ethereal) {
     NotifyStagger(*aggressor, targetActor, hitData, damage > 0.f);
   }
 }

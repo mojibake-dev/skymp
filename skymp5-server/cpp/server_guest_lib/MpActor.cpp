@@ -2390,10 +2390,18 @@ std::optional<skymp::rules::EffectFacts> EffectFactsOf(
     case espm::MGEF::EffectType::Dual:
       facts.kind = skymp::rules::EffectKind::DualValue;
       break;
+    // thuum docs/verbs/self-cast.md: states that change no value and run
+    // for their duration, which the server's rules read and every game shows
+    case espm::MGEF::EffectType::Invisibility:
+    case espm::MGEF::EffectType::Light:
+    case espm::MGEF::EffectType::Etherealize:
+      facts.kind = skymp::rules::EffectKind::State;
+      break;
     default:
       return std::nullopt;
   }
-  if (mgef.primaryAV == espm::ActorValue::None) {
+  if (mgef.primaryAV == espm::ActorValue::None &&
+      facts.kind != skymp::rules::EffectKind::State) {
     return std::nullopt;
   }
   constexpr uint32_t kNoSecond = std::numeric_limits<uint32_t>::max();
@@ -2435,6 +2443,7 @@ rust::Vec<skymp::rules::EffectEntry> EffectEntriesOf(
       e.facts.source = r.source.ToFormId(files);
       e.facts.kind = r.kind == 1 ? skymp::rules::EffectKind::PeakValue
         : r.kind == 2            ? skymp::rules::EffectKind::DualValue
+        : r.kind == 3            ? skymp::rules::EffectKind::State
                                  : skymp::rules::EffectKind::Value;
       e.facts.av = static_cast<uint32_t>(r.av);
       e.facts.second_av =
@@ -2485,6 +2494,7 @@ std::optional<std::vector<RunningEffect>> RunningEffectsOf(
     r.caster = e.caster ? FormDesc::FromFormId(e.caster, files) : FormDesc();
     r.kind = e.facts.kind == skymp::rules::EffectKind::PeakValue ? 1
       : e.facts.kind == skymp::rules::EffectKind::DualValue      ? 2
+      : e.facts.kind == skymp::rules::EffectKind::State          ? 3
                                                                  : 0;
     r.av = static_cast<int32_t>(e.facts.av);
     r.secondAv = e.facts.second_av == kNoSecond
@@ -2979,6 +2989,63 @@ bool MpActor::HasRunningEffects() const
 {
   const auto& running = ChangeForm().runningEffects;
   return running && !running->empty();
+}
+
+bool MpActor::HasRunningEffectOfType(espm::MGEF::EffectType type) const
+{
+  WorldState* worldState = GetParent();
+  if (!worldState || !HasRunningEffects()) {
+    return false;
+  }
+  for (const auto& e : EffectEntriesOf(ChangeForm(), worldState->espmFiles)) {
+    try {
+      if (espm::GetData<espm::MGEF>(e.facts.effect, worldState)
+            .data.effectType == type) {
+        return true;
+      }
+    } catch (std::exception&) {
+      // a record no longer loaded is no such effect
+    }
+  }
+  return false;
+}
+
+bool MpActor::EndRunningEffectsOfTypes(
+  std::initializer_list<espm::MGEF::EffectType> types)
+{
+  WorldState* worldState = GetParent();
+  if (!worldState || !HasRunningEffects()) {
+    return false;
+  }
+  const auto& files = worldState->espmFiles;
+  auto entries = EffectEntriesOf(ChangeForm(), files);
+  std::vector<uint32_t> ending;
+  for (const auto& e : entries) {
+    try {
+      const auto type =
+        espm::GetData<espm::MGEF>(e.facts.effect, worldState).data.effectType;
+      if (std::find(types.begin(), types.end(), type) != types.end()) {
+        ending.push_back(e.facts.effect);
+      }
+    } catch (std::exception&) {
+    }
+  }
+  if (ending.empty()) {
+    return false;
+  }
+  const BaseActorValues maxBefore = GetMaximumValues();
+  const auto changes = skymp::rules::remove_effects(
+    entries, rust::Slice<const uint32_t>(ending.data(), ending.size()));
+  auto running = RunningEffectsOf(entries, files, WallNowMs());
+  EditChangeForm(
+    [&](MpChangeForm& changeForm) { changeForm.runningEffects = running; });
+  std::array<float, 3> deltas{};
+  std::array<bool, 3> touched{};
+  SumAttributeChanges(changes, deltas, touched, pImpl->godMode);
+  // the set first, then the values, as AdvanceEffects does
+  SendMessageToActorListeners(MagicEffectsOf(GetIdx(), entries, {}), true);
+  ApplyAttributeDeltas(deltas, touched, maxBefore, 0);
+  return true;
 }
 
 float MpActor::GetEffectModifier(espm::ActorValue av) const

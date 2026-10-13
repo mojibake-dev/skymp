@@ -9,7 +9,10 @@ import { ClientListener, CombinedController, Sp } from "./clientListener";
 // thuum docs/verbs/shouts.md: a shout fires no spellCast (x-shout-probe
 // 20261011-060059), so the server heard none. The player's game plays
 // shoutStart, then MT_BreathExhaleShort at the release, whichever variation
-// it was (x-shout-probe2), and sets the voice recovery: the variation's
+// it was (x-shout-probe2), or CombatReady_BreathExhaleShort with magic
+// readied or a weapon drawn (x-shout-drawn2 20261013-221426: the release
+// went unseen in those states, playtest fifteen's Unrelenting Force with
+// Flames readied among them), and sets the voice recovery: the variation's
 // recovery time times ShoutRecoveryMult, which names the variation
 // (x-shout-probe3 20261011-221358). The hooks only note the release (no
 // script function runs inside a hook); the next frames read the recovery
@@ -58,16 +61,18 @@ export class ShoutService extends ClientListener {
             enter: () => { },
             leave: () => { this.shoutStartedAt = Date.now(); },
         }, this.playerId, this.playerId, "shoutStart");
-        this.sp.hooks.sendAnimationEvent.add({
-            enter: () => { },
-            leave: () => {
-                if (Date.now() - this.shoutStartedAt <= ShoutService.chargeMs) {
-                    this.releasedAt = Date.now();
-                    shoutGate.pending = true;
-                }
-                this.shoutStartedAt = 0;
-            },
-        }, this.playerId, this.playerId, "MT_BreathExhale*");
+        for (const release of ["MT_BreathExhale*", "CombatReady_BreathExhale*"]) {
+            this.sp.hooks.sendAnimationEvent.add({
+                enter: () => { },
+                leave: () => {
+                    if (Date.now() - this.shoutStartedAt <= ShoutService.chargeMs) {
+                        this.releasedAt = Date.now();
+                        shoutGate.pending = true;
+                    }
+                    this.shoutStartedAt = 0;
+                },
+            }, this.playerId, this.playerId, release);
+        }
     }
 
     private onUpdate() {

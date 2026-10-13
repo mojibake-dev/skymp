@@ -1,4 +1,6 @@
 import { Actor, Form, Game, Shout, Spell } from "skyrimPlatform";
+// @ts-expect-error (TODO: Remove in 2.10.0)
+import { getAnimationVariablesFromActor } from "skyrimPlatform";
 import { MsgType } from "../../messages";
 import { logError, logTrace } from "../../logging";
 import { SpellCastMsgData } from "../messages/spellCastMessage";
@@ -129,7 +131,10 @@ export class ShoutService extends ClientListener {
     // aim, in radians (CommonLibSSE-NG Actor::GetAimAngle falls back to the
     // actor's angle X, GetAimHeading to its heading); Papyrus reads degrees,
     // and the pitch is held within the quarter turn the validator allows.
-    // Dual casting and the graph's variables mean nothing for a shout
+    // It carries the shouter's graph variables too, as a spell's cast does:
+    // the figure's game applies them before it casts, and refuses a cast
+    // that has none (Skyrim Platform MagicApi.cpp, castSpellImmediate).
+    // Dual casting means nothing for a shout
     private castOf(spell: number): SpellCastMsgData {
         const player = this.sp.Game.getPlayer();
         let pitch = player ? player.getAngleX() : 0;
@@ -148,7 +153,16 @@ export class ShoutService extends ClientListener {
             castingSource: 2,
             aimAngle: pitch * toRadians,
             aimHeading: heading * toRadians,
-            actorAnimationVariables: { booleans: [], floats: [], integers: [] },
+            actorAnimationVariables: this.animationVariables(),
+        };
+    }
+
+    private animationVariables() {
+        const vars = getAnimationVariablesFromActor(this.playerId);
+        return {
+            booleans: Array.from(new Uint8Array(vars.booleans)),
+            floats: Array.from(new Uint8Array(vars.floats)),
+            integers: Array.from(new Uint8Array(vars.integers)),
         };
     }
 

@@ -2812,7 +2812,16 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
                  caster->GetFormId(), *shout, facts.variation,
                  spellCastData.spell,
                  partOne.VoiceRecoveryLeftMs(caster->GetFormId()) / 1000.0);
-    SendToNeighbours(myActor->idx, rawMsgData, true);
+    // relayed as the server resolved it, to every game but the shouter's
+    // (as a bow shot is): the shouter's game names its caster 0x14, which a
+    // neighbour's game would read as its own player
+    SpellCastMessage relay;
+    relay.data = spellCastData;
+    for (auto listener : caster->GetActorListeners()) {
+      if (listener != caster) {
+        listener->GetActorToSendTo().SendToUser(relay, true);
+      }
+    }
     return;
   }
 

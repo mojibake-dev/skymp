@@ -91,13 +91,16 @@ int RelayedCasts(PartOne& p)
   return n;
 }
 
-// how many casts one user was sent since the last clear, each reliably
-int CastsTo(PartOne& p, Networking::UserId userId)
+// how many casts one user was sent since the last clear, each reliably and
+// naming its caster as the server knows it (the shouter's own message says
+// 0x14, which the user's game would read as its own player)
+int CastsTo(PartOne& p, Networking::UserId userId, uint32_t caster)
 {
   int n = 0;
   for (auto& m : p.Messages()) {
     if (m.userId == userId && m.j["t"] == MsgType::SpellCast) {
       REQUIRE(m.reliable);
+      REQUIRE(m.j["data"]["caster"].get<uint32_t>() == caster);
       ++n;
     }
   }
@@ -284,7 +287,9 @@ TEST_CASE("A shout the record holds stands once per recovery, waits for its "
   p.SetUserActor(1, kNeighbour);
   p.Messages().clear();
   Shout(p, kFus);
-  REQUIRE(CastsTo(p, 1) == 1);
+  REQUIRE(CastsTo(p, 1, kShouter) == 1);
+  // the shouter's own game is not sent its own shout
+  REQUIRE(CastsTo(p, 0, kShouter) == 0);
   p.Messages().clear();
   const auto left = p.VoiceRecoveryLeftMs(kShouter);
   REQUIRE(left > 14000);

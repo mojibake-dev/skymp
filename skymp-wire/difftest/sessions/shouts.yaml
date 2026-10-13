@@ -17,8 +17,8 @@
 # the player's inventory sent again, Actor.RemoveSpell). At 3 s c1 shouts
 # one word (a cast from the voice, castingSource 2, with VoiceFireBreath1,
 # SPEL 0x3F9EB, 260587: recovery 30 s), and at 3.5 s its fire hits c2: the
-# wire stack takes the shout, relays its cast to every game that sees c1
-# (their figure of c1 breathes it; playtest fourteen saw none), and counts
+# wire stack takes the shout, relays its cast to every other game that sees
+# c1 (their figure of c1 breathes it; playtest fourteen saw none), and counts
 # its hit, which admits the fire's
 # one-second effect on c2 (the effect set sent to both games, then emptied
 # when it ends) and begins a fight; at 4 s c1 shouts again, inside the
@@ -134,12 +134,7 @@ divergences:
     wire: 1
     reason: departure detection, graceful close on the wire against RakNet's timeout
   - client: c2
-    msg: {t: 23, data: {spell: 260587, castingSource: 2}}
+    msg: {t: 23, data: {caster: 4278190082, spell: 260587, castingSource: 2}}
     legacy: 0
     wire: 1
-    reason: the wire stack relays the accepted shout's cast, so c2's game launches the breath from its figure of c1 (thuum docs/verbs/shouts.md); the refused second shout is not relayed, and the legacy stack relays no cast from a slot that holds no spell
-  - client: c1
-    msg: {t: 23, data: {spell: 260587, castingSource: 2}}
-    legacy: 0
-    wire: 1
-    reason: the same relay reaches c1's own game (it listens to itself), which finds no figure for its own player and casts nothing
+    reason: the wire stack relays the accepted shout's cast, naming c1 as the server knows it (its own message says 0x14, which c2's game would read as its own player), so c2's game launches the breath from its figure of c1 (thuum docs/verbs/shouts.md); c1's own game is not sent it; the refused second shout is not relayed, and the legacy stack relays no cast from a slot that holds no spell

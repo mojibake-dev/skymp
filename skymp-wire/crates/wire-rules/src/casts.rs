@@ -191,10 +191,14 @@ impl Casts {
     }
 
     /// A hit by `actor` at `now_ms`: an open stream of the hit's spell
-    /// counts the time since its last counted hit, at most MAX_TICK_MS;
-    /// otherwise the newest fire-and-forget cast of that spell that can still
-    /// take a hit (unused, or an area cast's further target within SPLASH_MS
-    /// of its first) and whose reach covers the target, once per target.
+    /// counts the time since its last counted hit, at most MAX_TICK_MS (with
+    /// a stream of that spell in each hand, the one whose last counted hit is
+    /// oldest: the game runs each hand's stream as an effect of its own on
+    /// the target, both working, and its hit reports do not say which hand,
+    /// thuum docs/verbs/spell-cast.md, x-dual-stack); otherwise the newest
+    /// fire-and-forget cast of that spell that can still take a hit (unused,
+    /// or an area cast's further target within SPLASH_MS of its first) and
+    /// whose reach covers the target, once per target.
     pub fn claim(&mut self, actor: u32, hit: CastHit, now_ms: u64) -> CastCheck {
         let CastHit { spell, target, x, y, z } = hit;
         let Some(casts) = self.per_actor.get_mut(&actor) else {
@@ -204,17 +208,24 @@ impl Casts {
             return CastCheck::NoCast;
         }
         let mut any = false;
-        for open in casts.open.iter_mut().flatten() {
+        let mut oldest: Option<(usize, u64)> = None;
+        for (hand, open) in casts.open.iter().enumerate() {
+            let Some(open) = open else {
+                continue;
+            };
             if open.facts.spell != spell {
                 continue;
             }
             any = true;
-            if within(&open.facts, x, y, z) {
-                let tick_ms = now_ms.saturating_sub(open.last_counted_ms).min(MAX_TICK_MS);
-                open.last_counted_ms = now_ms;
-                let scale = f32::from(u16::try_from(tick_ms).unwrap_or(u16::MAX)) / 1000.0;
-                return CastCheck::Claimed { scale };
+            if within(&open.facts, x, y, z) && oldest.is_none_or(|(_, at)| open.last_counted_ms < at) {
+                oldest = Some((hand, open.last_counted_ms));
             }
+        }
+        if let Some(open) = oldest.and_then(|(hand, _)| casts.open.get_mut(hand)).and_then(Option::as_mut) {
+            let tick_ms = now_ms.saturating_sub(open.last_counted_ms).min(MAX_TICK_MS);
+            open.last_counted_ms = now_ms;
+            let scale = f32::from(u16::try_from(tick_ms).unwrap_or(u16::MAX)) / 1000.0;
+            return CastCheck::Claimed { scale };
         }
         casts.released.retain(|c| now_ms.saturating_sub(c.at_ms) <= CAST_WINDOW_MS);
         for cast in casts.released.iter_mut().rev() {
@@ -324,6 +335,47 @@ mod tests {
         c.end(1, 1);
         assert!(!c.is_open(1, 1));
         assert_eq!(c.claim(1, hit(FLAMES, 2, 150.0, 0.0, 0.0), 1_200), CastCheck::NoCast);
+    }
+
+    #[test]
+    fn two_hands_of_one_stream_count_each_its_own_time() {
+        // x-dual-stack: the game runs each hand's Flames as an effect of its
+        // own on the target; the two hands' reports come every 200 ms each,
+        // the second's 50 ms behind the first's
+        let mut c = Casts::default();
+        c.start(1, cast(FLAMES, 1, CastKind::Concentration, false), 0);
+        c.start(1, cast(FLAMES, 0, CastKind::Concentration, false), 50);
+        let mut counted = 0.0_f32;
+        for t in (200..=1_000).step_by(200) {
+            for at in [t, t + 50] {
+                let check = c.claim(1, hit(FLAMES, 2, 150.0, 0.0, 0.0), at);
+                assert!(matches!(check, CastCheck::Claimed { .. }), "{check:?} at {at}");
+                if let CastCheck::Claimed { scale } = check {
+                    counted += scale;
+                }
+            }
+        }
+        // two streams from 0 and 50 to 1000 and 1050: two seconds
+        assert!((counted - 2.0).abs() < 1e-3, "{counted}");
+    }
+
+    #[test]
+    fn one_hand_missing_its_target_counts_at_most_a_tick_more() {
+        // both hands stream Flames but only one series of reports comes in:
+        // each report takes the hand that waited longest, and a hand counts
+        // at most MAX_TICK_MS, so the two halves count a quarter more than
+        // the one stream's time, not twice it
+        let mut c = Casts::default();
+        c.start(1, cast(FLAMES, 1, CastKind::Concentration, false), 0);
+        c.start(1, cast(FLAMES, 0, CastKind::Concentration, false), 50);
+        let mut counted = 0.0_f32;
+        for t in (200..=2_000).step_by(200) {
+            if let CastCheck::Claimed { scale } = c.claim(1, hit(FLAMES, 2, 150.0, 0.0, 0.0), t) {
+                counted += scale;
+            }
+        }
+        assert!(counted <= 2.0 * 1.25 + 1e-3, "{counted}");
+        assert!(counted >= 2.0 - 1e-3, "{counted}");
     }
 
     #[test]

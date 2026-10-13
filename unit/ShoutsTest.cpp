@@ -311,6 +311,30 @@ TEST_CASE("A shout the record holds stands once per recovery, waits for its "
   Leave(p, kShouter);
 }
 
+TEST_CASE("A god-mode shouter's shouts start no recovery, as TGM's game "
+          "sets none",
+          "[Shouts][espm]")
+{
+  constexpr uint32_t kShouter = 0xff000ac8;
+  constexpr uint32_t kNeighbour = 0xff000acc;
+  PartOne& p = GetPartOne();
+  auto& ac = Shouter(p, kShouter, true);
+  ac.SetGodMode(true);
+  DoConnect(p, 1);
+  p.CreateActor(kNeighbour, { 0, 300, 0 }, 0, 0x3c);
+  p.SetUserActor(1, kNeighbour);
+  p.Messages().clear();
+  Shout(p, kFus);
+  REQUIRE(p.VoiceRecoveryLeftMs(kShouter) == 0);
+  // again at once: it stands too, and both reach the neighbour
+  Shout(p, kFus);
+  REQUIRE(CastsTo(p, 1, kShouter) == 2);
+  ac.SetGodMode(false);
+  p.DestroyActor(kNeighbour);
+  DoDisconnect(p, 1);
+  Leave(p, kShouter);
+}
+
 TEST_CASE("A shout the record does not back is refused", "[Shouts][espm]")
 {
   PartOne& p = GetPartOne();

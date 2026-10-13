@@ -549,6 +549,12 @@ PartOne::VoiceFacts VoiceFactsOf(const MpActor& actor, uint32_t shout,
         static_cast<uint8_t>(espm::ActorValue::ShoutRecoveryMult))
       .value_or(1.f) +
     actor.GetEffectModifier(espm::ActorValue::ShoutRecoveryMult);
+  // thuum docs/verbs/god-mode.md: TGM is "no shout cooldown" in the game
+  // (UESP's Console page), so a god-mode player's shout starts no recovery
+  // here either; its game sets none, and its shouts came refused
+  if (actor.IsGodMode()) {
+    f.recoveryMult = 0.f;
+  }
   return f;
 }
 

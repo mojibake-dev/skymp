@@ -119,11 +119,22 @@ const applyBlocking = (ac: Actor, m: AnimationVariables) => {
   }
 };
 
+// thuum docs/verbs/movement-relay.md (playtests thirteen and fourteen,
+// x-crouch-magic2 20261012-235927): with magic readied the graph's IsSneaking
+// stays false and a figure's isSneaking() never turns true, so reading them
+// could not tell the figure still crouched and SneakStop was never sent: the
+// figure stood only when its hands were sheathed. The last state sent to each
+// figure is kept, so a change of the report sends its event whatever the
+// graph says.
+const sneakSent = new Map<number, boolean>();
+
 const applySneaking = (ac: Actor, isSneaking: boolean) => {
+  const id = ac.getFormID();
   const currentIsSneaking =
     ac.isSneaking() || ac.getAnimationVariableBool("IsSneaking");
-  if (currentIsSneaking != isSneaking) {
+  if (currentIsSneaking != isSneaking || sneakSent.get(id) !== isSneaking) {
     Debug.sendAnimationEvent(ac, isSneaking ? "SneakStart" : "SneakStop");
+    sneakSent.set(id, isSneaking);
   }
 };
 

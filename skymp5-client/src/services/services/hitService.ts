@@ -11,6 +11,7 @@ export class HitService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
         controller.on('hit', (e) => this.onHit(e));
+        controller.on('update', () => { this.frame++; });
     }
 
     private onHit(e: HitEvent) {
@@ -50,17 +51,26 @@ export class HitService extends ClientListener {
             return;
         }
 
-        // prevent double hit that happens for some reason with magic projectiles
+        // thuum docs/verbs/spell-cast.md: a magic hit comes twice in a frame
+        // (0 to 2 ms apart, x-dual-cast), so every other copy of one caster,
+        // target and spell within a frame is dropped: one hand's hit counts
+        // once, two hands' in one frame (both buttons pressed together)
+        // twice. The filter here before dropped any magic hit within 100 ms
+        // of the caster's last, the other hand's with it, and the server
+        // counted a two-handed stream once (x-dual-cast, x-dual-stack: the
+        // game runs both). A double that slips through adds nothing: the
+        // server counts a stream by its time, not its reports
         if (isSpell || isScroll) {
-            const aggressorId = e.aggressor.getFormID();
-            const now = Date.now();
-
-            const lastHitTime = this.recentMagicHits.get(aggressorId);
-            if (lastHitTime && now - lastHitTime < 100) {
+            if (this.magicHitsFrame !== this.frame) {
+                this.magicHitsFrame = this.frame;
+                this.magicHitsThisFrame.clear();
+            }
+            const key = `${e.aggressor.getFormID()}:${e.target.getFormID()}:${e.source.getFormID()}`;
+            const n = (this.magicHitsThisFrame.get(key) || 0) + 1;
+            this.magicHitsThisFrame.set(key, n);
+            if (n % 2 === 0) {
                 return;
             }
-
-            this.recentMagicHits.set(aggressorId, now);
         }
 
         const data = this.getHitData(e);
@@ -92,5 +102,7 @@ export class HitService extends ClientListener {
         return hitData;
     }
 
-    private recentMagicHits: Map<number, number> = new Map();
+    private frame = 0;
+    private magicHitsFrame = -1;
+    private magicHitsThisFrame = new Map<string, number>();
 }

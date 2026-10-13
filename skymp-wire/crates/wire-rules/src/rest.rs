@@ -180,6 +180,21 @@ pub fn rested_ms(slept: bool, time_scale: f32) -> Option<u64> {
     Some(ms as u64)
 }
 
+/// The seconds a rest of `hours` runs the resting player's magic effects
+/// (thuum docs/verbs/self-cast.md): the regeneration's measured seconds a
+/// rested hour (REGEN_SECONDS_PER_HOUR). HYPOTHESIS: the engine runs an
+/// effect's time at that rate in a wait; at least the real-time equivalent
+/// (180 s a game hour at time scale 20) is certain, so effects of a minute
+/// end in any rest, as playtest fifteen's Invisibility did in its caster's
+/// game. Zero for hours that are not a finite positive number.
+#[must_use]
+pub fn effect_seconds(hours: f32) -> f32 {
+    if !hours.is_finite() || hours <= 0.0 {
+        return 0.0;
+    }
+    hours.min(MAX_HOURS) * REGEN_SECONDS_PER_HOUR
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,5 +313,16 @@ mod tests {
         fn in_range_quiet_living_rests_pass(hours in MIN_HOURS..=MAX_HOURS, since in COMBAT_QUIET_MS..u64::MAX) {
             prop_assert_eq!(check(facts(hours, false, Some(since)), on()), Ok(()));
         }
+    }
+
+    #[test]
+    fn a_rest_runs_the_effects_by_its_regeneration_seconds() {
+        assert!((effect_seconds(1.0) - 360.0).abs() < 1e-3);
+        // a one-minute effect ends in any rest
+        assert!(effect_seconds(MIN_HOURS) > 60.0);
+        assert!((effect_seconds(48.0) - effect_seconds(MAX_HOURS)).abs() < 1e-3);
+        assert_eq!(effect_seconds(0.0), 0.0);
+        assert_eq!(effect_seconds(f32::NAN), 0.0);
+        assert_eq!(effect_seconds(-2.0), 0.0);
     }
 }

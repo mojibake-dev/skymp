@@ -453,6 +453,9 @@ mod ffi {
         PeakValue,
         /// Archetype 5, dual value modifier.
         DualValue,
+        /// A state that changes no value (Invisibility, Light,
+        /// Etherealize; thuum docs/verbs/self-cast.md).
+        State,
     }
 
     /// How an effect arrives.
@@ -810,6 +813,9 @@ mod ffi {
         /// Real milliseconds the Rested bonus of a rest lasts at the
         /// clock's `time_scale`; 0 when it earns none.
         fn rested_ms(slept: bool, time_scale: f32) -> u64;
+        /// The seconds a rest of `hours` runs the resting player's magic
+        /// effects (thuum docs/verbs/self-cast.md).
+        fn rest_effect_seconds(hours: f32) -> f32;
 
         /// The marker a discovery reported at the player's position means:
         /// the nearest candidate within the discovery range.
@@ -936,6 +942,9 @@ mod ffi {
         /// Adds `entry` to `entries` within the bound: a displaced buff's
         /// return comes back.
         fn admit_effect(entries: &mut Vec<EffectEntry>, entry: EffectEntry) -> Vec<AvChange>;
+        /// Ends the running effects whose MGEF is one of `effects`; a buff's
+        /// give-back is returned.
+        fn remove_effects(entries: &mut Vec<EffectEntry>, effects: &[u32]) -> Vec<AvChange>;
         /// The temporary modifier the running buffs put on `av`.
         fn effect_modifier(entries: &Vec<EffectEntry>, av: u32) -> f32;
 
@@ -1371,6 +1380,10 @@ fn rested_ms(slept: bool, time_scale: f32) -> u64 {
     rest::rested_ms(slept, time_scale).unwrap_or(0)
 }
 
+fn rest_effect_seconds(hours: f32) -> f32 {
+    rest::effect_seconds(hours)
+}
+
 fn rest_after(r: &Regen, hours: f32) -> f32 {
     rest::after_rest(rest::Regen { percentage: r.percentage, rate: r.rate, rate_mult: r.rate_mult }, hours)
 }
@@ -1475,6 +1488,7 @@ fn to_magic_facts(f: EffectFacts) -> magic::EffectFacts {
     let kind = match kind {
         EffectKind::PeakValue => magic::EffectKind::PeakValue,
         EffectKind::DualValue => magic::EffectKind::DualValue,
+        EffectKind::State => magic::EffectKind::State,
         _ => magic::EffectKind::Value,
     };
     let second_av = if second_av == u32::MAX { None } else { Some(second_av) };
@@ -1487,6 +1501,7 @@ fn from_magic_facts(f: magic::EffectFacts) -> EffectFacts {
         magic::EffectKind::Value => EffectKind::Value,
         magic::EffectKind::PeakValue => EffectKind::PeakValue,
         magic::EffectKind::DualValue => EffectKind::DualValue,
+        magic::EffectKind::State => EffectKind::State,
     };
     EffectFacts { effect, source, kind, av, second_av: second_av.unwrap_or(u32::MAX), second_weight, magnitude, duration_s, recover, detrimental, no_duration }
 }
@@ -1532,6 +1547,10 @@ fn advance_effects(entries: &mut Vec<EffectEntry>, dt_s: f32) -> Vec<AvChange> {
 fn admit_effect(entries: &mut Vec<EffectEntry>, entry: EffectEntry) -> Vec<AvChange> {
     let entry = to_magic_entry(&entry);
     with_entries(entries, |ours| magic::admit(ours, entry))
+}
+
+fn remove_effects(entries: &mut Vec<EffectEntry>, effects: &[u32]) -> Vec<AvChange> {
+    with_entries(entries, |ours| magic::remove(ours, effects))
 }
 
 // cxx passes a C++ rust::Vec by reference as &Vec

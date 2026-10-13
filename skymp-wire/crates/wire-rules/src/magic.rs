@@ -37,6 +37,11 @@ pub enum EffectKind {
     /// Archetype 5, dual value modifier: the primary value, and the second
     /// at its weight (shock's Magicka, frost's Stamina).
     DualValue,
+    /// An archetype that changes no actor value and lasts its duration:
+    /// Invisibility (11), Light (12), Etherealize (41). The server keeps it
+    /// as the actor's running state, which its rules read and every game
+    /// shows (thuum docs/verbs/self-cast.md).
+    State,
 }
 
 /// How the effect arrives: a concentration spell's hits each bring the
@@ -151,7 +156,7 @@ fn changes_of(facts: &EffectFacts, amount: f32, as_modifier: bool) -> Vec<AvChan
 /// and gives it back) rather than heals or wounds: Recover on a value or
 /// peak value modifier, and a peak value modifier always moves the maximum.
 fn buffs(facts: &EffectFacts) -> bool {
-    facts.recover || facts.kind == EffectKind::PeakValue
+    facts.kind != EffectKind::State && (facts.recover || facts.kind == EffectKind::PeakValue)
 }
 
 /// Applies one effect at `scale` times its magnitude, cast by `caster`: a
@@ -169,6 +174,11 @@ pub fn apply(facts: EffectFacts, scale: f32, caster: u32, arrival: Arrival) -> A
     facts.duration_s = facts.duration_s.clamp(0.0, MAX_DURATION_S);
     let amount = facts.magnitude * sign(&facts);
     let instant = arrival == Arrival::Stream || facts.no_duration || facts.duration_s <= 0.0;
+    if facts.kind == EffectKind::State {
+        // a state changes nothing; it runs for its duration, or not at all
+        let entry = (!instant).then_some(EffectEntry { facts, caster, elapsed_s: 0.0 });
+        return Applied { changes: Vec::new(), entry };
+    }
     if buffs(&facts) && !instant {
         return Applied {
             changes: changes_of(&facts, amount, true),
@@ -198,6 +208,9 @@ pub fn advance(entries: &mut Vec<EffectEntry>, dt_s: f32) -> Vec<AvChange> {
         entry.elapsed_s = before + dt_s;
         let facts = entry.facts;
         let amount = facts.magnitude * sign(&facts);
+        if facts.kind == EffectKind::State {
+            continue;
+        }
         if buffs(&facts) {
             if entry.elapsed_s >= facts.duration_s {
                 out.extend(changes_of(&facts, -amount, true));
@@ -227,6 +240,22 @@ pub fn modifier(entries: &[EffectEntry], av: u32) -> f32 {
             primary + second
         })
         .sum()
+}
+
+/// Ends the running effects among `entries` whose MGEF is one of `effects`
+/// before their time (an ethereal or invisible actor's own attack ends its
+/// state, thuum docs/verbs/self-cast.md); a buff that ends gives its
+/// modifier back: those changes are returned.
+pub fn remove(entries: &mut Vec<EffectEntry>, effects: &[u32]) -> Vec<AvChange> {
+    let mut out = Vec::new();
+    for gone in entries.iter().filter(|e| effects.contains(&e.facts.effect)) {
+        if buffs(&gone.facts) {
+            let amount = gone.facts.magnitude * sign(&gone.facts);
+            out.extend(changes_of(&gone.facts, -amount, true));
+        }
+    }
+    entries.retain(|e| !effects.contains(&e.facts.effect));
+    out
 }
 
 /// Adds `entry` to `entries`, keeping at most MAX_EFFECTS: past the bound the
@@ -417,5 +446,59 @@ mod tests {
         };
         assert_eq!(total(&back, HEALTH), (0.0, -20.0));
         assert_eq!(entries.len(), MAX_EFFECTS);
+    }
+
+    // Skyrim.esm (docs/verbs/magic-effects.md's table): InvisibillityFFSelf
+    // 0x1EA6A (archetype 11, actor value 54), Invisibility's 30 s
+    fn invisibility() -> EffectFacts {
+        EffectFacts {
+            effect: 0x1ea6a,
+            source: 0x27eb6,
+            kind: EffectKind::State,
+            av: 54,
+            second_av: None,
+            second_weight: 0.0,
+            magnitude: 0.0,
+            duration_s: 30.0,
+            recover: true,
+            detrimental: false,
+            no_duration: false,
+        }
+    }
+
+    #[test]
+    fn a_state_runs_its_duration_and_changes_nothing() {
+        let applied = apply(invisibility(), 1.0, 0x14, Arrival::Once);
+        assert!(applied.changes.is_empty());
+        let mut entries: Vec<EffectEntry> = applied.entry.into_iter().collect();
+        assert_eq!(entries.len(), 1, "a state with a duration runs");
+        assert_eq!(modifier(&entries, 54), 0.0);
+        assert!(advance(&mut entries, 10.0).is_empty());
+        assert_eq!(entries.len(), 1);
+        assert!(advance(&mut entries, 25.0).is_empty());
+        assert!(entries.is_empty());
+        // without a duration it never runs
+        let none = apply(EffectFacts { duration_s: 0.0, ..invisibility() }, 1.0, 0x14, Arrival::Once);
+        assert!(none.changes.is_empty() && none.entry.is_none());
+    }
+
+    #[test]
+    fn removing_ends_the_named_effects_and_a_buff_gives_back() {
+        let fortify = facts(EffectKind::PeakValue, 100.0, 60.0);
+        let mut entries = Vec::new();
+        for f in [fortify, invisibility()] {
+            if let Some(e) = apply(f, 1.0, 0x14, Arrival::Once).entry {
+                admit(&mut entries, e);
+            }
+        }
+        assert_eq!(entries.len(), 2);
+        // the state goes and gives nothing back; the buff stays
+        assert!(remove(&mut entries, &[0x1ea6a]).is_empty());
+        assert_eq!(entries.len(), 1);
+        assert_eq!(modifier(&entries, HEALTH), 100.0);
+        // the buff goes and gives its 100 back
+        let back = remove(&mut entries, &[fortify.effect]);
+        assert_eq!(total(&back, HEALTH), (0.0, -100.0));
+        assert!(entries.is_empty());
     }
 }

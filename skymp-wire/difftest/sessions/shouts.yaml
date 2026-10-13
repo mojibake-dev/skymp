@@ -35,11 +35,16 @@
 # bare-handed at 2.5 s (god-mode's layout mirrored: c2 50 units east of the
 # spawn, in the cone) to give both stacks a health message for c2: the
 # legacy stack the punch's damage, the wire stack c2's health unchanged.
+# Since m2-fifteen a shout's counted hit also staggers its target through the
+# server's stagger (thuum docs/verbs/stagger.md, shouts.md: the push decided
+# as staggers are), so UpdateAnimation (t 3) is compared message by message,
+# as in the stagger session: TESModPlatform.Stagger to c2's own game and c2's
+# staggerStart relayed to every game that sees it, c1's and c2's own.
 id: shouts
 clients:
   c1: {profile_id: 9}
   c2: {profile_id: 10}
-volatile: [2, 3, 24, 16]
+volatile: [2, 24, 16]
 steps:
   - {client: c1, at_ms: 1500, send: {t: 12, data: {t: 12, commandName: addshout, args: [20, 260586]}}}
   - {client: c1, at_ms: 1700, send: {t: 12, data: {t: 12, commandName: unlockword, args: [20, 134679]}}}
@@ -128,6 +133,21 @@ divergences:
     legacy: 0
     wire: 1
     reason: the counted hit begins a fight; the wire stack tells c2's game (thuum docs/verbs/hostility-sync.md)
+  - client: c2
+    msg: {t: 30, class: TESModPlatform, function: Stagger, selfId: 0, arguments: [{formId: 20, type: Actor}, 0.05, {formId: 4278190082, type: Actor}]}
+    legacy: 0
+    wire: 1
+    reason: the counted shout's hit staggers c2 at the server's word, in c2's own game; the spell's own StaggerPushFFAimed effect (Skyrim.esm VoiceFireBreath1, MGEF 0xA44C0 at 0.05) played through the server's stagger (thuum docs/verbs/stagger.md and shouts.md); the legacy server has no stagger
+  - client: c1
+    msg: {t: 3, data: {animEventName: staggerStart}}
+    legacy: 0
+    wire: 1
+    reason: the fixed server relays c2's stagger to every game that sees c2, c1's included, as c2's own animation (as in the stagger session)
+  - client: c2
+    msg: {t: 3, data: {animEventName: staggerStart}}
+    legacy: 0
+    wire: 1
+    reason: the same relay reaches c2's own game, which listens to itself and draws no figure of itself
   - client: c2
     msg: {t: 25, idx: 2}
     legacy: 0

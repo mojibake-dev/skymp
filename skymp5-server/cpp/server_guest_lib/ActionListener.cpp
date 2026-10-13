@@ -137,6 +137,18 @@ MpActor* ActionListener::SendToNeighbours(uint32_t idx,
                           rawMsgData.unparsedLength, reliable);
 }
 
+void ActionListener::RelayCast(MpActor& caster, const MpActor& sender,
+                               const SpellCastData& data)
+{
+  SpellCastMessage relay;
+  relay.data = data;
+  for (auto listener : caster.GetActorListeners()) {
+    if (listener != &sender) {
+      listener->GetActorToSendTo().SendToUser(relay, true);
+    }
+  }
+}
+
 void ActionListener::OnCustomPacket(const RawMessageData& rawMsgData,
                                     const CustomPacketMessage& msg)
 {
@@ -2773,11 +2785,13 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
 
   // A cast's end ends that hand's stream whatever the hand holds by now (it
   // used to need the spell still equipped, so a changed hand lost the stop),
-  // and reaches every screen (reliable: a lost end left an observer's figure
-  // casting, playtest six's Flames)
+  // and reaches every other screen (reliable: a lost end left an observer's
+  // figure casting, playtest six's Flames). Every relay below is the cast as
+  // resolved (RelayCast): the client's bytes named their caster 0x14 when
+  // the client chose, which each neighbour's game reads as its own player
   if (spellCastData.interruptCast) {
     partOne.EndCast(caster->GetFormId(), hand);
-    SendToNeighbours(myActor->idx, rawMsgData, true);
+    RelayCast(*caster, *myActor, spellCastData);
     return;
   }
 
@@ -2812,16 +2826,7 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
                  caster->GetFormId(), *shout, facts.variation,
                  spellCastData.spell,
                  partOne.VoiceRecoveryLeftMs(caster->GetFormId()) / 1000.0);
-    // relayed as the server resolved it, to every game but the shouter's
-    // (as a bow shot is): the shouter's game names its caster 0x14, which a
-    // neighbour's game would read as its own player
-    SpellCastMessage relay;
-    relay.data = spellCastData;
-    for (auto listener : caster->GetActorListeners()) {
-      if (listener != caster) {
-        listener->GetActorToSendTo().SendToUser(relay, true);
-      }
-    }
+    RelayCast(*caster, *myActor, spellCastData);
     return;
   }
 
@@ -2855,7 +2860,7 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
                  "reach {}; not relayed",
                  caster->GetFormId(), spellCastData.spell, teleportReach);
   } else {
-    SendToNeighbours(myActor->idx, rawMsgData, true);
+    RelayCast(*caster, *myActor, spellCastData);
   }
 
   auto& browser = partOne.worldState.GetEspm().GetBrowser();

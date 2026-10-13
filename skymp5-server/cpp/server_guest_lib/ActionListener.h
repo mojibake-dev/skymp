@@ -169,6 +169,12 @@ private:
   MpActor* SendToNeighbours(uint32_t idx, const RawMessageData& rawMsgData,
                             bool reliable = false);
 
+  // thuum docs/verbs/spell-cast.md: a cast as the server resolved it (its
+  // caster a form id, never the sender's 0x14) to every user listening to
+  // the caster but the sender, reliably, as a bow shot's relay
+  void RelayCast(MpActor& caster, const MpActor& sender,
+                 const SpellCastData& data);
+
   PartOne& partOne;
 
   // TODO: inverse dependency

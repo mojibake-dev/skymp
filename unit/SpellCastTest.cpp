@@ -50,8 +50,8 @@ MpActor& Duel(PartOne& p, uint32_t spell)
   return target;
 }
 
-// through the packet path (DoMessage), so the server's relay carries the
-// message's bytes as a client's would
+// through the packet path (DoMessage), as a client's message arrives; the
+// caster names itself 0x14, as a client may
 void Cast(PartOne& p, uint32_t spell, bool end)
 {
   DoMessage(
@@ -122,9 +122,14 @@ TEST_CASE("A fire-and-forget cast covers one hit, and reaches the neighbour "
   Cast(p, kFirebolt, false);
   bool relayed = false;
   for (auto& m : p.Messages()) {
-    if (m.userId == 1 && m.j.contains("t") && m.j["t"] == 23) {
-      relayed = true;
+    if (m.j.contains("t") && m.j["t"] == 23) {
+      // the neighbour's game is told the caster as the server knows it (a
+      // 0x14 there would be the neighbour's own player), and the caster's
+      // own game is told nothing
+      REQUIRE(m.userId == 1);
       REQUIRE(m.reliable);
+      REQUIRE(m.j["data"]["caster"].get<uint32_t>() == kCaster);
+      relayed = true;
     }
   }
   REQUIRE(relayed);
@@ -155,7 +160,20 @@ TEST_CASE("A stream counts the time it held its target, until its end",
   // its end, even with the hand changed since: no more hits
   Equipment eq;
   p.worldState.GetFormAt<MpActor>(kCaster).SetEquipment(eq);
+  p.Messages().clear();
   Cast(p, kFlames, true);
+  // the end reaches the neighbour as the server resolved it, and not the
+  // caster's own game
+  bool ended = false;
+  for (auto& m : p.Messages()) {
+    if (m.j.contains("t") && m.j["t"] == 23) {
+      REQUIRE(m.userId == 1);
+      REQUIRE(m.j["data"]["interruptCast"].get<bool>());
+      REQUIRE(m.j["data"]["caster"].get<uint32_t>() == kCaster);
+      ended = true;
+    }
+  }
+  REQUIRE(ended);
   eq.rightSpell = kFlames;
   p.worldState.GetFormAt<MpActor>(kCaster).SetEquipment(eq);
   std::this_thread::sleep_for(60ms);

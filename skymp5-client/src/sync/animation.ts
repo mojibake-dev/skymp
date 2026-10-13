@@ -261,9 +261,16 @@ export class AnimationSource {
     return mov;
   }
 
+  // thuum docs/verbs/spell-cast.md: the events the graph took, oldest first,
+  // one per call (the sender ships one a frame). A concentration cast's start
+  // and its release come in one frame, and an observer's figure that gets the
+  // release alone streams without raising its hand
   getAnimation(): Animation {
-    const { numChanges, animEventName } = this;
-    return { numChanges, animEventName };
+    const next = this.pending.shift();
+    if (next) {
+      this.last = next;
+    }
+    return this.last;
   }
 
   private onSendAnimationEvent(animEventName: string) {
@@ -292,17 +299,24 @@ export class AnimationSource {
     }
 
     this.numChanges++;
-    this.animEventName = animEventName;
+    this.pending.push({ numChanges: this.numChanges, animEventName });
+    if (this.pending.length > maxPendingAnimations) {
+      this.pending.shift();
+    }
   }
 
   private refrId = 0;
   private numChanges = 0;
-  private animEventName = "";
+  private pending = new Array<Animation>();
+  private last: Animation = { numChanges: 0, animEventName: "" };
 
   private weapNonDrawnBlocker = 0;
   private weapDrawnBlocker = 0;
   private sneakBlocker: boolean | null = null;
 }
+
+// a burst longer than this keeps its newest events (the old relay kept one)
+const maxPendingAnimations = 8;
 
 const ignoredAnims = new Set<string>([
   "moveStart",

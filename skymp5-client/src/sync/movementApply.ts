@@ -125,17 +125,26 @@ const applyBlocking = (ac: Actor, m: AnimationVariables) => {
 // could not tell the figure still crouched and SneakStop was never sent: the
 // figure stood only when its hands were sheathed. The last state sent to each
 // figure is kept, so a change of the report sends its event whatever the
-// graph says.
-const sneakSent = new Map<number, boolean>();
+// graph says. A graph that disagrees with an unchanged report (a figure whose
+// 3D reloaded) is told again at most once a second: with magic readied it
+// never agrees, and resending every update sent a crouched figure SneakStart
+// every 100 to 130 ms (x-crouch-latency2 20261013-060851).
+const sneakSent = new Map<number, { isSneaking: boolean; at: number }>();
+const sneakResendMs = 1000;
 
 const applySneaking = (ac: Actor, isSneaking: boolean) => {
   const id = ac.getFormID();
-  const currentIsSneaking =
-    ac.isSneaking() || ac.getAnimationVariableBool("IsSneaking");
-  if (currentIsSneaking != isSneaking || sneakSent.get(id) !== isSneaking) {
-    Debug.sendAnimationEvent(ac, isSneaking ? "SneakStart" : "SneakStop");
-    sneakSent.set(id, isSneaking);
+  const sent = sneakSent.get(id);
+  const now = Date.now();
+  if (sent && sent.isSneaking === isSneaking) {
+    const currentIsSneaking =
+      ac.isSneaking() || ac.getAnimationVariableBool("IsSneaking");
+    if (currentIsSneaking === isSneaking || now - sent.at < sneakResendMs) {
+      return;
+    }
   }
+  Debug.sendAnimationEvent(ac, isSneaking ? "SneakStart" : "SneakStop");
+  sneakSent.set(id, { isSneaking, at: now });
 };
 
 export const applyWeapDrawn = (ac: Actor, isWeapDrawn: boolean): void => {
@@ -162,6 +171,13 @@ const applyHealthPercentage = (ac: Actor, healthPercentage: number) => {
 
 // Use global temp var to avoid allocation of an array on each translateTo
 const gTempTargetPos: NiPoint3 = [0, 0, 0];
+
+// thuum docs/verbs/cast-teleport.md (playtest fourteen: a teleporting player
+// slid across the other screen): a figure further from its report than any
+// run covers between two reports (130 ms apart; Whirlwind Sprint's three
+// words spread 2140 units over several, docs/verbs/movement-speed.md) moved
+// by a jump, and is put there instead of glided across in 0.2 s
+const jumpDistance = 1024;
 
 const translateTo = (refr: ObjectReference, m: Movement) => {
   let time = 0.2;
@@ -202,6 +218,11 @@ const translateTo = (refr: ObjectReference, m: Movement) => {
     }
 
     if (!actor || !actor.isDead()) {
+      if (distance > jumpDistance) {
+        refr.setPosition(gTempTargetPos[0], gTempTargetPos[1], gTempTargetPos[2]);
+        refr.setAngle(m.rot[0], m.rot[1], m.rot[2]);
+        return;
+      }
       refr.translateTo(
         gTempTargetPos[0],
         gTempTargetPos[1],

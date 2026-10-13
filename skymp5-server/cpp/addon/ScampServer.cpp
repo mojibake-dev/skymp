@@ -2,6 +2,7 @@
 
 #include "Bot.h"
 #include "ConditionsEvaluator.h"
+#include "ConsoleCommands.h"
 #include "FormCallbacks.h"
 #include "FormDesc.h"
 #include "GamemodeApi.h"
@@ -96,6 +97,8 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
       InstanceMethod("getActorName", &ScampServer::GetActorName),
       InstanceMethod("destroyActor", &ScampServer::DestroyActor),
       InstanceMethod("setRaceMenuOpen", &ScampServer::SetRaceMenuOpen),
+      InstanceMethod("executeConsoleCommand",
+                     &ScampServer::ExecuteConsoleCommand),
       InstanceMethod("getActorsByProfileId",
                      &ScampServer::GetActorsByProfileId),
       InstanceMethod("setEnabled", &ScampServer::SetEnabled),
@@ -654,6 +657,41 @@ Napi::Value ScampServer::SetRaceMenuOpen(const Napi::CallbackInfo& info)
   auto open = info[1].As<Napi::Boolean>().operator bool();
   try {
     partOne->SetRaceMenuOpen(formId, open);
+  } catch (std::exception& e) {
+    throw Napi::Error::New(info.Env(), (std::string)e.what());
+  }
+  return info.Env().Undefined();
+}
+
+// thuum docs/verbs/console-commands.md: a console command run on the server
+// as the actor would type it (the console verb's own path: the actor's rank
+// checked, its reply sent to its game), for a gamemode's setup of a player
+// (the lab's playtest seats get their shouts and words this way, not by
+// keystrokes in a game: playtest fifteen, Eli). Arguments: the actor's form
+// id, the command's name, and its arguments as a client sends them, numbers
+// (a form id, 0x14 for the actor itself) or strings
+Napi::Value ScampServer::ExecuteConsoleCommand(const Napi::CallbackInfo& info)
+{
+  try {
+    auto actorId = info[0].As<Napi::Number>().Uint32Value();
+    auto name = info[1].As<Napi::String>().Utf8Value();
+    std::vector<ConsoleCommands::Argument> args;
+    if (info.Length() > 2 && info[2].IsArray()) {
+      auto array = info[2].As<Napi::Array>();
+      for (uint32_t i = 0; i < array.Length(); ++i) {
+        Napi::Value value = array.Get(i);
+        if (value.IsNumber()) {
+          args.emplace_back(value.As<Napi::Number>().Int64Value());
+        } else if (value.IsString()) {
+          args.emplace_back(value.As<Napi::String>().Utf8Value());
+        } else {
+          throw std::runtime_error(
+            "a console argument is a number or a string");
+        }
+      }
+    }
+    auto& actor = partOne->worldState.GetFormAt<MpActor>(actorId);
+    ConsoleCommands::Execute(*partOne, actor, name, args);
   } catch (std::exception& e) {
     throw Napi::Error::New(info.Env(), (std::string)e.what());
   }

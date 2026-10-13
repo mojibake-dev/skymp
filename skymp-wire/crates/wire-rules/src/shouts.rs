@@ -17,6 +17,17 @@ use std::collections::HashMap;
 /// Dragonrend's three words, a few minutes).
 const MAX_RECOVERY_MS: f64 = 3_600_000.0;
 
+/// How much of the last recovery may be left when the next shout arrives,
+/// milliseconds. The server starts a recovery when a shout's report
+/// arrives, the shouter's game when it shouts, and the report goes out on
+/// the frames after the release, on the client's one ordered channel: an
+/// earlier report resent once arrives 300 ms late (wire-transport
+/// `Limits::resend_ms`, as ranged::DELIVERY_SKEW_MS) and its read can lag a
+/// few frames more, so the next shout, on time in the game, finds that much
+/// left on the server. Playtest fifteen's Become Ethereal (20.0 s) was
+/// refused with 18 ms left (thuum docs/verbs/shouts.md).
+pub const RECOVERY_SKEW_MS: u64 = 400;
+
 /// What the server knows about a shout a player's game reported.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VoiceFacts {
@@ -80,7 +91,7 @@ impl Voices {
         if !words.iter().all(|&u| u) {
             return VoiceRefusal::WordLocked;
         }
-        if self.recovery_left_ms(actor, now_ms) > 0 {
+        if self.recovery_left_ms(actor, now_ms) > RECOVERY_SKEW_MS {
             return VoiceRefusal::Recovering;
         }
         self.recovered_at.insert(actor, now_ms.saturating_add(recovery_ms(f.recovery_s, f.recovery_mult)));
@@ -152,6 +163,21 @@ mod tests {
         // at the recovery's end the next stands
         assert_eq!(v.shout(ACTOR, &two_words(), 120_000), VoiceRefusal::Accepted);
         assert_eq!(v.recovery_left_ms(ACTOR, 120_000), 20_000);
+    }
+
+    #[test]
+    fn a_shout_on_time_in_its_game_stands_on_the_server() {
+        // playtest fifteen: Become Ethereal (20 s) again 19.982 s later
+        let mut v = Voices::default();
+        let ethereal = VoiceFacts { variation: 0, recovery_s: 20.0, ..two_words() };
+        assert_eq!(v.shout(ACTOR, &ethereal, 100_000), VoiceRefusal::Accepted);
+        assert_eq!(v.shout(ACTOR, &ethereal, 119_982), VoiceRefusal::Accepted);
+        // the skew's edge, and past it
+        assert_eq!(v.shout(ACTOR, &ethereal, 139_982 - RECOVERY_SKEW_MS), VoiceRefusal::Accepted);
+        let edge = 139_982 - RECOVERY_SKEW_MS + 20_000 - RECOVERY_SKEW_MS - 1;
+        assert_eq!(v.shout(ACTOR, &ethereal, edge), VoiceRefusal::Recovering);
+        // a second early is still refused
+        assert_eq!(v.shout(ACTOR, &ethereal, edge - 600), VoiceRefusal::Recovering);
     }
 
     #[test]

@@ -22,6 +22,8 @@ namespace {
 constexpr uint32_t kActor = 0xff000a01;
 constexpr uint32_t kPoison = 0x00058cfb;
 constexpr uint32_t kDagger = 0x0001397e;
+// gold, after the dagger: a dagger entry moved to the end shows
+constexpr uint32_t kGold = 0x0000000f;
 
 Inventory::ExtraData Worn(bool right)
 {
@@ -44,6 +46,7 @@ MpActor& Poisoner(PartOne& p, bool daggerInRight)
   auto& ac = p.worldState.GetFormAt<MpActor>(kActor);
   ac.RemoveAllItems();
   ac.AddItem(kDagger, 1);
+  ac.AddItem(kGold, 10);
   ac.AddItem(kPoison, 1);
   Equipment eq;
   eq.inv.entries.push_back(Inventory::Entry(kDagger, 1, Worn(daggerInRight)));
@@ -60,6 +63,19 @@ const Inventory::Entry* DaggerEntry(const MpActor& ac)
     }
   }
   return nullptr;
+}
+
+// where the dagger stands among the entries: marking and spending keep it
+// there (the legacy stack's drink does, and difftest compares the order)
+size_t DaggerIndex(const MpActor& ac)
+{
+  const auto& entries = ac.GetInventory().entries;
+  for (size_t i = 0; i < entries.size(); ++i) {
+    if (entries[i].baseId == kDagger && entries[i].count > 0) {
+      return i;
+    }
+  }
+  return entries.size();
 }
 
 bool PoisonRuns(const MpActor& ac)
@@ -98,9 +114,11 @@ TEST_CASE("A poison's OnEquip marks the right-hand weapon and spends the "
 {
   PartOne& p = GetPartOne();
   auto& ac = Poisoner(p, true);
+  const auto index = DaggerIndex(ac);
 
   REQUIRE(ac.OnEquip(kPoison));
   REQUIRE(ac.GetInventory().GetItemCount(kPoison) == 0);
+  REQUIRE(DaggerIndex(ac) == index);
   const auto* dagger = DaggerEntry(ac);
   REQUIRE(dagger);
   REQUIRE(dagger->poisonId == kPoison);
@@ -147,12 +165,14 @@ TEST_CASE("A poisoned weapon's hit runs the poison on its target and spends "
 {
   PartOne& p = GetPartOne();
   auto& ac = Poisoner(p, true);
+  const auto index = DaggerIndex(ac);
   REQUIRE(ac.OnEquip(kPoison));
 
   HitSelf(p, ac);
   REQUIRE(PoisonRuns(ac));
   REQUIRE(DaggerEntry(ac));
   REQUIRE(!DaggerEntry(ac)->poisonId);
+  REQUIRE(DaggerIndex(ac) == index);
   // one dose: nothing left to spend
   REQUIRE(!ac.SpendPoisonDose(kDagger));
   Leave(p);

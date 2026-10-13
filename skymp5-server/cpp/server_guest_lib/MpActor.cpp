@@ -674,17 +674,20 @@ bool MpActor::ApplyPoison(uint32_t poisonId)
     return false;
   }
 
-  // one copy takes the mark: the game poisons the worn copy only
+  // one copy takes the mark: the game poisons the worn copy only. A copy
+  // alone takes it where it stands, so the inventory keeps its order (as the
+  // legacy stack's drink leaves it, which difftest compares); a stack gives
+  // one copy to an entry of its own
   Inventory::Entry marked = *it;
   marked.count = 1;
   marked.poisonId = poisonId;
   marked.poisonCount = kPoisonDoses;
-  if (it->count > 1) {
-    it->count -= 1;
+  if (it->count == 1) {
+    *it = marked;
   } else {
-    inv.entries.erase(it);
+    it->count -= 1;
+    inv.AddItems({ marked });
   }
-  inv.AddItems({ marked });
   inv.RemoveItems({ Inventory::Entry(poisonId, 1) });
   SetInventory(inv);
 
@@ -715,12 +718,21 @@ std::optional<uint32_t> MpActor::SpendPoisonDose(uint32_t weaponId)
     spent.poisonId.reset();
     spent.poisonCount.reset();
   }
-  if (it->count > 1) {
-    it->count -= 1;
+  // a copy alone changes where it stands unless it rejoins a stack of its
+  // own kind, so the inventory keeps its order (see ApplyPoison)
+  const bool joinsStack = std::any_of(
+    inv.entries.begin(), inv.entries.end(),
+    [&](const Inventory::Entry& e) { return e.EqualExceptCount(spent); });
+  if (it->count == 1 && !joinsStack) {
+    *it = spent;
   } else {
-    inv.entries.erase(it);
+    if (it->count > 1) {
+      it->count -= 1;
+    } else {
+      inv.entries.erase(it);
+    }
+    inv.AddItems({ spent });
   }
-  inv.AddItems({ spent });
   SetInventory(inv);
   return poisonId;
 }

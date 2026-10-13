@@ -567,18 +567,20 @@ bool MpActor::OnEquip(uint32_t baseId)
     return false;
   }
 
-  // thuum docs/verbs/poison.md: what arrives when a player puts a poison on
-  // a weapon (the game's own box, which the lab cannot answer:
-  // x-poison-probe2), for playtest fourteen's traced check
+  // thuum docs/verbs/poison.md: a poison's OnEquip is its player putting it
+  // on the right-hand weapon, never a drink. The game's box is its only use
+  // of a poison for its player; the engine sends no equip event for it, and
+  // the client reports the game's PoisonedWeapon event as this.
   if (isPotion) {
+    bool isPoison = false;
     try {
-      if (espm::GetData<espm::ALCH>(baseId, GetParent()).isPoison) {
-        spdlog::info("MpActor::OnEquip {:x} - poison {:x} equipped (held {})",
-                     GetFormId(), baseId, GetInventory().GetItemCount(baseId));
-      }
+      isPoison = espm::GetData<espm::ALCH>(baseId, GetParent()).isPoison;
     } catch (std::exception& e) {
       spdlog::warn("MpActor::OnEquip {:x} - {:x}: {}", GetFormId(), baseId,
                    e.what());
+    }
+    if (isPoison) {
+      return ApplyPoison(baseId);
     }
   }
 
@@ -604,6 +606,123 @@ bool MpActor::OnEquip(uint32_t baseId)
   SendPapyrusEvent("OnObjectEquipped", args, std::size(args));
 
   return true;
+}
+
+namespace {
+// thuum docs/verbs/poison.md: the doses a poison gives a weapon without
+// perks, the game's 1.0 floored (the re-analyst's read of the box's callback,
+// 2026-10-12; CONFIRMED by x-poison-probe3 20261013-001004). Perks change
+// it through the kModPoisonDoseCount entry point, which waits for M5.
+constexpr uint32_t kPoisonDoses = 1;
+
+bool TakesPoison(WorldState& worldState, uint32_t weaponId)
+{
+  const auto lookup = worldState.GetEspm().GetBrowser().LookupById(weaponId);
+  if (!lookup.rec || lookup.rec->GetType() != espm::WEAP::kType) {
+    return false;
+  }
+  const auto weap = espm::GetData<espm::WEAP>(weaponId, &worldState);
+  return weap.weapDNAM &&
+    weap.weapDNAM->animType != espm::WEAP::AnimType::Other &&
+    weap.weapDNAM->animType != espm::WEAP::AnimType::Staff;
+}
+}
+
+bool MpActor::ApplyPoison(uint32_t poisonId)
+{
+  auto* worldState = GetParent();
+  if (!worldState || GetInventory().GetItemCount(poisonId) == 0) {
+    spdlog::warn("MpActor::ApplyPoison {:x} - E_POISON_NOT_HELD: {:x}",
+                 GetFormId(), poisonId);
+    return false;
+  }
+
+  // the weapon worn in the right hand, as the player's game reported it
+  std::optional<uint32_t> weaponId;
+  for (const auto& entry : GetEquipment().inv.entries) {
+    if (entry.GetWorn() == Inventory::Worn::Right &&
+        TakesPoison(*worldState, entry.baseId)) {
+      weaponId = entry.baseId;
+      break;
+    }
+  }
+  if (!weaponId) {
+    spdlog::warn("MpActor::ApplyPoison {:x} - E_POISON_NO_WEAPON: {:x} with "
+                 "no weapon that takes it in the right hand",
+                 GetFormId(), poisonId);
+    return false;
+  }
+
+  Inventory inv = GetInventory();
+  const auto isWeapon = [&](const Inventory::Entry& e) {
+    return e.baseId == *weaponId && e.count > 0;
+  };
+  if (std::any_of(inv.entries.begin(), inv.entries.end(),
+                  [&](const Inventory::Entry& e) {
+                    return isWeapon(e) && e.poisonId.has_value();
+                  })) {
+    spdlog::warn("MpActor::ApplyPoison {:x} - E_POISON_ALREADY: {:x} carries "
+                 "a poison",
+                 GetFormId(), *weaponId);
+    return false;
+  }
+  auto it = std::find_if(inv.entries.begin(), inv.entries.end(), isWeapon);
+  if (it == inv.entries.end()) {
+    spdlog::warn("MpActor::ApplyPoison {:x} - E_POISON_NO_WEAPON: {:x} is "
+                 "not in the server's inventory",
+                 GetFormId(), *weaponId);
+    return false;
+  }
+
+  // one copy takes the mark: the game poisons the worn copy only
+  Inventory::Entry marked = *it;
+  marked.count = 1;
+  marked.poisonId = poisonId;
+  marked.poisonCount = kPoisonDoses;
+  if (it->count > 1) {
+    it->count -= 1;
+  } else {
+    inv.entries.erase(it);
+  }
+  inv.AddItems({ marked });
+  inv.RemoveItems({ Inventory::Entry(poisonId, 1) });
+  SetInventory(inv);
+
+  spdlog::info("MpActor::ApplyPoison {:x} - poison {:x} on {:x}, {} dose(s)",
+               GetFormId(), poisonId, *weaponId, kPoisonDoses);
+  return true;
+}
+
+std::optional<uint32_t> MpActor::SpendPoisonDose(uint32_t weaponId)
+{
+  Inventory inv = GetInventory();
+  auto it = std::find_if(
+    inv.entries.begin(), inv.entries.end(), [&](const Inventory::Entry& e) {
+      return e.baseId == weaponId && e.count > 0 && e.poisonId.has_value() &&
+        e.poisonCount.value_or(0) > 0;
+    });
+  if (it == inv.entries.end()) {
+    return std::nullopt;
+  }
+
+  const uint32_t poisonId = *it->poisonId;
+  Inventory::Entry spent = *it;
+  spent.count = 1;
+  const uint32_t left = *it->poisonCount - 1;
+  if (left > 0) {
+    spent.poisonCount = left;
+  } else {
+    spent.poisonId.reset();
+    spent.poisonCount.reset();
+  }
+  if (it->count > 1) {
+    it->count -= 1;
+  } else {
+    inv.entries.erase(it);
+  }
+  inv.AddItems({ spent });
+  SetInventory(inv);
+  return poisonId;
 }
 
 void MpActor::AddEventSink(std::shared_ptr<DestroyEventSink> sink)

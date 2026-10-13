@@ -3059,6 +3059,22 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
                currentActorValues.healthPercentage, outBaseHealth);
 
   NotifyHostility(*aggressor, targetActor, currentHitTime);
+
+  // thuum docs/verbs/poison.md: a poisoned weapon's hit runs the poison's
+  // effects on the target through the effect rule (ADR-028), the attacker
+  // as caster, and spends a dose; the attacker's game is told its inventory,
+  // so its ExtraPoison agrees. HYPOTHESIS: the game spends a dose on a
+  // blocked hit as well (unmeasured)
+  if (const auto poison = aggressor->SpendPoisonDose(hitData.source)) {
+    const auto effects = MpActor::EffectsOf(&partOne.worldState, *poison);
+    targetActor.ApplyEffects(*poison, effects, 1.f, aggressor->GetFormId(),
+                             false);
+    spdlog::info("OnWeaponHit - {:x}'s {:x} carried poison {:x}: its effects "
+                 "run on {:x}, a dose spent",
+                 aggressor->GetFormId(), hitData.source, *poison,
+                 targetActor.GetFormId());
+  }
+
   // the engine's reaction skips a hit that killed
   if (currentActorValues.healthPercentage > 0.f) {
     NotifyStagger(*aggressor, targetActor, hitData, damage > 0.f);

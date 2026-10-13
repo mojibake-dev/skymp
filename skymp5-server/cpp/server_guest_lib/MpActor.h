@@ -97,6 +97,16 @@ public:
   MpActor& GetActorToSendTo();
 
   [[nodiscard]] bool OnEquip(uint32_t baseId);
+  // thuum docs/verbs/poison.md: the poison `poisonId` put on the weapon
+  // worn in the player's right hand (the game's box, reported as the
+  // poison's OnEquip): one poison spent and one copy of that weapon marked
+  // with it and the server's dose count; false, nothing changed, without
+  // the poison, without such a weapon (bare hands and staves take none, as
+  // the game refuses them), or with that weapon already poisoned
+  bool ApplyPoison(uint32_t poisonId);
+  // The poison a copy of `weaponId` carries, one dose spent (the mark
+  // cleared at none); nullopt when no copy carries one
+  std::optional<uint32_t> SpendPoisonDose(uint32_t weaponId);
 
   // TODO: consider removing the entire DestroyEventSink feature because it's
   // only used in unit tests

@@ -22,21 +22,38 @@ import { ClientListener, CombinedController, Sp } from "./clientListener";
 // its shout has no cast to claim (spell-cast's claim). Both go reliable on
 // one ordered channel, so a hit sent after the report reaches the server
 // after it. HitService asks the gate before it sends.
+//
+// When the recovery names no variation (god mode sets none: TGM's "no shout
+// cooldown"; or the read came late), the shout's own hit does: its spell is
+// one of the equipped shout's three, and the report goes out with it before
+// the hit. A hit of a shout's spell with no report in the last chargeMs
+// (the release unseen) reports it the same way. Playtest fifteen: no shout
+// of test 1's reached the server for a quarter hour, its Unrelenting Force
+// hits refused for want of a cast (thuum docs/verbs/shouts.md)
+type HeldHit = { spell: number; send: () => void };
 export const shoutGate = {
     pending: false,
-    held: [] as Array<() => void>,
+    held: [] as Array<HeldHit>,
+    // the last report: its spell and when, so a shout's own hits after it
+    // report nothing more
+    reportedSpell: 0,
+    reportedAt: 0,
+    // set by ShoutService: reports the equipped shout's cast from a hit's
+    // spell when it is one of the shout's variations; true when it did
+    reportFromHit: (_spell: number, _why: string): boolean => false,
 };
 
 const releaseHeld = () => {
     shoutGate.pending = false;
     const held = shoutGate.held.splice(0);
-    held.forEach((send) => send());
+    held.forEach((h) => h.send());
 };
 
 export class ShoutService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
         this.controller.on("update", () => this.onUpdate());
+        shoutGate.reportFromHit = (spell, why) => this.reportFromHit(spell, why);
         this.sp.hooks.sendAnimationEvent.add({
             enter: () => { },
             leave: () => { this.shoutStartedAt = Date.now(); },
@@ -78,8 +95,10 @@ export class ShoutService extends ClientListener {
         const recovery = this.sp.callNative("Actor", "GetVoiceRecoveryTime", player) as number;
         if (!(recovery > 0)) {
             if (Date.now() - this.releasedAt > ShoutService.readMs) {
-                logError(this, "E_SHOUT_UNREAD: no voice recovery", ShoutService.readMs, "ms after the release of", shout.getFormID().toString(16));
                 this.releasedAt = 0;
+                if (!this.reportFromHeld(shout, "no voice recovery")) {
+                    logError(this, "E_SHOUT_UNREAD: no voice recovery", ShoutService.readMs, "ms after the release of", shout.getFormID().toString(16), "and no hit of it held");
+                }
                 releaseHeld();
             }
             return;
@@ -95,16 +114,79 @@ export class ShoutService extends ClientListener {
             spell = Spell.from(this.sp.callNative("Shout", "GetNthSpell", shout, variation) as Form | null);
         }
         if (variation === null || !spell) {
-            logError(this, "E_SHOUT_UNREAD: a recovery of", recovery, "s names no variation of", shout.getFormID().toString(16));
+            if (!this.reportFromHeld(shout, `a recovery of ${recovery} s names no variation`)) {
+                logError(this, "E_SHOUT_UNREAD: a recovery of", recovery, "s names no variation of", shout.getFormID().toString(16), "and no hit of it held");
+            }
             releaseHeld();
             return;
         }
         logTrace(this, "shout", shout.getFormID().toString(16), "variation", variation, "recovery", recovery, "hits held", shoutGate.held.length);
+        this.report(spell.getFormID());
+        releaseHeld();
+    }
+
+    private report(spell: number) {
+        shoutGate.reportedSpell = spell;
+        shoutGate.reportedAt = Date.now();
         this.controller.emitter.emit("sendMessage", {
-            message: { t: MsgType.SpellCast, data: this.castOf(spell.getFormID()) },
+            message: { t: MsgType.SpellCast, data: this.castOf(spell) },
             reliability: "reliable",
         });
-        releaseHeld();
+    }
+
+    // The equipped shout's variation a spell is, or null
+    private variationSpellOf(shout: Shout, spell: number): number | null {
+        for (let n = 0; n < 3; ++n) {
+            const s = shout.getNthSpell(n);
+            if (s && s.getFormID() === spell) {
+                return n;
+            }
+        }
+        return null;
+    }
+
+    // A held hit names the shout when the recovery cannot: the first held
+    // hit whose spell is one of the shout's variations reports it
+    private reportFromHeld(shout: Shout, why: string): boolean {
+        for (const h of shoutGate.held) {
+            const n = this.variationSpellOf(shout, h.spell);
+            if (n !== null) {
+                logError(this, "E_SHOUT_FROM_HIT:", why, "; shout", shout.getFormID().toString(16), "variation", n, "named by its hit");
+                this.report(h.spell);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // HitService's check for a hit sent with no report pending: a hit of the
+    // equipped shout's spell with no report of it within chargeMs means the
+    // release went unseen, and the report goes out first
+    private reportFromHit(spell: number, why: string): boolean {
+        if (spell === shoutGate.reportedSpell && Date.now() - shoutGate.reportedAt <= ShoutService.chargeMs) {
+            return false;
+        }
+        // a stream's hits come ten a second: the equipped shout's spells are
+        // read at most once a second
+        const now = Date.now();
+        if (now - this.voiceSpellsReadAt > 1000) {
+            const player = Game.getPlayer();
+            const shout = player ? player.getEquippedShout() : null;
+            this.voiceSpells = [];
+            for (let n = 0; shout && n < 3; ++n) {
+                const s = shout.getNthSpell(n);
+                this.voiceSpells.push(s ? s.getFormID() : 0);
+            }
+            this.voiceShout = shout ? shout.getFormID() : 0;
+            this.voiceSpellsReadAt = now;
+        }
+        const n = this.voiceSpells.indexOf(spell);
+        if (n < 0) {
+            return false;
+        }
+        logError(this, "E_SHOUT_UNREPORTED:", why, "; shout", this.voiceShout.toString(16), "variation", n, "reported from its hit");
+        this.report(spell);
+        return true;
     }
 
     // The variation whose recovery the game set: the one whose recovery
@@ -167,6 +249,9 @@ export class ShoutService extends ClientListener {
     }
 
     private readonly playerId = 0x14;
+    private voiceSpells: number[] = [];
+    private voiceShout = 0;
+    private voiceSpellsReadAt = 0;
     private shoutStartedAt = 0;
     private releasedAt = 0;
     // three words charge in about 0.9 s (x-shout-probe2)

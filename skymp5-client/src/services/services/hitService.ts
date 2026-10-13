@@ -81,10 +81,15 @@ export class HitService extends ClientListener {
         });
 
         // thuum docs/verbs/shouts.md: the player's spell hits after a
-        // shout's release wait for the shout's report (shoutService)
-        if (isSpell && aggressor === 0x14 && shoutGate.pending) {
-            shoutGate.held.push(send);
-            return;
+        // shout's release wait for the shout's report (shoutService); one
+        // of the equipped shout's spells with no report of it, the release
+        // unseen, reports it first
+        if (isSpell && aggressor === 0x14) {
+            if (shoutGate.pending) {
+                shoutGate.held.push({ spell: e.source.getFormID(), send });
+                return;
+            }
+            shoutGate.reportFromHit(e.source.getFormID(), "no release seen");
         }
         send();
     }

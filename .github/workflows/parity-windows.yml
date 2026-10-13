@@ -16,7 +16,12 @@ name: Parity Windows Flatrim (AE/SE)
 
 on:
   push:
-    branches: [ parity ]
+    # parity and every milestone branch (m1-*, m2-*, ...): a verb's client is
+    # built at its push, not when someone remembers to dispatch. A newer push
+    # on the same branch supersedes a running build (concurrency below); a
+    # dispatch while a push build runs cancels it the same way, so dispatch
+    # only when nothing is building for that branch (2026-10-13).
+    branches: [ parity, 'm[0-9]+-**' ]
   workflow_dispatch:
 
 concurrency:

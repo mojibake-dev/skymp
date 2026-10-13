@@ -73,18 +73,29 @@ difftest-build:
     expire_in: 30 days
 
 # Bounded fuzzing per push; the nightly schedule sets FUZZ_SECONDS to an hour.
-# A crash leaves its input under fuzz/artifacts as a job artifact.
+# One job runs the four targets side by side on the runner's four cores: as a
+# four-job matrix on the one `sky` slot they ran one after another and were
+# half of every wire pipeline (608 of 1,180 s, measured 2026-10-13). A crash
+# leaves its input under fuzz/artifacts and that target's log as job artifacts.
 wire-fuzz:
   extends: .wire
   stage: wire
-  parallel:
-    matrix:
-      - TARGET: [codec_decode, validate, transport_ingest, json_recognize]
+  variables:
+    FUZZ_TARGETS: "codec_decode validate transport_ingest json_recognize"
   script:
-    - cargo +nightly fuzz run "$TARGET" -- -max_total_time="$FUZZ_SECONDS"
+    - cargo +nightly fuzz build
+    - |
+      rc=0; pids=""
+      for t in $FUZZ_TARGETS; do
+        cargo +nightly fuzz run "$t" -- -max_total_time="$FUZZ_SECONDS" > "fuzz-$t.log" 2>&1 &
+        pids="$pids $!"
+      done
+      for p in $pids; do wait "$p" || rc=1; done
+      for t in $FUZZ_TARGETS; do echo "== $t"; tail -n 6 "fuzz-$t.log"; done
+      exit $rc
   artifacts:
     when: on_failure
-    paths: [skymp-wire/fuzz/artifacts/]
+    paths: [skymp-wire/fuzz/artifacts/, skymp-wire/fuzz-*.log]
     expire_in: 1 month
 
 # C++ server, the upstream way, inside one docker build: ci/server.Dockerfile

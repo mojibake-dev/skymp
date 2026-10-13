@@ -1,23 +1,28 @@
 # difftest spell-cast (M2, thuum docs/verbs/spell-cast.md): c1 and c2 are new
 # characters (profiles 9 and 10, actors 0xff000002 and 0xff000003: see
 # melee-reach), c2 50 units off the spawn. A new character knows Flames
-# (Skyrim.esm SPEL 0x12FCD, 77773, concentration, 8 a second) from the
-# Player record's spell list, so c1 wears it in its right hand at 2 s
+# (Skyrim.esm SPEL 0x12FCD, 77773, concentration, 8 a second) from the Player
+# record's spell list, so c1 wears it in its right hand at 2 s
 # (UpdateEquipment as its game reports it; both stacks take it). At 2.5 s c1
 # reports a Flames hit on c2 with no cast: the legacy server counts it, the
 # fixed one refuses it (E_SPELL_NO_CAST). At 3 s c1 starts the stream
-# (SpellCast, castingSource 1, the right hand; both stacks relay it to c2),
-# and its hits at 3.4 s and 3.8 s each count the time since the stream's
-# last counted one on the fixed server, at most 250 ms (the gaps are 400 ms,
-# so each counts the cap whatever the network's jitter: 2 of Flames' 8),
-# where the legacy server counts each report as a whole second of it. At
-# 4 s c1 ends the stream (both relay the end), and its hit at 4.3 s is
-# refused by the fixed server (no open stream) and counted by the legacy
-# one. c2 steps again at 4 s of its own (5.5 s of c1's), so it outlives c1,
-# as in every session. The numbers are the first run's (T2 2026-10-10, fork
-# m2-spell 3aef8c78): c2's base health is 100, so the legacy server's four
-# hits leave 0.92, 0.84, 0.76 and 0.68, and the fixed server's two leave 0.98
-# and 0.96; both relay the start and the end to c2.
+# (SpellCast, castingSource 1, the right hand). The legacy server relays c1's
+# bytes to every game that sees c1, c1's own included, naming the caster 0x14
+# as c1's game did, which c2's game would read as its own player; the fixed
+# server relays the cast as it resolved it, to every game but the sender's,
+# naming c1 by its form id (RelayCast, fork 184bcc6f). c1's hits at 3.4 s
+# and 3.8 s each count the time since the stream's last counted one on the
+# fixed server, at most 250 ms (the gaps are 400 ms, so each counts the cap
+# whatever the network's jitter: 2 of Flames' 8), where the legacy server
+# counts each report as a whole second of it. At 4 s c1 ends the stream (each
+# relays the end as it relayed the start), and its hit at 4.3 s is refused by
+# the fixed server (no open stream) and counted by the legacy one. c2 steps
+# again at 4 s of its own (5.5 s of c1's), so it outlives c1, as in every
+# session. The numbers are the first run's (T2 2026-10-10, fork m2-spell
+# 3aef8c78): c2's base health is 100, so the legacy server's four hits leave
+# 0.92, 0.84, 0.76 and 0.68, and the fixed server's two leave 0.98 and 0.96.
+# The relays' declarations are from T2 on fork m2-relay dd3f729c
+# (2026-10-13).
 id: spell-cast
 clients:
   c1: {profile_id: 9}
@@ -73,3 +78,18 @@ divergences:
     legacy: 0
     wire: 1
     reason: the fixed server counts the stream's second hit the same way, 400 ms after the first and so the 250 ms cap again (since magic-effects the damage goes through the effect rule, (98 - 2) / 100, the f32 nearest 0.96, where the old path's 0.98 - 0.02 landed one step above it)
+  - client: c1
+    msg: {t: 23, data: {caster: 20}}
+    legacy: 2
+    wire: 0
+    reason: the legacy server relays a cast's start and its end to every game that sees the caster, the caster's own included; the fixed server sends neither back to the caster's game (RelayCast)
+  - client: c2
+    msg: {t: 23, data: {caster: 20}}
+    legacy: 2
+    wire: 0
+    reason: the legacy server relays c1's start and end as c1's bytes came, naming the caster 0x14, which c2's game reads as its own player
+  - client: c2
+    msg: {t: 23, data: {caster: 4278190082}}
+    legacy: 0
+    wire: 2
+    reason: the fixed server relays the start and the end as it resolved them, naming c1 by its form id (0xff000002), so c2's game casts them from c1's figure (rule 5, thuum docs/verbs/spell-cast.md)

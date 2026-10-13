@@ -2223,6 +2223,51 @@ EventResult EventHandler::ProcessEvent(
   return EventResult::kContinue;
 }
 EventResult EventHandler::ProcessEvent(
+  const RE::PoisonedWeapon::Event*,
+  RE::BSTEventSource<RE::PoisonedWeapon::Event>*)
+{
+  // thuum docs/verbs/poison.md: the engine sends this empty event when its
+  // player answers Yes in the poison box, after poisoning the weapon in the
+  // right hand (the re-analyst's read, 2026-10-12): that entry and its
+  // ExtraPoison (CommonLibSSE-NG include/RE/E/ExtraPoison.h) say which
+  // weapon, which poison and how many doses. The engine sends no equip event
+  // for a poison, so this is how the player's poisoning reaches the server.
+  RE::FormID weaponId = 0;
+  RE::FormID poisonId = 0;
+  uint32_t count = 0;
+  auto* player = RE::PlayerCharacter::GetSingleton();
+  auto* entry = player ? player->GetEquippedEntryData(false) : nullptr;
+  if (entry && entry->object) {
+    weaponId = entry->object->formID;
+  }
+  if (entry && entry->extraLists) {
+    for (auto* list : *entry->extraLists) {
+      auto* extra = list ? list->GetByType<RE::ExtraPoison>() : nullptr;
+      if (extra && extra->poison) {
+        poisonId = extra->poison->formID;
+        count = extra->count;
+        break;
+      }
+    }
+  }
+
+  SkyrimPlatform::GetSingleton()->AddUpdateTask(
+    [weaponId, poisonId, count](Napi::Env env) {
+      auto obj = Napi::Object::New(env);
+
+      auto weapon = RE::TESForm::LookupByID(weaponId);
+      auto poison = RE::TESForm::LookupByID(poisonId);
+
+      AddObjProperty(&obj, "weapon", weapon, "Weapon");
+      AddObjProperty(&obj, "poison", poison, "Potion");
+      AddObjProperty(&obj, "count", count);
+
+      SendEvent("poisonApplied", obj);
+    });
+
+  return EventResult::kContinue;
+}
+EventResult EventHandler::ProcessEvent(
   const RE::CriticalHit::Event* event,
   RE::BSTEventSource<RE::CriticalHit::Event>*)
 {

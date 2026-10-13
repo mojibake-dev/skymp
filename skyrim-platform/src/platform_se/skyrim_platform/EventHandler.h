@@ -81,6 +81,7 @@ class EventHandler final
   , public RE::BSTEventSink<RE::PositionPlayerEvent>
   , public RE::BSTEventSink<RE::ActorKill::Event>
   , public RE::BSTEventSink<RE::BooksRead::Event>
+  , public RE::BSTEventSink<RE::PoisonedWeapon::Event>
   , public RE::BSTEventSink<RE::CriticalHit::Event>
   , public RE::BSTEventSink<RE::DisarmedEvent::Event>
   , public RE::BSTEventSink<RE::DragonSoulsGained::Event>
@@ -410,6 +411,10 @@ public:
                            RE::BSTEventSource<RE::BooksRead::Event>*) override;
 
   EventResult ProcessEvent(
+    const RE::PoisonedWeapon::Event* event,
+    RE::BSTEventSource<RE::PoisonedWeapon::Event>*) override;
+
+  EventResult ProcessEvent(
     const RE::CriticalHit::Event* event,
     RE::BSTEventSource<RE::CriticalHit::Event>*) override;
 
@@ -684,6 +689,7 @@ private:
     AppendSink<RE::ItemHarvested>(std::vector({ "itemHarvested" }));
     AppendSink<RE::LevelIncrease>(std::vector({ "levelIncrease" }));
     AppendSink<RE::LocationDiscovery>(std::vector({ "locationDiscovery" }));
+    AppendSink<RE::PoisonedWeaponSource>(std::vector({ "poisonApplied" }));
     AppendSink<RE::ShoutAttack>(std::vector({ "shoutAttack" }));
     AppendSink<RE::SkillIncrease>(std::vector({ "skillIncrease" }));
     AppendSink<RE::SoulsTrapped>(std::vector({ "soulsTrapped" }));

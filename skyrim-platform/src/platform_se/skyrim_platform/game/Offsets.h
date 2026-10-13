@@ -41,6 +41,9 @@ inline REL::ID DragonSoulsGained(REL::Relocate(37571, 38520));
 inline REL::ID ItemHarvested(REL::Relocate(14704, 14875));
 inline REL::ID LevelIncrease(REL::Relocate(39247, 40319));
 inline REL::ID LocationDiscovery(REL::Relocate(40056, 41067));
+// AE only: 1.6.1170's id by lab/addr.py (thuum docs/verbs/poison.md); the
+// SE id is unread, and PoisonedWeaponSource checks the runtime first
+inline REL::ID PoisonedWeapon(41069);
 inline REL::ID ShoutAttack(REL::Relocate(40060, 41071));
 inline REL::ID SkillIncrease(REL::Relocate(39248, 40320));
 inline REL::ID SoulsTrapped(REL::Relocate(37916, 38873));

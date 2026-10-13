@@ -1,6 +1,7 @@
 #pragma once
 
 #include "events/ItemHarvested.h"
+#include "events/PoisonedWeapon.h"
 
 namespace RE {
 

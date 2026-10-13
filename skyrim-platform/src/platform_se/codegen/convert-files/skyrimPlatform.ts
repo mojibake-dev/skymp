@@ -327,6 +327,12 @@ export interface BookReadEvent {
   book: Book
 }
 
+export interface PoisonAppliedEvent {
+  weapon: Weapon | null
+  poison: Potion | null
+  count: number
+}
+
 export interface SellEvent {
   target: ObjectReference
   seller: ObjectReference
@@ -684,6 +690,8 @@ export declare function once(eventName: 'locationChanged', callback: (event: Loc
 
 export declare function on(eventName: 'bookRead', callback: (event: BookReadEvent) => void): EventHandle
 export declare function once(eventName: 'bookRead', callback: (event: BookReadEvent) => void): EventHandle
+export declare function on(eventName: 'poisonApplied', callback: (event: PoisonAppliedEvent) => void): EventHandle
+export declare function once(eventName: 'poisonApplied', callback: (event: PoisonAppliedEvent) => void): EventHandle
 
 export declare function on(eventName: 'sell', callback: (event: SellEvent) => void): EventHandle
 export declare function once(eventName: 'sell', callback: (event: SellEvent) => void): EventHandle

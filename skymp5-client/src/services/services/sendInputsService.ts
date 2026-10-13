@@ -8,7 +8,7 @@ import { getMovement } from "../../sync/movementGet";
 import * as worldViewMisc from "../../view/worldViewMisc";
 
 import { Animation, AnimationSource } from "../../sync/animation";
-import { Actor, EquipEvent, FormType } from "skyrimPlatform";
+import { Actor, EquipEvent, FormType, PoisonAppliedEvent } from "skyrimPlatform";
 import { getAppearance } from "../../sync/appearance";
 import { ActorValues, getActorValues } from "../../sync/actorvalues";
 import { getEquipment } from "../../sync/equipment";
@@ -33,6 +33,7 @@ export class SendInputsService extends ClientListener {
         this.controller.on("update", () => this.onUpdate());
         this.controller.on("equip", (e) => this.onEquip(e));
         this.controller.on("unequip", (e) => this.onUnequip(e));
+        this.controller.on("poisonApplied", (e) => this.onPoisonApplied(e));
         this.controller.on("loadGame", () => this.onLoadGame());
     }
 
@@ -72,6 +73,21 @@ export class SendInputsService extends ClientListener {
         // a potion drunk in this game that the server never consumed
         this.controller.emitter.emit("sendMessage", {
             message: { t: MsgType.OnEquip, baseId: event.baseObj.getFormID() },
+            reliability: "reliable"
+        });
+    }
+
+    // thuum docs/verbs/poison.md: the game puts the poison on the right hand's
+    // weapon when its player answers Yes in the poison box, and sends no equip
+    // event for it; the server takes the poison's OnEquip as that poisoning
+    // (it spends the poison and marks the weapon with its own dose count)
+    private onPoisonApplied(event: PoisonAppliedEvent) {
+        if (!event.poison) {
+            return;
+        }
+        this.equipmentChanged = true;
+        this.controller.emitter.emit("sendMessage", {
+            message: { t: MsgType.OnEquip, baseId: event.poison.getFormID() },
             reliability: "reliable"
         });
     }

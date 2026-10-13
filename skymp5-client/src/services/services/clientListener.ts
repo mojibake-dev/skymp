@@ -19,6 +19,16 @@ declare module "skyrimPlatform" {
     function getTextRefrNode(textId: number): string;
     function getTextRefrOffset(textId: number): number[];
     function getTextRefrScreenOffset(textId: number): number[];
+
+    // thuum docs/verbs/poison.md: the fork's Skyrim Platform sends it when the
+    // player answers Yes in the game's poison box, which sends no equip event
+    interface PoisonAppliedEvent {
+        weapon: Weapon | null;
+        poison: Potion | null;
+        count: number;
+    }
+    function on(eventName: 'poisonApplied', callback: (event: PoisonAppliedEvent) => void): EventHandle;
+    function once(eventName: 'poisonApplied', callback: (event: PoisonAppliedEvent) => void): EventHandle;
 }
 
 export type Sp = Omit<typeof sp, "on" | "once">;

@@ -3,47 +3,43 @@
 # see melee-reach), c2 50 units off the spawn. The lab server runs with
 # enableConsoleCommandsForAll (see console), so c1 gives itself Skyrim.esm's
 # FortifyHealth01 (ALCH 0x3EAF2, 256754: AlchFortifyHealth, a peak value
-# modifier with Recover, 20 for 60 s) and a Weak Poison (DamageHealth01, ALCH
-# 0x3A5A4, 239012: AlchDamageHealth 15, flagged a poison; both read with
-# thuum lab/esm.py) at 2 s and 2.3 s. At 3 s c1 drinks the fortify (OnEquip,
-# as its game reports a drink): the legacy server restores 20 health at once
-# and has c2's game drink it on c1's figure (an SpSnippet EquipItem); the
-# fixed server raises c1's maximum by 20 for a minute and tells every game
-# that sees c1 the effect (MagicEffects). At 3.5 s c1 equips the poison: the
-# legacy server drinks it as a heal (its magnitude restored) and has c2's
-# game drink it too; the fixed server takes the poison and applies nothing.
-# c2 steps again at 3.5 s of its own (5 s of c1's), so it outlives c1, as in
+# modifier with Recover, 20 for 60 s; read with thuum lab/esm.py) at 2 s. At
+# 3 s c1 drinks it (OnEquip, as its game reports a drink): the legacy server
+# restores 20 health at once and has c2's game drink it on c1's figure (an
+# SpSnippet EquipItem); the fixed server raises c1's maximum by 20 for a
+# minute and tells every game that sees c1 the effect (MagicEffects). c1
+# starts at full health, so each server sends it health 1 once (the legacy
+# server's restore, the fixed server's value moving with the maximum). c2
+# steps again at 3.5 s of its own (5 s of c1's), so it outlives c1, as in
 # every session. The numbers are the first run's (T2 2026-10-10, fork
-# m2-effects a9da1873): c1 starts at full health, so the legacy server's
-# fortify and its poison "heal" each send it health 1, and the fixed
-# server's fortify sends it once (the value moves with the maximum).
+# m2-effects a9da1873). Until 2026-10-13 c1 also equipped a Weak Poison here
+# (DamageHealth01, ALCH 0x3A5A4), which the legacy server drinks as a heal;
+# since the poison verb the fixed server puts a poison on the right-hand
+# weapon (here a new character's Iron War Axe, WEAP 0x13790; T2 on fork
+# m2-visuals be69bf68), and the legacy server's inventory after its drink is
+# contained in every earlier one, so no declaration (a pattern) could tell
+# it apart. The poison session (poison.yaml) declares both servers' handling
+# of a poison.
 id: magic-effects
 clients:
   c1: {profile_id: 9}
   c2: {profile_id: 10}
 steps:
   - {client: c1, at_ms: 2000, send: {t: 12, data: {t: 12, commandName: additem, args: [20, 256754, 1]}}}
-  - {client: c1, at_ms: 2300, send: {t: 12, data: {t: 12, commandName: additem, args: [20, 239012, 1]}}}
   - {client: c1, at_ms: 3000, send: {t: 11, baseId: 256754}}
-  - {client: c1, at_ms: 3500, send: {t: 11, baseId: 239012}}
   - {client: c2, at_ms: 0, move: {dx: 50}}
   - {client: c2, at_ms: 3500, move: {dx: 60}}
 divergences:
   - client: c1
     msg: {t: 41, text: "additem done", refused: false}
     legacy: 0
-    wire: 2
+    wire: 1
     reason: the server answers every console command with a line (ConsoleOutput, thuum docs/verbs/console-commands.md); the legacy server prints nothing back
   - client: c2
     msg: {t: 25, idx: 2}
     legacy: 0
     wire: 1
     reason: departure detection, graceful close on the wire against RakNet's timeout
-  - client: c1
-    msg: {t: 16, idx: 2, data: {health: 1}}
-    legacy: 2
-    wire: 1
-    reason: the legacy server restores the fortify's 20 at once and drinks the poison as a heal, a health message each; the fixed server's fortify moves the value with the maximum, one message, and a poison is not drunk
   - client: c1
     msg: {t: 43, idx: 2, effects: [{effect: 256755, source: 256754, magnitude: 20, remaining: 60}]}
     legacy: 0
@@ -59,8 +55,3 @@ divergences:
     legacy: 1
     wire: 0
     reason: the legacy server has c2's game drink c1's fortify on c1's figure; the fixed server shows it through MagicEffects instead
-  - client: c2
-    msg: {t: 30, class: Actor, function: EquipItem, selfId: 4278190082, snippetIdx: 4294967295, arguments: [{formId: 239012, type: Potion}, false, false]}
-    legacy: 1
-    wire: 0
-    reason: the legacy server has c2's game drink c1's poison on c1's figure too; the fixed server applies no poison by drinking

@@ -1,26 +1,36 @@
 # difftest poison (M2, thuum docs/verbs/poison.md): c1 and c2 are new
 # characters (profiles 9 and 10, actors 0xff000002 and 0xff000003: see
-# melee-reach), c2 50 units east of the spawn, which the spawn faces (see
-# god-mode). The lab server runs with enableConsoleCommandsForAll (see
-# console), so at 2 s c1 gives itself Skyrim.esm's DB03Poison (ALCH 0x58CFB,
-# 363771: flagged a poison, 6 a second for 10 s; thuum lab/esm.py). At 2.3 s
-# c1 holds its Iron Dagger (WEAP 0x1397E, 80254, a new character's) in the
-# right hand (UpdateEquipment). At 3 s c1 reports the poison's OnEquip, as
-# its game reports the box's Yes (the PoisonedWeapon event): the fixed server
-# spends the poison and marks the dagger with one dose; the legacy server
-# drinks it. At 3.5 s c1 hits c2 with the dagger: both servers take the
-# dagger's damage from c2; the fixed server also runs the poison's effects
-# on c2 and spends the dose. c2 steps again at 3.5 s of its own (5 s of
-# c1's), so it outlives c1, as in every session.
+# melee-reach), c2 50 units off the spawn. The lab server runs with
+# enableConsoleCommandsForAll (see console), so at 2 s c1 gives itself
+# Skyrim.esm's DB03Poison (ALCH 0x58CFB, 363771: flagged a poison, 6 a
+# second for 10 s; thuum lab/esm.py). At 2.3 s c1 holds its Iron Dagger
+# (WEAP 0x1397E, 80254, a new character's) in the right hand
+# (UpdateEquipment). At 3 s c1 reports the poison's OnEquip, as its game
+# reports the box's Yes (the PoisonedWeapon event): the fixed server spends
+# the poison and marks the dagger with one dose (its inventory sent to c1
+# with the mark); the legacy server drinks it, and has c2's game drink it on
+# c1's figure. At 3.5 s c1 hits itself with the dagger, as the server's
+# PoisonTest does: the fixed server runs the poison's effects on c1, tells
+# both games (MagicEffects), and spends the dose, the dagger back as it was,
+# where it was (the inventory equal to the legacy server's after its drink).
+# The poison's ticks send c1 its health at the effect's pace, as many as the
+# session's clock allows, so health messages (ChangeValues, t 16) compare as
+# presence only: both servers send c1 some (the dagger's own damage on both,
+# the legacy drink's heal), and c2 none. c2 steps again at 3.5 s of its own
+# (5 s of c1's), so it outlives c1, as in every session. The first draw
+# (T2 2026-10-12, fork m2-poison 78acce95) hit c2 instead: its ticks could
+# not be declared by count, and the spent dagger's entry moved to the end of
+# the inventory, since put back in place (MpActor::SpendPoisonDose).
 id: poison
 clients:
   c1: {profile_id: 9}
   c2: {profile_id: 10}
+volatile: [2, 3, 24, 16]
 steps:
   - {client: c1, at_ms: 2000, send: {t: 12, data: {t: 12, commandName: additem, args: [20, 363771, 1]}}}
   - {client: c1, at_ms: 2300, send: {t: 5, idx: "{{idx}}", data: {inv: {entries: [{baseId: 80254, count: 1, worn: true}]}, numChanges: 1}}}
   - {client: c1, at_ms: 3000, send: {t: 11, baseId: 363771}}
-  - {client: c1, at_ms: 3500, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 80254, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
+  - {client: c1, at_ms: 3500, send: {t: 17, data: {aggressor: 20, target: 20, source: 80254, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
   - {client: c2, at_ms: 0, move: {dx: 50}}
   - {client: c2, at_ms: 3500, move: {dx: 60}}
 divergences:
@@ -34,3 +44,23 @@ divergences:
     legacy: 0
     wire: 1
     reason: departure detection, graceful close on the wire against RakNet's timeout
+  - client: c1
+    msg: {t: 28, inventory: {entries: [{baseId: 80254, count: 1, poisonId: 363771, poisonCount: 1}]}}
+    legacy: 0
+    wire: 1
+    reason: the fixed server spends the poison on the dagger in c1's right hand and sends c1 its inventory with the dagger's mark, one dose (thuum docs/verbs/poison.md); the legacy server drinks it, and its inventory without the poison equals the fixed server's after the dose is spent
+  - client: c1
+    msg: {t: 43, idx: 2, effects: [{effect: 1092170, source: 363771, magnitude: 6, remaining: 10}]}
+    legacy: 0
+    wire: 1
+    reason: the dagger's hit runs the poison's effect on c1 (DB03Poison's 0x10AA4A, 6 a second for 10 s), told to every game that sees c1, its own included (MagicEffects); the legacy server has no mark to carry and no such message
+  - client: c2
+    msg: {t: 43, idx: 2, effects: [{effect: 1092170, source: 363771, magnitude: 6, remaining: 10}]}
+    legacy: 0
+    wire: 1
+    reason: c2's game hears the poison on c1 the same way
+  - client: c2
+    msg: {t: 30, class: Actor, function: EquipItem, selfId: 4278190082, arguments: [{formId: 363771, type: Potion}]}
+    legacy: 1
+    wire: 0
+    reason: the legacy server drinks the poison and has c2's game drink it on c1's figure; the fixed server puts it on the dagger

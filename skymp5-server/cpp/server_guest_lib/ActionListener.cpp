@@ -2987,6 +2987,28 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
   targetActorPtr->ApplyEffects(hitData.source, effects, scale,
                                aggressor->GetFormId(), stream);
 
+  // thuum docs/verbs/stagger.md: a spell's Stagger effect (Unrelenting
+  // Force's push) staggers its target by the effect's magnitude, played in
+  // the target's game as a weapon's stagger is, since the server decides a
+  // player's staggers (playtest fifteen, Eli: "does unrelenting force
+  // ragdoll"; HYPOTHESIS: the engine's stagger at Unrelenting Force's 1.5
+  // knocks the target down, to read on the lab)
+  float spellStagger = 0.f;
+  for (const auto& effect : effects) {
+    try {
+      if (espm::GetData<espm::MGEF>(effect.effectId, &partOne.worldState)
+            .data.effectType == espm::MGEF::EffectType::Stagger) {
+        spellStagger = std::max(spellStagger, effect.magnitude * scale);
+      }
+    } catch (std::exception&) {
+    }
+  }
+  if (spellStagger > 0.f && aggressor != targetActorPtr &&
+      targetActorPtr->GetChangeForm().actorValues.healthPercentage > 0.f) {
+    PlayStagger(*aggressor, *targetActorPtr, spellStagger,
+                fmt::format("spell {:x}", hitData.source));
+  }
+
   spdlog::info("OnSpellHit - Target {0:x} is hit by {1:x} spell at {2} times "
                "its magnitudes ({3}). By caster: {4:x}",
                targetActorPtr->GetFormId(), hitData.source, scale,
@@ -3199,7 +3221,17 @@ void ActionListener::NotifyStagger(MpActor& aggressor, MpActor& target,
   if (magnitude <= 0.f) {
     return;
   }
+  PlayStagger(aggressor, target, magnitude,
+              attackName.empty() ? std::string("hit") : attackName);
+}
 
+void ActionListener::PlayStagger(MpActor& aggressor, MpActor& target,
+                                 float magnitude, const std::string& what)
+{
+  if (partOne.serverState.UserByActor(&target) ==
+      Networking::InvalidUserId) {
+    return; // a hosted actor's host game reacts to its own hits
+  }
   SpSnippetObjectArgument player;
   player.formId = 0x14;
   player.type = "Actor";
@@ -3230,9 +3262,7 @@ void ActionListener::NotifyStagger(MpActor& aggressor, MpActor& target,
   }
   spdlog::info("ActionListener::OnWeaponHit - stagger: {:x}'s {} on {:x} "
                "staggers it by {}",
-               aggressor.GetFormId(),
-               attackName.empty() ? std::string("hit") : attackName,
-               target.GetFormId(), magnitude);
+               aggressor.GetFormId(), what, target.GetFormId(), magnitude);
 }
 
 // thuum docs/verbs/hostility-sync.md (ADR-023): the attacker's engine marks

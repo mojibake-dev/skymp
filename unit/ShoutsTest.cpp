@@ -1,6 +1,7 @@
 #include "ActionListener.h"
 #include "ActorValueRecord.h"
 #include "ConsoleCommandMessage.h"
+#include "HitMessage.h"
 #include "MpChangeForms.h"
 #include "TestUtils.hpp"
 #include "UpdateMovementMessage.h"
@@ -331,6 +332,48 @@ TEST_CASE("A god-mode shouter's shouts start no recovery, as TGM's game "
   REQUIRE(CastsTo(p, 1, kShouter) == 2);
   ac.SetGodMode(false);
   p.DestroyActor(kNeighbour);
+  DoDisconnect(p, 1);
+  Leave(p, kShouter);
+}
+
+TEST_CASE("A shout's hit staggers its target by the shout's Stagger effect",
+          "[Shouts][Stagger][espm]")
+{
+  // Unrelenting Force's first word: a Stagger effect among its spell's
+  // (VoiceUnrelentingForce1, thuum docs/verbs/stagger.md); the target's game
+  // is told to play it, and the shouter's sees the figure stagger
+  constexpr uint32_t kShouter = 0xff000ad0;
+  constexpr uint32_t kTarget = 0xff000ad4;
+  PartOne& p = GetPartOne();
+  Shouter(p, kShouter, true);
+  DoConnect(p, 1);
+  p.CreateActor(kTarget, { 0, 100, 0 }, 0, 0x3c);
+  p.SetUserActor(1, kTarget);
+  p.Messages().clear();
+  Shout(p, kFus);
+  RawMessageData raw;
+  raw.userId = 0;
+  HitMessage hit;
+  hit.data.aggressor = 0x14;
+  hit.data.target = kTarget;
+  hit.data.source = kFus;
+  p.GetActionListener().OnHit(raw, hit);
+  p.Tick(); // snippets are deferred
+  int staggers = 0;
+  int relayed = 0;
+  for (auto& m : p.Messages()) {
+    if (m.userId == 1 && m.j["t"] == MsgType::SpSnippet &&
+        m.j["class"] == "TESModPlatform" && m.j["function"] == "Stagger") {
+      REQUIRE(m.j["arguments"][1].get<double>() > 0.0);
+      REQUIRE(m.j["arguments"][2]["formId"] == kShouter);
+      ++staggers;
+    }
+    relayed += m.userId == 0 && m.j["t"] == MsgType::UpdateAnimation &&
+      m.j["data"]["animEventName"] == "staggerStart";
+  }
+  REQUIRE(staggers == 1);
+  REQUIRE(relayed == 1);
+  p.DestroyActor(kTarget);
   DoDisconnect(p, 1);
   Leave(p, kShouter);
 }

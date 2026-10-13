@@ -148,6 +148,11 @@ private:
   // engine's rule gives it, played in the victim's game
   void NotifyStagger(MpActor& aggressor, MpActor& target,
                      const HitData& hitData, bool dealtDamage);
+  // the stagger of `magnitude` played in the target's game, the aggressor's
+  // figure its source, and relayed to every game that sees the target
+  // (thuum docs/verbs/stagger.md); `what` names the hit for the log
+  void PlayStagger(MpActor& aggressor, MpActor& target, float magnitude,
+                   const std::string& what);
 
   void SendPapyrusOnHitEvent(MpActor* aggressor, MpObjectReference* target,
                              const HitData& hitData);

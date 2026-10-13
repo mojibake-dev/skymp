@@ -35,9 +35,18 @@ void SendShoutRecord(MpActor& actor)
   for (const auto& shout : record.shouts) {
     SendShoutEntry(actor, MpActor::ShoutEntry::Shout, shout.ToFormId(files));
   }
+  // a word known comes back silently: Game.TeachWord raises the game's big
+  // word-of-power message (x-reteach-probe 20261013-061753: HUD type 21,
+  // "Fire Breath", a second after the teachword; AddShout and UnlockWord
+  // raised none), shown again at each login (playtest fourteen). SKSE's
+  // Form.SetPlayerKnows sets the form's known flag alone (0x40,
+  // CommonLibSSE-NG TESForm.h kKnown)
+  const std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+    knows{ true };
   for (const auto& word : record.wordsKnown) {
-    SendShoutEntry(actor, MpActor::ShoutEntry::WordKnown,
-                   word.ToFormId(files));
+    SpSnippet("Form", "SetPlayerKnows", knows, word.ToFormId(files))
+      .Execute(&actor, SpSnippetMode::kNoReturnResult);
   }
   for (const auto& word : record.wordsUnlocked) {
     SendShoutEntry(actor, MpActor::ShoutEntry::WordUnlocked,

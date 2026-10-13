@@ -10,5 +10,7 @@
 void SendShoutEntry(MpActor& actor, MpActor::ShoutEntry kind, uint32_t formId);
 
 // The whole record, after a login (shouts, then words known, then words
-// unlocked, as the engine needs a word known before it unlocks it)
+// unlocked, as the engine needs a word known before it unlocks it); a word
+// known by Form.SetPlayerKnows, not Game.TeachWord, so a login raises no
+// word-of-power message
 void SendShoutRecord(MpActor& actor);

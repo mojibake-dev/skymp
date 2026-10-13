@@ -2786,9 +2786,11 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
   // thuum docs/verbs/shouts.md: a player's shout comes from the voice with
   // a shout in the voice slot, and the shouts rule judges it against the
   // server's record. An accepted one starts its recovery and waits for its
-  // hits as a cast does; it is relayed to nobody: observers' games play the
-  // figure's shoutStart from the animation relay already (x-shout-probe2),
-  // and a shout's effect on another player is a later slice
+  // hits as a cast does, and every screen draws it as a spell's cast: the
+  // animation relay plays the figure's shoutStart, and the cast launches
+  // the breath from the figure's voice (playtest fourteen: the shouter moved
+  // as though shouting with no breath on the other screen). Its damage
+  // stays the server's, from the shouter's own hits
   if (const auto shout = VoiceShout(equipment, partOne.worldState);
       shout && hand == 2 && caster == myActor) {
     const auto facts = VoiceFactsOf(*caster, *shout, spellCastData.spell,
@@ -2810,6 +2812,7 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
                  caster->GetFormId(), *shout, facts.variation,
                  spellCastData.spell,
                  partOne.VoiceRecoveryLeftMs(caster->GetFormId()) / 1000.0);
+    SendToNeighbours(myActor->idx, rawMsgData, true);
     return;
   }
 

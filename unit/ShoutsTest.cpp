@@ -20,7 +20,8 @@ PartOne& GetPartOne();
 // variation's spell) stands when the record holds the shout and every word
 // up to the variation unlocked and the last shout's recovery has run out
 // (wire-rules shouts); an accepted one starts the next recovery, waits for
-// its hits as a cast does, and is relayed to nobody.
+// its hits as a cast does, and reaches the neighbours' games as a cast (their
+// figure breathes it).
 // Skyrim.esm (thuum lab/esm.py, 2026-10-10): UnrelentingForceShout SHOU
 // 0x13E07, its first word WOOP 0x13E22, its variations' spells 0x13E09 and
 // 0x13F39 (recovery 15 and 20 s); Flames 0x12FCD, no shout's.
@@ -90,6 +91,19 @@ int RelayedCasts(PartOne& p)
   return n;
 }
 
+// how many casts one user was sent since the last clear, each reliably
+int CastsTo(PartOne& p, Networking::UserId userId)
+{
+  int n = 0;
+  for (auto& m : p.Messages()) {
+    if (m.userId == userId && m.j["t"] == MsgType::SpellCast) {
+      REQUIRE(m.reliable);
+      ++n;
+    }
+  }
+  return n;
+}
+
 // the player's console: `<name> <0x14> <form>`, as skymp5-client sends it
 void Console(PartOne& p, const std::string& name, uint32_t form)
 {
@@ -131,10 +145,15 @@ std::vector<std::string> Told(PartOne& p)
     if (m.userId != 0 || m.j["t"] != MsgType::SpSnippet) {
       continue;
     }
+    // the one form argument's id, else the form the call runs on (a word's
+    // Form.SetPlayerKnows)
     const auto& args = m.j["arguments"];
-    const uint32_t form = args.size() == 1 && args[0].contains("formId")
-      ? args[0]["formId"].get<uint32_t>()
+    uint64_t form = args.size() == 1 && args[0].contains("formId")
+      ? args[0]["formId"].get<uint64_t>()
       : 0;
+    if (!form && m.j.contains("selfId")) {
+      form = m.j["selfId"].get<uint64_t>();
+    }
     out.push_back(m.j["class"].get<std::string>() + "." +
                   m.j["function"].get<std::string>() + " " +
                   fmt::format("{:x}", form));
@@ -210,13 +229,16 @@ TEST_CASE("After a login the server teaches the recorded shouts and words",
   REQUIRE(!ac.RecordShoutEntry(MpActor::ShoutEntry::Shout,
                                FormDesc::FromString("13e07:Skyrim.esm")));
 
-  // the first movement after the login teaches the record
+  // the first movement after the login teaches the record, a word known by
+  // its known flag (Form.SetPlayerKnows), as Game.TeachWord would raise the
+  // game's word-of-power message at every login (x-reteach-probe)
   ac.SetMapMarkersPending(true);
   p.Messages().clear();
   Stand(p);
   const auto told = Told(p);
   REQUIRE(Contains(told, "Actor.AddShout 13e07"));
-  REQUIRE(Contains(told, "Game.TeachWord 13e22"));
+  REQUIRE(Contains(told, "Form.SetPlayerKnows 13e22"));
+  REQUIRE(!Contains(told, "Game.TeachWord 13e22"));
   REQUIRE(Contains(told, "Game.UnlockWord 13e22"));
   Leave(p);
 }
@@ -248,14 +270,22 @@ TEST_CASE("The change form keeps a player's shouts and words, and older "
 }
 
 TEST_CASE("A shout the record holds stands once per recovery, waits for its "
-          "hit and reaches nobody",
+          "hit and reaches the neighbours",
           "[Shouts][espm]")
 {
   constexpr uint32_t kShouter = 0xff000ac0;
+  constexpr uint32_t kNeighbour = 0xff000ac4;
   PartOne& p = GetPartOne();
   auto& ac = Shouter(p, kShouter, true);
+  // a player 300 units off, whose game draws the shout on the shouter's
+  // figure (playtest fourteen: no breath there)
+  DoConnect(p, 1);
+  p.CreateActor(kNeighbour, { 0, 300, 0 }, 0, 0x3c);
+  p.SetUserActor(1, kNeighbour);
+  p.Messages().clear();
   Shout(p, kFus);
-  REQUIRE(RelayedCasts(p) == 0);
+  REQUIRE(CastsTo(p, 1) == 1);
+  p.Messages().clear();
   const auto left = p.VoiceRecoveryLeftMs(kShouter);
   REQUIRE(left > 14000);
   REQUIRE(left <= 15000);
@@ -271,6 +301,8 @@ TEST_CASE("A shout the record holds stands once per recovery, waits for its "
   Shout(p, kFus);
   REQUIRE(p.VoiceRecoveryLeftMs(kShouter) <= left);
   REQUIRE(RelayedCasts(p) == 0);
+  p.DestroyActor(kNeighbour);
+  DoDisconnect(p, 1);
   Leave(p, kShouter);
 }
 

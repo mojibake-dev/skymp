@@ -1,5 +1,5 @@
-#include "TestUtils.hpp"
 #include "ActionListener.h"
+#include "TestUtils.hpp"
 #include <catch2/catch_all.hpp>
 #include <chrono>
 

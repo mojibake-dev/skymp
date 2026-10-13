@@ -32,6 +32,7 @@ export class HitService extends ClientListener {
             }
 
             if (!alreadyHosted) {
+              this.dispelFigureSpellOnPlayer(e);
               return;
             }
         }
@@ -86,6 +87,24 @@ export class HitService extends ClientListener {
             return;
         }
         send();
+    }
+
+    // thuum docs/verbs/shouts.md: a figure's relayed cast is drawn in this game
+    // and its projectile lands here as any spell's would, but what it does to
+    // this game's player is the server's to say (its ChangeValues and
+    // MagicEffects): the spell's effects leave the player at once. A relayed
+    // Fire Breath burned test 2's own game to 0.34 while the server counted
+    // half (x-shout-relay 20261013-082608); an instant hit is overwritten by
+    // the server's value anyway, an effect over time was not
+    private dispelFigureSpellOnPlayer(e: HitEvent) {
+        if (!e.target || e.target.getFormID() !== 0x14) {
+            return;
+        }
+        const spell = this.sp.Spell.from(e.source);
+        const player = this.sp.Game.getPlayer();
+        if (spell && player) {
+            player.dispelSpell(spell);
+        }
     }
 
     private getHitData(e: HitEvent): Hit {

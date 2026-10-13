@@ -5,6 +5,9 @@
 #include "SkyrimPlatform.h"
 #include "TickHandler.h"
 
+#include <mutex>
+#include <unordered_map>
+
 namespace {
 inline void SendEvent(const char* eventName)
 {
@@ -1366,9 +1369,37 @@ EventResult EventHandler::ProcessEvent(
     rightCasting = casting(RE::MagicSystem::CastingSource::kRightHand);
   }
 
+  // With the same spell in both hands both read as casting once the second
+  // begins, so the second hand's cast went out as the right hand's and the
+  // server replaced the right hand's stream with it instead of opening the
+  // left's (thuum docs/verbs/spell-cast.md, x-dual-cast3). The hand that
+  // began casting since this actor's last cast event is this cast's; when
+  // both or neither began (both buttons in one frame), the hand other than
+  // the one this actor's last cast was given.
+  bool preferLeft = leftCasting && !rightCasting;
+  {
+    struct Seen
+    {
+      bool left = false;
+      bool right = false;
+      bool lastLeft = false;
+    };
+    static std::mutex m;
+    static std::unordered_map<uint32_t, Seen> seen;
+    std::lock_guard l(m);
+    auto& s = seen[casterId];
+    if (leftCasting && rightCasting) {
+      const bool newLeft = !s.left;
+      const bool newRight = !s.right;
+      preferLeft = newLeft != newRight ? newLeft : !s.lastLeft;
+    }
+    s.left = leftCasting;
+    s.right = rightCasting;
+    s.lastLeft = preferLeft;
+  }
+
   SkyrimPlatform::GetSingleton()->AddUpdateTask([casterId, spellId,
-                                                 leftCasting, rightCasting](
-                                                  Napi::Env env) {
+                                                 preferLeft](Napi::Env env) {
     auto obj = Napi::Object::New(env);
 
     auto* caster = RE::TESForm::LookupByID<RE::Actor>(casterId);
@@ -1411,9 +1442,8 @@ EventResult EventHandler::ProcessEvent(
 
     auto castingSource = RE::MagicSystem::CastingSource::kLeftHand;
 
-    // the same spell in both hands: the hand that was casting it
-    const bool leftOfBoth =
-      isLeftHand && isRightHand && leftCasting && !rightCasting;
+    // the same spell in both hands: the hand chosen above
+    const bool leftOfBoth = isLeftHand && isRightHand && preferLeft;
 
     if (isRightHand && !leftOfBoth) {
       castingSource = RE::MagicSystem::CastingSource::kRightHand;

@@ -123,9 +123,22 @@ export class ShoutService extends ClientListener {
         return best;
     }
 
-    // the cast from the voice the server judges; aim, dual casting and the
-    // graph's variables mean nothing for a shout, which no game is sent
+    // the cast from the voice the server judges and relays: every game that
+    // sees the shouter launches it from its figure (thuum
+    // docs/verbs/shouts.md), so it carries the shouter's facing as a spell's
+    // aim, in radians (CommonLibSSE-NG Actor::GetAimAngle falls back to the
+    // actor's angle X, GetAimHeading to its heading); Papyrus reads degrees,
+    // and the pitch is held within the quarter turn the validator allows.
+    // Dual casting and the graph's variables mean nothing for a shout
     private castOf(spell: number): SpellCastMsgData {
+        const player = this.sp.Game.getPlayer();
+        let pitch = player ? player.getAngleX() : 0;
+        if (pitch > 180) {
+            pitch -= 360;
+        }
+        pitch = Math.max(-90, Math.min(90, pitch));
+        const heading = player ? player.getAngleZ() : 0;
+        const toRadians = Math.PI / 180;
         return {
             caster: this.playerId,
             target: 0,
@@ -133,8 +146,8 @@ export class ShoutService extends ClientListener {
             isDualCasting: false,
             interruptCast: false,
             castingSource: 2,
-            aimAngle: 0,
-            aimHeading: 0,
+            aimAngle: pitch * toRadians,
+            aimHeading: heading * toRadians,
             actorAnimationVariables: { booleans: [], floats: [], integers: [] },
         };
     }

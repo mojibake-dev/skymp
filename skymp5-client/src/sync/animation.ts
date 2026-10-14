@@ -40,6 +40,21 @@ const relayedStaggers = new Set<number>();
 export const takeRelayedStagger = (refrId: number): boolean =>
   relayedStaggers.delete(refrId);
 
+// thuum docs/verbs/push.md (the flight): in the shouter's game the vanilla
+// push throws the target's figure (A1's caster half), so the figure is down
+// already when its player's relayed Ragdoll comes. The relayed handler's
+// zero-force push, landing 20 to 50 ms after that knock, gave the figure a
+// fresh knock in place and it never flew (x-push-flight 20261014-215458 and
+// -220105 snapped; -210908, the relayed push first, and -215801, 76 ms
+// after, flew). So the handler leaves a figure this game has knocked down
+// alone, holding only its movement; a bystander's game, which runs no push,
+// still knocks it. knockedDown: when the figure's graph took a Ragdoll of
+// this game's own; relayedKnocks: the handler's own pushes, not counted
+const knockedDown = new Map<number, number>();
+const relayedKnocks = new Map<number, number>();
+const knockDownMs = 10000;
+const relayedKnockMs = 500;
+
 const actorSitAnimsLowerCase = [
   'idlestoolenterplayer',
   'idlestoolenter',
@@ -205,7 +220,12 @@ export const applyAnimation = (
         // @ts-ignore
         storage["animationFunc1"](ac);
       } else {
-        ac.pushActorAway(ac, 0);
+        const refrId = refr.getFormID();
+        const downAt = knockedDown.get(refrId);
+        if (downAt === undefined || Date.now() - downAt > knockDownMs) {
+          relayedKnocks.set(refrId, Date.now());
+          ac.pushActorAway(ac, 0);
+        }
         ac.setActorValue("Variable10", -1000);
       }
     }
@@ -363,6 +383,26 @@ const ignoredAnims = new Set<string>([
 ]);
 
 export const setupHooks = (): void => {
+  // a figure's own knock in this game (not the relayed handler's push) marks
+  // it down until its get-up; filtered in native to figures and the two
+  // events (rule 9)
+  hooks.sendAnimationEvent.add({
+    enter: () => { },
+    leave: (ctx) => {
+      if (!ctx.animationSucceeded) return;
+      const relayedAt = relayedKnocks.get(ctx.selfId);
+      relayedKnocks.delete(ctx.selfId);
+      if (relayedAt !== undefined && Date.now() - relayedAt <= relayedKnockMs) return;
+      knockedDown.set(ctx.selfId, Date.now());
+    },
+  }, 0xff000000, 0xffffffff, "Ragdoll");
+  hooks.sendAnimationEvent.add({
+    enter: () => { },
+    leave: (ctx) => {
+      if (ctx.animationSucceeded) knockedDown.delete(ctx.selfId);
+    },
+  }, 0xff000000, 0xffffffff, "GetUpBegin");
+
   hooks.sendAnimationEvent.add({
     enter: (ctx) => {
       if (refsWithDefaultAnimsDisabled.has(ctx.selfId)) {

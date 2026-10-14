@@ -134,22 +134,29 @@ const isIdle = (animEventName: string) => {
 // the caster's 500 ms snapshot), so the figure refused the start and never
 // made the grab and push. The same start, sent to the figure while it held
 // the relayed variables, was taken (x-figure-cast3 20261014-182649: refused
-// at 1189 ms before the variables came at 1482, taken at 2073). So the view
-// holds a hand's start, and the events behind it, until the figure wants to
-// cast with that hand.
+// at 1189 ms before the variables came at 1482, taken at 2073, the figure
+// casting: IsCastingRight 1, NotCasting 0, iState 10). The want variable
+// alone is not that state: set by itself it holds the graph at iState 10 for
+// one frame, and starts sent 16 to 266 ms after it were refused
+// (x-figure-cast2 20261014-183340). So the view holds a hand's start, and
+// the events behind it, until the figure is casting with that hand
+// (IsCastingRight or IsCastingLeft, the relayed state) since an earlier
+// frame.
 const castStartVariables = (animEventNameLowerCase: string): string[] => {
   if (!animEventNameLowerCase.includes("spell") || !animEventNameLowerCase.endsWith("start")) {
     return [];
   }
-  if (animEventNameLowerCase.startsWith("mrh_")) return ["bWantCastRight"];
-  if (animEventNameLowerCase.startsWith("mlh_")) return ["bWantCastLeft"];
-  if (animEventNameLowerCase.startsWith("dualmagic_")) return ["bWantCastRight", "bWantCastLeft"];
+  if (animEventNameLowerCase.startsWith("mrh_")) return ["IsCastingRight"];
+  if (animEventNameLowerCase.startsWith("mlh_")) return ["IsCastingLeft"];
+  if (animEventNameLowerCase.startsWith("dualmagic_")) return ["IsCastingRight", "IsCastingLeft"];
   return [];
 };
 
-export const castStartWaiting = (refr: ObjectReference, animEventName: string): boolean => {
+// null: the event never waits; true: the figure is not casting with the
+// start's hand yet; false: it is
+export const castStartWaiting = (refr: ObjectReference, animEventName: string): boolean | null => {
   const variables = castStartVariables(animEventName.toLowerCase());
-  if (variables.length === 0) return false;
+  if (variables.length === 0) return null;
   return !variables.some((name) => refr.getAnimationVariableBool(name));
 };
 

@@ -477,20 +477,28 @@ export class FormView {
       // update, oldest first, as the sender's graph took them (applyAnimation
       // skips one it has played by its numChanges); the newest alone when
       // none is queued (a spawn's). A hand's spell start waits, with what is
-      // behind it, until the figure holds its caster's casting state
-      // (castStartWaiting), at most castStartWaitMs, the caster's variables
-      // coming with its cast or its next 500 ms snapshot
+      // behind it, until the figure has held its caster's casting state
+      // since an earlier frame (castStartWaiting; a start in the frame the
+      // state lands is refused, x-figure-cast 20261014-142425), at most
+      // castStartWaitMs, the caster's variables coming with its cast or its
+      // next 500 ms snapshot
       const queued = model.animationQueue;
       if (queued && queued.length > 0) {
         let played = 0;
         for (; played < queued.length; played++) {
           const anim = queued[played];
-          if (castStartWaiting(refr, anim.animEventName)) {
-            const now = Date.now();
+          const now = Date.now();
+          const waiting = castStartWaiting(refr, anim.animEventName);
+          if (waiting !== null) {
             if (!this.castStartHeldSince) this.castStartHeldSince = now;
-            if (now - this.castStartHeldSince < FormView.castStartWaitMs) break;
+            const casting = !waiting;
+            const castingBefore = this.castStartCastingSeen;
+            this.castStartCastingSeen = casting;
+            const timedOut = now - this.castStartHeldSince >= FormView.castStartWaitMs;
+            if (!(casting && castingBefore) && !timedOut) break;
           }
           this.castStartHeldSince = 0;
+          this.castStartCastingSeen = false;
           applyAnimation(refr, anim, this.animState);
         }
         queued.splice(0, played);
@@ -694,6 +702,7 @@ export class FormView {
   private ready = false;
   private animState = this.getDefaultAnimState();
   private castStartHeldSince = 0;
+  private castStartCastingSeen = false;
   private static readonly castStartWaitMs = 1000;
   private movState = {
     lastNumChanges: 0,

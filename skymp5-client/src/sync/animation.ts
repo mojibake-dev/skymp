@@ -126,6 +126,40 @@ const isIdle = (animEventName: string) => {
   );
 };
 
+// thuum docs/verbs/spell-cast.md (the concentration pose): a hand's spell
+// start lands on a figure's graph only while the figure holds its caster's
+// casting state. The engine's caster sets its hand's want-cast variable and
+// starts the cast's motion a frame after the graph has answered it; the
+// relay delivers the start first and the variables after (with the cast, or
+// the caster's 500 ms snapshot), so the figure refused the start and never
+// made the grab and push. The same start, sent to the figure while it held
+// the relayed variables, was taken (x-figure-cast3 20261014-182649: refused
+// at 1189 ms before the variables came at 1482, taken at 2073, the figure
+// casting: IsCastingRight 1, NotCasting 0, iState 10). The want variable
+// alone is not that state: set by itself it holds the graph at iState 10 for
+// one frame, and starts sent 16 to 266 ms after it were refused
+// (x-figure-cast2 20261014-183340). So the view holds a hand's start, and
+// the events behind it, until the figure is casting with that hand
+// (IsCastingRight or IsCastingLeft, the relayed state) since an earlier
+// frame.
+const castStartVariables = (animEventNameLowerCase: string): string[] => {
+  if (!animEventNameLowerCase.includes("spell") || !animEventNameLowerCase.endsWith("start")) {
+    return [];
+  }
+  if (animEventNameLowerCase.startsWith("mrh_")) return ["IsCastingRight"];
+  if (animEventNameLowerCase.startsWith("mlh_")) return ["IsCastingLeft"];
+  if (animEventNameLowerCase.startsWith("dualmagic_")) return ["IsCastingRight", "IsCastingLeft"];
+  return [];
+};
+
+// null: the event never waits; true: the figure is not casting with the
+// start's hand yet; false: it is
+export const castStartWaiting = (refr: ObjectReference, animEventName: string): boolean | null => {
+  const variables = castStartVariables(animEventName.toLowerCase());
+  if (variables.length === 0) return null;
+  return !variables.some((name) => refr.getAnimationVariableBool(name));
+};
+
 export const applyAnimation = (
   refr: ObjectReference,
   anim: Animation,

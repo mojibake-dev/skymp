@@ -410,14 +410,15 @@ TEST_CASE("A shout in the voice slot is the player's only when the record "
   PartOne& p = GetPartOne();
   auto& ac = Player(p, kShouter);
   const auto equip = [&] {
-    DoMessage(p, 0,
-              nlohmann::json{
-                { "t", MsgType::UpdateEquipment },
-                { "idx", ac.GetIdx() },
-                { "data",
-                  { { "numChanges", 1 },
-                    { "voiceSpell", kShout },
-                    { "inv", { { "entries", nlohmann::json::array() } } } } } });
+    DoMessage(
+      p, 0,
+      nlohmann::json{
+        { "t", MsgType::UpdateEquipment },
+        { "idx", ac.GetIdx() },
+        { "data",
+          { { "numChanges", 1 },
+            { "voiceSpell", kShout },
+            { "inv", { { "entries", nlohmann::json::array() } } } } } });
   };
   // not recorded: refused, and the player's game loses it
   equip();

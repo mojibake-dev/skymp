@@ -543,11 +543,10 @@ PartOne::VoiceFacts VoiceFactsOf(const MpActor& actor, uint32_t shout,
       f.recoverySeconds = variation.recovery;
     }
   }
-  f.recoveryMult =
-    actor
-      .GetRecordedActorValueBase(
-        static_cast<uint8_t>(espm::ActorValue::ShoutRecoveryMult))
-      .value_or(1.f) +
+  f.recoveryMult = actor
+                     .GetRecordedActorValueBase(static_cast<uint8_t>(
+                       espm::ActorValue::ShoutRecoveryMult))
+                     .value_or(1.f) +
     actor.GetEffectModifier(espm::ActorValue::ShoutRecoveryMult);
   // thuum docs/verbs/god-mode.md: TGM is "no shout cooldown" in the game
   // (UESP's Console page), so a god-mode player's shout starts no recovery
@@ -563,8 +562,9 @@ PartOne::VoiceFacts VoiceFactsOf(const MpActor& actor, uint32_t shout,
 // in its game (HYPOTHESIS until the lab reads the engine's)
 void EndConcealment(MpActor& actor)
 {
-  if (actor.EndRunningEffectsOfTypes({ espm::MGEF::EffectType::Invisibility,
-                                       espm::MGEF::EffectType::Etherealize })) {
+  if (actor.EndRunningEffectsOfTypes(
+        { espm::MGEF::EffectType::Invisibility,
+          espm::MGEF::EffectType::Etherealize })) {
     spdlog::info("ActionListener - {:x} acts: its invisibility and ethereal "
                  "state end",
                  actor.GetFormId());
@@ -583,8 +583,8 @@ void RunSelfSpell(WorldState& worldState, MpActor& caster, uint32_t spellId)
         spell.spellItem->castType != espm::SPEL::CastType::FireAndForget) {
       return;
     }
-    caster.ApplyEffects(spellId, MpActor::EffectsOf(&worldState, spellId),
-                        1.f, caster.GetFormId(), false);
+    caster.ApplyEffects(spellId, MpActor::EffectsOf(&worldState, spellId), 1.f,
+                        caster.GetFormId(), false);
     spdlog::info("ActionListener - {:x} casts {:x} on itself: its effects run "
                  "on the server",
                  caster.GetFormId(), spellId);
@@ -2854,16 +2854,15 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
   // stays the server's, from the shouter's own hits
   if (const auto shout = VoiceShout(equipment, partOne.worldState);
       shout && hand == 2 && caster == myActor) {
-    const auto facts = VoiceFactsOf(*caster, *shout, spellCastData.spell,
-                                    partOne.worldState);
+    const auto facts =
+      VoiceFactsOf(*caster, *shout, spellCastData.spell, partOne.worldState);
     const auto check = partOne.Shout(caster->GetFormId(), facts);
     if (check != PartOne::VoiceCheck::Accepted) {
       spdlog::warn("ActionListener::OnSpellCast - {}: {:x} shouts {:x} "
                    "with spell {:x} (variation {}, words unlocked {:#b}); "
                    "refused",
                    VoiceRefusalCode(check), caster->GetFormId(), *shout,
-                   spellCastData.spell, facts.variation,
-                   facts.wordsUnlocked);
+                   spellCastData.spell, facts.variation, facts.wordsUnlocked);
       return;
     }
     partOne.StartCast(caster->GetFormId(), spellCastData.spell, hand,
@@ -3228,8 +3227,7 @@ void ActionListener::NotifyStagger(MpActor& aggressor, MpActor& target,
 void ActionListener::PlayStagger(MpActor& aggressor, MpActor& target,
                                  float magnitude, const std::string& what)
 {
-  if (partOne.serverState.UserByActor(&target) ==
-      Networking::InvalidUserId) {
+  if (partOne.serverState.UserByActor(&target) == Networking::InvalidUserId) {
     return; // a hosted actor's host game reacts to its own hits
   }
   SpSnippetObjectArgument player;

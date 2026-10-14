@@ -19,8 +19,8 @@ Napi::Value ShoutsBinding::Get(Napi::Env env, ScampServer& scampServer,
   result.Set("shouts", ids(record.shouts));
   result.Set("wordsKnown", ids(record.wordsKnown));
   result.Set("wordsUnlocked", ids(record.wordsUnlocked));
-  result.Set("recoverySecondsLeft",
-             Napi::Number::New(
-               env, partOne->VoiceRecoveryLeftMs(formId) / 1000.0));
+  result.Set(
+    "recoverySecondsLeft",
+    Napi::Number::New(env, partOne->VoiceRecoveryLeftMs(formId) / 1000.0));
   return result;
 }

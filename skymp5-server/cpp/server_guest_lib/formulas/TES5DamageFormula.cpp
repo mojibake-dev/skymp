@@ -145,7 +145,8 @@ float TES5DamageFormulaImpl::CalcOpponentArmorRating() const
   // thuum docs/verbs/self-cast.md: the target's running effects on
   // DamageResist (Oakflesh's peak value modifier) are armor too, as the
   // armor enchantments' above
-  combinedArmorRating += target.GetEffectModifier(espm::ActorValue::DamageResist);
+  combinedArmorRating +=
+    target.GetEffectModifier(espm::ActorValue::DamageResist);
   return combinedArmorRating;
 }
 

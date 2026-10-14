@@ -41,6 +41,29 @@ void OnSendEventEnter(GumInvocationContext* ic)
   EventsApi::SendPapyrusEventEnter(selfId, eventNameStr);
 
   auto blockEvents = TESModPlatform::GetPapyrusEventsBlocked();
+
+  // thuum docs/verbs/push.md (ADR-031; ADR-029's A1, its target half): an
+  // event on an effect the player's own actor bears runs in this game, so a
+  // consequence a record's script carries plays where the player is hosted.
+  // Unrelenting Force's throw is one: VoicePushEffectScript's OnEffectStart
+  // calls Caster.PushActorAway(Target, PushForce), and blanked here a player
+  // was never thrown. ActiveEffect's VM type id and its target field:
+  // CommonLibSSE-NG include/RE/A/ActiveEffect.h:31 and :104. The target is
+  // the actor's MagicTarget base (+0xA0 on 1.6.1170, measured), so it is
+  // compared with the player's AsMagicTarget (include/RE/A/Actor.h:720),
+  // never through ActiveEffect::GetTargetActor, whose reinterpret_cast
+  // skips that base. An effect the player cast on another stays blanked
+  // (A1's caster half waits for its verb).
+  if (blockEvents && policy &&
+      policy->HandleIsType(RE::ActiveEffect::VMTYPEID, handle)) {
+    auto effect = static_cast<RE::ActiveEffect*>(
+      policy->GetObjectForHandle(RE::ActiveEffect::VMTYPEID, handle));
+    auto player = RE::PlayerCharacter::GetSingleton();
+    if (effect && player && effect->target == player->AsMagicTarget()) {
+      blockEvents = false;
+    }
+  }
+
   if (blockEvents && strcmp(*eventName, "OnUpdate") != 0 && vm) {
     vm->attachedScriptsLock.Lock();
     auto it = vm->attachedScripts.find(handle);

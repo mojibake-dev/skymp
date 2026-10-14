@@ -13,6 +13,7 @@ import {
 } from "skyrimPlatform";
 import { Movement } from "./movement";
 import { applyWeapDrawn } from "./movementApply";
+import { clearKnockedDown, isKnockedDown, markKnockedDown } from "./knockState";
 
 export enum AnimationEventName {
   Ragdoll = "Ragdoll",
@@ -47,12 +48,10 @@ export const takeRelayedStagger = (refrId: number): boolean =>
 // fresh knock in place and it never flew (x-push-flight 20261014-215458 and
 // -220105 snapped; -210908, the relayed push first, and -215801, 76 ms
 // after, flew). So the handler leaves a figure this game has knocked down
-// alone, holding only its movement; a bystander's game, which runs no push,
-// still knocks it. knockedDown: when the figure's graph took a Ragdoll of
-// this game's own; relayedKnocks: the handler's own pushes, not counted
-const knockedDown = new Map<number, number>();
+// alone (sync/knockState.ts), holding only its movement; a bystander's game,
+// which runs no push, still knocks it. relayedKnocks: the handler's own
+// pushes, whose Ragdoll does not count as this game's own knock
 const relayedKnocks = new Map<number, number>();
-const knockDownMs = 10000;
 const relayedKnockMs = 500;
 
 const actorSitAnimsLowerCase = [
@@ -221,8 +220,7 @@ export const applyAnimation = (
         storage["animationFunc1"](ac);
       } else {
         const refrId = refr.getFormID();
-        const downAt = knockedDown.get(refrId);
-        if (downAt === undefined || Date.now() - downAt > knockDownMs) {
+        if (!isKnockedDown(refrId)) {
           relayedKnocks.set(refrId, Date.now());
           ac.pushActorAway(ac, 0);
         }
@@ -393,13 +391,13 @@ export const setupHooks = (): void => {
       const relayedAt = relayedKnocks.get(ctx.selfId);
       relayedKnocks.delete(ctx.selfId);
       if (relayedAt !== undefined && Date.now() - relayedAt <= relayedKnockMs) return;
-      knockedDown.set(ctx.selfId, Date.now());
+      markKnockedDown(ctx.selfId);
     },
   }, 0xff000000, 0xffffffff, "Ragdoll");
   hooks.sendAnimationEvent.add({
     enter: () => { },
     leave: (ctx) => {
-      if (ctx.animationSucceeded) knockedDown.delete(ctx.selfId);
+      if (ctx.animationSucceeded) clearKnockedDown(ctx.selfId);
     },
   }, 0xff000000, 0xffffffff, "GetUpBegin");
 

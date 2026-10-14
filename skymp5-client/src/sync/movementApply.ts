@@ -9,6 +9,7 @@ import { RespawnNeededError } from "../lib/errors";
 import { Movement, RunMode, AnimationVariables, Transform, NiPoint3 } from "./movement";
 import { ObjectReferenceEx } from "../extensions/objectReferenceEx";
 import { SpApiInteractor } from "../services/spApiInteractor";
+import { isKnockedDown } from "./knockState";
 
 const sqr = (x: number) => x * x;
 
@@ -213,7 +214,9 @@ const translateTo = (refr: ObjectReference, m: Movement) => {
     Actor.from(refr)?.getSitState() === 3
   ) {
     const actor = Actor.from(refr);
-    if (actor && actor.getActorValue("Variable10") < -999) {
+    // down: by its player's relayed Ragdoll (Variable10), or by this game's
+    // own knock until its get-up (sync/knockState.ts, the push's flight)
+    if (actor && (actor.getActorValue("Variable10") < -999 || isKnockedDown(refr.getFormID()))) {
       return;
     }
 

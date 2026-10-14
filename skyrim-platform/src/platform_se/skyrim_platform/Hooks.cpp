@@ -57,26 +57,93 @@ void InstallOnConsoleVPrintHook()
 }
 
 /**
- * thuum docs/verbs/magic-effects.md: while skymp5-client blocks them
- * (TESModPlatform.SetPotionEffectsBlocked), the player's own game applies
- * no effect of an alchemy item (a potion, a food, a poison: AlchemyItem's
- * spell type is kAlchemy) to the player: MagicTarget::AddTarget (vfunc 01,
- * CommonLibSSE-NG include/RE/M/MagicTarget.h:78) refuses it, and the
- * server's effects stand alone (its ChangeValues, and the buffs its
- * MagicEffects carries). The player's MagicTarget vtable is the fifth of
- * PlayerCharacter's: TESObjectREFR has four (VTABLE_TESObjectREFR) and
- * Actor's MagicTarget base follows them (include/RE/A/Actor.h:126), as
- * VTABLE_Actor's ten count.
+ * thuum docs/verbs/magic-effects.md and docs/verbs/push.md (ADR-028, ADR-031):
+ * while skymp5-client holds the server's values for the player
+ * (TESModPlatform.SetPotionEffectsBlocked), the player's
+ * MagicTarget::AddTarget (vfunc 01, CommonLibSSE-NG
+ * include/RE/M/MagicTarget.h:78, called once per effect: AddTargetData's
+ * caster, magic item and effect, :58-60) refuses the effects whose work is a
+ * number the server computes, and nothing else:
+ * - every effect of an alchemy item (a potion, a food, a poison: AlchemyItem's
+ *   spell type is kAlchemy): the player's own drinks are the server's alone,
+ *   and its effects stand alone (its ChangeValues, and the buffs its
+ *   MagicEffects carries);
+ * - an effect that another actor's spell, power, shout or scroll
+ *   (include/RE/M/MagicSystem.h:60-80) lands on the player and that modifies
+ *   Health, Magicka or Stamina: a value modifier archetype
+ *   (include/RE/E/EffectArchetypes.h:10-44) by its primary or second actor
+ *   value (include/RE/E/EffectSetting.h:89, :94). The server computes the
+ *   damage one actor deals another and sends the percentages (ADR-028).
+ * Every other effect of another actor's cast runs here as the engine plays
+ * it (ADR-031: cut at the number, not the event). That includes its
+ * stagger, its paralysis, its look, and its script: Unrelenting Force's
+ * VoicePushEffectScript throws the player from the caster's figure. Until
+ * 2026-10-14 skymp5-client dispelled a figure's whole spell from the player
+ * at its hit, before the effects' first update, so their OnEffectStart was
+ * never asked for and the push never ran (x-push2 20261014-143427 against
+ * the solo x-push-solo 20261014-143127, lab/frida/push-trace.js). The
+ * player's MagicTarget vtable is the fifth of PlayerCharacter's:
+ * TESObjectREFR has four (VTABLE_TESObjectREFR) and Actor's MagicTarget base
+ * follows them (include/RE/A/Actor.h:126), as VTABLE_Actor's ten count.
  */
 struct PlayerAddTarget
 {
+  static bool IsServerValue(RE::ActorValue a_av)
+  {
+    return a_av == RE::ActorValue::kHealth ||
+      a_av == RE::ActorValue::kMagicka || a_av == RE::ActorValue::kStamina;
+  }
+
+  static bool ChangesServerValue(const RE::Effect* a_effect)
+  {
+    const auto mgef = a_effect ? a_effect->baseEffect : nullptr;
+    if (!mgef) {
+      return false;
+    }
+    using Archetype = RE::EffectSetting::Archetype;
+    switch (mgef->GetArchetype()) {
+      case Archetype::kValueModifier:
+      case Archetype::kPeakValueModifier:
+      case Archetype::kAccumulateMagnitude:
+      case Archetype::kValueAndParts:
+        return IsServerValue(mgef->data.primaryAV);
+      case Archetype::kDualValueModifier:
+      case Archetype::kAbsorb:
+        return IsServerValue(mgef->data.primaryAV) ||
+          IsServerValue(mgef->data.secondaryAV);
+      default:
+        return false;
+    }
+  }
+
+  static bool IsCast(const RE::MagicItem* a_item)
+  {
+    using SpellType = RE::MagicSystem::SpellType;
+    switch (a_item->GetSpellType()) {
+      case SpellType::kSpell:
+      case SpellType::kPower:
+      case SpellType::kLesserPower:
+      case SpellType::kVoicePower:
+      case SpellType::kScroll:
+        return true;
+      default:
+        return false;
+    }
+  }
+
   static bool thunk(RE::MagicTarget* a_this,
                     RE::MagicTarget::AddTargetData& a_data)
   {
-    if (TESModPlatform::ArePotionEffectsBlocked() && a_data.magicItem &&
-        a_data.magicItem->GetSpellType() ==
+    if (TESModPlatform::ArePotionEffectsBlocked() && a_data.magicItem) {
+      if (a_data.magicItem->GetSpellType() ==
           RE::MagicSystem::SpellType::kAlchemy) {
-      return false;
+        return false;
+      }
+      auto caster = a_data.caster ? a_data.caster->As<RE::Actor>() : nullptr;
+      if (caster && !caster->IsPlayerRef() && IsCast(a_data.magicItem) &&
+          ChangesServerValue(a_data.effect)) {
+        return false;
+      }
     }
     return func(a_this, a_data);
   }

@@ -12,6 +12,12 @@ export interface FormModel extends CreateActorMessageAdditionalProps, CreateActo
   numMovementChanges?: number;
   numAppearanceChanges?: number;
   isMyClone?: boolean;
+  // thuum docs/verbs/spell-cast.md (ADR-031): every animation event the
+  // server relayed since the view last applied them, oldest first. `animation`
+  // alone kept the newest, so a concentration cast's start and its release
+  // arriving in one of this game's frames left the release alone, which the
+  // figure's graph refuses (x-recorder-flames 20261014-081353)
+  animationQueue?: Animation[];
 }
 
 export interface WorldModel {

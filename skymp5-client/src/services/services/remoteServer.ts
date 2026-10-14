@@ -106,6 +106,10 @@ const unequipIronHelmet = () => {
 // teleport to 180 faced 233.24 degrees (180 radians) in thuum's lab.
 const degreesToRadians = (degrees: number) => degrees * Math.PI / 180;
 
+// a burst longer than this keeps its newest events (sync/animation.ts's
+// sender keeps eight)
+const maxQueuedAnimations = 8;
+
 export class RemoteServer extends ClientListener {
   constructor(private sp: Sp, private controller: CombinedController) {
     super();
@@ -688,6 +692,14 @@ export class RemoteServer extends ClientListener {
     }
 
     form.animation = msg.data;
+    // thuum docs/verbs/spell-cast.md: kept in order for the view, which
+    // plays every one (the caster's own graph takes a concentration cast's
+    // start and release in one frame); at most the sender's own burst
+    const queue = form.animationQueue || (form.animationQueue = []);
+    queue.push(msg.data);
+    if (queue.length > maxQueuedAnimations) {
+      queue.shift();
+    }
   }
 
   private onUpdateAppearanceMessage(event: ConnectionMessage<UpdateAppearanceMessage>): void {

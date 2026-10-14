@@ -473,7 +473,16 @@ export class FormView {
     }
 
     if (refr.is3DLoaded()) {
-      if (model.animation) {
+      // thuum docs/verbs/spell-cast.md: every relayed event since the last
+      // update, oldest first, as the sender's graph took them (applyAnimation
+      // skips one it has played by its numChanges); the newest alone when
+      // none is queued (a spawn's)
+      const queued = model.animationQueue;
+      if (queued && queued.length > 0) {
+        for (const anim of queued.splice(0, queued.length)) {
+          applyAnimation(refr, anim, this.animState);
+        }
+      } else if (model.animation) {
         applyAnimation(refr, model.animation, this.animState);
       }
       // Use them only once, for spawning actors with correct animations

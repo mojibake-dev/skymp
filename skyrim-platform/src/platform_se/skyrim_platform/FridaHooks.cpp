@@ -42,24 +42,30 @@ void OnSendEventEnter(GumInvocationContext* ic)
 
   auto blockEvents = TESModPlatform::GetPapyrusEventsBlocked();
 
-  // thuum docs/verbs/push.md (ADR-031; ADR-029's A1, its target half): an
-  // event on an effect the player's own actor bears runs in this game, so a
-  // consequence a record's script carries plays where the player is hosted.
+  // thuum docs/verbs/push.md (ADR-031; ADR-029's A1, test 1): an event on
+  // an effect the player bears, or one the player cast, runs in this game,
+  // so a consequence a record's script carries plays where it lands.
   // Unrelenting Force's throw is one: VoicePushEffectScript's OnEffectStart
-  // calls Caster.PushActorAway(Target, PushForce), and blanked here a player
-  // was never thrown. ActiveEffect's VM type id and its target field:
-  // CommonLibSSE-NG include/RE/A/ActiveEffect.h:31 and :104. The target is
-  // the actor's MagicTarget base (+0xA0 on 1.6.1170, measured), so it is
-  // compared with the player's AsMagicTarget (include/RE/A/Actor.h:720),
-  // never through ActiveEffect::GetTargetActor, whose reinterpret_cast
-  // skips that base. An effect the player cast on another stays blanked
-  // (A1's caster half waits for its verb).
+  // calls Caster.PushActorAway(Target, PushForce). Borne, it throws the
+  // player in the player's own game; cast, it throws the target's figure
+  // in the shouter's game from the shouter's position, as the target's own
+  // game throws it (the movement relay stands down while the figure is
+  // down). ActiveEffect's VM type id, its caster and its target:
+  // CommonLibSSE-NG include/RE/A/ActiveEffect.h:31, :100 and :104. The
+  // target is the actor's MagicTarget base (+0xA0 on 1.6.1170, measured),
+  // so it is compared with the player's AsMagicTarget
+  // (include/RE/A/Actor.h:720), never through ActiveEffect::GetTargetActor,
+  // whose reinterpret_cast skips that base; the caster is a handle
+  // (GetCasterActor, src/RE/A/ActiveEffect.cpp:25-28). An effect between two
+  // figures stays blanked (A1's bystanders, docs/apocalypse-options.md 6).
   if (blockEvents && policy &&
       policy->HandleIsType(RE::ActiveEffect::VMTYPEID, handle)) {
     auto effect = static_cast<RE::ActiveEffect*>(
       policy->GetObjectForHandle(RE::ActiveEffect::VMTYPEID, handle));
     auto player = RE::PlayerCharacter::GetSingleton();
-    if (effect && player && effect->target == player->AsMagicTarget()) {
+    if (effect && player &&
+        (effect->target == player->AsMagicTarget() ||
+         effect->GetCasterActor().get() == player)) {
       blockEvents = false;
     }
   }

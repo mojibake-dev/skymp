@@ -580,7 +580,8 @@ export class FormView {
       const isVisibleByPlayer = !model.movement?.isSneaking
         && playerActor.getDistance(refr) <= maxNicknameDrawDistance
         && playerActor.hasLOS(refr)
-        && !this.isSweetHidePerson(refr);
+        && !this.isSweetHidePerson(refr)
+        && !FormView.isInvisible(refr);
       if (isVisibleByPlayer) {
         const headScreenPos = worldPointToScreenPoint([
           NetImmerse.getNodeWorldPositionX(refr, headPart, false),
@@ -613,6 +614,17 @@ export class FormView {
     } else {
       this.removeNickname();
     }
+  }
+
+  // thuum docs/verbs/self-cast.md (playtest seventeen: "when invisible
+  // player 1's name plaquard still shows"): a figure invisible in this game
+  // shows no name. Its player's Invisibility runs on it here (the relayed
+  // Self cast), and the effect raises its Invisibility actor value
+  // (CommonLibSSE-NG include/RE/I/InvisibilityEffect.h, a value modifier;
+  // kInvisibility, include/RE/A/ActorValues.h:62)
+  private static isInvisible(refr: ObjectReference): boolean {
+    const actor = Actor.from(refr);
+    return !!actor && actor.getActorValue("Invisibility") > 0;
   }
 
   private isSweetHidePerson(refr: ObjectReference): boolean {

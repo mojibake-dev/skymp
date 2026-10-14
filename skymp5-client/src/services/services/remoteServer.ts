@@ -106,9 +106,10 @@ const unequipIronHelmet = () => {
 // teleport to 180 faced 233.24 degrees (180 radians) in thuum's lab.
 const degreesToRadians = (degrees: number) => degrees * Math.PI / 180;
 
-// a burst longer than this keeps its newest events (sync/animation.ts's
-// sender keeps eight)
-const maxQueuedAnimations = 8;
+// a burst longer than this keeps its newest events: a sender's burst, and
+// what arrives while the view holds a hand's spell start for up to a second
+// (view/formView.ts)
+const maxQueuedAnimations = 32;
 
 export class RemoteServer extends ClientListener {
   constructor(private sp: Sp, private controller: CombinedController) {

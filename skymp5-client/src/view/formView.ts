@@ -1,5 +1,5 @@
 import { Actor, ActorBase, createText, destroyText, Form, FormType, Game, Keyword, NetImmerse, ObjectReference, once, printConsole, setTextPos, setTextSize, setTextString, storage, TESModPlatform, Utility, worldPointToScreenPoint } from "skyrimPlatform";
-import { setDefaultAnimsDisabled, applyAnimation } from "../sync/animation";
+import { setDefaultAnimsDisabled, applyAnimation, castStartWaiting } from "../sync/animation";
 import { Appearance, applyAppearance } from "../sync/appearance";
 import { isBadMenuShown, applyEquipment } from "../sync/equipment";
 import { RespawnNeededError } from "../lib/errors";
@@ -476,12 +476,24 @@ export class FormView {
       // thuum docs/verbs/spell-cast.md: every relayed event since the last
       // update, oldest first, as the sender's graph took them (applyAnimation
       // skips one it has played by its numChanges); the newest alone when
-      // none is queued (a spawn's)
+      // none is queued (a spawn's). A hand's spell start waits, with what is
+      // behind it, until the figure holds its caster's casting state
+      // (castStartWaiting), at most castStartWaitMs, the caster's variables
+      // coming with its cast or its next 500 ms snapshot
       const queued = model.animationQueue;
       if (queued && queued.length > 0) {
-        for (const anim of queued.splice(0, queued.length)) {
+        let played = 0;
+        for (; played < queued.length; played++) {
+          const anim = queued[played];
+          if (castStartWaiting(refr, anim.animEventName)) {
+            const now = Date.now();
+            if (!this.castStartHeldSince) this.castStartHeldSince = now;
+            if (now - this.castStartHeldSince < FormView.castStartWaitMs) break;
+          }
+          this.castStartHeldSince = 0;
           applyAnimation(refr, anim, this.animState);
         }
+        queued.splice(0, played);
       } else if (model.animation) {
         applyAnimation(refr, model.animation, this.animState);
       }
@@ -681,6 +693,8 @@ export class FormView {
   private refrId = 0;
   private ready = false;
   private animState = this.getDefaultAnimState();
+  private castStartHeldSince = 0;
+  private static readonly castStartWaitMs = 1000;
   private movState = {
     lastNumChanges: 0,
     lastApply: 0,

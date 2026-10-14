@@ -126,6 +126,33 @@ const isIdle = (animEventName: string) => {
   );
 };
 
+// thuum docs/verbs/spell-cast.md (the concentration pose): a hand's spell
+// start lands on a figure's graph only while the figure holds its caster's
+// casting state. The engine's caster sets its hand's want-cast variable and
+// starts the cast's motion a frame after the graph has answered it; the
+// relay delivers the start first and the variables after (with the cast, or
+// the caster's 500 ms snapshot), so the figure refused the start and never
+// made the grab and push. The same start, sent to the figure while it held
+// the relayed variables, was taken (x-figure-cast3 20261014-182649: refused
+// at 1189 ms before the variables came at 1482, taken at 2073). So the view
+// holds a hand's start, and the events behind it, until the figure wants to
+// cast with that hand.
+const castStartVariables = (animEventNameLowerCase: string): string[] => {
+  if (!animEventNameLowerCase.includes("spell") || !animEventNameLowerCase.endsWith("start")) {
+    return [];
+  }
+  if (animEventNameLowerCase.startsWith("mrh_")) return ["bWantCastRight"];
+  if (animEventNameLowerCase.startsWith("mlh_")) return ["bWantCastLeft"];
+  if (animEventNameLowerCase.startsWith("dualmagic_")) return ["bWantCastRight", "bWantCastLeft"];
+  return [];
+};
+
+export const castStartWaiting = (refr: ObjectReference, animEventName: string): boolean => {
+  const variables = castStartVariables(animEventName.toLowerCase());
+  if (variables.length === 0) return false;
+  return !variables.some((name) => refr.getAnimationVariableBool(name));
+};
+
 export const applyAnimation = (
   refr: ObjectReference,
   anim: Animation,

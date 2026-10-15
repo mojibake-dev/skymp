@@ -19,6 +19,11 @@ import { SpApiInteractor } from "../services/spApiInteractor";
 import { WorldCleanerService } from "../services/services/worldCleanerService";
 import { GamemodeUpdateService } from "../services/services/gamemodeUpdateService";
 
+// thuum docs/verbs/cast-action.md: the want variable a hand's cast event names
+// (MRh_ the right hand's, MLh_ and the perk's DualMagic_ the left hand's actions)
+const castWantVariable = (eventNameLowerCase: string): string =>
+  eventNameLowerCase.startsWith("mrh_") ? "bWantCastRight" : "bWantCastLeft";
+
 export interface ScreenResolution {
   width: number;
   height: number;
@@ -716,12 +721,42 @@ export class FormView {
       if (!taken) {
         printConsole(`cast-action: performAction refused on ${refr.getFormID().toString(16)}: ${pending.eventName}`);
       }
+      const name = pending.eventName.toLowerCase();
+      if (name.startsWith("dualmagic")) {
+        this.dualCastOnFigure = true;
+      }
+      if (name.includes("equipped")) {
+        // the engine's own sequence after the Interrupt action is FinishCast,
+        // which drops the hand's want variable; the action's variables are the
+        // caster's from before it, so the figure kept the want up, and a want
+        // already up when the next cast's variables land is no rise for the
+        // graph: that cast was refused whole, and whether the caster's 500 ms
+        // snapshot had dropped it first was a coin toss (playtest nineteen,
+        // "every test only half works"; c2's log 10:38 to 10:41)
+        const wants = this.dualCastOnFigure ? ["bWantCastRight", "bWantCastLeft"] : [castWantVariable(name)];
+        wants.forEach((w) => refr.setAnimationVariableBool(w, false));
+        this.dualCastOnFigure = false;
+      }
       return;
     }
     const queue = model.actionQueue;
     if (!queue || queue.length === 0) {
       return;
     }
+    const first = queue[0];
+    const firstName = first.eventName.toLowerCase();
+    if (firstName.endsWith("start") && !this.castEdgeCleared) {
+      // the graph enters a cast on the want variable's rise; one still up from
+      // an earlier cast gives it none, so it is dropped one update before the
+      // variables land (the same reason as above, from the other side)
+      const wants = firstName.startsWith("dualmagic") ? ["bWantCastRight", "bWantCastLeft"] : [castWantVariable(firstName)];
+      if (wants.some((w) => refr.getAnimationVariableBool(w))) {
+        wants.forEach((w) => refr.setAnimationVariableBool(w, false));
+        this.castEdgeCleared = true;
+        return;
+      }
+    }
+    this.castEdgeCleared = false;
     const next = queue.shift();
     if (!next) {
       return;
@@ -741,8 +776,12 @@ export class FormView {
   private ready = false;
   private animState = this.getDefaultAnimState();
   // thuum docs/verbs/cast-action.md: the relayed action whose variables went
-  // onto the figure's graph on the last update, performed on this one
+  // onto the figure's graph on the last update, performed on this one; whether
+  // a start's want variable was dropped on the last update for its rise; and
+  // whether the figure is in the perk's dual cast (both wants up, one exit)
   private pendingAction: UpdateActionMessage | null = null;
+  private castEdgeCleared = false;
+  private dualCastOnFigure = false;
   private movState = {
     lastNumChanges: 0,
     lastApply: 0,

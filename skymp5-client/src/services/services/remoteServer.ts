@@ -1,5 +1,5 @@
 // @ts-expect-error (TODO: Remove in 2.10.0)
-import { Actor, Form, FormType, Menu, interruptCast, castSpellImmediate, printConsole, applyAnimationVariablesToActor, ActorAnimationVariables } from 'skyrimPlatform';
+import { Actor, Form, FormType, Menu, interruptCast, castSpellImmediate, printConsole, applyAnimationVariablesToActor, getAnimationVariablesFromActor, ActorAnimationVariables } from 'skyrimPlatform';
 import {
   Armor,
   Cell,
@@ -114,6 +114,12 @@ const maxQueuedAnimations = 32;
 // thuum docs/verbs/cast-action.md: a cast is three actions; a burst from two
 // hands stays under this
 const maxQueuedActions = 16;
+// the casting booleans in Skyrim Platform's master behavior list, by index
+// (the fork's skyrim-platform/src/platform_se/skyrim_platform/Magic/
+// AnimVariableMasterGraphIndexes.cpp, CreateDefault: IsCastingDual 5,
+// IsCastingRight 7, IsCastingLeft 8, bWantCastLeft 14, bWantCastRight 15,
+// bCastReady 20, NotCasting 59), packed one byte each
+const figureCastingBooleanIndexes = [5, 7, 8, 14, 15, 20, 59];
 
 export class RemoteServer extends ClientListener {
   constructor(private sp: Sp, private controller: CombinedController) {
@@ -1031,6 +1037,25 @@ export class RemoteServer extends ClientListener {
         floats: new Uint8Array(msg.data.actorAnimationVariables.floats),
         integers: new Uint8Array(msg.data.actorAnimationVariables.integers)
       };
+
+      // thuum docs/verbs/cast-action.md: on a figure the casting bits are the
+      // relayed actions' (the want variables rise with a start and fall with
+      // an exit, the rest is the graph's own); the caster's 500 ms snapshot
+      // keeps its aim and the rest, and leaves those seven as the figure
+      // holds them, so it neither raises a want the graph would then not see
+      // rise nor drops one mid-cast
+      if (ac.getFormID() !== 0x14) {
+        const own = getAnimationVariablesFromActor(ac.getFormID());
+        const ownBooleans = new Uint8Array(own.booleans);
+        const snapshot = actorAnimationVariables.booleans;
+        if (ownBooleans.length === snapshot.length) {
+          for (const i of figureCastingBooleanIndexes) {
+            if (i < snapshot.length) {
+              snapshot[i] = ownBooleans[i];
+            }
+          }
+        }
+      }
 
       const isApplyed = applyAnimationVariablesToActor(ac.getFormID(), actorAnimationVariables);
 

@@ -719,8 +719,20 @@ export class FormView {
       this.pendingAction = null;
       const taken = performAction(refr.getFormID(), pending.action, pending.idle, pending.eventName, pending.type);
       if (!taken) {
-        printConsole(`cast-action: performAction refused on ${refr.getFormID().toString(16)}: ${pending.eventName}`);
+        // the caster's engine sets the want variable and performs the start
+        // only when the graph answers, however many updates that takes; a
+        // graph still finishing its last exit refused a start one update
+        // after its variables (x-cast-twice-move 20261015-175846, 570 ms
+        // after the exit; the playtest's rhythm), so the action goes again,
+        // variables then action, for up to castRetries updates
+        if (this.castRetries < FormView.castRetryLimit && model.actionQueue) {
+          this.castRetries++;
+          model.actionQueue.unshift(pending);
+          return;
+        }
+        printConsole(`cast-action: performAction refused on ${refr.getFormID().toString(16)}: ${pending.eventName} after ${this.castRetries} retries`);
       }
+      this.castRetries = 0;
       const name = pending.eventName.toLowerCase();
       if (name.startsWith("dualmagic")) {
         this.dualCastOnFigure = true;
@@ -782,6 +794,9 @@ export class FormView {
   private pendingAction: UpdateActionMessage | null = null;
   private castEdgeCleared = false;
   private dualCastOnFigure = false;
+  private castRetries = 0;
+  // about half a second at 60 updates a second, two updates a try
+  private static readonly castRetryLimit = 15;
   private movState = {
     lastNumChanges: 0,
     lastApply: 0,

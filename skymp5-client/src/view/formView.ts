@@ -1,7 +1,7 @@
 import { Actor, ActorBase, createText, destroyText, Form, FormType, Game, Keyword, NetImmerse, ObjectReference, once, printConsole, setTextPos, setTextSize, setTextString, storage, TESModPlatform, Utility, worldPointToScreenPoint } from "skyrimPlatform";
 import { setDefaultAnimsDisabled, applyAnimation } from "../sync/animation";
 // @ts-expect-error (TODO: Remove in 2.10.0)
-import { applyAnimationVariablesToActor, performAction } from "skyrimPlatform";
+import { applyAnimationVariablesToActor, performAction, performActionResult } from "skyrimPlatform";
 import { Appearance, applyAppearance } from "../sync/appearance";
 import { isBadMenuShown, applyEquipment } from "../sync/equipment";
 import { RespawnNeededError } from "../lib/errors";
@@ -716,8 +716,25 @@ export class FormView {
   private replayActions(refr: ObjectReference, model: FormModel): void {
     const pending = this.pendingAction;
     if (pending) {
+      if (!this.pendingAsked) {
+        // queued to the game thread, which performs it right after this
+        // update (MagicApi.cpp: performed inside the update, the action's
+        // graph event re-entered Skyrim Platform's hooks and hung the game at
+        // the first replay, x-cast-gap 20261015-211105); the graph's answer
+        // is read on the next update
+        performAction(refr.getFormID(), pending.action, pending.idle, pending.eventName, pending.type);
+        this.pendingAsked = true;
+        this.pendingWaits = 0;
+        return;
+      }
+      const answer = performActionResult(refr.getFormID());
+      if (answer < 0 && this.pendingWaits < FormView.answerWaitLimit) {
+        this.pendingWaits++;
+        return;
+      }
+      this.pendingAsked = false;
       this.pendingAction = null;
-      const taken = performAction(refr.getFormID(), pending.action, pending.idle, pending.eventName, pending.type);
+      const taken = answer === 1;
       if (!taken) {
         // the caster's engine sets the want variable and performs the start
         // only when the graph answers, however many updates that takes; a
@@ -749,7 +766,7 @@ export class FormView {
         wants.forEach((w) => refr.setAnimationVariableBool(w, false));
         this.dualCastOnFigure = false;
       }
-      return;
+      // the next action's variables may land on this same update
     }
     const queue = model.actionQueue;
     if (!queue || queue.length === 0) {
@@ -792,11 +809,16 @@ export class FormView {
   // a start's want variable was dropped on the last update for its rise; and
   // whether the figure is in the perk's dual cast (both wants up, one exit)
   private pendingAction: UpdateActionMessage | null = null;
+  // whether the pending action has been queued and its answer is awaited
+  private pendingAsked = false;
+  private pendingWaits = 0;
   private castEdgeCleared = false;
   private dualCastOnFigure = false;
   private castRetries = 0;
   // about half a second at 60 updates a second, two updates a try
   private static readonly castRetryLimit = 15;
+  // updates to wait for the queue's answer before counting it refused
+  private static readonly answerWaitLimit = 6;
   private movState = {
     lastNumChanges: 0,
     lastApply: 0,

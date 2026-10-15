@@ -6,6 +6,9 @@
 
 #include "Magic/AnimationGraphMasterBehaviourDescriptor.h"
 
+#include <mutex>
+#include <unordered_map>
+
 extern CallNativeApi::NativeCallRequirements g_nativeCallRequirements;
 
 namespace skymp::magic::details {
@@ -304,9 +307,24 @@ Napi::Object MagicApi::AnimationVariablesToJs(
 // performed on the actor through the entry the engine's own casters reach
 // for the Attack, Ready, Release and Interrupt actions (TESActionData,
 // CommonLibSSE-NG include/RE/T/TESActionData.h; ActionInput's source, target
-// and action, ActionOutput's animEvent and animObjIdle). Performed at once
-// on the game thread; returns whether the graph took it (the game log's
-// [verb:cast-action] line says the same).
+// and action, ActionOutput's animEvent and animObjIdle). Queued to the game
+// thread's task queue, which SkyrimPlatform drains right after the JS tick of
+// the same frame (main.cpp), never inside the JS call: performed inside it
+// (0ce34196) the action's graph event reached Skyrim Platform's
+// sendAnimationEvent hook, whose call back into JS from within a running JS
+// call hung the game at the first replay (x-cast-gap 20261015-211105 and
+// x-cast-human 211518 on the lab: no performAction logged, the seat's
+// heartbeat gone). The graph's answer goes to performActionResult, read on
+// the next update, so a refused action is retried; a queued task answering
+// "queued" (abe44a55) had the view's retry never fire (playtest nineteen's
+// second session: concentration starts taken 8 of 15 on the figure).
+namespace {
+std::mutex g_actionResultMutex;
+// the graph's answer to the last performAction on each actor: 1 taken, 0
+// refused, -1 queued and not yet performed
+std::unordered_map<uint32_t, int> g_actionResult;
+}
+
 Napi::Value MagicApi::PerformAction(const Napi::CallbackInfo& info)
 {
   const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
@@ -315,23 +333,39 @@ Napi::Value MagicApi::PerformAction(const Napi::CallbackInfo& info)
   const auto eventName = NapiHelper::ExtractString(info[3], "eventName");
   const auto type = NapiHelper::ExtractUInt32(info[4], "type");
 
-  // performed here and now, as applyAnimationVariablesToActor writes its
-  // variables (the update event runs on the game thread), so the answer is
-  // the graph's: a queued task answered "queued" before the engine ran, and
-  // the view's retry of a refused action never fired (playtest nineteen's
-  // second session, 2026-10-15: concentration starts taken 8 of 15 on the
-  // figure with no retry in sight)
-  auto* pActor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
-  auto* pAction = RE::TESForm::LookupByID<RE::BGSAction>(actionFormId);
-  if (!pActor || !pAction) {
-    return Napi::Boolean::New(info.Env(), false);
+  {
+    std::lock_guard<std::mutex> lock(g_actionResultMutex);
+    g_actionResult[actorFormId] = -1;
   }
-  auto* pIdle = idleFormId
-    ? RE::TESForm::LookupByID<RE::TESIdleForm>(idleFormId)
-    : nullptr;
-  const bool taken = skymp::magic::details::PerformActionOnActor(
-    *pActor, *pAction, pIdle, eventName, type);
-  return Napi::Boolean::New(info.Env(), taken);
+
+  g_nativeCallRequirements.gameThrQ->AddTask(
+    [actorFormId, actionFormId, idleFormId, eventName, type](Viet::Void) {
+      int result = 0;
+      auto* pActor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
+      auto* pAction = RE::TESForm::LookupByID<RE::BGSAction>(actionFormId);
+      if (pActor && pAction) {
+        auto* pIdle = idleFormId
+          ? RE::TESForm::LookupByID<RE::TESIdleForm>(idleFormId)
+          : nullptr;
+        result = skymp::magic::details::PerformActionOnActor(
+                   *pActor, *pAction, pIdle, eventName, type)
+          ? 1
+          : 0;
+      }
+      std::lock_guard<std::mutex> lock(g_actionResultMutex);
+      g_actionResult[actorFormId] = result;
+    });
+
+  return Napi::Boolean::New(info.Env(), true);
+}
+
+Napi::Value MagicApi::PerformActionResult(const Napi::CallbackInfo& info)
+{
+  const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  std::lock_guard<std::mutex> lock(g_actionResultMutex);
+  const auto it = g_actionResult.find(actorFormId);
+  return Napi::Number::New(info.Env(),
+                           it == g_actionResult.end() ? -1 : it->second);
 }
 
 Napi::Value MagicApi::ApplyAnimationVariablesToActor(
@@ -367,6 +401,10 @@ void MagicApi::Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "performAction",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(PerformAction)));
+
+  exports.Set("performActionResult",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(PerformActionResult)));
 
   exports.Set(
     "getAnimationVariablesFromActor",

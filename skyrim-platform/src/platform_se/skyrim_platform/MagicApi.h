@@ -15,6 +15,9 @@ Napi::Value ApplyAnimationVariablesToActor(const Napi::CallbackInfo& info);
 // the engine's action entry with the idle given, the way the engine performs
 // the caster's own; the figure's cast animation
 Napi::Value PerformAction(const Napi::CallbackInfo& info);
+// the graph's answer to the actor's last performAction: 1 taken, 0 refused,
+// -1 none or still queued (it is performed right after the update that asked)
+Napi::Value PerformActionResult(const Napi::CallbackInfo& info);
 
 // an actor's master-behavior variables as the JS object
 // getAnimationVariablesFromActor returns (booleans, floats, integers as

@@ -32,7 +32,8 @@ pub const ARRIVAL_WAIT_MS: u64 = 10_000;
 /// as the arrival, units over the ground.
 pub const ARRIVAL_RADIUS: f32 = 256.0;
 /// How long a cast teleport's jump waits for its caster's game to report
-/// the landing: the engine places the spell's marker, the mod's script
+/// the landing, unless its castTeleports entry names its own wait
+/// (teleports.rs): the engine places the spell's marker, the mod's script
 /// moves the player (Lost Grimoire's waits 0.12 s first), and the next
 /// movement report carries it. HYPOTHESIS until x-teleport-probe measures
 /// the time from the cast to the landing (docs/verbs/cast-teleport.md).
@@ -193,16 +194,17 @@ impl Budgets {
     }
 
     /// `actor` cast a teleport at `now_ms`, standing at (x, y, z) in
-    /// `cell_or_world`: one jump to within `reach` of there (and the slack)
-    /// is permitted until CAST_JUMP_WAIT_MS later; a later cast replaces it.
-    /// A cast whose position or reach is not a finite number permits nothing.
+    /// `cell_or_world`: one jump to within `reach` of there (and the slack;
+    /// a reach of 0 is a return to where it cast) is permitted until
+    /// `wait_ms` later; a later cast replaces it. A cast whose position or
+    /// reach is not a finite number permits nothing.
     #[allow(clippy::too_many_arguments)]
-    pub fn permit_cast_jump(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, z: f32, reach: f32, now_ms: u64) {
+    pub fn permit_cast_jump(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, z: f32, reach: f32, wait_ms: u64, now_ms: u64) {
         if !(x.is_finite() && y.is_finite() && z.is_finite() && reach.is_finite()) {
             self.cast_jumps.remove(&actor);
             return;
         }
-        let until_ms = now_ms.saturating_add(CAST_JUMP_WAIT_MS);
+        let until_ms = now_ms.saturating_add(wait_ms);
         self.cast_jumps.insert(actor, CastJump { cell_or_world, x, y, z, reach: reach.max(0.0), until_ms });
     }
 
@@ -280,7 +282,7 @@ mod tests {
     fn a_cast_jump_lands_once_within_reach_of_the_cast() {
         let mut all = Budgets::default();
         assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 0.0, 2_000.0, 12.0, 0), JumpCheck::NoPermit);
-        all.permit_cast_jump(1, TAMRIEL_ID, 0.0, -300.0, 12.0, 3_000.0, 1_000);
+        all.permit_cast_jump(1, TAMRIEL_ID, 0.0, -300.0, 12.0, 3_000.0, CAST_JUMP_WAIT_MS, 1_000);
         // another actor's jump is its own
         assert_eq!(all.check_cast_jump(2, TAMRIEL_ID, 0.0, 2_000.0, 12.0, 1_200), JumpCheck::NoPermit);
         // 2300 units off and 400 down: within 3000 and the slack
@@ -292,7 +294,7 @@ mod tests {
     #[test]
     fn a_cast_jump_beyond_reach_elsewhere_or_late_is_any_other_move() {
         let mut all = Budgets::default();
-        all.permit_cast_jump(1, TAMRIEL_ID, 0.0, -300.0, 12.0, 3_000.0, 0);
+        all.permit_cast_jump(1, TAMRIEL_ID, 0.0, -300.0, 12.0, 3_000.0, CAST_JUMP_WAIT_MS, 0);
         // beyond 3000 and the slack: judged as any move, the jump still waits
         assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 0.0, 3_000.0, 12.0, 100), JumpCheck::NoPermit);
         // another cell or worldspace
@@ -300,23 +302,40 @@ mod tests {
         // within reach, now: lands
         assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 0.0, 2_900.0, 12.0, 300), JumpCheck::Landed);
         // the wait runs out
-        all.permit_cast_jump(1, TAMRIEL_ID, 0.0, -300.0, 12.0, 3_000.0, 0);
+        all.permit_cast_jump(1, TAMRIEL_ID, 0.0, -300.0, 12.0, 3_000.0, CAST_JUMP_WAIT_MS, 0);
         assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 0.0, 0.0, 12.0, CAST_JUMP_WAIT_MS.saturating_add(1)), JumpCheck::NoPermit);
         assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 0.0, 0.0, 12.0, 1), JumpCheck::NoPermit);
     }
 
     #[test]
+    fn a_return_lands_once_back_where_it_was_cast_within_its_own_wait() {
+        // Ghostwalk's entry (thuum docs/verbs/ghostwalk.md): reach 0, 15.4 s
+        let mut all = Budgets::default();
+        all.permit_cast_jump(1, TAMRIEL_ID, 0.0, -300.0, 12.0, 0.0, 15_400, 1_000);
+        // walked 3000 units off: not the return, judged as any move
+        assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 0.0, 2_700.0, 12.0, 6_000), JumpCheck::NoPermit);
+        // past the default wait, within its own, back within the slack
+        assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 100.0, -300.0, 12.0, 11_400), JumpCheck::Landed);
+        assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 100.0, -300.0, 12.0, 11_500), JumpCheck::NoPermit);
+        // 300 units from the cast point is past the slack
+        all.permit_cast_jump(1, TAMRIEL_ID, 0.0, -300.0, 12.0, 0.0, 15_400, 20_000);
+        assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 300.0, -300.0, 12.0, 30_000), JumpCheck::NoPermit);
+        // and its wait runs out
+        assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 0.0, -300.0, 12.0, 35_401), JumpCheck::NoPermit);
+    }
+
+    #[test]
     fn a_later_cast_replaces_the_jump_and_nonsense_permits_nothing() {
         let mut all = Budgets::default();
-        all.permit_cast_jump(1, TAMRIEL_ID, 0.0, -300.0, 12.0, 3_000.0, 0);
-        all.permit_cast_jump(1, TAMRIEL_ID, 10_000.0, 10_000.0, 0.0, 500.0, 10);
+        all.permit_cast_jump(1, TAMRIEL_ID, 0.0, -300.0, 12.0, 3_000.0, CAST_JUMP_WAIT_MS, 0);
+        all.permit_cast_jump(1, TAMRIEL_ID, 10_000.0, 10_000.0, 0.0, 500.0, CAST_JUMP_WAIT_MS, 10);
         assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 0.0, 2_000.0, 12.0, 20), JumpCheck::NoPermit);
         assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 10_400.0, 10_000.0, 0.0, 30), JumpCheck::Landed);
-        all.permit_cast_jump(1, TAMRIEL_ID, f32::NAN, 0.0, 0.0, 3_000.0, 40);
+        all.permit_cast_jump(1, TAMRIEL_ID, f32::NAN, 0.0, 0.0, 3_000.0, CAST_JUMP_WAIT_MS, 40);
         assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 0.0, 0.0, 0.0, 50), JumpCheck::NoPermit);
-        all.permit_cast_jump(1, TAMRIEL_ID, 0.0, 0.0, 0.0, f32::INFINITY, 60);
+        all.permit_cast_jump(1, TAMRIEL_ID, 0.0, 0.0, 0.0, f32::INFINITY, CAST_JUMP_WAIT_MS, 60);
         assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 0.0, 0.0, 0.0, 70), JumpCheck::NoPermit);
-        all.permit_cast_jump(1, TAMRIEL_ID, 0.0, 0.0, 0.0, 3_000.0, 80);
+        all.permit_cast_jump(1, TAMRIEL_ID, 0.0, 0.0, 0.0, 3_000.0, CAST_JUMP_WAIT_MS, 80);
         assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, f32::NAN, 0.0, 0.0, 90), JumpCheck::NoPermit);
         all.forget(1);
         assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 0.0, 0.0, 0.0, 100), JumpCheck::NoPermit);

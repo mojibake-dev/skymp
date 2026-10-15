@@ -132,6 +132,40 @@ TEST_CASE("A cast teleport's jump is taken once within its reach, and its "
   Leave(p);
 }
 
+TEST_CASE("A return (reach 0, relayed) is taken back where it was cast, "
+          "and its cast is relayed",
+          "[CastTeleport][espm]")
+{
+  // thuum docs/verbs/ghostwalk.md: Apocalypse's Ghostwalk, 10 s invisible
+  // and then the mod's script moves the caster back where it cast
+  PartOne& p = GetPartOne();
+  p.SetCastTeleportSettings(
+    R"([{"spell": "12fd0:Skyrim.esm", "reach": 0, "waitMs": 15400, )"
+    R"("relay": true}])");
+  REQUIRE(p.TeleportReach(kFirebolt) == Catch::Approx(0.f));
+  REQUIRE(p.TeleportWaitMs(kFirebolt) == 15400);
+  REQUIRE(p.TeleportRelays(kFirebolt));
+  auto& caster = Pair(p);
+  p.Messages().clear();
+
+  Cast(p);
+  REQUIRE(Relayed(p));
+
+  // walked 1500 units east: the ground budget's burst (2048) takes it
+  Report(p, caster, { 1500, 0, 0 });
+  REQUIRE(SentBack(p) == 0);
+  // back to the cast point: past what the burst has left, the permit's
+  Report(p, caster, { 0, 0, 0 });
+  REQUIRE(caster.GetPos() == NiPoint3{ 0, 0, 0 });
+  REQUIRE(SentBack(p) == 0);
+
+  // that was the one return: the next jump is sent back
+  Report(p, caster, { 1500, 0, 0 });
+  REQUIRE(SentBack(p) == 1);
+  REQUIRE(caster.GetPos() == NiPoint3{ 0, 0, 0 });
+  Leave(p);
+}
+
 TEST_CASE("A spell the server names no teleport permits no jump, and its "
           "cast is relayed",
           "[CastTeleport][espm]")

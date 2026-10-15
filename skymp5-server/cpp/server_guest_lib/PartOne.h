@@ -152,14 +152,18 @@ public:
   // thuum docs/verbs/cast-teleport.md: the spells server-settings.json's
   // `castTeleports` names as teleports (a JSON list, "[]" for none; a bad
   // entry stops the server here, named), each spell's reach (negative for a
-  // spell the server names no teleport), and the one jump a player's actor
-  // may make after casting one: to within `reach` of `from`, where it stood,
-  // in cellOrWorld, for a few seconds; CheckCastJump judges a move the
-  // bounds refuse against it (Landed or NoPermit; the rule is Rust's)
+  // spell the server names no teleport; 0 for a return to where it was
+  // cast, docs/verbs/ghostwalk.md), its wait (ms, 0 when unnamed) and
+  // whether its cast is relayed, and the one jump a player's actor may make
+  // after casting one: to within `reach` of `from`, where it stood, in
+  // cellOrWorld, for `waitMs`; CheckCastJump judges a move the bounds refuse
+  // against it (Landed or NoPermit; the rule is Rust's)
   void SetCastTeleportSettings(const std::string& castTeleportsJson);
   float TeleportReach(uint32_t spellFormId) const;
+  uint64_t TeleportWaitMs(uint32_t spellFormId) const;
+  bool TeleportRelays(uint32_t spellFormId) const;
   void PermitCastJump(uint32_t actorFormId, uint32_t cellOrWorld,
-                      const NiPoint3& from, float reach);
+                      const NiPoint3& from, float reach, uint64_t waitMs);
   JumpCheck CheckCastJump(uint32_t actorFormId, uint32_t cellOrWorld,
                           const NiPoint3& at);
 

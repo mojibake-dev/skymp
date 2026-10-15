@@ -8,8 +8,18 @@
 //! and anchors), so server-settings.json names them: `castTeleports`, a list
 //! of `{"spell": "<hex form id>:<plugin>", "reach": <units>}`, the spell as the
 //! server's change forms write a FormDesc, so a change of load order keeps it.
+//!
+//! A spell that returns its caster to where it cast is the same jump with a
+//! reach of 0 (Apocalypse's Ghostwalk, thuum docs/verbs/ghostwalk.md: 10 s
+//! invisible, then the mod's script moves the caster back), so it takes the
+//! two optional fields: `waitMs`, how long after the cast the jump is
+//! permitted (movement::CAST_JUMP_WAIT_MS when absent), and `relay`, whether
+//! the cast is still relayed to the neighbours (false when absent: a relayed
+//! teleport would place its marker in an observer's game and move the
+//! observer; Ghostwalk's relayed Self cast only makes the figure invisible).
 
 use crate::clock::SettingsError;
+use crate::movement::CAST_JUMP_WAIT_MS;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -17,6 +27,20 @@ use serde::Deserialize;
 struct Entry {
     spell: String,
     reach: f32,
+    wait_ms: Option<u64>,
+    relay: Option<bool>,
+}
+
+/// What the server does with a named spell's cast.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CastTeleport {
+    /// How far from the caster its cast may land, units (0: back where it
+    /// cast, within movement::CAST_JUMP_SLACK).
+    pub reach: f32,
+    /// How long after the cast the jump is permitted, ms.
+    pub wait_ms: u64,
+    /// Whether the cast is relayed to the neighbours.
+    pub relay: bool,
 }
 
 /// One spell the server names as a teleport.
@@ -26,8 +50,7 @@ struct Named {
     short_id: u32,
     /// The plugin, as the load order names it, compared without case.
     file: String,
-    /// How far from the caster its cast may land, units.
-    reach: f32,
+    teleport: CastTeleport,
 }
 
 /// The spells the server names as teleports, each with its reach.
@@ -39,7 +62,8 @@ pub struct CastTeleports {
 impl CastTeleports {
     /// The list from the `castTeleports` block's JSON text (`[]` for none).
     /// The error names a bad entry: a spell that is not "<hex id>:<plugin>",
-    /// a reach that is not a finite positive number, an unknown key.
+    /// a reach that is not a finite number of 0 or more, a wait of 0, an
+    /// unknown key.
     pub fn from_json(text: &str) -> Result<Self, SettingsError> {
         let entries: Vec<Entry> = serde_json::from_str(text).map_err(|e| SettingsError(format!("castTeleports: {e}")))?;
         let mut spells = Vec::with_capacity(entries.len());
@@ -54,22 +78,34 @@ impl CastTeleports {
             if file.is_empty() {
                 return Err(SettingsError(format!("castTeleports: {:?} names no plugin", e.spell)));
             }
-            if !(e.reach.is_finite() && e.reach > 0.0) {
-                return Err(SettingsError(format!("castTeleports: {:?} has a reach that is not a positive number", e.spell)));
+            if !(e.reach.is_finite() && e.reach >= 0.0) {
+                return Err(SettingsError(format!("castTeleports: {:?} has a reach that is not a number of 0 or more", e.spell)));
             }
-            spells.push(Named { short_id, file: file.to_owned(), reach: e.reach });
+            let wait_ms = e.wait_ms.unwrap_or(CAST_JUMP_WAIT_MS);
+            if wait_ms == 0 {
+                return Err(SettingsError(format!("castTeleports: {:?} has a wait of 0", e.spell)));
+            }
+            let teleport = CastTeleport { reach: e.reach, wait_ms, relay: e.relay.unwrap_or(false) };
+            spells.push(Named { short_id, file: file.to_owned(), teleport });
         }
         Ok(Self { spells })
     }
 
-    /// The reach of the spell `short_id` in `file` (a FormDesc's parts), if
-    /// the server names it as a teleport.
+    /// The spell `short_id` in `file` (a FormDesc's parts), if the server
+    /// names it as a teleport.
     #[must_use]
-    pub fn reach_of(&self, short_id: u32, file: &str) -> Option<f32> {
+    pub fn named(&self, short_id: u32, file: &str) -> Option<CastTeleport> {
         self.spells
             .iter()
             .find(|s| s.short_id == short_id && s.file.eq_ignore_ascii_case(file))
-            .map(|s| s.reach)
+            .map(|s| s.teleport)
+    }
+
+    /// The reach of the spell `short_id` in `file`, if the server names it
+    /// as a teleport.
+    #[must_use]
+    pub fn reach_of(&self, short_id: u32, file: &str) -> Option<f32> {
+        self.named(short_id, file).map(|t| t.reach)
     }
 }
 
@@ -90,14 +126,34 @@ mod tests {
     }
 
     #[test]
+    fn a_teleport_waits_the_default_and_is_not_relayed_unless_named() {
+        let t = CastTeleports::from_json(
+            r#"[{"spell": "a86df:LostGrimoire.esp", "reach": 8000},
+                {"spell": "aae8:Apocalypse - Magic of Skyrim.esp", "reach": 0, "waitMs": 15400, "relay": true}]"#,
+        )
+        .unwrap_or_default();
+        assert_eq!(
+            t.named(0xa86df, "LostGrimoire.esp"),
+            Some(CastTeleport { reach: 8000.0, wait_ms: CAST_JUMP_WAIT_MS, relay: false })
+        );
+        assert_eq!(
+            t.named(0xaae8, "apocalypse - magic of skyrim.esp"),
+            Some(CastTeleport { reach: 0.0, wait_ms: 15_400, relay: true })
+        );
+        assert_eq!(t.named(0xaae8, "LostGrimoire.esp"), None);
+    }
+
+    #[test]
     fn none_named_by_default_and_bad_entries_refused() {
         assert_eq!(CastTeleports::from_json("[]").unwrap_or_default().reach_of(0xa86df, "LostGrimoire.esp"), None);
         for bad in [
             r#"[{"spell": "a86df", "reach": 3000}]"#,
             r#"[{"spell": "zz:LostGrimoire.esp", "reach": 3000}]"#,
             r#"[{"spell": "a86df:", "reach": 3000}]"#,
-            r#"[{"spell": "a86df:LostGrimoire.esp", "reach": 0}]"#,
             r#"[{"spell": "a86df:LostGrimoire.esp", "reach": -5}]"#,
+            r#"[{"spell": "a86df:LostGrimoire.esp", "reach": 3000, "waitMs": 0}]"#,
+            r#"[{"spell": "a86df:LostGrimoire.esp", "reach": 3000, "waitMs": -1}]"#,
+            r#"[{"spell": "a86df:LostGrimoire.esp", "reach": 3000, "relay": 1}]"#,
             r#"[{"spell": "a86df:LostGrimoire.esp", "reach": 3000, "speed": 1}]"#,
             r#"[{"spell": "a86df:LostGrimoire.esp"}]"#,
             r#"{"spell": "a86df:LostGrimoire.esp", "reach": 3000}"#,

@@ -1334,11 +1334,25 @@ float PartOne::TeleportReach(uint32_t spellFormId) const
   return pImpl->castTeleports->teleport_reach(desc.shortFormId, desc.file);
 }
 
-void PartOne::PermitCastJump(uint32_t actorFormId, uint32_t cellOrWorld,
-                             const NiPoint3& from, float reach)
+uint64_t PartOne::TeleportWaitMs(uint32_t spellFormId) const
 {
-  pImpl->movementBudgets->permit_cast_jump(
-    actorFormId, cellOrWorld, from.x, from.y, from.z, reach, SteadyNowMs());
+  const auto desc = FormDesc::FromFormId(spellFormId, worldState.espmFiles);
+  return pImpl->castTeleports->teleport_wait_ms(desc.shortFormId, desc.file);
+}
+
+bool PartOne::TeleportRelays(uint32_t spellFormId) const
+{
+  const auto desc = FormDesc::FromFormId(spellFormId, worldState.espmFiles);
+  return pImpl->castTeleports->teleport_relays(desc.shortFormId, desc.file);
+}
+
+void PartOne::PermitCastJump(uint32_t actorFormId, uint32_t cellOrWorld,
+                             const NiPoint3& from, float reach,
+                             uint64_t waitMs)
+{
+  pImpl->movementBudgets->permit_cast_jump(actorFormId, cellOrWorld, from.x,
+                                           from.y, from.z, reach, waitMs,
+                                           SteadyNowMs());
 }
 
 PartOne::JumpCheck PartOne::CheckCastJump(uint32_t actorFormId,

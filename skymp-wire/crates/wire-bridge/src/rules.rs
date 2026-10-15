@@ -903,9 +903,10 @@ mod ffi {
         fn check_arrival(self: &mut MovementBudgets, actor: u32, cell_or_world: u32, x: f32, y: f32, now_ms: u64) -> JumpCheck;
         /// thuum docs/verbs/cast-teleport.md: `actor` cast a teleport at
         /// `now_ms`, standing at (x, y, z) in `cell_or_world`: one jump to
-        /// within `reach` of there is permitted for a few seconds.
+        /// within `reach` of there (0: back there, docs/verbs/ghostwalk.md)
+        /// is permitted for `wait_ms`.
         #[allow(clippy::too_many_arguments)]
-        fn permit_cast_jump(self: &mut MovementBudgets, actor: u32, cell_or_world: u32, x: f32, y: f32, z: f32, reach: f32, now_ms: u64);
+        fn permit_cast_jump(self: &mut MovementBudgets, actor: u32, cell_or_world: u32, x: f32, y: f32, z: f32, reach: f32, wait_ms: u64, now_ms: u64);
         /// Judge a move of `actor`'s that the bounds refuse against its cast
         /// jump: Landed within reach (that ends it), else NoPermit.
         fn check_cast_jump(self: &mut MovementBudgets, actor: u32, cell_or_world: u32, x: f32, y: f32, z: f32, now_ms: u64) -> JumpCheck;
@@ -920,6 +921,13 @@ mod ffi {
         /// parts), or a negative number when the server names it no
         /// teleport.
         fn teleport_reach(self: &CastTeleports, short_id: u32, file: &str) -> f32;
+        /// How long after its cast the spell's jump is permitted, ms (0 when
+        /// the server names it no teleport).
+        fn teleport_wait_ms(self: &CastTeleports, short_id: u32, file: &str) -> u64;
+        /// Whether the spell's cast is still relayed to the neighbours
+        /// (false when the server names it no teleport: then the cast is
+        /// any spell's, relayed as ever).
+        fn teleport_relays(self: &CastTeleports, short_id: u32, file: &str) -> bool;
 
         /// Every player actor's recent bow and crossbow shots.
         type RangedShots;
@@ -1426,8 +1434,8 @@ impl MovementBudgets {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn permit_cast_jump(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, z: f32, reach: f32, now_ms: u64) {
-        self.0.permit_cast_jump(actor, cell_or_world, x, y, z, reach, now_ms);
+    fn permit_cast_jump(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, z: f32, reach: f32, wait_ms: u64, now_ms: u64) {
+        self.0.permit_cast_jump(actor, cell_or_world, x, y, z, reach, wait_ms, now_ms);
     }
 
     fn check_cast_jump(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, z: f32, now_ms: u64) -> JumpCheck {
@@ -1445,6 +1453,14 @@ fn new_cast_teleports(settings_json: &str) -> Result<Box<CastTeleports>, clock::
 impl CastTeleports {
     fn teleport_reach(&self, short_id: u32, file: &str) -> f32 {
         self.0.reach_of(short_id, file).unwrap_or(-1.0)
+    }
+
+    fn teleport_wait_ms(&self, short_id: u32, file: &str) -> u64 {
+        self.0.named(short_id, file).map_or(0, |t| t.wait_ms)
+    }
+
+    fn teleport_relays(&self, short_id: u32, file: &str) -> bool {
+        self.0.named(short_id, file).is_some_and(|t| t.relay)
     }
 }
 
@@ -1735,7 +1751,7 @@ mod tests {
         assert_eq!(b.check_arrival(7, 0x3c, 510.0, 490.0, 12), JumpCheck::Landed);
         assert_eq!(b.check_arrival(7, 0x3c, 0.0, 0.0, 13), JumpCheck::NoPermit);
         // a cast teleport's jump: within its reach of the cast, once
-        b.permit_cast_jump(7, 0x3c, 0.0, -300.0, 12.0, 3_000.0, 20);
+        b.permit_cast_jump(7, 0x3c, 0.0, -300.0, 12.0, 3_000.0, 5_000, 20);
         assert_eq!(b.check_cast_jump(7, 0x3c, 0.0, 4_000.0, 12.0, 21), JumpCheck::NoPermit);
         assert_eq!(b.check_cast_jump(7, 0x3c, 0.0, 2_000.0, 12.0, 22), JumpCheck::Landed);
         assert_eq!(b.check_cast_jump(7, 0x3c, 0.0, 2_000.0, 12.0, 23), JumpCheck::NoPermit);
@@ -1748,6 +1764,14 @@ mod tests {
         assert!(named.as_ref().is_ok_and(|t| t.teleport_reach(0x12fd0, "Skyrim.esm") < 0.0));
         assert!(new_cast_teleports("[]").is_ok_and(|t| t.teleport_reach(0xa86df, "LostGrimoire.esp") < 0.0));
         assert!(new_cast_teleports(r#"[{"spell": "a86df", "reach": 3000}]"#).is_err());
+        // a teleport waits the default and is not relayed; a return names both
+        assert!(named.as_ref().is_ok_and(|t| t.teleport_wait_ms(0xa86df, "LostGrimoire.esp") == 5_000));
+        assert!(named.as_ref().is_ok_and(|t| !t.teleport_relays(0xa86df, "LostGrimoire.esp")));
+        assert!(named.as_ref().is_ok_and(|t| t.teleport_wait_ms(0x12fd0, "Skyrim.esm") == 0 && !t.teleport_relays(0x12fd0, "Skyrim.esm")));
+        let ghostwalk = new_cast_teleports(r#"[{"spell": "aae8:Apocalypse - Magic of Skyrim.esp", "reach": 0, "waitMs": 15400, "relay": true}]"#);
+        assert!(ghostwalk.as_ref().is_ok_and(|t| t.teleport_reach(0xaae8, "Apocalypse - Magic of Skyrim.esp").abs() < 1e-3));
+        assert!(ghostwalk.as_ref().is_ok_and(|t| t.teleport_wait_ms(0xaae8, "Apocalypse - Magic of Skyrim.esp") == 15_400));
+        assert!(ghostwalk.as_ref().is_ok_and(|t| t.teleport_relays(0xaae8, "Apocalypse - Magic of Skyrim.esp")));
     }
 
     #[test]

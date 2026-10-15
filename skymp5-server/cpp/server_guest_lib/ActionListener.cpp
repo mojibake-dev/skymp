@@ -2895,21 +2895,31 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
   // thuum docs/verbs/cast-teleport.md: a spell the server names as a
   // teleport moves its caster in the caster's own game (the engine places
   // its marker, a mod's script moves the player), and the server takes that
-  // one jump within its reach of where the caster stood. Its cast reaches
-  // no other game: a neighbour's figure would launch it there, and the
-  // marker's script would move that game's own player.
+  // one jump within its reach of where the caster stood, for the entry's
+  // wait. Its cast reaches no other game unless the entry relays it: a
+  // neighbour's figure would launch it there, and the marker's script would
+  // move that game's own player. A return (docs/verbs/ghostwalk.md: reach 0,
+  // back where it cast) is relayed: its Self cast makes the figure
+  // invisible, and the figure's effect script is blanked there.
   const float teleportReach = partOne.TeleportReach(spellCastData.spell);
-  if (teleportReach > 0.f) {
-    if (caster == myActor) {
-      partOne.PermitCastJump(
-        caster->GetFormId(),
-        caster->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles),
-        caster->GetPos(), teleportReach);
-    }
+  const bool teleport = teleportReach >= 0.f;
+  if (teleport && caster == myActor) {
+    partOne.PermitCastJump(
+      caster->GetFormId(),
+      caster->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles),
+      caster->GetPos(), teleportReach,
+      partOne.TeleportWaitMs(spellCastData.spell));
+  }
+  if (teleport && !partOne.TeleportRelays(spellCastData.spell)) {
     spdlog::info("ActionListener::OnSpellCast - {:x} cast teleport {:x}, "
                  "reach {}; not relayed",
                  caster->GetFormId(), spellCastData.spell, teleportReach);
   } else {
+    if (teleport) {
+      spdlog::info("ActionListener::OnSpellCast - {:x} cast teleport {:x}, "
+                   "reach {}; relayed",
+                   caster->GetFormId(), spellCastData.spell, teleportReach);
+    }
     RelayCast(*caster, *myActor, spellCastData);
   }
 

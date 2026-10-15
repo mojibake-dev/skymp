@@ -45,5 +45,6 @@ export enum MsgType {
   ActorValues = 40,
   ConsoleOutput = 41,
   ArrowShot = 42,
-  MagicEffects = 43
+  MagicEffects = 43,
+  PlayerGlobals = 44
 }

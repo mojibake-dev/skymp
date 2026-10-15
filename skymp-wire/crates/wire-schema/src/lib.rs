@@ -32,7 +32,7 @@ use bounded::{String, Vec};
 
 /// Bump when any variant changes shape. It is part of netcode's protocol id,
 /// so peers built against another schema never complete a handshake.
-pub const SCHEMA_VERSION: u16 = 13;
+pub const SCHEMA_VERSION: u16 = 14;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -94,6 +94,9 @@ pub mod cap {
     /// Effects running on one actor (thuum docs/verbs/magic-effects.md:
     /// wire-rules magic::MAX_EFFECTS).
     pub const MAGIC_EFFECTS: usize = 32;
+    /// Globals the server keeps per player (thuum docs/verbs/player-globals.md:
+    /// Apocalypse's 55 with room for more mods).
+    pub const PLAYER_GLOBALS: usize = 256;
     /// Actor values one actor's running buffs touch: two per effect at most
     /// (a dual value modifier's second).
     pub const EFFECT_MODIFIERS: usize = 2 * MAGIC_EFFECTS;
@@ -386,6 +389,8 @@ pub enum Message {
     ArrowShot(skymp::ArrowShot),
     /// 51, MsgType 43 (thuum). See [`skymp::MagicEffects`].
     MagicEffects(skymp::MagicEffects),
+    /// 52, MsgType 44 (thuum). See [`skymp::PlayerGlobals`].
+    PlayerGlobals(skymp::PlayerGlobals),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -414,7 +419,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 52] = [
+const TABLE: [Row; 53] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -467,10 +472,11 @@ const TABLE: [Row; 52] = [
     row("ConsoleOutput", 41, 2 * KIB, S2C),
     row("ArrowShot", 42, 64, S2C),
     row("MagicEffects", 43, KIB, S2C),
+    row("PlayerGlobals", 44, 4 * KIB, Both),
 ];
 
 /// Wire ids in use: one past the last variant.
-pub const WIRE_IDS: u32 = 52;
+pub const WIRE_IDS: u32 = 53;
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -547,6 +553,7 @@ impl Message {
             Message::ConsoleOutput(_) => 49,
             Message::ArrowShot(_) => 50,
             Message::MagicEffects(_) => 51,
+            Message::PlayerGlobals(_) => 52,
         }
     }
 
@@ -619,8 +626,9 @@ mod tests {
         assert_eq!(name_of_msg_type(41), Some("ConsoleOutput"));
         assert_eq!(name_of_msg_type(42), Some("ArrowShot"));
         assert_eq!(name_of_msg_type(43), Some("MagicEffects"));
+        assert_eq!(name_of_msg_type(44), Some("PlayerGlobals"));
         assert_eq!(name_of_msg_type(0), None);
-        assert_eq!(name_of_msg_type(44), None);
+        assert_eq!(name_of_msg_type(45), None);
     }
 
     #[test]

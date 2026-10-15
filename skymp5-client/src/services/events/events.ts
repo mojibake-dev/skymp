@@ -25,6 +25,7 @@ import { ActorValuesMessage } from "../messages/actorValuesMessage";
 import { ConsoleOutputMessage } from "../messages/consoleOutputMessage";
 import { ArrowShotMessage } from "../messages/arrowShotMessage";
 import { MagicEffectsMessage } from "../messages/magicEffectsMessage";
+import { PlayerGlobalsMessage } from "../messages/playerGlobalsMessage";
 import { SpSnippetMessage } from "../messages/spSnippetMessage";
 import { TeleportMessage } from "../messages/teleportMessage";
 import { UpdateAnimationMessage } from "../messages/updateAnimationMessage";
@@ -90,6 +91,7 @@ type EventTypes = {
     'consoleOutputMessage': [ConnectionMessage<ConsoleOutputMessage>],
     'arrowShotMessage': [ConnectionMessage<ArrowShotMessage>],
     'magicEffectsMessage': [ConnectionMessage<MagicEffectsMessage>],
+    'playerGlobalsMessage': [ConnectionMessage<PlayerGlobalsMessage>],
     'customPacketMessage': [ConnectionMessage<CustomPacketMessage>]
 
     'browserWindowLoaded': [BrowserWindowLoadedEvent],

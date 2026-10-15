@@ -287,10 +287,10 @@ struct PerformedAction
 };
 thread_local std::vector<PerformedAction> g_performedActions;
 
-// the hand of the player's last cast action, for the cast event's source
-// (Frida::LastCastHand); written on the game thread, read there too
-std::atomic<int32_t> g_lastCastHand{ -1 };
-std::atomic<uint64_t> g_lastCastHandAtMs{ 0 };
+// the player's pending cast starts, one per hand (0 left, 1 right): the
+// time its start action was performed and no cast event has claimed
+// (Frida::TakeCastStart); written on the game thread, read there too
+std::atomic<uint64_t> g_pendingCastStartMs[2]{ 0, 0 };
 
 uint64_t NowMs()
 {
@@ -305,19 +305,30 @@ void NoteCastHand(const std::string& eventName)
   if (eventName.size() < 4) {
     return;
   }
-  std::string head = eventName.substr(0, 10);
-  for (auto& c : head) {
+  std::string lower = eventName;
+  for (auto& c : lower) {
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   }
   int32_t hand = -1;
-  if (head.rfind("mrh_", 0) == 0) {
+  if (lower.rfind("mrh_", 0) == 0) {
     hand = 1;
-  } else if (head.rfind("mlh_", 0) == 0 || head.rfind("dualmagic_", 0) == 0) {
+  } else if (lower.rfind("mlh_", 0) == 0 ||
+             lower.rfind("dualmagic_", 0) == 0) {
     hand = 0;
   }
-  if (hand >= 0) {
-    g_lastCastHand = hand;
-    g_lastCastHandAtMs = NowMs();
+  if (hand < 0) {
+    return;
+  }
+  // a start opens the hand's pending cast; its Equipped exit (the Interrupt
+  // action, a cancelled charge too) closes it; ready and release change
+  // nothing (a fire-and-forget spell's cast event comes at its release)
+  const bool isStart =
+    lower.size() >= 5 && lower.compare(lower.size() - 5, 5, "start") == 0;
+  const bool isExit = lower.find("equipped") != std::string::npos;
+  if (isStart) {
+    g_pendingCastStartMs[hand] = NowMs();
+  } else if (isExit) {
+    g_pendingCastStartMs[hand] = 0;
   }
 }
 
@@ -379,15 +390,25 @@ void OnPerformActionLeave(GumInvocationContext* ic)
     });
 }
 
-int32_t Frida::LastCastHand(uint64_t withinMs)
+int32_t Frida::TakeCastStart(uint64_t withinMs)
 {
-  const int32_t hand = g_lastCastHand.load();
-  if (hand < 0) {
-    return -1;
-  }
-  const uint64_t at = g_lastCastHandAtMs.load();
   const uint64_t now = NowMs();
-  return now >= at && now - at <= withinMs ? hand : -1;
+  int32_t oldest = -1;
+  uint64_t oldestAt = 0;
+  for (int32_t hand = 0; hand < 2; ++hand) {
+    const uint64_t at = g_pendingCastStartMs[hand].load();
+    if (at == 0 || now < at || now - at > withinMs) {
+      continue;
+    }
+    if (oldest < 0 || at < oldestAt) {
+      oldest = hand;
+      oldestAt = at;
+    }
+  }
+  if (oldest >= 0) {
+    g_pendingCastStartMs[oldest] = 0;
+  }
+  return oldest;
 }
 
 void InstallPerformActionHook()

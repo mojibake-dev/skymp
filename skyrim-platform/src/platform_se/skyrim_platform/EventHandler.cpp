@@ -1403,13 +1403,16 @@ EventResult EventHandler::ProcessEvent(
     s.right = rightCasting;
     s.lastLeft = preferLeft;
   }
-  // the hand whose action performed the cast, as the engine's action entry
-  // saw it (thuum docs/verbs/cast-action.md), over the readings above: with
-  // the spell in both hands the casters' states still named the right hand
-  // for a left-hand Firebolt (x-left-firebolt2 20261015-070447, the state
-  // read widened), where the action's own event name (MLh_, MRh_,
-  // DualMagic_) cannot be wrong
-  const auto actionHand = Frida::LastCastHand(5000);
+  // the hand whose start action the engine's action entry performed and no
+  // cast event has claimed yet, the oldest first (thuum
+  // docs/verbs/cast-action.md), over the readings above: with the spell in
+  // both hands the casters' states still named the right hand for a
+  // left-hand Firebolt (x-left-firebolt2 20261015-070447, the state read
+  // widened), where the action's own event name (MLh_, MRh_, DualMagic_)
+  // cannot be wrong; one pending start per hand, so two hands casting the
+  // same spell each get their own (playtest nineteen's one stream from the
+  // left hand)
+  const auto actionHand = Frida::TakeCastStart(3000);
   if (actionHand >= 0) {
     preferLeft = actionHand == 0;
   }

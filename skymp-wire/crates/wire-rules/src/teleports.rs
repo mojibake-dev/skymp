@@ -9,6 +9,15 @@
 //! of `{"spell": "<hex form id>:<plugin>", "reach": <units>}`, the spell as the
 //! server's change forms write a FormDesc, so a change of load order keeps it.
 //!
+//! A spell that returns its caster to where it cast is the same jump with a
+//! reach of 0 (Apocalypse's Ghostwalk, thuum docs/verbs/ghostwalk.md: 10 s
+//! invisible, then the mod's script moves the caster back), so it takes the
+//! two optional fields: `waitMs`, how long after the cast the jump is
+//! permitted (movement::CAST_JUMP_WAIT_MS when absent), and `relay`, whether
+//! the cast is still relayed to the neighbours (false when absent: a relayed
+//! teleport would place its marker in an observer's game and move the
+//! observer; Ghostwalk's relayed Self cast only makes the figure invisible).
+//!
 //! The mod's script plays the teleport's effects in the caster's game alone,
 //! so an entry may name its `look` in the other players' games (thuum
 //! docs/verbs/cast-teleport.md, the look on other screens): `vanish`, a
@@ -19,6 +28,7 @@
 //! one of the three.
 
 use crate::clock::SettingsError;
+use crate::movement::CAST_JUMP_WAIT_MS;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -26,6 +36,8 @@ use serde::Deserialize;
 struct Entry {
     spell: String,
     reach: f32,
+    wait_ms: Option<u64>,
+    relay: Option<bool>,
     look: Option<LookEntry>,
 }
 
@@ -76,6 +88,21 @@ pub struct TeleportLook {
     pub sound: Option<FormSpec>,
 }
 
+/// What the server does with a named spell's cast.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CastTeleport {
+    /// How far from the caster its cast may land, units (0: back where it
+    /// cast, within movement::CAST_JUMP_SLACK).
+    pub reach: f32,
+    /// How long after the cast the jump is permitted, ms.
+    pub wait_ms: u64,
+    /// Whether the cast is relayed to the neighbours.
+    pub relay: bool,
+    /// What the other players' games play on the caster's figure, when the
+    /// entry names it.
+    pub look: Option<TeleportLook>,
+}
+
 /// One spell the server names as a teleport.
 #[derive(Debug, Clone, PartialEq)]
 struct Named {
@@ -83,14 +110,10 @@ struct Named {
     short_id: u32,
     /// The plugin, as the load order names it, compared without case.
     file: String,
-    /// How far from the caster its cast may land, units.
-    reach: f32,
-    /// What the other players' games play on the caster's figure, when the
-    /// entry names it.
-    look: Option<TeleportLook>,
+    teleport: CastTeleport,
 }
 
-/// The spells the server names as teleports, each with its reach and look.
+/// The spells the server names as teleports, each with its reach.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CastTeleports {
     spells: Vec<Named>,
@@ -133,41 +156,43 @@ fn parse_look(spell: &str, entry: LookEntry) -> Result<TeleportLook, SettingsErr
 impl CastTeleports {
     /// The list from the `castTeleports` block's JSON text (`[]` for none).
     /// The error names a bad entry: a spell, or a look's form, that is not
-    /// "<hex id>:<plugin>", a reach that is not a finite positive number, a
-    /// look that names nothing or whose appearSeconds is not from 0 to 10, an
-    /// unknown key.
+    /// "<hex id>:<plugin>", a reach that is not a finite number of 0 or
+    /// more, a wait of 0, a look that names nothing or whose appearSeconds
+    /// is not from 0 to 10, an unknown key.
     pub fn from_json(text: &str) -> Result<Self, SettingsError> {
         let entries: Vec<Entry> = serde_json::from_str(text).map_err(|e| SettingsError(format!("castTeleports: {e}")))?;
         let mut spells = Vec::with_capacity(entries.len());
         for e in entries {
             let FormSpec { short_id, file } = form_spec(&e.spell)?;
-            if !(e.reach.is_finite() && e.reach > 0.0) {
-                return Err(SettingsError(format!("castTeleports: {:?} has a reach that is not a positive number", e.spell)));
+            if !(e.reach.is_finite() && e.reach >= 0.0) {
+                return Err(SettingsError(format!("castTeleports: {:?} has a reach that is not a number of 0 or more", e.spell)));
+            }
+            let wait_ms = e.wait_ms.unwrap_or(CAST_JUMP_WAIT_MS);
+            if wait_ms == 0 {
+                return Err(SettingsError(format!("castTeleports: {:?} has a wait of 0", e.spell)));
             }
             let look = e.look.map(|l| parse_look(&e.spell, l)).transpose()?;
-            spells.push(Named { short_id, file, reach: e.reach, look });
+            let teleport = CastTeleport { reach: e.reach, wait_ms, relay: e.relay.unwrap_or(false), look };
+            spells.push(Named { short_id, file, teleport });
         }
         Ok(Self { spells })
     }
 
-    /// The reach of the spell `short_id` in `file` (a FormDesc's parts), if
-    /// the server names it as a teleport.
+    /// The spell `short_id` in `file` (a FormDesc's parts), if the server
+    /// names it as a teleport.
+    #[must_use]
+    pub fn named(&self, short_id: u32, file: &str) -> Option<&CastTeleport> {
+        self.spells
+            .iter()
+            .find(|s| s.short_id == short_id && s.file.eq_ignore_ascii_case(file))
+            .map(|s| &s.teleport)
+    }
+
+    /// The reach of the spell `short_id` in `file`, if the server names it
+    /// as a teleport.
     #[must_use]
     pub fn reach_of(&self, short_id: u32, file: &str) -> Option<f32> {
-        self.find(short_id, file).map(|s| s.reach)
-    }
-
-    /// The look of the spell `short_id` in `file`, if the server names it as
-    /// a teleport and its entry names one.
-    #[must_use]
-    pub fn look_of(&self, short_id: u32, file: &str) -> Option<&TeleportLook> {
-        self.find(short_id, file).and_then(|s| s.look.as_ref())
-    }
-
-    /// The entry for the spell `short_id` in `file`, the plugin compared
-    /// without case.
-    fn find(&self, short_id: u32, file: &str) -> Option<&Named> {
-        self.spells.iter().find(|s| s.short_id == short_id && s.file.eq_ignore_ascii_case(file))
+        self.named(short_id, file).map(|t| t.reach)
     }
 }
 
@@ -196,14 +221,34 @@ mod tests {
     }
 
     #[test]
+    fn a_teleport_waits_the_default_and_is_not_relayed_unless_named() {
+        let t = CastTeleports::from_json(
+            r#"[{"spell": "a86df:LostGrimoire.esp", "reach": 8000},
+                {"spell": "aae8:Apocalypse - Magic of Skyrim.esp", "reach": 0, "waitMs": 15400, "relay": true}]"#,
+        )
+        .unwrap_or_default();
+        assert_eq!(
+            t.named(0xa86df, "LostGrimoire.esp"),
+            Some(&CastTeleport { reach: 8000.0, wait_ms: CAST_JUMP_WAIT_MS, relay: false, look: None })
+        );
+        assert_eq!(
+            t.named(0xaae8, "apocalypse - magic of skyrim.esp"),
+            Some(&CastTeleport { reach: 0.0, wait_ms: 15_400, relay: true, look: None })
+        );
+        assert_eq!(t.named(0xaae8, "LostGrimoire.esp"), None);
+    }
+
+    #[test]
     fn none_named_by_default_and_bad_entries_refused() {
         assert_eq!(CastTeleports::from_json("[]").unwrap_or_default().reach_of(0xa86df, "LostGrimoire.esp"), None);
         for bad in [
             r#"[{"spell": "a86df", "reach": 3000}]"#,
             r#"[{"spell": "zz:LostGrimoire.esp", "reach": 3000}]"#,
             r#"[{"spell": "a86df:", "reach": 3000}]"#,
-            r#"[{"spell": "a86df:LostGrimoire.esp", "reach": 0}]"#,
             r#"[{"spell": "a86df:LostGrimoire.esp", "reach": -5}]"#,
+            r#"[{"spell": "a86df:LostGrimoire.esp", "reach": 3000, "waitMs": 0}]"#,
+            r#"[{"spell": "a86df:LostGrimoire.esp", "reach": 3000, "waitMs": -1}]"#,
+            r#"[{"spell": "a86df:LostGrimoire.esp", "reach": 3000, "relay": 1}]"#,
             r#"[{"spell": "a86df:LostGrimoire.esp", "reach": 3000, "speed": 1}]"#,
             r#"[{"spell": "a86df:LostGrimoire.esp"}]"#,
             r#"{"spell": "a86df:LostGrimoire.esp", "reach": 3000}"#,
@@ -230,7 +275,7 @@ mod tests {
     fn a_look_names_its_forms_and_its_appear_time() {
         let t = with_look(LOOK).unwrap_or_default();
         assert_eq!(
-            t.look_of(0xa86df, "LostGrimoire.esp").cloned(),
+            t.named(0xa86df, "LostGrimoire.esp").and_then(|c| c.look.clone()),
             Some(TeleportLook {
                 vanish: spec(0x102731, "Skyrim.esm"),
                 appear: spec(0x102730, "Skyrim.esm"),
@@ -240,15 +285,16 @@ mod tests {
         );
         // the rest of the entry as without one
         assert_eq!(t.reach_of(0xa86df, "LostGrimoire.esp"), Some(8000.0));
+        assert_eq!(t.named(0xa86df, "LostGrimoire.esp").map(|c| (c.wait_ms, c.relay)), Some((CAST_JUMP_WAIT_MS, false)));
         // a part alone, its form written as a spell may be; the appear's
         // time defaults to the mod's
         let appear = with_look(r#"{"appear": "0x102730:Skyrim.esm"}"#).unwrap_or_default();
         assert_eq!(
-            appear.look_of(0xa86df, "LostGrimoire.esp").cloned(),
+            appear.named(0xa86df, "LostGrimoire.esp").and_then(|c| c.look.clone()),
             Some(TeleportLook { vanish: None, appear: spec(0x102730, "Skyrim.esm"), appear_seconds: APPEAR_SECONDS, sound: None })
         );
         let bounds = with_look(r#"{"sound": "010ec4:Dawnguard.esm", "appearSeconds": 0}"#).unwrap_or_default();
-        assert_eq!(bounds.look_of(0xa86df, "LostGrimoire.esp").map(|l| l.appear_seconds), Some(0.0));
+        assert_eq!(bounds.named(0xa86df, "LostGrimoire.esp").and_then(|c| c.look.as_ref()).map(|l| l.appear_seconds), Some(0.0));
         assert!(with_look(r#"{"appear": "102730:Skyrim.esm", "appearSeconds": 10}"#).is_ok());
     }
 
@@ -278,8 +324,7 @@ mod tests {
     #[test]
     fn an_entry_without_a_look_has_none() {
         let t = CastTeleports::from_json(r#"[{"spell": "a86df:LostGrimoire.esp", "reach": 8000}]"#).unwrap_or_default();
-        assert_eq!(t.reach_of(0xa86df, "LostGrimoire.esp"), Some(8000.0));
-        assert_eq!(t.look_of(0xa86df, "LostGrimoire.esp"), None);
+        assert_eq!(t.named(0xa86df, "LostGrimoire.esp").map(|c| c.look.is_none()), Some(true));
     }
 
     #[test]

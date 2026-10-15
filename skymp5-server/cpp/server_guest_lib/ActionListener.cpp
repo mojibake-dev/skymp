@@ -3007,28 +3007,36 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
   // thuum docs/verbs/cast-teleport.md: a spell the server names as a
   // teleport moves its caster in the caster's own game (the engine places
   // its marker, a mod's script moves the player), and the server takes that
-  // one jump within its reach of where the caster stood. Its cast reaches
-  // no other game: a neighbour's figure would launch it there, and the
-  // marker's script would move that game's own player.
+  // one jump within its reach of where the caster stood, for the entry's
+  // wait. Its cast reaches no other game unless the entry relays it: a
+  // neighbour's figure would launch it there, and the marker's script would
+  // move that game's own player. A return (docs/verbs/ghostwalk.md: reach 0,
+  // back where it cast) is relayed: its Self cast makes the figure
+  // invisible, and the figure's effect script is blanked there.
   const float teleportReach = partOne.TeleportReach(spellCastData.spell);
-  if (teleportReach > 0.f) {
-    if (caster == myActor) {
-      partOne.PermitCastJump(
-        caster->GetFormId(),
-        caster->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles),
-        caster->GetPos(), teleportReach);
-      // the look on other screens: the mod's script plays the teleport's
-      // effects in the caster's game alone, so the entry's look plays its
-      // vanish on the caster's figure in every other game until the landing
-      // (MovementValidation, PartOne::PlayTeleportLanding), as long as the
-      // jump is permitted (wire-rules movement::CAST_JUMP_WAIT_MS)
-      partOne.PlayTeleportVanish(*caster, spellCastData.spell,
-                                 skymp::rules::cast_jump_wait_ms());
-    }
+  const bool teleport = teleportReach >= 0.f;
+  if (teleport && caster == myActor) {
+    const uint64_t waitMs = partOne.TeleportWaitMs(spellCastData.spell);
+    partOne.PermitCastJump(
+      caster->GetFormId(),
+      caster->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles),
+      caster->GetPos(), teleportReach, waitMs);
+    // the look on other screens: the mod's script plays the teleport's
+    // effects in the caster's game alone, so the entry's look plays its
+    // vanish on the caster's figure in every other game until the landing
+    // (MovementValidation, PartOne::PlayTeleportLanding)
+    partOne.PlayTeleportVanish(*caster, spellCastData.spell, waitMs);
+  }
+  if (teleport && !partOne.TeleportRelays(spellCastData.spell)) {
     spdlog::info("ActionListener::OnSpellCast - {:x} cast teleport {:x}, "
                  "reach {}; not relayed",
                  caster->GetFormId(), spellCastData.spell, teleportReach);
   } else {
+    if (teleport) {
+      spdlog::info("ActionListener::OnSpellCast - {:x} cast teleport {:x}, "
+                   "reach {}; relayed",
+                   caster->GetFormId(), spellCastData.spell, teleportReach);
+    }
     RelayCast(*caster, *myActor, spellCastData);
   }
 

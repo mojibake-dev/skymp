@@ -1166,6 +1166,23 @@ bool MpActor::SetFavorites(std::vector<Favorite> favorites)
   return true;
 }
 
+std::vector<PlayerGlobal> MpActor::GetPlayerGlobals() const
+{
+  const auto& globals = ChangeForm().playerGlobals;
+  return globals ? *globals : std::vector<PlayerGlobal>();
+}
+
+bool MpActor::SetPlayerGlobals(std::vector<PlayerGlobal> globals)
+{
+  if (globals == GetPlayerGlobals()) {
+    return false;
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    changeForm.playerGlobals = std::move(globals);
+  });
+  return true;
+}
+
 std::optional<ActorValueRecord> MpActor::GetActorValueRecord() const
 {
   return ChangeForm().actorValueRecord;

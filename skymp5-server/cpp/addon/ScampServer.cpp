@@ -324,6 +324,12 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
       serverSettings.contains("castTeleports")
         ? serverSettings.at("castTeleports").dump()
         : std::string("[]"));
+    // the globals kept per player (thuum docs/verbs/player-globals.md):
+    // `playerGlobals`, the same way
+    partOne->SetPlayerGlobalsSettings(
+      serverSettings.contains("playerGlobals")
+        ? serverSettings.at("playerGlobals").dump()
+        : std::string("[]"));
 
     if (serverSettings["dataDir"] != nullptr) {
       dataDir = serverSettings["dataDir"];

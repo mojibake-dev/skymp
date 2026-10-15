@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, block, casts, clock, console, damage, effects, favorites, hostility, magic, markers, melee, movement, racemenu, ranged, rest, shouts, stagger, teleports};
+use wire_rules::{activation, actor_values, appearance, block, casts, clock, console, damage, effects, favorites, forms, hostility, magic, markers, melee, movement, player_globals, racemenu, ranged, rest, shouts, stagger, teleports};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -325,6 +325,18 @@ mod ffi {
         form: u32,
         /// -1 for none, 0 to 7.
         hotkey: i8,
+    }
+
+    /// One global a player's game wrote for its player, by its FormDesc's
+    /// parts (thuum docs/verbs/player-globals.md).
+    #[derive(Debug, Clone, PartialEq)]
+    struct PlayerGlobalEntry {
+        /// The form id within its plugin.
+        short_id: u32,
+        /// The plugin, as the load order names it.
+        file: String,
+        /// Its value.
+        value: f32,
     }
 
     /// One actor value's base (thuum docs/verbs/actor-values.md).
@@ -929,6 +941,23 @@ mod ffi {
         /// any spell's, relayed as ever).
         fn teleport_relays(self: &CastTeleports, short_id: u32, file: &str) -> bool;
 
+        /// thuum docs/verbs/player-globals.md: the globals server-settings.json's
+        /// `playerGlobals` names, kept per player.
+        type PlayerGlobalsList;
+        /// The list from the block as JSON text (`[]` for none); the error
+        /// names the bad entry.
+        fn new_player_globals(settings_json: &str) -> Result<Box<PlayerGlobalsList>>;
+        /// The listed globals, in the settings' order (values 0): what a
+        /// client watches.
+        fn player_globals_listed(self: &PlayerGlobalsList) -> Vec<PlayerGlobalEntry>;
+        /// Judge a player's report: 0 taken, 1 a global not listed, 2 a value
+        /// that is not finite, 3 a global twice, 4 more entries than listed.
+        fn player_globals_check(self: &PlayerGlobalsList, report: &[PlayerGlobalEntry]) -> u8;
+        /// What the login sends: the recorded values still listed.
+        fn player_globals_at_login(self: &PlayerGlobalsList, record: &[PlayerGlobalEntry]) -> Vec<PlayerGlobalEntry>;
+        /// The record after a checked report: the latest value wins.
+        fn player_globals_merge(record: &[PlayerGlobalEntry], report: &[PlayerGlobalEntry]) -> Vec<PlayerGlobalEntry>;
+
         /// Every player actor's recent bow and crossbow shots.
         type RangedShots;
         /// No shots yet.
@@ -998,7 +1027,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, AvChange, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, Verdict, VoiceFacts, VoiceRefusal};
+pub use ffi::{AvBase, AvChange, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlayerGlobalEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, Verdict, VoiceFacts, VoiceRefusal};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -1443,6 +1472,48 @@ impl MovementBudgets {
     }
 }
 
+/// The globals the server keeps per player (wire-rules player_globals).
+pub struct PlayerGlobalsList(player_globals::PlayerGlobals);
+
+fn new_player_globals(settings_json: &str) -> Result<Box<PlayerGlobalsList>, clock::SettingsError> {
+    player_globals::PlayerGlobals::from_json(settings_json).map(|l| Box::new(PlayerGlobalsList(l)))
+}
+
+fn to_values(entries: &[PlayerGlobalEntry]) -> Vec<player_globals::GlobalValue> {
+    entries
+        .iter()
+        .map(|e| player_globals::GlobalValue { global: forms::FormDesc { short_id: e.short_id, file: e.file.clone() }, value: e.value })
+        .collect()
+}
+
+fn to_entries(values: &[player_globals::GlobalValue]) -> Vec<PlayerGlobalEntry> {
+    values.iter().map(|v| PlayerGlobalEntry { short_id: v.global.short_id, file: v.global.file.clone(), value: v.value }).collect()
+}
+
+impl PlayerGlobalsList {
+    fn player_globals_listed(&self) -> Vec<PlayerGlobalEntry> {
+        self.0.listed().iter().map(|d| PlayerGlobalEntry { short_id: d.short_id, file: d.file.clone(), value: 0.0 }).collect()
+    }
+
+    fn player_globals_check(&self, report: &[PlayerGlobalEntry]) -> u8 {
+        match self.0.check(&to_values(report)) {
+            Ok(()) => 0,
+            Err(player_globals::Refusal::Unlisted) => 1,
+            Err(player_globals::Refusal::NotFinite) => 2,
+            Err(player_globals::Refusal::Duplicate) => 3,
+            Err(player_globals::Refusal::TooMany) => 4,
+        }
+    }
+
+    fn player_globals_at_login(&self, record: &[PlayerGlobalEntry]) -> Vec<PlayerGlobalEntry> {
+        to_entries(&self.0.at_login(&to_values(record)))
+    }
+}
+
+fn player_globals_merge(record: &[PlayerGlobalEntry], report: &[PlayerGlobalEntry]) -> Vec<PlayerGlobalEntry> {
+    to_entries(&player_globals::merge(&to_values(record), &to_values(report)))
+}
+
 /// The spells the server names as teleports (wire-rules teleports).
 pub struct CastTeleports(teleports::CastTeleports);
 
@@ -1755,6 +1826,22 @@ mod tests {
         assert_eq!(b.check_cast_jump(7, 0x3c, 0.0, 4_000.0, 12.0, 21), JumpCheck::NoPermit);
         assert_eq!(b.check_cast_jump(7, 0x3c, 0.0, 2_000.0, 12.0, 22), JumpCheck::Landed);
         assert_eq!(b.check_cast_jump(7, 0x3c, 0.0, 2_000.0, 12.0, 23), JumpCheck::NoPermit);
+    }
+
+    #[test]
+    fn the_bridge_keeps_player_globals() {
+        let apoc = "Apocalypse - Magic of Skyrim.esp";
+        let e = |short_id: u32, value: f32| PlayerGlobalEntry { short_id, file: apoc.to_owned(), value };
+        let list = new_player_globals(r#"["0b1c19:Apocalypse - Magic of Skyrim.esp", "043cef:Apocalypse - Magic of Skyrim.esp"]"#);
+        assert!(list.as_ref().is_ok_and(|l| l.player_globals_listed() == vec![e(0xb1c19, 0.0), e(0x43cef, 0.0)]));
+        assert!(list.as_ref().is_ok_and(|l| l.player_globals_check(&[e(0xb1c19, 3.0)]) == 0));
+        assert!(list.as_ref().is_ok_and(|l| l.player_globals_check(&[e(0xb1c1a, 3.0)]) == 1));
+        assert!(list.as_ref().is_ok_and(|l| l.player_globals_check(&[e(0xb1c19, f32::NAN)]) == 2));
+        assert!(list.as_ref().is_ok_and(|l| l.player_globals_check(&[e(0xb1c19, 1.0), e(0xb1c19, 2.0)]) == 3));
+        let record = player_globals_merge(&[e(0xb1c19, 3.0)], &[e(0xb1c19, 1.0), e(0x43cef, 2.0)]);
+        assert_eq!(record, vec![e(0xb1c19, 1.0), e(0x43cef, 2.0)]);
+        assert!(list.as_ref().is_ok_and(|l| l.player_globals_at_login(&[e(0x99999, 7.0), e(0x43cef, 2.0)]) == vec![e(0x43cef, 2.0)]));
+        assert!(new_player_globals(r#"["0b1c19"]"#).is_err());
     }
 
     #[test]

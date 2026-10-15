@@ -159,6 +159,22 @@ public:
   // cellOrWorld, for `waitMs`; CheckCastJump judges a move the bounds refuse
   // against it (Landed or NoPermit; the rule is Rust's)
   void SetCastTeleportSettings(const std::string& castTeleportsJson);
+
+  // thuum docs/verbs/player-globals.md: the globals server-settings.json's
+  // `playerGlobals` names (a JSON list of FormDescs, "[]" for none; a bad
+  // entry stops the server here, named), kept per player. Watch: their form
+  // ids in this load order (one whose plugin is not loaded left out).
+  // CheckPlayerGlobals: 0 taken, else the rule's refusal (wire-rules
+  // player_globals). AtLogin: the record's values still listed. Merge: the
+  // latest value wins.
+  void SetPlayerGlobalsSettings(const std::string& playerGlobalsJson);
+  std::vector<uint32_t> PlayerGlobalsWatch() const;
+  uint8_t CheckPlayerGlobals(const std::vector<PlayerGlobal>& report) const;
+  std::vector<PlayerGlobal> PlayerGlobalsAtLogin(
+    const std::vector<PlayerGlobal>& record) const;
+  static std::vector<PlayerGlobal> MergePlayerGlobals(
+    const std::vector<PlayerGlobal>& record,
+    const std::vector<PlayerGlobal>& report);
   float TeleportReach(uint32_t spellFormId) const;
   uint64_t TeleportWaitMs(uint32_t spellFormId) const;
   bool TeleportRelays(uint32_t spellFormId) const;

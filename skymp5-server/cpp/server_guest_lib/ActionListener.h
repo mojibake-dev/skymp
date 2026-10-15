@@ -76,6 +76,10 @@ public:
   virtual void OnActorValues(const RawMessageData& rawMsgData,
                              const ActorValuesMessage& msg);
 
+  // thuum docs/verbs/player-globals.md
+  virtual void OnPlayerGlobals(const RawMessageData& rawMsgData,
+                               const PlayerGlobalsMessage& msg);
+
   virtual void OnFinishSpSnippet(const RawMessageData& rawMsgData,
                                  const FinishSpSnippetMessage& msg);
 
@@ -141,6 +145,10 @@ private:
   // progress, for its client's engine to apply after a login; the record is
   // held until a report shows it applied
   void SendActorValues(MpActor& actor);
+  // thuum docs/verbs/player-globals.md: the globals the server keeps per
+  // player, for its client to watch, and their recorded values, for its
+  // game to set after a login
+  void SendPlayerGlobals(MpActor& actor);
 
   void NotifyHostility(MpActor& aggressor, MpActor& target,
                        std::chrono::steady_clock::time_point now);

@@ -215,8 +215,9 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     // (docs/verbs/learned-effects.md), its favorites marked again
     // (docs/verbs/favorites.md), its RaceMenu look applied again
     // (docs/verbs/racemenu-sync.md), its actor values and progress
-    // (docs/verbs/actor-values.md), and its shouts and words of power
-    // (docs/verbs/shouts.md)
+    // (docs/verbs/actor-values.md), its shouts and words of power
+    // (docs/verbs/shouts.md), and its own globals
+    // (docs/verbs/player-globals.md)
     if (actor == partOne.serverState.ActorByUser(rawMsgData.userId) &&
         actor->TakeMapMarkersPending()) {
       SendMapMarkers(*actor);
@@ -225,6 +226,7 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       SendRaceMenuPreset(*actor);
       SendActorValues(*actor);
       SendShoutRecord(*actor);
+      SendPlayerGlobals(*actor);
     }
 
     if (!msg.data.isBlocking) {
@@ -1659,6 +1661,65 @@ void ActionListener::OnActorValues(const RawMessageData& rawMsgData,
     // goes back so the player's game applies them
     actor->SendActorValueRecord();
   }
+}
+
+// thuum docs/verbs/player-globals.md (ADR-029's A2): a player's game reports
+// the watched globals whose values changed; the server keeps them per player
+// (R2, recorded unvalidated) and sets them in its game after a login. A
+// global named by a form id no loaded plugin holds reads as unlisted.
+void ActionListener::OnPlayerGlobals(const RawMessageData& rawMsgData,
+                                     const PlayerGlobalsMessage& msg)
+{
+  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!actor) {
+    return spdlog::warn("OnPlayerGlobals - no actor for user {}",
+                        rawMsgData.userId);
+  }
+  std::vector<PlayerGlobal> report;
+  report.reserve(msg.values.size());
+  for (const auto& entry : msg.values) {
+    try {
+      report.push_back(
+        { FormDesc::FromFormId(entry.global, partOne.worldState.espmFiles),
+          entry.value });
+    } catch (const std::exception&) {
+      return spdlog::info("PlayerGlobals: user {} actor {:x} report refused "
+                          "(global {:x} is in no loaded plugin)",
+                          rawMsgData.userId, actor->GetFormId(), entry.global);
+    }
+  }
+  if (const uint8_t refusal = partOne.CheckPlayerGlobals(report)) {
+    return spdlog::info("PlayerGlobals: user {} actor {:x} report refused "
+                        "({})",
+                        rawMsgData.userId, actor->GetFormId(), refusal);
+  }
+  const bool changed = actor->SetPlayerGlobals(
+    PartOne::MergePlayerGlobals(actor->GetPlayerGlobals(), report));
+  spdlog::info("PlayerGlobals: user {} actor {:x} recorded {} values{}",
+               rawMsgData.userId, actor->GetFormId(), report.size(),
+               changed ? "" : ", unchanged");
+}
+
+void ActionListener::SendPlayerGlobals(MpActor& actor)
+{
+  PlayerGlobalsMessage message;
+  message.watch = partOne.PlayerGlobalsWatch();
+  if (message.watch.empty()) {
+    return;
+  }
+  for (const auto& entry :
+       partOne.PlayerGlobalsAtLogin(actor.GetPlayerGlobals())) {
+    try {
+      message.values.push_back(
+        { entry.global.ToFormId(partOne.worldState.espmFiles), entry.value });
+    } catch (const std::exception&) {
+      // a recorded global whose plugin this load order lacks
+    }
+  }
+  actor.SendToUser(message, true);
+  spdlog::info("PlayerGlobals: actor {:x} sent {} to watch, {} values after "
+               "a login",
+               actor.GetFormId(), message.watch.size(), message.values.size());
 }
 
 void ActionListener::SendActorValues(MpActor& actor)

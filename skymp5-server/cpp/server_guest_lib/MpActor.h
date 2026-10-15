@@ -8,6 +8,7 @@
 #include "IngredientEffects.h"
 #include "MapMarker.h"
 #include "MpObjectReference.h"
+#include "PlayerGlobal.h"
 #include "ShoutRecord.h"
 #include "libespm/espm.h"
 #include <array>
@@ -200,6 +201,11 @@ public:
   // form; a kept report replaces them (returns whether anything changed)
   std::vector<Favorite> GetFavorites() const;
   bool SetFavorites(std::vector<Favorite> favorites);
+
+  // thuum docs/verbs/player-globals.md: the globals the player's game wrote
+  // for its player, as its change form keeps them; false when unchanged
+  std::vector<PlayerGlobal> GetPlayerGlobals() const;
+  bool SetPlayerGlobals(std::vector<PlayerGlobal> globals);
   // thuum docs/verbs/racemenu-sync.md: the player's RaceMenu look, its preset
   // JSON, kept in its change form; empty when none (returns whether anything
   // changed)

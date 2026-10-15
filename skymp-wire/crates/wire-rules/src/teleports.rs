@@ -28,6 +28,7 @@
 //! one of the three.
 
 use crate::clock::SettingsError;
+use crate::forms::FormDesc;
 use crate::movement::CAST_JUMP_WAIT_MS;
 use serde::Deserialize;
 
@@ -120,19 +121,10 @@ pub struct CastTeleports {
 }
 
 /// A form as an entry writes it, "<hex form id>:<plugin>" (the id may carry
-/// "0x"); the error names the text.
+/// "0x"), parsed as forms::FormDesc parses one; the error names the text.
 fn form_spec(text: &str) -> Result<FormSpec, SettingsError> {
-    let Some((id, file)) = text.split_once(':') else {
-        return Err(SettingsError(format!("castTeleports: {text:?} is not <hex form id>:<plugin>")));
-    };
-    let digits = id.strip_prefix("0x").unwrap_or(id);
-    let Ok(short_id) = u32::from_str_radix(digits, 16) else {
-        return Err(SettingsError(format!("castTeleports: {text:?} has no hex form id")));
-    };
-    if file.is_empty() {
-        return Err(SettingsError(format!("castTeleports: {text:?} names no plugin")));
-    }
-    Ok(FormSpec { short_id, file: file.to_owned() })
+    let FormDesc { short_id, file } = FormDesc::parse(text).map_err(|why| SettingsError(format!("castTeleports: {why}")))?;
+    Ok(FormSpec { short_id, file })
 }
 
 /// The look of the entry for `spell`, its forms written as the spell is.

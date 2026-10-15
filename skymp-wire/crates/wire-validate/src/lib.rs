@@ -123,6 +123,11 @@ pub struct ClientGuard {
     /// at once and six a second after that only ever stops a flood; the
     /// figures that replay them play what arrives.
     pub action_budget: TokenBucket,
+    /// Budget for player globals reports (thuum docs/verbs/player-globals.md):
+    /// the client reports the watched globals that changed once a second at
+    /// most, so two at once and one a second after that only ever stops a
+    /// flood.
+    pub player_globals_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -143,6 +148,7 @@ impl Default for ClientGuard {
             shot_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 2, last_refill_ms: 0 },
             on_hit_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 16, last_refill_ms: 0 },
             cast_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 4, last_refill_ms: 0 },
+            player_globals_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
             equip_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 8, last_refill_ms: 0 },
             action_budget: TokenBucket { tokens: 12, capacity: 12, refill_per_s: 6, last_refill_ms: 0 },
         }
@@ -414,6 +420,27 @@ fn check_actor_values(m: &skymp::ActorValues) -> Result<(), Reject> {
     Ok(())
 }
 
+/// Player globals, either way (docs/verbs/player-globals.md): every value
+/// finite and each global given once among the values and once among the
+/// globals to watch. Whether a global is one the server keeps per player is
+/// the server's rule (wire-rules `player_globals`), which holds the list.
+fn check_player_globals(m: &skymp::PlayerGlobals) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    for (i, v) in m.values.iter().enumerate() {
+        if m.values.iter().take(i).any(|p| p.global == v.global) {
+            return Err(Reject::Range);
+        }
+    }
+    for (i, w) in m.watch.iter().enumerate() {
+        if m.watch.iter().take(i).any(|p| p == w) {
+            return Err(Reject::Range);
+        }
+    }
+    Ok(())
+}
+
 /// A RaceMenu preset, either way: not empty (docs/verbs/racemenu-sync.md).
 /// From a client it is also its own ([`validate`]); the JSON's shape is the
 /// server's rule (wire-rules `racemenu`), past the capacity the type holds.
@@ -485,6 +512,13 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
             take(&mut guard.preset_budget, now_ms)
         }
         Message::ActorValues(_) => take(&mut guard.actor_values_budget, now_ms),
+        Message::PlayerGlobals(m) => {
+            // a client reports values; which globals to watch is the server's
+            if !m.watch.is_empty() {
+                return Err(Reject::Range);
+            }
+            take(&mut guard.player_globals_budget, now_ms)
+        }
         Message::ConsoleCommand(_) => take(&mut guard.console_budget, now_ms),
         Message::PlayerBowShot(_) => take(&mut guard.shot_budget, now_ms),
         Message::OnHit(_) => take(&mut guard.on_hit_budget, now_ms),
@@ -563,6 +597,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::Favorites(m) => check_favorites(m),
         Message::RaceMenuPreset(m) => check_preset(m),
         Message::ActorValues(m) => check_actor_values(m),
+        Message::PlayerGlobals(m) => check_player_globals(m),
         Message::PlayerBowShot(m) => {
             if !all_finite(m) {
                 return Err(Reject::NonFinite);
@@ -1213,6 +1248,44 @@ mod tests {
             assert_eq!(validate(&drink, &mut g, 1_000), Ok(()));
         }
         assert_eq!(validate(&drink, &mut g, 1_000), Err(Reject::Rate));
+    }
+
+    fn player_globals(watch: &[u32], values: &[(u32, f32)]) -> Message {
+        use wire_schema::skymp::{GlobalEntry, PlayerGlobals};
+        let mut m = PlayerGlobals::default();
+        for w in watch {
+            if m.watch.push(*w).is_err() {
+                return Message::PlayerGlobals(PlayerGlobals::default());
+            }
+        }
+        for (global, value) in values {
+            if m.values.push(GlobalEntry { global: *global, value: *value }).is_err() {
+                return Message::PlayerGlobals(PlayerGlobals::default());
+            }
+        }
+        Message::PlayerGlobals(m)
+    }
+
+    #[test]
+    fn player_globals_each_once_finite_and_watched_only_from_the_server() {
+        // the Craftlord's unspent points and the MCM's general XP multiplier
+        // at Apocalypse's slot 0C (thuum docs/verbs/player-globals.md)
+        let (points, xp) = (0x0c0b_1c19, 0x0c04_3cef);
+        let mut g = ClientGuard::default();
+        assert_eq!(validate(&player_globals(&[], &[(points, 3.0), (xp, 1.5)]), &mut g, 0), Ok(()));
+        assert_eq!(validate(&player_globals(&[], &[(points, 3.0), (points, 1.0)]), &mut g, 0), Err(Reject::Range));
+        assert_eq!(validate(&player_globals(&[], &[(points, f32::NAN)]), &mut g, 0), Err(Reject::NonFinite));
+        // a client names nothing to watch
+        assert_eq!(validate(&player_globals(&[points], &[]), &mut g, 0), Err(Reject::Range));
+        // the server's login message: the list and the record
+        assert_eq!(validate_server(&player_globals(&[points, xp], &[(points, 3.0)])), Ok(()));
+        assert_eq!(validate_server(&player_globals(&[points, points], &[])), Err(Reject::Range));
+        // one report a second after the first two
+        let mut g = ClientGuard::default();
+        assert_eq!(validate(&player_globals(&[], &[(points, 1.0)]), &mut g, 0), Ok(()));
+        assert_eq!(validate(&player_globals(&[], &[(points, 2.0)]), &mut g, 0), Ok(()));
+        assert_eq!(validate(&player_globals(&[], &[(points, 3.0)]), &mut g, 0), Err(Reject::Rate));
+        assert_eq!(validate(&player_globals(&[], &[(points, 3.0)]), &mut g, 1_000), Ok(()));
     }
 
     #[test]

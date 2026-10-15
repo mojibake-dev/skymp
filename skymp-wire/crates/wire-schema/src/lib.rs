@@ -5,7 +5,7 @@
 //!
 //! Two families share the enum. The M0 variants (ids 0 to 8) are the
 //! authority model's messages, reserved until its verbs land. The SkyMP
-//! variants (ids 9 to 52, id = MsgType + 8) are SkyMP's own protocol, ported
+//! variants (ids 9 to 53, id = MsgType + 8) are SkyMP's own protocol, ported
 //! field for field in [`skymp`], and the MsgTypes thuum appends after
 //! SkyMP's 33; their JSON form is what the C++ core and skymp5-client
 //! exchange in-process (`wire-json`).
@@ -32,7 +32,7 @@ use bounded::{String, Vec};
 
 /// Bump when any variant changes shape. It is part of netcode's protocol id,
 /// so peers built against another schema never complete a handshake.
-pub const SCHEMA_VERSION: u16 = 16;
+pub const SCHEMA_VERSION: u16 = 17;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -94,6 +94,9 @@ pub mod cap {
     /// Effects running on one actor (thuum docs/verbs/magic-effects.md:
     /// wire-rules magic::MAX_EFFECTS).
     pub const MAGIC_EFFECTS: usize = 32;
+    /// Globals the server keeps per player (thuum docs/verbs/player-globals.md:
+    /// Apocalypse's 55 with room for more mods).
+    pub const PLAYER_GLOBALS: usize = 256;
     /// Actor values one actor's running buffs touch: two per effect at most
     /// (a dual value modifier's second).
     pub const EFFECT_MODIFIERS: usize = 2 * MAGIC_EFFECTS;
@@ -388,6 +391,8 @@ pub enum Message {
     MagicEffects(skymp::MagicEffects),
     /// 52, MsgType 44 (thuum). See [`skymp::UpdateAction`].
     UpdateAction(skymp::UpdateAction),
+    /// 53, MsgType 45 (thuum). See [`skymp::PlayerGlobals`].
+    PlayerGlobals(skymp::PlayerGlobals),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -416,7 +421,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 53] = [
+const TABLE: [Row; 54] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -470,10 +475,11 @@ const TABLE: [Row; 53] = [
     row("ArrowShot", 42, 64, S2C),
     row("MagicEffects", 43, KIB, S2C),
     row("UpdateAction", 44, 32 * KIB, Both),
+    row("PlayerGlobals", 45, 4 * KIB, Both),
 ];
 
 /// Wire ids in use: one past the last variant.
-pub const WIRE_IDS: u32 = 53;
+pub const WIRE_IDS: u32 = 54;
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -551,6 +557,7 @@ impl Message {
             Message::ArrowShot(_) => 50,
             Message::MagicEffects(_) => 51,
             Message::UpdateAction(_) => 52,
+            Message::PlayerGlobals(_) => 53,
         }
     }
 
@@ -624,8 +631,9 @@ mod tests {
         assert_eq!(name_of_msg_type(42), Some("ArrowShot"));
         assert_eq!(name_of_msg_type(43), Some("MagicEffects"));
         assert_eq!(name_of_msg_type(44), Some("UpdateAction"));
+        assert_eq!(name_of_msg_type(45), Some("PlayerGlobals"));
         assert_eq!(name_of_msg_type(0), None);
-        assert_eq!(name_of_msg_type(45), None);
+        assert_eq!(name_of_msg_type(46), None);
     }
 
     #[test]

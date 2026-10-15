@@ -6,14 +6,14 @@
 //! to 33 are SkyMP's; thuum appends its own after them (34, SetGameTime; 35,
 //! RestIntent; 36, MapMarkerDiscovered; 37, IngredientEffectsKnown; 38,
 //! Favorites; 39, RaceMenuPreset; 40, ActorValues; 41, ConsoleOutput; 42,
-//! ArrowShot; 43, MagicEffects; 44, UpdateAction).
+//! ArrowShot; 43, MagicEffects; 44, UpdateAction; 45, PlayerGlobals).
 //!
 //! Directions are SkyMP's: twelve types (fifteen with RestIntent,
 //! MapMarkerDiscovered and IngredientEffectsKnown) only travel
 //! client to server, thirteen (fourteen with SetGameTime) only server to
 //! client (seventeen with ConsoleOutput, ArrowShot and MagicEffects), eight
-//! (twelve with Favorites, RaceMenuPreset, ActorValues and UpdateAction)
-//! both ways (the server relays a client's
+//! (thirteen with Favorites, RaceMenuPreset, ActorValues, UpdateAction and
+//! PlayerGlobals) both ways (the server relays a client's
 //! UpdateMovement, UpdateAnimation, UpdateAppearance, UpdateEquipment,
 //! SpellCast, UpdateAnimVariables and UpdateAction to its neighbours, and sends its own
 //! CustomPacket and ChangeValues). Rungs are the ones SkyMP gives them today;
@@ -866,6 +866,40 @@ wire_struct! {
         /// a value they leave at 0).
         #[serde(default)]
         pub modifiers: Vec<EffectModifier, { cap::EFFECT_MODIFIERS }>,
+    }
+}
+
+wire_struct! {
+    /// One global's value, as PlayerGlobals carries it (thuum
+    /// docs/verbs/player-globals.md).
+    pub struct GlobalEntry {
+        /// The global's form id in the load order both ends share (the
+        /// server keeps it as a FormDesc).
+        pub global: u32,
+        /// Its value (a TESGlobal holds a float whatever its type).
+        pub value: f32,
+    }
+}
+
+wire_struct! {
+    /// MsgType 45, thuum's (docs/verbs/player-globals.md, ADR-029's A2).
+    /// Both directions, reliable. Server to client, after a login: the
+    /// globals the server keeps per player, to watch, and the player's
+    /// recorded values, which the client's game sets. Client to server: the
+    /// watched globals whose values changed since its last report (R2:
+    /// recorded unvalidated), naming none to watch. Idempotent: the latest
+    /// value wins per global. Reason codes: `E_VAL_RANGE` (a global given
+    /// twice, or a client's report naming globals to watch),
+    /// `E_VAL_NONFINITE`, `E_VAL_RATE` (client to server).
+    pub struct PlayerGlobals {
+        /// `"t": 45`.
+        #[serde(default)]
+        pub t: MsgT<45>,
+        /// The globals to watch (server to client only).
+        #[serde(default)]
+        pub watch: Vec<u32, { cap::PLAYER_GLOBALS }>,
+        /// Values, each global once.
+        pub values: Vec<GlobalEntry, { cap::PLAYER_GLOBALS }>,
     }
 }
 

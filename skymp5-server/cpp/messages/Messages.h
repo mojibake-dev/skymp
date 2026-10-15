@@ -20,6 +20,7 @@
 #include "HostStopMessage.h"
 #include "IngredientEffectsKnownMessage.h"
 #include "MagicEffectsMessage.h"
+#include "PlayerGlobalsMessage.h"
 #include "MapMarkerDiscoveredMessage.h"
 #include "OnEquipMessage.h"
 #include "OpenContainerMessage.h"
@@ -88,4 +89,5 @@
   REGISTER_MESSAGE(ConsoleOutputMessage)                                      \
   REGISTER_MESSAGE(ArrowShotMessage)                                          \
   REGISTER_MESSAGE(MagicEffectsMessage)                                       \
-  REGISTER_MESSAGE(UpdateActionMessage)
+  REGISTER_MESSAGE(UpdateActionMessage)                                       \
+  REGISTER_MESSAGE(PlayerGlobalsMessage)

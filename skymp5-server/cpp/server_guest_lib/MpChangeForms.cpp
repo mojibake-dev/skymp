@@ -134,6 +134,18 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm)
     res["ingredientEffects"] = { { "entries", effectsJson } };
   }
 
+  // thuum docs/verbs/player-globals.md; absent in older records, read as
+  // none
+  if (changeForm.playerGlobals.has_value() &&
+      !changeForm.playerGlobals->empty()) {
+    auto globalsJson = nlohmann::json::array();
+    for (const auto& entry : *changeForm.playerGlobals) {
+      globalsJson.push_back(
+        { { "formDesc", entry.global.ToString() }, { "value", entry.value } });
+    }
+    res["playerGlobals"] = { { "entries", globalsJson } };
+  }
+
   // thuum docs/verbs/shouts.md; absent in older records, read as none
   if (changeForm.shoutRecord.has_value() && !changeForm.shoutRecord->Empty()) {
     res["shoutRecord"] = {
@@ -263,6 +275,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
   static const JsonPointer mapMarkers("mapMarkers");
   static const JsonPointer ingredientEffects("ingredientEffects");
   static const JsonPointer shoutRecord("shoutRecord");
+  static const JsonPointer playerGlobals("playerGlobals");
   static const JsonPointer favorites("favorites");
   static const JsonPointer raceMenuPreset("raceMenuPreset");
   static const JsonPointer staffRank("staffRank");
@@ -532,6 +545,25 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
       effects[i].mask = static_cast<uint8_t>(maskTmp & 0x0f);
     }
     res.ingredientEffects = effects;
+  }
+
+  if (element.at_pointer(playerGlobals.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, playerGlobals, &jTmp);
+    static const JsonPointer entries("entries");
+    static const JsonPointer value("value");
+
+    std::vector<simdjson::dom::element> parsedEntries;
+    ReadVector(jTmp, entries, &parsedEntries);
+
+    std::vector<PlayerGlobal> globals(parsedEntries.size());
+    for (size_t i = 0; i != parsedEntries.size(); ++i) {
+      const char* tmp;
+      ReadEx(parsedEntries[i], formDesc, &tmp);
+      globals[i].global = FormDesc::FromString(tmp);
+      ReadEx(parsedEntries[i], value, &globals[i].value);
+    }
+    res.playerGlobals = globals;
   }
 
   if (element.at_pointer(shoutRecord.GetData()).error() ==

@@ -13,6 +13,7 @@
 #include "LocationalData.h"
 #include "MapMarker.h"
 #include "NiPoint3.h"
+#include "PlayerGlobal.h"
 #include "Quest.h"
 #include "RunningEffect.h"
 #include "ShoutRecord.h"
@@ -168,6 +169,10 @@ public:
   // none
   std::optional<ShoutRecord> shoutRecord;
 
+  // The global variables the player's game wrote for its player (thuum
+  // docs/verbs/player-globals.md); absent in older records, read as none
+  std::optional<std::vector<PlayerGlobal>> playerGlobals;
+
   // Please update 'ActorTest.cpp' when adding new Actor-related rows
 
   DynamicFields dynamicFields;
@@ -184,7 +189,7 @@ public:
       dynamicFields, spawnDelay, learnedSpells, templateChain, lastAnimation,
       setNodeTextureSet, setNodeScale, displayName, mapMarkers,
       ingredientEffects, favorites, raceMenuPreset, actorValueRecord,
-      staffRank, runningEffects, shoutRecord);
+      staffRank, runningEffects, shoutRecord, playerGlobals);
   }
 
   static nlohmann::json ToJson(const MpChangeFormREFR& changeForm);

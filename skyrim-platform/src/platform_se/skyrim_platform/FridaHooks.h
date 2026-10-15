@@ -28,4 +28,8 @@ int32_t TakeCastStart(uint64_t withinMs);
 // figures answered later than the view's one update, playtest nineteen).
 bool TakeCastReady(uint32_t actorFormId, int32_t hand);
 
+// records an answer (hand bit 1 left, 2 right, 4 voice); called by the
+// typed hooks on the response handlers (Hooks.cpp)
+void NoteCastReady(uint32_t actorFormId, uint32_t handBit);
+
 }

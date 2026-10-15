@@ -22,11 +22,7 @@ enum HookID
   CONSOLE_VPRINT,
   NATIVE_FUNCTION_CTOR,
   // thuum docs/verbs/cast-action.md
-  HOOK_PERFORM_ACTION,
-  // the graph's answers to a cast request, one handler per casting source
-  HOOK_SPELL_CAST_RESPONSE_LEFT,
-  HOOK_SPELL_CAST_RESPONSE_RIGHT,
-  HOOK_SPELL_CAST_RESPONSE_VOICE
+  HOOK_PERFORM_ACTION
 };
 
 struct Hook

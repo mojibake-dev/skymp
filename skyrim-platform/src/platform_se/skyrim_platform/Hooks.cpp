@@ -1,3 +1,4 @@
+#include "FridaHooks.h"
 #include "Hooks.h"
 #include "EventHandler.h"
 #include "PapyrusTESModPlatform.h"
@@ -156,6 +157,56 @@ void InstallPlayerAddTargetHook()
   PlayerAddTarget::func = vtbl.write_vfunc(0x1, PlayerAddTarget::thunk);
 }
 
+/**
+ * The graph's answers to a cast request (thuum docs/verbs/cast-action.md).
+ * The engine's caster sets the hand's want variable and performs the Attack
+ * action only when the graph answers with the BeginCastRight (BeginCastLeft,
+ * BeginCastVoice) graph event, handled by the hand's functor:
+ * RightHandSpellCastHandler and kin, IHandlerFunctor<Actor, BSFixedStringCI>
+ * (CommonLibSSE-NG include/RE/Offsets_VTABLE.h:2392-2394), whose
+ * ExecuteHandler is the one virtual after the destructor
+ * (include/RE/I/IHandlerFunctor.h:16-19), called as (this, Actor&, const
+ * BSFixedStringCI&). A figure's graph answers the same way to the want
+ * variable the view writes (x-cast-gap 20261015-213755: 34 of 34 asks
+ * within 7 ms of an answer, all taken), and later while the figure moves,
+ * where a start one update after its variables was refused (playtest
+ * nineteen, about half). Each thunk notes the answer for its hand and
+ * passes the call on; the view performs the start when castReady says so.
+ * The player's own answers are the engine's business and are not noted.
+ * Typed vtable swaps, no interceptor and no read of the tag: the first
+ * build hooked these with Frida and died at the first answer (34bdf0c3).
+ */
+template <uint32_t HandBit>
+struct SpellCastResponse
+{
+  static bool thunk(void* a_this, RE::Actor* a_actor, const void* a_tag)
+  {
+    if (a_actor && a_actor != RE::PlayerCharacter::GetSingleton()) {
+      Frida::NoteCastReady(a_actor->formID, HandBit);
+    }
+    return func(a_this, a_actor, a_tag);
+  }
+  static inline REL::Relocation<decltype(thunk)> func;
+};
+
+void InstallSpellCastResponseHooks()
+{
+  REL::Relocation<std::uintptr_t> left{
+    RE::VTABLE_LeftHandSpellCastHandler[0]
+  };
+  SpellCastResponse<1>::func =
+    left.write_vfunc(0x1, SpellCastResponse<1>::thunk);
+  REL::Relocation<std::uintptr_t> right{
+    RE::VTABLE_RightHandSpellCastHandler[0]
+  };
+  SpellCastResponse<2>::func =
+    right.write_vfunc(0x1, SpellCastResponse<2>::thunk);
+  REL::Relocation<std::uintptr_t> voice{ RE::VTABLE_VoiceSpellCastHandler[0] };
+  SpellCastResponse<4>::func =
+    voice.write_vfunc(0x1, SpellCastResponse<4>::thunk);
+  logger::info("[verb:cast-action] spell cast response hooks installed");
+}
+
 void BindNativeMethod(RE::BSScript::Internal::VirtualMachine* thisArg,
                       RE::BSScript::IFunction* func);
 
@@ -234,6 +285,7 @@ void Hooks::Install()
   InstallOnConsoleVPrintHook();
   HookVirtualMachineBind();
   InstallPlayerAddTargetHook();
+  InstallSpellCastResponseHooks();
 
   logger::info("CommonLib hooks installed.");
 }

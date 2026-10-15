@@ -15,6 +15,8 @@ void EventManager::InitCustom()
   manager->EmplaceEvent("tick");
   manager->EmplaceEvent("browserMessage");
   manager->EmplaceEvent("consoleMessage");
+  // thuum docs/verbs/cast-action.md: an action the player's actor performed
+  manager->EmplaceEvent("actionPerformed");
   manager->EmplaceEvent("ipcMessage");
 
   // skse messages

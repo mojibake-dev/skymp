@@ -2,8 +2,11 @@
 #include "EventsApi.h"
 #include "FridaHookHandler.h"
 #include "FridaHooksUtils.h"
+#include "JsUtils.h"
+#include "MagicApi.h"
 #include "Override.h"
 #include "PapyrusTESModPlatform.h"
+#include "SkyrimPlatform.h"
 #include "StringHolder.h"
 
 #include <fmt/format.h>
@@ -256,6 +259,101 @@ void InstallSendAnimationEventHook()
 }
 
 /**
+ * PerformAction hook (thuum docs/verbs/cast-action.md): every BGSAction the
+ * player's actor performs, as the engine performs it through its one action
+ * entry, ActorMediator::PerformAction (the hand's attack, ready, release and
+ * interrupt a cast is made of, the dual and voice ones, the melee ones), with
+ * the idle the engine chose, the graph event it sent, and the actor's
+ * master-behavior variables as they were when the graph was asked. Filtered
+ * to the player here (rule 9), raised to JS as actionPerformed on the next
+ * tick; a figure in another game replays it through performAction.
+ *
+ * The entry is (ActorMediator*, TESActionData*) -> bool (the data is
+ * CommonLibSSE-NG's, include/RE/T/TESActionData.h; the entry read on sky-re
+ * 2026-10-14, HYPOTHESIS until the lab's trace): the data comes in with the
+ * event empty and leaves with the chosen idle's event in it, so the fields
+ * are read at the leave. A call with flags bit 0 set only validates (the
+ * engine's dry run, answered true with nothing performed), and a false
+ * return played nothing; neither is reported. The mediator re-enters itself
+ * for a paired action's target, so each thread keeps a stack, not a slot.
+ */
+struct PerformedAction
+{
+  RE::TESActionData* data = nullptr;
+  AnimationGraphMasterBehaviourDescriptor::AnimationVariables variables;
+};
+thread_local std::vector<PerformedAction> g_performedActions;
+
+void OnPerformActionEnter(GumInvocationContext* ic)
+{
+  PerformedAction entry;
+  auto* data = reinterpret_cast<RE::TESActionData*>(ic->cpu_context->rdx);
+  auto* player = RE::PlayerCharacter::GetSingleton();
+  if (data && player && data->source.get() == player && data->action &&
+      (data->flags & 1) == 0) {
+    entry.data = data;
+    // the variables before the action changes them: the want variable the
+    // caster set a few instructions earlier is among them
+    entry.variables =
+      AnimationGraphMasterBehaviourDescriptor{ *player }.GetVariables();
+  }
+  g_performedActions.push_back(std::move(entry));
+}
+
+void OnPerformActionLeave(GumInvocationContext* ic)
+{
+  if (g_performedActions.empty()) {
+    return;
+  }
+  PerformedAction entry = std::move(g_performedActions.back());
+  g_performedActions.pop_back();
+  auto* data = entry.data;
+  if (!data) {
+    return;
+  }
+  const bool taken = !!gum_invocation_context_get_return_value(ic);
+  if (!taken) {
+    return;
+  }
+  const uint32_t actionId = data->action ? data->action->formID : 0;
+  const uint32_t idleId = data->animObjIdle ? data->animObjIdle->formID : 0;
+  const std::string eventName =
+    data->animEvent.c_str() ? data->animEvent.c_str() : "";
+  const uint32_t type = data->unk20;
+  const uint32_t flags = data->flags;
+  const uint32_t result = static_cast<uint32_t>(data->result);
+
+  SkyrimPlatform::GetSingleton()->AddTickTask(
+    [actionId, idleId, eventName, type, flags, result,
+     variables = std::move(entry.variables)](Napi::Env env) {
+      auto obj = Napi::Object::New(env);
+      auto* player = RE::PlayerCharacter::GetSingleton();
+      AddObjProperty(&obj, "actor", static_cast<RE::TESForm*>(player),
+                     "Actor");
+      AddObjProperty(&obj, "action", actionId);
+      AddObjProperty(&obj, "idle", idleId);
+      AddObjProperty(&obj, "eventName", eventName.c_str());
+      AddObjProperty(&obj, "type", type);
+      AddObjProperty(&obj, "flags", flags);
+      AddObjProperty(&obj, "result", result);
+      obj.Set("variables", MagicApi::AnimationVariablesToJs(env, variables));
+      EventsApi::SendEvent("actionPerformed", { obj });
+    });
+}
+
+void InstallPerformActionHook()
+{
+  // AE only: the id is 1.6.1170's (game/Offsets.h)
+  if (!REL::Module::IsAE()) {
+    return;
+  }
+  Frida::HookHandler::GetSingleton()->Install(
+    Frida::HookID::HOOK_PERFORM_ACTION,
+    Offsets::Hooks::PerformAction.address(),
+    std::make_shared<Frida::Hook>(OnPerformActionEnter, OnPerformActionLeave));
+}
+
+/**
  * Queue Ninode Update hook
  */
 thread_local uint32_t g_queueNiNodeActorId = 0;
@@ -419,6 +517,7 @@ void Frida::InstallHooks()
   InstallDrawSheatheWeaponPcHook();
   InstallDrawSheatheWeaponActorHook();
   InstallSendAnimationEventHook();
+  InstallPerformActionHook();
   InstallQueueNinodeUpdateHook();
   InstallRenderCursorMenuHook();
 #ifdef ENABLE_SKYRIM_AE

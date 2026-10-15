@@ -17,4 +17,10 @@ struct PlayerGlobal
   {
     return lhs.ToTuple() == rhs.ToTuple();
   }
+
+  // the change form's own order compares its fields' (MpChangeForms.h)
+  friend bool operator<(const PlayerGlobal& lhs, const PlayerGlobal& rhs)
+  {
+    return lhs.ToTuple() < rhs.ToTuple();
+  }
 };

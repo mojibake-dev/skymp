@@ -30,6 +30,7 @@ import { ActorValuesMessage } from "./actorValuesMessage";
 import { ConsoleOutputMessage } from "./consoleOutputMessage";
 import { ArrowShotMessage } from "./arrowShotMessage";
 import { MagicEffectsMessage } from "./magicEffectsMessage";
+import { UpdateActionMessage } from "./updateActionMessage";
 import { SetInventoryMessage } from "./setInventoryMessage";
 import { SetRaceMenuOpenMessage } from "./setRaceMenuOpenMessage";
 import { SpSnippetMessage } from "./spSnippetMessage";
@@ -80,6 +81,7 @@ export type AnyMessage = ActivateMessage
     | ConsoleOutputMessage
     | ArrowShotMessage
     | MagicEffectsMessage
+    | UpdateActionMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage
     | UpdatePropertyMessage

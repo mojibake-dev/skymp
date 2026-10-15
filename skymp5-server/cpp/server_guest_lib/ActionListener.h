@@ -34,6 +34,10 @@ public:
 
   virtual void OnUpdateAnimation(const RawMessageData& rawMsgData,
                                  const UpdateAnimationMessage& msg);
+  // thuum docs/verbs/cast-action.md: an action the player's actor performed,
+  // relayed as received to the actor's neighbours but the sender, reliably
+  virtual void OnUpdateAction(const RawMessageData& rawMsgData,
+                              const UpdateActionMessage& msg);
   virtual void OnUpdateAppearance(const RawMessageData& rawMsgData,
                                   const UpdateAppearanceMessage& msg);
   virtual void OnUpdateEquipment(const RawMessageData& rawMsgData,

@@ -1,6 +1,7 @@
 #include "EventHandler.h"
 #include "EventManager.h"
 #include "EventsApi.h"
+#include "FridaHooks.h"
 #include "JsUtils.h"
 #include "SkyrimPlatform.h"
 #include "TickHandler.h"
@@ -1354,7 +1355,13 @@ EventResult EventHandler::ProcessEvent(
   // one's (the other screen's figure streamed from its right hand and never
   // stopped). Which hand casts this spell is read now, while it casts, from
   // each hand's caster (MagicCaster's currentSpell and state,
-  // CommonLibSSE-NG include/RE/M/MagicCaster.h:29-41, :89-90)
+  // CommonLibSSE-NG include/RE/M/MagicCaster.h:29-41, :89-90). A hand's
+  // caster holds its equipped spell as currentSpell while idle too, so the
+  // state tells the hands apart: any state but kNone is this cast's hand.
+  // Charging and casting alone missed a bolt's release moment, and a
+  // left-hand Firebolt with Firebolt in both hands went out as the right
+  // hand's (thuum docs/verbs/cast-action.md, x-left-firebolt2
+  // 20261015-035333, playtest eighteen's second finding)
   bool leftCasting = false;
   bool rightCasting = false;
   if (auto* actor = event->object ? event->object->As<RE::Actor>() : nullptr) {
@@ -1362,8 +1369,7 @@ EventResult EventHandler::ProcessEvent(
       auto* magicCaster = actor->GetMagicCaster(source);
       return magicCaster && magicCaster->currentSpell &&
         magicCaster->currentSpell->GetFormID() == spellId &&
-        (magicCaster->state == RE::MagicCaster::State::kCharging ||
-         magicCaster->state == RE::MagicCaster::State::kCasting);
+        magicCaster->state != RE::MagicCaster::State::kNone;
     };
     leftCasting = casting(RE::MagicSystem::CastingSource::kLeftHand);
     rightCasting = casting(RE::MagicSystem::CastingSource::kRightHand);
@@ -1396,6 +1402,16 @@ EventResult EventHandler::ProcessEvent(
     s.left = leftCasting;
     s.right = rightCasting;
     s.lastLeft = preferLeft;
+  }
+  // the hand whose action performed the cast, as the engine's action entry
+  // saw it (thuum docs/verbs/cast-action.md), over the readings above: with
+  // the spell in both hands the casters' states still named the right hand
+  // for a left-hand Firebolt (x-left-firebolt2 20261015-070447, the state
+  // read widened), where the action's own event name (MLh_, MRh_,
+  // DualMagic_) cannot be wrong
+  const auto actionHand = Frida::LastCastHand(5000);
+  if (actionHand >= 0) {
+    preferLeft = actionHand == 0;
   }
 
   SkyrimPlatform::GetSingleton()->AddUpdateTask([casterId, spellId,

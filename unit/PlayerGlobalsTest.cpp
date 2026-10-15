@@ -1,6 +1,12 @@
+#include "ActionListener.h"
 #include "MpChangeForms.h"
+#include "MsgType.h"
+#include "TestUtils.hpp"
+#include "UpdateMovementMessage.h"
 #include <catch2/catch_all.hpp>
 #include <simdjson.h>
+
+PartOne& GetPartOne();
 
 // thuum docs/verbs/player-globals.md (ADR-029's A2): the globals a player's
 // game wrote for its player live in its change form, named by FormDesc, and
@@ -29,4 +35,96 @@ TEST_CASE("The change form keeps a player's globals, and older records read "
   const std::string olderDump = older.dump();
   auto olderElement = parser.parse(olderDump).value();
   REQUIRE(!MpChangeForm::JsonToChangeForm(olderElement).playerGlobals);
+}
+
+// The handler and the login, on Skyrim.esm's own globals (the test's load
+// order lacks Apocalypse): GameHour 0x38 listed, GameDaysPassed 0x39 not
+// (thuum lab/esm.py).
+namespace {
+constexpr uint32_t kActor = 0xff000bcd;
+constexpr uint32_t kGameHour = 0x38;
+constexpr uint32_t kGameDaysPassed = 0x39;
+
+MpActor& Player(PartOne& p)
+{
+  DoConnect(p, 0);
+  p.CreateActor(kActor, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, kActor);
+  p.Messages().clear();
+  return p.worldState.GetFormAt<MpActor>(kActor);
+}
+
+void Report(PartOne& p, uint32_t global, float value)
+{
+  DoMessage(
+    p, 0,
+    nlohmann::json{
+      { "t", static_cast<int>(MsgType::PlayerGlobals) },
+      { "watch", nlohmann::json::array() },
+      { "values", { { { "global", global }, { "value", value } } } } });
+}
+
+// the player's own movement report, standing at the origin (ShoutsTest's)
+void Stand(PartOne& p)
+{
+  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
+  RawMessageData raw;
+  raw.userId = 0;
+  raw.unparsed = unparsed;
+  raw.unparsedLength = sizeof(unparsed);
+  UpdateMovementMessage msg;
+  msg.idx = 0;
+  msg.data.pos = { 0, 0, 0 };
+  msg.data.rot = { 0, 0, 0 };
+  msg.data.isInJumpState = false;
+  msg.data.isWeapDrawn = false;
+  msg.data.isBlocking = false;
+  msg.data.worldOrCell = 0x3c;
+  msg.data.runMode = "Standing";
+  p.GetActionListener().OnUpdateMovement(raw, msg);
+}
+
+void Leave(PartOne& p)
+{
+  p.SetPlayerGlobalsSettings("[]");
+  p.DestroyActor(kActor);
+  DoDisconnect(p, 0);
+}
+}
+
+TEST_CASE("A listed global's report is recorded, an unlisted one refused, "
+          "and the login sends the list and the record",
+          "[PlayerGlobals][espm]")
+{
+  PartOne& p = GetPartOne();
+  p.SetPlayerGlobalsSettings(R"(["38:Skyrim.esm"])");
+  auto& ac = Player(p);
+
+  Report(p, kGameHour, 7.f);
+  const std::vector<PlayerGlobal> recorded = {
+    { FormDesc::FromString("38:Skyrim.esm"), 7.f }
+  };
+  REQUIRE(ac.GetPlayerGlobals() == recorded);
+
+  // not listed: the report is refused whole, the record unchanged
+  Report(p, kGameDaysPassed, 3.f);
+  REQUIRE(ac.GetPlayerGlobals() == recorded);
+
+  // the first movement after a login sends the list to watch and the record
+  ac.SetMapMarkersPending(true);
+  p.Messages().clear();
+  Stand(p);
+  bool sent = false;
+  for (auto& m : p.Messages()) {
+    if (m.userId == 0 && m.j.contains("t") &&
+        m.j["t"] == MsgType::PlayerGlobals) {
+      REQUIRE(m.j["watch"] == nlohmann::json::array({ kGameHour }));
+      REQUIRE(m.j["values"].size() == 1);
+      REQUIRE(m.j["values"][0]["global"] == kGameHour);
+      REQUIRE(m.j["values"][0]["value"] == 7.f);
+      sent = true;
+    }
+  }
+  REQUIRE(sent);
+  Leave(p);
 }

@@ -160,6 +160,11 @@ struct PartOne::Impl
   };
   std::unordered_map<uint32_t, KeptTeleportLook> teleportLooks;
 
+  // the globals the server keeps per player (thuum
+  // docs/verbs/player-globals.md): server-settings.json's `playerGlobals`
+  rust::Box<skymp::rules::PlayerGlobalsList> playerGlobals =
+    skymp::rules::new_player_globals("[]");
+
   // the fights between players (thuum docs/verbs/hostility-sync.md, ADR-023)
   rust::Box<skymp::rules::Fights> fights = skymp::rules::new_fights();
   std::chrono::steady_clock::time_point lastFightsTick;
@@ -1340,6 +1345,82 @@ void PartOne::SetCastTeleportSettings(const std::string& castTeleportsJson)
 {
   pImpl->castTeleports = skymp::rules::new_cast_teleports(castTeleportsJson);
   spdlog::info("PartOne::SetCastTeleportSettings - {}", castTeleportsJson);
+}
+
+void PartOne::SetPlayerGlobalsSettings(const std::string& playerGlobalsJson)
+{
+  pImpl->playerGlobals = skymp::rules::new_player_globals(playerGlobalsJson);
+  spdlog::info("PartOne::SetPlayerGlobalsSettings - {}", playerGlobalsJson);
+}
+
+namespace {
+std::vector<skymp::rules::PlayerGlobalEntry> ToEntries(
+  const std::vector<PlayerGlobal>& globals)
+{
+  std::vector<skymp::rules::PlayerGlobalEntry> entries;
+  entries.reserve(globals.size());
+  for (const auto& g : globals) {
+    entries.push_back(
+      { g.global.shortFormId, rust::String(g.global.file), g.value });
+  }
+  return entries;
+}
+
+std::vector<PlayerGlobal> ToGlobals(
+  const rust::Vec<skymp::rules::PlayerGlobalEntry>& entries)
+{
+  std::vector<PlayerGlobal> globals;
+  globals.reserve(entries.size());
+  for (const auto& e : entries) {
+    globals.push_back({ FormDesc(e.short_id, std::string(e.file)), e.value });
+  }
+  return globals;
+}
+}
+
+std::vector<uint32_t> PartOne::PlayerGlobalsWatch() const
+{
+  std::vector<uint32_t> watch;
+  for (const auto& e : pImpl->playerGlobals->player_globals_listed()) {
+    try {
+      watch.push_back(FormDesc(e.short_id, std::string(e.file))
+                        .ToFormId(worldState.espmFiles));
+    } catch (const std::exception&) {
+      // a listed global whose plugin this load order lacks
+    }
+  }
+  return watch;
+}
+
+uint8_t PartOne::CheckPlayerGlobals(
+  const std::vector<PlayerGlobal>& report) const
+{
+  const auto entries = ToEntries(report);
+  return pImpl->playerGlobals->player_globals_check(
+    rust::Slice<const skymp::rules::PlayerGlobalEntry>(entries.data(),
+                                                       entries.size()));
+}
+
+std::vector<PlayerGlobal> PartOne::PlayerGlobalsAtLogin(
+  const std::vector<PlayerGlobal>& record) const
+{
+  const auto entries = ToEntries(record);
+  return ToGlobals(pImpl->playerGlobals->player_globals_at_login(
+    rust::Slice<const skymp::rules::PlayerGlobalEntry>(entries.data(),
+                                                       entries.size())));
+}
+
+std::vector<PlayerGlobal> PartOne::MergePlayerGlobals(
+  const std::vector<PlayerGlobal>& record,
+  const std::vector<PlayerGlobal>& report)
+{
+  const auto recordEntries = ToEntries(record);
+  const auto reportEntries = ToEntries(report);
+  return ToGlobals(skymp::rules::player_globals_merge(
+    rust::Slice<const skymp::rules::PlayerGlobalEntry>(recordEntries.data(),
+                                                       recordEntries.size()),
+    rust::Slice<const skymp::rules::PlayerGlobalEntry>(reportEntries.data(),
+                                                       reportEntries.size())));
 }
 
 float PartOne::TeleportReach(uint32_t spellFormId) const

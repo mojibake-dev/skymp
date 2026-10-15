@@ -19,6 +19,7 @@
 //! observer; Ghostwalk's relayed Self cast only makes the figure invisible).
 
 use crate::clock::SettingsError;
+use crate::forms::FormDesc;
 use crate::movement::CAST_JUMP_WAIT_MS;
 use serde::Deserialize;
 
@@ -68,16 +69,7 @@ impl CastTeleports {
         let entries: Vec<Entry> = serde_json::from_str(text).map_err(|e| SettingsError(format!("castTeleports: {e}")))?;
         let mut spells = Vec::with_capacity(entries.len());
         for e in entries {
-            let Some((id, file)) = e.spell.split_once(':') else {
-                return Err(SettingsError(format!("castTeleports: {:?} is not <hex form id>:<plugin>", e.spell)));
-            };
-            let digits = id.strip_prefix("0x").unwrap_or(id);
-            let Ok(short_id) = u32::from_str_radix(digits, 16) else {
-                return Err(SettingsError(format!("castTeleports: {:?} has no hex form id", e.spell)));
-            };
-            if file.is_empty() {
-                return Err(SettingsError(format!("castTeleports: {:?} names no plugin", e.spell)));
-            }
+            let FormDesc { short_id, file } = FormDesc::parse(&e.spell).map_err(|why| SettingsError(format!("castTeleports: {why}")))?;
             if !(e.reach.is_finite() && e.reach >= 0.0) {
                 return Err(SettingsError(format!("castTeleports: {:?} has a reach that is not a number of 0 or more", e.spell)));
             }
@@ -86,7 +78,7 @@ impl CastTeleports {
                 return Err(SettingsError(format!("castTeleports: {:?} has a wait of 0", e.spell)));
             }
             let teleport = CastTeleport { reach: e.reach, wait_ms, relay: e.relay.unwrap_or(false) };
-            spells.push(Named { short_id, file: file.to_owned(), teleport });
+            spells.push(Named { short_id, file, teleport });
         }
         Ok(Self { spells })
     }

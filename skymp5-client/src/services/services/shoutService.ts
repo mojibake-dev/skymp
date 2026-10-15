@@ -65,10 +65,15 @@ export class ShoutService extends ClientListener {
             this.sp.hooks.sendAnimationEvent.add({
                 enter: () => { },
                 leave: () => {
-                    if (Date.now() - this.shoutStartedAt <= ShoutService.chargeMs) {
-                        this.releasedAt = Date.now();
-                        shoutGate.pending = true;
-                    }
+                    // every exhale is a release (thuum docs/verbs/cast-action.md,
+                    // the god-mode breath): one that followed a shoutStart within
+                    // chargeMs used to arm the gate, but with no voice recovery a
+                    // second breath 2.5 s after the first played no shoutStart of
+                    // its own, its exhale armed nothing, and its hits, within 3 s
+                    // of the first report, were read as the first breath's
+                    // (x-tgm-breath4 20261015-035032: three shouts taken of four)
+                    this.releasedAt = Date.now();
+                    shoutGate.pending = true;
                     this.shoutStartedAt = 0;
                 },
             }, this.playerId, this.playerId, release);
@@ -168,7 +173,10 @@ export class ShoutService extends ClientListener {
     // equipped shout's spell with no report of it within chargeMs means the
     // release went unseen, and the report goes out first
     private reportFromHit(spell: number, why: string): boolean {
-        if (spell === shoutGate.reportedSpell && Date.now() - shoutGate.reportedAt <= ShoutService.chargeMs) {
+        // one breath's hits span about a second (r-shout-firebreath-a: the
+        // cone's hits 220 ms after the exhale); a hit of the same spell past
+        // that is another shout's, the release unseen
+        if (spell === shoutGate.reportedSpell && Date.now() - shoutGate.reportedAt <= ShoutService.hitWindowMs) {
             return false;
         }
         // a stream's hits come ten a second: the equipped shout's spells are
@@ -261,6 +269,8 @@ export class ShoutService extends ClientListener {
     private releasedAt = 0;
     // three words charge in about 0.9 s (x-shout-probe2)
     private static readonly chargeMs = 3000;
+    // how long one shout's own hits may follow its report
+    private static readonly hitWindowMs = 1200;
     // how long the recovery may take to show after the release
     private static readonly readMs = 1500;
     // how much of the recovery may have counted down when read, and how far a

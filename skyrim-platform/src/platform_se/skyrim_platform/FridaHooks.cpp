@@ -13,6 +13,9 @@
 #include <cctype>
 #include <chrono>
 #include <fmt/format.h>
+#include <mutex>
+#include <set>
+#include <unordered_map>
 
 /**
  * Send Event hook
@@ -424,6 +427,131 @@ void InstallPerformActionHook()
 }
 
 /**
+ * The graph's answers to a cast request (thuum docs/verbs/cast-action.md).
+ * The engine's caster sets the hand's want variable and performs the Attack
+ * action only when the graph answers with the BeginCastRight (BeginCastLeft,
+ * BeginCastVoice) graph event, handled by the hand's functor:
+ * RightHandSpellCastHandler and kin (CommonLibSSE-NG
+ * include/RE/Offsets_VTABLE.h:2392-2394), whose ExecuteHandler is the one
+ * virtual after the destructor (include/RE/I/IHandlerFunctor.h:16-19), called
+ * as (this, Actor&, const BSFixedString& tag). A figure's graph answers the
+ * same way to the want variable the view writes (x-cast-gap
+ * 20261015-213755: 34 of 34 asks within 7 ms of an answer, all taken), and
+ * later while the figure moves, which is where a start one update after its
+ * variables was refused (playtest nineteen, about half). The hand is read
+ * from the tag when it names one, else it is the handler's. The player's own
+ * answers are the engine's business and are not recorded.
+ */
+std::mutex g_castReadyMutex;
+std::unordered_map<uint32_t, uint32_t> g_castReady; // form id -> hand bits
+
+uint32_t HandBitOfTag(const RE::BSFixedString* tag, uint32_t fallback)
+{
+  const char* s = tag ? tag->c_str() : nullptr;
+  if (!s) {
+    return fallback;
+  }
+  std::string lower = s;
+  for (auto& c : lower) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  if (lower.find("right") != std::string::npos) {
+    return 2;
+  }
+  if (lower.find("left") != std::string::npos) {
+    return 1;
+  }
+  if (lower.find("voice") != std::string::npos) {
+    return 4;
+  }
+  return fallback;
+}
+
+void NoteCastReady(GumInvocationContext* ic, uint32_t fallbackBit)
+{
+  auto* actor = reinterpret_cast<RE::Actor*>(ic->cpu_context->rdx);
+  if (!actor || actor == RE::PlayerCharacter::GetSingleton()) {
+    return;
+  }
+  const auto* tag =
+    reinterpret_cast<const RE::BSFixedString*>(ic->cpu_context->r8);
+  const uint32_t bit = HandBitOfTag(tag, fallbackBit);
+  {
+    std::lock_guard<std::mutex> lock(g_castReadyMutex);
+    g_castReady[actor->formID] |= bit;
+  }
+  logger::info("[verb:cast-action] castReady on {:x}: hand bit {}",
+               actor->formID, bit);
+}
+
+void OnSpellCastResponseLeftEnter(GumInvocationContext* ic)
+{
+  NoteCastReady(ic, 1);
+}
+
+void OnSpellCastResponseRightEnter(GumInvocationContext* ic)
+{
+  NoteCastReady(ic, 2);
+}
+
+void OnSpellCastResponseVoiceEnter(GumInvocationContext* ic)
+{
+  NoteCastReady(ic, 4);
+}
+
+bool Frida::TakeCastReady(uint32_t actorFormId, int32_t hand)
+{
+  const uint32_t bit = hand == 0 ? 1 : hand == 1 ? 2 : hand == 2 ? 4 : 0;
+  std::lock_guard<std::mutex> lock(g_castReadyMutex);
+  auto it = g_castReady.find(actorFormId);
+  if (it == g_castReady.end() || (it->second & bit) == 0) {
+    return false;
+  }
+  it->second &= ~bit;
+  return true;
+}
+
+void InstallSpellCastResponseHooks()
+{
+  if (!REL::Module::IsAE()) {
+    return;
+  }
+  // ExecuteHandler: slot 1 of each handler's vtable (the destructor is 0)
+  const auto executeHandlerOf = [](const REL::VariantID& vtable) {
+    REL::Relocation<std::uintptr_t> vtbl{ vtable };
+    return *reinterpret_cast<std::uintptr_t*>(vtbl.address() +
+                                              sizeof(std::uintptr_t));
+  };
+  struct Entry
+  {
+    Frida::HookID id;
+    const REL::VariantID& vtable;
+    void (*enter)(GumInvocationContext*);
+  };
+  const Entry entries[] = {
+    { Frida::HookID::HOOK_SPELL_CAST_RESPONSE_LEFT,
+      RE::VTABLE_LeftHandSpellCastHandler[0], OnSpellCastResponseLeftEnter },
+    { Frida::HookID::HOOK_SPELL_CAST_RESPONSE_RIGHT,
+      RE::VTABLE_RightHandSpellCastHandler[0], OnSpellCastResponseRightEnter },
+    { Frida::HookID::HOOK_SPELL_CAST_RESPONSE_VOICE,
+      RE::VTABLE_VoiceSpellCastHandler[0], OnSpellCastResponseVoiceEnter },
+  };
+  // three handlers may share one implementation; one hook per address, the
+  // tag then names the hand
+  std::set<std::uintptr_t> hooked;
+  for (const auto& e : entries) {
+    const auto address = executeHandlerOf(e.vtable);
+    if (!address || !hooked.insert(address).second) {
+      continue;
+    }
+    Frida::HookHandler::GetSingleton()->Install(
+      e.id, address, std::make_shared<Frida::Hook>(e.enter, nullptr));
+    logger::info("[verb:cast-action] spell cast response hook at {:x}",
+                 address);
+  }
+}
+
+/**
  * Queue Ninode Update hook
  */
 thread_local uint32_t g_queueNiNodeActorId = 0;
@@ -588,6 +716,7 @@ void Frida::InstallHooks()
   InstallDrawSheatheWeaponActorHook();
   InstallSendAnimationEventHook();
   InstallPerformActionHook();
+  InstallSpellCastResponseHooks();
   InstallQueueNinodeUpdateHook();
   InstallRenderCursorMenuHook();
 #ifdef ENABLE_SKYRIM_AE

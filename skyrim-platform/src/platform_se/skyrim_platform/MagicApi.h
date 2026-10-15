@@ -18,6 +18,9 @@ Napi::Value PerformAction(const Napi::CallbackInfo& info);
 // the graph's answer to the actor's last performAction: 1 taken, 0 refused,
 // -1 none or still queued (it is performed right after the update that asked)
 Napi::Value PerformActionResult(const Napi::CallbackInfo& info);
+// whether the actor's graph has answered a cast request for the hand (0 left,
+// 1 right, 2 voice) since the last call: the engine's cue to perform a start
+Napi::Value CastReady(const Napi::CallbackInfo& info);
 
 // an actor's master-behavior variables as the JS object
 // getAnimationVariablesFromActor returns (booleans, floats, integers as

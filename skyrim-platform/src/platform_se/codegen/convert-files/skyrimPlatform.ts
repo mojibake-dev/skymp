@@ -1650,6 +1650,8 @@ export declare function interruptCast(actorCasterFormId: number, castingSource: 
 export declare function performAction(actorFormId: number, actionFormId: number, idleFormId: number, eventName: string, type: number): boolean;
 // the graph's answer to the actor's last performAction: 1 taken, 0 refused, -1 none or still queued; read it on the update after the call
 export declare function performActionResult(actorFormId: number): number;
+// thuum docs/verbs/cast-action.md: whether the actor's graph has answered a cast request for the hand (0 left, 1 right, 2 voice) since the last call, the BeginCast graph event the engine's own caster waits for before it performs a start; taken by the call
+export declare function castReady(actorFormId: number, hand: number): boolean;
 export declare function getAnimationVariablesFromActor(actorFormId: number): ActorAnimationVariables;
 export declare function applyAnimationVariablesToActor(actorFormId: number, animationVariables: ActorAnimationVariables): boolean;
 

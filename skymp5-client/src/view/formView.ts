@@ -1,7 +1,7 @@
 import { Actor, ActorBase, createText, destroyText, Form, FormType, Game, Keyword, NetImmerse, ObjectReference, once, printConsole, setTextPos, setTextSize, setTextString, storage, TESModPlatform, Utility, worldPointToScreenPoint } from "skyrimPlatform";
 import { setDefaultAnimsDisabled, applyAnimation } from "../sync/animation";
 // @ts-expect-error (TODO: Remove in 2.10.0)
-import { applyAnimationVariablesToActor, performAction, performActionResult } from "skyrimPlatform";
+import { applyAnimationVariablesToActor, castReady, performAction, performActionResult } from "skyrimPlatform";
 import { Appearance, applyAppearance } from "../sync/appearance";
 import { isBadMenuShown, applyEquipment } from "../sync/equipment";
 import { RespawnNeededError } from "../lib/errors";
@@ -21,6 +21,14 @@ import { GamemodeUpdateService } from "../services/services/gamemodeUpdateServic
 
 // thuum docs/verbs/cast-action.md: the want variable a hand's cast event names
 // (MRh_ the right hand's, MLh_ and the perk's DualMagic_ the left hand's actions)
+// the hands a cast start's event names: 0 left, 1 right; the perk's dual cast
+// is the left hand's actions with both wants up, so either hand's answer
+// counts for it
+const castHandsOf = (eventNameLowerCase: string): number[] =>
+  eventNameLowerCase.startsWith("dualmagic") ? [0, 1] : eventNameLowerCase.startsWith("mlh_") ? [0] : [1];
+
+const wantVariableOfHand = (hand: number): string => (hand === 0 ? "bWantCastLeft" : "bWantCastRight");
+
 const castWantVariable = (eventNameLowerCase: string): string =>
   eventNameLowerCase.startsWith("mrh_") ? "bWantCastRight" : "bWantCastLeft";
 
@@ -717,6 +725,37 @@ export class FormView {
     const pending = this.pendingAction;
     if (pending) {
       if (!this.pendingAsked) {
+        const pendingName = pending.eventName.toLowerCase();
+        if (pendingName.endsWith("start")) {
+          // the engine's handshake: its caster sets the want variable and
+          // performs the Attack only when the graph answers BeginCast (the
+          // hand's response handler); a start one update after its variables
+          // was taken standing still (x-cast-gap 20261015-213755: 34 of 34,
+          // each 4 to 7 ms after that answer) and refused about half the time
+          // while the figure moved (playtest nineteen, x-cast-human 202506),
+          // where the graph answers later. So the start waits for the answer;
+          // without one for a second the want variable rises again, twice;
+          // then it goes without (the shape before the handshake)
+          const hands = castHandsOf(pendingName);
+          const answered = hands.some((h) => castReady(refr.getFormID(), h));
+          if (!answered) {
+            if (this.readyWaits < FormView.readyWaitLimit) {
+              this.readyWaits++;
+              return;
+            }
+            if (this.edgeTries < FormView.edgeTryLimit && model.actionQueue) {
+              this.edgeTries++;
+              this.readyWaits = 0;
+              hands.forEach((h) => refr.setAnimationVariableBool(wantVariableOfHand(h), false));
+              this.pendingAction = null;
+              model.actionQueue.unshift(pending);
+              // the drop is done; the next update applies the variables again (the rise)
+              this.castEdgeCleared = true;
+              return;
+            }
+            printConsole(`cast-action: no cast answer on ${refr.getFormID().toString(16)} for ${pending.eventName}, performed without`);
+          }
+        }
         // queued to the game thread, which performs it right after this
         // update (MagicApi.cpp: performed inside the update, the action's
         // graph event re-entered Skyrim Platform's hooks and hung the game at
@@ -725,6 +764,8 @@ export class FormView {
         performAction(refr.getFormID(), pending.action, pending.idle, pending.eventName, pending.type);
         this.pendingAsked = true;
         this.pendingWaits = 0;
+        this.readyWaits = 0;
+        this.edgeTries = 0;
         return;
       }
       const answer = performActionResult(refr.getFormID());
@@ -790,6 +831,12 @@ export class FormView {
     if (!next) {
       return;
     }
+    if (firstName.endsWith("start")) {
+      // a stale answer is dropped before this rise (an exit's variables raise
+      // the want too, and the graph answers that rise), so the wait above
+      // sees the answer to this one
+      castHandsOf(firstName).forEach((h) => castReady(refr.getFormID(), h));
+    }
     const applied = applyAnimationVariablesToActor(refr.getFormID(), {
       booleans: new Uint8Array(next.actorAnimationVariables.booleans),
       floats: new Uint8Array(next.actorAnimationVariables.floats),
@@ -819,6 +866,12 @@ export class FormView {
   private static readonly castRetryLimit = 15;
   // updates to wait for the queue's answer before counting it refused
   private static readonly answerWaitLimit = 6;
+  // updates a start waits for the graph's cast answer (about a second), and
+  // how many times the want variable rises again without one
+  private readyWaits = 0;
+  private edgeTries = 0;
+  private static readonly readyWaitLimit = 60;
+  private static readonly edgeTryLimit = 2;
   private movState = {
     lastNumChanges: 0,
     lastApply: 0,

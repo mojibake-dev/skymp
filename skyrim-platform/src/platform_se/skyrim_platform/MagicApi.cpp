@@ -1,5 +1,6 @@
 #include "MagicApi.h"
 #include "CallNativeApi.h"
+#include "FridaHooks.h"
 #include "JsUtils.h"
 #include "SkyrimPlatform.h"
 #include "game/Offsets.h"
@@ -368,6 +369,14 @@ Napi::Value MagicApi::PerformActionResult(const Napi::CallbackInfo& info)
                            it == g_actionResult.end() ? -1 : it->second);
 }
 
+Napi::Value MagicApi::CastReady(const Napi::CallbackInfo& info)
+{
+  const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  const auto hand = NapiHelper::ExtractInt32(info[1], "hand");
+  return Napi::Boolean::New(info.Env(),
+                            Frida::TakeCastReady(actorFormId, hand));
+}
+
 Napi::Value MagicApi::ApplyAnimationVariablesToActor(
   const Napi::CallbackInfo& info)
 {
@@ -405,6 +414,10 @@ void MagicApi::Register(Napi::Env env, Napi::Object& exports)
   exports.Set("performActionResult",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(PerformActionResult)));
+
+  exports.Set(
+    "castReady",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(CastReady)));
 
   exports.Set(
     "getAnimationVariablesFromActor",

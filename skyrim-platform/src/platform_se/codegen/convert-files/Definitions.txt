@@ -1641,7 +1641,7 @@ export declare function setInventory(formId: number, inventory: Inventory): void
 
 export declare function castSpellImmediate(actorCasterFormId: number, castingSource: SpellType, formIdSpell: number, formIdTarget: number, aimAngle: number, aimHeading: number, animationVariables: ActorAnimationVariables): void;
 export declare function interruptCast(actorCasterFormId: number, castingSource: SpellType, animationVariables: ActorAnimationVariables): void;
-// thuum docs/verbs/cast-action.md: performs a BGSAction on an actor through the engine's action entry, with the event and idle the caster's engine chose (an actionPerformed event's fields), the caster's variables applied first by applyAnimationVariablesToActor; the figure's cast animation. Returns whether it was queued; the game log says whether the graph took it
+// thuum docs/verbs/cast-action.md: performs a BGSAction on an actor through the engine's action entry, with the event and idle the caster's engine chose (an actionPerformed event's fields), the caster's variables applied first by applyAnimationVariablesToActor; the figure's cast animation. Returns whether the figure's graph took it, performed at once on the game thread
 export declare function performAction(actorFormId: number, actionFormId: number, idleFormId: number, eventName: string, type: number): boolean;
 export declare function getAnimationVariablesFromActor(actorFormId: number): ActorAnimationVariables;
 export declare function applyAnimationVariablesToActor(actorFormId: number, animationVariables: ActorAnimationVariables): boolean;

@@ -304,10 +304,9 @@ Napi::Object MagicApi::AnimationVariablesToJs(
 // performed on the actor through the entry the engine's own casters reach
 // for the Attack, Ready, Release and Interrupt actions (TESActionData,
 // CommonLibSSE-NG include/RE/T/TESActionData.h; ActionInput's source, target
-// and action, ActionOutput's animEvent and animObjIdle). Runs on the game
-// thread, so the return says "queued"; whether the graph took it is in the
-// game log ([verb:cast-action]) and in the graph's own events, which the
-// lab driver's watch reads.
+// and action, ActionOutput's animEvent and animObjIdle). Performed at once
+// on the game thread; returns whether the graph took it (the game log's
+// [verb:cast-action] line says the same).
 Napi::Value MagicApi::PerformAction(const Napi::CallbackInfo& info)
 {
   const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
@@ -316,21 +315,23 @@ Napi::Value MagicApi::PerformAction(const Napi::CallbackInfo& info)
   const auto eventName = NapiHelper::ExtractString(info[3], "eventName");
   const auto type = NapiHelper::ExtractUInt32(info[4], "type");
 
-  g_nativeCallRequirements.gameThrQ->AddTask(
-    [actorFormId, actionFormId, idleFormId, eventName, type](Viet::Void) {
-      auto* pActor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
-      auto* pAction = RE::TESForm::LookupByID<RE::BGSAction>(actionFormId);
-      if (!pActor || !pAction) {
-        return;
-      }
-      auto* pIdle = idleFormId
-        ? RE::TESForm::LookupByID<RE::TESIdleForm>(idleFormId)
-        : nullptr;
-      skymp::magic::details::PerformActionOnActor(*pActor, *pAction, pIdle,
-                                                  eventName, type);
-    });
-
-  return Napi::Boolean::New(info.Env(), true);
+  // performed here and now, as applyAnimationVariablesToActor writes its
+  // variables (the update event runs on the game thread), so the answer is
+  // the graph's: a queued task answered "queued" before the engine ran, and
+  // the view's retry of a refused action never fired (playtest nineteen's
+  // second session, 2026-10-15: concentration starts taken 8 of 15 on the
+  // figure with no retry in sight)
+  auto* pActor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
+  auto* pAction = RE::TESForm::LookupByID<RE::BGSAction>(actionFormId);
+  if (!pActor || !pAction) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  auto* pIdle = idleFormId
+    ? RE::TESForm::LookupByID<RE::TESIdleForm>(idleFormId)
+    : nullptr;
+  const bool taken = skymp::magic::details::PerformActionOnActor(
+    *pActor, *pAction, pIdle, eventName, type);
+  return Napi::Boolean::New(info.Env(), taken);
 }
 
 Napi::Value MagicApi::ApplyAnimationVariablesToActor(

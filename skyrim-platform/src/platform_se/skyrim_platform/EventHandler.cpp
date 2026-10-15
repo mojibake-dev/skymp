@@ -1,6 +1,7 @@
 #include "EventHandler.h"
 #include "EventManager.h"
 #include "EventsApi.h"
+#include "FridaHooks.h"
 #include "JsUtils.h"
 #include "SkyrimPlatform.h"
 #include "TickHandler.h"
@@ -1401,6 +1402,16 @@ EventResult EventHandler::ProcessEvent(
     s.left = leftCasting;
     s.right = rightCasting;
     s.lastLeft = preferLeft;
+  }
+  // the hand whose action performed the cast, as the engine's action entry
+  // saw it (thuum docs/verbs/cast-action.md), over the readings above: with
+  // the spell in both hands the casters' states still named the right hand
+  // for a left-hand Firebolt (x-left-firebolt2 20261015-070447, the state
+  // read widened), where the action's own event name (MLh_, MRh_,
+  // DualMagic_) cannot be wrong
+  const auto actionHand = Frida::LastCastHand(5000);
+  if (actionHand >= 0) {
+    preferLeft = actionHand == 0;
   }
 
   SkyrimPlatform::GetSingleton()->AddUpdateTask([casterId, spellId,

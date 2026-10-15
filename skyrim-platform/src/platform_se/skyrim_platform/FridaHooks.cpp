@@ -9,6 +9,9 @@
 #include "SkyrimPlatform.h"
 #include "StringHolder.h"
 
+#include <atomic>
+#include <cctype>
+#include <chrono>
 #include <fmt/format.h>
 
 /**
@@ -284,6 +287,40 @@ struct PerformedAction
 };
 thread_local std::vector<PerformedAction> g_performedActions;
 
+// the hand of the player's last cast action, for the cast event's source
+// (Frida::LastCastHand); written on the game thread, read there too
+std::atomic<int32_t> g_lastCastHand{ -1 };
+std::atomic<uint64_t> g_lastCastHandAtMs{ 0 };
+
+uint64_t NowMs()
+{
+  return static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch())
+      .count());
+}
+
+void NoteCastHand(const std::string& eventName)
+{
+  if (eventName.size() < 4) {
+    return;
+  }
+  std::string head = eventName.substr(0, 10);
+  for (auto& c : head) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  int32_t hand = -1;
+  if (head.rfind("mrh_", 0) == 0) {
+    hand = 1;
+  } else if (head.rfind("mlh_", 0) == 0 || head.rfind("dualmagic_", 0) == 0) {
+    hand = 0;
+  }
+  if (hand >= 0) {
+    g_lastCastHand = hand;
+    g_lastCastHandAtMs = NowMs();
+  }
+}
+
 void OnPerformActionEnter(GumInvocationContext* ic)
 {
   PerformedAction entry;
@@ -322,6 +359,7 @@ void OnPerformActionLeave(GumInvocationContext* ic)
   const uint32_t type = data->unk20;
   const uint32_t flags = data->flags;
   const uint32_t result = static_cast<uint32_t>(data->result);
+  NoteCastHand(eventName);
 
   SkyrimPlatform::GetSingleton()->AddTickTask(
     [actionId, idleId, eventName, type, flags, result,
@@ -339,6 +377,17 @@ void OnPerformActionLeave(GumInvocationContext* ic)
       obj.Set("variables", MagicApi::AnimationVariablesToJs(env, variables));
       EventsApi::SendEvent("actionPerformed", { obj });
     });
+}
+
+int32_t Frida::LastCastHand(uint64_t withinMs)
+{
+  const int32_t hand = g_lastCastHand.load();
+  if (hand < 0) {
+    return -1;
+  }
+  const uint64_t at = g_lastCastHandAtMs.load();
+  const uint64_t now = NowMs();
+  return now >= at && now - at <= withinMs ? hand : -1;
 }
 
 void InstallPerformActionHook()

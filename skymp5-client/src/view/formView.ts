@@ -1,9 +1,12 @@
 import { Actor, ActorBase, createText, destroyText, Form, FormType, Game, Keyword, NetImmerse, ObjectReference, once, printConsole, setTextPos, setTextSize, setTextString, storage, TESModPlatform, Utility, worldPointToScreenPoint } from "skyrimPlatform";
-import { setDefaultAnimsDisabled, applyAnimation, castStartWaiting } from "../sync/animation";
+import { setDefaultAnimsDisabled, applyAnimation } from "../sync/animation";
+// @ts-expect-error (TODO: Remove in 2.10.0)
+import { applyAnimationVariablesToActor, performAction } from "skyrimPlatform";
 import { Appearance, applyAppearance } from "../sync/appearance";
 import { isBadMenuShown, applyEquipment } from "../sync/equipment";
 import { RespawnNeededError } from "../lib/errors";
 import { FormModel } from "./model";
+import { UpdateActionMessage } from "../services/messages/updateActionMessage";
 import { applyMovement } from "../sync/movementApply";
 import { SpawnProcess } from "./spawnProcess";
 import { ObjectReferenceEx } from "../extensions/objectReferenceEx";
@@ -476,37 +479,21 @@ export class FormView {
       // thuum docs/verbs/spell-cast.md: every relayed event since the last
       // update, oldest first, as the sender's graph took them (applyAnimation
       // skips one it has played by its numChanges); the newest alone when
-      // none is queued (a spawn's). A hand's spell start waits, with what is
-      // behind it, until the figure has held its caster's casting state
-      // since an earlier frame (castStartWaiting; a start in the frame the
-      // state lands is refused, x-figure-cast 20261014-142425), at most
-      // castStartWaitMs, the caster's variables coming with its cast or its
-      // next 500 ms snapshot
+      // none is queued (a spawn's). The hands' casts no longer come this way
+      // (docs/verbs/cast-action.md: they are actions, replayed below)
       const queued = model.animationQueue;
       if (queued && queued.length > 0) {
-        let played = 0;
-        for (; played < queued.length; played++) {
-          const anim = queued[played];
-          const now = Date.now();
-          const waiting = castStartWaiting(refr, anim.animEventName);
-          if (waiting !== null) {
-            if (!this.castStartHeldSince) this.castStartHeldSince = now;
-            const casting = !waiting;
-            const castingBefore = this.castStartCastingSeen;
-            this.castStartCastingSeen = casting;
-            const timedOut = now - this.castStartHeldSince >= FormView.castStartWaitMs;
-            if (!(casting && castingBefore) && !timedOut) break;
-          }
-          this.castStartHeldSince = 0;
-          this.castStartCastingSeen = false;
+        for (const anim of queued) {
           applyAnimation(refr, anim, this.animState);
         }
-        queued.splice(0, played);
+        queued.splice(0, queued.length);
       } else if (model.animation) {
         applyAnimation(refr, model.animation, this.animState);
       }
       // Use them only once, for spawning actors with correct animations
       this.animState.useAnimOverrides = false;
+
+      this.replayActions(refr, model);
     }
 
 
@@ -710,12 +697,52 @@ export class FormView {
     return this.remoteRefrId as number;
   }
 
+  // thuum docs/verbs/cast-action.md: the caster's actions, performed on the
+  // figure through the engine's own action entry (the fork's performAction),
+  // one per two updates: the caster's variables as the graph was asked go on
+  // first, the action on the next update. The graph takes a cast's start only
+  // once it has processed the want variable, at its next update: a start in
+  // the same tick as its variables is refused every time, one an update later
+  // is taken, holds the loop, and the Interrupt's Equipped exit ends it with
+  // the engine's own timing (x-figure-action 20261015-055039, -bolt 055907,
+  // -self 060152). Variables alone provoke nothing in the engine (the
+  // response handler is a no-op on an idle caster, the re-analyst 2026-10-14),
+  // so a queue that drains slowly leaves the figure in the caster's state.
+  private replayActions(refr: ObjectReference, model: FormModel): void {
+    const pending = this.pendingAction;
+    if (pending) {
+      this.pendingAction = null;
+      const taken = performAction(refr.getFormID(), pending.action, pending.idle, pending.eventName, pending.type);
+      if (!taken) {
+        printConsole(`cast-action: performAction refused on ${refr.getFormID().toString(16)}: ${pending.eventName}`);
+      }
+      return;
+    }
+    const queue = model.actionQueue;
+    if (!queue || queue.length === 0) {
+      return;
+    }
+    const next = queue.shift();
+    if (!next) {
+      return;
+    }
+    const applied = applyAnimationVariablesToActor(refr.getFormID(), {
+      booleans: new Uint8Array(next.actorAnimationVariables.booleans),
+      floats: new Uint8Array(next.actorAnimationVariables.floats),
+      integers: new Uint8Array(next.actorAnimationVariables.integers),
+    });
+    if (!applied) {
+      printConsole(`cast-action: variables refused on ${refr.getFormID().toString(16)} before ${next.eventName}`);
+    }
+    this.pendingAction = next;
+  }
+
   private refrId = 0;
   private ready = false;
   private animState = this.getDefaultAnimState();
-  private castStartHeldSince = 0;
-  private castStartCastingSeen = false;
-  private static readonly castStartWaitMs = 1000;
+  // thuum docs/verbs/cast-action.md: the relayed action whose variables went
+  // onto the figure's graph on the last update, performed on this one
+  private pendingAction: UpdateActionMessage | null = null;
   private movState = {
     lastNumChanges: 0,
     lastApply: 0,

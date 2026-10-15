@@ -63,6 +63,7 @@ import { logTrace, logError } from '../../logging';
 
 import { SpellCastMessage } from '../messages/spellCastMessage';
 import { UpdateAnimVariablesMessage } from '../messages/updateAnimVariablesMessage';
+import { UpdateActionMessage } from '../messages/updateActionMessage';
 import { MsgType } from '../../messages';
 
 export const getPcInventory = (): Inventory | undefined => {
@@ -110,6 +111,9 @@ const degreesToRadians = (degrees: number) => degrees * Math.PI / 180;
 // what arrives while the view holds a hand's spell start for up to a second
 // (view/formView.ts)
 const maxQueuedAnimations = 32;
+// thuum docs/verbs/cast-action.md: a cast is three actions; a burst from two
+// hands stays under this
+const maxQueuedActions = 16;
 
 export class RemoteServer extends ClientListener {
   constructor(private sp: Sp, private controller: CombinedController) {
@@ -136,6 +140,7 @@ export class RemoteServer extends ClientListener {
 
     this.controller.emitter.on("spellCastMessage", (e) => this.onSpellCastMessage(e));
     this.controller.emitter.on("updateAnimVariablesMessage", (e) => this.onUpdateAnimVariablesMessage(e));
+    this.controller.emitter.on("updateActionMessage", (e) => this.onUpdateActionMessage(e));
 
   }
 
@@ -957,6 +962,27 @@ export class RemoteServer extends ClientListener {
     }
 
     return msgData;
+  }
+
+  // thuum docs/verbs/cast-action.md: an action the caster's actor performed,
+  // queued for the view in order; at most the sender's own burst
+  private onUpdateActionMessage(event: ConnectionMessage<UpdateActionMessage>): void {
+    const msg = event.message;
+
+    const i = this.getIdManager().getId(msg.idx);
+
+    const form = this.worldModel.forms[i];
+
+    if (form === undefined) {
+      logError(this, `onUpdateActionMessage - Form with idx`, msg.idx, `not found`);
+      return;
+    }
+
+    const queue = form.actionQueue || (form.actionQueue = []);
+    queue.push(msg);
+    if (queue.length > maxQueuedActions) {
+      queue.shift();
+    }
   }
 
   private onSpellCastMessage(event: ConnectionMessage<SpellCastMessage>): void {

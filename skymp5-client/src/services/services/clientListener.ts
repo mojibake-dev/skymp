@@ -29,6 +29,24 @@ declare module "skyrimPlatform" {
     }
     function on(eventName: 'poisonApplied', callback: (event: PoisonAppliedEvent) => void): EventHandle;
     function once(eventName: 'poisonApplied', callback: (event: PoisonAppliedEvent) => void): EventHandle;
+
+    // thuum docs/verbs/cast-action.md: the fork's Skyrim Platform reports
+    // every BGSAction the player's actor performs through the engine's action
+    // entry, with the idle the engine chose, the graph event it sent, the
+    // input type and the actor's behavior graph variables as the graph was
+    // asked. No game call is allowed in its handler (the event's context).
+    interface ActionPerformedEvent {
+        actor: Actor;
+        action: number;
+        idle: number;
+        eventName: string;
+        type: number;
+        flags: number;
+        result: number;
+        variables: { booleans: ArrayBuffer; floats: ArrayBuffer; integers: ArrayBuffer };
+    }
+    function on(eventName: 'actionPerformed', callback: (event: ActionPerformedEvent) => void): EventHandle;
+    function once(eventName: 'actionPerformed', callback: (event: ActionPerformedEvent) => void): EventHandle;
 }
 
 export type Sp = Omit<typeof sp, "on" | "once">;

@@ -189,7 +189,15 @@ export class PlayerBowShotService extends ClientListener {
                 ammoId: equippedAmmoEntries[0].baseId,
                 isSunGazing: false,
                 power: 1.0,
-                ...this.aimOf(actor)
+                ...this.aimOf(actor),
+                // a crossbow's shot goes without its launch: the figure's
+                // bolt leaves along the aim (the wire requires the fields)
+                hasLaunch: false,
+                originX: 0,
+                originY: 0,
+                originZ: 0,
+                launchAngleX: 0,
+                launchAngleZ: 0,
             },
             reliability: "reliable"
         });

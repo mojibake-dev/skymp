@@ -51,7 +51,10 @@ MpActor& Range(PartOne& p, bool equipped)
   return shooter;
 }
 
-void Shoot(PartOne& p, float power = 1.f)
+// a shot without its launch (its game saw none in time: all zero), or, with
+// `launch`, the launch its game made from `origin`
+void Shoot(PartOne& p, float power = 1.f, bool launch = false,
+           NiPoint3 origin = { 0, 0, 0 })
 {
   RawMessageData raw;
   raw.userId = 0;
@@ -61,6 +64,12 @@ void Shoot(PartOne& p, float power = 1.f)
   shot.power = power;
   shot.aimAngle = 0.125f;
   shot.aimHeading = 1.5f;
+  shot.hasLaunch = launch;
+  shot.originX = launch ? origin.x : 0.f;
+  shot.originY = launch ? origin.y : 0.f;
+  shot.originZ = launch ? origin.z : 0.f;
+  shot.launchAngleX = launch ? 0.1f : 0.f;
+  shot.launchAngleZ = launch ? 1.57f : 0.f;
   p.GetActionListener().OnPlayerBowShot(raw, shot);
 }
 
@@ -119,6 +128,63 @@ TEST_CASE("A shot from a held bow takes an arrow and reaches the neighbours",
   REQUIRE(relays[0].second["power"] == 1.f);
   REQUIRE(relays[0].second["aimAngle"] == 0.125f);
   REQUIRE(relays[0].second["aimHeading"] == 1.5f);
+  // a shot without its launch: the figure's arrow leaves along the aim
+  REQUIRE(relays[0].second["hasLaunch"] == false);
+  REQUIRE(relays[0].second["originX"] == 0.f);
+  REQUIRE(relays[0].second["originY"] == 0.f);
+  REQUIRE(relays[0].second["originZ"] == 0.f);
+  REQUIRE(relays[0].second["launchAngleX"] == 0.f);
+  REQUIRE(relays[0].second["launchAngleZ"] == 0.f);
+
+  Leave(p);
+}
+
+TEST_CASE("A shot's launch reaches the neighbours as the shooter's game made "
+          "it",
+          "[Marksman][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& shooter = Range(p, true);
+  const auto arrows = shooter.GetInventory().GetItemCount(kIronArrow);
+  p.Messages().clear();
+
+  // from the bow, a little ahead of the shooter's feet and above them
+  Shoot(p, 1.f, true, { 10, 20, 120 });
+
+  REQUIRE(shooter.GetInventory().GetItemCount(kIronArrow) == arrows - 1);
+  const auto relays = Relays(p);
+  REQUIRE(relays.size() == 1);
+  REQUIRE(relays[0].first == 1);
+  REQUIRE(relays[0].second["hasLaunch"] == true);
+  REQUIRE(relays[0].second["originX"] == 10.f);
+  REQUIRE(relays[0].second["originY"] == 20.f);
+  REQUIRE(relays[0].second["originZ"] == 120.f);
+  REQUIRE(relays[0].second["launchAngleX"] == 0.1f);
+  REQUIRE(relays[0].second["launchAngleZ"] == 1.57f);
+
+  Leave(p);
+}
+
+TEST_CASE("A shot launched far from the shooter changes nothing",
+          "[Marksman][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& shooter = Range(p, true);
+  auto& target = p.worldState.GetFormAt<MpActor>(kTarget);
+  ActorValueRecord record;
+  record.bases = { { 24, 250.f } };
+  REQUIRE(target.SetActorValueRecord(record));
+  const auto arrows = shooter.GetInventory().GetItemCount(kIronArrow);
+  p.Messages().clear();
+
+  // 600 units off where the server has the shooter (E_SHOT_ORIGIN): no
+  // arrow taken, nothing relayed, no shot recorded for a hit to claim
+  Shoot(p, 1.f, true, { 0, 600, 0 });
+
+  REQUIRE(shooter.GetInventory().GetItemCount(kIronArrow) == arrows);
+  REQUIRE(Relays(p).empty());
+  ArrowHits(p, shooter);
+  REQUIRE(target.GetChangeForm().actorValues.healthPercentage == 1.f);
 
   Leave(p);
 }

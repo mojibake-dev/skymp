@@ -11,4 +11,14 @@ export interface ArrowShotMessage {
     power: number;
     aimAngle: number;
     aimHeading: number;
+    // the shot's launch: when hasLaunch, the figure's arrow is launched at
+    // this origin with these angles (TESModPlatform.LaunchArrowAt), the
+    // shooter's own path; otherwise the five are zero and it leaves along
+    // the aim
+    hasLaunch: boolean;
+    originX: number;
+    originY: number;
+    originZ: number;
+    launchAngleX: number;
+    launchAngleZ: number;
 }

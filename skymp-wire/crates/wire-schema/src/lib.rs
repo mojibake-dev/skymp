@@ -32,7 +32,7 @@ use bounded::{String, Vec};
 
 /// Bump when any variant changes shape. It is part of netcode's protocol id,
 /// so peers built against another schema never complete a handshake.
-pub const SCHEMA_VERSION: u16 = 14;
+pub const SCHEMA_VERSION: u16 = 16;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -447,7 +447,7 @@ const TABLE: [Row; 53] = [
     row("DropItem", 19, 32, C2S),
     row("Teleport", 20, 64, S2C),
     row("OpenContainer", 21, 16, S2C),
-    row("PlayerBowShot", 22, 32, C2S),
+    row("PlayerBowShot", 22, 64, C2S),
     row("SpellCast", 23, 32 * KIB, Both),
     row("UpdateAnimVariables", 24, 32 * KIB, Both),
     row("DestroyActor", 25, 16, S2C),
@@ -685,6 +685,38 @@ mod tests {
             Message::ConsoleOutput(skymp::ConsoleOutput {
                 text: "x".repeat(cap::CONSOLE_OUTPUT).try_into().unwrap_or_default(),
                 refused: true,
+                ..Default::default()
+            }),
+            // a shot and its relay at their longest: every id a five-byte
+            // varint, the launch carried
+            Message::PlayerBowShot(skymp::PlayerBowShot {
+                weapon_id: u32::MAX,
+                ammo_id: u32::MAX,
+                power: 1.0,
+                is_sun_gazing: true,
+                aim_angle: f32::MAX,
+                aim_heading: f32::MAX,
+                has_launch: true,
+                origin_x: f32::MAX,
+                origin_y: f32::MAX,
+                origin_z: f32::MAX,
+                launch_angle_x: f32::MAX,
+                launch_angle_z: f32::MAX,
+                ..Default::default()
+            }),
+            Message::ArrowShot(skymp::ArrowShot {
+                idx: u32::MAX,
+                weapon_id: u32::MAX,
+                ammo_id: u32::MAX,
+                power: 1.0,
+                aim_angle: f32::MAX,
+                aim_heading: f32::MAX,
+                has_launch: true,
+                origin_x: f32::MAX,
+                origin_y: f32::MAX,
+                origin_z: f32::MAX,
+                launch_angle_x: f32::MAX,
+                launch_angle_z: f32::MAX,
                 ..Default::default()
             }),
         ];

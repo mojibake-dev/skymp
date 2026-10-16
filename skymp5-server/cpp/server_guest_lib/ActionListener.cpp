@@ -1795,6 +1795,23 @@ void ActionListener::OnPlayerBowShot(const RawMessageData& rawMsgData,
                         ac->GetFormId(), msg.ammoId, msg.weaponId);
   }
 
+  // thuum docs/verbs/marksman.md: the launch each neighbour's game replays
+  // leaves from the shooter's bow, near where the server has the shooter;
+  // one from farther off changes nothing, as a shot from a bow it does not
+  // hold
+  if (msg.hasLaunch) {
+    constexpr float kMaxLaunchOffsetUnits = 512.f;
+    const float distance =
+      (NiPoint3(msg.originX, msg.originY, msg.originZ) - ac->GetPos())
+        .Length();
+    if (distance > kMaxLaunchOffsetUnits) {
+      return spdlog::warn("ActionListener::OnPlayerBowShot - E_SHOT_ORIGIN: "
+                          "{:x} launched {:.0f} units from its position; "
+                          "refused",
+                          ac->GetFormId(), distance);
+    }
+  }
+
   if (!ac->IsGodMode()) {
     // thuum docs/verbs/god-mode.md: TGM, unlimited arrows
     ac->RemoveItem(msg.ammoId, 1, nullptr);
@@ -1810,6 +1827,12 @@ void ActionListener::OnPlayerBowShot(const RawMessageData& rawMsgData,
   relay.power = msg.power;
   relay.aimAngle = msg.aimAngle;
   relay.aimHeading = msg.aimHeading;
+  relay.hasLaunch = msg.hasLaunch;
+  relay.originX = msg.originX;
+  relay.originY = msg.originY;
+  relay.originZ = msg.originZ;
+  relay.launchAngleX = msg.launchAngleX;
+  relay.launchAngleZ = msg.launchAngleZ;
   for (auto listener : ac->GetActorListeners()) {
     if (listener != ac) {
       listener->GetActorToSendTo().SendToUser(relay, true);

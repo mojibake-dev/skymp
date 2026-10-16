@@ -736,7 +736,11 @@ wire_struct! {
 
 wire_struct! {
     /// MsgType 22. Client to server, reliable: the player loosed an arrow
-    /// (R1 intent; thuum docs/verbs/marksman.md). Not idempotent.
+    /// (R1 intent; thuum docs/verbs/marksman.md). Not idempotent. Reason
+    /// codes: `E_VAL_NONFINITE`, `E_VAL_RANGE` (a power outside 0 to 1, an
+    /// aim or a launch pitched past a quarter turn, a launch's fields set
+    /// without `has_launch`), `E_VAL_OUT_OF_WORLD` (a launch's origin),
+    /// `E_VAL_RATE`.
     pub struct PlayerBowShot {
         /// `"t": 22`.
         #[serde(default)]
@@ -754,6 +758,21 @@ wire_struct! {
         pub aim_angle: f32,
         /// Aim heading when the arrow left, radians (Actor::GetAimHeading).
         pub aim_heading: f32,
+        /// The shooter's game saw its own arrow's launch (Projectile::Launch's
+        /// LaunchData, Skyrim Platform's projectileLaunched) and the five
+        /// fields after this one are it; false, they are all zero.
+        pub has_launch: bool,
+        /// Where the engine launched the arrow, x, engine units.
+        pub origin_x: f32,
+        /// Where the engine launched the arrow, y, engine units.
+        pub origin_y: f32,
+        /// Where the engine launched the arrow, z, engine units.
+        pub origin_z: f32,
+        /// The launch's pitch, radians (LaunchData angleX), within a quarter
+        /// turn either way.
+        pub launch_angle_x: f32,
+        /// The launch's heading, radians (LaunchData angleZ).
+        pub launch_angle_z: f32,
     }
 }
 
@@ -762,7 +781,8 @@ wire_struct! {
     /// reliable: a neighbour's shot the server took, for the receiving game
     /// to launch the arrow from that player's figure. The shooter's game made
     /// the shot (R1) and the server checked it; the figure's arrow is drawn,
-    /// its damage the server's.
+    /// its damage the server's. Reason codes: `E_VAL_NONFINITE`, and for
+    /// its launch, as the shot's, `E_VAL_RANGE` and `E_VAL_OUT_OF_WORLD`.
     pub struct ArrowShot {
         /// `"t": 42`.
         #[serde(default)]
@@ -779,6 +799,21 @@ wire_struct! {
         pub aim_angle: f32,
         /// Aim heading, radians.
         pub aim_heading: f32,
+        /// The shot carried its launch ([`PlayerBowShot::has_launch`]): the
+        /// receiving game launches the figure's arrow at this origin with
+        /// these angles, so its path is the shooter's; false, all zero, and
+        /// the arrow leaves along the aim.
+        pub has_launch: bool,
+        /// The launch's origin, x, engine units.
+        pub origin_x: f32,
+        /// The launch's origin, y, engine units.
+        pub origin_y: f32,
+        /// The launch's origin, z, engine units.
+        pub origin_z: f32,
+        /// The launch's pitch, radians.
+        pub launch_angle_x: f32,
+        /// The launch's heading, radians.
+        pub launch_angle_z: f32,
     }
 }
 

@@ -227,6 +227,9 @@ DLLEXPORT bool SKSEAPI SKSEPlugin_Load_Impl(const SKSE::LoadInterface* skse)
     [](SKSE::MessagingInterface::Message* a_msg) {
       EventHandler::HandleSKSEMessage(a_msg);
       BrowserApiNirnLab::GetInstance().HandleSkseMessage(a_msg);
+      if (a_msg && a_msg->type == SKSE::MessagingInterface::kDataLoaded) {
+        Hooks::InstallCastAnswerSink();
+      }
     });
 
   Hooks::Install();

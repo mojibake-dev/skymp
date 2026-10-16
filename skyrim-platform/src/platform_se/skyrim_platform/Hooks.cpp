@@ -161,50 +161,67 @@ void InstallPlayerAddTargetHook()
  * The graph's answers to a cast request (thuum docs/verbs/cast-action.md).
  * The engine's caster sets the hand's want variable and performs the Attack
  * action only when the graph answers with the BeginCastRight (BeginCastLeft,
- * BeginCastVoice) graph event, handled by the hand's functor:
- * RightHandSpellCastHandler and kin, IHandlerFunctor<Actor, BSFixedStringCI>
- * (CommonLibSSE-NG include/RE/Offsets_VTABLE.h:2392-2394), whose
- * ExecuteHandler is the one virtual after the destructor
- * (include/RE/I/IHandlerFunctor.h:16-19), called as (this, Actor&, const
- * BSFixedStringCI&). A figure's graph answers the same way to the want
- * variable the view writes (x-cast-gap 20261015-213755: 34 of 34 asks
- * within 7 ms of an answer, all taken), and later while the figure moves,
- * where a start one update after its variables was refused (playtest
- * nineteen, about half). Each thunk notes the answer for its hand and
- * passes the call on; the view performs the start when castReady says so.
- * The player's own answers are the engine's business and are not noted.
- * Typed vtable swaps, no interceptor and no read of the tag: the first
- * build hooked these with Frida and died at the first answer (34bdf0c3).
+ * BeginCastVoice) graph event; the response dispatcher (38447 on 1.6.1170)
+ * hands it to the hand's functor through slot 1 of its vtable
+ * (RightHandSpellCastHandler and kin, CommonLibSSE-NG
+ * include/RE/Offsets_VTABLE.h:2392-2394; the re-analyst on sky-re,
+ * 2026-10-15: slot 1 is 42820, 42819, 42821, the only way in). SKSE owns that
+ * slot: skse64 writes its own function there for its action events, over
+ * any plugin's write (fork 5df863fd's write_vfunc never fired; slot-probe.js
+ * on the running game found skse64_1_6_1170.dll+0xd760 in it). So the
+ * answer is read where SKSE publishes it: SKSE::ActionEvent kSpellCast
+ * (slot kLeft, kRight) and kVoiceCast (include/SKSE/Events.h:37-67), through
+ * SKSE::GetActionEventSource() (include/SKSE/API.h:31), one event per answer
+ * for every actor. The sink notes the answer for its hand by the actor's
+ * form id; the view performs the start when castReady says so. The player's
+ * own answers are the engine's business and are not noted. Registered at
+ * kDataLoaded, once.
  */
-template <uint32_t HandBit>
-struct SpellCastResponse
+class CastAnswerSink final : public RE::BSTEventSink<SKSE::ActionEvent>
 {
-  static bool thunk(void* a_this, RE::Actor* a_actor, const void* a_tag)
+public:
+  static CastAnswerSink* GetSingleton()
   {
-    if (a_actor && a_actor != RE::PlayerCharacter::GetSingleton()) {
-      Frida::NoteCastReady(a_actor->formID, HandBit);
-    }
-    return func(a_this, a_actor, a_tag);
+    static CastAnswerSink singleton;
+    return &singleton;
   }
-  static inline REL::Relocation<decltype(thunk)> func;
+
+  RE::BSEventNotifyControl ProcessEvent(
+    const SKSE::ActionEvent* a_event,
+    RE::BSTEventSource<SKSE::ActionEvent>*) override
+  {
+    if (!a_event || !a_event->actor ||
+        a_event->actor == RE::PlayerCharacter::GetSingleton()) {
+      return RE::BSEventNotifyControl::kContinue;
+    }
+    uint32_t bit = 0;
+    if (a_event->type == SKSE::ActionEvent::Type::kSpellCast) {
+      bit = a_event->slot == SKSE::ActionEvent::Slot::kLeft ? 1 : 2;
+    } else if (a_event->type == SKSE::ActionEvent::Type::kVoiceCast) {
+      bit = 4;
+    }
+    if (bit) {
+      Frida::NoteCastReady(a_event->actor->formID, bit);
+    }
+    return RE::BSEventNotifyControl::kContinue;
+  }
 };
 
-void InstallSpellCastResponseHooks()
+void Hooks::InstallCastAnswerSink()
 {
-  REL::Relocation<std::uintptr_t> left{
-    RE::VTABLE_LeftHandSpellCastHandler[0]
-  };
-  SpellCastResponse<1>::func =
-    left.write_vfunc(0x1, SpellCastResponse<1>::thunk);
-  REL::Relocation<std::uintptr_t> right{
-    RE::VTABLE_RightHandSpellCastHandler[0]
-  };
-  SpellCastResponse<2>::func =
-    right.write_vfunc(0x1, SpellCastResponse<2>::thunk);
-  REL::Relocation<std::uintptr_t> voice{ RE::VTABLE_VoiceSpellCastHandler[0] };
-  SpellCastResponse<4>::func =
-    voice.write_vfunc(0x1, SpellCastResponse<4>::thunk);
-  logger::info("[verb:cast-action] spell cast response hooks installed");
+  static bool installed = false;
+  if (installed) {
+    return;
+  }
+  auto* source = SKSE::GetActionEventSource();
+  if (!source) {
+    logger::error("[verb:cast-action] no SKSE action event source; a "
+                  "figure's start goes without the graph's answer");
+    return;
+  }
+  source->AddEventSink(CastAnswerSink::GetSingleton());
+  installed = true;
+  logger::info("[verb:cast-action] cast answer sink on SKSE's action events");
 }
 
 void BindNativeMethod(RE::BSScript::Internal::VirtualMachine* thisArg,
@@ -285,7 +302,6 @@ void Hooks::Install()
   InstallOnConsoleVPrintHook();
   HookVirtualMachineBind();
   InstallPlayerAddTargetHook();
-  InstallSpellCastResponseHooks();
 
   logger::info("CommonLib hooks installed.");
 }

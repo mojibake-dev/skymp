@@ -153,12 +153,7 @@ const applySneaking = (ac: Actor, isSneaking: boolean) => {
 // the actor still not in it (playtest twenty: a figure whose state never
 // matched its movement had the native called on every movement message, 20 a
 // second, once the relayed drawn flag began to expire)
-const weapDrawnAsked = new Map < number,
-{
-  drawn: boolean;
-  at: number
-}
->();
+const weapDrawnAsked = new Map<number, { drawn: boolean; at: number }>();
 
 export const applyWeapDrawn = (ac: Actor, isWeapDrawn: boolean): void => {
   if (ac.isWeaponDrawn() === isWeapDrawn) {
@@ -170,7 +165,7 @@ export const applyWeapDrawn = (ac: Actor, isWeapDrawn: boolean): void => {
   if (last && last.drawn === isWeapDrawn && now - last.at < 1000) {
     return;
   }
-  weapDrawnAsked.set(id, { drawn : isWeapDrawn, at : now });
+  weapDrawnAsked.set(id, { drawn: isWeapDrawn, at: now });
   TESModPlatform.setWeaponDrawnMode(ac, isWeapDrawn ? 1 : 0);
 };
 

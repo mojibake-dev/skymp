@@ -1,51 +1,23 @@
-import {
-  Actor,
-  ActorBase,
-  applyAnimationVariablesToActor,
-  castReady,
-  createText,
-  destroyText,
-  Form,
-  FormType,
-  Game,
-  Keyword,
-  NetImmerse,
-  ObjectReference,
-  once,
-  performAction,
-  performActionResult,
-  printConsole,
-  setActivateTextHidden,
-  setActorAimPitch,
-  setTextPos,
-  setTextSize,
-  setTextString,
-  storage,
-  TESModPlatform,
-  Utility,
-  worldPointToScreenPoint
-} from "skyrimPlatform";
-
-import {ObjectReferenceEx} from "../extensions/objectReferenceEx";
-import {RespawnNeededError} from "../lib/errors";
-import {UpdateActionMessage} from "../services/messages/updateActionMessage";
-import {
-  GamemodeUpdateService
-} from "../services/services/gamemodeUpdateService";
-import {WorldCleanerService} from "../services/services/worldCleanerService";
-import {SpApiInteractor} from "../services/spApiInteractor";
-import {applyAnimation, setDefaultAnimsDisabled} from "../sync/animation";
-import {Appearance, applyAppearance} from "../sync/appearance";
-import {applyEquipment, isBadMenuShown} from "../sync/equipment";
-import {applyMovement} from "../sync/movementApply";
-import {getMovement} from "../sync/movementGet";
-
-import {lastTryHost, tryHost} from "./hostAttempts";
-import {FormModel} from "./model";
-import {ModelApplyUtils} from "./modelApplyUtils";
-import {PlayerCharacterDataHolder} from "./playerCharacterDataHolder";
-import {SpawnProcess} from "./spawnProcess";
-import {localIdToRemoteId} from "./worldViewMisc";
+import { Actor, ActorBase, createText, destroyText, Form, FormType, Game, Keyword, NetImmerse, ObjectReference, once, printConsole, setTextPos, setTextSize, setTextString, storage, TESModPlatform, Utility, worldPointToScreenPoint } from "skyrimPlatform";
+import { setDefaultAnimsDisabled, applyAnimation } from "../sync/animation";
+// @ts-expect-error (TODO: Remove in 2.10.0)
+import { applyAnimationVariablesToActor, castReady, performAction, performActionResult, setActivateTextHidden, setActorAimPitch } from "skyrimPlatform";
+import { Appearance, applyAppearance } from "../sync/appearance";
+import { isBadMenuShown, applyEquipment } from "../sync/equipment";
+import { RespawnNeededError } from "../lib/errors";
+import { FormModel } from "./model";
+import { UpdateActionMessage } from "../services/messages/updateActionMessage";
+import { applyMovement } from "../sync/movementApply";
+import { SpawnProcess } from "./spawnProcess";
+import { ObjectReferenceEx } from "../extensions/objectReferenceEx";
+import { PlayerCharacterDataHolder } from "./playerCharacterDataHolder";
+import { getMovement } from "../sync/movementGet";
+import { lastTryHost, tryHost } from "./hostAttempts";
+import { ModelApplyUtils } from "./modelApplyUtils";
+import { localIdToRemoteId } from "./worldViewMisc";
+import { SpApiInteractor } from "../services/spApiInteractor";
+import { WorldCleanerService } from "../services/services/worldCleanerService";
+import { GamemodeUpdateService } from "../services/services/gamemodeUpdateService";
 
 // thuum docs/verbs/cast-action.md: the want variable a hand's cast event names
 // (MRh_ the right hand's, MLh_ and the perk's DualMagic_ the left hand's actions)

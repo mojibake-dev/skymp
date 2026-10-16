@@ -6,7 +6,7 @@
 //! to 33 are SkyMP's; thuum appends its own after them (34, SetGameTime; 35,
 //! RestIntent; 36, MapMarkerDiscovered; 37, IngredientEffectsKnown; 38,
 //! Favorites; 39, RaceMenuPreset; 40, ActorValues; 41, ConsoleOutput; 42,
-//! ArrowShot; 43, MagicEffects; 44, UpdateAction; 44, PlayerGlobals).
+//! ArrowShot; 43, MagicEffects; 44, UpdateAction; 45, PlayerGlobals).
 //!
 //! Directions are SkyMP's: twelve types (fifteen with RestIntent,
 //! MapMarkerDiscovered and IngredientEffectsKnown) only travel
@@ -847,7 +847,7 @@ wire_struct! {
 }
 
 wire_struct! {
-    /// MsgType 44, thuum's (docs/verbs/player-globals.md, ADR-029's A2).
+    /// MsgType 45, thuum's (docs/verbs/player-globals.md, ADR-029's A2).
     /// Both directions, reliable. Server to client, after a login: the
     /// globals the server keeps per player, to watch, and the player's
     /// recorded values, which the client's game sets. Client to server: the
@@ -857,9 +857,9 @@ wire_struct! {
     /// twice, or a client's report naming globals to watch),
     /// `E_VAL_NONFINITE`, `E_VAL_RATE` (client to server).
     pub struct PlayerGlobals {
-        /// `"t": 44`.
+        /// `"t": 45`.
         #[serde(default)]
-        pub t: MsgT<44>,
+        pub t: MsgT<45>,
         /// The globals to watch (server to client only).
         #[serde(default)]
         pub watch: Vec<u32, { cap::PLAYER_GLOBALS }>,

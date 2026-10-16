@@ -15,6 +15,7 @@
 #include <functional>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <save_storages/ISaveStorage.h>
 #include <set>
 #include <simdjson.h>
@@ -166,6 +167,36 @@ public:
                       const NiPoint3& from, float reach, uint64_t waitMs);
   JumpCheck CheckCastJump(uint32_t actorFormId, uint32_t cellOrWorld,
                           const NiPoint3& at);
+
+  // thuum docs/verbs/cast-teleport.md, the look on other screens: what a
+  // teleport's castTeleports entry names for the other players' games to
+  // play on its caster's figure, as load-order form ids (0 for a part it
+  // names none of, or one in a plugin the server does not load); none for a
+  // spell the server names no teleport, or whose entry names no look
+  struct TeleportLook
+  {
+    uint32_t vanish = 0;       // VisualEffect: from the cast to the landing
+    uint32_t appear = 0;       // VisualEffect: at the landing
+    float appearSeconds = 0.f; // how long the appear plays
+    uint32_t sound = 0;        // Sound: at the landing
+  };
+  std::optional<TeleportLook> GetTeleportLook(uint32_t spellFormId) const;
+  // The caster's teleport cast, its jump permitted for `waitMs`: every other
+  // player's game that sees the caster plays the look's vanish on its figure
+  // for that wait (so a fizzled teleport's ends by itself), and the look is
+  // kept for the landing as long; a later teleport cast replaces it, one
+  // without a look drops it
+  void PlayTeleportVanish(MpActor& caster, uint32_t spellFormId,
+                          uint64_t waitMs);
+  // The caster landed at `at`: those games place the figure there at once
+  // (no glide), stop the vanish, play the appear and the sound. Once per
+  // kept look; nothing when none is kept or its wait ran out
+  void PlayTeleportLanding(MpActor& caster, const NiPoint3& at);
+  // Whether a move of `step` units over the ground that the movement bounds
+  // took is a teleport's landing for its look: a landing within the ground
+  // budget's burst never reaches the cast jump's permit (wire-rules
+  // teleports::look_lands)
+  static bool TeleportLookLands(float step);
 
   // thuum docs/verbs/marksman.md: a player loosed an arrow from `weapon` at
   // draw `power`, standing at `from`; a later hit with that weapon claims

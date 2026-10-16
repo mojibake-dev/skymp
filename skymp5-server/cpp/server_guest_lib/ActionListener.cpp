@@ -2931,11 +2931,16 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
   const float teleportReach = partOne.TeleportReach(spellCastData.spell);
   const bool teleport = teleportReach >= 0.f;
   if (teleport && caster == myActor) {
+    const uint64_t waitMs = partOne.TeleportWaitMs(spellCastData.spell);
     partOne.PermitCastJump(
       caster->GetFormId(),
       caster->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles),
-      caster->GetPos(), teleportReach,
-      partOne.TeleportWaitMs(spellCastData.spell));
+      caster->GetPos(), teleportReach, waitMs);
+    // the look on other screens: the mod's script plays the teleport's
+    // effects in the caster's game alone, so the entry's look plays its
+    // vanish on the caster's figure in every other game until the landing
+    // (MovementValidation, PartOne::PlayTeleportLanding)
+    partOne.PlayTeleportVanish(*caster, spellCastData.spell, waitMs);
   }
   if (teleport && !partOne.TeleportRelays(spellCastData.spell)) {
     spdlog::info("ActionListener::OnSpellCast - {:x} cast teleport {:x}, "

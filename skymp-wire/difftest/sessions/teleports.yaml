@@ -25,7 +25,13 @@
 # forms that enter and leave its view are the same on both (the first run's
 # order, the refused move after the jump, left the legacy stack's c1 2500
 # units east, and 32 forms apart). c2 steps again at 5 s of its own (6.5 s
-# of c1's), so it outlives c1, as in every session.
+# of c1's), so it outlives c1, as in every session. The lab's entry names
+# the spell's look on the other screens (thuum docs/verbs/cast-teleport.md:
+# Skyrim.esm's MGTeleportOutEffect 0x102731 and MGTeleportInEffect 0x102730,
+# Dawnguard.esm's 0x010EC4 sound, 0x02010EC4 in the load order): at the cast
+# the wire stack has c2's game play the vanish on c1's figure (0xff000002),
+# at the landing place the figure there, stop the vanish, play the appear
+# and the sound; the legacy stack names no teleport and sends none of them.
 id: teleports
 clients:
   c1: {profile_id: 9}
@@ -79,3 +85,28 @@ divergences:
     legacy: 0
     wire: 1
     reason: departure detection, graceful close on the wire against RakNet's timeout
+  - client: c2
+    msg: {t: 30, class: VisualEffect, function: Play, selfId: 1058609}
+    legacy: 0
+    wire: 1
+    reason: the look's vanish on c1's figure at its teleport's cast, for the jump's wait (thuum docs/verbs/cast-teleport.md, the look on other screens); the legacy stack names no teleport
+  - client: c2
+    msg: {t: 30, class: ObjectReference, function: SetPosition, selfId: 4278190082}
+    legacy: 0
+    wire: 1
+    reason: at c1's landing c2's game places c1's figure there at once, no glide
+  - client: c2
+    msg: {t: 30, class: VisualEffect, function: Stop, selfId: 1058609}
+    legacy: 0
+    wire: 1
+    reason: the landing stops the vanish
+  - client: c2
+    msg: {t: 30, class: VisualEffect, function: Play, selfId: 1058608}
+    legacy: 0
+    wire: 1
+    reason: the landing plays the look's appear on c1's figure
+  - client: c2
+    msg: {t: 30, class: Sound, function: Play, selfId: 33623748}
+    legacy: 0
+    wire: 1
+    reason: the landing plays the look's sound on c1's figure

@@ -424,8 +424,8 @@ int32_t Frida::TakeCastStart(uint64_t withinMs)
  * shooter's client sends its own arrow's origin and angles with the shot so
  * the observer launches the figure's arrow at the same point in the same
  * direction instead of from the figure's node along its aim; the lab's
- * recorder keeps every launch for the parity check. Launches are few (rule 9
- * costs nothing here); the player's own, the figures' and the NPCs' all go.
+ * recorder keeps every launch for the parity check. Only the player's and
+ * the figures' cross into JS (rule 9).
  */
 struct LaunchSeen
 {
@@ -445,6 +445,13 @@ void OnProjectileLaunchEnter(GumInvocationContext* ic)
 {
   auto* data = reinterpret_cast<RE::Projectile::LaunchData*>(ic->cpu_context->rdx);
   if (!data || !data->shooter) {
+    return;
+  }
+  // filtered in native (rule 9): the player's own launches (the shooter's
+  // side of the sync) and the figures' (dynamic forms, the observer's side,
+  // which the recorder compares); an NPC's arrows and spells stay out of JS
+  const uint32_t shooterId = data->shooter->formID;
+  if (shooterId != 0x14 && shooterId < 0xFF000000) {
     return;
   }
   LaunchSeen seen;

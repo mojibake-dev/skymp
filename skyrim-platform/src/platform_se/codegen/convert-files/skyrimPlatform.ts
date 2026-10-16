@@ -292,6 +292,22 @@ export interface SkseActionEvent {
   slot: number;
   sourceForm: number;
 }
+// thuum docs/verbs/marksman.md: a projectile the engine launched (Projectile::Launch's LaunchData, CommonLibSSE-NG include/RE/P/Projectile.h:78-107), raised on the next tick for every shooter: the arrow's or spell's origin and angles as the engine used them. No game call in its handler
+export interface ProjectileLaunchedEvent {
+  shooter: number;
+  projectile: number;
+  weapon: number;
+  ammo: number;
+  spell: number;
+  castingSource: number;
+  originX: number;
+  originY: number;
+  originZ: number;
+  angleX: number;
+  angleZ: number;
+  power: number;
+  useOrigin: boolean;
+}
 
 export interface OpenCloseEvent {
   target: ObjectReference
@@ -665,6 +681,9 @@ export declare function once(eventName: 'actionPerformed', callback: (event: Act
 
 export declare function on(eventName: 'skseAction', callback: (event: SkseActionEvent) => void): EventHandle
 export declare function once(eventName: 'skseAction', callback: (event: SkseActionEvent) => void): EventHandle
+
+export declare function on(eventName: 'projectileLaunched', callback: (event: ProjectileLaunchedEvent) => void): EventHandle
+export declare function once(eventName: 'projectileLaunched', callback: (event: ProjectileLaunchedEvent) => void): EventHandle
 
 export declare function on(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle
 export declare function once(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle

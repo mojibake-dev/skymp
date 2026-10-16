@@ -413,6 +413,85 @@ int32_t Frida::TakeCastStart(uint64_t withinMs)
   return oldest;
 }
 
+/**
+ * Every projectile launch (thuum docs/verbs/marksman.md: the arrow's path
+ * identical on both screens; ADR-032's shape for the effect). The engine
+ * launches every arrow and spell projectile through Projectile::Launch with
+ * a LaunchData the caller filled (CommonLibSSE-NG include/RE/P/Projectile.h:
+ * 78-107: origin, projectileBase, shooter, weaponSource, ammoSource, angleZ,
+ * angleX, spell, castingSource, power, useOrigin). Read on entry, before the
+ * launch, and raised to JS as projectileLaunched on the next tick: the
+ * shooter's client sends its own arrow's origin and angles with the shot so
+ * the observer launches the figure's arrow at the same point in the same
+ * direction instead of from the figure's node along its aim; the lab's
+ * recorder keeps every launch for the parity check. Launches are few (rule 9
+ * costs nothing here); the player's own, the figures' and the NPCs' all go.
+ */
+struct LaunchSeen
+{
+  uint32_t shooter = 0;
+  uint32_t projectile = 0;
+  uint32_t weapon = 0;
+  uint32_t ammo = 0;
+  uint32_t spell = 0;
+  int32_t castingSource = -1;
+  float originX = 0, originY = 0, originZ = 0;
+  float angleX = 0, angleZ = 0;
+  float power = 0;
+  bool useOrigin = false;
+};
+
+void OnProjectileLaunchEnter(GumInvocationContext* ic)
+{
+  auto* data = reinterpret_cast<RE::Projectile::LaunchData*>(ic->cpu_context->rdx);
+  if (!data || !data->shooter) {
+    return;
+  }
+  LaunchSeen seen;
+  seen.shooter = data->shooter->formID;
+  seen.projectile = data->projectileBase ? data->projectileBase->formID : 0;
+  seen.weapon = data->weaponSource ? data->weaponSource->formID : 0;
+  seen.ammo = data->ammoSource ? data->ammoSource->formID : 0;
+  seen.spell = data->spell ? data->spell->formID : 0;
+  seen.castingSource = static_cast<int32_t>(data->castingSource);
+  seen.originX = data->origin.x;
+  seen.originY = data->origin.y;
+  seen.originZ = data->origin.z;
+  seen.angleX = data->angleX;
+  seen.angleZ = data->angleZ;
+  seen.power = data->power;
+  seen.useOrigin = data->useOrigin;
+  SkyrimPlatform::GetSingleton()->AddTickTask([seen](Napi::Env env) {
+    auto obj = Napi::Object::New(env);
+    AddObjProperty(&obj, "shooter", seen.shooter);
+    AddObjProperty(&obj, "projectile", seen.projectile);
+    AddObjProperty(&obj, "weapon", seen.weapon);
+    AddObjProperty(&obj, "ammo", seen.ammo);
+    AddObjProperty(&obj, "spell", seen.spell);
+    AddObjProperty(&obj, "castingSource", seen.castingSource);
+    obj.Set("originX", Napi::Number::New(env, static_cast<double>(seen.originX)));
+    obj.Set("originY", Napi::Number::New(env, static_cast<double>(seen.originY)));
+    obj.Set("originZ", Napi::Number::New(env, static_cast<double>(seen.originZ)));
+    obj.Set("angleX", Napi::Number::New(env, static_cast<double>(seen.angleX)));
+    obj.Set("angleZ", Napi::Number::New(env, static_cast<double>(seen.angleZ)));
+    obj.Set("power", Napi::Number::New(env, static_cast<double>(seen.power)));
+    AddObjProperty(&obj, "useOrigin", seen.useOrigin);
+    EventsApi::SendEvent("projectileLaunched", { obj });
+  });
+}
+
+void InstallProjectileLaunchHook()
+{
+  // AE only: the id is 1.6.1170's (game/Offsets.h)
+  if (!REL::Module::IsAE()) {
+    return;
+  }
+  Frida::HookHandler::GetSingleton()->Install(
+    Frida::HookID::HOOK_PROJECTILE_LAUNCH,
+    Offsets::Hooks::ProjectileLaunch.address(),
+    std::make_shared<Frida::Hook>(OnProjectileLaunchEnter, nullptr));
+}
+
 void InstallPerformActionHook()
 {
   // AE only: the id is 1.6.1170's (game/Offsets.h)
@@ -627,6 +706,7 @@ void Frida::InstallHooks()
   InstallDrawSheatheWeaponActorHook();
   InstallSendAnimationEventHook();
   InstallPerformActionHook();
+  InstallProjectileLaunchHook();
   InstallQueueNinodeUpdateHook();
   InstallRenderCursorMenuHook();
 #ifdef ENABLE_SKYRIM_AE

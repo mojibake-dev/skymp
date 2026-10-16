@@ -30,6 +30,12 @@ inline REL::Relocation<std::uintptr_t> SendAnimation{ RELOCATION_ID(37020,
 // 2026-10-14; the SE id is unread, and the hook installs on AE runtimes only
 // (ADR-025's 1.6.1170).
 inline REL::Relocation<std::uintptr_t> PerformAction{ REL::ID(38949) };
+// Projectile::Launch, (ProjectileHandle*, LaunchData&) -> ProjectileHandle*:
+// the engine's one launch of every projectile, an arrow's or a spell's
+// (CommonLibSSE-NG src/RE/P/Projectile.cpp:255-258, RELOCATION_ID(42928,
+// 44108); include/RE/P/Projectile.h:78-107 the LaunchData). AE id; thuum
+// docs/verbs/marksman.md, the arrow's path identical on both screens.
+inline REL::Relocation<std::uintptr_t> ProjectileLaunch{ REL::ID(44108) };
 inline REL::Relocation<std::uintptr_t> QueueNinodeUpdate{ RELOCATION_ID(
   39181, 40255) };
 inline REL::Relocation<std::uintptr_t> ApplyMasksToRenderTargets{

@@ -1987,14 +1987,22 @@ void ActionListener::OnHostAttempt(const RawMessageData& rawMsgData,
   if (hoster == 0 || !lastRemoteUpdate ||
       std::chrono::system_clock::now() - *lastRemoteUpdate >
         hostResetTimeout) {
-    partOne.GetLogger().info("Hoster changed from {0:x} to {0:x}", prevHoster,
+    partOne.GetLogger().info("Hoster changed from {0:x} to {1:x}", prevHoster,
                              me->GetFormId());
     hoster = me->GetFormId();
     remote.UpdateHoster(hoster);
 
-    // Prevents too fast host switch
-    partOne.worldState.lastMovUpdateByIdx[remoteIdx] =
-      std::chrono::system_clock::now();
+    // Prevents too fast host switch. A form no movement was recorded for
+    // sits past the vector's end (on a fresh server, the first host of an
+    // actor that never moved), so it grows as OnUpdateMovement's does
+    // first: the write past its end aborted the server on libstdc++'s
+    // bounds assertion (thuum, the Apocalypse layer's sweep,
+    // 20261016-233122-a-movement-speed's server.log).
+    auto& lastMovUpdate = partOne.worldState.lastMovUpdateByIdx;
+    if (lastMovUpdate.size() <= remoteIdx) {
+      lastMovUpdate.resize(static_cast<size_t>(remoteIdx) + 1);
+    }
+    lastMovUpdate[remoteIdx] = std::chrono::system_clock::now();
 
     auto remoteAsActor = remote.AsActor();
     if (remoteAsActor) {

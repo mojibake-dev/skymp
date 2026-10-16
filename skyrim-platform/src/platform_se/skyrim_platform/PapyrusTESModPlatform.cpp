@@ -1584,10 +1584,11 @@ bool TESModPlatform::Register(IVM* vm)
       "LaunchArrow", "TESModPlatform", LaunchArrow));
 
   vm->BindNativeMethod(
-    new RE::BSScript::NativeFunction<
-      true, decltype(LaunchArrowAt), bool, RE::StaticFunctionTag*,
-      RE::Actor*, RE::TESObjectWEAP*, RE::TESAmmo*, float, float, float,
-      float, float, float>("LaunchArrowAt", "TESModPlatform", LaunchArrowAt));
+    new RE::BSScript::NativeFunction<true, decltype(LaunchArrowAt), bool,
+                                     RE::StaticFunctionTag*, RE::Actor*,
+                                     RE::TESObjectWEAP*, RE::TESAmmo*, float,
+                                     float, float, float, float, float>(
+      "LaunchArrowAt", "TESModPlatform", LaunchArrowAt));
 
   vm->BindNativeMethod(
     new RE::BSScript::NativeFunction<true, decltype(GetFavorites),

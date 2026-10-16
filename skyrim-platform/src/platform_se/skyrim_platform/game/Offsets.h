@@ -42,7 +42,8 @@ inline REL::Relocation<std::uintptr_t> ProjectileLaunch{ REL::ID(44108) };
 // not yet carry. Not in CommonLibSSE-NG; the re-analyst on sky-re
 // (2026-10-16, Ghidra, 1.6.1170: InitVelocity, AE id 44184, RVA 0x7e99a0 by
 // lab/addr.py), HYPOTHESIS until x-arrow-path. thuum docs/verbs/marksman.md.
-inline REL::Relocation<std::uintptr_t> ProjectileInitVelocity{ REL::ID(44184) };
+inline REL::Relocation<std::uintptr_t> ProjectileInitVelocity{ REL::ID(
+  44184) };
 inline REL::Relocation<std::uintptr_t> QueueNinodeUpdate{ RELOCATION_ID(
   39181, 40255) };
 inline REL::Relocation<std::uintptr_t> ApplyMasksToRenderTargets{

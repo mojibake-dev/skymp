@@ -443,7 +443,8 @@ struct LaunchSeen
 
 void OnProjectileLaunchEnter(GumInvocationContext* ic)
 {
-  auto* data = reinterpret_cast<RE::Projectile::LaunchData*>(ic->cpu_context->rdx);
+  auto* data =
+    reinterpret_cast<RE::Projectile::LaunchData*>(ic->cpu_context->rdx);
   if (!data || !data->shooter) {
     return;
   }
@@ -476,11 +477,16 @@ void OnProjectileLaunchEnter(GumInvocationContext* ic)
     AddObjProperty(&obj, "ammo", seen.ammo);
     AddObjProperty(&obj, "spell", seen.spell);
     AddObjProperty(&obj, "castingSource", seen.castingSource);
-    obj.Set("originX", Napi::Number::New(env, static_cast<double>(seen.originX)));
-    obj.Set("originY", Napi::Number::New(env, static_cast<double>(seen.originY)));
-    obj.Set("originZ", Napi::Number::New(env, static_cast<double>(seen.originZ)));
-    obj.Set("angleX", Napi::Number::New(env, static_cast<double>(seen.angleX)));
-    obj.Set("angleZ", Napi::Number::New(env, static_cast<double>(seen.angleZ)));
+    obj.Set("originX",
+            Napi::Number::New(env, static_cast<double>(seen.originX)));
+    obj.Set("originY",
+            Napi::Number::New(env, static_cast<double>(seen.originY)));
+    obj.Set("originZ",
+            Napi::Number::New(env, static_cast<double>(seen.originZ)));
+    obj.Set("angleX",
+            Napi::Number::New(env, static_cast<double>(seen.angleX)));
+    obj.Set("angleZ",
+            Napi::Number::New(env, static_cast<double>(seen.angleZ)));
     obj.Set("power", Napi::Number::New(env, static_cast<double>(seen.power)));
     AddObjProperty(&obj, "useOrigin", seen.useOrigin);
     EventsApi::SendEvent("projectileLaunched", { obj });
@@ -517,7 +523,8 @@ void OnProjectileInitVelocityEnter(GumInvocationContext* ic)
   }
   LaunchSeen seen;
   seen.shooter = shooterId;
-  seen.projectile = projectile->GetBaseObject() ? projectile->GetBaseObject()->formID : 0;
+  seen.projectile =
+    projectile->GetBaseObject() ? projectile->GetBaseObject()->formID : 0;
   seen.weapon = runtime.weaponSource ? runtime.weaponSource->formID : 0;
   seen.ammo = runtime.ammoSource->formID;
   seen.originX = projectile->data.location.x;
@@ -535,8 +542,10 @@ void OnProjectileInitVelocityEnter(GumInvocationContext* ic)
     obj.Set("x", Napi::Number::New(env, static_cast<double>(seen.originX)));
     obj.Set("y", Napi::Number::New(env, static_cast<double>(seen.originY)));
     obj.Set("z", Napi::Number::New(env, static_cast<double>(seen.originZ)));
-    obj.Set("angleX", Napi::Number::New(env, static_cast<double>(seen.angleX)));
-    obj.Set("angleZ", Napi::Number::New(env, static_cast<double>(seen.angleZ)));
+    obj.Set("angleX",
+            Napi::Number::New(env, static_cast<double>(seen.angleX)));
+    obj.Set("angleZ",
+            Napi::Number::New(env, static_cast<double>(seen.angleZ)));
     obj.Set("power", Napi::Number::New(env, static_cast<double>(seen.power)));
     EventsApi::SendEvent("projectileFlight", { obj });
   });

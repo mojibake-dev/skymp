@@ -584,17 +584,67 @@ PartOne::VoiceFacts VoiceFactsOf(const MpActor& actor, uint32_t shout,
   return f;
 }
 
-// thuum docs/verbs/self-cast.md: an invisible or ethereal actor's own act
-// (an attack, a cast) ends that state on the server, as the engine ends it
-// in its game (HYPOTHESIS until the lab reads the engine's)
-void EndConcealment(MpActor& actor)
+// The archetype a cast spell carries that its own cast spares (the engine's
+// exception: Invisibility before Etherealize, none otherwise)
+std::optional<espm::MGEF::EffectType> ConcealmentExceptionOf(
+  WorldState* worldState, uint32_t spell)
 {
-  if (actor.EndRunningEffectsOfTypes(
-        { espm::MGEF::EffectType::Invisibility,
-          espm::MGEF::EffectType::Etherealize })) {
+  if (!spell) {
+    return std::nullopt;
+  }
+  bool invisibility = false;
+  bool etherealize = false;
+  for (const auto& effect : MpActor::EffectsOf(worldState, spell)) {
+    try {
+      const auto type =
+        espm::GetData<espm::MGEF>(effect.effectId, worldState).data.effectType;
+      invisibility |= type == espm::MGEF::EffectType::Invisibility;
+      etherealize |= type == espm::MGEF::EffectType::Etherealize;
+    } catch (std::exception& e) {
+      spdlog::warn("ConcealmentExceptionOf - effect {:x} of {:x}: {}",
+                   effect.effectId, spell, e.what());
+    }
+  }
+  if (invisibility) {
+    return espm::MGEF::EffectType::Invisibility;
+  }
+  if (etherealize) {
+    return espm::MGEF::EffectType::Etherealize;
+  }
+  return std::nullopt;
+}
+
+// thuum docs/verbs/self-cast.md: an invisible or ethereal actor's own act
+// (an attack, a cast) ends that state on the server, as the engine ends it in
+// its game: Actor::DispelAlteredStates (38819 on 1.6.1170), which the
+// caster's SpellCast calls at the fire with one exception, the archetype the
+// cast spell itself carries, so a recast of Invisibility replaces the running
+// copy instead of ending it (the engine's own replace pass); a hit or an
+// activation passes none (the re-analyst on sky-re, 2026-10-16; HYPOTHESIS
+// until x-invis-recast). Without the exception the server ended the state
+// and told every game at once, and the observer's dispel, landing after its
+// figure's fresh cast, ended the new copy: playtest nineteen's "if i REcast
+// it i lose invisibility on the other players screen but not my own".
+void EndConcealment(MpActor& actor, uint32_t castSpell = 0)
+{
+  const auto exception = ConcealmentExceptionOf(actor.GetParent(), castSpell);
+  bool ended = false;
+  if (exception == espm::MGEF::EffectType::Invisibility) {
+    ended =
+      actor.EndRunningEffectsOfTypes({ espm::MGEF::EffectType::Etherealize });
+  } else if (exception == espm::MGEF::EffectType::Etherealize) {
+    ended =
+      actor.EndRunningEffectsOfTypes({ espm::MGEF::EffectType::Invisibility });
+  } else {
+    ended =
+      actor.EndRunningEffectsOfTypes({ espm::MGEF::EffectType::Invisibility,
+                                       espm::MGEF::EffectType::Etherealize });
+  }
+  if (ended) {
     spdlog::info("ActionListener - {:x} acts: its invisibility and ethereal "
-                 "state end",
-                 actor.GetFormId());
+                 "state end{}",
+                 actor.GetFormId(),
+                 exception ? " (but the one its own spell carries)" : "");
   }
 }
 
@@ -2922,7 +2972,7 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
                  caster->GetFormId(), *shout, facts.variation,
                  spellCastData.spell,
                  partOne.VoiceRecoveryLeftMs(caster->GetFormId()) / 1000.0);
-    EndConcealment(*caster);
+    EndConcealment(*caster, spellCastData.spell);
     RunSelfSpell(partOne.worldState, *caster, spellCastData.spell);
     RelayCast(*caster, *myActor, spellCastData);
     return;
@@ -2939,7 +2989,7 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
   // every screen draws it
   partOne.StartCast(caster->GetFormId(), spellCastData.spell, hand,
                     caster->GetPos());
-  EndConcealment(*caster);
+  EndConcealment(*caster, spellCastData.spell);
   RunSelfSpell(partOne.worldState, *caster, spellCastData.spell);
 
   // thuum docs/verbs/cast-teleport.md: a spell the server names as a

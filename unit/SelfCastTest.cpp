@@ -200,6 +200,29 @@ TEST_CASE("Invisibility runs as a state, and the caster's next act ends it",
   Leave(p);
 }
 
+TEST_CASE("A recast of Invisibility keeps its caster invisible, as the "
+          "engine spares the archetype its own spell carries",
+          "[SelfCast][espm]")
+{
+  // thuum docs/verbs/self-cast.md (playtest nineteen: the recast made the
+  // figure visible on the other screen): the engine's DispelAlteredStates
+  // passes the cast spell's own archetype as its exception, so the recast's
+  // copy replaces the running one; the server ended it and told every game
+  PartOne& p = GetPartOne();
+  auto& caster = Pair(p, kInvisibility);
+  Cast(p, kInvisibility);
+  REQUIRE(caster.HasRunningEffectOfType(espm::MGEF::EffectType::Invisibility));
+  Cast(p, kInvisibility);
+  REQUIRE(caster.HasRunningEffectOfType(espm::MGEF::EffectType::Invisibility));
+
+  // another spell still ends it
+  Hold(caster, kFirebolt);
+  Cast(p, kFirebolt);
+  REQUIRE(
+    !caster.HasRunningEffectOfType(espm::MGEF::EffectType::Invisibility));
+  Leave(p);
+}
+
 TEST_CASE("An ethereal player takes no damage from another's arrow",
           "[SelfCast][espm]")
 {

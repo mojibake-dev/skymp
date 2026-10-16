@@ -444,9 +444,9 @@ void MagicApi::Register(Napi::Env env, Napi::Object& exports)
     "castReady",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(CastReady)));
 
-  exports.Set("setActorAimPitch",
-              Napi::Function::New(
-                env, NapiHelper::WrapCppExceptions(SetActorAimPitch)));
+  exports.Set(
+    "setActorAimPitch",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetActorAimPitch)));
 
   exports.Set(
     "getAnimationVariablesFromActor",

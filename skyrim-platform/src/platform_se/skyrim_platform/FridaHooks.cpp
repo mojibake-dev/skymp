@@ -487,6 +487,72 @@ void OnProjectileLaunchEnter(GumInvocationContext* ic)
   });
 }
 
+/**
+ * An arrow's flight as it starts (thuum docs/verbs/marksman.md): the
+ * engine sets a missile's velocity on its first update from its angles at
+ * that moment (InitVelocity, game/Offsets.h), and for the player's arrow
+ * those are the angles after the engine's auto-aim, which Launch's LaunchData
+ * does not carry (the re-analyst, 2026-10-16). Read on entry for arrows
+ * (an ammo source) whose shooter is the player or a figure (rule 9), raised
+ * as projectileFlight on the next tick: the shooter's client sends these
+ * angles with the shot, the recorder keeps both games' for the parity check.
+ */
+void OnProjectileInitVelocityEnter(GumInvocationContext* ic)
+{
+  auto* projectile = reinterpret_cast<RE::Projectile*>(ic->cpu_context->rcx);
+  if (!projectile) {
+    return;
+  }
+  auto& runtime = projectile->GetProjectileRuntimeData();
+  if (!runtime.ammoSource) {
+    return;
+  }
+  const auto shooter = runtime.shooter.get();
+  if (!shooter) {
+    return;
+  }
+  const uint32_t shooterId = shooter->formID;
+  if (shooterId != 0x14 && shooterId < 0xFF000000) {
+    return;
+  }
+  LaunchSeen seen;
+  seen.shooter = shooterId;
+  seen.projectile = projectile->GetBaseObject() ? projectile->GetBaseObject()->formID : 0;
+  seen.weapon = runtime.weaponSource ? runtime.weaponSource->formID : 0;
+  seen.ammo = runtime.ammoSource->formID;
+  seen.originX = projectile->data.location.x;
+  seen.originY = projectile->data.location.y;
+  seen.originZ = projectile->data.location.z;
+  seen.angleX = projectile->data.angle.x;
+  seen.angleZ = projectile->data.angle.z;
+  seen.power = runtime.power;
+  SkyrimPlatform::GetSingleton()->AddTickTask([seen](Napi::Env env) {
+    auto obj = Napi::Object::New(env);
+    AddObjProperty(&obj, "shooter", seen.shooter);
+    AddObjProperty(&obj, "projectile", seen.projectile);
+    AddObjProperty(&obj, "weapon", seen.weapon);
+    AddObjProperty(&obj, "ammo", seen.ammo);
+    obj.Set("x", Napi::Number::New(env, static_cast<double>(seen.originX)));
+    obj.Set("y", Napi::Number::New(env, static_cast<double>(seen.originY)));
+    obj.Set("z", Napi::Number::New(env, static_cast<double>(seen.originZ)));
+    obj.Set("angleX", Napi::Number::New(env, static_cast<double>(seen.angleX)));
+    obj.Set("angleZ", Napi::Number::New(env, static_cast<double>(seen.angleZ)));
+    obj.Set("power", Napi::Number::New(env, static_cast<double>(seen.power)));
+    EventsApi::SendEvent("projectileFlight", { obj });
+  });
+}
+
+void InstallProjectileInitVelocityHook()
+{
+  if (!REL::Module::IsAE()) {
+    return;
+  }
+  Frida::HookHandler::GetSingleton()->Install(
+    Frida::HookID::HOOK_PROJECTILE_INIT_VELOCITY,
+    Offsets::Hooks::ProjectileInitVelocity.address(),
+    std::make_shared<Frida::Hook>(OnProjectileInitVelocityEnter, nullptr));
+}
+
 void InstallProjectileLaunchHook()
 {
   // AE only: the id is 1.6.1170's (game/Offsets.h)
@@ -714,6 +780,7 @@ void Frida::InstallHooks()
   InstallSendAnimationEventHook();
   InstallPerformActionHook();
   InstallProjectileLaunchHook();
+  InstallProjectileInitVelocityHook();
   InstallQueueNinodeUpdateHook();
   InstallRenderCursorMenuHook();
 #ifdef ENABLE_SKYRIM_AE

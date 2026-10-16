@@ -24,7 +24,9 @@ enum HookID
   // thuum docs/verbs/cast-action.md
   HOOK_PERFORM_ACTION,
   // thuum docs/verbs/marksman.md: every projectile launch
-  HOOK_PROJECTILE_LAUNCH
+  HOOK_PROJECTILE_LAUNCH,
+  // and an arrow's final angles on its first update
+  HOOK_PROJECTILE_INIT_VELOCITY
 };
 
 struct Hook

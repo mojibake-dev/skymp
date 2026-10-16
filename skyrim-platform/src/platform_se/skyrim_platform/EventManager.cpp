@@ -19,6 +19,7 @@ void EventManager::InitCustom()
   manager->EmplaceEvent("actionPerformed");
   manager->EmplaceEvent("skseAction");
   manager->EmplaceEvent("projectileLaunched");
+  manager->EmplaceEvent("projectileFlight");
   manager->EmplaceEvent("ipcMessage");
 
   // skse messages

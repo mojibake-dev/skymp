@@ -36,6 +36,13 @@ inline REL::Relocation<std::uintptr_t> PerformAction{ REL::ID(38949) };
 // 44108); include/RE/P/Projectile.h:78-107 the LaunchData). AE id; thuum
 // docs/verbs/marksman.md, the arrow's path identical on both screens.
 inline REL::Relocation<std::uintptr_t> ProjectileLaunch{ REL::ID(44108) };
+// A missile's velocity set on its first update, Projectile vfunc called as
+// (Projectile*): the angles here are its final ones, the player's arrow's
+// after the engine's auto-aim rewrote them (41248), which Launch's entry does
+// not yet carry. Not in CommonLibSSE-NG; the re-analyst on sky-re
+// (2026-10-16, Ghidra, 1.6.1170: InitVelocity, AE id 44184, RVA 0x7e99a0 by
+// lab/addr.py), HYPOTHESIS until x-arrow-path. thuum docs/verbs/marksman.md.
+inline REL::Relocation<std::uintptr_t> ProjectileInitVelocity{ REL::ID(44184) };
 inline REL::Relocation<std::uintptr_t> QueueNinodeUpdate{ RELOCATION_ID(
   39181, 40255) };
 inline REL::Relocation<std::uintptr_t> ApplyMasksToRenderTargets{

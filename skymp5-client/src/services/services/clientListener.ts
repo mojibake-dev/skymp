@@ -78,6 +78,22 @@ declare module "skyrimPlatform" {
     }
     function on(eventName: 'projectileLaunched', callback: (event: ProjectileLaunchedEvent) => void): EventHandle;
     function once(eventName: 'projectileLaunched', callback: (event: ProjectileLaunchedEvent) => void): EventHandle;
+    // thuum docs/verbs/marksman.md: an arrow's flight as it starts, its final
+    // angles (after the player's auto-aim). No game call in its handler.
+    interface ProjectileFlightEvent {
+        shooter: number;
+        projectile: number;
+        weapon: number;
+        ammo: number;
+        x: number;
+        y: number;
+        z: number;
+        angleX: number;
+        angleZ: number;
+        power: number;
+    }
+    function on(eventName: 'projectileFlight', callback: (event: ProjectileFlightEvent) => void): EventHandle;
+    function once(eventName: 'projectileFlight', callback: (event: ProjectileFlightEvent) => void): EventHandle;
 }
 
 export type Sp = Omit<typeof sp, "on" | "once">;

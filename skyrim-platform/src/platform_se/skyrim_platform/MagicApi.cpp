@@ -369,6 +369,31 @@ Napi::Value MagicApi::PerformActionResult(const Napi::CallbackInfo& info)
                            it == g_actionResult.end() ? -1 : it->second);
 }
 
+// thuum docs/verbs/spell-cast.md (playtest nineteen: Flames aimed straight
+// up showed as a forward stream on the other screen): the engine aims an
+// actor's stream at its launch and again every frame from Actor::GetAimAngle
+// (37930 on 1.6.1170), which returns -AimPitchCurrent when the actor's graph
+// has bAimActive, else the reference's angle.x (the re-analyst on sky-re,
+// 2026-10-16; CommonLibSSE-NG src/RE/A/Actor.cpp:275-296). Nothing set either
+// on a figure while it stands (movementApply passes only a heading offset),
+// so its stream flew level. Both are written here, each update, from the
+// caster's pitch (radians, down positive, as GetAimAngle): the reference's
+// angle (include/RE/T/TESObjectREFR.h:495, OBJ_REFR's angle) and the graph
+// float, so either branch reads the caster's aim. False for no actor or a
+// pitch that is not a number.
+Napi::Value MagicApi::SetActorAimPitch(const Napi::CallbackInfo& info)
+{
+  const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  const auto radians = NapiHelper::ExtractFloat(info[1], "radians");
+  auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
+  if (!actor || !std::isfinite(radians)) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  actor->data.angle.x = radians;
+  actor->SetGraphVariableFloat("AimPitchCurrent", -radians);
+  return Napi::Boolean::New(info.Env(), true);
+}
+
 Napi::Value MagicApi::CastReady(const Napi::CallbackInfo& info)
 {
   const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
@@ -418,6 +443,10 @@ void MagicApi::Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "castReady",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(CastReady)));
+
+  exports.Set("setActorAimPitch",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(SetActorAimPitch)));
 
   exports.Set(
     "getAnimationVariablesFromActor",

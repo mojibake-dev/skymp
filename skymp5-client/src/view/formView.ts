@@ -1,7 +1,7 @@
 import { Actor, ActorBase, createText, destroyText, Form, FormType, Game, Keyword, NetImmerse, ObjectReference, once, printConsole, setTextPos, setTextSize, setTextString, storage, TESModPlatform, Utility, worldPointToScreenPoint } from "skyrimPlatform";
 import { setDefaultAnimsDisabled, applyAnimation } from "../sync/animation";
 // @ts-expect-error (TODO: Remove in 2.10.0)
-import { applyAnimationVariablesToActor, castReady, performAction, performActionResult } from "skyrimPlatform";
+import { applyAnimationVariablesToActor, castReady, performAction, performActionResult, setActorAimPitch } from "skyrimPlatform";
 import { Appearance, applyAppearance } from "../sync/appearance";
 import { isBadMenuShown, applyEquipment } from "../sync/equipment";
 import { RespawnNeededError } from "../lib/errors";
@@ -503,6 +503,20 @@ export class FormView {
       }
       // Use them only once, for spawning actors with correct animations
       this.animState.useAnimOverrides = false;
+
+      // thuum docs/verbs/spell-cast.md (playtest nineteen: Flames aimed up
+      // showed forward on the other screen): the engine aims an actor's
+      // stream every frame from its aim angle, the reference's pitch or its
+      // AimPitchCurrent, and nothing set either on a figure while it stood;
+      // so each update a form another game drives (a player's figure, an NPC
+      // another client hosts; the movement applies under the same test above)
+      // takes its pitch from the movement (angle X, degrees, down positive)
+      if (model.movement && !model.isMyClone && model.isHostedByOther) {
+        const pitchDegrees = model.movement.rot[0];
+        if (Number.isFinite(pitchDegrees) && Actor.from(refr)) {
+          setActorAimPitch(refr.getFormID(), pitchDegrees * Math.PI / 180);
+        }
+      }
 
       this.replayActions(refr, model);
     }

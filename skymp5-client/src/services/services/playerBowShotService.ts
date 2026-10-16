@@ -22,6 +22,10 @@ export class PlayerBowShotService extends ClientListener {
         // arrow at the same origin in the same direction (thuum
         // docs/verbs/marksman.md: the arrow's path identical on both screens)
         this.controller.on("projectileLaunched", (e) => this.onProjectileLaunched(e));
+        // and its flight as it starts: the arrow's final angles, after the
+        // engine's auto-aim (Launch's entry carries the angles before it;
+        // the re-analyst, 2026-10-16)
+        this.controller.on("projectileFlight", (e) => this.onProjectileFlight(e));
         this.controller.on("update", () => this.flushShot());
 
         const _this = this;
@@ -88,22 +92,43 @@ export class PlayerBowShotService extends ClientListener {
         this.lastLaunch = { at: Date.now(), ammo: e.ammo, weapon: e.weapon, originX: e.originX, originY: e.originY, originZ: e.originZ, angleX: e.angleX, angleZ: e.angleZ };
     }
 
+    private onProjectileFlight(e: { shooter: number; ammo: number; x: number; y: number; z: number; angleX: number; angleZ: number }) {
+        if (e.shooter !== 0x14 || !e.ammo) {
+            return;
+        }
+        this.lastFlight = { at: Date.now(), ammo: e.ammo, x: e.x, y: e.y, z: e.z, angleX: e.angleX, angleZ: e.angleZ };
+    }
+
     private flushShot() {
         const shot = this.pendingShot;
         if (!shot) {
             return;
         }
-        const launch = this.lastLaunch;
-        const fresh = launch && Date.now() - launch.at <= PlayerBowShotService.launchMatchMs && launch.ammo === shot.ammoId;
-        if (!fresh && shot.waited < PlayerBowShotService.launchWaitUpdates) {
+        const now = Date.now();
+        const launchSeen = this.lastLaunch;
+        const flightSeen = this.lastFlight;
+        const launchFresh = !!launchSeen && now - launchSeen.at <= PlayerBowShotService.launchMatchMs && launchSeen.ammo === shot.ammoId;
+        const flightFresh = !!flightSeen && now - flightSeen.at <= PlayerBowShotService.launchMatchMs && flightSeen.ammo === shot.ammoId;
+        // the flight's angles are the arrow's own; the shot waits for them a
+        // few updates, then goes with what it has (the launch's angles, or
+        // none: the observer then launches from the figure as before)
+        if (!flightFresh && shot.waited < PlayerBowShotService.launchWaitUpdates) {
             shot.waited++;
             return;
         }
         this.pendingShot = null;
-        if (fresh && launch) {
+        if (launchFresh) {
             this.lastLaunch = null;
         }
-        const withLaunch = fresh && launch && Number.isFinite(launch.originX) && Number.isFinite(launch.originY) && Number.isFinite(launch.originZ)
+        if (flightFresh) {
+            this.lastFlight = null;
+        }
+        const origin = launchFresh && launchSeen ? { x: launchSeen.originX, y: launchSeen.originY, z: launchSeen.originZ }
+            : flightFresh && flightSeen ? { x: flightSeen.x, y: flightSeen.y, z: flightSeen.z } : null;
+        const angles = flightFresh && flightSeen ? { x: flightSeen.angleX, z: flightSeen.angleZ }
+            : launchFresh && launchSeen ? { x: launchSeen.angleX, z: launchSeen.angleZ } : null;
+        const launch = origin && angles ? { originX: origin.x, originY: origin.y, originZ: origin.z, angleX: angles.x, angleZ: angles.z } : null;
+        const withLaunch = !!launch && Number.isFinite(launch.originX) && Number.isFinite(launch.originY) && Number.isFinite(launch.originZ)
             && Number.isFinite(launch.angleX) && Number.isFinite(launch.angleZ);
         this.controller.emitter.emit("sendMessage", {
             message: {
@@ -124,15 +149,20 @@ export class PlayerBowShotService extends ClientListener {
             reliability: "reliable"
         });
         if (!withLaunch) {
-            logTrace(this, "bow shot sent without its launch", launch ? `(last launch ${Date.now() - launch.at} ms ago, ammo ${launch.ammo.toString(16)})` : "(no launch seen)");
+            logTrace(this, "bow shot sent without its launch:", launchFresh ? "launch seen" : "no launch", flightFresh ? "flight seen" : "no flight");
+        } else if (!flightFresh) {
+            logTrace(this, "bow shot sent with its launch's angles (no flight seen)");
         }
     }
 
     private pendingShot: { weaponId: number; ammoId: number; power: number; isSunGazing: boolean; aimAngle: number; aimHeading: number; waited: number } | null = null;
     private lastLaunch: { at: number; ammo: number; weapon: number; originX: number; originY: number; originZ: number; angleX: number; angleZ: number } | null = null;
-    // a launch this close to the shot is the shot's; a shot waits this many updates for one
+    private lastFlight: { at: number; ammo: number; x: number; y: number; z: number; angleX: number; angleZ: number } | null = null;
+    // a launch or flight this close to the shot is the shot's; a shot waits
+    // this many updates for the flight (the arrow's first update follows its
+    // launch by a frame or two)
     private static readonly launchMatchMs = 400;
-    private static readonly launchWaitUpdates = 3;
+    private static readonly launchWaitUpdates = 6;
 
     // A pitch within the quarter turn the server's validator allows
     private static pitch(radians: number): number {

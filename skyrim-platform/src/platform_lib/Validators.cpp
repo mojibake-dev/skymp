@@ -1,11 +1,17 @@
 #include "Validators.h"
 
+// A plugin's file name may hold spaces ("Apocalypse - Magic of Skyrim.esp",
+// USSEP's; thuum docs/verbs/ghostwalk.md: skymp5-client's load-order check
+// asks getFileInfo for every plugin, and the first spaced name threw here,
+// 2026-10-14). A space traverses nothing, so a file name (allowDots, the
+// getFileInfo and text callers) takes it; a Skyrim Platform plugin's name
+// (the dev and console callers, no dots) stays as strict as before.
 bool ValidateFilename(std::string_view filename, bool allowDots)
 {
   for (char c : filename) {
     if (!(('0' <= c && c <= '9') || ('A' <= c && c <= 'Z') ||
           ('a' <= c && c <= 'z') || (c == '.' && allowDots) || c == '-' ||
-          c == '_')) {
+          c == '_' || (c == ' ' && allowDots))) {
       return false;
     }
   }

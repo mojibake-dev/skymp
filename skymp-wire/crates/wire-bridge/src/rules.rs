@@ -596,8 +596,8 @@ mod ffi {
         scale: f32,
     }
 
-    /// A form a RaceMenu look names (thuum ADR-026): its plugin and its id
-    /// within it.
+    /// A form a RaceMenu look names (thuum ADR-026), or a cast teleport's
+    /// look (TeleportLook): its plugin and its id within it.
     #[derive(Debug, Clone)]
     struct LookRef {
         /// The plugin's file name.
@@ -637,6 +637,29 @@ mod ffi {
         valid_for_race: bool,
         /// The extra parts it lists.
         extras: Vec<u32>,
+    }
+
+    /// thuum docs/verbs/cast-teleport.md, the look on other screens: what a
+    /// teleport's castTeleports entry names for the other players' games to
+    /// play on its caster's figure, each form as the entry writes it; every
+    /// `has_` false for a spell the server names no teleport, or whose entry
+    /// names no look.
+    #[derive(Debug, Clone)]
+    struct TeleportLook {
+        /// The look names a vanish.
+        has_vanish: bool,
+        /// A VisualEffect played from the cast until the landing.
+        vanish: LookRef,
+        /// The look names an appear.
+        has_appear: bool,
+        /// A VisualEffect played at the landing.
+        appear: LookRef,
+        /// How long the appear plays, seconds.
+        appear_seconds: f32,
+        /// The look names a sound.
+        has_sound: bool,
+        /// A Sound played at the landing.
+        sound: LookRef,
     }
 
     /// The appearance's head parts a look implies; `ok` false refuses the look.
@@ -928,6 +951,13 @@ mod ffi {
         /// (false when the server names it no teleport: then the cast is
         /// any spell's, relayed as ever).
         fn teleport_relays(self: &CastTeleports, short_id: u32, file: &str) -> bool;
+        /// What the spell's entry names for the other players' games to play
+        /// on its caster's figure (every `has_` false without a look).
+        fn teleport_look(self: &CastTeleports, short_id: u32, file: &str) -> TeleportLook;
+        /// Whether a move of `step` units over the ground, which the
+        /// movement bounds took while a teleport's look waits, is its
+        /// landing (wire-rules teleports::LOOK_LANDING_STEP).
+        fn teleport_look_lands(step: f32) -> bool;
 
         /// Every player actor's recent bow and crossbow shots.
         type RangedShots;
@@ -998,7 +1028,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, AvChange, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, Verdict, VoiceFacts, VoiceRefusal};
+pub use ffi::{AvBase, AvChange, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -1462,6 +1492,35 @@ impl CastTeleports {
     fn teleport_relays(&self, short_id: u32, file: &str) -> bool {
         self.0.named(short_id, file).is_some_and(|t| t.relay)
     }
+
+    fn teleport_look(&self, short_id: u32, file: &str) -> TeleportLook {
+        let look = self.0.named(short_id, file).and_then(|t| t.look.as_ref());
+        let (has_vanish, vanish) = teleport_look_ref(look.and_then(|l| l.vanish.as_ref()));
+        let (has_appear, appear) = teleport_look_ref(look.and_then(|l| l.appear.as_ref()));
+        let (has_sound, sound) = teleport_look_ref(look.and_then(|l| l.sound.as_ref()));
+        TeleportLook {
+            has_vanish,
+            vanish,
+            has_appear,
+            appear,
+            appear_seconds: look.map_or(0.0, |l| l.appear_seconds),
+            has_sound,
+            sound,
+        }
+    }
+}
+
+/// A teleport look's form for the core: whether the look names it, and the
+/// form as the entry writes it (an empty one when it does not).
+fn teleport_look_ref(spec: Option<&teleports::FormSpec>) -> (bool, LookRef) {
+    spec.map_or_else(
+        || (false, LookRef { plugin: String::new(), id: 0 }),
+        |s| (true, LookRef { plugin: s.file.clone(), id: s.short_id }),
+    )
+}
+
+fn teleport_look_lands(step: f32) -> bool {
+    teleports::look_lands(step)
 }
 
 fn jump_check(c: movement::JumpCheck) -> JumpCheck {
@@ -1772,6 +1831,31 @@ mod tests {
         assert!(ghostwalk.as_ref().is_ok_and(|t| t.teleport_reach(0xaae8, "Apocalypse - Magic of Skyrim.esp").abs() < 1e-3));
         assert!(ghostwalk.as_ref().is_ok_and(|t| t.teleport_wait_ms(0xaae8, "Apocalypse - Magic of Skyrim.esp") == 15_400));
         assert!(ghostwalk.as_ref().is_ok_and(|t| t.teleport_relays(0xaae8, "Apocalypse - Magic of Skyrim.esp")));
+    }
+
+    #[test]
+    fn the_bridge_passes_a_teleports_look() {
+        let looked = new_cast_teleports(
+            r#"[{"spell": "a86df:LostGrimoire.esp", "reach": 8000, "look": {"vanish": "102731:Skyrim.esm",
+                "appear": "102730:Skyrim.esm", "appearSeconds": 1.75, "sound": "010ec4:Dawnguard.esm"}},
+               {"spell": "aae8:Apocalypse - Magic of Skyrim.esp", "reach": 0, "look": {"sound": "010ec4:Dawnguard.esm"}}]"#,
+        );
+        let look = looked.as_ref().map(|t| t.teleport_look(0xa86df, "lostgrimoire.esp"));
+        assert!(look.as_ref().is_ok_and(|l| l.has_vanish && l.vanish.plugin == "Skyrim.esm" && l.vanish.id == 0x102731));
+        assert!(look.as_ref().is_ok_and(|l| l.has_appear && l.appear.plugin == "Skyrim.esm" && l.appear.id == 0x102730));
+        assert!(look.as_ref().is_ok_and(|l| (l.appear_seconds - 1.75).abs() < 1e-6));
+        assert!(look.as_ref().is_ok_and(|l| l.has_sound && l.sound.plugin == "Dawnguard.esm" && l.sound.id == 0x10ec4));
+        // a look of one part names the others not
+        let sound = looked.as_ref().map(|t| t.teleport_look(0xaae8, "Apocalypse - Magic of Skyrim.esp"));
+        assert!(sound.as_ref().is_ok_and(|l| !l.has_vanish && !l.has_appear && l.has_sound && l.sound.id == 0x10ec4));
+        // no look without an entry's, nor for a spell the server names no teleport
+        let plain = new_cast_teleports(r#"[{"spell": "a86df:LostGrimoire.esp", "reach": 8000}]"#);
+        for l in [plain.as_ref().map(|t| t.teleport_look(0xa86df, "LostGrimoire.esp")), looked.as_ref().map(|t| t.teleport_look(0x12fd0, "Skyrim.esm"))] {
+            assert!(l.is_ok_and(|l| !l.has_vanish && !l.has_appear && !l.has_sound));
+        }
+        assert!(new_cast_teleports(r#"[{"spell": "a86df:LostGrimoire.esp", "reach": 8000, "look": {}}]"#).is_err());
+        // the landing a step no run covers
+        assert!(teleport_look_lands(549.0) && !teleport_look_lands(86.0) && !teleport_look_lands(f32::NAN));
     }
 
     #[test]

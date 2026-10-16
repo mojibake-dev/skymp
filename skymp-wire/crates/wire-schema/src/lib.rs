@@ -5,7 +5,7 @@
 //!
 //! Two families share the enum. The M0 variants (ids 0 to 8) are the
 //! authority model's messages, reserved until its verbs land. The SkyMP
-//! variants (ids 9 to 49, id = MsgType + 8) are SkyMP's own protocol, ported
+//! variants (ids 9 to 52, id = MsgType + 8) are SkyMP's own protocol, ported
 //! field for field in [`skymp`], and the MsgTypes thuum appends after
 //! SkyMP's 33; their JSON form is what the C++ core and skymp5-client
 //! exchange in-process (`wire-json`).
@@ -389,6 +389,8 @@ pub enum Message {
     ArrowShot(skymp::ArrowShot),
     /// 51, MsgType 43 (thuum). See [`skymp::MagicEffects`].
     MagicEffects(skymp::MagicEffects),
+    /// 52, MsgType 44 (thuum). See [`skymp::UpdateAction`].
+    UpdateAction(skymp::UpdateAction),
     /// 52, MsgType 44 (thuum). See [`skymp::PlayerGlobals`].
     PlayerGlobals(skymp::PlayerGlobals),
 }
@@ -472,6 +474,7 @@ const TABLE: [Row; 53] = [
     row("ConsoleOutput", 41, 2 * KIB, S2C),
     row("ArrowShot", 42, 64, S2C),
     row("MagicEffects", 43, KIB, S2C),
+    row("UpdateAction", 44, 32 * KIB, Both),
     row("PlayerGlobals", 44, 4 * KIB, Both),
 ];
 
@@ -553,6 +556,7 @@ impl Message {
             Message::ConsoleOutput(_) => 49,
             Message::ArrowShot(_) => 50,
             Message::MagicEffects(_) => 51,
+            Message::UpdateAction(_) => 52,
             Message::PlayerGlobals(_) => 52,
         }
     }
@@ -626,6 +630,7 @@ mod tests {
         assert_eq!(name_of_msg_type(41), Some("ConsoleOutput"));
         assert_eq!(name_of_msg_type(42), Some("ArrowShot"));
         assert_eq!(name_of_msg_type(43), Some("MagicEffects"));
+        assert_eq!(name_of_msg_type(44), Some("UpdateAction"));
         assert_eq!(name_of_msg_type(44), Some("PlayerGlobals"));
         assert_eq!(name_of_msg_type(0), None);
         assert_eq!(name_of_msg_type(45), None);

@@ -96,6 +96,12 @@ void PacketParser::TransformPacketIntoAction(Networking::UserId userId,
         actionListener.OnUpdateAnimation(rawMsgData, *message);
         return;
       }
+      case MsgType::UpdateAction: {
+        auto message =
+          reinterpret_cast<UpdateActionMessage*>(result->message.get());
+        actionListener.OnUpdateAction(rawMsgData, *message);
+        return;
+      }
       case MsgType::UpdateEquipment: {
         auto message =
           reinterpret_cast<UpdateEquipmentMessage*>(result->message.get());

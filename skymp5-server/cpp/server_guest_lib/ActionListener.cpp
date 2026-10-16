@@ -301,6 +301,33 @@ void ActionListener::OnUpdateAnimation(const RawMessageData& rawMsgData,
   targetActor->SetLastAnimEvent(msg.data);
 }
 
+void ActionListener::OnUpdateAction(const RawMessageData& rawMsgData,
+                                    const UpdateActionMessage& msg)
+{
+  MpActor* myActor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!myActor) {
+    return;
+  }
+  // the actor the sender may update (its own, or an NPC it hosts), else
+  // nothing; the bytes go as they came (the wire validated them), reliably,
+  // to every user listening to the actor but the sender, whose own game
+  // performed the action already
+  MpActor* actor = ActorUpdatableBy(msg.idx, rawMsgData.userId);
+  if (!actor) {
+    return;
+  }
+  for (auto listener : actor->GetActorListeners()) {
+    if (listener == myActor) {
+      continue;
+    }
+    auto targetUserId = partOne.serverState.UserByActor(listener);
+    if (targetUserId != Networking::InvalidUserId) {
+      partOne.GetSendTarget().Send(targetUserId, rawMsgData.unparsed,
+                                   rawMsgData.unparsedLength, true);
+    }
+  }
+}
+
 namespace {
 // thuum docs/verbs/character-creation.md: the facts the race rule needs; the
 // rule is Rust's (skymp-wire wire-rules appearance, ADR-020)

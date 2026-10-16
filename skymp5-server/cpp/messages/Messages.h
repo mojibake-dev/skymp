@@ -36,6 +36,7 @@
 #include "TakeItemMessage.h"
 #include "TeleportMessage.h"
 #include "TeleportMessage2.h"
+#include "UpdateActionMessage.h"
 #include "UpdateAnimVariablesMessage.h"
 #include "UpdateAnimationMessage.h"
 #include "UpdateAppearanceMessage.h"
@@ -88,4 +89,5 @@
   REGISTER_MESSAGE(ConsoleOutputMessage)                                      \
   REGISTER_MESSAGE(ArrowShotMessage)                                          \
   REGISTER_MESSAGE(MagicEffectsMessage)                                       \
+  REGISTER_MESSAGE(UpdateActionMessage)                                       \
   REGISTER_MESSAGE(PlayerGlobalsMessage)

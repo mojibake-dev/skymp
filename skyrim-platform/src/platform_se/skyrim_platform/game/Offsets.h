@@ -23,6 +23,13 @@ inline REL::Relocation<std::uintptr_t> DrawSheatheWeaponActor{ RELOCATION_ID(
   36289, 37279) };
 inline REL::Relocation<std::uintptr_t> SendAnimation{ RELOCATION_ID(37020,
                                                                     38048) };
+// thuum docs/verbs/cast-action.md: the engine's action entry,
+// ActorMediator::PerformAction, (ActorMediator*, TESActionData*) -> bool. AE
+// only: 1.6.1170's id by lab/addr.py, the function SourceActionMap::DoAction
+// (34202) reaches through TESActionData::Process (41557), read on sky-re
+// 2026-10-14; the SE id is unread, and the hook installs on AE runtimes only
+// (ADR-025's 1.6.1170).
+inline REL::Relocation<std::uintptr_t> PerformAction{ REL::ID(38949) };
 inline REL::Relocation<std::uintptr_t> QueueNinodeUpdate{ RELOCATION_ID(
   39181, 40255) };
 inline REL::Relocation<std::uintptr_t> ApplyMasksToRenderTargets{
@@ -30,6 +37,21 @@ inline REL::Relocation<std::uintptr_t> ApplyMasksToRenderTargets{
 };
 inline REL::Relocation<std::uintptr_t> RenderCursorMenu{ RELOCATION_ID(
   32867, 33632) };
+}
+
+// thuum docs/verbs/cast-action.md: the replay side of the action entry. AE
+// only, 1.6.1170's ids by lab/addr.py, read on sky-re 2026-10-14 (HYPOTHESIS
+// until the lab's trace): PerformChosenAction is ActorMediator's second
+// entry, the tail of PerformAction that performs a TESActionData as given
+// (the output's event sent to the actor's graph, the engine's books kept),
+// with no validation and no idle selection; ActorMediatorSingleton holds the
+// ActorMediator* its constructor stores. The post step the first entry and
+// this one both call (39004, the actor-state bookkeeping keyed by the event
+// name) is not called again here: it is not the master-behavior variables,
+// which applyAnimationVariablesToActor writes before the replay.
+namespace Actions {
+inline REL::ID PerformChosenAction(38953);
+inline REL::ID ActorMediatorSingleton(403567);
 }
 
 namespace EventSource {

@@ -1,6 +1,10 @@
+#include "FridaHooks.h"
 #include "Hooks.h"
 #include "EventHandler.h"
+#include "EventsApi.h"
+#include "JsUtils.h"
 #include "PapyrusTESModPlatform.h"
+#include "SkyrimPlatform.h"
 #include <mutex>
 
 namespace hook::internal {
@@ -154,6 +158,97 @@ void InstallPlayerAddTargetHook()
 {
   REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_PlayerCharacter[4] };
   PlayerAddTarget::func = vtbl.write_vfunc(0x1, PlayerAddTarget::thunk);
+}
+
+/**
+ * The graph's answers to a cast request (thuum docs/verbs/cast-action.md).
+ * The engine's caster sets the hand's want variable and performs the Attack
+ * action only when the graph answers with the BeginCastRight (BeginCastLeft,
+ * BeginCastVoice) graph event; the response dispatcher (38447 on 1.6.1170)
+ * hands it to the hand's functor through slot 1 of its vtable
+ * (RightHandSpellCastHandler and kin, CommonLibSSE-NG
+ * include/RE/Offsets_VTABLE.h:2392-2394; the re-analyst on sky-re,
+ * 2026-10-15: slot 1 is 42820, 42819, 42821, the only way in). SKSE owns that
+ * slot: skse64 writes its own function there for its action events, over
+ * any plugin's write (fork 5df863fd's write_vfunc never fired; slot-probe.js
+ * on the running game found skse64_1_6_1170.dll+0xd760 in it). So the
+ * answer is read where SKSE publishes it: SKSE::ActionEvent kSpellCast
+ * (slot kLeft, kRight) and kVoiceCast (include/SKSE/Events.h:37-67), through
+ * SKSE::GetActionEventSource() (include/SKSE/API.h:31), one event per answer
+ * for every actor. The sink notes the answer for its hand by the actor's
+ * form id; the view performs the start when castReady says so. The player's
+ * own answers are the engine's business and are not noted. Registered at
+ * kDataLoaded, once.
+ */
+class CastAnswerSink final : public RE::BSTEventSink<SKSE::ActionEvent>
+{
+public:
+  static CastAnswerSink* GetSingleton()
+  {
+    static CastAnswerSink singleton;
+    return &singleton;
+  }
+
+  RE::BSEventNotifyControl ProcessEvent(
+    const SKSE::ActionEvent* a_event,
+    RE::BSTEventSource<SKSE::ActionEvent>*) override
+  {
+    if (!a_event || !a_event->actor) {
+      return RE::BSEventNotifyControl::kContinue;
+    }
+    if (a_event->actor == RE::PlayerCharacter::GetSingleton()) {
+      // the player's own action events go to JS as skseAction (ADR-034: an
+      // engine moment comes from SKSE's event where SKSE publishes one): the
+      // shout's fire for the breath report (docs/verbs/shouts.md), later the
+      // cast's hand and the draw state. Raised on the next tick, the way
+      // actionPerformed is; no game call in its handler
+      const uint32_t type = static_cast<uint32_t>(a_event->type.get());
+      const uint32_t slot = static_cast<uint32_t>(a_event->slot.get());
+      const uint32_t sourceForm =
+        a_event->sourceForm ? a_event->sourceForm->formID : 0;
+      SkyrimPlatform::GetSingleton()->AddTickTask(
+        [type, slot, sourceForm](Napi::Env env) {
+          auto obj = Napi::Object::New(env);
+          AddObjProperty(&obj, "actor",
+                         static_cast<RE::TESForm*>(
+                           RE::PlayerCharacter::GetSingleton()),
+                         "Actor");
+          AddObjProperty(&obj, "type", type);
+          AddObjProperty(&obj, "slot", slot);
+          AddObjProperty(&obj, "sourceForm", sourceForm);
+          EventsApi::SendEvent("skseAction", { obj });
+        });
+      return RE::BSEventNotifyControl::kContinue;
+    }
+    uint32_t bit = 0;
+    if (a_event->type == SKSE::ActionEvent::Type::kSpellCast) {
+      bit = a_event->slot == SKSE::ActionEvent::Slot::kLeft ? 1 : 2;
+    } else if (a_event->type == SKSE::ActionEvent::Type::kVoiceCast) {
+      bit = 4;
+    }
+    if (bit) {
+      Frida::NoteCastReady(a_event->actor->formID, bit);
+    }
+    return RE::BSEventNotifyControl::kContinue;
+  }
+};
+
+void Hooks::InstallCastAnswerSink()
+{
+  static bool installed = false;
+  if (installed) {
+    return;
+  }
+  auto* source = SKSE::GetActionEventSource();
+  if (!source) {
+    logger::error("[verb:cast-action] no SKSE action event source; a "
+                  "figure's start goes without the graph's answer");
+    return;
+  }
+  source->AddEventSink(CastAnswerSink::GetSingleton());
+  installed = true;
+  logger::info("[verb:cast-action] cast answer sink on SKSE's action events "
+               "(the player's raised to JS as skseAction)");
 }
 
 void BindNativeMethod(RE::BSScript::Internal::VirtualMachine* thisArg,

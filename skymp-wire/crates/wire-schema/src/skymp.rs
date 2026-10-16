@@ -6,16 +6,16 @@
 //! to 33 are SkyMP's; thuum appends its own after them (34, SetGameTime; 35,
 //! RestIntent; 36, MapMarkerDiscovered; 37, IngredientEffectsKnown; 38,
 //! Favorites; 39, RaceMenuPreset; 40, ActorValues; 41, ConsoleOutput; 42,
-//! ArrowShot; 43, MagicEffects; 44, PlayerGlobals).
+//! ArrowShot; 43, MagicEffects; 44, UpdateAction; 44, PlayerGlobals).
 //!
 //! Directions are SkyMP's: twelve types (fifteen with RestIntent,
 //! MapMarkerDiscovered and IngredientEffectsKnown) only travel
 //! client to server, thirteen (fourteen with SetGameTime) only server to
 //! client (seventeen with ConsoleOutput, ArrowShot and MagicEffects), eight
-//! (twelve with Favorites, RaceMenuPreset, ActorValues and PlayerGlobals)
-//! both ways (the server relays a client's
+//! (thirteen with Favorites, RaceMenuPreset, ActorValues, UpdateAction and
+//! PlayerGlobals) both ways (the server relays a client's
 //! UpdateMovement, UpdateAnimation, UpdateAppearance, UpdateEquipment,
-//! SpellCast and UpdateAnimVariables to its neighbours, and sends its own
+//! SpellCast, UpdateAnimVariables and UpdateAction to its neighbours, and sends its own
 //! CustomPacket and ChangeValues). Rungs are the ones SkyMP gives them today;
 //! M1's validation work tightens them per verb. Every float a message carries
 //! must be finite (`E_VAL_NONFINITE`); that and the capacities below are the
@@ -923,6 +923,37 @@ wire_struct! {
         pub t: MsgT<24>,
         /// The variables.
         pub data: UpdateAnimVariablesData,
+    }
+}
+
+wire_struct! {
+    /// MsgType 44, thuum's (docs/verbs/cast-action.md). Both directions,
+    /// reliable: an action the player's actor performed through the engine's
+    /// action entry (a hand's attack, ready, release or interrupt, the voice's
+    /// too), with the idle the engine chose, the graph event it sent, the
+    /// input type and the actor's behavior graph variables as they were when
+    /// the graph was asked. R2: relayed as the client reports it to the
+    /// actor's neighbours, never back to the sender; a figure replays it
+    /// through the same entry, the variables one update before the action.
+    /// Not idempotent: each is one performance. Reason codes: `E_VAL_RANGE`
+    /// (no action, an empty event, a type past 255), `E_VAL_RATE`.
+    pub struct UpdateAction {
+        /// `"t": 44`.
+        #[serde(default)]
+        pub t: MsgT<44>,
+        /// The actor.
+        pub idx: u32,
+        /// The BGSAction's form id.
+        pub action: u32,
+        /// The TESIdleForm the engine chose for it, 0 for none.
+        pub idle: u32,
+        /// The graph event the action sent.
+        pub event_name: String<{ cap::ANIM_EVENT }>,
+        /// The ActionInput's type (2 for everything the player does).
+        #[serde(rename = "type")]
+        pub kind: u32,
+        /// The actor's behavior graph variables as the graph was asked.
+        pub actor_animation_variables: ActorAnimationVariables,
     }
 }
 

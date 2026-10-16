@@ -4,6 +4,7 @@ import { Appearance } from "../sync/appearance";
 import { Equipment } from "../sync/equipment";
 import { Inventory } from "../sync/inventory";
 import { CreateActorMessageMainProps, CreateActorMessageAdditionalProps } from "src/services/messages/createActorMessage";
+import { UpdateActionMessage } from "src/services/messages/updateActionMessage";
 
 // Own properties (not inherited) are being assigned locally
 export interface FormModel extends CreateActorMessageAdditionalProps, CreateActorMessageMainProps{
@@ -18,6 +19,10 @@ export interface FormModel extends CreateActorMessageAdditionalProps, CreateActo
   // arriving in one of this game's frames left the release alone, which the
   // figure's graph refuses (x-recorder-flames 20261014-081353)
   animationQueue?: Animation[];
+  // thuum docs/verbs/cast-action.md: the actions the server relayed for
+  // this actor since the view last performed them, oldest first; the view
+  // plays one per two updates (its variables, then the action)
+  actionQueue?: UpdateActionMessage[];
 }
 
 export interface WorldModel {

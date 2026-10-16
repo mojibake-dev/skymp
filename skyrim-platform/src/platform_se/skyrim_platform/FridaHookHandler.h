@@ -20,7 +20,9 @@ enum HookID
   SEND_EVENT,
   SEND_EVENT_ALL,
   CONSOLE_VPRINT,
-  NATIVE_FUNCTION_CTOR
+  NATIVE_FUNCTION_CTOR,
+  // thuum docs/verbs/cast-action.md
+  HOOK_PERFORM_ACTION
 };
 
 struct Hook

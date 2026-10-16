@@ -116,6 +116,13 @@ pub struct ClientGuard {
     /// can send a row at once, so sixteen at once and eight a second after
     /// that only ever stops a flood.
     pub equip_budget: TokenBucket,
+    /// Budget for the actions a player's actor performs (thuum
+    /// docs/verbs/cast-action.md): a cast is three (the hand's attack and
+    /// release in one tick for a stream, attack, ready and release for a
+    /// bolt, the interrupt at the end), from two hands at once, so twelve
+    /// at once and six a second after that only ever stops a flood; the
+    /// figures that replay them play what arrives.
+    pub action_budget: TokenBucket,
     /// Budget for player globals reports (thuum docs/verbs/player-globals.md):
     /// the client reports the watched globals that changed once a second at
     /// most, so two at once and one a second after that only ever stops a
@@ -143,6 +150,7 @@ impl Default for ClientGuard {
             cast_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 4, last_refill_ms: 0 },
             player_globals_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
             equip_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 8, last_refill_ms: 0 },
+            action_budget: TokenBucket { tokens: 12, capacity: 12, refill_per_s: 6, last_refill_ms: 0 },
         }
     }
 }
@@ -283,6 +291,19 @@ fn check_game_time(m: &skymp::SetGameTime) -> Result<(), Reject> {
 /// way, radians), thuum docs/verbs/marksman.md.
 fn check_bow_shot(m: &skymp::PlayerBowShot) -> Result<(), Reject> {
     if (0.0..=1.0).contains(&m.power) && (-core::f32::consts::FRAC_PI_2..=core::f32::consts::FRAC_PI_2).contains(&m.aim_angle) {
+        Ok(())
+    } else {
+        Err(Reject::Range)
+    }
+}
+
+/// thuum docs/verbs/cast-action.md: an action names its BGSAction and the
+/// graph event the engine sent for it (the replay entry performs the event
+/// as given, so an empty one would send an empty event), and its type fits
+/// the byte the engine's ActionInput reads it as (every action a player
+/// performs carries 2). The variables are packed bytes, bounded at decode.
+fn check_update_action(m: &skymp::UpdateAction) -> Result<(), Reject> {
+    if m.action != 0 && !m.event_name.as_str().is_empty() && m.kind <= 0xFF {
         Ok(())
     } else {
         Err(Reject::Range)
@@ -484,6 +505,7 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::OnHit(_) => take(&mut guard.on_hit_budget, now_ms),
         Message::SpellCast(_) => take(&mut guard.cast_budget, now_ms),
         Message::OnEquip(_) => take(&mut guard.equip_budget, now_ms),
+        Message::UpdateAction(_) => take(&mut guard.action_budget, now_ms),
         _ => Ok(()),
     }
 }
@@ -573,6 +595,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         // length bounded at decode (cap::CONSOLE_OUTPUT); the transport
         // refuses it from a client by direction
         Message::ConsoleOutput(_) => Ok(()),
+        Message::UpdateAction(m) => check_update_action(m),
         // thuum docs/verbs/magic-effects.md: the server's own effect set, at
         // most MAGIC_EFFECTS entries and EFFECT_MODIFIERS sums (bounded at
         // decode); the transport refuses it from a client by direction, its
@@ -1164,6 +1187,39 @@ mod tests {
         assert_eq!(validate(&player_globals(&[], &[(points, 2.0)]), &mut g, 0), Ok(()));
         assert_eq!(validate(&player_globals(&[], &[(points, 3.0)]), &mut g, 0), Err(Reject::Rate));
         assert_eq!(validate(&player_globals(&[], &[(points, 3.0)]), &mut g, 1_000), Ok(()));
+    }
+
+    #[test]
+    fn an_action_names_its_action_and_event_and_keeps_its_type_a_byte() {
+        use wire_schema::skymp::UpdateAction;
+        // Flames' start as the engine performs it (thuum docs/verbs/cast-action.md):
+        // ActionRightAttack 0x13005, idle CastRightConcentrationAimed 0x1346F,
+        // MRh_SpellAimedConcentrationStart, type 2 (x-figure-action 20261015-055039)
+        let action = |action: u32, event: &str, kind: u32| {
+            let Ok(event_name) = wire_schema::bounded::String::try_from(event) else {
+                return Message::UpdateAction(UpdateAction::default());
+            };
+            Message::UpdateAction(UpdateAction { idx: 64, action, idle: 0x1346f, event_name, kind, ..UpdateAction::default() })
+        };
+        assert_eq!(validate_server(&action(0x13005, "MRh_SpellAimedConcentrationStart", 2)), Ok(()));
+        assert_eq!(validate_server(&action(0, "MRh_SpellAimedConcentrationStart", 2)), Err(Reject::Range));
+        assert_eq!(validate_server(&action(0x13005, "", 2)), Err(Reject::Range));
+        assert_eq!(validate_server(&action(0x13005, "MRh_SpellAimedConcentrationStart", 256)), Err(Reject::Range));
+    }
+
+    #[test]
+    fn actions_are_rate_limited() {
+        use wire_schema::skymp::UpdateAction;
+        let mut g = ClientGuard::default();
+        let Ok(event_name) = wire_schema::bounded::String::try_from("MRh_SpellAimedConcentrationStart") else {
+            return;
+        };
+        let m = Message::UpdateAction(UpdateAction { idx: 64, action: 0x13005, event_name, kind: 2, ..UpdateAction::default() });
+        for _ in 0..12 {
+            assert_eq!(validate(&m, &mut g, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&m, &mut g, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&m, &mut g, 2_000), Ok(()));
     }
 
     #[test]

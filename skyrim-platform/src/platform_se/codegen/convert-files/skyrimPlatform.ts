@@ -276,6 +276,23 @@ export interface SpellCastEvent {
   aimHeading: number
 }
 
+// thuum docs/verbs/cast-action.md: an action the player's actor performed, as the hook on the engine's action entry reports it
+export interface ActionPerformedEvent {
+  actor: Actor
+  action: number
+  idle: number
+  eventName: string
+  type: number
+  variables: ActorAnimationVariables
+}
+// thuum ADR-034: one of SKSE's action events for the player (CommonLibSSE-NG include/SKSE/Events.h: type 0 weapon swing, 1 spell cast, 2 spell fire, 3 voice cast, 4 voice fire, 5 bow draw, 6 bow release, 7 begin draw, 8 end draw, 9 begin sheathe, 10 end sheathe; slot 0 left, 1 right, 2 voice; sourceForm the spell, shout or weapon's form id, 0 for none), raised on the next tick; no game call in its handler
+export interface SkseActionEvent {
+  actor: Actor;
+  type: number;
+  slot: number;
+  sourceForm: number;
+}
+
 export interface OpenCloseEvent {
   target: ObjectReference
   cause: ObjectReference | undefined
@@ -642,6 +659,12 @@ export declare function once(eventName: 'consoleMessage', callback: (event: Cons
 
 export declare function on(eventName: 'spellCast', callback: (event: SpellCastEvent) => void): EventHandle
 export declare function once(eventName: 'spellCast', callback: (event: SpellCastEvent) => void): EventHandle
+
+export declare function on(eventName: 'actionPerformed', callback: (event: ActionPerformedEvent) => void): EventHandle
+export declare function once(eventName: 'actionPerformed', callback: (event: ActionPerformedEvent) => void): EventHandle
+
+export declare function on(eventName: 'skseAction', callback: (event: SkseActionEvent) => void): EventHandle
+export declare function once(eventName: 'skseAction', callback: (event: SkseActionEvent) => void): EventHandle
 
 export declare function on(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle
 export declare function once(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle
@@ -1633,6 +1656,12 @@ export declare function setInventory(formId: number, inventory: Inventory): void
 
 export declare function castSpellImmediate(actorCasterFormId: number, castingSource: SpellType, formIdSpell: number, formIdTarget: number, aimAngle: number, aimHeading: number, animationVariables: ActorAnimationVariables): void;
 export declare function interruptCast(actorCasterFormId: number, castingSource: SpellType, animationVariables: ActorAnimationVariables): void;
+// thuum docs/verbs/cast-action.md: performs a BGSAction on an actor through the engine's action entry, with the event and idle the caster's engine chose (an actionPerformed event's fields), the caster's variables applied first by applyAnimationVariablesToActor; the figure's cast animation. Queued to the game thread, which performs it right after this update; returns true when queued
+export declare function performAction(actorFormId: number, actionFormId: number, idleFormId: number, eventName: string, type: number): boolean;
+// the graph's answer to the actor's last performAction: 1 taken, 0 refused, -1 none or still queued; read it on the update after the call
+export declare function performActionResult(actorFormId: number): number;
+// thuum docs/verbs/cast-action.md: whether the actor's graph has answered a cast request for the hand (0 left, 1 right, 2 voice) since the last call, the BeginCast graph event the engine's own caster waits for before it performs a start; taken by the call
+export declare function castReady(actorFormId: number, hand: number): boolean;
 export declare function getAnimationVariablesFromActor(actorFormId: number): ActorAnimationVariables;
 export declare function applyAnimationVariablesToActor(actorFormId: number, animationVariables: ActorAnimationVariables): boolean;
 

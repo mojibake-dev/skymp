@@ -71,7 +71,7 @@ macro_rules! skymp_family {
             32 UpdateGamemodeData, 33 CreateActor, 34 SetGameTime, 35 RestIntent,
             36 MapMarkerDiscovered, 37 IngredientEffectsKnown, 38 Favorites,
             39 RaceMenuPreset, 40 ActorValues, 41 ConsoleOutput, 42 ArrowShot,
-            43 MagicEffects, 44 PlayerGlobals
+            43 MagicEffects, 44 UpdateAction, 44 PlayerGlobals
         }
     };
 }

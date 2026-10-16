@@ -1,9 +1,12 @@
 import { Actor, ActorBase, createText, destroyText, Form, FormType, Game, Keyword, NetImmerse, ObjectReference, once, printConsole, setTextPos, setTextSize, setTextString, storage, TESModPlatform, Utility, worldPointToScreenPoint } from "skyrimPlatform";
-import { setDefaultAnimsDisabled, applyAnimation, castStartWaiting } from "../sync/animation";
+import { setDefaultAnimsDisabled, applyAnimation } from "../sync/animation";
+// @ts-expect-error (TODO: Remove in 2.10.0)
+import { applyAnimationVariablesToActor, castReady, performAction, performActionResult } from "skyrimPlatform";
 import { Appearance, applyAppearance } from "../sync/appearance";
 import { isBadMenuShown, applyEquipment } from "../sync/equipment";
 import { RespawnNeededError } from "../lib/errors";
 import { FormModel } from "./model";
+import { UpdateActionMessage } from "../services/messages/updateActionMessage";
 import { applyMovement } from "../sync/movementApply";
 import { SpawnProcess } from "./spawnProcess";
 import { ObjectReferenceEx } from "../extensions/objectReferenceEx";
@@ -15,6 +18,17 @@ import { localIdToRemoteId } from "./worldViewMisc";
 import { SpApiInteractor } from "../services/spApiInteractor";
 import { WorldCleanerService } from "../services/services/worldCleanerService";
 import { GamemodeUpdateService } from "../services/services/gamemodeUpdateService";
+
+// thuum docs/verbs/cast-action.md: the want variable a hand's cast event names
+// (MRh_ the right hand's, MLh_ and the perk's DualMagic_ the left hand's actions)
+// the hands a cast start's event names: 0 left, 1 right; the perk's dual cast
+// is the left hand's actions with both wants up, so either hand's answer
+// counts for it
+const castHandsOf = (eventNameLowerCase: string): number[] =>
+  eventNameLowerCase.startsWith("dualmagic") ? [0, 1] : eventNameLowerCase.startsWith("mlh_") ? [0] : [1];
+
+const castWantVariable = (eventNameLowerCase: string): string =>
+  eventNameLowerCase.startsWith("mrh_") ? "bWantCastRight" : "bWantCastLeft";
 
 export interface ScreenResolution {
   width: number;
@@ -476,37 +490,21 @@ export class FormView {
       // thuum docs/verbs/spell-cast.md: every relayed event since the last
       // update, oldest first, as the sender's graph took them (applyAnimation
       // skips one it has played by its numChanges); the newest alone when
-      // none is queued (a spawn's). A hand's spell start waits, with what is
-      // behind it, until the figure has held its caster's casting state
-      // since an earlier frame (castStartWaiting; a start in the frame the
-      // state lands is refused, x-figure-cast 20261014-142425), at most
-      // castStartWaitMs, the caster's variables coming with its cast or its
-      // next 500 ms snapshot
+      // none is queued (a spawn's). The hands' casts no longer come this way
+      // (docs/verbs/cast-action.md: they are actions, replayed below)
       const queued = model.animationQueue;
       if (queued && queued.length > 0) {
-        let played = 0;
-        for (; played < queued.length; played++) {
-          const anim = queued[played];
-          const now = Date.now();
-          const waiting = castStartWaiting(refr, anim.animEventName);
-          if (waiting !== null) {
-            if (!this.castStartHeldSince) this.castStartHeldSince = now;
-            const casting = !waiting;
-            const castingBefore = this.castStartCastingSeen;
-            this.castStartCastingSeen = casting;
-            const timedOut = now - this.castStartHeldSince >= FormView.castStartWaitMs;
-            if (!(casting && castingBefore) && !timedOut) break;
-          }
-          this.castStartHeldSince = 0;
-          this.castStartCastingSeen = false;
+        for (const anim of queued) {
           applyAnimation(refr, anim, this.animState);
         }
-        queued.splice(0, played);
+        queued.splice(0, queued.length);
       } else if (model.animation) {
         applyAnimation(refr, model.animation, this.animState);
       }
       // Use them only once, for spawning actors with correct animations
       this.animState.useAnimOverrides = false;
+
+      this.replayActions(refr, model);
     }
 
 
@@ -710,12 +708,159 @@ export class FormView {
     return this.remoteRefrId as number;
   }
 
+  // thuum docs/verbs/cast-action.md: the caster's actions, performed on the
+  // figure through the engine's own action entry (the fork's performAction),
+  // one per two updates: the caster's variables as the graph was asked go on
+  // first, the action on the next update. The graph takes a cast's start only
+  // once it has processed the want variable, at its next update: a start in
+  // the same tick as its variables is refused every time, one an update later
+  // is taken, holds the loop, and the Interrupt's Equipped exit ends it with
+  // the engine's own timing (x-figure-action 20261015-055039, -bolt 055907,
+  // -self 060152). Variables alone provoke nothing in the engine (the
+  // response handler is a no-op on an idle caster, the re-analyst 2026-10-14),
+  // so a queue that drains slowly leaves the figure in the caster's state.
+  private replayActions(refr: ObjectReference, model: FormModel): void {
+    const pending = this.pendingAction;
+    if (pending) {
+      if (!this.pendingAsked) {
+        const pendingName = pending.eventName.toLowerCase();
+        if (pendingName.endsWith("start")) {
+          // the engine's handshake: its caster sets the want variable and
+          // performs the Attack only when the graph answers BeginCast (the
+          // hand's response handler); a start one update after its variables
+          // was taken standing still (x-cast-gap 20261015-213755: 34 of 34,
+          // each 4 to 7 ms after that answer) and refused about half the time
+          // while the figure moved (playtest nineteen, x-cast-human 202506),
+          // where the graph answers later. So the start waits for the answer;
+          // without one for a second the want variable rises again, twice;
+          // then it goes without (the shape before the handshake)
+          const hands = castHandsOf(pendingName);
+          const answered = hands.some((h) => castReady(refr.getFormID(), h));
+          if (!answered && this.readyWaits < FormView.readyWaitLimit) {
+            // the answer comes within a frame or two of the rise when it
+            // comes at all (x-cast-gap 213755: 4 to 7 ms); past that the
+            // start goes as caff3e04's did, one update after its variables
+            // plus the retry below, which took 6 of 6 moving (b-cast-moving
+            // 233639). 5df863fd waited three seconds for an answer its hook
+            // never gave and every blind ask after that was refused
+            // (x-cast-human 20261016-011836)
+            this.readyWaits++;
+            return;
+          }
+        }
+        // queued to the game thread, which performs it right after this
+        // update (MagicApi.cpp: performed inside the update, the action's
+        // graph event re-entered Skyrim Platform's hooks and hung the game at
+        // the first replay, x-cast-gap 20261015-211105); the graph's answer
+        // is read on the next update
+        performAction(refr.getFormID(), pending.action, pending.idle, pending.eventName, pending.type);
+        this.pendingAsked = true;
+        this.pendingWaits = 0;
+        this.readyWaits = 0;
+        return;
+      }
+      const answer = performActionResult(refr.getFormID());
+      if (answer < 0 && this.pendingWaits < FormView.answerWaitLimit) {
+        this.pendingWaits++;
+        return;
+      }
+      this.pendingAsked = false;
+      this.pendingAction = null;
+      const taken = answer === 1;
+      if (!taken) {
+        // the caster's engine sets the want variable and performs the start
+        // only when the graph answers, however many updates that takes; a
+        // graph still finishing its last exit refused a start one update
+        // after its variables (x-cast-twice-move 20261015-175846, 570 ms
+        // after the exit; the playtest's rhythm), so the action goes again,
+        // variables then action, for up to castRetries updates
+        if (this.castRetries < FormView.castRetryLimit && model.actionQueue) {
+          this.castRetries++;
+          model.actionQueue.unshift(pending);
+          return;
+        }
+        printConsole(`cast-action: performAction refused on ${refr.getFormID().toString(16)}: ${pending.eventName} after ${this.castRetries} retries`);
+      }
+      this.castRetries = 0;
+      const name = pending.eventName.toLowerCase();
+      if (name.startsWith("dualmagic")) {
+        this.dualCastOnFigure = true;
+      }
+      if (name.includes("equipped")) {
+        // the engine's own sequence after the Interrupt action is FinishCast,
+        // which drops the hand's want variable; the action's variables are the
+        // caster's from before it, so the figure kept the want up, and a want
+        // already up when the next cast's variables land is no rise for the
+        // graph: that cast was refused whole, and whether the caster's 500 ms
+        // snapshot had dropped it first was a coin toss (playtest nineteen,
+        // "every test only half works"; c2's log 10:38 to 10:41)
+        const wants = this.dualCastOnFigure ? ["bWantCastRight", "bWantCastLeft"] : [castWantVariable(name)];
+        wants.forEach((w) => refr.setAnimationVariableBool(w, false));
+        this.dualCastOnFigure = false;
+      }
+      // the next action's variables may land on this same update
+    }
+    const queue = model.actionQueue;
+    if (!queue || queue.length === 0) {
+      return;
+    }
+    const first = queue[0];
+    const firstName = first.eventName.toLowerCase();
+    if (firstName.endsWith("start") && !this.castEdgeCleared) {
+      // the graph enters a cast on the want variable's rise; one still up from
+      // an earlier cast gives it none, so it is dropped one update before the
+      // variables land (the same reason as above, from the other side)
+      const wants = firstName.startsWith("dualmagic") ? ["bWantCastRight", "bWantCastLeft"] : [castWantVariable(firstName)];
+      if (wants.some((w) => refr.getAnimationVariableBool(w))) {
+        wants.forEach((w) => refr.setAnimationVariableBool(w, false));
+        this.castEdgeCleared = true;
+        return;
+      }
+    }
+    this.castEdgeCleared = false;
+    const next = queue.shift();
+    if (!next) {
+      return;
+    }
+    if (firstName.endsWith("start")) {
+      // a stale answer is dropped before this rise (an exit's variables raise
+      // the want too, and the graph answers that rise), so the wait above
+      // sees the answer to this one
+      castHandsOf(firstName).forEach((h) => castReady(refr.getFormID(), h));
+    }
+    const applied = applyAnimationVariablesToActor(refr.getFormID(), {
+      booleans: new Uint8Array(next.actorAnimationVariables.booleans),
+      floats: new Uint8Array(next.actorAnimationVariables.floats),
+      integers: new Uint8Array(next.actorAnimationVariables.integers),
+    });
+    if (!applied) {
+      printConsole(`cast-action: variables refused on ${refr.getFormID().toString(16)} before ${next.eventName}`);
+    }
+    this.pendingAction = next;
+  }
+
   private refrId = 0;
   private ready = false;
   private animState = this.getDefaultAnimState();
-  private castStartHeldSince = 0;
-  private castStartCastingSeen = false;
-  private static readonly castStartWaitMs = 1000;
+  // thuum docs/verbs/cast-action.md: the relayed action whose variables went
+  // onto the figure's graph on the last update, performed on this one; whether
+  // a start's want variable was dropped on the last update for its rise; and
+  // whether the figure is in the perk's dual cast (both wants up, one exit)
+  private pendingAction: UpdateActionMessage | null = null;
+  // whether the pending action has been queued and its answer is awaited
+  private pendingAsked = false;
+  private pendingWaits = 0;
+  private castEdgeCleared = false;
+  private dualCastOnFigure = false;
+  private castRetries = 0;
+  // about half a second at 60 updates a second, two updates a try
+  private static readonly castRetryLimit = 15;
+  // updates to wait for the queue's answer before counting it refused
+  private static readonly answerWaitLimit = 6;
+  // updates a start waits for the graph's cast answer before it goes without
+  // (the answer comes within a frame or two when it comes)
+  private readyWaits = 0;
+  private static readonly readyWaitLimit = 4;
   private movState = {
     lastNumChanges: 0,
     lastApply: 0,

@@ -734,6 +734,38 @@ export class FormView {
   // response handler is a no-op on an idle caster, the re-analyst 2026-10-14),
   // so a queue that drains slowly leaves the figure in the caster's state.
   private replayActions(refr: ObjectReference, model: FormModel): void {
+    // x-cast-interrupt (20261016-134830): a caster who sheathes mid-cast
+    // performs no exit action (its engine ends the cast and performs
+    // Unequip, which the figure takes through the animation relay), and the
+    // view kept retrying the cast's Ready, writing the caster's casting
+    // variables back each time, so the figure's hand stayed up until the
+    // next start (4.9 to 5.2 s) and its graph refused the next draw. A
+    // sheathed caster casts nothing: while its movement says so, the cast's
+    // later actions (ready, release, exit) are dropped with the hands' want
+    // variables; a start is kept, since a start can only follow a draw the
+    // movement has not reported yet
+    if (model.movement && model.movement.isWeapDrawn === false) {
+      const isStart = (a: UpdateActionMessage) => a.eventName.toLowerCase().endsWith("start");
+      let dropped = false;
+      if (this.pendingAction && !isStart(this.pendingAction)) {
+        this.pendingAction = null;
+        this.pendingAsked = false;
+        this.castRetries = 0;
+        this.readyWaits = 0;
+        dropped = true;
+      }
+      const queue = model.actionQueue;
+      if (queue && queue.some((a) => !isStart(a))) {
+        const starts = queue.filter(isStart);
+        queue.splice(0, queue.length, ...starts);
+        dropped = true;
+      }
+      if (dropped) {
+        this.castEdgeCleared = false;
+        this.dualCastOnFigure = false;
+        ["bWantCastRight", "bWantCastLeft"].forEach((w) => refr.setAnimationVariableBool(w, false));
+      }
+    }
     const pending = this.pendingAction;
     if (pending) {
       if (!this.pendingAsked) {

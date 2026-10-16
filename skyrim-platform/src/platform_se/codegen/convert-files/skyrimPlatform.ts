@@ -1697,11 +1697,8 @@ export declare function performAction(actorFormId: number, actionFormId: number,
 export declare function performActionResult(actorFormId: number): number;
 // thuum docs/verbs/cast-action.md: whether the actor's graph has answered a cast request for the hand (0 left, 1 right, 2 voice) since the last call, the BeginCast graph event the engine's own caster waits for before it performs a start; taken by the call
 export declare function castReady(actorFormId: number, hand: number): boolean;
-// thuum docs/verbs/self-cast.md: hides or shows a reference's activation
-// prompt text (ExtraFlags kBlockActivateText), so an invisible figure is not
-// named by the crosshair
-export declare function setActivateTextHidden(refrFormId: number,
-                                              hidden: boolean): boolean;
+// thuum docs/verbs/self-cast.md: hides or shows a reference's activation prompt text (ExtraFlags kBlockActivateText), so an invisible figure is not named by the crosshair
+export declare function setActivateTextHidden(refrFormId: number, hidden: boolean): boolean;
 // thuum docs/verbs/spell-cast.md: a figure's aim pitch (radians, down positive), its reference angle X and AimPitchCurrent, the two the engine's GetAimAngle reads to aim its stream every frame; call each update
 export declare function setActorAimPitch(actorFormId: number, radians: number): boolean;
 export declare function getAnimationVariablesFromActor(actorFormId: number): ActorAnimationVariables;

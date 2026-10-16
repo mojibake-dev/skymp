@@ -2,11 +2,19 @@
 #include "EventsApi.h"
 #include "FridaHookHandler.h"
 #include "FridaHooksUtils.h"
+#include "JsUtils.h"
+#include "MagicApi.h"
 #include "Override.h"
 #include "PapyrusTESModPlatform.h"
+#include "SkyrimPlatform.h"
 #include "StringHolder.h"
 
+#include <atomic>
+#include <cctype>
+#include <chrono>
 #include <fmt/format.h>
+#include <mutex>
+#include <unordered_map>
 
 /**
  * Send Event hook
@@ -256,6 +264,205 @@ void InstallSendAnimationEventHook()
 }
 
 /**
+ * PerformAction hook (thuum docs/verbs/cast-action.md): every BGSAction the
+ * player's actor performs, as the engine performs it through its one action
+ * entry, ActorMediator::PerformAction (the hand's attack, ready, release and
+ * interrupt a cast is made of, the dual and voice ones, the melee ones), with
+ * the idle the engine chose, the graph event it sent, and the actor's
+ * master-behavior variables as they were when the graph was asked. Filtered
+ * to the player here (rule 9), raised to JS as actionPerformed on the next
+ * tick; a figure in another game replays it through performAction.
+ *
+ * The entry is (ActorMediator*, TESActionData*) -> bool (the data is
+ * CommonLibSSE-NG's, include/RE/T/TESActionData.h; the entry read on sky-re
+ * 2026-10-14, HYPOTHESIS until the lab's trace): the data comes in with the
+ * event empty and leaves with the chosen idle's event in it, so the fields
+ * are read at the leave. A call with flags bit 0 set only validates (the
+ * engine's dry run, answered true with nothing performed), and a false
+ * return played nothing; neither is reported. The mediator re-enters itself
+ * for a paired action's target, so each thread keeps a stack, not a slot.
+ */
+struct PerformedAction
+{
+  RE::TESActionData* data = nullptr;
+  AnimationGraphMasterBehaviourDescriptor::AnimationVariables variables;
+};
+thread_local std::vector<PerformedAction> g_performedActions;
+
+// the player's pending cast starts, one per hand (0 left, 1 right): the
+// time its start action was performed and no cast event has claimed
+// (Frida::TakeCastStart); written on the game thread, read there too
+std::atomic<uint64_t> g_pendingCastStartMs[2]{ 0, 0 };
+
+uint64_t NowMs()
+{
+  return static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch())
+      .count());
+}
+
+void NoteCastHand(const std::string& eventName)
+{
+  if (eventName.size() < 4) {
+    return;
+  }
+  std::string lower = eventName;
+  for (auto& c : lower) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  int32_t hand = -1;
+  if (lower.rfind("mrh_", 0) == 0) {
+    hand = 1;
+  } else if (lower.rfind("mlh_", 0) == 0 ||
+             lower.rfind("dualmagic_", 0) == 0) {
+    hand = 0;
+  }
+  if (hand < 0) {
+    return;
+  }
+  // a start opens the hand's pending cast; its Equipped exit (the Interrupt
+  // action, a cancelled charge too) closes it; ready and release change
+  // nothing (a fire-and-forget spell's cast event comes at its release)
+  const bool isStart =
+    lower.size() >= 5 && lower.compare(lower.size() - 5, 5, "start") == 0;
+  const bool isExit = lower.find("equipped") != std::string::npos;
+  if (isStart) {
+    g_pendingCastStartMs[hand] = NowMs();
+  } else if (isExit) {
+    g_pendingCastStartMs[hand] = 0;
+  }
+}
+
+void OnPerformActionEnter(GumInvocationContext* ic)
+{
+  PerformedAction entry;
+  auto* data = reinterpret_cast<RE::TESActionData*>(ic->cpu_context->rdx);
+  auto* player = RE::PlayerCharacter::GetSingleton();
+  if (data && player && data->source.get() == player && data->action &&
+      (data->flags & 1) == 0) {
+    entry.data = data;
+    // the variables before the action changes them: the want variable the
+    // caster set a few instructions earlier is among them
+    entry.variables =
+      AnimationGraphMasterBehaviourDescriptor{ *player }.GetVariables();
+  }
+  g_performedActions.push_back(std::move(entry));
+}
+
+void OnPerformActionLeave(GumInvocationContext* ic)
+{
+  if (g_performedActions.empty()) {
+    return;
+  }
+  PerformedAction entry = std::move(g_performedActions.back());
+  g_performedActions.pop_back();
+  auto* data = entry.data;
+  if (!data) {
+    return;
+  }
+  const bool taken = !!gum_invocation_context_get_return_value(ic);
+  if (!taken) {
+    return;
+  }
+  const uint32_t actionId = data->action ? data->action->formID : 0;
+  const uint32_t idleId = data->animObjIdle ? data->animObjIdle->formID : 0;
+  const std::string eventName =
+    data->animEvent.c_str() ? data->animEvent.c_str() : "";
+  const uint32_t type = data->unk20;
+  const uint32_t flags = data->flags;
+  const uint32_t result = static_cast<uint32_t>(data->result);
+  NoteCastHand(eventName);
+
+  SkyrimPlatform::GetSingleton()->AddTickTask(
+    [actionId, idleId, eventName, type, flags, result,
+     variables = std::move(entry.variables)](Napi::Env env) {
+      auto obj = Napi::Object::New(env);
+      auto* player = RE::PlayerCharacter::GetSingleton();
+      AddObjProperty(&obj, "actor", static_cast<RE::TESForm*>(player),
+                     "Actor");
+      AddObjProperty(&obj, "action", actionId);
+      AddObjProperty(&obj, "idle", idleId);
+      AddObjProperty(&obj, "eventName", eventName.c_str());
+      AddObjProperty(&obj, "type", type);
+      AddObjProperty(&obj, "flags", flags);
+      AddObjProperty(&obj, "result", result);
+      obj.Set("variables", MagicApi::AnimationVariablesToJs(env, variables));
+      EventsApi::SendEvent("actionPerformed", { obj });
+    });
+}
+
+int32_t Frida::TakeCastStart(uint64_t withinMs)
+{
+  const uint64_t now = NowMs();
+  int32_t oldest = -1;
+  uint64_t oldestAt = 0;
+  for (int32_t hand = 0; hand < 2; ++hand) {
+    const uint64_t at = g_pendingCastStartMs[hand].load();
+    if (at == 0 || now < at || now - at > withinMs) {
+      continue;
+    }
+    if (oldest < 0 || at < oldestAt) {
+      oldest = hand;
+      oldestAt = at;
+    }
+  }
+  if (oldest >= 0) {
+    g_pendingCastStartMs[oldest] = 0;
+  }
+  return oldest;
+}
+
+void InstallPerformActionHook()
+{
+  // AE only: the id is 1.6.1170's (game/Offsets.h)
+  if (!REL::Module::IsAE()) {
+    return;
+  }
+  Frida::HookHandler::GetSingleton()->Install(
+    Frida::HookID::HOOK_PERFORM_ACTION,
+    Offsets::Hooks::PerformAction.address(),
+    std::make_shared<Frida::Hook>(OnPerformActionEnter, OnPerformActionLeave));
+}
+
+/**
+ * The graph's answers to a cast request (thuum docs/verbs/cast-action.md):
+ * the store behind castReady. The hooks that fill it are typed vtable
+ * swaps on the three spell-cast response handlers (Hooks.cpp,
+ * InstallSpellCastResponseHooks), not Frida interceptors: the first build
+ * with interceptors on those functions (34bdf0c3) died at the first answer
+ * on the lab (x-cast-human 20261015-224514), before anything was logged.
+ * Written where the graph event is handled, read on the game thread.
+ */
+std::mutex g_castReadyMutex;
+std::unordered_map<uint32_t, uint32_t> g_castReady; // form id -> hand bits
+
+void Frida::NoteCastReady(uint32_t actorFormId, uint32_t handBit)
+{
+  std::lock_guard<std::mutex> lock(g_castReadyMutex);
+  g_castReady[actorFormId] |= handBit;
+}
+
+bool Frida::TakeCastReady(uint32_t actorFormId, int32_t hand)
+{
+  const uint32_t bit = hand == 0 ? 1 : hand == 1 ? 2 : hand == 2 ? 4 : 0;
+  bool taken = false;
+  {
+    std::lock_guard<std::mutex> lock(g_castReadyMutex);
+    auto it = g_castReady.find(actorFormId);
+    if (it != g_castReady.end() && (it->second & bit) != 0) {
+      it->second &= ~bit;
+      taken = true;
+    }
+  }
+  if (taken) {
+    logger::info("[verb:cast-action] castReady on {:x}: hand {}", actorFormId,
+                 hand);
+  }
+  return taken;
+}
+
+/**
  * Queue Ninode Update hook
  */
 thread_local uint32_t g_queueNiNodeActorId = 0;
@@ -419,6 +626,7 @@ void Frida::InstallHooks()
   InstallDrawSheatheWeaponPcHook();
   InstallDrawSheatheWeaponActorHook();
   InstallSendAnimationEventHook();
+  InstallPerformActionHook();
   InstallQueueNinodeUpdateHook();
   InstallRenderCursorMenuHook();
 #ifdef ENABLE_SKYRIM_AE

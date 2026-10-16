@@ -12,6 +12,9 @@ void write_thunk_call(std::uintptr_t a_src)
 }
 
 void Install();
+// thuum docs/verbs/cast-action.md: the sink on SKSE's action events that
+// records a figure's graph answering a cast request; at kDataLoaded
+void InstallCastAnswerSink();
 
 std::vector<std::tuple<std::string, std::string, RE::BSScript::IFunction*,
                        uintptr_t, uintptr_t, uintptr_t>>

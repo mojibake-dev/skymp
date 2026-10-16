@@ -21,7 +21,54 @@
 #include "TextApi.h"
 #include "TextsCollection.h"
 
+#include <spdlog/details/file_helper.h>
+#include <spdlog/sinks/base_sink.h>
+
 extern CallNativeApi::NativeCallRequirements g_nativeCallRequirements;
+
+namespace {
+// A file sink that survives a failed write. spdlog's basic_file_sink throws
+// on a short fwrite and the logger drops that one line, but the CRT keeps the
+// stream's error indicator set, so every later write fails the same way and
+// the log stops while the game runs on (thuum playtest nineteen, 2026-10-15:
+// four logs stopped mid-play minutes apart from any fetch, stream or host
+// event; the figure kept taking replayed events for two minutes after c2's
+// last line). On a failure this reopens the file in append mode and writes
+// the line again once, so a failed write costs one line, not the session.
+class ReopeningFileSink final : public spdlog::sinks::base_sink<std::mutex>
+{
+public:
+  ReopeningFileSink(const std::string& filename, bool truncate)
+  {
+    file_.open(filename, truncate);
+  }
+
+protected:
+  void sink_it_(const spdlog::details::log_msg& msg) override
+  {
+    spdlog::memory_buf_t formatted;
+    formatter_->format(msg, formatted);
+    try {
+      file_.write(formatted);
+    } catch (const spdlog::spdlog_ex&) {
+      file_.reopen(false);
+      file_.write(formatted);
+    }
+  }
+
+  void flush_() override
+  {
+    try {
+      file_.flush();
+    } catch (const spdlog::spdlog_ex&) {
+      file_.reopen(false);
+    }
+  }
+
+private:
+  spdlog::details::file_helper file_;
+};
+}
 
 void GetTextsToDraw(TextToDrawCallback callback)
 {
@@ -97,8 +144,7 @@ void InitLog()
 
   const auto pathStr = path->string();
 
-  auto sink =
-    std::make_shared<spdlog::sinks::basic_file_sink_mt>(pathStr, true);
+  auto sink = std::make_shared<ReopeningFileSink>(pathStr, true);
 
   auto log = std::make_shared<spdlog::logger>("global log", std::move(sink));
 
@@ -181,6 +227,9 @@ DLLEXPORT bool SKSEAPI SKSEPlugin_Load_Impl(const SKSE::LoadInterface* skse)
     [](SKSE::MessagingInterface::Message* a_msg) {
       EventHandler::HandleSKSEMessage(a_msg);
       BrowserApiNirnLab::GetInstance().HandleSkseMessage(a_msg);
+      if (a_msg && a_msg->type == SKSE::MessagingInterface::kDataLoaded) {
+        Hooks::InstallCastAnswerSink();
+      }
     });
 
   Hooks::Install();

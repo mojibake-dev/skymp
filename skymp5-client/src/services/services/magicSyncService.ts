@@ -56,6 +56,14 @@ export class MagicSyncService extends ClientListener {
     }
 
     private onSpellCast(event: SpellCastEvent) {
+        // thuum docs/verbs/cast-action.md: a figure's cast in this game (the
+        // relay's castSpellImmediate) raises this event too, and the server
+        // refused each as a cast this player may not make; only the player's
+        // own and its hosted actors' go out
+        const casterId = event.caster.getFormID();
+        if (casterId !== this.playerId && !this.isHostedByMe(casterId)) {
+            return;
+        }
         const isInterruptCast = false;
 
         const msg: SpellCastMsgData = this.getSpellCastEventData(event, isInterruptCast);
@@ -100,6 +108,15 @@ export class MagicSyncService extends ClientListener {
             });
         });
 
+    }
+
+    private isHostedByMe(localId: number): boolean {
+        const hosted = this.sp.storage['hosted'];
+        if (!Array.isArray(hosted)) {
+            return false;
+        }
+        const remoteId = localIdToRemoteId(localId);
+        return hosted.includes(remoteId) || hosted.includes(remoteId + 0x100000000);
     }
 
     private getSpellCastEventData(e: SpellCastEvent, isInterruptCast: boolean): SpellCastMsgData {

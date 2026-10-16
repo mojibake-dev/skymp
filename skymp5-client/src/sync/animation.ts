@@ -14,6 +14,7 @@ import {
 import { Movement } from "./movement";
 import { applyWeapDrawn } from "./movementApply";
 import { clearKnockedDown, isKnockedDown, markKnockedDown } from "./knockState";
+import { isHandCastEvent } from "../services/services/actionSyncService";
 
 export enum AnimationEventName {
   Ragdoll = "Ragdoll",
@@ -138,40 +139,6 @@ const isIdle = (animEventName: string) => {
       animEventNameLowerCase !== "idlestop" &&
       animEventNameLowerCase !== "idleforcedefaultstate")
   );
-};
-
-// thuum docs/verbs/spell-cast.md (the concentration pose): a hand's spell
-// start lands on a figure's graph only while the figure holds its caster's
-// casting state. The engine's caster sets its hand's want-cast variable and
-// starts the cast's motion a frame after the graph has answered it; the
-// relay delivers the start first and the variables after (with the cast, or
-// the caster's 500 ms snapshot), so the figure refused the start and never
-// made the grab and push. The same start, sent to the figure while it held
-// the relayed variables, was taken (x-figure-cast3 20261014-182649: refused
-// at 1189 ms before the variables came at 1482, taken at 2073, the figure
-// casting: IsCastingRight 1, NotCasting 0, iState 10). The want variable
-// alone is not that state: set by itself it holds the graph at iState 10 for
-// one frame, and starts sent 16 to 266 ms after it were refused
-// (x-figure-cast2 20261014-183340). So the view holds a hand's start, and
-// the events behind it, until the figure is casting with that hand
-// (IsCastingRight or IsCastingLeft, the relayed state) since an earlier
-// frame.
-const castStartVariables = (animEventNameLowerCase: string): string[] => {
-  if (!animEventNameLowerCase.includes("spell") || !animEventNameLowerCase.endsWith("start")) {
-    return [];
-  }
-  if (animEventNameLowerCase.startsWith("mrh_")) return ["IsCastingRight"];
-  if (animEventNameLowerCase.startsWith("mlh_")) return ["IsCastingLeft"];
-  if (animEventNameLowerCase.startsWith("dualmagic_")) return ["IsCastingRight", "IsCastingLeft"];
-  return [];
-};
-
-// null: the event never waits; true: the figure is not casting with the
-// start's hand yet; false: it is
-export const castStartWaiting = (refr: ObjectReference, animEventName: string): boolean | null => {
-  const variables = castStartVariables(animEventName.toLowerCase());
-  if (variables.length === 0) return null;
-  return !variables.some((name) => refr.getAnimationVariableBool(name));
 };
 
 export const applyAnimation = (
@@ -331,6 +298,18 @@ export class AnimationSource {
     }
 
     const lower = animEventName.toLowerCase();
+
+    // thuum docs/verbs/cast-action.md: a hand's cast events (MRh_, MLh_,
+    // DualMagic_ starts, ready, release and the Equipped exit) travel as the
+    // actions that sent them (UpdateAction, services/actionSyncService.ts),
+    // which a figure performs through the engine's own entry; relayed as
+    // events too they would play twice, and the Equipped exit, rewritten
+    // below into SkympFakeEquip, never reached a figure's graph at all
+    // (x-flames-stop 20261015-031410: the figure cast for 11 s after the
+    // caster stopped, playtest eighteen's first finding)
+    if (isHandCastEvent(animEventName)) {
+      return;
+    }
 
     const isTorchEvent = lower.includes("torch");
     if (animEventName.toLowerCase().includes("unequip") && !isTorchEvent) {

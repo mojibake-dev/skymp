@@ -1,0 +1,38 @@
+# difftest cast-action (M2, thuum docs/verbs/cast-action.md): c1 and c2 are
+# new characters (profiles 9 and 10, actors 0xff000002 and 0xff000003: see
+# melee-reach), c2 50 units off the spawn. c1 wears Flames in its right hand
+# at 2 s (UpdateEquipment, as spell-cast does). At 3 s c1 reports the two
+# actions its engine performs for a stream's start (ActionRightAttack
+# 0x13005 with CastRightConcentrationAimed 0x1346F,
+# MRh_SpellAimedConcentrationStart; ActionRightRelease 0x13454 with
+# MagicRightRelease 0x205F6, MRh_SpellRelease_Event; x-action-trace-input
+# 20261015-055622) and at 4 s the interrupt (ActionRightInterrupt 0x13456
+# with InterruptRight 0x13460, MRh_Equipped_Event), each an UpdateAction
+# (MsgType 44, type 2 as the engine's ActionInput carries it, the variables
+# empty here). The fixed server relays each as it came to every game that
+# sees c1 but c1's own, reliably; the legacy server knows no such message
+# and relays nothing. c2 steps again at 4 s of its own (5.5 s of c1's), so it
+# outlives c1, as in every session. Declarations from the first run (T2
+# 2026-10-15, fork m2-cast-action).
+id: cast-action
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 2000, send: {t: 5, idx: 2, data: {inv: {entries: []}, rightSpell: 77773, numChanges: 1}}}
+  - {client: c1, at_ms: 3000, send: {t: 44, idx: "{{idx}}", action: 77829, idle: 78959, eventName: MRh_SpellAimedConcentrationStart, type: 2, actorAnimationVariables: {booleans: [], floats: [], integers: []}}}
+  - {client: c1, at_ms: 3000, send: {t: 44, idx: "{{idx}}", action: 78932, idle: 132598, eventName: MRh_SpellRelease_Event, type: 2, actorAnimationVariables: {booleans: [], floats: [], integers: []}}}
+  - {client: c1, at_ms: 4000, send: {t: 44, idx: "{{idx}}", action: 78934, idle: 78944, eventName: MRh_Equipped_Event, type: 2, actorAnimationVariables: {booleans: [], floats: [], integers: []}}}
+  - {client: c2, at_ms: 0, move: {dx: 50}}
+  - {client: c2, at_ms: 4000, move: {dx: 60}}
+divergences:
+  - client: c2
+    msg: {t: 25, idx: 2}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout
+  - client: c2
+    msg: {t: 44, idx: 2}
+    legacy: 0
+    wire: 3
+    reason: the fixed server relays c1's three cast actions to c2's game, whose view performs them on c1's figure (thuum docs/verbs/cast-action.md); the legacy server has no such message

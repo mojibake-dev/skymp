@@ -27,8 +27,6 @@ import { GamemodeUpdateService } from "../services/services/gamemodeUpdateServic
 const castHandsOf = (eventNameLowerCase: string): number[] =>
   eventNameLowerCase.startsWith("dualmagic") ? [0, 1] : eventNameLowerCase.startsWith("mlh_") ? [0] : [1];
 
-const wantVariableOfHand = (hand: number): string => (hand === 0 ? "bWantCastLeft" : "bWantCastRight");
-
 const castWantVariable = (eventNameLowerCase: string): string =>
   eventNameLowerCase.startsWith("mrh_") ? "bWantCastRight" : "bWantCastLeft";
 
@@ -738,22 +736,16 @@ export class FormView {
           // then it goes without (the shape before the handshake)
           const hands = castHandsOf(pendingName);
           const answered = hands.some((h) => castReady(refr.getFormID(), h));
-          if (!answered) {
-            if (this.readyWaits < FormView.readyWaitLimit) {
-              this.readyWaits++;
-              return;
-            }
-            if (this.edgeTries < FormView.edgeTryLimit && model.actionQueue) {
-              this.edgeTries++;
-              this.readyWaits = 0;
-              hands.forEach((h) => refr.setAnimationVariableBool(wantVariableOfHand(h), false));
-              this.pendingAction = null;
-              model.actionQueue.unshift(pending);
-              // the drop is done; the next update applies the variables again (the rise)
-              this.castEdgeCleared = true;
-              return;
-            }
-            printConsole(`cast-action: no cast answer on ${refr.getFormID().toString(16)} for ${pending.eventName}, performed without`);
+          if (!answered && this.readyWaits < FormView.readyWaitLimit) {
+            // the answer comes within a frame or two of the rise when it
+            // comes at all (x-cast-gap 213755: 4 to 7 ms); past that the
+            // start goes as caff3e04's did, one update after its variables
+            // plus the retry below, which took 6 of 6 moving (b-cast-moving
+            // 233639). 5df863fd waited three seconds for an answer its hook
+            // never gave and every blind ask after that was refused
+            // (x-cast-human 20261016-011836)
+            this.readyWaits++;
+            return;
           }
         }
         // queued to the game thread, which performs it right after this
@@ -765,7 +757,6 @@ export class FormView {
         this.pendingAsked = true;
         this.pendingWaits = 0;
         this.readyWaits = 0;
-        this.edgeTries = 0;
         return;
       }
       const answer = performActionResult(refr.getFormID());
@@ -866,12 +857,10 @@ export class FormView {
   private static readonly castRetryLimit = 15;
   // updates to wait for the queue's answer before counting it refused
   private static readonly answerWaitLimit = 6;
-  // updates a start waits for the graph's cast answer (about a second), and
-  // how many times the want variable rises again without one
+  // updates a start waits for the graph's cast answer before it goes without
+  // (the answer comes within a frame or two when it comes)
   private readyWaits = 0;
-  private edgeTries = 0;
-  private static readonly readyWaitLimit = 60;
-  private static readonly edgeTryLimit = 2;
+  private static readonly readyWaitLimit = 4;
   private movState = {
     lastNumChanges: 0,
     lastApply: 0,

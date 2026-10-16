@@ -163,6 +163,8 @@ export class RaceMenuService extends ClientListener {
             // nothing the server has not sent since counts as sent
             this.lastSent = "";
             this.resetPending = true;
+            this.resetSince = Date.now();
+            this.resetFor = id;
         }
     }
 
@@ -180,10 +182,34 @@ export class RaceMenuService extends ClientListener {
         if (!this.available() || (this.wanted.size === 0 && !this.resetPending)) {
             return;
         }
+        const me = this.myId();
+        if (this.resetPending && this.ownLook && this.ownLook.refrId === this.resetFor && this.resetFor === me) {
+            // the same character logging in again inside one game: the reset
+            // is for another character's RaceMenu additions, and on this one
+            // it destroys what the game itself set (playtest twenty: after a
+            // re-login rotfern's Root, Pelvis and Spine went from 0.6, 0.72
+            // and 0.83 to 1.0 under her race's 1.6, two to three times her
+            // size in her own game only; dropTransforms re-evaluates each node
+            // from NiOverride's stored base, which is not the skeleton's live
+            // scale). So its server preset is awaited a while: the look the
+            // game already shows needs neither the reset nor a reload
+            const wantedMine = this.wanted.get(me);
+            if (wantedMine === undefined && Date.now() - this.resetSince < RaceMenuService.sameLookWaitMs) {
+                return; // the server's preset comes at the first movement
+            }
+            if (wantedMine !== undefined && wantedMine === this.ownLook.preset) {
+                this.resetPending = false;
+                const player = this.sp.Game.getPlayer();
+                const base = player ? player.getBaseObject() : null;
+                if (player) {
+                    this.applied.set(me, player.getFormID().toString(16) + " on base " + (base ? base.getFormID() : 0).toString(16));
+                }
+                logTrace(this, "the same look logged in again; neither reset nor reloaded");
+            }
+        }
         if (this.resetPending && this.resetPlayer()) {
             this.resetPending = false;
         }
-        const me = this.myId();
         this.wanted.forEach((preset, actor) => {
             if (actor === me && this.resetPending) {
                 return; // the reset first, tried again on the next pass
@@ -204,6 +230,9 @@ export class RaceMenuService extends ClientListener {
             }
             if (this.load(target, actor, preset)) {
                 this.applied.set(actor, where);
+                if (actor === me) {
+                    this.ownLook = { refrId: me, preset };
+                }
                 logTrace(this, "applied the RaceMenu look of", actor.toString(16), "to", where);
             } else if (this.failed.get(actor) !== where) {
                 this.failed.set(actor, where);
@@ -428,5 +457,12 @@ export class RaceMenuService extends ClientListener {
     // the player's own CreateActor came, and RaceMenu's additions are still
     // to be taken off it
     private resetPending = false;
+    // when the player's CreateActor came and for which of its server ids; and
+    // the look this game last applied to the player, which a re-login of the
+    // same character with the same preset leaves as it is
+    private resetSince = 0;
+    private resetFor = 0;
+    private ownLook: { refrId: number; preset: string } | null = null;
+    private static readonly sameLookWaitMs = 10000;
     private raceMenu: boolean | undefined = undefined;
 }

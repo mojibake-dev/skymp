@@ -86,3 +86,4 @@ Bool Function Stagger(Actor target, Float magnitude, Actor source) global native
 ; thuum docs/verbs/marksman.md: a neighbour's arrow, launched from its figure
 ; along its shooter's aim (pitch and heading, radians) with its draw's power
 Bool Function LaunchArrow(Actor shooter, Weapon weapon, Ammo ammo, Float power, Float aimAngle, Float aimHeading) global native
+Bool Function LaunchArrowAt(Actor shooter, Weapon weapon, Ammo ammo, Float power, Float angleX, Float angleZ, Float originX, Float originY, Float originZ) global native

@@ -1066,6 +1066,39 @@ bool TESModPlatform::LaunchArrow(IVM* vm, StackID stackId,
   return true;
 }
 
+// thuum docs/verbs/marksman.md: the arrow's path identical on both screens
+// (Eli, 2026-10-15). The shooter's engine launched its arrow at an origin
+// with a pitch and a heading (Projectile::Launch's LaunchData, read by the
+// fork's projectileLaunched event); the figure's arrow is launched at that
+// same origin in that same direction, LaunchData's useOrigin set by its
+// constructor, so the engine's own physics flies the same path from the same
+// point. The power the shooter's draw, as LaunchArrow. False when an argument
+// is missing or not a number.
+bool TESModPlatform::LaunchArrowAt(IVM* vm, StackID stackId,
+                                   RE::StaticFunctionTag*, RE::Actor* shooter,
+                                   RE::TESObjectWEAP* weapon,
+                                   RE::TESAmmo* ammo, float power,
+                                   float angleX, float angleZ, float originX,
+                                   float originY, float originZ)
+{
+  if (!shooter || !weapon || !ammo || !std::isfinite(power) ||
+      !std::isfinite(angleX) || !std::isfinite(angleZ) ||
+      !std::isfinite(originX) || !std::isfinite(originY) ||
+      !std::isfinite(originZ)) {
+    return false;
+  }
+  const RE::NiPoint3 origin{ originX, originY, originZ };
+  const RE::Projectile::ProjectileRot angles{ angleX, angleZ };
+  RE::Projectile::LaunchData data(shooter, origin, angles, ammo, weapon);
+  data.power = std::clamp(power, 0.f, 1.f);
+  RE::ProjectileHandle handle{};
+  RE::Projectile::Launch(&handle, data);
+  if (const auto projectile = handle.get()) {
+    projectile->GetProjectileRuntimeData().power = data.power;
+  }
+  return true;
+}
+
 namespace {
 // thuum docs/verbs/favorites.md. An item is a favorite when an extra list of
 // its inventory entry carries ExtraHotkey (InventoryEntryData::IsFavorited);
@@ -1549,6 +1582,12 @@ bool TESModPlatform::Register(IVM* vm)
       true, decltype(LaunchArrow), bool, RE::StaticFunctionTag*, RE::Actor*,
       RE::TESObjectWEAP*, RE::TESAmmo*, float, float, float>(
       "LaunchArrow", "TESModPlatform", LaunchArrow));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<
+      true, decltype(LaunchArrowAt), bool, RE::StaticFunctionTag*,
+      RE::Actor*, RE::TESObjectWEAP*, RE::TESAmmo*, float, float, float,
+      float, float, float>("LaunchArrowAt", "TESModPlatform", LaunchArrowAt));
 
   vm->BindNativeMethod(
     new RE::BSScript::NativeFunction<true, decltype(GetFavorites),

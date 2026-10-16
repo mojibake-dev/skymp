@@ -16,6 +16,13 @@ export class PlayerBowShotService extends ClientListener {
 
         this.controller.emitter.on("queryBlockSetInventoryEvent", (e) => this.onQueryBlockSetInventoryEvent(e));
         this.controller.on("playerBowShot", (e) => this.onPlayerBowShot(e));
+        // the engine's own launch of the player's arrow (the fork's
+        // projectileLaunched event: Projectile::Launch's LaunchData), kept
+        // for the shot that follows it, so the observer launches the figure's
+        // arrow at the same origin in the same direction (thuum
+        // docs/verbs/marksman.md: the arrow's path identical on both screens)
+        this.controller.on("projectileLaunched", (e) => this.onProjectileLaunched(e));
+        this.controller.on("update", () => this.flushShot());
 
         const _this = this;
 
@@ -59,19 +66,73 @@ export class PlayerBowShotService extends ClientListener {
     // for each and lets each arrow's hit through once
     private onPlayerBowShot(e: BowShotWithAim) {
         const aimHeading = e.aimHeading ?? 0;
+        // the shot waits a few updates for its launch when the engine's launch
+        // event has not come yet (both come at the release; their order is
+        // not relied on), then goes with the launch or without
+        this.pendingShot = {
+            weaponId: e.weapon.getFormID(),
+            ammoId: e.ammo.getFormID(),
+            power: e.power,
+            isSunGazing: e.isSunGazing || false,
+            aimAngle: PlayerBowShotService.pitch(e.aimAngle ?? 0),
+            aimHeading: Number.isFinite(aimHeading) ? aimHeading : 0,
+            waited: 0,
+        };
+        this.flushShot();
+    }
+
+    private onProjectileLaunched(e: { shooter: number; ammo: number; weapon: number; originX: number; originY: number; originZ: number; angleX: number; angleZ: number }) {
+        if (e.shooter !== 0x14 || !e.ammo) {
+            return; // not the player's own arrow (a spell has no ammo)
+        }
+        this.lastLaunch = { at: Date.now(), ammo: e.ammo, weapon: e.weapon, originX: e.originX, originY: e.originY, originZ: e.originZ, angleX: e.angleX, angleZ: e.angleZ };
+    }
+
+    private flushShot() {
+        const shot = this.pendingShot;
+        if (!shot) {
+            return;
+        }
+        const launch = this.lastLaunch;
+        const fresh = launch && Date.now() - launch.at <= PlayerBowShotService.launchMatchMs && launch.ammo === shot.ammoId;
+        if (!fresh && shot.waited < PlayerBowShotService.launchWaitUpdates) {
+            shot.waited++;
+            return;
+        }
+        this.pendingShot = null;
+        if (fresh && launch) {
+            this.lastLaunch = null;
+        }
+        const withLaunch = fresh && launch && Number.isFinite(launch.originX) && Number.isFinite(launch.originY) && Number.isFinite(launch.originZ)
+            && Number.isFinite(launch.angleX) && Number.isFinite(launch.angleZ);
         this.controller.emitter.emit("sendMessage", {
             message: {
                 t: MsgType.PlayerBowShot,
-                weaponId: e.weapon.getFormID(),
-                ammoId: e.ammo.getFormID(),
-                power: e.power,
-                isSunGazing: e.isSunGazing || false,
-                aimAngle: PlayerBowShotService.pitch(e.aimAngle ?? 0),
-                aimHeading: Number.isFinite(aimHeading) ? aimHeading : 0
+                weaponId: shot.weaponId,
+                ammoId: shot.ammoId,
+                power: shot.power,
+                isSunGazing: shot.isSunGazing,
+                aimAngle: shot.aimAngle,
+                aimHeading: shot.aimHeading,
+                hasLaunch: !!withLaunch,
+                originX: withLaunch && launch ? launch.originX : 0,
+                originY: withLaunch && launch ? launch.originY : 0,
+                originZ: withLaunch && launch ? launch.originZ : 0,
+                launchAngleX: withLaunch && launch ? PlayerBowShotService.pitch(launch.angleX) : 0,
+                launchAngleZ: withLaunch && launch ? launch.angleZ : 0,
             },
             reliability: "reliable"
         });
+        if (!withLaunch) {
+            logTrace(this, "bow shot sent without its launch", launch ? `(last launch ${Date.now() - launch.at} ms ago, ammo ${launch.ammo.toString(16)})` : "(no launch seen)");
+        }
     }
+
+    private pendingShot: { weaponId: number; ammoId: number; power: number; isSunGazing: boolean; aimAngle: number; aimHeading: number; waited: number } | null = null;
+    private lastLaunch: { at: number; ammo: number; weapon: number; originX: number; originY: number; originZ: number; angleX: number; angleZ: number } | null = null;
+    // a launch this close to the shot is the shot's; a shot waits this many updates for one
+    private static readonly launchMatchMs = 400;
+    private static readonly launchWaitUpdates = 3;
 
     // A pitch within the quarter turn the server's validator allows
     private static pitch(radians: number): number {

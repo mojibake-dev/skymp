@@ -47,8 +47,16 @@ export class ArrowSyncService extends ClientListener {
                 continue;
             }
             try {
-                this.sp.callNative("TESModPlatform", "LaunchArrow", undefined,
-                    shooter, weapon, ammo, shot.power, shot.aimAngle, shot.aimHeading);
+                if (shot.hasLaunch) {
+                    // the shooter's own launch, replayed at its origin and angles
+                    // (thuum docs/verbs/marksman.md: one path on both screens)
+                    this.sp.callNative("TESModPlatform", "LaunchArrowAt", undefined,
+                        shooter, weapon, ammo, shot.power, shot.launchAngleX, shot.launchAngleZ,
+                        shot.originX, shot.originY, shot.originZ);
+                } else {
+                    this.sp.callNative("TESModPlatform", "LaunchArrow", undefined,
+                        shooter, weapon, ammo, shot.power, shot.aimAngle, shot.aimHeading);
+                }
             } catch (err) {
                 logError(this, "TESModPlatform.LaunchArrow failed", err);
             }

@@ -57,6 +57,14 @@ export class ShoutService extends ClientListener {
         super();
         this.controller.on("update", () => this.onUpdate());
         shoutGate.reportFromHit = (spell, why) => this.reportFromHit(spell, why);
+        // the engine's own fire of the voice (SKSE's action event, ADR-034):
+        // the shout's spell at the moment the engine casts it, whether or not
+        // it hits anything and whatever the voice recovery reads. Playtest
+        // nineteen's third session: 13 of 18 god-mode breaths never reached
+        // the server, every second breath within three seconds among them,
+        // because with a zero recovery the release was reported only from a
+        // hit (reportFromHeld) and a breath that hits nobody has none
+        this.controller.on("skseAction", (e) => this.onSkseAction(e));
         this.sp.hooks.sendAnimationEvent.add({
             enter: () => { },
             leave: () => { this.shoutStartedAt = Date.now(); },
@@ -78,6 +86,29 @@ export class ShoutService extends ClientListener {
                 },
             }, this.playerId, this.playerId, release);
         }
+    }
+
+    private onSkseAction(e: { actor: Actor; type: number; slot: number; sourceForm: number }) {
+        if (e.type !== ShoutService.kVoiceFire || !e.sourceForm) {
+            return;
+        }
+        // no game call in the event's context: the form is read on the update
+        this.controller.once("update", () => {
+            const form = Game.getFormEx(e.sourceForm);
+            const spell = form ? Spell.from(form) : null;
+            logTrace(this, "voice fire: source", e.sourceForm.toString(16), spell ? "a spell" : form ? "not a spell" : "no form");
+            if (!spell) {
+                // a shout's form names no variation; the recovery read stays
+                return;
+            }
+            const spellId = spell.getFormID();
+            if (spellId === shoutGate.reportedSpell && Date.now() - shoutGate.reportedAt <= ShoutService.fireReportWindowMs) {
+                return;
+            }
+            this.report(spellId);
+            this.releasedAt = 0;
+            releaseHeld();
+        });
     }
 
     private onUpdate() {
@@ -269,6 +300,10 @@ export class ShoutService extends ClientListener {
     private releasedAt = 0;
     // three words charge in about 0.9 s (x-shout-probe2)
     private static readonly chargeMs = 3000;
+    // SKSE::ActionEvent::Type::kVoiceFire (CommonLibSSE-NG include/SKSE/Events.h)
+    private static readonly kVoiceFire = 4;
+    // a release reported from the recovery read within this is the same shout
+    private static readonly fireReportWindowMs = 500;
     // how long one shout's own hits may follow its report
     private static readonly hitWindowMs = 1200;
     // how long the recovery may take to show after the release

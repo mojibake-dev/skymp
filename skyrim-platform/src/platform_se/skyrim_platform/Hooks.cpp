@@ -1,7 +1,10 @@
 #include "FridaHooks.h"
 #include "Hooks.h"
 #include "EventHandler.h"
+#include "EventsApi.h"
+#include "JsUtils.h"
 #include "PapyrusTESModPlatform.h"
+#include "SkyrimPlatform.h"
 #include <mutex>
 
 namespace hook::internal {
@@ -190,8 +193,31 @@ public:
     const SKSE::ActionEvent* a_event,
     RE::BSTEventSource<SKSE::ActionEvent>*) override
   {
-    if (!a_event || !a_event->actor ||
-        a_event->actor == RE::PlayerCharacter::GetSingleton()) {
+    if (!a_event || !a_event->actor) {
+      return RE::BSEventNotifyControl::kContinue;
+    }
+    if (a_event->actor == RE::PlayerCharacter::GetSingleton()) {
+      // the player's own action events go to JS as skseAction (ADR-034: an
+      // engine moment comes from SKSE's event where SKSE publishes one): the
+      // shout's fire for the breath report (docs/verbs/shouts.md), later the
+      // cast's hand and the draw state. Raised on the next tick, the way
+      // actionPerformed is; no game call in its handler
+      const uint32_t type = static_cast<uint32_t>(a_event->type.get());
+      const uint32_t slot = static_cast<uint32_t>(a_event->slot.get());
+      const uint32_t sourceForm =
+        a_event->sourceForm ? a_event->sourceForm->formID : 0;
+      SkyrimPlatform::GetSingleton()->AddTickTask(
+        [type, slot, sourceForm](Napi::Env env) {
+          auto obj = Napi::Object::New(env);
+          AddObjProperty(&obj, "actor",
+                         static_cast<RE::TESForm*>(
+                           RE::PlayerCharacter::GetSingleton()),
+                         "Actor");
+          AddObjProperty(&obj, "type", type);
+          AddObjProperty(&obj, "slot", slot);
+          AddObjProperty(&obj, "sourceForm", sourceForm);
+          EventsApi::SendEvent("skseAction", { obj });
+        });
       return RE::BSEventNotifyControl::kContinue;
     }
     uint32_t bit = 0;
@@ -221,7 +247,8 @@ void Hooks::InstallCastAnswerSink()
   }
   source->AddEventSink(CastAnswerSink::GetSingleton());
   installed = true;
-  logger::info("[verb:cast-action] cast answer sink on SKSE's action events");
+  logger::info("[verb:cast-action] cast answer sink on SKSE's action events "
+               "(the player's raised to JS as skseAction)");
 }
 
 void BindNativeMethod(RE::BSScript::Internal::VirtualMachine* thisArg,

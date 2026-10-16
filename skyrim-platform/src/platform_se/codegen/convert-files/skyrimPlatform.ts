@@ -285,6 +285,13 @@ export interface ActionPerformedEvent {
   type: number
   variables: ActorAnimationVariables
 }
+// thuum ADR-034: one of SKSE's action events for the player (CommonLibSSE-NG include/SKSE/Events.h: type 0 weapon swing, 1 spell cast, 2 spell fire, 3 voice cast, 4 voice fire, 5 bow draw, 6 bow release, 7 begin draw, 8 end draw, 9 begin sheathe, 10 end sheathe; slot 0 left, 1 right, 2 voice; sourceForm the spell, shout or weapon's form id, 0 for none), raised on the next tick; no game call in its handler
+export interface SkseActionEvent {
+  actor: Actor;
+  type: number;
+  slot: number;
+  sourceForm: number;
+}
 
 export interface OpenCloseEvent {
   target: ObjectReference
@@ -655,6 +662,9 @@ export declare function once(eventName: 'spellCast', callback: (event: SpellCast
 
 export declare function on(eventName: 'actionPerformed', callback: (event: ActionPerformedEvent) => void): EventHandle
 export declare function once(eventName: 'actionPerformed', callback: (event: ActionPerformedEvent) => void): EventHandle
+
+export declare function on(eventName: 'skseAction', callback: (event: SkseActionEvent) => void): EventHandle
+export declare function once(eventName: 'skseAction', callback: (event: SkseActionEvent) => void): EventHandle
 
 export declare function on(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle
 export declare function once(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle

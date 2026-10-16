@@ -47,6 +47,17 @@ declare module "skyrimPlatform" {
     }
     function on(eventName: 'actionPerformed', callback: (event: ActionPerformedEvent) => void): EventHandle;
     function once(eventName: 'actionPerformed', callback: (event: ActionPerformedEvent) => void): EventHandle;
+    // thuum ADR-034: one of SKSE's action events for the player (type 4 is
+    // the voice's fire, 2 a hand's spell fire; slot 0 left, 1 right, 2
+    // voice; sourceForm the spell or shout). No game call in its handler.
+    interface SkseActionEvent {
+        actor: Actor;
+        type: number;
+        slot: number;
+        sourceForm: number;
+    }
+    function on(eventName: 'skseAction', callback: (event: SkseActionEvent) => void): EventHandle;
+    function once(eventName: 'skseAction', callback: (event: SkseActionEvent) => void): EventHandle;
 }
 
 export type Sp = Omit<typeof sp, "on" | "once">;

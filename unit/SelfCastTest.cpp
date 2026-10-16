@@ -223,6 +223,26 @@ TEST_CASE("A recast of Invisibility keeps its caster invisible, as the "
   Leave(p);
 }
 
+TEST_CASE("A bow's release ends its shooter's concealment, as the engine's "
+          "release does",
+          "[SelfCast][espm]")
+{
+  // thuum docs/verbs/self-cast.md: ArrowReleaseHandler calls
+  // DispelAlteredStates after the shot, with no exception
+  PartOne& p = GetPartOne();
+  Pair(p, kInvisibility);
+  auto& shooter = p.worldState.GetFormAt<MpActor>(kShooter);
+  shooter.ApplyEffects(kInvisibility,
+                       MpActor::EffectsOf(&p.worldState, kInvisibility), 1.f,
+                       kShooter, false);
+  REQUIRE(
+    shooter.HasRunningEffectOfType(espm::MGEF::EffectType::Invisibility));
+  ArrowHitsCaster(p);
+  REQUIRE(
+    !shooter.HasRunningEffectOfType(espm::MGEF::EffectType::Invisibility));
+  Leave(p);
+}
+
 TEST_CASE("An ethereal player takes no damage from another's arrow",
           "[SelfCast][espm]")
 {

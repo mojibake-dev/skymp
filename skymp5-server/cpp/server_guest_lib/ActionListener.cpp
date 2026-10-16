@@ -1007,6 +1007,14 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
   constexpr bool kDefaultProcessingOnlyFalse = false;
   targetPtr->Activate(caster, kDefaultProcessingOnlyFalse,
                       msg.data.isSecondActivation);
+  // thuum docs/verbs/self-cast.md: an actor's activation ends its
+  // concealment (TESObjectREFR::ActivateRef 19796 calls DispelAlteredStates
+  // for an actor activator, with no exception; pick-up goes the same way;
+  // HYPOTHESIS until a lab run); the player's own here, a hosted actor's in
+  // its host's game
+  if (msg.data.caster == 0x14) {
+    EndConcealment(*ac);
+  }
   if (hosterId) {
     auto actor =
       std::dynamic_pointer_cast<MpActor>(partOne.worldState.LookupFormById(
@@ -1870,6 +1878,10 @@ void ActionListener::OnPlayerBowShot(const RawMessageData& rawMsgData,
   // the shot waits for its hit (one), and each neighbour's game draws the
   // arrow from the shooter's figure
   partOne.RecordShot(ac->GetFormId(), msg.weaponId, msg.power, ac->GetPos());
+  // thuum docs/verbs/self-cast.md: the engine's bow release ends its
+  // shooter's concealment after the shot (ArrowReleaseHandler 42859 calls
+  // DispelAlteredStates with no exception; HYPOTHESIS until a lab run)
+  EndConcealment(*ac);
   ArrowShotMessage relay;
   relay.idx = ac->GetIdx();
   relay.weaponId = msg.weaponId;

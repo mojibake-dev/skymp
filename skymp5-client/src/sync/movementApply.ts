@@ -148,10 +148,30 @@ const applySneaking = (ac: Actor, isSneaking: boolean) => {
   sneakSent.set(id, { isSneaking, at: now });
 };
 
+// the draw state last asked of each actor and when: the latent native is
+// asked again only when the wanted state changes or a second has passed with
+// the actor still not in it (playtest twenty: a figure whose state never
+// matched its movement had the native called on every movement message, 20 a
+// second, once the relayed drawn flag began to expire)
+const weapDrawnAsked = new Map < number,
+{
+  drawn: boolean;
+  at: number
+}
+>();
+
 export const applyWeapDrawn = (ac: Actor, isWeapDrawn: boolean): void => {
-  if (ac.isWeaponDrawn() !== isWeapDrawn) {
-    TESModPlatform.setWeaponDrawnMode(ac, isWeapDrawn ? 1 : 0);
+  if (ac.isWeaponDrawn() === isWeapDrawn) {
+    return;
   }
+  const id = ac.getFormID();
+  const last = weapDrawnAsked.get(id);
+  const now = Date.now();
+  if (last && last.drawn === isWeapDrawn && now - last.at < 1000) {
+    return;
+  }
+  weapDrawnAsked.set(id, { drawn : isWeapDrawn, at : now });
+  TESModPlatform.setWeaponDrawnMode(ac, isWeapDrawn ? 1 : 0);
 };
 
 const applyHealthPercentage = (ac: Actor, healthPercentage: number) => {

@@ -130,7 +130,8 @@ Napi::Value CallNativeImpl(
           throw NullPointerException("g_callNativeArgsPtr");
         g_callNativeArgsPtr->latentCallback =
           [resolveFunctionRef](Napi::Env env, const CallNative::AnySafe& v) {
-            spdlog::info("Latent callback called");
+            // thuum: named and counted in CallNative's onResult instead
+            // (this line, unnamed, ran 20 a second in playtest twenty)
             resolveFunctionRef->Value().Call(
               env.Undefined(),
               { SP3NativeValueCasts::GetSingleton().NativeValueToJsValue(env,

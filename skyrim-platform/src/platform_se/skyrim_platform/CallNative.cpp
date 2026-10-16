@@ -8,6 +8,8 @@
 #include "StringHolder.h"
 #include "VmCall.h"
 #include "VmCallback.h"
+#include <mutex>
+#include <unordered_map>
 
 #include <spdlog/spdlog.h>
 
@@ -454,8 +456,23 @@ CallNative::AnySafe CallNative::CallNativeSafe(Arguments& args_)
     auto funcReturnType = funcInfo->GetReturnType().className;
     auto jsThrQPtr = &jsThrQ;
     auto cb = latentCallback;
-    auto onResult = [cb, funcReturnType, jsThrQPtr](const Variable& result) {
-      spdlog::info("onResult called");
+    // thuum (playtest twenty: 19,889 of these lines in 16 minutes on one
+    // seat, no name to tell which native): the latent call's class and
+    // function, the first three of each and then every 1000th with its count
+    const std::string latentName =
+      std::string(className) + "." + std::string(classFunc);
+    auto onResult = [cb, funcReturnType, jsThrQPtr,
+                     latentName](const Variable& result) {
+      static std::mutex countsMutex;
+      static std::unordered_map<std::string, uint64_t> counts;
+      uint64_t n = 0;
+      {
+        std::lock_guard<std::mutex> lock(countsMutex);
+        n = ++counts[latentName];
+      }
+      if (n <= 3 || n % 1000 == 0) {
+        spdlog::info("onResult called: {} (call {})", latentName, n);
+      }
       jsThrQPtr->AddTask([=](Napi::Env env) {
         if (!cb)
           throw NullPointerException("cb");

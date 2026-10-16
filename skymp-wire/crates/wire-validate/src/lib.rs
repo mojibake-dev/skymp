@@ -279,12 +279,29 @@ fn check_game_time(m: &skymp::SetGameTime) -> Result<(), Reject> {
     }
 }
 
-/// A rest's hours: the Sleep/Wait menu's range, one hour to a day
-/// (docs/verbs/rest.md; UESP, Skyrim:Health, "the hour minimum").
 /// A bow shot's draw power (0 to 1) and aim pitch (a quarter turn either
-/// way, radians), thuum docs/verbs/marksman.md.
+/// way, radians), thuum docs/verbs/marksman.md, and its launch
+/// ([`check_launch`]).
 fn check_bow_shot(m: &skymp::PlayerBowShot) -> Result<(), Reject> {
-    if (0.0..=1.0).contains(&m.power) && (-core::f32::consts::FRAC_PI_2..=core::f32::consts::FRAC_PI_2).contains(&m.aim_angle) {
+    if !((0.0..=1.0).contains(&m.power) && (-core::f32::consts::FRAC_PI_2..=core::f32::consts::FRAC_PI_2).contains(&m.aim_angle)) {
+        return Err(Reject::Range);
+    }
+    check_launch(m.has_launch, &[m.origin_x, m.origin_y, m.origin_z], m.launch_angle_x, m.launch_angle_z)
+}
+
+/// A shot's launch as the shooter's engine made it, which PlayerBowShot and
+/// its relay ArrowShot carry alike (thuum docs/verbs/marksman.md: the arrow's
+/// path identical on both screens): when carried, a pitch within a quarter
+/// turn either way and an origin inside the world; when not, origin and
+/// angles all zero, so no message holds a launch it says it lacks. The
+/// heading is any finite angle, as the aim's is.
+fn check_launch(has_launch: bool, origin: &skymp::Vec3, angle_x: f32, angle_z: f32) -> Result<(), Reject> {
+    if has_launch {
+        if !(-core::f32::consts::FRAC_PI_2..=core::f32::consts::FRAC_PI_2).contains(&angle_x) {
+            return Err(Reject::Range);
+        }
+        check_pos(origin)
+    } else if origin.iter().chain(&[angle_x, angle_z]).all(|v| *v == 0.0) {
         Ok(())
     } else {
         Err(Reject::Range)
@@ -319,6 +336,8 @@ fn check_spell_cast(m: &skymp::SpellCast) -> Result<(), Reject> {
     }
 }
 
+/// A rest's hours: the Sleep/Wait menu's range, one hour to a day
+/// (docs/verbs/rest.md; UESP, Skyrim:Health, "the hour minimum").
 fn check_rest(m: &skymp::RestIntent) -> Result<(), Reject> {
     if (1.0..=24.0).contains(&m.hours) {
         Ok(())
@@ -549,6 +568,15 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
                 return Err(Reject::NonFinite);
             }
             check_bow_shot(m)
+        }
+        // thuum docs/verbs/marksman.md: a shot's relay carries the shot's
+        // launch, under the shot's rule; the transport refuses it from a
+        // client by direction
+        Message::ArrowShot(m) => {
+            if !all_finite(m) {
+                return Err(Reject::NonFinite);
+            }
+            check_launch(m.has_launch, &[m.origin_x, m.origin_y, m.origin_z], m.launch_angle_x, m.launch_angle_z)
         }
         Message::SpellCast(m) => {
             if !all_finite(m) {
@@ -968,6 +996,77 @@ mod tests {
         }
         assert_eq!(validate(&shot(f32::NAN, 0.0), &mut ClientGuard::default(), 0), Err(Reject::NonFinite));
         assert_eq!(validate(&shot(1.0, f32::INFINITY), &mut ClientGuard::default(), 0), Err(Reject::NonFinite));
+    }
+
+    // a shot with the launch its game made, from (x, y, z) at pitch angle_x
+    fn launched(x: f32, y: f32, z: f32, angle_x: f32) -> Message {
+        Message::PlayerBowShot(skymp::PlayerBowShot {
+            weapon_id: 0x3b562,
+            ammo_id: 0x1397d,
+            power: 1.0,
+            aim_angle: 0.1,
+            aim_heading: 1.57,
+            has_launch: true,
+            origin_x: x,
+            origin_y: y,
+            origin_z: z,
+            launch_angle_x: angle_x,
+            launch_angle_z: 1.57,
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn a_bow_shot_carries_its_launch_from_inside_the_world_at_a_pitch_within_bounds() {
+        assert_eq!(validate(&launched(1234.5, -300.25, 96.0, 0.1), &mut ClientGuard::default(), 0), Ok(()));
+        assert_eq!(validate(&launched(-WORLD_ABS_MAX, WORLD_ABS_MAX, 0.0, -1.5), &mut ClientGuard::default(), 0), Ok(()));
+        for (x, y, z) in [(1.5e6, 0.0, 96.0), (1234.5, -1.0e7, 96.0), (1234.5, -300.25, 2.0e6)] {
+            assert_eq!(validate(&launched(x, y, z, 0.1), &mut ClientGuard::default(), 0), Err(Reject::OutOfWorld), "{x} {y} {z}");
+        }
+        for angle_x in [2.0, -2.0, core::f32::consts::PI] {
+            assert_eq!(validate(&launched(1234.5, -300.25, 96.0, angle_x), &mut ClientGuard::default(), 0), Err(Reject::Range), "{angle_x}");
+        }
+        assert_eq!(validate(&launched(f32::NAN, -300.25, 96.0, 0.1), &mut ClientGuard::default(), 0), Err(Reject::NonFinite));
+    }
+
+    #[test]
+    fn a_bow_shot_without_its_launch_carries_zeros() {
+        // shot() carries none: has_launch false, origin and angles zero
+        assert_eq!(validate(&shot(1.0, 0.3), &mut ClientGuard::default(), 0), Ok(()));
+        let none = skymp::PlayerBowShot { weapon_id: 0x3b562, ammo_id: 0x1397d, power: 1.0, aim_angle: 0.1, ..Default::default() };
+        for m in [
+            skymp::PlayerBowShot { origin_x: 1234.5, ..none.clone() },
+            skymp::PlayerBowShot { origin_y: -300.25, ..none.clone() },
+            skymp::PlayerBowShot { origin_z: 96.0, ..none.clone() },
+            skymp::PlayerBowShot { launch_angle_x: 0.1, ..none.clone() },
+            skymp::PlayerBowShot { launch_angle_z: 1.57, ..none.clone() },
+        ] {
+            assert_eq!(validate(&Message::PlayerBowShot(m.clone()), &mut ClientGuard::default(), 0), Err(Reject::Range), "{m:?}");
+        }
+    }
+
+    #[test]
+    fn an_arrow_shot_carries_its_shots_launch_under_the_same_rule() {
+        let relay = skymp::ArrowShot {
+            idx: 2,
+            weapon_id: 0x3b562,
+            ammo_id: 0x1397d,
+            power: 1.0,
+            aim_angle: 0.1,
+            aim_heading: 1.57,
+            has_launch: true,
+            origin_x: 1234.5,
+            origin_y: -300.25,
+            origin_z: 96.0,
+            launch_angle_x: 0.1,
+            launch_angle_z: 1.57,
+            ..Default::default()
+        };
+        assert_eq!(validate_server(&Message::ArrowShot(relay.clone())), Ok(()));
+        assert_eq!(validate_server(&Message::ArrowShot(skymp::ArrowShot { idx: 2, ..Default::default() })), Ok(()));
+        assert_eq!(validate_server(&Message::ArrowShot(skymp::ArrowShot { origin_y: -1.0e7, ..relay.clone() })), Err(Reject::OutOfWorld));
+        assert_eq!(validate_server(&Message::ArrowShot(skymp::ArrowShot { launch_angle_x: 2.0, ..relay.clone() })), Err(Reject::Range));
+        assert_eq!(validate_server(&Message::ArrowShot(skymp::ArrowShot { has_launch: false, ..relay })), Err(Reject::Range));
     }
 
     fn spell_cast(spell: u32, casting_source: i32, aim_angle: f32) -> Message {

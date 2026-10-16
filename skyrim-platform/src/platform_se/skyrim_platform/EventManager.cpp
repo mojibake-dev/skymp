@@ -18,6 +18,8 @@ void EventManager::InitCustom()
   // thuum docs/verbs/cast-action.md: an action the player's actor performed
   manager->EmplaceEvent("actionPerformed");
   manager->EmplaceEvent("skseAction");
+  manager->EmplaceEvent("projectileLaunched");
+  manager->EmplaceEvent("projectileFlight");
   manager->EmplaceEvent("ipcMessage");
 
   // skse messages

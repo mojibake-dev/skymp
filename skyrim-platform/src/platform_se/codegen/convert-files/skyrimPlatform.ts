@@ -292,6 +292,35 @@ export interface SkseActionEvent {
   slot: number;
   sourceForm: number;
 }
+// thuum docs/verbs/marksman.md: a projectile the engine launched (Projectile::Launch's LaunchData, CommonLibSSE-NG include/RE/P/Projectile.h:78-107), raised on the next tick for every shooter: the arrow's or spell's origin and angles as the engine used them. No game call in its handler
+export interface ProjectileLaunchedEvent {
+  shooter: number;
+  projectile: number;
+  weapon: number;
+  ammo: number;
+  spell: number;
+  castingSource: number;
+  originX: number;
+  originY: number;
+  originZ: number;
+  angleX: number;
+  angleZ: number;
+  power: number;
+  useOrigin: boolean;
+}
+// thuum docs/verbs/marksman.md: an arrow's flight as it starts (its first update's angles, after the player's auto-aim), for the player's and the figures' arrows, raised on the next tick. No game call in its handler
+export interface ProjectileFlightEvent {
+  shooter: number;
+  projectile: number;
+  weapon: number;
+  ammo: number;
+  x: number;
+  y: number;
+  z: number;
+  angleX: number;
+  angleZ: number;
+  power: number;
+}
 
 export interface OpenCloseEvent {
   target: ObjectReference
@@ -665,6 +694,12 @@ export declare function once(eventName: 'actionPerformed', callback: (event: Act
 
 export declare function on(eventName: 'skseAction', callback: (event: SkseActionEvent) => void): EventHandle
 export declare function once(eventName: 'skseAction', callback: (event: SkseActionEvent) => void): EventHandle
+
+export declare function on(eventName: 'projectileLaunched', callback: (event: ProjectileLaunchedEvent) => void): EventHandle
+export declare function once(eventName: 'projectileLaunched', callback: (event: ProjectileLaunchedEvent) => void): EventHandle
+
+export declare function on(eventName: 'projectileFlight', callback: (event: ProjectileFlightEvent) => void): EventHandle
+export declare function once(eventName: 'projectileFlight', callback: (event: ProjectileFlightEvent) => void): EventHandle
 
 export declare function on(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle
 export declare function once(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle
@@ -1662,6 +1697,8 @@ export declare function performAction(actorFormId: number, actionFormId: number,
 export declare function performActionResult(actorFormId: number): number;
 // thuum docs/verbs/cast-action.md: whether the actor's graph has answered a cast request for the hand (0 left, 1 right, 2 voice) since the last call, the BeginCast graph event the engine's own caster waits for before it performs a start; taken by the call
 export declare function castReady(actorFormId: number, hand: number): boolean;
+// thuum docs/verbs/spell-cast.md: a figure's aim pitch (radians, down positive), its reference angle X and AimPitchCurrent, the two the engine's GetAimAngle reads to aim its stream every frame; call each update
+export declare function setActorAimPitch(actorFormId: number, radians: number): boolean;
 export declare function getAnimationVariablesFromActor(actorFormId: number): ActorAnimationVariables;
 export declare function applyAnimationVariablesToActor(actorFormId: number, animationVariables: ActorAnimationVariables): boolean;
 

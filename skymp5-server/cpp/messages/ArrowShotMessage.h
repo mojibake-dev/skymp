@@ -21,7 +21,13 @@ struct ArrowShotMessage : public MessageBase<ArrowShotMessage>
       .Serialize("ammoId", ammoId)
       .Serialize("power", power)
       .Serialize("aimAngle", aimAngle)
-      .Serialize("aimHeading", aimHeading);
+      .Serialize("aimHeading", aimHeading)
+      .Serialize("hasLaunch", hasLaunch)
+      .Serialize("originX", originX)
+      .Serialize("originY", originY)
+      .Serialize("originZ", originZ)
+      .Serialize("launchAngleX", launchAngleX)
+      .Serialize("launchAngleZ", launchAngleZ);
   }
 
   uint32_t idx = 0;
@@ -30,4 +36,13 @@ struct ArrowShotMessage : public MessageBase<ArrowShotMessage>
   float power = 0.f;
   float aimAngle = 0.f;
   float aimHeading = 0.f;
+  // the shot's launch, as the shot carried it: the receiving game launches
+  // the figure's arrow at this origin with these angles; without it, all
+  // zero, and the arrow leaves along the aim
+  bool hasLaunch = false;
+  float originX = 0.f;
+  float originY = 0.f;
+  float originZ = 0.f;
+  float launchAngleX = 0.f;
+  float launchAngleZ = 0.f;
 };

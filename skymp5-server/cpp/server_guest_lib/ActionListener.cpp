@@ -584,17 +584,67 @@ PartOne::VoiceFacts VoiceFactsOf(const MpActor& actor, uint32_t shout,
   return f;
 }
 
-// thuum docs/verbs/self-cast.md: an invisible or ethereal actor's own act
-// (an attack, a cast) ends that state on the server, as the engine ends it
-// in its game (HYPOTHESIS until the lab reads the engine's)
-void EndConcealment(MpActor& actor)
+// The archetype a cast spell carries that its own cast spares (the engine's
+// exception: Invisibility before Etherealize, none otherwise)
+std::optional<espm::MGEF::EffectType> ConcealmentExceptionOf(
+  WorldState* worldState, uint32_t spell)
 {
-  if (actor.EndRunningEffectsOfTypes(
-        { espm::MGEF::EffectType::Invisibility,
-          espm::MGEF::EffectType::Etherealize })) {
+  if (!spell) {
+    return std::nullopt;
+  }
+  bool invisibility = false;
+  bool etherealize = false;
+  for (const auto& effect : MpActor::EffectsOf(worldState, spell)) {
+    try {
+      const auto type =
+        espm::GetData<espm::MGEF>(effect.effectId, worldState).data.effectType;
+      invisibility |= type == espm::MGEF::EffectType::Invisibility;
+      etherealize |= type == espm::MGEF::EffectType::Etherealize;
+    } catch (std::exception& e) {
+      spdlog::warn("ConcealmentExceptionOf - effect {:x} of {:x}: {}",
+                   effect.effectId, spell, e.what());
+    }
+  }
+  if (invisibility) {
+    return espm::MGEF::EffectType::Invisibility;
+  }
+  if (etherealize) {
+    return espm::MGEF::EffectType::Etherealize;
+  }
+  return std::nullopt;
+}
+
+// thuum docs/verbs/self-cast.md: an invisible or ethereal actor's own act
+// (an attack, a cast) ends that state on the server, as the engine ends it in
+// its game: Actor::DispelAlteredStates (38819 on 1.6.1170), which the
+// caster's SpellCast calls at the fire with one exception, the archetype the
+// cast spell itself carries, so a recast of Invisibility replaces the running
+// copy instead of ending it (the engine's own replace pass); a hit or an
+// activation passes none (the re-analyst on sky-re, 2026-10-16; HYPOTHESIS
+// until x-invis-recast). Without the exception the server ended the state
+// and told every game at once, and the observer's dispel, landing after its
+// figure's fresh cast, ended the new copy: playtest nineteen's "if i REcast
+// it i lose invisibility on the other players screen but not my own".
+void EndConcealment(MpActor& actor, uint32_t castSpell = 0)
+{
+  const auto exception = ConcealmentExceptionOf(actor.GetParent(), castSpell);
+  bool ended = false;
+  if (exception == espm::MGEF::EffectType::Invisibility) {
+    ended =
+      actor.EndRunningEffectsOfTypes({ espm::MGEF::EffectType::Etherealize });
+  } else if (exception == espm::MGEF::EffectType::Etherealize) {
+    ended =
+      actor.EndRunningEffectsOfTypes({ espm::MGEF::EffectType::Invisibility });
+  } else {
+    ended =
+      actor.EndRunningEffectsOfTypes({ espm::MGEF::EffectType::Invisibility,
+                                       espm::MGEF::EffectType::Etherealize });
+  }
+  if (ended) {
     spdlog::info("ActionListener - {:x} acts: its invisibility and ethereal "
-                 "state end",
-                 actor.GetFormId());
+                 "state end{}",
+                 actor.GetFormId(),
+                 exception ? " (but the one its own spell carries)" : "");
   }
 }
 
@@ -957,6 +1007,14 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
   constexpr bool kDefaultProcessingOnlyFalse = false;
   targetPtr->Activate(caster, kDefaultProcessingOnlyFalse,
                       msg.data.isSecondActivation);
+  // thuum docs/verbs/self-cast.md: an actor's activation ends its
+  // concealment (TESObjectREFR::ActivateRef 19796 calls DispelAlteredStates
+  // for an actor activator, with no exception; pick-up goes the same way;
+  // HYPOTHESIS until a lab run); the player's own here, a hosted actor's in
+  // its host's game
+  if (msg.data.caster == 0x14) {
+    EndConcealment(*ac);
+  }
   if (hosterId) {
     auto actor =
       std::dynamic_pointer_cast<MpActor>(partOne.worldState.LookupFormById(
@@ -1795,6 +1853,23 @@ void ActionListener::OnPlayerBowShot(const RawMessageData& rawMsgData,
                         ac->GetFormId(), msg.ammoId, msg.weaponId);
   }
 
+  // thuum docs/verbs/marksman.md: the launch each neighbour's game replays
+  // leaves from the shooter's bow, near where the server has the shooter;
+  // one from farther off changes nothing, as a shot from a bow it does not
+  // hold
+  if (msg.hasLaunch) {
+    constexpr float kMaxLaunchOffsetUnits = 512.f;
+    const float distance =
+      (NiPoint3(msg.originX, msg.originY, msg.originZ) - ac->GetPos())
+        .Length();
+    if (distance > kMaxLaunchOffsetUnits) {
+      return spdlog::warn("ActionListener::OnPlayerBowShot - E_SHOT_ORIGIN: "
+                          "{:x} launched {:.0f} units from its position; "
+                          "refused",
+                          ac->GetFormId(), distance);
+    }
+  }
+
   if (!ac->IsGodMode()) {
     // thuum docs/verbs/god-mode.md: TGM, unlimited arrows
     ac->RemoveItem(msg.ammoId, 1, nullptr);
@@ -1803,6 +1878,10 @@ void ActionListener::OnPlayerBowShot(const RawMessageData& rawMsgData,
   // the shot waits for its hit (one), and each neighbour's game draws the
   // arrow from the shooter's figure
   partOne.RecordShot(ac->GetFormId(), msg.weaponId, msg.power, ac->GetPos());
+  // thuum docs/verbs/self-cast.md: the engine's bow release ends its
+  // shooter's concealment after the shot (ArrowReleaseHandler 42859 calls
+  // DispelAlteredStates with no exception; HYPOTHESIS until a lab run)
+  EndConcealment(*ac);
   ArrowShotMessage relay;
   relay.idx = ac->GetIdx();
   relay.weaponId = msg.weaponId;
@@ -1810,6 +1889,12 @@ void ActionListener::OnPlayerBowShot(const RawMessageData& rawMsgData,
   relay.power = msg.power;
   relay.aimAngle = msg.aimAngle;
   relay.aimHeading = msg.aimHeading;
+  relay.hasLaunch = msg.hasLaunch;
+  relay.originX = msg.originX;
+  relay.originY = msg.originY;
+  relay.originZ = msg.originZ;
+  relay.launchAngleX = msg.launchAngleX;
+  relay.launchAngleZ = msg.launchAngleZ;
   for (auto listener : ac->GetActorListeners()) {
     if (listener != ac) {
       listener->GetActorToSendTo().SendToUser(relay, true);
@@ -2899,7 +2984,7 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
                  caster->GetFormId(), *shout, facts.variation,
                  spellCastData.spell,
                  partOne.VoiceRecoveryLeftMs(caster->GetFormId()) / 1000.0);
-    EndConcealment(*caster);
+    EndConcealment(*caster, spellCastData.spell);
     RunSelfSpell(partOne.worldState, *caster, spellCastData.spell);
     RelayCast(*caster, *myActor, spellCastData);
     return;
@@ -2916,7 +3001,7 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
   // every screen draws it
   partOne.StartCast(caster->GetFormId(), spellCastData.spell, hand,
                     caster->GetPos());
-  EndConcealment(*caster);
+  EndConcealment(*caster, spellCastData.spell);
   RunSelfSpell(partOne.worldState, *caster, spellCastData.spell);
 
   // thuum docs/verbs/cast-teleport.md: a spell the server names as a

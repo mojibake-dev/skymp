@@ -21,6 +21,9 @@ Napi::Value PerformActionResult(const Napi::CallbackInfo& info);
 // whether the actor's graph has answered a cast request for the hand (0 left,
 // 1 right, 2 voice) since the last call: the engine's cue to perform a start
 Napi::Value CastReady(const Napi::CallbackInfo& info);
+// a figure's aim pitch (radians, down positive): its reference angle.x and
+// its AimPitchCurrent, which the engine's GetAimAngle reads for its stream
+Napi::Value SetActorAimPitch(const Napi::CallbackInfo& info);
 
 // an actor's master-behavior variables as the JS object
 // getAnimationVariablesFromActor returns (booleans, floats, integers as

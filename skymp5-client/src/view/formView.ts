@@ -1,7 +1,7 @@
 import { Actor, ActorBase, createText, destroyText, Form, FormType, Game, Keyword, NetImmerse, ObjectReference, once, printConsole, setTextPos, setTextSize, setTextString, storage, TESModPlatform, Utility, worldPointToScreenPoint } from "skyrimPlatform";
 import { setDefaultAnimsDisabled, applyAnimation } from "../sync/animation";
 // @ts-expect-error (TODO: Remove in 2.10.0)
-import { applyAnimationVariablesToActor, castReady, performAction, performActionResult } from "skyrimPlatform";
+import { applyAnimationVariablesToActor, castReady, performAction, performActionResult, setActorAimPitch } from "skyrimPlatform";
 import { Appearance, applyAppearance } from "../sync/appearance";
 import { isBadMenuShown, applyEquipment } from "../sync/equipment";
 import { RespawnNeededError } from "../lib/errors";
@@ -391,10 +391,22 @@ export class FormView {
     }
 
     if (model.animation) {
-      if (model.animation.animEventName === "SkympFakeUnequip") {
-        forcedWeapDrawn = false;
-      } else if (model.animation.animEventName === "SkympFakeEquip") {
-        forcedWeapDrawn = true;
+      // the relayed draw or sheathe flag forces the figure's drawn state only
+      // while it is fresh, then the caster's movement decides: a redraw is an
+      // engine action with no graph event (Magic_Equip), so nothing replaced
+      // the sheathe's flag, and the figure stayed sheathed against its
+      // movement, refusing every event and cast start until some other event
+      // came (x-cast-interrupt 20261016-152919: 21 s, until a stagger)
+      if (model.animation.numChanges !== this.drawnFlagNumChanges) {
+        this.drawnFlagNumChanges = model.animation.numChanges;
+        this.drawnFlagAt = Date.now();
+      }
+      if (Date.now() - this.drawnFlagAt <= FormView.drawnFlagMs) {
+        if (model.animation.animEventName === "SkympFakeUnequip") {
+          forcedWeapDrawn = false;
+        } else if (model.animation.animEventName === "SkympFakeEquip") {
+          forcedWeapDrawn = true;
+        }
       }
     }
 
@@ -503,6 +515,20 @@ export class FormView {
       }
       // Use them only once, for spawning actors with correct animations
       this.animState.useAnimOverrides = false;
+
+      // thuum docs/verbs/spell-cast.md (playtest nineteen: Flames aimed up
+      // showed forward on the other screen): the engine aims an actor's
+      // stream every frame from its aim angle, the reference's pitch or its
+      // AimPitchCurrent, and nothing set either on a figure while it stood;
+      // so each update a form another game drives (a player's figure, an NPC
+      // another client hosts; the movement applies under the same test above)
+      // takes its pitch from the movement (angle X, degrees, down positive)
+      if (model.movement && !model.isMyClone && model.isHostedByOther) {
+        const pitchDegrees = model.movement.rot[0];
+        if (Number.isFinite(pitchDegrees) && Actor.from(refr)) {
+          setActorAimPitch(refr.getFormID(), pitchDegrees * Math.PI / 180);
+        }
+      }
 
       this.replayActions(refr, model);
     }
@@ -720,6 +746,38 @@ export class FormView {
   // response handler is a no-op on an idle caster, the re-analyst 2026-10-14),
   // so a queue that drains slowly leaves the figure in the caster's state.
   private replayActions(refr: ObjectReference, model: FormModel): void {
+    // x-cast-interrupt (20261016-134830): a caster who sheathes mid-cast
+    // performs no exit action (its engine ends the cast and performs
+    // Unequip, which the figure takes through the animation relay), and the
+    // view kept retrying the cast's Ready, writing the caster's casting
+    // variables back each time, so the figure's hand stayed up until the
+    // next start (4.9 to 5.2 s) and its graph refused the next draw. A
+    // sheathed caster casts nothing: while its movement says so, the cast's
+    // later actions (ready, release, exit) are dropped with the hands' want
+    // variables; a start is kept, since a start can only follow a draw the
+    // movement has not reported yet
+    if (model.movement && model.movement.isWeapDrawn === false) {
+      const isStart = (a: UpdateActionMessage) => a.eventName.toLowerCase().endsWith("start");
+      let dropped = false;
+      if (this.pendingAction && !isStart(this.pendingAction)) {
+        this.pendingAction = null;
+        this.pendingAsked = false;
+        this.castRetries = 0;
+        this.readyWaits = 0;
+        dropped = true;
+      }
+      const queue = model.actionQueue;
+      if (queue && queue.some((a) => !isStart(a))) {
+        const starts = queue.filter(isStart);
+        queue.splice(0, queue.length, ...starts);
+        dropped = true;
+      }
+      if (dropped) {
+        this.castEdgeCleared = false;
+        this.dualCastOnFigure = false;
+        ["bWantCastRight", "bWantCastLeft"].forEach((w) => refr.setAnimationVariableBool(w, false));
+      }
+    }
     const pending = this.pendingAction;
     if (pending) {
       if (!this.pendingAsked) {
@@ -846,6 +904,12 @@ export class FormView {
   // onto the figure's graph on the last update, performed on this one; whether
   // a start's want variable was dropped on the last update for its rise; and
   // whether the figure is in the perk's dual cast (both wants up, one exit)
+  // the relayed drawn flag's arrival (its numChanges and when), and how long
+  // it outranks the caster's movement (the sender's own blockers hold the
+  // movement to it for 300 ms)
+  private drawnFlagNumChanges = -1;
+  private drawnFlagAt = 0;
+  private static readonly drawnFlagMs = 1000;
   private pendingAction: UpdateActionMessage | null = null;
   // whether the pending action has been queued and its answer is awaited
   private pendingAsked = false;

@@ -65,6 +65,15 @@ export class ShoutService extends ClientListener {
         // because with a zero recovery the release was reported only from a
         // hit (reportFromHeld) and a breath that hits nobody has none
         this.controller.on("skseAction", (e) => this.onSkseAction(e));
+        // and the engine's own launch of the shout's projectile: the player's
+        // launch from the voice (castingSource 2, kOther, CommonLibSSE-NG
+        // include/RE/M/MagicSystem.h) carries the variation's spell itself
+        // (Projectile::Launch's LaunchData, the fork's projectileLaunched).
+        // x-tgm-breath6 (20261016-135744): five god-mode breaths into empty
+        // air, five such launches in the shouter's game, one report (the
+        // recovery read's); the voice fire's event names the shout, not the
+        // spell, so it reported nothing
+        this.controller.on("projectileLaunched", (e) => this.onProjectileLaunched(e));
         this.sp.hooks.sendAnimationEvent.add({
             enter: () => { },
             leave: () => { this.shoutStartedAt = Date.now(); },
@@ -106,6 +115,27 @@ export class ShoutService extends ClientListener {
                 return;
             }
             this.report(spellId);
+            this.releasedAt = 0;
+            releaseHeld();
+        });
+    }
+
+    private onProjectileLaunched(e: { shooter: number; spell: number; castingSource: number }) {
+        if (e.shooter !== 0x14 || e.castingSource !== ShoutService.kVoiceSource || !e.spell) {
+            return;
+        }
+        // no game call in the event's context: the shout is read on the update
+        this.controller.once("update", () => {
+            const player = Game.getPlayer();
+            const shout = player ? player.getEquippedShout() : null;
+            if (!shout || this.variationSpellOf(shout, e.spell) === null) {
+                return; // a voice launch that is not the equipped shout's
+            }
+            if (e.spell === shoutGate.reportedSpell && Date.now() - shoutGate.reportedAt <= ShoutService.fireReportWindowMs) {
+                return; // reported already, by the recovery read or the voice fire
+            }
+            logTrace(this, "shout reported from its launch:", e.spell.toString(16));
+            this.report(e.spell);
             this.releasedAt = 0;
             releaseHeld();
         });
@@ -162,6 +192,10 @@ export class ShoutService extends ClientListener {
             return;
         }
         logTrace(this, "shout", shout.getFormID().toString(16), "variation", variation, "recovery", recovery, "hits held", shoutGate.held.length);
+        if (spell.getFormID() === shoutGate.reportedSpell && Date.now() - shoutGate.reportedAt <= ShoutService.fireReportWindowMs) {
+            releaseHeld(); // the launch reported it already
+            return;
+        }
         this.report(spell.getFormID());
         releaseHeld();
     }
@@ -302,6 +336,8 @@ export class ShoutService extends ClientListener {
     private static readonly chargeMs = 3000;
     // SKSE::ActionEvent::Type::kVoiceFire (CommonLibSSE-NG include/SKSE/Events.h)
     private static readonly kVoiceFire = 4;
+    // MagicSystem::CastingSource::kOther, the voice's
+    private static readonly kVoiceSource = 2;
     // a release reported from the recovery read within this is the same shout
     private static readonly fireReportWindowMs = 500;
     // how long one shout's own hits may follow its report

@@ -105,6 +105,13 @@ bool LaunchArrow(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                  RE::Actor* shooter, RE::TESObjectWEAP* weapon,
                  RE::TESAmmo* ammo, float power, float aimAngle,
                  float aimHeading);
+// The same arrow launched at the origin and with the pitch and heading the
+// shooter's own engine used (its projectileLaunched event), so both screens
+// fly one path (thuum docs/verbs/marksman.md)
+bool LaunchArrowAt(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
+                   RE::Actor* shooter, RE::TESObjectWEAP* weapon,
+                   RE::TESAmmo* ammo, float power, float angleX, float angleZ,
+                   float originX, float originY, float originZ);
 
 // The player's favorites as (form id, hotkey) pairs, hotkey -1 for none, and
 // marking one with a hotkey, -1 for none (thuum docs/verbs/favorites.md)

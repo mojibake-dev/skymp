@@ -2,7 +2,13 @@
   "aimAngle": 82.01251220703125,
   "aimHeading": -0.002403251826763153,
   "ammoId": 2987685592,
+  "hasLaunch": true,
   "isSunGazing": true,
+  "launchAngleX": 0.10000000149011612,
+  "launchAngleZ": 1.5700000524520874,
+  "originX": 1234.5,
+  "originY": -300.25,
+  "originZ": 96.0,
   "power": 1.0085076220314737e-12,
   "t": 22,
   "weaponId": 966524255

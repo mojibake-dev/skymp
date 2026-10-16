@@ -46,6 +46,21 @@ export class ArrowSyncService extends ClientListener {
                 logTrace(this, "no figure, bow or arrow here for a shot of", shot.idx);
                 continue;
             }
+            if (shot.hasLaunch) {
+                // the shooter's own launch, replayed at its origin and angles
+                // (thuum docs/verbs/marksman.md: one path on both screens); a
+                // game whose script lacks the native (an older dist's pex)
+                // launches from the figure instead, as before (b-marksman
+                // 20261016-130329: LaunchArrowAt missing from the pex, no arrow)
+                try {
+                    this.sp.callNative("TESModPlatform", "LaunchArrowAt", undefined,
+                        shooter, weapon, ammo, shot.power, shot.launchAngleX, shot.launchAngleZ,
+                        shot.originX, shot.originY, shot.originZ);
+                    continue;
+                } catch (err) {
+                    logError(this, "TESModPlatform.LaunchArrowAt failed; launching from the figure", err);
+                }
+            }
             try {
                 this.sp.callNative("TESModPlatform", "LaunchArrow", undefined,
                     shooter, weapon, ammo, shot.power, shot.aimAngle, shot.aimHeading);

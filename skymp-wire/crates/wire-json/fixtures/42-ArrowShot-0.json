@@ -2,7 +2,13 @@
   "aimAngle": 1.1922701034175618e-29,
   "aimHeading": -1.410115400900235e-33,
   "ammoId": 494920002,
+  "hasLaunch": true,
   "idx": 730722129,
+  "launchAngleX": 0.10000000149011612,
+  "launchAngleZ": 1.5700000524520874,
+  "originX": 1234.5,
+  "originY": -300.25,
+  "originZ": 96.0,
   "power": -4.012381989630468e-25,
   "t": 42,
   "weaponId": 2751883466

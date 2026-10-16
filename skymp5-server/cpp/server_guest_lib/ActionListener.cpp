@@ -3017,6 +3017,13 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
         caster->GetFormId(),
         caster->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles),
         caster->GetPos(), teleportReach);
+      // the look on other screens: the mod's script plays the teleport's
+      // effects in the caster's game alone, so the entry's look plays its
+      // vanish on the caster's figure in every other game until the landing
+      // (MovementValidation, PartOne::PlayTeleportLanding), as long as the
+      // jump is permitted (wire-rules movement::CAST_JUMP_WAIT_MS)
+      partOne.PlayTeleportVanish(*caster, spellCastData.spell,
+                                 skymp::rules::cast_jump_wait_ms());
     }
     spdlog::info("ActionListener::OnSpellCast - {:x} cast teleport {:x}, "
                  "reach {}; not relayed",

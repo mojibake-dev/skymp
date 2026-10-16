@@ -10,8 +10,11 @@ PartOne& GetPartOne();
 // thuum docs/verbs/cast-teleport.md: a spell the server names as a teleport
 // (server-settings.json castTeleports) permits its caster one jump within its
 // reach of where it stood at the cast, and its cast reaches no other game.
-// Skyrim.esm's Firebolt (0x12FD0, thuum lab/esm.py) stands in for Lost
-// Grimoire's Teleportation, which the test's load order lacks.
+// The entry's look plays in the other games on the caster's figure: its
+// vanish at the cast; the figure placed, the vanish stopped, the appear and
+// the sound at the landing (SpSnippets). Skyrim.esm's Firebolt (0x12FD0,
+// thuum lab/esm.py) stands in for Lost Grimoire's Teleportation, which the
+// test's load order lacks.
 namespace {
 constexpr uint32_t kFirebolt = 0x00012fd0;
 constexpr uint32_t kCaster = 0xff000000;
@@ -104,6 +107,70 @@ void Leave(PartOne& p)
   DoDisconnect(p, 1);
   DoDisconnect(p, 0);
 }
+
+// The look on other screens: Lost Grimoire's marker script's forms (thuum
+// docs/verbs/cast-teleport.md: Skyrim.esm's MGTeleportOutEffect and
+// MGTeleportInEffect, Dawnguard.esm's MAGPowersSupernaturalReflexesInMarker)
+// in the test's load order, Dawnguard.esm third
+constexpr uint32_t kVanish = 0x00102731;
+constexpr uint32_t kAppear = 0x00102730;
+constexpr uint32_t kSound = 0x02010ec4;
+constexpr auto kLooked =
+  R"([{"spell": "12fd0:Skyrim.esm", "reach": 3000, "look": {"vanish": )"
+  R"("102731:Skyrim.esm", "appear": "102730:Skyrim.esm", "appearSeconds": )"
+  R"(1.75, "sound": "010ec4:Dawnguard.esm"}}])";
+
+// an object argument: the caster's figure, or form 0 for None
+nlohmann::json Ref(uint32_t formId)
+{
+  return nlohmann::json{ { "formId", formId }, { "type", "ObjectReference" } };
+}
+
+// the look's snippets a user's game was sent, in order (VisualEffect, Sound,
+// and ObjectReference.SetPosition)
+std::vector<nlohmann::json> LookSnippets(PartOne& p, Networking::UserId user)
+{
+  p.Tick(); // snippets are deferred
+  std::vector<nlohmann::json> out;
+  for (auto& m : p.Messages()) {
+    if (m.userId != user || !m.j.contains("t") ||
+        m.j["t"] != MsgType::SpSnippet) {
+      continue;
+    }
+    const auto cl = m.j["class"].get<std::string>();
+    if (cl == "VisualEffect" || cl == "Sound" ||
+        (cl == "ObjectReference" && m.j["function"] == "SetPosition")) {
+      out.push_back(m.j);
+    }
+  }
+  return out;
+}
+
+// the four snippets of a landing at `at`, in their order
+void RequireLanding(const std::vector<nlohmann::json>& s, const NiPoint3& at)
+{
+  REQUIRE(s.size() == 4);
+  REQUIRE(s[0]["class"] == "ObjectReference");
+  REQUIRE(s[0]["function"] == "SetPosition");
+  REQUIRE(s[0]["selfId"] == kCaster);
+  REQUIRE(s[0]["arguments"] ==
+          nlohmann::json::array({ static_cast<double>(at.x),
+                                  static_cast<double>(at.y),
+                                  static_cast<double>(at.z) }));
+  REQUIRE(s[1]["class"] == "VisualEffect");
+  REQUIRE(s[1]["function"] == "Stop");
+  REQUIRE(s[1]["selfId"] == kVanish);
+  REQUIRE(s[1]["arguments"] == nlohmann::json::array({ Ref(kCaster) }));
+  REQUIRE(s[2]["class"] == "VisualEffect");
+  REQUIRE(s[2]["function"] == "Play");
+  REQUIRE(s[2]["selfId"] == kAppear);
+  REQUIRE(s[2]["arguments"] ==
+          nlohmann::json::array({ Ref(kCaster), 1.75, Ref(0) }));
+  REQUIRE(s[3]["class"] == "Sound");
+  REQUIRE(s[3]["function"] == "Play");
+  REQUIRE(s[3]["selfId"] == kSound);
+  REQUIRE(s[3]["arguments"] == nlohmann::json::array({ Ref(kCaster) }));
+}
 }
 
 TEST_CASE("A cast teleport's jump is taken once within its reach, and its "
@@ -165,5 +232,106 @@ TEST_CASE("A cast teleport's jump beyond its reach is sent back",
   Report(p, caster, { 2500, 0, 0 });
   REQUIRE(SentBack(p) == 1);
   REQUIRE(caster.GetPos() == NiPoint3{ 0, 0, 0 });
+  Leave(p);
+}
+
+TEST_CASE("A cast teleport's look plays its vanish on the caster's figure in "
+          "the other games, and nothing in the caster's",
+          "[CastTeleport][espm]")
+{
+  PartOne& p = GetPartOne();
+  p.SetCastTeleportSettings(kLooked);
+  const auto look = p.GetTeleportLook(kFirebolt);
+  REQUIRE(look.has_value());
+  REQUIRE(look->vanish == kVanish);
+  REQUIRE(look->appear == kAppear);
+  REQUIRE(look->appearSeconds == Catch::Approx(1.75f));
+  REQUIRE(look->sound == kSound);
+  Pair(p);
+  p.Tick();
+  p.Messages().clear();
+
+  Cast(p);
+  REQUIRE(!Relayed(p));
+  const auto vanish = LookSnippets(p, 1);
+  REQUIRE(vanish.size() == 1);
+  REQUIRE(vanish[0]["class"] == "VisualEffect");
+  REQUIRE(vanish[0]["function"] == "Play");
+  REQUIRE(vanish[0]["selfId"] == kVanish);
+  // on the figure for the jump's wait (the default 5 s), facing nothing
+  REQUIRE(vanish[0]["arguments"] ==
+          nlohmann::json::array({ Ref(kCaster), 5.0, Ref(0) }));
+  REQUIRE(LookSnippets(p, 0).empty());
+  Leave(p);
+}
+
+TEST_CASE("A cast teleport's landing places the figure and plays the look's "
+          "appear and sound in the other games, once",
+          "[CastTeleport][espm]")
+{
+  PartOne& p = GetPartOne();
+  p.SetCastTeleportSettings(kLooked);
+  auto& caster = Pair(p);
+  Cast(p);
+  p.Tick();
+  p.Messages().clear();
+
+  // 2500 units east: past the ground budget's burst, the permitted jump
+  Report(p, caster, { 2500, 0, 0 });
+  REQUIRE(SentBack(p) == 0);
+  REQUIRE(caster.GetPos() == NiPoint3{ 2500, 0, 0 });
+  RequireLanding(LookSnippets(p, 1), { 2500, 0, 0 });
+  REQUIRE(LookSnippets(p, 0).empty());
+
+  // the look is used: another step no run makes plays nothing
+  p.Messages().clear();
+  Report(p, caster, { 3100, 0, 0 });
+  REQUIRE(SentBack(p) == 0);
+  REQUIRE(LookSnippets(p, 1).empty());
+  Leave(p);
+}
+
+TEST_CASE("A cast teleport's landing the ground budget takes lands its look",
+          "[CastTeleport][espm]")
+{
+  // most landings (b-teleport's 550 units, every one of playtest fourteen)
+  // stay within the budget's burst and never reach the jump's permit
+  PartOne& p = GetPartOne();
+  p.SetCastTeleportSettings(kLooked);
+  auto& caster = Pair(p);
+  Cast(p);
+  p.Tick();
+  p.Messages().clear();
+
+  // a step a run makes between two reports is no landing
+  Report(p, caster, { 50, 0, 0 });
+  REQUIRE(LookSnippets(p, 1).empty());
+  // 550 units on: the budget takes it, and the look lands
+  Report(p, caster, { 600, 0, 0 });
+  REQUIRE(SentBack(p) == 0);
+  REQUIRE(caster.GetPos() == NiPoint3{ 600, 0, 0 });
+  RequireLanding(LookSnippets(p, 1), { 600, 0, 0 });
+  REQUIRE(LookSnippets(p, 0).empty());
+  Leave(p);
+}
+
+TEST_CASE("A cast teleport whose entry names no look sends no look's snippet",
+          "[CastTeleport][espm]")
+{
+  PartOne& p = GetPartOne();
+  p.SetCastTeleportSettings(
+    R"([{"spell": "12fd0:Skyrim.esm", "reach": 3000}])");
+  REQUIRE(!p.GetTeleportLook(kFirebolt));
+  auto& caster = Pair(p);
+  p.Tick();
+  p.Messages().clear();
+
+  Cast(p);
+  Report(p, caster, { 600, 0, 0 });
+  Report(p, caster, { 3100, 0, 0 });
+  REQUIRE(SentBack(p) == 0);
+  REQUIRE(caster.GetPos() == NiPoint3{ 3100, 0, 0 });
+  REQUIRE(LookSnippets(p, 1).empty());
+  REQUIRE(LookSnippets(p, 0).empty());
   Leave(p);
 }

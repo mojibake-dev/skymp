@@ -4,7 +4,9 @@
 #include <array>
 #include <cassert>
 #include <chrono>
+#include <limits>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "CreateActorMessage.h"
@@ -26,6 +28,7 @@
 #include "libespm/MGEF.h"
 #include "libespm/PROJ.h"
 #include "libespm/SPEL.h"
+#include "papyrus-vm/Utils.h"
 #include <spdlog/spdlog.h>
 
 namespace {
@@ -146,6 +149,16 @@ struct PartOne::Impl
   // docs/verbs/cast-teleport.md): server-settings.json's `castTeleports`
   rust::Box<skymp::rules::CastTeleports> castTeleports =
     skymp::rules::new_cast_teleports("[]");
+
+  // a teleport's look, kept from its cast for its landing (thuum
+  // docs/verbs/cast-teleport.md, the look on other screens), by the caster's
+  // form id, until the jump's wait runs out (SteadyNowMs)
+  struct KeptTeleportLook
+  {
+    PartOne::TeleportLook look;
+    uint64_t untilMs = 0;
+  };
+  std::unordered_map<uint32_t, KeptTeleportLook> teleportLooks;
 
   // the fights between players (thuum docs/verbs/hostility-sync.md, ADR-023)
   rust::Box<skymp::rules::Fights> fights = skymp::rules::new_fights();
@@ -551,6 +564,9 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           // a departing caster's streams end with it (thuum
           // docs/verbs/spell-cast.md)
           this_->pImpl->spellCasts->forget(actor->GetFormId());
+          // and a teleport's look waiting for its landing
+          // (docs/verbs/cast-teleport.md)
+          this_->pImpl->teleportLooks.erase(actor->GetFormId());
           // TGM and TIM are the session's (thuum docs/verbs/god-mode.md)
           actor->SetGodMode(false);
           actor->SetImmortal(false);
@@ -1347,6 +1363,168 @@ PartOne::JumpCheck PartOne::CheckCastJump(uint32_t actorFormId,
 {
   return ToJumpCheck(pImpl->movementBudgets->check_cast_jump(
     actorFormId, cellOrWorld, at.x, at.y, at.z, SteadyNowMs()));
+}
+
+namespace {
+// A form a teleport's look names, as its entry writes it, to its id in the
+// server's load order, light plugins numbered as the engine numbers them
+// (FormDesc::ToFormId) and the plugin compared without case, as the spell's
+// is (wire-rules teleports); 0 when the look names none, or for a plugin the
+// server does not load
+uint32_t LookPartFormId(bool named, const skymp::rules::LookRef& ref,
+                        const EspmFileList& files)
+{
+  if (!named) {
+    return 0;
+  }
+  const std::string plugin(ref.plugin);
+  for (const auto& file : files) {
+    if (!Utils::stricmp(file.c_str(), plugin.c_str())) {
+      return FormDesc(ref.id & 0x00ffffff, file).ToFormId(files);
+    }
+  }
+  return 0;
+}
+
+// The arguments the look's snippets pass, as Skyrim Platform's dump declares
+// the calls (skyrim-platform codegen FunctionsDump.txt: VisualEffect.Play
+// (ObjectReference, Float, ObjectReference), VisualEffect.Stop
+// (ObjectReference), Sound.Play(ObjectReference), ObjectReference.SetPosition
+// (Float, Float, Float), latent); CallNative takes every parameter
+using SnippetArgs = std::vector<std::optional<
+  std::variant<bool, double, std::string, SpSnippetObjectArgument>>>;
+
+// The caster's figure in a neighbour's game (spSnippetService resolves a
+// server id to its figure)
+SpSnippetObjectArgument FigureOf(const MpActor& caster)
+{
+  SpSnippetObjectArgument figure;
+  figure.formId = caster.GetFormId();
+  figure.type = "ObjectReference";
+  return figure;
+}
+
+// None for an ObjectReference parameter, the facing object the mod's script
+// leaves out: an object argument naming form 0, which the client's
+// deserializeArg turns into null (Game.getFormEx(0) finds no form, and
+// ObjectReference.from(null) is null). A JSON null would not do:
+// deserializeArg reads formId off any argument whose typeof is "object"
+SpSnippetObjectArgument NoReference()
+{
+  SpSnippetObjectArgument none;
+  none.formId = 0;
+  none.type = "ObjectReference";
+  return none;
+}
+}
+
+std::optional<PartOne::TeleportLook> PartOne::GetTeleportLook(
+  uint32_t spellFormId) const
+{
+  const auto desc = FormDesc::FromFormId(spellFormId, worldState.espmFiles);
+  const auto spec =
+    pImpl->castTeleports->teleport_look(desc.shortFormId, desc.file);
+  if (!spec.has_vanish && !spec.has_appear && !spec.has_sound) {
+    return std::nullopt;
+  }
+  const auto& files = worldState.espmFiles;
+  TeleportLook look;
+  look.vanish = LookPartFormId(spec.has_vanish, spec.vanish, files);
+  look.appear = LookPartFormId(spec.has_appear, spec.appear, files);
+  look.appearSeconds = spec.appear_seconds;
+  look.sound = LookPartFormId(spec.has_sound, spec.sound, files);
+  return look;
+}
+
+void PartOne::PlayTeleportVanish(MpActor& caster, uint32_t spellFormId,
+                                 uint64_t waitMs)
+{
+  const auto look = GetTeleportLook(spellFormId);
+  if (!look) {
+    pImpl->teleportLooks.erase(caster.GetFormId());
+    return;
+  }
+  const uint64_t now = SteadyNowMs();
+  const uint64_t untilMs = waitMs > std::numeric_limits<uint64_t>::max() - now
+    ? std::numeric_limits<uint64_t>::max()
+    : now + waitMs;
+  pImpl->teleportLooks[caster.GetFormId()] = { *look, untilMs };
+  if (!look->vanish) {
+    return;
+  }
+
+  const double waitSeconds = static_cast<double>(waitMs) / 1000.0;
+  const SnippetArgs play{ FigureOf(caster), waitSeconds, NoReference() };
+  int neighbours = 0;
+  for (auto* listener : caster.GetActorListeners()) {
+    if (listener == &caster ||
+        serverState.UserByActor(listener) == Networking::InvalidUserId) {
+      continue;
+    }
+    SpSnippet("VisualEffect", "Play", play, look->vanish)
+      .Execute(listener, SpSnippetMode::kNoReturnResult);
+    ++neighbours;
+  }
+  spdlog::info("PartOne::PlayTeleportVanish - {:x}'s teleport look at the "
+               "cast: vanish {:x} for {:.1f} s in {} neighbour(s)' games",
+               caster.GetFormId(), look->vanish, waitSeconds, neighbours);
+}
+
+void PartOne::PlayTeleportLanding(MpActor& caster, const NiPoint3& at)
+{
+  const auto it = pImpl->teleportLooks.find(caster.GetFormId());
+  if (it == pImpl->teleportLooks.end()) {
+    return;
+  }
+  const auto kept = it->second;
+  pImpl->teleportLooks.erase(it);
+  if (SteadyNowMs() > kept.untilMs) {
+    return;
+  }
+  const auto& look = kept.look;
+
+  const SnippetArgs place{ static_cast<double>(at.x),
+                           static_cast<double>(at.y),
+                           static_cast<double>(at.z) };
+  const SnippetArgs onFigure{ FigureOf(caster) };
+  const SnippetArgs appear{ FigureOf(caster),
+                            static_cast<double>(look.appearSeconds),
+                            NoReference() };
+  int neighbours = 0;
+  for (auto* listener : caster.GetActorListeners()) {
+    if (listener == &caster ||
+        serverState.UserByActor(listener) == Networking::InvalidUserId) {
+      continue;
+    }
+    // the pop first: a near teleport's figure would glide there in 0.2 s
+    // (skymp5-client sync/movementApply.ts translateTo)
+    SpSnippet("ObjectReference", "SetPosition", place, caster.GetFormId())
+      .Execute(listener, SpSnippetMode::kNoReturnResult);
+    if (look.vanish) {
+      SpSnippet("VisualEffect", "Stop", onFigure, look.vanish)
+        .Execute(listener, SpSnippetMode::kNoReturnResult);
+    }
+    if (look.appear) {
+      SpSnippet("VisualEffect", "Play", appear, look.appear)
+        .Execute(listener, SpSnippetMode::kNoReturnResult);
+    }
+    if (look.sound) {
+      SpSnippet("Sound", "Play", onFigure, look.sound)
+        .Execute(listener, SpSnippetMode::kNoReturnResult);
+    }
+    ++neighbours;
+  }
+  spdlog::info("PartOne::PlayTeleportLanding - {:x}'s teleport look at the "
+               "landing ({:.0f}, {:.0f}, {:.0f}): placed, vanish {:x} "
+               "stopped, appear {:x} for {:.2f} s, sound {:x}, in {} "
+               "neighbour(s)' games",
+               caster.GetFormId(), at.x, at.y, at.z, look.vanish, look.appear,
+               look.appearSeconds, look.sound, neighbours);
+}
+
+bool PartOne::TeleportLookLands(float step)
+{
+  return skymp::rules::teleport_look_lands(step);
 }
 
 void PartOne::RecordShot(uint32_t actorFormId, uint32_t weapon, float power,

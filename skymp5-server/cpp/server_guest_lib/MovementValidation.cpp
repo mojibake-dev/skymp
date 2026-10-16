@@ -70,6 +70,9 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
                    "{:x} at ({:.0f}, {:.0f}, {:.0f})",
                    actor->GetFormId(), cellOrWorld, newPos.x, newPos.y,
                    newPos.z);
+      // the look on other screens: the figure placed there, the vanish
+      // stopped, the appear and the sound played
+      partOne.PlayTeleportLanding(*actor, newPos);
       return true;
     }
     switch (
@@ -111,6 +114,14 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
                    "units over the ground beyond its budget; snapped back",
                    actor->GetFormId(), ground);
       return snapBack();
+    }
+    // thuum docs/verbs/cast-teleport.md, the look on other screens: a
+    // teleport's landing the budget takes never reaches the jump's permit
+    // above (most of them: b-teleport's 550 units, every landing of
+    // playtest fourteen), so a step no run makes between two reports lands
+    // a look waiting for it (nothing when none waits)
+    if (PartOne::TeleportLookLands(ground)) {
+      partOne.PlayTeleportLanding(*actor, newPos);
     }
   }
   return true;

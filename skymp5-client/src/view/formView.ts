@@ -391,10 +391,22 @@ export class FormView {
     }
 
     if (model.animation) {
-      if (model.animation.animEventName === "SkympFakeUnequip") {
-        forcedWeapDrawn = false;
-      } else if (model.animation.animEventName === "SkympFakeEquip") {
-        forcedWeapDrawn = true;
+      // the relayed draw or sheathe flag forces the figure's drawn state only
+      // while it is fresh, then the caster's movement decides: a redraw is an
+      // engine action with no graph event (Magic_Equip), so nothing replaced
+      // the sheathe's flag, and the figure stayed sheathed against its
+      // movement, refusing every event and cast start until some other event
+      // came (x-cast-interrupt 20261016-152919: 21 s, until a stagger)
+      if (model.animation.numChanges !== this.drawnFlagNumChanges) {
+        this.drawnFlagNumChanges = model.animation.numChanges;
+        this.drawnFlagAt = Date.now();
+      }
+      if (Date.now() - this.drawnFlagAt <= FormView.drawnFlagMs) {
+        if (model.animation.animEventName === "SkympFakeUnequip") {
+          forcedWeapDrawn = false;
+        } else if (model.animation.animEventName === "SkympFakeEquip") {
+          forcedWeapDrawn = true;
+        }
       }
     }
 
@@ -892,6 +904,12 @@ export class FormView {
   // onto the figure's graph on the last update, performed on this one; whether
   // a start's want variable was dropped on the last update for its rise; and
   // whether the figure is in the perk's dual cast (both wants up, one exit)
+  // the relayed drawn flag's arrival (its numChanges and when), and how long
+  // it outranks the caster's movement (the sender's own blockers hold the
+  // movement to it for 300 ms)
+  private drawnFlagNumChanges = -1;
+  private drawnFlagAt = 0;
+  private static readonly drawnFlagMs = 1000;
   private pendingAction: UpdateActionMessage | null = null;
   // whether the pending action has been queued and its answer is awaited
   private pendingAsked = false;

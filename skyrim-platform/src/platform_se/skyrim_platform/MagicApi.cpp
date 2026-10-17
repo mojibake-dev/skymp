@@ -178,8 +178,25 @@ Napi::Value MagicApi::CastSpellImmediate(const Napi::CallbackInfo& info)
 
       if (pSpell->GetCastingType() ==
           RE::MagicSystem::CastingType::kConcentration) {
-
-        magicCaster->CastSpellImmediate(pSpell, false, magicTarget, 1.0f,
+        // thuum docs/verbs/spell-cast.md (Apocalypse's Scattershock, playtest
+        // twenty-one: "the particle effect is running the wrong way on
+        // player 2's screen"): an aimed stream's missiles are launched at
+        // the caster's desired target whenever it resolves and the caster is
+        // no player outside combat (MagicCaster's launch, ID 34450, the
+        // re-analyst on sky-re, 2026-10-16), and the relayed target is the
+        // figure itself, so each missile left for the figure's own chest.
+        // An aimed stream goes with no target and the caster's desired
+        // target cleared (CommonLibSSE-NG include/RE/M/MagicCaster.h:87), so
+        // its missiles follow the figure's aim, which SetActorAimPitch sets
+        // every update; a flame or a beam re-aims from that aim every frame
+        // either way. HYPOTHESIS until x-stream-aim
+        const bool aimed =
+          pSpell->data.delivery == RE::MagicSystem::Delivery::kAimed;
+        if (aimed) {
+          magicCaster->desiredTarget.reset();
+        }
+        magicCaster->CastSpellImmediate(pSpell, false,
+                                        aimed ? nullptr : magicTarget, 1.0f,
                                         false, 0.0f, pActor);
 
         return;

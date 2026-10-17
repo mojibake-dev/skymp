@@ -23,9 +23,9 @@
 # permitted return and the legacy stack as any move under 4096. So both
 # stacks end with c1 at the spawn. c2 steps again at 16 s of its own, so it
 # outlives c1, as in every session.
-# The divergences below are teleports' that apply here (2026-10-16); the
-# first run, with the layer on sky-srv, lists the rest: the self-cast's
-# effects on the wire stack and the relayed cast's exact shape.
+# The divergences below are teleports' that apply here (2026-10-16), and
+# the first run's (T2 21:27, 2026-10-16, with the layer on sky-srv): the
+# self-cast's effect on the wire stack, its start and its end, to both.
 id: ghostwalk
 clients:
   c1: {profile_id: 9}
@@ -89,3 +89,23 @@ divergences:
     legacy: 0
     wire: 1
     reason: departure detection, graceful close on the wire against RakNet's timeout
+  - client: c1
+    msg: {t: 43, effects: [{effect: 201370341, source: 201370344}]}
+    legacy: 0
+    wire: 1
+    reason: the wire stack runs the return's Self cast on the server (thuum docs/verbs/self-cast.md) and tells c1's own game its effect, Ghostwalk's 0C00AAE5 (201370341) from the spell 0C00AAE8, its Invisibility for 10 s (MagicEffects); the legacy stack refuses the unlearned spell
+  - client: c1
+    msg: {t: 43}
+    legacy: 0
+    wire: 1
+    reason: the effect's end 10 s later, an empty set of running effects told to c1's game (after the declaration above sets the start aside, only the end is left to match)
+  - client: c2
+    msg: {t: 43, effects: [{effect: 201370341, source: 201370344}]}
+    legacy: 0
+    wire: 1
+    reason: the same effect told to c2, which sees c1 (the figure invisible there)
+  - client: c2
+    msg: {t: 43}
+    legacy: 0
+    wire: 1
+    reason: and its end, told to c2

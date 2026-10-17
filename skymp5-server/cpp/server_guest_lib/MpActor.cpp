@@ -2861,6 +2861,21 @@ std::vector<espm::Effects::Effect> MpActor::EffectsOf(WorldState* worldState,
   return effects;
 }
 
+bool MpActor::IsConditionGated(WorldState* worldState,
+                               const espm::Effects::Effect& effect)
+{
+  if (effect.hasConditions) {
+    return true;
+  }
+  try {
+    return espm::GetData<espm::MGEF>(effect.effectId, worldState).callsHasPerk;
+  } catch (std::exception& e) {
+    spdlog::warn("IsConditionGated - effect {:x}: {}", effect.effectId,
+                 e.what());
+    return false;
+  }
+}
+
 void MpActor::ApplyEffects(uint32_t source,
                            const std::vector<espm::Effects::Effect>& effects,
                            float scale, uint32_t caster, bool stream)
@@ -2878,8 +2893,9 @@ void MpActor::ApplyEffects(uint32_t source,
   std::array<float, 3> deltas{};
   std::array<bool, 3> touched{};
   for (const auto& effect : effects) {
-    if (effect.hasConditions) {
-      // until the server evaluates conditions: a perk's extras stay out
+    if (IsConditionGated(worldState, effect)) {
+      // until the server evaluates conditions: a perk's extras stay out,
+      // whether the spell gates them or their own record does
       continue;
     }
     const auto facts = EffectFactsOf(worldState, source, effect);

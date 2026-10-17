@@ -42,6 +42,14 @@ MGEF::Data MGEF::GetData(
           std::memcpy(&result.data.hitEffectArt, data + 0x60,
                       sizeof(result.data.hitEffectArt));
         }
+      } else if (!std::memcmp(type, "CTDA", 4) && size >= 10) {
+        // a condition's function index is the u16 at 8 (UESP "Skyrim
+        // Mod:Mod File Format/CTDA Field")
+        uint16_t function = 0;
+        std::memcpy(&function, data + 8, sizeof(function));
+        if (function == kHasPerkFunction) {
+          result.callsHasPerk = true;
+        }
       }
     },
     compressedFieldsCache);

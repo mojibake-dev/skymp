@@ -3129,6 +3129,12 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
   // knocks the target down, to read on the lab)
   float spellStagger = 0.f;
   for (const auto& effect : effects) {
+    if (MpActor::IsConditionGated(&partOne.worldState, effect)) {
+      // a perk's rider (the Impact perk's stagger on every Firebolt, read
+      // in the lab's logs: 67 of 91 hits staggered with no perk) waits on
+      // conditions, as ApplyEffects' effects do
+      continue;
+    }
     try {
       if (espm::GetData<espm::MGEF>(effect.effectId, &partOne.worldState)
             .data.effectType == espm::MGEF::EffectType::Stagger) {

@@ -329,6 +329,14 @@ public:
   // CTDA), each MGEF id as the load order numbers it; empty for none
   static std::vector<espm::Effects::Effect> EffectsOf(WorldState* worldState,
                                                       uint32_t source);
+  // thuum docs/verbs/magic-effects.md: whether an effect waits on
+  // conditions the server does not evaluate yet: the spell's own gate on
+  // its entry, or a perk the effect record's conditions name, the way
+  // vanilla gates its perks' riders (the Impact perk's stagger,
+  // Disintegrate's 200 Health). The server keeps no perks before M5, so
+  // such a rider stays out
+  static bool IsConditionGated(WorldState* worldState,
+                               const espm::Effects::Effect& effect);
   // thuum docs/verbs/god-mode.md: TGM and TIM, the server's flags for the
   // player's session (cleared at its departure). A god actor takes no
   // damage from another actor and spends no arrow; an immortal actor's

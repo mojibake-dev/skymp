@@ -2,6 +2,7 @@
 #include "CallNativeApi.h"
 #include "ConsoleApi.h"
 #include "ExceptionPrinter.h"
+#include "FridaHooks.h"
 #include "NullPointerException.h"
 
 #include <RE/B/BSPointerHandle.h>
@@ -1052,7 +1053,12 @@ bool TESModPlatform::LaunchArrow(IVM* vm, StackID stackId,
   RE::Projectile::LaunchData data(shooter, origin, angles, ammo, weapon);
   data.power = std::clamp(power, 0.f, 1.f);
   RE::ProjectileHandle handle{};
-  RE::Projectile::Launch(&handle, data);
+  {
+    // the relayed shot's arrow: the launch hook drops any other arrow a
+    // figure launches (FridaHooks.h)
+    Frida::RelayedArrowScope relayed;
+    RE::Projectile::Launch(&handle, data);
+  }
   // Launch keeps LaunchData's power only for a spell: an arrow keeps its
   // constructor's 1.0 and flies at full speed whatever the shooter's draw,
   // and its speed is set on its first update, so the power set here still
@@ -1092,7 +1098,10 @@ bool TESModPlatform::LaunchArrowAt(IVM* vm, StackID stackId,
   RE::Projectile::LaunchData data(shooter, origin, angles, ammo, weapon);
   data.power = std::clamp(power, 0.f, 1.f);
   RE::ProjectileHandle handle{};
-  RE::Projectile::Launch(&handle, data);
+  {
+    Frida::RelayedArrowScope relayed;
+    RE::Projectile::Launch(&handle, data);
+  }
   if (const auto projectile = handle.get()) {
     projectile->GetProjectileRuntimeData().power = data.power;
   }

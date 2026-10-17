@@ -32,4 +32,17 @@ bool TakeCastReady(uint32_t actorFormId, int32_t hand);
 // typed hooks on the response handlers (Hooks.cpp)
 void NoteCastReady(uint32_t actorFormId, uint32_t handBit);
 
+// thuum docs/verbs/marksman.md: open on this thread while TESModPlatform's
+// LaunchArrow or LaunchArrowAt launches the arrow of a shot the server
+// relayed. A figure wears its quiver (skymp5-client equipment.ts), so its bow
+// releasing in this game launches an arrow of its own beside the relayed one
+// (x-double-arrow2 20261012-022726: two launches for one shot); the launch
+// hook lets a figure's arrow through only inside one of these.
+struct RelayedArrowScope
+{
+  RelayedArrowScope();
+  ~RelayedArrowScope();
+  RelayedArrowScope(const RelayedArrowScope&) = delete;
+  RelayedArrowScope& operator=(const RelayedArrowScope&) = delete;
+};
 }

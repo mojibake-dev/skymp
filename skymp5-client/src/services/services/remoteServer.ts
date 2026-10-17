@@ -1014,11 +1014,14 @@ export class RemoteServer extends ClientListener {
       // thuum docs/verbs/spell-cast.md: the spell the server relayed (it
       // relays only a cast of a spell the caster has equipped), not what
       // this game's figure holds by now, which its equipment's own message
-      // sets and can lag the cast
+      // sets and can lag the cast. A target-location cast that carries its
+      // caster's launch is launched at the point the caster's game picked,
+      // with that launch's angles (castSpellImmediate's last six)
       const spell = Spell.from(Game.getFormEx(msg.data.spell));
       if (spell) {
         castSpellImmediate(ac.getFormID(), msg.data.castingSource, spell.getFormID(), remoteIdToLocalId(msg.data.target),
-          msg.data.aimAngle, msg.data.aimHeading, actorAnimationVariables);
+          msg.data.aimAngle, msg.data.aimHeading, actorAnimationVariables,
+          msg.data.hasLaunch, msg.data.originX, msg.data.originY, msg.data.originZ, msg.data.launchAngleX, msg.data.launchAngleZ);
       }
     });
   }

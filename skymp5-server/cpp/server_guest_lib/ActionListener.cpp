@@ -670,6 +670,36 @@ void RunSelfSpell(WorldState& worldState, MpActor& caster, uint32_t spellId)
   }
 }
 
+// thuum docs/verbs/marksman.md, spell-cast.md: how far from where the server
+// has an actor its own launch may leave from (a shooter's bow, a caster's
+// magic node): the node's height above the recorded position and that
+// position's age
+constexpr float kMaxLaunchOffsetUnits = 512.f;
+
+// thuum docs/verbs/spell-cast.md: how far from its magic node a player's
+// target-location cast reaches: its game picks the point with a ray along
+// the caster's aim as long as the spell's range (SPIT) x 22 units, 5000 for
+// a range of 0 (the re-analyst on sky-re, 2026-10-16, 1.6.1170; HYPOTHESIS
+// until a lab run); none for a spell without a record to read it from
+std::optional<float> LaunchRay(WorldState& worldState, uint32_t spellId)
+{
+  constexpr float kUnitsPerRange = 22.f;
+  constexpr float kRayWithoutRange = 5000.f;
+  try {
+    const auto spell = espm::GetData<espm::SPEL>(spellId, &worldState);
+    if (!spell.spellItem || !std::isfinite(spell.spellItem->range)) {
+      return std::nullopt;
+    }
+    return spell.spellItem->range > 0.f
+      ? spell.spellItem->range * kUnitsPerRange
+      : kRayWithoutRange;
+  } catch (std::exception& e) {
+    spdlog::warn("ActionListener - launch of spell {:x}: {}", spellId,
+                 e.what());
+    return std::nullopt;
+  }
+}
+
 // Whether `spell` is a variation of the shout in the voice slot
 bool IsVoiceVariation(const Equipment& equipment, uint32_t spell,
                       WorldState& worldState)
@@ -1858,7 +1888,6 @@ void ActionListener::OnPlayerBowShot(const RawMessageData& rawMsgData,
   // one from farther off changes nothing, as a shot from a bow it does not
   // hold
   if (msg.hasLaunch) {
-    constexpr float kMaxLaunchOffsetUnits = 512.f;
     const float distance =
       (NiPoint3(msg.originX, msg.originY, msg.originZ) - ac->GetPos())
         .Length();
@@ -2943,6 +2972,36 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
                              caster->GetFormId()));
     caster->RespawnWithDelay(true);
     return;
+  }
+
+  // thuum docs/verbs/spell-cast.md: the launch a target-location cast
+  // carries is the point the caster's game picked along its aim, which each
+  // neighbour's game launches the spell at (R1). Its game picks no farther
+  // than the spell's ray from the caster's magic node (LaunchRay), a node
+  // within kMaxLaunchOffsetUnits of where the server has the caster, as a
+  // bow's launch is; a point beyond the two goes to no other game. The cast
+  // itself stands, and every relay below carries it without the launch, so
+  // the neighbours place it as they did before casts carried one
+  if (spellCastData.hasLaunch) {
+    const auto ray = LaunchRay(partOne.worldState, spellCastData.spell);
+    const float distance =
+      (NiPoint3(spellCastData.originX, spellCastData.originY,
+                spellCastData.originZ) -
+       caster->GetPos())
+        .Length();
+    if (!ray || distance > *ray + kMaxLaunchOffsetUnits) {
+      spdlog::warn("ActionListener::OnSpellCast - E_SPELL_ORIGIN: {:x} "
+                   "launched {:x} {:.0f} units from its position, its ray "
+                   "{:.0f}; relayed without the launch",
+                   caster->GetFormId(), spellCastData.spell, distance,
+                   ray.value_or(0.f));
+      spellCastData.hasLaunch = false;
+      spellCastData.originX = 0.f;
+      spellCastData.originY = 0.f;
+      spellCastData.originZ = 0.f;
+      spellCastData.launchAngleX = 0.f;
+      spellCastData.launchAngleZ = 0.f;
+    }
   }
 
   // thuum docs/verbs/spell-cast.md: the hand the cast comes from (the

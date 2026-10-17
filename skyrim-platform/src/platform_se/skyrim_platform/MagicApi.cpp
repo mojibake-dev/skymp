@@ -394,26 +394,6 @@ Napi::Value MagicApi::SetActorAimPitch(const Napi::CallbackInfo& info)
   return Napi::Boolean::New(info.Env(), true);
 }
 
-// thuum docs/verbs/self-cast.md (playtest twenty, Eli: an invisible
-// player's figure still showed the crosshair's "E Talk / test 1" prompt;
-// "yes hide it"): the reference's ExtraFlags kBlockActivateText
-// (CommonLibSSE-NG include/RE/E/ExtraFlags.h:20), set or cleared through its
-// extra data list (include/RE/E/ExtraDataList.h:194), the way the engine's
-// own BlockActivation sets kBlockActivate (src/RE/T/TESObjectREFR.cpp:843).
-// HYPOTHESIS until a lab run: the crosshair's prompt reads the flag.
-Napi::Value MagicApi::SetActivateTextHidden(const Napi::CallbackInfo& info)
-{
-  const auto refrFormId = NapiHelper::ExtractUInt32(info[0], "refrFormId");
-  const auto hidden = NapiHelper::ExtractBoolean(info[1], "hidden");
-  auto* refr = RE::TESForm::LookupByID<RE::TESObjectREFR>(refrFormId);
-  if (!refr) {
-    return Napi::Boolean::New(info.Env(), false);
-  }
-  refr->extraList.SetExtraFlags(RE::ExtraFlags::Flag::kBlockActivateText,
-                                hidden);
-  return Napi::Boolean::New(info.Env(), true);
-}
-
 Napi::Value MagicApi::CastReady(const Napi::CallbackInfo& info)
 {
   const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
@@ -459,10 +439,6 @@ void MagicApi::Register(Napi::Env env, Napi::Object& exports)
   exports.Set("performActionResult",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(PerformActionResult)));
-
-  exports.Set("setActivateTextHidden",
-              Napi::Function::New(
-                env, NapiHelper::WrapCppExceptions(SetActivateTextHidden)));
 
   exports.Set(
     "castReady",

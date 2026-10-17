@@ -1,7 +1,7 @@
 import { Actor, ActorBase, createText, destroyText, Form, FormType, Game, Keyword, NetImmerse, ObjectReference, once, printConsole, setTextPos, setTextSize, setTextString, storage, TESModPlatform, Utility, worldPointToScreenPoint } from "skyrimPlatform";
 import { setDefaultAnimsDisabled, applyAnimation } from "../sync/animation";
 // @ts-expect-error (TODO: Remove in 2.10.0)
-import { applyAnimationVariablesToActor, castReady, performAction, performActionResult, setActivateTextHidden, setActorAimPitch } from "skyrimPlatform";
+import { applyAnimationVariablesToActor, castReady, performAction, performActionResult, setActorAimPitch } from "skyrimPlatform";
 import { Appearance, applyAppearance } from "../sync/appearance";
 import { isBadMenuShown, applyEquipment } from "../sync/equipment";
 import { RespawnNeededError } from "../lib/errors";
@@ -109,7 +109,9 @@ export class FormView {
             // Change name inplace
             const refr = ObjectReference.from(Game.getFormEx(this.refrId));
             refr?.getBaseObject()?.setName(model.appearance.name);
-            refr?.setDisplayName(model.appearance.name, true);
+            if (!this.nameHiddenForInvisibility) {
+              refr?.setDisplayName(model.appearance.name, true);
+            }
             //printConsole("Appearance updated, changing name inplace");
           } else {
             // Force re-apply appearance on the next getAppearanceBasedBase call
@@ -299,6 +301,9 @@ export class FormView {
         if (model.appearance && model.appearance.name) {
           refr?.setDisplayName("" + model.appearance.name, true);
         }
+        // a new reference carries its name: the invisibility check below
+        // decides afresh whether to empty it
+        this.nameHiddenForInvisibility = false;
         Actor.from(refr)?.setActorValue("attackDamageMult", 0);
       }
       this.refrId = (refr as ObjectReference).getFormID();
@@ -597,14 +602,21 @@ export class FormView {
       }
     }
 
-    // thuum docs/verbs/self-cast.md (playtest twenty: "yes hide it"): an
-    // invisible figure's crosshair prompt is hidden with its name, set only
-    // when its invisibility changes
+    // thuum docs/verbs/self-cast.md (playtest twenty: "yes hide it"; still
+    // shown in twenty-one): an invisible figure is not offered by the
+    // crosshair. The engine's crosshair filter skips a reference whose
+    // display name is empty, which is how it keeps nameless references out
+    // of the pick, while hits, collision and our replayed actions never read
+    // the name (the re-analyst on sky-re, 2026-10-16, 1.6.1170: the filter
+    // 26130 behind the pick 26127; HYPOTHESIS until hud-trace.js). So the
+    // figure's display name is emptied while it is invisible and given back
+    // after, set only when its invisibility changes. ExtraFlags'
+    // kBlockActivateText, the first try, is read by nothing in this version.
     if (Actor.from(refr)) {
       const invisible = FormView.isInvisible(refr);
-      if (invisible !== this.activateTextHidden) {
-        this.activateTextHidden = invisible;
-        setActivateTextHidden(refr.getFormID(), invisible);
+      if (invisible !== this.nameHiddenForInvisibility) {
+        this.nameHiddenForInvisibility = invisible;
+        refr.setDisplayName(invisible ? "" : "" + (model.appearance?.name ?? ""), true);
       }
     }
 
@@ -918,7 +930,7 @@ export class FormView {
   // the relayed drawn flag's arrival (its numChanges and when), and how long
   // it outranks the caster's movement (the sender's own blockers hold the
   // movement to it for 300 ms)
-  private activateTextHidden = false;
+  private nameHiddenForInvisibility = false;
   private drawnFlagNumChanges = -1;
   private drawnFlagAt = 0;
   private static readonly drawnFlagMs = 1000;

@@ -51,8 +51,10 @@ MpActor& Duel(PartOne& p, uint32_t spell)
 }
 
 // through the packet path (DoMessage), as a client's message arrives; the
-// caster names itself 0x14, as a client may
-void Cast(PartOne& p, uint32_t spell, bool end)
+// caster names itself 0x14, as a client may. A cast without its launch (all
+// zero), or, with `launch`, the launch its game made at `origin`
+void Cast(PartOne& p, uint32_t spell, bool end, bool launch = false,
+          NiPoint3 origin = { 0, 0, 0 })
 {
   DoMessage(
     p, 0,
@@ -66,10 +68,29 @@ void Cast(PartOne& p, uint32_t spell, bool end)
                         { "castingSource", 1 },
                         { "aimAngle", 0.f },
                         { "aimHeading", 0.f },
+                        { "hasLaunch", launch },
+                        { "originX", launch ? origin.x : 0.f },
+                        { "originY", launch ? origin.y : 0.f },
+                        { "originZ", launch ? origin.z : 0.f },
+                        { "launchAngleX", launch ? 0.1f : 0.f },
+                        { "launchAngleZ", launch ? 1.57f : 0.f },
                         { "actorAnimationVariables",
                           { { "booleans", nlohmann::json::array() },
                             { "floats", nlohmann::json::array() },
                             { "integers", nlohmann::json::array() } } } } } });
+}
+
+// the casts the server sent since the last clear: each one's data, and
+// whom it went to
+std::vector<std::pair<Networking::UserId, nlohmann::json>> Relays(PartOne& p)
+{
+  std::vector<std::pair<Networking::UserId, nlohmann::json>> out;
+  for (auto& m : p.Messages()) {
+    if (m.j.contains("t") && m.j["t"] == MsgType::SpellCast) {
+      out.emplace_back(m.userId, m.j["data"]);
+    }
+  }
+  return out;
 }
 
 void SpellHits(PartOne& p, uint32_t spell)
@@ -129,6 +150,14 @@ TEST_CASE("A fire-and-forget cast covers one hit, and reaches the neighbour "
       REQUIRE(m.userId == 1);
       REQUIRE(m.reliable);
       REQUIRE(m.j["data"]["caster"].get<uint32_t>() == kCaster);
+      // a cast without its launch: the neighbour's game places the spell
+      // as it did before
+      REQUIRE(m.j["data"]["hasLaunch"] == false);
+      REQUIRE(m.j["data"]["originX"] == 0.f);
+      REQUIRE(m.j["data"]["originY"] == 0.f);
+      REQUIRE(m.j["data"]["originZ"] == 0.f);
+      REQUIRE(m.j["data"]["launchAngleX"] == 0.f);
+      REQUIRE(m.j["data"]["launchAngleZ"] == 0.f);
       relayed = true;
     }
   }
@@ -139,6 +168,32 @@ TEST_CASE("A fire-and-forget cast covers one hit, and reaches the neighbour "
   // the same cast again: nothing
   SpellHits(p, kFirebolt);
   REQUIRE(Health(p) == Catch::Approx(0.9f));
+  Leave(p);
+}
+
+// thuum docs/verbs/spell-cast.md: a target-location cast carries the point
+// its caster's game picked along the aim, which no other game can pick for
+// a figure; the neighbour's game launches the spell there
+TEST_CASE("A cast's launch reaches the neighbour as the caster's game made "
+          "it",
+          "[SpellCast][espm]")
+{
+  PartOne& p = GetPartOne();
+  Duel(p, kFirebolt);
+  p.Messages().clear();
+
+  // at the neighbour's feet, 300 units north of the caster
+  Cast(p, kFirebolt, false, true, { 0, 300, 0 });
+
+  const auto relays = Relays(p);
+  REQUIRE(relays.size() == 1);
+  REQUIRE(relays[0].first == 1);
+  REQUIRE(relays[0].second["hasLaunch"] == true);
+  REQUIRE(relays[0].second["originX"] == 0.f);
+  REQUIRE(relays[0].second["originY"] == 300.f);
+  REQUIRE(relays[0].second["originZ"] == 0.f);
+  REQUIRE(relays[0].second["launchAngleX"] == 0.1f);
+  REQUIRE(relays[0].second["launchAngleZ"] == 1.57f);
   Leave(p);
 }
 

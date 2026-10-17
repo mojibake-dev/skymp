@@ -32,7 +32,7 @@ use bounded::{String, Vec};
 
 /// Bump when any variant changes shape. It is part of netcode's protocol id,
 /// so peers built against another schema never complete a handshake.
-pub const SCHEMA_VERSION: u16 = 16;
+pub const SCHEMA_VERSION: u16 = 17;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -717,6 +717,32 @@ mod tests {
                 origin_z: f32::MAX,
                 launch_angle_x: f32::MAX,
                 launch_angle_z: f32::MAX,
+                ..Default::default()
+            }),
+            // a cast at its longest: every id and the hand a five-byte
+            // varint, the graph's variables full, the launch carried
+            Message::SpellCast(skymp::SpellCast {
+                data: skymp::SpellCastData {
+                    caster: u32::MAX,
+                    target: u32::MAX,
+                    spell: u32::MAX,
+                    is_dual_casting: true,
+                    interrupt_cast: true,
+                    casting_source: i32::MIN,
+                    aim_angle: f32::MAX,
+                    aim_heading: f32::MAX,
+                    has_launch: true,
+                    origin_x: f32::MAX,
+                    origin_y: f32::MAX,
+                    origin_z: f32::MAX,
+                    launch_angle_x: f32::MAX,
+                    launch_angle_z: f32::MAX,
+                    actor_animation_variables: skymp::ActorAnimationVariables {
+                        booleans: alloc::vec![u8::MAX; cap::ANIM_VARS].try_into().unwrap_or_default(),
+                        floats: alloc::vec![u8::MAX; cap::ANIM_VARS].try_into().unwrap_or_default(),
+                        integers: alloc::vec![u8::MAX; cap::ANIM_VARS].try_into().unwrap_or_default(),
+                    },
+                },
                 ..Default::default()
             }),
         ];

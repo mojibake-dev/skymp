@@ -7,7 +7,7 @@ import { ClientListener, CombinedController, Sp } from './clientListener';
 import { logTrace } from '../../logging';
 
 import { MsgType } from "../../messages";
-import { SpellCastMsgData, SpellCastMessage } from "../messages/spellCastMessage";
+import { noSpellLaunch, SpellCastMsgData, SpellCastMessage } from "../messages/spellCastMessage";
 import { UpdateAnimVariablesMessageMsgData } from "../messages/updateAnimVariablesMessage";
 
 export class MagicSyncService extends ClientListener {
@@ -134,6 +134,7 @@ export class MagicSyncService extends ClientListener {
             aimAngle: e.aimAngle,
             // @ts-expect-error (TODO: Remove in 2.10.0)
             aimHeading: e.aimHeading,
+            ...noSpellLaunch,
             actorAnimationVariables: this.getAnimationVariablesFromActorConverted(e.caster.getFormID()),
         }
         return spellCastData;

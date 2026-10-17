@@ -109,3 +109,18 @@ divergences:
     legacy: 0
     wire: 1
     reason: and its end, told to c2
+  - client: c2
+    msg: {t: 30, class: ObjectReference, function: SetPosition, selfId: 4278190082}
+    legacy: 0
+    wire: 1
+    reason: Ghostwalk's look (thuum branch ghostwalk-look's settings, docs/verbs/ghostwalk.md) pops c1's figure in c2's game at the return, no glide; the legacy stack names no teleport
+  - client: c2
+    msg: {t: 30, class: VisualEffect, function: Play, selfId: 201459649}
+    legacy: 0
+    wire: 1
+    reason: the return's own visual, RFCT 0207C1, played on c1's figure for 3 s
+  - client: c2
+    msg: {t: 30, class: Sound, function: Play, selfId: 201459647}
+    legacy: 0
+    wire: 1
+    reason: the return's own sound, SOUN 0207BF, played on c1's figure

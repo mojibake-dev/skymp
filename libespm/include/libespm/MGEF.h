@@ -111,9 +111,18 @@ public:
     }
   };
 
+  // the condition function HasPerk (CommonLibSSE-NG
+  // include/RE/T/TESCondition.h:566, FUNCTION_DATA::FunctionID::kHasPerk)
+  static constexpr uint16_t kHasPerkFunction = 448;
+
   struct Data
   {
     DATA data;
+    // thuum docs/verbs/magic-effects.md: whether the effect record's own
+    // conditions (its CTDA subrecords) ask HasPerk, the way vanilla gates a
+    // perk's rider on the effect instead of the spell (the Impact perk's
+    // stagger, Disintegrate's 200 Health)
+    bool callsHasPerk = false;
   };
 
   Data GetData(CompressedFieldsCache& compressedFieldsCache) const noexcept;

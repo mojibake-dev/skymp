@@ -235,6 +235,9 @@ export interface EquipEvent {
 
 export interface ActiveEffectApplyRemoveEvent {
   effect: MagicEffect
+  // thuum: the spell that applied the effect (the active effect's own),
+  // null when none is found
+  spell: Form | null
   caster: ObjectReference
   target: ObjectReference
 }

@@ -2878,6 +2878,22 @@ std::vector<espm::Effects::Effect> MpActor::EffectsOf(WorldState* worldState,
   return effects;
 }
 
+bool MpActor::IsHostileArea(WorldState* worldState,
+                            const espm::Effects::Effect& effect)
+{
+  if (effect.areaOfEffect == 0) {
+    return false;
+  }
+  try {
+    const auto mgef = espm::GetData<espm::MGEF>(effect.effectId, worldState);
+    return mgef.data.IsFlagSet(espm::MGEF::Flags::Detrimental) ||
+      mgef.data.IsFlagSet(espm::MGEF::Flags::Hostile);
+  } catch (std::exception& e) {
+    spdlog::warn("IsHostileArea - effect {:x}: {}", effect.effectId, e.what());
+    return false;
+  }
+}
+
 bool MpActor::IsConditionGated(WorldState* worldState,
                                const espm::Effects::Effect& effect)
 {

@@ -662,8 +662,19 @@ void RunSelfSpell(WorldState& worldState, MpActor& caster, uint32_t spellId)
         spell.spellItem->castType != espm::SPEL::CastType::FireAndForget) {
       return;
     }
-    caster.ApplyEffects(spellId, MpActor::EffectsOf(&worldState, spellId), 1.f,
-                        caster.GetFormId(), false);
+    // thuum docs/verbs/self-cast.md (r-shock-nova 20261018-013824, the
+    // engine alone: two Shock Novas left their caster's health whole while
+    // the bandit beside it took every effect): a Self burst's hostile area
+    // effects are for those around the caster, claimed as its hits, never
+    // for the caster itself
+    auto effects = MpActor::EffectsOf(&worldState, spellId);
+    effects.erase(std::remove_if(effects.begin(), effects.end(),
+                                 [&](const espm::Effects::Effect& effect) {
+                                   return MpActor::IsHostileArea(&worldState,
+                                                                 effect);
+                                 }),
+                  effects.end());
+    caster.ApplyEffects(spellId, effects, 1.f, caster.GetFormId(), false);
     spdlog::info("ActionListener - {:x} casts {:x} on itself: its effects run "
                  "on the server",
                  caster.GetFormId(), spellId);

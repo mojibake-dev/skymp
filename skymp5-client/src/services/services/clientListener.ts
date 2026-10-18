@@ -78,6 +78,11 @@ declare module "skyrimPlatform" {
     }
     function on(eventName: 'projectileLaunched', callback: (event: ProjectileLaunchedEvent) => void): EventHandle;
     function once(eventName: 'projectileLaunched', callback: (event: ProjectileLaunchedEvent) => void): EventHandle;
+    // thuum docs/verbs/spell-cast.md: a magic effect applied to an actor,
+    // with its caster (Skyrim Platform's magicEffectApply; its event type is
+    // skyrimPlatform's own)
+    function on(eventName: 'magicEffectApply', callback: (event: MagicEffectApplyEvent) => void): EventHandle;
+    function once(eventName: 'magicEffectApply', callback: (event: MagicEffectApplyEvent) => void): EventHandle;
     // thuum docs/research/apocalypse/target-location.md: where the player's
     // target-location cast placed its explosion. No game call in its handler.
     interface AreaEffectPlacedEvent {

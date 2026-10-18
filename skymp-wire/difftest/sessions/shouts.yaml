@@ -158,3 +158,8 @@ divergences:
     legacy: 0
     wire: 1
     reason: the wire stack relays the accepted shout's cast, naming c1 as the server knows it (its own message says 0x14, which c2's game would read as its own player), so c2's game launches the breath from its figure of c1 (thuum docs/verbs/shouts.md); c1's own game is not sent it; the refused second shout is not relayed, and the legacy stack relays no cast from a slot that holds no spell
+  - client: c2
+    msg: {t: 45}
+    legacy: 0
+    wire: 1
+    reason: the wire stack sends a player its globals to watch, and their recorded values, on its first movement after a login (docs/verbs/player-globals.md); the legacy server has no such message

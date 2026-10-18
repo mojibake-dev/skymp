@@ -11,8 +11,8 @@
 # castingSource 1; the cast carries m2-spell-launch's launch fields, zero,
 # which parity's schema ignores). Its proc hits at 3.4 s and 3.8 s are
 # dropped by the legacy server (a spell c1 never held) and claimed by the
-# fixed one against the cloak's cast, each counting the time since its last
-# counted hit on c2, at most 250 ms: 2 of FlameCloakDmg's 8 each. c2 steps
+# fixed one against the cloak's cast: the first counts one cadence (500 ms,
+# 4 of FlameCloakDmg's 8 a second), the next the 400 ms since it (3.2). c2 steps
 # again at 4 s of its own (5.5 s of c1's), so it outlives c1, as in every
 # session. The divergences beyond the departure line are declared from the
 # session's first T2 run.

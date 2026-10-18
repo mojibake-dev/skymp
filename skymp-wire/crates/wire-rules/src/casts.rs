@@ -40,11 +40,23 @@ pub const MAX_CASTS: usize = 16;
 /// a cloak's spell, the spells its effects' scripts name).
 pub const MAX_REACHED: usize = 8;
 
-/// How often one cast's fire-and-forget reached spell may claim a hit on
-/// one target, milliseconds: a chosen bound on a proc's rate (HYPOTHESIS
-/// until the class probes read the cadence). A concentration reached spell
-/// is counted by its time instead, as a stream is (MAX_TICK_MS).
+/// The engine's cadence for a cloak's applied spell, milliseconds: the
+/// caster's game reports its hit on each target about every 500 ms (thuum
+/// x-class-self 20261018-011427: Sotha's Maelstrom's and Blood Boil's procs
+/// at 496 to 504 ms). A concentration reached spell's first report on a
+/// target counts one cadence.
 pub const REACHED_TICK_MS: u64 = 500;
+
+/// The most one report of a concentration reached spell counts,
+/// milliseconds: the cadence and a little, so the engine's own rhythm counts
+/// in full (a stream's MAX_TICK_MS would count half of it) and a longer gap
+/// never counts time the proc did not hold its target.
+pub const REACHED_MAX_TICK_MS: u64 = 600;
+
+/// How often a fire-and-forget reached spell may claim a hit on one target,
+/// milliseconds: under the cadence, so a proc the engine applies each
+/// cadence is never refused, and a report faster than the engine's is.
+pub const REACHED_MIN_GAP_MS: u64 = 400;
 
 /// The targets one cast's reached spells keep a rate for; past this many,
 /// the oldest is forgotten.
@@ -332,9 +344,9 @@ impl Casts {
     /// stands within that cast's reach of where the server has the caster
     /// now (a cloak moves with its bearer). A concentration reached spell
     /// (a cloak's damage) counts the time since its last counted hit on that
-    /// target, at most MAX_TICK_MS (the first counts MAX_TICK_MS), as a
-    /// stream does; a fire-and-forget one counts its magnitude once, at most
-    /// once per target each REACHED_TICK_MS.
+    /// target, at most REACHED_MAX_TICK_MS (the first counts one
+    /// REACHED_TICK_MS), as a stream does; a fire-and-forget one counts its
+    /// magnitude once, at most once per target each REACHED_MIN_GAP_MS.
     pub fn claim_reached(&mut self, actor: u32, hit: CastHit, caster: [f32; 3], now_ms: u64) -> CastCheck {
         let CastHit { spell, target, x, y, z } = hit;
         let [cx, cy, cz] = caster;
@@ -360,9 +372,9 @@ impl Casts {
             let last = l.claims.iter().find(|(t, _)| *t == target).map(|(_, last)| *last);
             let tick_ms = match last {
                 Some(last) => now_ms.saturating_sub(last),
-                None => MAX_TICK_MS,
+                None => REACHED_TICK_MS,
             };
-            if !concentration && last.is_some() && tick_ms < REACHED_TICK_MS {
+            if !concentration && last.is_some() && tick_ms < REACHED_MIN_GAP_MS {
                 return CastCheck::Throttled;
             }
             if let Some(slot) = l.claims.iter_mut().find(|(t, _)| *t == target) {
@@ -371,7 +383,7 @@ impl Casts {
                 *slot = (target, now_ms);
             }
             let scale = if concentration {
-                f32::from(u16::try_from(tick_ms.min(MAX_TICK_MS)).unwrap_or(u16::MAX)) / 1000.0
+                f32::from(u16::try_from(tick_ms.min(REACHED_MAX_TICK_MS)).unwrap_or(u16::MAX)) / 1000.0
             } else {
                 1.0
             };
@@ -545,7 +557,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cloaks_proc_claims_its_cast_for_the_cloaks_seconds_once_a_tick_per_target() {
+    fn a_fire_and_forget_proc_claims_its_cast_for_the_cloaks_seconds_at_the_engines_rhythm() {
         let mut c = Casts::default();
         c.start(1, reaching(CLOAK, CastKind::FireAndForget, CLOAK_PROC, 60_000), 0);
         let at = [0.0, 0.0, 0.0];
@@ -553,7 +565,8 @@ mod tests {
         assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 2, 300.0, 0.0, 0.0), at, 1_200), CastCheck::Throttled);
         // another target has its own rate
         assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 3, 0.0, 300.0, 0.0), at, 1_200), CastCheck::Claimed { scale: 1.0 });
-        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 2, 300.0, 0.0, 0.0), at, 1_500), CastCheck::Claimed { scale: 1.0 });
+        // the engine's cadence, 496 ms in x-class-self, is never refused
+        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 2, 300.0, 0.0, 0.0), at, 1_496), CastCheck::Claimed { scale: 1.0 });
         // past the CAST_WINDOW_MS a bolt has, still within the cloak's
         assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 2, 300.0, 0.0, 0.0), at, 40_000), CastCheck::Claimed { scale: 1.0 });
         // and not after it
@@ -566,15 +579,16 @@ mod tests {
         // bit 0: the reached spell is a concentration spell (a cloak's damage)
         c.start(1, CastFacts { reached_concentration: 1, ..reaching(CLOAK, CastKind::FireAndForget, CLOAK_PROC, 60_000) }, 0);
         let on = |t| hit(CLOAK_PROC, t, 300.0, 0.0, 0.0);
-        // the first report on a target counts a tick, then each the time since
-        assert_eq!(c.claim_reached(1, on(2), [0.0; 3], 1_000), CastCheck::Claimed { scale: 0.25 });
-        assert_eq!(c.claim_reached(1, on(2), [0.0; 3], 1_200), CastCheck::Claimed { scale: 0.2 });
-        // five reports a second are never throttled, and add up to the time
-        assert_eq!(c.claim_reached(1, on(2), [0.0; 3], 1_200), CastCheck::Claimed { scale: 0.0 });
-        // a gap counts at most a tick
-        assert_eq!(c.claim_reached(1, on(2), [0.0; 3], 5_000), CastCheck::Claimed { scale: 0.25 });
+        // the first report on a target counts one cadence, then each the time
+        // since the last, the engine's 500 ms rhythm in full
+        assert_eq!(c.claim_reached(1, on(2), [0.0; 3], 1_000), CastCheck::Claimed { scale: 0.5 });
+        assert_eq!(c.claim_reached(1, on(2), [0.0; 3], 1_499), CastCheck::Claimed { scale: 0.499 });
+        // reports faster than the engine's are never throttled, and add up to the time
+        assert_eq!(c.claim_reached(1, on(2), [0.0; 3], 1_499), CastCheck::Claimed { scale: 0.0 });
+        // a gap counts at most REACHED_MAX_TICK_MS
+        assert_eq!(c.claim_reached(1, on(2), [0.0; 3], 5_000), CastCheck::Claimed { scale: 0.6 });
         // another target's time is its own
-        assert_eq!(c.claim_reached(1, on(3), [0.0; 3], 5_000), CastCheck::Claimed { scale: 0.25 });
+        assert_eq!(c.claim_reached(1, on(3), [0.0; 3], 5_000), CastCheck::Claimed { scale: 0.5 });
     }
 
     #[test]

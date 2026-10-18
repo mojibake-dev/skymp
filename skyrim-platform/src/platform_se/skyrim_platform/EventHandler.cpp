@@ -793,11 +793,47 @@ EventResult EventHandler::ProcessEvent(
     event->target.get() ? event->target.get()->GetFormID() : 0;
   uint32_t effectId = event->magicEffect;
 
+  // thuum docs/verbs/spell-cast.md: the spell that applied the effect, from
+  // the target's active effects (the newest of this effect by this caster:
+  // ActiveEffect's spell, caster and elapsedSeconds, CommonLibSSE-NG
+  // include/RE/A/ActiveEffect.h:100-108; Actor::GetActiveEffectList,
+  // include/RE/A/Actor.h:356). The event itself names only the effect, and
+  // an effect reaches an actor by spells the caster never equipped (a
+  // cloak's, a script's, Core Impact Framework's), so the applying spell is
+  // what a report of the apply needs. Read here, at the event, before the
+  // list changes.
+  uint32_t spellId = 0;
+  if (auto target = event->target.get()) {
+    if (auto* actor = target->As<RE::Actor>()) {
+      if (auto* list = actor->GetActiveEffectList()) {
+        float newest = -1.f;
+        for (RE::ActiveEffect* eff : *list) {
+          if (!eff || !eff->spell) {
+            continue;
+          }
+          auto* base = eff->GetBaseObject();
+          if (!base || base->formID != effectId) {
+            continue;
+          }
+          auto effCaster = eff->caster.get();
+          if (effCaster && effCaster->GetFormID() != casterId) {
+            continue;
+          }
+          if (newest < 0.f || eff->elapsedSeconds < newest) {
+            newest = eff->elapsedSeconds;
+            spellId = eff->spell->formID;
+          }
+        }
+      }
+    }
+  }
+
   SkyrimPlatform::GetSingleton()->AddUpdateTask(
-    [casterId, targetId, effectId](Napi::Env env) {
+    [casterId, targetId, effectId, spellId](Napi::Env env) {
       auto obj = Napi::Object::New(env);
 
       auto effect = RE::TESForm::LookupByID(effectId);
+      auto spell = spellId ? RE::TESForm::LookupByID(spellId) : nullptr;
 
       auto casterRefr = RE::TESForm::LookupByID<RE::TESObjectREFR>(casterId);
       auto targetRefr = RE::TESForm::LookupByID<RE::TESObjectREFR>(targetId);
@@ -811,6 +847,7 @@ EventResult EventHandler::ProcessEvent(
       }
 
       AddObjProperty(&obj, "effect", effect, "MagicEffect");
+      AddObjProperty(&obj, "spell", spell, "Form");
       AddObjProperty(&obj, "caster", casterRefr, "ObjectReference");
       AddObjProperty(&obj, "target", targetRefr, "ObjectReference");
 

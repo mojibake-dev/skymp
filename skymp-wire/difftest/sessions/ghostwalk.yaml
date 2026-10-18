@@ -35,7 +35,7 @@ steps:
   - {client: c1, at_ms: 2000, send: {t: 5, idx: "{{idx}}", data: {inv: {entries: []}, rightSpell: 201370344, numChanges: 1}}}
   - {client: c1, at_ms: 2500, move: {dy: 3000}}
   - {client: c1, at_ms: 3000, move: {dy: 0}}
-  - {client: c1, at_ms: 3500, send: {t: 23, data: {caster: 20, target: 0, spell: 201370344, isDualCasting: false, interruptCast: false, castingSource: 1, aimAngle: 0, aimHeading: 0, actorAnimationVariables: {booleans: [], floats: [], integers: []}}}}
+  - {client: c1, at_ms: 3500, send: {t: 23, data: {caster: 20, target: 0, spell: 201370344, isDualCasting: false, interruptCast: false, castingSource: 1, aimAngle: 0, aimHeading: 0, hasLaunch: false, originX: 0, originY: 0, originZ: 0, launchAngleX: 0, launchAngleZ: 0, actorAnimationVariables: {booleans: [], floats: [], integers: []}}}}
   - {client: c1, at_ms: 4500, move: {dy: 700}}
   - {client: c1, at_ms: 6000, move: {dy: 1400}}
   - {client: c1, at_ms: 7500, move: {dy: 2100}}

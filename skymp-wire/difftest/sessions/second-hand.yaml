@@ -35,3 +35,58 @@ divergences:
     legacy: 0
     wire: 1
     reason: departure detection, graceful close on the wire against RakNet's timeout
+  - client: c1
+    msg: {t: 41, text: "addspell done: de511 recorded", refused: false}
+    legacy: 0
+    wire: 1
+    reason: an owner's AddSpell writes the server's record of learned spells and answers with a line (thuum docs/verbs/second-hand.md teaches the cloak as teleports.yaml teaches its spell); the legacy server does not know the command
+  - client: c1
+    msg: {t: 30, class: Actor, function: AddSpell, arguments: [{formId: 910609, type: Spell}, false]}
+    legacy: 0
+    wire: 1
+    reason: the recorded spell is told to c1's own game
+  - client: c1
+    msg: {t: 30, class: Actor, function: RemoveSpell, arguments: [{formId: 910609, type: Spell}]}
+    legacy: 1
+    wire: 0
+    reason: the legacy stack refuses a spell c1 never learned and takes it from c1's game (upstream #2665)
+  - client: c1
+    msg: {t: 28, inventory: {entries: [{baseId: 10, count: 10}, {baseId: 15, count: 140}, {baseId: 77382, count: 1}, {baseId: 77385, count: 1}, {baseId: 77387, count: 1}, {baseId: 77389, count: 1}, {baseId: 77494, count: 1}, {baseId: 77495, count: 1}, {baseId: 79760, count: 1}, {baseId: 80253, count: 23}, {baseId: 80254, count: 1}, {baseId: 120044, count: 2}, {baseId: 236362, count: 2}, {baseId: 243042, count: 1}, {baseId: 256733, count: 5}, {baseId: 256736, count: 5}, {baseId: 256741, count: 5}, {baseId: 256810, count: 1}, {baseId: 256819, count: 1}, {baseId: 1017598, count: 1}]}}
+    legacy: 1
+    wire: 0
+    reason: the legacy stack's refusal of the spell sends c1 its inventory again (upstream #2665)
+  - client: c1
+    msg: {t: 5, data: {rightSpell: 910609}}
+    legacy: 0
+    wire: 1
+    reason: the wire stack takes the learned cloak in the right hand and relays it, c1's own game included (it listens to itself); the legacy stack refuses it
+  - client: c2
+    msg: {t: 5, data: {rightSpell: 910609}}
+    legacy: 0
+    wire: 1
+    reason: the same relay reaches c2
+  - client: c2
+    msg: {t: 23, data: {caster: 4278190082, castingSource: 1, spell: 910609}}
+    legacy: 0
+    wire: 1
+    reason: the wire stack relays c1's accepted cloak cast to c2, naming c1 as the server knows it; the legacy stack refuses a cast of a spell c1 never learned
+  - client: c2
+    msg: {t: 30, class: Actor, function: StartCombat, selfId: 4278190082, arguments: [{formId: 20, type: Actor}]}
+    legacy: 0
+    wire: 1
+    reason: the first claimed proc begins a fight; the wire stack tells c2's game (thuum docs/verbs/hostility-sync.md); the legacy stack counted no hit
+  - client: c2
+    msg: {t: 16, idx: 64, data: {health: 0.9599999785423279}}
+    legacy: 0
+    wire: 1
+    reason: the first proc claimed against the cloak's cast, one cadence of FlameCloakDmg, 4 of c2's Health (thuum docs/verbs/second-hand.md); the legacy stack dropped the hit as a spell c1 never held
+  - client: c2
+    msg: {t: 16, idx: 64, data: {health: 0.9277600049972534}}
+    legacy: 0
+    wire: 1
+    reason: the second proc, 400 ms after the first, 3.2 more
+  - client: c2
+    msg: {t: 45}
+    legacy: 0
+    wire: 1
+    reason: the wire stack sends a player its globals to watch, and their recorded values, on its first movement after a login (docs/verbs/player-globals.md); the legacy server has no such message

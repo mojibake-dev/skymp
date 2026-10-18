@@ -74,3 +74,8 @@ divergences:
     legacy: 1
     wire: 0
     reason: the legacy server takes an arrow (31 left) for a shot from a hunting bow c1 does not hold; the fixed server refuses the shot (E_SHOT_EQUIPMENT) and takes nothing
+  - client: c2
+    msg: {t: 45}
+    legacy: 0
+    wire: 1
+    reason: the wire stack sends a player its globals to watch, and their recorded values, on its first movement after a login (docs/verbs/player-globals.md); the legacy server has no such message

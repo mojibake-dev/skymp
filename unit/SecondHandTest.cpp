@@ -111,9 +111,12 @@ TEST_CASE("A cloak's spell counts as its caster's hit, by the time it held",
   Cast(p, kFlameCloak);
   Hits(p, kFlameCloakDmg);
   REQUIRE(Health(p) == Catch::Approx(0.984f));
-  // the same report again at once counts no more time
+  // the same report again counts the time since the first, which is the
+  // milliseconds this test took between the two calls (36 on a Windows
+  // runner, build 39088647542), never another cadence: under 4 more of 250
   Hits(p, kFlameCloakDmg);
-  REQUIRE(Health(p) == Catch::Approx(0.984f));
+  REQUIRE(Health(p) <= 0.984f + 1e-4f);
+  REQUIRE(Health(p) > 0.984f - 4.f / 250.f);
   Leave(p);
 }
 

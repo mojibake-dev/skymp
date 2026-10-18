@@ -324,6 +324,11 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
       serverSettings.contains("castTeleports")
         ? serverSettings.at("castTeleports").dump()
         : std::string("[]"));
+    // the headshot rule (thuum docs/verbs/headshot.md): `headshot`, the
+    // same way
+    partOne->SetHeadshotSettings(serverSettings.contains("headshot")
+                                   ? serverSettings.at("headshot").dump()
+                                   : std::string("{}"));
     // the globals kept per player (thuum docs/verbs/player-globals.md):
     // `playerGlobals`, the same way
     partOne->SetPlayerGlobalsSettings(

@@ -122,7 +122,7 @@ pub struct CastTeleports {
 
 /// A form as an entry writes it, "<hex form id>:<plugin>" (the id may carry
 /// "0x"), parsed as forms::FormDesc parses one; the error names the text.
-fn form_spec(text: &str) -> Result<FormSpec, SettingsError> {
+pub(crate) fn form_spec(text: &str) -> Result<FormSpec, SettingsError> {
     let FormDesc { short_id, file } = FormDesc::parse(text).map_err(|why| SettingsError(format!("castTeleports: {why}")))?;
     Ok(FormSpec { short_id, file })
 }

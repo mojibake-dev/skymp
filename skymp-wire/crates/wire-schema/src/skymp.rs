@@ -922,6 +922,24 @@ wire_struct! {
         pub aim_angle: f32,
         /// Aim heading.
         pub aim_heading: f32,
+        /// The caster's game saw its own launch of the spell
+        /// (Projectile::Launch's LaunchData, Skyrim Platform's
+        /// projectileLaunched) and the five fields after this one are it:
+        /// for a target-location spell, the point its game picked along the
+        /// caster's aim, which each neighbour's game launches the spell at
+        /// (thuum docs/verbs/spell-cast.md); false, they are all zero.
+        pub has_launch: bool,
+        /// Where the engine launched the spell, x, engine units.
+        pub origin_x: f32,
+        /// Where the engine launched the spell, y, engine units.
+        pub origin_y: f32,
+        /// Where the engine launched the spell, z, engine units.
+        pub origin_z: f32,
+        /// The launch's pitch, radians (LaunchData angleX), within a quarter
+        /// turn either way.
+        pub launch_angle_x: f32,
+        /// The launch's heading, radians (LaunchData angleZ).
+        pub launch_angle_z: f32,
         /// The caster's behavior graph variables.
         pub actor_animation_variables: ActorAnimationVariables,
     }
@@ -929,7 +947,10 @@ wire_struct! {
 
 wire_struct! {
     /// MsgType 23. Both directions, reliable: a spell cast (R1 intent) and
-    /// its relay. Not idempotent.
+    /// its relay. Not idempotent. Reason codes: `E_VAL_NONFINITE`,
+    /// `E_VAL_RANGE` (no spell, a hand SkyMP does not know, an aim or a
+    /// launch pitched past a quarter turn, a launch's fields set without
+    /// `has_launch`), `E_VAL_OUT_OF_WORLD` (a launch's origin), `E_VAL_RATE`.
     pub struct SpellCast {
         /// `"t": 23`.
         #[serde(default)]

@@ -3,7 +3,7 @@ import { Actor, Form, Game, Shout, Spell } from "skyrimPlatform";
 import { getAnimationVariablesFromActor } from "skyrimPlatform";
 import { MsgType } from "../../messages";
 import { logError, logTrace } from "../../logging";
-import { SpellCastMsgData } from "../messages/spellCastMessage";
+import { noSpellLaunch, SpellCastMsgData } from "../messages/spellCastMessage";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 
 // thuum docs/verbs/shouts.md: a shout fires no spellCast (x-shout-probe
@@ -313,6 +313,7 @@ export class ShoutService extends ClientListener {
             castingSource: 2,
             aimAngle: pitch * toRadians,
             aimHeading: heading * toRadians,
+            ...noSpellLaunch,
             actorAnimationVariables: this.animationVariables(),
         };
     }

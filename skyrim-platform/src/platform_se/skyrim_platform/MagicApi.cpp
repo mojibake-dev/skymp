@@ -8,6 +8,7 @@
 #include "Magic/AnimationGraphMasterBehaviourDescriptor.h"
 
 #include <mutex>
+#include <optional>
 #include <unordered_map>
 
 extern CallNativeApi::NativeCallRequirements g_nativeCallRequirements;
@@ -47,6 +48,44 @@ GetAnimationVariablesFromJSArg(const Napi::Object& argObj)
     };
 
   return variables;
+}
+
+// thuum docs/verbs/spell-cast.md: a relayed cast's launch, where the
+// caster's engine launched the spell and with which angles (pitch x and
+// heading z, radians)
+struct RelayedLaunch
+{
+  RE::NiPoint3 origin;
+  RE::Projectile::ProjectileRot angles;
+};
+
+// The launch a relayed cast carries, as the caster's engine made it
+// (Projectile::Launch's LaunchData, read in the caster's game by its
+// projectileLaunched event): castSpellImmediate's arguments from `first` on,
+// hasLaunch, originX, originY, originZ, launchAngleX and launchAngleZ. None
+// when a caller passes fewer, when hasLaunch is false, or when a number is
+// not finite
+std::optional<RelayedLaunch> GetLaunchFromJSArgs(
+  const Napi::CallbackInfo& info, size_t first)
+{
+  if (info.Length() < first + 6 ||
+      !NapiHelper::ExtractBoolean(info[first], "hasLaunch")) {
+    return std::nullopt;
+  }
+  const RelayedLaunch launch{
+    RE::NiPoint3{ NapiHelper::ExtractFloat(info[first + 1], "originX"),
+                  NapiHelper::ExtractFloat(info[first + 2], "originY"),
+                  NapiHelper::ExtractFloat(info[first + 3], "originZ") },
+    RE::Projectile::ProjectileRot{
+      NapiHelper::ExtractFloat(info[first + 4], "launchAngleX"),
+      NapiHelper::ExtractFloat(info[first + 5], "launchAngleZ") }
+  };
+  if (!std::isfinite(launch.origin.x) || !std::isfinite(launch.origin.y) ||
+      !std::isfinite(launch.origin.z) || !std::isfinite(launch.angles.x) ||
+      !std::isfinite(launch.angles.z)) {
+    return std::nullopt;
+  }
+  return launch;
 }
 
 // thuum docs/verbs/cast-action.md: a BGSAction performed on an actor with
@@ -123,9 +162,13 @@ Napi::Value MagicApi::CastSpellImmediate(const Napi::CallbackInfo& info)
   const auto aimHeading = NapiHelper::ExtractFloat(info[5], "aimHeading");
   const RE::Projectile::ProjectileRot projectileAngles{ aimAngle, aimHeading };
 
+  // thuum docs/verbs/spell-cast.md: the caster's own launch, after the
+  // animation variables, when the cast carries one
+  const auto launch = skymp::magic::details::GetLaunchFromJSArgs(info, 7);
+
   g_nativeCallRequirements.gameThrQ->AddTask(
     [spellFormId, actorFormId, castingSource, magicTargetFormId,
-     projectileAngles,
+     projectileAngles, launch,
 
      animVars = skymp::magic::details::GetAnimationVariablesFromJSArg(
        NapiHelper::ExtractObject(info[6], "animationVariables"))](Viet::Void) {
@@ -215,23 +258,35 @@ Napi::Value MagicApi::CastSpellImmediate(const Napi::CallbackInfo& info)
         origin.z += (boundMax.z - boundMin.z) * 0.7f;
       }
 
+      RE::Projectile::ProjectileRot angles = projectileAngles;
+
       if (pSpell->data.delivery ==
           RE::MagicSystem::Delivery::kTargetLocation) {
-        // TODO we need recalculate origin, cast ray from head to crosshair
-        auto rotation = pActor->Get3D2()->world.rotate.entry;
-        auto viewDirection =
-          NiPoint3{ rotation[0][1], rotation[1][1], rotation[2][1] };
-        viewDirection.Unitize();
+        if (launch) {
+          // the point the caster's game picked along its aim, a ray from its
+          // magic node as long as the spell's range x 22 units, and the
+          // angles its engine launched the effect with (the re-analyst on
+          // sky-re, 2026-10-16, 1.6.1170; HYPOTHESIS until a lab run): a
+          // figure has no aim to pick one with, and the engine's own
+          // CastSpellImmediate places no target-location projectile on it
+          origin = launch->origin;
+          angles = launch->angles;
+        } else {
+          // TODO we need recalculate origin, cast ray from head to crosshair
+          auto rotation = pActor->Get3D2()->world.rotate.entry;
+          auto viewDirection =
+            NiPoint3{ rotation[0][1], rotation[1][1], rotation[2][1] };
+          viewDirection.Unitize();
 
-        auto offset = viewDirection * 200.f;
+          auto offset = viewDirection * 200.f;
 
-        origin.x += offset.x;
-        origin.y += offset.y;
-        origin.z = pActor->GetPositionZ() + 10.f;
+          origin.x += offset.x;
+          origin.y += offset.y;
+          origin.z = pActor->GetPositionZ() + 10.f;
+        }
       }
 
-      RE::Projectile::LaunchData launchData(pActor, origin, projectileAngles,
-                                            pSpell);
+      RE::Projectile::LaunchData launchData(pActor, origin, angles, pSpell);
 
       launchData.castingSource = castingSource;
       launchData.desiredTarget = magicTarget;

@@ -727,6 +727,32 @@ mod tests {
                 launch_angle_z: f32::MAX,
                 ..Default::default()
             }),
+            // a cast at its longest: every id and the hand a five-byte
+            // varint, the graph's variables full, the launch carried
+            Message::SpellCast(skymp::SpellCast {
+                data: skymp::SpellCastData {
+                    caster: u32::MAX,
+                    target: u32::MAX,
+                    spell: u32::MAX,
+                    is_dual_casting: true,
+                    interrupt_cast: true,
+                    casting_source: i32::MIN,
+                    aim_angle: f32::MAX,
+                    aim_heading: f32::MAX,
+                    has_launch: true,
+                    origin_x: f32::MAX,
+                    origin_y: f32::MAX,
+                    origin_z: f32::MAX,
+                    launch_angle_x: f32::MAX,
+                    launch_angle_z: f32::MAX,
+                    actor_animation_variables: skymp::ActorAnimationVariables {
+                        booleans: alloc::vec![u8::MAX; cap::ANIM_VARS].try_into().unwrap_or_default(),
+                        floats: alloc::vec![u8::MAX; cap::ANIM_VARS].try_into().unwrap_or_default(),
+                        integers: alloc::vec![u8::MAX; cap::ANIM_VARS].try_into().unwrap_or_default(),
+                    },
+                },
+                ..Default::default()
+            }),
         ];
         for m in samples {
             let bytes = postcard::to_allocvec(&m).unwrap_or_default();

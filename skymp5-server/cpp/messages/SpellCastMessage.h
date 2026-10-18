@@ -31,6 +31,12 @@ struct SpellCastMsgData
       .Serialize("castingSource", castingSource)
       .Serialize("aimAngle", aimAngle)
       .Serialize("aimHeading", aimHeading)
+      .Serialize("hasLaunch", hasLaunch)
+      .Serialize("originX", originX)
+      .Serialize("originY", originY)
+      .Serialize("originZ", originZ)
+      .Serialize("launchAngleX", launchAngleX)
+      .Serialize("launchAngleZ", launchAngleZ)
       .Serialize("actorAnimationVariables", actorAnimationVariables);
   }
 
@@ -42,6 +48,17 @@ struct SpellCastMsgData
   int32_t castingSource = 0;
   float aimAngle = 0.f;
   float aimHeading = 0.f;
+  // the caster's own launch as its engine made it (Projectile::Launch's
+  // LaunchData): for a target-location spell, the point its game picked
+  // along the caster's aim, which each neighbour's game launches the spell
+  // at; the origin in engine units, pitch and heading in radians; without
+  // it, all zero (thuum docs/verbs/spell-cast.md)
+  bool hasLaunch = false;
+  float originX = 0.f;
+  float originY = 0.f;
+  float originZ = 0.f;
+  float launchAngleX = 0.f;
+  float launchAngleZ = 0.f;
 
   ActorAnimationVariables actorAnimationVariables;
 };

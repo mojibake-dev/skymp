@@ -16,7 +16,8 @@ PartOne& GetPartOne();
 // Cloak with the associated item (DATA 0x08) FlameCloakDmg 0x2B385, a
 // concentration spell of FireDamageConcAimedCloak at 8 a second; Firebolt
 // 0x12FD0 reaches nothing. Against the victim's recorded 250 Health a
-// first proc report counts a quarter second: 2 damage, 0.992 left.
+// first proc report counts one cadence, half a second (wire-rules
+// REACHED_TICK_MS): 4 damage, 0.984 left.
 namespace {
 constexpr uint32_t kFlameCloak = 0x000de511;
 constexpr uint32_t kFlameCloakDmg = 0x0002b385;
@@ -103,10 +104,10 @@ TEST_CASE("A cloak's spell counts as its caster's hit, by the time it held",
 
   Cast(p, kFlameCloak);
   Hits(p, kFlameCloakDmg);
-  REQUIRE(Health(p) == Catch::Approx(0.992f));
+  REQUIRE(Health(p) == Catch::Approx(0.984f));
   // the same report again at once counts no more time
   Hits(p, kFlameCloakDmg);
-  REQUIRE(Health(p) == Catch::Approx(0.992f));
+  REQUIRE(Health(p) == Catch::Approx(0.984f));
   Leave(p);
 }
 

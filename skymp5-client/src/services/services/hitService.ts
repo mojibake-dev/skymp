@@ -110,20 +110,25 @@ export class HitService extends ClientListener {
         this.due.push({ frame: this.frame + HitService.spellHitDelayUpdates, send });
     }
 
-    // an unarmed hit held one update: an explosion's hit event names
+    // an unarmed hit held a few updates: an explosion's hit event names
     // Unarmed as its weapon, and a player casting a burst or an area spell
-    // is no puncher, so one that lands beside the player's own effect on the
-    // same target in the same frame or the next is the explosion's and goes
-    // nowhere (x-class-self: source 0x1F4 counted as 3.71 of unarmed damage
-    // at every Shock Nova and Battletide)
+    // is no puncher, so one that lands within the window of the player's
+    // own effect on the same target is the explosion's and goes nowhere
+    // (x-class-self: source 0x1F4 counted as 3.71 of unarmed damage at
+    // every Shock Nova and Battletide). The window is ten updates either
+    // way: x-area-hit 20261018-135726 on train-25 had the explosion's hit
+    // land 115 ms, about seven updates, after the apply, past the earlier
+    // window of one, so the punch still reached the server; a real punch
+    // on a figure now goes out about 170 ms late, and never within ten
+    // updates of the player's own effect on that figure
     private sendHeldUnarmed() {
         const keep: Array<{ frame: number; target: number; send: () => void }> = [];
         for (const held of this.heldUnarmed) {
             const applied = this.appliedOn.get(held.target);
-            if (applied !== undefined && Math.abs(applied - held.frame) <= 1) {
+            if (applied !== undefined && Math.abs(applied - held.frame) <= HitService.unarmedWindowFrames) {
                 continue;
             }
-            if (this.frame > held.frame) {
+            if (this.frame > held.frame + HitService.unarmedWindowFrames) {
                 held.send();
             } else {
                 keep.push(held);
@@ -257,6 +262,10 @@ export class HitService extends ClientListener {
     // a hit event and an apply of the same spell on the same target this
     // many frames apart are one hit
     private static readonly dedupFrames = 2;
+    // an Unarmed hit on a figure this many updates from the player's own
+    // effect on it is the explosion's stand-in (x-area-hit 20261018-135726:
+    // about seven)
+    private static readonly unarmedWindowFrames = 10;
     private magicSent = new Map<string, number>();
     private appliedOn = new Map<number, number>();
     private heldUnarmed: Array<{ frame: number; target: number; send: () => void }> = [];

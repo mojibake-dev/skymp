@@ -66,12 +66,15 @@ MpActor& Range(PartOne& p, float archery, bool helmet)
   ActorValueRecord victimRecord;
   victimRecord.bases = { { 24, 250.f } };
   REQUIRE(victim.SetActorValueRecord(victimRecord));
+  // an actor the test fixture creates starts in the iron set, helmet
+  // included (pipeline 1843's facts line: worn 12e46 12e49 12e4b 12e4d), so
+  // the bare victim is stripped and the helmeted one wears the helmet alone
+  Equipment worn;
   if (helmet) {
     victim.AddItem(kIronHelmet, 1);
-    Equipment worn;
     worn.inv.entries.push_back(Inventory::Entry(kIronHelmet, 1, kWorn));
-    victim.SetEquipment(worn);
   }
+  victim.SetEquipment(worn);
   return shooter;
 }
 
@@ -120,10 +123,6 @@ TEST_CASE("A headshot on a claimed bow hit kills a bare-headed victim, once",
 {
   PartOne& p = GetPartOne();
   auto& shooter = Range(p, 60.f, false);
-  // a fresh actor's equipment record wears nothing
-  REQUIRE(p.worldState.GetFormAt<MpActor>(kVictim)
-            .GetEquipment()
-            .inv.entries.empty());
   // the report alone, no bow hit: nothing
   Hits(p, shooter, kHeadshotSpell);
   REQUIRE(!VictimDead(p));

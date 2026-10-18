@@ -25,6 +25,12 @@ export class MagicSyncService extends ClientListener {
         // another game has no aim to pick one with, so the cast carries it,
         // as a bow shot carries its arrow's launch (playerBowShotService)
         this.controller.on("projectileLaunched", (e) => this.onProjectileLaunched(e));
+        // and the point a target-location cast with no projectile placed its
+        // explosion at (the fork's areaEffectPlaced, the engine's placer
+        // 34413; docs/research/apocalypse/target-location.md): carried as
+        // the cast's launch too, angles zero, so the observer places the
+        // same explosion there (remoteServer placeAreaEffect)
+        this.controller.on("areaEffectPlaced", (e) => this.onAreaEffectPlaced(e));
         this.controller.on("update", () => this.onUpdateCasts());
 
         const self = this;
@@ -141,9 +147,20 @@ export class MagicSyncService extends ClientListener {
         if (e.shooter !== this.playerId || !e.spell || e.ammo) {
             return; // not the player's own spell (an arrow has its ammo)
         }
+        this.noteLaunch(e.spell, e.originX, e.originY, e.originZ, e.angleX, e.angleZ);
+    }
+
+    private onAreaEffectPlaced(e: { spell: number; x: number; y: number; z: number }) {
+        if (!e.spell) {
+            return;
+        }
+        this.noteLaunch(e.spell, e.x, e.y, e.z, 0, 0);
+    }
+
+    private noteLaunch(spell: number, originX: number, originY: number, originZ: number, angleX: number, angleZ: number) {
         const now = Date.now();
         this.launches = this.launches.filter((l) => now - l.at <= MagicSyncService.launchMatchMs);
-        this.launches.push({ at: now, spell: e.spell, originX: e.originX, originY: e.originY, originZ: e.originZ, angleX: e.angleX, angleZ: e.angleZ });
+        this.launches.push({ at: now, spell, originX, originY, originZ, angleX, angleZ });
         if (this.launches.length > MagicSyncService.launchesKept) {
             this.launches.shift();
         }
@@ -196,9 +213,12 @@ export class MagicSyncService extends ClientListener {
     // include/RE/M/MagicSystem.h:45; Papyrus reads no spell's own delivery)
     // and has a projectile, which the engine launches through
     // Projectile::Launch at the picked point (the re-analyst, 2026-10-16). A
-    // target-location spell without one raises no launch to wait for and
-    // goes at once, as before: Lost Grimoire's Teleportation, whose landing
-    // must not overtake its cast's permit (thuum docs/verbs/cast-teleport.md)
+    // target-location spell without one but with an area places its
+    // explosion at the point instead (34413, raised as areaEffectPlaced), so
+    // it waits too (docs/research/apocalypse/target-location.md). One with
+    // neither raises nothing to wait for and goes at once, as before: Lost
+    // Grimoire's Teleportation, whose landing must not overtake its cast's
+    // permit (thuum docs/verbs/cast-teleport.md)
     private static launchesAtTargetLocation(spell: Spell | null): boolean {
         if (!spell) {
             return false;
@@ -206,7 +226,8 @@ export class MagicSyncService extends ClientListener {
         const n = spell.getNumEffects();
         for (let i = 0; i < n; ++i) {
             const effect = spell.getNthEffectMagicEffect(i);
-            if (effect && effect.getDeliveryType() === MagicSyncService.kTargetLocation && effect.getProjectile()) {
+            if (effect && effect.getDeliveryType() === MagicSyncService.kTargetLocation
+                && (effect.getProjectile() || spell.getNthEffectArea(i) > 0)) {
                 return true;
             }
         }

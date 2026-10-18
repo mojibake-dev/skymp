@@ -697,6 +697,18 @@ export declare function once(eventName: 'skseAction', callback: (event: SkseActi
 
 export declare function on(eventName: 'projectileLaunched', callback: (event: ProjectileLaunchedEvent) => void): EventHandle
 export declare function once(eventName: 'projectileLaunched', callback: (event: ProjectileLaunchedEvent) => void): EventHandle
+// thuum docs/research/apocalypse/target-location.md: the point the player's
+// target-location cast placed its explosion at. No game call in its handler.
+export interface AreaEffectPlacedEvent {
+    spell: number;
+    effect: number;
+    x: number;
+    y: number;
+    z: number;
+    dual: boolean;
+}
+export declare function on(eventName: 'areaEffectPlaced', callback: (event: AreaEffectPlacedEvent) => void): EventHandle
+export declare function once(eventName: 'areaEffectPlaced', callback: (event: AreaEffectPlacedEvent) => void): EventHandle
 
 export declare function on(eventName: 'projectileFlight', callback: (event: ProjectileFlightEvent) => void): EventHandle
 export declare function once(eventName: 'projectileFlight', callback: (event: ProjectileFlightEvent) => void): EventHandle
@@ -1702,6 +1714,7 @@ export declare function castReady(actorFormId: number, hand: number): boolean;
 export declare function setActivateTextHidden(refrFormId: number, hidden: boolean): boolean;
 // thuum docs/verbs/spell-cast.md: a figure's aim pitch (radians, down positive), its reference angle X and AimPitchCurrent, the two the engine's GetAimAngle reads to aim its stream every frame; call each update
 export declare function setActorAimPitch(actorFormId: number, radians: number): boolean;
+export declare function placeAreaEffect(actorFormId: number, spellFormId: number, castingSource: SpellType, x: number, y: number, z: number, dual: boolean): boolean;
 export declare function getAnimationVariablesFromActor(actorFormId: number): ActorAnimationVariables;
 export declare function applyAnimationVariablesToActor(actorFormId: number, animationVariables: ActorAnimationVariables): boolean;
 

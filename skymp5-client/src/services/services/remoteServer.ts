@@ -1,5 +1,5 @@
 // @ts-expect-error (TODO: Remove in 2.10.0)
-import { Actor, Form, FormType, Menu, interruptCast, castSpellImmediate, printConsole, applyAnimationVariablesToActor, getAnimationVariablesFromActor, ActorAnimationVariables } from 'skyrimPlatform';
+import { Actor, Form, FormType, Menu, interruptCast, castSpellImmediate, placeAreaEffect, printConsole, applyAnimationVariablesToActor, getAnimationVariablesFromActor, ActorAnimationVariables } from 'skyrimPlatform';
 import {
   Armor,
   Cell,
@@ -1037,8 +1037,33 @@ export class RemoteServer extends ClientListener {
         castSpellImmediate(ac.getFormID(), msg.data.castingSource, spell.getFormID(), target,
           msg.data.aimAngle, msg.data.aimHeading, actorAnimationVariables,
           msg.data.hasLaunch, msg.data.originX, msg.data.originY, msg.data.originZ, msg.data.launchAngleX, msg.data.launchAngleZ);
+        // thuum docs/research/apocalypse/target-location.md (x-class-location
+        // 20261018-013501: nothing of Thrumming Stone, Lightning Strike or
+        // the rune on the other screen): a target-location spell whose
+        // area effect has no projectile is placed as an explosion at the
+        // point the caster's game picked, which rides the cast's launch;
+        // castSpellImmediate launches nothing for it
+        if (msg.data.hasLaunch && RemoteServer.placesAnExplosion(spell)) {
+          placeAreaEffect(ac.getFormID(), spell.getFormID(), msg.data.castingSource,
+            msg.data.originX, msg.data.originY, msg.data.originZ, msg.data.isDualCasting);
+        }
       }
     });
+  }
+
+  // A spell with a target-location effect that has an area and no
+  // projectile: the engine places its explosion at the picked point
+  // (MagicSystem::Delivery::kTargetLocation 4, CommonLibSSE-NG
+  // include/RE/M/MagicSystem.h:45)
+  private static placesAnExplosion(spell: Spell): boolean {
+    const n = spell.getNumEffects();
+    for (let i = 0; i < n; ++i) {
+      const effect = spell.getNthEffectMagicEffect(i);
+      if (effect && effect.getDeliveryType() === 4 && !effect.getProjectile() && spell.getNthEffectArea(i) > 0) {
+        return true;
+      }
+    }
+    return false;
   }
 
   // A spell whose effects are delivered to their target, by touch or at a

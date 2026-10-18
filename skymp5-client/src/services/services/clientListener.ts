@@ -78,6 +78,18 @@ declare module "skyrimPlatform" {
     }
     function on(eventName: 'projectileLaunched', callback: (event: ProjectileLaunchedEvent) => void): EventHandle;
     function once(eventName: 'projectileLaunched', callback: (event: ProjectileLaunchedEvent) => void): EventHandle;
+    // thuum docs/research/apocalypse/target-location.md: where the player's
+    // target-location cast placed its explosion. No game call in its handler.
+    interface AreaEffectPlacedEvent {
+        spell: number;
+        effect: number;
+        x: number;
+        y: number;
+        z: number;
+        dual: boolean;
+    }
+    function on(eventName: 'areaEffectPlaced', callback: (event: AreaEffectPlacedEvent) => void): EventHandle;
+    function once(eventName: 'areaEffectPlaced', callback: (event: AreaEffectPlacedEvent) => void): EventHandle;
     // thuum docs/verbs/marksman.md: an arrow's flight as it starts, its final
     // angles (after the player's auto-aim). No game call in its handler.
     interface ProjectileFlightEvent {

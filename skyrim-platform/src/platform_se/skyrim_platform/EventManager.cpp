@@ -20,6 +20,11 @@ void EventManager::InitCustom()
   manager->EmplaceEvent("skseAction");
   manager->EmplaceEvent("projectileLaunched");
   manager->EmplaceEvent("projectileFlight");
+  // thuum docs/research/apocalypse/target-location.md: a target-location
+  // explosion placed at the caster's point (FridaHooks' areaEffectPlaced);
+  // a custom event without this line refuses every subscription, and the
+  // client's startup chain broke on it (train-25's first stage, 2026-10-18)
+  manager->EmplaceEvent("areaEffectPlaced");
   manager->EmplaceEvent("ipcMessage");
 
   // skse messages

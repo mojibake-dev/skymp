@@ -31,6 +31,7 @@
 #include "libespm/SPEL.h"
 #include "libespm/ScriptData.h"
 #include "papyrus-vm/Utils.h"
+#include <spdlog/fmt/fmt.h>
 #include <spdlog/spdlog.h>
 
 namespace {
@@ -1455,10 +1456,12 @@ PartOne::HeadshotCheck PartOne::ClaimHeadshot(MpActor& actor, MpActor& target)
   // the target's equipment record wears
   constexpr uint32_t kHeadSlots = 0x3;
   facts.head_bare = true;
+  std::string worn;
   for (const auto& entry : target.GetEquipment().inv.entries) {
     if (entry.GetWorn() == Inventory::Worn::None) {
       continue;
     }
+    worn += fmt::format(" {:x}", entry.baseId);
     const auto lookup =
       worldState.GetEspm().GetBrowser().LookupById(entry.baseId);
     if (!lookup.rec || lookup.rec->GetType() != espm::ARMO::kType) {
@@ -1468,6 +1471,7 @@ PartOne::HeadshotCheck PartOne::ClaimHeadshot(MpActor& actor, MpActor& target)
     const uint32_t flags = armo.bod2.present ? armo.bod2.bodyPartFlags
       : armo.bodt.present                    ? armo.bodt.bodyPartFlags
                                              : 0;
+    worn += fmt::format("/{:x}", flags);
     if (flags & kHeadSlots) {
       facts.head_bare = false;
       break;
@@ -1490,6 +1494,11 @@ PartOne::HeadshotCheck PartOne::ClaimHeadshot(MpActor& actor, MpActor& target)
   }
   const auto check = pImpl->headshots->claim(
     actor.GetFormId(), target.GetFormId(), facts, SteadyNowMs());
+  spdlog::info("PartOne::ClaimHeadshot - {:x} on {:x}: head bare {} (worn{}), "
+               "race {:x}:{}, archery {}",
+               actor.GetFormId(), target.GetFormId(), facts.head_bare,
+               worn.empty() ? " none" : worn, facts.race_short,
+               std::string(facts.race_file), facts.archery);
   switch (check) {
     case skymp::rules::HeadshotCheck::Killed:
       target.Kill(&actor);

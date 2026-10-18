@@ -120,6 +120,10 @@ TEST_CASE("A headshot on a claimed bow hit kills a bare-headed victim, once",
 {
   PartOne& p = GetPartOne();
   auto& shooter = Range(p, 60.f, false);
+  // a fresh actor's equipment record wears nothing
+  REQUIRE(p.worldState.GetFormAt<MpActor>(kVictim)
+            .GetEquipment()
+            .inv.entries.empty());
   // the report alone, no bow hit: nothing
   Hits(p, shooter, kHeadshotSpell);
   REQUIRE(!VictimDead(p));

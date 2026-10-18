@@ -2769,6 +2769,37 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
     return;
   }
 
+  // thuum docs/verbs/second-hand.md: a player's hit by a spell it neither
+  // holds nor shouted counts only as one that a cast the server recorded
+  // for it reaches through the records (a cloak's spell, a proc its
+  // effects' scripts cast), from where the server has the caster now; any
+  // other is refused where the log shows it (it fell to the weapon path's
+  // debug lines before)
+  if (isSourceSpell && aggressor == myActor) {
+    const auto claim = partOne.ClaimReached(
+      aggressor->GetFormId(), hitData.source, targetRef->GetFormId(),
+      targetRef->GetPos(), aggressor->GetPos());
+    if (claim.check != PartOne::CastCheck::Claimed) {
+      const char* code = claim.check == PartOne::CastCheck::TooFar
+        ? "E_SPELL_RANGE"
+        : claim.check == PartOne::CastCheck::Throttled ? "E_SPELL_TICK"
+                                                       : "E_SPELL_NO_CAST";
+      spdlog::warn("ActionListener::OnHit - {}: {:x} hits {:x} with spell "
+                   "{:x}, which it holds not and no cast of its reaches "
+                   "within {:.0f} units; refused",
+                   code, aggressor->GetFormId(), targetRef->GetFormId(),
+                   hitData.source,
+                   (targetRef->GetPos() - aggressor->GetPos()).Length());
+      return;
+    }
+    spdlog::info("ActionListener::OnHit - {:x} hits {:x} with spell {:x}, "
+                 "claimed as a spell its cast reaches",
+                 aggressor->GetFormId(), targetRef->GetFormId(),
+                 hitData.source);
+    OnSpellHit(aggressor, targetRef, hitData, claim.scale);
+    return;
+  }
+
   const bool isUnarmed = IsUnarmedAttack(hitData.source);
 
   if (equipment.inv.HasItem(hitData.source) || isUnarmed) {

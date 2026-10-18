@@ -11,7 +11,10 @@ export class HitService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
         controller.on('hit', (e) => this.onHit(e));
-        controller.on('update', () => { this.frame++; });
+        controller.on('update', () => {
+            this.frame++;
+            this.sendDue();
+        });
     }
 
     private onHit(e: HitEvent) {
@@ -93,8 +96,24 @@ export class HitService extends ClientListener {
                 return;
             }
             shoutGate.reportFromHit(e.source.getFormID(), "no release seen");
+            // thuum docs/verbs/self-cast.md (playtest twenty-one: Battletide's
+            // area hit reached the server in the same millisecond as its
+            // cast, ahead of it, and was refused, E_SPELL_NO_CAST): a Self
+            // burst hits in the frame its spell is cast, and the hit's event
+            // can come before the cast's. The player's own spell hit goes two
+            // updates later, behind any cast this frame or the next sends
+            // (one reliable channel keeps the order to the server)
+            this.due.push({ frame: this.frame + HitService.spellHitDelayUpdates, send });
+            return;
         }
         send();
+    }
+
+    private sendDue() {
+        while (this.due.length > 0 && this.due[0].frame <= this.frame) {
+            const next = this.due.shift();
+            next?.send();
+        }
     }
 
     private getHitData(e: HitEvent): Hit {
@@ -112,6 +131,8 @@ export class HitService extends ClientListener {
     }
 
     private frame = 0;
+    private due: Array<{ frame: number; send: () => void }> = [];
+    private static readonly spellHitDelayUpdates = 2;
     private magicHitsFrame = -1;
     private magicHitsThisFrame = new Map<string, number>();
 }

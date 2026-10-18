@@ -9,6 +9,10 @@
 #include "SkyrimPlatform.h"
 #include "StringHolder.h"
 
+#include <RE/A/ActorMagicCaster.h>
+#include <RE/E/Effect.h>
+#include <RE/E/EffectSetting.h>
+
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -613,6 +617,73 @@ void InstallProjectileInitVelocityHook()
     std::make_shared<Frida::Hook>(OnProjectileInitVelocityEnter, nullptr));
 }
 
+/**
+ * The point a player's target-location cast places its explosion at (thuum
+ * docs/research/apocalypse/target-location.md, the class pass): FindTargets
+ * calls the engine's one placer (game/Offsets.h PlaceAreaEffect, 34413) with
+ * the caster, the final point after the pick and the navmesh snap, the cell,
+ * the spell and its largest-area effect. Read on entry for the player's
+ * caster alone (rule 9; ActorMagicCaster's actor, CommonLibSSE-NG
+ * include/RE/A/ActorMagicCaster.h:82) and raised to JS as areaEffectPlaced
+ * on the next tick: the caster's client sends the point with its cast as a
+ * launch, and an observer places the same explosion there with the figure's
+ * caster (MagicApi placeAreaEffect). SKSE publishes no event for it (ADR-034's
+ * exception). HYPOTHESIS until x-class-location's rerun: the id is the
+ * re-analyst's static read.
+ */
+struct AreaEffectSeen
+{
+  uint32_t spell = 0;
+  uint32_t effect = 0;
+  float x = 0, y = 0, z = 0;
+  bool dual = false;
+};
+
+void OnPlaceAreaEffectEnter(GumInvocationContext* ic)
+{
+  auto* caster = reinterpret_cast<RE::ActorMagicCaster*>(ic->cpu_context->rcx);
+  auto* point = reinterpret_cast<RE::NiPoint3*>(ic->cpu_context->rdx);
+  auto* spell = reinterpret_cast<RE::MagicItem*>(ic->cpu_context->r9);
+  auto* effect = reinterpret_cast<RE::Effect*>(
+    gum_invocation_context_get_nth_argument(ic, 4));
+  if (!caster || !point || !spell) {
+    return;
+  }
+  auto* player = RE::PlayerCharacter::GetSingleton();
+  if (!player || caster->actor != player) {
+    return;
+  }
+  AreaEffectSeen seen;
+  seen.spell = spell->formID;
+  seen.effect = effect && effect->baseEffect ? effect->baseEffect->formID : 0;
+  seen.x = point->x;
+  seen.y = point->y;
+  seen.z = point->z;
+  seen.dual = caster->GetIsDualCasting();
+  SkyrimPlatform::GetSingleton()->AddTickTask([seen](Napi::Env env) {
+    auto obj = Napi::Object::New(env);
+    AddObjProperty(&obj, "spell", seen.spell);
+    AddObjProperty(&obj, "effect", seen.effect);
+    obj.Set("x", Napi::Number::New(env, static_cast<double>(seen.x)));
+    obj.Set("y", Napi::Number::New(env, static_cast<double>(seen.y)));
+    obj.Set("z", Napi::Number::New(env, static_cast<double>(seen.z)));
+    AddObjProperty(&obj, "dual", seen.dual);
+    EventsApi::SendEvent("areaEffectPlaced", { obj });
+  });
+}
+
+void InstallPlaceAreaEffectHook()
+{
+  // AE only: the id is 1.6.1170's (game/Offsets.h)
+  if (!REL::Module::IsAE()) {
+    return;
+  }
+  Frida::HookHandler::GetSingleton()->Install(
+    Frida::HookID::HOOK_PLACE_AREA_EFFECT,
+    Offsets::Hooks::PlaceAreaEffect.address(),
+    std::make_shared<Frida::Hook>(OnPlaceAreaEffectEnter, nullptr));
+}
+
 void InstallProjectileLaunchHook()
 {
   // AE only: the id is 1.6.1170's (game/Offsets.h)
@@ -842,6 +913,7 @@ void Frida::InstallHooks()
   InstallPerformActionHook();
   InstallProjectileLaunchHook();
   InstallProjectileInitVelocityHook();
+  InstallPlaceAreaEffectHook();
   InstallQueueNinodeUpdateHook();
   InstallRenderCursorMenuHook();
 #ifdef ENABLE_SKYRIM_AE

@@ -7,6 +7,12 @@
 
 #include "Magic/AnimationGraphMasterBehaviourDescriptor.h"
 
+#include <RE/B/BSTArray.h>
+#include <RE/E/Effect.h>
+#include <RE/E/EffectSetting.h>
+#include <RE/M/MagicItemDataCollector.h>
+#include <RE/T/TES.h>
+#include <RE/T/TESObjectCELL.h>
 #include <mutex>
 #include <unordered_map>
 
@@ -431,6 +437,70 @@ Napi::Value MagicApi::SetActivateTextHidden(const Napi::CallbackInfo& info)
   return Napi::Boolean::New(info.Env(), true);
 }
 
+// thuum docs/research/apocalypse/target-location.md (the class pass;
+// x-class-location 20261018-013501: an observer's game launched nothing and
+// showed nothing for Thrumming Stone, Lightning Strike and the rune). The
+// engine places a target-location spell's explosion through one call after
+// its pick (game/Offsets.h PlaceAreaEffect, 34413, the re-analyst's read on
+// sky-re 2026-10-17: signature CONFIRMED-STATIC, behavior HYPOTHESIS until a
+// run): the caster, the point, the point's cell, the spell, its largest-area
+// effect (MagicItemDataCollector, CommonLibSSE-NG include/RE/M/
+// MagicItemDataCollector.h:37) and a target list it may fill. Called here for
+// a figure at the point its caster's game picked, on the game thread, when
+// the cell is attached and the effect is not Aimed, the dual-cast flag as
+// the caster's; it creates the explosion, owned by the figure, and applies
+// no spell number itself (the explosion's own record may: target-location.md,
+// ADR-028's rule to extend). False for a point that is not a number or a
+// non-AE runtime; a missing actor, spell or cell places nothing.
+Napi::Value MagicApi::PlaceAreaEffect(const Napi::CallbackInfo& info)
+{
+  const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  const auto spellFormId = NapiHelper::ExtractUInt32(info[1], "spellFormId");
+  const auto castingSource = static_cast<RE::MagicSystem::CastingSource>(
+    NapiHelper::ExtractInt32(info[2], "castingSource"));
+  const RE::NiPoint3 point{ NapiHelper::ExtractFloat(info[3], "x"),
+                            NapiHelper::ExtractFloat(info[4], "y"),
+                            NapiHelper::ExtractFloat(info[5], "z") };
+  const bool dual = NapiHelper::ExtractBoolean(info[6], "dual");
+  if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
+      !std::isfinite(point.z) || !REL::Module::IsAE()) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  g_nativeCallRequirements.gameThrQ->AddTask(
+    [actorFormId, spellFormId, castingSource, point, dual](Viet::Void) {
+      auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
+      auto* spell = RE::TESForm::LookupByID<RE::MagicItem>(spellFormId);
+      if (!actor || !spell) {
+        return;
+      }
+      auto* caster = actor->GetMagicCaster(castingSource);
+      auto* tes = RE::TES::GetSingleton();
+      auto* cell = tes ? tes->GetCell(point) : nullptr;
+      if (!caster || !cell || !cell->IsAttached()) {
+        return;
+      }
+      RE::MagicItemDataCollector collector(spell);
+      spell->Traverse(collector);
+      auto* effect = collector.largestAreaEffect;
+      if (!effect || !effect->baseEffect ||
+          effect->baseEffect->data.delivery ==
+            RE::MagicSystem::Delivery::kAimed) {
+        return;
+      }
+      caster->SetDualCasting(dual);
+      using PlaceAreaEffect_t =
+        void(RE::MagicCaster*, const RE::NiPoint3*, RE::TESObjectCELL*,
+             RE::MagicItem*, RE::Effect*,
+             RE::BSScrapArray<RE::NiPointer<RE::TESObjectREFR>>*);
+      REL::Relocation<PlaceAreaEffect_t> place{
+        Offsets::Hooks::PlaceAreaEffect.address()
+      };
+      RE::BSScrapArray<RE::NiPointer<RE::TESObjectREFR>> targets;
+      place(caster, &point, cell, spell, effect, &targets);
+    });
+  return Napi::Boolean::New(info.Env(), true);
+}
+
 Napi::Value MagicApi::CastReady(const Napi::CallbackInfo& info)
 {
   const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
@@ -476,6 +546,10 @@ void MagicApi::Register(Napi::Env env, Napi::Object& exports)
   exports.Set("performActionResult",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(PerformActionResult)));
+
+  exports.Set(
+    "placeAreaEffect",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(PlaceAreaEffect)));
 
   exports.Set("setActivateTextHidden",
               Napi::Function::New(

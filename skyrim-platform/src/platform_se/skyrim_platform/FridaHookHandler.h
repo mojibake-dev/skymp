@@ -26,7 +26,10 @@ enum HookID
   // thuum docs/verbs/marksman.md: every projectile launch
   HOOK_PROJECTILE_LAUNCH,
   // and an arrow's final angles on its first update
-  HOOK_PROJECTILE_INIT_VELOCITY
+  HOOK_PROJECTILE_INIT_VELOCITY,
+  // thuum docs/research/apocalypse/target-location.md: where a
+  // target-location cast places its explosion
+  HOOK_PLACE_AREA_EFFECT
 };
 
 struct Hook

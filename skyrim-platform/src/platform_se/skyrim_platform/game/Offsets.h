@@ -44,6 +44,15 @@ inline REL::Relocation<std::uintptr_t> ProjectileLaunch{ REL::ID(44108) };
 // lab/addr.py), HYPOTHESIS until x-arrow-path. thuum docs/verbs/marksman.md.
 inline REL::Relocation<std::uintptr_t> ProjectileInitVelocity{ REL::ID(
   44184) };
+// The place of a target-location effect that is not Aimed: (MagicCaster*,
+// const NiPoint3* point, TESObjectCELL*, MagicItem*, Effect* largestArea,
+// BSScrapArray<NiPointer<TESObjectREFR>>* targets) -> void, FindTargets
+// 34410's one call after the pick and the snap; it creates the effect's
+// explosion at the point, owned by the caster's actor, and applies no spell
+// number itself (the re-analyst on sky-re, 2026-10-17, 1.6.1170, signature
+// CONFIRMED-STATIC; thuum docs/research/apocalypse/target-location.md). AE
+// id only: CommonLibSSE-NG binds SE 34413 to DialogueItem::Ctor.
+inline REL::Relocation<std::uintptr_t> PlaceAreaEffect{ REL::ID(34413) };
 inline REL::Relocation<std::uintptr_t> QueueNinodeUpdate{ RELOCATION_ID(
   39181, 40255) };
 inline REL::Relocation<std::uintptr_t> ApplyMasksToRenderTargets{

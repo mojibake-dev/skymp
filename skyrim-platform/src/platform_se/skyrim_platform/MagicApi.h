@@ -28,6 +28,11 @@ Napi::Value SetActivateTextHidden(const Napi::CallbackInfo& info);
 // its AimPitchCurrent, which the engine's GetAimAngle reads for its stream
 Napi::Value SetActorAimPitch(const Napi::CallbackInfo& info);
 
+// thuum docs/research/apocalypse/target-location.md: the explosion a
+// target-location spell places, put at a point by an actor's caster
+// (placeAreaEffect(actorFormId, spellFormId, castingSource, x, y, z, dual))
+Napi::Value PlaceAreaEffect(const Napi::CallbackInfo& info);
+
 // an actor's master-behavior variables as the JS object
 // getAnimationVariablesFromActor returns (booleans, floats, integers as
 // ArrayBuffers)

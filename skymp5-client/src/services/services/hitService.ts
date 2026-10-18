@@ -22,13 +22,17 @@ export class HitService extends ClientListener {
         // the apply, as hits of the spell in hand that carries the effect,
         // once per target and spell within a frame beside any hit event
         controller.on('magicEffectApply', (e) => this.onEffectApplied(e));
-        // thuum docs/verbs/second-hand.md: the same report from effectStart,
-        // which fires once the active effect is on the target and so names
-        // its spell where magicEffectApply's lookup found none (a cloak's
-        // applied spell, FlameCloakDmg on the figure: b-cloak-apply
-        // 20261018-140353, nine applications and no report); the key below
-        // keeps one report when both events name the spell
-        controller.on('effectStart', (e) => this.onEffectApplied(e));
+        // thuum docs/verbs/second-hand.md: NOT from effectStart. A cloak's
+        // applied spell lands on a peaceful neighbour's figure as an
+        // application the engine turns into no hit and no damage
+        // (b-cloak-apply 20261018-140353: nine applications of
+        // FireDamageConcAimedCloak, nothing taken), and into hit events, local
+        // damage and the server's claims once a fight has begun
+        // (x-second-hand-cloak2 140554: the same cloak after one Firebolt).
+        // Reporting every application would make the server hurt a neighbour
+        // the engine spares; the hit events carry a cloak's ticks exactly
+        // where the engine means them. effectStart still names its spell
+        // (Skyrim Platform) for a reader that needs it.
         controller.on('update', () => {
             this.frame++;
             this.sendDue();

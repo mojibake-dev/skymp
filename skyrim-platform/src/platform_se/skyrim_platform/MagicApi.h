@@ -27,6 +27,10 @@ Napi::Value SetActivateTextHidden(const Napi::CallbackInfo& info);
 // a figure's aim pitch (radians, down positive): its reference angle.x and
 // its AimPitchCurrent, which the engine's GetAimAngle reads for its stream
 Napi::Value SetActorAimPitch(const Napi::CallbackInfo& info);
+// thuum docs/verbs/spell-cast.md: the heading an actor's aimed projectiles
+// leave at, without turning its body (setActorAimHeading(actorFormId,
+// radians))
+Napi::Value SetActorAimHeading(const Napi::CallbackInfo& info);
 
 // thuum docs/research/apocalypse/target-location.md: the explosion a
 // target-location spell places, put at a point by an actor's caster

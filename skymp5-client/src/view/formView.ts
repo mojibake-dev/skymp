@@ -1,7 +1,8 @@
 import { Actor, ActorBase, createText, destroyText, Form, FormType, Game, Keyword, NetImmerse, ObjectReference, once, printConsole, setTextPos, setTextSize, setTextString, storage, TESModPlatform, Utility, worldPointToScreenPoint } from "skyrimPlatform";
 import { setDefaultAnimsDisabled, applyAnimation } from "../sync/animation";
 // @ts-expect-error (TODO: Remove in 2.10.0)
-import { applyAnimationVariablesToActor, castReady, performAction, performActionResult, setActivateTextHidden, setActorAimPitch } from "skyrimPlatform";
+import { applyAnimationVariablesToActor, castReady, performAction, performActionResult, setActivateTextHidden, setActorAimHeading, setActorAimPitch } from "skyrimPlatform";
+import { figureAimHeading } from "../sync/figureAim";
 import { Appearance, applyAppearance } from "../sync/appearance";
 import { isBadMenuShown, applyEquipment } from "../sync/equipment";
 import { RespawnNeededError } from "../lib/errors";
@@ -527,6 +528,13 @@ export class FormView {
         const pitchDegrees = model.movement.rot[0];
         if (Number.isFinite(pitchDegrees) && Actor.from(refr)) {
           setActorAimPitch(refr.getFormID(), pitchDegrees * Math.PI / 180);
+        }
+        // and its heading from its caster's relayed cast while one runs
+        // (sync/figureAim.ts; x-stream-aim 20261017-135526: the body's
+        // heading left a figure's missiles 2.75 degrees off)
+        const aimHeading = figureAimHeading.get(refr.getFormID());
+        if (aimHeading !== undefined && Number.isFinite(aimHeading) && Actor.from(refr)) {
+          setActorAimHeading(refr.getFormID(), aimHeading);
         }
       }
 

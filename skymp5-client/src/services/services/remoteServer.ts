@@ -1,5 +1,6 @@
 // @ts-expect-error (TODO: Remove in 2.10.0)
 import { Actor, Form, FormType, Menu, interruptCast, castSpellImmediate, placeAreaEffect, printConsole, applyAnimationVariablesToActor, getAnimationVariablesFromActor, ActorAnimationVariables } from 'skyrimPlatform';
+import { figureAimHeading } from "../../sync/figureAim";
 import {
   Armor,
   Cell,
@@ -1008,6 +1009,7 @@ export class RemoteServer extends ClientListener {
 
       if (msg.data.interruptCast) {
         interruptCast(ac.getFormID(), msg.data.castingSource, actorAnimationVariables);
+        figureAimHeading.delete(ac.getFormID());
         return;
       }
 
@@ -1030,6 +1032,11 @@ export class RemoteServer extends ClientListener {
         // server's instead: push.md); an aimed one keeps no target, so its
         // projectile follows the caster's relayed aim and hits only where
         // it flies
+        // thuum docs/verbs/spell-cast.md: the caster's aim heading, held on
+        // the figure while its hand's cast runs (sync/figureAim.ts)
+        if (msg.data.castingSource === 0 || msg.data.castingSource === 1) {
+          figureAimHeading.set(ac.getFormID(), msg.data.aimHeading);
+        }
         const atPlayer = msg.data.target !== 0 && msg.data.target === this.worldModel.playerCharacterRefrId;
         const target = atPlayer && RemoteServer.landsOnItsTarget(spell)
           ? 0x14

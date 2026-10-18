@@ -10,6 +10,7 @@
 #include <RE/B/BSTArray.h>
 #include <RE/E/Effect.h>
 #include <RE/E/EffectSetting.h>
+#include <RE/F/FixedStrings.h>
 #include <RE/M/MagicItemDataCollector.h>
 #include <RE/T/TES.h>
 #include <RE/T/TESObjectCELL.h>
@@ -472,6 +473,46 @@ Napi::Value MagicApi::SetActorAimPitch(const Napi::CallbackInfo& info)
   return Napi::Boolean::New(info.Env(), true);
 }
 
+// thuum docs/verbs/spell-cast.md (x-stream-aim 20261017-135526: a figure's
+// Scattershock missiles leave 2.75 degrees off the caster's own). The engine
+// takes an aimed projectile's heading at every relaunch from
+// Actor::GetAimHeading (37929 on 1.6.1170; MagicCaster 34450, then 34452
+// into LaunchData's angleZ, CommonLibSSE-NG include/RE/P/Projectile.h:88),
+// which returns GetHeading(false) minus the graph float AimHeadingCurrent
+// (include/RE/F/FixedStrings.h:187; src/RE/A/Actor.cpp:288-296, no
+// bAimActive branch); GetHeading(false) on a Character is the reference's
+// angle.z (37206; angle.z plus angle.y only for a race flagged kImmobile,
+// include/RE/T/TESRace.h:60), and the player's own override adds a seat's
+// heading delta, zero on foot (the re-analyst on sky-re, 2026-10-17,
+// CONFIRMED-STATIC). The body's heading is the movement's, so only the graph
+// float is written, to the difference, and GetAimHeading returns the
+// caster's heading without turning the figure; a figure's Flames and beams
+// read the same float every frame. HYPOTHESIS until a lab run: the graph
+// does not write the float back between this write and the caster's read.
+// False for no actor or a heading that is not a number.
+Napi::Value MagicApi::SetActorAimHeading(const Napi::CallbackInfo& info)
+{
+  const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  const auto radians = NapiHelper::ExtractFloat(info[1], "radians");
+  auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
+  if (!actor || !std::isfinite(radians)) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  constexpr float kPi = 3.1415927f;
+  float delta = actor->GetHeading(false) - radians;
+  // 37929 subtracts without wrapping and its readers are periodic; a value
+  // in [-pi, pi] keeps a graph reading it for pose from twisting the spine
+  while (delta > kPi) {
+    delta -= 2.0f * kPi;
+  }
+  while (delta < -kPi) {
+    delta += 2.0f * kPi;
+  }
+  const bool ok = actor->SetGraphVariableFloat(
+    RE::FixedStrings::GetSingleton()->aimHeadingCurrent, delta);
+  return Napi::Boolean::New(info.Env(), ok);
+}
+
 // thuum docs/verbs/self-cast.md (playtest twenty, Eli: an invisible
 // player's figure still showed the crosshair's "E Talk / test 1" prompt;
 // "yes hide it"): the reference's ExtraFlags kBlockActivateText
@@ -601,6 +642,10 @@ void MagicApi::Register(Napi::Env env, Napi::Object& exports)
   exports.Set("performActionResult",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(PerformActionResult)));
+
+  exports.Set("setActorAimHeading",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(SetActorAimHeading)));
 
   exports.Set(
     "placeAreaEffect",

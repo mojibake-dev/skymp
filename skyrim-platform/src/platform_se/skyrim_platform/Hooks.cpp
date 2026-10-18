@@ -120,6 +120,12 @@ struct PlayerAddTarget
     }
   }
 
+  // thuum ADR-037 (docs/DECISIONS.md, proposed): a figure's enchantment
+  // counts as its cast too. An explosion a figure owns casts its EXPL's
+  // enchantment at the player through the figure's instant caster, an
+  // EnchantmentItem (the re-analyst on sky-re, 2026-10-17: the explosion
+  // pass 43849), and so does a figure's enchanted weapon on a hit; neither
+  // is the server's number (include/RE/M/MagicSystem.h:60-80 for the types)
   static bool IsCast(const RE::MagicItem* a_item)
   {
     using SpellType = RE::MagicSystem::SpellType;
@@ -129,6 +135,8 @@ struct PlayerAddTarget
       case SpellType::kLesserPower:
       case SpellType::kVoicePower:
       case SpellType::kScroll:
+      case SpellType::kEnchantment:
+      case SpellType::kStaffEnchantment:
         return true;
       default:
         return false;
@@ -158,6 +166,43 @@ void InstallPlayerAddTargetHook()
 {
   REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_PlayerCharacter[4] };
   PlayerAddTarget::func = vtbl.write_vfunc(0x1, PlayerAddTarget::thunk);
+}
+
+/**
+ * thuum ADR-037 (docs/DECISIONS.md, proposed; docs/research/apocalypse/
+ * target-location.md): the server's numbers alone reach a player (ADR-028),
+ * and an explosion a figure owns deals its EXPL record's damage to the
+ * player through the engine's own damage chain with the figure as attacker,
+ * never through AddTarget (the re-analyst on sky-re, 2026-10-17: 43849, then
+ * 37335, then the write to Health). Where the engine hands the player's
+ * actor its health damage, Actor::HandleHealthDamage (CommonLibSSE-NG
+ * include/RE/A/Actor.h:458, vfunc 0x104: the attacker and the damage),
+ * damage from a figure (a dynamic form, the other players' actors in this
+ * game) is dropped. Melee and arrows from figures already deal zero
+ * (attackDamageMult 0, skymp5-client formView.ts), so this changes nothing
+ * for them. HYPOTHESIS until a lab run: that this virtual applies the
+ * number rather than reporting it after (Skyrim Together gates 37335, one
+ * call earlier, docs/TE-MAP.md; the fallback). The player's own and an
+ * NPC's damage pass as before.
+ */
+struct PlayerHealthDamage
+{
+  static void thunk(RE::Actor* a_this, RE::Actor* a_attacker, float a_damage)
+  {
+    if (a_attacker && a_attacker != a_this &&
+        a_attacker->formID >= 0xFF000000) {
+      return;
+    }
+    func(a_this, a_attacker, a_damage);
+  }
+  static inline REL::Relocation<decltype(thunk)> func;
+};
+
+void InstallPlayerHealthDamageHook()
+{
+  REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_PlayerCharacter[0] };
+  PlayerHealthDamage::func =
+    vtbl.write_vfunc(0x104, PlayerHealthDamage::thunk);
 }
 
 /**
@@ -329,6 +374,7 @@ void Hooks::Install()
   InstallOnConsoleVPrintHook();
   HookVirtualMachineBind();
   InstallPlayerAddTargetHook();
+  InstallPlayerHealthDamageHook();
 
   logger::info("CommonLib hooks installed.");
 }

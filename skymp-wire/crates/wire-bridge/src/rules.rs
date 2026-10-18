@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, block, casts, clock, console, damage, effects, favorites, forms, hostility, magic, markers, melee, movement, player_globals, racemenu, ranged, rest, shouts, stagger, teleports};
+use wire_rules::{activation, actor_values, appearance, block, casts, clock, console, damage, effects, favorites, forms, hostility, magic, markers, melee, movement, player_globals, racemenu, ranged, rest, shouts, stagger, teleports, headshots};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -619,6 +619,37 @@ mod ffi {
         scale: f32,
     }
 
+    /// What the server knows at a headshot's report (thuum
+    /// docs/verbs/headshot.md): the victim's head and hair slots bare by its
+    /// equipment record, its race as a FormDesc's parts, the shooter's base
+    /// Archery.
+    #[derive(Debug, Clone)]
+    struct HeadshotFacts {
+        /// Nothing worn in the head and hair slots (ARMO BOD2 30 and 31).
+        head_bare: bool,
+        /// The victim's race: its id within its plugin.
+        race_short: u32,
+        /// The victim's race's plugin.
+        race_file: String,
+        /// The shooter's base Archery.
+        archery: f32,
+    }
+
+    /// The server's answer to a headshot report.
+    #[derive(Debug, Clone, Copy)]
+    enum HeadshotCheck {
+        /// Everything holds: the victim dies.
+        Killed,
+        /// No claimed bow hit on that target within the window, or spent.
+        NoShot,
+        /// The victim wears something in the head or hair slot.
+        Helmeted,
+        /// The victim's race is not one the rule names.
+        Race,
+        /// The shooter's Archery is under the floor.
+        Archery,
+    }
+
     /// A form a RaceMenu look names (thuum ADR-026), or a cast teleport's
     /// look (TeleportLook): its plugin and its id within it.
     #[derive(Debug, Clone)]
@@ -957,6 +988,23 @@ mod ffi {
         /// jump: Landed within reach (that ends it), else NoPermit.
         fn check_cast_jump(self: &mut MovementBudgets, actor: u32, cell_or_world: u32, x: f32, y: f32, z: f32, now_ms: u64) -> JumpCheck;
 
+        /// thuum docs/verbs/headshot.md: the headshot rule's settings
+        /// (server-settings.json's `headshot` block) and every shooter's
+        /// recent claimed bow hits.
+        type Headshots;
+        /// The block as JSON text (`{}` for none); the error names the bad
+        /// entry.
+        fn new_headshots(settings_json: &str) -> Result<Box<Headshots>>;
+        /// Whether the spell `short_id` in `file` reports a headshot.
+        fn is_headshot_spell(self: &Headshots, short_id: u32, file: &str) -> bool;
+        /// A claimed bow hit by `actor` on `target` at `now_ms`.
+        fn note_bow_hit(self: &mut Headshots, actor: u32, target: u32, now_ms: u64);
+        /// A headshot report by `actor` on `target`, judged against its
+        /// newest unspent bow hit and the facts; a kill spends the hit.
+        fn claim(self: &mut Headshots, actor: u32, target: u32, facts: &HeadshotFacts, now_ms: u64) -> HeadshotCheck;
+        /// The actor is gone: its bow hits with it.
+        fn forget(self: &mut Headshots, actor: u32);
+
         /// thuum docs/verbs/cast-teleport.md: the spells server-settings.json's
         /// `castTeleports` names as teleports, each with its reach.
         type CastTeleports;
@@ -1079,7 +1127,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, AvChange, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlayerGlobalEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
+pub use ffi::{AvBase, AvChange, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlayerGlobalEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -1568,6 +1616,44 @@ fn player_globals_merge(record: &[PlayerGlobalEntry], report: &[PlayerGlobalEntr
 
 /// The spells the server names as teleports (wire-rules teleports).
 pub struct CastTeleports(teleports::CastTeleports);
+
+/// The headshot rule (wire-rules headshots).
+#[derive(Debug, Clone, Default)]
+pub struct Headshots(headshots::Headshots);
+
+fn new_headshots(settings_json: &str) -> Result<Box<Headshots>, clock::SettingsError> {
+    headshots::Headshots::from_json(settings_json).map(|h| Box::new(Headshots(h)))
+}
+
+impl Headshots {
+    fn is_headshot_spell(&self, short_id: u32, file: &str) -> bool {
+        self.0.is_headshot_spell(short_id, file)
+    }
+
+    fn note_bow_hit(&mut self, actor: u32, target: u32, now_ms: u64) {
+        self.0.note_bow_hit(actor, target, now_ms);
+    }
+
+    fn claim(&mut self, actor: u32, target: u32, facts: &HeadshotFacts, now_ms: u64) -> HeadshotCheck {
+        let f = headshots::HeadshotFacts {
+            head_bare: facts.head_bare,
+            race_short: facts.race_short,
+            race_file: facts.race_file.clone(),
+            archery: facts.archery,
+        };
+        match self.0.claim(actor, target, &f, now_ms) {
+            headshots::HeadshotCheck::Killed => HeadshotCheck::Killed,
+            headshots::HeadshotCheck::NoShot => HeadshotCheck::NoShot,
+            headshots::HeadshotCheck::Helmeted => HeadshotCheck::Helmeted,
+            headshots::HeadshotCheck::Race => HeadshotCheck::Race,
+            headshots::HeadshotCheck::Archery => HeadshotCheck::Archery,
+        }
+    }
+
+    fn forget(&mut self, actor: u32) {
+        self.0.forget(actor);
+    }
+}
 
 fn new_cast_teleports(settings_json: &str) -> Result<Box<CastTeleports>, clock::SettingsError> {
     teleports::CastTeleports::from_json(settings_json).map(|t| Box::new(CastTeleports(t)))

@@ -2876,6 +2876,38 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
   // effects' scripts cast), from where the server has the caster now; any
   // other is refused where the log shows it (it fell to the weapon path's
   // debug lines before)
+  // thuum docs/verbs/headshot.md: the shooter's game reports a head hit as
+  // the mod's instant death spell on the victim (Core Impact Framework casts
+  // it from the shooter at the victim); the server kills when a bow hit it
+  // claimed on that victim came moments before and the records agree (a
+  // bare head, a named race, the shooter's Archery), once per hit. The head
+  // hit itself is the shooter's game's word (R1, Eli 2026-10-12).
+  if (isSourceSpell && aggressor == myActor &&
+      partOne.IsHeadshotSpell(hitData.source)) {
+    auto* victim = dynamic_cast<MpActor*>(targetRef);
+    if (!victim) {
+      return;
+    }
+    const auto check = partOne.ClaimHeadshot(*aggressor, *victim);
+    if (check == PartOne::HeadshotCheck::Killed) {
+      spdlog::info("ActionListener::OnHit - headshot: {:x} kills {:x} with "
+                   "{:x} on a claimed bow hit",
+                   aggressor->GetFormId(), victim->GetFormId(),
+                   hitData.source);
+      return;
+    }
+    const char* code = check == PartOne::HeadshotCheck::Helmeted
+      ? "E_HEADSHOT_HELMET"
+      : check == PartOne::HeadshotCheck::Race    ? "E_HEADSHOT_RACE"
+      : check == PartOne::HeadshotCheck::Archery ? "E_HEADSHOT_ARCHERY"
+                                                 : "E_HEADSHOT_NO_SHOT";
+    spdlog::warn("ActionListener::OnHit - {}: {:x} reports a headshot on "
+                 "{:x} with {:x}; refused",
+                 code, aggressor->GetFormId(), victim->GetFormId(),
+                 hitData.source);
+    return;
+  }
+
   if (isSourceSpell && aggressor == myActor) {
     const auto claim = partOne.ClaimReached(
       aggressor->GetFormId(), hitData.source, targetRef->GetFormId(),
@@ -3009,6 +3041,8 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
         return;
       }
       damageMult = claim.power;
+      // thuum docs/verbs/headshot.md: a headshot may ride this hit
+      partOne.NoteBowHit(aggressor->GetFormId(), targetRef->GetFormId());
     }
     OnWeaponHit(aggressor, targetRef, hitData, isUnarmed, damageMult);
     return;

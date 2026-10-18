@@ -15,6 +15,7 @@ pub mod damage;
 pub mod effects;
 pub mod favorites;
 pub mod forms;
+pub mod headshots;
 pub mod hostility;
 pub mod magic;
 pub mod markers;

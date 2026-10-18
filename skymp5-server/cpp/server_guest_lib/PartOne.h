@@ -177,6 +177,29 @@ public:
     const std::vector<PlayerGlobal>& record,
     const std::vector<PlayerGlobal>& report);
   float TeleportReach(uint32_t spellFormId) const;
+
+  // thuum docs/verbs/headshot.md: server-settings.json's `headshot` block
+  // (the spells whose hit reports a headshot, the victim races the mod's
+  // rule names, the shooter's base Archery floor; "{}" for none; a bad
+  // block refuses to start)
+  void SetHeadshotSettings(const std::string& headshotJson);
+  bool IsHeadshotSpell(uint32_t spellFormId) const;
+  // a bow hit by the actor on the target the server claimed (OnHit): a
+  // headshot may follow it within the rule's window, once
+  void NoteBowHit(uint32_t actorFormId, uint32_t targetFormId);
+  enum class HeadshotCheck
+  {
+    Killed,   // everything holds: the target died
+    NoShot,   // no claimed bow hit on the target within the window
+    Helmeted, // the target wears something in the head or hair slot
+    Race,     // the target's race is not one the rule names
+    Archery   // the shooter's base Archery is under the floor
+  };
+  // a headshot the actor's game reports on the target: the facts from the
+  // records (the target's worn head slots by ARMO BOD2, its race, the
+  // actor's base Archery) against the rule (wire-rules headshots); Killed
+  // kills the target
+  HeadshotCheck ClaimHeadshot(MpActor& actor, MpActor& target);
   uint64_t TeleportWaitMs(uint32_t spellFormId) const;
   bool TeleportRelays(uint32_t spellFormId) const;
   void PermitCastJump(uint32_t actorFormId, uint32_t cellOrWorld,

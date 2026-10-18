@@ -24,6 +24,7 @@
 #include "OpenSSLSigner.h"
 #include "PacketParser.h"
 #include "SpSnippet.h"
+#include "libespm/ARMO.h"
 #include "libespm/CELL.h"
 #include "libespm/MGEF.h"
 #include "libespm/PROJ.h"
@@ -150,6 +151,11 @@ struct PartOne::Impl
   // docs/verbs/cast-teleport.md): server-settings.json's `castTeleports`
   rust::Box<skymp::rules::CastTeleports> castTeleports =
     skymp::rules::new_cast_teleports("[]");
+
+  // the headshot rule (thuum docs/verbs/headshot.md): server-settings.json's
+  // `headshot` block and every shooter's recent claimed bow hits
+  rust::Box<skymp::rules::Headshots> headshots =
+    skymp::rules::new_headshots("{}");
 
   // a teleport's look, kept from its cast for its landing (thuum
   // docs/verbs/cast-teleport.md, the look on other screens), by the caster's
@@ -1422,6 +1428,81 @@ std::vector<PlayerGlobal> PartOne::MergePlayerGlobals(
                                                        recordEntries.size()),
     rust::Slice<const skymp::rules::PlayerGlobalEntry>(reportEntries.data(),
                                                        reportEntries.size())));
+}
+
+void PartOne::SetHeadshotSettings(const std::string& headshotJson)
+{
+  pImpl->headshots = skymp::rules::new_headshots(headshotJson);
+  spdlog::info("PartOne::SetHeadshotSettings - {}", headshotJson);
+}
+
+bool PartOne::IsHeadshotSpell(uint32_t spellFormId) const
+{
+  const auto desc = FormDesc::FromFormId(spellFormId, worldState.espmFiles);
+  return pImpl->headshots->is_headshot_spell(desc.shortFormId, desc.file);
+}
+
+void PartOne::NoteBowHit(uint32_t actorFormId, uint32_t targetFormId)
+{
+  pImpl->headshots->note_bow_hit(actorFormId, targetFormId, SteadyNowMs());
+}
+
+PartOne::HeadshotCheck PartOne::ClaimHeadshot(MpActor& actor, MpActor& target)
+{
+  skymp::rules::HeadshotFacts facts{};
+  // the head and hair slots (ARMO BOD2 bits 0 and 1, biped slots 30 and 31:
+  // CommonLibSSE-NG include/RE/B/BGSBipedObjectForm.h:13-14) of every item
+  // the target's equipment record wears
+  constexpr uint32_t kHeadSlots = 0x3;
+  facts.head_bare = true;
+  for (const auto& entry : target.GetEquipment().inv.entries) {
+    if (entry.GetWorn() == Inventory::Worn::None) {
+      continue;
+    }
+    const auto lookup =
+      worldState.GetEspm().GetBrowser().LookupById(entry.baseId);
+    if (!lookup.rec || lookup.rec->GetType() != espm::ARMO::kType) {
+      continue;
+    }
+    const auto armo = espm::GetData<espm::ARMO>(entry.baseId, &worldState);
+    const uint32_t flags = armo.bod2.present ? armo.bod2.bodyPartFlags
+      : armo.bodt.present                    ? armo.bodt.bodyPartFlags
+                                             : 0;
+    if (flags & kHeadSlots) {
+      facts.head_bare = false;
+      break;
+    }
+  }
+  const auto appearance = target.GetAppearance();
+  const auto race = FormDesc::FromFormId(appearance ? appearance->raceId : 0,
+                                         worldState.espmFiles);
+  facts.race_short = race.shortFormId;
+  facts.race_file = rust::String(race.file);
+  // the shooter's base Archery (actor value 8, CommonLibSSE-NG
+  // include/RE/A/ActorValues.h:16) by its record; none recorded reads 0
+  facts.archery = 0.f;
+  if (const auto record = actor.GetActorValueRecord()) {
+    for (const auto& [av, value] : record->bases) {
+      if (av == 8) {
+        facts.archery = value;
+      }
+    }
+  }
+  const auto check = pImpl->headshots->claim(
+    actor.GetFormId(), target.GetFormId(), facts, SteadyNowMs());
+  switch (check) {
+    case skymp::rules::HeadshotCheck::Killed:
+      target.Kill(&actor);
+      return HeadshotCheck::Killed;
+    case skymp::rules::HeadshotCheck::Helmeted:
+      return HeadshotCheck::Helmeted;
+    case skymp::rules::HeadshotCheck::Race:
+      return HeadshotCheck::Race;
+    case skymp::rules::HeadshotCheck::Archery:
+      return HeadshotCheck::Archery;
+    default:
+      return HeadshotCheck::NoShot;
+  }
 }
 
 float PartOne::TeleportReach(uint32_t spellFormId) const

@@ -245,6 +245,9 @@ export interface MenuCloseEvent {
 export interface MagicEffectApplyEvent {
   activeEffect: ActiveMagicEffect
   effect: MagicEffect
+  // thuum: the spell that applied the effect (the newest of it by the
+  // caster on the target), null when none is found
+  spell: Form | null
   caster: ObjectReference
   target: ObjectReference
 }

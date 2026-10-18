@@ -1,7 +1,7 @@
 // TODO: refactor this out
 import { localIdToRemoteId } from "../../view/worldViewMisc";
 
-import { ActiveMagicEffect, FormType, Game, HitEvent, MagicEffect, ObjectReference, Spell, storage } from "skyrimPlatform";
+import { ActiveMagicEffect, Form, FormType, Game, HitEvent, MagicEffect, ObjectReference, Spell, storage } from "skyrimPlatform";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { MsgType } from "../../messages";
 import { Hit } from "../messages/hitMessage";
@@ -29,7 +29,7 @@ export class HitService extends ClientListener {
         });
     }
 
-    private onEffectApplied(e: { activeEffect: ActiveMagicEffect; effect: MagicEffect; caster: ObjectReference; target: ObjectReference }) {
+    private onEffectApplied(e: { activeEffect: ActiveMagicEffect; effect: MagicEffect; spell: Form | null; caster: ObjectReference; target: ObjectReference }) {
         if (!e.caster || !e.target || !e.effect || e.caster.getFormID() !== 0x14) {
             return;
         }
@@ -38,9 +38,13 @@ export class HitService extends ClientListener {
             return; // another player's figure, never the player itself or a world actor
         }
         this.appliedOn.set(targetId, this.frame);
-        const spell = this.spellInHandWith(e.effect.getFormID());
+        // the applying spell as the native side read it from the active
+        // effect (a spell the player never equipped included: Core Impact
+        // Framework's kill spell, docs/verbs/headshot.md); the hands' spells
+        // when it gave none
+        const spell = e.spell ? e.spell.getFormID() : this.spellInHandWith(e.effect.getFormID());
         if (!spell) {
-            return; // a cloak's or a script's spell: its own hit event reports it
+            return;
         }
         const key = `${targetId}:${spell}`;
         const sentAt = this.magicSent.get(key);

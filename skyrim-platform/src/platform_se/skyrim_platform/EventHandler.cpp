@@ -796,8 +796,9 @@ EventResult EventHandler::ProcessEvent(
   // thuum docs/verbs/spell-cast.md: the spell that applied the effect, from
   // the target's active effects (the newest of this effect by this caster:
   // ActiveEffect's spell, caster and elapsedSeconds, CommonLibSSE-NG
-  // include/RE/A/ActiveEffect.h:100-108; Actor::GetActiveEffectList,
-  // include/RE/A/Actor.h:356). The event itself names only the effect, and
+  // include/RE/A/ActiveEffect.h:100-108; MagicTarget::GetActiveEffectList
+  // through the actor's MagicTarget, include/RE/M/MagicTarget.h:84, as the
+  // apply-remove sink above does). The event itself names only the effect, and
   // an effect reaches an actor by spells the caster never equipped (a
   // cloak's, a script's, Core Impact Framework's), so the applying spell is
   // what a report of the apply needs. Read here, at the event, before the
@@ -805,7 +806,7 @@ EventResult EventHandler::ProcessEvent(
   uint32_t spellId = 0;
   if (auto target = event->target.get()) {
     if (auto* actor = target->As<RE::Actor>()) {
-      if (auto* list = actor->GetActiveEffectList()) {
+      if (auto* list = actor->AsMagicTarget()->GetActiveEffectList()) {
         float newest = -1.f;
         for (RE::ActiveEffect* eff : *list) {
           if (!eff || !eff->spell) {

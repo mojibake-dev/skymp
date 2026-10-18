@@ -570,6 +570,14 @@ mod ffi {
         y: f32,
         /// Where the caster stood.
         z: f32,
+        /// The spells the cast's records reach, 0 for an empty slot (thuum
+        /// docs/verbs/second-hand.md; wire-rules casts::MAX_REACHED).
+        reached: [u32; 8],
+        /// How long a reached spell may claim the cast, milliseconds.
+        linger_ms: u64,
+        /// Bit i set: `reached[i]` is a concentration spell, counted by its
+        /// time.
+        reached_concentration: u8,
     }
 
     /// A spell hit as the caster's game reported it.
@@ -596,6 +604,9 @@ mod ffi {
         NoCast,
         /// Casts wait, but the target is beyond their reach: refuse.
         TooFar,
+        /// A reached spell's hit on a target it claimed within the tick:
+        /// refuse.
+        Throttled,
     }
 
     /// A spell hit's claim and, when claimed, the factor on the spell's
@@ -1027,6 +1038,17 @@ mod ffi {
         fn is_open(self: &SpellCasts, actor: u32, hand: u8) -> bool;
         /// A spell hit by `actor`: claims a cast that covers it.
         fn claim(self: &mut SpellCasts, actor: u32, hit: CastHit, now_ms: u64) -> CastClaim;
+        /// A hit by a spell a recorded cast's records reach (thuum
+        /// docs/verbs/second-hand.md), judged from where the caster stands.
+        fn claim_reached(
+            self: &mut SpellCasts,
+            actor: u32,
+            hit: CastHit,
+            caster_x: f32,
+            caster_y: f32,
+            caster_z: f32,
+            now_ms: u64,
+        ) -> CastClaim;
         /// The actor is gone: its casts and streams with it.
         fn forget(self: &mut SpellCasts, actor: u32);
 
@@ -1711,18 +1733,30 @@ fn effect_modifier(entries: &Vec<EffectEntry>, av: u32) -> f32 {
 #[derive(Debug, Default)]
 pub struct SpellCasts(casts::Casts);
 
+// the bridge's reach array is wire-rules' MAX_REACHED long
+const _: () = assert!(casts::MAX_REACHED == 8);
+
+fn cast_claim(check: casts::CastCheck) -> CastClaim {
+    match check {
+        casts::CastCheck::Claimed { scale } => CastClaim { check: CastCheck::Claimed, scale },
+        casts::CastCheck::NoCast => CastClaim { check: CastCheck::NoCast, scale: 0.0 },
+        casts::CastCheck::TooFar => CastClaim { check: CastCheck::TooFar, scale: 0.0 },
+        casts::CastCheck::Throttled => CastClaim { check: CastCheck::Throttled, scale: 0.0 },
+    }
+}
+
 fn new_spell_casts() -> Box<SpellCasts> {
     Box::default()
 }
 
 impl SpellCasts {
     fn start(&mut self, actor: u32, facts: CastFacts, now_ms: u64) {
-        let CastFacts { spell, hand, kind, area, reach, x, y, z } = facts;
+        let CastFacts { spell, hand, kind, area, reach, x, y, z, reached, linger_ms, reached_concentration } = facts;
         let kind = match kind {
             CastKind::Concentration => casts::CastKind::Concentration,
             _ => casts::CastKind::FireAndForget,
         };
-        self.0.start(actor, casts::CastFacts { spell, hand, kind, area, reach, x, y, z }, now_ms);
+        self.0.start(actor, casts::CastFacts { spell, hand, kind, area, reach, x, y, z, reached, linger_ms, reached_concentration }, now_ms);
     }
 
     fn end(&mut self, actor: u32, hand: u8) {
@@ -1735,11 +1769,25 @@ impl SpellCasts {
 
     fn claim(&mut self, actor: u32, hit: CastHit, now_ms: u64) -> CastClaim {
         let CastHit { spell, target, x, y, z } = hit;
-        match self.0.claim(actor, casts::CastHit { spell, target, x, y, z }, now_ms) {
-            casts::CastCheck::Claimed { scale } => CastClaim { check: CastCheck::Claimed, scale },
-            casts::CastCheck::NoCast => CastClaim { check: CastCheck::NoCast, scale: 0.0 },
-            casts::CastCheck::TooFar => CastClaim { check: CastCheck::TooFar, scale: 0.0 },
-        }
+        cast_claim(self.0.claim(actor, casts::CastHit { spell, target, x, y, z }, now_ms))
+    }
+
+    fn claim_reached(
+        &mut self,
+        actor: u32,
+        hit: CastHit,
+        caster_x: f32,
+        caster_y: f32,
+        caster_z: f32,
+        now_ms: u64,
+    ) -> CastClaim {
+        let CastHit { spell, target, x, y, z } = hit;
+        cast_claim(self.0.claim_reached(
+            actor,
+            casts::CastHit { spell, target, x, y, z },
+            [caster_x, caster_y, caster_z],
+            now_ms,
+        ))
     }
 
     fn forget(&mut self, actor: u32) {
@@ -1984,7 +2032,19 @@ mod tests {
     #[test]
     fn the_bridge_passes_casts_through() {
         let mut c = new_spell_casts();
-        let flames = CastFacts { spell: 0x12fcd, hand: 1, kind: CastKind::Concentration, area: false, reach: 1_000.0, x: 0.0, y: 0.0, z: 0.0 };
+        let flames = CastFacts {
+            spell: 0x12fcd,
+            hand: 1,
+            kind: CastKind::Concentration,
+            area: false,
+            reach: 1_000.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            reached: [0; 8],
+            linger_ms: 0,
+            reached_concentration: 0,
+        };
         let on = |t| CastHit { spell: 0x12fcd, target: 2, x: 150.0, y: 0.0, z: t };
         assert_eq!(c.claim(7, on(0.0), 0).check, CastCheck::NoCast);
         c.start(7, flames, 0);
@@ -1997,6 +2057,24 @@ mod tests {
         assert!(!c.is_open(7, 1));
         c.forget(7);
         assert_eq!(c.claim(7, on(0.0), 400).check, CastCheck::NoCast);
+    }
+
+    #[test]
+    fn the_bridge_passes_reached_claims_through() {
+        let mut c = new_spell_casts();
+        // labels, not records: a cloak and the spell its records reach
+        let mut reached = [0; 8];
+        reached[0] = 0xa102;
+        let cloak =
+            CastFacts { spell: 0xa101, hand: 1, kind: CastKind::FireAndForget, area: false, reach: 512.0, x: 0.0, y: 0.0, z: 0.0, reached, linger_ms: 60_000, reached_concentration: 0 };
+        let proc_on = |x| CastHit { spell: 0xa102, target: 2, x, y: 0.0, z: 0.0 };
+        assert_eq!(c.claim_reached(7, proc_on(300.0), 0.0, 0.0, 0.0, 0).check, CastCheck::NoCast);
+        c.start(7, cloak, 0);
+        let claim = c.claim_reached(7, proc_on(300.0), 0.0, 0.0, 0.0, 1_000);
+        assert_eq!(claim.check, CastCheck::Claimed);
+        assert!((claim.scale - 1.0).abs() < f32::EPSILON);
+        assert_eq!(c.claim_reached(7, proc_on(300.0), 0.0, 0.0, 0.0, 1_100).check, CastCheck::Throttled);
+        assert_eq!(c.claim_reached(7, proc_on(9_000.0), 0.0, 0.0, 0.0, 2_000).check, CastCheck::TooFar);
     }
 
     #[test]

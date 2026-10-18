@@ -28,6 +28,7 @@
 #include "libespm/MGEF.h"
 #include "libespm/PROJ.h"
 #include "libespm/SPEL.h"
+#include "libespm/ScriptData.h"
 #include "papyrus-vm/Utils.h"
 #include <spdlog/spdlog.h>
 
@@ -1646,6 +1647,78 @@ namespace {
 // 2026-10-10), so the bound is for mods'
 constexpr float kTouchReach = 512.f;
 
+// thuum docs/verbs/second-hand.md: the spells a cast of `spell` can make,
+// read from the records, as global ids: a Cloak effect's associated spell
+// (MGEF DATA 0x08) and every spell an Object property of a script on one of
+// its effects names (VMAD), then the same for those, to kReachDepth; at most
+// the bridge's eight. An id inside a record counts against that file's
+// masters, so each is mapped through the record that names it
+constexpr int kReachDepth = 3;
+
+std::vector<uint32_t> ReachedSpells(WorldState& worldState, uint32_t spell)
+{
+  std::vector<uint32_t> reached;
+  std::vector<uint32_t> frontier{ spell };
+  std::vector<uint32_t> seen{ spell };
+  auto& browser = worldState.GetEspm().GetBrowser();
+  auto& cache = worldState.GetEspmCache();
+  constexpr size_t kMaxReached = 8;
+  for (int depth = 0; depth < kReachDepth && !frontier.empty(); ++depth) {
+    std::vector<uint32_t> next;
+    for (const uint32_t from : frontier) {
+      const auto spellLookup = browser.LookupById(from);
+      if (!spellLookup.rec ||
+          spellLookup.rec->GetType() != espm::SPEL::kType) {
+        continue;
+      }
+      const auto data = espm::GetData<espm::SPEL>(from, &worldState);
+      for (const auto& effect : data.effects) {
+        if (effect.effectFormId == 0) {
+          continue;
+        }
+        const uint32_t mgefId = spellLookup.ToGlobalId(effect.effectFormId);
+        const auto mgefLookup = browser.LookupById(mgefId);
+        if (!mgefLookup.rec) {
+          continue;
+        }
+        std::vector<uint32_t> named;
+        const auto mgef = espm::GetData<espm::MGEF>(mgefId, &worldState);
+        if (mgef.data.effectType == espm::MGEF::EffectType::Cloak &&
+            mgef.data.associatedItem != 0) {
+          named.push_back(mgefLookup.ToGlobalId(mgef.data.associatedItem));
+        }
+        espm::ScriptData scriptData;
+        mgefLookup.rec->GetScriptData(&scriptData, cache);
+        for (const auto& script : scriptData.scripts) {
+          for (const auto& property : script.properties) {
+            if (property.type == espm::Property::Type::Object &&
+                property.value.formId != 0) {
+              named.push_back(mgefLookup.ToGlobalId(property.value.formId));
+            }
+          }
+        }
+        for (const uint32_t id : named) {
+          if (std::find(seen.begin(), seen.end(), id) != seen.end()) {
+            continue;
+          }
+          seen.push_back(id);
+          const auto lookup = browser.LookupById(id);
+          if (!lookup.rec || lookup.rec->GetType() != espm::SPEL::kType) {
+            continue;
+          }
+          if (reached.size() >= kMaxReached) {
+            return reached;
+          }
+          reached.push_back(id);
+          next.push_back(id);
+        }
+      }
+    }
+    frontier = std::move(next);
+  }
+  return reached;
+}
+
 skymp::rules::CastFacts CastFactsFor(WorldState& worldState, uint32_t spell,
                                      uint8_t hand, const NiPoint3& from)
 {
@@ -1671,9 +1744,13 @@ skymp::rules::CastFacts CastFactsFor(WorldState& worldState, uint32_t spell,
     auto& browser = worldState.GetEspm().GetBrowser();
     const auto spellLookup = browser.LookupById(spell);
     float reach = 0.f;
+    uint32_t longestS = 0;
     for (const auto& effect : data.effects) {
       if (effect.effectItem && effect.effectItem->areaOfEffect > 0) {
         facts.area = true;
+      }
+      if (effect.effectItem) {
+        longestS = std::max(longestS, effect.effectItem->duration);
       }
       if (effect.effectFormId == 0) {
         continue;
@@ -1690,6 +1767,23 @@ skymp::rules::CastFacts CastFactsFor(WorldState& worldState, uint32_t spell,
     }
     if (reach > 0.f) {
       facts.reach = reach;
+    }
+    // thuum docs/verbs/second-hand.md: what the cast's records reach, and
+    // for how long their hits may claim it (the wire-rules floor is the
+    // bolt window; a concentration cast's open stream extends it)
+    facts.linger_ms = static_cast<uint64_t>(longestS) * 1000;
+    // and which of them are concentration spells, counted by their time
+    // (a cloak's applied spell is one: Skyrim.esm's FlameCloakDmg 0x2B385)
+    const auto reached = ReachedSpells(worldState, spell);
+    for (size_t i = 0; i < reached.size() && i < facts.reached.size(); ++i) {
+      facts.reached[i] = reached[i];
+      const auto reachedData =
+        espm::GetData<espm::SPEL>(reached[i], &worldState);
+      if (reachedData.spellItem &&
+          reachedData.spellItem->castType ==
+            espm::SPEL::CastType::Concentration) {
+        facts.reached_concentration |= static_cast<uint8_t>(1u << i);
+      }
     }
   } catch (std::exception& e) {
     spdlog::warn("CastFactsFor - {:x}: {}; cast as fire-and-forget within {} "
@@ -1730,6 +1824,40 @@ PartOne::CastClaim PartOne::ClaimCast(uint32_t actorFormId, uint32_t spell,
       break;
     case skymp::rules::CastCheck::TooFar:
       res.check = CastCheck::TooFar;
+      break;
+    case skymp::rules::CastCheck::Throttled:
+      res.check = CastCheck::Throttled;
+      break;
+    default:
+      res.check = CastCheck::NoCast;
+      break;
+  }
+  return res;
+}
+
+PartOne::CastClaim PartOne::ClaimReached(uint32_t actorFormId, uint32_t spell,
+                                         uint32_t target, const NiPoint3& at,
+                                         const NiPoint3& casterAt)
+{
+  skymp::rules::CastHit hit{};
+  hit.spell = spell;
+  hit.target = target;
+  hit.x = at.x;
+  hit.y = at.y;
+  hit.z = at.z;
+  const auto claim = pImpl->spellCasts->claim_reached(
+    actorFormId, hit, casterAt.x, casterAt.y, casterAt.z, SteadyNowMs());
+  CastClaim res;
+  res.scale = claim.scale;
+  switch (claim.check) {
+    case skymp::rules::CastCheck::Claimed:
+      res.check = CastCheck::Claimed;
+      break;
+    case skymp::rules::CastCheck::TooFar:
+      res.check = CastCheck::TooFar;
+      break;
+    case skymp::rules::CastCheck::Throttled:
+      res.check = CastCheck::Throttled;
       break;
     default:
       res.check = CastCheck::NoCast;

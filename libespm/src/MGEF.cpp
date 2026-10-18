@@ -33,6 +33,10 @@ MGEF::Data MGEF::GetData(
           std::memcpy(&result.data.hitShader, data + 0x20,
                       sizeof(result.data.hitShader));
         }
+        if (size >= 0x0C) {
+          std::memcpy(&result.data.associatedItem, data + 0x08,
+                      sizeof(result.data.associatedItem));
+        }
         if (size >= 0x5C) {
           std::underlying_type_t<ActorValue> second = 0;
           std::memcpy(&second, data + 0x58, sizeof(second));

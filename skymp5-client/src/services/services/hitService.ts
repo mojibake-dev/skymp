@@ -29,7 +29,7 @@ export class HitService extends ClientListener {
         });
     }
 
-    private onEffectApplied(e: { activeEffect: ActiveMagicEffect; effect: MagicEffect; spell: Form | null; caster: ObjectReference; target: ObjectReference }) {
+    private onEffectApplied(e: { activeEffect: ActiveMagicEffect; effect: MagicEffect; spell?: Form | null; caster: ObjectReference; target: ObjectReference }) {
         if (!e.caster || !e.target || !e.effect || e.caster.getFormID() !== 0x14) {
             return;
         }

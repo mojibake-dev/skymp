@@ -148,6 +148,14 @@ EventResult EventHandler::ProcessEvent(
     uint32_t baseMagicEffectId = 0;
     uint32_t casterRefrId = 0;
     uint32_t targetRefrId = 0;
+    // thuum docs/verbs/second-hand.md: the spell that applied the effect
+    // (ActiveEffect::spell, CommonLibSSE-NG include/RE/A/ActiveEffect.h),
+    // read here where the active effect is in the target's list by its
+    // unique id; the magicEffectApply event's own lookup found none for a
+    // cloak's applied spell (b-cloak-apply 20261018-140353: nine applications
+    // on the figure, no report), HYPOTHESIS: that event fires before the
+    // effect joins the list
+    uint32_t spellId = 0;
     bool isApplied = false;
   };
 
@@ -168,6 +176,7 @@ EventResult EventHandler::ProcessEvent(
         auto baseMagicEffect = eff->GetBaseObject();
         effectData.baseMagicEffectId =
           baseMagicEffect ? baseMagicEffect->formID : 0;
+        effectData.spellId = eff->spell ? eff->spell->formID : 0;
         break;
       }
     }
@@ -199,7 +208,12 @@ EventResult EventHandler::ProcessEvent(
       return;
     }
 
+    auto spell = effectData.spellId
+      ? RE::TESForm::LookupByID(effectData.spellId)
+      : nullptr;
+
     AddObjProperty(&obj, "effect", baseMagicEffect, "MagicEffect");
+    AddObjProperty(&obj, "spell", spell, "Form");
     AddObjProperty(&obj, "caster", casterRefr, "ObjectReference");
     AddObjProperty(&obj, "target", targetRefr, "ObjectReference");
 

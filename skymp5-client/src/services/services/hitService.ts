@@ -22,6 +22,13 @@ export class HitService extends ClientListener {
         // the apply, as hits of the spell in hand that carries the effect,
         // once per target and spell within a frame beside any hit event
         controller.on('magicEffectApply', (e) => this.onEffectApplied(e));
+        // thuum docs/verbs/second-hand.md: the same report from effectStart,
+        // which fires once the active effect is on the target and so names
+        // its spell where magicEffectApply's lookup found none (a cloak's
+        // applied spell, FlameCloakDmg on the figure: b-cloak-apply
+        // 20261018-140353, nine applications and no report); the key below
+        // keeps one report when both events name the spell
+        controller.on('effectStart', (e) => this.onEffectApplied(e));
         controller.on('update', () => {
             this.frame++;
             this.sendDue();
@@ -29,7 +36,7 @@ export class HitService extends ClientListener {
         });
     }
 
-    private onEffectApplied(e: { activeEffect: ActiveMagicEffect; effect: MagicEffect; spell?: Form | null; caster: ObjectReference; target: ObjectReference }) {
+    private onEffectApplied(e: { activeEffect?: ActiveMagicEffect; effect: MagicEffect; spell?: Form | null; caster: ObjectReference; target: ObjectReference }) {
         if (!e.caster || !e.target || !e.effect || e.caster.getFormID() !== 0x14) {
             return;
         }

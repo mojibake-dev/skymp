@@ -8,6 +8,7 @@
 #include "IngredientEffects.h"
 #include "MapMarker.h"
 #include "MpObjectReference.h"
+#include "PlayerGlobal.h"
 #include "ShoutRecord.h"
 #include "libespm/espm.h"
 #include <array>
@@ -200,6 +201,11 @@ public:
   // form; a kept report replaces them (returns whether anything changed)
   std::vector<Favorite> GetFavorites() const;
   bool SetFavorites(std::vector<Favorite> favorites);
+
+  // thuum docs/verbs/player-globals.md: the globals the player's game wrote
+  // for its player, as its change form keeps them; false when unchanged
+  std::vector<PlayerGlobal> GetPlayerGlobals() const;
+  bool SetPlayerGlobals(std::vector<PlayerGlobal> globals);
   // thuum docs/verbs/racemenu-sync.md: the player's RaceMenu look, its preset
   // JSON, kept in its change form; empty when none (returns whether anything
   // changed)
@@ -321,6 +327,11 @@ public:
   // The effect list of a record that carries one (a potion, a poison, a
   // spell, an enchantment, a scroll, an ingredient: EFID, EFIT and their
   // CTDA), each MGEF id as the load order numbers it; empty for none
+  // thuum docs/verbs/self-cast.md (r-shock-nova 20261018-013824): an effect
+  // with an area whose record is detrimental, the hostile part of a Self
+  // burst, which the engine keeps off the burst's own caster
+  static bool IsHostileArea(WorldState* worldState,
+                            const espm::Effects::Effect& effect);
   static std::vector<espm::Effects::Effect> EffectsOf(WorldState* worldState,
                                                       uint32_t source);
   // thuum docs/verbs/magic-effects.md: whether an effect waits on

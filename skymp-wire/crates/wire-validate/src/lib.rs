@@ -123,6 +123,11 @@ pub struct ClientGuard {
     /// at once and six a second after that only ever stops a flood; the
     /// figures that replay them play what arrives.
     pub action_budget: TokenBucket,
+    /// Budget for player globals reports (thuum docs/verbs/player-globals.md):
+    /// the client reports the watched globals that changed once a second at
+    /// most, so two at once and one a second after that only ever stops a
+    /// flood.
+    pub player_globals_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -143,6 +148,7 @@ impl Default for ClientGuard {
             shot_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 2, last_refill_ms: 0 },
             on_hit_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 16, last_refill_ms: 0 },
             cast_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 4, last_refill_ms: 0 },
+            player_globals_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
             equip_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 8, last_refill_ms: 0 },
             action_budget: TokenBucket { tokens: 12, capacity: 12, refill_per_s: 6, last_refill_ms: 0 },
         }
@@ -289,9 +295,11 @@ fn check_bow_shot(m: &skymp::PlayerBowShot) -> Result<(), Reject> {
     check_launch(m.has_launch, &[m.origin_x, m.origin_y, m.origin_z], m.launch_angle_x, m.launch_angle_z)
 }
 
-/// A shot's launch as the shooter's engine made it, which PlayerBowShot and
-/// its relay ArrowShot carry alike (thuum docs/verbs/marksman.md: the arrow's
-/// path identical on both screens): when carried, a pitch within a quarter
+/// A launch as the shooter's or the caster's engine made it, which
+/// PlayerBowShot and its relay ArrowShot carry alike (thuum
+/// docs/verbs/marksman.md: the arrow's path identical on both screens), and
+/// SpellCast both ways (docs/verbs/spell-cast.md: a target-location spell
+/// lands where its caster aimed): when carried, a pitch within a quarter
 /// turn either way and an origin inside the world; when not, origin and
 /// angles all zero, so no message holds a launch it says it lacks. The
 /// heading is any finite angle, as the aim's is.
@@ -323,17 +331,17 @@ fn check_update_action(m: &skymp::UpdateAction) -> Result<(), Reject> {
 
 /// thuum docs/verbs/spell-cast.md: a cast names a spell, comes from a hand
 /// or slot SkyMP knows (0 left, 1 right, 2 voice, 3 instant), and aims within
-/// a quarter turn of level, as a bow shot does.
+/// a quarter turn of level, as a bow shot does, and carries its launch as a
+/// bow shot does ([`check_launch`]).
 fn check_spell_cast(m: &skymp::SpellCast) -> Result<(), Reject> {
     let d = &m.data;
-    if d.spell != 0
+    if !(d.spell != 0
         && (0..=3).contains(&d.casting_source)
-        && (-core::f32::consts::FRAC_PI_2..=core::f32::consts::FRAC_PI_2).contains(&d.aim_angle)
+        && (-core::f32::consts::FRAC_PI_2..=core::f32::consts::FRAC_PI_2).contains(&d.aim_angle))
     {
-        Ok(())
-    } else {
-        Err(Reject::Range)
+        return Err(Reject::Range);
     }
+    check_launch(d.has_launch, &[d.origin_x, d.origin_y, d.origin_z], d.launch_angle_x, d.launch_angle_z)
 }
 
 /// A rest's hours: the Sleep/Wait menu's range, one hour to a day
@@ -414,6 +422,27 @@ fn check_actor_values(m: &skymp::ActorValues) -> Result<(), Reject> {
     Ok(())
 }
 
+/// Player globals, either way (docs/verbs/player-globals.md): every value
+/// finite and each global given once among the values and once among the
+/// globals to watch. Whether a global is one the server keeps per player is
+/// the server's rule (wire-rules `player_globals`), which holds the list.
+fn check_player_globals(m: &skymp::PlayerGlobals) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    for (i, v) in m.values.iter().enumerate() {
+        if m.values.iter().take(i).any(|p| p.global == v.global) {
+            return Err(Reject::Range);
+        }
+    }
+    for (i, w) in m.watch.iter().enumerate() {
+        if m.watch.iter().take(i).any(|p| p == w) {
+            return Err(Reject::Range);
+        }
+    }
+    Ok(())
+}
+
 /// A RaceMenu preset, either way: not empty (docs/verbs/racemenu-sync.md).
 /// From a client it is also its own ([`validate`]); the JSON's shape is the
 /// server's rule (wire-rules `racemenu`), past the capacity the type holds.
@@ -485,6 +514,13 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
             take(&mut guard.preset_budget, now_ms)
         }
         Message::ActorValues(_) => take(&mut guard.actor_values_budget, now_ms),
+        Message::PlayerGlobals(m) => {
+            // a client reports values; which globals to watch is the server's
+            if !m.watch.is_empty() {
+                return Err(Reject::Range);
+            }
+            take(&mut guard.player_globals_budget, now_ms)
+        }
         Message::ConsoleCommand(_) => take(&mut guard.console_budget, now_ms),
         Message::PlayerBowShot(_) => take(&mut guard.shot_budget, now_ms),
         Message::OnHit(_) => take(&mut guard.on_hit_budget, now_ms),
@@ -563,6 +599,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::Favorites(m) => check_favorites(m),
         Message::RaceMenuPreset(m) => check_preset(m),
         Message::ActorValues(m) => check_actor_values(m),
+        Message::PlayerGlobals(m) => check_player_globals(m),
         Message::PlayerBowShot(m) => {
             if !all_finite(m) {
                 return Err(Reject::NonFinite);
@@ -1087,6 +1124,60 @@ mod tests {
         assert_eq!(validate(&spell_cast(0x12fcd, 1, f32::NAN), &mut ClientGuard::default(), 0), Err(Reject::NonFinite));
     }
 
+    // a cast with the launch its game made, from (x, y, z) at pitch angle_x
+    fn cast_launched(x: f32, y: f32, z: f32, angle_x: f32) -> Message {
+        Message::SpellCast(skymp::SpellCast {
+            data: skymp::SpellCastData {
+                spell: 0x12fd0,
+                casting_source: 1,
+                aim_angle: 0.1,
+                aim_heading: 1.57,
+                has_launch: true,
+                origin_x: x,
+                origin_y: y,
+                origin_z: z,
+                launch_angle_x: angle_x,
+                launch_angle_z: 1.57,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn a_cast_carries_its_launch_from_inside_the_world_at_a_pitch_within_bounds() {
+        assert_eq!(validate(&cast_launched(1234.5, -300.25, 96.0, 0.1), &mut ClientGuard::default(), 0), Ok(()));
+        assert_eq!(validate(&cast_launched(-WORLD_ABS_MAX, WORLD_ABS_MAX, 0.0, -1.5), &mut ClientGuard::default(), 0), Ok(()));
+        for (x, y, z) in [(1.5e6, 0.0, 96.0), (1234.5, -1.0e7, 96.0), (1234.5, -300.25, 2.0e6)] {
+            assert_eq!(validate(&cast_launched(x, y, z, 0.1), &mut ClientGuard::default(), 0), Err(Reject::OutOfWorld), "{x} {y} {z}");
+        }
+        for angle_x in [2.0, -2.0, core::f32::consts::PI] {
+            assert_eq!(validate(&cast_launched(1234.5, -300.25, 96.0, angle_x), &mut ClientGuard::default(), 0), Err(Reject::Range), "{angle_x}");
+        }
+        assert_eq!(validate(&cast_launched(f32::NAN, -300.25, 96.0, 0.1), &mut ClientGuard::default(), 0), Err(Reject::NonFinite));
+        // its relay, server to client, under the same rule
+        assert_eq!(validate_server(&cast_launched(1234.5, -300.25, 96.0, 0.1)), Ok(()));
+        assert_eq!(validate_server(&cast_launched(1234.5, -1.0e7, 96.0, 0.1)), Err(Reject::OutOfWorld));
+    }
+
+    #[test]
+    fn a_cast_without_its_launch_carries_zeros() {
+        // spell_cast() carries none: has_launch false, origin and angles zero
+        assert_eq!(validate(&spell_cast(0x12fd0, 1, 0.3), &mut ClientGuard::default(), 0), Ok(()));
+        let none = skymp::SpellCastData { spell: 0x12fd0, casting_source: 1, aim_angle: 0.1, ..Default::default() };
+        for d in [
+            skymp::SpellCastData { origin_x: 1234.5, ..none.clone() },
+            skymp::SpellCastData { origin_y: -300.25, ..none.clone() },
+            skymp::SpellCastData { origin_z: 96.0, ..none.clone() },
+            skymp::SpellCastData { launch_angle_x: 0.1, ..none.clone() },
+            skymp::SpellCastData { launch_angle_z: 1.57, ..none.clone() },
+        ] {
+            let m = Message::SpellCast(skymp::SpellCast { data: d, ..Default::default() });
+            assert_eq!(validate(&m, &mut ClientGuard::default(), 0), Err(Reject::Range), "{m:?}");
+            assert_eq!(validate_server(&m), Err(Reject::Range), "{m:?}");
+        }
+    }
+
     #[test]
     fn casts_eight_at_once_then_four_a_second() {
         let mut g = ClientGuard::default();
@@ -1213,6 +1304,44 @@ mod tests {
             assert_eq!(validate(&drink, &mut g, 1_000), Ok(()));
         }
         assert_eq!(validate(&drink, &mut g, 1_000), Err(Reject::Rate));
+    }
+
+    fn player_globals(watch: &[u32], values: &[(u32, f32)]) -> Message {
+        use wire_schema::skymp::{GlobalEntry, PlayerGlobals};
+        let mut m = PlayerGlobals::default();
+        for w in watch {
+            if m.watch.push(*w).is_err() {
+                return Message::PlayerGlobals(PlayerGlobals::default());
+            }
+        }
+        for (global, value) in values {
+            if m.values.push(GlobalEntry { global: *global, value: *value }).is_err() {
+                return Message::PlayerGlobals(PlayerGlobals::default());
+            }
+        }
+        Message::PlayerGlobals(m)
+    }
+
+    #[test]
+    fn player_globals_each_once_finite_and_watched_only_from_the_server() {
+        // the Craftlord's unspent points and the MCM's general XP multiplier
+        // at Apocalypse's slot 0C (thuum docs/verbs/player-globals.md)
+        let (points, xp) = (0x0c0b_1c19, 0x0c04_3cef);
+        let mut g = ClientGuard::default();
+        assert_eq!(validate(&player_globals(&[], &[(points, 3.0), (xp, 1.5)]), &mut g, 0), Ok(()));
+        assert_eq!(validate(&player_globals(&[], &[(points, 3.0), (points, 1.0)]), &mut g, 0), Err(Reject::Range));
+        assert_eq!(validate(&player_globals(&[], &[(points, f32::NAN)]), &mut g, 0), Err(Reject::NonFinite));
+        // a client names nothing to watch
+        assert_eq!(validate(&player_globals(&[points], &[]), &mut g, 0), Err(Reject::Range));
+        // the server's login message: the list and the record
+        assert_eq!(validate_server(&player_globals(&[points, xp], &[(points, 3.0)])), Ok(()));
+        assert_eq!(validate_server(&player_globals(&[points, points], &[])), Err(Reject::Range));
+        // one report a second after the first two
+        let mut g = ClientGuard::default();
+        assert_eq!(validate(&player_globals(&[], &[(points, 1.0)]), &mut g, 0), Ok(()));
+        assert_eq!(validate(&player_globals(&[], &[(points, 2.0)]), &mut g, 0), Ok(()));
+        assert_eq!(validate(&player_globals(&[], &[(points, 3.0)]), &mut g, 0), Err(Reject::Rate));
+        assert_eq!(validate(&player_globals(&[], &[(points, 3.0)]), &mut g, 1_000), Ok(()));
     }
 
     #[test]
@@ -1423,6 +1552,41 @@ mod tests {
         fn marker_is_accepted_exactly_for_location_types(t in any::<u16>()) {
             let want = if t <= MARKER_TYPE_MAX { Ok(()) } else { Err(Reject::Range) };
             prop_assert_eq!(validate(&marker(t), &mut ClientGuard::default(), 0), want);
+        }
+
+        #[test]
+        fn a_casts_launch_is_accepted_exactly_inside_the_world_at_a_pitch_within_bounds_or_all_zero(
+            has_launch in any::<bool>(),
+            origin in proptest::array::uniform3(prop_oneof![1 => Just(0.0f32), 3 => -2.0e6f32..2.0e6]),
+            angle_x in prop_oneof![1 => Just(0.0f32), 3 => -3.2f32..3.2],
+            angle_z in prop_oneof![1 => Just(0.0f32), 3 => -7.0f32..7.0],
+        ) {
+            let [x, y, z] = origin;
+            let m = Message::SpellCast(skymp::SpellCast {
+                data: skymp::SpellCastData {
+                    spell: 0x12fd0,
+                    casting_source: 1,
+                    has_launch,
+                    origin_x: x,
+                    origin_y: y,
+                    origin_z: z,
+                    launch_angle_x: angle_x,
+                    launch_angle_z: angle_z,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            let want = if !has_launch {
+                if origin.iter().chain(&[angle_x, angle_z]).all(|v| *v == 0.0) { Ok(()) } else { Err(Reject::Range) }
+            } else if !(-core::f32::consts::FRAC_PI_2..=core::f32::consts::FRAC_PI_2).contains(&angle_x) {
+                Err(Reject::Range)
+            } else if origin.iter().any(|v| v.abs() > WORLD_ABS_MAX) {
+                Err(Reject::OutOfWorld)
+            } else {
+                Ok(())
+            };
+            prop_assert_eq!(validate_server(&m), want);
+            prop_assert_eq!(validate(&m, &mut ClientGuard::default(), 0), want);
         }
 
         #[test]

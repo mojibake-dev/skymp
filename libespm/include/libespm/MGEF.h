@@ -103,6 +103,10 @@ public:
     float secondAVWeight = 0.f;
     uint32_t hitShader = 0;
     uint32_t hitEffectArt = 0;
+    // thuum docs/verbs/second-hand.md: the associated item (DATA 0x08, the
+    // same UESP layout), whose meaning the archetype gives: a Cloak effect's
+    // is the spell it applies to those near its bearer; 0 for none
+    uint32_t associatedItem = 0;
 
     [[nodiscard]] inline bool IsFlagSet(Flags flag) const
     {

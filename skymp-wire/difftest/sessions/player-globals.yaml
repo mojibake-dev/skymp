@@ -1,0 +1,41 @@
+# difftest player-globals (M2, thuum docs/verbs/player-globals.md): c1 and c2
+# are new characters (profiles 9 and 10, see melee-reach). The lab server's
+# settings name Apocalypse's 53 globals (playerGlobals, thuum branch
+# player-globals) and both stacks load the plugin (thuum branch apocalypse's
+# layer: "Apocalypse - Magic of Skyrim.esp" at full slot 0C). Each client's
+# first movement, at 1 s, makes the wire stack send its login PlayerGlobals
+# (the 53 to watch, no values yet); the legacy stack sends nothing. At 2 s c1
+# reports the Craftlord's unspent points (0x0C0B1C19, 202054681) at 3: the
+# wire stack records it, with no reply; the legacy stack knows no MsgType
+# 45. At 2.5 s c1 reports Skyrim.esm's GameHour (0x38), which is not listed:
+# refused on the wire, logged only. c2 steps again at 5 s of its own, so it
+# outlives c1, as in every session.
+# The divergences below are the expected ones; the first T2 run on fork
+# m2-train-24 (the Apocalypse layer on sky-srv) lists the rest, declared then.
+# MsgType 45 since the renumber (docs/verbs/player-globals.md).
+id: player-globals
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 1000, move: {dx: 10}}
+  - {client: c1, at_ms: 2000, send: {t: 45, watch: [], values: [{global: 202054681, value: 3}]}}
+  - {client: c1, at_ms: 2500, send: {t: 45, watch: [], values: [{global: 56, value: 12}]}}
+  - {client: c2, at_ms: 0, move: {dx: 50}}
+  - {client: c2, at_ms: 5000, move: {dx: 60}}
+divergences:
+  - client: c1
+    msg: {t: 45}
+    legacy: 0
+    wire: 1
+    reason: the wire stack sends a player its globals to watch, and their recorded values, on its first movement after a login (docs/verbs/player-globals.md); the legacy server has no such message
+  - client: c2
+    msg: {t: 45}
+    legacy: 0
+    wire: 1
+    reason: the same, for c2's login
+  - client: c2
+    msg: {t: 25, idx: 2}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

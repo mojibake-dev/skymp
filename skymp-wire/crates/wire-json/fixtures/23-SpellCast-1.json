@@ -2,41 +2,48 @@
   "data": {
     "actorAnimationVariables": {
       "booleans": [
-        252,
-        154,
-        57,
-        215,
-        117,
-        19,
-        177,
-        80,
-        238
-      ],
-      "floats": [
-        42,
-        201,
-        103,
-        5
-      ],
-      "integers": [
-        65,
-        224,
-        126,
-        28,
-        186,
-        88,
         247,
         149,
-        51,
-        209
+        51
+      ],
+      "floats": [
+        112,
+        14,
+        172,
+        74,
+        232
+      ],
+      "integers": [
+        37,
+        195,
+        97,
+        255,
+        158,
+        60,
+        218,
+        120,
+        23,
+        181,
+        83,
+        241,
+        143,
+        46,
+        204,
+        106
       ]
     },
     "aimAngle": 86548.84375,
     "aimHeading": -2.5236752033233643,
     "caster": 663349836,
     "castingSource": -835677453,
+    "hasLaunch": false,
     "interruptCast": true,
     "isDualCasting": true,
+    "launchAngleX": 20.37763786315918,
+    "launchAngleZ": -0.0005969833582639694,
+    "originX": -204075303960576.0,
+    "originY": 23766738944.0,
+    "originZ": -698574.875,
     "spell": 427482174,
     "target": 2684511173
   },

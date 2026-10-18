@@ -215,8 +215,9 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     // (docs/verbs/learned-effects.md), its favorites marked again
     // (docs/verbs/favorites.md), its RaceMenu look applied again
     // (docs/verbs/racemenu-sync.md), its actor values and progress
-    // (docs/verbs/actor-values.md), and its shouts and words of power
-    // (docs/verbs/shouts.md)
+    // (docs/verbs/actor-values.md), its shouts and words of power
+    // (docs/verbs/shouts.md), and its own globals
+    // (docs/verbs/player-globals.md)
     if (actor == partOne.serverState.ActorByUser(rawMsgData.userId) &&
         actor->TakeMapMarkersPending()) {
       SendMapMarkers(*actor);
@@ -225,6 +226,7 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       SendRaceMenuPreset(*actor);
       SendActorValues(*actor);
       SendShoutRecord(*actor);
+      SendPlayerGlobals(*actor);
     }
 
     if (!msg.data.isBlocking) {
@@ -660,13 +662,54 @@ void RunSelfSpell(WorldState& worldState, MpActor& caster, uint32_t spellId)
         spell.spellItem->castType != espm::SPEL::CastType::FireAndForget) {
       return;
     }
-    caster.ApplyEffects(spellId, MpActor::EffectsOf(&worldState, spellId), 1.f,
-                        caster.GetFormId(), false);
+    // thuum docs/verbs/self-cast.md (r-shock-nova 20261018-013824, the
+    // engine alone: two Shock Novas left their caster's health whole while
+    // the bandit beside it took every effect): a Self burst's hostile area
+    // effects are for those around the caster, claimed as its hits, never
+    // for the caster itself
+    auto effects = MpActor::EffectsOf(&worldState, spellId);
+    effects.erase(std::remove_if(effects.begin(), effects.end(),
+                                 [&](const espm::Effects::Effect& effect) {
+                                   return MpActor::IsHostileArea(&worldState,
+                                                                 effect);
+                                 }),
+                  effects.end());
+    caster.ApplyEffects(spellId, effects, 1.f, caster.GetFormId(), false);
     spdlog::info("ActionListener - {:x} casts {:x} on itself: its effects run "
                  "on the server",
                  caster.GetFormId(), spellId);
   } catch (std::exception& e) {
     spdlog::warn("ActionListener - self spell {:x}: {}", spellId, e.what());
+  }
+}
+
+// thuum docs/verbs/marksman.md, spell-cast.md: how far from where the server
+// has an actor its own launch may leave from (a shooter's bow, a caster's
+// magic node): the node's height above the recorded position and that
+// position's age
+constexpr float kMaxLaunchOffsetUnits = 512.f;
+
+// thuum docs/verbs/spell-cast.md: how far from its magic node a player's
+// target-location cast reaches: its game picks the point with a ray along
+// the caster's aim as long as the spell's range (SPIT) x 22 units, 5000 for
+// a range of 0 (the re-analyst on sky-re, 2026-10-16, 1.6.1170; HYPOTHESIS
+// until a lab run); none for a spell without a record to read it from
+std::optional<float> LaunchRay(WorldState& worldState, uint32_t spellId)
+{
+  constexpr float kUnitsPerRange = 22.f;
+  constexpr float kRayWithoutRange = 5000.f;
+  try {
+    const auto spell = espm::GetData<espm::SPEL>(spellId, &worldState);
+    if (!spell.spellItem || !std::isfinite(spell.spellItem->range)) {
+      return std::nullopt;
+    }
+    return spell.spellItem->range > 0.f
+      ? spell.spellItem->range * kUnitsPerRange
+      : kRayWithoutRange;
+  } catch (std::exception& e) {
+    spdlog::warn("ActionListener - launch of spell {:x}: {}", spellId,
+                 e.what());
+    return std::nullopt;
   }
 }
 
@@ -1746,6 +1789,65 @@ void ActionListener::OnActorValues(const RawMessageData& rawMsgData,
   }
 }
 
+// thuum docs/verbs/player-globals.md (ADR-029's A2): a player's game reports
+// the watched globals whose values changed; the server keeps them per player
+// (R2, recorded unvalidated) and sets them in its game after a login. A
+// global named by a form id no loaded plugin holds reads as unlisted.
+void ActionListener::OnPlayerGlobals(const RawMessageData& rawMsgData,
+                                     const PlayerGlobalsMessage& msg)
+{
+  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!actor) {
+    return spdlog::warn("OnPlayerGlobals - no actor for user {}",
+                        rawMsgData.userId);
+  }
+  std::vector<PlayerGlobal> report;
+  report.reserve(msg.values.size());
+  for (const auto& entry : msg.values) {
+    try {
+      report.push_back(
+        { FormDesc::FromFormId(entry.global, partOne.worldState.espmFiles),
+          entry.value });
+    } catch (const std::exception&) {
+      return spdlog::info("PlayerGlobals: user {} actor {:x} report refused "
+                          "(global {:x} is in no loaded plugin)",
+                          rawMsgData.userId, actor->GetFormId(), entry.global);
+    }
+  }
+  if (const uint8_t refusal = partOne.CheckPlayerGlobals(report)) {
+    return spdlog::info("PlayerGlobals: user {} actor {:x} report refused "
+                        "({})",
+                        rawMsgData.userId, actor->GetFormId(), refusal);
+  }
+  const bool changed = actor->SetPlayerGlobals(
+    PartOne::MergePlayerGlobals(actor->GetPlayerGlobals(), report));
+  spdlog::info("PlayerGlobals: user {} actor {:x} recorded {} values{}",
+               rawMsgData.userId, actor->GetFormId(), report.size(),
+               changed ? "" : ", unchanged");
+}
+
+void ActionListener::SendPlayerGlobals(MpActor& actor)
+{
+  PlayerGlobalsMessage message;
+  message.watch = partOne.PlayerGlobalsWatch();
+  if (message.watch.empty()) {
+    return;
+  }
+  for (const auto& entry :
+       partOne.PlayerGlobalsAtLogin(actor.GetPlayerGlobals())) {
+    try {
+      message.values.push_back(
+        { entry.global.ToFormId(partOne.worldState.espmFiles), entry.value });
+    } catch (const std::exception&) {
+      // a recorded global whose plugin this load order lacks
+    }
+  }
+  actor.SendToUser(message, true);
+  spdlog::info("PlayerGlobals: actor {:x} sent {} to watch, {} values after "
+               "a login",
+               actor.GetFormId(), message.watch.size(), message.values.size());
+}
+
 void ActionListener::SendActorValues(MpActor& actor)
 {
   const auto record = actor.GetActorValueRecord();
@@ -1858,7 +1960,6 @@ void ActionListener::OnPlayerBowShot(const RawMessageData& rawMsgData,
   // one from farther off changes nothing, as a shot from a bow it does not
   // hold
   if (msg.hasLaunch) {
-    constexpr float kMaxLaunchOffsetUnits = 512.f;
     const float distance =
       (NiPoint3(msg.originX, msg.originY, msg.originZ) - ac->GetPos())
         .Length();
@@ -2769,6 +2870,37 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
     return;
   }
 
+  // thuum docs/verbs/second-hand.md: a player's hit by a spell it neither
+  // holds nor shouted counts only as one that a cast the server recorded
+  // for it reaches through the records (a cloak's spell, a proc its
+  // effects' scripts cast), from where the server has the caster now; any
+  // other is refused where the log shows it (it fell to the weapon path's
+  // debug lines before)
+  if (isSourceSpell && aggressor == myActor) {
+    const auto claim = partOne.ClaimReached(
+      aggressor->GetFormId(), hitData.source, targetRef->GetFormId(),
+      targetRef->GetPos(), aggressor->GetPos());
+    if (claim.check != PartOne::CastCheck::Claimed) {
+      const char* code = claim.check == PartOne::CastCheck::TooFar
+        ? "E_SPELL_RANGE"
+        : claim.check == PartOne::CastCheck::Throttled ? "E_SPELL_TICK"
+                                                       : "E_SPELL_NO_CAST";
+      spdlog::warn("ActionListener::OnHit - {}: {:x} hits {:x} with spell "
+                   "{:x}, which it holds not and no cast of its reaches "
+                   "within {:.0f} units; refused",
+                   code, aggressor->GetFormId(), targetRef->GetFormId(),
+                   hitData.source,
+                   (targetRef->GetPos() - aggressor->GetPos()).Length());
+      return;
+    }
+    spdlog::info("ActionListener::OnHit - {:x} hits {:x} with spell {:x}, "
+                 "claimed as a spell its cast reaches",
+                 aggressor->GetFormId(), targetRef->GetFormId(),
+                 hitData.source);
+    OnSpellHit(aggressor, targetRef, hitData, claim.scale);
+    return;
+  }
+
   const bool isUnarmed = IsUnarmedAttack(hitData.source);
 
   if (equipment.inv.HasItem(hitData.source) || isUnarmed) {
@@ -2943,6 +3075,36 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
                              caster->GetFormId()));
     caster->RespawnWithDelay(true);
     return;
+  }
+
+  // thuum docs/verbs/spell-cast.md: the launch a target-location cast
+  // carries is the point the caster's game picked along its aim, which each
+  // neighbour's game launches the spell at (R1). Its game picks no farther
+  // than the spell's ray from the caster's magic node (LaunchRay), a node
+  // within kMaxLaunchOffsetUnits of where the server has the caster, as a
+  // bow's launch is; a point beyond the two goes to no other game. The cast
+  // itself stands, and every relay below carries it without the launch, so
+  // the neighbours place it as they did before casts carried one
+  if (spellCastData.hasLaunch) {
+    const auto ray = LaunchRay(partOne.worldState, spellCastData.spell);
+    const float distance =
+      (NiPoint3(spellCastData.originX, spellCastData.originY,
+                spellCastData.originZ) -
+       caster->GetPos())
+        .Length();
+    if (!ray || distance > *ray + kMaxLaunchOffsetUnits) {
+      spdlog::warn("ActionListener::OnSpellCast - E_SPELL_ORIGIN: {:x} "
+                   "launched {:x} {:.0f} units from its position, its ray "
+                   "{:.0f}; relayed without the launch",
+                   caster->GetFormId(), spellCastData.spell, distance,
+                   ray.value_or(0.f));
+      spellCastData.hasLaunch = false;
+      spellCastData.originX = 0.f;
+      spellCastData.originY = 0.f;
+      spellCastData.originZ = 0.f;
+      spellCastData.launchAngleX = 0.f;
+      spellCastData.launchAngleZ = 0.f;
+    }
   }
 
   // thuum docs/verbs/spell-cast.md: the hand the cast comes from (the

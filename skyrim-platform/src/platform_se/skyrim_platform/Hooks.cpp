@@ -1,7 +1,7 @@
-#include "FridaHooks.h"
 #include "Hooks.h"
 #include "EventHandler.h"
 #include "EventsApi.h"
+#include "FridaHooks.h"
 #include "JsUtils.h"
 #include "PapyrusTESModPlatform.h"
 #include "SkyrimPlatform.h"
@@ -209,10 +209,10 @@ public:
       SkyrimPlatform::GetSingleton()->AddTickTask(
         [type, slot, sourceForm](Napi::Env env) {
           auto obj = Napi::Object::New(env);
-          AddObjProperty(&obj, "actor",
-                         static_cast<RE::TESForm*>(
-                           RE::PlayerCharacter::GetSingleton()),
-                         "Actor");
+          AddObjProperty(
+            &obj, "actor",
+            static_cast<RE::TESForm*>(RE::PlayerCharacter::GetSingleton()),
+            "Actor");
           AddObjProperty(&obj, "type", type);
           AddObjProperty(&obj, "slot", slot);
           AddObjProperty(&obj, "sourceForm", sourceForm);

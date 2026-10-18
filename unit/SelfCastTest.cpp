@@ -87,6 +87,12 @@ void Cast(PartOne& p, uint32_t spell)
                         { "castingSource", 1 },
                         { "aimAngle", 0.f },
                         { "aimHeading", 0.f },
+                        { "hasLaunch", false },
+                        { "originX", 0.f },
+                        { "originY", 0.f },
+                        { "originZ", 0.f },
+                        { "launchAngleX", 0.f },
+                        { "launchAngleZ", 0.f },
                         { "actorAnimationVariables",
                           { { "booleans", nlohmann::json::array() },
                             { "floats", nlohmann::json::array() },
@@ -181,6 +187,25 @@ TEST_CASE("A Self spell's cast runs its effects on its caster on the server, "
   Cast(p, kFirebolt);
   REQUIRE(caster.GetRunningEffects().size() == before);
   Leave(p);
+}
+
+// Skyrim.esm (thuum lab/esm.py on sky-srv, 2026-10-17): Fireball 0x1C789's
+// first effect FireDamageFFAimedArea 0x1CEA1 has an area of 15 and a
+// detrimental record; Oakflesh 0x5AD5C's effects have no area
+TEST_CASE("A Self burst's hostile area effect is not its caster's",
+          "[SelfCast][espm]")
+{
+  PartOne& p = GetPartOne();
+  constexpr uint32_t kFireball = 0x0001c789;
+  const auto fireball = MpActor::EffectsOf(&p.worldState, kFireball);
+  REQUIRE(!fireball.empty());
+  REQUIRE(fireball.front().areaOfEffect > 0);
+  REQUIRE(MpActor::IsHostileArea(&p.worldState, fireball.front()));
+  const auto oakflesh = MpActor::EffectsOf(&p.worldState, kOakflesh);
+  REQUIRE(!oakflesh.empty());
+  for (const auto& effect : oakflesh) {
+    REQUIRE(!MpActor::IsHostileArea(&p.worldState, effect));
+  }
 }
 
 TEST_CASE("Invisibility runs as a state, and the caster's next act ends it",

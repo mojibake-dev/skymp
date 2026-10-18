@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, block, casts, clock, console, damage, effects, favorites, hostility, magic, markers, melee, movement, racemenu, ranged, rest, shouts, stagger, teleports};
+use wire_rules::{activation, actor_values, appearance, block, casts, clock, console, damage, effects, favorites, forms, hostility, magic, markers, melee, movement, player_globals, racemenu, ranged, rest, shouts, stagger, teleports};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -327,6 +327,18 @@ mod ffi {
         hotkey: i8,
     }
 
+    /// One global a player's game wrote for its player, by its FormDesc's
+    /// parts (thuum docs/verbs/player-globals.md).
+    #[derive(Debug, Clone, PartialEq)]
+    struct PlayerGlobalEntry {
+        /// The form id within its plugin.
+        short_id: u32,
+        /// The plugin, as the load order names it.
+        file: String,
+        /// Its value.
+        value: f32,
+    }
+
     /// One actor value's base (thuum docs/verbs/actor-values.md).
     #[derive(Debug, Clone)]
     struct AvBase {
@@ -558,6 +570,14 @@ mod ffi {
         y: f32,
         /// Where the caster stood.
         z: f32,
+        /// The spells the cast's records reach, 0 for an empty slot (thuum
+        /// docs/verbs/second-hand.md; wire-rules casts::MAX_REACHED).
+        reached: [u32; 8],
+        /// How long a reached spell may claim the cast, milliseconds.
+        linger_ms: u64,
+        /// Bit i set: `reached[i]` is a concentration spell, counted by its
+        /// time.
+        reached_concentration: u8,
     }
 
     /// A spell hit as the caster's game reported it.
@@ -584,6 +604,9 @@ mod ffi {
         NoCast,
         /// Casts wait, but the target is beyond their reach: refuse.
         TooFar,
+        /// A reached spell's hit on a target it claimed within the tick:
+        /// refuse.
+        Throttled,
     }
 
     /// A spell hit's claim and, when claimed, the factor on the spell's
@@ -959,6 +982,23 @@ mod ffi {
         /// landing (wire-rules teleports::LOOK_LANDING_STEP).
         fn teleport_look_lands(step: f32) -> bool;
 
+        /// thuum docs/verbs/player-globals.md: the globals server-settings.json's
+        /// `playerGlobals` names, kept per player.
+        type PlayerGlobalsList;
+        /// The list from the block as JSON text (`[]` for none); the error
+        /// names the bad entry.
+        fn new_player_globals(settings_json: &str) -> Result<Box<PlayerGlobalsList>>;
+        /// The listed globals, in the settings' order (values 0): what a
+        /// client watches.
+        fn player_globals_listed(self: &PlayerGlobalsList) -> Vec<PlayerGlobalEntry>;
+        /// Judge a player's report: 0 taken, 1 a global not listed, 2 a value
+        /// that is not finite, 3 a global twice, 4 more entries than listed.
+        fn player_globals_check(self: &PlayerGlobalsList, report: &[PlayerGlobalEntry]) -> u8;
+        /// What the login sends: the recorded values still listed.
+        fn player_globals_at_login(self: &PlayerGlobalsList, record: &[PlayerGlobalEntry]) -> Vec<PlayerGlobalEntry>;
+        /// The record after a checked report: the latest value wins.
+        fn player_globals_merge(record: &[PlayerGlobalEntry], report: &[PlayerGlobalEntry]) -> Vec<PlayerGlobalEntry>;
+
         /// Every player actor's recent bow and crossbow shots.
         type RangedShots;
         /// No shots yet.
@@ -998,6 +1038,17 @@ mod ffi {
         fn is_open(self: &SpellCasts, actor: u32, hand: u8) -> bool;
         /// A spell hit by `actor`: claims a cast that covers it.
         fn claim(self: &mut SpellCasts, actor: u32, hit: CastHit, now_ms: u64) -> CastClaim;
+        /// A hit by a spell a recorded cast's records reach (thuum
+        /// docs/verbs/second-hand.md), judged from where the caster stands.
+        fn claim_reached(
+            self: &mut SpellCasts,
+            actor: u32,
+            hit: CastHit,
+            caster_x: f32,
+            caster_y: f32,
+            caster_z: f32,
+            now_ms: u64,
+        ) -> CastClaim;
         /// The actor is gone: its casts and streams with it.
         fn forget(self: &mut SpellCasts, actor: u32);
 
@@ -1028,7 +1079,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, AvChange, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
+pub use ffi::{AvBase, AvChange, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlayerGlobalEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -1473,6 +1524,48 @@ impl MovementBudgets {
     }
 }
 
+/// The globals the server keeps per player (wire-rules player_globals).
+pub struct PlayerGlobalsList(player_globals::PlayerGlobals);
+
+fn new_player_globals(settings_json: &str) -> Result<Box<PlayerGlobalsList>, clock::SettingsError> {
+    player_globals::PlayerGlobals::from_json(settings_json).map(|l| Box::new(PlayerGlobalsList(l)))
+}
+
+fn to_values(entries: &[PlayerGlobalEntry]) -> Vec<player_globals::GlobalValue> {
+    entries
+        .iter()
+        .map(|e| player_globals::GlobalValue { global: forms::FormDesc { short_id: e.short_id, file: e.file.clone() }, value: e.value })
+        .collect()
+}
+
+fn to_entries(values: &[player_globals::GlobalValue]) -> Vec<PlayerGlobalEntry> {
+    values.iter().map(|v| PlayerGlobalEntry { short_id: v.global.short_id, file: v.global.file.clone(), value: v.value }).collect()
+}
+
+impl PlayerGlobalsList {
+    fn player_globals_listed(&self) -> Vec<PlayerGlobalEntry> {
+        self.0.listed().iter().map(|d| PlayerGlobalEntry { short_id: d.short_id, file: d.file.clone(), value: 0.0 }).collect()
+    }
+
+    fn player_globals_check(&self, report: &[PlayerGlobalEntry]) -> u8 {
+        match self.0.check(&to_values(report)) {
+            Ok(()) => 0,
+            Err(player_globals::Refusal::Unlisted) => 1,
+            Err(player_globals::Refusal::NotFinite) => 2,
+            Err(player_globals::Refusal::Duplicate) => 3,
+            Err(player_globals::Refusal::TooMany) => 4,
+        }
+    }
+
+    fn player_globals_at_login(&self, record: &[PlayerGlobalEntry]) -> Vec<PlayerGlobalEntry> {
+        to_entries(&self.0.at_login(&to_values(record)))
+    }
+}
+
+fn player_globals_merge(record: &[PlayerGlobalEntry], report: &[PlayerGlobalEntry]) -> Vec<PlayerGlobalEntry> {
+    to_entries(&player_globals::merge(&to_values(record), &to_values(report)))
+}
+
 /// The spells the server names as teleports (wire-rules teleports).
 pub struct CastTeleports(teleports::CastTeleports);
 
@@ -1640,18 +1733,30 @@ fn effect_modifier(entries: &Vec<EffectEntry>, av: u32) -> f32 {
 #[derive(Debug, Default)]
 pub struct SpellCasts(casts::Casts);
 
+// the bridge's reach array is wire-rules' MAX_REACHED long
+const _: () = assert!(casts::MAX_REACHED == 8);
+
+fn cast_claim(check: casts::CastCheck) -> CastClaim {
+    match check {
+        casts::CastCheck::Claimed { scale } => CastClaim { check: CastCheck::Claimed, scale },
+        casts::CastCheck::NoCast => CastClaim { check: CastCheck::NoCast, scale: 0.0 },
+        casts::CastCheck::TooFar => CastClaim { check: CastCheck::TooFar, scale: 0.0 },
+        casts::CastCheck::Throttled => CastClaim { check: CastCheck::Throttled, scale: 0.0 },
+    }
+}
+
 fn new_spell_casts() -> Box<SpellCasts> {
     Box::default()
 }
 
 impl SpellCasts {
     fn start(&mut self, actor: u32, facts: CastFacts, now_ms: u64) {
-        let CastFacts { spell, hand, kind, area, reach, x, y, z } = facts;
+        let CastFacts { spell, hand, kind, area, reach, x, y, z, reached, linger_ms, reached_concentration } = facts;
         let kind = match kind {
             CastKind::Concentration => casts::CastKind::Concentration,
             _ => casts::CastKind::FireAndForget,
         };
-        self.0.start(actor, casts::CastFacts { spell, hand, kind, area, reach, x, y, z }, now_ms);
+        self.0.start(actor, casts::CastFacts { spell, hand, kind, area, reach, x, y, z, reached, linger_ms, reached_concentration }, now_ms);
     }
 
     fn end(&mut self, actor: u32, hand: u8) {
@@ -1664,11 +1769,25 @@ impl SpellCasts {
 
     fn claim(&mut self, actor: u32, hit: CastHit, now_ms: u64) -> CastClaim {
         let CastHit { spell, target, x, y, z } = hit;
-        match self.0.claim(actor, casts::CastHit { spell, target, x, y, z }, now_ms) {
-            casts::CastCheck::Claimed { scale } => CastClaim { check: CastCheck::Claimed, scale },
-            casts::CastCheck::NoCast => CastClaim { check: CastCheck::NoCast, scale: 0.0 },
-            casts::CastCheck::TooFar => CastClaim { check: CastCheck::TooFar, scale: 0.0 },
-        }
+        cast_claim(self.0.claim(actor, casts::CastHit { spell, target, x, y, z }, now_ms))
+    }
+
+    fn claim_reached(
+        &mut self,
+        actor: u32,
+        hit: CastHit,
+        caster_x: f32,
+        caster_y: f32,
+        caster_z: f32,
+        now_ms: u64,
+    ) -> CastClaim {
+        let CastHit { spell, target, x, y, z } = hit;
+        cast_claim(self.0.claim_reached(
+            actor,
+            casts::CastHit { spell, target, x, y, z },
+            [caster_x, caster_y, caster_z],
+            now_ms,
+        ))
     }
 
     fn forget(&mut self, actor: u32) {
@@ -1817,6 +1936,22 @@ mod tests {
     }
 
     #[test]
+    fn the_bridge_keeps_player_globals() {
+        let apoc = "Apocalypse - Magic of Skyrim.esp";
+        let e = |short_id: u32, value: f32| PlayerGlobalEntry { short_id, file: apoc.to_owned(), value };
+        let list = new_player_globals(r#"["0b1c19:Apocalypse - Magic of Skyrim.esp", "043cef:Apocalypse - Magic of Skyrim.esp"]"#);
+        assert!(list.as_ref().is_ok_and(|l| l.player_globals_listed() == vec![e(0xb1c19, 0.0), e(0x43cef, 0.0)]));
+        assert!(list.as_ref().is_ok_and(|l| l.player_globals_check(&[e(0xb1c19, 3.0)]) == 0));
+        assert!(list.as_ref().is_ok_and(|l| l.player_globals_check(&[e(0xb1c1a, 3.0)]) == 1));
+        assert!(list.as_ref().is_ok_and(|l| l.player_globals_check(&[e(0xb1c19, f32::NAN)]) == 2));
+        assert!(list.as_ref().is_ok_and(|l| l.player_globals_check(&[e(0xb1c19, 1.0), e(0xb1c19, 2.0)]) == 3));
+        let record = player_globals_merge(&[e(0xb1c19, 3.0)], &[e(0xb1c19, 1.0), e(0x43cef, 2.0)]);
+        assert_eq!(record, vec![e(0xb1c19, 1.0), e(0x43cef, 2.0)]);
+        assert!(list.as_ref().is_ok_and(|l| l.player_globals_at_login(&[e(0x99999, 7.0), e(0x43cef, 2.0)]) == vec![e(0x43cef, 2.0)]));
+        assert!(new_player_globals(r#"["0b1c19"]"#).is_err());
+    }
+
+    #[test]
     fn the_bridge_names_cast_teleports() {
         let named = new_cast_teleports(r#"[{"spell": "a86df:LostGrimoire.esp", "reach": 3000}]"#);
         assert!(named.as_ref().is_ok_and(|t| (t.teleport_reach(0xa86df, "LostGrimoire.esp") - 3000.0).abs() < 1e-3));
@@ -1897,7 +2032,19 @@ mod tests {
     #[test]
     fn the_bridge_passes_casts_through() {
         let mut c = new_spell_casts();
-        let flames = CastFacts { spell: 0x12fcd, hand: 1, kind: CastKind::Concentration, area: false, reach: 1_000.0, x: 0.0, y: 0.0, z: 0.0 };
+        let flames = CastFacts {
+            spell: 0x12fcd,
+            hand: 1,
+            kind: CastKind::Concentration,
+            area: false,
+            reach: 1_000.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            reached: [0; 8],
+            linger_ms: 0,
+            reached_concentration: 0,
+        };
         let on = |t| CastHit { spell: 0x12fcd, target: 2, x: 150.0, y: 0.0, z: t };
         assert_eq!(c.claim(7, on(0.0), 0).check, CastCheck::NoCast);
         c.start(7, flames, 0);
@@ -1910,6 +2057,24 @@ mod tests {
         assert!(!c.is_open(7, 1));
         c.forget(7);
         assert_eq!(c.claim(7, on(0.0), 400).check, CastCheck::NoCast);
+    }
+
+    #[test]
+    fn the_bridge_passes_reached_claims_through() {
+        let mut c = new_spell_casts();
+        // labels, not records: a cloak and the spell its records reach
+        let mut reached = [0; 8];
+        reached[0] = 0xa102;
+        let cloak =
+            CastFacts { spell: 0xa101, hand: 1, kind: CastKind::FireAndForget, area: false, reach: 512.0, x: 0.0, y: 0.0, z: 0.0, reached, linger_ms: 60_000, reached_concentration: 0 };
+        let proc_on = |x| CastHit { spell: 0xa102, target: 2, x, y: 0.0, z: 0.0 };
+        assert_eq!(c.claim_reached(7, proc_on(300.0), 0.0, 0.0, 0.0, 0).check, CastCheck::NoCast);
+        c.start(7, cloak, 0);
+        let claim = c.claim_reached(7, proc_on(300.0), 0.0, 0.0, 0.0, 1_000);
+        assert_eq!(claim.check, CastCheck::Claimed);
+        assert!((claim.scale - 1.0).abs() < f32::EPSILON);
+        assert_eq!(c.claim_reached(7, proc_on(300.0), 0.0, 0.0, 0.0, 1_100).check, CastCheck::Throttled);
+        assert_eq!(c.claim_reached(7, proc_on(9_000.0), 0.0, 0.0, 0.0, 2_000).check, CastCheck::TooFar);
     }
 
     #[test]

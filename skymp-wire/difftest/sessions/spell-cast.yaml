@@ -30,10 +30,10 @@ clients:
 steps:
   - {client: c1, at_ms: 2000, send: {t: 5, idx: 2, data: {inv: {entries: []}, rightSpell: 77773, numChanges: 1}}}
   - {client: c1, at_ms: 2500, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 77773, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
-  - {client: c1, at_ms: 3000, send: {t: 23, data: {caster: 20, target: 4278190083, spell: 77773, isDualCasting: false, interruptCast: false, castingSource: 1, aimAngle: 0, aimHeading: 0, actorAnimationVariables: {booleans: [], floats: [], integers: []}}}}
+  - {client: c1, at_ms: 3000, send: {t: 23, data: {caster: 20, target: 4278190083, spell: 77773, isDualCasting: false, interruptCast: false, castingSource: 1, aimAngle: 0, aimHeading: 0, hasLaunch: false, originX: 0, originY: 0, originZ: 0, launchAngleX: 0, launchAngleZ: 0, actorAnimationVariables: {booleans: [], floats: [], integers: []}}}}
   - {client: c1, at_ms: 3400, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 77773, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
   - {client: c1, at_ms: 3800, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 77773, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
-  - {client: c1, at_ms: 4000, send: {t: 23, data: {caster: 20, target: 4278190083, spell: 77773, isDualCasting: false, interruptCast: true, castingSource: 1, aimAngle: 0, aimHeading: 0, actorAnimationVariables: {booleans: [], floats: [], integers: []}}}}
+  - {client: c1, at_ms: 4000, send: {t: 23, data: {caster: 20, target: 4278190083, spell: 77773, isDualCasting: false, interruptCast: true, castingSource: 1, aimAngle: 0, aimHeading: 0, hasLaunch: false, originX: 0, originY: 0, originZ: 0, launchAngleX: 0, launchAngleZ: 0, actorAnimationVariables: {booleans: [], floats: [], integers: []}}}}
   - {client: c1, at_ms: 4300, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 77773, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
   - {client: c2, at_ms: 0, move: {dx: 50}}
   - {client: c2, at_ms: 4000, move: {dx: 60}}

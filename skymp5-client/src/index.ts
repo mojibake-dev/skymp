@@ -19,6 +19,7 @@ import { IngredientEffectsService } from "./services/services/ingredientEffectsS
 import { FavoritesService } from "./services/services/favoritesService";
 import { RaceMenuService } from "./services/services/raceMenuService";
 import { ActorValuesService } from "./services/services/actorValuesService";
+import { PlayerGlobalsService } from "./services/services/playerGlobalsService";
 import { ArrowSyncService } from "./services/services/arrowSyncService";
 import { SpVersionCheckService } from "./services/services/spVersionCheckService";
 import { ConsoleCommandsService } from "./services/services/consoleCommandsService";
@@ -89,6 +90,7 @@ const main = () => {
       new FavoritesService(sp, controller),
       new RaceMenuService(sp, controller),
       new ActorValuesService(sp, controller),
+      new PlayerGlobalsService(sp, controller),
       new ArrowSyncService(sp, controller),
       new SpVersionCheckService(sp, controller),
       new ConsoleCommandsService(sp, controller),

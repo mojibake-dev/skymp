@@ -1014,13 +1014,47 @@ export class RemoteServer extends ClientListener {
       // thuum docs/verbs/spell-cast.md: the spell the server relayed (it
       // relays only a cast of a spell the caster has equipped), not what
       // this game's figure holds by now, which its equipment's own message
-      // sets and can lag the cast
+      // sets and can lag the cast. A target-location cast that carries its
+      // caster's launch is launched at the point the caster's game picked,
+      // with that launch's angles (castSpellImmediate's last six)
       const spell = Spell.from(Game.getFormEx(msg.data.spell));
       if (spell) {
-        castSpellImmediate(ac.getFormID(), msg.data.castingSource, spell.getFormID(), remoteIdToLocalId(msg.data.target),
-          msg.data.aimAngle, msg.data.aimHeading, actorAnimationVariables);
+        // thuum docs/verbs/spell-cast.md (the class pass's target-actor
+        // spells, x-class-target 20261018-012152): a relayed cast at this
+        // game's own player names it by its server id, which
+        // remoteIdToLocalId made 0 (no figure stands for the player here),
+        // so the figure's target-actor spell landed on the figure itself
+        // (Azure Reconstruction healed it) or on nothing (Shadowbond). A
+        // spell delivered to its target lands on the player, as a figure's
+        // spell does (its Health, Magicka and Stamina numbers refused there, the
+        // server's instead: push.md); an aimed one keeps no target, so its
+        // projectile follows the caster's relayed aim and hits only where
+        // it flies
+        const atPlayer = msg.data.target !== 0 && msg.data.target === this.worldModel.playerCharacterRefrId;
+        const target = atPlayer && RemoteServer.landsOnItsTarget(spell)
+          ? 0x14
+          : remoteIdToLocalId(msg.data.target);
+        castSpellImmediate(ac.getFormID(), msg.data.castingSource, spell.getFormID(), target,
+          msg.data.aimAngle, msg.data.aimHeading, actorAnimationVariables,
+          msg.data.hasLaunch, msg.data.originX, msg.data.originY, msg.data.originZ, msg.data.launchAngleX, msg.data.launchAngleZ);
       }
     });
+  }
+
+  // A spell whose effects are delivered to their target, by touch or at a
+  // target actor, so no aim decides where they land (a cosmetic projectile,
+  // Azure Reconstruction's, included; MagicEffect.GetDeliveryType, SKSE;
+  // CommonLibSSE-NG include/RE/M/MagicSystem.h:39-45: kTouch 1,
+  // kTargetActor 3)
+  private static landsOnItsTarget(spell: Spell): boolean {
+    const n = spell.getNumEffects();
+    for (let i = 0; i < n; ++i) {
+      const delivery = spell.getNthEffectMagicEffect(i)?.getDeliveryType();
+      if (delivery !== 1 && delivery !== 3) {
+        return false;
+      }
+    }
+    return n > 0;
   }
 
   private onUpdateAnimVariablesMessage(event: ConnectionMessage<UpdateAnimVariablesMessage>): void {

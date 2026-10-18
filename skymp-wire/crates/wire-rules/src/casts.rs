@@ -36,6 +36,32 @@ pub const MAX_SPLASH_TARGETS: usize = 4;
 /// Casts kept per actor; older ones go first.
 pub const MAX_CASTS: usize = 16;
 
+/// The most spells one cast's records reach (thuum docs/verbs/second-hand.md:
+/// a cloak's spell, the spells its effects' scripts name).
+pub const MAX_REACHED: usize = 8;
+
+/// The engine's cadence for a cloak's applied spell, milliseconds: the
+/// caster's game reports its hit on each target about every 500 ms (thuum
+/// x-class-self 20261018-011427: Sotha's Maelstrom's and Blood Boil's procs
+/// at 496 to 504 ms). A concentration reached spell's first report on a
+/// target counts one cadence.
+pub const REACHED_TICK_MS: u64 = 500;
+
+/// The most one report of a concentration reached spell counts,
+/// milliseconds: the cadence and a little, so the engine's own rhythm counts
+/// in full (a stream's MAX_TICK_MS would count half of it) and a longer gap
+/// never counts time the proc did not hold its target.
+pub const REACHED_MAX_TICK_MS: u64 = 600;
+
+/// How often a fire-and-forget reached spell may claim a hit on one target,
+/// milliseconds: under the cadence, so a proc the engine applies each
+/// cadence is never refused, and a report faster than the engine's is.
+pub const REACHED_MIN_GAP_MS: u64 = 400;
+
+/// The targets one cast's reached spells keep a rate for; past this many,
+/// the oldest is forgotten.
+pub const MAX_REACHED_TARGETS: usize = 8;
+
 /// How a spell is cast (the record's SPIT casting type).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CastKind {
@@ -65,6 +91,19 @@ pub struct CastFacts {
     pub y: f32,
     /// Where the caster stood.
     pub z: f32,
+    /// The spells the cast's records reach, 0 for an empty slot (thuum
+    /// docs/verbs/second-hand.md): a hit by one of them claims this cast
+    /// through [`Casts::claim_reached`]. Read from the records by the caller.
+    pub reached: [u32; MAX_REACHED],
+    /// How long a reached spell may claim this cast, milliseconds: its
+    /// longest effect's duration (at least CAST_WINDOW_MS, and as long as a
+    /// concentration cast's stream stays open).
+    pub linger_ms: u64,
+    /// Bit i set: `reached[i]` is a concentration spell (a cloak's applied
+    /// spell is one), whose hits count the time they held their target, as
+    /// a stream's do; clear: a fire-and-forget proc, once per
+    /// REACHED_TICK_MS.
+    pub reached_concentration: u8,
 }
 
 /// A spell hit as the caster's game reported it: the spell, the target's
@@ -97,6 +136,9 @@ pub enum CastCheck {
     NoCast,
     /// Casts of that spell wait, but the target is beyond their reach.
     TooFar,
+    /// A reached spell's hit on a target that one claimed within
+    /// REACHED_TICK_MS.
+    Throttled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -115,10 +157,20 @@ struct Open {
     last_counted_ms: u64,
 }
 
+/// A cast whose records reach other spells, kept for its linger.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Lingering {
+    facts: CastFacts,
+    at_ms: u64,
+    /// The last claim on each target, (target, ms); 0 for an empty slot.
+    claims: [(u32, u64); MAX_REACHED_TARGETS],
+}
+
 #[derive(Debug, Default)]
 struct ActorCasts {
     released: VecDeque<Released>,
     open: [Option<Open>; 4],
+    lingering: VecDeque<Lingering>,
 }
 
 /// Every actor's recent casts.
@@ -134,6 +186,20 @@ fn finite(facts: &CastFacts) -> bool {
 fn within(facts: &CastFacts, x: f32, y: f32, z: f32) -> bool {
     let (dx, dy, dz) = (x - facts.x, y - facts.y, z - facts.z);
     (dx * dx + dy * dy + dz * dz).sqrt() <= facts.reach.max(0.0) + RANGE_SLACK
+}
+
+/// Whether a cast's reached spells may still claim it at `now_ms`: within
+/// its linger (at least CAST_WINDOW_MS), or while its concentration stream
+/// stays open in its hand.
+fn lingers(l: &Lingering, open: &[Option<Open>; 4], now_ms: u64) -> bool {
+    if now_ms.saturating_sub(l.at_ms) <= l.facts.linger_ms.max(CAST_WINDOW_MS) {
+        return true;
+    }
+    l.facts.kind == CastKind::Concentration
+        && open
+            .get(usize::from(l.facts.hand))
+            .and_then(Option::as_ref)
+            .is_some_and(|o| o.facts.spell == l.facts.spell)
 }
 
 impl Casts {
@@ -167,6 +233,16 @@ impl Casts {
                     *slot = Some(Open { facts, last_counted_ms: now_ms });
                 }
             }
+        }
+        // thuum docs/verbs/second-hand.md: a cast whose records reach other
+        // spells waits for their hits for its linger
+        if facts.reached.iter().any(|s| *s != 0) {
+            let open = &casts.open;
+            casts.lingering.retain(|l| lingers(l, open, now_ms));
+            if casts.lingering.len() >= MAX_CASTS {
+                casts.lingering.pop_front();
+            }
+            casts.lingering.push_back(Lingering { facts, at_ms: now_ms, claims: [(0, 0); MAX_REACHED_TARGETS] });
         }
     }
 
@@ -262,6 +338,64 @@ impl Casts {
         }
     }
 
+    /// A hit by `actor` at `now_ms` with a spell none of its casts is of
+    /// (thuum docs/verbs/second-hand.md): the newest cast whose records
+    /// reach the hit's spell and still lingers covers it, when the target
+    /// stands within that cast's reach of where the server has the caster
+    /// now (a cloak moves with its bearer). A concentration reached spell
+    /// (a cloak's damage) counts the time since its last counted hit on that
+    /// target, at most REACHED_MAX_TICK_MS (the first counts one
+    /// REACHED_TICK_MS), as a stream does; a fire-and-forget one counts its
+    /// magnitude once, at most once per target each REACHED_MIN_GAP_MS.
+    pub fn claim_reached(&mut self, actor: u32, hit: CastHit, caster: [f32; 3], now_ms: u64) -> CastCheck {
+        let CastHit { spell, target, x, y, z } = hit;
+        let [cx, cy, cz] = caster;
+        if spell == 0 || target == 0 || ![x, y, z, cx, cy, cz].iter().all(|v| v.is_finite()) {
+            return CastCheck::NoCast;
+        }
+        let Some(casts) = self.per_actor.get_mut(&actor) else {
+            return CastCheck::NoCast;
+        };
+        let open = &casts.open;
+        casts.lingering.retain(|l| lingers(l, open, now_ms));
+        let mut any = false;
+        for l in casts.lingering.iter_mut().rev() {
+            let Some(index) = l.facts.reached.iter().position(|r| *r == spell) else {
+                continue;
+            };
+            any = true;
+            let (dx, dy, dz) = (x - cx, y - cy, z - cz);
+            if (dx * dx + dy * dy + dz * dz).sqrt() > l.facts.reach.max(0.0) + RANGE_SLACK {
+                continue;
+            }
+            let concentration = u32::try_from(index).ok().and_then(|i| l.facts.reached_concentration.checked_shr(i)).is_some_and(|bits| bits & 1 == 1);
+            let last = l.claims.iter().find(|(t, _)| *t == target).map(|(_, last)| *last);
+            let tick_ms = match last {
+                Some(last) => now_ms.saturating_sub(last),
+                None => REACHED_TICK_MS,
+            };
+            if !concentration && last.is_some() && tick_ms < REACHED_MIN_GAP_MS {
+                return CastCheck::Throttled;
+            }
+            if let Some(slot) = l.claims.iter_mut().find(|(t, _)| *t == target) {
+                slot.1 = now_ms;
+            } else if let Some(slot) = l.claims.iter_mut().min_by_key(|(t, last)| (*t != 0, *last)) {
+                *slot = (target, now_ms);
+            }
+            let scale = if concentration {
+                f32::from(u16::try_from(tick_ms.min(REACHED_MAX_TICK_MS)).unwrap_or(u16::MAX)) / 1000.0
+            } else {
+                1.0
+            };
+            return CastCheck::Claimed { scale };
+        }
+        if any {
+            CastCheck::TooFar
+        } else {
+            CastCheck::NoCast
+        }
+    }
+
     /// The actor is gone (dead, left): its casts and streams with it.
     pub fn forget(&mut self, actor: u32) {
         self.per_actor.remove(&actor);
@@ -283,7 +417,20 @@ mod tests {
     }
 
     fn cast(spell: u32, hand: u8, kind: CastKind, area: bool) -> CastFacts {
-        CastFacts { spell, hand, kind, area, reach: 1_000.0, x: 0.0, y: 0.0, z: 0.0 }
+        CastFacts { spell, hand, kind, area, reach: 1_000.0, x: 0.0, y: 0.0, z: 0.0, reached: [0; MAX_REACHED], linger_ms: 0, reached_concentration: 0 }
+    }
+
+    // labels, not records: a cloak spell and its proc, a bolt and its proc
+    const CLOAK: u32 = 0xa101;
+    const CLOAK_PROC: u32 = 0xa102;
+    const ZAP: u32 = 0xa103;
+    const ZAP_PROC: u32 = 0xa104;
+
+    // a cast whose records reach `proc`, lingering `linger_ms`
+    fn reaching(spell: u32, kind: CastKind, proc: u32, linger_ms: u64) -> CastFacts {
+        let mut reached = [0; MAX_REACHED];
+        reached[0] = proc;
+        CastFacts { reached, linger_ms, ..cast(spell, 1, kind, false) }
     }
 
     #[test]
@@ -407,5 +554,102 @@ mod tests {
         let mut c = Casts::default();
         c.start(1, cast(BOLT, 1, CastKind::FireAndForget, false), 0);
         assert_eq!(c.claim(1, hit(BOLT, 2, 100.0, 0.0, 0.0), CAST_WINDOW_MS + 1), CastCheck::NoCast);
+    }
+
+    #[test]
+    fn a_fire_and_forget_proc_claims_its_cast_for_the_cloaks_seconds_at_the_engines_rhythm() {
+        let mut c = Casts::default();
+        c.start(1, reaching(CLOAK, CastKind::FireAndForget, CLOAK_PROC, 60_000), 0);
+        let at = [0.0, 0.0, 0.0];
+        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 2, 300.0, 0.0, 0.0), at, 1_000), CastCheck::Claimed { scale: 1.0 });
+        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 2, 300.0, 0.0, 0.0), at, 1_200), CastCheck::Throttled);
+        // another target has its own rate
+        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 3, 0.0, 300.0, 0.0), at, 1_200), CastCheck::Claimed { scale: 1.0 });
+        // the engine's cadence, 496 ms in x-class-self, is never refused
+        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 2, 300.0, 0.0, 0.0), at, 1_496), CastCheck::Claimed { scale: 1.0 });
+        // past the CAST_WINDOW_MS a bolt has, still within the cloak's
+        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 2, 300.0, 0.0, 0.0), at, 40_000), CastCheck::Claimed { scale: 1.0 });
+        // and not after it
+        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 2, 300.0, 0.0, 0.0), at, 60_001), CastCheck::NoCast);
+    }
+
+    #[test]
+    fn a_cloaks_concentration_spell_counts_the_time_it_held_each_target() {
+        let mut c = Casts::default();
+        // bit 0: the reached spell is a concentration spell (a cloak's damage)
+        c.start(1, CastFacts { reached_concentration: 1, ..reaching(CLOAK, CastKind::FireAndForget, CLOAK_PROC, 60_000) }, 0);
+        let on = |t| hit(CLOAK_PROC, t, 300.0, 0.0, 0.0);
+        // the first report on a target counts one cadence, then each the time
+        // since the last, the engine's 500 ms rhythm in full
+        assert_eq!(c.claim_reached(1, on(2), [0.0; 3], 1_000), CastCheck::Claimed { scale: 0.5 });
+        assert_eq!(c.claim_reached(1, on(2), [0.0; 3], 1_499), CastCheck::Claimed { scale: 0.499 });
+        // reports faster than the engine's are never throttled, and add up to the time
+        assert_eq!(c.claim_reached(1, on(2), [0.0; 3], 1_499), CastCheck::Claimed { scale: 0.0 });
+        // a gap counts at most REACHED_MAX_TICK_MS
+        assert_eq!(c.claim_reached(1, on(2), [0.0; 3], 5_000), CastCheck::Claimed { scale: 0.6 });
+        // another target's time is its own
+        assert_eq!(c.claim_reached(1, on(3), [0.0; 3], 5_000), CastCheck::Claimed { scale: 0.5 });
+    }
+
+    #[test]
+    fn a_proc_is_judged_from_where_the_caster_stands_now() {
+        let mut c = Casts::default();
+        c.start(1, reaching(CLOAK, CastKind::FireAndForget, CLOAK_PROC, 60_000), 0);
+        // the bearer walked 5000 units: a target beside it is within reach
+        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 2, 5_100.0, 0.0, 0.0), [5_000.0, 0.0, 0.0], 1_000), CastCheck::Claimed { scale: 1.0 });
+        // one by the cast's spot is not
+        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 3, 0.0, 0.0, 0.0), [5_000.0, 0.0, 0.0], 1_000), CastCheck::TooFar);
+    }
+
+    #[test]
+    fn a_spell_no_cast_reaches_is_refused_and_the_own_claim_is_unchanged() {
+        let mut c = Casts::default();
+        c.start(1, reaching(CLOAK, CastKind::FireAndForget, CLOAK_PROC, 60_000), 0);
+        assert_eq!(c.claim_reached(1, hit(ZAP_PROC, 2, 300.0, 0.0, 0.0), [0.0; 3], 1_000), CastCheck::NoCast);
+        assert_eq!(c.claim_reached(7, hit(CLOAK_PROC, 2, 300.0, 0.0, 0.0), [0.0; 3], 1_000), CastCheck::NoCast);
+        // a proc's hit is not a hit of the cast's own spell
+        assert_eq!(c.claim(1, hit(CLOAK_PROC, 2, 300.0, 0.0, 0.0), 1_000), CastCheck::NoCast);
+        // and the cast's own hit still claims as before
+        assert_eq!(c.claim(1, hit(CLOAK, 2, 300.0, 0.0, 0.0), 1_000), CastCheck::Claimed { scale: 1.0 });
+    }
+
+    #[test]
+    fn a_bolts_proc_claims_within_the_cast_window() {
+        let mut c = Casts::default();
+        c.start(1, reaching(ZAP, CastKind::FireAndForget, ZAP_PROC, 0), 0);
+        assert_eq!(c.claim_reached(1, hit(ZAP_PROC, 2, 600.0, 0.0, 0.0), [0.0; 3], 10_000), CastCheck::Claimed { scale: 1.0 });
+        assert_eq!(c.claim_reached(1, hit(ZAP_PROC, 2, 600.0, 0.0, 0.0), [0.0; 3], CAST_WINDOW_MS + 1), CastCheck::NoCast);
+    }
+
+    #[test]
+    fn a_concentration_cloak_lingers_while_its_stream_is_open() {
+        let mut c = Casts::default();
+        c.start(1, reaching(CLOAK, CastKind::Concentration, CLOAK_PROC, 0), 0);
+        let late = CAST_WINDOW_MS + 5_000;
+        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 2, 300.0, 0.0, 0.0), [0.0; 3], late), CastCheck::Claimed { scale: 1.0 });
+        c.end(1, 1);
+        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 2, 300.0, 0.0, 0.0), [0.0; 3], late + 1_000), CastCheck::NoCast);
+    }
+
+    #[test]
+    fn a_reached_claim_with_values_that_are_not_numbers_or_no_target_is_refused() {
+        let mut c = Casts::default();
+        c.start(1, reaching(CLOAK, CastKind::FireAndForget, CLOAK_PROC, 60_000), 0);
+        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 2, 300.0, 0.0, 0.0), [f32::NAN, 0.0, 0.0], 1_000), CastCheck::NoCast);
+        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 0, 300.0, 0.0, 0.0), [0.0; 3], 1_000), CastCheck::NoCast);
+        assert_eq!(c.claim_reached(1, hit(0, 2, 300.0, 0.0, 0.0), [0.0; 3], 1_000), CastCheck::NoCast);
+    }
+
+    #[test]
+    fn many_targets_keep_the_newest_rates() {
+        let mut c = Casts::default();
+        c.start(1, reaching(CLOAK, CastKind::FireAndForget, CLOAK_PROC, 60_000), 0);
+        let kept = u32::try_from(MAX_REACHED_TARGETS).unwrap_or(u32::MAX);
+        for t in 2..(2 + kept + 3) {
+            assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, t, 300.0, 0.0, 0.0), [0.0; 3], 1_000), CastCheck::Claimed { scale: 1.0 });
+        }
+        // the newest target's rate is kept
+        let newest = 2 + kept + 2;
+        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, newest, 300.0, 0.0, 0.0), [0.0; 3], 1_100), CastCheck::Throttled);
     }
 }

@@ -24,6 +24,7 @@
 #include "OnEquipMessage.h"
 #include "OpenContainerMessage.h"
 #include "PlayerBowShotMessage.h"
+#include "PlayerGlobalsMessage.h"
 #include "PutItemMessage.h"
 #include "RaceMenuPresetMessage.h"
 #include "RestIntentMessage.h"
@@ -88,4 +89,5 @@
   REGISTER_MESSAGE(ConsoleOutputMessage)                                      \
   REGISTER_MESSAGE(ArrowShotMessage)                                          \
   REGISTER_MESSAGE(MagicEffectsMessage)                                       \
-  REGISTER_MESSAGE(UpdateActionMessage)
+  REGISTER_MESSAGE(UpdateActionMessage)                                       \
+  REGISTER_MESSAGE(PlayerGlobalsMessage)

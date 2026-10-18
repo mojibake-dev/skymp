@@ -9,6 +9,8 @@
 #include "MsgType.h"
 #include "PacketParser.h"
 #include "SpellCastMessage.h"
+#include "libespm/Loader.h"
+#include "libespm/SPEL.h"
 
 PartOne& GetPartOne();
 using namespace std::chrono_literals;
@@ -51,8 +53,10 @@ MpActor& Duel(PartOne& p, uint32_t spell)
 }
 
 // through the packet path (DoMessage), as a client's message arrives; the
-// caster names itself 0x14, as a client may
-void Cast(PartOne& p, uint32_t spell, bool end)
+// caster names itself 0x14, as a client may. A cast without its launch (all
+// zero), or, with `launch`, the launch its game made at `origin`
+void Cast(PartOne& p, uint32_t spell, bool end, bool launch = false,
+          NiPoint3 origin = { 0, 0, 0 })
 {
   DoMessage(
     p, 0,
@@ -66,10 +70,41 @@ void Cast(PartOne& p, uint32_t spell, bool end)
                         { "castingSource", 1 },
                         { "aimAngle", 0.f },
                         { "aimHeading", 0.f },
+                        { "hasLaunch", launch },
+                        { "originX", launch ? origin.x : 0.f },
+                        { "originY", launch ? origin.y : 0.f },
+                        { "originZ", launch ? origin.z : 0.f },
+                        { "launchAngleX", launch ? 0.1f : 0.f },
+                        { "launchAngleZ", launch ? 1.57f : 0.f },
                         { "actorAnimationVariables",
                           { { "booleans", nlohmann::json::array() },
                             { "floats", nlohmann::json::array() },
                             { "integers", nlohmann::json::array() } } } } } });
+}
+
+// the casts the server sent since the last clear: each one's data, and
+// whom it went to
+std::vector<std::pair<Networking::UserId, nlohmann::json>> Relays(PartOne& p)
+{
+  std::vector<std::pair<Networking::UserId, nlohmann::json>> out;
+  for (auto& m : p.Messages()) {
+    if (m.j.contains("t") && m.j["t"] == MsgType::SpellCast) {
+      out.emplace_back(m.userId, m.j["data"]);
+    }
+  }
+  return out;
+}
+
+// how far from where the server has its caster a cast's launch may lie
+// (ActionListener's LaunchRay and kMaxLaunchOffsetUnits): the spell's ray,
+// its SPIT range x 22 units (5000 for a range of 0), and the 512 units its
+// magic node may be from that position
+float LaunchReach(PartOne& p, uint32_t spell)
+{
+  const auto data = espm::GetData<espm::SPEL>(spell, &p.worldState);
+  REQUIRE(data.spellItem != nullptr);
+  const float range = data.spellItem->range;
+  return (range > 0.f ? range * 22.f : 5000.f) + 512.f;
 }
 
 void SpellHits(PartOne& p, uint32_t spell)
@@ -129,6 +164,14 @@ TEST_CASE("A fire-and-forget cast covers one hit, and reaches the neighbour "
       REQUIRE(m.userId == 1);
       REQUIRE(m.reliable);
       REQUIRE(m.j["data"]["caster"].get<uint32_t>() == kCaster);
+      // a cast without its launch: the neighbour's game places the spell
+      // as it did before
+      REQUIRE(m.j["data"]["hasLaunch"] == false);
+      REQUIRE(m.j["data"]["originX"] == 0.f);
+      REQUIRE(m.j["data"]["originY"] == 0.f);
+      REQUIRE(m.j["data"]["originZ"] == 0.f);
+      REQUIRE(m.j["data"]["launchAngleX"] == 0.f);
+      REQUIRE(m.j["data"]["launchAngleZ"] == 0.f);
       relayed = true;
     }
   }
@@ -137,6 +180,68 @@ TEST_CASE("A fire-and-forget cast covers one hit, and reaches the neighbour "
   SpellHits(p, kFirebolt);
   REQUIRE(Health(p) == Catch::Approx(0.9f));
   // the same cast again: nothing
+  SpellHits(p, kFirebolt);
+  REQUIRE(Health(p) == Catch::Approx(0.9f));
+  Leave(p);
+}
+
+// thuum docs/verbs/spell-cast.md: a target-location cast carries the point
+// its caster's game picked along the aim, which no other game can pick for
+// a figure; the neighbour's game launches the spell there
+TEST_CASE("A cast's launch reaches the neighbour as the caster's game made "
+          "it",
+          "[SpellCast][espm]")
+{
+  PartOne& p = GetPartOne();
+  Duel(p, kFirebolt);
+  p.Messages().clear();
+
+  // at the neighbour's feet, 300 units north of the caster
+  Cast(p, kFirebolt, false, true, { 0, 300, 0 });
+
+  const auto relays = Relays(p);
+  REQUIRE(relays.size() == 1);
+  REQUIRE(relays[0].first == 1);
+  REQUIRE(relays[0].second["hasLaunch"] == true);
+  REQUIRE(relays[0].second["originX"] == 0.f);
+  REQUIRE(relays[0].second["originY"] == 300.f);
+  REQUIRE(relays[0].second["originZ"] == 0.f);
+  REQUIRE(relays[0].second["launchAngleX"] == 0.1f);
+  REQUIRE(relays[0].second["launchAngleZ"] == 1.57f);
+  Leave(p);
+}
+
+TEST_CASE("A cast launched beyond its spell's reach reaches the neighbour "
+          "without its launch",
+          "[SpellCast][espm]")
+{
+  PartOne& p = GetPartOne();
+  Duel(p, kFirebolt);
+  const float reach = LaunchReach(p, kFirebolt);
+
+  // just within the reach, north of the caster at the origin: as made
+  p.Messages().clear();
+  Cast(p, kFirebolt, false, true, { 0, reach - 10.f, 0 });
+  auto relays = Relays(p);
+  REQUIRE(relays.size() == 1);
+  REQUIRE(relays[0].second["hasLaunch"] == true);
+  REQUIRE(relays[0].second["originY"].get<float>() ==
+          Catch::Approx(reach - 10.f));
+
+  // just beyond it (E_SPELL_ORIGIN): the cast still reaches the neighbour,
+  // without its launch, and still covers its hit
+  p.Messages().clear();
+  Cast(p, kFirebolt, false, true, { 0, reach + 10.f, 0 });
+  relays = Relays(p);
+  REQUIRE(relays.size() == 1);
+  REQUIRE(relays[0].first == 1);
+  REQUIRE(relays[0].second["hasLaunch"] == false);
+  REQUIRE(relays[0].second["originX"] == 0.f);
+  REQUIRE(relays[0].second["originY"] == 0.f);
+  REQUIRE(relays[0].second["originZ"] == 0.f);
+  REQUIRE(relays[0].second["launchAngleX"] == 0.f);
+  REQUIRE(relays[0].second["launchAngleZ"] == 0.f);
+
   SpellHits(p, kFirebolt);
   REQUIRE(Health(p) == Catch::Approx(0.9f));
   Leave(p);

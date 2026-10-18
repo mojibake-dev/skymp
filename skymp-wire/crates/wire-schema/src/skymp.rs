@@ -6,14 +6,14 @@
 //! to 33 are SkyMP's; thuum appends its own after them (34, SetGameTime; 35,
 //! RestIntent; 36, MapMarkerDiscovered; 37, IngredientEffectsKnown; 38,
 //! Favorites; 39, RaceMenuPreset; 40, ActorValues; 41, ConsoleOutput; 42,
-//! ArrowShot; 43, MagicEffects; 44, UpdateAction).
+//! ArrowShot; 43, MagicEffects; 44, UpdateAction; 45, PlayerGlobals).
 //!
 //! Directions are SkyMP's: twelve types (fifteen with RestIntent,
 //! MapMarkerDiscovered and IngredientEffectsKnown) only travel
 //! client to server, thirteen (fourteen with SetGameTime) only server to
 //! client (seventeen with ConsoleOutput, ArrowShot and MagicEffects), eight
-//! (twelve with Favorites, RaceMenuPreset, ActorValues and UpdateAction)
-//! both ways (the server relays a client's
+//! (thirteen with Favorites, RaceMenuPreset, ActorValues, UpdateAction and
+//! PlayerGlobals) both ways (the server relays a client's
 //! UpdateMovement, UpdateAnimation, UpdateAppearance, UpdateEquipment,
 //! SpellCast, UpdateAnimVariables and UpdateAction to its neighbours, and sends its own
 //! CustomPacket and ChangeValues). Rungs are the ones SkyMP gives them today;
@@ -870,6 +870,40 @@ wire_struct! {
 }
 
 wire_struct! {
+    /// One global's value, as PlayerGlobals carries it (thuum
+    /// docs/verbs/player-globals.md).
+    pub struct GlobalEntry {
+        /// The global's form id in the load order both ends share (the
+        /// server keeps it as a FormDesc).
+        pub global: u32,
+        /// Its value (a TESGlobal holds a float whatever its type).
+        pub value: f32,
+    }
+}
+
+wire_struct! {
+    /// MsgType 45, thuum's (docs/verbs/player-globals.md, ADR-029's A2).
+    /// Both directions, reliable. Server to client, after a login: the
+    /// globals the server keeps per player, to watch, and the player's
+    /// recorded values, which the client's game sets. Client to server: the
+    /// watched globals whose values changed since its last report (R2:
+    /// recorded unvalidated), naming none to watch. Idempotent: the latest
+    /// value wins per global. Reason codes: `E_VAL_RANGE` (a global given
+    /// twice, or a client's report naming globals to watch),
+    /// `E_VAL_NONFINITE`, `E_VAL_RATE` (client to server).
+    pub struct PlayerGlobals {
+        /// `"t": 45`.
+        #[serde(default)]
+        pub t: MsgT<45>,
+        /// The globals to watch (server to client only).
+        #[serde(default)]
+        pub watch: Vec<u32, { cap::PLAYER_GLOBALS }>,
+        /// Values, each global once.
+        pub values: Vec<GlobalEntry, { cap::PLAYER_GLOBALS }>,
+    }
+}
+
+wire_struct! {
     /// SpellCastMessage's `data`.
     pub struct SpellCastData {
         /// Who casts.
@@ -888,6 +922,24 @@ wire_struct! {
         pub aim_angle: f32,
         /// Aim heading.
         pub aim_heading: f32,
+        /// The caster's game saw its own launch of the spell
+        /// (Projectile::Launch's LaunchData, Skyrim Platform's
+        /// projectileLaunched) and the five fields after this one are it:
+        /// for a target-location spell, the point its game picked along the
+        /// caster's aim, which each neighbour's game launches the spell at
+        /// (thuum docs/verbs/spell-cast.md); false, they are all zero.
+        pub has_launch: bool,
+        /// Where the engine launched the spell, x, engine units.
+        pub origin_x: f32,
+        /// Where the engine launched the spell, y, engine units.
+        pub origin_y: f32,
+        /// Where the engine launched the spell, z, engine units.
+        pub origin_z: f32,
+        /// The launch's pitch, radians (LaunchData angleX), within a quarter
+        /// turn either way.
+        pub launch_angle_x: f32,
+        /// The launch's heading, radians (LaunchData angleZ).
+        pub launch_angle_z: f32,
         /// The caster's behavior graph variables.
         pub actor_animation_variables: ActorAnimationVariables,
     }
@@ -895,7 +947,10 @@ wire_struct! {
 
 wire_struct! {
     /// MsgType 23. Both directions, reliable: a spell cast (R1 intent) and
-    /// its relay. Not idempotent.
+    /// its relay. Not idempotent. Reason codes: `E_VAL_NONFINITE`,
+    /// `E_VAL_RANGE` (no spell, a hand SkyMP does not know, an aim or a
+    /// launch pitched past a quarter turn, a launch's fields set without
+    /// `has_launch`), `E_VAL_OUT_OF_WORLD` (a launch's origin), `E_VAL_RATE`.
     pub struct SpellCast {
         /// `"t": 23`.
         #[serde(default)]

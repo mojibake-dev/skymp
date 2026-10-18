@@ -1,0 +1,37 @@
+# difftest second-hand (M2, thuum docs/verbs/second-hand.md): c1 and c2 are
+# new characters (profiles 9 and 10, actors 0xff000002 and 0xff000003: see
+# melee-reach), c2 50 units off the spawn. At 1.5 s c1 learns Flame Cloak
+# (Skyrim.esm FlameCloakLeftHand 0xDE511, 910609, fire-and-forget, Self,
+# 60 s; the console's addspell, as teleports.yaml teaches its spell) and
+# wears it in its right hand at 2 s. At 2.5 s c1 reports a hit on c2 by the
+# cloak's applied spell (FlameCloakDmg 0x2B385, 177029, concentration, 8 a
+# second; the Cloak effect FireCloakFFSelf 0x3AE9E names it as its
+# associated item, thuum lab/esm.py on sky-srv 2026-10-17) with no cloak
+# cast: both servers drop it. At 3 s c1 casts the cloak (SpellCast,
+# castingSource 1; the cast carries m2-spell-launch's launch fields, zero,
+# which parity's schema ignores). Its proc hits at 3.4 s and 3.8 s are
+# dropped by the legacy server (a spell c1 never held) and claimed by the
+# fixed one against the cloak's cast: the first counts one cadence (500 ms,
+# 4 of FlameCloakDmg's 8 a second), the next the 400 ms since it (3.2). c2 steps
+# again at 4 s of its own (5.5 s of c1's), so it outlives c1, as in every
+# session. The divergences beyond the departure line are declared from the
+# session's first T2 run.
+id: second-hand
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 1500, send: {t: 12, data: {t: 12, commandName: addspell, args: [20, 910609]}}}
+  - {client: c1, at_ms: 2000, send: {t: 5, idx: "{{idx}}", data: {inv: {entries: []}, rightSpell: 910609, numChanges: 1}}}
+  - {client: c1, at_ms: 2500, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 177029, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
+  - {client: c1, at_ms: 3000, send: {t: 23, data: {caster: 20, target: 0, spell: 910609, isDualCasting: false, interruptCast: false, castingSource: 1, aimAngle: 0, aimHeading: 0, hasLaunch: false, originX: 0, originY: 0, originZ: 0, launchAngleX: 0, launchAngleZ: 0, actorAnimationVariables: {booleans: [], floats: [], integers: []}}}}
+  - {client: c1, at_ms: 3400, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 177029, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
+  - {client: c1, at_ms: 3800, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 177029, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
+  - {client: c2, at_ms: 0, move: {dx: 50}}
+  - {client: c2, at_ms: 4000, move: {dx: 60}}
+divergences:
+  - client: c2
+    msg: {t: 25, idx: 2}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

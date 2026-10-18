@@ -217,6 +217,10 @@ export class NetworkingService extends ClientListener {
             const event = { message: msgAny };
             this.controller.emitter.emit("updateActionMessage", event);
             this.controller.emitter.emit("anyMessage", event);
+          } else if (msgAny.t === MsgType.PlayerGlobals) {
+            const event = { message: msgAny };
+            this.controller.emitter.emit("playerGlobalsMessage", event);
+            this.controller.emitter.emit("anyMessage", event);
           } else {
             // throw new NeverError(msgAny);
             throw new Error("Unhandled MsgType " + msgAny.t);

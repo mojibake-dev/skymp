@@ -280,6 +280,42 @@ export interface ActionPerformedEvent {
   type: number
   variables: ActorAnimationVariables
 }
+// thuum ADR-034: one of SKSE's action events for the player (CommonLibSSE-NG include/SKSE/Events.h: type 0 weapon swing, 1 spell cast, 2 spell fire, 3 voice cast, 4 voice fire, 5 bow draw, 6 bow release, 7 begin draw, 8 end draw, 9 begin sheathe, 10 end sheathe; slot 0 left, 1 right, 2 voice; sourceForm the spell, shout or weapon's form id, 0 for none), raised on the next tick; no game call in its handler
+export interface SkseActionEvent {
+  actor: Actor;
+  type: number;
+  slot: number;
+  sourceForm: number;
+}
+// thuum docs/verbs/marksman.md: a projectile the engine launched (Projectile::Launch's LaunchData, CommonLibSSE-NG include/RE/P/Projectile.h:78-107), raised on the next tick for every shooter: the arrow's or spell's origin and angles as the engine used them. No game call in its handler
+export interface ProjectileLaunchedEvent {
+  shooter: number;
+  projectile: number;
+  weapon: number;
+  ammo: number;
+  spell: number;
+  castingSource: number;
+  originX: number;
+  originY: number;
+  originZ: number;
+  angleX: number;
+  angleZ: number;
+  power: number;
+  useOrigin: boolean;
+}
+// thuum docs/verbs/marksman.md: an arrow's flight as it starts (its first update's angles, after the player's auto-aim), for the player's and the figures' arrows, raised on the next tick. No game call in its handler
+export interface ProjectileFlightEvent {
+  shooter: number;
+  projectile: number;
+  weapon: number;
+  ammo: number;
+  x: number;
+  y: number;
+  z: number;
+  angleX: number;
+  angleZ: number;
+  power: number;
+}
 
 export interface OpenCloseEvent {
   target: ObjectReference
@@ -650,6 +686,15 @@ export declare function once(eventName: 'spellCast', callback: (event: SpellCast
 
 export declare function on(eventName: 'actionPerformed', callback: (event: ActionPerformedEvent) => void): EventHandle
 export declare function once(eventName: 'actionPerformed', callback: (event: ActionPerformedEvent) => void): EventHandle
+
+export declare function on(eventName: 'skseAction', callback: (event: SkseActionEvent) => void): EventHandle
+export declare function once(eventName: 'skseAction', callback: (event: SkseActionEvent) => void): EventHandle
+
+export declare function on(eventName: 'projectileLaunched', callback: (event: ProjectileLaunchedEvent) => void): EventHandle
+export declare function once(eventName: 'projectileLaunched', callback: (event: ProjectileLaunchedEvent) => void): EventHandle
+
+export declare function on(eventName: 'projectileFlight', callback: (event: ProjectileFlightEvent) => void): EventHandle
+export declare function once(eventName: 'projectileFlight', callback: (event: ProjectileFlightEvent) => void): EventHandle
 
 export declare function on(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle
 export declare function once(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle
@@ -1639,10 +1684,19 @@ export interface ActorAnimationVariables {
 
 export declare function setInventory(formId: number, inventory: Inventory): void;
 
-export declare function castSpellImmediate(actorCasterFormId: number, castingSource: SpellType, formIdSpell: number, formIdTarget: number, aimAngle: number, aimHeading: number, animationVariables: ActorAnimationVariables): void;
+// thuum docs/verbs/spell-cast.md: with hasLaunch, a target-location spell is launched at the caster's own launch (the point its game picked, engine units) with its angles (radians), not from the figure
+export declare function castSpellImmediate(actorCasterFormId: number, castingSource: SpellType, formIdSpell: number, formIdTarget: number, aimAngle: number, aimHeading: number, animationVariables: ActorAnimationVariables, hasLaunch?: boolean, originX?: number, originY?: number, originZ?: number, launchAngleX?: number, launchAngleZ?: number): void;
 export declare function interruptCast(actorCasterFormId: number, castingSource: SpellType, animationVariables: ActorAnimationVariables): void;
-// thuum docs/verbs/cast-action.md: performs a BGSAction on an actor through the engine's action entry, with the event and idle the caster's engine chose (an actionPerformed event's fields), the caster's variables applied first by applyAnimationVariablesToActor; the figure's cast animation. Returns whether the figure's graph took it, performed at once on the game thread
+// thuum docs/verbs/cast-action.md: performs a BGSAction on an actor through the engine's action entry, with the event and idle the caster's engine chose (an actionPerformed event's fields), the caster's variables applied first by applyAnimationVariablesToActor; the figure's cast animation. Queued to the game thread, which performs it right after this update; returns true when queued
 export declare function performAction(actorFormId: number, actionFormId: number, idleFormId: number, eventName: string, type: number): boolean;
+// the graph's answer to the actor's last performAction: 1 taken, 0 refused, -1 none or still queued; read it on the update after the call
+export declare function performActionResult(actorFormId: number): number;
+// thuum docs/verbs/cast-action.md: whether the actor's graph has answered a cast request for the hand (0 left, 1 right, 2 voice) since the last call, the BeginCast graph event the engine's own caster waits for before it performs a start; taken by the call
+export declare function castReady(actorFormId: number, hand: number): boolean;
+// thuum docs/verbs/self-cast.md: hides or shows a reference's activation prompt text (ExtraFlags kBlockActivateText), so an invisible figure is not named by the crosshair
+export declare function setActivateTextHidden(refrFormId: number, hidden: boolean): boolean;
+// thuum docs/verbs/spell-cast.md: a figure's aim pitch (radians, down positive), its reference angle X and AimPitchCurrent, the two the engine's GetAimAngle reads to aim its stream every frame; call each update
+export declare function setActorAimPitch(actorFormId: number, radians: number): boolean;
 export declare function getAnimationVariablesFromActor(actorFormId: number): ActorAnimationVariables;
 export declare function applyAnimationVariablesToActor(actorFormId: number, animationVariables: ActorAnimationVariables): boolean;
 

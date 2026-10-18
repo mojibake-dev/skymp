@@ -160,6 +160,22 @@ public:
   // cellOrWorld, for `waitMs`; CheckCastJump judges a move the bounds refuse
   // against it (Landed or NoPermit; the rule is Rust's)
   void SetCastTeleportSettings(const std::string& castTeleportsJson);
+
+  // thuum docs/verbs/player-globals.md: the globals server-settings.json's
+  // `playerGlobals` names (a JSON list of FormDescs, "[]" for none; a bad
+  // entry stops the server here, named), kept per player. Watch: their form
+  // ids in this load order (one whose plugin is not loaded left out).
+  // CheckPlayerGlobals: 0 taken, else the rule's refusal (wire-rules
+  // player_globals). AtLogin: the record's values still listed. Merge: the
+  // latest value wins.
+  void SetPlayerGlobalsSettings(const std::string& playerGlobalsJson);
+  std::vector<uint32_t> PlayerGlobalsWatch() const;
+  uint8_t CheckPlayerGlobals(const std::vector<PlayerGlobal>& report) const;
+  std::vector<PlayerGlobal> PlayerGlobalsAtLogin(
+    const std::vector<PlayerGlobal>& record) const;
+  static std::vector<PlayerGlobal> MergePlayerGlobals(
+    const std::vector<PlayerGlobal>& record,
+    const std::vector<PlayerGlobal>& report);
   float TeleportReach(uint32_t spellFormId) const;
   uint64_t TeleportWaitMs(uint32_t spellFormId) const;
   bool TeleportRelays(uint32_t spellFormId) const;
@@ -229,9 +245,10 @@ public:
   void EndCast(uint32_t actorFormId, uint8_t hand);
   enum class CastCheck
   {
-    Claimed, // a recorded cast covers the hit
-    NoCast,  // no cast of that spell covers it
-    TooFar   // casts wait, but the target is beyond their reach
+    Claimed,  // a recorded cast covers the hit
+    NoCast,   // no cast of that spell covers it
+    TooFar,   // casts wait, but the target is beyond their reach
+    Throttled // a reached spell's hit on a target it claimed within the tick
   };
   struct CastClaim
   {
@@ -241,6 +258,12 @@ public:
   // a spell hit by the actor on `target` standing at `at`
   CastClaim ClaimCast(uint32_t actorFormId, uint32_t spell, uint32_t target,
                       const NiPoint3& at);
+  // thuum docs/verbs/second-hand.md: a hit by a spell none of the actor's
+  // casts is of, claimed against a recorded cast whose records reach it
+  // (a cloak's spell, a spell its effects' scripts name), judged from where
+  // the caster stands now (`casterAt`)
+  CastClaim ClaimReached(uint32_t actorFormId, uint32_t spell, uint32_t target,
+                         const NiPoint3& at, const NiPoint3& casterAt);
 
   // thuum docs/verbs/shouts.md: what the server knows of a shout a player's
   // game reported, and its verdict (wire-rules shouts); an accepted shout

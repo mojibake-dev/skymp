@@ -6,6 +6,7 @@ import { SpellCastEvent, Actor, printConsole, Game, getAnimationVariablesFromAct
 import { Spell } from 'skyrimPlatform';
 import { ClientListener, CombinedController, Sp } from './clientListener';
 import { logTrace } from '../../logging';
+import { landsOnItsTarget } from "../../sync/spellDelivery";
 
 import { MsgType } from "../../messages";
 import { noSpellLaunch, SpellCastMsgData, SpellCastMessage } from "../messages/spellCastMessage";
@@ -252,8 +253,7 @@ export class MagicSyncService extends ClientListener {
     private getSpellCastEventData(e: SpellCastEvent, isInterruptCast: boolean): SpellCastMsgData {
         const spellCastData: SpellCastMsgData = {
             caster: localIdToRemoteId(e.caster.getFormID(), true),
-            // @ts-expect-error (TODO: Remove in 2.10.0)
-            target: e.target ? localIdToRemoteId(e.target.getFormID(), true) : 0,
+            target: this.castTarget(e),
             spell: e.spell ? e.spell.getFormID() : 0,
             interruptCast: isInterruptCast,
             // @ts-expect-error (TODO: Remove in 2.10.0)
@@ -268,6 +268,27 @@ export class MagicSyncService extends ClientListener {
             actorAnimationVariables: this.getAnimationVariablesFromActorConverted(e.caster.getFormID()),
         }
         return spellCastData;
+    }
+
+    // thuum docs/verbs/spell-cast.md (x-class-target2 20261018-105815 read
+    // statically, 2026-10-18): Skyrim Platform fills the spellCast event's
+    // target from the caster's own MagicTarget (EventHandler.cpp, the
+    // actor's GetTargetStatsObject is the actor itself), so every cast
+    // named its caster and a relayed target-actor spell landed on the
+    // figure that cast it (Azure Reconstruction healed the figure). For the
+    // player's own cast of a spell delivered to its target (touch, target
+    // actor), the target is the actor under the crosshair at the cast, by
+    // its server id (a figure's through the view, an NPC's as is), or none;
+    // every other cast keeps the event's word, as before. Client-reported
+    // (rule 5): the server records it and relays it; a reach check at the
+    // cast is the follow-up, the numbers coming only through validated hits
+    private castTarget(e: SpellCastEvent): number {
+        if (e.caster.getFormID() === this.playerId && e.spell && landsOnItsTarget(e.spell)) {
+            const picked = Game.getCurrentCrosshairRef();
+            return picked ? localIdToRemoteId(picked.getFormID(), true) : 0;
+        }
+        // @ts-expect-error (TODO: Remove in 2.10.0)
+        return e.target ? localIdToRemoteId(e.target.getFormID(), true) : 0;
     }
 
     private getAnimationVariablesFromActorConverted(actorId: number) {

@@ -1,6 +1,7 @@
 // @ts-expect-error (TODO: Remove in 2.10.0)
 import { Actor, Form, FormType, Menu, interruptCast, castSpellImmediate, placeAreaEffect, printConsole, applyAnimationVariablesToActor, getAnimationVariablesFromActor, ActorAnimationVariables } from 'skyrimPlatform';
 import { figureAimHeading } from "../../sync/figureAim";
+import { landsOnItsTarget } from "../../sync/spellDelivery";
 import {
   Armor,
   Cell,
@@ -1038,7 +1039,7 @@ export class RemoteServer extends ClientListener {
           figureAimHeading.set(ac.getFormID(), msg.data.aimHeading);
         }
         const atPlayer = msg.data.target !== 0 && msg.data.target === this.worldModel.playerCharacterRefrId;
-        const target = atPlayer && RemoteServer.landsOnItsTarget(spell)
+        const target = atPlayer && landsOnItsTarget(spell)
           ? 0x14
           : remoteIdToLocalId(msg.data.target);
         castSpellImmediate(ac.getFormID(), msg.data.castingSource, spell.getFormID(), target,
@@ -1071,22 +1072,6 @@ export class RemoteServer extends ClientListener {
       }
     }
     return false;
-  }
-
-  // A spell whose effects are delivered to their target, by touch or at a
-  // target actor, so no aim decides where they land (a cosmetic projectile,
-  // Azure Reconstruction's, included; MagicEffect.GetDeliveryType, SKSE;
-  // CommonLibSSE-NG include/RE/M/MagicSystem.h:39-45: kTouch 1,
-  // kTargetActor 3)
-  private static landsOnItsTarget(spell: Spell): boolean {
-    const n = spell.getNumEffects();
-    for (let i = 0; i < n; ++i) {
-      const delivery = spell.getNthEffectMagicEffect(i)?.getDeliveryType();
-      if (delivery !== 1 && delivery !== 3) {
-        return false;
-      }
-    }
-    return n > 0;
   }
 
   private onUpdateAnimVariablesMessage(event: ConnectionMessage<UpdateAnimVariablesMessage>): void {

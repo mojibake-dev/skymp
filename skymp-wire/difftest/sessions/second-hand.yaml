@@ -12,7 +12,7 @@
 # which parity's schema ignores). Its proc hits at 3.4 s and 3.8 s are
 # dropped by the legacy server (a spell c1 never held) and claimed by the
 # fixed one against the cloak's cast: the first counts one cadence (500 ms,
-# 4 of FlameCloakDmg's 8 a second), the next the 400 ms since it (3.2). c2 steps
+# 4 of FlameCloakDmg's 8 a second), the next the 400 ms since it (about 3.2, moved by the claim's timing). c2 steps
 # again at 4 s of its own (5.5 s of c1's), so it outlives c1, as in every
 # session. The divergences beyond the departure line are declared from the
 # session's first T2 run.
@@ -81,10 +81,10 @@ divergences:
     wire: 1
     reason: the first proc claimed against the cloak's cast, one cadence of FlameCloakDmg, 4 of c2's Health (thuum docs/verbs/second-hand.md); the legacy stack dropped the hit as a spell c1 never held
   - client: c2
-    msg: {t: 16, idx: 64, data: {health: 0.9277600049972534}}
+    msg: {t: 16, idx: 64}
     legacy: 0
     wire: 1
-    reason: the second proc, 400 ms after the first, 3.2 more
+    reason: the second proc, about 400 ms after the first, about 3.2 more; its value moves with the claim's timing (a concentration proc counts the time since the last report, 0.92776 in the first T2 run and 0.92808 in the second), so it is declared by its shape alone, after the first proc's exact value has been set aside
   - client: c2
     msg: {t: 45}
     legacy: 0

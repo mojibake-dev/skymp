@@ -1,5 +1,8 @@
 #include "DirectoryMonitor.h"
 
+#include <chrono>
+#include <thread>
+
 namespace {
 bool WaitForNextUpdate(DWORD* outErrorCode, std::filesystem::path dir)
 {
@@ -11,6 +14,7 @@ bool WaitForNextUpdate(DWORD* outErrorCode, std::filesystem::path dir)
     return false;
   }
   WaitForSingleObject(hDir, INFINITE);
+  FindCloseChangeNotification(hDir);
   return true;
 }
 }
@@ -75,6 +79,12 @@ void DirectoryMonitor::Watch()
         ++pImpl_->numUpdates;
       } else {
         pImpl_->errorCode = err;
+        // thuum: a directory that cannot be watched (Data/Platform/PluginsDev
+        // absent, code 2 or 3) is tried again every few seconds, not in a
+        // tight loop: the load-freeze dump of 2026-10-17 (20261017-132848,
+        // c1) had this thread at 72.4 s of kernel CPU, one core on every
+        // seat in every run
+        std::this_thread::sleep_for(std::chrono::seconds(5));
       }
     }
   }).detach();

@@ -195,6 +195,47 @@ const gTempTargetPos: NiPoint3 = [0, 0, 0];
 // by a jump, and is put there instead of glided across in 0.2 s
 const jumpDistance = 1024;
 
+// thuum docs/verbs/cast-teleport.md (Eli, playtest twenty-two: "teleports
+// slide behavior was never fully fixed"): a cast teleport's look pops the
+// figure to the landing by the server's SetPosition, which rides the
+// reliable channel, while a movement report its caster sent before the
+// landing rides the unreliable one and can arrive after the pop: glided to,
+// it pulls the figure back toward the start, then the next reports glide it
+// forward again (x-teleport-look 20261017-015128: about 40 to 85 units back
+// inside 250 ms, then a glide of about 80). A figure that jumped further than
+// popDistance since the last report, to somewhere this code did not send it,
+// was placed by something else: a pop. For popWindowMs after it, a report
+// nearer the figure's place before the pop than the pop itself is such a
+// stale report and is left unapplied
+const popDistance = 256;
+const popWindowMs = 600;
+const lastSent = new Map<number, NiPoint3>();
+const lastReal = new Map<number, NiPoint3>();
+const pops = new Map<number, { at: number; pos: NiPoint3; from: NiPoint3 }>();
+
+const isStaleAfterPop = (refrId: number, real: NiPoint3, target: NiPoint3): boolean => {
+  const now = Date.now();
+  const sent = lastSent.get(refrId);
+  const before = lastReal.get(refrId);
+  lastReal.set(refrId, [real[0], real[1], real[2]]);
+  if (
+    sent && before &&
+    ObjectReferenceEx.getDistance(real, before) > popDistance &&
+    ObjectReferenceEx.getDistance(real, sent) > popDistance
+  ) {
+    pops.set(refrId, { at: now, pos: [real[0], real[1], real[2]], from: [before[0], before[1], before[2]] });
+  }
+  const pop = pops.get(refrId);
+  if (!pop) {
+    return false;
+  }
+  if (now - pop.at > popWindowMs) {
+    pops.delete(refrId);
+    return false;
+  }
+  return ObjectReferenceEx.getDistance(target, pop.from) < ObjectReferenceEx.getDistance(target, pop.pos);
+};
+
 const translateTo = (refr: ObjectReference, m: Movement) => {
   let time = 0.2;
   if (m.isInJumpState || m.runMode !== "Standing") {
@@ -236,6 +277,11 @@ const translateTo = (refr: ObjectReference, m: Movement) => {
     }
 
     if (!actor || !actor.isDead()) {
+      const refrId = refr.getFormID();
+      if (isStaleAfterPop(refrId, refrRealPos, gTempTargetPos)) {
+        return;
+      }
+      lastSent.set(refrId, [gTempTargetPos[0], gTempTargetPos[1], gTempTargetPos[2]]);
       if (distance > jumpDistance) {
         refr.setPosition(gTempTargetPos[0], gTempTargetPos[1], gTempTargetPos[2]);
         refr.setAngle(m.rot[0], m.rot[1], m.rot[2]);

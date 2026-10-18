@@ -426,6 +426,16 @@ int32_t Frida::TakeCastStart(uint64_t withinMs)
  * direction instead of from the figure's node along its aim; the lab's
  * recorder keeps every launch for the parity check. Only the player's and
  * the figures' cross into JS (rule 9).
+ *
+ * A figure's own arrow is dropped here. A figure wears its quiver, so its
+ * bow releasing in this game launches an arrow of its own, beside the one
+ * TESModPlatform launches for the shot the server relayed (x-double-arrow2
+ * 20261012-022726: two launches for one shot). An arrow a figure launches
+ * outside a RelayedArrowScope enters with no projectile (LaunchData's
+ * projectileBase, Projectile.h:83), so Launch builds none (HYPOTHESIS, the
+ * re-analyst's read of 44108 pending; the probe x-quiver counts the arrows),
+ * and leaves with it put back for its caller. It is not reported: nothing
+ * flew.
  */
 struct LaunchSeen
 {
@@ -441,10 +451,31 @@ struct LaunchSeen
   bool useOrigin = false;
 };
 
+// one entry per Launch on the thread, pushed at the enter and popped at the
+// leave; data is set when the enter took the projectile away
+struct DroppedArrow
+{
+  RE::Projectile::LaunchData* data = nullptr;
+  RE::BGSProjectile* projectile = nullptr;
+};
+thread_local std::vector<DroppedArrow> g_droppedArrows;
+thread_local uint32_t g_relayedArrowDepth = 0;
+
+Frida::RelayedArrowScope::RelayedArrowScope()
+{
+  ++g_relayedArrowDepth;
+}
+
+Frida::RelayedArrowScope::~RelayedArrowScope()
+{
+  --g_relayedArrowDepth;
+}
+
 void OnProjectileLaunchEnter(GumInvocationContext* ic)
 {
   auto* data =
     reinterpret_cast<RE::Projectile::LaunchData*>(ic->cpu_context->rdx);
+  g_droppedArrows.push_back({});
   if (!data || !data->shooter) {
     return;
   }
@@ -453,6 +484,14 @@ void OnProjectileLaunchEnter(GumInvocationContext* ic)
   // which the recorder compares); an NPC's arrows and spells stay out of JS
   const uint32_t shooterId = data->shooter->formID;
   if (shooterId != 0x14 && shooterId < 0xFF000000) {
+    return;
+  }
+  if (shooterId >= 0xFF000000 && data->ammoSource && data->projectileBase &&
+      g_relayedArrowDepth == 0) {
+    g_droppedArrows.back() = { data, data->projectileBase };
+    data->projectileBase = nullptr;
+    logger::info("a figure's own arrow dropped: shooter {:x}, ammo {:x}",
+                 shooterId, data->ammoSource->formID);
     return;
   }
   LaunchSeen seen;
@@ -491,6 +530,18 @@ void OnProjectileLaunchEnter(GumInvocationContext* ic)
     AddObjProperty(&obj, "useOrigin", seen.useOrigin);
     EventsApi::SendEvent("projectileLaunched", { obj });
   });
+}
+
+void OnProjectileLaunchLeave(GumInvocationContext* ic)
+{
+  if (g_droppedArrows.empty()) {
+    return;
+  }
+  const DroppedArrow dropped = g_droppedArrows.back();
+  g_droppedArrows.pop_back();
+  if (dropped.data) {
+    dropped.data->projectileBase = dropped.projectile;
+  }
 }
 
 /**
@@ -571,7 +622,8 @@ void InstallProjectileLaunchHook()
   Frida::HookHandler::GetSingleton()->Install(
     Frida::HookID::HOOK_PROJECTILE_LAUNCH,
     Offsets::Hooks::ProjectileLaunch.address(),
-    std::make_shared<Frida::Hook>(OnProjectileLaunchEnter, nullptr));
+    std::make_shared<Frida::Hook>(OnProjectileLaunchEnter,
+                                  OnProjectileLaunchLeave));
 }
 
 void InstallPerformActionHook()

@@ -24,6 +24,12 @@ WORKDIR /src
 # (sed -i and the build tree write there), exactly as upstream's Dockerfile does.
 USER root
 RUN chown skymp:skymp /src
+# ccache (thuum ADR-041's build levers): it keys on content, not times, so the
+# shared runner checkout, whose times change with every branch switch, no longer
+# makes ninja's rebuilds full ones; the cache lives in a BuildKit cache mount
+# beside the build tree's.
+RUN command -v ccache >/dev/null \
+ || (apt-get update && apt-get install -y --no-install-recommends ccache && rm -rf /var/lib/apt/lists/*)
 # Rust for skymp-wire (thuum ADR-019): corrosion runs cargo inside the CMake
 # build, and corrosion_add_cxxbridge wants the cxxbridge CLI at exactly the
 # cxx version the workspace locks. Installed under /opt/rust for the build
@@ -49,17 +55,26 @@ RUN if [ ! -f vcpkg/scripts/buildsystems/vcpkg.cmake ]; then \
 # The CMake build tree and cargo's registry are BuildKit cache mounts, kept by
 # sky-ci's daemon between builds, so a build recompiles what changed instead of
 # everything (configure and build were 342 s of server-build 8454's 468; thuum
-# ADR-040 item 4). The runner reuses its working copy, so unchanged files keep
-# their times and the build tree's dependency checks hold. A cache mount is no
-# part of the image: the dist is copied out of it for the runtime stage.
+# ADR-040 item 4). The runner reuses its working copy, but a branch switch
+# changes the times of every file that differs, so the tree alone saved only the
+# Rust layer (476 to 399 s, server-build on m2-ci-server-cache); ccache turns the
+# recompiles the times force into hits. A cache mount is no part of the image:
+# the dist is copied out of it for the runtime stage.
 # Unit tests read their data directory from the UNIT_DATA_DIR CMake option
 # (unit/TestUtils.cpp GetDataDir); the hash and dist-contents checks run only
 # with CI=true in the environment (unit/EspmTest.cpp, unit/DistContentsTest.cpp).
+# ccache's statistics are zeroed before and printed after, so the job log
+# carries each build's hit rate.
 RUN --mount=type=cache,id=skymp-server-build,target=/src/build,mode=0777,sharing=locked \
     --mount=type=cache,id=skymp-cargo-registry,target=/opt/rust/cargo/registry,mode=0777,sharing=locked \
+    --mount=type=cache,id=skymp-ccache,target=/opt/ccache,mode=0777,sharing=locked \
     chmod +x build.sh && sed -i 's/\r$//' build.sh \
+ && export CCACHE_DIR=/opt/ccache CCACHE_MAXSIZE=4G CCACHE_BASEDIR=/src \
+ && ccache -z \
  && ./build.sh --configure -DUNIT_DATA_DIR=/src/skyrim_data_files \
+      -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
  && ./build.sh --build \
+ && ccache -s \
  && rm -rf /src/dist-server && cp -a build/dist/server /src/dist-server
 RUN --mount=type=cache,id=skymp-server-build,target=/src/build,mode=0777,sharing=locked \
     if [ -f skyrim_data_files/Skyrim.esm ]; then \

@@ -111,7 +111,11 @@ runs:
               console.log('Installing OpenCppCoverage using choco...');
               execSync('choco install opencppcoverage -y', { stdio: 'inherit' });
             } catch (installError) {
-              core.setFailed(`Failed to install OpenCppCoverage: ${installError.message}`);
+              // thuum: a chocolatey outage is not a build failure; coverage is
+              // skipped when the tool is missing (the configure step passes
+              // CPPCOV_PATH only when the exe exists). 2026-10-19: two builds
+              // failed on this install in four minutes.
+              core.warning(`Failed to install OpenCppCoverage, coverage skipped: ${installError.message}`);
             }
           }
 
@@ -242,7 +246,7 @@ runs:
 
         $cmake_command = if ('${{ inputs.EMSCRIPTEN }}' -eq 'true') { "emcmake cmake" } else { "cmake" }
 
-        $cppcov_path_arg = if ($env:RUNNER_OS -eq 'Windows') { '-DCPPCOV_PATH="C:\Program Files\OpenCppCoverage"' } else { '-DCPPCOV_PATH=OFF' }
+        $cppcov_path_arg = if ($env:RUNNER_OS -eq 'Windows' -and (Test-Path 'C:\Program Files\OpenCppCoverage\OpenCppCoverage.exe')) { '-DCPPCOV_PATH="C:\Program Files\OpenCppCoverage"' } else { '-DCPPCOV_PATH=OFF' }
         $vcpkg_root_arg = if ($env:RUNNER_OS -eq 'Windows') { '-DVCPKG_ROOT=C:/vcpkg' } else { '-DVCPKG_ROOT="${{github.workspace}}/vcpkg"' }
         $vcpkg_chainload_toolchain_arg = if ('${{ inputs.EMSCRIPTEN }}' -eq 'true') { '-DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="${{github.workspace}}/emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake"' } else { '' }
         $vcpkg_triplet_arg = if ('${{ inputs.EMSCRIPTEN }}' -eq 'true') { '-DVCPKG_TARGET_TRIPLET=wasm32-emscripten' } else { '' }

@@ -482,7 +482,11 @@ const TABLE: [Row; 55] = [
 ];
 
 /// Wire ids in use: one past the last variant.
-pub const WIRE_IDS: u32 = 54;
+/// Wire ids in use: one past the last variant, the table's length (ActorJump
+/// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
+/// pins the two together).
+pub const WIRE_IDS: u32 = 55;
+const _: () = assert!(TABLE.len() == 55, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;

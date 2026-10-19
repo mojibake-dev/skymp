@@ -1736,6 +1736,12 @@ namespace {
 // daedra banishing's, none cast from a player's hand (thuum lab scan,
 // 2026-10-10), so the bound is for mods'
 constexpr float kTouchReach = 512.f;
+// thuum docs/verbs/spell-cast.md (train-27): how long a placed trigger's
+// cast (a rune) may claim the hit that trips it, milliseconds. The records
+// give no lifetime (PROJ Lifetime is 0 on the runes), so the engine's own
+// persistence is HYPOTHESIS; ten minutes bounds a rune a player walks into
+// late without keeping casts forever
+constexpr uint64_t kHazardWindowMs = 600'000;
 
 // thuum docs/verbs/second-hand.md: the spells a cast of `spell` can make,
 // read from the records, as global ids: a Cloak effect's associated spell
@@ -1862,6 +1868,14 @@ skymp::rules::CastFacts CastFactsFor(WorldState& worldState, uint32_t spell,
         browser.LookupById(mgefId).ToGlobalId(mgef.data.projectile),
         &worldState);
       reach = std::max(reach, proj.range);
+      // thuum docs/verbs/spell-cast.md (train-27): a rune's projectile is a
+      // placed trigger whose hit comes when an actor walks into it, minutes
+      // after the cast (playtest twenty-three: the rune's hits refused as
+      // E_SPELL_NO_CAST once the cast reached the server at all), so its
+      // cast's claim lasts the hazard window instead of the bolt window
+      if (proj.IsPlacedTrigger()) {
+        facts.hazard_ms = kHazardWindowMs;
+      }
     }
     if (reach > 0.f) {
       facts.reach = reach;

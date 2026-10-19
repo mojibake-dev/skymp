@@ -113,6 +113,12 @@ pub struct CastFacts {
     /// for its first hit, which names the target the server trusts; a cast
     /// that hits nobody is never relayed.
     pub lands_on_target: bool,
+    /// How long the cast itself may claim its hit, milliseconds, when longer
+    /// than CAST_WINDOW_MS: a placed trigger's (a rune's: its projectile
+    /// waits for an actor to trip it, PROJ's alternate trigger with a
+    /// proximity and no timer; thuum docs/verbs/spell-cast.md, train-27). 0
+    /// for the bolt window.
+    pub hazard_ms: u64,
 }
 
 /// A spell hit as the caster's game reported it: the spell, the target's
@@ -238,7 +244,7 @@ impl Casts {
         let casts = self.per_actor.entry(actor).or_default();
         match facts.kind {
             CastKind::FireAndForget => {
-                casts.released.retain(|c| now_ms.saturating_sub(c.at_ms) <= CAST_WINDOW_MS);
+                casts.released.retain(|c| now_ms.saturating_sub(c.at_ms) <= c.facts.hazard_ms.max(CAST_WINDOW_MS));
                 if casts.released.len() >= MAX_CASTS {
                     casts.released.pop_front();
                 }
@@ -328,7 +334,7 @@ impl Casts {
             let relay = std::mem::replace(&mut open.relay_pending, false);
             return CastCheck::Claimed { scale, relay };
         }
-        casts.released.retain(|c| now_ms.saturating_sub(c.at_ms) <= CAST_WINDOW_MS);
+        casts.released.retain(|c| now_ms.saturating_sub(c.at_ms) <= c.facts.hazard_ms.max(CAST_WINDOW_MS));
         for cast in casts.released.iter_mut().rev() {
             if cast.facts.spell != spell {
                 continue;
@@ -443,7 +449,7 @@ mod tests {
     }
 
     fn cast(spell: u32, hand: u8, kind: CastKind, area: bool) -> CastFacts {
-        CastFacts { spell, hand, kind, area, reach: 1_000.0, x: 0.0, y: 0.0, z: 0.0, reached: [0; MAX_REACHED], linger_ms: 0, reached_concentration: 0, lands_on_target: false }
+        CastFacts { spell, hand, kind, area, reach: 1_000.0, x: 0.0, y: 0.0, z: 0.0, reached: [0; MAX_REACHED], linger_ms: 0, reached_concentration: 0, lands_on_target: false, hazard_ms: 0 }
     }
 
     // labels, not records: a cloak spell and its proc, a bolt and its proc
@@ -460,6 +466,22 @@ mod tests {
     }
 
     // a spell delivered to its target: its relay waits for its first hit
+    #[test]
+    fn a_placed_triggers_cast_claims_its_late_hit_within_the_hazard_window() {
+        let mut c = Casts::default();
+        c.start(1, CastFacts { hazard_ms: 600_000, ..cast(BOLT, 1, CastKind::FireAndForget, false) }, 0);
+        // a bolt's own cast is gone after its window
+        c.start(1, cast(BALL, 1, CastKind::FireAndForget, false), 0);
+        assert_eq!(c.claim(1, hit(BALL, 2, 100.0, 0.0, 0.0), 60_000), CastCheck::NoCast);
+        // the rune's cast waits for the actor that trips it
+        assert_eq!(c.claim(1, hit(BOLT, 2, 100.0, 0.0, 0.0), 60_000), CastCheck::Claimed { scale: 1.0, relay: false });
+        assert_eq!(c.claim(1, hit(BOLT, 2, 100.0, 0.0, 0.0), 60_100), CastCheck::NoCast);
+        // and not past the hazard window
+        let mut c = Casts::default();
+        c.start(1, CastFacts { hazard_ms: 600_000, ..cast(BOLT, 1, CastKind::FireAndForget, false) }, 0);
+        assert_eq!(c.claim(1, hit(BOLT, 2, 100.0, 0.0, 0.0), 600_001), CastCheck::NoCast);
+    }
+
     fn landing(spell: u32, kind: CastKind) -> CastFacts {
         CastFacts { lands_on_target: true, ..cast(spell, 1, kind, false) }
     }

@@ -18,6 +18,36 @@ steps:
   - {client: c1, at_ms: 3000, send: {t: 40, bases: [], skills: [{skill: 1, level: 15.0, xp: 0.0, threshold: 10.0}, {skill: 1, level: 15.0, xp: 0.0, threshold: 10.0}], xp: 5.0, threshold: 75.0, level: 2, legendary: []}}
   - {client: c2, at_ms: 4000, move: {dx: 1, dy: 0}}
 divergences:
+  - client: c1
+    msg: {t: 7, idx: 2, propName: health}
+    legacy: 0
+    wire: 1
+    reason: figure-values (thuum docs/verbs/figure-values.md, train-28): c1's recorded maximum as a property of its own actor, told to every game that sees it, its own included; the legacy server has no ActorValues record
+  - client: c1
+    msg: {t: 7, idx: 2, propName: magicka}
+    legacy: 0
+    wire: 1
+    reason: figure-values, as above
+  - client: c1
+    msg: {t: 7, idx: 2, propName: stamina}
+    legacy: 0
+    wire: 1
+    reason: figure-values, as above
+  - client: c2
+    msg: {t: 7, idx: 2, propName: health}
+    legacy: 0
+    wire: 1
+    reason: figure-values, the same maxima for c2's figure of c1
+  - client: c2
+    msg: {t: 7, idx: 2, propName: magicka}
+    legacy: 0
+    wire: 1
+    reason: figure-values, as above
+  - client: c2
+    msg: {t: 7, idx: 2, propName: stamina}
+    legacy: 0
+    wire: 1
+    reason: figure-values, as above
   - client: c2
     msg: {t: 25, idx: 2}
     legacy: 0

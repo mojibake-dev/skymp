@@ -162,8 +162,9 @@ server-build:
 client-build:
   stage: server
   tags: [windows]
-  # a cold vcpkg build of the client's 59 ports on sky-build's 8 cores runs past the project's hour (the first
-  # run, job 8859, timed out at 49 min on port 13 of 59); warm runs hit D:/vcpkg-bincache and take minutes
+  # a cold vcpkg build of the client's 59 ports on sky-build's 8 cores will not fit the project's hour (the
+  # first run, job 8859, was on port 13 of 59 at 49 min when it failed with no_updates_running, the runner's
+  # reporting stopping, not this timeout); warm runs hit D:/vcpkg-bincache and take minutes
   timeout: 4h
   variables:
     GIT_SUBMODULE_STRATEGY: recursive

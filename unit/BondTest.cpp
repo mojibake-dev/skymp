@@ -273,6 +273,7 @@ TEST_CASE("A bond's claimed hit conceals both for the bond's time, cast in "
   p.Messages().clear();
   Cast(p);
   Hit(p);
+  p.Tick(); // snippets are deferred
   // the server's records, on both (the proc's archetype runs as a state)
   REQUIRE(caster->HasRunningEffectOfType(kInvisibility));
   REQUIRE(target->HasRunningEffectOfType(kInvisibility));
@@ -292,8 +293,10 @@ TEST_CASE("The break ends both concealments and dispels the target's own",
   auto [caster, target] = Pair(p);
   Cast(p);
   Hit(p);
+  p.Tick(); // snippets are deferred
   p.Messages().clear();
   REQUIRE(p.BreakBondsOf(kCaster));
+  p.Tick();
   REQUIRE_FALSE(caster->HasRunningEffectOfType(kInvisibility));
   REQUIRE_FALSE(target->HasRunningEffectOfType(kInvisibility));
   // the target's copy was the server's cast: the server dispels it; the
@@ -315,19 +318,23 @@ TEST_CASE("A bond left alone runs out: the concealments end and the target's "
   auto [caster, target] = Pair(p);
   Cast(p);
   Hit(p);
+  p.Tick(); // snippets are deferred
   p.Messages().clear();
   const uint64_t now = NowMs();
   // not yet (the bonds rule's clock; the records' own seconds are the
-  // effects tick's, which does not run here)
+  // effects tick's, which barely moves here)
   p.TickBonds(now + 19'000);
+  p.Tick();
   REQUIRE(target->HasRunningEffectOfType(kInvisibility));
   REQUIRE(Snippets(p, 1, "Actor", "DispelSpell") == 0);
   p.TickBonds(now + 21'000);
+  p.Tick();
   REQUIRE_FALSE(caster->HasRunningEffectOfType(kInvisibility));
   REQUIRE_FALSE(target->HasRunningEffectOfType(kInvisibility));
   REQUIRE(Snippets(p, 1, "Actor", "DispelSpell", 0x14) == 1);
   // once, and no swap: the bond is spent
   p.TickBonds(now + 22'000);
+  p.Tick();
   REQUIRE(Snippets(p, 1, "Actor", "DispelSpell", 0x14) == 1);
   REQUIRE(Sent(p, 1, MsgType::Teleport) == 0);
   REQUIRE_FALSE(p.BreakBondsOf(kCaster));
@@ -343,9 +350,11 @@ TEST_CASE("A recast at the same target refreshes the concealment without a "
   auto [caster, target] = Pair(p);
   Cast(p);
   Hit(p);
+  p.Tick(); // snippets are deferred
   p.Messages().clear();
   Cast(p);
   Hit(p);
+  p.Tick();
   REQUIRE(caster->HasRunningEffectOfType(kInvisibility));
   REQUIRE(target->HasRunningEffectOfType(kInvisibility));
   REQUIRE(ProcCastsOn(p, 1) == std::vector<uint32_t>{ kCaster, 0x14 });

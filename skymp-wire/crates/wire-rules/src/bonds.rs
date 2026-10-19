@@ -104,20 +104,24 @@ impl Bonds {
     /// `proc` (the same form), `durationMs`, `windowMs` and `slackUnits`;
     /// the error names the bad entry.
     pub fn from_json(text: &str) -> Result<Self, SettingsError> {
-        let entries: Vec<Entry> = serde_json::from_str(text).map_err(|why| SettingsError(format!("bonds: {why}")))?;
+        let entries: Vec<Entry> =
+            serde_json::from_str(text).map_err(|why| SettingsError(format!("bonds: {why}")))?;
         let mut spells = Vec::with_capacity(entries.len());
         for entry in entries {
-            let FormDesc { short_id, file } =
-                FormDesc::parse(&entry.spell).map_err(|why| SettingsError(format!("bonds: {why}")))?;
+            let FormDesc { short_id, file } = FormDesc::parse(&entry.spell)
+                .map_err(|why| SettingsError(format!("bonds: {why}")))?;
             let proc = match &entry.proc {
-                Some(text) => Some(
-                    FormDesc::parse(text).map_err(|why| SettingsError(format!("bonds: {}: proc: {why}", entry.spell)))?,
-                ),
+                Some(text) => Some(FormDesc::parse(text).map_err(|why| {
+                    SettingsError(format!("bonds: {}: proc: {why}", entry.spell))
+                })?),
                 None => None,
             };
             let slack_units = entry.slack_units.unwrap_or(BOND_SLACK_UNITS);
             if !slack_units.is_finite() || slack_units < 0.0 {
-                return Err(SettingsError(format!("bonds: {}: slackUnits must be a finite non-negative number", entry.spell)));
+                return Err(SettingsError(format!(
+                    "bonds: {}: slackUnits must be a finite non-negative number",
+                    entry.spell
+                )));
             }
             spells.push(Named {
                 short_id,
@@ -130,13 +134,20 @@ impl Bonds {
                 },
             });
         }
-        Ok(Self { spells, bonds: Vec::new(), lapsed: Vec::new() })
+        Ok(Self {
+            spells,
+            bonds: Vec::new(),
+            lapsed: Vec::new(),
+        })
     }
 
     /// The bond spell `short_id` in `file` (compared without case), if the
     /// server names one.
     pub fn named(&self, short_id: u32, file: &str) -> Option<&BondSpell> {
-        self.spells.iter().find(|n| n.short_id == short_id && n.file.eq_ignore_ascii_case(file)).map(|n| &n.spell)
+        self.spells
+            .iter()
+            .find(|n| n.short_id == short_id && n.file.eq_ignore_ascii_case(file))
+            .map(|n| &n.spell)
     }
 
     /// `caster`'s cast of `spell` landed on `target` at `now_ms`: a bond
@@ -176,7 +187,10 @@ impl Bonds {
     /// in none, or its bond ran out.
     pub fn break_of(&mut self, actor: u32, now_ms: u64) -> Option<Bond> {
         self.prune(now_ms);
-        let at = self.bonds.iter().position(|b| b.caster == actor || b.target == actor)?;
+        let at = self
+            .bonds
+            .iter()
+            .position(|b| b.caster == actor || b.target == actor)?;
         Some(self.bonds.remove(at))
     }
 
@@ -191,7 +205,8 @@ impl Bonds {
     /// The actor is gone: its standing bonds with it (a lapsed one still
     /// comes back from `expired`, for the other actor's sake).
     pub fn forget(&mut self, actor: u32) {
-        self.bonds.retain(|b| b.caster != actor && b.target != actor);
+        self.bonds
+            .retain(|b| b.caster != actor && b.target != actor);
     }
 
     /// How many bonds stand at `now_ms`.
@@ -203,11 +218,12 @@ impl Bonds {
     /// Moves the bonds that ran out by `now_ms` to the lapsed list, which is
     /// bounded should nobody drain it.
     fn prune(&mut self, now_ms: u64) {
-        let (lapsed, standing): (Vec<Bond>, Vec<Bond>) = self.bonds.drain(..).partition(|b| now_ms > b.until_ms);
+        let (lapsed, standing): (Vec<Bond>, Vec<Bond>) =
+            self.bonds.drain(..).partition(|b| now_ms > b.until_ms);
         self.bonds = standing;
         self.lapsed.extend(lapsed);
-        if self.lapsed.len() > MAX_BONDS {
-            let excess = self.lapsed.len() - MAX_BONDS;
+        let excess = self.lapsed.len().saturating_sub(MAX_BONDS);
+        if excess > 0 {
             self.lapsed.drain(..excess);
         }
     }
@@ -218,34 +234,65 @@ mod tests {
     use super::*;
 
     const SHADOWBOND: &str = r#"[{"spell": "31C4D:Apocalypse - Magic of Skyrim.esp"}]"#;
-    const DEFAULTS: BondSpell =
-        BondSpell { duration_ms: BOND_DURATION_MS, window_ms: BOND_WINDOW_MS, slack_units: BOND_SLACK_UNITS, proc: None };
+    const DEFAULTS: BondSpell = BondSpell {
+        duration_ms: BOND_DURATION_MS,
+        window_ms: BOND_WINDOW_MS,
+        slack_units: BOND_SLACK_UNITS,
+        proc: None,
+    };
 
     #[test]
     fn an_entry_names_a_spell_with_the_defaults_and_its_own_numbers() {
         let b = Bonds::from_json(SHADOWBOND).unwrap_or_default();
         assert_eq!(
             b.named(0x31c4d, "apocalypse - magic of skyrim.esp"),
-            Some(&BondSpell { duration_ms: BOND_DURATION_MS, window_ms: BOND_WINDOW_MS, slack_units: BOND_SLACK_UNITS, proc: None })
+            Some(&BondSpell {
+                duration_ms: BOND_DURATION_MS,
+                window_ms: BOND_WINDOW_MS,
+                slack_units: BOND_SLACK_UNITS,
+                proc: None
+            })
         );
         assert!(b.named(0x31c4d, "Skyrim.esm").is_none());
-        let b = Bonds::from_json(r#"[{"spell": "31C4D:A.esp", "durationMs": 5000, "windowMs": 800, "slackUnits": 100}]"#).unwrap_or_default();
-        assert_eq!(b.named(0x31c4d, "A.esp"), Some(&BondSpell { duration_ms: 5_000, window_ms: 800, slack_units: 100.0, proc: None }));
+        let b = Bonds::from_json(
+            r#"[{"spell": "31C4D:A.esp", "durationMs": 5000, "windowMs": 800, "slackUnits": 100}]"#,
+        )
+        .unwrap_or_default();
+        assert_eq!(
+            b.named(0x31c4d, "A.esp"),
+            Some(&BondSpell {
+                duration_ms: 5_000,
+                window_ms: 800,
+                slack_units: 100.0,
+                proc: None
+            })
+        );
         assert!(Bonds::from_json(r#"[{"spell": "31C4D:A.esp", "slackUnits": -1}]"#).is_err());
         assert!(Bonds::from_json(r#"[{"spell": "31C4D:A.esp", "reach": 3}]"#).is_err());
-        assert!(Bonds::from_json("[]").unwrap_or_default().named(1, "A.esp").is_none());
+        assert!(Bonds::from_json("[]")
+            .unwrap_or_default()
+            .named(1, "A.esp")
+            .is_none());
     }
 
     #[test]
     fn an_entry_may_name_the_concealment_the_server_imposes() {
-        let b = Bonds::from_json(r#"[{"spell": "31C4D:A.esp", "proc": "55B32:A.esp"}]"#).unwrap_or_default();
+        let b = Bonds::from_json(r#"[{"spell": "31C4D:A.esp", "proc": "55B32:A.esp"}]"#)
+            .unwrap_or_default();
         assert_eq!(
             b.named(0x31c4d, "A.esp").and_then(|s| s.proc.clone()),
-            Some(FormDesc { short_id: 0x55b32, file: "A.esp".to_string() })
+            Some(FormDesc {
+                short_id: 0x55b32,
+                file: "A.esp".to_string()
+            })
         );
         // a bond without one is the swap alone, as before
         let b = Bonds::from_json(SHADOWBOND).unwrap_or_default();
-        assert_eq!(b.named(0x31c4d, "Apocalypse - Magic of Skyrim.esp").and_then(|s| s.proc.clone()), None);
+        assert_eq!(
+            b.named(0x31c4d, "Apocalypse - Magic of Skyrim.esp")
+                .and_then(|s| s.proc.clone()),
+            None
+        );
         assert!(Bonds::from_json(r#"[{"spell": "31C4D:A.esp", "proc": "nonsense"}]"#).is_err());
     }
 
@@ -257,7 +304,11 @@ mod tests {
         // a bystander's act breaks nothing
         assert_eq!(b.break_of(3, 2_000), None);
         // the target's act breaks it, once
-        assert_eq!(b.break_of(2, 2_000).map(|x| (x.caster, x.target, x.window_ms)), Some((1, 2, BOND_WINDOW_MS)));
+        assert_eq!(
+            b.break_of(2, 2_000)
+                .map(|x| (x.caster, x.target, x.window_ms)),
+            Some((1, 2, BOND_WINDOW_MS))
+        );
         assert_eq!(b.break_of(1, 2_100), None);
         // the caster's act breaks a fresh one
         b.record(1, 2, &s, 3_000);
@@ -273,13 +324,27 @@ mod tests {
         let mut b = Bonds::from_json(SHADOWBOND).unwrap_or_default();
         let s = DEFAULTS;
         let recorded = b.record(1, 2, &s, 1_000);
-        assert_eq!((recorded.caster, recorded.target, recorded.duration_ms, recorded.proc), (1, 2, BOND_DURATION_MS, None));
+        assert_eq!(
+            (
+                recorded.caster,
+                recorded.target,
+                recorded.duration_ms,
+                recorded.proc
+            ),
+            (1, 2, BOND_DURATION_MS, None)
+        );
         // not yet
         assert!(b.expired(1_000 + BOND_DURATION_MS).is_empty());
         // another method noticing the lapse keeps it for `expired`
         assert_eq!(b.break_of(2, 1_001 + BOND_DURATION_MS), None);
         let lapsed = b.expired(1_001 + BOND_DURATION_MS);
-        assert_eq!(lapsed.iter().map(|x| (x.caster, x.target)).collect::<Vec<_>>(), vec![(1, 2)]);
+        assert_eq!(
+            lapsed
+                .iter()
+                .map(|x| (x.caster, x.target))
+                .collect::<Vec<_>>(),
+            vec![(1, 2)]
+        );
         assert!(b.expired(5_000 + BOND_DURATION_MS).is_empty());
         // a broken bond never runs out
         b.record(1, 2, &s, 10_000);
@@ -308,7 +373,10 @@ mod tests {
         b.record(1, 2, &s, 0);
         // the target casting one of its own supersedes nothing: it is no caster yet
         assert_eq!(b.supersede(2, 100), None);
-        assert_eq!(b.supersede(1, 100).map(|x| (x.caster, x.target)), Some((1, 2)));
+        assert_eq!(
+            b.supersede(1, 100).map(|x| (x.caster, x.target)),
+            Some((1, 2))
+        );
         assert_eq!(b.supersede(1, 100), None);
         assert_eq!(b.standing(100), 0);
         // a superseded bond did not run out

@@ -6,6 +6,7 @@
 #include "MpActor.h"
 #include "MpChangeForms.h"
 #include "MpObjectReference.h"
+#include "condition_functions/ConditionFunctionFactory.h"
 #include "libespm/GroupUtils.h"
 #include "papyrus-vm/Reader.h"
 #include "papyrus-vm/Utils.h"
@@ -72,6 +73,14 @@ WorldState::WorldState()
 
   pImpl.reset(new Impl);
   pImpl->policy = PapyrusCompatibilityPolicyFactory::Create(this);
+
+  // the condition functions the server knows, from the one factory, so every
+  // world carries the server's set from its construction: the unit binary's
+  // PartOne as the addon's (ScampServer sets the same). An effect's
+  // conditions are judged against them, and a function missing here refuses
+  // the effect (thuum docs/DECISIONS.md ADR-039); an empty map judged every
+  // function unknown
+  conditionFunctionMap = ConditionFunctionFactory::CreateConditionFunctions();
 }
 
 void WorldState::Clear()

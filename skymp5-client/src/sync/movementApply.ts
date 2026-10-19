@@ -282,7 +282,9 @@ const translateTo = (refr: ObjectReference, m: Movement) => {
         return;
       }
       lastSent.set(refrId, [gTempTargetPos[0], gTempTargetPos[1], gTempTargetPos[2]]);
-      if (distance > jumpDistance) {
+      // thuum docs/verbs/cast-teleport.md (the teleport snap): a report the
+      // server vouched for as a jump (ActorJump) places at any distance
+      if (distance > jumpDistance || m.placed) {
         refr.setPosition(gTempTargetPos[0], gTempTargetPos[1], gTempTargetPos[2]);
         refr.setAngle(m.rot[0], m.rot[1], m.rot[2]);
         return;

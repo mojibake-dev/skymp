@@ -21,7 +21,10 @@ export interface AnimationVariables {
   speed: number;
 }
 
-export type Movement = Transform & AnimationVariables;
+// `placed`, this game's own mark, never on the wire: the server vouched for
+// the jump this report is (ActorJump, thuum docs/verbs/cast-teleport.md), so
+// the figure is placed at it, not glided
+export type Movement = Transform & AnimationVariables & { placed?: boolean };
 
 // // This doesn't work in SkyrimPlatform 0.5.0:
 // export * from './movementApply';

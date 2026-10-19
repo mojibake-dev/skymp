@@ -324,6 +324,10 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
       serverSettings.contains("castTeleports")
         ? serverSettings.at("castTeleports").dump()
         : std::string("[]"));
+    // the bonds (thuum docs/verbs/shadowbond.md): `bonds`, the same way
+    partOne->SetBondSettings(serverSettings.contains("bonds")
+                               ? serverSettings.at("bonds").dump()
+                               : std::string("[]"));
     // the headshot rule (thuum docs/verbs/headshot.md): `headshot`, the
     // same way
     partOne->SetHeadshotSettings(serverSettings.contains("headshot")

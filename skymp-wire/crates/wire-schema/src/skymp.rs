@@ -908,7 +908,14 @@ wire_struct! {
     pub struct SpellCastData {
         /// Who casts.
         pub caster: u32,
-        /// At whom.
+        /// At whom: the caster's game's guess (its crosshair's actor for a
+        /// spell delivered to its target, 0 for none), which the receiver
+        /// resolves against its own player (thuum docs/verbs/spell-cast.md).
+        /// Train-27: for a spell whose every effect is delivered to its
+        /// target (touch, target actor) the server relays the cast only at
+        /// its first hit, with that hit's target in this field, and never
+        /// when it hits nobody (wire-rules casts::CastFacts::lands_on_target);
+        /// a sender's guess is a hint, not trusted alone.
         pub target: u32,
         /// Spell form id.
         pub spell: u32,
@@ -1382,3 +1389,25 @@ wire_struct! {
         pub refused: bool,
     }
 }
+
+wire_struct! {
+    /// MsgType 46, thuum's (docs/verbs/cast-teleport.md, the teleport snap).
+    /// Server to client, reliable: the actor at `idx` made a jump the server
+    /// vouches for (a cast teleport's permitted landing, the arrival after a
+    /// move the server made, a permitted console jump), so the game places
+    /// its figure at the movement report that follows instead of gliding it
+    /// there (the glide covered 0.2 s, and a jump under 1024 units slid on
+    /// every other screen: playtest twenty-three). Sent to every other game
+    /// that sees the actor, just before that report's relay. Idempotent: a
+    /// second one before the report changes nothing. Reason codes:
+    /// `E_VAL_RANGE` (the invalid index, `u32::MAX`; 0 is the first actor's).
+    pub struct ActorJump {
+        /// `"t": 46`.
+        #[serde(default)]
+        pub t: MsgT<46>,
+        /// The actor's index on the wire, as its movement reports carry it;
+        /// the server hands indices out from 0.
+        pub idx: u32,
+    }
+}
+

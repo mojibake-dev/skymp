@@ -13,7 +13,11 @@ class ConditionFunctionMap;
 enum class ConditionsEvaluatorCaller
 {
   kDamageMultConditionalFormula,
-  kCraft
+  kCraft,
+  // thuum docs/DECISIONS.md ADR-039: an effect's own conditions before the
+  // server applies it to another player (Subject the actor it lands on,
+  // Target its caster)
+  kMagicEffect
 };
 
 struct ConditionsEvaluatorSettings
@@ -32,6 +36,11 @@ struct ConditionsEvaluatorSettings
 struct ConditionEvaluatorContext
 {
   std::optional<uint32_t> damageSourceFormId;
+  // thuum ADR-039: the pair an effect's conditions are judged for (the
+  // actor it lands on and its caster), for the functions that ask about the
+  // other actor (IsHostileToActor); 0 from the other callers
+  uint32_t effectVictimFormId = 0;
+  uint32_t effectCasterFormId = 0;
 };
 
 class ConditionsEvaluator

@@ -1,0 +1,42 @@
+# difftest figure-values (M2, thuum docs/verbs/figure-values.md): c1 and c2
+# are new characters (profiles 9 and 10, actors 0xff000002 and 0xff000003:
+# see melee-reach), both at the spawn, so each receives the other's
+# CreateActor with no record yet and no maxima in it, on both stacks. At 2 s
+# c1 reports its bases (Health 250, Magicka 120, Stamina 130, level 2),
+# which the fixed server records and turns into three property updates
+# (t 7: health, magicka, stamina) for every game that sees c1, c2's; the
+# legacy server has no ActorValues and sends nothing (actor-values.yaml). c2
+# steps aside at 4 s so it outlives c1, as in every session.
+id: figure-values
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 2000, send: {t: 40, bases: [{av: 24, base: 250.0}, {av: 25, base: 120.0}, {av: 26, base: 130.0}], skills: [], xp: 5.0, threshold: 75.0, level: 2, legendary: []}}
+  - {client: c2, at_ms: 4000, move: {dx: 1, dy: 0}}
+divergences:
+  - client: c2
+    msg: {t: 7, propName: health}
+    legacy: 0
+    wire: 1
+    reason: figure-values (thuum docs/verbs/figure-values.md), c1's recorded maximum for c2's figure of c1; the legacy server has no ActorValues record
+  - client: c2
+    msg: {t: 7, propName: magicka}
+    legacy: 0
+    wire: 1
+    reason: figure-values, as above
+  - client: c2
+    msg: {t: 7, propName: stamina}
+    legacy: 0
+    wire: 1
+    reason: figure-values, as above
+  - client: c2
+    msg: {t: 25, idx: 2}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout
+  - client: c2
+    msg: {t: 45}
+    legacy: 0
+    wire: 1
+    reason: the wire stack sends a player its globals to watch, and their recorded values, on its first movement after a login (docs/verbs/player-globals.md); the legacy server has no such message

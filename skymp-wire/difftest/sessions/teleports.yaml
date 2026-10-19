@@ -45,6 +45,11 @@ steps:
   - {client: c2, at_ms: 0, move: {dx: 50}}
   - {client: c2, at_ms: 5000, move: {dx: 60}}
 divergences:
+  - client: c2
+    msg: {t: 46}
+    legacy: 0
+    wire: 1
+    reason: the fixed server tells the other game to place the figure at c1's permitted jump at 3.3 s (ActorJump, the teleport snap); the legacy server relays the report alone
   - client: c1
     msg: {t: 41, text: "addspell done: b0a86df recorded", refused: false}
     legacy: 0

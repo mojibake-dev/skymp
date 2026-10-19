@@ -1,4 +1,5 @@
 #include "PartOne.h"
+#include "LocationalData.h"
 #include "wire_bridge_cxx/rules.h"
 #include <algorithm>
 #include <array>
@@ -157,6 +158,10 @@ struct PartOne::Impl
   // `headshot` block and every shooter's recent claimed bow hits
   rust::Box<skymp::rules::Headshots> headshots =
     skymp::rules::new_headshots("{}");
+
+  // the bonds (thuum docs/verbs/shadowbond.md): server-settings.json's
+  // `bonds` list and the bonds standing between actors
+  rust::Box<skymp::rules::Bonds> bonds = skymp::rules::new_bonds("[]");
 
   // a teleport's look, kept from its cast for its landing (thuum
   // docs/verbs/cast-teleport.md, the look on other screens), by the caster's
@@ -886,6 +891,9 @@ void PartOne::Init()
   pImpl->logger.reset(new spdlog::logger{ "empty logger" });
 
   worldState.gameTime = [this] { return GetGameTime(); };
+  worldState.fightBetween = [this](uint32_t a, uint32_t b) {
+    return pImpl->fights->between(a, b);
+  };
 
   pImpl->onSubscribe = [this](PartOneSendTargetWrapper* sendTarget,
                               MpObjectReference* emitter,
@@ -1341,6 +1349,20 @@ void PartOne::ExpectArrival(uint32_t actorFormId, uint32_t cellOrWorld,
                                          SteadyNowMs());
 }
 
+void PartOne::PinArrival(uint32_t actorFormId, uint32_t cellOrWorld,
+                         const NiPoint3& at, float radius, uint64_t holdMs)
+{
+  pImpl->movementBudgets->pin(actorFormId, cellOrWorld, at.x, at.y, radius,
+                              SteadyNowMs() + holdMs);
+}
+
+bool PartOne::PinnedAway(uint32_t actorFormId, uint32_t cellOrWorld,
+                         const NiPoint3& at)
+{
+  return pImpl->movementBudgets->pinned_away(actorFormId, cellOrWorld, at.x,
+                                             at.y, SteadyNowMs());
+}
+
 PartOne::JumpCheck PartOne::CheckArrival(uint32_t actorFormId,
                                          uint32_t cellOrWorld, float x,
                                          float y)
@@ -1353,6 +1375,96 @@ void PartOne::SetCastTeleportSettings(const std::string& castTeleportsJson)
 {
   pImpl->castTeleports = skymp::rules::new_cast_teleports(castTeleportsJson);
   spdlog::info("PartOne::SetCastTeleportSettings - {}", castTeleportsJson);
+}
+
+void PartOne::SetBondSettings(const std::string& bondsJson)
+{
+  pImpl->bonds = skymp::rules::new_bonds(bondsJson);
+  spdlog::info("PartOne::SetBondSettings - {}", bondsJson);
+}
+
+bool PartOne::IsBondSpell(uint32_t spellFormId) const
+{
+  const auto desc = FormDesc::FromFormId(spellFormId, worldState.espmFiles);
+  return pImpl->bonds->bond_duration_ms(desc.shortFormId, desc.file) > 0;
+}
+
+void PartOne::RecordBond(uint32_t casterFormId, uint32_t targetFormId,
+                         uint32_t spellFormId)
+{
+  const auto desc = FormDesc::FromFormId(spellFormId, worldState.espmFiles);
+  pImpl->bonds->record(casterFormId, targetFormId, desc.shortFormId, desc.file,
+                       SteadyNowMs());
+  spdlog::info("PartOne::RecordBond - {:x} bonds {:x} with spell {:x} (thuum "
+               "docs/verbs/shadowbond.md)",
+               casterFormId, targetFormId, spellFormId);
+}
+
+namespace {
+// thuum docs/verbs/shadowbond.md: how long the swap's places are held against
+// the mod's own script move in the caster's game (its poll is 0.2 s;
+// HYPOTHESIS that the second move comes within this, x-shadowbond reads it)
+constexpr uint64_t kBondPinMs = 1'500;
+}
+
+bool PartOne::BreakBondsOf(uint32_t actorFormId)
+{
+  const auto broken = pImpl->bonds->break_of(actorFormId, SteadyNowMs());
+  if (!broken.found) {
+    return false;
+  }
+  const auto caster = std::dynamic_pointer_cast<MpActor>(
+    worldState.LookupFormById(broken.caster));
+  const auto target = std::dynamic_pointer_cast<MpActor>(
+    worldState.LookupFormById(broken.target));
+  if (!caster || !target) {
+    spdlog::warn("PartOne::BreakBondsOf - {:x} acts, but its bond's actors "
+                 "{:x} and {:x} are not both here; nothing permitted",
+                 actorFormId, broken.caster, broken.target);
+    return false;
+  }
+  // the swap is a position change the server owns (R0): it moves both to
+  // each other's places itself. The mod's script runs in the caster's game
+  // only (ADR-029), so it moves the caster there too (the same spot, which
+  // the arrival rule reads as the arrival) and only the FIGURE of the other
+  // player, whose own game never moved: x-shadowbond 20261019-073758 on
+  // 4c7e6998 swapped c1 alone. A report from elsewhere while the teleport
+  // is on its way is dropped, not sent back (movement-speed.md, arrivals).
+  // The window and slack the bond carries are its record's; the arrival
+  // rule's radius and wait bound the landings now.
+  LocationalData casterTo;
+  casterTo.pos = target->GetPos();
+  casterTo.rot = caster->GetAngle();
+  casterTo.cellOrWorldDesc = target->GetCellOrWorld();
+  LocationalData targetTo;
+  targetTo.pos = caster->GetPos();
+  targetTo.rot = target->GetAngle();
+  targetTo.cellOrWorldDesc = caster->GetCellOrWorld();
+  caster->Teleport(casterTo);
+  target->Teleport(targetTo);
+  // the mod's script in the caster's game moves the caster once more after
+  // the swap, to where the target's figure now stands (its own spot), and
+  // undid the swap (x-shadowbond 20261019-083537 on 13acbb35); a report
+  // from away from the swap's place within the hold is sent back
+  // the pin's radius is half the swap's own distance (clamped in the rule):
+  // a swap shorter than the arrival radius slipped through a pin judged by
+  // it (x-shadowbond 20261019-090907, the two 150 units apart)
+  const float swapDistance = (casterTo.pos - targetTo.pos).Length();
+  PinArrival(broken.caster,
+             casterTo.cellOrWorldDesc.ToFormId(worldState.espmFiles),
+             casterTo.pos, swapDistance / 2.f, kBondPinMs);
+  PinArrival(broken.target,
+             targetTo.cellOrWorldDesc.ToFormId(worldState.espmFiles),
+             targetTo.pos, swapDistance / 2.f, kBondPinMs);
+  spdlog::info("PartOne::BreakBondsOf - {:x} acts: its bond with {:x} breaks; "
+               "the server swaps their places, {:x} to ({:.0f}, {:.0f}, "
+               "{:.0f}) and {:x} to ({:.0f}, {:.0f}, {:.0f}) (thuum "
+               "docs/verbs/shadowbond.md)",
+               actorFormId,
+               actorFormId == broken.caster ? broken.target : broken.caster,
+               broken.caster, casterTo.pos.x, casterTo.pos.y, casterTo.pos.z,
+               broken.target, targetTo.pos.x, targetTo.pos.y, targetTo.pos.z);
+  return true;
 }
 
 void PartOne::SetPlayerGlobalsSettings(const std::string& playerGlobalsJson)
@@ -1551,6 +1663,13 @@ PartOne::JumpCheck PartOne::CheckCastJump(uint32_t actorFormId,
     actorFormId, cellOrWorld, at.x, at.y, at.z, SteadyNowMs()));
 }
 
+bool PartOne::CastJumpLands(uint32_t actorFormId, uint32_t cellOrWorld,
+                            const NiPoint3& at) const
+{
+  return pImpl->movementBudgets->cast_jump_lands(
+    actorFormId, cellOrWorld, at.x, at.y, at.z, SteadyNowMs());
+}
+
 namespace {
 // A form a teleport's look names, as its entry writes it, to its id in the
 // server's load order, light plugins numbered as the engine numbers them
@@ -1736,6 +1855,12 @@ namespace {
 // daedra banishing's, none cast from a player's hand (thuum lab scan,
 // 2026-10-10), so the bound is for mods'
 constexpr float kTouchReach = 512.f;
+// thuum docs/verbs/spell-cast.md (train-27): how long a placed trigger's
+// cast (a rune) may claim the hit that trips it, milliseconds. The records
+// give no lifetime (PROJ Lifetime is 0 on the runes), so the engine's own
+// persistence is HYPOTHESIS; ten minutes bounds a rune a player walks into
+// late without keeping casts forever
+constexpr uint64_t kHazardWindowMs = 600'000;
 
 // thuum docs/verbs/second-hand.md: the spells a cast of `spell` can make,
 // read from the records, as global ids: a Cloak effect's associated spell
@@ -1835,6 +1960,11 @@ skymp::rules::CastFacts CastFactsFor(WorldState& worldState, uint32_t spell,
     const auto spellLookup = browser.LookupById(spell);
     float reach = 0.f;
     uint32_t longestS = 0;
+    // thuum docs/verbs/spell-cast.md (train-27): a spell whose every effect
+    // is delivered to its target, by touch or at a target actor (MGEF
+    // delivery 1 or 3, libespm MGEF::DATA::delivery), lands where no aim
+    // decides; its relay waits for its first hit, which names the target
+    bool landsOnTarget = !data.effects.empty();
     for (const auto& effect : data.effects) {
       if (effect.effectItem && effect.effectItem->areaOfEffect > 0) {
         facts.area = true;
@@ -1847,6 +1977,9 @@ skymp::rules::CastFacts CastFactsFor(WorldState& worldState, uint32_t spell,
       }
       const uint32_t mgefId = spellLookup.ToGlobalId(effect.effectFormId);
       const auto mgef = espm::GetData<espm::MGEF>(mgefId, &worldState);
+      if (mgef.data.delivery != 1 && mgef.data.delivery != 3) {
+        landsOnTarget = false;
+      }
       if (mgef.data.projectile == 0) {
         continue;
       }
@@ -1854,10 +1987,19 @@ skymp::rules::CastFacts CastFactsFor(WorldState& worldState, uint32_t spell,
         browser.LookupById(mgefId).ToGlobalId(mgef.data.projectile),
         &worldState);
       reach = std::max(reach, proj.range);
+      // thuum docs/verbs/spell-cast.md (train-27): a rune's projectile is a
+      // placed trigger whose hit comes when an actor walks into it, minutes
+      // after the cast (playtest twenty-three: the rune's hits refused as
+      // E_SPELL_NO_CAST once the cast reached the server at all), so its
+      // cast's claim lasts the hazard window instead of the bolt window
+      if (proj.IsPlacedTrigger()) {
+        facts.hazard_ms = kHazardWindowMs;
+      }
     }
     if (reach > 0.f) {
       facts.reach = reach;
     }
+    facts.lands_on_target = landsOnTarget;
     // thuum docs/verbs/second-hand.md: what the cast's records reach, and
     // for how long their hits may claim it (the wire-rules floor is the
     // bolt window; a concentration cast's open stream extends it)
@@ -1884,10 +2026,10 @@ skymp::rules::CastFacts CastFactsFor(WorldState& worldState, uint32_t spell,
 }
 }
 
-void PartOne::StartCast(uint32_t actorFormId, uint32_t spell, uint8_t hand,
+bool PartOne::StartCast(uint32_t actorFormId, uint32_t spell, uint8_t hand,
                         const NiPoint3& from)
 {
-  pImpl->spellCasts->start(
+  return pImpl->spellCasts->start(
     actorFormId, CastFactsFor(worldState, spell, hand, from), SteadyNowMs());
 }
 
@@ -1908,6 +2050,7 @@ PartOne::CastClaim PartOne::ClaimCast(uint32_t actorFormId, uint32_t spell,
   const auto claim = pImpl->spellCasts->claim(actorFormId, hit, SteadyNowMs());
   CastClaim res;
   res.scale = claim.scale;
+  res.relay = claim.relay;
   switch (claim.check) {
     case skymp::rules::CastCheck::Claimed:
       res.check = CastCheck::Claimed;

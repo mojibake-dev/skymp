@@ -124,6 +124,14 @@ impl Fights {
         self.fights.keys().any(|&(x, y)| x == actor || y == actor)
     }
 
+    /// Whether the two actors are in a fight with each other: what
+    /// IsHostileToActor asks between players (thuum ADR-039, the vanilla
+    /// cloaks' damage effects gate on it). Symmetric, as the record is.
+    #[must_use]
+    pub fn between(&self, a: u32, b: u32) -> bool {
+        a != b && self.fights.contains_key(&pair(a, b))
+    }
+
     /// The actor is gone: its fights end without a notice.
     pub fn forget(&mut self, actor: u32) {
         self.fights.retain(|&(x, y), _| x != actor && y != actor);
@@ -153,6 +161,8 @@ mod tests {
         assert!(!f.hit(2, 1, 3_000)); // the same fight, either way round
         assert!(!f.hit(1, 2, 50_000));
         assert!(f.in_fight(1) && f.in_fight(2) && !f.in_fight(3));
+        assert!(f.between(1, 2) && f.between(2, 1));
+        assert!(!f.between(1, 3) && !f.between(1, 1));
         assert_eq!(f.pairs(), vec![(1, 2)]);
         assert!(!f.hit(4, 4, 0)); // a self-hit is no fight
     }

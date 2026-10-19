@@ -40,6 +40,11 @@ void ConditionsEvaluator::EvaluateConditions(
       enableLogging = true;
       break;
     }
+    if (callerToLog == "MagicEffect" &&
+        caller == ConditionsEvaluatorCaller::kMagicEffect) {
+      enableLogging = true;
+      break;
+    }
   }
 
   std::vector<int> conditionResolutions;

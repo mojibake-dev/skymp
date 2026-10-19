@@ -266,6 +266,11 @@ public:
   // Papyrus's time natives read it.
   std::function<GameTimeNow()> gameTime;
 
+  // Whether two player actors are in a fight with each other (thuum
+  // ADR-023's record, installed by PartOne); IsHostileToActor answers from
+  // it for an effect between players (ADR-039)
+  std::function<bool(uint32_t, uint32_t)> fightBetween;
+
   bool npcEnabled = false;
   std::unordered_map<std::string, NpcSettingsEntry> npcSettings;
   NpcSettingsEntry defaultSetting;

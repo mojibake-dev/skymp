@@ -272,6 +272,13 @@ public:
 
   BaseActorValues GetBaseValues();
   BaseActorValues GetMaximumValues();
+  // thuum docs/verbs/figure-values.md: the maxima the other games set as
+  // this player's figure's base Health, Magicka and Stamina (the recorded
+  // bases 24, 25, 26 with the running buffs: GetMaximumValues), present once
+  // a record exists; before it the figure keeps the engine's defaults
+  std::optional<BaseActorValues> RecordedMaxima();
+  // ... and their trip to every game that sees the figure, when they change
+  void SendMaximaToListeners();
 
   void DropItem(const uint32_t baseId, const Inventory::Entry& entry);
   void SetIsBlockActive(bool isBlockActive);
@@ -342,6 +349,17 @@ public:
   // such a rider stays out
   static bool IsConditionGated(WorldState* worldState,
                                const espm::Effects::Effect& effect);
+  // thuum docs/DECISIONS.md ADR-039: whether the effect's conditions (the
+  // spell's on its entry and the effect record's own) hold for `victim`
+  // when `caster` applies it: Subject the actor the effect lands on, Target
+  // the caster (the engine's reading for a magic effect's conditions,
+  // HYPOTHESIS until a lab run shows a Target row; CK wiki "Condition
+  // Functions"). A function the server cannot evaluate refuses the effect
+  // and logs E_CONDITION_UNKNOWN; no conditions hold trivially
+  static bool EffectConditionsHold(WorldState* worldState,
+                                   const espm::Effects::Effect& effect,
+                                   uint32_t source, const MpActor& victim,
+                                   const MpActor& caster);
   // thuum docs/verbs/god-mode.md: TGM and TIM, the server's flags for the
   // player's session (cleared at its departure). A god actor takes no
   // damage from another actor and spends no arrow; an immortal actor's

@@ -30,6 +30,7 @@ import { DropItemService } from "./services/services/dropItemService";
 import { HitService } from "./services/services/hitService";
 import { RagdollService } from "./services/services/ragdollService";
 import { DeathService } from "./services/services/deathService";
+import { HeadshotPredictionService } from "./services/services/headshotPredictionService";
 import { ContainersService } from "./services/services/containersService";
 import { NetworkingService } from "./services/services/networkingService";
 import { RemoteServer } from "./services/services/remoteServer";
@@ -101,6 +102,7 @@ const main = () => {
       new HitService(sp, controller),
       new RagdollService(sp, controller),
       new DeathService(sp, controller),
+      new HeadshotPredictionService(sp, controller),
       new ContainersService(sp, controller),
       new NetworkingService(sp, controller),
       new RemoteServer(sp, controller),

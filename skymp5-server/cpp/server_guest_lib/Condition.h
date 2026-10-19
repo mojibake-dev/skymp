@@ -26,4 +26,8 @@ struct Condition
   std::string parameter1;      // hex uint32_t ("0xDEADBEEF")
   std::string parameter2;      // hex uint32_t ("0xDEADBEEF")
   std::string logicalOperator; // OR, AND
+  // the record's function index (UESP "Skyrim Mod:Function Indices"), kept
+  // beside the name so an unknown function can be named in a refusal
+  // (thuum ADR-039); not serialized
+  uint16_t functionIndex = 0;
 };

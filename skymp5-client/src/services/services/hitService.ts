@@ -1,7 +1,7 @@
 // TODO: refactor this out
 import { localIdToRemoteId } from "../../view/worldViewMisc";
 
-import { ActiveMagicEffect, Form, FormType, Game, HitEvent, MagicEffect, ObjectReference, Spell, storage } from "skyrimPlatform";
+import { ActiveMagicEffect, Form, FormType, Game, HitEvent, MagicEffect, ObjectReference, Scroll, Spell, Weapon, printConsole, storage } from "skyrimPlatform";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { MsgType } from "../../messages";
 import { Hit } from "../messages/hitMessage";
@@ -167,16 +167,34 @@ export class HitService extends ClientListener {
             }
         }
 
-        const base = e.target.getBaseObject();
-        const type = base?.getType();
+        // thuum docs/research/apocalypse/target-location.md (playtest
+        // twenty-three): a call on a projectile reference aborts in the
+        // engine's VM ("Bad call result 4", kFailedAbort; LAB.md), and a hit
+        // whose target or source is one ended this handler five times in
+        // the caster's game, the rune trips among them, taking the rest of
+        // the update's hits with it. Such a hit is nobody's: it is dropped
+        // and logged once, and the handler goes on
+        let type: FormType | undefined;
+        let isWeapon: Weapon | null = null;
+        let isSpell: Spell | null = null;
+        let isScroll: Scroll | null = null;
+        try {
+            const base = e.target.getBaseObject();
+            type = base?.getType();
+            isWeapon = this.sp.Weapon.from(e.source);
+            isSpell = isWeapon ? null : this.sp.Spell.from(e.source);
+            isScroll = isWeapon || isSpell ? null : this.sp.Scroll.from(e.source);
+        } catch (err) {
+            if (!this.abortedHitLogged) {
+                this.abortedHitLogged = true;
+                printConsole(`hitService: a hit's form call aborted (aggressor ${aggressor.toString(16)}): ${String(err)}`);
+            }
+            return;
+        }
 
         if (type === FormType.Static || type === FormType.MovableStatic) {
             return;
         }
-
-        const isWeapon = this.sp.Weapon.from(e.source);
-        const isSpell = !isWeapon && this.sp.Spell.from(e.source);
-        const isScroll = !isWeapon && !isSpell && this.sp.Scroll.from(e.source);
 
         if (!isWeapon && !isSpell && !isScroll) {
             return;
@@ -274,5 +292,6 @@ export class HitService extends ClientListener {
     private appliedOn = new Map<number, number>();
     private heldUnarmed: Array<{ frame: number; target: number; send: () => void }> = [];
     private magicHitsFrame = -1;
+    private abortedHitLogged = false;
     private magicHitsThisFrame = new Map<string, number>();
 }

@@ -47,6 +47,10 @@ Effects::Data Effects::GetData(
                  orderFlag) {
         // a condition after an EFIT gates that effect
         result.effects[effectIndex - 1].hasConditions = true;
+        if (size >= sizeof(CTDA)) {
+          result.effects[effectIndex - 1].conditions.push_back(
+            *reinterpret_cast<const CTDA*>(data));
+        }
       }
       if (!isValid) {
         auto name = parent->GetEditorId(compressedFieldsCache);

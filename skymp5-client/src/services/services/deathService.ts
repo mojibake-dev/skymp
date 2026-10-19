@@ -81,6 +81,11 @@ export class DeathService extends ClientListener {
   }
 
   private applyDeathState = (actor: Actor, isDead: boolean) => {
+    if (isDead === true) {
+      // thuum docs/verbs/headshot.md (ADR-038): the server's word confirms
+      // a death this game played ahead; the real kill goes over the ragdoll
+      this.predicted.delete(actor.getFormID());
+    }
     if (actor.isDead() === isDead && this.isPlayer(actor) === false) {
       return;
     }
@@ -90,6 +95,48 @@ export class DeathService extends ClientListener {
       this.resurrectActor(actor);
     }
   };
+
+  // thuum docs/verbs/headshot.md (ADR-038, Eli: "for marksman combat, some
+  // elements at least, the feel is more important"): a figure's death this
+  // game plays ahead of the server's word, the way the local player's own
+  // death is played (the ragdoll, nothing killed: the figure's million and
+  // startDeferredKill stand), and takes back if the word never comes. The
+  // kill itself stays the server's (ADR-028); this is its playback.
+  private readonly predicted = new Map<number, number>();
+
+  public predictFigureDeath(actor: Actor): boolean {
+    if (this.isPlayer(actor) || actor.isDead()) {
+      return false;
+    }
+    const id = actor.getFormID();
+    if (this.predicted.has(id)) {
+      return false;
+    }
+    this.predicted.set(id, Date.now());
+    actor.pushActorAway(actor, 0);
+    return true;
+  }
+
+  public hasPredictedDeath(actorId: number): boolean {
+    return this.predicted.has(actorId);
+  }
+
+  // the word never came: the figure stands back up where it fell
+  public revertPredictedDeath(actor: Actor): void {
+    const id = actor.getFormID();
+    if (!this.predicted.delete(id) || actor.isDead()) {
+      return;
+    }
+    const ragdollService = this.controller.lookupListener(RagdollService);
+    ragdollService.safeRemoveRagdollFromWorld(actor, () => {
+      const again = Actor.from(this.sp.Game.getFormEx(id));
+      if (!again || again.isDead()) {
+        return;
+      }
+      again.setAnimationVariableInt("iGetUpType", 1);
+      this.sp.Debug.sendAnimationEvent(again, AnimationEventName.GetUpBegin);
+    });
+  }
 
   private killActor = (actor: Actor, killer: Actor | null = null): void => {
     if (this.isPlayer(actor) === true) {

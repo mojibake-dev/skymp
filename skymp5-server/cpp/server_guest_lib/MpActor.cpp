@@ -3,6 +3,8 @@
 #include "ActorValues.h"
 #include "ActorValuesMessage.h"
 #include "ChangeFormGuard.h"
+#include "Condition.h"
+#include "ConditionsEvaluator.h"
 #include "CropRegeneration.h"
 #include "EvaluateTemplate.h"
 #include "FormCallbacks.h"
@@ -427,6 +429,19 @@ void MpActor::VisitProperties(CreateActorMessage& message,
   if (mode == VisitPropertiesMode::All) {
     baseActorValues.VisitBaseActorValuesAndPercentages(baseActorValues,
                                                        changeForm, message);
+  }
+
+  // thuum docs/verbs/figure-values.md: another game's figure of this player
+  // carries the player's recorded maxima as its base values, instead of the
+  // million the client used to set, so a script there reads Skyrim's number
+  // (Finger of Death's threshold, Nature's Balance's swap). Nothing travels
+  // before the first record: the figure keeps the engine's defaults
+  if (mode == VisitPropertiesMode::OnlyPublic) {
+    if (const auto maxima = RecordedMaxima()) {
+      message.props.health = maxima->health;
+      message.props.magicka = maxima->magicka;
+      message.props.stamina = maxima->stamina;
+    }
   }
 
   message.props.learnedSpells = changeForm.learnedSpells.GetLearnedSpells();
@@ -2171,6 +2186,39 @@ BaseActorValues MpActor::GetMaximumValues()
   return values;
 }
 
+std::optional<BaseActorValues> MpActor::RecordedMaxima()
+{
+  const auto recorded = [this](uint8_t av) {
+    const auto base = GetRecordedActorValueBase(av);
+    return base && *base > 0.f;
+  };
+  if (!recorded(24) && !recorded(25) && !recorded(26)) {
+    return std::nullopt;
+  }
+  return GetMaximumValues();
+}
+
+void MpActor::SendMaximaToListeners()
+{
+  const auto maxima = RecordedMaxima();
+  if (!maxima) {
+    return;
+  }
+  // the same three props CreateActor carries to an observer, as property
+  // updates (the owner's own values travel by ChangeValues and its record)
+  SendMessageToActorListeners(
+    CreatePropertyMessage_(this, "health", fmt::format("{}", maxima->health)),
+    true);
+  SendMessageToActorListeners(
+    CreatePropertyMessage_(this, "magicka",
+                           fmt::format("{}", maxima->magicka)),
+    true);
+  SendMessageToActorListeners(
+    CreatePropertyMessage_(this, "stamina",
+                           fmt::format("{}", maxima->stamina)),
+    true);
+}
+
 void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
 {
   constexpr float kDeletionTimeSeconds = 2 * 60;
@@ -2909,6 +2957,61 @@ bool MpActor::IsConditionGated(WorldState* worldState,
   }
 }
 
+bool MpActor::EffectConditionsHold(WorldState* worldState,
+                                   const espm::Effects::Effect& effect,
+                                   uint32_t source, const MpActor& victim,
+                                   const MpActor& caster)
+{
+  if (!worldState) {
+    return false;
+  }
+  std::vector<Condition> conditions;
+  for (const auto& ctda : effect.conditions) {
+    conditions.push_back(Condition::FromCtda(ctda));
+  }
+  try {
+    const auto mgef = espm::GetData<espm::MGEF>(effect.effectId, worldState);
+    for (const auto& ctda : mgef.conditions) {
+      conditions.push_back(Condition::FromCtda(ctda));
+    }
+  } catch (std::exception& e) {
+    spdlog::warn("EffectConditionsHold - effect {:x}: {}; refused",
+                 effect.effectId, e.what());
+    return false;
+  }
+  if (conditions.empty()) {
+    return true;
+  }
+  const auto& map = worldState->conditionFunctionMap;
+  for (const auto& condition : conditions) {
+    if (!map.GetConditionFunction(condition.functionIndex)) {
+      spdlog::warn("MpActor::EffectConditionsHold - E_CONDITION_UNKNOWN: "
+                   "function {} ({}) on effect {:x} of {:x}, cast by {:x} at "
+                   "{:x}; refused (thuum ADR-039)",
+                   condition.function.empty() ? "?" : condition.function,
+                   condition.functionIndex, effect.effectId, source,
+                   caster.GetFormId(), victim.GetFormId());
+      return false;
+    }
+  }
+  bool holds = false;
+  ConditionEvaluatorContext context;
+  context.damageSourceFormId = source;
+  context.effectVictimFormId = victim.GetFormId();
+  context.effectCasterFormId = caster.GetFormId();
+  ConditionsEvaluator::EvaluateConditions(
+    map, worldState->conditionsEvaluatorSettings,
+    ConditionsEvaluatorCaller::kMagicEffect, conditions, victim, caster,
+    [&](bool result, std::vector<std::string>&) { holds = result; }, context);
+  if (!holds) {
+    spdlog::info("MpActor::EffectConditionsHold - effect {:x} of {:x} by {:x} "
+                 "at {:x}: its conditions fail; not applied (thuum ADR-039)",
+                 effect.effectId, source, caster.GetFormId(),
+                 victim.GetFormId());
+  }
+  return holds;
+}
+
 void MpActor::ApplyEffects(uint32_t source,
                            const std::vector<espm::Effects::Effect>& effects,
                            float scale, uint32_t caster, bool stream)
@@ -2916,6 +3019,14 @@ void MpActor::ApplyEffects(uint32_t source,
   WorldState* worldState = GetParent();
   if (!worldState || IsDead()) {
     return;
+  }
+  // thuum docs/DECISIONS.md ADR-039: another actor's effect is applied only
+  // if its conditions hold for this actor; a self effect keeps the gate
+  // below (ADR-029's default: the caster's own game runs it)
+  std::shared_ptr<MpActor> casterActor;
+  if (caster != 0 && caster != GetFormId()) {
+    casterActor =
+      std::dynamic_pointer_cast<MpActor>(worldState->LookupFormById(caster));
   }
   const auto& files = worldState->espmFiles;
   const BaseActorValues maxBefore = GetMaximumValues();
@@ -2926,9 +3037,14 @@ void MpActor::ApplyEffects(uint32_t source,
   std::array<float, 3> deltas{};
   std::array<bool, 3> touched{};
   for (const auto& effect : effects) {
-    if (IsConditionGated(worldState, effect)) {
-      // until the server evaluates conditions: a perk's extras stay out,
-      // whether the spell gates them or their own record does
+    if (casterActor) {
+      if (!EffectConditionsHold(worldState, effect, source, *this,
+                                *casterActor)) {
+        continue;
+      }
+    } else if (IsConditionGated(worldState, effect)) {
+      // a self effect, until the server evaluates its conditions: a perk's
+      // extras stay out, whether the spell gates them or their own record
       continue;
     }
     const auto facts = EffectFactsOf(worldState, source, effect);
@@ -3148,6 +3264,13 @@ void MpActor::ApplyAttributeDeltas(const std::array<float, 3>& deltas,
     }
   }
   NetSetPercentages(values, aggressor, avs);
+  // a buff that moved a maximum moves the figure's base in the other games
+  // too (thuum docs/verbs/figure-values.md: c1 drinks, c2's figure follows)
+  if (maxAfter.health != maxBefore.health ||
+      maxAfter.magicka != maxBefore.magicka ||
+      maxAfter.stamina != maxBefore.stamina) {
+    SendMaximaToListeners();
+  }
 }
 
 std::array<std::optional<Inventory::Entry>, 2> MpActor::GetEquippedWeapon()

@@ -1,4 +1,5 @@
 #include "TestUtils.hpp"
+#include "wire_bridge_cxx/rules.h"
 #include <catch2/catch_all.hpp>
 
 #include "ActionListener.h"
@@ -6,6 +7,8 @@
 #include "HitMessage.h"
 #include "MsgType.h"
 #include "SpellCastMessage.h"
+
+#include <chrono>
 
 PartOne& GetPartOne();
 
@@ -17,7 +20,11 @@ PartOne& GetPartOne();
 // concentration spell of FireDamageConcAimedCloak at 8 a second; Firebolt
 // 0x12FD0 reaches nothing. Against the victim's recorded 250 Health a
 // first proc report counts one cadence, half a second (wire-rules
-// REACHED_TICK_MS): 4 damage, 0.984 left.
+// REACHED_TICK_MS): 4 damage, 0.984 left. The cloak's damage effect 0x10CBDD
+// gates on IsHostileToActor (719), Skyrim's own rule that a cloak does
+// nothing to a peaceful neighbour (lab b-cloak-fight), which the server
+// judges from ADR-023's fights (thuum ADR-039): the proc counts within a
+// fight another hit began, and a proc refused that way begins no fight.
 namespace {
 constexpr uint32_t kFlameCloak = 0x000de511;
 constexpr uint32_t kFlameCloakDmg = 0x0002b385;
@@ -89,6 +96,16 @@ float Health(PartOne& p)
     .actorValues.healthPercentage;
 }
 
+// a fight between the two, begun by another hit (ADR-023's record)
+void Fight(PartOne& p)
+{
+  const auto nowMs = static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch())
+      .count());
+  REQUIRE(p.GetFights().hit(kCaster, kTarget, nowMs));
+}
+
 void Leave(PartOne& p)
 {
   p.DestroyActor(kTarget);
@@ -109,6 +126,7 @@ TEST_CASE("A cloak's spell counts as its caster's hit, by the time it held",
   REQUIRE(Health(p) == Catch::Approx(1.f));
 
   Cast(p, kFlameCloak);
+  Fight(p);
   Hits(p, kFlameCloakDmg);
   REQUIRE(Health(p) == Catch::Approx(0.984f));
   // the same report again counts the time since the first, which is the
@@ -127,5 +145,22 @@ TEST_CASE("A spell no recorded cast reaches is refused", "[SecondHand][espm]")
   Cast(p, kFirebolt);
   Hits(p, kFlameCloakDmg);
   REQUIRE(Health(p) == Catch::Approx(1.f));
+  Leave(p);
+}
+
+TEST_CASE(
+  "A cloak's spell on a neighbour not in a fight is refused and begins "
+  "no fight",
+  "[SecondHand][espm]")
+{
+  PartOne& p = GetPartOne();
+  Duel(p, kFlameCloak);
+  Cast(p, kFlameCloak);
+  // the engine never reports this proc (lab b-cloak-fight); a report of it
+  // is judged by the effect's own IsHostileToActor and refused, and a hit
+  // whose every effect is refused is no hit between the two
+  Hits(p, kFlameCloakDmg);
+  REQUIRE(Health(p) == Catch::Approx(1.f));
+  REQUIRE_FALSE(p.GetFights().in_fight(kTarget));
   Leave(p);
 }

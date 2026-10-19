@@ -64,6 +64,7 @@ import { TimeService } from './timeService';
 import { logTrace, logError } from '../../logging';
 
 import { SpellCastMessage } from '../messages/spellCastMessage';
+import { ActorJumpMessage } from '../messages/actorJumpMessage';
 import { UpdateAnimVariablesMessage } from '../messages/updateAnimVariablesMessage';
 import { UpdateActionMessage } from '../messages/updateActionMessage';
 import { MsgType } from '../../messages';
@@ -147,6 +148,7 @@ export class RemoteServer extends ClientListener {
     this.controller.emitter.on("connectionAccepted", () => this.handleConnectionAccepted());
 
     this.controller.emitter.on("spellCastMessage", (e) => this.onSpellCastMessage(e));
+    this.controller.emitter.on("actorJumpMessage", (e) => this.onActorJumpMessage(e));
     this.controller.emitter.on("updateAnimVariablesMessage", (e) => this.onUpdateAnimVariablesMessage(e));
     this.controller.emitter.on("updateActionMessage", (e) => this.onUpdateActionMessage(e));
 
@@ -687,10 +689,26 @@ export class RemoteServer extends ClientListener {
     }
 
     form.movement = msg.data;
+    // thuum docs/verbs/cast-teleport.md (the teleport snap): the server
+    // vouched for this report as a jump, so the view places the figure
+    const placedUntil = this.placedIdx.get(msg.idx);
+    if (placedUntil !== undefined) {
+      this.placedIdx.delete(msg.idx);
+      if (Date.now() <= placedUntil) {
+        form.movement.placed = true;
+      }
+    }
     if (!form.numMovementChanges) {
       form.numMovementChanges = 0;
     }
     form.numMovementChanges++;
+  }
+
+  // the server's word that the next report of this actor is a jump; kept a
+  // second, long past the report that follows it on the same connection
+  private readonly placedIdx = new Map<number, number>();
+  private onActorJumpMessage(event: ConnectionMessage<ActorJumpMessage>): void {
+    this.placedIdx.set(event.message.idx, Date.now() + 1000);
   }
 
   private onUpdateAnimationMessage(event: ConnectionMessage<UpdateAnimationMessage>): void {

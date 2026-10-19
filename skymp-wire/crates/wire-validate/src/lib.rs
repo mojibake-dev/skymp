@@ -582,6 +582,15 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
             }
             check_pos(&m.pos)
         }
+        // thuum docs/verbs/cast-teleport.md: a placement names an actor by
+        // its world index, which the server hands out from 0 (the first
+        // actor's); only the invalid index is out of range
+        Message::ActorJump(m) => {
+            if m.idx == u32::MAX {
+                return Err(Reject::Range);
+            }
+            Ok(())
+        }
         Message::SetGameTime(m) => {
             if !all_finite(m) {
                 return Err(Reject::NonFinite);
@@ -1622,5 +1631,23 @@ mod tests {
                 prop_assert!(b.tokens <= b.capacity);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod actor_jump_tests {
+    use super::*;
+
+    #[test]
+    fn a_placement_names_any_actor_index_but_the_invalid_one() {
+        // thuum docs/verbs/cast-teleport.md: WorldState hands out indices from
+        // 0, so the first actor is idx 0 (the lab's c1 in a fresh world:
+        // x-azure-player 20261019-064704 saw its snap refused with the old
+        // rule); only FormIndex::g_invalidIdx (u32::MAX) is no actor
+        let placement = |idx: u32| Message::ActorJump(skymp::ActorJump { t: Default::default(), idx });
+        assert_eq!(validate_server(&placement(0)), Ok(()));
+        assert_eq!(validate_server(&placement(1)), Ok(()));
+        assert_eq!(validate_server(&placement(u32::MAX - 1)), Ok(()));
+        assert_eq!(validate_server(&placement(u32::MAX)), Err(Reject::Range));
     }
 }

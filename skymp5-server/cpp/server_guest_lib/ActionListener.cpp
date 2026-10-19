@@ -196,14 +196,29 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
                             currentPos.x, currentPos.y);
     }
 
+    bool placed = false;
     if (!MovementValidation::Validate(
           partOne, currentPos, currentRot, currentCellOrWorld,
           teleportFlag && !isPlayersOwn
             ? kInfinityPos
             : NiPoint3{ msg.data.pos[0], msg.data.pos[1], msg.data.pos[2] },
           FormDesc::FromFormId(msg.data.worldOrCell, espmFiles),
-          rawMsgData.userId, actor, espmFiles)) {
+          rawMsgData.userId, actor, espmFiles, &placed)) {
       return;
+    }
+
+    // thuum docs/verbs/cast-teleport.md (the teleport snap, playtest
+    // twenty-three: a jump under 1024 units slid on every other screen): a
+    // move the server vouches for as a jump tells the other games to place
+    // the figure at the report that follows, reliably and before it
+    if (placed) {
+      ActorJumpMessage jump;
+      jump.idx = msg.idx;
+      for (auto listener : actor->GetActorListeners()) {
+        if (listener != actor) {
+          listener->GetActorToSendTo().SendToUser(jump, true);
+        }
+      }
     }
 
     RelayToListeners(*actor, rawMsgData.unparsed, rawMsgData.unparsedLength,
@@ -627,7 +642,7 @@ std::optional<espm::MGEF::EffectType> ConcealmentExceptionOf(
 // and told every game at once, and the observer's dispel, landing after its
 // figure's fresh cast, ended the new copy: playtest nineteen's "if i REcast
 // it i lose invisibility on the other players screen but not my own".
-void EndConcealment(MpActor& actor, uint32_t castSpell = 0)
+void EndConcealment(PartOne& partOne, MpActor& actor, uint32_t castSpell = 0)
 {
   const auto exception = ConcealmentExceptionOf(actor.GetParent(), castSpell);
   bool ended = false;
@@ -647,6 +662,17 @@ void EndConcealment(MpActor& actor, uint32_t castSpell = 0)
                  "state end{}",
                  actor.GetFormId(),
                  exception ? " (but the one its own spell carries)" : "");
+  }
+  // thuum docs/verbs/shadowbond.md: a bonded actor's act is the mod's trigger
+  // for the swap, whether or not the server holds its concealment: the
+  // caster's invisibility is the mod's script's, run in its game alone
+  // (ADR-029), so the server records none for it and the gate on `ended`
+  // never opened for the caster's own attack (x-shadowbond 20261019-081315
+  // on 9fb0732f: bond recorded, Flames cast, no break). The bond spell's
+  // own cast is not an act against it: the bond is recorded at that cast's
+  // hit, after this
+  if (!partOne.IsBondSpell(castSpell)) {
+    partOne.BreakBondsOf(actor.GetFormId());
   }
 }
 
@@ -1056,7 +1082,7 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
   // HYPOTHESIS until a lab run); the player's own here, a hosted actor's in
   // its host's game
   if (msg.data.caster == 0x14) {
-    EndConcealment(*ac);
+    EndConcealment(partOne, *ac);
   }
   if (hosterId) {
     auto actor =
@@ -1782,6 +1808,11 @@ void ActionListener::OnActorValues(const RawMessageData& rawMsgData,
                "{}{}",
                rawMsgData.userId, actor->GetFormId(), msg.bases.size(),
                msg.level, changed ? "" : ", unchanged");
+  if (changed) {
+    // thuum docs/verbs/figure-values.md: the other games' figures of this
+    // player take the new maxima
+    actor->SendMaximaToListeners();
+  }
   if (holding) {
     // values the server set that this report does not carry: the record
     // goes back so the player's game applies them
@@ -1982,7 +2013,7 @@ void ActionListener::OnPlayerBowShot(const RawMessageData& rawMsgData,
   // thuum docs/verbs/self-cast.md: the engine's bow release ends its
   // shooter's concealment after the shot (ArrowReleaseHandler 42859 calls
   // DispelAlteredStates with no exception; HYPOTHESIS until a lab run)
-  EndConcealment(*ac);
+  EndConcealment(partOne, *ac);
   ArrowShotMessage relay;
   relay.idx = ac->GetIdx();
   relay.weaponId = msg.weaponId;
@@ -2865,6 +2896,32 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
         return;
       }
       magnitudeScale = claim.scale;
+      // thuum docs/verbs/shadowbond.md: a bond spell's claimed hit bonds
+      // the two until either acts, or the spell's duration ends
+      if (targetRef->GetFormId() != aggressor->GetFormId() &&
+          partOne.IsBondSpell(hitData.source)) {
+        partOne.RecordBond(aggressor->GetFormId(), targetRef->GetFormId(),
+                           hitData.source);
+      }
+      if (claim.relay) {
+        // the first hit of a cast delivered to its target: the cast goes
+        // to the other games now, at the target this hit names
+        for (auto it = pendingCastRelays.begin();
+             it != pendingCastRelays.end(); ++it) {
+          if (it->first.first == aggressor->GetFormId() &&
+              it->second.spell == hitData.source) {
+            SpellCastData relayed = it->second;
+            relayed.target = targetRef->GetFormId();
+            spdlog::info("ActionListener::OnHit - {:x} cast {:x} relayed at "
+                         "its first hit, on {:x}",
+                         aggressor->GetFormId(), hitData.source,
+                         targetRef->GetFormId());
+            RelayCast(*aggressor, *myActor, relayed);
+            pendingCastRelays.erase(it);
+            break;
+          }
+        }
+      }
     }
     OnSpellHit(aggressor, targetRef, hitData, magnitudeScale);
     return;
@@ -3154,6 +3211,14 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
   // the client chose, which each neighbour's game reads as its own player
   if (spellCastData.interruptCast) {
     partOne.EndCast(caster->GetFormId(), hand);
+    // a stream delivered to its target that ended before any hit: its start
+    // never reached the other games, so neither does its end
+    if (pendingCastRelays.erase({ caster->GetFormId(), hand }) > 0) {
+      spdlog::info("ActionListener::OnSpellCast - {:x} ended {:x} in hand "
+                   "{} before it hit anyone; not relayed",
+                   caster->GetFormId(), spellCastData.spell, hand);
+      return;
+    }
     RelayCast(*caster, *myActor, spellCastData);
     return;
   }
@@ -3188,7 +3253,7 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
                  caster->GetFormId(), *shout, facts.variation,
                  spellCastData.spell,
                  partOne.VoiceRecoveryLeftMs(caster->GetFormId()) / 1000.0);
-    EndConcealment(*caster, spellCastData.spell);
+    EndConcealment(partOne, *caster, spellCastData.spell);
     RunSelfSpell(partOne.worldState, *caster, spellCastData.spell);
     RelayCast(*caster, *myActor, spellCastData);
     return;
@@ -3202,10 +3267,13 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
   }
 
   // the cast waits for its hit (a stream stays open until its end), and
-  // every screen draws it
-  partOne.StartCast(caster->GetFormId(), spellCastData.spell, hand,
-                    caster->GetPos());
-  EndConcealment(*caster, spellCastData.spell);
+  // every screen draws it; one delivered to its target (touch, target
+  // actor) is drawn there only once its first hit names the target (thuum
+  // docs/verbs/spell-cast.md, playtest twenty-three: the caster's guess at
+  // the target was 0 at every Shadowbond and Azure Reconstruction cast)
+  const bool relayAtFirstHit = partOne.StartCast(
+    caster->GetFormId(), spellCastData.spell, hand, caster->GetPos());
+  EndConcealment(partOne, *caster, spellCastData.spell);
   RunSelfSpell(partOne.worldState, *caster, spellCastData.spell);
 
   // thuum docs/verbs/cast-teleport.md: a spell the server names as a
@@ -3241,7 +3309,14 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
                    "reach {}; relayed",
                    caster->GetFormId(), spellCastData.spell, teleportReach);
     }
-    RelayCast(*caster, *myActor, spellCastData);
+    if (relayAtFirstHit) {
+      pendingCastRelays[{ caster->GetFormId(), hand }] = spellCastData;
+      spdlog::info("ActionListener::OnSpellCast - {:x} cast {:x} in hand {}, "
+                   "delivered to its target; relay waits for its first hit",
+                   caster->GetFormId(), spellCastData.spell, hand);
+    } else {
+      RelayCast(*caster, *myActor, spellCastData);
+    }
   }
 
   auto& browser = partOne.worldState.GetEspm().GetBrowser();
@@ -3324,13 +3399,21 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
   // ragdoll"; HYPOTHESIS: the engine's stagger at Unrelenting Force's 1.5
   // knocks the target down, to read on the lab)
   float spellStagger = 0.f;
+  bool anyEffectHeld = false;
   for (const auto& effect : effects) {
-    if (MpActor::IsConditionGated(&partOne.worldState, effect)) {
-      // a perk's rider (the Impact perk's stagger on every Firebolt, read
-      // in the lab's logs: 67 of 91 hits staggered with no perk) waits on
-      // conditions, as ApplyEffects' effects do
+    // a perk's rider (the Impact perk's stagger on every Firebolt, read in
+    // the lab's logs: 67 of 91 hits staggered with no perk) is judged by its
+    // conditions as ApplyEffects' effects are (thuum ADR-039: HasPerk is
+    // unknown to the server before M5, so it refuses and logs)
+    const bool gated = aggressor != targetActorPtr
+      ? !MpActor::EffectConditionsHold(&partOne.worldState, effect,
+                                       hitData.source, *targetActorPtr,
+                                       *aggressor)
+      : MpActor::IsConditionGated(&partOne.worldState, effect);
+    if (gated) {
       continue;
     }
+    anyEffectHeld = true;
     try {
       if (espm::GetData<espm::MGEF>(effect.effectId, &partOne.worldState)
             .data.effectType == espm::MGEF::EffectType::Stagger) {
@@ -3350,9 +3433,14 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
                targetActorPtr->GetFormId(), hitData.source, scale,
                stream ? "a stream's seconds" : "once", aggressor->GetFormId());
 
-  // a spell hit begins a fight as a weapon's does (ADR-023)
-  NotifyHostility(*aggressor, *targetActorPtr,
-                  std::chrono::steady_clock::now());
+  // a spell hit begins a fight as a weapon's does (ADR-023), once an effect
+  // of it held: a hit whose every effect its conditions refuse (a cloak's
+  // proc on a peaceful neighbour, which the engine itself never reports)
+  // begins nothing (thuum ADR-039)
+  if (anyEffectHeld) {
+    NotifyHostility(*aggressor, *targetActorPtr,
+                    std::chrono::steady_clock::now());
+  }
 }
 
 void ActionListener::OnWeaponHit(MpActor* aggressor,
@@ -3474,7 +3562,7 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
   // thuum docs/verbs/self-cast.md: an attack ends its attacker's
   // invisibility and ethereal state, and an ethereal target takes nothing
   // (no damage, no poison's dose, no stagger)
-  EndConcealment(*aggressor);
+  EndConcealment(partOne, *aggressor);
   const bool ethereal =
     targetActor.HasRunningEffectOfType(espm::MGEF::EffectType::Etherealize);
   if (ethereal) {

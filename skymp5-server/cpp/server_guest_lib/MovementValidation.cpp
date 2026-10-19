@@ -16,9 +16,14 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
               const NiPoint3& currentRot, const FormDesc& currentCellOrWorld,
               const NiPoint3& newPos, const FormDesc& newCellOrWorld,
               Networking::UserId userId, MpActor* actor,
-              const std::vector<std::string>& espmFiles)
+              const std::vector<std::string>& espmFiles, bool* placed)
 {
   constexpr float kSqrMaxDistance = 4096.f * 4096.f;
+  const auto markPlaced = [&] {
+    if (placed) {
+      *placed = true;
+    }
+  };
 
   PartOneSendTargetWrapper& sendTarget = partOne.GetSendTarget();
 
@@ -45,11 +50,22 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
     switch (partOne.CheckArrival(actor->GetFormId(), cellOrWorld, newPos.x,
                                  newPos.y)) {
       case PartOne::JumpCheck::Landed:
+        markPlaced();
         return true;
       case PartOne::JumpCheck::Waiting:
         return false;
       default:
         break;
+    }
+    // thuum docs/verbs/shadowbond.md: a place the server holds the player at
+    // for a while after its swap; a report from elsewhere is a move the
+    // server did not author (the mod's own script), and the player is sent
+    // back to where the server has it
+    if (partOne.PinnedAway(actor->GetFormId(), cellOrWorld, newPos)) {
+      spdlog::info("MovementValidation: {:x} reported ({:.0f}, {:.0f}) away "
+                   "from the place the server holds it at; sent back",
+                   actor->GetFormId(), newPos.x, newPos.y);
+      return snapBack();
     }
   }
 
@@ -73,6 +89,7 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
       // the look on other screens: the figure placed there, the vanish
       // stopped, the appear and the sound played
       partOne.PlayTeleportLanding(*actor, newPos);
+      markPlaced();
       return true;
     }
     switch (
@@ -82,6 +99,7 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
                      "{:x} at ({:.0f}, {:.0f}, {:.0f})",
                      actor->GetFormId(), cellOrWorld, newPos.x, newPos.y,
                      newPos.z);
+        markPlaced();
         return true;
       case PartOne::JumpCheck::Waiting:
         spdlog::info("MovementValidation: {:x} reported {:x} at ({:.0f}, "
@@ -122,6 +140,21 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
     // a look waiting for it (nothing when none waits)
     if (PartOne::TeleportLookLands(ground)) {
       partOne.PlayTeleportLanding(*actor, newPos);
+      // and the teleport snap (docs/verbs/cast-teleport.md; the swap's two
+      // landings, docs/verbs/shadowbond.md): the same step, within the cast
+      // jump that waits for this actor, is that jump's landing, which the
+      // other games place instead of gliding (playtest twenty-three: a jump
+      // under 1024 units slid on every other screen). The permit stands: it
+      // is for a move the bounds refuse, which this one was not
+      const uint32_t cellOrWorld = newCellOrWorld.ToFormId(espmFiles);
+      if (partOne.CastJumpLands(actor->GetFormId(), cellOrWorld, newPos)) {
+        spdlog::info("MovementValidation: {:x} landed its permitted jump "
+                     "within its budget, {:.0f} units to {:x} at ({:.0f}, "
+                     "{:.0f}, {:.0f}); placed for the other games",
+                     actor->GetFormId(), ground, cellOrWorld, newPos.x,
+                     newPos.y, newPos.z);
+        markPlaced();
+      }
     }
   }
   return true;

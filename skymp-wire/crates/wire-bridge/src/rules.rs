@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, block, casts, clock, console, damage, effects, favorites, forms, hostility, magic, markers, melee, movement, player_globals, racemenu, ranged, rest, shouts, stagger, teleports, headshots};
+use wire_rules::{bonds, activation, actor_values, appearance, block, casts, clock, console, damage, effects, favorites, forms, hostility, magic, markers, melee, movement, player_globals, racemenu, ranged, rest, shouts, stagger, teleports, headshots};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -578,6 +578,13 @@ mod ffi {
         /// Bit i set: `reached[i]` is a concentration spell, counted by its
         /// time.
         reached_concentration: u8,
+        /// Every effect is delivered to its target (MGEF delivery touch or
+        /// target actor): the cast's relay waits for its first hit (thuum
+        /// docs/verbs/spell-cast.md, wire-rules casts).
+        lands_on_target: bool,
+        /// How long the cast itself may claim its hit when longer than the
+        /// bolt window: a placed trigger's (a rune's); 0 for the bolt window.
+        hazard_ms: u64,
     }
 
     /// A spell hit as the caster's game reported it.
@@ -609,6 +616,23 @@ mod ffi {
         Throttled,
     }
 
+    /// A bond's break (thuum docs/verbs/shadowbond.md): whether the actor
+    /// was in one, its two actors, and the window and slack for their two
+    /// landings.
+    #[derive(Debug, Clone, Copy)]
+    struct BondBreak {
+        /// The actor was in a standing bond, now ended.
+        found: bool,
+        /// Who cast the bond's spell.
+        caster: u32,
+        /// Whom it landed on.
+        target: u32,
+        /// How long after the break each landing is permitted, ms.
+        window_ms: u64,
+        /// How far from the other's position a landing may fall, units.
+        slack_units: f32,
+    }
+
     /// A spell hit's claim and, when claimed, the factor on the spell's
     /// magnitude (1 for a fire-and-forget hit, seconds for a stream's).
     #[derive(Debug, Clone, Copy)]
@@ -617,6 +641,9 @@ mod ffi {
         check: CastCheck,
         /// The factor on the magnitude.
         scale: f32,
+        /// The hit is the first of a cast whose relay waited for it: relay
+        /// the cast now, with this hit's target.
+        relay: bool,
     }
 
     /// What the server knows at a headshot's report (thuum
@@ -951,6 +978,9 @@ mod ffi {
         fn check(self: &mut Fights, a: u32, b: u32, apart: bool, now_ms: u64) -> bool;
         /// Whether the actor is in a fight.
         fn in_fight(self: &Fights, actor: u32) -> bool;
+        /// Whether the two actors are in a fight with each other
+        /// (IsHostileToActor between players, thuum ADR-039).
+        fn between(self: &Fights, a: u32, b: u32) -> bool;
         /// The actor is gone: its fights end without a notice.
         fn forget(self: &mut Fights, actor: u32);
 
@@ -978,6 +1008,11 @@ mod ffi {
         /// Judge any report of `actor`'s against the arrival the server
         /// expects; the arrival ends the wait.
         fn check_arrival(self: &mut MovementBudgets, actor: u32, cell_or_world: u32, x: f32, y: f32, now_ms: u64) -> JumpCheck;
+        /// Hold `actor` where the server put it until `until_ms` (thuum
+        /// docs/verbs/shadowbond.md: the swap against the mod's own script).
+        fn pin(self: &mut MovementBudgets, actor: u32, cell_or_world: u32, x: f32, y: f32, radius: f32, until_ms: u64);
+        /// Whether a report leaves the pinned place while the pin holds.
+        fn pinned_away(self: &mut MovementBudgets, actor: u32, cell_or_world: u32, x: f32, y: f32, now_ms: u64) -> bool;
         /// thuum docs/verbs/cast-teleport.md: `actor` cast a teleport at
         /// `now_ms`, standing at (x, y, z) in `cell_or_world`: one jump to
         /// within `reach` of there (0: back there, docs/verbs/ghostwalk.md)
@@ -987,6 +1022,11 @@ mod ffi {
         /// Judge a move of `actor`'s that the bounds refuse against its cast
         /// jump: Landed within reach (that ends it), else NoPermit.
         fn check_cast_jump(self: &mut MovementBudgets, actor: u32, cell_or_world: u32, x: f32, y: f32, z: f32, now_ms: u64) -> JumpCheck;
+        /// Whether a move of `actor`'s that the bounds took lands within the
+        /// cast jump that waits for it; the jump stands. The other games
+        /// place the figure there (thuum docs/verbs/cast-teleport.md, the
+        /// teleport snap; docs/verbs/shadowbond.md).
+        fn cast_jump_lands(self: &MovementBudgets, actor: u32, cell_or_world: u32, x: f32, y: f32, z: f32, now_ms: u64) -> bool;
 
         /// thuum docs/verbs/headshot.md: the headshot rule's settings
         /// (server-settings.json's `headshot` block) and every shooter's
@@ -1029,6 +1069,25 @@ mod ffi {
         /// movement bounds took while a teleport's look waits, is its
         /// landing (wire-rules teleports::LOOK_LANDING_STEP).
         fn teleport_look_lands(step: f32) -> bool;
+
+        /// thuum docs/verbs/shadowbond.md: the spells server-settings.json's
+        /// `bonds` names, and the bonds standing between actors.
+        type Bonds;
+        /// The list from the block as JSON text (`[]` for none); the error
+        /// names the bad entry.
+        fn new_bonds(settings_json: &str) -> Result<Box<Bonds>>;
+        /// The bond's duration for the spell `short_id` in `file`, ms, or 0
+        /// when the server names it no bond.
+        fn bond_duration_ms(self: &Bonds, short_id: u32, file: &str) -> u64;
+        /// `caster`'s cast of the spell landed on `target` at `now_ms`: a
+        /// bond stands for the spell's duration (nothing for a spell the
+        /// server names no bond).
+        fn record(self: &mut Bonds, caster: u32, target: u32, short_id: u32, file: &str, now_ms: u64);
+        /// `actor` acted at `now_ms`: the bond it is in ends and is returned
+        /// (`found` false when it is in none).
+        fn break_of(self: &mut Bonds, actor: u32, now_ms: u64) -> BondBreak;
+        /// The actor is gone: its bonds with it.
+        fn forget(self: &mut Bonds, actor: u32);
 
         /// thuum docs/verbs/player-globals.md: the globals server-settings.json's
         /// `playerGlobals` names, kept per player.
@@ -1078,8 +1137,9 @@ mod ffi {
         type SpellCasts;
         /// No casts yet.
         fn new_spell_casts() -> Box<SpellCasts>;
-        /// `actor` began a cast at `now_ms` (a monotonic clock).
-        fn start(self: &mut SpellCasts, actor: u32, facts: CastFacts, now_ms: u64);
+        /// `actor` began a cast at `now_ms` (a monotonic clock). True: the
+        /// cast's relay waits for its first hit (`CastFacts::lands_on_target`).
+        fn start(self: &mut SpellCasts, actor: u32, facts: CastFacts, now_ms: u64) -> bool;
         /// `actor`'s stream in `hand` ended.
         fn end(self: &mut SpellCasts, actor: u32, hand: u8);
         /// Whether `actor` holds a stream open in `hand`.
@@ -1127,7 +1187,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, AvChange, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlayerGlobalEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
+pub use ffi::{AvBase, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlayerGlobalEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -1330,6 +1390,10 @@ impl Fights {
 
     fn in_fight(&self, actor: u32) -> bool {
         self.0.in_fight(actor)
+    }
+
+    fn between(&self, a: u32, b: u32) -> bool {
+        self.0.between(a, b)
     }
 
     fn forget(&mut self, actor: u32) {
@@ -1558,6 +1622,14 @@ impl MovementBudgets {
         self.0.expect_arrival(actor, cell_or_world, x, y, now_ms);
     }
 
+    fn pin(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, radius: f32, until_ms: u64) {
+        self.0.pin(actor, cell_or_world, x, y, radius, until_ms);
+    }
+
+    fn pinned_away(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, now_ms: u64) -> bool {
+        self.0.pinned_away(actor, cell_or_world, x, y, now_ms)
+    }
+
     fn check_arrival(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, now_ms: u64) -> JumpCheck {
         jump_check(self.0.check_arrival(actor, cell_or_world, x, y, now_ms))
     }
@@ -1569,6 +1641,10 @@ impl MovementBudgets {
 
     fn check_cast_jump(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, z: f32, now_ms: u64) -> JumpCheck {
         jump_check(self.0.check_cast_jump(actor, cell_or_world, x, y, z, now_ms))
+    }
+
+    fn cast_jump_lands(&self, actor: u32, cell_or_world: u32, x: f32, y: f32, z: f32, now_ms: u64) -> bool {
+        self.0.cast_jump_lands(actor, cell_or_world, x, y, z, now_ms)
     }
 }
 
@@ -1647,6 +1723,37 @@ impl Headshots {
             headshots::HeadshotCheck::Helmeted => HeadshotCheck::Helmeted,
             headshots::HeadshotCheck::Race => HeadshotCheck::Race,
             headshots::HeadshotCheck::Archery => HeadshotCheck::Archery,
+        }
+    }
+
+    fn forget(&mut self, actor: u32) {
+        self.0.forget(actor);
+    }
+}
+
+/// The bonds rule (wire-rules bonds).
+#[derive(Debug, Clone, Default)]
+pub struct Bonds(bonds::Bonds);
+
+fn new_bonds(settings_json: &str) -> Result<Box<Bonds>, clock::SettingsError> {
+    bonds::Bonds::from_json(settings_json).map(|b| Box::new(Bonds(b)))
+}
+
+impl Bonds {
+    fn bond_duration_ms(&self, short_id: u32, file: &str) -> u64 {
+        self.0.named(short_id, file).map_or(0, |s| s.duration_ms)
+    }
+
+    fn record(&mut self, caster: u32, target: u32, short_id: u32, file: &str, now_ms: u64) {
+        if let Some(spell) = self.0.named(short_id, file).copied() {
+            self.0.record(caster, target, &spell, now_ms);
+        }
+    }
+
+    fn break_of(&mut self, actor: u32, now_ms: u64) -> BondBreak {
+        match self.0.break_of(actor, now_ms) {
+            Some(b) => BondBreak { found: true, caster: b.caster, target: b.target, window_ms: b.window_ms, slack_units: b.slack_units },
+            None => BondBreak { found: false, caster: 0, target: 0, window_ms: 0, slack_units: 0.0 },
         }
     }
 
@@ -1824,10 +1931,10 @@ const _: () = assert!(casts::MAX_REACHED == 8);
 
 fn cast_claim(check: casts::CastCheck) -> CastClaim {
     match check {
-        casts::CastCheck::Claimed { scale } => CastClaim { check: CastCheck::Claimed, scale },
-        casts::CastCheck::NoCast => CastClaim { check: CastCheck::NoCast, scale: 0.0 },
-        casts::CastCheck::TooFar => CastClaim { check: CastCheck::TooFar, scale: 0.0 },
-        casts::CastCheck::Throttled => CastClaim { check: CastCheck::Throttled, scale: 0.0 },
+        casts::CastCheck::Claimed { scale, relay } => CastClaim { check: CastCheck::Claimed, scale, relay },
+        casts::CastCheck::NoCast => CastClaim { check: CastCheck::NoCast, scale: 0.0, relay: false },
+        casts::CastCheck::TooFar => CastClaim { check: CastCheck::TooFar, scale: 0.0, relay: false },
+        casts::CastCheck::Throttled => CastClaim { check: CastCheck::Throttled, scale: 0.0, relay: false },
     }
 }
 
@@ -1836,13 +1943,13 @@ fn new_spell_casts() -> Box<SpellCasts> {
 }
 
 impl SpellCasts {
-    fn start(&mut self, actor: u32, facts: CastFacts, now_ms: u64) {
-        let CastFacts { spell, hand, kind, area, reach, x, y, z, reached, linger_ms, reached_concentration } = facts;
+    fn start(&mut self, actor: u32, facts: CastFacts, now_ms: u64) -> bool {
+        let CastFacts { spell, hand, kind, area, reach, x, y, z, reached, linger_ms, reached_concentration, lands_on_target, hazard_ms } = facts;
         let kind = match kind {
             CastKind::Concentration => casts::CastKind::Concentration,
             _ => casts::CastKind::FireAndForget,
         };
-        self.0.start(actor, casts::CastFacts { spell, hand, kind, area, reach, x, y, z, reached, linger_ms, reached_concentration }, now_ms);
+        self.0.start(actor, casts::CastFacts { spell, hand, kind, area, reach, x, y, z, reached, linger_ms, reached_concentration, lands_on_target, hazard_ms }, now_ms)
     }
 
     fn end(&mut self, actor: u32, hand: u8) {
@@ -2014,11 +2121,24 @@ mod tests {
         assert_eq!(b.check_arrival(7, 0x3c, 0.0, 0.0, 11), JumpCheck::Waiting);
         assert_eq!(b.check_arrival(7, 0x3c, 510.0, 490.0, 12), JumpCheck::Landed);
         assert_eq!(b.check_arrival(7, 0x3c, 0.0, 0.0, 13), JumpCheck::NoPermit);
+        // a pin after the server's swap: a report away from the place while
+        // it holds is a move the server did not author
+        b.pin(7, 0x3c, 500.0, 500.0, 150.0, 1_500);
+        assert!(!b.pinned_away(7, 0x3c, 510.0, 490.0, 14));
+        assert!(b.pinned_away(7, 0x3c, 0.0, 0.0, 15));
+        assert!(!b.pinned_away(7, 0x3c, 0.0, 0.0, 1_501));
         // a cast teleport's jump: within its reach of the cast, once
         b.permit_cast_jump(7, 0x3c, 0.0, -300.0, 12.0, 3_000.0, 5_000, 20);
         assert_eq!(b.check_cast_jump(7, 0x3c, 0.0, 4_000.0, 12.0, 21), JumpCheck::NoPermit);
         assert_eq!(b.check_cast_jump(7, 0x3c, 0.0, 2_000.0, 12.0, 22), JumpCheck::Landed);
         assert_eq!(b.check_cast_jump(7, 0x3c, 0.0, 2_000.0, 12.0, 23), JumpCheck::NoPermit);
+        // a move the budget took within a waiting cast jump: placed, the
+        // jump standing for a move the bounds refuse
+        b.permit_cast_jump(7, 0x3c, 0.0, 300.0, 0.0, 256.0, 1_500, 30);
+        assert!(b.cast_jump_lands(7, 0x3c, 0.0, 300.0, 0.0, 31));
+        assert!(!b.cast_jump_lands(7, 0x3c, 0.0, 900.0, 0.0, 31));
+        assert_eq!(b.check_cast_jump(7, 0x3c, 0.0, 300.0, 0.0, 32), JumpCheck::Landed);
+        assert!(!b.cast_jump_lands(7, 0x3c, 0.0, 300.0, 0.0, 33));
     }
 
     #[test]
@@ -2130,6 +2250,8 @@ mod tests {
             reached: [0; 8],
             linger_ms: 0,
             reached_concentration: 0,
+            lands_on_target: false,
+            hazard_ms: 0,
         };
         let on = |t| CastHit { spell: 0x12fcd, target: 2, x: 150.0, y: 0.0, z: t };
         assert_eq!(c.claim(7, on(0.0), 0).check, CastCheck::NoCast);
@@ -2152,7 +2274,7 @@ mod tests {
         let mut reached = [0; 8];
         reached[0] = 0xa102;
         let cloak =
-            CastFacts { spell: 0xa101, hand: 1, kind: CastKind::FireAndForget, area: false, reach: 512.0, x: 0.0, y: 0.0, z: 0.0, reached, linger_ms: 60_000, reached_concentration: 0 };
+            CastFacts { spell: 0xa101, hand: 1, kind: CastKind::FireAndForget, area: false, reach: 512.0, x: 0.0, y: 0.0, z: 0.0, reached, linger_ms: 60_000, reached_concentration: 0, lands_on_target: false, hazard_ms: 0 };
         let proc_on = |x| CastHit { spell: 0xa102, target: 2, x, y: 0.0, z: 0.0 };
         assert_eq!(c.claim_reached(7, proc_on(300.0), 0.0, 0.0, 0.0, 0).check, CastCheck::NoCast);
         c.start(7, cloak, 0);
@@ -2246,6 +2368,7 @@ mod tests {
         assert!(!f.hit(2, 1, 1_000));
         assert_eq!(f.pairs().iter().map(|p| (p.a, p.b)).collect::<Vec<_>>(), vec![(1, 2)]);
         assert!(f.in_fight(2));
+        assert!(f.between(2, 1) && !f.between(1, 3));
         assert!(!f.check(1, 2, false, 2_000));
         assert!(f.check(1, 2, false, 1_000 + hostility::FIGHT_QUIET_MS));
         assert!(!f.in_fight(1));

@@ -104,6 +104,7 @@ Condition Condition::FromCtda(const espm::CTDA& ctda)
   condition.runsOn = ConvertRunOnTypeToString(ctda.runOnType);
 
   condition.function = ConvertFunctionIndexToString(ctda.functionIndex);
+  condition.functionIndex = ctda.functionIndex;
 
   return condition;
 }

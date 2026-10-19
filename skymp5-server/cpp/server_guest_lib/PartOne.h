@@ -147,6 +147,13 @@ public:
   // sent before the move. CheckArrival judges any report against that.
   void ExpectArrival(uint32_t actorFormId, uint32_t cellOrWorld, float x,
                      float y);
+  // thuum docs/verbs/shadowbond.md: hold an actor where the server put it for
+  // holdMs; a report from elsewhere meanwhile is sent back (the mod's own
+  // swap script moving the caster a second time)
+  void PinArrival(uint32_t actorFormId, uint32_t cellOrWorld,
+                  const NiPoint3& at, float radius, uint64_t holdMs);
+  bool PinnedAway(uint32_t actorFormId, uint32_t cellOrWorld,
+                  const NiPoint3& at);
   JumpCheck CheckArrival(uint32_t actorFormId, uint32_t cellOrWorld, float x,
                          float y);
 
@@ -178,6 +185,21 @@ public:
     const std::vector<PlayerGlobal>& report);
   float TeleportReach(uint32_t spellFormId) const;
 
+  // thuum docs/verbs/shadowbond.md: server-settings.json's `bonds` (a JSON
+  // list, "[]" for none; a bad entry stops the server here, named): the
+  // spells whose claimed hit bonds caster and target for the spell's
+  // duration. The first act that ends either's concealment breaks the bond
+  // and permits each one jump to where the other stands (the cast-jump
+  // permit, for the entry's window and slack); the rule is Rust's
+  // (wire-rules bonds)
+  void SetBondSettings(const std::string& bondsJson);
+  bool IsBondSpell(uint32_t spellFormId) const;
+  void RecordBond(uint32_t casterFormId, uint32_t targetFormId,
+                  uint32_t spellFormId);
+  // true when the actor was in a standing bond: it ended, both jumps are
+  // permitted
+  bool BreakBondsOf(uint32_t actorFormId);
+
   // thuum docs/verbs/headshot.md: server-settings.json's `headshot` block
   // (the spells whose hit reports a headshot, the victim races the mod's
   // rule names, the shooter's base Archery floor; "{}" for none; a bad
@@ -206,6 +228,12 @@ public:
                       const NiPoint3& from, float reach, uint64_t waitMs);
   JumpCheck CheckCastJump(uint32_t actorFormId, uint32_t cellOrWorld,
                           const NiPoint3& at);
+  // Whether a move the bounds took, to `at` in cellOrWorld, lands within
+  // the cast jump that waits for the actor; the jump stands. The other games
+  // place the figure there (thuum docs/verbs/cast-teleport.md, the teleport
+  // snap; docs/verbs/shadowbond.md, the swap's landings within the budget)
+  bool CastJumpLands(uint32_t actorFormId, uint32_t cellOrWorld,
+                     const NiPoint3& at) const;
 
   // thuum docs/verbs/cast-teleport.md, the look on other screens: what a
   // teleport's castTeleports entry names for the other players' games to
@@ -262,7 +290,9 @@ public:
   // fire-and-forget cast waits for its hit, a concentration one opens in
   // that hand (wire-rules casts); its kind, area and reach come from the
   // records
-  void StartCast(uint32_t actorFormId, uint32_t spell, uint8_t hand,
+  // true: the cast's relay waits for its first hit (every effect delivered
+  // to its target; wire-rules casts::CastFacts::lands_on_target)
+  bool StartCast(uint32_t actorFormId, uint32_t spell, uint8_t hand,
                  const NiPoint3& from);
   // the stream in `hand` ended
   void EndCast(uint32_t actorFormId, uint8_t hand);
@@ -276,7 +306,8 @@ public:
   struct CastClaim
   {
     CastCheck check = CastCheck::NoCast;
-    float scale = 0.f; // the factor on the spell's magnitude
+    float scale = 0.f;  // the factor on the spell's magnitude
+    bool relay = false; // the first hit of a cast whose relay waited for it
   };
   // a spell hit by the actor on `target` standing at `at`
   CastClaim ClaimCast(uint32_t actorFormId, uint32_t spell, uint32_t target,

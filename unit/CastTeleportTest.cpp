@@ -2,6 +2,7 @@
 #include <catch2/catch_all.hpp>
 
 #include "ActionListener.h"
+#include "MessageSerializerFactory.h"
 #include "MsgType.h"
 #include "UpdateMovementMessage.h"
 
@@ -64,14 +65,12 @@ void Cast(PartOne& p)
                             { "integers", nlohmann::json::array() } } } } } });
 }
 
-// the caster's own movement report (ConsoleCommandTest's)
+// the caster's own movement report (ConsoleCommandTest's), carried as the
+// bytes its game would send: the server relays a movement report unparsed
+// (ActionListener::RelayToListeners), so the relay the other game gets is
+// the report only if the bytes are
 void Report(PartOne& p, MpActor& me, const NiPoint3& pos)
 {
-  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
-  RawMessageData raw;
-  raw.userId = 0;
-  raw.unparsed = unparsed;
-  raw.unparsedLength = sizeof(unparsed);
   UpdateMovementMessage msg;
   msg.idx = me.GetIdx();
   msg.data.pos = { pos.x, pos.y, pos.z };
@@ -81,6 +80,12 @@ void Report(PartOne& p, MpActor& me, const NiPoint3& pos)
   msg.data.isBlocking = false;
   msg.data.worldOrCell = 0x3c;
   msg.data.runMode = "Standing";
+  std::string packet;
+  PartOne::GetMessageSerializerInstance().Serialize(msg, packet);
+  RawMessageData raw;
+  raw.userId = 0;
+  raw.unparsed = reinterpret_cast<Networking::PacketData>(packet.data());
+  raw.unparsedLength = packet.size();
   p.GetActionListener().OnUpdateMovement(raw, msg);
 }
 
@@ -328,6 +333,60 @@ TEST_CASE("A cast teleport's landing places the figure and plays the look's "
   Report(p, caster, { 3100, 0, 0 });
   REQUIRE(SentBack(p) == 0);
   REQUIRE(LookSnippets(p, 1).empty());
+  Leave(p);
+}
+
+// thuum docs/verbs/cast-teleport.md (the teleport snap, train-27): a landing
+// the server vouches for reaches the other game as a placement (MsgType 46)
+// before the report's relay, so the figure is placed, not glided
+TEST_CASE("A cast teleport's landing tells the other game to place the figure "
+          "before the report's relay",
+          "[CastTeleport][espm]")
+{
+  PartOne& p = GetPartOne();
+  p.SetCastTeleportSettings(kLooked);
+  auto& caster = Pair(p);
+  Cast(p);
+  p.Tick();
+  p.Messages().clear();
+
+  Report(p, caster, { 2500, 0, 0 });
+  REQUIRE(SentBack(p) == 0);
+  int jumpAt = -1;
+  int relayAt = -1;
+  int i = 0;
+  for (auto& m : p.Messages()) {
+    if (m.userId == 1 && m.j.contains("t")) {
+      if (m.j["t"] == static_cast<int>(MsgType::ActorJump) && jumpAt < 0) {
+        REQUIRE(m.reliable);
+        REQUIRE(m.j["idx"].get<uint32_t>() == caster.idx);
+        jumpAt = i;
+      }
+      if (m.j["t"] == static_cast<int>(MsgType::UpdateMovement) &&
+          relayAt < 0) {
+        relayAt = i;
+      }
+    }
+    ++i;
+  }
+  REQUIRE(jumpAt >= 0);
+  REQUIRE(relayAt >= 0);
+  REQUIRE(jumpAt < relayAt);
+  // the caster's own game is told nothing
+  for (auto& m : p.Messages()) {
+    const bool jumpToMover = m.userId == 0 && m.j.contains("t") &&
+      m.j["t"] == static_cast<int>(MsgType::ActorJump);
+    REQUIRE_FALSE(jumpToMover);
+  }
+
+  // a plain step after it: no placement
+  p.Messages().clear();
+  Report(p, caster, { 2600, 0, 0 });
+  for (auto& m : p.Messages()) {
+    const bool anyJump =
+      m.j.contains("t") && m.j["t"] == static_cast<int>(MsgType::ActorJump);
+    REQUIRE_FALSE(anyJump);
+  }
   Leave(p);
 }
 

@@ -431,6 +431,19 @@ void MpActor::VisitProperties(CreateActorMessage& message,
                                                        changeForm, message);
   }
 
+  // thuum docs/verbs/figure-values.md: another game's figure of this player
+  // carries the player's recorded maxima as its base values, instead of the
+  // million the client used to set, so a script there reads Skyrim's number
+  // (Finger of Death's threshold, Nature's Balance's swap). Nothing travels
+  // before the first record: the figure keeps the engine's defaults
+  if (mode == VisitPropertiesMode::OnlyPublic) {
+    if (const auto maxima = RecordedMaxima()) {
+      message.props.health = maxima->health;
+      message.props.magicka = maxima->magicka;
+      message.props.stamina = maxima->stamina;
+    }
+  }
+
   message.props.learnedSpells = changeForm.learnedSpells.GetLearnedSpells();
 
   if (!changeForm.templateChain.empty()) {
@@ -2173,6 +2186,39 @@ BaseActorValues MpActor::GetMaximumValues()
   return values;
 }
 
+std::optional<BaseActorValues> MpActor::RecordedMaxima()
+{
+  const auto recorded = [this](uint8_t av) {
+    const auto base = GetRecordedActorValueBase(av);
+    return base && *base > 0.f;
+  };
+  if (!recorded(24) && !recorded(25) && !recorded(26)) {
+    return std::nullopt;
+  }
+  return GetMaximumValues();
+}
+
+void MpActor::SendMaximaToListeners()
+{
+  const auto maxima = RecordedMaxima();
+  if (!maxima) {
+    return;
+  }
+  // the same three props CreateActor carries to an observer, as property
+  // updates (the owner's own values travel by ChangeValues and its record)
+  SendMessageToActorListeners(
+    CreatePropertyMessage_(this, "health", fmt::format("{}", maxima->health)),
+    true);
+  SendMessageToActorListeners(
+    CreatePropertyMessage_(this, "magicka",
+                           fmt::format("{}", maxima->magicka)),
+    true);
+  SendMessageToActorListeners(
+    CreatePropertyMessage_(this, "stamina",
+                           fmt::format("{}", maxima->stamina)),
+    true);
+}
+
 void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
 {
   constexpr float kDeletionTimeSeconds = 2 * 60;
@@ -3218,6 +3264,13 @@ void MpActor::ApplyAttributeDeltas(const std::array<float, 3>& deltas,
     }
   }
   NetSetPercentages(values, aggressor, avs);
+  // a buff that moved a maximum moves the figure's base in the other games
+  // too (thuum docs/verbs/figure-values.md: c1 drinks, c2's figure follows)
+  if (maxAfter.health != maxBefore.health ||
+      maxAfter.magicka != maxBefore.magicka ||
+      maxAfter.stamina != maxBefore.stamina) {
+    SendMaximaToListeners();
+  }
 }
 
 std::array<std::optional<Inventory::Entry>, 2> MpActor::GetEquippedWeapon()

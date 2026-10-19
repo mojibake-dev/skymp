@@ -13,6 +13,7 @@ import { SpawnProcess } from "./spawnProcess";
 import { ObjectReferenceEx } from "../extensions/objectReferenceEx";
 import { PlayerCharacterDataHolder } from "./playerCharacterDataHolder";
 import { getMovement } from "../sync/movementGet";
+import { setActorValuePercentage } from "../sync/actorvalues";
 import { lastTryHost, tryHost } from "./hostAttempts";
 import { ModelApplyUtils } from "./modelApplyUtils";
 import { localIdToRemoteId } from "./worldViewMisc";
@@ -313,11 +314,12 @@ export class FormView {
     if (refr) {
       const actor = Actor.from(refr);
       if (actor && !this.localImmortal) {
+        // the figure never dies by this game's hand (the server's death is
+        // the only death); its values are its player's, below, not a million
         actor.startDeferredKill();
-        actor.setActorValue("health", 1000000);
-        actor.setActorValue("magicka", 1000000);
         this.localImmortal = true;
       }
+      this.applyFigureMaxima(actor, model);
       this.applyAll(refr, model);
 
       const gamemodeUpdateService = SpApiInteractor.getControllerInstance().lookupListener(GamemodeUpdateService);
@@ -344,6 +346,7 @@ export class FormView {
     })
 
     this.localImmortal = false;
+    this.figureMaxima.clear();
     this.removeNickname();
   }
 
@@ -351,6 +354,36 @@ export class FormView {
   private lastOpenApply = 0;
   private isSetNodeTextureSetApplied = false;
   private isSetNodeScaleApplied = false;
+
+  // thuum docs/verbs/figure-values.md: the figure carries its player's
+  // recorded maxima (the server's health, magicka and stamina props for an
+  // observer, at spawn and on each change) as its base values, so a script
+  // in this game reads Skyrim's number instead of the million that stood
+  // here before. The shown fraction is kept across the set: the engine keeps
+  // the current value, not the share, when a base changes
+  private applyFigureMaxima(actor: Actor | null, model: FormModel) {
+    if (!actor) {
+      return;
+    }
+    const maxima: Array<[string, unknown]> = [
+      ["health", model.health],
+      ["magicka", model.magicka],
+      ["stamina", model.stamina],
+    ];
+    for (const [name, value] of maxima) {
+      if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+        continue;
+      }
+      if (this.figureMaxima.get(name) === value) {
+        continue;
+      }
+      const fraction = actor.getActorValuePercentage(name);
+      actor.setActorValue(name, value);
+      actor.restoreActorValue(name, value);
+      setActorValuePercentage(actor, name, Math.min(Math.max(fraction, 0), 1));
+      this.figureMaxima.set(name, value);
+    }
+  }
 
   private applyAll(refr: ObjectReference, model: FormModel) {
     let forcedWeapDrawn: boolean | null = null;
@@ -962,6 +995,8 @@ export class FormView {
   private wasHostedByOther: boolean | undefined = undefined;
   private state = {};
   private localImmortal = false;
+  // the maxima set on the figure so far, by actor value name (figure-values)
+  private figureMaxima = new Map<string, number>();
   private textNameId: number | undefined = undefined;
 
 

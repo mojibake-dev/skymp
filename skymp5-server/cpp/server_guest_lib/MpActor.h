@@ -272,6 +272,13 @@ public:
 
   BaseActorValues GetBaseValues();
   BaseActorValues GetMaximumValues();
+  // thuum docs/verbs/figure-values.md: the maxima the other games set as
+  // this player's figure's base Health, Magicka and Stamina (the recorded
+  // bases 24, 25, 26 with the running buffs: GetMaximumValues), present once
+  // a record exists; before it the figure keeps the engine's defaults
+  std::optional<BaseActorValues> RecordedMaxima();
+  // ... and their trip to every game that sees the figure, when they change
+  void SendMaximaToListeners();
 
   void DropItem(const uint32_t baseId, const Inventory::Entry& entry);
   void SetIsBlockActive(bool isBlockActive);

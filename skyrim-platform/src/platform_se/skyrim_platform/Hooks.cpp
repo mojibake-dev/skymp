@@ -206,6 +206,42 @@ void InstallPlayerHealthDamageHook()
 }
 
 /**
+ * thuum docs/verbs/figure-values.md: a figure (another player's actor in
+ * this game) carries its player's real maxima now, not a million, so this
+ * game's own damage to it (the player's melee and arrows, an NPC's hits, a
+ * trap) would move its bar before the server's number arrives in the next
+ * movement report. The same virtual as above, on Character's vtable, drops
+ * the damage when the VICTIM is a figure; the hit event, the impact, the
+ * blood and the stagger are untouched (they come earlier in the chain), and
+ * the server's percentage remains the only thing that moves a figure's bar.
+ * A figure is known by the mark skymp5-client puts on every one at spawn,
+ * attackDamageMult 0 (formView.ts), which no other actor carries; a registry
+ * native is the follow-up if the mark proves too loose (HYPOTHESIS until
+ * x-figure-values-hit).
+ */
+struct FigureHealthDamage
+{
+  static void thunk(RE::Actor* a_this, RE::Actor* a_attacker, float a_damage)
+  {
+    if (a_this && a_this->formID >= 0xFF000000) {
+      if (auto owner = a_this->AsActorValueOwner(); owner &&
+          owner->GetActorValue(RE::ActorValue::kAttackDamageMult) == 0.f) {
+        return;
+      }
+    }
+    func(a_this, a_attacker, a_damage);
+  }
+  static inline REL::Relocation<decltype(thunk)> func;
+};
+
+void InstallFigureHealthDamageHook()
+{
+  REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_Character[0] };
+  FigureHealthDamage::func =
+    vtbl.write_vfunc(0x104, FigureHealthDamage::thunk);
+}
+
+/**
  * The graph's answers to a cast request (thuum docs/verbs/cast-action.md).
  * The engine's caster sets the hand's want variable and performs the Attack
  * action only when the graph answers with the BeginCastRight (BeginCastLeft,
@@ -375,6 +411,7 @@ void Hooks::Install()
   HookVirtualMachineBind();
   InstallPlayerAddTargetHook();
   InstallPlayerHealthDamageHook();
+  InstallFigureHealthDamageHook();
 
   logger::info("CommonLib hooks installed.");
 }

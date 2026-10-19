@@ -1801,6 +1801,11 @@ void ActionListener::OnActorValues(const RawMessageData& rawMsgData,
                "{}{}",
                rawMsgData.userId, actor->GetFormId(), msg.bases.size(),
                msg.level, changed ? "" : ", unchanged");
+  if (changed) {
+    // thuum docs/verbs/figure-values.md: the other games' figures of this
+    // player take the new maxima
+    actor->SendMaximaToListeners();
+  }
   if (holding) {
     // values the server set that this report does not carry: the record
     // goes back so the player's game applies them

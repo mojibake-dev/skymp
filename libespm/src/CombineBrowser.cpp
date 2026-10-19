@@ -3,18 +3,44 @@
 #include "libespm/RecordHeader.h"
 #include "libespm/Utils.h"
 #include <array>
+#include <cctype>
+#include <cstring>
 #include <fmt/format.h>
 #include <memory>
 #include <unordered_set>
 
 namespace espm {
 
+namespace {
+// A plugin's name as the engine compares it: without case. A master list
+// names its masters as their authors typed them (USSEP: ccbgssse001-fish.esm)
+// and the load order names the files as the disk has them
+// (ccBGSSSE001-Fish.esm); Windows never tells them apart, Linux does
+// (thuum, the essentials layer's first load, 2026-10-19: "unofficial skyrim
+// special edition patch.esp has unresolved dependency (ccbgssse001-fish.esm)"
+// with the file fifth in the order)
+bool SameFileName(const std::string& a, const char* b) noexcept
+{
+  const size_t n = std::strlen(b);
+  if (a.size() != n) {
+    return false;
+  }
+  for (size_t i = 0; i < n; ++i) {
+    if (std::tolower(static_cast<unsigned char>(a[i])) !=
+        std::tolower(static_cast<unsigned char>(b[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+}
+
 int32_t CombineBrowser::Impl::GetFileIndex(const char* fileName) const noexcept
 {
   // returns index of sources array or -1 if not found
   if (fileName[0] != '\0') {
     for (size_t i = 0; i < sources.size(); ++i) {
-      if (sources[i].fileName == fileName) {
+      if (SameFileName(sources[i].fileName, fileName)) {
         return i;
       }
     }

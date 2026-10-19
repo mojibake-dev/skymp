@@ -15,14 +15,16 @@
 # the act that ends its concealment: the server swaps the two (a Teleport to
 # each), holds them, ends both records (the sets without the proc) and
 # dispels c2's own copy (Actor.DispelSpell to c2). c2 steps again at 6 s of
-# its own, from where its game still stands, which is away from the swap's
-# place within the hold, so the fixed server sends it back (Teleport2). The
-# legacy server never learned the spells (its console has no addspell),
-# refuses them in the hands and relays no cast, so none of this occurs on
+# its own, from where its game still stands; the fake client never lands the
+# server's teleport, so that report is dropped as one sent before the move
+# arrived (movement-speed.md, arrivals), nothing sent back. Flames is a
+# starting spell of the Player, so the legacy server keeps it in the hand,
+# and an earlier session of the run has recorded it on profile 9 already, so
+# the wire answers "already recorded" for it (first T2 run 20261019-1407).
+# The legacy server never learned Shadowbond (its console has no addspell),
+# refuses it in the hand and relays no cast, so none of the bond occurs on
 # it; its own reactions (RemoveSpell, the inventory resent) are declared as
-# in target-by-hit. The counts beyond the departure line are declared from
-# the design and corrected from the session's first T2 run, as every
-# session's are.
+# in target-by-hit.
 id: shadowbond
 clients:
   c1: {profile_id: 9}
@@ -43,10 +45,10 @@ divergences:
     wire: 1
     reason: an owner's AddSpell writes the server's record of learned spells and answers with a line (thuum docs/verbs/cast-teleport.md); the legacy server does not know the command
   - client: c1
-    msg: {t: 41, text: "addspell done: 12fcd recorded", refused: false}
+    msg: {t: 41, text: "addspell done: 12fcd already recorded", refused: false}
     legacy: 0
     wire: 1
-    reason: the same for Flames
+    reason: the same for Flames, which an earlier session of the run recorded on profile 9 already (the record outlives a session)
   - client: c1
     msg: {t: 30, class: Actor, function: AddSpell, arguments: [{formId: 201530445, type: Spell}, false]}
     legacy: 0
@@ -72,11 +74,6 @@ divergences:
     legacy: 1
     wire: 0
     reason: the legacy stack refuses a spell c1 never learned and takes it from c1's game (upstream #2665)
-  - client: c1
-    msg: {t: 30, class: Actor, function: RemoveSpell, arguments: [{formId: 77773, type: Spell}]}
-    legacy: 1
-    wire: 0
-    reason: the same for Flames
   - client: c1
     msg: {t: 28, inventory: {entries: [{baseId: 10, count: 10}, {baseId: 15, count: 140}, {baseId: 77382, count: 1}, {baseId: 77385, count: 1}, {baseId: 77387, count: 1}, {baseId: 77389, count: 1}, {baseId: 77494, count: 1}, {baseId: 77495, count: 1}, {baseId: 79760, count: 1}, {baseId: 80253, count: 23}, {baseId: 80254, count: 1}, {baseId: 120044, count: 2}, {baseId: 236362, count: 2}, {baseId: 243042, count: 1}, {baseId: 256733, count: 5}, {baseId: 256736, count: 5}, {baseId: 256741, count: 5}, {baseId: 256810, count: 1}, {baseId: 256819, count: 1}, {baseId: 1017598, count: 1}]}}
     legacy: 1
@@ -127,11 +124,6 @@ divergences:
     legacy: 0
     wire: 1
     reason: the target's own copy of the proc was the server's cast, so the server dispels it at the break
-  - client: c2
-    msg: {t: 31}
-    legacy: 0
-    wire: 1
-    reason: c2's step at 6 s is reported from where its game still stands, away from the swap's place within the hold, and is sent back (the pin, MovementValidation); the legacy server took it as a walk
   - client: c2
     msg: {t: 45}
     legacy: 0

@@ -1,5 +1,5 @@
 // @ts-expect-error (TODO: Remove in 2.10.0)
-import { Actor, Form, FormType, Menu, interruptCast, castSpellImmediate, placeAreaEffect, printConsole, applyAnimationVariablesToActor, getAnimationVariablesFromActor, ActorAnimationVariables } from 'skyrimPlatform';
+import { Actor, Form, FormType, MagicEffect, Menu, interruptCast, castSpellImmediate, placeAreaEffect, printConsole, applyAnimationVariablesToActor, getAnimationVariablesFromActor, ActorAnimationVariables } from 'skyrimPlatform';
 import { figureAimHeading } from "../../sync/figureAim";
 import { landsOnItsTarget } from "../../sync/spellDelivery";
 import {
@@ -1085,11 +1085,33 @@ export class RemoteServer extends ClientListener {
     const n = spell.getNumEffects();
     for (let i = 0; i < n; ++i) {
       const effect = spell.getNthEffectMagicEffect(i);
-      if (effect && effect.getDeliveryType() === 4 && !effect.getProjectile() && spell.getNthEffectArea(i) > 0) {
+      if (effect && effect.getDeliveryType() === 4 && !RemoteServer.hasProjectile(effect, spell.getFormID()) && spell.getNthEffectArea(i) > 0) {
         return true;
       }
     }
     return false;
+  }
+
+  // thuum docs/verbs/spell-cast.md (playtest twenty-four's c2.log: every
+  // relayed rune and Lightning Strike cast ended this callback with "Cannot
+  // read properties of undefined (reading 'prototype')"): Skyrim Platform
+  // wraps the projectile it returns by its VM class name, PROJECTILE, which
+  // its class list may not carry, so getProjectile throws for a spell that
+  // HAS one. The throw came after the figure's launch and placed nothing
+  // wrong, but it was the callback's end and a false lead in every read. A
+  // throw counts as a projectile, as magicSyncService's sender-side guard
+  // counts it; logged once per spell
+  private static readonly projectileThrows = new Set<number>();
+  private static hasProjectile(effect: MagicEffect, spellId: number): boolean {
+    try {
+      return !!effect.getProjectile();
+    } catch (err) {
+      if (!RemoteServer.projectileThrows.has(spellId)) {
+        RemoteServer.projectileThrows.add(spellId);
+        logTrace(`remoteServer: placesAnExplosion: getProjectile threw for spell ${spellId.toString(16)}: ${String(err)}`);
+      }
+      return true;
+    }
   }
 
   private onUpdateAnimVariablesMessage(event: ConnectionMessage<UpdateAnimVariablesMessage>): void {

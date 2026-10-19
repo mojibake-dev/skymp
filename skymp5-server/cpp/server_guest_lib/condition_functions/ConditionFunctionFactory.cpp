@@ -17,6 +17,8 @@
 
 // thuum docs/DECISIONS.md ADR-039: the effect conditions the server evaluates
 #include "GetDead.h"
+#include "GetGlobalValue.h"
+#include "GetIsID.h"
 #include "HasKeyword.h"
 #include "HasMagicEffectKeyword.h"
 #include "IsActor.h"
@@ -73,6 +75,10 @@ ConditionFunctionMap ConditionFunctionFactory::CreateConditionFunctions()
     std::make_shared<ConditionFunctions::IsCommandedActor>());
   res.RegisterConditionFunction(
     std::make_shared<ConditionFunctions::IsHostileToActor>());
+  res.RegisterConditionFunction(
+    std::make_shared<ConditionFunctions::GetIsID>());
+  res.RegisterConditionFunction(
+    std::make_shared<ConditionFunctions::GetGlobalValue>());
   res.RegisterConditionFunction(
     std::make_shared<ConditionFunctions::IsUndead>());
 

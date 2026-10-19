@@ -138,3 +138,43 @@ TEST_CASE("A summon-only effect refuses a player, and the functions the "
     *target, *caster));
   Leave(p);
 }
+
+TEST_CASE("GetIsID and GetGlobalValue answer from the records: Dragonborn's "
+          "Unrelenting Force gate",
+          "[EffectConditions][espm]")
+{
+  // Dragonborn.esm overrides VoiceUnrelentingForce1 and 3 with an extra
+  // damage effect gated by GetIsID(Player 0x7) == 1 on Target (the caster
+  // is a player's actor) AND GetGlobalValue(DLC2BlackBookReward2) == 1, the
+  // "Dragonborn Force" Black Book reward (lab/esm.py on sky-srv, 2026-10-19;
+  // the nightly's b-push read 10 damage, the vanilla number, once the
+  // server stopped applying the gated 40 unconditionally)
+  PartOne& p = GetPartOne();
+  auto [caster, target] = Pair(p);
+  constexpr uint32_t kPlayerBase = 0x00000007;
+  // Dragonborn.esm is the fifth master here (unit/main.cpp): 0x04 prefix
+  constexpr uint32_t kBlackBookReward2 = 0x04020e98;
+  REQUIRE(
+    Holds(p, { Row("GetIsID", 72, "Target", "==", 1.f, kPlayerBase, "AND") },
+          *target, *caster));
+  REQUIRE_FALSE(
+    Holds(p, { Row("GetIsID", 72, "Target", "==", 1.f, 0x00013bb8, "AND") },
+          *target, *caster));
+  // the records' default is 0: the reward is not earned
+  REQUIRE_FALSE(Holds(p,
+                      { Row("GetGlobalValue", 74, "Subject", "==", 1.f,
+                            kBlackBookReward2, "AND") },
+                      *target, *caster));
+  REQUIRE(Holds(p,
+                { Row("GetGlobalValue", 74, "Subject", "==", 0.f,
+                      kBlackBookReward2, "AND") },
+                *target, *caster));
+  // the player's own recorded global wins over the records
+  REQUIRE(target->SetPlayerGlobals({ PlayerGlobal{
+    FormDesc::FromFormId(kBlackBookReward2, p.worldState.espmFiles), 1.f } }));
+  REQUIRE(Holds(p,
+                { Row("GetGlobalValue", 74, "Subject", "==", 1.f,
+                      kBlackBookReward2, "AND") },
+                *target, *caster));
+  Leave(p);
+}

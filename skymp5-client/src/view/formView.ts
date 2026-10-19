@@ -362,7 +362,10 @@ export class FormView {
   // here before. The shown fraction is kept across the set: the engine keeps
   // the current value, not the share, when a base changes
   private applyFigureMaxima(actor: Actor | null, model: FormModel) {
-    if (!actor) {
+    // never the player's own actor: its maxima are its CreateActor's (the
+    // isMe props, remoteServer.ts) and the engine's own; the server's
+    // property updates reach the owner as a listener too
+    if (!actor || actor.getFormID() === 0x14) {
       return;
     }
     const maxima: Array<[string, unknown]> = [

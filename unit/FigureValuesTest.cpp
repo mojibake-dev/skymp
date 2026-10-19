@@ -90,8 +90,10 @@ TEST_CASE("A figure carries its player's recorded maxima, and follows them",
           Catch::Approx(120.f));
   REQUIRE(std::stof(PropertyDumps(p, 1, "stamina").back()) ==
           Catch::Approx(130.f));
-  // the owner is not told its own maxima this way
-  REQUIRE(PropertyDumps(p, 0, "health").empty());
+  // the owner hears it too, as every public property's listener (it listens
+  // to itself); its own game ignores it for the player (formView skips the
+  // player; the owner's values are its CreateActor's)
+  REQUIRE(PropertyDumps(p, 0, "health").size() == 1);
 
   // a later spawn of the figure carries them in CreateActor itself
   p.DestroyActor(kObserver);

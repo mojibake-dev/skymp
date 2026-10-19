@@ -1400,12 +1400,13 @@ wire_struct! {
     /// every other screen: playtest twenty-three). Sent to every other game
     /// that sees the actor, just before that report's relay. Idempotent: a
     /// second one before the report changes nothing. Reason codes:
-    /// `E_VAL_RANGE` (idx 0).
+    /// `E_VAL_RANGE` (the invalid index, `u32::MAX`; 0 is the first actor's).
     pub struct ActorJump {
         /// `"t": 46`.
         #[serde(default)]
         pub t: MsgT<46>,
-        /// The actor's index on the wire, as its movement reports carry it.
+        /// The actor's index on the wire, as its movement reports carry it;
+        /// the server hands indices out from 0.
         pub idx: u32,
     }
 }

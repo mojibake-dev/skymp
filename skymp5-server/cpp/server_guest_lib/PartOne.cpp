@@ -1835,6 +1835,11 @@ skymp::rules::CastFacts CastFactsFor(WorldState& worldState, uint32_t spell,
     const auto spellLookup = browser.LookupById(spell);
     float reach = 0.f;
     uint32_t longestS = 0;
+    // thuum docs/verbs/spell-cast.md (train-27): a spell whose every effect
+    // is delivered to its target, by touch or at a target actor (MGEF
+    // delivery 1 or 3, libespm MGEF::DATA::delivery), lands where no aim
+    // decides; its relay waits for its first hit, which names the target
+    bool landsOnTarget = !data.effects.empty();
     for (const auto& effect : data.effects) {
       if (effect.effectItem && effect.effectItem->areaOfEffect > 0) {
         facts.area = true;
@@ -1847,6 +1852,9 @@ skymp::rules::CastFacts CastFactsFor(WorldState& worldState, uint32_t spell,
       }
       const uint32_t mgefId = spellLookup.ToGlobalId(effect.effectFormId);
       const auto mgef = espm::GetData<espm::MGEF>(mgefId, &worldState);
+      if (mgef.data.delivery != 1 && mgef.data.delivery != 3) {
+        landsOnTarget = false;
+      }
       if (mgef.data.projectile == 0) {
         continue;
       }
@@ -1858,6 +1866,7 @@ skymp::rules::CastFacts CastFactsFor(WorldState& worldState, uint32_t spell,
     if (reach > 0.f) {
       facts.reach = reach;
     }
+    facts.lands_on_target = landsOnTarget;
     // thuum docs/verbs/second-hand.md: what the cast's records reach, and
     // for how long their hits may claim it (the wire-rules floor is the
     // bolt window; a concentration cast's open stream extends it)
@@ -1884,10 +1893,10 @@ skymp::rules::CastFacts CastFactsFor(WorldState& worldState, uint32_t spell,
 }
 }
 
-void PartOne::StartCast(uint32_t actorFormId, uint32_t spell, uint8_t hand,
+bool PartOne::StartCast(uint32_t actorFormId, uint32_t spell, uint8_t hand,
                         const NiPoint3& from)
 {
-  pImpl->spellCasts->start(
+  return pImpl->spellCasts->start(
     actorFormId, CastFactsFor(worldState, spell, hand, from), SteadyNowMs());
 }
 
@@ -1908,6 +1917,7 @@ PartOne::CastClaim PartOne::ClaimCast(uint32_t actorFormId, uint32_t spell,
   const auto claim = pImpl->spellCasts->claim(actorFormId, hit, SteadyNowMs());
   CastClaim res;
   res.scale = claim.scale;
+  res.relay = claim.relay;
   switch (claim.check) {
     case skymp::rules::CastCheck::Claimed:
       res.check = CastCheck::Claimed;

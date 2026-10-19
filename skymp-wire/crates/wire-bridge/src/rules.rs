@@ -578,6 +578,10 @@ mod ffi {
         /// Bit i set: `reached[i]` is a concentration spell, counted by its
         /// time.
         reached_concentration: u8,
+        /// Every effect is delivered to its target (MGEF delivery touch or
+        /// target actor): the cast's relay waits for its first hit (thuum
+        /// docs/verbs/spell-cast.md, wire-rules casts).
+        lands_on_target: bool,
     }
 
     /// A spell hit as the caster's game reported it.
@@ -617,6 +621,9 @@ mod ffi {
         check: CastCheck,
         /// The factor on the magnitude.
         scale: f32,
+        /// The hit is the first of a cast whose relay waited for it: relay
+        /// the cast now, with this hit's target.
+        relay: bool,
     }
 
     /// What the server knows at a headshot's report (thuum
@@ -1078,8 +1085,9 @@ mod ffi {
         type SpellCasts;
         /// No casts yet.
         fn new_spell_casts() -> Box<SpellCasts>;
-        /// `actor` began a cast at `now_ms` (a monotonic clock).
-        fn start(self: &mut SpellCasts, actor: u32, facts: CastFacts, now_ms: u64);
+        /// `actor` began a cast at `now_ms` (a monotonic clock). True: the
+        /// cast's relay waits for its first hit (`CastFacts::lands_on_target`).
+        fn start(self: &mut SpellCasts, actor: u32, facts: CastFacts, now_ms: u64) -> bool;
         /// `actor`'s stream in `hand` ended.
         fn end(self: &mut SpellCasts, actor: u32, hand: u8);
         /// Whether `actor` holds a stream open in `hand`.
@@ -1824,10 +1832,10 @@ const _: () = assert!(casts::MAX_REACHED == 8);
 
 fn cast_claim(check: casts::CastCheck) -> CastClaim {
     match check {
-        casts::CastCheck::Claimed { scale } => CastClaim { check: CastCheck::Claimed, scale },
-        casts::CastCheck::NoCast => CastClaim { check: CastCheck::NoCast, scale: 0.0 },
-        casts::CastCheck::TooFar => CastClaim { check: CastCheck::TooFar, scale: 0.0 },
-        casts::CastCheck::Throttled => CastClaim { check: CastCheck::Throttled, scale: 0.0 },
+        casts::CastCheck::Claimed { scale, relay } => CastClaim { check: CastCheck::Claimed, scale, relay },
+        casts::CastCheck::NoCast => CastClaim { check: CastCheck::NoCast, scale: 0.0, relay: false },
+        casts::CastCheck::TooFar => CastClaim { check: CastCheck::TooFar, scale: 0.0, relay: false },
+        casts::CastCheck::Throttled => CastClaim { check: CastCheck::Throttled, scale: 0.0, relay: false },
     }
 }
 
@@ -1836,13 +1844,13 @@ fn new_spell_casts() -> Box<SpellCasts> {
 }
 
 impl SpellCasts {
-    fn start(&mut self, actor: u32, facts: CastFacts, now_ms: u64) {
-        let CastFacts { spell, hand, kind, area, reach, x, y, z, reached, linger_ms, reached_concentration } = facts;
+    fn start(&mut self, actor: u32, facts: CastFacts, now_ms: u64) -> bool {
+        let CastFacts { spell, hand, kind, area, reach, x, y, z, reached, linger_ms, reached_concentration, lands_on_target } = facts;
         let kind = match kind {
             CastKind::Concentration => casts::CastKind::Concentration,
             _ => casts::CastKind::FireAndForget,
         };
-        self.0.start(actor, casts::CastFacts { spell, hand, kind, area, reach, x, y, z, reached, linger_ms, reached_concentration }, now_ms);
+        self.0.start(actor, casts::CastFacts { spell, hand, kind, area, reach, x, y, z, reached, linger_ms, reached_concentration, lands_on_target }, now_ms)
     }
 
     fn end(&mut self, actor: u32, hand: u8) {
@@ -2130,6 +2138,7 @@ mod tests {
             reached: [0; 8],
             linger_ms: 0,
             reached_concentration: 0,
+            lands_on_target: false,
         };
         let on = |t| CastHit { spell: 0x12fcd, target: 2, x: 150.0, y: 0.0, z: t };
         assert_eq!(c.claim(7, on(0.0), 0).check, CastCheck::NoCast);
@@ -2152,7 +2161,7 @@ mod tests {
         let mut reached = [0; 8];
         reached[0] = 0xa102;
         let cloak =
-            CastFacts { spell: 0xa101, hand: 1, kind: CastKind::FireAndForget, area: false, reach: 512.0, x: 0.0, y: 0.0, z: 0.0, reached, linger_ms: 60_000, reached_concentration: 0 };
+            CastFacts { spell: 0xa101, hand: 1, kind: CastKind::FireAndForget, area: false, reach: 512.0, x: 0.0, y: 0.0, z: 0.0, reached, linger_ms: 60_000, reached_concentration: 0, lands_on_target: false };
         let proc_on = |x| CastHit { spell: 0xa102, target: 2, x, y: 0.0, z: 0.0 };
         assert_eq!(c.claim_reached(7, proc_on(300.0), 0.0, 0.0, 0.0, 0).check, CastCheck::NoCast);
         c.start(7, cloak, 0);

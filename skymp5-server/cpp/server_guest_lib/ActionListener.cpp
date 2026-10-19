@@ -2865,6 +2865,25 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
         return;
       }
       magnitudeScale = claim.scale;
+      if (claim.relay) {
+        // the first hit of a cast delivered to its target: the cast goes
+        // to the other games now, at the target this hit names
+        for (auto it = pendingCastRelays.begin();
+             it != pendingCastRelays.end(); ++it) {
+          if (it->first.first == aggressor->GetFormId() &&
+              it->second.spell == hitData.source) {
+            SpellCastData relayed = it->second;
+            relayed.target = targetRef->GetFormId();
+            spdlog::info("ActionListener::OnHit - {:x} cast {:x} relayed at "
+                         "its first hit, on {:x}",
+                         aggressor->GetFormId(), hitData.source,
+                         targetRef->GetFormId());
+            RelayCast(*aggressor, *myActor, relayed);
+            pendingCastRelays.erase(it);
+            break;
+          }
+        }
+      }
     }
     OnSpellHit(aggressor, targetRef, hitData, magnitudeScale);
     return;
@@ -3154,6 +3173,14 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
   // the client chose, which each neighbour's game reads as its own player
   if (spellCastData.interruptCast) {
     partOne.EndCast(caster->GetFormId(), hand);
+    // a stream delivered to its target that ended before any hit: its start
+    // never reached the other games, so neither does its end
+    if (pendingCastRelays.erase({ caster->GetFormId(), hand }) > 0) {
+      spdlog::info("ActionListener::OnSpellCast - {:x} ended {:x} in hand "
+                   "{} before it hit anyone; not relayed",
+                   caster->GetFormId(), spellCastData.spell, hand);
+      return;
+    }
     RelayCast(*caster, *myActor, spellCastData);
     return;
   }
@@ -3202,9 +3229,12 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
   }
 
   // the cast waits for its hit (a stream stays open until its end), and
-  // every screen draws it
-  partOne.StartCast(caster->GetFormId(), spellCastData.spell, hand,
-                    caster->GetPos());
+  // every screen draws it; one delivered to its target (touch, target
+  // actor) is drawn there only once its first hit names the target (thuum
+  // docs/verbs/spell-cast.md, playtest twenty-three: the caster's guess at
+  // the target was 0 at every Shadowbond and Azure Reconstruction cast)
+  const bool relayAtFirstHit = partOne.StartCast(
+    caster->GetFormId(), spellCastData.spell, hand, caster->GetPos());
   EndConcealment(*caster, spellCastData.spell);
   RunSelfSpell(partOne.worldState, *caster, spellCastData.spell);
 
@@ -3241,7 +3271,14 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
                    "reach {}; relayed",
                    caster->GetFormId(), spellCastData.spell, teleportReach);
     }
-    RelayCast(*caster, *myActor, spellCastData);
+    if (relayAtFirstHit) {
+      pendingCastRelays[{ caster->GetFormId(), hand }] = spellCastData;
+      spdlog::info("ActionListener::OnSpellCast - {:x} cast {:x} in hand {}, "
+                   "delivered to its target; relay waits for its first hit",
+                   caster->GetFormId(), spellCastData.spell, hand);
+    } else {
+      RelayCast(*caster, *myActor, spellCastData);
+    }
   }
 
   auto& browser = partOne.worldState.GetEspm().GetBrowser();

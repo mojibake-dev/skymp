@@ -107,6 +107,15 @@ public:
     // same UESP layout), whose meaning the archetype gives: a Cloak effect's
     // is the spell it applies to those near its bearer; 0 for none
     uint32_t associatedItem = 0;
+    // thuum docs/verbs/spell-cast.md (train-27, the target by first hit):
+    // how the effect reaches its target, DATA 0x54 (the same UESP layout:
+    // casting type at 0x50, delivery at 0x54; MagicSystem::Delivery,
+    // CommonLibSSE-NG include/RE/M/MagicSystem.h:39-45: 0 Self, 1 Touch,
+    // 2 Aimed, 3 TargetActor, 4 TargetLocation), and the casting type at
+    // 0x50 (MagicSystem::CastingType: 0 constant, 1 fire-and-forget, 2
+    // concentration, 3 scroll); both 0 when the record is too short
+    uint32_t castingType = 0;
+    uint32_t delivery = 0;
 
     [[nodiscard]] inline bool IsFlagSet(Flags flag) const
     {

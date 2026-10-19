@@ -262,7 +262,9 @@ public:
   // fire-and-forget cast waits for its hit, a concentration one opens in
   // that hand (wire-rules casts); its kind, area and reach come from the
   // records
-  void StartCast(uint32_t actorFormId, uint32_t spell, uint8_t hand,
+  // true: the cast's relay waits for its first hit (every effect delivered
+  // to its target; wire-rules casts::CastFacts::lands_on_target)
+  bool StartCast(uint32_t actorFormId, uint32_t spell, uint8_t hand,
                  const NiPoint3& from);
   // the stream in `hand` ended
   void EndCast(uint32_t actorFormId, uint8_t hand);
@@ -276,7 +278,8 @@ public:
   struct CastClaim
   {
     CastCheck check = CastCheck::NoCast;
-    float scale = 0.f; // the factor on the spell's magnitude
+    float scale = 0.f;  // the factor on the spell's magnitude
+    bool relay = false; // the first hit of a cast whose relay waited for it
   };
   // a spell hit by the actor on `target` standing at `at`
   CastClaim ClaimCast(uint32_t actorFormId, uint32_t spell, uint32_t target,

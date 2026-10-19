@@ -27,6 +27,10 @@ using namespace std::chrono_literals;
 namespace {
 constexpr uint32_t kFirebolt = 0x00012fd0;
 constexpr uint32_t kFlames = 0x00012fcd;
+// Skyrim.esm's dunHonningbrewSkeeverPoison (thuum lab/esm.py on sky-srv,
+// 2026-10-18, landing-spells): one effect, delivered by touch (MGEF
+// delivery 1), fire-and-forget; a spell delivered to its target
+constexpr uint32_t kTouch = 0x0010fc22;
 constexpr uint32_t kCaster = 0xff000000;
 constexpr uint32_t kTarget = 0xff000001;
 
@@ -182,6 +186,59 @@ TEST_CASE("A fire-and-forget cast covers one hit, and reaches the neighbour "
   // the same cast again: nothing
   SpellHits(p, kFirebolt);
   REQUIRE(Health(p) == Catch::Approx(0.9f));
+  Leave(p);
+}
+
+// thuum docs/verbs/spell-cast.md (train-27, playtest twenty-three): a cast
+// delivered to its target (touch, target actor) names its target by the
+// caster's guess, 0 when the crosshair found nobody; the server relays it
+// only at its first hit, with the target the hit names, and never when it
+// hits nobody
+TEST_CASE("A cast delivered to its target reaches the neighbour at its first "
+          "hit, with the hit's target",
+          "[SpellCast][espm]")
+{
+  PartOne& p = GetPartOne();
+  Duel(p, kTouch);
+  p.Messages().clear();
+
+  // the cast, its target unknown to the caster's game
+  DoMessage(
+    p, 0,
+    nlohmann::json{ { "t", static_cast<int>(MsgType::SpellCast) },
+                    { "data",
+                      { { "caster", 0x14 },
+                        { "target", 0 },
+                        { "spell", kTouch },
+                        { "isDualCasting", false },
+                        { "interruptCast", false },
+                        { "castingSource", 1 },
+                        { "aimAngle", 0.f },
+                        { "aimHeading", 0.f },
+                        { "hasLaunch", false },
+                        { "originX", 0.f },
+                        { "originY", 0.f },
+                        { "originZ", 0.f },
+                        { "launchAngleX", 0.f },
+                        { "launchAngleZ", 0.f },
+                        { "actorAnimationVariables",
+                          { { "booleans", nlohmann::json::array() },
+                            { "floats", nlohmann::json::array() },
+                            { "integers", nlohmann::json::array() } } } } } });
+  REQUIRE(Relays(p).empty());
+
+  // its first hit names the target: the cast goes to the neighbour now
+  SpellHits(p, kTouch);
+  auto relays = Relays(p);
+  REQUIRE(relays.size() == 1);
+  REQUIRE(relays[0].first == 1);
+  REQUIRE(relays[0].second["caster"].get<uint32_t>() == kCaster);
+  REQUIRE(relays[0].second["target"].get<uint32_t>() == kTarget);
+  REQUIRE(relays[0].second["spell"].get<uint32_t>() == kTouch);
+
+  // the same cast again covers nothing and relays nothing more
+  SpellHits(p, kTouch);
+  REQUIRE(Relays(p).size() == 1);
   Leave(p);
 }
 

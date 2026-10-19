@@ -9,7 +9,9 @@
 #include "SpellCastData.h"
 #include "SweetHidePlayerNamesService.h"
 #include "libespm/Loader.h"
+#include <map>
 #include <memory>
+#include <utility>
 
 class ServerState;
 class WorldState;
@@ -193,6 +195,12 @@ private:
                  const SpellCastData& data);
 
   PartOne& partOne;
+  // thuum docs/verbs/spell-cast.md (train-27): a cast delivered to its
+  // target (touch, target actor) whose relay waits for its first hit, by
+  // the caster's form id and hand; the hit's claim (CastClaim::relay)
+  // sends it with the target the hit names, a new cast in the hand
+  // replaces it, its stream's end drops it unsent
+  std::map<std::pair<uint32_t, uint8_t>, SpellCastData> pendingCastRelays;
 
   // TODO: inverse dependency
   std::shared_ptr<CraftService> craftService;

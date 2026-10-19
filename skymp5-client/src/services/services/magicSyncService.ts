@@ -3,7 +3,7 @@ import { localIdToRemoteId } from "../../view/worldViewMisc";
 
 // @ts-expect-error (TODO: Remove in 2.10.0)
 import { SpellCastEvent, Actor, printConsole, Game, getAnimationVariablesFromActor, ActorAnimationVariables, SpellType, SlotType, EquippedItemType } from 'skyrimPlatform'
-import { Spell } from 'skyrimPlatform';
+import { Spell, MagicEffect } from 'skyrimPlatform';
 import { ClientListener, CombinedController, Sp } from './clientListener';
 import { logTrace } from '../../logging';
 import { landsOnItsTarget } from "../../sync/spellDelivery";
@@ -228,11 +228,33 @@ export class MagicSyncService extends ClientListener {
         for (let i = 0; i < n; ++i) {
             const effect = spell.getNthEffectMagicEffect(i);
             if (effect && effect.getDeliveryType() === MagicSyncService.kTargetLocation
-                && (effect.getProjectile() || spell.getNthEffectArea(i) > 0)) {
+                && (MagicSyncService.hasProjectile(effect, spell.getFormID()) || spell.getNthEffectArea(i) > 0)) {
                 return true;
             }
         }
         return false;
+    }
+
+    // thuum docs/research/apocalypse/target-location.md (playtest
+    // twenty-three): MagicEffect.getProjectile threw in the caster's game at
+    // every rune cast ("Cannot read properties of undefined (reading
+    // 'prototype')": Skyrim Platform wraps the returned form by its VM
+    // class name, PROJECTILE, which its class list may not carry), and the
+    // throw ended the spellCast handler, so no cast reached the server and
+    // the rune's hits were refused. A throw counts as a projectile (the
+    // engine launches one for every rune), so the cast waits for its launch
+    // as it should; the throw is logged once per spell
+    private static readonly projectileThrows = new Set<number>();
+    private static hasProjectile(effect: MagicEffect, spellId: number): boolean {
+        try {
+            return !!effect.getProjectile();
+        } catch (err) {
+            if (!MagicSyncService.projectileThrows.has(spellId)) {
+                MagicSyncService.projectileThrows.add(spellId);
+                logTrace(`magicSyncService: getProjectile threw for spell ${spellId.toString(16)}: ${String(err)}`);
+            }
+            return true;
+        }
     }
 
     // A pitch within the quarter turn the server's validator allows

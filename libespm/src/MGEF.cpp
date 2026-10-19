@@ -46,6 +46,12 @@ MGEF::Data MGEF::GetData(
           std::memcpy(&result.data.hitEffectArt, data + 0x60,
                       sizeof(result.data.hitEffectArt));
         }
+        if (size >= 0x58) {
+          std::memcpy(&result.data.castingType, data + 0x50,
+                      sizeof(result.data.castingType));
+          std::memcpy(&result.data.delivery, data + 0x54,
+                      sizeof(result.data.delivery));
+        }
       } else if (!std::memcmp(type, "CTDA", 4) && size >= 10) {
         // a condition's function index is the u16 at 8 (UESP "Skyrim
         // Mod:Mod File Format/CTDA Field")

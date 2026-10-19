@@ -124,8 +124,9 @@ int Snippets(PartOne& p, Networking::UserId user, const char* cls,
   int n = 0;
   for (auto& m : p.Messages()) {
     n += m.userId == user && m.j.contains("t") &&
-      m.j["t"] == static_cast<int>(MsgType::SpSnippet) && m.j["class"] == cls &&
-      m.j["function"] == fn && (selfId == 0 || m.j["selfId"] == selfId);
+      m.j["t"] == static_cast<int>(MsgType::SpSnippet) &&
+      m.j["class"] == cls && m.j["function"] == fn &&
+      (selfId == 0 || m.j["selfId"] == selfId);
   }
   return n;
 }

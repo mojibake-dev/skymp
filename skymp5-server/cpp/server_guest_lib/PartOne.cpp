@@ -1761,10 +1761,10 @@ void PartOne::ConcealBond(const skymp::rules::BondBreak& bond)
   if (!procId) {
     return;
   }
-  const auto caster = std::dynamic_pointer_cast<MpActor>(
-    worldState.LookupFormById(bond.caster));
-  const auto target = std::dynamic_pointer_cast<MpActor>(
-    worldState.LookupFormById(bond.target));
+  const auto caster =
+    std::dynamic_pointer_cast<MpActor>(worldState.LookupFormById(bond.caster));
+  const auto target =
+    std::dynamic_pointer_cast<MpActor>(worldState.LookupFormById(bond.target));
   if (!caster || !target) {
     return;
   }

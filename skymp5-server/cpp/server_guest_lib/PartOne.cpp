@@ -1349,6 +1349,20 @@ void PartOne::ExpectArrival(uint32_t actorFormId, uint32_t cellOrWorld,
                                          SteadyNowMs());
 }
 
+void PartOne::PinArrival(uint32_t actorFormId, uint32_t cellOrWorld,
+                         const NiPoint3& at, uint64_t holdMs)
+{
+  pImpl->movementBudgets->pin(actorFormId, cellOrWorld, at.x, at.y,
+                              SteadyNowMs() + holdMs);
+}
+
+bool PartOne::PinnedAway(uint32_t actorFormId, uint32_t cellOrWorld,
+                         const NiPoint3& at)
+{
+  return pImpl->movementBudgets->pinned_away(actorFormId, cellOrWorld, at.x,
+                                             at.y, SteadyNowMs());
+}
+
 PartOne::JumpCheck PartOne::CheckArrival(uint32_t actorFormId,
                                          uint32_t cellOrWorld, float x,
                                          float y)
@@ -1421,6 +1435,16 @@ bool PartOne::BreakBondsOf(uint32_t actorFormId)
   targetTo.cellOrWorldDesc = caster->GetCellOrWorld();
   caster->Teleport(casterTo);
   target->Teleport(targetTo);
+  // the mod's script in the caster's game moves the caster once more after
+  // the swap, to where the target's figure now stands (its own spot), and
+  // undid the swap (x-shadowbond 20261019-083537 on 13acbb35); a report
+  // from away from the swap's place within the hold is sent back
+  PinArrival(broken.caster,
+             casterTo.cellOrWorldDesc.ToFormId(worldState.espmFiles),
+             casterTo.pos, kBondPinMs);
+  PinArrival(broken.target,
+             targetTo.cellOrWorldDesc.ToFormId(worldState.espmFiles),
+             targetTo.pos, kBondPinMs);
   spdlog::info("PartOne::BreakBondsOf - {:x} acts: its bond with {:x} breaks; "
                "the server swaps their places, {:x} to ({:.0f}, {:.0f}, "
                "{:.0f}) and {:x} to ({:.0f}, {:.0f}, {:.0f}) (thuum "

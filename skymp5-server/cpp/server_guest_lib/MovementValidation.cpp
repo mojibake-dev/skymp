@@ -57,6 +57,16 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
       default:
         break;
     }
+    // thuum docs/verbs/shadowbond.md: a place the server holds the player at
+    // for a while after its swap; a report from elsewhere is a move the
+    // server did not author (the mod's own script), and the player is sent
+    // back to where the server has it
+    if (partOne.PinnedAway(actor->GetFormId(), cellOrWorld, newPos)) {
+      spdlog::info("MovementValidation: {:x} reported ({:.0f}, {:.0f}) away "
+                   "from the place the server holds it at; sent back",
+                   actor->GetFormId(), newPos.x, newPos.y);
+      return snapBack();
+    }
   }
 
   // thuum docs/verbs/console-commands.md, COC: a move the bounds below refuse

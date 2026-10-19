@@ -221,6 +221,12 @@ public:
                       const NiPoint3& from, float reach, uint64_t waitMs);
   JumpCheck CheckCastJump(uint32_t actorFormId, uint32_t cellOrWorld,
                           const NiPoint3& at);
+  // Whether a move the bounds took, to `at` in cellOrWorld, lands within
+  // the cast jump that waits for the actor; the jump stands. The other games
+  // place the figure there (thuum docs/verbs/cast-teleport.md, the teleport
+  // snap; docs/verbs/shadowbond.md, the swap's landings within the budget)
+  bool CastJumpLands(uint32_t actorFormId, uint32_t cellOrWorld,
+                     const NiPoint3& at) const;
 
   // thuum docs/verbs/cast-teleport.md, the look on other screens: what a
   // teleport's castTeleports entry names for the other players' games to

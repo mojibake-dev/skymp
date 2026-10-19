@@ -130,6 +130,21 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
     // a look waiting for it (nothing when none waits)
     if (PartOne::TeleportLookLands(ground)) {
       partOne.PlayTeleportLanding(*actor, newPos);
+      // and the teleport snap (docs/verbs/cast-teleport.md; the swap's two
+      // landings, docs/verbs/shadowbond.md): the same step, within the cast
+      // jump that waits for this actor, is that jump's landing, which the
+      // other games place instead of gliding (playtest twenty-three: a jump
+      // under 1024 units slid on every other screen). The permit stands: it
+      // is for a move the bounds refuse, which this one was not
+      const uint32_t cellOrWorld = newCellOrWorld.ToFormId(espmFiles);
+      if (partOne.CastJumpLands(actor->GetFormId(), cellOrWorld, newPos)) {
+        spdlog::info("MovementValidation: {:x} landed its permitted jump "
+                     "within its budget, {:.0f} units to {:x} at ({:.0f}, "
+                     "{:.0f}, {:.0f}); placed for the other games",
+                     actor->GetFormId(), ground, cellOrWorld, newPos.x,
+                     newPos.y, newPos.z);
+        markPlaced();
+      }
     }
   }
   return true;

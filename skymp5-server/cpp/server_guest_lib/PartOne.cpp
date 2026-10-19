@@ -1612,6 +1612,13 @@ PartOne::JumpCheck PartOne::CheckCastJump(uint32_t actorFormId,
     actorFormId, cellOrWorld, at.x, at.y, at.z, SteadyNowMs()));
 }
 
+bool PartOne::CastJumpLands(uint32_t actorFormId, uint32_t cellOrWorld,
+                            const NiPoint3& at) const
+{
+  return pImpl->movementBudgets->cast_jump_lands(
+    actorFormId, cellOrWorld, at.x, at.y, at.z, SteadyNowMs());
+}
+
 namespace {
 // A form a teleport's look names, as its entry writes it, to its id in the
 // server's load order, light plugins numbered as the engine numbers them

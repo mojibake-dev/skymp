@@ -1014,6 +1014,11 @@ mod ffi {
         /// Judge a move of `actor`'s that the bounds refuse against its cast
         /// jump: Landed within reach (that ends it), else NoPermit.
         fn check_cast_jump(self: &mut MovementBudgets, actor: u32, cell_or_world: u32, x: f32, y: f32, z: f32, now_ms: u64) -> JumpCheck;
+        /// Whether a move of `actor`'s that the bounds took lands within the
+        /// cast jump that waits for it; the jump stands. The other games
+        /// place the figure there (thuum docs/verbs/cast-teleport.md, the
+        /// teleport snap; docs/verbs/shadowbond.md).
+        fn cast_jump_lands(self: &MovementBudgets, actor: u32, cell_or_world: u32, x: f32, y: f32, z: f32, now_ms: u64) -> bool;
 
         /// thuum docs/verbs/headshot.md: the headshot rule's settings
         /// (server-settings.json's `headshot` block) and every shooter's
@@ -1617,6 +1622,10 @@ impl MovementBudgets {
     fn check_cast_jump(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, z: f32, now_ms: u64) -> JumpCheck {
         jump_check(self.0.check_cast_jump(actor, cell_or_world, x, y, z, now_ms))
     }
+
+    fn cast_jump_lands(&self, actor: u32, cell_or_world: u32, x: f32, y: f32, z: f32, now_ms: u64) -> bool {
+        self.0.cast_jump_lands(actor, cell_or_world, x, y, z, now_ms)
+    }
 }
 
 /// The globals the server keeps per player (wire-rules player_globals).
@@ -2097,6 +2106,13 @@ mod tests {
         assert_eq!(b.check_cast_jump(7, 0x3c, 0.0, 4_000.0, 12.0, 21), JumpCheck::NoPermit);
         assert_eq!(b.check_cast_jump(7, 0x3c, 0.0, 2_000.0, 12.0, 22), JumpCheck::Landed);
         assert_eq!(b.check_cast_jump(7, 0x3c, 0.0, 2_000.0, 12.0, 23), JumpCheck::NoPermit);
+        // a move the budget took within a waiting cast jump: placed, the
+        // jump standing for a move the bounds refuse
+        b.permit_cast_jump(7, 0x3c, 0.0, 300.0, 0.0, 256.0, 1_500, 30);
+        assert!(b.cast_jump_lands(7, 0x3c, 0.0, 300.0, 0.0, 31));
+        assert!(!b.cast_jump_lands(7, 0x3c, 0.0, 900.0, 0.0, 31));
+        assert_eq!(b.check_cast_jump(7, 0x3c, 0.0, 300.0, 0.0, 32), JumpCheck::Landed);
+        assert!(!b.cast_jump_lands(7, 0x3c, 0.0, 300.0, 0.0, 33));
     }
 
     #[test]

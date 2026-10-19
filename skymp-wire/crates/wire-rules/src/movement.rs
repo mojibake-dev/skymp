@@ -153,6 +153,16 @@ struct CastJump {
     until_ms: u64,
 }
 
+impl CastJump {
+    /// Whether (x, y, z) in `cell_or_world` lies within the jump's reach and
+    /// the slack of its point, in its cell or worldspace.
+    fn covers(&self, cell_or_world: u32, x: f32, y: f32, z: f32) -> bool {
+        let (dx, dy, dz) = (x - self.x, y - self.y, z - self.z);
+        let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+        cell_or_world == self.cell_or_world && distance.is_finite() && distance <= self.reach + CAST_JUMP_SLACK
+    }
+}
+
 /// Every player actor's budget and permitted jump, by form id. Runtime
 /// only: after a restart or a login a budget starts full, with no jump.
 #[derive(Debug, Default)]
@@ -222,13 +232,26 @@ impl Budgets {
             self.cast_jumps.remove(&actor);
             return JumpCheck::NoPermit;
         }
-        let (dx, dy, dz) = (x - j.x, y - j.y, z - j.z);
-        let distance = (dx * dx + dy * dy + dz * dz).sqrt();
-        if cell_or_world != j.cell_or_world || !distance.is_finite() || distance > j.reach + CAST_JUMP_SLACK {
+        if !j.covers(cell_or_world, x, y, z) {
             return JumpCheck::NoPermit;
         }
         self.cast_jumps.remove(&actor);
         JumpCheck::Landed
+    }
+
+    /// Whether a move of `actor`'s that the bounds took, to (x, y, z) in
+    /// `cell_or_world` at `now_ms`, lands within the cast jump that waits
+    /// for it: the other games place its figure there instead of gliding it
+    /// (thuum docs/verbs/cast-teleport.md, the teleport snap;
+    /// docs/verbs/shadowbond.md, the swap's two landings, each within the
+    /// ground budget's burst). The jump stands: it is the permit for a move
+    /// the bounds refuse, which a move they took never needed. The caller
+    /// asks for a step no run makes between two reports alone
+    /// (teleports::look_lands): a short jump's point lies within reach of
+    /// where the actor already stands, so any nearer report would land too.
+    #[must_use]
+    pub fn cast_jump_lands(&self, actor: u32, cell_or_world: u32, x: f32, y: f32, z: f32, now_ms: u64) -> bool {
+        self.cast_jumps.get(&actor).is_some_and(|j| now_ms <= j.until_ms && j.covers(cell_or_world, x, y, z))
     }
 
     /// The server moved `actor` itself, to (x, y) in `cell_or_world`, at
@@ -305,6 +328,31 @@ mod tests {
         all.permit_cast_jump(1, TAMRIEL_ID, 0.0, -300.0, 12.0, 3_000.0, CAST_JUMP_WAIT_MS, 0);
         assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 0.0, 0.0, 12.0, CAST_JUMP_WAIT_MS.saturating_add(1)), JumpCheck::NoPermit);
         assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 0.0, 0.0, 12.0, 1), JumpCheck::NoPermit);
+    }
+
+    #[test]
+    fn a_step_the_budget_takes_lands_within_the_waiting_cast_jump_and_leaves_it() {
+        // thuum docs/verbs/shadowbond.md: the swap's landing, 300 units off
+        // (within the budget's burst), at the other actor's place, which the
+        // bond permits within its slack for its window
+        let mut all = Budgets::default();
+        assert!(!all.cast_jump_lands(1, TAMRIEL_ID, 0.0, 300.0, 0.0, 0));
+        all.permit_cast_jump(1, TAMRIEL_ID, 0.0, 300.0, 0.0, 256.0, 1_500, 1_000);
+        // another actor's, another worldspace, beyond the slack, no number
+        assert!(!all.cast_jump_lands(2, TAMRIEL_ID, 0.0, 300.0, 0.0, 1_100));
+        assert!(!all.cast_jump_lands(1, 0x1_3a8f, 0.0, 300.0, 0.0, 1_100));
+        assert!(!all.cast_jump_lands(1, TAMRIEL_ID, 0.0, 900.0, 0.0, 1_100));
+        assert!(!all.cast_jump_lands(1, TAMRIEL_ID, f32::NAN, 300.0, 0.0, 1_100));
+        // at the other's place: lands, and the jump stands for a move the
+        // bounds refuse
+        assert!(all.cast_jump_lands(1, TAMRIEL_ID, 0.0, 300.0, 0.0, 1_100));
+        assert!(all.cast_jump_lands(1, TAMRIEL_ID, 100.0, 400.0, 0.0, 1_200));
+        assert_eq!(all.check_cast_jump(1, TAMRIEL_ID, 0.0, 300.0, 0.0, 1_300), JumpCheck::Landed);
+        assert!(!all.cast_jump_lands(1, TAMRIEL_ID, 0.0, 300.0, 0.0, 1_400));
+        // the window runs out
+        all.permit_cast_jump(1, TAMRIEL_ID, 0.0, 300.0, 0.0, 256.0, 1_500, 2_000);
+        assert!(all.cast_jump_lands(1, TAMRIEL_ID, 0.0, 300.0, 0.0, 3_500));
+        assert!(!all.cast_jump_lands(1, TAMRIEL_ID, 0.0, 300.0, 0.0, 3_501));
     }
 
     #[test]

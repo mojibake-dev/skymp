@@ -2,6 +2,7 @@
 #include <catch2/catch_all.hpp>
 
 #include "ActionListener.h"
+#include "MessageSerializerFactory.h"
 #include "MsgType.h"
 #include "UpdateMovementMessage.h"
 
@@ -64,14 +65,12 @@ void Cast(PartOne& p)
                             { "integers", nlohmann::json::array() } } } } } });
 }
 
-// the caster's own movement report (ConsoleCommandTest's)
+// the caster's own movement report (ConsoleCommandTest's), carried as the
+// bytes its game would send: the server relays a movement report unparsed
+// (ActionListener::RelayToListeners), so the relay the other game gets is
+// the report only if the bytes are
 void Report(PartOne& p, MpActor& me, const NiPoint3& pos)
 {
-  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
-  RawMessageData raw;
-  raw.userId = 0;
-  raw.unparsed = unparsed;
-  raw.unparsedLength = sizeof(unparsed);
   UpdateMovementMessage msg;
   msg.idx = me.GetIdx();
   msg.data.pos = { pos.x, pos.y, pos.z };
@@ -81,6 +80,12 @@ void Report(PartOne& p, MpActor& me, const NiPoint3& pos)
   msg.data.isBlocking = false;
   msg.data.worldOrCell = 0x3c;
   msg.data.runMode = "Standing";
+  std::string packet;
+  PartOne::GetMessageSerializerInstance().Serialize(msg, packet);
+  RawMessageData raw;
+  raw.userId = 0;
+  raw.unparsed = reinterpret_cast<Networking::PacketData>(packet.data());
+  raw.unparsedLength = packet.size();
   p.GetActionListener().OnUpdateMovement(raw, msg);
 }
 

@@ -1,0 +1,144 @@
+# difftest shadowbond (M2 train-27 and train-28, thuum docs/verbs/shadowbond.md):
+# c1 and c2 are new characters (profiles 9 and 10, actors 0xff000002 and
+# 0xff000003: see melee-reach), c2 50 units off the spawn. At 1.5 s c1 learns
+# Apocalypse's Shadowbond (0x0C031C4D in the lab's order, 201530445; the
+# lab's server-settings name it a bond whose proc is 0x0C055B32, thuum
+# lab-bonds-proc) and at 1.6 s Flames (Skyrim.esm 0x12FCD, 77773), holds
+# Shadowbond in its left hand and Flames in its right at 2 s. At 3 s c1 casts
+# Shadowbond with target 0 (a target-actor spell waits for its first hit) and
+# at 3.4 s its hit on c2 names the target: the fixed server relays the cast
+# to c2 with c2's id, records the bond, records the proc's Invisibility on
+# both for the bond's 20 s (MagicEffects to both games) and tells c2's game
+# to cast the proc on its own player and on c1's figure (two Spell.Cast
+# snippets; c1's own game, where the mod's script casts both, hears none);
+# the hostile hit begins a fight (StartCombat to c2). At 5 s c1 casts Flames,
+# the act that ends its concealment: the server swaps the two (a Teleport to
+# each), holds them, ends both records (the sets without the proc) and
+# dispels c2's own copy (Actor.DispelSpell to c2). c2 steps again at 6 s of
+# its own, from where its game still stands, which is away from the swap's
+# place within the hold, so the fixed server sends it back (Teleport2). The
+# legacy server never learned the spells (its console has no addspell),
+# refuses them in the hands and relays no cast, so none of this occurs on
+# it; its own reactions (RemoveSpell, the inventory resent) are declared as
+# in target-by-hit. The counts beyond the departure line are declared from
+# the design and corrected from the session's first T2 run, as every
+# session's are.
+id: shadowbond
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 1500, send: {t: 12, data: {t: 12, commandName: addspell, args: [20, 201530445]}}}
+  - {client: c1, at_ms: 1600, send: {t: 12, data: {t: 12, commandName: addspell, args: [20, 77773]}}}
+  - {client: c1, at_ms: 2000, send: {t: 5, idx: "{{idx}}", data: {inv: {entries: []}, leftSpell: 201530445, rightSpell: 77773, numChanges: 1}}}
+  - {client: c1, at_ms: 3000, send: {t: 23, data: {caster: 20, target: 0, spell: 201530445, isDualCasting: false, interruptCast: false, castingSource: 0, aimAngle: 0, aimHeading: 0, hasLaunch: false, originX: 0, originY: 0, originZ: 0, launchAngleX: 0, launchAngleZ: 0, actorAnimationVariables: {booleans: [], floats: [], integers: []}}}}
+  - {client: c1, at_ms: 3400, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 201530445, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
+  - {client: c1, at_ms: 5000, send: {t: 23, data: {caster: 20, target: 0, spell: 77773, isDualCasting: false, interruptCast: false, castingSource: 1, aimAngle: 0, aimHeading: 0, hasLaunch: false, originX: 0, originY: 0, originZ: 0, launchAngleX: 0, launchAngleZ: 0, actorAnimationVariables: {booleans: [], floats: [], integers: []}}}}
+  - {client: c2, at_ms: 0, move: {dx: 50}}
+  - {client: c2, at_ms: 6000, move: {dx: 60}}
+divergences:
+  - client: c1
+    msg: {t: 41, text: "addspell done: c031c4d recorded", refused: false}
+    legacy: 0
+    wire: 1
+    reason: an owner's AddSpell writes the server's record of learned spells and answers with a line (thuum docs/verbs/cast-teleport.md); the legacy server does not know the command
+  - client: c1
+    msg: {t: 41, text: "addspell done: 12fcd recorded", refused: false}
+    legacy: 0
+    wire: 1
+    reason: the same for Flames
+  - client: c1
+    msg: {t: 30, class: Actor, function: AddSpell, arguments: [{formId: 201530445, type: Spell}, false]}
+    legacy: 0
+    wire: 1
+    reason: the recorded spell is told to c1's own game
+  - client: c1
+    msg: {t: 30, class: Actor, function: AddSpell, arguments: [{formId: 77773, type: Spell}, false]}
+    legacy: 0
+    wire: 1
+    reason: the same for Flames
+  - client: c1
+    msg: {t: 5, data: {leftSpell: 201530445}}
+    legacy: 0
+    wire: 1
+    reason: the wire stack takes the learned spells in the hands and relays them, c1's own game included (it listens to itself); the legacy stack refuses them
+  - client: c2
+    msg: {t: 5, data: {leftSpell: 201530445}}
+    legacy: 0
+    wire: 1
+    reason: the same relay reaches c2
+  - client: c1
+    msg: {t: 30, class: Actor, function: RemoveSpell, arguments: [{formId: 201530445, type: Spell}]}
+    legacy: 1
+    wire: 0
+    reason: the legacy stack refuses a spell c1 never learned and takes it from c1's game (upstream #2665)
+  - client: c1
+    msg: {t: 30, class: Actor, function: RemoveSpell, arguments: [{formId: 77773, type: Spell}]}
+    legacy: 1
+    wire: 0
+    reason: the same for Flames
+  - client: c1
+    msg: {t: 28, inventory: {entries: [{baseId: 10, count: 10}, {baseId: 15, count: 140}, {baseId: 77382, count: 1}, {baseId: 77385, count: 1}, {baseId: 77387, count: 1}, {baseId: 77389, count: 1}, {baseId: 77494, count: 1}, {baseId: 77495, count: 1}, {baseId: 79760, count: 1}, {baseId: 80253, count: 23}, {baseId: 80254, count: 1}, {baseId: 120044, count: 2}, {baseId: 236362, count: 2}, {baseId: 243042, count: 1}, {baseId: 256733, count: 5}, {baseId: 256736, count: 5}, {baseId: 256741, count: 5}, {baseId: 256810, count: 1}, {baseId: 256819, count: 1}, {baseId: 1017598, count: 1}]}}
+    legacy: 1
+    wire: 0
+    reason: the legacy stack's refusal of the spells sends c1 its inventory again (upstream #2665)
+  - client: c2
+    msg: {t: 23, data: {target: 4278190083}}
+    legacy: 0
+    wire: 1
+    reason: the fixed server relays the Shadowbond cast at its first hit, with the target the hit names (the legacy server, which never learned the spell, relays no cast at all)
+  - client: c2
+    msg: {t: 23, data: {spell: 77773}}
+    legacy: 0
+    wire: 1
+    reason: the Flames cast relays at once, a stream aimed at nobody; the legacy server refused the spell in the hand
+  - client: c2
+    msg: {t: 30, class: Actor, function: StartCombat}
+    legacy: 0
+    wire: 1
+    reason: the claimed hostile hit begins a fight and the victim's game is told (ADR-023); the legacy server saw no cast to claim the hit against
+  - client: c1
+    msg: {t: 43}
+    legacy: 0
+    wire: 4
+    reason: the bond's concealment on the server's record (thuum docs/verbs/shadowbond.md, train-28), two records at the claim (c1's and c2's, each listener hears both) and their two ends at the break (c1's with its act, c2's with the bond); the legacy server records nothing of a spell it refused
+  - client: c2
+    msg: {t: 43}
+    legacy: 0
+    wire: 4
+    reason: the same sets reach c2
+  - client: c2
+    msg: {t: 30, class: Spell, function: Cast}
+    legacy: 0
+    wire: 2
+    reason: the proc cast in c2's game on its own player and on c1's figure (every game but the caster's own, where the mod's script casts both)
+  - client: c1
+    msg: {t: 20}
+    legacy: 0
+    wire: 1
+    reason: the swap at the break, the server moving c1 to c2's place itself (R0)
+  - client: c2
+    msg: {t: 20}
+    legacy: 0
+    wire: 1
+    reason: the same swap, c2 to c1's place
+  - client: c2
+    msg: {t: 30, class: Actor, function: DispelSpell}
+    legacy: 0
+    wire: 1
+    reason: the target's own copy of the proc was the server's cast, so the server dispels it at the break
+  - client: c2
+    msg: {t: 31}
+    legacy: 0
+    wire: 1
+    reason: c2's step at 6 s is reported from where its game still stands, away from the swap's place within the hold, and is sent back (the pin, MovementValidation); the legacy server took it as a walk
+  - client: c2
+    msg: {t: 45}
+    legacy: 0
+    wire: 1
+    reason: the wire stack sends a player its globals to watch, and their recorded values, on its first movement after a login (docs/verbs/player-globals.md); the legacy server has no such message
+  - client: c2
+    msg: {t: 25, idx: 2}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

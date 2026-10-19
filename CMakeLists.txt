@@ -25,10 +25,13 @@ else()
   set(VCPKG_INSTALL_OPTIONS --no-print-usage --clean-after-build)
 endif()
 
-if("$ENV{CI}" STREQUAL "true" AND WIN32)
-  # The same submodule but moved to a larger disk in Windows CI. See action files:
+if("$ENV{GITHUB_ACTIONS}" STREQUAL "true" AND WIN32)
+  # The same submodule but moved to a larger disk in GitHub's Windows CI. See action files:
   # - https://github.com/skyrim-multiplayer/skymp/blob/main/.github/workflows/pr-windows.yml
   # - https://github.com/skyrim-multiplayer/skymp/blob/main/.github/workflows/pr-windows-ae.yml
+  # thuum: the move is those workflows' alone, so the test is GITHUB_ACTIONS, not CI: the fork's
+  # GitLab client-build job on sky-build (CI=true too) builds from the checkout's own submodule,
+  # whose disk is already the large one (2026-10-19, pipeline 2092 job 8844).
   set(CMAKE_TOOLCHAIN_FILE "C:/vcpkg/scripts/buildsystems/vcpkg.cmake")
 else()
   set(CMAKE_TOOLCHAIN_FILE "${CMAKE_SOURCE_DIR}/vcpkg/scripts/buildsystems/vcpkg.cmake")

@@ -18,6 +18,11 @@
 # again at 4 s of its own, so it outlives c1, as in every session. The first
 # session shape used a Poison-type spell with a health effect whose
 # regeneration ticks were timing-dependent; a disease has none.
+# Since train-27's conditions evaluator (thuum ADR-039) the hit's effect,
+# TrapDiseaseWitbane's, is refused by its own conditions on the server, so
+# no MagicEffects record (t 43) and no StartCombat follow the claimed hit on
+# either stack (T2 20261019-0000 on c32cf0bd: the old declarations no longer
+# occurring); the relay at the first hit, the session's point, is unchanged.
 id: target-by-hit
 clients:
   c1: {profile_id: 9}
@@ -65,21 +70,6 @@ divergences:
     legacy: 0
     wire: 1
     reason: the fixed server relays the cast at its first hit, with the target the hit names (the legacy server, which never learned the spell, relays no cast at all)
-  - client: c1
-    msg: {t: 43, idx: 64}
-    legacy: 0
-    wire: 1
-    reason: the hit's effect on the server's record of c2 (MagicEffects, thuum docs/verbs/magic-effects.md), told to every game that sees c2, c1's included; the legacy stack refused the hit as a cast of no spell
-  - client: c2
-    msg: {t: 43, idx: 64}
-    legacy: 0
-    wire: 1
-    reason: the same, to c2's own game
-  - client: c2
-    msg: {t: 30, class: Actor, function: StartCombat}
-    legacy: 0
-    wire: 1
-    reason: a hostile hit begins a fight and the victim's game is told (thuum docs/verbs/hostility-sync.md, ADR-023); the legacy stack counted no hit
   - client: c2
     msg: {t: 45}
     legacy: 0

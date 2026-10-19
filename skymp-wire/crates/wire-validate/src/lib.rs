@@ -582,6 +582,13 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
             }
             check_pos(&m.pos)
         }
+        // thuum docs/verbs/cast-teleport.md: a placement names an actor
+        Message::ActorJump(m) => {
+            if m.idx == 0 {
+                return Err(Reject::Range);
+            }
+            Ok(())
+        }
         Message::SetGameTime(m) => {
             if !all_finite(m) {
                 return Err(Reject::NonFinite);

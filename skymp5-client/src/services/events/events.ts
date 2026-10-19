@@ -27,6 +27,7 @@ import { ArrowShotMessage } from "../messages/arrowShotMessage";
 import { MagicEffectsMessage } from "../messages/magicEffectsMessage";
 import { UpdateActionMessage } from "../messages/updateActionMessage";
 import { PlayerGlobalsMessage } from "../messages/playerGlobalsMessage";
+import { ActorJumpMessage } from "../messages/actorJumpMessage";
 import { SpSnippetMessage } from "../messages/spSnippetMessage";
 import { TeleportMessage } from "../messages/teleportMessage";
 import { UpdateAnimationMessage } from "../messages/updateAnimationMessage";
@@ -94,6 +95,7 @@ type EventTypes = {
     'magicEffectsMessage': [ConnectionMessage<MagicEffectsMessage>],
     'updateActionMessage': [ConnectionMessage<UpdateActionMessage>],
     'playerGlobalsMessage': [ConnectionMessage<PlayerGlobalsMessage>],
+    'actorJumpMessage': [ConnectionMessage<ActorJumpMessage>],
     'customPacketMessage': [ConnectionMessage<CustomPacketMessage>]
 
     'browserWindowLoaded': [BrowserWindowLoadedEvent],

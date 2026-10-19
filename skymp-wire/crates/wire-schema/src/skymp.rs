@@ -1389,3 +1389,24 @@ wire_struct! {
         pub refused: bool,
     }
 }
+
+wire_struct! {
+    /// MsgType 46, thuum's (docs/verbs/cast-teleport.md, the teleport snap).
+    /// Server to client, reliable: the actor at `idx` made a jump the server
+    /// vouches for (a cast teleport's permitted landing, the arrival after a
+    /// move the server made, a permitted console jump), so the game places
+    /// its figure at the movement report that follows instead of gliding it
+    /// there (the glide covered 0.2 s, and a jump under 1024 units slid on
+    /// every other screen: playtest twenty-three). Sent to every other game
+    /// that sees the actor, just before that report's relay. Idempotent: a
+    /// second one before the report changes nothing. Reason codes:
+    /// `E_VAL_RANGE` (idx 0).
+    pub struct ActorJump {
+        /// `"t": 46`.
+        #[serde(default)]
+        pub t: MsgT<46>,
+        /// The actor's index on the wire, as its movement reports carry it.
+        pub idx: u32,
+    }
+}
+

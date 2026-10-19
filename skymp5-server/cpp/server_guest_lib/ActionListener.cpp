@@ -196,14 +196,29 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
                             currentPos.x, currentPos.y);
     }
 
+    bool placed = false;
     if (!MovementValidation::Validate(
           partOne, currentPos, currentRot, currentCellOrWorld,
           teleportFlag && !isPlayersOwn
             ? kInfinityPos
             : NiPoint3{ msg.data.pos[0], msg.data.pos[1], msg.data.pos[2] },
           FormDesc::FromFormId(msg.data.worldOrCell, espmFiles),
-          rawMsgData.userId, actor, espmFiles)) {
+          rawMsgData.userId, actor, espmFiles, &placed)) {
       return;
+    }
+
+    // thuum docs/verbs/cast-teleport.md (the teleport snap, playtest
+    // twenty-three: a jump under 1024 units slid on every other screen): a
+    // move the server vouches for as a jump tells the other games to place
+    // the figure at the report that follows, reliably and before it
+    if (placed) {
+      ActorJumpMessage jump;
+      jump.idx = msg.idx;
+      for (auto listener : actor->GetActorListeners()) {
+        if (listener != actor) {
+          listener->GetActorToSendTo().SendToUser(jump, true);
+        }
+      }
     }
 
     RelayToListeners(*actor, rawMsgData.unparsed, rawMsgData.unparsedLength,

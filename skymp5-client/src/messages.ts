@@ -47,5 +47,6 @@ export enum MsgType {
   ArrowShot = 42,
   MagicEffects = 43,
   UpdateAction = 44,
-  PlayerGlobals = 45
+  PlayerGlobals = 45,
+  ActorJump = 46
 }

@@ -393,6 +393,8 @@ pub enum Message {
     UpdateAction(skymp::UpdateAction),
     /// 53, MsgType 45 (thuum). See [`skymp::PlayerGlobals`].
     PlayerGlobals(skymp::PlayerGlobals),
+    /// 54, MsgType 46 (thuum). See [`skymp::ActorJump`].
+    ActorJump(skymp::ActorJump),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -421,7 +423,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 54] = [
+const TABLE: [Row; 55] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -476,6 +478,7 @@ const TABLE: [Row; 54] = [
     row("MagicEffects", 43, KIB, S2C),
     row("UpdateAction", 44, 32 * KIB, Both),
     row("PlayerGlobals", 45, 4 * KIB, Both),
+    row("ActorJump", 46, 16, S2C),
 ];
 
 /// Wire ids in use: one past the last variant.
@@ -558,6 +561,7 @@ impl Message {
             Message::MagicEffects(_) => 51,
             Message::UpdateAction(_) => 52,
             Message::PlayerGlobals(_) => 53,
+            Message::ActorJump(_) => 54,
         }
     }
 
@@ -632,6 +636,7 @@ mod tests {
         assert_eq!(name_of_msg_type(43), Some("MagicEffects"));
         assert_eq!(name_of_msg_type(44), Some("UpdateAction"));
         assert_eq!(name_of_msg_type(45), Some("PlayerGlobals"));
+        assert_eq!(name_of_msg_type(46), Some("ActorJump"));
         assert_eq!(name_of_msg_type(0), None);
         assert_eq!(name_of_msg_type(46), None);
     }

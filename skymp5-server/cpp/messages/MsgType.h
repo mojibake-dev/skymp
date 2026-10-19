@@ -53,6 +53,7 @@ enum class MsgType : uint8_t
   MagicEffects = 43,
   UpdateAction = 44,
   PlayerGlobals = 45,
+  ActorJump = 46,
 
   Max
 };

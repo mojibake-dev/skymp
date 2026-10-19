@@ -1,5 +1,6 @@
 #pragma once
 #include "ActivateMessage.h"
+#include "ActorJumpMessage.h"
 #include "ActorValuesMessage.h"
 #include "ArrowShotMessage.h"
 #include "ChangeValuesMessage.h"
@@ -90,4 +91,5 @@
   REGISTER_MESSAGE(ArrowShotMessage)                                          \
   REGISTER_MESSAGE(MagicEffectsMessage)                                       \
   REGISTER_MESSAGE(UpdateActionMessage)                                       \
-  REGISTER_MESSAGE(PlayerGlobalsMessage)
+  REGISTER_MESSAGE(PlayerGlobalsMessage)                                      \
+  REGISTER_MESSAGE(ActorJumpMessage)

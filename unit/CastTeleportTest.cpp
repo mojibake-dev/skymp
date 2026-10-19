@@ -331,6 +331,58 @@ TEST_CASE("A cast teleport's landing places the figure and plays the look's "
   Leave(p);
 }
 
+// thuum docs/verbs/cast-teleport.md (the teleport snap, train-27): a landing
+// the server vouches for reaches the other game as a placement (MsgType 46)
+// before the report's relay, so the figure is placed, not glided
+TEST_CASE("A cast teleport's landing tells the other game to place the figure "
+          "before the report's relay",
+          "[CastTeleport][espm]")
+{
+  PartOne& p = GetPartOne();
+  p.SetCastTeleportSettings(kLooked);
+  auto& caster = Pair(p);
+  Cast(p);
+  p.Tick();
+  p.Messages().clear();
+
+  Report(p, caster, { 2500, 0, 0 });
+  REQUIRE(SentBack(p) == 0);
+  int jumpAt = -1;
+  int relayAt = -1;
+  int i = 0;
+  for (auto& m : p.Messages()) {
+    if (m.userId == 1 && m.j.contains("t")) {
+      if (m.j["t"] == static_cast<int>(MsgType::ActorJump) && jumpAt < 0) {
+        REQUIRE(m.reliable);
+        REQUIRE(m.j["idx"].get<uint32_t>() == caster.idx);
+        jumpAt = i;
+      }
+      if (m.j["t"] == static_cast<int>(MsgType::UpdateMovement) &&
+          relayAt < 0) {
+        relayAt = i;
+      }
+    }
+    ++i;
+  }
+  REQUIRE(jumpAt >= 0);
+  REQUIRE(relayAt >= 0);
+  REQUIRE(jumpAt < relayAt);
+  // the caster's own game is told nothing
+  for (auto& m : p.Messages()) {
+    REQUIRE_FALSE(m.userId == 0 && m.j.contains("t") &&
+                  m.j["t"] == static_cast<int>(MsgType::ActorJump));
+  }
+
+  // a plain step after it: no placement
+  p.Messages().clear();
+  Report(p, caster, { 2600, 0, 0 });
+  for (auto& m : p.Messages()) {
+    REQUIRE_FALSE(m.j.contains("t") &&
+                  m.j["t"] == static_cast<int>(MsgType::ActorJump));
+  }
+  Leave(p);
+}
+
 TEST_CASE("A cast teleport's landing the ground budget takes lands its look",
           "[CastTeleport][espm]")
 {

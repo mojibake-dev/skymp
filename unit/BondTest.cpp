@@ -7,6 +7,7 @@
 #include "UpdateMovementMessage.h"
 
 #include <chrono>
+#include <thread>
 
 PartOne& GetPartOne();
 
@@ -155,6 +156,15 @@ uint64_t NowMs()
       .count());
 }
 
+// the proc's casts wait on the server's timer (kBondProcCastDelayMs, 500 ms)
+// and then on the deferred flush: sleep past the delay, fire the timer, flush
+void CastsFire(PartOne& p)
+{
+  std::this_thread::sleep_for(std::chrono::milliseconds(650));
+  p.Tick(); // the timer
+  p.Tick(); // the deferred snippets
+}
+
 void Leave(PartOne& p)
 {
   p.SetBondSettings("[]");
@@ -278,6 +288,9 @@ TEST_CASE("A bond's claimed hit conceals both for the bond's time, cast in "
   // the server's records, on both (the proc's archetype runs as a state)
   REQUIRE(caster->HasRunningEffectOfType(kInvisibility));
   REQUIRE(target->HasRunningEffectOfType(kInvisibility));
+  // the casts wait for the relayed bond cast to have run in the other games
+  REQUIRE(ProcCastsOn(p, 1).empty());
+  CastsFire(p);
   // the target's game casts it on the caster's figure and on its own player;
   // the caster's game, where the mod's script cast both, hears nothing
   REQUIRE(ProcCastsOn(p, 1) == std::vector<uint32_t>{ kCaster, 0x14 });
@@ -294,7 +307,7 @@ TEST_CASE("The break ends both concealments and dispels the target's own",
   auto [caster, target] = Pair(p);
   Cast(p);
   Hit(p);
-  p.Tick(); // snippets are deferred
+  CastsFire(p);
   p.Messages().clear();
   REQUIRE(p.BreakBondsOf(kCaster));
   p.Tick();
@@ -319,7 +332,7 @@ TEST_CASE("A bond left alone runs out: the concealments end and the target's "
   auto [caster, target] = Pair(p);
   Cast(p);
   Hit(p);
-  p.Tick(); // snippets are deferred
+  CastsFire(p);
   p.Messages().clear();
   const uint64_t now = NowMs();
   // not yet (the bonds rule's clock; the records' own seconds are the
@@ -351,11 +364,11 @@ TEST_CASE("A recast at the same target refreshes the concealment without a "
   auto [caster, target] = Pair(p);
   Cast(p);
   Hit(p);
-  p.Tick(); // snippets are deferred
+  CastsFire(p);
   p.Messages().clear();
   Cast(p);
   Hit(p);
-  p.Tick();
+  CastsFire(p);
   REQUIRE(caster->HasRunningEffectOfType(kInvisibility));
   REQUIRE(target->HasRunningEffectOfType(kInvisibility));
   REQUIRE(ProcCastsOn(p, 1) == std::vector<uint32_t>{ kCaster, 0x14 });
@@ -363,6 +376,26 @@ TEST_CASE("A recast at the same target refreshes the concealment without a "
   // one bond stands: one break
   REQUIRE(p.BreakBondsOf(kTarget));
   REQUIRE_FALSE(p.BreakBondsOf(kCaster));
+  Leave(p);
+}
+
+TEST_CASE("A bond broken before its casts fire casts nothing, and dispels "
+          "the target's once",
+          "[Bond][espm]")
+{
+  PartOne& p = GetPartOne();
+  p.SetBondSettings(kBonds);
+  auto [caster, target] = Pair(p);
+  Cast(p);
+  Hit(p);
+  p.Tick();
+  p.Messages().clear();
+  REQUIRE(p.BreakBondsOf(kTarget));
+  CastsFire(p);
+  REQUIRE(ProcCastsOn(p, 1).empty());
+  REQUIRE(Snippets(p, 1, "Actor", "DispelSpell", 0x14) == 1);
+  REQUIRE_FALSE(caster->HasRunningEffectOfType(kInvisibility));
+  REQUIRE_FALSE(target->HasRunningEffectOfType(kInvisibility));
   Leave(p);
 }
 

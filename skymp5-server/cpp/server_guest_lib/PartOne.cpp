@@ -163,6 +163,9 @@ struct PartOne::Impl
   // `bonds` list and the bonds standing between actors
   rust::Box<skymp::rules::Bonds> bonds = skymp::rules::new_bonds("[]");
   std::chrono::steady_clock::time_point lastBondsTick;
+  // per caster, bumped at every bond change: a proc cast still waiting on
+  // its timer when the bond ended casts nothing (shadowbond.md, train-28)
+  std::unordered_map<uint32_t, uint64_t> bondEpochs;
 
   // a teleport's look, kept from its cast for its landing (thuum
   // docs/verbs/cast-teleport.md, the look on other screens), by the caster's
@@ -1418,6 +1421,16 @@ namespace {
 // the mod's own script move in the caster's game (its poll is 0.2 s;
 // HYPOTHESIS that the second move comes within this, x-shadowbond reads it)
 constexpr uint64_t kBondPinMs = 1'500;
+// thuum docs/verbs/shadowbond.md (playtest twenty-five: the proc was cast in
+// test 2's game, twice, without error, and test 2 saw both players visible):
+// how long after the claim the proc is cast in the other games. The bond
+// cast itself is relayed at the claim and runs on each game's next frame,
+// and a cast ends an actor's invisibility unless it is the spell's own
+// archetype (self-cast.md), so a proc that lands first is dispelled at once;
+// the mod's own script waits 0.25 s after its OnEffectStart for the same
+// reason. HYPOTHESIS until b-shadowbond's watch series shows the figure's
+// av:Invisibility holding for the bond
+constexpr uint64_t kBondProcCastDelayMs = 500;
 }
 
 bool PartOne::BreakBondsOf(uint32_t actorFormId)
@@ -1784,10 +1797,36 @@ void PartOne::ConcealBond(const skymp::rules::BondBreak& bond)
   for (MpActor* actor : { caster.get(), target.get() }) {
     actor->ApplyEffects(procId, effects, 1.f, bond.caster, false);
   }
-  // the cast itself, in every game that sees either but the caster's own,
-  // where the mod's script cast both already: the target's own player in
-  // its game, the figures elsewhere (the player's actor is 0x14 in its
-  // game; a server id resolves to that game's figure, spSnippetService)
+  spdlog::info("PartOne::ConcealBond - {:x} and {:x} concealed by {:x} for {} "
+               "s; the casts follow in {} ms (thuum docs/verbs/shadowbond.md)",
+               bond.caster, bond.target, procId, seconds,
+               kBondProcCastDelayMs);
+  // the cast itself comes after the relayed bond cast has run in the other
+  // games (kBondProcCastDelayMs); a bond that ended meanwhile casts nothing
+  const uint64_t epoch = ++pImpl->bondEpochs[bond.caster];
+  worldState.SetTimer(std::chrono::milliseconds(kBondProcCastDelayMs))
+    .Then([this, bond, procId, epoch](Viet::Void) {
+      if (pImpl->bondEpochs[bond.caster] != epoch) {
+        return;
+      }
+      CastBondProc(bond, procId);
+    });
+}
+
+void PartOne::CastBondProc(const skymp::rules::BondBreak& bond,
+                           uint32_t procId)
+{
+  const auto caster =
+    std::dynamic_pointer_cast<MpActor>(worldState.LookupFormById(bond.caster));
+  const auto target =
+    std::dynamic_pointer_cast<MpActor>(worldState.LookupFormById(bond.target));
+  if (!caster || !target) {
+    return;
+  }
+  // in every game that sees either but the caster's own, where the mod's
+  // script cast both already: the target's own player in its game, the
+  // figures elsewhere (the player's actor is 0x14 in its game; a server id
+  // resolves to that game's figure, spSnippetService)
   int games = 0;
   for (MpActor* actor : { caster.get(), target.get() }) {
     for (auto* listener : actor->GetActorListeners()) {
@@ -1804,14 +1843,16 @@ void PartOne::ConcealBond(const skymp::rules::BondBreak& bond)
       ++games;
     }
   }
-  spdlog::info("PartOne::ConcealBond - {:x} and {:x} concealed by {:x} for {} "
-               "s; cast in {} game(s) (thuum docs/verbs/shadowbond.md)",
-               bond.caster, bond.target, procId, seconds, games);
+  spdlog::info("PartOne::CastBondProc - {:x} cast on {:x} and {:x} in {} "
+               "game(s) (thuum docs/verbs/shadowbond.md)",
+               procId, bond.caster, bond.target, games);
 }
 
 void PartOne::UnconcealBond(const skymp::rules::BondBreak& bond,
                             const char* why)
 {
+  // a proc cast still on its timer casts nothing after this
+  ++pImpl->bondEpochs[bond.caster];
   const uint32_t procId = BondProcFormId(bond);
   if (!procId) {
     return;

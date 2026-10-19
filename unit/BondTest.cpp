@@ -17,6 +17,8 @@ PartOne& GetPartOne();
 // for Apocalypse's Shadowbond, which the test's load order lacks.
 namespace {
 constexpr uint32_t kTouch = 0x0010fc22;
+// Skyrim.esm Flames, the act that breaks the bond in x-shadowbond
+constexpr uint32_t kFlames = 0x00012fcd;
 constexpr uint32_t kCaster = 0xff000000;
 constexpr uint32_t kTarget = 0xff000001;
 constexpr auto kBonds = R"([{"spell": "10fc22:Skyrim.esm"}])";
@@ -38,7 +40,7 @@ std::pair<MpActor*, MpActor*> Pair(PartOne& p)
   return { &caster, &p.worldState.GetFormAt<MpActor>(kTarget) };
 }
 
-void Cast(PartOne& p)
+void Cast(PartOne& p, uint32_t spell = kTouch, int castingSource = 0)
 {
   DoMessage(
     p, 0,
@@ -46,10 +48,10 @@ void Cast(PartOne& p)
                     { "data",
                       { { "caster", 0x14 },
                         { "target", 0 },
-                        { "spell", kTouch },
+                        { "spell", spell },
                         { "isDualCasting", false },
                         { "interruptCast", false },
-                        { "castingSource", 0 },
+                        { "castingSource", castingSource },
                         { "aimAngle", 0.f },
                         { "aimHeading", 0.f },
                         { "hasLaunch", false },
@@ -177,6 +179,32 @@ TEST_CASE("A bonded actor's report from elsewhere after the swap is dropped, "
   REQUIRE(Sent(p, 1, MsgType::ActorJump) == 0);
   REQUIRE(caster->GetPos() == NiPoint3{ 0, 300, 0 });
   (void)target;
+  Leave(p);
+}
+
+TEST_CASE("A bonded actor's own cast breaks the bond, its concealment "
+          "recorded or not",
+          "[Bond][espm]")
+{
+  PartOne& p = GetPartOne();
+  p.SetBondSettings(kBonds);
+  auto [caster, target] = Pair(p);
+  Cast(p);
+  Hit(p);
+  // the caster's invisibility is the mod's script's, in its game alone
+  // (ADR-029), so the server records none for it; its next cast is the act
+  // (x-shadowbond 20261019-081315: bond recorded, Flames cast, no break)
+  Equipment eq;
+  eq.leftSpell = kTouch;
+  eq.rightSpell = kFlames;
+  caster->SetEquipment(eq);
+  p.Messages().clear();
+  Cast(p, kFlames, 1);
+  REQUIRE(Sent(p, 0, MsgType::Teleport) == 1);
+  REQUIRE(Sent(p, 1, MsgType::Teleport) == 1);
+  REQUIRE(caster->GetPos() == NiPoint3{ 0, 300, 0 });
+  REQUIRE(target->GetPos() == NiPoint3{ 0, 0, 0 });
+  REQUIRE_FALSE(p.BreakBondsOf(kCaster));
   Leave(p);
 }
 

@@ -2985,12 +2985,25 @@ bool MpActor::EffectConditionsHold(WorldState* worldState,
   const auto& map = worldState->conditionFunctionMap;
   for (const auto& condition : conditions) {
     if (!map.GetConditionFunction(condition.functionIndex)) {
-      spdlog::warn("MpActor::EffectConditionsHold - E_CONDITION_UNKNOWN: "
-                   "function {} ({}) on effect {:x} of {:x}, cast by {:x} at "
-                   "{:x}; refused (thuum ADR-039)",
-                   condition.function.empty() ? "?" : condition.function,
-                   condition.functionIndex, effect.effectId, source,
-                   caster.GetFormId(), victim.GetFormId());
+      // the refusal stands per hit; the line is worth once per effect and
+      // function (playtest twenty-four: 139 of these in an hour, two per
+      // tick of a stream, for riders gated on HasPerk, which the server
+      // refuses by design until it holds perks), then debug
+      static std::set<std::pair<uint32_t, uint16_t>> seen;
+      const bool first =
+        seen.insert({ effect.effectId, condition.functionIndex }).second;
+      const auto line = fmt::format(
+        "MpActor::EffectConditionsHold - E_CONDITION_UNKNOWN: function {} "
+        "({}) on effect {:x} of {:x}, cast by {:x} at {:x}; refused (thuum "
+        "ADR-039){}",
+        condition.function.empty() ? "?" : condition.function,
+        condition.functionIndex, effect.effectId, source, caster.GetFormId(),
+        victim.GetFormId(), first ? "; logged once, later ones at debug" : "");
+      if (first) {
+        spdlog::warn("{}", line);
+      } else {
+        spdlog::debug("{}", line);
+      }
       return false;
     }
   }

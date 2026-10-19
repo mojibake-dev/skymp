@@ -31,6 +31,8 @@ pub const ARRIVAL_WAIT_MS: u64 = 10_000;
 /// How near the place the server put it a report must come from to count
 /// as the arrival, units over the ground.
 pub const ARRIVAL_RADIUS: f32 = 256.0;
+/// The least a pin's radius may be: a standing player's own jitter, with room.
+pub const PIN_RADIUS_MIN: f32 = 32.0;
 /// How long a cast teleport's jump waits for its caster's game to report
 /// the landing, unless its castTeleports entry names its own wait
 /// (teleports.rs): the engine places the spell's marker, the mod's script
@@ -141,6 +143,25 @@ struct Arrival {
     until_ms: u64,
 }
 
+/// A place the server holds a player's actor at for a while after moving it
+/// there: a report from farther than `ARRIVAL_RADIUS` before `until_ms` is
+/// a move the server did not author (thuum docs/verbs/shadowbond.md: the
+/// mod's own swap script in the caster's game moves the caster again after
+/// the server's swap, to where the target's figure now stands, undoing it;
+/// x-shadowbond 20261019-083537), and the player is sent back.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Pin {
+    cell_or_world: u32,
+    x: f32,
+    y: f32,
+    /// How far a report may stray and still be the pinned place: the swap's
+    /// own distance halved and clamped, since a swap shorter than the
+    /// arrival radius (150 units in x-shadowbond 20261019-090907) slipped
+    /// through a pin judged by `ARRIVAL_RADIUS`.
+    radius: f32,
+    until_ms: u64,
+}
+
 /// Where a cast teleport may land: within `reach` and the slack of where its
 /// caster stood at the cast, in that cell or worldspace, until `until_ms`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -171,6 +192,7 @@ pub struct Budgets {
     jumps: HashMap<u32, (Landing, u64)>,
     cast_jumps: HashMap<u32, CastJump>,
     arrivals: HashMap<u32, Arrival>,
+    pins: HashMap<u32, Pin>,
 }
 
 impl Budgets {
@@ -262,6 +284,31 @@ impl Budgets {
         self.arrivals.insert(actor, Arrival { cell_or_world, x, y, until_ms: now_ms.saturating_add(ARRIVAL_WAIT_MS) });
     }
 
+    /// Hold `actor` at (x, y) in `cell_or_world` until `until_ms`: a report
+    /// from farther than `radius` before then is a move the server did not
+    /// author, and `pinned_away` says so (the caller sends the player back).
+    /// The radius is clamped to [`PIN_RADIUS_MIN`, `ARRIVAL_RADIUS`]. The
+    /// server's own next move of the actor replaces the pin.
+    pub fn pin(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, radius: f32, until_ms: u64) {
+        let radius = if radius.is_finite() { radius.clamp(PIN_RADIUS_MIN, ARRIVAL_RADIUS) } else { PIN_RADIUS_MIN };
+        self.pins.insert(actor, Pin { cell_or_world, x, y, radius, until_ms });
+    }
+
+    /// Whether a report of `actor`'s from (x, y) in `cell_or_world` at
+    /// `now_ms` leaves the place it is pinned to while the pin holds; a pin
+    /// that ran out is forgotten.
+    pub fn pinned_away(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, now_ms: u64) -> bool {
+        let Some(&p) = self.pins.get(&actor) else {
+            return false;
+        };
+        if now_ms > p.until_ms {
+            self.pins.remove(&actor);
+            return false;
+        }
+        let near = x.is_finite() && y.is_finite() && (x - p.x).hypot(y - p.y) <= p.radius;
+        cell_or_world != p.cell_or_world || !near
+    }
+
     /// Judge any report of `actor`'s, from (x, y) in `cell_or_world` at
     /// `now_ms`, against the arrival the server expects: Landed from within
     /// `ARRIVAL_RADIUS` of it (that ends it), Waiting from elsewhere (drop
@@ -289,6 +336,7 @@ impl Budgets {
         self.jumps.remove(&actor);
         self.cast_jumps.remove(&actor);
         self.arrivals.remove(&actor);
+        self.pins.remove(&actor);
     }
 }
 
@@ -511,6 +559,39 @@ mod tests {
         all.expect_arrival(1, INN, 0.0, 0.0, 0);
         all.forget(1);
         assert_eq!(all.check_arrival(1, TAMRIEL, 9.0, 9.0, 1), JumpCheck::NoPermit);
+    }
+
+    #[test]
+    fn a_pin_sends_back_a_move_the_server_did_not_author_while_it_holds() {
+        // thuum docs/verbs/shadowbond.md: after the server's swap the mod's
+        // script in the caster's game moves the caster again, 150 units to
+        // where the target's figure now stands (x-shadowbond 20261019-083537)
+        let mut all = Budgets::default();
+        assert!(!all.pinned_away(1, TAMRIEL, 0.0, 300.0, 0));
+        all.pin(1, TAMRIEL, 0.0, 300.0, 150.0, 1_500);
+        // within the radius: not away; the script's move back: away
+        assert!(!all.pinned_away(1, TAMRIEL, 10.0, 290.0, 100));
+        assert!(all.pinned_away(1, TAMRIEL, 0.0, 0.0, 250));
+        assert!(all.pinned_away(1, 0x1_3a8f, 0.0, 300.0, 300));
+        assert!(all.pinned_away(1, TAMRIEL, f32::NAN, 300.0, 350));
+        // another actor is not pinned; the pin runs out; a forgotten actor's goes
+        assert!(!all.pinned_away(2, TAMRIEL, 0.0, 0.0, 400));
+        assert!(!all.pinned_away(1, TAMRIEL, 0.0, 0.0, 1_501));
+        all.pin(1, TAMRIEL, 0.0, 300.0, 150.0, 5_000);
+        all.forget(1);
+        assert!(!all.pinned_away(1, TAMRIEL, 0.0, 0.0, 2_000));
+        // a swap of 150 units (x-shadowbond 20261019-090907, the two 150 apart):
+        // the radius is the half, 75, so the script's 150-unit move is away
+        // while a jitter of 20 is not; the clamp holds the ends
+        all.pin(1, TAMRIEL, 0.0, 150.0, 75.0, 1_500);
+        assert!(all.pinned_away(1, TAMRIEL, 0.0, 0.0, 300));
+        assert!(!all.pinned_away(1, TAMRIEL, 0.0, 130.0, 300));
+        all.pin(1, TAMRIEL, 0.0, 0.0, 5.0, 1_500);
+        assert!(!all.pinned_away(1, TAMRIEL, 0.0, 31.0, 300));
+        assert!(all.pinned_away(1, TAMRIEL, 0.0, 33.0, 300));
+        all.pin(1, TAMRIEL, 0.0, 0.0, 10_000.0, 1_500);
+        assert!(!all.pinned_away(1, TAMRIEL, 0.0, 255.0, 300));
+        assert!(all.pinned_away(1, TAMRIEL, 0.0, 257.0, 300));
     }
 
     #[test]

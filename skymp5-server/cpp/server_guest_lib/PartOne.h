@@ -147,6 +147,13 @@ public:
   // sent before the move. CheckArrival judges any report against that.
   void ExpectArrival(uint32_t actorFormId, uint32_t cellOrWorld, float x,
                      float y);
+  // thuum docs/verbs/shadowbond.md: hold an actor where the server put it for
+  // holdMs; a report from elsewhere meanwhile is sent back (the mod's own
+  // swap script moving the caster a second time)
+  void PinArrival(uint32_t actorFormId, uint32_t cellOrWorld,
+                  const NiPoint3& at, float radius, uint64_t holdMs);
+  bool PinnedAway(uint32_t actorFormId, uint32_t cellOrWorld,
+                  const NiPoint3& at);
   JumpCheck CheckArrival(uint32_t actorFormId, uint32_t cellOrWorld, float x,
                          float y);
 

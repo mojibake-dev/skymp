@@ -157,6 +157,15 @@ TEST_CASE("A bond spell's claimed hit bonds the two, and the break permits "
   REQUIRE(Sent(p, 1, MsgType::Teleport2) == 0);
   REQUIRE(Sent(p, 0, MsgType::ActorJump) == 1);
   REQUIRE(target->GetPos() == NiPoint3{ 0, 0, 0 });
+
+  // the mod's script in the caster's game moves the caster once more, to
+  // where the target's figure now stands, its own old spot (x-shadowbond
+  // 20261019-083537): within the hold that report is sent back to the
+  // swap's place, and the server's position stands
+  p.Messages().clear();
+  Report(p, 0, *caster, { 0, 0, 0 });
+  REQUIRE(Sent(p, 0, MsgType::Teleport2) == 1);
+  REQUIRE(caster->GetPos() == NiPoint3{ 0, 300, 0 });
   Leave(p);
 }
 

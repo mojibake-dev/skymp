@@ -1349,6 +1349,20 @@ void PartOne::ExpectArrival(uint32_t actorFormId, uint32_t cellOrWorld,
                                          SteadyNowMs());
 }
 
+void PartOne::PinArrival(uint32_t actorFormId, uint32_t cellOrWorld,
+                         const NiPoint3& at, float radius, uint64_t holdMs)
+{
+  pImpl->movementBudgets->pin(actorFormId, cellOrWorld, at.x, at.y, radius,
+                              SteadyNowMs() + holdMs);
+}
+
+bool PartOne::PinnedAway(uint32_t actorFormId, uint32_t cellOrWorld,
+                         const NiPoint3& at)
+{
+  return pImpl->movementBudgets->pinned_away(actorFormId, cellOrWorld, at.x,
+                                             at.y, SteadyNowMs());
+}
+
 PartOne::JumpCheck PartOne::CheckArrival(uint32_t actorFormId,
                                          uint32_t cellOrWorld, float x,
                                          float y)
@@ -1386,6 +1400,13 @@ void PartOne::RecordBond(uint32_t casterFormId, uint32_t targetFormId,
                casterFormId, targetFormId, spellFormId);
 }
 
+namespace {
+// thuum docs/verbs/shadowbond.md: how long the swap's places are held against
+// the mod's own script move in the caster's game (its poll is 0.2 s;
+// HYPOTHESIS that the second move comes within this, x-shadowbond reads it)
+constexpr uint64_t kBondPinMs = 1'500;
+}
+
 bool PartOne::BreakBondsOf(uint32_t actorFormId)
 {
   const auto broken = pImpl->bonds->break_of(actorFormId, SteadyNowMs());
@@ -1421,6 +1442,20 @@ bool PartOne::BreakBondsOf(uint32_t actorFormId)
   targetTo.cellOrWorldDesc = caster->GetCellOrWorld();
   caster->Teleport(casterTo);
   target->Teleport(targetTo);
+  // the mod's script in the caster's game moves the caster once more after
+  // the swap, to where the target's figure now stands (its own spot), and
+  // undid the swap (x-shadowbond 20261019-083537 on 13acbb35); a report
+  // from away from the swap's place within the hold is sent back
+  // the pin's radius is half the swap's own distance (clamped in the rule):
+  // a swap shorter than the arrival radius slipped through a pin judged by
+  // it (x-shadowbond 20261019-090907, the two 150 units apart)
+  const float swapDistance = (casterTo.pos - targetTo.pos).Length();
+  PinArrival(broken.caster,
+             casterTo.cellOrWorldDesc.ToFormId(worldState.espmFiles),
+             casterTo.pos, swapDistance / 2.f, kBondPinMs);
+  PinArrival(broken.target,
+             targetTo.cellOrWorldDesc.ToFormId(worldState.espmFiles),
+             targetTo.pos, swapDistance / 2.f, kBondPinMs);
   spdlog::info("PartOne::BreakBondsOf - {:x} acts: its bond with {:x} breaks; "
                "the server swaps their places, {:x} to ({:.0f}, {:.0f}, "
                "{:.0f}) and {:x} to ({:.0f}, {:.0f}, {:.0f}) (thuum "

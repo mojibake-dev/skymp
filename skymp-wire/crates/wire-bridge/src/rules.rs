@@ -1008,6 +1008,11 @@ mod ffi {
         /// Judge any report of `actor`'s against the arrival the server
         /// expects; the arrival ends the wait.
         fn check_arrival(self: &mut MovementBudgets, actor: u32, cell_or_world: u32, x: f32, y: f32, now_ms: u64) -> JumpCheck;
+        /// Hold `actor` where the server put it until `until_ms` (thuum
+        /// docs/verbs/shadowbond.md: the swap against the mod's own script).
+        fn pin(self: &mut MovementBudgets, actor: u32, cell_or_world: u32, x: f32, y: f32, radius: f32, until_ms: u64);
+        /// Whether a report leaves the pinned place while the pin holds.
+        fn pinned_away(self: &mut MovementBudgets, actor: u32, cell_or_world: u32, x: f32, y: f32, now_ms: u64) -> bool;
         /// thuum docs/verbs/cast-teleport.md: `actor` cast a teleport at
         /// `now_ms`, standing at (x, y, z) in `cell_or_world`: one jump to
         /// within `reach` of there (0: back there, docs/verbs/ghostwalk.md)
@@ -1617,6 +1622,14 @@ impl MovementBudgets {
         self.0.expect_arrival(actor, cell_or_world, x, y, now_ms);
     }
 
+    fn pin(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, radius: f32, until_ms: u64) {
+        self.0.pin(actor, cell_or_world, x, y, radius, until_ms);
+    }
+
+    fn pinned_away(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, now_ms: u64) -> bool {
+        self.0.pinned_away(actor, cell_or_world, x, y, now_ms)
+    }
+
     fn check_arrival(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, now_ms: u64) -> JumpCheck {
         jump_check(self.0.check_arrival(actor, cell_or_world, x, y, now_ms))
     }
@@ -2108,6 +2121,12 @@ mod tests {
         assert_eq!(b.check_arrival(7, 0x3c, 0.0, 0.0, 11), JumpCheck::Waiting);
         assert_eq!(b.check_arrival(7, 0x3c, 510.0, 490.0, 12), JumpCheck::Landed);
         assert_eq!(b.check_arrival(7, 0x3c, 0.0, 0.0, 13), JumpCheck::NoPermit);
+        // a pin after the server's swap: a report away from the place while
+        // it holds is a move the server did not author
+        b.pin(7, 0x3c, 500.0, 500.0, 150.0, 1_500);
+        assert!(!b.pinned_away(7, 0x3c, 510.0, 490.0, 14));
+        assert!(b.pinned_away(7, 0x3c, 0.0, 0.0, 15));
+        assert!(!b.pinned_away(7, 0x3c, 0.0, 0.0, 1_501));
         // a cast teleport's jump: within its reach of the cast, once
         b.permit_cast_jump(7, 0x3c, 0.0, -300.0, 12.0, 3_000.0, 5_000, 20);
         assert_eq!(b.check_cast_jump(7, 0x3c, 0.0, 4_000.0, 12.0, 21), JumpCheck::NoPermit);

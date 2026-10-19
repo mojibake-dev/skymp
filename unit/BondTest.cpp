@@ -6,22 +6,30 @@
 #include "MsgType.h"
 #include "UpdateMovementMessage.h"
 
+#include <chrono>
+
 PartOne& GetPartOne();
 
 // thuum docs/verbs/shadowbond.md: a spell the server names as a bond
 // (server-settings.json bonds) bonds its caster and the actor its claimed
 // hit lands on; the first act that ends either's concealment breaks the
-// bond and permits each one jump to where the other stands, within the
-// entry's slack, for its window. Skyrim.esm's dunHonningbrewSkeeverPoison
+// bond and swaps the two. Skyrim.esm's dunHonningbrewSkeeverPoison
 // (0x10FC22, delivered by touch; thuum lab/esm.py 2026-10-18) stands in
-// for Apocalypse's Shadowbond, which the test's load order lacks.
+// for Apocalypse's Shadowbond, which the test's load order lacks, and
+// Skyrim.esm's Invisibility (0x27EB6, InvisibillityFFSelf, archetype
+// Invisibility; SelfCastTest) for the mod's proc, the concealment the
+// server records on both and casts in every game but the caster's
+// (train-28).
 namespace {
 constexpr uint32_t kTouch = 0x0010fc22;
+constexpr uint32_t kProc = 0x00027eb6;
 // Skyrim.esm Flames, the act that breaks the bond in x-shadowbond
 constexpr uint32_t kFlames = 0x00012fcd;
 constexpr uint32_t kCaster = 0xff000000;
 constexpr uint32_t kTarget = 0xff000001;
-constexpr auto kBonds = R"([{"spell": "10fc22:Skyrim.esm"}])";
+constexpr auto kBonds =
+  R"([{"spell": "10fc22:Skyrim.esm", "proc": "27eb6:Skyrim.esm"}])";
+constexpr auto kInvisibility = espm::MGEF::EffectType::Invisibility;
 
 // The caster (user 0) at the origin with the spell in its left hand, and
 // the target (user 1) 300 units north, both in Tamriel
@@ -106,6 +114,44 @@ int Sent(PartOne& p, Networking::UserId user, MsgType type)
       m.j["t"] == static_cast<int>(type);
   }
   return n;
+}
+
+// the SpSnippets `cls`.`fn` sent to `user` (on `selfId` when not 0; a
+// snippet on the user's own actor travels on 0x14, SpSnippet.cpp)
+int Snippets(PartOne& p, Networking::UserId user, const char* cls,
+             const char* fn, uint32_t selfId = 0)
+{
+  int n = 0;
+  for (auto& m : p.Messages()) {
+    n += m.userId == user && m.j.contains("t") &&
+      m.j["t"] == static_cast<int>(MsgType::SpSnippet) && m.j["class"] == cls &&
+      m.j["function"] == fn && (selfId == 0 || m.j["selfId"] == selfId);
+  }
+  return n;
+}
+
+// whom `user`'s game was told to cast the proc on, in order (0x14 is its own
+// player; a server id is that actor's figure there)
+std::vector<uint32_t> ProcCastsOn(PartOne& p, Networking::UserId user)
+{
+  std::vector<uint32_t> on;
+  for (auto& m : p.Messages()) {
+    if (m.userId == user && m.j.contains("t") &&
+        m.j["t"] == static_cast<int>(MsgType::SpSnippet) &&
+        m.j["class"] == "Spell" && m.j["function"] == "Cast" &&
+        m.j["selfId"] == kProc) {
+      on.push_back(m.j["arguments"][0]["formId"].get<uint32_t>());
+    }
+  }
+  return on;
+}
+
+uint64_t NowMs()
+{
+  return static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch())
+      .count());
 }
 
 void Leave(PartOne& p)
@@ -213,6 +259,99 @@ TEST_CASE("A bonded actor's own cast breaks the bond, its concealment "
   REQUIRE(Sent(p, 1, MsgType::Teleport) == 1);
   REQUIRE(caster->GetPos() == NiPoint3{ 0, 300, 0 });
   REQUIRE(target->GetPos() == NiPoint3{ 0, 0, 0 });
+  REQUIRE_FALSE(p.BreakBondsOf(kCaster));
+  Leave(p);
+}
+
+TEST_CASE("A bond's claimed hit conceals both for the bond's time, cast in "
+          "every game but the caster's",
+          "[Bond][espm]")
+{
+  PartOne& p = GetPartOne();
+  p.SetBondSettings(kBonds);
+  auto [caster, target] = Pair(p);
+  p.Messages().clear();
+  Cast(p);
+  Hit(p);
+  // the server's records, on both (the proc's archetype runs as a state)
+  REQUIRE(caster->HasRunningEffectOfType(kInvisibility));
+  REQUIRE(target->HasRunningEffectOfType(kInvisibility));
+  // the target's game casts it on the caster's figure and on its own player;
+  // the caster's game, where the mod's script cast both, hears nothing
+  REQUIRE(ProcCastsOn(p, 1) == std::vector<uint32_t>{ kCaster, 0x14 });
+  REQUIRE(ProcCastsOn(p, 0).empty());
+  REQUIRE(Snippets(p, 1, "Actor", "DispelSpell") == 0);
+  Leave(p);
+}
+
+TEST_CASE("The break ends both concealments and dispels the target's own",
+          "[Bond][espm]")
+{
+  PartOne& p = GetPartOne();
+  p.SetBondSettings(kBonds);
+  auto [caster, target] = Pair(p);
+  Cast(p);
+  Hit(p);
+  p.Messages().clear();
+  REQUIRE(p.BreakBondsOf(kCaster));
+  REQUIRE_FALSE(caster->HasRunningEffectOfType(kInvisibility));
+  REQUIRE_FALSE(target->HasRunningEffectOfType(kInvisibility));
+  // the target's copy was the server's cast: the server dispels it; the
+  // caster's is the script's own, dispelled by the script
+  REQUIRE(Snippets(p, 1, "Actor", "DispelSpell", 0x14) == 1);
+  REQUIRE(Snippets(p, 0, "Actor", "DispelSpell") == 0);
+  // the swap as before
+  REQUIRE(Sent(p, 0, MsgType::Teleport) == 1);
+  REQUIRE(Sent(p, 1, MsgType::Teleport) == 1);
+  Leave(p);
+}
+
+TEST_CASE("A bond left alone runs out: the concealments end and the target's "
+          "is dispelled once",
+          "[Bond][espm]")
+{
+  PartOne& p = GetPartOne();
+  p.SetBondSettings(kBonds);
+  auto [caster, target] = Pair(p);
+  Cast(p);
+  Hit(p);
+  p.Messages().clear();
+  const uint64_t now = NowMs();
+  // not yet (the bonds rule's clock; the records' own seconds are the
+  // effects tick's, which does not run here)
+  p.TickBonds(now + 19'000);
+  REQUIRE(target->HasRunningEffectOfType(kInvisibility));
+  REQUIRE(Snippets(p, 1, "Actor", "DispelSpell") == 0);
+  p.TickBonds(now + 21'000);
+  REQUIRE_FALSE(caster->HasRunningEffectOfType(kInvisibility));
+  REQUIRE_FALSE(target->HasRunningEffectOfType(kInvisibility));
+  REQUIRE(Snippets(p, 1, "Actor", "DispelSpell", 0x14) == 1);
+  // once, and no swap: the bond is spent
+  p.TickBonds(now + 22'000);
+  REQUIRE(Snippets(p, 1, "Actor", "DispelSpell", 0x14) == 1);
+  REQUIRE(Sent(p, 1, MsgType::Teleport) == 0);
+  REQUIRE_FALSE(p.BreakBondsOf(kCaster));
+  Leave(p);
+}
+
+TEST_CASE("A recast at the same target refreshes the concealment without a "
+          "dispel",
+          "[Bond][espm]")
+{
+  PartOne& p = GetPartOne();
+  p.SetBondSettings(kBonds);
+  auto [caster, target] = Pair(p);
+  Cast(p);
+  Hit(p);
+  p.Messages().clear();
+  Cast(p);
+  Hit(p);
+  REQUIRE(caster->HasRunningEffectOfType(kInvisibility));
+  REQUIRE(target->HasRunningEffectOfType(kInvisibility));
+  REQUIRE(ProcCastsOn(p, 1) == std::vector<uint32_t>{ kCaster, 0x14 });
+  REQUIRE(Snippets(p, 1, "Actor", "DispelSpell") == 0);
+  // one bond stands: one break
+  REQUIRE(p.BreakBondsOf(kTarget));
   REQUIRE_FALSE(p.BreakBondsOf(kCaster));
   Leave(p);
 }

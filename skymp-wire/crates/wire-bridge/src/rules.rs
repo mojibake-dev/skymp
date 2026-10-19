@@ -616,12 +616,15 @@ mod ffi {
         Throttled,
     }
 
-    /// A bond's break (thuum docs/verbs/shadowbond.md): whether the actor
-    /// was in one, its two actors, and the window and slack for their two
-    /// landings.
-    #[derive(Debug, Clone, Copy)]
+    /// A bond's facts (thuum docs/verbs/shadowbond.md): whether there was
+    /// one (the actor was in a standing bond, or the spell is a bond), its
+    /// two actors, the window and slack for their two landings, its
+    /// duration, and the concealment the server records and casts for it
+    /// (train-28), if its entry names one.
+    #[derive(Debug, Clone)]
     struct BondBreak {
-        /// The actor was in a standing bond, now ended.
+        /// The actor was in a standing bond, now ended (or, from `record`,
+        /// the spell is a bond and this is it).
         found: bool,
         /// Who cast the bond's spell.
         caster: u32,
@@ -631,6 +634,14 @@ mod ffi {
         window_ms: u64,
         /// How far from the other's position a landing may fall, units.
         slack_units: f32,
+        /// How long the bond stands from its claim, ms.
+        duration_ms: u64,
+        /// Whether the entry names a proc, the concealment.
+        has_proc: bool,
+        /// The proc's form id within its plugin.
+        proc_short_id: u32,
+        /// The proc's plugin, as the load order names it.
+        proc_file: String,
     }
 
     /// A spell hit's claim and, when claimed, the factor on the spell's
@@ -1080,12 +1091,17 @@ mod ffi {
         /// when the server names it no bond.
         fn bond_duration_ms(self: &Bonds, short_id: u32, file: &str) -> u64;
         /// `caster`'s cast of the spell landed on `target` at `now_ms`: a
-        /// bond stands for the spell's duration (nothing for a spell the
-        /// server names no bond).
-        fn record(self: &mut Bonds, caster: u32, target: u32, short_id: u32, file: &str, now_ms: u64);
+        /// bond stands for the spell's duration, returned (`found` false,
+        /// and nothing recorded, for a spell the server names no bond).
+        fn record(self: &mut Bonds, caster: u32, target: u32, short_id: u32, file: &str, now_ms: u64) -> BondBreak;
+        /// A recast: the caster's standing bond, removed and returned
+        /// (`found` false for none), before `record` replaces it.
+        fn supersede(self: &mut Bonds, caster: u32, now_ms: u64) -> BondBreak;
         /// `actor` acted at `now_ms`: the bond it is in ends and is returned
         /// (`found` false when it is in none).
         fn break_of(self: &mut Bonds, actor: u32, now_ms: u64) -> BondBreak;
+        /// The bonds that ran out by `now_ms`, each once.
+        fn expired(self: &mut Bonds, now_ms: u64) -> Vec<BondBreak>;
         /// The actor is gone: its bonds with it.
         fn forget(self: &mut Bonds, actor: u32);
 
@@ -1739,22 +1755,56 @@ fn new_bonds(settings_json: &str) -> Result<Box<Bonds>, clock::SettingsError> {
     bonds::Bonds::from_json(settings_json).map(|b| Box::new(Bonds(b)))
 }
 
+/// A bond as the bridge carries it; `found` false for none.
+fn bond_facts(bond: Option<bonds::Bond>) -> BondBreak {
+    match bond {
+        Some(b) => BondBreak {
+            found: true,
+            caster: b.caster,
+            target: b.target,
+            window_ms: b.window_ms,
+            slack_units: b.slack_units,
+            duration_ms: b.duration_ms,
+            has_proc: b.proc.is_some(),
+            proc_short_id: b.proc.as_ref().map_or(0, |p| p.short_id),
+            proc_file: b.proc.map_or_else(String::new, |p| p.file),
+        },
+        None => BondBreak {
+            found: false,
+            caster: 0,
+            target: 0,
+            window_ms: 0,
+            slack_units: 0.0,
+            duration_ms: 0,
+            has_proc: false,
+            proc_short_id: 0,
+            proc_file: String::new(),
+        },
+    }
+}
+
 impl Bonds {
     fn bond_duration_ms(&self, short_id: u32, file: &str) -> u64 {
         self.0.named(short_id, file).map_or(0, |s| s.duration_ms)
     }
 
-    fn record(&mut self, caster: u32, target: u32, short_id: u32, file: &str, now_ms: u64) {
-        if let Some(spell) = self.0.named(short_id, file).copied() {
-            self.0.record(caster, target, &spell, now_ms);
+    fn record(&mut self, caster: u32, target: u32, short_id: u32, file: &str, now_ms: u64) -> BondBreak {
+        match self.0.named(short_id, file).cloned() {
+            Some(spell) => bond_facts(Some(self.0.record(caster, target, &spell, now_ms))),
+            None => bond_facts(None),
         }
     }
 
+    fn supersede(&mut self, caster: u32, now_ms: u64) -> BondBreak {
+        bond_facts(self.0.supersede(caster, now_ms))
+    }
+
     fn break_of(&mut self, actor: u32, now_ms: u64) -> BondBreak {
-        match self.0.break_of(actor, now_ms) {
-            Some(b) => BondBreak { found: true, caster: b.caster, target: b.target, window_ms: b.window_ms, slack_units: b.slack_units },
-            None => BondBreak { found: false, caster: 0, target: 0, window_ms: 0, slack_units: 0.0 },
-        }
+        bond_facts(self.0.break_of(actor, now_ms))
+    }
+
+    fn expired(&mut self, now_ms: u64) -> Vec<BondBreak> {
+        self.0.expired(now_ms).into_iter().map(|b| bond_facts(Some(b))).collect()
     }
 
     fn forget(&mut self, actor: u32) {

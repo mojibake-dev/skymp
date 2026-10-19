@@ -664,13 +664,13 @@ void EndConcealment(PartOne& partOne, MpActor& actor, uint32_t castSpell = 0)
                  exception ? " (but the one its own spell carries)" : "");
   }
   // thuum docs/verbs/shadowbond.md: a bonded actor's act is the mod's trigger
-  // for the swap, whether or not the server holds its concealment: the
-  // caster's invisibility is the mod's script's, run in its game alone
-  // (ADR-029), so the server records none for it and the gate on `ended`
-  // never opened for the caster's own attack (x-shadowbond 20261019-081315
-  // on 9fb0732f: bond recorded, Flames cast, no break). The bond spell's
-  // own cast is not an act against it: the bond is recorded at that cast's
-  // hit, after this
+  // for the swap, whether or not the server holds its concealment (train-27
+  // held none: the invisibility was the mod's script's, run in the caster's
+  // game alone, and the gate on `ended` never opened for the caster's own
+  // attack, x-shadowbond 20261019-081315 on 9fb0732f; train-28 records the
+  // bond's proc on both, so `ended` opens too, and the break is the same).
+  // The bond spell's own cast is not an act against it: the bond is
+  // recorded at that cast's hit, after this
   if (!partOne.IsBondSpell(castSpell)) {
     partOne.BreakBondsOf(actor.GetFormId());
   }

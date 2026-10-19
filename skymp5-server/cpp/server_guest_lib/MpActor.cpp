@@ -3182,10 +3182,8 @@ bool MpActor::EndRunningEffectsOfTypes(
   if (!worldState || !HasRunningEffects()) {
     return false;
   }
-  const auto& files = worldState->espmFiles;
-  auto entries = EffectEntriesOf(ChangeForm(), files);
   std::vector<uint32_t> ending;
-  for (const auto& e : entries) {
+  for (const auto& e : EffectEntriesOf(ChangeForm(), worldState->espmFiles)) {
     try {
       const auto type =
         espm::GetData<espm::MGEF>(e.facts.effect, worldState).data.effectType;
@@ -3195,9 +3193,32 @@ bool MpActor::EndRunningEffectsOfTypes(
     } catch (std::exception&) {
     }
   }
-  if (ending.empty()) {
+  return EndRunningEffectIds(ending);
+}
+
+bool MpActor::EndRunningEffectsOfSource(uint32_t source)
+{
+  WorldState* worldState = GetParent();
+  if (!worldState || !HasRunningEffects()) {
     return false;
   }
+  std::vector<uint32_t> ending;
+  for (const auto& e : EffectEntriesOf(ChangeForm(), worldState->espmFiles)) {
+    if (e.facts.source == source) {
+      ending.push_back(e.facts.effect);
+    }
+  }
+  return EndRunningEffectIds(ending);
+}
+
+bool MpActor::EndRunningEffectIds(const std::vector<uint32_t>& ending)
+{
+  WorldState* worldState = GetParent();
+  if (!worldState || ending.empty()) {
+    return false;
+  }
+  const auto& files = worldState->espmFiles;
+  auto entries = EffectEntriesOf(ChangeForm(), files);
   const BaseActorValues maxBefore = GetMaximumValues();
   const auto changes = skymp::rules::remove_effects(
     entries, rust::Slice<const uint32_t>(ending.data(), ending.size()));

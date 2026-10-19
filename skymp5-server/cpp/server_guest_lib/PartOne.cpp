@@ -17,6 +17,7 @@
 #include "RaceMenuPresetMessage.h"
 #include "SetGameTimeMessage.h"
 #include "SetRaceMenuOpenMessage.h"
+#include "SpellCastMessage.h"
 #include "UpdateGameModeDataMessage.h"
 
 #include "ActionListener.h"
@@ -1823,28 +1824,36 @@ void PartOne::CastBondProc(const skymp::rules::BondBreak& bond,
   if (!caster || !target) {
     return;
   }
-  // in every game that sees either but the caster's own, where the mod's
-  // script cast both already: the target's own player in its game, the
-  // figures elsewhere (the player's actor is 0x14 in its game; a server id
-  // resolves to that game's figure, spSnippetService)
+  // the proc as a cast relay (SpellCast, the message every resolved cast
+  // travels on): each bonded actor casts the proc on itself, through its
+  // instant caster (castingSource 3), in every game that sees it but the
+  // caster's own, where the mod's script cast both. An observer's game casts
+  // it on the actor's figure through castSpellImmediate's Self branch, the
+  // primitive b-invis-recast proves nightly; the target's own game reads a
+  // caster that is its own player as 0x14 (remoteServer.ts). A Papyrus
+  // Spell.Cast snippet completed in the target's game and applied nothing
+  // (b-shadowbond 20261019-215816, playtest twenty-five), as the driver's
+  // own Spell.Cast never applied anything either (push.md); no cast of the
+  // proc comes back to the server (Skyrim Platform reports only a cast of an
+  // equipped spell), so it is never an act against the bond
   int games = 0;
   for (MpActor* actor : { caster.get(), target.get() }) {
+    SpellCastMessage cast;
+    cast.data.caster = actor->GetFormId();
+    cast.data.target = actor->GetFormId();
+    cast.data.spell = procId;
+    cast.data.castingSource = 3; // MagicSystem::CastingSource::kInstant
     for (auto* listener : actor->GetActorListeners()) {
       if (listener == caster.get() ||
           serverState.UserByActor(listener) == Networking::InvalidUserId) {
         continue;
       }
-      SpSnippetObjectArgument who;
-      who.formId = listener == actor ? 0x14 : actor->GetFormId();
-      who.type = "ObjectReference";
-      const SnippetArgs cast{ who, NoReference() };
-      SpSnippet("Spell", "Cast", cast, procId)
-        .Execute(listener, SpSnippetMode::kNoReturnResult);
+      listener->GetActorToSendTo().SendToUser(cast, true);
       ++games;
     }
   }
-  spdlog::info("PartOne::CastBondProc - {:x} cast on {:x} and {:x} in {} "
-               "game(s) (thuum docs/verbs/shadowbond.md)",
+  spdlog::info("PartOne::CastBondProc - {:x} relayed as {:x}'s and {:x}'s own "
+               "instant cast to {} game(s) (thuum docs/verbs/shadowbond.md)",
                procId, bond.caster, bond.target, games);
 }
 

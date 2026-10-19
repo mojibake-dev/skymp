@@ -178,6 +178,21 @@ public:
     const std::vector<PlayerGlobal>& report);
   float TeleportReach(uint32_t spellFormId) const;
 
+  // thuum docs/verbs/shadowbond.md: server-settings.json's `bonds` (a JSON
+  // list, "[]" for none; a bad entry stops the server here, named): the
+  // spells whose claimed hit bonds caster and target for the spell's
+  // duration. The first act that ends either's concealment breaks the bond
+  // and permits each one jump to where the other stands (the cast-jump
+  // permit, for the entry's window and slack); the rule is Rust's
+  // (wire-rules bonds)
+  void SetBondSettings(const std::string& bondsJson);
+  bool IsBondSpell(uint32_t spellFormId) const;
+  void RecordBond(uint32_t casterFormId, uint32_t targetFormId,
+                  uint32_t spellFormId);
+  // true when the actor was in a standing bond: it ended, both jumps are
+  // permitted
+  bool BreakBondsOf(uint32_t actorFormId);
+
   // thuum docs/verbs/headshot.md: server-settings.json's `headshot` block
   // (the spells whose hit reports a headshot, the victim races the mod's
   // rule names, the shooter's base Archery floor; "{}" for none; a bad

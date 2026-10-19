@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, block, casts, clock, console, damage, effects, favorites, forms, hostility, magic, markers, melee, movement, player_globals, racemenu, ranged, rest, shouts, stagger, teleports, headshots};
+use wire_rules::{bonds, activation, actor_values, appearance, block, casts, clock, console, damage, effects, favorites, forms, hostility, magic, markers, melee, movement, player_globals, racemenu, ranged, rest, shouts, stagger, teleports, headshots};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -616,6 +616,23 @@ mod ffi {
         Throttled,
     }
 
+    /// A bond's break (thuum docs/verbs/shadowbond.md): whether the actor
+    /// was in one, its two actors, and the window and slack for their two
+    /// landings.
+    #[derive(Debug, Clone, Copy)]
+    struct BondBreak {
+        /// The actor was in a standing bond, now ended.
+        found: bool,
+        /// Who cast the bond's spell.
+        caster: u32,
+        /// Whom it landed on.
+        target: u32,
+        /// How long after the break each landing is permitted, ms.
+        window_ms: u64,
+        /// How far from the other's position a landing may fall, units.
+        slack_units: f32,
+    }
+
     /// A spell hit's claim and, when claimed, the factor on the spell's
     /// magnitude (1 for a fire-and-forget hit, seconds for a stream's).
     #[derive(Debug, Clone, Copy)]
@@ -1040,6 +1057,25 @@ mod ffi {
         /// landing (wire-rules teleports::LOOK_LANDING_STEP).
         fn teleport_look_lands(step: f32) -> bool;
 
+        /// thuum docs/verbs/shadowbond.md: the spells server-settings.json's
+        /// `bonds` names, and the bonds standing between actors.
+        type Bonds;
+        /// The list from the block as JSON text (`[]` for none); the error
+        /// names the bad entry.
+        fn new_bonds(settings_json: &str) -> Result<Box<Bonds>>;
+        /// The bond's duration for the spell `short_id` in `file`, ms, or 0
+        /// when the server names it no bond.
+        fn bond_duration_ms(self: &Bonds, short_id: u32, file: &str) -> u64;
+        /// `caster`'s cast of the spell landed on `target` at `now_ms`: a
+        /// bond stands for the spell's duration (nothing for a spell the
+        /// server names no bond).
+        fn record(self: &mut Bonds, caster: u32, target: u32, short_id: u32, file: &str, now_ms: u64);
+        /// `actor` acted at `now_ms`: the bond it is in ends and is returned
+        /// (`found` false when it is in none).
+        fn break_of(self: &mut Bonds, actor: u32, now_ms: u64) -> BondBreak;
+        /// The actor is gone: its bonds with it.
+        fn forget(self: &mut Bonds, actor: u32);
+
         /// thuum docs/verbs/player-globals.md: the globals server-settings.json's
         /// `playerGlobals` names, kept per player.
         type PlayerGlobalsList;
@@ -1138,7 +1174,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, AvChange, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlayerGlobalEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
+pub use ffi::{AvBase, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlayerGlobalEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -1658,6 +1694,37 @@ impl Headshots {
             headshots::HeadshotCheck::Helmeted => HeadshotCheck::Helmeted,
             headshots::HeadshotCheck::Race => HeadshotCheck::Race,
             headshots::HeadshotCheck::Archery => HeadshotCheck::Archery,
+        }
+    }
+
+    fn forget(&mut self, actor: u32) {
+        self.0.forget(actor);
+    }
+}
+
+/// The bonds rule (wire-rules bonds).
+#[derive(Debug, Clone, Default)]
+pub struct Bonds(bonds::Bonds);
+
+fn new_bonds(settings_json: &str) -> Result<Box<Bonds>, clock::SettingsError> {
+    bonds::Bonds::from_json(settings_json).map(|b| Box::new(Bonds(b)))
+}
+
+impl Bonds {
+    fn bond_duration_ms(&self, short_id: u32, file: &str) -> u64 {
+        self.0.named(short_id, file).map_or(0, |s| s.duration_ms)
+    }
+
+    fn record(&mut self, caster: u32, target: u32, short_id: u32, file: &str, now_ms: u64) {
+        if let Some(spell) = self.0.named(short_id, file).copied() {
+            self.0.record(caster, target, &spell, now_ms);
+        }
+    }
+
+    fn break_of(&mut self, actor: u32, now_ms: u64) -> BondBreak {
+        match self.0.break_of(actor, now_ms) {
+            Some(b) => BondBreak { found: true, caster: b.caster, target: b.target, window_ms: b.window_ms, slack_units: b.slack_units },
+            None => BondBreak { found: false, caster: 0, target: 0, window_ms: 0, slack_units: 0.0 },
         }
     }
 

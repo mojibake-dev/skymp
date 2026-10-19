@@ -642,7 +642,7 @@ std::optional<espm::MGEF::EffectType> ConcealmentExceptionOf(
 // and told every game at once, and the observer's dispel, landing after its
 // figure's fresh cast, ended the new copy: playtest nineteen's "if i REcast
 // it i lose invisibility on the other players screen but not my own".
-void EndConcealment(MpActor& actor, uint32_t castSpell = 0)
+void EndConcealment(PartOne& partOne, MpActor& actor, uint32_t castSpell = 0)
 {
   const auto exception = ConcealmentExceptionOf(actor.GetParent(), castSpell);
   bool ended = false;
@@ -662,6 +662,10 @@ void EndConcealment(MpActor& actor, uint32_t castSpell = 0)
                  "state end{}",
                  actor.GetFormId(),
                  exception ? " (but the one its own spell carries)" : "");
+    // thuum docs/verbs/shadowbond.md: the act that ends a bonded actor's
+    // invisibility is the mod's trigger for the swap; the server permits
+    // both landings
+    partOne.BreakBondsOf(actor.GetFormId());
   }
 }
 
@@ -1071,7 +1075,7 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
   // HYPOTHESIS until a lab run); the player's own here, a hosted actor's in
   // its host's game
   if (msg.data.caster == 0x14) {
-    EndConcealment(*ac);
+    EndConcealment(partOne, *ac);
   }
   if (hosterId) {
     auto actor =
@@ -1997,7 +2001,7 @@ void ActionListener::OnPlayerBowShot(const RawMessageData& rawMsgData,
   // thuum docs/verbs/self-cast.md: the engine's bow release ends its
   // shooter's concealment after the shot (ArrowReleaseHandler 42859 calls
   // DispelAlteredStates with no exception; HYPOTHESIS until a lab run)
-  EndConcealment(*ac);
+  EndConcealment(partOne, *ac);
   ArrowShotMessage relay;
   relay.idx = ac->GetIdx();
   relay.weaponId = msg.weaponId;
@@ -2880,6 +2884,13 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
         return;
       }
       magnitudeScale = claim.scale;
+      // thuum docs/verbs/shadowbond.md: a bond spell's claimed hit bonds
+      // the two until either acts, or the spell's duration ends
+      if (targetRef->GetFormId() != aggressor->GetFormId() &&
+          partOne.IsBondSpell(hitData.source)) {
+        partOne.RecordBond(aggressor->GetFormId(), targetRef->GetFormId(),
+                           hitData.source);
+      }
       if (claim.relay) {
         // the first hit of a cast delivered to its target: the cast goes
         // to the other games now, at the target this hit names
@@ -3230,7 +3241,7 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
                  caster->GetFormId(), *shout, facts.variation,
                  spellCastData.spell,
                  partOne.VoiceRecoveryLeftMs(caster->GetFormId()) / 1000.0);
-    EndConcealment(*caster, spellCastData.spell);
+    EndConcealment(partOne, *caster, spellCastData.spell);
     RunSelfSpell(partOne.worldState, *caster, spellCastData.spell);
     RelayCast(*caster, *myActor, spellCastData);
     return;
@@ -3250,7 +3261,7 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
   // the target was 0 at every Shadowbond and Azure Reconstruction cast)
   const bool relayAtFirstHit = partOne.StartCast(
     caster->GetFormId(), spellCastData.spell, hand, caster->GetPos());
-  EndConcealment(*caster, spellCastData.spell);
+  EndConcealment(partOne, *caster, spellCastData.spell);
   RunSelfSpell(partOne.worldState, *caster, spellCastData.spell);
 
   // thuum docs/verbs/cast-teleport.md: a spell the server names as a
@@ -3532,7 +3543,7 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
   // thuum docs/verbs/self-cast.md: an attack ends its attacker's
   // invisibility and ethereal state, and an ethereal target takes nothing
   // (no damage, no poison's dose, no stagger)
-  EndConcealment(*aggressor);
+  EndConcealment(partOne, *aggressor);
   const bool ethereal =
     targetActor.HasRunningEffectOfType(espm::MGEF::EffectType::Etherealize);
   if (ethereal) {

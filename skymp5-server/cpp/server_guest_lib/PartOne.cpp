@@ -158,6 +158,10 @@ struct PartOne::Impl
   rust::Box<skymp::rules::Headshots> headshots =
     skymp::rules::new_headshots("{}");
 
+  // the bonds (thuum docs/verbs/shadowbond.md): server-settings.json's
+  // `bonds` list and the bonds standing between actors
+  rust::Box<skymp::rules::Bonds> bonds = skymp::rules::new_bonds("[]");
+
   // a teleport's look, kept from its cast for its landing (thuum
   // docs/verbs/cast-teleport.md, the look on other screens), by the caster's
   // form id, until the jump's wait runs out (SteadyNowMs)
@@ -1353,6 +1357,63 @@ void PartOne::SetCastTeleportSettings(const std::string& castTeleportsJson)
 {
   pImpl->castTeleports = skymp::rules::new_cast_teleports(castTeleportsJson);
   spdlog::info("PartOne::SetCastTeleportSettings - {}", castTeleportsJson);
+}
+
+void PartOne::SetBondSettings(const std::string& bondsJson)
+{
+  pImpl->bonds = skymp::rules::new_bonds(bondsJson);
+  spdlog::info("PartOne::SetBondSettings - {}", bondsJson);
+}
+
+bool PartOne::IsBondSpell(uint32_t spellFormId) const
+{
+  const auto desc = FormDesc::FromFormId(spellFormId, worldState.espmFiles);
+  return pImpl->bonds->bond_duration_ms(desc.shortFormId, desc.file) > 0;
+}
+
+void PartOne::RecordBond(uint32_t casterFormId, uint32_t targetFormId,
+                         uint32_t spellFormId)
+{
+  const auto desc = FormDesc::FromFormId(spellFormId, worldState.espmFiles);
+  pImpl->bonds->record(casterFormId, targetFormId, desc.shortFormId, desc.file,
+                       SteadyNowMs());
+  spdlog::info("PartOne::RecordBond - {:x} bonds {:x} with spell {:x} (thuum "
+               "docs/verbs/shadowbond.md)",
+               casterFormId, targetFormId, spellFormId);
+}
+
+bool PartOne::BreakBondsOf(uint32_t actorFormId)
+{
+  const auto broken = pImpl->bonds->break_of(actorFormId, SteadyNowMs());
+  if (!broken.found) {
+    return false;
+  }
+  const auto caster = std::dynamic_pointer_cast<MpActor>(
+    worldState.LookupFormById(broken.caster));
+  const auto target = std::dynamic_pointer_cast<MpActor>(
+    worldState.LookupFormById(broken.target));
+  if (!caster || !target) {
+    spdlog::warn("PartOne::BreakBondsOf - {:x} acts, but its bond's actors "
+                 "{:x} and {:x} are not both here; nothing permitted",
+                 actorFormId, broken.caster, broken.target);
+    return false;
+  }
+  // each may land within the slack of where the other stands now, for the
+  // window; each game's own script moves its own player (the mod's
+  // MoveTo), and the landing is validated as a cast teleport's is
+  PermitCastJump(broken.caster,
+                 target->GetCellOrWorld().ToFormId(worldState.espmFiles),
+                 target->GetPos(), broken.slack_units, broken.window_ms);
+  PermitCastJump(broken.target,
+                 caster->GetCellOrWorld().ToFormId(worldState.espmFiles),
+                 caster->GetPos(), broken.slack_units, broken.window_ms);
+  spdlog::info("PartOne::BreakBondsOf - {:x} acts: its bond with {:x} breaks; "
+               "both may swap places within {:.0f} units for {} ms (thuum "
+               "docs/verbs/shadowbond.md)",
+               actorFormId,
+               actorFormId == broken.caster ? broken.target : broken.caster,
+               broken.slack_units, broken.window_ms);
+  return true;
 }
 
 void PartOne::SetPlayerGlobalsSettings(const std::string& playerGlobalsJson)

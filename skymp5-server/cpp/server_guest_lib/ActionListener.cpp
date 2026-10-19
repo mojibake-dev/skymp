@@ -2820,9 +2820,13 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
   MpObjectReference* targetRef =
     targetForm ? targetForm->AsObjectReference() : nullptr;
   if (!targetRef) {
-    spdlog::error("ActionListener::OnHit - MpObjectReference not found for "
-                  "hitData.target {:x}",
-                  hitData.target);
+    // a hit on nothing the server holds: the ground (target 0, every
+    // teleport cast's own landing, playtest twenty-four) or a world
+    // reference outside the server's forms (an arrow in a wall); nothing to
+    // judge, nothing wrong
+    spdlog::info("ActionListener::OnHit - MpObjectReference not found for "
+                 "hitData.target {:x}: a hit on nothing the server holds",
+                 hitData.target);
     return;
   }
 

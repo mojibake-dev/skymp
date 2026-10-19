@@ -18,7 +18,9 @@ float ConditionFunctions::HasMagicEffectKeyword::Execute(
   const ConditionEvaluatorContext&)
 {
   auto* worldState = actor.GetParent();
-  const auto& running = actor.GetChangeForm().runningEffects;
+  // GetChangeForm returns by value: keep the copy alive for the loop
+  const auto changeForm = actor.GetChangeForm();
+  const auto& running = changeForm.runningEffects;
   if (!worldState || !running || parameter1 == 0) {
     return 0.f;
   }

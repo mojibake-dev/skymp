@@ -36,6 +36,11 @@ struct ConditionsEvaluatorSettings
 struct ConditionEvaluatorContext
 {
   std::optional<uint32_t> damageSourceFormId;
+  // thuum ADR-039: the pair an effect's conditions are judged for (the
+  // actor it lands on and its caster), for the functions that ask about the
+  // other actor (IsHostileToActor); 0 from the other callers
+  uint32_t effectVictimFormId = 0;
+  uint32_t effectCasterFormId = 0;
 };
 
 class ConditionsEvaluator

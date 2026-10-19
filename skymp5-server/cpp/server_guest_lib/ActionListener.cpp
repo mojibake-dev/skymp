@@ -3387,6 +3387,7 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
   // ragdoll"; HYPOTHESIS: the engine's stagger at Unrelenting Force's 1.5
   // knocks the target down, to read on the lab)
   float spellStagger = 0.f;
+  bool anyEffectHeld = false;
   for (const auto& effect : effects) {
     // a perk's rider (the Impact perk's stagger on every Firebolt, read in
     // the lab's logs: 67 of 91 hits staggered with no perk) is judged by its
@@ -3400,6 +3401,7 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
     if (gated) {
       continue;
     }
+    anyEffectHeld = true;
     try {
       if (espm::GetData<espm::MGEF>(effect.effectId, &partOne.worldState)
             .data.effectType == espm::MGEF::EffectType::Stagger) {
@@ -3419,9 +3421,14 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
                targetActorPtr->GetFormId(), hitData.source, scale,
                stream ? "a stream's seconds" : "once", aggressor->GetFormId());
 
-  // a spell hit begins a fight as a weapon's does (ADR-023)
-  NotifyHostility(*aggressor, *targetActorPtr,
-                  std::chrono::steady_clock::now());
+  // a spell hit begins a fight as a weapon's does (ADR-023), once an effect
+  // of it held: a hit whose every effect its conditions refuse (a cloak's
+  // proc on a peaceful neighbour, which the engine itself never reports)
+  // begins nothing (thuum ADR-039)
+  if (anyEffectHeld) {
+    NotifyHostility(*aggressor, *targetActorPtr,
+                    std::chrono::steady_clock::now());
+  }
 }
 
 void ActionListener::OnWeaponHit(MpActor* aggressor,

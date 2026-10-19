@@ -890,6 +890,9 @@ void PartOne::Init()
   pImpl->logger.reset(new spdlog::logger{ "empty logger" });
 
   worldState.gameTime = [this] { return GetGameTime(); };
+  worldState.fightBetween = [this](uint32_t a, uint32_t b) {
+    return pImpl->fights->between(a, b);
+  };
 
   pImpl->onSubscribe = [this](PartOneSendTargetWrapper* sendTarget,
                               MpObjectReference* emitter,

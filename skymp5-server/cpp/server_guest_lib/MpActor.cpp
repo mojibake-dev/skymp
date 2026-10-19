@@ -2951,6 +2951,8 @@ bool MpActor::EffectConditionsHold(WorldState* worldState,
   bool holds = false;
   ConditionEvaluatorContext context;
   context.damageSourceFormId = source;
+  context.effectVictimFormId = victim.GetFormId();
+  context.effectCasterFormId = caster.GetFormId();
   ConditionsEvaluator::EvaluateConditions(
     map, worldState->conditionsEvaluatorSettings,
     ConditionsEvaluatorCaller::kMagicEffect, conditions, victim, caster,

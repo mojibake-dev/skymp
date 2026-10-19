@@ -21,6 +21,7 @@
 #include "HasMagicEffectKeyword.h"
 #include "IsActor.h"
 #include "IsCommandedActor.h"
+#include "IsHostileToActor.h"
 #include "IsUndead.h"
 
 #include "SkympGetDamageSourceHasKeyword.h"
@@ -70,6 +71,8 @@ ConditionFunctionMap ConditionFunctionFactory::CreateConditionFunctions()
     std::make_shared<ConditionFunctions::IsActor>());
   res.RegisterConditionFunction(
     std::make_shared<ConditionFunctions::IsCommandedActor>());
+  conditionFunctionMap.Add(
+    std::make_shared<ConditionFunctions::IsHostileToActor>());
   res.RegisterConditionFunction(
     std::make_shared<ConditionFunctions::IsUndead>());
 

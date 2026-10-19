@@ -978,6 +978,9 @@ mod ffi {
         fn check(self: &mut Fights, a: u32, b: u32, apart: bool, now_ms: u64) -> bool;
         /// Whether the actor is in a fight.
         fn in_fight(self: &Fights, actor: u32) -> bool;
+        /// Whether the two actors are in a fight with each other
+        /// (IsHostileToActor between players, thuum ADR-039).
+        fn between(self: &Fights, a: u32, b: u32) -> bool;
         /// The actor is gone: its fights end without a notice.
         fn forget(self: &mut Fights, actor: u32);
 
@@ -1382,6 +1385,10 @@ impl Fights {
 
     fn in_fight(&self, actor: u32) -> bool {
         self.0.in_fight(actor)
+    }
+
+    fn between(&self, a: u32, b: u32) -> bool {
+        self.0.between(a, b)
     }
 
     fn forget(&mut self, actor: u32) {
@@ -2342,6 +2349,7 @@ mod tests {
         assert!(!f.hit(2, 1, 1_000));
         assert_eq!(f.pairs().iter().map(|p| (p.a, p.b)).collect::<Vec<_>>(), vec![(1, 2)]);
         assert!(f.in_fight(2));
+        assert!(f.between(2, 1) && !f.between(1, 3));
         assert!(!f.check(1, 2, false, 2_000));
         assert!(f.check(1, 2, false, 1_000 + hostility::FIGHT_QUIET_MS));
         assert!(!f.in_fight(1));

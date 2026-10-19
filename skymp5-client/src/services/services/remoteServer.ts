@@ -1015,16 +1015,30 @@ export class RemoteServer extends ClientListener {
     const msg = event.message;
 
     once('update', () => {
-      const ac = Actor.from(Game.getFormEx(remoteIdToLocalId(msg.data.caster)));
+      // thuum docs/verbs/shadowbond.md: a cast whose caster is this game's own
+      // player is the server's imposition on it (a bond's concealment proc,
+      // cast through the player's instant caster), the sibling of the
+      // target rule below; no game ever relays a player's cast back to it,
+      // so the id can only be the server's
+      const casterIsMe = msg.data.caster !== 0 && msg.data.caster === this.worldModel.playerCharacterRefrId;
+      const ac = Actor.from(Game.getFormEx(casterIsMe ? 0x14 : remoteIdToLocalId(msg.data.caster)));
       if (!ac) {
         return;
       }
 
-      const actorAnimationVariables: ActorAnimationVariables = {
-        booleans: new Uint8Array(msg.data.actorAnimationVariables.booleans),
-        floats: new Uint8Array(msg.data.actorAnimationVariables.floats),
-        integers: new Uint8Array(msg.data.actorAnimationVariables.integers)
-      };
+      // a cast the server built carries no animation variables (it holds
+      // none); castSpellImmediate applies the set before it casts and casts
+      // nothing when the set does not apply, so the actor's own current set
+      // stands in, a write-back of what the graph already holds
+      const carried = msg.data.actorAnimationVariables;
+      const empty = carried.booleans.length === 0 && carried.floats.length === 0 && carried.integers.length === 0;
+      const actorAnimationVariables: ActorAnimationVariables = empty
+        ? getAnimationVariablesFromActor(ac.getFormID())
+        : {
+          booleans: new Uint8Array(carried.booleans),
+          floats: new Uint8Array(carried.floats),
+          integers: new Uint8Array(carried.integers)
+        };
 
       if (msg.data.interruptCast) {
         interruptCast(ac.getFormID(), msg.data.castingSource, actorAnimationVariables);

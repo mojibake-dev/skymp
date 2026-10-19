@@ -8,9 +8,11 @@
 # Shadowbond with target 0 (a target-actor spell waits for its first hit) and
 # at 3.4 s its hit on c2 names the target: the fixed server relays the cast
 # to c2 with c2's id, records the bond, records the proc's Invisibility on
-# both for the bond's 20 s (MagicEffects to both games) and tells c2's game
-# to cast the proc on its own player and on c1's figure (two Spell.Cast
-# snippets; c1's own game, where the mod's script casts both, hears none);
+# both for the bond's 20 s (MagicEffects to both games) and, 500 ms later,
+# relays the proc as each actor's own instant cast to c2's game (two
+# SpellCast messages, castingSource 3, the caster its own target: one c2
+# casts on c1's figure, one on its own player; c1's own game, where the mod's
+# script casts both, hears none);
 # the hostile hit begins a fight (StartCombat to c2). At 5 s c1 casts Flames,
 # the act that ends its concealment: the server swaps the two (a Teleport to
 # each), holds them, ends both records (the sets without the proc) and
@@ -105,10 +107,10 @@ divergences:
     wire: 4
     reason: the same sets reach c2
   - client: c2
-    msg: {t: 30, class: Spell, function: Cast}
+    msg: {t: 23, data: {spell: 201677618, castingSource: 3}}
     legacy: 0
     wire: 2
-    reason: the proc cast in c2's game on its own player and on c1's figure (every game but the caster's own, where the mod's script casts both)
+    reason: the proc relayed as each bonded actor's own instant cast (castingSource 3, no launch) to c2's game, which casts it on c1's figure and on its own player (every game but the caster's own, where the mod's script casts both); the legacy server knows no bond
   - client: c1
     msg: {t: 20}
     legacy: 0

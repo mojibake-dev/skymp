@@ -638,7 +638,7 @@ mod tests {
         assert_eq!(name_of_msg_type(45), Some("PlayerGlobals"));
         assert_eq!(name_of_msg_type(46), Some("ActorJump"));
         assert_eq!(name_of_msg_type(0), None);
-        assert_eq!(name_of_msg_type(46), None);
+        assert_eq!(name_of_msg_type(47), None);
     }
 
     #[test]

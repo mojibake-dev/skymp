@@ -31,6 +31,8 @@ pub const ARRIVAL_WAIT_MS: u64 = 10_000;
 /// How near the place the server put it a report must come from to count
 /// as the arrival, units over the ground.
 pub const ARRIVAL_RADIUS: f32 = 256.0;
+/// The least a pin's radius may be: a standing player's own jitter, with room.
+pub const PIN_RADIUS_MIN: f32 = 32.0;
 /// How long a cast teleport's jump waits for its caster's game to report
 /// the landing, unless its castTeleports entry names its own wait
 /// (teleports.rs): the engine places the spell's marker, the mod's script
@@ -152,6 +154,11 @@ struct Pin {
     cell_or_world: u32,
     x: f32,
     y: f32,
+    /// How far a report may stray and still be the pinned place: the swap's
+    /// own distance halved and clamped, since a swap shorter than the
+    /// arrival radius (150 units in x-shadowbond 20261019-090907) slipped
+    /// through a pin judged by `ARRIVAL_RADIUS`.
+    radius: f32,
     until_ms: u64,
 }
 
@@ -278,11 +285,13 @@ impl Budgets {
     }
 
     /// Hold `actor` at (x, y) in `cell_or_world` until `until_ms`: a report
-    /// from farther than `ARRIVAL_RADIUS` before then is a move the server
-    /// did not author, and `pinned_away` says so (the caller sends the player
-    /// back). The server's own next move of the actor replaces the pin.
-    pub fn pin(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, until_ms: u64) {
-        self.pins.insert(actor, Pin { cell_or_world, x, y, until_ms });
+    /// from farther than `radius` before then is a move the server did not
+    /// author, and `pinned_away` says so (the caller sends the player back).
+    /// The radius is clamped to [`PIN_RADIUS_MIN`, `ARRIVAL_RADIUS`]. The
+    /// server's own next move of the actor replaces the pin.
+    pub fn pin(&mut self, actor: u32, cell_or_world: u32, x: f32, y: f32, radius: f32, until_ms: u64) {
+        let radius = if radius.is_finite() { radius.clamp(PIN_RADIUS_MIN, ARRIVAL_RADIUS) } else { PIN_RADIUS_MIN };
+        self.pins.insert(actor, Pin { cell_or_world, x, y, radius, until_ms });
     }
 
     /// Whether a report of `actor`'s from (x, y) in `cell_or_world` at
@@ -296,7 +305,7 @@ impl Budgets {
             self.pins.remove(&actor);
             return false;
         }
-        let near = x.is_finite() && y.is_finite() && (x - p.x).hypot(y - p.y) <= ARRIVAL_RADIUS;
+        let near = x.is_finite() && y.is_finite() && (x - p.x).hypot(y - p.y) <= p.radius;
         cell_or_world != p.cell_or_world || !near
     }
 
@@ -559,7 +568,7 @@ mod tests {
         // where the target's figure now stands (x-shadowbond 20261019-083537)
         let mut all = Budgets::default();
         assert!(!all.pinned_away(1, TAMRIEL, 0.0, 300.0, 0));
-        all.pin(1, TAMRIEL, 0.0, 300.0, 1_500);
+        all.pin(1, TAMRIEL, 0.0, 300.0, 150.0, 1_500);
         // within the radius: not away; the script's move back: away
         assert!(!all.pinned_away(1, TAMRIEL, 10.0, 290.0, 100));
         assert!(all.pinned_away(1, TAMRIEL, 0.0, 0.0, 250));
@@ -568,9 +577,21 @@ mod tests {
         // another actor is not pinned; the pin runs out; a forgotten actor's goes
         assert!(!all.pinned_away(2, TAMRIEL, 0.0, 0.0, 400));
         assert!(!all.pinned_away(1, TAMRIEL, 0.0, 0.0, 1_501));
-        all.pin(1, TAMRIEL, 0.0, 300.0, 5_000);
+        all.pin(1, TAMRIEL, 0.0, 300.0, 150.0, 5_000);
         all.forget(1);
         assert!(!all.pinned_away(1, TAMRIEL, 0.0, 0.0, 2_000));
+        // a swap of 150 units (x-shadowbond 20261019-090907, the two 150 apart):
+        // the radius is the half, 75, so the script's 150-unit move is away
+        // while a jitter of 20 is not; the clamp holds the ends
+        all.pin(1, TAMRIEL, 0.0, 150.0, 75.0, 1_500);
+        assert!(all.pinned_away(1, TAMRIEL, 0.0, 0.0, 300));
+        assert!(!all.pinned_away(1, TAMRIEL, 0.0, 130.0, 300));
+        all.pin(1, TAMRIEL, 0.0, 0.0, 5.0, 1_500);
+        assert!(!all.pinned_away(1, TAMRIEL, 0.0, 31.0, 300));
+        assert!(all.pinned_away(1, TAMRIEL, 0.0, 33.0, 300));
+        all.pin(1, TAMRIEL, 0.0, 0.0, 10_000.0, 1_500);
+        assert!(!all.pinned_away(1, TAMRIEL, 0.0, 255.0, 300));
+        assert!(all.pinned_away(1, TAMRIEL, 0.0, 257.0, 300));
     }
 
     #[test]

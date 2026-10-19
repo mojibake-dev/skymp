@@ -151,7 +151,7 @@ public:
   // holdMs; a report from elsewhere meanwhile is sent back (the mod's own
   // swap script moving the caster a second time)
   void PinArrival(uint32_t actorFormId, uint32_t cellOrWorld,
-                  const NiPoint3& at, uint64_t holdMs);
+                  const NiPoint3& at, float radius, uint64_t holdMs);
   bool PinnedAway(uint32_t actorFormId, uint32_t cellOrWorld,
                   const NiPoint3& at);
   JumpCheck CheckArrival(uint32_t actorFormId, uint32_t cellOrWorld, float x,

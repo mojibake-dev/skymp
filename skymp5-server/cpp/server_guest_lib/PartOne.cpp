@@ -1350,9 +1350,9 @@ void PartOne::ExpectArrival(uint32_t actorFormId, uint32_t cellOrWorld,
 }
 
 void PartOne::PinArrival(uint32_t actorFormId, uint32_t cellOrWorld,
-                         const NiPoint3& at, uint64_t holdMs)
+                         const NiPoint3& at, float radius, uint64_t holdMs)
 {
-  pImpl->movementBudgets->pin(actorFormId, cellOrWorld, at.x, at.y,
+  pImpl->movementBudgets->pin(actorFormId, cellOrWorld, at.x, at.y, radius,
                               SteadyNowMs() + holdMs);
 }
 
@@ -1446,12 +1446,16 @@ bool PartOne::BreakBondsOf(uint32_t actorFormId)
   // the swap, to where the target's figure now stands (its own spot), and
   // undid the swap (x-shadowbond 20261019-083537 on 13acbb35); a report
   // from away from the swap's place within the hold is sent back
+  // the pin's radius is half the swap's own distance (clamped in the rule):
+  // a swap shorter than the arrival radius slipped through a pin judged by
+  // it (x-shadowbond 20261019-090907, the two 150 units apart)
+  const float swapDistance = (casterTo.pos - targetTo.pos).Length();
   PinArrival(broken.caster,
              casterTo.cellOrWorldDesc.ToFormId(worldState.espmFiles),
-             casterTo.pos, kBondPinMs);
+             casterTo.pos, swapDistance / 2.f, kBondPinMs);
   PinArrival(broken.target,
              targetTo.cellOrWorldDesc.ToFormId(worldState.espmFiles),
-             targetTo.pos, kBondPinMs);
+             targetTo.pos, swapDistance / 2.f, kBondPinMs);
   spdlog::info("PartOne::BreakBondsOf - {:x} acts: its bond with {:x} breaks; "
                "the server swaps their places, {:x} to ({:.0f}, {:.0f}, "
                "{:.0f}) and {:x} to ({:.0f}, {:.0f}, {:.0f}) (thuum "

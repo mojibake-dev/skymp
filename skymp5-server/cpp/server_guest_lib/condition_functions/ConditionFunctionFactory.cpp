@@ -71,7 +71,7 @@ ConditionFunctionMap ConditionFunctionFactory::CreateConditionFunctions()
     std::make_shared<ConditionFunctions::IsActor>());
   res.RegisterConditionFunction(
     std::make_shared<ConditionFunctions::IsCommandedActor>());
-  conditionFunctionMap.Add(
+  res.RegisterConditionFunction(
     std::make_shared<ConditionFunctions::IsHostileToActor>());
   res.RegisterConditionFunction(
     std::make_shared<ConditionFunctions::IsUndead>());

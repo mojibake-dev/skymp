@@ -1,6 +1,8 @@
 #pragma once
 #include "ActorValue.h"
+#include "CTDA.h"
 #include "RecordHeader.h"
+#include <vector>
 
 #pragma pack(push, 1)
 
@@ -136,6 +138,10 @@ public:
     // perk's rider on the effect instead of the spell (the Impact perk's
     // stagger, Disintegrate's 200 Health)
     bool callsHasPerk = false;
+    // thuum docs/DECISIONS.md ADR-039: the effect record's own conditions,
+    // every CTDA in file order (the server evaluates them before applying
+    // the effect to another player; an unknown function refuses it)
+    std::vector<CTDA> conditions;
   };
 
   Data GetData(CompressedFieldsCache& compressedFieldsCache) const noexcept;

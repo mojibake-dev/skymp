@@ -15,6 +15,14 @@
 #include "WornApparelHasKeywordCount.h"
 #include "WornHasKeyword.h"
 
+// thuum docs/DECISIONS.md ADR-039: the effect conditions the server evaluates
+#include "GetDead.h"
+#include "HasKeyword.h"
+#include "HasMagicEffectKeyword.h"
+#include "IsActor.h"
+#include "IsCommandedActor.h"
+#include "IsUndead.h"
+
 #include "SkympGetDamageSourceHasKeyword.h"
 #include "SkympGetIsDamageSource.h"
 #include "SkympWornHasKeywordCount.h"
@@ -51,6 +59,19 @@ ConditionFunctionMap ConditionFunctionFactory::CreateConditionFunctions()
     std::make_shared<ConditionFunctions::GetEquippedItemType>());
   res.RegisterConditionFunction(
     std::make_shared<ConditionFunctions::IsBlocking>());
+
+  res.RegisterConditionFunction(
+    std::make_shared<ConditionFunctions::GetDead>());
+  res.RegisterConditionFunction(
+    std::make_shared<ConditionFunctions::HasKeyword>());
+  res.RegisterConditionFunction(
+    std::make_shared<ConditionFunctions::HasMagicEffectKeyword>());
+  res.RegisterConditionFunction(
+    std::make_shared<ConditionFunctions::IsActor>());
+  res.RegisterConditionFunction(
+    std::make_shared<ConditionFunctions::IsCommandedActor>());
+  res.RegisterConditionFunction(
+    std::make_shared<ConditionFunctions::IsUndead>());
 
   res.RegisterConditionFunction(
     std::make_shared<ConditionFunctions::SkympGetDamageSourceHasKeyword>());

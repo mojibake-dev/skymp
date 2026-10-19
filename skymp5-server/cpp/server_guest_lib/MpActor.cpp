@@ -3,6 +3,8 @@
 #include "ActorValues.h"
 #include "ActorValuesMessage.h"
 #include "ChangeFormGuard.h"
+#include "Condition.h"
+#include "ConditionsEvaluator.h"
 #include "CropRegeneration.h"
 #include "EvaluateTemplate.h"
 #include "FormCallbacks.h"
@@ -2909,6 +2911,59 @@ bool MpActor::IsConditionGated(WorldState* worldState,
   }
 }
 
+bool MpActor::EffectConditionsHold(WorldState* worldState,
+                                   const espm::Effects::Effect& effect,
+                                   uint32_t source, const MpActor& victim,
+                                   const MpActor& caster)
+{
+  if (!worldState) {
+    return false;
+  }
+  std::vector<Condition> conditions;
+  for (const auto& ctda : effect.conditions) {
+    conditions.push_back(Condition::FromCtda(ctda));
+  }
+  try {
+    const auto mgef = espm::GetData<espm::MGEF>(effect.effectId, worldState);
+    for (const auto& ctda : mgef.conditions) {
+      conditions.push_back(Condition::FromCtda(ctda));
+    }
+  } catch (std::exception& e) {
+    spdlog::warn("EffectConditionsHold - effect {:x}: {}; refused",
+                 effect.effectId, e.what());
+    return false;
+  }
+  if (conditions.empty()) {
+    return true;
+  }
+  const auto& map = worldState->conditionFunctionMap;
+  for (const auto& condition : conditions) {
+    if (!map.GetConditionFunction(condition.functionIndex)) {
+      spdlog::warn("MpActor::EffectConditionsHold - E_CONDITION_UNKNOWN: "
+                   "function {} ({}) on effect {:x} of {:x}, cast by {:x} at "
+                   "{:x}; refused (thuum ADR-039)",
+                   condition.function.empty() ? "?" : condition.function,
+                   condition.functionIndex, effect.effectId, source,
+                   caster.GetFormId(), victim.GetFormId());
+      return false;
+    }
+  }
+  bool holds = false;
+  ConditionEvaluatorContext context;
+  context.damageSourceFormId = source;
+  ConditionsEvaluator::EvaluateConditions(
+    map, worldState->conditionsEvaluatorSettings,
+    ConditionsEvaluatorCaller::kMagicEffect, conditions, victim, caster,
+    [&](bool result, std::vector<std::string>&) { holds = result; }, context);
+  if (!holds) {
+    spdlog::info("MpActor::EffectConditionsHold - effect {:x} of {:x} by {:x} "
+                 "at {:x}: its conditions fail; not applied (thuum ADR-039)",
+                 effect.effectId, source, caster.GetFormId(),
+                 victim.GetFormId());
+  }
+  return holds;
+}
+
 void MpActor::ApplyEffects(uint32_t source,
                            const std::vector<espm::Effects::Effect>& effects,
                            float scale, uint32_t caster, bool stream)
@@ -2916,6 +2971,14 @@ void MpActor::ApplyEffects(uint32_t source,
   WorldState* worldState = GetParent();
   if (!worldState || IsDead()) {
     return;
+  }
+  // thuum docs/DECISIONS.md ADR-039: another actor's effect is applied only
+  // if its conditions hold for this actor; a self effect keeps the gate
+  // below (ADR-029's default: the caster's own game runs it)
+  std::shared_ptr<MpActor> casterActor;
+  if (caster != 0 && caster != GetFormId()) {
+    casterActor =
+      std::dynamic_pointer_cast<MpActor>(worldState->LookupFormById(caster));
   }
   const auto& files = worldState->espmFiles;
   const BaseActorValues maxBefore = GetMaximumValues();
@@ -2926,9 +2989,14 @@ void MpActor::ApplyEffects(uint32_t source,
   std::array<float, 3> deltas{};
   std::array<bool, 3> touched{};
   for (const auto& effect : effects) {
-    if (IsConditionGated(worldState, effect)) {
-      // until the server evaluates conditions: a perk's extras stay out,
-      // whether the spell gates them or their own record does
+    if (casterActor) {
+      if (!EffectConditionsHold(worldState, effect, source, *this,
+                                *casterActor)) {
+        continue;
+      }
+    } else if (IsConditionGated(worldState, effect)) {
+      // a self effect, until the server evaluates its conditions: a perk's
+      // extras stay out, whether the spell gates them or their own record
       continue;
     }
     const auto facts = EffectFactsOf(worldState, source, effect);

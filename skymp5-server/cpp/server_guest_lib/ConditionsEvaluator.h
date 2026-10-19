@@ -13,7 +13,11 @@ class ConditionFunctionMap;
 enum class ConditionsEvaluatorCaller
 {
   kDamageMultConditionalFormula,
-  kCraft
+  kCraft,
+  // thuum docs/DECISIONS.md ADR-039: an effect's own conditions before the
+  // server applies it to another player (Subject the actor it lands on,
+  // Target its caster)
+  kMagicEffect
 };
 
 struct ConditionsEvaluatorSettings

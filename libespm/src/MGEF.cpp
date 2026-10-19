@@ -60,6 +60,9 @@ MGEF::Data MGEF::GetData(
         if (function == kHasPerkFunction) {
           result.callsHasPerk = true;
         }
+        if (size >= sizeof(CTDA)) {
+          result.conditions.push_back(*reinterpret_cast<const CTDA*>(data));
+        }
       }
     },
     compressedFieldsCache);

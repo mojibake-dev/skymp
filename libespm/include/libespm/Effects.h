@@ -26,6 +26,9 @@ public:
     // effect's EFIT) gate it, as a perk's extras are gated (Firebolt's
     // PerkIntenseFlamesConfDownFFAimed); the server does not evaluate them yet
     bool hasConditions = false;
+    // thuum docs/DECISIONS.md ADR-039: those conditions themselves, the
+    // CTDAs after the effect's EFIT, in file order
+    std::vector<CTDA> conditions;
   };
 
   struct Data

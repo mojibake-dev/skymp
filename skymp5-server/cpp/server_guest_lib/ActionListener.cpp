@@ -3377,10 +3377,16 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
   // knocks the target down, to read on the lab)
   float spellStagger = 0.f;
   for (const auto& effect : effects) {
-    if (MpActor::IsConditionGated(&partOne.worldState, effect)) {
-      // a perk's rider (the Impact perk's stagger on every Firebolt, read
-      // in the lab's logs: 67 of 91 hits staggered with no perk) waits on
-      // conditions, as ApplyEffects' effects do
+    // a perk's rider (the Impact perk's stagger on every Firebolt, read in
+    // the lab's logs: 67 of 91 hits staggered with no perk) is judged by its
+    // conditions as ApplyEffects' effects are (thuum ADR-039: HasPerk is
+    // unknown to the server before M5, so it refuses and logs)
+    const bool gated = aggressor != targetActorPtr
+      ? !MpActor::EffectConditionsHold(&partOne.worldState, effect,
+                                       hitData.source, *targetActorPtr,
+                                       *aggressor)
+      : MpActor::IsConditionGated(&partOne.worldState, effect);
+    if (gated) {
       continue;
     }
     try {

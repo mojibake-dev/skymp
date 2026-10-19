@@ -1,4 +1,5 @@
 #include "PartOne.h"
+#include "LocationalData.h"
 #include "wire_bridge_cxx/rules.h"
 #include <algorithm>
 #include <array>
@@ -1401,21 +1402,33 @@ bool PartOne::BreakBondsOf(uint32_t actorFormId)
                  actorFormId, broken.caster, broken.target);
     return false;
   }
-  // each may land within the slack of where the other stands now, for the
-  // window; each game's own script moves its own player (the mod's
-  // MoveTo), and the landing is validated as a cast teleport's is
-  PermitCastJump(broken.caster,
-                 target->GetCellOrWorld().ToFormId(worldState.espmFiles),
-                 target->GetPos(), broken.slack_units, broken.window_ms);
-  PermitCastJump(broken.target,
-                 caster->GetCellOrWorld().ToFormId(worldState.espmFiles),
-                 caster->GetPos(), broken.slack_units, broken.window_ms);
+  // the swap is a position change the server owns (R0): it moves both to
+  // each other's places itself. The mod's script runs in the caster's game
+  // only (ADR-029), so it moves the caster there too (the same spot, which
+  // the arrival rule reads as the arrival) and only the FIGURE of the other
+  // player, whose own game never moved: x-shadowbond 20261019-073758 on
+  // 4c7e6998 swapped c1 alone. A report from elsewhere while the teleport
+  // is on its way is dropped, not sent back (movement-speed.md, arrivals).
+  // The window and slack the bond carries are its record's; the arrival
+  // rule's radius and wait bound the landings now.
+  LocationalData casterTo;
+  casterTo.pos = target->GetPos();
+  casterTo.rot = caster->GetAngle();
+  casterTo.cellOrWorldDesc = target->GetCellOrWorld();
+  LocationalData targetTo;
+  targetTo.pos = caster->GetPos();
+  targetTo.rot = target->GetAngle();
+  targetTo.cellOrWorldDesc = caster->GetCellOrWorld();
+  caster->Teleport(casterTo);
+  target->Teleport(targetTo);
   spdlog::info("PartOne::BreakBondsOf - {:x} acts: its bond with {:x} breaks; "
-               "both may swap places within {:.0f} units for {} ms (thuum "
+               "the server swaps their places, {:x} to ({:.0f}, {:.0f}, "
+               "{:.0f}) and {:x} to ({:.0f}, {:.0f}, {:.0f}) (thuum "
                "docs/verbs/shadowbond.md)",
                actorFormId,
                actorFormId == broken.caster ? broken.target : broken.caster,
-               broken.slack_units, broken.window_ms);
+               broken.caster, casterTo.pos.x, casterTo.pos.y, casterTo.pos.z,
+               broken.target, targetTo.pos.x, targetTo.pos.y, targetTo.pos.z);
   return true;
 }
 

@@ -130,12 +130,21 @@ TEST_CASE("A bond spell's claimed hit bonds the two, and the break permits "
 
   Cast(p);
   Hit(p);
+  p.Messages().clear();
   REQUIRE(p.BreakBondsOf(kTarget));
   // the bond is spent
   REQUIRE_FALSE(p.BreakBondsOf(kCaster));
 
-  // the caster lands where the target stood: taken, and placed for the
-  // other game; the target lands where the caster stood, the same way
+  // the server swaps their places itself: each game is told its move (the
+  // caster's own script lands on the same spot; the target's game runs no
+  // script at all, x-shadowbond 20261019-073758)
+  REQUIRE(Sent(p, 0, MsgType::Teleport) == 1);
+  REQUIRE(Sent(p, 1, MsgType::Teleport) == 1);
+  REQUIRE(caster->GetPos() == NiPoint3{ 0, 300, 0 });
+  REQUIRE(target->GetPos() == NiPoint3{ 0, 0, 0 });
+
+  // each game's report from where it was put is the arrival: taken, and
+  // placed for the other game
   p.Messages().clear();
   Report(p, 0, *caster, { 0, 300, 0 });
   REQUIRE(Sent(p, 0, MsgType::Teleport2) == 0);
@@ -149,7 +158,8 @@ TEST_CASE("A bond spell's claimed hit bonds the two, and the break permits "
   Leave(p);
 }
 
-TEST_CASE("A bonded actor's landing away from the other is sent back",
+TEST_CASE("A bonded actor's report from elsewhere after the swap is dropped, "
+          "the server's move standing",
           "[Bond][espm]")
 {
   PartOne& p = GetPartOne();
@@ -159,11 +169,13 @@ TEST_CASE("A bonded actor's landing away from the other is sent back",
   Hit(p);
   REQUIRE(p.BreakBondsOf(kCaster));
   p.Messages().clear();
-  // 3000 units east: not the target's place, beyond the bounds
+  // 3000 units east: not where the server put it; sent before the move as
+  // far as the arrival rule knows, so dropped, not sent back (the reliable
+  // teleport is on its way)
   Report(p, 0, *caster, { 3000, 0, 0 });
-  REQUIRE(Sent(p, 0, MsgType::Teleport2) == 1);
+  REQUIRE(Sent(p, 0, MsgType::Teleport2) == 0);
   REQUIRE(Sent(p, 1, MsgType::ActorJump) == 0);
-  REQUIRE(caster->GetPos() == NiPoint3{ 0, 0, 0 });
+  REQUIRE(caster->GetPos() == NiPoint3{ 0, 300, 0 });
   (void)target;
   Leave(p);
 }

@@ -1400,6 +1400,13 @@ void PartOne::RecordBond(uint32_t casterFormId, uint32_t targetFormId,
                casterFormId, targetFormId, spellFormId);
 }
 
+namespace {
+// thuum docs/verbs/shadowbond.md: how long the swap's places are held against
+// the mod's own script move in the caster's game (its poll is 0.2 s;
+// HYPOTHESIS that the second move comes within this, x-shadowbond reads it)
+constexpr uint64_t kBondPinMs = 1'500;
+}
+
 bool PartOne::BreakBondsOf(uint32_t actorFormId)
 {
   const auto broken = pImpl->bonds->break_of(actorFormId, SteadyNowMs());

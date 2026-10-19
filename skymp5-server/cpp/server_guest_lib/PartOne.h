@@ -24,7 +24,7 @@
 namespace skymp::rules {
 struct RestSettings; // wire-bridge's (thuum ADR-020), opaque here
 struct Fights;       // wire-bridge's (thuum ADR-023), opaque here
-struct BondBreak;    // wire-bridge's bond facts (thuum docs/verbs/shadowbond.md), opaque here
+struct BondBreak;    // wire-bridge's (thuum shadowbond.md), opaque here
 }
 
 using ProfileId = int32_t;

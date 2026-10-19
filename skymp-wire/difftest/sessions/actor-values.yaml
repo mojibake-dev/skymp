@@ -22,7 +22,7 @@ divergences:
     msg: {t: 7, idx: 2, propName: health}
     legacy: 0
     wire: 1
-    reason: figure-values (thuum docs/verbs/figure-values.md, train-28): c1's recorded maximum as a property of its own actor, told to every game that sees it, its own included; the legacy server has no ActorValues record
+    reason: figure-values (thuum docs/verbs/figure-values.md, train-28), c1's recorded maximum as a property of its own actor, told to every game that sees it, its own included; the legacy server has no ActorValues record
   - client: c1
     msg: {t: 7, idx: 2, propName: magicka}
     legacy: 0

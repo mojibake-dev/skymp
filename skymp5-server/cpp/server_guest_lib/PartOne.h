@@ -24,6 +24,7 @@
 namespace skymp::rules {
 struct RestSettings; // wire-bridge's (thuum ADR-020), opaque here
 struct Fights;       // wire-bridge's (thuum ADR-023), opaque here
+struct BondBreak;    // wire-bridge's bond facts (thuum docs/verbs/shadowbond.md), opaque here
 }
 
 using ProfileId = int32_t;
@@ -194,11 +195,23 @@ public:
   // (wire-rules bonds)
   void SetBondSettings(const std::string& bondsJson);
   bool IsBondSpell(uint32_t spellFormId) const;
+  // Train-28: the bond's concealment is the server's too. The entry's `proc`
+  // (the Self spell the mod's script casts on both in the caster's game
+  // alone, archetype Invisibility) is recorded on both for the bond's time
+  // at the claim and cast, by SpSnippet, in every game but the caster's own:
+  // the target's own player in its game, the figures elsewhere (R0; no
+  // client reports the script's cast, Skyrim Platform drops a Papyrus cast
+  // of an unequipped spell, and the relayed fire-and-forget cast applies
+  // nothing to the target's player). The break, a recast at another target
+  // and the bond running out end the records and dispel the target's copy
   void RecordBond(uint32_t casterFormId, uint32_t targetFormId,
                   uint32_t spellFormId);
-  // true when the actor was in a standing bond: it ended, both jumps are
-  // permitted
+  // true when the actor was in a standing bond: it ended, both are swapped
+  // and held, and the concealment the server imposed ends
   bool BreakBondsOf(uint32_t actorFormId);
+  // Ends the bonds that ran out by `nowMs` (the bonds rule's clock,
+  // SteadyNowMs): their concealments end as at a break, without the swap
+  void TickBonds(uint64_t nowMs);
 
   // thuum docs/verbs/headshot.md: server-settings.json's `headshot` block
   // (the spells whose hit reports a headshot, the victim races the mod's
@@ -405,6 +418,14 @@ private:
   void TickPacketHistoryPlaybacks();
   void TickGameTime();
   void TickFightsEverySecond();
+  void TickBondsEverySecond();
+  // thuum docs/verbs/shadowbond.md (train-28): the proc's records on both
+  // and its cast in every game but the caster's; the reverse, with the
+  // reason for the log
+  void ConcealBond(const skymp::rules::BondBreak& bond);
+  void UnconcealBond(const skymp::rules::BondBreak& bond, const char* why);
+  // the proc's form id in this load order, 0 for none (or not loaded)
+  uint32_t BondProcFormId(const skymp::rules::BondBreak& bond) const;
   void TickDeferredMessages();
 
   std::string SignJavaScriptSources(const std::string& src) const;

@@ -331,6 +331,11 @@ public:
   // time, a buff's modifier given back, every game told; whether any ended
   bool EndRunningEffectsOfTypes(
     std::initializer_list<espm::MGEF::EffectType> types);
+  // Ends the running effects `source` (a spell, a potion) carries before
+  // their time, the same way; whether any ended (thuum
+  // docs/verbs/shadowbond.md: the bond's proc on the actor that did not
+  // act, its own Invisibility spell spared)
+  bool EndRunningEffectsOfSource(uint32_t source);
   // The effect list of a record that carries one (a potion, a poison, a
   // spell, an enchantment, a scroll, an ingredient: EFID, EFIT and their
   // CTDA), each MGEF id as the load order numbers it; empty for none
@@ -390,6 +395,9 @@ public:
   std::optional<AnimationData> GetLastAnimEvent() const;
 
 private:
+  // the two EndRunningEffects above: removes the MGEFs named, gives a buff's
+  // modifier back, tells every game; false for none
+  bool EndRunningEffectIds(const std::vector<uint32_t>& ending);
   // thuum docs/verbs/god-mode.md: `healthPercentage`, or one point for an
   // immortal actor whose health would reach nothing
   float ImmortalHealth(float healthPercentage);

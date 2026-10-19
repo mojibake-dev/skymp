@@ -162,6 +162,7 @@ struct PartOne::Impl
   // the bonds (thuum docs/verbs/shadowbond.md): server-settings.json's
   // `bonds` list and the bonds standing between actors
   rust::Box<skymp::rules::Bonds> bonds = skymp::rules::new_bonds("[]");
+  std::chrono::steady_clock::time_point lastBondsTick;
 
   // a teleport's look, kept from its cast for its landing (thuum
   // docs/verbs/cast-teleport.md, the look on other screens), by the caster's
@@ -260,6 +261,7 @@ void PartOne::Tick()
   TickDeferredMessages();
   TickGameTime();
   TickFightsEverySecond();
+  TickBondsEverySecond();
   worldState.Tick();
 }
 
@@ -1393,11 +1395,22 @@ void PartOne::RecordBond(uint32_t casterFormId, uint32_t targetFormId,
                          uint32_t spellFormId)
 {
   const auto desc = FormDesc::FromFormId(spellFormId, worldState.espmFiles);
-  pImpl->bonds->record(casterFormId, targetFormId, desc.shortFormId, desc.file,
-                       SteadyNowMs());
+  const uint64_t now = SteadyNowMs();
+  // a recast replaces the caster's standing bond: what the server imposed
+  // for the old one ends first, unless the new bond is with the same target,
+  // whose records the new claim refreshes
+  const auto old = pImpl->bonds->supersede(casterFormId, now);
+  if (old.found && old.target != targetFormId) {
+    UnconcealBond(old, "replaced by the caster's new bond");
+  }
+  const auto bond = pImpl->bonds->record(casterFormId, targetFormId,
+                                         desc.shortFormId, desc.file, now);
   spdlog::info("PartOne::RecordBond - {:x} bonds {:x} with spell {:x} (thuum "
                "docs/verbs/shadowbond.md)",
                casterFormId, targetFormId, spellFormId);
+  if (bond.found) {
+    ConcealBond(bond);
+  }
 }
 
 namespace {
@@ -1413,6 +1426,9 @@ bool PartOne::BreakBondsOf(uint32_t actorFormId)
   if (!broken.found) {
     return false;
   }
+  // the acting actor's own concealment went with its act (EndConcealment);
+  // the other's, and the target's own game's copy, go here
+  UnconcealBond(broken, "an act of either");
   const auto caster = std::dynamic_pointer_cast<MpActor>(
     worldState.LookupFormById(broken.caster));
   const auto target = std::dynamic_pointer_cast<MpActor>(
@@ -1721,6 +1737,132 @@ SpSnippetObjectArgument NoReference()
   none.type = "ObjectReference";
   return none;
 }
+}
+
+uint32_t PartOne::BondProcFormId(const skymp::rules::BondBreak& bond) const
+{
+  if (!bond.has_proc) {
+    return 0;
+  }
+  try {
+    return FormDesc(bond.proc_short_id, std::string(bond.proc_file))
+      .ToFormId(worldState.espmFiles);
+  } catch (std::exception& e) {
+    spdlog::warn("PartOne - the bond's proc {}:{:x} is not in the load order "
+                 "({}); the bond stands without its concealment",
+                 std::string(bond.proc_file), bond.proc_short_id, e.what());
+    return 0;
+  }
+}
+
+void PartOne::ConcealBond(const skymp::rules::BondBreak& bond)
+{
+  const uint32_t procId = BondProcFormId(bond);
+  if (!procId) {
+    return;
+  }
+  const auto caster = std::dynamic_pointer_cast<MpActor>(
+    worldState.LookupFormById(bond.caster));
+  const auto target = std::dynamic_pointer_cast<MpActor>(
+    worldState.LookupFormById(bond.target));
+  if (!caster || !target) {
+    return;
+  }
+  auto effects = MpActor::EffectsOf(&worldState, procId);
+  if (effects.empty()) {
+    spdlog::warn("PartOne::ConcealBond - proc {:x} carries no effects; the "
+                 "bond stands without its concealment",
+                 procId);
+    return;
+  }
+  // the record is the bond's, not the proc's own 600 s: it ends by itself
+  // with the bond, a restart included (running effects persist)
+  const auto seconds = static_cast<uint32_t>(bond.duration_ms / 1000);
+  for (auto& effect : effects) {
+    effect.duration = seconds;
+  }
+  for (MpActor* actor : { caster.get(), target.get() }) {
+    actor->ApplyEffects(procId, effects, 1.f, bond.caster, false);
+  }
+  // the cast itself, in every game that sees either but the caster's own,
+  // where the mod's script cast both already: the target's own player in
+  // its game, the figures elsewhere (the player's actor is 0x14 in its
+  // game; a server id resolves to that game's figure, spSnippetService)
+  int games = 0;
+  for (MpActor* actor : { caster.get(), target.get() }) {
+    for (auto* listener : actor->GetActorListeners()) {
+      if (listener == caster.get() ||
+          serverState.UserByActor(listener) == Networking::InvalidUserId) {
+        continue;
+      }
+      SpSnippetObjectArgument who;
+      who.formId = listener == actor ? 0x14 : actor->GetFormId();
+      who.type = "ObjectReference";
+      const SnippetArgs cast{ who, NoReference() };
+      SpSnippet("Spell", "Cast", cast, procId)
+        .Execute(listener, SpSnippetMode::kNoReturnResult);
+      ++games;
+    }
+  }
+  spdlog::info("PartOne::ConcealBond - {:x} and {:x} concealed by {:x} for {} "
+               "s; cast in {} game(s) (thuum docs/verbs/shadowbond.md)",
+               bond.caster, bond.target, procId, seconds, games);
+}
+
+void PartOne::UnconcealBond(const skymp::rules::BondBreak& bond,
+                            const char* why)
+{
+  const uint32_t procId = BondProcFormId(bond);
+  if (!procId) {
+    return;
+  }
+  int ended = 0;
+  int games = 0;
+  for (uint32_t formId : { bond.caster, bond.target }) {
+    const auto actor =
+      std::dynamic_pointer_cast<MpActor>(worldState.LookupFormById(formId));
+    if (!actor) {
+      continue;
+    }
+    // by source, so a player's own Invisibility spell is spared
+    ended += actor->EndRunningEffectsOfSource(procId) ? 1 : 0;
+    // the target's own copy was the server's cast, so the server dispels it;
+    // the caster's is the script's, which dispels its own at the swap or at
+    // its end; the figures' copies follow the records (dispelEnded)
+    if (formId == bond.target &&
+        serverState.UserByActor(actor.get()) != Networking::InvalidUserId) {
+      SpSnippetObjectArgument spell;
+      spell.formId = procId;
+      spell.type = "Spell";
+      const SnippetArgs dispel{ spell };
+      SpSnippet("Actor", "DispelSpell", dispel, actor->GetFormId())
+        .Execute(actor.get(), SpSnippetMode::kNoReturnResult);
+      ++games;
+    }
+  }
+  spdlog::info("PartOne::UnconcealBond - {:x} and {:x}'s concealment by {:x} "
+               "ends ({}): {} record(s) ended, dispelled in {} game(s)",
+               bond.caster, bond.target, procId, why, ended, games);
+}
+
+void PartOne::TickBonds(uint64_t nowMs)
+{
+  for (const auto& lapsed : pImpl->bonds->expired(nowMs)) {
+    spdlog::info("PartOne::TickBonds - {:x}'s bond with {:x} ran out (thuum "
+                 "docs/verbs/shadowbond.md)",
+                 lapsed.caster, lapsed.target);
+    UnconcealBond(lapsed, "the bond ran out");
+  }
+}
+
+void PartOne::TickBondsEverySecond()
+{
+  const auto now = std::chrono::steady_clock::now();
+  if (now - pImpl->lastBondsTick < std::chrono::seconds(1)) {
+    return;
+  }
+  pImpl->lastBondsTick = now;
+  TickBonds(SteadyNowMs());
 }
 
 std::optional<PartOne::TeleportLook> PartOne::GetTeleportLook(

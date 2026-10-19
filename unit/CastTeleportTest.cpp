@@ -369,16 +369,18 @@ TEST_CASE("A cast teleport's landing tells the other game to place the figure "
   REQUIRE(jumpAt < relayAt);
   // the caster's own game is told nothing
   for (auto& m : p.Messages()) {
-    REQUIRE_FALSE(m.userId == 0 && m.j.contains("t") &&
-                  m.j["t"] == static_cast<int>(MsgType::ActorJump));
+    const bool jumpToMover = m.userId == 0 && m.j.contains("t") &&
+      m.j["t"] == static_cast<int>(MsgType::ActorJump);
+    REQUIRE_FALSE(jumpToMover);
   }
 
   // a plain step after it: no placement
   p.Messages().clear();
   Report(p, caster, { 2600, 0, 0 });
   for (auto& m : p.Messages()) {
-    REQUIRE_FALSE(m.j.contains("t") &&
-                  m.j["t"] == static_cast<int>(MsgType::ActorJump));
+    const bool anyJump =
+      m.j.contains("t") && m.j["t"] == static_cast<int>(MsgType::ActorJump);
+    REQUIRE_FALSE(anyJump);
   }
   Leave(p);
 }

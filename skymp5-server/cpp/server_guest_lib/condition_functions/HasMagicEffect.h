@@ -16,5 +16,7 @@ public:
 
   float Execute(MpActor& actor, uint32_t parameter1, uint32_t parameter2,
                 const ConditionEvaluatorContext& context) override;
+
+  bool IsFormParameter(int index) const override;
 };
 }

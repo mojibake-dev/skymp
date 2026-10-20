@@ -12,13 +12,19 @@ uint16_t ConditionFunctions::HasMagicEffect::GetFunctionIndex() const
   return 214;
 }
 
+bool ConditionFunctions::HasMagicEffect::IsFormParameter(int index) const
+{
+  return index == 1;
+}
+
 float ConditionFunctions::HasMagicEffect::Execute(
   MpActor& actor, uint32_t parameter1, [[maybe_unused]] uint32_t parameter2,
   const ConditionEvaluatorContext&)
 {
   // The running effects are the server's own applications with a duration
   // (wire-rules magic.rs: an instant effect gets no entry), keyed by the
-  // MGEF (RunningEffect.h), read here by runtime id. HYPOTHESIS
+  // MGEF (RunningEffect.h), read here by runtime id; the reader mapped the
+  // parameter from the record's own index space to the global id. HYPOTHESIS
   // (docs/verbs/spell-cast.md, Hailstone): the engine's ActiveEffect of an
   // instant effect lives for the hit it belongs to, so a same-hit check
   // against an instant effect reads false here as it does there.

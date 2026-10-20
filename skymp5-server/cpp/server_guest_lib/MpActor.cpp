@@ -2966,13 +2966,41 @@ bool MpActor::EffectConditionsHold(WorldState* worldState,
     return false;
   }
   std::vector<Condition> conditions;
+  const auto& map = worldState->conditionFunctionMap;
+  auto& browser = worldState->GetEspm().GetBrowser();
+  // A form parameter sits in the owning record's own index space (the
+  // file's masters, then itself), as the record's EFIDs do: mapped here to
+  // the global id through the record, for the functions that declare one
+  // (ConditionFunction::IsFormParameter; thuum docs/verbs/spell-cast.md,
+  // Hailstone's Shatter names its MGEF as 0x030B2C7F)
+  const auto mapForms = [&](Condition& condition,
+                            const espm::LookupResult& owner) {
+    const auto& fn = map.GetConditionFunction(condition.functionIndex);
+    if (!fn || !owner.rec) {
+      return;
+    }
+    if (fn->IsFormParameter(1)) {
+      const auto raw = ConditionsEvaluator::ExtractParameter(condition.parameter1);
+      condition.parameter1 = fmt::format("0x{:X}", owner.ToGlobalId(raw));
+    }
+    if (fn->IsFormParameter(2)) {
+      const auto raw = ConditionsEvaluator::ExtractParameter(condition.parameter2);
+      condition.parameter2 = fmt::format("0x{:X}", owner.ToGlobalId(raw));
+    }
+  };
+  const auto spellRecord = browser.LookupById(source);
   for (const auto& ctda : effect.conditions) {
-    conditions.push_back(Condition::FromCtda(ctda));
+    auto condition = Condition::FromCtda(ctda);
+    mapForms(condition, spellRecord);
+    conditions.push_back(std::move(condition));
   }
   try {
+    const auto mgefRecord = browser.LookupById(effect.effectId);
     const auto mgef = espm::GetData<espm::MGEF>(effect.effectId, worldState);
     for (const auto& ctda : mgef.conditions) {
-      conditions.push_back(Condition::FromCtda(ctda));
+      auto condition = Condition::FromCtda(ctda);
+      mapForms(condition, mgefRecord);
+      conditions.push_back(std::move(condition));
     }
   } catch (std::exception& e) {
     spdlog::warn("EffectConditionsHold - effect {:x}: {}; refused",
@@ -2982,7 +3010,6 @@ bool MpActor::EffectConditionsHold(WorldState* worldState,
   if (conditions.empty()) {
     return true;
   }
-  const auto& map = worldState->conditionFunctionMap;
   for (const auto& condition : conditions) {
     if (!map.GetConditionFunction(condition.functionIndex)) {
       // the refusal stands per hit; the line is worth once per effect and

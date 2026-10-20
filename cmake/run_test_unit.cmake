@@ -13,6 +13,17 @@ if(temp_coverage)
   file(REMOVE ${temp_coverage})
 endif()
 
+# The dist under test is also the integration tests' server directory, and
+# CI's build tree is one cache shared across builds of every branch: a server
+# of an earlier run leaves its world there (world/load-order.json at every
+# load since thuum ADR-043), which DistContentsTest would flag as an excess
+# dist file, and the integration tests that would clean it never run after a
+# failed test_unit (FIXTURES_REQUIRED unit_passed). A world is runtime state,
+# no part of the dist: drop it before the unit run.
+if(UNIT_WORKING_DIRECTORY)
+  file(REMOVE_RECURSE "${UNIT_WORKING_DIRECTORY}/dist/server/world")
+endif()
+
 # Emscripten support
 if("${EXE_PATH}" MATCHES ".*\\.js")
   execute_process(COMMAND node ${EXE_PATH}

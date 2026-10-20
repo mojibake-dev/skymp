@@ -36,8 +36,3 @@ divergences:
     legacy: 0
     wire: 3
     reason: the fixed server relays c1's three cast actions to c2's game, whose view performs them on c1's figure (thuum docs/verbs/cast-action.md); the legacy server has no such message
-  - client: c2
-    msg: {t: 45}
-    legacy: 0
-    wire: 1
-    reason: the wire stack sends a player its globals to watch, and their recorded values, on its first movement after a login (docs/verbs/player-globals.md); the legacy server has no such message

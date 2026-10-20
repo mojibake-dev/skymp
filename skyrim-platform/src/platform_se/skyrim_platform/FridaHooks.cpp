@@ -17,8 +17,106 @@
 #include <cctype>
 #include <chrono>
 #include <fmt/format.h>
+#include <fstream>
 #include <mutex>
+#include <string>
 #include <unordered_map>
+#include <unordered_set>
+
+/**
+ * The admitted scripts (thuum ADR-044, docs/verbs/papyrus-events.md)
+ */
+
+// Under skymp5-client's Papyrus event block (blockPapyrusEventsService.ts,
+// set at the client's first tick), the SendEvent hook below blanks every
+// event a script would receive unless the script is admitted. Two ways in
+// since train-29: by class chain (the script or any class it extends is
+// SkyUI's, SKI_*: a mod's MCM extends SKI_ConfigBase, MCM Helper's
+// MCM_ConfigBase extends it too), and by plugin (Data/Platform/
+// papyrus-scripts.txt, laid by the mod layer: one line per admitted plugin,
+// "<plugin>: <class> <class> ...", a plugin's script class names as its
+// VMAD and .pex spell them; the Survival Mode Creation first). The file is
+// read once here, at Skyrim Platform's load, because a script whose first
+// OnUpdate is blanked never re-arms its RegisterForSingleUpdate chain
+// (x-survival-unblock 20261020-023907: a block lifted after login changed
+// nothing; x-survival-unblock3 20261020-024406: lifted and re-armed, the
+// Creation's check ran and its prompt appeared). No file: an empty list and
+// the behavior before train-29. Names compare without case (Papyrus's rule).
+namespace {
+std::unordered_set<std::string> g_admittedScripts;
+
+std::string LowerAscii(const char* s)
+{
+  std::string out = s ? s : "";
+  for (auto& c : out) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  return out;
+}
+
+void LoadAdmittedScripts()
+{
+  g_admittedScripts.clear();
+  std::ifstream file("Data/Platform/papyrus-scripts.txt");
+  if (!file.is_open()) {
+    logger::info("[verb:papyrus-events] no Data/Platform/papyrus-scripts.txt: "
+                 "no plugin's scripts admitted");
+    return;
+  }
+  std::string line;
+  size_t plugins = 0;
+  while (std::getline(file, line)) {
+    if (line.empty() || line[0] == '#') {
+      continue;
+    }
+    auto colon = line.find(": ");
+    if (colon == std::string::npos) {
+      continue;
+    }
+    ++plugins;
+    std::string rest = line.substr(colon + 2);
+    size_t pos = 0;
+    while (pos < rest.size()) {
+      auto end = rest.find(' ', pos);
+      if (end == std::string::npos) {
+        end = rest.size();
+      }
+      if (end > pos) {
+        auto name = rest.substr(pos, end - pos);
+        while (!name.empty() && (name.back() == '\r' || name.back() == '\t')) {
+          name.pop_back();
+        }
+        if (!name.empty()) {
+          g_admittedScripts.insert(LowerAscii(name.c_str()));
+        }
+      }
+      pos = end + 1;
+    }
+  }
+  logger::info(
+    "[verb:papyrus-events] {} script class name(s) admitted from {} "
+    "plugin line(s) in Data/Platform/papyrus-scripts.txt",
+    g_admittedScripts.size(), plugins);
+}
+
+// A script passes if it, or any class it extends, is SkyUI's (SKI_*) or is
+// named by an admitted plugin's line. The chain is ObjectTypeInfo's
+// parentTypeInfo (CommonLibSSE-NG include/RE/O/ObjectTypeInfo.h:127-128,
+// :178); it ends at a null parent, and the walk stops at 16 either way.
+bool AdmittedByChain(const RE::BSScript::ObjectTypeInfo* info)
+{
+  for (int depth = 0; info && depth < 16; ++depth, info = info->GetParent()) {
+    auto name = LowerAscii(info->GetName());
+    if (name.size() >= 4 && name.compare(0, 4, "ski_") == 0) {
+      return true;
+    }
+    if (!g_admittedScripts.empty() && g_admittedScripts.count(name)) {
+      return true;
+    }
+  }
+  return false;
+}
+}
 
 /**
  * Send Event hook
@@ -82,7 +180,11 @@ void OnSendEventEnter(GumInvocationContext* ic)
     }
   }
 
-  if (blockEvents && strcmp(*eventName, "OnUpdate") != 0 && vm) {
+  // Every event, OnUpdate included, consults the admitted scripts (thuum
+  // ADR-044 decision 3): an admitted script receives its OnUpdate, the
+  // rest stay blanked. Before train-29 OnUpdate skipped this lookup and
+  // was blanked for every script.
+  if (blockEvents && vm) {
     vm->attachedScriptsLock.Lock();
     auto it = vm->attachedScripts.find(handle);
 
@@ -94,10 +196,7 @@ void OnSendEventEnter(GumInvocationContext* ic)
         auto info = script->GetTypeInfo();
         auto name = info->GetName();
 
-        const char* skyui_name = "SKI_"; // start skyui object name
-        if (strlen(name) >= 4 && name[0] == skyui_name[0] &&
-            name[1] == skyui_name[1] && name[2] == skyui_name[2] &&
-            name[3] == skyui_name[3]) {
+        if (AdmittedByChain(info)) {
           blockEvents = false;
           break;
         } else if (!strnicmp(name, "RaceMenu", 8)) {
@@ -918,6 +1017,7 @@ void InstallNativeFunctionCtorHook() noexcept
 
 void Frida::InstallHooks()
 {
+  LoadAdmittedScripts();
   InstallSendEventHook();
   InstallDrawSheatheWeaponPcHook();
   InstallDrawSheatheWeaponActorHook();

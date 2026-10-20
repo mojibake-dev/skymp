@@ -139,6 +139,40 @@ TEST_CASE("A summon-only effect refuses a player, and the functions the "
   Leave(p);
 }
 
+TEST_CASE("IsEssential and EffectWasDualCast answer: a player is never "
+          "essential, and the dual flag is the claimed cast's",
+          "[Conditions]")
+{
+  // thuum train-29 (docs/verbs/spell-cast.md). Finger of Death's one effect
+  // gates on IsEssential == 0 (Apocalypse's census row 86); playtest
+  // twenty-five's server refused it as unknown (354). A player is never
+  // essential, so the row holds on another player.
+  PartOne& p = GetPartOne();
+  auto [caster, target] = Pair(p);
+  REQUIRE(Holds(p, { Row("IsEssential", 354, "Subject", "==", 0.f, 0, "AND") },
+                *target, *caster));
+  REQUIRE_FALSE(
+    Holds(p, { Row("IsEssential", 354, "Subject", "==", 1.f, 0, "AND") },
+          *target, *caster));
+
+  // EffectWasDualCast (724) reads the context the hit's claim fills from
+  // the cast record (SpellCastMessage.isDualCasting); a caller that knows
+  // nothing of the cast leaves it false, so a 724 rider never holds there
+  const std::vector<Condition> dualRider = { Row(
+    "EffectWasDualCast", 724, "Subject", "==", 1.f, 0, "AND") };
+  REQUIRE_FALSE(Holds(p, dualRider, *target, *caster));
+  bool holds = false;
+  ConditionEvaluatorContext dual;
+  dual.effectWasDualCast = true;
+  ConditionsEvaluator::EvaluateConditions(
+    p.worldState.conditionFunctionMap,
+    p.worldState.conditionsEvaluatorSettings,
+    ConditionsEvaluatorCaller::kMagicEffect, dualRider, *target, *caster,
+    [&](bool result, std::vector<std::string>&) { holds = result; }, dual);
+  REQUIRE(holds);
+  Leave(p);
+}
+
 TEST_CASE("GetIsID and GetGlobalValue answer from the records: Dragonborn's "
           "Unrelenting Force gate",
           "[EffectConditions][espm]")

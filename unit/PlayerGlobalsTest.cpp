@@ -64,26 +64,6 @@ void Report(PartOne& p, uint32_t global, float value)
       { "values", { { { "global", global }, { "value", value } } } } });
 }
 
-// the player's own movement report, standing at the origin (ShoutsTest's)
-void Stand(PartOne& p)
-{
-  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
-  RawMessageData raw;
-  raw.userId = 0;
-  raw.unparsed = unparsed;
-  raw.unparsedLength = sizeof(unparsed);
-  UpdateMovementMessage msg;
-  msg.idx = 0;
-  msg.data.pos = { 0, 0, 0 };
-  msg.data.rot = { 0, 0, 0 };
-  msg.data.isInJumpState = false;
-  msg.data.isWeapDrawn = false;
-  msg.data.isBlocking = false;
-  msg.data.worldOrCell = 0x3c;
-  msg.data.runMode = "Standing";
-  p.GetActionListener().OnUpdateMovement(raw, msg);
-}
-
 void Leave(PartOne& p)
 {
   p.SetPlayerGlobalsSettings("[]");
@@ -110,10 +90,12 @@ TEST_CASE("A listed global's report is recorded, an unlisted one refused, "
   Report(p, kGameDaysPassed, 3.f);
   REQUIRE(ac.GetPlayerGlobals() == recorded);
 
-  // the first movement after a login sends the list to watch and the record
-  ac.SetMapMarkersPending(true);
+  // the login itself sends the list to watch and the record (train-30: at
+  // SetUserActor, not at the first movement report, so the client holds the
+  // values before its game's scripts run their first check); a second login
+  // of the same actor is what a reconnect does
   p.Messages().clear();
-  Stand(p);
+  p.SetUserActor(0, kActor);
   bool sent = false;
   for (auto& m : p.Messages()) {
     if (m.userId == 0 && m.j.contains("t") &&

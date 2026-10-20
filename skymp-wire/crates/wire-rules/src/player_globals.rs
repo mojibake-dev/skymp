@@ -6,7 +6,14 @@
 //! globals' values as they change, and the server sets the recorded ones in
 //! its game at login. The records cannot say whose a global is, so
 //! server-settings.json names them: `playerGlobals`, a list of FormDescs
-//! ("<hex form id>:<plugin>").
+//! ("<hex form id>:<plugin>"), or of objects `{"global": "<hex>:<plugin>",
+//! "default": <number>}` whose default the login sends to a player whose
+//! record holds no value for that global (train-30: the Survival Mode
+//! Creation's first-login box, which the lab's seats must never see, so the
+//! lab's settings give its Prompted flag the default 1 while a players'
+//! deployment leaves it unset and gets the one-time box; a value the server
+//! sends at login lands before the Creation's 5 s check,
+//! x-survival-restore-timing 20261020-135028).
 
 use crate::clock::SettingsError;
 use crate::forms::FormDesc;
@@ -15,6 +22,16 @@ use crate::forms::FormDesc;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PlayerGlobals {
     listed: Vec<FormDesc>,
+    /// Per listed global, the value the login sends when the record holds
+    /// none; `None` sends nothing (the game's own value stands).
+    defaults: Vec<Option<f32>>,
+}
+
+/// A setting's number as the record's f32 (clock.rs's shape for the one
+/// narrowing the rules allow); the caller has checked it is finite.
+#[allow(clippy::as_conversions)]
+fn narrow(x: f64) -> f32 {
+    x as f32
 }
 
 /// One global's value.
@@ -41,20 +58,42 @@ pub enum Refusal {
 }
 
 impl PlayerGlobals {
-    /// The list from the `playerGlobals` block's JSON text (`[]` for none).
-    /// The error names a bad entry: one that is not "<hex id>:<plugin>", or
+    /// The list from the `playerGlobals` block's JSON text (`[]` for none):
+    /// each entry a "<hex id>:<plugin>" string, or an object with `global`
+    /// (that string) and an optional finite `default`. The error names a bad
+    /// entry: one that is neither, a default that is not a finite number, or
     /// a global listed twice.
     pub fn from_json(text: &str) -> Result<Self, SettingsError> {
-        let entries: Vec<String> = serde_json::from_str(text).map_err(|e| SettingsError(format!("playerGlobals: {e}")))?;
+        let entries: Vec<serde_json::Value> = serde_json::from_str(text).map_err(|e| SettingsError(format!("playerGlobals: {e}")))?;
         let mut listed: Vec<FormDesc> = Vec::with_capacity(entries.len());
+        let mut defaults: Vec<Option<f32>> = Vec::with_capacity(entries.len());
         for e in entries {
-            let d = FormDesc::parse(&e).map_err(|why| SettingsError(format!("playerGlobals: {why}")))?;
+            let (name, default) = match &e {
+                serde_json::Value::String(s) => (s.as_str(), None),
+                serde_json::Value::Object(o) => {
+                    let Some(name) = o.get("global").and_then(serde_json::Value::as_str) else {
+                        return Err(SettingsError(format!("playerGlobals: {e} has no \"global\" string")));
+                    };
+                    let default = match o.get("default") {
+                        None | Some(serde_json::Value::Null) => None,
+                        Some(v) => match v.as_f64() {
+                            // the record holds an f32: a default must survive the narrowing too
+                            Some(f) if f.is_finite() && narrow(f).is_finite() => Some(narrow(f)),
+                            _ => return Err(SettingsError(format!("playerGlobals: {e} has a default that is not a finite number"))),
+                        },
+                    };
+                    (name, default)
+                }
+                _ => return Err(SettingsError(format!("playerGlobals: {e} is neither \"<hex id>:<plugin>\" nor an object"))),
+            };
+            let d = FormDesc::parse(name).map_err(|why| SettingsError(format!("playerGlobals: {why}")))?;
             if listed.iter().any(|l| l.is(d.short_id, &d.file)) {
-                return Err(SettingsError(format!("playerGlobals: {e:?} is listed twice")));
+                return Err(SettingsError(format!("playerGlobals: {name:?} is listed twice")));
             }
             listed.push(d);
+            defaults.push(default);
         }
-        Ok(Self { listed })
+        Ok(Self { listed, defaults })
     }
 
     /// Whether the server keeps the global `short_id` in `file` per player.
@@ -90,10 +129,20 @@ impl PlayerGlobals {
     }
 
     /// What the login sends: the recorded values of globals still listed (a
-    /// record made under a longer list keeps the rest, unsent).
+    /// record made under a longer list keeps the rest, unsent), then the
+    /// defaults of listed globals the record holds no value for. A recorded
+    /// value always wins over a default.
     #[must_use]
     pub fn at_login(&self, record: &[GlobalValue]) -> Vec<GlobalValue> {
-        record.iter().filter(|r| self.is_listed(r.global.short_id, &r.global.file)).cloned().collect()
+        let mut out: Vec<GlobalValue> = record.iter().filter(|r| self.is_listed(r.global.short_id, &r.global.file)).cloned().collect();
+        for (global, default) in self.listed.iter().zip(&self.defaults) {
+            if let Some(value) = default {
+                if !record.iter().any(|r| global.is(r.global.short_id, &r.global.file)) {
+                    out.push(GlobalValue { global: global.clone(), value: *value });
+                }
+            }
+        }
+        out
     }
 }
 
@@ -176,5 +225,50 @@ mod tests {
         let record = vec![g(0xb1c19, 1.0), g(0x99999, 7.0)];
         assert_eq!(list().at_login(&record), vec![g(0xb1c19, 1.0)]);
         assert!(PlayerGlobals::default().at_login(&record).is_empty());
+    }
+
+    // the Survival Mode Creation's Prompted flag (8df) with the lab's default
+    // 1, the switch (828) without one, beside a plain Apocalypse string
+    const SURVIVAL: &str = "ccQDRSSE001-SurvivalMode.esl";
+
+    fn with_defaults() -> PlayerGlobals {
+        PlayerGlobals::from_json(
+            r#"["0b1c19:Apocalypse - Magic of Skyrim.esp",
+                {"global": "8df:ccQDRSSE001-SurvivalMode.esl", "default": 1},
+                {"global": "828:ccQDRSSE001-SurvivalMode.esl"}]"#,
+        )
+        .unwrap_or_default()
+    }
+
+    fn s(short_id: u32, value: f32) -> GlobalValue {
+        GlobalValue { global: FormDesc { short_id, file: SURVIVAL.to_owned() }, value }
+    }
+
+    #[test]
+    fn an_object_entry_lists_its_global_and_may_carry_a_default() {
+        let l = with_defaults();
+        assert_eq!(l.listed().len(), 3);
+        assert!(l.is_listed(0x8df, "ccqdrsse001-survivalmode.esl"));
+        assert!(l.is_listed(0x828, SURVIVAL));
+        for bad in [
+            r#"[{"global": "8df:ccQDRSSE001-SurvivalMode.esl", "default": "one"}]"#,
+            r#"[{"global": "8df:ccQDRSSE001-SurvivalMode.esl", "default": null}, {"global": "8df:ccQDRSSE001-SurvivalMode.esl"}]"#,
+            r#"[{"default": 1}]"#,
+            r#"[{"global": "8df"}]"#,
+            r#"[true]"#,
+        ] {
+            assert!(PlayerGlobals::from_json(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_login_sends_a_default_only_where_the_record_is_silent() {
+        let l = with_defaults();
+        // nothing recorded: the Prompted default goes, the switch stays the game's
+        assert_eq!(l.at_login(&[]), vec![s(0x8df, 1.0)]);
+        // the player answered: the record's 0 wins over the default
+        assert_eq!(l.at_login(&[s(0x8df, 0.0), s(0x828, 1.0)]), vec![s(0x8df, 0.0), s(0x828, 1.0)]);
+        // an unlisted record and a listed Apocalypse value: the default follows the record's values
+        assert_eq!(l.at_login(&[g(0x99999, 7.0), g(0xb1c19, 2.0)]), vec![g(0xb1c19, 2.0), s(0x8df, 1.0)]);
     }
 }

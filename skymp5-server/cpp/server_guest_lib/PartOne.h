@@ -305,8 +305,9 @@ public:
   // records
   // true: the cast's relay waits for its first hit (every effect delivered
   // to its target; wire-rules casts::CastFacts::lands_on_target)
+  // `dual`: the caster's game reported a dual cast (EffectWasDualCast 724)
   bool StartCast(uint32_t actorFormId, uint32_t spell, uint8_t hand,
-                 const NiPoint3& from);
+                 const NiPoint3& from, bool dual = false);
   // the stream in `hand` ended
   void EndCast(uint32_t actorFormId, uint8_t hand);
   enum class CastCheck
@@ -321,6 +322,7 @@ public:
     CastCheck check = CastCheck::NoCast;
     float scale = 0.f;  // the factor on the spell's magnitude
     bool relay = false; // the first hit of a cast whose relay waited for it
+    bool dual = false;  // the claimed cast was dual cast (EffectWasDualCast)
   };
   // a spell hit by the actor on `target` standing at `at`
   CastClaim ClaimCast(uint32_t actorFormId, uint32_t spell, uint32_t target,

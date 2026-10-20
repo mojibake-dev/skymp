@@ -241,13 +241,33 @@ export class RemoteServer extends ClientListener {
       // This differs from Skyrim's behavior, where it's just one activation.
 
       (async () => {
+        // thuum docs/verbs/activate.md (train-29): the first wait has a
+        // deadline. Playtest twenty-five's log shows this loop spinning for
+        // minutes (2000 Utility.wait calls, five a second) after Shadowbond's
+        // swap moved the player away from a container it had just activated:
+        // the menu never opened, and the server kept the player as the
+        // object's occupant (MpObjectReference::occupant) until a destroy.
+        // On giving up the second activation is still sent, which the server
+        // takes without the reach check, so the occupant is released.
+        const kOpenDeadlineMs = 15000;
+        const openDeadline = Date.now() + kOpenDeadlineMs;
+        let opened = true;
         logTrace(this, "onOpenContainerMesage - waiting for", factName, "to be true");
-        while (!functionChecker()) await Utility.wait(0.1);
+        while (!functionChecker()) {
+          if (Date.now() > openDeadline) {
+            opened = false;
+            break;
+          }
+          await Utility.wait(0.1);
+        }
 
-        logTrace(this, "onOpenContainerMesage - waiting for", factName, "to be false");
-        while (functionChecker()) await Utility.wait(0.1);
-
-        logTrace(this, "onOpenContainerMesage - menu closed", factName);
+        if (opened) {
+          logTrace(this, "onOpenContainerMesage - waiting for", factName, "to be false");
+          while (functionChecker()) await Utility.wait(0.1);
+          logTrace(this, "onOpenContainerMesage - menu closed", factName);
+        } else {
+          logTrace(this, "onOpenContainerMesage - gave up waiting for", factName, "after", kOpenDeadlineMs, "ms; releasing the occupant");
+        }
 
         const message: ActivateMessage = {
           t: messages.MsgType.Activate,

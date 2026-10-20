@@ -316,6 +316,32 @@ Napi::Value MagicApi::CastSpellImmediate(const Napi::CallbackInfo& info)
         }
       }
 
+      // thuum docs/verbs/spell-cast.md, the rune's glyph on the observer
+      // (train-29, rule 8's reads x-rune-visible-frida 20261020-085906 and
+      // -frida2 20261020-092130, docs/research/frida-reads-train29.md): a
+      // relayed rune stands armed at the right point in the observer's game
+      // but its landing's look never runs (no settle, no impact-effects
+      // pass, kAddedVisualEffectOnGround never set), while the caster's own
+      // engine-launched rune at the same point is dressed. The first
+      // divergence is the launch flags at Init3D's entry: the engine's cast
+      // path launches with kAutoAim set and kUseOrigin clear (include/RE/P/
+      // Projectile.h:157, :165), and CommonLib's spell LaunchData
+      // constructor sets the opposite pair, useOrigin true and autoAim false
+      // (src/RE/P/Projectile.cpp:220-221; the fields :105, :107), after which
+      // the arrival takes a different branch for each. So a relayed
+      // target-location launch takes the engine's own pair. Scoped to
+      // delivery kTargetLocation (runes, Lightning Strike's lobber), where no
+      // aim is left to auto-aim; aimed bolts keep the constructor's.
+      // HYPOTHESIS until the probe reruns on this build: bit 21 on the
+      // observer's rune, the arrival from the caster's branch, the glyph in
+      // the observer's screenshot; if useOrigin false moves the rune to the
+      // figure's hand instead of the point, the probe's distance line says so.
+      if (pSpell->data.delivery ==
+          RE::MagicSystem::Delivery::kTargetLocation) {
+        launchData.autoAim = true;
+        launchData.useOrigin = false;
+      }
+
       launchData.castingSource = castingSource;
       launchData.desiredTarget = magicTarget;
       launchData.contactNormal = RE::NiPoint3{ 0.f, 0.f, 1.0f };

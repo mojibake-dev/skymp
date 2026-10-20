@@ -28,6 +28,12 @@ struct EspmFileList : public std::vector<std::string>
   {
     return i < light.size() && light[i];
   }
+
+  // The same list as a database keeps it beside a world's records (thuum
+  // docs/DECISIONS.md ADR-043): each file name with its light flag
+  using LoadOrder = std::vector<std::pair<std::string, bool>>;
+  static EspmFileList FromLoadOrder(const LoadOrder& order);
+  LoadOrder ToLoadOrder() const;
 };
 
 class FormDesc

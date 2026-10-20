@@ -18,9 +18,354 @@ std::vector<FormDesc> ToFormDescsArray(const std::vector<std::string>& strings)
                  [](const std::string& v) { return FormDesc::FromString(v); });
   return res;
 }
+
+// The record's forms as "<hex>:<plugin>" (thuum docs/DECISIONS.md ADR-043;
+// docs/research/formdesc-world-map.md section 6, shape b). The twelve raw
+// fields are converted here, at the record boundary, so the wire and every
+// runtime API keep their uint32: the inventory entries' baseId,
+// enchantmentId and poisonId (under inv and under equipmentDump.inv), the
+// equipment's four spell slots and learnedSpells in place; the appearance's
+// race, head parts and texture set as the sibling `appearanceForms`, since
+// appearanceDump is an Appearance's JSON as text, which MpActor and the
+// legacy readers parse by the numbers: the dump keeps the numbers of the
+// order it was saved under, the sibling carries the plugin-relative truth and
+// overrides them on read.
+
+// "<hex>:<plugin>" for a runtime id under an order; nullopt for an id no file
+// of the order holds, which a record should not carry (the caller logs it)
+std::optional<std::string> Describe(uint32_t formId, const EspmFileList& files)
+{
+  try {
+    return FormDesc::FromFormId(formId, files).ToString();
+  } catch (std::exception&) {
+    return std::nullopt;
+  }
 }
 
-nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm)
+// The runtime id of a stored form under an order; nullopt when its plugin is
+// not in the order
+std::optional<uint32_t> Resolve(const FormDesc& form,
+                                const EspmFileList& files)
+{
+  try {
+    return form.ToFormId(files);
+  } catch (std::exception&) {
+    return std::nullopt;
+  }
+}
+
+const UnresolvedForm* FindUnresolved(
+  const std::vector<UnresolvedForm>& unresolved, const char* field)
+{
+  for (const auto& entry : unresolved) {
+    if (entry.field == field) {
+      return &entry;
+    }
+  }
+  return nullptr;
+}
+
+constexpr const char* kEntryForms[] = { "baseId", "enchantmentId",
+                                        "poisonId" };
+constexpr const char* kSpellSlots[] = { "leftSpell", "rightSpell",
+                                        "voiceSpell", "instantSpell" };
+
+// An inventory's JSON (Inventory::ToJson's shape) with its entries' forms
+// described. An entry a file of the order does not hold is dropped with an
+// error (a raw id in a record is a bug under ADR-043); the entries parked
+// under `field` are written back after the live ones.
+void DescribeInventory(nlohmann::json& inv, const EspmFileList& files,
+                       const std::vector<UnresolvedForm>& unresolved,
+                       const char* field, const std::string& record)
+{
+  auto kept = nlohmann::json::array();
+  auto entries = inv.find("entries");
+  if (entries != inv.end() && entries->is_array()) {
+    for (auto& entry : *entries) {
+      bool described = true;
+      for (const char* key : kEntryForms) {
+        auto value = entry.find(key);
+        if (value == entry.end() || !value->is_number()) {
+          continue;
+        }
+        const uint32_t formId = value->get<uint32_t>();
+        const auto desc = Describe(formId, files);
+        if (!desc) {
+          spdlog::error("MpChangeForm::ToJson {} - {} entry's {} {:#x} "
+                        "belongs to no loaded plugin, dropping the entry",
+                        record, field, key, formId);
+          described = false;
+          break;
+        }
+        *value = *desc;
+      }
+      if (described) {
+        kept.push_back(std::move(entry));
+      }
+    }
+  }
+  for (const auto& parked : unresolved) {
+    if (parked.field == field) {
+      kept.push_back(nlohmann::json::parse(parked.entry));
+    }
+  }
+  inv["entries"] = std::move(kept);
+}
+
+// The inverse: a stored inventory's entries resolved under the running
+// order. An entry whose base, enchantment or poison names a plugin the order
+// lacks is parked whole under `field`, as written.
+void ResolveInventory(nlohmann::json& inv, const EspmFileList& files,
+                      std::vector<UnresolvedForm>& unresolved,
+                      const char* field)
+{
+  auto entries = inv.find("entries");
+  if (entries == inv.end() || !entries->is_array()) {
+    return;
+  }
+  auto kept = nlohmann::json::array();
+  for (const auto& entry : *entries) {
+    nlohmann::json resolved = entry;
+    std::optional<FormDesc> missing;
+    for (const char* key : kEntryForms) {
+      auto value = resolved.find(key);
+      if (value == resolved.end() || !value->is_string()) {
+        continue;
+      }
+      const FormDesc form = FormDesc::FromString(value->get<std::string>());
+      const auto formId = Resolve(form, files);
+      if (!formId) {
+        missing = form;
+        break;
+      }
+      *value = *formId;
+    }
+    if (missing) {
+      unresolved.push_back(UnresolvedForm{ field, *missing, entry.dump() });
+    } else {
+      kept.push_back(std::move(resolved));
+    }
+  }
+  *entries = std::move(kept);
+}
+
+// A scalar form field described: the runtime value when it holds one, else
+// the form parked under `field` if any; absent (an empty spell slot) or
+// unplaceable, the key is left out
+void DescribeScalar(nlohmann::json& object, const char* field,
+                    std::optional<uint32_t> value, const EspmFileList& files,
+                    const std::vector<UnresolvedForm>& unresolved,
+                    const std::string& record)
+{
+  if (!value || *value == 0) {
+    if (const auto* parked = FindUnresolved(unresolved, field)) {
+      object[field] = parked->form.ToString();
+      return;
+    }
+    if (!value) {
+      object.erase(field);
+      return;
+    }
+  }
+  if (const auto desc = Describe(*value, files)) {
+    object[field] = *desc;
+    return;
+  }
+  spdlog::error("MpChangeForm::ToJson {} - {} {:#x} belongs to no loaded "
+                "plugin, writing none",
+                record, field, *value);
+  object.erase(field);
+}
+
+// A stored scalar form under the running order: its runtime id, or 0 with
+// the form parked under `field`
+uint32_t ResolveScalar(const nlohmann::json& object, const char* field,
+                       const EspmFileList& files,
+                       std::vector<UnresolvedForm>& unresolved)
+{
+  auto it = object.find(field);
+  if (it == object.end() || !it->is_string()) {
+    return 0;
+  }
+  const FormDesc form = FormDesc::FromString(it->get<std::string>());
+  if (const auto formId = Resolve(form, files)) {
+    return *formId;
+  }
+  unresolved.push_back(UnresolvedForm{ field, form, "" });
+  return 0;
+}
+
+void DescribeAppearance(nlohmann::json& res, const MpChangeForm& changeForm,
+                        const EspmFileList& files, const std::string& record)
+{
+  if (changeForm.appearanceDump.empty()) {
+    return;
+  }
+  const nlohmann::json dump =
+    nlohmann::json::parse(changeForm.appearanceDump, nullptr, false);
+  if (!dump.is_object()) {
+    return;
+  }
+
+  auto forms = nlohmann::json::object();
+  for (const char* field : { "raceId", "headTextureSetId" }) {
+    std::optional<uint32_t> value;
+    if (auto it = dump.find(field); it != dump.end() && it->is_number()) {
+      value = it->get<uint32_t>();
+    }
+    if (value) {
+      DescribeScalar(forms, field, value, files, changeForm.unresolved,
+                     record);
+    } else if (const auto* parked =
+                 FindUnresolved(changeForm.unresolved, field)) {
+      forms[field] = parked->form.ToString();
+    }
+  }
+
+  auto parts = nlohmann::json::array();
+  if (auto it = dump.find("headpartIds"); it != dump.end() && it->is_array()) {
+    for (const auto& part : *it) {
+      if (!part.is_number()) {
+        continue;
+      }
+      const uint32_t formId = part.get<uint32_t>();
+      if (const auto desc = Describe(formId, files)) {
+        parts.push_back(*desc);
+      } else {
+        spdlog::error("MpChangeForm::ToJson {} - head part {:#x} belongs to "
+                      "no loaded plugin, dropping it",
+                      record, formId);
+      }
+    }
+  }
+  for (const auto& parked : changeForm.unresolved) {
+    if (parked.field == "headpartIds") {
+      parts.push_back(parked.form.ToString());
+    }
+  }
+  forms["headpartIds"] = std::move(parts);
+  res["appearanceForms"] = std::move(forms);
+}
+
+// appearanceForms resolved under the running order into the dump's numbers;
+// the dump is rewritten only when a number moves, so a record read under the
+// order it was saved in keeps its text byte for byte
+void ResolveAppearance(MpChangeForm& res, const nlohmann::json& forms,
+                       const EspmFileList& files)
+{
+  if (res.appearanceDump.empty() || !forms.is_object()) {
+    return;
+  }
+  nlohmann::json dump =
+    nlohmann::json::parse(res.appearanceDump, nullptr, false);
+  if (!dump.is_object()) {
+    return;
+  }
+  const nlohmann::json before = dump;
+
+  dump["raceId"] = ResolveScalar(forms, "raceId", files, res.unresolved);
+  dump["headTextureSetId"] =
+    ResolveScalar(forms, "headTextureSetId", files, res.unresolved);
+
+  auto parts = nlohmann::json::array();
+  if (auto it = forms.find("headpartIds");
+      it != forms.end() && it->is_array()) {
+    for (const auto& part : *it) {
+      if (!part.is_string()) {
+        continue;
+      }
+      const FormDesc form = FormDesc::FromString(part.get<std::string>());
+      if (const auto formId = Resolve(form, files)) {
+        parts.push_back(*formId);
+      } else {
+        res.unresolved.push_back(UnresolvedForm{ "headpartIds", form, "" });
+      }
+    }
+  }
+  dump["headpartIds"] = std::move(parts);
+
+  if (dump != before) {
+    res.appearanceDump = dump.dump();
+  }
+}
+
+void DescribeLearnedSpells(nlohmann::json& res, const MpChangeForm& changeForm,
+                           const EspmFileList& files,
+                           const std::string& record)
+{
+  auto spells = nlohmann::json::array();
+  for (const uint32_t formId : changeForm.learnedSpells.GetLearnedSpells()) {
+    if (const auto desc = Describe(formId, files)) {
+      spells.push_back(*desc);
+    } else {
+      spdlog::error("MpChangeForm::ToJson {} - learned spell {:#x} belongs "
+                    "to no loaded plugin, dropping it",
+                    record, formId);
+    }
+  }
+  for (const auto& parked : changeForm.unresolved) {
+    if (parked.field == "learnedSpells") {
+      spells.push_back(parked.form.ToString());
+    }
+  }
+  res["learnedSpells"] = std::move(spells);
+}
+
+// Every stored form of the written record as "<hex>:<plugin>" under `files`,
+// and the version mark that says so
+void DescribeForms(nlohmann::json& res, const MpChangeForm& changeForm,
+                   const EspmFileList& files)
+{
+  const std::string record = changeForm.formDesc.ToString();
+  res["formVersion"] = MpChangeForm::kFormVersion;
+
+  DescribeInventory(res["inv"], files, changeForm.unresolved, "inv", record);
+
+  nlohmann::json& equipment = res["equipmentDump"];
+  DescribeInventory(equipment["inv"], files, changeForm.unresolved,
+                    "equipment.inv", record);
+  for (const char* slot : kSpellSlots) {
+    std::optional<uint32_t> value;
+    if (auto it = equipment.find(slot);
+        it != equipment.end() && it->is_number()) {
+      value = it->get<uint32_t>();
+    }
+    DescribeScalar(equipment, slot, value, files, changeForm.unresolved,
+                   record);
+  }
+
+  DescribeLearnedSpells(res, changeForm, files, record);
+  DescribeAppearance(res, changeForm, files, record);
+}
+
+// The stored equipment resolved under the running order: its inventory and
+// its four spell slots; a slot naming a plugin the order lacks is parked and
+// left empty
+void ResolveEquipment(nlohmann::json& equipment, const EspmFileList& files,
+                      std::vector<UnresolvedForm>& unresolved)
+{
+  if (auto it = equipment.find("inv");
+      it != equipment.end() && it->is_object()) {
+    ResolveInventory(*it, files, unresolved, "equipment.inv");
+  }
+  for (const char* slot : kSpellSlots) {
+    auto it = equipment.find(slot);
+    if (it == equipment.end() || !it->is_string()) {
+      continue;
+    }
+    const FormDesc form = FormDesc::FromString(it->get<std::string>());
+    if (const auto formId = Resolve(form, files)) {
+      *it = *formId;
+    } else {
+      unresolved.push_back(UnresolvedForm{ slot, form, "" });
+      equipment.erase(it);
+    }
+  }
+}
+}
+
+nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
+                                    const EspmFileList* files)
 {
   auto res = nlohmann::json::object();
   res["recType"] = static_cast<int>(changeForm.recType);
@@ -230,12 +575,21 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm)
     };
   }
 
+  // ADR-043: with the running order every stored form goes plugin-relative
+  if (files) {
+    DescribeForms(res, changeForm, *files);
+  }
+
   return res;
 }
 
-MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
+MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
+                                            const EspmFileList* files,
+                                            const EspmFileList* rawOrder)
 {
   static const JsonPointer recType("recType");
+  static const JsonPointer formVersion("formVersion");
+  static const JsonPointer appearanceForms("appearanceForms");
   static const JsonPointer formDesc("formDesc");
   static const JsonPointer baseDesc("baseDesc");
   static const JsonPointer position("position");
@@ -299,6 +653,21 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
   ReadEx(element, baseDesc, &tmp);
   res.baseDesc = FormDesc::FromString(tmp);
 
+  // ADR-043 decision 2: the version mark; a record without it is the raw
+  // shape, written before the mark existed
+  res.formVersion = 1;
+  if (element.at_pointer(formVersion.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, formVersion, &res.formVersion);
+  }
+  const bool pluginRelative = res.formVersion >= kFormVersion;
+  if (pluginRelative && !files) {
+    throw std::runtime_error(
+      fmt::format("{} is plugin-relative (formVersion {}) and needs the load "
+                  "order to read",
+                  res.formDesc.ToString(), res.formVersion));
+  }
+
   ReadEx(element, position, &jTmp);
   for (int i = 0; i < 3; ++i) {
     ReadEx(jTmp, i, &res.position[i]);
@@ -313,7 +682,14 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
   res.worldOrCellDesc = FormDesc::FromString(tmp);
 
   ReadEx(element, inv, &jTmp);
-  res.inv = Inventory::FromJson(jTmp);
+  if (pluginRelative) {
+    nlohmann::json invJson =
+      nlohmann::json::parse(static_cast<std::string>(simdjson::minify(jTmp)));
+    ResolveInventory(invJson, *files, res.unresolved, "inv");
+    res.inv = Inventory::FromJson(invJson);
+  } else {
+    res.inv = Inventory::FromJson(jTmp);
+  }
 
   ReadEx(element, isHarvested, &res.isHarvested);
   ReadEx(element, isOpen, &res.isOpen);
@@ -340,6 +716,15 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
     res.appearanceDump.clear();
   }
 
+  if (pluginRelative &&
+      element.at_pointer(appearanceForms.GetData()).error() ==
+        simdjson::error_code::SUCCESS) {
+    ReadEx(element, appearanceForms, &jTmp);
+    const nlohmann::json forms =
+      nlohmann::json::parse(static_cast<std::string>(simdjson::minify(jTmp)));
+    ResolveAppearance(res, forms, *files);
+  }
+
   ReadEx(element, equipmentDump, &jTmp);
   std::string eqDump = simdjson::minify(jTmp);
   if (eqDump == "null") {
@@ -356,20 +741,37 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
   }
 
   if (eqDump.size() > 0) {
-    res.equipment = Equipment::FromJson(nlohmann::json::parse(eqDump));
+    nlohmann::json equipmentJson = nlohmann::json::parse(eqDump);
+    if (pluginRelative) {
+      ResolveEquipment(equipmentJson, *files, res.unresolved);
+    }
+    res.equipment = Equipment::FromJson(equipmentJson);
   } else {
     res.equipment = Equipment();
   }
 
   if (element.at_pointer(learnedSpells.GetData()).error() ==
       simdjson::error_code::SUCCESS) {
+    if (pluginRelative) {
+      std::vector<std::string> stored;
+      ReadVector(element, learnedSpells, &stored);
+      for (const auto& text : stored) {
+        const FormDesc form = FormDesc::FromString(text);
+        if (const auto spellId = Resolve(form, *files)) {
+          res.learnedSpells.LearnSpell(*spellId);
+        } else {
+          res.unresolved.push_back(
+            UnresolvedForm{ "learnedSpells", form, "" });
+        }
+      }
+    } else {
+      std::vector<LearnedSpells::Data::key_type> learnedSpellsData;
 
-    std::vector<LearnedSpells::Data::key_type> learnedSpellsData;
+      ReadVector(element, learnedSpells, &learnedSpellsData);
 
-    ReadVector(element, learnedSpells, &learnedSpellsData);
-
-    for (const auto spellId : learnedSpellsData) {
-      res.learnedSpells.LearnSpell(spellId);
+      for (const auto spellId : learnedSpellsData) {
+        res.learnedSpells.LearnSpell(spellId);
+      }
     }
   }
 
@@ -714,6 +1116,21 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
     record.threshold = static_cast<float>(thresholdTmp);
     record.level = static_cast<uint16_t>(levelTmp);
     res.actorValueRecord = record;
+  }
+
+  // ADR-043 decision 2: a raw-shape record under a known order is written
+  // plugin-relative under the order it was saved in (rawOrder, else the
+  // running one) and read back under the running one. The migration is a
+  // save and a load, the one conversion path for both; the result keeps
+  // formVersion 1 so the driver writes it back as version 2.
+  if (files && !pluginRelative) {
+    const std::string described =
+      ToJson(res, rawOrder ? rawOrder : files).dump();
+    simdjson::dom::parser parser;
+    simdjson::dom::element rebased = parser.parse(described).value();
+    MpChangeForm migrated = JsonToChangeForm(rebased, files, nullptr);
+    migrated.formVersion = 1;
+    return migrated;
   }
 
   return res;

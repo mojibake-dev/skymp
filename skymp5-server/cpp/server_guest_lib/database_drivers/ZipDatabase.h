@@ -13,6 +13,10 @@ public:
   void Iterate(const IterateCallback& iterateCallback,
                std::optional<std::vector<FormDesc>> filter) override;
 
+  // thuum ADR-043: the load-order.json entry of the archive
+  void UpsertLoadOrder(const LoadOrder& order) override;
+  std::optional<LoadOrder> LoadLoadOrder() override;
+
 private:
   std::vector<std::optional<MpChangeForm>>&& UpsertImpl(
     std::vector<std::optional<MpChangeForm>>&& changeForms,

@@ -119,8 +119,27 @@ MigrationDatabase::MigrationDatabase(
   spdlog::info("MigrationDatabase: {} total changeForms migrated successfully",
                totalUpserted);
 
+  // thuum ADR-043: the new database carries the order its records were
+  // written under: the running one when known (the records went through
+  // it), else the one the old database saved
+  if (const auto& running = newDatabase->GetLoadOrder()) {
+    newDatabase->UpsertLoadOrder(*running);
+  } else if (const auto saved = oldDatabase->LoadLoadOrder()) {
+    newDatabase->UpsertLoadOrder(*saved);
+  }
+
   spdlog::info("The server will exit");
   pImpl->exit();
+}
+
+void MigrationDatabase::UpsertLoadOrder(const LoadOrder& order)
+{
+  pImpl->newDatabase->UpsertLoadOrder(order);
+}
+
+std::optional<MigrationDatabase::LoadOrder> MigrationDatabase::LoadLoadOrder()
+{
+  return pImpl->oldDatabase->LoadLoadOrder();
 }
 
 std::vector<std::optional<MpChangeForm>>&& MigrationDatabase::UpsertImpl(

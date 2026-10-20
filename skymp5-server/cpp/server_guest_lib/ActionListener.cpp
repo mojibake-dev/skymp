@@ -2234,16 +2234,18 @@ void ActionListener::OnChangeValues(const RawMessageData& rawMsgData,
       return;
     }
 
-    if (MathUtils::IsNearlyEqual(currentVal, *inputVal)) {
-      return;
-    }
-
     // a report below a value the server raised predates it: dropped until
-    // one reaches the value (thuum docs/verbs/attributes.md)
+    // one reaches the value (thuum docs/verbs/attributes.md). Asked before
+    // the equality below: the report that carries the raise equals the
+    // server's value and must still end the hold
     if (!actor->TakeReportedPercentage(av, *inputVal)) {
       spdlog::debug("OnChangeValues - {:x} reported {} {:.3f} below a value "
                     "the server raised; dropped",
                     actor->GetFormId(), static_cast<int>(av), *inputVal);
+      return;
+    }
+
+    if (MathUtils::IsNearlyEqual(currentVal, *inputVal)) {
       return;
     }
 

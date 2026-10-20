@@ -45,10 +45,9 @@ void EatItemEvent::OnFireSuccess(WorldState* worldState)
     return;
   }
   // thuum docs/verbs/magic-effects.md: a drink's effects run by their
-  // records through the effect rule. The drinker's own game drinks it too,
-  // so its reports from before the drink are not taken for a while: a stale
-  // fall would undo the restore
+  // records through the effect rule. The drinker's own game drinks it too;
+  // a value the drink raised holds against the drinker's stale reports
+  // until one reaches it (docs/verbs/attributes.md, in SetPercentages)
   actor->ApplyEffects(baseId, MpActor::EffectsOf(worldState, baseId), 1.f, 0,
                       false);
-  actor->UpdateNextRestorationTime(std::chrono::seconds{ 5 });
 }

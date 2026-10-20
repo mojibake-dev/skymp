@@ -8,6 +8,7 @@ pub mod activation;
 pub mod block;
 pub mod bonds;
 pub mod actor_values;
+pub mod attributes;
 pub mod appearance;
 pub mod casts;
 pub mod clock;

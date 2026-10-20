@@ -335,6 +335,17 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
     // once its client's world is up (the first movement after this)
     actor.SetMapMarkersPending(true);
 
+    // thuum docs/verbs/player-globals.md (train-30's early send): the
+    // player's own globals go out at the login itself, not at the first
+    // movement report with the other login sends. The client's service
+    // holds the message until its first in-game update, which comes a few
+    // seconds before the Survival Mode Creation's 5 s check; sent at the
+    // first movement (4.2 s after the connect in playtest twenty-seven's
+    // test 2 relaunch) the restore lost that race once in two and the
+    // Creation's first-login box asked again (x-survival-restore-timing
+    // 20261020-135028 won it; 18:23Z lost it).
+    GetActionListener().SendPlayerGlobals(actor);
+
     // We do the same in MpActor::ApplyChangeForm for non-player characters
     if (actor.IsDead() && !actor.IsRespawning()) {
       spdlog::info("PartOne::SetUserActor {} {:x} - respawning dead actor",

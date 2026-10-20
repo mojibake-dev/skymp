@@ -230,9 +230,11 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     // (docs/verbs/learned-effects.md), its favorites marked again
     // (docs/verbs/favorites.md), its RaceMenu look applied again
     // (docs/verbs/racemenu-sync.md), its actor values and progress
-    // (docs/verbs/actor-values.md), its shouts and words of power
-    // (docs/verbs/shouts.md), and its own globals
-    // (docs/verbs/player-globals.md)
+    // (docs/verbs/actor-values.md), and its shouts and words of power
+    // (docs/verbs/shouts.md). Its own globals go at the login itself
+    // (PartOne::SetUserActor, docs/verbs/player-globals.md): the client
+    // holds them until its first in-game update, ahead of the scripts
+    // that read them at their first check.
     if (actor == partOne.serverState.ActorByUser(rawMsgData.userId) &&
         actor->TakeMapMarkersPending()) {
       SendMapMarkers(*actor);
@@ -241,7 +243,6 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       SendRaceMenuPreset(*actor);
       SendActorValues(*actor);
       SendShoutRecord(*actor);
-      SendPlayerGlobals(*actor);
     }
 
     if (!msg.data.isBlocking) {

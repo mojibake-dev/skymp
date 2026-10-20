@@ -82,10 +82,10 @@ divergences:
     wire: 0
     reason: the legacy stack's refusal of the spells sends c1 its inventory again (upstream #2665)
   - client: c2
-    msg: {t: 23, data: {target: 4278190083}}
+    msg: {t: 23, data: {spell: 201530445, target: 4278190083}}
     legacy: 0
     wire: 1
-    reason: the fixed server relays the Shadowbond cast at its first hit, with the target the hit names (the legacy server, which never learned the spell, relays no cast at all)
+    reason: the fixed server relays the Shadowbond cast at its first hit, with the target the hit names (the legacy server, which never learned the spell, relays no cast at all); named by its spell too, since the proc's relay on c2 below also carries target 4278190083 and a message must match one declaration only (T2 20261020-0120 on b81ce2a9)
   - client: c2
     msg: {t: 23, data: {spell: 77773}}
     legacy: 0

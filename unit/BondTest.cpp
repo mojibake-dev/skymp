@@ -7,6 +7,7 @@
 #include "UpdateMovementMessage.h"
 
 #include <chrono>
+#include <thread>
 
 PartOne& GetPartOne();
 
@@ -124,23 +125,27 @@ int Snippets(PartOne& p, Networking::UserId user, const char* cls,
   int n = 0;
   for (auto& m : p.Messages()) {
     n += m.userId == user && m.j.contains("t") &&
-      m.j["t"] == static_cast<int>(MsgType::SpSnippet) && m.j["class"] == cls &&
-      m.j["function"] == fn && (selfId == 0 || m.j["selfId"] == selfId);
+      m.j["t"] == static_cast<int>(MsgType::SpSnippet) &&
+      m.j["class"] == cls && m.j["function"] == fn &&
+      (selfId == 0 || m.j["selfId"] == selfId);
   }
   return n;
 }
 
-// whom `user`'s game was told to cast the proc on, in order (0x14 is its own
-// player; a server id is that actor's figure there)
+// whose instant cast of the proc `user`'s game was told of, in order: a
+// SpellCast relay whose caster and target are that actor (the game resolves
+// its own id to 0x14, another's to its figure), castingSource 3, no launch
 std::vector<uint32_t> ProcCastsOn(PartOne& p, Networking::UserId user)
 {
   std::vector<uint32_t> on;
   for (auto& m : p.Messages()) {
     if (m.userId == user && m.j.contains("t") &&
-        m.j["t"] == static_cast<int>(MsgType::SpSnippet) &&
-        m.j["class"] == "Spell" && m.j["function"] == "Cast" &&
-        m.j["selfId"] == kProc) {
-      on.push_back(m.j["arguments"][0]["formId"].get<uint32_t>());
+        m.j["t"] == static_cast<int>(MsgType::SpellCast) &&
+        m.j["data"]["spell"] == kProc) {
+      REQUIRE(m.j["data"]["castingSource"] == 3);
+      REQUIRE(m.j["data"]["hasLaunch"] == false);
+      REQUIRE(m.j["data"]["target"] == m.j["data"]["caster"]);
+      on.push_back(m.j["data"]["caster"].get<uint32_t>());
     }
   }
   return on;
@@ -152,6 +157,15 @@ uint64_t NowMs()
     std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now().time_since_epoch())
       .count());
+}
+
+// the proc's casts wait on the server's timer (kBondProcCastDelayMs, 500 ms):
+// sleep past the delay, fire the timer (and flush whatever was deferred)
+void CastsFire(PartOne& p)
+{
+  std::this_thread::sleep_for(std::chrono::milliseconds(650));
+  p.Tick(); // the timer
+  p.Tick(); // the deferred snippets
 }
 
 void Leave(PartOne& p)
@@ -277,10 +291,16 @@ TEST_CASE("A bond's claimed hit conceals both for the bond's time, cast in "
   // the server's records, on both (the proc's archetype runs as a state)
   REQUIRE(caster->HasRunningEffectOfType(kInvisibility));
   REQUIRE(target->HasRunningEffectOfType(kInvisibility));
-  // the target's game casts it on the caster's figure and on its own player;
-  // the caster's game, where the mod's script cast both, hears nothing
-  REQUIRE(ProcCastsOn(p, 1) == std::vector<uint32_t>{ kCaster, 0x14 });
+  // the casts wait for the relayed bond cast to have run in the other games
+  REQUIRE(ProcCastsOn(p, 1).empty());
+  CastsFire(p);
+  // the target's game is told of the caster's instant cast (its figure
+  // there) and of its own (0x14 there); the caster's game, where the mod's
+  // script cast both, hears nothing, and no Papyrus snippet carries it
+  REQUIRE(ProcCastsOn(p, 1) == std::vector<uint32_t>{ kCaster, kTarget });
   REQUIRE(ProcCastsOn(p, 0).empty());
+  REQUIRE(Sent(p, 0, MsgType::SpellCast) == 0);
+  REQUIRE(Snippets(p, 1, "Spell", "Cast") == 0);
   REQUIRE(Snippets(p, 1, "Actor", "DispelSpell") == 0);
   Leave(p);
 }
@@ -293,7 +313,7 @@ TEST_CASE("The break ends both concealments and dispels the target's own",
   auto [caster, target] = Pair(p);
   Cast(p);
   Hit(p);
-  p.Tick(); // snippets are deferred
+  CastsFire(p);
   p.Messages().clear();
   REQUIRE(p.BreakBondsOf(kCaster));
   p.Tick();
@@ -318,7 +338,7 @@ TEST_CASE("A bond left alone runs out: the concealments end and the target's "
   auto [caster, target] = Pair(p);
   Cast(p);
   Hit(p);
-  p.Tick(); // snippets are deferred
+  CastsFire(p);
   p.Messages().clear();
   const uint64_t now = NowMs();
   // not yet (the bonds rule's clock; the records' own seconds are the
@@ -350,18 +370,38 @@ TEST_CASE("A recast at the same target refreshes the concealment without a "
   auto [caster, target] = Pair(p);
   Cast(p);
   Hit(p);
-  p.Tick(); // snippets are deferred
+  CastsFire(p);
   p.Messages().clear();
   Cast(p);
   Hit(p);
-  p.Tick();
+  CastsFire(p);
   REQUIRE(caster->HasRunningEffectOfType(kInvisibility));
   REQUIRE(target->HasRunningEffectOfType(kInvisibility));
-  REQUIRE(ProcCastsOn(p, 1) == std::vector<uint32_t>{ kCaster, 0x14 });
+  REQUIRE(ProcCastsOn(p, 1) == std::vector<uint32_t>{ kCaster, kTarget });
   REQUIRE(Snippets(p, 1, "Actor", "DispelSpell") == 0);
   // one bond stands: one break
   REQUIRE(p.BreakBondsOf(kTarget));
   REQUIRE_FALSE(p.BreakBondsOf(kCaster));
+  Leave(p);
+}
+
+TEST_CASE("A bond broken before its casts fire casts nothing, and dispels "
+          "the target's once",
+          "[Bond][espm]")
+{
+  PartOne& p = GetPartOne();
+  p.SetBondSettings(kBonds);
+  auto [caster, target] = Pair(p);
+  Cast(p);
+  Hit(p);
+  p.Tick();
+  p.Messages().clear();
+  REQUIRE(p.BreakBondsOf(kTarget));
+  CastsFire(p);
+  REQUIRE(ProcCastsOn(p, 1).empty());
+  REQUIRE(Snippets(p, 1, "Actor", "DispelSpell", 0x14) == 1);
+  REQUIRE_FALSE(caster->HasRunningEffectOfType(kInvisibility));
+  REQUIRE_FALSE(target->HasRunningEffectOfType(kInvisibility));
   Leave(p);
 }
 

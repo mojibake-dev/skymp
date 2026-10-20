@@ -18,11 +18,15 @@
 # again at 4 s of its own, so it outlives c1, as in every session. The first
 # session shape used a Poison-type spell with a health effect whose
 # regeneration ticks were timing-dependent; a disease has none.
-# Since train-27's conditions evaluator (thuum ADR-039) the hit's effect,
-# TrapDiseaseWitbane's, is refused by its own conditions on the server, so
-# no MagicEffects record (t 43) and no StartCombat follow the claimed hit on
-# either stack (T2 20261019-0000 on c32cf0bd: the old declarations no longer
-# occurring); the relay at the first hit, the session's point, is unchanged.
+# Train-27's conditions evaluator (thuum ADR-039) refused the hit's effect,
+# TrapDiseaseWitbane's, as gated on a function it did not know, so for a
+# day no MagicEffects record (t 43) and no StartCombat followed the claimed
+# hit (T2 20261019-0000 on c32cf0bd). Train-28's functions (GetIsID,
+# GetGlobalValue, IsHostileToActor) evaluate it and it holds, so the effect
+# is applied once and shown to both games (t 43, magnitude 0.5, no
+# duration) and the hostile hit begins a fight (StartCombat to c2), as on
+# 2026-10-18 before the evaluator (first T2 run 20261019-1407); the relay at
+# the first hit, the session's point, is unchanged.
 id: target-by-hit
 clients:
   c1: {profile_id: 9}
@@ -70,6 +74,21 @@ divergences:
     legacy: 0
     wire: 1
     reason: the fixed server relays the cast at its first hit, with the target the hit names (the legacy server, which never learned the spell, relays no cast at all)
+  - client: c1
+    msg: {t: 43}
+    legacy: 0
+    wire: 1
+    reason: the hit's effect, its conditions evaluated and holding (ADR-039, train-28's functions), applied to c2 once and shown to every game that sees c2, c1's included; the legacy server saw no cast to claim the hit against
+  - client: c2
+    msg: {t: 43}
+    legacy: 0
+    wire: 1
+    reason: the same set to c2's own game
+  - client: c2
+    msg: {t: 30, class: Actor, function: StartCombat}
+    legacy: 0
+    wire: 1
+    reason: the claimed hostile hit, its effect held, begins a fight and the victim's game is told (ADR-023)
   - client: c2
     msg: {t: 45}
     legacy: 0

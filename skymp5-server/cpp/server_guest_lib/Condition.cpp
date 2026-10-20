@@ -1,5 +1,6 @@
 #include "Condition.h"
 #include "condition_functions/ConditionFunctionFactory.h"
+#include <set>
 #include <spdlog/spdlog.h>
 
 namespace {
@@ -82,8 +83,19 @@ std::string ConvertFunctionIndexToString(uint16_t functionIndex)
   if (conditionFunction) {
     return conditionFunction->GetName();
   }
-  spdlog::warn("ConvertFunctionIndexToString - Unknown function index: {}",
-               functionIndex);
+  // thuum docs/DECISIONS.md ADR-039: an index the server does not evaluate
+  // is worth one line, not one per hit (playtest twenty-four: 143 of them
+  // in an hour for two indices, HasPerk and EffectWasDualCast, both by
+  // design: see docs/verbs/magic-effects.md)
+  static std::set<uint16_t> g_unknownIndicesSeen;
+  if (g_unknownIndicesSeen.insert(functionIndex).second) {
+    spdlog::warn("ConvertFunctionIndexToString - Unknown function index: {} "
+                 "(logged once; later ones at debug)",
+                 functionIndex);
+  } else {
+    spdlog::debug("ConvertFunctionIndexToString - Unknown function index: {}",
+                  functionIndex);
+  }
   return "";
 }
 }

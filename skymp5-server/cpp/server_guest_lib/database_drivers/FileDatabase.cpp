@@ -1,4 +1,6 @@
 #include "FileDatabase.h"
+#include "LoadOrderFile.h"
+#include "RecordReader.h"
 #include <filesystem>
 #include <fstream>
 #include <save_storages/AsyncSaveStorage.h>
@@ -7,6 +9,7 @@
 struct FileDatabase::Impl
 {
   const std::filesystem::path changeFormsDirectory;
+  const std::filesystem::path worldDirectory;
   const std::shared_ptr<spdlog::logger> logger;
 };
 
@@ -16,7 +19,7 @@ FileDatabase::FileDatabase(std::string directory_,
   std::filesystem::path p = directory_;
   p /= "changeForms";
 
-  pImpl.reset(new Impl{ p, logger_ });
+  pImpl.reset(new Impl{ p, directory_, logger_ });
   std::filesystem::create_directories(p);
 }
 
@@ -28,6 +31,9 @@ std::vector<std::optional<MpChangeForm>>&& FileDatabase::UpsertImpl(
     std::filesystem::path p = pImpl->changeFormsDirectory;
     size_t nUpserted = 0;
 
+    // ADR-043: written against the running order when there is one
+    const auto files = RecordReader::Files(GetLoadOrder());
+
     for (auto& changeForm : changeForms) {
       if (changeForm == std::nullopt) {
         continue;
@@ -38,7 +44,8 @@ std::vector<std::optional<MpChangeForm>>&& FileDatabase::UpsertImpl(
 
       std::ofstream f(tempFilePath);
       if (f) {
-        f << MpChangeForm::ToJson(*changeForm).dump(2);
+        f << MpChangeForm::ToJson(*changeForm, files ? &*files : nullptr)
+               .dump(2);
       }
 
       bool wasOpen = f.is_open();
@@ -97,6 +104,10 @@ void FileDatabase::Iterate(const IterateCallback& iterateCallback,
       }
     }
 
+    // ADR-043: records read under the running order, a raw-shape world
+    // re-based from the order it saved and written back after the loop
+    RecordReader reader(GetLoadOrder(), LoadLoadOrder(), pImpl->logger);
+
     for (auto& entry : std::filesystem::directory_iterator(p)) {
       try {
         if (entry.path().extension() != ".json") {
@@ -108,7 +119,7 @@ void FileDatabase::Iterate(const IterateCallback& iterateCallback,
                              std::istreambuf_iterator<char>());
 
         auto result = parser.parse(jsonDump).value();
-        auto changeForm = MpChangeForm::JsonToChangeForm(result);
+        auto changeForm = reader.Read(result);
 
         if (filterSet) {
           if (filterSet->find(changeForm.formDesc.ToString()) ==
@@ -124,10 +135,49 @@ void FileDatabase::Iterate(const IterateCallback& iterateCallback,
       }
     }
 
+    reader.Commit(*this);
+
   } catch (std::exception& e) {
     throw Viet::AsyncSaveStorage<
       MpChangeForm, FormDesc,
       std::vector<FormDesc>>::IterateFailedException(std::move(filter),
                                                      e.what());
   }
+}
+
+void FileDatabase::UpsertLoadOrder(const LoadOrder& order)
+{
+  const auto filePath = pImpl->worldDirectory / LoadOrderFile::kName;
+  const auto tempFilePath =
+    pImpl->worldDirectory / (std::string(LoadOrderFile::kName) + ".tmp");
+
+  {
+    std::ofstream f(tempFilePath);
+    f << LoadOrderFile::ToJson(order).dump(2);
+    if (!f) {
+      throw std::runtime_error(
+        fmt::format("Unable to write {}", tempFilePath.string()));
+    }
+  }
+
+  std::error_code errorCode;
+  std::filesystem::rename(tempFilePath, filePath, errorCode);
+  if (errorCode) {
+    throw std::runtime_error(
+      fmt::format("Unable to rename {} to {}: {}", tempFilePath.string(),
+                  filePath.string(), errorCode.message()));
+  }
+}
+
+std::optional<FileDatabase::LoadOrder> FileDatabase::LoadLoadOrder()
+{
+  const auto filePath = pImpl->worldDirectory / LoadOrderFile::kName;
+  if (!std::filesystem::exists(filePath)) {
+    return std::nullopt;
+  }
+
+  std::ifstream t(filePath);
+  std::string text((std::istreambuf_iterator<char>(t)),
+                   std::istreambuf_iterator<char>());
+  return LoadOrderFile::FromJson(nlohmann::json::parse(text));
 }

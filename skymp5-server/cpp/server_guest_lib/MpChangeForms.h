@@ -17,6 +17,7 @@
 #include "Quest.h"
 #include "RunningEffect.h"
 #include "ShoutRecord.h"
+#include "UnresolvedForm.h"
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -177,6 +178,18 @@ public:
 
   DynamicFields dynamicFields;
 
+  // The shape of the record this change form was read from (thuum
+  // docs/DECISIONS.md ADR-043 decision 2): 1 is the raw shape, every form a
+  // runtime id of the order it was saved under; 2 stores every form as
+  // "<hex>:<plugin>". A record without the key reads as 1; a form built in
+  // memory is current. Not part of the record's equality.
+  static constexpr int32_t kFormVersion = 2;
+  int32_t formVersion = kFormVersion;
+
+  // The stored forms the running order could not resolve, kept for the next
+  // save (ADR-043 decision 1)
+  std::vector<UnresolvedForm> unresolved;
+
   auto ToTuple() const
   {
     return std::make_tuple(
@@ -189,11 +202,24 @@ public:
       dynamicFields, spawnDelay, learnedSpells, templateChain, lastAnimation,
       setNodeTextureSet, setNodeScale, displayName, mapMarkers,
       ingredientEffects, favorites, raceMenuPreset, actorValueRecord,
-      staffRank, runningEffects, shoutRecord, playerGlobals);
+      staffRank, runningEffects, shoutRecord, playerGlobals, unresolved);
   }
 
-  static nlohmann::json ToJson(const MpChangeFormREFR& changeForm);
-  static MpChangeFormREFR JsonToChangeForm(simdjson::dom::element& element);
+  // The record boundary (thuum docs/DECISIONS.md ADR-043; the map
+  // docs/research/formdesc-world-map.md section 6, shape b). With `files`,
+  // the running load order, ToJson writes every stored form as
+  // "<hex>:<plugin>" and marks the record kFormVersion; JsonToChangeForm
+  // resolves them back to runtime ids, keeping what does not resolve in
+  // `unresolved`. A raw-shape record (no mark) read with `files` is re-based
+  // from `rawOrder`, the order it was saved under, or from `files` when none
+  // is known, and comes back with formVersion 1 so the caller writes it
+  // again. Without `files` both keep today's raw shape (the tests, the
+  // legacy path); a plugin-relative record cannot be read that way.
+  static nlohmann::json ToJson(const MpChangeFormREFR& changeForm,
+                               const EspmFileList* files = nullptr);
+  static MpChangeFormREFR JsonToChangeForm(
+    simdjson::dom::element& element, const EspmFileList* files = nullptr,
+    const EspmFileList* rawOrder = nullptr);
 };
 
 #define MpChangeForm MpChangeFormREFR

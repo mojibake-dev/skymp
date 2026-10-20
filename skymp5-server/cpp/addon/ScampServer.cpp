@@ -494,7 +494,16 @@ Napi::Value ScampServer::_SetSelf(const Napi::CallbackInfo& info)
 Napi::Value ScampServer::AttachSaveStorage(const Napi::CallbackInfo& info)
 {
   try {
-    auto db = DatabaseFactory::Create(serverSettings, logger);
+    // thuum docs/DECISIONS.md ADR-043: the driver writes the world's records
+    // against the order this server runs (AttachEspm set it in the
+    // constructor), reads them back into it and keeps it beside the records;
+    // without plugins the records keep the raw shape
+    std::shared_ptr<const DatabaseFactory::LoadOrder> loadOrder;
+    if (!partOne->worldState.espmFiles.empty()) {
+      loadOrder = std::make_shared<DatabaseFactory::LoadOrder>(
+        partOne->worldState.espmFiles.ToLoadOrder());
+    }
+    auto db = DatabaseFactory::Create(serverSettings, logger, loadOrder);
     auto saveStorage =
       Viet::SaveStorageFactory::Create<MpChangeForm, FormDesc>(db, logger);
     partOne->AttachSaveStorage(saveStorage);

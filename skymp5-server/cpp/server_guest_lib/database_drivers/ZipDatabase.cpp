@@ -1,5 +1,7 @@
 #include "ZipDatabase.h"
 
+#include "LoadOrderFile.h"
+#include "RecordReader.h"
 #include "libzippp/libzippp.h"
 #include <FileUtils.h>
 #include <MappedBuffer.h>
@@ -43,13 +45,17 @@ std::vector<std::optional<MpChangeForm>>&& ZipDatabase::UpsertImpl(
 
     std::vector<std::unique_ptr<std::string>> buffers;
 
+    // ADR-043: written against the running order when there is one
+    const auto files = RecordReader::Files(GetLoadOrder());
+
     for (auto& changeForm : changeForms) {
       if (changeForm == std::nullopt) {
         continue;
       }
 
       // Data to be added or updated
-      std::string data = MpChangeForm::ToJson(*changeForm).dump(2);
+      std::string data =
+        MpChangeForm::ToJson(*changeForm, files ? &*files : nullptr).dump(2);
       std::string fileName = changeForm->formDesc.ToString('_') + ".json";
       std::string filePath = fileName;
 
@@ -81,15 +87,6 @@ void ZipDatabase::Iterate(const IterateCallback& iterateCallback,
     auto filePathAbsolute =
       std::filesystem::absolute(pImpl->filePath).string();
 
-    libzippp::ZipArchive archive(filePathAbsolute.data());
-
-    archive.open(libzippp::ZipArchive::ReadOnly);
-
-    std::vector<libzippp::ZipEntry> entries = archive.getEntries();
-    std::vector<libzippp::ZipEntry>::iterator it;
-
-    simdjson::dom::parser p;
-
     std::optional<std::unordered_set<std::string>> filterSet;
     if (filter) {
       std::unordered_set<std::string>& value = filterSet.emplace();
@@ -98,30 +95,55 @@ void ZipDatabase::Iterate(const IterateCallback& iterateCallback,
       }
     }
 
-    for (it = entries.begin(); it != entries.end(); ++it) {
-      libzippp::ZipEntry entry = *it;
-      std::string name = entry.getName();
-      int size = entry.getSize();
+    // ADR-043: records read under the running order, a raw-shape world
+    // re-based from the order it saved and written back once the archive is
+    // closed for reading
+    RecordReader reader(GetLoadOrder(), LoadLoadOrder(), pImpl->logger);
 
-      std::string textData = entry.readAsText();
+    {
+      libzippp::ZipArchive archive(filePathAbsolute.data());
 
-      try {
-        auto result = p.parse(textData).value();
-        auto changeForm = MpChangeForm::JsonToChangeForm(result);
+      archive.open(libzippp::ZipArchive::ReadOnly);
 
-        if (filterSet) {
-          if (filterSet->find(changeForm.formDesc.ToString()) ==
-              filterSet->end()) {
-            continue;
-          }
+      std::vector<libzippp::ZipEntry> entries = archive.getEntries();
+      std::vector<libzippp::ZipEntry>::iterator it;
+
+      simdjson::dom::parser p;
+
+      for (it = entries.begin(); it != entries.end(); ++it) {
+        libzippp::ZipEntry entry = *it;
+        std::string name = entry.getName();
+        int size = entry.getSize();
+
+        // the saved order is no record
+        if (name == LoadOrderFile::kName) {
+          continue;
         }
 
-        iterateCallback(changeForm);
-      } catch (std::exception& e) {
-        pImpl->logger->error("Parsing or loading of {} failed with {}", name,
-                             e.what());
+        std::string textData = entry.readAsText();
+
+        try {
+          auto result = p.parse(textData).value();
+          auto changeForm = reader.Read(result);
+
+          if (filterSet) {
+            if (filterSet->find(changeForm.formDesc.ToString()) ==
+                filterSet->end()) {
+              continue;
+            }
+          }
+
+          iterateCallback(changeForm);
+        } catch (std::exception& e) {
+          pImpl->logger->error("Parsing or loading of {} failed with {}", name,
+                               e.what());
+        }
       }
+
+      archive.close();
     }
+
+    reader.Commit(*this);
 
   } catch (std::exception& e) {
     throw Viet::AsyncSaveStorage<
@@ -129,4 +151,36 @@ void ZipDatabase::Iterate(const IterateCallback& iterateCallback,
       std::vector<FormDesc>>::IterateFailedException(std::move(filter),
                                                      e.what());
   }
+}
+
+void ZipDatabase::UpsertLoadOrder(const LoadOrder& order)
+{
+  auto filePathAbsolute = std::filesystem::absolute(pImpl->filePath).string();
+
+  libzippp::ZipArchive archive(filePathAbsolute.data());
+  archive.open(libzippp::ZipArchive::Write);
+
+  // the buffer must outlive close(), which writes the archive
+  const std::string data = LoadOrderFile::ToJson(order).dump(2);
+  archive.addData(LoadOrderFile::kName, data.data(), data.size());
+
+  archive.close();
+}
+
+std::optional<ZipDatabase::LoadOrder> ZipDatabase::LoadLoadOrder()
+{
+  auto filePathAbsolute = std::filesystem::absolute(pImpl->filePath).string();
+
+  libzippp::ZipArchive archive(filePathAbsolute.data());
+  archive.open(libzippp::ZipArchive::ReadOnly);
+
+  libzippp::ZipEntry entry = archive.getEntry(LoadOrderFile::kName);
+  if (entry.isNull()) {
+    archive.close();
+    return std::nullopt;
+  }
+
+  const std::string text = entry.readAsText();
+  archive.close();
+  return LoadOrderFile::FromJson(nlohmann::json::parse(text));
 }

@@ -1153,6 +1153,8 @@ mod ffi {
         fn remove_effects(entries: &mut Vec<EffectEntry>, effects: &[u32]) -> Vec<AvChange>;
         /// The temporary modifier the running buffs put on `av`.
         fn effect_modifier(entries: &Vec<EffectEntry>, av: u32) -> f32;
+        /// The standing modifier a race's constant abilities put on `av`.
+        fn ability_modifier(facts: &Vec<EffectFacts>, av: u32) -> f32;
 
         /// Every player actor's recent spell casts and open streams.
         type SpellCasts;
@@ -1974,6 +1976,13 @@ fn remove_effects(entries: &mut Vec<EffectEntry>, effects: &[u32]) -> Vec<AvChan
 fn effect_modifier(entries: &Vec<EffectEntry>, av: u32) -> f32 {
     let ours: Vec<magic::EffectEntry> = entries.iter().map(to_magic_entry).collect();
     magic::modifier(&ours, av)
+}
+
+// cxx passes a C++ rust::Vec by reference as &Vec
+#[allow(clippy::ptr_arg)]
+fn ability_modifier(facts: &Vec<EffectFacts>, av: u32) -> f32 {
+    let ours: Vec<magic::EffectFacts> = facts.iter().map(|f| to_magic_facts(*f)).collect();
+    magic::constant_modifier(&ours, av)
 }
 
 /// Every player actor's recent spell casts and open streams (wire-rules

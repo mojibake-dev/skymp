@@ -3276,14 +3276,66 @@ bool MpActor::EndRunningEffectIds(const std::vector<uint32_t>& ending)
   return true;
 }
 
+namespace {
+// The constant effects of a race's abilities (RACE SPLO: each an Ability
+// spell of constant cast type, a Nord's Resist Frost 000AA020 above all)
+// as the rule's facts, read once per race from the records: the engine
+// keeps them on the actor from its first frame, the client's ActorValues
+// report carries bases alone, and the server applied none of them (thuum
+// docs/verbs/spell-cast.md, Hailstone, train-30). Empty for a race the
+// records lack.
+const rust::Vec<skymp::rules::EffectFacts>& RaceAbilityFactsOf(
+  WorldState* worldState, uint32_t raceId)
+{
+  static std::unordered_map<uint32_t, rust::Vec<skymp::rules::EffectFacts>>
+    cache;
+  static const rust::Vec<skymp::rules::EffectFacts> none;
+  if (!worldState || raceId == 0) {
+    return none;
+  }
+  if (const auto it = cache.find(raceId); it != cache.end()) {
+    return it->second;
+  }
+  rust::Vec<skymp::rules::EffectFacts> facts;
+  try {
+    const auto race = worldState->GetEspm().GetBrowser().LookupById(raceId);
+    const auto raceData = espm::GetData<espm::RACE>(raceId, worldState);
+    for (const auto rawSpell : raceData.spells) {
+      const auto spellId = race.ToGlobalId(rawSpell);
+      const auto spell = espm::GetData<espm::SPEL>(spellId, worldState);
+      if (!spell.spellItem ||
+          spell.spellItem->type != espm::SPEL::SpellType::Ability ||
+          spell.spellItem->castType != espm::SPEL::CastType::ConstantEffect) {
+        continue;
+      }
+      for (const auto& effect : MpActor::EffectsOf(worldState, spellId)) {
+        if (auto f = EffectFactsOf(worldState, spellId, effect)) {
+          facts.push_back(*f);
+        }
+      }
+    }
+  } catch (std::exception& e) {
+    spdlog::warn("RaceAbilityFactsOf - race {:x}: {}", raceId, e.what());
+  }
+  return cache.emplace(raceId, std::move(facts)).first->second;
+}
+}
+
 float MpActor::GetEffectModifier(espm::ActorValue av) const
 {
   WorldState* worldState = GetParent();
-  if (!worldState || !HasRunningEffects()) {
+  if (!worldState) {
     return 0.f;
   }
-  const auto entries = EffectEntriesOf(ChangeForm(), worldState->espmFiles);
-  return skymp::rules::effect_modifier(entries, static_cast<uint32_t>(av));
+  const auto avIndex = static_cast<uint32_t>(av);
+  // the race's constant abilities stand under every running effect
+  float modifier = skymp::rules::ability_modifier(
+    RaceAbilityFactsOf(worldState, GetRaceId()), avIndex);
+  if (HasRunningEffects()) {
+    const auto entries = EffectEntriesOf(ChangeForm(), worldState->espmFiles);
+    modifier += skymp::rules::effect_modifier(entries, avIndex);
+  }
+  return modifier;
 }
 
 void MpActor::ApplyAttributeDeltas(const std::array<float, 3>& deltas,

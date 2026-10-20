@@ -233,19 +233,20 @@ TEST_CASE("GetActorValue and HasMagicEffect answer from what the server "
   REQUIRE_FALSE(
     Holds(p, { Row("GetActorValue", 14, "Subject", "==", 0.f, 24, "AND") },
           *target, *caster));
-  // ResistFrost (43) with no record: 0
-  REQUIRE(Holds(p, { Row("GetActorValue", 14, "Subject", "==", 0.f, 43, "AND") },
+  // ResistFire (42) with no record: 0 (the harness's default base 0x7 is a
+  // Nord, whose abilities carry frost resistance, 43, and no fire)
+  REQUIRE(Holds(p, { Row("GetActorValue", 14, "Subject", "==", 0.f, 42, "AND") },
                 *target, *caster));
   REQUIRE_FALSE(
-    Holds(p, { Row("GetActorValue", 14, "Subject", ">", 0.f, 43, "AND") },
+    Holds(p, { Row("GetActorValue", 14, "Subject", ">", 0.f, 42, "AND") },
           *target, *caster));
   // the player's recorded base (the client's ActorValues report)
   ActorValueRecord record;
-  record.bases = { { 43, 50.f } };
+  record.bases = { { 42, 50.f } };
   target->SetActorValueRecord(record);
-  REQUIRE(Holds(p, { Row("GetActorValue", 14, "Subject", ">", 0.f, 43, "AND") },
+  REQUIRE(Holds(p, { Row("GetActorValue", 14, "Subject", ">", 0.f, 42, "AND") },
                 *target, *caster));
-  REQUIRE(Holds(p, { Row("GetActorValue", 14, "Subject", "==", 50.f, 43, "AND") },
+  REQUIRE(Holds(p, { Row("GetActorValue", 14, "Subject", "==", 50.f, 42, "AND") },
                 *target, *caster));
   // HasMagicEffect: nothing running
   REQUIRE(Holds(p,
@@ -296,6 +297,7 @@ TEST_CASE("A race's constant abilities stand in GetActorValue and the "
 {
   PartOne& p = GetPartOne();
   auto [caster, target] = Pair(p);
+  // the default base 0x7 is a Nord already; the appearance names it anyway
   Appearance nord;
   nord.raceId = 0x00013746; // Skyrim.esm NordRace
   target->SetAppearance(&nord);

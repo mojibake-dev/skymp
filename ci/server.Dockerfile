@@ -65,12 +65,22 @@ RUN if [ ! -f vcpkg/scripts/buildsystems/vcpkg.cmake ]; then \
 # with CI=true in the environment (unit/EspmTest.cpp, unit/DistContentsTest.cpp).
 # ccache's statistics are zeroed before and printed after, so the job log
 # carries each build's hit rate.
+# The dist's world directory is the server's runtime state, no build output
+# (unit/DistContentsExpected.json names nothing under it). The integration tests
+# run their servers in build/dist/server (cmake/run_integration_test.cmake),
+# which clears world/changeForms before a run and nothing after it, so in the
+# cached tree one branch's run leaves its world to the next build of any branch:
+# DistContentsTest refuses it there (m2-formdesc-world's world/load-order.json,
+# thuum ADR-043, server-build 9323) and the copy below would ship it. Every
+# build starts without one; a test server's other runtime files belong in that
+# script's step 5.
 RUN --mount=type=cache,id=skymp-server-build,target=/src/build,mode=0777,sharing=locked \
     --mount=type=cache,id=skymp-cargo-registry,target=/opt/rust/cargo/registry,mode=0777,sharing=locked \
     --mount=type=cache,id=skymp-ccache,target=/opt/ccache,mode=0777,sharing=locked \
     chmod +x build.sh && sed -i 's/\r$//' build.sh \
  && export CCACHE_DIR=/opt/ccache CCACHE_MAXSIZE=4G CCACHE_BASEDIR=/src \
  && ccache -z \
+ && rm -rf build/dist/server/world \
  && ./build.sh --configure -DUNIT_DATA_DIR=/src/skyrim_data_files \
       -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
  && ./build.sh --build \

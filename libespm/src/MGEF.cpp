@@ -37,6 +37,10 @@ MGEF::Data MGEF::GetData(
           std::memcpy(&result.data.associatedItem, data + 0x08,
                       sizeof(result.data.associatedItem));
         }
+        if (size >= 0x14) {
+          std::memcpy(&result.data.resistValue, data + 0x10,
+                      sizeof(result.data.resistValue));
+        }
         if (size >= 0x5C) {
           std::underlying_type_t<ActorValue> second = 0;
           std::memcpy(&second, data + 0x58, sizeof(second));

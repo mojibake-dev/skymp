@@ -1155,6 +1155,9 @@ mod ffi {
         fn effect_modifier(entries: &Vec<EffectEntry>, av: u32) -> f32;
         /// The standing modifier a race's constant abilities put on `av`.
         fn ability_modifier(facts: &Vec<EffectFacts>, av: u32) -> f32;
+        /// The share of a hostile effect's magnitude a target takes, by its
+        /// element and magic resistances under `cap`.
+        fn resistance_factor(resist: f32, magic_resist: f32, cap: f32) -> f32;
 
         /// Every player actor's recent spell casts and open streams.
         type SpellCasts;
@@ -1983,6 +1986,10 @@ fn effect_modifier(entries: &Vec<EffectEntry>, av: u32) -> f32 {
 fn ability_modifier(facts: &Vec<EffectFacts>, av: u32) -> f32 {
     let ours: Vec<magic::EffectFacts> = facts.iter().map(|f| to_magic_facts(*f)).collect();
     magic::constant_modifier(&ours, av)
+}
+
+fn resistance_factor(resist: f32, magic_resist: f32, cap: f32) -> f32 {
+    magic::resistance_factor(resist, magic_resist, cap)
 }
 
 /// Every player actor's recent spell casts and open streams (wire-rules

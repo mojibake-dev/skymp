@@ -3093,8 +3093,11 @@ void MpActor::ApplyEffects(uint32_t source,
     if (!facts) {
       continue;
     }
+    // the target's resistances take their share of a hostile effect before
+    // anything is applied (thuum docs/verbs/magic-effects.md, train-30)
+    const float resisted = scale * ResistanceFactorOf(source, effect);
     const auto applied =
-      skymp::rules::apply_effect(*facts, scale, caster,
+      skymp::rules::apply_effect(*facts, resisted, caster,
                                  stream ? skymp::rules::EffectArrival::Stream
                                         : skymp::rules::EffectArrival::Once);
     SumAttributeChanges(applied.changes, deltas, touched, pImpl->godMode);
@@ -3107,7 +3110,7 @@ void MpActor::ApplyEffects(uint32_t source,
       MagicEffectsMessage::Effect once;
       once.effect = facts->effect;
       once.source = source;
-      once.magnitude = facts->magnitude * scale;
+      once.magnitude = facts->magnitude * resisted;
       shownOnce.push_back(once);
     }
   }
@@ -3319,6 +3322,82 @@ const rust::Vec<skymp::rules::EffectFacts>& RaceAbilityFactsOf(
   }
   return cache.emplace(raceId, std::move(facts)).first->second;
 }
+}
+
+float MpActor::GetCurrentActorValue(espm::ActorValue av)
+{
+  if (av == espm::ActorValue::Health || av == espm::ActorValue::Magicka ||
+      av == espm::ActorValue::Stamina) {
+    const auto maximum = GetMaximumValues();
+    const auto& values = GetActorValues();
+    if (av == espm::ActorValue::Health) {
+      return maximum.health * values.healthPercentage;
+    }
+    if (av == espm::ActorValue::Magicka) {
+      return maximum.magicka * values.magickaPercentage;
+    }
+    return maximum.stamina * values.staminaPercentage;
+  }
+  const auto index = static_cast<int32_t>(av);
+  if (index < 0 || index > 0xff) {
+    return 0.f;
+  }
+  const auto base = GetRecordedActorValueBase(static_cast<uint8_t>(index));
+  return base.value_or(0.f) + GetEffectModifier(av);
+}
+
+float MpActor::ResistanceFactorOf(uint32_t source,
+                                  const espm::Effects::Effect& effect)
+{
+  // The engine's own resistance never runs on a player's Health, Magicka
+  // or Stamina damage from another actor (the player's AddTarget refuses
+  // those effects; the server's number is imposed, R0), so the server
+  // applies it: only a Hostile effect is resisted (MGEF flag 0x1), a
+  // spell flagged IgnoreResistance is not, Magic Resistance applies to a
+  // spell's or an enchantment's effect and not to a poison's or a
+  // potion's (an ALCH source), the element's own value is the MGEF's
+  // ResistanceAV read on this actor, and the player's cap is 85
+  // (fPlayerMaxResistance's executable default, which the masters do not
+  // set: ActionListener BlockSettingsOf, thuum ghidra/notes/block-formula.md);
+  // an NPC's cap is 100, immunity. HYPOTHESIS until x-hailstone: the
+  // engine's order and cap for a dual value modifier's second value.
+  WorldState* worldState = GetParent();
+  if (!worldState) {
+    return 1.f;
+  }
+  espm::MGEF::DATA mgef;
+  try {
+    mgef = espm::GetData<espm::MGEF>(effect.effectId, worldState).data;
+  } catch (std::exception&) {
+    return 1.f;
+  }
+  if (!mgef.IsFlagSet(espm::MGEF::Flags::Hostile)) {
+    return 1.f;
+  }
+  bool magicResists = true;
+  const auto sourceRecord = worldState->GetEspm().GetBrowser().LookupById(source);
+  if (sourceRecord.rec && sourceRecord.rec->GetType() == "ALCH") {
+    magicResists = false;
+  }
+  if (sourceRecord.rec && sourceRecord.rec->GetType() == "SPEL") {
+    try {
+      const auto spell = espm::GetData<espm::SPEL>(source, worldState);
+      if (spell.spellItem &&
+          (static_cast<uint32_t>(spell.spellItem->flags) &
+           static_cast<uint32_t>(espm::SPEL::SpellFlags::IgnoreResistance)) !=
+            0) {
+        return 1.f;
+      }
+    } catch (std::exception&) {
+    }
+  }
+  const float cap = IsCreatedAsPlayer() ? 85.f : 100.f;
+  const float magic =
+    magicResists ? GetCurrentActorValue(espm::ActorValue::MagicResist) : 0.f;
+  const float element = mgef.resistValue >= 0
+    ? GetCurrentActorValue(static_cast<espm::ActorValue>(mgef.resistValue))
+    : 0.f;
+  return skymp::rules::resistance_factor(element, magic, cap);
 }
 
 float MpActor::GetEffectModifier(espm::ActorValue av) const

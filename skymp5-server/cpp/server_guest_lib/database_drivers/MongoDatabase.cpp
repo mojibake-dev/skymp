@@ -1,6 +1,8 @@
 #include "MongoDatabase.h"
 
 #include "JsonUtils.h"
+#include "LoadOrderFile.h"
+#include "RecordReader.h"
 #include <save_storages/AsyncSaveStorage.h>
 
 #ifndef NO_MONGO
@@ -31,6 +33,8 @@ struct MongoDatabase::Impl
   const std::string name;
 
   const char* const collectionName = "changeForms";
+  const char* const loadOrderCollectionName = "loadOrder";
+  const char* const loadOrderDocumentId = "loadOrder";
 
   std::shared_ptr<mongocxx::pool> pool;
 
@@ -54,6 +58,15 @@ std::vector<std::optional<MpChangeForm>>&& MongoDatabase::UpsertImpl(
 void MongoDatabase::Iterate(const IterateCallback&,
                             std::optional<std::vector<FormDesc>>)
 {
+}
+
+void MongoDatabase::UpsertLoadOrder(const LoadOrder&)
+{
+}
+
+std::optional<MongoDatabase::LoadOrder> MongoDatabase::LoadLoadOrder()
+{
+  return std::nullopt;
 }
 
 #endif
@@ -84,13 +97,17 @@ std::vector<std::optional<MpChangeForm>>&& MongoDatabase::UpsertImpl(
     mongocxx::v_noabi::collection collection =
       poolEntry->database(pImpl->name).collection(pImpl->collectionName);
 
+    // ADR-043: written against the running order when there is one
+    const auto files = RecordReader::Files(GetLoadOrder());
+
     auto bulk = collection.create_bulk_write();
     for (auto& changeForm : changeForms) {
       if (changeForm == std::nullopt) {
         continue;
       }
 
-      auto jChangeForm = MpChangeForm::ToJson(*changeForm);
+      auto jChangeForm =
+        MpChangeForm::ToJson(*changeForm, files ? &*files : nullptr);
 
       auto filter = nlohmann::json::object();
       filter["formDesc"] = changeForm->formDesc.ToString();
@@ -241,6 +258,11 @@ void MongoDatabase::Iterate(const IterateCallback& iterateCallback,
       }
     }
 
+    // ADR-043: records read under the running order, a raw-shape world
+    // re-based from the order it saved and written back after the loop
+    RecordReader reader(GetLoadOrder(), LoadLoadOrder(),
+                        spdlog::default_logger());
+
     for (int i = 0; i < numParts; i++) {
       threadsDocumentsJsonArray[i].back() = ']';
 
@@ -263,10 +285,9 @@ void MongoDatabase::Iterate(const IterateCallback& iterateCallback,
           std::string restoredDocumentDump = restoredDocument.dump();
           auto restoredDocumentSimdjson =
             p2.parse(restoredDocumentDump).value();
-          changeForm =
-            MpChangeForm::JsonToChangeForm(restoredDocumentSimdjson);
+          changeForm = reader.Read(restoredDocumentSimdjson);
         } else {
-          changeForm = MpChangeForm::JsonToChangeForm(document);
+          changeForm = reader.Read(document);
         }
 
         iterateCallback(changeForm);
@@ -288,12 +309,53 @@ void MongoDatabase::Iterate(const IterateCallback& iterateCallback,
                     totalDocumentsProcessed.load(), totalDocuments));
     }
 
+    reader.Commit(*this);
+
   } catch (std::exception& e) {
     throw Viet::AsyncSaveStorage<
       MpChangeForm, FormDesc,
       std::vector<FormDesc>>::IterateFailedException(std::move(filter),
                                                      e.what());
   }
+}
+
+void MongoDatabase::UpsertLoadOrder(const LoadOrder& order)
+{
+  mongocxx::v_noabi::pool::entry poolEntry = pImpl->pool->acquire();
+  mongocxx::v_noabi::collection collection =
+    poolEntry->database(pImpl->name)
+      .collection(pImpl->loadOrderCollectionName);
+
+  auto filter = nlohmann::json::object();
+  filter["_id"] = pImpl->loadOrderDocumentId;
+
+  nlohmann::json document = LoadOrderFile::ToJson(order);
+  document["_id"] = pImpl->loadOrderDocumentId;
+
+  mongocxx::options::replace options;
+  options.upsert(true);
+  (void)collection.replace_one(bsoncxx::from_json(filter.dump()),
+                               bsoncxx::from_json(document.dump()), options);
+}
+
+std::optional<MongoDatabase::LoadOrder> MongoDatabase::LoadLoadOrder()
+{
+  mongocxx::v_noabi::pool::entry poolEntry = pImpl->pool->acquire();
+  mongocxx::v_noabi::collection collection =
+    poolEntry->database(pImpl->name)
+      .collection(pImpl->loadOrderCollectionName);
+
+  auto filter = nlohmann::json::object();
+  filter["_id"] = pImpl->loadOrderDocumentId;
+
+  auto found = collection.find_one(bsoncxx::from_json(filter.dump()));
+  if (!found) {
+    return std::nullopt;
+  }
+
+  const nlohmann::json document =
+    nlohmann::json::parse(bsoncxx::to_json(found->view()));
+  return LoadOrderFile::FromJson(document);
 }
 
 int MongoDatabase::GetDocumentCount(const std::string& filterJson)

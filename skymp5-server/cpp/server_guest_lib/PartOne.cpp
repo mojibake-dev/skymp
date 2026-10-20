@@ -2127,9 +2127,11 @@ std::vector<uint32_t> ReachedSpells(WorldState& worldState, uint32_t spell)
 }
 
 skymp::rules::CastFacts CastFactsFor(WorldState& worldState, uint32_t spell,
-                                     uint8_t hand, const NiPoint3& from)
+                                     uint8_t hand, const NiPoint3& from,
+                                     bool dual)
 {
   skymp::rules::CastFacts facts{};
+  facts.dual = dual;
   facts.spell = spell;
   facts.hand = hand;
   facts.kind = skymp::rules::CastKind::FireAndForget;
@@ -2219,10 +2221,11 @@ skymp::rules::CastFacts CastFactsFor(WorldState& worldState, uint32_t spell,
 }
 
 bool PartOne::StartCast(uint32_t actorFormId, uint32_t spell, uint8_t hand,
-                        const NiPoint3& from)
+                        const NiPoint3& from, bool dual)
 {
   return pImpl->spellCasts->start(
-    actorFormId, CastFactsFor(worldState, spell, hand, from), SteadyNowMs());
+    actorFormId, CastFactsFor(worldState, spell, hand, from, dual),
+    SteadyNowMs());
 }
 
 void PartOne::EndCast(uint32_t actorFormId, uint8_t hand)
@@ -2243,6 +2246,7 @@ PartOne::CastClaim PartOne::ClaimCast(uint32_t actorFormId, uint32_t spell,
   CastClaim res;
   res.scale = claim.scale;
   res.relay = claim.relay;
+  res.dual = claim.dual;
   switch (claim.check) {
     case skymp::rules::CastCheck::Claimed:
       res.check = CastCheck::Claimed;

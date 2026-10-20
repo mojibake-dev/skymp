@@ -2885,6 +2885,7 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
     // targets once each), a stream by the time it held its target (a hosted
     // actor's casts are its host's game's, M3)
     float magnitudeScale = 1.f;
+    bool dualCast = false;
     if (aggressor == myActor) {
       const auto claim =
         partOne.ClaimCast(aggressor->GetFormId(), hitData.source,
@@ -2900,6 +2901,7 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
         return;
       }
       magnitudeScale = claim.scale;
+      dualCast = claim.dual;
       // thuum docs/verbs/shadowbond.md: a bond spell's claimed hit bonds
       // the two until either acts, or the spell's duration ends
       if (targetRef->GetFormId() != aggressor->GetFormId() &&
@@ -2927,7 +2929,7 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
         }
       }
     }
-    OnSpellHit(aggressor, targetRef, hitData, magnitudeScale);
+    OnSpellHit(aggressor, targetRef, hitData, magnitudeScale, dualCast);
     return;
   }
 
@@ -2990,7 +2992,7 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
                  "claimed as a spell its cast reaches",
                  aggressor->GetFormId(), targetRef->GetFormId(),
                  hitData.source);
-    OnSpellHit(aggressor, targetRef, hitData, claim.scale);
+    OnSpellHit(aggressor, targetRef, hitData, claim.scale, claim.dual);
     return;
   }
 
@@ -3251,7 +3253,7 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
       return;
     }
     partOne.StartCast(caster->GetFormId(), spellCastData.spell, hand,
-                      caster->GetPos());
+                      caster->GetPos(), spellCastData.isDualCasting);
     spdlog::info("ActionListener::OnSpellCast - {:x} shouts {:x}, variation "
                  "{} (spell {:x}); recovers in {:.1f} s",
                  caster->GetFormId(), *shout, facts.variation,
@@ -3275,8 +3277,9 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
   // actor) is drawn there only once its first hit names the target (thuum
   // docs/verbs/spell-cast.md, playtest twenty-three: the caster's guess at
   // the target was 0 at every Shadowbond and Azure Reconstruction cast)
-  const bool relayAtFirstHit = partOne.StartCast(
-    caster->GetFormId(), spellCastData.spell, hand, caster->GetPos());
+  const bool relayAtFirstHit =
+    partOne.StartCast(caster->GetFormId(), spellCastData.spell, hand,
+                      caster->GetPos(), spellCastData.isDualCasting);
   EndConcealment(partOne, *caster, spellCastData.spell);
   RunSelfSpell(partOne.worldState, *caster, spellCastData.spell);
 
@@ -3353,7 +3356,8 @@ void ActionListener::OnUnknown(const RawMessageData& rawMsgData)
 
 void ActionListener::OnSpellHit(MpActor* aggressor,
                                 MpObjectReference* targetRef,
-                                const HitData& hitData, float magnitudeScale)
+                                const HitData& hitData, float magnitudeScale,
+                                bool dualCast)
 {
   SendPapyrusOnHitEvent(aggressor, targetRef, hitData);
 
@@ -3394,7 +3398,7 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
     return;
   }
   targetActorPtr->ApplyEffects(hitData.source, effects, scale,
-                               aggressor->GetFormId(), stream);
+                               aggressor->GetFormId(), stream, dualCast);
 
   // thuum docs/verbs/stagger.md: a spell's Stagger effect (Unrelenting
   // Force's push) staggers its target by the effect's magnitude, played in

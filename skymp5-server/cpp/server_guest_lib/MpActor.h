@@ -305,7 +305,8 @@ public:
   // value modifiers are left alone.
   void ApplyEffects(uint32_t source,
                     const std::vector<espm::Effects::Effect>& effects,
-                    float scale, uint32_t caster, bool stream);
+                    float scale, uint32_t caster, bool stream,
+                    bool dualCast = false);
   // Runs the actor's effects for `dtSeconds` of the server's wall clock
   // (WorldState's effects tick; at a load, the time since the record's)
   void AdvanceEffects(float dtSeconds);
@@ -364,7 +365,8 @@ public:
   static bool EffectConditionsHold(WorldState* worldState,
                                    const espm::Effects::Effect& effect,
                                    uint32_t source, const MpActor& victim,
-                                   const MpActor& caster);
+                                   const MpActor& caster,
+                                   bool dualCast = false);
   // thuum docs/verbs/god-mode.md: TGM and TIM, the server's flags for the
   // player's session (cleared at its departure). A god actor takes no
   // damage from another actor and spends no arrow; an immortal actor's

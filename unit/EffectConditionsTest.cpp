@@ -4,6 +4,7 @@
 #include "ActorValueRecord.h"
 #include "Condition.h"
 #include "ConditionsEvaluator.h"
+#include "Appearance.h"
 #include "MpActor.h"
 #include "RunningEffect.h"
 #include "libespm/espm.h"
@@ -281,5 +282,35 @@ TEST_CASE("GetActorValue and HasMagicEffect answer from what the server "
   REQUIRE(Holds(p,
                 { Row("GetActorValue", 14, "Subject", ">", 110.f, 24, "AND") },
                 *target, *caster));
+  Leave(p);
+}
+
+// thuum docs/verbs/spell-cast.md (train-30, Hailstone): a race's constant
+// abilities stand in the server's modifier from the records (RACE SPLO),
+// so a Nord reads its 50 ResistFrost (Skyrim.esm 000AA020) with no record
+// and no running effect, and an Altmer's maximum Magicka carries Highborn's
+// 50 (UESP Skyrim:Nord, Skyrim:High Elf).
+TEST_CASE("A race's constant abilities stand in GetActorValue and the "
+          "maxima: a Nord's frost resistance, an Altmer's magicka",
+          "[Conditions]")
+{
+  PartOne& p = GetPartOne();
+  auto [caster, target] = Pair(p);
+  Appearance nord;
+  nord.raceId = 0x00013746; // Skyrim.esm NordRace
+  target->SetAppearance(&nord);
+  REQUIRE(Holds(p, { Row("GetActorValue", 14, "Subject", "==", 50.f, 43, "AND") },
+                *target, *caster));
+  REQUIRE(Holds(p, { Row("GetActorValue", 14, "Subject", ">", 0.f, 43, "AND") },
+                *target, *caster));
+  REQUIRE(Holds(p, { Row("GetActorValue", 14, "Subject", "==", 0.f, 42, "AND") },
+                *target, *caster)); // ResistFire: none for a Nord
+  Appearance altmer;
+  altmer.raceId = 0x00013743; // Skyrim.esm HighElfRace
+  target->SetAppearance(&altmer);
+  REQUIRE(Holds(p, { Row("GetActorValue", 14, "Subject", "==", 0.f, 43, "AND") },
+                *target, *caster));
+  REQUIRE(target->GetMaximumValues().magicka ==
+          Catch::Approx(target->GetBaseValues().magicka + 50.f));
   Leave(p);
 }

@@ -114,9 +114,10 @@ struct MpActor::Impl
   rust::Vec<skymp::rules::PercentHold> heldPercentages;
 };
 
-uint64_t WallNowMs();
-
 namespace {
+
+// defined below with the running effects (the file's one wall clock)
+uint64_t WallNowMs();
 
 void RestoreActorValuePatched(MpActor* actor, espm::ActorValue actorValue,
                               float value)

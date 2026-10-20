@@ -424,6 +424,9 @@ private:
   // reason for the log
   void ConcealBond(const skymp::rules::BondBreak& bond);
   void UnconcealBond(const skymp::rules::BondBreak& bond, const char* why);
+  // the proc's casts in every game but the caster's, sent by ConcealBond's
+  // timer once the relayed bond cast has run there
+  void CastBondProc(const skymp::rules::BondBreak& bond, uint32_t procId);
   // the proc's form id in this load order, 0 for none (or not loaded)
   uint32_t BondProcFormId(const skymp::rules::BondBreak& bond) const;
   void TickDeferredMessages();

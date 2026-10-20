@@ -295,6 +295,27 @@ Napi::Value MagicApi::CastSpellImmediate(const Napi::CallbackInfo& info)
 
       RE::Projectile::LaunchData launchData(pActor, origin, angles, pSpell);
 
+      // thuum docs/verbs/spell-cast.md, target location (train-29):
+      // CommonLib's spell constructor takes the AV effect's projectile
+      // (src/RE/P/Projectile.cpp:213-222, GetAVEffect()->data.projectileBase).
+      // Lightning Strike's AV effect has none; its lobber (the Grenade PROJ
+      // whose explosion places the bolt) sits on its second effect, so the
+      // observer's launch recorded projectile 0 and nothing flew
+      // (x-lightning-strike 20261019-220431). Take the first effect that
+      // carries a projectile (include/RE/E/Effect.h:39 baseEffect,
+      // include/RE/E/EffectSetting.h:90 projectileBase); area stays as the
+      // constructor set it, the explosion comes from the PROJ when area is 0.
+      if (!launchData.projectileBase) {
+        for (auto* effect : pSpell->effects) {
+          if (effect && effect->baseEffect &&
+              effect->baseEffect->data.projectileBase) {
+            launchData.projectileBase =
+              effect->baseEffect->data.projectileBase;
+            break;
+          }
+        }
+      }
+
       launchData.castingSource = castingSource;
       launchData.desiredTarget = magicTarget;
       launchData.contactNormal = RE::NiPoint3{ 0.f, 0.f, 1.0f };

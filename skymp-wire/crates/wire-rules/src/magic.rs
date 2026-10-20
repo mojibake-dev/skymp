@@ -242,6 +242,44 @@ pub fn modifier(entries: &[EffectEntry], av: u32) -> f32 {
         .sum()
 }
 
+/// The standing modifier a set of constant effects puts on `av`: a race's
+/// abilities (RACE SPLO, each an Ability spell of constant cast type) as
+/// the engine keeps them from the first frame, a Nord's 50 ResistFrost and
+/// an Altmer's 50 Magicka above all. Every value-moving kind counts, with
+/// its sign; nothing here has a duration, so nothing is given back
+/// (thuum docs/verbs/spell-cast.md, Hailstone).
+pub fn constant_modifier(facts: &[EffectFacts], av: u32) -> f32 {
+    facts
+        .iter()
+        .filter(|f| f.kind != EffectKind::State)
+        .map(|f| {
+            let amount = f.magnitude * sign(f);
+            let primary = if f.av == av { amount } else { 0.0 };
+            let second = match (f.kind, f.second_av) {
+                (EffectKind::DualValue, Some(second)) if second == av => amount * f.second_weight,
+                _ => 0.0,
+            };
+            primary + second
+        })
+        .sum()
+}
+
+/// How much of a hostile effect's magnitude a target takes, by its
+/// resistances: the element's resist value (the MGEF's ResistanceAV read on
+/// the target) after its Magic Resistance, each a percentage off and
+/// capped at `cap` (the player's 85, fPlayerMaxResistance's executable
+/// default; an NPC's 100 is immunity), a negative value a weakness that
+/// adds (UESP "Skyrim:Resist Frost", "Skyrim:Resist Magic": "applied after
+/// damage reduction from Resist Magic"; thuum docs/verbs/magic-effects.md).
+/// Non-finite inputs resist nothing.
+pub fn resistance_factor(resist: f32, magic_resist: f32, cap: f32) -> f32 {
+    if !resist.is_finite() || !magic_resist.is_finite() || !cap.is_finite() {
+        return 1.0;
+    }
+    let share = |r: f32| 1.0 - r.min(cap) / 100.0;
+    (share(magic_resist) * share(resist)).max(0.0)
+}
+
 /// Ends the running effects among `entries` whose MGEF is one of `effects`
 /// before their time (an ethereal or invisible actor's own attack ends its
 /// state, thuum docs/verbs/self-cast.md); a buff that ends gives its
@@ -500,5 +538,53 @@ mod tests {
         let back = remove(&mut entries, &[fortify.effect]);
         assert_eq!(total(&back, HEALTH), (0.0, -100.0));
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn constant_modifier_sums_every_value_kind_with_its_sign_and_no_buff_filter() {
+        let mut resist = EffectFacts {
+            effect: 0x3EAF1,
+            source: 0xAA020,
+            kind: EffectKind::Value,
+            av: 43,
+            second_av: None,
+            second_weight: 0.0,
+            magnitude: 50.0,
+            duration_s: 0.0,
+            recover: false,
+            detrimental: false,
+            no_duration: true,
+        };
+        assert!((constant_modifier(&[resist], 43) - 50.0).abs() < 1e-6);
+        assert!(constant_modifier(&[resist], 24).abs() < 1e-6);
+        resist.detrimental = true;
+        assert!((constant_modifier(&[resist], 43) + 50.0).abs() < 1e-6);
+        let dual = EffectFacts {
+            kind: EffectKind::DualValue,
+            av: 24,
+            second_av: Some(26),
+            second_weight: 0.5,
+            magnitude: 20.0,
+            detrimental: false,
+            ..resist
+        };
+        assert!((constant_modifier(&[dual], 26) - 10.0).abs() < 1e-6);
+        let state = EffectFacts { kind: EffectKind::State, ..resist };
+        assert!(constant_modifier(&[state], 43).abs() < 1e-6);
+    }
+
+    #[test]
+    fn resistance_factor_takes_the_element_after_magic_resistance_under_the_cap() {
+        assert!((resistance_factor(0.0, 0.0, 85.0) - 1.0).abs() < 1e-6);
+        assert!((resistance_factor(50.0, 0.0, 85.0) - 0.5).abs() < 1e-6);
+        assert!((resistance_factor(50.0, 50.0, 85.0) - 0.25).abs() < 1e-6);
+        // UESP's example: 85 and 85 leave 2.25 of 100
+        assert!((resistance_factor(85.0, 85.0, 85.0) - 0.0225).abs() < 1e-6);
+        // the player's cap holds 100 at 85; an NPC's 100 is immunity
+        assert!((resistance_factor(100.0, 0.0, 85.0) - 0.15).abs() < 1e-6);
+        assert!(resistance_factor(100.0, 0.0, 100.0).abs() < 1e-6);
+        // a weakness adds
+        assert!((resistance_factor(-50.0, 0.0, 85.0) - 1.5).abs() < 1e-6);
+        assert!((resistance_factor(f32::NAN, 0.0, 85.0) - 1.0).abs() < 1e-6);
     }
 }

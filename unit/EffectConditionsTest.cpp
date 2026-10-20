@@ -4,8 +4,11 @@
 #include "ActorValueRecord.h"
 #include "Condition.h"
 #include "ConditionsEvaluator.h"
+#include "Appearance.h"
 #include "MpActor.h"
+#include "RunningEffect.h"
 #include "libespm/espm.h"
+#include <chrono>
 
 PartOne& GetPartOne();
 
@@ -210,5 +213,106 @@ TEST_CASE("GetIsID and GetGlobalValue answer from the records: Dragonborn's "
                 { Row("GetGlobalValue", 74, "Subject", "==", 1.f,
                       kBlackBookReward2, "AND") },
                 *target, *caster));
+  Leave(p);
+}
+
+// thuum docs/verbs/spell-cast.md (train-30, Hailstone): GetActorValue (14)
+// answers the current Health, Magicka or Stamina as the maximum times the
+// kept percentage, and any other actor value as the player's recorded base
+// plus the modifier of the effects the server applied (0 with no record);
+// HasMagicEffect (214) answers from the running effects, by the MGEF's id.
+TEST_CASE("GetActorValue and HasMagicEffect answer from what the server "
+          "holds: the current Health, a recorded base, a running effect",
+          "[Conditions]")
+{
+  PartOne& p = GetPartOne();
+  auto [caster, target] = Pair(p);
+  // Health (24, CommonLibSSE-NG include/RE/A/ActorValues.h): 100 at full
+  REQUIRE(Holds(p, { Row("GetActorValue", 14, "Subject", ">", 50.f, 24, "AND") },
+                *target, *caster));
+  REQUIRE_FALSE(
+    Holds(p, { Row("GetActorValue", 14, "Subject", "==", 0.f, 24, "AND") },
+          *target, *caster));
+  // ResistFire (42) with no record: 0 (the harness's default base 0x7 is a
+  // Nord, whose abilities carry frost resistance, 43, and no fire)
+  REQUIRE(Holds(p, { Row("GetActorValue", 14, "Subject", "==", 0.f, 42, "AND") },
+                *target, *caster));
+  REQUIRE_FALSE(
+    Holds(p, { Row("GetActorValue", 14, "Subject", ">", 0.f, 42, "AND") },
+          *target, *caster));
+  // the player's recorded base (the client's ActorValues report)
+  ActorValueRecord record;
+  record.bases = { { 42, 50.f } };
+  target->SetActorValueRecord(record);
+  REQUIRE(Holds(p, { Row("GetActorValue", 14, "Subject", ">", 0.f, 42, "AND") },
+                *target, *caster));
+  REQUIRE(Holds(p, { Row("GetActorValue", 14, "Subject", "==", 50.f, 42, "AND") },
+                *target, *caster));
+  // HasMagicEffect: nothing running
+  REQUIRE(Holds(p,
+                { Row("HasMagicEffect", 214, "Subject", "==", 0.f, 0x3EAF3,
+                      "AND") },
+                *target, *caster));
+  // Fortify Health (Skyrim.esm MGEF 0x3EAF3 of 0x3EAF2) running for 60 s
+  const auto nowMs = static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch())
+      .count());
+  RunningEffect fortify;
+  fortify.effect = FormDesc::FromString("3eaf3:Skyrim.esm");
+  fortify.source = FormDesc::FromString("3eaf2:Skyrim.esm");
+  fortify.kind = 1;
+  fortify.av = 24;
+  fortify.magnitude = 20.f;
+  fortify.durationS = 60.f;
+  fortify.elapsedS = 0.f;
+  fortify.asOfMs = nowMs;
+  MpChangeForm changeForm = target->GetChangeForm();
+  changeForm.runningEffects = std::vector<RunningEffect>{ fortify };
+  target->ApplyChangeForm(changeForm);
+  REQUIRE(Holds(p,
+                { Row("HasMagicEffect", 214, "Subject", "==", 1.f, 0x3EAF3,
+                      "AND") },
+                *target, *caster));
+  // the spell's id is not an effect's
+  REQUIRE(Holds(p,
+                { Row("HasMagicEffect", 214, "Subject", "==", 0.f, 0x3EAF2,
+                      "AND") },
+                *target, *caster));
+  // and the current Health reads the raised maximum, 120 at full
+  REQUIRE(Holds(p,
+                { Row("GetActorValue", 14, "Subject", ">", 110.f, 24, "AND") },
+                *target, *caster));
+  Leave(p);
+}
+
+// thuum docs/verbs/spell-cast.md (train-30, Hailstone): a race's constant
+// abilities stand in the server's modifier from the records (RACE SPLO),
+// so a Nord reads its 50 ResistFrost (Skyrim.esm 000AA020) with no record
+// and no running effect, and an Altmer's maximum Magicka carries Highborn's
+// 50 (UESP Skyrim:Nord, Skyrim:High Elf).
+TEST_CASE("A race's constant abilities stand in GetActorValue and the "
+          "maxima: a Nord's frost resistance, an Altmer's magicka",
+          "[Conditions]")
+{
+  PartOne& p = GetPartOne();
+  auto [caster, target] = Pair(p);
+  // the default base 0x7 is a Nord already; the appearance names it anyway
+  Appearance nord;
+  nord.raceId = 0x00013746; // Skyrim.esm NordRace
+  target->SetAppearance(&nord);
+  REQUIRE(Holds(p, { Row("GetActorValue", 14, "Subject", "==", 50.f, 43, "AND") },
+                *target, *caster));
+  REQUIRE(Holds(p, { Row("GetActorValue", 14, "Subject", ">", 0.f, 43, "AND") },
+                *target, *caster));
+  REQUIRE(Holds(p, { Row("GetActorValue", 14, "Subject", "==", 0.f, 42, "AND") },
+                *target, *caster)); // ResistFire: none for a Nord
+  Appearance altmer;
+  altmer.raceId = 0x00013743; // Skyrim.esm HighElfRace
+  target->SetAppearance(&altmer);
+  REQUIRE(Holds(p, { Row("GetActorValue", 14, "Subject", "==", 0.f, 43, "AND") },
+                *target, *caster));
+  REQUIRE(target->GetMaximumValues().magicka ==
+          Catch::Approx(target->GetBaseValues().magicka + 50.f));
   Leave(p);
 }

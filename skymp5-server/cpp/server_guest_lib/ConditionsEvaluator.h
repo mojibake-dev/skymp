@@ -58,6 +58,9 @@ public:
     const std::function<void(bool, std::vector<std::string>&)>& callback,
     const ConditionEvaluatorContext& context = ConditionEvaluatorContext());
 
+  // A condition parameter's text ("0x2B", a decimal) as the number it names
+  static uint32_t ExtractParameter(const std::string& parameter1);
+
 private:
   static bool EvaluateConditionsImpl(
     const ConditionFunctionMap& conditionFunctionMap,
@@ -77,6 +80,4 @@ private:
     const MpActor& target, const ConditionEvaluatorContext& context);
 
   static bool CompareFloats(float a, float b, const std::string& op);
-
-  static uint32_t ExtractParameter(const std::string& parameter1);
 };

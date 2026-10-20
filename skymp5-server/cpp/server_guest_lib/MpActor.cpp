@@ -2980,11 +2980,13 @@ bool MpActor::EffectConditionsHold(WorldState* worldState,
       return;
     }
     if (fn->IsFormParameter(1)) {
-      const auto raw = ConditionsEvaluator::ExtractParameter(condition.parameter1);
+      const auto raw =
+        ConditionsEvaluator::ExtractParameter(condition.parameter1);
       condition.parameter1 = fmt::format("0x{:X}", owner.ToGlobalId(raw));
     }
     if (fn->IsFormParameter(2)) {
-      const auto raw = ConditionsEvaluator::ExtractParameter(condition.parameter2);
+      const auto raw =
+        ConditionsEvaluator::ExtractParameter(condition.parameter2);
       condition.parameter2 = fmt::format("0x{:X}", owner.ToGlobalId(raw));
     }
   };
@@ -3375,7 +3377,8 @@ float MpActor::ResistanceFactorOf(uint32_t source,
     return 1.f;
   }
   bool magicResists = true;
-  const auto sourceRecord = worldState->GetEspm().GetBrowser().LookupById(source);
+  const auto sourceRecord =
+    worldState->GetEspm().GetBrowser().LookupById(source);
   if (sourceRecord.rec && sourceRecord.rec->GetType() == "ALCH") {
     magicResists = false;
   }

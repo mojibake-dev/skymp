@@ -2,9 +2,9 @@
 #include <catch2/catch_all.hpp>
 
 #include "ActorValueRecord.h"
+#include "Appearance.h"
 #include "Condition.h"
 #include "ConditionsEvaluator.h"
-#include "Appearance.h"
 #include "MpActor.h"
 #include "RunningEffect.h"
 #include "libespm/espm.h"
@@ -228,14 +228,16 @@ TEST_CASE("GetActorValue and HasMagicEffect answer from what the server "
   PartOne& p = GetPartOne();
   auto [caster, target] = Pair(p);
   // Health (24, CommonLibSSE-NG include/RE/A/ActorValues.h): 100 at full
-  REQUIRE(Holds(p, { Row("GetActorValue", 14, "Subject", ">", 50.f, 24, "AND") },
+  REQUIRE(Holds(p,
+                { Row("GetActorValue", 14, "Subject", ">", 50.f, 24, "AND") },
                 *target, *caster));
   REQUIRE_FALSE(
     Holds(p, { Row("GetActorValue", 14, "Subject", "==", 0.f, 24, "AND") },
           *target, *caster));
   // ResistFire (42) with no record: 0 (the harness's default base 0x7 is a
   // Nord, whose abilities carry frost resistance, 43, and no fire)
-  REQUIRE(Holds(p, { Row("GetActorValue", 14, "Subject", "==", 0.f, 42, "AND") },
+  REQUIRE(Holds(p,
+                { Row("GetActorValue", 14, "Subject", "==", 0.f, 42, "AND") },
                 *target, *caster));
   REQUIRE_FALSE(
     Holds(p, { Row("GetActorValue", 14, "Subject", ">", 0.f, 42, "AND") },
@@ -244,15 +246,16 @@ TEST_CASE("GetActorValue and HasMagicEffect answer from what the server "
   ActorValueRecord record;
   record.bases = { { 42, 50.f } };
   target->SetActorValueRecord(record);
-  REQUIRE(Holds(p, { Row("GetActorValue", 14, "Subject", ">", 0.f, 42, "AND") },
+  REQUIRE(Holds(p,
+                { Row("GetActorValue", 14, "Subject", ">", 0.f, 42, "AND") },
                 *target, *caster));
-  REQUIRE(Holds(p, { Row("GetActorValue", 14, "Subject", "==", 50.f, 42, "AND") },
+  REQUIRE(Holds(p,
+                { Row("GetActorValue", 14, "Subject", "==", 50.f, 42, "AND") },
                 *target, *caster));
   // HasMagicEffect: nothing running
-  REQUIRE(Holds(p,
-                { Row("HasMagicEffect", 214, "Subject", "==", 0.f, 0x3EAF3,
-                      "AND") },
-                *target, *caster));
+  REQUIRE(Holds(
+    p, { Row("HasMagicEffect", 214, "Subject", "==", 0.f, 0x3EAF3, "AND") },
+    *target, *caster));
   // Fortify Health (Skyrim.esm MGEF 0x3EAF3 of 0x3EAF2) running for 60 s
   const auto nowMs = static_cast<uint64_t>(
     std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -270,15 +273,13 @@ TEST_CASE("GetActorValue and HasMagicEffect answer from what the server "
   MpChangeForm changeForm = target->GetChangeForm();
   changeForm.runningEffects = std::vector<RunningEffect>{ fortify };
   target->ApplyChangeForm(changeForm);
-  REQUIRE(Holds(p,
-                { Row("HasMagicEffect", 214, "Subject", "==", 1.f, 0x3EAF3,
-                      "AND") },
-                *target, *caster));
+  REQUIRE(Holds(
+    p, { Row("HasMagicEffect", 214, "Subject", "==", 1.f, 0x3EAF3, "AND") },
+    *target, *caster));
   // the spell's id is not an effect's
-  REQUIRE(Holds(p,
-                { Row("HasMagicEffect", 214, "Subject", "==", 0.f, 0x3EAF2,
-                      "AND") },
-                *target, *caster));
+  REQUIRE(Holds(
+    p, { Row("HasMagicEffect", 214, "Subject", "==", 0.f, 0x3EAF2, "AND") },
+    *target, *caster));
   // and the current Health reads the raised maximum, 120 at full
   REQUIRE(Holds(p,
                 { Row("GetActorValue", 14, "Subject", ">", 110.f, 24, "AND") },
@@ -301,16 +302,20 @@ TEST_CASE("A race's constant abilities stand in GetActorValue and the "
   Appearance nord;
   nord.raceId = 0x00013746; // Skyrim.esm NordRace
   target->SetAppearance(&nord);
-  REQUIRE(Holds(p, { Row("GetActorValue", 14, "Subject", "==", 50.f, 43, "AND") },
+  REQUIRE(Holds(p,
+                { Row("GetActorValue", 14, "Subject", "==", 50.f, 43, "AND") },
                 *target, *caster));
-  REQUIRE(Holds(p, { Row("GetActorValue", 14, "Subject", ">", 0.f, 43, "AND") },
+  REQUIRE(Holds(p,
+                { Row("GetActorValue", 14, "Subject", ">", 0.f, 43, "AND") },
                 *target, *caster));
-  REQUIRE(Holds(p, { Row("GetActorValue", 14, "Subject", "==", 0.f, 42, "AND") },
+  REQUIRE(Holds(p,
+                { Row("GetActorValue", 14, "Subject", "==", 0.f, 42, "AND") },
                 *target, *caster)); // ResistFire: none for a Nord
   Appearance altmer;
   altmer.raceId = 0x00013743; // Skyrim.esm HighElfRace
   target->SetAppearance(&altmer);
-  REQUIRE(Holds(p, { Row("GetActorValue", 14, "Subject", "==", 0.f, 43, "AND") },
+  REQUIRE(Holds(p,
+                { Row("GetActorValue", 14, "Subject", "==", 0.f, 43, "AND") },
                 *target, *caster));
   REQUIRE(target->GetMaximumValues().magicka ==
           Catch::Approx(target->GetBaseValues().magicka + 50.f));

@@ -2966,13 +2966,41 @@ bool MpActor::EffectConditionsHold(WorldState* worldState,
     return false;
   }
   std::vector<Condition> conditions;
+  const auto& map = worldState->conditionFunctionMap;
+  auto& browser = worldState->GetEspm().GetBrowser();
+  // A form parameter sits in the owning record's own index space (the
+  // file's masters, then itself), as the record's EFIDs do: mapped here to
+  // the global id through the record, for the functions that declare one
+  // (ConditionFunction::IsFormParameter; thuum docs/verbs/spell-cast.md,
+  // Hailstone's Shatter names its MGEF as 0x030B2C7F)
+  const auto mapForms = [&](Condition& condition,
+                            const espm::LookupResult& owner) {
+    const auto& fn = map.GetConditionFunction(condition.functionIndex);
+    if (!fn || !owner.rec) {
+      return;
+    }
+    if (fn->IsFormParameter(1)) {
+      const auto raw = ConditionsEvaluator::ExtractParameter(condition.parameter1);
+      condition.parameter1 = fmt::format("0x{:X}", owner.ToGlobalId(raw));
+    }
+    if (fn->IsFormParameter(2)) {
+      const auto raw = ConditionsEvaluator::ExtractParameter(condition.parameter2);
+      condition.parameter2 = fmt::format("0x{:X}", owner.ToGlobalId(raw));
+    }
+  };
+  const auto spellRecord = browser.LookupById(source);
   for (const auto& ctda : effect.conditions) {
-    conditions.push_back(Condition::FromCtda(ctda));
+    auto condition = Condition::FromCtda(ctda);
+    mapForms(condition, spellRecord);
+    conditions.push_back(std::move(condition));
   }
   try {
+    const auto mgefRecord = browser.LookupById(effect.effectId);
     const auto mgef = espm::GetData<espm::MGEF>(effect.effectId, worldState);
     for (const auto& ctda : mgef.conditions) {
-      conditions.push_back(Condition::FromCtda(ctda));
+      auto condition = Condition::FromCtda(ctda);
+      mapForms(condition, mgefRecord);
+      conditions.push_back(std::move(condition));
     }
   } catch (std::exception& e) {
     spdlog::warn("EffectConditionsHold - effect {:x}: {}; refused",
@@ -2982,7 +3010,6 @@ bool MpActor::EffectConditionsHold(WorldState* worldState,
   if (conditions.empty()) {
     return true;
   }
-  const auto& map = worldState->conditionFunctionMap;
   for (const auto& condition : conditions) {
     if (!map.GetConditionFunction(condition.functionIndex)) {
       // the refusal stands per hit; the line is worth once per effect and
@@ -3066,8 +3093,11 @@ void MpActor::ApplyEffects(uint32_t source,
     if (!facts) {
       continue;
     }
+    // the target's resistances take their share of a hostile effect before
+    // anything is applied (thuum docs/verbs/magic-effects.md, train-30)
+    const float resisted = scale * ResistanceFactorOf(source, effect);
     const auto applied =
-      skymp::rules::apply_effect(*facts, scale, caster,
+      skymp::rules::apply_effect(*facts, resisted, caster,
                                  stream ? skymp::rules::EffectArrival::Stream
                                         : skymp::rules::EffectArrival::Once);
     SumAttributeChanges(applied.changes, deltas, touched, pImpl->godMode);
@@ -3080,7 +3110,7 @@ void MpActor::ApplyEffects(uint32_t source,
       MagicEffectsMessage::Effect once;
       once.effect = facts->effect;
       once.source = source;
-      once.magnitude = facts->magnitude * scale;
+      once.magnitude = facts->magnitude * resisted;
       shownOnce.push_back(once);
     }
   }
@@ -3249,14 +3279,142 @@ bool MpActor::EndRunningEffectIds(const std::vector<uint32_t>& ending)
   return true;
 }
 
+namespace {
+// The constant effects of a race's abilities (RACE SPLO: each an Ability
+// spell of constant cast type, a Nord's Resist Frost 000AA020 above all)
+// as the rule's facts, read once per race from the records: the engine
+// keeps them on the actor from its first frame, the client's ActorValues
+// report carries bases alone, and the server applied none of them (thuum
+// docs/verbs/spell-cast.md, Hailstone, train-30). Empty for a race the
+// records lack.
+const rust::Vec<skymp::rules::EffectFacts>& RaceAbilityFactsOf(
+  WorldState* worldState, uint32_t raceId)
+{
+  static std::unordered_map<uint32_t, rust::Vec<skymp::rules::EffectFacts>>
+    cache;
+  static const rust::Vec<skymp::rules::EffectFacts> none;
+  if (!worldState || raceId == 0) {
+    return none;
+  }
+  if (const auto it = cache.find(raceId); it != cache.end()) {
+    return it->second;
+  }
+  rust::Vec<skymp::rules::EffectFacts> facts;
+  try {
+    const auto race = worldState->GetEspm().GetBrowser().LookupById(raceId);
+    const auto raceData = espm::GetData<espm::RACE>(raceId, worldState);
+    for (const auto rawSpell : raceData.spells) {
+      const auto spellId = race.ToGlobalId(rawSpell);
+      const auto spell = espm::GetData<espm::SPEL>(spellId, worldState);
+      if (!spell.spellItem ||
+          spell.spellItem->type != espm::SPEL::SpellType::Ability ||
+          spell.spellItem->castType != espm::SPEL::CastType::ConstantEffect) {
+        continue;
+      }
+      for (const auto& effect : MpActor::EffectsOf(worldState, spellId)) {
+        if (auto f = EffectFactsOf(worldState, spellId, effect)) {
+          facts.push_back(*f);
+        }
+      }
+    }
+  } catch (std::exception& e) {
+    spdlog::warn("RaceAbilityFactsOf - race {:x}: {}", raceId, e.what());
+  }
+  return cache.emplace(raceId, std::move(facts)).first->second;
+}
+}
+
+float MpActor::GetCurrentActorValue(espm::ActorValue av)
+{
+  if (av == espm::ActorValue::Health || av == espm::ActorValue::Magicka ||
+      av == espm::ActorValue::Stamina) {
+    const auto maximum = GetMaximumValues();
+    const auto& values = GetActorValues();
+    if (av == espm::ActorValue::Health) {
+      return maximum.health * values.healthPercentage;
+    }
+    if (av == espm::ActorValue::Magicka) {
+      return maximum.magicka * values.magickaPercentage;
+    }
+    return maximum.stamina * values.staminaPercentage;
+  }
+  const auto index = static_cast<int32_t>(av);
+  if (index < 0 || index > 0xff) {
+    return 0.f;
+  }
+  const auto base = GetRecordedActorValueBase(static_cast<uint8_t>(index));
+  return base.value_or(0.f) + GetEffectModifier(av);
+}
+
+float MpActor::ResistanceFactorOf(uint32_t source,
+                                  const espm::Effects::Effect& effect)
+{
+  // The engine's own resistance never runs on a player's Health, Magicka
+  // or Stamina damage from another actor (the player's AddTarget refuses
+  // those effects; the server's number is imposed, R0), so the server
+  // applies it: only a Hostile effect is resisted (MGEF flag 0x1), a
+  // spell flagged IgnoreResistance is not, Magic Resistance applies to a
+  // spell's or an enchantment's effect and not to a poison's or a
+  // potion's (an ALCH source), the element's own value is the MGEF's
+  // ResistanceAV read on this actor, and the player's cap is 85
+  // (fPlayerMaxResistance's executable default, which the masters do not
+  // set: ActionListener BlockSettingsOf, thuum ghidra/notes/block-formula.md);
+  // an NPC's cap is 100, immunity. HYPOTHESIS until x-hailstone: the
+  // engine's order and cap for a dual value modifier's second value.
+  WorldState* worldState = GetParent();
+  if (!worldState) {
+    return 1.f;
+  }
+  espm::MGEF::DATA mgef;
+  try {
+    mgef = espm::GetData<espm::MGEF>(effect.effectId, worldState).data;
+  } catch (std::exception&) {
+    return 1.f;
+  }
+  if (!mgef.IsFlagSet(espm::MGEF::Flags::Hostile)) {
+    return 1.f;
+  }
+  bool magicResists = true;
+  const auto sourceRecord = worldState->GetEspm().GetBrowser().LookupById(source);
+  if (sourceRecord.rec && sourceRecord.rec->GetType() == "ALCH") {
+    magicResists = false;
+  }
+  if (sourceRecord.rec && sourceRecord.rec->GetType() == "SPEL") {
+    try {
+      const auto spell = espm::GetData<espm::SPEL>(source, worldState);
+      if (spell.spellItem &&
+          (static_cast<uint32_t>(spell.spellItem->flags) &
+           static_cast<uint32_t>(espm::SPEL::SpellFlags::IgnoreResistance)) !=
+            0) {
+        return 1.f;
+      }
+    } catch (std::exception&) {
+    }
+  }
+  const float cap = IsCreatedAsPlayer() ? 85.f : 100.f;
+  const float magic =
+    magicResists ? GetCurrentActorValue(espm::ActorValue::MagicResist) : 0.f;
+  const float element = mgef.resistValue >= 0
+    ? GetCurrentActorValue(static_cast<espm::ActorValue>(mgef.resistValue))
+    : 0.f;
+  return skymp::rules::resistance_factor(element, magic, cap);
+}
+
 float MpActor::GetEffectModifier(espm::ActorValue av) const
 {
   WorldState* worldState = GetParent();
-  if (!worldState || !HasRunningEffects()) {
+  if (!worldState) {
     return 0.f;
   }
-  const auto entries = EffectEntriesOf(ChangeForm(), worldState->espmFiles);
-  return skymp::rules::effect_modifier(entries, static_cast<uint32_t>(av));
+  const auto avIndex = static_cast<uint32_t>(av);
+  // the race's constant abilities stand under every running effect
+  float modifier = skymp::rules::ability_modifier(
+    RaceAbilityFactsOf(worldState, GetRaceId()), avIndex);
+  if (HasRunningEffects()) {
+    const auto entries = EffectEntriesOf(ChangeForm(), worldState->espmFiles);
+    modifier += skymp::rules::effect_modifier(entries, avIndex);
+  }
+  return modifier;
 }
 
 void MpActor::ApplyAttributeDeltas(const std::array<float, 3>& deltas,

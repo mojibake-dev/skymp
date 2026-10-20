@@ -11,3 +11,14 @@ divergences:
     legacy: 0
     wire: 1
     reason: the game clock at login (SetGameTime, thuum ADR-021); the legacy server has none
+
+  # thuum docs/verbs/player-globals.md (train-30's early send): the player's
+  # own globals. The wire server tells each player the globals it watches and
+  # their recorded values (a silent record gets the entry's default) at the
+  # login itself (PlayerGlobals, MsgType 45), right after the clock; until
+  # train-30 it rode the first movement report, so only the sessions whose
+  # clients moved declared it. The legacy server has no such message.
+  - msg: {t: 45}
+    legacy: 0
+    wire: 1
+    reason: the player's globals at login (PlayerGlobals, thuum docs/verbs/player-globals.md); the legacy server has none

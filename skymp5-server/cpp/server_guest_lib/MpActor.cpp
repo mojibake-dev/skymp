@@ -129,9 +129,8 @@ void RestoreActorValuePatched(MpActor* actor, espm::ActorValue actorValue,
 
 bool MpActor::TakeReportedPercentage(espm::ActorValue av, float reported)
 {
-  return skymp::rules::percentages_report(pImpl->heldPercentages,
-                                          static_cast<uint8_t>(av), reported,
-                                          WallNowMs());
+  return skymp::rules::percentages_report(
+    pImpl->heldPercentages, static_cast<uint8_t>(av), reported, WallNowMs());
 }
 
 MpActor::MpActor(const LocationalData& locationalData_,

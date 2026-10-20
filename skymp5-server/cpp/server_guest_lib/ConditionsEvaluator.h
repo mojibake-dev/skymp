@@ -41,6 +41,10 @@ struct ConditionEvaluatorContext
   // other actor (IsHostileToActor); 0 from the other callers
   uint32_t effectVictimFormId = 0;
   uint32_t effectCasterFormId = 0;
+  // thuum train-29: whether the cast that landed the effect was dual cast
+  // (the claimed cast's record, from the caster's game's report), for
+  // EffectWasDualCast (724); false from every other caller
+  bool effectWasDualCast = false;
 };
 
 class ConditionsEvaluator

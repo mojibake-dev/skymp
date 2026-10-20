@@ -2960,7 +2960,7 @@ bool MpActor::IsConditionGated(WorldState* worldState,
 bool MpActor::EffectConditionsHold(WorldState* worldState,
                                    const espm::Effects::Effect& effect,
                                    uint32_t source, const MpActor& victim,
-                                   const MpActor& caster)
+                                   const MpActor& caster, bool dualCast)
 {
   if (!worldState) {
     return false;
@@ -3012,6 +3012,7 @@ bool MpActor::EffectConditionsHold(WorldState* worldState,
   context.damageSourceFormId = source;
   context.effectVictimFormId = victim.GetFormId();
   context.effectCasterFormId = caster.GetFormId();
+  context.effectWasDualCast = dualCast;
   ConditionsEvaluator::EvaluateConditions(
     map, worldState->conditionsEvaluatorSettings,
     ConditionsEvaluatorCaller::kMagicEffect, conditions, victim, caster,
@@ -3027,7 +3028,8 @@ bool MpActor::EffectConditionsHold(WorldState* worldState,
 
 void MpActor::ApplyEffects(uint32_t source,
                            const std::vector<espm::Effects::Effect>& effects,
-                           float scale, uint32_t caster, bool stream)
+                           float scale, uint32_t caster, bool stream,
+                           bool dualCast)
 {
   WorldState* worldState = GetParent();
   if (!worldState || IsDead()) {
@@ -3052,7 +3054,7 @@ void MpActor::ApplyEffects(uint32_t source,
   for (const auto& effect : effects) {
     if (casterActor) {
       if (!EffectConditionsHold(worldState, effect, source, *this,
-                                *casterActor)) {
+                                *casterActor, dualCast)) {
         continue;
       }
     } else if (IsConditionGated(worldState, effect)) {

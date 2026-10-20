@@ -119,6 +119,10 @@ pub struct CastFacts {
     /// proximity and no timer; thuum docs/verbs/spell-cast.md, train-27). 0
     /// for the bolt window.
     pub hazard_ms: u64,
+    /// The cast was dual cast, as the caster's game reported it
+    /// (SpellCastMessage.isDualCasting), for the effect conditions gated on
+    /// EffectWasDualCast (724; thuum docs/verbs/spell-cast.md, train-29).
+    pub dual: bool,
 }
 
 /// A spell hit as the caster's game reported it: the spell, the target's
@@ -151,6 +155,8 @@ pub enum CastCheck {
         scale: f32,
         /// Relay the cast now, with this hit's target.
         relay: bool,
+        /// The claimed cast was dual cast ([`CastFacts::dual`]).
+        dual: bool,
     },
     /// No cast of that spell covers the hit.
     NoCast,
@@ -332,7 +338,7 @@ impl Casts {
             open.last_counted_ms = now_ms;
             let scale = f32::from(u16::try_from(tick_ms).unwrap_or(u16::MAX)) / 1000.0;
             let relay = std::mem::replace(&mut open.relay_pending, false);
-            return CastCheck::Claimed { scale, relay };
+            return CastCheck::Claimed { scale, relay, dual: open.facts.dual };
         }
         casts.released.retain(|c| now_ms.saturating_sub(c.at_ms) <= c.facts.hazard_ms.max(CAST_WINDOW_MS));
         for cast in casts.released.iter_mut().rev() {
@@ -361,7 +367,7 @@ impl Casts {
             cast.hits = cast.hits.saturating_add(1);
             cast.first_hit_ms.get_or_insert(now_ms);
             let relay = std::mem::replace(&mut cast.relay_pending, false);
-            return CastCheck::Claimed { scale: 1.0, relay };
+            return CastCheck::Claimed { scale: 1.0, relay, dual: cast.facts.dual };
         }
         if any {
             CastCheck::TooFar
@@ -419,7 +425,7 @@ impl Casts {
             } else {
                 1.0
             };
-            return CastCheck::Claimed { scale, relay: false };
+            return CastCheck::Claimed { scale, relay: false, dual: l.facts.dual };
         }
         if any {
             CastCheck::TooFar
@@ -449,7 +455,7 @@ mod tests {
     }
 
     fn cast(spell: u32, hand: u8, kind: CastKind, area: bool) -> CastFacts {
-        CastFacts { spell, hand, kind, area, reach: 1_000.0, x: 0.0, y: 0.0, z: 0.0, reached: [0; MAX_REACHED], linger_ms: 0, reached_concentration: 0, lands_on_target: false, hazard_ms: 0 }
+        CastFacts { spell, hand, kind, area, reach: 1_000.0, x: 0.0, y: 0.0, z: 0.0, reached: [0; MAX_REACHED], linger_ms: 0, reached_concentration: 0, lands_on_target: false, hazard_ms: 0, dual: false }
     }
 
     // labels, not records: a cloak spell and its proc, a bolt and its proc
@@ -465,6 +471,16 @@ mod tests {
         CastFacts { reached, linger_ms, ..cast(spell, 1, kind, false) }
     }
 
+    // a dual cast's claim says so (EffectWasDualCast, train-29)
+    #[test]
+    fn a_dual_casts_claim_carries_its_flag() {
+        let mut c = Casts::default();
+        c.start(1, CastFacts { dual: true, ..cast(BOLT, 1, CastKind::FireAndForget, false) }, 0);
+        assert_eq!(c.claim(1, hit(BOLT, 2, 100.0, 0.0, 0.0), 50), CastCheck::Claimed { scale: 1.0, relay: false, dual: true });
+        c.start(1, cast(BOLT, 1, CastKind::FireAndForget, false), 1_000);
+        assert_eq!(c.claim(1, hit(BOLT, 2, 100.0, 0.0, 0.0), 1_050), CastCheck::Claimed { scale: 1.0, relay: false, dual: false });
+    }
+
     // a spell delivered to its target: its relay waits for its first hit
     #[test]
     fn a_placed_triggers_cast_claims_its_late_hit_within_the_hazard_window() {
@@ -474,7 +490,7 @@ mod tests {
         c.start(1, cast(BALL, 1, CastKind::FireAndForget, false), 0);
         assert_eq!(c.claim(1, hit(BALL, 2, 100.0, 0.0, 0.0), 60_000), CastCheck::NoCast);
         // the rune's cast waits for the actor that trips it
-        assert_eq!(c.claim(1, hit(BOLT, 2, 100.0, 0.0, 0.0), 60_000), CastCheck::Claimed { scale: 1.0, relay: false });
+        assert_eq!(c.claim(1, hit(BOLT, 2, 100.0, 0.0, 0.0), 60_000), CastCheck::Claimed { scale: 1.0, relay: false, dual: false });
         assert_eq!(c.claim(1, hit(BOLT, 2, 100.0, 0.0, 0.0), 60_100), CastCheck::NoCast);
         // and not past the hazard window
         let mut c = Casts::default();
@@ -490,30 +506,30 @@ mod tests {
     fn a_landing_casts_relay_waits_for_its_first_hit_and_goes_once() {
         let mut c = Casts::default();
         assert!(c.start(1, landing(BOLT, CastKind::FireAndForget), 0));
-        assert_eq!(c.claim(1, hit(BOLT, 2, 100.0, 0.0, 0.0), 50), CastCheck::Claimed { scale: 1.0, relay: true });
+        assert_eq!(c.claim(1, hit(BOLT, 2, 100.0, 0.0, 0.0), 50), CastCheck::Claimed { scale: 1.0, relay: true, dual: false });
         // an area landing cast's further target relays nothing more
         let mut c = Casts::default();
         assert!(c.start(1, CastFacts { area: true, ..landing(BALL, CastKind::FireAndForget) }, 0));
-        assert_eq!(c.claim(1, hit(BALL, 2, 100.0, 0.0, 0.0), 50), CastCheck::Claimed { scale: 1.0, relay: true });
-        assert_eq!(c.claim(1, hit(BALL, 3, 120.0, 0.0, 0.0), 80), CastCheck::Claimed { scale: 1.0, relay: false });
+        assert_eq!(c.claim(1, hit(BALL, 2, 100.0, 0.0, 0.0), 50), CastCheck::Claimed { scale: 1.0, relay: true, dual: false });
+        assert_eq!(c.claim(1, hit(BALL, 3, 120.0, 0.0, 0.0), 80), CastCheck::Claimed { scale: 1.0, relay: false, dual: false });
     }
 
     #[test]
     fn a_landing_streams_first_hit_relays_and_its_later_hits_do_not() {
         let mut c = Casts::default();
         assert!(c.start(1, landing(FLAMES, CastKind::Concentration), 0));
-        assert_eq!(c.claim(1, hit(FLAMES, 2, 100.0, 0.0, 0.0), 200), CastCheck::Claimed { scale: 0.2, relay: true });
-        assert_eq!(c.claim(1, hit(FLAMES, 2, 100.0, 0.0, 0.0), 400), CastCheck::Claimed { scale: 0.2, relay: false });
+        assert_eq!(c.claim(1, hit(FLAMES, 2, 100.0, 0.0, 0.0), 200), CastCheck::Claimed { scale: 0.2, relay: true, dual: false });
+        assert_eq!(c.claim(1, hit(FLAMES, 2, 100.0, 0.0, 0.0), 400), CastCheck::Claimed { scale: 0.2, relay: false, dual: false });
         // a new stream in the same hand waits again
         assert!(c.start(1, landing(FLAMES, CastKind::Concentration), 1_000));
-        assert_eq!(c.claim(1, hit(FLAMES, 2, 100.0, 0.0, 0.0), 1_100), CastCheck::Claimed { scale: 0.1, relay: true });
+        assert_eq!(c.claim(1, hit(FLAMES, 2, 100.0, 0.0, 0.0), 1_100), CastCheck::Claimed { scale: 0.1, relay: true, dual: false });
     }
 
     #[test]
     fn a_cast_that_is_not_delivered_to_its_target_relays_at_once() {
         let mut c = Casts::default();
         assert!(!c.start(1, cast(BOLT, 1, CastKind::FireAndForget, false), 0));
-        assert_eq!(c.claim(1, hit(BOLT, 2, 100.0, 0.0, 0.0), 50), CastCheck::Claimed { scale: 1.0, relay: false });
+        assert_eq!(c.claim(1, hit(BOLT, 2, 100.0, 0.0, 0.0), 50), CastCheck::Claimed { scale: 1.0, relay: false, dual: false });
         // an unrecorded cast (a bad hand) holds nothing
         assert!(!c.start(1, CastFacts { hand: 7, ..landing(BOLT, CastKind::FireAndForget) }, 0));
     }
@@ -537,7 +553,7 @@ mod tests {
     fn a_fire_and_forget_cast_covers_one_hit() {
         let mut c = Casts::default();
         c.start(1, cast(BOLT, 1, CastKind::FireAndForget, false), 0);
-        assert_eq!(c.claim(1, hit(BOLT, 2, 100.0, 0.0, 0.0), 50), CastCheck::Claimed { scale: 1.0, relay: false });
+        assert_eq!(c.claim(1, hit(BOLT, 2, 100.0, 0.0, 0.0), 50), CastCheck::Claimed { scale: 1.0, relay: false, dual: false });
         assert_eq!(c.claim(1, hit(BOLT, 2, 100.0, 0.0, 0.0), 60), CastCheck::NoCast);
     }
 
@@ -545,8 +561,8 @@ mod tests {
     fn an_area_cast_covers_its_other_targets_once_each_within_the_splash() {
         let mut c = Casts::default();
         c.start(1, cast(BALL, 1, CastKind::FireAndForget, true), 0);
-        assert_eq!(c.claim(1, hit(BALL, 2, 100.0, 0.0, 0.0), 500), CastCheck::Claimed { scale: 1.0, relay: false });
-        assert_eq!(c.claim(1, hit(BALL, 3, 120.0, 0.0, 0.0), 550), CastCheck::Claimed { scale: 1.0, relay: false });
+        assert_eq!(c.claim(1, hit(BALL, 2, 100.0, 0.0, 0.0), 500), CastCheck::Claimed { scale: 1.0, relay: false, dual: false });
+        assert_eq!(c.claim(1, hit(BALL, 3, 120.0, 0.0, 0.0), 550), CastCheck::Claimed { scale: 1.0, relay: false, dual: false });
         // the same target again, and a target after the splash window
         assert_eq!(c.claim(1, hit(BALL, 3, 120.0, 0.0, 0.0), 560), CastCheck::NoCast);
         assert_eq!(c.claim(1, hit(BALL, 4, 130.0, 0.0, 0.0), 700), CastCheck::NoCast);
@@ -557,7 +573,7 @@ mod tests {
         let mut c = Casts::default();
         c.start(1, cast(BOLT, 1, CastKind::FireAndForget, false), 0);
         assert_eq!(c.claim(1, hit(BOLT, 2, 2_000.0, 0.0, 0.0), 50), CastCheck::TooFar);
-        assert_eq!(c.claim(1, hit(BOLT, 2, 1_200.0, 0.0, 0.0), 60), CastCheck::Claimed { scale: 1.0, relay: false });
+        assert_eq!(c.claim(1, hit(BOLT, 2, 1_200.0, 0.0, 0.0), 60), CastCheck::Claimed { scale: 1.0, relay: false, dual: false });
     }
 
     #[test]
@@ -566,10 +582,10 @@ mod tests {
         c.start(1, cast(FLAMES, 1, CastKind::Concentration, false), 0);
         assert!(c.is_open(1, 1));
         // the first report after the stream's way out counts MAX_TICK_MS
-        assert_eq!(c.claim(1, hit(FLAMES, 2, 150.0, 0.0, 0.0), 600), CastCheck::Claimed { scale: 0.25, relay: false });
+        assert_eq!(c.claim(1, hit(FLAMES, 2, 150.0, 0.0, 0.0), 600), CastCheck::Claimed { scale: 0.25, relay: false, dual: false });
         // five reports a second count a fifth of a second each
-        assert_eq!(c.claim(1, hit(FLAMES, 2, 150.0, 0.0, 0.0), 800), CastCheck::Claimed { scale: 0.2, relay: false });
-        assert_eq!(c.claim(1, hit(FLAMES, 2, 150.0, 0.0, 0.0), 1_000), CastCheck::Claimed { scale: 0.2, relay: false });
+        assert_eq!(c.claim(1, hit(FLAMES, 2, 150.0, 0.0, 0.0), 800), CastCheck::Claimed { scale: 0.2, relay: false, dual: false });
+        assert_eq!(c.claim(1, hit(FLAMES, 2, 150.0, 0.0, 0.0), 1_000), CastCheck::Claimed { scale: 0.2, relay: false, dual: false });
         // ended: nothing more
         c.end(1, 1);
         assert!(!c.is_open(1, 1));
@@ -623,7 +639,7 @@ mod tests {
         c.start(1, cast(FLAMES, 1, CastKind::Concentration, false), 0);
         c.start(1, cast(BOLT, 1, CastKind::Concentration, false), 100);
         assert_eq!(c.claim(1, hit(FLAMES, 2, 150.0, 0.0, 0.0), 200), CastCheck::NoCast);
-        assert_eq!(c.claim(1, hit(BOLT, 2, 150.0, 0.0, 0.0), 200), CastCheck::Claimed { scale: 0.1, relay: false });
+        assert_eq!(c.claim(1, hit(BOLT, 2, 150.0, 0.0, 0.0), 200), CastCheck::Claimed { scale: 0.1, relay: false, dual: false });
         c.forget(1);
         assert_eq!(c.claim(1, hit(BOLT, 2, 150.0, 0.0, 0.0), 300), CastCheck::NoCast);
     }
@@ -653,14 +669,14 @@ mod tests {
         let mut c = Casts::default();
         c.start(1, reaching(CLOAK, CastKind::FireAndForget, CLOAK_PROC, 60_000), 0);
         let at = [0.0, 0.0, 0.0];
-        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 2, 300.0, 0.0, 0.0), at, 1_000), CastCheck::Claimed { scale: 1.0, relay: false });
+        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 2, 300.0, 0.0, 0.0), at, 1_000), CastCheck::Claimed { scale: 1.0, relay: false, dual: false });
         assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 2, 300.0, 0.0, 0.0), at, 1_200), CastCheck::Throttled);
         // another target has its own rate
-        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 3, 0.0, 300.0, 0.0), at, 1_200), CastCheck::Claimed { scale: 1.0, relay: false });
+        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 3, 0.0, 300.0, 0.0), at, 1_200), CastCheck::Claimed { scale: 1.0, relay: false, dual: false });
         // the engine's cadence, 496 ms in x-class-self, is never refused
-        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 2, 300.0, 0.0, 0.0), at, 1_496), CastCheck::Claimed { scale: 1.0, relay: false });
+        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 2, 300.0, 0.0, 0.0), at, 1_496), CastCheck::Claimed { scale: 1.0, relay: false, dual: false });
         // past the CAST_WINDOW_MS a bolt has, still within the cloak's
-        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 2, 300.0, 0.0, 0.0), at, 40_000), CastCheck::Claimed { scale: 1.0, relay: false });
+        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 2, 300.0, 0.0, 0.0), at, 40_000), CastCheck::Claimed { scale: 1.0, relay: false, dual: false });
         // and not after it
         assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 2, 300.0, 0.0, 0.0), at, 60_001), CastCheck::NoCast);
     }
@@ -673,14 +689,14 @@ mod tests {
         let on = |t| hit(CLOAK_PROC, t, 300.0, 0.0, 0.0);
         // the first report on a target counts one cadence, then each the time
         // since the last, the engine's 500 ms rhythm in full
-        assert_eq!(c.claim_reached(1, on(2), [0.0; 3], 1_000), CastCheck::Claimed { scale: 0.5, relay: false });
-        assert_eq!(c.claim_reached(1, on(2), [0.0; 3], 1_499), CastCheck::Claimed { scale: 0.499, relay: false });
+        assert_eq!(c.claim_reached(1, on(2), [0.0; 3], 1_000), CastCheck::Claimed { scale: 0.5, relay: false, dual: false });
+        assert_eq!(c.claim_reached(1, on(2), [0.0; 3], 1_499), CastCheck::Claimed { scale: 0.499, relay: false, dual: false });
         // reports faster than the engine's are never throttled, and add up to the time
-        assert_eq!(c.claim_reached(1, on(2), [0.0; 3], 1_499), CastCheck::Claimed { scale: 0.0, relay: false });
+        assert_eq!(c.claim_reached(1, on(2), [0.0; 3], 1_499), CastCheck::Claimed { scale: 0.0, relay: false, dual: false });
         // a gap counts at most REACHED_MAX_TICK_MS
-        assert_eq!(c.claim_reached(1, on(2), [0.0; 3], 5_000), CastCheck::Claimed { scale: 0.6, relay: false });
+        assert_eq!(c.claim_reached(1, on(2), [0.0; 3], 5_000), CastCheck::Claimed { scale: 0.6, relay: false, dual: false });
         // another target's time is its own
-        assert_eq!(c.claim_reached(1, on(3), [0.0; 3], 5_000), CastCheck::Claimed { scale: 0.5, relay: false });
+        assert_eq!(c.claim_reached(1, on(3), [0.0; 3], 5_000), CastCheck::Claimed { scale: 0.5, relay: false, dual: false });
     }
 
     #[test]
@@ -688,7 +704,7 @@ mod tests {
         let mut c = Casts::default();
         c.start(1, reaching(CLOAK, CastKind::FireAndForget, CLOAK_PROC, 60_000), 0);
         // the bearer walked 5000 units: a target beside it is within reach
-        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 2, 5_100.0, 0.0, 0.0), [5_000.0, 0.0, 0.0], 1_000), CastCheck::Claimed { scale: 1.0, relay: false });
+        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 2, 5_100.0, 0.0, 0.0), [5_000.0, 0.0, 0.0], 1_000), CastCheck::Claimed { scale: 1.0, relay: false, dual: false });
         // one by the cast's spot is not
         assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 3, 0.0, 0.0, 0.0), [5_000.0, 0.0, 0.0], 1_000), CastCheck::TooFar);
     }
@@ -702,14 +718,14 @@ mod tests {
         // a proc's hit is not a hit of the cast's own spell
         assert_eq!(c.claim(1, hit(CLOAK_PROC, 2, 300.0, 0.0, 0.0), 1_000), CastCheck::NoCast);
         // and the cast's own hit still claims as before
-        assert_eq!(c.claim(1, hit(CLOAK, 2, 300.0, 0.0, 0.0), 1_000), CastCheck::Claimed { scale: 1.0, relay: false });
+        assert_eq!(c.claim(1, hit(CLOAK, 2, 300.0, 0.0, 0.0), 1_000), CastCheck::Claimed { scale: 1.0, relay: false, dual: false });
     }
 
     #[test]
     fn a_bolts_proc_claims_within_the_cast_window() {
         let mut c = Casts::default();
         c.start(1, reaching(ZAP, CastKind::FireAndForget, ZAP_PROC, 0), 0);
-        assert_eq!(c.claim_reached(1, hit(ZAP_PROC, 2, 600.0, 0.0, 0.0), [0.0; 3], 10_000), CastCheck::Claimed { scale: 1.0, relay: false });
+        assert_eq!(c.claim_reached(1, hit(ZAP_PROC, 2, 600.0, 0.0, 0.0), [0.0; 3], 10_000), CastCheck::Claimed { scale: 1.0, relay: false, dual: false });
         assert_eq!(c.claim_reached(1, hit(ZAP_PROC, 2, 600.0, 0.0, 0.0), [0.0; 3], CAST_WINDOW_MS + 1), CastCheck::NoCast);
     }
 
@@ -718,7 +734,7 @@ mod tests {
         let mut c = Casts::default();
         c.start(1, reaching(CLOAK, CastKind::Concentration, CLOAK_PROC, 0), 0);
         let late = CAST_WINDOW_MS + 5_000;
-        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 2, 300.0, 0.0, 0.0), [0.0; 3], late), CastCheck::Claimed { scale: 1.0, relay: false });
+        assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 2, 300.0, 0.0, 0.0), [0.0; 3], late), CastCheck::Claimed { scale: 1.0, relay: false, dual: false });
         c.end(1, 1);
         assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, 2, 300.0, 0.0, 0.0), [0.0; 3], late + 1_000), CastCheck::NoCast);
     }
@@ -738,7 +754,7 @@ mod tests {
         c.start(1, reaching(CLOAK, CastKind::FireAndForget, CLOAK_PROC, 60_000), 0);
         let kept = u32::try_from(MAX_REACHED_TARGETS).unwrap_or(u32::MAX);
         for t in 2..(2 + kept + 3) {
-            assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, t, 300.0, 0.0, 0.0), [0.0; 3], 1_000), CastCheck::Claimed { scale: 1.0, relay: false });
+            assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, t, 300.0, 0.0, 0.0), [0.0; 3], 1_000), CastCheck::Claimed { scale: 1.0, relay: false, dual: false });
         }
         // the newest target's rate is kept
         let newest = 2 + kept + 2;

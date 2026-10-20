@@ -26,23 +26,8 @@ float ConditionFunctions::GetActorValue::Execute(
   // GetEffectModifier). HYPOTHESIS (docs/verbs/spell-cast.md, Hailstone):
   // a modifier from any other source the engine applies by itself, a perk's
   // or an enchantment's, is not seen here.
-  const auto av = static_cast<espm::ActorValue>(parameter1);
-  if (av == espm::ActorValue::Health || av == espm::ActorValue::Magicka ||
-      av == espm::ActorValue::Stamina) {
-    const auto maximum = actor.GetMaximumValues();
-    const auto& values = actor.GetActorValues();
-    if (av == espm::ActorValue::Health) {
-      return maximum.health * values.healthPercentage;
-    }
-    if (av == espm::ActorValue::Magicka) {
-      return maximum.magicka * values.magickaPercentage;
-    }
-    return maximum.stamina * values.staminaPercentage;
-  }
   if (parameter1 > 0xff) {
     return 0.f;
   }
-  const auto base =
-    actor.GetRecordedActorValueBase(static_cast<uint8_t>(parameter1));
-  return base.value_or(0.f) + actor.GetEffectModifier(av);
+  return actor.GetCurrentActorValue(static_cast<espm::ActorValue>(parameter1));
 }

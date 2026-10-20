@@ -1,5 +1,5 @@
 // @ts-expect-error (TODO: Remove in 2.10.0)
-import { Actor, Form, FormType, Menu, interruptCast, castSpellImmediate, placeAreaEffect, printConsole, applyAnimationVariablesToActor, getAnimationVariablesFromActor, ActorAnimationVariables } from 'skyrimPlatform';
+import { Actor, Form, FormType, MagicEffect, Menu, interruptCast, castSpellImmediate, placeAreaEffect, printConsole, applyAnimationVariablesToActor, getAnimationVariablesFromActor, ActorAnimationVariables } from 'skyrimPlatform';
 import { figureAimHeading } from "../../sync/figureAim";
 import { landsOnItsTarget } from "../../sync/spellDelivery";
 import {
@@ -1015,16 +1015,30 @@ export class RemoteServer extends ClientListener {
     const msg = event.message;
 
     once('update', () => {
-      const ac = Actor.from(Game.getFormEx(remoteIdToLocalId(msg.data.caster)));
+      // thuum docs/verbs/shadowbond.md: a cast whose caster is this game's own
+      // player is the server's imposition on it (a bond's concealment proc,
+      // cast through the player's instant caster), the sibling of the
+      // target rule below; no game ever relays a player's cast back to it,
+      // so the id can only be the server's
+      const casterIsMe = msg.data.caster !== 0 && msg.data.caster === this.worldModel.playerCharacterRefrId;
+      const ac = Actor.from(Game.getFormEx(casterIsMe ? 0x14 : remoteIdToLocalId(msg.data.caster)));
       if (!ac) {
         return;
       }
 
-      const actorAnimationVariables: ActorAnimationVariables = {
-        booleans: new Uint8Array(msg.data.actorAnimationVariables.booleans),
-        floats: new Uint8Array(msg.data.actorAnimationVariables.floats),
-        integers: new Uint8Array(msg.data.actorAnimationVariables.integers)
-      };
+      // a cast the server built carries no animation variables (it holds
+      // none); castSpellImmediate applies the set before it casts and casts
+      // nothing when the set does not apply, so the actor's own current set
+      // stands in, a write-back of what the graph already holds
+      const carried = msg.data.actorAnimationVariables;
+      const empty = carried.booleans.length === 0 && carried.floats.length === 0 && carried.integers.length === 0;
+      const actorAnimationVariables: ActorAnimationVariables = empty
+        ? getAnimationVariablesFromActor(ac.getFormID())
+        : {
+          booleans: new Uint8Array(carried.booleans),
+          floats: new Uint8Array(carried.floats),
+          integers: new Uint8Array(carried.integers)
+        };
 
       if (msg.data.interruptCast) {
         interruptCast(ac.getFormID(), msg.data.castingSource, actorAnimationVariables);
@@ -1085,11 +1099,33 @@ export class RemoteServer extends ClientListener {
     const n = spell.getNumEffects();
     for (let i = 0; i < n; ++i) {
       const effect = spell.getNthEffectMagicEffect(i);
-      if (effect && effect.getDeliveryType() === 4 && !effect.getProjectile() && spell.getNthEffectArea(i) > 0) {
+      if (effect && effect.getDeliveryType() === 4 && !RemoteServer.hasProjectile(effect, spell.getFormID()) && spell.getNthEffectArea(i) > 0) {
         return true;
       }
     }
     return false;
+  }
+
+  // thuum docs/verbs/spell-cast.md (playtest twenty-four's c2.log: every
+  // relayed rune and Lightning Strike cast ended this callback with "Cannot
+  // read properties of undefined (reading 'prototype')"): Skyrim Platform
+  // wraps the projectile it returns by its VM class name, PROJECTILE, which
+  // its class list may not carry, so getProjectile throws for a spell that
+  // HAS one. The throw came after the figure's launch and placed nothing
+  // wrong, but it was the callback's end and a false lead in every read. A
+  // throw counts as a projectile, as magicSyncService's sender-side guard
+  // counts it; logged once per spell
+  private static readonly projectileThrows = new Set<number>();
+  private static hasProjectile(effect: MagicEffect, spellId: number): boolean {
+    try {
+      return !!effect.getProjectile();
+    } catch (err) {
+      if (!RemoteServer.projectileThrows.has(spellId)) {
+        RemoteServer.projectileThrows.add(spellId);
+        logTrace(`remoteServer: placesAnExplosion: getProjectile threw for spell ${spellId.toString(16)}: ${String(err)}`);
+      }
+      return true;
+    }
   }
 
   private onUpdateAnimVariablesMessage(event: ConnectionMessage<UpdateAnimVariablesMessage>): void {

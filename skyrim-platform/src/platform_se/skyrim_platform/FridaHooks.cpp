@@ -121,6 +121,18 @@ void OnSendEventEnter(GumInvocationContext* ic)
           // 20261012-071906).
           blockEvents = false;
           break;
+        } else if (!stricmp(name, "WB_DestroyAfterDelay_Script")) {
+          // Apocalypse's placed visuals (thuum docs/verbs/spell-cast.md,
+          // target location; docs/research/apocalypse/train-27-spells.md):
+          // Lightning Strike's bolt and Fingers of the Mountain's are
+          // activators an explosion places, whose one script waits WB_Delay
+          // (0.3 s) at OnLoad, then disables and deletes the reference.
+          // Blocked, the bolt stays in the sky of whichever game placed it
+          // (playtests twenty-one to twenty-four: "the bolt looks the same
+          // and hangs"). The script touches no state but its own reference's
+          // life: R3, visual, in every game
+          blockEvents = false;
+          break;
         } else if (!stricmp(name, "defaultDisableHavokOnLoad")) {
           // Maybe worth unblocking events only for this script, not for all
           blockEvents = false;

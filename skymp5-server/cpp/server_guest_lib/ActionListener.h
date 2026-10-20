@@ -127,8 +127,10 @@ private:
   // magnitudeScale: the claimed cast's factor on the spell's magnitude
   // (thuum docs/verbs/spell-cast.md): 1 for a fire-and-forget hit, seconds
   // for a stream's
+  // dualCast: the claimed cast was dual cast (EffectWasDualCast 724)
   void OnSpellHit(MpActor* aggressor, MpObjectReference* targetRef,
-                  const HitData& hitData, float magnitudeScale = 1.f);
+                  const HitData& hitData, float magnitudeScale = 1.f,
+                  bool dualCast = false);
   // damageMult: a claimed arrow's draw power (thuum docs/verbs/marksman.md),
   // 1 for every other hit
   void OnWeaponHit(MpActor* aggressor, MpObjectReference* targetRef,

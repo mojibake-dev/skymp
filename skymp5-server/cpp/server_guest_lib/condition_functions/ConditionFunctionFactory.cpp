@@ -26,6 +26,8 @@
 #include "IsHostileToActor.h"
 #include "IsUndead.h"
 
+#include "EffectWasDualCast.h"
+#include "IsEssential.h"
 #include "SkympGetDamageSourceHasKeyword.h"
 #include "SkympGetIsDamageSource.h"
 #include "SkympWornHasKeywordCount.h"
@@ -81,6 +83,10 @@ ConditionFunctionMap ConditionFunctionFactory::CreateConditionFunctions()
     std::make_shared<ConditionFunctions::GetGlobalValue>());
   res.RegisterConditionFunction(
     std::make_shared<ConditionFunctions::IsUndead>());
+  res.RegisterConditionFunction(
+    std::make_shared<ConditionFunctions::IsEssential>());
+  res.RegisterConditionFunction(
+    std::make_shared<ConditionFunctions::EffectWasDualCast>());
 
   res.RegisterConditionFunction(
     std::make_shared<ConditionFunctions::SkympGetDamageSourceHasKeyword>());

@@ -2218,10 +2218,6 @@ void ActionListener::OnChangeValues(const RawMessageData& rawMsgData,
       rawMsgData.userId);
   }
 
-  if (actor->ShouldSkipRestoration()) {
-    return;
-  }
-
   const auto now = std::chrono::steady_clock::now();
   const float timeAfterRegeneration = CropPeriodAfterLastRegen(
     actor->GetDurationOfAttributesPercentagesUpdate(now).count());
@@ -2239,6 +2235,15 @@ void ActionListener::OnChangeValues(const RawMessageData& rawMsgData,
     }
 
     if (MathUtils::IsNearlyEqual(currentVal, *inputVal)) {
+      return;
+    }
+
+    // a report below a value the server raised predates it: dropped until
+    // one reaches the value (thuum docs/verbs/attributes.md)
+    if (!actor->TakeReportedPercentage(av, *inputVal)) {
+      spdlog::debug("OnChangeValues - {:x} reported {} {:.3f} below a value "
+                    "the server raised; dropped",
+                    actor->GetFormId(), static_cast<int>(av), *inputVal);
       return;
     }
 

@@ -108,9 +108,13 @@ struct MpActor::Impl
   bool godMode = false;
   bool immortal = false;
 
-  // this is a hot fix attempt to make permanent restoration potions work
-  std::chrono::system_clock::time_point nextRestorationTime{};
+  // thuum docs/verbs/attributes.md: the percentages the server raised that
+  // the client has not reported yet (wire-rules attributes); the former
+  // 5 s blanket drop of reports after a drink lives here now, per value
+  rust::Vec<skymp::rules::PercentHold> heldPercentages;
 };
+
+uint64_t WallNowMs();
 
 namespace {
 
@@ -118,19 +122,15 @@ void RestoreActorValuePatched(MpActor* actor, espm::ActorValue actorValue,
                               float value)
 {
   actor->RestoreActorValue(actorValue, value);
-  actor->UpdateNextRestorationTime(std::chrono::seconds{ 5 });
 }
 
 }
 
-void MpActor::UpdateNextRestorationTime(std::chrono::seconds duration) noexcept
+bool MpActor::TakeReportedPercentage(espm::ActorValue av, float reported)
 {
-  pImpl->nextRestorationTime = std::chrono::system_clock::now() + duration;
-}
-
-bool MpActor::ShouldSkipRestoration() const noexcept
-{
-  return pImpl->nextRestorationTime > std::chrono::system_clock::now();
+  return skymp::rules::percentages_report(pImpl->heldPercentages,
+                                          static_cast<uint8_t>(av), reported,
+                                          WallNowMs());
 }
 
 MpActor::MpActor(const LocationalData& locationalData_,
@@ -902,6 +902,22 @@ void MpActor::SetPercentages(const ActorValues& actorValues,
     Kill(aggressor);
     return;
   }
+  // a value the server raises holds against the client's reports until one
+  // reaches it (thuum docs/verbs/attributes.md); a lowered one needs no
+  // hold, the crop takes a stale higher report
+  const ActorValues before = GetChangeForm().actorValues;
+  const auto nowMs = WallNowMs();
+  const auto raise = [&](espm::ActorValue av, float was, float is) {
+    if (is > was + skymp::rules::attributes_applied_within()) {
+      skymp::rules::percentages_hold(pImpl->heldPercentages,
+                                     static_cast<uint8_t>(av), is, nowMs);
+    }
+  };
+  raise(espm::ActorValue::Health, before.healthPercentage, health);
+  raise(espm::ActorValue::Magicka, before.magickaPercentage,
+        actorValues.magickaPercentage);
+  raise(espm::ActorValue::Stamina, before.staminaPercentage,
+        actorValues.staminaPercentage);
   EditChangeForm([&](MpChangeForm& changeForm) {
     changeForm.actorValues.healthPercentage = health;
     changeForm.actorValues.magickaPercentage = actorValues.magickaPercentage;

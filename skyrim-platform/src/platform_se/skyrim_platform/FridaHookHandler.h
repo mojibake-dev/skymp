@@ -55,6 +55,11 @@ public:
 
   bool Attach(HookID id, uintptr_t address);
   void Install(HookID id, uintptr_t address, std::shared_ptr<Hook> hook);
+  // Replace the function at address with replacement (Gum's
+  // gum_interceptor_replace, frida-gum 16.0.19 gum/guminterceptor.h:49-51),
+  // the original left callable through *original; false when Gum refused
+  // (thuum docs/verbs/figure-values.md, the first replace-style hook)
+  bool Replace(uintptr_t address, void* replacement, void** original);
   auto GetHooks() { return &hooks; }
   std::function<void(GumInvocationContext*)> GetHookEnterFunction(HookID id);
   std::function<void(GumInvocationContext*)> GetHookLeaveFunction(HookID id);

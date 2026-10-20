@@ -9,7 +9,9 @@
 #include "SkyrimPlatform.h"
 #include "StringHolder.h"
 
+#include <RE/A/Actor.h>
 #include <RE/A/ActorMagicCaster.h>
+#include <RE/A/ActorValues.h>
 #include <RE/E/Effect.h>
 #include <RE/E/EffectSetting.h>
 
@@ -1015,6 +1017,60 @@ void InstallNativeFunctionCtorHook() noexcept
   // nativeFunctionCtor.address(), std::make_shared<Frida::Hook>(hook3));
 }
 
+/**
+ * A figure's bar is the server's alone (thuum docs/verbs/figure-values.md,
+ * train-30). A figure (another player's actor in this game) carries its
+ * player's real maxima, so this game's own damage to it, the player's melee
+ * and arrows, an NPC's hit, a trap, would dent its bar before the server's
+ * percentage arrives. The HandleHealthDamage vfunc the train-28 guard
+ * dropped is reached from inside DamageActor after the write (the Frida
+ * read of 2026-10-20), so the gate is DamageActor itself: replaced through
+ * Gum, the replacement answers false for a figure victim, the engine's own
+ * answer for an invulnerable one (nothing written, not dead), and calls the
+ * original for every other actor. The hit event, the impact, the blood and
+ * the stagger come earlier in the chain and are untouched. A figure is
+ * known by the mark skymp5-client puts on every one at spawn,
+ * attackDamageMult 0 (view/formView.ts), on a dynamic form id. HYPOTHESIS
+ * until b-figure-values' hit steps: the replacement's calling convention is
+ * the function's (Windows x64: this in RCX, the float second argument in
+ * XMM1, R8, R9B), and the figure's own hit reactions stay.
+ */
+namespace {
+bool IsFigureVictim(RE::Actor* actor)
+{
+  if (!actor || actor->formID < 0xFF000000) {
+    return false;
+  }
+  auto owner = actor->AsActorValueOwner();
+  return owner &&
+    owner->GetActorValue(RE::ActorValue::kAttackDamageMult) == 0.f;
+}
+
+using DamageActorFn = bool (*)(RE::Actor* victim, float damage,
+                               RE::Actor* attacker, bool killMove);
+DamageActorFn g_damageActorOriginal = nullptr;
+
+bool DamageActorReplacement(RE::Actor* victim, float damage,
+                            RE::Actor* attacker, bool killMove)
+{
+  if (IsFigureVictim(victim)) {
+    return false;
+  }
+  return g_damageActorOriginal(victim, damage, attacker, killMove);
+}
+}
+
+void InstallDamageActorHook()
+{
+  if (!REL::Module::IsAE()) {
+    return;
+  }
+  Frida::HookHandler::GetSingleton()->Replace(
+    Offsets::Hooks::DamageActor.address(),
+    reinterpret_cast<void*>(&DamageActorReplacement),
+    reinterpret_cast<void**>(&g_damageActorOriginal));
+}
+
 void Frida::InstallHooks()
 {
   LoadAdmittedScripts();
@@ -1026,6 +1082,7 @@ void Frida::InstallHooks()
   InstallProjectileLaunchHook();
   InstallProjectileInitVelocityHook();
   InstallPlaceAreaEffectHook();
+  InstallDamageActorHook();
   InstallQueueNinodeUpdateHook();
   InstallRenderCursorMenuHook();
 #ifdef ENABLE_SKYRIM_AE

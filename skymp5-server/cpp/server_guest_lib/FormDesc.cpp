@@ -171,6 +171,29 @@ uint32_t FormDesc::ToFormId(const EspmFileList& files) const
   throw std::runtime_error(file + " not found in loaded files");
 }
 
+EspmFileList EspmFileList::FromLoadOrder(const LoadOrder& order)
+{
+  std::vector<std::string> names;
+  std::vector<bool> light;
+  names.reserve(order.size());
+  light.reserve(order.size());
+  for (const auto& [name, isLight] : order) {
+    names.push_back(name);
+    light.push_back(isLight);
+  }
+  return EspmFileList(std::move(names), std::move(light));
+}
+
+EspmFileList::LoadOrder EspmFileList::ToLoadOrder() const
+{
+  LoadOrder order;
+  order.reserve(size());
+  for (size_t i = 0; i < size(); ++i) {
+    order.emplace_back((*this)[i], IsLight(i));
+  }
+  return order;
+}
+
 static const FormDesc kTamriel = FormDesc::FromString("3c:Skyrim.esm");
 
 FormDesc FormDesc::Tamriel()

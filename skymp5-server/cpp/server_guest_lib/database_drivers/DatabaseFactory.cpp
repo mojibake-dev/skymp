@@ -9,9 +9,9 @@
 #include "ZipDatabase.h"
 #include <database_drivers/MongoDatabase.h>
 
-std::shared_ptr<Viet::IDatabase<MpChangeForm, FormDesc, std::vector<FormDesc>>>
-DatabaseFactory::Create(nlohmann::json settings,
-                        std::shared_ptr<spdlog::logger> logger)
+std::shared_ptr<DatabaseFactory::Database> DatabaseFactory::Create(
+  nlohmann::json settings, std::shared_ptr<spdlog::logger> logger,
+  std::shared_ptr<const LoadOrder> loadOrder)
 {
   auto databaseDriver = settings.count("databaseDriver")
     ? settings["databaseDriver"].get<std::string>()
@@ -23,7 +23,9 @@ DatabaseFactory::Create(nlohmann::json settings,
       : std::string("world");
 
     logger->info("Using file with name '" + databaseName + "'");
-    return std::make_shared<FileDatabase>(databaseName, logger);
+    auto database = std::make_shared<FileDatabase>(databaseName, logger);
+    database->SetLoadOrder(loadOrder);
+    return database;
   }
 
   if (databaseDriver == "mongodb") {
@@ -33,15 +35,22 @@ DatabaseFactory::Create(nlohmann::json settings,
 
     auto databaseUri = settings["databaseUri"].get<std::string>();
     logger->info("Using mongodb with name '" + databaseName + "'");
-    return std::make_shared<MongoDatabase>(databaseUri, databaseName);
+    auto database = std::make_shared<MongoDatabase>(databaseUri, databaseName);
+    database->SetLoadOrder(loadOrder);
+    return database;
   }
 
   if (databaseDriver == "migration") {
+    // both sides under the running order: the old one is read into it and
+    // the new one written against it (thuum ADR-043)
     auto from = settings.at("databaseOld");
     auto to = settings.at("databaseNew");
-    auto oldDatabase = Create(from, logger);
-    auto newDatabase = Create(to, logger);
-    return std::make_shared<MigrationDatabase>(newDatabase, oldDatabase);
+    auto oldDatabase = Create(from, logger, loadOrder);
+    auto newDatabase = Create(to, logger, loadOrder);
+    auto database =
+      std::make_shared<MigrationDatabase>(newDatabase, oldDatabase);
+    database->SetLoadOrder(loadOrder);
+    return database;
   }
 
   if (databaseDriver == "zip") {
@@ -50,7 +59,9 @@ DatabaseFactory::Create(nlohmann::json settings,
       : std::string("world");
 
     logger->info("Using zip with name '" + databaseName + "'");
-    return std::make_shared<ZipDatabase>(databaseName, logger);
+    auto database = std::make_shared<ZipDatabase>(databaseName, logger);
+    database->SetLoadOrder(loadOrder);
+    return database;
   }
 
   throw std::runtime_error("Unrecognized databaseDriver: " + databaseDriver);

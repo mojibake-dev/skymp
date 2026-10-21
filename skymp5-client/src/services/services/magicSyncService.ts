@@ -216,8 +216,15 @@ export class MagicSyncService extends ClientListener {
             this.pendingCasts.shift();
             const launch = i < 0 ? null : this.launches.splice(i, 1)[0];
             const flight = f < 0 ? null : this.flights.splice(f, 1)[0];
-            const origin = launch ? { x: launch.originX, y: launch.originY, z: launch.originZ }
-                : flight ? { x: flight.x, y: flight.y, z: flight.z } : null;
+            // the flight's position and angles when seen, the launch's otherwise:
+            // a spell's bolt sits 2.5 to 34 units from the Launch call's origin
+            // at its first update in the caster's own game (up in first person,
+            // right and forward in third, b-spell-aim 20261021-042101 on
+            // m2-train-31 3b579f41), where an arrow sits on its origin exactly,
+            // so the figure that launched from the Launch origin flew a parallel
+            // path that far off; the bolt's own first position is where it is
+            const origin = flight ? { x: flight.x, y: flight.y, z: flight.z }
+                : launch ? { x: launch.originX, y: launch.originY, z: launch.originZ } : null;
             const angles = flight ? { x: flight.angleX, z: flight.angleZ }
                 : launch ? { x: launch.angleX, z: launch.angleZ } : null;
             const withLaunch = !!origin && !!angles && Number.isFinite(origin.x) && Number.isFinite(origin.y) && Number.isFinite(origin.z)

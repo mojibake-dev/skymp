@@ -1910,6 +1910,18 @@ void ActionListener::OnPlayerGlobals(const RawMessageData& rawMsgData,
                changed ? "" : ", unchanged");
 }
 
+void ActionListener::OnCellLoaded(const RawMessageData& rawMsgData,
+                                  const CellLoadedMessage& msg)
+{
+  // thuum docs/verbs/cell-host.md: the report lands here; the election
+  // (wire-rules cells, through the bridge) follows in the verb's server
+  // commit, which turns this line into a grant or nothing
+  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  spdlog::info("CellLoaded: user {} actor {:x} cell {:x} {}",
+               rawMsgData.userId, actor ? actor->GetFormId() : 0, msg.cell,
+               msg.loaded ? "loaded" : "unloaded");
+}
+
 void ActionListener::SendPlayerGlobals(MpActor& actor)
 {
   PlayerGlobalsMessage message;

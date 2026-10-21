@@ -128,6 +128,11 @@ pub struct ClientGuard {
     /// most, so two at once and one a second after that only ever stops a
     /// flood.
     pub player_globals_budget: TokenBucket,
+    /// Budget for CellLoaded reports (thuum docs/verbs/cell-host.md): a
+    /// 5x5 grid load is 25 cells at once, then a row or column per grid
+    /// shift; wire-rules cells::CELL_LOADED_BURST and CELL_LOADED_PER_SECOND,
+    /// measured in x-cell-attach and carried with their conditions.
+    pub cell_loaded_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -151,6 +156,7 @@ impl Default for ClientGuard {
             player_globals_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
             equip_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 8, last_refill_ms: 0 },
             action_budget: TokenBucket { tokens: 12, capacity: 12, refill_per_s: 6, last_refill_ms: 0 },
+            cell_loaded_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 8, last_refill_ms: 0 },
         }
     }
 }
@@ -426,6 +432,15 @@ fn check_actor_values(m: &skymp::ActorValues) -> Result<(), Reject> {
 /// finite and each global given once among the values and once among the
 /// globals to watch. Whether a global is one the server keeps per player is
 /// the server's rule (wire-rules `player_globals`), which holds the list.
+/// A host grant or release names a cell and an epoch above 0 (thuum
+/// docs/verbs/cell-host.md).
+fn check_host(cell: u32, epoch: u32) -> Result<(), Reject> {
+    if cell == 0 || epoch == 0 {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
 fn check_player_globals(m: &skymp::PlayerGlobals) -> Result<(), Reject> {
     if !all_finite(m) {
         return Err(Reject::NonFinite);
@@ -527,6 +542,7 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::SpellCast(_) => take(&mut guard.cast_budget, now_ms),
         Message::OnEquip(_) => take(&mut guard.equip_budget, now_ms),
         Message::UpdateAction(_) => take(&mut guard.action_budget, now_ms),
+        Message::CellLoaded(_) => take(&mut guard.cell_loaded_budget, now_ms),
         _ => Ok(()),
     }
 }
@@ -609,6 +625,16 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::RaceMenuPreset(m) => check_preset(m),
         Message::ActorValues(m) => check_actor_values(m),
         Message::PlayerGlobals(m) => check_player_globals(m),
+        // thuum docs/verbs/cell-host.md: a cell of 0 names nothing; an
+        // epoch of 0 is before any grant
+        Message::CellLoaded(m) => {
+            if m.cell == 0 {
+                return Err(Reject::Range);
+            }
+            Ok(())
+        }
+        Message::HostGrant(m) => check_host(m.cell, m.epoch),
+        Message::HostRelease(m) => check_host(m.cell, m.epoch),
         Message::PlayerBowShot(m) => {
             if !all_finite(m) {
                 return Err(Reject::NonFinite);

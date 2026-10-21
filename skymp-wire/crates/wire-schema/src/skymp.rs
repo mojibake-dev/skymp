@@ -1411,3 +1411,57 @@ wire_struct! {
     }
 }
 
+wire_struct! {
+    /// MsgType 47, thuum's (docs/verbs/cell-host.md, ADR-035). Client to
+    /// server, reliable (a load then an unload keep their order), R1: the
+    /// game reports a cell fully loaded, or gone from its loaded set; the
+    /// server's election reads it against its own grid, so a forged report
+    /// costs a token and nothing else. Idempotent (it sets a bit). Reason
+    /// codes: `E_VAL_RATE` (the burst and the rate of wire-rules
+    /// cells::CELL_LOADED_BURST and CELL_LOADED_PER_SECOND), `E_VAL_RANGE`
+    /// (a cell of 0).
+    pub struct CellLoaded {
+        /// `"t": 47`.
+        #[serde(default)]
+        pub t: MsgT<47>,
+        /// The cell's form id in the load order both ends share.
+        pub cell: u32,
+        /// Loaded (true), or left the loaded set (false).
+        pub loaded: bool,
+    }
+}
+
+wire_struct! {
+    /// MsgType 48, thuum's (docs/verbs/cell-host.md, ADR-035): server to one
+    /// client, reliable, R0 output: your game hosts `cell` from now, at
+    /// `epoch`, one counter per cell that goes up at every grant and is kept
+    /// while the cell is unhosted, so a grant or a report from an older
+    /// epoch is dropped (a fencing token). Idempotent per (cell, epoch).
+    /// Reason codes: `E_VAL_RANGE` (a cell or an epoch of 0).
+    pub struct HostGrant {
+        /// `"t": 48`.
+        #[serde(default)]
+        pub t: MsgT<48>,
+        /// The cell's form id.
+        pub cell: u32,
+        /// The grant's epoch, 1 at a cell's first grant.
+        pub epoch: u32,
+    }
+}
+
+wire_struct! {
+    /// MsgType 49, thuum's (docs/verbs/cell-host.md, ADR-035): server to one
+    /// client, reliable, R0 output: your game stops hosting `cell`; `epoch`
+    /// is the grant that ends. Idempotent per (cell, epoch). Reason codes:
+    /// `E_VAL_RANGE` (a cell or an epoch of 0).
+    pub struct HostRelease {
+        /// `"t": 49`.
+        #[serde(default)]
+        pub t: MsgT<49>,
+        /// The cell's form id.
+        pub cell: u32,
+        /// The epoch of the grant that ends.
+        pub epoch: u32,
+    }
+}
+

@@ -642,10 +642,12 @@ mod tests {
             server_time_ms: 0
         }));
         assert!(!client_may_send(&Message::Refuse { reason: 0 }));
-        assert!(!client_may_send(&Message::HostGrant { cell: FormId(1) }));
-        assert!(!client_may_send(&Message::HostRelease { cell: FormId(1) }));
+        let grant = Message::HostGrant(wire_schema::skymp::HostGrant { cell: 1, epoch: 1, ..Default::default() });
+        let release = Message::HostRelease(wire_schema::skymp::HostRelease { cell: 1, epoch: 1, ..Default::default() });
+        assert!(!client_may_send(&grant));
+        assert!(!client_may_send(&release));
         assert!(!server_may_send(&Message::Movement(movement(1))));
-        assert!(server_may_send(&Message::HostGrant { cell: FormId(1) }));
+        assert!(server_may_send(&grant));
     }
 
     #[test]
@@ -799,9 +801,7 @@ mod tests {
         server
             .send(
                 client_id,
-                &Message::HostGrant {
-                    cell: FormId(0x1234),
-                },
+                &Message::HostGrant(wire_schema::skymp::HostGrant { cell: 0x1234, epoch: 1, ..Default::default() }),
             )
             .expect("send");
         assert!(
@@ -814,7 +814,7 @@ mod tests {
             ),
             "reply"
         );
-        assert!(matches!(inbox.first(), Some(Message::HostGrant { cell }) if cell.0 == 0x1234));
+        assert!(matches!(inbox.first(), Some(Message::HostGrant(g)) if g.cell == 0x1234 && g.epoch == 1));
         assert_eq!(client.rejected(), 0);
 
         client.disconnect();

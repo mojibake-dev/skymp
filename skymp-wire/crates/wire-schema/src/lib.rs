@@ -5,7 +5,7 @@
 //!
 //! Two families share the enum. The M0 variants (ids 0 to 8) are the
 //! authority model's messages, reserved until its verbs land. The SkyMP
-//! variants (ids 9 to 53, id = MsgType + 8) are SkyMP's own protocol, ported
+//! variants (ids 9 to 57, id = MsgType + 8) are SkyMP's own protocol, ported
 //! field for field in [`skymp`], and the MsgTypes thuum appends after
 //! SkyMP's 33; their JSON form is what the C++ core and skymp5-client
 //! exchange in-process (`wire-json`).
@@ -293,13 +293,16 @@ pub enum Message {
         /// The change.
         delta: ItemDelta,
     },
-    /// Id 7: Server to one client, R0 output: you now host `cell`. Idempotent.
-    HostGrant {
+    /// Id 7: the M0 reserved grant, `{ cell }`, never sent; kept dead so the
+    /// ids stay (ADR-012). The cell-host verb's grant is [`Message::HostGrant`],
+    /// id 56, in the SkyMP family's shape.
+    ReservedHostGrant {
         /// The cell form.
         cell: FormId,
     },
-    /// Id 8: Server to one client, R0 output: stop hosting `cell`. Idempotent.
-    HostRelease {
+    /// Id 8: the M0 reserved release, the same way; the verb's is
+    /// [`Message::HostRelease`], id 57.
+    ReservedHostRelease {
         /// The cell form.
         cell: FormId,
     },
@@ -395,6 +398,12 @@ pub enum Message {
     PlayerGlobals(skymp::PlayerGlobals),
     /// 54, MsgType 46 (thuum). See [`skymp::ActorJump`].
     ActorJump(skymp::ActorJump),
+    /// 55, MsgType 47 (thuum). See [`skymp::CellLoaded`].
+    CellLoaded(skymp::CellLoaded),
+    /// 56, MsgType 48 (thuum). See [`skymp::HostGrant`].
+    HostGrant(skymp::HostGrant),
+    /// 57, MsgType 49 (thuum). See [`skymp::HostRelease`].
+    HostRelease(skymp::HostRelease),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -423,7 +432,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 55] = [
+const TABLE: [Row; 58] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -431,8 +440,8 @@ const TABLE: [Row; 55] = [
     row("Hit", 0, 64, C2S),
     row("HostedActor", 0, KIB, C2S),
     row("InventoryApply", 0, 32, S2C),
-    row("HostGrant", 0, 16, S2C),
-    row("HostRelease", 0, 16, S2C),
+    row("ReservedHostGrant", 0, 16, S2C),
+    row("ReservedHostRelease", 0, 16, S2C),
     row("CustomPacket", 1, MIB + 16, Both),
     row("UpdateMovement", 2, 256, Both),
     row("UpdateAnimation", 3, 256, Both),
@@ -479,14 +488,17 @@ const TABLE: [Row; 55] = [
     row("UpdateAction", 44, 32 * KIB, Both),
     row("PlayerGlobals", 45, 4 * KIB, Both),
     row("ActorJump", 46, 16, S2C),
+    row("CellLoaded", 47, 16, C2S),
+    row("HostGrant", 48, 32, S2C),
+    row("HostRelease", 49, 32, S2C),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 55;
-const _: () = assert!(TABLE.len() == 55, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 58;
+const _: () = assert!(TABLE.len() == 58, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -518,8 +530,8 @@ impl Message {
             Message::Hit(_) => 4,
             Message::HostedActor(_) => 5,
             Message::InventoryApply { .. } => 6,
-            Message::HostGrant { .. } => 7,
-            Message::HostRelease { .. } => 8,
+            Message::ReservedHostGrant { .. } => 7,
+            Message::ReservedHostRelease { .. } => 8,
             Message::CustomPacket(_) => 9,
             Message::UpdateMovement(_) => 10,
             Message::UpdateAnimation(_) => 11,
@@ -566,6 +578,9 @@ impl Message {
             Message::UpdateAction(_) => 52,
             Message::PlayerGlobals(_) => 53,
             Message::ActorJump(_) => 54,
+            Message::CellLoaded(_) => 55,
+            Message::HostGrant(_) => 56,
+            Message::HostRelease(_) => 57,
         }
     }
 
@@ -607,7 +622,8 @@ mod tests {
     #[test]
     fn names_are_the_variant_identifiers() {
         assert_eq!(Message::Refuse { reason: 0 }.name(), "Refuse");
-        assert_eq!(Message::HostGrant { cell: FormId(1) }.name(), "HostGrant");
+        assert_eq!(Message::HostGrant(skymp::HostGrant::default()).name(), "HostGrant");
+        assert_eq!(Message::ReservedHostGrant { cell: FormId(1) }.name(), "ReservedHostGrant");
         assert_eq!(
             Message::CreateActor(skymp::CreateActor::default()).name(),
             "CreateActor"
@@ -641,8 +657,11 @@ mod tests {
         assert_eq!(name_of_msg_type(44), Some("UpdateAction"));
         assert_eq!(name_of_msg_type(45), Some("PlayerGlobals"));
         assert_eq!(name_of_msg_type(46), Some("ActorJump"));
+        assert_eq!(name_of_msg_type(47), Some("CellLoaded"));
+        assert_eq!(name_of_msg_type(48), Some("HostGrant"));
+        assert_eq!(name_of_msg_type(49), Some("HostRelease"));
         assert_eq!(name_of_msg_type(0), None);
-        assert_eq!(name_of_msg_type(47), None);
+        assert_eq!(name_of_msg_type(50), None);
     }
 
     #[test]

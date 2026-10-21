@@ -86,6 +86,11 @@ public:
   virtual void OnPlayerGlobals(const RawMessageData& rawMsgData,
                                const PlayerGlobalsMessage& msg);
 
+  // thuum docs/verbs/cell-host.md: a game's cell loaded or left its loaded
+  // set; the server's election follows (wire-rules cells)
+  virtual void OnCellLoaded(const RawMessageData& rawMsgData,
+                            const CellLoadedMessage& msg);
+
   virtual void OnFinishSpSnippet(const RawMessageData& rawMsgData,
                                  const FinishSpSnippetMessage& msg);
 

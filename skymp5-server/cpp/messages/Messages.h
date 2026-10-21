@@ -3,6 +3,7 @@
 #include "ActorJumpMessage.h"
 #include "ActorValuesMessage.h"
 #include "ArrowShotMessage.h"
+#include "CellLoadedMessage.h"
 #include "ChangeValuesMessage.h"
 #include "ConsoleCommandMessage.h"
 #include "ConsoleOutputMessage.h"
@@ -16,7 +17,9 @@
 #include "FavoritesMessage.h"
 #include "FinishSpSnippetMessage.h"
 #include "HitMessage.h"
+#include "HostGrantMessage.h"
 #include "HostMessage.h"
+#include "HostReleaseMessage.h"
 #include "HostStartMessage.h"
 #include "HostStopMessage.h"
 #include "IngredientEffectsKnownMessage.h"
@@ -92,4 +95,7 @@
   REGISTER_MESSAGE(MagicEffectsMessage)                                       \
   REGISTER_MESSAGE(UpdateActionMessage)                                       \
   REGISTER_MESSAGE(PlayerGlobalsMessage)                                      \
-  REGISTER_MESSAGE(ActorJumpMessage)
+  REGISTER_MESSAGE(ActorJumpMessage)                                          \
+  REGISTER_MESSAGE(CellLoadedMessage)                                         \
+  REGISTER_MESSAGE(HostGrantMessage)                                          \
+  REGISTER_MESSAGE(HostReleaseMessage)

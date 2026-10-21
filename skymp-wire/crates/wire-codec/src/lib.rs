@@ -195,9 +195,11 @@ mod tests {
 
     #[test]
     fn rejects_trailing() -> Result<(), WireError> {
-        let m = Message::HostGrant {
-            cell: FormId(0x1234),
-        };
+        let m = Message::HostGrant(wire_schema::skymp::HostGrant {
+            cell: 0x1234,
+            epoch: 1,
+            ..Default::default()
+        });
         let mut with_extra = encode(&m)?;
         with_extra.push(0);
         assert_eq!(decode(&with_extra), Err(WireError::Trailing(1)));

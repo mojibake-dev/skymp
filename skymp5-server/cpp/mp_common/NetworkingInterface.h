@@ -1,6 +1,7 @@
 #pragma once
 #include "MinPacketId.h"
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -59,6 +60,11 @@ public:
   virtual void Tick(OnPacket onPacket, void* state) = 0;
 
   virtual std::string GetIp(UserId userId) const = 0;
+
+  // The connection's smoothed round trip in milliseconds, or -1 while
+  // unknown (a transport that measures none, a client not connected);
+  // thuum docs/verbs/cell-host.md ranks a cell's visitors by it.
+  virtual int64_t GetRttMs(UserId) const { return -1; }
 
   virtual void CloseConnection(UserId userId) = 0;
 };

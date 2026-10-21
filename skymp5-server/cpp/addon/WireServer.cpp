@@ -102,6 +102,14 @@ public:
     return std::string(server->client_ip(ClientOf(userId)));
   }
 
+  int64_t GetRttMs(Networking::UserId userId) const override
+  {
+    if (userId >= clientsByUser.size() || !clientsByUser[userId]) {
+      return -1;
+    }
+    return server->client_rtt_ms(*clientsByUser[userId]);
+  }
+
   void CloseConnection(Networking::UserId userId) override
   {
     server->disconnect(ClientOf(userId));

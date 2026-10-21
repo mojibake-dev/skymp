@@ -203,6 +203,7 @@ struct PartOne::Impl
   std::chrono::steady_clock::time_point lastCellsTick;
   using Square = std::tuple<uint32_t, int32_t, int32_t>;
   std::unordered_map<uint32_t, Square> lastSquareByPlayer;
+  std::function<int64_t(Networking::UserId)> roundTripSource;
 
   espm::Loader* espm = nullptr;
 
@@ -1479,12 +1480,28 @@ void PartOne::TickCellHostsEverySecond()
   TickCellHosts(SteadyNowMs());
 }
 
+void PartOne::SetRoundTripSource(
+  std::function<int64_t(Networking::UserId)> source)
+{
+  pImpl->roundTripSource = std::move(source);
+}
+
 void PartOne::TickCellHosts(uint64_t nowMs)
 {
   for (size_t i = 0, n = serverState.maxConnectedId; i <= n; ++i) {
-    if (MpActor* actor =
-          serverState.ActorByUser(static_cast<Networking::UserId>(i))) {
-      RefreshReach(*actor);
+    const auto userId = static_cast<Networking::UserId>(i);
+    MpActor* actor = serverState.ActorByUser(userId);
+    if (!actor) {
+      continue;
+    }
+    RefreshReach(*actor);
+    if (pImpl->roundTripSource) {
+      const int64_t ms = pImpl->roundTripSource(userId);
+      if (ms >= 0) {
+        pImpl->cells->rtt(
+          actor->GetFormId(),
+          static_cast<uint32_t>(std::min<int64_t>(ms, UINT32_MAX)));
+      }
     }
   }
   ApplyHostDecisions(*this, pImpl->cells->tick(nowMs));

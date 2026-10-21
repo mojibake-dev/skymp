@@ -396,6 +396,10 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
     server = Networking::CreateCombinedServer({ realServer, serverMock });
 
     partOne->SetSendTarget(server.get());
+    // thuum docs/verbs/cell-host.md: the players' round trips, for the
+    // handoff's ranking (the wire server measures them; the mock knows none)
+    partOne->SetRoundTripSource(
+      [this](Networking::UserId userId) { return server->GetRttMs(userId); });
 
     const auto conditionFunctionMap =
       ConditionFunctionFactory::CreateConditionFunctions();

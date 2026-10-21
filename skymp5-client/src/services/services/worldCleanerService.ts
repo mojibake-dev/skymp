@@ -61,6 +61,20 @@ export class WorldCleanerService extends ClientListener {
       return;
     }
 
+    // thuum docs/verbs/cell-host.md (b-cell-host 20261021-192835, the lab's
+    // first runs with npcEnabled on): findRandomActor hands out the same
+    // actor on frame after frame while its latent disable below is still
+    // running, and the guards above do not see a disable that has not
+    // completed, so one deer got two disable-and-delete chains; the second
+    // delete ran on a Character the first had freed (CrashLogger: a
+    // MovementControllerNPC job on "Deer" [0x00000000], the form id read
+    // from freed memory, EXCEPTION_ACCESS_VIOLATION at 41702+0x22).
+    // HYPOTHESIS for the cause, MEASURED for the double pick; an actor
+    // being cleaned is skipped until its chain ends either way
+    if (this.cleaning.has(actorId)) {
+      return;
+    }
+
     if (this.isActorInDialogue(actor)) {
       // Deleting actor in dialogue crashes Skyrim
       // https://github.com/skyrim-multiplayer/issue-tracker/issues/13
@@ -98,12 +112,18 @@ export class WorldCleanerService extends ClientListener {
       }
     }
 
+    this.cleaning.add(actorId);
     actor.disable(false).then(() => {
+      this.cleaning.delete(actorId);
       const ac = this.sp.Actor.from(this.sp.Game.getFormEx(actorId));
-      if (!ac || this.isActorInDialogue(ac)) {
+      // a form gone or already deleted by the time the disable completes is
+      // left alone: a second delete is the crash above
+      if (!ac || ac.isDeleted() || this.isActorInDialogue(ac)) {
         return;
       }
       ac.delete();
+    }).catch(() => {
+      this.cleaning.delete(actorId);
     });
   }
 
@@ -112,6 +132,8 @@ export class WorldCleanerService extends ClientListener {
   }
 
   private protection = new Map<number, number>();
+  // the actors whose disable-and-delete chain is running (cell-host's read)
+  private cleaning = new Set<number>();
   private initialPos?: NiPoint3;
   private initialCellOrWorld?: number;
 }

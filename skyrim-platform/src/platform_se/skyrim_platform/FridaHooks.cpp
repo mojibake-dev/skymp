@@ -667,8 +667,10 @@ void OnProjectileLaunchLeave(GumInvocationContext* ic)
  * that moment (InitVelocity, game/Offsets.h), and for the player's arrow
  * those are the angles after the engine's auto-aim, which Launch's LaunchData
  * does not carry (the re-analyst, 2026-10-16). Read on entry for arrows
- * (an ammo source) whose shooter is the player or a figure (rule 9), raised
- * as projectileFlight on the next tick: the shooter's client sends these
+ * (an ammo source) and, since train-30, for a spell's projectiles (a spell
+ * source, the ammo 0: docs/verbs/spell-cast.md, Scattershock's heading on
+ * the observer) whose shooter is the player or a figure (rule 9), raised as
+ * projectileFlight on the next tick: the shooter's client sends an arrow's
  * angles with the shot, the recorder keeps both games' for the parity check.
  */
 void OnProjectileInitVelocityEnter(GumInvocationContext* ic)
@@ -678,7 +680,7 @@ void OnProjectileInitVelocityEnter(GumInvocationContext* ic)
     return;
   }
   auto& runtime = projectile->GetProjectileRuntimeData();
-  if (!runtime.ammoSource) {
+  if (!runtime.ammoSource && !runtime.spell) {
     return;
   }
   const auto shooter = runtime.shooter.get();
@@ -694,7 +696,8 @@ void OnProjectileInitVelocityEnter(GumInvocationContext* ic)
   seen.projectile =
     projectile->GetBaseObject() ? projectile->GetBaseObject()->formID : 0;
   seen.weapon = runtime.weaponSource ? runtime.weaponSource->formID : 0;
-  seen.ammo = runtime.ammoSource->formID;
+  seen.ammo = runtime.ammoSource ? runtime.ammoSource->formID : 0;
+  seen.spell = runtime.spell ? runtime.spell->formID : 0;
   seen.originX = projectile->data.location.x;
   seen.originY = projectile->data.location.y;
   seen.originZ = projectile->data.location.z;
@@ -707,6 +710,7 @@ void OnProjectileInitVelocityEnter(GumInvocationContext* ic)
     AddObjProperty(&obj, "projectile", seen.projectile);
     AddObjProperty(&obj, "weapon", seen.weapon);
     AddObjProperty(&obj, "ammo", seen.ammo);
+    AddObjProperty(&obj, "spell", seen.spell);
     obj.Set("x", Napi::Number::New(env, static_cast<double>(seen.originX)));
     obj.Set("y", Napi::Number::New(env, static_cast<double>(seen.originY)));
     obj.Set("z", Napi::Number::New(env, static_cast<double>(seen.originZ)));

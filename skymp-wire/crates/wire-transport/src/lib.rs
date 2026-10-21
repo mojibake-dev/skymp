@@ -302,6 +302,20 @@ impl Server {
         self.transport.client_addr(client)
     }
 
+    /// A connected client's round trip in milliseconds: renet's smoothed
+    /// ack round trip (remote_connection.rs, an EWMA over every acked
+    /// packet), updated while packets flow. None for a client not connected
+    /// or a reading that is not a number (thuum docs/verbs/cell-host.md: the
+    /// handoff ranks visitors by it).
+    pub fn client_rtt_ms(&self, client: u64) -> Option<u64> {
+        if !self.renet.is_connected(client) {
+            return None;
+        }
+        let secs = self.renet.rtt(client);
+        let d = Duration::try_from_secs_f64(secs).ok()?;
+        u64::try_from(d.as_millis()).ok()
+    }
+
     /// The address the socket is bound to.
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
@@ -327,6 +341,17 @@ impl Server {
     /// validation. Outgoing packets are flushed at the end.
     pub fn poll(&mut self, dt: Duration, out: &mut Vec<Inbound>) {
         self.now_ms = self.now_ms.saturating_add(ms(dt));
+        // renet's own clock first, then the transport's: every connection's
+        // current_time advances here and nowhere else (renet 2.0.0
+        // server.rs:241-245, remote_connection.rs: update), and the
+        // reliable channels resend, the round trip is measured and a lost
+        // packet is discarded against that clock (channel/reliable.rs:
+        // 112-113; remote_connection.rs: DISCARD_AFTER). Until thuum's
+        // wire-renet-clock the transport's update ran alone, so the clock
+        // stood at zero on both ends: no resend of a lost reliable packet,
+        // every round trip 0 (renet's README: server.update, then
+        // transport.update, each frame).
+        self.renet.update(dt);
         if self.transport.update(dt, &mut self.renet).is_err() {
             self.io_errors = self.io_errors.saturating_add(1);
         }
@@ -579,6 +604,8 @@ impl Client {
     /// first per channel. Outgoing packets are flushed at the end.
     pub fn poll(&mut self, dt: Duration, out: &mut Vec<Message>) {
         self.now_ms = self.now_ms.saturating_add(ms(dt));
+        // renet's clock first (the server's poll says why)
+        self.renet.update(dt);
         if self.transport.update(dt, &mut self.renet).is_err() {
             self.io_errors = self.io_errors.saturating_add(1);
         }
@@ -1045,5 +1072,44 @@ mod tests {
         for (i, p) in harness::seed_packets(&Limits::default()).iter().enumerate() {
             std::fs::write(dir.join(format!("seed-{i:02}")), p).expect("write seed");
         }
+    }
+
+    #[test]
+    fn the_connection_clock_advances_under_poll_and_the_round_trip_reads() {
+        // thuum wire-renet-clock: renet's connection clock moved only in
+        // RenetServer::update, which the polls never called, so every round
+        // trip read 0 and no lost reliable packet was ever resent. The
+        // clock now advances with every poll: after a message and its ack
+        // the server reads a round trip of at least one poll step.
+        let localhost: SocketAddr = "127.0.0.1:0".parse().expect("literal");
+        let mut server =
+            Server::bind(localhost, Limits::default(), token::Auth::Unsecure).expect("bind");
+        let mut client =
+            Client::connect(server.local_addr(), token::ConnectToken(Vec::new())).expect("connect");
+        let mut events = Vec::new();
+        let mut inbox = Vec::new();
+        assert!(
+            pump(&mut server, &mut client, &mut events, &mut inbox, |ev, _, c| c.is_connected()
+                && ev.iter().any(|e| matches!(e, Inbound::Connected { .. }))),
+            "handshake"
+        );
+        let client_id = match events.iter().find(|e| matches!(e, Inbound::Connected { .. })) {
+            Some(Inbound::Connected { client }) => *client,
+            _ => unreachable!("checked above"),
+        };
+        assert_eq!(server.client_rtt_ms(0xdead_beef), None);
+        client.send(&Message::Movement(movement(1))).expect("send");
+        let step = Duration::from_millis(10);
+        let mut rtt = None;
+        for _ in 0..100 {
+            client.poll(step, &mut inbox);
+            server.poll(step, &mut events);
+            rtt = server.client_rtt_ms(client_id);
+            if rtt.is_some_and(|r| r > 0) {
+                break;
+            }
+            sleep(step);
+        }
+        assert!(rtt.is_some_and(|r| r > 0), "a round trip above zero once a packet was acked");
     }
 }

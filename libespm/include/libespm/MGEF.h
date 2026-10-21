@@ -118,6 +118,11 @@ public:
     // concentration, 3 scroll); both 0 when the record is too short
     uint32_t castingType = 0;
     uint32_t delivery = 0;
+    // thuum docs/verbs/magic-effects.md (train-30, resistance): the actor
+    // value that resists the effect, DATA 0x10 (UESP "Skyrim Mod:Mod File
+    // Format/MGEF": "ResistanceAV, Resistance skill index (generally 39-45)
+    // or -1"); -1 for none, as when the record is too short
+    int32_t resistValue = -1;
 
     [[nodiscard]] inline bool IsFlagSet(Flags flag) const
     {

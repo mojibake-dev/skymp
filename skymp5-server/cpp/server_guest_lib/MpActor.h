@@ -325,6 +325,17 @@ public:
   // The running buffs' sum on `av`: the temporary modifier the maximum and
   // the regeneration rates count
   float GetEffectModifier(espm::ActorValue av) const;
+  // The actor value as the engine's GetActorValue answers it: Health,
+  // Magicka and Stamina as the maximum times the kept percentage; any
+  // other as the player's recorded base (0 with no record) plus the
+  // modifier above (thuum docs/verbs/spell-cast.md, train-30)
+  float GetCurrentActorValue(espm::ActorValue av);
+  // The share of a hostile effect's magnitude this actor takes, by its
+  // resistances (thuum docs/verbs/magic-effects.md, train-30): 1 for an
+  // effect that is not hostile, a spell that ignores resistance, or an
+  // effect whose resist value this actor does not carry
+  float ResistanceFactorOf(uint32_t source,
+                           const espm::Effects::Effect& effect);
   // Whether a running effect's MGEF is of `type` (thuum
   // docs/verbs/self-cast.md: an ethereal actor takes no damage)
   bool HasRunningEffectOfType(espm::MGEF::EffectType type) const;

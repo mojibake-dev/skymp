@@ -1,10 +1,12 @@
 #include "TestUtils.hpp"
 #include <catch2/catch_all.hpp>
 
+#include "ActionListener.h"
 #include "ActorValueRecord.h"
 #include "HitMessage.h"
 #include "MpActor.h"
 #include "MsgType.h"
+#include "wire_bridge_cxx/rules.h"
 
 PartOne& GetPartOne();
 

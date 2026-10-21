@@ -83,6 +83,11 @@ mod ffi {
         fn disconnect(self: &mut Server, client: u64);
         /// The client's IP address, or an empty string once it is gone.
         fn client_ip(self: &Server, client: u64) -> String;
+        /// The connection's smoothed round trip in milliseconds (renet's
+        /// ack round trip), or -1 while the client is not connected or
+        /// nothing has been measured (thuum docs/verbs/cell-host.md: the
+        /// handoff ranks visitors by it).
+        fn client_rtt_ms(self: &Server, client: u64) -> i64;
         /// Connected clients now.
         fn client_count(self: &Server) -> usize;
         /// Counters, as JSON, for the server's metrics and logs.
@@ -286,6 +291,11 @@ impl Server {
             .client_addr(client)
             .map(|a| a.ip().to_string())
             .unwrap_or_default()
+    }
+
+    /// See the bridge declaration.
+    pub fn client_rtt_ms(&self, client: u64) -> i64 {
+        self.inner.client_rtt_ms(client).and_then(|ms| i64::try_from(ms).ok()).unwrap_or(-1)
     }
 
     /// See the bridge declaration.

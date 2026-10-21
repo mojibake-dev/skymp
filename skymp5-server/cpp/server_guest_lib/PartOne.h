@@ -405,6 +405,10 @@ public:
   void OnCellLoaded(MpActor& player, uint32_t cell, bool loaded);
   void RefreshReach(MpActor& player);
   void TickCellHosts(uint64_t nowMs);
+  // Where the players' round trips come from (IServer::GetRttMs, -1 while
+  // unknown), read every tick for the table's ranking; none installed, no
+  // round trip is known and the earliest loaded takes a cell.
+  void SetRoundTripSource(std::function<int64_t(Networking::UserId)> source);
   // Who hosts `cell` (hosted false while nobody; the epoch kept).
   skymp::rules::CellHost GetCellHost(uint32_t cell) const;
   // The cell-change rule: `sender`'s report moves `actor` (an actor no user

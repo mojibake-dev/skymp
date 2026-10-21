@@ -22,6 +22,7 @@ constexpr uint32_t kTamriel = 0x3c;
 constexpr uint32_t kC1 = 0xff000c01;
 constexpr uint32_t kC2 = 0xff000c02;
 constexpr uint32_t kWolf = 0xff000c03;
+constexpr uint32_t kC3 = 0xff000c04;
 
 // the exterior grid square (2, 0) of Tamriel: x in [8192, 12288); and the
 // next square east, 4500 units on, beyond the 4096 a movement report may
@@ -226,4 +227,50 @@ TEST_CASE("A cell loaded before the grid reaches it is granted when the "
 
   DoDisconnect(p, 0);
   p.DestroyActor(kC1);
+}
+
+TEST_CASE("At the handoff the visitor with the lowest round trip takes the "
+          "cell, read from the server's connections",
+          "[CellHost]")
+{
+  auto& p = GetPartOne();
+  Player(p, 0, kC1, kHere);
+  Player(p, 1, kC2, kHere + NiPoint3{ 100.f, 0.f, 0.f });
+  Player(p, 2, kC3, kHere + NiPoint3{ 200.f, 0.f, 0.f });
+  // user 1 is the far one, user 2 the near one; the host's does not matter
+  p.SetRoundTripSource([](Networking::UserId userId) -> int64_t {
+    switch (userId) {
+      case 1:
+        return 90;
+      case 2:
+        return 30;
+      default:
+        return -1;
+    }
+  });
+  const auto cell = p.worldState.CellOf(kTamriel, kHere);
+  REQUIRE(cell.has_value());
+  CellLoaded(p, 0, *cell);
+  CellLoaded(p, 1, *cell);
+  CellLoaded(p, 2, *cell);
+  REQUIRE(p.GetCellHost(*cell).player == kC1);
+  const auto now = NowMs();
+  // a tick reads the round trips in
+  p.TickCellHosts(now);
+  p.Messages().clear();
+
+  DoDisconnect(p, 0);
+  p.TickCellHosts(now + skymp::rules::host_grace_ms() + 1);
+  const auto host = p.GetCellHost(*cell);
+  REQUIRE(host.hosted);
+  REQUIRE(host.player == kC3);
+  REQUIRE(host.epoch == 2);
+  REQUIRE(SentTo<HostGrantMessage>(p, 2).size() == 1);
+  REQUIRE(SentTo<HostGrantMessage>(p, 1).empty());
+
+  DoDisconnect(p, 1);
+  DoDisconnect(p, 2);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+  p.DestroyActor(kC3);
 }

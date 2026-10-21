@@ -524,16 +524,10 @@ MpActor& MpActor::GetActorToSendTo()
   auto worldState = GetParent();
 
   if (isOffline && worldState) {
-    auto hosterIterator = worldState->hosters.find(GetFormId());
-    if (hosterIterator != worldState->hosters.end()) {
-      auto& hosterForm =
-        worldState->LookupFormByIdNoLoad(hosterIterator->second);
-      if (hosterForm) {
-        if (auto hosterActor = hosterForm->AsActor()) {
-          // Send messages such as Teleport, ChangeValues to our host
-          return *hosterActor;
-        }
-      }
+    // thuum docs/verbs/cell-host.md: the game hosting this actor's cell
+    if (MpActor* host = worldState->HostOf(*this)) {
+      // Send messages such as Teleport, ChangeValues to our host
+      return *host;
     }
   }
 

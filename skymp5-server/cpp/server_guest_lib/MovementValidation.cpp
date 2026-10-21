@@ -16,7 +16,8 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
               const NiPoint3& currentRot, const FormDesc& currentCellOrWorld,
               const NiPoint3& newPos, const FormDesc& newCellOrWorld,
               Networking::UserId userId, MpActor* actor,
-              const std::vector<std::string>& espmFiles, bool* placed)
+              const std::vector<std::string>& espmFiles, bool* placed,
+              bool hostedCellChange)
 {
   constexpr float kSqrMaxDistance = 4096.f * 4096.f;
   const auto markPlaced = [&] {
@@ -110,6 +111,13 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
         return std::nullopt;
     }
   };
+
+  // thuum docs/verbs/cell-host.md, the cell-change rule: a hosted actor's
+  // move into another cell its host vouches for (a door, a grid edge) is
+  // the one case these bounds stand aside for; the caller judged it
+  if (!isMe && hostedCellChange) {
+    return true;
+  }
 
   if (currentCellOrWorld != newCellOrWorld ||
       (currentPos - newPos).SqrLength() >= kSqrMaxDistance) {

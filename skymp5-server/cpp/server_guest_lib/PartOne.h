@@ -25,6 +25,8 @@ namespace skymp::rules {
 struct RestSettings; // wire-bridge's (thuum ADR-020), opaque here
 struct Fights;       // wire-bridge's (thuum ADR-023), opaque here
 struct BondBreak;    // wire-bridge's (thuum shadowbond.md), opaque here
+struct CellHost;     // wire-bridge's (thuum cell-host.md), opaque here
+struct HostDecision; // wire-bridge's (thuum cell-host.md), opaque here
 }
 
 using ProfileId = int32_t;
@@ -392,6 +394,26 @@ public:
   skymp::rules::Fights& GetFights();
   void TickFights(uint64_t nowMs);
 
+  // thuum docs/verbs/cell-host.md (ADR-035): the cell host table (wire-rules
+  // cells, through the bridge). The facts: a game's CellLoaded report
+  // (OnCellLoaded), the server's grid for the player (RefreshReach: its 3x3
+  // of exterior cells, or its interior, recomputed when its grid square
+  // moves, before a report is judged and every second), the clock
+  // (TickCellHosts: a grace that ran out passes its cell on) and a departure
+  // (the disconnect). The decisions go to the games as HostGrant and
+  // HostRelease, and the actors of the cell flip their hosted flag.
+  void OnCellLoaded(MpActor& player, uint32_t cell, bool loaded);
+  void RefreshReach(MpActor& player);
+  void TickCellHosts(uint64_t nowMs);
+  // Who hosts `cell` (hosted false while nobody; the epoch kept).
+  skymp::rules::CellHost GetCellHost(uint32_t cell) const;
+  // The cell-change rule: `sender`'s report moves `actor` (an actor no user
+  // plays) to `destCell` from the cell its record holds: a same-cell report
+  // is the host's; one naming another cell is accepted when the sender hosts
+  // the destination and the origin is unhosted or the sender's.
+  bool MayMoveActor(const MpActor& sender, const MpActor& actor,
+                    std::optional<uint32_t> destCell) const;
+
   float CalculateDamage(const MpActor& aggressor, const MpActor& target,
                         const SpellCastData& spellCastData) const;
 
@@ -407,9 +429,6 @@ public:
   void ClearPacketHistory(Networking::UserId userId);
   void RequestPacketHistoryPlayback(Networking::UserId userId,
                                     const PacketHistory& history);
-
-  void SendHostStop(Networking::UserId badHosterUserId,
-                    MpObjectReference& remote);
 
   static MessageSerializer& GetMessageSerializerInstance();
 
@@ -433,6 +452,7 @@ private:
   void TickPacketHistoryPlaybacks();
   void TickGameTime();
   void TickFightsEverySecond();
+  void TickCellHostsEverySecond();
   void TickBondsEverySecond();
   // thuum docs/verbs/shadowbond.md (train-28): the proc's records on both
   // and its cast in every game but the caster's; the reverse, with the

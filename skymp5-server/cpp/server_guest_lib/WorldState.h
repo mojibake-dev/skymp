@@ -239,6 +239,17 @@ public:
   // Utility function to check if the provided baseId has the certain keyword
   bool HasKeyword(uint32_t baseId, const char* keyword);
 
+  // thuum docs/verbs/cell-host.md: the CELL a reference is in: the record's
+  // worldOrCell for an interior; for an exterior, the CELL at the
+  // reference's 4096-unit grid square (floor, as the engine's grid and
+  // GetParentCell count it) from libespm's index of every exterior CELL;
+  // none when no file has a CELL there (unhostable, never 0).
+  std::optional<uint32_t> CellOf(const MpObjectReference& ref) const;
+  std::optional<uint32_t> CellOf(uint32_t cellOrWorld,
+                                 const NiPoint3& pos) const;
+  // The player actor whose game hosts the reference's cell, or nullptr.
+  MpActor* HostOf(const MpObjectReference& ref);
+
   // Only for tests
   auto& GetGrids() { return grids; }
 
@@ -254,7 +265,11 @@ public:
     actorIdByPrivateIndexedProperty;
   std::shared_ptr<spdlog::logger> logger;
   std::vector<std::shared_ptr<PartOneListener>> listeners;
-  std::unordered_map<uint32_t, uint32_t> hosters;
+  // thuum docs/verbs/cell-host.md (ADR-035): who hosts a cell, installed by
+  // PartOne from the cell host table (wire-rules cells): the player actor's
+  // form id, or 0 while nobody does. The per-actor `hosters` map retired
+  // with the Host (14) election; an actor no user plays is its cell's host's.
+  std::function<uint32_t(uint32_t cell)> cellHostOf;
   std::unordered_map<uint32_t, std::map<uint32_t, float>>
     activationChildsByActivationParent;
   std::vector<std::optional<std::chrono::system_clock::time_point>>

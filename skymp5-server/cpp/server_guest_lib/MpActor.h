@@ -96,7 +96,8 @@ public:
 
   Networking::UserId GetUserId() const;
 
-  // Returns the actor to send messages to, considering hosters.
+  // Returns the actor to send messages to: the host of this actor's cell
+  // while no user plays it (thuum docs/verbs/cell-host.md).
   // If this actor is offline and has a hoster, returns the hoster.
   // Otherwise returns this actor.
   MpActor& GetActorToSendTo();

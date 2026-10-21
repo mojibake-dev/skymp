@@ -5,15 +5,18 @@
 #include <array>
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <limits>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
 #include "CreateActorMessage.h"
 #include "CustomPacketMessage.h"
 #include "DestroyActorMessage.h"
-#include "HostStopMessage.h"
+#include "HostGrantMessage.h"
+#include "HostReleaseMessage.h"
 #include "RaceMenuPresetMessage.h"
 #include "SetGameTimeMessage.h"
 #include "SetRaceMenuOpenMessage.h"
@@ -193,6 +196,14 @@ struct PartOne::Impl
   rust::Box<skymp::rules::Fights> fights = skymp::rules::new_fights();
   std::chrono::steady_clock::time_point lastFightsTick;
 
+  // the cell host table (thuum docs/verbs/cell-host.md, ADR-035) and each
+  // player's last grid square (worldOrCell, floor x, floor y), so its reach
+  // is recomputed only when the square moves
+  rust::Box<skymp::rules::Cells> cells = skymp::rules::new_cells();
+  std::chrono::steady_clock::time_point lastCellsTick;
+  using Square = std::tuple<uint32_t, int32_t, int32_t>;
+  std::unordered_map<uint32_t, Square> lastSquareByPlayer;
+
   espm::Loader* espm = nullptr;
 
   std::function<void(PartOneSendTargetWrapper* sendTarget,
@@ -272,6 +283,7 @@ void PartOne::Tick()
   TickGameTime();
   TickFightsEverySecond();
   TickBondsEverySecond();
+  TickCellHostsEverySecond();
   worldState.Tick();
 }
 
@@ -310,15 +322,11 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
       throw std::runtime_error(ss.str());
     }
 
-    // Clear actor's hoster if any.
-    // HostStop message will be sent on the next attempt to update actor's
-    // movement
-    // Possible fix for "players link to each other" bug
-    // See also ActionListener::SendToNeighbours
-    auto hosterActorIt = worldState.hosters.find(actor.GetFormId());
-    if (hosterActorIt != worldState.hosters.end()) {
-      worldState.hosters.erase(hosterActorIt);
-    }
+    // thuum docs/verbs/cell-host.md: the player's reach is recomputed at
+    // its first report (the square forgotten); a user's own actor is never
+    // hosted (ActionListener::ActorUpdatableBy), the "players link to each
+    // other" fix of old
+    pImpl->lastSquareByPlayer.erase(actor.GetFormId());
 
     // Both functions are required here, but it is NOT covered by unit tests
     // properly. If you do something wrong here, players will not be able to
@@ -621,6 +629,10 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           // TGM and TIM are the session's (thuum docs/verbs/god-mode.md)
           actor->SetGodMode(false);
           actor->SetImmortal(false);
+          // every cell it hosts starts its grace (thuum
+          // docs/verbs/cell-host.md); the clock passes them on
+          this_->pImpl->cells->gone(actor->GetFormId(), SteadyNowMs());
+          this_->pImpl->lastSquareByPlayer.erase(actor->GetFormId());
         }
         this_->serverState.Disconnect(userId);
         this_->serverState.disconnectingUserId = Networking::InvalidUserId;
@@ -803,21 +815,6 @@ void PartOne::RequestPacketHistoryPlayback(Networking::UserId userId,
   }
 }
 
-void PartOne::SendHostStop(Networking::UserId badHosterUserId,
-                           MpObjectReference& remote)
-{
-  auto remoteAsActor = remote.AsActor();
-
-  uint64_t longFormId = remote.GetFormId();
-  if (remoteAsActor && longFormId < 0xff000000) {
-    longFormId += 0x100000000;
-  }
-
-  HostStopMessage message;
-  message.target = longFormId;
-  GetSendTarget().Send(badHosterUserId, message, true);
-}
-
 FormCallbacks PartOne::CreateFormCallbacks()
 {
   auto st = &serverState;
@@ -927,6 +924,10 @@ void PartOne::Init()
   worldState.fightBetween = [this](uint32_t a, uint32_t b) {
     return pImpl->fights->between(a, b);
   };
+  worldState.cellHostOf = [this](uint32_t cell) {
+    const auto host = pImpl->cells->host_of(cell);
+    return host.hosted ? host.player : 0u;
+  };
 
   pImpl->onSubscribe = [this](PartOneSendTargetWrapper* sendTarget,
                               MpObjectReference* emitter,
@@ -1022,12 +1023,12 @@ void PartOne::Init()
 
     const bool hasUser = emitterAsActor &&
       serverState.UserByActor(emitterAsActor) != Networking::InvalidUserId;
-    auto hosterIterator = worldState.hosters.find(emitter->GetFormId());
 
+    // thuum docs/verbs/cell-host.md: an actor no user plays is run by the
+    // game hosting its cell; every other game, and every game while the
+    // cell is unhosted, sees it as hosted by other (frozen at the record)
     if (hasUser ||
-        (hosterIterator != worldState.hosters.end() &&
-         hosterIterator->second != 0 &&
-         hosterIterator->second != listener->GetFormId())) {
+        (emitterAsActor && worldState.HostOf(*emitter) != listener)) {
       message.props.isHostedByOther = true;
     }
 
@@ -1334,6 +1335,186 @@ void PartOne::TickFights(uint64_t nowMs)
                    pair.a, pair.b, apart ? "apart" : "a minute quiet");
     }
   }
+}
+
+namespace {
+// thuum docs/verbs/cell-host.md: the cells the server's grid gives a player
+// at `pos`: the 3x3 of exterior grid cells around it (4096 units a side, the
+// squares with no CELL in any file skipped), or its interior alone
+std::vector<uint32_t> ReachCells(const WorldState& worldState,
+                                 uint32_t cellOrWorld, const NiPoint3& pos)
+{
+  std::vector<uint32_t> cells;
+  for (int dx = -1; dx <= 1; ++dx) {
+    for (int dy = -1; dy <= 1; ++dy) {
+      const NiPoint3 at{ pos.x + 4096.f * static_cast<float>(dx),
+                         pos.y + 4096.f * static_cast<float>(dy), pos.z };
+      if (const auto cell = worldState.CellOf(cellOrWorld, at)) {
+        if (std::find(cells.begin(), cells.end(), *cell) == cells.end()) {
+          cells.push_back(*cell);
+        }
+      }
+    }
+  }
+  return cells;
+}
+
+// the player actor `formId` while a user plays it
+MpActor* PlayerActor(PartOne& partOne, uint32_t formId)
+{
+  const auto& form = partOne.worldState.LookupFormByIdNoLoad(formId);
+  MpActor* actor = form ? form->AsActor() : nullptr;
+  return actor &&
+      partOne.serverState.UserByActor(actor) != Networking::InvalidUserId
+    ? actor
+    : nullptr;
+}
+
+// the actors of `cell` that `viewer`'s game sees flip their hosted flag:
+// the host's own from now, hosted by other on every other screen (and on
+// every screen while `host` is nobody)
+void FlipHostedFlags(PartOne& partOne, MpActor& viewer, uint32_t cell,
+                     MpActor* host)
+{
+  for (MpObjectReference* emitter : viewer.GetEmitters()) {
+    MpActor* actor = emitter ? emitter->AsActor() : nullptr;
+    if (!actor ||
+        partOne.serverState.UserByActor(actor) != Networking::InvalidUserId) {
+      continue;
+    }
+    if (partOne.worldState.CellOf(*actor) != cell) {
+      continue;
+    }
+    actor->UpdateHoster(host ? host->GetFormId() : 0);
+  }
+}
+
+void ApplyHostDecisions(PartOne& partOne,
+                        const rust::Vec<skymp::rules::HostDecision>& decisions)
+{
+  for (const auto& d : decisions) {
+    switch (d.kind) {
+      case skymp::rules::HostKind::Grant: {
+        spdlog::info("PartOne - cell-host: {:x} hosts cell {:x} at epoch {}",
+                     d.player, d.cell, d.epoch);
+        MpActor* host = PlayerActor(partOne, d.player);
+        if (!host) {
+          break;
+        }
+        HostGrantMessage grant;
+        grant.cell = d.cell;
+        grant.epoch = d.epoch;
+        partOne.GetSendTarget().Send(partOne.serverState.UserByActor(host),
+                                     grant, true);
+        FlipHostedFlags(partOne, *host, d.cell, host);
+        break;
+      }
+      case skymp::rules::HostKind::Release: {
+        spdlog::info(
+          "PartOne - cell-host: {:x} stops hosting cell {:x} (epoch {})",
+          d.player, d.cell, d.epoch);
+        MpActor* old = PlayerActor(partOne, d.player);
+        if (!old) {
+          break;
+        }
+        HostReleaseMessage release;
+        release.cell = d.cell;
+        release.epoch = d.epoch;
+        partOne.GetSendTarget().Send(partOne.serverState.UserByActor(old),
+                                     release, true);
+        FlipHostedFlags(partOne, *old, d.cell, nullptr);
+        break;
+      }
+      case skymp::rules::HostKind::Unhosted:
+        spdlog::info("PartOne - cell-host: cell {:x} is unhosted, frozen at "
+                     "its record (epoch {} kept)",
+                     d.cell, d.epoch);
+        break;
+      default:
+        break;
+    }
+  }
+}
+}
+
+void PartOne::RefreshReach(MpActor& player)
+{
+  const uint32_t cellOrWorld =
+    player.GetCellOrWorld().ToFormId(worldState.espmFiles);
+  const NiPoint3& pos = player.GetPos();
+  const Impl::Square square{
+    cellOrWorld, static_cast<int32_t>(std::floor(pos.x / 4096.f)),
+    static_cast<int32_t>(std::floor(pos.y / 4096.f))
+  };
+  const auto it = pImpl->lastSquareByPlayer.find(player.GetFormId());
+  if (it != pImpl->lastSquareByPlayer.end() && it->second == square) {
+    return;
+  }
+  pImpl->lastSquareByPlayer[player.GetFormId()] = square;
+  const auto cells = ReachCells(worldState, cellOrWorld, pos);
+  ApplyHostDecisions(*this,
+                     pImpl->cells->reach(
+                       player.GetFormId(),
+                       rust::Slice<const uint32_t>(cells.data(), cells.size()),
+                       SteadyNowMs()));
+}
+
+void PartOne::OnCellLoaded(MpActor& player, uint32_t cell, bool loaded)
+{
+  RefreshReach(player);
+  const auto nowMs = SteadyNowMs();
+  ApplyHostDecisions(
+    *this,
+    loaded ? pImpl->cells->loaded(player.GetFormId(), cell, nowMs)
+           : pImpl->cells->unloaded(player.GetFormId(), cell, nowMs));
+}
+
+void PartOne::TickCellHostsEverySecond()
+{
+  const auto now = std::chrono::steady_clock::now();
+  if (now - pImpl->lastCellsTick < std::chrono::seconds(1)) {
+    return;
+  }
+  pImpl->lastCellsTick = now;
+  TickCellHosts(SteadyNowMs());
+}
+
+void PartOne::TickCellHosts(uint64_t nowMs)
+{
+  for (size_t i = 0, n = serverState.maxConnectedId; i <= n; ++i) {
+    if (MpActor* actor =
+          serverState.ActorByUser(static_cast<Networking::UserId>(i))) {
+      RefreshReach(*actor);
+    }
+  }
+  ApplyHostDecisions(*this, pImpl->cells->tick(nowMs));
+}
+
+skymp::rules::CellHost PartOne::GetCellHost(uint32_t cell) const
+{
+  return pImpl->cells->host_of(cell);
+}
+
+bool PartOne::MayMoveActor(const MpActor& sender, const MpActor& actor,
+                           std::optional<uint32_t> destCell) const
+{
+  const auto hostOf = [&](std::optional<uint32_t> cell) -> uint32_t {
+    if (!cell) {
+      return 0;
+    }
+    const auto host = pImpl->cells->host_of(*cell);
+    return host.hosted ? host.player : 0u;
+  };
+  const auto origin = worldState.CellOf(actor);
+  const uint32_t me = sender.GetFormId();
+  if (!destCell) {
+    return false;
+  }
+  if (destCell == origin) {
+    return hostOf(origin) == me;
+  }
+  const uint32_t originHost = hostOf(origin);
+  return hostOf(destCell) == me && (originHost == 0 || originHost == me);
 }
 
 bool PartOne::SpendMovementBudget(uint32_t actorFormId, float ground)

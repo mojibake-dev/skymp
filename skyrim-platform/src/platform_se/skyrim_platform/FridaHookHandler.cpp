@@ -119,6 +119,23 @@ void HookHandler::Install(HookID id, uintptr_t address,
     hooks.emplace(id, hook);
 }
 
+bool HookHandler::Replace(uintptr_t address, void* replacement,
+                          void** original)
+{
+  gum_interceptor_begin_transaction(_interceptor);
+  auto status = gum_interceptor_replace(_interceptor, (void*)address,
+                                        replacement, nullptr, original);
+  gum_interceptor_end_transaction(_interceptor);
+  uint64_t diff = address - Offsets::BaseAddress;
+  if (status != GUM_REPLACE_OK) {
+    logger::critical("Failed to replace function: address {:X} status {}.",
+                     diff, static_cast<uint64_t>(status));
+    return false;
+  }
+  logger::debug("Replaced function: address {:X}.", diff);
+  return true;
+}
+
 std::function<void(GumInvocationContext*)> HookHandler::GetHookEnterFunction(
   HookID id)
 {

@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{bonds, activation, actor_values, appearance, attributes, block, casts, clock, console, damage, effects, favorites, forms, hostility, magic, markers, melee, movement, player_globals, racemenu, ranged, rest, shouts, stagger, teleports, headshots};
+use wire_rules::{bonds, activation, actor_values, appearance, attributes, block, casts, clock, console, damage, effects, favorites, forms, hostility, magic, markers, melee, movement, player_globals, racemenu, ranged, rest, shouts, stagger, teleports, headshots, scripted_effects};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -704,6 +704,18 @@ mod ffi {
         Archery,
     }
 
+    /// thuum docs/verbs/scripted-effects.md: what Finger of Death does to
+    /// its two actors (wire-rules scripted_effects::finger_of_death).
+    #[derive(Debug, Clone, Copy)]
+    struct DeathBlast {
+        /// Health the target loses.
+        target_damage: f32,
+        /// Health the caster loses.
+        caster_damage: f32,
+        /// The target dies by the caster's hand.
+        kill: bool,
+    }
+
     /// A form a RaceMenu look names (thuum ADR-026), or a cast teleport's
     /// look (TeleportLook): its plugin and its id within it.
     #[derive(Debug, Clone)]
@@ -1080,6 +1092,22 @@ mod ffi {
         /// The actor is gone: its bow hits with it.
         fn forget(self: &mut Headshots, actor: u32);
 
+        /// thuum docs/verbs/scripted-effects.md: the spells
+        /// server-settings.json's `scriptedEffects` names, whose scripts'
+        /// work the server does itself from the claimed hit.
+        type ScriptedEffects;
+        /// The list from the block as JSON text (`[]` for none); the error
+        /// names the bad entry.
+        fn new_scripted_effects(settings_json: &str) -> Result<Box<ScriptedEffects>>;
+        /// Whether the spell `short_id` in `file` is a scripted kill.
+        fn is_kill_spell(self: &ScriptedEffects, short_id: u32, file: &str) -> bool;
+        /// The percentage the spell's entry carries (the script's global as
+        /// the mod ships it when the entry says nothing).
+        fn kill_percentage(self: &ScriptedEffects, short_id: u32, file: &str) -> f32;
+        /// Finger of Death's arithmetic over the target's and the caster's
+        /// current Health and the percentage.
+        fn finger_of_death(target_health: f32, caster_health: f32, percentage: f32) -> DeathBlast;
+
         /// thuum docs/verbs/cast-teleport.md: the spells server-settings.json's
         /// `castTeleports` names as teleports, each with its reach.
         type CastTeleports;
@@ -1232,7 +1260,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlayerGlobalEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
+pub use ffi::{AvBase, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlayerGlobalEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -1794,6 +1822,29 @@ impl Headshots {
     fn forget(&mut self, actor: u32) {
         self.0.forget(actor);
     }
+}
+
+/// The scripted effects the server runs (wire-rules scripted_effects).
+#[derive(Debug, Clone, Default)]
+pub struct ScriptedEffects(scripted_effects::ScriptedEffects);
+
+fn new_scripted_effects(settings_json: &str) -> Result<Box<ScriptedEffects>, clock::SettingsError> {
+    scripted_effects::ScriptedEffects::from_json(settings_json).map(|s| Box::new(ScriptedEffects(s)))
+}
+
+impl ScriptedEffects {
+    fn is_kill_spell(&self, short_id: u32, file: &str) -> bool {
+        self.0.is_kill_spell(short_id, file)
+    }
+
+    fn kill_percentage(&self, short_id: u32, file: &str) -> f32 {
+        self.0.percentage(short_id, file)
+    }
+}
+
+fn finger_of_death(target_health: f32, caster_health: f32, percentage: f32) -> DeathBlast {
+    let b = scripted_effects::finger_of_death(target_health, caster_health, percentage);
+    DeathBlast { target_damage: b.target_damage, caster_damage: b.caster_damage, kill: b.kill }
 }
 
 /// The bonds rule (wire-rules bonds).

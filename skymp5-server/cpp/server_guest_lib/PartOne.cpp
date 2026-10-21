@@ -160,6 +160,12 @@ struct PartOne::Impl
   rust::Box<skymp::rules::Headshots> headshots =
     skymp::rules::new_headshots("{}");
 
+  // the scripted effects the server runs itself (thuum
+  // docs/verbs/scripted-effects.md): server-settings.json's
+  // `scriptedEffects` list
+  rust::Box<skymp::rules::ScriptedEffects> scriptedEffects =
+    skymp::rules::new_scripted_effects("[]");
+
   // the bonds (thuum docs/verbs/shadowbond.md): server-settings.json's
   // `bonds` list and the bonds standing between actors
   rust::Box<skymp::rules::Bonds> bonds = skymp::rules::new_bonds("[]");
@@ -1582,6 +1588,86 @@ std::vector<PlayerGlobal> PartOne::MergePlayerGlobals(
                                                        recordEntries.size()),
     rust::Slice<const skymp::rules::PlayerGlobalEntry>(reportEntries.data(),
                                                        reportEntries.size())));
+}
+
+void PartOne::SetScriptedEffectSettings(const std::string& scriptedEffectsJson)
+{
+  pImpl->scriptedEffects =
+    skymp::rules::new_scripted_effects(scriptedEffectsJson);
+  spdlog::info("PartOne::SetScriptedEffectSettings - {}", scriptedEffectsJson);
+}
+
+bool PartOne::IsScriptedKillSpell(uint32_t spellFormId) const
+{
+  const auto desc = FormDesc::FromFormId(spellFormId, worldState.espmFiles);
+  return pImpl->scriptedEffects->is_kill_spell(desc.shortFormId, desc.file);
+}
+
+bool PartOne::ClaimScriptedKill(
+  MpActor& actor, MpActor& target, uint32_t spellFormId,
+  const std::vector<espm::Effects::Effect>& effects)
+{
+  if (target.GetChangeForm().isDead) {
+    spdlog::info("PartOne::ClaimScriptedKill - {:x}'s {:x} on {:x}: the "
+                 "target is dead already; nothing",
+                 actor.GetFormId(), spellFormId, target.GetFormId());
+    return false;
+  }
+  if (target.IsGodMode()) {
+    spdlog::info("PartOne::ClaimScriptedKill - {:x}'s {:x} on {:x}: the "
+                 "target is in god mode; nothing",
+                 actor.GetFormId(), spellFormId, target.GetFormId());
+    return false;
+  }
+  // the script runs only where its effect applies: an effect of the spell
+  // whose conditions hold for the target (thuum ADR-039; Finger of Death's
+  // seven, IsEssential among them)
+  const bool held = std::any_of(
+    effects.begin(), effects.end(), [&](const espm::Effects::Effect& effect) {
+      return MpActor::EffectConditionsHold(&worldState, effect, spellFormId,
+                                           target, actor);
+    });
+  if (!held) {
+    spdlog::info("PartOne::ClaimScriptedKill - {:x}'s {:x} on {:x}: no "
+                 "effect's conditions hold; nothing",
+                 actor.GetFormId(), spellFormId, target.GetFormId());
+    return false;
+  }
+  const auto desc = FormDesc::FromFormId(spellFormId, worldState.espmFiles);
+  const float percentage =
+    pImpl->scriptedEffects->kill_percentage(desc.shortFormId, desc.file);
+  const float targetHealth =
+    target.GetCurrentActorValue(espm::ActorValue::Health);
+  const float casterHealth =
+    actor.GetCurrentActorValue(espm::ActorValue::Health);
+  const auto blast =
+    skymp::rules::finger_of_death(targetHealth, casterHealth, percentage);
+  // the caster's share, by its own hand (a god caster takes none, as the
+  // engine's TGM takes no damage)
+  if (blast.caster_damage > 0.f && !actor.IsGodMode()) {
+    actor.DamageActorValue(espm::ActorValue::Health, blast.caster_damage);
+  }
+  // the target's, by the caster's hand: a Health reaching nothing names
+  // its killer (MpActor::SetPercentages), an immortal target keeps its one
+  // point (NetSetPercentages)
+  if (blast.target_damage > 0.f) {
+    const float maximum = std::max(target.GetMaximumValues().health, 1.f);
+    ActorValues values = target.GetChangeForm().actorValues;
+    values.healthPercentage = blast.kill
+      ? 0.f
+      : std::max(0.f, values.healthPercentage - blast.target_damage / maximum);
+    target.NetSetPercentages(
+      values, &actor,
+      std::vector<espm::ActorValue>{ espm::ActorValue::Health });
+  }
+  spdlog::info(
+    "PartOne::ClaimScriptedKill - {:x}'s {:x} on {:x}: the "
+    "target's {:.1f} Health against the caster's {:.1f} at {:.0f} "
+    "percent: the target loses {:.1f}, the caster {:.1f}; {}",
+    actor.GetFormId(), spellFormId, target.GetFormId(), targetHealth,
+    casterHealth, percentage, blast.target_damage, blast.caster_damage,
+    blast.kill ? "the target dies by the caster's hand" : "nobody dies");
+  return blast.kill;
 }
 
 void PartOne::SetHeadshotSettings(const std::string& headshotJson)

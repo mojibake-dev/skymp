@@ -27,6 +27,7 @@ pub mod player_globals;
 pub mod racemenu;
 pub mod ranged;
 pub mod rest;
+pub mod scripted_effects;
 pub mod shouts;
 pub mod stagger;
 pub mod teleports;

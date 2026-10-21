@@ -235,6 +235,19 @@ public:
   // actor's base Archery) against the rule (wire-rules headshots); Killed
   // kills the target
   HeadshotCheck ClaimHeadshot(MpActor& actor, MpActor& target);
+  // thuum docs/verbs/scripted-effects.md: server-settings.json's
+  // `scriptedEffects` list (the spells whose script's work the server does
+  // itself from the claimed hit; "[]" for none; a bad list refuses to
+  // start)
+  void SetScriptedEffectSettings(const std::string& scriptedEffectsJson);
+  bool IsScriptedKillSpell(uint32_t spellFormId) const;
+  // the claimed hit of a scripted kill by the actor on the target: once an
+  // effect of the spell holds its conditions for the target (ADR-039), the
+  // script's arithmetic over the two actors' current Health (wire-rules
+  // scripted_effects), the target's loss by the actor's hand; whether the
+  // target died
+  bool ClaimScriptedKill(MpActor& actor, MpActor& target, uint32_t spellFormId,
+                         const std::vector<espm::Effects::Effect>& effects);
   uint64_t TeleportWaitMs(uint32_t spellFormId) const;
   bool TeleportRelays(uint32_t spellFormId) const;
   void PermitCastJump(uint32_t actorFormId, uint32_t cellOrWorld,

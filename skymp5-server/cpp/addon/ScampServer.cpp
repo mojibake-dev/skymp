@@ -333,6 +333,12 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
     partOne->SetHeadshotSettings(serverSettings.contains("headshot")
                                    ? serverSettings.at("headshot").dump()
                                    : std::string("{}"));
+    // the scripted effects the server runs itself (thuum
+    // docs/verbs/scripted-effects.md): `scriptedEffects`, the same way
+    partOne->SetScriptedEffectSettings(
+      serverSettings.contains("scriptedEffects")
+        ? serverSettings.at("scriptedEffects").dump()
+        : std::string("[]"));
     // the globals kept per player (thuum docs/verbs/player-globals.md):
     // `playerGlobals`, the same way
     partOne->SetPlayerGlobalsSettings(

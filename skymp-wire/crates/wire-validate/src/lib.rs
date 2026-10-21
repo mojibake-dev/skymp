@@ -1487,6 +1487,43 @@ mod tests {
         );
     }
 
+    // thuum docs/verbs/cell-host.md: a game's loaded set crosses as
+    // CellLoaded under a 32-then-8-a-second budget; the grants and releases
+    // are the server's, each naming a cell and an epoch after the first
+    fn cell_loaded(cell: u32) -> Message {
+        use wire_schema::skymp::CellLoaded;
+        Message::CellLoaded(CellLoaded { cell, loaded: true, ..Default::default() })
+    }
+
+    #[test]
+    fn cell_loaded_has_the_grid_load_budget_and_names_a_cell() {
+        let mut g = ClientGuard::default();
+        // a 5x5 load is 25 reports; the burst is 32
+        for i in 0..32u32 {
+            assert_eq!(validate(&cell_loaded(0x9732 + i), &mut g, 0), Ok(()));
+        }
+        assert_eq!(validate(&cell_loaded(0x9732), &mut g, 0), Err(Reject::Rate));
+        // a second later, eight more
+        for _ in 0..8 {
+            assert_eq!(validate(&cell_loaded(0x9732), &mut g, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&cell_loaded(0x9732), &mut g, 1_000), Err(Reject::Rate));
+        // a cell of 0 names nothing
+        assert_eq!(validate(&cell_loaded(0), &mut ClientGuard::default(), 0), Err(Reject::Range));
+    }
+
+    #[test]
+    fn host_grants_and_releases_name_a_cell_and_an_epoch_after_the_first() {
+        use wire_schema::skymp::{HostGrant, HostRelease};
+        let grant = |cell, epoch| Message::HostGrant(HostGrant { cell, epoch, ..Default::default() });
+        let release = |cell, epoch| Message::HostRelease(HostRelease { cell, epoch, ..Default::default() });
+        assert_eq!(validate_server(&grant(0x9732, 1)), Ok(()));
+        assert_eq!(validate_server(&release(0x9732, 1)), Ok(()));
+        assert_eq!(validate_server(&grant(0, 1)), Err(Reject::Range));
+        assert_eq!(validate_server(&grant(0x9732, 0)), Err(Reject::Range));
+        assert_eq!(validate_server(&release(0x9732, 0)), Err(Reject::Range));
+    }
+
     proptest! {
         #[test]
         fn movement_never_panics(
@@ -1511,6 +1548,15 @@ mod tests {
                 now = now.saturating_add(u64::from(*tick));
                 let _ = validate(&hit(*seq), &mut g, now);
             }
+        }
+
+        #[test]
+        fn cell_host_messages_never_panic(cell in any::<u32>(), epoch in any::<u32>(), loaded in any::<bool>(), now in any::<u64>()) {
+            use wire_schema::skymp::{CellLoaded, HostGrant, HostRelease};
+            let mut g = ClientGuard::default();
+            let _ = validate(&Message::CellLoaded(CellLoaded { cell, loaded, ..Default::default() }), &mut g, now);
+            let _ = validate_server(&Message::HostGrant(HostGrant { cell, epoch, ..Default::default() }));
+            let _ = validate_server(&Message::HostRelease(HostRelease { cell, epoch, ..Default::default() }));
         }
 
         #[test]

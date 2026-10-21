@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{bonds, activation, actor_values, appearance, attributes, block, casts, clock, console, damage, effects, favorites, forms, hostility, magic, markers, melee, movement, player_globals, racemenu, ranged, rest, shouts, stagger, teleports, headshots, scripted_effects};
+use wire_rules::{bonds, activation, cells, actor_values, appearance, attributes, block, casts, clock, console, damage, effects, favorites, forms, hostility, magic, markers, melee, movement, player_globals, racemenu, ranged, rest, shouts, stagger, teleports, headshots, scripted_effects};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -914,6 +914,43 @@ mod ffi {
         rate_mult: f32,
     }
 
+    /// What the cell host table decides (thuum docs/verbs/cell-host.md,
+    /// ADR-035).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum HostKind {
+        /// `player` hosts `cell` at `epoch` from now.
+        Grant,
+        /// `player` stops hosting `cell`; `epoch` is the grant that ends.
+        Release,
+        /// Nobody hosts `cell`: it freezes at its record, the epoch kept.
+        Unhosted,
+    }
+
+    /// One decision of the cell host table, for the core to send to its
+    /// game or apply.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct HostDecision {
+        /// Which decision.
+        kind: HostKind,
+        /// The player it concerns (0 for Unhosted).
+        player: u32,
+        /// The cell.
+        cell: u32,
+        /// The grant's epoch (the cell's kept epoch for Unhosted).
+        epoch: u32,
+    }
+
+    /// Who hosts a cell now.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct CellHost {
+        /// False while nobody hosts the cell.
+        hosted: bool,
+        /// The host's player actor (0 when unhosted).
+        player: u32,
+        /// The standing grant's epoch (the kept epoch when unhosted).
+        epoch: u32,
+    }
+
     extern "Rust" {
         /// A client's first activation of a target `distance` units away,
         /// `target_size` being its bounds' farthest point times its scale.
@@ -1263,10 +1300,46 @@ mod ffi {
         fn resync_due(self: &mut GameClock, user: u32, now_ms: i64) -> bool;
         /// A player left.
         fn forget(self: &mut GameClock, user: u32);
+
+        /// thuum docs/verbs/cell-host.md (ADR-035): which player's game runs
+        /// each cell's NPCs, the grace and the epochs.
+        type Cells;
+        /// No cell hosted, no player known.
+        fn new_cells() -> Box<Cells>;
+        /// The cells the server's grid gives `player` now (its 3x3 of
+        /// exterior grid cells, or its interior) at `now_ms`: a grant for a
+        /// cell newly reached that the game has loaded and nobody hosts; a
+        /// hosted cell the grid dropped starts its grace, one reached again
+        /// disarms it.
+        fn reach(self: &mut Cells, player: u32, cells: &[u32], now_ms: u64) -> Vec<HostDecision>;
+        /// The transport's round trip for `player`'s connection, ms.
+        fn rtt(self: &mut Cells, player: u32, ms: u32);
+        /// `player`'s game reports `cell` fully loaded at `now_ms` (a
+        /// monotonic clock): a grant when the cell has no host and the grid
+        /// gives it the cell.
+        fn loaded(self: &mut Cells, player: u32, cell: u32, now_ms: u64) -> Vec<HostDecision>;
+        /// `player`'s game reports `cell` gone from its loaded set: its
+        /// grace starts when it hosts the cell.
+        fn unloaded(self: &mut Cells, player: u32, cell: u32, now_ms: u64) -> Vec<HostDecision>;
+        /// `player` left the server: every cell it hosts starts its grace.
+        fn gone(self: &mut Cells, player: u32, now_ms: u64) -> Vec<HostDecision>;
+        /// The clock: each grace that ran out passes its cell on (a Release,
+        /// then a Grant or an Unhosted).
+        fn tick(self: &mut Cells, now_ms: u64) -> Vec<HostDecision>;
+        /// Who hosts `cell` now.
+        fn host_of(self: &Cells, cell: u32) -> CellHost;
+        /// Whether a report from `player` for an actor in `cell` at `epoch`
+        /// is the standing host's.
+        fn accepts(self: &Cells, cell: u32, player: u32, epoch: u32) -> bool;
+        /// The cell's epoch, kept while unhosted; 0 before any grant.
+        fn epoch_of(self: &Cells, cell: u32) -> u32;
+        /// The grace a host keeps its cell after leaving it, ms
+        /// (wire-rules cells::GRACE_MS), for the core's timer.
+        fn host_grace_ms() -> u64;
     }
 }
 
-pub use ffi::{AvBase, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlayerGlobalEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
+pub use ffi::{AvBase, CellHost, HostDecision, HostKind, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlayerGlobalEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -1800,6 +1873,79 @@ fn player_globals_merge(record: &[PlayerGlobalEntry], report: &[PlayerGlobalEntr
     to_entries(&player_globals::merge(&to_values(record), &to_values(report)))
 }
 
+/// The cell host table (wire-rules cells, thuum docs/verbs/cell-host.md).
+#[derive(Debug, Default)]
+pub struct Cells(cells::Cells);
+
+fn new_cells() -> Box<Cells> {
+    Box::default()
+}
+
+fn host_decisions(table: &cells::Cells, decisions: Vec<cells::Decision>) -> Vec<HostDecision> {
+    decisions
+        .into_iter()
+        .map(|d| match d {
+            cells::Decision::Grant { player, cell, epoch } => HostDecision { kind: HostKind::Grant, player, cell, epoch },
+            cells::Decision::Release { player, cell, epoch } => {
+                HostDecision { kind: HostKind::Release, player, cell, epoch }
+            }
+            cells::Decision::Unhosted { cell } => {
+                HostDecision { kind: HostKind::Unhosted, player: 0, cell, epoch: table.epoch_of(cell) }
+            }
+        })
+        .collect()
+}
+
+impl Cells {
+    fn reach(&mut self, player: u32, cells: &[u32], now_ms: u64) -> Vec<HostDecision> {
+        let decisions = self.0.reach(player, cells, now_ms);
+        host_decisions(&self.0, decisions)
+    }
+
+    fn rtt(&mut self, player: u32, ms: u32) {
+        self.0.rtt(player, ms);
+    }
+
+    fn loaded(&mut self, player: u32, cell: u32, now_ms: u64) -> Vec<HostDecision> {
+        let decisions = self.0.loaded(player, cell, now_ms);
+        host_decisions(&self.0, decisions)
+    }
+
+    fn unloaded(&mut self, player: u32, cell: u32, now_ms: u64) -> Vec<HostDecision> {
+        let decisions = self.0.unloaded(player, cell, now_ms);
+        host_decisions(&self.0, decisions)
+    }
+
+    fn gone(&mut self, player: u32, now_ms: u64) -> Vec<HostDecision> {
+        let decisions = self.0.gone(player, now_ms);
+        host_decisions(&self.0, decisions)
+    }
+
+    fn tick(&mut self, now_ms: u64) -> Vec<HostDecision> {
+        let decisions = self.0.tick(now_ms);
+        host_decisions(&self.0, decisions)
+    }
+
+    fn host_of(&self, cell: u32) -> CellHost {
+        match self.0.host_of(cell) {
+            Some((player, epoch)) => CellHost { hosted: true, player, epoch },
+            None => CellHost { hosted: false, player: 0, epoch: self.0.epoch_of(cell) },
+        }
+    }
+
+    fn accepts(&self, cell: u32, player: u32, epoch: u32) -> bool {
+        self.0.accepts(cell, player, epoch)
+    }
+
+    fn epoch_of(&self, cell: u32) -> u32 {
+        self.0.epoch_of(cell)
+    }
+}
+
+const fn host_grace_ms() -> u64 {
+    cells::GRACE_MS
+}
+
 /// The spells the server names as teleports (wire-rules teleports).
 pub struct CastTeleports(teleports::CastTeleports);
 
@@ -2237,6 +2383,31 @@ impl GameClock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cell_host_table_crosses_as_decisions() {
+        let mut c = new_cells();
+        assert!(c.reach(0xff00_0000, &[0x9732], 0).is_empty());
+        assert!(c.reach(0xff00_0001, &[0x9732], 0).is_empty());
+        assert_eq!(
+            c.loaded(0xff00_0000, 0x9732, 1_000),
+            vec![HostDecision { kind: HostKind::Grant, player: 0xff00_0000, cell: 0x9732, epoch: 1 }]
+        );
+        assert_eq!(c.host_of(0x9732), CellHost { hosted: true, player: 0xff00_0000, epoch: 1 });
+        assert!(c.accepts(0x9732, 0xff00_0000, 1));
+        // the host leaves, nobody else has the cell loaded: released, unhosted at the kept epoch
+        assert!(c.gone(0xff00_0000, 2_000).is_empty());
+        assert!(c.tick(2_000 + host_grace_ms() - 1).is_empty());
+        assert_eq!(
+            c.tick(2_000 + host_grace_ms()),
+            vec![
+                HostDecision { kind: HostKind::Release, player: 0xff00_0000, cell: 0x9732, epoch: 1 },
+                HostDecision { kind: HostKind::Unhosted, player: 0, cell: 0x9732, epoch: 1 },
+            ]
+        );
+        assert_eq!(c.host_of(0x9732), CellHost { hosted: false, player: 0, epoch: 1 });
+        assert_eq!(c.epoch_of(0x9732), 1);
+    }
 
     #[test]
     fn the_bridge_passes_the_rules_through() {

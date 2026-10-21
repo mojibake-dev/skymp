@@ -1,9 +1,12 @@
 //! Cell hosts (thuum docs/verbs/cell-host.md, ADR-035, M3). One player's game
-//! runs a cell's NPCs and the server knows which: the first game to report
-//! the cell fully loaded while its interest grid holds it; kept while it
-//! stays; when it leaves (the cell unloaded, or the player gone) a grace
-//! window runs, and at its end the remaining visitors with the cell loaded and
-//! in reach rank by round trip, lowest first, earliest loaded on a tie; the
+//! runs a cell's NPCs and the server knows which: the first game to have
+//! the cell fully loaded while the server's interest grid holds it (whichever
+//! of the two comes second: the game loads a 5x5 and the grid is a 3x3, so a
+//! cell is often loaded before it is reached); kept while both stand; when
+//! either lapses (the cell unloaded, the grid moved off it, or the player
+//! gone) a grace window runs, disarmed when both stand again, and at its end
+//! the remaining visitors with the cell loaded and in reach rank by round
+//! trip, lowest first, earliest loaded on a tie; the
 //! first gets the grant, the old host its release; none, and the cell is
 //! unhosted, frozen at its record. Every grant carries an epoch, one counter
 //! per cell, up at every grant and kept while the cell is unhosted, so a
@@ -89,9 +92,16 @@ pub struct Cells {
 
 impl Cells {
     /// The cells the server's grid gives `player` now (its 3x3 of 4096-unit
-    /// chunks, one exterior grid cell each, plus its interior).
-    pub fn reach(&mut self, player: u32, cells: &[u32]) {
-        self.players.entry(player).or_default().reach = cells.iter().copied().collect();
+    /// chunks, one exterior grid cell each, or its interior) at `now_ms`:
+    /// a cell newly reached that the game has loaded and nobody hosts is
+    /// granted; a hosted cell newly reached disarms its grace; a hosted cell
+    /// the grid dropped arms it.
+    pub fn reach(&mut self, player: u32, cells: &[u32], now_ms: u64) -> Vec<Decision> {
+        let next: HashSet<u32> = cells.iter().copied().collect();
+        let prev = std::mem::replace(&mut self.players.entry(player).or_default().reach, next.clone());
+        let mut touched: Vec<u32> = prev.symmetric_difference(&next).copied().collect();
+        touched.sort_unstable();
+        touched.into_iter().filter_map(|cell| self.consider(player, cell, now_ms)).collect()
     }
 
     /// The transport's round trip for `player`'s connection, milliseconds.
@@ -99,30 +109,13 @@ impl Cells {
         self.players.entry(player).or_default().rtt_ms = Some(ms);
     }
 
-    /// `player` reports `cell` fully loaded at `now_ms`. A cell with no host
-    /// goes to it when its reach holds the cell; its own cell's grace is
-    /// disarmed; a cell another player hosts gives nothing.
+    /// `player` reports `cell` fully loaded at `now_ms`: a grant when its
+    /// reach holds the cell and nobody hosts it; its own cell's grace is
+    /// disarmed when the reach holds it; a cell another player hosts gives
+    /// nothing.
     pub fn loaded(&mut self, player: u32, cell: u32, now_ms: u64) -> Vec<Decision> {
-        let in_reach = {
-            let p = self.players.entry(player).or_default();
-            p.loaded.entry(cell).or_insert(now_ms);
-            p.reach.contains(&cell)
-        };
-        let state = self.cells.entry(cell).or_default();
-        match state.host {
-            Some(ref mut host) if host.player == player => {
-                host.leaving_since_ms = None;
-                Vec::new()
-            }
-            Some(_) => Vec::new(),
-            None if in_reach => {
-                let epoch = state.epoch.saturating_add(1);
-                state.epoch = epoch;
-                state.host = Some(Host { player, epoch, leaving_since_ms: None });
-                vec![Decision::Grant { player, cell, epoch }]
-            }
-            None => Vec::new(),
-        }
+        self.players.entry(player).or_default().loaded.entry(cell).or_insert(now_ms);
+        self.consider(player, cell, now_ms).into_iter().collect()
     }
 
     /// `player` reports `cell` unloaded at `now_ms`: its grace starts when it
@@ -131,14 +124,7 @@ impl Cells {
         if let Some(p) = self.players.get_mut(&player) {
             p.loaded.remove(&cell);
         }
-        if let Some(state) = self.cells.get_mut(&cell) {
-            if let Some(ref mut host) = state.host {
-                if host.player == player && host.leaving_since_ms.is_none() {
-                    host.leaving_since_ms = Some(now_ms);
-                }
-            }
-        }
-        Vec::new()
+        self.consider(player, cell, now_ms).into_iter().collect()
     }
 
     /// `player` left the server at `now_ms`: every cell it hosts starts its
@@ -153,6 +139,37 @@ impl Cells {
             }
         }
         Vec::new()
+    }
+
+    /// Whether `player` has `cell` loaded and in reach: what hosting takes.
+    fn eligible(&self, player: u32, cell: u32) -> bool {
+        self.players.get(&player).is_some_and(|p| p.reach.contains(&cell) && p.loaded.contains_key(&cell))
+    }
+
+    /// `player`'s standing toward `cell` changed at `now_ms`: a grant when
+    /// it is eligible and nobody hosts; its own grace disarmed while
+    /// eligible, armed while not; nothing toward another's cell.
+    fn consider(&mut self, player: u32, cell: u32, now_ms: u64) -> Option<Decision> {
+        let eligible = self.eligible(player, cell);
+        let state = self.cells.entry(cell).or_default();
+        match state.host {
+            Some(ref mut host) if host.player == player => {
+                if eligible {
+                    host.leaving_since_ms = None;
+                } else if host.leaving_since_ms.is_none() {
+                    host.leaving_since_ms = Some(now_ms);
+                }
+                None
+            }
+            Some(_) => None,
+            None if eligible => {
+                let epoch = state.epoch.saturating_add(1);
+                state.epoch = epoch;
+                state.host = Some(Host { player, epoch, leaving_since_ms: None });
+                Some(Decision::Grant { player, cell, epoch })
+            }
+            None => None,
+        }
     }
 
     /// The clock at `now_ms`: every grace that has run out passes its cell on,
@@ -233,8 +250,8 @@ mod tests {
 
     fn both_in_reach() -> Cells {
         let mut c = Cells::default();
-        c.reach(C1, &[RIVERWOOD]);
-        c.reach(C2, &[RIVERWOOD]);
+        c.reach(C1, &[RIVERWOOD], 0);
+        c.reach(C2, &[RIVERWOOD], 0);
         c
     }
 
@@ -249,7 +266,7 @@ mod tests {
         assert!(!c.accepts(RIVERWOOD, C1, 2));
         // a load the grid does not give: no grant
         let mut d = Cells::default();
-        d.reach(C1, &[0x1234]);
+        d.reach(C1, &[0x1234], 0);
         assert_eq!(d.loaded(C1, RIVERWOOD, 1_000), vec![]);
         assert_eq!(d.host_of(RIVERWOOD), None);
     }
@@ -283,7 +300,7 @@ mod tests {
     fn the_lowest_round_trip_wins_and_the_earliest_on_a_tie() {
         let c3: u32 = 0xff00_0002;
         let mut c = both_in_reach();
-        c.reach(c3, &[RIVERWOOD]);
+        c.reach(c3, &[RIVERWOOD], 0);
         c.loaded(C1, RIVERWOOD, 1_000);
         c.loaded(C2, RIVERWOOD, 2_000);
         c.loaded(c3, RIVERWOOD, 3_000);
@@ -294,7 +311,7 @@ mod tests {
         assert!(out.contains(&Decision::Grant { player: c3, cell: RIVERWOOD, epoch: 2 }));
         // a tie on the round trip: the earliest loaded
         let mut t = both_in_reach();
-        t.reach(c3, &[RIVERWOOD]);
+        t.reach(c3, &[RIVERWOOD], 0);
         t.loaded(C1, RIVERWOOD, 1_000);
         t.loaded(c3, RIVERWOOD, 2_000);
         t.loaded(C2, RIVERWOOD, 3_000);
@@ -307,7 +324,7 @@ mod tests {
         let mut u = both_in_reach();
         u.loaded(C1, RIVERWOOD, 1_000);
         u.loaded(C2, RIVERWOOD, 1_000);
-        u.reach(c3, &[RIVERWOOD]);
+        u.reach(c3, &[RIVERWOOD], 0);
         u.loaded(c3, RIVERWOOD, 500);
         u.rtt(C2, 300);
         u.unloaded(C1, RIVERWOOD, 2_000);
@@ -345,7 +362,7 @@ mod tests {
     fn a_player_gone_is_an_unload_everywhere_and_a_restart_counts_from_one() {
         let inn: u32 = 0x1_3480;
         let mut c = both_in_reach();
-        c.reach(C1, &[RIVERWOOD, inn]);
+        c.reach(C1, &[RIVERWOOD, inn], 0);
         c.loaded(C1, RIVERWOOD, 1_000);
         c.loaded(C1, inn, 1_000);
         c.loaded(C2, RIVERWOOD, 1_500);
@@ -359,6 +376,42 @@ mod tests {
         // a restart: a fresh table, the first grant at epoch 1
         let mut fresh = both_in_reach();
         assert_eq!(fresh.loaded(C2, RIVERWOOD, 100), vec![Decision::Grant { player: C2, cell: RIVERWOOD, epoch: 1 }]);
+    }
+
+    #[test]
+    fn a_cell_loaded_before_it_is_reached_is_granted_when_the_grid_arrives_and_the_grid_leaving_arms_the_grace() {
+        let far: u32 = 0x9733;
+        let mut c = both_in_reach();
+        // the game's 5x5 loads the next cell while the grid's 3x3 does not reach it
+        assert_eq!(c.loaded(C1, far, 1_000), vec![]);
+        assert_eq!(c.host_of(far), None);
+        // the player walks on: the grid reaches it, the cell is granted
+        assert_eq!(c.reach(C1, &[RIVERWOOD, far], 2_000), vec![Decision::Grant { player: C1, cell: far, epoch: 1 }]);
+        // a second player reaching a hosted cell gets nothing
+        c.loaded(C2, far, 2_500);
+        assert_eq!(c.reach(C2, &[RIVERWOOD, far], 3_000), vec![]);
+        // the host's grid drops the cell (still loaded in its 5x5): the grace arms
+        assert_eq!(c.reach(C1, &[RIVERWOOD], 4_000), vec![]);
+        assert_eq!(c.tick(4_000 + GRACE_MS - 1), vec![]);
+        // back inside the grace: disarmed, same epoch
+        assert_eq!(c.reach(C1, &[RIVERWOOD, far], 4_000 + GRACE_MS - 1), vec![]);
+        assert_eq!(c.tick(4_000 + GRACE_MS + 1_000), vec![]);
+        assert_eq!(c.host_of(far), Some((C1, 1)));
+        // off again past the grace: the visitor who has it loaded and in reach takes it
+        c.reach(C1, &[RIVERWOOD], 20_000);
+        assert_eq!(
+            c.tick(20_000 + GRACE_MS),
+            vec![Decision::Release { player: C1, cell: far, epoch: 1 }, Decision::Grant { player: C2, cell: far, epoch: 2 }]
+        );
+        // a load report while out of reach disarms nothing
+        let mut d = both_in_reach();
+        d.loaded(C1, RIVERWOOD, 1_000);
+        d.reach(C1, &[], 2_000);
+        assert_eq!(d.loaded(C1, RIVERWOOD, 3_000), vec![]);
+        assert_eq!(
+            d.tick(2_000 + GRACE_MS),
+            vec![Decision::Release { player: C1, cell: RIVERWOOD, epoch: 1 }, Decision::Unhosted { cell: RIVERWOOD }]
+        );
     }
 
     #[test]

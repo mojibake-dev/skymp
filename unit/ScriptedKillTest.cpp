@@ -99,7 +99,10 @@ TEST_CASE("A scripted kill: the server runs Finger of Death's arithmetic from "
   REQUIRE(health(target) ==
           Catch::Approx((250.f - 199.2f - 25.f) / 250.f).margin(0.01f));
   REQUIRE(!caster.GetChangeForm().isDead);
-  REQUIRE(health(caster) == Catch::Approx(1.f / 250.f).margin(0.005f));
+  // the caster's share is its own game's (the mod's script runs there and
+  // reports the fall; b-fod-kill 20261021-042635 saw the server's share and
+  // the script's stack to a death), so a player caster stays whole here
+  REQUIRE(health(caster) == Catch::Approx(1.f));
 
   // the kill branch: a target at 125 costs the caster 156.25, under its
   // 249: the target dies by the caster's hand and the caster keeps 93.75
@@ -107,7 +110,8 @@ TEST_CASE("A scripted kill: the server runs Finger of Death's arithmetic from "
   target.SetPercentages({ 0.5f, 1.f, 1.f });
   hit();
   REQUIRE(target.GetChangeForm().isDead);
-  REQUIRE(health(caster) == Catch::Approx(93.75f / 250.f).margin(0.005f));
+  REQUIRE(!caster.GetChangeForm().isDead);
+  REQUIRE(health(caster) == Catch::Approx(1.f));
 
   p.SetScriptedEffectSettings("[]");
   p.DestroyActor(kCaster);

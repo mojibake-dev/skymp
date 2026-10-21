@@ -320,6 +320,7 @@ export interface ProjectileFlightEvent {
   projectile: number;
   weapon: number;
   ammo: number;
+  spell: number;
   x: number;
   y: number;
   z: number;

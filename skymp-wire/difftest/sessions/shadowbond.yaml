@@ -13,7 +13,11 @@
 # SpellCast messages, castingSource 3, the caster its own target: one c2
 # casts on c1's figure, one on its own player; c1's own game, where the mod's
 # script casts both, hears none);
-# the hostile hit begins a fight (StartCombat to c2). At 5 s c1 casts Flames,
+# the hit begins no fight: Shadowbond's effect is neither hostile nor
+# detrimental by its record (Recover, No Magnitude, No Area, FX Persist), and
+# since train-31 only such an effect's hit begins one (docs/verbs/magic-effects.md,
+# "Hostility from an effect"; before it every held effect did, and this
+# session declared the StartCombat). At 5 s c1 casts Flames,
 # the act that ends its concealment: the server swaps the two (a Teleport to
 # each), holds them, ends both records (the sets without the proc) and
 # dispels c2's own copy (Actor.DispelSpell to c2). c2 steps again at 6 s of
@@ -91,11 +95,6 @@ divergences:
     legacy: 0
     wire: 1
     reason: the Flames cast relays at once, a stream aimed at nobody; the legacy server refused the spell in the hand
-  - client: c2
-    msg: {t: 30, class: Actor, function: StartCombat}
-    legacy: 0
-    wire: 1
-    reason: the claimed hostile hit begins a fight and the victim's game is told (ADR-023); the legacy server saw no cast to claim the hit against
   - client: c1
     msg: {t: 43}
     legacy: 0

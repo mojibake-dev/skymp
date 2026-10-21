@@ -1,0 +1,41 @@
+# difftest cell-host (M3, thuum docs/verbs/cell-host.md, ADR-035): c1 and c2
+# are new characters (profiles 9 and 10, actors 0xff000002 and 0xff000003:
+# see melee-reach), both at the spawn, which stands in Tamriel's exterior
+# cell (32, -15), form 0xbbb1 (48049; Skyrim.esm's XCLC through lab/esm.py,
+# 2026-10-21). At 1 s c1 reports the cell fully loaded (CellLoaded 47): the
+# fixed server's grid gives both players that cell, so the first report is
+# the grant, HostGrant {cell 0xbbb1, epoch 1} to c1. At 2 s c2's report
+# yields nothing: the cell is hosted. At 2.5 s c1 reports the cell gone from
+# its loaded set: the host's grace (5 s) arms; c1's script ends and it leaves
+# at about 4.5 s (the 2 s settle), which changes nothing already armed. At
+# the deadline, about 7.5 s, the cell passes on: the release to c1 goes
+# nowhere (gone) and c2, with the cell loaded and in reach, is granted at
+# epoch 2, HostGrant {cell 0xbbb1, epoch 2}. The legacy server has none of
+# this: CellLoaded is unknown to it and dropped (as map-markers' 36 is),
+# HostGrant and HostRelease are never sent. c2 steps aside at 9 s so it
+# outlives the handoff and c1's departure, as in every session.
+id: cell-host
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 1000, send: {t: 47, cell: 48049, loaded: true}, reliable: true}
+  - {client: c2, at_ms: 2000, send: {t: 47, cell: 48049, loaded: true}, reliable: true}
+  - {client: c1, at_ms: 2500, send: {t: 47, cell: 48049, loaded: false}, reliable: true}
+  - {client: c2, at_ms: 9000, move: {dx: 1, dy: 0}}
+divergences:
+  - client: c1
+    msg: {t: 48, cell: 48049, epoch: 1}
+    legacy: 0
+    wire: 1
+    reason: the first loader in reach hosts the cell (HostGrant, thuum docs/verbs/cell-host.md); the legacy server has no cell hosts
+  - client: c2
+    msg: {t: 48, cell: 48049, epoch: 2}
+    legacy: 0
+    wire: 1
+    reason: the host's departure passes the cell on after the grace to the visitor with it loaded and in reach, at the next epoch
+  - client: c2
+    msg: {t: 25, idx: 2}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

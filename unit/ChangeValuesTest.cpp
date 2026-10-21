@@ -194,3 +194,51 @@ TEST_CASE("OnChangeValues function doesn't sends ChangeValues message if "
   partOne.DestroyActor(0xff000000);
   DoDisconnect(partOne, 0);
 }
+
+// thuum docs/verbs/attributes.md: a percentage the server RAISED holds
+// against the client's reports until one reaches it, since the client's
+// next report may predate the server's message and would read as a fall
+// (x-class-target2, 2026-10-18: 7 of 11 upward sets reverted within 2 s);
+// a report at or above the value ends the hold, a later real fall is taken,
+// and a value the server lowered needs no hold.
+TEST_CASE("A percentage the server raised holds against a stale report "
+          "until the client's report reaches it",
+          "[ChangeValues]")
+{
+  PartOne& p = GetPartOne();
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, 0xff000000);
+  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
+
+  RawMessageData msgData;
+  msgData.userId = 0;
+  auto report = [&](float health) {
+    ChangeValuesMessage msg;
+    msg.idx = std::nullopt;
+    msg.data.health = health;
+    p.GetActionListener().OnChangeValues(msgData, msg);
+    return ac.GetChangeForm().actorValues.healthPercentage;
+  };
+
+  ac.SetPercentages({ 0.5f, 1.f, 1.f });
+  REQUIRE(report(0.45f) == Catch::Approx(0.45f)); // a fall, taken
+  // the server raises the value (an owner's set, a heal): a stale report
+  // from before it is dropped, the value stands
+  ac.NetSetPercentages({ 1.f, 1.f, 1.f }, nullptr, std::nullopt);
+  REQUIRE(report(0.46f) == Catch::Approx(1.f));
+  REQUIRE(report(0.9f) == Catch::Approx(1.f));
+  // the report that carries the raise ends the hold; a real fall after it
+  // is taken again
+  REQUIRE(report(1.f) == Catch::Approx(1.f));
+  REQUIRE(report(0.8f) == Catch::Approx(0.8f));
+  // a value the server LOWERS holds nothing: a stale higher report is
+  // cropped by the regeneration model, not dropped whole
+  ac.NetSetPercentages({ 0.3f, 1.f, 1.f }, nullptr, std::nullopt);
+  const float after = report(0.8f);
+  REQUIRE(after < 0.8f);
+  REQUIRE(after >= 0.3f);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}

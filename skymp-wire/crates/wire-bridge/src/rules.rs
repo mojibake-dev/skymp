@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{bonds, activation, actor_values, appearance, block, casts, clock, console, damage, effects, favorites, forms, hostility, magic, markers, melee, movement, player_globals, racemenu, ranged, rest, shouts, stagger, teleports, headshots};
+use wire_rules::{bonds, activation, actor_values, appearance, attributes, block, casts, clock, console, damage, effects, favorites, forms, hostility, magic, markers, melee, movement, player_globals, racemenu, ranged, rest, shouts, stagger, teleports, headshots};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -346,6 +346,17 @@ mod ffi {
         av: u8,
         /// Its base value.
         base: f32,
+    }
+
+    /// A percentage the server raised, awaiting the client's report of it
+    /// (thuum docs/verbs/attributes.md).
+    struct PercentHold {
+        /// Health 24, Magicka 25, Stamina 26.
+        av: u8,
+        /// The percentage set, 0 to 1.
+        value: f32,
+        /// When the hold lapses, Unix milliseconds.
+        until_ms: u64,
     }
 
     /// One skill's progress.
@@ -978,6 +989,14 @@ mod ffi {
         fn actor_value_index(name: &str) -> i16;
         /// Whether the server may set an actor value's base to a value (R0).
         fn actor_values_set_ok(av: u8, value: f32) -> bool;
+        /// Arms a hold on a percentage the server raised (thuum
+        /// docs/verbs/attributes.md).
+        fn percentages_hold(holds: &mut Vec<PercentHold>, av: u8, value: f32, now_ms: u64);
+        /// Whether a client's report of a percentage is taken: false while
+        /// a hold on it stands and the report does not reach the held value.
+        fn percentages_report(holds: &mut Vec<PercentHold>, av: u8, reported: f32, now_ms: u64) -> bool;
+        /// How far a percentage must move to count as raised or applied.
+        fn attributes_applied_within() -> f32;
 
         /// The fights between players going on (thuum ADR-023).
         type Fights;
@@ -1213,7 +1232,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlayerGlobalEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
+pub use ffi::{AvBase, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlayerGlobalEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -1574,6 +1593,26 @@ fn actor_values_login_applied(record: &AvSnapshot, report: &AvSnapshot) -> bool 
 
 fn actor_value_index(name: &str) -> i16 {
     actor_values::index_of(name).map_or(-1, i16::from)
+}
+
+// cxx passes a C++ rust::Vec by reference as &mut Vec
+#[allow(clippy::ptr_arg)]
+fn percentages_hold(holds: &mut Vec<PercentHold>, av: u8, value: f32, now_ms: u64) {
+    let mut ours: Vec<attributes::Hold> = holds.iter().map(|h| attributes::Hold { av: h.av, value: h.value, until_ms: h.until_ms }).collect();
+    attributes::hold(&mut ours, av, value, now_ms);
+    *holds = ours.into_iter().map(|h| PercentHold { av: h.av, value: h.value, until_ms: h.until_ms }).collect();
+}
+
+#[allow(clippy::ptr_arg)]
+fn percentages_report(holds: &mut Vec<PercentHold>, av: u8, reported: f32, now_ms: u64) -> bool {
+    let mut ours: Vec<attributes::Hold> = holds.iter().map(|h| attributes::Hold { av: h.av, value: h.value, until_ms: h.until_ms }).collect();
+    let taken = attributes::report(&mut ours, av, reported, now_ms);
+    *holds = ours.into_iter().map(|h| PercentHold { av: h.av, value: h.value, until_ms: h.until_ms }).collect();
+    taken
+}
+
+fn attributes_applied_within() -> f32 {
+    attributes::APPLIED_WITHIN
 }
 
 fn actor_values_set_ok(av: u8, value: f32) -> bool {

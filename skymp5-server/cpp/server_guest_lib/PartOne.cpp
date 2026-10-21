@@ -1652,9 +1652,17 @@ bool PartOne::ClaimScriptedKill(
     actor.GetCurrentActorValue(espm::ActorValue::Health);
   const auto blast =
     skymp::rules::finger_of_death(targetHealth, casterHealth, percentage);
-  // the caster's share, by its own hand (a god caster takes none, as the
-  // engine's TGM takes no damage)
-  if (blast.caster_damage > 0.f && !actor.IsGodMode()) {
+  // the caster's share: a player's own game runs the mod's script, which
+  // damages the caster itself and reports the fall (b-fod-kill
+  // 20261021-042635: the server's 64 and the script's 64 stacked to nothing
+  // and the report of 0 killed the caster), so the server takes it from the
+  // report as it takes every self-inflicted script damage (ADR-029's
+  // default); an actor no game plays (M3's NPC casters) pays here. A god
+  // caster pays nothing, as the engine's TGM takes no damage
+  const bool casterGameRunsTheScript =
+    serverState.UserByActor(&actor) != Networking::InvalidUserId;
+  if (blast.caster_damage > 0.f && !actor.IsGodMode() &&
+      !casterGameRunsTheScript) {
     actor.DamageActorValue(espm::ActorValue::Health, blast.caster_damage);
   }
   // the target's, by the caster's hand: a Health reaching nothing names
@@ -1673,9 +1681,10 @@ bool PartOne::ClaimScriptedKill(
   spdlog::info(
     "PartOne::ClaimScriptedKill - {:x}'s {:x} on {:x}: the "
     "target's {:.1f} Health against the caster's {:.1f} at {:.0f} "
-    "percent: the target loses {:.1f}, the caster {:.1f}; {}",
+    "percent: the target loses {:.1f}, the caster {:.1f}{}; {}",
     actor.GetFormId(), spellFormId, target.GetFormId(), targetHealth,
     casterHealth, percentage, blast.target_damage, blast.caster_damage,
+    casterGameRunsTheScript ? " in its own game, reported" : " here",
     blast.kill ? "the target dies by the caster's hand" : "nobody dies");
   return blast.kill;
 }

@@ -15,9 +15,9 @@ const PROGRESS_LENGTH = 3 + SKILLS * 3 + SKILLS;
 // level-up or the stats menu closes, the player's whole snapshot (its 164 base
 // values, every skill's progress, its experience and level) is sent if it
 // changed. The server's record, sent after a login or after a value it set,
-// is applied through TESModPlatform's natives and counts as sent. The server
+// is applied through TESModPlatform's natives and echoed once. The server
 // holds its record until a report shows it applied, so a report from before
-// is harmless.
+// is harmless, and the echo is what ends the hold.
 export class ActorValuesService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -104,9 +104,13 @@ export class ActorValuesService extends ClientListener {
             logError(this, "applying the server's actor values failed", err);
             return;
         }
-        // the record counts as sent: it is not echoed back
-        const applied = this.read();
-        this.lastKey = applied ? JSON.stringify(applied) : this.lastKey;
+        // the applied record is echoed once (thuum docs/verbs/actor-values.md,
+        // train-31): the server holds its record until a report shows it
+        // applied, and a relaunched game's own reports could sit under the
+        // record on a base the engine computes for the rest of the session
+        // (playtest twenty-eight's test 2), so the echo ends the hold
+        this.lastKey = "";
+        this.report();
     }
 
     private read(): Omit<ActorValuesMessage, "t"> | undefined {

@@ -996,6 +996,9 @@ mod ffi {
         fn actor_values_merge(record: &AvSnapshot, report: &AvSnapshot, held: &[AvBase]) -> AvMerge;
         /// Whether a report shows the record a login sent as applied.
         fn actor_values_login_applied(record: &AvSnapshot, report: &AvSnapshot) -> bool;
+        /// The recorded skills and attributes the report falls under
+        /// (wire-rules actor_values::login_shortfall), for the refusal's log.
+        fn actor_values_login_shortfall(record: &AvSnapshot, report: &AvSnapshot) -> Vec<AvBase>;
         /// An actor value's index from its Papyrus name, case aside; -1 for
         /// a name the lab confirmed no index for (thuum docs/verbs/actor-values.md).
         fn actor_value_index(name: &str) -> i16;
@@ -1009,6 +1012,9 @@ mod ffi {
         fn percentages_report(holds: &mut Vec<PercentHold>, av: u8, reported: f32, now_ms: u64) -> bool;
         /// How far a percentage must move to count as raised or applied.
         fn attributes_applied_within() -> f32;
+        /// How long a Self concentration cast's effects run on the server
+        /// without the cast's end message (wire-rules magic::SELF_STREAM_CAP_S).
+        fn self_stream_cap_seconds() -> f32;
 
         /// The fights between players going on (thuum ADR-023).
         type Fights;
@@ -1619,6 +1625,13 @@ fn actor_values_login_applied(record: &AvSnapshot, report: &AvSnapshot) -> bool 
     actor_values::login_applied(&av_snapshot(record), &av_snapshot(report))
 }
 
+fn actor_values_login_shortfall(record: &AvSnapshot, report: &AvSnapshot) -> Vec<AvBase> {
+    actor_values::login_shortfall(&av_snapshot(record), &av_snapshot(report))
+        .into_iter()
+        .map(|(av, base)| AvBase { av, base })
+        .collect()
+}
+
 fn actor_value_index(name: &str) -> i16 {
     actor_values::index_of(name).map_or(-1, i16::from)
 }
@@ -1637,6 +1650,10 @@ fn percentages_report(holds: &mut Vec<PercentHold>, av: u8, reported: f32, now_m
     let taken = attributes::report(&mut ours, av, reported, now_ms);
     *holds = ours.into_iter().map(|h| PercentHold { av: h.av, value: h.value, until_ms: h.until_ms }).collect();
     taken
+}
+
+fn self_stream_cap_seconds() -> f32 {
+    magic::SELF_STREAM_CAP_S
 }
 
 fn attributes_applied_within() -> f32 {

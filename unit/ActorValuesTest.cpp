@@ -22,6 +22,7 @@ constexpr uint32_t kActorLogin = 0xff000fc2;
 constexpr uint32_t kActorHeld = 0xff000fc3;
 constexpr uint32_t kActorNative = 0xff000fc4;
 constexpr uint32_t kActorFresh = 0xff000fc5;
+constexpr uint32_t kActorRelaunch = 0xff000fc6;
 constexpr uint32_t kTamriel = 0x0000003c;
 
 // the engine's actor values (CommonLibSSE-NG include/RE/A/ActorValues.h)
@@ -30,6 +31,8 @@ constexpr uint8_t kTwoHanded = 7;
 constexpr uint8_t kHealth = 24;
 // Archery: its Papyrus name is Marksman (wire-rules actor_values::NAMES)
 constexpr uint8_t kArchery = 8;
+// a base the engine moves by itself, which a login's hold does not compare
+constexpr uint8_t kInventoryWeight = 31;
 
 MpActor& Player(PartOne& p, uint32_t actorId)
 {
@@ -166,6 +169,58 @@ TEST_CASE("A login sends the record and holds it until a report shows it "
           std::vector<std::pair<uint8_t, float>>{ { kOneHanded, 41.f } });
 
   Leave(p, kActorLogin);
+}
+
+TEST_CASE("A relaunch's login holds the record from the fresh session's "
+          "first report until the echo, and a base the engine moves by "
+          "itself holds nothing back",
+          "[ActorValues]")
+{
+  // thuum docs/verbs/actor-values.md (train-31; playtest twenty-eight's
+  // test 2 relaunch, probes x-relaunch-reports 20261021-015132 and
+  // 20261021-015600): the hold is armed at the login itself, so the
+  // relaunched game's first report (its fresh save's values) is refused
+  // whether it lands before or after the record's send; the client's echo
+  // of the applied record ends the hold; a recorded InventoryWeight above
+  // the report's is not compared
+  using Bases = std::vector<std::pair<uint8_t, float>>;
+  PartOne& p = GetPartOne();
+  auto& ac = Player(p, kActorRelaunch);
+  Report(p,
+         Snapshot({ { kOneHanded, 40.f }, { kInventoryWeight, 50.f } }, 12));
+  REQUIRE(RecordedBases(ac) ==
+          Bases{ { kOneHanded, 40.f }, { kInventoryWeight, 50.f } });
+
+  // the game relaunched with the server up: a fresh login of the same
+  // actor
+  DoDisconnect(p, 0);
+  DoConnect(p, 0);
+  p.SetUserActor(0, kActorRelaunch);
+  p.Messages().clear();
+
+  // the fresh save's report lands before the first movement sends the
+  // record: refused
+  Report(p, Snapshot({ { kOneHanded, 15.f }, { kInventoryWeight, 0.f } }, 1));
+  REQUIRE(RecordedBases(ac) ==
+          Bases{ { kOneHanded, 40.f }, { kInventoryWeight, 50.f } });
+  Stand(p);
+  REQUIRE(SentLevels(p) == std::vector<uint16_t>{ 12 });
+  // and after it: refused
+  Report(p, Snapshot({ { kOneHanded, 15.f }, { kInventoryWeight, 0.f } }, 1));
+  REQUIRE(RecordedBases(ac) ==
+          Bases{ { kOneHanded, 40.f }, { kInventoryWeight, 50.f } });
+
+  // the echo: the skills and attributes as recorded, the engine's own
+  // InventoryWeight lower; taken
+  Report(p, Snapshot({ { kOneHanded, 40.f }, { kInventoryWeight, 5.f } }, 12));
+  REQUIRE(RecordedBases(ac) ==
+          Bases{ { kOneHanded, 40.f }, { kInventoryWeight, 5.f } });
+  // and play goes on
+  Report(p, Snapshot({ { kOneHanded, 41.f }, { kInventoryWeight, 5.f } }, 12));
+  REQUIRE(RecordedBases(ac) ==
+          Bases{ { kOneHanded, 41.f }, { kInventoryWeight, 5.f } });
+
+  Leave(p, kActorRelaunch);
 }
 
 TEST_CASE("A value the server set holds until a report carries it",

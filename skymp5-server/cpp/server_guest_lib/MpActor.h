@@ -305,11 +305,14 @@ public:
   // effects (its record's list) apply at `scale` times their magnitudes,
   // by `caster` (0 for none); `stream` for a concentration spell's hit,
   // which counts at once. Archetypes other than value, peak value and dual
-  // value modifiers are left alone.
+  // value modifiers are left alone. `streamSeconds` above 0 runs every
+  // effect for that many seconds at its magnitude a second, the record's
+  // own duration set aside: a Self concentration cast's stream (thuum
+  // docs/verbs/self-cast.md, train-31)
   void ApplyEffects(uint32_t source,
                     const std::vector<espm::Effects::Effect>& effects,
                     float scale, uint32_t caster, bool stream,
-                    bool dualCast = false);
+                    bool dualCast = false, float streamSeconds = 0.f);
   // Runs the actor's effects for `dtSeconds` of the server's wall clock
   // (WorldState's effects tick; at a load, the time since the record's)
   void AdvanceEffects(float dtSeconds);

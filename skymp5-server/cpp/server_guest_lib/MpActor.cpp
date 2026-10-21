@@ -3074,7 +3074,7 @@ bool MpActor::EffectConditionsHold(WorldState* worldState,
 void MpActor::ApplyEffects(uint32_t source,
                            const std::vector<espm::Effects::Effect>& effects,
                            float scale, uint32_t caster, bool stream,
-                           bool dualCast)
+                           bool dualCast, float streamSeconds)
 {
   WorldState* worldState = GetParent();
   if (!worldState || IsDead()) {
@@ -3107,9 +3107,15 @@ void MpActor::ApplyEffects(uint32_t source,
       // extras stay out, whether the spell gates them or their own record
       continue;
     }
-    const auto facts = EffectFactsOf(worldState, source, effect);
+    auto facts = EffectFactsOf(worldState, source, effect);
     if (!facts) {
       continue;
+    }
+    if (streamSeconds > 0.f) {
+      // a Self concentration cast: the effect runs for the cast's span at
+      // its magnitude a second (thuum docs/verbs/self-cast.md, train-31)
+      facts->duration_s = streamSeconds;
+      facts->no_duration = false;
     }
     // the target's resistances take their share of a hostile effect before
     // anything is applied (thuum docs/verbs/magic-effects.md, train-30)

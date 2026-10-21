@@ -149,17 +149,41 @@ pub fn merge(record: &Snapshot, report: &Snapshot, held: &[(u8, f32)]) -> (Snaps
     (out, still)
 }
 
+/// The actor values a login's record imposes and play only raises: the
+/// eighteen skills (6 to 23) and the three attribute bases Health, Magicka
+/// and Stamina (24 to 26). Every other recorded base is the engine's to move
+/// either way (InventoryWeight, an item's charge, the script variables), so
+/// a report is not held against it (thuum docs/verbs/actor-values.md,
+/// train-31: a relaunched game's reports fell under such a base for the rest
+/// of its session).
+#[must_use]
+pub fn login_compares(av: u8) -> bool {
+    (6..=26).contains(&av)
+}
+
+/// The recorded values a report falls under, of those a login compares: a
+/// value the report does not carry, or carries lower than the record's by
+/// more than [`APPLIED_WITHIN`]. Empty when the report shows them applied.
+#[must_use]
+pub fn login_shortfall(record: &Snapshot, report: &Snapshot) -> Vec<(u8, f32)> {
+    record
+        .bases
+        .iter()
+        .filter(|&&(av, base)| {
+            login_compares(av) && !report.bases.iter().any(|&(a, v)| a == av && v >= base - APPLIED_WITHIN)
+        })
+        .copied()
+        .collect()
+}
+
 /// Whether a report shows the record a login sent as applied: the level at
-/// least the record's, and every recorded base at least the record's value
-/// (play only raises them). A report from before the client applied the
-/// record carries the race's values a fresh session starts on, and is not
-/// taken; the record holds until one is.
+/// least the record's, and every recorded skill and attribute base at least
+/// the record's value (play only raises them; [`login_compares`]). A report
+/// from before the client applied the record carries the race's values a
+/// fresh session starts on, and is not taken; the record holds until one is.
 #[must_use]
 pub fn login_applied(record: &Snapshot, report: &Snapshot) -> bool {
-    report.level >= record.level
-        && record.bases.iter().all(|&(av, base)| {
-            report.bases.iter().any(|&(a, v)| a == av && v >= base - APPLIED_WITHIN)
-        })
+    report.level >= record.level && login_shortfall(record, report).is_empty()
 }
 
 /// Whether the server may set an actor value's base to a value (a Papyrus
@@ -440,6 +464,19 @@ mod tests {
         let mut missing = snapshot(&[(6, 41.0)]);
         missing.level = 12;
         assert!(!login_applied(&record, &missing));
+        // the shortfall names the record's values the report fell under
+        assert_eq!(login_shortfall(&record, &fresh), vec![(6, 40.0), (24, 150.0)]);
+        assert_eq!(login_shortfall(&record, &missing), vec![(24, 150.0)]);
+        // a base the engine moves by itself is not compared: a recorded
+        // InventoryWeight above the report's holds nothing back
+        let mut heavy = snapshot(&[(6, 40.0), (24, 150.0), (31, 50.0)]);
+        heavy.level = 12;
+        let mut light = snapshot(&[(6, 40.0), (24, 150.0), (31, 5.0)]);
+        light.level = 12;
+        assert!(login_applied(&heavy, &light));
+        assert!(login_shortfall(&heavy, &light).is_empty());
+        assert!(login_compares(6) && login_compares(23) && login_compares(26));
+        assert!(!login_compares(5) && !login_compares(27) && !login_compares(31));
     }
 
     #[test]

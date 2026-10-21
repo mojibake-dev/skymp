@@ -30,6 +30,14 @@ inline REL::Relocation<std::uintptr_t> SendAnimation{ RELOCATION_ID(37020,
 // 2026-10-14; the SE id is unread, and the hook installs on AE runtimes only
 // (ADR-025's 1.6.1170).
 inline REL::Relocation<std::uintptr_t> PerformAction{ REL::ID(38949) };
+// thuum docs/verbs/figure-values.md: the engine's damage writer for an
+// actor, (Actor* this, float damage in XMM1, Actor* attacker, bool killMove)
+// -> bool (this->IsDead), reached by every damage path (DamageActor, Address
+// Library 37335 on 1.6.1170: lab/frida/figure-dent-trace.js measured the
+// write inside it before the HandleHealthDamage vfunc, 2026-10-20;
+// docs/research/re-37335-and-rune-landing.md). Not in CommonLibSSE-NG, the
+// SE id unread: AE only, as PerformAction.
+inline REL::Relocation<std::uintptr_t> DamageActor{ REL::ID(37335) };
 // Projectile::Launch, (ProjectileHandle*, LaunchData&) -> ProjectileHandle*:
 // the engine's one launch of every projectile, an arrow's or a spell's
 // (CommonLibSSE-NG src/RE/P/Projectile.cpp:255-258, RELOCATION_ID(42928,

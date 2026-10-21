@@ -102,9 +102,23 @@ MpActor* ActionListener::ActorUpdatableBy(uint32_t idx,
 
 void ActionListener::RelayToListeners(MpActor& actor,
                                       Networking::PacketData data,
-                                      size_t length, bool reliable)
+                                      size_t length, bool reliable,
+                                      Networking::UserId sender)
 {
+  // thuum docs/verbs/cell-host.md: the host's own game has the truth of an
+  // actor it hosts (its engine moved it), so its report goes to every other
+  // listener and not back to it: the echo replayed the actor's own turn and
+  // movement events on the actor and spun it (playtest thirty, 2026-10-21,
+  // Eli: "the wolves are spinning around in place", on the host's screen
+  // too). A player's own actor keeps the echo it always had.
+  MpActor* senderActor = sender == Networking::InvalidUserId
+    ? nullptr
+    : partOne.serverState.ActorByUser(sender);
+  const bool hosted = senderActor && senderActor != &actor;
   for (auto listener : actor.GetActorListeners()) {
+    if (hosted && listener == senderActor) {
+      continue;
+    }
     auto targetuserId = partOne.serverState.UserByActor(listener);
     if (targetuserId != Networking::InvalidUserId) {
       partOne.GetSendTarget().Send(targetuserId, data, length, reliable);
@@ -119,7 +133,7 @@ MpActor* ActionListener::SendToNeighbours(uint32_t idx,
 {
   MpActor* actor = ActorUpdatableBy(idx, userId);
   if (actor) {
-    RelayToListeners(*actor, data, length, reliable);
+    RelayToListeners(*actor, data, length, reliable, userId);
   }
   return actor;
 }
@@ -252,7 +266,7 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     }
 
     RelayToListeners(*actor, rawMsgData.unparsed, rawMsgData.unparsedLength,
-                     false);
+                     false, rawMsgData.userId);
 
     // thuum docs/verbs/cell-host.md: the player's grid square may have
     // moved, and with it the cells the server's grid gives it (a cell

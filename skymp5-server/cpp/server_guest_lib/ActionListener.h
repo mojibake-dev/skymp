@@ -186,9 +186,14 @@ private:
   // returns nullptr.
   MpActor* ActorUpdatableBy(uint32_t idx, Networking::UserId userId);
 
-  // The message, as received, to every user listening to the actor.
+  // The message, as received, to every user listening to the actor. A
+  // hosted actor's report is not echoed to the game that sent it (thuum
+  // docs/verbs/cell-host.md: its engine moved the actor, and the echo
+  // replayed the actor's own turn events on it, playtest thirty's spinning
+  // wolves); a player's own actor keeps its echo as before.
   void RelayToListeners(MpActor& actor, Networking::PacketData data,
-                        size_t length, bool reliable);
+                        size_t length, bool reliable,
+                        Networking::UserId sender = Networking::InvalidUserId);
 
   // ActorUpdatableBy, then RelayToListeners. Returns the actor or nullptr.
   MpActor* SendToNeighbours(uint32_t idx, Networking::UserId userId,

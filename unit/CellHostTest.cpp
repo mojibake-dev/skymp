@@ -197,10 +197,13 @@ TEST_CASE("A cell loaded before the grid reaches it is granted when the "
   REQUIRE_FALSE(p.GetCellHost(*farCell).hosted);
   REQUIRE(SentTo<HostGrantMessage>(p, 0).empty());
 
-  // the player's own report from one square east: the grid reaches the
-  // cell, the grant follows
-  Move(p, 0, kC1, kHere + NiPoint3{ 4000.f, 0.f, 0.f });
-  REQUIRE(c1.GetPos().x == Catch::Approx(kHere.x + 4000.f));
+  // the player one square east (placed by the server, as its teleports
+  // do; a 4000-unit step would exceed the ground budget) and its report
+  // from there: the grid reaches the cell, the grant follows
+  const NiPoint3 east{ kHere.x + 4000.f, kHere.y, kHere.z };
+  c1.SetPos(east);
+  Move(p, 0, kC1, east);
+  REQUIRE(c1.GetPos().x == Catch::Approx(east.x));
   auto host = p.GetCellHost(*farCell);
   REQUIRE(host.hosted);
   REQUIRE(host.player == kC1);
@@ -209,6 +212,7 @@ TEST_CASE("A cell loaded before the grid reaches it is granted when the "
 
   // back west: the grid drops the cell (still loaded), the grace arms and,
   // with no visitor, the cell goes unhosted at its end, the host told
+  c1.SetPos(kHere);
   Move(p, 0, kC1, kHere);
   REQUIRE(p.GetCellHost(*farCell).player == kC1);
   const auto now = NowMs();

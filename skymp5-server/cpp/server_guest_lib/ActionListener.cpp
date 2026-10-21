@@ -254,6 +254,13 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     RelayToListeners(*actor, rawMsgData.unparsed, rawMsgData.unparsedLength,
                      false);
 
+    // thuum docs/verbs/cell-host.md: the player's grid square may have
+    // moved, and with it the cells the server's grid gives it (a cell
+    // already loaded that the grid now reaches is granted here)
+    if (isPlayersOwn) {
+      partOne.RefreshReach(*actor);
+    }
+
     // thuum docs/verbs/map-markers.md: the first movement after a login
     // means the player's own world is up, so its map can be shown, what it
     // learned of its ingredients taught again

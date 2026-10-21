@@ -44,8 +44,6 @@ import { RespawnNeededError } from '../../lib/errors';
 import { OpenContainerMessage } from '../messages/openContainerMessage';
 import { ActivateMessage } from '../messages/activateMessage';
 import { ClientListener, CombinedController, Sp } from './clientListener';
-import { HostStartMessage } from '../messages/hostStartMessage';
-import { HostStopMessage } from '../messages/hostStopMessage';
 import { ConnectionMessage } from '../events/connectionMessage';
 import { SetInventoryMessage } from '../messages/setInventoryMessage';
 import { CreateActorMessage, CreateActorMessageAdditionalProps } from '../messages/createActorMessage';
@@ -128,8 +126,6 @@ export class RemoteServer extends ClientListener {
   constructor(private sp: Sp, private controller: CombinedController) {
     super();
 
-    this.controller.emitter.on("hostStartMessage", (e) => this.onHostStartMessage(e));
-    this.controller.emitter.on("hostStopMessage", (e) => this.onHostStopMessage(e));
     this.controller.emitter.on("setInventoryMessage", (e) => this.onSetInventoryMessage(e));
     this.controller.emitter.on("openContainerMessage", (e) => this.onOpenContainerMessage(e));
     this.controller.emitter.on("updateMovementMessage", (e) => this.onUpdateMovementMessage(e));
@@ -152,34 +148,6 @@ export class RemoteServer extends ClientListener {
     this.controller.emitter.on("updateAnimVariablesMessage", (e) => this.onUpdateAnimVariablesMessage(e));
     this.controller.emitter.on("updateActionMessage", (e) => this.onUpdateActionMessage(e));
 
-  }
-
-  private onHostStartMessage(event: ConnectionMessage<HostStartMessage>) {
-    const msg = event.message;
-    const target = msg.target;
-
-    let hosted = storage['hosted'];
-    if (typeof hosted !== typeof []) {
-      // if you try to switch to Set please checkout .concat usage.
-      // concat compiles but doesn't work as expected
-      hosted = new Array<number>();
-      storage['hosted'] = hosted;
-    }
-
-    if (!(hosted as Array<unknown>).includes(target)) {
-      (hosted as Array<unknown>).push(target);
-    }
-  }
-
-  private onHostStopMessage(event: ConnectionMessage<HostStopMessage>) {
-    const msg = event.message;
-    const target = msg.target;
-    logTrace(this, 'hostStop ' + target.toString(16));
-
-    const hosted = storage['hosted'] as Array<number>;
-    if (typeof hosted === typeof []) {
-      storage['hosted'] = hosted.filter((x) => x !== target);
-    }
   }
 
   private onSetInventoryMessage(event: ConnectionMessage<SetInventoryMessage>): void {

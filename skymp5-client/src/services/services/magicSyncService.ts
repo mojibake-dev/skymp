@@ -5,6 +5,7 @@ import { localIdToRemoteId } from "../../view/worldViewMisc";
 import { SpellCastEvent, Actor, printConsole, Game, getAnimationVariablesFromActor, ActorAnimationVariables, SpellType, SlotType, EquippedItemType } from 'skyrimPlatform'
 import { Spell, MagicEffect } from 'skyrimPlatform';
 import { ClientListener, CombinedController, Sp } from './clientListener';
+import { HostService } from './hostService';
 import { logTrace } from '../../logging';
 import { landsOnItsTarget } from "../../sync/spellDelivery";
 
@@ -332,13 +333,10 @@ export class MagicSyncService extends ClientListener {
         return Number.isFinite(radians) ? Math.max(-Math.PI / 2, Math.min(Math.PI / 2, radians)) : 0;
     }
 
+    // thuum docs/verbs/cell-host.md: an actor this game hosts (its cell
+    // granted here, the server marking it nobody else's)
     private isHostedByMe(localId: number): boolean {
-        const hosted = this.sp.storage['hosted'];
-        if (!Array.isArray(hosted)) {
-            return false;
-        }
-        const remoteId = localIdToRemoteId(localId);
-        return hosted.includes(remoteId) || hosted.includes(remoteId + 0x100000000);
+        return this.controller.lookupListener(HostService).isMineLocal(localId);
     }
 
     private getSpellCastEventData(e: SpellCastEvent, isInterruptCast: boolean): SpellCastMsgData {

@@ -1,0 +1,182 @@
+import { CellFullyLoadedEvent, ObjectReference } from "skyrimPlatform";
+import { MsgType } from "../../messages";
+import { logError, logTrace } from "../../logging";
+import { ConnectionMessage } from "../events/connectionMessage";
+import { CreateActorMessage } from "../messages/createActorMessage";
+import { HostGrantMessage } from "../messages/hostGrantMessage";
+import { HostReleaseMessage } from "../messages/hostReleaseMessage";
+import { FormModel } from "../../view/model";
+import { localIdToRemoteId, remoteIdToLocalId } from "../../view/worldViewMisc";
+import { ClientListener, CombinedController, Sp } from "./clientListener";
+import { RemoteServer } from "./remoteServer";
+
+// thuum docs/verbs/cell-host.md (ADR-035): one player's game runs a cell's
+// NPCs and the server decides which. This game reports its loaded set, one
+// CellLoaded per cell as the engine fully loads it (cellFullyLoaded) and as
+// it leaves the loaded set (Cell.isAttached read once a second); the server
+// elects from those reports and its own grid, and tells this game with
+// HostGrant and HostRelease, each carrying the cell's epoch. The hosted set
+// here is what the other services ask: isHostedHere(refr), and isMine(form,
+// refr) for an actor this game simulates and reports, where the grant and
+// the server's own word on the actor (isHostedByOther false, flipped at the
+// grant) agree. A grant whose epoch is not above the last seen for the cell
+// in this connection is ignored (a late grant after a release); a release
+// for a grant this game does not hold is ignored too; both clear when the
+// player's own actor is created again (a reconnect, a restarted server
+// counting from 1), when the loaded set is reported anew. The per-actor
+// claim of old (Host 14, tryHost) is gone: the server ignores it.
+export class HostService extends ClientListener {
+    constructor(private sp: Sp, private controller: CombinedController) {
+        super();
+        this.enabled = this.sp.settings["skymp5-client"]["cellHost"] !== false;
+        if (!this.enabled) {
+            logTrace(this, "cellHost is off in settings: no loaded set is reported, the server grants nothing");
+        }
+        this.controller.on("cellFullyLoaded", (e) => this.onCellFullyLoaded(e));
+        this.controller.on("update", () => this.onUpdate());
+        this.controller.emitter.on("hostGrantMessage", (e) => this.onHostGrant(e));
+        this.controller.emitter.on("hostReleaseMessage", (e) => this.onHostRelease(e));
+        this.controller.emitter.on("createActorMessage", (e) => this.onCreateActor(e));
+    }
+
+    // Whether this game hosts the cell the reference stands in.
+    isHostedHere(refr: ObjectReference | null | undefined): boolean {
+        if (!refr) {
+            return false;
+        }
+        const cell = refr.getParentCell();
+        return cell !== null && this.hosted.has(cell.getFormID());
+    }
+
+    // Whether the actor behind `form` is this game's to simulate and report:
+    // its cell is granted here and the server marks it as nobody else's
+    // (every actor a user plays, and every actor of a cell hosted elsewhere
+    // or unhosted, is hosted by other).
+    isMine(form: FormModel | undefined, refr: ObjectReference | null | undefined): boolean {
+        return !!form && form.isHostedByOther === false && this.isHostedHere(refr);
+    }
+
+    // The same for an actor by its local form id (a hit's aggressor, a
+    // cast's caster): its form in the world model and its reference.
+    isMineLocal(localId: number): boolean {
+        const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(localId));
+        const remoteId = localIdToRemoteId(localId);
+        const world = this.controller.lookupListener(RemoteServer).getWorldModel();
+        const form = world.forms.find((f) => f !== undefined && f.refrId === remoteId);
+        return this.isMine(form, refr);
+    }
+
+    // The remote ids of the actors this game simulates, for the input
+    // stream (sendInputsService): the forms the server marks as nobody
+    // else's, standing in a cell granted here; the player's own aside.
+    hostedActorRemoteIds(): number[] {
+        const world = this.controller.lookupListener(RemoteServer).getWorldModel();
+        const out: number[] = [];
+        world.forms.forEach((form, i) => {
+            if (form === undefined || i === world.playerCharacterFormIdx || form.isHostedByOther !== false) {
+                return;
+            }
+            const remoteId = form.refrId;
+            if (remoteId === undefined) {
+                return;
+            }
+            const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(remoteIdToLocalId(remoteId)));
+            if (this.isHostedHere(refr)) {
+                out.push(remoteId);
+            }
+        });
+        return out;
+    }
+
+    // The cells this game hosts, with their epochs.
+    hostedCells(): ReadonlyMap<number, number> {
+        return this.hosted;
+    }
+
+    private onCellFullyLoaded(e: CellFullyLoadedEvent) {
+        const id = e.cell.getFormID();
+        if (this.loaded.has(id)) {
+            return;
+        }
+        this.loaded.add(id);
+        this.report(id, true);
+    }
+
+    // Once a second: a cell the engine detached since (or whose form is gone)
+    // leaves the loaded set and is reported so
+    private onUpdate() {
+        const now = Date.now();
+        if (now - this.lastPoll < HostService.pollMs) {
+            return;
+        }
+        this.lastPoll = now;
+        for (const id of Array.from(this.loaded)) {
+            const cell = this.sp.Cell.from(this.sp.Game.getFormEx(id));
+            if (cell === null || !cell.isAttached()) {
+                this.loaded.delete(id);
+                this.report(id, false);
+            }
+        }
+    }
+
+    private onHostGrant(e: ConnectionMessage<HostGrantMessage>) {
+        const { cell, epoch } = e.message;
+        const last = this.lastEpoch.get(cell) ?? 0;
+        if (epoch <= last) {
+            logTrace(this, `grant for cell ${cell.toString(16)} at epoch ${epoch} ignored: epoch ${last} seen`);
+            return;
+        }
+        this.lastEpoch.set(cell, epoch);
+        this.hosted.set(cell, epoch);
+        logTrace(this, `hosting cell ${cell.toString(16)} at epoch ${epoch}`);
+    }
+
+    private onHostRelease(e: ConnectionMessage<HostReleaseMessage>) {
+        const { cell, epoch } = e.message;
+        const held = this.hosted.get(cell);
+        if (held === undefined || held !== epoch) {
+            logTrace(this, `release for cell ${cell.toString(16)} at epoch ${epoch} ignored: ${held === undefined ? "not hosted here" : `epoch ${held} held`}`);
+            return;
+        }
+        this.hosted.delete(cell);
+        if (epoch > (this.lastEpoch.get(cell) ?? 0)) {
+            this.lastEpoch.set(cell, epoch);
+        }
+        logTrace(this, `released cell ${cell.toString(16)} (epoch ${epoch})`);
+    }
+
+    // The player's own actor is created: a fresh table on the server's side
+    // of this connection (a login, a reconnect, a restart), so the epochs
+    // clear and the loaded set is reported anew, in its own order
+    private onCreateActor(e: ConnectionMessage<CreateActorMessage>) {
+        if (!e.message.isMe) {
+            return;
+        }
+        this.hosted.clear();
+        this.lastEpoch.clear();
+        for (const id of Array.from(this.loaded)) {
+            this.report(id, true);
+        }
+    }
+
+    private report(cell: number, loaded: boolean) {
+        if (!this.enabled) {
+            return;
+        }
+        if (cell === 0) {
+            logError(this, "a cell of 0 is nothing to report");
+            return;
+        }
+        this.controller.emitter.emit("sendMessage", {
+            message: { t: MsgType.CellLoaded, cell, loaded },
+            reliability: "reliable",
+        });
+    }
+
+    private static readonly pollMs = 1000;
+    private readonly enabled: boolean;
+    private readonly loaded = new Set<number>();
+    private readonly hosted = new Map<number, number>();
+    private readonly lastEpoch = new Map<number, number>();
+    private lastPoll = 0;
+}

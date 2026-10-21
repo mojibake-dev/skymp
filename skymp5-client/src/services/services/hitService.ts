@@ -3,6 +3,7 @@ import { localIdToRemoteId } from "../../view/worldViewMisc";
 
 import { ActiveMagicEffect, Form, FormType, Game, HitEvent, MagicEffect, ObjectReference, Scroll, Spell, Weapon, printConsole, storage } from "skyrimPlatform";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
+import { HostService } from "./hostService";
 import { MsgType } from "../../messages";
 import { Hit } from "../messages/hitMessage";
 import { shoutGate } from "./shoutService";
@@ -148,15 +149,9 @@ export class HitService extends ClientListener {
         if (aggressor < 0xff000000 && aggressor !== 0x14) return; // all skymp npcs are FF+
 
         if (aggressor >= 0xff000000) {
-            // TODO: make host service
-            const hosted = storage['hosted'];
-            let alreadyHosted = false;
-            if (Array.isArray(hosted)) {
-                const remoteId = localIdToRemoteId(aggressor);
-                if (hosted.includes(remoteId) || hosted.includes(remoteId + 0x100000000)) {
-                    alreadyHosted = true;
-                }
-            }
+            // thuum docs/verbs/cell-host.md: an actor this game hosts (its
+            // cell granted here, the server marking it nobody else's)
+            const alreadyHosted = this.controller.lookupListener(HostService).isMineLocal(aggressor);
 
             // a figure's own hit is its player's to report; what its spell
             // does to this game's player is the server's number and the

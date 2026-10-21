@@ -103,7 +103,13 @@ export class HostService extends ClientListener {
     }
 
     // Once a second: a cell the engine detached since (or whose form is gone)
-    // leaves the loaded set and is reported so
+    // leaves the loaded set and is reported so. Every refreshMs the whole
+    // loaded set is reported again: a report is a bit the server sets, so a
+    // repeat costs nothing there, and it heals a report the server never
+    // took (b-cell-host 20261021-184501: a teleport's burst ran past the
+    // budget and the landing cell's own report was refused, never retried,
+    // and the cell went unhosted for the run; the budget is sized for the
+    // burst since, and this is the second line).
     private onUpdate() {
         const now = Date.now();
         if (now - this.lastPoll < HostService.pollMs) {
@@ -115,6 +121,12 @@ export class HostService extends ClientListener {
             if (cell === null || !cell.isAttached()) {
                 this.loaded.delete(id);
                 this.report(id, false);
+            }
+        }
+        if (now - this.lastRefresh >= HostService.refreshMs) {
+            this.lastRefresh = now;
+            for (const id of Array.from(this.loaded)) {
+                this.report(id, true);
             }
         }
     }
@@ -154,6 +166,7 @@ export class HostService extends ClientListener {
         }
         this.hosted.clear();
         this.lastEpoch.clear();
+        this.lastRefresh = Date.now();
         for (const id of Array.from(this.loaded)) {
             this.report(id, true);
         }
@@ -174,9 +187,11 @@ export class HostService extends ClientListener {
     }
 
     private static readonly pollMs = 1000;
+    private static readonly refreshMs = 30_000;
     private readonly enabled: boolean;
     private readonly loaded = new Set<number>();
     private readonly hosted = new Map<number, number>();
     private readonly lastEpoch = new Map<number, number>();
     private lastPoll = 0;
+    private lastRefresh = 0;
 }

@@ -1104,14 +1104,19 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
   if (!ac)
     throw std::runtime_error("Can't do this without Actor attached");
 
-  // thuum docs/verbs/cell-host.md: a hosted caster is its cell's host's
+  // thuum docs/verbs/cell-host.md: a hosted caster is its cell's host's;
+  // an actor a user plays is nobody's to report for
   uint32_t hosterId = 0;
   if (msg.data.caster != 0x14) {
     const auto& casterForm = partOne.worldState.LookupFormById(
       static_cast<uint32_t>(msg.data.caster));
     MpActor* casterActor = casterForm ? casterForm->AsActor() : nullptr;
-    MpActor* host =
-      casterActor ? partOne.worldState.HostOf(*casterActor) : nullptr;
+    const bool played = casterActor &&
+      partOne.serverState.UserByActor(casterActor) !=
+        Networking::InvalidUserId;
+    MpActor* host = casterActor && !played
+      ? partOne.worldState.HostOf(*casterActor)
+      : nullptr;
     hosterId = host ? host->GetFormId() : 0;
     if (hosterId != ac->GetFormId()) {
       std::stringstream ss;
@@ -2830,8 +2835,11 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
     hitData.aggressor = aggressor->GetFormId();
   } else {
     aggressor = &partOne.worldState.GetFormAt<MpActor>(hitData.aggressor);
-    // thuum docs/verbs/cell-host.md: a hosted aggressor is its cell's host's
-    if (partOne.worldState.HostOf(*aggressor) != myActor) {
+    // thuum docs/verbs/cell-host.md: a hosted aggressor is its cell's
+    // host's; an actor a user plays is nobody's to report for
+    if (partOne.serverState.UserByActor(aggressor) !=
+          Networking::InvalidUserId ||
+        partOne.worldState.HostOf(*aggressor) != myActor) {
       spdlog::error("SendToNeighbours - No permission to send OnHit with "
                     "aggressor actor {:x}",
                     aggressor->GetFormId());
@@ -3177,8 +3185,10 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
     spellCastData.caster = caster->GetFormId();
   } else {
     caster = &partOne.worldState.GetFormAt<MpActor>(spellCastData.caster);
-    // thuum docs/verbs/cell-host.md: a hosted caster is its cell's host's
-    if (partOne.worldState.HostOf(*caster) != myActor) {
+    // thuum docs/verbs/cell-host.md: a hosted caster is its cell's host's;
+    // an actor a user plays is nobody's to report for
+    if (partOne.serverState.UserByActor(caster) != Networking::InvalidUserId ||
+        partOne.worldState.HostOf(*caster) != myActor) {
       spdlog::error(
         "SendToNeighbours - No permission to send OnSpellCast with "
         "caster actor {:x}",

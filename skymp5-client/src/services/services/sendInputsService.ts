@@ -12,7 +12,6 @@ import { Actor, EquipEvent, FormType, PoisonAppliedEvent } from "skyrimPlatform"
 import { getAppearance } from "../../sync/appearance";
 import { ActorValues, getActorValues } from "../../sync/actorvalues";
 import { getEquipment } from "../../sync/equipment";
-import { nextHostAttempt } from "../../view/hostAttempts";
 import { SkympClient } from "./skympClient";
 import { MessageWithRefrId } from "../events/sendMessageWithRefrIdEvent";
 import { UpdateMovementMessage } from "../messages/updateMovementMessage";
@@ -21,6 +20,7 @@ import { UpdateAnimationMessage } from "../messages/updateAnimationMessage";
 import { UpdateEquipmentMessage } from "../messages/updateEquipmentMessage";
 import { UpdateAppearanceMessage } from "../messages/updateAppearanceMessage";
 import { RemoteServer } from "./remoteServer";
+import { HostService } from "./hostService";
 import { DeathService } from "./deathService";
 import { logTrace } from "../../logging";
 
@@ -109,8 +109,9 @@ export class SendInputsService extends ClientListener {
     }
 
     private sendInputs() {
-        const hosted =
-            typeof this.sp.storage['hosted'] === typeof [] ? this.sp.storage['hosted'] : [];
+        // thuum docs/verbs/cell-host.md: the actors this game hosts, the
+        // server's word and the grant agreeing (HostService)
+        const hosted = this.controller.lookupListener(HostService).hostedActorRemoteIds();
         const targets = [undefined].concat(hosted as any);
 
         const modelSource = this.controller.lookupListener(RemoteServer);
@@ -125,7 +126,6 @@ export class SendInputsService extends ClientListener {
             this.sendEquipment(target);
             this.sendActorValuePercentage(target, targetFormModel);
         });
-        this.sendHostAttempts();
     }
 
     private sendMovement(_refrId?: number, form?: FormModel) {
@@ -300,21 +300,6 @@ export class SendInputsService extends ClientListener {
                 reliability: "reliable"
             });
         }
-    }
-
-    private sendHostAttempts() {
-        const remoteId = nextHostAttempt();
-        if (!remoteId) {
-          return;
-        }
-
-        this.controller.emitter.emit("sendMessage", {
-            message: {
-                t: MsgType.Host,
-                remoteId
-            },
-            reliability: "unreliable"
-        });
     }
 
     private getInputOwner(_refrId?: number) {

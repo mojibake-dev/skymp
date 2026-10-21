@@ -225,6 +225,14 @@ export class NetworkingService extends ClientListener {
             const event = { message: msgAny };
             this.controller.emitter.emit("actorJumpMessage", event);
             this.controller.emitter.emit("anyMessage", event);
+          } else if (msgAny.t === MsgType.HostGrant) {
+            const event = { message: msgAny };
+            this.controller.emitter.emit("hostGrantMessage", event);
+            this.controller.emitter.emit("anyMessage", event);
+          } else if (msgAny.t === MsgType.HostRelease) {
+            const event = { message: msgAny };
+            this.controller.emitter.emit("hostReleaseMessage", event);
+            this.controller.emitter.emit("anyMessage", event);
           } else {
             // throw new NeverError(msgAny);
             throw new Error("Unhandled MsgType " + msgAny.t);

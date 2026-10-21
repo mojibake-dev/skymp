@@ -12,14 +12,13 @@ import { applyMovement } from "../sync/movementApply";
 import { SpawnProcess } from "./spawnProcess";
 import { ObjectReferenceEx } from "../extensions/objectReferenceEx";
 import { PlayerCharacterDataHolder } from "./playerCharacterDataHolder";
-import { getMovement } from "../sync/movementGet";
 import { setActorValuePercentage } from "../sync/actorvalues";
-import { lastTryHost, tryHost } from "./hostAttempts";
 import { ModelApplyUtils } from "./modelApplyUtils";
 import { localIdToRemoteId } from "./worldViewMisc";
 import { SpApiInteractor } from "../services/spApiInteractor";
 import { WorldCleanerService } from "../services/services/worldCleanerService";
 import { GamemodeUpdateService } from "../services/services/gamemodeUpdateService";
+import { HostService } from "../services/services/hostService";
 
 // thuum docs/verbs/cast-action.md: the want variable a hand's cast event names
 // (MRh_ the right hand's, MLh_ and the perk's DualMagic_ the left hand's actions)
@@ -447,16 +446,11 @@ export class FormView {
       }
     }
 
-    // TODO: make host service
-    const hosted = storage['hosted'];
-    let alreadyHosted = false;
-    if (Array.isArray(hosted)) {
-      const remoteId = localIdToRemoteId(this.refrId);
-
-      if (hosted.includes(remoteId) || hosted.includes(remoteId + 0x100000000)) {
-        alreadyHosted = true;
-      }
-    }
+    // thuum docs/verbs/cell-host.md: an actor this game hosts (its cell
+    // granted here, the server marking it nobody else's) runs under its own
+    // engine, with its default animations
+    const alreadyHosted =
+      SpApiInteractor.getControllerInstance().lookupListener(HostService).isMine(model, refr);
     setDefaultAnimsDisabled(this.refrId, alreadyHosted ? false : true);
 
     if (alreadyHosted) {
@@ -465,19 +459,8 @@ export class FormView {
 
     if (model.movement) {
       let ac = Actor.from(refr);
-      if (
-        this.movState.lastApply &&
-        Date.now() - this.movState.lastApply > 1500
-      ) {
-        if (Date.now() - this.movState.lastRehost > 1000) {
-          this.movState.lastRehost = Date.now();
-          const remoteId = this.remoteRefrId;
-          if (ac && ac.is3DLoaded()) {
-            this.tryHostIfNeed(ac, remoteId as number);
-            printConsole("tryHostIfNeed - reason: not seeing movement for long time");
-          }
-        }
-      }
+      // (the re-host on a quiet figure is gone: the server elects a cell's
+      // host and passes it on at its own grace, docs/verbs/cell-host.md)
 
       if (
         +(model.numMovementChanges as number) !==
@@ -507,28 +490,16 @@ export class FormView {
 
           this.movState.lastNumChanges = +(model.numMovementChanges as number);
           this.movState.everApplied = true;
+          this.hostedHereApplied = false;
         } else {
-          const remoteId = this.remoteRefrId;
-          if (ac && remoteId && ac.is3DLoaded()) {
+          // the server marks this actor as nobody else's: this game hosts
+          // its cell and the engine moves it (docs/verbs/cell-host.md); the
+          // weapon-drawn override is lifted once, as the old host attempt did
+          if (ac && ac.is3DLoaded()) {
             ac.clearKeepOffsetFromActor();
-
-            // TODO: make host service
-            const hosted = storage['hosted'];
-            let alreadyHosted = false;
-            if (Array.isArray(hosted)) {
-              const remoteId = localIdToRemoteId(ac.getFormID());
-              if (hosted.includes(remoteId) || hosted.includes(remoteId + 0x100000000)) {
-                alreadyHosted = true;
-              }
-            }
-
-            if (!alreadyHosted) {
-              if (this.tryHostIfNeed(ac, remoteId)) {
-
-                // previously, we did this cleanup on each update
-                // but I guess it's too expensive and can possibly hurt FPS
-                TESModPlatform.setWeaponDrawnMode(ac, -1);
-              }
+            if (!this.hostedHereApplied) {
+              this.hostedHereApplied = true;
+              TESModPlatform.setWeaponDrawnMode(ac, -1);
             }
           }
         }
@@ -765,22 +736,6 @@ export class FormView {
     return { lastNumChanges: 0, useAnimOverrides: true };
   };
 
-  private tryHostIfNeed(ac: Actor, remoteId: number) {
-    const last = lastTryHost[remoteId];
-    if (!last || Date.now() - last >= 1000) {
-      lastTryHost[remoteId] = Date.now();
-
-      if (
-        getMovement(ac).worldOrCell ===
-        getMovement(Game.getPlayer() as Actor).worldOrCell
-      ) {
-        tryHost(remoteId);
-        return true;
-      }
-    }
-    return false;
-  };
-
   getLocalRefrId(): number {
     return this.refrId;
   }
@@ -981,6 +936,9 @@ export class FormView {
   // (the answer comes within a frame or two when it comes)
   private readyWaits = 0;
   private static readonly readyWaitLimit = 4;
+  // whether the weapon-drawn override was lifted for this actor as one this
+  // game hosts (docs/verbs/cell-host.md)
+  private hostedHereApplied = false;
   private movState = {
     lastNumChanges: 0,
     lastApply: 0,

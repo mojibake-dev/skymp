@@ -48,5 +48,8 @@ export enum MsgType {
   MagicEffects = 43,
   UpdateAction = 44,
   PlayerGlobals = 45,
-  ActorJump = 46
+  ActorJump = 46,
+  CellLoaded = 47,
+  HostGrant = 48,
+  HostRelease = 49
 }

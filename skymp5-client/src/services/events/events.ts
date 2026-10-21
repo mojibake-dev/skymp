@@ -47,6 +47,8 @@ import { QueryKeyCodeBindings } from "./queryKeyCodeBindings";
 import { SpellCastMessage } from "../messages/spellCastMessage";
 import { UpdateAnimVariablesMessage } from "../messages/updateAnimVariablesMessage";
 import { CustomPacketMessage } from "../messages/customPacketMessage";
+import { HostGrantMessage } from "../messages/hostGrantMessage";
+import { HostReleaseMessage } from "../messages/hostReleaseMessage";
 
 import { AnyRawMessageEvent } from "./anyRawMessageEvent";
 import { NicknameCreateEvent } from "./nicknameCreateEvent";
@@ -96,6 +98,8 @@ type EventTypes = {
     'updateActionMessage': [ConnectionMessage<UpdateActionMessage>],
     'playerGlobalsMessage': [ConnectionMessage<PlayerGlobalsMessage>],
     'actorJumpMessage': [ConnectionMessage<ActorJumpMessage>],
+    'hostGrantMessage': [ConnectionMessage<HostGrantMessage>],
+    'hostReleaseMessage': [ConnectionMessage<HostReleaseMessage>],
     'customPacketMessage': [ConnectionMessage<CustomPacketMessage>]
 
     'browserWindowLoaded': [BrowserWindowLoadedEvent],

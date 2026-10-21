@@ -50,7 +50,8 @@ float Health(MpActor& actor)
 void Hit(PartOne& p, MpActor& target, float resistFire, float resistMagic)
 {
   ActorValueRecord record;
-  record.bases = { { kResistFire, resistFire }, { kResistMagic, resistMagic } };
+  record.bases = { { kResistFire, resistFire },
+                   { kResistMagic, resistMagic } };
   target.SetActorValueRecord(record);
   MpChangeForm changeForm = target.GetChangeForm();
   changeForm.actorValues.healthPercentage = 1.f;

@@ -144,6 +144,23 @@ TEST_CASE("The first loader in reach hosts the cell and alone moves its "
   Move(p, 1, kWolf, kHere + NiPoint3{ 70.f, 50.f, 0.f });
   REQUIRE(wolf.GetPos().x == Catch::Approx(kHere.x + 60.f));
 
+  // the host's report reaches the other game and is not echoed to the host
+  // (the echo replayed the wolf's own events on it and spun it, playtest
+  // thirty); a raw relay lands in the fake send target as an empty object
+  p.Messages().clear();
+  Move(p, 0, kWolf, kHere + NiPoint3{ 65.f, 50.f, 0.f });
+  const auto relays = [&](Networking::UserId user) {
+    size_t n = 0;
+    for (auto& m : p.Messages()) {
+      if (m.userId == user && m.j.is_object() && m.j.empty()) {
+        ++n;
+      }
+    }
+    return n;
+  };
+  REQUIRE(relays(1) == 1);
+  REQUIRE(relays(0) == 0);
+
   // the cell-change rule: the wolf into the next cell east, which nobody
   // hosts: dropped; once c1 has it loaded (and so hosts it), the same move
   // passes, 4500 units in one report

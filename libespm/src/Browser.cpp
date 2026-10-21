@@ -304,7 +304,16 @@ bool Browser::ReadAny(const GroupStack* parentGrStack)
         gridX, gridY, pImpl->dummyCache);
       uint32_t worldId = 0;
       const auto world = GetExteriorWorldGroup(*this, recHeader);
-      if (hasGrid && world && world->GetParentWRLD(worldId)) {
+      // the worldspace's persistent cell sits directly under WORLD_CHILDREN
+      // and carries an XCLC of (0, 0) too (Skyrim.esm's 0xd74 beside the
+      // map's 0x99a2 at Tamriel's origin, read 2026-10-21); only a cell in
+      // an exterior sub-block is a square of the map, so a plugin that
+      // overrides the persistent cell never answers for the origin (thuum
+      // docs/verbs/cell-host.md)
+      const bool inSubBlock = parentGrStack && !parentGrStack->empty() &&
+        parentGrStack->back()->GetGroupType() ==
+          GroupType::EXTERIOR_CELL_SUBBLOCK;
+      if (hasGrid && inSubBlock && world && world->GetParentWRLD(worldId)) {
         CellOrGridPos pos;
         pos.pos.x = static_cast<int16_t>(gridX);
         pos.pos.y = static_cast<int16_t>(gridY);

@@ -704,3 +704,22 @@ TEST_CASE("isFood flag is set for sweet roll", "[espm]")
   REQUIRE(data.isFood == true);
   REQUIRE(data.isPoison == false);
 }
+
+// thuum docs/verbs/cell-host.md: the exterior cell index answers the map's
+// cell at a square, never the worldspace's persistent cell, which carries an
+// XCLC of (0, 0) too (Skyrim.esm: 0xd74, the persistent cell, beside 0x99a2
+// BleakwindBasinExterior01 at Tamriel's origin, read 2026-10-21); the T2
+// spawn's square (32, -15) is 0xbbb1
+TEST_CASE("The exterior cell at a worldspace's origin is the map's, not the "
+          "persistent cell",
+          "[espm]")
+{
+  auto& br = GetEspmLoader().GetBrowser();
+  const auto origin = br.FindExteriorCell(0x3c, 0, 0);
+  REQUIRE(origin.rec);
+  REQUIRE(origin.ToGlobalId(origin.rec->GetId()) == 0x99a2);
+  const auto spawn = br.FindExteriorCell(0x3c, 32, -15);
+  REQUIRE(spawn.rec);
+  REQUIRE(spawn.ToGlobalId(spawn.rec->GetId()) == 0xbbb1);
+  REQUIRE_FALSE(br.FindExteriorCell(0x3c, 200, 200).rec);
+}

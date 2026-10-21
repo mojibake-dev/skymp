@@ -267,30 +267,34 @@ Napi::Value MagicApi::CastSpellImmediate(const Napi::CallbackInfo& info)
 
       RE::Projectile::ProjectileRot angles = projectileAngles;
 
-      if (pSpell->data.delivery ==
-          RE::MagicSystem::Delivery::kTargetLocation) {
-        if (launch) {
-          // the point the caster's game picked along its aim, a ray from its
-          // magic node as long as the spell's range x 22 units, and the
-          // angles its engine launched the effect with (the re-analyst on
-          // sky-re, 2026-10-16, 1.6.1170; HYPOTHESIS until a lab run): a
-          // figure has no aim to pick one with, and the engine's own
-          // CastSpellImmediate places no target-location projectile on it
-          origin = launch->origin;
-          angles = launch->angles;
-        } else {
-          // TODO we need recalculate origin, cast ray from head to crosshair
-          auto rotation = pActor->Get3D2()->world.rotate.entry;
-          auto viewDirection =
-            NiPoint3{ rotation[0][1], rotation[1][1], rotation[2][1] };
-          viewDirection.Unitize();
+      if (launch) {
+        // the caster's own launch, when the cast carries one, for any
+        // projectile (thuum docs/verbs/spell-cast.md, train-31's aim parity
+        // row; playtest twenty-eight: a bolt landed in different places on
+        // the two screens while the arrows landed alike): its origin, the
+        // caster's own magic node, which the lab measured about 65 units
+        // from this figure's third-person node at equal angles
+        // (docs/research/train-31-reads.md), and the angles its engine
+        // launched with, as LaunchArrowAt takes an arrow's. For a
+        // target-location cast the launch is the point the caster's game
+        // picked along its aim (the re-analyst on sky-re, 2026-10-16): a
+        // figure has no aim to pick one with, and the engine's own
+        // CastSpellImmediate places no target-location projectile on it
+        origin = launch->origin;
+        angles = launch->angles;
+      } else if (pSpell->data.delivery ==
+                 RE::MagicSystem::Delivery::kTargetLocation) {
+        // TODO we need recalculate origin, cast ray from head to crosshair
+        auto rotation = pActor->Get3D2()->world.rotate.entry;
+        auto viewDirection =
+          NiPoint3{ rotation[0][1], rotation[1][1], rotation[2][1] };
+        viewDirection.Unitize();
 
-          auto offset = viewDirection * 200.f;
+        auto offset = viewDirection * 200.f;
 
-          origin.x += offset.x;
-          origin.y += offset.y;
-          origin.z = pActor->GetPositionZ() + 10.f;
-        }
+        origin.x += offset.x;
+        origin.y += offset.y;
+        origin.z = pActor->GetPositionZ() + 10.f;
       }
 
       RE::Projectile::LaunchData launchData(pActor, origin, angles, pSpell);

@@ -26,6 +26,7 @@ export class MagicSyncService extends ClientListener {
         // another game has no aim to pick one with, so the cast carries it,
         // as a bow shot carries its arrow's launch (playerBowShotService)
         this.controller.on("projectileLaunched", (e) => this.onProjectileLaunched(e));
+        this.controller.on("projectileFlight", (e) => this.onProjectileFlight(e));
         // and the point a target-location cast with no projectile placed its
         // explosion at (the fork's areaEffectPlaced, the engine's placer
         // 34413; docs/research/apocalypse/target-location.md): carried as
@@ -89,9 +90,13 @@ export class MagicSyncService extends ClientListener {
         // thuum docs/verbs/spell-cast.md: the player's own target-location
         // cast waits a few updates for its launch when the engine's launch
         // event has not come yet (both come at the release; their order is
-        // not relied on), then goes with the launch or without; every other
-        // cast goes at once, as before
-        if (casterId === this.playerId && MagicSyncService.launchesAtTargetLocation(event.spell)) {
+        // not relied on), then goes with the launch or without; since
+        // train-31 a fire-and-forget projectile aimed or at an actor waits
+        // the same way, and for the projectile's flight after its launch, so
+        // the other games' figures launch it from the caster's own origin
+        // with the projectile's own angles, as arrows fly (the aim parity
+        // row); every other cast goes at once, as before
+        if (casterId === this.playerId && (MagicSyncService.launchesAtTargetLocation(event.spell) || MagicSyncService.launchesAProjectile(event.spell))) {
             this.pendingCasts.push({ msg, waited: 0 });
             this.flushCasts(false);
         } else {
@@ -144,11 +149,28 @@ export class MagicSyncService extends ClientListener {
         });
     }
 
-    private onProjectileLaunched(e: { shooter: number; ammo: number; spell: number; originX: number; originY: number; originZ: number; angleX: number; angleZ: number }) {
+    private onProjectileLaunched(e: { shooter: number; projectile: number; ammo: number; spell: number; originX: number; originY: number; originZ: number; angleX: number; angleZ: number }) {
         if (e.shooter !== this.playerId || !e.spell || e.ammo) {
             return; // not the player's own spell (an arrow has its ammo)
         }
-        this.noteLaunch(e.spell, e.originX, e.originY, e.originZ, e.angleX, e.angleZ);
+        this.noteLaunch(e.spell, e.originX, e.originY, e.originZ, e.angleX, e.angleZ, e.projectile);
+    }
+
+    // the projectile's flight as it starts (the fork's projectileFlight,
+    // raised for a spell's projectiles since train-30): its angles after the
+    // engine's first update, which the bow service prefers for an arrow
+    // (playerBowShotService); kept for the cast that waits on it
+    private onProjectileFlight(e: { shooter: number; ammo: number; spell: number; x: number; y: number; z: number; angleX: number; angleZ: number }) {
+        if (e.shooter !== this.playerId || !e.spell || e.ammo) {
+            return;
+        }
+        const now = Date.now();
+        this.flights = this.flights.filter((f) => now - f.at <= MagicSyncService.launchMatchMs);
+        this.flights.push({ at: now, spell: e.spell, x: e.x, y: e.y, z: e.z, angleX: e.angleX, angleZ: e.angleZ });
+        if (this.flights.length > MagicSyncService.launchesKept) {
+            this.flights.shift();
+        }
+        this.flushCasts(false);
     }
 
     private onAreaEffectPlaced(e: { spell: number; x: number; y: number; z: number }) {
@@ -158,10 +180,10 @@ export class MagicSyncService extends ClientListener {
         this.noteLaunch(e.spell, e.x, e.y, e.z, 0, 0);
     }
 
-    private noteLaunch(spell: number, originX: number, originY: number, originZ: number, angleX: number, angleZ: number) {
+    private noteLaunch(spell: number, originX: number, originY: number, originZ: number, angleX: number, angleZ: number, projectile = 0) {
         const now = Date.now();
         this.launches = this.launches.filter((l) => now - l.at <= MagicSyncService.launchMatchMs);
-        this.launches.push({ at: now, spell, originX, originY, originZ, angleX, angleZ });
+        this.launches.push({ at: now, spell, originX, originY, originZ, angleX, angleZ, projectile });
         if (this.launches.length > MagicSyncService.launchesKept) {
             this.launches.shift();
         }
@@ -176,7 +198,9 @@ export class MagicSyncService extends ClientListener {
     }
 
     // Sends the waiting casts in the order they were made: each with the
-    // first launch of its spell seen within launchMatchMs, or without one
+    // first launch of its spell seen within launchMatchMs (and, for a launch
+    // with a projectile, that projectile's flight: the origin is the
+    // launch's, the angles the flight's, the bow service's rule), or without
     // once it has waited launchWaitUpdates updates, or at once when `force`
     // (its end is going). A cast that still waits holds the ones after it
     private flushCasts(force: boolean) {
@@ -184,26 +208,36 @@ export class MagicSyncService extends ClientListener {
         while (this.pendingCasts.length > 0) {
             const pending = this.pendingCasts[0];
             const i = this.launches.findIndex((l) => l.spell === pending.msg.spell && now - l.at <= MagicSyncService.launchMatchMs);
-            if (i < 0 && !force && pending.waited < MagicSyncService.launchWaitUpdates) {
+            const f = this.flights.findIndex((l) => l.spell === pending.msg.spell && now - l.at <= MagicSyncService.launchMatchMs);
+            const flightWanted = i >= 0 && this.launches[i].projectile !== 0 && f < 0;
+            if ((i < 0 || flightWanted) && !force && pending.waited < MagicSyncService.launchWaitUpdates) {
                 return;
             }
             this.pendingCasts.shift();
             const launch = i < 0 ? null : this.launches.splice(i, 1)[0];
-            const withLaunch = !!launch && Number.isFinite(launch.originX) && Number.isFinite(launch.originY) && Number.isFinite(launch.originZ)
-                && Number.isFinite(launch.angleX) && Number.isFinite(launch.angleZ);
-            if (withLaunch && launch) {
+            const flight = f < 0 ? null : this.flights.splice(f, 1)[0];
+            const origin = launch ? { x: launch.originX, y: launch.originY, z: launch.originZ }
+                : flight ? { x: flight.x, y: flight.y, z: flight.z } : null;
+            const angles = flight ? { x: flight.angleX, z: flight.angleZ }
+                : launch ? { x: launch.angleX, z: launch.angleZ } : null;
+            const withLaunch = !!origin && !!angles && Number.isFinite(origin.x) && Number.isFinite(origin.y) && Number.isFinite(origin.z)
+                && Number.isFinite(angles.x) && Number.isFinite(angles.z);
+            if (withLaunch && origin && angles) {
                 this.sendCast({
                     ...pending.msg,
                     hasLaunch: true,
-                    originX: launch.originX,
-                    originY: launch.originY,
-                    originZ: launch.originZ,
-                    launchAngleX: MagicSyncService.pitch(launch.angleX),
-                    launchAngleZ: launch.angleZ,
+                    originX: origin.x,
+                    originY: origin.y,
+                    originZ: origin.z,
+                    launchAngleX: MagicSyncService.pitch(angles.x),
+                    launchAngleZ: angles.z,
                 });
+                if (!flight && launch && launch.projectile !== 0) {
+                    logTrace(this, "cast sent with its launch's angles (no flight seen)", "spell", pending.msg.spell.toString(16));
+                }
             } else {
                 this.sendCast(pending.msg);
-                logTrace(this, "target-location cast sent without its launch:", launch ? "launch not finite" : "no launch seen", "spell", pending.msg.spell.toString(16), "after", pending.waited, "updates");
+                logTrace(this, "cast sent without its launch:", launch || flight ? "launch not finite" : "no launch seen", "spell", pending.msg.spell.toString(16), "after", pending.waited, "updates");
             }
         }
     }
@@ -220,6 +254,34 @@ export class MagicSyncService extends ClientListener {
     // neither raises nothing to wait for and goes at once, as before: Lost
     // Grimoire's Teleportation, whose landing must not overtake its cast's
     // permit (thuum docs/verbs/cast-teleport.md)
+    // thuum docs/verbs/spell-cast.md (train-31, the aim parity row): a
+    // fire-and-forget spell with a projectile, aimed or at a target actor
+    // (Firebolt, Electrosphere, Hailstone), waits for its launch and the
+    // projectile's flight as a target-location cast waits for its launch, so
+    // the other games' figures launch it from the caster's own origin with
+    // the projectile's angles, as arrows fly (marksman.md). CommonLibSSE-NG
+    // include/RE/M/MagicSystem.h: CastingType kFireAndForget 1, Delivery
+    // kAimed 2 and kTargetActor 3
+    private static launchesAProjectile(spell: Spell | null): boolean {
+        if (!spell) {
+            return false;
+        }
+        const n = spell.getNumEffects();
+        for (let i = 0; i < n; ++i) {
+            const effect = spell.getNthEffectMagicEffect(i);
+            if (!effect) {
+                continue;
+            }
+            const delivery = effect.getDeliveryType();
+            if (effect.getCastingType() === MagicSyncService.kFireAndForget
+                && (delivery === MagicSyncService.kAimed || delivery === MagicSyncService.kTargetActor)
+                && MagicSyncService.hasProjectile(effect, spell.getFormID())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static launchesAtTargetLocation(spell: Spell | null): boolean {
         if (!spell) {
             return false;
@@ -388,7 +450,8 @@ export class MagicSyncService extends ClientListener {
     private lastCastByHand = new Map<number, SpellCastMsgData>();
     private lastSendUpdateAnimationVariables: number = 0;
     private pendingCasts: { msg: SpellCastMsgData; waited: number }[] = [];
-    private launches: { at: number; spell: number; originX: number; originY: number; originZ: number; angleX: number; angleZ: number }[] = [];
+    private launches: { at: number; spell: number; originX: number; originY: number; originZ: number; angleX: number; angleZ: number; projectile: number }[] = [];
+    private flights: { at: number; spell: number; x: number; y: number; z: number; angleX: number; angleZ: number }[] = [];
     // a launch this close to its cast is the cast's, and a cast waits this
     // many updates for one: the bow shot's numbers (playerBowShotService)
     private static readonly launchMatchMs = 400;
@@ -396,4 +459,7 @@ export class MagicSyncService extends ClientListener {
     // the launches kept: a cast of several projectile effects launches each
     private static readonly launchesKept = 8;
     private static readonly kTargetLocation = 4;
+    private static readonly kFireAndForget = 1;
+    private static readonly kAimed = 2;
+    private static readonly kTargetActor = 3;
 }

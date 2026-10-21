@@ -238,6 +238,16 @@ impl Cells {
     pub fn epoch_of(&self, cell: u32) -> u32 {
         self.cells.get(&cell).map_or(0, |s| s.epoch)
     }
+
+    /// Every cell the table knows, by cell id: its host (`None` while
+    /// unhosted) and its epoch, for the lab's reading of the server.
+    #[must_use]
+    pub fn hosts(&self) -> Vec<(u32, Option<u32>, u32)> {
+        let mut rows: Vec<(u32, Option<u32>, u32)> =
+            self.cells.iter().map(|(&cell, s)| (cell, s.host.map(|h| h.player), s.epoch)).collect();
+        rows.sort_unstable_by_key(|r| r.0);
+        rows
+    }
 }
 
 #[cfg(test)]
@@ -344,8 +354,10 @@ mod tests {
         assert_eq!(c.host_of(RIVERWOOD), None);
         assert_eq!(c.epoch_of(RIVERWOOD), 1);
         assert!(!c.accepts(RIVERWOOD, C1, 1));
+        assert_eq!(c.hosts(), vec![(RIVERWOOD, None, 1)]);
         // the next loader takes the next epoch
         assert_eq!(c.loaded(C2, RIVERWOOD, 9_000), vec![Decision::Grant { player: C2, cell: RIVERWOOD, epoch: 2 }]);
+        assert_eq!(c.hosts(), vec![(RIVERWOOD, Some(C2), 2)]);
         // a visitor who unloaded before the deadline is no candidate
         let mut d = both_in_reach();
         d.loaded(C1, RIVERWOOD, 1_000);

@@ -4,6 +4,7 @@
 #include "AngleBinding.h"
 #include "AppearanceBinding.h"
 #include "BaseDescBinding.h"
+#include "CellHostsBinding.h"
 #include "ConsoleCommandsAllowedBinding.h"
 #include "CustomPropertyBinding.h"
 #include "EquipmentBinding.h"
@@ -40,6 +41,7 @@ PropertyBindingFactory::CreateStandardPropertyBindings()
   result["appearance"] = std::make_shared<AppearanceBinding>();
   result["baseDesc"] = std::make_shared<BaseDescBinding>();
   result["equipment"] = std::make_shared<EquipmentBinding>();
+  result["cellHosts"] = std::make_shared<CellHostsBinding>();
   result["gameTime"] = std::make_shared<GameTimeBinding>();
   result["inventory"] = std::make_shared<InventoryBinding>();
   result["isDead"] = std::make_shared<IsDeadBinding>();

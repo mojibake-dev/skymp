@@ -411,6 +411,16 @@ public:
   void SetRoundTripSource(std::function<int64_t(Networking::UserId)> source);
   // Who hosts `cell` (hosted false while nobody; the epoch kept).
   skymp::rules::CellHost GetCellHost(uint32_t cell) const;
+  // Every cell the table knows, by cell id, for the lab's reading
+  // (mp.get(0, "cellHosts")).
+  struct CellHostEntry
+  {
+    uint32_t cell = 0;
+    bool hosted = false;
+    uint32_t player = 0;
+    uint32_t epoch = 0;
+  };
+  std::vector<CellHostEntry> GetCellHosts() const;
   // The cell-change rule: `sender`'s report moves `actor` (an actor no user
   // plays) to `destCell` from the cell its record holds: a same-cell report
   // is the host's; one naming another cell is accepted when the sender hosts

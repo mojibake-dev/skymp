@@ -1512,6 +1512,15 @@ skymp::rules::CellHost PartOne::GetCellHost(uint32_t cell) const
   return pImpl->cells->host_of(cell);
 }
 
+std::vector<PartOne::CellHostEntry> PartOne::GetCellHosts() const
+{
+  std::vector<CellHostEntry> out;
+  for (const auto& row : pImpl->cells->hosts()) {
+    out.push_back({ row.cell, row.hosted, row.player, row.epoch });
+  }
+  return out;
+}
+
 bool PartOne::MayMoveActor(const MpActor& sender, const MpActor& actor,
                            std::optional<uint32_t> destCell) const
 {

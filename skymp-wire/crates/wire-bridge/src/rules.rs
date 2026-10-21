@@ -940,6 +940,19 @@ mod ffi {
         epoch: u32,
     }
 
+    /// One cell the host table knows, for the lab's reading of the server.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct CellHostRow {
+        /// The cell.
+        cell: u32,
+        /// False while nobody hosts it.
+        hosted: bool,
+        /// The host's player actor (0 when unhosted).
+        player: u32,
+        /// The standing grant's epoch (the kept epoch when unhosted).
+        epoch: u32,
+    }
+
     /// Who hosts a cell now.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct CellHost {
@@ -1333,13 +1346,15 @@ mod ffi {
         fn accepts(self: &Cells, cell: u32, player: u32, epoch: u32) -> bool;
         /// The cell's epoch, kept while unhosted; 0 before any grant.
         fn epoch_of(self: &Cells, cell: u32) -> u32;
+        /// Every cell the table knows, by cell id (the lab's reading).
+        fn hosts(self: &Cells) -> Vec<CellHostRow>;
         /// The grace a host keeps its cell after leaving it, ms
         /// (wire-rules cells::GRACE_MS), for the core's timer.
         fn host_grace_ms() -> u64;
     }
 }
 
-pub use ffi::{AvBase, CellHost, HostDecision, HostKind, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlayerGlobalEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
+pub use ffi::{AvBase, CellHost, CellHostRow, HostDecision, HostKind, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlayerGlobalEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -1940,6 +1955,14 @@ impl Cells {
     fn epoch_of(&self, cell: u32) -> u32 {
         self.0.epoch_of(cell)
     }
+
+    fn hosts(&self) -> Vec<CellHostRow> {
+        self.0
+            .hosts()
+            .into_iter()
+            .map(|(cell, host, epoch)| CellHostRow { cell, hosted: host.is_some(), player: host.unwrap_or(0), epoch })
+            .collect()
+    }
 }
 
 const fn host_grace_ms() -> u64 {
@@ -2407,6 +2430,7 @@ mod tests {
         );
         assert_eq!(c.host_of(0x9732), CellHost { hosted: false, player: 0, epoch: 1 });
         assert_eq!(c.epoch_of(0x9732), 1);
+        assert_eq!(c.hosts(), vec![CellHostRow { cell: 0x9732, hosted: false, player: 0, epoch: 1 }]);
     }
 
     #[test]

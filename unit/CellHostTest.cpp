@@ -148,7 +148,7 @@ TEST_CASE("The first loader in reach hosts the cell and alone moves its "
   // (the echo replayed the wolf's own events on it and spun it, playtest
   // thirty); a raw relay lands in the fake send target as an empty object
   p.Messages().clear();
-  Move(p, 0, kWolf, kHere + NiPoint3{ 65.f, 50.f, 0.f });
+  Move(p, 0, kWolf, kHere + NiPoint3{ 60.f, 50.f, 0.f }); // standing still
   const auto relays = [&](Networking::UserId user) {
     size_t n = 0;
     for (auto& m : p.Messages()) {

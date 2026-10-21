@@ -22,13 +22,19 @@ use std::collections::{HashMap, HashSet};
 /// cell passes on (ADR-035, Eli 2026-10-18: "a grace window of about 5 s").
 pub const GRACE_MS: u64 = 5_000;
 
-/// How many CellLoaded reports a client may send at once (a 5x5 grid load is
-/// 25 cells); the validator's budget, measured in x-cell-attach and carried
-/// with its conditions (ADR-033).
-pub const CELL_LOADED_BURST: u32 = 32;
+/// How many CellLoaded reports a client may send at once; the validator's
+/// budget, carried with its conditions (ADR-033). Measured on the lab's
+/// first run of b-cell-host (20261021-184501, fork c0e4a029): the save's
+/// load fired 30 loaded reports within 14 ms, a teleport five cells away 25
+/// unloaded and 25 loaded within 60 ms (loads and unloads share the
+/// budget), and the first bucket of 32 then 8 a second refused the landing
+/// cell's own report (E_VAL_RATE), which no client retries. Two such
+/// teleports inside five seconds are 100 reports; a report is one bit set,
+/// so the bucket is sized for the engine's bursts, not for a byte budget.
+pub const CELL_LOADED_BURST: u32 = 128;
 
 /// How many CellLoaded reports a second after the burst.
-pub const CELL_LOADED_PER_SECOND: u32 = 8;
+pub const CELL_LOADED_PER_SECOND: u32 = 32;
 
 /// What the server decides; the core sends each to its game or applies it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

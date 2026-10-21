@@ -156,7 +156,7 @@ impl Default for ClientGuard {
             player_globals_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
             equip_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 8, last_refill_ms: 0 },
             action_budget: TokenBucket { tokens: 12, capacity: 12, refill_per_s: 6, last_refill_ms: 0 },
-            cell_loaded_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 8, last_refill_ms: 0 },
+            cell_loaded_budget: TokenBucket { tokens: 128, capacity: 128, refill_per_s: 32, last_refill_ms: 0 },
         }
     }
 }
@@ -1488,7 +1488,7 @@ mod tests {
     }
 
     // thuum docs/verbs/cell-host.md: a game's loaded set crosses as
-    // CellLoaded under a 32-then-8-a-second budget; the grants and releases
+    // CellLoaded under a 128-then-32-a-second budget; the grants and releases
     // are the server's, each naming a cell and an epoch after the first
     fn cell_loaded(cell: u32) -> Message {
         use wire_schema::skymp::CellLoaded;
@@ -1498,13 +1498,15 @@ mod tests {
     #[test]
     fn cell_loaded_has_the_grid_load_budget_and_names_a_cell() {
         let mut g = ClientGuard::default();
-        // a 5x5 load is 25 reports; the burst is 32
-        for i in 0..32u32 {
+        // the save's load is about 30 reports and a teleport about 50 (25
+        // unloads and 25 loads); two teleports inside five seconds fit the
+        // burst of 128 (b-cell-host 20261021-184501 measured them)
+        for i in 0..128u32 {
             assert_eq!(validate(&cell_loaded(0x9732 + i), &mut g, 0), Ok(()));
         }
         assert_eq!(validate(&cell_loaded(0x9732), &mut g, 0), Err(Reject::Rate));
-        // a second later, eight more
-        for _ in 0..8 {
+        // a second later, thirty-two more
+        for _ in 0..32 {
             assert_eq!(validate(&cell_loaded(0x9732), &mut g, 1_000), Ok(()));
         }
         assert_eq!(validate(&cell_loaded(0x9732), &mut g, 1_000), Err(Reject::Rate));

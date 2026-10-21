@@ -25,6 +25,13 @@ pub const MAX_EFFECTS: usize = 32;
 /// number is cut to it, so a running effect always ends.
 pub const MAX_DURATION_S: f32 = 86_400.0;
 
+/// How long a Self concentration cast's effects run on the server without
+/// the cast's end message (thuum docs/verbs/self-cast.md, train-31): the
+/// stream starts at the cast and ends at its end message; a lost end leaves
+/// it this long at most. A concentration cast drains Magicka at its cost a
+/// second, so a minute outlasts any real one. A chosen bound.
+pub const SELF_STREAM_CAP_S: f32 = 60.0;
+
 /// How an effect changes its actor values (the MGEF archetype).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EffectKind {

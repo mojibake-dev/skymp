@@ -352,6 +352,16 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
     // 20261020-135028 won it; 18:23Z lost it).
     GetActionListener().SendPlayerGlobals(actor);
 
+    // thuum docs/verbs/actor-values.md (train-31; playtest twenty-eight's
+    // test 2 relaunch): the login's record holds from the login itself, not
+    // from its send at the first movement, so a fresh session's report that
+    // lands first is refused instead of recorded over the player's skills
+    // (probe x-relaunch-reports 20261021-015132 took one); the client's
+    // echo of the applied record ends the hold
+    if (actor.GetActorValueRecord()) {
+      actor.SetActorValuesLoginPending(true);
+    }
+
     // We do the same in MpActor::ApplyChangeForm for non-player characters
     if (actor.IsDead() && !actor.IsRespawning()) {
       spdlog::info("PartOne::SetUserActor {} {:x} - respawning dead actor",

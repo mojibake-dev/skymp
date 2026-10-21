@@ -26,6 +26,7 @@ constexpr uint32_t kOakflesh = 0x0005ad5c;
 constexpr uint32_t kInvisibility = 0x00027eb6;
 constexpr uint32_t kEthereal = 0x0005f6eb;
 constexpr uint32_t kFirebolt = 0x00012fd0;
+constexpr uint32_t kHealing = 0x00012fcc;
 constexpr uint32_t kLongBow = 0x0003b562;
 constexpr uint32_t kIronArrow = 0x0001397d;
 constexpr uint32_t kCaster = 0xff000000;
@@ -72,8 +73,9 @@ void Hold(MpActor& caster, uint32_t spell)
   caster.SetEquipment(eq);
 }
 
-// through the packet path, as a client's message arrives
-void Cast(PartOne& p, uint32_t spell)
+// through the packet path, as a client's message arrives; `end` for the
+// cast's end message
+void Cast(PartOne& p, uint32_t spell, bool end = false)
 {
   DoMessage(
     p, 0,
@@ -83,7 +85,7 @@ void Cast(PartOne& p, uint32_t spell)
                         { "target", 0 },
                         { "spell", spell },
                         { "isDualCasting", false },
-                        { "interruptCast", false },
+                        { "interruptCast", end },
                         { "castingSource", 1 },
                         { "aimAngle", 0.f },
                         { "aimHeading", 0.f },
@@ -292,5 +294,49 @@ TEST_CASE("A rest runs the player's effects for its time", "[SelfCast][espm]")
   Rest(p, 1.f);
   REQUIRE(
     !caster.HasRunningEffectOfType(espm::MGEF::EffectType::Invisibility));
+  Leave(p);
+}
+
+TEST_CASE("A Self concentration spell runs on the server as a stream for the "
+          "cast's span, and its end message ends it; a fire-and-forget Self "
+          "spell's end message ends nothing",
+          "[SelfCast][espm]")
+{
+  // thuum docs/verbs/self-cast.md (train-31; playtest twenty-eight's heals):
+  // Healing (Skyrim.esm 0x12FCC, Self, concentration, 10 Health a second;
+  // UESP Skyrim:Healing) heals its caster on the server while the cast
+  // holds, so the caster's own game's rise is not cropped away; Oakflesh's
+  // end message leaves Oakflesh running its recorded time
+  PartOne& p = GetPartOne();
+  auto& caster = Pair(p, kHealing);
+  caster.SetPercentages({ 0.5f, 1.f, 1.f });
+  const auto before = caster.GetRunningEffects().size();
+
+  Cast(p, kHealing);
+  REQUIRE(caster.GetRunningEffects().size() == before + 1);
+  REQUIRE(caster.GetRunningEffects().back().source == kHealing);
+  caster.AdvanceEffects(2.f);
+  const float healed = Health(caster);
+  REQUIRE(healed > 0.5f);
+  REQUIRE(healed == Catch::Approx(0.7f).margin(0.1f));
+
+  // the end message: the stream ends, nothing more is healed
+  Cast(p, kHealing, true);
+  REQUIRE(caster.GetRunningEffects().size() == before);
+  caster.AdvanceEffects(2.f);
+  REQUIRE(Health(caster) == Catch::Approx(healed).margin(0.001f));
+
+  // a recast restarts one stream, not two
+  Cast(p, kHealing);
+  Cast(p, kHealing);
+  REQUIRE(caster.GetRunningEffects().size() == before + 1);
+  Cast(p, kHealing, true);
+  REQUIRE(caster.GetRunningEffects().size() == before);
+
+  Hold(caster, kOakflesh);
+  Cast(p, kOakflesh);
+  REQUIRE(caster.GetEffectModifier(espm::ActorValue::DamageResist) > 0.f);
+  Cast(p, kOakflesh, true);
+  REQUIRE(caster.GetEffectModifier(espm::ActorValue::DamageResist) > 0.f);
   Leave(p);
 }

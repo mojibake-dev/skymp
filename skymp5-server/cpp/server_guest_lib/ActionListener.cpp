@@ -685,7 +685,12 @@ void RunSelfSpell(WorldState& worldState, MpActor& caster, uint32_t spellId)
   try {
     const auto spell = espm::GetData<espm::SPEL>(spellId, &worldState);
     if (!spell.spellItem ||
-        spell.spellItem->delivery != espm::SPEL::Delivery::Self ||
+        spell.spellItem->delivery != espm::SPEL::Delivery::Self) {
+      return;
+    }
+    const bool concentration =
+      spell.spellItem->castType == espm::SPEL::CastType::Concentration;
+    if (!concentration &&
         spell.spellItem->castType != espm::SPEL::CastType::FireAndForget) {
       return;
     }
@@ -701,12 +706,49 @@ void RunSelfSpell(WorldState& worldState, MpActor& caster, uint32_t spellId)
                                                                  effect);
                                  }),
                   effects.end());
+    if (concentration) {
+      // thuum docs/verbs/self-cast.md (train-31; playtest twenty-eight's
+      // heals): a Self concentration spell (vanilla Healing) runs on the
+      // server as a stream at the record's magnitude a second for as long
+      // as the cast holds: its end message ends it (EndSelfStream), or the
+      // cap when that message is lost. A recast restarts it
+      caster.EndRunningEffectsOfSource(spellId);
+      caster.ApplyEffects(spellId, effects, 1.f, caster.GetFormId(), false,
+                          false, skymp::rules::self_stream_cap_seconds());
+      spdlog::info("ActionListener - {:x} casts {:x} on itself as a stream: "
+                   "its effects run on the server until the cast ends",
+                   caster.GetFormId(), spellId);
+      return;
+    }
     caster.ApplyEffects(spellId, effects, 1.f, caster.GetFormId(), false);
     spdlog::info("ActionListener - {:x} casts {:x} on itself: its effects run "
                  "on the server",
                  caster.GetFormId(), spellId);
   } catch (std::exception& e) {
     spdlog::warn("ActionListener - self spell {:x}: {}", spellId, e.what());
+  }
+}
+
+// the end of a Self concentration cast ends its stream on the server
+// (RunSelfSpell); a fire-and-forget Self spell's end message (its cast
+// animation's) ends nothing, its effects run their recorded time
+void EndSelfStream(WorldState& worldState, MpActor& caster, uint32_t spellId)
+{
+  try {
+    const auto spell = espm::GetData<espm::SPEL>(spellId, &worldState);
+    if (!spell.spellItem ||
+        spell.spellItem->delivery != espm::SPEL::Delivery::Self ||
+        spell.spellItem->castType != espm::SPEL::CastType::Concentration) {
+      return;
+    }
+    if (caster.EndRunningEffectsOfSource(spellId)) {
+      spdlog::info("ActionListener - {:x} ends {:x} on itself: its stream on "
+                   "the server ends with the cast",
+                   caster.GetFormId(), spellId);
+    }
+  } catch (std::exception& e) {
+    spdlog::warn("ActionListener - self stream's end {:x}: {}", spellId,
+                 e.what());
   }
 }
 
@@ -1790,9 +1832,19 @@ void ActionListener::OnActorValues(const RawMessageData& rawMsgData,
     if (record &&
         !skymp::rules::actor_values_login_applied(ToAvSnapshot(*record),
                                                   report)) {
+      // the values it fell under, named (thuum docs/verbs/actor-values.md,
+      // train-31: a relaunch's reports were refused for a whole session
+      // with no line saying on what)
+      std::string under;
+      for (const auto& base : skymp::rules::actor_values_login_shortfall(
+             ToAvSnapshot(*record), report)) {
+        under += fmt::format(" {}:{:.4g}", base.av, base.base);
+      }
       return spdlog::info("ActorValues: user {} actor {:x} report before "
-                          "the login's record was applied, not taken",
-                          rawMsgData.userId, actor->GetFormId());
+                          "the login's record was applied, not taken (level "
+                          "{} against the record's {}; under the record:{})",
+                          rawMsgData.userId, actor->GetFormId(), msg.level,
+                          record->level, under.empty() ? " nothing" : under);
     }
     actor->SetActorValuesLoginPending(false);
   }
@@ -3224,6 +3276,7 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
   // resolved (RelayCast): the client's bytes named their caster 0x14 when
   // the client chose, which each neighbour's game reads as its own player
   if (spellCastData.interruptCast) {
+    EndSelfStream(partOne.worldState, *caster, spellCastData.spell);
     partOne.EndCast(caster->GetFormId(), hand);
     // a stream delivered to its target that ended before any hit: its start
     // never reached the other games, so neither does its end

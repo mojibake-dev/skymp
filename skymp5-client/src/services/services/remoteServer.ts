@@ -28,7 +28,7 @@ import { applyAppearanceToPlayer } from '../../sync/appearance';
 import { applyEquipment, isBadMenuShown } from '../../sync/equipment';
 import { Inventory, applyInventory } from '../../sync/inventory';
 import { Movement } from '../../sync/movement';
-import { learnSpells, removeAllSpells } from '../../sync/spell';
+import { syncSpells } from '../../sync/spell';
 import { ModelApplyUtils } from '../../view/modelApplyUtils';
 import { FormModel, WorldModel } from '../../view/model';
 import { LoadGameService } from './loadGameService';
@@ -504,16 +504,29 @@ export class RemoteServer extends ClientListener {
     if (msg.isMe && msg.props && msg.props.learnedSpells) {
       const learnedSpells = msg.props.learnedSpells;
 
+      // thuum docs/PLAN.md Train-30's first row: the server's list applied
+      // as a diff (sync/spell.ts), with a second pass a second later for
+      // whatever did not stick; the wipe and re-add it replaces lost every
+      // listed spell on a reconnect with the game process up (playtest
+      // twenty-seven, 2026-10-20)
       once('update', () => {
         Utility.wait(1).then(() => {
           const player = Game.getPlayer();
 
           if (player) {
-            removeAllSpells(player);
-            learnSpells(player, learnedSpells);
+            const first = syncSpells(player, learnedSpells);
             logTrace(this,
-              `player learnedSpells:`, JSON.stringify(learnedSpells),
+              `player learnedSpells:`, JSON.stringify(learnedSpells), 'first pass', JSON.stringify(first),
             );
+            Utility.wait(1).then(() => {
+              const again = Game.getPlayer();
+              if (again) {
+                const second = syncSpells(again, learnedSpells);
+                if (second.added > 0 || second.missing.length > 0) {
+                  logTrace(this, `player learnedSpells: second pass`, JSON.stringify(second));
+                }
+              }
+            });
           }
         });
       });

@@ -3405,6 +3405,16 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
                  targetActorPtr->GetFormId());
     return;
   }
+  // thuum docs/verbs/scripted-effects.md (train-31, ADR-029's first
+  // allowlist entry): a spell the server names as a scripted kill has its
+  // script's arithmetic run here, from the claimed hit, before the record's
+  // other effects, as the script runs at its effect's start with the
+  // target's Health as it stands; the target dies in every game or in none
+  if (aggressor != targetActorPtr &&
+      partOne.IsScriptedKillSpell(hitData.source)) {
+    partOne.ClaimScriptedKill(*aggressor, *targetActorPtr, hitData.source,
+                              effects);
+  }
   targetActorPtr->ApplyEffects(hitData.source, effects, scale,
                                aggressor->GetFormId(), stream, dualCast);
 
@@ -3415,7 +3425,7 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
   // ragdoll"; HYPOTHESIS: the engine's stagger at Unrelenting Force's 1.5
   // knocks the target down, to read on the lab)
   float spellStagger = 0.f;
-  bool anyEffectHeld = false;
+  bool anyHostileEffectHeld = false;
   for (const auto& effect : effects) {
     // a perk's rider (the Impact perk's stagger on every Firebolt, read in
     // the lab's logs: 67 of 91 hits staggered with no perk) is judged by its
@@ -3429,13 +3439,26 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
     if (gated) {
       continue;
     }
-    anyEffectHeld = true;
+    // thuum docs/verbs/magic-effects.md (train-31; playtest twenty-eight,
+    // Eli: "i should be able to cast healing hands on them"): a hit begins
+    // a fight only through an effect whose record is hostile or
+    // detrimental. A heal held on another player (Healing Hands) begins
+    // nothing, as the engine's neighbours only remark on a non-hostile
+    // spell (SayOnHitByMagicEffectScript's non-hostile topic). An effect
+    // whose record the server cannot read counts as hostile, as every held
+    // effect did before
     try {
-      if (espm::GetData<espm::MGEF>(effect.effectId, &partOne.worldState)
-            .data.effectType == espm::MGEF::EffectType::Stagger) {
+      const auto mgef =
+        espm::GetData<espm::MGEF>(effect.effectId, &partOne.worldState);
+      if (mgef.data.IsFlagSet(espm::MGEF::Flags::Hostile) ||
+          mgef.data.IsFlagSet(espm::MGEF::Flags::Detrimental)) {
+        anyHostileEffectHeld = true;
+      }
+      if (mgef.data.effectType == espm::MGEF::EffectType::Stagger) {
         spellStagger = std::max(spellStagger, effect.magnitude * scale);
       }
     } catch (std::exception&) {
+      anyHostileEffectHeld = true;
     }
   }
   if (spellStagger > 0.f && aggressor != targetActorPtr &&
@@ -3449,11 +3472,11 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
                targetActorPtr->GetFormId(), hitData.source, scale,
                stream ? "a stream's seconds" : "once", aggressor->GetFormId());
 
-  // a spell hit begins a fight as a weapon's does (ADR-023), once an effect
-  // of it held: a hit whose every effect its conditions refuse (a cloak's
-  // proc on a peaceful neighbour, which the engine itself never reports)
-  // begins nothing (thuum ADR-039)
-  if (anyEffectHeld) {
+  // a spell hit begins a fight as a weapon's does (ADR-023), once a hostile
+  // effect of it held: a hit whose every effect its conditions refuse (a
+  // cloak's proc on a peaceful neighbour, which the engine itself never
+  // reports) begins nothing (thuum ADR-039), and neither does a heal
+  if (anyHostileEffectHeld) {
     NotifyHostility(*aggressor, *targetActorPtr,
                     std::chrono::steady_clock::now());
   }

@@ -42,8 +42,6 @@
 
 #include "ArrowShotMessage.h"
 #include "CustomPacketMessage.h"
-#include "HostStartMessage.h"
-#include "HostStopMessage.h"
 #include "SpSnippet.h"
 #include "UpdateAnimVariablesMessage.h"
 #include "UpdateEquipmentMessage.h"
@@ -81,23 +79,20 @@ MpActor* ActionListener::ActorUpdatableBy(uint32_t idx,
       spdlog::error("SendToNeighbours - No permission to update actor {:x} "
                     "(already owned by user {})",
                     actor->GetFormId(), actorsOwningUserId);
-      partOne.SendHostStop(userId, *actor);
-
-      partOne.worldState.hosters.erase(actor->GetFormId());
       return nullptr;
     }
 
-    auto it = partOne.worldState.hosters.find(actor->GetFormId());
-    if (it == partOne.worldState.hosters.end() ||
-        it->second != myActor->GetFormId()) {
+    // thuum docs/verbs/cell-host.md (ADR-035): an actor no user plays is
+    // the host's of its cell; a report from any other game is dropped and
+    // nothing is sent back (the client's HostService knows its grants)
+    if (partOne.worldState.HostOf(*actor) != myActor) {
       if (idx == 0) {
         spdlog::warn("SendToNeighbours - idx=0, <Message>::ReadJson or "
                      "similar is probably incorrect");
       }
-      spdlog::error(
-        "SendToNeighbours - No permission to update actor {:x} (not a hoster)",
-        actor->GetFormId());
-      partOne.SendHostStop(userId, *actor);
+      spdlog::error("SendToNeighbours - No permission to update actor {:x} "
+                    "(not the host of its cell)",
+                    actor->GetFormId());
       return nullptr;
     }
   }
@@ -164,7 +159,42 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
 {
   // Validate, then relay: a move the server rejects must not reach the
   // neighbours (thuum docs/verbs/validation.md, Movement)
-  auto actor = ActorUpdatableBy(msg.idx, rawMsgData.userId);
+  MpActor* actor = nullptr;
+  bool hostedCellChange = false;
+  {
+    // thuum docs/verbs/cell-host.md, the cell-change rule: a hosted actor's
+    // report is its cell's host's; one naming another cell is accepted when
+    // the sender hosts the destination and the cell it leaves is unhosted or
+    // the sender's too (npc-handoff's row otherwise: dropped, logged)
+    MpActor* myActor = partOne.serverState.ActorByUser(rawMsgData.userId);
+    MpForm* form = partOne.worldState.LookupFormByIdx(msg.idx);
+    MpActor* moved = form ? form->AsActor() : nullptr;
+    if (myActor && moved && moved != myActor &&
+        partOne.serverState.UserByActor(moved) == Networking::InvalidUserId) {
+      const auto destCell = partOne.worldState.CellOf(
+        msg.data.worldOrCell,
+        NiPoint3{ msg.data.pos[0], msg.data.pos[1], msg.data.pos[2] });
+      if (!partOne.MayMoveActor(*myActor, *moved, destCell)) {
+        spdlog::warn("ActionListener::OnUpdateMovement - cell-host: {:x} may "
+                     "not move {:x} to cell {:x} (it hosts neither the cell "
+                     "the actor stands in nor, for a change, the "
+                     "destination); dropped",
+                     myActor->GetFormId(), moved->GetFormId(),
+                     destCell.value_or(0));
+        return;
+      }
+      hostedCellChange =
+        destCell.has_value() && destCell != partOne.worldState.CellOf(*moved);
+      if (hostedCellChange) {
+        spdlog::info("ActionListener::OnUpdateMovement - cell-host: {:x} "
+                     "moves {:x} into cell {:x}, which it hosts",
+                     myActor->GetFormId(), moved->GetFormId(), *destCell);
+      }
+      actor = moved;
+    } else {
+      actor = ActorUpdatableBy(msg.idx, rawMsgData.userId);
+    }
+  }
   if (actor) {
     // a teleport the server made (MpActor::Teleport sets the flag): the
     // player's reports from anywhere else were sent before it, so the
@@ -203,7 +233,7 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
             ? kInfinityPos
             : NiPoint3{ msg.data.pos[0], msg.data.pos[1], msg.data.pos[2] },
           FormDesc::FromFormId(msg.data.worldOrCell, espmFiles),
-          rawMsgData.userId, actor, espmFiles, &placed)) {
+          rawMsgData.userId, actor, espmFiles, &placed, hostedCellChange)) {
       return;
     }
 
@@ -1074,11 +1104,15 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
   if (!ac)
     throw std::runtime_error("Can't do this without Actor attached");
 
-  auto it =
-    partOne.worldState.hosters.find(static_cast<uint32_t>(msg.data.caster));
-  auto hosterId = it == partOne.worldState.hosters.end() ? 0 : it->second;
-
+  // thuum docs/verbs/cell-host.md: a hosted caster is its cell's host's
+  uint32_t hosterId = 0;
   if (msg.data.caster != 0x14) {
+    const auto& casterForm = partOne.worldState.LookupFormById(
+      static_cast<uint32_t>(msg.data.caster));
+    MpActor* casterActor = casterForm ? casterForm->AsActor() : nullptr;
+    MpActor* host =
+      casterActor ? partOne.worldState.HostOf(*casterActor) : nullptr;
+    hosterId = host ? host->GetFormId() : 0;
     if (hosterId != ac->GetFormId()) {
       std::stringstream ss;
       ss << std::hex << "Bad hoster is attached to caster 0x"
@@ -1913,13 +1947,19 @@ void ActionListener::OnPlayerGlobals(const RawMessageData& rawMsgData,
 void ActionListener::OnCellLoaded(const RawMessageData& rawMsgData,
                                   const CellLoadedMessage& msg)
 {
-  // thuum docs/verbs/cell-host.md: the report lands here; the election
-  // (wire-rules cells, through the bridge) follows in the verb's server
-  // commit, which turns this line into a grant or nothing
+  // thuum docs/verbs/cell-host.md: a game's loaded set, the fact the
+  // election runs on (wire-rules cells, through PartOne)
   MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
-  spdlog::info("CellLoaded: user {} actor {:x} cell {:x} {}",
-               rawMsgData.userId, actor ? actor->GetFormId() : 0, msg.cell,
-               msg.loaded ? "loaded" : "unloaded");
+  if (!actor) {
+    spdlog::warn("ActionListener::OnCellLoaded - user {} has no actor; cell "
+                 "{:x} ignored",
+                 rawMsgData.userId, msg.cell);
+    return;
+  }
+  spdlog::info("ActionListener::OnCellLoaded - {:x} {} cell {:x}",
+               actor->GetFormId(), msg.loaded ? "loaded" : "unloaded",
+               msg.cell);
+  partOne.OnCellLoaded(*actor, msg.cell, msg.loaded);
 }
 
 void ActionListener::SendPlayerGlobals(MpActor& actor)
@@ -2155,96 +2195,12 @@ void ActionListener::OnCraftItem(const RawMessageData& rawMsgData,
 void ActionListener::OnHostAttempt(const RawMessageData& rawMsgData,
                                    const HostMessage& msg)
 {
-  uint32_t remoteId = FormIdCasts::LongToNormal(msg.remoteId);
-
-  MpActor* me = partOne.serverState.ActorByUser(rawMsgData.userId);
-  if (!me) {
-    throw std::runtime_error("Unable to host without actor attached");
-  }
-
-  auto& remote = partOne.worldState.GetFormAt<MpObjectReference>(remoteId);
-
-  auto user = partOne.serverState.UserByActor(remote.AsActor());
-  if (user != Networking::InvalidUserId) {
-    return;
-  }
-
-  auto& hoster = partOne.worldState.hosters[remoteId];
-  const uint32_t prevHoster = hoster;
-
-  auto remoteIdx = remote.GetIdx();
-
-  std::optional<std::chrono::system_clock::time_point> lastRemoteUpdate;
-  if (partOne.worldState.lastMovUpdateByIdx.size() > remoteIdx) {
-    lastRemoteUpdate = partOne.worldState.lastMovUpdateByIdx[remoteIdx];
-  }
-
-  const auto hostResetTimeout = std::chrono::seconds(2);
-
-  if (hoster == 0 || !lastRemoteUpdate ||
-      std::chrono::system_clock::now() - *lastRemoteUpdate >
-        hostResetTimeout) {
-    partOne.GetLogger().info("Hoster changed from {0:x} to {1:x}", prevHoster,
-                             me->GetFormId());
-    hoster = me->GetFormId();
-    remote.UpdateHoster(hoster);
-
-    // Prevents too fast host switch. A form no movement was recorded for
-    // sits past the vector's end (on a fresh server, the first host of an
-    // actor that never moved), so it grows as OnUpdateMovement's does
-    // first: the write past its end aborted the server on libstdc++'s
-    // bounds assertion (thuum, the Apocalypse layer's sweep,
-    // 20261016-233122-a-movement-speed's server.log).
-    auto& lastMovUpdate = partOne.worldState.lastMovUpdateByIdx;
-    if (lastMovUpdate.size() <= remoteIdx) {
-      lastMovUpdate.resize(static_cast<size_t>(remoteIdx) + 1);
-    }
-    lastMovUpdate[remoteIdx] = std::chrono::system_clock::now();
-
-    auto remoteAsActor = remote.AsActor();
-    if (remoteAsActor) {
-      remoteAsActor->EquipBestWeapon();
-    }
-
-    uint64_t longFormId = remote.GetFormId();
-    if (remoteAsActor && longFormId < 0xff000000) {
-      longFormId += 0x100000000;
-    }
-
-    HostStartMessage message;
-    message.target = longFormId;
-    partOne.GetSendTarget().Send(rawMsgData.userId, message, true);
-
-    // Otherwise, health percentage would remain unsynced until someone hits
-    // npc
-    auto formId = remote.GetFormId();
-    partOne.worldState.SetTimer(std::chrono::seconds(1))
-      .Then([this, formId](Viet::Void) {
-        // Check if form is still here
-        auto& remote = partOne.worldState.GetFormAt<MpActor>(formId);
-
-        auto changeForm = remote.GetChangeForm();
-
-        ChangeValuesMessage msg;
-        msg.idx = remote.GetIdx();
-        msg.data.health = changeForm.actorValues.healthPercentage;
-        msg.data.magicka = changeForm.actorValues.magickaPercentage;
-        msg.data.stamina = changeForm.actorValues.staminaPercentage;
-        remote.GetActorToSendTo().SendToUser(msg, true);
-      });
-
-    auto& prevHosterForm = partOne.worldState.LookupFormById(prevHoster);
-    if (MpActor* prevHosterActor =
-          prevHosterForm ? prevHosterForm->AsActor() : nullptr) {
-      auto prevHosterUser = partOne.serverState.UserByActor(prevHosterActor);
-      if (prevHosterUser != Networking::InvalidUserId &&
-          prevHosterUser != rawMsgData.userId) {
-        HostStopMessage message;
-        message.target = longFormId;
-        partOne.GetSendTarget().Send(prevHosterUser, message, true);
-      }
-    }
-  }
+  // thuum docs/verbs/cell-host.md (ADR-035): the server elects a cell's host
+  // from the games' CellLoaded reports; a game's own claim on one actor (the
+  // M0 shape, Host 14) is read and ignored, nothing sent back
+  spdlog::debug("ActionListener::OnHostAttempt - Host for {:x} from user {} "
+                "ignored: cells are hosted by the server's election",
+                msg.remoteId, rawMsgData.userId);
 }
 
 void ActionListener::OnCustomEvent(const RawMessageData& rawMsgData,
@@ -2874,9 +2830,8 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
     hitData.aggressor = aggressor->GetFormId();
   } else {
     aggressor = &partOne.worldState.GetFormAt<MpActor>(hitData.aggressor);
-    auto it = partOne.worldState.hosters.find(hitData.aggressor);
-    if (it == partOne.worldState.hosters.end() ||
-        it->second != myActor->GetFormId()) {
+    // thuum docs/verbs/cell-host.md: a hosted aggressor is its cell's host's
+    if (partOne.worldState.HostOf(*aggressor) != myActor) {
       spdlog::error("SendToNeighbours - No permission to send OnHit with "
                     "aggressor actor {:x}",
                     aggressor->GetFormId());
@@ -3222,10 +3177,8 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
     spellCastData.caster = caster->GetFormId();
   } else {
     caster = &partOne.worldState.GetFormAt<MpActor>(spellCastData.caster);
-    const auto it = partOne.worldState.hosters.find(spellCastData.caster);
-
-    if (it == partOne.worldState.hosters.end() ||
-        it->second != myActor->GetFormId()) {
+    // thuum docs/verbs/cell-host.md: a hosted caster is its cell's host's
+    if (partOne.worldState.HostOf(*caster) != myActor) {
       spdlog::error(
         "SendToNeighbours - No permission to send OnSpellCast with "
         "caster actor {:x}",

@@ -186,16 +186,14 @@ void DelegateToHost(const char* className, const char* function,
   spdlog::warn("{} executes locally at this moment. Results will not "
                "affect server calculations",
                function);
-  auto it = actor.GetParent()->hosters.find(actor.GetFormId());
   auto serializedArgs =
     SpSnippetFunctionGen::SerializeArguments(arguments, actor.GetParent());
   // spsnippet don't support auto sending to host. so determining current
-  // hoster explicitly
+  // hoster explicitly: the game hosting the actor's cell (thuum
+  // docs/verbs/cell-host.md), or the actor's own
+  MpActor* host = actor.GetParent()->HostOf(actor);
   SpSnippet(className, function, serializedArgs, actor.GetFormId())
-    .Execute(it == actor.GetParent()->hosters.end()
-               ? &actor
-               : &actor.GetParent()->GetFormAt<MpActor>(it->second),
-             SpSnippetMode::kNoReturnResult);
+    .Execute(host ? host : &actor, SpSnippetMode::kNoReturnResult);
 }
 
 void RequireArguments(const char* native,

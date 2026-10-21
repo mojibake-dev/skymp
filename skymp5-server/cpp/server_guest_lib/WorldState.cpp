@@ -7,7 +7,9 @@
 #include "MpChangeForms.h"
 #include "MpObjectReference.h"
 #include "condition_functions/ConditionFunctionFactory.h"
+#include "libespm/CELL.h"
 #include "libespm/GroupUtils.h"
+#include "libespm/WRLD.h"
 #include "papyrus-vm/Reader.h"
 #include "papyrus-vm/Utils.h"
 #include "script_classes/PapyrusClassesFactory.h"
@@ -17,6 +19,7 @@
 #include <Timer.h>
 #include <algorithm>
 #include <antigo/Context.h>
+#include <cmath>
 #include <deque>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
@@ -1259,4 +1262,55 @@ bool WorldState::HasEspmFile(std::string_view filename) const noexcept
 {
   return std::find(espmFiles.begin(), espmFiles.end(), filename) !=
     espmFiles.end();
+}
+
+std::optional<uint32_t> WorldState::CellOf(uint32_t cellOrWorld,
+                                           const NiPoint3& pos) const
+{
+  if (!espm) {
+    return std::nullopt;
+  }
+  const auto& browser = espm->GetBrowser();
+  const auto res = browser.LookupById(cellOrWorld);
+  if (!res.rec) {
+    return std::nullopt;
+  }
+  if (res.rec->GetType() == espm::CELL::kType) {
+    return cellOrWorld;
+  }
+  if (res.rec->GetType() != espm::WRLD::kType) {
+    return std::nullopt;
+  }
+  // the exterior cell at the grid square: 4096 units a side, counted from
+  // the world's origin, so negative positions floor (the engine's grid, and
+  // GetParentCell's reading, docs/NATIVES.md 2026-10-04)
+  const auto gridX = static_cast<int16_t>(std::floor(pos.x / 4096.f));
+  const auto gridY = static_cast<int16_t>(std::floor(pos.y / 4096.f));
+  const auto cell = browser.FindExteriorCell(cellOrWorld, gridX, gridY);
+  if (!cell.rec) {
+    return std::nullopt;
+  }
+  return cell.ToGlobalId(cell.rec->GetId());
+}
+
+std::optional<uint32_t> WorldState::CellOf(const MpObjectReference& ref) const
+{
+  return CellOf(ref.GetCellOrWorld().ToFormId(espmFiles), ref.GetPos());
+}
+
+MpActor* WorldState::HostOf(const MpObjectReference& ref)
+{
+  if (!cellHostOf) {
+    return nullptr;
+  }
+  const auto cell = CellOf(ref);
+  if (!cell) {
+    return nullptr;
+  }
+  const uint32_t host = cellHostOf(*cell);
+  if (!host) {
+    return nullptr;
+  }
+  const auto& form = LookupFormByIdNoLoad(host);
+  return form ? form->AsActor() : nullptr;
 }

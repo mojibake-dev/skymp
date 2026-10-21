@@ -731,15 +731,18 @@ void MpObjectReference::SetPrimitive(const NiPoint3& boundsDiv2)
     PrimitiveData{ boundsDiv2, Primitive::CreateGeoPolygonProc(vertices) };
 }
 
+// thuum docs/verbs/cell-host.md: the host's own game sees this actor as its
+// own; every other game, and every game while `newHosterId` is nobody (0, an
+// unhosted cell, frozen at its record), sees it hosted by other
 void MpObjectReference::UpdateHoster(uint32_t newHosterId)
 {
   auto hostedMsg = CreatePropertyMessage_(this, "isHostedByOther", "true");
   auto notHostedMsg = CreatePropertyMessage_(this, "isHostedByOther", "false");
   for (auto listener : this->GetActorListeners()) {
-    if (newHosterId != 0 && newHosterId != listener->GetFormId()) {
-      listener->GetActorToSendTo().SendToUser(hostedMsg, true);
-    } else {
+    if (newHosterId != 0 && newHosterId == listener->GetFormId()) {
       listener->GetActorToSendTo().SendToUser(notHostedMsg, true);
+    } else {
+      listener->GetActorToSendTo().SendToUser(hostedMsg, true);
     }
   }
 }

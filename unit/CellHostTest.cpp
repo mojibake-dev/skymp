@@ -38,6 +38,15 @@ uint64_t NowMs()
       .count());
 }
 
+// The grace is stamped by the server's own clock reading inside the
+// disconnect or the movement report, a few milliseconds apart from a reading
+// the test takes around it (on Windows the gap reached past a millisecond,
+// GitHub run 39618997497: a tick 1 ms inside the deadline fired, one 1 ms
+// past it did not). So a test reads its clock before the act that arms the
+// grace, ticks well inside the deadline and well past it.
+constexpr uint64_t kInsideMs = 2'500;
+constexpr uint64_t kPastMs = 2'000;
+
 MpActor& Player(PartOne& p, Networking::UserId user, uint32_t id,
                 const NiPoint3& pos)
 {
@@ -156,11 +165,11 @@ TEST_CASE("The first loader in reach hosts the cell and alone moves its "
   // reach, takes it at epoch 2 and is told; the east cell, loaded by
   // nobody else, goes unhosted with its epoch kept
   p.Messages().clear();
-  DoDisconnect(p, 0);
   const auto now = NowMs();
-  p.TickCellHosts(now + skymp::rules::host_grace_ms() - 1);
+  DoDisconnect(p, 0);
+  p.TickCellHosts(now + kInsideMs);
   REQUIRE(p.GetCellHost(*cell).player == kC1);
-  p.TickCellHosts(now + skymp::rules::host_grace_ms() + 1);
+  p.TickCellHosts(now + skymp::rules::host_grace_ms() + kPastMs);
   host = p.GetCellHost(*cell);
   REQUIRE(host.hosted);
   REQUIRE(host.player == kC2);
@@ -213,11 +222,13 @@ TEST_CASE("A cell loaded before the grid reaches it is granted when the "
 
   // back west: the grid drops the cell (still loaded), the grace arms and,
   // with no visitor, the cell goes unhosted at its end, the host told
+  const auto now = NowMs();
   c1.SetPos(kHere);
   Move(p, 0, kC1, kHere);
   REQUIRE(p.GetCellHost(*farCell).player == kC1);
-  const auto now = NowMs();
-  p.TickCellHosts(now + skymp::rules::host_grace_ms() + 1);
+  p.TickCellHosts(now + kInsideMs);
+  REQUIRE(p.GetCellHost(*farCell).player == kC1);
+  p.TickCellHosts(now + skymp::rules::host_grace_ms() + kPastMs);
   REQUIRE_FALSE(p.GetCellHost(*farCell).hosted);
   REQUIRE(p.GetCellHost(*farCell).epoch == 1);
   auto releases = SentTo<HostReleaseMessage>(p, 0);
@@ -260,7 +271,9 @@ TEST_CASE("At the handoff the visitor with the lowest round trip takes the "
   p.Messages().clear();
 
   DoDisconnect(p, 0);
-  p.TickCellHosts(now + skymp::rules::host_grace_ms() + 1);
+  p.TickCellHosts(now + kInsideMs);
+  REQUIRE(p.GetCellHost(*cell).player == kC1);
+  p.TickCellHosts(now + skymp::rules::host_grace_ms() + kPastMs);
   const auto host = p.GetCellHost(*cell);
   REQUIRE(host.hosted);
   REQUIRE(host.player == kC3);

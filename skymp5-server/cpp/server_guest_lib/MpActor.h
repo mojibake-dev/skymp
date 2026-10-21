@@ -65,8 +65,11 @@ public:
   float GetMagickaRespawnPercentage() const;
   float GetStaminaRespawnPercentage() const;
 
-  bool ShouldSkipRestoration() const noexcept;
-  void UpdateNextRestorationTime(std::chrono::seconds duration) noexcept;
+  // thuum docs/verbs/attributes.md: a percentage the server RAISED holds
+  // against the client's reports until one reaches it (the client's next
+  // report may predate the server's message and read as a fall); false
+  // from TakeReportedPercentage means the report is stale and dropped
+  bool TakeReportedPercentage(espm::ActorValue av, float reported);
 
   void SetRaceMenuOpen(bool isOpen);
   void SetAppearance(const Appearance* newAppearance);

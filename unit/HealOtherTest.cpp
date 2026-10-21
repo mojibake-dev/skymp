@@ -7,8 +7,11 @@
 #include "MpActor.h"
 #include "MsgType.h"
 #include "wire_bridge_cxx/rules.h"
+#include <chrono>
+#include <thread>
 
 PartOne& GetPartOne();
+using namespace std::chrono_literals;
 
 // thuum docs/verbs/magic-effects.md (train-31; playtest twenty-eight, Eli:
 // "i should be able to cast healing hands on them"): Healing Hands
@@ -84,12 +87,9 @@ TEST_CASE("Healing Hands on another player heals it on the server and begins "
     }
     return count;
   };
+  // the spell's hit on the target, after its cast (the caller equips, casts
+  // and clears the messages: a stream's hit counts the time since the cast)
   const auto hit = [&](uint32_t spell) {
-    Equipment eq;
-    eq.rightSpell = spell;
-    caster.SetEquipment(eq);
-    Cast(p, spell);
-    p.Messages().clear();
     RawMessageData raw;
     raw.userId = 0;
     HitMessage msg;
@@ -102,15 +102,29 @@ TEST_CASE("Healing Hands on another player heals it on the server and begins "
     return target.GetChangeForm().actorValues.healthPercentage;
   };
 
-  // the stream's first hit: 10 of 250, and no fight
+  // the stream's hit counts the time it held its target since the cast
+  // (wire-rules casts MAX_TICK_MS 250; unit/SpellCastTest.cpp's Flames):
+  // 10 a second for 0.12 s to 0.25 s, 1.2 to 2.5 of 250; and no fight
+  Equipment eq;
+  eq.rightSpell = kHealingHands;
+  caster.SetEquipment(eq);
+  Cast(p, kHealingHands);
+  std::this_thread::sleep_for(120ms);
+  p.Messages().clear();
   hit(kHealingHands);
-  REQUIRE(health() == Catch::Approx(0.54f).margin(0.005f));
+  const float healed = health();
+  REQUIRE(healed >= 0.5f + 1.1f / 250.f);
+  REQUIRE(healed <= 0.5f + 2.6f / 250.f);
   REQUIRE(startCombats() == 0);
   REQUIRE(!p.GetFights().in_fight(kTarget));
 
-  // a hostile hit: the fire damage lands and the fight begins
+  // a hostile hit: the fire damage (25 of 250) lands and the fight begins
+  eq.rightSpell = kFirebolt;
+  caster.SetEquipment(eq);
+  Cast(p, kFirebolt);
+  p.Messages().clear();
   hit(kFirebolt);
-  REQUIRE(health() < 0.54f);
+  REQUIRE(health() < healed - 20.f / 250.f);
   REQUIRE(startCombats() == 1);
   REQUIRE(p.GetFights().in_fight(kTarget));
 

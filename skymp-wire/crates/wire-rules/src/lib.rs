@@ -11,6 +11,7 @@ pub mod actor_values;
 pub mod attributes;
 pub mod appearance;
 pub mod casts;
+pub mod cells;
 pub mod clock;
 pub mod console;
 pub mod damage;

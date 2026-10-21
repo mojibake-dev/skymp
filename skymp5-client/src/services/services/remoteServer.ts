@@ -853,8 +853,15 @@ export class RemoteServer extends ClientListener {
           });
         } catch (e) {
           if (e instanceof RespawnNeededError) {
-            actor.disableNoWait(false);
-            actor.delete();
+            // disabled first, deleted once the engine has let it go (the
+            // crash of b-cell-host 20261021-192835; formView.destroy)
+            const id = actor.getFormID();
+            actor.disable(false).then(() => {
+              const again = Actor.from(Game.getFormEx(id));
+              if (again && !again.isDeleted()) {
+                again.delete();
+              }
+            });
           } else {
             throw e;
           }

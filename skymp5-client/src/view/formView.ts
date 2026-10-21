@@ -333,13 +333,26 @@ export class FormView {
     once("update", () => {
       if (refrId >= 0xff000000) {
         const refr = ObjectReference.from(Game.getFormEx(refrId));
-        if (refr) {
-          refr.delete();
-        }
         SpApiInteractor.getControllerInstance().lookupListener(WorldCleanerService).modWcProtection(refrId, -1);
         const ac = Actor.from(refr);
         if (ac) {
           TESModPlatform.setWeaponDrawnMode(ac, -1);
+        }
+        // thuum docs/verbs/cell-host.md: a copy this game hosts runs under
+        // the engine's AI, and a delete while its movement job still runs it
+        // is the crash b-cell-host 20261021-192835 took (a job thread on a
+        // MovementControllerNPC for a Character whose form was gone); the
+        // Creation Kit's rule for Delete is a disable first, so the copy is
+        // disabled (latent: the call returns once the engine has it out of
+        // its process lists) and deleted after, as the harvest path does
+        // (modelApplyUtils) and the cleaner does
+        if (refr) {
+          refr.disable(false).then(() => {
+            const again = ObjectReference.from(Game.getFormEx(refrId));
+            if (again && !again.isDeleted()) {
+              again.delete();
+            }
+          });
         }
       }
     })

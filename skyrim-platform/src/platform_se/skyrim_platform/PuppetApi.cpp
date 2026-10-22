@@ -26,6 +26,18 @@ using ClearKeepOffsetFn = void (*)(RE::Actor*);
 // high process, where the detours animate it
 void Demote(RE::Actor& actor)
 {
+  // an actor with no 3D (a persistent one its game has left behind, demoted
+  // when the server took its form back, skymp5-client formView.destroy)
+  // has no combat, no movement controller and no process to stop: the bit
+  // alone, which EnableAI(false) writes without touching a controller
+  // (src/RE/A/Actor.cpp:230-240, GetCharController null-safe)
+  if (!actor.Is3DLoaded()) {
+    actor.EnableAI(false);
+    logger::info("[verb:npc-puppet] puppet {:x}: AI off (no 3D, the bit "
+                 "alone)",
+                 actor.formID);
+    return;
+  }
   if (auto* lists = RE::ProcessLists::GetSingleton()) {
     lists->StopCombatAndAlarmOnActor(&actor, false);
   }

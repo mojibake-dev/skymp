@@ -20,13 +20,13 @@ export class FormViewArray {
       return;
     }
 
-    formView.destroy();
+    formView.destroy(true);
     this.formViews[i] = undefined;
   }
 
   resize(newSize: number) {
     if (this.formViews.length > newSize) {
-      this.formViews.slice(newSize).forEach((v) => v && v.destroy());
+      this.formViews.slice(newSize).forEach((v) => v && v.destroy(true));
     }
     this.formViews.length = newSize;
   }

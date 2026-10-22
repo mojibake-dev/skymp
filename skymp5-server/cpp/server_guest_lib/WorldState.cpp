@@ -367,7 +367,7 @@ void WorldState::RequestSave(MpObjectReference& ref)
 }
 
 const std::shared_ptr<MpForm>& WorldState::LookupFormById(
-  uint32_t formId, std::stringstream* optionalOutTrace)
+  uint32_t formId, std::stringstream* optionalOutTrace, bool sighted)
 {
   static const std::shared_ptr<MpForm> kNullForm;
 
@@ -378,7 +378,7 @@ const std::shared_ptr<MpForm>& WorldState::LookupFormById(
   auto it = forms.find(formId);
   if (it == forms.end()) {
     if (formId < 0xff000000) {
-      if (LoadForm(formId, optionalOutTrace)) {
+      if (LoadForm(formId, optionalOutTrace, sighted)) {
         it = forms.find(formId);
         if (it != forms.end()) {
           if (optionalOutTrace) {
@@ -427,7 +427,8 @@ const std::shared_ptr<MpForm>& WorldState::LookupFormByIdNoLoad(
 bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
                                   const espm::RecordHeader* record,
                                   const espm::IdMapping& mapping,
-                                  std::stringstream* optionalOutTrace)
+                                  std::stringstream* optionalOutTrace,
+                                  bool sighted)
 {
   auto& cache = GetEspmCache();
   // this place is a hotpath.
@@ -487,7 +488,10 @@ bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
     DeletedRecord = 0x20
   };
 
-  if (refr->GetFlags() & InitiallyDisabled) {
+  // a sighting (thuum docs/verbs/npc-puppet.md, the roster) says the host's
+  // engine has the actor attached and enabled, which a quest may have done
+  // to a placement the files disable: the two disabled filters yield to it
+  if (!sighted && (refr->GetFlags() & InitiallyDisabled)) {
     if (optionalOutTrace) {
       *optionalOutTrace << fmt::format(
         "AttachEspmRecord - the server skips initially disabled references\n");
@@ -501,6 +505,35 @@ bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
         "AttachEspmRecord - the server skips deleted references\n");
     }
     return false;
+  }
+
+  // thuum docs/verbs/npc-puppet.md (playtest 31, 2026-10-22): a reference
+  // with an enable parent (XESP) starts enabled only as its parent does (the
+  // opposite under flag 1), so the child of an initially disabled marker
+  // never shows in a game started from the files: Riverwood's E3 demo thief
+  // 0xe93d2 under marker 0x93638. The server loaded it, both games held a
+  // puppet with no 3D, and its word flapped with the cell's host. One level
+  // of parents, read at load. HYPOTHESIS for the flag's semantics beyond the
+  // Creation Kit's description (UESP, REFR XESP); the lab's e93d2 is the
+  // measured case.
+  if (!sighted && data.enableParentId != 0) {
+    const uint32_t parentId =
+      espm::utils::GetMappedId(data.enableParentId, mapping);
+    const espm::LookupResult parent = br.LookupById(parentId);
+    if (parent.rec) {
+      const bool parentDisabled =
+        (parent.rec->GetFlags() & InitiallyDisabled) != 0;
+      const bool opposite = (data.enableParentFlags & 1) != 0;
+      if (parentDisabled != opposite) {
+        if (optionalOutTrace) {
+          *optionalOutTrace << fmt::format(
+            "AttachEspmRecord - the server skips a reference its enable "
+            "parent {:x} disables\n",
+            parentId);
+        }
+        return false;
+      }
+    }
   }
 
   if (!npcEnabled && isNpc) {
@@ -654,7 +687,8 @@ bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
   return true;
 }
 
-bool WorldState::LoadForm(uint32_t formId, std::stringstream* optionalOutTrace)
+bool WorldState::LoadForm(uint32_t formId, std::stringstream* optionalOutTrace,
+                          bool sighted)
 {
   ANTIGO_CONTEXT_INIT(ctx);
   ctx.AddUnsigned(formId);
@@ -670,7 +704,7 @@ bool WorldState::LoadForm(uint32_t formId, std::stringstream* optionalOutTrace)
   auto mapping = br.GetCombMapping(lookupRes.fileIdx);
 
   bool attached =
-    AttachEspmRecord(br, lookupRes.rec, *mapping, optionalOutTrace);
+    AttachEspmRecord(br, lookupRes.rec, *mapping, optionalOutTrace, sighted);
   if (optionalOutTrace) {
     *optionalOutTrace << "AttachEspmRecord " << (attached ? "true" : "false")
                       << std::endl;

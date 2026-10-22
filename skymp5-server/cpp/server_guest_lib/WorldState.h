@@ -126,9 +126,13 @@ public:
   bool RemoveEffectTimer(uint32_t timerId);
 
   // Loads a requested form, likely resulting in whole chunk
-  // loading if not yet loaded
+  // loading if not yet loaded. `sighted`: a host's engine has the actor
+  // attached and enabled (thuum docs/verbs/npc-puppet.md, the roster), so
+  // the loader's disabled filters (initially disabled, an enable parent
+  // that disables) do not apply to it
   const std::shared_ptr<MpForm>& LookupFormById(
-    uint32_t formId, std::stringstream* optionalOutTrace = nullptr);
+    uint32_t formId, std::stringstream* optionalOutTrace = nullptr,
+    bool sighted = false);
 
   // No loading
   MpForm* LookupFormByIdx(int idx);
@@ -301,10 +305,11 @@ private:
   bool AttachEspmRecord(const espm::CombineBrowser& br,
                         const espm::RecordHeader* record,
                         const espm::IdMapping& mapping,
-                        std::stringstream* optionalOutTrace = nullptr);
+                        std::stringstream* optionalOutTrace = nullptr,
+                        bool sighted = false);
 
-  bool LoadForm(uint32_t formId,
-                std::stringstream* optionalOutTrace = nullptr);
+  bool LoadForm(uint32_t formId, std::stringstream* optionalOutTrace = nullptr,
+                bool sighted = false);
   void TickSaveStorage(const std::chrono::system_clock::time_point& now);
   void TickTimers(const std::chrono::system_clock::time_point& now);
   void TickEffects(const std::chrono::system_clock::time_point& now);

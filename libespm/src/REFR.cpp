@@ -38,6 +38,12 @@ REFR::Data REFR::GetData(
         }
       } else if (!std::memcmp(type, "XOWN", 4)) {
         result.ownerFaction = *reinterpret_cast<const uint32_t*>(data);
+      } else if (!std::memcmp(type, "XESP", 4)) {
+        [[likely]] if (dataSize >= 8) {
+          result.enableParentId = *reinterpret_cast<const uint32_t*>(data);
+          result.enableParentFlags =
+            *reinterpret_cast<const uint32_t*>(data + 4);
+        }
       } else if (!std::memcmp(type, "FULL", 4)) {
         result.mapMarkerName = *reinterpret_cast<const lstring*>(data);
       } else if (!std::memcmp(type, "FNAM", 4)) {

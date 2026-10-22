@@ -30,6 +30,7 @@
 #include "wire_bridge_cxx/rules.h"
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
@@ -38,6 +39,7 @@
 #include <optional>
 #include <random>
 #include <spdlog/spdlog.h>
+#include <unordered_map>
 #include <unordered_set>
 
 #include "ArrowShotMessage.h"
@@ -1997,6 +1999,22 @@ void ActionListener::OnActorSightings(const RawMessageData& rawMsgData,
                  "{} sighting(s) ignored",
                  rawMsgData.userId, msg.sightings.size());
     return;
+  }
+  // the roster's arrival itself, once in ten seconds per reporter: every
+  // entry may be dropped silently (already standing where its host has it)
+  static std::unordered_map<uint32_t, std::chrono::steady_clock::time_point>
+    lastRosterLog;
+  const auto now = std::chrono::steady_clock::now();
+  auto& last = lastRosterLog[reporter->GetFormId()];
+  if (last == std::chrono::steady_clock::time_point{} ||
+      now - last >= std::chrono::seconds(10)) {
+    last = now;
+    spdlog::info("ActionListener::OnActorSightings - roster from {:x}: {} "
+                 "sighting(s), first {:x} in {:x}",
+                 reporter->GetFormId(), msg.sightings.size(),
+                 msg.sightings.empty() ? 0u : msg.sightings.front().refrId,
+                 msg.sightings.empty() ? 0u
+                                       : msg.sightings.front().worldOrCell);
   }
   for (const auto& s : msg.sightings) {
     partOne.OnActorSighting(*reporter, s.refrId, s.worldOrCell,

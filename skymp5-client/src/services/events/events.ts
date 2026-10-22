@@ -99,6 +99,8 @@ type EventTypes = {
     'playerGlobalsMessage': [ConnectionMessage<PlayerGlobalsMessage>],
     'actorJumpMessage': [ConnectionMessage<ActorJumpMessage>],
     'hostGrantMessage': [ConnectionMessage<HostGrantMessage>],
+    // thuum docs/verbs/npc-puppet.md: HostService's grant or release of a cell, for PuppetService
+    'cellHostChanged': [{ cell: number; hosted: boolean }],
     'hostReleaseMessage': [ConnectionMessage<HostReleaseMessage>],
     'customPacketMessage': [ConnectionMessage<CustomPacketMessage>]
 

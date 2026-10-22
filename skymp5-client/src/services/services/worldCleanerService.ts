@@ -61,6 +61,14 @@ export class WorldCleanerService extends ClientListener {
       return;
     }
 
+    // thuum docs/verbs/npc-puppet.md (ADR-045): the engine's own placed
+    // references stay; a puppet or the host's own actor is the engine's
+    // reference itself (upstream deleted them to make room for copies). The
+    // dead-body and chicken-anomaly branches of old were for them.
+    if (actorId < 0xff000000) {
+      return;
+    }
+
     // thuum docs/verbs/cell-host.md (b-cell-host 20261021-192835, the lab's
     // first runs with npcEnabled on): findRandomActor hands out the same
     // actor on frame after frame while its latent disable below is still
@@ -81,35 +89,6 @@ export class WorldCleanerService extends ClientListener {
       actor.setPosition(0, 0, 0);
       actor.disableNoWait(true); // Seems to not crash
       return;
-    }
-
-    // Keep vanila pre-placed bodies, but delete player bodies
-    if (actor.isDead() && actorId < 0xff000000) {
-      actor.blockActivation(true);
-      return;
-    }
-
-    const pos = ObjectReferenceEx.getPos(actor);
-    const cellOrWorld = ObjectReferenceEx.getWorldOrCell(actor);
-
-    const chickenRace = 0xa919d;
-
-    // We discovered anomaly chickens that fail to Disable if we load game near to them
-    // Refs: 106C22, 106C23
-    if (actorId < 0xff000000 && actor.getRace()?.getFormID() === chickenRace) {
-      if (this.initialPos && ObjectReferenceEx.getDistanceNoZ(pos, this.initialPos) < 4096) {
-        if (cellOrWorld === this.initialCellOrWorld) {
-          if (this.isActorInDialogue(actor)) {
-            return;
-          }
-          logTrace(this, `Deleting chicken anomaly`, actorId.toString(16));
-          actor.killSilent(null);
-          actor.blockActivation(true);
-          actor.disableNoWait(false);
-          actor.setAlpha(0, false);
-          return;
-        }
-      }
     }
 
     this.cleaning.add(actorId);

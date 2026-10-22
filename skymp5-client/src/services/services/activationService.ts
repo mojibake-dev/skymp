@@ -4,7 +4,7 @@ import { MsgType } from "../../messages";
 import { getInventory } from "../../sync/inventory";
 
 // TODO: refactor this out
-import { localIdToRemoteId } from "../../view/worldViewMisc";
+import { isSyncedActorId, localIdToRemoteId } from "../../view/worldViewMisc";
 
 import { LastInvService } from "./lastInvService";
 import { logError, logTrace } from "../../logging";
@@ -26,8 +26,10 @@ export class ActivationService extends ClientListener {
           return;
         }
 
-        // Actors never have non-ff ids locally in skymp
-        if (caster !== 0x14 && caster < 0xff000000) {
+        // the player, or a server actor (a 0xff copy or figure, or an actor
+        // from the game files the server sent: docs/verbs/npc-puppet.md);
+        // any other engine actor's activation is nobody's
+        if (caster !== 0x14 && !isSyncedActorId(caster)) {
           return;
         }
 

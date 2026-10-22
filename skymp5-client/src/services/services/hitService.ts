@@ -1,5 +1,5 @@
 // TODO: refactor this out
-import { localIdToRemoteId } from "../../view/worldViewMisc";
+import { isSyncedActorId, localIdToRemoteId } from "../../view/worldViewMisc";
 
 import { ActiveMagicEffect, Form, FormType, Game, HitEvent, MagicEffect, ObjectReference, Scroll, Spell, Weapon, printConsole, storage } from "skyrimPlatform";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
@@ -46,8 +46,8 @@ export class HitService extends ClientListener {
             return;
         }
         const targetId = e.target.getFormID();
-        if (targetId < 0xff000000) {
-            return; // another player's figure, never the player itself or a world actor
+        if (targetId === 0x14 || !isSyncedActorId(targetId)) {
+            return; // a figure or a server actor only (an actor from the game files included, npc-puppet), never the player itself
         }
         this.appliedOn.set(targetId, this.frame);
         // the applying spell as the native side read it from the active
@@ -146,9 +146,12 @@ export class HitService extends ClientListener {
         // TODO: add more logging in case of 'return'
         // TODO: allow non-weapon sources
         const aggressor = e.aggressor.getFormID();
-        if (aggressor < 0xff000000 && aggressor !== 0x14) return; // all skymp npcs are FF+
+        // thuum docs/verbs/npc-puppet.md: a server actor is a 0xff copy or
+        // figure, or an actor from the game files the server sent (its own
+        // id in the world model); any other engine actor's hit is nobody's
+        if (aggressor !== 0x14 && !isSyncedActorId(aggressor)) return;
 
-        if (aggressor >= 0xff000000) {
+        if (aggressor !== 0x14) {
             // thuum docs/verbs/cell-host.md: an actor this game hosts (its
             // cell granted here, the server marking it nobody else's)
             const alreadyHosted = this.controller.lookupListener(HostService).isMineLocal(aggressor);

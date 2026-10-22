@@ -35,6 +35,7 @@ import { ContainersService } from "./services/services/containersService";
 import { NetworkingService } from "./services/services/networkingService";
 import { RemoteServer } from "./services/services/remoteServer";
 import { HostService } from "./services/services/hostService";
+import { PuppetService } from "./services/services/puppetService";
 import { SpSnippetService } from "./services/services/spSnippetService";
 import { SweetTaffyDynamicPerksService } from "./services/services/sweetTaffyDynamicPerksService";
 import { SweetTaffySweetCantDropService } from "./services/services/sweetTaffySweetCantDropService";
@@ -108,6 +109,7 @@ const main = () => {
       new NetworkingService(sp, controller),
       new RemoteServer(sp, controller),
       new HostService(sp, controller),
+      new PuppetService(sp, controller),
       new SpSnippetService(sp, controller),
       new SettingsService(sp, controller),
       new SweetTaffyDynamicPerksService(sp, controller),

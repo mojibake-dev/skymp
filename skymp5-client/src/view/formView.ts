@@ -19,6 +19,7 @@ import { SpApiInteractor } from "../services/spApiInteractor";
 import { WorldCleanerService } from "../services/services/worldCleanerService";
 import { GamemodeUpdateService } from "../services/services/gamemodeUpdateService";
 import { HostService } from "../services/services/hostService";
+import { PuppetService } from "../services/services/puppetService";
 
 // thuum docs/verbs/cast-action.md: the want variable a hand's cast event names
 // (MRh_ the right hand's, MLh_ and the perk's DualMagic_ the left hand's actions)
@@ -138,7 +139,14 @@ export class FormView {
         const refr = ObjectReference.from(Game.getFormEx(this.refrId));
         if (refr) {
           const base = refr.getBaseObject();
-          if (base) {
+          if (base && base.getType() === FormType.NPC) {
+            // thuum docs/verbs/npc-puppet.md: an actor from the game files
+            // binds as itself (no copy, no cleaner protection); its damage
+            // is the server's number (attackDamageMult 0, as every copy's);
+            // dealWithRef's blockActivation is the puppet apply's, so the
+            // host's own actor keeps its engine behavior (Rule A)
+            Actor.from(refr)?.setActorValue("attackDamageMult", 0);
+          } else if (base) {
             ObjectReferenceEx.dealWithRef(refr, base);
           }
         }
@@ -373,6 +381,13 @@ export class FormView {
   // in this game reads Skyrim's number instead of the million that stood
   // here before. The shown fraction is kept across the set: the engine keeps
   // the current value, not the share, when a base changes
+  // an NPC's model: a server-made actor or one from the game files carries
+  // its base id; a player's figure (base 0x7) and the player's own clone
+  // carry none (PartOne.cpp omits bases 0 and 7)
+  private static isNpcModel(model: FormModel): boolean {
+    return model.baseId !== undefined && model.baseId !== 0x7;
+  }
+
   private applyFigureMaxima(actor: Actor | null, model: FormModel) {
     // never the player's own actor: its maxima are its CreateActor's (the
     // isMe props, remoteServer.ts) and the engine's own; the server's
@@ -466,12 +481,20 @@ export class FormView {
       SpApiInteractor.getControllerInstance().lookupListener(HostService).isMine(model, refr);
     setDefaultAnimsDisabled(this.refrId, alreadyHosted ? false : true);
 
-    if (alreadyHosted) {
-      Actor.from(refr)?.clearKeepOffsetFromActor();
+    // thuum docs/verbs/npc-puppet.md (ADR-045): an NPC this game does not
+    // host is a puppet (AI off, the relay's transform and events), an engine
+    // reference or a server-made copy alike; one it hosts is live under the
+    // engine. A player's figure is neither: its own game's reports hold it.
+    const puppet = !alreadyHosted && FormView.isNpcModel(model);
+    const puppetService = SpApiInteractor.getControllerInstance().lookupListener(PuppetService);
+    if (puppet) {
+      puppetService.ensurePuppet(refr);
+    } else if (alreadyHosted) {
+      puppetService.ensureLive(refr, model.movement);
     }
 
     if (model.movement) {
-      let ac = Actor.from(refr);
+      const ac = Actor.from(refr);
       // (the re-host on a quiet figure is gone: the server elects a cell's
       // host and passes it on at its own grace, docs/verbs/cell-host.md)
 
@@ -481,15 +504,25 @@ export class FormView {
         Date.now() - this.movState.lastApply > 2000
       ) {
         this.movState.lastApply = Date.now();
-        if (model.isHostedByOther || !this.movState.everApplied) {
+        if (!alreadyHosted) {
+          // a figure or a puppet: the record's movement is imposed (a
+          // puppet's absolutely, docs/verbs/npc-puppet.md Rule B)
           const backup = model.movement.isWeapDrawn;
           if (forcedWeapDrawn === true || forcedWeapDrawn === false) {
             model.movement.isWeapDrawn = forcedWeapDrawn;
           }
           try {
-            applyMovement(refr, model.movement, !!model.isMyClone);
+            applyMovement(refr, model.movement, !!model.isMyClone, puppet);
           } catch (e) {
             if (e instanceof RespawnNeededError) {
+              model.movement.isWeapDrawn = backup;
+              if (this.refrId < 0xff000000) {
+                // an engine reference reported from another cell stands
+                // where it is until npc-handoff moves it (MoveTo); a copy
+                // respawns there as before
+                this.movState.lastNumChanges = +(model.numMovementChanges as number);
+                return;
+              }
               this.lastWorldOrCell = model.movement.worldOrCell;
               this.destroy();
               this.refrId = 0;
@@ -505,21 +538,22 @@ export class FormView {
           this.movState.everApplied = true;
           this.hostedHereApplied = false;
         } else {
-          // the server marks this actor as nobody else's: this game hosts
-          // its cell and the engine moves it (docs/verbs/cell-host.md); the
-          // weapon-drawn override is lifted once, as the old host attempt did
-          if (ac && ac.is3DLoaded()) {
-            ac.clearKeepOffsetFromActor();
-            if (!this.hostedHereApplied) {
-              this.hostedHereApplied = true;
-              TESModPlatform.setWeaponDrawnMode(ac, -1);
-            }
+          // this game hosts the actor: nothing of the record is applied, not
+          // even once (docs/verbs/npc-puppet.md Rule A; the first apply of
+          // old pinned the host's own copy with a keep-offset on itself);
+          // the weapon-drawn override is lifted once, as the old host
+          // attempt did
+          if (ac && ac.is3DLoaded() && !this.hostedHereApplied) {
+            this.hostedHereApplied = true;
+            TESModPlatform.setWeaponDrawnMode(ac, -1);
           }
         }
       }
     }
 
-    if (refr.is3DLoaded()) {
+    // thuum docs/verbs/npc-puppet.md Rule A: an actor this game hosts takes
+    // no relayed event, pitch or action; its engine's are its own
+    if (refr.is3DLoaded() && !alreadyHosted) {
       // thuum docs/verbs/spell-cast.md: every relayed event since the last
       // update, oldest first, as the sender's graph took them (applyAnimation
       // skips one it has played by its numChanges); the newest alone when
@@ -599,7 +633,8 @@ export class FormView {
       }
     }
 
-    if (model.equipment) {
+    // (Rule A again: a hosted actor's equipment is its engine's)
+    if (model.equipment && !alreadyHosted) {
       if (this.eqState.lastNumChanges !== model.equipment.numChanges) {
         const ac = Actor.from(refr);
         // If we do not block inventory here, we will be able to reproduce the bug:

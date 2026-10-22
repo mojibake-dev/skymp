@@ -118,14 +118,6 @@ export class SendInputsService extends ClientListener {
 
         const world = modelSource.getWorldModel();
 
-        // nothing is sent for the player until its own form is here and is
-        // the player's (docs/verbs/npc-puppet.md: the slot a game-file
-        // actor's model may hold at login); the hosted actors need no player
-        const own = world.forms[world.playerCharacterFormIdx];
-        if (!own || own.isMyClone !== true) {
-            return;
-        }
-
         targets.forEach((target) => {
             const targetFormModel = target ? this.getForm(target, world) : this.getForm(undefined, world);
             this.sendMovement(target, targetFormModel);

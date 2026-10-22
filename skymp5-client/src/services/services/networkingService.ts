@@ -9,7 +9,6 @@ import { RemoteServer } from "./remoteServer";
 import { SendRawMessageEvent } from "../events/sendRawMessageEvent";
 
 export class NetworkingService extends ClientListener {
-  private wrongPlayerSlotLogged = false;
   constructor(private sp: Sp, private controller: CombinedController) {
     super();
     this.controller.on("tick", () => this.onTick());
@@ -38,24 +37,9 @@ export class NetworkingService extends ClientListener {
       : remoteServer.getWorldModel().playerCharacterFormIdx;
 
     // fixes "can't get property idx of null or undefined"
-    const target = remoteServer.getWorldModel().forms[idxInModel];
-    if (!target) {
+    if (!remoteServer.getWorldModel().forms[idxInModel]) {
       return;
     }
-    // thuum docs/verbs/npc-puppet.md: a message about the player goes out
-    // under the player's own form alone. With game-file actors creating
-    // models at login, the player's slot can hold another actor's model for
-    // a moment (x-npc-landing-trace 20261022-054932: the player's movement
-    // streamed under a deer's index from login to the grant, then moved the
-    // deer's record to the player), so the slot is verified, not trusted
-    if (!refrId && target.isMyClone !== true) {
-      if (!this.wrongPlayerSlotLogged) {
-        this.wrongPlayerSlotLogged = true;
-        logError(this, `player message dropped: slot ${idxInModel} holds ${target.refrId?.toString(16)}, not the player`);
-      }
-      return;
-    }
-    this.wrongPlayerSlotLogged = false;
 
     // @ts-ignore
     e.message.idx = remoteServer.getWorldModel().forms[idxInModel].idx;

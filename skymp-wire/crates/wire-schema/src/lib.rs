@@ -62,6 +62,9 @@ pub mod cap {
     /// Favorites one player keeps, items and magic: far past what the
     /// inventory and magic menus show a player at once.
     pub const FAVORITES: usize = 128;
+    /// Sighted actors one host names in one report (docs/verbs/npc-puppet.md):
+    /// a village's residents and visitors at once, with room.
+    pub const ACTOR_SIGHTINGS: usize = 64;
     /// Leveled templates one NPC resolves through.
     pub const TEMPLATE_CHAIN: usize = 64;
     /// Node overrides on one reference.
@@ -404,6 +407,8 @@ pub enum Message {
     HostGrant(skymp::HostGrant),
     /// 57, MsgType 49 (thuum). See [`skymp::HostRelease`].
     HostRelease(skymp::HostRelease),
+    /// 58, MsgType 50 (thuum). See [`skymp::ActorSightings`].
+    ActorSightings(skymp::ActorSightings),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -432,7 +437,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 58] = [
+const TABLE: [Row; 59] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -491,14 +496,15 @@ const TABLE: [Row; 58] = [
     row("CellLoaded", 47, 16, C2S),
     row("HostGrant", 48, 32, S2C),
     row("HostRelease", 49, 32, S2C),
+    row("ActorSightings", 50, 4 * KIB, C2S),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 58;
-const _: () = assert!(TABLE.len() == 58, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 59;
+const _: () = assert!(TABLE.len() == 59, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -581,6 +587,7 @@ impl Message {
             Message::CellLoaded(_) => 55,
             Message::HostGrant(_) => 56,
             Message::HostRelease(_) => 57,
+            Message::ActorSightings(_) => 58,
         }
     }
 
@@ -660,8 +667,9 @@ mod tests {
         assert_eq!(name_of_msg_type(47), Some("CellLoaded"));
         assert_eq!(name_of_msg_type(48), Some("HostGrant"));
         assert_eq!(name_of_msg_type(49), Some("HostRelease"));
+        assert_eq!(name_of_msg_type(50), Some("ActorSightings"));
         assert_eq!(name_of_msg_type(0), None);
-        assert_eq!(name_of_msg_type(50), None);
+        assert_eq!(name_of_msg_type(51), None);
     }
 
     #[test]
@@ -687,6 +695,16 @@ mod tests {
             Message::Favorites(skymp::Favorites {
                 entries: (0..cap::FAVORITES)
                     .map(|i| skymp::FavoriteEntry { form: u32::MAX - u32::try_from(i).unwrap_or(0), hotkey: if i < 8 { i8::try_from(i).unwrap_or(-1) } else { -1 } })
+                    .collect::<alloc::vec::Vec<_>>()
+                    .try_into()
+                    .unwrap_or_default(),
+                ..Default::default()
+            }),
+            // a host's roster at its fullest: every id a five-byte varint,
+            // every float carried (docs/verbs/npc-puppet.md)
+            Message::ActorSightings(skymp::ActorSightings {
+                sightings: (0..cap::ACTOR_SIGHTINGS)
+                    .map(|_| skymp::ActorSighting { refr_id: 0xfeff_ffff, world_or_cell: u32::MAX, pos: [f32::MAX; 3], rot: [f32::MAX; 3] })
                     .collect::<alloc::vec::Vec<_>>()
                     .try_into()
                     .unwrap_or_default(),

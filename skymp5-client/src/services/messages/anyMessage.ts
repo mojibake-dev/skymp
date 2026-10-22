@@ -19,6 +19,7 @@ import { HostStopMessage } from "./hostStopMessage";
 import { CellLoadedMessage } from "./cellLoadedMessage";
 import { HostGrantMessage } from "./hostGrantMessage";
 import { HostReleaseMessage } from "./hostReleaseMessage";
+import { ActorSightingsMessage } from "./actorSightingsMessage";
 import { OnEquipMessage } from "./onEquipMessage";
 import { OpenContainerMessage } from "./openContainerMessage";
 import { PlayerBowShotMessage } from "./playerBowShotMessage";
@@ -92,6 +93,7 @@ export type AnyMessage = ActivateMessage
     | CellLoadedMessage
     | HostGrantMessage
     | HostReleaseMessage
+    | ActorSightingsMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage
     | UpdatePropertyMessage

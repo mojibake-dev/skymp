@@ -1,4 +1,5 @@
 #include "TestUtils.hpp"
+#include "libespm/GroupUtils.h"
 #include <catch2/catch_all.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -124,83 +125,53 @@ TEST_CASE("Riverwood's Alvor 0x13482, a unique Nord in an interior, loads "
   REQUIRE_NOTHROW(partOne.worldState.GetFormAt<MpActor>(0x13482));
 }
 
-// Riverwood's Sigrid 0x13483 (thuum docs/verbs/npc-puppet.md): a persistent
-// reference in Tamriel's persistent cell (Skyrim.esm 0xd74), placed at
-// (24063, -45204). b-npc-puppet 20261022-081631 and 090227 saw her host demote
-// her at the attach and never promote her: no word for her ever reached the
-// host. The two questions this case asks the server alone: where libespm
-// files her (the chunk loader asks GetRecordsAtPos at the truncated square of
-// a player's position, GetGridPos's rounding), and whether a player landing
-// at Riverwood (b-npc-puppet's c1, (17225, -47204)) loads her and is sent her
-// CreateActor.
-TEST_CASE("Riverwood's Sigrid 0x13483 is filed at her own square and loads "
-          "for a player landing at Riverwood",
+// Riverwood's Sigrid 0x13483 (thuum docs/verbs/npc-puppet.md): placed in
+// RiverwoodAlvorsHouse (CELL 0x133c8, interior coordinates) and walked
+// outside by her schedule, like every named resident. The server loads a
+// game-file actor by its placement square, so a player landing at Riverwood
+// (b-npc-puppet's c1, (17225, -47204)) loads no resident, and no word for
+// one can reach a host (b-npc-puppet 20261022-081631 and 090227; the probe
+// x-npc-sigrid-ref 091354 read her record in 133c8). The host's roster
+// (ActorSightings, CellHostTest) is the fix this case is the reason for.
+TEST_CASE("Riverwood's Sigrid 0x13483 is placed in her house, not at "
+          "Riverwood's squares, so a landing there loads no resident",
           "[NpcExists][espm]")
 {
   constexpr uint32_t kSigrid = 0x13483;
+  constexpr uint32_t kAlvorsHouse = 0x133c8;
   constexpr uint32_t kTamriel = 0x3c;
   auto& partOne = GetPartOne();
   partOne.worldState.npcEnabled = true;
   auto& br = partOne.worldState.GetEspm().GetBrowser();
 
-  // the index: under Tamriel at the truncated square of her own position
-  {
-    int filedAt = 0;
-    int16_t atX = 0, atY = 0;
-    for (int16_t x = 3; x <= 6; ++x) {
-      for (int16_t y = -13; y <= -10; ++y) {
-        for (auto vec : br.GetRecordsAtPos(kTamriel, x, y)) {
-          for (auto rec : *vec) {
-            if (rec->GetId() == kSigrid) {
-              ++filedAt;
-              atX = x;
-              atY = y;
-            }
+  // her record's cell is the house, and the index files her nowhere around
+  // Riverwood under Tamriel
+  const auto rec = br.LookupById(kSigrid);
+  REQUIRE(rec.rec);
+  REQUIRE(rec.rec->GetType() == "ACHR");
+  REQUIRE(espm::GetWorldOrCell(br, rec.rec) == kAlvorsHouse);
+  int filedAt = 0;
+  for (int16_t x = 3; x <= 6; ++x) {
+    for (int16_t y = -13; y <= -10; ++y) {
+      for (auto vec : br.GetRecordsAtPos(kTamriel, x, y)) {
+        for (auto r : *vec) {
+          if (r->GetId() == kSigrid) {
+            ++filedAt;
           }
         }
       }
     }
-    INFO("Sigrid filed " << filedAt << " time(s) around Riverwood, last at ("
-                         << atX << ", " << atY << ")");
-    REQUIRE(filedAt == 1);
-    REQUIRE(atX == 5);
-    REQUIRE(atY == -11);
   }
+  REQUIRE(filedAt == 0);
 
-  // the server: the player's landing loads the chunk and subscribes it
+  // the landing's chunk pass loads nothing of her
   DoConnect(partOne, 0);
   partOne.CreateActor(0xff000000, { 17225.f, -47204.f, -128.f }, 0, kTamriel);
   partOne.SetUserActor(0, 0xff000000);
   auto& player = partOne.worldState.GetFormAt<MpActor>(0xff000000);
   player.SetPos(player.GetPos());
-
-  {
-    std::stringstream trace;
-    const bool loadedByTheLanding =
-      partOne.worldState.LookupFormByIdNoLoad(kSigrid) != nullptr;
-    if (!loadedByTheLanding) {
-      // the loader's own reasons, for the failing case's report
-      partOne.worldState.LookupFormById(kSigrid, &trace);
-    }
-    INFO("LookupFormById trace: " << trace.str());
-    REQUIRE(loadedByTheLanding);
-    auto& sigrid = partOne.worldState.GetFormAt<MpActor>(kSigrid);
-    REQUIRE(sigrid.GetCellOrWorld().ToFormId(partOne.worldState.espmFiles) ==
-            kTamriel);
-    REQUIRE(sigrid.GetPos().x == Catch::Approx(24063.7f).margin(2.f));
-  }
-
-  {
-    auto& messages = partOne.Messages();
-    auto it = std::find_if(
-      messages.begin(), messages.end(), [&](PartOne::Message& msg) {
-        return msg.userId == 0 && msg.j["refrId"] == kSigrid &&
-          msg.j["props"]["isHostedByOther"] == true;
-      });
-    REQUIRE(it != messages.end());
-  }
+  REQUIRE(partOne.worldState.LookupFormByIdNoLoad(kSigrid) == nullptr);
 
   partOne.DestroyActor(0xff000000);
-  partOne.DestroyActor(kSigrid);
   DoDisconnect(partOne, 0);
 }

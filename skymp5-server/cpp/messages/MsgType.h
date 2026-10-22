@@ -54,9 +54,11 @@ enum class MsgType : uint8_t
   UpdateAction = 44,
   PlayerGlobals = 45,
   ActorJump = 46,
-  CellLoaded = 47,  // thuum docs/verbs/cell-host.md
-  HostGrant = 48,   // the same, the reserved wire family's id 7
-  HostRelease = 49, // the same, id 8
+  CellLoaded = 47,     // thuum docs/verbs/cell-host.md
+  HostGrant = 48,      // the same, the reserved wire family's id 7
+  HostRelease = 49,    // the same, id 8
+  ActorSightings = 50, // thuum docs/verbs/npc-puppet.md: a host's roster of
+                       // game-file actors the server does not hold
 
   Max
 };

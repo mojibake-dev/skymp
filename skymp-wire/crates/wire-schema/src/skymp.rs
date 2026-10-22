@@ -1465,3 +1465,39 @@ wire_struct! {
     }
 }
 
+wire_struct! {
+    /// One sighted actor (docs/verbs/npc-puppet.md): a game-file actor the
+    /// host's engine has attached, where the engine has it.
+    pub struct ActorSighting {
+        /// The actor's own form id, under 0xff000000.
+        pub refr_id: u32,
+        /// The worldspace, or the interior cell, the engine has it in.
+        pub world_or_cell: u32,
+        /// Its position there.
+        pub pos: Vec3,
+        /// Its heading, degrees.
+        pub rot: Vec3,
+    }
+}
+
+wire_struct! {
+    /// MsgType 50, thuum's (docs/verbs/npc-puppet.md, ADR-045 as revised
+    /// 2026-10-22; TES3MP's actor list): client to server, reliable, R1. A
+    /// game hosting a cell names the game-file actors its engine has that the
+    /// server holds no record of (a village's residents are placed in their
+    /// houses and walked outside by their schedules, so their placement is not
+    /// where they stand). The server takes an entry only from the host of the
+    /// cell of the sighted position, loads the record on demand and places it
+    /// there; its CreateActor and hosted word follow. Every 2 s while any
+    /// remain. Reason codes: `E_VAL_RANGE` (a form id of 0 or at or above
+    /// 0xff000000, a world or cell of 0), `E_VAL_WORLD` (a position outside
+    /// the world's bounds), `E_VAL_FINITE`.
+    pub struct ActorSightings {
+        /// `"t": 50`.
+        #[serde(default)]
+        pub t: MsgT<50>,
+        /// The sightings, at most [`cap::ACTOR_SIGHTINGS`].
+        pub sightings: Vec<ActorSighting, { cap::ACTOR_SIGHTINGS }>,
+    }
+}
+

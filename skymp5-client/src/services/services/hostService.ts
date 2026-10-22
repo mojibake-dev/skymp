@@ -1,10 +1,11 @@
-import { CellFullyLoadedEvent, ObjectReference } from "skyrimPlatform";
+import { CellAttachDetachEvent, CellFullyLoadedEvent, ObjectReference } from "skyrimPlatform";
 import { MsgType } from "../../messages";
 import { logError, logTrace } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
 import { CreateActorMessage } from "../messages/createActorMessage";
 import { HostGrantMessage } from "../messages/hostGrantMessage";
 import { HostReleaseMessage } from "../messages/hostReleaseMessage";
+import { ActorSightingsMessage } from "../messages/actorSightingsMessage";
 import { FormModel } from "../../view/model";
 import { localIdToRemoteId, remoteIdToLocalId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
@@ -37,6 +38,11 @@ export class HostService extends ClientListener {
         this.controller.emitter.on("hostGrantMessage", (e) => this.onHostGrant(e));
         this.controller.emitter.on("hostReleaseMessage", (e) => this.onHostRelease(e));
         this.controller.emitter.on("createActorMessage", (e) => this.onCreateActor(e));
+        // the engine's actors in reach, for the roster (docs/verbs/npc-puppet.md,
+        // ActorSightings): an actor the server does not hold is reported to it
+        // while this game hosts the cell the actor stands in
+        this.controller.on("cellAttach", (e) => this.onActorAttach(e));
+        this.controller.on("cellDetach", (e) => this.onActorDetach(e));
     }
 
     // Whether this game hosts the cell the reference stands in.
@@ -129,6 +135,7 @@ export class HostService extends ClientListener {
             return;
         }
         this.lastPoll = now;
+        this.reportSightings(now);
         for (const id of Array.from(this.loaded)) {
             const cell = this.sp.Cell.from(this.sp.Game.getFormEx(id));
             if (cell === null || !cell.isAttached()) {
@@ -192,6 +199,71 @@ export class HostService extends ClientListener {
         }
     }
 
+    private onActorAttach(e: CellAttachDetachEvent) {
+        if (!e.refr) {
+            return;
+        }
+        const id = e.refr.getFormID();
+        if (id === 0x14 || id >= 0xff000000 || !this.sp.Actor.from(e.refr)) {
+            return;
+        }
+        this.attached.set(id, e.refr);
+    }
+
+    private onActorDetach(e: CellAttachDetachEvent) {
+        if (e.refr) {
+            this.attached.delete(e.refr.getFormID());
+        }
+    }
+
+    // The roster (thuum docs/verbs/npc-puppet.md, ADR-045's revision of
+    // 2026-10-22; TES3MP's actor list): every sightingsMs, the game-file
+    // actors the engine has attached that the server holds no record of
+    // (no form model), with where the engine has them. The server loads
+    // the record on demand (a village's residents are placed in their
+    // houses and walked outside by their schedules, so their placement is
+    // not where they stand) and places it there, if this game hosts the
+    // cell of that position; its CreateActor and word follow, and from
+    // then on the actor is the host's to run and report. Only while this
+    // game hosts anything, and only while unknown actors remain.
+    private reportSightings(now: number) {
+        if (!this.enabled || this.hosted.size === 0 || now - this.lastSightings < HostService.sightingsMs) {
+            return;
+        }
+        this.lastSightings = now;
+        const world = this.controller.lookupListener(RemoteServer).getWorldModel();
+        const known = new Set<number>();
+        for (const form of world.forms) {
+            if (form && form.refrId !== undefined && form.refrId < 0xff000000) {
+                known.add(form.refrId);
+            }
+        }
+        const sightings: ActorSightingsMessage["sightings"] = [];
+        this.attached.forEach((refr, id) => {
+            if (known.has(id) || sightings.length >= HostService.sightingsMax) {
+                return;
+            }
+            const worldSpace = refr.getWorldSpace();
+            const worldOrCell = worldSpace ? worldSpace.getFormID() : (refr.getParentCell()?.getFormID() ?? 0);
+            if (!worldOrCell) {
+                return;
+            }
+            sightings.push({
+                refrId: id,
+                worldOrCell,
+                pos: [refr.getPositionX(), refr.getPositionY(), refr.getPositionZ()],
+                rot: [refr.getAngleX(), refr.getAngleY(), refr.getAngleZ()],
+            });
+        });
+        if (sightings.length === 0) {
+            return;
+        }
+        this.controller.emitter.emit("sendMessage", {
+            message: { t: MsgType.ActorSightings, sightings },
+            reliability: "reliable",
+        });
+    }
+
     private report(cell: number, loaded: boolean) {
         if (!this.enabled) {
             return;
@@ -208,10 +280,14 @@ export class HostService extends ClientListener {
 
     private static readonly pollMs = 1000;
     private static readonly refreshMs = 30_000;
+    private static readonly sightingsMs = 2000;
+    private static readonly sightingsMax = 64;
     private readonly enabled: boolean;
     private readonly loaded = new Set<number>();
     private readonly hosted = new Map<number, number>();
     private readonly lastEpoch = new Map<number, number>();
     private lastPoll = 0;
     private lastRefresh = 0;
+    private lastSightings = 0;
+    private readonly attached = new Map<number, ObjectReference>();
 }

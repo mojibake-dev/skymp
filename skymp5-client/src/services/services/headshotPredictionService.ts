@@ -1,3 +1,4 @@
+import { isSyncedActorId } from "../../view/worldViewMisc";
 import { Actor, Form, MagicEffect, ObjectReference } from "skyrimPlatform";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { DeathService } from "./deathService";
@@ -61,8 +62,8 @@ export class HeadshotPredictionService extends ClientListener {
             return;
         }
         const targetId = e.target.getFormID();
-        if (targetId < 0xff000000) {
-            return; // a figure only: never the player itself or a world actor
+        if (targetId === 0x14 || !isSyncedActorId(targetId)) {
+            return; // a figure or a server actor only (npc-puppet), never the player itself
         }
         if (!this.resolveSpells().includes(e.spell.getFormID())) {
             return;

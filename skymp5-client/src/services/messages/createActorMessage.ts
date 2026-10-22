@@ -23,7 +23,7 @@ export interface CustomPropsEntry {
 export interface CreateActorMessage extends CreateActorMessageMainProps {
     t: MsgType.CreateActor,
     idx: number;
-    baseRecordType?: "DOOR"; // see PartOne.cpp
+    baseRecordType?: "DOOR" | "NPC_"; // see PartOne.cpp
     transform: Transform;
     isMe: boolean;
     props?: CreateActorMessageAdditionalProps;

@@ -13,7 +13,7 @@ import { isKnockedDown } from "./knockState";
 
 const sqr = (x: number) => x * x;
 
-export const applyMovement = (refr: ObjectReference, m: Movement, isMyClone?: boolean): void => {
+export const applyMovement = (refr: ObjectReference, m: Movement, isMyClone?: boolean, puppet?: boolean): void => {
   if (teleportIfNeed(refr, m)) {
     return;
   }
@@ -58,7 +58,11 @@ export const applyMovement = (refr: ObjectReference, m: Movement, isMyClone?: bo
   // ac.stopCombat();
   ac.blockActivation(true);
 
-  keepOffsetFromActor(ac, m);
+  if (puppet) {
+    applyPuppetPose(ac, m);
+  } else {
+    keepOffsetFromActor(ac, m);
+  }
 
   applySprinting(ac, m.runMode === "Sprinting");
   applyBlocking(ac, m);
@@ -69,8 +73,29 @@ export const applyMovement = (refr: ObjectReference, m: Movement, isMyClone?: bo
   SpApiInteractor.getControllerInstance().emitter.emit("applyDeathStateEvent", { actor: ac, isDead: m.isDead });
 };
 
+// the shortest signed turn from heading b to heading a, in (-180, 180]
+const angleDelta = (a: number, b: number): number => ((((a - b + 180) % 360) + 360) % 360) - 180;
+
+// thuum docs/verbs/npc-puppet.md (ADR-045, Rule B; H2, H11): a puppet's
+// heading is written absolutely from the host's sample. A keep-offset on the
+// actor itself with a nonzero angle is a turn that renews itself every frame
+// (the planner agent's goal is the actor's own angle plus the offset, REA
+// 2026-10-21): playtest thirty's spinning wolves. Its graph is fed the host's
+// Speed and Direction so the walk cycle plays on the re-admitted animation
+// job (H2; the AI that wrote them is off on a puppet).
+const applyPuppetPose = (ac: Actor, m: Movement) => {
+  if (Math.abs(angleDelta(m.rot[2], ac.getAngleZ())) >= 1) {
+    ac.setAngle(m.rot[0], m.rot[1], m.rot[2]);
+  }
+  const standing = m.runMode === "Standing";
+  ac.setAnimationVariableFloat("Speed", standing ? 0 : m.speed);
+  ac.setAnimationVariableFloat("Direction", standing ? 0 : m.direction / 360);
+};
+
 const keepOffsetFromActor = (ac: Actor, m: Movement) => {
-  let offsetAngle = m.rot[2] - ac.getAngleZ();
+  // the turn the short way round: an unwrapped difference in (-360, 360)
+  // sent a figure the long way (npc-puppet's read of playtest thirty)
+  let offsetAngle = angleDelta(m.rot[2], ac.getAngleZ());
   if (Math.abs(offsetAngle) < 5) {
     offsetAngle = 0;
   }

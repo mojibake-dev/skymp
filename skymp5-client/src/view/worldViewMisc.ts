@@ -64,18 +64,3 @@ export const getObjectReference = (i: number): ObjectReference | null => {
   }
   return null;
 };
-
-// thuum docs/verbs/npc-puppet.md: whether a local form id names an actor the
-// server knows: a 0xff copy or figure (the view's), or an actor from the game
-// files the server sent under its own id (a form in the world model). Any
-// other engine actor is nobody's (its hits and activations are not reported).
-export const isSyncedActorId = (localFormId: number): boolean => {
-  if (localFormId >= 0xff000000) {
-    return true;
-  }
-  if (!localFormId || localFormId === 0x14) {
-    return false;
-  }
-  const world = SpApiInteractor.getControllerInstance().lookupListener(RemoteServer).getWorldModel();
-  return world.forms.some((f) => f !== undefined && f.refrId === localFormId);
-};

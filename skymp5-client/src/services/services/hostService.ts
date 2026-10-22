@@ -48,22 +48,12 @@ export class HostService extends ClientListener {
         return cell !== null && this.hosted.has(cell.getFormID());
     }
 
-    // Whether the actor behind `form` is this game's to simulate and report.
-    // An actor from the game files (the engine's own reference, its own id
-    // under 0xff000000; thuum docs/verbs/npc-puppet.md, ADR-045): the grant
-    // alone, since the server sends it no per-actor property (the flip under
-    // its u32 id never reached the client's copy: playtest thirty's wolves).
-    // A server-made 0xff actor: the grant and the server's word agreeing
-    // (isHostedByOther false; a player's figure is never false).
+    // Whether the actor behind `form` is this game's to simulate and report:
+    // its cell is granted here and the server marks it as nobody else's
+    // (every actor a user plays, and every actor of a cell hosted elsewhere
+    // or unhosted, is hosted by other).
     isMine(form: FormModel | undefined, refr: ObjectReference | null | undefined): boolean {
-        if (!form || !refr) {
-            return false;
-        }
-        const id = refr.getFormID();
-        if (id < 0xff000000) {
-            return id !== 0x14 && this.isHostedHere(refr);
-        }
-        return form.isHostedByOther === false && this.isHostedHere(refr);
+        return !!form && form.isHostedByOther === false && this.isHostedHere(refr);
     }
 
     // The same for an actor by its local form id (a hit's aggressor, a
@@ -77,14 +67,13 @@ export class HostService extends ClientListener {
     }
 
     // The remote ids of the actors this game simulates, for the input
-    // stream (sendInputsService): isMine's rule over the world model, the
-    // player's own aside (an actor from the game files travels under its
-    // own id, so remote and local ids agree for it).
+    // stream (sendInputsService): the forms the server marks as nobody
+    // else's, standing in a cell granted here; the player's own aside.
     hostedActorRemoteIds(): number[] {
         const world = this.controller.lookupListener(RemoteServer).getWorldModel();
         const out: number[] = [];
         world.forms.forEach((form, i) => {
-            if (form === undefined || i === world.playerCharacterFormIdx) {
+            if (form === undefined || i === world.playerCharacterFormIdx || form.isHostedByOther !== false) {
                 return;
             }
             const remoteId = form.refrId;
@@ -92,7 +81,7 @@ export class HostService extends ClientListener {
                 return;
             }
             const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(remoteIdToLocalId(remoteId)));
-            if (refr && this.sp.Actor.from(refr) && this.isMine(form, refr)) {
+            if (this.isHostedHere(refr)) {
                 out.push(remoteId);
             }
         });
@@ -152,8 +141,6 @@ export class HostService extends ClientListener {
         this.lastEpoch.set(cell, epoch);
         this.hosted.set(cell, epoch);
         logTrace(this, `hosting cell ${cell.toString(16)} at epoch ${epoch}`);
-        // the cell's puppets go live (PuppetService, docs/verbs/npc-puppet.md)
-        this.controller.emitter.emit("cellHostChanged", { cell, hosted: true });
     }
 
     private onHostRelease(e: ConnectionMessage<HostReleaseMessage>) {
@@ -168,8 +155,6 @@ export class HostService extends ClientListener {
             this.lastEpoch.set(cell, epoch);
         }
         logTrace(this, `released cell ${cell.toString(16)} (epoch ${epoch})`);
-        // the cell's actors become puppets (PuppetService)
-        this.controller.emitter.emit("cellHostChanged", { cell, hosted: false });
     }
 
     // The player's own actor is created: a fresh table on the server's side
@@ -178,9 +163,6 @@ export class HostService extends ClientListener {
     private onCreateActor(e: ConnectionMessage<CreateActorMessage>) {
         if (!e.message.isMe) {
             return;
-        }
-        for (const cell of Array.from(this.hosted.keys())) {
-            this.controller.emitter.emit("cellHostChanged", { cell, hosted: false });
         }
         this.hosted.clear();
         this.lastEpoch.clear();

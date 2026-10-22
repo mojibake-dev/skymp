@@ -368,9 +368,8 @@ export class RemoteServer extends ClientListener {
     }
 
     let movement: Movement | undefined = undefined;
-    // an actor: a 0xff copy or figure, or an actor from the game files
-    // (its own id, baseRecordType NPC_; thuum docs/verbs/npc-puppet.md)
-    if (msg.refrId !== undefined && (msg.refrId >= 0xff000000 || msg.baseRecordType === 'NPC_')) {
+    // TODO: better check if it is an npc (not an object reference)
+    if (msg.refrId !== undefined && msg.refrId >= 0xff000000) {
       movement = {
         pos: msg.transform.pos,
         rot: msg.transform.rot,
@@ -976,10 +975,8 @@ export class RemoteServer extends ClientListener {
   private skipFormViewCreation(
     msg: UpdatePropertyMessage | CreateActorMessage,
   ) {
-    // Optimization added in #1186, however it doesn't work for doors for some reason.
-    // thuum docs/verbs/npc-puppet.md: an actor from the game files (NPC_) gets a
-    // form model and a view bound to the engine's own reference, as a copy did
-    return msg.refrId && msg.refrId < 0xff000000 && msg.baseRecordType !== 'DOOR' && msg.baseRecordType !== 'NPC_';
+    // Optimization added in #1186, however it doesn't work for doors for some reason
+    return msg.refrId && msg.refrId < 0xff000000 && msg.baseRecordType !== 'DOOR';
   };
 
   private extractUpdatePropertyMessageData(updatePropertyMessage: UpdatePropertyMessage) {

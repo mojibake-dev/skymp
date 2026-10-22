@@ -49,21 +49,23 @@ export class HostService extends ClientListener {
     }
 
     // Whether the actor behind `form` is this game's to simulate and report.
-    // An actor from the game files (the engine's own reference, its own id
-    // under 0xff000000; thuum docs/verbs/npc-puppet.md, ADR-045): the grant
-    // alone, since the server sends it no per-actor property (the flip under
-    // its u32 id never reached the client's copy: playtest thirty's wolves).
-    // A server-made 0xff actor: the grant and the server's word agreeing
-    // (isHostedByOther false; a player's figure is never false).
+    // The server's word per actor (thuum docs/verbs/npc-puppet.md, ADR-045
+    // point 2 as revised 2026-10-22): isHostedByOther false names the one
+    // game that simulates the actor, a server-made 0xff copy and an actor
+    // from the game files under its own id alike; the server derives it from
+    // the cell's grant. The cell is not asked here: for a persistent
+    // reference getParentCell is the worldspace's persistent cell, so
+    // Riverwood's named residents never counted as their host's
+    // (b-npc-puppet 20261022-081631). A player's figure is never false, and
+    // the player's own actor is nobody's puppet.
     isMine(form: FormModel | undefined, refr: ObjectReference | null | undefined): boolean {
         if (!form || !refr) {
             return false;
         }
-        const id = refr.getFormID();
-        if (id < 0xff000000) {
-            return id !== 0x14 && this.isHostedHere(refr);
+        if (refr.getFormID() === 0x14) {
+            return false;
         }
-        return form.isHostedByOther === false && this.isHostedHere(refr);
+        return form.isHostedByOther === false;
     }
 
     // The same for an actor by its local form id (a hit's aggressor, a

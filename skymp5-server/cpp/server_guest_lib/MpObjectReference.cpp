@@ -736,12 +736,10 @@ void MpObjectReference::SetPrimitive(const NiPoint3& boundsDiv2)
 // unhosted cell, frozen at its record), sees it hosted by other
 void MpObjectReference::UpdateHoster(uint32_t newHosterId)
 {
-  // thuum docs/verbs/npc-puppet.md: an actor from the game files has no
-  // such property; its games run or puppet it by the cell's grant (the
-  // u32 id here never reached the client's copy of it, playtest thirty)
-  if (GetFormId() < 0xff000000) {
-    return;
-  }
+  // thuum docs/verbs/npc-puppet.md: an actor from the game files travels
+  // under its own id, and since the client binds a view to it the property
+  // under that id reaches it (2026-10-22; it did not reach the copy of
+  // playtest thirty, which is why the flip was once withheld here)
   auto hostedMsg = CreatePropertyMessage_(this, "isHostedByOther", "true");
   auto notHostedMsg = CreatePropertyMessage_(this, "isHostedByOther", "false");
   for (auto listener : this->GetActorListeners()) {

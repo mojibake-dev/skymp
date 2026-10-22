@@ -41,10 +41,12 @@ TEST_CASE("Whiterun cow 0x10ebaf is visible to players", "[NpcExists][espm]")
   {
     auto it = std::find_if(messages.begin(), messages.end(),
                            [&](PartOne::Message& msg) {
-                             // the flag sits under props; a game-file
-                             // actor carries none (npc-puppet.md)
+                             // the flag sits under props, explicit for a
+                             // game-file actor too: nobody hosts its cell
+                             // here, so hosted by other (npc-puppet.md,
+                             // ADR-045 point 2 as revised 2026-10-22)
                              return msg.j["refrId"] == cowRefrId &&
-                               msg.j["props"]["isHostedByOther"] == nullptr;
+                               msg.j["props"]["isHostedByOther"] == true;
                            });
     REQUIRE(it != messages.end());
   }

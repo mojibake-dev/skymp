@@ -107,6 +107,22 @@ std::vector<nlohmann::json> PropertiesSentTo(PartOne& p,
   return out;
 }
 
+// the last isHostedByOther `user` was sent for `actor` ("true", "false"),
+// or "" when none was: the word a game keeps
+std::string LastHostedWord(PartOne& p, Networking::UserId user,
+                           const MpActor& actor)
+{
+  std::string word;
+  for (const auto& j : PropertiesSentTo(p, user)) {
+    if (j.value("propName", std::string()) == "isHostedByOther" &&
+        j.value("idx", 0u) == actor.GetIdx()) {
+      REQUIRE(j["refrId"] == actor.GetFormId());
+      word = j.value("dataDump", std::string());
+    }
+  }
+  return word;
+}
+
 // every message sent to `user`, one line each, for a failing case's report
 std::string MessagesSentTo(PartOne& p, Networking::UserId user)
 {
@@ -172,24 +188,19 @@ TEST_CASE("The first loader in reach hosts the cell and alone moves its "
   REQUIRE(grants.front().epoch == 1);
   REQUIRE(p.worldState.HostOf(wolf) == &p.worldState.GetFormAt<MpActor>(kC1));
   // a server-made actor (a 0xff id, a copy on every client) is told to its
-  // host as nobody else's: the property still carries for such ids
-  // (docs/verbs/npc-puppet.md; a game-file actor gets none, the case below)
+  // host as nobody else's (docs/verbs/npc-puppet.md; a game-file actor the
+  // same, the case below). The LAST word is read: pipeline 2594's first
+  // server-build (job 10667) found an earlier "true" in c1's stream once in
+  // four runs, an ordering the client resolves the same way (task #21 reads
+  // where it comes from)
   {
-    const auto props = PropertiesSentTo(p, 0);
     UNSCOPED_INFO(
       "after the grant, to c1: "
       << MessagesSentTo(p, 0) << "wolf idx " << wolf.GetIdx()
       << ", actor listeners " << wolf.GetActorListeners().size()
       << ", c1 emitters "
       << p.worldState.GetFormAt<MpActor>(kC1).GetEmitters().size());
-    const auto flip =
-      std::find_if(props.begin(), props.end(), [&](const nlohmann::json& j) {
-        return j.value("propName", std::string()) == "isHostedByOther" &&
-          j.value("idx", 0u) == wolf.GetIdx();
-      });
-    REQUIRE(flip != props.end());
-    REQUIRE((*flip)["refrId"] == kWolf);
-    REQUIRE((*flip)["dataDump"] == "false");
+    REQUIRE(LastHostedWord(p, 0, wolf) == "false");
   }
 
   // c2 loads it too: nothing
@@ -365,16 +376,17 @@ TEST_CASE("At the handoff the visitor with the lowest round trip takes the "
   p.DestroyActor(kC3);
 }
 
-TEST_CASE("An actor from the game files travels under its own id with no "
-          "hosted flag, the grant sends it no property, and only the host's "
-          "reports move it",
+TEST_CASE("An actor from the game files travels under its own id with the "
+          "server's explicit hosted word, the grant flips it, and only the "
+          "host's reports move it",
           "[CellHost][espm]")
 {
-  // thuum docs/verbs/npc-puppet.md: the client binds the engine's own
-  // reference to such an actor and runs it or puppets it by the cell's
-  // grant alone; upstream's id + 0x100000000 and the isHostedByOther flip
-  // under the raw id (which the client dropped) made playtest thirty's
-  // wolves spin on every screen
+  // thuum docs/verbs/npc-puppet.md (ADR-045 point 2 as revised 2026-10-22):
+  // the client binds the engine's own reference to such an actor and runs
+  // it or puppets it by the server's word, isHostedByOther explicit either
+  // way under the raw id (upstream's id + 0x100000000 made the flip miss the
+  // copy: playtest thirty's spin; the client's own cell test misses a
+  // persistent reference: b-npc-puppet 20261022-081631)
   auto& p = GetPartOne();
   p.worldState.npcEnabled = true;
   auto& cow = p.worldState.GetFormAt<MpActor>(kCow);
@@ -399,25 +411,23 @@ TEST_CASE("An actor from the game files travels under its own id with no "
     }
     return out;
   };
+  // nobody hosts the cell yet: hosted by other on both screens, said so
   const auto toC1 = cowCreated(0);
   REQUIRE(toC1.size() == 1);
   REQUIRE(toC1.front().baseRecordType == "NPC_");
-  REQUIRE_FALSE(toC1.front().props.isHostedByOther.has_value());
+  REQUIRE(toC1.front().props.isHostedByOther == true);
   const auto toC2 = cowCreated(1);
   REQUIRE(toC2.size() == 1);
-  REQUIRE_FALSE(toC2.front().props.isHostedByOther.has_value());
+  REQUIRE(toC2.front().props.isHostedByOther == true);
   p.Messages().clear();
 
-  // c1 hosts the cell: the grant, and no property for the cow on either
-  // screen
+  // c1 hosts the cell: the grant, the cow's word flipped to c1 alone (the
+  // last word each game hears is the one it keeps)
   CellLoaded(p, 0, *cell);
   REQUIRE(p.GetCellHost(*cell).player == kC1);
   REQUIRE(SentTo<HostGrantMessage>(p, 0).size() == 1);
-  for (const Networking::UserId user : { 0, 1 }) {
-    for (const auto& j : PropertiesSentTo(p, user)) {
-      REQUIRE(j.value("propName", std::string()) != "isHostedByOther");
-    }
-  }
+  REQUIRE(LastHostedWord(p, 0, cow) == "false");
+  REQUIRE(LastHostedWord(p, 1, cow) == "true");
 
   // the host's report moves the cow and reaches the other game once, not
   // the host; the other game's report is dropped

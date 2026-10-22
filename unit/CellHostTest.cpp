@@ -1,9 +1,12 @@
 #include "ActionListener.h"
+#include "CreateActorMessage.h"
 #include "HostGrantMessage.h"
 #include "HostReleaseMessage.h"
 #include "TestUtils.hpp"
 #include "UpdateMovementMessage.h"
+#include "UpdatePropertyMessage.h"
 #include "wire_bridge_cxx/rules.h"
+#include <algorithm>
 #include <catch2/catch_all.hpp>
 #include <chrono>
 
@@ -23,6 +26,10 @@ constexpr uint32_t kC1 = 0xff000c01;
 constexpr uint32_t kC2 = 0xff000c02;
 constexpr uint32_t kWolf = 0xff000c03;
 constexpr uint32_t kC3 = 0xff000c04;
+// Whiterun's cow, an actor from Skyrim.esm (unit/NpcExists.cpp), in the
+// Whiterun worldspace
+constexpr uint32_t kCow = 0x10ebaf;
+const uint32_t kWhiterun = ToUnderlying(Constants::kWhiterunCell);
 
 // the exterior grid square (2, 0) of Tamriel: x in [8192, 12288); and the
 // next square east, 4500 units on, beyond the 4096 a movement report may
@@ -67,7 +74,7 @@ void CellLoaded(PartOne& p, Networking::UserId user, uint32_t cell,
 
 // `user`'s movement report for `actorId`, standing at `pos`
 void Move(PartOne& p, Networking::UserId user, uint32_t actorId,
-          const NiPoint3& pos)
+          const NiPoint3& pos, uint32_t worldOrCell = kTamriel)
 {
   static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
   RawMessageData raw;
@@ -81,7 +88,7 @@ void Move(PartOne& p, Networking::UserId user, uint32_t actorId,
   msg.data.isInJumpState = false;
   msg.data.isWeapDrawn = false;
   msg.data.isBlocking = false;
-  msg.data.worldOrCell = kTamriel;
+  msg.data.worldOrCell = worldOrCell;
   msg.data.runMode = "Standing";
   p.GetActionListener().OnUpdateMovement(raw, msg);
 }
@@ -131,6 +138,19 @@ TEST_CASE("The first loader in reach hosts the cell and alone moves its "
   REQUIRE(grants.front().cell == *cell);
   REQUIRE(grants.front().epoch == 1);
   REQUIRE(p.worldState.HostOf(wolf) == &p.worldState.GetFormAt<MpActor>(kC1));
+  // a server-made actor (a 0xff id, a copy on every client) is told to its
+  // host as nobody else's: the property still carries for such ids
+  // (docs/verbs/npc-puppet.md; a game-file actor gets none, the case below)
+  {
+    const auto props = SentTo<UpdatePropertyMessage>(p, 0);
+    const auto flip = std::find_if(
+      props.begin(), props.end(), [&](const UpdatePropertyMessage& m) {
+        return m.propName == "isHostedByOther" && m.idx == wolf.GetIdx();
+      });
+    REQUIRE(flip != props.end());
+    REQUIRE(flip->refrId == kWolf);
+    REQUIRE(flip->dataDump == "false");
+  }
 
   // c2 loads it too: nothing
   CellLoaded(p, 1, *cell);
@@ -303,4 +323,84 @@ TEST_CASE("At the handoff the visitor with the lowest round trip takes the "
   p.DestroyActor(kC1);
   p.DestroyActor(kC2);
   p.DestroyActor(kC3);
+}
+
+TEST_CASE("An actor from the game files travels under its own id with no "
+          "hosted flag, the grant sends it no property, and only the host's "
+          "reports move it",
+          "[CellHost][espm]")
+{
+  // thuum docs/verbs/npc-puppet.md: the client binds the engine's own
+  // reference to such an actor and runs it or puppets it by the cell's
+  // grant alone; upstream's id + 0x100000000 and the isHostedByOther flip
+  // under the raw id (which the client dropped) made playtest thirty's
+  // wolves spin on every screen
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  auto& cow = p.worldState.GetFormAt<MpActor>(kCow);
+  const NiPoint3 cowPos = cow.GetPos();
+  const auto cell = p.worldState.CellOf(cow);
+  REQUIRE(cell.has_value());
+  REQUIRE(*cell != 0);
+
+  // two players beside the cow: the grid subscribes both to it
+  DoConnect(p, 0);
+  p.CreateActor(kC1, cowPos + NiPoint3{ 100.f, 0.f, 0.f }, 0, kWhiterun);
+  p.SetUserActor(0, kC1);
+  DoConnect(p, 1);
+  p.CreateActor(kC2, cowPos + NiPoint3{ 200.f, 0.f, 0.f }, 0, kWhiterun);
+  p.SetUserActor(1, kC2);
+  const auto cowCreated = [&](Networking::UserId user) {
+    std::vector<CreateActorMessage> out;
+    for (auto& m : SentTo<CreateActorMessage>(p, user)) {
+      if (m.refrId == kCow) {
+        out.push_back(m);
+      }
+    }
+    return out;
+  };
+  const auto toC1 = cowCreated(0);
+  REQUIRE(toC1.size() == 1);
+  REQUIRE(toC1.front().baseRecordType == "NPC_");
+  REQUIRE_FALSE(toC1.front().props.isHostedByOther.has_value());
+  const auto toC2 = cowCreated(1);
+  REQUIRE(toC2.size() == 1);
+  REQUIRE_FALSE(toC2.front().props.isHostedByOther.has_value());
+  p.Messages().clear();
+
+  // c1 hosts the cell: the grant, and no property for the cow on either
+  // screen
+  CellLoaded(p, 0, *cell);
+  REQUIRE(p.GetCellHost(*cell).player == kC1);
+  REQUIRE(SentTo<HostGrantMessage>(p, 0).size() == 1);
+  for (const Networking::UserId user : { 0, 1 }) {
+    for (auto& m : SentTo<UpdatePropertyMessage>(p, user)) {
+      REQUIRE(m.propName != "isHostedByOther");
+    }
+  }
+
+  // the host's report moves the cow and reaches the other game once, not
+  // the host; the other game's report is dropped
+  p.Messages().clear();
+  Move(p, 0, kCow, cowPos + NiPoint3{ 20.f, 0.f, 0.f }, kWhiterun);
+  REQUIRE(cow.GetPos().x == Catch::Approx(cowPos.x + 20.f));
+  Move(p, 1, kCow, cowPos + NiPoint3{ 40.f, 0.f, 0.f }, kWhiterun);
+  REQUIRE(cow.GetPos().x == Catch::Approx(cowPos.x + 20.f));
+  const auto relays = [&](Networking::UserId user) {
+    size_t n = 0;
+    for (auto& m : p.Messages()) {
+      if (m.userId == user && m.j.is_object() && m.j.empty()) {
+        ++n;
+      }
+    }
+    return n;
+  };
+  REQUIRE(relays(1) == 1);
+  REQUIRE(relays(0) == 0);
+
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+  p.DestroyActor(kCow);
 }

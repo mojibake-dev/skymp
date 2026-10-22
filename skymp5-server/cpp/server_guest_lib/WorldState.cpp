@@ -525,75 +525,12 @@ bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
       }
       return false;
     }
-    auto npcData =
-      reinterpret_cast<const espm::NPC_*>(base.rec)->GetData(cache);
-
-    if (npcData.isEssential || npcData.isProtected || npcData.isUnique) {
-      if (optionalOutTrace) {
-        *optionalOutTrace << fmt::format("Skip NPC due to its flags")
-                          << std::endl;
-      }
-      return false;
-    }
-
-    enum class ListType : uint32_t
-    {
-      CrimeFactionsList = 0x26953
-    };
-
-    auto factionBaseId = static_cast<std::underlying_type_t<ListType>>(
-      ListType::CrimeFactionsList);
-    espm::LookupResult res = br.LookupById(factionBaseId);
-    auto* formList = reinterpret_cast<const espm::FLST*>(res.rec);
-    std::vector<uint32_t> factionFormIds = formList->GetData(cache).formIds;
-    for (auto& formId : factionFormIds) {
-      formId = res.ToGlobalId(formId);
-    }
-
-    for (auto fact : npcData.factions) {
-      auto it = std::find(factionFormIds.begin(), factionFormIds.end(),
-                          base.ToGlobalId(fact.formId));
-      if (it != factionFormIds.end()) {
-        logger->info("Skipping actor {:#x} because it's in faction {:#x}",
-                     record->GetId(), *it);
-        if (optionalOutTrace) {
-          *optionalOutTrace << fmt::format("Skip NPC due to faction")
-                            << std::endl;
-        }
-        return false;
-      }
-    }
-
-    const int kPcLevel = 0; // Shouldn't mean much to races
-
-    // May be not exact the same template chain as it would be in MpActor
-    // but it's ok for this check
-    std::vector<uint32_t> evaluateChainResult =
-      LeveledListUtils::EvaluateTemplateChain(br, base, kPcLevel);
-    std::vector<FormDesc> templateChain(evaluateChainResult.size());
-    std::transform(evaluateChainResult.begin(), evaluateChainResult.end(),
-                   templateChain.begin(), [&](uint32_t formId) {
-                     return FormDesc::FromFormId(formId, this->espmFiles);
-                   });
-
-    uint32_t race = EvaluateTemplate<espm::NPC_::UseTraits>(
-      this, baseId, templateChain,
-      [&](const auto& npcLookupResult, const auto& npcData) {
-        return npcLookupResult.ToGlobalId(npcData.race);
-      });
-
-    bool isBanned = std::find(bannedEspmCharacterRaceIds.begin(),
-                              bannedEspmCharacterRaceIds.end(),
-                              race) != bannedEspmCharacterRaceIds.end();
-    if (isBanned) {
-      logger->info("Skipping actor {:#x} because it has banned race {:#x}",
-                   record->GetId(), race);
-      if (optionalOutTrace) {
-        *optionalOutTrace << fmt::format("Skip NPC due to banned race")
-                          << std::endl;
-      }
-      return false;
-    }
+    // thuum docs/verbs/npc-puppet.md: upstream skipped essential, protected
+    // and unique actors, the crime factions' members (0x26953) and the
+    // playable races here; the bans are lifted, since the game hosting the
+    // cell runs the actor under its own engine and the grant decides whose,
+    // so a village's residents, its guards and the humanoid bandits load
+    // under npcEnabled (dead-at-start and initially disabled stay skipped)
   }
 
   auto locationalData = data.loc;

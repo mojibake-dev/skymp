@@ -293,7 +293,14 @@ export class AnimationSource {
   }
 
   private onSendAnimationEvent(animEventName: string) {
-    if (ignoredAnims.has(animEventName)) {
+    // thuum docs/verbs/npc-puppet.md (playtest 31, 2026-10-22): a player's
+    // figure makes its own locomotion events from its keep-offset AI, so
+    // the relay drops them for a player; a hosted NPC's puppet has no
+    // movement controller running (AI off, the movement step skipped) and
+    // never enters the walking state without them: it got the idles and
+    // the TurnToWalk events and slid (c2's watch: no moveStart, no
+    // moveStop). An NPC source keeps them.
+    if (ignoredAnims.has(animEventName) && !(this.relaysLocomotion && locomotionEvents.has(animEventName))) {
       return;
     }
 
@@ -336,6 +343,12 @@ export class AnimationSource {
     }
   }
 
+  // an actor from the game files this game hosts (never the player, never a
+  // 0xff copy): its puppets on the other games need its locomotion events
+  private get relaysLocomotion(): boolean {
+    return this.refrId !== 0x14 && this.refrId < 0xff000000;
+  }
+
   private refrId = 0;
   private numChanges = 0;
   private pending = new Array<Animation>();
@@ -355,6 +368,16 @@ const ignoredAnims = new Set<string>([
   "turnStop",
   "CyclicCrossBlend",
   "CyclicFreeze",
+  "TurnLeft",
+  "TurnRight",
+]);
+
+// the movement controller's own events, which a puppet's graph needs from
+// its host (the two Cyclic blends stay the local graph's)
+const locomotionEvents = new Set<string>([
+  "moveStart",
+  "moveStop",
+  "turnStop",
   "TurnLeft",
   "TurnRight",
 ]);

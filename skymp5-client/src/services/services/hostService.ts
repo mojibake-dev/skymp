@@ -207,7 +207,7 @@ export class HostService extends ClientListener {
         if (id === 0x14 || id >= 0xff000000 || !this.sp.Actor.from(e.refr)) {
             return;
         }
-        this.attached.set(id, e.refr);
+        this.attached.set(id, true);
     }
 
     private onActorDetach(e: CellAttachDetachEvent) {
@@ -239,8 +239,21 @@ export class HostService extends ClientListener {
             }
         }
         const sightings: ActorSightingsMessage["sightings"] = [];
-        this.attached.forEach((refr, id) => {
-            if (known.has(id) || sightings.length >= HostService.sightingsMax) {
+        const gone: number[] = [];
+        let unknown = 0;
+        this.attached.forEach((_stored, id) => {
+            if (known.has(id)) {
+                return;
+            }
+            unknown += 1;
+            if (sightings.length >= HostService.sightingsMax) {
+                return;
+            }
+            // the reference is looked up afresh: an event's wrapper is not
+            // kept across ticks
+            const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(id));
+            if (!refr) {
+                gone.push(id);
                 return;
             }
             const worldSpace = refr.getWorldSpace();
@@ -255,9 +268,13 @@ export class HostService extends ClientListener {
                 rot: [refr.getAngleX(), refr.getAngleY(), refr.getAngleZ()],
             });
         });
+        for (const id of gone) {
+            this.attached.delete(id);
+        }
         if (sightings.length === 0) {
             return;
         }
+        logTrace(this, `roster: ${sightings.length} sighting(s) sent, ${unknown} unknown of ${this.attached.size} attached, ${this.hosted.size} cell(s) hosted; first ${sightings[0].refrId.toString(16)} in ${sightings[0].worldOrCell.toString(16)}`);
         this.controller.emitter.emit("sendMessage", {
             message: { t: MsgType.ActorSightings, sightings },
             reliability: "reliable",
@@ -289,5 +306,5 @@ export class HostService extends ClientListener {
     private lastPoll = 0;
     private lastRefresh = 0;
     private lastSightings = 0;
-    private readonly attached = new Map<number, ObjectReference>();
+    private readonly attached = new Map<number, true>();
 }

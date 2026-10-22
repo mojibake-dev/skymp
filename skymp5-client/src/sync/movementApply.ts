@@ -93,8 +93,14 @@ const applyPuppetPose = (ac: Actor, m: Movement) => {
   // per-sample writes). The sample goes to the native side, which writes
   // the fields every frame in the movement-step detour; the engine's own
   // moveStart, moveStop and direction actions follow from them (HYPOTHESIS)
-  const standing = m.runMode === "Standing";
-  setPuppetLocomotion(ac.getFormID(), standing ? 0 : m.speed, standing ? 0 : m.direction, 0);
+  // the host's Speed as reported, whatever the run mode: getRunMode answers
+  // "Standing" for any actor holding a furniture reference (movementGet.ts),
+  // which Alvor keeps between the forge's and the tanning rack's markers, so
+  // a Standing gate here fed his puppet 0 while the record walked him
+  // between them (x-npc-legs 20261022-204726: Speed 0 through two walks at
+  // 51 to 86 units/s, every event taken); the host's Speed channel is 0
+  // when an actor truly stands
+  setPuppetLocomotion(ac.getFormID(), m.speed, m.direction, 0);
 };
 
 const keepOffsetFromActor = (ac: Actor, m: Movement) => {

@@ -35,13 +35,33 @@ export class PuppetService extends ClientListener {
         return this.puppets.has(localId);
     }
 
+    // Whether the actor is a player's figure or the player's own clone: a
+    // server actor whose model carries no NPC base (the server omits base
+    // 0x7, PartOne.cpp) or is the clone. A figure is never a puppet: its
+    // own game's reports hold it, and its hold (the keep-offset on itself)
+    // is an AI package, so a demote leaves it standing where it spawned
+    // (a-racemenu 20261022-050437 on the gate: c2's figure of c1 absent
+    // where the server had c1, after c2 demoted it at its attach)
+    private isFigure(localId: number): boolean {
+        const remoteId = localIdToRemoteId(localId);
+        if (!remoteId) {
+            return false;
+        }
+        const world = this.controller.lookupListener(RemoteServer).getWorldModel();
+        const form = world.forms.find((f) => f !== undefined && f.refrId === remoteId);
+        if (!form) {
+            return false;
+        }
+        return form.isMyClone === true || form.baseId === undefined || form.baseId === 0x7;
+    }
+
     // An NPC this game does not host, seen by its view: a puppet from now on.
     ensurePuppet(refr: ObjectReference): void {
         if (!this.enabled) {
             return;
         }
         const id = refr.getFormID();
-        if (id === 0x14 || this.puppets.has(id)) {
+        if (id === 0x14 || this.puppets.has(id) || this.isFigure(id)) {
             return;
         }
         const ac = this.sp.Actor.from(refr);

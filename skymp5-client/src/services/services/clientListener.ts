@@ -112,6 +112,12 @@ declare module "skyrimPlatform" {
     }
     function on(eventName: 'projectileFlight', callback: (event: ProjectileFlightEvent) => void): EventHandle;
     function once(eventName: 'projectileFlight', callback: (event: ProjectileFlightEvent) => void): EventHandle;
+
+    // thuum docs/verbs/npc-puppet.md: the fork's Skyrim Platform switches an
+    // NPC to a puppet (combat stopped, keep-offset cleared, AI off, flagged
+    // for the two detours) and back (AI on, package evaluated)
+    function setPuppet(actorFormId: number, puppet: boolean): boolean;
+    function isPuppet(actorFormId: number): boolean;
 }
 
 export type Sp = Omit<typeof sp, "on" | "once">;

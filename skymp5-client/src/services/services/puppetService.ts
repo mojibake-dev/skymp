@@ -1,5 +1,5 @@
-import { Actor, CellAttachDetachEvent, CombatEvent, FormType, ObjectReference } from "skyrimPlatform";
-import { logTrace } from "../../logging";
+import { CellAttachDetachEvent, CombatEvent, FormType, ObjectReference } from "skyrimPlatform";
+import { logError, logTrace } from "../../logging";
 import { Movement } from "../../sync/movement";
 import { localIdToRemoteId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
@@ -14,9 +14,9 @@ import { RemoteServer } from "./remoteServer";
 // grant and release flip a whole cell at once, and an actor attaching to a
 // cell this game does not host is a puppet from its first frame (TES3MP's
 // shape: AI off everywhere but the cells this game hosts). The combat sink
-// undoes a draft into combat (a hit or a script; H6). Until Stage 2's native
-// export (setPuppet: Q4's demote and promote in one call, and the flag the
-// two detours read), the switch is the Papyrus-level set below.
+// undoes a draft into combat (a hit or a script; H6). The switch is the
+// fork's Skyrim Platform export setPuppet: Q4's demote and promote in one
+// native call on the game thread, and the flag the two detours read.
 export class PuppetService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -44,11 +44,13 @@ export class PuppetService extends ClientListener {
         if (id === 0x14 || this.puppets.has(id)) {
             return;
         }
-        const ac = this.sp.Actor.from(refr);
-        if (!ac) {
+        if (!this.sp.Actor.from(refr)) {
             return;
         }
-        this.demote(ac);
+        if (!this.sp.setPuppet(id, true)) {
+            logError(this, `setPuppet(${id.toString(16)}, true) found no actor`);
+            return;
+        }
         this.puppets.add(id);
         logTrace(this, `puppet ${id.toString(16)}`);
     }
@@ -61,11 +63,13 @@ export class PuppetService extends ClientListener {
             return;
         }
         const ac = this.sp.Actor.from(refr);
-        if (!ac) {
-            this.puppets.delete(id);
-            return;
+        if (ac && last) {
+            // the record's last point and heading first: the relay stops at
+            // the grant (the native promote leaves the transform alone)
+            ac.setPosition(last.pos[0], last.pos[1], last.pos[2]);
+            ac.setAngle(last.rot[0], last.rot[1], last.rot[2]);
         }
-        this.promote(ac, last);
+        this.sp.setPuppet(id, false);
         this.puppets.delete(id);
         logTrace(this, `live ${id.toString(16)}`);
     }
@@ -108,7 +112,8 @@ export class PuppetService extends ClientListener {
         if (!this.puppets.has(id)) {
             return;
         }
-        this.sp.Actor.from(e.actor)?.stopCombat();
+        // the demote again: idempotent, and it stops the combat natively
+        this.sp.setPuppet(id, true);
     }
 
     // The whole cell at a grant or a release: every actor of the cell flips,
@@ -136,27 +141,6 @@ export class PuppetService extends ClientListener {
                 this.ensurePuppet(refr);
             }
         }
-    }
-
-    // Q4's demote (docs/research/m3/re-ai-puppet.md): combat off, the
-    // keep-offset gone, the AI bit cleared (the engine zeroes the character
-    // controller's velocity with it)
-    private demote(ac: Actor) {
-        ac.stopCombat();
-        ac.clearKeepOffsetFromActor();
-        ac.enableAI(false);
-    }
-
-    // Q4's promote: the record's last point and heading, the AI bit set, the
-    // package evaluated (immediate in sit states 0, 3 and 7, else the first
-    // AI tick)
-    private promote(ac: Actor, last?: Movement) {
-        if (last) {
-            ac.setPosition(last.pos[0], last.pos[1], last.pos[2]);
-            ac.setAngle(last.rot[0], last.rot[1], last.rot[2]);
-        }
-        ac.enableAI(true);
-        ac.evaluatePackage();
     }
 
     private readonly puppets = new Set<number>();

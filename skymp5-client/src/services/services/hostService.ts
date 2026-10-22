@@ -143,6 +143,21 @@ export class HostService extends ClientListener {
                 this.report(id, false);
             }
         }
+        // the player's own cell, without waiting for an event: at a teleport
+        // the engine's cellFullyLoaded for the destination cell itself can go
+        // missing while its neighbours' arrive (x-npc-legs 20261022-211702:
+        // c1 reported 9752, 9733, 9712 and 9731 and never 9732, the landing's
+        // own, so Riverwood's centre went unhosted for the run; the 30 s
+        // refresh re-reports only what this set holds). The player's parent
+        // cell is the engine's answer for the player, interior or exterior
+        const player = this.sp.Game.getPlayer();
+        const own = player ? player.getParentCell() : null;
+        if (own && own.isAttached() && !this.loaded.has(own.getFormID())) {
+            const id = own.getFormID();
+            this.loaded.add(id);
+            this.report(id, true);
+            logTrace(this, `own cell ${id.toString(16)} reported without its load event`);
+        }
         if (now - this.lastRefresh >= HostService.refreshMs) {
             this.lastRefresh = now;
             for (const id of Array.from(this.loaded)) {

@@ -44,7 +44,13 @@ export class PuppetService extends ClientListener {
         if (id === 0x14 || this.puppets.has(id)) {
             return;
         }
-        if (!this.sp.Actor.from(refr)) {
+        const ac = this.sp.Actor.from(refr);
+        // an actor still loading (no 3D yet: a cell's attach, a copy's spawn)
+        // is left alone until it has one; the view asks again every update
+        // and cellAttach's call is followed by the view's (the gate's hang at
+        // a landing, 2026-10-21, under reading: the demote must not race the
+        // loader on a half-made actor)
+        if (!ac || !ac.is3DLoaded()) {
             return;
         }
         if (!this.sp.setPuppet(id, true)) {

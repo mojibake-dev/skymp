@@ -29,10 +29,16 @@ void Demote(RE::Actor& actor)
   if (auto* lists = RE::ProcessLists::GetSingleton()) {
     lists->StopCombatAndAlarmOnActor(&actor, false);
   }
-  REL::Relocation<ClearKeepOffsetFn> clearKeepOffset{
-    Offsets::Puppet::ClearKeepOffsetFromActor
-  };
-  clearKeepOffset(&actor);
+  // the engine's clear reads the movement controller with no null test
+  // (37895 to 41734(controller, 0), REA 2026-10-21); an actor whose process
+  // has not started has none yet (GetActorRuntimeData().movementController,
+  // Actor.h's runtime data), so the clear waits for a later call
+  if (actor.GetActorRuntimeData().movementController.get() != nullptr) {
+    REL::Relocation<ClearKeepOffsetFn> clearKeepOffset{
+      Offsets::Puppet::ClearKeepOffsetFromActor
+    };
+    clearKeepOffset(&actor);
+  }
   actor.EnableAI(false);
   logger::info("[verb:npc-puppet] puppet {:x}: AI off, combat stopped, "
                "keep-offset cleared",

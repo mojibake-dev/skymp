@@ -468,6 +468,23 @@ fn check_preset(m: &skymp::RaceMenuPreset) -> Result<(), Reject> {
     Ok(())
 }
 
+/// A host's roster (docs/verbs/npc-puppet.md): every sighting names a
+/// game-file actor (a form id of 1 to 0xfeffffff) in a named world or cell,
+/// at a finite position inside the world's bounds. Whose cell it is, and
+/// whether the sender hosts it, is the server's rule (PartOne).
+fn check_sightings(m: &skymp::ActorSightings) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    for s in m.sightings.iter() {
+        if s.refr_id == 0 || s.refr_id >= 0xff00_0000 || s.world_or_cell == 0 {
+            return Err(Reject::Range);
+        }
+        check_pos(&s.pos)?;
+    }
+    Ok(())
+}
+
 /// A favorites report: every hotkey in [`HOTKEYS`], no key bound twice, no
 /// form listed twice (docs/verbs/favorites.md).
 fn check_favorites(m: &skymp::Favorites) -> Result<(), Reject> {
@@ -675,6 +692,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
                 Ok(())
             }
         }
+        Message::ActorSightings(m) => check_sightings(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
         // rejects it by direction before it gets this far.
@@ -1514,6 +1532,35 @@ mod tests {
         assert_eq!(validate(&cell_loaded(0), &mut ClientGuard::default(), 0), Err(Reject::Range));
     }
 
+    // thuum docs/verbs/npc-puppet.md: a host's roster names game-file actors
+    // in a named world or cell at a finite position inside the world
+    fn sightings(entries: &[(u32, u32, [f32; 3])]) -> Message {
+        use wire_schema::skymp::{ActorSighting, ActorSightings};
+        Message::ActorSightings(ActorSightings {
+            sightings: entries
+                .iter()
+                .map(|&(refr_id, world_or_cell, pos)| ActorSighting { refr_id, world_or_cell, pos, rot: [0.0, 0.0, 165.3] })
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap_or_default(),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn actor_sightings_name_game_file_actors_in_a_world_at_a_place() {
+        let riverwood = [24063.7, -45204.2, -40.6];
+        assert_eq!(validate(&sightings(&[(0x13483, 0x3c, riverwood)]), &mut ClientGuard::default(), 0), Ok(()));
+        assert_eq!(validate(&sightings(&[]), &mut ClientGuard::default(), 0), Ok(()));
+        // a server-made actor, nobody's to sight; a form id of 0; a world of 0
+        assert_eq!(validate(&sightings(&[(0xff00_0c03, 0x3c, riverwood)]), &mut ClientGuard::default(), 0), Err(Reject::Range));
+        assert_eq!(validate(&sightings(&[(0, 0x3c, riverwood)]), &mut ClientGuard::default(), 0), Err(Reject::Range));
+        assert_eq!(validate(&sightings(&[(0x13483, 0, riverwood)]), &mut ClientGuard::default(), 0), Err(Reject::Range));
+        // a position past the world, or not a number
+        assert_eq!(validate(&sightings(&[(0x13483, 0x3c, [1.0e9, 0.0, 0.0])]), &mut ClientGuard::default(), 0), Err(Reject::OutOfWorld));
+        assert_eq!(validate(&sightings(&[(0x13483, 0x3c, [f32::NAN, 0.0, 0.0])]), &mut ClientGuard::default(), 0), Err(Reject::NonFinite));
+    }
+
     #[test]
     fn host_grants_and_releases_name_a_cell_and_an_epoch_after_the_first() {
         use wire_schema::skymp::{HostGrant, HostRelease};
@@ -1589,6 +1636,11 @@ mod tests {
         #[test]
         fn favorites_never_panic(entries in proptest::collection::vec((any::<u32>(), any::<i8>()), 0..=cap::FAVORITES)) {
             let _ = validate(&favorites(&entries), &mut ClientGuard::default(), 0);
+        }
+
+        #[test]
+        fn actor_sightings_never_panic(entries in proptest::collection::vec((any::<u32>(), any::<u32>(), any::<[f32; 3]>()), 0..=cap::ACTOR_SIGHTINGS)) {
+            let _ = validate(&sightings(&entries), &mut ClientGuard::default(), 0);
         }
 
         #[test]

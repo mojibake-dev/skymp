@@ -21,6 +21,10 @@ clients:
 steps:
   - {client: c1, at_ms: 1000, send: {t: 47, cell: 48049, loaded: true}, reliable: true}
   - {client: c2, at_ms: 2000, send: {t: 47, cell: 48049, loaded: true}, reliable: true}
+  # npc-puppet's roster (ActorSightings 50): c2 hosts nothing, so its sighting
+  # of Riverwood's Sigrid crosses the wire and is dropped by the server's host
+  # rule, on both servers alike (the legacy one knows no 50)
+  - {client: c2, at_ms: 2200, send: {t: 50, sightings: [{refrId: 79491, worldOrCell: 60, pos: [24063.7, -45204.2, -40.6], rot: [0, 0, 165.3]}]}, reliable: true}
   - {client: c1, at_ms: 2500, send: {t: 47, cell: 48049, loaded: false}, reliable: true}
   - {client: c2, at_ms: 9000, move: {dx: 1, dy: 0}}
 divergences:

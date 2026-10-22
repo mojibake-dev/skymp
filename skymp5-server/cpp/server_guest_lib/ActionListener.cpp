@@ -1988,6 +1988,23 @@ void ActionListener::OnCellLoaded(const RawMessageData& rawMsgData,
   partOne.OnCellLoaded(*actor, msg.cell, msg.loaded);
 }
 
+void ActionListener::OnActorSightings(const RawMessageData& rawMsgData,
+                                      const ActorSightingsMessage& msg)
+{
+  MpActor* reporter = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!reporter) {
+    spdlog::warn("ActionListener::OnActorSightings - user {} has no actor; "
+                 "{} sighting(s) ignored",
+                 rawMsgData.userId, msg.sightings.size());
+    return;
+  }
+  for (const auto& s : msg.sightings) {
+    partOne.OnActorSighting(*reporter, s.refrId, s.worldOrCell,
+                            NiPoint3{ s.pos[0], s.pos[1], s.pos[2] },
+                            NiPoint3{ s.rot[0], s.rot[1], s.rot[2] });
+  }
+}
+
 void ActionListener::SendPlayerGlobals(MpActor& actor)
 {
   PlayerGlobalsMessage message;

@@ -405,6 +405,15 @@ public:
   void OnCellLoaded(MpActor& player, uint32_t cell, bool loaded);
   void RefreshReach(MpActor& player);
   void TickCellHosts(uint64_t nowMs);
+  // thuum docs/verbs/npc-puppet.md (ActorSightings, TES3MP's actor list): a
+  // host's engine has a game-file actor the server holds no record of, or
+  // holds elsewhere (a resident placed in its house, walked outside by its
+  // schedule). If `reporter` hosts the cell of the sighted position and no
+  // other game hosts the actor where the record stands, the record is
+  // loaded on demand and placed there; its CreateActor and word follow.
+  void OnActorSighting(MpActor& reporter, uint32_t refrId,
+                       uint32_t worldOrCell, const NiPoint3& pos,
+                       const NiPoint3& rot);
   // Where the players' round trips come from (IServer::GetRttMs, -1 while
   // unknown), read every tick for the table's ranking; none installed, no
   // round trip is known and the earliest loaded takes a cell.

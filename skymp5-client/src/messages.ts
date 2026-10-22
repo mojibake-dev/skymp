@@ -51,5 +51,6 @@ export enum MsgType {
   ActorJump = 46,
   CellLoaded = 47,
   HostGrant = 48,
-  HostRelease = 49
+  HostRelease = 49,
+  ActorSightings = 50 // thuum docs/verbs/npc-puppet.md: a host's roster of engine actors the server does not hold
 }

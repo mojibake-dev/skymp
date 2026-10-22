@@ -91,6 +91,12 @@ public:
   virtual void OnCellLoaded(const RawMessageData& rawMsgData,
                             const CellLoadedMessage& msg);
 
+  // thuum docs/verbs/npc-puppet.md: a host's roster of game-file actors the
+  // server does not hold where its engine has them; each entry judged by
+  // PartOne::OnActorSighting
+  virtual void OnActorSightings(const RawMessageData& rawMsgData,
+                                const ActorSightingsMessage& msg);
+
   virtual void OnFinishSpSnippet(const RawMessageData& rawMsgData,
                                  const FinishSpSnippetMessage& msg);
 

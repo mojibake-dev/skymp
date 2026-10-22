@@ -1482,6 +1482,54 @@ void PartOne::OnCellLoaded(MpActor& player, uint32_t cell, bool loaded)
            : pImpl->cells->unloaded(player.GetFormId(), cell, nowMs));
 }
 
+void PartOne::OnActorSighting(MpActor& reporter, uint32_t refrId,
+                              uint32_t worldOrCell, const NiPoint3& pos,
+                              const NiPoint3& rot)
+{
+  // a game-file actor alone (the validator's bound too); a player's actor
+  // never
+  if (refrId >= 0xff000000) {
+    return;
+  }
+  const auto cell = worldState.CellOf(worldOrCell, pos);
+  if (!cell) {
+    return;
+  }
+  const auto host = GetCellHost(*cell);
+  if (!host.hosted || host.player != reporter.GetFormId()) {
+    // another game's cell, or nobody's yet: that host reports it, or the
+    // grant comes first
+    return;
+  }
+  // the record, loaded on demand where the game files place it
+  const auto& form = worldState.LookupFormById(refrId);
+  MpActor* actor = form ? form->AsActor() : nullptr;
+  if (!actor || serverState.UserByActor(actor) != Networking::InvalidUserId) {
+    return;
+  }
+  const auto standing = worldState.CellOf(*actor);
+  if (standing && *standing == *cell) {
+    return; // already where the host's engine has it
+  }
+  if (MpActor* other = worldState.HostOf(*actor);
+      other && other != &reporter) {
+    // hosted by another game where the record stands: its word, not this
+    // one's; the records meet at a handoff (npc-handoff)
+    return;
+  }
+  spdlog::info("PartOne - npc-puppet: {:x} sights {:x} at ({:.0f}, {:.0f}, "
+               "{:.0f}) in {:x}, cell {:x}; the record stood in {:x}",
+               reporter.GetFormId(), refrId, pos.x, pos.y, pos.z, worldOrCell,
+               *cell, standing.value_or(0));
+  // the three sets of MpActor::Teleport without its message (the actor has
+  // no game of its own): the new grid, then the position subscribes it and
+  // CreateActor carries the word to every game in reach
+  actor->SetCellOrWorldObsolete(
+    FormDesc::FromFormId(worldOrCell, worldState.espmFiles));
+  actor->SetPos(pos);
+  actor->SetAngle(rot);
+}
+
 void PartOne::TickCellHostsEverySecond()
 {
   const auto now = std::chrono::steady_clock::now();

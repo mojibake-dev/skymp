@@ -386,6 +386,89 @@ TEST_CASE("At the handoff the visitor with the lowest round trip takes the "
   p.DestroyActor(kC3);
 }
 
+// thuum docs/verbs/npc-puppet.md (ActorSightings, TES3MP's actor list): a
+// named resident is placed in her house and walked outside by her schedule;
+// the server loads actors by placement, so her host's engine has her where
+// the server has nothing. The host's roster names her where it has her, the
+// server loads the record on demand and places it there, and from then on
+// the normal path runs: CreateActor with the word, the host's reports.
+TEST_CASE("A host's sighting places an interior-placed resident where its "
+          "engine has her; a non-host's and an unhosted cell's are dropped",
+          "[CellHost][espm]")
+{
+  constexpr uint32_t kSigrid = 0x13483;
+  constexpr uint32_t kDorthe = 0x13484;
+  const NiPoint3 sigridPos{ 24063.7f, -45204.2f, -40.6f };
+  const NiPoint3 landing{ 17225.f, -47204.f, -128.f };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kSigrid) == nullptr);
+
+  // c1 lands at Riverwood and loads Sigrid's square; c2 stands far away
+  Player(p, 0, kC1, landing);
+  Player(p, 1, kC2, landing + NiPoint3{ 0.f, -40000.f, 0.f });
+  const auto cell = p.worldState.CellOf(kTamriel, sigridPos);
+  REQUIRE(cell.has_value());
+  CellLoaded(p, 0, *cell);
+  REQUIRE(p.GetCellHost(*cell).player == kC1);
+  p.Messages().clear();
+
+  const auto sighting = [&](Networking::UserId user, uint32_t refrId,
+                            const NiPoint3& pos) {
+    DoMessage(p, user,
+              nlohmann::json{ { "t", MsgType::ActorSightings },
+                              { "sightings",
+                                nlohmann::json::array({ nlohmann::json{
+                                  { "refrId", refrId },
+                                  { "worldOrCell", kTamriel },
+                                  { "pos", { pos.x, pos.y, pos.z } },
+                                  { "rot", { 0.f, 0.f, 165.3f } } } }) } });
+  };
+
+  // a non-host's sighting (c2 hosts nothing): dropped, no record
+  sighting(1, kSigrid, sigridPos);
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kSigrid) == nullptr);
+
+  // the host's sighting of a position in a cell it does not host: dropped
+  sighting(0, kDorthe, landing + NiPoint3{ 0.f, -40000.f, 0.f });
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kDorthe) == nullptr);
+
+  // the host's sighting: the record loaded and placed where the engine has
+  // her, in Tamriel, and told to c1 as its own
+  sighting(0, kSigrid, sigridPos);
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kSigrid) != nullptr);
+  auto& sigrid = p.worldState.GetFormAt<MpActor>(kSigrid);
+  REQUIRE(sigrid.GetCellOrWorld().ToFormId(p.worldState.espmFiles) ==
+          kTamriel);
+  REQUIRE(sigrid.GetPos().x == Catch::Approx(sigridPos.x));
+  REQUIRE(sigrid.GetPos().y == Catch::Approx(sigridPos.y));
+  REQUIRE(p.worldState.CellOf(sigrid) == cell);
+  REQUIRE(p.worldState.HostOf(sigrid) ==
+          &p.worldState.GetFormAt<MpActor>(kC1));
+  {
+    bool created = false;
+    for (auto& m : SentTo<CreateActorMessage>(p, 0)) {
+      if (m.refrId == kSigrid) {
+        created = true;
+        REQUIRE(m.props.isHostedByOther == false);
+        REQUIRE(m.baseRecordType == "NPC_");
+      }
+    }
+    REQUIRE(created);
+  }
+
+  // the same sighting again: nothing moves, nothing new is sent
+  p.Messages().clear();
+  sighting(0, kSigrid, sigridPos);
+  REQUIRE(SentTo<CreateActorMessage>(p, 0).empty());
+
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+  p.DestroyActor(kSigrid);
+}
+
 TEST_CASE("An actor from the game files travels under its own id with the "
           "server's explicit hosted word, the grant flips it, and only the "
           "host's reports move it",

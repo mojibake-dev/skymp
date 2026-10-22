@@ -219,6 +219,12 @@ void PacketParser::TransformPacketIntoAction(Networking::UserId userId,
         actionListener.OnCellLoaded(rawMsgData, *message);
         return;
       }
+      case MsgType::ActorSightings: {
+        auto message =
+          reinterpret_cast<ActorSightingsMessage*>(result->message.get());
+        actionListener.OnActorSightings(rawMsgData, *message);
+        return;
+      }
       default: {
         spdlog::error("PacketParser.cpp doesn't implement MsgType {}",
                       static_cast<int64_t>(result->msgType));

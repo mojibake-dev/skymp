@@ -41,8 +41,11 @@ bool AnimatesAsPuppet(RE::Actor& actor)
   if (actor.IsAIEnabled() || !Puppets::Is(actor.formID)) {
     return false;
   }
-  if (!actor.currentProcess ||
-      actor.boolBits.any(RE::Actor::BOOL_BITS::kInTempChangeList) ||
+  // CommonLibSSE-NG keeps Actor's runtime-dependent fields behind
+  // GetActorRuntimeData() (Actor.h:651 and :647 are its members)
+  auto& runtime = actor.GetActorRuntimeData();
+  if (!runtime.currentProcess ||
+      runtime.boolBits.any(RE::Actor::BOOL_BITS::kInTempChangeList) ||
       actor.IsDeleted() || actor.IsDisabled()) {
     return false;
   }
@@ -95,7 +98,7 @@ void MovementStepReplacement(RE::Actor* actor, float delta)
   }
   auto* cell = actor->GetParentCell();
   auto* controller = actor->GetCharController();
-  if (!actor->currentProcess || !controller || !cell ||
+  if (!actor->GetActorRuntimeData().currentProcess || !controller || !cell ||
       cell->cellState.get() != RE::TESObjectCELL::CellState::kAttached) {
     return;
   }

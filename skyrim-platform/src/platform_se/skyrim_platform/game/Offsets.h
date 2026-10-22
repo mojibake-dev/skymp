@@ -63,6 +63,18 @@ inline REL::Relocation<std::uintptr_t> ProjectileInitVelocity{ REL::ID(
 inline REL::Relocation<std::uintptr_t> PlaceAreaEffect{ REL::ID(34413) };
 inline REL::Relocation<std::uintptr_t> QueueNinodeUpdate{ RELOCATION_ID(
   39181, 40255) };
+// thuum docs/verbs/npc-puppet.md: the two detours of the puppet shape and
+// the engine's own job and push they reuse. AE only, 1.6.1170's ids by
+// lab/addr.py, read by the re-analyst on sky-re (REA over Ghidra,
+// 2026-10-21, CONFIRMED-STATIC for the prototypes; HYPOTHESIS names):
+// 41370 the "Actor animation" stage's queueing (ProcessLists*, JobList*),
+// 41453 the per-actor animation job (a 32-bit ActorHandle), 69349 the job
+// list's push (jobs, fn, arg, an unused fourth), 37356 the per-frame
+// movement step (Actor*, float delta).
+inline REL::Relocation<std::uintptr_t> QueueActorAnimation{ REL::ID(41370) };
+inline REL::Relocation<std::uintptr_t> ActorAnimationJob{ REL::ID(41453) };
+inline REL::ID JobListPush(69349);
+inline REL::Relocation<std::uintptr_t> ActorMovementStep{ REL::ID(37356) };
 inline REL::Relocation<std::uintptr_t> ApplyMasksToRenderTargets{
   RELOCATION_ID(26454, 27040)
 };
@@ -83,6 +95,13 @@ inline REL::Relocation<std::uintptr_t> RenderCursorMenu{ RELOCATION_ID(
 namespace Actions {
 inline REL::ID PerformChosenAction(38953);
 inline REL::ID ActorMediatorSingleton(403567);
+}
+
+// thuum docs/verbs/npc-puppet.md: Actor::ClearKeepOffsetFromActor, not in
+// CommonLibSSE-NG; `void (RE::Actor*)`, the Papyrus native's body (REA on
+// sky-re 2026-10-21, CONFIRMED-STATIC). AE only, 1.6.1170's id by lab/addr.py.
+namespace Puppet {
+inline REL::ID ClearKeepOffsetFromActor(37895);
 }
 
 namespace EventSource {

@@ -18,6 +18,7 @@
 #include "MagicApi.h"
 #include "MpClientPluginApi.h"
 #include "ObjectReferenceApi.h"
+#include "PuppetApi.h"
 #include "Sp3Api.h"
 #include "TextApi.h"
 #include "ThreadPoolWrapper.h"
@@ -287,6 +288,7 @@ private:
       TextApi::Register(env, e);
       InventoryApi::Register(env, e);
       MagicApi::Register(env, e);
+      PuppetApi::Register(env, e);
       ConstEnumApi::Register(env, e);
       CallNativeApi::Register(env, e, getNativeCallRequirements);
       Sp3Api::Register(env, e, getNativeCallRequirements);

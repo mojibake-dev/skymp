@@ -93,6 +93,32 @@ void Move(PartOne& p, Networking::UserId user, uint32_t actorId,
   p.GetActionListener().OnUpdateMovement(raw, msg);
 }
 
+// every UpdateProperty (t 7) sent to `user`, as the JSON the wire carries
+std::vector<nlohmann::json> PropertiesSentTo(PartOne& p,
+                                             Networking::UserId user)
+{
+  std::vector<nlohmann::json> out;
+  for (auto& m : p.Messages()) {
+    if (m.userId == user && m.j.is_object() && m.j.contains("t") &&
+        m.j["t"] == static_cast<int>(MsgType::UpdateProperty)) {
+      out.push_back(m.j);
+    }
+  }
+  return out;
+}
+
+// every message sent to `user`, one line each, for a failing case's report
+std::string MessagesSentTo(PartOne& p, Networking::UserId user)
+{
+  std::string out;
+  for (auto& m : p.Messages()) {
+    if (m.userId == user) {
+      out += m.j.dump().substr(0, 160) + "\n";
+    }
+  }
+  return out;
+}
+
 template <class Message>
 std::vector<Message> SentTo(PartOne& p, Networking::UserId user)
 {
@@ -142,14 +168,21 @@ TEST_CASE("The first loader in reach hosts the cell and alone moves its "
   // host as nobody else's: the property still carries for such ids
   // (docs/verbs/npc-puppet.md; a game-file actor gets none, the case below)
   {
-    const auto props = SentTo<UpdatePropertyMessage>(p, 0);
-    const auto flip = std::find_if(
-      props.begin(), props.end(), [&](const UpdatePropertyMessage& m) {
-        return m.propName == "isHostedByOther" && m.idx == wolf.GetIdx();
+    const auto props = PropertiesSentTo(p, 0);
+    UNSCOPED_INFO(
+      "after the grant, to c1: "
+      << MessagesSentTo(p, 0) << "wolf idx " << wolf.GetIdx()
+      << ", actor listeners " << wolf.GetActorListeners().size()
+      << ", c1 emitters "
+      << p.worldState.GetFormAt<MpActor>(kC1).GetEmitters().size());
+    const auto flip =
+      std::find_if(props.begin(), props.end(), [&](const nlohmann::json& j) {
+        return j.value("propName", std::string()) == "isHostedByOther" &&
+          j.value("idx", 0u) == wolf.GetIdx();
       });
     REQUIRE(flip != props.end());
-    REQUIRE(flip->refrId == kWolf);
-    REQUIRE(flip->dataDump == "false");
+    REQUIRE((*flip)["refrId"] == kWolf);
+    REQUIRE((*flip)["dataDump"] == "false");
   }
 
   // c2 loads it too: nothing
@@ -374,8 +407,8 @@ TEST_CASE("An actor from the game files travels under its own id with no "
   REQUIRE(p.GetCellHost(*cell).player == kC1);
   REQUIRE(SentTo<HostGrantMessage>(p, 0).size() == 1);
   for (const Networking::UserId user : { 0, 1 }) {
-    for (auto& m : SentTo<UpdatePropertyMessage>(p, user)) {
-      REQUIRE(m.propName != "isHostedByOther");
+    for (const auto& j : PropertiesSentTo(p, user)) {
+      REQUIRE(j.value("propName", std::string()) != "isHostedByOther");
     }
   }
 

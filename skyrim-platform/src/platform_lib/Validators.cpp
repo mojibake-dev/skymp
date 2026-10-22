@@ -5,13 +5,17 @@
 // asks getFileInfo for every plugin, and the first spaced name threw here,
 // 2026-10-14). A space traverses nothing, so a file name (allowDots, the
 // getFileInfo and text callers) takes it; a Skyrim Platform plugin's name
-// (the dev and console callers, no dots) stays as strict as before.
+// (the dev and console callers, no dots) stays as strict as before. A plus
+// sign the same way ("DigitigradeKhajiit+ArgonianRaptor.esp", 2026-10-22:
+// the refusal was the login's one C++ exception, and it unwound through
+// V8's frames from the unwrapped getFileInfo; docs/verbs/npc-puppet.md,
+// the landing hang).
 bool ValidateFilename(std::string_view filename, bool allowDots)
 {
   for (char c : filename) {
     if (!(('0' <= c && c <= '9') || ('A' <= c && c <= 'Z') ||
           ('a' <= c && c <= 'z') || (c == '.' && allowDots) || c == '-' ||
-          c == '_' || (c == ' ' && allowDots))) {
+          c == '_' || (c == ' ' && allowDots) || (c == '+' && allowDots))) {
       return false;
     }
   }

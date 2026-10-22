@@ -743,10 +743,20 @@ void MpObjectReference::UpdateHoster(uint32_t newHosterId)
   auto hostedMsg = CreatePropertyMessage_(this, "isHostedByOther", "true");
   auto notHostedMsg = CreatePropertyMessage_(this, "isHostedByOther", "false");
   for (auto listener : this->GetActorListeners()) {
+    // the word is a game's, so only a listener with a user hears it, and
+    // directly: GetActorToSendTo would hand an offline listener's word (a
+    // game-file or server-made NPC in reach, a leftover actor; never the
+    // hoster, so "true") to its cell's host, telling the host's own game
+    // "hosted by other" about an actor it runs, in whatever order the
+    // listener set iterates (unit CellHostTest's stray "true", pipelines
+    // 2594 and 2602; thuum docs/verbs/npc-puppet.md)
+    if (listener->GetUserId() == Networking::InvalidUserId) {
+      continue;
+    }
     if (newHosterId != 0 && newHosterId == listener->GetFormId()) {
-      listener->GetActorToSendTo().SendToUser(notHostedMsg, true);
+      listener->SendToUser(notHostedMsg, true);
     } else {
-      listener->GetActorToSendTo().SendToUser(hostedMsg, true);
+      listener->SendToUser(hostedMsg, true);
     }
   }
 }

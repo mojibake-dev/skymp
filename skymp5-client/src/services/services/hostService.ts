@@ -256,6 +256,12 @@ export class HostService extends ClientListener {
                 gone.push(id);
                 return;
             }
+            // a reference the engine holds disabled stands nowhere: not sighted
+            // (the server would refuse an initially disabled placement anyway,
+            // WorldState::AttachEspmRecord; a runtime disable is this game's)
+            if (refr.isDisabled()) {
+                return;
+            }
             const worldSpace = refr.getWorldSpace();
             const worldOrCell = worldSpace ? worldSpace.getFormID() : (refr.getParentCell()?.getFormID() ?? 0);
             if (!worldOrCell) {

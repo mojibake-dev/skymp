@@ -441,11 +441,21 @@ export class FormView {
       this.lastOpenApply = 0;
     }
     const now = Date.now();
-    if (now - this.lastHarvestedApply > 666) {
+    // thuum docs/verbs/npc-puppet.md (playtest 31, 2026-10-22): an actor is
+    // never harvested or opened, and the harvested apply's non-flora branch
+    // reads refr.isDisabled() against the model and calls enable(true) on a
+    // reference the engine holds disabled; with every game-file actor bound
+    // to a view that was a force-enable every 666 ms on each disabled
+    // resident (a quest's duplicate, a sleeper), ten enable calls a second
+    // across Riverwood, the engine disabling them back, flapping actors and
+    // hitching. The server's word on an actor's disabled state comes by its
+    // property message, never from here.
+    const isActor = Actor.from(refr) !== null;
+    if (!isActor && now - this.lastHarvestedApply > 666) {
       this.lastHarvestedApply = now;
       ModelApplyUtils.applyModelIsHarvested(refr, !!model.isHarvested);
     }
-    if (now - this.lastOpenApply > 133) {
+    if (!isActor && now - this.lastOpenApply > 133) {
       this.lastOpenApply = now;
       ModelApplyUtils.applyModelIsOpen(refr, !!model.isOpen);
     }

@@ -84,7 +84,14 @@ const removeUnnecessaryExtra = (inv: Inventory, ignoreAmmo: boolean): Inventory 
       const r: Entry = JSON.parse(JSON.stringify(x));
       r.chargePercent = r.maxCharge;
       if (ignoreAmmo) {
-        r.count = Ammo.from(Game.getFormEx(x.baseId)) ? r.count : 1;
+        // thuum (playtest 31, 2026-10-22): the engine's container changes
+        // count a stack against the base container, so a kit given below
+        // the base's default reads negative (iron arrows -23, gold -10 on
+        // both lab seats); the wire's count is a u32 and refused the whole
+        // equipment report on every send (MpClientPlugin-logs.txt, t5
+        // E_JSON_SHAPE), so neither seat's gear reached the server. A worn
+        // stack exists: one at least
+        r.count = Ammo.from(Game.getFormEx(x.baseId)) ? Math.max(1, r.count) : 1;
       } else {
         r.count = Ammo.from(Game.getFormEx(x.baseId)) ? 1000 : 1;
       }

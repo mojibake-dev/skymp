@@ -42,6 +42,21 @@ export class PuppetService extends ClientListener {
     // (a-racemenu 20261022-050437 on the gate: c2's figure of c1 absent
     // where the server had c1, after c2 demoted it at its attach)
     private isFigure(localId: number): boolean {
+        // the engine's own answer first: a figure is placed from the player
+        // base 0x7 or from a runtime base the appearance made (0xff and
+        // above); a server-made copy of a game-file NPC carries that NPC's
+        // base. The view's id map below can lag a copy's cellAttach by a
+        // tick, and a figure read as a copy was demoted (a-racemenu
+        // 20261022-050437; playtest 31's figures moving oddly for the other
+        // seat, 2026-10-22)
+        const ac = this.sp.Actor.from(this.sp.Game.getFormEx(localId));
+        const base = ac ? ac.getBaseObject() : null;
+        if (base) {
+            const baseId = base.getFormID();
+            if (baseId === 0x7 || baseId >= 0xff000000) {
+                return true;
+            }
+        }
         const remoteId = localIdToRemoteId(localId);
         if (!remoteId) {
             return false;

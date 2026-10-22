@@ -199,7 +199,10 @@ const squash = (inv: Inventory): Inventory => {
       res.push(JSON.parse(JSON.stringify(e)));
     }
   });
-  return { entries: res.filter((x) => x.count !== 0) };
+  // a count under one is a base-relative residue (a stack taken below the
+  // base container's default), not an item; the wire's count is a u32
+  // (thuum, playtest 31, 2026-10-22)
+  return { entries: res.filter((x) => x.count > 0) };
 };
 
 const getExtraContainerChangesAsInventory = (

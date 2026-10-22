@@ -3,7 +3,7 @@ import {
   Actor,
   Game,
   TESModPlatform,
-  Debug, setPuppetLocomotion } from "skyrimPlatform";
+  Debug, setPuppetLocomotion, printConsole } from "skyrimPlatform";
 import { RespawnNeededError } from "../lib/errors";
 import { Movement, RunMode, AnimationVariables, Transform, NiPoint3 } from "./movement";
 import { ObjectReferenceEx } from "../extensions/objectReferenceEx";
@@ -308,14 +308,30 @@ const translateTo = (refr: ObjectReference, m: Movement, settle = false) => {
   // with c2 standing still no sample ever moved it back: the 2 s re-apply
   // ran the same gate, and the Flames stream aimed at the record missed
   // half its ticks. The periodic re-apply settles from one unit instead
-  const deadband = settle ? 1 : 8;
+  // The re-apply's `settle` never comes for a player's figure: its game
+  // reports movement at every tick while it stands, so every apply is a
+  // fresh sample (x-duel-stream 20261022-233951 on 8a581ede: the figure 6.9
+  // units off for ten seconds). So the record's own stillness decides: a
+  // target equal to the last one this code sent (the player stands where it
+  // stood) has no jitter to guard against, and a standing figure settles
+  // onto it from one unit; a moving target keeps the eight
+  const refrId0 = refr.getFormID();
+  const sentBefore = lastSent.get(refrId0);
+  const recordStill = sentBefore !== undefined && ObjectReferenceEx.getDistance(sentBefore, gTempTargetPos) < 0.5;
+  const deadband = settle || recordStill ? 1 : 8;
+  const offBy = ObjectReferenceEx.getDistanceNoZ(refrRealPos, gTempTargetPos);
   if (
     m.runMode !== "Standing" ||
     m.isInJumpState ||
-    ObjectReferenceEx.getDistanceNoZ(refrRealPos, gTempTargetPos) > deadband ||
+    offBy > deadband ||
     angleDiff > 80 ||
     Actor.from(refr)?.getSitState() === 3
   ) {
+    if (m.runMode === "Standing" && offBy > deadband && deadband === 1) {
+      // the settle, on the console for the lab's read (rare: a standing figure
+      // or puppet found off its still record)
+      printConsole(`settle ${refrId0.toString(16)}: ${offBy.toFixed(1)} units from (${refrRealPos[0].toFixed(0)}, ${refrRealPos[1].toFixed(0)}) to (${gTempTargetPos[0].toFixed(0)}, ${gTempTargetPos[1].toFixed(0)})`);
+    }
     const actor = Actor.from(refr);
     // down: by its player's relayed Ragdoll (Variable10), or by this game's
     // own knock until its get-up (sync/knockState.ts, the push's flight)

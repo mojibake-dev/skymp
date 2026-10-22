@@ -116,31 +116,29 @@ Napi::Value CallNativeImpl(
     (functionName == "removeItem") || (functionName == "addItem");
 
   if (f && f->IsLatent() && !isAddOrRemove) {
-
-    thread_local CallNative::Arguments* g_callNativeArgsPtr = nullptr;
-    g_callNativeArgsPtr = &callNativeArgs;
-
-    auto g_promiseFn =
-      Napi::Function::New(info.Env(), [](const Napi::CallbackInfo& info) {
-        std::shared_ptr<Napi::Reference<Napi::Function>> resolveFunctionRef(
-          new Napi::Reference<Napi::Function>(
-            Napi::Persistent<Napi::Function>(info[0].As<Napi::Function>())));
-
-        if (!g_callNativeArgsPtr)
-          throw NullPointerException("g_callNativeArgsPtr");
-        g_callNativeArgsPtr->latentCallback =
-          [resolveFunctionRef](Napi::Env env, const CallNative::AnySafe& v) {
-            // thuum: named and counted in CallNative's onResult instead
-            // (this line, unnamed, ran 20 a second in playtest twenty)
-            resolveFunctionRef->Value().Call(
-              env.Undefined(),
-              { SP3NativeValueCasts::GetSingleton().NativeValueToJsValue(env,
-                                                                         v) });
-          };
-        CallNative::CallNativeSafe(*g_callNativeArgsPtr);
-        return info.Env().Undefined();
-      });
-    return CreatePromise(g_promiseFn);
+    // thuum docs/verbs/npc-puppet.md (the landing hang of 2026-10-21 and
+    // 2026-10-22): the native is called here, in this wrapped callback, and
+    // never inside a Promise executor. The old shape built the promise with
+    // an executor lambda that ran CallNativeSafe (and a null-pointer test)
+    // from inside V8's Promise constructor: a C++ exception thrown there
+    // ("Expected self to be non-null" and the rest of CallNative.cpp's
+    // throws) unwound through V8's frames to the catch in this callback's
+    // wrapper, and the nested entry's StackHandler stayed registered. The
+    // next JavaScript exception's unwind (Isolate::UnwindAndFindHandler,
+    // libnode 23.2.0) then walked a handler chain linked to itself forever:
+    // every lone profile-1 login hung at its first update, on the actor set
+    // of that parking spot. With the deferred, a failing call is this
+    // callback's own exception, which WrapCppExceptions turns into a
+    // JavaScript error, and the resolve needs no persistent function.
+    auto deferred = std::make_shared<Napi::Promise::Deferred>(
+      Napi::Promise::Deferred::New(info.Env()));
+    callNativeArgs.latentCallback = [deferred](Napi::Env env,
+                                               const CallNative::AnySafe& v) {
+      deferred->Resolve(
+        SP3NativeValueCasts::GetSingleton().NativeValueToJsValue(env, v));
+    };
+    CallNative::CallNativeSafe(callNativeArgs);
+    return deferred->Promise();
   } else {
     Override o;
     auto res = SP3NativeValueCasts::GetSingleton().NativeValueToJsValue(

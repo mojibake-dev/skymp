@@ -52,7 +52,9 @@ export class PuppetService extends ClientListener {
         if (!form) {
             return false;
         }
-        return form.isMyClone === true || form.baseId === undefined || form.baseId === 0x7;
+        // a player's figure: no base, the player base, or the message's
+        // default 0 (every player's CreateActor carries baseId 0, 2026-10-22)
+        return form.isMyClone === true || !form.baseId || form.baseId === 0x7;
     }
 
     // An NPC this game does not host, seen by its view: a puppet from now on.

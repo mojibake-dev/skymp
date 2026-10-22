@@ -382,10 +382,13 @@ export class FormView {
   // here before. The shown fraction is kept across the set: the engine keeps
   // the current value, not the share, when a base changes
   // an NPC's model: a server-made actor or one from the game files carries
-  // its base id; a player's figure (base 0x7) and the player's own clone
-  // carry none (PartOne.cpp omits bases 0 and 7)
+  // its base id; a player's figure and the player's own clone carry none or
+  // the player base (PartOne.cpp sets baseId for a base other than 0 and 7,
+  // but the message's optional defaults to 0 and the wire carries it, so a
+  // player arrives as baseId 0: read on 2026-10-22 from the clean world's
+  // two records)
   private static isNpcModel(model: FormModel): boolean {
-    return model.baseId !== undefined && model.baseId !== 0x7;
+    return !!model.baseId && model.baseId !== 0x7;
   }
 
   private applyFigureMaxima(actor: Actor | null, model: FormModel) {

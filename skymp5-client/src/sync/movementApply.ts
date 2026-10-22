@@ -12,7 +12,10 @@ import { isKnockedDown } from "./knockState";
 
 const sqr = (x: number) => x * x;
 
-export const applyMovement = (refr: ObjectReference, m: Movement, isMyClone?: boolean, puppet?: boolean): void => {
+// `settle`: the view's periodic re-apply of an unchanged record (no new sample
+// from the actor's game), which brings a standing figure or puppet back to
+// the record from one unit; a fresh sample keeps the eight-unit deadband
+export const applyMovement = (refr: ObjectReference, m: Movement, isMyClone?: boolean, puppet?: boolean, settle?: boolean): void => {
   if (teleportIfNeed(refr, m)) {
     return;
   }
@@ -26,7 +29,7 @@ export const applyMovement = (refr: ObjectReference, m: Movement, isMyClone?: bo
     SpApiInteractor.getControllerInstance().emitter.emit("newLocalLagValueCalculated", { lagUnitsNoZ });
   }
 
-  translateTo(refr, m);
+  translateTo(refr, m, settle === true);
 
   const ac = Actor.from(refr);
   if (!ac) {
@@ -272,7 +275,7 @@ const isStaleAfterPop = (refrId: number, real: NiPoint3, target: NiPoint3): bool
   return ObjectReferenceEx.getDistance(target, pop.from) < ObjectReferenceEx.getDistance(target, pop.pos);
 };
 
-const translateTo = (refr: ObjectReference, m: Movement) => {
+const translateTo = (refr: ObjectReference, m: Movement, settle = false) => {
   let time = 0.2;
   if (m.isInJumpState || m.runMode !== "Standing") {
     time = 0.2;
@@ -298,10 +301,18 @@ const translateTo = (refr: ObjectReference, m: Movement) => {
   const speed = distance / time;
 
   const angleDiff = Math.abs(m.rot[2] - refr.getAngleZ());
+  // thuum docs/verbs/spell-cast.md (b-duel 215524, 222125, 224131, 224453 on
+  // train-33 against 192438 and 223749): a stagger's push left c2's figure 6
+  // to 7.6 units from the record on the caster's screen, under the 8-unit
+  // deadband a standing figure keeps against a fresh sample's jitter, and
+  // with c2 standing still no sample ever moved it back: the 2 s re-apply
+  // ran the same gate, and the Flames stream aimed at the record missed
+  // half its ticks. The periodic re-apply settles from one unit instead
+  const deadband = settle ? 1 : 8;
   if (
     m.runMode !== "Standing" ||
     m.isInJumpState ||
-    ObjectReferenceEx.getDistanceNoZ(refrRealPos, gTempTargetPos) > 8 ||
+    ObjectReferenceEx.getDistanceNoZ(refrRealPos, gTempTargetPos) > deadband ||
     angleDiff > 80 ||
     Actor.from(refr)?.getSitState() === 3
   ) {

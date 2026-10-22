@@ -116,6 +116,13 @@ public:
     uint32_t linkedRefId = 0;
     uint32_t ownerFaction = 0;
 
+    // XESP: the enable parent (a reference whose enabled state this one
+    // follows; flag 1 takes the opposite state, flag 2 pops in). Zero when
+    // the record has none. The Creation Kit's Enable Parent; UESP, Skyrim
+    // mod file format, REFR XESP.
+    uint32_t enableParentId = 0;
+    uint32_t enableParentFlags = 0;
+
     // FULL: in-game name of the map marker.
     lstring mapMarkerName = 0;
 

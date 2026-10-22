@@ -1517,8 +1517,11 @@ void PartOne::OnActorSighting(MpActor& reporter, uint32_t refrId,
     return drop(host.hosted ? "the cell is another game's"
                             : "the cell is nobody's yet");
   }
-  // the record, loaded on demand where the game files place it
-  const auto& form = worldState.LookupFormById(refrId);
+  // the record, loaded on demand where the game files place it; the host's
+  // engine has it attached and enabled, so the loader's disabled filters
+  // yield (an initially disabled placement a quest enabled, a child of a
+  // marker that is on now)
+  const auto& form = worldState.LookupFormById(refrId, nullptr, true);
   MpActor* actor = form ? form->AsActor() : nullptr;
   if (!actor) {
     return drop("no actor record loads for it");

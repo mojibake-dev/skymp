@@ -1,5 +1,6 @@
 #include "TestUtils.hpp"
 #include "libespm/GroupUtils.h"
+#include "libespm/REFR.h"
 #include <catch2/catch_all.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -174,4 +175,60 @@ TEST_CASE("Riverwood's Sigrid 0x13483 is placed in her house, not at "
 
   partOne.DestroyActor(0xff000000);
   DoDisconnect(partOne, 0);
+}
+
+// Riverwood's E3 demo thief 0xe93d2 (base NPC_ 0xe93d3 E3demoThief) is placed
+// at (14184.8, -51974.4, 631.1) under the enable parent 0x93638, a marker the
+// files leave initially disabled (XESP flags 0: the child follows it), so no
+// game started from the files ever shows him. Playtest 31 (2026-10-22): the
+// server loaded him at the landing's chunk pass, both seats held a puppet
+// with no 3D, and his hosted word flapped with the cell. A host's sighting,
+// its engine having him attached and enabled, loads him regardless.
+TEST_CASE("Riverwood's E3 demo thief 0xe93d2, enabled by a disabled marker, "
+          "stays out of the landing's chunk pass; a host's sighting loads him",
+          "[NpcExists][espm]")
+{
+  constexpr uint32_t kThief = 0xe93d2;
+  constexpr uint32_t kMarker = 0x93638;
+  constexpr uint32_t kTamriel = 0x3c;
+  const NiPoint3 kThiefPos{ 14184.8f, -51974.4f, 631.1f };
+  auto& partOne = GetPartOne();
+  partOne.worldState.npcEnabled = true;
+  auto& br = partOne.worldState.GetEspm().GetBrowser();
+  auto& cache = partOne.worldState.GetEspmCache();
+
+  // the record's enable parent and the marker's flag, as the files say
+  const auto rec = br.LookupById(kThief);
+  REQUIRE(rec.rec);
+  REQUIRE(rec.rec->GetType() == "ACHR");
+  const auto data =
+    reinterpret_cast<const espm::REFR*>(rec.rec)->GetData(cache);
+  REQUIRE(data.enableParentId == kMarker);
+  REQUIRE((data.enableParentFlags & 1) == 0);
+  const auto marker = br.LookupById(kMarker);
+  REQUIRE(marker.rec);
+  REQUIRE((marker.rec->GetFlags() & 0x800) != 0);
+
+  // the landing's chunk pass holds his square and loads him no more
+  DoConnect(partOne, 0);
+  partOne.CreateActor(0xff000000, { 17225.f, -47204.f, -128.f }, 0, kTamriel);
+  partOne.SetUserActor(0, 0xff000000);
+  auto& player = partOne.worldState.GetFormAt<MpActor>(0xff000000);
+  player.SetPos(player.GetPos());
+  REQUIRE(partOne.worldState.LookupFormByIdNoLoad(kThief) == nullptr);
+
+  // the host's sighting (its engine shows him, a quest's doing) loads him
+  // where the engine has him
+  const auto cell = partOne.worldState.CellOf(kTamriel, kThiefPos);
+  REQUIRE(cell.has_value());
+  partOne.OnCellLoaded(player, *cell, true);
+  REQUIRE(partOne.GetCellHost(*cell).player == 0xff000000);
+  partOne.OnActorSighting(player, kThief, kTamriel, kThiefPos,
+                          NiPoint3{ 0.f, 0.f, 90.f });
+  const auto& form = partOne.worldState.LookupFormByIdNoLoad(kThief);
+  REQUIRE(form != nullptr);
+  REQUIRE(form->AsActor() != nullptr);
+  REQUIRE(partOne.worldState.CellOf(*form->AsActor()) == cell);
+
+  partOne.DestroyActor(0xff000000);
 }

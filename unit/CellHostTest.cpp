@@ -109,8 +109,7 @@ std::vector<nlohmann::json> PropertiesSentTo(PartOne& p,
 
 // the last isHostedByOther `user` was sent for `actor` ("true", "false"),
 // or "" when none was: the word a game keeps
-std::string LastHostedWord(PartOne& p, Networking::UserId user,
-                           const MpActor& actor)
+std::string LastHostedWord(PartOne& p, Networking::UserId user, MpActor& actor)
 {
   std::string word;
   for (const auto& j : PropertiesSentTo(p, user)) {

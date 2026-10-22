@@ -1025,18 +1025,22 @@ void PartOne::Init()
     const bool hasUser = emitterAsActor &&
       serverState.UserByActor(emitterAsActor) != Networking::InvalidUserId;
 
-    // thuum docs/verbs/cell-host.md and npc-puppet.md: a player's figure is
-    // always hosted by other; a server-made actor (a 0xff id, a copy on
-    // every client) is hosted by other unless this listener hosts its cell;
-    // an actor from the game files carries no flag at all: whether a game
-    // runs it or puppets it is the cell's grant alone (the property's u32
-    // id never reached the client's copy of it: playtest thirty's wolves)
+    // thuum docs/verbs/cell-host.md and npc-puppet.md (ADR-045 point 2 as
+    // revised 2026-10-22): a player's figure is always hosted by other;
+    // every other actor, a server-made copy (a 0xff id) and an actor from
+    // the game files under its own id alike, is hosted by other unless this
+    // listener hosts its cell. The server's word, explicit either way: the
+    // client cannot derive a persistent reference's exterior cell (Papyrus
+    // GetParentCell answers the worldspace's persistent cell), so Riverwood's
+    // named residents stayed puppets on their host while the grant's cell
+    // walk promoted only the cell's own references (b-npc-puppet
+    // 20261022-081631). The client binds an engine reference to a game-file
+    // actor's model, so the flag under the raw id reaches it now.
     const bool fromGameFiles =
       emitterAsActor && emitter->GetFormId() < 0xff000000;
-    if (hasUser ||
-        (emitterAsActor && !fromGameFiles &&
-         worldState.HostOf(*emitter) != listener)) {
-      message.props.isHostedByOther = true;
+    if (emitterAsActor) {
+      message.props.isHostedByOther =
+        hasUser || worldState.HostOf(*emitter) != listener;
     }
 
     uint32_t worldOrCell =

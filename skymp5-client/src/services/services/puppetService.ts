@@ -1,4 +1,4 @@
-import { CellAttachDetachEvent, CombatEvent, FormType, ObjectReference } from "skyrimPlatform";
+import { CellAttachDetachEvent, CombatEvent, ObjectReference } from "skyrimPlatform";
 import { logError, logTrace } from "../../logging";
 import { Movement } from "../../sync/movement";
 import { localIdToRemoteId } from "../../view/worldViewMisc";
@@ -27,7 +27,6 @@ export class PuppetService extends ClientListener {
         this.controller.on("cellAttach", (e) => this.onCellAttach(e));
         this.controller.on("cellDetach", (e) => this.onCellDetach(e));
         this.controller.on("combatState", (e) => this.onCombatState(e));
-        this.controller.emitter.on("cellHostChanged", (e) => this.onCellHostChanged(e.cell, e.hosted));
     }
 
     // Whether this game switched the actor's AI off (by its local form id).
@@ -106,9 +105,10 @@ export class PuppetService extends ClientListener {
         return this.puppets.size;
     }
 
-    // An actor attaching to a cell: a puppet unless this game hosts the cell
-    // (the player's own actor aside). Its view, if the server knows it,
-    // confirms on the next update.
+    // An actor attaching to a cell: a puppet unless the server's word already
+    // names this game as its simulator (the player's own actor aside); an
+    // actor the server has not described yet is a puppet until it does. Its
+    // view confirms on the next update.
     private onCellAttach(e: CellAttachDetachEvent) {
         if (!this.enabled || !e.refr) {
             return;
@@ -117,7 +117,7 @@ export class PuppetService extends ClientListener {
         if (!ac || ac.getFormID() === 0x14) {
             return;
         }
-        if (!this.controller.lookupListener(HostService).isHostedHere(e.refr)) {
+        if (!this.controller.lookupListener(HostService).isMineLocal(ac.getFormID())) {
             this.ensurePuppet(e.refr);
         }
     }
@@ -144,32 +144,13 @@ export class PuppetService extends ClientListener {
         this.sp.setPuppet(id, true);
     }
 
-    // The whole cell at a grant or a release: every actor of the cell flips,
-    // the server's (with the record's last point) and the engine's own alike
-    private onCellHostChanged(cellId: number, hosted: boolean) {
-        if (!this.enabled) {
-            return;
-        }
-        const cell = this.sp.Cell.from(this.sp.Game.getFormEx(cellId));
-        if (!cell) {
-            return;
-        }
-        const world = this.controller.lookupListener(RemoteServer).getWorldModel();
-        const n = cell.getNumRefs(FormType.Character);
-        for (let i = 0; i < n; ++i) {
-            const refr = cell.getNthRef(i, FormType.Character);
-            if (!refr || refr.getFormID() === 0x14) {
-                continue;
-            }
-            if (hosted) {
-                const remoteId = localIdToRemoteId(refr.getFormID());
-                const form = world.forms.find((f) => f !== undefined && f.refrId === remoteId);
-                this.ensureLive(refr, form?.movement);
-            } else {
-                this.ensurePuppet(refr);
-            }
-        }
-    }
+    // A grant or a release reaches every actor as the server's word per actor
+    // (isHostedByOther flipped under its id); each view promotes or demotes
+    // on its next update, persistent references included. The cell walk that
+    // stood here (Cell.getNthRef over the cell's own references) missed them
+    // and ran at the message's tick, outside the update
+    // (b-npc-puppet 20261022-081631: 5 promoted of 23, "Game.getFormEx can't
+    // be called in this context" 27 times).
 
     private readonly puppets = new Set<number>();
     private readonly enabled: boolean;

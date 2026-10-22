@@ -68,8 +68,14 @@ UpdatePropertyMessage MpObjectReference::PreparePropertyMessage_(
   res.dataDump = valueDump;
 
   // See 'perf: improve game framerate #1186'
-  // Client needs to know if it is DOOR or not
-  if (baseRecordType == "DOOR") {
+  // Client needs to know if it is DOOR or not. thuum docs/verbs/npc-puppet.md:
+  // and whether it is an actor from the game files (NPC_), whose properties
+  // reach its form model like a copy's; without the type the client takes a
+  // game-file id for a plain engine reference and keeps only inventory,
+  // isOpen, isHarvested and disabled, so the hosted word of a handoff never
+  // arrived (b-npc-puppet 20261022-104032, step 29: c2 granted Riverwood,
+  // Sigrid's AI off on every screen)
+  if (baseRecordType == "DOOR" || baseRecordType == "NPC_") {
     res.baseRecordType = baseRecordType;
   }
 

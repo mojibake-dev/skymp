@@ -105,6 +105,24 @@ export class PuppetService extends ClientListener {
         return this.puppets.size;
     }
 
+    // An actor from the game files whose form the server took back while it
+    // was live here (this game left its reach; a disconnect): a puppet from
+    // now on, loaded or not. The server's word cannot reach a game that no
+    // longer listens to the actor, and the release of its cell comes after
+    // the grace; the native finds a persistent actor unloaded too and, with
+    // no 3D, clears the AI bit alone (PuppetApi.cpp). The view's caller has
+    // already told an actor from a figure (a figure is a 0xff copy).
+    demoteOnLoss(localId: number): void {
+        if (!this.enabled || localId === 0x14 || this.puppets.has(localId)) {
+            return;
+        }
+        if (!this.sp.setPuppet(localId, true)) {
+            return;
+        }
+        this.puppets.add(localId);
+        logTrace(this, `puppet ${localId.toString(16)} (its form lost while live)`);
+    }
+
     // An actor attaching to a cell: a puppet unless the server's word already
     // names this game as its simulator (the player's own actor aside); an
     // actor the server has not described yet is a puppet until it does. Its

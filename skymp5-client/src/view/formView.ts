@@ -334,11 +334,26 @@ export class FormView {
     }
   }
 
-  destroy(): void {
+  // `lost`: the server took the form back (this game left the actor's reach,
+  // by a walk or a teleport; a disconnect), as against the view rebinding
+  destroy(lost = false): void {
     this.isOnScreen = false;
     this.spawnMoment = 0;
     const refrId = this.refrId;
     once("update", () => {
+      if (refrId && refrId < 0xff000000 && lost) {
+        // thuum docs/verbs/npc-puppet.md: an actor from the game files was
+        // live here by the server's word alone, and no further word reaches
+        // a game that no longer listens to it (the release of its cell comes
+        // after the grace, to a game with no form for it). Its AI goes off
+        // now, loaded or not: TES3MP's leaving host does the same
+        // (b-npc-puppet 20261022-104032, step 29: c1's Sigrid read AI on
+        // from the lab spawn after the handoff)
+        const refr = ObjectReference.from(Game.getFormEx(refrId));
+        if (refr && Actor.from(refr)) {
+          SpApiInteractor.getControllerInstance().lookupListener(PuppetService).demoteOnLoss(refrId);
+        }
+      }
       if (refrId >= 0xff000000) {
         const refr = ObjectReference.from(Game.getFormEx(refrId));
         SpApiInteractor.getControllerInstance().lookupListener(WorldCleanerService).modWcProtection(refrId, -1);

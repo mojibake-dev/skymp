@@ -112,7 +112,8 @@ std::vector<nlohmann::json> PropertiesSentTo(PartOne& p,
 // id (the cases share one PartOne, so an idx can be reused by a later
 // actor), and counted: the host hears exactly one word per grant
 std::string LastHostedWord(PartOne& p, Networking::UserId user, MpActor& actor,
-                           size_t* count = nullptr)
+                           size_t* count = nullptr,
+                           std::string* baseRecordType = nullptr)
 {
   std::string word;
   size_t n = 0;
@@ -120,6 +121,9 @@ std::string LastHostedWord(PartOne& p, Networking::UserId user, MpActor& actor,
     if (j.value("propName", std::string()) == "isHostedByOther" &&
         j.value("refrId", 0u) == actor.GetFormId()) {
       word = j.value("dataDump", std::string());
+      if (baseRecordType) {
+        *baseRecordType = j.value("baseRecordType", std::string());
+      }
       ++n;
     }
   }
@@ -519,7 +523,11 @@ TEST_CASE("An actor from the game files travels under its own id with the "
   CellLoaded(p, 0, *cell);
   REQUIRE(p.GetCellHost(*cell).player == kC1);
   REQUIRE(SentTo<HostGrantMessage>(p, 0).size() == 1);
-  REQUIRE(LastHostedWord(p, 0, cow) == "false");
+  // the word names the record's type, or the client files it under a plain
+  // engine reference and drops it (b-npc-puppet 20261022-104032's handoff)
+  std::string wordType;
+  REQUIRE(LastHostedWord(p, 0, cow, nullptr, &wordType) == "false");
+  REQUIRE(wordType == "NPC_");
   REQUIRE(LastHostedWord(p, 1, cow) == "true");
 
   // the host's report moves the cow and reaches the other game once, not

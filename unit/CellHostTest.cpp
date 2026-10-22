@@ -144,12 +144,12 @@ TEST_CASE("The first loader in reach hosts the cell and alone moves its "
   Player(p, 1, kC2, kHere + NiPoint3{ 100.f, 0.f, 0.f });
   p.CreateActor(kWolf, kHere + NiPoint3{ 50.f, 50.f, 0.f }, 0, kTamriel);
   auto& wolf = p.worldState.GetFormAt<MpActor>(kWolf);
-  // the players' next reports subscribe them to the new actor both ways (the
-  // grid pass of SetPos; a creation alone leaves the actor with no listeners,
-  // pipeline 2557's dump: "actor listeners 0"), as the live game's 130 ms
-  // reports do long before any grant
-  Move(p, 0, kC1, kHere);
-  Move(p, 1, kC2, kHere + NiPoint3{ 100.f, 0.f, 0.f });
+  // a server-made actor joins the grid and subscribes at its own first
+  // SetPos (ForceSubscriptionsUpdate while nothing has subscribed it;
+  // PartOne::CreateActor writes no position of its own, and a standing
+  // player's report runs no pass: pipelines 2557 and 2560, "actor listeners
+  // 0"); in the live game the host's first report for it does this
+  wolf.SetPos(wolf.GetPos());
   REQUIRE(wolf.GetActorListeners().size() >= 2);
   p.Messages().clear();
 

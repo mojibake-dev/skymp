@@ -531,6 +531,10 @@ export class FormView {
         this.movState.lastNumChanges ||
         Date.now() - this.movState.lastApply > 2000
       ) {
+        // the periodic re-apply of an unchanged record settles a displaced
+        // standing figure or puppet (movementApply's deadband; the stagger
+        // push left under eight units, b-duel on train-33)
+        const settle = +(model.numMovementChanges as number) === this.movState.lastNumChanges;
         this.movState.lastApply = Date.now();
         if (!alreadyHosted) {
           // a figure or a puppet: the record's movement is imposed (a
@@ -540,7 +544,7 @@ export class FormView {
             model.movement.isWeapDrawn = forcedWeapDrawn;
           }
           try {
-            applyMovement(refr, model.movement, !!model.isMyClone, puppet);
+            applyMovement(refr, model.movement, !!model.isMyClone, puppet, settle);
           } catch (e) {
             if (e instanceof RespawnNeededError) {
               model.movement.isWeapDrawn = backup;

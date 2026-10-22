@@ -69,13 +69,16 @@ UpdatePropertyMessage MpObjectReference::PreparePropertyMessage_(
 
   // See 'perf: improve game framerate #1186'
   // Client needs to know if it is DOOR or not. thuum docs/verbs/npc-puppet.md:
-  // and whether it is an actor from the game files (NPC_), whose properties
-  // reach its form model like a copy's; without the type the client takes a
-  // game-file id for a plain engine reference and keeps only inventory,
-  // isOpen, isHarvested and disabled, so the hosted word of a handoff never
-  // arrived (b-npc-puppet 20261022-104032, step 29: c2 granted Riverwood,
-  // Sigrid's AI off on every screen)
-  if (baseRecordType == "DOOR" || baseRecordType == "NPC_") {
+  // and whether a game-file id is an actor's (NPC_), whose properties reach
+  // its form model like a copy's; without the type the client takes the id
+  // for a plain engine reference and keeps only inventory, isOpen,
+  // isHarvested and disabled, so the hosted word of a handoff never arrived
+  // (b-npc-puppet 20261022-104032, step 29: c2 granted Riverwood, Sigrid's
+  // AI off on every screen). A server-made actor's id (0xff...) needs no
+  // type: the client binds every such id to its model (RespawnTest's shape
+  // kept for players)
+  if (baseRecordType == "DOOR" ||
+      (baseRecordType == "NPC_" && self->GetFormId() < 0xff000000)) {
     res.baseRecordType = baseRecordType;
   }
 

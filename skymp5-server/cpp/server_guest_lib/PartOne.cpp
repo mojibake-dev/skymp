@@ -1486,36 +1486,55 @@ void PartOne::OnActorSighting(MpActor& reporter, uint32_t refrId,
                               uint32_t worldOrCell, const NiPoint3& pos,
                               const NiPoint3& rot)
 {
+  // each reason a sighting is dropped, once a minute per actor: the lab
+  // reads the server log, and a roster that changes nothing must say why
+  static std::unordered_map<uint32_t, uint64_t> lastDropLogMs;
+  const auto drop = [&](const char* why) {
+    const uint64_t now = SteadyNowMs();
+    auto& last = lastDropLogMs[refrId];
+    if (last != 0 && now - last < 60'000) {
+      return;
+    }
+    last = now;
+    spdlog::info("PartOne - npc-puppet: {:x}'s sighting of {:x} at ({:.0f}, "
+                 "{:.0f}, {:.0f}) in {:x} dropped: {}",
+                 reporter.GetFormId(), refrId, pos.x, pos.y, pos.z,
+                 worldOrCell, why);
+  };
   // a game-file actor alone (the validator's bound too); a player's actor
   // never
   if (refrId >= 0xff000000) {
-    return;
+    return drop("not a game-file id");
   }
   const auto cell = worldState.CellOf(worldOrCell, pos);
   if (!cell) {
-    return;
+    return drop("no cell at that position");
   }
   const auto host = GetCellHost(*cell);
   if (!host.hosted || host.player != reporter.GetFormId()) {
     // another game's cell, or nobody's yet: that host reports it, or the
     // grant comes first
-    return;
+    return drop(host.hosted ? "the cell is another game's"
+                            : "the cell is nobody's yet");
   }
   // the record, loaded on demand where the game files place it
   const auto& form = worldState.LookupFormById(refrId);
   MpActor* actor = form ? form->AsActor() : nullptr;
-  if (!actor || serverState.UserByActor(actor) != Networking::InvalidUserId) {
-    return;
+  if (!actor) {
+    return drop("no actor record loads for it");
+  }
+  if (serverState.UserByActor(actor) != Networking::InvalidUserId) {
+    return drop("a player's actor");
   }
   const auto standing = worldState.CellOf(*actor);
   if (standing && *standing == *cell) {
-    return; // already where the host's engine has it
+    return; // already where the host's engine has it: the usual case, silent
   }
   if (MpActor* other = worldState.HostOf(*actor);
       other && other != &reporter) {
     // hosted by another game where the record stands: its word, not this
     // one's; the records meet at a handoff (npc-handoff)
-    return;
+    return drop("its record stands in a cell another game hosts");
   }
   spdlog::info("PartOne - npc-puppet: {:x} sights {:x} at ({:.0f}, {:.0f}, "
                "{:.0f}) in {:x}, cell {:x}; the record stood in {:x}",

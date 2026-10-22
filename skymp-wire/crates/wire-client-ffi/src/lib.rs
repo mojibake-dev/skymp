@@ -36,21 +36,38 @@ static STATE: Mutex<Option<WireClient>> = Mutex::new(None);
 const LOG_PATH: &str = "Data/Platform/Logs/MpClientPlugin-logs.txt";
 /// The password file SkyMP's installer writes (MpClientPlugin.cpp).
 const PASSWORD_PATH: &str = "Data/Platform/Distribution/password";
-/// Log lines past this many bytes are dropped until the game restarts.
+/// Past this many bytes the log rotates (see `rotate_if_full`).
 const LOG_MAX_BYTES: u64 = 4 * 1024 * 1024;
 
 fn log(line: &str) {
     let path = std::env::var("SKYMP_WIRE_LOG").unwrap_or_else(|_| LOG_PATH.into());
+    rotate_if_full(&path);
     let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) else {
         return;
     };
-    if f.metadata().map(|m| m.len()).unwrap_or(0) > LOG_MAX_BYTES {
-        return;
-    }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     let _ = writeln!(f, "{}.{:03} {line}", now.as_secs(), now.subsec_millis());
+}
+
+/// A log over the cap moves to `<stem>.1.<ext>`, replacing the one before,
+/// and a fresh file starts. The lines past the cap used to be dropped, and
+/// since the file persisted across launches a full log silenced the plugin
+/// for good: the lab's c1 wrote nothing from 2026-10-18 to 2026-10-22. The
+/// handle is opened per line, so nothing holds the file at the rename.
+fn rotate_if_full(path: &str) {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    if meta.len() <= LOG_MAX_BYTES {
+        return;
+    }
+    let p = std::path::Path::new(path);
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("MpClientPlugin-logs");
+    let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("txt");
+    let rotated = p.with_file_name(format!("{stem}.1.{ext}"));
+    let _ = std::fs::rename(p, rotated);
 }
 
 fn read_password() -> Option<String> {
@@ -252,6 +269,30 @@ mod tests {
 
     extern "C-unwind" fn explode(_: i32, _: *const c_char, _: usize, _: *const c_char, _: *mut c_void) {
         panic!("a JavaScript handler threw");
+    }
+
+    #[test]
+    fn a_full_log_rotates_instead_of_falling_silent() {
+        let dir = std::env::temp_dir().join(format!("skymp-wire-rotate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("MpClientPlugin-logs.txt");
+        let rotated = dir.join("MpClientPlugin-logs.1.txt");
+        let _ = std::fs::remove_file(&rotated);
+        let over = usize::try_from(LOG_MAX_BYTES.saturating_add(1)).expect("fits");
+        std::fs::write(&path, vec![b'x'; over]).expect("full log");
+        std::fs::write(&rotated, b"older").expect("older rotation");
+        let path_str = path.to_str().expect("utf8 path");
+        rotate_if_full(path_str);
+        assert!(!path.exists(), "the full log moved aside");
+        assert_eq!(
+            std::fs::metadata(&rotated).expect("rotated").len(),
+            LOG_MAX_BYTES.saturating_add(1),
+            "replacing the older one"
+        );
+        std::fs::OpenOptions::new().create(true).append(true).open(&path).expect("fresh");
+        rotate_if_full(path_str);
+        assert!(path.exists(), "a log under the cap stays");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -40,5 +40,10 @@ private:
   std::set<DWORD> inProgressThreads;
   std::map<uint32_t, std::shared_ptr<Handler>> handlers;
   uint32_t hCounter = 0;
+  // raised by the hooked thread around its hand-off to the JavaScript thread
+  // (kept for the Papyrus hook's early scan); not a guard for add or remove
   std::atomic<int> addRemoveBlocker = 0;
+  // the JavaScript thread's depth inside HandleEnter or HandleLeave: the
+  // guard AddHandler and RemoveHandler read (thuum docs/verbs/npc-puppet.md)
+  int handlerDepth = 0;
 };

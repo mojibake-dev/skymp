@@ -976,11 +976,11 @@ void PartOne::Init()
       message.animation = emitterAsActor->GetLastAnimEvent();
     }
 
-    uint64_t longFormId = emitter->GetFormId();
-    if (emitterAsActor && longFormId < 0xff000000) {
-      longFormId += 0x100000000;
-    }
-    message.refrId = longFormId;
+    // thuum docs/verbs/npc-puppet.md: an actor from the game files travels
+    // under its own form id (the client binds the engine's own reference
+    // and runs it or puppets it by the cell's grant); upstream's
+    // id + 0x100000000 made the client place a copy of its base
+    message.refrId = emitter->GetFormId();
 
     if (emitter->GetBaseId() != 0x00000000 &&
         emitter->GetBaseId() != 0x00000007) {
@@ -1025,11 +1025,17 @@ void PartOne::Init()
     const bool hasUser = emitterAsActor &&
       serverState.UserByActor(emitterAsActor) != Networking::InvalidUserId;
 
-    // thuum docs/verbs/cell-host.md: an actor no user plays is run by the
-    // game hosting its cell; every other game, and every game while the
-    // cell is unhosted, sees it as hosted by other (frozen at the record)
+    // thuum docs/verbs/cell-host.md and npc-puppet.md: a player's figure is
+    // always hosted by other; a server-made actor (a 0xff id, a copy on
+    // every client) is hosted by other unless this listener hosts its cell;
+    // an actor from the game files carries no flag at all: whether a game
+    // runs it or puppets it is the cell's grant alone (the property's u32
+    // id never reached the client's copy of it: playtest thirty's wolves)
+    const bool fromGameFiles =
+      emitterAsActor && emitter->GetFormId() < 0xff000000;
     if (hasUser ||
-        (emitterAsActor && worldState.HostOf(*emitter) != listener)) {
+        (emitterAsActor && !fromGameFiles &&
+         worldState.HostOf(*emitter) != listener)) {
       message.props.isHostedByOther = true;
     }
 
@@ -1037,10 +1043,12 @@ void PartOne::Init()
       emitter->GetCellOrWorld().ToFormId(worldState.espmFiles);
 
     // See 'perf: improve game framerate #1186'
-    // Client needs to know if it is DOOR or not
+    // Client needs to know if it is DOOR or not; thuum docs/verbs/
+    // npc-puppet.md: and whether an engine reference is an actor (NPC_),
+    // which it binds a view to instead of placing a copy
     if (const std::string& baseType = emitter->GetBaseType();
-        baseType == "DOOR") {
-      message.baseRecordType = "DOOR";
+        baseType == "DOOR" || (fromGameFiles && baseType == "NPC_")) {
+      message.baseRecordType = baseType;
     }
 
     message.idx = emitter->GetIdx();

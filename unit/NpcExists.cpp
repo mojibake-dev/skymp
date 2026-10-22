@@ -6,7 +6,9 @@
 PartOne& GetPartOne();
 
 static constexpr uint32_t cowId = 0x10ebaf;
-static constexpr uint64_t cowRefrId = 0x10010ebaf;
+// thuum docs/verbs/npc-puppet.md: an actor from the game files travels under
+// its own form id (upstream sent id + 0x100000000 for a client-side copy)
+static constexpr uint64_t cowRefrId = 0x10ebaf;
 
 TEST_CASE("Whiterun cow 0x10ebaf exists", "[NpcExists][espm]")
 {
@@ -39,9 +41,10 @@ TEST_CASE("Whiterun cow 0x10ebaf is visible to players", "[NpcExists][espm]")
   {
     auto it = std::find_if(messages.begin(), messages.end(),
                            [&](PartOne::Message& msg) {
+                             // the flag sits under props; a game-file
+                             // actor carries none (npc-puppet.md)
                              return msg.j["refrId"] == cowRefrId &&
-                               (msg.j["isHostedByOther"] == nullptr ||
-                                msg.j["isHostedByOther"] == false);
+                               msg.j["props"]["isHostedByOther"] == nullptr;
                            });
     REQUIRE(it != messages.end());
   }
@@ -107,4 +110,14 @@ TEST_CASE(
   partOne.worldState.defaultSetting.spawnInExterior = true;
   partOne.worldState.defaultSetting.overriden = true;
   REQUIRE_NOTHROW(partOne.worldState.GetFormAt<MpActor>(cowId));
+}
+
+TEST_CASE("Riverwood's Alvor 0x13482, a unique Nord in an interior, loads "
+          "under npcEnabled: the essential, unique, crime-faction and race "
+          "bans are lifted (thuum docs/verbs/npc-puppet.md)",
+          "[NpcExists][espm]")
+{
+  PartOne& partOne = GetPartOne();
+  partOne.worldState.npcEnabled = true;
+  REQUIRE_NOTHROW(partOne.worldState.GetFormAt<MpActor>(0x13482));
 }

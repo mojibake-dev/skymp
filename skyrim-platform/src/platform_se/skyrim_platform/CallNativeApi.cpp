@@ -137,7 +137,15 @@ Napi::Value CallNativeImpl(
       deferred->Resolve(
         SP3NativeValueCasts::GetSingleton().NativeValueToJsValue(env, v));
     };
-    CallNative::CallNativeSafe(callNativeArgs);
+    try {
+      CallNative::CallNativeSafe(callNativeArgs);
+    } catch (const std::exception& e) {
+      // the failure is logged here as well as thrown to JavaScript, so a
+      // script that swallows it still leaves the native's name in the log
+      spdlog::warn("[callNative] latent {}.{} failed: {}", className,
+                   functionName, e.what());
+      throw;
+    }
     return deferred->Promise();
   } else {
     Override o;

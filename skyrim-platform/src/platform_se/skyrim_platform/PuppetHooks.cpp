@@ -1,6 +1,7 @@
 #include "FridaHookHandler.h"
 #include "Puppets.h"
 #include "game/Offsets.h"
+#include <cmath>
 
 // thuum docs/verbs/npc-puppet.md, the two detours of the puppet shape (one AI
 // bit plus two hooks, re-ai-puppet.md Q2). Every prototype below is the
@@ -106,6 +107,36 @@ void MovementStepReplacement(RE::Actor* actor, float delta)
     controller->flags.set(RE::CHARACTER_FLAGS::kFollowRagdoll);
   }
   actor->Move(delta, RE::NiPoint3{ 0.f, 0.f, 0.f });
+
+  // docs/research/m3/re-puppet-locomotion.md (R2, 2026-10-22): the graph's
+  // Speed, Direction and TurnDelta are Actor data channels polled at every
+  // graph tick from MiddleHighProcessData::currentMovementSpeed (:197),
+  // rotation.z (:138, the move direction feedback in radians clockwise from
+  // the facing) and rotationSpeed.z (:139), fields only the skipped step
+  // and its feedback tail write; a Papyrus SetAnimationVariableFloat lives
+  // less than a frame (the channel push rewrites the slot before the step).
+  // So the host's relayed sample is written here, every frame, before the
+  // animation stage polls (HYPOTHESIS on the stage order, probe F5); the
+  // Speed channel's own threshold at 5.0 then raises moveStart and moveStop,
+  // and the Direction channel the move direction actions, as for a live
+  // actor (HYPOTHESIS, probe F2 and F3). unk2AC is TargetSpeed's source
+  // (:198; HYPOTHESIS that the graph reads it).
+  Puppets::Locomotion sample;
+  if (Puppets::GetLocomotion(actor->formID, sample)) {
+    if (auto* mh = actor->GetActorRuntimeData().currentProcess->middleHigh) {
+      constexpr float kDegToRad = 0.017453292f;
+      constexpr float kTwoPi = 6.2831853f;
+      float direction = sample.directionDeg * kDegToRad;
+      direction = std::fmod(direction, kTwoPi);
+      if (direction < 0.f) {
+        direction += kTwoPi;
+      }
+      mh->currentMovementSpeed = sample.speed;
+      mh->unk2AC = sample.speed;
+      mh->rotation.z = direction;
+      mh->rotationSpeed.z = -sample.turnRateDeg * kDegToRad;
+    }
+  }
 }
 }
 

@@ -3,8 +3,7 @@ import {
   Actor,
   Game,
   TESModPlatform,
-  Debug
-} from "skyrimPlatform";
+  Debug, setPuppetLocomotion } from "skyrimPlatform";
 import { RespawnNeededError } from "../lib/errors";
 import { Movement, RunMode, AnimationVariables, Transform, NiPoint3 } from "./movement";
 import { ObjectReferenceEx } from "../extensions/objectReferenceEx";
@@ -87,9 +86,15 @@ const applyPuppetPose = (ac: Actor, m: Movement) => {
   if (Math.abs(angleDelta(m.rot[2], ac.getAngleZ())) >= 1) {
     ac.setAngle(m.rot[0], m.rot[1], m.rot[2]);
   }
+  // docs/research/m3/re-puppet-locomotion.md: the graph's Speed and
+  // Direction are data channels the engine refreshes every tick from the
+  // movement step's fields, so a SetAnimationVariableFloat here lived less
+  // than a frame (x-npc-legs 20261022-190831: every input read 0 under
+  // per-sample writes). The sample goes to the native side, which writes
+  // the fields every frame in the movement-step detour; the engine's own
+  // moveStart, moveStop and direction actions follow from them (HYPOTHESIS)
   const standing = m.runMode === "Standing";
-  ac.setAnimationVariableFloat("Speed", standing ? 0 : m.speed);
-  ac.setAnimationVariableFloat("Direction", standing ? 0 : m.direction / 360);
+  setPuppetLocomotion(ac.getFormID(), standing ? 0 : m.speed, standing ? 0 : m.direction, 0);
 };
 
 const keepOffsetFromActor = (ac: Actor, m: Movement) => {

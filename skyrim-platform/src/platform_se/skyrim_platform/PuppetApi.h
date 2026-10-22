@@ -13,6 +13,11 @@ namespace PuppetApi {
 Napi::Value SetPuppet(const Napi::CallbackInfo& info);
 // isPuppet(actorFormId): whether this game flagged the actor
 Napi::Value IsPuppet(const Napi::CallbackInfo& info);
+// setPuppetLocomotion(actorFormId, speed, directionDeg, turnRateDeg): the
+// host's latest movement sample, which the Move detour writes every frame
+// where the graph's Speed, Direction and TurnDelta channels read
+// (docs/research/m3/re-puppet-locomotion.md)
+Napi::Value SetPuppetLocomotion(const Napi::CallbackInfo& info);
 
 inline void Register(Napi::Env env, Napi::Object& exports)
 {
@@ -22,5 +27,8 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "isPuppet",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(IsPuppet)));
+  exports.Set("setPuppetLocomotion",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(SetPuppetLocomotion)));
 }
 }

@@ -1726,6 +1726,8 @@ export declare function placeAreaEffect(actorFormId: number, spellFormId: number
 // thuum docs/verbs/npc-puppet.md: an NPC this game does not host is a puppet: setPuppet(actorFormId, true) stops its combat, clears its keep-offset and switches its AI off, and flags it for the two detours that keep its graph ticking and skip the engine's movement step; setPuppet(actorFormId, false) switches the AI back on and evaluates its package. The engine calls run on the game thread right after this update; false when no such actor exists
 export declare function setPuppet(actorFormId: number, puppet: boolean): boolean;
 export declare function isPuppet(actorFormId: number): boolean;
+// thuum docs/verbs/npc-puppet.md (docs/research/m3/re-puppet-locomotion.md): the host's latest movement sample for a puppet, which the movement-step detour writes every frame where the graph's Speed, Direction and TurnDelta channels read (speed in units per second, the move direction in degrees clockwise from the facing, the heading rate in degrees per second); call at every relayed sample. Stored on the JS thread; false when the actor is not a puppet
+export declare function setPuppetLocomotion(actorFormId: number, speed: number, directionDeg: number, turnRateDeg: number): boolean;
 export declare function getAnimationVariablesFromActor(actorFormId: number): ActorAnimationVariables;
 export declare function applyAnimationVariablesToActor(actorFormId: number, animationVariables: ActorAnimationVariables): boolean;
 

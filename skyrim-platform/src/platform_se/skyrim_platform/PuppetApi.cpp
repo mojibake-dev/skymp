@@ -3,6 +3,7 @@
 #include "Puppets.h"
 #include "game/Offsets.h"
 #include <mutex>
+#include <unordered_map>
 #include <unordered_set>
 
 extern CallNativeApi::NativeCallRequirements g_nativeCallRequirements;
@@ -11,6 +12,7 @@ namespace {
 struct
 {
   std::unordered_set<uint32_t> ids;
+  std::unordered_map<uint32_t, Puppets::Locomotion> locomotion;
   std::recursive_mutex m;
 } g_puppets;
 
@@ -83,6 +85,7 @@ void Puppets::Set(uint32_t formId, bool puppet)
     g_puppets.ids.insert(formId);
   } else {
     g_puppets.ids.erase(formId);
+    g_puppets.locomotion.erase(formId);
   }
 }
 
@@ -90,6 +93,23 @@ size_t Puppets::Count()
 {
   std::lock_guard l(g_puppets.m);
   return g_puppets.ids.size();
+}
+
+void Puppets::SetLocomotion(uint32_t formId, const Locomotion& sample)
+{
+  std::lock_guard l(g_puppets.m);
+  g_puppets.locomotion[formId] = sample;
+}
+
+bool Puppets::GetLocomotion(uint32_t formId, Locomotion& out)
+{
+  std::lock_guard l(g_puppets.m);
+  const auto it = g_puppets.locomotion.find(formId);
+  if (it == g_puppets.locomotion.end()) {
+    return false;
+  }
+  out = it->second;
+  return true;
 }
 
 Napi::Value PuppetApi::SetPuppet(const Napi::CallbackInfo& info)
@@ -126,5 +146,20 @@ Napi::Value PuppetApi::SetPuppet(const Napi::CallbackInfo& info)
 Napi::Value PuppetApi::IsPuppet(const Napi::CallbackInfo& info)
 {
   const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  return Napi::Boolean::New(info.Env(), Puppets::Is(actorFormId));
+}
+
+// setPuppetLocomotion(actorFormId, speed, directionDeg, turnRateDeg): the
+// relayed sample a puppet's graph is fed from, stored under the registry's
+// lock on the JS thread (no game call); false when the actor is not a
+// puppet (the sample is kept anyway for the next demote)
+Napi::Value PuppetApi::SetPuppetLocomotion(const Napi::CallbackInfo& info)
+{
+  const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  Puppets::Locomotion sample;
+  sample.speed = NapiHelper::ExtractFloat(info[1], "speed");
+  sample.directionDeg = NapiHelper::ExtractFloat(info[2], "directionDeg");
+  sample.turnRateDeg = NapiHelper::ExtractFloat(info[3], "turnRateDeg");
+  Puppets::SetLocomotion(actorFormId, sample);
   return Napi::Boolean::New(info.Env(), Puppets::Is(actorFormId));
 }

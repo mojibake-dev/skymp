@@ -78,16 +78,22 @@ Napi::Value PuppetApi::SetPuppet(const Napi::CallbackInfo& info)
 {
   const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
   const auto puppet = NapiHelper::ExtractBoolean(info[1], "puppet");
-  auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
-  if (!actor) {
+  if (actorFormId == 0 || actorFormId == 0x14) {
     return Napi::Boolean::New(info.Env(), false);
   }
-  // the flag first: the detours read it from this frame on
+  // the flag first: the detours read it from this frame on. The actor is
+  // looked up on the game thread alone (performAction's shape): a lookup
+  // here runs on the JS thread under the forms map's lock while the game
+  // thread waits for this tick, and a cell load holding that lock would
+  // hold both (the gate's hang at a landing, 2026-10-21, under reading)
   Puppets::Set(actorFormId, puppet);
   g_nativeCallRequirements.gameThrQ->AddTask(
     [actorFormId, puppet](Viet::Void) {
       auto* pActor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
       if (!pActor) {
+        logger::warn("[verb:npc-puppet] setPuppet({:x}, {}): no such actor",
+                     actorFormId, puppet);
+        Puppets::Set(actorFormId, false);
         return;
       }
       if (puppet) {

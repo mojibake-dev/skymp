@@ -60,10 +60,11 @@ export class HitService extends ClientListener {
         }
         const key = `${targetId}:${spell}`;
         const sentAt = this.magicSent.get(key);
-        if (sentAt !== undefined && this.frame - sentAt <= HitService.dedupFrames) {
+        const now = Date.now();
+        if (sentAt !== undefined && now - sentAt <= HitService.dedupMs) {
             return;
         }
-        this.magicSent.set(key, this.frame);
+        this.magicSent.set(key, now);
         const data: Hit = {
             aggressor: localIdToRemoteId(0x14),
             isBashAttack: false,
@@ -207,15 +208,21 @@ export class HitService extends ClientListener {
         // counted a two-handed stream once (x-dual-cast, x-dual-stack: the
         // game runs both). A double that slips through adds nothing: the
         // server counts a stream by its time, not its reports
+        // thuum docs/verbs/spell-cast.md (x-duel-stream 20261022-225540 against
+        // 225208: both games saw the whole Flames stream, the server got 10 of
+        // its 20 reports, in clusters, nothing refused anywhere): these two
+        // rules were measured in JS frames, and a stalled tick puts two real
+        // stream ticks, 183 ms apart, inside one frame or inside dedupFrames,
+        // where they read as the engine's double and were dropped before any
+        // send. They are measured in time now: the engine's double is 0 to
+        // 2 ms apart, a stream's ticks never under 100 ms
         if (isSpell || isScroll) {
-            if (this.magicHitsFrame !== this.frame) {
-                this.magicHitsFrame = this.frame;
-                this.magicHitsThisFrame.clear();
-            }
             const key = `${e.aggressor.getFormID()}:${e.target.getFormID()}:${e.source.getFormID()}`;
-            const n = (this.magicHitsThisFrame.get(key) || 0) + 1;
-            this.magicHitsThisFrame.set(key, n);
-            if (n % 2 === 0) {
+            const now = Date.now();
+            const last = this.magicHitLastMs.get(key);
+            this.magicHitLastMs.set(key, now);
+            if (last !== undefined && now - last <= HitService.doubleMs) {
+                this.magicHitLastMs.delete(key); // the pair is spent; a third copy is a new hit
                 return;
             }
         }
@@ -239,10 +246,11 @@ export class HitService extends ClientListener {
         if (isSpell && aggressor === 0x14) {
             const key = `${e.target.getFormID()}:${e.source.getFormID()}`;
             const sentAt = this.magicSent.get(key);
-            if (sentAt !== undefined && this.frame - sentAt <= HitService.dedupFrames) {
+            const now = Date.now();
+            if (sentAt !== undefined && now - sentAt <= HitService.dedupMs) {
                 return;
             }
-            this.magicSent.set(key, this.frame);
+            this.magicSent.set(key, now);
             this.sendSpellHit(e.source.getFormID(), data);
             return;
         }
@@ -279,17 +287,19 @@ export class HitService extends ClientListener {
     private static readonly spellHitDelayUpdates = 2;
     // Skyrim.esm's Unarmed weapon, the explosion's stand-in for a weapon
     private static readonly kUnarmed = 0x1f4;
-    // a hit event and an apply of the same spell on the same target this
-    // many frames apart are one hit
-    private static readonly dedupFrames = 2;
+    // a hit event and an apply of the same spell on the same target within
+    // this many milliseconds are one hit (two JS frames at 60 updates a
+    // second; a stream's ticks are 183 ms apart, never inside it)
+    private static readonly dedupMs = 34;
+    // the engine's two copies of one magic hit come 0 to 2 ms apart
+    private static readonly doubleMs = 8;
     // an Unarmed hit on a figure this many updates from the player's own
     // effect on it is the explosion's stand-in (x-area-hit 20261018-135726:
     // about seven)
     private static readonly unarmedWindowFrames = 10;
-    private magicSent = new Map<string, number>();
+    private magicSent = new Map<string, number>(); // key -> Date.now() of the last report
     private appliedOn = new Map<number, number>();
     private heldUnarmed: Array<{ frame: number; target: number; send: () => void }> = [];
-    private magicHitsFrame = -1;
     private abortedHitLogged = false;
-    private magicHitsThisFrame = new Map<string, number>();
+    private magicHitLastMs = new Map<string, number>();
 }

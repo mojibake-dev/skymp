@@ -1,6 +1,7 @@
 #include "TestUtils.hpp"
 #include "libespm/GroupUtils.h"
 #include "libespm/REFR.h"
+#include "wire_bridge_cxx/rules.h"
 #include <catch2/catch_all.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>

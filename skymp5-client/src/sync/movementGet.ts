@@ -58,7 +58,15 @@ export const getMovement = (refr: ObjectReference, form?: FormModel): Movement =
   const pos = ObjectReferenceEx.getPos(refr);
 
   let speed;
-  if (refr.getFormID() !== 0x14) {
+  if (refr.getFormID() !== 0x14 && refr.getFormID() < 0xff000000) {
+    // thuum docs/verbs/npc-puppet.md (x-npc-legs 20261022-202106 against the
+    // host baseline 195031): an actor from the game files reports Speed, the
+    // graph's own locomotion input (the movement controller's speed, about 80
+    // at a walk and 220 at a run), which its puppets' graphs are fed from
+    // natively; SpeedSampled runs 1.3 to 1.5 times higher and blended the
+    // puppets toward a jog
+    speed = refr.getAnimationVariableFloat("Speed");
+  } else if (refr.getFormID() !== 0x14) {
     speed = refr.getAnimationVariableFloat("SpeedSampled");
   } else {
     // Real players often run into the wall.

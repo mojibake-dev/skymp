@@ -9,7 +9,9 @@ import {
   Game,
   storage,
   // @ts-expect-error (TODO: Remove in 2.10.0)
-  setCollision
+  setCollision,
+  isPuppet,
+  once
 } from "skyrimPlatform";
 import { Movement } from "./movement";
 import { applyWeapDrawn } from "./movementApply";
@@ -388,6 +390,29 @@ export const setupHooks = (): void => {
       if (ctx.animationSucceeded) clearKnockedDown(ctx.selfId);
     },
   }, 0xff000000, 0xffffffff, "GetUpBegin");
+
+  // thuum docs/verbs/npc-puppet.md (x-npc-legs 20261022-202106, Alvor): a
+  // puppet's graph took its host's chair enter but REFUSED the relayed
+  // IdleChairExitStart, stayed in the furniture state, which consumes no
+  // Speed, and the relay carried a sitting body across the yard. A refused
+  // furniture exit on a puppet (an actor from the game files this game does
+  // not run) is answered with the graph's default state on the next update,
+  // the Papyrus-side reset the engine offers (IdleForceDefaultState, the one
+  // idle isIdle lets through). Filtered in native to game-file ids and the
+  // exit idles (rule 9). HYPOTHESIS until a probe catches a refused exit.
+  hooks.sendAnimationEvent.add({
+    enter: () => { },
+    leave: (ctx) => {
+      if (ctx.animationSucceeded || !isPuppet(ctx.selfId)) return;
+      const refrId = ctx.selfId;
+      once("update", () => {
+        const refr = ObjectReference.from(Game.getFormEx(refrId));
+        if (refr && isPuppet(refrId)) {
+          Debug.sendAnimationEvent(refr, "IdleForceDefaultState");
+        }
+      });
+    },
+  }, 0, 0xfeffffff, "*ExitStart");
 
   hooks.sendAnimationEvent.add({
     enter: (ctx) => {

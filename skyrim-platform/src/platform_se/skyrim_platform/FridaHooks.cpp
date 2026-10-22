@@ -6,7 +6,6 @@
 #include "MagicApi.h"
 #include "Override.h"
 #include "PapyrusTESModPlatform.h"
-#include "Puppets.h"
 #include "SkyrimPlatform.h"
 #include "StringHolder.h"
 
@@ -1094,8 +1093,6 @@ void Frida::InstallHooks()
   InstallApplyMasksToRenderTargetsHook();
 #endif
   InstallNativeFunctionCtorHook();
-  // thuum docs/verbs/npc-puppet.md: the puppet shape's two detours
-  Puppets::InstallHooks();
 
   logger::info("Frida hooks installed.");
 }

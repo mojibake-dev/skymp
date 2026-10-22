@@ -108,16 +108,23 @@ std::vector<nlohmann::json> PropertiesSentTo(PartOne& p,
 }
 
 // the last isHostedByOther `user` was sent for `actor` ("true", "false"),
-// or "" when none was: the word a game keeps
-std::string LastHostedWord(PartOne& p, Networking::UserId user, MpActor& actor)
+// or "" when none was: the word a game keeps. Matched by the actor's form
+// id (the cases share one PartOne, so an idx can be reused by a later
+// actor), and counted: the host hears exactly one word per grant
+std::string LastHostedWord(PartOne& p, Networking::UserId user, MpActor& actor,
+                           size_t* count = nullptr)
 {
   std::string word;
+  size_t n = 0;
   for (const auto& j : PropertiesSentTo(p, user)) {
     if (j.value("propName", std::string()) == "isHostedByOther" &&
-        j.value("idx", 0u) == actor.GetIdx()) {
-      REQUIRE(j["refrId"] == actor.GetFormId());
+        j.value("refrId", 0u) == actor.GetFormId()) {
       word = j.value("dataDump", std::string());
+      ++n;
     }
+  }
+  if (count) {
+    *count = n;
   }
   return word;
 }
@@ -199,7 +206,11 @@ TEST_CASE("The first loader in reach hosts the cell and alone moves its "
       << ", actor listeners " << wolf.GetActorListeners().size()
       << ", c1 emitters "
       << p.worldState.GetFormAt<MpActor>(kC1).GetEmitters().size());
-    REQUIRE(LastHostedWord(p, 0, wolf) == "false");
+    size_t words = 0;
+    REQUIRE(LastHostedWord(p, 0, wolf, &words) == "false");
+    // one word, c1's own: an offline neighbour's word is nobody's to hear
+    // (UpdateHoster sends only to listeners with a user)
+    REQUIRE(words == 1);
   }
 
   // c2 loads it too: nothing

@@ -112,41 +112,50 @@ namespace {
 Napi::Value CreateHookApi(Napi::Env env, std::shared_ptr<Hook> hookInfo)
 {
   auto hook = Napi::Object::New(env);
-  hook.Set(
-    "add",
-    Napi::Function::New(env, [hookInfo](const Napi::CallbackInfo& info) {
-      auto handlerObj = NapiHelper::ExtractObject(info[0], "handlerObj");
+  // thuum docs/verbs/npc-puppet.md: both callbacks wrapped, so a failure
+  // (a handler added inside a handler) reaches JavaScript as its error and
+  // never as a C++ exception through V8's frames (the landing hang)
+  hook.Set("add",
+           Napi::Function::New(
+             env,
+             NapiHelper::WrapCppExceptions(
+               [hookInfo](const Napi::CallbackInfo& info) {
+                 auto handlerObj =
+                   NapiHelper::ExtractObject(info[0], "handlerObj");
 
-      std::optional<double> minSelfId;
-      if (info[1].IsNumber()) {
-        minSelfId = NapiHelper::ExtractDouble(info[1], "minSelfId");
-      }
+                 std::optional<double> minSelfId;
+                 if (info[1].IsNumber()) {
+                   minSelfId = NapiHelper::ExtractDouble(info[1], "minSelfId");
+                 }
 
-      std::optional<double> maxSelfId;
-      if (info[2].IsNumber()) {
-        maxSelfId = NapiHelper::ExtractDouble(info[2], "maxSelfId");
-      }
+                 std::optional<double> maxSelfId;
+                 if (info[2].IsNumber()) {
+                   maxSelfId = NapiHelper::ExtractDouble(info[2], "maxSelfId");
+                 }
 
-      std::optional<HookPattern> pattern;
-      if (info[3].IsString()) {
-        auto s = NapiHelper::ExtractString(info[3], "pattern");
-        pattern = HookPattern::Parse(s);
-      }
+                 std::optional<HookPattern> pattern;
+                 if (info[3].IsString()) {
+                   auto s = NapiHelper::ExtractString(info[3], "pattern");
+                   pattern = HookPattern::Parse(s);
+                 }
 
-      auto handler =
-        std::make_shared<Handler>(handlerObj, minSelfId, maxSelfId, pattern);
-      uint32_t id = hookInfo->AddHandler(handler);
+                 auto handler = std::make_shared<Handler>(
+                   handlerObj, minSelfId, maxSelfId, pattern);
+                 uint32_t id = hookInfo->AddHandler(handler);
 
-      return Napi::Number::New(info.Env(), id);
-    }));
+                 return Napi::Value(Napi::Number::New(info.Env(), id));
+               })));
 
-  hook.Set(
-    "remove",
-    Napi::Function::New(env, [hookInfo](const Napi::CallbackInfo& info) {
-      uint32_t toRemove = NapiHelper::ExtractUInt32(info[0], "toRemove");
-      hookInfo->RemoveHandler(toRemove);
-      return info.Env().Undefined();
-    }));
+  hook.Set("remove",
+           Napi::Function::New(env,
+                               NapiHelper::WrapCppExceptions(
+                                 [hookInfo](const Napi::CallbackInfo& info) {
+                                   uint32_t toRemove =
+                                     NapiHelper::ExtractUInt32(info[0],
+                                                               "toRemove");
+                                   hookInfo->RemoveHandler(toRemove);
+                                   return Napi::Value(info.Env().Undefined());
+                                 })));
   return hook;
 }
 }

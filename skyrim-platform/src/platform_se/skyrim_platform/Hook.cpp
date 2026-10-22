@@ -10,9 +10,21 @@ Hook::Hook(std::string hookName_, std::string eventNameVariableName_,
 {
 }
 
+// thuum docs/verbs/npc-puppet.md (the landing hang of 2026-10-21): the test
+// that matters is re-entrancy on the JavaScript thread, a handler adding or
+// removing a hook while HandleEnter or HandleLeave walks the map. The old
+// test read addRemoveBlocker, which a game or job thread raises before it
+// hands its Enter to the JavaScript thread, so an add made by ordinary
+// JavaScript while any animation event was in flight anywhere threw a C++
+// exception out of an unwrapped Napi callback, through V8's frames: the
+// isolate's handler chain was left pointing at a dead frame and the next
+// exception unwind spun forever (two dumps, the JS worker in
+// StackFrameIterator::Advance). The npc-puppet build hosts a cell's
+// game-file actors and adds one animation hook per actor at the grant while
+// those actors animate from the job threads, so the collision was certain.
 uint32_t Hook::AddHandler(const std::shared_ptr<Handler>& handler)
 {
-  if (addRemoveBlocker) {
+  if (handlerDepth > 0) {
     throw std::runtime_error("Trying to add hook inside hook context");
   }
   handlers.emplace(hCounter, handler);
@@ -21,7 +33,7 @@ uint32_t Hook::AddHandler(const std::shared_ptr<Handler>& handler)
 
 void Hook::RemoveHandler(const uint32_t& id)
 {
-  if (addRemoveBlocker) {
+  if (handlerDepth > 0) {
     throw std::runtime_error("Trying to remove hook inside hook context");
   }
   handlers.erase(id);
@@ -105,6 +117,18 @@ void Hook::Leave(bool succeeded)
 void Hook::HandleEnter(DWORD owningThread, uint32_t selfId,
                        std::string& eventName, const Napi::Env& env)
 {
+  // JavaScript thread only (the handlers run here); the depth is the
+  // re-entrancy guard AddHandler and RemoveHandler read
+  struct DepthScope
+  {
+    int& d;
+    explicit DepthScope(int& d_)
+      : d(d_)
+    {
+      ++d;
+    }
+    ~DepthScope() { --d; }
+  } depthScope(handlerDepth);
   for (auto& hp : handlers) {
     Handler* h = hp.second.get();
     auto& perThread = h->perThread[owningThread];
@@ -167,6 +191,16 @@ void Hook::ClearContextStorage(HandlerInfoPerThread& h, Napi::Env env)
 
 void Hook::HandleLeave(DWORD owningThread, bool succeeded, Napi::Env env)
 {
+  struct DepthScope
+  {
+    int& d;
+    explicit DepthScope(int& d_)
+      : d(d_)
+    {
+      ++d;
+    }
+    ~DepthScope() { --d; }
+  } depthScope(handlerDepth);
   for (auto& hp : handlers) {
     Handler* h = hp.second.get();
     auto& perThread = h->perThread.at(owningThread);

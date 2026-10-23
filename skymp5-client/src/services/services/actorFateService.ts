@@ -51,4 +51,5 @@ export class ActorFateService extends ClientListener {
     // the last fate applied per reference (base and worn), so a repeated fate
     // for the same roll re-rolls nothing
     private applied = new Map<number, string>();
+    private enabled: boolean;
 }

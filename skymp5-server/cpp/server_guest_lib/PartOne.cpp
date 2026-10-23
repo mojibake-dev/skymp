@@ -944,6 +944,15 @@ void PartOne::Init()
   worldState.simulatorOf = [this](uint32_t actor, uint32_t cell) {
     return pImpl->cells->simulator_of(actor, cell);
   };
+  // and a hosted NPC's door (npc-handoff D6): the crossing judged by the
+  // follow verdict for its simulator before the host's engine walks it
+  worldState.npcDoorVerdict = [this](MpActor& actor, uint32_t destWorldOrCell,
+                                     const NiPoint3& destPos) {
+    MpActor* host = worldState.HostOf(actor);
+    return host &&
+      MayMoveActor(*host, actor, destWorldOrCell, destPos) !=
+      MoveVerdict::Refuse;
+  };
   worldState.cellHostOf = [this](uint32_t cell) {
     const auto host = pImpl->cells->host_of(cell);
     return host.hosted ? host.player : 0u;

@@ -10,6 +10,7 @@
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "CreateActorMessage.h"
@@ -204,6 +205,10 @@ struct PartOne::Impl
   using Square = std::tuple<uint32_t, int32_t, int32_t>;
   std::unordered_map<uint32_t, Square> lastSquareByPlayer;
   std::function<int64_t(Networking::UserId)> roundTripSource;
+  // the quitting host (docs/verbs/cell-host.md): each connection's silence
+  // and the users the table holds stale for it
+  std::function<int64_t(Networking::UserId)> silenceSource;
+  std::unordered_set<Networking::UserId> staleUsers;
 
   espm::Loader* espm = nullptr;
 
@@ -639,6 +644,7 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           this_->pImpl->cells->gone(actor->GetFormId(), SteadyNowMs());
           this_->pImpl->lastSquareByPlayer.erase(actor->GetFormId());
         }
+        this_->pImpl->staleUsers.erase(userId);
         this_->serverState.Disconnect(userId);
         this_->serverState.disconnectingUserId = Networking::InvalidUserId;
         this_->pImpl->gameClock->forget(userId);
@@ -1572,6 +1578,12 @@ void PartOne::SetRoundTripSource(
   pImpl->roundTripSource = std::move(source);
 }
 
+void PartOne::SetSilenceSource(
+  std::function<int64_t(Networking::UserId)> source)
+{
+  pImpl->silenceSource = std::move(source);
+}
+
 void PartOne::TickCellHosts(uint64_t nowMs)
 {
   for (size_t i = 0, n = serverState.maxConnectedId; i <= n; ++i) {
@@ -1587,6 +1599,29 @@ void PartOne::TickCellHosts(uint64_t nowMs)
         pImpl->cells->rtt(
           actor->GetFormId(),
           static_cast<uint32_t>(std::min<int64_t>(ms, UINT32_MAX)));
+      }
+    }
+    // the quitting host: a connection silent past kStaleHostMs is stale
+    // (its cells start their grace now, not at netcode's timeout), one
+    // heard again is revived; -1 (unknown, the mock's users) changes
+    // nothing
+    if (pImpl->silenceSource) {
+      const int64_t silenceMs = pImpl->silenceSource(userId);
+      const bool wasStale = pImpl->staleUsers.count(userId) > 0;
+      if (silenceMs >= kStaleHostMs && !wasStale) {
+        pImpl->staleUsers.insert(userId);
+        spdlog::info("PartOne - cell-host: {:x} (user {}) silent {} ms, "
+                     "stale: its cells start their grace",
+                     actor->GetFormId(), userId, silenceMs);
+        ApplyHostDecisions(*this,
+                           pImpl->cells->stale(actor->GetFormId(), nowMs));
+      } else if (silenceMs >= 0 && silenceMs < kStaleHostMs && wasStale) {
+        pImpl->staleUsers.erase(userId);
+        spdlog::info("PartOne - cell-host: {:x} (user {}) heard again after "
+                     "its silence, revived",
+                     actor->GetFormId(), userId);
+        ApplyHostDecisions(*this,
+                           pImpl->cells->revived(actor->GetFormId(), nowMs));
       }
     }
   }

@@ -91,6 +91,18 @@ public:
     return childs[p.first]->GetRttMs(p.second);
   }
 
+  int64_t GetSilenceMs(UserId userId) const override
+  {
+    if (realIdByCombined.size() <= userId) {
+      return -1;
+    }
+    auto& p = realIdByCombined[userId];
+    if (p.second == Networking::InvalidUserId) {
+      return -1;
+    }
+    return childs[p.first]->GetSilenceMs(p.second);
+  }
+
   void CloseConnection(Networking::UserId combinedUserId) override
   {
     if (realIdByCombined.size() <= combinedUserId) {

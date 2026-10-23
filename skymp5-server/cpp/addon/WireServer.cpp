@@ -110,6 +110,14 @@ public:
     return server->client_rtt_ms(*clientsByUser[userId]);
   }
 
+  int64_t GetSilenceMs(Networking::UserId userId) const override
+  {
+    if (userId >= clientsByUser.size() || !clientsByUser[userId]) {
+      return -1;
+    }
+    return server->client_silence_ms(*clientsByUser[userId]);
+  }
+
   void CloseConnection(Networking::UserId userId) override
   {
     server->disconnect(ClientOf(userId));

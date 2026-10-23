@@ -222,6 +222,11 @@ pub struct Server {
     renet: RenetServer,
     transport: NetcodeServerTransport,
     guards: HashMap<u64, (ClientGuard, ByteBudget)>,
+    /// When each connected client was last heard from (a message received),
+    /// by this transport's clock: the server's own read of a game that was
+    /// killed, crashed or quit while netcode's timeout still runs (thuum
+    /// docs/verbs/cell-host.md, the quitting host).
+    last_heard_ms: HashMap<u64, u64>,
     limits: Limits,
     password: Option<[u8; token::USER_DATA_BYTES]>,
     now_ms: u64,
@@ -286,6 +291,7 @@ impl Server {
             renet,
             transport,
             guards: HashMap::new(),
+            last_heard_ms: HashMap::new(),
             limits,
             password: password
                 .filter(|p| !p.is_empty())
@@ -314,6 +320,18 @@ impl Server {
         let secs = self.renet.rtt(client);
         let d = Duration::try_from_secs_f64(secs).ok()?;
         u64::try_from(d.as_millis()).ok()
+    }
+
+    /// Milliseconds since the last message from a connected client, by this
+    /// transport's clock: 0 right after one, growing while it is silent (a
+    /// game that was killed, crashed or quit sends nothing while netcode's
+    /// own timeout still runs; thuum docs/verbs/cell-host.md reads it for
+    /// the quitting host). None for a client not connected.
+    pub fn client_silence_ms(&self, client: u64) -> Option<u64> {
+        if !self.renet.is_connected(client) {
+            return None;
+        }
+        self.last_heard_ms.get(&client).map(|&heard| self.now_ms.saturating_sub(heard))
     }
 
     /// The address the socket is bound to.
@@ -369,10 +387,12 @@ impl Server {
                         }
                     }
                     self.guards.insert(client_id, Default::default());
+                    self.last_heard_ms.insert(client_id, self.now_ms);
                     out.push(Inbound::Connected { client: client_id });
                 }
                 ServerEvent::ClientDisconnected { client_id, reason } => {
                     // a client refused for its password never got a guard and is not announced
+                    self.last_heard_ms.remove(&client_id);
                     if self.guards.remove(&client_id).is_some() {
                         out.push(Inbound::Disconnected {
                             client: client_id,
@@ -388,6 +408,7 @@ impl Server {
             };
             for channel in channels::ALL {
                 while let Some(bytes) = self.renet.receive_message(client, channel) {
+                    self.last_heard_ms.insert(client, self.now_ms);
                     out.push(ingest(
                         client,
                         &bytes,
@@ -1111,5 +1132,49 @@ mod tests {
             sleep(step);
         }
         assert!(rtt.is_some_and(|r| r > 0), "a round trip above zero once a packet was acked");
+    }
+
+    #[test]
+    fn the_silence_resets_on_a_message_and_grows_while_the_client_says_nothing() {
+        // thuum docs/verbs/cell-host.md, the quitting host: the server reads
+        // a game's silence itself instead of waiting for netcode's timeout
+        let localhost: SocketAddr = "127.0.0.1:0".parse().expect("literal");
+        let mut server =
+            Server::bind(localhost, Limits::default(), token::Auth::Unsecure).expect("bind");
+        let mut client =
+            Client::connect(server.local_addr(), token::ConnectToken(Vec::new())).expect("connect");
+        let mut events = Vec::new();
+        let mut inbox = Vec::new();
+        assert!(
+            pump(&mut server, &mut client, &mut events, &mut inbox, |ev, _, c| c.is_connected()
+                && ev.iter().any(|e| matches!(e, Inbound::Connected { .. }))),
+            "handshake"
+        );
+        let client_id = match events.iter().find(|e| matches!(e, Inbound::Connected { .. })) {
+            Some(Inbound::Connected { client }) => *client,
+            _ => unreachable!("checked above"),
+        };
+        assert_eq!(server.client_silence_ms(0xdead_beef), None);
+        client.send(&Message::Movement(movement(1))).expect("send");
+        let step = Duration::from_millis(10);
+        let mut heard = false;
+        for _ in 0..100 {
+            client.poll(step, &mut inbox);
+            server.poll(step, &mut events);
+            if events.iter().any(|e| matches!(e, Inbound::Message { .. })) {
+                heard = true;
+                break;
+            }
+            sleep(step);
+        }
+        assert!(heard, "the message arrives");
+        let just_heard = server.client_silence_ms(client_id).expect("connected");
+        assert!(just_heard <= 20, "silence {just_heard} ms right after a message");
+        // the server's clock runs on while the client sends nothing
+        for _ in 0..50 {
+            server.poll(step, &mut events);
+        }
+        let silent = server.client_silence_ms(client_id).expect("still connected");
+        assert!(silent >= 400, "silence {silent} ms after 500 ms without a message");
     }
 }

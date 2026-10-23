@@ -87,6 +87,11 @@ struct PlayerState {
     reach: HashSet<u32>,
     /// The connection's round trip, when the transport has measured one.
     rtt_ms: Option<u32>,
+    /// The connection has gone silent (no message for the server's stale
+    /// threshold while netcode still holds it connected): no candidate
+    /// anywhere, its hosted cells in their grace, its loaded set kept for
+    /// its return (thuum docs/verbs/cell-host.md, the quitting host).
+    stale: bool,
 }
 
 /// Every cell's host and every player's loaded set, grid and round trip.
@@ -147,9 +152,42 @@ impl Cells {
         Vec::new()
     }
 
-    /// Whether `player` has `cell` loaded and in reach: what hosting takes.
+    /// `player`'s connection went silent at `now_ms` (the game killed,
+    /// crashed or quit while netcode's own timeout still runs): every cell
+    /// it hosts starts its grace and it is no candidate anywhere, but its
+    /// loaded set and reach stay, so a return within netcode's patience is
+    /// `revived` and not a fresh arrival.
+    pub fn stale(&mut self, player: u32, now_ms: u64) -> Vec<Decision> {
+        self.players.entry(player).or_default().stale = true;
+        for state in self.cells.values_mut() {
+            if let Some(ref mut host) = state.host {
+                if host.player == player && host.leaving_since_ms.is_none() {
+                    host.leaving_since_ms = Some(now_ms);
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    /// `player`'s messages resumed at `now_ms`: a candidate again; each cell
+    /// it has loaded is considered anew, which disarms its own grace where
+    /// it still hosts and grants a free cell the grid gives it.
+    pub fn revived(&mut self, player: u32, now_ms: u64) -> Vec<Decision> {
+        let Some(p) = self.players.get_mut(&player) else {
+            return Vec::new();
+        };
+        p.stale = false;
+        let mut cells: Vec<u32> = p.loaded.keys().copied().collect();
+        cells.sort_unstable();
+        cells.into_iter().filter_map(|cell| self.consider(player, cell, now_ms)).collect()
+    }
+
+    /// Whether `player` has `cell` loaded and in reach, and is heard from:
+    /// what hosting takes.
     fn eligible(&self, player: u32, cell: u32) -> bool {
-        self.players.get(&player).is_some_and(|p| p.reach.contains(&cell) && p.loaded.contains_key(&cell))
+        self.players
+            .get(&player)
+            .is_some_and(|p| !p.stale && p.reach.contains(&cell) && p.loaded.contains_key(&cell))
     }
 
     /// `player`'s standing toward `cell` changed at `now_ms`: a grant when
@@ -220,7 +258,7 @@ impl Cells {
     fn candidate(&self, cell: u32, leaving: u32) -> Option<u32> {
         self.players
             .iter()
-            .filter(|&(&id, p)| id != leaving && p.reach.contains(&cell) && p.loaded.contains_key(&cell))
+            .filter(|&(&id, p)| id != leaving && !p.stale && p.reach.contains(&cell) && p.loaded.contains_key(&cell))
             .map(|(&id, p)| (p.rtt_ms.unwrap_or(u32::MAX), p.loaded.get(&cell).copied().unwrap_or(u64::MAX), id))
             .min()
             .map(|(_, _, id)| id)
@@ -439,5 +477,60 @@ mod tests {
         let b = c.loaded(C2, RIVERWOOD, 1_000);
         assert_eq!(a.len(), 1);
         assert!(b.is_empty());
+    }
+
+    #[test]
+    fn a_silent_host_loses_its_cell_at_the_grace_and_a_revived_one_is_a_candidate_again() {
+        // thuum docs/verbs/cell-host.md, the quitting host (playtest 33):
+        // the village belonged to a gone game for netcode's timeout plus
+        // the grace, about 24 s; the server now reads the silence itself
+        let mut c = both_in_reach();
+        assert_eq!(c.loaded(C1, RIVERWOOD, 1_000), vec![Decision::Grant { player: C1, cell: RIVERWOOD, epoch: 1 }]);
+        assert_eq!(c.loaded(C2, RIVERWOOD, 1_500), vec![]);
+        // silence: the grace starts, nothing passes before it runs out
+        assert_eq!(c.stale(C1, 10_000), vec![]);
+        assert_eq!(c.tick(10_000 + GRACE_MS - 100), vec![]);
+        assert_eq!(c.host_of(RIVERWOOD), Some((C1, 1)));
+        // the grace runs out: the visitor with the cell loaded takes it
+        assert_eq!(
+            c.tick(10_000 + GRACE_MS),
+            vec![
+                Decision::Release { player: C1, cell: RIVERWOOD, epoch: 1 },
+                Decision::Grant { player: C2, cell: RIVERWOOD, epoch: 2 }
+            ]
+        );
+        // the old host's messages resume: a candidate again, nothing to take
+        assert_eq!(c.revived(C1, 20_000), vec![]);
+        assert_eq!(c.host_of(RIVERWOOD), Some((C2, 2)));
+        // the new host leaves: the revived one, still loaded and in reach, is next
+        assert_eq!(c.unloaded(C2, RIVERWOOD, 30_000), vec![]);
+        assert_eq!(
+            c.tick(30_000 + GRACE_MS),
+            vec![
+                Decision::Release { player: C2, cell: RIVERWOOD, epoch: 2 },
+                Decision::Grant { player: C1, cell: RIVERWOOD, epoch: 3 }
+            ]
+        );
+    }
+
+    #[test]
+    fn a_host_heard_again_inside_the_grace_keeps_its_cell_and_a_stale_player_is_no_candidate() {
+        let mut c = both_in_reach();
+        c.loaded(C1, RIVERWOOD, 1_000);
+        c.loaded(C2, RIVERWOOD, 1_500);
+        assert_eq!(c.stale(C1, 10_000), vec![]);
+        // heard again before the grace runs out: disarmed, same epoch
+        assert_eq!(c.revived(C1, 10_000 + 1_000), vec![]);
+        assert_eq!(c.tick(10_000 + GRACE_MS + 1_000), vec![]);
+        assert_eq!(c.host_of(RIVERWOOD), Some((C1, 1)));
+        // a stale visitor never takes a cell: the host leaves, the cell is nobody's
+        assert_eq!(c.stale(C2, 20_000), vec![]);
+        assert_eq!(c.unloaded(C1, RIVERWOOD, 20_000), vec![]);
+        assert_eq!(
+            c.tick(20_000 + GRACE_MS),
+            vec![Decision::Release { player: C1, cell: RIVERWOOD, epoch: 1 }, Decision::Unhosted { cell: RIVERWOOD }]
+        );
+        // and takes it the moment it is heard again
+        assert_eq!(c.revived(C2, 30_000), vec![Decision::Grant { player: C2, cell: RIVERWOOD, epoch: 2 }]);
     }
 }

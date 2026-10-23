@@ -65,6 +65,11 @@ public:
   // unknown (a transport that measures none, a client not connected);
   // thuum docs/verbs/cell-host.md ranks a cell's visitors by it.
   virtual int64_t GetRttMs(UserId) const { return -1; }
+  // thuum docs/verbs/cell-host.md, the quitting host: milliseconds since
+  // the user's connection last delivered a message, -1 while unknown (the
+  // wire server measures it; a game killed, crashed or quit sends netcode
+  // no disconnect, and its silence is the server's only early word)
+  virtual int64_t GetSilenceMs(UserId) const { return -1; }
 
   virtual void CloseConnection(UserId userId) = 0;
 };

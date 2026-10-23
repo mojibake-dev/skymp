@@ -2,6 +2,7 @@
 #include "CallNativeApi.h"
 #include "Puppets.h"
 #include "game/Offsets.h"
+#include <chrono>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -95,10 +96,20 @@ size_t Puppets::Count()
   return g_puppets.ids.size();
 }
 
+uint64_t Puppets::NowMs()
+{
+  return static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch())
+      .count());
+}
+
 void Puppets::SetLocomotion(uint32_t formId, const Locomotion& sample)
 {
   std::lock_guard l(g_puppets.m);
-  g_puppets.locomotion[formId] = sample;
+  Locomotion stamped = sample;
+  stamped.stampMs = NowMs();
+  g_puppets.locomotion[formId] = stamped;
 }
 
 bool Puppets::GetLocomotion(uint32_t formId, Locomotion& out)

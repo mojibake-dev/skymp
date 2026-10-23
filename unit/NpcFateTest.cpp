@@ -51,6 +51,9 @@ TEST_CASE("A player's arrival rolls the ring's leveled actors at its level "
           "[NpcFate][espm]")
 {
   auto& p = GetPartOne();
+  // the loader skips NPCs unless the server setting says otherwise (the
+  // test fixture's default, as every NPC test sets it)
+  p.worldState.npcEnabled = true;
   DoConnect(p, 0);
   p.CreateActor(kC1, kForest, 0, kTamriel);
   p.SetUserActor(0, kC1);

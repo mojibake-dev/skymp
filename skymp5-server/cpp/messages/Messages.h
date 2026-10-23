@@ -1,5 +1,6 @@
 #pragma once
 #include "ActivateMessage.h"
+#include "ActorFateMessage.h"
 #include "ActorJumpMessage.h"
 #include "ActorSightingsMessage.h"
 #include "ActorValuesMessage.h"
@@ -100,4 +101,5 @@
   REGISTER_MESSAGE(CellLoadedMessage)                                         \
   REGISTER_MESSAGE(HostGrantMessage)                                          \
   REGISTER_MESSAGE(HostReleaseMessage)                                        \
-  REGISTER_MESSAGE(ActorSightingsMessage)
+  REGISTER_MESSAGE(ActorSightingsMessage)                                     \
+  REGISTER_MESSAGE(ActorFateMessage)

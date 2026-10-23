@@ -65,6 +65,11 @@ pub mod cap {
     /// Sighted actors one host names in one report (docs/verbs/npc-puppet.md):
     /// a village's residents and visitors at once, with room.
     pub const ACTOR_SIGHTINGS: usize = 64;
+    /// Fates in one message (docs/verbs/npc-fate.md, ADR-049): the game-file
+    /// actors of the cells a player's engine is about to attach, with room.
+    pub const ACTOR_FATES: usize = 64;
+    /// Worn items the server's outfit roll put on one actor.
+    pub const FATE_WORN: usize = 32;
     /// Leveled templates one NPC resolves through.
     pub const TEMPLATE_CHAIN: usize = 64;
     /// Node overrides on one reference.
@@ -409,6 +414,8 @@ pub enum Message {
     HostRelease(skymp::HostRelease),
     /// 58, MsgType 50 (thuum). See [`skymp::ActorSightings`].
     ActorSightings(skymp::ActorSightings),
+    /// 59, MsgType 51 (thuum). See [`skymp::ActorFate`].
+    ActorFate(skymp::ActorFate),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -437,7 +444,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 59] = [
+const TABLE: [Row; 60] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -497,14 +504,15 @@ const TABLE: [Row; 59] = [
     row("HostGrant", 48, 32, S2C),
     row("HostRelease", 49, 32, S2C),
     row("ActorSightings", 50, 4 * KIB, C2S),
+    row("ActorFate", 51, 16 * KIB, S2C),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 59;
-const _: () = assert!(TABLE.len() == 59, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 60;
+const _: () = assert!(TABLE.len() == 60, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -588,6 +596,7 @@ impl Message {
             Message::HostGrant(_) => 56,
             Message::HostRelease(_) => 57,
             Message::ActorSightings(_) => 58,
+            Message::ActorFate(_) => 59,
         }
     }
 
@@ -669,7 +678,8 @@ mod tests {
         assert_eq!(name_of_msg_type(49), Some("HostRelease"));
         assert_eq!(name_of_msg_type(50), Some("ActorSightings"));
         assert_eq!(name_of_msg_type(0), None);
-        assert_eq!(name_of_msg_type(51), None);
+        assert_eq!(name_of_msg_type(51), Some("ActorFate"));
+        assert_eq!(name_of_msg_type(52), None);
     }
 
     #[test]
@@ -705,6 +715,21 @@ mod tests {
             Message::ActorSightings(skymp::ActorSightings {
                 sightings: (0..cap::ACTOR_SIGHTINGS)
                     .map(|_| skymp::ActorSighting { refr_id: 0xfeff_ffff, world_or_cell: u32::MAX, pos: [f32::MAX; 3], rot: [f32::MAX; 3] })
+                    .collect::<alloc::vec::Vec<_>>()
+                    .try_into()
+                    .unwrap_or_default(),
+                ..Default::default()
+            }),
+            // the fates of a full ring at their fullest: every id a five-byte
+            // varint, every worn list full (docs/verbs/npc-fate.md)
+            Message::ActorFate(skymp::ActorFate {
+                fates: (0..cap::ACTOR_FATES)
+                    .map(|_| skymp::ActorFateEntry {
+                        refr_id: 0xfeff_ffff,
+                        base_id: u32::MAX,
+                        level: u16::MAX,
+                        worn: (0..cap::FATE_WORN).map(|_| u32::MAX).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default(),
+                    })
                     .collect::<alloc::vec::Vec<_>>()
                     .try_into()
                     .unwrap_or_default(),

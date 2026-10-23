@@ -118,6 +118,12 @@ public:
 
   std::vector<FormDesc> templateChain;
 
+  // thuum docs/verbs/npc-fate.md (ADR-049 decision 4): the level the
+  // server's roll of this actor used, present once rolled under the first
+  // loader's level; absent for a record rolled before the rule (read as the
+  // old roll, level 0 on the wire). An optional field, formVersion kept.
+  std::optional<uint16_t> fateLevel;
+
   // Used for PlayAnimation (object reference)
   std::optional<std::string> lastAnimation;
 
@@ -199,8 +205,8 @@ public:
       count, isRaceMenuOpen, isDead, consoleCommandsAllowed, appearanceDump,
       equipment.ToJson(), actorValues.ToTuple(), healthRespawnPercentage,
       magickaRespawnPercentage, staminaRespawnPercentage, spawnPoint,
-      dynamicFields, spawnDelay, learnedSpells, templateChain, lastAnimation,
-      setNodeTextureSet, setNodeScale, displayName, mapMarkers,
+      dynamicFields, spawnDelay, learnedSpells, templateChain, fateLevel,
+      lastAnimation, setNodeTextureSet, setNodeScale, displayName, mapMarkers,
       ingredientEffects, favorites, raceMenuPreset, actorValueRecord,
       staffRank, runningEffects, shoutRecord, playerGlobals, unresolved);
   }

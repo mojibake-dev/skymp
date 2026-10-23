@@ -142,6 +142,42 @@ export const syncSpellEquipment = (
   }
 };
 
+// a player's figure: a copy on the Player base 0x7 or on a base this game
+// made for its appearance (an id of 0xff000000 and up); never an actor from
+// the game files (npc-puppet's puppets keep their own spells)
+export const isFigureBase = (ac: Actor): boolean => {
+  const base = ac.getBaseObject();
+  if (!base) {
+    return false;
+  }
+  const baseId = base.getFormID();
+  return baseId === 0x7 || baseId >= 0xff000000;
+};
+
+// thuum docs/DECISIONS.md ADR-046 (2026-10-23), decision 2: a figure carries
+// only what the server gives it. A distributor (SPID) hands every non-player
+// actor the layer's abilities at its load, and a figure is such an actor to
+// it, so a figure would run a resident's cloaks against the real player
+// (Stealth Detection Fixes' madDetectionCloak on every NPC; p-spell-bolt's
+// detection probes, 2026-10-23). The actor's added spells (Actor.getNthSpell
+// lists them, not the base's or the race's) are kept to the ones the server
+// equips; the rest are removed. Returns how many went.
+export const keepOnlyServerSpells = (ac: Actor, eq: Equipment): number => {
+  const keep = new Set<number>([eq.leftSpell ?? 0, eq.rightSpell ?? 0, eq.voiceSpell ?? 0, eq.instantSpell ?? 0]);
+  const foreign: Spell[] = [];
+  const count = ac.getSpellCount();
+  for (let i = 0; i < count; ++i) {
+    const spell = ac.getNthSpell(i);
+    if (spell && !keep.has(spell.getFormID())) {
+      foreign.push(spell);
+    }
+  }
+  for (const spell of foreign) {
+    ac.removeSpell(spell);
+  }
+  return foreign.length;
+};
+
 export const applyEquipment = (ac: Actor, eq: Equipment): boolean => {
   ac.removeAllItems(null, false, true);
 
@@ -157,6 +193,11 @@ export const applyEquipment = (ac: Actor, eq: Equipment): boolean => {
   syncSpellEquipment(ac, eq.rightSpell, SpellType.Right);
   syncSpellEquipment(ac, eq.voiceSpell, SpellType.Voice);
   syncSpellEquipment(ac, eq.instantSpell, SpellType.Instant);
+
+  // ADR-046: a figure's spells are the server's alone
+  if (ac.getFormID() !== 0x14 && isFigureBase(ac)) {
+    keepOnlyServerSpells(ac, eq);
+  }
 
   return true;
 };

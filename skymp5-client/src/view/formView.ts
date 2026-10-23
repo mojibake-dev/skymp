@@ -4,7 +4,7 @@ import { setDefaultAnimsDisabled, applyAnimation } from "../sync/animation";
 import { applyAnimationVariablesToActor, castReady, performAction, performActionResult, setActivateTextHidden, setActorAimHeading, setActorAimPitch } from "skyrimPlatform";
 import { figureAimHeading } from "../sync/figureAim";
 import { Appearance, applyAppearance } from "../sync/appearance";
-import { isBadMenuShown, applyEquipment } from "../sync/equipment";
+import { isBadMenuShown, applyEquipment, isFigureBase, keepOnlyServerSpells } from "../sync/equipment";
 import { RespawnNeededError } from "../lib/errors";
 import { FormModel } from "./model";
 import { UpdateActionMessage } from "../services/messages/updateActionMessage";
@@ -667,6 +667,20 @@ export class FormView {
 
     // (Rule A again: a hosted actor's equipment is its engine's)
     if (model.equipment && !alreadyHosted) {
+      // thuum ADR-046, decision 2: a figure's spells stay the server's. A
+      // distributor adds its abilities at the actor's load, after the
+      // equipment's apply, so the figure is swept every ten seconds (a few
+      // Papyrus calls per figure) beside the apply's own strip
+      if (!FormView.isNpcModel(model) && this.spawnMoment > 0 && Date.now() - this.spellSweepAt > 10000) {
+        this.spellSweepAt = Date.now();
+        const figure = Actor.from(refr);
+        if (figure && isFigureBase(figure)) {
+          const removed = keepOnlyServerSpells(figure, model.equipment);
+          if (removed > 0) {
+            printConsole(`figure ${refr.getFormID().toString(16)}: ${removed} spell(s) a distributor added removed (ADR-046)`);
+          }
+        }
+      }
       if (this.eqState.lastNumChanges !== model.equipment.numChanges) {
         const ac = Actor.from(refr);
         // If we do not block inventory here, we will be able to reproduce the bug:
@@ -1036,6 +1050,7 @@ export class FormView {
   private wasHostedByOther: boolean | undefined = undefined;
   private state = {};
   private localImmortal = false;
+  private spellSweepAt = 0;
   // the maxima set on the figure so far, by actor value name (figure-values)
   private figureMaxima = new Map<string, number>();
   private textNameId: number | undefined = undefined;

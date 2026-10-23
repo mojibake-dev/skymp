@@ -1,5 +1,6 @@
 #include "PropertyBindingFactory.h"
 
+#include "ActorFateBinding.h"
 #include "ActorNeighborsBinding.h"
 #include "AngleBinding.h"
 #include "AppearanceBinding.h"
@@ -44,6 +45,7 @@ PropertyBindingFactory::CreateStandardPropertyBindings()
   result["equipment"] = std::make_shared<EquipmentBinding>();
   result["cellHosts"] = std::make_shared<CellHostsBinding>();
   result["cellFollows"] = std::make_shared<CellFollowsBinding>();
+  result["actorFate"] = std::make_shared<ActorFateBinding>();
   result["gameTime"] = std::make_shared<GameTimeBinding>();
   result["inventory"] = std::make_shared<InventoryBinding>();
   result["isDead"] = std::make_shared<IsDeadBinding>();

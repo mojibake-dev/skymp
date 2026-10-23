@@ -909,29 +909,9 @@ const std::set<MpObjectReference*>& WorldState::GetNeighborsByPosition(
     Viet::ScopedTask<bool> task([](bool& st) { st = false; },
                                 pImpl->chunkLoadingInProgress);
     pImpl->chunkLoadingInProgress = true;
-
-    auto& br = espm->GetBrowser();
     for (int16_t x = cellX - 1; x <= cellX + 1; ++x) {
       for (int16_t y = cellY - 1; y <= cellY + 1; ++y) {
-        const bool loaded = grids[cellOrWorld].loadedChunks[x][y];
-        if (!loaded) {
-          for (size_t i = 0; i < espmFiles.size(); ++i) {
-            auto combMapping = br.GetCombMapping(i);
-            auto rawMapping = br.GetRawMapping(i);
-            uint32_t mappedCellOrWorld =
-              espm::utils::GetMappedId(cellOrWorld, *rawMapping);
-            auto records = br.GetRecordsAtPos(mappedCellOrWorld, x, y);
-            for (auto rec : *records[i]) {
-              auto mappedId =
-                espm::utils::GetMappedId(rec->GetId(), *combMapping);
-              assert(mappedId < 0xff000000);
-              LoadForm(mappedId);
-            }
-          }
-          // Do not keep "loaded" reference here since LoadForm would
-          // invalidate this reference
-          grids[cellOrWorld].loadedChunks[x][y] = true;
-        }
+        LoadChunkIfNeeded(cellOrWorld, x, y);
       }
     }
   }
@@ -939,6 +919,50 @@ const std::set<MpObjectReference*>& WorldState::GetNeighborsByPosition(
   auto& neighbours =
     grids[cellOrWorld].grid->GetNeighboursByPosition(cellX, cellY);
   return neighbours;
+}
+
+void WorldState::LoadChunkIfNeeded(uint32_t cellOrWorld, int16_t x, int16_t y)
+{
+  if (!espm) {
+    return;
+  }
+  const bool loaded = grids[cellOrWorld].loadedChunks[x][y];
+  if (loaded) {
+    return;
+  }
+  auto& br = espm->GetBrowser();
+  for (size_t i = 0; i < espmFiles.size(); ++i) {
+    auto combMapping = br.GetCombMapping(i);
+    auto rawMapping = br.GetRawMapping(i);
+    uint32_t mappedCellOrWorld =
+      espm::utils::GetMappedId(cellOrWorld, *rawMapping);
+    auto records = br.GetRecordsAtPos(mappedCellOrWorld, x, y);
+    for (auto rec : *records[i]) {
+      auto mappedId = espm::utils::GetMappedId(rec->GetId(), *combMapping);
+      assert(mappedId < 0xff000000);
+      LoadForm(mappedId);
+    }
+  }
+  // Do not keep a "loaded" reference across LoadForm: it would be
+  // invalidated
+  grids[cellOrWorld].loadedChunks[x][y] = true;
+}
+
+void WorldState::LoadChunksAround(uint32_t cellOrWorld, int16_t x, int16_t y,
+                                  int16_t radius)
+{
+  if (!espm || pImpl->chunkLoadingInProgress) {
+    return;
+  }
+  Viet::ScopedTask<bool> task([](bool& st) { st = false; },
+                              pImpl->chunkLoadingInProgress);
+  pImpl->chunkLoadingInProgress = true;
+  for (int16_t dx = -radius; dx <= radius; ++dx) {
+    for (int16_t dy = -radius; dy <= radius; ++dy) {
+      LoadChunkIfNeeded(cellOrWorld, static_cast<int16_t>(x + dx),
+                        static_cast<int16_t>(y + dy));
+    }
+  }
 }
 
 std::shared_ptr<std::vector<uint32_t>> WorldState::GetAllForms(

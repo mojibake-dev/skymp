@@ -1997,7 +1997,7 @@ std::vector<espm::CONT::ContainerObject> GetInventoryObjects(
 
 void MpObjectReference::AddContainerObject(
   const espm::CONT::ContainerObject& entry,
-  std::map<uint32_t, uint32_t>* itemsToAdd)
+  std::map<uint32_t, uint32_t>* itemsToAdd, uint32_t pcLevel)
 {
   auto& espm = GetParent()->GetEspm();
   auto formLookupRes = espm.GetBrowser().LookupById(entry.formId);
@@ -2005,7 +2005,7 @@ void MpObjectReference::AddContainerObject(
   if (leveledItem) {
     constexpr uint32_t kCountMult = 1;
     auto map = LeveledListUtils::EvaluateListRecurse(
-      espm.GetBrowser(), formLookupRes, kCountMult, kPlayerCharacterLevel,
+      espm.GetBrowser(), formLookupRes, kCountMult, pcLevel,
       chanceNoneOverride.get());
     for (auto& p : map) {
       (*itemsToAdd)[p.first] += p.second;
@@ -2035,16 +2035,22 @@ void MpObjectReference::EnsureBaseContainerAdded(espm::Loader& espm)
 
   std::map<uint32_t, uint32_t> itemsToAdd, itemsToEquip;
 
+  // thuum docs/verbs/npc-fate.md (ADR-049 decision 1): an actor's leveled
+  // entries roll at its fate level (the first loader's), else the old 1
+  const uint32_t pcLevel = actor && actor->GetFateLevel().has_value()
+    ? std::max<uint32_t>(1, *actor->GetFateLevel())
+    : kPlayerCharacterLevel;
+
   auto inventoryObjects =
     GetInventoryObjects(GetParent(), templateChain, lookupRes);
   for (auto& entry : inventoryObjects) {
-    AddContainerObject(entry, &itemsToAdd);
+    AddContainerObject(entry, &itemsToAdd, pcLevel);
   }
 
   auto outfitObjects = GetOutfitObjects(GetParent(), templateChain, lookupRes);
   for (auto& entry : outfitObjects) {
-    AddContainerObject(entry, &itemsToAdd);
-    AddContainerObject(entry, &itemsToEquip);
+    AddContainerObject(entry, &itemsToAdd, pcLevel);
+    AddContainerObject(entry, &itemsToEquip, pcLevel);
   }
   if (actor) {
     Equipment eq;

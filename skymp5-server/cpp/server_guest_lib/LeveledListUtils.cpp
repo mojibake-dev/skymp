@@ -162,6 +162,27 @@ const espm::NPC_* LeveledListUtils::ConvertToNpc(
   return espm::Convert<espm::NPC_>(lookupResult.rec);
 }
 
+uint32_t LeveledListUtils::FirstLeveledPick(const espm::CombineBrowser& br,
+                                            const std::vector<uint32_t>& chain)
+{
+  for (size_t i = 0; i + 1 < chain.size(); ++i) {
+    const auto lookupRes = br.LookupById(chain[i]);
+    const auto* npc = ConvertToNpc(lookupRes);
+    if (!npc) {
+      return 0;
+    }
+    const uint32_t templateId = GetBaseTemplateId(npc, lookupRes.fileIdx, br);
+    if (templateId == 0) {
+      return 0;
+    }
+    const auto templateRes = br.LookupById(templateId);
+    if (templateRes.rec && templateRes.rec->GetType() == espm::LVLN::kType) {
+      return chain[i + 1];
+    }
+  }
+  return 0;
+}
+
 uint32_t LeveledListUtils::GetBaseTemplateId(
   const espm::NPC_* cursor, uint32_t fileIdx,
   const espm::CombineBrowser& browser)

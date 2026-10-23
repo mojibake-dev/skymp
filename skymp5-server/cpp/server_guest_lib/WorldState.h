@@ -292,6 +292,14 @@ public:
   // actor's follower (npc-handoff D6), else 0; installed by PartOne; HostOf
   // reads this when installed and cellHostOf otherwise
   std::function<uint32_t(uint32_t actor, uint32_t cell)> simulatorOf;
+  // thuum docs/verbs/npc-fate.md (ADR-049 decision 1): the level the next
+  // game-file actors loaded roll their template chain and outfit at (the
+  // player whose arrival loads them), set by PartOne around the fate pass's
+  // chunk loads; none, the old rule's roll (level 0, outfit at 1)
+  std::optional<uint16_t> fateLoaderLevel;
+  // a game-file actor's fate rolled anew (the respawn), installed by PartOne
+  // to send the fate again
+  std::function<void(MpActor&)> onActorFate;
   std::unordered_map<uint32_t, std::map<uint32_t, float>>
     activationChildsByActivationParent;
   std::vector<std::optional<std::chrono::system_clock::time_point>>
@@ -328,6 +336,13 @@ private:
 
   bool LoadForm(uint32_t formId, std::stringstream* optionalOutTrace = nullptr,
                 bool sighted = false);
+  // thuum docs/verbs/npc-fate.md (ADR-049): the game files' records at the
+  // chunks around (x, y) of `cellOrWorld` (its grid squares, 4096 units),
+  // loaded once each: the grid's own loader (GetNeighborsByPosition, a 3x3)
+  // factored out for the fate pass, which loads the ring the engine is about
+  // to attach so the actors there are rolled before any engine rolls them.
+  void LoadChunksAround(uint32_t cellOrWorld, int16_t x, int16_t y,
+                        int16_t radius);
   void TickSaveStorage(const std::chrono::system_clock::time_point& now);
   void TickTimers(const std::chrono::system_clock::time_point& now);
   void TickEffects(const std::chrono::system_clock::time_point& now);
@@ -337,6 +352,8 @@ private:
   [[nodiscard]] bool IsRelootForbidden(std::string type) const noexcept;
 
 private:
+  void LoadChunkIfNeeded(uint32_t cellOrWorld, int16_t x, int16_t y);
+
   struct GridInfo
   {
     std::shared_ptr<GridImpl<MpObjectReference*>> grid =

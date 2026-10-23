@@ -2,6 +2,7 @@
 #include "CreateActorMessage.h"
 #include "HostGrantMessage.h"
 #include "HostReleaseMessage.h"
+#include "OpenContainerMessage.h"
 #include "TestUtils.hpp"
 #include "UpdateMovementMessage.h"
 #include "UpdatePropertyMessage.h"
@@ -554,4 +555,57 @@ TEST_CASE("An actor from the game files travels under its own id with the "
   p.DestroyActor(kC1);
   p.DestroyActor(kC2);
   p.DestroyActor(kCow);
+}
+
+TEST_CASE("A hosted actor's furniture use is its host's engine's: the server "
+          "answers it no OpenContainer, the reply that performs a player's "
+          "own activation in its game",
+          "[CellHost][Activate]")
+{
+  // playtest 32 (2026-10-22): a resident sat on Riverwood's bench 2ad10 by
+  // package in the host's game; the host's client reported the activation
+  // as the resident's (cell-host's hosted caster), the server answered
+  // OpenContainer through GetActorToSendTo, which hands an offline actor's
+  // messages to its host, and the host's game activated the bench with its
+  // own player: rotfern "sat down on a bench all on her own". The reply is
+  // the activating player's alone.
+  auto& p = GetPartOne();
+  // unit/RestTest.cpp's bed, a FURN the server loads, in Tamriel
+  constexpr uint32_t kBed = 0x000B3184;
+  constexpr uint32_t kSitter = 0xff000c05;
+  const NiPoint3 kAtBed{ 117786.f, -81400.f, 10997.f };
+  Player(p, 0, kC1, kAtBed + NiPoint3{ 40.f, 0.f, 0.f });
+  p.CreateActor(kSitter, kAtBed + NiPoint3{ 30.f, 0.f, 0.f }, 0, kTamriel);
+  auto& sitter = p.worldState.GetFormAt<MpActor>(kSitter);
+  sitter.SetPos(sitter.GetPos());
+  const auto cell = p.worldState.CellOf(sitter);
+  REQUIRE(cell.has_value());
+  CellLoaded(p, 0, *cell);
+  REQUIRE(p.worldState.HostOf(sitter) ==
+          &p.worldState.GetFormAt<MpActor>(kC1));
+  p.Messages().clear();
+
+  // the host's report of its actor's activation: taken, never answered with
+  // the player's activation
+  DoMessage(p, 0,
+            nlohmann::json{ { "t", MsgType::Activate },
+                            { "data",
+                              { { "caster", kSitter },
+                                { "target", kBed },
+                                { "isSecondActivation", false } } } });
+  REQUIRE(SentTo<OpenContainerMessage>(p, 0).empty());
+
+  // the player's own activation is answered as before
+  p.Messages().clear();
+  DoMessage(p, 0,
+            nlohmann::json{ { "t", MsgType::Activate },
+                            { "data",
+                              { { "caster", 0x14 },
+                                { "target", kBed },
+                                { "isSecondActivation", false } } } });
+  REQUIRE(SentTo<OpenContainerMessage>(p, 0).size() == 1);
+
+  DoDisconnect(p, 0);
+  p.DestroyActor(kSitter);
+  p.DestroyActor(kC1);
 }

@@ -43,11 +43,6 @@
 #include <spdlog/fmt/fmt.h>
 #include <spdlog/spdlog.h>
 
-// thuum docs/verbs/npc-fate.md (ADR-049): one actor's fate as the wire
-// carries it (defined with the fate pass below)
-ActorFateMessage::Fate FateOf(const WorldState& worldState,
-                              const MpActor& actor);
-
 namespace {
 // The wall clock, Unix milliseconds: the game clock is a function of it
 int64_t UnixNowMs()
@@ -64,6 +59,29 @@ uint64_t SteadyNowMs()
     std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now().time_since_epoch())
       .count());
+}
+
+// thuum docs/verbs/npc-fate.md (ADR-049 decision 3): one actor's fate as the
+// wire carries it: the placement, the NPC_ the roll is pinned to (the
+// chain's first leveled pick, else the placed base), the roll's level (0 for
+// the old rule's) and the worn list, at most the wire's 32 entries
+constexpr size_t kFatesPerMessage = 64;
+constexpr size_t kFateWornMax = 32;
+
+ActorFateMessage::Fate FateOf(const WorldState& worldState,
+                              const MpActor& actor)
+{
+  ActorFateMessage::Fate fate;
+  fate.refrId = actor.GetFormId();
+  fate.baseId = actor.GetFateBaseId();
+  fate.level = actor.GetFateLevel().value_or(0);
+  for (const auto& entry : actor.GetEquipment().inv.entries) {
+    if (entry.GetWorn() != Inventory::Worn::None &&
+        fate.worn.size() < kFateWornMax) {
+      fate.worn.push_back(entry.baseId);
+    }
+  }
+  return fate;
 }
 
 SetGameTimeMessage ToMessage(const skymp::rules::GameTime& t)
@@ -1422,29 +1440,6 @@ std::vector<std::pair<uint32_t, uint8_t>> ReachCells(
     }
   }
   return cells;
-}
-
-// thuum docs/verbs/npc-fate.md (ADR-049 decision 3): one actor's fate as the
-// wire carries it: the placement, the NPC_ the roll is pinned to (the
-// chain's first leveled pick, else the placed base), the roll's level (0 for
-// the old rule's) and the worn list, at most the wire's 32 entries
-constexpr size_t kFatesPerMessage = 64;
-constexpr size_t kFateWornMax = 32;
-
-ActorFateMessage::Fate FateOf(const WorldState& worldState,
-                              const MpActor& actor)
-{
-  ActorFateMessage::Fate fate;
-  fate.refrId = actor.GetFormId();
-  fate.baseId = actor.GetFateBaseId();
-  fate.level = actor.GetFateLevel().value_or(0);
-  for (const auto& entry : actor.GetEquipment().inv.entries) {
-    if (entry.GetWorn() != Inventory::Worn::None &&
-        fate.worn.size() < kFateWornMax) {
-      fate.worn.push_back(entry.baseId);
-    }
-  }
-  return fate;
 }
 
 // the player actor `formId` while a user plays it

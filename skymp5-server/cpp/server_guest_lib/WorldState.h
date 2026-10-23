@@ -267,6 +267,13 @@ public:
   // (the record header's PersistentReference flag); false for a server-made
   // form or an id no file has.
   bool IsPersistentReference(uint32_t formId);
+  // thuum docs/verbs/npc-fate.md (ADR-049): the game files' records at the
+  // chunks around (x, y) of `cellOrWorld` (its grid squares, 4096 units),
+  // loaded once each: the grid's own loader (GetNeighborsByPosition, a 3x3)
+  // factored out for the fate pass, which loads the ring the engine is about
+  // to attach so the actors there are rolled before any engine rolls them.
+  void LoadChunksAround(uint32_t cellOrWorld, int16_t x, int16_t y,
+                        int16_t radius);
 
   // Only for tests
   auto& GetGrids() { return grids; }
@@ -336,13 +343,6 @@ private:
 
   bool LoadForm(uint32_t formId, std::stringstream* optionalOutTrace = nullptr,
                 bool sighted = false);
-  // thuum docs/verbs/npc-fate.md (ADR-049): the game files' records at the
-  // chunks around (x, y) of `cellOrWorld` (its grid squares, 4096 units),
-  // loaded once each: the grid's own loader (GetNeighborsByPosition, a 3x3)
-  // factored out for the fate pass, which loads the ring the engine is about
-  // to attach so the actors there are rolled before any engine rolls them.
-  void LoadChunksAround(uint32_t cellOrWorld, int16_t x, int16_t y,
-                        int16_t radius);
   void TickSaveStorage(const std::chrono::system_clock::time_point& now);
   void TickTimers(const std::chrono::system_clock::time_point& now);
   void TickEffects(const std::chrono::system_clock::time_point& now);

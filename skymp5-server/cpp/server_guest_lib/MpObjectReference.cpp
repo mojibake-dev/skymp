@@ -37,6 +37,7 @@
 
 #include "OpenContainerMessage.h"
 #include "SetInventoryMessage.h"
+#include "SpSnippet.h"
 #include "TeleportMessage.h"
 
 #include "script_classes/PapyrusObjectReference.h" // kOriginalNameExpression
@@ -1542,20 +1543,67 @@ void MpObjectReference::ProcessActivateNormal(
                             teleport->rotRadians[1] / kPi * 180,
                             teleport->rotRadians[2] / kPi * 180 };
 
-      TeleportMessage msg;
-      msg.idx = activationSource.GetIdx();
-      std::copy(std::begin(pos), std::end(pos), msg.pos.begin());
-      std::copy(std::begin(rot), std::end(rot), msg.rot.begin());
-      msg.worldOrCell = teleportWorldOrCell;
+      MpActor* npcActivator = actorActivator &&
+          actorActivator->GetUserId() == Networking::InvalidUserId
+        ? actorActivator
+        : nullptr;
+      if (npcActivator) {
+        // thuum docs/verbs/npc-handoff.md D6, the door (x-handoff-door v3,
+        // 2026-10-23): a hosted NPC's door is its host engine's to walk
+        // through. The client blocks every door's activation and reports
+        // it, so without this reply the engine stood at the door while
+        // the record was teleported indoors by the branch below, the record
+        // left the host's grid, both seats demoted the actor, the roster
+        // brought the record back out and the loop ran every 4 s. Now the
+        // server judges the crossing (the follow verdict: a cell nobody
+        // hosts is a follow, another live host's cell a refusal) and asks
+        // the host's game to perform the activation for the actor
+        // (ObjectReference.Activate with default processing, the engine's
+        // own door transit); the record follows the host's next report
+        // through MayMoveActor. The door still swings for everyone.
+        const NiPoint3 destPos{ pos[0], pos[1], pos[2] };
+        const bool allowed = !worldState->npcDoorVerdict ||
+          worldState->npcDoorVerdict(*npcActivator, teleportWorldOrCell,
+                                     destPos);
+        MpActor* host = worldState->HostOf(*npcActivator);
+        if (allowed && host && host->IsCreatedAsPlayer()) {
+          SpSnippetObjectArgument walker;
+          walker.formId = npcActivator->GetFormId();
+          walker.type = "ObjectReference";
+          const std::vector<std::optional<
+            std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+            args{ walker, true };
+          SpSnippet("ObjectReference", "Activate", args, GetFormId())
+            .Execute(host, SpSnippetMode::kNoReturnResult);
+          spdlog::info("MpObjectReference::ProcessActivateNormal - "
+                       "npc-handoff: door {:x}: {:x}'s host {:x} walks it "
+                       "through to {:x}; the record follows its report",
+                       GetFormId(), npcActivator->GetFormId(),
+                       host->GetFormId(), teleportWorldOrCell);
+        } else {
+          spdlog::info("MpObjectReference::ProcessActivateNormal - "
+                       "npc-handoff: door {:x}: {:x} may not cross into {:x} "
+                       "({}); the actor stays",
+                       GetFormId(), npcActivator->GetFormId(),
+                       teleportWorldOrCell,
+                       allowed ? "no host to walk it" : "refused");
+        }
+      } else {
+        TeleportMessage msg;
+        msg.idx = activationSource.GetIdx();
+        std::copy(std::begin(pos), std::end(pos), msg.pos.begin());
+        std::copy(std::begin(rot), std::end(rot), msg.rot.begin());
+        msg.worldOrCell = teleportWorldOrCell;
 
-      if (actorActivator) {
-        actorActivator->GetActorToSendTo().SendToUser(msg, true);
+        if (actorActivator) {
+          actorActivator->GetActorToSendTo().SendToUser(msg, true);
+        }
+
+        activationSource.SetCellOrWorldObsolete(
+          FormDesc::FromFormId(teleportWorldOrCell, worldState->espmFiles));
+        activationSource.SetPos({ pos[0], pos[1], pos[2] });
+        activationSource.SetAngle({ rot[0], rot[1], rot[2] });
       }
-
-      activationSource.SetCellOrWorldObsolete(
-        FormDesc::FromFormId(teleportWorldOrCell, worldState->espmFiles));
-      activationSource.SetPos({ pos[0], pos[1], pos[2] });
-      activationSource.SetAngle({ rot[0], rot[1], rot[2] });
 
     } else {
       SetOpen(!IsOpen());

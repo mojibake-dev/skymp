@@ -119,9 +119,14 @@ public:
 
   virtual void VisitProperties(CreateActorMessage& message,
                                VisitPropertiesMode mode);
+  // `reportedByHost`: the activation is a client's report for an actor it
+  // simulates (thuum docs/verbs/npc-handoff.md D6, the door): a hosted
+  // NPC's door is then its host engine's to walk through; a script's or a
+  // runtime actor's activation keeps the server's own door transit
   virtual void Activate(MpObjectReference& activationSource,
                         bool defaultProcessingOnly = false,
-                        bool isSecondActivation = false);
+                        bool isSecondActivation = false,
+                        bool reportedByHost = false);
   // A FURN the engine lets the player sleep in (thuum docs/verbs/sleep.md)
   bool IsSleepFurniture() const;
   virtual void Disable();
@@ -239,7 +244,8 @@ private:
 
   void CheckInteractionAbility(MpObjectReference& ac);
   bool IsLocationSavingNeeded() const;
-  void ProcessActivateNormal(MpObjectReference& activationSource);
+  void ProcessActivateNormal(MpObjectReference& activationSource,
+                             bool reportedByHost = false);
   bool ProcessActivateSecond(MpObjectReference& activationSource);
   void GivePickupItemsToActivationSource(MpObjectReference& activationSource,
                                          const espm::LookupResult& base);

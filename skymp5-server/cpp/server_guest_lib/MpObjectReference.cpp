@@ -1919,10 +1919,17 @@ void MpObjectReference::SendInventoryUpdate()
 void MpObjectReference::SendOpenContainer(uint32_t targetId)
 {
   auto actor = AsActor();
-  if (actor) {
+  // thuum docs/verbs/cell-host.md: this reply performs a player's own
+  // activation in its game (the client blocks it and waits for the word).
+  // A hosted actor's activation already ran in its host's engine, and
+  // GetActorToSendTo hands an offline actor's messages to its host, whose
+  // game then activated the object with its own player: playtest 32
+  // (2026-10-22), the host sat on the bench a resident had taken. The reply
+  // is the activating player's alone.
+  if (actor && actor->GetUserId() != Networking::InvalidUserId) {
     OpenContainerMessage msg;
     msg.target = targetId;
-    actor->GetActorToSendTo().SendToUser(msg, true);
+    actor->SendToUser(msg, true);
   }
 }
 

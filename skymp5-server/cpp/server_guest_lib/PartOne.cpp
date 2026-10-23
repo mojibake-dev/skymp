@@ -551,6 +551,10 @@ void PartOne::AttachSaveStorage(
                       "loaded {} ChangeForms (Including {} player characters)",
                       duration.count() / 1000, duration.count() % 1000, n,
                       numPlayerCharacters);
+
+  // thuum docs/verbs/npc-puppet.md (playtest 33): the saved game-file actors
+  // onto the grid now, not at the first lookup that happens to name them
+  worldState.LoadDeferredActors();
 }
 
 espm::Loader& PartOne::GetEspm() const

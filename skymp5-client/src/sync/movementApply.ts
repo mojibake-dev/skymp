@@ -58,7 +58,12 @@ export const applyMovement = (refr: ObjectReference, m: Movement, isMyClone?: bo
   }
 
   // ac.stopCombat();
-  ac.blockActivation(true);
+  // a figure's activation is blocked here, per sample as upstream had it; a
+  // puppet's is the native demote's (PuppetApi.cpp, playtest 33: no
+  // Papyrus-backed call per sample for the village's puppets)
+  if (!puppet) {
+    ac.blockActivation(true);
+  }
 
   if (puppet) {
     applyPuppetPose(ac, m);

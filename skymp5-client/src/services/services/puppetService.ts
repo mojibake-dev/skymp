@@ -122,12 +122,11 @@ export class PuppetService extends ClientListener {
         }
         if (ac) {
             // the puppet's imposed state undone, the inverse of the apply's
-            // (movementApply.ts: activation blocked, head tracking on the
-            // relayed look-at point); the native promote restores the AI
-            // alone, so after a handoff the new host's residents kept their
-            // activation blocked: a Talk prompt with E dead (playtest 32,
-            // "but i cant talk to them", 2026-10-22)
-            ac.blockActivation(false);
+            // (movementApply.ts: head tracking on the relayed look-at point);
+            // the activation block is the native demote's and the native
+            // promote lifts it (PuppetApi.cpp; playtest 32's dead Talk prompts
+            // after a handoff, playtest 33's dialogue stuck on an unblocked
+            // puppet)
             ac.clearLookAt();
             ac.setHeadTracking(true);
         }

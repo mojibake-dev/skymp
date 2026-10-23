@@ -34,10 +34,17 @@ void Demote(RE::Actor& actor)
   // has no combat, no movement controller and no process to stop: the bit
   // alone, which EnableAI(false) writes without touching a controller
   // (src/RE/A/Actor.cpp:230-240, GetCharController null-safe)
+  // the engine's activation (Talk, trade, pickpocket) is the host's alone:
+  // blocked natively from the demote (TESObjectREFR::SetActivationBlocked,
+  // CommonLibSSE-NG include/RE/T/TESObjectREFR.h:464), so a puppet that has
+  // taken no relayed sample yet is blocked too (playtest 33: E on such a
+  // puppet opened the engine's dialogue with an AI-off actor, which never
+  // answered, and the Dialogue Menu stayed; no Papyrus call at the attach)
+  actor.SetActivationBlocked(true);
   if (!actor.Is3DLoaded()) {
     actor.EnableAI(false);
     logger::info("[verb:npc-puppet] puppet {:x}: AI off (no 3D, the bit "
-                 "alone)",
+                 "alone), activation blocked",
                  actor.formID);
     return;
   }
@@ -56,7 +63,7 @@ void Demote(RE::Actor& actor)
   }
   actor.EnableAI(false);
   logger::info("[verb:npc-puppet] puppet {:x}: AI off, combat stopped, "
-               "keep-offset cleared",
+               "keep-offset cleared, activation blocked",
                actor.formID);
 }
 
@@ -66,9 +73,13 @@ void Demote(RE::Actor& actor)
 // and heading are written by skymp5-client before this call.
 void Promote(RE::Actor& actor)
 {
+  // the puppet's block lifted with the AI: the host's residents can be
+  // talked to (playtest 32's dead Talk prompts after a handoff)
+  actor.SetActivationBlocked(false);
   actor.EnableAI(true);
   actor.EvaluatePackage(false, false);
-  logger::info("[verb:npc-puppet] live {:x}: AI on, package evaluated",
+  logger::info("[verb:npc-puppet] live {:x}: AI on, package evaluated, "
+               "activation unblocked",
                actor.formID);
 }
 }

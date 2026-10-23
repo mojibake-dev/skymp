@@ -1,4 +1,5 @@
 #include "TestUtils.hpp"
+#include "libespm/CompressedFieldsCache.h"
 #include "libespm/GroupUtils.h"
 #include "libespm/REFR.h"
 #include "wire_bridge_cxx/rules.h"
@@ -232,4 +233,67 @@ TEST_CASE("Riverwood's E3 demo thief 0xe93d2, enabled by a disabled marker, "
   REQUIRE(partOne.worldState.CellOf(*form->AsActor()) == cell);
 
   partOne.DestroyActor(0xff000000);
+}
+
+TEST_CASE("A game-file actor whose ChangeForm the save holds is loaded onto "
+          "the grid before any lookup names it, and a player in reach gets "
+          "its CreateActor",
+          "[NpcExists][espm]")
+{
+  // thuum docs/verbs/npc-puppet.md (playtest 33, 2026-10-23): Riverwood's
+  // residents placed indoors by the game files sat deferred from the restore
+  // until the host's own activation looked one up; both seats ran them by
+  // their own engines meanwhile. Hod 0x1348a, saved outdoors.
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  constexpr uint32_t kHod = 0x1348a;
+  const NiPoint3 kAt{ 19277.f, -44313.f, 89.f };
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kHod) == nullptr);
+
+  // the base the game files give the placement, as a save would carry it
+  auto lookupRes = p.GetEspm().GetBrowser().LookupById(kHod);
+  REQUIRE(lookupRes.rec);
+  auto refrRecord = espm::Convert<espm::REFR>(lookupRes.rec);
+  REQUIRE(refrRecord);
+  espm::CompressedFieldsCache cache;
+  const uint32_t baseId =
+    lookupRes.ToGlobalId(refrRecord->GetData(cache).baseId);
+  REQUIRE(baseId != 0);
+
+  MpChangeForm saved;
+  saved.recType = MpChangeForm::ACHR;
+  saved.formDesc = FormDesc::FromFormId(kHod, p.worldState.espmFiles);
+  saved.baseDesc = FormDesc::FromFormId(baseId, p.worldState.espmFiles);
+  saved.worldOrCellDesc = FormDesc::Tamriel();
+  saved.position = kAt;
+  saved.angle = { 0.f, 0.f, 45.f };
+
+  // deferred: the form is not loaded, so the save's record waits
+  p.worldState.LoadChangeForm(saved, p.CreateFormCallbacks());
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kHod) == nullptr);
+
+  // the eager load: on the grid at the saved position
+  p.worldState.LoadDeferredActors();
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kHod) != nullptr);
+  auto& hod = p.worldState.GetFormAt<MpActor>(kHod);
+  REQUIRE(hod.GetPos().x == Catch::Approx(kAt.x));
+  REQUIRE(hod.GetPos().y == Catch::Approx(kAt.y));
+
+  // a player arriving in reach is told of it at once
+  p.Messages().clear();
+  DoConnect(p, 0);
+  p.CreateActor(0xff000e01, kAt + NiPoint3{ 100.f, 0.f, 0.f }, 0, 0x3c);
+  p.SetUserActor(0, 0xff000e01);
+  auto& messages = p.Messages();
+  auto it =
+    std::find_if(messages.begin(), messages.end(), [&](PartOne::Message& msg) {
+      return msg.userId == 0 && msg.j.is_object() &&
+        msg.j.contains("refrId") &&
+        msg.j["refrId"] == static_cast<uint64_t>(kHod);
+    });
+  REQUIRE(it != messages.end());
+
+  p.DestroyActor(0xff000e01);
+  DoDisconnect(p, 0);
+  p.DestroyActor(kHod);
 }

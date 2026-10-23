@@ -867,6 +867,40 @@ void WorldState::SendPapyrusEvent(MpForm* form, const char* eventName,
   return vm.SendEvent(form->ToGameObject(), eventName, args, onEnter);
 }
 
+// thuum docs/verbs/npc-puppet.md (playtest 33, 2026-10-23): a game-file
+// actor's ChangeForm the save holds waits in changeFormsForDeferredLoad
+// until something loads the form (LoadChangeForm above). The chunk loader
+// loads the game files' exterior placements alone, so a resident the game
+// files place indoors stayed unloaded from the restore until a player's
+// activation looked it up (OnActivate's LookupFormById), invisible to every
+// seat while both engines ran it by their own schedules. Loaded here, it
+// stands on the grid at its saved position from the first second, and every
+// seat in reach gets its CreateActor with the hosted word.
+void WorldState::LoadDeferredActors()
+{
+  if (!espm) {
+    return;
+  }
+  std::vector<uint32_t> ids;
+  for (const auto& [formId, changeForm] : pImpl->changeFormsForDeferredLoad) {
+    if (changeForm.recType == MpChangeForm::ACHR && formId < 0xff000000 &&
+        forms.find(formId) == forms.end()) {
+      ids.push_back(formId);
+    }
+  }
+  size_t loaded = 0;
+  for (uint32_t formId : ids) {
+    if (LoadForm(formId)) {
+      ++loaded;
+    }
+  }
+  if (!ids.empty()) {
+    logger->info("LoadDeferredActors - {} of {} saved game-file actors loaded "
+                 "onto the grid",
+                 loaded, ids.size());
+  }
+}
+
 const std::set<MpObjectReference*>& WorldState::GetNeighborsByPosition(
   uint32_t cellOrWorld, int16_t cellX, int16_t cellY)
 {

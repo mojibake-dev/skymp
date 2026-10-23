@@ -9,6 +9,7 @@
 #include "condition_functions/ConditionFunctionFactory.h"
 #include "libespm/CELL.h"
 #include "libespm/GroupUtils.h"
+#include "libespm/RecordFlags.h"
 #include "libespm/WRLD.h"
 #include "papyrus-vm/Reader.h"
 #include "papyrus-vm/Utils.h"

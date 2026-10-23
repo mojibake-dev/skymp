@@ -95,9 +95,14 @@ export class PuppetService extends ClientListener {
         }
         this.puppets.add(id);
         // the engine's activation (Talk, trade, pickpocket) is the host's
-        // alone: blocked on a puppet from its first moment, as every relayed
-        // sample blocks it again (movementApply.ts)
-        ac.blockActivation(true);
+        // alone: the puppet apply blocks it on the first relayed sample and
+        // every one after (movementApply.ts), so nothing Papyrus-backed runs
+        // here, at the load's first attaches: the one call this demote made
+        // on train-34's first head was the only Papyrus work the client added
+        // to that moment, and Intuitive Dragon Ride Control's quest start-up,
+        // half a second later on the same game thread, ran its init twice
+        // interleaved and showed its "SKSE is not loaded" box in two of two
+        // b-invis-recast runs (gate 20261023-031111), against none before
         logTrace(this, `puppet ${id.toString(16)}`);
     }
 

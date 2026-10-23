@@ -250,6 +250,8 @@ const popDistance = 256;
 const popWindowMs = 600;
 const lastSent = new Map<number, NiPoint3>();
 const lastReal = new Map<number, NiPoint3>();
+// the record's target at the previous apply, per actor (its stillness)
+const lastTarget = new Map<number, NiPoint3>();
 const pops = new Map<number, { at: number; pos: NiPoint3; from: NiPoint3 }>();
 
 const isStaleAfterPop = (refrId: number, real: NiPoint3, target: NiPoint3): boolean => {
@@ -315,9 +317,15 @@ const translateTo = (refr: ObjectReference, m: Movement, settle = false) => {
   // target equal to the last one this code sent (the player stands where it
   // stood) has no jitter to guard against, and a standing figure settles
   // onto it from one unit; a moving target keeps the eight
+  // The record's stillness is read from consecutive records, not from the
+  // last translation sent: a figure placed by a teleport that never walked
+  // has no translation behind it and never settled on 3bd8d8ae (b-duel
+  // 000622 and 000954: the figure 4.4 and 4.9 off at the end of phase 2, no
+  // settle fired)
   const refrId0 = refr.getFormID();
-  const sentBefore = lastSent.get(refrId0);
-  const recordStill = sentBefore !== undefined && ObjectReferenceEx.getDistance(sentBefore, gTempTargetPos) < 0.5;
+  const prevTarget = lastTarget.get(refrId0);
+  lastTarget.set(refrId0, [gTempTargetPos[0], gTempTargetPos[1], gTempTargetPos[2]]);
+  const recordStill = prevTarget !== undefined && ObjectReferenceEx.getDistance(prevTarget, gTempTargetPos) < 0.5;
   const deadband = settle || recordStill ? 1 : 8;
   const offBy = ObjectReferenceEx.getDistanceNoZ(refrRealPos, gTempTargetPos);
   if (
@@ -328,8 +336,8 @@ const translateTo = (refr: ObjectReference, m: Movement, settle = false) => {
     Actor.from(refr)?.getSitState() === 3
   ) {
     if (m.runMode === "Standing" && offBy > deadband && deadband === 1) {
-      // the settle, on the console for the lab's read (rare: a standing figure
-      // or puppet found off its still record)
+      // the settle, on the in-game console (rare: a standing figure or puppet
+      // found off its still record); the watch's track is the lab's read
       printConsole(`settle ${refrId0.toString(16)}: ${offBy.toFixed(1)} units from (${refrRealPos[0].toFixed(0)}, ${refrRealPos[1].toFixed(0)}) to (${gTempTargetPos[0].toFixed(0)}, ${gTempTargetPos[1].toFixed(0)})`);
     }
     const actor = Actor.from(refr);

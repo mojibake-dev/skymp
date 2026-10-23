@@ -1,4 +1,4 @@
-import { Actor, ActorBase, createText, destroyText, Form, FormType, Game, Keyword, NetImmerse, ObjectReference, once, printConsole, setTextPos, setTextSize, setTextString, storage, TESModPlatform, Utility, worldPointToScreenPoint } from "skyrimPlatform";
+import { Actor, ActorBase, Cell, createText, destroyText, Form, FormType, Game, Keyword, NetImmerse, ObjectReference, once, printConsole, setTextPos, setTextSize, setTextString, settings, storage, TESModPlatform, Utility, WorldSpace, worldPointToScreenPoint } from "skyrimPlatform";
 import { setDefaultAnimsDisabled, applyAnimation } from "../sync/animation";
 // @ts-expect-error (TODO: Remove in 2.10.0)
 import { applyAnimationVariablesToActor, castReady, performAction, performActionResult, setActivateTextHidden, setActorAimHeading, setActorAimPitch } from "skyrimPlatform";
@@ -51,11 +51,47 @@ export const getScreenResolution = (): ScreenResolution => {
 export class FormView {
   constructor(private remoteRefrId?: number) { }
 
+  // thuum docs/verbs/npc-handoff.md: the kill switch (settings
+  // skymp5-client.npcHandoff, default on): off, an engine reference whose
+  // record changed cell stands at the door as before train-40
+  private static npcHandoffEnabled(): boolean {
+    if (FormView.npcHandoff === undefined) {
+      const s = settings["skymp5-client"] as Record<string, unknown> | undefined;
+      FormView.npcHandoff = !s || s["npcHandoff"] !== false;
+    }
+    return FormView.npcHandoff;
+  }
+  private static npcHandoff: boolean | undefined = undefined;
+
   update(model: FormModel): void {
     // Other players mutate into PC clones when moving to another location
     if (model.movement) {
       if (!this.lastWorldOrCell)
         this.lastWorldOrCell = model.movement.worldOrCell;
+      if (this.lastWorldOrCell !== model.movement.worldOrCell && this.refrId !== 0 && this.refrId < 0xff000000) {
+        // an engine reference whose record changed cell (a resident through
+        // a door under its host's follow, thuum docs/verbs/npc-handoff.md
+        // D6): the reference is moved into the record's cell as the player's
+        // own cross-cell move is (remoteServer's moveRefrToPosition), never
+        // destroyed; the npcHandoff switch leaves it standing at the door
+        this.lastWorldOrCell = model.movement.worldOrCell;
+        if (FormView.npcHandoffEnabled()) {
+          const refr = ObjectReference.from(Game.getFormEx(this.refrId));
+          const target = Game.getFormEx(model.movement.worldOrCell);
+          if (refr && target) {
+            const pos = model.movement.pos;
+            const rot = model.movement.rot;
+            TESModPlatform.moveRefrToPosition(
+              refr,
+              Cell.from(target),
+              WorldSpace.from(target),
+              pos[0], pos[1], pos[2],
+              rot[0] * Math.PI / 180, rot[1] * Math.PI / 180, rot[2] * Math.PI / 180,
+            );
+            printConsole(`[verb:npc-handoff] moved ${this.refrId.toString(16)} into ${model.movement.worldOrCell.toString(16)}`);
+          }
+        }
+      }
       if (this.lastWorldOrCell !== model.movement.worldOrCell) {
         printConsole(
           `[1] worldOrCell changed, destroying FormView ${this.lastWorldOrCell.toString(
@@ -86,6 +122,12 @@ export class FormView {
         worldOrCell !== 0 &&
         model.movement.worldOrCell !== worldOrCell
       ) {
+        if (this.refrId !== 0 && this.refrId < 0xff000000) {
+          // an engine reference in another cell than the player's stands
+          // where its record put it; nothing is applied until the player's
+          // cell is its cell again (npc-handoff D6)
+          return;
+        }
         this.destroy();
         this.refrId = 0;
         return;

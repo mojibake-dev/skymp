@@ -299,6 +299,13 @@ public:
   // actor's follower (npc-handoff D6), else 0; installed by PartOne; HostOf
   // reads this when installed and cellHostOf otherwise
   std::function<uint32_t(uint32_t actor, uint32_t cell)> simulatorOf;
+  // thuum docs/verbs/npc-handoff.md D6, the door: whether a hosted NPC may
+  // cross a teleport door into `destWorldOrCell` at `destPos` (PartOne's
+  // follow verdict for its simulator), installed by PartOne; none installed,
+  // every crossing is allowed
+  std::function<bool(MpActor& actor, uint32_t destWorldOrCell,
+                     const NiPoint3& destPos)>
+    npcDoorVerdict;
   // thuum docs/verbs/npc-fate.md (ADR-049 decision 1): the level the next
   // game-file actors loaded roll their template chain and outfit at (the
   // player whose arrival loads them), set by PartOne around the fate pass's

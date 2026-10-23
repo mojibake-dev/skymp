@@ -27,7 +27,14 @@ struct Locomotion
   float speed = 0.f;
   float directionDeg = 0.f;
   float turnRateDeg = 0.f;
+  // steady-clock milliseconds at the store; a sample older than
+  // kStaleMs feeds speed 0 (the record stood still and the host sent no
+  // newer sample, or the relay paused): playtest 32, a conversation pair
+  // walking in place on the puppet screen (Embry 0x3550c, 2026-10-22)
+  uint64_t stampMs = 0;
 };
+constexpr uint64_t kLocomotionStaleMs = 400;
+uint64_t NowMs();
 void SetLocomotion(uint32_t formId, const Locomotion& sample);
 bool GetLocomotion(uint32_t formId, Locomotion& out);
 

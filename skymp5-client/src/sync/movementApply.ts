@@ -103,8 +103,30 @@ const applyPuppetPose = (ac: Actor, m: Movement) => {
   // between them (x-npc-legs 20261022-204726: Speed 0 through two walks at
   // 51 to 86 units/s, every event taken); the host's Speed channel is 0
   // when an actor truly stands
-  setPuppetLocomotion(ac.getFormID(), m.speed, m.direction, 0);
+  // the fed speed is bounded by what the record itself moved since the
+  // previous sample: a talker's small turns report a Speed of 10 to 20 with
+  // no displacement, and a puppet fed that walks in place (playtest 32,
+  // Embry's conversation pair, 2026-10-22). A record that moved at the
+  // host's walk feeds the host's Speed; a still record feeds 0
+  const id = ac.getFormID();
+  const now = Date.now();
+  const prev = puppetTrack.get(id);
+  puppetTrack.set(id, { x: m.pos[0], y: m.pos[1], t: now });
+  let fed = m.speed;
+  if (prev) {
+    const dt = Math.max(0.05, (now - prev.t) / 1000);
+    const moved = Math.sqrt(sqr(m.pos[0] - prev.x) + sqr(m.pos[1] - prev.y));
+    const trackSpeed = moved / dt;
+    fed = Math.min(m.speed, trackSpeed * 1.5);
+    if (moved < 2) {
+      fed = 0;
+    }
+  }
+  setPuppetLocomotion(id, fed, m.direction, 0);
 };
+
+// a puppet's record at the previous sample, for the fed speed's bound
+const puppetTrack = new Map<number, { x: number; y: number; t: number }>();
 
 const keepOffsetFromActor = (ac: Actor, m: Movement) => {
   // the turn the short way round: an unwrapped difference in (-360, 360)

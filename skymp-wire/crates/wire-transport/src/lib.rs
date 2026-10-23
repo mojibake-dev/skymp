@@ -322,16 +322,29 @@ impl Server {
         u64::try_from(d.as_millis()).ok()
     }
 
-    /// Milliseconds since the last message from a connected client, by this
-    /// transport's clock: 0 right after one, growing while it is silent (a
-    /// game that was killed, crashed or quit sends nothing while netcode's
-    /// own timeout still runs; thuum docs/verbs/cell-host.md reads it for
-    /// the quitting host). None for a client not connected.
+    /// Milliseconds since a connected client was last heard from, the
+    /// smaller of two readings: netcode's time since its last packet of any
+    /// kind (a keepalive counts, so a game whose network tick still runs
+    /// while its world loads is heard) and this transport's time since its
+    /// last message. 0 right after either, growing while the client is
+    /// silent: a game that was killed, crashed or quit sends neither while
+    /// netcode's own timeout still runs (thuum docs/verbs/cell-host.md reads
+    /// it for the quitting host). None for a client not connected.
     pub fn client_silence_ms(&self, client: u64) -> Option<u64> {
         if !self.renet.is_connected(client) {
             return None;
         }
-        self.last_heard_ms.get(&client).map(|&heard| self.now_ms.saturating_sub(heard))
+        let messages = self.last_heard_ms.get(&client).map(|&heard| self.now_ms.saturating_sub(heard));
+        let packets = self
+            .transport
+            .time_since_last_received_packet(client)
+            .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+        match (messages, packets) {
+            (Some(m), Some(p)) => Some(m.min(p)),
+            (Some(m), None) => Some(m),
+            (None, Some(p)) => Some(p),
+            (None, None) => None,
+        }
     }
 
     /// The address the socket is bound to.

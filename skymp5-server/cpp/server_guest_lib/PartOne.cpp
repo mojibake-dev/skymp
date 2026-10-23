@@ -1634,7 +1634,18 @@ void PartOne::TickCellHosts(uint64_t nowMs)
     if (pImpl->silenceSource) {
       const int64_t silenceMs = pImpl->silenceSource(userId);
       const bool wasStale = pImpl->staleUsers.count(userId) > 0;
-      if (silenceMs >= kStaleHostMs && !wasStale) {
+      // only a host is marked: a silent visitor hosts nothing to pass on,
+      // and a game's first loads after a login (3 to 5 s of silence in the
+      // lab, x-host-kill 205837 and 214420) come before any grant
+      const bool hostsSomething = [&] {
+        for (const auto& row : pImpl->cells->hosts()) {
+          if (row.hosted && row.player == actor->GetFormId()) {
+            return true;
+          }
+        }
+        return false;
+      }();
+      if (silenceMs >= kStaleHostMs && !wasStale && hostsSomething) {
         pImpl->staleUsers.insert(userId);
         spdlog::info("PartOne - cell-host: {:x} (user {}) silent {} ms, "
                      "stale: its cells start their grace",

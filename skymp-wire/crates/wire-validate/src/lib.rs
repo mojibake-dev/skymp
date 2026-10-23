@@ -601,6 +601,14 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
             if !all_finite(m) {
                 return Err(Reject::NonFinite);
             }
+            // thuum docs/verbs/npc-puppet.md (x-npc-death 20261023-054215): a
+            // health percentage lives in [0, 1]. The engine's deferred kill
+            // lets a host's actor sit below zero, and that number killed the
+            // puppet on the other screen; the client clamps at the source and
+            // this refuses the rest
+            if !(0.0..=1.0).contains(&m.data.health_percentage) {
+                return Err(Reject::Range);
+            }
             check_pos(&m.data.pos)
         }
         Message::Teleport(m) => {
@@ -893,6 +901,28 @@ mod tests {
                 ..Default::default()
             },
         })
+    }
+
+    // thuum docs/verbs/npc-puppet.md (x-npc-death 20261023-054215)
+    #[test]
+    fn skymp_movement_health_outside_the_unit_interval_is_range() {
+        let mut g = ClientGuard::default();
+        let at = |health: f32| {
+            Message::UpdateMovement(skymp::UpdateMovement {
+                t: skymp::MsgT,
+                idx: 1,
+                data: skymp::MovementData {
+                    pos: [0.0, 0.0, 0.0],
+                    health_percentage: health,
+                    ..Default::default()
+                },
+            })
+        };
+        assert_eq!(validate(&at(-1.2887), &mut g, 0), Err(Reject::Range));
+        assert_eq!(validate(&at(1.5), &mut g, 0), Err(Reject::Range));
+        assert!(validate(&at(0.0), &mut g, 0).is_ok());
+        assert!(validate(&at(1.0), &mut g, 0).is_ok());
+        assert!(validate(&at(0.5), &mut g, 0).is_ok());
     }
 
     #[test]

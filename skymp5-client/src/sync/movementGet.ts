@@ -42,6 +42,13 @@ export const getMovement = (refr: ObjectReference, form?: FormModel): Movement =
   if (ac && ac.isDead()) {
     healthPercentage = 0;
   }
+  // thuum docs/verbs/npc-puppet.md (x-npc-death 20261023-054215): under the
+  // engine's deferred kill an actor's health can sit below zero (a script,
+  // a fall) and read as a negative percentage; the wire carries [0, 1] and
+  // the validator refuses anything else
+  if (typeof healthPercentage === "number") {
+    healthPercentage = Math.min(1, Math.max(0, healthPercentage));
+  }
 
   let lookAt: undefined | NiPoint3 = undefined;
   if (refr.getFormID() !== 0x14) {

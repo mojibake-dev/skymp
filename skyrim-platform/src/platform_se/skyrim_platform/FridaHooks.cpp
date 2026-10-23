@@ -1,5 +1,6 @@
 #include "FridaHooks.h"
 #include "EventsApi.h"
+#include "Fates.h"
 #include "FridaHookHandler.h"
 #include "FridaHooksUtils.h"
 #include "JsUtils.h"
@@ -1096,6 +1097,9 @@ void Frida::InstallHooks()
   InstallNativeFunctionCtorHook();
   // thuum docs/verbs/npc-puppet.md: the puppet shape's two detours
   Puppets::InstallHooks();
+  // thuum docs/verbs/npc-fate.md: the roll's two detours, inert until
+  // setActorFateEnabled(true)
+  Fates::InstallHooks();
 
   logger::info("Frida hooks installed.");
 }

@@ -1725,6 +1725,15 @@ export declare function isPuppet(actorFormId: number): boolean;
 export declare function setPuppetLocomotion(actorFormId: number, speed: number, directionDeg: number, turnRateDeg: number): boolean;
 // thuum docs/verbs/npc-puppet.md (playtest 33): the form ids of the engine's high-process actors as of the last "Actor animation" stage, read with no game call; the roster's source and the demote poll's, where the cellAttach events name temporary references alone
 export declare function getHighProcessActors(): number[];
+// thuum docs/verbs/npc-fate.md (ADR-046 decision 1, ADR-049): the server's one roll for a leveled placement, held by this game ahead of the engine's own roll: baseId is the NPC_ the server named (0: no actor there, the engine deletes the placement), worn the items it rolled, each added as an inventory entry tagged for the actor's default outfit by the outfit detour (an empty list dresses nothing). Stored on the JS thread, no game call; false for an invalid reference id
+export declare function setActorFate(refrId: number, baseId: number, worn: number[]): boolean;
+// the reference rolls as the engine's own again; false when it held no fate
+export declare function clearActorFate(refrId: number): boolean;
+// the runtime switch over both detours (the leveled roll and InitOutfitItems), default off: nothing is imposed until the lab read x-npc-fate-roll confirms the roll's moments
+export declare function setActorFateEnabled(on: boolean): void;
+// the engine's own re-roll of a loaded leveled actor through the detours, for a fate that arrived after the roll (one visible pop); the actor is looked up on the game thread; false when the reference has no fate or the switch is off
+export declare function rerollActor(refrId: number): boolean;
+export declare function actorFateCount(): number;
 export declare function getAnimationVariablesFromActor(actorFormId: number): ActorAnimationVariables;
 export declare function applyAnimationVariablesToActor(actorFormId: number, animationVariables: ActorAnimationVariables): boolean;
 

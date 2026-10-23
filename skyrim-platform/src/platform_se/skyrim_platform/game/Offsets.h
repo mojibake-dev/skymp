@@ -75,6 +75,17 @@ inline REL::Relocation<std::uintptr_t> QueueActorAnimation{ REL::ID(41370) };
 inline REL::Relocation<std::uintptr_t> ActorAnimationJob{ REL::ID(41453) };
 inline REL::ID JobListPush(69349);
 inline REL::Relocation<std::uintptr_t> ActorMovementStep{ REL::ID(37356) };
+// thuum docs/verbs/npc-fate.md (ADR-046 decision 1, ADR-049): the two
+// detours of the roll pushed to both (FateHooks.cpp). AE only, 1.6.1170's
+// ids by `just addr` on 2026-10-23, the re-analyst's REA read on sky-re
+// (docs/research/m3/re-npc-roll.md section 6; HYPOTHESIS until the lab read
+// x-npc-fate-roll): 14752 the per-reference roll wrapper (TESLeveledList*,
+// TESObjectREFR*, BSScrapArray<CALCED_OBJECT>*), 14374's one call for the
+// LVLN pick at InitItemImpl; 16072 InventoryChanges::InitOutfitItems
+// (InventoryChanges*, BGSOutfit*, uint16 npcLevel), CommonLibSSE-NG's own
+// binding of the AE id (src/RE/I/InventoryChanges.cpp:147-152).
+inline REL::Relocation<std::uintptr_t> LeveledRoll{ REL::ID(14752) };
+inline REL::Relocation<std::uintptr_t> InitOutfitItems{ REL::ID(16072) };
 inline REL::Relocation<std::uintptr_t> ApplyMasksToRenderTargets{
   RELOCATION_ID(26454, 27040)
 };
@@ -102,6 +113,16 @@ inline REL::ID ActorMediatorSingleton(403567);
 // sky-re 2026-10-21, CONFIRMED-STATIC). AE only, 1.6.1170's id by lab/addr.py.
 namespace Puppet {
 inline REL::ID ClearKeepOffsetFromActor(37895);
+}
+
+// thuum docs/verbs/npc-fate.md: the engine's re-roll of a leveled actor,
+// `(RE::Actor*, int a_arg)`, -1 skipping its level check; it restores the
+// placed base, drops the clone and the 3D and re-resolves through 14374,
+// hence through Hooks::LeveledRoll (docs/research/m3/re-npc-roll.md section
+// 1 and section 3 (b), HYPOTHESIS). AE only, 1.6.1170's id by `just addr` on
+// 2026-10-23.
+namespace Fate {
+inline REL::ID ActorReroll(37323);
 }
 
 namespace EventSource {

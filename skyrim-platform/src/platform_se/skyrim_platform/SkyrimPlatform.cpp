@@ -9,6 +9,7 @@
 #include "EncodingApi.h"
 #include "EventsApi.h"
 #include "ExceptionPrinter.h"
+#include "FateApi.h"
 #include "FileInfoApi.h"
 #include "FileUtils.h"
 #include "HttpClient.h"
@@ -289,6 +290,7 @@ private:
       InventoryApi::Register(env, e);
       MagicApi::Register(env, e);
       PuppetApi::Register(env, e);
+      FateApi::Register(env, e);
       ConstEnumApi::Register(env, e);
       CallNativeApi::Register(env, e, getNativeCallRequirements);
       Sp3Api::Register(env, e, getNativeCallRequirements);

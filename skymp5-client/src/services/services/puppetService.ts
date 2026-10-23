@@ -94,6 +94,10 @@ export class PuppetService extends ClientListener {
             return;
         }
         this.puppets.add(id);
+        // the engine's activation (Talk, trade, pickpocket) is the host's
+        // alone: blocked on a puppet from its first moment, as every relayed
+        // sample blocks it again (movementApply.ts)
+        ac.blockActivation(true);
         logTrace(this, `puppet ${id.toString(16)}`);
     }
 
@@ -110,6 +114,17 @@ export class PuppetService extends ClientListener {
             // the grant (the native promote leaves the transform alone)
             ac.setPosition(last.pos[0], last.pos[1], last.pos[2]);
             ac.setAngle(last.rot[0], last.rot[1], last.rot[2]);
+        }
+        if (ac) {
+            // the puppet's imposed state undone, the inverse of the apply's
+            // (movementApply.ts: activation blocked, head tracking on the
+            // relayed look-at point); the native promote restores the AI
+            // alone, so after a handoff the new host's residents kept their
+            // activation blocked: a Talk prompt with E dead (playtest 32,
+            // "but i cant talk to them", 2026-10-22)
+            ac.blockActivation(false);
+            ac.clearLookAt();
+            ac.setHeadTracking(true);
         }
         this.sp.setPuppet(id, false);
         this.puppets.delete(id);

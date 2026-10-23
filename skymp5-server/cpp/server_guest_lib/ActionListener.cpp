@@ -1203,8 +1203,10 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
   }
 
   constexpr bool kDefaultProcessingOnlyFalse = false;
+  // a hosted caster's activation is its host's report (npc-handoff D6)
+  const bool reportedByHost = msg.data.caster != 0x14;
   targetPtr->Activate(caster, kDefaultProcessingOnlyFalse,
-                      msg.data.isSecondActivation);
+                      msg.data.isSecondActivation, reportedByHost);
   // thuum docs/verbs/self-cast.md: an actor's activation ends its
   // concealment (TESObjectREFR::ActivateRef 19796 calls DispelAlteredStates
   // for an actor activator, with no exception; pick-up goes the same way;

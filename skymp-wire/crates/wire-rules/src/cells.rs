@@ -16,11 +16,38 @@
 //! gathers the facts (the loaded reports, the grid, the round trips, the
 //! disconnects) and asks here.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// How long a host keeps its cell after unloading it or leaving, before the
 /// cell passes on (ADR-035, Eli 2026-10-18: "a grace window of about 5 s").
 pub const GRACE_MS: u64 = 5_000;
+
+/// How long after a cold start (no cell ever hosted) the first grants stay
+/// provisional: a nearer eligible player arriving inside it takes the cell
+/// at once, without a grace, the one time a host changes without one
+/// (ADR-047 D10: a restart's two reconnects came 20 ms apart and split
+/// Riverwood nine cells to three by arrival order). UNMEASURED placeholder;
+/// b-npc-handoff's restart step sizes it.
+pub const COLD_START_MS: u64 = 5_000;
+
+/// What the server answers a simulator's report that moves an actor
+/// (ADR-047 D6, thuum docs/verbs/npc-handoff.md): the core turns it into
+/// the accept, the follow's record or the drop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum MoveVerdict {
+    /// Dropped: the sender does not simulate the actor where it stands, or
+    /// the destination is no cell, or another game hosts it (a pass between
+    /// live hosts is D9, the second slice).
+    Refuse = 0,
+    /// Applied as today: the move stays inside the sender's cell, or enters
+    /// a cell the sender hosts (which ends any follow of the actor).
+    Accept = 1,
+    /// The destination is nobody's and the sender vouches for it: the sender
+    /// follows its actor there and simulates it until the cell is granted,
+    /// the sender unloads it or leaves, or the actor enters a hosted cell.
+    Follow = 2,
+}
 
 /// How many CellLoaded reports a client may send at once; the validator's
 /// budget, carried with its conditions (ADR-033). Measured on the lab's
@@ -77,14 +104,44 @@ struct CellState {
     host: Option<Host>,
     /// The last grant's epoch, kept while unhosted.
     epoch: u32,
+    /// When the standing host was granted (the cold start's provisional window).
+    granted_ms: u64,
+}
+
+/// A simulator's report that moves an actor between cells, the facts the
+/// core gathers for `Cells::may_move` (ADR-047 D6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CellMove {
+    /// The reporting player's actor.
+    pub sender: u32,
+    /// The actor moved.
+    pub actor: u32,
+    /// The cell the actor's record stands in (0 for none).
+    pub origin: u32,
+    /// The cell the report puts it in (0 for none).
+    pub dest: u32,
+    /// Whether the two exterior grid squares touch in one worldspace.
+    pub adjacent: bool,
+    /// Whether the destination is an interior entered by a persistent actor.
+    pub door: bool,
+}
+
+/// A host simulating an actor in a cell nobody hosts (ADR-047 D6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Follow {
+    player: u32,
+    cell: u32,
+    since_ms: u64,
 }
 
 #[derive(Debug, Clone, Default)]
 struct PlayerState {
     /// The cells the game reports loaded, each with the time it first did.
     loaded: HashMap<u32, u64>,
-    /// The cells the server's grid gives the player (its 3x3).
-    reach: HashSet<u32>,
+    /// The cells the server's grid gives the player (its 3x3), each with
+    /// its ring: 0 the player's own square, 1 a neighbour, the nearness the
+    /// cold start ranks by (ADR-047 D10).
+    reach: HashMap<u32, u8>,
     /// The connection's round trip, when the transport has measured one.
     rtt_ms: Option<u32>,
     /// The connection has gone silent (no message for the server's stale
@@ -94,11 +151,15 @@ struct PlayerState {
     stale: bool,
 }
 
-/// Every cell's host and every player's loaded set, grid and round trip.
+/// Every cell's host and every player's loaded set, grid and round trip,
+/// and the follows (ADR-047 D6).
 #[derive(Debug, Default)]
 pub struct Cells {
     cells: HashMap<u32, CellState>,
     players: HashMap<u32, PlayerState>,
+    follows: HashMap<u32, Follow>,
+    /// The first grant's time, the cold start's window opening; None until it.
+    first_grant_ms: Option<u64>,
 }
 
 impl Cells {
@@ -108,11 +169,28 @@ impl Cells {
     /// granted; a hosted cell newly reached disarms its grace; a hosted cell
     /// the grid dropped arms it.
     pub fn reach(&mut self, player: u32, cells: &[u32], now_ms: u64) -> Vec<Decision> {
-        let next: HashSet<u32> = cells.iter().copied().collect();
+        let rings = vec![1u8; cells.len()];
+        self.reach_ranked(player, cells, &rings, now_ms)
+    }
+
+    /// `reach` with each cell's ring (0 the player's own square, 1 a
+    /// neighbour; a missing ring counts as 1), the nearness the cold start
+    /// ranks by (ADR-047 D10).
+    pub fn reach_ranked(&mut self, player: u32, cells: &[u32], rings: &[u8], now_ms: u64) -> Vec<Decision> {
+        let next: HashMap<u32, u8> =
+            cells.iter().enumerate().map(|(i, &c)| (c, rings.get(i).copied().unwrap_or(1))).collect();
         let prev = std::mem::replace(&mut self.players.entry(player).or_default().reach, next.clone());
-        let mut touched: Vec<u32> = prev.symmetric_difference(&next).copied().collect();
+        let mut touched: Vec<u32> = prev
+            .keys()
+            .filter(|c| !next.contains_key(c))
+            .chain(next.keys().filter(|c| !prev.contains_key(c)))
+            .copied()
+            .collect();
+        // a cell newly reached, or reached from a nearer square, is considered (the cold start)
+        touched.extend(next.iter().filter(|(c, r)| prev.get(c).is_some_and(|p| p != *r)).map(|(c, _)| *c));
         touched.sort_unstable();
-        touched.into_iter().filter_map(|cell| self.consider(player, cell, now_ms)).collect()
+        touched.dedup();
+        touched.into_iter().flat_map(|cell| self.consider(player, cell, now_ms)).collect()
     }
 
     /// The transport's round trip for `player`'s connection, milliseconds.
@@ -126,7 +204,7 @@ impl Cells {
     /// nothing.
     pub fn loaded(&mut self, player: u32, cell: u32, now_ms: u64) -> Vec<Decision> {
         self.players.entry(player).or_default().loaded.entry(cell).or_insert(now_ms);
-        self.consider(player, cell, now_ms).into_iter().collect()
+        self.consider(player, cell, now_ms)
     }
 
     /// `player` reports `cell` unloaded at `now_ms`: its grace starts when it
@@ -135,13 +213,16 @@ impl Cells {
         if let Some(p) = self.players.get_mut(&player) {
             p.loaded.remove(&cell);
         }
-        self.consider(player, cell, now_ms).into_iter().collect()
+        // a follow into an exterior the follower no longer loads ends (ADR-047 D6)
+        self.follows.retain(|_, f| !(f.player == player && f.cell == cell));
+        self.consider(player, cell, now_ms)
     }
 
     /// `player` left the server at `now_ms`: every cell it hosts starts its
     /// grace, and it is no candidate anywhere.
     pub fn gone(&mut self, player: u32, now_ms: u64) -> Vec<Decision> {
         self.players.remove(&player);
+        self.follows.retain(|_, f| f.player != player);
         for state in self.cells.values_mut() {
             if let Some(ref mut host) = state.host {
                 if host.player == player && host.leaving_since_ms.is_none() {
@@ -179,7 +260,7 @@ impl Cells {
         p.stale = false;
         let mut cells: Vec<u32> = p.loaded.keys().copied().collect();
         cells.sort_unstable();
-        cells.into_iter().filter_map(|cell| self.consider(player, cell, now_ms)).collect()
+        cells.into_iter().flat_map(|cell| self.consider(player, cell, now_ms)).collect()
     }
 
     /// Whether `player` has `cell` loaded and in reach, and is heard from:
@@ -187,14 +268,104 @@ impl Cells {
     fn eligible(&self, player: u32, cell: u32) -> bool {
         self.players
             .get(&player)
-            .is_some_and(|p| !p.stale && p.reach.contains(&cell) && p.loaded.contains_key(&cell))
+            .is_some_and(|p| !p.stale && p.reach.contains_key(&cell) && p.loaded.contains_key(&cell))
+    }
+
+    /// `player`'s ring for `cell` (0 its own square, 1 a neighbour), 2 when
+    /// the grid does not give it the cell.
+    fn ring(&self, player: u32, cell: u32) -> u8 {
+        self.players.get(&player).and_then(|p| p.reach.get(&cell).copied()).unwrap_or(2)
+    }
+
+    /// Whether the table is inside its cold start: nothing granted yet, or
+    /// the first grant less than COLD_START_MS ago (ADR-047 D10).
+    fn cold_start(&self, now_ms: u64) -> bool {
+        self.first_grant_ms.is_none_or(|t| now_ms.saturating_sub(t) < COLD_START_MS)
+    }
+
+    /// `player` hosts `cell` from `now_ms` at the next epoch; any follow into
+    /// the cell ends with the grant.
+    fn grant(&mut self, player: u32, cell: u32, now_ms: u64) -> Decision {
+        self.follows.retain(|_, f| f.cell != cell);
+        self.first_grant_ms.get_or_insert(now_ms);
+        let state = self.cells.entry(cell).or_default();
+        let epoch = state.epoch.saturating_add(1);
+        state.epoch = epoch;
+        state.host = Some(Host { player, epoch, leaving_since_ms: None });
+        state.granted_ms = now_ms;
+        Decision::Grant { player, cell, epoch }
+    }
+
+    /// Who simulates `actor` standing in `cell`: the cell's host, else the
+    /// follower whose follow names the cell, else nobody (0). The one answer
+    /// the core's word, routing and sighting gate read (ADR-047 D6).
+    #[must_use]
+    pub fn simulator_of(&self, actor: u32, cell: u32) -> u32 {
+        if let Some((player, _)) = self.host_of(cell) {
+            return player;
+        }
+        match self.follows.get(&actor) {
+            Some(f) if f.cell == cell => f.player,
+            _ => 0,
+        }
+    }
+
+    /// The report `m` at `now_ms`. The verdict (ADR-047 D6): inside the
+    /// sender's own cell, or into a cell it hosts, Accept; into a cell
+    /// nobody hosts that the sender vouches for (adjacent and loaded by its
+    /// game, or a door), Follow, recorded here; anything else Refuse. A pass
+    /// into another live host's cell is D9, the second slice: Refuse today.
+    pub fn may_move(&mut self, m: &CellMove, now_ms: u64) -> MoveVerdict {
+        let CellMove { sender, actor, origin, dest, adjacent, door } = *m;
+        if dest == 0 {
+            return MoveVerdict::Refuse;
+        }
+        let simulator = if origin == 0 { 0 } else { self.simulator_of(actor, origin) };
+        if dest == origin {
+            return if simulator == sender { MoveVerdict::Accept } else { MoveVerdict::Refuse };
+        }
+        match self.host_of(dest) {
+            Some((host, _)) if host == sender => {
+                if simulator == 0 || simulator == sender {
+                    self.follows.remove(&actor);
+                    MoveVerdict::Accept
+                } else {
+                    MoveVerdict::Refuse
+                }
+            }
+            Some(_) => MoveVerdict::Refuse,
+            None => {
+                if simulator != sender {
+                    return MoveVerdict::Refuse;
+                }
+                let loads = self.players.get(&sender).is_some_and(|p| p.loaded.contains_key(&dest));
+                if (adjacent && loads) || door {
+                    self.follows.insert(actor, Follow { player: sender, cell: dest, since_ms: now_ms });
+                    MoveVerdict::Follow
+                } else {
+                    MoveVerdict::Refuse
+                }
+            }
+        }
+    }
+
+    /// Every follow, by actor id: the actor, its follower and the cell, for
+    /// the lab's reading of the server.
+    #[must_use]
+    pub fn follows(&self) -> Vec<(u32, u32, u32)> {
+        let mut rows: Vec<(u32, u32, u32)> = self.follows.iter().map(|(&a, f)| (a, f.player, f.cell)).collect();
+        rows.sort_unstable();
+        rows
     }
 
     /// `player`'s standing toward `cell` changed at `now_ms`: a grant when
     /// it is eligible and nobody hosts; its own grace disarmed while
-    /// eligible, armed while not; nothing toward another's cell.
-    fn consider(&mut self, player: u32, cell: u32, now_ms: u64) -> Option<Decision> {
+    /// eligible, armed while not; nothing toward another's cell, except
+    /// inside the cold start, where a provisional grant passes at once to an
+    /// eligible player standing nearer the cell (ADR-047 D10).
+    fn consider(&mut self, player: u32, cell: u32, now_ms: u64) -> Vec<Decision> {
         let eligible = self.eligible(player, cell);
+        let cold = self.cold_start(now_ms);
         let state = self.cells.entry(cell).or_default();
         match state.host {
             Some(ref mut host) if host.player == player => {
@@ -203,16 +374,20 @@ impl Cells {
                 } else if host.leaving_since_ms.is_none() {
                     host.leaving_since_ms = Some(now_ms);
                 }
-                None
+                Vec::new()
             }
-            Some(_) => None,
-            None if eligible => {
-                let epoch = state.epoch.saturating_add(1);
-                state.epoch = epoch;
-                state.host = Some(Host { player, epoch, leaving_since_ms: None });
-                Some(Decision::Grant { player, cell, epoch })
+            Some(host) => {
+                let provisional = cold && now_ms.saturating_sub(state.granted_ms) < COLD_START_MS;
+                if eligible && provisional && self.ring(player, cell) < self.ring(host.player, cell) {
+                    let release = Decision::Release { player: host.player, cell, epoch: host.epoch };
+                    let grant = self.grant(player, cell, now_ms);
+                    vec![release, grant]
+                } else {
+                    Vec::new()
+                }
             }
-            None => None,
+            None if eligible => vec![self.grant(player, cell, now_ms)],
+            None => Vec::new(),
         }
     }
 
@@ -235,16 +410,12 @@ impl Cells {
         for (cell, old) in due {
             out.push(Decision::Release { player: old.player, cell, epoch: old.epoch });
             let next = self.candidate(cell, old.player);
-            let Some(state) = self.cells.get_mut(&cell) else { continue };
             match next {
-                Some(player) => {
-                    let epoch = state.epoch.saturating_add(1);
-                    state.epoch = epoch;
-                    state.host = Some(Host { player, epoch, leaving_since_ms: None });
-                    out.push(Decision::Grant { player, cell, epoch });
-                }
+                Some(player) => out.push(self.grant(player, cell, now_ms)),
                 None => {
-                    state.host = None;
+                    if let Some(state) = self.cells.get_mut(&cell) {
+                        state.host = None;
+                    }
                     out.push(Decision::Unhosted { cell });
                 }
             }
@@ -258,7 +429,7 @@ impl Cells {
     fn candidate(&self, cell: u32, leaving: u32) -> Option<u32> {
         self.players
             .iter()
-            .filter(|&(&id, p)| id != leaving && !p.stale && p.reach.contains(&cell) && p.loaded.contains_key(&cell))
+            .filter(|&(&id, p)| id != leaving && !p.stale && p.reach.contains_key(&cell) && p.loaded.contains_key(&cell))
             .map(|(&id, p)| (p.rtt_ms.unwrap_or(u32::MAX), p.loaded.get(&cell).copied().unwrap_or(u64::MAX), id))
             .min()
             .map(|(_, _, id)| id)
@@ -532,5 +703,96 @@ mod tests {
         );
         // and takes it the moment it is heard again
         assert_eq!(c.revived(C2, 30_000), vec![Decision::Grant { player: C2, cell: RIVERWOOD, epoch: 2 }]);
+    }
+
+    #[test]
+    fn a_host_follows_its_actor_into_a_cell_nobody_hosts_and_a_grant_ends_the_follow() {
+        // ADR-047 D6: Stump into Gerdur's house was refused 751 times; the
+        // host's own move into a cell it loads and nobody hosts is a follow
+        const EAST: u32 = 0x9733;
+        const STUMP: u32 = 0x1e62b;
+        let mut c = both_in_reach();
+        assert_eq!(c.loaded(C1, RIVERWOOD, 1_000), vec![Decision::Grant { player: C1, cell: RIVERWOOD, epoch: 1 }]);
+        // east is loaded by c1's game but outside everybody's grid
+        assert_eq!(c.loaded(C1, EAST, 1_100), vec![]);
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: STUMP, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false }, 10_000), MoveVerdict::Follow);
+        assert_eq!(c.simulator_of(STUMP, EAST), C1);
+        assert_eq!(c.follows(), vec![(STUMP, C1, EAST)]);
+        // inside the followed cell: the follower's moves pass, anyone else's are dropped
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: STUMP, origin: EAST, dest: EAST, adjacent: false, door: false }, 10_200), MoveVerdict::Accept);
+        assert_eq!(c.may_move(&CellMove { sender: C2, actor: STUMP, origin: EAST, dest: EAST, adjacent: false, door: false }, 10_300), MoveVerdict::Refuse);
+        // a visitor who has not loaded east cannot follow anything there
+        assert_eq!(c.may_move(&CellMove { sender: C2, actor: 0x1348a, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false }, 10_400), MoveVerdict::Refuse);
+        // two squares away, or not loaded: refused
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: 0x1348a, origin: RIVERWOOD, dest: 0x9734, adjacent: false, door: false }, 10_500), MoveVerdict::Refuse);
+        // back into the sender's hosted cell: accepted, the follow ends
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: STUMP, origin: EAST, dest: RIVERWOOD, adjacent: true, door: false }, 11_000), MoveVerdict::Accept);
+        assert_eq!(c.follows(), vec![]);
+        assert_eq!(c.simulator_of(STUMP, EAST), 0);
+        // out again, then c2 reaches and loads east: granted, and the follow ends with the grant
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: STUMP, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false }, 12_000), MoveVerdict::Follow);
+        assert_eq!(c.loaded(C2, EAST, 12_500), vec![]);
+        assert_eq!(c.reach(C2, &[RIVERWOOD, EAST], 12_600), vec![Decision::Grant { player: C2, cell: EAST, epoch: 1 }]);
+        assert_eq!(c.follows(), vec![]);
+        assert_eq!(c.simulator_of(STUMP, EAST), C2);
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: STUMP, origin: EAST, dest: EAST, adjacent: false, door: false }, 12_700), MoveVerdict::Refuse);
+        // into another live host's cell: refused until D9
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: 0x1348a, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false }, 12_800), MoveVerdict::Refuse);
+    }
+
+    #[test]
+    fn a_door_is_a_follow_without_a_loaded_report_and_the_follow_ends_with_an_unload_or_a_departure() {
+        // an interior is never in a loaded set unless the player is inside;
+        // a persistent actor through a door is vouched for by the door
+        const INN: u32 = 0x133c6;
+        const EMBRY: u32 = 0x3550c;
+        let mut c = both_in_reach();
+        c.loaded(C1, RIVERWOOD, 1_000);
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: EMBRY, origin: RIVERWOOD, dest: INN, adjacent: false, door: false }, 2_000), MoveVerdict::Refuse);
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: EMBRY, origin: RIVERWOOD, dest: INN, adjacent: false, door: true }, 2_000), MoveVerdict::Follow);
+        assert_eq!(c.simulator_of(EMBRY, INN), C1);
+        // the follower leaves: the follow goes with it
+        assert_eq!(c.gone(C1, 3_000), vec![]);
+        assert_eq!(c.simulator_of(EMBRY, INN), 0);
+        assert_eq!(c.follows(), vec![]);
+        // an exterior follow ends when the follower unloads the cell
+        const EAST: u32 = 0x9733;
+        let mut d = both_in_reach();
+        d.loaded(C2, RIVERWOOD, 1_000);
+        d.loaded(C2, EAST, 1_000);
+        assert_eq!(d.may_move(&CellMove { sender: C2, actor: EMBRY, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false }, 2_000), MoveVerdict::Follow);
+        assert_eq!(d.unloaded(C2, EAST, 3_000), vec![]);
+        assert_eq!(d.simulator_of(EMBRY, EAST), 0);
+        assert_eq!(d.may_move(&CellMove { sender: C2, actor: EMBRY, origin: EAST, dest: EAST, adjacent: false, door: false }, 3_100), MoveVerdict::Refuse);
+    }
+
+    #[test]
+    fn the_cold_starts_first_grants_pass_to_a_nearer_player_inside_the_dwell_and_stand_after_it() {
+        // ADR-047 D10: after a restart two games reconnect 20 ms apart; the
+        // cell each stands in goes to it, not to whoever reported first
+        const WEST: u32 = 0x9731;
+        let mut c = Cells::default();
+        // c1 stands in Riverwood's square, west is its neighbour
+        assert_eq!(c.reach_ranked(C1, &[RIVERWOOD, WEST], &[0, 1], 1_000), vec![]);
+        assert_eq!(c.loaded(C1, RIVERWOOD, 1_000), vec![Decision::Grant { player: C1, cell: RIVERWOOD, epoch: 1 }]);
+        assert_eq!(c.loaded(C1, WEST, 1_001), vec![Decision::Grant { player: C1, cell: WEST, epoch: 1 }]);
+        // c2 stands in the west square: west passes to it at once, Riverwood stays
+        assert_eq!(c.loaded(C2, WEST, 1_020), vec![]);
+        assert_eq!(c.loaded(C2, RIVERWOOD, 1_020), vec![]);
+        assert_eq!(
+            c.reach_ranked(C2, &[WEST, RIVERWOOD], &[0, 1], 1_021),
+            vec![Decision::Release { player: C1, cell: WEST, epoch: 1 }, Decision::Grant { player: C2, cell: WEST, epoch: 2 }]
+        );
+        assert_eq!(c.host_of(RIVERWOOD), Some((C1, 1)));
+        assert_eq!(c.host_of(WEST), Some((C2, 2)));
+        // a tie in nearness stays with the arrival order
+        assert_eq!(c.reach_ranked(C2, &[WEST, RIVERWOOD], &[0, 0], 1_030), vec![]);
+        // after the dwell a nearer arrival takes nothing: hosts do not churn
+        let mut d = Cells::default();
+        d.reach_ranked(C1, &[RIVERWOOD], &[1], 1_000);
+        assert_eq!(d.loaded(C1, RIVERWOOD, 1_000), vec![Decision::Grant { player: C1, cell: RIVERWOOD, epoch: 1 }]);
+        d.loaded(C2, RIVERWOOD, 1_000 + COLD_START_MS);
+        assert_eq!(d.reach_ranked(C2, &[RIVERWOOD], &[0], 1_000 + COLD_START_MS), vec![]);
+        assert_eq!(d.host_of(RIVERWOOD), Some((C1, 1)));
     }
 }

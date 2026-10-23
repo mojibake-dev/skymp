@@ -940,6 +940,40 @@ mod ffi {
         epoch: u32,
     }
 
+    /// A simulator's report moving an actor between cells, the facts the
+    /// core gathers for `may_move` (ADR-047 D6): the reporting player's
+    /// actor, the actor moved, the cell its record stands in and the cell
+    /// the report puts it in (0 for none), whether the two exterior squares
+    /// touch in one worldspace, whether the destination is an interior
+    /// entered by a persistent actor.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct CellMove {
+        /// The reporting player's actor.
+        sender: u32,
+        /// The actor moved.
+        actor: u32,
+        /// The cell the actor's record stands in (0 for none).
+        origin: u32,
+        /// The cell the report puts it in (0 for none).
+        dest: u32,
+        /// Whether the two exterior grid squares touch in one worldspace.
+        adjacent: bool,
+        /// Whether the destination is an interior entered by a persistent actor.
+        door: bool,
+    }
+
+    /// A follow (ADR-047 D6, thuum docs/verbs/npc-handoff.md): `player`
+    /// simulates `actor` in `cell`, a cell nobody hosts, for the lab's reading.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct CellFollowRow {
+        /// The actor followed.
+        actor: u32,
+        /// The player whose game simulates it.
+        player: u32,
+        /// The cell nobody hosts that it stands in.
+        cell: u32,
+    }
+
     /// One cell the host table knows, for the lab's reading of the server.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct CellHostRow {
@@ -1356,13 +1390,24 @@ mod ffi {
         fn epoch_of(self: &Cells, cell: u32) -> u32;
         /// Every cell the table knows, by cell id (the lab's reading).
         fn hosts(self: &Cells) -> Vec<CellHostRow>;
+        /// `reach` with each cell's ring (0 the player's own square, 1 a
+        /// neighbour), the nearness the cold start ranks by (ADR-047 D10).
+        fn reach_ranked(self: &mut Cells, player: u32, cells: &[u32], rings: &[u8], now_ms: u64) -> Vec<HostDecision>;
+        /// A simulator's report moving an actor between cells: 0 Refuse,
+        /// 1 Accept, 2 Follow (recorded here) (ADR-047 D6).
+        fn may_move(self: &mut Cells, report: &CellMove, now_ms: u64) -> u8;
+        /// Who simulates `actor` standing in `cell`: the host, else the
+        /// follower, else 0.
+        fn simulator_of(self: &Cells, actor: u32, cell: u32) -> u32;
+        /// Every follow, by actor id.
+        fn follows(self: &Cells) -> Vec<CellFollowRow>;
         /// The grace a host keeps its cell after leaving it, ms
         /// (wire-rules cells::GRACE_MS), for the core's timer.
         fn host_grace_ms() -> u64;
     }
 }
 
-pub use ffi::{AvBase, CellHost, CellHostRow, HostDecision, HostKind, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlayerGlobalEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
+pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlayerGlobalEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -1972,6 +2017,35 @@ impl Cells {
 
     fn epoch_of(&self, cell: u32) -> u32 {
         self.0.epoch_of(cell)
+    }
+
+    fn reach_ranked(&mut self, player: u32, cells: &[u32], rings: &[u8], now_ms: u64) -> Vec<HostDecision> {
+        let decisions = self.0.reach_ranked(player, cells, rings, now_ms);
+        host_decisions(&self.0, decisions)
+    }
+
+    fn may_move(&mut self, report: &CellMove, now_ms: u64) -> u8 {
+        let m = cells::CellMove {
+            sender: report.sender,
+            actor: report.actor,
+            origin: report.origin,
+            dest: report.dest,
+            adjacent: report.adjacent,
+            door: report.door,
+        };
+        match self.0.may_move(&m, now_ms) {
+            cells::MoveVerdict::Refuse => 0,
+            cells::MoveVerdict::Accept => 1,
+            cells::MoveVerdict::Follow => 2,
+        }
+    }
+
+    fn simulator_of(&self, actor: u32, cell: u32) -> u32 {
+        self.0.simulator_of(actor, cell)
+    }
+
+    fn follows(&self) -> Vec<CellFollowRow> {
+        self.0.follows().into_iter().map(|(actor, player, cell)| CellFollowRow { actor, player, cell }).collect()
     }
 
     fn hosts(&self) -> Vec<CellHostRow> {

@@ -551,8 +551,17 @@ void MpObjectReference::SetPos(const NiPoint3& newPos, SetPosMode setPosMode)
     [&newPos](MpChangeFormREFR& changeForm) { changeForm.position = newPos; },
     MakeMode(IsLocationSavingNeeded(), setPosMode));
 
-  if (oldGridPos != newGridPos || !everSubscribedOrListened)
+  if (oldGridPos != newGridPos || !everSubscribedOrListened) {
+    // thuum docs/verbs/npc-fate.md (ADR-049): a player's fate pass before
+    // the grid loads its 3x3, so the ring rolls at the player's level
+    if (auto* worldState = GetParent();
+        worldState && worldState->onSquareChange) {
+      if (MpActor* actor = AsActor()) {
+        worldState->onSquareChange(*actor);
+      }
+    }
     ForceSubscriptionsUpdate();
+  }
 
   if (!IsDisabled()) {
     if (emittersWithPrimitives) {

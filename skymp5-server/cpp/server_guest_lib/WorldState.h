@@ -307,6 +307,11 @@ public:
   // a game-file actor's fate rolled anew (the respawn), installed by PartOne
   // to send the fate again
   std::function<void(MpActor&)> onActorFate;
+  // an actor's grid square changed at a position write, before the grid's
+  // own 3x3 loads around it (MpObjectReference::SetPos): PartOne's fate pass
+  // runs here for a player, so the ring is rolled at that player's level
+  // before any of it is loaded or subscribed
+  std::function<void(MpActor&)> onSquareChange;
   std::unordered_map<uint32_t, std::map<uint32_t, float>>
     activationChildsByActivationParent;
   std::vector<std::optional<std::chrono::system_clock::time_point>>

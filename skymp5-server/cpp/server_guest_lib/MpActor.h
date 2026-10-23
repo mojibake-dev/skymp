@@ -62,6 +62,12 @@ public:
   // pick, else the placed base
   std::optional<uint16_t> GetFateLevel() const;
   uint32_t GetFateBaseId() const;
+  // An actor this process rolled without a fate (loaded by the grid's own
+  // 3x3 before any fate pass reached it) is rolled anew at `level`, chain
+  // and outfit, and stamped; one loaded from a save keeps its roll (ADR-049
+  // decision 1: a record rolled before the rule keeps it), as does a dead
+  // one and one already fated. Returns whether it rolled.
+  bool RollFateIfUnrolled(uint16_t level);
   bool IsCreatedAsPlayer() const;
   const ActorValues& GetActorValues() const;
   const ActiveMagicEffectsMap& GetActiveMagicEffects() const;

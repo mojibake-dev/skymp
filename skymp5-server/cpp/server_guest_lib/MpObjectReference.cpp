@@ -450,7 +450,7 @@ void MpObjectReference::VisitProperties(CreateActorMessage& message,
 
 void MpObjectReference::Activate(MpObjectReference& activationSource,
                                  bool defaultProcessingOnly,
-                                 bool isSecondActivation)
+                                 bool isSecondActivation, bool reportedByHost)
 {
   if (spdlog::should_log(spdlog::level::trace)) {
     for (auto& script : ListActivePexInstances()) {
@@ -498,7 +498,7 @@ void MpObjectReference::Activate(MpObjectReference& activationSource,
 
     if (!activationBlockedByMpApi &&
         (!activationBlocked || defaultProcessingOnly)) {
-      ProcessActivateNormal(activationSource);
+      ProcessActivateNormal(activationSource, reportedByHost);
       ActivateChilds();
     } else {
       spdlog::trace(
@@ -1469,7 +1469,7 @@ void MpObjectReference::GivePickupItemsToActivationSource(
 }
 
 void MpObjectReference::ProcessActivateNormal(
-  MpObjectReference& activationSource)
+  MpObjectReference& activationSource, bool reportedByHost)
 {
   auto actorActivator = activationSource.AsActor();
 
@@ -1543,8 +1543,12 @@ void MpObjectReference::ProcessActivateNormal(
                             teleport->rotRadians[1] / kPi * 180,
                             teleport->rotRadians[2] / kPi * 180 };
 
-      MpActor* npcActivator = actorActivator &&
-          actorActivator->GetUserId() == Networking::InvalidUserId
+      // a game-file actor a host reported for (never a runtime actor, a
+      // script's activation or a player's: those keep the transit below;
+      // unit/PapyrusCompatibilityTest's BrokenOarGrotto door among them)
+      MpActor* npcActivator = reportedByHost && actorActivator &&
+          actorActivator->GetUserId() == Networking::InvalidUserId &&
+          actorActivator->GetFormId() < 0xff000000
         ? actorActivator
         : nullptr;
       if (npcActivator) {

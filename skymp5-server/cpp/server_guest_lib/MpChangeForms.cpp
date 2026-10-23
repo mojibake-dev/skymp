@@ -422,6 +422,11 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
   res["spawnDelay"] = changeForm.spawnDelay;
   res["effects"] = changeForm.activeMagicEffects.ToJson();
 
+  // thuum docs/verbs/npc-fate.md (ADR-049); absent in older records
+  if (changeForm.fateLevel.has_value()) {
+    res["fateLevel"] = *changeForm.fateLevel;
+  }
+
   if (!changeForm.templateChain.empty()) {
     res["templateChain"] = ToStringArray(changeForm.templateChain);
   }
@@ -621,6 +626,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
   static const JsonPointer spawnDelay("spawnDelay");
   static const JsonPointer effects("effects");
   static const JsonPointer templateChain("templateChain");
+  static const JsonPointer fateLevel("fateLevel");
   static const JsonPointer lastAnimation("lastAnimation");
   static const JsonPointer setNodeTextureSet("setNodeTextureSet");
   static const JsonPointer setNodeScale("setNodeScale");
@@ -825,6 +831,13 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
       simdjson::error_code::SUCCESS) {
     ReadEx(element, effects, &jTmp);
     res.activeMagicEffects = ActiveMagicEffectsMap::FromJson(jTmp);
+  }
+
+  if (element.at_pointer(fateLevel.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    uint64_t level = 0;
+    ReadEx(element, fateLevel, &level);
+    res.fateLevel = static_cast<uint16_t>(std::min<uint64_t>(level, 65535));
   }
 
   if (element.at_pointer(templateChain.GetData()).error() ==

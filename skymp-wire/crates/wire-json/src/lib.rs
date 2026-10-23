@@ -72,7 +72,8 @@ macro_rules! skymp_family {
             36 MapMarkerDiscovered, 37 IngredientEffectsKnown, 38 Favorites,
             39 RaceMenuPreset, 40 ActorValues, 41 ConsoleOutput, 42 ArrowShot,
             43 MagicEffects, 44 UpdateAction, 45 PlayerGlobals, 46 ActorJump,
-            47 CellLoaded, 48 HostGrant, 49 HostRelease, 50 ActorSightings
+            47 CellLoaded, 48 HostGrant, 49 HostRelease, 50 ActorSightings,
+            51 ActorFate
         }
     };
 }
@@ -337,7 +338,7 @@ mod tests {
             n += 1;
         }
         assert!(n >= 90, "{n} fixtures");
-        assert_eq!(types.len(), 50, "every SkyMP type has fixtures");
+        assert_eq!(types.len(), 51, "every SkyMP type has fixtures");
     }
 
     /// Writes the fixtures: two per SkyMP type, from arbitrary values with

@@ -59,6 +59,8 @@ enum class MsgType : uint8_t
   HostRelease = 49,    // the same, id 8
   ActorSightings = 50, // thuum docs/verbs/npc-puppet.md: a host's roster of
                        // game-file actors the server does not hold
+  ActorFate = 51,      // thuum docs/verbs/npc-fate.md (ADR-049): the server's
+                       // roll for a placement, ahead of the engine's own
 
   Max
 };

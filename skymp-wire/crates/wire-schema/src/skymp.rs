@@ -1501,3 +1501,39 @@ wire_struct! {
     }
 }
 
+wire_struct! {
+    /// One placement's fate (docs/verbs/npc-fate.md, ADR-046 decision 1,
+    /// ADR-049): the server's roll for a game-file actor, for every engine to
+    /// take instead of its own.
+    pub struct ActorFateEntry {
+        /// The placement's form id, under 0xff000000.
+        pub refr_id: u32,
+        /// The NPC_ the roll chose: the template chain's leaf for a leveled
+        /// template, the placed base when nothing is leveled, 0 when the roll
+        /// chose none (the placement stays empty).
+        pub base_id: u32,
+        /// The level the roll used (0: rolled before ADR-049's rule).
+        pub level: u16,
+        /// The worn items the server's outfit roll chose, by form id.
+        pub worn: Vec<u32, { cap::FATE_WORN }>,
+    }
+}
+
+wire_struct! {
+    /// MsgType 51, thuum's (docs/verbs/npc-fate.md, ADR-049): server to
+    /// client, reliable, R0. The fates of the game-file actors in the cells a
+    /// player's engine is about to attach (the ring around its square, two
+    /// squares out), sent once per square per player ahead of the engine's
+    /// own roll at the reference's load, and again at a respawn. The client
+    /// pins the engine's roll from it; a fate arriving after the engine rolled
+    /// goes through the engine's own re-roll. Reason codes: `E_VAL_RANGE` (a
+    /// placement id of 0 or at or above 0xff000000, a worn id of 0).
+    pub struct ActorFate {
+        /// `"t": 51`.
+        #[serde(default)]
+        pub t: MsgT<51>,
+        /// The fates, at most [`cap::ACTOR_FATES`].
+        pub fates: Vec<ActorFateEntry, { cap::ACTOR_FATES }>,
+    }
+}
+

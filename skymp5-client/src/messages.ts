@@ -52,5 +52,6 @@ export enum MsgType {
   CellLoaded = 47,
   HostGrant = 48,
   HostRelease = 49,
-  ActorSightings = 50 // thuum docs/verbs/npc-puppet.md: a host's roster of engine actors the server does not hold
+  ActorSightings = 50, // thuum docs/verbs/npc-puppet.md: a host's roster of engine actors the server does not hold
+  ActorFate = 51 // thuum docs/verbs/npc-fate.md (ADR-049): the server's roll for a placement, ahead of the engine's own
 }

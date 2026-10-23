@@ -48,6 +48,7 @@ import { SpellCastMessage } from "../messages/spellCastMessage";
 import { UpdateAnimVariablesMessage } from "../messages/updateAnimVariablesMessage";
 import { CustomPacketMessage } from "../messages/customPacketMessage";
 import { HostGrantMessage } from "../messages/hostGrantMessage";
+import { ActorFateMessage } from "../messages/actorFateMessage";
 import { HostReleaseMessage } from "../messages/hostReleaseMessage";
 
 import { AnyRawMessageEvent } from "./anyRawMessageEvent";
@@ -99,6 +100,7 @@ type EventTypes = {
     'playerGlobalsMessage': [ConnectionMessage<PlayerGlobalsMessage>],
     'actorJumpMessage': [ConnectionMessage<ActorJumpMessage>],
     'hostGrantMessage': [ConnectionMessage<HostGrantMessage>],
+    'actorFateMessage': [ConnectionMessage<ActorFateMessage>],
     // thuum docs/verbs/npc-puppet.md: HostService's grant or release of a cell, for PuppetService
     'cellHostChanged': [{ cell: number; hosted: boolean }],
     'hostReleaseMessage': [ConnectionMessage<HostReleaseMessage>],

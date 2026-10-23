@@ -572,6 +572,21 @@ fn take(budget: &mut TokenBucket, now_ms: u64) -> Result<(), Reject> {
     }
 }
 
+/// The server's fates (docs/verbs/npc-fate.md, ADR-049): every entry names a
+/// game-file placement (a form id of 1 to 0xfeffffff); the base may be 0
+/// (the roll chose none) or any form; every worn id is a form (never 0).
+fn check_fates(m: &skymp::ActorFate) -> Result<(), Reject> {
+    for f in m.fates.iter() {
+        if f.refr_id == 0 || f.refr_id >= 0xff00_0000 {
+            return Err(Reject::Range);
+        }
+        if f.worn.contains(&0) {
+            return Err(Reject::Range);
+        }
+    }
+    Ok(())
+}
+
 /// Validate one message by its shape alone: what holds whichever side sent
 /// it, without a client's rate budgets or replay state, which guard a server
 /// against its clients ([`validate`]). A client checks what its server sends
@@ -701,6 +716,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
             }
         }
         Message::ActorSightings(m) => check_sightings(m),
+        Message::ActorFate(m) => check_fates(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
         // rejects it by direction before it gets this far.
@@ -1577,6 +1593,38 @@ mod tests {
         })
     }
 
+    // thuum docs/verbs/npc-fate.md (ADR-049): the server's fates name
+    // game-file placements; a base of 0 is a roll of none; a worn id is a form
+    fn fates(entries: &[(u32, u32, u16, &[u32])]) -> Message {
+        use wire_schema::skymp::{ActorFate, ActorFateEntry};
+        Message::ActorFate(ActorFate {
+            fates: entries
+                .iter()
+                .map(|&(refr_id, base_id, level, worn)| ActorFateEntry {
+                    refr_id,
+                    base_id,
+                    level,
+                    worn: worn.to_vec().try_into().unwrap_or_default(),
+                })
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap_or_default(),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn actor_fates_name_placements_with_a_base_and_worn_forms() {
+        assert_eq!(validate_server(&fates(&[(0x85547, 0xff00_1234, 25, &[0x1397f, 0x13982])])), Ok(()));
+        assert_eq!(validate_server(&fates(&[])), Ok(()));
+        // a roll of none: the placement stays empty
+        assert_eq!(validate_server(&fates(&[(0x85547, 0, 25, &[])])), Ok(()));
+        // a server-made actor is no placement; a placement of 0; a worn id of 0
+        assert_eq!(validate_server(&fates(&[(0xff00_0c03, 0x7, 1, &[])])), Err(Reject::Range));
+        assert_eq!(validate_server(&fates(&[(0, 0x7, 1, &[])])), Err(Reject::Range));
+        assert_eq!(validate_server(&fates(&[(0x85547, 0x7, 1, &[0])])), Err(Reject::Range));
+    }
+
     #[test]
     fn actor_sightings_name_game_file_actors_in_a_world_at_a_place() {
         let riverwood = [24063.7, -45204.2, -40.6];
@@ -1671,6 +1719,11 @@ mod tests {
         #[test]
         fn actor_sightings_never_panic(entries in proptest::collection::vec((any::<u32>(), any::<u32>(), any::<[f32; 3]>()), 0..=cap::ACTOR_SIGHTINGS)) {
             let _ = validate(&sightings(&entries), &mut ClientGuard::default(), 0);
+        }
+        #[test]
+        fn actor_fates_never_panic(entries in proptest::collection::vec((any::<u32>(), any::<u32>(), any::<u16>(), proptest::collection::vec(any::<u32>(), 0..=cap::FATE_WORN)), 0..=cap::ACTOR_FATES)) {
+            let borrowed: Vec<(u32, u32, u16, &[u32])> = entries.iter().map(|(r, b, l, w)| (*r, *b, *l, w.as_slice())).collect();
+            let _ = validate_server(&fates(&borrowed));
         }
 
         #[test]

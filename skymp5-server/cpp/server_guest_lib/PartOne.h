@@ -444,12 +444,39 @@ public:
     uint32_t epoch = 0;
   };
   std::vector<CellHostEntry> GetCellHosts() const;
-  // The cell-change rule: `sender`'s report moves `actor` (an actor no user
-  // plays) to `destCell` from the cell its record holds: a same-cell report
-  // is the host's; one naming another cell is accepted when the sender hosts
-  // the destination and the origin is unhosted or the sender's.
-  bool MayMoveActor(const MpActor& sender, const MpActor& actor,
-                    std::optional<uint32_t> destCell) const;
+  // Every follow (thuum docs/verbs/npc-handoff.md D6, ADR-047): an actor a
+  // host simulates in a cell nobody hosts, for the lab's reading.
+  struct CellFollowEntry
+  {
+    uint32_t actor = 0;
+    uint32_t player = 0;
+    uint32_t cell = 0;
+  };
+  std::vector<CellFollowEntry> GetFollows() const;
+  // The cell-change rule (thuum docs/verbs/cell-host.md; npc-handoff D6):
+  // `sender`'s report moves `actor` (an actor no user plays) to `destPos`
+  // in `destWorldOrCell` from the cell its record holds. Inside the cell
+  // the sender simulates (as its host, or as the actor's follower), or
+  // into a cell it hosts: Accept. Into a cell nobody hosts that the sender
+  // vouches for (an adjacent exterior square its game has loaded, or a door
+  // with a persistent actor, either way through it): Follow, recorded in
+  // the table; the sender simulates the actor there until the cell is
+  // granted, it unloads the cell or leaves. Anything else, another live
+  // host's cell included (D9, later): Refuse.
+  enum class MoveVerdict : uint8_t
+  {
+    Refuse = 0,
+    Accept = 1,
+    Follow = 2
+  };
+  MoveVerdict MayMoveActor(const MpActor& sender, const MpActor& actor,
+                           uint32_t destWorldOrCell, const NiPoint3& destPos);
+  // Who simulates `actor` where its record stands: the cell's host, else
+  // its follower, else 0.
+  uint32_t SimulatorOf(const MpActor& actor) const;
+  // The follow switched off (server setting cellFollow false): a move into
+  // an unhosted cell is refused as before train-40.
+  void SetFollowEnabled(bool enabled);
 
   float CalculateDamage(const MpActor& aggressor, const MpActor& target,
                         const SpellCastData& spellCastData) const;

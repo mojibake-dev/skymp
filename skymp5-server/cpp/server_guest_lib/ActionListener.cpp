@@ -187,24 +187,48 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     MpActor* moved = form ? form->AsActor() : nullptr;
     if (myActor && moved && moved != myActor &&
         partOne.serverState.UserByActor(moved) == Networking::InvalidUserId) {
-      const auto destCell = partOne.worldState.CellOf(
-        msg.data.worldOrCell,
-        NiPoint3{ msg.data.pos[0], msg.data.pos[1], msg.data.pos[2] });
-      if (!partOne.MayMoveActor(*myActor, *moved, destCell)) {
+      const NiPoint3 destPos{ msg.data.pos[0], msg.data.pos[1],
+                              msg.data.pos[2] };
+      const auto destCell =
+        partOne.worldState.CellOf(msg.data.worldOrCell, destPos);
+      const auto verdict =
+        partOne.MayMoveActor(*myActor, *moved, msg.data.worldOrCell, destPos);
+      if (verdict == PartOne::MoveVerdict::Refuse) {
+        // one warn line a minute per actor, the rest counted (npc-handoff
+        // (e): Stump's 751 lines in five minutes, playtest 32)
+        static std::unordered_map<
+          uint32_t, std::pair<std::chrono::steady_clock::time_point, uint32_t>>
+          refusals;
+        auto& [since, count] = refusals[moved->GetFormId()];
+        const auto now = std::chrono::steady_clock::now();
+        ++count;
+        if (since.time_since_epoch().count() != 0 &&
+            now - since < std::chrono::minutes(1)) {
+          return;
+        }
         spdlog::warn("ActionListener::OnUpdateMovement - cell-host: {:x} may "
-                     "not move {:x} to cell {:x} (it hosts neither the cell "
-                     "the actor stands in nor, for a change, the "
-                     "destination); dropped",
+                     "not move {:x} to cell {:x} (it simulates the actor "
+                     "nowhere it may take it: not its cell, not a cell it "
+                     "hosts, not a follow it can vouch for); dropped, {} "
+                     "refusal(s) since the last line",
                      myActor->GetFormId(), moved->GetFormId(),
-                     destCell.value_or(0));
+                     destCell.value_or(0), count);
+        since = now;
+        count = 0;
         return;
       }
       hostedCellChange =
         destCell.has_value() && destCell != partOne.worldState.CellOf(*moved);
       if (hostedCellChange) {
-        spdlog::info("ActionListener::OnUpdateMovement - cell-host: {:x} "
-                     "moves {:x} into cell {:x}, which it hosts",
-                     myActor->GetFormId(), moved->GetFormId(), *destCell);
+        spdlog::info("ActionListener::OnUpdateMovement - cell-host: {:x} {} "
+                     "{:x} into cell {:x}, which {}",
+                     myActor->GetFormId(),
+                     verdict == PartOne::MoveVerdict::Follow ? "follows"
+                                                             : "moves",
+                     moved->GetFormId(), *destCell,
+                     verdict == PartOne::MoveVerdict::Follow
+                       ? "nobody hosts (npc-handoff D6)"
+                       : "it hosts");
       }
       actor = moved;
     } else {

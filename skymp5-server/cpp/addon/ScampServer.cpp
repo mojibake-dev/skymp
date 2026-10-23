@@ -236,6 +236,12 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
                    spdlog::level::to_string_view(logger->level()));
     }
 
+    // thuum docs/verbs/npc-handoff.md D6: the follow, on unless cellFollow
+    // is false (a stage or a playtest can run without it)
+    if (serverSettings.find("cellFollow") != serverSettings.end()) {
+      partOne->SetFollowEnabled(serverSettings.at("cellFollow").get<bool>());
+    }
+
     if (serverSettings.find("npcEnabled") != serverSettings.end()) {
       bool enabled = serverSettings.at("npcEnabled").get<bool>();
       partOne->worldState.npcEnabled = enabled;

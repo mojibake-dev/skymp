@@ -1305,17 +1305,44 @@ std::optional<uint32_t> WorldState::CellOf(const MpObjectReference& ref) const
 
 MpActor* WorldState::HostOf(const MpObjectReference& ref)
 {
-  if (!cellHostOf) {
+  if (!cellHostOf && !simulatorOf) {
     return nullptr;
   }
   const auto cell = CellOf(ref);
   if (!cell) {
     return nullptr;
   }
-  const uint32_t host = cellHostOf(*cell);
+  const uint32_t host =
+    simulatorOf ? simulatorOf(ref.GetFormId(), *cell) : cellHostOf(*cell);
   if (!host) {
     return nullptr;
   }
   const auto& form = LookupFormByIdNoLoad(host);
   return form ? form->AsActor() : nullptr;
+}
+
+bool WorldState::IsInteriorCell(uint32_t cellOrWorld)
+{
+  if (!espm) {
+    return false;
+  }
+  const auto res = espm->GetBrowser().LookupById(cellOrWorld);
+  if (!res.rec || res.rec->GetType() != espm::CELL::kType) {
+    return false;
+  }
+  const auto* cellRecord = espm::Convert<espm::CELL>(res.rec);
+  return cellRecord &&
+    (cellRecord->GetData(GetEspmCache()).flags & espm::CELL::Interior) != 0;
+}
+
+bool WorldState::IsPersistentReference(uint32_t formId)
+{
+  if (!espm || formId >= 0xff000000) {
+    return false;
+  }
+  const auto res = espm->GetBrowser().LookupById(formId);
+  if (!res.rec) {
+    return false;
+  }
+  return (res.rec->GetFlags() & espm::RecordFlags::PersistentReference) != 0;
 }

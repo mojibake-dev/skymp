@@ -428,10 +428,13 @@ public:
   // transport's timeout plus the grace, about 24 s. None installed, only
   // the disconnect ends a host's tenure.
   void SetSilenceSource(std::function<int64_t(Networking::UserId)> source);
-  // the silence that makes a user stale: three seconds is twenty-three
-  // missed reports at the client's 130 ms cadence and past a save's or a
-  // loading screen's stall of a second or two (calibrated by the lab)
-  static constexpr int64_t kStaleHostMs = 3'000;
+  // the silence that makes a user stale: four seconds is thirty missed
+  // reports at the client's 130 ms cadence and past a game's first loads
+  // after a login (x-host-kill 20261023-205837 on three seconds: live
+  // silences of 3.1, 3.5 and 3.1 s at the first teleport after connect and
+  // at a relaunched game's login, none at a mid-session loading screen; the
+  // kill passed its cell 8.7 s after the last report against 24 s before)
+  static constexpr int64_t kStaleHostMs = 4'000;
   // Who hosts `cell` (hosted false while nobody; the epoch kept).
   skymp::rules::CellHost GetCellHost(uint32_t cell) const;
   // Every cell the table knows, by cell id, for the lab's reading

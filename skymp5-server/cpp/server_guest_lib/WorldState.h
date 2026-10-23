@@ -257,8 +257,16 @@ public:
   std::optional<uint32_t> CellOf(const MpObjectReference& ref) const;
   std::optional<uint32_t> CellOf(uint32_t cellOrWorld,
                                  const NiPoint3& pos) const;
-  // The player actor whose game hosts the reference's cell, or nullptr.
+  // The player actor whose game simulates the reference where it stands:
+  // its cell's host, or the actor's follower in a cell nobody hosts
+  // (thuum docs/verbs/npc-handoff.md D6), or nullptr.
   MpActor* HostOf(const MpObjectReference& ref);
+  // Whether `cellOrWorld` is an interior CELL record (libespm CELL::Interior).
+  bool IsInteriorCell(uint32_t cellOrWorld);
+  // Whether `formId` is a persistent placed reference in the game files
+  // (the record header's PersistentReference flag); false for a server-made
+  // form or an id no file has.
+  bool IsPersistentReference(uint32_t formId);
 
   // Only for tests
   auto& GetGrids() { return grids; }
@@ -280,6 +288,10 @@ public:
   // form id, or 0 while nobody does. The per-actor `hosters` map retired
   // with the Host (14) election; an actor no user plays is its cell's host's.
   std::function<uint32_t(uint32_t cell)> cellHostOf;
+  // and who simulates an actor standing in a cell: the host, else the
+  // actor's follower (npc-handoff D6), else 0; installed by PartOne; HostOf
+  // reads this when installed and cellHostOf otherwise
+  std::function<uint32_t(uint32_t actor, uint32_t cell)> simulatorOf;
   std::unordered_map<uint32_t, std::map<uint32_t, float>>
     activationChildsByActivationParent;
   std::vector<std::optional<std::chrono::system_clock::time_point>>

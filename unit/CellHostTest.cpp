@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <catch2/catch_all.hpp>
 #include <chrono>
+#include <cmath>
 #include <map>
 
 PartOne& GetPartOne();
@@ -463,6 +464,85 @@ TEST_CASE("A host whose connection falls silent passes its cell at the "
   p.SetSilenceSource(nullptr);
   DoDisconnect(p, 0);
   DoDisconnect(p, 1);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+}
+
+// thuum docs/verbs/npc-handoff.md D6 (ADR-047): a host's actor walks into a
+// cell nobody hosts that the host's game has loaded (Stump into Gerdur's
+// house was refused 751 times in five minutes, playtest 32). The move is a
+// follow: accepted, the record moves, the host simulates the actor there and
+// stays its listener two squares away; a visitor's report for it is
+// dropped; a grant of the cell to the visitor ends the follow and the old
+// follower's reports are dropped from then on.
+TEST_CASE("A host follows its actor into an unhosted cell its game loads, "
+          "and a grant of that cell ends the follow",
+          "[CellHost]")
+{
+  auto& p = GetPartOne();
+  Player(p, 0, kC1, kHere);
+  // square 4 of Tamriel: loaded by c1's game, two squares from c1 (its
+  // reach is squares 1 to 3), adjacent to kEast's square 3
+  const NiPoint3 kFar{ 17500.f, 500.f, 0.f };
+  const auto here = p.worldState.CellOf(kTamriel, kHere);
+  const auto east1 = p.worldState.CellOf(kTamriel, kEast);
+  const auto east2 = p.worldState.CellOf(kTamriel, kFar);
+  REQUIRE(here.has_value());
+  REQUIRE(east1.has_value());
+  REQUIRE(east2.has_value());
+  CellLoaded(p, 0, *here);
+  CellLoaded(p, 0, *east1);
+  CellLoaded(p, 0, *east2);
+  REQUIRE(p.GetCellHost(*here).player == kC1);
+  REQUIRE(p.GetCellHost(*east1).player == kC1);
+  REQUIRE_FALSE(p.GetCellHost(*east2).hosted);
+  p.CreateActor(kWolf, kEast, 0, kTamriel);
+  auto& wolf = p.worldState.GetFormAt<MpActor>(kWolf);
+  wolf.SetPos(kEast);
+  REQUIRE(p.worldState.CellOf(wolf) == east1);
+  REQUIRE(p.SimulatorOf(wolf) == kC1);
+  p.Messages().clear();
+
+  // the host moves it one square on, into the loaded cell nobody hosts
+  Move(p, 0, kWolf, kFar);
+  REQUIRE(p.worldState.CellOf(wolf) == east2);
+  REQUIRE(p.SimulatorOf(wolf) == kC1);
+  const auto follows = p.GetFollows();
+  REQUIRE(follows.size() == 1);
+  REQUIRE(follows[0].actor == kWolf);
+  REQUIRE(follows[0].player == kC1);
+  REQUIRE(follows[0].cell == *east2);
+  auto& c1 = p.worldState.GetFormAt<MpActor>(kC1);
+  REQUIRE(wolf.GetListeners().count(&c1) == 1);
+
+  // inside the followed cell the follower's reports pass and a visitor's
+  // are dropped
+  Move(p, 0, kWolf, kFar + NiPoint3{ 50.f, 0.f, 0.f });
+  REQUIRE(std::abs(wolf.GetPos().x - 17550.f) < 1.f);
+  Player(p, 1, kC2, kFar + NiPoint3{ 0.f, 300.f, 0.f });
+  Move(p, 1, kWolf, kFar + NiPoint3{ 500.f, 0.f, 0.f });
+  REQUIRE(std::abs(wolf.GetPos().x - 17550.f) < 1.f);
+
+  // the visitor loads the cell: granted, the follow ends, and the old
+  // follower's report is dropped
+  CellLoaded(p, 1, *east2);
+  REQUIRE(p.GetCellHost(*east2).player == kC2);
+  REQUIRE(p.SimulatorOf(wolf) == kC2);
+  REQUIRE(p.GetFollows().empty());
+  Move(p, 0, kWolf, kFar + NiPoint3{ 100.f, 0.f, 0.f });
+  REQUIRE(std::abs(wolf.GetPos().x - 17550.f) < 1.f);
+
+  // the facts the door rule reads from the game files: the Sleeping Giant
+  // Inn is an interior, Riverwood's exterior cell is not; Hod's placed
+  // reference is persistent, a server-made actor has no record
+  REQUIRE(p.worldState.IsInteriorCell(0x133c6));
+  REQUIRE_FALSE(p.worldState.IsInteriorCell(0x9732));
+  REQUIRE(p.worldState.IsPersistentReference(0x1348a));
+  REQUIRE_FALSE(p.worldState.IsPersistentReference(kWolf));
+
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kWolf);
   p.DestroyActor(kC1);
   p.DestroyActor(kC2);
 }

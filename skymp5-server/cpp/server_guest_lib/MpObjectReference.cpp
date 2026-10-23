@@ -705,8 +705,18 @@ void MpObjectReference::ForceSubscriptionsUpdate()
 
   auto& was = *this->listeners;
   auto pos = GetGridPos(GetPos());
-  auto& now =
+  const auto& neighbors =
     worldState->GetNeighborsByPosition(worldOrCell, pos.first, pos.second);
+  // thuum docs/verbs/npc-handoff.md D6: an actor's simulator stays its
+  // listener where the grid would drop it (a follower two squares away, or
+  // outside the interior its actor walked into), else the follow's host
+  // would get a DestroyActor for the actor its engine runs
+  std::set<MpObjectReference*> now = neighbors;
+  if (AsActor()) {
+    if (MpActor* simulator = worldState->HostOf(*this)) {
+      now.insert(simulator);
+    }
+  }
 
   std::vector<MpObjectReference*> toRemove;
   std::set_difference(was.begin(), was.end(), now.begin(), now.end(),

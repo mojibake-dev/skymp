@@ -6,6 +6,7 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <string>
 #include <tuple>
@@ -209,6 +210,8 @@ struct PartOne::Impl
   // and the users the table holds stale for it
   std::function<int64_t(Networking::UserId)> silenceSource;
   std::unordered_set<Networking::UserId> staleUsers;
+  // the follow (docs/verbs/npc-handoff.md D6), off by the cellFollow setting
+  bool followEnabled = true;
 
   espm::Loader* espm = nullptr;
 
@@ -935,6 +938,12 @@ void PartOne::Init()
   worldState.fightBetween = [this](uint32_t a, uint32_t b) {
     return pImpl->fights->between(a, b);
   };
+  // and who simulates an actor where it stands: the host, or its follower
+  // in a cell nobody hosts (npc-handoff D6); the word, the routing and the
+  // sighting gate read this one
+  worldState.simulatorOf = [this](uint32_t actor, uint32_t cell) {
+    return pImpl->cells->simulator_of(actor, cell);
+  };
   worldState.cellHostOf = [this](uint32_t cell) {
     const auto host = pImpl->cells->host_of(cell);
     return host.hosted ? host.player : 0u;
@@ -1364,17 +1373,27 @@ namespace {
 // thuum docs/verbs/cell-host.md: the cells the server's grid gives a player
 // at `pos`: the 3x3 of exterior grid cells around it (4096 units a side, the
 // squares with no CELL in any file skipped), or its interior alone
-std::vector<uint32_t> ReachCells(const WorldState& worldState,
-                                 uint32_t cellOrWorld, const NiPoint3& pos)
+// each reached cell with its ring: 0 the player's own square, 1 a
+// neighbour (the nearness the cold start ranks by, npc-handoff D10); an
+// interior is its own square
+std::vector<std::pair<uint32_t, uint8_t>> ReachCells(
+  const WorldState& worldState, uint32_t cellOrWorld, const NiPoint3& pos)
 {
-  std::vector<uint32_t> cells;
+  std::vector<std::pair<uint32_t, uint8_t>> cells;
   for (int dx = -1; dx <= 1; ++dx) {
     for (int dy = -1; dy <= 1; ++dy) {
       const NiPoint3 at{ pos.x + 4096.f * static_cast<float>(dx),
                          pos.y + 4096.f * static_cast<float>(dy), pos.z };
       if (const auto cell = worldState.CellOf(cellOrWorld, at)) {
-        if (std::find(cells.begin(), cells.end(), *cell) == cells.end()) {
-          cells.push_back(*cell);
+        const uint8_t ring =
+          static_cast<uint8_t>(std::max(std::abs(dx), std::abs(dy)));
+        const auto it =
+          std::find_if(cells.begin(), cells.end(),
+                       [&](const auto& c) { return c.first == *cell; });
+        if (it == cells.end()) {
+          cells.emplace_back(*cell, ring);
+        } else if (ring < it->second) {
+          it->second = ring;
         }
       }
     }
@@ -1474,11 +1493,18 @@ void PartOne::RefreshReach(MpActor& player)
     return;
   }
   pImpl->lastSquareByPlayer[player.GetFormId()] = square;
-  const auto cells = ReachCells(worldState, cellOrWorld, pos);
+  const auto reached = ReachCells(worldState, cellOrWorld, pos);
+  std::vector<uint32_t> cells;
+  std::vector<uint8_t> rings;
+  for (const auto& [cell, ring] : reached) {
+    cells.push_back(cell);
+    rings.push_back(ring);
+  }
   ApplyHostDecisions(*this,
-                     pImpl->cells->reach(
+                     pImpl->cells->reach_ranked(
                        player.GetFormId(),
                        rust::Slice<const uint32_t>(cells.data(), cells.size()),
+                       rust::Slice<const uint8_t>(rings.data(), rings.size()),
                        SteadyNowMs()));
 }
 
@@ -1642,26 +1668,65 @@ std::vector<PartOne::CellHostEntry> PartOne::GetCellHosts() const
   return out;
 }
 
-bool PartOne::MayMoveActor(const MpActor& sender, const MpActor& actor,
-                           std::optional<uint32_t> destCell) const
+std::vector<PartOne::CellFollowEntry> PartOne::GetFollows() const
 {
-  const auto hostOf = [&](std::optional<uint32_t> cell) -> uint32_t {
-    if (!cell) {
-      return 0;
-    }
-    const auto host = pImpl->cells->host_of(*cell);
-    return host.hosted ? host.player : 0u;
-  };
+  std::vector<CellFollowEntry> out;
+  for (const auto& row : pImpl->cells->follows()) {
+    out.push_back({ row.actor, row.player, row.cell });
+  }
+  return out;
+}
+
+PartOne::MoveVerdict PartOne::MayMoveActor(const MpActor& sender,
+                                           const MpActor& actor,
+                                           uint32_t destWorldOrCell,
+                                           const NiPoint3& destPos)
+{
   const auto origin = worldState.CellOf(actor);
-  const uint32_t me = sender.GetFormId();
-  if (!destCell) {
-    return false;
+  const auto dest = worldState.CellOf(destWorldOrCell, destPos);
+  if (!dest) {
+    return MoveVerdict::Refuse;
   }
-  if (destCell == origin) {
-    return hostOf(origin) == me;
+  // the facts the table judges by (npc-handoff D6): two exterior squares
+  // touching in one worldspace, or a door (an interior at either end and a
+  // persistent actor, the kind the engine keeps simulating off screen)
+  const uint32_t originWorldOrCell =
+    actor.GetCellOrWorld().ToFormId(worldState.espmFiles);
+  const bool destInterior = worldState.IsInteriorCell(destWorldOrCell);
+  const bool originInterior = worldState.IsInteriorCell(originWorldOrCell);
+  bool adjacent = false;
+  if (origin && !destInterior && !originInterior &&
+      originWorldOrCell == destWorldOrCell) {
+    const NiPoint3& from = actor.GetPos();
+    const int dx = std::abs(static_cast<int>(std::floor(from.x / 4096.f)) -
+                            static_cast<int>(std::floor(destPos.x / 4096.f)));
+    const int dy = std::abs(static_cast<int>(std::floor(from.y / 4096.f)) -
+                            static_cast<int>(std::floor(destPos.y / 4096.f)));
+    adjacent = std::max(dx, dy) <= 1;
   }
-  const uint32_t originHost = hostOf(origin);
-  return hostOf(destCell) == me && (originHost == 0 || originHost == me);
+  const bool door = (destInterior || originInterior) &&
+    worldState.IsPersistentReference(actor.GetFormId());
+  skymp::rules::CellMove move{ sender.GetFormId(), actor.GetFormId(),
+                               origin.value_or(0), *dest,
+                               adjacent,           door };
+  if (!pImpl->followEnabled) {
+    move.adjacent = false;
+    move.door = false;
+  }
+  return static_cast<MoveVerdict>(pImpl->cells->may_move(move, SteadyNowMs()));
+}
+
+uint32_t PartOne::SimulatorOf(const MpActor& actor) const
+{
+  const auto cell = worldState.CellOf(actor);
+  return cell ? pImpl->cells->simulator_of(actor.GetFormId(), *cell) : 0u;
+}
+
+void PartOne::SetFollowEnabled(bool enabled)
+{
+  pImpl->followEnabled = enabled;
+  spdlog::info("PartOne - cell-host: the follow is {}",
+               enabled ? "on" : "off (cellFollow false)");
 }
 
 bool PartOne::SpendMovementBudget(uint32_t actorFormId, float ground)

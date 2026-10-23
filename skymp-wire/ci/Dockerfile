@@ -18,7 +18,7 @@
 # toolchain goes, the image carrying one stable and one nightly.
 FROM 10.10.70.12:5000/rust:1-bookworm
 RUN old="$(rustup default | cut -d' ' -f1)" \
- && rustup toolchain install stable --component clippy rustfmt \
+ && rustup toolchain install stable --component clippy --component rustfmt \
  && rustup default stable \
  && rustup toolchain uninstall "$old" \
  && rustup toolchain install nightly --profile minimal \

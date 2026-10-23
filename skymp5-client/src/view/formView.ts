@@ -63,6 +63,18 @@ export class FormView {
   }
   private static npcHandoff: boolean | undefined = undefined;
 
+  // thuum docs/verbs/npc-fate.md: the fate switch (settings
+  // skymp5-client.npcFate, default off until x-npc-fate-roll): on, engine
+  // references are dressed by the engine from the server's roll
+  private static npcFateEnabled(): boolean {
+    if (FormView.npcFate === undefined) {
+      const s = settings["skymp5-client"] as Record<string, unknown> | undefined;
+      FormView.npcFate = !!s && s["npcFate"] === true;
+    }
+    return FormView.npcFate;
+  }
+  private static npcFate: boolean | undefined = undefined;
+
   update(model: FormModel): void {
     // Other players mutate into PC clones when moving to another location
     if (model.movement) {
@@ -708,7 +720,13 @@ export class FormView {
     }
 
     // (Rule A again: a hosted actor's equipment is its engine's)
-    if (model.equipment && !alreadyHosted) {
+    // thuum docs/verbs/npc-fate.md (ADR-046 decision 1): under the fate switch
+    // an engine reference is dressed by the engine itself from the server's
+    // roll (the outfit detour at its first dressing), the one shape for the
+    // host's own actor and a puppet alike, so the apply below is for copies
+    // (figures and 0xff actors) alone
+    const engineDressed = FormView.npcFateEnabled() && this.refrId !== 0 && this.refrId < 0xff000000;
+    if (model.equipment && !alreadyHosted && !engineDressed) {
       // thuum ADR-046, decision 2: a figure's spells stay the server's. A
       // distributor adds its abilities at the actor's load, after the
       // equipment's apply, so the figure is swept every ten seconds (a few

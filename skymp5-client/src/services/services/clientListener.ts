@@ -120,6 +120,15 @@ declare module "skyrimPlatform" {
     function isPuppet(actorFormId: number): boolean;
     function setPuppetLocomotion(actorFormId: number, speed: number, directionDeg: number, turnRateDeg: number): boolean;
     function getHighProcessActors(): number[];
+
+    // thuum docs/verbs/npc-fate.md (ADR-046 decision 1, ADR-049): the
+    // server's roll for a leveled placement, held ahead of the engine's own
+    // roll and imposed by two detours behind a runtime switch (default off)
+    function setActorFate(refrId: number, baseId: number, worn: number[]): boolean;
+    function clearActorFate(refrId: number): boolean;
+    function setActorFateEnabled(on: boolean): void;
+    function rerollActor(refrId: number): boolean;
+    function actorFateCount(): number;
 }
 
 export type Sp = Omit<typeof sp, "on" | "once">;

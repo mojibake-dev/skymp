@@ -230,14 +230,22 @@ export const applyWeapDrawn = (ac: Actor, isWeapDrawn: boolean): void => {
   TESModPlatform.setWeaponDrawnMode(ac, isWeapDrawn ? 1 : 0);
 };
 
+// thuum docs/verbs/npc-puppet.md (x-npc-death 20261023-054215): the step
+// never takes a figure or a puppet to zero. The server's death state is the
+// only death; a host's actor floored below zero under the engine's deferred
+// kill stood on its host while its puppet, under the same deferred kill with
+// its AI off, died of the relayed number applied here
+const kHealthFloor = 0.01;
+
 const applyHealthPercentage = (ac: Actor, healthPercentage: number) => {
+  const target = Math.min(1, Math.max(kHealthFloor, healthPercentage));
   const currentPercentage = ac.getActorValuePercentage('health');
-  if (currentPercentage === healthPercentage) {
+  if (currentPercentage === target) {
     return;
   }
 
   const currentMax = ac.getBaseActorValue('health');
-  const deltaPercentage = healthPercentage - currentPercentage;
+  const deltaPercentage = target - currentPercentage;
   const k = 0.25;
   if (deltaPercentage > 0) {
     ac.restoreActorValue('health', deltaPercentage * currentMax * k);

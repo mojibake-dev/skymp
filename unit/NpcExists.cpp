@@ -1,4 +1,5 @@
 #include "TestUtils.hpp"
+#include "libespm/ACHR.h"
 #include "libespm/CompressedFieldsCache.h"
 #include "libespm/GroupUtils.h"
 #include "libespm/REFR.h"
@@ -250,11 +251,13 @@ TEST_CASE("A game-file actor whose ChangeForm the save holds is loaded onto "
   const NiPoint3 kAt{ 19277.f, -44313.f, 89.f };
   REQUIRE(p.worldState.LookupFormByIdNoLoad(kHod) == nullptr);
 
-  // the base the game files give the placement, as a save would carry it
+  // the base the game files give the placement, as a save would carry it:
+  // an actor's placement is an ACHR record, read with the REFR layout as
+  // WorldState::AttachEspmRecord reads it (espm::Convert refuses the type)
   auto lookupRes = p.GetEspm().GetBrowser().LookupById(kHod);
   REQUIRE(lookupRes.rec);
-  auto refrRecord = espm::Convert<espm::REFR>(lookupRes.rec);
-  REQUIRE(refrRecord);
+  REQUIRE(lookupRes.rec->GetType() == espm::ACHR::kType);
+  auto* refrRecord = reinterpret_cast<const espm::REFR*>(lookupRes.rec);
   espm::CompressedFieldsCache cache;
   const uint32_t baseId =
     lookupRes.ToGlobalId(refrRecord->GetData(cache).baseId);

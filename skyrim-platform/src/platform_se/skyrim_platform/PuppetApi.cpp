@@ -14,6 +14,7 @@ struct
 {
   std::unordered_set<uint32_t> ids;
   std::unordered_map<uint32_t, Puppets::Locomotion> locomotion;
+  std::vector<uint32_t> highActors;
   std::recursive_mutex m;
 } g_puppets;
 
@@ -134,6 +135,18 @@ bool Puppets::GetLocomotion(uint32_t formId, Locomotion& out)
   return true;
 }
 
+void Puppets::SetHighActors(std::vector<uint32_t> ids)
+{
+  std::lock_guard l(g_puppets.m);
+  g_puppets.highActors = std::move(ids);
+}
+
+std::vector<uint32_t> Puppets::GetHighActors()
+{
+  std::lock_guard l(g_puppets.m);
+  return g_puppets.highActors;
+}
+
 Napi::Value PuppetApi::SetPuppet(const Napi::CallbackInfo& info)
 {
   const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
@@ -169,6 +182,21 @@ Napi::Value PuppetApi::IsPuppet(const Napi::CallbackInfo& info)
 {
   const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
   return Napi::Boolean::New(info.Env(), Puppets::Is(actorFormId));
+}
+
+// getHighProcessActors(): the form ids of the engine's high-process actors
+// as of the last "Actor animation" stage (Puppets::GetHighActors), read on
+// the JS thread with no game call; the roster's source (skymp5-client
+// HostService) and the demote poll's (PuppetService)
+Napi::Value PuppetApi::GetHighProcessActors(const Napi::CallbackInfo& info)
+{
+  const auto ids = Puppets::GetHighActors();
+  auto res = Napi::Array::New(info.Env(), ids.size());
+  for (size_t i = 0; i < ids.size(); ++i) {
+    res.Set(static_cast<uint32_t>(i),
+            Napi::Number::New(info.Env(), static_cast<double>(ids[i])));
+  }
+  return res;
 }
 
 // setPuppetLocomotion(actorFormId, speed, directionDeg, turnRateDeg): the

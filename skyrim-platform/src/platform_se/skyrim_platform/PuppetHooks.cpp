@@ -2,6 +2,7 @@
 #include "Puppets.h"
 #include "game/Offsets.h"
 #include <cmath>
+#include <vector>
 
 // thuum docs/verbs/npc-puppet.md, the two detours of the puppet shape (one AI
 // bit plus two hooks, re-ai-puppet.md Q2). Every prototype below is the
@@ -62,7 +63,24 @@ bool AnimatesAsPuppet(RE::Actor& actor)
 void QueueActorAnimationReplacement(RE::ProcessLists* lists, void* jobs)
 {
   g_queueActorAnimationOriginal(lists, jobs);
-  if (!lists || !jobs || Puppets::Count() == 0) {
+  if (!lists) {
+    return;
+  }
+  // the high-process actors by form id, for the roster and the demote poll
+  // (Puppets.h): read here on the game thread where the engine owns the
+  // list, a few dozen handles a frame
+  {
+    std::vector<uint32_t> ids;
+    ids.reserve(lists->highActorHandles.size());
+    for (const auto& handle : lists->highActorHandles) {
+      auto actor = handle.get();
+      if (actor) {
+        ids.push_back(actor->formID);
+      }
+    }
+    Puppets::SetHighActors(std::move(ids));
+  }
+  if (!jobs || Puppets::Count() == 0) {
     return;
   }
   REL::Relocation<JobListPushFn> push{ Offsets::Hooks::JobListPush };

@@ -18,9 +18,15 @@ Napi::Value IsPuppet(const Napi::CallbackInfo& info);
 // where the graph's Speed, Direction and TurnDelta channels read
 // (docs/research/m3/re-puppet-locomotion.md)
 Napi::Value SetPuppetLocomotion(const Napi::CallbackInfo& info);
+// getHighProcessActors(): the engine's high-process actors by form id, the
+// game thread's latest snapshot (Puppets.h)
+Napi::Value GetHighProcessActors(const Napi::CallbackInfo& info);
 
 inline void Register(Napi::Env env, Napi::Object& exports)
 {
+  exports.Set("getHighProcessActors",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(GetHighProcessActors)));
   exports.Set(
     "setPuppet",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetPuppet)));

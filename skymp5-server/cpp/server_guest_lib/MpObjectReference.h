@@ -75,6 +75,10 @@ enum class AnimationVariableBool
 
 using SetAngleMode = SetPosMode;
 
+// thuum docs/verbs/npc-fate.md: the level a container's leveled item entry
+// rolls at when no actor's fate level says otherwise
+constexpr uint32_t kPlayerCharacterLevelDefault = 1;
+
 class MpObjectReference
   : public MpForm
   , public FormIndex
@@ -223,8 +227,11 @@ protected:
                                    bool reliable) const;
 
 private:
+  // thuum docs/verbs/npc-fate.md (ADR-049): `pcLevel` is the level a leveled
+  // item entry rolls at (an actor's fate level, else 1)
   void AddContainerObject(const espm::CONT::ContainerObject& containerObject,
-                          std::map<uint32_t, uint32_t>* itemsToAdd);
+                          std::map<uint32_t, uint32_t>* itemsToAdd,
+                          uint32_t pcLevel = kPlayerCharacterLevelDefault);
   void InitScripts();
   void MoveOnGrid(GridImpl<MpObjectReference*>& grid);
   void InitListenersAndEmitters();

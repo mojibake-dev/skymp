@@ -438,6 +438,15 @@ public:
   static constexpr int64_t kStaleHostMs = 4'000;
   // Who hosts `cell` (hosted false while nobody; the epoch kept).
   skymp::rules::CellHost GetCellHost(uint32_t cell) const;
+  // thuum docs/verbs/npc-fate.md (ADR-049 decision 3): the fates of the
+  // game-file actors in the grid squares around `player`'s own, kFateRing
+  // out (the engine attaches a 5x5 of cells; the grid's squares truncate
+  // toward zero, so three squares cover it on the negative side too), sent
+  // once per square per player as ActorFate ahead of the engine's own roll;
+  // the chunks are loaded first with the player's level as the roll's.
+  // Runs at every square change (RefreshReach).
+  void SendFates(MpActor& player, uint32_t cellOrWorld, const NiPoint3& pos);
+  static constexpr int16_t kFateRing = 3;
   // Every cell the table knows, by cell id, for the lab's reading
   // (mp.get(0, "cellHosts")).
   struct CellHostEntry

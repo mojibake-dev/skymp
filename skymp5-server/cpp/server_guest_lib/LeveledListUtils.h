@@ -29,6 +29,13 @@ public:
     const espm::CombineBrowser& br, const espm::LookupResult& headNpc,
     uint32_t pcLevel);
 
+  // thuum docs/verbs/npc-fate.md (ADR-049): the NPC_ a chain's first LVLN
+  // template resolved to (the element after the first element whose base
+  // template is an LVLN), the pick an engine's leveled roll is pinned to;
+  // 0 when no template in the chain is leveled.
+  static uint32_t FirstLeveledPick(const espm::CombineBrowser& br,
+                                   const std::vector<uint32_t>& chain);
+
 private:
   static const espm::NPC_* ConvertToNpc(
     const espm::LookupResult& lookupResult);

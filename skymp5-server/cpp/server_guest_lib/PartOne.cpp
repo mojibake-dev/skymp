@@ -1,4 +1,5 @@
 #include "PartOne.h"
+#include "ActorFateMessage.h"
 #include "LocationalData.h"
 #include "wire_bridge_cxx/rules.h"
 #include <algorithm>
@@ -8,6 +9,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <limits>
+#include <set>
 #include <string>
 #include <tuple>
 #include <unordered_map>
@@ -40,6 +42,11 @@
 #include "papyrus-vm/Utils.h"
 #include <spdlog/fmt/fmt.h>
 #include <spdlog/spdlog.h>
+
+// thuum docs/verbs/npc-fate.md (ADR-049): one actor's fate as the wire
+// carries it (defined with the fate pass below)
+ActorFateMessage::Fate FateOf(const WorldState& worldState,
+                              const MpActor& actor);
 
 namespace {
 // The wall clock, Unix milliseconds: the game clock is a function of it
@@ -210,6 +217,8 @@ struct PartOne::Impl
   // and the users the table holds stale for it
   std::function<int64_t(Networking::UserId)> silenceSource;
   std::unordered_set<Networking::UserId> staleUsers;
+  // the squares each player has been sent fates for (npc-fate, ADR-049)
+  std::unordered_map<uint32_t, std::set<Square>> fatedSquares;
   // the follow (docs/verbs/npc-handoff.md D6), off by the cellFollow setting
   bool followEnabled = true;
 
@@ -336,6 +345,7 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
     // hosted (ActionListener::ActorUpdatableBy), the "players link to each
     // other" fix of old
     pImpl->lastSquareByPlayer.erase(actor.GetFormId());
+    pImpl->fatedSquares.erase(actor.GetFormId());
 
     // Both functions are required here, but it is NOT covered by unit tests
     // properly. If you do something wrong here, players will not be able to
@@ -646,6 +656,7 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           // docs/verbs/cell-host.md); the clock passes them on
           this_->pImpl->cells->gone(actor->GetFormId(), SteadyNowMs());
           this_->pImpl->lastSquareByPlayer.erase(actor->GetFormId());
+          this_->pImpl->fatedSquares.erase(actor->GetFormId());
         }
         this_->pImpl->staleUsers.erase(userId);
         this_->serverState.Disconnect(userId);
@@ -943,6 +954,18 @@ void PartOne::Init()
   // sighting gate read this one
   worldState.simulatorOf = [this](uint32_t actor, uint32_t cell) {
     return pImpl->cells->simulator_of(actor, cell);
+  };
+  // thuum docs/verbs/npc-fate.md (ADR-049 decision 2): a fate rolled anew at
+  // a respawn goes to every user
+  worldState.onActorFate = [this](MpActor& actor) {
+    ActorFateMessage msg;
+    msg.fates.push_back(FateOf(worldState, actor));
+    for (size_t i = 0, n = serverState.maxConnectedId; i <= n; ++i) {
+      const auto userId = static_cast<Networking::UserId>(i);
+      if (serverState.ActorByUser(userId)) {
+        GetSendTarget().Send(userId, msg, true);
+      }
+    }
   };
   worldState.cellHostOf = [this](uint32_t cell) {
     const auto host = pImpl->cells->host_of(cell);
@@ -1401,6 +1424,29 @@ std::vector<std::pair<uint32_t, uint8_t>> ReachCells(
   return cells;
 }
 
+// thuum docs/verbs/npc-fate.md (ADR-049 decision 3): one actor's fate as the
+// wire carries it: the placement, the NPC_ the roll is pinned to (the
+// chain's first leveled pick, else the placed base), the roll's level (0 for
+// the old rule's) and the worn list, at most the wire's 32 entries
+constexpr size_t kFatesPerMessage = 64;
+constexpr size_t kFateWornMax = 32;
+
+ActorFateMessage::Fate FateOf(const WorldState& worldState,
+                              const MpActor& actor)
+{
+  ActorFateMessage::Fate fate;
+  fate.refrId = actor.GetFormId();
+  fate.baseId = actor.GetFateBaseId();
+  fate.level = actor.GetFateLevel().value_or(0);
+  for (const auto& entry : actor.GetEquipment().inv.entries) {
+    if (entry.GetWorn() != Inventory::Worn::None &&
+        fate.worn.size() < kFateWornMax) {
+      fate.worn.push_back(entry.baseId);
+    }
+  }
+  return fate;
+}
+
 // the player actor `formId` while a user plays it
 MpActor* PlayerActor(PartOne& partOne, uint32_t formId)
 {
@@ -1493,6 +1539,7 @@ void PartOne::RefreshReach(MpActor& player)
     return;
   }
   pImpl->lastSquareByPlayer[player.GetFormId()] = square;
+  SendFates(player, cellOrWorld, pos);
   const auto reached = ReachCells(worldState, cellOrWorld, pos);
   std::vector<uint32_t> cells;
   std::vector<uint8_t> rings;
@@ -1506,6 +1553,83 @@ void PartOne::RefreshReach(MpActor& player)
                        rust::Slice<const uint32_t>(cells.data(), cells.size()),
                        rust::Slice<const uint8_t>(rings.data(), rings.size()),
                        SteadyNowMs()));
+}
+
+void PartOne::SendFates(MpActor& player, uint32_t cellOrWorld,
+                        const NiPoint3& pos)
+{
+  const auto userId = serverState.UserByActor(&player);
+  if (userId == Networking::InvalidUserId || !worldState.HasEspm()) {
+    return;
+  }
+  // the grid's own squares (MpObjectReference's GetGridPos truncates toward
+  // zero), so the loaded chunks and the listeners' grid agree
+  const auto sx = static_cast<int16_t>(pos.x / 4096);
+  const auto sy = static_cast<int16_t>(pos.y / 4096);
+  auto& fated = pImpl->fatedSquares[player.GetFormId()];
+  std::vector<Impl::Square> fresh;
+  for (int16_t dx = -kFateRing; dx <= kFateRing; ++dx) {
+    for (int16_t dy = -kFateRing; dy <= kFateRing; ++dy) {
+      const Impl::Square square{ cellOrWorld, sx + dx, sy + dy };
+      if (fated.insert(square).second) {
+        fresh.push_back(square);
+      }
+    }
+  }
+  if (fresh.empty()) {
+    return;
+  }
+  // the ring's records loaded now, rolled at this player's level (ADR-049
+  // decision 1): the first loader's, read from its actor-value record
+  const auto record = player.GetActorValueRecord();
+  const uint16_t level =
+    record ? std::max<uint16_t>(1, record->level) : uint16_t{ 1 };
+  worldState.fateLoaderLevel = level;
+  worldState.LoadChunksAround(cellOrWorld, sx, sy, kFateRing);
+  worldState.fateLoaderLevel.reset();
+
+  auto& grid = *worldState.GetGrids()[cellOrWorld].grid;
+  std::set<uint32_t> seen;
+  ActorFateMessage msg;
+  size_t sent = 0;
+  const auto flush = [&] {
+    if (!msg.fates.empty()) {
+      GetSendTarget().Send(userId, msg, true);
+      sent += msg.fates.size();
+      msg.fates.clear();
+    }
+  };
+  for (const auto& square : fresh) {
+    const int32_t x = std::get<1>(square);
+    const int32_t y = std::get<2>(square);
+    for (MpObjectReference* ref : grid.GetNeighboursByPosition(
+           static_cast<int16_t>(x), static_cast<int16_t>(y))) {
+      MpActor* actor = ref ? ref->AsActor() : nullptr;
+      if (!actor || actor->GetFormId() >= 0xff000000 ||
+          serverState.UserByActor(actor) != Networking::InvalidUserId) {
+        continue;
+      }
+      const NiPoint3& at = actor->GetPos();
+      if (static_cast<int16_t>(at.x / 4096) != x ||
+          static_cast<int16_t>(at.y / 4096) != y) {
+        continue; // a neighbour of the square, listed under its own
+      }
+      if (!seen.insert(actor->GetFormId()).second) {
+        continue;
+      }
+      msg.fates.push_back(FateOf(worldState, *actor));
+      if (msg.fates.size() >= kFatesPerMessage) {
+        flush();
+      }
+    }
+  }
+  flush();
+  if (sent) {
+    spdlog::info("PartOne - npc-fate: {:x} (user {}) sent {} fate(s) for {} "
+                 "new square(s) around ({}, {}) in {:x} at level {}",
+                 player.GetFormId(), userId, sent, fresh.size(), sx, sy,
+                 cellOrWorld, level);
+  }
 }
 
 void PartOne::OnCellLoaded(MpActor& player, uint32_t cell, bool loaded)

@@ -56,6 +56,12 @@ public:
   bool IsWeaponDrawn() const;
   espm::ObjectBounds GetBounds() const;
   const std::vector<FormDesc>& GetTemplateChain() const;
+  // thuum docs/verbs/npc-fate.md (ADR-049): the level the server's roll of
+  // this actor used (none for a record rolled before the rule), and the
+  // NPC_ an engine's leveled roll is pinned to: the chain's first leveled
+  // pick, else the placed base
+  std::optional<uint16_t> GetFateLevel() const;
+  uint32_t GetFateBaseId() const;
   bool IsCreatedAsPlayer() const;
   const ActorValues& GetActorValues() const;
   const ActiveMagicEffectsMap& GetActiveMagicEffects() const;

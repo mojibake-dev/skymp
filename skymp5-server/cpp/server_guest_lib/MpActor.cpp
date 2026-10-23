@@ -1658,15 +1658,41 @@ bool MpActor::ReadBook(const uint32_t baseId)
   return readBookEvent.SpellLearned();
 }
 
+std::optional<uint16_t> MpActor::GetFateLevel() const
+{
+  return ChangeForm().fateLevel;
+}
+
+uint32_t MpActor::GetFateBaseId() const
+{
+  auto worldState = GetParent();
+  if (!worldState || !worldState->HasEspm()) {
+    return GetBaseId();
+  }
+  const auto& chain = ChangeForm().templateChain;
+  std::vector<uint32_t> ids(chain.size());
+  std::transform(chain.begin(), chain.end(), ids.begin(),
+                 [&](const FormDesc& desc) {
+                   return desc.ToFormId(worldState->espmFiles);
+                 });
+  const uint32_t pick = LeveledListUtils::FirstLeveledPick(
+    worldState->GetEspm().GetBrowser(), ids);
+  return pick ? pick : GetBaseId();
+}
+
 void MpActor::EnsureTemplateChainEvaluated(espm::Loader& loader,
                                            ChangeFormGuard::Mode mode)
 {
-  constexpr auto kPcLevel = 0;
-
   auto worldState = GetParent();
   if (!worldState) {
     return;
   }
+
+  // thuum docs/verbs/npc-fate.md (ADR-049 decision 1): the level of the
+  // player whose arrival loads the actor, set around the fate pass's chunk
+  // loads; none, the old rule's roll (0: every entry allowed)
+  const std::optional<uint16_t> fateLevel = worldState->fateLoaderLevel;
+  const uint32_t kPcLevel = fateLevel.value_or(0);
 
   auto baseId = GetBaseId();
   if (baseId == 0x7 || baseId == 0) {
@@ -1759,6 +1785,7 @@ void MpActor::EnsureTemplateChainEvaluated(espm::Loader& loader,
           return FormDesc::FromFormId(formId, worldState->espmFiles);
         });
       changeForm.templateChain = std::move(templateChain);
+      changeForm.fateLevel = fateLevel;
     },
     mode);
 }
@@ -1982,13 +2009,30 @@ void MpActor::RespawnWithDelay(bool shouldTeleport)
                   inventoryToKeep.entries.push_back(entry);
                 }
               }
+              // thuum docs/verbs/npc-fate.md (ADR-049 decision 2): the
+              // respawn re-rolls the chain and the outfit at the record's
+              // level, as the engine re-rolls at a cell reset, and the fate
+              // is sent again
+              const auto fateLevel = ChangeForm().fateLevel;
               EditChangeForm(
                 [&](MpChangeForm& changeForm) {
                   changeForm.inv = inventoryToKeep;
                   changeForm.baseContainerAdded = false;
+                  if (fateLevel.has_value()) {
+                    changeForm.templateChain.clear();
+                  }
                 },
                 Mode::NoRequestSave);
+              if (fateLevel.has_value()) {
+                worldState->fateLoaderLevel = fateLevel;
+                EnsureTemplateChainEvaluated(worldState->GetEspm(),
+                                             Mode::NoRequestSave);
+              }
               EnsureBaseContainerAdded(worldState->GetEspm());
+              worldState->fateLoaderLevel.reset();
+              if (fateLevel.has_value() && worldState->onActorFate) {
+                worldState->onActorFate(*this);
+              }
               spdlog::info("MpActor::RespawnWithDelay {:x} - {} inventory "
                            "entries with keyword kept",
                            GetFormId(), inventoryToKeep.entries.size());

@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 // thuum docs/verbs/npc-puppet.md (ADR-045): the actors this game shows as
 // puppets, by form id. A puppet's AI is off (Actor::EnableAI, the kProcessMe
@@ -37,6 +38,17 @@ constexpr uint64_t kLocomotionStaleMs = 400;
 uint64_t NowMs();
 void SetLocomotion(uint32_t formId, const Locomotion& sample);
 bool GetLocomotion(uint32_t formId, Locomotion& out);
+
+// The engine's high-process actors (RE::ProcessLists::highActorHandles,
+// CommonLibSSE-NG include/RE/P/ProcessLists.h:69), snapshotted by form id on
+// the game thread at every "Actor animation" stage (PuppetHooks.cpp) and read
+// on the JS thread by the getHighProcessActors export: the roster's source
+// and the demote poll's. The cellAttach events name temporary references
+// alone (playtest 33, 2026-10-23: the host's rosters carried the animals,
+// the creatures and the placements and never a named resident, so a resident
+// with no saved record was loaded by nobody and ran live in both games).
+void SetHighActors(std::vector<uint32_t> ids);
+std::vector<uint32_t> GetHighActors();
 
 // the two detours (Frida Gum replacements through FridaHookHandler::Replace,
 // the DamageActor hook's shape), AE only (ADR-025's 1.6.1170)

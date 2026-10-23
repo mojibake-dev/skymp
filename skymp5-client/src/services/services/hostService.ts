@@ -233,8 +233,11 @@ export class HostService extends ClientListener {
 
     // The roster (thuum docs/verbs/npc-puppet.md, ADR-045's revision of
     // 2026-10-22; TES3MP's actor list): every sightingsMs, the game-file
-    // actors the engine has attached that the server holds no record of
-    // (no form model), with where the engine has them. The server loads
+    // actors in the engine's high-process list (getHighProcessActors, the
+    // game thread's snapshot; the cellAttach events named temporary
+    // references alone, never a named resident: playtest 33, 2026-10-23)
+    // that the server holds no record of (no form model), with where the
+    // engine has them. The server loads
     // the record on demand (a village's residents are placed in their
     // houses and walked outside by their schedules, so their placement is
     // not where they stand) and places it there, if this game hosts the
@@ -256,8 +259,9 @@ export class HostService extends ClientListener {
         const sightings: ActorSightingsMessage["sightings"] = [];
         const gone: number[] = [];
         let unknown = 0;
-        this.attached.forEach((_stored, id) => {
-            if (known.has(id)) {
+        const high = this.sp.getHighProcessActors();
+        high.forEach((id) => {
+            if (id === 0x14 || id >= 0xff000000 || known.has(id)) {
                 return;
             }
             unknown += 1;
@@ -295,7 +299,7 @@ export class HostService extends ClientListener {
         if (sightings.length === 0) {
             return;
         }
-        logTrace(this, `roster: ${sightings.length} sighting(s) sent, ${unknown} unknown of ${this.attached.size} attached, ${this.hosted.size} cell(s) hosted; first ${sightings[0].refrId.toString(16)} in ${sightings[0].worldOrCell.toString(16)}`);
+        logTrace(this, `roster: ${sightings.length} sighting(s) sent, ${unknown} unknown of ${high.length} high-process, ${this.hosted.size} cell(s) hosted; first ${sightings[0].refrId.toString(16)} in ${sightings[0].worldOrCell.toString(16)}`);
         this.controller.emitter.emit("sendMessage", {
             message: { t: MsgType.ActorSightings, sightings },
             reliability: "reliable",

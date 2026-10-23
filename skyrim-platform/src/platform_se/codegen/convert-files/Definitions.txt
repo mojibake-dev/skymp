@@ -1723,6 +1723,8 @@ export declare function setPuppet(actorFormId: number, puppet: boolean): boolean
 export declare function isPuppet(actorFormId: number): boolean;
 // thuum docs/verbs/npc-puppet.md (docs/research/m3/re-puppet-locomotion.md): the host's latest movement sample for a puppet, which the movement-step detour writes every frame where the graph's Speed, Direction and TurnDelta channels read (speed in units per second, the move direction in degrees clockwise from the facing, the heading rate in degrees per second); call at every relayed sample. Stored on the JS thread; false when the actor is not a puppet
 export declare function setPuppetLocomotion(actorFormId: number, speed: number, directionDeg: number, turnRateDeg: number): boolean;
+// thuum docs/verbs/npc-puppet.md (playtest 33): the form ids of the engine's high-process actors as of the last "Actor animation" stage, read with no game call; the roster's source and the demote poll's, where the cellAttach events name temporary references alone
+export declare function getHighProcessActors(): number[];
 export declare function getAnimationVariablesFromActor(actorFormId: number): ActorAnimationVariables;
 export declare function applyAnimationVariablesToActor(actorFormId: number, animationVariables: ActorAnimationVariables): boolean;
 

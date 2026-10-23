@@ -27,6 +27,39 @@ export class PuppetService extends ClientListener {
         this.controller.on("cellAttach", (e) => this.onCellAttach(e));
         this.controller.on("cellDetach", (e) => this.onCellDetach(e));
         this.controller.on("combatState", (e) => this.onCombatState(e));
+        this.controller.on("update", () => this.onUpdate());
+    }
+
+    // The demote poll (playtest 33, 2026-10-23): the cellAttach events name
+    // temporary references alone, so a named resident the engine runs is
+    // found here, in its high-process list (getHighProcessActors), within
+    // pollMs of its appearance, and is a puppet unless the server's word
+    // names this game as its simulator; the view confirms when the word
+    // arrives (a resident the server does not hold yet is a puppet on its
+    // own host for one roster round, until its CreateActor's word promotes
+    // it). The roster (HostService) reads the same list.
+    private onUpdate() {
+        if (!this.enabled) {
+            return;
+        }
+        const now = Date.now();
+        if (now - this.lastPoll < PuppetService.pollMs) {
+            return;
+        }
+        this.lastPoll = now;
+        const host = this.controller.lookupListener(HostService);
+        for (const id of this.sp.getHighProcessActors()) {
+            if (id === 0x14 || id >= 0xff000000 || this.puppets.has(id)) {
+                continue;
+            }
+            if (host.isMineLocal(id)) {
+                continue;
+            }
+            const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(id));
+            if (refr) {
+                this.ensurePuppet(refr);
+            }
+        }
     }
 
     // Whether this game switched the actor's AI off (by its local form id).
@@ -205,5 +238,7 @@ export class PuppetService extends ClientListener {
     // be called in this context" 27 times).
 
     private readonly puppets = new Set<number>();
+    private lastPoll = 0;
+    private static readonly pollMs = 2000;
     private readonly enabled: boolean;
 }

@@ -119,6 +119,7 @@ declare module "skyrimPlatform" {
     function setPuppet(actorFormId: number, puppet: boolean): boolean;
     function isPuppet(actorFormId: number): boolean;
     function setPuppetLocomotion(actorFormId: number, speed: number, directionDeg: number, turnRateDeg: number): boolean;
+    function getHighProcessActors(): number[];
 }
 
 export type Sp = Omit<typeof sp, "on" | "once">;

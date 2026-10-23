@@ -22,6 +22,21 @@ constexpr uint32_t kC1 = 0xff000d01;
 constexpr uint32_t kPredator = 0x85547;
 const NiPoint3 kForest{ 123000.f, -80000.f, 10705.f };
 
+template <class Message>
+std::vector<Message> SentTo(PartOne& p, Networking::UserId user)
+{
+  std::vector<Message> out;
+  for (auto& m : p.Messages()) {
+    if (m.userId != user) {
+      continue;
+    }
+    if (auto typed = dynamic_cast<Message*>(m.message.get())) {
+      out.push_back(*typed);
+    }
+  }
+  return out;
+}
+
 uint64_t FateNowMs()
 {
   return static_cast<uint64_t>(

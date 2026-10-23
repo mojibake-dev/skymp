@@ -1336,6 +1336,14 @@ mod ffi {
         fn unloaded(self: &mut Cells, player: u32, cell: u32, now_ms: u64) -> Vec<HostDecision>;
         /// `player` left the server: every cell it hosts starts its grace.
         fn gone(self: &mut Cells, player: u32, now_ms: u64) -> Vec<HostDecision>;
+        /// `player`'s connection went silent while netcode still holds it
+        /// (thuum docs/verbs/cell-host.md, the quitting host): every cell
+        /// it hosts starts its grace and it is no candidate, its loaded set
+        /// kept for its return.
+        fn stale(self: &mut Cells, player: u32, now_ms: u64) -> Vec<HostDecision>;
+        /// `player`'s messages resumed: a candidate again; a free cell it
+        /// has loaded is granted, its own running grace disarmed.
+        fn revived(self: &mut Cells, player: u32, now_ms: u64) -> Vec<HostDecision>;
         /// The clock: each grace that ran out passes its cell on (a Release,
         /// then a Grant or an Unhosted).
         fn tick(self: &mut Cells, now_ms: u64) -> Vec<HostDecision>;
@@ -1933,6 +1941,16 @@ impl Cells {
 
     fn gone(&mut self, player: u32, now_ms: u64) -> Vec<HostDecision> {
         let decisions = self.0.gone(player, now_ms);
+        host_decisions(&self.0, decisions)
+    }
+
+    fn stale(&mut self, player: u32, now_ms: u64) -> Vec<HostDecision> {
+        let decisions = self.0.stale(player, now_ms);
+        host_decisions(&self.0, decisions)
+    }
+
+    fn revived(&mut self, player: u32, now_ms: u64) -> Vec<HostDecision> {
+        let decisions = self.0.revived(player, now_ms);
         host_decisions(&self.0, decisions)
     }
 

@@ -400,6 +400,12 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
     // handoff's ranking (the wire server measures them; the mock knows none)
     partOne->SetRoundTripSource(
       [this](Networking::UserId userId) { return server->GetRttMs(userId); });
+    // and each connection's silence, for the quitting host (a game killed,
+    // crashed or quit holds its connection until netcode's timeout; the
+    // server reads the silence itself and starts the grace at once)
+    partOne->SetSilenceSource([this](Networking::UserId userId) {
+      return server->GetSilenceMs(userId);
+    });
 
     const auto conditionFunctionMap =
       ConditionFunctionFactory::CreateConditionFunctions();

@@ -88,6 +88,9 @@ mod ffi {
         /// nothing has been measured (thuum docs/verbs/cell-host.md: the
         /// handoff ranks visitors by it).
         fn client_rtt_ms(self: &Server, client: u64) -> i64;
+        /// Milliseconds since the client was last heard from, -1 when not connected
+        /// (thuum docs/verbs/cell-host.md, the quitting host).
+        fn client_silence_ms(self: &Server, client: u64) -> i64;
         /// Connected clients now.
         fn client_count(self: &Server) -> usize;
         /// Counters, as JSON, for the server's metrics and logs.
@@ -296,6 +299,12 @@ impl Server {
     /// See the bridge declaration.
     pub fn client_rtt_ms(&self, client: u64) -> i64 {
         self.inner.client_rtt_ms(client).and_then(|ms| i64::try_from(ms).ok()).unwrap_or(-1)
+    }
+
+    /// Milliseconds since `client` last delivered a message, -1 when it is
+    /// not connected (thuum docs/verbs/cell-host.md, the quitting host).
+    pub fn client_silence_ms(&self, client: u64) -> i64 {
+        self.inner.client_silence_ms(client).and_then(|ms| i64::try_from(ms).ok()).unwrap_or(-1)
     }
 
     /// See the bridge declaration.

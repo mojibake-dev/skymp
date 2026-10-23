@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <catch2/catch_all.hpp>
 #include <chrono>
+#include <map>
 
 PartOne& GetPartOne();
 
@@ -389,6 +390,81 @@ TEST_CASE("At the handoff the visitor with the lowest round trip takes the "
   p.DestroyActor(kC1);
   p.DestroyActor(kC2);
   p.DestroyActor(kC3);
+}
+
+// thuum docs/verbs/cell-host.md, the quitting host (playtest 32, 2026-10-22):
+// a game killed, crashed or quit sends netcode no disconnect; the connection
+// stood for the transport's timeout (about 18 s) before the grace began,
+// and the village belonged to a gone game for about 24 s. The server now
+// reads each connection's silence itself (IServer::GetSilenceMs) at every
+// tick: a host silent past kStaleHostMs starts its grace at once and is no
+// candidate; heard again inside the grace it keeps its cell at the same
+// epoch; heard again after the cell passed it is a candidate again.
+TEST_CASE("A host whose connection falls silent passes its cell at the "
+          "grace without a disconnect, and keeps it when heard again inside",
+          "[CellHost]")
+{
+  auto& p = GetPartOne();
+  Player(p, 0, kC1, kHere);
+  Player(p, 1, kC2, kHere + NiPoint3{ 100.f, 0.f, 0.f });
+  // the silence each connection reports, by user (-1 unknown); static, the
+  // source outlives the test's frame until it is cleared below
+  static std::map<Networking::UserId, int64_t> silence;
+  silence = { { 0, 0 }, { 1, 0 } };
+  p.SetSilenceSource([](Networking::UserId userId) -> int64_t {
+    const auto it = silence.find(userId);
+    return it == silence.end() ? -1 : it->second;
+  });
+  const auto cell = p.worldState.CellOf(kTamriel, kHere);
+  REQUIRE(cell.has_value());
+  CellLoaded(p, 0, *cell);
+  CellLoaded(p, 1, *cell);
+  REQUIRE(p.GetCellHost(*cell).player == kC1);
+  const auto now = NowMs();
+  p.TickCellHosts(now);
+  p.Messages().clear();
+
+  // the host's game stops: its silence grows past the threshold and the
+  // grace starts at that tick, with no disconnect
+  silence[0] = PartOne::kStaleHostMs;
+  p.TickCellHosts(now);
+  p.TickCellHosts(now + kInsideMs);
+  REQUIRE(p.GetCellHost(*cell).player == kC1);
+  REQUIRE(SentTo<HostReleaseMessage>(p, 0).empty());
+  p.TickCellHosts(now + skymp::rules::host_grace_ms() + kPastMs);
+  const auto passed = p.GetCellHost(*cell);
+  REQUIRE(passed.hosted);
+  REQUIRE(passed.player == kC2);
+  REQUIRE(passed.epoch == 2);
+  REQUIRE(SentTo<HostReleaseMessage>(p, 0).size() == 1);
+  REQUIRE(SentTo<HostGrantMessage>(p, 1).size() == 1);
+
+  // the old host is heard again: a candidate again, with nothing to take
+  silence[0] = 0;
+  const auto revivedAt = now + skymp::rules::host_grace_ms() + kPastMs + 1'000;
+  p.TickCellHosts(revivedAt);
+  REQUIRE(p.GetCellHost(*cell).player == kC2);
+  p.Messages().clear();
+
+  // the new host falls silent and is heard again inside its grace: it keeps
+  // the cell at the same epoch and nobody is told anything
+  silence[1] = PartOne::kStaleHostMs;
+  p.TickCellHosts(revivedAt + 1'000);
+  silence[1] = 0;
+  p.TickCellHosts(revivedAt + 1'000 + kInsideMs);
+  p.TickCellHosts(revivedAt + 1'000 + skymp::rules::host_grace_ms() + kPastMs);
+  const auto kept = p.GetCellHost(*cell);
+  REQUIRE(kept.hosted);
+  REQUIRE(kept.player == kC2);
+  REQUIRE(kept.epoch == 2);
+  REQUIRE(SentTo<HostReleaseMessage>(p, 1).empty());
+  REQUIRE(SentTo<HostGrantMessage>(p, 0).empty());
+
+  p.SetSilenceSource(nullptr);
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
 }
 
 // thuum docs/verbs/npc-puppet.md (ActorSightings, TES3MP's actor list): a

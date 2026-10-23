@@ -418,6 +418,20 @@ public:
   // unknown), read every tick for the table's ranking; none installed, no
   // round trip is known and the earliest loaded takes a cell.
   void SetRoundTripSource(std::function<int64_t(Networking::UserId)> source);
+  // Where each connection's silence comes from (IServer::GetSilenceMs, the
+  // milliseconds since its last message, -1 while unknown), read every
+  // tick: a user silent for kStaleHostMs is stale (its hosted cells start
+  // their grace, it is no candidate, its loaded set kept), and heard again
+  // it is revived (a candidate again; a grace of its own still running is
+  // disarmed). The quitting host of playtest 32: a game killed, crashed or
+  // quit sends netcode no disconnect and held its village for the
+  // transport's timeout plus the grace, about 24 s. None installed, only
+  // the disconnect ends a host's tenure.
+  void SetSilenceSource(std::function<int64_t(Networking::UserId)> source);
+  // the silence that makes a user stale: three seconds is twenty-three
+  // missed reports at the client's 130 ms cadence and past a save's or a
+  // loading screen's stall of a second or two (calibrated by the lab)
+  static constexpr int64_t kStaleHostMs = 3'000;
   // Who hosts `cell` (hosted false while nobody; the epoch kept).
   skymp::rules::CellHost GetCellHost(uint32_t cell) const;
   // Every cell the table knows, by cell id, for the lab's reading

@@ -310,6 +310,11 @@ private:
 
   bool LoadForm(uint32_t formId, std::stringstream* optionalOutTrace = nullptr,
                 bool sighted = false);
+  // thuum docs/verbs/npc-puppet.md (playtest 33, 2026-10-23): every game-file
+  // actor whose ChangeForm the save holds, loaded onto the grid at its saved
+  // position as the save attaches (a deferred record is invisible to every
+  // seat until something loads it)
+  void LoadDeferredActors();
   void TickSaveStorage(const std::chrono::system_clock::time_point& now);
   void TickTimers(const std::chrono::system_clock::time_point& now);
   void TickEffects(const std::chrono::system_clock::time_point& now);

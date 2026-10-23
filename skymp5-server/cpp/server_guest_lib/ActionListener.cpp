@@ -2009,12 +2009,19 @@ void ActionListener::OnActorSightings(const RawMessageData& rawMsgData,
   if (last == std::chrono::steady_clock::time_point{} ||
       now - last >= std::chrono::seconds(10)) {
     last = now;
-    spdlog::info("ActionListener::OnActorSightings - roster from {:x}: {} "
-                 "sighting(s), first {:x} in {:x}",
-                 reporter->GetFormId(), msg.sightings.size(),
-                 msg.sightings.empty() ? 0u : msg.sightings.front().refrId,
-                 msg.sightings.empty() ? 0u
-                                       : msg.sightings.front().worldOrCell);
+    // every id, so a resident the roster never names can be told from one
+    // the server drops silently (playtest 33, 2026-10-23: the host's rosters
+    // named the animals and not the residents, and only the first id showed)
+    std::string ids;
+    for (const auto& s : msg.sightings) {
+      ids += fmt::format("{}{:x}", ids.empty() ? "" : " ", s.refrId);
+    }
+    spdlog::info(
+      "ActionListener::OnActorSightings - roster from {:x}: {} "
+      "sighting(s), first {:x} in {:x}; ids [{}]",
+      reporter->GetFormId(), msg.sightings.size(),
+      msg.sightings.empty() ? 0u : msg.sightings.front().refrId,
+      msg.sightings.empty() ? 0u : msg.sightings.front().worldOrCell, ids);
   }
   for (const auto& s : msg.sightings) {
     partOne.OnActorSighting(*reporter, s.refrId, s.worldOrCell,

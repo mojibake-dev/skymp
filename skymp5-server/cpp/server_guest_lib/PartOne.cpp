@@ -2024,9 +2024,20 @@ PartOne::HeadshotCheck PartOne::ClaimHeadshot(MpActor& actor, MpActor& target)
       break;
     }
   }
-  const auto appearance = target.GetAppearance();
-  const auto race = FormDesc::FromFormId(appearance ? appearance->raceId : 0,
-                                         worldState.espmFiles);
+  // thuum docs/verbs/headshot.md (playtest 32, 2026-10-22): a player's record
+  // carries its race in its appearance, an actor's from the game files never
+  // does, and the rule read race 0 for every NPC and refused each headshot on
+  // the race (E_HEADSHOT_RACE on 39fe2, a bare-headed bandit). MpActor's own
+  // race read falls back through the NPC_ base's template chain (UseTraits);
+  // a chain that cannot be evaluated reads 0, as before
+  uint32_t raceId = 0;
+  try {
+    raceId = target.GetRaceId();
+  } catch (const std::exception& e) {
+    spdlog::warn("ClaimHeadshot - race of {:x} unknown: {}",
+                 target.GetFormId(), e.what());
+  }
+  const auto race = FormDesc::FromFormId(raceId, worldState.espmFiles);
   facts.race_short = race.shortFormId;
   facts.race_file = rust::String(race.file);
   // the shooter's base Archery (actor value 8, CommonLibSSE-NG

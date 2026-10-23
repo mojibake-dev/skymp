@@ -170,3 +170,30 @@ TEST_CASE("With no headshot settings the spell is no headshot",
   REQUIRE(!VictimDead(p));
   Leave(p);
 }
+
+// thuum docs/verbs/headshot.md (playtest 32, 2026-10-22): an actor from the
+// game files has no appearance, so the rule read race 0 and refused every NPC
+// headshot (E_HEADSHOT_RACE on 39fe2, a bare-headed bandit). The race now
+// comes from MpActor::GetRaceId, the NPC_ base through its template chain:
+// Riverwood's Alvor 0x13482 (base 0x13477, a Nord) loaded from the files,
+// no appearance, reads the Nord race and passes the race check.
+TEST_CASE("A headshot's race check reads a game-file actor's race from its "
+          "NPC_ base, not an appearance it never had",
+          "[Headshot][espm]")
+{
+  PartOne& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  auto& shooter = Range(p, 60.f, false);
+  const auto& form = p.worldState.LookupFormById(0x13482);
+  REQUIRE(form != nullptr);
+  MpActor* alvor = form->AsActor();
+  REQUIRE(alvor != nullptr);
+  REQUIRE(alvor->GetAppearance() == nullptr);
+  REQUIRE(alvor->GetRaceId() == 0x13746);
+  Equipment bare;
+  alvor->SetEquipment(bare);
+  const auto check = p.ClaimHeadshot(shooter, *alvor);
+  REQUIRE(check != PartOne::HeadshotCheck::Race);
+  Leave(p);
+  p.worldState.npcEnabled = false;
+}

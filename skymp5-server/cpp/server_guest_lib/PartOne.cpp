@@ -975,6 +975,15 @@ void PartOne::Init()
   };
   // thuum docs/verbs/npc-fate.md (ADR-049 decision 2): a fate rolled anew at
   // a respawn goes to every user
+  // and the fate pass at a player's square change, ahead of the grid's own
+  // loader (decision 3's "ahead of the engine" begins with ahead of ours)
+  worldState.onSquareChange = [this](MpActor& actor) {
+    if (serverState.UserByActor(&actor) == Networking::InvalidUserId) {
+      return;
+    }
+    SendFates(actor, actor.GetCellOrWorld().ToFormId(worldState.espmFiles),
+              actor.GetPos());
+  };
   worldState.onActorFate = [this](MpActor& actor) {
     ActorFateMessage msg;
     msg.fates.push_back(FateOf(worldState, actor));
@@ -1612,6 +1621,9 @@ void PartOne::SendFates(MpActor& player, uint32_t cellOrWorld,
       if (!seen.insert(actor->GetFormId()).second) {
         continue;
       }
+      // an actor this process rolled before any pass reached it (the grid's
+      // 3x3 at a login, another square's ring) rolls at this level now
+      actor->RollFateIfUnrolled(level);
       msg.fates.push_back(FateOf(worldState, *actor));
       if (msg.fates.size() >= kFatesPerMessage) {
         flush();

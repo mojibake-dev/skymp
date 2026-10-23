@@ -82,6 +82,9 @@ struct MpActor::Impl
   // client has not reported yet, and whether the record a login sent waits
   // for a report that shows it applied
   std::vector<std::pair<uint8_t, float>> heldActorValues;
+  // thuum docs/verbs/npc-fate.md (ADR-049): whether this actor came from a
+  // saved change form (its roll kept) or was rolled by this process
+  bool fromSave = false;
   bool actorValuesLoginPending = false;
   using RestorationTimePoints =
     std::unordered_map<espm::ActorValue,
@@ -1680,6 +1683,30 @@ uint32_t MpActor::GetFateBaseId() const
   return pick ? pick : GetBaseId();
 }
 
+bool MpActor::RollFateIfUnrolled(uint16_t level)
+{
+  auto worldState = GetParent();
+  if (!worldState || !worldState->HasEspm() || pImpl->fromSave || IsDead() ||
+      ChangeForm().fateLevel.has_value()) {
+    return false;
+  }
+  const auto baseId = GetBaseId();
+  if (baseId == 0x7 || baseId == 0 || GetFormId() >= 0xff000000) {
+    return false;
+  }
+  worldState->fateLoaderLevel = level;
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    changeForm.templateChain.clear();
+    changeForm.inv = Inventory();
+    changeForm.baseContainerAdded = false;
+  });
+  EnsureTemplateChainEvaluated(worldState->GetEspm());
+  EnsureBaseContainerAdded(worldState->GetEspm());
+  EquipBestWeapon();
+  worldState->fateLoaderLevel.reset();
+  return true;
+}
+
 void MpActor::EnsureTemplateChainEvaluated(espm::Loader& loader,
                                            ChangeFormGuard::Mode mode)
 {
@@ -1923,6 +1950,7 @@ void MpActor::BeforeDestroy()
 
 void MpActor::Init(WorldState* worldState, uint32_t formId, bool hasChangeForm)
 {
+  pImpl->fromSave = hasChangeForm;
   MpObjectReference::Init(worldState, formId, hasChangeForm);
 
   if (worldState->HasEspm()) {

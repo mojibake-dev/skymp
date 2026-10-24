@@ -151,6 +151,11 @@ export class NetworkingService extends ClientListener {
             this.controller.emitter.emit("anyMessage", event);
           } else if (msgAny.t === MsgType.Teleport) {
             const event = { message: msgAny };
+            // thuum docs/verbs/npc-handoff.md D6: the viewer's Teleport for a
+            // hosted actor's door (x-handoff-door 20261024-013234 read no
+            // handler line on the viewer; this names arrival apart from
+            // handling)
+            logTrace(this, `Teleport received for idx ${(msgAny as { idx?: number }).idx} into ${((msgAny as { worldOrCell?: number }).worldOrCell ?? 0).toString(16)}`);
             this.controller.emitter.emit("teleportMessage", event);
             this.controller.emitter.emit("anyMessage", event);
           } else if (msgAny.t === MsgType.UpdateProperty) {

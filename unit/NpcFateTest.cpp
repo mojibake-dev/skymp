@@ -1,10 +1,14 @@
 #include "ActorFateMessage.h"
 #include "CreateActorMessage.h"
+#include "MpChangeForms.h"
 #include "OpenContainerMessage.h"
 #include "TestUtils.hpp"
 #include "UpdatePropertyMessage.h"
+#include "libespm/Loader.h"
+#include "libespm/NPC_.h"
 #include <catch2/catch_all.hpp>
 #include <cmath>
+#include <simdjson.h>
 
 PartOne& GetPartOne();
 
@@ -300,4 +304,61 @@ TEST_CASE("A dead game-file actor is a container to the player beside it",
   p.worldState.fateRespawnDue.erase(kPredator);
   DoDisconnect(p, 0);
   p.DestroyActor(kLooter);
+}
+
+// thuum docs/verbs/npc-fate.md (the deaths): the body's day is on the change
+// form and survives its JSON (the restart's record); an older record without
+// it reads as "no stamp"
+TEST_CASE("A body's day survives the change form's JSON", "[NpcFate]")
+{
+  MpChangeForm changeForm;
+  changeForm.isDead = true;
+  changeForm.fateDiedAt = 100.5f;
+  simdjson::dom::parser parser;
+  const std::string dump = MpChangeForm::ToJson(changeForm).dump();
+  auto element = parser.parse(dump).value();
+  const auto back = MpChangeForm::JsonToChangeForm(element);
+  REQUIRE(back.isDead);
+  REQUIRE(back.fateDiedAt == std::optional<float>{ 100.5f });
+
+  const std::string older = MpChangeForm::ToJson(MpChangeForm()).dump();
+  REQUIRE(older.find("fateDiedAt") == std::string::npos);
+  auto olderElement = parser.parse(older).value();
+  REQUIRE_FALSE(
+    MpChangeForm::JsonToChangeForm(olderElement).fateDiedAt.has_value());
+}
+
+// thuum docs/verbs/npc-fate.md (D15): the engine's rule for a game-file base,
+// read from the master's own flags: essential never dies, protected dies to
+// a player's hand alone. Hod 0x1348a (Riverwood's persistent mill worker,
+// CellHostTest's espm fact) is whatever Skyrim.esm says he is: the rule is
+// asserted against the flags, never a remembered flag.
+TEST_CASE("A game-file base dies by the master's essential and protected "
+          "flags",
+          "[NpcFate][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  constexpr uint32_t kHodRef = 0x1348a;
+  constexpr uint32_t kHand = 0xff000d05;
+  DoConnect(p, 0);
+  p.CreateActor(kHand, kForest, 0, kTamriel);
+  p.SetUserActor(0, kHand);
+  auto& hand = p.worldState.GetFormAt<MpActor>(kHand);
+  auto& form = p.worldState.LookupFormById(kHodRef);
+  REQUIRE(form);
+  MpActor* hod = form->AsActor();
+  REQUIRE(hod);
+  const auto flags =
+    espm::GetData<espm::NPC_>(hod->GetBaseId(), &p.worldState);
+  REQUIRE(hod->MayDie(nullptr) == !(flags.isEssential || flags.isProtected));
+  REQUIRE(hod->MayDie(&hand) == !flags.isEssential);
+
+  // a leveled pick carries neither flag: it dies to anyone
+  auto& predatorForm = p.worldState.LookupFormByIdNoLoad(kPredator);
+  REQUIRE(predatorForm);
+  REQUIRE(predatorForm->AsActor()->MayDie(nullptr));
+
+  DoDisconnect(p, 0);
+  p.DestroyActor(kHand);
 }

@@ -1,6 +1,7 @@
 #include "FateApi.h"
 #include "CallNativeApi.h"
 #include "Fates.h"
+#include "Puppets.h"
 #include "game/Offsets.h"
 #include <string>
 
@@ -138,6 +139,41 @@ Napi::Value FateApi::RedressActor(const Napi::CallbackInfo& info)
                  "3D loaded {})",
                  refrId, dressed.added, fate.worn.size(), outfit->formID,
                  dressed.carried, actor->Is3DLoaded());
+  });
+  return Napi::Boolean::New(info.Env(), true);
+}
+
+Napi::Value FateApi::ResurrectActor(const Napi::CallbackInfo& info)
+{
+  const auto refrId = NapiHelper::ExtractUInt32(info[0], "refrId");
+  if (refrId == 0 || refrId == 0x14) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  g_nativeCallRequirements.gameThrQ->AddTask([refrId](Viet::Void) {
+    auto* actor = RE::TESForm::LookupByID<RE::Actor>(refrId);
+    if (!actor) {
+      logger::warn("[verb:npc-fate] resurrectActor({:x}): no such actor",
+                   refrId);
+      return;
+    }
+    const bool puppet = Puppets::Is(refrId);
+    const bool wasDead = actor->IsDead();
+    // Actor::EnableAI (A/Actor.h:521), Actor::Resurrect (A/Actor.h:369),
+    // TESObjectREFR::SetActivationBlocked (T/TESObjectREFR.h:464)
+    if (puppet) {
+      actor->EnableAI(true);
+    }
+    actor->Resurrect(true, true);
+    if (puppet) {
+      actor->EnableAI(false);
+      actor->SetActivationBlocked(true);
+    } else {
+      actor->SetActivationBlocked(false);
+    }
+    logger::info(
+      "[verb:npc-fate] resurrected {:x} (puppet {}, dead before {}, "
+      "dead after {})",
+      refrId, puppet, wasDead, actor->IsDead());
   });
   return Napi::Boolean::New(info.Env(), true);
 }

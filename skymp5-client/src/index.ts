@@ -37,6 +37,7 @@ import { RemoteServer } from "./services/services/remoteServer";
 import { HostService } from "./services/services/hostService";
 import { PuppetService } from "./services/services/puppetService";
 import { ActorFateService } from "./services/services/actorFateService";
+import { DeathReportService } from "./services/services/deathReportService";
 import { SpSnippetService } from "./services/services/spSnippetService";
 import { SweetTaffyDynamicPerksService } from "./services/services/sweetTaffyDynamicPerksService";
 import { SweetTaffySweetCantDropService } from "./services/services/sweetTaffySweetCantDropService";
@@ -112,6 +113,7 @@ const main = () => {
       new HostService(sp, controller),
       new PuppetService(sp, controller),
       new ActorFateService(sp, controller),
+      new DeathReportService(sp, controller),
       new SpSnippetService(sp, controller),
       new SettingsService(sp, controller),
       new SweetTaffyDynamicPerksService(sp, controller),

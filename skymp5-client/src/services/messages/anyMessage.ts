@@ -21,6 +21,7 @@ import { HostGrantMessage } from "./hostGrantMessage";
 import { HostReleaseMessage } from "./hostReleaseMessage";
 import { ActorSightingsMessage } from "./actorSightingsMessage";
 import { ActorFateMessage } from "./actorFateMessage";
+import { ActorDeathMessage } from "./actorDeathMessage";
 import { OnEquipMessage } from "./onEquipMessage";
 import { OpenContainerMessage } from "./openContainerMessage";
 import { PlayerBowShotMessage } from "./playerBowShotMessage";
@@ -96,6 +97,7 @@ export type AnyMessage = ActivateMessage
     | HostReleaseMessage
     | ActorSightingsMessage
     | ActorFateMessage
+    | ActorDeathMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage
     | UpdatePropertyMessage

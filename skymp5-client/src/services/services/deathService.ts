@@ -122,6 +122,16 @@ export class DeathService extends ClientListener {
     return this.predicted.has(actorId);
   }
 
+  // thuum docs/verbs/npc-fate.md (ADR-048's B): whether `actorId`'s death
+  // the engine just played was the server's own word (killActor above);
+  // consumed by the report that asks, so a later death of the same actor
+  // (after its respawn) is reported again
+  public takeServerKill(actorId: number): boolean {
+    return this.serverKills.delete(actorId);
+  }
+
+  private readonly serverKills = new Set<number>();
+
   // the word never came: the figure stands back up where it fell
   public revertPredictedDeath(actor: Actor): void {
     const id = actor.getFormID();
@@ -148,6 +158,12 @@ export class DeathService extends ClientListener {
       actor.setDontMove(true);
       this.killWithPush(actor);
     } else {
+      if (actor.getFormID() < 0xff000000) {
+        // thuum docs/verbs/npc-fate.md (ADR-048's B): the kill below fires
+        // the engine's death events; DeathReportService must not report a
+        // death that is the server's own word
+        this.serverKills.add(actor.getFormID());
+      }
       actor.endDeferredKill();
       actor.kill(killer);
       if (actor.getFormID() < 0xff000000) {

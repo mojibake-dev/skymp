@@ -53,5 +53,6 @@ export enum MsgType {
   HostGrant = 48,
   HostRelease = 49,
   ActorSightings = 50, // thuum docs/verbs/npc-puppet.md: a host's roster of engine actors the server does not hold
-  ActorFate = 51 // thuum docs/verbs/npc-fate.md (ADR-049): the server's roll for a placement, ahead of the engine's own
+  ActorFate = 51, // thuum docs/verbs/npc-fate.md (ADR-049): the server's roll for a placement, ahead of the engine's own
+  ActorDeath = 52 // thuum docs/verbs/npc-fate.md (ADR-048's B): a host's death report for a game-file actor, checked by the server
 }

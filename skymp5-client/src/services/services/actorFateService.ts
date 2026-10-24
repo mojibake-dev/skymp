@@ -17,19 +17,20 @@ import { ClientListener, CombinedController, Sp } from "./clientListener";
 // engine's own re-roll (rerollActor) when the engine cloned a leveled pick
 // (its base is a runtime form), else the redress (redressActor: the outfit
 // stripped, the server's list added tagged, worn again); one pop, accepted
-// by ADR-049. The switch npcFate (settings
-// skymp5-client.npcFate, default OFF) arms the detours; until the lab read
-// x-npc-fate-roll confirms the roll's moments (docs/research/m3/
-// re-npc-roll.md section 7) they are HYPOTHESIS and stay pass-throughs, the
-// fates kept for the day they turn on.
+// by ADR-049. The switch npcFate (settings skymp5-client.npcFate) arms the
+// detours; on unless the file says false since ADR-046 decision 1 held at
+// T3 (x-npc-fate-pin v3 GREEN 20261024-053914 on 0a10f977: both seats show
+// the server's species, each pinned at the roll); off, the fates are kept
+// and the detours pass every roll through (the bisect switch).
 export class ActorFateService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
-        this.enabled = this.sp.settings["skymp5-client"]["npcFate"] === true;
+        const setting = this.sp.settings["skymp5-client"]["npcFate"];
+        this.enabled = setting !== false;
         this.sp.setActorFateEnabled(this.enabled);
         logTrace(this, this.enabled
-            ? "npcFate is on: the engine rolls what the server rolled (the two detours armed)"
-            : "npcFate is off (the default until x-npc-fate-roll): fates are kept, the detours pass every roll through");
+            ? "npcFate is on (the default): the engine rolls what the server rolled (the two detours armed)"
+            : "npcFate is off by the settings file: fates are kept, the detours pass every roll through");
         this.controller.emitter.on("actorFateMessage", (e) => this.onActorFate(e));
     }
 

@@ -73,7 +73,9 @@ export class FormView {
   private static npcFateEnabled(): boolean {
     if (FormView.npcFate === undefined) {
       const s = settings["skymp5-client"] as Record<string, unknown> | undefined;
-      FormView.npcFate = !!s && s["npcFate"] === true;
+      // on unless the settings file says false (ADR-046 decision 1 held at
+      // T3: x-npc-fate-pin v3 GREEN 053914, both seats, both paths)
+      FormView.npcFate = !s || s["npcFate"] !== false;
     }
     return FormView.npcFate;
   }

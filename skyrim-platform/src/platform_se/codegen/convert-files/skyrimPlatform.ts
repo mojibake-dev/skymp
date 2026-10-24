@@ -1738,6 +1738,8 @@ export declare function clearActorFate(refrId: number): boolean;
 export declare function setActorFateEnabled(on: boolean): void;
 // the engine's own re-roll of a loaded leveled actor through the detours, for a fate that arrived after the roll (one visible pop); the actor is looked up on the game thread; false when the reference has no fate or the switch is off
 export declare function rerollActor(refrId: number): boolean;
+// thuum docs/verbs/npc-fate.md (the deaths): a game-file actor's respawn, the engine's own Resurrect run with its AI on in one game-thread task; a puppet is demoted again after it, a live actor unblocked; false for an invalid id
+export declare function resurrectActor(refrId: number): boolean;
 // for a fate that arrives after an unleveled actor was dressed (re-npc-roll.md section 8.4's late path): on the game thread, the engine's RemoveOutfitItems with the base's default outfit, the server's worn list added tagged exactly as the outfit detour adds it, then AddWornOutfit: one pop; false when the id is invalid, the reference holds no fate or the switch is off (a reference the game cannot find, or a base with no default outfit, is a warn on the game thread)
 export declare function redressActor(refrId: number): boolean;
 export declare function actorFateCount(): number;

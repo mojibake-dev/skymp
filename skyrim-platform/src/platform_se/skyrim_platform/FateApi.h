@@ -31,6 +31,17 @@ Napi::Value RerollActor(const Napi::CallbackInfo& info);
 // off; a reference the game cannot find, or a base with no default outfit,
 // is a warn on the game thread (the lookup runs there, setPuppet's shape).
 Napi::Value RedressActor(const Napi::CallbackInfo& info);
+// resurrectActor(refrId): a game-file actor's respawn, the engine's own
+// Resurrect (A/Actor.h:369: the inventory reset, the 3D attached) run with
+// its AI on, in one game-thread task: a puppet is given its AI back for the
+// call and demoted again after it (EnableAI false, activation blocked), a
+// live actor is unblocked (the body's block from the kill). x-npc-respawn
+// 070508: Resurrect from Papyrus on a corpse a reconnecting viewer had just
+// demoted (AI off, after an AI-on death) did not stand it up, while the
+// same corpse stood up on the seat whose promote (AI on) ran 40 ms before.
+// False for an invalid id; a reference the game cannot find is a warn on
+// the game thread (the lookup runs there, setPuppet's shape).
+Napi::Value ResurrectActor(const Napi::CallbackInfo& info);
 // actorFateCount(): the table's size
 Napi::Value ActorFateCount(const Napi::CallbackInfo& info);
 
@@ -51,6 +62,9 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "redressActor",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(RedressActor)));
+  exports.Set(
+    "resurrectActor",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(ResurrectActor)));
   exports.Set(
     "actorFateCount",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(ActorFateCount)));

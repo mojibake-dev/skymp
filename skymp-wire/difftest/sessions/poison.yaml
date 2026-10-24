@@ -40,7 +40,7 @@ divergences:
     wire: 1
     reason: the server answers every console command with a line (ConsoleOutput, thuum docs/verbs/console-commands.md); the legacy server prints nothing back
   - client: c2
-    msg: {t: 25, idx: 2}
+    msg: {t: 25, idx: "refr:ff000002"}
     legacy: 0
     wire: 1
     reason: departure detection, graceful close on the wire against RakNet's timeout
@@ -50,12 +50,12 @@ divergences:
     wire: 1
     reason: the fixed server spends the poison on the dagger in c1's right hand and sends c1 its inventory with the dagger's mark, one dose (thuum docs/verbs/poison.md); the legacy server drinks it, and its inventory without the poison equals the fixed server's after the dose is spent
   - client: c1
-    msg: {t: 43, idx: 2, effects: [{effect: 1092170, source: 363771, magnitude: 6, remaining: 10}]}
+    msg: {t: 43, idx: "refr:ff000002", effects: [{effect: 1092170, source: 363771, magnitude: 6, remaining: 10}]}
     legacy: 0
     wire: 1
     reason: the dagger's hit runs the poison's effect on c1 (DB03Poison's 0x10AA4A, 6 a second for 10 s), told to every game that sees c1, its own included (MagicEffects); the legacy server has no mark to carry and no such message
   - client: c2
-    msg: {t: 43, idx: 2, effects: [{effect: 1092170, source: 363771, magnitude: 6, remaining: 10}]}
+    msg: {t: 43, idx: "refr:ff000002", effects: [{effect: 1092170, source: 363771, magnitude: 6, remaining: 10}]}
     legacy: 0
     wire: 1
     reason: c2's game hears the poison on c1 the same way

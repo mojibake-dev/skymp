@@ -27,7 +27,7 @@ divergences:
     wire: 0
     reason: a bare-handed hit from 2000 units lowered c2's health on the legacy server; refused beyond reach on the fixed one
   - client: c2
-    msg: {t: 25, idx: 2}
+    msg: {t: 25, idx: "refr:ff000002"}
     legacy: 0
     wire: 1
     reason: departure detection, graceful close on the wire against RakNet's timeout

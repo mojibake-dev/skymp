@@ -11,7 +11,10 @@
 //! would send it). Each stack runs one fakeclient process per client, in
 //! declared order, a fixed gap apart, and the clients' event lines are
 //! normalized and diffed: whether each logged in and where it spawned, its
-//! exit code, what it sent, and the multiset of messages it received. The
+//! exit code, what it sent, and the multiset of messages it received, with
+//! every form index renamed to the id of the form it names (the client's
+//! CreateActor pairs them): an index is allocation order, not identity, and
+//! the legacy image allocates its own. The
 //! relays whose count depends on timing (UpdateMovement, UpdateAnimation,
 //! UpdateAnimVariables by default) compare as "received at least one".
 //! A session may declare divergences: the messages one client receives
@@ -304,9 +307,52 @@ fn canonical(v: &Value) -> Value {
     }
 }
 
+/// A form index names a form only within one server's run: each stack
+/// allocates indices by its own form count, and a server that loads records
+/// ahead of the engine (thuum's fate pass, train-41) shifts every index
+/// against the legacy image while the messages stay the same. A client's
+/// CreateActor (MsgType 33) pairs an index with the form's id; every index in
+/// that client's stream is renamed to the id before the diff, so the
+/// comparison reads identity, not allocation order. An index no CreateActor
+/// named stays a number and differs as before.
+fn idx_names(events: &[Value]) -> BTreeMap<i64, String> {
+    let mut names = BTreeMap::new();
+    for e in events {
+        let Some(m) = e.get("msg") else { continue };
+        if m.get("t").and_then(Value::as_i64) != Some(33) {
+            continue;
+        }
+        if let (Some(idx), Some(refr)) = (m.get("idx").and_then(Value::as_i64), m.get("refrId").and_then(Value::as_u64)) {
+            names.insert(idx, format!("refr:{refr:x}"));
+        }
+    }
+    names
+}
+
+/// Every `idx` field, at any depth, renamed through `names`.
+fn rename_idx(v: &Value, names: &BTreeMap<i64, String>) -> Value {
+    match v {
+        Value::Array(a) => Value::Array(a.iter().map(|x| rename_idx(x, names)).collect()),
+        Value::Object(o) => Value::Object(
+            o.iter()
+                .map(|(k, x)| {
+                    if k == "idx" {
+                        if let Some(name) = x.as_i64().and_then(|i| names.get(&i)) {
+                            return (k.clone(), Value::String(name.clone()));
+                        }
+                    }
+                    (k.clone(), rename_idx(x, names))
+                })
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
 /// What one client saw, in comparable form.
 fn normalize(rc: i32, events: &[Value], volatile: &BTreeSet<i64>) -> Value {
     let kind = |e: &Value| e.get("event").and_then(Value::as_str).unwrap_or("").to_string();
+    let names = idx_names(events);
     let actor = events
         .iter()
         .find(|e| kind(e) == "actor")
@@ -322,7 +368,7 @@ fn normalize(rc: i32, events: &[Value], volatile: &BTreeSet<i64>) -> Value {
             "message" if volatile.contains(&t) => {
                 relays.insert(t);
             }
-            "message" => received.push(canonical(&msg).to_string()),
+            "message" => received.push(canonical(&rename_idx(&msg, &names)).to_string()),
             "sent" => {
                 let n = sent.entry(t).or_insert(0);
                 *n = n.saturating_add(1);
@@ -490,6 +536,28 @@ fn main() -> std::process::ExitCode {
 #[allow(clippy::panic, clippy::expect_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_form_index_compares_as_the_form_it_names() {
+        // the same session on two servers whose form counts differ: the
+        // player's actor is form 64 on one and 293 on the other
+        let legacy = vec![
+            json!({"event": "message", "msg": {"t": 33, "idx": 64, "refrId": 0xff00_0000_u64, "baseId": 7}}),
+            json!({"event": "message", "msg": {"t": 16, "idx": 64, "data": {"health": 0.5}}}),
+            json!({"event": "message", "msg": {"t": 18, "tIsDead": {"idx": 64, "propName": "isDead"}}}),
+        ];
+        let wire = vec![
+            json!({"event": "message", "msg": {"t": 33, "idx": 293, "refrId": 0xff00_0000_u64, "baseId": 7}}),
+            json!({"event": "message", "msg": {"t": 16, "idx": 293, "data": {"health": 0.5}}}),
+            json!({"event": "message", "msg": {"t": 18, "tIsDead": {"idx": 293, "propName": "isDead"}}}),
+        ];
+        let none = BTreeSet::new();
+        assert_eq!(normalize(0, &legacy, &none), normalize(0, &wire, &none));
+        // an index no CreateActor named keeps its number and still differs
+        let stray_a = vec![json!({"event": "message", "msg": {"t": 16, "idx": 5}})];
+        let stray_b = vec![json!({"event": "message", "msg": {"t": 16, "idx": 6}})];
+        assert_ne!(normalize(0, &stray_a, &none), normalize(0, &stray_b, &none));
+    }
 
     fn smoke_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sessions/smoke.yaml")

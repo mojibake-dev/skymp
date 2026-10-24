@@ -103,6 +103,11 @@ pub struct ClientGuard {
     /// second after that only ever stops a flood; each hit's rules are the
     /// server's.
     pub on_hit_budget: TokenBucket,
+    /// Budget for a host's death reports (ActorDeath, thuum docs/verbs/
+    /// npc-fate.md, ADR-048's B): a fight's end can fell two or three at
+    /// once, so six at once and one a second after that only ever stops a
+    /// flood; which deaths are accepted is the server's rule.
+    pub actor_death_budget: TokenBucket,
     /// Budget for spell casts and their ends (thuum docs/verbs/spell-cast.md):
     /// a cast charges before it goes (Firebolt's SPIT charge time is half a
     /// second) and a stream's start and end are two messages, from two hands
@@ -152,6 +157,7 @@ impl Default for ClientGuard {
             console_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
             shot_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 2, last_refill_ms: 0 },
             on_hit_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 16, last_refill_ms: 0 },
+            actor_death_budget: TokenBucket { tokens: 6, capacity: 6, refill_per_s: 1, last_refill_ms: 0 },
             cast_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 4, last_refill_ms: 0 },
             player_globals_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
             equip_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 8, last_refill_ms: 0 },
@@ -485,6 +491,21 @@ fn check_sightings(m: &skymp::ActorSightings) -> Result<(), Reject> {
     Ok(())
 }
 
+/// A host's death report (docs/verbs/npc-fate.md, ADR-048's B): a game-file
+/// actor (a form id of 1 to 0xfeffffff), a cause the contract names (0 to 4),
+/// a finite point inside the world's bounds. Whether the sender simulates
+/// the actor and whether the cause checks out is the server's rule.
+fn check_actor_death(m: &skymp::ActorDeath) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    if m.refr_id == 0 || m.refr_id >= 0xff00_0000 || m.cause > 4 {
+        return Err(Reject::Range);
+    }
+    check_pos(&m.pos)?;
+    Ok(())
+}
+
 /// A favorites report: every hotkey in [`HOTKEYS`], no key bound twice, no
 /// form listed twice (docs/verbs/favorites.md).
 fn check_favorites(m: &skymp::Favorites) -> Result<(), Reject> {
@@ -556,6 +577,7 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::ConsoleCommand(_) => take(&mut guard.console_budget, now_ms),
         Message::PlayerBowShot(_) => take(&mut guard.shot_budget, now_ms),
         Message::OnHit(_) => take(&mut guard.on_hit_budget, now_ms),
+        Message::ActorDeath(_) => take(&mut guard.actor_death_budget, now_ms),
         Message::SpellCast(_) => take(&mut guard.cast_budget, now_ms),
         Message::OnEquip(_) => take(&mut guard.equip_budget, now_ms),
         Message::UpdateAction(_) => take(&mut guard.action_budget, now_ms),
@@ -717,6 +739,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         }
         Message::ActorSightings(m) => check_sightings(m),
         Message::ActorFate(m) => check_fates(m),
+        Message::ActorDeath(m) => check_actor_death(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
         // rejects it by direction before it gets this far.
@@ -1591,6 +1614,29 @@ mod tests {
                 .unwrap_or_default(),
             ..Default::default()
         })
+    }
+
+    // thuum docs/verbs/npc-fate.md (ADR-048's B): a host's death report names
+    // a game-file actor, a cause the contract knows and a point in the world;
+    // six at once, one a second after that
+    fn death(refr_id: u32, cause: u8, killer: u32, pos: [f32; 3]) -> Message {
+        Message::ActorDeath(wire_schema::skymp::ActorDeath { refr_id, cause, killer, pos, ..Default::default() })
+    }
+
+    #[test]
+    fn a_death_report_names_an_actor_a_cause_and_a_point() {
+        assert_eq!(validate_server(&death(0x85547, 1, 0, [123592.5, -80301.25, 10705.0])), Ok(()));
+        assert_eq!(validate_server(&death(0x85547, 4, 0x85549, [0.0, 0.0, 0.0])), Ok(()));
+        assert_eq!(validate_server(&death(0, 1, 0, [0.0, 0.0, 0.0])), Err(Reject::Range));
+        assert_eq!(validate_server(&death(0xff00_0000, 1, 0, [0.0, 0.0, 0.0])), Err(Reject::Range));
+        assert_eq!(validate_server(&death(0x85547, 5, 0, [0.0, 0.0, 0.0])), Err(Reject::Range));
+        assert_eq!(validate_server(&death(0x85547, 1, 0, [f32::NAN, 0.0, 0.0])), Err(Reject::NonFinite));
+        let mut guard = ClientGuard::default();
+        for _ in 0..6 {
+            assert_eq!(validate(&death(0x85547, 1, 0, [0.0, 0.0, 0.0]), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&death(0x85547, 1, 0, [0.0, 0.0, 0.0]), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&death(0x85547, 1, 0, [0.0, 0.0, 0.0]), &mut guard, 2_100), Ok(()));
     }
 
     // thuum docs/verbs/npc-fate.md (ADR-049): the server's fates name

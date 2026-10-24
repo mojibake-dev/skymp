@@ -416,6 +416,8 @@ pub enum Message {
     ActorSightings(skymp::ActorSightings),
     /// 59, MsgType 51 (thuum). See [`skymp::ActorFate`].
     ActorFate(skymp::ActorFate),
+    /// 60, MsgType 52 (thuum). See [`skymp::ActorDeath`].
+    ActorDeath(skymp::ActorDeath),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -444,7 +446,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 60] = [
+const TABLE: [Row; 61] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -505,14 +507,15 @@ const TABLE: [Row; 60] = [
     row("HostRelease", 49, 32, S2C),
     row("ActorSightings", 50, 4 * KIB, C2S),
     row("ActorFate", 51, 16 * KIB, S2C),
+    row("ActorDeath", 52, KIB, C2S),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 60;
-const _: () = assert!(TABLE.len() == 60, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 61;
+const _: () = assert!(TABLE.len() == 61, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -597,6 +600,7 @@ impl Message {
             Message::HostRelease(_) => 57,
             Message::ActorSightings(_) => 58,
             Message::ActorFate(_) => 59,
+            Message::ActorDeath(_) => 60,
         }
     }
 
@@ -679,7 +683,8 @@ mod tests {
         assert_eq!(name_of_msg_type(50), Some("ActorSightings"));
         assert_eq!(name_of_msg_type(0), None);
         assert_eq!(name_of_msg_type(51), Some("ActorFate"));
-        assert_eq!(name_of_msg_type(52), None);
+        assert_eq!(name_of_msg_type(52), Some("ActorDeath"));
+        assert_eq!(name_of_msg_type(53), None);
     }
 
     #[test]
@@ -735,6 +740,7 @@ mod tests {
                     .unwrap_or_default(),
                 ..Default::default()
             }),
+            Message::ActorDeath(skymp::ActorDeath { refr_id: 0xfeff_ffff, cause: u8::MAX, killer: u32::MAX, pos: [f32::MAX; 3], ..Default::default() }),
             Message::RaceMenuPreset(skymp::RaceMenuPreset {
                 actor: u32::MAX,
                 preset: "x".repeat(cap::RACEMENU_PRESET).try_into().unwrap_or_default(),

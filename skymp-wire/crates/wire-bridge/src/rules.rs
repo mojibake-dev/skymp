@@ -1398,7 +1398,7 @@ mod ffi {
         fn may_move(self: &mut Cells, report: &CellMove, now_ms: u64) -> u8;
         /// `may_move`'s verdict without recording anything (the door's
         /// pre-check, ADR-047 D6).
-        fn judge_move(self: &Cells, report: &CellMove) -> u8;
+        fn judge_move(self: &Cells, report: &CellMove, now_ms: u64) -> u8;
         /// Who simulates `actor` standing in `cell`: the host, else the
         /// follower, else 0.
         fn simulator_of(self: &Cells, actor: u32, cell: u32) -> u32;
@@ -2027,7 +2027,7 @@ impl Cells {
         host_decisions(&self.0, decisions)
     }
 
-    fn judge_move(&self, report: &CellMove) -> u8 {
+    fn judge_move(&self, report: &CellMove, now_ms: u64) -> u8 {
         let m = cells::CellMove {
             sender: report.sender,
             actor: report.actor,
@@ -2036,7 +2036,7 @@ impl Cells {
             adjacent: report.adjacent,
             door: report.door,
         };
-        match self.0.judge(&m) {
+        match self.0.judge(&m, now_ms) {
             cells::MoveVerdict::Refuse => 0,
             cells::MoveVerdict::Accept => 1,
             cells::MoveVerdict::Follow => 2,

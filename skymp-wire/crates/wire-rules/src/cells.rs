@@ -30,6 +30,14 @@ pub const GRACE_MS: u64 = 5_000;
 /// b-npc-handoff's restart step sizes it.
 pub const COLD_START_MS: u64 = 5_000;
 
+/// How long after a follow through a door a report putting the actor back
+/// in the cell it left is refused as stale (x-handoff-door 20261024-013234:
+/// the host's report 133 ms after the follow said the exterior again and the
+/// record bounced out; a sample taken before the engine's transit, or
+/// reordered on the unreliable channel). A real return after the window
+/// passes as before. UNMEASURED placeholder.
+pub const FOLLOW_SETTLE_MS: u64 = 1_000;
+
 /// What the server answers a simulator's report that moves an actor
 /// (ADR-047 D6, thuum docs/verbs/npc-handoff.md): the core turns it into
 /// the accept, the follow's record or the drop.
@@ -319,8 +327,17 @@ impl Cells {
     /// that wrote follow rows at the door removed a standing follow before
     /// the host was looked up, and recorded one before the host had crossed).
     #[must_use]
-    pub fn judge(&self, m: &CellMove) -> MoveVerdict {
+    pub fn judge(&self, m: &CellMove, now_ms: u64) -> MoveVerdict {
         let CellMove { sender, actor, origin, dest, adjacent, door } = *m;
+        // a report putting the actor back where it stood before a follow
+        // younger than the settle window is a stale sample, not a return
+        if dest != origin && dest != 0 && origin != 0 {
+            if let Some(f) = self.follows.get(&actor) {
+                if f.cell == origin && f.player == sender && now_ms.saturating_sub(f.since_ms) < FOLLOW_SETTLE_MS {
+                    return MoveVerdict::Refuse;
+                }
+            }
+        }
         if dest == 0 {
             return MoveVerdict::Refuse;
         }
@@ -355,7 +372,7 @@ impl Cells {
     /// recorded (actor to the sender, the destination, now); an Accept into a
     /// cell the sender hosts ends any follow of the actor.
     pub fn may_move(&mut self, m: &CellMove, now_ms: u64) -> MoveVerdict {
-        let verdict = self.judge(m);
+        let verdict = self.judge(m, now_ms);
         match verdict {
             MoveVerdict::Follow => {
                 self.follows.insert(m.actor, Follow { player: m.sender, cell: m.dest, since_ms: now_ms });
@@ -823,15 +840,32 @@ mod tests {
         c.loaded(C1, RIVERWOOD, 1_000);
         c.loaded(C1, EAST, 1_100);
         let m = CellMove { sender: C1, actor: STUMP, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false };
-        assert_eq!(c.judge(&m), MoveVerdict::Follow);
+        assert_eq!(c.judge(&m, 9_000), MoveVerdict::Follow);
         assert_eq!(c.follows(), vec![]);
         assert_eq!(c.may_move(&m, 10_000), MoveVerdict::Follow);
         assert_eq!(c.follows(), vec![(STUMP, C1, EAST)]);
         // judging the way back removes nothing; applying it does
         let back = CellMove { sender: C1, actor: STUMP, origin: EAST, dest: RIVERWOOD, adjacent: true, door: false };
-        assert_eq!(c.judge(&back), MoveVerdict::Accept);
+        assert_eq!(c.judge(&back, 10_500), MoveVerdict::Accept);
         assert_eq!(c.follows(), vec![(STUMP, C1, EAST)]);
         assert_eq!(c.may_move(&back, 11_000), MoveVerdict::Accept);
+        assert_eq!(c.follows(), vec![]);
+    }
+
+    #[test]
+    fn a_report_back_out_within_the_settle_after_a_door_follow_is_stale() {
+        const INN: u32 = 0x133c6;
+        const ALVOR: u32 = 0x13482;
+        let mut c = both_in_reach();
+        c.loaded(C1, RIVERWOOD, 1_000);
+        let inward = CellMove { sender: C1, actor: ALVOR, origin: RIVERWOOD, dest: INN, adjacent: false, door: true };
+        assert_eq!(c.may_move(&inward, 10_000), MoveVerdict::Follow);
+        // the host's next sample, taken before the engine's transit, says the exterior
+        let outward = CellMove { sender: C1, actor: ALVOR, origin: INN, dest: RIVERWOOD, adjacent: false, door: true };
+        assert_eq!(c.may_move(&outward, 10_133), MoveVerdict::Refuse);
+        assert_eq!(c.follows(), vec![(ALVOR, C1, INN)]);
+        // a real return after the window passes and ends the follow
+        assert_eq!(c.may_move(&outward, 10_000 + FOLLOW_SETTLE_MS), MoveVerdict::Accept);
         assert_eq!(c.follows(), vec![]);
     }
 }

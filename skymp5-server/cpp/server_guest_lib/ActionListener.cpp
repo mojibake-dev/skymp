@@ -246,10 +246,17 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
         teleport.pos = { destPos.x, destPos.y, destPos.z };
         teleport.rot = { msg.data.rot[0], msg.data.rot[1], msg.data.rot[2] };
         teleport.worldOrCell = msg.data.worldOrCell;
+        // only the games the move unsubscribes (outside the destination's
+        // 3x3): a border crossed inside both seats' grids rides the relay as
+        // every other step, no snap (x-handoff-door 20261024-013234 read
+        // about thirty such lines in four minutes for Riverwood's walkers)
+        const auto& staying = partOne.worldState.GetNeighborsByPosition(
+          msg.data.worldOrCell, static_cast<int16_t>(destPos.x / 4096),
+          static_cast<int16_t>(destPos.y / 4096));
         size_t told = 0;
         for (MpObjectReference* listener : moved->GetListeners()) {
           MpActor* viewer = listener ? listener->AsActor() : nullptr;
-          if (!viewer || viewer == myActor) {
+          if (!viewer || viewer == myActor || staying.count(viewer)) {
             continue;
           }
           const auto viewerUser = partOne.serverState.UserByActor(viewer);

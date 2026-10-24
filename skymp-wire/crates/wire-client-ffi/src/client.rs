@@ -126,11 +126,11 @@ struct Inbox {
     bytes: usize,
 }
 
-/// A live client: the handle the game holds.
 /// How long `shutdown` waits for the network thread (normally 5 to 10 ms:
 /// one poll to see Close, the disconnect datagram, one last poll).
 const SHUTDOWN_WAIT: Duration = Duration::from_millis(200);
 
+/// A live client: the handle the game holds.
 pub struct WireClient {
     inbox: Arc<Mutex<Inbox>>,
     connected: Arc<AtomicBool>,

@@ -805,6 +805,13 @@ export class RemoteServer extends ClientListener {
     }
     const i = this.getIdManager().getId(msg.idx);
     const form = this.worldModel.forms[i];
+    if (!form) {
+      // a property for a form this game does not hold (an interior door's
+      // isOpen sent to a resident's host outside; x-handoff-door
+      // 20261024-001915 threw on 'tick' five times): nothing to set
+      logTrace(this, `UpdateProperty ${msg.propName} for idx ${msg.idx} (refr ${msg.refrId.toString(16)}): no form held, skipped`);
+      return;
+    }
     (form as Record<string, unknown>)[msg.propName] = msgData;
 
     // thuum docs/verbs/npc-fate.md, ADR-048's seam: a game-file actor's death

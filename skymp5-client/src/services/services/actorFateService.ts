@@ -54,7 +54,7 @@ export class ActorFateService extends ClientListener {
                 const base = actor.getBaseObject();
                 const leveled = !!base && base.getFormID() >= 0xff000000;
                 const queued = leveled ? this.sp.rerollActor(fate.refrId) : this.sp.redressActor(fate.refrId);
-                this.sp.printConsole(`[verb:npc-fate] late fate for ${fate.refrId.toString(16)}: ${leveled ? "reroll" : "redress"} ${queued ? "queued" : "refused"}`);
+                logTrace(this, `[verb:npc-fate] late fate for ${fate.refrId.toString(16)}: ${leveled ? "reroll" : "redress"} ${queued ? "queued" : "refused"}`);
             }
         }
     }

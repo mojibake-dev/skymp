@@ -125,12 +125,20 @@ export class DeathService extends ClientListener {
   // thuum docs/verbs/npc-fate.md (ADR-048's B): whether `actorId`'s death
   // the engine just played was the server's own word (killActor above);
   // consumed by the report that asks, so a later death of the same actor
-  // (after its respawn) is reported again
+  // (after its respawn) is reported again. A mark the engine never answered
+  // (a kill on a body already dead raises no deathStart) expires after
+  // serverKillMarkMs, so it cannot swallow a real death after the respawn
   public takeServerKill(actorId: number): boolean {
-    return this.serverKills.delete(actorId);
+    const markedAt = this.serverKills.get(actorId);
+    if (markedAt === undefined) {
+      return false;
+    }
+    this.serverKills.delete(actorId);
+    return Date.now() - markedAt <= DeathService.serverKillMarkMs;
   }
 
-  private readonly serverKills = new Set<number>();
+  private readonly serverKills = new Map<number, number>();
+  private static readonly serverKillMarkMs = 10_000;
 
   // the word never came: the figure stands back up where it fell
   public revertPredictedDeath(actor: Actor): void {
@@ -162,7 +170,7 @@ export class DeathService extends ClientListener {
         // thuum docs/verbs/npc-fate.md (ADR-048's B): the kill below fires
         // the engine's death events; DeathReportService must not report a
         // death that is the server's own word
-        this.serverKills.add(actor.getFormID());
+        this.serverKills.set(actor.getFormID(), Date.now());
       }
       actor.endDeferredKill();
       actor.kill(killer);

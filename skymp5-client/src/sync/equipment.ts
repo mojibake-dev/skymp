@@ -179,6 +179,12 @@ export const keepOnlyServerSpells = (ac: Actor, eq: Equipment): number => {
 };
 
 export const applyEquipment = (ac: Actor, eq: Equipment): boolean => {
+  // a deleted reference (a copy the cleaner or a respawn let go) crashes
+  // the engine in UnequipAll (c2's crash in x-handoff-door 20261024-001915:
+  // EXCEPTION_ACCESS_VIOLATION on "test 1" flagged kDeleted); nothing to dress
+  if (ac.isDeleted()) {
+    return false;
+  }
   ac.removeAllItems(null, false, true);
 
   ac.unequipAll();

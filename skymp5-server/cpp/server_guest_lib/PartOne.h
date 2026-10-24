@@ -475,6 +475,12 @@ public:
   };
   MoveVerdict MayMoveActor(const MpActor& sender, const MpActor& actor,
                            uint32_t destWorldOrCell, const NiPoint3& destPos);
+  // The same verdict without recording anything (no follow written or
+  // ended): the door's pre-check, before the host's engine is asked to walk
+  // the actor through; the follow is recorded by the host's report.
+  MoveVerdict WouldMoveActor(const MpActor& sender, const MpActor& actor,
+                             uint32_t destWorldOrCell,
+                             const NiPoint3& destPos) const;
   // Who simulates `actor` where its record stands: the cell's host, else
   // its follower, else 0.
   uint32_t SimulatorOf(const MpActor& actor) const;

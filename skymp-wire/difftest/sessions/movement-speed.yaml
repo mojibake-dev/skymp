@@ -33,12 +33,12 @@ divergences:
     wire: 3
     reason: the three moves beyond c1's ground speed budget snapped back on the fixed server; taken on the legacy one
   - client: c1
-    msg: {t: 2, idx: 2}
+    msg: {t: 2, idx: "refr:ff000002"}
     legacy: 5
     wire: 2
     reason: c1's moves echoed back to it; the fixed server relays only the two within the budget
   - client: c2
-    msg: {t: 2, idx: 2}
+    msg: {t: 2, idx: "refr:ff000002"}
     legacy: 5
     wire: 2
     reason: c1's moves relayed to the neighbour; the fixed server relays only the two within the budget
@@ -63,7 +63,7 @@ divergences:
     wire: 0
     reason: a form near where the legacy server let c1 go; the fixed server held c1 back
   - client: c2
-    msg: {t: 25, idx: 2}
+    msg: {t: 25, idx: "refr:ff000002"}
     legacy: 0
     wire: 1
     reason: departure detection, graceful close on the wire against RakNet's timeout

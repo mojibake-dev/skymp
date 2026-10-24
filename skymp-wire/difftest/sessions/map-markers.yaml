@@ -21,7 +21,7 @@ steps:
   - {client: c2, at_ms: 4000, move: {dx: 1, dy: 0}}
 divergences:
   - client: c2
-    msg: {t: 25, idx: 2}
+    msg: {t: 25, idx: "refr:ff000002"}
     legacy: 0
     wire: 1
     reason: departure detection, graceful close on the wire against RakNet's timeout

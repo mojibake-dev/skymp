@@ -21,7 +21,7 @@ divergences:
     wire: 0
     reason: the legacy server took a hit on a player behind its attacker (3.7 percent of c2's health); the fixed one refused it outside the cone
   - client: c2
-    msg: {t: 25, idx: 2}
+    msg: {t: 25, idx: "refr:ff000002"}
     legacy: 0
     wire: 1
     reason: departure detection, graceful close on the wire against RakNet's timeout

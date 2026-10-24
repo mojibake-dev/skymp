@@ -20,17 +20,17 @@ steps:
   - {client: c2, at_ms: 2500, move: {dy: 60}}
 divergences:
   - client: c1
-    msg: {t: 2, idx: 2}
+    msg: {t: 2, idx: "refr:ff000002"}
     legacy: 1
     wire: 0
     reason: the rejected jump echoed back to its sender; the fixed server validates before relaying
   - client: c2
-    msg: {t: 2, idx: 2}
+    msg: {t: 2, idx: "refr:ff000002"}
     legacy: 1
     wire: 0
     reason: the rejected jump relayed to the neighbour; the fixed server validates before relaying
   - client: c2
-    msg: {t: 25, idx: 2}
+    msg: {t: 25, idx: "refr:ff000002"}
     legacy: 0
     wire: 1
     reason: departure detection, graceful close on the wire against RakNet's timeout

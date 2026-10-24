@@ -271,7 +271,7 @@ TEST_CASE("A dead game-file actor is a container to the player beside it",
   p.Messages().clear();
   actor->Activate(looter);
   for (const auto& msg : SentTo<UpdatePropertyMessage>(p, 0)) {
-    REQUIRE_FALSE(msg.idx == actor->GetIdx() && msg.propName == "inventory");
+    REQUIRE_FALSE((msg.idx == actor->GetIdx() && msg.propName == "inventory"));
   }
   REQUIRE(SentTo<OpenContainerMessage>(p, 0).empty());
 

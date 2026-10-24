@@ -255,6 +255,26 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
       partOne->worldState.npcDeathReports =
         serverSettings.at("npcDeathReports").get<bool>();
     }
+    // thuum docs/verbs/npc-fate.md (the memo's D2): the roll's level rule:
+    // "loader", "party-mean" (the default), "party-min", or a number for
+    // everyone (PartOne::FateRollLevel)
+    if (serverSettings.find("npcRollLevel") != serverSettings.end()) {
+      const auto& rule = serverSettings.at("npcRollLevel");
+      if (rule.is_number()) {
+        partOne->worldState.npcRollLevel = "fixed";
+        partOne->worldState.npcRollLevelFixed =
+          static_cast<uint16_t>(std::max(1, std::min(255, rule.get<int>())));
+      } else {
+        const auto word = rule.get<std::string>();
+        if (word == "loader" || word == "party-mean" || word == "party-min") {
+          partOne->worldState.npcRollLevel = word;
+        } else {
+          spdlog::warn("npcRollLevel \"{}\" is none of loader, party-mean, "
+                       "party-min or a number; party-mean kept",
+                       word);
+        }
+      }
+    }
 
     if (serverSettings.find("npcEnabled") != serverSettings.end()) {
       bool enabled = serverSettings.at("npcEnabled").get<bool>();

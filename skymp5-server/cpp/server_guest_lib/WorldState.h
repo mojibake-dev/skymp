@@ -312,6 +312,12 @@ public:
   // player whose arrival loads them), set by PartOne around the fate pass's
   // chunk loads; none, the old rule's roll (level 0, outfit at 1)
   std::optional<uint16_t> fateLoaderLevel;
+  // thuum docs/verbs/npc-fate.md (the memo's D2): the rule for the roll's
+  // level, the server setting npcRollLevel: "loader", "party-mean" (the
+  // default), "party-min", or "fixed" with npcRollLevelFixed the number
+  // (PartOne::FateRollLevel)
+  std::string npcRollLevel = "party-mean";
+  uint16_t npcRollLevelFixed = 0;
   // a game-file actor's fate rolled anew (the respawn), installed by PartOne
   // to send the fate again
   std::function<void(MpActor&)> onActorFate;

@@ -57,6 +57,7 @@ import {
   getObjectReference,
   getViewFromStorage,
   remoteIdToLocalId,
+  getLocalRefrIdOfIndex,
 } from '../../view/worldViewMisc';
 import { TimeService } from './timeService';
 import { logTrace, logError } from '../../logging';
@@ -260,19 +261,19 @@ export class RemoteServer extends ClientListener {
 
   private onTeleportMessage(event: ConnectionMessage<TeleportMessage> | ConnectionMessage<TeleportMessage2>): void {
     const msg = event.message;
-    // thuum docs/verbs/npc-handoff.md D6: the reference is resolved NOW, not
-    // in the deferred update. A hosted actor's Teleport to a viewer arrives
-    // in the same tick as the DestroyActor that frees its idx and view
-    // (the record's re-subscription on the destination's grid), so a
-    // deferred lookup found nothing and the move was skipped (x-handoff-door
-    // 20261024-013234, the door agent's read); the local form id is kept
-    // and the move alone waits for the update.
+    // thuum docs/verbs/npc-handoff.md D6: the idx and the view's local form
+    // id are read NOW, in pure JavaScript (no native call: Skyrim Platform
+    // refuses natives in a message handler's context, and the lookup that
+    // called them here broke every teleport, x-handoff-door
+    // 20261024-023055), because a hosted actor's Teleport to a viewer
+    // arrives in the same tick as the DestroyActor that frees its idx and
+    // view, and a lookup deferred to the update found nothing (013234).
+    // Every native, the form lookup and the move, waits for the update.
     const resolvedId = ("idx" in msg && typeof msg.idx === "number") ? this.getIdManager().getId(msg.idx) : this.getMyActorIndex();
-    const resolvedRefr = resolvedId === this.getMyActorIndex() ? Game.getPlayer() : getObjectReference(resolvedId);
-    const resolvedRefrId = resolvedRefr ? resolvedRefr.getFormID() : 0;
+    const resolvedRefrId = resolvedId === this.getMyActorIndex() ? 0 : getLocalRefrIdOfIndex(resolvedId);
     once('update', () => {
       const id = resolvedId;
-      const refr = id === this.getMyActorIndex() ? Game.getPlayer() : ObjectReference.from(Game.getFormEx(resolvedRefrId));
+      const refr = id === this.getMyActorIndex() ? Game.getPlayer() : (resolvedRefrId > 0 ? ObjectReference.from(Game.getFormEx(resolvedRefrId)) : null);
       logTrace(this,
         `Teleporting id`, id, `refrId`, refr?.getFormID().toString(16), `...`,
         msg.pos,

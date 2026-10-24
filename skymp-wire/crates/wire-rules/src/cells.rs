@@ -844,11 +844,12 @@ mod tests {
         assert_eq!(c.follows(), vec![]);
         assert_eq!(c.may_move(&m, 10_000), MoveVerdict::Follow);
         assert_eq!(c.follows(), vec![(STUMP, C1, EAST)]);
-        // judging the way back removes nothing; applying it does
+        // judging the way back removes nothing; applying it does (both past
+        // the settle window, else the return is a stale sample)
         let back = CellMove { sender: C1, actor: STUMP, origin: EAST, dest: RIVERWOOD, adjacent: true, door: false };
-        assert_eq!(c.judge(&back, 10_500), MoveVerdict::Accept);
+        assert_eq!(c.judge(&back, 10_000 + FOLLOW_SETTLE_MS), MoveVerdict::Accept);
         assert_eq!(c.follows(), vec![(STUMP, C1, EAST)]);
-        assert_eq!(c.may_move(&back, 11_000), MoveVerdict::Accept);
+        assert_eq!(c.may_move(&back, 10_000 + FOLLOW_SETTLE_MS + 500), MoveVerdict::Accept);
         assert_eq!(c.follows(), vec![]);
     }
 

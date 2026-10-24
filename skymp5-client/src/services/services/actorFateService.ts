@@ -66,13 +66,13 @@ export class ActorFateService extends ClientListener {
                 if (!actor) {
                     continue;
                 }
-                // a leveled pick the engine rolled is a clone with a runtime
-                // id (ExtraLeveledCreature's base); its re-roll goes through
-                // the resolver and both detours; a plain base is redressed
-                const base = actor.getBaseObject();
-                const leveled = !!base && base.getFormID() >= 0xff000000;
-                const queued = leveled ? this.sp.rerollActor(refrId) : this.sp.redressActor(refrId);
-                logLab("verb:npc-fate", `late fate for ${refrId.toString(16)}: ${leveled ? "reroll" : "redress"} ${queued ? "queued" : "refused"}`);
+                // the export decides on the game thread by the engine's own
+                // mark (ExtraLeveledCreature): a clone is re-rolled through
+                // the detours, a plain base is redressed. The Papyrus
+                // getBaseObject read before answered a clone's placed base,
+                // so no re-roll ever ran (b-npc-respawn 120743)
+                const queued = this.sp.rerollActor(refrId);
+                logLab("verb:npc-fate", `late fate for ${refrId.toString(16)}: engine re-roll or redress ${queued ? "queued" : "refused"}`);
             }
         });
     }

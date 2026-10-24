@@ -46,6 +46,11 @@ public:
   static constexpr uint32_t kFStaggerBlockAttackShieldMult = 0x00055A98;
   static constexpr uint32_t kFStaggerBlockingMult = 0x00015BDD;
   static constexpr uint32_t kIStaggerAttackChance = 0x0010B0DE;
+  // The cell reset hours, as Skyrim.esm holds them (thuum lab/esm.py on
+  // sky-srv, numidium 2026-10-23: 240 and 720; none of the lab's other 93
+  // plugins carries either; thuum docs/verbs/npc-fate.md, the deaths)
+  static constexpr uint32_t kIHoursToRespawnCell = 0x000D3646;
+  static constexpr uint32_t kIHoursToRespawnCellCleared = 0x000D3647;
 
   struct Data
   {

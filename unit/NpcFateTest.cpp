@@ -223,6 +223,23 @@ TEST_CASE("A game-file actor's body lies until the reset hours pass, then "
   p.DestroyActor(kHunter);
 }
 
+// thuum docs/verbs/npc-fate.md (the deaths, D13): the reset hours are the
+// master's GMST iHoursToRespawnCell (240 in Skyrim.esm, lab/esm.py on sky-srv
+// 2026-10-23), never the executable's compiled 72, unless the server setting
+// npcRespawnHours speaks
+TEST_CASE("The reset hours come from the master's GMST unless the server "
+          "setting speaks",
+          "[NpcFate][espm]")
+{
+  auto& p = GetPartOne();
+  const float saved = p.worldState.npcRespawnHours;
+  p.worldState.npcRespawnHours = 0.f;
+  REQUIRE(p.worldState.FateRespawnHours() == 240.f);
+  p.worldState.npcRespawnHours = 1.f;
+  REQUIRE(p.worldState.FateRespawnHours() == 1.f);
+  p.worldState.npcRespawnHours = saved;
+}
+
 // thuum docs/verbs/npc-fate.md (the deaths): a dead game-file actor is a
 // container to the player beside it, the CONT branch's body (occupancy
 // within 512, the record's inventory sent, OpenContainer), so the take and

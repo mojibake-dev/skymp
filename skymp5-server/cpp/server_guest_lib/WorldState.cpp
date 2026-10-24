@@ -8,6 +8,7 @@
 #include "MpObjectReference.h"
 #include "condition_functions/ConditionFunctionFactory.h"
 #include "libespm/CELL.h"
+#include "libespm/GMST.h"
 #include "libespm/GroupUtils.h"
 #include "libespm/RecordFlags.h"
 #include "libespm/WRLD.h"
@@ -1372,18 +1373,26 @@ bool WorldState::IsPersistentReference(uint32_t formId)
   return (res.rec->GetFlags() & espm::RecordFlags::PersistentReference) != 0;
 }
 
-// thuum docs/verbs/npc-fate.md (the deaths): the engine's reset clock. The
-// executable's compiled iHoursToRespawnCell is 72 (REA on sky-re, 2026-10-23,
-// docs/research/m3/re-npc-roll.md section 9); the master's GMST overrides it
-// in game and is read from Skyrim.esm once its record id is in hand (T0 5
-// owed), so until then the compiled default stands, HYPOTHESIS for the
-// number the game plays by. The cleared time (iHoursToRespawnCellCleared)
-// waits for the quests verb; every cell takes the uncleared hours.
-float WorldState::FateRespawnHours() const
+// thuum docs/verbs/npc-fate.md (the deaths, D13): the engine's reset clock,
+// the master's GMST iHoursToRespawnCell (240 in Skyrim.esm; the executable's
+// compiled 72 stands in only for a world without the master, REA on sky-re,
+// docs/research/m3/re-npc-roll.md section 9); the server setting
+// npcRespawnHours overrides it, the lab's knob. The cleared time
+// (iHoursToRespawnCellCleared, 720) waits for the quests verb: every cell
+// takes the uncleared hours.
+float WorldState::FateRespawnHours()
 {
-  constexpr float kCompiledHoursToRespawnCell = 72.f;
   if (npcRespawnHours > 0.f) {
     return npcRespawnHours;
   }
+  if (HasEspm()) {
+    const auto hours =
+      espm::GetData<espm::GMST>(espm::GMST::kIHoursToRespawnCell, this)
+        .intValue;
+    if (hours > 0) {
+      return static_cast<float>(hours);
+    }
+  }
+  constexpr float kCompiledHoursToRespawnCell = 72.f;
   return kCompiledHoursToRespawnCell;
 }

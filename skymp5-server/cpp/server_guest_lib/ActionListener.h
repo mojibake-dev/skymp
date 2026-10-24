@@ -9,6 +9,7 @@
 #include "SpellCastData.h"
 #include "SweetHidePlayerNamesService.h"
 #include "libespm/Loader.h"
+#include <deque>
 #include <map>
 #include <memory>
 #include <utility>
@@ -96,6 +97,22 @@ public:
   // PartOne::OnActorSighting
   virtual void OnActorSightings(const RawMessageData& rawMsgData,
                                 const ActorSightingsMessage& msg);
+
+  // thuum docs/verbs/npc-fate.md (ADR-048's B): a host's report that a
+  // game-file actor it simulates died of something the server has no
+  // number for; taken when the server can check the cause against what it
+  // saw (a hit it numbered, a drop in the host's samples, an activation
+  // beside the body), refused and logged otherwise
+  virtual void OnActorDeath(const RawMessageData& rawMsgData,
+                            const ActorDeathMessage& msg);
+
+  // the activations the server accepted lately, by place: a hazard death's
+  // evidence (ADR-048's B; that a trap's trigger reaches the server as an
+  // activation is a HYPOTHESIS until the lab's trap run)
+  void NoteActivation(const MpObjectReference& target,
+                      std::chrono::steady_clock::time_point now);
+  bool ActivationSeenNear(const MpObjectReference& where, const NiPoint3& pos,
+                          std::chrono::steady_clock::time_point now) const;
 
   virtual void OnFinishSpSnippet(const RawMessageData& rawMsgData,
                                  const FinishSpSnippetMessage& msg);
@@ -191,6 +208,14 @@ private:
   // it hosts); otherwise logs, sends HostStop where that applies, and
   // returns nullptr.
   MpActor* ActorUpdatableBy(uint32_t idx, Networking::UserId userId);
+
+  struct RecentActivation
+  {
+    std::chrono::steady_clock::time_point at;
+    FormDesc cellOrWorld;
+    NiPoint3 pos;
+  };
+  std::deque<RecentActivation> recentActivations;
 
   // The message, as received, to every user listening to the actor. A
   // hosted actor's report is not echoed to the game that sent it (thuum

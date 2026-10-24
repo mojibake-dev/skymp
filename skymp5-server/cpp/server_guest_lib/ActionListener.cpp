@@ -384,6 +384,11 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     actor->SetPos(
       NiPoint3{ msg.data.pos[0], msg.data.pos[1], msg.data.pos[2] },
       SetPosMode::CalledByUpdateMovement);
+    // thuum docs/verbs/npc-fate.md (ADR-048's B): a game-file actor's
+    // heights from its host's samples, a fall report's evidence
+    if (actor->IsFateRespawned()) {
+      actor->RecordHeight(msg.data.pos[2], std::chrono::steady_clock::now());
+    }
     actor->SetAngle(
       NiPoint3{ msg.data.rot[0], msg.data.rot[1], msg.data.rot[2] },
       SetAngleMode::CalledByUpdateMovement);
@@ -1246,6 +1251,12 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
     }
   }
 
+  // thuum docs/verbs/npc-fate.md (ADR-048's B): where things were set off
+  // lately, a hazard death's evidence
+  if (!msg.data.isSecondActivation) {
+    NoteActivation(*targetPtr, std::chrono::steady_clock::now());
+  }
+
   constexpr bool kDefaultProcessingOnlyFalse = false;
   // a hosted caster's activation is its host's report (npc-handoff D6)
   const bool reportedByHost = msg.data.caster != 0x14;
@@ -2098,6 +2109,236 @@ void ActionListener::OnActorSightings(const RawMessageData& rawMsgData,
                             NiPoint3{ s.pos[0], s.pos[1], s.pos[2] },
                             NiPoint3{ s.rot[0], s.rot[1], s.rot[2] });
   }
+}
+
+namespace {
+// thuum docs/verbs/npc-fate.md (ADR-048's B): the bounds a death report is
+// checked within. The windows are the host's reporting lags with room: a
+// hit the server numbered within kDeathHitWindow of the report, a drop of
+// kDeathFallUnits in the host's samples within MpActor::kHeightWindow, an
+// activation within kDeathHazardUnits of the body within
+// kDeathHazardWindow. A body farther than kDeathBodyUnits from the record
+// is refused (a ragdoll's flight fits; another cell does not). The fall
+// bound is a plausibility floor, not the engine's damage rule (that ran on
+// the host): HYPOTHESIS until the lab's fall run reads the drop the engine
+// kills at.
+constexpr auto kDeathHitWindow = std::chrono::milliseconds(3000);
+constexpr auto kDeathHazardWindow = std::chrono::milliseconds(5000);
+constexpr float kDeathFallUnits = 200.f;
+constexpr float kDeathHazardUnits = 512.f;
+constexpr float kDeathBodyUnits = 2048.f;
+
+const char* DeathCauseName(uint32_t cause)
+{
+  switch (cause) {
+    case 0:
+      return "unknown";
+    case 1:
+      return "a fall";
+    case 2:
+      return "a hazard";
+    case 3:
+      return "a script";
+    case 4:
+      return "an actor's hit";
+    default:
+      return "a code the contract does not name";
+  }
+}
+}
+
+void ActionListener::NoteActivation(const MpObjectReference& target,
+                                    std::chrono::steady_clock::time_point now)
+{
+  constexpr size_t kActivationsKept = 64;
+  recentActivations.push_back(
+    RecentActivation{ now, target.GetCellOrWorld(), target.GetPos() });
+  while (recentActivations.size() > kActivationsKept ||
+         (!recentActivations.empty() &&
+          now - recentActivations.front().at > kDeathHazardWindow)) {
+    recentActivations.pop_front();
+  }
+}
+
+bool ActionListener::ActivationSeenNear(
+  const MpObjectReference& where, const NiPoint3& pos,
+  std::chrono::steady_clock::time_point now) const
+{
+  for (const auto& activation : recentActivations) {
+    if (now - activation.at > kDeathHazardWindow) {
+      continue;
+    }
+    if (activation.cellOrWorld != where.GetCellOrWorld()) {
+      continue;
+    }
+    if ((activation.pos - pos).Length() <= kDeathHazardUnits) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
+                                  const ActorDeathMessage& msg)
+{
+  MpActor* reporter = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!reporter) {
+    spdlog::warn("ActionListener::OnActorDeath - user {} has no actor; its "
+                 "report for {:x} ignored",
+                 rawMsgData.userId, msg.refrId);
+    return;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  const NiPoint3 pos{ msg.pos[0], msg.pos[1], msg.pos[2] };
+  // one warn line a minute per actor, the rest counted (OnUpdateMovement's
+  // refusals' shape): a host reports a death once, but a wrong premise
+  // would repeat it at every death the engine deals
+  const auto refuse = [&](const char* code, const std::string& why) {
+    static std::unordered_map<
+      uint32_t, std::pair<std::chrono::steady_clock::time_point, uint32_t>>
+      refusals;
+    auto& [since, count] = refusals[msg.refrId];
+    ++count;
+    if (since.time_since_epoch().count() != 0 &&
+        now - since < std::chrono::minutes(1)) {
+      return;
+    }
+    spdlog::warn("[verb:npc-fate] death report {}: {:x} says {:x} died of {} "
+                 "(cause {}, killer {:x}) at ({:.0f}, {:.0f}, {:.0f}): {}; "
+                 "refused, {} since the last line",
+                 code, reporter->GetFormId(), msg.refrId,
+                 DeathCauseName(msg.cause), msg.cause, msg.killer, pos.x,
+                 pos.y, pos.z, why, count);
+    since = now;
+    count = 0;
+  };
+  if (!partOne.worldState.npcDeathReports) {
+    refuse("E_DEATH_OFF", "npcDeathReports is false (ADR-048's A)");
+    return;
+  }
+  // no load: an actor the server never held is nobody's to report dead
+  auto& form = partOne.worldState.LookupFormByIdNoLoad(msg.refrId);
+  MpActor* actor = form ? form->AsActor() : nullptr;
+  if (!actor) {
+    refuse("E_DEATH_NO_ACTOR", "the server holds no such actor");
+    return;
+  }
+  if (!actor->IsFateRespawned()) {
+    refuse("E_DEATH_PLAYER",
+           "a player's or a runtime actor: its deaths are the server's own "
+           "numbers");
+    return;
+  }
+  const uint32_t simulator = partOne.SimulatorOf(*actor);
+  if (simulator != reporter->GetFormId()) {
+    refuse("E_DEATH_NOT_HOST",
+           fmt::format("{:x} simulates it, not the reporter", simulator));
+    return;
+  }
+  if (actor->IsDead()) {
+    // the server's own kill reached the host first, or a second report:
+    // nothing to do and no warning, the race is the expected one
+    spdlog::info("[verb:npc-fate] death report: {:x} says {:x} died of {}; "
+                 "already dead here, nothing to do",
+                 reporter->GetFormId(), msg.refrId, DeathCauseName(msg.cause));
+    return;
+  }
+  MpActor* killer = nullptr;
+  if (msg.killer != 0) {
+    auto& killerForm = partOne.worldState.LookupFormByIdNoLoad(msg.killer);
+    killer = killerForm ? killerForm->AsActor() : nullptr;
+  }
+  if (!actor->MayDie(killer)) {
+    refuse("E_DEATH_IMMORTAL",
+           "an essential or protected base (the engine's rule, "
+           "MpActor::MayDie)");
+    return;
+  }
+  const float away = (pos - actor->GetPos()).Length();
+  if (!(away <= kDeathBodyUnits)) {
+    refuse("E_DEATH_FAR",
+           fmt::format("the body {:.0f} units from the record (bound {:.0f})",
+                       away, kDeathBodyUnits));
+    return;
+  }
+
+  // the evidence: the cause named is checked against what the server saw
+  const auto hitAgo = actor->HitByAgo(killer ? killer->GetFormId() : 0u, now);
+  const bool hitSeen = hitAgo && *hitAgo <= kDeathHitWindow;
+  const auto drop = actor->DropTo(std::min(pos.z, actor->GetPos().z), now);
+  const bool fallSeen = drop && *drop >= kDeathFallUnits;
+  const bool hazardSeen = ActivationSeenNear(*actor, pos, now);
+  std::string evidence;
+  switch (msg.cause) {
+    case 4:
+      if (!killer) {
+        refuse("E_DEATH_NO_KILLER",
+               "the killer named is no actor the server holds");
+        return;
+      }
+      if (!hitSeen) {
+        refuse("E_DEATH_UNCHECKED",
+               fmt::format("the server saw no hit by {:x} within {} ms",
+                           killer->GetFormId(), kDeathHitWindow.count()));
+        return;
+      }
+      evidence = fmt::format("{:x} hit it {} ms before (the engine's number "
+                             "outran the server's)",
+                             killer->GetFormId(), hitAgo->count());
+      break;
+    case 1:
+      if (!fallSeen) {
+        refuse("E_DEATH_UNCHECKED",
+               fmt::format("the host's samples show {} of a drop, {:.0f} "
+                           "units needed",
+                           drop ? fmt::format("{:.0f} units", *drop)
+                                : std::string("nothing"),
+                           kDeathFallUnits));
+        return;
+      }
+      evidence =
+        fmt::format("a drop of {:.0f} units in the host's samples", *drop);
+      break;
+    case 2:
+      if (!hazardSeen) {
+        refuse("E_DEATH_UNCHECKED",
+               fmt::format("no activation within {:.0f} units in {} ms",
+                           kDeathHazardUnits, kDeathHazardWindow.count()));
+        return;
+      }
+      evidence = "an activation beside the body";
+      break;
+    case 0:
+      if (hitSeen) {
+        evidence = fmt::format("a hit the server numbered {} ms before",
+                               hitAgo->count());
+      } else if (fallSeen) {
+        evidence =
+          fmt::format("a drop of {:.0f} units in the host's samples", *drop);
+      } else if (hazardSeen) {
+        evidence = "an activation beside the body";
+      } else {
+        refuse("E_DEATH_UNCHECKED",
+               "no hit, drop or activation the server saw");
+        return;
+      }
+      break;
+    case 3:
+      refuse("E_DEATH_SCRIPT",
+             "a script's kill is the server's to run (scripted-effects.md), "
+             "not a host's to report");
+      return;
+    default:
+      refuse("E_DEATH_CAUSE", "a cause the contract does not name");
+      return;
+  }
+  spdlog::info("[verb:npc-fate] death report: {:x} died of {} at ({:.0f}, "
+               "{:.0f}, {:.0f}), host {:x}, killer {:x}: {}; the server "
+               "records the death",
+               msg.refrId, DeathCauseName(msg.cause), pos.x, pos.y, pos.z,
+               reporter->GetFormId(), killer ? killer->GetFormId() : 0u,
+               evidence);
+  actor->Kill(killer);
 }
 
 void ActionListener::SendPlayerGlobals(MpActor& actor)
@@ -3578,6 +3819,12 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
   }
   targetActorPtr->ApplyEffects(hitData.source, effects, scale,
                                aggressor->GetFormId(), stream, dualCast);
+  // thuum docs/verbs/npc-fate.md (ADR-048's B): the hit the server
+  // numbered, a death report's evidence (a self cast is no hit taken)
+  if (aggressor != targetActorPtr) {
+    targetActorPtr->NoteHitBy(aggressor->GetFormId(),
+                              std::chrono::steady_clock::now());
+  }
 
   // thuum docs/verbs/stagger.md: a spell's Stagger effect (Unrelenting
   // Force's push) staggers its target by the effect's magnitude, played in
@@ -3784,6 +4031,9 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
     std::vector<espm::ActorValue>{ espm::ActorValue::Health });
   aggressor->SetLastHitTime(targetActor.GetFormId(), currentHitTime);
   targetActor.SetLastHitTakenTime(currentHitTime);
+  // thuum docs/verbs/npc-fate.md (ADR-048's B): the hit the server numbered,
+  // the evidence a death report naming this aggressor is checked against
+  targetActor.NoteHitBy(aggressor->GetFormId(), currentHitTime);
 
   // thuum docs/verbs/marksman.md: the server's own damage for every weapon
   // hit, at info as OnSpellHit's, so a lab run can tell it from what the

@@ -34,6 +34,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <deque>
 #include <functional>
 #include <limits>
 #include <optional>
@@ -111,6 +112,13 @@ struct MpActor::Impl
   // thuum docs/verbs/god-mode.md: TGM and TIM for the session
   bool godMode = false;
   bool immortal = false;
+
+  // thuum docs/verbs/npc-fate.md (ADR-048's B): the hits this actor took,
+  // by aggressor, newest last, and its host's height samples for it within
+  // MpActor::kHeightWindow; a death report's evidence
+  std::vector<std::pair<uint32_t, std::chrono::steady_clock::time_point>>
+    hitsTaken;
+  std::deque<std::pair<std::chrono::steady_clock::time_point, float>> heights;
 
   // thuum docs/verbs/attributes.md: the percentages the server raised that
   // the client has not reported yet (wire-rules attributes); the former
@@ -2179,6 +2187,65 @@ void MpActor::RespawnFated()
                "anew",
                GetFormId());
   RebuildAndRespawn(true, true);
+}
+
+void MpActor::NoteHitBy(uint32_t aggressorId,
+                        std::chrono::steady_clock::time_point now)
+{
+  constexpr size_t kHitsKept = 8;
+  auto& hits = pImpl->hitsTaken;
+  hits.erase(
+    std::remove_if(hits.begin(), hits.end(),
+                   [&](const auto& hit) { return hit.first == aggressorId; }),
+    hits.end());
+  hits.emplace_back(aggressorId, now);
+  if (hits.size() > kHitsKept) {
+    hits.erase(hits.begin());
+  }
+}
+
+std::optional<std::chrono::milliseconds> MpActor::HitByAgo(
+  uint32_t aggressorId, std::chrono::steady_clock::time_point now) const
+{
+  std::optional<std::chrono::milliseconds> ago;
+  for (const auto& [by, at] : pImpl->hitsTaken) {
+    if (aggressorId != 0 && by != aggressorId) {
+      continue;
+    }
+    const auto since =
+      std::chrono::duration_cast<std::chrono::milliseconds>(now - at);
+    if (!ago || since < *ago) {
+      ago = since;
+    }
+  }
+  return ago;
+}
+
+void MpActor::RecordHeight(float z, std::chrono::steady_clock::time_point now)
+{
+  auto& heights = pImpl->heights;
+  heights.emplace_back(now, z);
+  while (!heights.empty() && now - heights.front().first > kHeightWindow) {
+    heights.pop_front();
+  }
+}
+
+std::optional<float> MpActor::DropTo(
+  float z, std::chrono::steady_clock::time_point now) const
+{
+  std::optional<float> top;
+  for (const auto& [at, height] : pImpl->heights) {
+    if (now - at > kHeightWindow) {
+      continue;
+    }
+    if (!top || height > *top) {
+      top = height;
+    }
+  }
+  if (!top) {
+    return std::nullopt;
+  }
+  return *top - z;
 }
 
 bool MpActor::MayDie(MpActor* aggressor)

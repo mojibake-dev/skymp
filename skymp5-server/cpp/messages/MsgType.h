@@ -61,6 +61,8 @@ enum class MsgType : uint8_t
                        // game-file actors the server does not hold
   ActorFate = 51,      // thuum docs/verbs/npc-fate.md (ADR-049): the server's
                        // roll for a placement, ahead of the engine's own
+  ActorDeath = 52,     // thuum docs/verbs/npc-fate.md (ADR-048's B): a host's
+                       // death report for a game-file actor, checked
 
   Max
 };

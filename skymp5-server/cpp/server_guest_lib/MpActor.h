@@ -280,6 +280,22 @@ public:
   // the engine's rule for a game-file base: essential never dies, protected
   // dies to a player's own hand alone; a player's or a runtime actor may
   bool MayDie(MpActor* aggressor);
+  // thuum docs/verbs/npc-fate.md (ADR-048's B, the host's checked death
+  // report): what the server saw of this actor lately, the evidence a
+  // report is checked against. The hits it took, by aggressor, from the
+  // hit reports the server numbered (OnWeaponHit, OnSpellHit); its heights
+  // from its host's movement samples, the last kHeightWindow of them
+  void NoteHitBy(uint32_t aggressorId,
+                 std::chrono::steady_clock::time_point now);
+  // how long since `aggressorId` last hit this actor (any aggressor when
+  // 0); nothing when the server saw no such hit
+  std::optional<std::chrono::milliseconds> HitByAgo(
+    uint32_t aggressorId, std::chrono::steady_clock::time_point now) const;
+  void RecordHeight(float z, std::chrono::steady_clock::time_point now);
+  // the highest sample within the window minus `z`; nothing without samples
+  std::optional<float> DropTo(float z,
+                              std::chrono::steady_clock::time_point now) const;
+  static constexpr std::chrono::seconds kHeightWindow{ 4 };
   void Teleport(const LocationalData& position);
   void SetSpawnPoint(const LocationalData& position);
   LocationalData GetSpawnPoint() const;

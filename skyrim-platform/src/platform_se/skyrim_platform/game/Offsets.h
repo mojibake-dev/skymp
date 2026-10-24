@@ -15,6 +15,14 @@ inline REL::Relocation<std::uintptr_t> VPrint{
 inline REL::Relocation<std::uintptr_t> FrameUpdate{
   RELOCATION_ID(35565, 36564), REL::VariantOffset(0x53, 0x6e, 0x68)
 };
+// thuum docs/verbs/cell-host.md (the quitting host, ADR-047's D12 B): the
+// call WinMain (36544) makes to the engine's shutdown routine (36551) at
+// WinMain+0x1ae, the first instruction after Main::quitGame (Main.h:77) is
+// seen true. AE only: 1.6.1170's ids by `just addr` (0x63e970, 0x641c60),
+// the call site by REA on sky-re 2026-10-24 (CONFIRMED-STATIC); the SE id
+// and offset are unread, and the hook installs on AE runtimes only.
+inline REL::Relocation<std::uintptr_t> QuitShutdownCall{ REL::ID(36544),
+                                                         0x1ae };
 inline REL::Relocation<std::uintptr_t> SendEvent{ RELOCATION_ID(98077,
                                                                 104800) };
 inline REL::Relocation<std::uintptr_t> DrawSheatheWeaponPC{ RELOCATION_ID(

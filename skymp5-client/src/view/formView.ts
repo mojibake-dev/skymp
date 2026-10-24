@@ -543,15 +543,22 @@ export class FormView {
       ModelApplyUtils.applyModelNodeTextureSet(refr, model.setNodeTextureSet);
     }
 
-    // thuum docs/verbs/npc-fate.md (the deaths): a dead record's engine
-    // reference is dead on this seat too, at the bind and again after the
-    // engine's own cell reset stood it up on a re-entry (re-npc-roll.md
-    // section 9); read every two seconds, never per frame (natives cost)
-    if (model.isDead && this.refrId !== 0 && this.refrId !== 0x14 && this.refrId < 0xff000000 && Date.now() >= this.deadCheckAt) {
+    // thuum docs/verbs/npc-fate.md (the deaths): the record's death or life
+    // is this seat's too. A dead record on a live engine reference is killed
+    // (the bind; the engine's own cell reset standing a corpse up on a
+    // re-entry, re-npc-roll.md section 9). A record the server says is alive
+    // (isDead false, said explicitly: a respawn) on a dead engine reference
+    // is resurrected (the respawn's container goes to the host alone, and a
+    // seat that reconnects after the sweep binds a corpse: x-npc-fate-pin
+    // 052150's 2,077-unit "settle" on a dead copy). A record never dead says
+    // nothing (undefined) and leaves a predicted death (ADR-038) alone. Read
+    // every two seconds, never per frame (natives cost).
+    if (model.isDead !== undefined && this.refrId !== 0 && this.refrId !== 0x14 && this.refrId < 0xff000000 && Date.now() >= this.deadCheckAt) {
       this.deadCheckAt = Date.now() + 2000;
       const body = Actor.from(refr);
-      if (body && !body.isDead()) {
-        SpApiInteractor.getControllerInstance().emitter.emit("applyDeathStateEvent", { actor: body, isDead: true });
+      const want = !!model.isDead;
+      if (body && body.isDead() !== want) {
+        SpApiInteractor.getControllerInstance().emitter.emit("applyDeathStateEvent", { actor: body, isDead: want });
       }
     }
 

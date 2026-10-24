@@ -310,12 +310,16 @@ impl Cells {
         }
     }
 
-    /// The report `m` at `now_ms`. The verdict (ADR-047 D6): inside the
-    /// sender's own cell, or into a cell it hosts, Accept; into a cell
-    /// nobody hosts that the sender vouches for (adjacent and loaded by its
-    /// game, or a door), Follow, recorded here; anything else Refuse. A pass
-    /// into another live host's cell is D9, the second slice: Refuse today.
-    pub fn may_move(&mut self, m: &CellMove, now_ms: u64) -> MoveVerdict {
+    /// The verdict for the report `m` without recording anything (ADR-047
+    /// D6): inside the sender's own cell, or into a cell it hosts, Accept;
+    /// into a cell nobody hosts that the sender vouches for (adjacent and
+    /// loaded by its game, or a door), Follow; anything else Refuse, a pass
+    /// into another live host's cell included (D9, the second slice). The
+    /// door's pre-check reads this (x-handoff-door 20261024-001915: a verdict
+    /// that wrote follow rows at the door removed a standing follow before
+    /// the host was looked up, and recorded one before the host had crossed).
+    #[must_use]
+    pub fn judge(&self, m: &CellMove) -> MoveVerdict {
         let CellMove { sender, actor, origin, dest, adjacent, door } = *m;
         if dest == 0 {
             return MoveVerdict::Refuse;
@@ -327,7 +331,6 @@ impl Cells {
         match self.host_of(dest) {
             Some((host, _)) if host == sender => {
                 if simulator == 0 || simulator == sender {
-                    self.follows.remove(&actor);
                     MoveVerdict::Accept
                 } else {
                     MoveVerdict::Refuse
@@ -340,13 +343,29 @@ impl Cells {
                 }
                 let loads = self.players.get(&sender).is_some_and(|p| p.loaded.contains_key(&dest));
                 if (adjacent && loads) || door {
-                    self.follows.insert(actor, Follow { player: sender, cell: dest, since_ms: now_ms });
                     MoveVerdict::Follow
                 } else {
                     MoveVerdict::Refuse
                 }
             }
         }
+    }
+
+    /// The report `m` at `now_ms`: `judge`'s verdict, applied. A Follow is
+    /// recorded (actor to the sender, the destination, now); an Accept into a
+    /// cell the sender hosts ends any follow of the actor.
+    pub fn may_move(&mut self, m: &CellMove, now_ms: u64) -> MoveVerdict {
+        let verdict = self.judge(m);
+        match verdict {
+            MoveVerdict::Follow => {
+                self.follows.insert(m.actor, Follow { player: m.sender, cell: m.dest, since_ms: now_ms });
+            }
+            MoveVerdict::Accept if m.dest != m.origin => {
+                self.follows.remove(&m.actor);
+            }
+            _ => {}
+        }
+        verdict
     }
 
     /// Every follow, by actor id: the actor, its follower and the cell, for
@@ -794,5 +813,25 @@ mod tests {
         d.loaded(C2, RIVERWOOD, 1_000 + COLD_START_MS);
         assert_eq!(d.reach_ranked(C2, &[RIVERWOOD], &[0], 1_000 + COLD_START_MS), vec![]);
         assert_eq!(d.host_of(RIVERWOOD), Some((C1, 1)));
+    }
+
+    #[test]
+    fn judging_a_move_records_nothing_and_applying_it_does() {
+        const EAST: u32 = 0x9733;
+        const STUMP: u32 = 0x1e62b;
+        let mut c = both_in_reach();
+        c.loaded(C1, RIVERWOOD, 1_000);
+        c.loaded(C1, EAST, 1_100);
+        let m = CellMove { sender: C1, actor: STUMP, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false };
+        assert_eq!(c.judge(&m), MoveVerdict::Follow);
+        assert_eq!(c.follows(), vec![]);
+        assert_eq!(c.may_move(&m, 10_000), MoveVerdict::Follow);
+        assert_eq!(c.follows(), vec![(STUMP, C1, EAST)]);
+        // judging the way back removes nothing; applying it does
+        let back = CellMove { sender: C1, actor: STUMP, origin: EAST, dest: RIVERWOOD, adjacent: true, door: false };
+        assert_eq!(c.judge(&back), MoveVerdict::Accept);
+        assert_eq!(c.follows(), vec![(STUMP, C1, EAST)]);
+        assert_eq!(c.may_move(&back, 11_000), MoveVerdict::Accept);
+        assert_eq!(c.follows(), vec![]);
     }
 }

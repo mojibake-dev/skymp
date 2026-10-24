@@ -24,6 +24,7 @@
 #include <spdlog/spdlog.h>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 
 #ifdef AddForm
 #  undef AddForm
@@ -319,6 +320,14 @@ public:
   // runs here for a player, so the ring is rolled at that player's level
   // before any of it is loaded or subscribed
   std::function<void(MpActor&)> onSquareChange;
+  // thuum docs/verbs/npc-fate.md (the deaths): the game-file actors whose
+  // bodies lie waiting for their deadline (MpActor::ScheduleFateRespawn);
+  // PartOne::TickFateRespawns ends them against the game clock
+  std::unordered_set<uint32_t> fateRespawnDue;
+  // the hours a body lies before its respawn: the server setting
+  // npcRespawnHours when set, else the engine's iHoursToRespawnCell
+  float npcRespawnHours = 0.f;
+  float FateRespawnHours() const;
   std::unordered_map<uint32_t, std::map<uint32_t, float>>
     activationChildsByActivationParent;
   std::vector<std::optional<std::chrono::system_clock::time_point>>

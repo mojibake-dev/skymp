@@ -1468,6 +1468,12 @@ void MpObjectReference::GivePickupItemsToActivationSource(
   }
 }
 
+bool MpObjectReference::IsCorpse()
+{
+  auto actor = AsActor();
+  return GetFormId() < 0xff000000 && actor && actor->IsDead();
+}
+
 void MpObjectReference::ProcessActivateNormal(
   MpObjectReference& activationSource, bool reportedByHost)
 {
@@ -1612,7 +1618,11 @@ void MpObjectReference::ProcessActivateNormal(
     } else {
       SetOpen(!IsOpen());
     }
-  } else if (t == espm::CONT::kType && actorActivator) {
+  } else if (actorActivator && (t == espm::CONT::kType || IsCorpse())) {
+    // thuum docs/verbs/npc-fate.md (the deaths): a game-file actor's body is
+    // a container, the CONT branch's own body (occupancy within reach, the
+    // record's inventory, OpenContainer; TakeItem and PutItem on the
+    // server); a live actor's activation stays the host's engine's
     EnsureBaseContainerAdded(loader);
 
     constexpr float kOccupationReach = 512.f;

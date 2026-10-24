@@ -405,6 +405,11 @@ public:
   void OnCellLoaded(MpActor& player, uint32_t cell, bool loaded);
   void RefreshReach(MpActor& player);
   void TickCellHosts(uint64_t nowMs);
+  // thuum docs/verbs/npc-fate.md (the deaths): the bodies whose deadline
+  // (fateDiedAt plus WorldState::FateRespawnHours()) the installed game
+  // clock has passed stand again; once a second from Tick, directly from a
+  // test with the clock it set
+  void TickFateRespawns();
   // thuum docs/verbs/npc-puppet.md (ActorSightings, TES3MP's actor list): a
   // host's engine has a game-file actor the server holds no record of, or
   // holds elsewhere (a resident placed in its house, walked outside by its
@@ -536,6 +541,7 @@ private:
   void TickGameTime();
   void TickFightsEverySecond();
   void TickCellHostsEverySecond();
+  void TickFateRespawnsEverySecond();
   void TickBondsEverySecond();
   // thuum docs/verbs/shadowbond.md (train-28): the proc's records on both
   // and its cast in every game but the caster's; the reverse, with the

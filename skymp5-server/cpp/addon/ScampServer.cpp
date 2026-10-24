@@ -241,6 +241,13 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
     if (serverSettings.find("cellFollow") != serverSettings.end()) {
       partOne->SetFollowEnabled(serverSettings.at("cellFollow").get<bool>());
     }
+    // thuum docs/verbs/npc-fate.md (the deaths): the hours a game-file
+    // actor's body lies before its respawn; unset, the engine's
+    // iHoursToRespawnCell (WorldState::FateRespawnHours)
+    if (serverSettings.find("npcRespawnHours") != serverSettings.end()) {
+      partOne->worldState.npcRespawnHours =
+        serverSettings.at("npcRespawnHours").get<float>();
+    }
 
     if (serverSettings.find("npcEnabled") != serverSettings.end()) {
       bool enabled = serverSettings.at("npcEnabled").get<bool>();

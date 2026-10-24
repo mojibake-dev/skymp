@@ -101,6 +101,9 @@ public:
   const FormDesc& GetCellOrWorld() const;
   const uint32_t& GetBaseId() const;
   const std::string& GetBaseType() const;
+  // thuum docs/verbs/npc-fate.md (the deaths): a dead game-file actor, a
+  // container to the player beside it
+  bool IsCorpse();
   const Inventory& GetInventory() const;
   const bool& IsHarvested() const;
   const bool& IsOpen() const;

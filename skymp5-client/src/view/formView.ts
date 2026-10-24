@@ -62,23 +62,30 @@ export class FormView {
     return FormView.npcHandoff;
   }
   private static npcHandoff: boolean | undefined = undefined;
+  // the record cell an engine reference was last moved into (one attempt
+  // per record cell; the engine's own cell says whether another is due)
+  private movedInto = 0;
 
   update(model: FormModel): void {
     // Other players mutate into PC clones when moving to another location
     if (model.movement) {
       if (!this.lastWorldOrCell)
         this.lastWorldOrCell = model.movement.worldOrCell;
-      if (this.lastWorldOrCell !== model.movement.worldOrCell && this.refrId !== 0 && this.refrId < 0xff000000) {
-        // an engine reference whose record changed cell (a resident through
-        // a door under its host's follow, thuum docs/verbs/npc-handoff.md
-        // D6): the reference is moved into the record's cell as the player's
-        // own cross-cell move is (remoteServer's moveRefrToPosition), never
-        // destroyed; the npcHandoff switch leaves it standing at the door
+      if (this.refrId !== 0 && this.refrId < 0xff000000) {
+        // an engine reference whose record stands in another cell than this
+        // engine has it (a resident through a door under its host's follow,
+        // thuum docs/verbs/npc-handoff.md D6; or a view created after the
+        // record went indoors: x-handoff-door 001915's second seat): the
+        // reference is moved into the record's cell as the player's own
+        // cross-cell move is (remoteServer's moveRefrToPosition), one attempt
+        // per record cell, never destroyed; the npcHandoff switch leaves it
+        // standing where the engine put it
         this.lastWorldOrCell = model.movement.worldOrCell;
-        if (FormView.npcHandoffEnabled()) {
+        if (FormView.npcHandoffEnabled() && this.movedInto !== model.movement.worldOrCell) {
           const refr = ObjectReference.from(Game.getFormEx(this.refrId));
+          const engineCell = refr ? ObjectReferenceEx.getWorldOrCell(refr) : 0;
           const target = Game.getFormEx(model.movement.worldOrCell);
-          if (refr && target) {
+          if (refr && target && engineCell !== 0 && engineCell !== model.movement.worldOrCell) {
             const pos = model.movement.pos;
             const rot = model.movement.rot;
             TESModPlatform.moveRefrToPosition(
@@ -88,7 +95,8 @@ export class FormView {
               pos[0], pos[1], pos[2],
               rot[0] * Math.PI / 180, rot[1] * Math.PI / 180, rot[2] * Math.PI / 180,
             );
-            printConsole(`[verb:npc-handoff] moved ${this.refrId.toString(16)} into ${model.movement.worldOrCell.toString(16)}`);
+            this.movedInto = model.movement.worldOrCell;
+            printConsole(`[verb:npc-handoff] moved ${this.refrId.toString(16)} into ${model.movement.worldOrCell.toString(16)} (the engine had it in ${engineCell.toString(16)})`);
           }
         }
       }

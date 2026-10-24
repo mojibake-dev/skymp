@@ -39,7 +39,7 @@ divergences:
     wire: 1
     reason: SetAV runs through the server's actor value natives on the wire stack (docs/verbs/actor-values.md); the legacy server does not know the command
   - client: c2
-    msg: {t: 25, idx: 2}
+    msg: {t: 25, idx: "refr:ff000002"}
     legacy: 0
     wire: 1
     reason: departure detection, graceful close on the wire against RakNet's timeout

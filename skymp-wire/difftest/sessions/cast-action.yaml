@@ -27,12 +27,12 @@ steps:
   - {client: c2, at_ms: 4000, move: {dx: 60}}
 divergences:
   - client: c2
-    msg: {t: 25, idx: 2}
+    msg: {t: 25, idx: "refr:ff000002"}
     legacy: 0
     wire: 1
     reason: departure detection, graceful close on the wire against RakNet's timeout
   - client: c2
-    msg: {t: 44, idx: 2}
+    msg: {t: 44, idx: "refr:ff000002"}
     legacy: 0
     wire: 3
     reason: the fixed server relays c1's three cast actions to c2's game, whose view performs them on c1's figure (thuum docs/verbs/cast-action.md); the legacy server has no such message

@@ -48,6 +48,20 @@ export const remoteIdToLocalId = (remoteFormId: number): number => {
   return remoteFormId;
 };
 
+// The local form id a form view holds for model index `i`, pure JavaScript
+// (no native call): what a network message handler may read, since Skyrim
+// Platform refuses natives in that context (thuum docs/verbs/npc-handoff.md
+// D6: x-handoff-door 20261024-023055 broke every teleport on a lookup made
+// at message time); the native lookup itself waits for the update.
+export const getLocalRefrIdOfIndex = (i: number): number => {
+  const view = getViewFromStorage();
+  if (!view) {
+    return 0;
+  }
+  const formView = view.getFormViews().getNthFormView(i);
+  return formView ? formView.getLocalRefrId() : 0;
+};
+
 export const getObjectReference = (i: number): ObjectReference | null => {
   const view = getViewFromStorage();
   if (view) {

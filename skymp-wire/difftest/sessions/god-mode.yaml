@@ -27,7 +27,7 @@ steps:
   - {client: c2, at_ms: 4000, move: {dx: -60}}
 divergences:
   - client: c2
-    msg: {t: 25, idx: 2}
+    msg: {t: 25, idx: "refr:ff000002"}
     legacy: 0
     wire: 1
     reason: departure detection, graceful close on the wire against RakNet's timeout
@@ -47,12 +47,12 @@ divergences:
     wire: 1
     reason: c2's hit on god-mode c1 still begins the fight (hostility sync, thuum ADR-023); the legacy server has none
   - client: c1
-    msg: {t: 16, idx: 2, data: {health: 0.96288001537323}}
+    msg: {t: 16, idx: "refr:ff000002", data: {health: 0.96288001537323}}
     legacy: 1
     wire: 0
     reason: the legacy server takes the bare-handed hit's 3.7 percent from c1
   - client: c1
-    msg: {t: 16, idx: 2, data: {health: 1}}
+    msg: {t: 16, idx: "refr:ff000002", data: {health: 1}}
     legacy: 0
     wire: 1
     reason: the fixed server takes nothing from god-mode c1 and sends it its health unchanged

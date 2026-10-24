@@ -6,6 +6,7 @@ import { figureAimHeading } from "../sync/figureAim";
 import { Appearance, applyAppearance } from "../sync/appearance";
 import { isBadMenuShown, applyEquipment, isFigureBase, keepOnlyServerSpells } from "../sync/equipment";
 import { RespawnNeededError } from "../lib/errors";
+import { logTrace } from "../logging";
 import { FormModel } from "./model";
 import { UpdateActionMessage } from "../services/messages/updateActionMessage";
 import { applyMovement } from "../sync/movementApply";
@@ -108,7 +109,7 @@ export class FormView {
               rot[0] * Math.PI / 180, rot[1] * Math.PI / 180, rot[2] * Math.PI / 180,
             );
             this.movedInto = model.movement.worldOrCell;
-            printConsole(`[verb:npc-handoff] moved ${this.refrId.toString(16)} into ${model.movement.worldOrCell.toString(16)} (the engine had it in ${engineCell.toString(16)})`);
+            logTrace("formView", `[verb:npc-handoff] moved ${this.refrId.toString(16)} into ${model.movement.worldOrCell.toString(16)} (the engine had it in ${engineCell.toString(16)})`);
           }
         }
       }
@@ -755,9 +756,7 @@ export class FormView {
         // 1. Place ~90 bots and force them to reequip iron swords to the left hand (rate should be ~50ms)
         // 2. Open your inventory and reequip different items fast
         // 3. After 1-2 minutes close your inventory and see that HUD disappeared
-        if (
-          ac &&
-          !isBadMenuShown() &&
+        if (ac && !ac.isDeleted() && !isBadMenuShown() &&
           Date.now() - this.eqState.lastEqMoment > 500 &&
           Date.now() - this.spawnMoment > -1 &&
           this.spawnMoment > 0

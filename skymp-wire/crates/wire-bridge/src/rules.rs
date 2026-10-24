@@ -1396,6 +1396,9 @@ mod ffi {
         /// A simulator's report moving an actor between cells: 0 Refuse,
         /// 1 Accept, 2 Follow (recorded here) (ADR-047 D6).
         fn may_move(self: &mut Cells, report: &CellMove, now_ms: u64) -> u8;
+        /// `may_move`'s verdict without recording anything (the door's
+        /// pre-check, ADR-047 D6).
+        fn judge_move(self: &Cells, report: &CellMove) -> u8;
         /// Who simulates `actor` standing in `cell`: the host, else the
         /// follower, else 0.
         fn simulator_of(self: &Cells, actor: u32, cell: u32) -> u32;
@@ -2022,6 +2025,22 @@ impl Cells {
     fn reach_ranked(&mut self, player: u32, cells: &[u32], rings: &[u8], now_ms: u64) -> Vec<HostDecision> {
         let decisions = self.0.reach_ranked(player, cells, rings, now_ms);
         host_decisions(&self.0, decisions)
+    }
+
+    fn judge_move(&self, report: &CellMove) -> u8 {
+        let m = cells::CellMove {
+            sender: report.sender,
+            actor: report.actor,
+            origin: report.origin,
+            dest: report.dest,
+            adjacent: report.adjacent,
+            door: report.door,
+        };
+        match self.0.judge(&m) {
+            cells::MoveVerdict::Refuse => 0,
+            cells::MoveVerdict::Accept => 1,
+            cells::MoveVerdict::Follow => 2,
+        }
     }
 
     fn may_move(&mut self, report: &CellMove, now_ms: u64) -> u8 {

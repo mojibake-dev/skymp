@@ -806,6 +806,23 @@ export class RemoteServer extends ClientListener {
     const i = this.getIdManager().getId(msg.idx);
     const form = this.worldModel.forms[i];
     (form as Record<string, unknown>)[msg.propName] = msgData;
+
+    // thuum docs/verbs/npc-fate.md, ADR-048's seam: a game-file actor's death
+    // is the server's word on every seat (the server broadcasts isDead to the
+    // actor's listeners); the relayed sample's isDead no longer kills an
+    // engine reference (movementApply), this does. Idempotent with the
+    // DeathStateContainer's own apply on the host (deathService returns when
+    // the engine already agrees).
+    if (form && msg.propName === 'isDead' && typeof form.refrId === 'number' && form.refrId < 0xff000000) {
+      const engineRefrId = form.refrId;
+      const isDead = !!msgData;
+      once('update', () => {
+        const actor = Actor.from(Game.getFormEx(remoteIdToLocalId(engineRefrId)));
+        if (actor) {
+          this.controller.emitter.emit("applyDeathStateEvent", { actor, isDead });
+        }
+      });
+    }
   }
 
   private onDeathStateContainerMessage(event: ConnectionMessage<DeathStateContainerMessage>): void {

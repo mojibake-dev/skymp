@@ -31,8 +31,11 @@ const main = async () => {
     }
   };
 
-  // spawnDelay should be 0 so just wait a bit
-  await new Promise((resolve) => setTimeout(resolve, 1000));
+  // thuum docs/verbs/npc-fate.md (the deaths): the body loaded dead is
+  // stamped at the load and lies npcRespawnHours (0.0001 h here, the
+  // settings file); the once-a-second sweep stands it up at its placement,
+  // so the wait spans one sweep
+  await new Promise((resolve) => setTimeout(resolve, 2500));
 
   assert.strictEqual(respawned, true);
 

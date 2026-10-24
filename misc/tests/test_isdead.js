@@ -14,6 +14,11 @@ const main = async () => {
     onRespawnCalledWith = { actorId };
   };
 
+  // thuum docs/verbs/npc-fate.md (the deaths): a game-file actor's body
+  // keeps to the server's reset clock (the npcRespawnHours setting, here
+  // 0.0001 h in test_isdead.settings.json; the master's 240 in play), never
+  // the per-actor spawnDelay, which times players alone; the sweep that
+  // stands the body up runs once a second, so the wait below spans one
   mp.set(crabActorId, "spawnDelay", 0);
 
   assert.deepEqual(onDeathCalledWith, null);
@@ -33,7 +38,7 @@ const main = async () => {
   assert.deepEqual(onRespawnCalledWith, null);
   assert.strictEqual(mp.get(crabActorId, "isDead"), true);
 
-  await new Promise((resolve) => setTimeout(resolve, 1));
+  await new Promise((resolve) => setTimeout(resolve, 2500));
 
   assert.deepEqual(onDeathCalledWith, { actorId: crabActorId, killerId: 0 });
   assert.deepEqual(onRespawnCalledWith, { actorId: crabActorId });

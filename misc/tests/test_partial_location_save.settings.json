@@ -1,3 +1,4 @@
 {
-  "npcEnabled": true
+  "npcEnabled": true,
+  "npcRespawnHours": 0.0001
 }

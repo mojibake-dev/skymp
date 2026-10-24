@@ -260,9 +260,19 @@ export class RemoteServer extends ClientListener {
 
   private onTeleportMessage(event: ConnectionMessage<TeleportMessage> | ConnectionMessage<TeleportMessage2>): void {
     const msg = event.message;
+    // thuum docs/verbs/npc-handoff.md D6: the reference is resolved NOW, not
+    // in the deferred update. A hosted actor's Teleport to a viewer arrives
+    // in the same tick as the DestroyActor that frees its idx and view
+    // (the record's re-subscription on the destination's grid), so a
+    // deferred lookup found nothing and the move was skipped (x-handoff-door
+    // 20261024-013234, the door agent's read); the local form id is kept
+    // and the move alone waits for the update.
+    const resolvedId = ("idx" in msg && typeof msg.idx === "number") ? this.getIdManager().getId(msg.idx) : this.getMyActorIndex();
+    const resolvedRefr = resolvedId === this.getMyActorIndex() ? Game.getPlayer() : getObjectReference(resolvedId);
+    const resolvedRefrId = resolvedRefr ? resolvedRefr.getFormID() : 0;
     once('update', () => {
-      const id = ("idx" in msg && typeof msg.idx === "number") ? this.getIdManager().getId(msg.idx) : this.getMyActorIndex();
-      const refr = id === this.getMyActorIndex() ? Game.getPlayer() : getObjectReference(id);
+      const id = resolvedId;
+      const refr = id === this.getMyActorIndex() ? Game.getPlayer() : ObjectReference.from(Game.getFormEx(resolvedRefrId));
       logTrace(this,
         `Teleporting id`, id, `refrId`, refr?.getFormID().toString(16), `...`,
         msg.pos,

@@ -41,14 +41,23 @@ void Demote(RE::Actor& actor)
   // taken no relayed sample yet is blocked too (playtest 33: E on such a
   // puppet opened the engine's dialogue with an AI-off actor, which never
   // answered, and the Dialogue Menu stayed; no Papyrus call at the attach)
-  actor.SetActivationBlocked(true);
   if (!actor.Is3DLoaded()) {
-    actor.EnableAI(false);
-    logger::info("[verb:npc-puppet] puppet {:x}: AI off (no 3D, the bit "
-                 "alone), activation blocked",
+    // thuum docs/verbs/npc-handoff.md D11 (b-npc-handoff-night 092208): an
+    // actor with no 3D is simulated by nobody's engine, and clearing its AI
+    // bit pinned it in an unhosted interior for good: no word reaches a
+    // record nobody subscribes, so no promote ever came, and the morning
+    // never brought the resident out (three of three on that seat, none on
+    // the seat that had not been live for them). It keeps its AI and its
+    // block untouched: the engine's own low-process schedule moves it, the
+    // roster of whichever host it walks in on sights it and the record moves
+    // to the sighter's cell; a copy that wandered this way is rebound and
+    // placed by the server's word when its cell loads again.
+    logger::info("[verb:npc-puppet] {:x} lost with no 3D: left to its "
+                 "schedule, AI and activation untouched (npc-handoff D11)",
                  actor.formID);
     return;
   }
+  actor.SetActivationBlocked(true);
   if (auto* lists = RE::ProcessLists::GetSingleton()) {
     lists->StopCombatAndAlarmOnActor(&actor, false);
   }

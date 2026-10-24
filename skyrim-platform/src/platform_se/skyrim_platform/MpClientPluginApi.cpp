@@ -1,4 +1,5 @@
 #include "MpClientPluginApi.h"
+#include <atomic>
 
 namespace {
 const char* GetPacketTypeName(int32_t type)
@@ -50,6 +51,9 @@ MpClientPlugin* GetMpClientPlugin()
   static MpClientPlugin instance;
   return &instance;
 }
+
+// set by CreateClient, taken by DestroyClientAtQuit
+std::atomic<bool> g_clientCreated{ false };
 }
 
 Napi::Value MpClientPluginApi::GetVersion(const Napi::CallbackInfo& info)
@@ -71,7 +75,19 @@ Napi::Value MpClientPluginApi::CreateClient(const Napi::CallbackInfo& info)
   typedef void (*CreateClient)(const char* hostName, uint16_t port);
   auto f = (CreateClient)GetMpClientPlugin()->GetFunction("CreateClient");
   f(hostName.data(), static_cast<uint16_t>(port));
+  g_clientCreated = true;
   return info.Env().Undefined();
+}
+
+bool MpClientPluginApi::DestroyClientAtQuit()
+{
+  if (!g_clientCreated.exchange(false)) {
+    return false;
+  }
+  typedef void (*DestroyClient)();
+  auto f = (DestroyClient)GetMpClientPlugin()->GetFunction("DestroyClient");
+  f();
+  return true;
 }
 
 Napi::Value MpClientPluginApi::DestroyClient(const Napi::CallbackInfo& info)

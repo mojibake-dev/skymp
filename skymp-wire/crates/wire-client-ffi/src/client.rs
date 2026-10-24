@@ -127,6 +127,10 @@ struct Inbox {
 }
 
 /// A live client: the handle the game holds.
+/// How long `shutdown` waits for the network thread (normally 5 to 10 ms:
+/// one poll to see Close, the disconnect datagram, one last poll).
+const SHUTDOWN_WAIT: Duration = Duration::from_millis(200);
+
 pub struct WireClient {
     inbox: Arc<Mutex<Inbox>>,
     connected: Arc<AtomicBool>,
@@ -248,10 +252,25 @@ impl WireClient {
         self.shutdown();
     }
 
+    /// The network thread gets `Command::Close`, sends the disconnect
+    /// (`run`'s Close arm) and ends within one poll; the wait for it is
+    /// bounded (`SHUTDOWN_WAIT`) because this runs on the game's main
+    /// thread at a quit (thuum docs/verbs/cell-host.md, the quitting host:
+    /// Skyrim Platform's QuitDisconnect thunk) and a wedged socket must
+    /// not hang the quit. A handle dropped unjoined detaches the thread;
+    /// the process's exit ends it.
     fn shutdown(&mut self) {
         let _ = self.commands.try_send(Command::Close);
         if let Some(t) = self.thread.take() {
-            let _ = t.join();
+            let started = Instant::now();
+            while !t.is_finished() && started.elapsed() < SHUTDOWN_WAIT {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            if t.is_finished() {
+                let _ = t.join();
+            } else {
+                drop(t);
+            }
         }
         self.connected.store(false, Ordering::Release);
     }

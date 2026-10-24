@@ -3,6 +3,7 @@
 #include "EventsApi.h"
 #include "FridaHooks.h"
 #include "JsUtils.h"
+#include "MpClientPluginApi.h"
 #include "PapyrusTESModPlatform.h"
 #include "SkyrimPlatform.h"
 #include <mutex>
@@ -58,6 +59,57 @@ struct OnConsoleVPrint
 void InstallOnConsoleVPrintHook()
 {
   Hooks::write_thunk_call<OnConsoleVPrint>(Offsets::Hooks::VPrint.address());
+}
+
+// thuum docs/verbs/cell-host.md (the quitting host, ADR-047's D12 B): the
+// one call WinMain (36544) makes to the engine's shutdown routine (36551)
+// once Main::quitGame is seen true, at WinMain+0x1ae. Every quit sets that
+// byte and passes here on the main thread with the network thread alive:
+// the console's qqq, the main and system menus' Quit, Alt-F4 and the
+// title bar's X (WM_DESTROY), Skyrim Platform's own exitProcess; the engine
+// never calls ExitProcess itself, the CRT does after WinMain returns (REA on
+// sky-re 2026-10-24, CONFIRMED-STATIC; the Frida trace of the verb doc's
+// Dynamic plan is owed). The client is torn down first, so its disconnect
+// datagram goes out before the engine's teardown and the server passes the
+// quitter's cells at once, not at the 4 s stale rule or netcode's 15 s
+// timeout (the 24 s wait of the 2026-10-22 playtest). The teardown's wait
+// is bounded in the client (wire-client-ffi, 200 ms). The shutdown
+// routine's arguments are unread: the four integer-register arguments are
+// forwarded as they came, the result as it returns.
+struct OnQuitShutdown
+{
+  static std::int64_t thunk(std::int64_t a1, std::int64_t a2, std::int64_t a3,
+                            std::int64_t a4)
+  {
+    const auto started = std::chrono::steady_clock::now();
+    bool destroyed = false;
+    try {
+      destroyed = MpClientPluginApi::DestroyClientAtQuit();
+    } catch (std::exception& e) {
+      logger::error("[verb:cell-host] quit: the client's teardown threw: {}",
+                    e.what());
+    }
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now() - started)
+                      .count();
+    logger::info(
+      "[verb:cell-host] quit: {} in {} ms; the engine's shutdown "
+      "follows",
+      destroyed ? "the client disconnected" : "no client to disconnect", ms);
+    return func(a1, a2, a3, a4);
+  };
+  static inline REL::Relocation<decltype(&thunk)> func;
+};
+
+void InstallQuitDisconnectHook()
+{
+  if (!REL::Module::IsAE()) {
+    logger::info("[verb:cell-host] the quit hook installs on AE only; the "
+                 "disconnect waits for netcode's timeout here");
+    return;
+  }
+  Hooks::write_thunk_call<OnQuitShutdown>(
+    Offsets::Hooks::QuitShutdownCall.address());
 }
 
 /**
@@ -372,6 +424,7 @@ void Hooks::Install()
 {
   // InstallOnFrameUpdateHook();
   InstallOnConsoleVPrintHook();
+  InstallQuitDisconnectHook();
   HookVirtualMachineBind();
   InstallPlayerAddTargetHook();
   InstallPlayerHealthDamageHook();

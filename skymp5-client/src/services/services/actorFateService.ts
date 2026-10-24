@@ -34,29 +34,46 @@ export class ActorFateService extends ClientListener {
     }
 
     private onActorFate(event: ConnectionMessage<ActorFateMessage>) {
+        // the table write is the handler's own work and stays here: Fates is a
+        // mutex-guarded table the detours read on the engine's threads, and the
+        // fate has to sit in it before the attach it runs ahead of (a loading
+        // screen attaches the cell before the next update tick fires)
+        const late: number[] = [];
         for (const fate of event.message.fates) {
             this.sp.setActorFate(fate.refrId, fate.baseId, fate.worn);
             const key = `${fate.baseId}:${fate.worn.join(",")}`;
             const before = this.applied.get(fate.refrId);
             this.applied.set(fate.refrId, key);
-            if (!this.enabled || before === key) {
-                continue;
+            if (this.enabled && before !== key) {
+                late.push(fate.refrId);
             }
-            // the late path: the engine has the reference already (the save
-            // around the player at a login, a cell attached ahead of the fate,
-            // a respawn's new roll): its own re-roll goes through the detour
-            const refr = this.sp.Game.getFormEx(fate.refrId);
-            const actor = refr ? this.sp.Actor.from(refr) : null;
-            if (actor) {
+        }
+        if (late.length === 0) {
+            return;
+        }
+        // the late path asks the engine (Game.getFormEx, Actor.from, the base),
+        // so it runs inside the update tick, never in the message handler's
+        // context: a native there broke every teleport on train-40 (acaf4b34,
+        // 2026-10-23); the two exports queue their own game-thread tasks
+        this.controller.once("update", () => {
+            for (const refrId of late) {
+                // the engine has the reference already (the save around the
+                // player at a login, a cell attached ahead of the fate, a
+                // respawn's new roll): its own re-roll goes through the detour
+                const refr = this.sp.Game.getFormEx(refrId);
+                const actor = refr ? this.sp.Actor.from(refr) : null;
+                if (!actor) {
+                    continue;
+                }
                 // a leveled pick the engine rolled is a clone with a runtime
                 // id (ExtraLeveledCreature's base); its re-roll goes through
                 // the resolver and both detours; a plain base is redressed
                 const base = actor.getBaseObject();
                 const leveled = !!base && base.getFormID() >= 0xff000000;
-                const queued = leveled ? this.sp.rerollActor(fate.refrId) : this.sp.redressActor(fate.refrId);
-                logLab("verb:npc-fate", `late fate for ${fate.refrId.toString(16)}: ${leveled ? "reroll" : "redress"} ${queued ? "queued" : "refused"}`);
+                const queued = leveled ? this.sp.rerollActor(refrId) : this.sp.redressActor(refrId);
+                logLab("verb:npc-fate", `late fate for ${refrId.toString(16)}: ${leveled ? "reroll" : "redress"} ${queued ? "queued" : "refused"}`);
             }
-        }
+        });
     }
 
     // the last fate applied per reference (base and worn), so a repeated fate

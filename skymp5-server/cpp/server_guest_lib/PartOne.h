@@ -452,6 +452,18 @@ public:
   // Runs at every square change (RefreshReach).
   void SendFates(MpActor& player, uint32_t cellOrWorld, const NiPoint3& pos);
   static constexpr int16_t kFateRing = 3;
+  // thuum docs/verbs/npc-fate.md (ADR-049 decision 1, the memo's D2): the
+  // level the fate pass rolls `loader`'s fresh squares at, by the server
+  // setting npcRollLevel (WorldState): "loader", the loader's own level (the
+  // engine's input, option A); "party-mean" (the default), the mean, rounded
+  // down, of the levels of the players within kFateRing squares of the
+  // loader's square in the same world or cell, the loader among them, or of
+  // every player online when no near player has a record; "party-min", the
+  // lowest of the same; "fixed", npcRollLevelFixed for everyone (a designed
+  // difficulty). Clamped at 1. The encounter zone's clamp is ADR-049's owed
+  // read.
+  uint16_t FateRollLevel(MpActor& loader, uint32_t cellOrWorld, int16_t sx,
+                         int16_t sy);
   // Every cell the table knows, by cell id, for the lab's reading
   // (mp.get(0, "cellHosts")).
   struct CellHostEntry

@@ -1574,6 +1574,64 @@ void PartOne::RefreshReach(MpActor& player)
                        SteadyNowMs()));
 }
 
+uint16_t PartOne::FateRollLevel(MpActor& loader, uint32_t cellOrWorld,
+                                int16_t sx, int16_t sy)
+{
+  const auto levelOf = [](MpActor& actor) -> std::optional<uint16_t> {
+    const auto record = actor.GetActorValueRecord();
+    if (!record) {
+      return std::nullopt;
+    }
+    return std::max<uint16_t>(1, record->level);
+  };
+  const auto& rule = worldState.npcRollLevel;
+  if (rule == "fixed") {
+    return std::max<uint16_t>(1, worldState.npcRollLevelFixed);
+  }
+  if (rule == "loader") {
+    return levelOf(loader).value_or(1);
+  }
+  // the party: every player online with a record; near, those within
+  // kFateRing squares of the loader's square in its world or cell
+  std::vector<uint16_t> near;
+  std::vector<uint16_t> online;
+  for (Networking::UserId userId = 0; userId <= serverState.maxConnectedId;
+       ++userId) {
+    MpActor* actor = serverState.ActorByUser(userId);
+    if (!actor) {
+      continue;
+    }
+    const auto level = levelOf(*actor);
+    if (!level) {
+      continue;
+    }
+    online.push_back(*level);
+    if (actor->GetCellOrWorld().ToFormId(worldState.espmFiles) !=
+        cellOrWorld) {
+      continue;
+    }
+    const auto ax = static_cast<int16_t>(actor->GetPos().x / 4096);
+    const auto ay = static_cast<int16_t>(actor->GetPos().y / 4096);
+    if (std::abs(ax - sx) <= kFateRing && std::abs(ay - sy) <= kFateRing) {
+      near.push_back(*level);
+    }
+  }
+  const auto& party = near.empty() ? online : near;
+  if (party.empty()) {
+    return levelOf(loader).value_or(1);
+  }
+  if (rule == "party-min") {
+    return *std::min_element(party.begin(), party.end());
+  }
+  // party-mean, and any rule word ScampServer did not recognize (it warns)
+  uint32_t sum = 0;
+  for (const auto level : party) {
+    sum += level;
+  }
+  return std::max<uint16_t>(
+    1, static_cast<uint16_t>(sum / static_cast<uint32_t>(party.size())));
+}
+
 void PartOne::SendFates(MpActor& player, uint32_t cellOrWorld,
                         const NiPoint3& pos)
 {
@@ -1598,11 +1656,10 @@ void PartOne::SendFates(MpActor& player, uint32_t cellOrWorld,
   if (fresh.empty()) {
     return;
   }
-  // the ring's records loaded now, rolled at this player's level (ADR-049
-  // decision 1): the first loader's, read from its actor-value record
-  const auto record = player.GetActorValueRecord();
-  const uint16_t level =
-    record ? std::max<uint16_t>(1, record->level) : uint16_t{ 1 };
+  // the ring's records loaded now, rolled at the level the setting's rule
+  // gives (ADR-049 decision 1 with the memo's D2: the loader's own, the
+  // party's mean or low end, or a number)
+  const uint16_t level = FateRollLevel(player, cellOrWorld, sx, sy);
   worldState.fateLoaderLevel = level;
   worldState.LoadChunksAround(cellOrWorld, sx, sy, kFateRing);
   worldState.fateLoaderLevel.reset();

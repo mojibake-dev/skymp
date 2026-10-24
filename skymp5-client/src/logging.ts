@@ -28,11 +28,12 @@ export function logTrace(service: ClientListener | string, ...rest: unknown[]) {
     printConsole(`Trace in ${typeof service !== "string" ? service.constructor.name : service}:`, ...restProcessed);
 }
 
-// thuum docs/LAB.md: a line the lab can count. printConsole (and logTrace,
-// which wraps it) reaches the in-game console alone; writeLogs reaches
-// Skyrim Platform's log file, the one lab-api's log-count reads (the door
-// probe 20261024-013234 counted none of the console lines). Verb lines
-// meant for a probe go through this, and still print to the console.
+// thuum docs/LAB.md: a line the lab can count. Since lab main 70731404 the
+// driver tees every console line into <client>-console.log and log-count
+// reads it beside skyrim-platform.log, so printConsole is what a probe
+// counts; writeLogs writes Data/Platform/Logs/<plugin>-logs.txt, a file
+// nothing reads, kept here as a second copy. Verb lines meant for a probe
+// go through this.
 export function logLab(tag: string, ...rest: unknown[]) {
     const line = `[${tag}] ${rest.map((item) => (item instanceof Error ? item.stack || item.message : String(item))).join(" ")}`;
     writeLogs("skymp5-client", line);

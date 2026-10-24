@@ -199,6 +199,11 @@ export class RemoteServer extends ClientListener {
         functionChecker = () => !!Game.getPlayer()?.getFurnitureReference();
         factName = "'getFurnitureReference not null'";
         delaySeconds = 1.0;
+      } else if (baseType === FormType.NPC && Actor.from(refr)?.isDead()) {
+        // thuum docs/verbs/npc-fate.md (the deaths): a corpse is a container
+        functionChecker = () => Ui.isMenuOpen("ContainerMenu");
+        factName = "'ContainerMenu open' (a corpse)";
+        delaySeconds = 0.0;
       }
 
       if (functionChecker === null) {

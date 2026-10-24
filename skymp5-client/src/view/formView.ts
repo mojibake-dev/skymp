@@ -134,8 +134,12 @@ export class FormView {
 
 
 
-    // Don't spawn dead actors if not already
-    if (model.isDead) {
+    // Don't spawn dead actors if not already (a copy). An engine reference
+    // binds dead and takes the record's death below (thuum docs/verbs/
+    // npc-fate.md, the deaths: the body on a seat that was not listening at
+    // the kill, and after the engine's own cell reset stood it up)
+    const engineReference = !!model.refrId && model.refrId < 0xff000000;
+    if (model.isDead && !engineReference) {
       if (this.refrId === 0) {
         return;
       }
@@ -456,6 +460,7 @@ export class FormView {
   private lastHarvestedApply = 0;
   private lastOpenApply = 0;
   private isSetNodeTextureSetApplied = false;
+  private deadCheckAt = 0;
   private isSetNodeScaleApplied = false;
 
   // thuum docs/verbs/figure-values.md: the figure carries its player's
@@ -536,6 +541,18 @@ export class FormView {
       ModelApplyUtils.applyModelNodeTextureSet(refr, model.setNodeTextureSet);
     }
 
+    // thuum docs/verbs/npc-fate.md (the deaths): a dead record's engine
+    // reference is dead on this seat too, at the bind and again after the
+    // engine's own cell reset stood it up on a re-entry (re-npc-roll.md
+    // section 9); read every two seconds, never per frame (natives cost)
+    if (model.isDead && this.refrId !== 0 && this.refrId !== 0x14 && this.refrId < 0xff000000 && Date.now() >= this.deadCheckAt) {
+      this.deadCheckAt = Date.now() + 2000;
+      const body = Actor.from(refr);
+      if (body && !body.isDead()) {
+        SpApiInteractor.getControllerInstance().emitter.emit("applyDeathStateEvent", { actor: body, isDead: true });
+      }
+    }
+
     if (
       model.inventory &&
       PlayerCharacterDataHolder.getCrosshairRefId() == this.refrId &&
@@ -543,8 +560,11 @@ export class FormView {
     ) {
       // Do not let actors breaking their equipment via inventory apply
       // However, actually, actors do not have inventory in their models
-      // Except your clone.
-      if (!Actor.from(refr)) {
+      // Except your clone. A dead engine reference is the server's
+      // container (npc-fate.md): its inventory is the record's, applied
+      // before the OpenContainer that follows it
+      const asActor = Actor.from(refr);
+      if (!asActor || (this.refrId < 0xff000000 && asActor.isDead())) {
         ModelApplyUtils.applyModelInventory(refr, model.inventory);
         model.inventory = undefined;
       }

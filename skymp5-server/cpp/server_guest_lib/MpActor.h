@@ -269,6 +269,17 @@ public:
   void Kill(MpActor* killer = nullptr, bool shouldTeleport = false);
   void Respawn(bool shouldTeleport = true);
   void RespawnWithDelay(bool shouldTeleport = true);
+  // thuum docs/verbs/npc-fate.md (the deaths): a game-file actor (an id
+  // under 0xff000000 that is not a player's) keeps to the engine's reset
+  // clock: its body lies from fateDiedAt until WorldState::FateRespawnHours()
+  // later, then stands at its placement rolled anew (PartOne::
+  // TickFateRespawns); a unique base stays dead, the engine's rule
+  bool IsFateRespawned() const;
+  void ScheduleFateRespawn();
+  void RespawnFated();
+  // the engine's rule for a game-file base: essential never dies, protected
+  // dies to a player's own hand alone; a player's or a runtime actor may
+  bool MayDie(MpActor* aggressor);
   void Teleport(const LocationalData& position);
   void SetSpawnPoint(const LocationalData& position);
   LocationalData GetSpawnPoint() const;
@@ -447,6 +458,7 @@ private:
   bool factionsLoaded = false;
 
   void SendAndSetDeathState(bool isDead, bool shouldTeleport);
+  void RebuildAndRespawn(bool shouldTeleport, bool rebuildAlways);
 
   DeathStateContainerMessage GetDeathStateMsg(const LocationalData& position,
                                               bool isDead,

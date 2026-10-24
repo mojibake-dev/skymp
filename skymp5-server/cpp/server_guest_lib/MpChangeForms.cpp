@@ -426,6 +426,9 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
   if (changeForm.fateLevel.has_value()) {
     res["fateLevel"] = *changeForm.fateLevel;
   }
+  if (changeForm.fateDiedAt.has_value()) {
+    res["fateDiedAt"] = *changeForm.fateDiedAt;
+  }
 
   if (!changeForm.templateChain.empty()) {
     res["templateChain"] = ToStringArray(changeForm.templateChain);
@@ -627,6 +630,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
   static const JsonPointer effects("effects");
   static const JsonPointer templateChain("templateChain");
   static const JsonPointer fateLevel("fateLevel");
+  static const JsonPointer fateDiedAt("fateDiedAt");
   static const JsonPointer lastAnimation("lastAnimation");
   static const JsonPointer setNodeTextureSet("setNodeTextureSet");
   static const JsonPointer setNodeScale("setNodeScale");
@@ -838,6 +842,13 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
     uint64_t level = 0;
     ReadEx(element, fateLevel, &level);
     res.fateLevel = static_cast<uint16_t>(std::min<uint64_t>(level, 65535));
+  }
+
+  if (element.at_pointer(fateDiedAt.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    float day = 0.f;
+    ReadEx(element, fateDiedAt, &day);
+    res.fateDiedAt = day;
   }
 
   if (element.at_pointer(templateChain.GetData()).error() ==

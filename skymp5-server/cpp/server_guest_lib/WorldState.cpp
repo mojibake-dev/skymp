@@ -1371,3 +1371,19 @@ bool WorldState::IsPersistentReference(uint32_t formId)
   }
   return (res.rec->GetFlags() & espm::RecordFlags::PersistentReference) != 0;
 }
+
+// thuum docs/verbs/npc-fate.md (the deaths): the engine's reset clock. The
+// executable's compiled iHoursToRespawnCell is 72 (REA on sky-re, 2026-10-23,
+// docs/research/m3/re-npc-roll.md section 9); the master's GMST overrides it
+// in game and is read from Skyrim.esm once its record id is in hand (T0 5
+// owed), so until then the compiled default stands, HYPOTHESIS for the
+// number the game plays by. The cleared time (iHoursToRespawnCellCleared)
+// waits for the quests verb; every cell takes the uncleared hours.
+float WorldState::FateRespawnHours() const
+{
+  constexpr float kCompiledHoursToRespawnCell = 72.f;
+  if (npcRespawnHours > 0.f) {
+    return npcRespawnHours;
+  }
+  return kCompiledHoursToRespawnCell;
+}

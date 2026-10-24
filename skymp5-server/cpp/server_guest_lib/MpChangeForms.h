@@ -124,6 +124,12 @@ public:
   // old roll, level 0 on the wire). An optional field, formVersion kept.
   std::optional<uint16_t> fateLevel;
 
+  // thuum docs/verbs/npc-fate.md (the deaths): the game day a game-file
+  // actor's body fell, from the server's clock; the respawn is due
+  // WorldState::FateRespawnHours() later and a restart recomputes the
+  // deadline from it. Absent while alive. An optional field, formVersion kept.
+  std::optional<float> fateDiedAt;
+
   // Used for PlayAnimation (object reference)
   std::optional<std::string> lastAnimation;
 
@@ -206,9 +212,10 @@ public:
       equipment.ToJson(), actorValues.ToTuple(), healthRespawnPercentage,
       magickaRespawnPercentage, staminaRespawnPercentage, spawnPoint,
       dynamicFields, spawnDelay, learnedSpells, templateChain, fateLevel,
-      lastAnimation, setNodeTextureSet, setNodeScale, displayName, mapMarkers,
-      ingredientEffects, favorites, raceMenuPreset, actorValueRecord,
-      staffRank, runningEffects, shoutRecord, playerGlobals, unresolved);
+      fateDiedAt, lastAnimation, setNodeTextureSet, setNodeScale, displayName,
+      mapMarkers, ingredientEffects, favorites, raceMenuPreset,
+      actorValueRecord, staffRank, runningEffects, shoutRecord, playerGlobals,
+      unresolved);
   }
 
   // The record boundary (thuum docs/DECISIONS.md ADR-043; the map

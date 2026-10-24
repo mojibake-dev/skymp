@@ -23,6 +23,7 @@
 #include "gamemode_events/EatItemEvent.h"
 #include "gamemode_events/ReadBookEvent.h"
 #include "gamemode_events/RespawnEvent.h"
+#include "libespm/NPC_.h"
 #include "libespm/espm.h"
 #include "papyrus-vm/Utils.h"
 #include "script_objects/EspmGameObject.h"
@@ -859,8 +860,9 @@ void MpActor::SetPercentage(espm::ActorValue av, float percentage)
     return;
   }
   if (av == espm::ActorValue::Health && percentage <= 0.f) {
-    if (pImpl->immortal) {
-      // thuum docs/verbs/god-mode.md: TIM, one point left instead of death
+    if (pImpl->immortal || !MayDie(nullptr)) {
+      // thuum docs/verbs/god-mode.md: TIM, one point left instead of death;
+      // the same point for an essential or protected base (npc-fate.md)
       percentage = 1.f / std::max(GetMaximumValues().health, 1.f);
     } else {
       Kill(nullptr);
@@ -894,10 +896,14 @@ void MpActor::SetPercentages(const ActorValues& actorValues,
   if (IsDead() || pImpl->isRespawning) {
     return;
   }
-  const float health = ImmortalHealth(actorValues.healthPercentage);
+  float health = ImmortalHealth(actorValues.healthPercentage);
   if (health == 0.f) {
-    Kill(aggressor);
-    return;
+    if (MayDie(aggressor)) {
+      Kill(aggressor);
+      return;
+    }
+    // essential, or protected and not a player's hand: one point left
+    health = 1.f / std::max(GetMaximumValues().health, 1.f);
   }
   // a value the server raises holds against the client's reports until one
   // reaches it (thuum docs/verbs/attributes.md); a lowered one needs no
@@ -2007,6 +2013,13 @@ void MpActor::RespawnWithDelay(bool shouldTeleport)
   if (pImpl->isRespawning) {
     return;
   }
+  // thuum docs/verbs/npc-fate.md (the deaths): a game-file actor's body keeps
+  // to the engine's reset clock in game hours, never a wall delay; the
+  // deadline lives on the record and PartOne's sweep ends it
+  if (IsFateRespawned()) {
+    ScheduleFateRespawn();
+    return;
+  }
   pImpl->isRespawning = true;
 
   ++pImpl->respawnTimerIndex;
@@ -2022,68 +2035,10 @@ void MpActor::RespawnWithDelay(bool shouldTeleport)
       if (worldState->LookupFormById(formId).get() == this) {
         bool isLatestRespawn = respawnTimerIndex == pImpl->respawnTimerIndex;
         if (isLatestRespawn) {
-          // This is implemented here, not in MpActor::Respawn because we don't
-          // want inventory to be re-added in case of artificial resurrect from
-          // the gamemode
-
-          // This will do nothing if death item resolved to no items
-          auto deathItem = EvaluateDeathItem();
-          if (deathItem.empty()) {
-            spdlog::info("MpActor::RespawnWithDelay {:x} - death item "
-                         "resolved to no items, keeping inventory",
-                         GetFormId());
-          } else {
-            spdlog::info("MpActor::RespawnWithDelay {:x} - death item "
-                         "resolved to {} items, re-adding base inventory",
-                         GetFormId(), deathItem.size());
-
-            if (!worldState->HasEspm()) {
-              spdlog::error(
-                "MpActor::RespawnWithDelay {:x} - no espm attached",
-                GetFormId());
-            } else {
-              Inventory inventory = GetInventory();
-              Inventory inventoryToKeep;
-              for (auto& entry : inventory.entries) {
-                if (worldState->HasKeyword(entry.baseId, "SweetCantDrop")) {
-                  inventoryToKeep.entries.push_back(entry);
-                }
-              }
-              // thuum docs/verbs/npc-fate.md (ADR-049 decision 2): the
-              // respawn re-rolls the chain and the outfit at the record's
-              // level, as the engine re-rolls at a cell reset, and the fate
-              // is sent again
-              const auto fateLevel = ChangeForm().fateLevel;
-              EditChangeForm(
-                [&](MpChangeForm& changeForm) {
-                  changeForm.inv = inventoryToKeep;
-                  changeForm.baseContainerAdded = false;
-                  if (fateLevel.has_value()) {
-                    changeForm.templateChain.clear();
-                  }
-                },
-                Mode::NoRequestSave);
-              if (fateLevel.has_value()) {
-                worldState->fateLoaderLevel = fateLevel;
-                EnsureTemplateChainEvaluated(worldState->GetEspm(),
-                                             Mode::NoRequestSave);
-              }
-              EnsureBaseContainerAdded(worldState->GetEspm());
-              worldState->fateLoaderLevel.reset();
-              if (fateLevel.has_value() && worldState->onActorFate) {
-                worldState->onActorFate(*this);
-              }
-              spdlog::info("MpActor::RespawnWithDelay {:x} - {} inventory "
-                           "entries with keyword kept",
-                           GetFormId(), inventoryToKeep.entries.size());
-            }
-          }
-
-          // Do actual respawn
           spdlog::info("MpActor::RespawnWithDelay {:x} - finally, respawn "
                        "after {} seconds",
                        GetFormId(), respawnTime);
-          Respawn(shouldTeleport);
+          RebuildAndRespawn(shouldTeleport, false);
         }
       }
     });
@@ -2099,6 +2054,140 @@ void MpActor::Respawn(bool shouldTeleport)
 
   RespawnEvent respawnEvent(this, shouldTeleport);
   respawnEvent.Fire(GetParent());
+}
+
+void MpActor::RebuildAndRespawn(bool shouldTeleport, bool rebuildAlways)
+{
+  auto worldState = GetParent();
+  if (!worldState) {
+    return;
+  }
+  // This is implemented here, not in MpActor::Respawn because we don't
+  // want inventory to be re-added in case of artificial resurrect from
+  // the gamemode
+
+  // This will do nothing if death item resolved to no items
+  auto deathItem = EvaluateDeathItem();
+  if (deathItem.empty() && !rebuildAlways) {
+    spdlog::info("MpActor::RespawnWithDelay {:x} - death item "
+                 "resolved to no items, keeping inventory",
+                 GetFormId());
+  } else {
+    spdlog::info("MpActor::RespawnWithDelay {:x} - death item "
+                 "resolved to {} items, re-adding base inventory",
+                 GetFormId(), deathItem.size());
+
+    if (!worldState->HasEspm()) {
+      spdlog::error("MpActor::RespawnWithDelay {:x} - no espm attached",
+                    GetFormId());
+    } else {
+      Inventory inventory = GetInventory();
+      Inventory inventoryToKeep;
+      for (auto& entry : inventory.entries) {
+        if (worldState->HasKeyword(entry.baseId, "SweetCantDrop")) {
+          inventoryToKeep.entries.push_back(entry);
+        }
+      }
+      // thuum docs/verbs/npc-fate.md (ADR-049 decision 2): the
+      // respawn re-rolls the chain and the outfit at the record's
+      // level, as the engine re-rolls at a cell reset, and the fate
+      // is sent again
+      const auto fateLevel = ChangeForm().fateLevel;
+      EditChangeForm(
+        [&](MpChangeForm& changeForm) {
+          changeForm.inv = inventoryToKeep;
+          changeForm.baseContainerAdded = false;
+          if (fateLevel.has_value()) {
+            changeForm.templateChain.clear();
+          }
+        },
+        Mode::NoRequestSave);
+      if (fateLevel.has_value()) {
+        worldState->fateLoaderLevel = fateLevel;
+        EnsureTemplateChainEvaluated(worldState->GetEspm(),
+                                     Mode::NoRequestSave);
+      }
+      EnsureBaseContainerAdded(worldState->GetEspm());
+      worldState->fateLoaderLevel.reset();
+      if (fateLevel.has_value() && worldState->onActorFate) {
+        worldState->onActorFate(*this);
+      }
+      spdlog::info("MpActor::RespawnWithDelay {:x} - {} inventory "
+                   "entries with keyword kept",
+                   GetFormId(), inventoryToKeep.entries.size());
+    }
+  }
+
+  Respawn(shouldTeleport);
+}
+
+bool MpActor::IsFateRespawned() const
+{
+  return GetFormId() < 0xff000000 && !IsCreatedAsPlayer();
+}
+
+void MpActor::ScheduleFateRespawn()
+{
+  auto worldState = GetParent();
+  if (!worldState) {
+    return;
+  }
+  pImpl->isRespawning = true;
+  if (!ChangeForm().fateDiedAt.has_value()) {
+    const float day =
+      worldState->gameTime ? worldState->gameTime().daysPassed : 0.f;
+    EditChangeForm(
+      [&](MpChangeForm& changeForm) { changeForm.fateDiedAt = day; });
+  }
+  const float diedAt = *ChangeForm().fateDiedAt;
+  bool unique = false;
+  if (worldState->HasEspm() && GetBaseType() == "NPC_") {
+    unique = espm::GetData<espm::NPC_>(GetBaseId(), worldState).isUnique;
+  }
+  if (unique) {
+    spdlog::info("[verb:npc-fate] {:x} died at day {:.4f}: a unique base, "
+                 "the body stays (the engine's rule)",
+                 GetFormId(), diedAt);
+    return;
+  }
+  const float hours = worldState->FateRespawnHours();
+  worldState->fateRespawnDue.insert(GetFormId());
+  spdlog::info("[verb:npc-fate] {:x} died at day {:.4f}; the body lies until "
+               "day {:.4f} ({} h)",
+               GetFormId(), diedAt, diedAt + hours / 24.f, hours);
+}
+
+void MpActor::RespawnFated()
+{
+  if (!IsDead()) {
+    return;
+  }
+  EditChangeForm(
+    [&](MpChangeForm& changeForm) { changeForm.fateDiedAt.reset(); },
+    Mode::NoRequestSave);
+  spdlog::info("[verb:npc-fate] {:x} stands again at its placement, rolled "
+               "anew",
+               GetFormId());
+  RebuildAndRespawn(true, true);
+}
+
+bool MpActor::MayDie(MpActor* aggressor)
+{
+  if (!IsFateRespawned()) {
+    return true;
+  }
+  auto worldState = GetParent();
+  if (!worldState || !worldState->HasEspm() || GetBaseType() != "NPC_") {
+    return true;
+  }
+  const auto npc = espm::GetData<espm::NPC_>(GetBaseId(), worldState);
+  if (npc.isEssential) {
+    return false;
+  }
+  if (npc.isProtected) {
+    return aggressor && aggressor->IsCreatedAsPlayer();
+  }
+  return true;
 }
 
 void MpActor::Teleport(const LocationalData& position)

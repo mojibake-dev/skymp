@@ -222,6 +222,7 @@ struct PartOne::Impl
   // the fights between players (thuum docs/verbs/hostility-sync.md, ADR-023)
   rust::Box<skymp::rules::Fights> fights = skymp::rules::new_fights();
   std::chrono::steady_clock::time_point lastFightsTick;
+  std::chrono::steady_clock::time_point lastFateRespawnsTick;
 
   // the cell host table (thuum docs/verbs/cell-host.md, ADR-035) and each
   // player's last grid square (worldOrCell, floor x, floor y), so its reach
@@ -320,6 +321,7 @@ void PartOne::Tick()
   TickFightsEverySecond();
   TickBondsEverySecond();
   TickCellHostsEverySecond();
+  TickFateRespawnsEverySecond();
   worldState.Tick();
 }
 
@@ -1740,6 +1742,50 @@ void PartOne::TickCellHostsEverySecond()
   }
   pImpl->lastCellsTick = now;
   TickCellHosts(SteadyNowMs());
+}
+
+void PartOne::TickFateRespawnsEverySecond()
+{
+  const auto now = std::chrono::steady_clock::now();
+  if (now - pImpl->lastFateRespawnsTick < std::chrono::seconds(1)) {
+    return;
+  }
+  pImpl->lastFateRespawnsTick = now;
+  TickFateRespawns();
+}
+
+void PartOne::TickFateRespawns()
+{
+  if (worldState.fateRespawnDue.empty()) {
+    return;
+  }
+  const float day =
+    worldState.gameTime ? worldState.gameTime().daysPassed : 0.f;
+  const float hours = worldState.FateRespawnHours();
+  std::vector<uint32_t> dropped;
+  std::vector<uint32_t> due;
+  for (const auto id : worldState.fateRespawnDue) {
+    auto& form = worldState.LookupFormByIdNoLoad(id);
+    MpActor* actor = form ? form->AsActor() : nullptr;
+    if (!actor || !actor->IsDead() ||
+        !actor->GetChangeForm().fateDiedAt.has_value()) {
+      dropped.push_back(id);
+      continue;
+    }
+    if (day >= *actor->GetChangeForm().fateDiedAt + hours / 24.f) {
+      due.push_back(id);
+    }
+  }
+  for (const auto id : dropped) {
+    worldState.fateRespawnDue.erase(id);
+  }
+  for (const auto id : due) {
+    worldState.fateRespawnDue.erase(id);
+    auto& form = worldState.LookupFormByIdNoLoad(id);
+    if (MpActor* actor = form ? form->AsActor() : nullptr) {
+      actor->RespawnFated();
+    }
+  }
 }
 
 void PartOne::SetRoundTripSource(

@@ -1773,7 +1773,8 @@ PartOne::MoveVerdict PartOne::WouldMoveActor(const MpActor& sender,
     move->adjacent = false;
     move->door = false;
   }
-  return static_cast<MoveVerdict>(pImpl->cells->judge_move(*move));
+  return static_cast<MoveVerdict>(
+    pImpl->cells->judge_move(*move, SteadyNowMs()));
 }
 
 uint32_t PartOne::SimulatorOf(const MpActor& actor) const

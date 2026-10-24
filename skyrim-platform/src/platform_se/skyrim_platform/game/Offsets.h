@@ -91,6 +91,12 @@ inline REL::Relocation<std::uintptr_t> ActorMovementStep{ REL::ID(37356) };
 // entered at the load.
 inline REL::Relocation<std::uintptr_t> LeveledRoll{ REL::ID(14752) };
 inline REL::Relocation<std::uintptr_t> OutfitResolve{ REL::ID(16155) };
+// thuum docs/verbs/npc-fate.md, the hands: the container-path adder every
+// CNTO leveled roll passes through (re-npc-roll.md section 11, REA on
+// sky-re 2026-10-24; `just addr 16128` 0x236890 on 1.6.1170), `void
+// (InventoryChanges*, BSScrapArray<CALCED_OBJECT>*, uint32 ordinal,
+// BGSOutfit*)`, outfit null on the container path
+inline REL::Relocation<std::uintptr_t> ContainerAdd{ REL::ID(16128) };
 inline REL::Relocation<std::uintptr_t> ApplyMasksToRenderTargets{
   RELOCATION_ID(26454, 27040)
 };

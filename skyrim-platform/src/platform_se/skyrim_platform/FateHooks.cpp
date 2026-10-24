@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <vector>
 
 // thuum docs/verbs/npc-fate.md (ADR-046 decision 1, ADR-049): the two detours
 // that make the engine roll what the server rolled, docs/research/m3/
@@ -329,6 +330,98 @@ Fates::Dressing Fates::AddWornTagged(RE::InventoryChanges* changes,
   return result;
 }
 
+// (d) 16128, the container-path adder (re-npc-roll.md section 11; its callers
+// and arguments CONFIRMED-STATIC, unnamed in CommonLibSSE-NG): `void (RE::
+// InventoryChanges* changes, RE::BSScrapArray<RE::CALCED_OBJECT>* picks,
+// std::uint32_t ordinal, RE::BGSOutfit* outfit)`, called by InitLeveledItems
+// 16129 with outfit null for each CNTO leveled entry's roll (the rows the
+// per-entry roll 14751 wrote, which carries no owner) and by 16155 with the
+// init's outfit (OutfitResolveReplacement's path, left alone here). The
+// engine's own dresser (418622) equips the best weapon by score over the
+// base's and the added entries, so a server weapon merely added competes
+// with the engine's roll and loses to a better one (run 062856: the engine's
+// steel sword over the server's iron mace): the robust shape makes the
+// inventory the server's here. For a fated owner on the container path the
+// WEAP rows (the base's weapon list, LItemBanditWeapon1H for a bandit,
+// section 10) are dropped and the fate's worn WEAP forms written in their
+// place (count 1, the pads written as the 14752 detour does), once per init
+// pass (the first weapon-bearing ordinal arms, later ones only drop: the
+// rare second weapon of a loot list); then the original runs and tags them
+// as the engine would (the ordinal, the count, the entry, the change flag).
+// Rows that are not weapons (gold, loot) stay the engine's: the corpse's
+// menu is the server's inventory. Re-asked at every re-init (the first
+// InitItemImpl, the attach's ResetInventory, SetOutfit), idempotent like
+// 16155's. HYPOTHESIS until x-npc-fate-outfit v3 holds the worn equality
+// with the hands counted.
+using ContainerAddFn = void (*)(RE::InventoryChanges* changes,
+                                RE::BSScrapArray<RE::CALCED_OBJECT>* picks,
+                                std::uint32_t ordinal, RE::BGSOutfit* outfit);
+ContainerAddFn g_containerAddOriginal = nullptr;
+
+// the owner armed in the current init pass and at which ordinal (the pass
+// runs on one thread, its ordinals rising)
+thread_local std::uint32_t t_armedOwner = 0;
+thread_local std::uint32_t t_armedOrdinal = 0;
+
+void ContainerAddReplacement(RE::InventoryChanges* changes,
+                             RE::BSScrapArray<RE::CALCED_OBJECT>* picks,
+                             std::uint32_t ordinal, RE::BGSOutfit* outfit)
+{
+  Fates::Fate fate;
+  // InventoryChanges::owner (include/RE/I/InventoryChanges.h:64)
+  if (outfit || !Fates::Enabled() || !changes || !picks || !changes->owner ||
+      !Fates::Get(changes->owner->formID, fate)) {
+    return g_containerAddOriginal(changes, picks, ordinal, outfit);
+  }
+  bool hadWeapon = false;
+  for (const auto& row : *picks) {
+    // TESForm::IsWeapon (include/RE/T/TESForm.h:347)
+    if (row.form && row.form->IsWeapon()) {
+      hadWeapon = true;
+      break;
+    }
+  }
+  if (!hadWeapon) {
+    return g_containerAddOriginal(changes, picks, ordinal, outfit);
+  }
+  const auto ownerId = changes->owner->formID;
+  const bool arm = !(t_armedOwner == ownerId && ordinal > t_armedOrdinal);
+  std::vector<RE::CALCED_OBJECT> kept;
+  std::size_t dropped = 0;
+  for (const auto& row : *picks) {
+    if (row.form && row.form->IsWeapon()) {
+      ++dropped;
+    } else {
+      kept.push_back(row);
+    }
+  }
+  picks->clear();
+  for (const auto& row : kept) {
+    picks->emplace_back() = row;
+  }
+  std::size_t written = 0;
+  if (arm) {
+    for (const auto id : fate.worn) {
+      auto* weapon = RE::TESForm::LookupByID<RE::TESObjectWEAP>(id);
+      if (!weapon) {
+        continue;
+      }
+      auto& pick = picks->emplace_back();
+      pick.form = weapon;
+      pick.count = 1;
+      pick.pad0A = 0;
+      pick.pad0C = 0;
+      ++written;
+    }
+    t_armedOwner = ownerId;
+    t_armedOrdinal = ordinal;
+  }
+  logger::info("[verb:npc-fate] armed {:x} from the server's roll at entry "
+               "{}: {} engine weapon(s) dropped, {} of the server's written",
+               ownerId, ordinal, dropped, written);
+  return g_containerAddOriginal(changes, picks, ordinal, outfit);
+}
+
 void Fates::InstallHooks()
 {
   if (!REL::Module::IsAE()) {
@@ -343,7 +436,12 @@ void Fates::InstallHooks()
     handler->Replace(Offsets::Hooks::OutfitResolve.address(),
                      reinterpret_cast<void*>(&OutfitResolveReplacement),
                      reinterpret_cast<void**>(&g_outfitResolveOriginal));
+  const bool container =
+    handler->Replace(Offsets::Hooks::ContainerAdd.address(),
+                     reinterpret_cast<void*>(&ContainerAddReplacement),
+                     reinterpret_cast<void**>(&g_containerAddOriginal));
   logger::info("[verb:npc-fate] detours installed, inert until "
-               "setActorFateEnabled(true): leveled roll {}, outfit resolve {}",
-               roll, outfit);
+               "setActorFateEnabled(true): leveled roll {}, outfit resolve "
+               "{}, container add {}",
+               roll, outfit, container);
 }

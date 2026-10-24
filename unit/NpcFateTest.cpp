@@ -283,6 +283,11 @@ TEST_CASE("A dead game-file actor is a container to the player beside it",
   actor->Kill(nullptr);
   REQUIRE(actor->IsDead());
   actor->AddItem(kGold, 3);
+  // the shared world: neither inventory starts empty (the looter held 140
+  // gold in CI), so the take is read as a difference
+  const auto corpseGold = actor->GetInventory().GetItemCount(kGold);
+  const auto looterGold = looter.GetInventory().GetItemCount(kGold);
+  REQUIRE(corpseGold >= 3);
   p.Messages().clear();
   actor->Activate(looter);
   bool inventorySent = false;
@@ -297,8 +302,8 @@ TEST_CASE("A dead game-file actor is a container to the player beside it",
   gold.baseId = kGold;
   gold.count = 3;
   actor->TakeItem(looter, gold);
-  REQUIRE(looter.GetInventory().GetItemCount(kGold) == 3);
-  REQUIRE(actor->GetInventory().GetItemCount(kGold) == 0);
+  REQUIRE(looter.GetInventory().GetItemCount(kGold) == looterGold + 3);
+  REQUIRE(actor->GetInventory().GetItemCount(kGold) == corpseGold - 3);
 
   actor->Respawn(false);
   p.worldState.fateRespawnDue.erase(kPredator);

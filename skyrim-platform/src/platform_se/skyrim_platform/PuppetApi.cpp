@@ -192,6 +192,35 @@ Napi::Value PuppetApi::SetPuppet(const Napi::CallbackInfo& info)
   return Napi::Boolean::New(info.Env(), true);
 }
 
+Napi::Value PuppetApi::ReleasePuppet(const Napi::CallbackInfo& info)
+{
+  const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  if (actorFormId == 0 || actorFormId == 0x14) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  // the flag off first: the detours stop skipping its step from this frame
+  Puppets::Set(actorFormId, false);
+  g_nativeCallRequirements.gameThrQ->AddTask([actorFormId](Viet::Void) {
+    auto* pActor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
+    if (!pActor) {
+      logger::warn("[verb:npc-puppet] releasePuppet({:x}): no such actor",
+                   actorFormId);
+      return;
+    }
+    // thuum docs/verbs/npc-handoff.md D11: an unloaded puppet is simulated
+    // by nobody, so its AI bit comes back on (the engine's own schedule
+    // moves it; Actor::EnableAI writes the bit without a controller,
+    // src/RE/A/Actor.cpp:230-240) and its block comes off; no package
+    // evaluation on an actor with no process
+    pActor->SetActivationBlocked(false);
+    pActor->EnableAI(true);
+    logger::info("[verb:npc-puppet] released {:x}: AI on, flag and block "
+                 "off, left to its schedule (3D loaded {})",
+                 actorFormId, pActor->Is3DLoaded());
+  });
+  return Napi::Boolean::New(info.Env(), true);
+}
+
 Napi::Value PuppetApi::IsPuppet(const Napi::CallbackInfo& info)
 {
   const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");

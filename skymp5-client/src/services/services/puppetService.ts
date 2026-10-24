@@ -190,6 +190,17 @@ export class PuppetService extends ClientListener {
         if (!this.enabled || localId === 0x14 || this.puppets.has(localId)) {
             return;
         }
+        // thuum docs/verbs/npc-handoff.md D11 (b-npc-handoff-night 092208 and
+        // 114904): an actor with no 3D is simulated by nobody's engine and no
+        // word reaches a record nobody subscribes, so it is left to its own
+        // schedule: no flag (the detours would skip its movement step once
+        // it loads), no set entry (the roster must sight it), no AI change;
+        // the server's word rebinds it when its cell loads again
+        const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(localId));
+        if (refr && !refr.is3DLoaded()) {
+            logTrace(this, `${localId.toString(16)} lost with no 3D: left to its schedule (npc-handoff D11)`);
+            return;
+        }
         if (!this.sp.setPuppet(localId, true)) {
             return;
         }

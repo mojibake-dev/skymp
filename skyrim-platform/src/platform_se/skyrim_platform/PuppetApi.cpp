@@ -52,8 +52,13 @@ void Demote(RE::Actor& actor)
     // roster of whichever host it walks in on sights it and the record moves
     // to the sighter's cell; a copy that wandered this way is rebound and
     // placed by the server's word when its cell loads again.
+    // the flag the export set ahead of this task comes off too: a flagged
+    // actor has its movement step skipped by the detours once the engine
+    // processes it (PuppetHooks.cpp), which would pin it the moment it loads
+    Puppets::Set(actor.formID, false);
     logger::info("[verb:npc-puppet] {:x} lost with no 3D: left to its "
-                 "schedule, AI and activation untouched (npc-handoff D11)",
+                 "schedule, AI, activation and flag untouched (npc-handoff "
+                 "D11)",
                  actor.formID);
     return;
   }

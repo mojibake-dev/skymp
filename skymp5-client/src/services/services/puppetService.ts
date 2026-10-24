@@ -60,6 +60,23 @@ export class PuppetService extends ClientListener {
                 this.ensurePuppet(refr);
             }
         }
+        // thuum docs/verbs/npc-handoff.md D11 (b-npc-handoff-night 092208,
+        // 114904): a puppet this engine no longer loads (the player walked
+        // away, the server's Teleport moved it into a house this engine has
+        // not attached, a cell detached) is simulated by nobody, and no word
+        // reaches a record nobody subscribes; AI off, it would never run its
+        // schedule, never be sighted, never come out. Released: the flag
+        // off, the AI and activation back on, left to the engine's own
+        // schedule; this poll makes it a puppet again within pollMs when it
+        // loads here and this seat does not host it
+        for (const id of Array.from(this.puppets)) {
+            const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(id));
+            if (refr && !refr.is3DLoaded()) {
+                this.sp.releasePuppet(id);
+                this.puppets.delete(id);
+                logTrace(this, `released ${id.toString(16)}: no 3D here, left to its schedule (npc-handoff D11)`);
+            }
+        }
     }
 
     // Whether this game switched the actor's AI off (by its local form id).

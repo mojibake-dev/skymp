@@ -164,6 +164,13 @@ export class PuppetService extends ClientListener {
             ac.setHeadTracking(true);
         }
         this.sp.setPuppet(id, false);
+        if (ac && id < 0xff000000 && ac.isDead()) {
+            // thuum docs/verbs/npc-fate.md (the deaths): a corpse stays the
+            // server's container on its new host; the promote lifted the
+            // puppet's block, the body's goes back on (deathService puts it
+            // on at the kill, Resurrect's path takes it off)
+            ac.blockActivation(true);
+        }
         this.puppets.delete(id);
         logTrace(this, `live ${id.toString(16)}`);
     }

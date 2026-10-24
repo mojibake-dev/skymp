@@ -149,6 +149,14 @@ export class DeathService extends ClientListener {
     } else {
       actor.endDeferredKill();
       actor.kill(killer);
+      if (actor.getFormID() < 0xff000000) {
+        // thuum docs/verbs/npc-fate.md (the deaths): the body is the
+        // server's container, its activation blocked as a CONT's is
+        // (dealWithRef): the engine's own loot menu never opens ahead of the
+        // server's inventory and OpenContainer, while the activate hook
+        // still reports the player's activation
+        actor.blockActivation(true);
+      }
     }
   };
 
@@ -160,6 +168,17 @@ export class DeathService extends ClientListener {
       this.allowedPlayerAnimations = null;
       actor.setDontMove(false);
       this.ressurectWithPushKill(actor);
+    } else if (actor.getFormID() < 0xff000000) {
+      // thuum docs/verbs/npc-fate.md (the deaths): a game-file actor stands
+      // again by the engine's own Resurrect (inventory and AI reset, the
+      // cell reset's shape, re-npc-roll.md section 9); the server's fresh
+      // roll follows through ActorFate's late path and its placement through
+      // the death container's teleport; never the copy's delete. A puppet
+      // keeps its block; the host's own actor gets its engine behavior back
+      actor.resurrect();
+      if (!this.sp.isPuppet(actor.getFormID())) {
+        actor.blockActivation(false);
+      }
     } else {
       throw new RespawnNeededError("needs to be respawned");
     }

@@ -77,7 +77,14 @@ export const applyMovement = (refr: ObjectReference, m: Movement, isMyClone?: bo
   applyWeapDrawn(ac, m.isWeapDrawn);
   applyHealthPercentage(ac, m.healthPercentage);
 
-  SpApiInteractor.getControllerInstance().emitter.emit("applyDeathStateEvent", { actor: ac, isDead: m.isDead });
+  // thuum docs/verbs/npc-fate.md, ADR-048's seam (death-path.md section 2):
+  // a game-file actor (an engine reference) dies by the server's word alone,
+  // the isDead property the server broadcasts at a death or a respawn, never
+  // by the host's relayed sample, which no record stood behind (rule 5); a
+  // figure or a 0xff copy keeps the sample's word as before
+  if (ac.getFormID() >= 0xff000000) {
+    SpApiInteractor.getControllerInstance().emitter.emit("applyDeathStateEvent", { actor: ac, isDead: m.isDead });
+  }
 };
 
 // the shortest signed turn from heading b to heading a, in (-180, 180]

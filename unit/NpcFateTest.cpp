@@ -1,6 +1,7 @@
 #include "ActorFateMessage.h"
 #include "CreateActorMessage.h"
 #include "TestUtils.hpp"
+#include "UpdatePropertyMessage.h"
 #include <catch2/catch_all.hpp>
 #include <cmath>
 
@@ -101,4 +102,47 @@ TEST_CASE("A player's arrival rolls the ring's leveled actors at its level "
 
   DoDisconnect(p, 0);
   p.DestroyActor(kC1);
+}
+
+// thuum docs/verbs/npc-fate.md, ADR-048's seam (docs/research/m3/
+// death-path.md section 2): a game-file actor's death is the server's word
+// on every seat. The DeathStateContainer reaches the actor's host alone;
+// the other listening games get the isDead property, the respawn's shape,
+// so a puppet dies by the record and never by the host's relayed sample.
+TEST_CASE("A game-file actor's death is told to every listening game as the "
+          "isDead property",
+          "[NpcFate][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  constexpr uint32_t kViewer = 0xff000d02;
+  DoConnect(p, 0);
+  p.CreateActor(kViewer, kForest, 0, kTamriel);
+  p.SetUserActor(0, kViewer);
+  p.TickCellHosts(FateNowMs());
+  auto& form = p.worldState.LookupFormByIdNoLoad(kPredator);
+  REQUIRE(form);
+  MpActor* actor = form->AsActor();
+  REQUIRE(actor);
+  auto& viewer = p.worldState.GetFormAt<MpActor>(kViewer);
+  REQUIRE(actor->GetListeners().count(&viewer) == 1);
+  if (actor->IsDead()) {
+    actor->SetIsDead(false);
+  }
+  p.Messages().clear();
+
+  actor->Kill(nullptr);
+
+  bool told = false;
+  for (const auto& msg : SentTo<UpdatePropertyMessage>(p, 0)) {
+    if (msg.idx == actor->GetIdx() && msg.propName == "isDead" &&
+        msg.dataDump == "true") {
+      told = true;
+    }
+  }
+  REQUIRE(told);
+
+  actor->SetIsDead(false);
+  DoDisconnect(p, 0);
+  p.DestroyActor(kViewer);
 }

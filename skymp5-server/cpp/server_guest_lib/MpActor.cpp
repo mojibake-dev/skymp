@@ -1591,6 +1591,18 @@ void MpActor::SendAndSetDeathState(bool isDead, bool shouldTeleport)
   auto respawnMsg = GetDeathStateMsg(position, isDead, shouldTeleport);
   GetActorToSendTo().SendToUser(respawnMsg, true);
 
+  // thuum docs/verbs/npc-fate.md, ADR-048's seam (docs/research/m3/
+  // death-path.md section 2): a game-file actor's death is the server's word
+  // on every seat. The container above reaches the host alone; the other
+  // games learned a death from the host's relayed sample, which a puppet
+  // applied with no record behind it (rule 5). Now the word itself goes to
+  // every listening game, as the respawn's "false" already does
+  // (RespawnEvent), and the client takes a puppet's death from it alone.
+  if (isDead && GetFormId() < 0xff000000) {
+    SendMessageToActorListeners(CreatePropertyMessage_(this, "isDead", "true"),
+                                true);
+  }
+
   EditChangeForm([&](MpChangeForm& changeForm) {
     changeForm.isDead = isDead;
     changeForm.actorValues.healthPercentage =

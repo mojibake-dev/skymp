@@ -325,9 +325,9 @@ public:
   // PartOne::TickFateRespawns ends them against the game clock
   std::unordered_set<uint32_t> fateRespawnDue;
   // the hours a body lies before its respawn: the server setting
-  // npcRespawnHours when set, else the engine's iHoursToRespawnCell
+  // npcRespawnHours when set, else the master's GMST iHoursToRespawnCell
   float npcRespawnHours = 0.f;
-  float FateRespawnHours() const;
+  float FateRespawnHours();
   std::unordered_map<uint32_t, std::map<uint32_t, float>>
     activationChildsByActivationParent;
   std::vector<std::optional<std::chrono::system_clock::time_point>>

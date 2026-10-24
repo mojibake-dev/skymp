@@ -2052,6 +2052,19 @@ void MpActor::Respawn(bool shouldTeleport)
   }
   pImpl->isRespawning = false;
 
+  // thuum docs/verbs/npc-fate.md (the deaths): every respawn passes here,
+  // the sweep's, the console's Resurrect, the lab's respawn-ref; the body's
+  // stamp and its place in the due set end with it, so the next death
+  // counts from its own day
+  if (ChangeForm().fateDiedAt.has_value()) {
+    EditChangeForm(
+      [&](MpChangeForm& changeForm) { changeForm.fateDiedAt.reset(); },
+      Mode::NoRequestSave);
+  }
+  if (auto worldState = GetParent()) {
+    worldState->fateRespawnDue.erase(GetFormId());
+  }
+
   RespawnEvent respawnEvent(this, shouldTeleport);
   respawnEvent.Fire(GetParent());
 }
@@ -2162,9 +2175,6 @@ void MpActor::RespawnFated()
   if (!IsDead()) {
     return;
   }
-  EditChangeForm(
-    [&](MpChangeForm& changeForm) { changeForm.fateDiedAt.reset(); },
-    Mode::NoRequestSave);
   spdlog::info("[verb:npc-fate] {:x} stands again at its placement, rolled "
                "anew",
                GetFormId());

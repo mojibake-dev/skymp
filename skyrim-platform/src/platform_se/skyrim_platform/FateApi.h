@@ -22,6 +22,15 @@ Napi::Value SetActorFateEnabled(const Napi::CallbackInfo& info);
 // on the game thread (setPuppet's shape); false when the reference has no
 // fate or the switch is off, since the engine would then roll its own.
 Napi::Value RerollActor(const Napi::CallbackInfo& info);
+// redressActor(refrId): for a fate that arrives after an unleveled actor was
+// dressed (re-npc-roll.md section 8.4's late path): on the game thread, for
+// a fated actor with a base defaultOutfit, the engine's RemoveOutfitItems
+// with that outfit, the server's worn list added tagged exactly as the
+// outfit detour adds it, then AddWornOutfit with a_forceUpdate: one pop.
+// False when the id is invalid, the reference holds no fate or the switch is
+// off; a reference the game cannot find, or a base with no default outfit,
+// is a warn on the game thread (the lookup runs there, setPuppet's shape).
+Napi::Value RedressActor(const Napi::CallbackInfo& info);
 // actorFateCount(): the table's size
 Napi::Value ActorFateCount(const Napi::CallbackInfo& info);
 
@@ -39,6 +48,9 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "rerollActor",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(RerollActor)));
+  exports.Set(
+    "redressActor",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(RedressActor)));
   exports.Set(
     "actorFateCount",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(ActorFateCount)));

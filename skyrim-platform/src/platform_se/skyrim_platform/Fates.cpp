@@ -10,8 +10,8 @@ struct
   std::recursive_mutex m;
 } g_fates;
 
-// tested by both detours on every roll and every outfit init before they
-// take the table's lock, so the off state costs one load
+// tested by both detours on every leveled roll and every outfit resolution
+// before they take the table's lock, so the off state costs one load
 std::atomic<bool> g_enabled{ false };
 }
 

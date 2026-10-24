@@ -1,3 +1,4 @@
+import { logLab } from "../../logging";
 import { Actor } from "skyrimPlatform";
 import { ApplyDeathStateEvent } from "../events/applyDeathStateEvent";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
@@ -175,10 +176,13 @@ export class DeathService extends ClientListener {
       // roll follows through ActorFate's late path and its placement through
       // the death container's teleport; never the copy's delete. A puppet
       // keeps its block; the host's own actor gets its engine behavior back
-      actor.resurrect();
-      if (!this.sp.isPuppet(actor.getFormID())) {
-        actor.blockActivation(false);
-      }
+      // one game-thread task (FateApi.cpp resurrectActor): AI on for the
+      // call, a puppet demoted again after it, a live actor unblocked;
+      // Papyrus's Resurrect on a just-demoted corpse did not stand it up
+      // (x-npc-respawn 070508)
+      const id = actor.getFormID();
+      const queued = this.sp.resurrectActor(id);
+      logLab("verb:npc-fate", `resurrect ${id.toString(16)} (puppet ${this.sp.isPuppet(id)}) ${queued ? "queued" : "refused"}`);
     } else {
       throw new RespawnNeededError("needs to be respawned");
     }

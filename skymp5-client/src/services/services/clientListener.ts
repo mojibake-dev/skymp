@@ -128,6 +128,7 @@ declare module "skyrimPlatform" {
     function clearActorFate(refrId: number): boolean;
     function setActorFateEnabled(on: boolean): void;
     function rerollActor(refrId: number): boolean;
+    function resurrectActor(refrId: number): boolean;
     function redressActor(refrId: number): boolean;
     function actorFateCount(): number;
 }

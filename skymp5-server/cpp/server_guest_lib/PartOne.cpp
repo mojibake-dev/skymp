@@ -948,9 +948,12 @@ void PartOne::Init()
   // follow verdict for its simulator before the host's engine walks it
   worldState.npcDoorVerdict = [this](MpActor& actor, uint32_t destWorldOrCell,
                                      const NiPoint3& destPos) {
+    // a judgment, not a move: nothing recorded until the host's report
+    // (x-handoff-door 20261024-001915 read a follow removed at the exit
+    // door before the host lookup, hence a false "no host")
     MpActor* host = worldState.HostOf(actor);
     return host &&
-      MayMoveActor(*host, actor, destWorldOrCell, destPos) !=
+      WouldMoveActor(*host, actor, destWorldOrCell, destPos) !=
       MoveVerdict::Refuse;
   };
   worldState.cellHostOf = [this](uint32_t cell) {
@@ -1697,15 +1700,21 @@ std::vector<PartOne::CellFollowEntry> PartOne::GetFollows() const
   return out;
 }
 
-PartOne::MoveVerdict PartOne::MayMoveActor(const MpActor& sender,
-                                           const MpActor& actor,
-                                           uint32_t destWorldOrCell,
-                                           const NiPoint3& destPos)
+namespace {
+// the facts the table judges a move by (npc-handoff D6): the origin and
+// destination cells, two exterior squares touching in one worldspace, or a
+// door (an interior at either end and a persistent actor, the kind the
+// engine keeps simulating off screen); none when the destination is no cell
+std::optional<skymp::rules::CellMove> CellMoveFacts(WorldState& worldState,
+                                                    const MpActor& sender,
+                                                    const MpActor& actor,
+                                                    uint32_t destWorldOrCell,
+                                                    const NiPoint3& destPos)
 {
   const auto origin = worldState.CellOf(actor);
   const auto dest = worldState.CellOf(destWorldOrCell, destPos);
   if (!dest) {
-    return MoveVerdict::Refuse;
+    return std::nullopt;
   }
   // the facts the table judges by (npc-handoff D6): two exterior squares
   // touching in one worldspace, or a door (an interior at either end and a
@@ -1726,14 +1735,45 @@ PartOne::MoveVerdict PartOne::MayMoveActor(const MpActor& sender,
   }
   const bool door = (destInterior || originInterior) &&
     worldState.IsPersistentReference(actor.GetFormId());
-  skymp::rules::CellMove move{ sender.GetFormId(), actor.GetFormId(),
-                               origin.value_or(0), *dest,
-                               adjacent,           door };
-  if (!pImpl->followEnabled) {
-    move.adjacent = false;
-    move.door = false;
+  return skymp::rules::CellMove{ sender.GetFormId(), actor.GetFormId(),
+                                 origin.value_or(0), *dest,
+                                 adjacent,           door };
+}
+}
+
+PartOne::MoveVerdict PartOne::MayMoveActor(const MpActor& sender,
+                                           const MpActor& actor,
+                                           uint32_t destWorldOrCell,
+                                           const NiPoint3& destPos)
+{
+  auto move =
+    CellMoveFacts(worldState, sender, actor, destWorldOrCell, destPos);
+  if (!move) {
+    return MoveVerdict::Refuse;
   }
-  return static_cast<MoveVerdict>(pImpl->cells->may_move(move, SteadyNowMs()));
+  if (!pImpl->followEnabled) {
+    move->adjacent = false;
+    move->door = false;
+  }
+  return static_cast<MoveVerdict>(
+    pImpl->cells->may_move(*move, SteadyNowMs()));
+}
+
+PartOne::MoveVerdict PartOne::WouldMoveActor(const MpActor& sender,
+                                             const MpActor& actor,
+                                             uint32_t destWorldOrCell,
+                                             const NiPoint3& destPos) const
+{
+  auto move = CellMoveFacts(const_cast<WorldState&>(worldState), sender, actor,
+                            destWorldOrCell, destPos);
+  if (!move) {
+    return MoveVerdict::Refuse;
+  }
+  if (!pImpl->followEnabled) {
+    move->adjacent = false;
+    move->door = false;
+  }
+  return static_cast<MoveVerdict>(pImpl->cells->judge_move(*move));
 }
 
 uint32_t PartOne::SimulatorOf(const MpActor& actor) const

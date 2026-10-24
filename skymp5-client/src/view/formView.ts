@@ -6,7 +6,7 @@ import { figureAimHeading } from "../sync/figureAim";
 import { Appearance, applyAppearance } from "../sync/appearance";
 import { isBadMenuShown, applyEquipment, isFigureBase, keepOnlyServerSpells } from "../sync/equipment";
 import { RespawnNeededError } from "../lib/errors";
-import { logTrace } from "../logging";
+import { logLab } from "../logging";
 import { FormModel } from "./model";
 import { UpdateActionMessage } from "../services/messages/updateActionMessage";
 import { applyMovement } from "../sync/movementApply";
@@ -86,7 +86,12 @@ export class FormView {
           const refr = ObjectReference.from(Game.getFormEx(this.refrId));
           const engineCell = refr ? ObjectReferenceEx.getWorldOrCell(refr) : 0;
           const target = Game.getFormEx(model.movement.worldOrCell);
-          if (refr && target && engineCell !== 0 && engineCell !== model.movement.worldOrCell) {
+          // never the actor's own simulator: the host's engine is the truth
+          // and the host never hears its own reports, so its model lags the
+          // engine (x-handoff-door 20261024-013234: the host's view moved
+          // its own Alvor back out of the inn 133 ms after the follow)
+          const mine = !!refr && SpApiInteractor.getControllerInstance().lookupListener(HostService).isMine(model, refr);
+          if (refr && target && !mine && engineCell !== 0 && engineCell !== model.movement.worldOrCell) {
             const pos = model.movement.pos;
             const rot = model.movement.rot;
             TESModPlatform.moveRefrToPosition(
@@ -97,7 +102,7 @@ export class FormView {
               rot[0] * Math.PI / 180, rot[1] * Math.PI / 180, rot[2] * Math.PI / 180,
             );
             this.movedInto = model.movement.worldOrCell;
-            logTrace("formView", `[verb:npc-handoff] moved ${this.refrId.toString(16)} into ${model.movement.worldOrCell.toString(16)} (the engine had it in ${engineCell.toString(16)})`);
+            logLab("verb:npc-handoff", `moved ${this.refrId.toString(16)} into ${model.movement.worldOrCell.toString(16)} (the engine had it in ${engineCell.toString(16)})`);
           }
         }
       }

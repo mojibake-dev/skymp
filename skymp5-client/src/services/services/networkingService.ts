@@ -1,4 +1,4 @@
-import { logTrace, logError } from "../../logging";
+import { logTrace, logError, logLab } from "../../logging";
 import { NeverError } from "../../lib/errors";
 import { MsgType } from "../../messages";
 import { SendMessageEvent } from "../events/sendMessageEvent";
@@ -155,7 +155,7 @@ export class NetworkingService extends ClientListener {
             // hosted actor's door (x-handoff-door 20261024-013234 read no
             // handler line on the viewer; this names arrival apart from
             // handling)
-            logTrace(this, `Teleport received for idx ${(msgAny as { idx?: number }).idx} into ${((msgAny as { worldOrCell?: number }).worldOrCell ?? 0).toString(16)}`);
+            logLab("verb:npc-handoff", `Teleport received for idx ${(msgAny as { idx?: number }).idx} into ${((msgAny as { worldOrCell?: number }).worldOrCell ?? 0).toString(16)}`);
             this.controller.emitter.emit("teleportMessage", event);
             this.controller.emitter.emit("anyMessage", event);
           } else if (msgAny.t === MsgType.UpdateProperty) {

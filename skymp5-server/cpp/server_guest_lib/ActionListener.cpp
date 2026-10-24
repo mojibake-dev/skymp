@@ -12,6 +12,7 @@
 #include "MsgType.h"
 #include "Overloaded.h"
 #include "ShoutSnippets.h"
+#include "TeleportMessage.h"
 #include "WorldState.h"
 #include "gamemode_events/CustomEvent.h"
 #include "gamemode_events/EatItemEvent.h"
@@ -229,6 +230,42 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
                      verdict == PartOne::MoveVerdict::Follow
                        ? "nobody hosts (npc-handoff D6)"
                        : "it hosts");
+      }
+      if (hostedCellChange) {
+        // thuum docs/verbs/npc-handoff.md D6, the viewer's half (x-handoff-
+        // door 20261024-001915: the host's engine walked Alvor into the inn
+        // and the other seat's engine kept him at the door): the record's
+        // move re-subscribes it on the destination's grid, so every viewer
+        // outside it is dropped at once and a dropped view moves nothing.
+        // Before that, each listening game but the host's gets a Teleport
+        // for the actor, the reliable channel ahead of the DestroyActor, so
+        // its engine moves its own reference into the record's cell
+        // (remoteServer's onTeleportMessage, moveRefrToPosition).
+        TeleportMessage teleport;
+        teleport.idx = moved->GetIdx();
+        teleport.pos = { destPos.x, destPos.y, destPos.z };
+        teleport.rot = { msg.data.rot[0], msg.data.rot[1], msg.data.rot[2] };
+        teleport.worldOrCell = msg.data.worldOrCell;
+        size_t told = 0;
+        for (MpObjectReference* listener : moved->GetListeners()) {
+          MpActor* viewer = listener ? listener->AsActor() : nullptr;
+          if (!viewer || viewer == myActor) {
+            continue;
+          }
+          const auto viewerUser = partOne.serverState.UserByActor(viewer);
+          if (viewerUser == Networking::InvalidUserId) {
+            continue;
+          }
+          partOne.GetSendTarget().Send(viewerUser, teleport, true);
+          ++told;
+        }
+        if (told) {
+          spdlog::info(
+            "ActionListener::OnUpdateMovement - npc-handoff: {:x}'s "
+            "move into {:x} told to {} viewing game(s) as a "
+            "Teleport ahead of their unsubscribe",
+            moved->GetFormId(), destCell.value_or(0), told);
+        }
       }
       actor = moved;
     } else {

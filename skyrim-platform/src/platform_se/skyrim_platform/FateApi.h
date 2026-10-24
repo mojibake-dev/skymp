@@ -16,11 +16,14 @@ Napi::Value SetActorFate(const Napi::CallbackInfo& info);
 Napi::Value ClearActorFate(const Napi::CallbackInfo& info);
 // setActorFateEnabled(on): the runtime switch over both detours, default off
 Napi::Value SetActorFateEnabled(const Napi::CallbackInfo& info);
-// rerollActor(refrId): the engine's own re-roll of a loaded leveled actor
-// (37323(actor, -1), re-npc-roll.md section 3 (b)), through the detours, for
-// a fate that arrived after the roll: one visible pop. The actor is looked up
-// on the game thread (setPuppet's shape); false when the reference has no
-// fate or the switch is off, since the engine would then roll its own.
+// rerollActor(refrId): the late path for a fate that arrived after the roll
+// (one visible pop): on the game thread, a leveled clone (ExtraLeveledCreature
+// on the reference) takes the engine's own re-roll (37323(actor, -1),
+// re-npc-roll.md section 3 (b)) through the detours, any other actor the
+// redress below; the decision is the engine's mark, never a Papyrus base
+// read (GetBaseObject answers a clone's placed base). False when the
+// reference has no fate or the switch is off, since the engine would then
+// roll its own.
 Napi::Value RerollActor(const Napi::CallbackInfo& info);
 // redressActor(refrId): for a fate that arrives after an unleveled actor was
 // dressed (re-npc-roll.md section 8.4's late path): on the game thread, for

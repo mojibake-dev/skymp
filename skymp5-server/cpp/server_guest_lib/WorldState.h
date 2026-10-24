@@ -328,6 +328,11 @@ public:
   // npcRespawnHours when set, else the master's GMST iHoursToRespawnCell
   float npcRespawnHours = 0.f;
   float FateRespawnHours();
+  // thuum docs/verbs/npc-fate.md (ADR-048's B): a host's death report for a
+  // game-file actor is taken when the server can check its cause
+  // (ActionListener::OnActorDeath); false refuses every report (A: the
+  // server's number alone kills)
+  bool npcDeathReports = true;
   std::unordered_map<uint32_t, std::map<uint32_t, float>>
     activationChildsByActivationParent;
   std::vector<std::optional<std::chrono::system_clock::time_point>>

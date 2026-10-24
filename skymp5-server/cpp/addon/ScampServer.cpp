@@ -248,6 +248,13 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
       partOne->worldState.npcRespawnHours =
         serverSettings.at("npcRespawnHours").get<float>();
     }
+    // thuum docs/verbs/npc-fate.md (ADR-048's B): a host's checked death
+    // report for a game-file actor; false restores A (the server's number
+    // alone kills)
+    if (serverSettings.find("npcDeathReports") != serverSettings.end()) {
+      partOne->worldState.npcDeathReports =
+        serverSettings.at("npcDeathReports").get<bool>();
+    }
 
     if (serverSettings.find("npcEnabled") != serverSettings.end()) {
       bool enabled = serverSettings.at("npcEnabled").get<bool>();

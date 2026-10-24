@@ -52,6 +52,59 @@ Napi::Value FateApi::SetActorFateEnabled(const Napi::CallbackInfo& info)
   return info.Env().Undefined();
 }
 
+namespace {
+// re-npc-roll.md 8.4's late path on the game thread: the actor looked up
+// here (setPuppet's shape, the 2026-10-21 hang), the outfit stripped, the
+// server's worn list added tagged as the detour adds it, worn again
+void RedressOnGameThread(uint32_t refrId, const Fates::Fate& fate)
+{
+  auto* actor = RE::TESForm::LookupByID<RE::Actor>(refrId);
+  if (!actor) {
+    logger::warn("[verb:npc-fate] redressActor({:x}): no such actor", refrId);
+    return;
+  }
+  // Actor::GetActorBase (include/RE/A/Actor.h:524), TESNPC::defaultOutfit
+  // (include/RE/T/TESNPC.h:281): no default outfit, nothing the engine
+  // would dress by (the lab spawn's figures and puppets, re-npc-roll.md
+  // 8.4)
+  auto* npc = actor->GetActorBase();
+  auto* outfit = npc ? npc->defaultOutfit : nullptr;
+  if (!outfit) {
+    logger::warn("[verb:npc-fate] redressActor({:x}): the base has no "
+                 "default outfit, nothing to redress",
+                 refrId);
+    return;
+  }
+  // the changes first: TESObjectREFR::GetInventoryChanges (include/RE/T/
+  // TESObjectREFR.h:405; src/RE/T/TESObjectREFR.cpp:414-426) initializes
+  // the inventory when the reference holds none, and that init rolls
+  // through the outfit detour, so it runs before the strip below and the
+  // strip takes its entries with the rest
+  auto* changes = actor->GetInventoryChanges();
+  if (!changes) {
+    logger::warn("[verb:npc-fate] redressActor({:x}): no inventory "
+                 "changes",
+                 refrId);
+    return;
+  }
+  // re-npc-roll.md 8.4's three calls, CommonLib's SetDefaultOutfit
+  // sequence (src/RE/A/Actor.cpp:1016-1029) less the outfit change:
+  // Actor::RemoveOutfitItems (include/RE/A/Actor.h:617, bound to 19690 at
+  // src/RE/A/Actor.cpp:1300-1305) with the outfit, not nullptr, to spare
+  // the sleep outfit's entries; the same adds as the detour's; Actor::
+  // AddWornOutfit (include/RE/A/Actor.h:502, bound to 19692 at :1293-1298)
+  // with a_forceUpdate true: one pop
+  actor->RemoveOutfitItems(outfit);
+  const auto dressed = Fates::AddWornTagged(changes, outfit, fate, refrId);
+  actor->AddWornOutfit(outfit, true);
+  logger::info("[verb:npc-fate] redressed {:x} from the server's roll: {} "
+               "of {} tagged for outfit {:x} and worn ({} already tagged, "
+               "3D loaded {})",
+               refrId, dressed.added, fate.worn.size(), outfit->formID,
+               dressed.carried, actor->Is3DLoaded());
+}
+}
+
 Napi::Value FateApi::RerollActor(const Napi::CallbackInfo& info)
 {
   const auto refrId = NapiHelper::ExtractUInt32(info[0], "refrId");
@@ -65,18 +118,31 @@ Napi::Value FateApi::RerollActor(const Napi::CallbackInfo& info)
   // while the game thread waits for this tick, and a cell load holding that
   // lock hung a landing, 2026-10-21), where the re-roll has to run anyway:
   // it drops the 3D and re-initializes the inventory
-  const auto baseId = fate.baseId;
-  g_nativeCallRequirements.gameThrQ->AddTask([refrId, baseId](Viet::Void) {
+  g_nativeCallRequirements.gameThrQ->AddTask([refrId, fate](Viet::Void) {
     auto* actor = RE::TESForm::LookupByID<RE::Actor>(refrId);
     if (!actor) {
       logger::warn("[verb:npc-fate] rerollActor({:x}): no such actor", refrId);
+      return;
+    }
+    // the decision is the engine's own mark: a leveled pick is a clone that
+    // carries ExtraLeveledCreature (ExtraDataList::HasType, include/RE/E/
+    // ExtraDataList.h:163; kLeveledCreature, E/ExtraDataTypes.h:219). The
+    // Papyrus GetBaseObject the client read before answers that extra's
+    // originalBase (the placed NPC_, an esm id) for every clone, so the
+    // re-roll branch was never taken (b-npc-respawn 120743: the respawn's
+    // new pick stayed the old species on both seats)
+    if (!actor->extraList.HasType(RE::ExtraDataType::kLeveledCreature)) {
+      logger::info("[verb:npc-fate] rerollActor({:x}): not a leveled clone, "
+                   "redress instead",
+                   refrId);
+      RedressOnGameThread(refrId, fate);
       return;
     }
     REL::Relocation<ActorRerollFn> reroll{ Offsets::Fate::ActorReroll };
     reroll(actor, -1);
     logger::info("[verb:npc-fate] rerolled {:x} through the engine (3D loaded "
                  "{}) toward the fate's {:x}",
-                 refrId, actor->Is3DLoaded(), baseId);
+                 refrId, actor->Is3DLoaded(), fate.baseId);
   });
   return Napi::Boolean::New(info.Env(), true);
 }
@@ -92,53 +158,8 @@ Napi::Value FateApi::RedressActor(const Napi::CallbackInfo& info)
   // the actor is looked up on the game thread alone (rerollActor's and
   // setPuppet's shape, the 2026-10-21 hang), where the three engine calls
   // have to run anyway; the fate travels by value
-  g_nativeCallRequirements.gameThrQ->AddTask([refrId, fate](Viet::Void) {
-    auto* actor = RE::TESForm::LookupByID<RE::Actor>(refrId);
-    if (!actor) {
-      logger::warn("[verb:npc-fate] redressActor({:x}): no such actor",
-                   refrId);
-      return;
-    }
-    // Actor::GetActorBase (include/RE/A/Actor.h:524), TESNPC::defaultOutfit
-    // (include/RE/T/TESNPC.h:281): no default outfit, nothing the engine
-    // would dress by (the lab spawn's figures and puppets, re-npc-roll.md
-    // 8.4)
-    auto* npc = actor->GetActorBase();
-    auto* outfit = npc ? npc->defaultOutfit : nullptr;
-    if (!outfit) {
-      logger::warn("[verb:npc-fate] redressActor({:x}): the base has no "
-                   "default outfit, nothing to redress",
-                   refrId);
-      return;
-    }
-    // the changes first: TESObjectREFR::GetInventoryChanges (include/RE/T/
-    // TESObjectREFR.h:405; src/RE/T/TESObjectREFR.cpp:414-426) initializes
-    // the inventory when the reference holds none, and that init rolls
-    // through the outfit detour, so it runs before the strip below and the
-    // strip takes its entries with the rest
-    auto* changes = actor->GetInventoryChanges();
-    if (!changes) {
-      logger::warn("[verb:npc-fate] redressActor({:x}): no inventory "
-                   "changes",
-                   refrId);
-      return;
-    }
-    // re-npc-roll.md 8.4's three calls, CommonLib's SetDefaultOutfit
-    // sequence (src/RE/A/Actor.cpp:1016-1029) less the outfit change:
-    // Actor::RemoveOutfitItems (include/RE/A/Actor.h:617, bound to 19690 at
-    // src/RE/A/Actor.cpp:1300-1305) with the outfit, not nullptr, to spare
-    // the sleep outfit's entries; the same adds as the detour's; Actor::
-    // AddWornOutfit (include/RE/A/Actor.h:502, bound to 19692 at :1293-1298)
-    // with a_forceUpdate true: one pop
-    actor->RemoveOutfitItems(outfit);
-    const auto dressed = Fates::AddWornTagged(changes, outfit, fate, refrId);
-    actor->AddWornOutfit(outfit, true);
-    logger::info("[verb:npc-fate] redressed {:x} from the server's roll: {} "
-                 "of {} tagged for outfit {:x} and worn ({} already tagged, "
-                 "3D loaded {})",
-                 refrId, dressed.added, fate.worn.size(), outfit->formID,
-                 dressed.carried, actor->Is3DLoaded());
-  });
+  g_nativeCallRequirements.gameThrQ->AddTask(
+    [refrId, fate](Viet::Void) { RedressOnGameThread(refrId, fate); });
   return Napi::Boolean::New(info.Env(), true);
 }
 

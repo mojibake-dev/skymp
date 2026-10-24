@@ -118,6 +118,7 @@ declare module "skyrimPlatform" {
     // for the two detours) and back (AI on, package evaluated)
     function setPuppet(actorFormId: number, puppet: boolean): boolean;
     function isPuppet(actorFormId: number): boolean;
+    function releasePuppet(actorFormId: number): boolean;
     function setPuppetLocomotion(actorFormId: number, speed: number, directionDeg: number, turnRateDeg: number): boolean;
     function getHighProcessActors(): number[];
 

@@ -81,6 +81,67 @@ Napi::Value FateApi::RerollActor(const Napi::CallbackInfo& info)
   return Napi::Boolean::New(info.Env(), true);
 }
 
+Napi::Value FateApi::RedressActor(const Napi::CallbackInfo& info)
+{
+  const auto refrId = NapiHelper::ExtractUInt32(info[0], "refrId");
+  Fates::Fate fate;
+  if (refrId == 0 || refrId == 0x14 || !Fates::Enabled() ||
+      !Fates::Get(refrId, fate)) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  // the actor is looked up on the game thread alone (rerollActor's and
+  // setPuppet's shape, the 2026-10-21 hang), where the three engine calls
+  // have to run anyway; the fate travels by value
+  g_nativeCallRequirements.gameThrQ->AddTask([refrId, fate](Viet::Void) {
+    auto* actor = RE::TESForm::LookupByID<RE::Actor>(refrId);
+    if (!actor) {
+      logger::warn("[verb:npc-fate] redressActor({:x}): no such actor",
+                   refrId);
+      return;
+    }
+    // Actor::GetActorBase (include/RE/A/Actor.h:524), TESNPC::defaultOutfit
+    // (include/RE/T/TESNPC.h:281): no default outfit, nothing the engine
+    // would dress by (the lab spawn's figures and puppets, re-npc-roll.md
+    // 8.4)
+    auto* npc = actor->GetActorBase();
+    auto* outfit = npc ? npc->defaultOutfit : nullptr;
+    if (!outfit) {
+      logger::warn("[verb:npc-fate] redressActor({:x}): the base has no "
+                   "default outfit, nothing to redress",
+                   refrId);
+      return;
+    }
+    // the changes first: TESObjectREFR::GetInventoryChanges (include/RE/T/
+    // TESObjectREFR.h:405; src/RE/T/TESObjectREFR.cpp:414-426) initializes
+    // the inventory when the reference holds none, and that init rolls
+    // through the outfit detour, so it runs before the strip below and the
+    // strip takes its entries with the rest
+    auto* changes = actor->GetInventoryChanges();
+    if (!changes) {
+      logger::warn("[verb:npc-fate] redressActor({:x}): no inventory "
+                   "changes",
+                   refrId);
+      return;
+    }
+    // re-npc-roll.md 8.4's three calls, CommonLib's SetDefaultOutfit
+    // sequence (src/RE/A/Actor.cpp:1016-1029) less the outfit change:
+    // Actor::RemoveOutfitItems (include/RE/A/Actor.h:617, bound to 19690 at
+    // src/RE/A/Actor.cpp:1300-1305) with the outfit, not nullptr, to spare
+    // the sleep outfit's entries; the same adds as the detour's; Actor::
+    // AddWornOutfit (include/RE/A/Actor.h:502, bound to 19692 at :1293-1298)
+    // with a_forceUpdate true: one pop
+    actor->RemoveOutfitItems(outfit);
+    const auto dressed = Fates::AddWornTagged(changes, outfit, fate, refrId);
+    actor->AddWornOutfit(outfit, true);
+    logger::info("[verb:npc-fate] redressed {:x} from the server's roll: {} "
+                 "of {} tagged for outfit {:x} and worn ({} already tagged, "
+                 "3D loaded {})",
+                 refrId, dressed.added, fate.worn.size(), outfit->formID,
+                 dressed.carried, actor->Is3DLoaded());
+  });
+  return Napi::Boolean::New(info.Env(), true);
+}
+
 Napi::Value FateApi::ActorFateCount(const Napi::CallbackInfo& info)
 {
   return Napi::Number::New(info.Env(), static_cast<double>(Fates::Count()));

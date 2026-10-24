@@ -1,31 +1,54 @@
 #include "Fates.h"
 #include "FridaHookHandler.h"
 #include "game/Offsets.h"
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 
 // thuum docs/verbs/npc-fate.md (ADR-046 decision 1, ADR-049): the two detours
 // that make the engine roll what the server rolled, docs/research/m3/
-// re-npc-roll.md section 3 (a) and (c) and section 7's recommendation. Every
-// engine prototype below is the re-analyst's REA read of 1.6.1170 on sky-re
-// (2026-10-23, section 6's table; the ids resolved by `just addr`) or
-// CommonLibSSE-NG's own declaration, cited where it is used: none is written
-// from memory.
+// re-npc-roll.md section 3 (a) for the species and section 8.4 for the
+// outfit. Section 8 replaces section 3 (c) and the second detour of section
+// 7: on 1.6.1170 the load-time outfit roll never passes InitOutfitItems
+// (16072); InitLeveledItems rolls both outfits through the outfit-array
+// resolver 16155 at the inventory's init, and 16072 is the late path from
+// the outfit equipper. Every engine prototype below is the re-analyst's REA
+// read of 1.6.1170 on sky-re (2026-10-23, sections 6 and 8.5; the ids
+// resolved by `just addr`) or CommonLibSSE-NG's own declaration, cited where
+// it is used: none is written from memory.
 //
-// HYPOTHESIS, the whole file, until the lab read x-npc-fate-roll (section 5's
-// Frida plan, lab/frida/npc-roll.js) shows these five on a seat; until then
-// the TS side leaves setActorFateEnabled off and both detours pass every call
-// through (section 7):
+// The leveled detour's observations, HELD three times on 2026-10-23
+// (x-npc-fate-roll 232048, v2 234133, v3 235610; docs/LOG.md):
 //   1. 14374 runs once per placement inside InitItemImpl at the cell's load
-//      and never at 3D load (else the pin moves off 14752);
+//      and never at 3D load (the pin stays on 14752);
 //   2. 14752's out array holds exactly one NPC_ after the engine's own roll
-//      (the detour's out shape: one CALCED_OBJECT, count 1);
-//   3. 37323 on a live, loaded actor re-rolls without a crash or a missing
-//      body (else shape B falls back to disable, native, enable);
-//   4. tagged entries suppress InitOutfitItems across process transitions
-//      and a ResetInventory (else the outfit detour must also guard 418622);
-//   5. a reloaded seat keeps the imposed base without a new 14374
-//      (persistence through the reference's change form).
+//      (the detour's out shape: one CALCED_OBJECT, count 1).
+// MEASURED there as well: every load is a fresh engine roll (section 7's
+// persistence observation NOT HELD), so the pin applies at every load and a
+// fate that arrives late goes through rerollActor or redressActor.
+//
+// The outfit detour's expected chain per fresh actor (section 8.4),
+// HYPOTHESIS until the 8.4 trace (lab/frida/npc-roll.js with 16129, 16155,
+// 16038 and 418622's outfit id) shows it on a seat: InitInventoryIfRequired
+// (16038) from InitItemImpl (19507); RemoveOutfitItems(nullptr) (19690)
+// returning to 16038+0xb4, which strips every outfit-tagged entry before the
+// roll (8.3); InitLeveledItems (16129); 16155 once per non-null outfit with
+// its CalculateCurrentFormList (14751) calls returning to 16155+0xca; then
+// the outfit equipper (418622) at the biped init with HasOutfitItems true
+// and no InitOutfitItems (16072). Falsifiers: a 16155 return outside 16129
+// and 16072; a 14751 return into 16155 with no 16155 entry on the thread;
+// tagged entries surviving a 19690 from 16038. Until the switch is on
+// (setActorFateEnabled, off by default) both detours pass every call
+// through.
+//
+// Declared gap: the sleep outfit. 16129's second 16155 call, for TESNPC::
+// sleepOutfit, falls through to the engine's roll, so a fated actor sleeps
+// in the engine's picks (the server's record carries no sleep list). Open
+// question: AddWornOutfit (19692) counted zero across 65 418622 calls in the
+// lab read while the actors came out dressed; what wears the outfit when it
+// stays zero is the trace's EquipObject (38894) question, and the redress
+// native's AddWornOutfit call stands on CommonLib's SetDefaultOutfit
+// sequence (src/RE/A/Actor.cpp:1016-1029) until it is answered.
 namespace {
 // (a) 14752 (HYPOTHESIS name: the per-reference roll wrapper), `(RE::
 // TESLeveledList* a_list, RE::TESObjectREFR* a_ref, RE::BSScrapArray<RE::
@@ -70,7 +93,7 @@ std::uintptr_t LeveledRollReplacement(RE::TESLeveledList* list,
   }
   RE::TESNPC* npc = nullptr;
   if (fate.baseId != 0) {
-    // LookupByID<T> is As<T> on the form (include/RE/T/TESForm.h:223-226),
+    // LookupByID<T> is As<T> on the form (include/RE/T/TESForm.h:223-227),
     // TESNPC::FORMTYPE = FormType::NPC (include/RE/T/TESNPC.h:42)
     npc = RE::TESForm::LookupByID<RE::TESNPC>(fate.baseId);
     if (!npc) {
@@ -97,118 +120,213 @@ std::uintptr_t LeveledRollReplacement(RE::TESLeveledList* list,
   return 0;
 }
 
-// (c) 16072 InventoryChanges::InitOutfitItems, CommonLibSSE-NG's own name and
-// binding: `void (RE::InventoryChanges* a_this, RE::BGSOutfit* a_outfit,
-// std::uint16_t a_npcLevel)` (include/RE/I/InventoryChanges.h:48; src/RE/I/
-// InventoryChanges.cpp:147-152 binds the AE id 16072). The outfit equipper
-// 418622 calls it while HasOutfitItems is false (re-npc-roll.md section 2):
-// it rolls every LVLI of the outfit at the NPC's level and adds the picks
-// tagged ExtraOutfitItem{outfit} (the engine's tag setter 11647), the tag
-// AddWornOutfit (19692) equips by and RemoveOutfitItems (19690) removes by.
-// For a fated owner the detour adds the server's worn list under the same tag
-// and skips the roll, so HasOutfitItems turns true and the engine's next
-// equipper pass equips the server's items and rolls nothing (section 3 (c);
-// observation 4 above).
-using InitOutfitItemsFn = void (*)(RE::InventoryChanges* changes,
-                                   RE::BGSOutfit* outfit,
-                                   std::uint16_t npcLevel);
-InitOutfitItemsFn g_initOutfitItemsOriginal = nullptr;
-
-// The tag's route. Two were open (section 3 (c)): the engine's tag setter
-// 11647 `(ExtraDataList*, BGSOutfit*)`, a HYPOTHESIS signature, or an
-// ExtraOutfitItem built on CommonLibSSE-NG's type. The second is taken: every
-// fact in it is a header's (BSExtraData::Create, include/RE/B/BSExtraData.h:
-// 22, zeroed memory with the vtable written, src/RE/B/BSExtraData.cpp:31-37;
-// the vtable symbol VTABLE_ExtraOutfitItem, include/RE/Offsets_VTABLE.h:95;
-// the outfit id at 0x10 and sizeof 0x18, include/RE/E/ExtraOutfitItem.h:
-// 20-23; the type kOutfitItem, include/RE/E/ExtraDataTypes.h:316), so no
-// hypothesized prototype is called, and the list it goes into is made and
-// filled the way this plugin's AddItemEx already makes one for
-// AddObjectToContainer (PapyrusTESModPlatform.cpp:597-610 the list, :630-657
-// the insert). The engine takes the list with the entry.
-RE::ExtraDataList* CreateTaggedList(RE::FormID outfitId)
+// (c) 16155, the outfit-array resolver (re-npc-roll.md 8.2; its callers and
+// registers CONFIRMED-STATIC, unnamed in CommonLibSSE-NG): `bool (RE::
+// BSTArray<RE::TESForm*>* a_items, OutfitInitCtx* a_ctx)`, rcx the outfit's
+// item array (BGSOutfit::outfitItems, include/RE/B/BGSOutfit.h:43, a
+// BSTArray<TESForm*>, include/RE/B/BSTArray.h:373-377), rdx the context its
+// two callers build on their stack; it returns MOV EAX,1 (8.2), hence the
+// bool. Called by InventoryChanges::InitLeveledItems (16129, CommonLib's
+// binding src/RE/I/InventoryChanges.cpp:140-145) once for the base's
+// defaultOutfit and once for its sleepOutfit at the inventory's init, and by
+// InventoryChanges::InitOutfitItems (16072, :147-152), the late path from
+// the outfit equipper 418622 (8.1). Per item it rolls an LVLI through
+// CalculateCurrentFormList and tags the picks, or adds a plain form tagged,
+// a form whose entry already carries this outfit's tag skipped (8.2). For a
+// fated owner and its default outfit the detour answers the server's worn
+// list through the engine's own tag setter and entry adder and returns true
+// without touching a_items; the one site covers the load (16129), every
+// later InitInventoryIfRequired (which strips the tags first, 8.3) and the
+// late re-dress (16072 from 418622): idempotent by construction (8.4).
+struct OutfitInitCtx
 {
-  // The list: CommonLibSSE-NG declares ExtraDataList() (include/RE/E/
-  // ExtraDataList.h:136) and the pin's sources do not define it; under
-  // ENABLE_SKYRIM_AE the type carries no lock member (:207-209: the lock
-  // sits at 0x18 on AE .629 and later, reached through GetLock(), :202), so
-  // the engine's size is the fork's constant: BaseExtraList's data and
-  // presence pointers (:18-38) and the lock, all zeroed (a zero
-  // BSReadWriteLock is unlocked; include/RE/B/BSAtomic.h:70).
+  RE::BGSOutfit* outfit;         // 00, [RBP-0x31] in 16129 (8.1)
+  RE::InventoryChanges* changes; // 08, [RBP-0x29]: this, the InventoryChanges
+  std::uint16_t level;           // 10, [RBP-0x21]: the NPC's level, u16
+};
+// the layout {BGSOutfit* outfit; InventoryChanges* changes; uint16 level},
+// CONFIRMED-STATIC by both callers' stores and 16155's reads (re-npc-roll.md
+// 8.2, the struct named in 8.4)
+static_assert(offsetof(OutfitInitCtx, outfit) == 0x0);
+static_assert(offsetof(OutfitInitCtx, changes) == 0x8);
+static_assert(offsetof(OutfitInitCtx, level) == 0x10);
+
+using OutfitResolveFn = bool (*)(RE::BSTArray<RE::TESForm*>* items,
+                                 OutfitInitCtx* ctx);
+OutfitResolveFn g_outfitResolveOriginal = nullptr;
+
+// 11647, the engine's ExtraOutfitItem setter (re-npc-roll.md 8.2,
+// CONFIRMED-STATIC): `(RE::ExtraDataList* a_list, RE::BGSOutfit* a_outfit)`;
+// under the list's lock at +0x18 it finds the list's ExtraOutfitItem and
+// writes the outfit's id into it, or allocates one (0x18 bytes) on
+// VTABLE_ExtraOutfitItem with the id at +0x10 and adds it to the list. Taken
+// over the hand-written insert this file carried, since every byte it
+// touches is the fork's own list layout (CreateExtraList below) and the
+// call's two arguments are confirmed. RE this: its return (called as void,
+// the value unread).
+using SetOutfitItemTagFn = void (*)(RE::ExtraDataList* list,
+                                    RE::BGSOutfit* outfit);
+
+// 16053, the entry adder 16155 and 16128 add through (re-npc-roll.md 8.2 and
+// 8.5, HYPOTHESIS): `(RE::InventoryChanges* a_this, RE::TESForm* a_form,
+// RE::ExtraDataList* a_list, std::int32_t a_count, RE::TESObjectREFR*
+// a_fromRefr)`, a_fromRefr nullptr at this site, the list the entry's from
+// here. It is the engine's own call inside the init; TESObjectREFR::
+// AddObjectToContainer (vfunc 0x5A, include/RE/T/TESObjectREFR.h:286) is the
+// CommonLib-named fallback but may raise container events mid-init (8.4,
+// HYPOTHESIS). RE this: its return (called as void, the value unread).
+using AddEntryWithListFn = void (*)(RE::InventoryChanges* changes,
+                                    RE::TESForm* form, RE::ExtraDataList* list,
+                                    std::int32_t count,
+                                    RE::TESObjectREFR* fromRefr);
+
+// A fresh, empty ExtraDataList the way this plugin's AddItemEx makes one for
+// AddObjectToContainer (PapyrusTESModPlatform.cpp:597-624, the fork's
+// idiom): CommonLibSSE-NG declares ExtraDataList() (include/RE/E/
+// ExtraDataList.h:136) and the pin's sources do not define it (8.4's "if the
+// pin defines it": it does not), and under ENABLE_SKYRIM_AE the type carries
+// no lock member (:207-209: the lock sits at 0x18 on AE .629 and later,
+// reached through GetLock(), :202), so the engine's size is the fork's
+// constant: BaseExtraList's data and presence pointers (:18-38) and the
+// lock, all zeroed (a zero BSReadWriteLock is unlocked, include/RE/B/
+// BSAtomic.h:70), 0x20 in all, the engine's own Allocate size at this site
+// (8.2). The presence bitfield (0x18 bytes, :21-28) is allocated and zeroed
+// as the idiom does; the tag is the engine's to add (11647).
+RE::ExtraDataList* CreateExtraList()
+{
   constexpr size_t kBaseExtraListSizeMax = 24;
   constexpr size_t kSpinLockSizeMax = 8;
   constexpr size_t kExtraListSize = kBaseExtraListSizeMax + kSpinLockSizeMax;
   auto* memory = static_cast<uint8_t*>(RE::malloc(kExtraListSize));
-  // the presence bitfield, 0x18 bytes (include/RE/E/ExtraDataList.h:21-28)
+  if (!memory) {
+    return nullptr;
+  }
   auto* presence = RE::malloc<RE::BaseExtraList::PresenceBitfield>();
-  // the extra: Create zeroes it and writes the vtable (BSExtraData.cpp:31-37)
-  auto* tag = static_cast<RE::ExtraOutfitItem*>(RE::BSExtraData::Create(
-    sizeof(RE::ExtraOutfitItem), RE::VTABLE_ExtraOutfitItem[0].address()));
-  if (!memory || !presence || !tag) {
+  if (!presence) {
+    // include/RE/M/MemoryManager.h:187
+    RE::free(memory);
     return nullptr;
   }
   std::memset(memory, 0, kExtraListSize);
   std::memset(presence, 0, sizeof(*presence));
   auto* list = reinterpret_cast<RE::ExtraDataList*>(memory);
   list->_extraData.GetPresence() = presence;
-  tag->id = outfitId;
-  {
-    // the insert (PapyrusTESModPlatform.cpp:643-657): the extra at the head
-    // under the list's write lock (include/RE/B/BSAtomic.h:127), its
-    // presence bit set (bits[type >> 3], 1 << (type % 8))
-    RE::BSWriteLockGuard locker(list->GetLock());
-    tag->next = list->_extraData.GetData();
-    list->_extraData.GetData() = tag;
-    const auto type = static_cast<uint32_t>(RE::ExtraDataType::kOutfitItem);
-    presence->bits[type >> 3] |= static_cast<uint8_t>(1u << (type % 8));
-  }
   return list;
 }
 
-void InitOutfitItemsReplacement(RE::InventoryChanges* changes,
-                                RE::BGSOutfit* outfit, std::uint16_t npcLevel)
+// The engine's own skip at this site (re-npc-roll.md 8.2: 16133 finds the
+// owner's entry for the form, 15988 asks it for an ExtraOutfitItem, 15989
+// reads that tag's id; a pick whose entry already carries this outfit's tag
+// is not added again), done through CommonLibSSE-NG's names instead of those
+// three HYPOTHESIS ids: InventoryChanges::entryList (include/RE/I/
+// InventoryChanges.h:63), InventoryEntryData::object and extraLists
+// (include/RE/I/InventoryEntryData.h:59-60), BSSimpleList's range iteration
+// (include/RE/B/BSTList.h:9, :170, :225-228; the fork's shape at
+// PapyrusTESModPlatform.cpp:1142-1144 and EventHandler.cpp:2345-2346),
+// ExtraDataList::GetByType<T> (include/RE/E/ExtraDataList.h:152-155),
+// ExtraOutfitItem::id (include/RE/E/ExtraOutfitItem.h:20). It is what keeps
+// 16129's second call (a sleepOutfit that is the same form as the
+// defaultOutfit) from dressing twice.
+bool CarriesOutfitTag(RE::InventoryChanges* changes, RE::TESBoundObject* form,
+                      RE::FormID outfitId)
 {
-  Fates::Fate fate;
-  // InventoryChanges::owner (include/RE/I/InventoryChanges.h:64)
-  RE::TESObjectREFR* owner = changes ? changes->owner : nullptr;
-  if (!Fates::Enabled() || !owner || !outfit ||
-      !Fates::Get(owner->formID, fate)) {
-    g_initOutfitItemsOriginal(changes, outfit, npcLevel);
-    return;
+  if (!changes->entryList) {
+    return false;
   }
-  size_t added = 0;
+  for (auto* entry : *changes->entryList) {
+    if (!entry || entry->object != form || !entry->extraLists) {
+      continue;
+    }
+    for (auto* list : *entry->extraLists) {
+      const auto* tag =
+        list ? list->GetByType<RE::ExtraOutfitItem>() : nullptr;
+      if (tag && tag->id == outfitId) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool OutfitResolveReplacement(RE::BSTArray<RE::TESForm*>* items,
+                              OutfitInitCtx* ctx)
+{
+  if (!Fates::Enabled() || !ctx || !ctx->outfit || !ctx->changes) {
+    return g_outfitResolveOriginal(items, ctx);
+  }
+  // InventoryChanges::owner (include/RE/I/InventoryChanges.h:64); the outfit
+  // must be the owner's base's defaultOutfit: TESForm::As<T> (include/RE/T/
+  // TESForm.h:257), Actor::GetActorBase (include/RE/A/Actor.h:524, the base
+  // object As<TESNPC>, src/RE/A/Actor.cpp:256-260), TESNPC::defaultOutfit
+  // (include/RE/T/TESNPC.h:281). The sleepOutfit call (:282), a container
+  // owner and an unfated actor fall through to the engine's roll; the outfit
+  // test comes before the table's lock so the common case costs no lock.
+  RE::TESObjectREFR* owner = ctx->changes->owner;
+  auto* actor = owner ? owner->As<RE::Actor>() : nullptr;
+  auto* npc = actor ? actor->GetActorBase() : nullptr;
+  if (!npc || npc->defaultOutfit != ctx->outfit) {
+    return g_outfitResolveOriginal(items, ctx);
+  }
+  Fates::Fate fate;
+  // TESForm::formID (include/RE/T/TESForm.h:354)
+  if (!Fates::Get(owner->formID, fate)) {
+    return g_outfitResolveOriginal(items, ctx);
+  }
+  const auto dressed =
+    Fates::AddWornTagged(ctx->changes, ctx->outfit, fate, owner->formID);
+  logger::info("[verb:npc-fate] dressed {:x} from the server's roll inside "
+               "the outfit roll: {} of {} tagged for outfit {:x} (npc level "
+               "{}, {} already tagged, the engine's outfit roll skipped)",
+               owner->formID, dressed.added, fate.worn.size(),
+               ctx->outfit->formID, ctx->level, dressed.carried);
+  return true;
+}
+}
+
+Fates::Dressing Fates::AddWornTagged(RE::InventoryChanges* changes,
+                                     RE::BGSOutfit* outfit, const Fate& fate,
+                                     uint32_t ownerId)
+{
+  Dressing result;
+  if (!changes || !outfit) {
+    return result;
+  }
+  REL::Relocation<SetOutfitItemTagFn> setTag{
+    Offsets::Fate::SetOutfitItemTag
+  };
+  REL::Relocation<AddEntryWithListFn> addEntry{
+    Offsets::Fate::AddEntryWithList
+  };
   for (const auto wornId : fate.worn) {
-    // an inventory entry needs a bound object (TESObjectREFR::
-    // AddObjectToContainer's first argument, include/RE/T/TESObjectREFR.h:
-    // 286); LookupByID<TESBoundObject> is As<TESBoundObject> on the form
-    // (include/RE/T/TESForm.h:223-226)
+    // an inventory entry needs a bound object (InventoryEntryData::object,
+    // include/RE/I/InventoryEntryData.h:59; AddObjectToContainer's first
+    // argument, include/RE/T/TESObjectREFR.h:286); LookupByID<TESBoundObject>
+    // is As<TESBoundObject> on the form (include/RE/T/TESForm.h:223-227)
     auto* bound = RE::TESForm::LookupByID<RE::TESBoundObject>(wornId);
     if (!bound) {
       logger::warn("[verb:npc-fate] worn item {:x} for {:x} is no bound "
                    "object in this game, skipped",
-                   wornId, owner->formID);
+                   wornId, ownerId);
       continue;
     }
-    auto* tagged = CreateTaggedList(outfit->formID);
-    if (!tagged) {
+    if (CarriesOutfitTag(changes, bound, outfit->formID)) {
+      ++result.carried;
+      continue;
+    }
+    auto* list = CreateExtraList();
+    if (!list) {
       logger::warn("[verb:npc-fate] no memory for {:x}'s outfit tag, the "
                    "rest of the list skipped",
-                   owner->formID);
+                   ownerId);
       break;
     }
-    // TESObjectREFR::AddObjectToContainer, vfunc 0x5A (include/RE/T/
-    // TESObjectREFR.h:286; Actor's override include/RE/A/Actor.h:304): one
-    // entry, count 1, no source container; the list is the entry's from here
-    // (the AddItemEx idiom, PapyrusTESModPlatform.cpp:758-760)
-    owner->AddObjectToContainer(bound, tagged, 1, nullptr);
-    ++added;
+    // the engine's tag (11647), then the engine's add (16053): one entry,
+    // count 1, no source reference; the list is the entry's from here
+    setTag(list, outfit);
+    addEntry(changes, bound, list, 1, nullptr);
+    ++result.added;
   }
-  logger::info("[verb:npc-fate] dressed {:x} from the server's roll: {} of {} "
-               "worn items tagged for outfit {:x} (npc level {}), the "
-               "engine's outfit roll skipped",
-               owner->formID, added, fate.worn.size(), outfit->formID,
-               npcLevel);
-}
+  return result;
 }
 
 void Fates::InstallHooks()
@@ -222,10 +340,10 @@ void Fates::InstallHooks()
                      reinterpret_cast<void*>(&LeveledRollReplacement),
                      reinterpret_cast<void**>(&g_leveledRollOriginal));
   const bool outfit =
-    handler->Replace(Offsets::Hooks::InitOutfitItems.address(),
-                     reinterpret_cast<void*>(&InitOutfitItemsReplacement),
-                     reinterpret_cast<void**>(&g_initOutfitItemsOriginal));
+    handler->Replace(Offsets::Hooks::OutfitResolve.address(),
+                     reinterpret_cast<void*>(&OutfitResolveReplacement),
+                     reinterpret_cast<void**>(&g_outfitResolveOriginal));
   logger::info("[verb:npc-fate] detours installed, inert until "
-               "setActorFateEnabled(true): leveled roll {}, outfit init {}",
+               "setActorFateEnabled(true): leveled roll {}, outfit resolve {}",
                roll, outfit);
 }

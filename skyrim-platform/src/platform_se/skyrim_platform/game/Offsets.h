@@ -78,14 +78,19 @@ inline REL::Relocation<std::uintptr_t> ActorMovementStep{ REL::ID(37356) };
 // thuum docs/verbs/npc-fate.md (ADR-046 decision 1, ADR-049): the two
 // detours of the roll pushed to both (FateHooks.cpp). AE only, 1.6.1170's
 // ids by `just addr` on 2026-10-23, the re-analyst's REA read on sky-re
-// (docs/research/m3/re-npc-roll.md section 6; HYPOTHESIS until the lab read
-// x-npc-fate-roll): 14752 the per-reference roll wrapper (TESLeveledList*,
-// TESObjectREFR*, BSScrapArray<CALCED_OBJECT>*), 14374's one call for the
-// LVLN pick at InitItemImpl; 16072 InventoryChanges::InitOutfitItems
-// (InventoryChanges*, BGSOutfit*, uint16 npcLevel), CommonLibSSE-NG's own
-// binding of the AE id (src/RE/I/InventoryChanges.cpp:147-152).
+// (docs/research/m3/re-npc-roll.md sections 6 and 8.5): 14752 the
+// per-reference roll wrapper (TESLeveledList*, TESObjectREFR*,
+// BSScrapArray<CALCED_OBJECT>*), 14374's one call for the LVLN pick at
+// InitItemImpl (HYPOTHESIS name; its two lab observations held three times
+// on 2026-10-23); 16155 the outfit-array resolver (BSTArray<TESForm*>*
+// a_items, OutfitInitCtx* a_ctx), unnamed in CommonLibSSE-NG, the one
+// function every outfit resolution passes through: InitLeveledItems' two
+// calls at the inventory's init and InitOutfitItems' (16072) late one from
+// the outfit equipper (callers and registers CONFIRMED-STATIC, sections 8.1
+// and 8.2). Section 8 replaces the 16072 site: the lab read found it never
+// entered at the load.
 inline REL::Relocation<std::uintptr_t> LeveledRoll{ REL::ID(14752) };
-inline REL::Relocation<std::uintptr_t> InitOutfitItems{ REL::ID(16072) };
+inline REL::Relocation<std::uintptr_t> OutfitResolve{ REL::ID(16155) };
 inline REL::Relocation<std::uintptr_t> ApplyMasksToRenderTargets{
   RELOCATION_ID(26454, 27040)
 };
@@ -115,14 +120,30 @@ namespace Puppet {
 inline REL::ID ClearKeepOffsetFromActor(37895);
 }
 
-// thuum docs/verbs/npc-fate.md: the engine's re-roll of a leveled actor,
-// `(RE::Actor*, int a_arg)`, -1 skipping its level check; it restores the
-// placed base, drops the clone and the 3D and re-resolves through 14374,
-// hence through Hooks::LeveledRoll (docs/research/m3/re-npc-roll.md section
-// 1 and section 3 (b), HYPOTHESIS). AE only, 1.6.1170's id by `just addr` on
-// 2026-10-23.
+// thuum docs/verbs/npc-fate.md: the engine calls the fate natives make
+// (FateApi.cpp, FateHooks.cpp). AE only, 1.6.1170's ids by `just addr` on
+// 2026-10-23 (docs/research/m3/re-npc-roll.md sections 6 and 8.5).
 namespace Fate {
+// the re-roll of a leveled actor `(RE::Actor*, int a_arg)`, -1 skipping its
+// level check; it restores the placed base, drops the clone and the 3D and
+// re-resolves through 14374, hence through Hooks::LeveledRoll (section 1 and
+// section 3 (b), HYPOTHESIS)
 inline REL::ID ActorReroll(37323);
+// the ExtraOutfitItem setter `(ExtraDataList*, BGSOutfit*)` (section 8.2,
+// CONFIRMED-STATIC)
+inline REL::ID SetOutfitItemTag(11647);
+// the entry adder `(InventoryChanges*, TESForm*, ExtraDataList*, int32
+// count, TESObjectREFR* fromRefr)`, 16155's own add (sections 8.2 and 8.5,
+// HYPOTHESIS)
+inline REL::ID AddEntryWithList(16053);
+// Actor::RemoveOutfitItems `(Actor*, BGSOutfit*)` (section 6, CommonLib
+// name; the pin binds it at src/RE/A/Actor.cpp:1300-1305, so the member is
+// what is called and this id is the record)
+inline REL::ID RemoveOutfitItems(19690);
+// Actor::AddWornOutfit `(Actor*, BGSOutfit*, bool a_forceUpdate)` (section
+// 6, CommonLib name; bound at src/RE/A/Actor.cpp:1293-1298, called through
+// the member; section 8.4's open question: it counted zero in the lab read)
+inline REL::ID AddWornOutfit(19692);
 }
 
 namespace EventSource {

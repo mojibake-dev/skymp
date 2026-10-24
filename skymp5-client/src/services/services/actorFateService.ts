@@ -8,11 +8,16 @@ import { ClientListener, CombinedController, Sp } from "./clientListener";
 // squares this game is about to attach, the NPC_ the server's leveled roll
 // chose and the worn list its outfit roll chose; the fates go into the fork's
 // Skyrim Platform table (setActorFate), where two native detours make the
-// engine roll them at the reference's load (the leveled roll wrapper) and
-// at its first dressing (InventoryChanges::InitOutfitItems). A fate for a
-// reference the engine already holds (its cell attached before the fate
-// arrived, or a respawn's new fate) goes through the engine's own re-roll
-// (rerollActor), one pop, accepted by ADR-049. The switch npcFate (settings
+// engine roll them: the leveled roll wrapper under the resolver (the
+// reference's load and the attach-time re-roll alike) and the outfit
+// resolver under every inventory init (re-npc-roll.md section 8). A fate
+// for a reference the engine already holds (a login's neighbours, loaded by
+// the save before the connect; an interior's actors, loaded at the door
+// before the fate arrives; a respawn's new fate) takes the late path: the
+// engine's own re-roll (rerollActor) when the engine cloned a leveled pick
+// (its base is a runtime form), else the redress (redressActor: the outfit
+// stripped, the server's list added tagged, worn again); one pop, accepted
+// by ADR-049. The switch npcFate (settings
 // skymp5-client.npcFate, default OFF) arms the detours; until the lab read
 // x-npc-fate-roll confirms the roll's moments (docs/research/m3/
 // re-npc-roll.md section 7) they are HYPOTHESIS and stay pass-throughs, the
@@ -41,9 +46,15 @@ export class ActorFateService extends ClientListener {
             // around the player at a login, a cell attached ahead of the fate,
             // a respawn's new roll): its own re-roll goes through the detour
             const refr = this.sp.Game.getFormEx(fate.refrId);
-            if (refr && this.sp.Actor.from(refr)) {
-                const queued = this.sp.rerollActor(fate.refrId);
-                this.sp.printConsole(`[verb:npc-fate] late fate for ${fate.refrId.toString(16)}: reroll ${queued ? "queued" : "refused"}`);
+            const actor = refr ? this.sp.Actor.from(refr) : null;
+            if (actor) {
+                // a leveled pick the engine rolled is a clone with a runtime
+                // id (ExtraLeveledCreature's base); its re-roll goes through
+                // the resolver and both detours; a plain base is redressed
+                const base = actor.getBaseObject();
+                const leveled = !!base && base.getFormID() >= 0xff000000;
+                const queued = leveled ? this.sp.rerollActor(fate.refrId) : this.sp.redressActor(fate.refrId);
+                this.sp.printConsole(`[verb:npc-fate] late fate for ${fate.refrId.toString(16)}: ${leveled ? "reroll" : "redress"} ${queued ? "queued" : "refused"}`);
             }
         }
     }

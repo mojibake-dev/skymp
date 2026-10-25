@@ -464,6 +464,8 @@ export class FormView {
   private isSetNodeTextureSetApplied = false;
   private deadCheckAt = 0;
   private isSetNodeScaleApplied = false;
+  // the hosted server-made copy's one dress by the server's equipment
+  private hostDressed = false;
 
   // thuum docs/verbs/figure-values.md: the figure carries its player's
   // recorded maxima (the server's health, magicka and stamina props for an
@@ -573,8 +575,13 @@ export class FormView {
       // container (npc-fate.md): its inventory is the record's, applied
       // before the OpenContainer that follows it
       const asActor = Actor.from(refr);
-      if (!asActor || (this.refrId < 0xff000000 && asActor.isDead())) {
-        ModelApplyUtils.applyModelInventory(refr, model.inventory);
+      const deadBody = !!asActor && this.refrId < 0xff000000 && asActor.isDead();
+      if (!asActor || deadBody) {
+        // thuum docs/verbs/npc-fate.md (playtest 34, section 5): a body keeps
+        // the engine's dressing (the pin made the worn sets equal); the
+        // server's list is the loot rows, laid in as a diff alone, never
+        // through resetBase's removeAllItems and resetContainer
+        ModelApplyUtils.applyModelInventory(refr, model.inventory, !deadBody);
         model.inventory = undefined;
       }
     }
@@ -769,7 +776,15 @@ export class FormView {
     // host's own actor and a puppet alike, so the apply below is for copies
     // (figures and 0xff actors) alone
     const engineDressed = FormView.npcFateEnabled() && this.refrId !== 0 && this.refrId < 0xff000000;
-    if (model.equipment && !alreadyHosted && !engineDressed) {
+    // thuum docs/verbs/npc-fate.md (playtest 34, finding 2): a server-made
+    // copy this game hosts takes the server's equipment ONCE, at its first
+    // apply, so its hands are the record's (the fate's pin is a game-file
+    // actor's; a copy has none, and the host's engine dressed it from the
+    // base's own roll, which OnHit's weapon check then refused, silently)
+    // and Rule A holds from then on: the record's later changes never touch
+    // it while hosted
+    const hostDress = alreadyHosted && !this.hostDressed && FormView.isNpcModel(model) && this.refrId >= 0xff000000;
+    if (model.equipment && ((!alreadyHosted && !engineDressed) || hostDress)) {
       // thuum ADR-046, decision 2: a figure's spells stay the server's. A
       // distributor adds its abilities at the actor's load, after the
       // equipment's apply, so the figure is swept every ten seconds (a few
@@ -798,6 +813,9 @@ export class FormView {
           //if (this.spawnMoment > 0 && Date.now() - this.spawnMoment > 5000) {
           if (applyEquipment(ac, model.equipment)) {
             this.eqState.lastNumChanges = model.equipment.numChanges;
+            if (hostDress) {
+              this.hostDressed = true;
+            }
           }
           this.eqState.lastEqMoment = Date.now();
           //}

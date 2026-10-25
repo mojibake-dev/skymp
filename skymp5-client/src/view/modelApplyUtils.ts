@@ -6,8 +6,8 @@ import { SetNodeScaleEntry, SetNodeTextureSetEntry } from "src/services/messages
 // For 0xff000000+ used from FormView
 // For objects from master files used directly from remoteServer.ts
 export class ModelApplyUtils {
-  static applyModelInventory(refr: ObjectReference, inventory: Inventory) {
-    applyInventory(refr, inventory, false, true);
+  static applyModelInventory(refr: ObjectReference, inventory: Inventory, resetBaseFirst = true) {
+    applyInventory(refr, inventory, false, true, resetBaseFirst);
   }
 
   static applyModelIsOpen(refr: ObjectReference, isOpen: boolean) {

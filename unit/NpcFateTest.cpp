@@ -384,12 +384,15 @@ TEST_CASE("A server-made actor with an NPC base dies by the NPC rule, not "
   constexpr uint32_t kBanditBase = 0x3de6f; // EncBandit01Melee2HBerserkNordM
   MpChangeForm saved;
   saved.recType = MpChangeForm::ACHR;
-  saved.formDesc = FormDesc(kMade, "");
+  saved.formDesc = FormDesc::FromFormId(kMade, p.worldState.espmFiles);
   saved.baseDesc = FormDesc::FromFormId(kBanditBase, p.worldState.espmFiles);
   saved.worldOrCellDesc = FormDesc::Tamriel();
   saved.position = kForest;
   saved.angle = { 0.f, 0.f, 0.f };
+  // an ACHR change form waits for the deferred load (unit/NpcExists.cpp's
+  // idiom), then stands on the grid at its saved position
   p.worldState.LoadChangeForm(saved, p.CreateFormCallbacks());
+  p.worldState.LoadDeferredActors();
   auto& form = p.worldState.LookupFormByIdNoLoad(kMade);
   REQUIRE(form);
   MpActor* made = form->AsActor();

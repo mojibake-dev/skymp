@@ -5,6 +5,7 @@
 #include "TestUtils.hpp"
 #include "libespm/Loader.h"
 #include "wire_bridge_cxx/rules.h"
+#include <algorithm>
 #include <catch2/catch_all.hpp>
 #include <chrono>
 
@@ -279,5 +280,62 @@ TEST_CASE("A script's kill, an unnamed cause and a body far from the record "
   REQUIRE(actor.IsDead());
 
   StandUp(p, actor);
+  Leave(p, 0, kHost);
+}
+
+// thuum docs/verbs/npc-fate.md (playtest 34, section 5): a body is a
+// container with one occupant within 512 units, and its looter's closing
+// activation must release it. ProcessActivateSecond shared the CONT branch's
+// open but not its close, so rotfern's closing activation fell through, the
+// body stayed hers, and test 2 was refused five times ("occupant is another
+// object and is nearby") until she stood out of range.
+TEST_CASE("A looter's closing activation releases a corpse's occupancy for "
+          "the next player",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  auto& host = Arrive(p, 0, kHost);
+  auto& actor = Standing(p, kPredator);
+  const NiPoint3 body = actor.GetPos();
+  host.SetPos(body + NiPoint3{ 60.f, 0.f, 0.f });
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+
+  const auto activate = [&](Networking::UserId user, bool second) {
+    DoMessage(p, user,
+              nlohmann::json{ { "t", MsgType::Activate },
+                              { "data",
+                                { { "caster", 0x14 },
+                                  { "target", kPredator },
+                                  { "isSecondActivation", second } } } });
+  };
+
+  // the looter opens the body: the CONT branch's open
+  activate(0, false);
+  REQUIRE(actor.IsOpen());
+  // the closing activation releases it
+  activate(0, true);
+  REQUIRE_FALSE(actor.IsOpen());
+
+  // a second player at the body is admitted at once, the looter still beside
+  // it: the record's inventory and OpenContainer go to that player
+  auto& other = Arrive(p, 1, kOther);
+  other.SetPos(body + NiPoint3{ -60.f, 0.f, 0.f });
+  p.Messages().clear();
+  activate(1, false);
+  REQUIRE(actor.IsOpen());
+  auto& messages = p.Messages();
+  const bool opened =
+    std::any_of(messages.begin(), messages.end(), [&](PartOne::Message& m) {
+      return m.userId == 1 && m.j.is_object() && m.j.contains("t") &&
+        m.j["t"] == static_cast<int>(MsgType::OpenContainer);
+    });
+  REQUIRE(opened);
+  activate(1, true);
+  REQUIRE_FALSE(actor.IsOpen());
+
+  StandUp(p, actor);
+  Leave(p, 1, kOther);
   Leave(p, 0, kHost);
 }

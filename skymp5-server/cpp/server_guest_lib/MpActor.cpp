@@ -1651,6 +1651,12 @@ void MpActor::SendAndSetDeathState(bool isDead, bool shouldTeleport)
     SetPos(position.pos);
     SetAngle(position.rot);
   }
+
+  // thuum docs/research/m3/decisions-after-playtest-34.md D18: the cell host
+  // table hears a player's death and respawn here (PartOne installs it)
+  if (auto worldState = GetParent(); worldState && worldState->onDeathState) {
+    worldState->onDeathState(*this, isDead);
+  }
 }
 
 DeathStateContainerMessage MpActor::GetDeathStateMsg(

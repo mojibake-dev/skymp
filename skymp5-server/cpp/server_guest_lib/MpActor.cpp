@@ -2144,7 +2144,13 @@ void MpActor::RebuildAndRespawn(bool shouldTeleport, bool rebuildAlways)
 
 bool MpActor::IsFateRespawned() const
 {
-  return GetFormId() < 0xff000000 && !IsCreatedAsPlayer();
+  // every actor that is not a player's: a game-file actor (its id under
+  // 0xff000000) and a server-made actor with an NPC base alike. Playtest 34
+  // (2026-10-25): two server-made bandits in Bleak Falls Temple (base
+  // EncBandit01Melee2HBerserkNordM, profileId -1, the lab's placement)
+  // died to headshots and stood again 25 s later by the players' rule,
+  // while the game-file bandit beside them lay for the reset hours
+  return !IsCreatedAsPlayer();
 }
 
 void MpActor::ScheduleFateRespawn()

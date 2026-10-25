@@ -2280,8 +2280,7 @@ void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
   }
   if (!actor->IsFateRespawned()) {
     refuse("E_DEATH_PLAYER",
-           "a player's or a runtime actor: its deaths are the server's own "
-           "numbers");
+           "a player's actor: its deaths are the server's own numbers");
     return;
   }
   const uint32_t simulator = partOne.SimulatorOf(*actor);

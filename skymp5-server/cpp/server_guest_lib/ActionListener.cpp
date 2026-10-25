@@ -3574,6 +3574,34 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
     return;
   }
 
+  if (aggressor != myActor) {
+    // thuum docs/verbs/npc-fate.md (playtest 34, 2026-10-25): a hosted
+    // actor's hit with a weapon its record's hands lack ended here at debug
+    // level, silent in the lab's log, and two server-made bandits in Bleak
+    // Falls Temple never landed a hit on the server: the host's engine
+    // dresses a server-made copy from the base's own roll (npc-puppet's Rule
+    // A) while the record holds the server's, and nothing pins the two the
+    // way a game-file actor's fate pins its hands. The hit stays dropped
+    // (the server's number needs the server's weapon); the drop is said
+    // once a minute per actor
+    static std::unordered_map<uint32_t, std::chrono::steady_clock::time_point>
+      lastWeaponDropLog;
+    const auto now = std::chrono::steady_clock::now();
+    auto& last = lastWeaponDropLog[aggressor->GetFormId()];
+    if (last == std::chrono::steady_clock::time_point() ||
+        now - last >= std::chrono::minutes(1)) {
+      last = now;
+      spdlog::info("ActionListener::OnHit - E_HIT_WEAPON: hosted {:x} hits "
+                   "{:x} with {:x}, which its record's hands lack ({} in its "
+                   "inventory); dropped",
+                   aggressor->GetFormId(), hitData.target, hitData.source,
+                   aggressor->GetInventory().HasItem(hitData.source)
+                     ? "held unequipped"
+                     : "absent");
+    }
+    return;
+  }
+
   if (aggressor->GetInventory().HasItem(hitData.source) == false) {
     spdlog::debug("{:x} actor has no {:x} weapon and can't attack",
                   hitData.aggressor, hitData.source);

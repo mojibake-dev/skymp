@@ -547,6 +547,79 @@ TEST_CASE("A host follows its actor into an unhosted cell its game loads, "
   p.DestroyActor(kC2);
 }
 
+// thuum docs/verbs/npc-handoff.md (d), ADR-047 D9 (playtest 34, 2026-10-25:
+// a restart's cold start gave Sigrid's two cells to different players and
+// her shuttle between them was refused at every crossing, seven a second,
+// one engine walking her live where the other held the record): a hosted
+// actor its host walks into an adjacent cell another live host holds passes
+// to that host at once; the record moves, the new host's game hears "not
+// hosted by other" and the old host's "hosted by other", the old host's
+// further reports are dropped and the new host's pass; a crossing back
+// passes it the same way.
+TEST_CASE("A hosted actor crossing into another live host's cell passes to "
+          "that host, whose word flips both games",
+          "[CellHost]")
+{
+  auto& p = GetPartOne();
+  Player(p, 0, kC1, kHere);
+  Player(p, 1, kC2, kEast);
+  const auto here = p.worldState.CellOf(kTamriel, kHere);
+  const auto east = p.worldState.CellOf(kTamriel, kEast);
+  REQUIRE(here.has_value());
+  REQUIRE(east.has_value());
+  CellLoaded(p, 0, *here);
+  CellLoaded(p, 1, *east);
+  REQUIRE(p.GetCellHost(*here).player == kC1);
+  REQUIRE(p.GetCellHost(*east).player == kC2);
+  p.CreateActor(kWolf, kHere, 0, kTamriel);
+  auto& wolf = p.worldState.GetFormAt<MpActor>(kWolf);
+  wolf.SetPos(kHere);
+  REQUIRE(p.SimulatorOf(wolf) == kC1);
+  p.Messages().clear();
+
+  // c1 walks it across the border (the next square begins at x 12288; a
+  // report may move an actor 4096 at most): the record moves, the
+  // simulation passes, no follow is left behind
+  const NiPoint3 kAcross{ 12400.f, 500.f, 0.f };
+  Move(p, 0, kWolf, kAcross);
+  REQUIRE(p.worldState.CellOf(wolf) == east);
+  REQUIRE(p.SimulatorOf(wolf) == kC2);
+  REQUIRE(p.GetFollows().empty());
+  bool newHostLive = false;
+  for (const auto& m : SentTo<UpdatePropertyMessage>(p, 1)) {
+    if (m.idx == wolf.GetIdx() && m.propName == "isHostedByOther" &&
+        m.dataDump == "false") {
+      newHostLive = true;
+    }
+  }
+  bool oldHostDemoted = false;
+  for (const auto& m : SentTo<UpdatePropertyMessage>(p, 0)) {
+    if (m.idx == wolf.GetIdx() && m.propName == "isHostedByOther" &&
+        m.dataDump == "true") {
+      oldHostDemoted = true;
+    }
+  }
+  REQUIRE(newHostLive);
+  REQUIRE(oldHostDemoted);
+
+  // the old host's next report is dropped, the new host's passes
+  Move(p, 0, kWolf, kAcross + NiPoint3{ 100.f, 0.f, 0.f });
+  REQUIRE(std::abs(wolf.GetPos().x - kAcross.x) < 1.f);
+  Move(p, 1, kWolf, kAcross + NiPoint3{ 100.f, 0.f, 0.f });
+  REQUIRE(std::abs(wolf.GetPos().x - (kAcross.x + 100.f)) < 1.f);
+
+  // and back across: passed to c1 the same way
+  Move(p, 1, kWolf, kHere);
+  REQUIRE(p.worldState.CellOf(wolf) == here);
+  REQUIRE(p.SimulatorOf(wolf) == kC1);
+
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kWolf);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+}
+
 // thuum docs/verbs/npc-puppet.md (ActorSightings, TES3MP's actor list): a
 // named resident is placed in her house and walked outside by her schedule;
 // the server loads actors by placement, so her host's engine has her where

@@ -491,13 +491,17 @@ public:
   // vouches for (an adjacent exterior square its game has loaded, or a door
   // with a persistent actor, either way through it): Follow, recorded in
   // the table; the sender simulates the actor there until the cell is
-  // granted, it unloads the cell or leaves. Anything else, another live
-  // host's cell included (D9, later): Refuse.
+  // granted, it unloads the cell or leaves. Pass (ADR-047 D9, npc-handoff
+  // (d)): the simulator's adjacent crossing into another live host's cell,
+  // the record moving there and the simulation passing to that host at
+  // once, the word flipped both ways (OnUpdateMovement). Anything else:
+  // Refuse.
   enum class MoveVerdict : uint8_t
   {
     Refuse = 0,
     Accept = 1,
-    Follow = 2
+    Follow = 2,
+    Pass = 3
   };
   MoveVerdict MayMoveActor(const MpActor& sender, const MpActor& actor,
                            uint32_t destWorldOrCell, const NiPoint3& destPos);

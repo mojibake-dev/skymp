@@ -2040,6 +2040,7 @@ impl Cells {
             cells::MoveVerdict::Refuse => 0,
             cells::MoveVerdict::Accept => 1,
             cells::MoveVerdict::Follow => 2,
+            cells::MoveVerdict::Pass => 3,
         }
     }
 
@@ -2056,6 +2057,7 @@ impl Cells {
             cells::MoveVerdict::Refuse => 0,
             cells::MoveVerdict::Accept => 1,
             cells::MoveVerdict::Follow => 2,
+            cells::MoveVerdict::Pass => 3,
         }
     }
 

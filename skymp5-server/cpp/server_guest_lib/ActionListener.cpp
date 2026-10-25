@@ -178,6 +178,7 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
   // neighbours (thuum docs/verbs/validation.md, Movement)
   MpActor* actor = nullptr;
   bool hostedCellChange = false;
+  bool passed = false;
   {
     // thuum docs/verbs/cell-host.md, the cell-change rule: a hosted actor's
     // report is its cell's host's; one naming another cell is accepted when
@@ -220,16 +221,20 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       }
       hostedCellChange =
         destCell.has_value() && destCell != partOne.worldState.CellOf(*moved);
+      passed = verdict == PartOne::MoveVerdict::Pass;
       if (hostedCellChange) {
         spdlog::info("ActionListener::OnUpdateMovement - cell-host: {:x} {} "
                      "{:x} into cell {:x}, which {}",
                      myActor->GetFormId(),
                      verdict == PartOne::MoveVerdict::Follow ? "follows"
+                       : passed                              ? "passes"
                                                              : "moves",
                      moved->GetFormId(), *destCell,
                      verdict == PartOne::MoveVerdict::Follow
                        ? "nobody hosts (npc-handoff D6)"
-                       : "it hosts");
+                       : passed ? "another game hosts (npc-handoff D9: the "
+                                  "simulation passes with it)"
+                                : "it hosts");
       }
       if (hostedCellChange) {
         // thuum docs/verbs/npc-handoff.md D6, the viewer's half (x-handoff-
@@ -388,6 +393,22 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     // heights from its host's samples, a fall report's evidence
     if (actor->IsFateRespawned()) {
       actor->RecordHeight(msg.data.pos[2], std::chrono::steady_clock::now());
+    }
+    // thuum docs/verbs/npc-handoff.md (d), ADR-047 D9: the record stands in
+    // the destination now, so its simulator is that cell's host; the word
+    // goes out per actor (UpdateHoster, npc-puppet.md): the new host's game
+    // hears "not hosted by other" and goes live from the relayed point, every
+    // other listener, the sender's game first, hears "hosted by other" and
+    // demotes its copy. Playtest 34 (2026-10-25): without this the sender's
+    // engine walked Sigrid live where the other game held her record.
+    if (passed) {
+      MpActor* newHost = partOne.worldState.HostOf(*actor);
+      actor->UpdateHoster(newHost ? newHost->GetFormId() : 0);
+      spdlog::info("ActionListener::OnUpdateMovement - npc-handoff D9: {:x} "
+                   "now simulates {:x} in cell {:x}; the sender's game is "
+                   "told to demote",
+                   newHost ? newHost->GetFormId() : 0u, actor->GetFormId(),
+                   partOne.worldState.CellOf(*actor).value_or(0));
     }
     actor->SetAngle(
       NiPoint3{ msg.data.rot[0], msg.data.rot[1], msg.data.rot[2] },

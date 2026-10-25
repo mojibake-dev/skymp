@@ -1200,6 +1200,40 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
   if (!ac)
     throw std::runtime_error("Can't do this without Actor attached");
 
+  // thuum docs/verbs/npc-fate.md (ADR-048's B, the hazard evidence): a
+  // reference's activation of itself is a trap trigger's firing (every
+  // vanilla trigger script activates itself, and the engine forwards it to
+  // the trap with the plate as the activator; the stepping actor is never
+  // the action reference, so no activation names the victim). The game
+  // hosting the trigger's cell reports it; it is noted where and when as a
+  // hazard death's evidence (R2) and nothing is activated here.
+  if (msg.data.caster == msg.data.target && msg.data.caster != 0x14) {
+    auto trigger = std::dynamic_pointer_cast<MpObjectReference>(
+      partOne.worldState.LookupFormById(
+        static_cast<uint32_t>(msg.data.target)));
+    if (!trigger) {
+      return;
+    }
+    const auto cell = partOne.worldState.CellOf(
+      trigger->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles),
+      trigger->GetPos());
+    if (!cell) {
+      return;
+    }
+    const auto host = partOne.GetCellHost(*cell);
+    if (!host.hosted || host.player != ac->GetFormId()) {
+      spdlog::debug("ActionListener::OnActivate - trigger {:x} fired itself, "
+                    "reported by {:x}, which does not host cell {:x}; dropped",
+                    trigger->GetFormId(), ac->GetFormId(), *cell);
+      return;
+    }
+    NoteActivation(*trigger, std::chrono::steady_clock::now());
+    spdlog::info("[verb:npc-fate] trigger {:x} fired itself in cell {:x} (its "
+                 "host {:x} reports): noted as a hazard death's evidence",
+                 trigger->GetFormId(), *cell, ac->GetFormId());
+    return;
+  }
+
   // thuum docs/verbs/cell-host.md: a hosted caster is its cell's host's;
   // an actor a user plays is nobody's to report for
   uint32_t hosterId = 0;

@@ -1,4 +1,5 @@
 #include "ActionListener.h"
+#include "ActivateMessage.h"
 #include "ActorDeathMessage.h"
 #include "CellLoadedMessage.h"
 #include "TestUtils.hpp"
@@ -83,6 +84,19 @@ void Report(PartOne& p, Networking::UserId user, uint32_t refrId,
   RawMessageData raw;
   raw.userId = user;
   p.GetActionListener().OnActorDeath(raw, msg);
+}
+
+// a reference's activation of itself, the trap trigger's firing as the
+// host's game reports it (activationService): caster and target the same
+void SelfActivation(PartOne& p, Networking::UserId user, uint32_t refId)
+{
+  ActivateMessage msg;
+  msg.data.caster = refId;
+  msg.data.target = refId;
+  msg.data.isSecondActivation = false;
+  RawMessageData raw;
+  raw.userId = user;
+  p.GetActionListener().OnActivate(raw, msg);
 }
 
 void Leave(PartOne& p, Networking::UserId user, uint32_t id)
@@ -210,14 +224,19 @@ TEST_CASE("A hazard report is checked against an activation beside the body",
 
   Report(p, 0, kPredator, 2, 0, body);
   REQUIRE_FALSE(actor.IsDead());
-  // something set off beside it a moment ago (the trap's trigger, as the
-  // host's activation report; HYPOTHESIS for the lab)
-  p.GetActionListener().NoteActivation(actor,
-                                       std::chrono::steady_clock::now());
+  // a trigger's own firing reported by a game that does not host the cell
+  // is nothing (the reference stands in for a plate: the path is the same)
+  Arrive(p, 1, kOther);
+  SelfActivation(p, 1, kPredator);
+  Report(p, 0, kPredator, 2, 0, body);
+  REQUIRE_FALSE(actor.IsDead());
+  // the host's report of the trigger firing beside the body a moment ago
+  SelfActivation(p, 0, kPredator);
   Report(p, 0, kPredator, 2, 0, body);
   REQUIRE(actor.IsDead());
 
   StandUp(p, actor);
+  Leave(p, 1, kOther);
   Leave(p, 0, kHost);
 }
 

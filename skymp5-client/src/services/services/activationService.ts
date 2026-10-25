@@ -7,6 +7,7 @@ import { getInventory } from "../../sync/inventory";
 import { isSyncedActorId, localIdToRemoteId } from "../../view/worldViewMisc";
 
 import { LastInvService } from "./lastInvService";
+import { HostService } from "./hostService";
 import { logError, logTrace } from "../../logging";
 
 export class ActivationService extends ClientListener {
@@ -30,6 +31,33 @@ export class ActivationService extends ClientListener {
         // from the game files the server sent: docs/verbs/npc-puppet.md);
         // any other engine actor's activation is nobody's
         if (caster !== 0x14 && !isSyncedActorId(caster)) {
+          // thuum docs/verbs/npc-fate.md (ADR-048's B, the hazard evidence): a
+          // reference's activation of itself is a trap trigger's firing
+          // (TrapTriggerBase, PressurePlate and Tripwire all activate(self),
+          // and the engine forwards it to the trap with the plate as the
+          // activator, never the stepping actor, so no activation names the
+          // victim). The game that hosts the trigger's cell reports it as a
+          // record: the server notes where and when, activates nothing, and
+          // checks a hazard death against it. Every seat's engine runs the
+          // trap for itself (a puppet steps on the plate too), so only the
+          // host's word travels.
+          const trigger = caster === target
+            && this.controller.lookupListener(HostService).isHostedHere(e.target);
+          if (!trigger) {
+            return;
+          }
+          const remoteTrigger = localIdToRemoteId(target);
+          if (!remoteTrigger) {
+            return;
+          }
+          this.controller.emitter.emit("sendMessage", {
+              message: {
+                  t: MsgType.Activate,
+                  data: { caster: remoteTrigger, target: remoteTrigger, isSecondActivation: false }
+              },
+              reliability: "reliable"
+          });
+          logTrace(this, `Sent a trigger's own activation for `, remoteTrigger.toString(16));
           return;
         }
 

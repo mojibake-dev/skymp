@@ -269,10 +269,12 @@ public:
   void Kill(MpActor* killer = nullptr, bool shouldTeleport = false);
   void Respawn(bool shouldTeleport = true);
   void RespawnWithDelay(bool shouldTeleport = true);
-  // thuum docs/verbs/npc-fate.md (the deaths): a game-file actor (an id
-  // under 0xff000000 that is not a player's) keeps to the engine's reset
-  // clock: its body lies from fateDiedAt until WorldState::FateRespawnHours()
-  // later, then stands at its placement rolled anew (PartOne::
+  // thuum docs/verbs/npc-fate.md (the deaths): every actor that is not a
+  // player's, a game-file actor (an id under 0xff000000) or a server-made
+  // actor with an NPC base (playtest 34's finding), keeps to the engine's
+  // reset clock: its body lies from fateDiedAt until
+  // WorldState::FateRespawnHours() later, then stands at its placement (a
+  // server-made actor at its spawn point) rolled anew (PartOne::
   // TickFateRespawns); a unique base stays dead, the engine's rule
   bool IsFateRespawned() const;
   void ScheduleFateRespawn();

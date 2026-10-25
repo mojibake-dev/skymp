@@ -367,3 +367,46 @@ TEST_CASE("A game-file base dies by the master's essential and protected "
   DoDisconnect(p, 0);
   p.DestroyActor(kHand);
 }
+
+// thuum docs/verbs/npc-fate.md (the deaths), playtest 34 (2026-10-25): two
+// server-made bandits placed by the lab in Bleak Falls Temple (a 0xff id,
+// an NPC base, profileId -1) died to headshots and stood again 25 s later
+// by the players' rule, while the game-file bandit beside them lay for the
+// reset hours. A server-made actor with an NPC base is fated like a
+// game-file one: the death schedules the reset clock, no wall timer.
+TEST_CASE("A server-made actor with an NPC base dies by the NPC rule, not "
+          "the players' 25 s respawn",
+          "[NpcFate][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  constexpr uint32_t kMade = 0xff000d0c;
+  constexpr uint32_t kBanditBase = 0x3de6f; // EncBandit01Melee2HBerserkNordM
+  MpChangeForm saved;
+  saved.recType = MpChangeForm::ACHR;
+  saved.formDesc = FormDesc(kMade, "");
+  saved.baseDesc = FormDesc::FromFormId(kBanditBase, p.worldState.espmFiles);
+  saved.worldOrCellDesc = FormDesc::Tamriel();
+  saved.position = kForest;
+  saved.angle = { 0.f, 0.f, 0.f };
+  p.worldState.LoadChangeForm(saved, p.CreateFormCallbacks());
+  auto& form = p.worldState.LookupFormByIdNoLoad(kMade);
+  REQUIRE(form);
+  MpActor* made = form->AsActor();
+  REQUIRE(made);
+  REQUIRE(made->GetBaseId() == kBanditBase);
+  REQUIRE_FALSE(made->IsCreatedAsPlayer());
+  REQUIRE(made->IsFateRespawned());
+  p.worldState.fateRespawnDue.erase(kMade);
+
+  made->Kill(nullptr);
+  REQUIRE(made->IsDead());
+  // the reset clock, not the 25 s timer
+  REQUIRE(p.worldState.fateRespawnDue.count(kMade) == 1);
+  REQUIRE(made->GetChangeForm().fateDiedAt.has_value());
+
+  // the shared world
+  made->Respawn(false);
+  p.worldState.fateRespawnDue.erase(kMade);
+  p.DestroyActor(kMade);
+}

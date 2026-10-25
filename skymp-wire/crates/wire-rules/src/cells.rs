@@ -45,8 +45,8 @@ pub const FOLLOW_SETTLE_MS: u64 = 1_000;
 #[repr(u8)]
 pub enum MoveVerdict {
     /// Dropped: the sender does not simulate the actor where it stands, or
-    /// the destination is no cell, or another game hosts it (a pass between
-    /// live hosts is D9, the second slice).
+    /// the destination is no cell, or another game hosts it and the move is
+    /// no adjacent crossing by the actor's simulator.
     Refuse = 0,
     /// Applied as today: the move stays inside the sender's cell, or enters
     /// a cell the sender hosts (which ends any follow of the actor).
@@ -55,6 +55,14 @@ pub enum MoveVerdict {
     /// follows its actor there and simulates it until the cell is granted,
     /// the sender unloads it or leaves, or the actor enters a hosted cell.
     Follow = 2,
+    /// The sender simulates the actor and walks it into an adjacent cell
+    /// another live player hosts (ADR-047 D9, npc-handoff (d)): the record
+    /// moves there and the simulation passes to that host at once, the word
+    /// flipping both ways; the sender's further reports are dropped. Playtest
+    /// 34 (2026-10-25): a restart's cold start split Sigrid's two cells
+    /// between the players and every crossing was refused, seven a second,
+    /// one engine walking her live where the other held the record.
+    Pass = 3,
 }
 
 /// How many CellLoaded reports a client may send at once; the validator's
@@ -321,8 +329,9 @@ impl Cells {
     /// The verdict for the report `m` without recording anything (ADR-047
     /// D6): inside the sender's own cell, or into a cell it hosts, Accept;
     /// into a cell nobody hosts that the sender vouches for (adjacent and
-    /// loaded by its game, or a door), Follow; anything else Refuse, a pass
-    /// into another live host's cell included (D9, the second slice). The
+    /// loaded by its game, or a door), Follow; the simulator's adjacent
+    /// crossing into another live host's cell, Pass (D9); anything else
+    /// Refuse. The
     /// door's pre-check reads this (x-handoff-door 20261024-001915: a verdict
     /// that wrote follow rows at the door removed a standing follow before
     /// the host was looked up, and recorded one before the host had crossed).
@@ -353,7 +362,16 @@ impl Cells {
                     MoveVerdict::Refuse
                 }
             }
-            Some(_) => MoveVerdict::Refuse,
+            Some(_) => {
+                // another live host's cell: the simulator's own adjacent
+                // crossing passes the actor to that host (D9); a teleport
+                // across squares or a stranger's report is dropped
+                if simulator == sender && adjacent {
+                    MoveVerdict::Pass
+                } else {
+                    MoveVerdict::Refuse
+                }
+            }
             None => {
                 if simulator != sender {
                     return MoveVerdict::Refuse;
@@ -378,6 +396,10 @@ impl Cells {
                 self.follows.insert(m.actor, Follow { player: m.sender, cell: m.dest, since_ms: now_ms });
             }
             MoveVerdict::Accept if m.dest != m.origin => {
+                self.follows.remove(&m.actor);
+            }
+            MoveVerdict::Pass => {
+                // the destination's host simulates it from here: any follow ends
                 self.follows.remove(&m.actor);
             }
             _ => {}
@@ -772,8 +794,35 @@ mod tests {
         assert_eq!(c.follows(), vec![]);
         assert_eq!(c.simulator_of(STUMP, EAST), C2);
         assert_eq!(c.may_move(&CellMove { sender: C1, actor: STUMP, origin: EAST, dest: EAST, adjacent: false, door: false }, 12_700), MoveVerdict::Refuse);
-        // into another live host's cell: refused until D9
-        assert_eq!(c.may_move(&CellMove { sender: C1, actor: 0x1348a, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false }, 12_800), MoveVerdict::Refuse);
+        // into another live host's cell: the simulator's adjacent crossing passes it (D9)
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: 0x1348a, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false }, 12_800), MoveVerdict::Pass);
+    }
+
+    #[test]
+    fn a_crossing_into_another_live_hosts_cell_passes_the_actor_to_that_host() {
+        // ADR-047 D9, npc-handoff (d); playtest 34 (2026-10-25): a restart's
+        // cold start gave 9712 to one player and 9731 to the other, and
+        // Sigrid's shuttle between them was refused at every crossing
+        const EAST: u32 = 0x9733;
+        const SIGRID: u32 = 0x13483;
+        let mut c = both_in_reach();
+        assert_eq!(c.loaded(C1, RIVERWOOD, 1_000), vec![Decision::Grant { player: C1, cell: RIVERWOOD, epoch: 1 }]);
+        assert_eq!(c.loaded(C2, EAST, 1_100), vec![]);
+        assert_eq!(c.reach(C2, &[RIVERWOOD, EAST], 1_200), vec![Decision::Grant { player: C2, cell: EAST, epoch: 1 }]);
+        assert_eq!(c.simulator_of(SIGRID, RIVERWOOD), C1);
+        // c1 walks her across the border into c2's cell: a pass, no follow left
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: SIGRID, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false }, 2_000), MoveVerdict::Pass);
+        assert_eq!(c.follows(), vec![]);
+        assert_eq!(c.simulator_of(SIGRID, EAST), C2);
+        // from there c1's reports are dropped and c2's pass
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: SIGRID, origin: EAST, dest: EAST, adjacent: false, door: false }, 2_100), MoveVerdict::Refuse);
+        assert_eq!(c.may_move(&CellMove { sender: C2, actor: SIGRID, origin: EAST, dest: EAST, adjacent: false, door: false }, 2_200), MoveVerdict::Accept);
+        // and back across, c2 passes her to c1 the same way
+        assert_eq!(c.may_move(&CellMove { sender: C2, actor: SIGRID, origin: EAST, dest: RIVERWOOD, adjacent: true, door: false }, 3_000), MoveVerdict::Pass);
+        assert_eq!(c.simulator_of(SIGRID, RIVERWOOD), C1);
+        // a crossing that is no adjacent walk (a teleport across squares) and a stranger's report stay refused
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: SIGRID, origin: RIVERWOOD, dest: EAST, adjacent: false, door: false }, 3_100), MoveVerdict::Refuse);
+        assert_eq!(c.may_move(&CellMove { sender: C2, actor: SIGRID, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false }, 3_200), MoveVerdict::Refuse);
     }
 
     #[test]

@@ -1829,6 +1829,16 @@ void PartOne::TickFateRespawns()
       dropped.push_back(id);
       continue;
     }
+    // thuum docs/research/m3/decisions-after-playtest-34.md D21: a body taken
+    // out of the world while it lay waits for its enable (MpActor::Enable
+    // puts it back on the clock, the death's stamp kept)
+    if (actor->IsDisabled()) {
+      spdlog::info("[verb:npc-fate] {:x} disabled while its body lay: its "
+                   "return waits for its enable (D21)",
+                   id);
+      dropped.push_back(id);
+      continue;
+    }
     if (day >= *actor->GetChangeForm().fateDiedAt + hours / 24.f) {
       due.push_back(id);
     }

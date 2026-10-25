@@ -998,6 +998,9 @@ void PartOne::Init()
     SendFates(actor, actor.GetCellOrWorld().ToFormId(worldState.espmFiles),
               actor.GetPos());
   };
+  worldState.onDeathState = [this](MpActor& actor, bool isDead) {
+    OnDeathState(actor, isDead);
+  };
   worldState.onActorFate = [this](MpActor& actor) {
     ActorFateMessage msg;
     msg.fates.push_back(FateOf(worldState, actor));
@@ -1719,6 +1722,27 @@ void PartOne::OnCellLoaded(MpActor& player, uint32_t cell, bool loaded)
     *this,
     loaded ? pImpl->cells->loaded(player.GetFormId(), cell, nowMs)
            : pImpl->cells->unloaded(player.GetFormId(), cell, nowMs));
+}
+
+void PartOne::OnDeathState(MpActor& actor, bool isDead)
+{
+  // a player's actor alone: an NPC's death is npc-fate's and hosts nothing
+  if (serverState.UserByActor(&actor) == Networking::InvalidUserId) {
+    return;
+  }
+  const auto nowMs = SteadyNowMs();
+  if (isDead) {
+    spdlog::info("PartOne - cell-host: {:x} died: its cells start their "
+                 "grace, no candidate until it stands (D18)",
+                 actor.GetFormId());
+    ApplyHostDecisions(*this, pImpl->cells->died(actor.GetFormId(), nowMs));
+  } else {
+    spdlog::info("PartOne - cell-host: {:x} stands again: a candidate again "
+                 "(D18)",
+                 actor.GetFormId());
+    ApplyHostDecisions(*this,
+                       pImpl->cells->respawned(actor.GetFormId(), nowMs));
+  }
 }
 
 void PartOne::OnActorSighting(MpActor& reporter, uint32_t refrId,

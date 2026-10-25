@@ -100,6 +100,10 @@ public:
   void VisitProperties(CreateActorMessage& message,
                        VisitPropertiesMode mode) override;
   void Disable() override;
+  // thuum docs/research/m3/decisions-after-playtest-34.md D21: a dead actor
+  // enabled again resumes its return (the fated clock from the enable when
+  // it died out of the world, from its death otherwise)
+  void Enable() override;
 
   void SendToUser(const IMessageBase& message, bool reliable);
   void SendToUserDeferred(const IMessageBase& message, bool reliable,

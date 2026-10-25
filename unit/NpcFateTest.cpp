@@ -413,3 +413,80 @@ TEST_CASE("A server-made actor with an NPC base dies by the NPC rule, not "
   p.worldState.fateRespawnDue.erase(kMade);
   p.DestroyActor(kMade);
 }
+
+// thuum docs/research/m3/decisions-after-playtest-34.md D21 (playtest 34,
+// section 5, numidium's read): the ice wolf ff000003, disabled by the console
+// at 23:00Z, was killed at 23:01:00 and stood again enabled at 23:01:25. A
+// disabled actor is out of the world by the server's own word: its death
+// schedules no return, a body disabled while it lies waits, and the enable
+// resumes the clock (from the enable when the death left no stamp, from the
+// death otherwise).
+TEST_CASE("A disabled actor's death schedules no respawn, a body disabled "
+          "meanwhile waits, and the enable resumes the clock",
+          "[NpcFate][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  constexpr uint32_t kOut = 0xff000d0d;
+  constexpr uint32_t kBanditBase = 0x3de6f; // EncBandit01Melee2HBerserkNordM
+  MpChangeForm saved;
+  saved.recType = MpChangeForm::ACHR;
+  saved.formDesc = FormDesc::FromFormId(kOut, p.worldState.espmFiles);
+  saved.baseDesc = FormDesc::FromFormId(kBanditBase, p.worldState.espmFiles);
+  saved.worldOrCellDesc = FormDesc::Tamriel();
+  saved.position = kForest;
+  saved.angle = { 0.f, 0.f, 0.f };
+  p.worldState.LoadChangeForm(saved, p.CreateFormCallbacks());
+  p.worldState.LoadDeferredActors();
+  auto& form = p.worldState.LookupFormByIdNoLoad(kOut);
+  REQUIRE(form);
+  MpActor* made = form->AsActor();
+  REQUIRE(made);
+  REQUIRE(made->IsFateRespawned());
+  p.worldState.fateRespawnDue.erase(kOut);
+
+  const auto savedClock = p.worldState.gameTime;
+  float day = 200.f;
+  p.worldState.gameTime = [&day] {
+    GameTimeNow t;
+    t.daysPassed = day;
+    return t;
+  };
+  const float hours = p.worldState.FateRespawnHours();
+  REQUIRE(hours > 0.f);
+
+  // out of the world first: the death schedules nothing and stamps nothing
+  made->Disable();
+  REQUIRE(made->IsDisabled());
+  made->Kill(nullptr);
+  REQUIRE(made->IsDead());
+  REQUIRE(p.worldState.fateRespawnDue.count(kOut) == 0);
+  REQUIRE_FALSE(made->GetChangeForm().fateDiedAt.has_value());
+
+  // the enable starts the clock from now
+  made->Enable();
+  REQUIRE_FALSE(made->IsDisabled());
+  REQUIRE(p.worldState.fateRespawnDue.count(kOut) == 1);
+  REQUIRE(made->GetChangeForm().fateDiedAt == std::optional<float>{ 200.f });
+
+  // disabled while the body lies: the sweep drops it and keeps the stamp
+  made->Disable();
+  day = 200.f + hours / 24.f + 0.01f;
+  p.TickFateRespawns();
+  REQUIRE(made->IsDead());
+  REQUIRE(p.worldState.fateRespawnDue.count(kOut) == 0);
+  REQUIRE(made->GetChangeForm().fateDiedAt == std::optional<float>{ 200.f });
+
+  // back in the world past its hours: the enable puts it on the clock and
+  // the next sweep stands it
+  made->Enable();
+  REQUIRE(p.worldState.fateRespawnDue.count(kOut) == 1);
+  p.TickFateRespawns();
+  REQUIRE_FALSE(made->IsDead());
+  REQUIRE(p.worldState.fateRespawnDue.count(kOut) == 0);
+
+  // the shared world
+  p.worldState.gameTime = savedClock;
+  p.worldState.fateRespawnDue.erase(kOut);
+  p.DestroyActor(kOut);
+}

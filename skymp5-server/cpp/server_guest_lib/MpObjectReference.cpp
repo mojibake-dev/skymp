@@ -1714,7 +1714,12 @@ bool MpObjectReference::ProcessActivateSecond(
 
   auto t = base.rec->GetType();
 
-  if (t == espm::CONT::kType && actorActivator) {
+  // thuum docs/verbs/npc-fate.md (playtest 34, section 5): a corpse shares
+  // the CONT branch's open (ProcessActivateNormal) and must share its close,
+  // else its looter's closing activation fell through here, the occupancy
+  // was never released, and every other player was refused ("occupant is
+  // another object and is nearby") until the looter stood 512 units away
+  if ((t == espm::CONT::kType || IsCorpse()) && actorActivator) {
     if (this->occupant == &activationSource) {
       SetOpen(false);
       this->occupant->RemoveEventSink(this->occupantDestroySink);

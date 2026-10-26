@@ -3,9 +3,11 @@
 #include "ActorValues.h"
 #include "ActorValuesMessage.h"
 #include "ChangeFormGuard.h"
+#include "ChangeValuesMessage.h"
 #include "Condition.h"
 #include "ConditionsEvaluator.h"
 #include "CropRegeneration.h"
+#include "DamageCauseMessage.h"
 #include "EvaluateTemplate.h"
 #include "FormCallbacks.h"
 #include "GetBaseActorValues.h"
@@ -62,6 +64,11 @@ struct MpActor::Impl
   uint32_t snippetIndex = 0;
   uint32_t respawnTimerIndex = 0;
   bool isRespawning = false;
+  // ADR-050 decision 2: the server's number reached zero, the host's report
+  // awaited (MpActor::BeginPendingDeath)
+  bool pendingDeath = false;
+  uint32_t pendingDeathAggressor = 0;
+  uint64_t pendingDeathSinceMs = 0;
   bool isBlockActive = false;
   std::chrono::steady_clock::time_point lastAttributesUpdateTimePoint;
   std::vector<std::pair<uint32_t, std::chrono::steady_clock::time_point>>
@@ -949,11 +956,21 @@ void MpActor::SetPercentages(const ActorValues& actorValues,
   float health = ImmortalHealth(actorValues.healthPercentage);
   if (health == 0.f) {
     if (MayDie(aggressor)) {
-      Kill(aggressor);
-      return;
+      // thuum docs/verbs/npc-fate.md (ADR-050 decision 2): a hosted NPC's
+      // death is its host's engine's, from the cause this number sent; the
+      // record reads zero now and the kill waits for the report (or the
+      // window, PartOne::TickDeaths)
+      auto worldState = GetParent();
+      if (worldState && worldState->npcEngineDeaths && HostedBy()) {
+        BeginPendingDeath(aggressor);
+      } else {
+        Kill(aggressor);
+        return;
+      }
+    } else {
+      // essential, or protected and not a player's hand: one point left
+      health = 1.f / std::max(GetMaximumValues().health, 1.f);
     }
-    // essential, or protected and not a player's hand: one point left
-    health = 1.f / std::max(GetMaximumValues().health, 1.f);
   }
   // a value the server raises holds against the client's reports until one
   // reaches it (thuum docs/verbs/attributes.md); a lowered one needs no
@@ -1036,8 +1053,145 @@ void MpActor::NetSetPercentages(
   // own game would take for a death (thuum docs/verbs/god-mode.md)
   ActorValues values = actorValues;
   values.healthPercentage = ImmortalHealth(values.healthPercentage);
-  NetSendChangeValues(values, avFilter);
+  static const std::vector<espm::ActorValue> kAll = {
+    espm::ActorValue::Health, espm::ActorValue::Magicka,
+    espm::ActorValue::Stamina
+  };
+  const std::vector<espm::ActorValue>& touched =
+    avFilter.has_value() && !avFilter->empty() ? *avFilter : kAll;
+  const bool healthTouched =
+    std::find(touched.begin(), touched.end(), espm::ActorValue::Health) !=
+    touched.end();
+  auto worldState = GetParent();
+  MpActor* host = HostedBy();
+  // thuum docs/verbs/npc-fate.md (ADR-050 decision 2, deaths by the engine):
+  // a hosted NPC's health reaches its host as a CAUSE (the resulting
+  // percentage, the aggressor), which the host's engine applies through its
+  // own damage entry; its other values as before; every other listener
+  // hears the resulting values at once (the attacker's bar moves within a
+  // round trip, not at the host's next sample)
+  if (host && healthTouched && worldState && worldState->npcEngineDeaths) {
+    DamageCauseMessage cause;
+    cause.idx = GetIdx();
+    cause.attacker = aggressor ? aggressor->GetFormId() : 0;
+    cause.health = values.healthPercentage;
+    cause.killMove = false;
+    host->SendToUser(cause, true);
+    std::vector<espm::ActorValue> rest;
+    for (const auto av : touched) {
+      if (av != espm::ActorValue::Health) {
+        rest.push_back(av);
+      }
+    }
+    if (!rest.empty()) {
+      NetSendChangeValues(values, rest);
+    }
+    SendValuesToOtherListeners(values, touched, host);
+  } else {
+    NetSendChangeValues(values, avFilter);
+  }
   SetPercentages(values, aggressor);
+}
+
+MpActor* MpActor::HostedBy()
+{
+  if (IsCreatedAsPlayer() || GetUserId() != Networking::InvalidUserId) {
+    return nullptr;
+  }
+  auto worldState = GetParent();
+  if (!worldState) {
+    return nullptr;
+  }
+  return worldState->HostOf(*this);
+}
+
+void MpActor::SendValuesToOtherListeners(
+  const ActorValues& values, const std::vector<espm::ActorValue>& touched,
+  MpActor* host)
+{
+  ChangeValuesMessage out;
+  out.idx = GetIdx();
+  for (const auto av : touched) {
+    switch (av) {
+      case espm::ActorValue::Health:
+        out.data.health = values.healthPercentage;
+        break;
+      case espm::ActorValue::Magicka:
+        out.data.magicka = values.magickaPercentage;
+        break;
+      case espm::ActorValue::Stamina:
+        out.data.stamina = values.staminaPercentage;
+        break;
+      default:
+        break;
+    }
+  }
+  // every listener with a user but the host (OnHostedActorState's loop)
+  for (auto listener : GetActorListeners()) {
+    if (listener == host ||
+        listener->GetUserId() == Networking::InvalidUserId) {
+      continue;
+    }
+    listener->SendToUser(out, true);
+  }
+}
+
+void MpActor::KillOrDefer(MpActor* killer, bool killMove)
+{
+  auto worldState = GetParent();
+  MpActor* host = HostedBy();
+  if (!host || !worldState || !worldState->npcEngineDeaths || IsDead()) {
+    Kill(killer);
+    return;
+  }
+  DamageCauseMessage cause;
+  cause.idx = GetIdx();
+  cause.attacker = killer ? killer->GetFormId() : 0;
+  cause.health = 0.f;
+  cause.killMove = killMove;
+  host->SendToUser(cause, true);
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    changeForm.actorValues.healthPercentage = 0.f;
+  });
+  SetLastAttributesPercentagesUpdate(std::chrono::steady_clock::now());
+  BeginPendingDeath(killer);
+}
+
+void MpActor::BeginPendingDeath(MpActor* aggressor)
+{
+  if (pImpl->pendingDeath || IsDead()) {
+    return;
+  }
+  pImpl->pendingDeath = true;
+  pImpl->pendingDeathAggressor = aggressor ? aggressor->GetFormId() : 0;
+  pImpl->pendingDeathSinceMs = static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch())
+      .count());
+  if (auto worldState = GetParent()) {
+    worldState->pendingDeaths.insert(GetFormId());
+  }
+  MpActor* host = HostedBy();
+  spdlog::info("[verb:npc-fate] death pending on {:x}: the server's number "
+               "reached zero (aggressor {:x}); its host {:x} reports within "
+               "{} ms or the kill is the server's word",
+               GetFormId(), pImpl->pendingDeathAggressor,
+               host ? host->GetFormId() : 0u, kPendingDeathMs);
+}
+
+bool MpActor::HasPendingDeath() const
+{
+  return pImpl->pendingDeath;
+}
+
+uint64_t MpActor::PendingDeathSinceMs() const
+{
+  return pImpl->pendingDeathSinceMs;
+}
+
+uint32_t MpActor::PendingDeathAggressor() const
+{
+  return pImpl->pendingDeathAggressor;
 }
 
 float MpActor::ImmortalHealth(float healthPercentage)
@@ -2042,6 +2196,18 @@ void MpActor::Kill(MpActor* killer, bool shouldTeleport)
 {
   spdlog::trace("MpActor::Kill {:x} - killer is {:x}", GetFormId(),
                 killer ? killer->GetFormId() : 0);
+  // ADR-050 decision 2: one death, one word (the host's report and the
+  // pending death's timeout may both ask)
+  if (IsDead()) {
+    spdlog::trace("MpActor::Kill {:x} - already dead, nothing", GetFormId());
+    return;
+  }
+  if (pImpl->pendingDeath) {
+    pImpl->pendingDeath = false;
+    if (auto worldState = GetParent()) {
+      worldState->pendingDeaths.erase(GetFormId());
+    }
+  }
 
   auto& changeForm = ChangeForm();
   const float healthPercentageBeforeDeath =

@@ -343,6 +343,16 @@ public:
   // (ActionListener::OnActorDeath); false refuses every report (A: the
   // server's number alone kills)
   bool npcDeathReports = true;
+  // thuum docs/verbs/npc-fate.md (ADR-050 decision 2, deaths by the engine):
+  // the server's number for a hit on a hosted NPC goes to its host as a
+  // cause (DamageCause) and the kill at zero waits for the host's report up
+  // to kPendingDeathMs; false restores the absolute values and the kill at
+  // once (a bisect switch, server setting npcEngineDeaths)
+  bool npcEngineDeaths = true;
+  // the actors whose server number reached zero and whose host's report is
+  // awaited (MpActor::BeginPendingDeath; PartOne::TickDeaths kills the ones
+  // past the window)
+  std::unordered_set<uint32_t> pendingDeaths;
   std::unordered_map<uint32_t, std::map<uint32_t, float>>
     activationChildsByActivationParent;
   std::vector<std::optional<std::chrono::system_clock::time_point>>

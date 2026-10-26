@@ -551,6 +551,19 @@ fn check_actor_speech(m: &skymp::ActorSpeech) -> Result<(), Reject> {
     Ok(())
 }
 
+/// The server's cause for a hit on a hosted NPC (docs/verbs/npc-fate.md,
+/// ADR-050 decision 2): the victim's idx in range and the resulting health a
+/// percentage.
+fn check_damage_cause(m: &skymp::DamageCause) -> Result<(), Reject> {
+    if !m.health.is_finite() {
+        return Err(Reject::NonFinite);
+    }
+    if m.idx == u32::MAX || !(0.0..=1.0).contains(&m.health) {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
 /// A favorites report: every hotkey in [`HOTKEYS`], no key bound twice, no
 /// form listed twice (docs/verbs/favorites.md).
 fn check_favorites(m: &skymp::Favorites) -> Result<(), Reject> {
@@ -791,6 +804,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::ActorDeath(m) => check_actor_death(m),
         Message::HostedActorState(m) => check_hosted_state(m),
         Message::ActorSpeech(m) => check_actor_speech(m),
+        Message::DamageCause(m) => check_damage_cause(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
         // rejects it by direction before it gets this far.
@@ -1762,6 +1776,18 @@ mod tests {
                 .unwrap_or_default(),
             ..Default::default()
         })
+    }
+
+    #[test]
+    fn damage_causes_carry_a_percentage_for_a_victim_in_range() {
+        use wire_schema::skymp::DamageCause;
+        let cause = |idx, health| Message::DamageCause(DamageCause { idx, attacker: 0xff00_0001, health, kill_move: false, ..Default::default() });
+        assert_eq!(validate_server(&cause(7, 0.42)), Ok(()));
+        assert_eq!(validate_server(&cause(7, 0.0)), Ok(()));
+        assert_eq!(validate_server(&cause(7, 1.0)), Ok(()));
+        assert_eq!(validate_server(&cause(7, f32::NAN)), Err(Reject::NonFinite));
+        assert_eq!(validate_server(&cause(7, 1.5)), Err(Reject::Range));
+        assert_eq!(validate_server(&cause(u32::MAX, 0.5)), Err(Reject::Range));
     }
 
     #[test]

@@ -2,6 +2,10 @@
 #include "ActivateMessage.h"
 #include "ActorDeathMessage.h"
 #include "CellLoadedMessage.h"
+#include "ChangeValuesMessage.h"
+#include "DamageCauseMessage.h"
+#include "HitMessage.h"
+#include "MsgType.h"
 #include "TestUtils.hpp"
 #include "libespm/Loader.h"
 #include "wire_bridge_cxx/rules.h"
@@ -336,6 +340,179 @@ TEST_CASE("A looter's closing activation releases a corpse's occupancy for "
   REQUIRE_FALSE(actor.IsOpen());
 
   StandUp(p, actor);
+  Leave(p, 1, kOther);
+  Leave(p, 0, kHost);
+}
+
+namespace {
+// the typed messages `user` was sent, in order
+template <class Message>
+std::vector<Message> TypedSentTo(PartOne& p, Networking::UserId user)
+{
+  std::vector<Message> out;
+  for (auto& m : p.Messages()) {
+    if (m.userId != user) {
+      continue;
+    }
+    if (auto typed = dynamic_cast<Message*>(m.message.get())) {
+      out.push_back(*typed);
+    }
+  }
+  return out;
+}
+
+// the isDead words `user` heard for `refrId`
+size_t DeathWordsTo(PartOne& p, Networking::UserId user, uint32_t refrId)
+{
+  size_t n = 0;
+  for (auto& m : p.Messages()) {
+    if (m.userId == user && m.j.is_object() &&
+        m.j.value("t", -1) == static_cast<int>(MsgType::UpdateProperty) &&
+        m.j.value("propName", std::string()) == "isDead" &&
+        m.j.value("refrId", 0u) == refrId &&
+        m.j.value("dataDump", std::string()) == "true") {
+      ++n;
+    }
+  }
+  return n;
+}
+
+// `user`'s bare-handed hit on `target`
+void HitBy(PartOne& p, Networking::UserId user, uint32_t target)
+{
+  RawMessageData raw;
+  raw.userId = user;
+  HitMessage hit;
+  hit.data.aggressor = 0x14;
+  hit.data.target = target;
+  hit.data.source = 0;
+  p.GetActionListener().OnHit(raw, hit);
+}
+}
+
+// thuum docs/verbs/npc-fate.md (ADR-050 decision 2, deaths by the engine)
+TEST_CASE("A numbered hit on a hosted NPC reaches its host as a cause and "
+          "the other listeners as values, and the kill at zero waits for "
+          "the host's report, once",
+          "[NpcFate][Death][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  p.worldState.npcDeathReports = true;
+  p.worldState.npcEngineDeaths = true;
+  auto& host = Arrive(p, 0, kHost);
+  auto& other = Arrive(p, 1, kOther);
+  Host(p, 0, 0x9810);
+  auto& predator = Standing(p, kPredator);
+  predator.SetPercentages(ActorValues{}, nullptr);
+  REQUIRE(predator.HostedBy() == &host);
+  REQUIRE_FALSE(predator.IsDead());
+
+  // the other player's hit: the host hears a cause for the health and no
+  // absolute health; the other player hears the resulting values
+  p.Messages().clear();
+  HitBy(p, 1, kPredator);
+  const auto causes = TypedSentTo<DamageCauseMessage>(p, 0);
+  REQUIRE_FALSE(causes.empty());
+  REQUIRE(causes.back().idx == predator.GetIdx());
+  REQUIRE(causes.back().attacker == other.GetFormId());
+  REQUIRE(causes.back().health < 1.f);
+  REQUIRE_FALSE(causes.back().killMove);
+  for (const auto& values : TypedSentTo<ChangeValuesMessage>(p, 0)) {
+    if (values.idx == predator.GetIdx()) {
+      REQUIRE_FALSE(values.data.health.has_value());
+    }
+  }
+  bool otherHeard = false;
+  for (const auto& values : TypedSentTo<ChangeValuesMessage>(p, 1)) {
+    if (values.idx == predator.GetIdx() && values.data.health.has_value()) {
+      otherHeard = true;
+    }
+  }
+  REQUIRE(otherHeard);
+
+  // the server's number reaches zero: no kill yet, the cause says 0, the
+  // record reads 0, the death pends
+  p.Messages().clear();
+  ActorValues zero;
+  zero.healthPercentage = 0.f;
+  predator.NetSetPercentages(
+    zero, &other, std::vector<espm::ActorValue>{ espm::ActorValue::Health });
+  REQUIRE_FALSE(predator.IsDead());
+  REQUIRE(predator.HasPendingDeath());
+  REQUIRE(predator.GetChangeForm().actorValues.healthPercentage == 0.f);
+  const auto lethal = TypedSentTo<DamageCauseMessage>(p, 0);
+  REQUIRE_FALSE(lethal.empty());
+  REQUIRE(lethal.back().health == 0.f);
+
+  // the host's report ends it: one death, one word to the other game, and
+  // the window's tick adds nothing
+  p.Messages().clear();
+  Report(p, 0, kPredator, 4, kOther, predator.GetPos());
+  REQUIRE(predator.IsDead());
+  REQUIRE_FALSE(predator.HasPendingDeath());
+  REQUIRE(DeathWordsTo(p, 1, kPredator) == 1);
+  p.TickDeaths(NowMs() + MpActor::kPendingDeathMs + 2'000);
+  REQUIRE(DeathWordsTo(p, 1, kPredator) == 1);
+
+  StandUp(p, predator);
+  Leave(p, 1, kOther);
+  Leave(p, 0, kHost);
+}
+
+TEST_CASE("A hosted NPC at zero with no report dies by the server's word "
+          "when the window passes, and a headshot defers the same way",
+          "[NpcFate][Death][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  p.worldState.npcDeathReports = true;
+  p.worldState.npcEngineDeaths = true;
+  auto& host = Arrive(p, 0, kHost);
+  auto& other = Arrive(p, 1, kOther);
+  Host(p, 0, 0x9810);
+  auto& predator = Standing(p, kPredator);
+  predator.SetPercentages(ActorValues{}, nullptr);
+  REQUIRE(predator.HostedBy() == &host);
+
+  p.Messages().clear();
+  ActorValues zero;
+  zero.healthPercentage = 0.f;
+  predator.NetSetPercentages(
+    zero, &other, std::vector<espm::ActorValue>{ espm::ActorValue::Health });
+  REQUIRE(predator.HasPendingDeath());
+  const auto since = predator.PendingDeathSinceMs();
+  p.TickDeaths(since + 1'000);
+  REQUIRE_FALSE(predator.IsDead());
+  p.TickDeaths(since + MpActor::kPendingDeathMs + 1);
+  REQUIRE(predator.IsDead());
+  REQUIRE(DeathWordsTo(p, 1, kPredator) == 1);
+
+  // a kill the server decided (a headshot's shape): a lethal cause with the
+  // kill move, deferred the same way; the switch off kills at once
+  StandUp(p, predator);
+  predator.SetPercentages(ActorValues{}, nullptr);
+  p.Messages().clear();
+  predator.KillOrDefer(&other, true);
+  REQUIRE_FALSE(predator.IsDead());
+  REQUIRE(predator.HasPendingDeath());
+  const auto causes = TypedSentTo<DamageCauseMessage>(p, 0);
+  REQUIRE_FALSE(causes.empty());
+  REQUIRE(causes.back().killMove);
+  REQUIRE(causes.back().health == 0.f);
+  p.TickDeaths(predator.PendingDeathSinceMs() + MpActor::kPendingDeathMs + 1);
+  REQUIRE(predator.IsDead());
+
+  StandUp(p, predator);
+  predator.SetPercentages(ActorValues{}, nullptr);
+  p.worldState.npcEngineDeaths = false;
+  p.Messages().clear();
+  predator.KillOrDefer(&other, false);
+  REQUIRE(predator.IsDead());
+  REQUIRE(TypedSentTo<DamageCauseMessage>(p, 0).empty());
+  p.worldState.npcEngineDeaths = true;
+
+  StandUp(p, predator);
   Leave(p, 1, kOther);
   Leave(p, 0, kHost);
 }

@@ -267,6 +267,23 @@ public:
     std::chrono::steady_clock::time_point now);
 
   void Kill(MpActor* killer = nullptr, bool shouldTeleport = false);
+  // thuum docs/verbs/npc-fate.md (ADR-050 decision 2, deaths by the engine):
+  // the game hosting this NPC (nullptr for a player's actor, an unhosted
+  // actor or a player's own)
+  MpActor* HostedBy();
+  // a kill the server decided for a hosted NPC: the cause (health 0,
+  // killMove) to the host and the kill deferred to its report, else Kill
+  void KillOrDefer(MpActor* killer, bool killMove);
+  // the server's number reached zero: the host's death report is awaited
+  // for kPendingDeathMs, then the kill is the server's word (TickDeaths)
+  void BeginPendingDeath(MpActor* aggressor);
+  bool HasPendingDeath() const;
+  void SendValuesToOtherListeners(const ActorValues& values,
+                                  const std::vector<espm::ActorValue>& touched,
+                                  MpActor* host);
+  uint64_t PendingDeathSinceMs() const;
+  uint32_t PendingDeathAggressor() const;
+  static constexpr uint64_t kPendingDeathMs = 3000;
   void Respawn(bool shouldTeleport = true);
   void RespawnWithDelay(bool shouldTeleport = true);
   // thuum docs/verbs/npc-fate.md (the deaths): every actor that is not a

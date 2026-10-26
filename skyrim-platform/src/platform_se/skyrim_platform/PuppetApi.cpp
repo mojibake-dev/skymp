@@ -1,5 +1,6 @@
 #include "PuppetApi.h"
 #include "CallNativeApi.h"
+#include "FridaHooks.h"
 #include "Hosted.h"
 #include "Puppets.h"
 #include "game/Offsets.h"
@@ -431,6 +432,70 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
     g_sayResult[actorFormId] = result;
   });
   return Napi::Boolean::New(info.Env(), true);
+}
+
+Napi::Value PuppetApi::DamageActor(const Napi::CallbackInfo& info)
+{
+  const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  const float health = NapiHelper::ExtractFloat(info[1], "health");
+  const auto attackerFormId =
+    NapiHelper::ExtractUInt32(info[2], "attackerFormId");
+  const bool killMove = NapiHelper::ExtractBoolean(info[3], "killMove");
+  if (actorFormId == 0 || actorFormId == 0x14 || !std::isfinite(health)) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  // the forms looked up on the game thread alone (setPuppet's reason)
+  g_nativeCallRequirements.gameThrQ->AddTask([actorFormId, health,
+                                              attackerFormId,
+                                              killMove](Viet::Void) {
+    auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
+    if (!actor) {
+      logger::warn("[verb:npc-fate] damageActor on {:x}: no such actor",
+                   actorFormId);
+      return;
+    }
+    auto* attacker = attackerFormId
+      ? RE::TESForm::LookupByID<RE::Actor>(attackerFormId)
+      : nullptr;
+    auto* owner = actor->AsActorValueOwner();
+    if (!owner) {
+      return;
+    }
+    // the engine's current health against its maximum (the permanent value
+    // plus the temporary modifier, CommonLibSSE-NG ActorValueOwner.h:15-16,
+    // Actor.h:526), the resulting percentage the server sent, the delta
+    const float current = owner->GetActorValue(RE::ActorValue::kHealth);
+    const float maximum =
+      owner->GetPermanentActorValue(RE::ActorValue::kHealth) +
+      actor->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kTemporary,
+                                   RE::ActorValue::kHealth);
+    const float target = std::clamp(health, 0.f, 1.f) * std::max(maximum, 1.f);
+    const float delta = current - target;
+    const char* way = "nothing";
+    if (delta > 0.01f || (killMove && current > 0.f)) {
+      Frida::DamageActorOriginal(actor, std::max(delta, 0.f), attacker,
+                                 killMove);
+      way = "damaged";
+    } else if (delta < -0.01f) {
+      owner->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage,
+                               RE::ActorValue::kHealth, -delta);
+      way = "restored";
+    }
+    logger::info("[verb:npc-fate] cause on {:x}: health {:.3f} of {:.1f} "
+                 "(engine {:.1f} -> {:.1f}, {}), attacker {:x}, kill move {}",
+                 actorFormId, health, maximum, current, target, way,
+                 attackerFormId, killMove);
+  });
+  return Napi::Boolean::New(info.Env(), true);
+}
+
+Napi::Value PuppetApi::SetEngineDamageCut(const Napi::CallbackInfo& info)
+{
+  const bool on = NapiHelper::ExtractBoolean(info[0], "on");
+  Frida::SetEngineDamageCut(on);
+  logger::info("[verb:npc-fate] the engine damage cut is {}",
+               on ? "on" : "off");
+  return info.Env().Undefined();
 }
 
 Napi::Value PuppetApi::SayTopicInfoResult(const Napi::CallbackInfo& info)

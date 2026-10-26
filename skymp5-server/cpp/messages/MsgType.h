@@ -68,6 +68,9 @@ enum class MsgType : uint8_t
                          // simulates
   ActorSpeech = 54,      // the same verb's voice slice: a spoken line begins
                          // on an actor the host simulates
+  DamageCause = 55,      // thuum docs/verbs/npc-fate.md (ADR-050 decision 2):
+                         // the server's number for a hit on a hosted NPC,
+                         // to its host as a cause (the resulting health)
 
   Max
 };

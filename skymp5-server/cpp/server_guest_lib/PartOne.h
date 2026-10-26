@@ -405,6 +405,10 @@ public:
   void OnCellLoaded(MpActor& player, uint32_t cell, bool loaded);
   void RefreshReach(MpActor& player);
   void TickCellHosts(uint64_t nowMs);
+  // thuum docs/verbs/npc-fate.md (ADR-050 decision 2): a hosted NPC whose
+  // server number reached zero dies by the server's word when its host
+  // reported nothing within MpActor::kPendingDeathMs
+  void TickDeaths(uint64_t nowMs);
   // thuum docs/verbs/npc-fate.md (the deaths): the bodies whose deadline
   // (fateDiedAt plus WorldState::FateRespawnHours()) the installed game
   // clock has passed stand again; once a second from Tick, directly from a

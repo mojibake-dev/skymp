@@ -28,6 +28,11 @@ export class PuppetService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
         this.enabled = this.sp.settings["skymp5-client"]["npcPuppet"] !== false;
+        // ADR-050 decision 2: with the server's number arriving as a cause,
+        // the engine of the game that simulates an NPC dies by itself; the
+        // deferred kill holds puppets alone. Off (npcEngineDamage false, the
+        // bisect), every NPC holds at zero for the server's word as before
+        this.engineDeaths = this.sp.settings["skymp5-client"]["npcEngineDamage"] !== false;
         if (!this.enabled) {
             logTrace(this, "npcPuppet is off in settings: no actor's AI is switched (a bisect switch, not a play mode)");
         }
@@ -61,11 +66,17 @@ export class PuppetService extends ClientListener {
         const flagged = this.sp.isPuppet(localId);
         const now = Date.now();
 
-        // the deferred kill, once per actor (re-armed after a resurrect):
-        // no NPC dies by this game's hand until the server's word
-        if (!this.deferredArmed.has(localId)) {
+        // the deferred kill (re-armed after a resurrect): a puppet never dies
+        // by this game's hand, the server's word kills it; an actor this game
+        // simulates dies by its own engine from the server's cause (ADR-050
+        // decision 2), or holds at zero too while npcEngineDamage is off
+        const holdAtZero = !word || !loadedHere || !this.engineDeaths;
+        if (holdAtZero && !this.deferredArmed.has(localId)) {
             ac.startDeferredKill();
             this.deferredArmed.add(localId);
+        } else if (!holdAtZero && this.deferredArmed.has(localId)) {
+            ac.endDeferredKill();
+            this.deferredArmed.delete(localId);
         }
 
         if (!loadedHere) {
@@ -317,4 +328,5 @@ export class PuppetService extends ClientListener {
     // reloads it), and a walk out of reach is a release either way
     private static readonly releaseGraceMs = 4000;
     private readonly enabled: boolean;
+    private readonly engineDeaths: boolean;
 }

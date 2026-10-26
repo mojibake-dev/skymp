@@ -39,6 +39,7 @@ import { PuppetService } from "./services/services/puppetService";
 import { ActorFateService } from "./services/services/actorFateService";
 import { DeathReportService } from "./services/services/deathReportService";
 import { HostedStateService } from "./services/services/hostedStateService";
+import { DamageCauseService } from "./services/services/damageCauseService";
 import { VoiceService } from "./services/services/voiceService";
 import { SpSnippetService } from "./services/services/spSnippetService";
 import { SweetTaffyDynamicPerksService } from "./services/services/sweetTaffyDynamicPerksService";
@@ -117,6 +118,7 @@ const main = () => {
       new ActorFateService(sp, controller),
       new DeathReportService(sp, controller),
       new HostedStateService(sp, controller),
+      new DamageCauseService(sp, controller),
       new VoiceService(sp, controller),
       new SpSnippetService(sp, controller),
       new SettingsService(sp, controller),

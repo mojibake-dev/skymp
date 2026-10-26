@@ -53,6 +53,18 @@ Napi::Value IsPerformingAction(const Napi::CallbackInfo& info);
 // for a replay its AI update would run (a puppet's never comes)
 Napi::Value SayTopicInfo(const Napi::CallbackInfo& info);
 Napi::Value SayTopicInfoResult(const Napi::CallbackInfo& info);
+// thuum docs/verbs/npc-fate.md (ADR-050 decision 2, deaths by the engine):
+// damageActor(actorFormId, health, attackerFormId, killMove): the server's
+// cause applied to an actor this game simulates on the game thread, through
+// the engine's own damage entry: the delta from the engine's current health
+// to the resulting percentage, downward through DamageActor with the
+// attacker (the engine reacts, records the killer, dies by itself at zero),
+// upward through the value owner's restore; false for an invalid id or a
+// health that is not a number
+Napi::Value DamageActor(const Napi::CallbackInfo& info);
+// setEngineDamageCut(on): the replacement's cut (FridaHooks.cpp), the client
+// setting npcEngineDamage's mirror
+Napi::Value SetEngineDamageCut(const Napi::CallbackInfo& info);
 
 inline void Register(Napi::Env env, Napi::Object& exports)
 {
@@ -86,5 +98,11 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set("sayTopicInfoResult",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(SayTopicInfoResult)));
+  exports.Set(
+    "damageActor",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(DamageActor)));
+  exports.Set("setEngineDamageCut",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(SetEngineDamageCut)));
 }
 }

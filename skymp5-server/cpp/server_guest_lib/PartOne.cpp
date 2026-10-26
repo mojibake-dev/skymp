@@ -1835,6 +1835,36 @@ void PartOne::TickCellHostsEverySecond()
   }
   pImpl->lastCellsTick = now;
   TickCellHosts(SteadyNowMs());
+  TickDeaths(SteadyNowMs());
+}
+
+void PartOne::TickDeaths(uint64_t nowMs)
+{
+  if (worldState.pendingDeaths.empty()) {
+    return;
+  }
+  const std::vector<uint32_t> ids(worldState.pendingDeaths.begin(),
+                                  worldState.pendingDeaths.end());
+  for (const auto id : ids) {
+    auto& form = worldState.LookupFormByIdNoLoad(id);
+    MpActor* actor = form ? form->AsActor() : nullptr;
+    if (!actor || actor->IsDead() || !actor->HasPendingDeath()) {
+      worldState.pendingDeaths.erase(id);
+      continue;
+    }
+    if (nowMs < actor->PendingDeathSinceMs() + MpActor::kPendingDeathMs) {
+      continue;
+    }
+    MpActor* aggressor = nullptr;
+    if (const auto killerId = actor->PendingDeathAggressor()) {
+      auto& killerForm = worldState.LookupFormByIdNoLoad(killerId);
+      aggressor = killerForm ? killerForm->AsActor() : nullptr;
+    }
+    spdlog::info("[verb:npc-fate] death by the server's word on {:x}: no "
+                 "report from its host within {} ms (aggressor {:x})",
+                 id, MpActor::kPendingDeathMs, actor->PendingDeathAggressor());
+    actor->Kill(aggressor);
+  }
 }
 
 void PartOne::TickFateRespawnsEverySecond()
@@ -2496,7 +2526,9 @@ PartOne::HeadshotCheck PartOne::ClaimHeadshot(MpActor& actor, MpActor& target)
                std::string(facts.race_file), facts.archery);
   switch (check) {
     case skymp::rules::HeadshotCheck::Killed:
-      target.Kill(&actor);
+      // ADR-050 decision 2: a hosted NPC's headshot is a lethal cause to its
+      // host (killMove), the kill deferred to the host's report
+      target.KillOrDefer(&actor, true);
       return HeadshotCheck::Killed;
     case skymp::rules::HeadshotCheck::Helmeted:
       return HeadshotCheck::Helmeted;

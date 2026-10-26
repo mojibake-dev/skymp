@@ -597,6 +597,12 @@ void ActionListener::OnActorSpeech(const RawMessageData& rawMsgData,
 // claimant simulates the actor: the word names it on every seat (the old
 // host's demotes, the claimant's promotes and opens the dialogue), for the
 // lease or until the release.
+namespace {
+// defined with the activation rule below (the reach a dialogue claim shares
+// with an activation, wire-rules activation)
+float ActivationTargetSize(MpObjectReference& target);
+}
+
 void ActionListener::OnActorClaim(const RawMessageData& rawMsgData,
                                   const ActorClaimMessage& msg)
 {

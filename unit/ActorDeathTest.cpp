@@ -385,7 +385,7 @@ void HitBy(PartOne& p, Networking::UserId user, uint32_t target)
   HitMessage hit;
   hit.data.aggressor = 0x14;
   hit.data.target = target;
-  hit.data.source = 0;
+  hit.data.source = 0x1f4; // bare hands, Skyrim.esm's Unarmed (HitTest's)
   p.GetActionListener().OnHit(raw, hit);
 }
 }

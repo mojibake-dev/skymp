@@ -162,6 +162,7 @@ mod tests {
         one_hand_mace: 3.0,
         two_hand_sword: 2.0,
         two_hand_axe: 2.0,
+        ranged: 0.0,
     };
 
     #[test]

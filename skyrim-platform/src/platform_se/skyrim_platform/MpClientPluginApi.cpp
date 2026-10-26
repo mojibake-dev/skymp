@@ -54,6 +54,8 @@ MpClientPlugin* GetMpClientPlugin()
 
 // set by CreateClient, taken by DestroyClientAtQuit
 std::atomic<bool> g_clientCreated{ false };
+// D24 (B): set by SetQuitFastExit, read by the quit thunk
+std::atomic<bool> g_quitFastExit{ false };
 }
 
 Napi::Value MpClientPluginApi::GetVersion(const Napi::CallbackInfo& info)
@@ -88,6 +90,21 @@ bool MpClientPluginApi::DestroyClientAtQuit()
   auto f = (DestroyClient)GetMpClientPlugin()->GetFunction("DestroyClient");
   f();
   return true;
+}
+
+Napi::Value MpClientPluginApi::SetQuitFastExit(const Napi::CallbackInfo& info)
+{
+  const bool fastExit = NapiHelper::ExtractBoolean(info[0], "fastExit");
+  g_quitFastExit = fastExit;
+  logger::info("[verb:cell-host] quit: fast exit {} (D24-B, skymp5-client's "
+               "quitFastExit setting)",
+               fastExit ? "on" : "off");
+  return info.Env().Undefined();
+}
+
+bool MpClientPluginApi::QuitFastExit()
+{
+  return g_quitFastExit;
 }
 
 Napi::Value MpClientPluginApi::DestroyClient(const Napi::CallbackInfo& info)

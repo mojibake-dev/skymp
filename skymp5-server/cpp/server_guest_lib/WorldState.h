@@ -349,6 +349,10 @@ public:
   // to kPendingDeathMs; false restores the absolute values and the kill at
   // once (a bisect switch, server setting npcEngineDeaths)
   bool npcEngineDeaths = true;
+  // the sneak attack multiplier for bows, staffs and crossbows, which the
+  // game names no setting for: measured against the engine (x-npc-sneak-shot)
+  // and set here (server setting sneakRangedMult); 0 keeps SkyMP's 1.3
+  float sneakRangedMult = 0.f;
   // the actors whose server number reached zero and whose host's report is
   // awaited (MpActor::BeginPendingDeath; PartOne::TickDeaths kills the ones
   // past the window)

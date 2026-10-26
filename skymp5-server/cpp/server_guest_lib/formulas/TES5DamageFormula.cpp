@@ -202,6 +202,9 @@ float TES5DamageFormulaImpl::CalcSneakMultiplier() const
   mults.one_hand_mace = setting(espm::GMST::kFCombatSneak1HMaceMult);
   mults.two_hand_sword = setting(espm::GMST::kFCombatSneak2HSwordMult);
   mults.two_hand_axe = setting(espm::GMST::kFCombatSneak2HAxeMult);
+  // the ranged term has no game setting (thuum docs/verbs/npc-fate.md, train
+  // 52): the server setting sneakRangedMult, 0 for SkyMP's 1.3
+  mults.ranged = espmProvider ? espmProvider->sneakRangedMult : 0.f;
   return skymp::rules::sneak_mult(animType, mults);
 }
 

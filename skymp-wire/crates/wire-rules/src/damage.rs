@@ -78,6 +78,12 @@ pub struct SneakMults {
     pub two_hand_sword: f32,
     /// fCombatSneak2HAxeMult.
     pub two_hand_axe: f32,
+    /// The ranged weapons' multiplier (bows, staffs, crossbows: DNAM animation
+    /// types 7 to 9), which the game names no setting for (Skyrim.esm has no
+    /// fCombatSneakBowMult, esm.py 2026-10-26): the server setting
+    /// sneakRangedMult, measured against the engine by x-npc-sneak-shot
+    /// (thuum docs/verbs/npc-fate.md, train 52); 0 keeps SkyMP's 1.3.
+    pub ranged: f32,
 }
 
 /// A kept sneak attack's damage multiplier for a weapon whose WEAP record's
@@ -94,6 +100,7 @@ pub fn sneak_mult(anim_type: u8, m: SneakMults) -> f32 {
         4 => m.one_hand_mace,
         5 => m.two_hand_sword,
         6 => m.two_hand_axe,
+        7..=9 => m.ranged,
         _ => return SKYMP_SNEAK_MULT,
     };
     if setting.is_finite() && setting > 0.0 {
@@ -106,6 +113,16 @@ pub fn sneak_mult(anim_type: u8, m: SneakMults) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ranged_weapons_take_the_measured_setting_or_skymps_number() {
+        let m = SneakMults { ranged: 2.0, ..SneakMults::default() };
+        assert_eq!(sneak_mult(7, m), 2.0);
+        assert_eq!(sneak_mult(8, m), 2.0);
+        assert_eq!(sneak_mult(9, m), 2.0);
+        assert_eq!(sneak_mult(7, SneakMults::default()), SKYMP_SNEAK_MULT);
+        assert_eq!(sneak_mult(7, SneakMults { ranged: f32::NAN, ..SneakMults::default() }), SKYMP_SNEAK_MULT);
+    }
 
     const fn facts(power: bool, sneak: bool, since: Option<u64>, sneaking: bool) -> FlagFacts {
         FlagFacts {

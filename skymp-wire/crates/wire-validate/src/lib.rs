@@ -114,6 +114,11 @@ pub struct ClientGuard {
     /// UNMEASURED: four times the rate a host of Riverwood would send at
     /// every change (28 a second), to be replaced by P3's numbers.
     pub hosted_state_budget: TokenBucket,
+    /// Budget for a host's spoken lines (ActorSpeech, thuum docs/verbs/
+    /// npc-stream.md): a village's residents greet and chatter a few lines a
+    /// minute each. UNMEASURED: 32 at once, 8 a second, until P7 reads a
+    /// host's rate.
+    pub speech_budget: TokenBucket,
     /// Budget for spell casts and their ends (thuum docs/verbs/spell-cast.md):
     /// a cast charges before it goes (Firebolt's SPIT charge time is half a
     /// second) and a stream's start and end are two messages, from two hands
@@ -165,6 +170,7 @@ impl Default for ClientGuard {
             on_hit_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 16, last_refill_ms: 0 },
             actor_death_budget: TokenBucket { tokens: 6, capacity: 6, refill_per_s: 1, last_refill_ms: 0 },
             hosted_state_budget: TokenBucket { tokens: 128, capacity: 128, refill_per_s: 32, last_refill_ms: 0 },
+            speech_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 8, last_refill_ms: 0 },
             cast_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 4, last_refill_ms: 0 },
             player_globals_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
             equip_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 8, last_refill_ms: 0 },
@@ -535,6 +541,16 @@ fn check_hosted_state(m: &skymp::HostedActorState) -> Result<(), Reject> {
     Ok(())
 }
 
+/// A host's spoken line (docs/verbs/npc-stream.md, the voice slice): an actor
+/// index below u32::MAX, a topic and an info that are forms. Whether the
+/// sender hosts the actor is the server's rule.
+fn check_actor_speech(m: &skymp::ActorSpeech) -> Result<(), Reject> {
+    if m.idx == u32::MAX || m.topic == 0 || m.info == 0 {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
 /// A favorites report: every hotkey in [`HOTKEYS`], no key bound twice, no
 /// form listed twice (docs/verbs/favorites.md).
 fn check_favorites(m: &skymp::Favorites) -> Result<(), Reject> {
@@ -612,6 +628,7 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::UpdateAction(_) => take(&mut guard.action_budget, now_ms),
         Message::CellLoaded(_) => take(&mut guard.cell_loaded_budget, now_ms),
         Message::HostedActorState(_) => take(&mut guard.hosted_state_budget, now_ms),
+        Message::ActorSpeech(_) => take(&mut guard.speech_budget, now_ms),
         _ => Ok(()),
     }
 }
@@ -773,6 +790,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::ActorFate(m) => check_fates(m),
         Message::ActorDeath(m) => check_actor_death(m),
         Message::HostedActorState(m) => check_hosted_state(m),
+        Message::ActorSpeech(m) => check_actor_speech(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
         // rejects it by direction before it gets this far.
@@ -1706,6 +1724,26 @@ mod tests {
         assert_eq!(validate(&hosted_state(7, 0.5, 1.0, 1.0), &mut guard, 1_100), Ok(()));
     }
 
+    // thuum docs/verbs/npc-stream.md (the voice slice): a host's spoken line
+    // names the actor's index, a topic and an info; 32 at once, 8 a second
+    fn speech(idx: u32, topic: u32, info: u32) -> Message {
+        Message::ActorSpeech(wire_schema::skymp::ActorSpeech { idx, topic, info, ..Default::default() })
+    }
+
+    #[test]
+    fn a_spoken_line_names_an_actor_a_topic_and_an_info() {
+        assert_eq!(validate_server(&speech(7, 0x2_0000, 0x2_0001)), Ok(()));
+        assert_eq!(validate_server(&speech(u32::MAX, 0x2_0000, 0x2_0001)), Err(Reject::Range));
+        assert_eq!(validate_server(&speech(7, 0, 0x2_0001)), Err(Reject::Range));
+        assert_eq!(validate_server(&speech(7, 0x2_0000, 0)), Err(Reject::Range));
+        let mut guard = ClientGuard::default();
+        for _ in 0..32 {
+            assert_eq!(validate(&speech(7, 0x2_0000, 0x2_0001), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&speech(7, 0x2_0000, 0x2_0001), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&speech(7, 0x2_0000, 0x2_0001), &mut guard, 1_200), Ok(()));
+    }
+
     // thuum docs/verbs/npc-fate.md (ADR-049): the server's fates name
     // game-file placements; a base of 0 is a roll of none; a worn id is a form
     fn fates(entries: &[(u32, u32, u16, &[u32])]) -> Message {
@@ -1803,6 +1841,14 @@ mod tests {
         fn hosted_never_panics(health in any::<f32>(), counts in proptest::collection::vec(any::<i32>(), 0..=cap::INVENTORY_DELTA)) {
             let mut g = ClientGuard::default();
             let _ = validate(&hosted(health, &counts), &mut g, 0);
+        }
+
+        #[test]
+        fn speech_never_panics(idx in any::<u32>(), topic in any::<u32>(), info in any::<u32>(), now in any::<u64>()) {
+            let m = Message::ActorSpeech(wire_schema::skymp::ActorSpeech { idx, topic, info, ..Default::default() });
+            let mut g = ClientGuard::default();
+            let _ = validate(&m, &mut g, now);
+            let _ = validate_server(&m);
         }
 
         #[test]

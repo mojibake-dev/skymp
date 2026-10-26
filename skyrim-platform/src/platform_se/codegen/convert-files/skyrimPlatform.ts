@@ -426,6 +426,13 @@ export interface SceneActionEvent {
   quest: Quest
 }
 
+// thuum docs/verbs/npc-stream.md (the voice slice): a spoken line begins on an actor this game hosts (setHosted); the speaker's form id, the topic info's and its parent topic's; filtered in native to the hosted set and the begin. Raised on the next tick, no game call in its handler
+export interface TopicInfoEvent {
+  speakerId: number
+  topicInfo: number
+  topic: number
+}
+
 export interface PlayerBowShotEvent {
   weapon: Weapon
   ammo: Ammo
@@ -800,6 +807,8 @@ export declare function once(eventName: 'destructionStageChanged', callback: (ev
 
 export declare function on(eventName: 'sceneAction', callback: (event: SceneActionEvent) => void): EventHandle
 export declare function once(eventName: 'sceneAction', callback: (event: SceneActionEvent) => void): EventHandle
+export declare function on(eventName: 'topicInfo', callback: (event: TopicInfoEvent) => void): EventHandle
+export declare function once(eventName: 'topicInfo', callback: (event: TopicInfoEvent) => void): EventHandle
 
 export declare function on(eventName: 'playerBowShot', callback: (event: PlayerBowShotEvent) => void): EventHandle
 export declare function once(eventName: 'playerBowShot', callback: (event: PlayerBowShotEvent) => void): EventHandle
@@ -1738,6 +1747,9 @@ export declare function setHosted(actorFormId: number, hosted: boolean): boolean
 export declare function isHosted(actorFormId: number): boolean;
 // thuum docs/verbs/npc-stream.md: whether the engine's action entry is open on the actor right now (the hook's mark from its entry to its leave); read inside a sendAnimationEvent hook handler, where the game thread waits, it says the event being sent is the action's own
 export declare function isPerformingAction(actorFormId: number): boolean;
+// thuum docs/verbs/npc-stream.md (the voice slice): a puppet says the host's line through the engine's own say with the topic info given (the engine's pick skipped); queued to the game thread; sayTopicInfoResult answers -1 while it waits, 0 for no actor, info or process, 1 when the line started, 2 when the engine refused it, 3 when a line plays without the state byte (a live sound handle or a running timer), 4 when the engine deferred it for an AI replay a puppet never runs Voice v4 adds 5: the engine judged the line inaudible on this seat (no 3D, or the speaker outside the dialogue output model's range of the listener) before the lip load; the item is cleared and nothing plays
+export declare function sayTopicInfo(actorFormId: number, topicInfoFormId: number): boolean;
+export declare function sayTopicInfoResult(actorFormId: number): number;
 // thuum docs/verbs/npc-fate.md (ADR-046 decision 1, ADR-049): the server's one roll for a leveled placement, held by this game ahead of the engine's own roll: baseId is the NPC_ the server named (0: no actor there, the engine deletes the placement), worn the items it rolled, each added as an inventory entry tagged for the actor's default outfit by the outfit detour (an empty list dresses nothing). Stored on the JS thread, no game call; false for an invalid reference id
 export declare function setActorFate(refrId: number, baseId: number, worn: number[]): boolean;
 // thuum ADR-050 decision 3 (train 51): a server-made NPC's fate armed by its base before the copy's placeAtMe; the first detour that meets a new 0xff reference of that base binds it to the copy's own id, so the copy's engine rolls the server's roll inside its placement (one copy per call, in spawn order). Stored on the JS thread, no game call; false for a base id of 0

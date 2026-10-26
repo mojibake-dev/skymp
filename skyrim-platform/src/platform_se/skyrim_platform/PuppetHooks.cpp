@@ -60,6 +60,44 @@ bool AnimatesAsPuppet(RE::Actor& actor)
   return node && node->parent;
 }
 
+// thuum docs/verbs/npc-stream.md (the voice slice): a line on a puppet is
+// ended by the engine's own pair, which the AI update runs for a live actor
+// and skips for an AI-off one (37347 returns at kProcessMe before the voice
+// timer and UpdateSoundCallBack, the re-analyst's read of 2026-10-26): left
+// alone, a puppet's line plays its audio and lip sync, shows no subtitle and
+// never ends, and the next line is refused while it stands (HYPOTHESIS until
+// P7). So the pair runs here, once a frame on the game thread, for a puppet
+// with a line in flight: the callback state 3 (just started: the subtitle
+// and the timer are armed), the timer counting, or 1 and 2 (the timer ran
+// out: the end event, the subtitle gone)
+using UpdateVoiceTimerFn = void (*)(RE::Actor*, bool);
+
+void DriveVoice(RE::Actor& actor)
+{
+  auto& runtime = actor.GetActorRuntimeData();
+  const int state = runtime.soundCallBackSet;
+  if (state != 1 && state != 2 && state != 3 && runtime.voiceTimer <= 0.f) {
+    return;
+  }
+  REL::Relocation<UpdateVoiceTimerFn> updateVoiceTimer{
+    Offsets::Voice::UpdateVoiceTimer
+  };
+  const float timerBefore = runtime.voiceTimer;
+  updateVoiceTimer(&actor, false);
+  actor.UpdateSoundCallBack(false);
+  const int after = runtime.soundCallBackSet;
+  // the end shows as the timer's run-out across the pair (voice v2: the
+  // state byte passes 1 and back to idle INSIDE one pair call, 37752
+  // setting it and UpdateSoundCallBack handling it, so a before-and-after
+  // read of the state alone saw nothing in P7 v1)
+  if ((timerBefore > 0.f && runtime.voiceTimer <= 0.f) ||
+      ((state == 1 || state == 2) && after != state)) {
+    logger::info("[verb:npc-stream] line on {:x} ended (state {} -> {}, "
+                 "timer {:.2f} -> {:.2f})",
+                 actor.formID, state, after, timerBefore, runtime.voiceTimer);
+  }
+}
+
 void QueueActorAnimationReplacement(RE::ProcessLists* lists, void* jobs)
 {
   g_queueActorAnimationOriginal(lists, jobs);
@@ -90,6 +128,7 @@ void QueueActorAnimationReplacement(RE::ProcessLists* lists, void* jobs)
     auto actor = handle.get();
     if (actor && AnimatesAsPuppet(*actor)) {
       push(jobs, job, handle.native_handle(), 0);
+      DriveVoice(*actor);
     }
   }
 }

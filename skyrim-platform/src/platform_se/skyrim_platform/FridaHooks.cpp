@@ -478,16 +478,24 @@ void OnPerformActionEnter(GumInvocationContext* ic)
       actor = source->As<RE::Actor>();
     }
     if (actor) {
-      entry.data = data;
-      entry.sourceId = actor->formID;
       // the variables before the action changes them: the want variable the
-      // caster set a few instructions earlier is among them
-      entry.variables =
+      // caster set a few instructions earlier is among them. A graph that is
+      // not the master behaviour's (a creature's, slice 1 v2) gives none,
+      // and such an actor is not admitted: its actions are not reported and
+      // it is not marked, so its events ride the relay as before
+      auto variables =
         AnimationGraphMasterBehaviourDescriptor{ *actor }.GetVariables();
-      // the mark the relay's source reads while the engine sends this
-      // action's graph event inside the call (Hosted::IsPerforming): the
-      // event is the action's own and travels as the action
-      Hosted::BeginPerforming(actor->formID);
+      if (entry.isPlayer || !variables.IsEmpty()) {
+        entry.data = data;
+        entry.sourceId = actor->formID;
+        entry.variables = std::move(variables);
+        // the mark the relay's source reads while the engine sends this
+        // action's graph event inside the call (Hosted::IsPerforming): the
+        // event is the action's own and travels as the action
+        Hosted::BeginPerforming(actor->formID);
+      } else {
+        entry.isPlayer = false;
+      }
     }
   }
   g_performedActions.push_back(std::move(entry));

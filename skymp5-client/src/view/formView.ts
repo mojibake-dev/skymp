@@ -587,11 +587,14 @@ export class FormView {
     // 052150's 2,077-unit "settle" on a dead copy). A record never dead says
     // nothing (undefined) and leaves a predicted death (ADR-038) alone. Read
     // every two seconds, never per frame (natives cost).
+    // ADR-050 decision 2: an actor this game simulates dies and stands by
+    // its own engine and the server's container; the check is a puppet's
     if (model.isDead !== undefined && this.refrId !== 0 && this.refrId !== 0x14 && this.refrId < 0xff000000 && Date.now() >= this.deadCheckAt) {
       this.deadCheckAt = Date.now() + 2000;
       const body = Actor.from(refr);
       const want = !!model.isDead;
-      if (body && body.isDead() !== want) {
+      const simulatedHere = SpApiInteractor.getControllerInstance().lookupListener(HostService).isMine(model, refr);
+      if (body && !simulatedHere && body.isDead() !== want) {
         SpApiInteractor.getControllerInstance().emitter.emit("applyDeathStateEvent", { actor: body, isDead: want });
       }
     }

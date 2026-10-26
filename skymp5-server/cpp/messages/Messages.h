@@ -15,6 +15,7 @@
 #include "CreateActorMessage.h"
 #include "CustomEventMessage.h"
 #include "CustomPacketMessage.h"
+#include "DamageCauseMessage.h"
 #include "DeathStateContainerMessage.h"
 #include "DestroyActorMessage.h"
 #include "DropItemMessage.h"
@@ -108,4 +109,5 @@
   REGISTER_MESSAGE(ActorFateMessage)                                          \
   REGISTER_MESSAGE(ActorDeathMessage)                                         \
   REGISTER_MESSAGE(HostedActorStateMessage)                                   \
-  REGISTER_MESSAGE(ActorSpeechMessage)
+  REGISTER_MESSAGE(ActorSpeechMessage)                                        \
+  REGISTER_MESSAGE(DamageCauseMessage)

@@ -1102,6 +1102,7 @@ bool IsFigureVictim(RE::Actor* actor)
 using DamageActorFn = bool (*)(RE::Actor* victim, float damage,
                                RE::Actor* attacker, bool killMove);
 DamageActorFn g_damageActorOriginal = nullptr;
+std::atomic<bool> g_engineDamageCut{ true };
 
 bool DamageActorReplacement(RE::Actor* victim, float damage,
                             RE::Actor* attacker, bool killMove)
@@ -1109,8 +1110,38 @@ bool DamageActorReplacement(RE::Actor* victim, float damage,
   if (IsFigureVictim(victim)) {
     return false;
   }
+  // thuum docs/verbs/npc-fate.md (ADR-050 decision 2, deaths by the engine):
+  // a puppet here takes no engine damage (the record's values come as
+  // ChangeValues); an NPC this game simulates takes none from the player's
+  // or a figure's hand (the server's number arrives as a cause through
+  // Frida::DamageActorOriginal, the one number); an NPC's hand on an NPC
+  // stays the engine's (the host reports the hit and the absolute cause
+  // corrects it). The player's own actor is never cut here.
+  if (g_engineDamageCut.load(std::memory_order_relaxed) && victim &&
+      victim->formID != 0x14) {
+    if (Puppets::Is(victim->formID)) {
+      return false;
+    }
+    if (attacker && (attacker->formID == 0x14 || IsFigureVictim(attacker))) {
+      return false;
+    }
+  }
   return g_damageActorOriginal(victim, damage, attacker, killMove);
 }
+}
+
+bool Frida::DamageActorOriginal(RE::Actor* victim, float damage,
+                                RE::Actor* attacker, bool killMove)
+{
+  if (!g_damageActorOriginal || !victim) {
+    return false;
+  }
+  return g_damageActorOriginal(victim, damage, attacker, killMove);
+}
+
+void Frida::SetEngineDamageCut(bool on)
+{
+  g_engineDamageCut.store(on, std::memory_order_relaxed);
 }
 
 void InstallDamageActorHook()

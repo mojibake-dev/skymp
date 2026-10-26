@@ -425,6 +425,8 @@ pub enum Message {
     HostedActorState(skymp::HostedActorState),
     /// 62, MsgType 54 (thuum). See [`skymp::ActorSpeech`].
     ActorSpeech(skymp::ActorSpeech),
+    /// 63, MsgType 55 (thuum). See [`skymp::DamageCause`].
+    DamageCause(skymp::DamageCause),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -453,7 +455,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 63] = [
+const TABLE: [Row; 64] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -517,14 +519,15 @@ const TABLE: [Row; 63] = [
     row("ActorDeath", 52, KIB, C2S),
     row("HostedActorState", 53, 64, C2S),
     row("ActorSpeech", 54, 32, Both),
+    row("DamageCause", 55, 32, S2C),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 63;
-const _: () = assert!(TABLE.len() == 63, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 64;
+const _: () = assert!(TABLE.len() == 64, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -612,6 +615,7 @@ impl Message {
             Message::ActorDeath(_) => 60,
             Message::HostedActorState(_) => 61,
             Message::ActorSpeech(_) => 62,
+            Message::DamageCause(_) => 63,
         }
     }
 
@@ -697,7 +701,8 @@ mod tests {
         assert_eq!(name_of_msg_type(52), Some("ActorDeath"));
         assert_eq!(name_of_msg_type(53), Some("HostedActorState"));
         assert_eq!(name_of_msg_type(54), Some("ActorSpeech"));
-        assert_eq!(name_of_msg_type(55), None);
+        assert_eq!(name_of_msg_type(55), Some("DamageCause"));
+        assert_eq!(name_of_msg_type(56), None);
     }
 
     #[test]

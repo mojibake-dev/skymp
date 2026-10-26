@@ -255,6 +255,13 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
       partOne->worldState.npcDeathReports =
         serverSettings.at("npcDeathReports").get<bool>();
     }
+    // thuum docs/verbs/npc-fate.md (ADR-050 decision 2): a hosted NPC's
+    // number goes to its host as a cause and its kill waits for the host's
+    // report; false restores the absolute values and the kill at once
+    if (serverSettings.find("npcEngineDeaths") != serverSettings.end()) {
+      partOne->worldState.npcEngineDeaths =
+        serverSettings.at("npcEngineDeaths").get<bool>();
+    }
     // thuum docs/verbs/npc-fate.md (the memo's D2): the roll's level rule:
     // "loader", "party-mean" (the default), "party-min", or a number for
     // everyone (PartOne::FateRollLevel)

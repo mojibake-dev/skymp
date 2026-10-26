@@ -1624,3 +1624,31 @@ wire_struct! {
     }
 }
 
+wire_struct! {
+    /// MsgType 55, thuum's (docs/verbs/npc-fate.md, ADR-050 decision 2, deaths
+    /// by the engine): the server's number for a hit on an NPC some game
+    /// hosts, sent to that host as a CAUSE instead of absolute values, so the
+    /// host's engine applies it through its own damage entry (a reaction, a
+    /// killer, its own death at zero). Server to client, reliable, R0 output:
+    /// `health` is the resulting percentage (absolute, never a delta: the
+    /// hold rule keeps the record below the engine for 10 s after a hit, and
+    /// a delta would double on a hit the host also reports), `attacker` the
+    /// aggressor's form id (0 for none), `kill_move` whether the server's
+    /// number killed through a headshot or a scripted kill. Reason codes:
+    /// `E_VAL_NONFINITE` (a health that is not a number), `E_VAL_RANGE` (a
+    /// health outside 0 to 1, an idx of u32::MAX).
+    pub struct DamageCause {
+        /// `"t": 55`.
+        #[serde(default)]
+        pub t: MsgT<55>,
+        /// The victim as the server indexes it.
+        pub idx: u32,
+        /// The aggressor's form id, 0 for none.
+        pub attacker: u32,
+        /// The resulting health, 0 to 1.
+        pub health: f32,
+        /// Whether the number killed through a headshot or a scripted kill.
+        pub kill_move: bool,
+    }
+}
+

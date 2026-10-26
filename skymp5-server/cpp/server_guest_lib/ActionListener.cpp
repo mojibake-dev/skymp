@@ -4441,7 +4441,14 @@ void ActionListener::NotifyStagger(MpActor& aggressor, MpActor& target,
 {
   const auto targetUser = partOne.serverState.UserByActor(&target);
   if (targetUser == Networking::InvalidUserId) {
-    return; // a hosted actor's host game reacts to its own hits
+    // thuum docs/verbs/npc-fate.md (ADR-050 decision 2): a hosted actor's
+    // host game reacts to its own hits; a hit by another player's hand
+    // reaches that game only as the server's cause, so the stagger is sent
+    // to the host for the engine to play on the actor (HYPOTHESIS H-52s)
+    MpActor* host = target.HostedBy();
+    if (!host || host == &aggressor || !partOne.worldState.npcEngineDeaths) {
+      return;
+    }
   }
   const std::string attackName =
     partOne.animationSystem.GetLastAttackStartName(aggressor);
@@ -4463,11 +4470,18 @@ void ActionListener::NotifyStagger(MpActor& aggressor, MpActor& target,
 void ActionListener::PlayStagger(MpActor& aggressor, MpActor& target,
                                  float magnitude, const std::string& what)
 {
+  // the game that plays it: the victim's own, or its host's for a hosted
+  // NPC (ADR-050 decision 2; the snippet runs on a player's actor alone,
+  // SpSnippet::Execute)
+  MpActor* executor = &target;
   if (partOne.serverState.UserByActor(&target) == Networking::InvalidUserId) {
-    return; // a hosted actor's host game reacts to its own hits
+    executor = target.HostedBy();
+    if (!executor || executor == &aggressor) {
+      return; // a hosted actor's host game reacts to its own hits
+    }
   }
   SpSnippetObjectArgument player;
-  player.formId = 0x14;
+  player.formId = executor == &target ? 0x14 : target.GetFormId();
   player.type = "Actor";
   SpSnippetObjectArgument source;
   source.formId = aggressor.GetFormId();
@@ -4476,7 +4490,12 @@ void ActionListener::PlayStagger(MpActor& aggressor, MpActor& target,
     std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
     args{ player, static_cast<double>(magnitude), source };
   SpSnippet("TESModPlatform", "Stagger", args, 0)
-    .Execute(&target, SpSnippetMode::kNoReturnResult);
+    .Execute(executor, SpSnippetMode::kNoReturnResult);
+  if (executor != &target) {
+    // the host's engine plays it and its relay carries the event to the
+    // puppets (npc-stream); no second relay from here
+    return;
+  }
 
   // every game that sees the victim plays the stagger on its figure: the
   // engine's stagger in the victim's own game is an action its client never

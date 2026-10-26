@@ -2,9 +2,25 @@
 
 #include <cstdint>
 
+namespace RE {
+class Actor;
+}
+
 namespace Frida {
 
 void InstallHooks();
+
+// thuum docs/verbs/npc-fate.md (ADR-050 decision 2, deaths by the engine):
+// the engine's own damage entry (DamageActor, the replaced function's
+// original), for the server's cause applied to an actor this game simulates:
+// the engine reacts, records the killer and dies by itself at zero
+bool DamageActorOriginal(RE::Actor* victim, float damage, RE::Actor* attacker,
+                         bool killMove);
+// the replacement's cut of this game's own engine damage to a puppet, and to
+// an NPC this game simulates when the hand is a player's or a figure's (the
+// server's number is the one number); default on, skymp5-client's
+// npcEngineDamage switches it
+void SetEngineDamageCut(bool on);
 
 // thuum docs/verbs/cast-action.md: the hand whose cast start the engine's
 // action entry performed for the player and no cast event has claimed yet

@@ -90,7 +90,7 @@ export class VoiceService extends ClientListener {
         for (const [localId, ask] of Array.from(this.pending.entries())) {
             const result = this.sp.sayTopicInfoResult(localId);
             if (result >= 0) {
-                const word = result === 1 ? "started" : result === 2 ? "refused" : "no actor or info";
+                const word = result === 1 ? "started" : result === 3 ? "played" : result === 2 ? "refused" : "no actor or info";
                 logTrace(this, `say ${localId.toString(16)} info ${ask.info.toString(16)} -> ${word}`);
                 this.pending.delete(localId);
             } else if (now - ask.since > VoiceService.answerMs) {

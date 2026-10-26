@@ -82,12 +82,19 @@ void DriveVoice(RE::Actor& actor)
   REL::Relocation<UpdateVoiceTimerFn> updateVoiceTimer{
     Offsets::Voice::UpdateVoiceTimer
   };
+  const float timerBefore = runtime.voiceTimer;
   updateVoiceTimer(&actor, false);
   actor.UpdateSoundCallBack(false);
   const int after = runtime.soundCallBackSet;
-  if ((state == 1 || state == 2) && after != state) {
-    logger::info("[verb:npc-stream] line on {:x} ended (state {} -> {})",
-                 actor.formID, state, after);
+  // the end shows as the timer's run-out across the pair (voice v2: the
+  // state byte passes 1 and back to idle INSIDE one pair call, 37752
+  // setting it and UpdateSoundCallBack handling it, so a before-and-after
+  // read of the state alone saw nothing in P7 v1)
+  if ((timerBefore > 0.f && runtime.voiceTimer <= 0.f) ||
+      ((state == 1 || state == 2) && after != state)) {
+    logger::info("[verb:npc-stream] line on {:x} ended (state {} -> {}, "
+                 "timer {:.2f} -> {:.2f})",
+                 actor.formID, state, after, timerBefore, runtime.voiceTimer);
   }
 }
 

@@ -47,7 +47,9 @@ Napi::Value IsPerformingAction(const Napi::CallbackInfo& info);
 // pick is skipped), queued to the game thread; sayTopicInfoResult answers
 // -1 while it waits, 0 for no actor, info or process, 1 when the line
 // started (the actor's sound callback state read 3 after the call), 2 when
-// the engine refused it (a line still ending, the process's dialogue state)
+// the engine refused it (a line still ending, the process's dialogue state),
+// 3 when a line plays without the state byte (a live sound handle or a
+// running timer: the sound descriptor path)
 Napi::Value SayTopicInfo(const Napi::CallbackInfo& info);
 Napi::Value SayTopicInfoResult(const Napi::CallbackInfo& info);
 

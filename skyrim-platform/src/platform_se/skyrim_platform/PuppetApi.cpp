@@ -327,16 +327,39 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
           // Say's shape with the info given: the engine's own books, lip
           // sync, talking idle and begin event; the end is the detour's
           // (PuppetHooks.cpp DriveVoice) on a puppet
-          say(runtime.currentProcess, actor, topicInfo->parentTopic, topicInfo,
-              false, false, true, true);
+          const bool returned =
+            say(runtime.currentProcess, actor, topicInfo->parentTopic,
+                topicInfo, false, false, true, true);
           const int stateAfter = runtime.soundCallBackSet;
-          result = stateAfter == 3 ? 1 : 2;
+          // voice v2 (P7 v1 20261026-181119: the say started on every
+          // creature puppet and was refused on a humanoid resident's with
+          // the same pre-state): the facts the engine's answer leaves
+          // behind, so the lab reads WHICH path refused or played. The state
+          // byte 3 is the SpeakSoundFunction path's mark; a line through the
+          // sound descriptor path (39771, the static read) sets no state
+          // byte but leaves a live handle or a running timer: "played"
+          auto* high = runtime.currentProcess->high;
+          const bool handleLive = high && high->soundHandles[0].IsValid();
+          const float timerAfter = runtime.voiceTimer;
+          if (stateAfter == 3) {
+            result = 1;
+          } else if (handleLive || timerAfter > 0.f) {
+            result = 3;
+          } else {
+            result = 2;
+          }
           logger::info("[verb:npc-stream] sayTopicInfo on {:x}: info {:x} "
                        "topic {:x} -> {} (bits {:x}, timer {:.2f}, state {} "
-                       "before; state {} after)",
+                       "before; returned {}, state {}, timer {:.2f}, handle "
+                       "{}, high {}, dialogue state {} after)",
                        actorFormId, infoFormId, topicInfo->parentTopic->formID,
-                       result == 1 ? "started" : "refused", bitsBefore,
-                       timerBefore, stateBefore, stateAfter);
+                       result == 1     ? "started"
+                         : result == 3 ? "played"
+                                       : "refused",
+                       bitsBefore, timerBefore, stateBefore, returned,
+                       stateAfter, timerAfter, handleLive ? "live" : "none",
+                       high ? "yes" : "no",
+                       high && high->unk3B8 ? "set" : "null");
         }
       }
       std::lock_guard<std::mutex> lock(g_sayResultMutex);

@@ -180,8 +180,17 @@ export class HostedStateService extends ClientListener {
         for (let slot = 0; slot < 32; ++slot) {
             add(actor.getWornForm(1 << slot)?.getFormID() ?? 0, false);
         }
-        add(right, false);
-        add(left, true);
+        // a spell in a hand is the hand's spell, not a worn item (x-npc-spell
+        // 221906: the mage's SparksRightHand in the worn list refused the whole
+        // report, "inventory does not contain item c96a1"; train 53)
+        const leftSpell = getEquipedSpell(actor, SpellType.Left);
+        const rightSpell = getEquipedSpell(actor, SpellType.Right);
+        if (right !== rightSpell) {
+            add(right, false);
+        }
+        if (left !== leftSpell) {
+            add(left, true);
+        }
         const world = this.controller.lookupListener(RemoteServer).getWorldModel();
         const recorded = world.forms.find((f) => f !== undefined && f.refrId === remoteId)?.equipment?.numChanges ?? 0;
         const numChanges = (this.equipChanges.get(localId) ?? recorded) + 1;
@@ -190,8 +199,8 @@ export class HostedStateService extends ClientListener {
             t: MsgType.UpdateEquipment,
             data: {
                 inv: { entries },
-                leftSpell: getEquipedSpell(actor, SpellType.Left),
-                rightSpell: getEquipedSpell(actor, SpellType.Right),
+                leftSpell,
+                rightSpell,
                 voiceSpell: getEquipedSpell(actor, SpellType.Voice),
                 instantSpell: getEquipedSpell(actor, SpellType.Instant),
                 numChanges,

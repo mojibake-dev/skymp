@@ -35,7 +35,7 @@ pub enum Delivery {
 pub fn for_message(msg: &Message) -> u8 {
     match msg {
         Message::Movement(_) | Message::UpdateMovement(_) => UNRELIABLE,
-        Message::Hit(_) | Message::HostedActor(_) | Message::InventoryApply { .. } => {
+        Message::Hit(_) | Message::ReservedHostedActor(_) | Message::InventoryApply { .. } => {
             RELIABLE_UNORDERED
         }
         _ => RELIABLE_ORDERED,

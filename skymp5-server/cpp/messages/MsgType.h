@@ -63,6 +63,9 @@ enum class MsgType : uint8_t
                        // roll for a placement, ahead of the engine's own
   ActorDeath = 52,     // thuum docs/verbs/npc-fate.md (ADR-048's B): a host's
                        // death report for a game-file actor, checked
+  HostedActorState = 53, // thuum docs/verbs/npc-stream.md (ADR-050): a host's
+                         // values, combat target and package for an actor it
+                         // simulates
 
   Max
 };

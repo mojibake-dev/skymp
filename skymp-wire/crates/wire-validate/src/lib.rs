@@ -108,6 +108,12 @@ pub struct ClientGuard {
     /// once, so six at once and one a second after that only ever stops a
     /// flood; which deaths are accepted is the server's rule.
     pub actor_death_budget: TokenBucket,
+    /// Budget for a host's state reports (HostedActorState, thuum docs/verbs/
+    /// npc-stream.md, ADR-050): one per hosted actor per half second on a
+    /// change, a village's fourteen residents at once after a grant.
+    /// UNMEASURED: four times the rate a host of Riverwood would send at
+    /// every change (28 a second), to be replaced by P3's numbers.
+    pub hosted_state_budget: TokenBucket,
     /// Budget for spell casts and their ends (thuum docs/verbs/spell-cast.md):
     /// a cast charges before it goes (Firebolt's SPIT charge time is half a
     /// second) and a stream's start and end are two messages, from two hands
@@ -158,10 +164,17 @@ impl Default for ClientGuard {
             shot_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 2, last_refill_ms: 0 },
             on_hit_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 16, last_refill_ms: 0 },
             actor_death_budget: TokenBucket { tokens: 6, capacity: 6, refill_per_s: 1, last_refill_ms: 0 },
+            hosted_state_budget: TokenBucket { tokens: 128, capacity: 128, refill_per_s: 32, last_refill_ms: 0 },
             cast_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 4, last_refill_ms: 0 },
             player_globals_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
             equip_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 8, last_refill_ms: 0 },
-            action_budget: TokenBucket { tokens: 12, capacity: 12, refill_per_s: 6, last_refill_ms: 0 },
+            // thuum docs/verbs/npc-stream.md (ADR-050): the actions a host
+            // streams for every actor it simulates ride this budget with the
+            // player's own; UNMEASURED at four times the rate P1 read for
+            // Riverwood (490 taken actions in 122 s for seventeen NPCs before
+            // the movement filter, x-npc-stream-p1 20261026-101422), a fight's
+            // burst on top; P3 replaces it
+            action_budget: TokenBucket { tokens: 48, capacity: 48, refill_per_s: 16, last_refill_ms: 0 },
             cell_loaded_budget: TokenBucket { tokens: 128, capacity: 128, refill_per_s: 32, last_refill_ms: 0 },
         }
     }
@@ -506,6 +519,22 @@ fn check_actor_death(m: &skymp::ActorDeath) -> Result<(), Reject> {
     Ok(())
 }
 
+/// A host's state report for an actor it simulates (docs/verbs/npc-stream.md,
+/// ADR-050): three percentages, each a number within 0 and 1, and an actor
+/// index below u32::MAX (ActorJump's idiom). Whether the sender hosts the
+/// actor and whether a value is taken against the server's own numbers is
+/// the server's rule (wire-rules hosted_state).
+fn check_hosted_state(m: &skymp::HostedActorState) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    let within = |v: f32| (0.0..=1.0).contains(&v);
+    if m.idx == u32::MAX || !within(m.health) || !within(m.magicka) || !within(m.stamina) {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
 /// A favorites report: every hotkey in [`HOTKEYS`], no key bound twice, no
 /// form listed twice (docs/verbs/favorites.md).
 fn check_favorites(m: &skymp::Favorites) -> Result<(), Reject> {
@@ -582,6 +611,7 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::OnEquip(_) => take(&mut guard.equip_budget, now_ms),
         Message::UpdateAction(_) => take(&mut guard.action_budget, now_ms),
         Message::CellLoaded(_) => take(&mut guard.cell_loaded_budget, now_ms),
+        Message::HostedActorState(_) => take(&mut guard.hosted_state_budget, now_ms),
         _ => Ok(()),
     }
 }
@@ -624,7 +654,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::Movement(m) => check_transform(&m.transform),
         // replay order and rate are all a hit is checked for ([`validate`])
         Message::Hit(_) => Ok(()),
-        Message::HostedActor(s) => {
+        Message::ReservedHostedActor(s) => {
             check_transform(&s.transform)?;
             if !s.health.is_finite() {
                 return Err(Reject::NonFinite);
@@ -740,6 +770,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::ActorSightings(m) => check_sightings(m),
         Message::ActorFate(m) => check_fates(m),
         Message::ActorDeath(m) => check_actor_death(m),
+        Message::HostedActorState(m) => check_hosted_state(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
         // rejects it by direction before it gets this far.
@@ -758,7 +789,7 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use wire_schema::{
-        cap, FormId, Hello, HitIntent, HostedActorState, ItemDelta, MovementSample, SCHEMA_VERSION,
+        cap, FormId, Hello, HitIntent, ItemDelta, MovementSample, ReservedHostedActorState, SCHEMA_VERSION,
     };
 
     fn movement(seq: u32, x: f32) -> Message {
@@ -805,7 +836,7 @@ mod tests {
                 count: *c,
             });
         }
-        Message::HostedActor(HostedActorState {
+        Message::ReservedHostedActor(ReservedHostedActorState {
             actor: FormId(0x20),
             transform: Transform {
                 x: 0.0,
@@ -1492,7 +1523,9 @@ mod tests {
             return;
         };
         let m = Message::UpdateAction(UpdateAction { idx: 64, action: 0x13005, event_name, kind: 2, ..UpdateAction::default() });
-        for _ in 0..12 {
+        // 48 at once, 16 a second after that: a host's budget (thuum
+        // docs/verbs/npc-stream.md, UNMEASURED from x-npc-stream-p1's rate)
+        for _ in 0..48 {
             assert_eq!(validate(&m, &mut g, 1_000), Ok(()));
         }
         assert_eq!(validate(&m, &mut g, 1_000), Err(Reject::Rate));
@@ -1639,6 +1672,38 @@ mod tests {
         assert_eq!(validate(&death(0x85547, 1, 0, [0.0, 0.0, 0.0]), &mut guard, 2_100), Ok(()));
     }
 
+    // thuum docs/verbs/npc-stream.md (ADR-050): a host's state for an actor
+    // it simulates names the actor's index and three percentages within 0
+    // and 1; 128 at once, 32 a second after that (UNMEASURED until P3)
+    fn hosted_state(idx: u32, health: f32, magicka: f32, stamina: f32) -> Message {
+        Message::HostedActorState(wire_schema::skymp::HostedActorState {
+            idx,
+            health,
+            magicka,
+            stamina,
+            combat_target: 0xff00_0000,
+            package: 0x4_0000,
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn a_hosted_state_names_an_actor_and_its_values() {
+        assert_eq!(validate_server(&hosted_state(7, 0.5, 1.0, 0.75)), Ok(()));
+        assert_eq!(validate_server(&hosted_state(7, 0.0, 0.0, 0.0)), Ok(()));
+        assert_eq!(validate_server(&hosted_state(7, 1.01, 1.0, 1.0)), Err(Reject::Range));
+        assert_eq!(validate_server(&hosted_state(7, 1.0, -0.01, 1.0)), Err(Reject::Range));
+        assert_eq!(validate_server(&hosted_state(7, 1.0, 1.0, 2.0)), Err(Reject::Range));
+        assert_eq!(validate_server(&hosted_state(u32::MAX, 1.0, 1.0, 1.0)), Err(Reject::Range));
+        assert_eq!(validate_server(&hosted_state(7, f32::NAN, 1.0, 1.0)), Err(Reject::NonFinite));
+        let mut guard = ClientGuard::default();
+        for _ in 0..128 {
+            assert_eq!(validate(&hosted_state(7, 0.5, 1.0, 1.0), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&hosted_state(7, 0.5, 1.0, 1.0), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&hosted_state(7, 0.5, 1.0, 1.0), &mut guard, 1_100), Ok(()));
+    }
+
     // thuum docs/verbs/npc-fate.md (ADR-049): the server's fates name
     // game-file placements; a base of 0 is a roll of none; a worn id is a form
     fn fates(entries: &[(u32, u32, u16, &[u32])]) -> Message {
@@ -1736,6 +1801,20 @@ mod tests {
         fn hosted_never_panics(health in any::<f32>(), counts in proptest::collection::vec(any::<i32>(), 0..=cap::INVENTORY_DELTA)) {
             let mut g = ClientGuard::default();
             let _ = validate(&hosted(health, &counts), &mut g, 0);
+        }
+
+        #[test]
+        fn hosted_state_never_panics(
+            idx in any::<u32>(), health in any::<f32>(), magicka in any::<f32>(), stamina in any::<f32>(),
+            target in any::<u32>(), package in any::<u32>(), now in any::<u64>(),
+        ) {
+            let m = Message::HostedActorState(wire_schema::skymp::HostedActorState {
+                idx, health, magicka, stamina, combat_target: target, package, ..Default::default()
+            });
+            let mut g = ClientGuard::default();
+            let _ = validate(&m, &mut g, now);
+            let _ = validate(&m, &mut g, now);
+            let _ = validate_server(&m);
         }
 
         #[test]

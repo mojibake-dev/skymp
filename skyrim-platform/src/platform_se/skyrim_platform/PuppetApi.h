@@ -41,6 +41,15 @@ Napi::Value IsHosted(const Napi::CallbackInfo& info);
 // inside a sendAnimationEvent hook handler, where the game thread waits, it
 // says the event being sent is the action's own
 Napi::Value IsPerformingAction(const Napi::CallbackInfo& info);
+// thuum docs/verbs/npc-stream.md (the voice slice): sayTopicInfo(actorFormId,
+// topicInfoFormId) makes a puppet say the host's line through the engine's
+// own say (Offsets::Voice::SayTopic with the info given, so the engine's
+// pick is skipped), queued to the game thread; sayTopicInfoResult answers
+// -1 while it waits, 0 for no actor, info or process, 1 when the line
+// started (the actor's sound callback state read 3 after the call), 2 when
+// the engine refused it (a line still ending, the process's dialogue state)
+Napi::Value SayTopicInfo(const Napi::CallbackInfo& info);
+Napi::Value SayTopicInfoResult(const Napi::CallbackInfo& info);
 
 inline void Register(Napi::Env env, Napi::Object& exports)
 {
@@ -68,5 +77,11 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set("isPerformingAction",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(IsPerformingAction)));
+  exports.Set(
+    "sayTopicInfo",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(SayTopicInfo)));
+  exports.Set("sayTopicInfoResult",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(SayTopicInfoResult)));
 }
 }

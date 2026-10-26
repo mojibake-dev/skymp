@@ -3,6 +3,8 @@
 #include "Hosted.h"
 #include "Puppets.h"
 #include "game/Offsets.h"
+#include <RE/T/TESTopic.h>
+#include <RE/T/TESTopicInfo.h>
 #include <chrono>
 #include <mutex>
 #include <unordered_map>
@@ -18,6 +20,14 @@ struct
   std::vector<uint32_t> highActors;
   std::recursive_mutex m;
 } g_puppets;
+
+// thuum docs/verbs/npc-stream.md (the voice slice): the engine's say with a
+// given info (Offsets::Voice::SayTopic; the prototype the re-analyst read),
+// and the answers of the asks, by actor
+using SayTopicFn = bool (*)(RE::AIProcess*, RE::Actor*, RE::TESTopic*,
+                            RE::TESTopicInfo*, bool, bool, bool, bool);
+std::mutex g_sayResultMutex;
+std::unordered_map<uint32_t, int> g_sayResult;
 
 // Actor::ClearKeepOffsetFromActor is not in CommonLibSSE-NG (only the
 // IMovementSetKeepOffsetFromActor vtable is). The engine's function (37895;
@@ -287,4 +297,59 @@ Napi::Value PuppetApi::IsPerformingAction(const Napi::CallbackInfo& info)
 {
   const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
   return Napi::Boolean::New(info.Env(), Hosted::IsPerforming(actorFormId));
+}
+
+Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
+{
+  const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  const auto infoFormId =
+    NapiHelper::ExtractUInt32(info[1], "topicInfoFormId");
+  if (actorFormId == 0 || actorFormId == 0x14 || infoFormId == 0) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_sayResultMutex);
+    g_sayResult[actorFormId] = -1;
+  }
+  // the forms looked up on the game thread alone (setPuppet's reason)
+  g_nativeCallRequirements.gameThrQ->AddTask(
+    [actorFormId, infoFormId](Viet::Void) {
+      int result = 0;
+      auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
+      auto* topicInfo = RE::TESForm::LookupByID<RE::TESTopicInfo>(infoFormId);
+      if (actor && topicInfo && topicInfo->parentTopic) {
+        auto& runtime = actor->GetActorRuntimeData();
+        if (runtime.currentProcess) {
+          const auto bitsBefore = runtime.boolBits.underlying();
+          const float timerBefore = runtime.voiceTimer;
+          const int stateBefore = runtime.soundCallBackSet;
+          REL::Relocation<SayTopicFn> say{ Offsets::Voice::SayTopic };
+          // Say's shape with the info given: the engine's own books, lip
+          // sync, talking idle and begin event; the end is the detour's
+          // (PuppetHooks.cpp DriveVoice) on a puppet
+          say(runtime.currentProcess, actor, topicInfo->parentTopic, topicInfo,
+              false, false, true, true);
+          const int stateAfter = runtime.soundCallBackSet;
+          result = stateAfter == 3 ? 1 : 2;
+          logger::info("[verb:npc-stream] sayTopicInfo on {:x}: info {:x} "
+                       "topic {:x} -> {} (bits {:x}, timer {:.2f}, state {} "
+                       "before; state {} after)",
+                       actorFormId, infoFormId, topicInfo->parentTopic->formID,
+                       result == 1 ? "started" : "refused", bitsBefore,
+                       timerBefore, stateBefore, stateAfter);
+        }
+      }
+      std::lock_guard<std::mutex> lock(g_sayResultMutex);
+      g_sayResult[actorFormId] = result;
+    });
+  return Napi::Boolean::New(info.Env(), true);
+}
+
+Napi::Value PuppetApi::SayTopicInfoResult(const Napi::CallbackInfo& info)
+{
+  const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  std::lock_guard<std::mutex> lock(g_sayResultMutex);
+  const auto it = g_sayResult.find(actorFormId);
+  return Napi::Number::New(info.Env(),
+                           it == g_sayResult.end() ? -1 : it->second);
 }

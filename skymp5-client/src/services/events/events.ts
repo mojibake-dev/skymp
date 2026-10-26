@@ -26,6 +26,7 @@ import { ConsoleOutputMessage } from "../messages/consoleOutputMessage";
 import { ArrowShotMessage } from "../messages/arrowShotMessage";
 import { MagicEffectsMessage } from "../messages/magicEffectsMessage";
 import { UpdateActionMessage } from "../messages/updateActionMessage";
+import { ActorSpeechMessage } from "../messages/actorSpeechMessage";
 import { PlayerGlobalsMessage } from "../messages/playerGlobalsMessage";
 import { ActorJumpMessage } from "../messages/actorJumpMessage";
 import { SpSnippetMessage } from "../messages/spSnippetMessage";
@@ -97,6 +98,7 @@ type EventTypes = {
     'arrowShotMessage': [ConnectionMessage<ArrowShotMessage>],
     'magicEffectsMessage': [ConnectionMessage<MagicEffectsMessage>],
     'updateActionMessage': [ConnectionMessage<UpdateActionMessage>],
+    'actorSpeechMessage': [ConnectionMessage<ActorSpeechMessage>],
     'playerGlobalsMessage': [ConnectionMessage<PlayerGlobalsMessage>],
     'actorJumpMessage': [ConnectionMessage<ActorJumpMessage>],
     'hostGrantMessage': [ConnectionMessage<HostGrantMessage>],

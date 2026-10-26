@@ -423,6 +423,8 @@ pub enum Message {
     ActorDeath(skymp::ActorDeath),
     /// 61, MsgType 53 (thuum). See [`skymp::HostedActorState`].
     HostedActorState(skymp::HostedActorState),
+    /// 62, MsgType 54 (thuum). See [`skymp::ActorSpeech`].
+    ActorSpeech(skymp::ActorSpeech),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -451,7 +453,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 62] = [
+const TABLE: [Row; 63] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -514,14 +516,15 @@ const TABLE: [Row; 62] = [
     row("ActorFate", 51, 16 * KIB, S2C),
     row("ActorDeath", 52, KIB, C2S),
     row("HostedActorState", 53, 64, C2S),
+    row("ActorSpeech", 54, 32, Both),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 62;
-const _: () = assert!(TABLE.len() == 62, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 63;
+const _: () = assert!(TABLE.len() == 63, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -608,6 +611,7 @@ impl Message {
             Message::ActorFate(_) => 59,
             Message::ActorDeath(_) => 60,
             Message::HostedActorState(_) => 61,
+            Message::ActorSpeech(_) => 62,
         }
     }
 
@@ -692,7 +696,8 @@ mod tests {
         assert_eq!(name_of_msg_type(51), Some("ActorFate"));
         assert_eq!(name_of_msg_type(52), Some("ActorDeath"));
         assert_eq!(name_of_msg_type(53), Some("HostedActorState"));
-        assert_eq!(name_of_msg_type(54), None);
+        assert_eq!(name_of_msg_type(54), Some("ActorSpeech"));
+        assert_eq!(name_of_msg_type(55), None);
     }
 
     #[test]
@@ -758,6 +763,7 @@ mod tests {
                 package: u32::MAX,
                 ..Default::default()
             }),
+            Message::ActorSpeech(skymp::ActorSpeech { idx: u32::MAX, topic: u32::MAX, info: u32::MAX, ..Default::default() }),
             Message::RaceMenuPreset(skymp::RaceMenuPreset {
                 actor: u32::MAX,
                 preset: "x".repeat(cap::RACEMENU_PRESET).try_into().unwrap_or_default(),

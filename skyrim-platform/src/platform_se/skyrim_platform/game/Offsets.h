@@ -127,6 +127,23 @@ inline REL::ID PerformChosenAction(38953);
 inline REL::ID ActorMediatorSingleton(403567);
 }
 
+// thuum docs/verbs/npc-stream.md (the voice slice): the engine's say and the
+// first half of the pair that ends a line. The re-analyst's REA read of
+// 1.6.1170 on sky-re (2026-10-26, CONFIRMED-STATIC by instruction; the ids
+// by lab/addr.py): SayTopic 39162 (asm 0x1406d71e0), `bool (AIProcess*,
+// Actor* speaker, TESTopic*, TESTopicInfo* info, bool unused, bool flag6,
+// bool flag7, bool keepExtra)`, the function Papyrus Say (56220) calls for a
+// living actor with (process, actor, topic, 0, 0, 0, 1, 1); a given info
+// skips the condition pick (25541 to 25544), the topic must be its parent.
+// UpdateVoiceTimer 37752 (asm 0x14068f4e0), `void (Actor*, bool force)`,
+// which the AI update (37347) runs right before Actor::UpdateSoundCallBack
+// (CommonLibSSE-NG Actor.h:287, vtable slot 0x40) for a live actor and
+// skips for an AI-off one. AE only, as the rest of this file.
+namespace Voice {
+inline REL::ID SayTopic(39162);
+inline REL::ID UpdateVoiceTimer(37752);
+}
+
 // thuum docs/verbs/npc-puppet.md: Actor::ClearKeepOffsetFromActor, not in
 // CommonLibSSE-NG; `void (RE::Actor*)`, the Papyrus native's body (REA on
 // sky-re 2026-10-21, CONFIRMED-STATIC). AE only, 1.6.1170's id by lab/addr.py.

@@ -434,6 +434,87 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
   return Napi::Boolean::New(info.Env(), true);
 }
 
+namespace {
+struct HostedGazeRead
+{
+  uint32_t target = 0;
+  uint32_t slot = 0;
+  uint32_t emotionType = 0;
+  uint32_t emotionValue = 0;
+};
+std::mutex g_gazeMutex;
+std::unordered_map<uint32_t, HostedGazeRead> g_gaze;
+}
+
+Napi::Value PuppetApi::PollHostedGaze(const Napi::CallbackInfo& info)
+{
+  const auto ids = NapiHelper::ExtractArray(info[0], "actorFormIds");
+  std::vector<uint32_t> actorIds;
+  const uint32_t n = ids.Length();
+  actorIds.reserve(n);
+  for (uint32_t i = 0; i < n; ++i) {
+    const std::string name = "actorFormIds[" + std::to_string(i) + "]";
+    actorIds.push_back(NapiHelper::ExtractUInt32(ids.Get(i), name.c_str()));
+  }
+  // the engine's fields read on the game thread (setPuppet's reason); a few
+  // field reads per hosted actor per poll (rule 9)
+  g_nativeCallRequirements.gameThrQ->AddTask([actorIds](Viet::Void) {
+    std::unordered_map<uint32_t, HostedGazeRead> reads;
+    for (const auto id : actorIds) {
+      auto* actor = RE::TESForm::LookupByID<RE::Actor>(id);
+      if (!actor) {
+        continue;
+      }
+      HostedGazeRead read;
+      auto& runtime = actor->GetActorRuntimeData();
+      auto* high =
+        runtime.currentProcess ? runtime.currentProcess->high : nullptr;
+      if (high) {
+        // the highest set slot wins (HighProcessData.h:80-94: default,
+        // action, script, combat, dialogue, procedure)
+        for (int slot = RE::HighProcessData::HEAD_TRACK_TYPE::kTotal - 1;
+             slot >= 0; --slot) {
+          if (!high->headTracked[slot]) {
+            continue;
+          }
+          auto target = high->headTrackTarget[slot].get();
+          if (target) {
+            read.target = target->formID;
+            read.slot = static_cast<uint32_t>(slot);
+            break;
+          }
+        }
+      }
+      read.emotionType = static_cast<uint32_t>(actor->GetEmotionType());
+      read.emotionValue = std::min<uint32_t>(actor->GetEmotionValue(), 100u);
+      reads[id] = read;
+    }
+    std::lock_guard<std::mutex> lock(g_gazeMutex);
+    g_gaze.swap(reads);
+  });
+  return info.Env().Undefined();
+}
+
+Napi::Value PuppetApi::HostedGaze(const Napi::CallbackInfo& info)
+{
+  const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  HostedGazeRead read;
+  {
+    std::lock_guard<std::mutex> lock(g_gazeMutex);
+    const auto it = g_gaze.find(actorFormId);
+    if (it == g_gaze.end()) {
+      return info.Env().Null();
+    }
+    read = it->second;
+  }
+  auto res = Napi::Array::New(info.Env(), 4);
+  res.Set(uint32_t(0), Napi::Number::New(info.Env(), read.target));
+  res.Set(uint32_t(1), Napi::Number::New(info.Env(), read.slot));
+  res.Set(uint32_t(2), Napi::Number::New(info.Env(), read.emotionType));
+  res.Set(uint32_t(3), Napi::Number::New(info.Env(), read.emotionValue));
+  return res;
+}
+
 Napi::Value PuppetApi::DamageActor(const Napi::CallbackInfo& info)
 {
   const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");

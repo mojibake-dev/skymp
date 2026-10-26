@@ -4,6 +4,7 @@ import {
   Game,
   TESModPlatform,
   Debug, setPuppetLocomotion, printConsole } from "skyrimPlatform";
+import { puppetGazeHeld } from "./puppetGaze";
 import { RespawnNeededError } from "../lib/errors";
 import { Movement, RunMode, AnimationVariables, Transform, NiPoint3 } from "./movement";
 import { ObjectReferenceEx } from "../extensions/objectReferenceEx";
@@ -37,7 +38,11 @@ export const applyMovement = (refr: ObjectReference, m: Movement, isMyClone?: bo
   }
 
   let lookAt = null;
-  if (m.lookAt) {
+  // slice 5: a puppet whose gaze the host's state names keeps that target
+  // (PuppetFaceService); the point heuristic is for the rest
+  if (puppet && puppetGazeHeld.has(ac.getFormID())) {
+    // the gaze is set by the state's handler
+  } else if (m.lookAt) {
     try {
       lookAt = Game.findClosestActor(
         m.lookAt[0],
@@ -53,7 +58,7 @@ export const applyMovement = (refr: ObjectReference, m: Movement, isMyClone?: bo
   if (lookAt) {
     ac.setHeadTracking(true);
     ac.setLookAt(lookAt, false);
-  } else {
+  } else if (!(puppet && puppetGazeHeld.has(ac.getFormID()))) {
     ac.setHeadTracking(false);
   }
 

@@ -21,4 +21,12 @@ export interface HostedActorStateMessage {
     stamina: number;
     combatTarget: number;
     package: number;
+    // slice 5 (the gaze and the face): the head-track target (a remote id,
+    // 0 none), the engine's slot type (below 6), the emotion type (at most
+    // 7) and strength (0 to 100); the server records them and relays the
+    // message to the actor's other listeners (PuppetFaceService)
+    gazeTarget: number;
+    gazeSlot: number;
+    emotionType: number;
+    emotionValue: number;
 }

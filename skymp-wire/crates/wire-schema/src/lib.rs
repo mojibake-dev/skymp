@@ -517,7 +517,7 @@ const TABLE: [Row; 64] = [
     row("ActorSightings", 50, 4 * KIB, C2S),
     row("ActorFate", 51, 16 * KIB, S2C),
     row("ActorDeath", 52, KIB, C2S),
-    row("HostedActorState", 53, 64, C2S),
+    row("HostedActorState", 53, 64, Both),
     row("ActorSpeech", 54, 32, Both),
     row("DamageCause", 55, 32, S2C),
 ];

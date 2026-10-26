@@ -27,10 +27,10 @@ steps:
   - {client: c1, at_ms: 2000, send: {t: 12, data: {t: 12, commandName: additem, args: [20, 243042, 1]}}}
   - {client: c1, at_ms: 2300, send: {t: 12, data: {t: 12, commandName: additem, args: [20, 80253, 10]}}}
   - {client: c1, at_ms: 2600, send: {t: 5, idx: 2, data: {inv: {entries: [{baseId: 243042, count: 1, worn: true}, {baseId: 80253, count: 10, worn: true}]}, numChanges: 1}}}
-  - {client: c1, at_ms: 3000, send: {t: 22, weaponId: 243042, ammoId: 80253, power: 1, isSunGazing: false, aimAngle: 0.125, aimHeading: 1.5, hasLaunch: false, originX: 0, originY: 0, originZ: 0, launchAngleX: 0, launchAngleZ: 0}}
+  - {client: c1, at_ms: 3000, send: {t: 22, idx: 2, weaponId: 243042, ammoId: 80253, power: 1, isSunGazing: false, aimAngle: 0.125, aimHeading: 1.5, hasLaunch: false, originX: 0, originY: 0, originZ: 0, launchAngleX: 0, launchAngleZ: 0}}
   - {client: c1, at_ms: 3200, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 243042, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
   - {client: c1, at_ms: 4200, send: {t: 17, data: {aggressor: 20, target: 4278190083, source: 243042, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
-  - {client: c1, at_ms: 4500, send: {t: 22, weaponId: 80261, ammoId: 80253, power: 1, isSunGazing: false, aimAngle: 0.125, aimHeading: 1.5, hasLaunch: false, originX: 0, originY: 0, originZ: 0, launchAngleX: 0, launchAngleZ: 0}}
+  - {client: c1, at_ms: 4500, send: {t: 22, idx: 2, weaponId: 80261, ammoId: 80253, power: 1, isSunGazing: false, aimAngle: 0.125, aimHeading: 1.5, hasLaunch: false, originX: 0, originY: 0, originZ: 0, launchAngleX: 0, launchAngleZ: 0}}
   - {client: c2, at_ms: 0, move: {dx: 50}}
   - {client: c2, at_ms: 3500, move: {dx: 60}}
 divergences:

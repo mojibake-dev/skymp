@@ -12,6 +12,7 @@ struct PlayerBowShotMessage : public MessageBase<PlayerBowShotMessage>
   void Serialize(Archive& archive)
   {
     archive.Serialize("t", kMsgType)
+      .Serialize("idx", idx)
       .Serialize("weaponId", weaponId)
       .Serialize("ammoId", ammoId)
       .Serialize("power", power)
@@ -26,6 +27,10 @@ struct PlayerBowShotMessage : public MessageBase<PlayerBowShotMessage>
       .Serialize("launchAngleZ", launchAngleZ);
   }
 
+  // the shooter, as CreateActor named it: the sender's own idx for its own
+  // shot, a hosted actor's for one its game simulates (thuum
+  // docs/verbs/npc-stream.md, train 53)
+  uint32_t idx = 0;
   uint32_t weaponId = 0;
   uint32_t ammoId = 0;
   float power = 0.f;

@@ -4,6 +4,10 @@ import { MsgType } from "../../messages";
 import { getEquipment } from "../../sync/equipment";
 import { QueryBlockSetInventoryEvent } from "../events/queryBlockSetInventoryEvent";
 import { logError, logTrace } from "../../logging";
+import { PlayerBowShotMessage } from "../messages/playerBowShotMessage";
+import { MessageWithRefrId } from "../events/sendMessageWithRefrIdEvent";
+import { HostService } from "./hostService";
+import { localIdToRemoteId } from "../../view/worldViewMisc";
 
 // Skyrim Platform's shot event with the aim the fork adds to it
 // (skyrim-platform EventHandler.cpp, TESPlayerBowShotEvent); the published
@@ -85,11 +89,54 @@ export class PlayerBowShotService extends ClientListener {
         this.flushShot();
     }
 
-    private onProjectileLaunched(e: { shooter: number; ammo: number; weapon: number; originX: number; originY: number; originZ: number; angleX: number; angleZ: number }) {
-        if (e.shooter !== 0x14 || !e.ammo) {
-            return; // not the player's own arrow (a spell has no ammo)
+    private onProjectileLaunched(e: { shooter: number; ammo: number; weapon: number; power: number; originX: number; originY: number; originZ: number; angleX: number; angleZ: number }) {
+        if (!e.ammo) {
+            return; // a spell has no ammo
+        }
+        if (e.shooter !== 0x14) {
+            this.onHostedLaunch(e);
+            return;
         }
         this.lastLaunch = { at: Date.now(), ammo: e.ammo, weapon: e.weapon, originX: e.originX, originY: e.originY, originZ: e.originZ, angleX: e.angleX, angleZ: e.angleZ };
+    }
+
+    // thuum docs/verbs/npc-stream.md (train 53): an arrow a hosted actor's
+    // engine launched in this game (the native launch rule lets a simulated
+    // actor's arrow fly and reports it, where a figure's or a puppet's is
+    // dropped) goes to the server as that actor's shot under its idx, with
+    // the launch the engine made; the server relays it as ArrowShot and the
+    // other games' puppets launch it the same way a figure's arrow flies
+    private onHostedLaunch(e: { shooter: number; ammo: number; weapon: number; power: number; originX: number; originY: number; originZ: number; angleX: number; angleZ: number }) {
+        if (!this.controller.lookupListener(HostService).isMineLocal(e.shooter)) {
+            return;
+        }
+        const remoteId = localIdToRemoteId(e.shooter);
+        const actor = this.sp.Actor.from(this.sp.Game.getFormEx(e.shooter));
+        if (!remoteId || !actor) {
+            logTrace(this, `hosted shot by ${e.shooter.toString(16)} dropped: no remote id or actor`);
+            return;
+        }
+        const aim = this.aimOf(actor);
+        const launchOk = [e.originX, e.originY, e.originZ, e.angleX, e.angleZ].every((v) => Number.isFinite(v));
+        const weaponId = e.weapon || (actor.getEquippedWeapon(false)?.getFormID() ?? 0);
+        const message: MessageWithRefrId<PlayerBowShotMessage> = {
+            t: MsgType.PlayerBowShot,
+            weaponId,
+            ammoId: e.ammo,
+            power: Number.isFinite(e.power) ? Math.max(0, Math.min(1, e.power)) : 1,
+            isSunGazing: false,
+            aimAngle: aim.aimAngle,
+            aimHeading: aim.aimHeading,
+            hasLaunch: launchOk,
+            originX: launchOk ? e.originX : 0,
+            originY: launchOk ? e.originY : 0,
+            originZ: launchOk ? e.originZ : 0,
+            launchAngleX: launchOk ? PlayerBowShotService.pitch(e.angleX) : 0,
+            launchAngleZ: launchOk ? e.angleZ : 0,
+            _refrId: remoteId,
+        };
+        this.controller.emitter.emit("sendMessageWithRefrId", { message, reliability: "reliable" });
+        logTrace(this, `hosted shot by ${remoteId.toString(16)}: ${e.ammo.toString(16)} from ${weaponId.toString(16)}, power ${message.power.toFixed(2)}${launchOk ? "" : ", no launch"}`);
     }
 
     private onProjectileFlight(e: { shooter: number; ammo: number; x: number; y: number; z: number; angleX: number; angleZ: number }) {
@@ -130,24 +177,25 @@ export class PlayerBowShotService extends ClientListener {
         const launch = origin && angles ? { originX: origin.x, originY: origin.y, originZ: origin.z, angleX: angles.x, angleZ: angles.z } : null;
         const withLaunch = !!launch && Number.isFinite(launch.originX) && Number.isFinite(launch.originY) && Number.isFinite(launch.originZ)
             && Number.isFinite(launch.angleX) && Number.isFinite(launch.angleZ);
-        this.controller.emitter.emit("sendMessage", {
-            message: {
-                t: MsgType.PlayerBowShot,
-                weaponId: shot.weaponId,
-                ammoId: shot.ammoId,
-                power: shot.power,
-                isSunGazing: shot.isSunGazing,
-                aimAngle: shot.aimAngle,
-                aimHeading: shot.aimHeading,
-                hasLaunch: !!withLaunch,
-                originX: withLaunch && launch ? launch.originX : 0,
-                originY: withLaunch && launch ? launch.originY : 0,
-                originZ: withLaunch && launch ? launch.originZ : 0,
-                launchAngleX: withLaunch && launch ? PlayerBowShotService.pitch(launch.angleX) : 0,
-                launchAngleZ: withLaunch && launch ? launch.angleZ : 0,
-            },
-            reliability: "reliable"
-        });
+        // the player's own shot carries the player's own idx (train 53: the
+        // message names its shooter; networkingService fills it)
+        const message: MessageWithRefrId<PlayerBowShotMessage> = {
+            _refrId: undefined,
+            t: MsgType.PlayerBowShot,
+            weaponId: shot.weaponId,
+            ammoId: shot.ammoId,
+            power: shot.power,
+            isSunGazing: shot.isSunGazing,
+            aimAngle: shot.aimAngle,
+            aimHeading: shot.aimHeading,
+            hasLaunch: !!withLaunch,
+            originX: withLaunch && launch ? launch.originX : 0,
+            originY: withLaunch && launch ? launch.originY : 0,
+            originZ: withLaunch && launch ? launch.originZ : 0,
+            launchAngleX: withLaunch && launch ? PlayerBowShotService.pitch(launch.angleX) : 0,
+            launchAngleZ: withLaunch && launch ? launch.angleZ : 0,
+        };
+        this.controller.emitter.emit("sendMessageWithRefrId", { message, reliability: "reliable" });
         if (!withLaunch) {
             logTrace(this, "bow shot sent without its launch:", launchFresh ? "launch seen" : "no launch", flightFresh ? "flight seen" : "no flight");
         } else if (!flightFresh) {
@@ -212,25 +260,26 @@ export class PlayerBowShotService extends ClientListener {
             return;
         }
 
-        this.controller.emitter.emit("sendMessage", {
-            message: {
-                t: MsgType.PlayerBowShot,
-                weaponId: crossbow.getFormID(),
-                ammoId: equippedAmmoEntries[0].baseId,
-                isSunGazing: false,
-                power: 1.0,
-                ...this.aimOf(actor),
-                // a crossbow's shot goes without its launch: the figure's
-                // bolt leaves along the aim (the wire requires the fields)
-                hasLaunch: false,
-                originX: 0,
-                originY: 0,
-                originZ: 0,
-                launchAngleX: 0,
-                launchAngleZ: 0,
-            },
-            reliability: "reliable"
-        });
+        // the player's own shot carries the player's own idx (train 53: the
+        // message names its shooter; networkingService fills it)
+        const message: MessageWithRefrId<PlayerBowShotMessage> = {
+            _refrId: undefined,
+            t: MsgType.PlayerBowShot,
+            weaponId: crossbow.getFormID(),
+            ammoId: equippedAmmoEntries[0].baseId,
+            isSunGazing: false,
+            power: 1.0,
+            ...this.aimOf(actor),
+            // a crossbow's shot goes without its launch: the figure's
+            // bolt leaves along the aim (the wire requires the fields)
+            hasLaunch: false,
+            originX: 0,
+            originY: 0,
+            originZ: 0,
+            launchAngleX: 0,
+            launchAngleZ: 0,
+        };
+        this.controller.emitter.emit("sendMessageWithRefrId", { message, reliability: "reliable" });
 
         // Fixes race condition when the server removes an item faster than local crossbow does that: -1 total
         // Then crossbow removes one more item: -2 total

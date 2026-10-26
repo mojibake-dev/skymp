@@ -3,6 +3,7 @@
 #include "CellLoadedMessage.h"
 #include "HitMessage.h"
 #include "MsgType.h"
+#include "PlayerBowShotMessage.h"
 #include "SpellCastMessage.h"
 #include "TestUtils.hpp"
 #include "UpdateEquipmentMessage.h"
@@ -32,7 +33,16 @@ constexpr uint32_t kForestCell = 0x9810;
 constexpr uint32_t kFirebolt = 0x00012fd0;
 constexpr uint32_t kTouch = 0x0010fc22;
 constexpr uint32_t kIronSword = 0x00012eb7;
+// MarksmanTest's: LongBow 0x3B562, IronArrow 0x1397D
+constexpr uint32_t kLongBow = 0x0003b562;
+constexpr uint32_t kIronArrow = 0x0001397d;
 const NiPoint3 kForest{ 123000.f, -80000.f, 10705.f };
+
+const auto kWorn = [] {
+  Inventory::ExtraData extra;
+  extra.worn_ = true;
+  return extra;
+}();
 
 uint64_t NowMs()
 {
@@ -282,5 +292,68 @@ TEST_CASE("A hosted caster's touch cast reaches the other game at its first "
   REQUIRE(relays.size() == 1);
   REQUIRE(relays[0]["data"]["caster"].get<uint32_t>() == kPredator);
   REQUIRE(relays[0]["data"]["target"].get<uint32_t>() == kOther);
+  Leave(p);
+}
+
+TEST_CASE("A hosted archer's shot is reported by its host under the actor's "
+          "id: it spends the record's arrow, reaches the other game as "
+          "ArrowShot, and its hit is claimed once at the shot's power; a "
+          "shot by a player who is not the host changes nothing",
+          "[NpcCast][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  auto& predator = Gather(p);
+  // beside the other player, so the shot's arrow can have reached it
+  predator.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
+  predator.AddItem(kLongBow, 1);
+  predator.AddItem(kIronArrow, 3);
+  // the host's hands report: the bow in the record's hands, no ammo (the
+  // quiver is the engine's)
+  UpdateEquipmentMessage hands;
+  hands.idx = predator.GetIdx();
+  hands.data.inv.entries.push_back(Inventory::Entry(kLongBow, 1, kWorn));
+  RawMessageData raw;
+  raw.userId = 0;
+  p.GetActionListener().OnUpdateEquipment(raw, hands);
+  REQUIRE(predator.GetEquipment().inv.HasItem(kLongBow));
+  p.Messages().clear();
+
+  PlayerBowShotMessage shot;
+  shot.idx = predator.GetIdx();
+  shot.weaponId = kLongBow;
+  shot.ammoId = kIronArrow;
+  shot.power = 0.5f;
+  shot.aimAngle = 0.f;
+  shot.aimHeading = 1.5f;
+  p.GetActionListener().OnPlayerBowShot(raw, shot);
+  REQUIRE(predator.GetInventory().GetItemCount(kIronArrow) == 2);
+  const auto relays = SentTo(p, 1, MsgType::ArrowShot);
+  REQUIRE(relays.size() == 1);
+  REQUIRE(relays[0]["idx"].get<uint32_t>() == predator.GetIdx());
+  REQUIRE(relays[0]["weaponId"].get<uint32_t>() == kLongBow);
+  REQUIRE(SentTo(p, 0, MsgType::ArrowShot).empty());
+
+  // the hit at the shot's power: the fixture's formula gives 25, halved,
+  // against the other player's recorded 250
+  HitMessage hit;
+  hit.data.aggressor = kPredator;
+  hit.data.target = kOther;
+  hit.data.source = kLongBow;
+  p.GetActionListener().OnHit(raw, hit);
+  REQUIRE(Health(p) == Catch::Approx(0.95f));
+  // the same shot again: no shot behind it
+  p.GetActionListener().OnHit(raw, hit);
+  REQUIRE(Health(p) == Catch::Approx(0.95f));
+
+  // the other player reports a shot for the actor it does not host
+  p.Messages().clear();
+  RawMessageData other;
+  other.userId = 1;
+  p.GetActionListener().OnPlayerBowShot(other, shot);
+  REQUIRE(predator.GetInventory().GetItemCount(kIronArrow) == 2);
+  REQUIRE(SentTo(p, 0, MsgType::ArrowShot).empty());
+  predator.RemoveItem(kLongBow, 1, nullptr);
+  predator.RemoveItem(kIronArrow, 2, nullptr);
   Leave(p);
 }

@@ -2,6 +2,11 @@ import { MsgType } from "../../messages";
 
 export interface PlayerBowShotMessage {
     t: MsgType.PlayerBowShot,
+    // the shooter, as the server named it: the player's own idx for its own
+    // shot, a hosted actor's for one this game simulates (thuum
+    // docs/verbs/npc-stream.md, train 53; networkingService fills it from
+    // _refrId, the player's slot when none)
+    idx: number,
     weaponId: number,
     ammoId: number,
     power: number,

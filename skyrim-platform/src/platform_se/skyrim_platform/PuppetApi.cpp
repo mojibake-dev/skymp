@@ -454,6 +454,19 @@ std::mutex g_gazeMutex;
 std::unordered_map<uint32_t, HostedGazeRead> g_gaze;
 }
 
+Napi::Value PuppetApi::ActivatePickRef(const Napi::CallbackInfo& info)
+{
+  g_nativeCallRequirements.gameThrQ->AddTask([](Viet::Void) {
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) {
+      return;
+    }
+    player->ActivatePickRef();
+    logger::info("[verb:npc-talk] activatePickRef ran");
+  });
+  return Napi::Boolean::New(info.Env(), true);
+}
+
 Napi::Value PuppetApi::PollHostedGaze(const Napi::CallbackInfo& info)
 {
   const auto ids = NapiHelper::ExtractArray(info[0], "actorFormIds");

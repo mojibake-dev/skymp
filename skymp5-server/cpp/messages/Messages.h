@@ -1,5 +1,6 @@
 #pragma once
 #include "ActivateMessage.h"
+#include "ActorClaimMessage.h"
 #include "ActorDeathMessage.h"
 #include "ActorFateMessage.h"
 #include "ActorJumpMessage.h"
@@ -110,4 +111,5 @@
   REGISTER_MESSAGE(ActorDeathMessage)                                         \
   REGISTER_MESSAGE(HostedActorStateMessage)                                   \
   REGISTER_MESSAGE(ActorSpeechMessage)                                        \
-  REGISTER_MESSAGE(DamageCauseMessage)
+  REGISTER_MESSAGE(DamageCauseMessage)                                        \
+  REGISTER_MESSAGE(ActorClaimMessage)

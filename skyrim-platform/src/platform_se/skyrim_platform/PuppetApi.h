@@ -61,6 +61,11 @@ Napi::Value SayTopicInfoResult(const Napi::CallbackInfo& info);
 // Actor.h:464-466) into a table; hostedGaze(actorFormId) answers the last
 // read as [targetFormId, slot, emotionType, emotionValue], or null
 Napi::Value PollHostedGaze(const Napi::CallbackInfo& info);
+// thuum docs/verbs/npc-talk.md (ADR-052): activatePickRef() runs the
+// player's own activation of its crosshair pick on the game thread
+// (PlayerCharacter::ActivatePickRef, CommonLibSSE-NG PlayerCharacter.h:544),
+// the E the claim's word made meaningful; true when queued
+Napi::Value ActivatePickRef(const Napi::CallbackInfo& info);
 Napi::Value HostedGaze(const Napi::CallbackInfo& info);
 // thuum docs/verbs/npc-fate.md (ADR-050 decision 2, deaths by the engine):
 // damageActor(actorFormId, health, attackerFormId, killMove): the server's
@@ -107,6 +112,9 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set("sayTopicInfoResult",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(SayTopicInfoResult)));
+  exports.Set(
+    "activatePickRef",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(ActivatePickRef)));
   exports.Set(
     "pollHostedGaze",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(PollHostedGaze)));

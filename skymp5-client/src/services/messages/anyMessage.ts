@@ -54,6 +54,7 @@ import { UpdatePropertyMessage } from "./updatePropertyMessage";
 import { HostedActorStateMessage } from "./hostedActorStateMessage";
 import { ActorSpeechMessage } from "./actorSpeechMessage";
 import { DamageCauseMessage } from "./damageCauseMessage";
+import { ActorClaimMessage } from "./actorClaimMessage";
 
 export type AnyMessage = ActivateMessage
     | ConsoleCommandMessage
@@ -104,6 +105,7 @@ export type AnyMessage = ActivateMessage
     | HostedActorStateMessage
     | ActorSpeechMessage
     | DamageCauseMessage
+    | ActorClaimMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage
     | UpdatePropertyMessage

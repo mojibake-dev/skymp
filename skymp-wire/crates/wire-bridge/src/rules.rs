@@ -985,6 +985,9 @@ mod ffi {
         Release,
         /// Nobody hosts `cell`: it freezes at its record, the epoch kept.
         Unhosted,
+        /// A player's claim on `actor` in `cell` ended with its lease
+        /// (ADR-052): the cell's rule names the simulator again.
+        ClaimEnded,
     }
 
     /// One decision of the cell host table, for the core to send to its
@@ -999,6 +1002,8 @@ mod ffi {
         cell: u32,
         /// The grant's epoch (the cell's kept epoch for Unhosted).
         epoch: u32,
+        /// The actor a ClaimEnded concerns (0 for the others).
+        actor: u32,
     }
 
     /// A simulator's report moving an actor between cells, the facts the
@@ -1469,6 +1474,12 @@ mod ffi {
         /// Who simulates `actor` standing in `cell`: the host, else the
         /// follower, else 0.
         fn simulator_of(self: &Cells, actor: u32, cell: u32) -> u32;
+        /// ADR-052: `player` claims `actor` in `cell` for a dialogue; 0
+        /// granted, 1 held by another, 2 the claimant has not loaded the
+        /// cell, 3 renewed.
+        fn claim_actor(self: &mut Cells, actor: u32, player: u32, cell: u32, now_ms: u64) -> u8;
+        /// `player` releases its claim on `actor`; false when it holds none.
+        fn release_claim(self: &mut Cells, actor: u32, player: u32) -> bool;
         /// Every follow, by actor id.
         fn follows(self: &Cells) -> Vec<CellFollowRow>;
         /// The grace a host keeps its cell after leaving it, ms
@@ -2054,12 +2065,15 @@ fn host_decisions(table: &cells::Cells, decisions: Vec<cells::Decision>) -> Vec<
     decisions
         .into_iter()
         .map(|d| match d {
-            cells::Decision::Grant { player, cell, epoch } => HostDecision { kind: HostKind::Grant, player, cell, epoch },
+            cells::Decision::Grant { player, cell, epoch } => HostDecision { actor: 0, kind: HostKind::Grant, player, cell, epoch },
             cells::Decision::Release { player, cell, epoch } => {
-                HostDecision { kind: HostKind::Release, player, cell, epoch }
+                HostDecision { actor: 0, kind: HostKind::Release, player, cell, epoch }
             }
             cells::Decision::Unhosted { cell } => {
-                HostDecision { kind: HostKind::Unhosted, player: 0, cell, epoch: table.epoch_of(cell) }
+                HostDecision { actor: 0, kind: HostKind::Unhosted, player: 0, cell, epoch: table.epoch_of(cell) }
+            }
+            cells::Decision::ClaimEnded { actor, cell } => {
+                HostDecision { actor, kind: HostKind::ClaimEnded, player: 0, cell, epoch: table.epoch_of(cell) }
             }
         })
         .collect()
@@ -2159,6 +2173,19 @@ impl Cells {
             cells::MoveVerdict::Follow => 2,
             cells::MoveVerdict::Pass => 3,
         }
+    }
+
+    fn claim_actor(&mut self, actor: u32, player: u32, cell: u32, now_ms: u64) -> u8 {
+        match self.0.claim(actor, player, cell, now_ms) {
+            cells::ClaimVerdict::Granted => 0,
+            cells::ClaimVerdict::Held => 1,
+            cells::ClaimVerdict::Unloaded => 2,
+            cells::ClaimVerdict::Reclaimed => 3,
+        }
+    }
+
+    fn release_claim(&mut self, actor: u32, player: u32) -> bool {
+        self.0.release_claim(actor, player)
     }
 
     fn simulator_of(&self, actor: u32, cell: u32) -> u32 {
@@ -2646,7 +2673,7 @@ mod tests {
         assert!(c.reach(0xff00_0001, &[0x9732], 0).is_empty());
         assert_eq!(
             c.loaded(0xff00_0000, 0x9732, 1_000),
-            vec![HostDecision { kind: HostKind::Grant, player: 0xff00_0000, cell: 0x9732, epoch: 1 }]
+            vec![HostDecision { actor: 0, kind: HostKind::Grant, player: 0xff00_0000, cell: 0x9732, epoch: 1 }]
         );
         assert_eq!(c.host_of(0x9732), CellHost { hosted: true, player: 0xff00_0000, epoch: 1 });
         assert!(c.accepts(0x9732, 0xff00_0000, 1));
@@ -2656,8 +2683,8 @@ mod tests {
         assert_eq!(
             c.tick(2_000 + host_grace_ms()),
             vec![
-                HostDecision { kind: HostKind::Release, player: 0xff00_0000, cell: 0x9732, epoch: 1 },
-                HostDecision { kind: HostKind::Unhosted, player: 0, cell: 0x9732, epoch: 1 },
+                HostDecision { actor: 0, kind: HostKind::Release, player: 0xff00_0000, cell: 0x9732, epoch: 1 },
+                HostDecision { actor: 0, kind: HostKind::Unhosted, player: 0, cell: 0x9732, epoch: 1 },
             ]
         );
         assert_eq!(c.host_of(0x9732), CellHost { hosted: false, player: 0, epoch: 1 });

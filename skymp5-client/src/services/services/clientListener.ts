@@ -153,6 +153,8 @@ declare module "skyrimPlatform" {
     function pollHostedGaze(actorFormIds: number[]): void;
     function hostedGaze(actorFormId: number): number[] | null;
     function setEngineDamageCut(on: boolean): void;
+    // thuum docs/verbs/npc-talk.md (ADR-052): the player's activation of its crosshair pick on the game thread
+    function activatePickRef(): boolean;
 
     // thuum docs/verbs/npc-fate.md (ADR-046 decision 1, ADR-049): the
     // server's roll for a leveled placement, held ahead of the engine's own

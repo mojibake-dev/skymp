@@ -588,6 +588,90 @@ void ActionListener::OnActorSpeech(const RawMessageData& rawMsgData,
   }
 }
 
+// thuum docs/verbs/npc-talk.md (ADR-052): a player asks for an NPC another
+// game simulates, for a dialogue, or gives it back. The gates: the actor an
+// NPC (no user, not a player's), alive, not in combat by the host's last
+// state, in the claimant's cell or world and within activation reach of its
+// record (the activate rule's own bound), the claimant loaded in the actor's
+// cell and nobody else's claim on it (wire-rules cells.rs). Granted, the
+// claimant simulates the actor: the word names it on every seat (the old
+// host's demotes, the claimant's promotes and opens the dialogue), for the
+// lease or until the release.
+void ActionListener::OnActorClaim(const RawMessageData& rawMsgData,
+                                  const ActorClaimMessage& msg)
+{
+  MpActor* myActor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!myActor) {
+    return;
+  }
+  MpForm* form = partOne.worldState.LookupFormByIdx(msg.idx);
+  MpActor* actor = form ? form->AsActor() : nullptr;
+  const auto refuse = [&](const char* code, const std::string& why) {
+    spdlog::warn("[verb:npc-talk] {}: {:x} {} idx {} ({:x}); {}", code,
+                 myActor->GetFormId(), msg.claim ? "claims" : "releases",
+                 msg.idx, actor ? actor->GetFormId() : 0u, why);
+  };
+  if (!actor) {
+    refuse("E_CLAIM_NO_ACTOR", "no such actor");
+    return;
+  }
+  if (!msg.claim) {
+    if (!partOne.ReleaseClaim(*myActor, *actor)) {
+      refuse("E_CLAIM_NONE", "it holds no claim on it");
+      return;
+    }
+    spdlog::info("[verb:npc-talk] {:x} releases {:x}; the cell's rule names "
+                 "{:x}",
+                 myActor->GetFormId(), actor->GetFormId(),
+                 partOne.SimulatorOf(*actor));
+    return;
+  }
+  if (actor->IsCreatedAsPlayer() ||
+      partOne.serverState.UserByActor(actor) != Networking::InvalidUserId) {
+    refuse("E_CLAIM_NPC", "a player's actor is nobody's to claim");
+    return;
+  }
+  if (actor->IsDead()) {
+    refuse("E_CLAIM_DEAD", "the actor is dead");
+    return;
+  }
+  if (actor->GetHostedCombatTarget() != 0) {
+    refuse("E_CLAIM_COMBAT", "the actor fights (its host's last state)");
+    return;
+  }
+  if (myActor->GetCellOrWorld() != actor->GetCellOrWorld()) {
+    refuse("E_CLAIM_REACH", "another cell or world");
+    return;
+  }
+  const float distance = (myActor->GetPos() - actor->GetPos()).Length();
+  const auto reach = skymp::rules::activation_within_reach(
+    distance, ActivationTargetSize(*actor));
+  if (!reach.allowed) {
+    refuse("E_CLAIM_REACH",
+           fmt::format("{:.0f} units from its record, reach {:.0f}", distance,
+                       reach.bound));
+    return;
+  }
+  const auto verdict = partOne.ClaimActor(*myActor, *actor);
+  switch (verdict) {
+    case PartOne::ClaimVerdict::Granted:
+    case PartOne::ClaimVerdict::Reclaimed:
+      spdlog::info("[verb:npc-talk] {:x} claims {:x} in cell {:x} for a "
+                   "dialogue{}; it simulates the actor for the lease",
+                   myActor->GetFormId(), actor->GetFormId(),
+                   partOne.worldState.CellOf(*actor).value_or(0),
+                   verdict == PartOne::ClaimVerdict::Reclaimed ? " (renewed)"
+                                                               : "");
+      break;
+    case PartOne::ClaimVerdict::Held:
+      refuse("E_CLAIM_HELD", "another player holds a claim on it");
+      break;
+    case PartOne::ClaimVerdict::Unloaded:
+      refuse("E_CLAIM_UNLOADED", "the claimant has not loaded its cell");
+      break;
+  }
+}
+
 // thuum docs/verbs/npc-stream.md (ADR-050 decision 1, slice 2): a host's
 // state for an actor it simulates. The gate is ActorUpdatableBy's (the host
 // of the actor's cell); the sender's own actor is refused (a player's values

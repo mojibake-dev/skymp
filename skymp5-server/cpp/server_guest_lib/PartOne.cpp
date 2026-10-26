@@ -1528,7 +1528,12 @@ void FlipHostedFlags(PartOne& partOne, MpActor& viewer, uint32_t cell,
     if (partOne.worldState.CellOf(*actor) != cell) {
       continue;
     }
-    actor->UpdateHoster(host ? host->GetFormId() : 0);
+    // the per-actor rows survive a grant or a release they do not concern
+    // (ADR-047's follows, D22's margin hold, ADR-052's claims): the word
+    // names the simulator the table answers, which is the host for an actor
+    // with no row (a grant into the cell ends the rows into it)
+    (void)host;
+    actor->UpdateHoster(partOne.SimulatorOf(*actor));
   }
 }
 
@@ -1573,6 +1578,19 @@ void ApplyHostDecisions(PartOne& partOne,
                      "its record (epoch {} kept)",
                      d.cell, d.epoch);
         break;
+      case skymp::rules::HostKind::ClaimEnded: {
+        // thuum docs/verbs/npc-talk.md (ADR-052): a claim's lease ran out;
+        // the cell's rule names the simulator again and the word follows
+        auto& form = partOne.worldState.LookupFormByIdNoLoad(d.actor);
+        MpActor* actor = form ? form->AsActor() : nullptr;
+        spdlog::info("[verb:npc-talk] the claim on {:x} in cell {:x} ended "
+                     "with its lease; the cell's rule stands",
+                     d.actor, d.cell);
+        if (actor) {
+          actor->UpdateHoster(partOne.SimulatorOf(*actor));
+        }
+        break;
+      }
       default:
         break;
     }
@@ -2093,6 +2111,32 @@ uint32_t PartOne::SimulatorOf(const MpActor& actor) const
 {
   const auto cell = worldState.CellOf(actor);
   return cell ? pImpl->cells->simulator_of(actor.GetFormId(), *cell) : 0u;
+}
+
+PartOne::ClaimVerdict PartOne::ClaimActor(MpActor& claimant, MpActor& actor)
+{
+  const auto cell = worldState.CellOf(actor);
+  if (!cell) {
+    return ClaimVerdict::Unloaded;
+  }
+  const auto code = pImpl->cells->claim_actor(
+    actor.GetFormId(), claimant.GetFormId(), *cell, SteadyNowMs());
+  const auto verdict = static_cast<ClaimVerdict>(code);
+  if (verdict == ClaimVerdict::Granted || verdict == ClaimVerdict::Reclaimed) {
+    // the word to every listening game: the claimant simulates it now
+    actor.UpdateHoster(claimant.GetFormId());
+  }
+  return verdict;
+}
+
+bool PartOne::ReleaseClaim(MpActor& claimant, MpActor& actor)
+{
+  const bool released =
+    pImpl->cells->release_claim(actor.GetFormId(), claimant.GetFormId());
+  if (released) {
+    actor.UpdateHoster(SimulatorOf(actor));
+  }
+  return released;
 }
 
 void PartOne::SetFollowEnabled(bool enabled)

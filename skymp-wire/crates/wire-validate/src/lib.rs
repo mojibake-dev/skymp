@@ -119,6 +119,9 @@ pub struct ClientGuard {
     /// minute each. UNMEASURED: 32 at once, 8 a second, until P7 reads a
     /// host's rate.
     pub speech_budget: TokenBucket,
+    /// ActorClaim (docs/verbs/npc-talk.md): a dialogue's claim and release; 8
+    /// at once, 2 a second after (UNMEASURED).
+    pub claim_budget: TokenBucket,
     /// Budget for spell casts and their ends (thuum docs/verbs/spell-cast.md):
     /// a cast charges before it goes (Firebolt's SPIT charge time is half a
     /// second) and a stream's start and end are two messages, from two hands
@@ -171,6 +174,7 @@ impl Default for ClientGuard {
             actor_death_budget: TokenBucket { tokens: 6, capacity: 6, refill_per_s: 1, last_refill_ms: 0 },
             hosted_state_budget: TokenBucket { tokens: 128, capacity: 128, refill_per_s: 32, last_refill_ms: 0 },
             speech_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 8, last_refill_ms: 0 },
+            claim_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             cast_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 4, last_refill_ms: 0 },
             player_globals_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
             equip_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 8, last_refill_ms: 0 },
@@ -647,6 +651,7 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::CellLoaded(_) => take(&mut guard.cell_loaded_budget, now_ms),
         Message::HostedActorState(_) => take(&mut guard.hosted_state_budget, now_ms),
         Message::ActorSpeech(_) => take(&mut guard.speech_budget, now_ms),
+        Message::ActorClaim(_) => take(&mut guard.claim_budget, now_ms),
         _ => Ok(()),
     }
 }
@@ -810,6 +815,13 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::HostedActorState(m) => check_hosted_state(m),
         Message::ActorSpeech(m) => check_actor_speech(m),
         Message::DamageCause(m) => check_damage_cause(m),
+        Message::ActorClaim(m) => {
+            if m.idx == u32::MAX {
+                Err(Reject::Range)
+            } else {
+                Ok(())
+            }
+        }
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
         // rejects it by direction before it gets this far.
@@ -1794,6 +1806,21 @@ mod tests {
                 .unwrap_or_default(),
             ..Default::default()
         })
+    }
+
+    #[test]
+    fn actor_claims_name_an_actor_and_are_rate_limited() {
+        use wire_schema::skymp::ActorClaim;
+        let claim = |idx, claim| Message::ActorClaim(ActorClaim { idx, claim, ..Default::default() });
+        assert_eq!(validate_server(&claim(7, true)), Ok(()));
+        assert_eq!(validate_server(&claim(7, false)), Ok(()));
+        assert_eq!(validate_server(&claim(u32::MAX, true)), Err(Reject::Range));
+        let mut guard = ClientGuard::default();
+        for _ in 0..8 {
+            assert_eq!(validate(&claim(7, true), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&claim(7, true), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&claim(7, false), &mut guard, 1_500), Ok(()));
     }
 
     #[test]

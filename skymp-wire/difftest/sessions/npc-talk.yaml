@@ -1,0 +1,25 @@
+# thuum docs/verbs/npc-talk.md (ADR-052): a guest's claim on an NPC the host's game
+# simulates. c1 hosts Riverwood's cell (the first loader); c2 loads it too and claims
+# Sven (the game-file actor 0x13491, idx by the server's map: the fixture's idx 7 names
+# whatever the servers index there; the legacy server knows no 56 and drops it). The
+# wire server answers the claim with the word (isHostedByOther false to c2, true to c1)
+# when the actor exists at that idx and is in reach; a release follows. Divergences are
+# the words themselves: the legacy stack has no claims.
+id: npc-talk
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 1000, send: {t: 47, cell: 48049, loaded: true}, reliable: true}
+  - {client: c2, at_ms: 2000, send: {t: 47, cell: 48049, loaded: true}, reliable: true}
+  # the claim and its release, by idx 7 (an actor both servers may or may not index: the
+  # wire server refuses an unknown idx with E_CLAIM_NO_ACTOR, the legacy drops the type)
+  - {client: c2, at_ms: 3000, send: {t: 56, idx: 7, claim: true}, reliable: true}
+  - {client: c2, at_ms: 4000, send: {t: 56, idx: 7, claim: false}, reliable: true}
+  - {client: c2, at_ms: 9000, move: {dx: 1, dy: 0}}
+divergences:
+  - client: c1
+    msg: {t: 48, cell: 48049, epoch: 1}
+    legacy: 0
+    wire: 1
+    reason: the first loader in reach hosts the cell (HostGrant); the legacy server has no cell hosts

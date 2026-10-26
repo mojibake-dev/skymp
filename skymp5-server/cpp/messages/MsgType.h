@@ -71,6 +71,8 @@ enum class MsgType : uint8_t
   DamageCause = 55,      // thuum docs/verbs/npc-fate.md (ADR-050 decision 2):
                          // the server's number for a hit on a hosted NPC,
                          // to its host as a cause (the resulting health)
+  ActorClaim = 56,       // thuum docs/verbs/npc-talk.md (ADR-052): a player's
+                         // claim on an NPC for a dialogue, or its release
 
   Max
 };

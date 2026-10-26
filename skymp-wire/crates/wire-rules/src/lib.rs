@@ -19,6 +19,7 @@ pub mod effects;
 pub mod favorites;
 pub mod forms;
 pub mod headshots;
+pub mod hosted_state;
 pub mod hostility;
 pub mod magic;
 pub mod markers;

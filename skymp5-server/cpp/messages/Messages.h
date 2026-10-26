@@ -25,6 +25,7 @@
 #include "HostReleaseMessage.h"
 #include "HostStartMessage.h"
 #include "HostStopMessage.h"
+#include "HostedActorStateMessage.h"
 #include "IngredientEffectsKnownMessage.h"
 #include "MagicEffectsMessage.h"
 #include "MapMarkerDiscoveredMessage.h"
@@ -104,4 +105,5 @@
   REGISTER_MESSAGE(HostReleaseMessage)                                        \
   REGISTER_MESSAGE(ActorSightingsMessage)                                     \
   REGISTER_MESSAGE(ActorFateMessage)                                          \
-  REGISTER_MESSAGE(ActorDeathMessage)
+  REGISTER_MESSAGE(ActorDeathMessage)                                         \
+  REGISTER_MESSAGE(HostedActorStateMessage)

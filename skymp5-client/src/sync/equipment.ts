@@ -142,6 +142,52 @@ export const syncSpellEquipment = (
   }
 };
 
+// thuum docs/verbs/npc-stream.md (ADR-050, slice 3): a puppet dressed by its
+// engine from the fate's roll keeps its outfit; its hands follow the host's
+// record. The right hand is the worn weapon (a WEAP record among the worn
+// entries), the left the wornLeft entry (a weapon, a shield, a torch); each
+// hand is changed only when it differs from what the puppet holds, the item
+// added to the puppet when its engine's roll lacks it (one count, silent; a
+// look, not a loot), and the hands' spells follow as a figure's do.
+// HYPOTHESIS H6 until a probe reads a hosted actor's draw on the puppet seat.
+export const applyHands = (ac: Actor, eq: Equipment): void => {
+  if (ac.isDeleted()) {
+    return;
+  }
+  const typeOf = (baseId: number): number => Game.getFormEx(baseId)?.getType() ?? 0;
+  const right = eq.inv.entries.find((e) => e.worn && typeOf(e.baseId) === 41)?.baseId ?? 0;
+  const left = eq.inv.entries.find((e) => e.wornLeft)?.baseId ?? 0;
+  // equipItemEx's slots: 1 the right hand, 2 the left; getEquippedObject's:
+  // 1 the right hand, 0 the left
+  const hands: Array<{ slot: number; location: number; baseId: number }> = [
+    { slot: 1, location: 1, baseId: right },
+    { slot: 2, location: 0, baseId: left },
+  ];
+  for (const hand of hands) {
+    const current = ac.getEquippedObject(hand.location)?.getFormID() ?? 0;
+    if (current === hand.baseId) {
+      continue;
+    }
+    if (current !== 0) {
+      const held = Game.getFormEx(current);
+      if (held) {
+        ac.unequipItem(held, false, true);
+      }
+    }
+    if (hand.baseId !== 0) {
+      const form = Game.getFormEx(hand.baseId);
+      if (form) {
+        if (ac.getItemCount(form) < 1) {
+          ac.addItem(form, 1, true);
+        }
+        ac.equipItemEx(form, hand.slot, false, false);
+      }
+    }
+  }
+  syncSpellEquipment(ac, eq.leftSpell, SpellType.Left);
+  syncSpellEquipment(ac, eq.rightSpell, SpellType.Right);
+};
+
 // a player's figure: a copy on the Player base 0x7 or on a base this game
 // made for its appearance (an id of 0xff000000 and up); never an actor from
 // the game files (npc-puppet's puppets keep their own spells)

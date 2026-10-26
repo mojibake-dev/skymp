@@ -36,7 +36,10 @@ declare module "skyrimPlatform" {
     // input type and the actor's behavior graph variables as the graph was
     // asked. No game call is allowed in its handler (the event's context).
     interface ActionPerformedEvent {
-        actor: Actor;
+        // thuum docs/verbs/npc-stream.md (ADR-050): a hosted actor's action
+        // comes with actor null and its form id; the player's with 0x14
+        actor: Actor | null;
+        actorId: number;
         action: number;
         idle: number;
         eventName: string;
@@ -121,6 +124,12 @@ declare module "skyrimPlatform" {
     function releasePuppet(actorFormId: number): boolean;
     function setPuppetLocomotion(actorFormId: number, speed: number, directionDeg: number, turnRateDeg: number): boolean;
     function getHighProcessActors(): number[];
+    // thuum docs/verbs/npc-stream.md (ADR-050): the hosted set the fork's
+    // action hook reads (the server's word per actor, HostService), and the
+    // mark that the engine's action entry is open on an actor right now
+    function setHosted(actorFormId: number, hosted: boolean): boolean;
+    function isHosted(actorFormId: number): boolean;
+    function isPerformingAction(actorFormId: number): boolean;
 
     // thuum docs/verbs/npc-fate.md (ADR-046 decision 1, ADR-049): the
     // server's roll for a leveled placement, held ahead of the engine's own

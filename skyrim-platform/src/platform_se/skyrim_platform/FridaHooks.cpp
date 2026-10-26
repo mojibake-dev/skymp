@@ -3,6 +3,7 @@
 #include "Fates.h"
 #include "FridaHookHandler.h"
 #include "FridaHooksUtils.h"
+#include "Hosted.h"
 #include "JsUtils.h"
 #include "MagicApi.h"
 #include "Override.h"
@@ -404,6 +405,11 @@ void InstallSendAnimationEventHook()
 struct PerformedAction
 {
   RE::TESActionData* data = nullptr;
+  // the source actor's form id (0x14 the player's) and whether it is the
+  // player's; the actor's mark in the hosted table (Hosted::IsPerforming)
+  // is on from the entry to the leave
+  uint32_t sourceId = 0;
+  bool isPlayer = false;
   AnimationGraphMasterBehaviourDescriptor::AnimationVariables variables;
 };
 thread_local std::vector<PerformedAction> g_performedActions;
@@ -458,13 +464,39 @@ void OnPerformActionEnter(GumInvocationContext* ic)
   PerformedAction entry;
   auto* data = reinterpret_cast<RE::TESActionData*>(ic->cpu_context->rdx);
   auto* player = RE::PlayerCharacter::GetSingleton();
-  if (data && player && data->source.get() == player && data->action &&
-      (data->flags & 1) == 0) {
-    entry.data = data;
-    // the variables before the action changes them: the want variable the
-    // caster set a few instructions earlier is among them
-    entry.variables =
-      AnimationGraphMasterBehaviourDescriptor{ *player }.GetVariables();
+  if (data && player && data->action && (data->flags & 1) == 0) {
+    // thuum docs/verbs/npc-stream.md (ADR-050): an actor this game hosts
+    // (Hosted.h, the server's word mirrored by setHosted) is admitted beside
+    // the player: its actions travel as UpdateAction under its own id and
+    // the puppets perform them through the engine's same entry
+    auto* source = data->source.get();
+    RE::Actor* actor = nullptr;
+    if (source == player) {
+      actor = player;
+      entry.isPlayer = true;
+    } else if (source && Hosted::Is(source->formID)) {
+      actor = source->As<RE::Actor>();
+    }
+    if (actor) {
+      // the variables before the action changes them: the want variable the
+      // caster set a few instructions earlier is among them. A graph that is
+      // not the master behaviour's (a creature's, slice 1 v2) gives none,
+      // and such an actor is not admitted: its actions are not reported and
+      // it is not marked, so its events ride the relay as before
+      auto variables =
+        AnimationGraphMasterBehaviourDescriptor{ *actor }.GetVariables();
+      if (entry.isPlayer || !variables.IsEmpty()) {
+        entry.data = data;
+        entry.sourceId = actor->formID;
+        entry.variables = std::move(variables);
+        // the mark the relay's source reads while the engine sends this
+        // action's graph event inside the call (Hosted::IsPerforming): the
+        // event is the action's own and travels as the action
+        Hosted::BeginPerforming(actor->formID);
+      } else {
+        entry.isPlayer = false;
+      }
+    }
   }
   g_performedActions.push_back(std::move(entry));
 }
@@ -480,6 +512,8 @@ void OnPerformActionLeave(GumInvocationContext* ic)
   if (!data) {
     return;
   }
+  // the mark off before any return: the graph event, if any, went inside
+  Hosted::EndPerforming(entry.sourceId);
   const bool taken = !!gum_invocation_context_get_return_value(ic);
   if (!taken) {
     return;
@@ -491,15 +525,28 @@ void OnPerformActionLeave(GumInvocationContext* ic)
   const uint32_t type = data->unk20;
   const uint32_t flags = data->flags;
   const uint32_t result = static_cast<uint32_t>(data->result);
-  NoteCastHand(eventName);
+  // the player's pending cast starts alone: a hosted actor's casts are the
+  // stream's, not the player's cast events'
+  if (entry.isPlayer) {
+    NoteCastHand(eventName);
+  }
 
   SkyrimPlatform::GetSingleton()->AddTickTask(
     [actionId, idleId, eventName, type, flags, result,
+     sourceId = entry.sourceId, isPlayer = entry.isPlayer,
      variables = std::move(entry.variables)](Napi::Env env) {
       auto obj = Napi::Object::New(env);
-      auto* player = RE::PlayerCharacter::GetSingleton();
-      AddObjProperty(&obj, "actor", static_cast<RE::TESForm*>(player),
-                     "Actor");
+      // the player's own form as before; a hosted actor goes by its id
+      // alone (no form lookup on this thread: PuppetApi.cpp's reason, the
+      // forms map's lock against a cell load), actor null
+      if (isPlayer) {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        AddObjProperty(&obj, "actor", static_cast<RE::TESForm*>(player),
+                       "Actor");
+      } else {
+        obj.Set("actor", env.Null());
+      }
+      AddObjProperty(&obj, "actorId", sourceId);
       AddObjProperty(&obj, "action", actionId);
       AddObjProperty(&obj, "idle", idleId);
       AddObjProperty(&obj, "eventName", eventName.c_str());

@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{bonds, activation, cells, actor_values, appearance, attributes, block, casts, clock, console, damage, effects, favorites, forms, hostility, magic, markers, melee, movement, player_globals, racemenu, ranged, rest, shouts, stagger, teleports, headshots, scripted_effects};
+use wire_rules::{bonds, activation, cells, actor_values, appearance, attributes, block, casts, clock, console, damage, effects, favorites, forms, hosted_state, hostility, magic, markers, melee, movement, player_globals, racemenu, ranged, rest, shouts, stagger, teleports, headshots, scripted_effects};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -838,6 +838,64 @@ mod ffi {
         time_scale: f32,
     }
 
+    /// What the core knows about one of a hosted actor's values (thuum
+    /// docs/verbs/npc-stream.md, ADR-050; wire-rules hosted_state).
+    #[derive(Debug, Clone, Copy)]
+    struct HostedValueFacts {
+        /// The host's percentage, 0 to 1.
+        reported: f32,
+        /// The record's percentage.
+        recorded: f32,
+        /// The hold table refuses this report (a value the server raised that
+        /// the host has not reported yet).
+        held: bool,
+        /// The server lowered this value by its own number at some time.
+        lowered: bool,
+        /// Milliseconds since that lowering (read when `lowered`).
+        lowered_ago_ms: u64,
+    }
+
+    /// The facts of one state report.
+    #[derive(Debug, Clone, Copy)]
+    struct HostedStateFacts {
+        /// Health.
+        health: HostedValueFacts,
+        /// Magicka.
+        magicka: HostedValueFacts,
+        /// Stamina.
+        stamina: HostedValueFacts,
+        /// The record is alive and not respawning.
+        alive: bool,
+        /// One point of health as a percentage of the actor's maximum.
+        one_point: f32,
+    }
+
+    /// The verdict on one value.
+    #[derive(Debug, Clone, Copy)]
+    struct HostedValueVerdict {
+        /// The percentage to record.
+        record: f32,
+        /// The record changes (the value travels to the viewers).
+        changed: bool,
+        /// The report was dropped against the server's number.
+        dropped: bool,
+    }
+
+    /// The verdict on one state report.
+    #[derive(Debug, Clone, Copy)]
+    struct HostedStateVerdict {
+        /// Health.
+        health: HostedValueVerdict,
+        /// Magicka.
+        magicka: HostedValueVerdict,
+        /// Stamina.
+        stamina: HostedValueVerdict,
+        /// The health was floored at one point.
+        floored: bool,
+        /// The whole report was dropped: a dead or respawning record.
+        dead: bool,
+    }
+
     /// What the core knows about a player's rest (thuum docs/verbs/rest.md).
     #[derive(Debug)]
     struct RestFacts {
@@ -1038,6 +1096,9 @@ mod ffi {
         fn rest_check(settings: &RestSettings, facts: &RestFacts) -> RestRefusal;
         /// An attribute's percentage after a rest of `hours`.
         fn rest_after(regen: &Regen, hours: f32) -> f32;
+        /// A host's state report for an actor it simulates, judged value by
+        /// value against the server's numbers (thuum docs/verbs/npc-stream.md).
+        fn hosted_state_judge(facts: &HostedStateFacts) -> HostedStateVerdict;
         /// Whether a rest was a sleep, from the server's own bed facts.
         fn rest_slept(facts: &BedFacts) -> bool;
         /// Real milliseconds the Rested bonus of a rest lasts at the
@@ -1413,7 +1474,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlayerGlobalEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
+pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlayerGlobalEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -1487,6 +1548,36 @@ fn rest_check(settings: &RestSettings, f: &RestFacts) -> RestRefusal {
         Err(rest::Refusal::Off) => RestRefusal::Off,
         Err(rest::Refusal::Dead) => RestRefusal::Dead,
         Err(rest::Refusal::Fighting) => RestRefusal::Fighting,
+    }
+}
+
+fn hosted_value_facts(f: &HostedValueFacts) -> hosted_state::ValueFacts {
+    hosted_state::ValueFacts {
+        reported: f.reported,
+        recorded: f.recorded,
+        held: f.held,
+        lowered_ago_ms: f.lowered.then_some(f.lowered_ago_ms),
+    }
+}
+
+fn hosted_value_verdict(v: hosted_state::ValueVerdict) -> HostedValueVerdict {
+    HostedValueVerdict { record: v.record, changed: v.changed, dropped: v.dropped }
+}
+
+fn hosted_state_judge(f: &HostedStateFacts) -> HostedStateVerdict {
+    let v = hosted_state::judge(&hosted_state::Facts {
+        health: hosted_value_facts(&f.health),
+        magicka: hosted_value_facts(&f.magicka),
+        stamina: hosted_value_facts(&f.stamina),
+        alive: f.alive,
+        one_point: f.one_point,
+    });
+    HostedStateVerdict {
+        health: hosted_value_verdict(v.health),
+        magicka: hosted_value_verdict(v.magicka),
+        stamina: hosted_value_verdict(v.stamina),
+        floored: v.floored,
+        dead: v.dead,
     }
 }
 
@@ -2524,6 +2615,25 @@ impl GameClock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hosted_state_crosses_value_by_value() {
+        let value = |reported: f32, recorded: f32| HostedValueFacts { reported, recorded, held: false, lowered: false, lowered_ago_ms: 0 };
+        let facts = HostedStateFacts {
+            health: HostedValueFacts { lowered: true, lowered_ago_ms: 300, ..value(0.9, 0.6) },
+            magicka: value(0.0, 1.0),
+            stamina: value(0.5, 0.5),
+            alive: true,
+            one_point: 0.01,
+        };
+        let v = hosted_state_judge(&facts);
+        assert!(v.health.dropped && !v.health.changed && v.health.record == 0.6);
+        assert!(v.magicka.changed && v.magicka.record == 0.0);
+        assert!(!v.stamina.changed && !v.stamina.dropped);
+        assert!(!v.floored && !v.dead);
+        let dead = hosted_state_judge(&HostedStateFacts { alive: false, ..facts });
+        assert!(dead.dead && dead.health.dropped && dead.magicka.dropped);
+    }
 
     #[test]
     fn the_cell_host_table_crosses_as_decisions() {

@@ -458,8 +458,12 @@ void ActionListener::OnUpdateAnimation(const RawMessageData& rawMsgData,
     return;
   }
 
-  // Only process animation system and set last anim event for player's actor
+  // Only the player's own actor goes through the animation system (it spends
+  // the player's stamina); a hosted actor keeps its last event too (thuum
+  // docs/verbs/npc-stream.md: a later subscriber's CreateActor carries it,
+  // as a player's does)
   if (targetActor != myActor) {
+    targetActor->SetLastAnimEvent(msg.data);
     return;
   }
 
@@ -491,6 +495,146 @@ void ActionListener::OnUpdateAction(const RawMessageData& rawMsgData,
       partOne.GetSendTarget().Send(targetUserId, rawMsgData.unparsed,
                                    rawMsgData.unparsedLength, true);
     }
+  }
+}
+
+// thuum docs/verbs/npc-stream.md (ADR-050 decision 1, slice 2): a host's
+// state for an actor it simulates. The gate is ActorUpdatableBy's (the host
+// of the actor's cell); the sender's own actor is refused (a player's values
+// go as ChangeValues, with the regeneration crop). The core gathers the facts
+// (the record, the hold table's answer per value, the time since the server
+// last lowered the health by its own number: the last hit it numbered) and
+// wire-rules hosted_state judges: a report that would undo a value the server
+// lowered or raised lately is dropped, an equal one changes nothing, a 0 on a
+// living record is floored at one point (until ADR-050's deaths-by-the-engine
+// train), a dead or respawning record drops the report whole (npc-fate owns
+// the transition). The changed values are written as judged (no kill, no
+// respawn check) and go as ChangeValues to every listener with a user but
+// the host (Rule A: the host's engine has them). The target and the package
+// are recorded in memory. One info line a minute per actor with the counts,
+// the first state at once (the lab's read).
+void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
+                                        const HostedActorStateMessage& msg)
+{
+  MpActor* myActor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!myActor) {
+    return;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  if (msg.idx == myActor->GetIdx()) {
+    static std::unordered_map<uint32_t, std::chrono::steady_clock::time_point>
+      lastOwn;
+    auto& last = lastOwn[myActor->GetFormId()];
+    if (last == std::chrono::steady_clock::time_point() ||
+        now - last >= std::chrono::minutes(1)) {
+      spdlog::warn("[verb:npc-stream] E_STATE_OWN: {:x} sent a hosted state "
+                   "for its own actor (idx {}); a player's values go as "
+                   "ChangeValues; dropped",
+                   myActor->GetFormId(), msg.idx);
+      last = now;
+    }
+    return;
+  }
+  MpActor* actor = ActorUpdatableBy(msg.idx, rawMsgData.userId);
+  if (!actor) {
+    return;
+  }
+
+  const ActorValues& recorded = actor->GetActorValues();
+  skymp::rules::HostedStateFacts facts{};
+  facts.health.reported = msg.health;
+  facts.health.recorded = recorded.healthPercentage;
+  facts.magicka.reported = msg.magicka;
+  facts.magicka.recorded = recorded.magickaPercentage;
+  facts.stamina.reported = msg.stamina;
+  facts.stamina.recorded = recorded.staminaPercentage;
+  // the hold table (docs/verbs/attributes.md): a value the server raised
+  // that this host has not reported yet refuses the report; the call that
+  // reaches the held value ends the hold, as the players' path has it
+  facts.health.held =
+    !actor->TakeReportedPercentage(espm::ActorValue::Health, msg.health);
+  facts.magicka.held =
+    !actor->TakeReportedPercentage(espm::ActorValue::Magicka, msg.magicka);
+  facts.stamina.held =
+    !actor->TakeReportedPercentage(espm::ActorValue::Stamina, msg.stamina);
+  // the server lowers an NPC's health by its own number at a hit it judged
+  // (OnWeaponHit stamps the time); magicka and stamina have no such path
+  const auto lastHit = actor->GetLastHitTakenTime();
+  facts.health.lowered = lastHit.time_since_epoch().count() != 0;
+  facts.health.lowered_ago_ms = facts.health.lowered
+    ? static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - lastHit)
+          .count())
+    : 0;
+  facts.magicka.lowered = false;
+  facts.magicka.lowered_ago_ms = 0;
+  facts.stamina.lowered = false;
+  facts.stamina.lowered_ago_ms = 0;
+  facts.alive = !actor->IsDead() && !actor->IsRespawning();
+  facts.one_point = 1.f / std::max(actor->GetMaximumValues().health, 1.f);
+
+  const skymp::rules::HostedStateVerdict verdict =
+    skymp::rules::hosted_state_judge(facts);
+
+  static std::unordered_map<
+    uint32_t,
+    std::tuple<std::chrono::steady_clock::time_point, uint32_t, uint32_t>>
+    lines;
+  auto& [since, taken, dropped] = lines[actor->GetFormId()];
+  if (verdict.dead) {
+    ++dropped;
+  } else {
+    ++taken;
+    actor->SetJudgedPercentages(
+      verdict.health.changed ? std::optional<float>(verdict.health.record)
+                             : std::nullopt,
+      verdict.magicka.changed ? std::optional<float>(verdict.magicka.record)
+                              : std::nullopt,
+      verdict.stamina.changed ? std::optional<float>(verdict.stamina.record)
+                              : std::nullopt);
+    actor->SetHostedState(msg.combatTarget, msg.package);
+    if (verdict.health.changed || verdict.magicka.changed ||
+        verdict.stamina.changed) {
+      ChangeValuesMessage out;
+      out.idx = actor->GetIdx();
+      if (verdict.health.changed) {
+        out.data.health = verdict.health.record;
+      }
+      if (verdict.magicka.changed) {
+        out.data.magicka = verdict.magicka.record;
+      }
+      if (verdict.stamina.changed) {
+        out.data.stamina = verdict.stamina.record;
+      }
+      // every listener with a user but the host (UpdateHoster's loop: an
+      // offline listener's GetActorToSendTo would hand it to its host)
+      for (auto listener : actor->GetActorListeners()) {
+        if (listener == myActor ||
+            listener->GetUserId() == Networking::InvalidUserId) {
+          continue;
+        }
+        listener->SendToUser(out, true);
+      }
+    }
+  }
+  if (since == std::chrono::steady_clock::time_point() ||
+      now - since >= std::chrono::minutes(1)) {
+    spdlog::info(
+      "[verb:npc-stream] state {:x} by {:x}: health {:.3f}{} magicka {:.3f}{} "
+      "stamina {:.3f}{} target {:x} package {:x}{}{}; {} taken, {} dropped "
+      "whole since the last line",
+      actor->GetFormId(), myActor->GetFormId(), verdict.health.record,
+      verdict.health.dropped ? " (report dropped)" : "",
+      verdict.magicka.record,
+      verdict.magicka.dropped ? " (report dropped)" : "",
+      verdict.stamina.record,
+      verdict.stamina.dropped ? " (report dropped)" : "", msg.combatTarget,
+      msg.package, verdict.floored ? "; floored at one point" : "",
+      verdict.dead ? "; the record is dead, the report dropped" : "", taken,
+      dropped);
+    since = now;
+    taken = 0;
+    dropped = 0;
   }
 }
 
@@ -970,7 +1114,24 @@ const char* VoiceRefusalCode(PartOne::VoiceCheck check)
 void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
                                        const UpdateEquipmentMessage& msg)
 {
-  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  MpActor* myActor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!myActor) {
+    return;
+  }
+  // thuum docs/verbs/npc-stream.md (ADR-050 decision 1, slice 3): an idx that
+  // is not the sender's own names an actor it hosts (ActorUpdatableBy's
+  // gate): its equipment is the host's engine's word, checked against the
+  // actor's own record (the items it wears present in its inventory, the
+  // spells its base knows) and written to the actor's record (not the
+  // sender's: an idx was resolved to the sender's own actor here, the latent
+  // corruption cell-host noted). A refusal drops the report with one warn a
+  // minute per actor and sends the host nothing (Rule A: nothing writes to
+  // an actor the host's engine runs; SetInventory has no idx and would
+  // replace the host player's own inventory, and a snippet on an NPC runs
+  // nowhere)
+  const bool hosted = msg.idx != myActor->GetIdx();
+  MpActor* actor =
+    hosted ? ActorUpdatableBy(msg.idx, rawMsgData.userId) : myActor;
   if (!actor) {
     return;
   }
@@ -1039,6 +1200,11 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
 
   const auto& inventory = actor->GetInventory();
   for (auto& entry : equipmentInv.entries) {
+    // a hosted actor's report names what it wears; its engine's whole
+    // inventory is npc-fate's record, not this message's
+    if (hosted && entry.GetWorn() == Inventory::Worn::None) {
+      continue;
+    }
     if (!inventory.HasItem(entry.baseId)) {
       spdlog::warn(
         "ActionListener::OnUpdateEquipment {:x} - rejected equipment "
@@ -1120,6 +1286,43 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   if (isAllowed) {
     SendToNeighbours(msg.idx, rawMsgData, true);
     actor->SetEquipment(data);
+    if (hosted) {
+      uint32_t right = 0;
+      uint32_t left = 0;
+      size_t worn = 0;
+      for (auto& entry : equipmentInv.entries) {
+        const auto w = entry.GetWorn();
+        if (w == Inventory::Worn::None) {
+          continue;
+        }
+        ++worn;
+        if (w == Inventory::Worn::Right) {
+          right = entry.baseId;
+        } else {
+          left = entry.baseId;
+        }
+      }
+      spdlog::info("[verb:npc-stream] equipment {:x} by {:x}: {} worn, "
+                   "right {:x} left {:x}, spells {:x} {:x}, numChanges {}",
+                   actorFormId, myActor->GetFormId(), worn, right, left,
+                   rightSpell, leftSpell, data.numChanges);
+    }
+  } else if (hosted) {
+    static std::unordered_map<
+      uint32_t, std::pair<std::chrono::steady_clock::time_point, uint32_t>>
+      refusals;
+    const auto now = std::chrono::steady_clock::now();
+    auto& [since, count] = refusals[actorFormId];
+    ++count;
+    if (since == std::chrono::steady_clock::time_point() ||
+        now - since >= std::chrono::minutes(1)) {
+      spdlog::warn("[verb:npc-stream] E_EQUIP_REFUSED: {:x}'s equipment by "
+                   "{:x} refused (the lines above say why); the record "
+                   "stands, nothing sent to the host; {} since the last line",
+                   actorFormId, myActor->GetFormId(), count);
+      since = now;
+      count = 0;
+    }
   } else {
     actor->SendInventoryUpdate();
 

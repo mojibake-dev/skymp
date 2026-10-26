@@ -11,6 +11,7 @@ import {
   // @ts-expect-error (TODO: Remove in 2.10.0)
   setCollision,
   isPuppet,
+  isPerformingAction,
   once
 } from "skyrimPlatform";
 import { Movement } from "./movement";
@@ -241,13 +242,38 @@ export const setDefaultAnimsDisabled = (
   }
 };
 
+// thuum docs/verbs/npc-stream.md: the attack event an action replay is about
+// to send through the engine's action entry (view/formView.ts replayActions)
+// on a figure or a puppet whose default animations are blanked, admitted once
+// by the hook above, as applyAnimation admits a relayed attack event
+export const allowAnimationOnce = (refrId: number, animEventName: string): void => {
+  if (refsWithDefaultAnimsDisabled.has(refrId) && animEventName.toLowerCase().includes("attack")) {
+    allowedAnims.add(refrId + ":" + animEventName);
+  }
+};
+
 export class AnimationSource {
   constructor(refr: ObjectReference) {
     this.refrId = refr.getFormID();
-    hooks.sendAnimationEvent.add({
+    // thuum docs/verbs/npc-stream.md (rule 9): the hook pre-matched in
+    // native to this one id; a host with a village's residents on its list
+    // had a JavaScript crossing per source for every event of every actor
+    this.hookId = hooks.sendAnimationEvent.add({
       enter: () => { },
       leave: (ctx) => {
         if (ctx.selfId !== this.refrId) {
+          return;
+        }
+
+        // thuum docs/verbs/npc-stream.md (ADR-050): for an actor this game
+        // hosts, an event the engine sends inside the actor's own action
+        // entry is the action's (isPerformingAction, read here while the
+        // game thread waits inside the hook): it travels as UpdateAction
+        // (services/actionSyncService.ts) and a puppet performs it through
+        // the same entry, so the relay drops it, or the puppet would play it
+        // twice (P4's H1). The player keeps the name rule below: its melee
+        // and voice events feed the server's AnimationSystem
+        if (this.refrId !== 0x14 && isPerformingAction(this.refrId)) {
           return;
         }
 
@@ -260,7 +286,13 @@ export class AnimationSource {
         }
         this.onSendAnimationEvent(ctx.animEventName);
       },
-    });
+    }, this.refrId, this.refrId);
+  }
+
+  // the hook goes with the source (sendInputsService drops a source whose
+  // actor left the hosted list)
+  dispose(): void {
+    hooks.sendAnimationEvent.remove(this.hookId);
   }
 
   filterMovement(mov: Movement): Movement {
@@ -348,6 +380,7 @@ export class AnimationSource {
   }
 
   private refrId = 0;
+  private hookId = 0;
   private numChanges = 0;
   private pending = new Array<Animation>();
   private last: Animation = { numChanges: 0, animEventName: "" };
@@ -369,6 +402,12 @@ const ignoredAnims = new Set<string>([
   "TurnLeft",
   "TurnRight",
 ]);
+
+// thuum docs/verbs/npc-stream.md: the movement controller's own events, which
+// no channel carries for an NPC (a puppet's locomotion is the engine's Speed
+// and Direction channels fed by the detour); the action stream drops the
+// actions that send them too (services/actionSyncService.ts)
+export const isMovementControllerEvent = (animEventName: string): boolean => ignoredAnims.has(animEventName);
 
 export const setupHooks = (): void => {
   // a figure's own knock in this game (not the relayed handler's push) marks

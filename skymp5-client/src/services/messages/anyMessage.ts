@@ -51,6 +51,7 @@ import { UpdateEquipmentMessage } from "./updateEquipmentMessage";
 import { UpdateGamemodeDataMessage } from "./updateGameModeDataMessage";
 import { UpdateMovementMessage } from "./updateMovementMessage";
 import { UpdatePropertyMessage } from "./updatePropertyMessage";
+import { HostedActorStateMessage } from "./hostedActorStateMessage";
 
 export type AnyMessage = ActivateMessage
     | ConsoleCommandMessage
@@ -98,6 +99,7 @@ export type AnyMessage = ActivateMessage
     | ActorSightingsMessage
     | ActorFateMessage
     | ActorDeathMessage
+    | HostedActorStateMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage
     | UpdatePropertyMessage

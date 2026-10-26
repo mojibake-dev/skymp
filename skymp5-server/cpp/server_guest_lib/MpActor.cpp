@@ -1674,8 +1674,6 @@ bool MpActor::IsSpellLearned(const uint32_t spellId) const
 
 bool MpActor::IsSpellLearnedFromBase(const uint32_t spellId) const
 {
-  // TODO: support npc templates here?
-
   const auto npcData = espm::GetData<espm::NPC_>(GetBaseId(), GetParent());
   const auto npc = GetParent()->GetEspm().GetBrowser().LookupById(GetBaseId());
 
@@ -1689,6 +1687,28 @@ bool MpActor::IsSpellLearnedFromBase(const uint32_t spellId) const
     if (npcSpell == spellId) {
       return true;
     }
+  }
+
+  // thuum docs/verbs/npc-stream.md (ADR-050, train 53): the list of the
+  // template the chain names for spells (NPC_'s UseSpelllist flag) where the
+  // server has evaluated the chain; a chain not evaluated, or one that walks
+  // into a leveled list, answers nothing here and the base's own list stands
+  // (a hosted actor's cast of a spell outside this set is recorded, not
+  // refused: ActionListener::OnSpellCast)
+  std::string chainError;
+  const auto fromTemplate = EvaluateTemplateNoThrow<espm::NPC_::UseSpelllist>(
+    GetParent(), GetBaseId(), GetTemplateChain(),
+    [spellId](const auto& lookup, const auto& data) {
+      for (auto raw : data.spells) {
+        if (lookup.ToGlobalId(raw) == spellId) {
+          return true;
+        }
+      }
+      return false;
+    },
+    &chainError);
+  if (fromTemplate.has_value() && *fromTemplate) {
+    return true;
   }
 
   for (auto raceSpellRaw : raceData.spells) {

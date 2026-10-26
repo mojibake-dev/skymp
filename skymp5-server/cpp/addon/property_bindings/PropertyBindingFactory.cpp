@@ -30,6 +30,7 @@
 #include "SpawnDelayBinding.h"
 #include "SpawnPointBinding.h"
 #include "StaffRankBinding.h"
+#include "StreamCountersBinding.h"
 #include "TemplateChainBinding.h"
 #include "TypeBinding.h"
 #include "WorldOrCellDescBinding.h"
@@ -45,6 +46,7 @@ PropertyBindingFactory::CreateStandardPropertyBindings()
   result["equipment"] = std::make_shared<EquipmentBinding>();
   result["cellHosts"] = std::make_shared<CellHostsBinding>();
   result["cellFollows"] = std::make_shared<CellFollowsBinding>();
+  result["streamCounters"] = std::make_shared<StreamCountersBinding>();
   result["actorFate"] = std::make_shared<ActorFateBinding>();
   result["gameTime"] = std::make_shared<GameTimeBinding>();
   result["inventory"] = std::make_shared<InventoryBinding>();

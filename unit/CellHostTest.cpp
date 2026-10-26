@@ -957,6 +957,24 @@ TEST_CASE("A hosted actor's state is its host's word bounded by the server's "
   REQUIRE(SentTo<HostedActorStateMessage>(p, 1).size() == 1);
   REQUIRE(SentTo<HostedActorStateMessage>(p, 1).front().gazeTarget == kC2);
   REQUIRE(SentTo<HostedActorStateMessage>(p, 1).front().emotionValue == 60);
+  // slice 4's counters: the host's states accepted under its row, a
+  // non-host's dropped as foreign
+  State(p, 1, kActor, 0.4f, 1.f, 1.f, 0, 0);
+  bool hostRow = false;
+  bool otherRow = false;
+  for (const auto& row : p.serverState.StreamRows()) {
+    if (row.msgType != static_cast<uint8_t>(MsgType::HostedActorState)) {
+      continue;
+    }
+    if (row.user == 0 && row.accepted >= 2) {
+      hostRow = true;
+    }
+    if (row.user == 1 && row.dropped >= 1 && row.foreign >= 1) {
+      otherRow = true;
+    }
+  }
+  REQUIRE(hostRow);
+  REQUIRE(otherRow);
 
   // the other game's state about the same actor: dropped at the gate
   p.Messages().clear();

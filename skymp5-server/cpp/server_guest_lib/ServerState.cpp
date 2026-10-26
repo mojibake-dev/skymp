@@ -76,3 +76,30 @@ void ServerState::EnsureUserExists(Networking::UserId userId)
                              " doesn't exist");
   }
 }
+
+void ServerState::CountStream(Networking::UserId userId, uint8_t msgType,
+                              bool accepted, bool foreign)
+{
+  auto& user = streamCounters[userId];
+  auto& count = user.byType[msgType];
+  if (accepted) {
+    ++count.accepted;
+  } else {
+    ++count.dropped;
+  }
+  if (foreign) {
+    ++user.foreign;
+  }
+}
+
+std::vector<ServerState::StreamRow> ServerState::StreamRows() const
+{
+  std::vector<StreamRow> rows;
+  for (const auto& [userId, user] : streamCounters) {
+    for (const auto& [msgType, count] : user.byType) {
+      rows.push_back(
+        { userId, msgType, count.accepted, count.dropped, user.foreign });
+    }
+  }
+  return rows;
+}

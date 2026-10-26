@@ -57,12 +57,21 @@ uint32_t LongToNormal(uint64_t longFormId)
 }
 
 MpActor* ActionListener::ActorUpdatableBy(uint32_t idx,
-                                          Networking::UserId userId)
+                                          Networking::UserId userId,
+                                          MsgType msgType)
 {
+  // slice 4's counters: the row this outcome lands in
+  const auto count = [&](bool accepted, bool foreign) {
+    if (msgType != MsgType::Invalid) {
+      partOne.serverState.CountStream(userId, static_cast<uint8_t>(msgType),
+                                      accepted, foreign);
+    }
+  };
   MpActor* myActor = partOne.serverState.ActorByUser(userId);
   // The old behavior is doing nothing in that case. This is covered by tests
   if (!myActor) {
     spdlog::warn("SendToNeighbours - No actor assigned to user");
+    count(false, false);
     return nullptr;
   }
 
@@ -70,6 +79,7 @@ MpActor* ActionListener::ActorUpdatableBy(uint32_t idx,
   MpActor* actor = form ? form->AsActor() : nullptr;
   if (!actor) {
     spdlog::error("SendToNeighbours - Target actor doesn't exist");
+    count(false, false);
     return nullptr;
   }
 
@@ -82,6 +92,7 @@ MpActor* ActionListener::ActorUpdatableBy(uint32_t idx,
       spdlog::error("SendToNeighbours - No permission to update actor {:x} "
                     "(already owned by user {})",
                     actor->GetFormId(), actorsOwningUserId);
+      count(false, true);
       return nullptr;
     }
 
@@ -96,10 +107,12 @@ MpActor* ActionListener::ActorUpdatableBy(uint32_t idx,
       spdlog::error("SendToNeighbours - No permission to update actor {:x} "
                     "(not the host of its cell)",
                     actor->GetFormId());
+      count(false, true);
       return nullptr;
     }
   }
 
+  count(true, false);
   return actor;
 }
 
@@ -132,9 +145,10 @@ void ActionListener::RelayToListeners(MpActor& actor,
 MpActor* ActionListener::SendToNeighbours(uint32_t idx,
                                           Networking::UserId userId,
                                           Networking::PacketData data,
-                                          size_t length, bool reliable)
+                                          size_t length, bool reliable,
+                                          MsgType msgType)
 {
-  MpActor* actor = ActorUpdatableBy(idx, userId);
+  MpActor* actor = ActorUpdatableBy(idx, userId, msgType);
   if (actor) {
     RelayToListeners(*actor, data, length, reliable, userId);
   }
@@ -143,10 +157,10 @@ MpActor* ActionListener::SendToNeighbours(uint32_t idx,
 
 MpActor* ActionListener::SendToNeighbours(uint32_t idx,
                                           const RawMessageData& rawMsgData,
-                                          bool reliable)
+                                          bool reliable, MsgType msgType)
 {
   return SendToNeighbours(idx, rawMsgData.userId, rawMsgData.unparsed,
-                          rawMsgData.unparsedLength, reliable);
+                          rawMsgData.unparsedLength, reliable, msgType);
 }
 
 void ActionListener::RelayCast(MpActor& caster, const MpActor& sender,
@@ -206,6 +220,9 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
         ++count;
         if (since.time_since_epoch().count() != 0 &&
             now - since < std::chrono::minutes(1)) {
+          partOne.serverState.CountStream(
+            rawMsgData.userId, static_cast<uint8_t>(MsgType::UpdateMovement),
+            false);
           return;
         }
         spdlog::warn("ActionListener::OnUpdateMovement - cell-host: {:x} may "
@@ -217,6 +234,9 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
                      destCell.value_or(0), count);
         since = now;
         count = 0;
+        partOne.serverState.CountStream(
+          rawMsgData.userId, static_cast<uint8_t>(MsgType::UpdateMovement),
+          false);
         return;
       }
       hostedCellChange =
@@ -281,7 +301,8 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       }
       actor = moved;
     } else {
-      actor = ActorUpdatableBy(msg.idx, rawMsgData.userId);
+      actor =
+        ActorUpdatableBy(msg.idx, rawMsgData.userId, MsgType::UpdateMovement);
     }
   }
   if (actor) {
@@ -449,7 +470,8 @@ void ActionListener::OnUpdateAnimation(const RawMessageData& rawMsgData,
     return;
   }
 
-  auto targetActor = SendToNeighbours(msg.idx, rawMsgData);
+  auto targetActor =
+    SendToNeighbours(msg.idx, rawMsgData, false, MsgType::UpdateAnimation);
 
   if (!targetActor) {
     return;
@@ -479,7 +501,8 @@ void ActionListener::OnUpdateAction(const RawMessageData& rawMsgData,
   // nothing; the bytes go as they came (the wire validated them), reliably,
   // to every user listening to the actor but the sender, whose own game
   // performed the action already
-  MpActor* actor = ActorUpdatableBy(msg.idx, rawMsgData.userId);
+  MpActor* actor =
+    ActorUpdatableBy(msg.idx, rawMsgData.userId, MsgType::UpdateAction);
   if (!actor) {
     return;
   }
@@ -521,9 +544,12 @@ void ActionListener::OnActorSpeech(const RawMessageData& rawMsgData,
                    myActor->GetFormId(), msg.idx);
       last = now;
     }
+    partOne.serverState.CountStream(
+      rawMsgData.userId, static_cast<uint8_t>(MsgType::ActorSpeech), false);
     return;
   }
-  MpActor* actor = ActorUpdatableBy(msg.idx, rawMsgData.userId);
+  MpActor* actor =
+    ActorUpdatableBy(msg.idx, rawMsgData.userId, MsgType::ActorSpeech);
   if (!actor) {
     return;
   }
@@ -594,9 +620,13 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
                    myActor->GetFormId(), msg.idx);
       last = now;
     }
+    partOne.serverState.CountStream(
+      rawMsgData.userId, static_cast<uint8_t>(MsgType::HostedActorState),
+      false);
     return;
   }
-  MpActor* actor = ActorUpdatableBy(msg.idx, rawMsgData.userId);
+  MpActor* actor =
+    ActorUpdatableBy(msg.idx, rawMsgData.userId, MsgType::HostedActorState);
   if (!actor) {
     return;
   }
@@ -1208,8 +1238,9 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   // replace the host player's own inventory, and a snippet on an NPC runs
   // nowhere)
   const bool hosted = msg.idx != myActor->GetIdx();
-  MpActor* actor =
-    hosted ? ActorUpdatableBy(msg.idx, rawMsgData.userId) : myActor;
+  MpActor* actor = hosted
+    ? ActorUpdatableBy(msg.idx, rawMsgData.userId, MsgType::UpdateEquipment)
+    : myActor;
   if (!actor) {
     return;
   }
@@ -1398,6 +1429,9 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
                    "{:x} refused (the lines above say why); the record "
                    "stands, nothing sent to the host; {} since the last line",
                    actorFormId, myActor->GetFormId(), count);
+      partOne.serverState.CountStream(
+        rawMsgData.userId, static_cast<uint8_t>(MsgType::UpdateEquipment),
+        false);
       since = now;
       count = 0;
     }

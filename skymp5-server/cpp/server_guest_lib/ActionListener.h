@@ -223,7 +223,10 @@ private:
   // The actor at idx if this user may update it (its own actor, or an NPC
   // it hosts); otherwise logs, sends HostStop where that applies, and
   // returns nullptr.
-  MpActor* ActorUpdatableBy(uint32_t idx, Networking::UserId userId);
+  // `msgType` names the stream row the outcome counts in (slice 4's
+  // counters, ServerState::CountStream); Invalid counts nothing
+  MpActor* ActorUpdatableBy(uint32_t idx, Networking::UserId userId,
+                            MsgType msgType = MsgType::Invalid);
 
   struct RecentActivation
   {
@@ -245,10 +248,11 @@ private:
   // ActorUpdatableBy, then RelayToListeners. Returns the actor or nullptr.
   MpActor* SendToNeighbours(uint32_t idx, Networking::UserId userId,
                             Networking::PacketData data, size_t length,
-                            bool reliable);
+                            bool reliable, MsgType msgType = MsgType::Invalid);
 
   MpActor* SendToNeighbours(uint32_t idx, const RawMessageData& rawMsgData,
-                            bool reliable = false);
+                            bool reliable = false,
+                            MsgType msgType = MsgType::Invalid);
 
   // thuum docs/verbs/spell-cast.md: a cast as the server resolved it (its
   // caster a form id, never the sender's 0x14) to every user listening to

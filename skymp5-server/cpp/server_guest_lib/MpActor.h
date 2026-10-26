@@ -455,6 +455,20 @@ public:
   void SetLastAnimEvent(const std::optional<AnimationData>& animationData);
   std::optional<AnimationData> GetLastAnimEvent() const;
 
+  // thuum docs/verbs/npc-stream.md (ADR-050, slice 2): the percentages a
+  // host's state report writes once wire-rules hosted_state judged them
+  // (each present value written as given: no kill, no respawn check, the
+  // judging done; the attributes stamp refreshed), and the host's reading of
+  // the actor's combat target (a form id the server knows, 0 for none) and
+  // running package (0 for none), memory by design (R2 records for
+  // npc-handoff and the lab, forgotten at a restart)
+  void SetJudgedPercentages(std::optional<float> health,
+                            std::optional<float> magicka,
+                            std::optional<float> stamina);
+  void SetHostedState(uint32_t combatTarget, uint32_t package);
+  uint32_t GetHostedCombatTarget() const;
+  uint32_t GetHostedPackage() const;
+
 private:
   // the two EndRunningEffects above: removes the MGEFs named, gives a buff's
   // modifier back, tells every game; false for none

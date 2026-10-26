@@ -1,10 +1,13 @@
 #include "ActionListener.h"
+#include "ChangeValuesMessage.h"
 #include "CreateActorMessage.h"
 #include "HostGrantMessage.h"
 #include "HostReleaseMessage.h"
+#include "HostedActorStateMessage.h"
 #include "OpenContainerMessage.h"
 #include "TestUtils.hpp"
 #include "UpdateActionMessage.h"
+#include "UpdateAnimationMessage.h"
 #include "UpdateMovementMessage.h"
 #include "UpdatePropertyMessage.h"
 #include "wire_bridge_cxx/rules.h"
@@ -113,6 +116,27 @@ void Act(PartOne& p, Networking::UserId user, uint32_t actorId)
   msg.eventName = "attackStart";
   msg.type = 2;
   p.GetActionListener().OnUpdateAction(raw, msg);
+}
+
+// `user`'s state report for `actorId` (thuum docs/verbs/npc-stream.md): the
+// three percentages, the combat target and the package as the host's engine
+// has them
+void State(PartOne& p, Networking::UserId user, uint32_t actorId, float health,
+           float magicka, float stamina, uint32_t target, uint32_t package)
+{
+  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
+  RawMessageData raw;
+  raw.userId = user;
+  raw.unparsed = unparsed;
+  raw.unparsedLength = sizeof(unparsed);
+  HostedActorStateMessage msg;
+  msg.idx = p.worldState.GetFormAt<MpActor>(actorId).GetIdx();
+  msg.health = health;
+  msg.magicka = magicka;
+  msg.stamina = stamina;
+  msg.combatTarget = target;
+  msg.package = package;
+  p.GetActionListener().OnHostedActorState(raw, msg);
 }
 
 // every UpdateProperty (t 7) sent to `user`, as the JSON the wire carries
@@ -856,6 +880,133 @@ TEST_CASE("A hosted actor's actions travel from its host alone: the host's "
   Act(p, 0, kC1);
   REQUIRE(relays(1) == 1);
   REQUIRE(relays(0) == 0);
+
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kActor);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+}
+
+TEST_CASE("A hosted actor's state is its host's word bounded by the server's "
+          "numbers: the host's values reach the record and the other game "
+          "and never the host, a non-host's and the player's own idx are "
+          "dropped, an equal report sends nothing, a zero is floored at one "
+          "point, and a report that would undo the server's own lowering "
+          "waits for the hold",
+          "[CellHost][HostedState]")
+{
+  // thuum docs/verbs/npc-stream.md (ADR-050 decision 1, slice 2): the host's
+  // engine runs the actor's regeneration and its fights, so its percentages
+  // are the record's source (R2), bounded by the server's numbers
+  // (wire-rules hosted_state); the target and the package are recorded; the
+  // changed values travel as ChangeValues to the actor's other listeners
+  auto& p = GetPartOne();
+  constexpr uint32_t kActor = 0xff000c07;
+  const NiPoint3 kAt{ 117786.f, -81400.f, 10997.f };
+  Player(p, 0, kC1, kAt + NiPoint3{ 40.f, 0.f, 0.f });
+  Player(p, 1, kC2, kAt + NiPoint3{ 60.f, 0.f, 0.f });
+  p.CreateActor(kActor, kAt + NiPoint3{ 30.f, 0.f, 0.f }, 0, kTamriel);
+  auto& actor = p.worldState.GetFormAt<MpActor>(kActor);
+  actor.SetPos(actor.GetPos());
+  const auto cell = p.worldState.CellOf(actor);
+  REQUIRE(cell.has_value());
+  CellLoaded(p, 0, *cell);
+  auto& c1 = p.worldState.GetFormAt<MpActor>(kC1);
+  REQUIRE(p.worldState.HostOf(actor) == &c1);
+  const auto health = [&]() {
+    return actor.GetActorValues().healthPercentage;
+  };
+
+  // the host's state: the record takes the values, the other game hears the
+  // changed ones (magicka unchanged at 1), the host hears nothing
+  p.Messages().clear();
+  State(p, 0, kActor, 0.5f, 1.f, 0.75f, kC1, 0x40000);
+  REQUIRE(health() == Catch::Approx(0.5f));
+  REQUIRE(actor.GetActorValues().staminaPercentage == Catch::Approx(0.75f));
+  REQUIRE(actor.GetActorValues().magickaPercentage == Catch::Approx(1.f));
+  REQUIRE(actor.GetHostedCombatTarget() == kC1);
+  REQUIRE(actor.GetHostedPackage() == 0x40000);
+  const auto toC2 = SentTo<ChangeValuesMessage>(p, 1);
+  REQUIRE(toC2.size() == 1);
+  REQUIRE(toC2.front().idx == actor.GetIdx());
+  REQUIRE(toC2.front().data.health.has_value());
+  REQUIRE(*toC2.front().data.health == Catch::Approx(0.5f));
+  REQUIRE(toC2.front().data.stamina.has_value());
+  REQUIRE_FALSE(toC2.front().data.magicka.has_value());
+  REQUIRE(SentTo<ChangeValuesMessage>(p, 0).empty());
+
+  // the other game's state about the same actor: dropped at the gate
+  p.Messages().clear();
+  State(p, 1, kActor, 0.1f, 0.1f, 0.1f, 0, 0);
+  REQUIRE(health() == Catch::Approx(0.5f));
+  REQUIRE(actor.GetHostedCombatTarget() == kC1);
+  REQUIRE(SentTo<ChangeValuesMessage>(p, 0).empty());
+  REQUIRE(SentTo<ChangeValuesMessage>(p, 1).empty());
+
+  // the player's own idx: refused, its record untouched
+  const float c1Health = c1.GetActorValues().healthPercentage;
+  State(p, 0, kC1, 0.2f, 0.2f, 0.2f, 0, 0);
+  REQUIRE(c1.GetActorValues().healthPercentage == Catch::Approx(c1Health));
+
+  // the same values again: nothing changes, nothing is sent
+  p.Messages().clear();
+  State(p, 0, kActor, 0.5f, 1.f, 0.75f, kC1, 0x40000);
+  REQUIRE(SentTo<ChangeValuesMessage>(p, 1).empty());
+
+  // a zero on the living record: floored at one point, no death
+  p.Messages().clear();
+  State(p, 0, kActor, 0.f, 1.f, 0.75f, kC1, 0x40000);
+  const float onePoint = 1.f / std::max(actor.GetMaximumValues().health, 1.f);
+  REQUIRE(health() == Catch::Approx(onePoint));
+  REQUIRE_FALSE(actor.IsDead());
+  REQUIRE(SentTo<ChangeValuesMessage>(p, 1).size() == 1);
+
+  // the wire's own path once: the JSON the client sends
+  p.Messages().clear();
+  DoMessage(p, 0,
+            nlohmann::json{ { "t", MsgType::HostedActorState },
+                            { "idx", actor.GetIdx() },
+                            { "health", 0.45 },
+                            { "magicka", 1.0 },
+                            { "stamina", 0.75 },
+                            { "combatTarget", 0 },
+                            { "package", 0 } });
+  REQUIRE(health() == Catch::Approx(0.45f));
+  REQUIRE(actor.GetHostedCombatTarget() == 0);
+
+  // the server lowered the health by its own number a moment ago (a hit it
+  // judged): the host's higher report is the engine before the hit, dropped;
+  // its lower one is taken
+  actor.SetPercentage(espm::ActorValue::Health, 0.3f);
+  actor.SetLastHitTakenTime(std::chrono::steady_clock::now());
+  State(p, 0, kActor, 0.9f, 1.f, 0.75f, kC1, 0x40000);
+  REQUIRE(health() == Catch::Approx(0.3f));
+  State(p, 0, kActor, 0.25f, 1.f, 0.75f, kC1, 0x40000);
+  REQUIRE(health() == Catch::Approx(0.25f));
+
+  // the host's animation for its actor is kept as the actor's last event (a
+  // later subscriber's CreateActor carries it); the other game's is dropped
+  // at the gate with the event untouched
+  {
+    static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
+    RawMessageData raw;
+    raw.userId = 0;
+    raw.unparsed = unparsed;
+    raw.unparsedLength = sizeof(unparsed);
+    UpdateAnimationMessage anim;
+    anim.idx = actor.GetIdx();
+    anim.data.animEventName = "IdleWoodChopStart";
+    anim.data.numChanges = 1;
+    p.GetActionListener().OnUpdateAnimation(raw, anim);
+    REQUIRE(actor.GetLastAnimEvent().has_value());
+    REQUIRE(actor.GetLastAnimEvent()->animEventName == "IdleWoodChopStart");
+    raw.userId = 1;
+    anim.data.animEventName = "IdleStop";
+    anim.data.numChanges = 2;
+    p.GetActionListener().OnUpdateAnimation(raw, anim);
+    REQUIRE(actor.GetLastAnimEvent()->animEventName == "IdleWoodChopStart");
+  }
 
   DoDisconnect(p, 0);
   DoDisconnect(p, 1);

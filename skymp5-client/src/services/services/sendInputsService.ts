@@ -173,6 +173,14 @@ export class SendInputsService extends ClientListener {
     }
 
     private sendActorValuePercentage(_refrId?: number, form?: FormModel) {
+        // thuum docs/verbs/npc-stream.md (ADR-050): the player's own alone; a
+        // hosted actor's values go by HostedActorState (HostedStateService).
+        // This read the player's values for every target and sent them under
+        // the hosted actor's id (the server wrote them to the sender's own
+        // actor, so nothing showed)
+        if (_refrId) {
+          return;
+        }
         const canSend = form && (form.isDead ?? false) === false;
         if (!canSend) {
           return;

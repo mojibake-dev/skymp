@@ -1564,3 +1564,39 @@ wire_struct! {
     }
 }
 
+wire_struct! {
+    /// MsgType 53, thuum's (docs/verbs/npc-stream.md, ADR-050 decision 1):
+    /// client to server, unreliable (the first for an actor after a grant
+    /// marked reliable, the keyframe), at most once per 500 ms per hosted
+    /// actor and only on a change, R2 bounded by the server's numbers. The
+    /// state of an actor the sender's game simulates (cell-host's host of the
+    /// actor's cell) as its engine has it: the three percentages, its combat
+    /// target as the server knows it and the package its last package event
+    /// named. Absolute: a lost one is replaced by the next, the newest wins.
+    /// No epoch: the server's host table already refuses a sender that is
+    /// not the actor's host, and a client cannot name a persistent
+    /// reference's cell (the verb doc's Q1, revised at the build). Reason
+    /// codes: `E_VAL_NONFINITE` (a percentage that is not a number),
+    /// `E_VAL_RANGE` (a percentage outside 0 to 1, an idx of u32::MAX),
+    /// `E_VAL_RATE` (the budget).
+    pub struct HostedActorState {
+        /// `"t": 53`.
+        #[serde(default)]
+        pub t: MsgT<53>,
+        /// The actor as the server indexes it; the sender's own is refused
+        /// there (a player's values go as ChangeValues).
+        pub idx: u32,
+        /// Health, 0 to 1, as the host's engine has it (0 for a dead actor).
+        pub health: f32,
+        /// Magicka, 0 to 1.
+        pub magicka: f32,
+        /// Stamina, 0 to 1.
+        pub stamina: f32,
+        /// The combat target's form id as the server knows it, 0 for none.
+        pub combat_target: u32,
+        /// The running package's form id, the last package event's, 0 for
+        /// none.
+        pub package: u32,
+    }
+}
+

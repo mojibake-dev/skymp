@@ -238,7 +238,7 @@ pub struct ItemDelta {
 /// `E_VAL_OUT_OF_WORLD`, `E_VAL_ZERO_DELTA`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
-pub struct HostedActorState {
+pub struct ReservedHostedActorState {
     /// The NPC.
     pub actor: FormId,
     /// Where the host's engine has it.
@@ -290,8 +290,11 @@ pub enum Message {
     Movement(MovementSample),
     /// Id 4: Client to server, R1. See [`HitIntent`].
     Hit(HitIntent),
-    /// Id 5: Host to server, R2. See [`HostedActorState`].
-    HostedActor(HostedActorState),
+    /// Id 5: the M0 row for a host's NPC state, reserved and dead (thuum
+    /// docs/verbs/npc-stream.md: the state travels as the family message
+    /// [`skymp::HostedActorState`], MsgType 53; ADR-012 keeps the id). See
+    /// [`ReservedHostedActorState`].
+    ReservedHostedActor(ReservedHostedActorState),
     /// Id 6: Server to clients, R0 output: one applied inventory change for
     /// clients to render. The server sends each applied delta exactly once
     /// over ReliableUnordered; clients apply what they receive.
@@ -418,6 +421,8 @@ pub enum Message {
     ActorFate(skymp::ActorFate),
     /// 60, MsgType 52 (thuum). See [`skymp::ActorDeath`].
     ActorDeath(skymp::ActorDeath),
+    /// 61, MsgType 53 (thuum). See [`skymp::HostedActorState`].
+    HostedActorState(skymp::HostedActorState),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -446,13 +451,13 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 61] = [
+const TABLE: [Row; 62] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
     row("Movement", 0, 64, C2S),
     row("Hit", 0, 64, C2S),
-    row("HostedActor", 0, KIB, C2S),
+    row("ReservedHostedActor", 0, KIB, C2S),
     row("InventoryApply", 0, 32, S2C),
     row("ReservedHostGrant", 0, 16, S2C),
     row("ReservedHostRelease", 0, 16, S2C),
@@ -508,14 +513,15 @@ const TABLE: [Row; 61] = [
     row("ActorSightings", 50, 4 * KIB, C2S),
     row("ActorFate", 51, 16 * KIB, S2C),
     row("ActorDeath", 52, KIB, C2S),
+    row("HostedActorState", 53, 64, C2S),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 61;
-const _: () = assert!(TABLE.len() == 61, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 62;
+const _: () = assert!(TABLE.len() == 62, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -545,7 +551,7 @@ impl Message {
             Message::Refuse { .. } => 2,
             Message::Movement(_) => 3,
             Message::Hit(_) => 4,
-            Message::HostedActor(_) => 5,
+            Message::ReservedHostedActor(_) => 5,
             Message::InventoryApply { .. } => 6,
             Message::ReservedHostGrant { .. } => 7,
             Message::ReservedHostRelease { .. } => 8,
@@ -601,6 +607,7 @@ impl Message {
             Message::ActorSightings(_) => 58,
             Message::ActorFate(_) => 59,
             Message::ActorDeath(_) => 60,
+            Message::HostedActorState(_) => 61,
         }
     }
 
@@ -684,7 +691,8 @@ mod tests {
         assert_eq!(name_of_msg_type(0), None);
         assert_eq!(name_of_msg_type(51), Some("ActorFate"));
         assert_eq!(name_of_msg_type(52), Some("ActorDeath"));
-        assert_eq!(name_of_msg_type(53), None);
+        assert_eq!(name_of_msg_type(53), Some("HostedActorState"));
+        assert_eq!(name_of_msg_type(54), None);
     }
 
     #[test]
@@ -741,6 +749,15 @@ mod tests {
                 ..Default::default()
             }),
             Message::ActorDeath(skymp::ActorDeath { refr_id: 0xfeff_ffff, cause: u8::MAX, killer: u32::MAX, pos: [f32::MAX; 3], ..Default::default() }),
+            Message::HostedActorState(skymp::HostedActorState {
+                idx: u32::MAX,
+                health: f32::MAX,
+                magicka: f32::MAX,
+                stamina: f32::MAX,
+                combat_target: u32::MAX,
+                package: u32::MAX,
+                ..Default::default()
+            }),
             Message::RaceMenuPreset(skymp::RaceMenuPreset {
                 actor: u32::MAX,
                 preset: "x".repeat(cap::RACEMENU_PRESET).try_into().unwrap_or_default(),

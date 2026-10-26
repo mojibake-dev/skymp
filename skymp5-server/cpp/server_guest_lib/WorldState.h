@@ -321,6 +321,10 @@ public:
   // a game-file actor's fate rolled anew (the respawn), installed by PartOne
   // to send the fate again
   std::function<void(MpActor&)> onActorFate;
+  // an actor's death state written (MpActor::SendAndSetDeathState: the
+  // death true, the respawn false), installed by PartOne for the cell host
+  // table (thuum docs/research/m3/decisions-after-playtest-34.md D18)
+  std::function<void(MpActor&, bool)> onDeathState;
   // an actor's grid square changed at a position write, before the grid's
   // own 3x3 loads around it (MpObjectReference::SetPos): PartOne's fate pass
   // runs here for a player, so the ring is rolled at that player's level

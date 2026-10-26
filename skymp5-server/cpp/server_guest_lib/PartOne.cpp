@@ -1970,9 +1970,20 @@ std::optional<skymp::rules::CellMove> CellMoveFacts(WorldState& worldState,
   }
   const bool door = (destInterior || originInterior) &&
     worldState.IsPersistentReference(actor.GetFormId());
+  // the pass margin's fact (npc-handoff D22, 2026-10-26): how far inside the
+  // destination's 4096-unit square the report stands, from its nearest edge;
+  // an interior is deep by definition
+  uint32_t edgeUnits = std::numeric_limits<uint32_t>::max();
+  if (!destInterior) {
+    const float fx = destPos.x - std::floor(destPos.x / 4096.f) * 4096.f;
+    const float fy = destPos.y - std::floor(destPos.y / 4096.f) * 4096.f;
+    const float edge = std::min({ fx, 4096.f - fx, fy, 4096.f - fy, 4096.f });
+    edgeUnits = static_cast<uint32_t>(std::max(0.f, std::floor(edge)));
+  }
   return skymp::rules::CellMove{ sender.GetFormId(), actor.GetFormId(),
                                  origin.value_or(0), *dest,
-                                 adjacent,           door };
+                                 adjacent,           door,
+                                 edgeUnits };
 }
 }
 

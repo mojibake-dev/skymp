@@ -49,7 +49,8 @@ Napi::Value IsPerformingAction(const Napi::CallbackInfo& info);
 // started (the actor's sound callback state read 3 after the call), 2 when
 // the engine refused it (a line still ending, the process's dialogue state),
 // 3 when a line plays without the state byte (a live sound handle or a
-// running timer: the sound descriptor path)
+// running timer: the sound descriptor path), 4 when the engine deferred it
+// for a replay its AI update would run (a puppet's never comes)
 Napi::Value SayTopicInfo(const Napi::CallbackInfo& info);
 Napi::Value SayTopicInfoResult(const Napi::CallbackInfo& info);
 

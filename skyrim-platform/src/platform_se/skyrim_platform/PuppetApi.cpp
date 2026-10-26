@@ -312,59 +312,88 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
     g_sayResult[actorFormId] = -1;
   }
   // the forms looked up on the game thread alone (setPuppet's reason)
-  g_nativeCallRequirements.gameThrQ->AddTask(
-    [actorFormId, infoFormId](Viet::Void) {
-      int result = 0;
-      auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
-      auto* topicInfo = RE::TESForm::LookupByID<RE::TESTopicInfo>(infoFormId);
-      if (actor && topicInfo && topicInfo->parentTopic) {
-        auto& runtime = actor->GetActorRuntimeData();
-        if (runtime.currentProcess) {
-          const auto bitsBefore = runtime.boolBits.underlying();
-          const float timerBefore = runtime.voiceTimer;
-          const int stateBefore = runtime.soundCallBackSet;
-          REL::Relocation<SayTopicFn> say{ Offsets::Voice::SayTopic };
-          // Say's shape with the info given: the engine's own books, lip
-          // sync, talking idle and begin event; the end is the detour's
-          // (PuppetHooks.cpp DriveVoice) on a puppet
-          const bool returned =
-            say(runtime.currentProcess, actor, topicInfo->parentTopic,
-                topicInfo, false, false, true, true);
-          const int stateAfter = runtime.soundCallBackSet;
-          // voice v2 (P7 v1 20261026-181119: the say started on every
-          // creature puppet and was refused on a humanoid resident's with
-          // the same pre-state): the facts the engine's answer leaves
-          // behind, so the lab reads WHICH path refused or played. The state
-          // byte 3 is the SpeakSoundFunction path's mark; a line through the
-          // sound descriptor path (39771, the static read) sets no state
-          // byte but leaves a live handle or a running timer: "played"
-          auto* high = runtime.currentProcess->high;
-          const bool handleLive = high && high->soundHandles[0].IsValid();
-          const float timerAfter = runtime.voiceTimer;
-          if (stateAfter == 3) {
-            result = 1;
-          } else if (handleLive || timerAfter > 0.f) {
-            result = 3;
-          } else {
-            result = 2;
+  g_nativeCallRequirements.gameThrQ->AddTask([actorFormId,
+                                              infoFormId](Viet::Void) {
+    int result = 0;
+    auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
+    auto* topicInfo = RE::TESForm::LookupByID<RE::TESTopicInfo>(infoFormId);
+    if (actor && topicInfo && topicInfo->parentTopic) {
+      auto& runtime = actor->GetActorRuntimeData();
+      if (runtime.currentProcess) {
+        const auto bitsBefore = runtime.boolBits.underlying();
+        const float timerBefore = runtime.voiceTimer;
+        const int stateBefore = runtime.soundCallBackSet;
+        REL::Relocation<SayTopicFn> say{ Offsets::Voice::SayTopic };
+        // Say's shape with the info given: the engine's own books, lip
+        // sync, talking idle and begin event; the end is the detour's
+        // (PuppetHooks.cpp DriveVoice) on a puppet
+        // the lip entry's load state before the call (voice v3; the
+        // re-analyst's read of 2026-10-26: HighProcessData's +0x3B8 is the
+        // current line's lip-sync resource entry, its +0xC word carrying
+        // the load state in bits 28 to 30: 1 or 2 queued or pending, 3 or
+        // 4 loaded, 0 or 5 absent or failed)
+        const auto lipState = [](RE::HighProcessData* high) -> int {
+          if (!high || !high->unk3B8) {
+            return -1;
           }
-          logger::info("[verb:npc-stream] sayTopicInfo on {:x}: info {:x} "
-                       "topic {:x} -> {} (bits {:x}, timer {:.2f}, state {} "
-                       "before; returned {}, state {}, timer {:.2f}, handle "
-                       "{}, high {}, dialogue state {} after)",
-                       actorFormId, infoFormId, topicInfo->parentTopic->formID,
-                       result == 1     ? "started"
-                         : result == 3 ? "played"
-                                       : "refused",
-                       bitsBefore, timerBefore, stateBefore, returned,
-                       stateAfter, timerAfter, handleLive ? "live" : "none",
-                       high ? "yes" : "no",
-                       high && high->unk3B8 ? "set" : "null");
+          const auto word = *reinterpret_cast<const uint32_t*>(
+            reinterpret_cast<const uint8_t*>(high->unk3B8) + 0xC);
+          return static_cast<int>((word >> 28) & 7u);
+        };
+        const int lipBefore = lipState(runtime.currentProcess->high);
+        // voice v3: the seventh flag FALSE selects the SYNCHRONOUS lip-file
+        // load inside SpeakSoundFunction (16256), so the line plays in this
+        // call with its lip sync. Say's own shape passes true, the
+        // asynchronous load, after which the engine plays nothing and
+        // marks the say in flight (greetingPlayer) for a replay on its next
+        // AI frame (39632 under UpdateAI), which an AI-off puppet never
+        // runs: P7 v1 20261026-181119, the humanoid resident's line
+        // refused while every creature's bark (no lip file, a synchronous
+        // miss) started. HYPOTHESIS until P7 v3
+        const bool returned =
+          say(runtime.currentProcess, actor, topicInfo->parentTopic, topicInfo,
+              false, false, false, true);
+        const int stateAfter = runtime.soundCallBackSet;
+        // voice v2 (P7 v1 20261026-181119: the say started on every
+        // creature puppet and was refused on a humanoid resident's with
+        // the same pre-state): the facts the engine's answer leaves
+        // behind, so the lab reads WHICH path refused or played. The state
+        // byte 3 is the SpeakSoundFunction path's mark; a line through the
+        // sound descriptor path (39771, the static read) sets no state
+        // byte but leaves a live handle or a running timer: "played"
+        auto* high = runtime.currentProcess->high;
+        const bool handleLive = high && high->soundHandles[0].IsValid();
+        const float timerAfter = runtime.voiceTimer;
+        const bool inFlight = high && high->greetingPlayer;
+        const int lipAfter = lipState(high);
+        if (stateAfter == 3) {
+          result = 1;
+        } else if (handleLive || timerAfter > 0.f) {
+          result = 3;
+        } else if (inFlight) {
+          // the engine deferred the line for a replay its AI update would
+          // run: a puppet's never comes
+          result = 4;
+        } else {
+          result = 2;
         }
+        logger::info("[verb:npc-stream] sayTopicInfo on {:x}: info {:x} "
+                     "topic {:x} -> {} (bits {:x}, timer {:.2f}, state {}, "
+                     "lip {} before; returned {}, state {}, timer {:.2f}, "
+                     "handle {}, delay {:.2f}, in flight {}, lip {} after)",
+                     actorFormId, infoFormId, topicInfo->parentTopic->formID,
+                     result == 1     ? "started"
+                       : result == 3 ? "played"
+                       : result == 4 ? "deferred"
+                                     : "refused",
+                     bitsBefore, timerBefore, stateBefore, lipBefore, returned,
+                     stateAfter, timerAfter, handleLive ? "live" : "none",
+                     high ? high->soundDelay : -2.f, inFlight, lipAfter);
       }
-      std::lock_guard<std::mutex> lock(g_sayResultMutex);
-      g_sayResult[actorFormId] = result;
-    });
+    }
+    std::lock_guard<std::mutex> lock(g_sayResultMutex);
+    g_sayResult[actorFormId] = result;
+  });
   return Napi::Boolean::New(info.Env(), true);
 }
 

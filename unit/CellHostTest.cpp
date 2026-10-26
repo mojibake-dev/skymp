@@ -578,10 +578,16 @@ TEST_CASE("A hosted actor crossing into another live host's cell passes to "
   p.Messages().clear();
 
   // c1 walks it across the border (the next square begins at x 12288; a
-  // report may move an actor 4096 at most): the record moves, the
-  // simulation passes, no follow is left behind
+  // report may move an actor 4096 at most): within the pass margin (D22's
+  // brake, 256 units) the record moves and c1 keeps the actor as a follow
+  // into c2's cell; a step the margin deep passes it, no follow left behind
   const NiPoint3 kAcross{ 12400.f, 500.f, 0.f };
   Move(p, 0, kWolf, kAcross);
+  REQUIRE(p.worldState.CellOf(wolf) == east);
+  REQUIRE(p.SimulatorOf(wolf) == kC1);
+  REQUIRE_FALSE(p.GetFollows().empty());
+  const NiPoint3 kDeep{ 12600.f, 500.f, 0.f };
+  Move(p, 0, kWolf, kDeep);
   REQUIRE(p.worldState.CellOf(wolf) == east);
   REQUIRE(p.SimulatorOf(wolf) == kC2);
   REQUIRE(p.GetFollows().empty());
@@ -603,13 +609,15 @@ TEST_CASE("A hosted actor crossing into another live host's cell passes to "
   REQUIRE(oldHostDemoted);
 
   // the old host's next report is dropped, the new host's passes
-  Move(p, 0, kWolf, kAcross + NiPoint3{ 100.f, 0.f, 0.f });
-  REQUIRE(std::abs(wolf.GetPos().x - kAcross.x) < 1.f);
-  Move(p, 1, kWolf, kAcross + NiPoint3{ 100.f, 0.f, 0.f });
-  REQUIRE(std::abs(wolf.GetPos().x - (kAcross.x + 100.f)) < 1.f);
+  Move(p, 0, kWolf, kDeep + NiPoint3{ 100.f, 0.f, 0.f });
+  REQUIRE(std::abs(wolf.GetPos().x - kDeep.x) < 1.f);
+  Move(p, 1, kWolf, kDeep + NiPoint3{ 100.f, 0.f, 0.f });
+  REQUIRE(std::abs(wolf.GetPos().x - (kDeep.x + 100.f)) < 1.f);
 
-  // and back across: passed to c1 the same way
-  Move(p, 1, kWolf, kHere);
+  // and back across, the margin deep on the other side: passed to c1 the
+  // same way
+  const NiPoint3 kBack{ 11900.f, 500.f, 0.f };
+  Move(p, 1, kWolf, kBack);
   REQUIRE(p.worldState.CellOf(wolf) == here);
   REQUIRE(p.SimulatorOf(wolf) == kC1);
 

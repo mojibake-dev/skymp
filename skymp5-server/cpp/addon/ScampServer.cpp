@@ -262,6 +262,12 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
       partOne->worldState.npcEngineDeaths =
         serverSettings.at("npcEngineDeaths").get<bool>();
     }
+    // the ranged sneak attack multiplier the engine uses, measured by the lab
+    // (x-npc-sneak-shot); absent or 0, SkyMP's 1.3 stands
+    if (serverSettings.find("sneakRangedMult") != serverSettings.end()) {
+      partOne->worldState.sneakRangedMult =
+        serverSettings.at("sneakRangedMult").get<float>();
+    }
     // thuum docs/verbs/npc-fate.md (the memo's D2): the roll's level rule:
     // "loader", "party-mean" (the default), "party-min", or a number for
     // everyone (PartOne::FateRollLevel)

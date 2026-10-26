@@ -241,6 +241,9 @@ mod ffi {
         two_hand_sword: f32,
         /// fCombatSneak2HAxeMult.
         two_hand_axe: f32,
+        /// The ranged weapons' multiplier the server setting sneakRangedMult
+        /// gives (no game setting exists; 0 keeps SkyMP's 1.3), train 52.
+        ranged: f32,
     }
 
     /// What the core knows about a player's last bed (thuum
@@ -1589,6 +1592,7 @@ fn sneak_mult(anim_type: u8, m: &SneakMults) -> f32 {
             one_hand_mace: m.one_hand_mace,
             two_hand_sword: m.two_hand_sword,
             two_hand_axe: m.two_hand_axe,
+            ranged: m.ranged,
         },
     )
 }
@@ -2698,9 +2702,12 @@ mod tests {
             one_hand_mace: 3.0,
             two_hand_sword: 2.0,
             two_hand_axe: 2.0,
+            ranged: 0.0,
         };
         assert!((sneak_mult(1, &skyrim) - 3.0).abs() < 1e-6);
         assert!((sneak_mult(7, &skyrim) - 1.3).abs() < 1e-6);
+        let measured = SneakMults { ranged: 2.0, ..skyrim };
+        assert!((sneak_mult(7, &measured) - 2.0).abs() < 1e-6);
         let mut b = new_movement_budgets();
         assert!(b.spend(7, 2048.0, 0));
         assert!(!b.spend(7, 1.0, 0));

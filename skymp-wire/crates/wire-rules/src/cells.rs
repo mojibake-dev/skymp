@@ -38,6 +38,15 @@ pub const COLD_START_MS: u64 = 5_000;
 /// passes as before. UNMEASURED placeholder.
 pub const FOLLOW_SETTLE_MS: u64 = 1_000;
 
+/// The pass's hysteresis (ADR-047 D22, its brake; thuum docs/verbs/npc-handoff.md,
+/// 2026-10-26): a simulator's crossing into another live host's cell passes the
+/// actor only once the report stands this many units inside the destination's
+/// square; nearer the edge the crossing host keeps it (a follow into the hosted
+/// cell), so an actor working the border (Alvor between 9731 and 9732: 836
+/// passes in one green run of b-npc-handoff-cross, 2026-10-26) changes hands at
+/// most once per real crossing. UNMEASURED: the lab's read sets it.
+pub const PASS_MARGIN_UNITS: u32 = 256;
+
 /// What the server answers a simulator's report that moves an actor
 /// (ADR-047 D6, thuum docs/verbs/npc-handoff.md): the core turns it into
 /// the accept, the follow's record or the drop.
@@ -140,9 +149,14 @@ pub struct CellMove {
     pub adjacent: bool,
     /// Whether the destination is an interior entered by a persistent actor.
     pub door: bool,
+    /// How far the reported position stands inside the destination's exterior
+    /// square, in units from its nearest edge (u32::MAX for an interior or an
+    /// unknown): the pass's hysteresis reads it (PASS_MARGIN_UNITS).
+    pub edge_units: u32,
 }
 
-/// A host simulating an actor in a cell nobody hosts (ADR-047 D6).
+/// A host simulating an actor in a cell nobody hosts (ADR-047 D6), or, within
+/// the pass margin, in another host's cell it has just crossed into (D22).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Follow {
     player: u32,
@@ -317,12 +331,17 @@ impl Cells {
     /// the core's word, routing and sighting gate read (ADR-047 D6).
     #[must_use]
     pub fn simulator_of(&self, actor: u32, cell: u32) -> u32 {
-        if let Some((player, _)) = self.host_of(cell) {
-            return player;
+        // a follow names the simulator first: into a cell nobody hosts (D6) or,
+        // within the pass margin, into another host's cell the follower has
+        // just crossed into (D22); a grant into the cell ends either
+        if let Some(f) = self.follows.get(&actor) {
+            if f.cell == cell {
+                return f.player;
+            }
         }
-        match self.follows.get(&actor) {
-            Some(f) if f.cell == cell => f.player,
-            _ => 0,
+        match self.host_of(cell) {
+            Some((player, _)) => player,
+            None => 0,
         }
     }
 
@@ -337,7 +356,7 @@ impl Cells {
     /// the host was looked up, and recorded one before the host had crossed).
     #[must_use]
     pub fn judge(&self, m: &CellMove, now_ms: u64) -> MoveVerdict {
-        let CellMove { sender, actor, origin, dest, adjacent, door } = *m;
+        let CellMove { sender, actor, origin, dest, adjacent, door, edge_units } = *m;
         // a report putting the actor back where it stood before a follow
         // younger than the settle window is a stale sample, not a return
         if dest != origin && dest != 0 && origin != 0 {
@@ -352,7 +371,17 @@ impl Cells {
         }
         let simulator = if origin == 0 { 0 } else { self.simulator_of(actor, origin) };
         if dest == origin {
-            return if simulator == sender { MoveVerdict::Accept } else { MoveVerdict::Refuse };
+            if simulator != sender {
+                return MoveVerdict::Refuse;
+            }
+            // a follow within the pass margin into another host's cell ends
+            // once the actor stands the margin deep: the pass (D22)
+            let margin_follow = self
+                .follows
+                .get(&actor)
+                .is_some_and(|f| f.cell == dest && f.player == sender)
+                && self.host_of(dest).is_some_and(|(host, _)| host != sender);
+            return if margin_follow && edge_units >= PASS_MARGIN_UNITS { MoveVerdict::Pass } else { MoveVerdict::Accept };
         }
         match self.host_of(dest) {
             Some((host, _)) if host == sender => {
@@ -364,10 +393,17 @@ impl Cells {
             }
             Some(_) => {
                 // another live host's cell: the simulator's own adjacent
-                // crossing passes the actor to that host (D9); a teleport
-                // across squares or a stranger's report is dropped
+                // crossing passes the actor to that host (D9) once it stands
+                // the margin inside (D22's brake); nearer the edge the
+                // crossing host keeps it, a follow into the hosted cell, so a
+                // border worked back and forth changes hands once at most; a
+                // teleport across squares or a stranger's report is dropped
                 if simulator == sender && adjacent {
-                    MoveVerdict::Pass
+                    if edge_units >= PASS_MARGIN_UNITS {
+                        MoveVerdict::Pass
+                    } else {
+                        MoveVerdict::Follow
+                    }
                 } else {
                     MoveVerdict::Refuse
                 }
@@ -773,29 +809,29 @@ mod tests {
         assert_eq!(c.loaded(C1, RIVERWOOD, 1_000), vec![Decision::Grant { player: C1, cell: RIVERWOOD, epoch: 1 }]);
         // east is loaded by c1's game but outside everybody's grid
         assert_eq!(c.loaded(C1, EAST, 1_100), vec![]);
-        assert_eq!(c.may_move(&CellMove { sender: C1, actor: STUMP, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false }, 10_000), MoveVerdict::Follow);
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: STUMP, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false, edge_units: u32::MAX }, 10_000), MoveVerdict::Follow);
         assert_eq!(c.simulator_of(STUMP, EAST), C1);
         assert_eq!(c.follows(), vec![(STUMP, C1, EAST)]);
         // inside the followed cell: the follower's moves pass, anyone else's are dropped
-        assert_eq!(c.may_move(&CellMove { sender: C1, actor: STUMP, origin: EAST, dest: EAST, adjacent: false, door: false }, 10_200), MoveVerdict::Accept);
-        assert_eq!(c.may_move(&CellMove { sender: C2, actor: STUMP, origin: EAST, dest: EAST, adjacent: false, door: false }, 10_300), MoveVerdict::Refuse);
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: STUMP, origin: EAST, dest: EAST, adjacent: false, door: false, edge_units: u32::MAX }, 10_200), MoveVerdict::Accept);
+        assert_eq!(c.may_move(&CellMove { sender: C2, actor: STUMP, origin: EAST, dest: EAST, adjacent: false, door: false, edge_units: u32::MAX }, 10_300), MoveVerdict::Refuse);
         // a visitor who has not loaded east cannot follow anything there
-        assert_eq!(c.may_move(&CellMove { sender: C2, actor: 0x1348a, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false }, 10_400), MoveVerdict::Refuse);
+        assert_eq!(c.may_move(&CellMove { sender: C2, actor: 0x1348a, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false, edge_units: u32::MAX }, 10_400), MoveVerdict::Refuse);
         // two squares away, or not loaded: refused
-        assert_eq!(c.may_move(&CellMove { sender: C1, actor: 0x1348a, origin: RIVERWOOD, dest: 0x9734, adjacent: false, door: false }, 10_500), MoveVerdict::Refuse);
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: 0x1348a, origin: RIVERWOOD, dest: 0x9734, adjacent: false, door: false, edge_units: u32::MAX }, 10_500), MoveVerdict::Refuse);
         // back into the sender's hosted cell: accepted, the follow ends
-        assert_eq!(c.may_move(&CellMove { sender: C1, actor: STUMP, origin: EAST, dest: RIVERWOOD, adjacent: true, door: false }, 11_000), MoveVerdict::Accept);
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: STUMP, origin: EAST, dest: RIVERWOOD, adjacent: true, door: false, edge_units: u32::MAX }, 11_000), MoveVerdict::Accept);
         assert_eq!(c.follows(), vec![]);
         assert_eq!(c.simulator_of(STUMP, EAST), 0);
         // out again, then c2 reaches and loads east: granted, and the follow ends with the grant
-        assert_eq!(c.may_move(&CellMove { sender: C1, actor: STUMP, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false }, 12_000), MoveVerdict::Follow);
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: STUMP, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false, edge_units: u32::MAX }, 12_000), MoveVerdict::Follow);
         assert_eq!(c.loaded(C2, EAST, 12_500), vec![]);
         assert_eq!(c.reach(C2, &[RIVERWOOD, EAST], 12_600), vec![Decision::Grant { player: C2, cell: EAST, epoch: 1 }]);
         assert_eq!(c.follows(), vec![]);
         assert_eq!(c.simulator_of(STUMP, EAST), C2);
-        assert_eq!(c.may_move(&CellMove { sender: C1, actor: STUMP, origin: EAST, dest: EAST, adjacent: false, door: false }, 12_700), MoveVerdict::Refuse);
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: STUMP, origin: EAST, dest: EAST, adjacent: false, door: false, edge_units: u32::MAX }, 12_700), MoveVerdict::Refuse);
         // into another live host's cell: the simulator's adjacent crossing passes it (D9)
-        assert_eq!(c.may_move(&CellMove { sender: C1, actor: 0x1348a, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false }, 12_800), MoveVerdict::Pass);
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: 0x1348a, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false, edge_units: u32::MAX }, 12_800), MoveVerdict::Pass);
     }
 
     #[test]
@@ -811,18 +847,18 @@ mod tests {
         assert_eq!(c.reach(C2, &[RIVERWOOD, EAST], 1_200), vec![Decision::Grant { player: C2, cell: EAST, epoch: 1 }]);
         assert_eq!(c.simulator_of(SIGRID, RIVERWOOD), C1);
         // c1 walks her across the border into c2's cell: a pass, no follow left
-        assert_eq!(c.may_move(&CellMove { sender: C1, actor: SIGRID, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false }, 2_000), MoveVerdict::Pass);
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: SIGRID, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false, edge_units: u32::MAX }, 2_000), MoveVerdict::Pass);
         assert_eq!(c.follows(), vec![]);
         assert_eq!(c.simulator_of(SIGRID, EAST), C2);
         // from there c1's reports are dropped and c2's pass
-        assert_eq!(c.may_move(&CellMove { sender: C1, actor: SIGRID, origin: EAST, dest: EAST, adjacent: false, door: false }, 2_100), MoveVerdict::Refuse);
-        assert_eq!(c.may_move(&CellMove { sender: C2, actor: SIGRID, origin: EAST, dest: EAST, adjacent: false, door: false }, 2_200), MoveVerdict::Accept);
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: SIGRID, origin: EAST, dest: EAST, adjacent: false, door: false, edge_units: u32::MAX }, 2_100), MoveVerdict::Refuse);
+        assert_eq!(c.may_move(&CellMove { sender: C2, actor: SIGRID, origin: EAST, dest: EAST, adjacent: false, door: false, edge_units: u32::MAX }, 2_200), MoveVerdict::Accept);
         // and back across, c2 passes her to c1 the same way
-        assert_eq!(c.may_move(&CellMove { sender: C2, actor: SIGRID, origin: EAST, dest: RIVERWOOD, adjacent: true, door: false }, 3_000), MoveVerdict::Pass);
+        assert_eq!(c.may_move(&CellMove { sender: C2, actor: SIGRID, origin: EAST, dest: RIVERWOOD, adjacent: true, door: false, edge_units: u32::MAX }, 3_000), MoveVerdict::Pass);
         assert_eq!(c.simulator_of(SIGRID, RIVERWOOD), C1);
         // a crossing that is no adjacent walk (a teleport across squares) and a stranger's report stay refused
-        assert_eq!(c.may_move(&CellMove { sender: C1, actor: SIGRID, origin: RIVERWOOD, dest: EAST, adjacent: false, door: false }, 3_100), MoveVerdict::Refuse);
-        assert_eq!(c.may_move(&CellMove { sender: C2, actor: SIGRID, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false }, 3_200), MoveVerdict::Refuse);
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: SIGRID, origin: RIVERWOOD, dest: EAST, adjacent: false, door: false, edge_units: u32::MAX }, 3_100), MoveVerdict::Refuse);
+        assert_eq!(c.may_move(&CellMove { sender: C2, actor: SIGRID, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false, edge_units: u32::MAX }, 3_200), MoveVerdict::Refuse);
     }
 
     #[test]
@@ -833,8 +869,8 @@ mod tests {
         const EMBRY: u32 = 0x3550c;
         let mut c = both_in_reach();
         c.loaded(C1, RIVERWOOD, 1_000);
-        assert_eq!(c.may_move(&CellMove { sender: C1, actor: EMBRY, origin: RIVERWOOD, dest: INN, adjacent: false, door: false }, 2_000), MoveVerdict::Refuse);
-        assert_eq!(c.may_move(&CellMove { sender: C1, actor: EMBRY, origin: RIVERWOOD, dest: INN, adjacent: false, door: true }, 2_000), MoveVerdict::Follow);
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: EMBRY, origin: RIVERWOOD, dest: INN, adjacent: false, door: false, edge_units: u32::MAX }, 2_000), MoveVerdict::Refuse);
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: EMBRY, origin: RIVERWOOD, dest: INN, adjacent: false, door: true, edge_units: u32::MAX }, 2_000), MoveVerdict::Follow);
         assert_eq!(c.simulator_of(EMBRY, INN), C1);
         // the follower leaves: the follow goes with it
         assert_eq!(c.gone(C1, 3_000), vec![]);
@@ -845,10 +881,10 @@ mod tests {
         let mut d = both_in_reach();
         d.loaded(C2, RIVERWOOD, 1_000);
         d.loaded(C2, EAST, 1_000);
-        assert_eq!(d.may_move(&CellMove { sender: C2, actor: EMBRY, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false }, 2_000), MoveVerdict::Follow);
+        assert_eq!(d.may_move(&CellMove { sender: C2, actor: EMBRY, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false, edge_units: u32::MAX }, 2_000), MoveVerdict::Follow);
         assert_eq!(d.unloaded(C2, EAST, 3_000), vec![]);
         assert_eq!(d.simulator_of(EMBRY, EAST), 0);
-        assert_eq!(d.may_move(&CellMove { sender: C2, actor: EMBRY, origin: EAST, dest: EAST, adjacent: false, door: false }, 3_100), MoveVerdict::Refuse);
+        assert_eq!(d.may_move(&CellMove { sender: C2, actor: EMBRY, origin: EAST, dest: EAST, adjacent: false, door: false, edge_units: u32::MAX }, 3_100), MoveVerdict::Refuse);
     }
 
     #[test]
@@ -888,14 +924,14 @@ mod tests {
         let mut c = both_in_reach();
         c.loaded(C1, RIVERWOOD, 1_000);
         c.loaded(C1, EAST, 1_100);
-        let m = CellMove { sender: C1, actor: STUMP, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false };
+        let m = CellMove { sender: C1, actor: STUMP, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false, edge_units: u32::MAX };
         assert_eq!(c.judge(&m, 9_000), MoveVerdict::Follow);
         assert_eq!(c.follows(), vec![]);
         assert_eq!(c.may_move(&m, 10_000), MoveVerdict::Follow);
         assert_eq!(c.follows(), vec![(STUMP, C1, EAST)]);
         // judging the way back removes nothing; applying it does (both past
         // the settle window, else the return is a stale sample)
-        let back = CellMove { sender: C1, actor: STUMP, origin: EAST, dest: RIVERWOOD, adjacent: true, door: false };
+        let back = CellMove { sender: C1, actor: STUMP, origin: EAST, dest: RIVERWOOD, adjacent: true, door: false, edge_units: u32::MAX };
         assert_eq!(c.judge(&back, 10_000 + FOLLOW_SETTLE_MS), MoveVerdict::Accept);
         assert_eq!(c.follows(), vec![(STUMP, C1, EAST)]);
         assert_eq!(c.may_move(&back, 10_000 + FOLLOW_SETTLE_MS + 500), MoveVerdict::Accept);
@@ -908,14 +944,68 @@ mod tests {
         const ALVOR: u32 = 0x13482;
         let mut c = both_in_reach();
         c.loaded(C1, RIVERWOOD, 1_000);
-        let inward = CellMove { sender: C1, actor: ALVOR, origin: RIVERWOOD, dest: INN, adjacent: false, door: true };
+        let inward = CellMove { sender: C1, actor: ALVOR, origin: RIVERWOOD, dest: INN, adjacent: false, door: true, edge_units: u32::MAX };
         assert_eq!(c.may_move(&inward, 10_000), MoveVerdict::Follow);
         // the host's next sample, taken before the engine's transit, says the exterior
-        let outward = CellMove { sender: C1, actor: ALVOR, origin: INN, dest: RIVERWOOD, adjacent: false, door: true };
+        let outward = CellMove { sender: C1, actor: ALVOR, origin: INN, dest: RIVERWOOD, adjacent: false, door: true, edge_units: u32::MAX };
         assert_eq!(c.may_move(&outward, 10_133), MoveVerdict::Refuse);
         assert_eq!(c.follows(), vec![(ALVOR, C1, INN)]);
         // a real return after the window passes and ends the follow
         assert_eq!(c.may_move(&outward, 10_000 + FOLLOW_SETTLE_MS), MoveVerdict::Accept);
         assert_eq!(c.follows(), vec![]);
+    }
+
+    #[test]
+    fn a_crossing_within_the_margin_keeps_the_crossing_host_and_a_deeper_step_passes() {
+        // ADR-047 D22's brake (2026-10-26): Alvor working the border between
+        // 9731 and 9732 passed 836 times in one green run; the pass now waits
+        // for the actor to stand PASS_MARGIN_UNITS inside the other host's cell
+        const EAST: u32 = 0x9733;
+        const SIGRID: u32 = 0x13483;
+        let mut c = both_in_reach();
+        assert_eq!(c.loaded(C1, RIVERWOOD, 1_000), vec![Decision::Grant { player: C1, cell: RIVERWOOD, epoch: 1 }]);
+        assert_eq!(c.loaded(C2, EAST, 1_100), vec![]);
+        assert_eq!(c.reach(C2, &[RIVERWOOD, EAST], 1_200), vec![Decision::Grant { player: C2, cell: EAST, epoch: 1 }]);
+        // a step over the line, 100 units in: the crossing host keeps her
+        assert_eq!(
+            c.may_move(&CellMove { sender: C1, actor: SIGRID, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false, edge_units: 100 }, 2_000),
+            MoveVerdict::Follow
+        );
+        assert_eq!(c.simulator_of(SIGRID, EAST), C1);
+        assert_eq!(c.follows(), vec![(SIGRID, C1, EAST)]);
+        // her reports stay c1's; c2's are not hers to make
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: SIGRID, origin: EAST, dest: EAST, adjacent: false, door: false, edge_units: 120 }, 2_200), MoveVerdict::Accept);
+        assert_eq!(c.may_move(&CellMove { sender: C2, actor: SIGRID, origin: EAST, dest: EAST, adjacent: false, door: false, edge_units: 120 }, 2_300), MoveVerdict::Refuse);
+        // deep inside: the pass, the follow gone, c2 simulates from here
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: SIGRID, origin: EAST, dest: EAST, adjacent: false, door: false, edge_units: 300 }, 3_500), MoveVerdict::Pass);
+        assert_eq!(c.follows(), vec![]);
+        assert_eq!(c.simulator_of(SIGRID, EAST), C2);
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: SIGRID, origin: EAST, dest: EAST, adjacent: false, door: false, edge_units: 300 }, 3_600), MoveVerdict::Refuse);
+    }
+
+    #[test]
+    fn a_border_worked_back_and_forth_within_the_margin_passes_nothing() {
+        const EAST: u32 = 0x9733;
+        const ALVOR: u32 = 0x13482;
+        let mut c = both_in_reach();
+        assert_eq!(c.loaded(C1, RIVERWOOD, 1_000), vec![Decision::Grant { player: C1, cell: RIVERWOOD, epoch: 1 }]);
+        assert_eq!(c.loaded(C2, EAST, 1_100), vec![]);
+        assert_eq!(c.reach(C2, &[RIVERWOOD, EAST], 1_200), vec![Decision::Grant { player: C2, cell: EAST, epoch: 1 }]);
+        let mut passes = 0;
+        let mut now = 2_000;
+        let mut origin = RIVERWOOD;
+        for _ in 0..20 {
+            let dest = if origin == RIVERWOOD { EAST } else { RIVERWOOD };
+            // past the settle window each time, so a return is a return
+            now += FOLLOW_SETTLE_MS + 500;
+            let v = c.may_move(&CellMove { sender: C1, actor: ALVOR, origin, dest, adjacent: true, door: false, edge_units: 40 }, now);
+            assert_ne!(v, MoveVerdict::Refuse, "the crossing host's own report");
+            if v == MoveVerdict::Pass {
+                passes += 1;
+            }
+            assert_eq!(c.simulator_of(ALVOR, dest), C1, "the crossing host keeps him");
+            origin = dest;
+        }
+        assert_eq!(passes, 0);
     }
 }

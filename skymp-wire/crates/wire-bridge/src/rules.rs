@@ -1021,6 +1021,9 @@ mod ffi {
         adjacent: bool,
         /// Whether the destination is an interior entered by a persistent actor.
         door: bool,
+        /// Units from the reported position to the destination square's nearest
+        /// edge (u32::MAX for an interior): the pass margin's fact (D22).
+        edge_units: u32,
     }
 
     /// A follow (ADR-047 D6, thuum docs/verbs/npc-handoff.md): `player`
@@ -2130,6 +2133,7 @@ impl Cells {
             dest: report.dest,
             adjacent: report.adjacent,
             door: report.door,
+            edge_units: report.edge_units,
         };
         match self.0.judge(&m, now_ms) {
             cells::MoveVerdict::Refuse => 0,
@@ -2147,6 +2151,7 @@ impl Cells {
             dest: report.dest,
             adjacent: report.adjacent,
             door: report.door,
+            edge_units: report.edge_units,
         };
         match self.0.may_move(&m, now_ms) {
             cells::MoveVerdict::Refuse => 0,

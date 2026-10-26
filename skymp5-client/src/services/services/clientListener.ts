@@ -141,7 +141,7 @@ declare module "skyrimPlatform" {
     function isPerformingAction(actorFormId: number): boolean;
     // the voice slice: a puppet says the host's line through the engine's
     // own say with the info given; the result -1 pending, 0 none, 1 started,
-    // 2 refused, 3 played by the sound descriptor path (no state byte)
+    // 2 refused, 3 played by the sound descriptor path (no state byte), 4 deferred
     function sayTopicInfo(actorFormId: number, topicInfoFormId: number): boolean;
     function sayTopicInfoResult(actorFormId: number): number;
 

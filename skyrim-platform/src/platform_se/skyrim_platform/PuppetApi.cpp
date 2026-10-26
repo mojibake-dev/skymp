@@ -5,7 +5,9 @@
 #include "game/Offsets.h"
 #include <RE/T/TESTopic.h>
 #include <RE/T/TESTopicInfo.h>
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -341,6 +343,18 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
           return static_cast<int>((word >> 28) & 7u);
         };
         const int lipBefore = lipState(runtime.currentProcess->high);
+        // voice v4: the audibility terms SpeakSoundFunction tests before
+        // its lip branch (the re-analyst's read of P7 v3, 2026-10-26: a 3D
+        // on this seat, and the speaker within the dialogue output model's
+        // max distance of the listener on every axis unless talking to the
+        // player), read here as the player's distance per axis and the 3D
+        const bool has3D = actor->Get3D() != nullptr;
+        float axisDistance = -1.f;
+        if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+          const auto d = actor->GetPosition() - player->GetPosition();
+          axisDistance =
+            std::max({ std::fabs(d.x), std::fabs(d.y), std::fabs(d.z) });
+        }
         // voice v3: the seventh flag FALSE selects the SYNCHRONOUS lip-file
         // load inside SpeakSoundFunction (16256), so the line plays in this
         // call with its lip sync. Say's own shape passes true, the
@@ -350,9 +364,13 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
         // runs: P7 v1 20261026-181119, the humanoid resident's line
         // refused while every creature's bark (no lip file, a synchronous
         // miss) started. HYPOTHESIS until P7 v3
+        // voice v4: keepExtra false, the shape of the engine's own bark and
+        // player-dialogue callers (44673, 37541; only Papyrus Say passes
+        // true): no ExtraSayToTopicInfo is attached for a callback nothing
+        // on this seat consumes
         const bool returned =
           say(runtime.currentProcess, actor, topicInfo->parentTopic, topicInfo,
-              false, false, false, true);
+              false, false, false, false);
         const int stateAfter = runtime.soundCallBackSet;
         // voice v2 (P7 v1 20261026-181119: the say started on every
         // creature puppet and was refused on a humanoid resident's with
@@ -366,29 +384,47 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
         const float timerAfter = runtime.voiceTimer;
         const bool inFlight = high && high->greetingPlayer;
         const int lipAfter = lipState(high);
+        bool cleared = false;
         if (stateAfter == 3) {
           result = 1;
         } else if (handleLive || timerAfter > 0.f) {
           result = 3;
         } else if (inFlight) {
-          // the engine deferred the line for a replay its AI update would
-          // run: a puppet's never comes
-          result = 4;
+          // voice v4: the start left the item in progress with nothing
+          // playing and no lip entry: SpeakSoundFunction's audibility gate
+          // (no 3D here, or the speaker outside the dialogue output model's
+          // range of this seat's listener) returned before the lip branch
+          // (P7 v3 200538, the resident 13482 "deferred": lip -1 before and
+          // after, the re-analyst's read). The engine's verdict for this
+          // seat is accepted and the item cleared the way its END paths
+          // clear it, so the mark never holds a later promote's greetings
+          result = 5;
+          if (high) {
+            REL::Relocation<void (*)(RE::AIProcess*)> clearGreet{
+              Offsets::Voice::ClearGreetTopic
+            };
+            clearGreet(runtime.currentProcess);
+            cleared = true;
+          }
         } else {
           result = 2;
         }
         logger::info("[verb:npc-stream] sayTopicInfo on {:x}: info {:x} "
                      "topic {:x} -> {} (bits {:x}, timer {:.2f}, state {}, "
-                     "lip {} before; returned {}, state {}, timer {:.2f}, "
-                     "handle {}, delay {:.2f}, in flight {}, lip {} after)",
+                     "lip {}, 3D {}, axis distance {:.0f} before; returned "
+                     "{}, state {}, timer {:.2f}, handle {}, delay {:.2f}, in "
+                     "flight {}, lip {} after{})",
                      actorFormId, infoFormId, topicInfo->parentTopic->formID,
                      result == 1     ? "started"
                        : result == 3 ? "played"
+                       : result == 5 ? "inaudible"
                        : result == 4 ? "deferred"
                                      : "refused",
-                     bitsBefore, timerBefore, stateBefore, lipBefore, returned,
-                     stateAfter, timerAfter, handleLive ? "live" : "none",
-                     high ? high->soundDelay : -2.f, inFlight, lipAfter);
+                     bitsBefore, timerBefore, stateBefore, lipBefore, has3D,
+                     axisDistance, returned, stateAfter, timerAfter,
+                     handleLive ? "live" : "none",
+                     high ? high->soundDelay : -2.f, inFlight, lipAfter,
+                     cleared ? ", item cleared" : "");
       }
     }
     std::lock_guard<std::mutex> lock(g_sayResultMutex);

@@ -142,6 +142,14 @@ inline REL::ID ActorMediatorSingleton(403567);
 namespace Voice {
 inline REL::ID SayTopic(39162);
 inline REL::ID UpdateVoiceTimer(37752);
+// the dialogue item's clear on a high process (REA on sky-re, 2026-10-26,
+// scratchpad npc-stream/re-voice-defer.md: nulls +0x360, zeros +0x36C, +0x45C
+// and +0x454 greetingPlayer; the engine's END paths 37544 and the stop 37741
+// call it with actor->currentProcess); `void(RE::AIProcess*)`, the body
+// reading ->high and a null high a no-op (the dossier 0x1406e1b70,
+// CONFIRMED-STATIC). Voice v4 calls it after a start the engine judged
+// inaudible, so the mark never sticks on a puppet a handoff later promotes.
+inline REL::ID ClearGreetTopic(39334);
 }
 
 // thuum docs/verbs/npc-puppet.md: Actor::ClearKeepOffsetFromActor, not in

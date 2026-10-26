@@ -1345,10 +1345,16 @@ TEST_CASE("A guest's claim on a hosted NPC names the guest as the simulator "
   REQUIRE(p.worldState.HostOf(*actor) == &c2);
   REQUIRE(LastHostedWord(p, 1, *actor) == "false");
   REQUIRE(LastHostedWord(p, 0, *actor) == "true");
-  // c1's reports are refused, c2's pass the gate
-  REQUIRE(p.GetActionListener().ActorUpdatableBy(actor->GetIdx(), 0) ==
-          nullptr);
-  REQUIRE(p.GetActionListener().ActorUpdatableBy(actor->GetIdx(), 1) == actor);
+  // c1's reports are refused, c2's pass the gate: a hosted hands report
+  // under the actor's idx (the equipment case's shape; the gate itself is
+  // the listener's own)
+  actor->AddItem(kIronSword, 1);
+  Wear(p, 0, actor->GetFormId(), kIronSword, 1);
+  REQUIRE_FALSE(actor->GetEquipment().inv.HasItem(kIronSword));
+  Wear(p, 1, actor->GetFormId(), kIronSword, 1);
+  REQUIRE(actor->GetEquipment().inv.HasItem(kIronSword));
+  actor->SetEquipment(Equipment{});
+  actor->RemoveItem(kIronSword, 1, nullptr);
 
   // the release: the host again on both seats
   p.Messages().clear();

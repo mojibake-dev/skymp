@@ -1148,9 +1148,15 @@ export class FormView {
     }
     if (!FormView.performsThroughEntry(next.eventName)) {
       // the puppets' path for everything but the hands and the attacks: the
-      // action's event, as the relay sent it; no variables, no retries
+      // action's event, as the relay sent it; no variables, no retries. The
+      // first such event per puppet is said once (the lab's read of the
+      // path: x-npc-stream-p4's claim since v2)
       if (next.eventName) {
         Debug.sendAnimationEvent(refr, next.eventName);
+        if (!FormView.eventPathSaid.has(this.refrId)) {
+          FormView.eventPathSaid.add(this.refrId);
+          printConsole(`npc-stream: first action ${next.eventName} on ${this.refrId.toString(16)} played as its event`);
+        }
       }
       return;
     }
@@ -1199,6 +1205,7 @@ export class FormView {
     return isHandCastEvent(eventName) || /^(attack|bowattack|bash)/i.test(eventName);
   }
 
+  private static readonly eventPathSaid = new Set<number>();
   private static readonly castRetryLimit = 15;
   // updates to wait for the queue's answer before counting it refused
   private static readonly answerWaitLimit = 6;

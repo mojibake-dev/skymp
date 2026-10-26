@@ -38,6 +38,27 @@ Napi::Value FateApi::SetActorFate(const Napi::CallbackInfo& info)
   return Napi::Boolean::New(info.Env(), true);
 }
 
+Napi::Value FateApi::ArmActorFate(const Napi::CallbackInfo& info)
+{
+  const auto baseId = NapiHelper::ExtractUInt32(info[0], "baseId");
+  const auto fateBaseId = NapiHelper::ExtractUInt32(info[1], "fateBaseId");
+  const auto worn = NapiHelper::ExtractArray(info[2], "worn");
+  if (baseId == 0) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  Fates::Fate fate;
+  fate.baseId = fateBaseId;
+  const uint32_t n = worn.Length();
+  fate.worn.reserve(n);
+  for (uint32_t i = 0; i < n; ++i) {
+    const std::string subArgName = "worn[" + std::to_string(i) + "]";
+    fate.worn.push_back(
+      NapiHelper::ExtractUInt32(worn.Get(i), subArgName.c_str()));
+  }
+  Fates::Arm(baseId, fate);
+  return Napi::Boolean::New(info.Env(), true);
+}
+
 Napi::Value FateApi::ClearActorFate(const Napi::CallbackInfo& info)
 {
   const auto refrId = NapiHelper::ExtractUInt32(info[0], "refrId");

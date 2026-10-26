@@ -5,6 +5,7 @@ import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { RespawnNeededError } from "../../lib/errors";
 import { AnimationEventName, takeRelayedStagger } from "../../sync/animation";
 import { RagdollService } from "./ragdollService";
+import { PuppetService } from "./puppetService";
 
 export class DeathService extends ClientListener {
   constructor(private sp: Sp, private controller: CombinedController) {
@@ -206,6 +207,10 @@ export class DeathService extends ClientListener {
       // (x-npc-respawn 070508)
       const id = actor.getFormID();
       const queued = this.sp.resurrectActor(id);
+      // the reconciler arms the deferred kill again on its next pass
+      // (ADR-050 decision 3: the stood-up actor holds at zero for the
+      // server's word as before its death)
+      this.controller.lookupListener(PuppetService).onResurrected(id);
       logLab("verb:npc-fate", `resurrect ${id.toString(16)} (puppet ${this.sp.isPuppet(id)}) ${queued ? "queued" : "refused"}`);
     } else {
       throw new RespawnNeededError("needs to be respawned");

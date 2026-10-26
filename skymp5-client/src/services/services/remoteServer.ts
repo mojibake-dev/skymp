@@ -836,7 +836,10 @@ export class RemoteServer extends ClientListener {
     // engine reference (movementApply), this does. Idempotent with the
     // DeathStateContainer's own apply on the host (deathService returns when
     // the engine already agrees).
-    if (form && msg.propName === 'isDead' && typeof form.refrId === 'number' && form.refrId < 0xff000000) {
+    // ADR-050 decision 3 (train 51): a server-made NPC's copies hear the
+    // word too (the server sends it for every NPC, players aside)
+    const npcCopy = !!form && !!form.baseId && form.baseId !== 0x7 && form.isMyClone !== true;
+    if (form && msg.propName === 'isDead' && typeof form.refrId === 'number' && (form.refrId < 0xff000000 || npcCopy)) {
       const engineRefrId = form.refrId;
       const isDead = !!msgData;
       once('update', () => {

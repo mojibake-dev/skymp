@@ -41,6 +41,16 @@ export class ActorFateService extends ClientListener {
         // screen attaches the cell before the next update tick fires)
         const late: number[] = [];
         for (const fate of event.message.fates) {
+            if (fate.refrId >= 0xff000000) {
+                // thuum ADR-050 decision 3 (train 51): a server-made NPC's
+                // fate, sent ahead of its create word; kept by its remote id
+                // until the view arms it for the copy's spawn (armActorFate),
+                // where the detours bind it to the copy's own id. No native
+                // table entry under the remote id and no late path: the copy
+                // is this game's to place
+                this.copyFates.set(fate.refrId, { baseId: fate.baseId, worn: fate.worn.slice() });
+                continue;
+            }
             this.sp.setActorFate(fate.refrId, fate.baseId, fate.worn);
             const key = `${fate.baseId}:${fate.worn.join(",")}`;
             const before = this.applied.get(fate.refrId);
@@ -77,8 +87,15 @@ export class ActorFateService extends ClientListener {
         });
     }
 
+    // The server's fate for a server-made NPC by its remote id (ADR-050
+    // decision 3), read by the view at the copy's spawn.
+    fateForCopy(remoteId: number): { baseId: number; worn: number[] } | undefined {
+        return this.copyFates.get(remoteId);
+    }
+
     // the last fate applied per reference (base and worn), so a repeated fate
     // for the same roll re-rolls nothing
     private applied = new Map<number, string>();
+    private copyFates = new Map<number, { baseId: number; worn: number[] }>();
     private enabled: boolean;
 }

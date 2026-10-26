@@ -11,6 +11,11 @@ namespace FateApi {
 // rolled; stored on the JS thread, no game call; the detours (FateHooks.cpp)
 // read it at the roll. Returns false for an invalid reference id.
 Napi::Value SetActorFate(const Napi::CallbackInfo& info);
+// armActorFate(baseId, fateBaseId, worn): thuum ADR-050 decision 3 (train
+// 51), a server-made NPC's fate armed by its base before the view's
+// placeAtMe of its copy; the first detour that meets a new 0xff reference
+// of that base binds it to the copy's own id (Fates::BindArmed)
+Napi::Value ArmActorFate(const Napi::CallbackInfo& info);
 // clearActorFate(refrId): the reference rolls as the engine's own again;
 // false when it held no fate
 Napi::Value ClearActorFate(const Napi::CallbackInfo& info);
@@ -53,6 +58,9 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "setActorFate",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetActorFate)));
+  exports.Set(
+    "armActorFate",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(ArmActorFate)));
   exports.Set(
     "clearActorFate",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(ClearActorFate)));

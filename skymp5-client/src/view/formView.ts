@@ -1,4 +1,4 @@
-import { Actor, ActorBase, Cell, createText, destroyText, Form, FormType, Game, Keyword, NetImmerse, ObjectReference, once, printConsole, setTextPos, setTextSize, setTextString, settings, storage, TESModPlatform, Utility, WorldSpace, worldPointToScreenPoint } from "skyrimPlatform";
+import { Actor, ActorBase, Cell, createText, Debug, destroyText, Form, FormType, Game, Keyword, NetImmerse, ObjectReference, once, printConsole, setTextPos, setTextSize, setTextString, settings, storage, TESModPlatform, Utility, WorldSpace, worldPointToScreenPoint } from "skyrimPlatform";
 import { setDefaultAnimsDisabled, applyAnimation, allowAnimationOnce } from "../sync/animation";
 import { isHandCastEvent } from "../services/services/actionSyncService";
 // @ts-expect-error (TODO: Remove in 2.10.0)
@@ -71,6 +71,21 @@ export class FormView {
   // thuum docs/verbs/npc-fate.md: the fate switch (settings
   // skymp5-client.npcFate, default off until x-npc-fate-roll): on, engine
   // references are dressed by the engine from the server's roll
+  // thuum docs/verbs/npc-stream.md (slice 1 v2): two bisect switches for the
+  // puppet side of the stream, on unless the settings file says false:
+  // npcStreamActions (a puppet performs or plays the host's actions at all)
+  // and npcStreamHands (a puppet's hands follow the record). Read once.
+  private static streamSwitch(key: string): boolean {
+    let on = FormView.streamSwitches.get(key);
+    if (on === undefined) {
+      const s = settings["skymp5-client"] as Record<string, unknown> | undefined;
+      on = !s || s[key] !== false;
+      FormView.streamSwitches.set(key, on);
+    }
+    return on;
+  }
+  private static readonly streamSwitches = new Map<string, boolean>();
+
   private static npcFateEnabled(): boolean {
     if (FormView.npcFate === undefined) {
       const s = settings["skymp5-client"] as Record<string, unknown> | undefined;
@@ -771,6 +786,7 @@ export class FormView {
     // (figures and 0xff actors) alone
     const engineDressed = FormView.npcFateEnabled() && this.refrId !== 0 && this.refrId < 0xff000000;
     if (model.equipment && !alreadyHosted && engineDressed && FormView.isNpcModel(model) &&
+      FormView.streamSwitch("npcStreamHands") &&
       this.eqState.lastNumChanges !== model.equipment.numChanges) {
       // thuum docs/verbs/npc-stream.md (ADR-050, slice 3): an engine-dressed
       // puppet keeps its outfit; its hands follow the host's record (the
@@ -966,13 +982,29 @@ export class FormView {
   // so a queue that drains slowly leaves the figure in the caster's state.
   //
   // thuum docs/verbs/npc-stream.md (ADR-050): a puppet's queue carries its
-  // host's every action (idles, attacks, draws, the hands' casts), performed
-  // here the same way; the cast handshake below (the want variable, the
-  // graph's answer, the sheathed caster's drop, the Equipped exit) is the
-  // hands' alone and is gated to their events, so an idle or an attack goes
-  // variables then action with no wait. HYPOTHESIS H2 until P4: the puppet's
-  // graph (AI off, the detours feeding it) takes the action
+  // host's every action (idles, attacks, draws, the hands' casts). The
+  // hands' casts and the attack family go through the engine's action entry
+  // with the host's variables one update ahead (the figures' proven path,
+  // humanoid graphs alone: the host streams no other); the cast handshake
+  // below (the want variable, the graph's answer, the sheathed caster's
+  // drop, the Equipped exit) is the hands' alone and is gated to their
+  // events. Every other action (a package idle, a canned turn, a draw, an
+  // activate) is sent to the puppet's graph as its event, the puppets'
+  // proven path (the relay carried the same events for a week): slice 1 v2,
+  // after the first stage's crashes (x-npc-stream-p4 20261026-151921: a
+  // grindstone's furniture idle performed through the entry on a puppet
+  // not at the grindstone died in the graph's update). HYPOTHESIS H2 until
+  // P4: the puppet's graph (AI off, the detours feeding it) takes an attack
+  // through the entry
   private replayActions(refr: ObjectReference, model: FormModel): void {
+    if (FormView.isNpcModel(model) && !FormView.streamSwitch("npcStreamActions")) {
+      // the bisect switch: an NPC puppet's queue is dropped unplayed
+      if (model.actionQueue && model.actionQueue.length > 0) {
+        model.actionQueue.splice(0, model.actionQueue.length);
+      }
+      this.pendingAction = null;
+      return;
+    }
     // x-cast-interrupt (20261016-134830): a caster who sheathes mid-cast
     // performs no exit action (its engine ends the cast and performs
     // Unequip, which the figure takes through the animation relay), and the
@@ -1114,6 +1146,14 @@ export class FormView {
     if (!next) {
       return;
     }
+    if (!FormView.performsThroughEntry(next.eventName)) {
+      // the puppets' path for everything but the hands and the attacks: the
+      // action's event, as the relay sent it; no variables, no retries
+      if (next.eventName) {
+        Debug.sendAnimationEvent(refr, next.eventName);
+      }
+      return;
+    }
     if (firstName.endsWith("start") && isHandCastEvent(firstName)) {
       // a stale answer is dropped before this rise (an exit's variables raise
       // the want too, and the graph answers that rise), so the wait above
@@ -1153,6 +1193,12 @@ export class FormView {
   private dualCastOnFigure = false;
   private castRetries = 0;
   // about half a second at 60 updates a second, two updates a try
+  // the hands' casts (cast-action's family) and the attack family go through
+  // the engine's action entry on a puppet or a figure; the rest as events
+  private static performsThroughEntry(eventName: string): boolean {
+    return isHandCastEvent(eventName) || /^(attack|bowattack|bash)/i.test(eventName);
+  }
+
   private static readonly castRetryLimit = 15;
   // updates to wait for the queue's answer before counting it refused
   private static readonly answerWaitLimit = 6;

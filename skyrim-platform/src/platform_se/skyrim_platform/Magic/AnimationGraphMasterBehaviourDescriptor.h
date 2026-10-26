@@ -2,6 +2,10 @@
 
 #include "AnimVariableMasterGraphIndexes.h"
 #include "hkbVariableValueSet.h"
+#include <cstring>
+#include <mutex>
+#include <set>
+#include <string>
 
 #include <type_traits>
 #include <vector>
@@ -131,6 +135,9 @@ public:
     if (!pVariableSet) {
       return;
     }
+    if (!IsMasterBehaviourGraph(*pGraph, *pVariableSet, actor.formID)) {
+      return;
+    }
 
     variables.booleans.resize(agDescriptor.boolVariableIndexes.size());
     variables.floats.resize(agDescriptor.floatVariableIndexes.size());
@@ -190,6 +197,9 @@ public:
     if (!pVariableSet) {
       return false;
     }
+    if (!IsMasterBehaviourGraph(*pGraph, *pVariableSet, actor.formID)) {
+      return false;
+    }
 
     for (size_t i = 0; i < agDescriptor.boolVariableIndexes.size(); ++i) {
       *reinterpret_cast<AnimationVariables::BooleanAnimVarType*>(
@@ -213,6 +223,51 @@ public:
   }
 
 private:
+  // thuum docs/verbs/npc-stream.md (slice 1 v2, 2026-10-26): the indexes
+  // this descriptor reads and writes are the humanoid master behaviour's
+  // (AnimationVariablesForMasterBehavior.h), and every figure's graph was
+  // that one. A hosted NPC's graph may be another project (ChickenProject,
+  // HighlandCowProject: the puppet seat's three crashes on the first stage,
+  // x-npc-stream-p4 to -p6 20261026-1519 to -1528, the master's indexes
+  // written into a creature's variable set), so a graph is admitted only
+  // when its project is the master behaviour's (DefaultMale or
+  // DefaultFemale; HYPOTHESIS on the names until the lab's log line reads
+  // them) and every index lies inside its variable set. A refused project
+  // is logged once.
+  bool IsMasterBehaviourGraph(const RE::BShkbAnimationGraph& graph,
+                              const hkbVariableValueSet<uint32_t>& set,
+                              uint32_t actorFormId) const
+  {
+    const char* project = graph.projectName.c_str();
+    const std::string name = project ? project : "";
+    const bool master = _stricmp(name.c_str(), "DefaultMale") == 0 ||
+      _stricmp(name.c_str(), "DefaultFemale") == 0;
+    bool inside = master;
+    if (inside) {
+      for (const auto idx : agDescriptor.boolVariableIndexes) {
+        inside = inside && idx < set.size;
+      }
+      for (const auto idx : agDescriptor.floatVariableIndexes) {
+        inside = inside && idx < set.size;
+      }
+      for (const auto idx : agDescriptor.intVariableIndexes) {
+        inside = inside && idx < set.size;
+      }
+    }
+    if (!master || !inside) {
+      static std::mutex m;
+      static std::set<std::string> said;
+      std::lock_guard<std::mutex> lock(m);
+      if (said.insert(name).second) {
+        logger::info("[verb:npc-stream] graph project '{}' (variable set of "
+                     "{}) is not the master behaviour: no variables read or "
+                     "written for {:x} or any actor on it",
+                     name, set.size, actorFormId);
+      }
+    }
+    return master && inside;
+  }
+
   AnimationVariables variables{};
 
   AnimVariableMasterGraphIndexes agDescriptor =

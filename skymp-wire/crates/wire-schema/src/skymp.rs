@@ -1506,7 +1506,9 @@ wire_struct! {
     /// ADR-049): the server's roll for a game-file actor, for every engine to
     /// take instead of its own.
     pub struct ActorFateEntry {
-        /// The placement's form id, under 0xff000000.
+        /// The placement's form id: a game-file placement under 0xff000000,
+        /// or a server-made NPC's id from 0xff000000 up (ADR-050 decision 3,
+        /// fated through the same roll before its create word).
         pub refr_id: u32,
         /// The NPC_ the roll chose: the template chain's leaf for a leveled
         /// template, the placed base when nothing is leveled, 0 when the roll

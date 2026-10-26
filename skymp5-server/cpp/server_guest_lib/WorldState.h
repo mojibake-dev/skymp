@@ -326,6 +326,10 @@ public:
   // runs here for a player, so the ring is rolled at that player's level
   // before any of it is loaded or subscribed
   std::function<void(MpActor&)> onSquareChange;
+  // thuum ADR-050 decision 3 (train 51): the roll's level for a server-made
+  // NPC placed at a reference (PlaceAtMe), by the same rule as the ring's
+  // (PartOne::FateRollLevel with the placer as the loader)
+  std::function<uint16_t(MpObjectReference&)> fateRollLevelAt;
   // thuum docs/verbs/npc-fate.md (the deaths): the game-file actors whose
   // bodies lie waiting for their deadline (MpActor::ScheduleFateRespawn);
   // PartOne::TickFateRespawns ends them against the game clock

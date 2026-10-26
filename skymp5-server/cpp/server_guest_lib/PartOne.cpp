@@ -1008,6 +1008,30 @@ void PartOne::Init()
       }
     }
   };
+  // thuum ADR-050 decision 3 (train 51): a server-made NPC's roll at its
+  // placement, at the level the rule gives the placer (a player's console
+  // or the gamemode's reference), else the first player online, else 1
+  worldState.fateRollLevelAt = [this](MpObjectReference& at) -> uint16_t {
+    MpActor* loader = at.AsActor();
+    if (!loader ||
+        serverState.UserByActor(loader) == Networking::InvalidUserId) {
+      loader = nullptr;
+      for (Networking::UserId userId = 0; userId <= serverState.maxConnectedId;
+           ++userId) {
+        if (MpActor* actor = serverState.ActorByUser(userId)) {
+          loader = actor;
+          break;
+        }
+      }
+    }
+    if (!loader) {
+      return 1;
+    }
+    const NiPoint3& pos = at.GetPos();
+    return FateRollLevel(
+      *loader, at.GetCellOrWorld().ToFormId(worldState.espmFiles),
+      static_cast<int16_t>(pos.x / 4096), static_cast<int16_t>(pos.y / 4096));
+  };
   worldState.cellHostOf = [this](uint32_t cell) {
     const auto host = pImpl->cells->host_of(cell);
     return host.hosted ? host.player : 0u;
@@ -1144,6 +1168,18 @@ void PartOne::Init()
     message.transform.pos = { emitterPos.x, emitterPos.y, emitterPos.z };
     message.transform.rot = { emitterRot.x, emitterRot.y, emitterRot.z };
     message.transform.worldOrCell = worldOrCell;
+
+    // thuum ADR-050 decision 3 (train 51): a server-made NPC's fate goes
+    // ahead of its create word to each subscriber (a game-file actor's rides
+    // the ring pass at the square change, SendFates), so the copy's engine
+    // rolls the server's roll inside its placement
+    if (emitterAsActor && emitter->GetFormId() >= 0xff000000 &&
+        !emitterAsActor->IsCreatedAsPlayer() &&
+        emitterAsActor->GetFateLevel().has_value()) {
+      ActorFateMessage fateMessage;
+      fateMessage.fates.push_back(FateOf(worldState, *emitterAsActor));
+      sendTarget->Send(listenerUserId, fateMessage, true);
+    }
 
     sendTarget->Send(listenerUserId, message, true);
 

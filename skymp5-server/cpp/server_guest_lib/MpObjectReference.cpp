@@ -393,8 +393,8 @@ void MpObjectReference::VisitProperties(CreateActorMessage& message,
 
   if (auto actor = AsActor(); actor && actor->IsDead()) {
     message.props.isDead = true;
-  } else if (actor && GetFormId() < 0xff000000) {
-    // thuum docs/verbs/npc-fate.md (the deaths): a game-file actor's life is
+  } else if (actor && !actor->IsCreatedAsPlayer()) {
+    // thuum docs/verbs/npc-fate.md (the deaths): an NPC's life is
     // said explicitly, so a seat that binds a corpse the server has stood up
     // (a reconnect after the sweep) resurrects it (formView's two-second
     // read); a copy's or a player's absent isDead keeps its meaning

@@ -3525,10 +3525,17 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
   }
 
   if (aggressor->IsDead()) {
-    spdlog::debug(fmt::format("{:x} actor is dead and can't attack. "
-                              "requesting respawn in order to fix death state",
-                              aggressor->GetFormId()));
-    aggressor->RespawnWithDelay(true);
+    // thuum ADR-050 decision 3 (train 51): the respawn that fixes a dead
+    // player's state is a player's rule; a dead NPC's late swing is dropped
+    // and its respawn stays the fate's clock
+    spdlog::debug(fmt::format(
+      "{:x} actor is dead and can't attack{}", aggressor->GetFormId(),
+      aggressor->IsCreatedAsPlayer() ? ". requesting respawn in order to fix "
+                                       "death state"
+                                     : ""));
+    if (aggressor->IsCreatedAsPlayer()) {
+      aggressor->RespawnWithDelay(true);
+    }
     return;
   }
 
@@ -3861,10 +3868,15 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
   }
 
   if (caster->IsDead()) {
-    spdlog::info(fmt::format("{:x} actor is dead and can't spell cast. "
-                             "requesting respawn in order to fix death state",
-                             caster->GetFormId()));
-    caster->RespawnWithDelay(true);
+    // thuum ADR-050 decision 3 (train 51): a player's rule, as OnHit's
+    spdlog::info(fmt::format(
+      "{:x} actor is dead and can't spell cast{}", caster->GetFormId(),
+      caster->IsCreatedAsPlayer() ? ". requesting respawn in order to fix "
+                                    "death state"
+                                  : ""));
+    if (caster->IsCreatedAsPlayer()) {
+      caster->RespawnWithDelay(true);
+    }
     return;
   }
 

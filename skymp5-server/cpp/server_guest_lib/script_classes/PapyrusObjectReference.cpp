@@ -439,6 +439,23 @@ VarValue PapyrusObjectReference::PlaceAtMe(
   worldState->AddForm(std::move(newRefr), newRefrId);
 
   auto& refr = worldState->GetFormAt<MpObjectReference>(newRefrId);
+
+  // thuum ADR-050 decision 3 (train 51): a server-made NPC is fated through
+  // the same roll as a game-file actor, keyed before its create word goes
+  // out (ForceSubscriptionsUpdate below; PartOne::onSubscribe sends the
+  // fate ahead of CreateActor to each subscriber), at the level the
+  // setting's rule gives the placer's square (PartOne::FateRollLevel through
+  // WorldState::fateRollLevelAt). The placed copy's engine then rolls the
+  // server's roll inside its placement, as a game-file actor's does at its
+  // init, so the host's hands are the record's and nothing dresses it after.
+  if (auto actor = refr.AsActor(); actor && worldState->fateRollLevelAt) {
+    const uint16_t level = worldState->fateRollLevelAt(*selfRefr);
+    if (actor->RollFateIfUnrolled(level)) {
+      spdlog::info("PlaceAtMe - {:x} (base {:x}) fated at level {}", newRefrId,
+                   baseId, level);
+    }
+  }
+
   refr.ForceSubscriptionsUpdate();
 
   if (abInitiallyDisabled) {

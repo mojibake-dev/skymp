@@ -625,11 +625,13 @@ fn take(budget: &mut TokenBucket, now_ms: u64) -> Result<(), Reject> {
 }
 
 /// The server's fates (docs/verbs/npc-fate.md, ADR-049): every entry names a
-/// game-file placement (a form id of 1 to 0xfeffffff); the base may be 0
-/// (the roll chose none) or any form; every worn id is a form (never 0).
+/// placement, a game-file one (a form id of 1 to 0xfeffffff) or, since
+/// ADR-050 decision 3 (train 51), a server-made NPC's (0xff000000 up, fated
+/// through the same roll before its create word); the base may be 0 (the
+/// roll chose none) or any form; every worn id is a form (never 0).
 fn check_fates(m: &skymp::ActorFate) -> Result<(), Reject> {
     for f in m.fates.iter() {
-        if f.refr_id == 0 || f.refr_id >= 0xff00_0000 {
+        if f.refr_id == 0 {
             return Err(Reject::Range);
         }
         if f.worn.contains(&0) {
@@ -1730,8 +1732,8 @@ mod tests {
         assert_eq!(validate_server(&fates(&[])), Ok(()));
         // a roll of none: the placement stays empty
         assert_eq!(validate_server(&fates(&[(0x85547, 0, 25, &[])])), Ok(()));
-        // a server-made actor is no placement; a placement of 0; a worn id of 0
-        assert_eq!(validate_server(&fates(&[(0xff00_0c03, 0x7, 1, &[])])), Err(Reject::Range));
+        // a server-made NPC is a placement too (ADR-050 decision 3); a placement of 0; a worn id of 0
+        assert_eq!(validate_server(&fates(&[(0xff00_0c03, 0x1bcd8, 25, &[0x1397f])])), Ok(()));
         assert_eq!(validate_server(&fates(&[(0, 0x7, 1, &[])])), Err(Reject::Range));
         assert_eq!(validate_server(&fates(&[(0x85547, 0x7, 1, &[0])])), Err(Reject::Range));
     }

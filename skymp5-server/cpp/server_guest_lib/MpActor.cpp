@@ -1654,7 +1654,10 @@ void MpActor::SendAndSetDeathState(bool isDead, bool shouldTeleport)
   // applied with no record behind it (rule 5). Now the word itself goes to
   // every listening game, as the respawn's "false" already does
   // (RespawnEvent), and the client takes a puppet's death from it alone.
-  if (isDead && GetFormId() < 0xff000000) {
+  // ADR-050 decision 3 (train 51): a server-made NPC's copies hear it too;
+  // only a player's actor keeps its own path (the NPC rule keyed once on
+  // "not a player", IsCreatedAsPlayer).
+  if (isDead && !IsCreatedAsPlayer()) {
     SendMessageToActorListeners(CreatePropertyMessage_(this, "isDead", "true"),
                                 true);
   }
@@ -1758,8 +1761,12 @@ bool MpActor::RollFateIfUnrolled(uint16_t level)
       ChangeForm().fateLevel.has_value()) {
     return false;
   }
+  // thuum ADR-050 decision 3 (train 51): a server-made NPC, a placed base
+  // under a 0xff id, is fated through the same roll as a game-file actor
+  // (PapyrusObjectReference::PlaceAtMe rolls it before its create word);
+  // only a player's actor (the player base) and a baseless one are refused
   const auto baseId = GetBaseId();
-  if (baseId == 0x7 || baseId == 0 || GetFormId() >= 0xff000000) {
+  if (baseId <= 0x7) {
     return false;
   }
   worldState->fateLoaderLevel = level;

@@ -1,4 +1,5 @@
 #include "ActorFateMessage.h"
+#include "ConsoleCommandMessage.h"
 #include "CreateActorMessage.h"
 #include "MpChangeForms.h"
 #include "OpenContainerMessage.h"
@@ -412,4 +413,114 @@ TEST_CASE("A server-made actor with an NPC base dies by the NPC rule, not "
   made->Respawn(false);
   p.worldState.fateRespawnDue.erase(kMade);
   p.DestroyActor(kMade);
+}
+
+// thuum ADR-050 decision 3 (train 51): a server-made NPC goes through the
+// same roll and pin as a game-file actor, keyed before PlaceAtMe returns
+TEST_CASE("A server-made NPC is fated at its placement, its fate goes ahead "
+          "of its create word, and its death is the server's word to every "
+          "listener",
+          "[NpcFate][espm]")
+{
+  enum
+  {
+    EncBandit01Melee1HNordM = 0x1bcd8,
+    kC2 = 0xff000d02
+  };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  DoConnect(p, 0);
+  p.CreateActor(kC1, kForest, 0, kTamriel);
+  p.SetUserActor(0, kC1);
+  auto& player = p.worldState.GetFormAt<MpActor>(kC1);
+  ActorValueRecord record;
+  record.level = 25;
+  player.SetActorValueRecord(record);
+  player.SetConsoleCommandsAllowedFlag(true);
+  // a second game in the same square hears the words too
+  DoConnect(p, 1);
+  p.CreateActor(kC2, kForest + NiPoint3{ 200.f, 0.f, 0.f }, 0, kTamriel);
+  p.SetUserActor(1, kC2);
+  p.Messages().clear();
+
+  RawMessageData msgData;
+  msgData.userId = 0;
+  ConsoleCommandMessage cmd;
+  cmd.data.commandName = "placeatme";
+  cmd.data.args = { int64_t(0x14), int64_t(EncBandit01Melee1HNordM) };
+  p.GetActionListener().OnConsoleCommand(msgData, cmd);
+
+  // the placed actor is named by the one fate with that base under a 0xff
+  // id; its create word to the placer follows the fate
+  uint32_t placedId = 0;
+  size_t fateAt = 0;
+  for (size_t i = 0; i < p.Messages().size(); ++i) {
+    auto& m = p.Messages()[i];
+    if (m.userId != 0) {
+      continue;
+    }
+    if (auto fate = dynamic_cast<ActorFateMessage*>(m.message.get())) {
+      for (const auto& f : fate->fates) {
+        if (f.refrId >= 0xff000000 && f.baseId == EncBandit01Melee1HNordM) {
+          placedId = f.refrId;
+          fateAt = i;
+        }
+      }
+    }
+  }
+  REQUIRE(placedId >= 0xff000000);
+  auto& placed = p.worldState.GetFormAt<MpActor>(placedId);
+  REQUIRE_FALSE(placed.IsCreatedAsPlayer());
+  REQUIRE(placed.GetFateLevel().has_value());
+  REQUIRE(*placed.GetFateLevel() == 25);
+  size_t createAt = 0;
+  bool createSeen = false;
+  for (size_t i = 0; i < p.Messages().size(); ++i) {
+    auto& m = p.Messages()[i];
+    if (m.userId != 0) {
+      continue;
+    }
+    if (auto create = dynamic_cast<CreateActorMessage*>(m.message.get())) {
+      if (create->refrId.has_value() && *create->refrId == placedId) {
+        createSeen = true;
+        createAt = i;
+      }
+    }
+  }
+  REQUIRE(createSeen);
+  REQUIRE(fateAt < createAt);
+  // the second game got the fate ahead of its create word as well
+  bool fateToSecond = false;
+  for (auto& m : p.Messages()) {
+    if (m.userId != 1) {
+      continue;
+    }
+    if (auto fate = dynamic_cast<ActorFateMessage*>(m.message.get())) {
+      for (const auto& f : fate->fates) {
+        if (f.refrId == placedId) {
+          fateToSecond = true;
+        }
+      }
+    }
+  }
+  REQUIRE(fateToSecond);
+
+  // the death is the server's word to the listener that does not host it
+  p.Messages().clear();
+  placed.Kill(nullptr);
+  bool deathWord = false;
+  for (auto& m : p.Messages()) {
+    if (m.userId == 1 && m.j.is_object() &&
+        m.j.value("t", -1) == static_cast<int>(MsgType::UpdateProperty) &&
+        m.j.value("propName", std::string()) == "isDead" &&
+        m.j.value("refrId", 0u) == placedId &&
+        m.j.value("dataDump", std::string()) == "true") {
+      deathWord = true;
+    }
+  }
+  REQUIRE(deathWord);
+
+  p.DestroyActor(placedId);
+  DoDisconnect(p, 1);
+  DoDisconnect(p, 0);
 }

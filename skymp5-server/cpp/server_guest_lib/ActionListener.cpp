@@ -251,7 +251,10 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
                                                              : "moves",
                      moved->GetFormId(), *destCell,
                      verdict == PartOne::MoveVerdict::Follow
-                       ? "nobody hosts (npc-handoff D6)"
+                       ? (partOne.GetCellHost(*destCell).hosted
+                            ? "another game hosts, within the pass margin "
+                              "(npc-handoff D22: the crossing host keeps it)"
+                            : "nobody hosts (npc-handoff D6)")
                        : passed ? "another game hosts (npc-handoff D9: the "
                                   "simulation passes with it)"
                                 : "it hosts");

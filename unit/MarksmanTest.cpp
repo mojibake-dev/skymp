@@ -59,6 +59,7 @@ void Shoot(PartOne& p, float power = 1.f, bool launch = false,
   RawMessageData raw;
   raw.userId = 0;
   PlayerBowShotMessage shot;
+  shot.idx = p.serverState.ActorByUser(raw.userId)->GetIdx();
   shot.weaponId = kLongBow;
   shot.ammoId = kIronArrow;
   shot.power = power;

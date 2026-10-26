@@ -736,8 +736,10 @@ wire_struct! {
 
 wire_struct! {
     /// MsgType 22. Client to server, reliable: the player loosed an arrow
-    /// (R1 intent; thuum docs/verbs/marksman.md). Not idempotent. Reason
-    /// codes: `E_VAL_NONFINITE`, `E_VAL_RANGE` (a power outside 0 to 1, an
+    /// (R1 intent; thuum docs/verbs/marksman.md), or an actor its game
+    /// simulates did (`idx`; thuum docs/verbs/npc-stream.md, train 53). Not
+    /// idempotent. Reason codes: `E_VAL_NONFINITE`, `E_VAL_RANGE` (an idx of
+    /// u32::MAX, a power outside 0 to 1, an
     /// aim or a launch pitched past a quarter turn, a launch's fields set
     /// without `has_launch`), `E_VAL_OUT_OF_WORLD` (a launch's origin),
     /// `E_VAL_RATE`.
@@ -745,6 +747,11 @@ wire_struct! {
         /// `"t": 22`.
         #[serde(default)]
         pub t: MsgT<22>,
+        /// The shooter, as CreateActor named it: the sender's own idx for its
+        /// own shot, a hosted actor's for one its game simulates (thuum
+        /// docs/verbs/npc-stream.md, train 53). 0 is a real actor, so the
+        /// sender's own idx is the sentinel (slice 3's idiom), never 0.
+        pub idx: u32,
         /// Bow form id.
         pub weapon_id: u32,
         /// Arrow form id.

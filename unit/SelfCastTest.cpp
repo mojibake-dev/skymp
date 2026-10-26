@@ -108,6 +108,7 @@ void ArrowHitsCaster(PartOne& p)
   RawMessageData shotRaw;
   shotRaw.userId = 1;
   PlayerBowShotMessage shot;
+  shot.idx = shooter.GetIdx();
   shot.weaponId = kLongBow;
   shot.ammoId = kIronArrow;
   shot.power = 1.f;

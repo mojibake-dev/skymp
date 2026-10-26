@@ -32,7 +32,7 @@ use bounded::{String, Vec};
 
 /// Bump when any variant changes shape. It is part of netcode's protocol id,
 /// so peers built against another schema never complete a handshake.
-pub const SCHEMA_VERSION: u16 = 17;
+pub const SCHEMA_VERSION: u16 = 18;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -808,6 +808,7 @@ mod tests {
             // a shot and its relay at their longest: every id a five-byte
             // varint, the launch carried
             Message::PlayerBowShot(skymp::PlayerBowShot {
+                idx: u32::MAX,
                 weapon_id: u32::MAX,
                 ammo_id: u32::MAX,
                 power: 1.0,

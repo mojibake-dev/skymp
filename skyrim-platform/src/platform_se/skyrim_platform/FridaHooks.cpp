@@ -645,19 +645,34 @@ void OnProjectileLaunchEnter(GumInvocationContext* ic)
   if (!data || !data->shooter) {
     return;
   }
-  // filtered in native (rule 9): the player's own launches (the shooter's
-  // side of the sync) and the figures' (dynamic forms, the observer's side,
-  // which the recorder compares); an NPC's arrows and spells stay out of JS
+  // filtered in native (rule 9): the player's own launches and a hosted
+  // actor's (the shooter's side of the sync: this game simulates both), the
+  // figures' and the puppets' (the observer's side, which the recorder
+  // compares); any other NPC's arrows and spells stay out of JS
   const uint32_t shooterId = data->shooter->formID;
-  if (shooterId != 0x14 && shooterId < 0xFF000000) {
+  const bool player = shooterId == 0x14;
+  const bool hosted = !player && Hosted::Is(shooterId);
+  const bool puppet = !player && !hosted && Puppets::Is(shooterId);
+  const bool figure = !player && !hosted && !puppet && shooterId >= 0xFF000000;
+  if (!player && !hosted && !puppet && !figure) {
     return;
   }
-  if (shooterId >= 0xFF000000 && data->ammoSource && data->projectileBase &&
+  // thuum docs/verbs/marksman.md and npc-stream.md (train 53): an arrow this
+  // game did not shoot is dropped unless a relayed shot launches it
+  // (RelayedArrowScope): a figure's (its quiver is worn, so its bow's
+  // release launches one of its own beside the relayed one) and a puppet's
+  // (the replayed release may launch one; its host's shot arrives as
+  // ArrowShot). A hosted actor's arrow flies and reaches JS as the player's
+  // does: before train 53 a server-made actor this game hosted was dropped
+  // here by its 0xff id (x-npc-bow 221512: the host's own archer shot
+  // nothing on any screen)
+  if ((figure || puppet) && data->ammoSource && data->projectileBase &&
       g_relayedArrowDepth == 0) {
     g_droppedArrows.back() = { data, data->projectileBase };
     data->projectileBase = nullptr;
-    logger::info("a figure's own arrow dropped: shooter {:x}, ammo {:x}",
-                 shooterId, data->ammoSource->formID);
+    logger::info("{} own arrow dropped: shooter {:x}, ammo {:x}",
+                 puppet ? "a puppet's" : "a figure's", shooterId,
+                 data->ammoSource->formID);
     return;
   }
   LaunchSeen seen;

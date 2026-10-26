@@ -324,6 +324,11 @@ fn check_game_time(m: &skymp::SetGameTime) -> Result<(), Reject> {
 /// way, radians), thuum docs/verbs/marksman.md, and its launch
 /// ([`check_launch`]).
 fn check_bow_shot(m: &skymp::PlayerBowShot) -> Result<(), Reject> {
+    // the shooter's idx (thuum docs/verbs/npc-stream.md, train 53): u32::MAX
+    // is no actor; whether the sender may shoot for that idx is the server's
+    if m.idx == u32::MAX {
+        return Err(Reject::Range);
+    }
     if !((0.0..=1.0).contains(&m.power) && (-core::f32::consts::FRAC_PI_2..=core::f32::consts::FRAC_PI_2).contains(&m.aim_angle)) {
         return Err(Reject::Range);
     }
@@ -1237,6 +1242,17 @@ mod tests {
         }
         assert_eq!(validate(&shot(f32::NAN, 0.0), &mut ClientGuard::default(), 0), Err(Reject::NonFinite));
         assert_eq!(validate(&shot(1.0, f32::INFINITY), &mut ClientGuard::default(), 0), Err(Reject::NonFinite));
+    }
+
+    #[test]
+    fn a_bow_shot_names_its_shooter_by_a_real_idx() {
+        // the sender's own idx for its own shot, a hosted actor's for one its
+        // game simulates (thuum docs/verbs/npc-stream.md, train 53); 0 is a
+        // real actor, u32::MAX none
+        let own = Message::PlayerBowShot(skymp::PlayerBowShot { idx: 7, weapon_id: 0x3b562, ammo_id: 0x1397d, power: 1.0, ..Default::default() });
+        assert_eq!(validate(&own, &mut ClientGuard::default(), 0), Ok(()));
+        let none = Message::PlayerBowShot(skymp::PlayerBowShot { idx: u32::MAX, weapon_id: 0x3b562, ammo_id: 0x1397d, power: 1.0, ..Default::default() });
+        assert_eq!(validate(&none, &mut ClientGuard::default(), 0), Err(Reject::Range));
     }
 
     // a shot with the launch its game made, from (x, y, z) at pitch angle_x

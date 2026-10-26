@@ -2924,10 +2924,21 @@ void ActionListener::OnDropItem(const RawMessageData& rawMsgData,
 void ActionListener::OnPlayerBowShot(const RawMessageData& rawMsgData,
                                      const PlayerBowShotMessage& msg)
 {
-  MpActor* ac = partOne.serverState.ActorByUser(rawMsgData.userId);
-  if (!ac) {
+  MpActor* myActor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!myActor) {
     return spdlog::error("Unable to shot from user with id: {}.",
                          rawMsgData.userId);
+  }
+  // thuum docs/verbs/npc-stream.md (ADR-050, train 53): a hosted archer's
+  // shot comes from its host's game under the actor's idx (the host's own
+  // shot carries the host's own idx); the host rule gates it as it gates
+  // every hosted report
+  const bool hosted = msg.idx != myActor->GetIdx();
+  MpActor* ac = hosted
+    ? ActorUpdatableBy(msg.idx, rawMsgData.userId, MsgType::PlayerBowShot)
+    : myActor;
+  if (!ac) {
+    return;
   }
 
   auto worldState = ac->GetParent();
@@ -2960,7 +2971,10 @@ void ActionListener::OnPlayerBowShot(const RawMessageData& rawMsgData,
     }
     return false;
   };
-  if (!worn(msg.weaponId) || !worn(msg.ammoId)) {
+  // a hosted actor's quiver is its engine's (the host's hands report lists
+  // no ammo, and an NPC's arrows come from lists the server does not walk):
+  // its bow is checked against the record's hands, its ammo recorded (R2)
+  if (!worn(msg.weaponId) || (!hosted && !worn(msg.ammoId))) {
     return spdlog::warn("ActionListener::OnPlayerBowShot - E_SHOT_EQUIPMENT: "
                         "{:x} shot {:x} from {:x}, which its equipment does "
                         "not hold; refused",
@@ -2983,7 +2997,16 @@ void ActionListener::OnPlayerBowShot(const RawMessageData& rawMsgData,
     }
   }
 
-  if (!ac->IsGodMode()) {
+  if (hosted) {
+    if (ac->GetInventory().GetItemCount(msg.ammoId) > 0) {
+      ac->RemoveItem(msg.ammoId, 1, nullptr);
+    } else {
+      spdlog::info("[verb:npc-stream] E_SHOT_QUIVER: {:x}'s shot of {:x} by "
+                   "{:x} spends no arrow; its record holds none (the "
+                   "engine's quiver, recorded)",
+                   ac->GetFormId(), msg.ammoId, myActor->GetFormId());
+    }
+  } else if (!ac->IsGodMode()) {
     // thuum docs/verbs/god-mode.md: TGM, unlimited arrows
     ac->RemoveItem(msg.ammoId, 1, nullptr);
   }
@@ -3008,15 +3031,25 @@ void ActionListener::OnPlayerBowShot(const RawMessageData& rawMsgData,
   relay.originZ = msg.originZ;
   relay.launchAngleX = msg.launchAngleX;
   relay.launchAngleZ = msg.launchAngleZ;
+  // every listener with a user but the sender (OnHostedActorState's loop):
+  // an offline listener's GetActorToSendTo hands a message to its host, so
+  // the loop before train 53 sent a host near a shot one ArrowShot per NPC
+  // it hosted among the shooter's listeners (one arrow drawn per hosted
+  // neighbour; found at train 53's read, never seen in a lab run, which
+  // shot with no hosted cell near)
   for (auto listener : ac->GetActorListeners()) {
-    if (listener != ac) {
-      listener->GetActorToSendTo().SendToUser(relay, true);
+    if (listener == myActor ||
+        listener->GetUserId() == Networking::InvalidUserId) {
+      continue;
     }
+    listener->SendToUser(relay, true);
   }
   spdlog::info("ActionListener::OnPlayerBowShot - {:x} shot {:x} from {:x}, "
-               "power {:.2f}, aim {:.3f} heading {:.3f}",
+               "power {:.2f}, aim {:.3f} heading {:.3f}{}",
                ac->GetFormId(), msg.ammoId, msg.weaponId, msg.power,
-               msg.aimAngle, msg.aimHeading);
+               msg.aimAngle, msg.aimHeading,
+               hosted ? fmt::format(", by its host {:x}", myActor->GetFormId())
+                      : std::string());
 }
 
 void ActionListener::OnFinishSpSnippet(const RawMessageData& rawMsgData,
@@ -3997,14 +4030,14 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
         return;
       }
     }
-    // thuum docs/verbs/marksman.md: a player's arrow hits only as a shot the
-    // server recorded, and once (a hosted actor's shots are its host's
-    // game's, M3), at its draw power: the engine scales a player's arrow's
-    // damage by the power once, at launch (the re-analyst's read of
-    // Projectile::Launch, 2026-10-09)
+    // thuum docs/verbs/marksman.md: an arrow hits only as a shot the server
+    // recorded, and once, at its draw power (a hosted actor's shots are its
+    // host's game's reports under the actor's own id, train 53, claimed the
+    // same way): the engine scales a player's arrow's damage by the power
+    // once, at launch (the re-analyst's read of Projectile::Launch,
+    // 2026-10-09)
     float damageMult = 1.f;
-    if (aggressor == myActor &&
-        IsBowOrCrossbowShot(hitData, &partOne.worldState)) {
+    if (IsBowOrCrossbowShot(hitData, &partOne.worldState)) {
       const auto claim = partOne.ClaimShot(
         aggressor->GetFormId(), hitData.source, targetRef->GetPos());
       if (claim.check != PartOne::ShotCheck::Claimed) {

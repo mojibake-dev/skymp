@@ -1353,7 +1353,36 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   std::array<uint32_t, static_cast<size_t>(SpellSlotId::kCount)>
     spellIdsToRemove = {};
 
-  if (leftSpell > 0 && !actor->IsSpellLearned(leftSpell)) {
+  // thuum docs/verbs/npc-stream.md (ADR-050, train 53): the known set is a
+  // player's (the learned spells, the base's and its race's lists, the
+  // template's where the chain is evaluated); a hosted actor's hands are its
+  // host's engine's, which draws on templates and leveled spell lists the
+  // server does not walk, so a spell or a shout the set lacks in a hosted
+  // report is recorded as unvalidated (R2, rule 5) with one line, when the
+  // form is a spell or a shout at all; anything else refuses the report
+  const auto& espmBrowser = partOne.GetEspm().GetBrowser();
+  auto recordedUnknown = [&](const char* slot, uint32_t formId,
+                             bool shout) -> bool {
+    if (!hosted) {
+      return false;
+    }
+    const auto rec = espmBrowser.LookupById(formId).rec;
+    const bool spellForm = rec &&
+      (rec->GetType() == espm::SPEL::kType ||
+       (shout && rec->GetType() == espm::SHOU::kType));
+    if (!spellForm) {
+      return false;
+    }
+    spdlog::info("[verb:npc-stream] E_EQUIP_UNKNOWN_SPELL: {:x}'s {} slot by "
+                 "{:x} holds {} {:x}, which its record's known set lacks; "
+                 "recorded unvalidated (the host's engine's list)",
+                 actorFormId, slot, myActor->GetFormId(),
+                 shout ? "shout" : "spell", formId);
+    return true;
+  };
+
+  if (leftSpell > 0 && !actor->IsSpellLearned(leftSpell) &&
+      !recordedUnknown("left", leftSpell, false)) {
     spdlog::warn("ActionListener::OnUpdateEquipment {:x} - rejected equipment "
                  "update: spell {:x} is not learned",
                  actorFormId, leftSpell);
@@ -1361,7 +1390,8 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     spellIdsToRemove[static_cast<size_t>(SpellSlotId::Left)] = leftSpell;
   }
 
-  if (rightSpell > 0 && !actor->IsSpellLearned(rightSpell)) {
+  if (rightSpell > 0 && !actor->IsSpellLearned(rightSpell) &&
+      !recordedUnknown("right", rightSpell, false)) {
     spdlog::warn("ActionListener::OnUpdateEquipment {:x} - rejected equipment "
                  "update: spell {:x} is not learned",
                  actorFormId, rightSpell);
@@ -1376,7 +1406,8 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   if (voiceSpell > 0 &&
       !(voiceIsShout
           ? actor->HasShoutEntry(MpActor::ShoutEntry::Shout, voiceSpell)
-          : actor->IsSpellLearned(voiceSpell))) {
+          : actor->IsSpellLearned(voiceSpell)) &&
+      !recordedUnknown("voice", voiceSpell, voiceIsShout)) {
     spdlog::warn("ActionListener::OnUpdateEquipment {:x} - rejected equipment "
                  "update: {} {:x} is not learned",
                  actorFormId, voiceIsShout ? "shout" : "spell", voiceSpell);
@@ -1384,7 +1415,8 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     spellIdsToRemove[static_cast<size_t>(SpellSlotId::Voice)] = voiceSpell;
   }
 
-  if (instantSpell > 0 && !actor->IsSpellLearned(instantSpell)) {
+  if (instantSpell > 0 && !actor->IsSpellLearned(instantSpell) &&
+      !recordedUnknown("instant", instantSpell, false)) {
     spdlog::warn("ActionListener::OnUpdateEquipment {:x} - rejected equipment "
                  "update: spell {:x} is not learned",
                  actorFormId, instantSpell);
@@ -3753,15 +3785,16 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
   // docs/verbs/shouts.md), claimed against the shout the server accepted
   if (isSourceSpell &&
       (equipment.IsSpellEquipped(hitData.source) ||
-       (aggressor == myActor &&
-        IsVoiceVariation(equipment, hitData.source, partOne.worldState)))) {
-    // thuum docs/verbs/spell-cast.md: a player's spell hits only as a cast
-    // the server recorded: a fire-and-forget cast once (an area spell's
-    // targets once each), a stream by the time it held its target (a hosted
-    // actor's casts are its host's game's, M3)
+       IsVoiceVariation(equipment, hitData.source, partOne.worldState))) {
+    // thuum docs/verbs/spell-cast.md: a spell hits only as a cast the server
+    // recorded: a fire-and-forget cast once (an area spell's targets once
+    // each), a stream by the time it held its target. A hosted actor's casts
+    // are recorded under its own id from its host's reports (ADR-050, train
+    // 53), so its hits are claimed and scaled the same way, and one with no
+    // cast behind it is refused (rule 5)
     float magnitudeScale = 1.f;
     bool dualCast = false;
-    if (aggressor == myActor) {
+    {
       const auto claim =
         partOne.ClaimCast(aggressor->GetFormId(), hitData.source,
                           targetRef->GetFormId(), targetRef->GetPos());
@@ -3846,7 +3879,7 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
     return;
   }
 
-  if (isSourceSpell && aggressor == myActor) {
+  if (isSourceSpell) {
     const auto claim = partOne.ClaimReached(
       aggressor->GetFormId(), hitData.source, targetRef->GetFormId(),
       targetRef->GetPos(), aggressor->GetPos());
@@ -4175,10 +4208,31 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
   }
 
   if (equipment.IsSpellEquipped(spellCastData.spell) == false) {
-    spdlog::info("ActionListener::OnSpellCast - spell {0:x} not "
-                 "found in equipment",
+    if (caster == myActor) {
+      spdlog::info("ActionListener::OnSpellCast - spell {0:x} not "
+                   "found in equipment",
+                   spellCastData.spell);
+      return;
+    }
+    // thuum docs/verbs/npc-stream.md (ADR-050, train 53): a hosted caster's
+    // spell its record's hands lack is its host's engine's (a template's or
+    // a leveled list's the server does not walk, or a power cast from no
+    // slot): recorded unvalidated (R2, rule 5) when the form is a spell at
+    // all, so its hits are claimed against this cast as any cast's are
+    const auto rec =
+      partOne.GetEspm().GetBrowser().LookupById(spellCastData.spell).rec;
+    if (!rec || rec->GetType() != espm::SPEL::kType) {
+      spdlog::warn("ActionListener::OnSpellCast - E_CAST_FORM: {:x} by {:x} "
+                   "casts {:x}, which is no spell; refused",
+                   caster->GetFormId(), myActor->GetFormId(),
+                   spellCastData.spell);
+      return;
+    }
+    spdlog::info("[verb:npc-stream] E_CAST_UNKNOWN: {:x} by {:x} casts {:x}, "
+                 "which its record's hands lack; recorded unvalidated (the "
+                 "host's engine's list)",
+                 caster->GetFormId(), myActor->GetFormId(),
                  spellCastData.spell);
-    return;
   }
 
   // the cast waits for its hit (a stream stays open until its end), and

@@ -441,6 +441,14 @@ struct HostedGazeRead
   uint32_t slot = 0;
   uint32_t emotionType = 0;
   uint32_t emotionValue = 0;
+  // the face as FaceGen animates it (Actor::GetFaceGenAnimationData,
+  // CommonLibSSE-NG Actor.h:309; BSFaceGenAnimationData.h:39 the expression
+  // keyframe, :81 the override flag): the strongest expression's index and
+  // value, and whether an override holds it (the lab's read of a puppet's
+  // face, and the host's for comparison)
+  uint32_t exprOverride = 0;
+  uint32_t exprIndex = 0;
+  float exprValue = 0.f;
 };
 std::mutex g_gazeMutex;
 std::unordered_map<uint32_t, HostedGazeRead> g_gaze;
@@ -487,6 +495,18 @@ Napi::Value PuppetApi::PollHostedGaze(const Napi::CallbackInfo& info)
       }
       read.emotionType = static_cast<uint32_t>(actor->GetEmotionType());
       read.emotionValue = std::min<uint32_t>(actor->GetEmotionValue(), 100u);
+      if (auto* face = actor->GetFaceGenAnimationData()) {
+        read.exprOverride = face->exprOverride ? 1u : 0u;
+        const auto& frame = face->expressionKeyFrame;
+        if (frame.values) {
+          for (uint32_t i = 0; i < frame.count; ++i) {
+            if (frame.values[i] > read.exprValue) {
+              read.exprValue = frame.values[i];
+              read.exprIndex = i;
+            }
+          }
+        }
+      }
       reads[id] = read;
     }
     std::lock_guard<std::mutex> lock(g_gazeMutex);
@@ -507,11 +527,14 @@ Napi::Value PuppetApi::HostedGaze(const Napi::CallbackInfo& info)
     }
     read = it->second;
   }
-  auto res = Napi::Array::New(info.Env(), 4);
+  auto res = Napi::Array::New(info.Env(), 7);
   res.Set(uint32_t(0), Napi::Number::New(info.Env(), read.target));
   res.Set(uint32_t(1), Napi::Number::New(info.Env(), read.slot));
   res.Set(uint32_t(2), Napi::Number::New(info.Env(), read.emotionType));
   res.Set(uint32_t(3), Napi::Number::New(info.Env(), read.emotionValue));
+  res.Set(uint32_t(4), Napi::Number::New(info.Env(), read.exprOverride));
+  res.Set(uint32_t(5), Napi::Number::New(info.Env(), read.exprIndex));
+  res.Set(uint32_t(6), Napi::Number::New(info.Env(), read.exprValue));
   return res;
 }
 

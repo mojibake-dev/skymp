@@ -149,7 +149,7 @@ declare module "skyrimPlatform" {
     // entry to an actor this game simulates, and the cut of this game's own
     // engine damage (npcEngineDamage's mirror)
     function damageActor(actorFormId: number, health: number, attackerFormId: number, killMove: boolean): boolean;
-    // slice 5: the gaze and the face read on the game thread per poll
+    // slice 5: the gaze and the face read on the game thread per poll ([target, slot, emotionType, emotionValue, exprOverride, exprIndex, exprValue])
     function pollHostedGaze(actorFormIds: number[]): void;
     function hostedGaze(actorFormId: number): number[] | null;
     function setEngineDamageCut(on: boolean): void;

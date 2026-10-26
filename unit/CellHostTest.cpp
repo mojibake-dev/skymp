@@ -1011,7 +1011,11 @@ TEST_CASE("A hosted actor's state is its host's word bounded by the server's "
                             { "magicka", 1.0 },
                             { "stamina", 0.75 },
                             { "combatTarget", 0 },
-                            { "package", 0 } });
+                            { "package", 0 },
+                            { "gazeTarget", 0 },
+                            { "gazeSlot", 0 },
+                            { "emotionType", 0 },
+                            { "emotionValue", 0 } });
   REQUIRE(health() == Catch::Approx(0.45f));
   REQUIRE(actor.GetHostedCombatTarget() == 0);
 

@@ -1735,6 +1735,8 @@ export declare function isHosted(actorFormId: number): boolean;
 export declare function isPerformingAction(actorFormId: number): boolean;
 // thuum docs/verbs/npc-fate.md (ADR-046 decision 1, ADR-049): the server's one roll for a leveled placement, held by this game ahead of the engine's own roll: baseId is the NPC_ the server named (0: no actor there, the engine deletes the placement), worn the items it rolled, each added as an inventory entry tagged for the actor's default outfit by the outfit detour (an empty list dresses nothing). Stored on the JS thread, no game call; false for an invalid reference id
 export declare function setActorFate(refrId: number, baseId: number, worn: number[]): boolean;
+// thuum ADR-050 decision 3 (train 51): a server-made NPC's fate armed by its base before the copy's placeAtMe; the first detour that meets a new 0xff reference of that base binds it to the copy's own id, so the copy's engine rolls the server's roll inside its placement (one copy per call, in spawn order). Stored on the JS thread, no game call; false for a base id of 0
+export declare function armActorFate(baseId: number, fateBaseId: number, worn: number[]): boolean;
 // the reference rolls as the engine's own again; false when it held no fate
 export declare function clearActorFate(refrId: number): boolean;
 // the runtime switch over both detours (the leveled roll wrapper and the outfit-array resolver, docs/research/m3/re-npc-roll.md section 8.4), default off: nothing is imposed until it is on; the leveled detour's observations held three times in the lab, the outfit chain is HYPOTHESIS until its trace

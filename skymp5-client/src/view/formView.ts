@@ -2,7 +2,7 @@ import { Actor, ActorBase, Cell, createText, Debug, destroyText, Form, FormType,
 import { setDefaultAnimsDisabled, applyAnimation, allowAnimationOnce } from "../sync/animation";
 import { isHandCastEvent } from "../services/services/actionSyncService";
 // @ts-expect-error (TODO: Remove in 2.10.0)
-import { applyAnimationVariablesToActor, castReady, performAction, performActionResult, setActivateTextHidden, setActorAimHeading, setActorAimPitch } from "skyrimPlatform";
+import { applyAnimationVariablesToActor, armActorFate, castReady, performAction, performActionResult, setActivateTextHidden, setActorAimHeading, setActorAimPitch } from "skyrimPlatform";
 import { figureAimHeading } from "../sync/figureAim";
 import { Appearance, applyAppearance } from "../sync/appearance";
 import { isBadMenuShown, applyEquipment, isFigureBase, keepOnlyServerSpells, applyHands } from "../sync/equipment";
@@ -22,6 +22,7 @@ import { WorldCleanerService } from "../services/services/worldCleanerService";
 import { GamemodeUpdateService } from "../services/services/gamemodeUpdateService";
 import { HostService } from "../services/services/hostService";
 import { PuppetService } from "../services/services/puppetService";
+import { ActorFateService } from "../services/services/actorFateService";
 
 // thuum docs/verbs/cast-action.md: the want variable a hand's cast event names
 // (MRh_ the right hand's, MLh_ and the perk's DualMagic_ the left hand's actions)
@@ -317,6 +318,21 @@ export class FormView {
           && storage["formViewFunc2Set"] === true;
         const spawnMethod = spawnUsingStubMethod ? spawnMethodStub : spawnMethodOriginal;
 
+        // thuum ADR-050 decision 3 (train 51): a server-made NPC's copy
+        // rolls the server's roll inside its placement, as a game-file
+        // actor's does at its init: the fate the server sent ahead of the
+        // create word is armed by the base right before the spawn, and the
+        // fork's detours bind it to the copy's own id (Fates::BindArmed)
+        if (typeof model.refrId === "number" && model.refrId >= 0xff000000 && FormView.isNpcModel(model) && base.getType() === FormType.NPC) {
+          const fate = SpApiInteractor.getControllerInstance().lookupListener(ActorFateService).fateForCopy(model.refrId);
+          if (fate) {
+            const armed = armActorFate(base.getFormID(), fate.baseId, fate.worn);
+            logLab("verb:npc-fate", `copy ${model.refrId.toString(16)} of ${base.getFormID().toString(16)}: fate armed ${armed} (${fate.worn.length} worn)`);
+          } else {
+            logLab("verb:npc-fate", `copy ${model.refrId.toString(16)} of ${base.getFormID().toString(16)}: no fate held, the engine's own roll`);
+          }
+        }
+
         if (model.movement) {
           refr = spawnMethod.spawn(base, model.movement.pos, model.movement.rot);
         } else {
@@ -410,9 +426,11 @@ export class FormView {
     const refr = ObjectReference.from(Game.getFormEx(this.refrId));
     if (refr) {
       const actor = Actor.from(refr);
-      if (actor && !this.localImmortal) {
+      if (actor && !this.localImmortal && !FormView.isNpcModel(model)) {
         // the figure never dies by this game's hand (the server's death is
-        // the only death); its values are its player's, below, not a million
+        // the only death); its values are its player's, below, not a million.
+        // An NPC's deferred kill is the reconciler's (PuppetService, ADR-050
+        // decision 3), armed and re-armed there
         actor.startDeferredKill();
         this.localImmortal = true;
       }
@@ -626,12 +644,12 @@ export class FormView {
     // host is a puppet (AI off, the relay's transform and events), an engine
     // reference or a server-made copy alike; one it hosts is live under the
     // engine. A player's figure is neither: its own game's reports hold it.
+    // ADR-050 decision 3 (train 51): one function computes the state from
+    // (the server's word, loaded here, dead, kind) and applies it, here on
+    // every update and from the service's own events and poll
     const puppet = !alreadyHosted && FormView.isNpcModel(model);
-    const puppetService = SpApiInteractor.getControllerInstance().lookupListener(PuppetService);
-    if (puppet) {
-      puppetService.ensurePuppet(refr);
-    } else if (alreadyHosted) {
-      puppetService.ensureLive(refr, model.movement);
+    if (FormView.isNpcModel(model)) {
+      SpApiInteractor.getControllerInstance().lookupListener(PuppetService).reconcile(refr.getFormID(), alreadyHosted, model.movement);
     }
 
     if (model.movement) {

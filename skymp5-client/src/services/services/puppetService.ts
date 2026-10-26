@@ -9,14 +9,21 @@ import { RemoteServer } from "./remoteServer";
 // thuum docs/verbs/npc-puppet.md (ADR-045): every NPC this game does not host
 // is a puppet, the engine's own placed reference (or a server-made copy) with
 // its AI off, moved and animated from the host's relay; one it hosts is live
-// under the engine. The switch is the cell's grant alone: the view asks
-// ensurePuppet or ensureLive on every update (idempotent), HostService's
-// grant and release flip a whole cell at once, and an actor attaching to a
-// cell this game does not host is a puppet from its first frame (TES3MP's
-// shape: AI off everywhere but the cells this game hosts). The combat sink
-// undoes a draft into combat (a hit or a script; H6). The switch is the
-// fork's Skyrim Platform export setPuppet: Q4's demote and promote in one
-// native call on the game thread, and the flag the two detours read.
+// under the engine. The switch is the fork's Skyrim Platform export
+// setPuppet: Q4's demote and promote in one native call on the game thread,
+// and the flag the two detours read (Puppets::Is, the one truth about an
+// actor's brain on this seat).
+//
+// ADR-050 decision 3 (train 51): the state is computed in ONE place,
+// reconcile(), from (the server's word, loaded here, dead, kind) and applied
+// idempotently from every event that could change an input (the view's
+// update, a cell attach or detach, the loss of a form, a resurrect, the
+// combat sink) and from one two-second poll. "Loaded here" is the cell's
+// attach or the 3D (ADR-051: an actor this engine does not load is released
+// to its schedule after a grace, so a 3D the late fate dropped for a moment
+// does not flip a loaded actor live, playtest 34's composition). The
+// deferred kill is this service's too: every NPC this game shows holds at
+// zero until the server's word (train 52 moves the host's own to the engine).
 export class PuppetService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -30,14 +37,125 @@ export class PuppetService extends ClientListener {
         this.controller.on("update", () => this.onUpdate());
     }
 
-    // The demote poll (playtest 33, 2026-10-23): the cellAttach events name
-    // temporary references alone, so a named resident the engine runs is
-    // found here, in its high-process list (getHighProcessActors), within
-    // pollMs of its appearance, and is a puppet unless the server's word
-    // names this game as its simulator; the view confirms when the word
-    // arrives (a resident the server does not hold yet is a puppet on its
-    // own host for one roster round, until its CreateActor's word promotes
-    // it). The roster (HostService) reads the same list.
+    // The one function. `mine` is the server's word as the caller read it
+    // (HostService.isMine over the actor's model); undefined asks here.
+    // `last` is the record's last sample, placed at a promote (the relay
+    // stops at the grant).
+    reconcile(localId: number, mine?: boolean, last?: Movement): void {
+        if (!this.enabled || localId === 0x14) {
+            return;
+        }
+        const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(localId));
+        const ac = refr ? this.sp.Actor.from(refr) : null;
+        if (!ac) {
+            this.forget(localId);
+            return;
+        }
+        if (this.isFigure(localId)) {
+            return;
+        }
+        const host = this.controller.lookupListener(HostService);
+        const word = mine ?? host.isMineLocal(localId);
+        const has3D = ac.is3DLoaded();
+        const loadedHere = has3D || this.attached.has(localId);
+        const flagged = this.sp.isPuppet(localId);
+        const now = Date.now();
+
+        // the deferred kill, once per actor (re-armed after a resurrect):
+        // no NPC dies by this game's hand until the server's word
+        if (!this.deferredArmed.has(localId)) {
+            ac.startDeferredKill();
+            this.deferredArmed.add(localId);
+        }
+
+        if (!loadedHere) {
+            // thuum ADR-051 (npc-handoff D11; b-npc-handoff-night 092208,
+            // 114904): an actor this engine no longer loads is simulated by
+            // nobody here and sighted by nobody while its AI is off; after
+            // the grace (a 3D dropped by the late fate comes back within it,
+            // playtest 34) it is released: the flag off, the AI and the
+            // activation back on, left to its own schedule. The next pass
+            // makes it a puppet again when it loads on a seat that does not
+            // host it, and the host's roster sights it.
+            host.markHosted(localId, false);
+            const since = this.unloadedSince.get(localId);
+            if (since === undefined) {
+                this.unloadedSince.set(localId, now);
+                return;
+            }
+            if (flagged && now - since >= PuppetService.releaseGraceMs) {
+                this.sp.releasePuppet(localId);
+                this.puppets.delete(localId);
+                logTrace(this, `released ${localId.toString(16)}: no 3D here, left to its schedule (npc-handoff D11)`);
+            }
+            return;
+        }
+        this.unloadedSince.delete(localId);
+
+        if (word) {
+            // thuum docs/verbs/npc-stream.md (ADR-050): the word says this
+            // game simulates the actor: its actions stream from here (the
+            // hosted set the action hook reads)
+            host.markHosted(localId, true);
+            if (!flagged) {
+                return;
+            }
+            if (last) {
+                // the record's last point and heading first: the relay stops
+                // at the grant (the native promote leaves the transform alone)
+                ac.setPosition(last.pos[0], last.pos[1], last.pos[2]);
+                ac.setAngle(last.rot[0], last.rot[1], last.rot[2]);
+            }
+            // the puppet's imposed state undone, the inverse of the apply's
+            // (movementApply.ts: head tracking on the relayed look-at point);
+            // the activation block is the native demote's and the native
+            // promote lifts it (PuppetApi.cpp; playtest 32's dead Talk prompts
+            // after a handoff, playtest 33's dialogue stuck on an unblocked
+            // puppet)
+            ac.clearLookAt();
+            ac.setHeadTracking(true);
+            this.sp.setPuppet(localId, false);
+            if (localId < 0xff000000 && ac.isDead()) {
+                // thuum docs/verbs/npc-fate.md (the deaths): a corpse stays the
+                // server's container on its new host; the promote lifted the
+                // puppet's block, the body's goes back on (deathService puts
+                // it on at the kill, Resurrect's path takes it off)
+                ac.blockActivation(true);
+            }
+            this.puppets.delete(localId);
+            logTrace(this, `live ${localId.toString(16)}`);
+            return;
+        }
+
+        // not this game's to simulate: a puppet, once it has a 3D (an actor
+        // still loading is left alone until it has one; the view asks again
+        // every update: the gate's hang at a landing, 2026-10-21, under
+        // reading: the demote must not race the loader on a half-made actor)
+        host.markHosted(localId, false);
+        if (flagged || !has3D) {
+            return;
+        }
+        if (!this.sp.setPuppet(localId, true)) {
+            logError(this, `setPuppet(${localId.toString(16)}, true) found no actor`);
+            return;
+        }
+        this.puppets.add(localId);
+        // the engine's activation (Talk, trade, pickpocket) is the host's
+        // alone: the native demote blocks it, so nothing Papyrus-backed runs
+        // here, at the load's first attaches (train-34's first head: the one
+        // Papyrus call this demote made ran into Intuitive Dragon Ride
+        // Control's quest start-up half a second later on the same game
+        // thread, b-invis-recast on gate 20261023-031111)
+        logTrace(this, `puppet ${localId.toString(16)}`);
+    }
+
+    // The poll: every actor in the engine's high-process list (a named
+    // resident the engine runs is found here within pollMs of its appearance,
+    // the cellAttach events naming temporary references alone) and every
+    // actor this service has touched, through reconcile. A 0xff actor the
+    // server does not describe (a summon, the engine's own temporaries) is
+    // nobody's and left alone; a copy with a view goes through the view's
+    // own call as well.
     private onUpdate() {
         if (!this.enabled) {
             return;
@@ -47,41 +165,24 @@ export class PuppetService extends ClientListener {
             return;
         }
         this.lastPoll = now;
-        const host = this.controller.lookupListener(HostService);
-        for (const id of this.sp.getHighProcessActors()) {
-            if (id === 0x14 || id >= 0xff000000 || this.puppets.has(id)) {
-                continue;
+        const ids = new Set<number>(this.sp.getHighProcessActors());
+        this.puppets.forEach((id) => ids.add(id));
+        this.attached.forEach((id) => ids.add(id));
+        ids.forEach((id) => {
+            if (id === 0x14) {
+                return;
             }
-            if (host.isMineLocal(id)) {
-                continue;
+            if (id >= 0xff000000 && !localIdToRemoteId(id)) {
+                return;
             }
-            const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(id));
-            if (refr) {
-                this.ensurePuppet(refr);
-            }
-        }
-        // thuum docs/verbs/npc-handoff.md D11 (b-npc-handoff-night 092208,
-        // 114904): a puppet this engine no longer loads (the player walked
-        // away, the server's Teleport moved it into a house this engine has
-        // not attached, a cell detached) is simulated by nobody, and no word
-        // reaches a record nobody subscribes; AI off, it would never run its
-        // schedule, never be sighted, never come out. Released: the flag
-        // off, the AI and activation back on, left to the engine's own
-        // schedule; this poll makes it a puppet again within pollMs when it
-        // loads here and this seat does not host it
-        for (const id of Array.from(this.puppets)) {
-            const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(id));
-            if (refr && !refr.is3DLoaded()) {
-                this.sp.releasePuppet(id);
-                this.puppets.delete(id);
-                logTrace(this, `released ${id.toString(16)}: no 3D here, left to its schedule (npc-handoff D11)`);
-            }
-        }
+            this.reconcile(id);
+        });
     }
 
-    // Whether this game switched the actor's AI off (by its local form id).
+    // Whether this game switched the actor's AI off (by its local form id):
+    // the native flag, the detours' truth.
     isPuppet(localId: number): boolean {
-        return this.puppets.has(localId);
+        return this.sp.isPuppet(localId);
     }
 
     // Whether the actor is a player's figure or the player's own clone: a
@@ -121,123 +222,43 @@ export class PuppetService extends ClientListener {
         return form.isMyClone === true || !form.baseId || form.baseId === 0x7;
     }
 
-    // An NPC this game does not host, seen by its view: a puppet from now on.
+    // The view's two words of before, kept for their callers: a puppet
+    // unless the word says otherwise, live by the word.
     ensurePuppet(refr: ObjectReference): void {
-        if (!this.enabled) {
-            return;
-        }
-        const id = refr.getFormID();
-        if (id === 0x14 || this.puppets.has(id) || this.isFigure(id)) {
-            return;
-        }
-        // thuum docs/verbs/npc-stream.md: not this game's to stream from here
-        this.controller.lookupListener(HostService).markHosted(id, false);
-        const ac = this.sp.Actor.from(refr);
-        // an actor still loading (no 3D yet: a cell's attach, a copy's spawn)
-        // is left alone until it has one; the view asks again every update
-        // and cellAttach's call is followed by the view's (the gate's hang at
-        // a landing, 2026-10-21, under reading: the demote must not race the
-        // loader on a half-made actor)
-        if (!ac || !ac.is3DLoaded()) {
-            return;
-        }
-        if (!this.sp.setPuppet(id, true)) {
-            logError(this, `setPuppet(${id.toString(16)}, true) found no actor`);
-            return;
-        }
-        this.puppets.add(id);
-        // the engine's activation (Talk, trade, pickpocket) is the host's
-        // alone: the puppet apply blocks it on the first relayed sample and
-        // every one after (movementApply.ts), so nothing Papyrus-backed runs
-        // here, at the load's first attaches: the one call this demote made
-        // on train-34's first head was the only Papyrus work the client added
-        // to that moment, and Intuitive Dragon Ride Control's quest start-up,
-        // half a second later on the same game thread, ran its init twice
-        // interleaved and showed its "SKSE is not loaded" box in two of two
-        // b-invis-recast runs (gate 20261023-031111), against none before
-        logTrace(this, `puppet ${id.toString(16)}`);
+        this.reconcile(refr.getFormID(), false);
     }
 
-    // An NPC this game hosts, seen by its view: live from now on, placed at
-    // the record's last point first (the relay stops at the grant).
     ensureLive(refr: ObjectReference, last?: Movement): void {
-        const id = refr.getFormID();
-        // thuum docs/verbs/npc-stream.md (ADR-050): the word says this game
-        // simulates the actor: its actions stream from here (the hosted set
-        // the action hook reads), whether or not it was a puppet before
-        this.controller.lookupListener(HostService).markHosted(id, true);
-        if (!this.puppets.has(id)) {
-            return;
-        }
-        const ac = this.sp.Actor.from(refr);
-        if (ac && last) {
-            // the record's last point and heading first: the relay stops at
-            // the grant (the native promote leaves the transform alone)
-            ac.setPosition(last.pos[0], last.pos[1], last.pos[2]);
-            ac.setAngle(last.rot[0], last.rot[1], last.rot[2]);
-        }
-        if (ac) {
-            // the puppet's imposed state undone, the inverse of the apply's
-            // (movementApply.ts: head tracking on the relayed look-at point);
-            // the activation block is the native demote's and the native
-            // promote lifts it (PuppetApi.cpp; playtest 32's dead Talk prompts
-            // after a handoff, playtest 33's dialogue stuck on an unblocked
-            // puppet)
-            ac.clearLookAt();
-            ac.setHeadTracking(true);
-        }
-        this.sp.setPuppet(id, false);
-        if (ac && id < 0xff000000 && ac.isDead()) {
-            // thuum docs/verbs/npc-fate.md (the deaths): a corpse stays the
-            // server's container on its new host; the promote lifted the
-            // puppet's block, the body's goes back on (deathService puts it
-            // on at the kill, Resurrect's path takes it off)
-            ac.blockActivation(true);
-        }
-        this.puppets.delete(id);
-        logTrace(this, `live ${id.toString(16)}`);
+        this.reconcile(refr.getFormID(), true, last);
     }
 
     hostedCount(): number {
         return this.puppets.size;
     }
 
-    // An actor from the game files whose form the server took back while it
-    // was live here (this game left its reach; a disconnect): a puppet from
-    // now on, loaded or not. The server's word cannot reach a game that no
-    // longer listens to the actor, and the release of its cell comes after
-    // the grace; the native finds a persistent actor unloaded too and, with
-    // no 3D, clears the AI bit alone (PuppetApi.cpp). The view's caller has
-    // already told an actor from a figure (a figure is a 0xff copy).
+    // An actor whose form the server took back while it was live here (this
+    // game left its reach; a disconnect): no word, so not this game's; a
+    // puppet if loaded, released to its schedule after the grace if not.
     demoteOnLoss(localId: number): void {
-        if (!this.enabled || localId === 0x14 || this.puppets.has(localId)) {
-            return;
-        }
-        // thuum docs/verbs/npc-stream.md: an actor whose form is gone streams
-        // nothing from here, 3D or not
-        this.controller.lookupListener(HostService).markHosted(localId, false);
-        // thuum docs/verbs/npc-handoff.md D11 (b-npc-handoff-night 092208 and
-        // 114904): an actor with no 3D is simulated by nobody's engine and no
-        // word reaches a record nobody subscribes, so it is left to its own
-        // schedule: no flag (the detours would skip its movement step once
-        // it loads), no set entry (the roster must sight it), no AI change;
-        // the server's word rebinds it when its cell loads again
-        const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(localId));
-        if (refr && !refr.is3DLoaded()) {
-            logTrace(this, `${localId.toString(16)} lost with no 3D: left to its schedule (npc-handoff D11)`);
-            return;
-        }
-        if (!this.sp.setPuppet(localId, true)) {
-            return;
-        }
-        this.puppets.add(localId);
-        logTrace(this, `puppet ${localId.toString(16)} (its form lost while live)`);
+        this.reconcile(localId, false);
     }
 
-    // An actor attaching to a cell: a puppet unless the server's word already
-    // names this game as its simulator (the player's own actor aside); an
-    // actor the server has not described yet is a puppet until it does. Its
-    // view confirms on the next update.
+    // A stood-up actor (deathService's resurrect) holds at zero again for
+    // the server's word: the deferred kill is re-armed on the next pass.
+    onResurrected(localId: number): void {
+        this.deferredArmed.delete(localId);
+    }
+
+    private forget(localId: number) {
+        this.puppets.delete(localId);
+        this.attached.delete(localId);
+        this.deferredArmed.delete(localId);
+        this.unloadedSince.delete(localId);
+    }
+
+    // An actor attaching to a cell is loaded here from this moment, whatever
+    // its 3D says (ADR-050 decision 3's "loaded here from the attach"); its
+    // state follows from the word.
     private onCellAttach(e: CellAttachDetachEvent) {
         if (!this.enabled || !e.refr) {
             return;
@@ -246,45 +267,54 @@ export class PuppetService extends ClientListener {
         if (!ac || ac.getFormID() === 0x14) {
             return;
         }
-        if (!this.controller.lookupListener(HostService).isMineLocal(ac.getFormID())) {
-            this.ensurePuppet(e.refr);
-        }
+        const id = ac.getFormID();
+        this.attached.add(id);
+        this.reconcile(id);
     }
 
-    // A detached reference unloads; its reload is a fresh attach.
+    // A detached reference unloads; its reload is a fresh attach. The flag
+    // stays until the grace releases it (an unloaded actor streams nothing
+    // from here either way).
     private onCellDetach(e: CellAttachDetachEvent) {
         if (!e.refr) {
             return;
         }
-        this.puppets.delete(e.refr.getFormID());
-        // thuum docs/verbs/npc-stream.md: an unloaded actor streams nothing
-        this.controller.lookupListener(HostService).markHosted(e.refr.getFormID(), false);
+        const id = e.refr.getFormID();
+        this.attached.delete(id);
+        this.controller.lookupListener(HostService).markHosted(id, false);
+        this.reconcile(id);
     }
 
     // A puppet drafted into combat (a hit, a script's StartCombat; the AI bit
     // gates neither, re-ai-puppet.md:181-187): undone at the first event (H6)
+    // by the demote again, which is idempotent and stops the combat natively
     private onCombatState(e: CombatEvent) {
         if (!e.actor || !(e.isCombat || e.isSearching)) {
             return;
         }
         const id = e.actor.getFormID();
-        if (!this.puppets.has(id)) {
+        if (!this.sp.isPuppet(id)) {
             return;
         }
-        // the demote again: idempotent, and it stops the combat natively
         this.sp.setPuppet(id, true);
     }
 
     // A grant or a release reaches every actor as the server's word per actor
-    // (isHostedByOther flipped under its id); each view promotes or demotes
-    // on its next update, persistent references included. The cell walk that
+    // (isHostedByOther flipped under its id); each view's update runs
+    // reconcile with it, persistent references included. The cell walk that
     // stood here (Cell.getNthRef over the cell's own references) missed them
     // and ran at the message's tick, outside the update
     // (b-npc-puppet 20261022-081631: 5 promoted of 23, "Game.getFormEx can't
     // be called in this context" 27 times).
 
     private readonly puppets = new Set<number>();
+    private readonly attached = new Set<number>();
+    private readonly deferredArmed = new Set<number>();
+    private readonly unloadedSince = new Map<number, number>();
     private lastPoll = 0;
     private static readonly pollMs = 2000;
+    // two polls: a 3D the late fate dropped comes back within it (train-47b
+    // reloads it), and a walk out of reach is a release either way
+    private static readonly releaseGraceMs = 4000;
     private readonly enabled: boolean;
 }

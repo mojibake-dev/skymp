@@ -88,8 +88,13 @@ std::uintptr_t LeveledRollReplacement(RE::TESLeveledList* list,
                                       RE::BSScrapArray<RE::CALCED_OBJECT>* out)
 {
   Fates::Fate fate;
-  // TESForm::formID (include/RE/T/TESForm.h:354)
-  if (!Fates::Enabled() || !ref || !out || !Fates::Get(ref->formID, fate)) {
+  // TESForm::formID (include/RE/T/TESForm.h:354); a new copy of an armed
+  // base takes its armed fate here (ADR-050 decision 3, Fates::BindArmed)
+  if (!Fates::Enabled() || !ref || !out) {
+    return g_leveledRollOriginal(list, ref, out);
+  }
+  if (!Fates::Get(ref->formID, fate) &&
+      !(Fates::BindArmed(ref) && Fates::Get(ref->formID, fate))) {
     return g_leveledRollOriginal(list, ref, out);
   }
   RE::TESNPC* npc = nullptr;
@@ -269,8 +274,10 @@ bool OutfitResolveReplacement(RE::BSTArray<RE::TESForm*>* items,
     return g_outfitResolveOriginal(items, ctx);
   }
   Fates::Fate fate;
-  // TESForm::formID (include/RE/T/TESForm.h:354)
-  if (!Fates::Get(owner->formID, fate)) {
+  // TESForm::formID (include/RE/T/TESForm.h:354); a new copy of an armed
+  // base takes its armed fate here (ADR-050 decision 3, Fates::BindArmed)
+  if (!Fates::Get(owner->formID, fate) &&
+      !(Fates::BindArmed(owner) && Fates::Get(owner->formID, fate))) {
     return g_outfitResolveOriginal(items, ctx);
   }
   const auto dressed =
@@ -368,9 +375,14 @@ void ContainerAddReplacement(RE::InventoryChanges* changes,
                              std::uint32_t ordinal, RE::BGSOutfit* outfit)
 {
   Fates::Fate fate;
-  // InventoryChanges::owner (include/RE/I/InventoryChanges.h:64)
-  if (outfit || !Fates::Enabled() || !changes || !picks || !changes->owner ||
-      !Fates::Get(changes->owner->formID, fate)) {
+  // InventoryChanges::owner (include/RE/I/InventoryChanges.h:64); a new copy
+  // of an armed base takes its armed fate here (Fates::BindArmed)
+  if (outfit || !Fates::Enabled() || !changes || !picks || !changes->owner) {
+    return g_containerAddOriginal(changes, picks, ordinal, outfit);
+  }
+  if (!Fates::Get(changes->owner->formID, fate) &&
+      !(Fates::BindArmed(changes->owner) &&
+        Fates::Get(changes->owner->formID, fate))) {
     return g_containerAddOriginal(changes, picks, ordinal, outfit);
   }
   bool hadWeapon = false;

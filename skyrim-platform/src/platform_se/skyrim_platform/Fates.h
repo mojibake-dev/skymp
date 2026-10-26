@@ -7,6 +7,7 @@
 namespace RE {
 class BGSOutfit;
 class InventoryChanges;
+class TESObjectREFR;
 }
 
 // thuum docs/verbs/npc-fate.md (ADR-046 decision 1, ADR-049): the server's
@@ -40,6 +41,16 @@ void Set(uint32_t refrId, const Fate& fate);
 bool Clear(uint32_t refrId);
 bool Get(uint32_t refrId, Fate& out);
 size_t Count();
+
+// thuum ADR-050 decision 3 (train 51): a server-made NPC's fate, armed by
+// its base before the copy's spawn (the view's placeAtMe) and bound to the
+// copy's own id by the first detour that meets a new 0xff reference of that
+// base with no fate yet (BindArmed, called by the three detours before they
+// give up on an unknown id), so the copy's engine rolls the server's roll
+// inside its placement as a game-file actor's does at its init. One fate per
+// Arm, taken in spawn order per base.
+void Arm(uint32_t baseId, const Fate& fate);
+bool BindArmed(RE::TESObjectREFR* ref);
 
 // What one dressing did: the entries it added and the forms it found
 // already carrying the outfit's tag (the engine's own skip at the site).

@@ -1,4 +1,5 @@
 #include "ActionListener.h"
+#include "ActorSpeechMessage.h"
 #include "ChangeValuesMessage.h"
 #include "CreateActorMessage.h"
 #include "HostGrantMessage.h"
@@ -1118,6 +1119,73 @@ TEST_CASE("A hosted actor's equipment is its host's engine's word checked "
   REQUIRE(relays(1) == 0);
   REQUIRE(sentOfType(0, MsgType::SetInventory) == 0);
   REQUIRE(sentOfType(0, MsgType::SpSnippet) == 0);
+
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kActor);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+}
+
+// `user`'s spoken line for `actorId` (thuum docs/verbs/npc-stream.md, the
+// voice slice)
+void Speak(PartOne& p, Networking::UserId user, uint32_t actorId)
+{
+  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
+  RawMessageData raw;
+  raw.userId = user;
+  raw.unparsed = unparsed;
+  raw.unparsedLength = sizeof(unparsed);
+  ActorSpeechMessage msg;
+  msg.idx = p.worldState.GetFormAt<MpActor>(actorId).GetIdx();
+  msg.topic = 0x20000;
+  msg.info = 0x20001;
+  p.GetActionListener().OnActorSpeech(raw, msg);
+}
+
+TEST_CASE("A hosted actor's spoken line travels from its host alone to the "
+          "other game and never back; the other game's and the player's own "
+          "idx are dropped",
+          "[CellHost][Speech]")
+{
+  // thuum docs/verbs/npc-stream.md (the voice slice): the host's engine
+  // speaks the line, the hook reports it, the puppets say the same info
+  auto& p = GetPartOne();
+  constexpr uint32_t kActor = 0xff000c09;
+  const NiPoint3 kAt{ 117786.f, -81400.f, 10997.f };
+  Player(p, 0, kC1, kAt + NiPoint3{ 40.f, 0.f, 0.f });
+  Player(p, 1, kC2, kAt + NiPoint3{ 60.f, 0.f, 0.f });
+  p.CreateActor(kActor, kAt + NiPoint3{ 30.f, 0.f, 0.f }, 0, kTamriel);
+  auto& actor = p.worldState.GetFormAt<MpActor>(kActor);
+  actor.SetPos(actor.GetPos());
+  const auto cell = p.worldState.CellOf(actor);
+  REQUIRE(cell.has_value());
+  CellLoaded(p, 0, *cell);
+  REQUIRE(p.worldState.HostOf(actor) == &p.worldState.GetFormAt<MpActor>(kC1));
+  const auto relays = [&](Networking::UserId user) {
+    size_t n = 0;
+    for (auto& m : p.Messages()) {
+      if (m.userId == user && m.j.is_object() && m.j.empty()) {
+        ++n;
+      }
+    }
+    return n;
+  };
+
+  p.Messages().clear();
+  Speak(p, 0, kActor);
+  REQUIRE(relays(1) == 1);
+  REQUIRE(relays(0) == 0);
+
+  p.Messages().clear();
+  Speak(p, 1, kActor);
+  REQUIRE(relays(0) == 0);
+  REQUIRE(relays(1) == 0);
+
+  p.Messages().clear();
+  Speak(p, 0, kC1);
+  REQUIRE(relays(0) == 0);
+  REQUIRE(relays(1) == 0);
 
   DoDisconnect(p, 0);
   DoDisconnect(p, 1);

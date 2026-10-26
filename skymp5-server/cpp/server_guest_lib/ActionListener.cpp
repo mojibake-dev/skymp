@@ -495,6 +495,70 @@ void ActionListener::OnUpdateAction(const RawMessageData& rawMsgData,
   }
 }
 
+// thuum docs/verbs/npc-stream.md (the voice slice, ADR-050): a spoken line
+// begins on an actor the sender hosts. The sender's own actor is refused (a
+// player's lines are its own game's), the gate is ActorUpdatableBy's (the
+// host of the actor's cell), and the bytes go as they came, unreliable (a
+// lost line is a lost line, TES3MP's shape), to every listener with a user
+// but the host, whose puppet says the same info through the engine's own
+// say. Nothing is recorded; one info line a minute per actor with the count.
+void ActionListener::OnActorSpeech(const RawMessageData& rawMsgData,
+                                   const ActorSpeechMessage& msg)
+{
+  MpActor* myActor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!myActor) {
+    return;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  if (msg.idx == myActor->GetIdx()) {
+    static std::unordered_map<uint32_t, std::chrono::steady_clock::time_point>
+      lastOwn;
+    auto& last = lastOwn[myActor->GetFormId()];
+    if (last == std::chrono::steady_clock::time_point() ||
+        now - last >= std::chrono::minutes(1)) {
+      spdlog::warn("[verb:npc-stream] E_SPEECH_OWN: {:x} sent a spoken line "
+                   "for its own actor (idx {}); dropped",
+                   myActor->GetFormId(), msg.idx);
+      last = now;
+    }
+    return;
+  }
+  MpActor* actor = ActorUpdatableBy(msg.idx, rawMsgData.userId);
+  if (!actor) {
+    return;
+  }
+  size_t sent = 0;
+  for (auto listener : actor->GetActorListeners()) {
+    if (listener == myActor) {
+      continue;
+    }
+    auto targetUserId = partOne.serverState.UserByActor(listener);
+    if (targetUserId != Networking::InvalidUserId) {
+      partOne.GetSendTarget().Send(targetUserId, rawMsgData.unparsed,
+                                   rawMsgData.unparsedLength, false);
+      ++sent;
+    }
+  }
+  static std::unordered_map<
+    uint32_t,
+    std::tuple<std::chrono::steady_clock::time_point, uint32_t, uint32_t>>
+    lines;
+  auto& [since, count, relayed] = lines[actor->GetFormId()];
+  ++count;
+  relayed += static_cast<uint32_t>(sent);
+  if (since == std::chrono::steady_clock::time_point() ||
+      now - since >= std::chrono::minutes(1)) {
+    spdlog::info("[verb:npc-stream] speech {:x} by {:x}: topic {:x} info "
+                 "{:x} to {} listener(s); {} line(s), {} relays since the "
+                 "last line",
+                 actor->GetFormId(), myActor->GetFormId(), msg.topic, msg.info,
+                 sent, count, relayed);
+    since = now;
+    count = 0;
+    relayed = 0;
+  }
+}
+
 // thuum docs/verbs/npc-stream.md (ADR-050 decision 1, slice 2): a host's
 // state for an actor it simulates. The gate is ActorUpdatableBy's (the host
 // of the actor's cell); the sender's own actor is refused (a player's values

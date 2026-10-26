@@ -115,6 +115,13 @@ public:
   virtual void OnHostedActorState(const RawMessageData& rawMsgData,
                                   const HostedActorStateMessage& msg);
 
+  // thuum docs/verbs/npc-stream.md (the voice slice): a spoken line begins
+  // on an actor the sender hosts; the host gate, then the bytes relayed
+  // unreliable to the actor's other listeners (the puppets say the line);
+  // nothing recorded
+  virtual void OnActorSpeech(const RawMessageData& rawMsgData,
+                             const ActorSpeechMessage& msg);
+
   // the activations the server accepted lately, by place: a hazard death's
   // evidence (ADR-048's B; that a trap's trigger reaches the server as an
   // activation is a HYPOTHESIS until the lab's trap run)

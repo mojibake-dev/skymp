@@ -115,6 +115,15 @@ declare module "skyrimPlatform" {
     }
     function on(eventName: 'projectileFlight', callback: (event: ProjectileFlightEvent) => void): EventHandle;
     function once(eventName: 'projectileFlight', callback: (event: ProjectileFlightEvent) => void): EventHandle;
+    // thuum docs/verbs/npc-stream.md (the voice slice): a spoken line begins
+    // on an actor this game hosts; ids alone, no game call in its handler
+    interface TopicInfoEvent {
+        speakerId: number;
+        topicInfo: number;
+        topic: number;
+    }
+    function on(eventName: 'topicInfo', callback: (event: TopicInfoEvent) => void): EventHandle;
+    function once(eventName: 'topicInfo', callback: (event: TopicInfoEvent) => void): EventHandle;
 
     // thuum docs/verbs/npc-puppet.md: the fork's Skyrim Platform switches an
     // NPC to a puppet (combat stopped, keep-offset cleared, AI off, flagged
@@ -130,6 +139,11 @@ declare module "skyrimPlatform" {
     function setHosted(actorFormId: number, hosted: boolean): boolean;
     function isHosted(actorFormId: number): boolean;
     function isPerformingAction(actorFormId: number): boolean;
+    // the voice slice: a puppet says the host's line through the engine's
+    // own say with the info given; the result -1 pending, 0 none, 1 started,
+    // 2 refused
+    function sayTopicInfo(actorFormId: number, topicInfoFormId: number): boolean;
+    function sayTopicInfoResult(actorFormId: number): number;
 
     // thuum docs/verbs/npc-fate.md (ADR-046 decision 1, ADR-049): the
     // server's roll for a leveled placement, held ahead of the engine's own

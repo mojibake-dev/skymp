@@ -2,6 +2,7 @@
 #include "EventManager.h"
 #include "EventsApi.h"
 #include "FridaHooks.h"
+#include "Hosted.h"
 #include "JsUtils.h"
 #include "SkyrimPlatform.h"
 #include "TickHandler.h"
@@ -1343,6 +1344,42 @@ EventResult EventHandler::ProcessEvent(
       AddObjProperty(&obj, "quest", quest, "Quest");
 
       SendEvent("sceneAction", obj);
+    });
+
+  return EventResult::kContinue;
+}
+
+// thuum docs/verbs/npc-stream.md (the voice slice, ADR-050): a line an actor
+// this game hosts begins (type 0; its end is the engine's own on every
+// seat). The speaker's set is read natively (Hosted.h, rule 9): every other
+// actor's line, the player's own included, never crosses into JavaScript.
+// The topic info and its parent topic are read here, on the dispatching
+// thread, as every sink's lookup is; JavaScript gets ids alone (no game
+// call in its handler: the sender maps the id on its next update)
+EventResult EventHandler::ProcessEvent(
+  const RE::TESTopicInfoEvent* event,
+  RE::BSTEventSource<RE::TESTopicInfoEvent>*)
+{
+  if (!event || event->type != 0) {
+    return EventResult::kContinue;
+  }
+  auto* speaker = event->speaker.get();
+  if (!speaker || !Hosted::Is(speaker->formID)) {
+    return EventResult::kContinue;
+  }
+  const uint32_t speakerId = speaker->formID;
+  const uint32_t infoId = event->topicInfoFormID;
+  auto* info = RE::TESForm::LookupByID<RE::TESTopicInfo>(infoId);
+  const uint32_t topicId =
+    info && info->parentTopic ? info->parentTopic->formID : 0;
+
+  SkyrimPlatform::GetSingleton()->AddTickTask(
+    [speakerId, infoId, topicId](Napi::Env env) {
+      auto obj = Napi::Object::New(env);
+      AddObjProperty(&obj, "speakerId", speakerId);
+      AddObjProperty(&obj, "topicInfo", infoId);
+      AddObjProperty(&obj, "topic", topicId);
+      SendEvent("topicInfo", obj);
     });
 
   return EventResult::kContinue;

@@ -58,6 +58,7 @@ class EventHandler final
   , public RE::BSTEventSink<RE::TESQuestStartStopEvent>
   , public RE::BSTEventSink<RE::TESResetEvent>
   , public RE::BSTEventSink<RE::TESSceneActionEvent>
+  , public RE::BSTEventSink<RE::TESTopicInfoEvent>
   , public RE::BSTEventSink<RE::TESSellEvent>
   , public RE::BSTEventSink<RE::TESSleepStartEvent>
   , public RE::BSTEventSink<RE::TESSleepStopEvent>
@@ -327,6 +328,12 @@ public:
     const RE::TESSceneActionEvent* event,
     RE::BSTEventSource<RE::TESSceneActionEvent>*) override;
 
+  // thuum docs/verbs/npc-stream.md (the voice slice): a line an actor this
+  // game hosts begins; filtered in native to the hosted set and the begin
+  EventResult ProcessEvent(
+    const RE::TESTopicInfoEvent* event,
+    RE::BSTEventSource<RE::TESTopicInfoEvent>*) override;
+
   EventResult ProcessEvent(const RE::TESSellEvent* event,
                            RE::BSTEventSource<RE::TESSellEvent>*) override;
 
@@ -522,6 +529,7 @@ private:
     AppendSinkScriptEvent<RE::TESResetEvent>(std::vector({ "reset" }));
     AppendSinkScriptEvent<RE::TESSceneActionEvent>(
       std::vector({ "sceneAction" }));
+    AppendSinkScriptEvent<RE::TESTopicInfoEvent>(std::vector({ "topicInfo" }));
     AppendSinkScriptEvent<RE::TESSellEvent>(std::vector({ "sell" }));
     AppendSinkScriptEvent<RE::TESSleepStartEvent>(
       std::vector({ "sleepStart" }));

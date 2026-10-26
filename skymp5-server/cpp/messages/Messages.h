@@ -4,6 +4,7 @@
 #include "ActorFateMessage.h"
 #include "ActorJumpMessage.h"
 #include "ActorSightingsMessage.h"
+#include "ActorSpeechMessage.h"
 #include "ActorValuesMessage.h"
 #include "ArrowShotMessage.h"
 #include "CellLoadedMessage.h"
@@ -106,4 +107,5 @@
   REGISTER_MESSAGE(ActorSightingsMessage)                                     \
   REGISTER_MESSAGE(ActorFateMessage)                                          \
   REGISTER_MESSAGE(ActorDeathMessage)                                         \
-  REGISTER_MESSAGE(HostedActorStateMessage)
+  REGISTER_MESSAGE(HostedActorStateMessage)                                   \
+  REGISTER_MESSAGE(ActorSpeechMessage)

@@ -109,6 +109,11 @@ struct MpActor::Impl
   std::vector<std::pair<uint32_t, MpObjectReference*>> droppedItemsQueue;
   std::optional<AnimationData> animationData;
 
+  // thuum docs/verbs/npc-stream.md (ADR-050): the host's reading of this
+  // actor's combat target and running package, 0 for none
+  uint32_t hostedCombatTarget = 0;
+  uint32_t hostedPackage = 0;
+
   // thuum docs/verbs/god-mode.md: TGM and TIM for the session
   bool godMode = false;
   bool immortal = false;
@@ -279,6 +284,43 @@ void MpActor::SetLastAnimEvent(
 std::optional<AnimationData> MpActor::GetLastAnimEvent() const
 {
   return pImpl->animationData;
+}
+
+void MpActor::SetJudgedPercentages(std::optional<float> health,
+                                   std::optional<float> magicka,
+                                   std::optional<float> stamina)
+{
+  if (!health && !magicka && !stamina) {
+    return;
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    if (health) {
+      changeForm.actorValues.healthPercentage = *health;
+    }
+    if (magicka) {
+      changeForm.actorValues.magickaPercentage = *magicka;
+    }
+    if (stamina) {
+      changeForm.actorValues.staminaPercentage = *stamina;
+    }
+  });
+  SetLastAttributesPercentagesUpdate(std::chrono::steady_clock::now());
+}
+
+void MpActor::SetHostedState(uint32_t combatTarget, uint32_t package)
+{
+  pImpl->hostedCombatTarget = combatTarget;
+  pImpl->hostedPackage = package;
+}
+
+uint32_t MpActor::GetHostedCombatTarget() const
+{
+  return pImpl->hostedCombatTarget;
+}
+
+uint32_t MpActor::GetHostedPackage() const
+{
+  return pImpl->hostedPackage;
 }
 
 void MpActor::SetRaceMenuOpen(bool isOpen)

@@ -73,7 +73,7 @@ macro_rules! skymp_family {
             39 RaceMenuPreset, 40 ActorValues, 41 ConsoleOutput, 42 ArrowShot,
             43 MagicEffects, 44 UpdateAction, 45 PlayerGlobals, 46 ActorJump,
             47 CellLoaded, 48 HostGrant, 49 HostRelease, 50 ActorSightings,
-            51 ActorFate, 52 ActorDeath
+            51 ActorFate, 52 ActorDeath, 53 HostedActorState
         }
     };
 }
@@ -320,6 +320,18 @@ mod tests {
     /// to the same JSON. The C++ core's unit test (unit/WireJsonContractTest)
     /// reads the same files through ReadJson and WriteJson and must do the
     /// same, so the two sides agree on every message's shape.
+    /// thuum docs/verbs/npc-stream.md (slice 3): an equipment entry's count is
+    /// u32 on the wire, so the -1 an ExtraCount delta once produced (docs/
+    /// LOG.md 2026-10-22) is refused at the shape and never carried; a worn
+    /// entry of one is the shape a host sends for an actor it simulates.
+    #[test]
+    fn an_equipment_count_below_one_is_no_shape() {
+        let refused = r#"{"t":5,"idx":3,"data":{"numChanges":1,"inv":{"entries":[{"baseId":77495,"count":-1}]}}}"#;
+        assert!(matches!(recognize(refused), Err(JsonError::Shape(_))));
+        let worn = r#"{"t":5,"idx":3,"data":{"numChanges":1,"inv":{"entries":[{"baseId":77495,"count":1,"worn":true}]}}}"#;
+        assert!(recognize(worn).is_ok());
+    }
+
     #[test]
     fn fixtures_round_trip() {
         let mut n = 0;
@@ -338,7 +350,7 @@ mod tests {
             n += 1;
         }
         assert!(n >= 90, "{n} fixtures");
-        assert_eq!(types.len(), 52, "every SkyMP type has fixtures");
+        assert_eq!(types.len(), 53, "every SkyMP type has fixtures");
     }
 
     /// Writes the fixtures: two per SkyMP type, from arbitrary values with

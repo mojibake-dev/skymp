@@ -113,6 +113,18 @@ export class SendInputsService extends ClientListener {
         // server's word and the grant agreeing (HostService)
         const hosted = this.controller.lookupListener(HostService).hostedActorRemoteIds();
         const targets = [undefined].concat(hosted as any);
+        // thuum docs/verbs/npc-stream.md: a source whose actor left the hosted
+        // list goes with its hook (one per id was kept forever); the player's
+        // (0x14) stays
+        const keep = new Set<string>([(0x14).toString(16)]);
+        hosted.forEach((remoteId) => keep.add(worldViewMisc.remoteIdToLocalId(remoteId).toString(16)));
+        this.playerAnimSource.forEach((source, key) => {
+            if (!keep.has(key)) {
+                source.dispose();
+                this.playerAnimSource.delete(key);
+                this.lastAnimationSent.delete(key);
+            }
+        });
 
         const modelSource = this.controller.lookupListener(RemoteServer);
 
@@ -161,6 +173,14 @@ export class SendInputsService extends ClientListener {
     }
 
     private sendActorValuePercentage(_refrId?: number, form?: FormModel) {
+        // thuum docs/verbs/npc-stream.md (ADR-050): the player's own alone; a
+        // hosted actor's values go by HostedActorState (HostedStateService).
+        // This read the player's values for every target and sent them under
+        // the hosted actor's id (the server wrote them to the sender's own
+        // actor, so nothing showed)
+        if (_refrId) {
+          return;
+        }
         const canSend = form && (form.isDead ?? false) === false;
         if (!canSend) {
           return;

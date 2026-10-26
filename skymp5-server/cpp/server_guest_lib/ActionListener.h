@@ -106,6 +106,15 @@ public:
   virtual void OnActorDeath(const RawMessageData& rawMsgData,
                             const ActorDeathMessage& msg);
 
+  // thuum docs/verbs/npc-stream.md (ADR-050 decision 1, slice 2): a host's
+  // state for an actor it simulates: the values judged against the server's
+  // own numbers (wire-rules hosted_state: a report that would undo a value
+  // the server lowered or raised lately is dropped, a 0 on a living record
+  // floored at one point), the combat target and the package recorded, the
+  // changed values sent as ChangeValues to the actor's other listeners
+  virtual void OnHostedActorState(const RawMessageData& rawMsgData,
+                                  const HostedActorStateMessage& msg);
+
   // the activations the server accepted lately, by place: a hazard death's
   // evidence (ADR-048's B; that a trap's trigger reaches the server as an
   // activation is a HYPOTHESIS until the lab's trap run)

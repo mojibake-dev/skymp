@@ -1111,7 +1111,24 @@ const char* VoiceRefusalCode(PartOne::VoiceCheck check)
 void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
                                        const UpdateEquipmentMessage& msg)
 {
-  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  MpActor* myActor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!myActor) {
+    return;
+  }
+  // thuum docs/verbs/npc-stream.md (ADR-050 decision 1, slice 3): an idx that
+  // is not the sender's own names an actor it hosts (ActorUpdatableBy's
+  // gate): its equipment is the host's engine's word, checked against the
+  // actor's own record (the items it wears present in its inventory, the
+  // spells its base knows) and written to the actor's record (not the
+  // sender's: an idx was resolved to the sender's own actor here, the latent
+  // corruption cell-host noted). A refusal drops the report with one warn a
+  // minute per actor and sends the host nothing (Rule A: nothing writes to
+  // an actor the host's engine runs; SetInventory has no idx and would
+  // replace the host player's own inventory, and a snippet on an NPC runs
+  // nowhere)
+  const bool hosted = msg.idx != myActor->GetIdx();
+  MpActor* actor =
+    hosted ? ActorUpdatableBy(msg.idx, rawMsgData.userId) : myActor;
   if (!actor) {
     return;
   }
@@ -1180,6 +1197,11 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
 
   const auto& inventory = actor->GetInventory();
   for (auto& entry : equipmentInv.entries) {
+    // a hosted actor's report names what it wears; its engine's whole
+    // inventory is npc-fate's record, not this message's
+    if (hosted && entry.GetWorn() == Inventory::Worn::None) {
+      continue;
+    }
     if (!inventory.HasItem(entry.baseId)) {
       spdlog::warn(
         "ActionListener::OnUpdateEquipment {:x} - rejected equipment "
@@ -1261,6 +1283,43 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   if (isAllowed) {
     SendToNeighbours(msg.idx, rawMsgData, true);
     actor->SetEquipment(data);
+    if (hosted) {
+      uint32_t right = 0;
+      uint32_t left = 0;
+      size_t worn = 0;
+      for (auto& entry : equipmentInv.entries) {
+        const auto w = entry.GetWorn();
+        if (w == Inventory::Worn::None) {
+          continue;
+        }
+        ++worn;
+        if (w == Inventory::Worn::Right) {
+          right = entry.baseId;
+        } else {
+          left = entry.baseId;
+        }
+      }
+      spdlog::info("[verb:npc-stream] equipment {:x} by {:x}: {} worn, "
+                   "right {:x} left {:x}, spells {:x} {:x}, numChanges {}",
+                   actorFormId, myActor->GetFormId(), worn, right, left,
+                   rightSpell, leftSpell, data.numChanges);
+    }
+  } else if (hosted) {
+    static std::unordered_map<
+      uint32_t, std::pair<std::chrono::steady_clock::time_point, uint32_t>>
+      refusals;
+    const auto now = std::chrono::steady_clock::now();
+    auto& [since, count] = refusals[actorFormId];
+    ++count;
+    if (since == std::chrono::steady_clock::time_point() ||
+        now - since >= std::chrono::minutes(1)) {
+      spdlog::warn("[verb:npc-stream] E_EQUIP_REFUSED: {:x}'s equipment by "
+                   "{:x} refused (the lines above say why); the record "
+                   "stands, nothing sent to the host; {} since the last line",
+                   actorFormId, myActor->GetFormId(), count);
+      since = now;
+      count = 0;
+    }
   } else {
     actor->SendInventoryUpdate();
 

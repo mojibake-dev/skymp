@@ -8,6 +8,7 @@
 #include "TestUtils.hpp"
 #include "UpdateActionMessage.h"
 #include "UpdateAnimationMessage.h"
+#include "UpdateEquipmentMessage.h"
 #include "UpdateMovementMessage.h"
 #include "UpdatePropertyMessage.h"
 #include "wire_bridge_cxx/rules.h"
@@ -1007,6 +1008,116 @@ TEST_CASE("A hosted actor's state is its host's word bounded by the server's "
     p.GetActionListener().OnUpdateAnimation(raw, anim);
     REQUIRE(actor.GetLastAnimEvent()->animEventName == "IdleWoodChopStart");
   }
+
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kActor);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+}
+
+// `user`'s equipment report for `actorId`: one worn item in the right hand
+// (thuum docs/verbs/npc-stream.md slice 3), no spells
+void Wear(PartOne& p, Networking::UserId user, uint32_t actorId,
+          uint32_t baseId, uint32_t numChanges)
+{
+  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
+  RawMessageData raw;
+  raw.userId = user;
+  raw.unparsed = unparsed;
+  raw.unparsedLength = sizeof(unparsed);
+  UpdateEquipmentMessage msg;
+  msg.idx = p.worldState.GetFormAt<MpActor>(actorId).GetIdx();
+  msg.data.numChanges = numChanges;
+  Inventory::Entry entry;
+  entry.baseId = baseId;
+  entry.count = 1;
+  entry.SetWorn(Inventory::Worn::Right);
+  msg.data.inv.entries.push_back(entry);
+  p.GetActionListener().OnUpdateEquipment(raw, msg);
+}
+
+TEST_CASE("A hosted actor's equipment is its host's engine's word checked "
+          "against the actor's own record: a worn item the record holds goes "
+          "into the actor's record and to the other game alone, the host "
+          "player's record stays, a non-host's report is dropped, and an "
+          "item the record lacks is refused with nothing sent to the host",
+          "[CellHost][HostedEquipment][espm]")
+{
+  // thuum docs/verbs/npc-stream.md (ADR-050 decision 1, slice 3): the
+  // record's hands are what the hit path judges a hosted actor's swing
+  // against (E_HIT_WEAPON, playtest 34), so the host streams what its actor
+  // wears; before this the handler resolved any idx to the sender's own actor
+  auto& p = GetPartOne();
+  constexpr uint32_t kActor = 0xff000c08;
+  // Skyrim.esm's iron sword, a WEAP record (the slot rule looks it up and
+  // passes it by)
+  constexpr uint32_t kIronSword = 0x12eb7;
+  constexpr uint32_t kElsewhere = 0x13989;
+  const NiPoint3 kAt{ 117786.f, -81400.f, 10997.f };
+  Player(p, 0, kC1, kAt + NiPoint3{ 40.f, 0.f, 0.f });
+  Player(p, 1, kC2, kAt + NiPoint3{ 60.f, 0.f, 0.f });
+  p.CreateActor(kActor, kAt + NiPoint3{ 30.f, 0.f, 0.f }, 0, kTamriel);
+  auto& actor = p.worldState.GetFormAt<MpActor>(kActor);
+  actor.SetPos(actor.GetPos());
+  actor.AddItem(kIronSword, 1);
+  const auto cell = p.worldState.CellOf(actor);
+  REQUIRE(cell.has_value());
+  CellLoaded(p, 0, *cell);
+  auto& c1 = p.worldState.GetFormAt<MpActor>(kC1);
+  REQUIRE(p.worldState.HostOf(actor) == &c1);
+  const auto relays = [&](Networking::UserId user) {
+    size_t n = 0;
+    for (auto& m : p.Messages()) {
+      if (m.userId == user && m.j.is_object() && m.j.empty()) {
+        ++n;
+      }
+    }
+    return n;
+  };
+  const auto sentOfType = [&](Networking::UserId user, MsgType type) {
+    size_t n = 0;
+    for (auto& m : p.Messages()) {
+      if (m.userId == user && m.j.is_object() && m.j.contains("t") &&
+          m.j["t"] == static_cast<int>(type)) {
+        ++n;
+      }
+    }
+    return n;
+  };
+
+  // the host's report: the actor's record takes it, the other game hears
+  // the relay once, the host hears nothing, the host player's own record
+  // stays as it was
+  const auto c1Before = c1.GetEquipment();
+  p.Messages().clear();
+  Wear(p, 0, kActor, kIronSword, 1);
+  REQUIRE(actor.GetEquipment().inv.entries.size() == 1);
+  REQUIRE(actor.GetEquipment().inv.entries.front().baseId == kIronSword);
+  REQUIRE(actor.GetEquipment().numChanges == 1);
+  REQUIRE(c1.GetEquipment().inv.entries.size() == c1Before.inv.entries.size());
+  REQUIRE(relays(1) == 1);
+  REQUIRE(relays(0) == 0);
+
+  // the other game's report about the same actor: dropped at the gate
+  p.Messages().clear();
+  Wear(p, 1, kActor, kIronSword, 2);
+  REQUIRE(actor.GetEquipment().numChanges == 1);
+  REQUIRE(relays(0) == 0);
+  REQUIRE(relays(1) == 0);
+
+  // an item the actor's record lacks: refused, the record stands, and the
+  // host is sent neither an inventory (it has no idx: the player's own
+  // would be replaced) nor an unequip snippet (nothing writes to a hosted
+  // actor's engine)
+  p.Messages().clear();
+  Wear(p, 0, kActor, kElsewhere, 3);
+  p.Tick();
+  REQUIRE(actor.GetEquipment().inv.entries.front().baseId == kIronSword);
+  REQUIRE(actor.GetEquipment().numChanges == 1);
+  REQUIRE(relays(1) == 0);
+  REQUIRE(sentOfType(0, MsgType::SetInventory) == 0);
+  REQUIRE(sentOfType(0, MsgType::SpSnippet) == 0);
 
   DoDisconnect(p, 0);
   DoDisconnect(p, 1);

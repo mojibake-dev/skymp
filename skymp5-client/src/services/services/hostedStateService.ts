@@ -2,9 +2,13 @@ import { Actor, PackageEvent } from "skyrimPlatform";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { MsgType } from "../../messages";
 import { HostedActorStateMessage } from "../messages/hostedActorStateMessage";
+import { UpdateEquipmentMessage } from "../messages/updateEquipmentMessage";
 import { MessageWithRefrId } from "../events/sendMessageWithRefrIdEvent";
 import { HostService } from "./hostService";
+import { RemoteServer } from "./remoteServer";
 import { localIdToRemoteId, remoteIdToLocalId } from "../../view/worldViewMisc";
+import { getEquipedSpell, SpellType } from "../../sync/equipment";
+import { Inventory } from "../../sync/inventory";
 import { logTrace } from "../../logging";
 
 // thuum docs/verbs/npc-stream.md (ADR-050 decision 1, slice 2): the state of
@@ -25,6 +29,19 @@ import { logTrace } from "../../logging";
 // and pruned to the hosted list at each poll. The events have no native
 // filter (rule 9's cost, accepted: a package change is minutes apart per
 // actor); HYPOTHESIS H3 until a probe reads the 8:00 switch through them.
+//
+// The equipment (slice 3): the same poll reads each hosted actor's hands
+// (getEquippedObject 1 and 0, two calls) and, when they change or at the
+// first poll for the actor, sends UpdateEquipment under the actor's idx with
+// what it wears (the worn slots and the hands, worn flags set; never its
+// whole inventory, which is npc-fate's record) and the hands' spells; the
+// server checks the worn items against the actor's own record and the
+// puppets' hands follow (view/formView.ts applyHands). The record's hands
+// are what the server's hit path judges a hosted actor's swing against
+// (E_HIT_WEAPON, playtest 34: two bandits' every swing dropped), so this is
+// the stream that makes a hosted NPC's hits count. A poll, not the equip
+// events: whether the engine raises them for an AI's equip is unread (H4),
+// and a cell's attach would raise one per resident's outfit at once.
 export class HostedStateService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -92,6 +109,24 @@ export class HostedStateService extends ClientListener {
             this.lastSent.set(localId, sample);
             logTrace(this, `state ${remoteId.toString(16)}: health ${sample.health.toFixed(3)} magicka ${sample.magicka.toFixed(3)} stamina ${sample.stamina.toFixed(3)} target ${sample.combatTarget.toString(16)} package ${sample.package.toString(16)}${last ? "" : " (keyframe)"}`);
         }
+        for (const remoteId of hosted) {
+            if (remoteId === 0x14) {
+                continue;
+            }
+            const localId = remoteIdToLocalId(remoteId);
+            const actor = localId ? this.sp.Actor.from(this.sp.Game.getFormEx(localId)) : null;
+            if (!actor || actor.isDead()) {
+                continue;
+            }
+            const right = actor.getEquippedObject(1)?.getFormID() ?? 0;
+            const left = actor.getEquippedObject(0)?.getFormID() ?? 0;
+            const prev = this.hands.get(localId);
+            if (prev && prev.right === right && prev.left === left) {
+                continue;
+            }
+            this.hands.set(localId, { right, left });
+            this.sendEquipment(actor, localId, remoteId, right, left);
+        }
         // an actor that left the hosted list starts over at its next grant
         // (a keyframe again); its package is forgotten with it
         for (const id of Array.from(this.lastSent.keys())) {
@@ -104,6 +139,60 @@ export class HostedStateService extends ClientListener {
                 this.packages.delete(id);
             }
         }
+        for (const id of Array.from(this.hands.keys())) {
+            if (!seen.has(id)) {
+                this.hands.delete(id);
+                this.equipChanges.delete(id);
+            }
+        }
+    }
+
+    // what the actor wears, as the server's equipment lists it: the worn
+    // slots (getWornForm over the 32 biped slots, armor and the shield) and
+    // the hands, each entry a count of one with its worn flag (worn the
+    // right hand and the slots, wornLeft the left hand), the hands' spells;
+    // numChanges counts up from the record's own (the view applies on a
+    // change of the number)
+    private sendEquipment(actor: Actor, localId: number, remoteId: number, right: number, left: number) {
+        const entries: Inventory["entries"] = [];
+        const add = (baseId: number, wornLeft: boolean) => {
+            if (!baseId) {
+                return;
+            }
+            const have = entries.find((e) => e.baseId === baseId);
+            if (have) {
+                if (wornLeft) {
+                    have.wornLeft = true;
+                } else {
+                    have.worn = true;
+                }
+                return;
+            }
+            entries.push(wornLeft ? { baseId, count: 1, wornLeft: true } : { baseId, count: 1, worn: true });
+        };
+        for (let slot = 0; slot < 32; ++slot) {
+            add(actor.getWornForm(1 << slot)?.getFormID() ?? 0, false);
+        }
+        add(right, false);
+        add(left, true);
+        const world = this.controller.lookupListener(RemoteServer).getWorldModel();
+        const recorded = world.forms.find((f) => f !== undefined && f.refrId === remoteId)?.equipment?.numChanges ?? 0;
+        const numChanges = (this.equipChanges.get(localId) ?? recorded) + 1;
+        this.equipChanges.set(localId, numChanges);
+        const message: MessageWithRefrId<UpdateEquipmentMessage> = {
+            t: MsgType.UpdateEquipment,
+            data: {
+                inv: { entries },
+                leftSpell: getEquipedSpell(actor, SpellType.Left),
+                rightSpell: getEquipedSpell(actor, SpellType.Right),
+                voiceSpell: getEquipedSpell(actor, SpellType.Voice),
+                instantSpell: getEquipedSpell(actor, SpellType.Instant),
+                numChanges,
+            },
+            _refrId: remoteId,
+        };
+        this.controller.emitter.emit("sendMessageWithRefrId", { message, reliability: "reliable" });
+        logTrace(this, `equipment ${remoteId.toString(16)}: ${entries.length} worn, right ${right.toString(16)} left ${left.toString(16)}, numChanges ${numChanges}`);
     }
 
     private read(actor: Actor, localId: number): HostedStateSample {
@@ -138,6 +227,8 @@ export class HostedStateService extends ClientListener {
 
     private readonly packages = new Map<number, number>();
     private readonly lastSent = new Map<number, HostedStateSample>();
+    private readonly hands = new Map<number, { right: number; left: number }>();
+    private readonly equipChanges = new Map<number, number>();
     private lastPoll = 0;
     private static readonly pollMs = 500;
 }

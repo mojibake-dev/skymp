@@ -5,7 +5,7 @@ import { isHandCastEvent } from "../services/services/actionSyncService";
 import { applyAnimationVariablesToActor, castReady, performAction, performActionResult, setActivateTextHidden, setActorAimHeading, setActorAimPitch } from "skyrimPlatform";
 import { figureAimHeading } from "../sync/figureAim";
 import { Appearance, applyAppearance } from "../sync/appearance";
-import { isBadMenuShown, applyEquipment, isFigureBase, keepOnlyServerSpells } from "../sync/equipment";
+import { isBadMenuShown, applyEquipment, isFigureBase, keepOnlyServerSpells, applyHands } from "../sync/equipment";
 import { RespawnNeededError } from "../lib/errors";
 import { logLab } from "../logging";
 import { FormModel } from "./model";
@@ -770,6 +770,19 @@ export class FormView {
     // host's own actor and a puppet alike, so the apply below is for copies
     // (figures and 0xff actors) alone
     const engineDressed = FormView.npcFateEnabled() && this.refrId !== 0 && this.refrId < 0xff000000;
+    if (model.equipment && !alreadyHosted && engineDressed && FormView.isNpcModel(model) &&
+      this.eqState.lastNumChanges !== model.equipment.numChanges) {
+      // thuum docs/verbs/npc-stream.md (ADR-050, slice 3): an engine-dressed
+      // puppet keeps its outfit; its hands follow the host's record (the
+      // host streams what its actor wears, the server checks it against the
+      // actor's own record and relays it)
+      const ac = Actor.from(refr);
+      if (ac && !ac.isDeleted() && Date.now() - this.eqState.lastEqMoment > 500) {
+        applyHands(ac, model.equipment);
+        this.eqState.lastNumChanges = model.equipment.numChanges;
+        this.eqState.lastEqMoment = Date.now();
+      }
+    }
     if (model.equipment && !alreadyHosted && !engineDressed) {
       // thuum ADR-046, decision 2: a figure's spells stay the server's. A
       // distributor adds its abilities at the actor's load, after the

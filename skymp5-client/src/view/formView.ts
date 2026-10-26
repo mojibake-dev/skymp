@@ -1,5 +1,6 @@
 import { Actor, ActorBase, Cell, createText, destroyText, Form, FormType, Game, Keyword, NetImmerse, ObjectReference, once, printConsole, setTextPos, setTextSize, setTextString, settings, storage, TESModPlatform, Utility, WorldSpace, worldPointToScreenPoint } from "skyrimPlatform";
-import { setDefaultAnimsDisabled, applyAnimation } from "../sync/animation";
+import { setDefaultAnimsDisabled, applyAnimation, allowAnimationOnce } from "../sync/animation";
+import { isHandCastEvent } from "../services/services/actionSyncService";
 // @ts-expect-error (TODO: Remove in 2.10.0)
 import { applyAnimationVariablesToActor, castReady, performAction, performActionResult, setActivateTextHidden, setActorAimHeading, setActorAimPitch } from "skyrimPlatform";
 import { figureAimHeading } from "../sync/figureAim";
@@ -950,6 +951,14 @@ export class FormView {
   // -self 060152). Variables alone provoke nothing in the engine (the
   // response handler is a no-op on an idle caster, the re-analyst 2026-10-14),
   // so a queue that drains slowly leaves the figure in the caster's state.
+  //
+  // thuum docs/verbs/npc-stream.md (ADR-050): a puppet's queue carries its
+  // host's every action (idles, attacks, draws, the hands' casts), performed
+  // here the same way; the cast handshake below (the want variable, the
+  // graph's answer, the sheathed caster's drop, the Equipped exit) is the
+  // hands' alone and is gated to their events, so an idle or an attack goes
+  // variables then action with no wait. HYPOTHESIS H2 until P4: the puppet's
+  // graph (AI off, the detours feeding it) takes the action
   private replayActions(refr: ObjectReference, model: FormModel): void {
     // x-cast-interrupt (20261016-134830): a caster who sheathes mid-cast
     // performs no exit action (its engine ends the cast and performs
@@ -963,8 +972,9 @@ export class FormView {
     // movement has not reported yet
     if (model.movement && model.movement.isWeapDrawn === false) {
       const isStart = (a: UpdateActionMessage) => a.eventName.toLowerCase().endsWith("start");
+      const isCast = (a: UpdateActionMessage) => isHandCastEvent(a.eventName);
       let dropped = false;
-      if (this.pendingAction && !isStart(this.pendingAction)) {
+      if (this.pendingAction && isCast(this.pendingAction) && !isStart(this.pendingAction)) {
         this.pendingAction = null;
         this.pendingAsked = false;
         this.castRetries = 0;
@@ -972,8 +982,8 @@ export class FormView {
         dropped = true;
       }
       const queue = model.actionQueue;
-      if (queue && queue.some((a) => !isStart(a))) {
-        const starts = queue.filter(isStart);
+      if (queue && queue.some((a) => isCast(a) && !isStart(a))) {
+        const starts = queue.filter((a) => !isCast(a) || isStart(a));
         queue.splice(0, queue.length, ...starts);
         dropped = true;
       }
@@ -987,7 +997,7 @@ export class FormView {
     if (pending) {
       if (!this.pendingAsked) {
         const pendingName = pending.eventName.toLowerCase();
-        if (pendingName.endsWith("start")) {
+        if (pendingName.endsWith("start") && isHandCastEvent(pendingName)) {
           // the engine's handshake: its caster sets the want variable and
           // performs the Attack only when the graph answers BeginCast (the
           // hand's response handler); a start one update after its variables
@@ -1016,6 +1026,12 @@ export class FormView {
         // graph event re-entered Skyrim Platform's hooks and hung the game at
         // the first replay, x-cast-gap 20261015-211105); the graph's answer
         // is read on the next update
+        // thuum docs/verbs/npc-stream.md (ADR-050): a puppet keeps the
+        // figures' blank on the engine's attack events (sync/animation.ts),
+        // so the event this action sends is admitted once, as a relayed
+        // attack event is. HYPOTHESIS until P4: the engine sends the event
+        // the host's hook reported (performAction passes it as given)
+        allowAnimationOnce(refr.getFormID(), pending.eventName);
         performAction(refr.getFormID(), pending.action, pending.idle, pending.eventName, pending.type);
         this.pendingAsked = true;
         this.pendingWaits = 0;
@@ -1049,7 +1065,7 @@ export class FormView {
       if (name.startsWith("dualmagic")) {
         this.dualCastOnFigure = true;
       }
-      if (name.includes("equipped")) {
+      if (isHandCastEvent(name) && name.includes("equipped")) {
         // the engine's own sequence after the Interrupt action is FinishCast,
         // which drops the hand's want variable; the action's variables are the
         // caster's from before it, so the figure kept the want up, and a want
@@ -1069,7 +1085,7 @@ export class FormView {
     }
     const first = queue[0];
     const firstName = first.eventName.toLowerCase();
-    if (firstName.endsWith("start") && !this.castEdgeCleared) {
+    if (firstName.endsWith("start") && isHandCastEvent(firstName) && !this.castEdgeCleared) {
       // the graph enters a cast on the want variable's rise; one still up from
       // an earlier cast gives it none, so it is dropped one update before the
       // variables land (the same reason as above, from the other side)
@@ -1085,7 +1101,7 @@ export class FormView {
     if (!next) {
       return;
     }
-    if (firstName.endsWith("start")) {
+    if (firstName.endsWith("start") && isHandCastEvent(firstName)) {
       // a stale answer is dropped before this rise (an exit's variables raise
       // the want too, and the graph answers that rise), so the wait above
       // sees the answer to this one

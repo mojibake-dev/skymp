@@ -1,5 +1,6 @@
 #include "PuppetApi.h"
 #include "CallNativeApi.h"
+#include "Hosted.h"
 #include "Puppets.h"
 #include "game/Offsets.h"
 #include <chrono>
@@ -255,4 +256,35 @@ Napi::Value PuppetApi::SetPuppetLocomotion(const Napi::CallbackInfo& info)
   sample.turnRateDeg = NapiHelper::ExtractFloat(info[3], "turnRateDeg");
   Puppets::SetLocomotion(actorFormId, sample);
   return Napi::Boolean::New(info.Env(), Puppets::Is(actorFormId));
+}
+
+// thuum docs/verbs/npc-stream.md (ADR-050): the hosted set the action hook
+// reads (Hosted.h), fed by skymp5-client's HostService at every flip of the
+// server's word per actor; the JS thread alone, no game call. The count is
+// logged for the lab ("hosted set n" in the client's log at a grant)
+Napi::Value PuppetApi::SetHosted(const Napi::CallbackInfo& info)
+{
+  const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  const auto hosted = NapiHelper::ExtractBoolean(info[1], "hosted");
+  if (actorFormId == 0 || actorFormId == 0x14) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  Hosted::Set(actorFormId, hosted);
+  logger::info("[verb:npc-stream] setHosted({:x}, {}): hosted set {}",
+               actorFormId, hosted, Hosted::Count());
+  return Napi::Boolean::New(info.Env(), true);
+}
+
+Napi::Value PuppetApi::IsHosted(const Napi::CallbackInfo& info)
+{
+  const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  return Napi::Boolean::New(info.Env(), Hosted::Is(actorFormId));
+}
+
+// isPerformingAction(actorFormId): the hook's mark, on from the action
+// entry's enter to its leave (FridaHooks.cpp OnPerformActionEnter)
+Napi::Value PuppetApi::IsPerformingAction(const Napi::CallbackInfo& info)
+{
+  const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  return Napi::Boolean::New(info.Env(), Hosted::IsPerforming(actorFormId));
 }

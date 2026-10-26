@@ -130,6 +130,8 @@ export class PuppetService extends ClientListener {
         if (id === 0x14 || this.puppets.has(id) || this.isFigure(id)) {
             return;
         }
+        // thuum docs/verbs/npc-stream.md: not this game's to stream from here
+        this.controller.lookupListener(HostService).markHosted(id, false);
         const ac = this.sp.Actor.from(refr);
         // an actor still loading (no 3D yet: a cell's attach, a copy's spawn)
         // is left alone until it has one; the view asks again every update
@@ -160,6 +162,10 @@ export class PuppetService extends ClientListener {
     // the record's last point first (the relay stops at the grant).
     ensureLive(refr: ObjectReference, last?: Movement): void {
         const id = refr.getFormID();
+        // thuum docs/verbs/npc-stream.md (ADR-050): the word says this game
+        // simulates the actor: its actions stream from here (the hosted set
+        // the action hook reads), whether or not it was a puppet before
+        this.controller.lookupListener(HostService).markHosted(id, true);
         if (!this.puppets.has(id)) {
             return;
         }
@@ -207,6 +213,9 @@ export class PuppetService extends ClientListener {
         if (!this.enabled || localId === 0x14 || this.puppets.has(localId)) {
             return;
         }
+        // thuum docs/verbs/npc-stream.md: an actor whose form is gone streams
+        // nothing from here, 3D or not
+        this.controller.lookupListener(HostService).markHosted(localId, false);
         // thuum docs/verbs/npc-handoff.md D11 (b-npc-handoff-night 092208 and
         // 114904): an actor with no 3D is simulated by nobody's engine and no
         // word reaches a record nobody subscribes, so it is left to its own
@@ -248,6 +257,8 @@ export class PuppetService extends ClientListener {
             return;
         }
         this.puppets.delete(e.refr.getFormID());
+        // thuum docs/verbs/npc-stream.md: an unloaded actor streams nothing
+        this.controller.lookupListener(HostService).markHosted(e.refr.getFormID(), false);
     }
 
     // A puppet drafted into combat (a hit, a script's StartCombat; the AI bit

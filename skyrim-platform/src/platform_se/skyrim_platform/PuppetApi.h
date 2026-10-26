@@ -28,6 +28,19 @@ Napi::Value SetPuppetLocomotion(const Napi::CallbackInfo& info);
 // getHighProcessActors(): the engine's high-process actors by form id, the
 // game thread's latest snapshot (Puppets.h)
 Napi::Value GetHighProcessActors(const Napi::CallbackInfo& info);
+// thuum docs/verbs/npc-stream.md (ADR-050): setHosted(actorFormId, hosted),
+// the server's word that this game simulates the actor (true) or not
+// (false), kept in the hosted set the hook on the engine's action entry
+// reads (Hosted.h); the JS thread alone, no game call. False for 0 and for
+// the player's own id (its actions are reported regardless).
+Napi::Value SetHosted(const Napi::CallbackInfo& info);
+// isHosted(actorFormId): whether the set holds the actor
+Napi::Value IsHosted(const Napi::CallbackInfo& info);
+// isPerformingAction(actorFormId): whether the engine's action entry is open
+// on the actor right now (Hosted::IsPerforming, the hook's mark); read
+// inside a sendAnimationEvent hook handler, where the game thread waits, it
+// says the event being sent is the action's own
+Napi::Value IsPerformingAction(const Napi::CallbackInfo& info);
 
 inline void Register(Napi::Env env, Napi::Object& exports)
 {
@@ -46,5 +59,14 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set("setPuppetLocomotion",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(SetPuppetLocomotion)));
+  exports.Set(
+    "setHosted",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetHosted)));
+  exports.Set(
+    "isHosted",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(IsHosted)));
+  exports.Set("isPerformingAction",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(IsPerformingAction)));
 }
 }

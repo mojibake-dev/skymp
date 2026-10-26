@@ -1094,9 +1094,16 @@ export class RemoteServer extends ClientListener {
           integers: new Uint8Array(carried.integers)
         };
 
+      // thuum docs/verbs/npc-stream.md (train 53): a relayed cast on an NPC
+      // puppet and its end, traced so a run can count them (a figure's are
+      // the cast verb's)
+      const onPuppet = !casterIsMe && this.sp.isPuppet(ac.getFormID());
       if (msg.data.interruptCast) {
         interruptCast(ac.getFormID(), msg.data.castingSource, actorAnimationVariables);
         figureAimHeading.delete(ac.getFormID());
+        if (onPuppet) {
+          logTrace(this, `cast end ${msg.data.spell.toString(16)} on puppet ${ac.getFormID().toString(16)} hand ${msg.data.castingSource}`);
+        }
         return;
       }
 
@@ -1131,6 +1138,9 @@ export class RemoteServer extends ClientListener {
         castSpellImmediate(ac.getFormID(), msg.data.castingSource, spell.getFormID(), target,
           msg.data.aimAngle, msg.data.aimHeading, actorAnimationVariables,
           msg.data.hasLaunch, msg.data.originX, msg.data.originY, msg.data.originZ, msg.data.launchAngleX, msg.data.launchAngleZ);
+        if (onPuppet) {
+          logTrace(this, `cast ${spell.getFormID().toString(16)} on puppet ${ac.getFormID().toString(16)} hand ${msg.data.castingSource} at ${msg.data.target.toString(16)}`);
+        }
         // thuum docs/research/apocalypse/target-location.md (x-class-location
         // 20261018-013501: nothing of Thrumming Stone, Lightning Strike or
         // the rune on the other screen): a target-location spell whose

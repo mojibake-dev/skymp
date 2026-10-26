@@ -4,6 +4,7 @@
 #include "HostReleaseMessage.h"
 #include "OpenContainerMessage.h"
 #include "TestUtils.hpp"
+#include "UpdateActionMessage.h"
 #include "UpdateMovementMessage.h"
 #include "UpdatePropertyMessage.h"
 #include "wire_bridge_cxx/rules.h"
@@ -94,6 +95,24 @@ void Move(PartOne& p, Networking::UserId user, uint32_t actorId,
   msg.data.worldOrCell = worldOrCell;
   msg.data.runMode = "Standing";
   p.GetActionListener().OnUpdateMovement(raw, msg);
+}
+
+// `user`'s action report for `actorId`: the message the host's hook raises
+// for an action the actor performed (thuum docs/verbs/npc-stream.md); any
+// action id serves, the wire validates the real ones
+void Act(PartOne& p, Networking::UserId user, uint32_t actorId)
+{
+  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
+  RawMessageData raw;
+  raw.userId = user;
+  raw.unparsed = unparsed;
+  raw.unparsedLength = sizeof(unparsed);
+  UpdateActionMessage msg;
+  msg.idx = p.worldState.GetFormAt<MpActor>(actorId).GetIdx();
+  msg.action = 1;
+  msg.eventName = "attackStart";
+  msg.type = 2;
+  p.GetActionListener().OnUpdateAction(raw, msg);
 }
 
 // every UpdateProperty (t 7) sent to `user`, as the JSON the wire carries
@@ -784,6 +803,65 @@ TEST_CASE("An actor from the game files travels under its own id with the "
   p.DestroyActor(kC1);
   p.DestroyActor(kC2);
   p.DestroyActor(kCow);
+}
+
+TEST_CASE("A hosted actor's actions travel from its host alone: the host's "
+          "UpdateAction under the actor's idx reaches the other game once and "
+          "never the host, and the other game's is dropped",
+          "[CellHost][Action]")
+{
+  // thuum docs/verbs/npc-stream.md (ADR-050 decision 1): the host's engine
+  // performs a hosted actor's actions through its one action entry, the
+  // hook reports them under the actor's id, and the puppets perform the
+  // same action through the same entry. The gate is ActorUpdatableBy's (the
+  // host of the actor's cell, as for a movement report), the relay the
+  // bytes as they came, reliable, to every listener but the sender
+  auto& p = GetPartOne();
+  constexpr uint32_t kActor = 0xff000c06;
+  const NiPoint3 kAt{ 117786.f, -81400.f, 10997.f };
+  Player(p, 0, kC1, kAt + NiPoint3{ 40.f, 0.f, 0.f });
+  Player(p, 1, kC2, kAt + NiPoint3{ 60.f, 0.f, 0.f });
+  p.CreateActor(kActor, kAt + NiPoint3{ 30.f, 0.f, 0.f }, 0, kTamriel);
+  auto& actor = p.worldState.GetFormAt<MpActor>(kActor);
+  actor.SetPos(actor.GetPos());
+  const auto cell = p.worldState.CellOf(actor);
+  REQUIRE(cell.has_value());
+  CellLoaded(p, 0, *cell);
+  REQUIRE(p.worldState.HostOf(actor) == &p.worldState.GetFormAt<MpActor>(kC1));
+  const auto relays = [&](Networking::UserId user) {
+    size_t n = 0;
+    for (auto& m : p.Messages()) {
+      if (m.userId == user && m.j.is_object() && m.j.empty()) {
+        ++n;
+      }
+    }
+    return n;
+  };
+
+  // the host's report of its actor's action: relayed to the other game
+  // once, never back to the host
+  p.Messages().clear();
+  Act(p, 0, kActor);
+  REQUIRE(relays(1) == 1);
+  REQUIRE(relays(0) == 0);
+
+  // the other game's report about the same actor: dropped, nothing sent
+  p.Messages().clear();
+  Act(p, 1, kActor);
+  REQUIRE(relays(0) == 0);
+  REQUIRE(relays(1) == 0);
+
+  // the player's own action under its own idx, as cast-action has it
+  p.Messages().clear();
+  Act(p, 0, kC1);
+  REQUIRE(relays(1) == 1);
+  REQUIRE(relays(0) == 0);
+
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kActor);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
 }
 
 TEST_CASE("A hosted actor's furniture use is its host's engine's: the server "

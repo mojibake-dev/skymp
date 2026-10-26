@@ -277,9 +277,10 @@ export interface SpellCastEvent {
   aimHeading: number
 }
 
-// thuum docs/verbs/cast-action.md: an action the player's actor performed, as the hook on the engine's action entry reports it
+// thuum docs/verbs/cast-action.md: an action the player's actor performed, as the hook on the engine's action entry reports it; docs/verbs/npc-stream.md (ADR-050): an actor this game hosts (setHosted) is reported the same way, actor null (no form lookup on the event's thread) and actorId its form id (0x14 for the player)
 export interface ActionPerformedEvent {
-  actor: Actor
+  actor: Actor | null
+  actorId: number
   action: number
   idle: number
   eventName: string
@@ -1727,6 +1728,11 @@ export declare function releasePuppet(actorFormId: number): boolean;
 export declare function setPuppetLocomotion(actorFormId: number, speed: number, directionDeg: number, turnRateDeg: number): boolean;
 // thuum docs/verbs/npc-puppet.md (playtest 33): the form ids of the engine's high-process actors as of the last "Actor animation" stage, read with no game call; the roster's source and the demote poll's, where the cellAttach events name temporary references alone
 export declare function getHighProcessActors(): number[];
+// thuum docs/verbs/npc-stream.md (ADR-050): the server's word that this game simulates the actor, kept in the hosted set the hook on the engine's action entry reads: a hosted actor's actions are reported (actionPerformed, actorId) and travel as UpdateAction under its own id; false for 0 and for the player's own id. Stored on the JS thread, no game call
+export declare function setHosted(actorFormId: number, hosted: boolean): boolean;
+export declare function isHosted(actorFormId: number): boolean;
+// thuum docs/verbs/npc-stream.md: whether the engine's action entry is open on the actor right now (the hook's mark from its entry to its leave); read inside a sendAnimationEvent hook handler, where the game thread waits, it says the event being sent is the action's own
+export declare function isPerformingAction(actorFormId: number): boolean;
 // thuum docs/verbs/npc-fate.md (ADR-046 decision 1, ADR-049): the server's one roll for a leveled placement, held by this game ahead of the engine's own roll: baseId is the NPC_ the server named (0: no actor there, the engine deletes the placement), worn the items it rolled, each added as an inventory entry tagged for the actor's default outfit by the outfit detour (an empty list dresses nothing). Stored on the JS thread, no game call; false for an invalid reference id
 export declare function setActorFate(refrId: number, baseId: number, worn: number[]): boolean;
 // the reference rolls as the engine's own again; false when it held no fate

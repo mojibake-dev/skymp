@@ -113,6 +113,18 @@ export class SendInputsService extends ClientListener {
         // server's word and the grant agreeing (HostService)
         const hosted = this.controller.lookupListener(HostService).hostedActorRemoteIds();
         const targets = [undefined].concat(hosted as any);
+        // thuum docs/verbs/npc-stream.md: a source whose actor left the hosted
+        // list goes with its hook (one per id was kept forever); the player's
+        // (0x14) stays
+        const keep = new Set<string>([(0x14).toString(16)]);
+        hosted.forEach((remoteId) => keep.add(worldViewMisc.remoteIdToLocalId(remoteId).toString(16)));
+        this.playerAnimSource.forEach((source, key) => {
+            if (!keep.has(key)) {
+                source.dispose();
+                this.playerAnimSource.delete(key);
+                this.lastAnimationSent.delete(key);
+            }
+        });
 
         const modelSource = this.controller.lookupListener(RemoteServer);
 

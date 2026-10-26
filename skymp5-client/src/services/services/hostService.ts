@@ -33,6 +33,14 @@ export class HostService extends ClientListener {
         if (!this.enabled) {
             logTrace(this, "cellHost is off in settings: no loaded set is reported, the server grants nothing");
         }
+        // thuum docs/verbs/npc-stream.md (ADR-050): the stream's switch (a
+        // bisect switch, not a play mode): off, the hosted set stays empty,
+        // the hook reports the player alone and the host sends movement and
+        // animation as before
+        this.streamEnabled = this.sp.settings["skymp5-client"]["npcStream"] !== false;
+        if (!this.streamEnabled) {
+            logTrace(this, "npcStream is off in settings: no hosted actor's actions are streamed");
+        }
         this.controller.on("cellFullyLoaded", (e) => this.onCellFullyLoaded(e));
         this.controller.on("update", () => this.onUpdate());
         this.controller.emitter.on("hostGrantMessage", (e) => this.onHostGrant(e));
@@ -105,6 +113,29 @@ export class HostService extends ClientListener {
             }
         });
         return out;
+    }
+
+    // thuum docs/verbs/npc-stream.md (ADR-050): the hosted set in the fork's
+    // Skyrim Platform mirrors the word per actor (setHosted), so the hook on
+    // the engine's action entry reports a hosted actor's actions beside the
+    // player's; PuppetService calls this at every flip (live, puppet, lost,
+    // unloaded). Idempotent: a native call on a change alone.
+    markHosted(localId: number, hosted: boolean): void {
+        if (!this.streamEnabled || localId === 0x14 || hosted === this.hostedActors.has(localId)) {
+            return;
+        }
+        if (hosted) {
+            this.hostedActors.add(localId);
+        } else {
+            this.hostedActors.delete(localId);
+        }
+        if (!this.sp.setHosted(localId, hosted)) {
+            logError(this, `setHosted(${localId.toString(16)}, ${hosted}) refused`);
+        }
+    }
+
+    isStreamEnabled(): boolean {
+        return this.streamEnabled;
     }
 
     // The cells this game hosts, with their epochs.
@@ -327,6 +358,9 @@ export class HostService extends ClientListener {
     private readonly enabled: boolean;
     private readonly loaded = new Set<number>();
     private readonly hosted = new Map<number, number>();
+    // the actors whose actions stream from here (npc-stream), by local id
+    private readonly hostedActors = new Set<number>();
+    private readonly streamEnabled: boolean;
     private readonly lastEpoch = new Map<number, number>();
     private lastPoll = 0;
     private lastRefresh = 0;

@@ -1599,6 +1599,19 @@ wire_struct! {
         /// The running package's form id, the last package event's, 0 for
         /// none.
         pub package: u32,
+        /// Slice 5 (the gaze): the head-track target's form id as the server
+        /// knows it, the engine's highest set slot; 0 for none.
+        pub gaze_target: u32,
+        /// The engine's HEAD_TRACK_TYPE of that slot (0 default, 1 action, 2
+        /// script, 3 combat, 4 dialogue, 5 procedure; CommonLibSSE-NG
+        /// HighProcessData.h:80-94), 0 when no slot is set; below 6.
+        pub gaze_slot: u8,
+        /// The engine's EmotionType (0 neutral, 1 anger, 2 disgust, 3 fear, 4
+        /// sad, 5 happy, 6 surprise, 7 puzzled; TESTopicInfo.h:75-85); at
+        /// most 7.
+        pub emotion_type: u8,
+        /// The emotion's strength, 0 to 100.
+        pub emotion_value: u8,
     }
 }
 

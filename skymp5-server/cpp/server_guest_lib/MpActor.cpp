@@ -69,6 +69,11 @@ struct MpActor::Impl
   bool pendingDeath = false;
   uint32_t pendingDeathAggressor = 0;
   uint64_t pendingDeathSinceMs = 0;
+  // slice 5: the host's reading of the gaze and the face
+  uint32_t hostedGazeTarget = 0;
+  uint32_t hostedGazeSlot = 0;
+  uint32_t hostedEmotionType = 0;
+  uint32_t hostedEmotionValue = 0;
   bool isBlockActive = false;
   std::chrono::steady_clock::time_point lastAttributesUpdateTimePoint;
   std::vector<std::pair<uint32_t, std::chrono::steady_clock::time_point>>
@@ -318,6 +323,35 @@ void MpActor::SetHostedState(uint32_t combatTarget, uint32_t package)
 {
   pImpl->hostedCombatTarget = combatTarget;
   pImpl->hostedPackage = package;
+}
+
+void MpActor::SetHostedGaze(uint32_t target, uint32_t slot,
+                            uint32_t emotionType, uint32_t emotionValue)
+{
+  pImpl->hostedGazeTarget = target;
+  pImpl->hostedGazeSlot = slot;
+  pImpl->hostedEmotionType = emotionType;
+  pImpl->hostedEmotionValue = emotionValue;
+}
+
+uint32_t MpActor::GetHostedGazeTarget() const
+{
+  return pImpl->hostedGazeTarget;
+}
+
+uint32_t MpActor::GetHostedGazeSlot() const
+{
+  return pImpl->hostedGazeSlot;
+}
+
+uint32_t MpActor::GetHostedEmotionType() const
+{
+  return pImpl->hostedEmotionType;
+}
+
+uint32_t MpActor::GetHostedEmotionValue() const
+{
+  return pImpl->hostedEmotionValue;
 }
 
 uint32_t MpActor::GetHostedCombatTarget() const

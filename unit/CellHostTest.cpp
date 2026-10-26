@@ -124,7 +124,9 @@ void Act(PartOne& p, Networking::UserId user, uint32_t actorId)
 // three percentages, the combat target and the package as the host's engine
 // has them
 void State(PartOne& p, Networking::UserId user, uint32_t actorId, float health,
-           float magicka, float stamina, uint32_t target, uint32_t package)
+           float magicka, float stamina, uint32_t target, uint32_t package,
+           uint32_t gazeTarget = 0, uint32_t gazeSlot = 0,
+           uint32_t emotionType = 0, uint32_t emotionValue = 0)
 {
   static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
   RawMessageData raw;
@@ -138,6 +140,10 @@ void State(PartOne& p, Networking::UserId user, uint32_t actorId, float health,
   msg.stamina = stamina;
   msg.combatTarget = target;
   msg.package = package;
+  msg.gazeTarget = gazeTarget;
+  msg.gazeSlot = gazeSlot;
+  msg.emotionType = emotionType;
+  msg.emotionValue = emotionValue;
   p.GetActionListener().OnHostedActorState(raw, msg);
 }
 
@@ -937,6 +943,20 @@ TEST_CASE("A hosted actor's state is its host's word bounded by the server's "
   REQUIRE(toC2.front().data.stamina.has_value());
   REQUIRE_FALSE(toC2.front().data.magicka.has_value());
   REQUIRE(SentTo<ChangeValuesMessage>(p, 0).empty());
+  // slice 5: the state itself reaches the other game (the gaze and the face
+  // ride it), never the host
+  REQUIRE(SentTo<HostedActorStateMessage>(p, 1).size() == 1);
+  REQUIRE(SentTo<HostedActorStateMessage>(p, 1).front().idx == actor.GetIdx());
+  REQUIRE(SentTo<HostedActorStateMessage>(p, 0).empty());
+  p.Messages().clear();
+  State(p, 0, kActor, 0.5f, 1.f, 0.75f, kC1, 0x40000, kC2, 4, 5, 60);
+  REQUIRE(actor.GetHostedGazeTarget() == kC2);
+  REQUIRE(actor.GetHostedGazeSlot() == 4);
+  REQUIRE(actor.GetHostedEmotionType() == 5);
+  REQUIRE(actor.GetHostedEmotionValue() == 60);
+  REQUIRE(SentTo<HostedActorStateMessage>(p, 1).size() == 1);
+  REQUIRE(SentTo<HostedActorStateMessage>(p, 1).front().gazeTarget == kC2);
+  REQUIRE(SentTo<HostedActorStateMessage>(p, 1).front().emotionValue == 60);
 
   // the other game's state about the same actor: dropped at the gate
   p.Messages().clear();

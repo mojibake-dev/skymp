@@ -29,7 +29,11 @@ struct HostedActorStateMessage : public MessageBase<HostedActorStateMessage>
       .Serialize("magicka", magicka)
       .Serialize("stamina", stamina)
       .Serialize("combatTarget", combatTarget)
-      .Serialize("package", package);
+      .Serialize("package", package)
+      .Serialize("gazeTarget", gazeTarget)
+      .Serialize("gazeSlot", gazeSlot)
+      .Serialize("emotionType", emotionType)
+      .Serialize("emotionValue", emotionValue);
   }
 
   uint32_t idx = 0;
@@ -38,4 +42,13 @@ struct HostedActorStateMessage : public MessageBase<HostedActorStateMessage>
   float stamina = 1.f;
   uint32_t combatTarget = 0;
   uint32_t package = 0;
+  // slice 5 (the gaze and the face): the head-track target as the server
+  // knows it (0 none), the engine's slot type (below 6), the emotion type
+  // (at most 7) and strength (at most 100); the server records them and
+  // relays the message to the actor's other listeners, whose puppets apply
+  // them (the percentages stay the server's ChangeValues)
+  uint32_t gazeTarget = 0;
+  uint32_t gazeSlot = 0;
+  uint32_t emotionType = 0;
+  uint32_t emotionValue = 0;
 };

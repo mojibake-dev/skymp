@@ -485,6 +485,13 @@ public:
   void SetHostedState(uint32_t combatTarget, uint32_t package);
   uint32_t GetHostedCombatTarget() const;
   uint32_t GetHostedPackage() const;
+  // slice 5: the host's reading of the actor's gaze and face, recorded (R2)
+  void SetHostedGaze(uint32_t target, uint32_t slot, uint32_t emotionType,
+                     uint32_t emotionValue);
+  uint32_t GetHostedGazeTarget() const;
+  uint32_t GetHostedGazeSlot() const;
+  uint32_t GetHostedEmotionType() const;
+  uint32_t GetHostedEmotionValue() const;
 
 private:
   // the two EndRunningEffects above: removes the MGEFs named, gives a buff's

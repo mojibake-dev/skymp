@@ -53,6 +53,15 @@ Napi::Value IsPerformingAction(const Napi::CallbackInfo& info);
 // for a replay its AI update would run (a puppet's never comes)
 Napi::Value SayTopicInfo(const Napi::CallbackInfo& info);
 Napi::Value SayTopicInfoResult(const Napi::CallbackInfo& info);
+// thuum docs/verbs/npc-stream.md (slice 5, the gaze and the face):
+// pollHostedGaze(actorFormIds) reads, on the game thread, each actor's
+// highest set head-track slot (HighProcessData::headTrackTarget and
+// headTracked, CommonLibSSE-NG HighProcessData.h:217-218, the types at
+// :80-94) and its emotion (Actor::GetEmotionType and GetEmotionValue,
+// Actor.h:464-466) into a table; hostedGaze(actorFormId) answers the last
+// read as [targetFormId, slot, emotionType, emotionValue], or null
+Napi::Value PollHostedGaze(const Napi::CallbackInfo& info);
+Napi::Value HostedGaze(const Napi::CallbackInfo& info);
 // thuum docs/verbs/npc-fate.md (ADR-050 decision 2, deaths by the engine):
 // damageActor(actorFormId, health, attackerFormId, killMove): the server's
 // cause applied to an actor this game simulates on the game thread, through
@@ -98,6 +107,12 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set("sayTopicInfoResult",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(SayTopicInfoResult)));
+  exports.Set(
+    "pollHostedGaze",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(PollHostedGaze)));
+  exports.Set(
+    "hostedGaze",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(HostedGaze)));
   exports.Set(
     "damageActor",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(DamageActor)));

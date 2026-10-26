@@ -1,5 +1,9 @@
 {
   "combatTarget": 4278190080,
+  "emotionType": 5,
+  "emotionValue": 60,
+  "gazeSlot": 4,
+  "gazeTarget": 79986,
   "health": 0.5,
   "idx": 7,
   "magicka": 1.0,

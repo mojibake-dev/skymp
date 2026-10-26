@@ -100,6 +100,10 @@ export class HostedStateService extends ClientListener {
                 stamina: sample.stamina,
                 combatTarget: sample.combatTarget,
                 package: sample.package,
+                gazeTarget: sample.gazeTarget,
+                gazeSlot: sample.gazeSlot,
+                emotionType: sample.emotionType,
+                emotionValue: sample.emotionValue,
                 _refrId: remoteId,
             };
             this.controller.emitter.emit("sendMessageWithRefrId", {
@@ -107,8 +111,11 @@ export class HostedStateService extends ClientListener {
                 reliability: last ? "unreliable" : "reliable",
             });
             this.lastSent.set(localId, sample);
-            logTrace(this, `state ${remoteId.toString(16)}: health ${sample.health.toFixed(3)} magicka ${sample.magicka.toFixed(3)} stamina ${sample.stamina.toFixed(3)} target ${sample.combatTarget.toString(16)} package ${sample.package.toString(16)}${last ? "" : " (keyframe)"}`);
+            logTrace(this, `state ${remoteId.toString(16)}: health ${sample.health.toFixed(3)} magicka ${sample.magicka.toFixed(3)} stamina ${sample.stamina.toFixed(3)} target ${sample.combatTarget.toString(16)} package ${sample.package.toString(16)} gaze ${sample.gazeTarget.toString(16)} slot ${sample.gazeSlot} emotion ${sample.emotionType} ${sample.emotionValue}${last ? "" : " (keyframe)"}`);
         }
+        // slice 5: the gaze and the face read on the game thread for the next
+        // poll (one task; rule 9)
+        this.sp.pollHostedGaze(Array.from(seen));
         for (const remoteId of hosted) {
             if (remoteId === 0x14) {
                 continue;
@@ -208,12 +215,19 @@ export class HostedStateService extends ClientListener {
         };
         const target = actor.getCombatTarget();
         const targetLocal = target ? target.getFormID() : 0;
+        // slice 5: the last poll's read of the gaze and the face
+        const gaze = this.sp.hostedGaze(localId);
+        const gazeLocal = gaze && gaze[0] ? gaze[0] : 0;
         return {
             health: pct("health"),
             magicka: pct("magicka"),
             stamina: pct("stamina"),
             combatTarget: targetLocal ? localIdToRemoteId(targetLocal, true) : 0,
             package: this.packages.get(localId) ?? 0,
+            gazeTarget: gazeLocal ? localIdToRemoteId(gazeLocal, true) : 0,
+            gazeSlot: gaze ? Math.min(5, Math.max(0, Math.floor(gaze[1]))) : 0,
+            emotionType: gaze ? Math.min(7, Math.max(0, Math.floor(gaze[2]))) : 0,
+            emotionValue: gaze ? Math.min(100, Math.max(0, Math.floor(gaze[3]))) : 0,
         };
     }
 
@@ -222,7 +236,9 @@ export class HostedStateService extends ClientListener {
     private static same(a: HostedStateSample, b: HostedStateSample): boolean {
         const near = (x: number, y: number) => Math.abs(x - y) < 0.005;
         return near(a.health, b.health) && near(a.magicka, b.magicka) && near(a.stamina, b.stamina)
-            && a.combatTarget === b.combatTarget && a.package === b.package;
+            && a.combatTarget === b.combatTarget && a.package === b.package
+            && a.gazeTarget === b.gazeTarget && a.gazeSlot === b.gazeSlot
+            && a.emotionType === b.emotionType && Math.abs(a.emotionValue - b.emotionValue) < 10;
     }
 
     private readonly packages = new Map<number, number>();
@@ -239,4 +255,8 @@ interface HostedStateSample {
     stamina: number;
     combatTarget: number;
     package: number;
+    gazeTarget: number;
+    gazeSlot: number;
+    emotionType: number;
+    emotionValue: number;
 }

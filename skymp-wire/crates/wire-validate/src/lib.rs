@@ -538,6 +538,11 @@ fn check_hosted_state(m: &skymp::HostedActorState) -> Result<(), Reject> {
     if m.idx == u32::MAX || !within(m.health) || !within(m.magicka) || !within(m.stamina) {
         return Err(Reject::Range);
     }
+    // slice 5: the gaze slot below the engine's six, the emotion within its
+    // eight types, its strength at most 100
+    if m.gaze_slot >= 6 || m.emotion_type > 7 || m.emotion_value > 100 {
+        return Err(Reject::Range);
+    }
     Ok(())
 }
 
@@ -1709,6 +1714,19 @@ mod tests {
     // thuum docs/verbs/npc-stream.md (ADR-050): a host's state for an actor
     // it simulates names the actor's index and three percentages within 0
     // and 1; 128 at once, 32 a second after that (UNMEASURED until P3)
+    #[test]
+    fn a_hosted_states_gaze_and_face_are_bounded() {
+        use wire_schema::skymp::HostedActorState;
+        let face = |gaze_slot, emotion_type, emotion_value| {
+            Message::HostedActorState(HostedActorState { idx: 7, health: 1.0, magicka: 1.0, stamina: 1.0, gaze_target: 0x13491, gaze_slot, emotion_type, emotion_value, ..Default::default() })
+        };
+        assert_eq!(validate_server(&face(4, 5, 100)), Ok(()));
+        assert_eq!(validate_server(&face(0, 0, 0)), Ok(()));
+        assert_eq!(validate_server(&face(6, 0, 0)), Err(Reject::Range));
+        assert_eq!(validate_server(&face(0, 8, 0)), Err(Reject::Range));
+        assert_eq!(validate_server(&face(0, 0, 101)), Err(Reject::Range));
+    }
+
     fn hosted_state(idx: u32, health: f32, magicka: f32, stamina: f32) -> Message {
         Message::HostedActorState(wire_schema::skymp::HostedActorState {
             idx,

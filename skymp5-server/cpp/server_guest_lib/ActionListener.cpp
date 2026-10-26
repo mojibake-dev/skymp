@@ -654,6 +654,23 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
       verdict.stamina.changed ? std::optional<float>(verdict.stamina.record)
                               : std::nullopt);
     actor->SetHostedState(msg.combatTarget, msg.package);
+    // slice 5 (the gaze and the face): recorded, and the message itself
+    // relayed unreliable to every listener with a user but the host, whose
+    // puppets aim and make the face (the percentages stay the judged
+    // ChangeValues below; a puppet seat ignores the message's values)
+    actor->SetHostedGaze(msg.gazeTarget, msg.gazeSlot, msg.emotionType,
+                         msg.emotionValue);
+    {
+      HostedActorStateMessage relay = msg;
+      relay.idx = actor->GetIdx();
+      for (auto listener : actor->GetActorListeners()) {
+        if (listener == myActor ||
+            listener->GetUserId() == Networking::InvalidUserId) {
+          continue;
+        }
+        listener->SendToUser(relay, false);
+      }
+    }
     if (verdict.health.changed || verdict.magicka.changed ||
         verdict.stamina.changed) {
       ChangeValuesMessage out;

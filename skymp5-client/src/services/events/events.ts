@@ -28,6 +28,7 @@ import { MagicEffectsMessage } from "../messages/magicEffectsMessage";
 import { UpdateActionMessage } from "../messages/updateActionMessage";
 import { ActorSpeechMessage } from "../messages/actorSpeechMessage";
 import { DamageCauseMessage } from "../messages/damageCauseMessage";
+import { HostedActorStateMessage } from "../messages/hostedActorStateMessage";
 import { PlayerGlobalsMessage } from "../messages/playerGlobalsMessage";
 import { ActorJumpMessage } from "../messages/actorJumpMessage";
 import { SpSnippetMessage } from "../messages/spSnippetMessage";
@@ -101,6 +102,7 @@ type EventTypes = {
     'updateActionMessage': [ConnectionMessage<UpdateActionMessage>],
     'actorSpeechMessage': [ConnectionMessage<ActorSpeechMessage>],
     'damageCauseMessage': [ConnectionMessage<DamageCauseMessage>],
+    'hostedActorStateMessage': [ConnectionMessage<HostedActorStateMessage>],
     'playerGlobalsMessage': [ConnectionMessage<PlayerGlobalsMessage>],
     'actorJumpMessage': [ConnectionMessage<ActorJumpMessage>],
     'hostGrantMessage': [ConnectionMessage<HostGrantMessage>],

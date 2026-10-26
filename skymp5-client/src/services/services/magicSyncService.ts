@@ -35,6 +35,7 @@ export class MagicSyncService extends ClientListener {
         // same explosion there (remoteServer placeAreaEffect)
         this.controller.on("areaEffectPlaced", (e) => this.onAreaEffectPlaced(e));
         this.controller.on("update", () => this.onUpdateCasts());
+        this.controller.on("actionPerformed", (e) => this.onHostedAction(e));
 
         const self = this;
 
@@ -102,6 +103,17 @@ export class MagicSyncService extends ClientListener {
             this.flushCasts(false);
         } else {
             this.sendCast(msg);
+            // thuum docs/verbs/npc-stream.md (train 53): a hosted caster's
+            // end comes through its action stream (the hand's equipped event,
+            // actionPerformed), not the player's own graph hook below
+            if (casterId !== this.playerId) {
+                let byHand = this.lastHostedCastByHand.get(casterId);
+                if (!byHand) {
+                    byHand = new Map<number, SpellCastMsgData>();
+                    this.lastHostedCastByHand.set(casterId, byHand);
+                }
+                byHand.set(msg.castingSource, msg);
+            }
         }
 
         // thuum docs/verbs/spell-cast.md: the stop below hooks the player's
@@ -338,6 +350,36 @@ export class MagicSyncService extends ClientListener {
     private isHostedByMe(localId: number): boolean {
         return this.controller.lookupListener(HostService).isMineLocal(localId);
     }
+
+    // thuum docs/verbs/npc-stream.md (train 53, H-53b): a hosted caster's cast
+    // ends when its graph plays the hand's equipped event, which the host's
+    // action stream carries (ActionSyncService's actionPerformed, filtered to
+    // the hosted set in native); the end goes under the caster's own id, as
+    // the player's does from its own graph hook (onSendAnimationEventLeave)
+    private onHostedAction(e: { actorId: number; eventName: string }) {
+        if (e.actorId === this.playerId) {
+            return;
+        }
+        const hand = this.handOfEquippedAnim(e.eventName);
+        if (hand === null) {
+            return;
+        }
+        const byHand = this.lastHostedCastByHand.get(e.actorId);
+        const cast = byHand?.get(hand);
+        if (!byHand || !cast) {
+            return;
+        }
+        byHand.delete(hand);
+        const msg: SpellCastMsgData = {
+            ...cast,
+            ...noSpellLaunch,
+            interruptCast: true,
+            actorAnimationVariables: this.getAnimationVariablesFromActorConverted(e.actorId),
+        };
+        this.sendCast(msg);
+    }
+
+    private lastHostedCastByHand = new Map<number, Map<number, SpellCastMsgData>>();
 
     private getSpellCastEventData(e: SpellCastEvent, isInterruptCast: boolean): SpellCastMsgData {
         const spellCastData: SpellCastMsgData = {

@@ -274,6 +274,25 @@ export class NetworkingService extends ClientListener {
 
     if (this.serverAddress.hostName !== "" && this.serverAddress.port !== 0) {
       this.sp.mpClientPlugin.createClient(hostName, port);
+      // thuum docs/research/m3/decisions-after-playtest-34.md D24 (B): the
+      // game's quit ends the process right after the client's teardown
+      // instead of the engine's shutdown, which crashes at every quit (two
+      // SKSE plugins hold the Loading Menu past the UI's end;
+      // cell-host.md); quitFastExit false in skymp5-client-settings.txt
+      // keeps the engine's own shutdown for a read of it
+      try {
+        const fastExit = this.sp.settings["skymp5-client"]["quitFastExit"] !== false;
+        // typed by duck: the client's copy of the platform's declarations
+        // (node_modules/@skyrim-platform) lags the fork's Definitions.txt
+        const plugin = this.sp.mpClientPlugin as unknown as { setQuitFastExit?: (fastExit: boolean) => void };
+        if (typeof plugin.setQuitFastExit === "function") {
+          plugin.setQuitFastExit(fastExit);
+        } else {
+          logError(this, "setQuitFastExit missing: an older platform dist, the engine's shutdown runs at the quit");
+        }
+      } catch (e) {
+        logError(this, "setQuitFastExit failed", String(e));
+      }
     } else {
       logError(this, "createClientSafe failed");
     }

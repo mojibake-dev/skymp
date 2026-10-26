@@ -94,6 +94,22 @@ struct TESDestructionStageChangedEvent
   uint32_t newStage;
 };
 
+// thuum docs/verbs/npc-stream.md (the voice slice): the engine's event for
+// a spoken line, which CommonLibSSE-NG at the pin forward-declares alone
+// (ScriptEventSourceHolder.h:54). The layout is the re-analyst's REA read
+// of 1.6.1170 on sky-re (2026-10-26, CONFIRMED-STATIC from the dispatcher
+// 25616 and SkyrimVM's consumer 53997): a refcounted callback pointer (null
+// for a bark), the speaker, the topic info's form id, the type (0 the
+// line's begin, 1 its end)
+struct TESTopicInfoEvent
+{
+  void* callback;
+  RE::NiPointer<RE::TESObjectREFR> speaker;
+  RE::FormID topicInfoFormID;
+  std::uint32_t type;
+};
+static_assert(sizeof(TESTopicInfoEvent) == 0x18);
+
 struct TESSceneActionEvent
 {
   void* reference;

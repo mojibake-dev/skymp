@@ -1602,3 +1602,25 @@ wire_struct! {
     }
 }
 
+wire_struct! {
+    /// MsgType 54, thuum's (docs/verbs/npc-stream.md, the voice slice, ADR-050):
+    /// a spoken line begins on an actor the sender's game simulates. Client
+    /// to server, unreliable (a lost line is a lost line, TES3MP's shape),
+    /// R2: the server gates the host and relays the bytes to the actor's
+    /// other listeners, which make their puppet say the same info through
+    /// the engine's own say. Reason codes: `E_VAL_RANGE` (an idx of u32::MAX,
+    /// a topic or info of 0), `E_VAL_RATE` (the budget).
+    pub struct ActorSpeech {
+        /// `"t": 54`.
+        #[serde(default)]
+        pub t: MsgT<54>,
+        /// The speaking actor as the server indexes it; the sender's own is
+        /// refused there.
+        pub idx: u32,
+        /// The topic's form id (the info's parent).
+        pub topic: u32,
+        /// The topic info's form id: the line itself.
+        pub info: u32,
+    }
+}
+

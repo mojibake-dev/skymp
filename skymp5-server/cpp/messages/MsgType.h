@@ -66,6 +66,8 @@ enum class MsgType : uint8_t
   HostedActorState = 53, // thuum docs/verbs/npc-stream.md (ADR-050): a host's
                          // values, combat target and package for an actor it
                          // simulates
+  ActorSpeech = 54,      // the same verb's voice slice: a spoken line begins
+                         // on an actor the host simulates
 
   Max
 };

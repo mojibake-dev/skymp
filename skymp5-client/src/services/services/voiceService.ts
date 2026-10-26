@@ -23,6 +23,15 @@ import { logTrace } from "../../logging";
 export class VoiceService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
+        // thuum docs/verbs/npc-stream.md (the voice slice): the client switch
+        // npcVoice; on by default, off keeps the host's lines unsent and a
+        // puppet's say unplayed (D27-B: the voice rides a build only when P7
+        // is green; a merge that carries this code with a red P7 flips the
+        // default off)
+        this.enabled = this.sp.settings["skymp5-client"]["npcVoice"] !== false;
+        if (!this.enabled) {
+            logTrace(this, "npcVoice is off in settings: no spoken line goes out and no puppet says one");
+        }
         this.controller.on("topicInfo", (e) => this.onTopicInfo(e));
         this.controller.emitter.on("actorSpeechMessage", (e) => this.onActorSpeech(e));
         this.controller.on("update", () => this.onUpdate());
@@ -30,6 +39,9 @@ export class VoiceService extends ClientListener {
 
     // the event's context allows no game call; the id is mapped on the update
     private onTopicInfo(e: { speakerId: number; topicInfo: number; topic: number }) {
+        if (!this.enabled) {
+            return;
+        }
         if (!this.controller.lookupListener(HostService).isStreamEnabled()) {
             return;
         }
@@ -55,6 +67,9 @@ export class VoiceService extends ClientListener {
     // a relayed line: the puppet of that actor says it (never an actor this
     // game hosts, Rule A; never a figure or a dead actor)
     private onActorSpeech(event: ConnectionMessage<ActorSpeechMessage>) {
+        if (!this.enabled) {
+            return;
+        }
         const msg = event.message;
         this.controller.once("update", () => {
             const world = this.controller.lookupListener(RemoteServer).getWorldModel();
@@ -102,4 +117,5 @@ export class VoiceService extends ClientListener {
 
     private readonly pending = new Map<number, { info: number; since: number }>();
     private static readonly answerMs = 2000;
+    private readonly enabled: boolean;
 }

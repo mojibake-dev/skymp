@@ -409,6 +409,17 @@ public:
   // server number reached zero dies by the server's word when its host
   // reported nothing within MpActor::kPendingDeathMs
   void TickDeaths(uint64_t nowMs);
+  // thuum docs/verbs/npc-talk.md (ADR-052): a player's claim on an NPC for a
+  // dialogue, the per-actor row beside the cell's host; the word follows
+  enum class ClaimVerdict
+  {
+    Granted,
+    Held,
+    Unloaded,
+    Reclaimed
+  };
+  ClaimVerdict ClaimActor(MpActor& claimant, MpActor& actor);
+  bool ReleaseClaim(MpActor& claimant, MpActor& actor);
   // thuum docs/verbs/npc-fate.md (the deaths): the bodies whose deadline
   // (fateDiedAt plus WorldState::FateRespawnHours()) the installed game
   // clock has passed stand again; once a second from Tick, directly from a

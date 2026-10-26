@@ -1,4 +1,5 @@
 #include "ActionListener.h"
+#include "ActorClaimMessage.h"
 #include "ActorSpeechMessage.h"
 #include "ChangeValuesMessage.h"
 #include "CreateActorMessage.h"
@@ -1283,4 +1284,77 @@ TEST_CASE("A hosted actor's furniture use is its host's engine's: the server "
   DoDisconnect(p, 0);
   p.DestroyActor(kSitter);
   p.DestroyActor(kC1);
+}
+
+// thuum docs/verbs/npc-talk.md (ADR-052): a player's claim on an NPC another
+// game simulates, for a dialogue
+TEST_CASE("A guest's claim on a hosted NPC names the guest as the simulator "
+          "on every seat, a far or unloaded claimant is refused, and the "
+          "release names the host again",
+          "[CellHost][Talk][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  constexpr uint32_t kActor =
+    0x10ebaf; // kCow, the game-file actor the host cases use
+  const NiPoint3 kAt{ 117786.f, -81400.f, 10997.f };
+  auto& c1 = Player(p, 0, kC1, kAt + NiPoint3{ 40.f, 0.f, 0.f });
+  auto& c2 = Player(p, 1, kC2, kAt + NiPoint3{ 80.f, 0.f, 0.f });
+  auto& form = p.worldState.LookupFormByIdNoLoad(kActor);
+  REQUIRE(form);
+  MpActor* actor = form->AsActor();
+  REQUIRE(actor);
+  actor->SetPos(kAt);
+  const auto cell = p.worldState.CellOf(*actor);
+  REQUIRE(cell.has_value());
+  CellLoaded(p, 0, *cell);
+  CellLoaded(p, 1, *cell);
+  p.TickCellHosts(static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch())
+      .count()));
+  REQUIRE(p.worldState.HostOf(*actor) == &c1);
+  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
+  const auto claim = [&](Networking::UserId user, bool want) {
+    RawMessageData raw;
+    raw.userId = user;
+    raw.unparsed = unparsed;
+    raw.unparsedLength = sizeof(unparsed);
+    ActorClaimMessage msg;
+    msg.idx = actor->GetIdx();
+    msg.claim = want;
+    p.GetActionListener().OnActorClaim(raw, msg);
+  };
+
+  // c2 claims: the word names c2 on both seats, c2 simulates
+  p.Messages().clear();
+  claim(1, true);
+  REQUIRE(p.SimulatorOf(*actor) == kC2);
+  REQUIRE(p.worldState.HostOf(*actor) == &c2);
+  REQUIRE(LastHostedWord(p, 1, *actor) == "false");
+  REQUIRE(LastHostedWord(p, 0, *actor) == "true");
+  // c1's reports are refused, c2's pass the gate
+  REQUIRE(p.GetActionListener().ActorUpdatableBy(actor->GetIdx(), 0) ==
+          nullptr);
+  REQUIRE(p.GetActionListener().ActorUpdatableBy(actor->GetIdx(), 1) == actor);
+
+  // the release: the host again on both seats
+  p.Messages().clear();
+  claim(1, false);
+  REQUIRE(p.SimulatorOf(*actor) == kC1);
+  REQUIRE(LastHostedWord(p, 0, *actor) == "false");
+  REQUIRE(LastHostedWord(p, 1, *actor) == "true");
+
+  // a claimant far from the record is refused, nothing moves
+  c2.SetPos(kAt + NiPoint3{ 4000.f, 0.f, 0.f });
+  p.Messages().clear();
+  claim(1, true);
+  REQUIRE(p.SimulatorOf(*actor) == kC1);
+  REQUIRE(PropertiesSentTo(p, 1).empty());
+  c2.SetPos(kAt + NiPoint3{ 80.f, 0.f, 0.f });
+
+  DoDisconnect(p, 1);
+  DoDisconnect(p, 0);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
 }

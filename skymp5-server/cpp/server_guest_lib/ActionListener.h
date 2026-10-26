@@ -119,6 +119,10 @@ public:
   // on an actor the sender hosts; the host gate, then the bytes relayed
   // unreliable to the actor's other listeners (the puppets say the line);
   // nothing recorded
+  // thuum docs/verbs/npc-talk.md (ADR-052): a player's claim on an NPC for a
+  // dialogue, or its release
+  virtual void OnActorClaim(const RawMessageData& rawMsgData,
+                            const ActorClaimMessage& msg);
   virtual void OnActorSpeech(const RawMessageData& rawMsgData,
                              const ActorSpeechMessage& msg);
 

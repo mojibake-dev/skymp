@@ -1665,3 +1665,23 @@ wire_struct! {
     }
 }
 
+wire_struct! {
+    /// MsgType 56, thuum's (docs/verbs/npc-talk.md, ADR-052): a player asks
+    /// for an NPC some other player's game simulates, for a dialogue (`claim`
+    /// true), or gives it back (`claim` false). Client to server, reliable,
+    /// R0: the server grants when the claimant stands in the actor's cell
+    /// within activation reach and the actor is an NPC, alive, not in combat
+    /// and unclaimed; the word (isHostedByOther) then names the claimant as
+    /// the simulator for the claim's lease. Reason codes: `E_VAL_RANGE` (an
+    /// idx of u32::MAX), `E_VAL_RATE` (the budget).
+    pub struct ActorClaim {
+        /// `"t": 56`.
+        #[serde(default)]
+        pub t: MsgT<56>,
+        /// The actor as the server indexes it.
+        pub idx: u32,
+        /// True asks for the actor, false releases it.
+        pub claim: bool,
+    }
+}
+

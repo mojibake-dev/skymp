@@ -2129,10 +2129,19 @@ void MpObjectReference::EnsureBaseContainerAdded(espm::Loader& espm)
     AddContainerObject(entry, &itemsToAdd, pcLevel);
   }
 
+  // thuum docs/verbs/npc-fate.md, npc-stream.md (train 51): the outfit rolls
+  // ONCE, and what the actor wears is what its inventory holds. Two rolls of
+  // a leveled outfit entry (one for the worn set, one for the inventory) gave
+  // a placed bandit's record a worn hide helmet its inventory lacked, so the
+  // host's faithful hands report was refused ("inventory does not contain
+  // item 13913", x-npc-copy-fate 20261027-041406), and every leveled
+  // game-file outfit could do the same
   auto outfitObjects = GetOutfitObjects(GetParent(), templateChain, lookupRes);
   for (auto& entry : outfitObjects) {
-    AddContainerObject(entry, &itemsToAdd, pcLevel);
     AddContainerObject(entry, &itemsToEquip, pcLevel);
+  }
+  for (auto& p : itemsToEquip) {
+    itemsToAdd[p.first] += p.second;
   }
   if (actor) {
     Equipment eq;

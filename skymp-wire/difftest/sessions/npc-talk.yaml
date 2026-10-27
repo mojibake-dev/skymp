@@ -4,7 +4,11 @@
 # whatever the servers index there; the legacy server knows no 56 and drops it). The
 # wire server answers the claim with the word (isHostedByOther false to c2, true to c1)
 # when the actor exists at that idx and is in reach; a release follows. Divergences are
-# the words themselves: the legacy stack has no claims.
+# the words themselves: the legacy stack has no claims. c2 steps aside at 9 s so it outlives
+# c1's departure, as in every session, and the departure's two notices are declared as
+# cell-host's are: c1's actor gone from c2's view, and the cell passing to c2 at epoch 2 after
+# the host's grace (55's T2 on c1be67d1 found them undeclared, 2026-10-27; the claim handler
+# grants no cell, ActionListener::OnActorClaim, so the epoch-2 grant is the departure's).
 id: npc-talk
 clients:
   c1: {profile_id: 9}
@@ -23,3 +27,13 @@ divergences:
     legacy: 0
     wire: 1
     reason: the first loader in reach hosts the cell (HostGrant); the legacy server has no cell hosts
+  - client: c2
+    msg: {t: 48, cell: 48049, epoch: 2}
+    legacy: 0
+    wire: 1
+    reason: the host's departure passes the cell on after the grace to the visitor with it loaded and in reach, at the next epoch (cell-host's shape; the claim hands an actor, never the cell, ADR-052)
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

@@ -113,9 +113,12 @@ MpActor& Gather(PartOne& p)
   return predator;
 }
 
-// the raw bytes a relayed report carries (SendToNeighbours forwards them;
-// CellHostTest's Wear idiom)
-uint8_t kUnparsed[] = { Networking::MinPacketId, '{', '}' };
+// the raw bytes a relayed report carries (SendToNeighbours forwards them to
+// the listeners as they came, so the fixture reads them as the message's
+// type; CellHostTest's Wear idiom with the type named)
+uint8_t kUnparsed[] = {
+  Networking::MinPacketId, '{', '"', 't', '"', ':', '5', '}'
+};
 
 RawMessageData HostRaw()
 {

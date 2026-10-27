@@ -512,6 +512,25 @@ void MpActor::VisitProperties(CreateActorMessage& message,
   }
 }
 
+void MpActor::Enable()
+{
+  if (!ChangeForm().isDisabled) {
+    return;
+  }
+  MpObjectReference::Enable();
+  // thuum docs/research/m3/decisions-after-playtest-34.md D21: a dead actor
+  // back in the world resumes its return. ScheduleFateRespawn stamps the
+  // day when the death left none (it died disabled: the clock runs from
+  // now) and keeps the death's own stamp otherwise (disabled while the body
+  // lay: the sweep dropped it, the hours still count from the death)
+  if (IsDead() && IsFateRespawned()) {
+    ScheduleFateRespawn();
+    spdlog::info("[verb:npc-fate] {:x} enabled dead: its return scheduled "
+                 "(D21)",
+                 GetFormId());
+  }
+}
+
 void MpActor::Disable()
 {
   if (ChangeForm().isDisabled) {
@@ -1677,6 +1696,12 @@ void MpActor::SendAndSetDeathState(bool isDead, bool shouldTeleport)
     SetPos(position.pos);
     SetAngle(position.rot);
   }
+
+  // thuum docs/research/m3/decisions-after-playtest-34.md D18: the cell host
+  // table hears a player's death and respawn here (PartOne installs it)
+  if (auto worldState = GetParent(); worldState && worldState->onDeathState) {
+    worldState->onDeathState(*this, isDead);
+  }
 }
 
 DeathStateContainerMessage MpActor::GetDeathStateMsg(
@@ -2070,6 +2095,18 @@ void MpActor::RespawnWithDelay(bool shouldTeleport)
   if (pImpl->isRespawning) {
     return;
   }
+  // thuum docs/research/m3/decisions-after-playtest-34.md D21: a disabled
+  // actor is out of the world by the server's own word (the gamemode's or
+  // the lab's Disable), so its death schedules no return; playtest 34's ice
+  // wolf ff000003, disabled at 23:00Z, was killed at 23:01:00 and stood
+  // again enabled at 23:01:25. Its enable starts the clock (Enable below). A
+  // player's actor is never taken out this way
+  if (IsDisabled() && !IsCreatedAsPlayer()) {
+    spdlog::info("[verb:npc-fate] {:x} died disabled: no respawn scheduled "
+                 "(D21); its enable starts the clock",
+                 GetFormId());
+    return;
+  }
   // thuum docs/verbs/npc-fate.md (the deaths): a game-file actor's body keeps
   // to the engine's reset clock in game hours, never a wall delay; the
   // deadline lives on the record and PartOne's sweep ends it
@@ -2092,6 +2129,15 @@ void MpActor::RespawnWithDelay(bool shouldTeleport)
       if (worldState->LookupFormById(formId).get() == this) {
         bool isLatestRespawn = respawnTimerIndex == pImpl->respawnTimerIndex;
         if (isLatestRespawn) {
+          // D21: taken out of the world while the timer ran; its enable
+          // schedules the return anew
+          if (IsDisabled() && !IsCreatedAsPlayer()) {
+            spdlog::info("[verb:npc-fate] {:x} disabled before its respawn: "
+                         "the respawn is dropped (D21)",
+                         GetFormId());
+            pImpl->isRespawning = false;
+            return;
+          }
           spdlog::info("MpActor::RespawnWithDelay {:x} - finally, respawn "
                        "after {} seconds",
                        GetFormId(), respawnTime);

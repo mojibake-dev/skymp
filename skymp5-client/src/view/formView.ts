@@ -607,8 +607,13 @@ export class FormView {
       // container (npc-fate.md): its inventory is the record's, applied
       // before the OpenContainer that follows it
       const asActor = Actor.from(refr);
-      if (!asActor || (this.refrId < 0xff000000 && asActor.isDead())) {
-        ModelApplyUtils.applyModelInventory(refr, model.inventory);
+      const deadBody = !!asActor && this.refrId < 0xff000000 && asActor.isDead();
+      if (!asActor || deadBody) {
+        // thuum docs/verbs/npc-fate.md (playtest 34, section 5): a body keeps
+        // the engine's dressing (the pin made the worn sets equal); the
+        // server's list is the loot rows, laid in as a diff alone, never
+        // through resetBase's removeAllItems and resetContainer
+        ModelApplyUtils.applyModelInventory(refr, model.inventory, !deadBody);
         model.inventory = undefined;
       }
     }
@@ -817,6 +822,10 @@ export class FormView {
         this.eqState.lastEqMoment = Date.now();
       }
     }
+    // thuum ADR-050 decision 3 (D29-C, 2026-10-26): a server-made copy this
+    // game hosts is never dressed by this view (train-47's once-dress is
+    // reverted here, D28-B); train 51 pins the server's roll into it the way
+    // a game-file actor's fate does, so Rule A holds from the first apply
     if (model.equipment && !alreadyHosted && !engineDressed) {
       // thuum ADR-046, decision 2: a figure's spells stay the server's. A
       // distributor adds its abilities at the actor's load, after the

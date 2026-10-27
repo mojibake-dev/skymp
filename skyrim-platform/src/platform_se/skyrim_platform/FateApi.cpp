@@ -160,11 +160,44 @@ Napi::Value FateApi::RerollActor(const Napi::CallbackInfo& info)
       RedressOnGameThread(refrId, fate);
       return;
     }
+    // thuum docs/research/m3/decisions-after-playtest-34.md D23 (playtest 34,
+    // section 4): a seat that logs in inside a dungeon loads its leveled
+    // clones from the save before the fates arrive, and the save kept the
+    // roll the server pinned, so the loaded clone IS the fate's pick in the
+    // common case; the engine's re-roll below would drop its 3D for nothing
+    // (thirteen invisible NPCs on test 2). The clone's pick is the extra's
+    // templateBase (CommonLibSSE-NG include/RE/E/ExtraLeveledCreature.h:24;
+    // HYPOTHESIS for the field's meaning, the log prints both ids): equal,
+    // redress alone
+    const auto* leveled =
+      actor->extraList.GetByType<RE::ExtraLeveledCreature>();
+    const uint32_t pickedId =
+      leveled && leveled->templateBase ? leveled->templateBase->formID : 0;
+    if (pickedId != 0 && pickedId == fate.baseId) {
+      logger::info(
+        "[verb:npc-fate] rerollActor({:x}): the loaded clone is "
+        "the fate's pick {:x} already (3D loaded {}), redress alone",
+        refrId, pickedId, actor->Is3DLoaded());
+      RedressOnGameThread(refrId, fate);
+      return;
+    }
+    const bool had3D = actor->Is3DLoaded();
     REL::Relocation<ActorRerollFn> reroll{ Offsets::Fate::ActorReroll };
     reroll(actor, -1);
-    logger::info("[verb:npc-fate] rerolled {:x} through the engine (3D loaded "
-                 "{}) toward the fate's {:x}",
-                 refrId, actor->Is3DLoaded(), fate.baseId);
+    // the re-roll drops the 3D (re-npc-roll.md:53, Set3D(nullptr, true))
+    // and nothing reloads it on an attached actor: a live actor with no
+    // model, on the compass and detecting (D23). The model is asked back
+    // through the reference's own loader (TESObjectREFR::Load3D,
+    // include/RE/T/TESObjectREFR.h:302, Actor's override A/Actor.h:315);
+    // HYPOTHESIS until the lab reads 3D loaded true after a late fate (the
+    // fallback is Disable then Enable(false), the resurrect path's shape)
+    if (had3D && !actor->Is3DLoaded()) {
+      actor->Load3D(false);
+    }
+    logger::info("[verb:npc-fate] rerolled {:x} through the engine from pick "
+                 "{:x} toward the fate's {:x} (3D loaded {} before, {} after "
+                 "the reload)",
+                 refrId, pickedId, fate.baseId, had3D, actor->Is3DLoaded());
   });
   return Napi::Boolean::New(info.Env(), true);
 }

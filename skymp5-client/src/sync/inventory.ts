@@ -347,9 +347,17 @@ export const applyInventory = (
   refr: ObjectReference,
   newInventory: Inventory,
   enableCrashProtection: boolean,
-  ignoreWorn = false
+  ignoreWorn = false,
+  resetBaseFirst = true
 ): boolean => {
-  resetBase(refr);
+  // thuum docs/verbs/npc-fate.md (playtest 34): a game-file body keeps the
+  // engine's dressing, so its caller passes resetBaseFirst false and the
+  // server's list lands as a diff alone (resetBase stripped the corpse to its
+  // underwear at the host's first loot, and resetContainer on an NPC_ base
+  // shared by many placements would empty that base's later spawns)
+  if (resetBaseFirst) {
+    resetBase(refr);
+  }
   const diff = getDiff(newInventory, getInventory(refr), ignoreWorn).entries;
 
   let res = true;

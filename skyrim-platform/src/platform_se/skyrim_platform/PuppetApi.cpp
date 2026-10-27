@@ -107,9 +107,13 @@ void Promote(RE::Actor& actor)
   actor.SetActivationBlocked(false);
   actor.EnableAI(true);
   actor.EvaluatePackage(false, false);
+  // thuum docs/research/m3/decisions-after-playtest-34.md D23: a live actor
+  // with no model is the playtest 34 picture (on the compass, detecting,
+  // invisible); said here so a lab read places the order of the fate's
+  // reload and the promote
   logger::info("[verb:npc-puppet] live {:x}: AI on, package evaluated, "
-               "activation unblocked",
-               actor.formID);
+               "activation unblocked (3D loaded {})",
+               actor.formID, actor.Is3DLoaded());
 }
 }
 

@@ -1442,6 +1442,14 @@ mod ffi {
         /// `player`'s messages resumed: a candidate again; a free cell it
         /// has loaded is granted, its own running grace disarmed.
         fn revived(self: &mut Cells, player: u32, now_ms: u64) -> Vec<HostDecision>;
+        /// `player`'s actor died (thuum docs/research/m3/
+        /// decisions-after-playtest-34.md D18): every cell it hosts starts
+        /// its grace and it is no candidate until `respawned`; its loaded
+        /// set kept.
+        fn died(self: &mut Cells, player: u32, now_ms: u64) -> Vec<HostDecision>;
+        /// `player`'s actor stood again: a candidate again; a free cell it
+        /// has loaded is granted, its own running grace disarmed.
+        fn respawned(self: &mut Cells, player: u32, now_ms: u64) -> Vec<HostDecision>;
         /// The clock: each grace that ran out passes its cell on (a Release,
         /// then a Grant or an Unhosted).
         fn tick(self: &mut Cells, now_ms: u64) -> Vec<HostDecision>;
@@ -2094,6 +2102,16 @@ impl Cells {
 
     fn revived(&mut self, player: u32, now_ms: u64) -> Vec<HostDecision> {
         let decisions = self.0.revived(player, now_ms);
+        host_decisions(&self.0, decisions)
+    }
+
+    fn died(&mut self, player: u32, now_ms: u64) -> Vec<HostDecision> {
+        let decisions = self.0.died(player, now_ms);
+        host_decisions(&self.0, decisions)
+    }
+
+    fn respawned(&mut self, player: u32, now_ms: u64) -> Vec<HostDecision> {
+        let decisions = self.0.respawned(player, now_ms);
         host_decisions(&self.0, decisions)
     }
 

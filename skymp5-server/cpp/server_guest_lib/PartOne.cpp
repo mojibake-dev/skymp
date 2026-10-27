@@ -998,6 +998,9 @@ void PartOne::Init()
     SendFates(actor, actor.GetCellOrWorld().ToFormId(worldState.espmFiles),
               actor.GetPos());
   };
+  worldState.onDeathState = [this](MpActor& actor, bool isDead) {
+    OnDeathState(actor, isDead);
+  };
   worldState.onActorFate = [this](MpActor& actor) {
     ActorFateMessage msg;
     msg.fates.push_back(FateOf(worldState, actor));
@@ -1757,6 +1760,27 @@ void PartOne::OnCellLoaded(MpActor& player, uint32_t cell, bool loaded)
            : pImpl->cells->unloaded(player.GetFormId(), cell, nowMs));
 }
 
+void PartOne::OnDeathState(MpActor& actor, bool isDead)
+{
+  // a player's actor alone: an NPC's death is npc-fate's and hosts nothing
+  if (serverState.UserByActor(&actor) == Networking::InvalidUserId) {
+    return;
+  }
+  const auto nowMs = SteadyNowMs();
+  if (isDead) {
+    spdlog::info("PartOne - cell-host: {:x} died: its cells start their "
+                 "grace, no candidate until it stands (D18)",
+                 actor.GetFormId());
+    ApplyHostDecisions(*this, pImpl->cells->died(actor.GetFormId(), nowMs));
+  } else {
+    spdlog::info("PartOne - cell-host: {:x} stands again: a candidate again "
+                 "(D18)",
+                 actor.GetFormId());
+    ApplyHostDecisions(*this,
+                       pImpl->cells->respawned(actor.GetFormId(), nowMs));
+  }
+}
+
 void PartOne::OnActorSighting(MpActor& reporter, uint32_t refrId,
                               uint32_t worldOrCell, const NiPoint3& pos,
                               const NiPoint3& rot)
@@ -1892,6 +1916,16 @@ void PartOne::TickFateRespawns()
     MpActor* actor = form ? form->AsActor() : nullptr;
     if (!actor || !actor->IsDead() ||
         !actor->GetChangeForm().fateDiedAt.has_value()) {
+      dropped.push_back(id);
+      continue;
+    }
+    // thuum docs/research/m3/decisions-after-playtest-34.md D21: a body taken
+    // out of the world while it lay waits for its enable (MpActor::Enable
+    // puts it back on the clock, the death's stamp kept)
+    if (actor->IsDisabled()) {
+      spdlog::info("[verb:npc-fate] {:x} disabled while its body lay: its "
+                   "return waits for its enable (D21)",
+                   id);
       dropped.push_back(id);
       continue;
     }

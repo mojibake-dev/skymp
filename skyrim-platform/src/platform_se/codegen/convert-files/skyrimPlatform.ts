@@ -67,6 +67,8 @@ interface MpClientPlugin {
   tick(tickHandler: (packetType: PacketType, rawContent: ArrayBuffer | null, error: string) => void): void
   send(jsonContent: string, reliable: boolean): void
   sendRaw(data: ArrayBuffer, size: number, reliable: boolean): void
+  // thuum docs/research/m3/decisions-after-playtest-34.md D24 (B): the quit thunk ends the process after the client's teardown instead of the engine's crashing shutdown; the fork's dist alone
+  setQuitFastExit(fastExit: boolean): void
 }
 export declare let mpClientPlugin: MpClientPlugin
 

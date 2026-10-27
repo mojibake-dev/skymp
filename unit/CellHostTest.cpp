@@ -1307,18 +1307,24 @@ TEST_CASE("A guest's claim on a hosted NPC names the guest as the simulator "
 {
   auto& p = GetPartOne();
   p.worldState.npcEnabled = true;
-  constexpr uint32_t kActor =
-    0x10ebaf; // kCow, the game-file actor the host cases use
-  const NiPoint3 kAt{ 117786.f, -81400.f, 10997.f };
-  auto& c1 = Player(p, 0, kC1, kAt + NiPoint3{ 40.f, 0.f, 0.f });
-  auto& c2 = Player(p, 1, kC2, kAt + NiPoint3{ 80.f, 0.f, 0.f });
-  // loaded by its id as the puppet case does (the no-load lookup found
-  // nothing when this case ran first, pipeline 3229)
-  MpActor* actor = &p.worldState.GetFormAt<MpActor>(kActor);
+  // kCow, the game-file actor the host cases use, at its own place in its
+  // own world (loaded by its id as the puppet case does; a Tamriel point put
+  // the cow in no cell of Whiterun's world, pipeline 3248)
+  MpActor* actor = &p.worldState.GetFormAt<MpActor>(kCow);
   REQUIRE(actor);
-  actor->SetPos(kAt);
+  const NiPoint3 kAt = actor->GetPos();
   const auto cell = p.worldState.CellOf(*actor);
   REQUIRE(cell.has_value());
+  // two players beside the cow in its world, the claim's reach rule reading
+  // the same world for both
+  DoConnect(p, 0);
+  p.CreateActor(kC1, kAt + NiPoint3{ 40.f, 0.f, 0.f }, 0, kWhiterun);
+  p.SetUserActor(0, kC1);
+  DoConnect(p, 1);
+  p.CreateActor(kC2, kAt + NiPoint3{ 80.f, 0.f, 0.f }, 0, kWhiterun);
+  p.SetUserActor(1, kC2);
+  auto& c1 = p.worldState.GetFormAt<MpActor>(kC1);
+  auto& c2 = p.worldState.GetFormAt<MpActor>(kC2);
   CellLoaded(p, 0, *cell);
   CellLoaded(p, 1, *cell);
   p.TickCellHosts(static_cast<uint64_t>(

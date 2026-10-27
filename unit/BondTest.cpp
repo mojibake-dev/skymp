@@ -285,14 +285,23 @@ TEST_CASE("A bond's claimed hit conceals both for the bond's time, cast in "
   p.SetBondSettings(kBonds);
   auto [caster, target] = Pair(p);
   p.Messages().clear();
+  const uint64_t armed = NowMs();
   Cast(p);
   Hit(p);
   p.Tick(); // snippets are deferred
   // the server's records, on both (the proc's archetype runs as a state)
   REQUIRE(caster->HasRunningEffectOfType(kInvisibility));
   REQUIRE(target->HasRunningEffectOfType(kInvisibility));
-  // the casts wait for the relayed bond cast to have run in the other games
-  REQUIRE(ProcCastsOn(p, 1).empty());
+  // the casts wait for the relayed bond cast to have run in the other games:
+  // read while the timer's half (250 of its 500 ms) is still ahead, since a
+  // slow run can spend the whole delay before this line (the Windows build
+  // under OpenCppCoverage, 2026-10-27 06:48Z, fired the proc early and read
+  // a cast here: the test-clock-margins rule)
+  if (NowMs() - armed < 250) {
+    REQUIRE(ProcCastsOn(p, 1).empty());
+  } else {
+    WARN("the proc's delay passed before the wait could be read; skipped");
+  }
   CastsFire(p);
   // the target's game is told of the caster's instant cast (its figure
   // there) and of its own (0x14 there); the caster's game, where the mod's

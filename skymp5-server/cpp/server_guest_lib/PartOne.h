@@ -403,6 +403,10 @@ public:
   // (the disconnect). The decisions go to the games as HostGrant and
   // HostRelease, and the actors of the cell flip their hosted flag.
   void OnCellLoaded(MpActor& player, uint32_t cell, bool loaded);
+  // thuum docs/research/m3/decisions-after-playtest-34.md D18: a dead player
+  // hosts nothing; its cells start their grace at the death and it is a
+  // candidate again when it stands
+  void OnDeathState(MpActor& actor, bool isDead);
   void RefreshReach(MpActor& player);
   void TickCellHosts(uint64_t nowMs);
   // thuum docs/verbs/npc-fate.md (ADR-050 decision 2): a hosted NPC whose

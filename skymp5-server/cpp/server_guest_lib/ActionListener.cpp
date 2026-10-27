@@ -2684,6 +2684,23 @@ void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
       if (hitSeen) {
         evidence = fmt::format("a hit the server numbered {} ms before",
                                hitAgo->count());
+        // thuum docs/verbs/npc-fate.md H-52b (train 54): after a lethal
+        // single blow the engine's deathStart names no killer and the host
+        // reports cause 0 (52's gate's rest, 153601 and 160510); the
+        // server's own number knows who struck, so the latest hitter it
+        // recorded within the window is credited (R0: the server computes
+        // the death, the report is its evidence)
+        if (!killer) {
+          if (const auto by = actor->LastHitBy(now, kDeathHitWindow)) {
+            auto& byForm = partOne.worldState.LookupFormByIdNoLoad(*by);
+            killer = byForm ? byForm->AsActor() : nullptr;
+            if (killer) {
+              evidence += fmt::format(", the killer {:x} credited from the "
+                                      "server's own number",
+                                      killer->GetFormId());
+            }
+          }
+        }
       } else if (fallSeen) {
         evidence =
           fmt::format("a drop of {:.0f} units in the host's samples", *drop);

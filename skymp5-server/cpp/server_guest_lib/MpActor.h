@@ -271,6 +271,9 @@ public:
     std::chrono::steady_clock::time_point now);
 
   void Kill(MpActor* killer = nullptr, bool shouldTeleport = false);
+  // the killer the server credited at this actor's last death (nothing
+  // before any death; 0 for a death with none), the read of H-52b's credit
+  std::optional<uint32_t> LastKillerId() const;
   // thuum docs/verbs/npc-fate.md (ADR-050 decision 2, deaths by the engine):
   // the game hosting this NPC (nullptr for a player's actor, an unhosted
   // actor or a player's own)
@@ -314,6 +317,12 @@ public:
   // 0); nothing when the server saw no such hit
   std::optional<std::chrono::milliseconds> HitByAgo(
     uint32_t aggressorId, std::chrono::steady_clock::time_point now) const;
+  // the aggressor of the latest hit the server numbered within `window`;
+  // nothing when none (npc-fate.md H-52b, train 54: a death report naming
+  // no killer after a lethal single blow takes its killer from the server's
+  // own number)
+  std::optional<uint32_t> LastHitBy(std::chrono::steady_clock::time_point now,
+                                    std::chrono::milliseconds window) const;
   void RecordHeight(float z, std::chrono::steady_clock::time_point now);
   // the highest sample within the window minus `z`; nothing without samples
   std::optional<float> DropTo(float z,

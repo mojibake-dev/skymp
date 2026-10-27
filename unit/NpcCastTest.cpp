@@ -113,19 +113,22 @@ MpActor& Gather(PartOne& p)
   return predator;
 }
 
-// the raw bytes a relayed report carries (SendToNeighbours forwards them to
-// the listeners as they came, so the fixture reads them as the message's
-// type; CellHostTest's Wear idiom with the type named)
-uint8_t kUnparsed[] = {
-  Networking::MinPacketId, '{', '"', 't', '"', ':', '5', '}'
-};
-
-RawMessageData HostRaw()
+// the raw bytes a relayed report carries: the message as the host's client
+// would send it (SendToNeighbours forwards them as they came, and the
+// fixture types the relay by them, so a bare type without its fields threw
+// NO_SUCH_FIELD at the fixture's read); kept in a static for the call
+RawMessageData HostRaw(const UpdateEquipmentMessage& msg)
 {
+  static std::string bytes;
+  nlohmann::json j;
+  msg.WriteJson(j);
+  bytes.clear();
+  bytes.push_back(static_cast<char>(Networking::MinPacketId));
+  bytes += j.dump();
   RawMessageData raw;
   raw.userId = 0;
-  raw.unparsed = kUnparsed;
-  raw.unparsedLength = sizeof(kUnparsed);
+  raw.unparsed = reinterpret_cast<Networking::PacketData>(bytes.data());
+  raw.unparsedLength = bytes.size();
   return raw;
 }
 
@@ -141,7 +144,7 @@ void Hands(PartOne& p, MpActor& predator, uint32_t rightSpell,
   if (leftSpell) {
     msg.data.leftSpell = leftSpell;
   }
-  const RawMessageData raw = HostRaw();
+  const RawMessageData raw = HostRaw(msg);
   p.GetActionListener().OnUpdateEquipment(raw, msg);
 }
 
@@ -329,7 +332,7 @@ TEST_CASE("A hosted archer's shot is reported by its host under the actor's "
   UpdateEquipmentMessage hands;
   hands.idx = predator.GetIdx();
   hands.data.inv.entries.push_back(Inventory::Entry(kLongBow, 1, kWorn));
-  const RawMessageData raw = HostRaw();
+  RawMessageData raw = HostRaw(hands);
   p.GetActionListener().OnUpdateEquipment(raw, hands);
   REQUIRE(predator.GetEquipment().inv.HasItem(kLongBow));
   p.Messages().clear();

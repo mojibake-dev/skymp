@@ -1348,6 +1348,7 @@ TEST_CASE("A guest's claim on a hosted NPC names the guest as the simulator "
   // c1's reports are refused, c2's pass the gate: a hosted hands report
   // under the actor's idx (the equipment case's shape; the gate itself is
   // the listener's own)
+  constexpr uint32_t kIronSword = 0x12eb7; // the equipment case's
   actor->AddItem(kIronSword, 1);
   Wear(p, 0, actor->GetFormId(), kIronSword, 1);
   REQUIRE_FALSE(actor->GetEquipment().inv.HasItem(kIronSword));

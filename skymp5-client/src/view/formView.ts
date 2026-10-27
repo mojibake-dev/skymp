@@ -587,14 +587,20 @@ export class FormView {
     // 052150's 2,077-unit "settle" on a dead copy). A record never dead says
     // nothing (undefined) and leaves a predicted death (ADR-038) alone. Read
     // every two seconds, never per frame (natives cost).
-    // ADR-050 decision 2: an actor this game simulates dies and stands by
-    // its own engine and the server's container; the check is a puppet's
+    // ADR-050 decision 2: an actor this game simulates DIES by its own
+    // engine, from the server's cause and its report, so the check never
+    // kills it; it STANDS by the server's word like any seat's copy, since
+    // the respawn's container reaches the host of the moment and a host that
+    // logs in after the sweep binds a corpse (b-npc-respawn 20261027-115833
+    // in 52's gate: the record stood again while the server loaded, before
+    // any host held the cell; the viewer's check resurrected its puppet, the
+    // host's copy stayed dead under a guard on both directions)
     if (model.isDead !== undefined && this.refrId !== 0 && this.refrId !== 0x14 && this.refrId < 0xff000000 && Date.now() >= this.deadCheckAt) {
       this.deadCheckAt = Date.now() + 2000;
       const body = Actor.from(refr);
       const want = !!model.isDead;
       const simulatedHere = SpApiInteractor.getControllerInstance().lookupListener(HostService).isMine(model, refr);
-      if (body && !simulatedHere && body.isDead() !== want) {
+      if (body && body.isDead() !== want && !(simulatedHere && want)) {
         SpApiInteractor.getControllerInstance().emitter.emit("applyDeathStateEvent", { actor: body, isDead: want });
       }
     }

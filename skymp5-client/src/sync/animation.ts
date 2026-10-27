@@ -461,7 +461,9 @@ export const setupHooks = (): void => {
           if (allowedAnims.has(animKey)) {
             allowedAnims.delete(animKey);
           } else {
-            printConsole("block anim " + ctx.animEventName);
+            // the actor named, so a seat's count can be scoped to one (b-npc-stream-actions
+            // 20261027-120242 counted a creature's blocked attack at c2's connect point against the bandit)
+            printConsole("block anim " + ctx.animEventName + " on " + ctx.selfId.toString(16));
             return (ctx.animEventName = "");
           }
         }

@@ -213,6 +213,35 @@ TEST_CASE("A report naming an actor's hit is checked against the hits the "
   Leave(p, 0, kHost);
 }
 
+TEST_CASE("A report naming no killer after a numbered hit credits the "
+          "hit's aggressor from the server's own number (npc-fate H-52b)",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  p.worldState.npcDeathReports = true;
+  Arrive(p, 0, kHost);
+  auto& actor = Standing(p, kPredator);
+  auto& striker = Standing(p, kPredator2);
+  const auto cell = p.worldState.CellOf(actor);
+  REQUIRE(cell.has_value());
+  Host(p, 0, *cell);
+  REQUIRE(p.SimulatorOf(actor) == kHost);
+  const NiPoint3 body = actor.GetPos();
+
+  // the server numbered the striker's hit a moment ago and the host's
+  // engine named no killer (a lethal single blow, cause 0, 52's gate's rest
+  // 153601 and 160510): the death stands and the striker is credited
+  actor.NoteHitBy(striker.GetFormId(), std::chrono::steady_clock::now());
+  Report(p, 0, kPredator, 0, 0, body);
+  REQUIRE(actor.IsDead());
+  REQUIRE(actor.LastKillerId().has_value());
+  REQUIRE(*actor.LastKillerId() == striker.GetFormId());
+
+  StandUp(p, actor);
+  Leave(p, 0, kHost);
+}
+
 TEST_CASE("A hazard report is checked against an activation beside the body",
           "[ActorDeath][espm]")
 {

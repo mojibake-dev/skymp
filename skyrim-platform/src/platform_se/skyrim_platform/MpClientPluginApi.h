@@ -18,6 +18,15 @@ Napi::Value SendRaw(const Napi::CallbackInfo& args);
 // left alone.
 bool DestroyClientAtQuit();
 
+// thuum docs/research/m3/decisions-after-playtest-34.md D24 (B): whether the
+// quit thunk ends the process after the client's teardown instead of running
+// the engine's shutdown, which crashes at every quit in the Scaleform heap
+// teardown (two SKSE plugins hold the Loading Menu's IMenu in statics that
+// nothing clears, cell-host.md's quitting-host row). Set by skymp5-client
+// from its settings (quitFastExit, default on); off until it says so
+Napi::Value SetQuitFastExit(const Napi::CallbackInfo& info);
+bool QuitFastExit();
+
 inline void Register(Napi::Env env, Napi::Object& exports)
 {
   auto mpClientPlugin = Napi::Object::New(env);
@@ -40,6 +49,9 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   mpClientPlugin.Set(
     "sendRaw",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(SendRaw)));
+  mpClientPlugin.Set(
+    "setQuitFastExit",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetQuitFastExit)));
   exports.Set("mpClientPlugin", mpClientPlugin);
 }
 }

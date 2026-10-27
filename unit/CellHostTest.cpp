@@ -1376,4 +1376,59 @@ TEST_CASE("A guest's claim on a hosted NPC names the guest as the simulator "
   DoDisconnect(p, 0);
   p.DestroyActor(kC1);
   p.DestroyActor(kC2);
-}
+
+  // thuum docs/research/m3/decisions-after-playtest-34.md D18 (b-cell-host
+  // 20261025-115250: c1 took a cell at epoch 2 while dead): a dead player
+  // hosts nothing. Its death is the server's own number: the cells it hosts
+  // start their grace there, its own loaded report grants it nothing while it
+  // lies, and it is a candidate again when it stands.
+  TEST_CASE(
+    "A dead player hosts nothing: the grace starts at its death, its "
+    "loaded report grants nothing, and it is a candidate again when it "
+    "stands",
+    "[CellHost][espm]")
+  {
+    auto& p = GetPartOne();
+    auto& c1 = Player(p, 0, kC1, kHere);
+    Player(p, 1, kC2, kHere);
+    const auto cell = p.worldState.CellOf(c1);
+    REQUIRE(cell.has_value());
+    const uint64_t t0 = NowMs();
+    p.TickCellHosts(t0);
+    CellLoaded(p, 0, *cell);
+    CellLoaded(p, 1, *cell);
+    p.TickCellHosts(t0 + 10);
+    REQUIRE(p.GetCellHost(*cell).hosted);
+    REQUIRE(p.GetCellHost(*cell).player == kC1);
+
+    // the death arms the grace; the live visitor takes the cell at its end
+    const uint64_t tDeath = NowMs();
+    c1.Kill(nullptr);
+    REQUIRE(c1.IsDead());
+    p.TickCellHosts(tDeath + skymp::rules::host_grace_ms() - kInsideMs);
+    REQUIRE(p.GetCellHost(*cell).player == kC1);
+    p.TickCellHosts(tDeath + skymp::rules::host_grace_ms() + kPastMs);
+    REQUIRE(p.GetCellHost(*cell).hosted);
+    REQUIRE(p.GetCellHost(*cell).player == kC2);
+
+    // the visitor leaves; the dead player, its cell still loaded, takes
+    // nothing
+    const uint64_t tLeave = NowMs();
+    CellLoaded(p, 1, *cell, false);
+    p.TickCellHosts(tLeave + skymp::rules::host_grace_ms() + kPastMs);
+    REQUIRE_FALSE(p.GetCellHost(*cell).hosted);
+    CellLoaded(p, 0, *cell);
+    p.TickCellHosts(NowMs());
+    REQUIRE_FALSE(p.GetCellHost(*cell).hosted);
+
+    // it stands again: the free cell it has loaded is its
+    c1.Respawn(false);
+    REQUIRE_FALSE(c1.IsDead());
+    REQUIRE(p.GetCellHost(*cell).hosted);
+    REQUIRE(p.GetCellHost(*cell).player == kC1);
+
+    DoDisconnect(p, 1);
+    DoDisconnect(p, 0);
+    p.DestroyActor(kC2);
+    p.DestroyActor(kC1);
+  }

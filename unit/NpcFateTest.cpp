@@ -474,6 +474,14 @@ TEST_CASE("A server-made NPC is fated at its placement, its fate goes ahead "
   REQUIRE_FALSE(placed.IsCreatedAsPlayer());
   REQUIRE(placed.GetFateLevel().has_value());
   REQUIRE(*placed.GetFateLevel() == 25);
+  // what the record wears, its inventory holds (one roll for the outfit): the
+  // host's hands report of the copy passes the inventory check
+  for (const auto& worn : placed.GetEquipment().inv.entries) {
+    if (worn.GetWorn() != Inventory::Worn::None) {
+      INFO("worn " << std::hex << worn.baseId);
+      REQUIRE(placed.GetInventory().GetItemCount(worn.baseId) >= 1);
+    }
+  }
   size_t createAt = 0;
   bool createSeen = false;
   for (size_t i = 0; i < p.Messages().size(); ++i) {

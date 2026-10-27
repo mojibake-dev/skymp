@@ -1366,13 +1366,12 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   // server does not walk, so a spell or a shout the set lacks in a hosted
   // report is recorded as unvalidated (R2, rule 5) with one line, when the
   // form is a spell or a shout at all; anything else refuses the report
-  const auto& espmBrowser = partOne.GetEspm().GetBrowser();
   auto recordedUnknown = [&](const char* slot, uint32_t formId,
                              bool shout) -> bool {
-    if (!hosted) {
+    if (!hosted || !partOne.HasEspm()) {
       return false;
     }
-    const auto rec = espmBrowser.LookupById(formId).rec;
+    const auto rec = partOne.GetEspm().GetBrowser().LookupById(formId).rec;
     const bool spellForm = rec &&
       (rec->GetType() == espm::SPEL::kType ||
        (shout && rec->GetType() == espm::SHOU::kType));
@@ -3822,9 +3821,17 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
 
   // a player's shout hits with its variation's spell (thuum
   // docs/verbs/shouts.md), claimed against the shout the server accepted
+  // thuum docs/verbs/npc-stream.md (train 53): a hosted actor's spell hit
+  // claims its recorded cast whether or not its record's hands hold the
+  // spell (the hands are the host's engine's, recorded; the cast is the
+  // server's record); one its casts do not cover falls to the reach rule
+  // below (a cloak's damage), which refuses it when nothing reaches
+  const bool hostedSpellHit = isSourceSpell && aggressor != myActor;
+  bool castClaimed = false;
   if (isSourceSpell &&
       (equipment.IsSpellEquipped(hitData.source) ||
-       IsVoiceVariation(equipment, hitData.source, partOne.worldState))) {
+       IsVoiceVariation(equipment, hitData.source, partOne.worldState) ||
+       hostedSpellHit)) {
     // thuum docs/verbs/spell-cast.md: a spell hits only as a cast the server
     // recorded: a fire-and-forget cast once (an area spell's targets once
     // each), a stream by the time it held its target. A hosted actor's casts
@@ -3838,25 +3845,32 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
         partOne.ClaimCast(aggressor->GetFormId(), hitData.source,
                           targetRef->GetFormId(), targetRef->GetPos());
       if (claim.check != PartOne::CastCheck::Claimed) {
-        spdlog::warn(
-          "ActionListener::OnHit - {}: {:x} hits {:x} with spell "
-          "{:x} {:.0f} units away; refused",
-          claim.check == PartOne::CastCheck::TooFar ? "E_SPELL_RANGE"
-                                                    : "E_SPELL_NO_CAST",
-          aggressor->GetFormId(), targetRef->GetFormId(), hitData.source,
-          (targetRef->GetPos() - aggressor->GetPos()).Length());
-        return;
+        if (hostedSpellHit && claim.check == PartOne::CastCheck::NoCast &&
+            !equipment.IsSpellEquipped(hitData.source)) {
+          // nothing claimed, nothing spent: the reach rule below decides
+        } else {
+          spdlog::warn(
+            "ActionListener::OnHit - {}: {:x} hits {:x} with spell "
+            "{:x} {:.0f} units away; refused",
+            claim.check == PartOne::CastCheck::TooFar ? "E_SPELL_RANGE"
+                                                      : "E_SPELL_NO_CAST",
+            aggressor->GetFormId(), targetRef->GetFormId(), hitData.source,
+            (targetRef->GetPos() - aggressor->GetPos()).Length());
+          return;
+        }
+      } else {
+        castClaimed = true;
       }
       magnitudeScale = claim.scale;
       dualCast = claim.dual;
       // thuum docs/verbs/shadowbond.md: a bond spell's claimed hit bonds
       // the two until either acts, or the spell's duration ends
-      if (targetRef->GetFormId() != aggressor->GetFormId() &&
+      if (castClaimed && targetRef->GetFormId() != aggressor->GetFormId() &&
           partOne.IsBondSpell(hitData.source)) {
         partOne.RecordBond(aggressor->GetFormId(), targetRef->GetFormId(),
                            hitData.source);
       }
-      if (claim.relay) {
+      if (castClaimed && claim.relay) {
         // the first hit of a cast delivered to its target: the cast goes
         // to the other games now, at the target this hit names
         for (auto it = pendingCastRelays.begin();
@@ -3876,8 +3890,10 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
         }
       }
     }
-    OnSpellHit(aggressor, targetRef, hitData, magnitudeScale, dualCast);
-    return;
+    if (castClaimed) {
+      OnSpellHit(aggressor, targetRef, hitData, magnitudeScale, dualCast);
+      return;
+    }
   }
 
   // thuum docs/verbs/second-hand.md: a player's hit by a spell it neither
@@ -4258,8 +4274,9 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
     // a leveled list's the server does not walk, or a power cast from no
     // slot): recorded unvalidated (R2, rule 5) when the form is a spell at
     // all, so its hits are claimed against this cast as any cast's are
-    const auto rec =
-      partOne.GetEspm().GetBrowser().LookupById(spellCastData.spell).rec;
+    const auto rec = partOne.HasEspm()
+      ? partOne.GetEspm().GetBrowser().LookupById(spellCastData.spell).rec
+      : nullptr;
     if (!rec || rec->GetType() != espm::SPEL::kType) {
       spdlog::warn("ActionListener::OnSpellCast - E_CAST_FORM: {:x} by {:x} "
                    "casts {:x}, which is no spell; refused",

@@ -100,6 +100,9 @@ MpActor& Gather(PartOne& p)
   auto& host = Arrive(p, 0, kHost);
   auto& other = Arrive(p, 1, kOther);
   auto& predator = Standing(p, kPredator);
+  // beside the other player (the same square), so a cast or a shot of its
+  // can have reached it
+  predator.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
   Host(p, 0, kForestCell);
   REQUIRE(p.worldState.HostOf(predator) == &host);
   ActorValueRecord record;
@@ -108,6 +111,19 @@ MpActor& Gather(PartOne& p)
   predator.SetEquipment(Equipment{});
   p.Messages().clear();
   return predator;
+}
+
+// the raw bytes a relayed report carries (SendToNeighbours forwards them;
+// CellHostTest's Wear idiom)
+uint8_t kUnparsed[] = { Networking::MinPacketId, '{', '}' };
+
+RawMessageData HostRaw()
+{
+  RawMessageData raw;
+  raw.userId = 0;
+  raw.unparsed = kUnparsed;
+  raw.unparsedLength = sizeof(kUnparsed);
+  return raw;
 }
 
 // the host's report of the predator's hands: one spell in its right hand
@@ -122,8 +138,7 @@ void Hands(PartOne& p, MpActor& predator, uint32_t rightSpell,
   if (leftSpell) {
     msg.data.leftSpell = leftSpell;
   }
-  RawMessageData raw;
-  raw.userId = 0;
+  const RawMessageData raw = HostRaw();
   p.GetActionListener().OnUpdateEquipment(raw, msg);
 }
 
@@ -304,8 +319,6 @@ TEST_CASE("A hosted archer's shot is reported by its host under the actor's "
   auto& p = GetPartOne();
   p.worldState.npcEnabled = true;
   auto& predator = Gather(p);
-  // beside the other player, so the shot's arrow can have reached it
-  predator.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
   predator.AddItem(kLongBow, 1);
   predator.AddItem(kIronArrow, 3);
   // the host's hands report: the bow in the record's hands, no ammo (the
@@ -313,8 +326,7 @@ TEST_CASE("A hosted archer's shot is reported by its host under the actor's "
   UpdateEquipmentMessage hands;
   hands.idx = predator.GetIdx();
   hands.data.inv.entries.push_back(Inventory::Entry(kLongBow, 1, kWorn));
-  RawMessageData raw;
-  raw.userId = 0;
+  const RawMessageData raw = HostRaw();
   p.GetActionListener().OnUpdateEquipment(raw, hands);
   REQUIRE(predator.GetEquipment().inv.HasItem(kLongBow));
   p.Messages().clear();

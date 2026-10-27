@@ -105,6 +105,21 @@ void Promote(RE::Actor& actor)
   // the puppet's block lifted with the AI: the host's residents can be
   // talked to (playtest 32's dead Talk prompts after a handoff)
   actor.SetActivationBlocked(false);
+  // thuum docs/verbs/npc-fate.md H-54e (54's gate 20261027-190413): a corpse
+  // promoted at its host's reconnect (the reconciler's flip, puppet then live
+  // within a sample as the grant arrived) walked 1300 units at a wolf's trot
+  // with no height change, and the record followed: EnableAI(true) and
+  // EvaluatePackage on a dead actor hand the engine's package a body. A dead
+  // actor keeps its AI off here (Actor::IsDead, CommonLibSSE-NG
+  // include/RE/A/Actor.h:345); the block comes off for the loot, and the
+  // fate's resurrect turns the AI on when the record stands again
+  // (FateApi.cpp resurrectActor)
+  if (actor.IsDead()) {
+    logger::info("[verb:npc-puppet] promote {:x}: dead, the block lifted "
+                 "and the AI left off (npc-fate H-54e)",
+                 actor.formID);
+    return;
+  }
   actor.EnableAI(true);
   actor.EvaluatePackage(false, false);
   // thuum docs/research/m3/decisions-after-playtest-34.md D23: a live actor

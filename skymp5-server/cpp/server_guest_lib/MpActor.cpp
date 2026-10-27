@@ -69,6 +69,8 @@ struct MpActor::Impl
   bool pendingDeath = false;
   uint32_t pendingDeathAggressor = 0;
   uint64_t pendingDeathSinceMs = 0;
+  // npc-fate.md H-52b: the killer credited at the last Kill (the read)
+  std::optional<uint32_t> lastKillerId;
   // slice 5: the host's reading of the gaze and the face
   uint32_t hostedGazeTarget = 0;
   uint32_t hostedGazeSlot = 0;
@@ -2287,6 +2289,7 @@ void MpActor::Kill(MpActor* killer, bool shouldTeleport)
       worldState->pendingDeaths.erase(GetFormId());
     }
   }
+  pImpl->lastKillerId = killer ? killer->GetFormId() : 0u;
 
   auto& changeForm = ChangeForm();
   const float healthPercentageBeforeDeath =
@@ -2540,6 +2543,31 @@ std::optional<std::chrono::milliseconds> MpActor::HitByAgo(
     }
   }
   return ago;
+}
+
+std::optional<uint32_t> MpActor::LastHitBy(
+  std::chrono::steady_clock::time_point now,
+  std::chrono::milliseconds window) const
+{
+  std::optional<uint32_t> by;
+  std::optional<std::chrono::milliseconds> ago;
+  for (const auto& [aggressor, at] : pImpl->hitsTaken) {
+    const auto since =
+      std::chrono::duration_cast<std::chrono::milliseconds>(now - at);
+    if (since > window) {
+      continue;
+    }
+    if (!ago || since < *ago) {
+      ago = since;
+      by = aggressor;
+    }
+  }
+  return by;
+}
+
+std::optional<uint32_t> MpActor::LastKillerId() const
+{
+  return pImpl->lastKillerId;
 }
 
 void MpActor::RecordHeight(float z, std::chrono::steady_clock::time_point now)

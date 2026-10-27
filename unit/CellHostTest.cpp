@@ -1312,9 +1312,9 @@ TEST_CASE("A guest's claim on a hosted NPC names the guest as the simulator "
   const NiPoint3 kAt{ 117786.f, -81400.f, 10997.f };
   auto& c1 = Player(p, 0, kC1, kAt + NiPoint3{ 40.f, 0.f, 0.f });
   auto& c2 = Player(p, 1, kC2, kAt + NiPoint3{ 80.f, 0.f, 0.f });
-  auto& form = p.worldState.LookupFormByIdNoLoad(kActor);
-  REQUIRE(form);
-  MpActor* actor = form->AsActor();
+  // loaded by its id as the puppet case does (the no-load lookup found
+  // nothing when this case ran first, pipeline 3229)
+  MpActor* actor = &p.worldState.GetFormAt<MpActor>(kActor);
   REQUIRE(actor);
   actor->SetPos(kAt);
   const auto cell = p.worldState.CellOf(*actor);

@@ -92,10 +92,27 @@ struct OnQuitShutdown
     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                       std::chrono::steady_clock::now() - started)
                       .count();
+    const bool fastExit = MpClientPluginApi::QuitFastExit();
     logger::info(
-      "[verb:cell-host] quit: {} in {} ms; the engine's shutdown "
-      "follows",
-      destroyed ? "the client disconnected" : "no client to disconnect", ms);
+      "[verb:cell-host] quit: {} in {} ms; the engine's shutdown {}",
+      destroyed ? "the client disconnected" : "no client to disconnect", ms,
+      fastExit ? "is skipped (fast exit, D24-B)" : "follows");
+    // thuum docs/research/m3/decisions-after-playtest-34.md D24 (B): the
+    // engine's shutdown crashes at every quit in the Scaleform heap teardown,
+    // since two SKSE plugins hold the always-open Loading Menu's IMenu in
+    // statics that nothing clears (x-quit-scan v3 20261026-021707:
+    // NextGenDecapitations.dll, DeathDropOverhaul.dll; cell-host.md's
+    // quitting-host row). Nothing of ours needs that teardown: the client is
+    // gone above and the logs are flushed here, so the process ends the way
+    // the fast-exit plugins end it. skymp5-client's quitFastExit setting
+    // (default on) turns it off for a read of the engine's own shutdown
+    if (fastExit) {
+      try {
+        spdlog::default_logger()->flush();
+      } catch (...) {
+      }
+      TerminateProcess(GetCurrentProcess(), 0);
+    }
     return func(a1, a2, a3, a4);
   };
   static inline REL::Relocation<decltype(&thunk)> func;

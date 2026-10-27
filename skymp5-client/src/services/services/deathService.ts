@@ -1,4 +1,4 @@
-import { logLab } from "../../logging";
+import { logLab, logTrace } from "../../logging";
 import { Actor } from "skyrimPlatform";
 import { ApplyDeathStateEvent } from "../events/applyDeathStateEvent";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
@@ -6,6 +6,8 @@ import { RespawnNeededError } from "../../lib/errors";
 import { AnimationEventName, takeRelayedStagger } from "../../sync/animation";
 import { RagdollService } from "./ragdollService";
 import { PuppetService } from "./puppetService";
+import { RemoteServer } from "./remoteServer";
+import { localIdToRemoteId } from "../../view/worldViewMisc";
 
 export class DeathService extends ClientListener {
   constructor(private sp: Sp, private controller: CombinedController) {
@@ -141,6 +143,31 @@ export class DeathService extends ClientListener {
   private readonly serverKills = new Map<number, number>();
   private static readonly serverKillMarkMs = 10_000;
 
+  // the puppet to the host's last sample of its actor (the world model's
+  // movement for the form), when it stands more than 64 units from it
+  private restPuppetAtHost(actor: Actor): void {
+    const localId = actor.getFormID();
+    if (!this.controller.lookupListener(PuppetService).isPuppet(localId)) {
+      return;
+    }
+    const remoteId = localIdToRemoteId(localId);
+    const world = this.controller.lookupListener(RemoteServer).getWorldModel();
+    const form = world.forms.find((f) => f !== undefined && f.refrId === remoteId);
+    const pos = form?.movement?.pos;
+    if (!pos || pos.length < 3) {
+      return;
+    }
+    const dx = pos[0] - actor.getPositionX();
+    const dy = pos[1] - actor.getPositionY();
+    const dz = pos[2] - actor.getPositionZ();
+    const apart = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (!Number.isFinite(apart) || apart < 64) {
+      return;
+    }
+    actor.setPosition(pos[0], pos[1], pos[2]);
+    logTrace(this, `npc-fate: puppet ${localId.toString(16)} placed at the host's spot before its death, ${apart.toFixed(0)} units away`);
+  }
+
   // the word never came: the figure stands back up where it fell
   public revertPredictedDeath(actor: Actor): void {
     const id = actor.getFormID();
@@ -173,6 +200,13 @@ export class DeathService extends ClientListener {
         // death that is the server's own word
         this.serverKills.set(actor.getFormID(), Date.now());
       }
+      // thuum docs/verbs/npc-fate.md (ADR-050 decision 2, train 52): a
+      // puppet's body lies where its host's does. The host's last sample
+      // places the puppet BEFORE the kill, while it can still be moved: a
+      // dead ragdoll takes no setPosition (x-npc-death-host v3
+      // 20261027-091759: the rest after the death was logged, 329 units,
+      // and the body stayed; the bodies lay 326 units apart)
+      this.restPuppetAtHost(actor);
       actor.endDeferredKill();
       actor.kill(killer);
       if (actor.getFormID() < 0xff000000) {

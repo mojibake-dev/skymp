@@ -179,6 +179,11 @@ struct PlayerState {
     /// anywhere, its hosted cells in their grace, its loaded set kept for
     /// its return (thuum docs/verbs/cell-host.md, the quitting host).
     stale: bool,
+    /// The player's actor is dead (thuum docs/research/m3/
+    /// decisions-after-playtest-34.md D18): no candidate anywhere, its
+    /// hosted cells in their grace from the death, its loaded set kept for
+    /// the respawn; the server's own number, not the connection's.
+    dead: bool,
 }
 
 /// Every cell's host and every player's loaded set, grid and round trip,
@@ -293,12 +298,42 @@ impl Cells {
         cells.into_iter().flat_map(|cell| self.consider(player, cell, now_ms)).collect()
     }
 
-    /// Whether `player` has `cell` loaded and in reach, and is heard from:
-    /// what hosting takes.
+    /// `player`'s actor died at `now_ms` (thuum docs/research/m3/
+    /// decisions-after-playtest-34.md D18): every cell it hosts starts its
+    /// grace and it is no candidate anywhere until `respawned`; its loaded
+    /// set and reach stay, since its game keeps the cell loaded while the
+    /// body lies.
+    pub fn died(&mut self, player: u32, now_ms: u64) -> Vec<Decision> {
+        self.players.entry(player).or_default().dead = true;
+        for state in self.cells.values_mut() {
+            if let Some(ref mut host) = state.host {
+                if host.player == player && host.leaving_since_ms.is_none() {
+                    host.leaving_since_ms = Some(now_ms);
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    /// `player`'s actor stood again at `now_ms`: a candidate again; each cell
+    /// it has loaded is considered anew, which disarms its own grace where
+    /// it still hosts and grants a free cell the grid gives it.
+    pub fn respawned(&mut self, player: u32, now_ms: u64) -> Vec<Decision> {
+        let Some(p) = self.players.get_mut(&player) else {
+            return Vec::new();
+        };
+        p.dead = false;
+        let mut cells: Vec<u32> = p.loaded.keys().copied().collect();
+        cells.sort_unstable();
+        cells.into_iter().flat_map(|cell| self.consider(player, cell, now_ms)).collect()
+    }
+
+    /// Whether `player` has `cell` loaded and in reach, is heard from and
+    /// alive: what hosting takes.
     fn eligible(&self, player: u32, cell: u32) -> bool {
         self.players
             .get(&player)
-            .is_some_and(|p| !p.stale && p.reach.contains_key(&cell) && p.loaded.contains_key(&cell))
+            .is_some_and(|p| !p.stale && !p.dead && p.reach.contains_key(&cell) && p.loaded.contains_key(&cell))
     }
 
     /// `player`'s ring for `cell` (0 its own square, 1 a neighbour), 2 when
@@ -523,7 +558,9 @@ impl Cells {
     fn candidate(&self, cell: u32, leaving: u32) -> Option<u32> {
         self.players
             .iter()
-            .filter(|&(&id, p)| id != leaving && !p.stale && p.reach.contains_key(&cell) && p.loaded.contains_key(&cell))
+            .filter(|&(&id, p)| {
+                id != leaving && !p.stale && !p.dead && p.reach.contains_key(&cell) && p.loaded.contains_key(&cell)
+            })
             .map(|(&id, p)| (p.rtt_ms.unwrap_or(u32::MAX), p.loaded.get(&cell).copied().unwrap_or(u64::MAX), id))
             .min()
             .map(|(_, _, id)| id)
@@ -776,6 +813,41 @@ mod tests {
                 Decision::Grant { player: C1, cell: RIVERWOOD, epoch: 3 }
             ]
         );
+    }
+
+    #[test]
+    fn a_dead_host_loses_its_cell_at_the_grace_and_a_respawned_one_is_a_candidate_again() {
+        // thuum docs/research/m3/decisions-after-playtest-34.md D18 (b-cell-host
+        // 20261025-115250: c1 took a cell at epoch 2 while dead): the death is
+        // the server's own number, so the grace starts there and the dead
+        // player's own loaded report grants it nothing
+        let mut c = both_in_reach();
+        assert_eq!(c.loaded(C1, RIVERWOOD, 1_000), vec![Decision::Grant { player: C1, cell: RIVERWOOD, epoch: 1 }]);
+        assert_eq!(c.loaded(C2, RIVERWOOD, 1_500), vec![]);
+        assert_eq!(c.died(C1, 10_000), vec![]);
+        assert_eq!(c.tick(10_000 + GRACE_MS - 100), vec![]);
+        assert_eq!(c.host_of(RIVERWOOD), Some((C1, 1)));
+        // the grace runs out: the live visitor takes it
+        assert_eq!(
+            c.tick(10_000 + GRACE_MS),
+            vec![
+                Decision::Release { player: C1, cell: RIVERWOOD, epoch: 1 },
+                Decision::Grant { player: C2, cell: RIVERWOOD, epoch: 2 }
+            ]
+        );
+        // the new host leaves while the old one lies dead with the cell
+        // loaded: nobody takes it
+        assert_eq!(c.unloaded(C2, RIVERWOOD, 20_000), vec![]);
+        assert_eq!(
+            c.tick(20_000 + GRACE_MS),
+            vec![Decision::Release { player: C2, cell: RIVERWOOD, epoch: 2 }, Decision::Unhosted { cell: RIVERWOOD }]
+        );
+        assert_eq!(c.host_of(RIVERWOOD), None);
+        // a dead player's own loaded report grants it nothing
+        assert_eq!(c.loaded(C1, RIVERWOOD, 30_000), vec![]);
+        assert_eq!(c.host_of(RIVERWOOD), None);
+        // it stands again: a candidate, and the free cell it has loaded is its
+        assert_eq!(c.respawned(C1, 40_000), vec![Decision::Grant { player: C1, cell: RIVERWOOD, epoch: 3 }]);
     }
 
     #[test]

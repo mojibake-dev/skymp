@@ -61,6 +61,17 @@ export class ActivationService extends ClientListener {
           return;
         }
 
+        // thuum docs/verbs/npc-handoff.md D6: a hosted actor's activation is
+        // its host's report, so an actor this game does not simulate (a
+        // puppet: its engine's furniture use before the demote, a relayed
+        // sit) sends nothing from here; the server refused c2's report of
+        // Jenassa taking her chair with "Bad hoster is attached to caster
+        // 0xe1ba9" (x-npc-protected v1 20261025-234704), a message for nothing
+        if (caster !== 0x14 && !this.controller.lookupListener(HostService).isMineLocal(caster)) {
+            logTrace(this, `a puppet's own activation is its host's to report: `, caster.toString(16));
+            return;
+        }
+
         target = localIdToRemoteId(target);
         if (!target) {
             logError(this, 'localIdToRemoteId returned 0 (target) in on(\'activate\')');

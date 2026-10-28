@@ -253,6 +253,14 @@ private:
   void GivePickupItemsToActivationSource(MpObjectReference& activationSource,
                                          const espm::LookupResult& base);
   void ActivateChilds();
+  // thuum memo D52 (playtest 37, Eli: "i WOULD like two people to be able to
+  // be in one container at once"): a container's or a corpse's occupants, as
+  // many as open it; furniture keeps the one occupant below
+  bool IsContainerOccupant(const MpActor* actor) const;
+  void AddContainerOccupant(MpActor& actor);
+  void RemoveContainerOccupant(MpActor& actor);
+  void PruneContainerOccupants(float reach);
+  void SendInventoryToContainerOccupants(const MpActor* except);
   bool CheckIfObjectCanStartOccupyThis(MpObjectReference& activationSource,
                                        float occupationReach);
 
@@ -276,6 +284,14 @@ private:
   MpActor* occupant = nullptr;
   std::shared_ptr<OccupantDestroyEventSink> occupantDestroySink;
   std::shared_ptr<OccupantDisableEventSink> occupantDisableSink;
+  // the container's occupants (memo D52) and each one's sinks; the sinks
+  // leave with the actor on its normal way out (the closing activation, the
+  // pruning), never from inside their own callback
+  std::set<MpActor*> containerOccupants;
+  std::map<MpActor*,
+           std::pair<std::shared_ptr<OccupantDestroyEventSink>,
+                     std::shared_ptr<OccupantDisableEventSink>>>
+    containerOccupantSinks;
   std::optional<std::chrono::system_clock::duration> relootTimeOverride;
   std::unique_ptr<uint8_t> chanceNoneOverride;
   bool activationBlocked = false;

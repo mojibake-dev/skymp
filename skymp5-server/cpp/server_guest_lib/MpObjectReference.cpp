@@ -111,6 +111,12 @@ public:
       untrustedRefPtr->SetOpen(false);
       untrustedRefPtr->occupant = nullptr;
     }
+    // memo D52: the set alone here; the sink's own removal waits for a
+    // normal way out, so nothing frees this object under its callback
+    if (untrustedRefPtr->containerOccupants.erase(&actor) &&
+        untrustedRefPtr->containerOccupants.empty()) {
+      untrustedRefPtr->SetOpen(false);
+    }
   }
 
 private:
@@ -144,6 +150,10 @@ public:
     if (untrustedRefPtr->occupant == &actor) {
       untrustedRefPtr->SetOpen(false);
       untrustedRefPtr->occupant = nullptr;
+    }
+    if (untrustedRefPtr->containerOccupants.erase(&actor) &&
+        untrustedRefPtr->containerOccupants.empty()) {
+      untrustedRefPtr->SetOpen(false);
     }
   }
 
@@ -658,7 +668,7 @@ void MpObjectReference::SetOpen(bool open)
 void MpObjectReference::PutItem(MpActor& ac, const Inventory::Entry& e)
 {
   CheckInteractionAbility(ac);
-  if (this->occupant != &ac) {
+  if (!IsContainerOccupant(&ac)) {
     std::stringstream err;
     err << std::hex << "Actor 0x" << ac.GetFormId() << " doesn't occupy ref 0x"
         << GetFormId();
@@ -667,12 +677,14 @@ void MpObjectReference::PutItem(MpActor& ac, const Inventory::Entry& e)
 
   PutItemEvent putItemEvent(&ac, this, e);
   putItemEvent.Fire(GetParent());
+  // memo D52: the other players in this container see the move
+  SendInventoryToContainerOccupants(&ac);
 }
 
 void MpObjectReference::TakeItem(MpActor& ac, const Inventory::Entry& e)
 {
   CheckInteractionAbility(ac);
-  if (this->occupant != &ac) {
+  if (!IsContainerOccupant(&ac)) {
     std::stringstream err;
     err << std::hex << "Actor 0x" << ac.GetFormId() << " doesn't occupy ref 0x"
         << GetFormId();
@@ -681,6 +693,79 @@ void MpObjectReference::TakeItem(MpActor& ac, const Inventory::Entry& e)
 
   TakeItemEvent takeItemEvent(&ac, this, e);
   takeItemEvent.Fire(GetParent());
+  SendInventoryToContainerOccupants(&ac);
+}
+
+// thuum memo D52 (playtest 37, Eli: "i WOULD like two people to be able to be
+// in one container at once"): a container or a corpse holds every player who
+// opens it. The inventory is the server's already (every take and put a
+// validated transfer), so two menus are two views of one record; on a change
+// the record goes to every other player in it. HYPOTHESIS until the probe:
+// the engine's ContainerMenu redraws when the reference's inventory changes
+// under it (skymp5-client applies the property through ModelApplyUtils).
+bool MpObjectReference::IsContainerOccupant(const MpActor* actor) const
+{
+  return actor && containerOccupants.count(const_cast<MpActor*>(actor)) > 0;
+}
+
+void MpObjectReference::AddContainerOccupant(MpActor& actor)
+{
+  if (!containerOccupants.insert(&actor).second) {
+    return;
+  }
+  auto destroySink =
+    std::make_shared<OccupantDestroyEventSink>(*GetParent(), this);
+  auto disableSink =
+    std::make_shared<OccupantDisableEventSink>(*GetParent(), this);
+  actor.AddEventSink(destroySink);
+  actor.AddEventSink(disableSink);
+  containerOccupantSinks[&actor] = { destroySink, disableSink };
+}
+
+void MpObjectReference::RemoveContainerOccupant(MpActor& actor)
+{
+  containerOccupants.erase(&actor);
+  const auto it = containerOccupantSinks.find(&actor);
+  if (it != containerOccupantSinks.end()) {
+    actor.RemoveEventSink(it->second.first);
+    actor.RemoveEventSink(it->second.second);
+    containerOccupantSinks.erase(it);
+  }
+  if (containerOccupants.empty()) {
+    SetOpen(false);
+  }
+}
+
+// an occupant disabled, gone to another cell or out of reach has no menu
+// open here any more (the engine closes it as the player walks away)
+void MpObjectReference::PruneContainerOccupants(float reach)
+{
+  std::vector<MpActor*> gone;
+  for (auto* a : containerOccupants) {
+    const bool far = (a->GetPos() - GetPos()).SqrLength() > reach * reach;
+    if (a->IsDisabled() || a->GetCellOrWorld() != GetCellOrWorld() || far) {
+      gone.push_back(a);
+    }
+  }
+  for (auto* a : gone) {
+    RemoveContainerOccupant(*a);
+  }
+}
+
+void MpObjectReference::SendInventoryToContainerOccupants(
+  const MpActor* except)
+{
+  if (containerOccupants.size() < 2) {
+    return;
+  }
+  const auto msg =
+    CreatePropertyMessage_(this, "inventory", GetInventory().ToJson().dump());
+  for (auto* a : containerOccupants) {
+    if (a == except) {
+      continue;
+    }
+    a->GetActorToSendTo().SendToUser(msg, true);
+  }
 }
 
 void MpObjectReference::SetRelootTime(
@@ -1633,28 +1718,25 @@ void MpObjectReference::ProcessActivateNormal(
 
     constexpr float kOccupationReach = 512.f;
 
-    if (CheckIfObjectCanStartOccupyThis(activationSource, kOccupationReach)) {
-      if (this->occupant) {
-        this->occupant->RemoveEventSink(this->occupantDestroySink);
-        this->occupant->RemoveEventSink(this->occupantDisableSink);
+    // memo D52: every player who opens it is in it (the one-occupant rule
+    // was the engine's own for furniture, carried over); the ones gone out
+    // of reach, disabled or to another cell leave first
+    PruneContainerOccupants(kOccupationReach);
+    if (!IsContainerOccupant(actorActivator)) {
+      AddContainerOccupant(*actorActivator);
+      if (containerOccupants.size() > 1) {
+        spdlog::info("MpObjectReference::ProcessActivate {:x} - {} players in "
+                     "the container now (activationSource = {:x})",
+                     GetFormId(), containerOccupants.size(),
+                     activationSource.GetFormId());
       }
-      SetOpen(true);
-      actorActivator->GetActorToSendTo().SendToUser(
-        CreatePropertyMessage_(this, "inventory",
-                               GetInventory().ToJson().dump()),
-        true);
-      activationSource.SendOpenContainer(GetFormId());
-
-      this->occupant = actorActivator;
-
-      this->occupantDestroySink.reset(
-        new OccupantDestroyEventSink(*GetParent(), this));
-      this->occupant->AddEventSink(this->occupantDestroySink);
-
-      this->occupantDisableSink.reset(
-        new OccupantDisableEventSink(*GetParent(), this));
-      this->occupant->AddEventSink(this->occupantDisableSink);
     }
+    SetOpen(true);
+    actorActivator->GetActorToSendTo().SendToUser(
+      CreatePropertyMessage_(this, "inventory",
+                             GetInventory().ToJson().dump()),
+      true);
+    activationSource.SendOpenContainer(GetFormId());
   } else if (t == espm::ACTI::kType && actorActivator) {
     // SendOpenContainer being used to activate the object
     // TODO: rename SendOpenContainer to SendActivate
@@ -1720,10 +1802,9 @@ bool MpObjectReference::ProcessActivateSecond(
   // was never released, and every other player was refused ("occupant is
   // another object and is nearby") until the looter stood 512 units away
   if ((t == espm::CONT::kType || IsCorpse()) && actorActivator) {
-    if (this->occupant == &activationSource) {
-      SetOpen(false);
-      this->occupant->RemoveEventSink(this->occupantDestroySink);
-      this->occupant = nullptr;
+    // memo D52: this player leaves the container; it shuts with the last
+    if (IsContainerOccupant(actorActivator)) {
+      RemoveContainerOccupant(*actorActivator);
       return true;
     }
   } else if (t == "FURN" && actorActivator) {

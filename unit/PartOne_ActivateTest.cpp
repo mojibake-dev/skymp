@@ -415,6 +415,81 @@ TEST_CASE("An activation from beyond reach harvests nothing",
   partOne.DestroyActor(0xff000000);
 }
 
+// thuum memo D52 (playtest 37, Eli: "i WOULD like two people to be able to
+// be in one container at once"): a container holds every player who opens
+// it; a take by one reaches the other's menu as the inventory property; the
+// chest shuts with the last player's closing activation.
+TEST_CASE("Two players in one container: both open it, a take reaches the "
+          "other's menu, the chest shuts with the last to leave",
+          "[PartOne][espm]")
+{
+  auto& partOne = GetPartOne();
+  auto refrId = 0x20570;
+  auto& ref = partOne.worldState.GetFormAt<MpObjectReference>(refrId);
+  ref.SetRelootTime(kRelootWindow);
+  ref.SetChanceNoneOverride(0);
+
+  DoConnect(partOne, 0);
+  partOne.CreateActor(0xff000000, { 21272.0000, -7816.0000, -3608.0000 }, 0,
+                      0x1a26f);
+  partOne.SetUserActor(0, 0xff000000);
+  DoConnect(partOne, 1);
+  partOne.CreateActor(0xff000001, { 21300.0000, -7816.0000, -3608.0000 }, 0,
+                      0x1a26f);
+  partOne.SetUserActor(1, 0xff000001);
+  auto& first = partOne.worldState.GetFormAt<MpActor>(0xff000000);
+  auto& second = partOne.worldState.GetFormAt<MpActor>(0xff000001);
+  first.RemoveAllItems();
+  second.RemoveAllItems();
+
+  ref.Activate(first);
+  REQUIRE(ref.IsOpen());
+  partOne.Messages().clear();
+  // the second player joins while the first is in it
+  ref.Activate(second);
+  REQUIRE(ref.IsOpen());
+  auto& messages = partOne.Messages();
+  const bool secondOpened =
+    std::any_of(messages.begin(), messages.end(), [&](PartOne::Message& m) {
+      return m.userId == 1 && m.j.is_object() && m.j.contains("t") &&
+        m.j["t"] == static_cast<int>(MsgType::OpenContainer);
+    });
+  REQUIRE(secondOpened);
+
+  // a take by the first: the second's menu gets the inventory anew
+  REQUIRE(ref.GetInventory().GetTotalItemCount() > 0);
+  const auto taken = ref.GetInventory().entries.at(0).baseId;
+  partOne.Messages().clear();
+  ref.TakeItem(first, { taken, 1 });
+  const bool refreshed =
+    std::any_of(messages.begin(), messages.end(), [&](PartOne::Message& m) {
+      return m.userId == 1 && m.j.is_object() && m.j.contains("t") &&
+        m.j["t"] == static_cast<int>(MsgType::UpdateProperty) &&
+        m.j.contains("propName") && m.j["propName"] == "inventory" &&
+        m.j["idx"] == ref.GetIdx();
+    });
+  REQUIRE(refreshed);
+  // and the second may take as well
+  if (ref.GetInventory().GetTotalItemCount() > 0) {
+    const auto other = ref.GetInventory().entries.at(0).baseId;
+    REQUIRE_NOTHROW(ref.TakeItem(second, { other, 1 }));
+  }
+
+  // the first leaves: still open for the second; the second leaves: shut
+  ref.Activate(first, false, true);
+  REQUIRE(ref.IsOpen());
+  REQUIRE_THROWS_WITH(
+    ref.TakeItem(first, { taken, 1 }),
+    ContainsSubstring("Actor 0xff000000 doesn't occupy ref 0x20570"));
+  ref.Activate(second, false, true);
+  REQUIRE_FALSE(ref.IsOpen());
+
+  DoDisconnect(partOne, 0);
+  DoDisconnect(partOne, 1);
+  partOne.DestroyActor(0xff000000);
+  partOne.DestroyActor(0xff000001);
+}
+
 TEST_CASE("BarrelFood01 PutItem/TakeItem", "[PartOne][espm]")
 {
   auto& partOne = GetPartOne();

@@ -156,15 +156,14 @@ export class TalkService extends ClientListener {
             // wiggling around"): the promoted actor's package went on steering
             // under the claimed dialogue (NPC_TurnToWalkLeft180 1 s after the
             // promote, 80 units of drift in 20 s on the record, the watcher's
-            // puppet settling 4 to 6 units behind it). The engine stops its
-            // own dialogue partners; the claimed one is held still here for the
-            // claim's life (Actor.setDontMove), released with the claim
-            const actor = Actor.from(Game.getFormEx(localId));
-            if (actor) {
-                actor.setDontMove(true);
-            }
-            logLab("verb:npc-talk", `claim ${remoteId.toString(16)} granted: activatePickRef ${queued ? "queued" : "refused"} (crosshair ${under.toString(16)}, held still ${actor ? "yes" : "no actor"})`);
-            this.claimed = { localId, remoteId, since: Date.now(), renewedAt: Date.now(), menuSeen: false, retries: 0, held: !!actor };
+            // puppet settling 4 to 6 units behind it); open, see below
+            // The hold (Actor.setDontMove, 56300846) is withdrawn: on v4 Eli
+            // read "orgnar doesnt head track rotfern anymore", a held actor
+            // cannot turn to face its partner, so the dialogue's head track
+            // reads as gone; the wiggle it answered was unreproducible. The
+            // engine's own in-dialogue word is still logged at the menu's open
+            logLab("verb:npc-talk", `claim ${remoteId.toString(16)} granted: activatePickRef ${queued ? "queued" : "refused"} (crosshair ${under.toString(16)})`);
+            this.claimed = { localId, remoteId, since: Date.now(), renewedAt: Date.now(), menuSeen: false, retries: 0, held: false };
             this.pending = undefined;
             this.promotedAt = 0;
             return;

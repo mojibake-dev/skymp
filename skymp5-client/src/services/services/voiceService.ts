@@ -48,6 +48,10 @@ export class VoiceService extends ClientListener {
         if (!e.topicInfo || !e.topic) {
             return;
         }
+        // the actor's last line on this engine, for the dialogue claim's
+        // release (TalkService: the post-dialogue line came 3 s after the
+        // menu's close, on the grace's edge; playtest 37, 22:04:00Z)
+        this.lastSpokeAt.set(e.speakerId, Date.now());
         this.controller.once("update", () => {
             const remoteId = localIdToRemoteId(e.speakerId);
             if (!remoteId) {
@@ -59,7 +63,11 @@ export class VoiceService extends ClientListener {
                 info: e.topicInfo,
                 _refrId: remoteId,
             };
-            this.controller.emitter.emit("sendMessageWithRefrId", { message, reliability: "unreliable" });
+            // playtest 37 (2026-10-28 20:54Z): two lines fired 24 ms apart on the
+            // host (a response, then a greeting) reached the watcher in the other
+            // order over the unreliable channel, and the greeting cut the response;
+            // the newest line wins on both engines, so the order must be the host's
+            this.controller.emitter.emit("sendMessageWithRefrId", { message, reliability: "reliable" });
             logTrace(this, `speech ${remoteId.toString(16)}: info ${e.topicInfo.toString(16)} topic ${e.topic.toString(16)}`);
         });
     }
@@ -115,6 +123,12 @@ export class VoiceService extends ClientListener {
         }
     }
 
+    // when an actor last began a line on this engine (ms), by local id
+    lastSpoke(localId: number): number {
+        return this.lastSpokeAt.get(localId) ?? 0;
+    }
+
+    private readonly lastSpokeAt = new Map<number, number>();
     private readonly pending = new Map<number, { info: number; since: number }>();
     private static readonly answerMs = 2000;
     private readonly enabled: boolean;

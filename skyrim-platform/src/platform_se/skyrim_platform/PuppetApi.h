@@ -67,6 +67,20 @@ Napi::Value PollHostedGaze(const Napi::CallbackInfo& info);
 // the E the claim's word made meaningful; true when queued
 Napi::Value ActivatePickRef(const Napi::CallbackInfo& info);
 Napi::Value HostedGaze(const Napi::CallbackInfo& info);
+// thuum playtest 37 (the probe before any head build): pollFaceKeyframes
+// (actorFormId) copies, on the game thread, the actor's FaceGen keyframes
+// (BSFaceGenAnimationData's expression, modifier and phoneme keyframes,
+// CommonLibSSE-NG BSFaceGenAnimationData.h:39-42) and its override flag;
+// faceKeyframes(actorFormId) answers the last read as [expression[],
+// modifier[], phoneme[], override, sets[][]], or null; sets are every
+// keyframe set of BSFaceGenAnimationData, 0x20 to 0x180 in header order
+// (2026-10-28: the lip sync's set is among the unnamed ones)
+Napi::Value PollFaceKeyframes(const Napi::CallbackInfo& info);
+Napi::Value FaceKeyframes(const Napi::CallbackInfo& info);
+// thuum memo D52 B (2026-10-28): refreshContainerMenu(refId) tells an open
+// ContainerMenu on that reference to redraw (the engine's inventory-update
+// message and the item list's re-read); true when queued
+Napi::Value RefreshContainerMenu(const Napi::CallbackInfo& info);
 // thuum docs/verbs/npc-fate.md (ADR-050 decision 2, deaths by the engine):
 // damageActor(actorFormId, health, attackerFormId, killMove): the server's
 // cause applied to an actor this game simulates on the game thread, through
@@ -121,6 +135,15 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "hostedGaze",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(HostedGaze)));
+  exports.Set("pollFaceKeyframes",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(PollFaceKeyframes)));
+  exports.Set(
+    "faceKeyframes",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(FaceKeyframes)));
+  exports.Set("refreshContainerMenu",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(RefreshContainerMenu)));
   exports.Set(
     "damageActor",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(DamageActor)));

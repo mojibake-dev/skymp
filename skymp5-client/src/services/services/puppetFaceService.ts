@@ -57,20 +57,30 @@ export class PuppetFaceService extends ClientListener {
                 actor.clearLookAt();
                 logTrace(this, `face: ${localId.toString(16)} gaze cleared`);
             }
-            // the face
+            // the face: recorded, no longer imposed. The re-analyst's read of
+            // 2026-10-28 (docs/research/m3/re-puppet-head-lips.md B): the
+            // engine's expression override is written only by the Papyrus
+            // native and the console, never by its own dialogue, and while
+            // set it blocks the engine's per-line expression (37544 state 3,
+            // which runs on the puppet inside our voice pair too) and the
+            // lip-synced line's emotion on the live NPC after a promote (our
+            // leftover: exprOverride true on the talker's own Orgnar). So a
+            // puppet wears what its say gives it, and any override this
+            // seat set earlier is cleared once (playtest 37)
             const type = Math.min(7, Math.max(0, msg.emotionType | 0));
             const value = Math.min(100, Math.max(0, msg.emotionValue | 0));
+            if (!this.cleared.has(localId)) {
+                actor.clearExpressionOverride();
+                this.cleared.add(localId);
+                logLab("verb:npc-stream", `face: ${localId.toString(16)} expression override cleared (the engine's own per-line expression from here)`);
+            }
             if (!last || last.type !== type || Math.abs(last.value - value) >= 10) {
-                if (type === 0 && value === 0) {
-                    actor.clearExpressionOverride();
-                } else {
-                    actor.setExpressionOverride(MOOD_BY_EMOTION[type] ?? 7, value);
-                }
-                logLab("verb:npc-stream", `face: ${localId.toString(16)} expression ${type} ${value} (mood ${MOOD_BY_EMOTION[type] ?? 7})`);
+                logLab("verb:npc-stream", `face: ${localId.toString(16)} expression ${type} ${value} recorded (mood ${MOOD_BY_EMOTION[type] ?? 7}, not imposed)`);
             }
             this.last.set(localId, { target: targetLocal, type, value });
         });
     }
 
     private readonly last = new Map<number, { target: number; type: number; value: number }>();
+    private readonly cleared = new Set<number>();
 }

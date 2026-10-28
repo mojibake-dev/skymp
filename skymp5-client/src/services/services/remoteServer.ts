@@ -450,6 +450,24 @@ export class RemoteServer extends ClientListener {
       (form as Record<string, unknown>)[element.propName] = parsed;
     });
 
+    // thuum docs/verbs/npc-stream.md (playtest 35, Hilde's tanning missing
+    // on a seat that joined two minutes after it began): a hosted NPC's last
+    // action rides its CreateActor as the custom property "lastAction", and
+    // the puppet replays it once as the view's first action, the way a
+    // relayed one is replayed
+    const last = (form as Record<string, unknown>)["lastAction"];
+    if (!msg.isMe && msg.props?.isHostedByOther && RemoteServer.isLastAction(last)) {
+      form.actionQueue = [{
+        t: MsgType.UpdateAction,
+        idx: msg.idx,
+        action: last.action,
+        idle: last.idle,
+        eventName: last.eventName,
+        type: last.type,
+        actorAnimationVariables: last.actorAnimationVariables,
+      }];
+    }
+
     if (msg.isMe) {
       this.worldModel.playerCharacterFormIdx = i;
       this.worldModel.playerCharacterRefrId = msg.refrId || 0;
@@ -977,6 +995,17 @@ export class RemoteServer extends ClientListener {
 
   getMyActorIndex(): number {
     return this.worldModel.playerCharacterFormIdx;
+  }
+
+  // the custom property "lastAction" as the server writes it (MpActor::VisitProperties): UpdateAction's fields
+  private static isLastAction(value: unknown): value is { action: number; idle: number; eventName: string; type: number; actorAnimationVariables: { booleans: number[]; floats: number[]; integers: number[] } } {
+    if (!value || typeof value !== "object") {
+      return false;
+    }
+    const v = value as Record<string, unknown>;
+    const vars = v["actorAnimationVariables"] as Record<string, unknown> | undefined;
+    return typeof v["action"] === "number" && typeof v["idle"] === "number" && typeof v["eventName"] === "string" && typeof v["type"] === "number"
+      && !!vars && Array.isArray(vars["booleans"]) && Array.isArray(vars["floats"]) && Array.isArray(vars["integers"]);
   }
 
   getMyNodeOverrides(): { setNodeScale?: SetNodeScaleEntry[]; setNodeTextureSet?: SetNodeTextureSetEntry[] } | undefined {

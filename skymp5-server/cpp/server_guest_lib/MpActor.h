@@ -10,6 +10,7 @@
 #include "MpObjectReference.h"
 #include "PlayerGlobal.h"
 #include "ShoutRecord.h"
+#include "UpdateActionMessage.h"
 #include "libespm/espm.h"
 #include <array>
 #include <initializer_list>
@@ -484,6 +485,12 @@ public:
 
   void SetLastAnimEvent(const std::optional<AnimationData>& animationData);
   std::optional<AnimationData> GetLastAnimEvent() const;
+
+  // thuum docs/verbs/npc-stream.md (playtest 35): the last action a host
+  // performed on this NPC (UpdateAction's fields), memory by design, carried
+  // by CreateActor to a seat that joins the cell after the action began
+  void SetLastAction(const UpdateActionMessage& action);
+  std::optional<UpdateActionMessage> GetLastAction() const;
 
   // thuum docs/verbs/npc-stream.md (ADR-050, slice 2): the percentages a
   // host's state report writes once wire-rules hosted_state judged them

@@ -83,6 +83,9 @@ pub fn render_value(msg: &Message) -> Result<Value, JsonError> {
     if !wire_schema::finite::all_finite(msg) {
         return Err(JsonError::NonFinite);
     }
+    if let Some(v) = session::render(msg) {
+        return Ok(v);
+    }
     macro_rules! arms {
         ($($t:literal $name:ident),*) => {
             match msg {
@@ -148,8 +151,12 @@ pub fn recognize_bytes(bytes: &[u8]) -> Result<Message, JsonError> {
     recognize(text)
 }
 
-/// A SkyMP message from a parsed JSON value.
+/// A SkyMP message from a parsed JSON value; a session message (thuum
+/// docs/verbs/mod-lock.md) when the object carries `"w"` instead of `"t"`.
 pub fn recognize_value(value: Value) -> Result<Message, JsonError> {
+    if let Some(w) = value.as_object().and_then(|o| o.get("w")).and_then(Value::as_u64) {
+        return session::recognize(w, &value);
+    }
     let t = value
         .as_object()
         .and_then(|o| o.get("t"))
@@ -166,11 +173,124 @@ pub fn recognize_value(value: Value) -> Result<Message, JsonError> {
     skymp_family!(arms).map_err(|e| JsonError::Shape(e.to_string()))
 }
 
+/// The session family's JSON (thuum docs/verbs/mod-lock.md): the wire's own
+/// messages have no SkyMP MsgType, so they travel between skymp5-client and
+/// its wire DLL, and between the fakeclient and its, as objects keyed by
+/// `"w"`, the wire id: 0 Hello, 1 Welcome, 2 Refuse. A hash is a 16-digit
+/// lowercase hex string, since a JavaScript number cannot hold a u64.
+mod session {
+    use super::{JsonError, Message, Value};
+    use serde_json::json;
+    use wire_schema::{ClientId, Hello};
+
+    fn field<'a>(v: &'a Value, key: &str) -> Result<&'a Value, JsonError> {
+        v.get(key).ok_or_else(|| JsonError::Shape(format!("session message without {key}")))
+    }
+
+    fn integer<T: TryFrom<u64>>(v: &Value, key: &str) -> Result<T, JsonError> {
+        let n = field(v, key)?
+            .as_u64()
+            .ok_or_else(|| JsonError::Shape(format!("{key} is not an unsigned integer")))?;
+        T::try_from(n).map_err(|_| JsonError::Shape(format!("{key} out of range")))
+    }
+
+    /// A session message from its `"w"` and the object.
+    pub fn recognize(w: u64, v: &Value) -> Result<Message, JsonError> {
+        match w {
+            0 => {
+                let hashes = field(v, "mod_hashes")?
+                    .as_array()
+                    .ok_or_else(|| JsonError::Shape("mod_hashes is not an array".into()))?;
+                let mut mod_hashes = wire_schema::bounded::Vec::new();
+                for h in hashes {
+                    let text = h.as_str().ok_or_else(|| JsonError::Shape("a mod hash is not a string".into()))?;
+                    let value = u64::from_str_radix(text, 16)
+                        .map_err(|_| JsonError::Shape(format!("mod hash {text:?} is not hex")))?;
+                    mod_hashes
+                        .push(value)
+                        .map_err(|_| JsonError::Shape("more mod hashes than the cap".into()))?;
+                }
+                let name = field(v, "name")?
+                    .as_str()
+                    .ok_or_else(|| JsonError::Shape("name is not a string".into()))?;
+                let name = wire_schema::bounded::String::try_from(name)
+                    .map_err(|_| JsonError::Shape("name longer than the cap".into()))?;
+                // the client's plugin omits the version: its wire DLL and the
+                // server share the schema crate, so the DLL fills it in
+                let schema_version = match v.get("schema_version") {
+                    None => wire_schema::SCHEMA_VERSION,
+                    Some(_) => integer(v, "schema_version")?,
+                };
+                Ok(Message::Hello(Hello {
+                    schema_version,
+                    client_build: integer(v, "client_build")?,
+                    mod_hashes,
+                    name,
+                }))
+            }
+            1 => Ok(Message::Welcome {
+                client_id: ClientId(integer(v, "client_id")?),
+                server_time_ms: integer(v, "server_time_ms")?,
+            }),
+            2 => Ok(Message::Refuse { reason: integer(v, "reason")? }),
+            other => Err(JsonError::UnknownType(other)),
+        }
+    }
+
+    /// The JSON of a session message; None for the other families.
+    pub fn render(msg: &Message) -> Option<Value> {
+        match msg {
+            Message::Hello(h) => Some(json!({
+                "w": 0,
+                "schema_version": h.schema_version,
+                "client_build": h.client_build,
+                "mod_hashes": h.mod_hashes.iter().map(|x| format!("{x:016x}")).collect::<Vec<_>>(),
+                "name": h.name.as_str(),
+            })),
+            Message::Welcome { client_id, server_time_ms } => {
+                Some(json!({"w": 1, "client_id": client_id.0, "server_time_ms": server_time_ms}))
+            }
+            Message::Refuse { reason } => Some(json!({"w": 2, "reason": reason})),
+            _ => None,
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::panic, clippy::indexing_slicing)] // serde_json Value indexing returns Null, it never panics
 mod tests {
     use super::*;
     use wire_schema::skymp;
+    use wire_schema::Hello;
+
+    #[test]
+    fn the_session_family_round_trips_by_w() {
+        let hello = r#"{"w":0,"schema_version":18,"client_build":7,"mod_hashes":["4381e91f019b44e0","0000000000000001"],"name":"rotfern"}"#;
+        let msg = recognize(hello).unwrap_or(Message::Refuse { reason: 0 });
+        match &msg {
+            Message::Hello(h) => {
+                assert_eq!((h.schema_version, h.client_build), (18, 7));
+                assert_eq!(h.mod_hashes.iter().copied().collect::<Vec<_>>(), vec![0x4381_e91f_019b_44e0, 1]);
+                assert_eq!(h.name.as_str(), "rotfern");
+            }
+            other => panic!("not a Hello: {other:?}"),
+        }
+        let back: Value = serde_json::from_str(&render(&msg).unwrap_or_default()).unwrap_or(Value::Null);
+        assert_eq!(back["w"], 0);
+        assert_eq!(back["mod_hashes"][0], "4381e91f019b44e0");
+        let welcome = render(&Message::Welcome { client_id: wire_schema::ClientId(9), server_time_ms: 1234 }).unwrap_or_default();
+        assert!(matches!(recognize(&welcome), Ok(Message::Welcome { client_id: wire_schema::ClientId(9), server_time_ms: 1234 })));
+        let refuse = render(&Message::Refuse { reason: 402 }).unwrap_or_default();
+        assert!(matches!(recognize(&refuse), Ok(Message::Refuse { reason: 402 })));
+        assert!(matches!(recognize(r#"{"w":0,"schema_version":18,"client_build":7,"mod_hashes":["zz"],"name":"x"}"#), Err(JsonError::Shape(_))));
+        assert!(matches!(recognize(r#"{"w":7}"#), Err(JsonError::UnknownType(7))));
+        let filled = recognize(r#"{"w":0,"client_build":0,"mod_hashes":[],"name":""}"#);
+        let filled_version = match filled {
+            Ok(Message::Hello(Hello { schema_version, .. })) => Some(schema_version),
+            _ => None,
+        };
+        assert_eq!(filled_version, Some(wire_schema::SCHEMA_VERSION), "the DLL fills the version");
+    }
 
     fn movement() -> Message {
         Message::UpdateMovement(skymp::UpdateMovement {
@@ -289,7 +409,15 @@ mod tests {
         let long_mode = "x".repeat(wire_schema::cap::RUN_MODE + 1);
         let over = format!(r#"{{"t":2,"idx":1,"data":{{"worldOrCell":60,"pos":[1,2,3],"rot":[0,0,0],"direction":0,"healthPercentage":1,"speed":0,"runMode":"{long_mode}","isInJumpState":false,"isSneaking":false,"isBlocking":false,"isWeapDrawn":false,"isDead":false}}}}"#);
         assert!(matches!(recognize(&over), Err(JsonError::Shape(_))), "capacity");
-        assert_eq!(render(&Message::Refuse { reason: 1 }), Err(JsonError::NoForm("Refuse")));
+        // the session family has its "w" form now (thuum docs/verbs/mod-lock.md); an M0 intent still has none
+        let m0 = Message::Movement(wire_schema::MovementSample {
+            seq: 1,
+            actor: wire_schema::FormId(0x14),
+            transform: wire_schema::Transform { x: 0.0, y: 0.0, z: 0.0, yaw: 0.0, pitch: 0.0 },
+            run: false,
+            sneak: false,
+        });
+        assert_eq!(render(&m0), Err(JsonError::NoForm("Movement")));
         let mut m = movement();
         if let Message::UpdateMovement(u) = &mut m {
             u.data.speed = f32::NAN;

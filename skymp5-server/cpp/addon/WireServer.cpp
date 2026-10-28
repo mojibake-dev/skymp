@@ -43,7 +43,8 @@ class WireServer : public Networking::IServer
 public:
   WireServer(const char* listenAddress, unsigned short port,
              unsigned short maxConnections, const char* password,
-             std::shared_ptr<prometheus::Registry> promRegistry)
+             std::shared_ptr<prometheus::Registry> promRegistry,
+             const ModLockSettings& modLock)
     : server(Bind(listenAddress, port, maxConnections, password))
     , clientsByUser(maxConnections)
     , connectedClientsGauge{
@@ -52,6 +53,21 @@ public:
       "Count of currently connected clients (as seen by the wire)",
     }
   {
+    // thuum docs/verbs/mod-lock.md: the bridge judges each client's Hello
+    // against the manifest the TypeScript layer writes from the load order
+    const std::string error = std::string(server->set_mod_lock(
+      modLock.manifestPath, modLock.enabled, modLock.requireHello));
+    if (!error.empty()) {
+      spdlog::error("WireServer: mod-lock not set ({}); every Hello is "
+                    "welcomed unchecked",
+                    error);
+    } else {
+      spdlog::info("WireServer: mod-lock {} (manifest {}, a login without a "
+                   "Hello {})",
+                   modLock.enabled ? "on" : "off (verdicts logged)",
+                   modLock.manifestPath,
+                   modLock.requireHello ? "refused" : "allowed");
+    }
   }
 
   void Send(Networking::UserId id, Networking::PacketData data, size_t length,
@@ -189,6 +205,17 @@ private:
         }
         return;
       }
+      case skymp::wire::EventKind::Session: {
+        // the bridge's own decision on a Hello (thuum docs/verbs/mod-lock.md):
+        // reason 0 a welcome, else the refusal's code; the line is the log's
+        if (ev.reason == 0) {
+          spdlog::info("WireServer: {}", std::string(ev.detail));
+        } else {
+          spdlog::warn("WireServer: {} (code {})", std::string(ev.detail),
+                       ev.reason);
+        }
+        return;
+      }
     }
   }
 
@@ -256,8 +283,9 @@ private:
 std::shared_ptr<Networking::IServer> CreateWireServer(
   const char* listenAddress, unsigned short port,
   unsigned short maxConnections, const char* password,
-  std::shared_ptr<prometheus::Registry> promRegistry)
+  std::shared_ptr<prometheus::Registry> promRegistry,
+  const ModLockSettings& modLock)
 {
   return std::make_shared<WireServer>(listenAddress, port, maxConnections,
-                                      password, promRegistry);
+                                      password, promRegistry, modLock);
 }

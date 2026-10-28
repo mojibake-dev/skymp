@@ -1029,6 +1029,8 @@ dependencies = [
  "serde_json",
  "wire-bridge",
  "wire-client-ffi",
+ "wire-rules",
+ "wire-schema",
 ]
 
 [[package]]

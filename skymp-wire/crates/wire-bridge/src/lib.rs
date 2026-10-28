@@ -12,12 +12,12 @@
 
 pub mod rules;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, SocketAddr};
 use std::time::Instant;
 
 use wire_schema::Message;
-use wire_transport::{limits::Limits, token, Delivery, Encoded, Inbound, TransportError};
+use wire_transport::{limits::Limits, token, Delivery, Encoded, Inbound, ModLockReject, RejectKind, TransportError};
 
 #[cxx::bridge(namespace = "skymp::wire")]
 mod ffi {
@@ -33,6 +33,10 @@ mod ffi {
         /// A refused packet or connection; `reason` and `detail` say why.
         /// Never acted on, only counted and logged.
         Rejected,
+        /// A session decision the bridge made itself (thuum
+        /// docs/verbs/mod-lock.md): a Hello welcomed (`reason` 0) or refused
+        /// (`reason` the code), `detail` the line for the log. Never acted on.
+        Session,
     }
 
     /// One polled event.
@@ -81,6 +85,12 @@ mod ffi {
         fn send(self: &mut Server, client: u64, json: &str, reliable: bool) -> u16;
         /// Drop a client; it sees the server close the connection.
         fn disconnect(self: &mut Server, client: u64);
+        /// The mod lock (thuum docs/verbs/mod-lock.md): the server's
+        /// `manifest.json` to judge each client's Hello against, read at the
+        /// first Hello; `enabled` false welcomes every Hello and logs the
+        /// verdict; `require_hello` refuses a login from a connection that
+        /// sent none. Returns an empty string, or why the path is unusable.
+        fn set_mod_lock(self: &mut Server, manifest_path: &str, enabled: bool, require_hello: bool) -> String;
         /// The client's IP address, or an empty string once it is gone.
         fn client_ip(self: &Server, client: u64) -> String;
         /// The connection's smoothed round trip in milliseconds (renet's
@@ -108,6 +118,66 @@ pub struct Server {
     sent: u64,
     refused: BTreeMap<u16, u64>,
     rejected: BTreeMap<u16, u64>,
+    mod_lock: Option<ModLock>,
+    /// Clients whose Hello the lock accepted (or that sent one at all).
+    hello_seen: BTreeSet<u64>,
+    /// Clients refused on the last poll: their Refuse is queued, and the
+    /// disconnect waits one poll so the packet leaves first.
+    refusing: Vec<u64>,
+}
+
+/// The expected hashes and the plugin names in the same order, or why the
+/// manifest could not be read.
+type ModList = Result<(Vec<u64>, Vec<String>), String>;
+
+/// A Hello's judgement: the verdict, the server's plugin names and count,
+/// or why there was no list to judge against.
+type Judged = Result<(wire_rules::mods::ModVerdict, Vec<String>, usize), String>;
+
+/// The mod lock's settings and, once read, the server's list
+/// (thuum docs/verbs/mod-lock.md).
+struct ModLock {
+    manifest_path: String,
+    enabled: bool,
+    require_hello: bool,
+    /// The list once the manifest has been read; an Err is the read's
+    /// failure, logged at every Hello.
+    list: Option<ModList>,
+}
+
+impl ModLock {
+    fn list(&mut self) -> Result<(&[u64], &[String]), String> {
+        if self.list.is_none() {
+            let read = std::fs::read_to_string(&self.manifest_path)
+                .map_err(|e| format!("cannot read {}: {e}", self.manifest_path))
+                .and_then(|text| wire_rules::mods::parse_manifest(&text))
+                .map(|files| {
+                    let names: Vec<String> = {
+                        let plugins: Vec<&wire_rules::mods::ModFile> = files
+                            .iter()
+                            .filter(|f| {
+                                let l = f.name.to_lowercase();
+                                l.ends_with(".esm") || l.ends_with(".esp") || l.ends_with(".esl")
+                            })
+                            .collect();
+                        plugins
+                            .iter()
+                            .filter(|f| !f.light)
+                            .chain(plugins.iter().filter(|f| f.light))
+                            .map(|f| f.name.clone())
+                            .collect()
+                    };
+                    (wire_rules::mods::expected(&files), names)
+                });
+            self.list = Some(read);
+        }
+        match self.list.as_ref() {
+            Some(Ok((hashes, names))) => Ok((hashes.as_slice(), names.as_slice())),
+            Some(Err(e)) => Err(e.clone()),
+            // set just above; the lints want no panic for the impossible arm
+            None => Err("E_MOD_LOCK_STATE".to_string()),
+        }
+    }
 }
 
 /// Bind failures crossing to C++ (as exceptions).
@@ -174,6 +244,9 @@ pub fn wire_server_bind(options: &BindOptions) -> Result<Box<Server>, BindError>
         sent: 0,
         refused: BTreeMap::new(),
         rejected: BTreeMap::new(),
+        mod_lock: None,
+        hello_seen: BTreeSet::new(),
+        refusing: Vec::new(),
     }))
 }
 
@@ -207,15 +280,31 @@ impl Server {
         let now = Instant::now();
         let dt = now.saturating_duration_since(self.last_poll);
         self.last_poll = now;
+        // the clients refused on the last poll: their Refuse left with it
+        for client in std::mem::take(&mut self.refusing) {
+            self.inner.disconnect(client);
+        }
         let mut events = Vec::new();
         self.inner.poll(dt, &mut events);
         for ev in events {
             out.push(match ev {
                 Inbound::Connected { client } => event(ffi::EventKind::Connected, client),
-                Inbound::Disconnected { client, reason } => WireEvent {
-                    detail: reason,
-                    ..event(ffi::EventKind::Disconnected, client)
-                },
+                Inbound::Disconnected { client, reason } => {
+                    self.hello_seen.remove(&client);
+                    WireEvent {
+                        detail: reason,
+                        ..event(ffi::EventKind::Disconnected, client)
+                    }
+                }
+                // the session family is the bridge's own (thuum docs/verbs/mod-lock.md)
+                Inbound::Message { client, msg: Message::Hello(hello) } => self.on_hello(client, &hello),
+                Inbound::Message { client, msg }
+                    if msg.msg_type() == Some(1)
+                        && !self.hello_seen.contains(&client)
+                        && self.mod_lock.as_ref().is_some_and(|l| l.require_hello) =>
+                {
+                    self.refuse(client, ModLockReject::NoHello, "a login before any Hello".to_string())
+                }
                 Inbound::Message { client, msg } => match wire_json::render(&msg) {
                     Ok(json) => WireEvent {
                         msg_type: msg.msg_type().unwrap_or(0),
@@ -239,6 +328,93 @@ impl Server {
             reason,
             detail,
             ..event(ffi::EventKind::Rejected, client)
+        }
+    }
+
+    /// See the bridge declaration.
+    pub fn set_mod_lock(&mut self, manifest_path: &str, enabled: bool, require_hello: bool) -> String {
+        if manifest_path.trim().is_empty() {
+            return "E_MOD_LOCK_PATH: the manifest path is empty".to_string();
+        }
+        self.mod_lock = Some(ModLock {
+            manifest_path: manifest_path.to_string(),
+            enabled,
+            require_hello,
+            list: None,
+        });
+        String::new()
+    }
+
+    /// A client's Hello (thuum docs/verbs/mod-lock.md): judged against the
+    /// manifest when the lock is on, welcomed otherwise; one Session event
+    /// for the log either way.
+    fn on_hello(&mut self, client: u64, hello: &wire_schema::Hello) -> WireEvent {
+        if !self.hello_seen.insert(client) {
+            // the schema calls a second Hello a protocol error the server closes on
+            return self.refuse(client, ModLockReject::NoHello, "a second Hello on the connection".to_string());
+        }
+        let got: Vec<u64> = hello.mod_hashes.iter().copied().collect();
+        // judged first, acted on after: the lock's borrow ends before a send
+        let judged: Option<Judged> = match self.mod_lock.as_mut() {
+                Some(lock) if lock.enabled => Some(lock.list().map(|(expected, names)| {
+                    (wire_rules::mods::judge(expected, &got), names.to_vec(), expected.len())
+                })),
+                _ => None,
+            };
+        match judged {
+            None => self.welcome(client, format!("mod-lock: off; client {client:x} welcomed with {} plugin(s)", got.len())),
+            Some(Err(e)) => {
+                self.welcome(client, format!("mod-lock: manifest unusable ({e}); client {client:x} welcomed unchecked"))
+            }
+            Some(Ok((wire_rules::mods::ModVerdict::Ok, _, n))) => {
+                self.welcome(client, format!("mod-lock: client {client:x} welcomed, {n} plugin(s) match"))
+            }
+            Some(Ok((wire_rules::mods::ModVerdict::Count { server, client: c }, _, _))) => self.refuse(
+                client,
+                ModLockReject::Count,
+                format!("the server has {server} plugin(s), the client sent {c}"),
+            ),
+            Some(Ok((wire_rules::mods::ModVerdict::Mismatch { index }, names, _))) => {
+                let name = names.get(index).cloned().unwrap_or_default();
+                self.refuse(client, ModLockReject::Mismatch, format!("plugin {index} differs (the server's: {name})"))
+            }
+        }
+    }
+
+    fn welcome(&mut self, client: u64, detail: String) -> WireEvent {
+        let server_time_ms = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+        )
+        .unwrap_or(0);
+        let msg = Message::Welcome { client_id: wire_schema::ClientId(client), server_time_ms };
+        if let Err(e) = self.inner.send(client, &msg) {
+            return self.rejection(client, transport_code(&e), format!("Welcome not sent: {e}"));
+        }
+        WireEvent {
+            detail,
+            ..event(ffi::EventKind::Session, client)
+        }
+    }
+
+    fn refuse(&mut self, client: u64, why: ModLockReject, detail: String) -> WireEvent {
+        let kind = RejectKind::ModLock(why);
+        let reason = wire_transport::reason_code(&kind);
+        let msg = Message::Refuse { reason };
+        if let Err(e) = self.inner.send(client, &msg) {
+            // the client never hears why; it is dropped all the same
+            self.refusing.push(client);
+            return self.rejection(client, transport_code(&e), format!("Refuse not sent: {e}"));
+        }
+        self.refusing.push(client);
+        let n = self.rejected.entry(reason).or_insert(0);
+        *n = n.saturating_add(1);
+        WireEvent {
+            reason,
+            detail: format!("mod-lock: client {client:x} refused {kind}: {detail}"),
+            ..event(ffi::EventKind::Session, client)
         }
     }
 

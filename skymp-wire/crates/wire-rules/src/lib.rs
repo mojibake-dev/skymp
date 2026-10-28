@@ -24,6 +24,7 @@ pub mod hostility;
 pub mod magic;
 pub mod markers;
 pub mod melee;
+pub mod mods;
 pub mod movement;
 pub mod player_globals;
 pub mod racemenu;

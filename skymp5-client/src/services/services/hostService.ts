@@ -11,6 +11,10 @@ import { localIdToRemoteId, remoteIdToLocalId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { RemoteServer } from "./remoteServer";
 
+// The storage key of the state a plugin reload must not lose (sp.storage
+// survives one, ADR-041)
+const HOST_STORAGE_KEY = "hostServiceState";
+
 // thuum docs/verbs/cell-host.md (ADR-035): one player's game runs a cell's
 // NPCs and the server decides which. This game reports its loaded set, one
 // CellLoaded per cell as the engine fully loads it (cellFullyLoaded) and as
@@ -51,6 +55,7 @@ export class HostService extends ClientListener {
         // while this game hosts the cell the actor stands in
         this.controller.on("cellAttach", (e) => this.onActorAttach(e));
         this.controller.on("cellDetach", (e) => this.onActorDetach(e));
+        this.restore();
     }
 
     // Whether this game hosts the cell the reference stands in.
@@ -195,6 +200,7 @@ export class HostService extends ClientListener {
                 this.report(id, true);
             }
         }
+        this.persist();
     }
 
     private onHostGrant(e: ConnectionMessage<HostGrantMessage>) {
@@ -206,6 +212,7 @@ export class HostService extends ClientListener {
         }
         this.lastEpoch.set(cell, epoch);
         this.hosted.set(cell, epoch);
+        this.persist();
         logTrace(this, `hosting cell ${cell.toString(16)} at epoch ${epoch}`);
         // the cell's puppets go live (PuppetService, docs/verbs/npc-puppet.md)
         this.controller.emitter.emit("cellHostChanged", { cell, hosted: true });
@@ -222,6 +229,7 @@ export class HostService extends ClientListener {
         if (epoch > (this.lastEpoch.get(cell) ?? 0)) {
             this.lastEpoch.set(cell, epoch);
         }
+        this.persist();
         logTrace(this, `released cell ${cell.toString(16)} (epoch ${epoch})`);
         // the cell's actors become puppets (PuppetService)
         this.controller.emitter.emit("cellHostChanged", { cell, hosted: false });
@@ -239,6 +247,7 @@ export class HostService extends ClientListener {
         }
         this.hosted.clear();
         this.lastEpoch.clear();
+        this.persist();
         this.lastRefresh = Date.now();
         for (const id of Array.from(this.loaded)) {
             this.report(id, true);
@@ -352,6 +361,54 @@ export class HostService extends ClientListener {
     }
 
     private static readonly pollMs = 1000;
+    // The state a plugin reload must not lose, as plain arrays in the
+    // platform's storage (ADR-041's survivor): a hot-reloaded client (lab
+    // client-hot, ADR-054) keeps its connection, so no grant, release or
+    // load event comes again. Without it a reloaded host held no cell: the
+    // roster stopped (hosted.size 0), isHostedHere said no, a release for
+    // a cell it hosts was ignored, and the native hosted mirror
+    // (setHosted) could not be cleared. Written at every grant, release
+    // and reset and once a second from the poll; read once at construction.
+    private persist() {
+        this.sp.storage[HOST_STORAGE_KEY] = {
+            hosted: Array.from(this.hosted.entries()),
+            lastEpoch: Array.from(this.lastEpoch.entries()),
+            loaded: Array.from(this.loaded),
+            hostedActors: Array.from(this.hostedActors),
+            attached: Array.from(this.attached.keys()),
+        };
+    }
+
+    private restore() {
+        const raw: unknown = this.sp.storage[HOST_STORAGE_KEY];
+        if (!raw || typeof raw !== "object") {
+            return;
+        }
+        const stored = raw as Partial<Record<"hosted" | "lastEpoch" | "loaded" | "hostedActors" | "attached", unknown>>;
+        const pairs = (v: unknown): Array<[number, number]> => Array.isArray(v)
+            ? v.filter((x): x is [number, number] => Array.isArray(x) && x.length === 2 && typeof x[0] === "number" && typeof x[1] === "number")
+            : [];
+        const ids = (v: unknown): number[] => Array.isArray(v) ? v.filter((x): x is number => typeof x === "number") : [];
+        for (const [cell, epoch] of pairs(stored.hosted)) {
+            this.hosted.set(cell, epoch);
+        }
+        for (const [cell, epoch] of pairs(stored.lastEpoch)) {
+            this.lastEpoch.set(cell, epoch);
+        }
+        for (const id of ids(stored.loaded)) {
+            this.loaded.add(id);
+        }
+        for (const id of ids(stored.hostedActors)) {
+            this.hostedActors.add(id);
+        }
+        for (const id of ids(stored.attached)) {
+            this.attached.set(id, true);
+        }
+        if (this.hosted.size > 0 || this.loaded.size > 0) {
+            logTrace(this, `resumed after a reload: ${this.hosted.size} hosted cell(s), ${this.loaded.size} loaded, ${this.hostedActors.size} streamed actor(s)`);
+        }
+    }
+
     private static readonly refreshMs = 30_000;
     private static readonly sightingsMs = 2000;
     private static readonly sightingsMax = 64;

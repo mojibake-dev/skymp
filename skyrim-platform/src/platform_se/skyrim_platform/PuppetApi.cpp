@@ -120,6 +120,31 @@ void Promote(RE::Actor& actor)
                  actor.formID);
     return;
   }
+  // thuum playtest 37 (2026-10-28 20:52Z, Alvor): a relayed line said here
+  // through the sound descriptor path (a "played" result) left its item in
+  // flight (greetingPlayer set, the handle live) past its end, and the AI's
+  // first tick on the promoted actor drained it as greetings: four BEGINs in
+  // 100 ms and the player's dialogue snapped shut three times in twelve
+  // seconds. The item is cleared and the handle stopped before the AI runs.
+  // HYPOTHESIS until the probe reads a promote after a "played" line.
+  if (auto* process = actor.GetActorRuntimeData().currentProcess) {
+    if (auto* high = process->high) {
+      const bool handleLive = high->soundHandles[0].IsValid();
+      if (high->greetingPlayer || handleLive) {
+        if (handleLive) {
+          high->soundHandles[0].Stop();
+        }
+        REL::Relocation<void (*)(RE::AIProcess*)> clearGreet{
+          Offsets::Voice::ClearGreetTopic
+        };
+        clearGreet(process);
+        logger::info("[verb:npc-puppet] promote {:x}: a puppet line's item "
+                     "cleared before the AI (in flight {}, handle {})",
+                     actor.formID, high->greetingPlayer,
+                     handleLive ? "stopped" : "none");
+      }
+    }
+  }
   actor.EnableAI(true);
   actor.EvaluatePackage(false, false);
   // thuum docs/research/m3/decisions-after-playtest-34.md D23: a live actor
@@ -395,6 +420,24 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
         auto* highBefore = runtime.currentProcess->high;
         const bool repeat = highBefore && highBefore->greetingPlayer &&
           highBefore->greetTopic && highBefore->greetTopic->info == topicInfo;
+        // thuum playtest 37 (2026-10-28, Faendal and Alvor): a line asked while
+        // the last one still plays with no state byte (the sound descriptor
+        // path: timer running, state -1) takes that path too and plays with
+        // no lips (4540c, bccc6, 105384, each "played"); the host's own engine
+        // cuts a line for the next, so the one in flight is stopped and its
+        // item cleared here first, and this line starts through
+        // SpeakSoundFunction's lip branch. HYPOTHESIS until the probe.
+        bool precleared = false;
+        if (!repeat && highBefore && timerBefore > 0.f && stateBefore != 3) {
+          if (highBefore->soundHandles[0].IsValid()) {
+            highBefore->soundHandles[0].Stop();
+          }
+          REL::Relocation<void (*)(RE::AIProcess*)> clearGreetBefore{
+            Offsets::Voice::ClearGreetTopic
+          };
+          clearGreetBefore(runtime.currentProcess);
+          precleared = true;
+        }
         const bool returned = repeat
           ? false
           : say(runtime.currentProcess, actor, topicInfo->parentTopic,
@@ -448,7 +491,7 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
                      "topic {:x} -> {} (bits {:x}, timer {:.2f}, state {}, "
                      "lip {}, 3D {}, axis distance {:.0f} before; returned "
                      "{}, state {}, timer {:.2f}, handle {}, delay {:.2f}, in "
-                     "flight {}, lip {} after{})",
+                     "flight {}, lip {} after{}{})",
                      actorFormId, infoFormId, topicInfo->parentTopic->formID,
                      result == 1     ? "started"
                        : result == 3 ? "played"
@@ -459,7 +502,8 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
                      axisDistance, returned, stateAfter, timerAfter,
                      handleLive ? "live" : "none",
                      high ? high->soundDelay : -2.f, inFlight, lipAfter,
-                     cleared ? ", item cleared" : "");
+                     cleared ? ", item cleared" : "",
+                     precleared ? "; the line in flight stopped first" : "");
       }
     }
     std::lock_guard<std::mutex> lock(g_sayResultMutex);

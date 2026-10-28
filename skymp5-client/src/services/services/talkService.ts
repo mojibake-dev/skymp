@@ -125,8 +125,17 @@ export class TalkService extends ClientListener {
             this.release("a new target under E");
         }
         this.send(remoteId, true);
+        // one activation per claim (docs/research/m3/re-claimed-dialogue-state.md,
+        // finding 19): the engine's own release of this press lands after the
+        // promote lifts the block and activates the actor a second time, which
+        // clears its talking-to-player state; the press is consumed on the
+        // platform, and activatePickRef after the grant is the one activation
+        // (absent on an older dist: nothing to consume there)
+        const api = this.sp as unknown as Record<string, unknown>;
+        const consume = api["consumeActivatePress"];
+        const consumed = typeof consume === "function" ? !!(consume as () => boolean)() : false;
         this.pending = { localId, remoteId, since: Date.now() };
-        logLab("verb:npc-talk", `claim ${remoteId.toString(16)} (local ${localId.toString(16)}) sent on E`);
+        logLab("verb:npc-talk", `claim ${remoteId.toString(16)} (local ${localId.toString(16)}) sent on E${consumed ? ", the press consumed" : ""}`);
     }
 
     private onUpdate() {

@@ -640,7 +640,8 @@ TEST_CASE("A late joiner's CreateActor carries the hosted actor's last "
   Player(p, 1, kC2, kHere);
   // the custom property "lastAction" (the record's JSON-valued property
   // channel; no wire row) on the wolf's CreateActor, on no player's
-  const lastActionOf = [](const CreateActorMessage& m) -> std::optional<nlohmann::json> {
+  const auto lastActionOf =
+    [](const CreateActorMessage& m) -> std::optional<nlohmann::json> {
     for (const auto& entry : m.customPropsJsonDumps) {
       if (entry.propName == "lastAction") {
         return nlohmann::json::parse(entry.propValueJsonDump);

@@ -6,6 +6,7 @@ import { MessageWithRefrId } from "../events/sendMessageWithRefrIdEvent";
 import { localIdToRemoteId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { HostService } from "./hostService";
+import { VoiceService } from "./voiceService";
 import { PuppetService } from "./puppetService";
 
 // thuum docs/verbs/npc-talk.md (ADR-052): a guest opens dialogue with an NPC
@@ -202,8 +203,16 @@ export class TalkService extends ClientListener {
             // release waits the exit line's grace; the lease is the safety net
             const now = Date.now();
             held.closedAt = held.closedAt ?? now;
-            if (now - held.closedAt >= TalkService.goodbyeMs) {
-                this.release(`the Dialogue Menu's close, ${(TalkService.goodbyeMs / 1000).toFixed(0)} s on (the exit line's grace)`);
+            // 22:04:00Z: Orgnar's post-dialogue line began 19 ms after the
+            // graced release, 3 s after the close to the millisecond, and was
+            // dropped as a non-simulator's. So the release also waits until
+            // the actor's last line on this engine is speechSettleMs old, up
+            // to releaseCapMs after the close (a chatty resident cannot hold
+            // the claim; the lease is the net beyond that)
+            const sinceClose = now - held.closedAt;
+            const sinceSpoke = now - this.controller.lookupListener(VoiceService).lastSpoke(held.localId);
+            if (sinceClose >= TalkService.goodbyeMs && (sinceSpoke >= TalkService.speechSettleMs || sinceClose >= TalkService.releaseCapMs)) {
+                this.release(`the Dialogue Menu's close, ${(sinceClose / 1000).toFixed(1)} s on (the exit line's grace, last line ${(sinceSpoke / 1000).toFixed(1)} s ago)`);
             }
             return;
         }
@@ -263,6 +272,9 @@ export class TalkService extends ClientListener {
     private static readonly activateRetries = 2;
     // the exit line's grace after the Dialogue Menu's close before the release
     private static readonly goodbyeMs = 3000;
+    // and the quiet the actor's last line must have had, within a cap
+    private static readonly speechSettleMs = 2500;
+    private static readonly releaseCapMs = 10000;
     private readonly enabled: boolean;
     private readonly key: number;
 }

@@ -8,7 +8,7 @@ import { getMovement } from "../../sync/movementGet";
 import * as worldViewMisc from "../../view/worldViewMisc";
 
 import { Animation, AnimationSource } from "../../sync/animation";
-import { Actor, EquipEvent, FormType, PoisonAppliedEvent } from "skyrimPlatform";
+import { Actor, EquipEvent, FormType, PoisonAppliedEvent, settings } from "skyrimPlatform";
 import { getAppearance } from "../../sync/appearance";
 import { ActorValues, getActorValues } from "../../sync/actorvalues";
 import { getEquipment } from "../../sync/equipment";
@@ -155,7 +155,9 @@ export class SendInputsService extends ClientListener {
         }
 
         const refrIdStr = `${_refrId}`;
-        const sendMovementRateMs = 130;
+        // thuum D49: the send rate as a settings knob (skymp5-client.movement.sendRateMs, default 130; the
+        // player's own samples and the host's samples of its NPCs alike), read once
+        const sendMovementRateMs = SendInputsService.sendRateMs();
         const now = Date.now();
         const last = this.lastSendMovementMoment.get(refrIdStr);
         if (!last || now - last > sendMovementRateMs) {
@@ -170,6 +172,20 @@ export class SendInputsService extends ClientListener {
             });
             this.lastSendMovementMoment.set(refrIdStr, now);
         }
+    }
+
+    private static sendRateMs(): number {
+        if (SendInputsService.sendRateCache === undefined) {
+            const s = this.settingsOf();
+            const movement = s && typeof s["movement"] === "object" && s["movement"] ? s["movement"] as Record<string, unknown> : {};
+            const v = movement["sendRateMs"];
+            SendInputsService.sendRateCache = typeof v === "number" && Number.isFinite(v) && v >= 16 ? v : 130;
+        }
+        return SendInputsService.sendRateCache;
+    }
+    private static sendRateCache: number | undefined;
+    private static settingsOf(): Record<string, unknown> | undefined {
+        return settings["skymp5-client"] as Record<string, unknown> | undefined;
     }
 
     private sendActorValuePercentage(_refrId?: number, form?: FormModel) {

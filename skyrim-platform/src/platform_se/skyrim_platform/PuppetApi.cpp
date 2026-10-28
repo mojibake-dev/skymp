@@ -786,8 +786,11 @@ Napi::Value PuppetApi::RefreshContainerMenu(const Napi::CallbackInfo& info)
         posted = true;
       }
     }
+    // the item list through the runtime data: the pin declares GetItemList
+    // out of line with no body in the port's library (pipeline 3542, job
+    // 13389, LNK2019), the same shape as Actor's runtime-data accessor
     bool listed = false;
-    if (auto* list = menu->GetItemList()) {
+    if (auto* list = menu->GetRuntimeData().itemList) {
       list->Update(target.get());
       listed = true;
     }

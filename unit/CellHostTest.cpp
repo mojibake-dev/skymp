@@ -608,6 +608,71 @@ TEST_CASE("A host follows its actor into an unhosted cell its game loads, "
 // hosted by other" and the old host's "hosted by other", the old host's
 // further reports are dropped and the new host's pass; a crossing back
 // passes it the same way.
+TEST_CASE("A late joiner's CreateActor carries the hosted actor's last "
+          "action, a player's never",
+          "[CellHost]")
+{
+  // thuum docs/verbs/npc-stream.md (playtest 35, 2026-10-27): Hilde's tanning
+  // began two minutes before the second seat reached Riverwood, and its
+  // CreateActor carried the last animation event, not the action, so the
+  // puppet stood idle until the host's engine restarted the chore. The
+  // host's action on an NPC it hosts is kept on the record and rides the
+  // CreateActor a later arrival gets; a player's own actions never do
+  auto& p = GetPartOne();
+  Player(p, 0, kC1, kHere);
+  const auto here = p.worldState.CellOf(kTamriel, kHere);
+  REQUIRE(here.has_value());
+  CellLoaded(p, 0, *here);
+  REQUIRE(p.GetCellHost(*here).player == kC1);
+  p.CreateActor(kWolf, kHere, 0, kTamriel);
+  auto& wolf = p.worldState.GetFormAt<MpActor>(kWolf);
+  wolf.SetPos(kHere);
+  REQUIRE(p.SimulatorOf(wolf) == kC1);
+  REQUIRE_FALSE(wolf.GetLastAction().has_value());
+
+  // the host performs an action on its wolf: kept
+  Act(p, 0, kWolf);
+  REQUIRE(wolf.GetLastAction().has_value());
+  REQUIRE(wolf.GetLastAction()->eventName == "attackStart");
+
+  // the second player arrives: its CreateActor for the wolf carries it
+  p.Messages().clear();
+  Player(p, 1, kC2, kHere);
+  // the custom property "lastAction" (the record's JSON-valued property
+  // channel; no wire row) on the wolf's CreateActor, on no player's
+  const lastActionOf = [](const CreateActorMessage& m) -> std::optional<nlohmann::json> {
+    for (const auto& entry : m.customPropsJsonDumps) {
+      if (entry.propName == "lastAction") {
+        return nlohmann::json::parse(entry.propValueJsonDump);
+      }
+    }
+    return std::nullopt;
+  };
+  bool carried = false;
+  for (const auto& m : SentTo<CreateActorMessage>(p, 1)) {
+    if (m.refrId == kWolf) {
+      const auto last = lastActionOf(m);
+      REQUIRE(last.has_value());
+      REQUIRE(last->at("eventName").get<std::string>() == "attackStart");
+      REQUIRE(last->at("action").get<uint32_t>() == 1);
+      REQUIRE(last->at("type").get<uint32_t>() == 2);
+      REQUIRE(last->at("actorAnimationVariables").is_object());
+      carried = true;
+    }
+    if (m.refrId == kC1) {
+      // a player's actor: its actions are its own game's, never carried
+      REQUIRE_FALSE(lastActionOf(m).has_value());
+    }
+  }
+  REQUIRE(carried);
+
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kWolf);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+}
+
 TEST_CASE("A hosted actor crossing into another live host's cell passes to "
           "that host, whose word flips both games",
           "[CellHost]")

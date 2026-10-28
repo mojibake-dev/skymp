@@ -509,6 +509,13 @@ void ActionListener::OnUpdateAction(const RawMessageData& rawMsgData,
   if (!actor) {
     return;
   }
+  // thuum docs/verbs/npc-stream.md (playtest 35, Hilde's tanning missing on
+  // a seat that joined two minutes into it): a hosted NPC's last action is
+  // kept on the record (R2, memory), and its CreateActor carries it to a
+  // late joiner, whose puppet replays it once
+  if (actor != myActor) {
+    actor->SetLastAction(msg);
+  }
   for (auto listener : actor->GetActorListeners()) {
     if (listener == myActor) {
       continue;

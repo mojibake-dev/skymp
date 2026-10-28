@@ -1,3 +1,4 @@
+#include <nlohmann/json.hpp>
 #include "MpActor.h"
 #include "ActiveMagicEffectsMap.h"
 #include "ActorValues.h"
@@ -71,6 +72,7 @@ struct MpActor::Impl
   uint64_t pendingDeathSinceMs = 0;
   // npc-fate.md H-52b: the killer credited at the last Kill (the read)
   std::optional<uint32_t> lastKillerId;
+  std::optional<UpdateActionMessage> lastAction;
   // slice 5: the host's reading of the gaze and the face
   uint32_t hostedGazeTarget = 0;
   uint32_t hostedGazeSlot = 0;
@@ -552,6 +554,30 @@ void MpActor::VisitProperties(CreateActorMessage& message,
     }
 
     message.props.templateChain = std::move(templateChain);
+  }
+
+  // thuum docs/verbs/npc-stream.md (playtest 35, Hilde's tanning missing on
+  // a seat that joined two minutes into it): a hosted NPC's last action
+  // rides to a late joiner as the CreateActor's custom property "lastAction"
+  // (the record's own JSON-valued property channel, as isHostedByOther
+  // travels; no wire row, so the legacy capture and SCHEMA_VERSION stand),
+  // and its puppet replays it once as the view's first action
+  if (pImpl->lastAction && !IsCreatedAsPlayer()) {
+    const auto& last = *pImpl->lastAction;
+    nlohmann::json value{
+      { "action", last.action },
+      { "idle", last.idle },
+      { "eventName", last.eventName },
+      { "type", last.type },
+      { "actorAnimationVariables",
+        { { "booleans", last.actorAnimationVariables.booleans },
+          { "floats", last.actorAnimationVariables.floats },
+          { "integers", last.actorAnimationVariables.integers } } }
+    };
+    CustomPropsEntry entry;
+    entry.propName = "lastAction";
+    entry.propValueJsonDump = value.dump();
+    message.customPropsJsonDumps.push_back(std::move(entry));
   }
 }
 
@@ -2568,6 +2594,16 @@ std::optional<uint32_t> MpActor::LastHitBy(
 std::optional<uint32_t> MpActor::LastKillerId() const
 {
   return pImpl->lastKillerId;
+}
+
+void MpActor::SetLastAction(const UpdateActionMessage& action)
+{
+  pImpl->lastAction = action;
+}
+
+std::optional<UpdateActionMessage> MpActor::GetLastAction() const
+{
+  return pImpl->lastAction;
 }
 
 void MpActor::RecordHeight(float z, std::chrono::steady_clock::time_point now)

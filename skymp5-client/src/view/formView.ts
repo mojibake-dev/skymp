@@ -495,9 +495,9 @@ export class FormView {
 
   private lastHarvestedApply = 0;
   private lastOpenApply = 0;
-  private isSetNodeTextureSetApplied = false;
   private deadCheckAt = 0;
-  private isSetNodeScaleApplied = false;
+  // the node scales and texture sets applied to the 3D now loaded (false again when it goes)
+  private nodeOverridesOn3D = false;
 
   // thuum docs/verbs/figure-values.md: the figure carries its player's
   // recorded maxima (the server's health, magicka and stamina props for an
@@ -568,13 +568,20 @@ export class FormView {
       this.lastOpenApply = now;
       ModelApplyUtils.applyModelIsOpen(refr, !!model.isOpen);
     }
-    if (!this.isSetNodeScaleApplied) {
-      this.isSetNodeScaleApplied = true;
+    // thuum docs/verbs/racemenu-sync.md (playtest 35, 2026-10-27: rotfern's
+    // head node read 0.94 against RaceMenu's 1 after every teleport and after
+    // a relaunch into Bleak Falls): the node scales and texture sets are the
+    // engine's node transforms, which a 3D rebuilt after the one apply (a cell
+    // change's load, an interior's late 3D) comes up without. They go on again
+    // at every 3D load, not once per view; the player's own actor has the same
+    // in nodeOverridesService
+    const loaded3D = refr.is3DLoaded();
+    if (loaded3D && !this.nodeOverridesOn3D) {
+      this.nodeOverridesOn3D = true;
       ModelApplyUtils.applyModelNodeScale(refr, model.setNodeScale);
-    }
-    if (!this.isSetNodeTextureSetApplied) {
-      this.isSetNodeTextureSetApplied = true;
       ModelApplyUtils.applyModelNodeTextureSet(refr, model.setNodeTextureSet);
+    } else if (!loaded3D) {
+      this.nodeOverridesOn3D = false;
     }
 
     // thuum docs/verbs/npc-fate.md (the deaths): the record's death or life

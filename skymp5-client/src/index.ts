@@ -40,6 +40,7 @@ import { ActorFateService } from "./services/services/actorFateService";
 import { DeathReportService } from "./services/services/deathReportService";
 import { HostedStateService } from "./services/services/hostedStateService";
 import { DamageCauseService } from "./services/services/damageCauseService";
+import { NodeOverridesService } from "./services/services/nodeOverridesService";
 import { PuppetFaceService } from "./services/services/puppetFaceService";
 import { TalkService } from "./services/services/talkService";
 import { VoiceService } from "./services/services/voiceService";
@@ -121,6 +122,7 @@ const main = () => {
       new DeathReportService(sp, controller),
       new HostedStateService(sp, controller),
       new DamageCauseService(sp, controller),
+      new NodeOverridesService(sp, controller),
       new PuppetFaceService(sp, controller),
       new TalkService(sp, controller),
       new VoiceService(sp, controller),

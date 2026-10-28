@@ -746,6 +746,100 @@ TEST_CASE("A hosted actor crossing into another live host's cell passes to "
   p.DestroyActor(kC2);
 }
 
+// thuum docs/verbs/npc-handoff.md (d) through a door, ADR-047's note of
+// 2026-10-28 (playtest 37: Embry followed his package to the Sleeping
+// Giant's door while Prisoner hosted the inn from inside; the server refused
+// the crossing, "may not cross into 133c6", and his host's engine walked him
+// back to the door every few seconds; Eli: "let embry cross and hand him to
+// the inn's host. that's a good rule to have"): a persistent actor's door
+// into a cell another live host holds is admitted at the door's pre-check
+// and the host's report from indoors passes the actor to that host, whose
+// word flips both games; the exit by schedule passes it back the same way.
+TEST_CASE("A hosted actor's door into a cell another live host holds passes "
+          "it to that host, in and back out",
+          "[CellHost][espm]")
+{
+  // Hod 0x1348a, Riverwood's persistent mill worker (the door fact the
+  // follow case reads), stood by the server in c1's square; the Sleeping
+  // Giant 0x133c6 is the interior c2 stands in and so hosts
+  constexpr uint32_t kHod = 0x1348a;
+  constexpr uint32_t kInn = 0x133c6;
+  const NiPoint3 kInside{ -250.f, -360.f, 0.f };
+  const NiPoint3 kOutside = kHere + NiPoint3{ 300.f, 0.f, 0.f };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  REQUIRE(p.worldState.IsInteriorCell(kInn));
+  REQUIRE(p.worldState.IsPersistentReference(kHod));
+
+  Player(p, 0, kC1, kHere);
+  DoConnect(p, 1);
+  p.CreateActor(kC2, kInside, 0, kInn);
+  p.SetUserActor(1, kC2);
+  const auto here = p.worldState.CellOf(kTamriel, kHere);
+  REQUIRE(here.has_value());
+  CellLoaded(p, 0, *here);
+  CellLoaded(p, 1, kInn);
+  REQUIRE(p.GetCellHost(*here).player == kC1);
+  REQUIRE(p.GetCellHost(kInn).player == kC2);
+
+  auto& form = p.worldState.LookupFormById(kHod);
+  REQUIRE(form);
+  MpActor* hod = form->AsActor();
+  REQUIRE(hod);
+  hod->SetCellOrWorldObsolete(FormDesc::Tamriel());
+  hod->SetPos(kOutside);
+  REQUIRE(p.worldState.CellOf(*hod) == here);
+  REQUIRE(p.SimulatorOf(*hod) == kC1);
+  p.Messages().clear();
+
+  // the door's pre-check admits the crossing (the refusal of playtest 37)
+  REQUIRE(p.worldState.npcDoorVerdict);
+  REQUIRE(p.worldState.npcDoorVerdict(*hod, kInn, kInside));
+
+  // c1's engine walked him through; its report from indoors passes him
+  Move(p, 0, kHod, kInside, kInn);
+  REQUIRE(p.worldState.CellOf(*hod) == kInn);
+  REQUIRE(p.SimulatorOf(*hod) == kC2);
+  REQUIRE(p.GetFollows().empty());
+  bool newHostLive = false;
+  for (const auto& m : SentTo<UpdatePropertyMessage>(p, 1)) {
+    if (m.idx == hod->GetIdx() && m.propName == "isHostedByOther" &&
+        m.dataDump == "false") {
+      newHostLive = true;
+    }
+  }
+  bool oldHostDemoted = false;
+  for (const auto& m : SentTo<UpdatePropertyMessage>(p, 0)) {
+    if (m.idx == hod->GetIdx() && m.propName == "isHostedByOther" &&
+        m.dataDump == "true") {
+      oldHostDemoted = true;
+    }
+  }
+  REQUIRE(newHostLive);
+  REQUIRE(oldHostDemoted);
+
+  // the old host's next report from indoors is a stranger's, the inn
+  // host's passes
+  Move(p, 0, kHod, kInside + NiPoint3{ 100.f, 0.f, 0.f }, kInn);
+  REQUIRE(std::abs(hod->GetPos().x - kInside.x) < 1.f);
+  Move(p, 1, kHod, kInside + NiPoint3{ 100.f, 0.f, 0.f }, kInn);
+  REQUIRE(std::abs(hod->GetPos().x - (kInside.x + 100.f)) < 1.f);
+
+  // the exit by schedule: the inn's host walks him out into c1's square,
+  // deep inside it, and c1 takes him back
+  REQUIRE(p.worldState.npcDoorVerdict(*hod, kTamriel, kOutside));
+  Move(p, 1, kHod, kOutside);
+  REQUIRE(p.worldState.CellOf(*hod) == here);
+  REQUIRE(p.SimulatorOf(*hod) == kC1);
+  REQUIRE(p.GetFollows().empty());
+
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+  p.DestroyActor(kHod);
+}
+
 // thuum docs/verbs/npc-puppet.md (ActorSightings, TES3MP's actor list): a
 // named resident is placed in her house and walked outside by her schedule;
 // the server loads actors by placement, so her host's engine has her where

@@ -429,7 +429,9 @@ impl Cells {
     /// D6): inside the sender's own cell, or into a cell it hosts, Accept;
     /// into a cell nobody hosts that the sender vouches for (adjacent and
     /// loaded by its game, or a door), Follow; the simulator's adjacent
-    /// crossing into another live host's cell, Pass (D9); anything else
+    /// crossing into another live host's cell, Pass (D9), and its door into
+    /// one too (Eli, playtest 37, 2026-10-28: "let embry cross and hand him
+    /// to the inn's host. that's a good rule to have"); anything else
     /// Refuse. The
     /// door's pre-check reads this (x-handoff-door 20261024-001915: a verdict
     /// that wrote follow rows at the door removed a standing follow before
@@ -486,8 +488,15 @@ impl Cells {
                 // the margin inside (D22's brake); nearer the edge the
                 // crossing host keeps it, a follow into the hosted cell, so a
                 // border worked back and forth changes hands once at most; a
-                // teleport across squares or a stranger's report is dropped
-                if simulator == sender && adjacent {
+                // teleport across squares or a stranger's report is dropped.
+                // A door is a crossing too (Eli, playtest 37, 2026-10-28:
+                // Embry stood at the Sleeping Giant's door while Prisoner
+                // hosted the inn, his host's engine walking him back to it
+                // every few seconds): the simulator's persistent actor
+                // through a door into a cell another seat hosts passes to
+                // that host, so its schedule goes on indoors; an interior is
+                // deep by definition, an exit lands under the margin's brake
+                if simulator == sender && (adjacent || door) {
                     if edge_units >= PASS_MARGIN_UNITS {
                         MoveVerdict::Pass
                     } else {
@@ -1073,6 +1082,45 @@ mod tests {
         assert_eq!(d.unloaded(C2, EAST, 3_000), vec![]);
         assert_eq!(d.simulator_of(EMBRY, EAST), 0);
         assert_eq!(d.may_move(&CellMove { sender: C2, actor: EMBRY, origin: EAST, dest: EAST, adjacent: false, door: false, edge_units: u32::MAX }, 3_100), MoveVerdict::Refuse);
+    }
+
+    #[test]
+    fn a_door_into_another_live_hosts_cell_passes_the_actor_to_that_host() {
+        // Eli, playtest 37 (2026-10-28): "let embry cross and hand him to the
+        // inn's host. that's a good rule to have". Prisoner (C2) hosts the
+        // Sleeping Giant from inside it, rotfern (C1) hosts Riverwood and
+        // simulates Embry; his door into the inn passes him to C2 at once (an
+        // interior is deep by definition), no follow left behind
+        const INN: u32 = 0x133c6;
+        const EMBRY: u32 = 0x3550c;
+        let mut c = both_in_reach();
+        c.reach(C2, &[RIVERWOOD, INN], 0);
+        c.loaded(C1, RIVERWOOD, 1_000);
+        c.loaded(C2, INN, 1_000);
+        assert_eq!(c.host_of(INN), Some((C2, 1)));
+        assert_eq!(c.simulator_of(EMBRY, RIVERWOOD), C1);
+        let inward = CellMove { sender: C1, actor: EMBRY, origin: RIVERWOOD, dest: INN, adjacent: false, door: true, edge_units: u32::MAX };
+        assert_eq!(c.judge(&inward, 2_000), MoveVerdict::Pass);
+        assert_eq!(c.may_move(&inward, 2_000), MoveVerdict::Pass);
+        assert_eq!(c.simulator_of(EMBRY, INN), C2);
+        assert_eq!(c.follows(), vec![]);
+        // the old host's report from indoors is a stranger's now
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: EMBRY, origin: INN, dest: INN, adjacent: false, door: false, edge_units: u32::MAX }, 2_100), MoveVerdict::Refuse);
+        // a stranger pushing an actor through a door into its own cell is refused as before
+        assert_eq!(c.may_move(&CellMove { sender: C2, actor: 0x1348a, origin: RIVERWOOD, dest: INN, adjacent: false, door: true, edge_units: u32::MAX }, 2_200), MoveVerdict::Refuse);
+        // and the exit by schedule: the inn's host walks him out into C1's cell, which takes him back
+        let outward = CellMove { sender: C2, actor: EMBRY, origin: INN, dest: RIVERWOOD, adjacent: false, door: true, edge_units: u32::MAX };
+        assert_eq!(c.may_move(&outward, 9_000), MoveVerdict::Pass);
+        assert_eq!(c.simulator_of(EMBRY, RIVERWOOD), C1);
+        // an exit landing within the pass margin of the exterior square stays the inn host's follow (D22's brake)
+        let mut d = both_in_reach();
+        d.reach(C2, &[RIVERWOOD, INN], 0);
+        d.loaded(C1, RIVERWOOD, 1_000);
+        d.loaded(C2, INN, 1_000);
+        assert_eq!(d.may_move(&inward, 2_000), MoveVerdict::Pass);
+        let edge = CellMove { sender: C2, actor: EMBRY, origin: INN, dest: RIVERWOOD, adjacent: false, door: true, edge_units: PASS_MARGIN_UNITS - 1 };
+        assert_eq!(d.may_move(&edge, 9_000), MoveVerdict::Follow);
+        assert_eq!(d.simulator_of(EMBRY, RIVERWOOD), C2);
     }
 
     #[test]

@@ -1656,8 +1656,12 @@ void MpObjectReference::ProcessActivateNormal(
         // the record was teleported indoors by the branch below, the record
         // left the host's grid, both seats demoted the actor, the roster
         // brought the record back out and the loop ran every 4 s. Now the
-        // server judges the crossing (the follow verdict: a cell nobody
-        // hosts is a follow, another live host's cell a refusal) and asks
+        // server judges the crossing (the move verdict: a cell nobody
+        // hosts is a follow; another live host's cell a pass since Eli's
+        // call of 2026-10-28, playtest 37, "let embry cross and hand him to
+        // the inn's host": the record moves with the host's report and the
+        // word flips to the destination's host, npc-handoff D9; a stranger's
+        // actor is refused) and asks
         // the host's game to perform the activation for the actor
         // (ObjectReference.Activate with default processing, the engine's
         // own door transit); the record follows the host's next report

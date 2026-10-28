@@ -581,63 +581,63 @@ Napi::Value PuppetApi::DamageActor(const Napi::CallbackInfo& info)
     return Napi::Boolean::New(info.Env(), false);
   }
   // the forms looked up on the game thread alone (setPuppet's reason)
-  g_nativeCallRequirements.gameThrQ->AddTask([actorFormId, health,
-                                              attackerFormId,
-                                              killMove](Viet::Void) {
-    auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
-    if (!actor) {
-      logger::warn("[verb:npc-fate] damageActor on {:x}: no such actor",
-                   actorFormId);
-      return;
-    }
-    auto* attacker = attackerFormId
-      ? RE::TESForm::LookupByID<RE::Actor>(attackerFormId)
-      : nullptr;
-    auto* owner = actor->AsActorValueOwner();
-    if (!owner) {
-      return;
-    }
-    // the engine's current health against its maximum (the permanent value
-    // plus the temporary modifier, CommonLibSSE-NG ActorValueOwner.h:15-16,
-    // Actor.h:526), the resulting percentage the server sent, the delta
-    const float current = owner->GetActorValue(RE::ActorValue::kHealth);
-    const float maximum =
-      owner->GetPermanentActorValue(RE::ActorValue::kHealth) +
-      actor->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kTemporary,
-                                   RE::ActorValue::kHealth);
-    const float target = std::clamp(health, 0.f, 1.f) * std::max(maximum, 1.f);
-    const float delta = current - target;
-    const char* way = "nothing";
-    float topped = 0.f;
-    if (delta > 0.01f || (killMove && current > 0.f)) {
-      Frida::DamageActorOriginal(actor, std::max(delta, 0.f), attacker,
-                                 killMove);
-      way = "damaged";
-      // playtest 35 (2026-10-27, the campfire pair under rotfern's arrows):
-      // the engine took a quarter of what it was handed (35 asked 15.3 and
-      // moved 3.8; the difficulty's multiplier on a player's hit, the
-      // attacker unmapped then), so the server's zero landed at a quarter
-      // bar and the kill was the server's word three seconds later. The
-      // value is read back and the remainder taken through the value owner
-      // (Papyrus DamageActorValue's route, no multiplier): the server's
-      // number is the engine's, the killer the first call's
-      const float after = owner->GetActorValue(RE::ActorValue::kHealth);
-      if (after - target > 0.5f) {
-        topped = after - target;
-        owner->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage,
-                                 RE::ActorValue::kHealth, -topped);
+  g_nativeCallRequirements.gameThrQ->AddTask(
+    [actorFormId, health, attackerFormId, killMove](Viet::Void) {
+      auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
+      if (!actor) {
+        logger::warn("[verb:npc-fate] damageActor on {:x}: no such actor",
+                     actorFormId);
+        return;
       }
-    } else if (delta < -0.01f) {
-      owner->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage,
-                               RE::ActorValue::kHealth, -delta);
-      way = "restored";
-    }
-    logger::info("[verb:npc-fate] cause on {:x}: health {:.3f} of {:.1f} "
-                 "(engine {:.1f} -> {:.1f}, {}, topped up {:.1f}), attacker "
-                 "{:x}, kill move {}",
-                 actorFormId, health, maximum, current, target, way, topped,
-                 attackerFormId, killMove);
-  });
+      auto* attacker = attackerFormId
+        ? RE::TESForm::LookupByID<RE::Actor>(attackerFormId)
+        : nullptr;
+      auto* owner = actor->AsActorValueOwner();
+      if (!owner) {
+        return;
+      }
+      // the engine's current health against its maximum (the permanent value
+      // plus the temporary modifier, CommonLibSSE-NG ActorValueOwner.h:15-16,
+      // Actor.h:526), the resulting percentage the server sent, the delta
+      const float current = owner->GetActorValue(RE::ActorValue::kHealth);
+      const float maximum =
+        owner->GetPermanentActorValue(RE::ActorValue::kHealth) +
+        actor->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kTemporary,
+                                     RE::ActorValue::kHealth);
+      const float target =
+        std::clamp(health, 0.f, 1.f) * std::max(maximum, 1.f);
+      const float delta = current - target;
+      const char* way = "nothing";
+      float topped = 0.f;
+      if (delta > 0.01f || (killMove && current > 0.f)) {
+        Frida::DamageActorOriginal(actor, std::max(delta, 0.f), attacker,
+                                   killMove);
+        way = "damaged";
+        // playtest 35 (2026-10-27, the campfire pair under rotfern's arrows):
+        // the engine took a quarter of what it was handed (35 asked 15.3 and
+        // moved 3.8; the difficulty's multiplier on a player's hit, the
+        // attacker unmapped then), so the server's zero landed at a quarter
+        // bar and the kill was the server's word three seconds later. The
+        // value is read back and the remainder taken through the value owner
+        // (Papyrus DamageActorValue's route, no multiplier): the server's
+        // number is the engine's, the killer the first call's
+        const float after = owner->GetActorValue(RE::ActorValue::kHealth);
+        if (after - target > 0.5f) {
+          topped = after - target;
+          owner->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage,
+                                   RE::ActorValue::kHealth, -topped);
+        }
+      } else if (delta < -0.01f) {
+        owner->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage,
+                                 RE::ActorValue::kHealth, -delta);
+        way = "restored";
+      }
+      logger::info("[verb:npc-fate] cause on {:x}: health {:.3f} of {:.1f} "
+                   "(engine {:.1f} -> {:.1f}, {}, topped up {:.1f}), attacker "
+                   "{:x}, kill move {}",
+                   actorFormId, health, maximum, current, target, way, topped,
+                   attackerFormId, killMove);
+    });
   return Napi::Boolean::New(info.Env(), true);
 }
 

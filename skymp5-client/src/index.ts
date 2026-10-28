@@ -57,6 +57,7 @@ import { SweetTaffySkillMenuService } from "./services/services/sweetTaffySkillM
 import { LoadOrderVerificationService } from "./services/services/loadOrderVerificationService";
 import { BrowserService } from "./services/services/browserService";
 import { AuthService } from "./services/services/authService";
+import { HelloService } from "./services/services/helloService";
 import { NetInfoService } from "./services/services/netInfoService";
 import { AnimDebugService } from "./services/services/animDebugService";
 import { TimersService } from "./services/services/timersService";
@@ -114,6 +115,7 @@ const main = () => {
       new DeathService(sp, controller),
       new HeadshotPredictionService(sp, controller),
       new ContainersService(sp, controller),
+      new HelloService(sp, controller),
       new NetworkingService(sp, controller),
       new RemoteServer(sp, controller),
       new HostService(sp, controller),

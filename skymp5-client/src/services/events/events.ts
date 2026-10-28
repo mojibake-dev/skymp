@@ -30,6 +30,7 @@ import { ActorSpeechMessage } from "../messages/actorSpeechMessage";
 import { DamageCauseMessage } from "../messages/damageCauseMessage";
 import { HostedActorStateMessage } from "../messages/hostedActorStateMessage";
 import { PlayerGlobalsMessage } from "../messages/playerGlobalsMessage";
+import { WelcomeMessage, RefuseMessage } from "../messages/sessionMessages";
 import { ActorJumpMessage } from "../messages/actorJumpMessage";
 import { SpSnippetMessage } from "../messages/spSnippetMessage";
 import { TeleportMessage } from "../messages/teleportMessage";
@@ -104,6 +105,8 @@ type EventTypes = {
     'damageCauseMessage': [ConnectionMessage<DamageCauseMessage>],
     'hostedActorStateMessage': [ConnectionMessage<HostedActorStateMessage>],
     'playerGlobalsMessage': [ConnectionMessage<PlayerGlobalsMessage>],
+    'welcomeMessage': [ConnectionMessage<WelcomeMessage>],
+    'refuseMessage': [ConnectionMessage<RefuseMessage>],
     'actorJumpMessage': [ConnectionMessage<ActorJumpMessage>],
     'hostGrantMessage': [ConnectionMessage<HostGrantMessage>],
     'actorFateMessage': [ConnectionMessage<ActorFateMessage>],

@@ -420,12 +420,12 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
         auto* highBefore = runtime.currentProcess->high;
         const bool repeat = highBefore && highBefore->greetingPlayer &&
           highBefore->greetTopic && highBefore->greetTopic->info == topicInfo;
-        // thuum playtest 37 (2026-10-28, Faendal and Alvor): a line asked while
-        // the last one still plays with no state byte (the sound descriptor
-        // path: timer running, state -1) takes that path too and plays with
-        // no lips (4540c, bccc6, 105384, each "played"); the host's own engine
-        // cuts a line for the next, so the one in flight is stopped and its
-        // item cleared here first, and this line starts through
+        // thuum playtest 37 (2026-10-28, Faendal and Alvor): a line asked
+        // while the last one still plays with no state byte (the sound
+        // descriptor path: timer running, state -1) takes that path too and
+        // plays with no lips (4540c, bccc6, 105384, each "played"); the host's
+        // own engine cuts a line for the next, so the one in flight is stopped
+        // and its item cleared here first, and this line starts through
         // SpeakSoundFunction's lip branch. HYPOTHESIS until the probe.
         bool precleared = false;
         if (!repeat && highBefore && timerBefore > 0.f && stateBefore != 3) {

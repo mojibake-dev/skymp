@@ -530,6 +530,23 @@ struct HostedGazeRead
 };
 std::mutex g_gazeMutex;
 std::unordered_map<uint32_t, HostedGazeRead> g_gaze;
+
+// thuum playtest 37 (Eli: "do the probe first before any more head builds"):
+// the face as FaceGen animates it, every keyframe value, for the lab's read
+// of a puppet's mouth against the live NPC's on the host
+// (BSFaceGenAnimationData's expression, modifier and phoneme keyframes,
+// CommonLibSSE-NG BSFaceGenAnimationData.h:39-42; each a
+// BSFaceGenKeyframeMultiple, values and count at
+// BSFaceGenKeyframeMultiple.h:41-42)
+struct FaceRead
+{
+  std::vector<float> expression;
+  std::vector<float> modifier;
+  std::vector<float> phoneme;
+  bool exprOverride = false;
+};
+std::mutex g_faceMutex;
+std::unordered_map<uint32_t, FaceRead> g_face;
 }
 
 Napi::Value PuppetApi::ActivatePickRef(const Napi::CallbackInfo& info)
@@ -626,6 +643,62 @@ Napi::Value PuppetApi::HostedGaze(const Napi::CallbackInfo& info)
   res.Set(uint32_t(4), Napi::Number::New(info.Env(), read.exprOverride));
   res.Set(uint32_t(5), Napi::Number::New(info.Env(), read.exprIndex));
   res.Set(uint32_t(6), Napi::Number::New(info.Env(), read.exprValue));
+  return res;
+}
+
+Napi::Value PuppetApi::PollFaceKeyframes(const Napi::CallbackInfo& info)
+{
+  const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  // the engine's fields read on the game thread (setPuppet's reason)
+  g_nativeCallRequirements.gameThrQ->AddTask([actorFormId](Viet::Void) {
+    auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
+    if (!actor) {
+      return;
+    }
+    FaceRead read;
+    if (auto* face = actor->GetFaceGenAnimationData()) {
+      read.exprOverride = face->exprOverride;
+      const auto copy = [](const RE::BSFaceGenKeyframeMultiple& frame,
+                           std::vector<float>& out) {
+        if (!frame.values) {
+          return;
+        }
+        out.assign(frame.values, frame.values + frame.count);
+      };
+      copy(face->expressionKeyFrame, read.expression);
+      copy(face->modifierKeyFrame, read.modifier);
+      copy(face->phenomeKeyFrame, read.phoneme);
+    }
+    std::lock_guard<std::mutex> lock(g_faceMutex);
+    g_face[actorFormId] = std::move(read);
+  });
+  return info.Env().Undefined();
+}
+
+Napi::Value PuppetApi::FaceKeyframes(const Napi::CallbackInfo& info)
+{
+  const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  FaceRead read;
+  {
+    std::lock_guard<std::mutex> lock(g_faceMutex);
+    const auto it = g_face.find(actorFormId);
+    if (it == g_face.end()) {
+      return info.Env().Null();
+    }
+    read = it->second;
+  }
+  const auto toArray = [&](const std::vector<float>& v) {
+    auto arr = Napi::Array::New(info.Env(), v.size());
+    for (uint32_t i = 0; i < v.size(); ++i) {
+      arr.Set(i, Napi::Number::New(info.Env(), v[i]));
+    }
+    return arr;
+  };
+  auto res = Napi::Array::New(info.Env(), 4);
+  res.Set(uint32_t(0), toArray(read.expression));
+  res.Set(uint32_t(1), toArray(read.modifier));
+  res.Set(uint32_t(2), toArray(read.phoneme));
+  res.Set(uint32_t(3), Napi::Boolean::New(info.Env(), read.exprOverride));
   return res;
 }
 

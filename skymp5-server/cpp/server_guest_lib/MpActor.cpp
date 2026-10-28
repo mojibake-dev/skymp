@@ -1,4 +1,3 @@
-#include <nlohmann/json.hpp>
 #include "MpActor.h"
 #include "ActiveMagicEffectsMap.h"
 #include "ActorValues.h"
@@ -40,6 +39,7 @@
 #include <deque>
 #include <functional>
 #include <limits>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <random>
 #include <set>

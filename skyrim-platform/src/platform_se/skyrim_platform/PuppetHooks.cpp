@@ -121,8 +121,7 @@ void DriveVoice(RE::Actor& actor)
   auto* high = runtime.currentProcess ? runtime.currentProcess->high : nullptr;
   if (ended && high && high->greetingPlayer && high->greetTopic &&
       high->greetTopic->currentResponse) {
-    const bool busy =
-      (runtime.boolBits.underlying() & 0x180) != 0x180 ||
+    const bool busy = (runtime.boolBits.underlying() & 0x180) != 0x180 ||
       runtime.voiceTimer > 0.f;
     if (!busy) {
       REL::Relocation<SayTopicFn> say{ Offsets::Voice::SayTopic };

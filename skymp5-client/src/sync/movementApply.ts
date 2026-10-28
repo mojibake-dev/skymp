@@ -53,8 +53,43 @@ export const applyMovement = (refr: ObjectReference, m: Movement, isMyClone?: bo
   if (lookAt) {
     ac.setHeadTracking(true);
     ac.setLookAt(lookAt, false);
+    localGaze.delete(ac.getFormID());
   } else if (!(puppet && puppetGazeHeld.has(ac.getFormID()))) {
-    ac.setHeadTracking(false);
+    // thuum D50 (playtest 35, Eli: "HIS face and head doesn't move the way
+    // hilde's does"): the host's engine tracks heads near ITS player only
+    // (H-54d), so a resident far from its host stood stiff on the guest's
+    // screen while a live one turned to meet the guest. A puppet with no
+    // relayed target looks at the LOCAL player when it is near, as a live
+    // NPC's own head tracking would; the radius is a knob
+    // (movement.localGazeRadius, 450 units, 0 off) with a hysteresis of a
+    // hundred units so the head does not flicker at the edge. A relayed
+    // target (above) still wins.
+    const id = ac.getFormID();
+    const radius = movementKnobs().localGazeRadius;
+    const held = localGaze.has(id);
+    const player = puppet && radius > 0 ? Game.getPlayer() : null;
+    if (player) {
+      const d = ObjectReferenceEx.getDistanceNoZ(ObjectReferenceEx.getPos(player), ObjectReferenceEx.getPos(refr));
+      if (d < (held ? radius + 100 : radius)) {
+        if (!held) {
+          ac.setHeadTracking(true);
+          ac.setLookAt(player, false);
+          localGaze.add(id);
+        }
+      } else {
+        if (held) {
+          localGaze.delete(id);
+          ac.clearLookAt();
+        }
+        ac.setHeadTracking(false);
+      }
+    } else {
+      if (held) {
+        localGaze.delete(id);
+        ac.clearLookAt();
+      }
+      ac.setHeadTracking(false);
+    }
   }
 
   // ac.stopCombat();
@@ -338,11 +373,14 @@ type MovementKnobs = {
   popDistance: number;      // a jump this far, to a place not sent, is a pop
   popWindowMs: number;      // how long after a pop a stale report is ignored
   jumpDistance: number;     // a report this far from the figure places, never translates
+  localGazeRadius: number;  // a puppet with no relayed gaze looks at the local player within this (0 off)
 };
 let knobsCache: MovementKnobs | undefined;
+// the puppets looking at the local player right now (the local gaze, below)
+const localGaze = new Set<number>();
 const movementKnobs = (): MovementKnobs => {
   if (knobsCache) return knobsCache;
-  const defaults: MovementKnobs = { leadSeconds: 0.2, leadDecay: 0.5, deadbandMoving: 8, deadbandStill: 1, popDistance: 256, popWindowMs: 600, jumpDistance: 1024 };
+  const defaults: MovementKnobs = { leadSeconds: 0.2, leadDecay: 0.5, deadbandMoving: 8, deadbandStill: 1, popDistance: 256, popWindowMs: 600, jumpDistance: 1024, localGazeRadius: 450 };
   const s = settings["skymp5-client"] as Record<string, unknown> | undefined;
   const given = (s && typeof s["movement"] === "object" && s["movement"]) ? s["movement"] as Record<string, unknown> : {};
   const out = { ...defaults } as Record<string, number>;

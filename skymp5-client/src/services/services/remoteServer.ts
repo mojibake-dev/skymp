@@ -1,5 +1,6 @@
 // @ts-expect-error (TODO: Remove in 2.10.0)
-import { Actor, Form, FormType, MagicEffect, Menu, interruptCast, castSpellImmediate, placeAreaEffect, printConsole, applyAnimationVariablesToActor, getAnimationVariablesFromActor, ActorAnimationVariables } from 'skyrimPlatform';
+import { Ui, Actor, Form, FormType, MagicEffect, Menu, interruptCast, castSpellImmediate, placeAreaEffect, printConsole, applyAnimationVariablesToActor, getAnimationVariablesFromActor, ActorAnimationVariables } from 'skyrimPlatform';
+import * as sp from 'skyrimPlatform';
 import { figureAimHeading } from "../../sync/figureAim";
 import { landsOnItsTarget } from "../../sync/spellDelivery";
 import {
@@ -833,6 +834,18 @@ export class RemoteServer extends ClientListener {
         }
         if (msg.propName === 'inventory') {
           ModelApplyUtils.applyModelInventory(refr, msgData as Inventory);
+          // thuum memo D52 B (playtest 37, 2026-10-28): this is the path a shared
+          // chest's re-sent inventory takes while this seat's ContainerMenu is
+          // open on it (c1's addItemEx on 36c37 within 0.4 s of c2's puts and
+          // take, 22:49Z); the engine does not redraw the menu from the apply,
+          // so the platform's refreshContainerMenu is asked (it checks the menu's
+          // own target; absent on an older dist). HYPOTHESIS until the chest
+          if (Ui.isMenuOpen('ContainerMenu')) {
+            const api = sp as unknown as Record<string, unknown>;
+            const refresh = api['refreshContainerMenu'];
+            const asked = typeof refresh === 'function' ? !!(refresh as (id: number) => boolean)(refrId) : false;
+            logTrace(this, `live chest ${refrId.toString(16)}: inventory applied under the open ContainerMenu, redraw ${asked ? 'asked' : 'unavailable on this dist'}`);
+          }
         } else if (msg.propName === 'isOpen') {
           ModelApplyUtils.applyModelIsOpen(refr, !!msgData);
         } else if (msg.propName === 'isHarvested') {

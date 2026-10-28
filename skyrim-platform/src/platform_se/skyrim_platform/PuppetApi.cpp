@@ -589,7 +589,7 @@ Napi::Value PuppetApi::ActivatePickRef(const Napi::CallbackInfo& info)
     // stranger: the wiggle, the missing head turn. One activation per
     // claim: nothing runs while the Dialogue Menu is open, while the
     // MenuTopicManager's speaker is the pick, or while the pick already
-    // talks to the player (HighProcessData.h:341). HYPOTHESIS H-55c until
+    // talks to the player (HighProcessData.h:341). HYPOTHESIS H-55e until
     // x-npc-talk-claim reads the native true on the claimant.
     auto* ui = RE::UI::GetSingleton();
     if (ui && ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME)) {

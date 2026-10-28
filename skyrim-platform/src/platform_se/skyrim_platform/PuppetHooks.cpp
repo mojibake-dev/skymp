@@ -85,6 +85,22 @@ void DriveVoice(RE::Actor& actor)
   if (state != 1 && state != 2 && state != 3 && runtime.voiceTimer <= 0.f) {
     return;
   }
+  // thuum docs/research/m3/re-puppet-head-lips.md C (the re-analyst,
+  // 2026-10-28 23:25Z; playtest 37's lip read: the puppet's phoneme sets
+  // move like the live NPC's and its mouth does not): the face morph budget
+  // inside BSFaceGenNiNode::UpdateDownwardPass draws only the actors the
+  // per-frame AI job lists on its kProcessMe branch, so an AI-off puppet's
+  // face node is never queued and its evaluated phonemes are never applied,
+  // a static face on the watcher. Node flag bit 8 is the engine's own
+  // one-shot force (AIProcess::Update3DModel sets it; the pass then queues
+  // the node past the budget and the distances, applies every layer and
+  // clears it), so it is set each frame while the puppet speaks
+  // (BSFaceGenNiNode.h:27 flags, the runtime data at 0x128; the field is
+  // CommonLib's, no new id). HYPOTHESIS H-54d until x-npc-stream-face reads
+  // the mouth.
+  if (auto* face = actor.GetFaceNodeSkinned()) {
+    face->GetRuntimeData().flags |= 0x100;
+  }
   REL::Relocation<UpdateVoiceTimerFn> updateVoiceTimer{
     Offsets::Voice::UpdateVoiceTimer
   };

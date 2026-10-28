@@ -441,9 +441,24 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
     std::string password = serverSettings.contains("password")
       ? static_cast<std::string>(serverSettings["password"])
       : std::string();
+    // thuum docs/verbs/mod-lock.md: the manifest manifestGen.ts writes
+    // beside the plugins, judged by the wire at each Hello
+    ModLockSettings modLock;
+    modLock.manifestPath =
+      (std::filesystem::path(dataDir) / "manifest.json").string();
+    if (serverSettings.contains("modLock") &&
+        serverSettings["modLock"].is_object()) {
+      const auto& ml = serverSettings["modLock"];
+      if (ml.contains("enabled")) {
+        modLock.enabled = ml["enabled"].get<bool>();
+      }
+      if (ml.contains("requireHello")) {
+        modLock.requireHello = ml["requireHello"].get<bool>();
+      }
+    }
     auto realServer =
       CreateWireServer(listenHost.c_str(), listenPort, maxPlayers,
-                       password.data(), promRegistry);
+                       password.data(), promRegistry, modLock);
 
     static_assert(kMockServerIdx == 1);
     server = Networking::CreateCombinedServer({ realServer, serverMock });

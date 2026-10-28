@@ -99,6 +99,31 @@ pub enum RejectKind {
     /// The connect token's user data did not carry the server's password;
     /// the connection is dropped before the server ever sees it.
     Password,
+    /// The mod lock refused the session (thuum docs/verbs/mod-lock.md): the
+    /// client's plugins against the server's, judged at the handshake.
+    ModLock(ModLockReject),
+}
+
+/// Why the mod lock refused a session (thuum docs/verbs/mod-lock.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModLockReject {
+    /// The plugin counts differ (the shorter list is a prefix of the longer).
+    Count,
+    /// A plugin differs at some index; the server's log names it.
+    Mismatch,
+    /// A login came from a connection that never sent its Hello, and the
+    /// server requires one.
+    NoHello,
+}
+
+impl std::fmt::Display for ModLockReject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ModLockReject::Count => "E_MOD_LOCK_COUNT",
+            ModLockReject::Mismatch => "E_MOD_LOCK_MISMATCH",
+            ModLockReject::NoHello => "E_MOD_LOCK_NO_HELLO",
+        })
+    }
 }
 
 impl std::fmt::Display for RejectKind {
@@ -109,13 +134,14 @@ impl std::fmt::Display for RejectKind {
             RejectKind::Limit => f.write_str("E_TX_LIMIT"),
             RejectKind::Direction => f.write_str("E_TX_DIRECTION"),
             RejectKind::Password => f.write_str("E_TX_PASSWORD"),
+            RejectKind::ModLock(m) => write!(f, "{m}"),
         }
     }
 }
 
 /// Stable numeric reason codes: the `u16` carried by `Message::Refuse` and by
 /// the bridge's `WireEvent.reason`. Decode failures are 1xx, validation 2xx,
-/// transport 3xx. Append only; the match is exhaustive on purpose so a new
+/// transport 3xx, the mod lock's session decisions 5xx (the bridge keeps 4xx for its JSON refusals). Append only; the match is exhaustive on purpose so a new
 /// reason cannot ship without a number.
 pub fn reason_code(kind: &RejectKind) -> u16 {
     use wire_codec::WireError as W;
@@ -134,6 +160,9 @@ pub fn reason_code(kind: &RejectKind) -> u16 {
         RejectKind::Limit => 301,
         RejectKind::Direction => 302,
         RejectKind::Password => 303,
+        RejectKind::ModLock(ModLockReject::Count) => 501,
+        RejectKind::ModLock(ModLockReject::Mismatch) => 502,
+        RejectKind::ModLock(ModLockReject::NoHello) => 503,
     }
 }
 

@@ -8,6 +8,9 @@ import { ClientListener, CombinedController, Sp } from "./clientListener";
 // second (wire-validate's player_globals_budget)
 const WATCH_MS = 1000;
 
+// The storage key of the list to watch (sp.storage survives a plugin reload)
+const WATCH_STORAGE_KEY = "playerGlobalsWatch";
+
 // thuum docs/verbs/player-globals.md (ADR-029's A2): the globals the server
 // keeps per player (Apocalypse's progress and its MCM settings) follow the
 // player. After a login the server sends the list to watch and the recorded
@@ -16,11 +19,21 @@ const WATCH_MS = 1000;
 // second and the ones whose values changed are sent. Nothing is watched
 // before the server's list arrives, so no report comes before the record is
 // set.
+//
+// The list lives in the platform's storage (ADR-041's survivor of a plugin
+// reload), not in this object alone: a hot-reloaded client (lab client-hot,
+// ADR-054) keeps its connection and never logs in again, so the server's list
+// never comes a second time. Playtest 36 (2026-10-28): rotfern's Survival
+// needs froze in the record at 13:25:21Z, two seconds after the seat's hot
+// push, until its relaunch at 17:45Z. A fresh service with a stored list
+// resumes the watch and reports every watched value once, so the record
+// catches up with whatever moved during the reload.
 export class PlayerGlobalsService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
         this.controller.emitter.on("playerGlobalsMessage", (e) => this.onPlayerGlobalsMessage(e));
         this.controller.on("update", () => this.onUpdate());
+        this.resume();
     }
 
     private onPlayerGlobalsMessage(e: ConnectionMessage<PlayerGlobalsMessage>) {
@@ -64,6 +77,7 @@ export class PlayerGlobalsService extends ClientListener {
             }
         }
         this.watch = m.watch;
+        this.sp.storage[WATCH_STORAGE_KEY] = [...m.watch];
         this.last = new Map();
         for (const id of this.watch) {
             const value = this.read(id);
@@ -72,6 +86,22 @@ export class PlayerGlobalsService extends ClientListener {
             }
         }
         logTrace(this, "watching", this.watch.length, "globals,", m.values.length, "set from the record");
+    }
+
+    // After a plugin reload: the list the last login brought, from storage;
+    // `last` stays empty so the next read reports every watched value once
+    private resume() {
+        const stored: unknown = this.sp.storage[WATCH_STORAGE_KEY];
+        if (!Array.isArray(stored) || stored.length === 0) {
+            return;
+        }
+        const list = stored.filter((id): id is number => typeof id === "number" && Number.isInteger(id) && id > 0);
+        if (list.length === 0) {
+            return;
+        }
+        this.watch = list;
+        this.last = new Map();
+        logTrace(this, "resumed watching", this.watch.length, "globals after a reload; a full report follows");
     }
 
     private global(id: number) {

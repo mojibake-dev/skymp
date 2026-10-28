@@ -113,7 +113,7 @@ export class TalkService extends ClientListener {
             const under = ref ? ref.getFormID() : 0;
             const queued = this.sp.activatePickRef();
             logLab("verb:npc-talk", `claim ${remoteId.toString(16)} granted: activatePickRef ${queued ? "queued" : "refused"} (crosshair ${under.toString(16)})`);
-            this.claimed = { localId, remoteId, since: Date.now(), menuSeen: false };
+            this.claimed = { localId, remoteId, since: Date.now(), menuSeen: false, retries: 0 };
             this.pending = undefined;
             this.promotedAt = 0;
             return;
@@ -148,7 +148,21 @@ export class TalkService extends ClientListener {
             this.release("the Dialogue Menu's close");
             return;
         }
-        if (Date.now() - held.since > TalkService.menuWaitMs) {
+        // x-npc-talk-cross 20261028-131626 and the sweep's 123118: the claim
+        // granted, the actor live, activatePickRef ran (the engine's activation
+        // fired), and no Dialogue Menu opened; in 131626 the resident had begun
+        // a greeting 33 ms before. The activation is asked again at one and two
+        // seconds after the grant while the menu stays shut (HYPOTHESIS on the
+        // cause: a greeting in flight or the AI's first frame); the ten-second
+        // release stands after that
+        const waited = Date.now() - held.since;
+        if (held.retries < TalkService.activateRetries && waited > 1000 * (held.retries + 1)) {
+            held.retries += 1;
+            const queued = this.sp.activatePickRef();
+            logLab("verb:npc-talk", `claim ${held.remoteId.toString(16)}: no Dialogue Menu ${(waited / 1000).toFixed(1)} s after the grant, activatePickRef again (${queued ? "queued" : "refused"}, try ${held.retries})`);
+            return;
+        }
+        if (waited > TalkService.menuWaitMs) {
             this.release(`no Dialogue Menu within ${TalkService.menuWaitMs} ms`);
         }
     }
@@ -180,9 +194,10 @@ export class TalkService extends ClientListener {
     }
 
     private pending?: { localId: number; remoteId: number; since: number };
-    private claimed?: { localId: number; remoteId: number; since: number; menuSeen: boolean };
+    private claimed?: { localId: number; remoteId: number; since: number; menuSeen: boolean; retries: number };
     private promotedAt = 0;
     private static readonly menuWaitMs = 10000;
+    private static readonly activateRetries = 2;
     private readonly enabled: boolean;
     private readonly key: number;
 }

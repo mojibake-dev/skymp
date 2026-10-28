@@ -71,6 +71,13 @@ export class TalkService extends ClientListener {
             logTrace(this, `E: ${localId.toString(16)} is no puppet here (live or a figure), the engine's own activation`);
             return;
         }
+        if (actor.isDead()) {
+            // a body is looted, never talked to: the engine's own activation
+            // (playtest 36: E on a corpse sent a claim the server refused,
+            // E_CLAIM_DEAD, and the seat waited 3 s on it)
+            logTrace(this, `E: ${localId.toString(16)} is dead, the engine's own activation (a loot)`);
+            return;
+        }
         const base = actor.getBaseObject();
         const baseId = base ? base.getFormID() : 0;
         if (!baseId || baseId === 0x7 || baseId >= 0xff000000) {

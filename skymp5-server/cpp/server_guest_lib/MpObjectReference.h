@@ -262,6 +262,7 @@ private:
   void RemoveContainerOccupant(MpActor& actor);
   void PruneContainerOccupants(float reach);
   void SendInventoryToContainerOccupants(const MpActor* except);
+  void ResyncAfterRefusedMove(MpActor& ac);
   bool CheckIfObjectCanStartOccupyThis(MpObjectReference& activationSource,
                                        float occupationReach);
 

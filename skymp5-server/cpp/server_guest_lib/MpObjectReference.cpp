@@ -676,7 +676,12 @@ void MpObjectReference::PutItem(MpActor& ac, const Inventory::Entry& e)
   }
 
   PutItemEvent putItemEvent(&ac, this, e);
-  putItemEvent.Fire(GetParent());
+  try {
+    putItemEvent.Fire(GetParent());
+  } catch (...) {
+    ResyncAfterRefusedMove(ac);
+    throw;
+  }
   // memo D52: the other players in this container see the move
   SendInventoryToContainerOccupants(&ac);
 }
@@ -692,8 +697,28 @@ void MpObjectReference::TakeItem(MpActor& ac, const Inventory::Entry& e)
   }
 
   TakeItemEvent takeItemEvent(&ac, this, e);
-  takeItemEvent.Fire(GetParent());
+  try {
+    takeItemEvent.Fire(GetParent());
+  } catch (...) {
+    ResyncAfterRefusedMove(ac);
+    throw;
+  }
   SendInventoryToContainerOccupants(&ac);
+}
+
+// thuum memo D52 (playtest 37, 23:32Z): two players on one stack, the loser's
+// menu a redraw behind: its take of a row the server's chest no longer has
+// is refused here, but the engine's own take already moved the item into
+// its hand, a phantom it then equips and the server rejects (rotfern's bow
+// 3b562, then her scripts stopped). The refused mover hears the truth at
+// once: its own inventory (SetInventory) and the container's, so its engine
+// reverts both before anything equips
+void MpObjectReference::ResyncAfterRefusedMove(MpActor& ac)
+{
+  ac.SendInventoryUpdate();
+  ac.GetActorToSendTo().SendToUser(
+    CreatePropertyMessage_(this, "inventory", GetInventory().ToJson().dump()),
+    true);
 }
 
 // thuum memo D52 (playtest 37, Eli: "i WOULD like two people to be able to be

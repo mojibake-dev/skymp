@@ -437,6 +437,15 @@ impl Cells {
     #[must_use]
     pub fn judge(&self, m: &CellMove, now_ms: u64) -> MoveVerdict {
         let CellMove { sender, actor, origin, dest, adjacent, door, edge_units } = *m;
+        // a claim travels with its actor (ADR-052; playtest 35, 2026-10-27:
+        // Hilde walked from 9732 into 9731 under Prisoner's claim, the Follow
+        // verdict made the row a margin follow and a step deeper a pass, and
+        // the claim ended with no word, the client's flag never cleared): the
+        // claimant's report into any cell is accepted, the row keeps its kind
+        // and its lease and names the new cell (may_move)
+        if dest != 0 && self.follows.get(&actor).is_some_and(|f| f.kind == FollowKind::Claim && f.player == sender) {
+            return MoveVerdict::Accept;
+        }
         // a report putting the actor back where it stood before a follow
         // younger than the settle window is a stale sample, not a return
         if dest != origin && dest != 0 && origin != 0 {
@@ -514,6 +523,13 @@ impl Cells {
                 self.follows.insert(m.actor, Follow { player: m.sender, cell: m.dest, since_ms: now_ms, kind, lease_until_ms: None });
             }
             MoveVerdict::Accept if m.dest != m.origin => {
+                // a claim follows its actor into the new cell (ADR-052)
+                if let Some(f) = self.follows.get_mut(&m.actor) {
+                    if f.kind == FollowKind::Claim && f.player == m.sender {
+                        f.cell = m.dest;
+                        return verdict;
+                    }
+                }
                 self.follows.remove(&m.actor);
             }
             MoveVerdict::Pass => {
@@ -1217,6 +1233,40 @@ mod tests {
         let _ = c.unloaded(C1, RIVERWOOD, 5_100);
         let regrant = c.tick(5_100 + GRACE_MS + 1);
         assert!(regrant.iter().any(|d| matches!(d, Decision::Grant { player: C2, cell: RIVERWOOD, .. })));
+        assert_eq!(c.claims(), vec![]);
+    }
+    #[test]
+    fn a_claim_travels_with_its_actor_across_cells() {
+        // playtest 35 (2026-10-27): Hilde walked from 9732 into 9731, both the
+        // other player's cells, under a guest's claim; the claim rides with
+        // her for its lease, no follow, no pass, no word, and the release
+        // still finds it
+        const WEST: u32 = 0x9731;
+        const HILDE: u32 = 0x35534;
+        let mut c = both_in_reach();
+        assert_eq!(c.loaded(C1, RIVERWOOD, 1_000), vec![Decision::Grant { player: C1, cell: RIVERWOOD, epoch: 1 }]);
+        assert_eq!(c.loaded(C1, WEST, 1_050), vec![]);
+        assert_eq!(c.reach(C1, &[RIVERWOOD, WEST], 1_100), vec![Decision::Grant { player: C1, cell: WEST, epoch: 1 }]);
+        assert_eq!(c.loaded(C2, RIVERWOOD, 1_200), vec![]);
+        assert_eq!(c.claim(HILDE, C2, RIVERWOOD, 2_000), ClaimVerdict::Granted);
+        assert_eq!(c.simulator_of(HILDE, RIVERWOOD), C2);
+        // deep into the other host's next cell at once: no pass, the claim moves
+        assert_eq!(c.may_move(&CellMove { sender: C2, actor: HILDE, origin: RIVERWOOD, dest: WEST, adjacent: true, door: false, edge_units: 300 }, 2_500), MoveVerdict::Accept);
+        assert_eq!(c.claims(), vec![(HILDE, C2, WEST)]);
+        assert_eq!(c.simulator_of(HILDE, WEST), C2);
+        assert_eq!(c.simulator_of(HILDE, RIVERWOOD), C1);
+        // and back, near the edge: no follow row either, the claim moves again
+        assert_eq!(c.may_move(&CellMove { sender: C2, actor: HILDE, origin: WEST, dest: RIVERWOOD, adjacent: true, door: false, edge_units: 20 }, 2_600), MoveVerdict::Accept);
+        assert_eq!(c.claims(), vec![(HILDE, C2, RIVERWOOD)]);
+        // the host's own report of her is refused while the claim stands
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: HILDE, origin: RIVERWOOD, dest: WEST, adjacent: true, door: false, edge_units: 300 }, 2_700), MoveVerdict::Refuse);
+        // the release finds the claim after the crossings; the lease ends it in its current cell
+        assert!(c.release_claim(HILDE, C2));
+        assert_eq!(c.simulator_of(HILDE, RIVERWOOD), C1);
+        assert_eq!(c.claim(HILDE, C2, RIVERWOOD, 3_000), ClaimVerdict::Granted);
+        assert_eq!(c.may_move(&CellMove { sender: C2, actor: HILDE, origin: RIVERWOOD, dest: WEST, adjacent: true, door: false, edge_units: 300 }, 3_100), MoveVerdict::Accept);
+        assert_eq!(c.tick(3_000 + CLAIM_LEASE_MS), vec![Decision::ClaimEnded { actor: HILDE, cell: WEST }]);
+        assert_eq!(c.simulator_of(HILDE, WEST), C1);
         assert_eq!(c.claims(), vec![]);
     }
 }

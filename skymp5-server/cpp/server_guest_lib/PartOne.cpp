@@ -975,8 +975,9 @@ void PartOne::Init()
   worldState.simulatorOf = [this](uint32_t actor, uint32_t cell) {
     return pImpl->cells->simulator_of(actor, cell);
   };
-  // and a hosted NPC's door (npc-handoff D6): the crossing judged by the
-  // follow verdict for its simulator before the host's engine walks it
+  // and a hosted NPC's door (npc-handoff D6, and D9's pass through a door
+  // since 2026-10-28): the crossing judged by the move verdict for its
+  // simulator before the host's engine walks it
   worldState.npcDoorVerdict = [this](MpActor& actor, uint32_t destWorldOrCell,
                                      const NiPoint3& destPos) {
     // a judgment, not a move: nothing recorded until the host's report

@@ -59,7 +59,11 @@ export class VoiceService extends ClientListener {
                 info: e.topicInfo,
                 _refrId: remoteId,
             };
-            this.controller.emitter.emit("sendMessageWithRefrId", { message, reliability: "unreliable" });
+            // playtest 37 (2026-10-28 20:54Z): two lines fired 24 ms apart on the
+            // host (a response, then a greeting) reached the watcher in the other
+            // order over the unreliable channel, and the greeting cut the response;
+            // the newest line wins on both engines, so the order must be the host's
+            this.controller.emitter.emit("sendMessageWithRefrId", { message, reliability: "reliable" });
             logTrace(this, `speech ${remoteId.toString(16)}: info ${e.topicInfo.toString(16)} topic ${e.topic.toString(16)}`);
         });
     }

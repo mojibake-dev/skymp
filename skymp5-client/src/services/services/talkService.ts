@@ -1,4 +1,4 @@
-import { Actor, DxScanCode, Game, MenuCloseEvent, ObjectReference, ButtonEvent } from "skyrimPlatform";
+import { Actor, DxScanCode, Game, MenuCloseEvent, Ui, ButtonEvent } from "skyrimPlatform";
 import { logLab, logTrace } from "../../logging";
 import { MsgType } from "../../messages";
 import { ActorClaimMessage } from "../messages/actorClaimMessage";
@@ -20,6 +20,15 @@ import { PuppetService } from "./puppetService";
 // host again. A claim the word never answers is forgotten after 3 s (the
 // server's refusal is its log line). The setting npcTalk switches it; the
 // key is talkKey (DxScanCode, 18 by default, E).
+// Playtest 35 (2026-10-27): a guest's granted claim was never released (the
+// claimed resident walked across a cell border, the server's follow rule
+// ended the claim with no word, and the menu's close event never came), and
+// every later E on another puppet returned silently behind the held claim.
+// So the held claim is watched every update: the word ending it (the lease,
+// a pass, a release) forgets it, the Dialogue Menu seen open and then closed
+// releases it (the close event or not), a menu that never opens within ten
+// seconds releases it, and E on another puppet releases it first; every
+// decline of an E leaves a trace.
 export class TalkService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -40,26 +49,41 @@ export class TalkService extends ClientListener {
         if (e.code !== (this.key as DxScanCode) || !e.isPressed || e.heldDuration > 0) {
             return;
         }
-        if (this.pending || this.claimed) {
+        if (this.pending) {
+            logTrace(this, `E: claim ${this.pending.remoteId.toString(16)} still pending, ignored`);
             return;
         }
         const refr = Game.getCurrentCrosshairRef();
         const actor = refr ? Actor.from(refr) : null;
         if (!actor) {
+            logTrace(this, "E: nothing or no actor under the crosshair");
             return;
         }
         const localId = actor.getFormID();
-        if (localId === 0x14 || !this.controller.lookupListener(PuppetService).isPuppet(localId)) {
+        if (localId === 0x14) {
+            return;
+        }
+        if (this.claimed && this.claimed.localId === localId) {
+            // E on the claimed actor: the engine's own activation, the dialogue
+            return;
+        }
+        if (!this.controller.lookupListener(PuppetService).isPuppet(localId)) {
+            logTrace(this, `E: ${localId.toString(16)} is no puppet here (live or a figure), the engine's own activation`);
             return;
         }
         const base = actor.getBaseObject();
         const baseId = base ? base.getFormID() : 0;
         if (!baseId || baseId === 0x7 || baseId >= 0xff000000) {
+            logTrace(this, `E: ${localId.toString(16)} base ${baseId.toString(16)} is not a claimable NPC`);
             return;
         }
         const remoteId = localIdToRemoteId(localId);
         if (!remoteId) {
+            logTrace(this, `E: ${localId.toString(16)} has no remote id`);
             return;
+        }
+        if (this.claimed) {
+            this.release("a new target under E");
         }
         this.send(remoteId, true);
         this.pending = { localId, remoteId, since: Date.now() };
@@ -67,6 +91,9 @@ export class TalkService extends ClientListener {
     }
 
     private onUpdate() {
+        if (this.claimed) {
+            this.watchClaim();
+        }
         if (!this.pending) {
             return;
         }
@@ -86,7 +113,7 @@ export class TalkService extends ClientListener {
             const under = ref ? ref.getFormID() : 0;
             const queued = this.sp.activatePickRef();
             logLab("verb:npc-talk", `claim ${remoteId.toString(16)} granted: activatePickRef ${queued ? "queued" : "refused"} (crosshair ${under.toString(16)})`);
-            this.claimed = { localId, remoteId };
+            this.claimed = { localId, remoteId, since: Date.now(), menuSeen: false };
             this.pending = undefined;
             this.promotedAt = 0;
             return;
@@ -98,13 +125,48 @@ export class TalkService extends ClientListener {
         }
     }
 
+    // the held claim's end, read every update: the word ending it (the lease,
+    // a pass, a release the server made) forgets it; the Dialogue Menu seen
+    // open and then closed releases it whether or not the close event came
+    // (playtest 35: it did not); a menu that never opens releases it after
+    // menuWaitMs
+    private watchClaim() {
+        const held = this.claimed;
+        if (!held) {
+            return;
+        }
+        if (!this.controller.lookupListener(HostService).isMineLocal(held.localId)) {
+            logLab("verb:npc-talk", `claim ${held.remoteId.toString(16)} ended by the word (the lease, a pass or a release): forgotten`);
+            this.claimed = undefined;
+            return;
+        }
+        if (Ui.isMenuOpen("Dialogue Menu")) {
+            held.menuSeen = true;
+            return;
+        }
+        if (held.menuSeen) {
+            this.release("the Dialogue Menu's close");
+            return;
+        }
+        if (Date.now() - held.since > TalkService.menuWaitMs) {
+            this.release(`no Dialogue Menu within ${TalkService.menuWaitMs} ms`);
+        }
+    }
+
     private onMenuClose(e: MenuCloseEvent) {
         if (e.name !== "Dialogue Menu" || !this.claimed) {
             return;
         }
-        const { remoteId } = this.claimed;
-        this.send(remoteId, false);
-        logLab("verb:npc-talk", `claim ${remoteId.toString(16)} released at the Dialogue Menu's close`);
+        this.release("the Dialogue Menu's close");
+    }
+
+    private release(why: string) {
+        const held = this.claimed;
+        if (!held) {
+            return;
+        }
+        this.send(held.remoteId, false);
+        logLab("verb:npc-talk", `claim ${held.remoteId.toString(16)} released at ${why}`);
         this.claimed = undefined;
     }
 
@@ -118,8 +180,9 @@ export class TalkService extends ClientListener {
     }
 
     private pending?: { localId: number; remoteId: number; since: number };
-    private claimed?: { localId: number; remoteId: number };
+    private claimed?: { localId: number; remoteId: number; since: number; menuSeen: boolean };
     private promotedAt = 0;
+    private static readonly menuWaitMs = 10000;
     private readonly enabled: boolean;
     private readonly key: number;
 }

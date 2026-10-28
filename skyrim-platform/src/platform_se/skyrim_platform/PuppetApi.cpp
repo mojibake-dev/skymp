@@ -4,8 +4,15 @@
 #include "Hosted.h"
 #include "Puppets.h"
 #include "game/Offsets.h"
+#include <RE/C/ContainerMenu.h>
+#include <RE/I/InterfaceStrings.h>
+#include <RE/I/InventoryUpdateData.h>
+#include <RE/I/ItemList.h>
 #include <RE/T/TESTopic.h>
 #include <RE/T/TESTopicInfo.h>
+#include <RE/U/UI.h>
+#include <RE/U/UIMessage.h>
+#include <RE/U/UIMessageQueue.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -427,8 +434,13 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
         // own engine cuts a line for the next, so the one in flight is stopped
         // and its item cleared here first, and this line starts through
         // SpeakSoundFunction's lip branch. HYPOTHESIS until the probe.
+        // 2026-10-28 21:56Z (Eli: "on rotfern the rumors line doesnt make it
+        // to prisoner"): the rumor ca6da asked 1.7 s after the greeting 45447,
+        // a lip-path line still in flight (state 3), took the sound path too
+        // ("played", quiet 3D, no lips), since the pre-clear skipped state 3.
+        // The host's engine cuts any line for the next, so does this seat
         bool precleared = false;
-        if (!repeat && highBefore && timerBefore > 0.f && stateBefore != 3) {
+        if (!repeat && highBefore && timerBefore > 0.f) {
           if (highBefore->soundHandles[0].IsValid()) {
             highBefore->soundHandles[0].Stop();
           }
@@ -544,6 +556,12 @@ struct FaceRead
   std::vector<float> modifier;
   std::vector<float> phoneme;
   bool exprOverride = false;
+  // every keyframe set the header lays out, 0x20 to 0x180 (CommonLibSSE-NG
+  // BSFaceGenAnimationData.h:39-50, twelve BSFaceGenKeyframeMultiple), in
+  // that order: playtest 37's control (Eli, 2026-10-28: "lips move on the
+  // initiater") read zero phonemes on a live NPC whose mouth moved, so the
+  // lip sync writes a set the three named ones do not cover
+  std::vector<std::vector<float>> sets;
 };
 std::mutex g_faceMutex;
 std::unordered_map<uint32_t, FaceRead> g_face;
@@ -668,6 +686,23 @@ Napi::Value PuppetApi::PollFaceKeyframes(const Napi::CallbackInfo& info)
       copy(face->expressionKeyFrame, read.expression);
       copy(face->modifierKeyFrame, read.modifier);
       copy(face->phenomeKeyFrame, read.phoneme);
+      const RE::BSFaceGenKeyframeMultiple* all[] = { &face->expressionKeyFrame,
+                                                     &face->unk040,
+                                                     &face->modifierKeyFrame,
+                                                     &face->phenomeKeyFrame,
+                                                     &face->customKeyFrame,
+                                                     &face->unk0C0,
+                                                     &face->unk0E0,
+                                                     &face->unk100,
+                                                     &face->unk120,
+                                                     &face->unk140,
+                                                     &face->unk160,
+                                                     &face->unk180 };
+      for (const auto* frame : all) {
+        std::vector<float> values;
+        copy(*frame, values);
+        read.sets.push_back(std::move(values));
+      }
     }
     std::lock_guard<std::mutex> lock(g_faceMutex);
     g_face[actorFormId] = std::move(read);
@@ -694,12 +729,74 @@ Napi::Value PuppetApi::FaceKeyframes(const Napi::CallbackInfo& info)
     }
     return arr;
   };
-  auto res = Napi::Array::New(info.Env(), 4);
+  auto res = Napi::Array::New(info.Env(), 5);
   res.Set(uint32_t(0), toArray(read.expression));
   res.Set(uint32_t(1), toArray(read.modifier));
   res.Set(uint32_t(2), toArray(read.phoneme));
   res.Set(uint32_t(3), Napi::Boolean::New(info.Env(), read.exprOverride));
+  auto sets = Napi::Array::New(info.Env(), read.sets.size());
+  for (uint32_t i = 0; i < read.sets.size(); ++i) {
+    sets.Set(i, toArray(read.sets[i]));
+  }
+  res.Set(uint32_t(4), sets);
   return res;
+}
+
+// thuum memo D52 B (playtest 37, 2026-10-28, Eli: "so both can open it but
+// they dont see a shared live updating inventory / in morrowind they do"):
+// refreshContainerMenu(refId): when the ContainerMenu is open on this seat
+// for that reference (ContainerMenu::GetTargetRefHandle), the menu hears
+// what the engine tells it when a container's items change, an
+// InventoryUpdateData for the reference on the UI message queue
+// (UI_MESSAGE_TYPE::kInventoryUpdate, the data the queue creates by
+// InterfaceStrings' name), and its item list is re-read for the container
+// (ItemList::Update(owner), CommonLib's Offset::ItemList::Update).
+// HYPOTHESIS until Eli's chest: the menu redraws from one of the two; the
+// re-read shows the chest's rows on the player's own side if that side is
+// up at the moment (then the message alone stays)
+Napi::Value PuppetApi::RefreshContainerMenu(const Napi::CallbackInfo& info)
+{
+  const auto refId = NapiHelper::ExtractUInt32(info[0], "refId");
+  g_nativeCallRequirements.gameThrQ->AddTask([refId](Viet::Void) {
+    auto* ui = RE::UI::GetSingleton();
+    auto menu = ui ? ui->GetMenu<RE::ContainerMenu>() : nullptr;
+    if (!menu) {
+      return;
+    }
+    const auto handle = RE::ContainerMenu::GetTargetRefHandle();
+    RE::NiPointer<RE::TESObjectREFR> target;
+    RE::TESObjectREFR::LookupByHandle(handle, target);
+    if (!target || (refId != 0 && target->formID != refId)) {
+      logger::info("[verb:containers] refreshContainerMenu {:x}: the open "
+                   "menu is {:x}'s, nothing redrawn",
+                   refId, target ? target->formID : 0u);
+      return;
+    }
+    bool posted = false;
+    auto* queue = RE::UIMessageQueue::GetSingleton();
+    auto* strings = RE::InterfaceStrings::GetSingleton();
+    if (queue && strings) {
+      auto* data = static_cast<RE::InventoryUpdateData*>(
+        queue->CreateUIMessageData(strings->inventoryUpdateData));
+      if (data) {
+        data->inventoryRef = handle;
+        data->updateObj = nullptr;
+        queue->AddMessage(strings->containerMenu,
+                          RE::UI_MESSAGE_TYPE::kInventoryUpdate, data);
+        posted = true;
+      }
+    }
+    bool listed = false;
+    if (auto* list = menu->GetItemList()) {
+      list->Update(target.get());
+      listed = true;
+    }
+    logger::info("[verb:containers] refreshContainerMenu {:x}: inventory "
+                 "update {}, item list {}",
+                 refId, posted ? "posted" : "not posted",
+                 listed ? "re-read" : "absent");
+  });
+  return Napi::Boolean::New(info.Env(), true);
 }
 
 Napi::Value PuppetApi::DamageActor(const Napi::CallbackInfo& info)

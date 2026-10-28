@@ -46,7 +46,7 @@ import { ActivateMessage } from '../messages/activateMessage';
 import { ClientListener, CombinedController, Sp } from './clientListener';
 import { ConnectionMessage } from '../events/connectionMessage';
 import { SetInventoryMessage } from '../messages/setInventoryMessage';
-import { CreateActorMessage, CreateActorMessageAdditionalProps } from '../messages/createActorMessage';
+import { CreateActorMessage, CreateActorMessageAdditionalProps, SetNodeScaleEntry, SetNodeTextureSetEntry } from '../messages/createActorMessage';
 import { DestroyActorMessage } from '../messages/destroyActorMessage';
 import { SetRaceMenuOpenMessage } from '../messages/setRaceMenuOpenMessage';
 import { UpdatePropertyMessage } from '../messages/updatePropertyMessage';
@@ -453,6 +453,12 @@ export class RemoteServer extends ClientListener {
     if (msg.isMe) {
       this.worldModel.playerCharacterFormIdx = i;
       this.worldModel.playerCharacterRefrId = msg.refrId || 0;
+      // the player's own node scales and texture sets, re-applied at every 3D
+      // load by nodeOverridesService (playtest 35, rotfern's head at 0.94)
+      this.myNodeOverrides = {
+        setNodeScale: msg.props?.setNodeScale,
+        setNodeTextureSet: msg.props?.setNodeTextureSet,
+      };
     }
 
     // TODO: move to a separate module
@@ -972,6 +978,12 @@ export class RemoteServer extends ClientListener {
   getMyActorIndex(): number {
     return this.worldModel.playerCharacterFormIdx;
   }
+
+  getMyNodeOverrides(): { setNodeScale?: SetNodeScaleEntry[]; setNodeTextureSet?: SetNodeTextureSetEntry[] } | undefined {
+    return this.myNodeOverrides;
+  }
+
+  private myNodeOverrides?: { setNodeScale?: SetNodeScaleEntry[]; setNodeTextureSet?: SetNodeTextureSetEntry[] };
 
   getMyRemoteRefrId(): number {
     return this.worldModel.playerCharacterRefrId;

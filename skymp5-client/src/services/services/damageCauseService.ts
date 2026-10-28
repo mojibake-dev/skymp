@@ -56,7 +56,11 @@ export class DamageCauseService extends ClientListener {
                 logTrace(this, `cause for ${localId.toString(16)}: not simulated here, dropped`);
                 return;
             }
-            const attackerLocal = msg.attacker ? remoteIdToLocalId(msg.attacker) : 0;
+            // the attacker's local form: the local player's own remote id has no
+            // form in the view's map (remoteIdToLocalId answered 0 for rotfern's
+            // arrows in playtest 35, and the engine took the cause as nobody's),
+            // so it is the player, 0x14
+            const attackerLocal = !msg.attacker ? 0 : msg.attacker === remote.getMyRemoteRefrId() ? 0x14 : remoteIdToLocalId(msg.attacker);
             const queued = this.sp.damageActor(localId, msg.health, attackerLocal || 0, msg.killMove);
             logLab("verb:npc-fate", `cause on ${localId.toString(16)}: health ${msg.health.toFixed(3)}, attacker ${msg.attacker.toString(16)} (local ${(attackerLocal || 0).toString(16)}), killMove ${msg.killMove}: ${queued ? "queued" : "refused"}`);
         });

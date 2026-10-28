@@ -94,7 +94,16 @@ export class PlayerBowShotService extends ClientListener {
             return; // a spell has no ammo
         }
         if (e.shooter !== 0x14) {
-            this.onHostedLaunch(e);
+            // the hosted branch reads the engine (Game.getFormEx, the actor's
+            // hands and aim), and Skyrim Platform refuses a native inside this
+            // handler (CallNativeApi.cpp's requirements.vm: the launch event
+            // carries no VM context; x-npc-archer 20261028-023756: every one of
+            // the archer's seven launches threw "'Game.getFormEx' can't be
+            // called in this context" and no shot reached the server), so the
+            // launch is kept and the report made on the next update, as the
+            // player's own shot flushes there and the crossbow hook defers
+            const launch = { ...e };
+            this.controller.once("update", () => this.onHostedLaunch(launch));
             return;
         }
         this.lastLaunch = { at: Date.now(), ammo: e.ammo, weapon: e.weapon, originX: e.originX, originY: e.originY, originZ: e.originZ, angleX: e.angleX, angleZ: e.angleZ };

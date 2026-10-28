@@ -89,23 +89,58 @@ export class VoiceService extends ClientListener {
             if (!localId || localId === 0x14) {
                 return;
             }
-            if (this.controller.lookupListener(HostService).isMineLocal(localId) || !isPuppet(localId)) {
+            if (this.controller.lookupListener(HostService).isMineLocal(localId)) {
                 return;
             }
-            const actor = this.sp.Actor.from(this.sp.Game.getFormEx(localId));
-            if (!actor || actor.isDead()) {
+            if (!isPuppet(localId)) {
+                // playtest 37 (2026-10-28, Eli: "delphines bark and when rotfern
+                // went into the bar, orgnars bark" never crossed): a greeting
+                // fires on the host the moment the entering player's figure
+                // appears, and its relay reaches the entering seat while its
+                // engine still loads the cell, before the speaker is a puppet
+                // here; the line was dropped on this test. It waits arrivalMs
+                // for the puppet instead (TES3MP says a late line late)
+                this.arrivals.set(localId, { info: msg.info, since: Date.now() });
+                logTrace(this, `say ${localId.toString(16)} info ${msg.info.toString(16)} waits for the puppet`);
                 return;
             }
-            if (!this.sp.sayTopicInfo(localId, msg.info)) {
-                return;
-            }
-            this.pending.set(localId, { info: msg.info, since: Date.now() });
-            logTrace(this, `say ${localId.toString(16)} info ${msg.info.toString(16)} asked`);
+            this.ask(localId, msg.info);
         });
+    }
+
+    private ask(localId: number, info: number): boolean {
+        const actor = this.sp.Actor.from(this.sp.Game.getFormEx(localId));
+        if (!actor || actor.isDead()) {
+            return false;
+        }
+        if (!this.sp.sayTopicInfo(localId, info)) {
+            return false;
+        }
+        this.pending.set(localId, { info, since: Date.now() });
+        logTrace(this, `say ${localId.toString(16)} info ${info.toString(16)} asked`);
+        return true;
     }
 
     // the native's answer, read on the updates after the ask
     private onUpdate() {
+        if (this.arrivals.size > 0) {
+            const now = Date.now();
+            for (const [localId, line] of Array.from(this.arrivals.entries())) {
+                if (now - line.since > VoiceService.arrivalMs) {
+                    this.arrivals.delete(localId);
+                    logTrace(this, `say ${localId.toString(16)} info ${line.info.toString(16)} -> no puppet within ${VoiceService.arrivalMs} ms, dropped`);
+                    continue;
+                }
+                if (this.controller.lookupListener(HostService).isMineLocal(localId)) {
+                    this.arrivals.delete(localId);
+                    continue;
+                }
+                if (isPuppet(localId)) {
+                    this.arrivals.delete(localId);
+                    this.ask(localId, line.info);
+                }
+            }
+        }
         if (this.pending.size === 0) {
             return;
         }
@@ -130,6 +165,9 @@ export class VoiceService extends ClientListener {
 
     private readonly lastSpokeAt = new Map<number, number>();
     private readonly pending = new Map<number, { info: number; since: number }>();
+    // lines that arrived before their speaker was a puppet here (a cell still loading)
+    private readonly arrivals = new Map<number, { info: number; since: number }>();
     private static readonly answerMs = 2000;
+    private static readonly arrivalMs = 6000;
     private readonly enabled: boolean;
 }

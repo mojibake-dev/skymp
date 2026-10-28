@@ -151,8 +151,20 @@ export class TalkService extends ClientListener {
             const ref = Game.getCurrentCrosshairRef();
             const under = ref ? ref.getFormID() : 0;
             const queued = this.sp.activatePickRef();
-            logLab("verb:npc-talk", `claim ${remoteId.toString(16)} granted: activatePickRef ${queued ? "queued" : "refused"} (crosshair ${under.toString(16)})`);
-            this.claimed = { localId, remoteId, since: Date.now(), renewedAt: Date.now(), menuSeen: false, retries: 0 };
+            // playtest 37 (2026-10-28 22:10Z, Eli: "sven and gerdur, talking to
+            // both outside, they dont fully stop for the convo, they're like
+            // wiggling around"): the promoted actor's package went on steering
+            // under the claimed dialogue (NPC_TurnToWalkLeft180 1 s after the
+            // promote, 80 units of drift in 20 s on the record, the watcher's
+            // puppet settling 4 to 6 units behind it). The engine stops its
+            // own dialogue partners; the claimed one is held still here for the
+            // claim's life (Actor.setDontMove), released with the claim
+            const actor = Actor.from(Game.getFormEx(localId));
+            if (actor) {
+                actor.setDontMove(true);
+            }
+            logLab("verb:npc-talk", `claim ${remoteId.toString(16)} granted: activatePickRef ${queued ? "queued" : "refused"} (crosshair ${under.toString(16)}, held still ${actor ? "yes" : "no actor"})`);
+            this.claimed = { localId, remoteId, since: Date.now(), renewedAt: Date.now(), menuSeen: false, retries: 0, held: !!actor };
             this.pending = undefined;
             this.promotedAt = 0;
             return;
@@ -176,10 +188,16 @@ export class TalkService extends ClientListener {
         }
         if (!this.controller.lookupListener(HostService).isMineLocal(held.localId)) {
             logLab("verb:npc-talk", `claim ${held.remoteId.toString(16)} ended by the word (the lease, a pass or a release): forgotten`);
+            this.unhold(held);
             this.claimed = undefined;
             return;
         }
         if (Ui.isMenuOpen("Dialogue Menu")) {
+            if (!held.menuSeen) {
+                // the engine's own word on the partner, for the wiggle's read
+                const actor = Actor.from(Game.getFormEx(held.localId));
+                logLab("verb:npc-talk", `claim ${held.remoteId.toString(16)}: the Dialogue Menu is open, the actor ${actor ? (actor.isInDialogueWithPlayer() ? "is" : "is NOT") : "cannot be"} in dialogue with the player by the engine`);
+            }
             held.menuSeen = true;
             // playtest 36 (2026-10-28 17:55Z to 17:58Z): a dialogue of 175 s
             // outlived the claim's 120 s lease (wire-rules CLAIM_LEASE_MS); the
@@ -244,11 +262,22 @@ export class TalkService extends ClientListener {
         this.claimed.closedAt = this.claimed.closedAt ?? Date.now();
     }
 
+    private unhold(held: { localId: number; held?: boolean }) {
+        if (!held.held) {
+            return;
+        }
+        const actor = Actor.from(Game.getFormEx(held.localId));
+        if (actor) {
+            actor.setDontMove(false);
+        }
+    }
+
     private release(why: string) {
         const held = this.claimed;
         if (!held) {
             return;
         }
+        this.unhold(held);
         this.send(held.remoteId, false);
         logLab("verb:npc-talk", `claim ${held.remoteId.toString(16)} released at ${why}`);
         this.claimed = undefined;
@@ -264,7 +293,7 @@ export class TalkService extends ClientListener {
     }
 
     private pending?: { localId: number; remoteId: number; since: number };
-    private claimed?: { localId: number; remoteId: number; since: number; renewedAt: number; menuSeen: boolean; retries: number; closedAt?: number };
+    private claimed?: { localId: number; remoteId: number; since: number; renewedAt: number; menuSeen: boolean; retries: number; closedAt?: number; held?: boolean };
     private promotedAt = 0;
     private static readonly menuWaitMs = 10000;
     // half the server's lease (wire-rules cells.rs CLAIM_LEASE_MS, 120 s)

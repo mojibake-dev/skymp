@@ -113,7 +113,7 @@ export class TalkService extends ClientListener {
             const under = ref ? ref.getFormID() : 0;
             const queued = this.sp.activatePickRef();
             logLab("verb:npc-talk", `claim ${remoteId.toString(16)} granted: activatePickRef ${queued ? "queued" : "refused"} (crosshair ${under.toString(16)})`);
-            this.claimed = { localId, remoteId, since: Date.now(), menuSeen: false, retries: 0 };
+            this.claimed = { localId, remoteId, since: Date.now(), renewedAt: Date.now(), menuSeen: false, retries: 0 };
             this.pending = undefined;
             this.promotedAt = 0;
             return;
@@ -142,6 +142,17 @@ export class TalkService extends ClientListener {
         }
         if (Ui.isMenuOpen("Dialogue Menu")) {
             held.menuSeen = true;
+            // playtest 36 (2026-10-28 17:55Z to 17:58Z): a dialogue of 175 s
+            // outlived the claim's 120 s lease (wire-rules CLAIM_LEASE_MS); the
+            // server renews a claim its holder sends again (ClaimVerdict
+            // Reclaimed), so the held claim is sent again every renewMs while
+            // the menu stays open, and the lease is the safety net alone
+            const now = Date.now();
+            if (now - held.renewedAt >= TalkService.renewMs) {
+                held.renewedAt = now;
+                this.send(held.remoteId, true);
+                logLab("verb:npc-talk", `claim ${held.remoteId.toString(16)} renewed, the Dialogue Menu open ${((now - held.since) / 1000).toFixed(0)} s`);
+            }
             return;
         }
         if (held.menuSeen) {
@@ -194,9 +205,11 @@ export class TalkService extends ClientListener {
     }
 
     private pending?: { localId: number; remoteId: number; since: number };
-    private claimed?: { localId: number; remoteId: number; since: number; menuSeen: boolean; retries: number };
+    private claimed?: { localId: number; remoteId: number; since: number; renewedAt: number; menuSeen: boolean; retries: number };
     private promotedAt = 0;
     private static readonly menuWaitMs = 10000;
+    // half the server's lease (wire-rules cells.rs CLAIM_LEASE_MS, 120 s)
+    private static readonly renewMs = 60000;
     private static readonly activateRetries = 2;
     private readonly enabled: boolean;
     private readonly key: number;

@@ -125,6 +125,12 @@ export class PuppetService extends ClientListener {
             // puppet)
             ac.clearLookAt();
             ac.setHeadTracking(true);
+            // and the expression override the puppet period may have left
+            // (the re-analyst's read of 2026-10-28: the engine never sets it
+            // itself, and while set it blocks the line's own expression on
+            // the live NPC; playtest 37's exprOverride true on the talker's
+            // Orgnar)
+            ac.clearExpressionOverride();
             this.sp.setPuppet(localId, false);
             if (localId < 0xff000000 && ac.isDead()) {
                 // thuum docs/verbs/npc-fate.md (the deaths): a corpse stays the

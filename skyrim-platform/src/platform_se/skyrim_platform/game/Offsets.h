@@ -46,6 +46,18 @@ inline REL::Relocation<std::uintptr_t> PerformAction{ REL::ID(38949) };
 // docs/research/re-37335-and-rune-landing.md). Not in CommonLibSSE-NG, the
 // SE id unread: AE only, as PerformAction.
 inline REL::Relocation<std::uintptr_t> DamageActor{ REL::ID(37335) };
+// thuum docs/verbs/npc-stream.md (the voice slice; playtest 37, 2026-10-28,
+// Eli: "if i ask 'what do you have for sale' the trading menue is opened for
+// both people"): DialogueItem::SendTopicInfoEvent, (DialogueItem* item,
+// uint32_t type: 0 the BEGIN, 1 the END, bool force), the one sender of the
+// TESTopicInfoEvent that runs an info's script fragments (through 25616 to
+// SkyrimVM's sink 53997); a puppet's say on a watcher seat reaches it from
+// 39643 inside our sayTopicInfo and from UpdateSoundCallBack inside our
+// voice pair, so the watcher's game ran the barter fragment too. Address
+// Library 35225 on 1.6.1170 (RVA 0x5ddbf0; the re-analyst's pyghidra read,
+// docs/research/m3/re-puppet-head-lips.md A, HYPOTHESIS until the trace).
+// Not in CommonLibSSE-NG, the SE id unread: AE only, as DamageActor.
+inline REL::Relocation<std::uintptr_t> SendTopicInfoEvent{ REL::ID(35225) };
 // Projectile::Launch, (ProjectileHandle*, LaunchData&) -> ProjectileHandle*:
 // the engine's one launch of every projectile, an arrow's or a spell's
 // (CommonLibSSE-NG src/RE/P/Projectile.cpp:255-258, RELOCATION_ID(42928,

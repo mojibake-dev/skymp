@@ -42,6 +42,7 @@ import { HostedStateService } from "./services/services/hostedStateService";
 import { DamageCauseService } from "./services/services/damageCauseService";
 import { NodeOverridesService } from "./services/services/nodeOverridesService";
 import { PuppetFaceService } from "./services/services/puppetFaceService";
+import { ConversationGazeService } from "./services/services/conversationGazeService";
 import { TalkService } from "./services/services/talkService";
 import { VoiceService } from "./services/services/voiceService";
 import { SpSnippetService } from "./services/services/spSnippetService";
@@ -124,6 +125,7 @@ const main = () => {
       new DamageCauseService(sp, controller),
       new NodeOverridesService(sp, controller),
       new PuppetFaceService(sp, controller),
+      new ConversationGazeService(sp, controller),
       new TalkService(sp, controller),
       new VoiceService(sp, controller),
       new SpSnippetService(sp, controller),

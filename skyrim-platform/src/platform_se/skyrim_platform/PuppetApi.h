@@ -67,6 +67,14 @@ Napi::Value PollHostedGaze(const Napi::CallbackInfo& info);
 // the E the claim's word made meaningful; true when queued
 Napi::Value ActivatePickRef(const Napi::CallbackInfo& info);
 Napi::Value HostedGaze(const Napi::CallbackInfo& info);
+// thuum playtest 37 (the probe before any head build): pollFaceKeyframes
+// (actorFormId) copies, on the game thread, the actor's FaceGen keyframes
+// (BSFaceGenAnimationData's expression, modifier and phoneme keyframes,
+// CommonLibSSE-NG BSFaceGenAnimationData.h:39-42) and its override flag;
+// faceKeyframes(actorFormId) answers the last read as [expression[],
+// modifier[], phoneme[], override], or null
+Napi::Value PollFaceKeyframes(const Napi::CallbackInfo& info);
+Napi::Value FaceKeyframes(const Napi::CallbackInfo& info);
 // thuum docs/verbs/npc-fate.md (ADR-050 decision 2, deaths by the engine):
 // damageActor(actorFormId, health, attackerFormId, killMove): the server's
 // cause applied to an actor this game simulates on the game thread, through
@@ -121,6 +129,12 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "hostedGaze",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(HostedGaze)));
+  exports.Set("pollFaceKeyframes",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(PollFaceKeyframes)));
+  exports.Set(
+    "faceKeyframes",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(FaceKeyframes)));
   exports.Set(
     "damageActor",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(DamageActor)));

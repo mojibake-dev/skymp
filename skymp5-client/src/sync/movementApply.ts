@@ -380,7 +380,7 @@ let knobsCache: MovementKnobs | undefined;
 const localGaze = new Set<number>();
 const movementKnobs = (): MovementKnobs => {
   if (knobsCache) return knobsCache;
-  const defaults: MovementKnobs = { leadSeconds: 0.2, leadDecay: 0.5, deadbandMoving: 8, deadbandStill: 1, popDistance: 256, popWindowMs: 600, jumpDistance: 1024, localGazeRadius: 450 };
+  const defaults: MovementKnobs = { leadSeconds: 0.1, leadDecay: 0.5, deadbandMoving: 8, deadbandStill: 1, popDistance: 256, popWindowMs: 600, jumpDistance: 1024, localGazeRadius: 450 };
   const s = settings["skymp5-client"] as Record<string, unknown> | undefined;
   const given = (s && typeof s["movement"] === "object" && s["movement"]) ? s["movement"] as Record<string, unknown> : {};
   const out = { ...defaults } as Record<string, number>;

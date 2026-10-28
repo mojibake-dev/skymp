@@ -194,7 +194,17 @@ export class TalkService extends ClientListener {
             return;
         }
         if (held.menuSeen) {
-            this.release("the Dialogue Menu's close");
+            // playtest 37 (2026-10-28, Eli: "some tiny greetings are lost too.
+            // like the 'alright' when i end a convo"): the exit line is spoken
+            // on this engine right after the menu closes, and a release sent
+            // at the close reaches the server first, so the line's report
+            // finds this game no longer the simulator and is dropped. The
+            // release waits the exit line's grace; the lease is the safety net
+            const now = Date.now();
+            held.closedAt = held.closedAt ?? now;
+            if (now - held.closedAt >= TalkService.goodbyeMs) {
+                this.release(`the Dialogue Menu's close, ${(TalkService.goodbyeMs / 1000).toFixed(0)} s on (the exit line's grace)`);
+            }
             return;
         }
         // x-npc-talk-cross 20261028-131626 and the sweep's 123118: the claim
@@ -220,7 +230,9 @@ export class TalkService extends ClientListener {
         if (e.name !== "Dialogue Menu" || !this.claimed) {
             return;
         }
-        this.release("the Dialogue Menu's close");
+        // the close marks the time; watchClaim releases after the exit line's grace
+        this.claimed.menuSeen = true;
+        this.claimed.closedAt = this.claimed.closedAt ?? Date.now();
     }
 
     private release(why: string) {
@@ -243,12 +255,14 @@ export class TalkService extends ClientListener {
     }
 
     private pending?: { localId: number; remoteId: number; since: number };
-    private claimed?: { localId: number; remoteId: number; since: number; renewedAt: number; menuSeen: boolean; retries: number };
+    private claimed?: { localId: number; remoteId: number; since: number; renewedAt: number; menuSeen: boolean; retries: number; closedAt?: number };
     private promotedAt = 0;
     private static readonly menuWaitMs = 10000;
     // half the server's lease (wire-rules cells.rs CLAIM_LEASE_MS, 120 s)
     private static readonly renewMs = 60000;
     private static readonly activateRetries = 2;
+    // the exit line's grace after the Dialogue Menu's close before the release
+    private static readonly goodbyeMs = 3000;
     private readonly enabled: boolean;
     private readonly key: number;
 }

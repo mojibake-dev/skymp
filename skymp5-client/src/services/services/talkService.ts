@@ -68,7 +68,38 @@ export class TalkService extends ClientListener {
             return;
         }
         if (!this.controller.lookupListener(PuppetService).isPuppet(localId)) {
-            logTrace(this, `E: ${localId.toString(16)} is no puppet here (live or a figure), the engine's own activation`);
+            // thuum playtest 37 (Eli: "id like no one to be able to steal from
+            // anyone"): the host's own dialogue with an NPC it simulates is the
+            // engine's, and until now nothing marked it on the server, so a
+            // guest's E claimed the actor out from under the open menu. The host
+            // sends the same claim at its E (the server grants a claim to the
+            // actor's own simulator with no pass, and refuses others while it is
+            // held) and releases it at the menu's close as a guest does; the
+            // engine's own activation opens the dialogue, so nothing is
+            // activated here (retries spent). A figure or an actor another seat
+            // simulates stays the engine's own activation.
+            const host = this.controller.lookupListener(HostService);
+            const liveMine = host.isMineLocal(localId) && !actor.isDead();
+            if (!liveMine) {
+                logTrace(this, `E: ${localId.toString(16)} is no puppet here (live or a figure), the engine's own activation`);
+                return;
+            }
+            const base = actor.getBaseObject();
+            const baseId = base ? base.getFormID() : 0;
+            if (!baseId || baseId === 0x7 || baseId >= 0xff000000) {
+                return;
+            }
+            const remoteId = localIdToRemoteId(localId);
+            if (!remoteId) {
+                return;
+            }
+            if (this.claimed) {
+                this.release("a new target under E");
+            }
+            this.send(remoteId, true);
+            const now = Date.now();
+            this.claimed = { localId, remoteId, since: now, renewedAt: now, menuSeen: false, retries: TalkService.activateRetries };
+            logLab("verb:npc-talk", `claim ${remoteId.toString(16)} (local ${localId.toString(16)}) sent on E for the host's own dialogue`);
             return;
         }
         if (actor.isDead()) {

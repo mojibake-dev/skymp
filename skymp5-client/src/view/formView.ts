@@ -1,4 +1,4 @@
-import { Actor, ActorBase, Cell, createText, Debug, destroyText, Form, FormType, Game, Keyword, NetImmerse, ObjectReference, once, printConsole, setTextPos, setTextSize, setTextString, settings, storage, TESModPlatform, Utility, WorldSpace, worldPointToScreenPoint } from "skyrimPlatform";
+import { Ui, Actor, ActorBase, Cell, createText, Debug, destroyText, Form, FormType, Game, Keyword, NetImmerse, ObjectReference, once, printConsole, setTextPos, setTextSize, setTextString, settings, storage, TESModPlatform, Utility, WorldSpace, worldPointToScreenPoint } from "skyrimPlatform";
 import { setDefaultAnimsDisabled, applyAnimation, allowAnimationOnce } from "../sync/animation";
 import { isHandCastEvent } from "../services/services/actionSyncService";
 // @ts-expect-error (TODO: Remove in 2.10.0)
@@ -7,6 +7,7 @@ import { figureAimHeading } from "../sync/figureAim";
 import { Appearance, applyAppearance } from "../sync/appearance";
 import { isBadMenuShown, applyEquipment, isFigureBase, keepOnlyServerSpells, applyHands } from "../sync/equipment";
 import { RespawnNeededError } from "../lib/errors";
+import * as sp from "skyrimPlatform";
 import { logLab } from "../logging";
 import { FormModel } from "./model";
 import { UpdateActionMessage } from "../services/messages/updateActionMessage";
@@ -68,6 +69,9 @@ export class FormView {
   // the record cell an engine reference was last moved into (one attempt
   // per record cell; the engine's own cell says whether another is due)
   private movedInto = 0;
+  // the word's last value for this view: a flip to "mine" is a promotion
+  // (npc-handoff D9's pass, or a door's pass since 2026-10-28)
+  private hostedBefore: boolean | undefined = undefined;
 
   // thuum docs/verbs/npc-fate.md: the fate switch (settings
   // skymp5-client.npcFate, default off until x-npc-fate-roll): on, engine
@@ -122,7 +126,13 @@ export class FormView {
           // engine (x-handoff-door 20261024-013234: the host's view moved
           // its own Alvor back out of the inn 133 ms after the follow)
           const mine = !!refr && SpApiInteractor.getControllerInstance().lookupListener(HostService).isMine(model, refr);
-          if (refr && target && !mine && engineCell !== 0 && engineCell !== model.movement.worldOrCell) {
+          // a promotion by a pass (playtest 37, 2026-10-28, Embry through the
+          // Sleeping Giant's door into Prisoner's cell): the record came from
+          // the previous simulator's engine and is the truth for this one
+          // moment, so the new host moves its own reference to it when the
+          // engine has it in another cell; after that the host's engine leads
+          const promotedNow = mine && model.isHostedByOther === false && this.hostedBefore !== false;
+          if (refr && target && (!mine || promotedNow) && engineCell !== 0 && engineCell !== model.movement.worldOrCell) {
             const pos = model.movement.pos;
             const rot = model.movement.rot;
             TESModPlatform.moveRefrToPosition(
@@ -133,9 +143,10 @@ export class FormView {
               rot[0] * Math.PI / 180, rot[1] * Math.PI / 180, rot[2] * Math.PI / 180,
             );
             this.movedInto = model.movement.worldOrCell;
-            logLab("verb:npc-handoff", `moved ${this.refrId.toString(16)} into ${model.movement.worldOrCell.toString(16)} (the engine had it in ${engineCell.toString(16)})`);
+            logLab("verb:npc-handoff", `moved ${this.refrId.toString(16)} into ${model.movement.worldOrCell.toString(16)} (the engine had it in ${engineCell.toString(16)}${promotedNow ? ", at its promotion" : ""})`);
           }
         }
+        this.hostedBefore = model.isHostedByOther;
       }
       if (this.lastWorldOrCell !== model.movement.worldOrCell) {
         printConsole(
@@ -612,10 +623,19 @@ export class FormView {
       }
     }
 
+    // thuum memo D52 B (playtest 37, 2026-10-28, Eli: "so both can open it but
+    // they dont see a shared live updating inventory / in morrowind they do"):
+    // a chest whose ContainerMenu is open on this seat takes the server's
+    // inventory at once (the other occupant's take or put, re-sent by the
+    // server) instead of waiting for the menu to close, and the menu is told
+    // to redraw through the engine's own inventory-update message
+    // (refreshContainerMenu, fork m3-face-twelve; absent on an older dist)
+    const liveChest = !!model.inventory && Ui.isMenuOpen("ContainerMenu") &&
+      PlayerCharacterDataHolder.getCrosshairRefId() == this.refrId;
     if (
       model.inventory &&
       PlayerCharacterDataHolder.getCrosshairRefId() == this.refrId &&
-      !isBadMenuShown()
+      (!isBadMenuShown() || liveChest)
     ) {
       // Do not let actors breaking their equipment via inventory apply
       // However, actually, actors do not have inventory in their models
@@ -631,6 +651,12 @@ export class FormView {
         // through resetBase's removeAllItems and resetContainer
         ModelApplyUtils.applyModelInventory(refr, model.inventory, !deadBody);
         model.inventory = undefined;
+        if (liveChest) {
+          const api = sp as unknown as Record<string, unknown>;
+          const refresh = api["refreshContainerMenu"];
+          const redrawn = typeof refresh === "function" ? !!(refresh as (id: number) => boolean)(this.refrId) : false;
+          logLab("verb:containers", `live chest ${this.refrId.toString(16)}: the server's inventory applied under the open menu, redraw ${redrawn ? "asked" : "unavailable"}`);
+        }
       }
     }
 

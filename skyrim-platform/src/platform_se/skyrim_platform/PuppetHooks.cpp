@@ -127,11 +127,20 @@ void DriveVoice(RE::Actor& actor)
       REL::Relocation<SayTopicFn> say{ Offsets::Voice::SayTopic };
       const bool went = say(runtime.currentProcess, &actor, nullptr, nullptr,
                             false, high->unk45C != 0, false, false);
+      // playtest 37 (2026-10-28 22:06Z, Sven's bcc9b: the second response
+      // "started" on the watcher and Eli heard nothing): the engine's facts
+      // after the call, as sayTopicInfo logs its own, so the probe reads
+      // which path the second response took (state 3 the lip path, a live
+      // handle or a running timer the sound path, neither inaudible)
+      const bool handleAfter = high->soundHandles[0].IsValid();
       logger::info("[verb:npc-stream] line on {:x} continued: the item's "
-                   "next response {} (info {:x})",
+                   "next response {} (info {:x}; state {}, timer {:.2f}, "
+                   "handle {} after)",
                    actor.formID, went ? "started" : "refused",
                    high->greetTopic->info ? high->greetTopic->info->formID
-                                          : 0u);
+                                          : 0u,
+                   runtime.soundCallBackSet, runtime.voiceTimer,
+                   handleAfter ? "live" : "none");
     }
   }
 }

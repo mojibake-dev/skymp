@@ -6,6 +6,7 @@ import { MessageWithRefrId } from "../events/sendMessageWithRefrIdEvent";
 import { localIdToRemoteId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { HostService } from "./hostService";
+import { VoiceService } from "./voiceService";
 import { PuppetService } from "./puppetService";
 
 // thuum docs/verbs/npc-talk.md (ADR-052): a guest opens dialogue with an NPC
@@ -68,7 +69,38 @@ export class TalkService extends ClientListener {
             return;
         }
         if (!this.controller.lookupListener(PuppetService).isPuppet(localId)) {
-            logTrace(this, `E: ${localId.toString(16)} is no puppet here (live or a figure), the engine's own activation`);
+            // thuum playtest 37 (Eli: "id like no one to be able to steal from
+            // anyone"): the host's own dialogue with an NPC it simulates is the
+            // engine's, and until now nothing marked it on the server, so a
+            // guest's E claimed the actor out from under the open menu. The host
+            // sends the same claim at its E (the server grants a claim to the
+            // actor's own simulator with no pass, and refuses others while it is
+            // held) and releases it at the menu's close as a guest does; the
+            // engine's own activation opens the dialogue, so nothing is
+            // activated here (retries spent). A figure or an actor another seat
+            // simulates stays the engine's own activation.
+            const host = this.controller.lookupListener(HostService);
+            const liveMine = host.isMineLocal(localId) && !actor.isDead();
+            if (!liveMine) {
+                logTrace(this, `E: ${localId.toString(16)} is no puppet here (live or a figure), the engine's own activation`);
+                return;
+            }
+            const base = actor.getBaseObject();
+            const baseId = base ? base.getFormID() : 0;
+            if (!baseId || baseId === 0x7 || baseId >= 0xff000000) {
+                return;
+            }
+            const remoteId = localIdToRemoteId(localId);
+            if (!remoteId) {
+                return;
+            }
+            if (this.claimed) {
+                this.release("a new target under E");
+            }
+            this.send(remoteId, true);
+            const now = Date.now();
+            this.claimed = { localId, remoteId, since: now, renewedAt: now, menuSeen: false, retries: TalkService.activateRetries };
+            logLab("verb:npc-talk", `claim ${remoteId.toString(16)} (local ${localId.toString(16)}) sent on E for the host's own dialogue`);
             return;
         }
         if (actor.isDead()) {
@@ -119,8 +151,20 @@ export class TalkService extends ClientListener {
             const ref = Game.getCurrentCrosshairRef();
             const under = ref ? ref.getFormID() : 0;
             const queued = this.sp.activatePickRef();
-            logLab("verb:npc-talk", `claim ${remoteId.toString(16)} granted: activatePickRef ${queued ? "queued" : "refused"} (crosshair ${under.toString(16)})`);
-            this.claimed = { localId, remoteId, since: Date.now(), renewedAt: Date.now(), menuSeen: false, retries: 0 };
+            // playtest 37 (2026-10-28 22:10Z, Eli: "sven and gerdur, talking to
+            // both outside, they dont fully stop for the convo, they're like
+            // wiggling around"): the promoted actor's package went on steering
+            // under the claimed dialogue (NPC_TurnToWalkLeft180 1 s after the
+            // promote, 80 units of drift in 20 s on the record, the watcher's
+            // puppet settling 4 to 6 units behind it). The engine stops its
+            // own dialogue partners; the claimed one is held still here for the
+            // claim's life (Actor.setDontMove), released with the claim
+            const actor = Actor.from(Game.getFormEx(localId));
+            if (actor) {
+                actor.setDontMove(true);
+            }
+            logLab("verb:npc-talk", `claim ${remoteId.toString(16)} granted: activatePickRef ${queued ? "queued" : "refused"} (crosshair ${under.toString(16)}, held still ${actor ? "yes" : "no actor"})`);
+            this.claimed = { localId, remoteId, since: Date.now(), renewedAt: Date.now(), menuSeen: false, retries: 0, held: !!actor };
             this.pending = undefined;
             this.promotedAt = 0;
             return;
@@ -144,10 +188,16 @@ export class TalkService extends ClientListener {
         }
         if (!this.controller.lookupListener(HostService).isMineLocal(held.localId)) {
             logLab("verb:npc-talk", `claim ${held.remoteId.toString(16)} ended by the word (the lease, a pass or a release): forgotten`);
+            this.unhold(held);
             this.claimed = undefined;
             return;
         }
         if (Ui.isMenuOpen("Dialogue Menu")) {
+            if (!held.menuSeen) {
+                // the engine's own word on the partner, for the wiggle's read
+                const actor = Actor.from(Game.getFormEx(held.localId));
+                logLab("verb:npc-talk", `claim ${held.remoteId.toString(16)}: the Dialogue Menu is open, the actor ${actor ? (actor.isInDialogueWithPlayer() ? "is" : "is NOT") : "cannot be"} in dialogue with the player by the engine`);
+            }
             held.menuSeen = true;
             // playtest 36 (2026-10-28 17:55Z to 17:58Z): a dialogue of 175 s
             // outlived the claim's 120 s lease (wire-rules CLAIM_LEASE_MS); the
@@ -163,7 +213,25 @@ export class TalkService extends ClientListener {
             return;
         }
         if (held.menuSeen) {
-            this.release("the Dialogue Menu's close");
+            // playtest 37 (2026-10-28, Eli: "some tiny greetings are lost too.
+            // like the 'alright' when i end a convo"): the exit line is spoken
+            // on this engine right after the menu closes, and a release sent
+            // at the close reaches the server first, so the line's report
+            // finds this game no longer the simulator and is dropped. The
+            // release waits the exit line's grace; the lease is the safety net
+            const now = Date.now();
+            held.closedAt = held.closedAt ?? now;
+            // 22:04:00Z: Orgnar's post-dialogue line began 19 ms after the
+            // graced release, 3 s after the close to the millisecond, and was
+            // dropped as a non-simulator's. So the release also waits until
+            // the actor's last line on this engine is speechSettleMs old, up
+            // to releaseCapMs after the close (a chatty resident cannot hold
+            // the claim; the lease is the net beyond that)
+            const sinceClose = now - held.closedAt;
+            const sinceSpoke = now - this.controller.lookupListener(VoiceService).lastSpoke(held.localId);
+            if (sinceClose >= TalkService.goodbyeMs && (sinceSpoke >= TalkService.speechSettleMs || sinceClose >= TalkService.releaseCapMs)) {
+                this.release(`the Dialogue Menu's close, ${(sinceClose / 1000).toFixed(1)} s on (the exit line's grace, last line ${(sinceSpoke / 1000).toFixed(1)} s ago)`);
+            }
             return;
         }
         // x-npc-talk-cross 20261028-131626 and the sweep's 123118: the claim
@@ -189,7 +257,19 @@ export class TalkService extends ClientListener {
         if (e.name !== "Dialogue Menu" || !this.claimed) {
             return;
         }
-        this.release("the Dialogue Menu's close");
+        // the close marks the time; watchClaim releases after the exit line's grace
+        this.claimed.menuSeen = true;
+        this.claimed.closedAt = this.claimed.closedAt ?? Date.now();
+    }
+
+    private unhold(held: { localId: number; held?: boolean }) {
+        if (!held.held) {
+            return;
+        }
+        const actor = Actor.from(Game.getFormEx(held.localId));
+        if (actor) {
+            actor.setDontMove(false);
+        }
     }
 
     private release(why: string) {
@@ -197,6 +277,7 @@ export class TalkService extends ClientListener {
         if (!held) {
             return;
         }
+        this.unhold(held);
         this.send(held.remoteId, false);
         logLab("verb:npc-talk", `claim ${held.remoteId.toString(16)} released at ${why}`);
         this.claimed = undefined;
@@ -212,12 +293,17 @@ export class TalkService extends ClientListener {
     }
 
     private pending?: { localId: number; remoteId: number; since: number };
-    private claimed?: { localId: number; remoteId: number; since: number; renewedAt: number; menuSeen: boolean; retries: number };
+    private claimed?: { localId: number; remoteId: number; since: number; renewedAt: number; menuSeen: boolean; retries: number; closedAt?: number; held?: boolean };
     private promotedAt = 0;
     private static readonly menuWaitMs = 10000;
     // half the server's lease (wire-rules cells.rs CLAIM_LEASE_MS, 120 s)
     private static readonly renewMs = 60000;
     private static readonly activateRetries = 2;
+    // the exit line's grace after the Dialogue Menu's close before the release
+    private static readonly goodbyeMs = 3000;
+    // and the quiet the actor's last line must have had, within a cap
+    private static readonly speechSettleMs = 2500;
+    private static readonly releaseCapMs = 10000;
     private readonly enabled: boolean;
     private readonly key: number;
 }

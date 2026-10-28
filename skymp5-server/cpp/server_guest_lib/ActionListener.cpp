@@ -406,6 +406,17 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     // moves it, and SetPos below attaches it to that cell's grid
     const auto newCellOrWorld =
       FormDesc::FromFormId(msg.data.worldOrCell, espmFiles);
+    // npc-handoff (d) through a door (ADR-047's note of 2026-10-28): a pass
+    // into a cell whose grid the sender does not share (an interior from
+    // outside, or the way back) unsubscribes the sender at the move below,
+    // so its word goes first, while it still holds the view: its engine
+    // demotes the copy it walked through instead of running it on indoors
+    if (passed && hostedCellChange) {
+      if (MpActor* sender =
+            partOne.serverState.ActorByUser(rawMsgData.userId)) {
+        actor->TellHostedByOther(*sender);
+      }
+    }
     if (newCellOrWorld != actor->GetCellOrWorld()) {
       actor->SetCellOrWorldObsolete(newCellOrWorld);
     }

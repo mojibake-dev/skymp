@@ -152,6 +152,7 @@ public:
   void ForceSubscriptionsUpdate();
   void SetPrimitive(const NiPoint3& boundsDiv2);
   void UpdateHoster(uint32_t newHosterId);
+  void TellHostedByOther(MpActor& game);
   void SetPropertyValueDump(const std::string& propertyName,
                             const std::string& valueDump,
                             bool isVisibleByOwner, bool isVisibleByNeighbor);

@@ -881,6 +881,21 @@ void MpObjectReference::UpdateHoster(uint32_t newHosterId)
   }
 }
 
+// thuum docs/verbs/npc-handoff.md (d) through a door (ADR-047's note of
+// 2026-10-28): the word for a game the record's move is about to unsubscribe
+// (the old host outside the interior its actor just entered), sent before
+// the grid forgets it so its engine demotes the copy it walked through;
+// UpdateHoster reaches the listeners the move leaves (CellHostTest's door
+// case, pipeline 3532: the old host never heard "hosted by other")
+void MpObjectReference::TellHostedByOther(MpActor& game)
+{
+  if (game.GetUserId() == Networking::InvalidUserId) {
+    return;
+  }
+  game.SendToUser(CreatePropertyMessage_(this, "isHostedByOther", "true"),
+                  true);
+}
+
 void MpObjectReference::SetPropertyValueDump(const std::string& propertyName,
                                              const std::string& valueDump,
                                              bool isVisibleByOwner,

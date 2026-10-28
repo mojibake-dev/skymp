@@ -757,7 +757,14 @@ Napi::Value PuppetApi::FaceKeyframes(const Napi::CallbackInfo& info)
 Napi::Value PuppetApi::RefreshContainerMenu(const Napi::CallbackInfo& info)
 {
   const auto refId = NapiHelper::ExtractUInt32(info[0], "refId");
-  g_nativeCallRequirements.gameThrQ->AddTask([refId](Viet::Void) {
+  // mode (playtest 37, Eli on the first live chest: "kiiiiind of working"):
+  // bit 1 posts the engine's inventory-update message, bit 2 re-reads the
+  // item list for the container; 3 both, the default. A client setting
+  // picks it (chestRedraw), so the two halves separate without a build
+  const auto mode = info.Length() > 1 && !info[1].IsUndefined()
+    ? NapiHelper::ExtractUInt32(info[1], "mode")
+    : 3u;
+  g_nativeCallRequirements.gameThrQ->AddTask([refId, mode](Viet::Void) {
     auto* ui = RE::UI::GetSingleton();
     auto menu = ui ? ui->GetMenu<RE::ContainerMenu>() : nullptr;
     if (!menu) {
@@ -775,7 +782,7 @@ Napi::Value PuppetApi::RefreshContainerMenu(const Napi::CallbackInfo& info)
     bool posted = false;
     auto* queue = RE::UIMessageQueue::GetSingleton();
     auto* strings = RE::InterfaceStrings::GetSingleton();
-    if (queue && strings) {
+    if ((mode & 1u) && queue && strings) {
       auto* data = static_cast<RE::InventoryUpdateData*>(
         queue->CreateUIMessageData(strings->inventoryUpdateData));
       if (data) {
@@ -790,14 +797,16 @@ Napi::Value PuppetApi::RefreshContainerMenu(const Napi::CallbackInfo& info)
     // out of line with no body in the port's library (pipeline 3542, job
     // 13389, LNK2019), the same shape as Actor's runtime-data accessor
     bool listed = false;
-    if (auto* list = menu->GetRuntimeData().itemList) {
-      list->Update(target.get());
-      listed = true;
+    if (mode & 2u) {
+      if (auto* list = menu->GetRuntimeData().itemList) {
+        list->Update(target.get());
+        listed = true;
+      }
     }
-    logger::info("[verb:containers] refreshContainerMenu {:x}: inventory "
-                 "update {}, item list {}",
-                 refId, posted ? "posted" : "not posted",
-                 listed ? "re-read" : "absent");
+    logger::info("[verb:containers] refreshContainerMenu {:x} (mode {}): "
+                 "inventory update {}, item list {}",
+                 refId, mode, posted ? "posted" : "not posted",
+                 listed ? "re-read" : "not re-read");
   });
   return Napi::Boolean::New(info.Env(), true);
 }

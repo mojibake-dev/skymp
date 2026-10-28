@@ -475,6 +475,26 @@ TEST_CASE("Two players in one container: both open it, a take reaches the "
     REQUIRE_NOTHROW(ref.TakeItem(second, { other, 1 }));
   }
 
+  // a take the server refuses (the row gone, playtest 37's phantom bow):
+  // the taker hears its own inventory and the container's at once
+  partOne.Messages().clear();
+  REQUIRE_THROWS_WITH(ref.TakeItem(first, { 0x12eb7, 1 }),
+                      ContainsSubstring("doesn't have enough"));
+  const bool ownResent =
+    std::any_of(messages.begin(), messages.end(), [&](PartOne::Message& m) {
+      return m.userId == 0 && m.j.is_object() && m.j.contains("t") &&
+        m.j["t"] == static_cast<int>(MsgType::SetInventory);
+    });
+  const bool chestResent =
+    std::any_of(messages.begin(), messages.end(), [&](PartOne::Message& m) {
+      return m.userId == 0 && m.j.is_object() && m.j.contains("t") &&
+        m.j["t"] == static_cast<int>(MsgType::UpdateProperty) &&
+        m.j.contains("propName") && m.j["propName"] == "inventory" &&
+        m.j["idx"] == ref.GetIdx();
+    });
+  REQUIRE(ownResent);
+  REQUIRE(chestResent);
+
   // the first leaves: still open for the second; the second leaves: shut
   ref.Activate(first, false, true);
   REQUIRE(ref.IsOpen());

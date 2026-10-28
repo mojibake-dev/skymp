@@ -12,11 +12,14 @@
 #include "SkyrimPlatform.h"
 #include "StringHolder.h"
 
+#include <RE/A/AIProcess.h>
 #include <RE/A/Actor.h>
 #include <RE/A/ActorMagicCaster.h>
 #include <RE/A/ActorValues.h>
+#include <RE/D/DialogueItem.h>
 #include <RE/E/Effect.h>
 #include <RE/E/EffectSetting.h>
+#include <RE/H/HighProcessData.h>
 
 #include <atomic>
 #include <cctype>
@@ -1170,6 +1173,73 @@ void InstallDamageActorHook()
     reinterpret_cast<void**>(&g_damageActorOriginal));
 }
 
+// thuum docs/verbs/npc-stream.md (the voice slice), playtest 37 (2026-10-28,
+// Eli: "if i ask 'what do you have for sale' the trading menue is opened for
+// both people"): a relayed line a puppet says here runs its info's script
+// fragments on this game too, because the engine's only sender of the
+// TESTopicInfoEvent, DialogueItem::SendTopicInfoEvent, tests nothing about
+// the speaker's seat (the re-analyst's read, docs/research/m3/
+// re-puppet-head-lips.md A: the BEGIN from 39643 inside our sayTopicInfo,
+// the END from UpdateSoundCallBack inside our voice pair). Replaced through
+// Gum: when the item's speaker is a puppet here and not in dialogue with
+// this player (HighProcessData.h:341 talkingToPC), the event is not sent and
+// the fragment never runs on the watcher; the host's own NPCs are not
+// puppets there and keep every fragment. HYPOTHESIS until the probe
+// (x-npc-vendor: the host asks a merchant's wares, the watcher's BarterMenu
+// stays shut) or the Frida plan in the read (35225, 25616, 53997).
+namespace {
+using SendTopicInfoEventFn = std::uint64_t (*)(RE::DialogueItem* item,
+                                               std::uint32_t type, bool force);
+SendTopicInfoEventFn g_sendTopicInfoEventOriginal = nullptr;
+
+std::uint64_t SendTopicInfoEventReplacement(RE::DialogueItem* item,
+                                            std::uint32_t type, bool force)
+{
+  if (item && item->speaker) {
+    auto* speaker = item->speaker->As<RE::Actor>();
+    if (speaker && Puppets::Is(speaker->formID)) {
+      auto* process = speaker->GetActorRuntimeData().currentProcess;
+      auto* high = process ? process->high : nullptr;
+      const bool talking = high && high->talkingToPC;
+      if (!talking) {
+        // one info line a minute per speaker, the rest counted (the game
+        // thread's own path, no lock)
+        static std::unordered_map<
+          std::uint32_t,
+          std::pair<std::chrono::steady_clock::time_point, std::uint32_t>>
+          dropped;
+        auto& [since, count] = dropped[speaker->formID];
+        ++count;
+        const auto now = std::chrono::steady_clock::now();
+        if (since == std::chrono::steady_clock::time_point() ||
+            now - since >= std::chrono::minutes(1)) {
+          logger::info("[verb:npc-stream] fragment gate: info {:x} type {} "
+                       "on puppet {:x} not sent to the VM (the watcher's "
+                       "say); {} dropped since the last line",
+                       item->info ? item->info->formID : 0u, type,
+                       speaker->formID, count);
+          since = now;
+          count = 0;
+        }
+        return 0;
+      }
+    }
+  }
+  return g_sendTopicInfoEventOriginal(item, type, force);
+}
+}
+
+void InstallSendTopicInfoEventHook()
+{
+  if (!REL::Module::IsAE()) {
+    return;
+  }
+  Frida::HookHandler::GetSingleton()->Replace(
+    Offsets::Hooks::SendTopicInfoEvent.address(),
+    reinterpret_cast<void*>(&SendTopicInfoEventReplacement),
+    reinterpret_cast<void**>(&g_sendTopicInfoEventOriginal));
+}
+
 void Frida::InstallHooks()
 {
   LoadAdmittedScripts();
@@ -1182,6 +1252,7 @@ void Frida::InstallHooks()
   InstallProjectileInitVelocityHook();
   InstallPlaceAreaEffectHook();
   InstallDamageActorHook();
+  InstallSendTopicInfoEventHook();
   InstallQueueNinodeUpdateHook();
   InstallRenderCursorMenuHook();
 #ifdef ENABLE_SKYRIM_AE

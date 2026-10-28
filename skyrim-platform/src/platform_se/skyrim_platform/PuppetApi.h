@@ -82,6 +82,10 @@ Napi::Value FaceKeyframes(const Napi::CallbackInfo& info);
 // inventory-update message, bit 2 the item list's re-read, 3 both (the
 // default); true when queued
 Napi::Value RefreshContainerMenu(const Napi::CallbackInfo& info);
+// thuum docs/research/m3/re-claimed-dialogue-state.md (2026-10-28):
+// consumeActivatePress() marks the current E press's held action done, so
+// the engine's own release activates nothing (one activation per claim)
+Napi::Value ConsumeActivatePress(const Napi::CallbackInfo& info);
 // thuum docs/verbs/npc-fate.md (ADR-050 decision 2, deaths by the engine):
 // damageActor(actorFormId, health, attackerFormId, killMove): the server's
 // cause applied to an actor this game simulates on the game thread, through
@@ -145,6 +149,9 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set("refreshContainerMenu",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(RefreshContainerMenu)));
+  exports.Set("consumeActivatePress",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(ConsumeActivatePress)));
   exports.Set(
     "damageActor",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(DamageActor)));

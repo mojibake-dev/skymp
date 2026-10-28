@@ -36,6 +36,13 @@ struct Options {
     add_item_base: u32,
     add_item_count: i64,
     script: Option<String>,
+    /// The server's manifest.json to build the Hello's mod hashes from
+    /// (thuum docs/verbs/mod-lock.md); none sends an empty list.
+    manifest: Option<String>,
+    /// A hash to corrupt, by its index in the list: the refusal case.
+    break_mod: Option<usize>,
+    /// Send no Hello at all: the old client's case.
+    no_hello: bool,
 }
 
 impl Default for Options {
@@ -51,6 +58,9 @@ impl Default for Options {
             add_item_base: 0x0001_2EB7, // IronSword, Skyrim.esm
             add_item_count: 1,
             script: None,
+            manifest: None,
+            break_mod: None,
+            no_hello: false,
         }
     }
 }
@@ -106,6 +116,12 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
                 o.add_item_count = v.parse().map_err(|_| bad(&v))?;
             }
             "--script" => o.script = Some(next()?),
+            "--manifest" => o.manifest = Some(next()?),
+            "--break-mod" => {
+                let v = next()?;
+                o.break_mod = Some(v.parse().map_err(|_| bad(&v))?);
+            }
+            "--no-hello" => o.no_hello = true,
             _ => return Err(format!("unknown or incomplete option: {a}")),
         }
     }
@@ -127,6 +143,25 @@ struct Session {
     received: u64,
     failure: Option<String>,
     pending_snippets: Vec<Value>,
+    /// The server's answer to the Hello (thuum docs/verbs/mod-lock.md):
+    /// None until it comes, Some(0) a Welcome, Some(code) a Refuse.
+    session: Option<u16>,
+}
+
+/// The Hello's mod hashes from the server's manifest.json: the full plugins
+/// in load order, then the light ones, each FNV-1a 64 over name, size and
+/// CRC-32 (wire-rules mods.rs, the one definition), as 16-digit hex.
+fn mod_hashes(manifest_path: &str, break_mod: Option<usize>) -> Result<Vec<String>, String> {
+    let text = std::fs::read_to_string(manifest_path).map_err(|e| format!("cannot read {manifest_path}: {e}"))?;
+    let files = wire_rules::mods::parse_manifest(&text)?;
+    let mut hashes = wire_rules::mods::expected(&files);
+    if let Some(i) = break_mod {
+        match hashes.get_mut(i) {
+            Some(h) => *h ^= 1,
+            None => return Err(format!("--break-mod {i}: the list has {} plugins", hashes.len())),
+        }
+    }
+    Ok(hashes.iter().map(|h| format!("{h:016x}")).collect())
 }
 
 impl Session {
@@ -142,6 +177,25 @@ impl Session {
             PacketKind::ConnectionAccepted => emit(&json!({"event": "connected"})),
             PacketKind::Message => {
                 let msg: Value = serde_json::from_str(&ev.json).unwrap_or_else(|_| json!({"raw": ev.json}));
+                // the session family (thuum docs/verbs/mod-lock.md) is the
+                // wire's own handshake, not a SkyMP message: its own events,
+                // which difftest's normalize leaves out of the multiset
+                if let Some(w) = msg.get("w").and_then(Value::as_u64) {
+                    match w {
+                        1 => {
+                            self.session = Some(0);
+                            emit(&json!({"event": "welcome", "msg": msg}));
+                        }
+                        2 => {
+                            let reason = msg.get("reason").and_then(Value::as_u64).and_then(|r| u16::try_from(r).ok()).unwrap_or(u16::MAX);
+                            self.session = Some(reason);
+                            emit(&json!({"event": "refused", "reason": reason, "msg": msg}));
+                            self.failure = Some(format!("refused by the mod lock, code {reason}"));
+                        }
+                        _ => emit(&json!({"event": "session", "msg": msg})),
+                    }
+                    return;
+                }
                 self.received = self.received.saturating_add(1);
                 emit(&json!({"event": "message", "msg": msg}));
                 let t = msg.get("t").and_then(Value::as_i64).unwrap_or(-1);
@@ -302,6 +356,7 @@ fn main() -> std::process::ExitCode {
         received: 0,
         failure: None,
         pending_snippets: Vec::new(),
+        session: None,
     };
     let timeout = Duration::from_millis(o.timeout_ms);
     if !s.wait_for(timeout, |s| s.client.is_connected()) {
@@ -309,6 +364,37 @@ fn main() -> std::process::ExitCode {
             emit(&json!({"event": "error", "error": "connect timed out"}));
         }
         return std::process::ExitCode::from(1);
+    }
+    // the handshake (thuum docs/verbs/mod-lock.md): the Hello first, the
+    // login after the Welcome; a server that never answers (older than the
+    // lock) gets the login after a short wait, as the game's client does.
+    // Without a manifest no Hello goes (the old client's shape, which a
+    // server with requireHello off still logs in); an empty list would be
+    // refused by count, rightly, and difftest's sessions run without one
+    if !o.no_hello && o.manifest.is_some() {
+        let hashes = match o.manifest.as_deref() {
+            Some(path) => match mod_hashes(path, o.break_mod) {
+                Ok(h) => h,
+                Err(e) => {
+                    emit(&json!({"event": "error", "error": e}));
+                    return std::process::ExitCode::from(2);
+                }
+            },
+            None => Vec::new(),
+        };
+        let hello = json!({"w": 0, "schema_version": wire_schema::SCHEMA_VERSION, "client_build": 0, "mod_hashes": hashes, "name": format!("fakeclient-{}", o.profile_id)});
+        match s.client.send_json(&hello.to_string(), true) {
+            Ok(()) => emit(&json!({"event": "hello", "mods": hashes.len()})),
+            Err(e) => emit(&json!({"event": "error", "error": e.to_string(), "msg": hello})),
+        }
+        if !s.wait_for(Duration::from_millis(3_000), |s| s.session.is_some() || s.failure.is_some()) {
+            emit(&json!({"event": "warning", "warning": "no Welcome within 3 s: a server without the mod lock; logging in"}));
+        }
+        if let Some(code) = s.session.filter(|c| *c != 0) {
+            emit(&json!({"event": "done", "received": s.received, "rc": 3, "refused": code}));
+            s.client.close();
+            return std::process::ExitCode::from(3);
+        }
     }
     let login = json!({"customPacketType": "loginWithSkympIo", "gameData": {"profileId": o.profile_id}});
     s.send(&json!({"t": 1, "contentJsonDump": login.to_string()}), true);

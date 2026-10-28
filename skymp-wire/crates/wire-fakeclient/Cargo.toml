@@ -12,6 +12,8 @@ path = "src/main.rs"
 
 [dependencies]
 wire-client-ffi = { path = "../wire-client-ffi" }   # the WireClient the game's DLL runs
+wire-rules = { path = "../wire-rules" }   # the mod lock's hash and order, one definition (docs/verbs/mod-lock.md)
+wire-schema = { path = "../wire-schema" }   # SCHEMA_VERSION for the Hello
 serde_json.workspace = true
 
 [lints]

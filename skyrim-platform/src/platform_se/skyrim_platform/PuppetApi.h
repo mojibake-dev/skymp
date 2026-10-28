@@ -77,9 +77,10 @@ Napi::Value HostedGaze(const Napi::CallbackInfo& info);
 // (2026-10-28: the lip sync's set is among the unnamed ones)
 Napi::Value PollFaceKeyframes(const Napi::CallbackInfo& info);
 Napi::Value FaceKeyframes(const Napi::CallbackInfo& info);
-// thuum memo D52 B (2026-10-28): refreshContainerMenu(refId) tells an open
-// ContainerMenu on that reference to redraw (the engine's inventory-update
-// message and the item list's re-read); true when queued
+// thuum memo D52 B (2026-10-28): refreshContainerMenu(refId, mode) tells an
+// open ContainerMenu on that reference to redraw: mode bit 1 the engine's
+// inventory-update message, bit 2 the item list's re-read, 3 both (the
+// default); true when queued
 Napi::Value RefreshContainerMenu(const Napi::CallbackInfo& info);
 // thuum docs/verbs/npc-fate.md (ADR-050 decision 2, deaths by the engine):
 // damageActor(actorFormId, health, attackerFormId, killMove): the server's

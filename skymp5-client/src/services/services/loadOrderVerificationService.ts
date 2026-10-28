@@ -27,6 +27,13 @@ export class LoadOrderVerificationService extends ClientListener {
     this.resetText();
     const clientMods = this.getClientMods();
     this.printModOrder('Client load order:', clientMods);
+    // thuum docs/verbs/mod-lock.md: the server judges the Hello's hashes at
+    // the handshake (HelloService); this fetch of the master API's manifest
+    // failed on every lab launch and stays only as an opt-in for a server
+    // without the lock
+    if (this.sp.settings['skymp5-client']['modLockHttpCheck'] !== true) {
+      return Promise.resolve();
+    }
     return settingsService.getServerMods()
       .then((serverMods) => {
         this.printModOrder('Server load order:', serverMods);

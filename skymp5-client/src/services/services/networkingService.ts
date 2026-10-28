@@ -7,6 +7,7 @@ import { AnyMessage } from "../messages/anyMessage";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { RemoteServer } from "./remoteServer";
 import { SendRawMessageEvent } from "../events/sendRawMessageEvent";
+import { WelcomeMessage, RefuseMessage } from "../messages/sessionMessages";
 
 export class NetworkingService extends ClientListener {
   private wrongPlayerSlotLogged = false;
@@ -115,6 +116,17 @@ export class NetworkingService extends ClientListener {
             // assume raw
             const event = { rawContent: rawContent as unknown as ArrayBuffer};
             return this.controller.emitter.emit("anyRawMessage", event);
+          }
+
+          // the wire's session family (thuum docs/verbs/mod-lock.md) has no
+          // MsgType: "w" 1 is the server's Welcome, 2 its Refuse
+          const session = (msgAny as unknown as { w?: number }).w;
+          if (session === 1) {
+            this.controller.emitter.emit("welcomeMessage", { message: msgAny as unknown as WelcomeMessage });
+            break;
+          } else if (session === 2) {
+            this.controller.emitter.emit("refuseMessage", { message: msgAny as unknown as RefuseMessage });
+            break;
           }
 
           if (msgAny.t === MsgType.OpenContainer) {

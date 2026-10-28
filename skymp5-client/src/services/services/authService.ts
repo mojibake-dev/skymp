@@ -118,6 +118,9 @@ export class AuthService extends ClientListener {
     this.controller.emitter.on("browserWindowLoaded", (e) => this.onBrowserWindowLoaded(e));
     this.controller.emitter.on("createActorMessage", (e) => this.onCreateActorMessage(e));
     this.controller.emitter.on("connectionAccepted", () => this.handleConnectionAccepted());
+    // thuum docs/verbs/mod-lock.md: the login goes after the server's Welcome
+    this.controller.emitter.on("welcomeMessage", () => this.onWelcome());
+    this.controller.emitter.on("refuseMessage", (e) => this.onRefuse(e.message.reason));
     this.controller.emitter.on("connectionDenied", (e) => this.handleConnectionDenied(e));
     this.controller.emitter.on("customPacketMessage", (e) => this.onCustomPacketMessage(e));
     this.controller.on("browserMessage", (e) => this.onBrowserMessage(e));
@@ -608,6 +611,33 @@ export class AuthService extends ClientListener {
     this.setListenBrowserMessage(false, 'connectionAccepted event received');
     this.loggingStartMoment = Date.now();
 
+    // thuum docs/verbs/mod-lock.md: HelloService sent the Hello on this same
+    // event; the login follows the server's Welcome. A server without the
+    // lock never answers, so after loginWaitS the login goes regardless.
+    const armedAt = Date.now();
+    this.loginArmedAt = armedAt;
+    this.sp.Utility.wait(AuthService.loginWaitS).then(() => {
+      if (this.loginArmedAt === armedAt) {
+        logTrace(this, `no Welcome within ${AuthService.loginWaitS} s: a server without the mod lock, logging in`);
+        this.sendLogin();
+      }
+    });
+  }
+
+  private onWelcome() {
+    if (this.loginArmedAt !== 0) {
+      this.sendLogin();
+    }
+  }
+
+  private onRefuse(reason: number) {
+    // the Hello was refused: no login; HelloService draws the reason
+    this.loginArmedAt = 0;
+    logError(this, `the server refused the session (mod lock code ${reason}); no login`);
+  }
+
+  private sendLogin() {
+    this.loginArmedAt = 0;
     const authData = this.sp.storage[authGameDataStorageKey] as AuthGameData | undefined;
     if (authData?.local) {
       logTrace(this,
@@ -719,6 +749,8 @@ export class AuthService extends ClientListener {
   private authDialogOpen = false;
 
   private loggingStartMoment = 0;
+  private loginArmedAt = 0;
+  private static readonly loginWaitS = 3;
 
   private authAttemptProgressIndicator = false;
   private authAttemptProgressIndicatorCounter = 0;

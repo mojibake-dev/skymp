@@ -338,6 +338,15 @@ const lastSent = new Map<number, NiPoint3>();
 const lastReal = new Map<number, NiPoint3>();
 // the record's target at the previous apply, per actor (its stillness)
 const lastTarget = new Map<number, NiPoint3>();
+// the running lead still to run out, per actor (thuum playtest 35,
+// 2026-10-27; Eli: "a player running is snapped back a tiny bit after
+// jogging"; c1 wrote 108 settle lines on Prisoner's figure, mean 6.7 units,
+// max 36.8): a running figure is led speed x 0.2 s ahead of its record, and
+// at the first Standing sample the lead vanished, so the settle pulled the
+// figure back onto the record. The lead now runs out over the standing
+// samples (halved each, gone under one unit) and the deadband stays at eight
+// until it is gone
+const leads = new Map<number, [number, number]>();
 const pops = new Map<number, { at: number; pos: NiPoint3; from: NiPoint3 }>();
 
 const isStaleAfterPop = (refrId: number, real: NiPoint3, target: NiPoint3): boolean => {
@@ -378,9 +387,25 @@ const translateTo = (refr: ObjectReference, m: Movement, settle = false) => {
   gTempTargetPos[2] = m.pos[2];
 
   // We do not want to add pos in case of standing-jumping
+  const leadId = refr.getFormID();
   if (m.runMode !== "Standing") {
-    gTempTargetPos[0] += Math.sin(direction / 180 * Math.PI) * distanceAdd;
-    gTempTargetPos[1] += Math.cos(direction / 180 * Math.PI) * distanceAdd;
+    const lead: [number, number] = [Math.sin(direction / 180 * Math.PI) * distanceAdd, Math.cos(direction / 180 * Math.PI) * distanceAdd];
+    leads.set(leadId, lead);
+    gTempTargetPos[0] += lead[0];
+    gTempTargetPos[1] += lead[1];
+  } else {
+    // the lead's run-out: half of what was left, until it is under one unit
+    const left = leads.get(leadId);
+    if (left) {
+      const lead: [number, number] = [left[0] * 0.5, left[1] * 0.5];
+      if (Math.hypot(lead[0], lead[1]) < 1) {
+        leads.delete(leadId);
+      } else {
+        leads.set(leadId, lead);
+        gTempTargetPos[0] += lead[0];
+        gTempTargetPos[1] += lead[1];
+      }
+    }
   }
 
   const refrRealPos = ObjectReferenceEx.getPos(refr);
@@ -412,7 +437,7 @@ const translateTo = (refr: ObjectReference, m: Movement, settle = false) => {
   const prevTarget = lastTarget.get(refrId0);
   lastTarget.set(refrId0, [gTempTargetPos[0], gTempTargetPos[1], gTempTargetPos[2]]);
   const recordStill = prevTarget !== undefined && ObjectReferenceEx.getDistance(prevTarget, gTempTargetPos) < 0.5;
-  const deadband = settle || recordStill ? 1 : 8;
+  const deadband = settle || (recordStill && !leads.has(refrId0)) ? 1 : 8;
   const offBy = ObjectReferenceEx.getDistanceNoZ(refrRealPos, gTempTargetPos);
   if (
     m.runMode !== "Standing" ||

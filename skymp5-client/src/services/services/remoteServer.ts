@@ -1,5 +1,5 @@
 // @ts-expect-error (TODO: Remove in 2.10.0)
-import { Ui, Actor, Form, FormType, MagicEffect, Menu, interruptCast, castSpellImmediate, placeAreaEffect, printConsole, applyAnimationVariablesToActor, getAnimationVariablesFromActor, ActorAnimationVariables } from 'skyrimPlatform';
+import { Actor, Form, FormType, MagicEffect, Menu, interruptCast, castSpellImmediate, placeAreaEffect, printConsole, applyAnimationVariablesToActor, getAnimationVariablesFromActor, ActorAnimationVariables } from 'skyrimPlatform';
 import * as sp from 'skyrimPlatform';
 import { figureAimHeading } from "../../sync/figureAim";
 import { landsOnItsTarget } from "../../sync/spellDelivery";

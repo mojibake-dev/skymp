@@ -561,8 +561,11 @@ void MpActor::VisitProperties(CreateActorMessage& message,
   // rides to a late joiner as the CreateActor's custom property "lastAction"
   // (the record's own JSON-valued property channel, as isHostedByOther
   // travels; no wire row, so the legacy capture and SCHEMA_VERSION stand),
-  // and its puppet replays it once as the view's first action
-  if (pImpl->lastAction && !IsCreatedAsPlayer()) {
+  // and its puppet replays it once as the view's first action. No player
+  // guard: OnUpdateAction records an action for a hosted actor alone, never
+  // for the sender's own, and a created actor's base of 0 (the lab's and the
+  // tests' placed NPCs) reads as a player's to IsCreatedAsPlayer
+  if (pImpl->lastAction) {
     const auto& last = *pImpl->lastAction;
     nlohmann::json value{
       { "action", last.action },

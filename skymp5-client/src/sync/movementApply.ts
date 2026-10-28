@@ -1,9 +1,4 @@
-import {
-  ObjectReference,
-  Actor,
-  Game,
-  TESModPlatform,
-  Debug, setPuppetLocomotion, printConsole } from "skyrimPlatform";
+import { ObjectReference, Actor, Game, TESModPlatform, Debug, setPuppetLocomotion, printConsole, settings } from "skyrimPlatform";
 import { puppetGazeHeld } from "./puppetGaze";
 import { RespawnNeededError } from "../lib/errors";
 import { Movement, RunMode, AnimationVariables, Transform, NiPoint3 } from "./movement";
@@ -318,7 +313,6 @@ const gTempTargetPos: NiPoint3 = [0, 0, 0];
 // run covers between two reports (130 ms apart; Whirlwind Sprint's three
 // words spread 2140 units over several, docs/verbs/movement-speed.md) moved
 // by a jump, and is put there instead of glided across in 0.2 s
-const jumpDistance = 1024;
 
 // thuum docs/verbs/cast-teleport.md (Eli, playtest twenty-two: "teleports
 // slide behavior was never fully fixed"): a cast teleport's look pops the
@@ -332,8 +326,33 @@ const jumpDistance = 1024;
 // was placed by something else: a pop. For popWindowMs after it, a report
 // nearer the figure's place before the pop than the pop itself is such a
 // stale report and is left unapplied
-const popDistance = 256;
-const popWindowMs = 600;
+// thuum D49 (the turbo day, 2026-10-28): the feel numbers as settings knobs
+// (skymp5-client.movement in the settings file, read once; a plugin reload
+// re-reads them), so a motion change is a settings line and a reload, not a
+// build. The defaults are the values this file carried.
+type MovementKnobs = {
+  leadSeconds: number;      // the running lead, speed x this ahead of the record
+  leadDecay: number;        // the lead's run-out per standing sample (half)
+  deadbandMoving: number;   // units a figure may stand off a fresh sample
+  deadbandStill: number;    // units it settles from when the record is still
+  popDistance: number;      // a jump this far, to a place not sent, is a pop
+  popWindowMs: number;      // how long after a pop a stale report is ignored
+  jumpDistance: number;     // a report this far from the figure places, never translates
+};
+let knobsCache: MovementKnobs | undefined;
+const movementKnobs = (): MovementKnobs => {
+  if (knobsCache) return knobsCache;
+  const defaults: MovementKnobs = { leadSeconds: 0.2, leadDecay: 0.5, deadbandMoving: 8, deadbandStill: 1, popDistance: 256, popWindowMs: 600, jumpDistance: 1024 };
+  const s = settings["skymp5-client"] as Record<string, unknown> | undefined;
+  const given = (s && typeof s["movement"] === "object" && s["movement"]) ? s["movement"] as Record<string, unknown> : {};
+  const out = { ...defaults } as Record<string, number>;
+  for (const key of Object.keys(defaults)) {
+    const v = given[key];
+    if (typeof v === "number" && Number.isFinite(v)) out[key] = v;
+  }
+  knobsCache = out as MovementKnobs;
+  return knobsCache;
+};
 const lastSent = new Map<number, NiPoint3>();
 const lastReal = new Map<number, NiPoint3>();
 // the record's target at the previous apply, per actor (its stillness)
@@ -356,8 +375,8 @@ const isStaleAfterPop = (refrId: number, real: NiPoint3, target: NiPoint3): bool
   lastReal.set(refrId, [real[0], real[1], real[2]]);
   if (
     sent && before &&
-    ObjectReferenceEx.getDistance(real, before) > popDistance &&
-    ObjectReferenceEx.getDistance(real, sent) > popDistance
+    ObjectReferenceEx.getDistance(real, before) > movementKnobs().popDistance &&
+    ObjectReferenceEx.getDistance(real, sent) > movementKnobs().popDistance
   ) {
     pops.set(refrId, { at: now, pos: [real[0], real[1], real[2]], from: [before[0], before[1], before[2]] });
   }
@@ -365,7 +384,7 @@ const isStaleAfterPop = (refrId: number, real: NiPoint3, target: NiPoint3): bool
   if (!pop) {
     return false;
   }
-  if (now - pop.at > popWindowMs) {
+  if (now - pop.at > movementKnobs().popWindowMs) {
     pops.delete(refrId);
     return false;
   }
@@ -373,10 +392,8 @@ const isStaleAfterPop = (refrId: number, real: NiPoint3, target: NiPoint3): bool
 };
 
 const translateTo = (refr: ObjectReference, m: Movement, settle = false) => {
-  let time = 0.2;
-  if (m.isInJumpState || m.runMode !== "Standing") {
-    time = 0.2;
-  }
+  const knobs = movementKnobs();
+  const time = knobs.leadSeconds;
 
   // Local lag compensation
   // TODO: Remove "|| 0" hack (added to support old MpClientPlugin)
@@ -397,7 +414,7 @@ const translateTo = (refr: ObjectReference, m: Movement, settle = false) => {
     // the lead's run-out: half of what was left, until it is under one unit
     const left = leads.get(leadId);
     if (left) {
-      const lead: [number, number] = [left[0] * 0.5, left[1] * 0.5];
+      const lead: [number, number] = [left[0] * knobs.leadDecay, left[1] * knobs.leadDecay];
       if (Math.hypot(lead[0], lead[1]) < 1) {
         leads.delete(leadId);
       } else {
@@ -437,7 +454,7 @@ const translateTo = (refr: ObjectReference, m: Movement, settle = false) => {
   const prevTarget = lastTarget.get(refrId0);
   lastTarget.set(refrId0, [gTempTargetPos[0], gTempTargetPos[1], gTempTargetPos[2]]);
   const recordStill = prevTarget !== undefined && ObjectReferenceEx.getDistance(prevTarget, gTempTargetPos) < 0.5;
-  const deadband = settle || (recordStill && !leads.has(refrId0)) ? 1 : 8;
+  const deadband = settle || (recordStill && !leads.has(refrId0)) ? knobs.deadbandStill : knobs.deadbandMoving;
   const offBy = ObjectReferenceEx.getDistanceNoZ(refrRealPos, gTempTargetPos);
   if (
     m.runMode !== "Standing" ||
@@ -446,7 +463,7 @@ const translateTo = (refr: ObjectReference, m: Movement, settle = false) => {
     angleDiff > 80 ||
     Actor.from(refr)?.getSitState() === 3
   ) {
-    if (m.runMode === "Standing" && offBy > deadband && deadband === 1) {
+    if (m.runMode === "Standing" && offBy > deadband && deadband === knobs.deadbandStill) {
       // the settle, on the in-game console (rare: a standing figure or puppet
       // found off its still record); the watch's track is the lab's read
       printConsole(`settle ${refrId0.toString(16)}: ${offBy.toFixed(1)} units from (${refrRealPos[0].toFixed(0)}, ${refrRealPos[1].toFixed(0)}) to (${gTempTargetPos[0].toFixed(0)}, ${gTempTargetPos[1].toFixed(0)})`);
@@ -466,7 +483,7 @@ const translateTo = (refr: ObjectReference, m: Movement, settle = false) => {
       lastSent.set(refrId, [gTempTargetPos[0], gTempTargetPos[1], gTempTargetPos[2]]);
       // thuum docs/verbs/cast-teleport.md (the teleport snap): a report the
       // server vouched for as a jump (ActorJump) places at any distance
-      if (distance > jumpDistance || m.placed) {
+      if (distance > knobs.jumpDistance || m.placed) {
         refr.setPosition(gTempTargetPos[0], gTempTargetPos[1], gTempTargetPos[2]);
         refr.setAngle(m.rot[0], m.rot[1], m.rot[2]);
         return;

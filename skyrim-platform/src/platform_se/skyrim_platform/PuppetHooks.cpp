@@ -71,6 +71,12 @@ bool AnimatesAsPuppet(RE::Actor& actor)
 // and the timer are armed), the timer counting, or 1 and 2 (the timer ran
 // out: the end event, the subtitle gone)
 using UpdateVoiceTimerFn = void (*)(RE::Actor*, bool);
+// the engine's Say with a topic and an info, or with both null for the item
+// in progress (PuppetApi.cpp's SayTopicInfo passes the info; the AI update's
+// continuation passes null, 39632's own call per the re-analyst's read of
+// 2026-10-27, docs/private/re-voice-responses.md)
+using SayTopicFn = bool (*)(RE::AIProcess*, RE::Actor*, RE::TESTopic*,
+                            RE::TESTopicInfo*, bool, bool, bool, bool);
 
 void DriveVoice(RE::Actor& actor)
 {
@@ -90,11 +96,43 @@ void DriveVoice(RE::Actor& actor)
   // state byte passes 1 and back to idle INSIDE one pair call, 37752
   // setting it and UpdateSoundCallBack handling it, so a before-and-after
   // read of the state alone saw nothing in P7 v1)
-  if ((timerBefore > 0.f && runtime.voiceTimer <= 0.f) ||
-      ((state == 1 || state == 2) && after != state)) {
+  const bool ended = (timerBefore > 0.f && runtime.voiceTimer <= 0.f) ||
+    ((state == 1 || state == 2) && after != state);
+  if (ended) {
     logger::info("[verb:npc-stream] line on {:x} ended (state {} -> {}, "
                  "timer {:.2f} -> {:.2f})",
                  actor.formID, state, after, timerBefore, runtime.voiceTimer);
+  }
+  // thuum docs/verbs/npc-stream.md, train 57 (HYPOTHESIS until
+  // lab/frida/voice-lines.js reads it on a host seat; the re-analyst's read
+  // of 2026-10-27, docs/private/re-voice-responses.md): an info's later
+  // response lines start from the AI update's SayTopic with a null topic
+  // while the high process still marks the item in progress (greetingPlayer,
+  // HighProcessData.h:337) and a response remains (DialogueItem.h's
+  // currentResponse), a call an AI-off puppet never makes, so its answer
+  // stopped after the first line (playtest 35). The puppet's own
+  // continuation: once the pair has ended a line and the mark still stands
+  // with a response left, the same call, the lip load synchronous (voice
+  // v3's flag), which plays the item's current response, raises a BEGIN this
+  // seat ignores and advances; the last line's END clears the mark and the
+  // loop stops by itself. The engine's busy test (37266, the read) is
+  // inlined: not free while the two voice bits are not both set or the
+  // timer runs.
+  auto* high = runtime.currentProcess ? runtime.currentProcess->high : nullptr;
+  if (ended && high && high->greetingPlayer && high->greetTopic &&
+      high->greetTopic->currentResponse) {
+    const bool busy = (runtime.boolBits.underlying() & 0x180) != 0x180 ||
+      runtime.voiceTimer > 0.f;
+    if (!busy) {
+      REL::Relocation<SayTopicFn> say{ Offsets::Voice::SayTopic };
+      const bool went = say(runtime.currentProcess, &actor, nullptr, nullptr,
+                            false, high->unk45C != 0, false, false);
+      logger::info("[verb:npc-stream] line on {:x} continued: the item's "
+                   "next response {} (info {:x})",
+                   actor.formID, went ? "started" : "refused",
+                   high->greetTopic->info ? high->greetTopic->info->formID
+                                          : 0u);
+    }
   }
 }
 

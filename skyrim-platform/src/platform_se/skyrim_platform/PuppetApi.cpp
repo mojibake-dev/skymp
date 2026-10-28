@@ -388,9 +388,17 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
         // player-dialogue callers (44673, 37541; only Papyrus Say passes
         // true): no ExtraSayToTopicInfo is attached for a callback nothing
         // on this seat consumes
-        const bool returned =
-          say(runtime.currentProcess, actor, topicInfo->parentTopic, topicInfo,
-              false, false, false, false);
+        // train 57: a relayed repeat of the item in progress is left to the
+        // puppet's own continuation (PuppetHooks.cpp DriveVoice): a bark
+        // raises a BEGIN per line on the host and the relay carries each, so
+        // a say here would restart the item at its first line
+        auto* highBefore = runtime.currentProcess->high;
+        const bool repeat = highBefore && highBefore->greetingPlayer &&
+          highBefore->greetTopic && highBefore->greetTopic->info == topicInfo;
+        const bool returned = repeat
+          ? false
+          : say(runtime.currentProcess, actor, topicInfo->parentTopic,
+                topicInfo, false, false, false, false);
         const int stateAfter = runtime.soundCallBackSet;
         // voice v2 (P7 v1 20261026-181119: the say started on every
         // creature puppet and was refused on a humanoid resident's with
@@ -428,6 +436,13 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
           }
         } else {
           result = 2;
+        }
+        if (repeat) {
+          result = 3; // played: the item is in progress here, its later
+                      // lines the continuation's
+          logger::info("[verb:npc-stream] sayTopicInfo on {:x}: info {:x} is "
+                       "the item in progress, left to its continuation",
+                       actorFormId, infoFormId);
         }
         logger::info("[verb:npc-stream] sayTopicInfo on {:x}: info {:x} "
                      "topic {:x} -> {} (bits {:x}, timer {:.2f}, state {}, "

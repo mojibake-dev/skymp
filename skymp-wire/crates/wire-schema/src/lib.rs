@@ -32,7 +32,10 @@ use bounded::{String, Vec};
 
 /// Bump when any variant changes shape. It is part of netcode's protocol id,
 /// so peers built against another schema never complete a handshake.
-pub const SCHEMA_VERSION: u16 = 20;
+/// 21: PropTransform, PropClaim, PropOwner (thuum ADR-058, m3-prop-physics);
+/// another branch of the same train bumps it too, the train resolves the two
+/// into one bump.
+pub const SCHEMA_VERSION: u16 = 21;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -434,6 +437,12 @@ pub enum Message {
     ActorClaim(skymp::ActorClaim),
     /// 65, MsgType 57 (thuum). See [`skymp::QuestStage`].
     QuestStage(skymp::QuestStage),
+    /// 66, MsgType 58 (thuum). See [`skymp::PropTransform`].
+    PropTransform(skymp::PropTransform),
+    /// 67, MsgType 59 (thuum). See [`skymp::PropClaim`].
+    PropClaim(skymp::PropClaim),
+    /// 68, MsgType 60 (thuum). See [`skymp::PropOwner`].
+    PropOwner(skymp::PropOwner),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -462,7 +471,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 66] = [
+const TABLE: [Row; 69] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -529,14 +538,17 @@ const TABLE: [Row; 66] = [
     row("DamageCause", 55, 32, S2C),
     row("ActorClaim", 56, 16, C2S),
     row("QuestStage", 57, 2 * KIB, Both),
+    row("PropTransform", 58, 64, Both),
+    row("PropClaim", 59, 16, C2S),
+    row("PropOwner", 60, 32, S2C),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 66;
-const _: () = assert!(TABLE.len() == 66, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 69;
+const _: () = assert!(TABLE.len() == 69, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -627,6 +639,9 @@ impl Message {
             Message::DamageCause(_) => 63,
             Message::ActorClaim(_) => 64,
             Message::QuestStage(_) => 65,
+            Message::PropTransform(_) => 66,
+            Message::PropClaim(_) => 67,
+            Message::PropOwner(_) => 68,
         }
     }
 
@@ -715,7 +730,10 @@ mod tests {
         assert_eq!(name_of_msg_type(55), Some("DamageCause"));
         assert_eq!(name_of_msg_type(56), Some("ActorClaim"));
         assert_eq!(name_of_msg_type(57), Some("QuestStage"));
-        assert_eq!(name_of_msg_type(58), None);
+        assert_eq!(name_of_msg_type(58), Some("PropTransform"));
+        assert_eq!(name_of_msg_type(59), Some("PropClaim"));
+        assert_eq!(name_of_msg_type(60), Some("PropOwner"));
+        assert_eq!(name_of_msg_type(61), None);
     }
 
     #[test]
@@ -782,6 +800,12 @@ mod tests {
                 ..Default::default()
             }),
             Message::ActorSpeech(skymp::ActorSpeech { idx: u32::MAX, topic: u32::MAX, info: u32::MAX, ..Default::default() }),
+            // a prop's sample, claim and owner word at their longest: every id
+            // a five-byte varint, every float carried (thuum docs/verbs/
+            // prop-physics.md, ADR-058)
+            Message::PropTransform(skymp::PropTransform { refr: u32::MAX, pos: [f32::MAX; 3], rot: [f32::MAX; 3], asleep: true, ..Default::default() }),
+            Message::PropClaim(skymp::PropClaim { refr: u32::MAX, touch: u8::MAX, ..Default::default() }),
+            Message::PropOwner(skymp::PropOwner { refr: u32::MAX, player: u32::MAX, epoch: u32::MAX, ..Default::default() }),
             Message::RaceMenuPreset(skymp::RaceMenuPreset {
                 actor: u32::MAX,
                 preset: "x".repeat(cap::RACEMENU_PRESET).try_into().unwrap_or_default(),

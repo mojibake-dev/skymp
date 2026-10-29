@@ -16,10 +16,14 @@
 #include <RE/A/Actor.h>
 #include <RE/A/ActorMagicCaster.h>
 #include <RE/A/ActorValues.h>
+#include <RE/B/bhkCharProxyController.h>
 #include <RE/D/DialogueItem.h>
 #include <RE/E/Effect.h>
 #include <RE/E/EffectSetting.h>
 #include <RE/H/HighProcessData.h>
+#include <RE/H/hkpEntity.h>
+#include <RE/H/hkpRootCdPoint.h>
+#include <RE/T/TESHavokUtilities.h>
 
 #include <atomic>
 #include <cctype>
@@ -1340,6 +1344,147 @@ void InstallReanimateHook()
     std::make_shared<Frida::Hook>(OnReanimateEnter, OnReanimateLeave));
 }
 
+/**
+ * The player's touch of a prop (thuum docs/verbs/prop-physics.md, ADR-058:
+ * the seat whose player touched a prop it does not simulate claims the
+ * simulation, PropClaim touch 0). The one place the engine sees a Keyframed
+ * body's contact with the player is the player's proxy character
+ * controller's hkpCharacterProxyListener slot 2,
+ * bhkCharProxyController::ContactPointAddedCallback (CommonLibSSE-NG
+ * include/RE/H/hkpCharacterProxyListener.h:49,
+ * include/RE/B/bhkCharProxyController.h:22): hkpCharacterProxy::
+ * UpdateManifold calls it for every manifold point added with no
+ * motion-type filter, while the surface-interaction pass that fires slot 5
+ * and applies the player's bump skips bodies of motion type 4 and 5, so on
+ * the seat that does not simulate the prop (its body Keyframed, ADR-058
+ * decision 3) nothing but this callback ever says the player touched it,
+ * and polling the controller's bumpedBody (bhkCharacterController.h:148)
+ * cannot replace it (the re-analyst's read, docs/research/m3/
+ * re-havok-contact.md, 2026-10-29; HYPOTHESIS throughout until
+ * lab/frida/prop-contact.js). The engine's own body reacts to layer 30
+ * (other character controllers) alone; the detour reads, and the engine's
+ * body runs unchanged after it.
+ *
+ * On entry: this (rcx) is the listener subobject, the proxy controller's
+ * first base at +0 (bhkCharProxyController.h:12); the point (r8) is a
+ * reference. Filtered here (rule 9) to the other collidable's layer in
+ * {kClutter 4, kProps 10} (hkpRootCdPoint.h:16 rootCollidableB;
+ * hkpCollidable.h:52-55 GetCollisionLayer, collisionFilterInfo & 0x7F;
+ * include/RE/C/CollisionLayers.h) and to the player's own controller: the
+ * listener's enclosing proxy controller, upcast to its bhkCharacterController
+ * base (bhkCharProxyController.h:13; the casts apply the header's layout),
+ * against Actor::GetCharController (Actor.h:531; src/RE/A/Actor.cpp:324-328
+ * walks currentProcess->middleHigh->charController). The body is the
+ * collidable's owner when its broadphase type is an entity
+ * (hkpTypedBroadPhaseHandle.h:15; hkpWorldObject.h:39-47 kEntity;
+ * hkpCollidable.h:57-66 GetOwner by ownerOffset), its motion type at
+ * hkpEntity.h:99 motion, hkpMotion.h:77 type (hkpMotion.h:26-38: 1 Dynamic,
+ * 4 Keyframed, 5 Fixed); the reference by
+ * TESHavokUtilities::FindCollidableRef (TESHavokUtilities.h:15, bound by
+ * CommonLib at Offsets.h:524, Address Library 26003, just addr 2026-10-29).
+ * One event per reference per 250 ms (a manifold point is added each time
+ * the player's capsule meets the body anew, several a second while leaning
+ * on it), kept in a map under a mutex because the callback's thread is
+ * unread (the research note: inside the proxy's integrate, 62646); the hop
+ * to JS is a tick task, a locked queue (viet/include/TaskQueue.h), so the
+ * event reaches propContact the same way from any thread. The trace line
+ * carries the thread id for the Dynamic plan's question. The JS side
+ * (skymp5-client propService.ts onPropContact) claims the prop when it is
+ * tracked and this seat does not simulate it.
+ */
+namespace {
+constexpr uint64_t kPropContactEveryMs = 250;
+std::mutex g_propContactMutex;
+// reference form id -> NowMs() of the last event sent for it
+std::unordered_map<uint32_t, uint64_t> g_propContactLastMs;
+
+void OnPropContactEnter(GumInvocationContext* ic)
+{
+  auto* listener = reinterpret_cast<RE::hkpCharacterProxyListener*>(
+    gum_invocation_context_get_nth_argument(ic, 0));
+  const auto* point = reinterpret_cast<const RE::hkpRootCdPoint*>(
+    gum_invocation_context_get_nth_argument(ic, 2));
+  if (!listener || !point) {
+    return;
+  }
+  const RE::hkpCollidable* collidable = point->rootCollidableB;
+  if (!collidable) {
+    return;
+  }
+  // the layer first: the ground and the walls are most of the points
+  const auto layer = collidable->GetCollisionLayer();
+  if (layer != RE::COL_LAYER::kClutter && layer != RE::COL_LAYER::kProps) {
+    return;
+  }
+  // the player's controller alone
+  auto* player = RE::PlayerCharacter::GetSingleton();
+  auto* playerController = player ? player->GetCharController() : nullptr;
+  if (!playerController) {
+    return;
+  }
+  auto* proxyController = static_cast<RE::bhkCharProxyController*>(listener);
+  if (static_cast<RE::bhkCharacterController*>(proxyController) !=
+      playerController) {
+    return;
+  }
+  if (collidable->broadPhaseHandle.type !=
+      static_cast<std::int8_t>(RE::hkpWorldObject::BroadPhaseType::kEntity)) {
+    return;
+  }
+  auto* body = collidable->GetOwner<RE::hkpEntity>();
+  if (!body) {
+    return;
+  }
+  const uint32_t motionType = body->motion.type.underlying();
+  auto* refr = RE::TESHavokUtilities::FindCollidableRef(*collidable);
+  if (!refr) {
+    return;
+  }
+  const uint32_t refrId = refr->formID;
+  const uint64_t now = NowMs();
+  {
+    std::lock_guard<std::mutex> lock(g_propContactMutex);
+    auto it = g_propContactLastMs.find(refrId);
+    if (it != g_propContactLastMs.end() &&
+        now - it->second < kPropContactEveryMs) {
+      return;
+    }
+    if (g_propContactLastMs.size() > 1024) {
+      g_propContactLastMs.clear();
+    }
+    g_propContactLastMs[refrId] = now;
+  }
+  const uint32_t layerNumber = static_cast<uint32_t>(layer);
+  logger::trace(
+    "[verb:prop-physics] contact {:x} layer {} motion {} (thread {})", refrId,
+    layerNumber, motionType, GetCurrentThreadId());
+  SkyrimPlatform::GetSingleton()->AddTickTask(
+    [refrId, layerNumber, motionType](Napi::Env env) {
+      auto obj = Napi::Object::New(env);
+      AddObjProperty(&obj, "refrId", refrId);
+      AddObjProperty(&obj, "layer", layerNumber);
+      AddObjProperty(&obj, "motionType", motionType);
+      EventsApi::SendEvent("propContact", { obj });
+    });
+}
+}
+
+void InstallPropContactHook()
+{
+  // AE only: the id is 1.6.1170's (game/Offsets.h)
+  if (!REL::Module::IsAE()) {
+    return;
+  }
+  Frida::HookHandler::GetSingleton()->Install(
+    Frida::HookID::HOOK_PROP_CONTACT,
+    Offsets::Hooks::CharProxyContactPointAdded.address(),
+    std::make_shared<Frida::Hook>(OnPropContactEnter, nullptr));
+  logger::info("[verb:prop-physics] contact hook installed: the proxy "
+               "controller's ContactPointAddedCallback (Address Library "
+               "79131), one propContact per reference per {} ms",
+               kPropContactEveryMs);
+}
+
 void Frida::InstallHooks()
 {
   LoadAdmittedScripts();
@@ -1355,6 +1500,8 @@ void Frida::InstallHooks()
   InstallSendTopicInfoEventHook();
   // thuum docs/verbs/npc-fate.md: a hosted body's reanimation by the engine
   InstallReanimateHook();
+  // thuum docs/verbs/prop-physics.md: the player's touch of a prop's body
+  InstallPropContactHook();
   InstallQueueNinodeUpdateHook();
   InstallRenderCursorMenuHook();
 #ifdef ENABLE_SKYRIM_AE

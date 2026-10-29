@@ -29,7 +29,10 @@ enum HookID
   HOOK_PROJECTILE_INIT_VELOCITY,
   // thuum docs/research/apocalypse/target-location.md: where a
   // target-location cast places its explosion
-  HOOK_PLACE_AREA_EFFECT
+  HOOK_PLACE_AREA_EFFECT,
+  // thuum docs/verbs/npc-fate.md: the engine's reanimation of a body
+  // (docs/research/m3/re-resurrect-hook.md, Address Library 38820)
+  HOOK_REANIMATE
 };
 
 struct Hook

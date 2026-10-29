@@ -23,6 +23,15 @@ const APPLY_ALL = -1;
 // load (0x801 in RaceMenu.esp)
 const PLAYER_HAIR_COLOR = 0x801;
 
+// The storage key of the state a plugin reload must not lose (sp.storage,
+// ADR-041's survivor, hostService's shape): the looks the server sent and
+// the player's own. A hot-reloaded client (lab client-hot, ADR-054) keeps its
+// connection, so no preset message and no CreateActor comes again, and the
+// rebuilt views re-spawn every figure with its vanilla appearance alone:
+// playtest 37, finding 44 (Eli: "her face morph is wrong", "that worked but
+// it shouldnt have to" of the relaunch that brought the sculpt back)
+const LOOK_STORAGE_KEY = "thuum.raceMenu.v1";
+
 // The parts of a preset only RaceMenu gives a look, which a reset leaves out:
 // node overrides, skin overrides, node transforms and body morphs (top-level
 // sections of RaceMenu's preset file), and the sculpt and RaceMenu's own
@@ -49,6 +58,7 @@ export class RaceMenuService extends ClientListener {
         this.controller.emitter.on("raceMenuPresetMessage", (e) => this.onPresetMessage(e));
         this.controller.emitter.on("createActorMessage", (e) => this.onCreateActor(e));
         this.controller.on("update", () => this.onUpdate());
+        this.restore();
     }
 
     // RaceMenu puts its own saved copy of the player's hair color and tints
@@ -127,6 +137,7 @@ export class RaceMenuService extends ClientListener {
             return;
         }
         this.lastSent = preset;
+        this.persist();
         this.controller.emitter.emit("sendMessage", {
             message: { t: MsgType.RaceMenuPreset, actor: 0, preset },
             reliability: "reliable",
@@ -142,6 +153,7 @@ export class RaceMenuService extends ClientListener {
         this.wanted.set(actor, preset);
         this.applied.delete(actor);
         this.failed.delete(actor);
+        this.persist();
     }
 
     // A CreateActor starts that actor afresh: the server sends its current
@@ -166,6 +178,7 @@ export class RaceMenuService extends ClientListener {
             this.resetSince = Date.now();
             this.resetFor = id;
         }
+        this.persist();
     }
 
     private onUpdate() {
@@ -204,6 +217,7 @@ export class RaceMenuService extends ClientListener {
                 if (player) {
                     this.applied.set(me, player.getFormID().toString(16) + " on base " + (base ? base.getFormID() : 0).toString(16));
                 }
+                this.persist();
                 logTrace(this, "the same look logged in again; neither reset nor reloaded");
             }
         }
@@ -233,6 +247,7 @@ export class RaceMenuService extends ClientListener {
                 if (actor === me) {
                     this.ownLook = { refrId: me, preset };
                 }
+                this.persist();
                 logTrace(this, "applied the RaceMenu look of", actor.toString(16), "to", where);
             } else if (this.failed.get(actor) !== where) {
                 this.failed.set(actor, where);
@@ -418,6 +433,53 @@ export class RaceMenuService extends ClientListener {
                 this.sp.callNative("NiOverride", "UpdateNodeTransform", undefined, player, firstPerson, female, node);
             });
         });
+    }
+
+    // The state a plugin reload must not lose, as plain arrays in the
+    // platform's storage (ADR-041's survivor): the looks the server sent, the
+    // player's own look and what the player's own was applied to. The
+    // figures' "applied" marks are NOT kept: a rebuilt view re-spawns a figure
+    // on a fresh base with the vanilla appearance alone, so every figure's
+    // look goes on again at the first pass after a reload (RaceMenu's load
+    // of a look an actor already wears changes nothing); the player's own
+    // stays as it is (its reload path is the reset's, playtest twenty)
+    private persist() {
+        const me = this.ownLook ? this.ownLook.refrId : 0;
+        const mine = me ? this.applied.get(me) : undefined;
+        this.sp.storage[LOOK_STORAGE_KEY] = {
+            wanted: Array.from(this.wanted.entries()),
+            lastSent: this.lastSent,
+            ownLook: this.ownLook,
+            appliedMe: me && mine !== undefined ? [me, mine] : null,
+        };
+    }
+
+    private restore() {
+        const raw: unknown = this.sp.storage[LOOK_STORAGE_KEY];
+        if (!raw || typeof raw !== "object") {
+            return;
+        }
+        const stored = raw as Partial<Record<"wanted" | "lastSent" | "ownLook" | "appliedMe", unknown>>;
+        const looks = Array.isArray(stored.wanted)
+            ? stored.wanted.filter((x): x is [number, string] => Array.isArray(x) && x.length === 2 && typeof x[0] === "number" && typeof x[1] === "string")
+            : [];
+        for (const [actor, preset] of looks) {
+            this.wanted.set(actor, preset);
+        }
+        if (typeof stored.lastSent === "string") {
+            this.lastSent = stored.lastSent;
+        }
+        const own = stored.ownLook as { refrId?: unknown; preset?: unknown } | null | undefined;
+        if (own && typeof own.refrId === "number" && typeof own.preset === "string") {
+            this.ownLook = { refrId: own.refrId, preset: own.preset };
+        }
+        const mine = stored.appliedMe;
+        if (Array.isArray(mine) && mine.length === 2 && typeof mine[0] === "number" && typeof mine[1] === "string") {
+            this.applied.set(mine[0], mine[1]);
+        }
+        if (this.wanted.size > 0) {
+            logTrace(this, `resumed after a reload: ${this.wanted.size} look(s) kept, the figures' go on again at the next pass`);
+        }
     }
 
     private available(): boolean {

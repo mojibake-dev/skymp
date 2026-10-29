@@ -580,12 +580,20 @@ const translateTo = (refr: ObjectReference, m: Movement, settle = false) => {
     angleDiff > 80 ||
     Actor.from(refr)?.getSitState() === 3
   ) {
+    const actor = Actor.from(refr);
+    // thuum playtest 38's finding 71: a dead body is never settled (the move
+    // below already skipped it), and it never logs the settle either; c1
+    // printed "settle 39fe4: 45.7 units" 4,583 times in ten minutes, once per
+    // host sample, for a body at rest 45 units off its record (under
+    // restBody's 64). The ragdoll's rest is the body's position from here on
+    if (actor && actor.isDead()) {
+      return;
+    }
     if (m.runMode === "Standing" && offBy > deadband && deadband === knobs.deadbandStill) {
       // the settle, on the in-game console (rare: a standing figure or puppet
       // found off its still record); the watch's track is the lab's read
       printConsole(`settle ${refrId0.toString(16)}: ${offBy.toFixed(1)} units from (${refrRealPos[0].toFixed(0)}, ${refrRealPos[1].toFixed(0)}) to (${gTempTargetPos[0].toFixed(0)}, ${gTempTargetPos[1].toFixed(0)})`);
     }
-    const actor = Actor.from(refr);
     // down: by its player's relayed Ragdoll (Variable10), or by this game's
     // own knock until its get-up (sync/knockState.ts, the push's flight)
     if (actor && (actor.getActorValue("Variable10") < -999 || isKnockedDown(refr.getFormID()))) {

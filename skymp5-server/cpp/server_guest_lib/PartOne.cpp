@@ -1463,17 +1463,23 @@ void StopCombatOnClient(MpActor& client, uint32_t figureId)
 
 void PartOne::TickFights(uint64_t nowMs)
 {
-  // a player of a pair, while a user plays it
-  const auto player = [&](uint32_t formId) -> MpActor* {
+  // a party of a pair, while the server can name it: a user plays it, or a
+  // host's game simulates it (a hosted NPC, thuum docs/verbs/npc-stream.md
+  // H-53h); a pair that lost either is forgotten, an unhosted cell's NPC
+  // with it
+  const auto played = [&](MpActor& actor) {
+    return serverState.UserByActor(&actor) != Networking::InvalidUserId;
+  };
+  const auto party = [&](uint32_t formId) -> MpActor* {
     const auto& form = worldState.LookupFormById(formId);
     MpActor* actor = form ? form->AsActor() : nullptr;
-    return actor && serverState.UserByActor(actor) != Networking::InvalidUserId
+    return actor && (played(*actor) || worldState.HostOf(*actor) != nullptr)
       ? actor
       : nullptr;
   };
   for (const auto& pair : pImpl->fights->pairs()) {
-    MpActor* a = player(pair.a);
-    MpActor* b = player(pair.b);
+    MpActor* a = party(pair.a);
+    MpActor* b = party(pair.b);
     if (!a || !b) {
       pImpl->fights->forget(a ? pair.b : pair.a);
       continue;
@@ -1488,10 +1494,16 @@ void PartOne::TickFights(uint64_t nowMs)
         (a->GetPos() - b->GetPos()).Length(), interior);
     }
     if (pImpl->fights->check(pair.a, pair.b, apart, nowMs)) {
-      StopCombatOnClient(*a, pair.b);
-      StopCombatOnClient(*b, pair.a);
+      // a user's game is told the end; a hosted NPC's host engine ends its
+      // own combat when it loses its target
+      if (played(*a)) {
+        StopCombatOnClient(*a, pair.b);
+      }
+      if (played(*b)) {
+        StopCombatOnClient(*b, pair.a);
+      }
       spdlog::info("PartOne::TickFights - hostility: the fight between {:x} "
-                   "and {:x} is over ({}); both games are told",
+                   "and {:x} is over ({}); the players' games are told",
                    pair.a, pair.b, apart ? "apart" : "a minute quiet");
     }
   }

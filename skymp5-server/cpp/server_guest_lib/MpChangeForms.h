@@ -15,6 +15,7 @@
 #include "NiPoint3.h"
 #include "PlayerGlobal.h"
 #include "Quest.h"
+#include "QuestStageDone.h"
 #include "RunningEffect.h"
 #include "ShoutRecord.h"
 #include "UnresolvedForm.h"
@@ -186,6 +187,12 @@ public:
   // docs/verbs/player-globals.md); absent in older records, read as none
   std::optional<std::vector<PlayerGlobal>> playerGlobals;
 
+  // The world's quest stages (thuum docs/verbs/quest-stage.md, ADR-056):
+  // per quest the stages done, world-wide; absent in older records, read as
+  // none. Lives on the world's journal reference (PartOne::WorldJournal, a
+  // server-made reference at a fixed id), never on a player's actor
+  std::optional<std::vector<QuestStageDone>> questStages;
+
   // Please update 'ActorTest.cpp' when adding new Actor-related rows
 
   DynamicFields dynamicFields;
@@ -215,7 +222,7 @@ public:
       fateDiedAt, lastAnimation, setNodeTextureSet, setNodeScale, displayName,
       mapMarkers, ingredientEffects, favorites, raceMenuPreset,
       actorValueRecord, staffRank, runningEffects, shoutRecord, playerGlobals,
-      unresolved);
+      questStages, unresolved);
   }
 
   // The record boundary (thuum docs/DECISIONS.md ADR-043; the map

@@ -58,5 +58,6 @@ export enum MsgType {
   HostedActorState = 53, // thuum docs/verbs/npc-stream.md (ADR-050): a host's values, combat target and package for an actor it simulates
   ActorSpeech = 54, // the same verb's voice slice: a spoken line begins on an actor the host simulates
   DamageCause = 55, // thuum docs/verbs/npc-fate.md (ADR-050 decision 2): the server's number for a hit on an NPC this game hosts, as a cause for the engine
-  ActorClaim = 56 // thuum docs/verbs/npc-talk.md (ADR-052): this player's claim on an NPC for a dialogue, or its release
+  ActorClaim = 56, // thuum docs/verbs/npc-talk.md (ADR-052): this player's claim on an NPC for a dialogue, or its release
+  QuestStage = 57 // thuum docs/verbs/quest-stage.md (ADR-056): a quest stage this game set, reported; the world's stages and the shared list, from the server
 }

@@ -398,6 +398,12 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
       serverSettings.contains("playerGlobals")
         ? serverSettings.at("playerGlobals").dump()
         : std::string("[]"));
+    // the quests whose stages are the world's (thuum
+    // docs/verbs/quest-stage.md, ADR-056): `sharedQuests`, the same way
+    partOne->SetSharedQuestsSettings(
+      serverSettings.contains("sharedQuests")
+        ? serverSettings.at("sharedQuests").dump()
+        : std::string("[]"));
 
     if (serverSettings["dataDir"] != nullptr) {
       dataDir = serverSettings["dataDir"];

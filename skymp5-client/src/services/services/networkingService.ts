@@ -254,6 +254,10 @@ export class NetworkingService extends ClientListener {
             const event = { message: msgAny };
             this.controller.emitter.emit("playerGlobalsMessage", event);
             this.controller.emitter.emit("anyMessage", event);
+          } else if (msgAny.t === MsgType.QuestStage) {
+            const event = { message: msgAny };
+            this.controller.emitter.emit("questStageMessage", event);
+            this.controller.emitter.emit("anyMessage", event);
           } else if (msgAny.t === MsgType.ActorJump) {
             const event = { message: msgAny };
             this.controller.emitter.emit("actorJumpMessage", event);

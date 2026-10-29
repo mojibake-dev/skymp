@@ -1,0 +1,33 @@
+# thuum docs/verbs/quest-stage.md (ADR-056, memo D55 B): the world's quest stages. c1 and
+# c2 are new characters (profiles 9 and 10, see melee-reach). The lab server's settings
+# share Riverwood's quests (sharedQuests: A Lovely Letter FreeformRiverwood01 0x74a83 and
+# The Golden Claw's three, read from Skyrim.esm), so each login makes the wire stack send
+# the client the shared list (QuestStage with quest 0, declared in divergences.yaml for
+# every client of every session); the legacy stack knows no MsgType 57. At 2 s c1 reports
+# stage 10 of FreeformRiverwood01 (478851): the wire stack records it for the world and
+# relays it to c2 (the one divergence below); the legacy drops the type. At 2.5 s c1
+# reports the same stage again: a no-op, nothing relayed. At 3 s c1 reports stage 10 of
+# MQ102 (0x4e50d, 321805), which is not shared: refused on the wire (E_QUEST_UNLISTED),
+# logged only. c2 steps again at 5 s of its own, so it outlives c1, as in every session.
+id: quest-stage
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 1000, move: {dx: 10}}
+  - {client: c1, at_ms: 2000, send: {t: 57, quest: 478851, stage: 10}, reliable: true}
+  - {client: c1, at_ms: 2500, send: {t: 57, quest: 478851, stage: 10}, reliable: true}
+  - {client: c1, at_ms: 3000, send: {t: 57, quest: 321805, stage: 10}, reliable: true}
+  - {client: c2, at_ms: 0, move: {dx: 50}}
+  - {client: c2, at_ms: 5000, move: {dx: 60}}
+divergences:
+  - client: c2
+    msg: {t: 57, quest: 478851, stage: 10}
+    legacy: 0
+    wire: 1
+    reason: the world's stage relayed to the other seat (QuestStage, thuum docs/verbs/quest-stage.md); the legacy server knows no such message
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

@@ -499,6 +499,18 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
     res["playerGlobals"] = { { "entries", globalsJson } };
   }
 
+  // thuum docs/verbs/quest-stage.md (ADR-056); absent in older records, read
+  // as none
+  if (changeForm.questStages.has_value() && !changeForm.questStages->empty()) {
+    auto stagesJson = nlohmann::json::array();
+    for (const auto& entry : *changeForm.questStages) {
+      stagesJson.push_back(
+        { { "quest", entry.quest.ToString() },
+          { "stage", static_cast<uint32_t>(entry.stage) } });
+    }
+    res["questStages"] = { { "entries", stagesJson } };
+  }
+
   // thuum docs/verbs/shouts.md; absent in older records, read as none
   if (changeForm.shoutRecord.has_value() && !changeForm.shoutRecord->Empty()) {
     res["shoutRecord"] = {
@@ -640,6 +652,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
   static const JsonPointer ingredientEffects("ingredientEffects");
   static const JsonPointer shoutRecord("shoutRecord");
   static const JsonPointer playerGlobals("playerGlobals");
+  static const JsonPointer questStages("questStages");
   static const JsonPointer favorites("favorites");
   static const JsonPointer raceMenuPreset("raceMenuPreset");
   static const JsonPointer staffRank("staffRank");
@@ -990,6 +1003,28 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
       ReadEx(parsedEntries[i], value, &globals[i].value);
     }
     res.playerGlobals = globals;
+  }
+
+  if (element.at_pointer(questStages.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, questStages, &jTmp);
+    static const JsonPointer entries("entries");
+    static const JsonPointer quest("quest");
+    static const JsonPointer stage("stage");
+
+    std::vector<simdjson::dom::element> parsedEntries;
+    ReadVector(jTmp, entries, &parsedEntries);
+
+    std::vector<QuestStageDone> stages(parsedEntries.size());
+    for (size_t i = 0; i != parsedEntries.size(); ++i) {
+      const char* tmp;
+      ReadEx(parsedEntries[i], quest, &tmp);
+      stages[i].quest = FormDesc::FromString(tmp);
+      uint32_t stageTmp = 0;
+      ReadEx(parsedEntries[i], stage, &stageTmp);
+      stages[i].stage = static_cast<uint16_t>(stageTmp);
+    }
+    res.questStages = stages;
   }
 
   if (element.at_pointer(shoutRecord.GetData()).error() ==

@@ -11,6 +11,12 @@
 // thread after the engine change has landed; never ItemList::Update (it
 // blanks the menu's selection until the message is processed).
 namespace ItemMenuRefresh {
+// An item menu is open: the ContainerMenu, InventoryMenu, BarterMenu or
+// GiftMenu by name. Not UI::IsItemMenuOpen: playtest 37 (02:03Z, the live
+// chest's second test) read it FALSE with the ContainerMenu open on 1.6.1170
+// (the counter the pin names numItemMenus does not count it there), so both
+// gates keyed on it dropped every change under the menu and posted nothing
+bool ItemMenuOpen();
 // true when an item menu is open and the message was queued
 bool Post(RE::TESObjectREFR& owner);
 }

@@ -264,8 +264,13 @@ mod ffi {
     struct HostilityFacts {
         /// A user plays the attacker.
         aggressor_is_player: bool,
+        /// A host's game simulates the attacker: an NPC in a hosted cell that
+        /// no user plays (thuum docs/verbs/npc-stream.md, H-53h).
+        aggressor_is_hosted: bool,
         /// A user plays the victim.
         target_is_player: bool,
+        /// A host's game simulates the victim.
+        target_is_hosted: bool,
         /// The attacker hit itself.
         same_actor: bool,
     }
@@ -1102,8 +1107,9 @@ mod ffi {
         /// thuum docs/verbs/stagger.md: the stagger the victim's game plays
         /// (0 for none; at most 1); `roll` is 0 to 99, the caller's.
         fn stagger_magnitude(settings: &StaggerSettings, facts: &StaggerFacts, roll: u8) -> f32;
-        /// Whether an accepted hit is one between two players.
-        fn hostility_between_players(facts: &HostilityFacts) -> bool;
+        /// Whether an accepted hit is one a fight counts: a player on one
+        /// side, a player or a hosted NPC on the other.
+        fn hostility_counted(facts: &HostilityFacts) -> bool;
         /// Whether two players stand farther apart than the engine's
         /// "enemies nearby" range where they are (`interior`); players in
         /// different cells or worlds pass an infinite distance.
@@ -1732,10 +1738,12 @@ fn stagger_magnitude(s: &StaggerSettings, f: &StaggerFacts, roll: u8) -> f32 {
     )
 }
 
-fn hostility_between_players(f: &HostilityFacts) -> bool {
-    hostility::between_players(hostility::HitFacts {
+fn hostility_counted(f: &HostilityFacts) -> bool {
+    hostility::counted(hostility::HitFacts {
         aggressor_is_player: f.aggressor_is_player,
+        aggressor_is_hosted: f.aggressor_is_hosted,
         target_is_player: f.target_is_player,
+        target_is_hosted: f.target_is_hosted,
         same_actor: f.same_actor,
     })
 }
@@ -1744,7 +1752,8 @@ fn hostility_apart(distance: f32, interior: bool) -> bool {
     hostility::apart(distance, interior)
 }
 
-/// The fights between players going on (wire-rules hostility).
+/// The fights going on, between players or a player and a hosted NPC
+/// (wire-rules hostility).
 #[derive(Debug, Default)]
 pub struct Fights(hostility::Fights);
 
@@ -3119,9 +3128,11 @@ mod tests {
 
     #[test]
     fn the_bridge_passes_hostility_through() {
-        let players = HostilityFacts { aggressor_is_player: true, target_is_player: true, same_actor: false };
-        assert!(hostility_between_players(&players));
-        assert!(!hostility_between_players(&HostilityFacts { same_actor: true, ..players }));
+        let players = HostilityFacts { aggressor_is_player: true, aggressor_is_hosted: false, target_is_player: true, target_is_hosted: false, same_actor: false };
+        assert!(hostility_counted(&players));
+        assert!(!hostility_counted(&HostilityFacts { same_actor: true, ..players }));
+        assert!(hostility_counted(&HostilityFacts { aggressor_is_player: false, aggressor_is_hosted: true, ..players }));
+        assert!(!hostility_counted(&HostilityFacts { aggressor_is_player: false, ..players }));
         assert!(hostility_apart(hostility::EXTERIOR_RANGE + 1.0, false));
         assert!(!hostility_apart(hostility::INTERIOR_RANGE, true));
         let mut f = new_fights();

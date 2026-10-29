@@ -7,6 +7,13 @@
 //! Eli 2026-10-05: "60 seconds OR walk apart"): when neither player has hit
 //! the other for a minute, or when they have stood farther apart than the
 //! engine's "enemies nearby" range for a few seconds.
+//!
+//! Since 2026-10-28 (thuum docs/verbs/npc-stream.md, H-53h) a hosted NPC is a
+//! party too: a hit by or on an NPC a host's game simulates enters the table
+//! when the other side is a player, since IsHostileToActor reads the table
+//! for the effects between an effect's two ends (an atronach's cloak burns
+//! the player it fights), and the host's engine fights for its NPC by itself,
+//! so no notice goes to it. Two NPCs are their host's engine's business.
 
 use std::collections::HashMap;
 
@@ -30,17 +37,25 @@ pub const INTERIOR_RANGE: f32 = 2000.0;
 pub struct HitFacts {
     /// A user plays the attacker.
     pub aggressor_is_player: bool,
+    /// A host's game simulates the attacker: an NPC in a hosted cell that no
+    /// user plays.
+    pub aggressor_is_hosted: bool,
     /// A user plays the victim.
     pub target_is_player: bool,
+    /// A host's game simulates the victim.
+    pub target_is_hosted: bool,
     /// The attacker hit itself.
     pub same_actor: bool,
 }
 
-/// Whether a hit is one between two players, the only kind a fight here
-/// counts.
+/// Whether a hit is one a fight here counts: a player on one side, and a
+/// player or a hosted NPC on the other. An actor nobody plays or hosts is
+/// nobody's to fight, and two NPCs are their host's engine's.
 #[must_use]
-pub fn between_players(f: HitFacts) -> bool {
-    f.aggressor_is_player && f.target_is_player && !f.same_actor
+pub fn counted(f: HitFacts) -> bool {
+    let aggressor_named = f.aggressor_is_player || f.aggressor_is_hosted;
+    let target_named = f.target_is_player || f.target_is_hosted;
+    !f.same_actor && aggressor_named && target_named && (f.aggressor_is_player || f.target_is_player)
 }
 
 /// Whether two players stand apart: farther than the range where they are.
@@ -59,8 +74,8 @@ struct Fight {
     apart_since_ms: Option<u64>,
 }
 
-/// The fights going on, by pair of player actors. Times are a monotonic
-/// clock's milliseconds.
+/// The fights going on, by pair of actors: two players, or a player and a
+/// hosted NPC. Times are a monotonic clock's milliseconds.
 #[derive(Debug, Default)]
 pub struct Fights {
     fights: HashMap<(u32, u32), Fight>,
@@ -71,8 +86,8 @@ const fn pair(a: u32, b: u32) -> (u32, u32) {
 }
 
 impl Fights {
-    /// An accepted hit between two players: true when it begins a fight, so
-    /// the victim's game is to be told; a hit in a fight going on keeps it
+    /// An accepted hit the rule counted: true when it begins a fight, so a
+    /// victim a user plays is to be told; a hit in a fight going on keeps it
     /// going.
     pub fn hit(&mut self, aggressor: u32, victim: u32, now_ms: u64) -> bool {
         if aggressor == victim {
@@ -125,8 +140,9 @@ impl Fights {
     }
 
     /// Whether the two actors are in a fight with each other: what
-    /// IsHostileToActor asks between players (thuum ADR-039, the vanilla
-    /// cloaks' damage effects gate on it). Symmetric, as the record is.
+    /// IsHostileToActor asks of an effect's victim and caster (thuum ADR-039,
+    /// the vanilla cloaks' damage effects gate on it; a hosted creature's
+    /// cloak since H-53h). Symmetric, as the record is.
     #[must_use]
     pub fn between(&self, a: u32, b: u32) -> bool {
         a != b && self.fights.contains_key(&pair(a, b))
@@ -143,15 +159,35 @@ mod tests {
     use super::*;
 
     const fn players() -> HitFacts {
-        HitFacts { aggressor_is_player: true, target_is_player: true, same_actor: false }
+        HitFacts {
+            aggressor_is_player: true,
+            aggressor_is_hosted: false,
+            target_is_player: true,
+            target_is_hosted: false,
+            same_actor: false,
+        }
     }
 
     #[test]
-    fn only_a_hit_between_two_players_counts() {
-        assert!(between_players(players()));
-        assert!(!between_players(HitFacts { target_is_player: false, ..players() }));
-        assert!(!between_players(HitFacts { aggressor_is_player: false, ..players() }));
-        assert!(!between_players(HitFacts { same_actor: true, ..players() }));
+    fn a_hit_counts_with_a_player_on_one_side_and_a_player_or_a_hosted_npc_on_the_other() {
+        assert!(counted(players()));
+        assert!(!counted(HitFacts { same_actor: true, ..players() }));
+        // a hosted NPC's hit on a player begins a fight, and a player's on a hosted NPC
+        assert!(counted(HitFacts { aggressor_is_player: false, aggressor_is_hosted: true, ..players() }));
+        assert!(counted(HitFacts { target_is_player: false, target_is_hosted: true, ..players() }));
+        // an actor nobody plays or hosts is nobody's to fight
+        assert!(!counted(HitFacts { target_is_player: false, ..players() }));
+        assert!(!counted(HitFacts { aggressor_is_player: false, ..players() }));
+        // two NPCs never do, hosted or not: their host's engine's business
+        let npcs = HitFacts {
+            aggressor_is_player: false,
+            aggressor_is_hosted: true,
+            target_is_player: false,
+            target_is_hosted: true,
+            same_actor: false,
+        };
+        assert!(!counted(npcs));
+        assert!(!counted(HitFacts { aggressor_is_hosted: false, target_is_hosted: false, ..npcs }));
     }
 
     #[test]

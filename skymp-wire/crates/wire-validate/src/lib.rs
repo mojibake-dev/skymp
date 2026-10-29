@@ -157,6 +157,16 @@ pub struct ClientGuard {
     /// shift; wire-rules cells::CELL_LOADED_BURST and CELL_LOADED_PER_SECOND,
     /// measured in x-cell-attach and carried with their conditions.
     pub cell_loaded_budget: TokenBucket,
+    /// Budget for a simulator's prop samples (PropTransform, thuum docs/verbs/
+    /// prop-physics.md, ADR-058): one per awake prop per 100 ms and one at
+    /// its sleep, a kicked shelf's worth of bodies at once. UNMEASURED: 20 at
+    /// once and 10 a second after that, bodies and props on one budget, until
+    /// x-prop-push reads a seat's rate.
+    pub prop_budget: TokenBucket,
+    /// Budget for a seat's prop claims (PropClaim, the same verb): a touch, a
+    /// grab, a drop or an impulse each a claim; the claim idiom's 8 at once,
+    /// 2 a second after (UNMEASURED).
+    pub prop_claim_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -192,6 +202,8 @@ impl Default for ClientGuard {
             // burst on top; P3 replaces it
             action_budget: TokenBucket { tokens: 48, capacity: 48, refill_per_s: 16, last_refill_ms: 0 },
             cell_loaded_budget: TokenBucket { tokens: 128, capacity: 128, refill_per_s: 32, last_refill_ms: 0 },
+            prop_budget: TokenBucket { tokens: 20, capacity: 20, refill_per_s: 10, last_refill_ms: 0 },
+            prop_claim_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
         }
     }
 }
@@ -584,6 +596,42 @@ fn check_actor_death(m: &skymp::ActorDeath) -> Result<(), Reject> {
     Ok(())
 }
 
+/// A simulator's prop sample (docs/verbs/prop-physics.md, ADR-058): a
+/// reference (never 0), a finite position inside the world's bounds, a
+/// finite rotation. Whose sample is taken (the prop's owner, the cell's host
+/// by default) is the server's rule (wire-rules `props`).
+fn check_prop_transform(m: &skymp::PropTransform) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    if m.refr == 0 {
+        return Err(Reject::Range);
+    }
+    check_pos(&m.pos)?;
+    Ok(())
+}
+
+/// A seat's prop claim (docs/verbs/prop-physics.md): a reference (never 0)
+/// and a touch the contract names (0 contact, 1 grab, 2 drop, 3 impulse).
+/// Whether the claimant stands in the prop's cell and whether the prop is
+/// another's to hold is the server's rule.
+fn check_prop_claim(m: &skymp::PropClaim) -> Result<(), Reject> {
+    if m.refr == 0 || m.touch > 3 {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
+/// The server's owner word for a prop (docs/verbs/prop-physics.md): a
+/// reference and a player, neither 0; the transport refuses it from a client
+/// by direction.
+fn check_prop_owner(m: &skymp::PropOwner) -> Result<(), Reject> {
+    if m.refr == 0 || m.player == 0 {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
 /// A host's state report for an actor it simulates (docs/verbs/npc-stream.md,
 /// ADR-050): three percentages, each a number within 0 and 1, and an actor
 /// index below u32::MAX (ActorJump's idiom). Whether the sender hosts the
@@ -715,6 +763,8 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::HostedActorState(_) => take(&mut guard.hosted_state_budget, now_ms),
         Message::ActorSpeech(_) => take(&mut guard.speech_budget, now_ms),
         Message::ActorClaim(_) => take(&mut guard.claim_budget, now_ms),
+        Message::PropTransform(_) => take(&mut guard.prop_budget, now_ms),
+        Message::PropClaim(_) => take(&mut guard.prop_claim_budget, now_ms),
         _ => Ok(()),
     }
 }
@@ -886,6 +936,9 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
                 Ok(())
             }
         }
+        Message::PropTransform(m) => check_prop_transform(m),
+        Message::PropClaim(m) => check_prop_claim(m),
+        Message::PropOwner(m) => check_prop_owner(m),
         Message::CreateActor(m) => check_create_actor(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
@@ -1900,6 +1953,56 @@ mod tests {
         assert_eq!(validate(&claim(7, false), &mut guard, 1_500), Ok(()));
     }
 
+    // thuum docs/verbs/prop-physics.md (ADR-058): a simulator's prop sample
+    // names a reference, a finite point in the world and a finite rotation;
+    // 20 at once, 10 a second after that (UNMEASURED)
+    fn prop(refr: u32, pos: [f32; 3], rot: [f32; 3], asleep: bool) -> Message {
+        Message::PropTransform(wire_schema::skymp::PropTransform { refr, pos, rot, asleep, ..Default::default() })
+    }
+
+    #[test]
+    fn a_prop_sample_names_a_reference_at_a_finite_place_and_is_rate_limited() {
+        let basket = [23877.5, -45485.25, 8.0];
+        assert_eq!(validate_server(&prop(0x54a44, basket, [0.0, 0.0, 72.5], false)), Ok(()));
+        assert_eq!(validate_server(&prop(0xff00_0004, basket, [0.0, 0.0, 0.0], true)), Ok(()));
+        assert_eq!(validate_server(&prop(0, basket, [0.0, 0.0, 0.0], false)), Err(Reject::Range));
+        assert_eq!(validate_server(&prop(0x54a44, [f32::NAN, 0.0, 0.0], [0.0, 0.0, 0.0], false)), Err(Reject::NonFinite));
+        assert_eq!(validate_server(&prop(0x54a44, basket, [0.0, f32::INFINITY, 0.0], false)), Err(Reject::NonFinite));
+        assert_eq!(validate_server(&prop(0x54a44, [2.0e6, 0.0, 0.0], [0.0, 0.0, 0.0], false)), Err(Reject::OutOfWorld));
+        let mut guard = ClientGuard::default();
+        for _ in 0..20 {
+            assert_eq!(validate(&prop(0x54a44, basket, [0.0, 0.0, 0.0], false), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&prop(0x54a44, basket, [0.0, 0.0, 0.0], false), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&prop(0x54a44, basket, [0.0, 0.0, 0.0], true), &mut guard, 1_100), Ok(()));
+    }
+
+    #[test]
+    fn prop_claims_name_a_reference_and_a_touch_and_are_rate_limited() {
+        use wire_schema::skymp::PropClaim;
+        let claim = |refr, touch| Message::PropClaim(PropClaim { refr, touch, ..Default::default() });
+        assert_eq!(validate_server(&claim(0x54a44, 0)), Ok(()));
+        assert_eq!(validate_server(&claim(0xff00_0004, 3)), Ok(()));
+        assert_eq!(validate_server(&claim(0, 0)), Err(Reject::Range));
+        assert_eq!(validate_server(&claim(0x54a44, 4)), Err(Reject::Range));
+        let mut guard = ClientGuard::default();
+        for _ in 0..8 {
+            assert_eq!(validate(&claim(0x54a44, 0), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&claim(0x54a44, 0), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&claim(0x54a44, 2), &mut guard, 1_500), Ok(()));
+    }
+
+    #[test]
+    fn a_prop_owner_word_names_a_reference_and_a_player() {
+        use wire_schema::skymp::PropOwner;
+        let word = |refr, player, epoch| Message::PropOwner(PropOwner { refr, player, epoch, ..Default::default() });
+        assert_eq!(validate_server(&word(0x54a44, 0xff00_0002, 1)), Ok(()));
+        assert_eq!(validate_server(&word(0x54a44, 0xff00_0002, 0)), Ok(()));
+        assert_eq!(validate_server(&word(0, 0xff00_0002, 1)), Err(Reject::Range));
+        assert_eq!(validate_server(&word(0x54a44, 0, 1)), Err(Reject::Range));
+    }
+
     #[test]
     fn damage_causes_carry_a_percentage_for_a_victim_in_range() {
         use wire_schema::skymp::DamageCause;
@@ -1997,6 +2100,24 @@ mod tests {
             let mut g = ClientGuard::default();
             let _ = validate(&m, &mut g, now);
             let _ = validate_server(&m);
+        }
+
+        #[test]
+        fn prop_messages_never_panic(
+            refr in any::<u32>(), x in any::<f32>(), y in any::<f32>(), z in any::<f32>(),
+            rx in any::<f32>(), touch in any::<u8>(), player in any::<u32>(), epoch in any::<u32>(),
+            asleep in any::<bool>(), now in any::<u64>(),
+        ) {
+            use wire_schema::skymp::{PropClaim, PropOwner, PropTransform};
+            let mut g = ClientGuard::default();
+            let m = Message::PropTransform(PropTransform { refr, pos: [x, y, z], rot: [rx, y, x], asleep, ..Default::default() });
+            let _ = validate(&m, &mut g, now);
+            let _ = validate(&m, &mut g, now);
+            let _ = validate_server(&m);
+            let c = Message::PropClaim(PropClaim { refr, touch, ..Default::default() });
+            let _ = validate(&c, &mut g, now);
+            let _ = validate_server(&c);
+            let _ = validate_server(&Message::PropOwner(PropOwner { refr, player, epoch, ..Default::default() }));
         }
 
         #[test]

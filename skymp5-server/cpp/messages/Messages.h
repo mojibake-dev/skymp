@@ -36,6 +36,9 @@
 #include "OpenContainerMessage.h"
 #include "PlayerBowShotMessage.h"
 #include "PlayerGlobalsMessage.h"
+#include "PropClaimMessage.h"
+#include "PropOwnerMessage.h"
+#include "PropTransformMessage.h"
 #include "PutItemMessage.h"
 #include "QuestStageMessage.h"
 #include "RaceMenuPresetMessage.h"
@@ -114,4 +117,7 @@
   REGISTER_MESSAGE(ActorSpeechMessage)                                        \
   REGISTER_MESSAGE(DamageCauseMessage)                                        \
   REGISTER_MESSAGE(ActorClaimMessage)                                         \
-  REGISTER_MESSAGE(QuestStageMessage)
+  REGISTER_MESSAGE(QuestStageMessage)                                         \
+  REGISTER_MESSAGE(PropTransformMessage)                                      \
+  REGISTER_MESSAGE(PropClaimMessage)                                          \
+  REGISTER_MESSAGE(PropOwnerMessage)

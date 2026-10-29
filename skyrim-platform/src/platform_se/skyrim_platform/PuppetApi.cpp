@@ -2,6 +2,7 @@
 #include "CallNativeApi.h"
 #include "FridaHooks.h"
 #include "Hosted.h"
+#include "ItemMenuRefresh.h"
 #include "Puppets.h"
 #include "game/Offsets.h"
 #include <RE/A/ActivateHandler.h>
@@ -9,15 +10,12 @@
 #include <RE/C/CrosshairPickData.h>
 #include <RE/D/DialogueMenu.h>
 #include <RE/I/InterfaceStrings.h>
-#include <RE/I/InventoryUpdateData.h>
-#include <RE/I/ItemList.h>
 #include <RE/M/MenuTopicManager.h>
 #include <RE/P/PlayerControls.h>
 #include <RE/T/TESTopic.h>
 #include <RE/T/TESTopicInfo.h>
 #include <RE/U/UI.h>
 #include <RE/U/UIMessage.h>
-#include <RE/U/UIMessageQueue.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -813,28 +811,22 @@ Napi::Value PuppetApi::FaceKeyframes(const Napi::CallbackInfo& info)
 }
 
 // thuum memo D52 B (playtest 37, 2026-10-28, Eli: "so both can open it but
-// they dont see a shared live updating inventory / in morrowind they do"):
-// refreshContainerMenu(refId): when the ContainerMenu is open on this seat
-// for that reference (ContainerMenu::GetTargetRefHandle), the menu hears
-// what the engine tells it when a container's items change, an
-// InventoryUpdateData for the reference on the UI message queue
-// (UI_MESSAGE_TYPE::kInventoryUpdate, the data the queue creates by
-// InterfaceStrings' name), and its item list is re-read for the container
-// (ItemList::Update(owner), CommonLib's Offset::ItemList::Update).
-// HYPOTHESIS until Eli's chest: the menu redraws from one of the two; the
-// re-read shows the chest's rows on the player's own side if that side is
-// up at the moment (then the message alone stays)
+// they dont see a shared live updating inventory / in morrowind they do";
+// docs/research/m3/re-container-menu-refresh.md): refreshContainerMenu(refId)
+// ends a batch of changes to a container whose ContainerMenu is open on this
+// seat (ContainerMenu::GetTargetRefHandle): the engine's inventory-update
+// message for that reference, posted twice from the game thread after the
+// batch's tasks (Skyrim Souls' shape: the first redraws any rows the engine
+// marked dirty, the second rebuilds both sides when none is). Each change
+// addItemEx lands under the menu already posts one (ItemMenuRefresh); this
+// is the batch's end for the paths that land otherwise (resetBase's
+// RemoveAllItems). Never ItemList::Update: it blanks the menu's selection
+// until a message is processed, playtest 37's "cannot place" (finding 30).
+// HYPOTHESIS until the shared chest redraws in place on a seat
 Napi::Value PuppetApi::RefreshContainerMenu(const Napi::CallbackInfo& info)
 {
   const auto refId = NapiHelper::ExtractUInt32(info[0], "refId");
-  // mode (playtest 37, Eli on the first live chest: "kiiiiind of working"):
-  // bit 1 posts the engine's inventory-update message, bit 2 re-reads the
-  // item list for the container; 3 both, the default. A client setting
-  // picks it (chestRedraw), so the two halves separate without a build
-  const auto mode = info.Length() > 1 && !info[1].IsUndefined()
-    ? NapiHelper::ExtractUInt32(info[1], "mode")
-    : 3u;
-  g_nativeCallRequirements.gameThrQ->AddTask([refId, mode](Viet::Void) {
+  g_nativeCallRequirements.gameThrQ->AddTask([refId](Viet::Void) {
     auto* ui = RE::UI::GetSingleton();
     auto menu = ui ? ui->GetMenu<RE::ContainerMenu>() : nullptr;
     if (!menu) {
@@ -849,34 +841,11 @@ Napi::Value PuppetApi::RefreshContainerMenu(const Napi::CallbackInfo& info)
                    refId, target ? target->formID : 0u);
       return;
     }
-    bool posted = false;
-    auto* queue = RE::UIMessageQueue::GetSingleton();
-    auto* strings = RE::InterfaceStrings::GetSingleton();
-    if ((mode & 1u) && queue && strings) {
-      auto* data = static_cast<RE::InventoryUpdateData*>(
-        queue->CreateUIMessageData(strings->inventoryUpdateData));
-      if (data) {
-        data->inventoryRef = handle;
-        data->updateObj = nullptr;
-        queue->AddMessage(strings->containerMenu,
-                          RE::UI_MESSAGE_TYPE::kInventoryUpdate, data);
-        posted = true;
-      }
-    }
-    // the item list through the runtime data: the pin declares GetItemList
-    // out of line with no body in the port's library (pipeline 3542, job
-    // 13389, LNK2019), the same shape as Actor's runtime-data accessor
-    bool listed = false;
-    if (mode & 2u) {
-      if (auto* list = menu->GetRuntimeData().itemList) {
-        list->Update(target.get());
-        listed = true;
-      }
-    }
-    logger::info("[verb:containers] refreshContainerMenu {:x} (mode {}): "
-                 "inventory update {}, item list {}",
-                 refId, mode, posted ? "posted" : "not posted",
-                 listed ? "re-read" : "not re-read");
+    const bool first = ItemMenuRefresh::Post(*target);
+    const bool second = first && ItemMenuRefresh::Post(*target);
+    logger::info("[verb:containers] refreshContainerMenu {:x}: the engine's "
+                 "inventory update {}",
+                 refId, second ? "posted twice" : "not posted");
   });
   return Napi::Boolean::New(info.Env(), true);
 }

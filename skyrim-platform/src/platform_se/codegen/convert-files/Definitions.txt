@@ -1754,7 +1754,7 @@ export declare function hostedGaze(actorFormId: number): number[] | null;
 export declare function pollFaceKeyframes(actorFormId: number): void;
 export declare function faceKeyframes(actorFormId: number): [number[], number[], number[], boolean, number[][]] | null;
 // thuum memo D52 B (2026-10-28): an open ContainerMenu on that reference is told to redraw: mode bit 1 the engine's inventory-update message, bit 2 the item list's re-read, 3 both (the default); true when queued
-export declare function refreshContainerMenu(refId: number, mode?: number): boolean;
+export declare function refreshContainerMenu(refId: number): boolean;
 // thuum npc-talk (2026-10-28): the current E press's held action is marked done on the engine's ActivateHandler, so its release activates nothing: one activation per claim (a second TESNPC::Activate on a running dialogue clears the partner's talking-to-player state)
 export declare function consumeActivatePress(): boolean;
 // thuum docs/verbs/npc-fate.md (ADR-050 decision 2, deaths by the engine): the server's cause applied to an actor this game simulates on the game thread, through the engine's own damage entry (the delta from the engine's current health to the resulting percentage, downward with the attacker so the engine reacts, records the killer and dies by itself at zero; upward through its restore); false for an invalid id or a health that is not a number

@@ -916,6 +916,28 @@ TEST_CASE("A host's sighting places an interior-placed resident where its "
   sighting(0, kSigrid, sigridPos);
   REQUIRE(SentTo<CreateActorMessage>(p, 0).empty());
 
+  // playtest 37 (finding 38, "we have 2 embrys"): a game whose engine has
+  // the resident in a cell it hosts, while her record stands in another
+  // game's cell, is told to hide its copy and the record stays
+  const NiPoint3 far = landing + NiPoint3{ 0.f, -40000.f, 0.f };
+  const auto farCell = p.worldState.CellOf(kTamriel, far);
+  REQUIRE(farCell.has_value());
+  CellLoaded(p, 1, *farCell);
+  REQUIRE(p.GetCellHost(*farCell).player == kC2);
+  p.Messages().clear();
+  sighting(1, kSigrid, far);
+  REQUIRE(p.worldState.CellOf(sigrid) == cell);
+  bool hidden = false;
+  for (auto& m : p.Messages()) {
+    if (m.userId == 1 && m.j.is_object() && m.j.contains("t") &&
+        m.j["t"] == static_cast<int>(MsgType::SpSnippet) &&
+        m.j.contains("function") && m.j["function"] == "Disable" &&
+        m.j.contains("selfId") && m.j["selfId"] == kSigrid) {
+      hidden = true;
+    }
+  }
+  REQUIRE(hidden);
+
   DoDisconnect(p, 0);
   DoDisconnect(p, 1);
   p.DestroyActor(kC1);

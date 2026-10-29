@@ -3,6 +3,7 @@
 #include "PropOwnerMessage.h"
 #include "PropTransformMessage.h"
 #include "TestUtils.hpp"
+#include "wire_bridge_cxx/rules.h"
 #include <catch2/catch_all.hpp>
 
 PartOne& GetPartOne();

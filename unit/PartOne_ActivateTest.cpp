@@ -510,6 +510,70 @@ TEST_CASE("Two players in one container: both open it, a take reaches the "
   partOne.DestroyActor(0xff000001);
 }
 
+// thuum (playtest 37, 2026-10-28, Eli: "shouldn't be that hard to change that
+// to on cell load right?"): a container's recorded inventory reaches every
+// player whose grid loads it, inside its CreateActor at the subscribe, so the
+// engine copy and its crosshair label are the server's before any open; an
+// untouched container (no record: both engines hold the base's default)
+// sends none
+TEST_CASE("A container's recorded inventory reaches a player who never opened "
+          "it at the subscribe; an untouched container sends none",
+          "[PartOne][espm]")
+{
+  auto& partOne = GetPartOne();
+  auto refrId = 0x20570;
+  auto& ref = partOne.worldState.GetFormAt<MpObjectReference>(refrId);
+  ref.SetRelootTime(kRelootWindow);
+  ref.SetChanceNoneOverride(0);
+
+  auto& messages = partOne.Messages();
+  const auto createdFor = [&](Networking::UserId userId) {
+    return std::find_if(
+      messages.begin(), messages.end(), [&](PartOne::Message& m) {
+        return m.userId == userId && m.j.is_object() && m.j.contains("t") &&
+          m.j["t"] == static_cast<int>(MsgType::CreateActor) &&
+          m.j.contains("refrId") && m.j["refrId"] == refrId;
+      });
+  };
+
+  // untouched: the first player's word for the barrel carries no inventory
+  DoConnect(partOne, 0);
+  partOne.CreateActor(0xff000000, { 21272.0000, -7816.0000, -3608.0000 }, 0,
+                      0x1a26f);
+  partOne.Messages().clear();
+  partOne.SetUserActor(0, 0xff000000);
+  auto& first = partOne.worldState.GetFormAt<MpActor>(0xff000000);
+  REQUIRE_FALSE(ref.HasRecordedInventory());
+  auto untouched = createdFor(0);
+  REQUIRE(untouched != messages.end());
+  REQUIRE_FALSE(untouched->j["props"].contains("inventory"));
+
+  // the first opens it and leaves: the base's roll is the record now
+  ref.Activate(first);
+  REQUIRE(ref.IsOpen());
+  REQUIRE(ref.GetInventory().GetTotalItemCount() > 0);
+  ref.Activate(first, false, true);
+  REQUIRE_FALSE(ref.IsOpen());
+  REQUIRE(ref.HasRecordedInventory());
+
+  // the second player never opened it: its CreateActor for the barrel
+  // carries the record
+  DoConnect(partOne, 1);
+  partOne.CreateActor(0xff000001, { 21300.0000, -7816.0000, -3608.0000 }, 0,
+                      0x1a26f);
+  partOne.Messages().clear();
+  partOne.SetUserActor(1, 0xff000001);
+  auto recorded = createdFor(1);
+  REQUIRE(recorded != messages.end());
+  REQUIRE(recorded->j["props"].contains("inventory"));
+  REQUIRE(recorded->j["props"]["inventory"] == ref.GetInventory().ToJson());
+
+  DoDisconnect(partOne, 0);
+  DoDisconnect(partOne, 1);
+  partOne.DestroyActor(0xff000000);
+  partOne.DestroyActor(0xff000001);
+}
+
 TEST_CASE("BarrelFood01 PutItem/TakeItem", "[PartOne][espm]")
 {
   auto& partOne = GetPartOne();

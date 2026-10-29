@@ -282,6 +282,13 @@ const Inventory& MpObjectReference::GetInventory() const
   return ChangeForm().inv;
 }
 
+bool MpObjectReference::HasRecordedInventory() const
+{
+  // baseContainerAdded is set by every write of the record (SetInventory,
+  // AddItem, AddItems, EnsureBaseContainerAdded), so it is the record's mark
+  return GetBaseType() == "CONT" && ChangeForm().baseContainerAdded;
+}
+
 const bool& MpObjectReference::IsHarvested() const
 {
   return ChangeForm().isHarvested;
@@ -411,7 +418,17 @@ void MpObjectReference::VisitProperties(CreateActorMessage& message,
     message.props.isDead = false;
   }
 
-  if (mode == VisitPropertiesMode::All && !GetInventory().IsEmpty()) {
+  // thuum (playtest 37, 2026-10-28, Eli: "shouldn't be that hard to change
+  // that to on cell load right?"): an actor's inventory is its owner's alone
+  // (mode All); a container's record is public, so every player whose grid
+  // loads the container hears it in its CreateActor at the subscribe, and the
+  // engine copy and its crosshair label are the server's before any open
+  // (upstream's ROADMAP: "Incorrect 'empty' label on a container"). An
+  // emptied record travels as an empty list, an untouched container not at
+  // all (both engines hold the base's default). The opener's and the
+  // occupants' sends (memo D52) stay as they are.
+  if ((mode == VisitPropertiesMode::All && !GetInventory().IsEmpty()) ||
+      HasRecordedInventory()) {
     message.props.inventory = GetInventory();
   }
 

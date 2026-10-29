@@ -1899,7 +1899,8 @@ TEST_CASE("A hosted resident's melee hit its host reports is gated by reach",
     full.magickaPercentage = 1.f;
     full.staminaPercentage = 1.f;
     victim.SetPercentages(full);
-    sigrid.SetLastHitTime(kC2, std::chrono::steady_clock::now() - 10s);
+    sigrid.SetLastHitTime(
+      kC2, std::chrono::steady_clock::now() - std::chrono::seconds(10));
     RawMessageData raw;
     raw.userId = 0;
     HitMessage hit;

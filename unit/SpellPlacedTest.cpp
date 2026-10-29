@@ -9,6 +9,7 @@
 #include <catch2/catch_all.hpp>
 #include <chrono>
 #include <simdjson.h>
+#include <string_view>
 #include <vector>
 
 PartOne& GetPartOne();
@@ -21,8 +22,11 @@ PartOne& GetPartOne();
 // every such form. The table here names Skyrim.esm's own records, since the
 // test's five-file load order lacks Apocalypse: Flames 0x12FCD (casting type
 // 2, concentration; SpellCastTest's) is the listed spell, Firebolt 0x12FD0 a
-// spell off the list, and the bases are the load order's first MSTT and ACTI,
-// found by type so no id is guessed.
+// spell off the list, and the bases are two of Skyrim.esm's own records read
+// with lab/esm.py (`find <esm> MSTT Barrel`, `find <esm> ACTI
+// FXEmptyActivator`, 2026-10-29): MSTT 0xEEE0D BFXSmashedBarrelWithOil and
+// ACTI 0xB79FF FXEmptyActivator (the activator Apocalypse's own wall script
+// places as its target box), each checked against the record's type at use.
 
 namespace {
 constexpr uint32_t kTamriel = 0x3c;
@@ -42,15 +46,21 @@ uint64_t NowMs()
       .count());
 }
 
-// the load order's first record of `type`, as the settings write a form
+constexpr uint32_t kMsttBase =
+  0x000eee0d; // Skyrim.esm BFXSmashedBarrelWithOil
+constexpr uint32_t kActiBase = 0x000b79ff; // Skyrim.esm FXEmptyActivator
+
+// Skyrim.esm's record of `type` the table names, as the settings write a
+// form; the record is looked up by id and its type checked, since libespm's
+// GetRecordsByType indexes no MSTT or ACTI (the first T0 of the overnight
+// train, pipeline 3761, threw on it)
 FormDesc FirstOfType(PartOne& p, const char* type)
 {
-  const auto records = p.GetEspm().GetBrowser().GetDistinctRecordsByType(type);
-  REQUIRE(!records.empty());
-  const auto& first = records.front();
-  REQUIRE(first.rec);
-  return FormDesc::FromFormId(first.ToGlobalId(first.rec->GetId()),
-                              p.worldState.espmFiles);
+  const uint32_t id = std::string_view(type) == "MSTT" ? kMsttBase : kActiBase;
+  const auto lookup = p.GetEspm().GetBrowser().LookupById(id);
+  REQUIRE(lookup.rec);
+  REQUIRE(lookup.rec->GetType() == type);
+  return FormDesc::FromFormId(id, p.worldState.espmFiles);
 }
 
 // the Raise Wall entry's shape on Skyrim.esm's records: the wall 192 ahead

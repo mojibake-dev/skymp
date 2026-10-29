@@ -1902,14 +1902,22 @@ TEST_CASE("A hosted resident's melee hit its host reports is gated by reach",
   auto& victim = p.worldState.GetFormAt<MpActor>(kC2);
   // her hit names a weapon her record's hands hold (an unarmed 0 is dropped by
   // E_HIT_WEAPON before reach judges it, pipeline 3832's red): an iron sword
-  // (reach 1.0), as HitTest arms its aggressor
+  // (reach 1.0), as HitTest arms its aggressor. Armed AFTER the victim's move:
+  // the move sends the victim's new squares' fates and the roll re-dresses the
+  // resident's record, which wiped the sword in pipeline 3849 ("absent in its
+  // inventory")
   const uint32_t ironSword = 0x00012eb7;
-  sigrid.AddItem(ironSword, 1);
-  Equipment eq;
-  eq.inv.entries.push_back(Inventory::Entry(ironSword, 1, kWornExtra));
-  sigrid.SetEquipment(eq);
+  const auto arm = [&]() {
+    if (!sigrid.GetInventory().HasItem(ironSword)) {
+      sigrid.AddItem(ironSword, 1);
+    }
+    Equipment eq;
+    eq.inv.entries.push_back(Inventory::Entry(ironSword, 1, kWornExtra));
+    sigrid.SetEquipment(eq);
+  };
   const auto hitFrom = [&](const NiPoint3& victimPos) {
     victim.SetPos(victimPos);
+    arm();
     ActorValues full;
     full.healthPercentage = 1.f;
     full.magickaPercentage = 1.f;

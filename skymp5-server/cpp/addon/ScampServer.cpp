@@ -404,6 +404,13 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
       serverSettings.contains("sharedQuests")
         ? serverSettings.at("sharedQuests").dump()
         : std::string("[]"));
+    // the objects the server places at an accepted cast of a listed spell
+    // (thuum docs/verbs/spell-placed-object.md, ADR-057):
+    // `spellPlacedObjects`, the same way
+    partOne->SetSpellPlacedObjectsSettings(
+      serverSettings.contains("spellPlacedObjects")
+        ? serverSettings.at("spellPlacedObjects").dump()
+        : std::string("[]"));
     // the food effects that lower the needs the server keeps (thuum
     // docs/verbs/player-globals.md, the needs): `survivalFood`, the same way
     partOne->SetSurvivalFoodSettings(

@@ -1477,6 +1477,20 @@ bool MpObjectReference::SetQuestStages(std::vector<QuestStageDone> stages)
   return true;
 }
 
+std::optional<FormDesc> MpObjectReference::GetPlacedBySpell() const
+{
+  return ChangeForm().placedBySpell;
+}
+
+void MpObjectReference::SetPlacedBySpell(const FormDesc& spell)
+{
+  if (ChangeForm().placedBySpell == spell) {
+    return;
+  }
+  EditChangeForm(
+    [&](MpChangeForm& changeForm) { changeForm.placedBySpell = spell; });
+}
+
 void MpObjectReference::SetCellOrWorldObsolete(const FormDesc& newWorldOrCell)
 {
   auto worldState = GetParent();

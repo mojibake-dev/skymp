@@ -190,6 +190,30 @@ public:
   static std::vector<PlayerGlobal> MergePlayerGlobals(
     const std::vector<PlayerGlobal>& record,
     const std::vector<PlayerGlobal>& report);
+
+  // thuum docs/verbs/player-globals.md, the needs (playtest 37, 2026-10-28,
+  // Eli: "food doesnt replenish hunger"): server-settings.json's
+  // `survivalFood`, as data: the effects a food record carries whose
+  // Creation script would lower a need in the eater's game
+  // (Survival_HungerRestoreEffectScript.OnEffectStart calls
+  // Hunger.DecreaseHungerBuffered(AmountToRestore.GetValue()), and
+  // Survival_NeedBase.DecrementNeed clamps the result to a floor), each
+  // with the need's global, the amount and the floor, plus the switch the
+  // mode runs by (a JSON object, "{}" for none; a bad entry stops the
+  // server here, named). SurvivalFoodOf: the entry for an effect's form id
+  // in this load order, none for an effect the table does not name.
+  struct SurvivalFoodEffect
+  {
+    FormDesc effect;
+    FormDesc need;
+    float amount = 0.f;
+    float floor = 0.f;
+  };
+  void SetSurvivalFoodSettings(const std::string& survivalFoodJson);
+  std::optional<SurvivalFoodEffect> SurvivalFoodOf(
+    uint32_t effectFormId) const;
+  std::optional<FormDesc> SurvivalFoodSwitch() const;
+
   float TeleportReach(uint32_t spellFormId) const;
 
   // thuum docs/verbs/shadowbond.md: server-settings.json's `bonds` (a JSON

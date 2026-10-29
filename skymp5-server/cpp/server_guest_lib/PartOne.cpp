@@ -219,6 +219,12 @@ struct PartOne::Impl
   rust::Box<skymp::rules::PlayerGlobalsList> playerGlobals =
     skymp::rules::new_player_globals("[]");
 
+  // the food effects that lower the needs the server keeps (thuum
+  // docs/verbs/player-globals.md, the needs): server-settings.json's
+  // `survivalFood`, its switch and its table
+  std::optional<FormDesc> survivalFoodSwitch;
+  std::vector<PartOne::SurvivalFoodEffect> survivalFood;
+
   // the fights between players (thuum docs/verbs/hostility-sync.md, ADR-023)
   rust::Box<skymp::rules::Fights> fights = skymp::rules::new_fights();
   std::chrono::steady_clock::time_point lastFightsTick;
@@ -2479,6 +2485,70 @@ std::vector<PlayerGlobal> PartOne::MergePlayerGlobals(
                                                        recordEntries.size()),
     rust::Slice<const skymp::rules::PlayerGlobalEntry>(reportEntries.data(),
                                                        reportEntries.size())));
+}
+
+void PartOne::SetSurvivalFoodSettings(const std::string& survivalFoodJson)
+{
+  const auto j = nlohmann::json::parse(survivalFoodJson);
+  if (!j.is_object()) {
+    throw std::runtime_error("survivalFood must be an object");
+  }
+  // a FormDesc names its plugin, or a load order change would move it
+  const auto descOf = [](const nlohmann::json& text) {
+    const FormDesc desc = FormDesc::FromString(text.get<std::string>());
+    if (desc.file.empty()) {
+      throw std::runtime_error(
+        fmt::format("survivalFood: {} must name its plugin (<hex>:<plugin>)",
+                    text.get<std::string>()));
+    }
+    return desc;
+  };
+  std::optional<FormDesc> switchGlobal;
+  if (j.contains("switch")) {
+    switchGlobal = descOf(j.at("switch"));
+  }
+  std::vector<SurvivalFoodEffect> effects;
+  if (j.contains("effects")) {
+    for (const auto& entry : j.at("effects")) {
+      SurvivalFoodEffect effect;
+      effect.effect = descOf(entry.at("effect"));
+      effect.need = descOf(entry.at("need"));
+      effect.amount = entry.at("amount").get<float>();
+      effect.floor =
+        entry.contains("floor") ? entry.at("floor").get<float>() : 0.f;
+      if (!std::isfinite(effect.amount) || effect.amount <= 0.f ||
+          !std::isfinite(effect.floor)) {
+        throw std::runtime_error(
+          fmt::format("survivalFood: {} needs a positive finite amount and "
+                      "a finite floor",
+                      effect.effect.ToString()));
+      }
+      effects.push_back(std::move(effect));
+    }
+  }
+  pImpl->survivalFoodSwitch = std::move(switchGlobal);
+  pImpl->survivalFood = std::move(effects);
+  spdlog::info("PartOne::SetSurvivalFoodSettings - {}", survivalFoodJson);
+}
+
+std::optional<PartOne::SurvivalFoodEffect> PartOne::SurvivalFoodOf(
+  uint32_t effectFormId) const
+{
+  for (const auto& entry : pImpl->survivalFood) {
+    try {
+      if (entry.effect.ToFormId(worldState.espmFiles) == effectFormId) {
+        return entry;
+      }
+    } catch (const std::exception&) {
+      // a listed effect whose plugin this load order lacks
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<FormDesc> PartOne::SurvivalFoodSwitch() const
+{
+  return pImpl->survivalFoodSwitch;
 }
 
 void PartOne::SetScriptedEffectSettings(const std::string& scriptedEffectsJson)

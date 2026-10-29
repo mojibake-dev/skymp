@@ -2561,11 +2561,29 @@ void ActionListener::OnPlayerGlobals(const RawMessageData& rawMsgData,
                         "({})",
                         rawMsgData.userId, actor->GetFormId(), refusal);
   }
-  const bool changed = actor->SetPlayerGlobals(
-    PartOne::MergePlayerGlobals(actor->GetPlayerGlobals(), report));
+  const auto merged =
+    PartOne::MergePlayerGlobals(actor->GetPlayerGlobals(), report);
+  const bool changed = actor->SetPlayerGlobals(merged);
   spdlog::info("PlayerGlobals: user {} actor {:x} recorded {} values{}",
                rawMsgData.userId, actor->GetFormId(), report.size(),
                changed ? "" : ", unchanged");
+  // thuum memo D51 B (2026-10-28, Eli: "that sounds good"; docs/verbs/
+  // player-globals.md): a death from recorded state is the server's word
+  // (R0). A listed global may carry a killAt in the settings (Survival's
+  // cold need 81b at 1000, the mod's own CheckIfMaxCold threshold); when the
+  // record reaches it the server kills the player through its own death
+  // path, the respawn following as for any death, and the client's own
+  // Kill stays untrusted input (rule 5; the seat's deferred kill holds it)
+  if (!actor->IsDead()) {
+    const auto lethal = partOne.LethalPlayerGlobals(merged);
+    if (!lethal.empty()) {
+      spdlog::info("PlayerGlobals: user {} actor {:x} dies by the server's "
+                   "word: global {} at {} reached its killAt (memo D51 B)",
+                   rawMsgData.userId, actor->GetFormId(),
+                   lethal.front().global.ToString(), lethal.front().value);
+      actor->Kill(nullptr, false);
+    }
+  }
 }
 
 void ActionListener::OnCellLoaded(const RawMessageData& rawMsgData,

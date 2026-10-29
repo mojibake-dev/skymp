@@ -2432,6 +2432,15 @@ std::vector<PlayerGlobal> PartOne::PlayerGlobalsAtLogin(
                                                        entries.size())));
 }
 
+std::vector<PlayerGlobal> PartOne::LethalPlayerGlobals(
+  const std::vector<PlayerGlobal>& record) const
+{
+  const auto entries = ToEntries(record);
+  return ToGlobals(pImpl->playerGlobals->player_globals_lethal(
+    rust::Slice<const skymp::rules::PlayerGlobalEntry>(entries.data(),
+                                                       entries.size())));
+}
+
 std::vector<PlayerGlobal> PartOne::MergePlayerGlobals(
   const std::vector<PlayerGlobal>& record,
   const std::vector<PlayerGlobal>& report)

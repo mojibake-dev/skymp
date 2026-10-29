@@ -2763,8 +2763,12 @@ void PartOne::RemoveSpellPlacedSet(uint64_t set, const char* why)
       worldState.LookupFormByIdNoLoad(formId));
     if (refr && !refr->IsDeleted()) {
       // the existing destroy path: the record marked deleted, the form off
-      // the grid, every subscriber's DestroyActor (onUnsubscribe)
+      // the grid, every subscriber's DestroyActor (onUnsubscribe); then the
+      // reverse edges too, so no actor's listener set keeps naming a fallen
+      // form (MpObjectReference.h's pairing; the T0 use-after-free of
+      // 2026-10-29 when such a form was destroyed later)
       refr->Delete();
+      refr->UnsubscribeFromAll();
       ++deleted;
     }
   }

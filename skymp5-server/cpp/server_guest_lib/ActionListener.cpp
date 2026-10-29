@@ -1356,10 +1356,22 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     return;
   }
 
-  bool isAllowed = true;
+  // thuum docs/verbs/marksman.md (playtest 37's finding 45, 2026-10-29): a
+  // player's report with one entry the server cannot take (an item its
+  // inventory lacks, a spell or a shout it has not learned, armor sharing a
+  // slot) was refused whole, so the hands it also carried (the bow just
+  // drawn) never reached the record and every shot from them was refused
+  // (E_SHOT_EQUIPMENT, 32 arrows that did nothing). Each such entry is now
+  // dropped on its own, with the correction a refusal always sent (the item
+  // unequipped, the spell removed, the inventory re-sent), and the rest
+  // stands as the record. A hosted actor's report keeps npc-stream's shape
+  // (slice 3): one entry the record cannot take refuses it whole, and the
+  // host hears nothing (Rule A)
   const auto actorFormId = actor->GetFormId();
   const Equipment& data = msg.data;
-  const Inventory& equipmentInv = data.inv;
+  // the report less the entries dropped below
+  Equipment kept = data;
+  bool dropped = false;
   uint32_t leftSpell = data.leftSpell.value_or(0);
   uint32_t rightSpell = data.rightSpell.value_or(0);
   uint32_t voiceSpell = data.voiceSpell.value_or(0);
@@ -1406,19 +1418,21 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
 
   if (leftSpell > 0 && !actor->IsSpellLearned(leftSpell) &&
       !recordedUnknown("left", leftSpell, false)) {
-    spdlog::warn("ActionListener::OnUpdateEquipment {:x} - rejected equipment "
-                 "update: spell {:x} is not learned",
+    spdlog::warn("ActionListener::OnUpdateEquipment {:x} - dropped from the "
+                 "equipment update: spell {:x} is not learned",
                  actorFormId, leftSpell);
-    isAllowed = false;
+    kept.leftSpell.reset();
+    dropped = true;
     spellIdsToRemove[static_cast<size_t>(SpellSlotId::Left)] = leftSpell;
   }
 
   if (rightSpell > 0 && !actor->IsSpellLearned(rightSpell) &&
       !recordedUnknown("right", rightSpell, false)) {
-    spdlog::warn("ActionListener::OnUpdateEquipment {:x} - rejected equipment "
-                 "update: spell {:x} is not learned",
+    spdlog::warn("ActionListener::OnUpdateEquipment {:x} - dropped from the "
+                 "equipment update: spell {:x} is not learned",
                  actorFormId, rightSpell);
-    isAllowed = false;
+    kept.rightSpell.reset();
+    dropped = true;
     spellIdsToRemove[static_cast<size_t>(SpellSlotId::Right)] = rightSpell;
   }
 
@@ -1431,134 +1445,129 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
           ? actor->HasShoutEntry(MpActor::ShoutEntry::Shout, voiceSpell)
           : actor->IsSpellLearned(voiceSpell)) &&
       !recordedUnknown("voice", voiceSpell, voiceIsShout)) {
-    spdlog::warn("ActionListener::OnUpdateEquipment {:x} - rejected equipment "
-                 "update: {} {:x} is not learned",
+    spdlog::warn("ActionListener::OnUpdateEquipment {:x} - dropped from the "
+                 "equipment update: {} {:x} is not learned",
                  actorFormId, voiceIsShout ? "shout" : "spell", voiceSpell);
-    isAllowed = false;
+    kept.voiceSpell.reset();
+    dropped = true;
     spellIdsToRemove[static_cast<size_t>(SpellSlotId::Voice)] = voiceSpell;
   }
 
   if (instantSpell > 0 && !actor->IsSpellLearned(instantSpell) &&
       !recordedUnknown("instant", instantSpell, false)) {
-    spdlog::warn("ActionListener::OnUpdateEquipment {:x} - rejected equipment "
-                 "update: spell {:x} is not learned",
+    spdlog::warn("ActionListener::OnUpdateEquipment {:x} - dropped from the "
+                 "equipment update: spell {:x} is not learned",
                  actorFormId, instantSpell);
-    isAllowed = false;
+    kept.instantSpell.reset();
+    dropped = true;
     spellIdsToRemove[static_cast<size_t>(SpellSlotId::Instant)] = instantSpell;
   }
 
   std::vector<uint32_t> itemIdsToUnequip;
 
   const auto& inventory = actor->GetInventory();
-  for (auto& entry : equipmentInv.entries) {
-    // a hosted actor's report names what it wears; its engine's whole
-    // inventory is npc-fate's record, not this message's
-    if (hosted && entry.GetWorn() == Inventory::Worn::None) {
-      continue;
-    }
-    if (!inventory.HasItem(entry.baseId)) {
-      spdlog::warn(
-        "ActionListener::OnUpdateEquipment {:x} - rejected equipment "
-        "update: inventory does not contain item {:x}",
-        actorFormId, entry.baseId);
-      isAllowed = false;
-      break;
+  {
+    auto& entries = kept.inv.entries;
+    for (auto it = entries.begin(); it != entries.end();) {
+      // a hosted actor's report names what it wears; its engine's whole
+      // inventory is npc-fate's record, not this message's
+      if ((hosted && it->GetWorn() == Inventory::Worn::None) ||
+          inventory.HasItem(it->baseId)) {
+        ++it;
+        continue;
+      }
+      spdlog::warn("ActionListener::OnUpdateEquipment {:x} - dropped from the "
+                   "equipment update: inventory does not contain item {:x}",
+                   actorFormId, it->baseId);
+      if (it->GetWorn() != Inventory::Worn::None) {
+        itemIdsToUnequip.push_back(it->baseId);
+      }
+      it = entries.erase(it);
+      dropped = true;
     }
   }
 
-  if (isAllowed) {
-    auto worldState = actor->GetParent();
-    if (worldState) {
-      uint32_t occupiedSlots = 0;
-      // Track which item owns each bit so we can report conflicts
-      std::array<uint32_t, 32> slotOwner = {};
-      for (auto& entry : equipmentInv.entries) {
-        if (entry.GetWorn() == Inventory::Worn::None) {
-          continue;
-        }
-        auto lookupRes =
-          worldState->GetEspm().GetBrowser().LookupById(entry.baseId);
-        if (!lookupRes.rec || lookupRes.rec->GetType() != espm::ARMO::kType) {
-          continue;
-        }
-        auto armoData = espm::GetData<espm::ARMO>(entry.baseId, worldState);
-        uint32_t bodyPartFlags = 0;
-        if (armoData.bod2.present) {
-          bodyPartFlags = armoData.bod2.bodyPartFlags;
-        } else if (armoData.bodt.present) {
-          bodyPartFlags = armoData.bodt.bodyPartFlags;
-        }
-        if (bodyPartFlags == 0) {
-          continue;
-        }
-        uint32_t overlap = occupiedSlots & bodyPartFlags;
-        if (overlap) {
-          // Collect all conflicting item IDs from slotOwner
-          std::unordered_set<uint32_t> conflictingItems;
-          conflictingItems.insert(entry.baseId);
-          for (int bit = 0; bit < 32; ++bit) {
-            if (overlap & (1u << bit)) {
-              conflictingItems.insert(slotOwner[bit]);
-            }
-          }
-          std::string conflictList;
-          for (uint32_t id : conflictingItems) {
-            if (!conflictList.empty()) {
-              conflictList += ", ";
-            }
-            conflictList += fmt::format("{:x}", id);
-          }
-          std::string binaryStr(32, '0');
-          for (int bit = 31; bit >= 0; --bit) {
-            if (overlap & (1u << (31 - bit))) {
-              binaryStr[bit] = '1';
-            }
-          }
-          spdlog::warn(
-            "ActionListener::OnUpdateEquipment {:x} - rejected equipment "
-            "update: items [{}] share armor slot flags {:x} (0b{})",
-            actorFormId, conflictList, overlap, binaryStr);
-          isAllowed = false;
-          for (uint32_t id : conflictingItems) {
-            itemIdsToUnequip.push_back(id);
-          }
-          break;
-        }
+  if (auto worldState = actor->GetParent()) {
+    uint32_t occupiedSlots = 0;
+    // Track which item owns each bit so we can report conflicts
+    std::array<uint32_t, 32> slotOwner = {};
+    // the items sharing a slot, if any: they leave the report together and
+    // the player's game is told to take them off (as the refusal told it)
+    std::unordered_set<uint32_t> conflictingItems;
+    for (auto& entry : kept.inv.entries) {
+      if (entry.GetWorn() == Inventory::Worn::None) {
+        continue;
+      }
+      auto lookupRes =
+        worldState->GetEspm().GetBrowser().LookupById(entry.baseId);
+      if (!lookupRes.rec || lookupRes.rec->GetType() != espm::ARMO::kType) {
+        continue;
+      }
+      auto armoData = espm::GetData<espm::ARMO>(entry.baseId, worldState);
+      uint32_t bodyPartFlags = 0;
+      if (armoData.bod2.present) {
+        bodyPartFlags = armoData.bod2.bodyPartFlags;
+      } else if (armoData.bodt.present) {
+        bodyPartFlags = armoData.bodt.bodyPartFlags;
+      }
+      if (bodyPartFlags == 0) {
+        continue;
+      }
+      uint32_t overlap = occupiedSlots & bodyPartFlags;
+      if (overlap) {
+        // Collect all conflicting item IDs from slotOwner
+        conflictingItems.insert(entry.baseId);
         for (int bit = 0; bit < 32; ++bit) {
-          if (bodyPartFlags & (1u << bit)) {
-            slotOwner[bit] = entry.baseId;
+          if (overlap & (1u << bit)) {
+            conflictingItems.insert(slotOwner[bit]);
           }
         }
-        occupiedSlots |= bodyPartFlags;
+        std::string conflictList;
+        for (uint32_t id : conflictingItems) {
+          if (!conflictList.empty()) {
+            conflictList += ", ";
+          }
+          conflictList += fmt::format("{:x}", id);
+        }
+        std::string binaryStr(32, '0');
+        for (int bit = 31; bit >= 0; --bit) {
+          if (overlap & (1u << (31 - bit))) {
+            binaryStr[bit] = '1';
+          }
+        }
+        spdlog::warn(
+          "ActionListener::OnUpdateEquipment {:x} - dropped from the "
+          "equipment update: items [{}] share armor slot flags {:x} (0b{})",
+          actorFormId, conflictList, overlap, binaryStr);
+        break;
       }
+      for (int bit = 0; bit < 32; ++bit) {
+        if (bodyPartFlags & (1u << bit)) {
+          slotOwner[bit] = entry.baseId;
+        }
+      }
+      occupiedSlots |= bodyPartFlags;
+    }
+    if (!conflictingItems.empty()) {
+      auto& entries = kept.inv.entries;
+      entries.erase(std::remove_if(entries.begin(), entries.end(),
+                                   [&](const Inventory::Entry& entry) {
+                                     return conflictingItems.count(
+                                              entry.baseId) > 0;
+                                   }),
+                    entries.end());
+      for (uint32_t id : conflictingItems) {
+        itemIdsToUnequip.push_back(id);
+      }
+      dropped = true;
     }
   }
 
-  if (isAllowed) {
-    SendToNeighbours(msg.idx, rawMsgData, true);
-    actor->SetEquipment(data);
-    if (hosted) {
-      uint32_t right = 0;
-      uint32_t left = 0;
-      size_t worn = 0;
-      for (auto& entry : equipmentInv.entries) {
-        const auto w = entry.GetWorn();
-        if (w == Inventory::Worn::None) {
-          continue;
-        }
-        ++worn;
-        if (w == Inventory::Worn::Right) {
-          right = entry.baseId;
-        } else {
-          left = entry.baseId;
-        }
-      }
-      spdlog::info("[verb:npc-stream] equipment {:x} by {:x}: {} worn, "
-                   "right {:x} left {:x}, spells {:x} {:x}, numChanges {}",
-                   actorFormId, myActor->GetFormId(), worn, right, left,
-                   rightSpell, leftSpell, data.numChanges);
-    }
-  } else if (hosted) {
+  if (dropped && hosted) {
+    // the refusal as npc-stream's slice 3 has it: the record stands, nothing
+    // is sent to the host (SetInventory has no idx and would replace the
+    // host player's own inventory, a snippet on an NPC runs nowhere), one
+    // warn a minute per actor
     static std::unordered_map<
       uint32_t, std::pair<std::chrono::steady_clock::time_point, uint32_t>>
       refusals;
@@ -1577,7 +1586,54 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
       since = now;
       count = 0;
     }
+    UpdateEquipmentAttemptEvent refusedEvent(actor, data, false);
+    refusedEvent.Fire(actor->GetParent());
+    return;
+  }
+
+  // what stands is the record and the neighbours' picture: the bytes as
+  // they came when nothing was dropped (SendToNeighbours), else the kept
+  // report to the same audience (RelayToListeners': every listener with a
+  // user, the player's own echo kept)
+  if (dropped) {
+    UpdateEquipmentMessage relay;
+    relay.idx = msg.idx;
+    relay.data = kept;
+    for (auto listener : actor->GetActorListeners()) {
+      if (listener->GetUserId() == Networking::InvalidUserId) {
+        continue;
+      }
+      listener->SendToUser(relay, true);
+    }
   } else {
+    SendToNeighbours(msg.idx, rawMsgData, true);
+  }
+  actor->SetEquipment(kept);
+  if (hosted) {
+    uint32_t right = 0;
+    uint32_t left = 0;
+    size_t worn = 0;
+    for (auto& entry : kept.inv.entries) {
+      const auto w = entry.GetWorn();
+      if (w == Inventory::Worn::None) {
+        continue;
+      }
+      ++worn;
+      if (w == Inventory::Worn::Right) {
+        right = entry.baseId;
+      } else {
+        left = entry.baseId;
+      }
+    }
+    spdlog::info("[verb:npc-stream] equipment {:x} by {:x}: {} worn, "
+                 "right {:x} left {:x}, spells {:x} {:x}, numChanges {}",
+                 actorFormId, myActor->GetFormId(), worn, right, left,
+                 rightSpell, leftSpell, data.numChanges);
+  }
+
+  if (dropped) {
+    // the corrections a refusal sent, now for the dropped entries alone:
+    // the server's inventory again, each spell removed, each item taken off
     actor->SendInventoryUpdate();
 
     for (size_t slot = 0; slot < spellIdsToRemove.size(); ++slot) {
@@ -1599,35 +1655,11 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
         .Execute(actor, SpSnippetMode::kNoReturnResult);
     }
 
-    // Calculate diff between current (server) equipment and new (rejected)
-    // equipment. Items worn in the new set but not in the current set need
-    // to be unequipped on the client to revert the unauthorized change.
-    {
-      const auto& currentEquip = actor->GetEquipment().inv;
-
-      std::unordered_set<uint32_t> currentWornIds;
-      for (const auto& entry : currentEquip.entries) {
-        if (entry.GetWorn() != Inventory::Worn::None) {
-          currentWornIds.insert(entry.baseId);
-        }
-      }
-
-      for (const auto& entry : equipmentInv.entries) {
-        if (entry.GetWorn() != Inventory::Worn::None &&
-            currentWornIds.find(entry.baseId) == currentWornIds.end()) {
-          spdlog::info(
-            "ActionListener::OnUpdateEquipment {:x} - unequipping item {:x} "
-            "(not in current equipment, unauthorized change)",
-            actorFormId, entry.baseId);
-          itemIdsToUnequip.push_back(entry.baseId);
-        }
-      }
-
-      // TODO: consider doing EquipItem for items worn in current equipment
-      // but not worn in the new equipment (client tried to unequip them)
-    }
-
     for (uint32_t itemId : itemIdsToUnequip) {
+      spdlog::info("ActionListener::OnUpdateEquipment {:x} - unequipping item "
+                   "{:x} (dropped from the equipment update, unauthorized "
+                   "change)",
+                   actorFormId, itemId);
       SpSnippetObjectArgument itemArg;
       itemArg.formId = itemId;
       itemArg.type = "Form";
@@ -1642,8 +1674,7 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     }
   }
 
-  UpdateEquipmentAttemptEvent updateEquipmentAttemptEvent(actor, data,
-                                                          isAllowed);
+  UpdateEquipmentAttemptEvent updateEquipmentAttemptEvent(actor, kept, true);
   updateEquipmentAttemptEvent.Fire(actor->GetParent());
 }
 
@@ -3013,8 +3044,14 @@ void ActionListener::OnPlayerBowShot(const RawMessageData& rawMsgData,
   }
 
   // thuum docs/verbs/marksman.md: a shot from the bow the player holds with
-  // an arrow it has equipped, as the server records its equipment; anything
-  // else changes nothing
+  // an arrow it has equipped, as the server records its equipment. The
+  // record's hands are the client's last accepted report and lag it
+  // (playtest 37's finding 45, 2026-10-29: a report refused for one entry,
+  // the hands a login re-dresses; 32 arrows that did nothing), so a bow or
+  // an arrow the hands lack is judged by the inventory, the server's own
+  // (R0): held there, the shot is plausible and accepted, said once per
+  // shooter per ten seconds; absent there, refused (E_SHOT_NO_BOW,
+  // E_SHOT_NO_ARROW)
   const auto worn = [&](uint32_t baseId) {
     for (auto& entry : ac->GetEquipment().inv.entries) {
       if (entry.baseId == baseId && entry.GetWorn() != Inventory::Worn::None) {
@@ -3025,12 +3062,38 @@ void ActionListener::OnPlayerBowShot(const RawMessageData& rawMsgData,
   };
   // a hosted actor's quiver is its engine's (the host's hands report lists
   // no ammo, and an NPC's arrows come from lists the server does not walk):
-  // its bow is checked against the record's hands, its ammo recorded (R2)
-  if (!worn(msg.weaponId) || (!hosted && !worn(msg.ammoId))) {
-    return spdlog::warn("ActionListener::OnPlayerBowShot - E_SHOT_EQUIPMENT: "
-                        "{:x} shot {:x} from {:x}, which its equipment does "
-                        "not hold; refused",
-                        ac->GetFormId(), msg.ammoId, msg.weaponId);
+  // its bow is checked against the record, its ammo recorded (R2)
+  const bool bowInHands = worn(msg.weaponId);
+  const bool arrowInHands = hosted || worn(msg.ammoId);
+  if (!bowInHands || !arrowInHands) {
+    const auto& inventory = ac->GetInventory();
+    if (inventory.GetItemCount(msg.weaponId) < 1) {
+      return spdlog::warn("ActionListener::OnPlayerBowShot - E_SHOT_NO_BOW: "
+                          "{:x} shot {:x} from {:x}, which its inventory does "
+                          "not hold; refused",
+                          ac->GetFormId(), msg.ammoId, msg.weaponId);
+    }
+    if (!hosted && inventory.GetItemCount(msg.ammoId) < 1) {
+      return spdlog::warn("ActionListener::OnPlayerBowShot - E_SHOT_NO_ARROW: "
+                          "{:x} shot {:x} from {:x}, an arrow its inventory "
+                          "does not hold; refused",
+                          ac->GetFormId(), msg.ammoId, msg.weaponId);
+    }
+    static std::unordered_map<uint32_t, std::chrono::steady_clock::time_point>
+      lastStaleHandsLog;
+    const auto now = std::chrono::steady_clock::now();
+    auto& last = lastStaleHandsLog[ac->GetFormId()];
+    if (last == std::chrono::steady_clock::time_point() ||
+        now - last >= std::chrono::seconds(10)) {
+      last = now;
+      spdlog::info("ActionListener::OnPlayerBowShot - hands stale: shot from "
+                   "{:x} accepted on the inventory ({:x}'s record's hands "
+                   "lack {})",
+                   msg.weaponId, ac->GetFormId(),
+                   bowInHands       ? "the arrow"
+                     : arrowInHands ? "the bow"
+                                    : "the bow and the arrow");
+    }
   }
 
   // thuum docs/verbs/marksman.md: the launch each neighbour's game replays
@@ -4013,8 +4076,16 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
   }
 
   const bool isUnarmed = IsUnarmedAttack(hitData.source);
+  // thuum docs/verbs/marksman.md (playtest 37's finding 45): an arrow's hit
+  // is judged below by the shot the server recorded, not by the record's
+  // hands, which lag the client's report; a bow the hands lack but the
+  // inventory holds passes to that claim (OnPlayerBowShot's allowance, the
+  // same shape), and the claim refuses what no recorded shot covers
+  const bool bowShot = IsBowOrCrossbowShot(hitData, &partOne.worldState);
+  const bool bowHeld =
+    bowShot && aggressor->GetInventory().GetItemCount(hitData.source) > 0;
 
-  if (equipment.inv.HasItem(hitData.source) || isUnarmed) {
+  if (equipment.inv.HasItem(hitData.source) || isUnarmed || bowHeld) {
     // thuum docs/verbs/damage-flags.md: the facts the flag rule needs; the
     // rule is Rust's (skymp-wire wire-rules damage, ADR-020)
     if (aggressor == myActor &&
@@ -4106,7 +4177,7 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
     // once, at launch (the re-analyst's read of Projectile::Launch,
     // 2026-10-09)
     float damageMult = 1.f;
-    if (IsBowOrCrossbowShot(hitData, &partOne.worldState)) {
+    if (bowShot) {
       const auto claim = partOne.ClaimShot(
         aggressor->GetFormId(), hitData.source, targetRef->GetPos());
       if (claim.check != PartOne::ShotCheck::Claimed) {

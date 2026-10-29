@@ -772,8 +772,36 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
   facts.magicka.lowered_ago_ms = 0;
   facts.stamina.lowered = false;
   facts.stamina.lowered_ago_ms = 0;
+  const float onePoint = 1.f / std::max(actor->GetMaximumValues().health, 1.f);
+  // thuum docs/verbs/npc-fate.md (playtest 37's finding 48, 2026-10-29: a
+  // necromancer's Reanimate stood a dead skeever up on its host's engine,
+  // where it fought, while the record and the other seat kept the body): a
+  // hosted NPC the record holds dead whose host samples it alive, above one
+  // point of health, has been resurrected by its host's engine, which runs
+  // the spell that did it; the server records the result (R2, rule 5): the
+  // death cleared through the artificial respawn (MpActor::Respawn without a
+  // teleport: the inventory kept, the body's day and its reset due ended),
+  // the live word to every listener (RespawnEvent's isDead false, the
+  // puppets' Resurrect), then this sample judged as any live one. Guards: an
+  // NPC (a player's death is the server's own numbers), and the death older
+  // than MpActor::kPendingDeathMs on the server's clock: a sample the host
+  // sent before the server's kill word reached it is in flight for a round
+  // trip, not a resurrection
+  if (actor->IsDead() && actor->IsFateRespawned() && msg.health > onePoint) {
+    const auto diedAgo = actor->DiedAgo(now);
+    if (diedAgo &&
+        diedAgo->count() >= static_cast<int64_t>(MpActor::kPendingDeathMs)) {
+      spdlog::info("[verb:npc-fate] resurrection by its host's engine: {:x} "
+                   "stands again with health {:.3f} on {:x}'s sample, {} s "
+                   "after its death; the record's death cleared, the live "
+                   "word to every listener",
+                   actor->GetFormId(), msg.health, myActor->GetFormId(),
+                   diedAgo->count() / 1000);
+      actor->Respawn(false);
+    }
+  }
   facts.alive = !actor->IsDead() && !actor->IsRespawning();
-  facts.one_point = 1.f / std::max(actor->GetMaximumValues().health, 1.f);
+  facts.one_point = onePoint;
 
   const skymp::rules::HostedStateVerdict verdict =
     skymp::rules::hosted_state_judge(facts);
@@ -3988,9 +4016,39 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
   }
 
   if (isSourceSpell) {
-    const auto claim = partOne.ClaimReached(
+    auto claim = partOne.ClaimReached(
       aggressor->GetFormId(), hitData.source, targetRef->GetFormId(),
       targetRef->GetPos(), aggressor->GetPos());
+    // thuum docs/verbs/npc-stream.md (train 53; playtest 37's flame atronach,
+    // 2026-10-29): a creature's cloak is a constant-effect ability of its
+    // base or race (Skyrim.esm's AbFlameAtronach 0x2f3b5, AtronachFlameRace's
+    // one spell, whose effect AbAtronachCloakFire 0x64459 reaches
+    // crAtronachCloakFlameDmg 0x6445b; lab/esm.py on sky-srv), which its
+    // host's engine runs from the actor's birth and never casts, so no cast
+    // of its lingered for the reach rule and every cloak hit was refused
+    // ("which it holds not"). The ability the record holds stands as a cast
+    // of its own when its cloak's hit arrives (the records say the actor
+    // bears it, R1; the distance bound and the cadence are the reach rule's),
+    // and the hit claims it as a player's cloak hit claims the cloak's cast;
+    // a spell no ability of the record reaches stays refused (rule 5)
+    if (hostedSpellHit && claim.check == PartOne::CastCheck::NoCast) {
+      if (const auto ability =
+            partOne.AbilityReaching(*aggressor, hitData.source)) {
+        partOne.StartCast(aggressor->GetFormId(), *ability, uint8_t{ 3 },
+                          aggressor->GetPos(), false);
+        claim = partOne.ClaimReached(aggressor->GetFormId(), hitData.source,
+                                     targetRef->GetFormId(),
+                                     targetRef->GetPos(), aggressor->GetPos());
+        spdlog::info("[verb:npc-stream] ability cloak: {:x} hits {:x} with "
+                     "{:x}, the cloak of ability {:x} its record holds; the "
+                     "ability stands as its cast{}",
+                     aggressor->GetFormId(), targetRef->GetFormId(),
+                     hitData.source, *ability,
+                     claim.check == PartOne::CastCheck::Claimed
+                       ? ""
+                       : ", the hit outside its reach");
+      }
+    }
     if (claim.check != PartOne::CastCheck::Claimed) {
       const char* code = claim.check == PartOne::CastCheck::TooFar
         ? "E_SPELL_RANGE"

@@ -1,6 +1,8 @@
 #include "ActionListener.h"
+#include "ActorFateMessage.h"
 #include "ActorValueRecord.h"
 #include "CellLoadedMessage.h"
+#include "ConsoleCommandMessage.h"
 #include "HitMessage.h"
 #include "MsgType.h"
 #include "PlayerBowShotMessage.h"
@@ -9,6 +11,7 @@
 #include "UpdateEquipmentMessage.h"
 #include "libespm/Loader.h"
 #include "wire_bridge_cxx/rules.h"
+#include <algorithm>
 #include <catch2/catch_all.hpp>
 #include <chrono>
 
@@ -36,6 +39,12 @@ constexpr uint32_t kIronSword = 0x00012eb7;
 // MarksmanTest's: LongBow 0x3B562, IronArrow 0x1397D
 constexpr uint32_t kLongBow = 0x0003b562;
 constexpr uint32_t kIronArrow = 0x0001397d;
+// Skyrim.esm (lab/esm.py on sky-srv, 2026-10-29): EncAtronachFlame, whose
+// race AtronachFlameRace 0x131f5 bears the one ability AbFlameAtronach
+// 0x2f3b5; its effect AbAtronachCloakFire 0x64459 (archetype Cloak) reaches
+// crAtronachCloakFlameDmg, a concentration spell of 10 a second
+constexpr uint32_t kAtronach = 0x00023aa6;
+constexpr uint32_t kAtronachCloakDmg = 0x0006445b;
 const NiPoint3 kForest{ 123000.f, -80000.f, 10705.f };
 
 const auto kWorn = [] {
@@ -176,13 +185,14 @@ void Cast(PartOne& p, uint32_t spell)
                             { "integers", nlohmann::json::array() } } } } } });
 }
 
-// the host's report of the predator's spell hit on the other player
-void SpellHits(PartOne& p, uint32_t spell)
+// the host's report of the predator's (or `aggressor`'s) spell hit on the
+// other player
+void SpellHits(PartOne& p, uint32_t spell, uint32_t aggressor = kPredator)
 {
   RawMessageData raw;
   raw.userId = 0;
   HitMessage hit;
-  hit.data.aggressor = kPredator;
+  hit.data.aggressor = aggressor;
   hit.data.target = kOther;
   hit.data.source = spell;
   p.GetActionListener().OnHit(raw, hit);
@@ -216,6 +226,33 @@ void Leave(PartOne& p)
   DoDisconnect(p, 1);
   p.DestroyActor(kHost);
   p.DestroyActor(kOther);
+}
+
+// the host places `base` at its own actor through the server console
+// (NpcFateTest's placed-actor idiom); the placed actor is named by the one
+// fate with that base under a 0xff id
+uint32_t Place(PartOne& p, MpActor& host, uint32_t base)
+{
+  host.SetConsoleCommandsAllowedFlag(true);
+  p.Messages().clear();
+  RawMessageData raw;
+  raw.userId = 0;
+  ConsoleCommandMessage cmd;
+  cmd.data.commandName = "placeatme";
+  cmd.data.args = { int64_t(0x14), int64_t(base) };
+  p.GetActionListener().OnConsoleCommand(raw, cmd);
+  uint32_t placedId = 0;
+  for (auto& m : p.Messages()) {
+    if (auto fate = dynamic_cast<ActorFateMessage*>(m.message.get())) {
+      for (const auto& f : fate->fates) {
+        if (f.refrId >= 0xff000000 && f.baseId == base) {
+          placedId = f.refrId;
+        }
+      }
+    }
+  }
+  REQUIRE(placedId >= 0xff000000);
+  return placedId;
 }
 }
 
@@ -313,6 +350,46 @@ TEST_CASE("A hosted caster's touch cast reaches the other game at its first "
   REQUIRE(relays.size() == 1);
   REQUIRE(relays[0]["data"]["caster"].get<uint32_t>() == kPredator);
   REQUIRE(relays[0]["data"]["target"].get<uint32_t>() == kOther);
+  Leave(p);
+}
+
+// thuum docs/verbs/npc-stream.md (train 53; playtest 37's flame atronach,
+// 2026-10-29): a creature's cloak is a constant-effect ability of its race,
+// never cast, so no cast of its lingered for the reach rule and every cloak
+// hit was refused E_SPELL_NO_CAST ("which it holds not")
+TEST_CASE("A hosted creature's cloak hit is claimed against the ability its "
+          "record holds, which stands as its cast; a spell no ability of its "
+          "reaches stays refused",
+          "[NpcCast][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  Gather(p);
+  auto& host = p.worldState.GetFormAt<MpActor>(kHost);
+  const uint32_t atronachId = Place(p, host, kAtronach);
+  auto& atronach = p.worldState.GetFormAt<MpActor>(atronachId);
+  REQUIRE(atronach.GetBaseId() == kAtronach);
+  REQUIRE(p.worldState.HostOf(atronach) == &host);
+  // the race's ability is in the record's own spell set
+  const auto known = atronach.KnownBaseSpells();
+  REQUIRE(std::find(known.begin(), known.end(), 0x2f3b5u) != known.end());
+  REQUIRE(p.AbilityReaching(atronach, kAtronachCloakDmg) == 0x2f3b5u);
+  REQUIRE_FALSE(p.AbilityReaching(atronach, kFirebolt).has_value());
+  // beside the other player
+  atronach.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
+  p.Messages().clear();
+
+  // the cloak's spell with no cast of the atronach's: the ability stands as
+  // the cast and the first hit counts one cadence (500 ms of 10 a second,
+  // SecondHandTest's rule: 5 against the recorded 250)
+  SpellHits(p, kAtronachCloakDmg, atronachId);
+  REQUIRE(Health(p) == Catch::Approx(0.98f));
+  // a spell no ability of the record reaches, with no cast behind it: refused
+  // (rule 5)
+  SpellHits(p, kFirebolt, atronachId);
+  REQUIRE(Health(p) == Catch::Approx(0.98f));
+
+  p.DestroyActor(atronachId);
   Leave(p);
 }
 

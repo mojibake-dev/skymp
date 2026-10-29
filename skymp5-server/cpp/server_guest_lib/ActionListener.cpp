@@ -171,9 +171,21 @@ void ActionListener::RelayCast(MpActor& caster, const MpActor& sender,
   SpellCastMessage relay;
   relay.data = data;
   for (auto listener : caster.GetActorListeners()) {
-    if (listener != &sender) {
-      listener->GetActorToSendTo().SendToUser(relay, true);
+    // A relay is one game's report for the other games, so only a listener
+    // with a user hears it, and directly. GetActorToSendTo hands an offline
+    // listener's copy (a game-file or server-made NPC in reach) to its
+    // cell's host, and when the caster is hosted that host is the very game
+    // that reported the cast: it received one SpellCast per NPC it hosted
+    // near the caster (ten to thirteen in playtest 37) and cast each copy on
+    // its live atronach, a real bolt every time (finding 53, 2026-10-28).
+    // UpdateHoster, CastBondProc and PlayTeleportVanish skip such listeners
+    // the same way. The sender's own actor is skipped as before.
+    if (listener == &sender ||
+        partOne.serverState.UserByActor(listener) ==
+          Networking::InvalidUserId) {
+      continue;
     }
+    listener->SendToUser(relay, true);
   }
 }
 

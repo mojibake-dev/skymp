@@ -183,6 +183,10 @@ public:
   uint8_t CheckPlayerGlobals(const std::vector<PlayerGlobal>& report) const;
   std::vector<PlayerGlobal> PlayerGlobalsAtLogin(
     const std::vector<PlayerGlobal>& record) const;
+  // memo D51 B (2026-10-28, Eli: "that sounds good"): the recorded globals at
+  // or past their settings' killAt, the server's word that the player dies
+  std::vector<PlayerGlobal> LethalPlayerGlobals(
+    const std::vector<PlayerGlobal>& record) const;
   static std::vector<PlayerGlobal> MergePlayerGlobals(
     const std::vector<PlayerGlobal>& record,
     const std::vector<PlayerGlobal>& report);

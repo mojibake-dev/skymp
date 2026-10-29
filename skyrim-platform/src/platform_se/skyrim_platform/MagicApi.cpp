@@ -150,6 +150,21 @@ bool PerformActionOnActor(RE::Actor& actor, RE::BGSAction& action,
   return taken != 0;
 }
 
+// Whether the actor's active graph is the humanoid master behaviour's, whose
+// variables the descriptor reads and writes: its own set reads non-empty
+// (AnimationGraphMasterBehaviourDescriptor admits that project alone). An
+// actor whose 3D is not loaded reads empty too and keeps the old refusal:
+// only a loaded creature's graph is the case the cast goes on without
+bool HasMasterGraph(const RE::Actor& actor)
+{
+  if (!actor.Is3DLoaded()) {
+    return true;
+  }
+  return !AnimationGraphMasterBehaviourDescriptor{ actor }
+            .GetVariables()
+            .IsEmpty();
+}
+
 } // namespace skymp::magic::details
 
 Napi::Value MagicApi::CastSpellImmediate(const Napi::CallbackInfo& info)
@@ -197,12 +212,26 @@ Napi::Value MagicApi::CastSpellImmediate(const Napi::CallbackInfo& info)
         return;
       }
 
-      const bool isAnimationVariablesApplied =
-        AnimationGraphMasterBehaviourDescriptor{ std::move(animVars) }
-          .ApplyVariablesToActor(*pActor);
-
-      if (!isAnimationVariablesApplied) {
-        return;
+      // thuum docs/verbs/npc-stream.md (train 53; playtest 37's flame
+      // atronach): the variables are the humanoid master behaviour's; a
+      // creature puppet's graph (its project not DefaultMale or
+      // DefaultFemale) takes none and gave none, so the relayed cast
+      // returned here and drew nothing on the observer. On such a graph,
+      // once its 3D is loaded, the cast goes without them: the engine's own
+      // caster needs no graph variable to launch (HYPOTHESIS until a lab run
+      // reads the bolt on the observer); a humanoid's keeps the apply and
+      // its refusal
+      if (skymp::magic::details::HasMasterGraph(*pActor)) {
+        const bool isAnimationVariablesApplied =
+          AnimationGraphMasterBehaviourDescriptor{ std::move(animVars) }
+            .ApplyVariablesToActor(*pActor);
+        if (!isAnimationVariablesApplied) {
+          return;
+        }
+      } else {
+        logger::info("[verb:npc-stream] cast {:x} on {:x} without graph "
+                     "variables: its graph is not the master behaviour's",
+                     spellFormId, actorFormId);
       }
 
       const auto magicCaster = pActor->GetMagicCaster(castingSource);
@@ -346,12 +375,15 @@ Napi::Value MagicApi::InterruptCast(const Napi::CallbackInfo& info)
         return;
       }
 
-      const bool isAnimationVariablesApplied =
-        AnimationGraphMasterBehaviourDescriptor{ std::move(animVars) }
-          .ApplyVariablesToActor(*pActor);
-
-      if (!isAnimationVariablesApplied) {
-        return;
+      // a creature puppet's end goes without the master's variables too
+      // (CastSpellImmediate's rule above)
+      if (skymp::magic::details::HasMasterGraph(*pActor)) {
+        const bool isAnimationVariablesApplied =
+          AnimationGraphMasterBehaviourDescriptor{ std::move(animVars) }
+            .ApplyVariablesToActor(*pActor);
+        if (!isAnimationVariablesApplied) {
+          return;
+        }
       }
 
       if (auto* caster = pActor->GetMagicCaster(castingSource)) {

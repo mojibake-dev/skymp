@@ -13,6 +13,20 @@ import { MsgType } from "../../messages";
 import { noSpellLaunch, SpellCastMsgData, SpellCastMessage } from "../messages/spellCastMessage";
 import { UpdateAnimVariablesMessageMsgData } from "../messages/updateAnimVariablesMessage";
 
+// a hosted actor's spell launch waiting for its cast event (onHostedSpellLaunch)
+interface PendingHostedLaunch {
+    casterLocal: number;
+    spell: number;
+    castingSource: number;
+    originX: number;
+    originY: number;
+    originZ: number;
+    angleX: number;
+    angleZ: number;
+    at: number;
+    waited: number;
+}
+
 export class MagicSyncService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -102,7 +116,18 @@ export class MagicSyncService extends ClientListener {
             this.pendingCasts.push({ msg, waited: 0 });
             this.flushCasts(false);
         } else {
-            this.sendCast(msg);
+            // a hosted caster's cast its launch reported moments ago (the
+            // creature path below): the event's report would double it
+            const key = casterId !== this.playerId ? MagicSyncService.castKey(casterId, msg.spell) : null;
+            const launchAt = key ? this.hostedLaunchCasts.get(key) : undefined;
+            if (key && launchAt !== undefined && Date.now() - launchAt <= MagicSyncService.launchMatchMs) {
+                logTrace(this, `hosted cast ${msg.spell.toString(16)} by ${casterId.toString(16)}: reported from its launch already`);
+            } else {
+                this.sendCast(msg);
+            }
+            if (key) {
+                this.hostedEventCasts.set(key, Date.now());
+            }
             // thuum docs/verbs/npc-stream.md (train 53): a hosted caster's
             // end comes through its action stream (the hand's equipped event,
             // actionPerformed), not the player's own graph hook below
@@ -162,11 +187,121 @@ export class MagicSyncService extends ClientListener {
         });
     }
 
-    private onProjectileLaunched(e: { shooter: number; projectile: number; ammo: number; spell: number; originX: number; originY: number; originZ: number; angleX: number; angleZ: number }) {
+    private onProjectileLaunched(e: { shooter: number; projectile: number; ammo: number; spell: number; castingSource: number; originX: number; originY: number; originZ: number; angleX: number; angleZ: number }) {
+        if (e.shooter !== this.playerId && e.spell && !e.ammo) {
+            // a hosted actor's spell launch (the native hook admits the hosted
+            // set): its natives wait for the update tick, the launch event's
+            // context refusing them (memo D44, playerBowShotService's hosted
+            // branch)
+            this.controller.once("update", () => this.onHostedSpellLaunch(e));
+            return;
+        }
         if (e.shooter !== this.playerId || !e.spell || e.ammo) {
             return; // not the player's own spell (an arrow has its ammo)
         }
         this.noteLaunch(e.spell, e.originX, e.originY, e.originZ, e.angleX, e.angleZ, e.projectile);
+    }
+
+    // thuum docs/verbs/npc-stream.md (train 53; playtest 37's flame atronach,
+    // 2026-10-29: "the fire bolt from the flame atronoch was visible for
+    // prisoner only"): the host's engine launched a hosted creature's bolt and
+    // no spellCast event reported the cast (which engine event a creature's
+    // graph raises is the Dynamic plan's read), so nothing reached the
+    // server, the watcher's puppet cast nothing and the bolt's hits were
+    // refused. The launch itself names the caster, the spell, the hand and
+    // the bolt's origin and angles (Projectile::Launch's LaunchData, the
+    // fork's projectileLaunched), so a hosted caster's cast is reported from
+    // its launch when no cast event claims it within the match window: the
+    // bow relay's shape (playerBowShotService.onHostedLaunch). An event that
+    // comes first makes the launch's report redundant; one that comes after
+    // is dropped the same way (onSpellCast). A creature's end never comes
+    // (creatures ride the event relay, not the action stream), and a bolt
+    // needs none
+    private onHostedSpellLaunch(e: { shooter: number; spell: number; castingSource: number; originX: number; originY: number; originZ: number; angleX: number; angleZ: number }) {
+        if (!this.isHostedByMe(e.shooter)) {
+            return;
+        }
+        this.pendingHostedLaunches.push({
+            casterLocal: e.shooter, spell: e.spell, castingSource: e.castingSource,
+            originX: e.originX, originY: e.originY, originZ: e.originZ, angleX: e.angleX, angleZ: e.angleZ,
+            at: Date.now(), waited: 0,
+        });
+        this.flushHostedLaunches();
+    }
+
+    // the hosted launches waiting for a cast event: one that came within the
+    // match window makes the launch's report redundant; one that has waited
+    // launchWaitUpdates updates goes as the cast
+    private flushHostedLaunches() {
+        const now = Date.now();
+        const stale: string[] = [];
+        this.hostedEventCasts.forEach((at, key) => {
+            if (now - at > MagicSyncService.hostedCastsKeptMs) {
+                stale.push(key);
+            }
+        });
+        stale.forEach((key) => this.hostedEventCasts.delete(key));
+        stale.length = 0;
+        this.hostedLaunchCasts.forEach((at, key) => {
+            if (now - at > MagicSyncService.hostedCastsKeptMs) {
+                stale.push(key);
+            }
+        });
+        stale.forEach((key) => this.hostedLaunchCasts.delete(key));
+        const keep: PendingHostedLaunch[] = [];
+        for (const pending of this.pendingHostedLaunches) {
+            const key = MagicSyncService.castKey(pending.casterLocal, pending.spell);
+            const eventAt = this.hostedEventCasts.get(key);
+            if (eventAt !== undefined && Math.abs(eventAt - pending.at) <= MagicSyncService.launchMatchMs) {
+                logTrace(this, `hosted launch of ${pending.spell.toString(16)} by ${pending.casterLocal.toString(16)}: its cast event reported it`);
+                continue;
+            }
+            if (pending.waited < MagicSyncService.launchWaitUpdates) {
+                pending.waited++;
+                keep.push(pending);
+                continue;
+            }
+            this.sendHostedLaunchCast(pending);
+        }
+        this.pendingHostedLaunches = keep;
+    }
+
+    private sendHostedLaunchCast(pending: PendingHostedLaunch) {
+        const remoteId = localIdToRemoteId(pending.casterLocal, true);
+        if (!remoteId) {
+            logTrace(this, `hosted launch of ${pending.spell.toString(16)} by ${pending.casterLocal.toString(16)} dropped: no remote id`);
+            return;
+        }
+        // the launch's casting source (MagicSystem::CastingSource, 0 left to
+        // 3 instant, the validator's range); the right hand when it names none
+        const hand = pending.castingSource >= 0 && pending.castingSource <= 3 ? pending.castingSource : 1;
+        const launchOk = [pending.originX, pending.originY, pending.originZ, pending.angleX, pending.angleZ].every((v) => Number.isFinite(v));
+        const msg: SpellCastMsgData = {
+            caster: remoteId,
+            target: 0,
+            spell: pending.spell,
+            interruptCast: false,
+            isDualCasting: false,
+            castingSource: hand,
+            aimAngle: MagicSyncService.pitch(pending.angleX),
+            aimHeading: Number.isFinite(pending.angleZ) ? pending.angleZ : 0,
+            hasLaunch: launchOk,
+            originX: launchOk ? pending.originX : 0,
+            originY: launchOk ? pending.originY : 0,
+            originZ: launchOk ? pending.originZ : 0,
+            launchAngleX: launchOk ? MagicSyncService.pitch(pending.angleX) : 0,
+            launchAngleZ: launchOk ? pending.angleZ : 0,
+            // a creature's graph gives none (the master behaviour's alone are
+            // read); the other games' puppets cast with their own set
+            actorAnimationVariables: this.getAnimationVariablesFromActorConverted(pending.casterLocal),
+        };
+        this.sendCast(msg);
+        this.hostedLaunchCasts.set(MagicSyncService.castKey(pending.casterLocal, pending.spell), Date.now());
+        logTrace(this, `hosted cast from its launch: ${remoteId.toString(16)} casts ${pending.spell.toString(16)} hand ${hand}${launchOk ? "" : ", no launch"}`);
+    }
+
+    private static castKey(casterLocal: number, spell: number): string {
+        return `${casterLocal}:${spell}`;
     }
 
     // the projectile's flight as it starts (the fork's projectileFlight,
@@ -208,6 +343,9 @@ export class MagicSyncService extends ClientListener {
             pending.waited++;
         }
         this.flushCasts(false);
+        if (this.pendingHostedLaunches.length > 0 || this.hostedEventCasts.size > 0 || this.hostedLaunchCasts.size > 0) {
+            this.flushHostedLaunches();
+        }
     }
 
     // Sends the waiting casts in the order they were made: each with the
@@ -380,6 +518,12 @@ export class MagicSyncService extends ClientListener {
     }
 
     private lastHostedCastByHand = new Map<number, Map<number, SpellCastMsgData>>();
+    // the hosted casts' reports by caster and spell: the cast event's and the
+    // launch's, each the other's dedupe within launchMatchMs
+    private hostedEventCasts = new Map<string, number>();
+    private hostedLaunchCasts = new Map<string, number>();
+    private pendingHostedLaunches: PendingHostedLaunch[] = [];
+    private static readonly hostedCastsKeptMs = 5000;
 
     private getSpellCastEventData(e: SpellCastEvent, isInterruptCast: boolean): SpellCastMsgData {
         const spellCastData: SpellCastMsgData = {

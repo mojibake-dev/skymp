@@ -1544,6 +1544,30 @@ EventResult EventHandler::ProcessEvent(
 
     const bool isCastValid = isLeftHand || isRightHand || isVoise || isInstant;
 
+    // thuum docs/verbs/npc-stream.md (train 53; playtest 37's flame
+    // atronach: its bolt on its host's screen alone, no cast reported):
+    // whether the engine raises this event for a hosted creature's cast at
+    // all, and what its slots hold when it does, read from the log (rule 8's
+    // instrument; filtered in native to the hosted set, rule 9)
+    if (Hosted::Is(casterId)) {
+      const auto& runtime = caster->GetActorRuntimeData();
+      // SlotTypes is a struct around an anonymous enum (CommonLibSSE-NG
+      // include/RE/A/Actor.h:143-152), so the slot goes as its index
+      const auto slot = [&](std::size_t s) {
+        return runtime.selectedSpells[s]
+          ? runtime.selectedSpells[s]->GetFormID()
+          : 0u;
+      };
+      spdlog::info("[verb:npc-stream] spellCast event for hosted {:x}: spell "
+                   "{:x}, slots left {:x} right {:x} voice {:x} instant {:x}; "
+                   "{}",
+                   casterId, spellId, slot(RE::Actor::SlotTypes::kLeftHand),
+                   slot(RE::Actor::SlotTypes::kRightHand),
+                   slot(RE::Actor::SlotTypes::kUnknown),
+                   slot(RE::Actor::SlotTypes::kPowerOrShout),
+                   isCastValid ? "reported" : "dropped, the spell in no slot");
+    }
+
     if (!isCastValid) {
       return;
     }

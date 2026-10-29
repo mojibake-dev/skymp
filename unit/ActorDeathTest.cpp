@@ -5,6 +5,7 @@
 #include "ChangeValuesMessage.h"
 #include "DamageCauseMessage.h"
 #include "HitMessage.h"
+#include "HostedActorStateMessage.h"
 #include "MsgType.h"
 #include "TestUtils.hpp"
 #include "libespm/Loader.h"
@@ -117,6 +118,79 @@ void StandUp(PartOne& p, MpActor& actor)
   }
   p.worldState.fateRespawnDue.erase(actor.GetFormId());
 }
+
+// `user`'s state sample of `actorId` (CellHostTest's State idiom): the
+// percentages, no target and no package
+void State(PartOne& p, Networking::UserId user, uint32_t actorId, float health)
+{
+  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
+  RawMessageData raw;
+  raw.userId = user;
+  raw.unparsed = unparsed;
+  raw.unparsedLength = sizeof(unparsed);
+  HostedActorStateMessage msg;
+  msg.idx = p.worldState.GetFormAt<MpActor>(actorId).GetIdx();
+  msg.health = health;
+  msg.magicka = 1.f;
+  msg.stamina = 1.f;
+  p.GetActionListener().OnHostedActorState(raw, msg);
+}
+}
+
+// thuum docs/verbs/npc-fate.md (playtest 37's finding 48, 2026-10-29): a
+// necromancer's Reanimate stood a dead skeever up on its host's engine, where
+// it fought, while the record and the other seat kept the body
+TEST_CASE("A hosted NPC the record holds dead whose host samples it alive "
+          "stands again by its host's engine's word: after the grace of its "
+          "death, from its host alone, with the live word to the other game",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  constexpr uint32_t kForestCell = 0x9810;
+  auto& host = Arrive(p, 0, kHost);
+  Arrive(p, 1, kOther);
+  auto& actor = Standing(p, kPredator);
+  actor.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
+  Host(p, 0, kForestCell);
+  REQUIRE(p.worldState.HostOf(actor) == &host);
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  const auto now = std::chrono::steady_clock::now();
+
+  // a live sample within the grace of the death: the host's sample in flight
+  // when the server's word landed, not a resurrection
+  State(p, 0, kPredator, 1.f);
+  REQUIRE(actor.IsDead());
+
+  // past the grace, from the other game: dropped at the host gate
+  actor.RecordDeathAt(
+    now - std::chrono::milliseconds(MpActor::kPendingDeathMs + 1000));
+  State(p, 1, kPredator, 1.f);
+  REQUIRE(actor.IsDead());
+
+  // from the host: the death cleared, the body's day and its due ended, the
+  // live word to the other game
+  p.Messages().clear();
+  State(p, 0, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+  REQUIRE_FALSE(actor.GetChangeForm().fateDiedAt.has_value());
+  REQUIRE(p.worldState.fateRespawnDue.count(kPredator) == 0);
+  bool liveWord = false;
+  for (auto& m : p.Messages()) {
+    if (m.userId == 1 && m.j.is_object() &&
+        m.j.value("t", -1) == static_cast<int>(MsgType::UpdateProperty) &&
+        m.j.value("propName", std::string()) == "isDead" &&
+        m.j.value("refrId", 0u) == kPredator &&
+        m.j.value("dataDump", std::string()) == "false") {
+      liveWord = true;
+    }
+  }
+  REQUIRE(liveWord);
+
+  StandUp(p, actor);
+  Leave(p, 1, kOther);
+  Leave(p, 0, kHost);
 }
 
 TEST_CASE("A host's fall report is taken when its own samples show the drop "

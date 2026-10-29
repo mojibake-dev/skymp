@@ -5,18 +5,47 @@
 //! record after a login, and each seat applies it through the engine's own
 //! SetStage, so topics, conditions and the journal read one quest state. The
 //! records cannot say which quests are the world's, so server-settings.json
-//! names them: `sharedQuests`, a list of FormDescs ("<hex form id>:<plugin>"),
-//! Riverwood's quests first; a quest off the list stays each seat's own, and
-//! the list is what keeps the whole world's quest state off a fresh player
-//! (the main quest's stages move the player and start scenes).
+//! says, `sharedQuests`, in one of two modes (memo D58 B, 2026-10-29): a
+//! list of FormDescs ("<hex form id>:<plugin>") is mode list, Riverwood's
+//! quests first, and a quest off the list stays each seat's own; the object
+//! `{"mode": "all", "denied": [FormDesc, ...]}` is mode all, TES3MP's shared
+//! journal: every quest a seat reports is the world's unless denied. The
+//! denied list holds what must stay a seat's own (the main quest's intro
+//! chain, the DLC starts), because replaying their stages onto a fresh
+//! player moves the player and starts scenes.
 
 use crate::clock::SettingsError;
 use crate::forms::FormDesc;
 
+/// How the server decides which quests are the world's.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Mode {
+    /// A quest is the world's when `sharedQuests` lists it.
+    #[default]
+    List,
+    /// Every quest is the world's unless `denied` names it.
+    All,
+}
+
+impl Mode {
+    /// The wire's value (QuestStage `mode`): 0 list, 1 all.
+    #[must_use]
+    pub fn wire(self) -> u8 {
+        match self {
+            Self::List => 0,
+            Self::All => 1,
+        }
+    }
+}
+
 /// The quests whose stages are the world's.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SharedQuests {
+    mode: Mode,
+    /// Mode list's quests, in the settings' order.
     listed: Vec<FormDesc>,
+    /// Mode all's exceptions, in the settings' order.
+    denied: Vec<FormDesc>,
 }
 
 /// One stage done on a shared quest.
@@ -32,60 +61,95 @@ pub struct StageDone {
 /// Why a report is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
-    /// A quest the server does not share.
+    /// A quest the server does not share (mode list).
     Unlisted,
+    /// A quest the server denies (mode all).
+    Denied,
 }
 
 impl SharedQuests {
-    /// The list from the `sharedQuests` block's JSON text (`[]` for none):
-    /// each entry a "<hex id>:<plugin>" string. The error names a bad entry:
-    /// one that is not such a string, or a quest listed twice.
+    /// The setting from the `sharedQuests` block's JSON text: a list of
+    /// "<hex id>:<plugin>" strings (`[]` for none) is mode list; the object
+    /// `{"mode": "all", "denied": [...]}` (the list optional, the same
+    /// strings) is mode all. The error names what is wrong: an entry that is
+    /// not such a string, a quest named twice, a mode other than "all", a
+    /// field other than the two, or a block of another shape.
     pub fn from_json(text: &str) -> Result<Self, SettingsError> {
-        let entries: Vec<serde_json::Value> = serde_json::from_str(text).map_err(|e| SettingsError(format!("sharedQuests: {e}")))?;
-        let mut listed: Vec<FormDesc> = Vec::with_capacity(entries.len());
-        for e in entries {
-            let serde_json::Value::String(name) = &e else {
-                return Err(SettingsError(format!("sharedQuests: {e} is not \"<hex id>:<plugin>\"")));
-            };
-            let d = FormDesc::parse(name).map_err(|why| SettingsError(format!("sharedQuests: {why}")))?;
-            if listed.iter().any(|l| l.is(d.short_id, &d.file)) {
-                return Err(SettingsError(format!("sharedQuests: {name:?} is listed twice")));
+        let block: serde_json::Value = serde_json::from_str(text).map_err(|e| SettingsError(format!("sharedQuests: {e}")))?;
+        match block {
+            serde_json::Value::Array(entries) => Ok(Self { mode: Mode::List, listed: parse_quests(&entries, "sharedQuests")?, denied: Vec::new() }),
+            serde_json::Value::Object(fields) => {
+                if let Some(key) = fields.keys().find(|k| *k != "mode" && *k != "denied") {
+                    return Err(SettingsError(format!("sharedQuests: {key:?} is no field of the mode block (mode, denied)")));
+                }
+                match fields.get("mode") {
+                    Some(serde_json::Value::String(mode)) if mode == "all" => {}
+                    Some(other) => return Err(SettingsError(format!("sharedQuests: mode {other} is not \"all\" (a list of quests is mode list)"))),
+                    None => return Err(SettingsError("sharedQuests: the mode block names no \"mode\"".to_owned())),
+                }
+                let denied = match fields.get("denied") {
+                    None => Vec::new(),
+                    Some(serde_json::Value::Array(entries)) => parse_quests(entries, "sharedQuests.denied")?,
+                    Some(other) => return Err(SettingsError(format!("sharedQuests: denied {other} is not a list of \"<hex id>:<plugin>\""))),
+                };
+                Ok(Self { mode: Mode::All, listed: Vec::new(), denied })
             }
-            listed.push(d);
+            other => Err(SettingsError(format!("sharedQuests: {other} is neither a list of quests nor {{\"mode\": \"all\", \"denied\": [...]}}"))),
         }
-        Ok(Self { listed })
     }
 
-    /// Whether the quest `short_id` in `file` is the world's.
+    /// The sharing mode.
     #[must_use]
-    pub fn is_listed(&self, short_id: u32, file: &str) -> bool {
-        self.listed.iter().any(|l| l.is(short_id, file))
+    pub fn mode(&self) -> Mode {
+        self.mode
     }
 
-    /// The listed quests, in the settings' order: what a client reports.
+    /// Whether the quest `short_id` in `file` is the world's: listed in mode
+    /// list, not denied in mode all.
+    #[must_use]
+    pub fn is_shared(&self, short_id: u32, file: &str) -> bool {
+        match self.mode {
+            Mode::List => self.listed.iter().any(|l| l.is(short_id, file)),
+            Mode::All => !self.is_denied(short_id, file),
+        }
+    }
+
+    /// Whether mode all denies the quest `short_id` in `file`.
+    #[must_use]
+    pub fn is_denied(&self, short_id: u32, file: &str) -> bool {
+        self.denied.iter().any(|d| d.is(short_id, file))
+    }
+
+    /// What the login names, in the settings' order: the shared quests in
+    /// mode list (what a client reports), the denied quests in mode all
+    /// (what a client never reports).
     #[must_use]
     pub fn listed(&self) -> &[FormDesc] {
-        &self.listed
-    }
-
-    /// Judge a report's quest: listed, or refused.
-    pub fn check(&self, quest: &FormDesc) -> Result<(), Refusal> {
-        if self.is_listed(quest.short_id, &quest.file) {
-            Ok(())
-        } else {
-            Err(Refusal::Unlisted)
+        match self.mode {
+            Mode::List => &self.listed,
+            Mode::All => &self.denied,
         }
     }
 
-    /// What the login sends: the recorded stages of quests still listed (a
-    /// record made under a longer list keeps the rest, unsent), in the
+    /// Judge a report's quest: the world's, or refused by the mode's rule.
+    pub fn check(&self, quest: &FormDesc) -> Result<(), Refusal> {
+        match self.mode {
+            Mode::List if self.is_shared(quest.short_id, &quest.file) => Ok(()),
+            Mode::List => Err(Refusal::Unlisted),
+            Mode::All if self.is_denied(quest.short_id, &quest.file) => Err(Refusal::Denied),
+            Mode::All => Ok(()),
+        }
+    }
+
+    /// What the login sends: the recorded stages of quests still the world's
+    /// (a record made under another setting keeps the rest, unsent), in the
     /// record's quest order and ascending within a quest, so each SetStage
     /// on the seat sees the stages before it.
     #[must_use]
     pub fn at_login(&self, record: &[StageDone]) -> Vec<StageDone> {
         let mut out: Vec<StageDone> = Vec::with_capacity(record.len());
         for r in record {
-            if !self.is_listed(r.quest.short_id, &r.quest.file) || out.iter().any(|o| o.quest == r.quest && o.stage == r.stage) {
+            if !self.is_shared(r.quest.short_id, &r.quest.file) || out.iter().any(|o| o.quest == r.quest && o.stage == r.stage) {
                 continue;
             }
             // insert after the last stage of the same quest that is below it,
@@ -94,6 +158,23 @@ impl SharedQuests {
         }
         out
     }
+}
+
+/// A list of "<hex id>:<plugin>" strings as FormDescs, each quest once;
+/// `what` names the block in the error.
+fn parse_quests(entries: &[serde_json::Value], what: &str) -> Result<Vec<FormDesc>, SettingsError> {
+    let mut quests: Vec<FormDesc> = Vec::with_capacity(entries.len());
+    for e in entries {
+        let serde_json::Value::String(name) = e else {
+            return Err(SettingsError(format!("{what}: {e} is not \"<hex id>:<plugin>\"")));
+        };
+        let d = FormDesc::parse(name).map_err(|why| SettingsError(format!("{what}: {why}")))?;
+        if quests.iter().any(|q| q.is(d.short_id, &d.file)) {
+            return Err(SettingsError(format!("{what}: {name:?} is listed twice")));
+        }
+        quests.push(d);
+    }
+    Ok(quests)
 }
 
 /// Whether the record holds the stage already (a report of it is a no-op).
@@ -146,11 +227,35 @@ mod tests {
     #[test]
     fn the_list_parses_strings_and_refuses_the_rest() {
         let list = SharedQuests::from_json(r#"["074a83:Skyrim.esm", "0e0d2e:Skyrim.esm"]"#);
-        assert!(list.as_ref().is_ok_and(|l| l.listed().len() == 2 && l.is_listed(0x74a83, "Skyrim.esm") && !l.is_listed(0x74a84, "Skyrim.esm")));
+        assert!(list.as_ref().is_ok_and(|l| l.mode() == Mode::List && l.listed().len() == 2 && l.is_shared(0x74a83, "Skyrim.esm") && !l.is_shared(0x74a84, "Skyrim.esm")));
         assert!(SharedQuests::from_json(r#"[{"quest": "074a83:Skyrim.esm"}]"#).is_err());
         assert!(SharedQuests::from_json(r#"["074a83"]"#).is_err());
         assert!(SharedQuests::from_json(r#"["074a83:Skyrim.esm", "74a83:Skyrim.esm"]"#).is_err());
-        assert!(SharedQuests::from_json("[]").is_ok_and(|l| l.listed().is_empty()));
+        assert!(SharedQuests::from_json("[]").is_ok_and(|l| l.mode() == Mode::List && l.listed().is_empty()));
+        assert!(SharedQuests::from_json(r#""all""#).is_err());
+        assert!(SharedQuests::from_json("7").is_err());
+    }
+
+    #[test]
+    fn the_mode_block_is_all_with_a_denylist_and_refuses_the_rest() {
+        // MQ102 0x4e50d denied (Skyrim.esm, thuum lab/esm.py)
+        let all = SharedQuests::from_json(r#"{"mode": "all", "denied": ["04e50d:Skyrim.esm"]}"#);
+        assert!(all.as_ref().is_ok_and(|a| a.mode() == Mode::All && a.listed() == [quest(0x4e50d)]));
+        assert!(all.as_ref().is_ok_and(|a| a.is_shared(0x74a83, "Skyrim.esm") && !a.is_shared(0x4e50d, "Skyrim.esm") && a.is_denied(0x4e50d, "Skyrim.esm")));
+        assert!(all.as_ref().is_ok_and(|a| a.is_shared(0x4e50d, "Update.esm")));
+        // nothing denied: every quest is the world's, the login names none
+        assert!(SharedQuests::from_json(r#"{"mode": "all"}"#).is_ok_and(|a| a.mode() == Mode::All && a.listed().is_empty() && a.is_shared(0x4e50d, "Skyrim.esm")));
+        assert!(SharedQuests::from_json(r#"{"mode": "all", "denied": []}"#).is_ok_and(|a| a.listed().is_empty()));
+        // the refusals, each named
+        assert!(SharedQuests::from_json(r#"{"mode": "list"}"#).is_err());
+        assert!(SharedQuests::from_json(r#"{"denied": ["04e50d:Skyrim.esm"]}"#).is_err());
+        assert!(SharedQuests::from_json(r#"{"mode": "all", "deny": ["04e50d:Skyrim.esm"]}"#).is_err());
+        assert!(SharedQuests::from_json(r#"{"mode": "all", "denied": "04e50d:Skyrim.esm"}"#).is_err());
+        assert!(SharedQuests::from_json(r#"{"mode": "all", "denied": ["04e50d"]}"#).is_err());
+        assert!(SharedQuests::from_json(r#"{"mode": "all", "denied": ["04e50d:Skyrim.esm", "4e50d:Skyrim.esm"]}"#).is_err());
+        assert!(SharedQuests::from_json(r#"{"mode": 1}"#).is_err());
+        assert_eq!(Mode::List.wire(), 0);
+        assert_eq!(Mode::All.wire(), 1);
     }
 
     #[test]
@@ -159,6 +264,17 @@ mod tests {
         assert_eq!(list.check(&quest(0x74a83)), Ok(()));
         assert_eq!(list.check(&quest(0x74a84)), Err(Refusal::Unlisted));
         assert_eq!(list.check(&FormDesc { short_id: 0x74a83, file: "Update.esm".to_owned() }), Err(Refusal::Unlisted));
+    }
+
+    #[test]
+    fn in_mode_all_every_quest_passes_but_a_denied_one() {
+        let all = SharedQuests::from_json(r#"{"mode": "all", "denied": ["04e50d:Skyrim.esm"]}"#).unwrap_or_default();
+        assert_eq!(all.check(&quest(0x74a83)), Ok(()));
+        assert_eq!(all.check(&quest(0xb6031)), Ok(()));
+        assert_eq!(all.check(&quest(0x4e50d)), Err(Refusal::Denied));
+        assert_eq!(all.check(&FormDesc { short_id: 0x4e50d, file: "Update.esm".to_owned() }), Ok(()));
+        // an unparsed setting falls back to the default: mode list, empty
+        assert_eq!(SharedQuests::default().check(&quest(0x74a83)), Err(Refusal::Unlisted));
     }
 
     #[test]
@@ -180,5 +296,16 @@ mod tests {
         let record = vec![at(1, 30), at(2, 5), at(1, 10), at(1, 10), at(1, 20)];
         assert_eq!(list.at_login(&record), vec![at(1, 10), at(1, 20), at(1, 30)]);
         assert!(list.at_login(&[]).is_empty());
+    }
+
+    #[test]
+    fn in_mode_all_the_login_sends_every_recorded_quest_but_the_denied() {
+        let all = SharedQuests::from_json(r#"{"mode": "all", "denied": ["000002:Skyrim.esm"]}"#).unwrap_or_default();
+        // a record made under mode list that listed quest 2 keeps it, unsent
+        let record = vec![at(2, 5), at(1, 30), at(3, 10), at(1, 10), at(1, 10), at(1, 20)];
+        assert_eq!(all.at_login(&record), vec![at(1, 10), at(1, 20), at(1, 30), at(3, 10)]);
+        assert!(all.at_login(&[]).is_empty());
+        let none_denied = SharedQuests::from_json(r#"{"mode": "all"}"#).unwrap_or_default();
+        assert_eq!(none_denied.at_login(&record), vec![at(2, 5), at(1, 10), at(1, 20), at(1, 30), at(3, 10)]);
     }
 }

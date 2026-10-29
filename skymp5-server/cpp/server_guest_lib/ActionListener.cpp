@@ -4929,6 +4929,16 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
                    "delivered to its target; relay waits for its first hit",
                    caster->GetFormId(), spellCastData.spell, hand);
     } else {
+      // the one info line for an accepted aimed or self cast relayed at
+      // once; the target-delivered, teleport, shout and ended casts have
+      // their own lines above. The lab counts a hosted caster's casts by it
+      // (x-npc-creature-caster: a creature's casts were countable only from
+      // the watcher's puppet casts before, 2026-10-28)
+      spdlog::info("ActionListener::OnSpellCast - {:x} cast {:x} in hand {} "
+                   "at {:x}{}; relayed",
+                   caster->GetFormId(), spellCastData.spell, hand,
+                   spellCastData.target,
+                   caster == myActor ? "" : " (hosted, by its host's report)");
       RelayCast(*caster, *myActor, spellCastData);
     }
   }

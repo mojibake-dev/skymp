@@ -21,6 +21,7 @@
 #include "GetIsID.h"
 #include "HasKeyword.h"
 #include "HasMagicEffectKeyword.h"
+#include "HasPerk.h"
 #include "IsActor.h"
 #include "IsCommandedActor.h"
 #include "IsHostileToActor.h"
@@ -93,6 +94,8 @@ ConditionFunctionMap ConditionFunctionFactory::CreateConditionFunctions()
     std::make_shared<ConditionFunctions::GetActorValue>());
   res.RegisterConditionFunction(
     std::make_shared<ConditionFunctions::HasMagicEffect>());
+  res.RegisterConditionFunction(
+    std::make_shared<ConditionFunctions::HasPerk>());
 
   res.RegisterConditionFunction(
     std::make_shared<ConditionFunctions::SkympGetDamageSourceHasKeyword>());

@@ -1,4 +1,4 @@
-import { CellAttachDetachEvent, CombatEvent, ObjectReference } from "skyrimPlatform";
+import { Actor, CellAttachDetachEvent, CombatEvent, ObjectReference, Spell } from "skyrimPlatform";
 import { logError, logTrace } from "../../logging";
 import { Movement } from "../../sync/movement";
 import { localIdToRemoteId } from "../../view/worldViewMisc";
@@ -24,6 +24,10 @@ import { RemoteServer } from "./remoteServer";
 // does not flip a loaded actor live, playtest 34's composition). The
 // deferred kill is this service's too: every NPC this game shows holds at
 // zero until the server's word (train 52 moves the host's own to the engine).
+// one look played on a puppet: an effect shader, or the VisualEffect that
+// wraps an effect's hit effect art (artId 0 for a shader)
+type CloakLook = { kind: "shader" | "visual"; formId: number; artId: number; abilityId: number };
+
 export class PuppetService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -33,6 +37,9 @@ export class PuppetService extends ClientListener {
         // deferred kill holds puppets alone. Off (npcEngineDamage false, the
         // bisect), every NPC holds at zero for the server's word as before
         this.engineDeaths = this.sp.settings["skymp5-client"]["npcEngineDamage"] !== false;
+        // playtest 37 finding 60, the visuals slice: a puppet's ability shaders
+        // (the atronach's cloak) are played here; off, a puppet stands bare
+        this.cloakLook = this.sp.settings["skymp5-client"]["npcCloakLook"] !== false;
         if (!this.enabled) {
             logTrace(this, "npcPuppet is off in settings: no actor's AI is switched (a bisect switch, not a play mode)");
         }
@@ -65,6 +72,12 @@ export class PuppetService extends ClientListener {
         const loadedHere = has3D || this.attached.has(localId);
         const flagged = this.sp.isPuppet(localId);
         const now = Date.now();
+        if (!has3D) {
+            // a shader played on an actor ends with the 3D it was attached to
+            // (Papyrus's OnLoad re-play idiom), so the look is read and played
+            // again on the next 3D
+            this.cloakLooks.delete(localId);
+        }
 
         // the deferred kill (re-armed after a resurrect): a puppet never dies
         // by this game's hand, the server's word kills it; an actor this game
@@ -131,6 +144,7 @@ export class PuppetService extends ClientListener {
             // the live NPC; playtest 37's exprOverride true on the talker's
             // Orgnar)
             ac.clearExpressionOverride();
+            this.stopCloakLook(localId, ac);
             this.sp.setPuppet(localId, false);
             if (localId < 0xff000000 && ac.isDead()) {
                 // thuum docs/verbs/npc-fate.md (the deaths): a corpse stays the
@@ -149,21 +163,29 @@ export class PuppetService extends ClientListener {
         // every update: the gate's hang at a landing, 2026-10-21, under
         // reading: the demote must not race the loader on a half-made actor)
         host.markHosted(localId, false);
-        if (flagged || !has3D) {
+        if (!has3D) {
             return;
         }
-        if (!this.sp.setPuppet(localId, true)) {
-            logError(this, `setPuppet(${localId.toString(16)}, true) found no actor`);
-            return;
+        if (!flagged) {
+            if (!this.sp.setPuppet(localId, true)) {
+                logError(this, `setPuppet(${localId.toString(16)}, true) found no actor`);
+                return;
+            }
+            this.puppets.add(localId);
+            // the engine's activation (Talk, trade, pickpocket) is the host's
+            // alone: the native demote blocks it, so nothing Papyrus-backed runs
+            // here, at the load's first attaches (train-34's first head: the one
+            // Papyrus call this demote made ran into Intuitive Dragon Ride
+            // Control's quest start-up half a second later on the same game
+            // thread, b-invis-recast on gate 20261023-031111)
+            logTrace(this, `puppet ${localId.toString(16)}`);
         }
-        this.puppets.add(localId);
-        // the engine's activation (Talk, trade, pickpocket) is the host's
-        // alone: the native demote blocks it, so nothing Papyrus-backed runs
-        // here, at the load's first attaches (train-34's first head: the one
-        // Papyrus call this demote made ran into Intuitive Dragon Ride
-        // Control's quest start-up half a second later on the same game
-        // thread, b-invis-recast on gate 20261023-031111)
-        logTrace(this, `puppet ${localId.toString(16)}`);
+        if (ac.isDead()) {
+            // a corpse carries no ability on the engine either
+            this.stopCloakLook(localId, ac);
+        } else {
+            this.playCloakLook(localId, ac);
+        }
     }
 
     // The poll: every actor in the engine's high-process list (a named
@@ -266,8 +288,132 @@ export class PuppetService extends ClientListener {
         this.deferredArmed.delete(localId);
     }
 
+    // thuum docs/verbs/npc-stream.md, playtest 37 finding 60 (the visuals
+    // slice): a creature's constant-effect ability is the engine's to apply
+    // to its actor, and the watcher's puppet stood without its look while
+    // the host's atronach burned (HYPOTHESIS from the finding: the engine
+    // applies no ability on an AI-off actor). The look alone is restored, R3:
+    // among the abilities the puppet's race and base list, each constant
+    // effect on self is played on the puppet for the puppet period by its
+    // hit shader (EffectShader.play) and by the VisualEffect wrapping its
+    // hit effect art (VisualEffect.play), -1 being Papyrus's until stopped;
+    // stopped at the promote; read once per 3D. No spell is added to the
+    // puppet: the ability on this engine would burn this game's own player,
+    // and the cloak's damage is the server's (PartOne::AbilityReaching).
+    // Read from Skyrim.esm (lab/esm.py, 2026-10-28): AbFlameAtronach 0x2f3b5
+    // sits on AtronachFlameRace 0x131f5; none of its five effects has a hit
+    // shader, and its cloak effect AbAtronachCloakFire 0x64459 has no look at
+    // all; the flames are AbFXAtronachFlame 0x60da1's hit effect art.
+    private playCloakLook(localId: number, ac: Actor): void {
+        if (!this.cloakLook || this.cloakLooks.has(localId)) {
+            return;
+        }
+        const looks = this.abilityLooks(ac);
+        const playing: CloakLook[] = [];
+        for (const look of looks) {
+            const form = this.sp.Game.getFormEx(look.formId);
+            const id = localId.toString(16);
+            // a copy the engine kept across the 3D's reload would stack a
+            // second one; a stop of a look not playing does nothing
+            if (look.kind === "shader") {
+                const shader = this.sp.EffectShader.from(form);
+                if (!shader) {
+                    continue;
+                }
+                shader.stop(ac);
+                shader.play(ac, -1);
+                logTrace(this, `cloak look: ${id} plays shader ${look.formId.toString(16)} of ability ${look.abilityId.toString(16)}`);
+            } else {
+                const visual = this.sp.VisualEffect.from(form);
+                if (!visual) {
+                    continue;
+                }
+                visual.stop(ac);
+                visual.play(ac, -1, null);
+                logTrace(this, `cloak look: ${id} plays visual effect ${look.formId.toString(16)} of art ${look.artId.toString(16)} of ability ${look.abilityId.toString(16)}`);
+            }
+            playing.push(look);
+        }
+        // an empty list is a read too: the lists are not walked again for
+        // this 3D (reconcile runs every update for every viewed actor)
+        this.cloakLooks.set(localId, playing);
+    }
+
+    private stopCloakLook(localId: number, ac: Actor): void {
+        const playing = this.cloakLooks.get(localId);
+        this.cloakLooks.delete(localId);
+        if (!playing) {
+            return;
+        }
+        for (const look of playing) {
+            const form = this.sp.Game.getFormEx(look.formId);
+            if (look.kind === "shader") {
+                this.sp.EffectShader.from(form)?.stop(ac);
+            } else {
+                this.sp.VisualEffect.from(form)?.stop(ac);
+            }
+        }
+    }
+
+    // The looks of the actor's abilities: every spell the race's list and
+    // the base's hold (a creature's abilities live there; the actor's own
+    // added spells are its host engine's and a distributor's), each of its
+    // effects that is a constant effect delivered to self (an ability's
+    // shape, never a listed combat spell's: MagicSystem::CastingType
+    // kConstantEffect 0 and Delivery kSelf 0, CommonLibSSE-NG
+    // include/RE/M/MagicSystem.h), by its hit shader and by the VisualEffect
+    // wrapping its hit effect art, once per form.
+    private abilityLooks(ac: Actor): CloakLook[] {
+        const out: CloakLook[] = [];
+        const seenForms = new Set<number>();
+        const seenSpells = new Set<number>();
+        const lists: { getSpellCount(): number; getNthSpell(n: number): Spell | null }[] = [];
+        const race = ac.getRace();
+        if (race) {
+            lists.push(race);
+        }
+        const base = ac.getLeveledActorBase();
+        if (base) {
+            lists.push(base);
+        }
+        for (const list of lists) {
+            const count = list.getSpellCount();
+            for (let i = 0; i < count; ++i) {
+                const spell = list.getNthSpell(i);
+                if (!spell) {
+                    continue;
+                }
+                const abilityId = spell.getFormID();
+                if (seenSpells.has(abilityId)) {
+                    continue;
+                }
+                seenSpells.add(abilityId);
+                const effects = spell.getNumEffects();
+                for (let j = 0; j < effects; ++j) {
+                    const effect = spell.getNthEffectMagicEffect(j);
+                    if (!effect || effect.getCastingType() !== 0 || effect.getDeliveryType() !== 0) {
+                        continue;
+                    }
+                    const shader = effect.getHitShader();
+                    if (shader && !seenForms.has(shader.getFormID())) {
+                        seenForms.add(shader.getFormID());
+                        out.push({ kind: "shader", formId: shader.getFormID(), artId: 0, abilityId });
+                    }
+                    const art = effect.getHitEffectArt();
+                    const visual = art ? PuppetService.artVisualEffects.get(art.getFormID()) : undefined;
+                    if (art && visual !== undefined && !seenForms.has(visual)) {
+                        seenForms.add(visual);
+                        out.push({ kind: "visual", formId: visual, artId: art.getFormID(), abilityId });
+                    }
+                }
+            }
+        }
+        return out;
+    }
+
     private forget(localId: number) {
         this.puppets.delete(localId);
+        this.cloakLooks.delete(localId);
         this.attached.delete(localId);
         this.deferredArmed.delete(localId);
         this.unloadedSince.delete(localId);
@@ -325,6 +471,22 @@ export class PuppetService extends ClientListener {
     // be called in this context" 27 times).
 
     private readonly puppets = new Set<number>();
+    // the looks playing on each puppet, by local id (an empty list once the
+    // lists were read for the current 3D)
+    private readonly cloakLooks = new Map<number, CloakLook[]>();
+    // The Skyrim Platform API reads an effect's hit effect art
+    // (MagicEffect.getHitEffectArt) but plays only a VisualEffect (an RFCT
+    // wrapping an art, a shader or both), and nothing maps an art to one; the
+    // general path is one native, TESObjectREFR::ApplyArtObject
+    // (CommonLibSSE-NG include/RE/T/TESObjectREFR.h:368). Until the platform
+    // has it, this table is the map: the vanilla RFCT wrapping each art a
+    // creature's ability shows, read from Skyrim.esm with lab/esm.py (every
+    // RFCT's DATA scanned, 2026-10-28). Skyrim.esm is always load index 00.
+    private static readonly artVisualEffects = new Map<number, number>([
+        // FXAtronachFireTrailObject (AbFXAtronachFlame 0x60da1 of
+        // AbFlameAtronach 0x2f3b5): FXAtronachFireTrailEffect
+        [0x60d9c, 0x60d9d],
+    ]);
     private readonly attached = new Set<number>();
     private readonly deferredArmed = new Set<number>();
     private readonly unloadedSince = new Map<number, number>();
@@ -335,4 +497,5 @@ export class PuppetService extends ClientListener {
     private static readonly releaseGraceMs = 4000;
     private readonly enabled: boolean;
     private readonly engineDeaths: boolean;
+    private readonly cloakLook: boolean;
 }

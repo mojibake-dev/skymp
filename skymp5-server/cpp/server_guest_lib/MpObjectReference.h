@@ -101,8 +101,9 @@ public:
   const FormDesc& GetCellOrWorld() const;
   const uint32_t& GetBaseId() const;
   const std::string& GetBaseType() const;
-  // thuum docs/verbs/npc-fate.md (the deaths): a dead game-file actor, a
-  // container to the player beside it
+  // thuum docs/verbs/npc-fate.md (the deaths): a dead NPC, a game-file actor
+  // or a server-made copy alike (playtest 37, finding 62), a container to the
+  // player beside it; a player's dead actor is none
   bool IsCorpse();
   const Inventory& GetInventory() const;
   // thuum (playtest 37, 2026-10-28, Eli: "shouldn't be that hard to change

@@ -1,6 +1,5 @@
 #include "ItemMenuRefresh.h"
 
-#include <RE/A/Actor.h>
 #include <RE/B/BarterMenu.h>
 #include <RE/C/ContainerMenu.h>
 #include <RE/G/GiftMenu.h>
@@ -44,12 +43,15 @@ bool ItemMenuRefresh::Shows(RE::TESObjectREFR& owner)
   if (owner.formID == 0x14) {
     return true;
   }
-  // a body's loot menu never: Eli's repro of the crash (02:2xZ) is "crash
-  // happens when i open a corpse container", the body's inventory landing
-  // and posting as its menu builds; a dead actor's rows are the engine's own
-  // to build, the change shows at the next open as before tonight
-  if (owner.As<RE::Actor>() ||
-      !MenuExists(*ui, RE::ContainerMenu::MENU_NAME)) {
+  // a body's loot menu too: the re-analyst's read of the corpse crash
+  // (docs/research/m3/re-corpse-menu-crash.md): the body's Long Bow row's
+  // ExtraDataList was freed by the server's inventory landing under the
+  // open menu (RemoveItem, equip handling) and NOTHING posted a null after
+  // it, so the item card's RequestItemCardInfo read the stale row (12329
+  // GetByType on a dead presence pointer). A posted null rebuilds every row
+  // before the next card request, so the body is announced as any target;
+  // the exclusion that stood here for one build was the gap, not the fix
+  if (!MenuExists(*ui, RE::ContainerMenu::MENU_NAME)) {
     return false;
   }
   const auto target = RE::ContainerMenu::GetTargetRefHandle();

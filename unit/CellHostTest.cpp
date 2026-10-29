@@ -3,6 +3,7 @@
 #include "ActorSpeechMessage.h"
 #include "ChangeValuesMessage.h"
 #include "CreateActorMessage.h"
+#include "HitMessage.h"
 #include "HostGrantMessage.h"
 #include "HostReleaseMessage.h"
 #include "HostedActorStateMessage.h"
@@ -1858,4 +1859,64 @@ TEST_CASE("A dead player hosts nothing: the grace starts at its death, its "
   DoDisconnect(p, 0);
   p.DestroyActor(kC2);
   p.DestroyActor(kC1);
+}
+
+// thuum docs/verbs/melee-reach.md (the weekend pass, M3's "NPC melee reach and
+// hit cone"): a hosted humanoid NPC's melee hit, reported by its host, is
+// validated by reach as a player's is (R1); beyond reach it is refused and
+// the victim keeps its health; within reach it lands
+TEST_CASE("A hosted resident's melee hit its host reports is gated by reach",
+          "[CellHost][Hit][espm]")
+{
+  constexpr uint32_t kSigrid = 0x13483;
+  const NiPoint3 sigridPos{ 24063.7f, -45204.2f, -40.6f };
+  const NiPoint3 landing{ 17225.f, -47204.f, -128.f };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kSigrid) == nullptr);
+  Player(p, 0, kC1, landing);
+  Player(p, 1, kC2, sigridPos + NiPoint3{ 0.f, 2000.f, 0.f });
+  const auto cell = p.worldState.CellOf(kTamriel, sigridPos);
+  REQUIRE(cell.has_value());
+  CellLoaded(p, 0, *cell);
+  REQUIRE(p.GetCellHost(*cell).player == kC1);
+  DoMessage(
+    p, 0,
+    nlohmann::json{ { "t", MsgType::ActorSightings },
+                    { "sightings",
+                      nlohmann::json::array({ nlohmann::json{
+                        { "refrId", kSigrid },
+                        { "worldOrCell", kTamriel },
+                        { "pos", { sigridPos.x, sigridPos.y, sigridPos.z } },
+                        { "rot", { 0.f, 0.f, 0.f } } } }) } });
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kSigrid) != nullptr);
+  auto& sigrid = p.worldState.GetFormAt<MpActor>(kSigrid);
+  auto& victim = p.worldState.GetFormAt<MpActor>(kC2);
+  const auto hitFrom = [&](const NiPoint3& victimPos) {
+    victim.SetPos(victimPos);
+    ActorValues full;
+    full.healthPercentage = 1.f;
+    full.magickaPercentage = 1.f;
+    full.staminaPercentage = 1.f;
+    victim.SetPercentages(full);
+    sigrid.SetLastHitTime(kC2, std::chrono::steady_clock::now() - 10s);
+    RawMessageData raw;
+    raw.userId = 0;
+    HitMessage hit;
+    hit.data.aggressor = kSigrid;
+    hit.data.target = kC2;
+    hit.data.source = 0;
+    p.GetActionListener().OnHit(raw, hit);
+    return victim.GetChangeForm().actorValues.healthPercentage < 1.f;
+  };
+  // 2000 units north of her: beyond any unarmed reach, refused
+  REQUIRE_FALSE(hitFrom(sigridPos + NiPoint3{ 0.f, 2000.f, 0.f }));
+  // 60 units north, on her heading: lands
+  REQUIRE(hitFrom(sigridPos + NiPoint3{ 0.f, 60.f, 0.f }));
+
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+  p.DestroyActor(kSigrid);
 }

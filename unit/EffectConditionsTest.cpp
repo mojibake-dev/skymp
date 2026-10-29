@@ -61,17 +61,25 @@ Condition Row(const char* function, uint16_t index, const char* runsOn,
   return c;
 }
 
-bool Holds(PartOne& p, const std::vector<Condition>& conditions,
-           const MpActor& victim, const MpActor& caster)
+bool HoldsFor(PartOne& p, ConditionsEvaluatorCaller caller,
+              const std::vector<Condition>& conditions, const MpActor& victim,
+              const MpActor& caster)
 {
   bool holds = false;
   ConditionEvaluatorContext context;
   ConditionsEvaluator::EvaluateConditions(
     p.worldState.conditionFunctionMap,
-    p.worldState.conditionsEvaluatorSettings,
-    ConditionsEvaluatorCaller::kMagicEffect, conditions, victim, caster,
-    [&](bool result, std::vector<std::string>&) { holds = result; }, context);
+    p.worldState.conditionsEvaluatorSettings, caller, conditions, victim,
+    caster, [&](bool result, std::vector<std::string>&) { holds = result; },
+    context);
   return holds;
+}
+
+bool Holds(PartOne& p, const std::vector<Condition>& conditions,
+           const MpActor& victim, const MpActor& caster)
+{
+  return HoldsFor(p, ConditionsEvaluatorCaller::kMagicEffect, conditions,
+                  victim, caster);
 }
 
 // the default logger's lines at info and above while the guard lives
@@ -377,6 +385,12 @@ TEST_CASE("HasPerk is known by index and by name and answers false for every "
     *target, *caster));
   REQUIRE(Holds(
     p, { Row("HasPerk", kHasPerk, "Subject", "==", 0.f, kDarkSouls, "AND") },
+    *target, *caster));
+  // a recipe's gate is the player's own game's: the crafting caller reads
+  // the perk as held (CraftTest's steel recipe, COBJ 0xdb89e, carries one)
+  REQUIRE(HoldsFor(
+    p, ConditionsEvaluatorCaller::kCraft,
+    { Row("HasPerk", kHasPerk, "Subject", "==", 1.f, kDarkSouls, "AND") },
     *target, *caster));
   Leave(p);
 }

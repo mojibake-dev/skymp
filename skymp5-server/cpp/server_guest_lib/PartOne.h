@@ -535,6 +535,17 @@ public:
   void OnActorSighting(MpActor& reporter, uint32_t refrId,
                        uint32_t worldOrCell, const NiPoint3& pos,
                        const NiPoint3& rot);
+  // thuum docs/verbs/npc-puppet.md (playtest 38's finding 66, "attempted to
+  // kill a bandit outside bleakfalls. all damage was ignored"): the host's
+  // roster naming the bandit reached the server in the grant's own
+  // millisecond (20:00:51.189Z) and was dropped as nobody's; the next came
+  // ten seconds later, after the player had died. A sighting dropped for a
+  // missing host is held per cell for kHeldSightingMs and replayed for the
+  // grant's host here (ApplyHostDecisions calls it after the flags flip); a
+  // sighting of another game's cell is never held.
+  void ReplayHeldSightings(uint32_t cell, MpActor& host);
+  static constexpr uint64_t kHeldSightingMs = 30'000;
+  static constexpr size_t kHeldSightingsPerCell = 64;
   // Where the players' round trips come from (IServer::GetRttMs, -1 while
   // unknown), read every tick for the table's ranking; none installed, no
   // round trip is known and the earliest loaded takes a cell.

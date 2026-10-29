@@ -10,15 +10,29 @@
 #include <RE/U/UI.h>
 #include <RE/U/UIMessage.h>
 #include <RE/U/UIMessageQueue.h>
+#include <string_view>
+
+// A menu is open when its instance exists (UI::GetMenu by name: the menu
+// map holds an instance between the menu's open and its close). Not
+// UI::IsMenuOpen: it asks the menu's kOnStack flag, and with Skyrim Souls RE
+// on the seats (its MenuFlagHandler rewrites the unpaused menus' flags) the
+// flag reads false while the ContainerMenu stands, as numItemMenus did
+// (playtest 37, the chest's third test: "refreshContainerMenu 371e9: the
+// engine's inventory update not posted" with the menu found and its target
+// matched a line earlier)
+static bool MenuExists(RE::UI& ui, std::string_view name)
+{
+  return ui.GetMenu(name) != nullptr;
+}
 
 bool ItemMenuRefresh::ItemMenuOpen()
 {
   auto* ui = RE::UI::GetSingleton();
   return ui &&
-    (ui->IsMenuOpen(RE::ContainerMenu::MENU_NAME) ||
-     ui->IsMenuOpen(RE::InventoryMenu::MENU_NAME) ||
-     ui->IsMenuOpen(RE::BarterMenu::MENU_NAME) ||
-     ui->IsMenuOpen(RE::GiftMenu::MENU_NAME));
+    (MenuExists(*ui, RE::ContainerMenu::MENU_NAME) ||
+     MenuExists(*ui, RE::InventoryMenu::MENU_NAME) ||
+     MenuExists(*ui, RE::BarterMenu::MENU_NAME) ||
+     MenuExists(*ui, RE::GiftMenu::MENU_NAME));
 }
 
 bool ItemMenuRefresh::Shows(RE::TESObjectREFR& owner)
@@ -34,7 +48,8 @@ bool ItemMenuRefresh::Shows(RE::TESObjectREFR& owner)
   // happens when i open a corpse container", the body's inventory landing
   // and posting as its menu builds; a dead actor's rows are the engine's own
   // to build, the change shows at the next open as before tonight
-  if (owner.As<RE::Actor>() || !ui->IsMenuOpen(RE::ContainerMenu::MENU_NAME)) {
+  if (owner.As<RE::Actor>() ||
+      !MenuExists(*ui, RE::ContainerMenu::MENU_NAME)) {
     return false;
   }
   const auto target = RE::ContainerMenu::GetTargetRefHandle();

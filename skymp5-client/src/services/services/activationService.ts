@@ -17,11 +17,25 @@ export class ActivationService extends ClientListener {
     }
 
     private onActivate(e: ActivateEvent) {
-        const lastInvService = this.controller.lookupListener(LastInvService);
-        lastInvService.lastInv = getInventory(this.sp.Game.getPlayer() as Actor);
-
         let caster = e.caster ? e.caster.getFormID() : 0;
         let target = e.target ? e.target.getFormID() : 0;
+
+        // thuum playtest 37 (2026-10-29 02:03Z, the live chest's second test,
+        // finding 49): the baseline the container diff runs against
+        // (containersService: a take or put is the engine's player inventory
+        // against this) was taken at EVERY activation in the game, any
+        // actor's (a resident's door, a puppet's replayed activation, a
+        // trap's firing of itself), so an activation landing between the
+        // player's take and the containerChanged event's delivery re-read the
+        // inventory with the taken item already in it and the diff came out
+        // empty: rotfern's garnet never left c1 as a TakeItem ("diff:" with no
+        // entry at 02:03:34.860Z) while her puts, with no activation in their
+        // window, did. The baseline is the player's own activation's alone.
+        // HYPOTHESIS until a take under a busy cell's activations lands
+        if (caster === 0x14) {
+            const lastInvService = this.controller.lookupListener(LastInvService);
+            lastInvService.lastInv = getInventory(this.sp.Game.getPlayer() as Actor);
+        }
 
         if (!target || !caster) {
           return;

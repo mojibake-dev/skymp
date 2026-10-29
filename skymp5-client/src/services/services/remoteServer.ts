@@ -844,11 +844,12 @@ export class RemoteServer extends ClientListener {
           if (Ui.isMenuOpen('ContainerMenu')) {
             const api = sp as unknown as Record<string, unknown>;
             const refresh = api['refreshContainerMenu'];
-            // the setting chestRedraw picks the redraw's halves without a build:
-            // "message" (the engine's inventory-update message), "reread" (the
-            // item list's re-read for the container), "both" (the default)
+            // the setting chestRedraw: unset, the engine's in-place redraw (the
+            // apply lands under the paused menu and the platform posts the
+            // engine's inventory-update message, re-container-menu-refresh.md);
+            // "reopen", the flicker fallback below
             const s = settings['skymp5-client'] as Record<string, unknown> | undefined;
-            const pick = s ? String(s['chestRedraw'] ?? 'both') : 'both';
+            const pick = s ? String(s['chestRedraw'] ?? 'inplace') : 'inplace';
             if (pick === 'reopen') {
               // the fallback (playtest 37, findings 29 and 30: the list's
               // re-read showed nothing and took the store button): the engine
@@ -871,9 +872,8 @@ export class RemoteServer extends ClientListener {
               }
               logTrace(this, `live chest ${refrId.toString(16)}: inventory applied under the open ContainerMenu, the menu closed and the chest asked again (reopen)`);
             } else {
-              const mode = pick === 'message' ? 1 : pick === 'reread' ? 2 : 3;
-              const asked = typeof refresh === 'function' ? !!(refresh as (id: number, mode: number) => boolean)(refrId, mode) : false;
-              logTrace(this, `live chest ${refrId.toString(16)}: inventory applied under the open ContainerMenu, redraw ${asked ? `asked (${pick})` : 'unavailable on this dist'}`);
+              const asked = typeof refresh === 'function' ? !!(refresh as (id: number) => boolean)(refrId) : false;
+              logTrace(this, `live chest ${refrId.toString(16)}: inventory applied under the open ContainerMenu, the engine's redraw ${asked ? 'asked' : 'unavailable on this dist'}`);
             }
           }
         } else if (msg.propName === 'isOpen') {

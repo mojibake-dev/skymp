@@ -1575,15 +1575,16 @@ wire_struct! {
 
 wire_struct! {
     /// MsgType 52, thuum's (docs/verbs/npc-fate.md, ADR-048's B): client to
-    /// server, reliable, once per death, R1. The host of a game-file actor
+    /// server, reliable, once per death, R1. The host of a game-file actor,
+    /// or of a server-made one (0xff000000 up; playtest 37's finding 47),
     /// reports a death its engine played that the server has no number for:
     /// the actor, the host's reading of the cause, the killer when an actor,
     /// the point. The server accepts it only when it can check the cause by
     /// its own evidence (a fall by the record's height history, a hazard by
     /// an activation it saw near the point, an NPC's hit by a recent hit it
     /// numbered), refuses and logs the rest, and caps a host's reports. Reason
-    /// codes: `E_VAL_RANGE` (an actor id of 0 or at or above 0xff000000, a
-    /// cause above 4), `E_VAL_OUT_OF_WORLD`, `E_VAL_NONFINITE`, `E_VAL_RATE`.
+    /// codes: `E_VAL_RANGE` (an actor id of 0, a cause above 4),
+    /// `E_VAL_OUT_OF_WORLD`, `E_VAL_NONFINITE`, `E_VAL_RATE`.
     pub struct ActorDeath {
         /// `"t": 52`.
         #[serde(default)]

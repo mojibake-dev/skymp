@@ -23,6 +23,7 @@
 #include "libespm/GLOB.h"
 #include "libespm/GMST.h"
 #include "libespm/ObjectBounds.h"
+#include "libespm/QUST.h"
 #include "libespm/RACE.h"
 #include "libespm/REFR.h"
 #include "libespm/SHOU.h"
@@ -2790,13 +2791,39 @@ void ActionListener::OnPlayerGlobals(const RawMessageData& rawMsgData,
   KillByPlayerGlobals(*actor, merged);
 }
 
+namespace {
+// memo D62 (2026-10-29; apocrypha's census: 42 controller, MCM,
+// version-tracker and player-alias quests in the layer plus the alternate
+// start's eighteen, every one a quest the game starts by itself; 330 of
+// Skyrim.esm's 1811 carry the flag): in mode all a quest whose record is
+// Start Game Enabled (QUST DNAM, libespm QUST.h) is each seat's own unless
+// the setting's `allowed` names it. The flag is the record's, so it is read
+// here beside the rule (wire-rules quest_stages holds the lists) and not in
+// it. Mode list is untouched: its curated list names what crosses.
+bool IsSeatsOwnQuest(PartOne& partOne, const FormDesc& quest,
+                     const espm::RecordHeader* record)
+{
+  if (partOne.SharedQuestsMode() != 1 || partOne.IsSharedQuestAllowed(quest)) {
+    return false;
+  }
+  const auto qust = espm::Convert<espm::QUST>(record);
+  if (!qust) {
+    return false;
+  }
+  const auto data = qust->GetData(partOne.worldState.GetEspmCache());
+  return data.questData &&
+    (data.questData->mainFlags & espm::QUST::QuestData::StartGameEnabled);
+}
+}
+
 // thuum docs/verbs/quest-stage.md (ADR-056; memo D58 B): a player's game
 // reports a stage its engine set on a quest. The server checks the quest (a
 // QUST of the load order, the world's by the sharing mode: listed in mode
-// list, not denied in mode all; R1), records the stage as the world's (R0)
-// and relays it to every other connected player; a stage the world already
-// has is a no-op, never an error. A client names no list, no mode and no
-// quest 0: those are the login replay's, server to client.
+// list, not denied in mode all and, in mode all, not a quest the game
+// starts by itself unless allowed, memo D62; R1), records the stage as the
+// world's (R0) and relays it to every other connected player; a stage the
+// world already has is a no-op, never an error. A client names no list, no
+// mode and no quest 0: those are the login replay's, server to client.
 void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
                                   const QuestStageMessage& msg)
 {
@@ -2829,6 +2856,13 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
                         "{} of {:x}, which is no quest",
                         rawMsgData.userId, actor->GetFormId(), msg.stage,
                         msg.quest);
+  }
+  if (IsSeatsOwnQuest(partOne, quest, lookup.rec)) {
+    return spdlog::info("E_QUEST_OWN_START: user {} actor {:x} reported stage "
+                        "{} of {}: a start-game-enabled quest is each seat's "
+                        "own (D62)",
+                        rawMsgData.userId, actor->GetFormId(), msg.stage,
+                        quest.ToString());
   }
   if (const uint8_t refusal = partOne.CheckSharedQuest(quest)) {
     if (refusal == 2) {
@@ -3200,7 +3234,9 @@ void ActionListener::SendQuestStages(MpActor& actor)
   // the login's first message names the sharing mode and its list (memo D58
   // B): in mode list the shared quests, and nothing at all when none is
   // listed; in mode all the denied quests, sent even when none is, so the
-  // seat learns the mode
+  // seat learns the mode (the allowed quests are not named: the wire's one
+  // list is the denied, and the allowed matter to the server alone, memo
+  // D62)
   const uint8_t mode = partOne.SharedQuestsMode();
   const auto listed = partOne.SharedQuestsListed();
   if (mode == 0 && listed.empty()) {
@@ -3226,6 +3262,14 @@ void ActionListener::SendQuestStages(MpActor& actor)
       message.quest = entry.quest.ToFormId(partOne.worldState.espmFiles);
     } catch (const std::exception&) {
       continue; // a recorded quest whose plugin this load order lacks
+    }
+    if (mode == 1 && partOne.HasEspm() &&
+        IsSeatsOwnQuest(
+          partOne, entry.quest,
+          partOne.GetEspm().GetBrowser().LookupById(message.quest).rec)) {
+      // each seat's own (memo D62): a record made under another setting
+      // keeps the stage, unsent, as a denied quest's
+      continue;
     }
     message.stage = entry.stage;
     actor.SendToUser(message, true);

@@ -38,10 +38,12 @@ TEST_CASE("The change form keeps the world's quest stages, and older records "
 
 // The handler, the relay, the login and the restart, on Skyrim.esm's own
 // records (thuum lab/esm.py on the 1.6.1170 master): QUST 0x39645 MS13 is
-// the listed quest (its stage indexes include 5, 10 and 20), QUST 0xb6031
-// MS13Intro a quest off the list (in mode all, memo D58 B, a quest nobody
-// declared), QUST 0x4e50d MQ102 the quest mode all denies, STAT 0x3b
-// XMarker no quest at all.
+// the listed quest (its stage indexes include 5, 10 and 20) and the
+// start-game-enabled one (DNAM main flags 0x11; MQ101 0x3372b reads 0x00
+// there, not Start Game Enabled, so MS13 stands for memo D62's rule), QUST
+// 0xb6031 MS13Intro a quest off the list, DNAM 0x00 (in mode all, memo D58
+// B, a quest nobody declared), QUST 0x4e50d MQ102 the quest mode all
+// denies, DNAM 0x00, STAT 0x3b XMarker no quest at all.
 namespace {
 constexpr uint32_t kReporter = 0xff000bd0;
 constexpr uint32_t kWatcher = 0xff000bd1;
@@ -54,6 +56,8 @@ constexpr uint32_t kUnloaded = 0x05000d62;
 const char* const kSharedQuests = R"(["39645:Skyrim.esm"])";
 const char* const kDeniedQuests =
   R"({"mode":"all","denied":["4e50d:Skyrim.esm"]})";
+const char* const kAllowedQuests =
+  R"({"mode":"all","denied":["4e50d:Skyrim.esm"],"allowed":["39645:Skyrim.esm"]})";
 
 // one QuestStage message as sent: the quest, the stage, the shared list,
 // the mode (0 list, 1 all)
@@ -242,6 +246,58 @@ TEST_CASE("In mode all a quest nobody declared is the world's: its stage is "
   // in force stays
   REQUIRE_THROWS(p.SetSharedQuestsSettings(R"({"mode":"list"})"));
   REQUIRE(p.SharedQuestsMode() == 1);
+  Leave(p);
+}
+
+// memo D62 (2026-10-29): in mode all a quest the game starts by itself is
+// each seat's own unless allowed
+TEST_CASE("In mode all a start-game-enabled quest's stage is refused "
+          "(E_QUEST_OWN_START) and records nothing, unless the setting allows "
+          "the quest, when it is recorded, relayed and replayed; the login "
+          "names the denied quests alone, and a recorded stage of a quest no "
+          "longer allowed stays unsent",
+          "[QuestStage][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p, kDeniedQuests);
+
+  // MS13 is Start Game Enabled: refused, nothing recorded, nothing relayed
+  Report(p, 0, kMs13, 10);
+  REQUIRE(p.GetQuestStages().empty());
+  REQUIRE(SentTo(p, 1).empty());
+  REQUIRE(SentTo(p, 0).empty());
+
+  // allowed: the world's, as any other quest in mode all
+  p.SetSharedQuestsSettings(kAllowedQuests);
+  Report(p, 0, kMs13, 10);
+  const FormDesc ms13 = FormDesc::FromString("39645:Skyrim.esm");
+  REQUIRE(p.GetQuestStages() == std::vector<QuestStageDone>{ { ms13, 10 } });
+  REQUIRE(SentTo(p, 1) == std::vector<Sent>{ Msg(kMs13, 10) });
+  REQUIRE(SentTo(p, 0).empty());
+
+  // the login names the denied quest, never the allowed (the wire's one
+  // list), then replays the allowed quest's stage
+  p.Messages().clear();
+  p.SetUserActor(1, kWatcher);
+  REQUIRE(SentTo(p, 1) ==
+          std::vector<Sent>{ Msg(0, 0, nlohmann::json::array({ kMq102 }), 1),
+                             Msg(kMs13, 10) });
+
+  // allowed no more: the record keeps the stage, the login leaves it unsent
+  p.SetSharedQuestsSettings(kDeniedQuests);
+  p.Messages().clear();
+  p.SetUserActor(1, kWatcher);
+  REQUIRE(p.GetQuestStages() == std::vector<QuestStageDone>{ { ms13, 10 } });
+  REQUIRE(
+    SentTo(p, 1) ==
+    std::vector<Sent>{ Msg(0, 0, nlohmann::json::array({ kMq102 }), 1) });
+
+  // a quest both denied and allowed stops at the setting, named, and the
+  // setting in force stays
+  REQUIRE_THROWS(p.SetSharedQuestsSettings(
+    R"({"mode":"all","denied":["39645:Skyrim.esm"],"allowed":["39645:Skyrim.esm"]})"));
+  REQUIRE(p.SharedQuestsMode() == 1);
+  // mode list is untouched: the first case above records MS13's stage there
   Leave(p);
 }
 

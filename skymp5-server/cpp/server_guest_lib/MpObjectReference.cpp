@@ -1654,8 +1654,16 @@ void MpObjectReference::GivePickupItemsToActivationSource(
 
 bool MpObjectReference::IsCorpse()
 {
+  // thuum docs/verbs/npc-fate.md (playtest 37, finding 62): a server-made
+  // NPC, a 0xff id with an NPC base, is a corpse to the server as a
+  // game-file actor is. The id's range stood here, so rotfern's E on the
+  // dead necromancer ff00000a (sent twice) matched no branch of
+  // ProcessActivateNormal and was dropped with no line. A player's actor is
+  // the one dead actor that is no corpse (its death takes the respawn path),
+  // told apart as the NPC rule is everywhere else: IsCreatedAsPlayer, a 0xff
+  // id with the player base or none (MpActor.cpp).
   auto actor = AsActor();
-  return GetFormId() < 0xff000000 && actor && actor->IsDead();
+  return actor && actor->IsDead() && !actor->IsCreatedAsPlayer();
 }
 
 void MpObjectReference::ProcessActivateNormal(
@@ -1808,8 +1816,9 @@ void MpObjectReference::ProcessActivateNormal(
       SetOpen(!IsOpen());
     }
   } else if (actorActivator && (t == espm::CONT::kType || IsCorpse())) {
-    // thuum docs/verbs/npc-fate.md (the deaths): a game-file actor's body is
-    // a container, the CONT branch's own body (occupancy within reach, the
+    // thuum docs/verbs/npc-fate.md (the deaths): a dead NPC's body, a
+    // game-file actor's or a server-made copy's (finding 62), is a
+    // container, the CONT branch's own body (occupancy within reach, the
     // record's inventory, OpenContainer; TakeItem and PutItem on the
     // server); a live actor's activation stays the host's engine's
     EnsureBaseContainerAdded(loader);

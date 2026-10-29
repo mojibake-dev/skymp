@@ -1491,10 +1491,12 @@ TEST_CASE("A hosted actor's equipment is its host's engine's word checked "
   // Skyrim.esm's iron sword, a WEAP record (the slot rule looks it up and
   // passes it by)
   constexpr uint32_t kIronSword = 0x12eb7;
-  // Skyrim.esm's steel sword, a WEAP the record lacks, and its iron helmet
-  // ArmorIronHelmet, an ARMO the record lacks (lab/esm.py)
+  // Skyrim.esm's steel sword, a WEAP the record lacks, and its steel helmet
+  // ArmorSteelHelmetA, an ARMO the record lacks (lab/esm.py): the actor's
+  // fate dresses it in the iron set, so the iron helmet 0x12e4d is already
+  // its own (3b's first T0, "outfit kept ... 4 worn item(s)", right 12e4d)
   constexpr uint32_t kElsewhere = 0x13989;
-  constexpr uint32_t kIronHelmet = 0x12e4d;
+  constexpr uint32_t kSteelHelmet = 0x13954;
   const NiPoint3 kAt{ 117786.f, -81400.f, 10997.f };
   Player(p, 0, kC1, kAt + NiPoint3{ 40.f, 0.f, 0.f });
   Player(p, 1, kC2, kAt + NiPoint3{ 60.f, 0.f, 0.f });
@@ -1582,9 +1584,9 @@ TEST_CASE("A hosted actor's equipment is its host's engine's word checked "
   // an ARMOR the record lacks: refused as before, the record stands, nothing
   // sent to the host
   p.Messages().clear();
-  Wear(p, 0, kActor, kIronHelmet, 4);
+  Wear(p, 0, kActor, kSteelHelmet, 4);
   p.Tick();
-  REQUIRE(!actor.GetEquipment().inv.HasItem(kIronHelmet));
+  REQUIRE(!actor.GetEquipment().inv.HasItem(kSteelHelmet));
   REQUIRE(actor.GetEquipment().numChanges == 3);
   REQUIRE(relays(1) == 0);
   REQUIRE(sentOfType(0, MsgType::SetInventory) == 0);

@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{bonds, activation, cells, actor_values, appearance, attributes, block, casts, clock, console, damage, effects, favorites, forms, hosted_state, hostility, magic, markers, melee, movement, player_globals, racemenu, ranged, rest, shouts, stagger, teleports, headshots, scripted_effects};
+use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, effects, favorites, forms, headshots, hosted_state, hostility, magic, markers, melee, movement, player_globals, quest_stages, racemenu, ranged, rest, scripted_effects, shouts, stagger, teleports};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -340,6 +340,18 @@ mod ffi {
         file: String,
         /// Its value.
         value: f32,
+    }
+
+    /// One stage done on a shared quest, by the quest's FormDesc's parts
+    /// (thuum docs/verbs/quest-stage.md, ADR-056).
+    #[derive(Debug, Clone, PartialEq)]
+    struct QuestStageEntry {
+        /// The quest's form id within its plugin.
+        short_id: u32,
+        /// The plugin, as the load order names it.
+        file: String,
+        /// The stage index the engine set.
+        stage: u16,
     }
 
     /// One actor value's base (thuum docs/verbs/actor-values.md).
@@ -1338,6 +1350,28 @@ mod ffi {
         /// The record after a checked report: the latest value wins.
         fn player_globals_merge(record: &[PlayerGlobalEntry], report: &[PlayerGlobalEntry]) -> Vec<PlayerGlobalEntry>;
 
+        /// thuum docs/verbs/quest-stage.md (ADR-056): the quests
+        /// server-settings.json's `sharedQuests` names, whose stages are the
+        /// world's.
+        type SharedQuests;
+        /// The list from the block as JSON text (`[]` for none); the error
+        /// names the bad entry.
+        fn new_shared_quests(settings_json: &str) -> Result<Box<SharedQuests>>;
+        /// The listed quests, in the settings' order (stage 0): what a client
+        /// reports.
+        fn shared_quests_listed(self: &SharedQuests) -> Vec<QuestStageEntry>;
+        /// Judge a report's quest: 0 listed, 1 not listed.
+        fn shared_quests_check(self: &SharedQuests, short_id: u32, file: &str) -> u8;
+        /// What the login sends: the recorded stages of quests still listed,
+        /// ascending within each quest.
+        fn shared_quests_at_login(self: &SharedQuests, record: &[QuestStageEntry]) -> Vec<QuestStageEntry>;
+        /// Whether the record holds the stage already (a report of it is a
+        /// no-op).
+        fn quest_stage_done(record: &[QuestStageEntry], done: &QuestStageEntry) -> bool;
+        /// The record after a checked report: the stage added once, ascending
+        /// within its quest.
+        fn quest_stages_merge(record: &[QuestStageEntry], done: &QuestStageEntry) -> Vec<QuestStageEntry>;
+
         /// Every player actor's recent bow and crossbow shots.
         type RangedShots;
         /// No shots yet.
@@ -1498,7 +1532,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlayerGlobalEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
+pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlayerGlobalEntry, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -2064,6 +2098,53 @@ impl PlayerGlobalsList {
 
 fn player_globals_merge(record: &[PlayerGlobalEntry], report: &[PlayerGlobalEntry]) -> Vec<PlayerGlobalEntry> {
     to_entries(&player_globals::merge(&to_values(record), &to_values(report)))
+}
+
+/// The quests whose stages are the world's (wire-rules quest_stages).
+pub struct SharedQuests(quest_stages::SharedQuests);
+
+fn new_shared_quests(settings_json: &str) -> Result<Box<SharedQuests>, clock::SettingsError> {
+    quest_stages::SharedQuests::from_json(settings_json).map(|l| Box::new(SharedQuests(l)))
+}
+
+fn to_stages(entries: &[QuestStageEntry]) -> Vec<quest_stages::StageDone> {
+    entries
+        .iter()
+        .map(|e| quest_stages::StageDone { quest: forms::FormDesc { short_id: e.short_id, file: e.file.clone() }, stage: e.stage })
+        .collect()
+}
+
+fn to_stage(e: &QuestStageEntry) -> quest_stages::StageDone {
+    quest_stages::StageDone { quest: forms::FormDesc { short_id: e.short_id, file: e.file.clone() }, stage: e.stage }
+}
+
+fn to_stage_entries(stages: &[quest_stages::StageDone]) -> Vec<QuestStageEntry> {
+    stages.iter().map(|s| QuestStageEntry { short_id: s.quest.short_id, file: s.quest.file.clone(), stage: s.stage }).collect()
+}
+
+impl SharedQuests {
+    fn shared_quests_listed(&self) -> Vec<QuestStageEntry> {
+        self.0.listed().iter().map(|d| QuestStageEntry { short_id: d.short_id, file: d.file.clone(), stage: 0 }).collect()
+    }
+
+    fn shared_quests_check(&self, short_id: u32, file: &str) -> u8 {
+        match self.0.check(&forms::FormDesc { short_id, file: file.to_owned() }) {
+            Ok(()) => 0,
+            Err(quest_stages::Refusal::Unlisted) => 1,
+        }
+    }
+
+    fn shared_quests_at_login(&self, record: &[QuestStageEntry]) -> Vec<QuestStageEntry> {
+        to_stage_entries(&self.0.at_login(&to_stages(record)))
+    }
+}
+
+fn quest_stage_done(record: &[QuestStageEntry], done: &QuestStageEntry) -> bool {
+    quest_stages::done(&to_stages(record), &to_stage(done))
+}
+
+fn quest_stages_merge(record: &[QuestStageEntry], done: &QuestStageEntry) -> Vec<QuestStageEntry> {
+    to_stage_entries(&quest_stages::merge(&to_stages(record), &to_stage(done)))
 }
 
 /// The cell host table (wire-rules cells, thuum docs/verbs/cell-host.md).
@@ -2817,6 +2898,22 @@ mod tests {
         assert!(lethal.as_ref().is_ok_and(|l| l.player_globals_lethal(&[e(0x43cef, 9.5)]).is_empty()));
         assert!(lethal.as_ref().is_ok_and(|l| l.player_globals_lethal(&[e(0x43cef, 10.0)]) == vec![e(0x43cef, 10.0)]));
         assert!(new_player_globals(r#"["0b1c19"]"#).is_err());
+    }
+
+    #[test]
+    fn the_bridge_keeps_the_shared_quests() {
+        let e = |short_id: u32, stage: u16| QuestStageEntry { short_id, file: "Skyrim.esm".to_owned(), stage };
+        let list = new_shared_quests(r#"["074a83:Skyrim.esm"]"#);
+        assert!(list.as_ref().is_ok_and(|l| l.shared_quests_listed() == vec![e(0x74a83, 0)]));
+        assert!(list.as_ref().is_ok_and(|l| l.shared_quests_check(0x74a83, "Skyrim.esm") == 0));
+        assert!(list.as_ref().is_ok_and(|l| l.shared_quests_check(0x74a84, "Skyrim.esm") == 1));
+        let record = quest_stages_merge(&[e(0x74a83, 20)], &e(0x74a83, 10));
+        assert_eq!(record, vec![e(0x74a83, 10), e(0x74a83, 20)]);
+        assert!(quest_stage_done(&record, &e(0x74a83, 20)));
+        assert!(!quest_stage_done(&record, &e(0x74a83, 30)));
+        assert_eq!(quest_stages_merge(&record, &e(0x74a83, 20)), record);
+        assert!(list.as_ref().is_ok_and(|l| l.shared_quests_at_login(&[e(0x74a84, 5), e(0x74a83, 20), e(0x74a83, 10)]) == vec![e(0x74a83, 10), e(0x74a83, 20)]));
+        assert!(new_shared_quests(r#"["074a83"]"#).is_err());
     }
 
     #[test]

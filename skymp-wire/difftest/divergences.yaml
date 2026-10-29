@@ -22,3 +22,13 @@ divergences:
     legacy: 0
     wire: 1
     reason: the player's globals at login (PlayerGlobals, thuum docs/verbs/player-globals.md); the legacy server has none
+
+  # thuum docs/verbs/quest-stage.md (ADR-056): the world's quest stages. The
+  # wire server tells each player the quests it shares (QuestStage, MsgType
+  # 57, quest 0 with the list) at the login itself, right after the globals,
+  # then the world's recorded stages one by one (none in a fresh T2 world).
+  # The legacy server has no such message.
+  - msg: {t: 57, quest: 0}
+    legacy: 0
+    wire: 1
+    reason: the shared quests at login (QuestStage, thuum docs/verbs/quest-stage.md); the legacy server has none

@@ -73,6 +73,9 @@ enum class MsgType : uint8_t
                          // to its host as a cause (the resulting health)
   ActorClaim = 56,       // thuum docs/verbs/npc-talk.md (ADR-052): a player's
                          // claim on an NPC for a dialogue, or its release
+  QuestStage = 57,       // thuum docs/verbs/quest-stage.md (ADR-056): a quest
+                         // stage the world shares: the report up, the relay
+                         // and the login replay down
 
   Max
 };

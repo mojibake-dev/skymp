@@ -30,6 +30,7 @@ import { ActorSpeechMessage } from "../messages/actorSpeechMessage";
 import { DamageCauseMessage } from "../messages/damageCauseMessage";
 import { HostedActorStateMessage } from "../messages/hostedActorStateMessage";
 import { PlayerGlobalsMessage } from "../messages/playerGlobalsMessage";
+import { QuestStageMessage } from "../messages/questStageMessage";
 import { ActorJumpMessage } from "../messages/actorJumpMessage";
 import { SpSnippetMessage } from "../messages/spSnippetMessage";
 import { TeleportMessage } from "../messages/teleportMessage";
@@ -104,6 +105,7 @@ type EventTypes = {
     'damageCauseMessage': [ConnectionMessage<DamageCauseMessage>],
     'hostedActorStateMessage': [ConnectionMessage<HostedActorStateMessage>],
     'playerGlobalsMessage': [ConnectionMessage<PlayerGlobalsMessage>],
+    'questStageMessage': [ConnectionMessage<QuestStageMessage>],
     'actorJumpMessage': [ConnectionMessage<ActorJumpMessage>],
     'hostGrantMessage': [ConnectionMessage<HostGrantMessage>],
     'actorFateMessage': [ConnectionMessage<ActorFateMessage>],

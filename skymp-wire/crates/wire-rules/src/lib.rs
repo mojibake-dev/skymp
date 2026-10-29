@@ -26,6 +26,7 @@ pub mod markers;
 pub mod melee;
 pub mod movement;
 pub mod player_globals;
+pub mod quest_stages;
 pub mod racemenu;
 pub mod ranged;
 pub mod rest;

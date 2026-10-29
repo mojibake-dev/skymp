@@ -32,7 +32,7 @@ use bounded::{String, Vec};
 
 /// Bump when any variant changes shape. It is part of netcode's protocol id,
 /// so peers built against another schema never complete a handshake.
-pub const SCHEMA_VERSION: u16 = 18;
+pub const SCHEMA_VERSION: u16 = 19;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -105,6 +105,9 @@ pub mod cap {
     /// Globals the server keeps per player (thuum docs/verbs/player-globals.md:
     /// Apocalypse's 55 with room for more mods).
     pub const PLAYER_GLOBALS: usize = 256;
+    /// Quests whose stages are the world's (thuum docs/verbs/quest-stage.md:
+    /// the server's `sharedQuests` list, Riverwood's first).
+    pub const SHARED_QUESTS: usize = 256;
     /// Actor values one actor's running buffs touch: two per effect at most
     /// (a dual value modifier's second).
     pub const EFFECT_MODIFIERS: usize = 2 * MAGIC_EFFECTS;
@@ -429,6 +432,8 @@ pub enum Message {
     DamageCause(skymp::DamageCause),
     /// 64, MsgType 56 (thuum). See [`skymp::ActorClaim`].
     ActorClaim(skymp::ActorClaim),
+    /// 65, MsgType 57 (thuum). See [`skymp::QuestStage`].
+    QuestStage(skymp::QuestStage),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -457,7 +462,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 65] = [
+const TABLE: [Row; 66] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -523,14 +528,15 @@ const TABLE: [Row; 65] = [
     row("ActorSpeech", 54, 32, Both),
     row("DamageCause", 55, 32, S2C),
     row("ActorClaim", 56, 16, C2S),
+    row("QuestStage", 57, 2 * KIB, Both),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 65;
-const _: () = assert!(TABLE.len() == 65, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 66;
+const _: () = assert!(TABLE.len() == 66, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -620,6 +626,7 @@ impl Message {
             Message::ActorSpeech(_) => 62,
             Message::DamageCause(_) => 63,
             Message::ActorClaim(_) => 64,
+            Message::QuestStage(_) => 65,
         }
     }
 
@@ -707,7 +714,8 @@ mod tests {
         assert_eq!(name_of_msg_type(54), Some("ActorSpeech"));
         assert_eq!(name_of_msg_type(55), Some("DamageCause"));
         assert_eq!(name_of_msg_type(56), Some("ActorClaim"));
-        assert_eq!(name_of_msg_type(57), None);
+        assert_eq!(name_of_msg_type(57), Some("QuestStage"));
+        assert_eq!(name_of_msg_type(58), None);
     }
 
     #[test]

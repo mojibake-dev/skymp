@@ -23,7 +23,7 @@ export interface CustomPropsEntry {
 export interface CreateActorMessage extends CreateActorMessageMainProps {
     t: MsgType.CreateActor,
     idx: number;
-    baseRecordType?: "DOOR" | "NPC_"; // see PartOne.cpp
+    baseRecordType?: "DOOR" | "NPC_" | "MSTT" | "ACTI"; // see PartOne.cpp; MSTT and ACTI come with props.placedBy (thuum docs/verbs/spell-placed-object.md)
     transform: Transform;
     isMe: boolean;
     props?: CreateActorMessageAdditionalProps;
@@ -67,4 +67,7 @@ export interface CreateActorMessageAdditionalProps {
     inventory?: Inventory;
 
     isDead?: boolean; // TODO: take a look why doubles CreateActorMessageMainProps
+
+    // thuum docs/verbs/spell-placed-object.md (ADR-057): the server id of the caster whose accepted cast placed this MSTT or ACTI; absent for every other form
+    placedBy?: number;
 }

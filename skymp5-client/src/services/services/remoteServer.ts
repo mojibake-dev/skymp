@@ -26,7 +26,7 @@ import { IdManager } from '../../lib/idManager';
 import { nameof } from '../../lib/nameof';
 import { setActorValuePercentage } from '../../sync/actorvalues';
 import { applyAppearanceToPlayer } from '../../sync/appearance';
-import { applyEquipment, isBadMenuShown } from '../../sync/equipment';
+import { applyEquipment, isBadMenuShown, applyPlayerHands, Equipment } from '../../sync/equipment';
 import { Inventory, applyInventory } from '../../sync/inventory';
 import { ContainerApplyQueue } from '../../view/containerApplyQueue';
 import { Movement } from '../../sync/movement';
@@ -90,10 +90,25 @@ on('update', () => {
     return;
   }
   if (Date.now() - pcInvLastApply > 5000) {
+    const firstApplyAfterSet = pcInvLastApply === 0;
     pcInvLastApply = Date.now();
     const pcInv = getPcInventory();
     if (pcInv) {
       applyInventory(Game.getPlayer()!, pcInv, false, true);
+      // thuum playtest 38's finding 68 ("after rotfern came back her bow
+      // wouldn't draw arrows"; c1's console: the login's hands pass equipped
+      // the ammo at +0.1 s, and this loop's first apply re-added the whole
+      // inventory at +5 s with nothing equipping after it): the first apply
+      // after a setInventory resets the base and lands every entry anew, so
+      // the hands pass runs once more when the adds have landed
+      if (firstApplyAfterSet) {
+        Utility.wait(0.1).then(() => {
+          const player = Game.getPlayer();
+          if (player) {
+            applyPlayerHands(player, { inv: pcInv } as Equipment);
+          }
+        });
+      }
     }
   }
 });

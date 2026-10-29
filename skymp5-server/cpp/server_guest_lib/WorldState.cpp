@@ -473,13 +473,17 @@ bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
   bool startsDead = false;
   if (isNpc) {
     auto* achr = reinterpret_cast<const espm::ACHR*>(record);
+    // thuum docs/verbs/npc-fate.md (playtest 38's finding 65: a Bleak Falls
+    // floor body with different loot on each screen): a placement that
+    // starts dead (ACHR flag 0x200) is a corpse the server owns like one it
+    // killed. The record loads dead (MpActor::MarkPlacedDead after the
+    // attach: no death event, no death item, no respawn), its inventory is
+    // the corpse path's one roll, and every seat loots the same list.
+    // Upstream skipped these ("TODO: Load dead references").
     startsDead = achr->StartsDead();
-    if (startsDead) {
-      if (optionalOutTrace) {
-        *optionalOutTrace << fmt::format(
-          "AttachEspmRecord - the server skips dead actors\n");
-      }
-      return false; // TODO: Load dead references
+    if (startsDead && optionalOutTrace) {
+      *optionalOutTrace << fmt::format(
+        "AttachEspmRecord - a dead-at-start actor loads as a corpse\n");
     }
   }
 
@@ -678,7 +682,15 @@ bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
     form.reset(
       new MpActor(formLocationalData, formCallbacksFactory(), baseId));
   }
+  MpActor* placedDead =
+    isNpc && startsDead ? static_cast<MpActor*>(form.get()) : nullptr;
   AddForm(std::move(form), formId, true, changeForm);
+  if (placedDead) {
+    // after Init rolled its inventory and before any saved ChangeForm
+    // applies over it (ApplyChangeForm's respawn of a dead record yields
+    // to the mark)
+    placedDead->MarkPlacedDead();
+  }
 
   // Do not TriggerFormInitEvent here, doing it later after changeForm apply
 

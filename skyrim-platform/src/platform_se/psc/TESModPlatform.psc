@@ -87,3 +87,10 @@ Bool Function Stagger(Actor target, Float magnitude, Actor source) global native
 ; along its shooter's aim (pitch and heading, radians) with its draw's power
 Bool Function LaunchArrow(Actor shooter, Weapon weapon, Ammo ammo, Float power, Float aimAngle, Float aimHeading) global native
 Bool Function LaunchArrowAt(Actor shooter, Weapon weapon, Ammo ammo, Float power, Float angleX, Float angleZ, Float originX, Float originY, Float originZ) global native
+
+; thuum docs/verbs/quest-stage.md, slice two: a stage the server relays is
+; applied here through the engine's SetStage without its Papyrus fragment
+; (the talker's game ran it): the pair in before the SetStage, out at the
+; latent call's answer; false for no quest or a stage outside 0 to 65535
+Bool Function SuppressQuestStageFragment(Quest quest, Int stage) global native
+Bool Function ReleaseQuestStageFragment(Quest quest, Int stage) global native

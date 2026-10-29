@@ -25,6 +25,9 @@ void EventManager::InitCustom()
   // a custom event without this line refuses every subscription, and the
   // client's startup chain broke on it (train-25's first stage, 2026-10-18)
   manager->EmplaceEvent("areaEffectPlaced");
+  // thuum docs/verbs/prop-physics.md (ADR-058): the player's character
+  // controller touched a prop's Havok body (FridaHooks' propContact)
+  manager->EmplaceEvent("propContact");
   manager->EmplaceEvent("ipcMessage");
 
   // skse messages

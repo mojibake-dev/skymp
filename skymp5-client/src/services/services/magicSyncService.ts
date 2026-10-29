@@ -27,6 +27,14 @@ interface PendingHostedLaunch {
     waited: number;
 }
 
+// a hosted caster's projectile cast event held for its launch (onSpellCast):
+// the event's message as built in its handler, and when the event came
+interface HeldHostedCast {
+    casterLocal: number;
+    msg: SpellCastMsgData;
+    at: number;
+}
+
 export class MagicSyncService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -122,6 +130,21 @@ export class MagicSyncService extends ClientListener {
             const launchAt = key ? this.hostedLaunchCasts.get(key) : undefined;
             if (key && launchAt !== undefined && Date.now() - launchAt <= MagicSyncService.launchMatchMs) {
                 logTrace(this, `hosted cast ${msg.spell.toString(16)} by ${casterId.toString(16)}: reported from its launch already`);
+            } else if (key && (MagicSyncService.launchesAtTargetLocation(event.spell) || MagicSyncService.launchesAProjectile(event.spell))) {
+                // playtest 37 (the 3i lay, 2026-10-28), Eli on the hosted flame
+                // atronach's Firebolt: "yes 1 firebolt, but they dont land in
+                // the same place. our marksman bug of old". The event came
+                // first at every cast, so this branch sent the cast with no
+                // launch and the launch a tick later was dropped as reported
+                // (flushHostedLaunches); the watcher's puppet then launched
+                // from its own pose. A hosted caster's projectile cast is held
+                // for its launch up to launchMatchMs instead, as the player's
+                // own waits (pendingCasts above), and goes as one message with
+                // the launch's geometry (mergeHeldHostedCasts); with no launch
+                // by then it goes as before. Self and touch casts keep the
+                // immediate send below
+                this.heldHostedCasts.push({ casterLocal: casterId, msg, at: Date.now() });
+                this.mergeHeldHostedCasts();
             } else {
                 this.sendCast(msg);
             }
@@ -233,9 +256,11 @@ export class MagicSyncService extends ClientListener {
         this.flushHostedLaunches();
     }
 
-    // the hosted launches waiting for a cast event: one that came within the
-    // match window makes the launch's report redundant; one that has waited
-    // launchWaitUpdates updates goes as the cast
+    // the hosted launches waiting for a cast event: one held for this launch
+    // takes its geometry and goes (mergeHeldHostedCasts); one that came
+    // within the match window makes the launch's report redundant; a launch
+    // that has waited launchWaitUpdates updates goes as the cast. A held cast
+    // whose window closed with no launch goes as the event reported it
     private flushHostedLaunches() {
         const now = Date.now();
         const stale: string[] = [];
@@ -252,6 +277,7 @@ export class MagicSyncService extends ClientListener {
             }
         });
         stale.forEach((key) => this.hostedLaunchCasts.delete(key));
+        this.mergeHeldHostedCasts();
         const keep: PendingHostedLaunch[] = [];
         for (const pending of this.pendingHostedLaunches) {
             const key = MagicSyncService.castKey(pending.casterLocal, pending.spell);
@@ -268,6 +294,63 @@ export class MagicSyncService extends ClientListener {
             this.sendHostedLaunchCast(pending);
         }
         this.pendingHostedLaunches = keep;
+        const stillHeld: HeldHostedCast[] = [];
+        for (const held of this.heldHostedCasts) {
+            if (now - held.at > MagicSyncService.launchMatchMs) {
+                this.sendCast(held.msg);
+                logTrace(this, `hosted cast ${held.msg.spell.toString(16)} by ${held.casterLocal.toString(16)}: no launch within the window, sent from its event`);
+            } else {
+                stillHeld.push(held);
+            }
+        }
+        this.heldHostedCasts = stillHeld;
+    }
+
+    // the held cast events paired with the pending launches of the same
+    // caster and spell within launchMatchMs: each pair goes as one message,
+    // the event's cast with the launch's geometry (the shape the player's own
+    // flushCasts sends), so the watcher launches the bolt where the host's
+    // engine did. Called from both sides, so either order pairs: the event's
+    // handler holds and pairs at once with a launch already waiting (its data
+    // read on its own update tick, memo D44), and a launch pairs on that tick
+    // with an event held before it. The merged message needs no native: the
+    // event's message was built in its handler and the launch is numbers
+    private mergeHeldHostedCasts() {
+        if (this.heldHostedCasts.length === 0 || this.pendingHostedLaunches.length === 0) {
+            return;
+        }
+        const launchesLeft: PendingHostedLaunch[] = [];
+        for (const pending of this.pendingHostedLaunches) {
+            const i = this.heldHostedCasts.findIndex((held) => held.casterLocal === pending.casterLocal
+                && held.msg.spell === pending.spell && Math.abs(held.at - pending.at) <= MagicSyncService.launchMatchMs);
+            if (i < 0) {
+                launchesLeft.push(pending);
+                continue;
+            }
+            this.sendHeldHostedCast(this.heldHostedCasts.splice(i, 1)[0], pending);
+        }
+        this.pendingHostedLaunches = launchesLeft;
+    }
+
+    private sendHeldHostedCast(held: HeldHostedCast, launch: PendingHostedLaunch) {
+        const launchOk = [launch.originX, launch.originY, launch.originZ, launch.angleX, launch.angleZ].every((v) => Number.isFinite(v));
+        if (!launchOk) {
+            // a launch the wire would refuse (E_VAL_NONFINITE) attaches
+            // nothing; the event's cast goes as before
+            this.sendCast(held.msg);
+            logTrace(this, `hosted cast ${held.msg.spell.toString(16)} by ${held.casterLocal.toString(16)}: its launch not finite, sent from its event`);
+            return;
+        }
+        this.sendCast({
+            ...held.msg,
+            hasLaunch: true,
+            originX: launch.originX,
+            originY: launch.originY,
+            originZ: launch.originZ,
+            launchAngleX: MagicSyncService.pitch(launch.angleX),
+            launchAngleZ: launch.angleZ,
+        });
+        logTrace(this, `hosted cast ${held.msg.spell.toString(16)} by ${held.casterLocal.toString(16)}: the launch's geometry attached`);
     }
 
     private sendHostedLaunchCast(pending: PendingHostedLaunch) {
@@ -347,7 +430,7 @@ export class MagicSyncService extends ClientListener {
             pending.waited++;
         }
         this.flushCasts(false);
-        if (this.pendingHostedLaunches.length > 0 || this.hostedEventCasts.size > 0 || this.hostedLaunchCasts.size > 0) {
+        if (this.pendingHostedLaunches.length > 0 || this.heldHostedCasts.length > 0 || this.hostedEventCasts.size > 0 || this.hostedLaunchCasts.size > 0) {
             this.flushHostedLaunches();
         }
     }
@@ -527,6 +610,9 @@ export class MagicSyncService extends ClientListener {
     private hostedEventCasts = new Map<string, number>();
     private hostedLaunchCasts = new Map<string, number>();
     private pendingHostedLaunches: PendingHostedLaunch[] = [];
+    // the hosted casters' projectile cast events held for their launches, up
+    // to launchMatchMs each (onSpellCast, mergeHeldHostedCasts)
+    private heldHostedCasts: HeldHostedCast[] = [];
     private static readonly hostedCastsKeptMs = 5000;
 
     // playtest 37, finding 53 (2026-10-28): the spell launches of the puppets

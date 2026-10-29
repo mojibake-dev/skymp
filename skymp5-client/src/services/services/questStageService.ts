@@ -1,4 +1,4 @@
-import { QuestStageEvent, QuestStartStopEvent } from "skyrimPlatform";
+import { Quest, QuestStageEvent, QuestStartStopEvent } from "skyrimPlatform";
 import { MsgType } from "../../messages";
 import { logError, logTrace } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
@@ -36,6 +36,17 @@ const PARKED_MAX = 64;
 // the Story Manager's alone to start (the Creation Kit's rule: "Any quest
 // which specifies an Event can only be started by the Story Manager"; A
 // Lovely Letter 0x74a83 starts on the player's Change Location into Riverwood).
+// Slice two (the verb doc's "Slice two", the re-analyst's read of
+// 2026-10-29): a stage applied from the relay runs the engine's SetStage
+// whole, but its Papyrus fragment (the QF_ script's Fragment_N: the reward,
+// the world effect) ran on the talker's game already, so the pair is handed
+// to Skyrim Platform's replacement of the VM's quest stage sink
+// (TESModPlatform.SuppressQuestStageFragment, FridaHooks.cpp) before the
+// SetStage and taken back at the latent call's answer, set or refused or
+// thrown; the journal entry, the done bit and the promise stay the engine's.
+// This seat's own stages (the report path, onQuestStage) never pass there.
+// Off under the questFragmentSuppress setting (default on). HYPOTHESIS until
+// lab/frida/quest-stage-chain.js reads the chain.
 export class QuestStageService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -133,12 +144,59 @@ export class QuestStageService extends ClientListener {
             logError(this, "the world's quest", questId.toString(16), "is gone before its stage", stage, "was set");
             return Promise.resolve();
         }
+        // slice two: the pair is the native sink's from here to the answer
+        const suppressed = this.suppressFragment(quest, questId, stage);
         return quest.setCurrentStageID(stage).then((ok) => {
+            if (suppressed) {
+                this.releaseFragment(questId, stage);
+            }
             logTrace(this, "the world's stage", stage, "of quest", questId.toString(16), ok ? "set" : "refused by the engine");
             if (!ok) {
                 this.applying.delete(key);
             }
+        }, (err) => {
+            if (suppressed) {
+                this.releaseFragment(questId, stage);
+            }
+            throw err;
         });
+    }
+
+    // Slice two's hand-over of a pair to the native sink (see the class
+    // comment). Both calls run where the SetStage runs, inside the update
+    // tick's promise chain, the VM context callNative needs; the release
+    // looks the quest up again, because the wrapper from before the latent
+    // call is out of Skyrim Platform's object pool (as setStage above). A
+    // refusal or a throw leaves the fragment the engine's, logged, and the
+    // stage still applies.
+    private suppressFragment(quest: Quest, questId: number, stage: number): boolean {
+        if (!this.fragmentSuppressEnabled()) {
+            return false;
+        }
+        try {
+            const ok = this.sp.callNative("TESModPlatform", "SuppressQuestStageFragment", undefined, quest, stage);
+            if (ok !== true) {
+                logError(this, "TESModPlatform.SuppressQuestStageFragment refused quest", questId.toString(16), "stage", stage);
+                return false;
+            }
+            return true;
+        } catch (err) {
+            logError(this, "TESModPlatform.SuppressQuestStageFragment failed on quest", questId.toString(16), "stage", stage, err);
+            return false;
+        }
+    }
+
+    private releaseFragment(questId: number, stage: number) {
+        const quest = this.sp.Quest.from(this.sp.Game.getFormEx(questId));
+        if (!quest) {
+            logError(this, "the world's quest", questId.toString(16), "is gone before its stage", stage, "fragment was released");
+            return;
+        }
+        try {
+            this.sp.callNative("TESModPlatform", "ReleaseQuestStageFragment", undefined, quest, stage);
+        } catch (err) {
+            logError(this, "TESModPlatform.ReleaseQuestStageFragment failed on quest", questId.toString(16), "stage", stage, err);
+        }
     }
 
     // the highest stage the world asked for on a quest that would not start,
@@ -223,6 +281,12 @@ export class QuestStageService extends ClientListener {
     private enabled(): boolean {
         const s = this.sp.settings["skymp5-client"] as Record<string, unknown> | undefined;
         return !s || s["questStage"] !== false;
+    }
+
+    // slice two's switch: a relayed stage keeps its fragment here when false
+    private fragmentSuppressEnabled(): boolean {
+        const s = this.sp.settings["skymp5-client"] as Record<string, unknown> | undefined;
+        return !s || s["questFragmentSuppress"] !== false;
     }
 
     private static key(questId: number, stage: number): string {

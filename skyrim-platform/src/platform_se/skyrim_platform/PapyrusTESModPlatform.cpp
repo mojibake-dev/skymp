@@ -1411,6 +1411,35 @@ bool TESModPlatform::Stagger(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
   return true;
 }
 
+// thuum docs/verbs/quest-stage.md, slice two: the pair goes to the quest
+// stage sink's replacement (FridaHooks.cpp); the stage is the engine's u16
+// (CommonLibSSE-NG TESQuestStageEvent.h:11)
+bool TESModPlatform::SuppressQuestStageFragment(IVM* vm, StackID stackId,
+                                                RE::StaticFunctionTag*,
+                                                RE::TESQuest* quest,
+                                                int32_t stage)
+{
+  if (!quest || stage < 0 || stage > 0xFFFF) {
+    return false;
+  }
+  Frida::SuppressQuestStageFragment(quest->formID,
+                                    static_cast<uint16_t>(stage));
+  return true;
+}
+
+bool TESModPlatform::ReleaseQuestStageFragment(IVM* vm, StackID stackId,
+                                               RE::StaticFunctionTag*,
+                                               RE::TESQuest* quest,
+                                               int32_t stage)
+{
+  if (!quest || stage < 0 || stage > 0xFFFF) {
+    return false;
+  }
+  Frida::ReleaseQuestStageFragment(quest->formID,
+                                   static_cast<uint16_t>(stage));
+  return true;
+}
+
 std::vector<float> TESModPlatform::GetPlayerProgress(IVM* vm, StackID stackId,
                                                      RE::StaticFunctionTag*)
 {
@@ -1697,6 +1726,17 @@ bool TESModPlatform::Register(IVM* vm)
                                      RE::StaticFunctionTag*, RE::Actor*, float,
                                      RE::Actor*>("Stagger", "TESModPlatform",
                                                  Stagger));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<
+      true, decltype(SuppressQuestStageFragment), bool, RE::StaticFunctionTag*,
+      RE::TESQuest*, int32_t>("SuppressQuestStageFragment", "TESModPlatform",
+                              SuppressQuestStageFragment));
+
+  vm->BindNativeMethod(new RE::BSScript::NativeFunction<
+                       true, decltype(ReleaseQuestStageFragment), bool,
+                       RE::StaticFunctionTag*, RE::TESQuest*, int32_t>(
+    "ReleaseQuestStageFragment", "TESModPlatform", ReleaseQuestStageFragment));
 
   static LoadGameEvent loadGameEvent;
 

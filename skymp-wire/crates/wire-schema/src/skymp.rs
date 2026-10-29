@@ -261,6 +261,14 @@ wire_struct! {
         pub inventory: Option<Inventory>,
         /// Dead state (also in the main props; SkyMP writes both).
         pub is_dead: Option<bool>,
+        /// thuum docs/verbs/spell-placed-object.md (ADR-057): the server id
+        /// of the caster whose accepted cast of a listed spell placed this
+        /// reference (the server's own MSTT or ACTI from its table); absent
+        /// for every other form. The caster's game skips a form naming
+        /// itself while its cast is open, since its engine runs the script's
+        /// own copies. Nonzero, and only with `base_record_type` MSTT or
+        /// ACTI (`E_VAL_RANGE`).
+        pub placed_by: Option<u32>,
     }
 }
 

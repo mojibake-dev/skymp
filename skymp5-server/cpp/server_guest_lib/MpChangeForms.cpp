@@ -511,6 +511,12 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
     res["questStages"] = { { "entries", stagesJson } };
   }
 
+  // thuum docs/verbs/spell-placed-object.md (ADR-057); absent in older
+  // records, read as none
+  if (changeForm.placedBySpell.has_value()) {
+    res["placedBySpell"] = changeForm.placedBySpell->ToString();
+  }
+
   // thuum docs/verbs/shouts.md; absent in older records, read as none
   if (changeForm.shoutRecord.has_value() && !changeForm.shoutRecord->Empty()) {
     res["shoutRecord"] = {
@@ -653,6 +659,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
   static const JsonPointer shoutRecord("shoutRecord");
   static const JsonPointer playerGlobals("playerGlobals");
   static const JsonPointer questStages("questStages");
+  static const JsonPointer placedBySpell("placedBySpell");
   static const JsonPointer favorites("favorites");
   static const JsonPointer raceMenuPreset("raceMenuPreset");
   static const JsonPointer staffRank("staffRank");
@@ -1025,6 +1032,13 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
       stages[i].stage = static_cast<uint16_t>(stageTmp);
     }
     res.questStages = stages;
+  }
+
+  if (element.at_pointer(placedBySpell.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    const char* placedTmp;
+    ReadEx(element, placedBySpell, &placedTmp);
+    res.placedBySpell = FormDesc::FromString(placedTmp);
   }
 
   if (element.at_pointer(shoutRecord.GetData()).error() ==

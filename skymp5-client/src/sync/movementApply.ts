@@ -383,7 +383,7 @@ const gTempTargetPos: NiPoint3 = [0, 0, 0];
 // shapes, chosen by the mode knob; the reasons are at translateTo's head
 type MovementMode = "lead" | "follow";
 type MovementKnobs = {
-  mode: MovementMode;       // "lead": the figure is led speed x leadSeconds ahead of the record; "follow": it glides to the sample itself, timed by the measured sample spacing
+  mode: MovementMode;       // "follow" (the default since 2026-10-28, Eli on the 3i lay: "movement looks great"): the figure glides to the sample itself, timed by the measured sample spacing; "lead": upstream's shape, led speed x leadSeconds ahead of the record
   leadSeconds: number;      // the running lead, speed x this ahead of the record (lead mode; the standing glide's time in both modes)
   leadDecay: number;        // the lead's run-out per standing sample (half)
   followMargin: number;     // follow mode: the glide's time as a multiple of the smoothed sample spacing, over one so the glide outlasts the wait for the next sample
@@ -399,7 +399,7 @@ let knobsCache: MovementKnobs | undefined;
 const localGaze = new Set<number>();
 const movementKnobs = (): MovementKnobs => {
   if (knobsCache) return knobsCache;
-  const defaults: MovementKnobs = { mode: "lead", leadSeconds: 0.2, leadDecay: 0.5, followMargin: 1.15, deadbandMoving: 8, deadbandStill: 4, popDistance: 256, popWindowMs: 600, jumpDistance: 1024, localGazeRadius: 450 };
+  const defaults: MovementKnobs = { mode: "follow", leadSeconds: 0.2, leadDecay: 0.5, followMargin: 1.15, deadbandMoving: 8, deadbandStill: 4, popDistance: 256, popWindowMs: 600, jumpDistance: 1024, localGazeRadius: 450 };
   const s = settings["skymp5-client"] as Record<string, unknown> | undefined;
   const given = (s && typeof s["movement"] === "object" && s["movement"]) ? s["movement"] as Record<string, unknown> : {};
   const out = { ...defaults } as Record<string, unknown>;

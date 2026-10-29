@@ -58,25 +58,59 @@ bool ItemMenuRefresh::Shows(RE::TESObjectREFR& owner)
   return target != 0 && target == owner.CreateRefHandle().native_handle();
 }
 
-bool ItemMenuRefresh::Post(RE::TESObjectREFR& owner)
+const char* ItemMenuRefresh::Name(PostResult result)
+{
+  switch (result) {
+    case PostResult::kPosted:
+      return "posted";
+    case PostResult::kNotShown:
+      return "no open item menu shows that inventory";
+    case PostResult::kNoQueue:
+      return "no UI message queue or interface strings";
+    case PostResult::kNoData:
+      return "the queue gave no message data";
+  }
+  return "unknown";
+}
+
+ItemMenuRefresh::PostResult ItemMenuRefresh::TryPost(RE::TESObjectREFR& owner)
 {
   auto* ui = RE::UI::GetSingleton();
   if (!ui || !Shows(owner)) {
-    return false;
+    return PostResult::kNotShown;
   }
   auto* queue = RE::UIMessageQueue::GetSingleton();
   auto* strings = RE::InterfaceStrings::GetSingleton();
   if (!queue || !strings) {
-    return false;
+    return PostResult::kNoQueue;
   }
   auto* data = static_cast<RE::InventoryUpdateData*>(
     queue->CreateUIMessageData(strings->inventoryUpdateData));
   if (!data) {
-    return false;
+    return PostResult::kNoData;
   }
   data->inventoryRef = owner.CreateRefHandle().native_handle();
   data->updateObj = nullptr;
   queue->AddMessage(strings->topMenu, RE::UI_MESSAGE_TYPE::kInventoryUpdate,
                     data);
-  return true;
+  return PostResult::kPosted;
+}
+
+bool ItemMenuRefresh::Post(RE::TESObjectREFR& owner)
+{
+  return TryPost(owner) == PostResult::kPosted;
+}
+
+bool ItemMenuRefresh::TargetByFormId(const RE::TESObjectREFR& owner,
+                                     std::uint32_t& menuHandle)
+{
+  menuHandle = 0;
+  auto* ui = RE::UI::GetSingleton();
+  if (!ui || !MenuExists(*ui, RE::ContainerMenu::MENU_NAME)) {
+    return false;
+  }
+  menuHandle = RE::ContainerMenu::GetTargetRefHandle();
+  RE::NiPointer<RE::TESObjectREFR> target;
+  RE::TESObjectREFR::LookupByHandle(menuHandle, target);
+  return target && target->formID == owner.formID;
 }

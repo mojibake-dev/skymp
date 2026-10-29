@@ -783,10 +783,28 @@ void TESModPlatform::AddItemEx(
     // dirty by itself, AddObjectToContainer says nothing; the message with no
     // object redraws the dirty rows, or everything when none is dirty).
     // HYPOTHESIS until the shared chest redraws in place on a seat
-    if (countDelta != 0 && ItemMenuRefresh::Post(*containerRefr)) {
-      logger::info("[verb:containers] addItemEx {:x}: {} x{} landed under an "
-                   "open item menu, the menu told",
-                   refrId, boundObject->GetFormID(), countDelta);
+    if (countDelta != 0) {
+      const auto result = ItemMenuRefresh::TryPost(*containerRefr);
+      std::uint32_t menuHandle = 0;
+      if (result == ItemMenuRefresh::PostResult::kPosted) {
+        logger::info(
+          "[verb:containers] addItemEx {:x}: {} x{} landed under an "
+          "open item menu, the menu told",
+          refrId, boundObject->GetFormID(), countDelta);
+      } else if (result != ItemMenuRefresh::PostResult::kNotShown ||
+                 ItemMenuRefresh::TargetByFormId(*containerRefr, menuHandle)) {
+        // the one silence worth a line: the open menu's target is this very
+        // reference by form id and the message still did not go (the handle
+        // comparison in Shows, or the queue); every other container's change
+        // under a menu is rightly silent
+        logger::info(
+          "[verb:containers] addItemEx {:x}: {} x{} landed under an "
+          "open item menu, the menu NOT told: {} (the menu's target "
+          "handle {:x}, the reference's {:x})",
+          refrId, boundObject->GetFormID(), countDelta,
+          ItemMenuRefresh::Name(result), menuHandle,
+          containerRefr->CreateRefHandle().native_handle());
+      }
     }
   });
 

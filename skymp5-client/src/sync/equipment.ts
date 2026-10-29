@@ -6,9 +6,11 @@ import {
   Shout,
   Spell,
   Ui,
+  Utility,
   setInventory,
 } from 'skyrimPlatform';
 
+import { logTrace } from '../logging';
 import { Entry, Inventory, getInventory } from './inventory';
 
 export const enum SpellType {
@@ -224,6 +226,70 @@ export const keepOnlyServerSpells = (ac: Actor, eq: Equipment): number => {
   return foreign.length;
 };
 
+// thuum docs/verbs/marksman.md, finding 45 (playtest 37): after a relaunch
+// the player's record lost the weapons in its hands. applyEquipment's
+// setInventory lists every worn entry with its hand, but the Skyrim Platform
+// native equips with forceEquip only for an actor other than 0x14
+// (InventoryApi.cpp SetInventory), and on the player armor sticks while
+// weapons do not; upstream knew (sendInputsService.ts onLoadGame: "Currently
+// only armor is equipped after relogging"). Three seconds after the load that
+// service reports the engine's hands, empty, the server replaces the record's
+// equipment whole, and the bow is gone: every shot was judged against an
+// empty hand. So the player's hands are set the way applyHands sets a
+// puppet's: the worn weapon to the right hand, the wornLeft entry to the
+// left, the worn ammo by equipItem, each only when the hand does not hold it
+// already and the item is in the inventory. Nothing is added here; the
+// inventory sync brings the items, and one not landed yet is the second
+// apply's, 0.3 s later (remoteServer.ts applyPcInv). The delay: a Papyrus
+// native called from here runs on the game thread at once, but setInventory
+// queues its adds on gameThrQ, drained after the JS tick (skyrim_platform
+// main.cpp OnUpdate), so a count read in applyEquipment's own tick sees the
+// inventory removeAllItems just emptied; this runs a tenth of a second
+// later, as sync/appearance.ts defers its own.
+const applyPlayerHands = (ac: Actor, eq: Equipment): void => {
+  if (ac.isDeleted()) {
+    return;
+  }
+  const typeOf = (baseId: number): number => Game.getFormEx(baseId)?.getType() ?? 0;
+  // the right hand is the worn weapon (FormType.Weapon, 41), the left the
+  // wornLeft entry, the quiver the worn ammo (inventory.ts flags the
+  // equipped ammo worn)
+  const right = eq.inv.entries.find((e) => e.worn && typeOf(e.baseId) === 41)?.baseId ?? 0;
+  const left = eq.inv.entries.find((e) => e.wornLeft)?.baseId ?? 0;
+  const ammo = eq.inv.entries.find((e) => e.worn && Ammo.from(Game.getFormEx(e.baseId)))?.baseId ?? 0;
+  const done: string[] = [];
+  // equipItemEx's slots: 1 the right hand, 2 the left; getEquippedObject's:
+  // 1 the right hand, 0 the left (as applyHands)
+  const hands: Array<{ name: string; slot: number; location: number; baseId: number }> = [
+    { name: 'right', slot: 1, location: 1, baseId: right },
+    { name: 'left', slot: 2, location: 0, baseId: left },
+  ];
+  for (const hand of hands) {
+    if (hand.baseId === 0) {
+      continue;
+    }
+    const current = ac.getEquippedObject(hand.location)?.getFormID() ?? 0;
+    if (current === hand.baseId) {
+      continue;
+    }
+    const form = Game.getFormEx(hand.baseId);
+    if (form && ac.getItemCount(form) >= 1) {
+      ac.equipItemEx(form, hand.slot, false, false);
+      done.push(`${hand.name} ${hand.baseId.toString(16)}`);
+    }
+  }
+  if (ammo !== 0) {
+    const form = Game.getFormEx(ammo);
+    if (form && !ac.isEquipped(form) && ac.getItemCount(form) >= 1) {
+      ac.equipItem(form, false, true);
+      done.push(`ammo ${ammo.toString(16)}`);
+    }
+  }
+  if (done.length > 0) {
+    logTrace('Equipment', `player hands re-equipped after setInventory: ${done.join(', ')}`);
+  }
+};
+
 export const applyEquipment = (ac: Actor, eq: Equipment): boolean => {
   // a deleted reference (a copy the cleaner or a respawn let go) crashes
   // the engine in UnequipAll (c2's crash in x-handoff-door 20261024-001915:
@@ -240,6 +306,17 @@ export const applyEquipment = (ac: Actor, eq: Equipment): boolean => {
   const newInventory = removeUnnecessaryExtra(filterWorn(eq.inv), ac.getFormID() === 0x14);
 
   setInventory(ac.getFormID(), newInventory);
+
+  // finding 45: the player's hands, once setInventory's adds have landed
+  // (applyPlayerHands above)
+  if (ac.getFormID() === 0x14) {
+    Utility.wait(0.1).then(() => {
+      const player = Game.getPlayer();
+      if (player) {
+        applyPlayerHands(player, eq);
+      }
+    });
+  }
 
   syncSpellEquipment(ac, eq.leftSpell, SpellType.Left);
   syncSpellEquipment(ac, eq.rightSpell, SpellType.Right);

@@ -2,23 +2,25 @@
 #include "CallNativeApi.h"
 #include "FridaHooks.h"
 #include "Hosted.h"
+#include "ItemMenuRefresh.h"
 #include "Puppets.h"
 #include "game/Offsets.h"
 #include <RE/A/ActivateHandler.h>
+#include <RE/C/Calendar.h>
 #include <RE/C/ContainerMenu.h>
 #include <RE/C/CrosshairPickData.h>
 #include <RE/D/DialogueMenu.h>
 #include <RE/I/InterfaceStrings.h>
-#include <RE/I/InventoryUpdateData.h>
-#include <RE/I/ItemList.h>
 #include <RE/M/MenuTopicManager.h>
 #include <RE/P/PlayerControls.h>
+#include <RE/T/TESFaction.h>
+#include <RE/T/TESObjectCELL.h>
 #include <RE/T/TESTopic.h>
 #include <RE/T/TESTopicInfo.h>
 #include <RE/U/UI.h>
 #include <RE/U/UIMessage.h>
-#include <RE/U/UIMessageQueue.h>
 #include <algorithm>
+#include <cfloat>
 #include <chrono>
 #include <cmath>
 #include <mutex>
@@ -572,60 +574,133 @@ std::mutex g_faceMutex;
 std::unordered_map<uint32_t, FaceRead> g_face;
 }
 
+namespace {
+// thuum docs/research/m3/re-claimed-vendor-topic.md (the re-analyst,
+// 2026-10-28; playtest 37's finding 40: a claimant's promoted innkeeper
+// offered no "What have you got for sale?"): the vendor topics' condition
+// GetOffersServicesNow reads the actor's cached vendor faction
+// (Actor::CanOfferServices over GetVendorFaction, CommonLib Actor.cpp:136),
+// which the engine recomputes lazily and at most every 20 s of AI time, so
+// a dialogue opened right after the claim's promote finds the cache empty
+// (a run within the last 20 s kept nothing for an AI-off puppet) and builds
+// its topic list without the services. Before the activation the cache is
+// reset with the engine's own sentinel (the stamp at -FLT_MAX, Actor.h:671)
+// and asked again; a vendor whose faction still does not resolve waits a
+// frame, at most this many, then the dialogue opens anyway and the inputs
+// the engine judged (the cell, the hour) are logged. HYPOTHESIS H-58b until
+// x-npc-vendor-claim reads the topic on the claimant
+constexpr int kVendorFrames = 30;
+
+// the actor belongs to some faction flagged as a vendor
+bool IsVendorActor(RE::Actor& actor)
+{
+  bool vendor = false;
+  actor.VisitFactions([&vendor](RE::TESFaction* faction, std::int8_t) {
+    if (faction && faction->IsVendor()) {
+      vendor = true;
+      return true;
+    }
+    return false;
+  });
+  return vendor;
+}
+
+void ActivatePickRefTask(int vendorFramesLeft)
+{
+  auto* player = RE::PlayerCharacter::GetSingleton();
+  if (!player) {
+    return;
+  }
+  // thuum docs/research/m3/re-claimed-dialogue-state.md (the re-analyst,
+  // 2026-10-28; playtest 37's finding 19: a claimant's promoted partner
+  // reads not-in-dialogue while the menu is open): a SECOND
+  // TESNPC::Activate on an actor whose dialogue already runs clears
+  // HighProcessData::talkingToPC (its SetTalkingToPC(1)/(0) pair before
+  // the speaker test), and with the byte off the engine steps the
+  // package, drops the look at the player and times the voice as for a
+  // stranger: the wiggle, the missing head turn. One activation per
+  // claim: nothing runs while the Dialogue Menu is open, while the
+  // MenuTopicManager's speaker is the pick, or while the pick already
+  // talks to the player (HighProcessData.h:341). H-55e CONFIRMED live
+  // (playtest 37, 00:21Z).
+  auto* ui = RE::UI::GetSingleton();
+  if (ui && ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME)) {
+    logger::info("[verb:npc-talk] activatePickRef skipped: the Dialogue "
+                 "Menu is open");
+    return;
+  }
+  RE::NiPointer<RE::TESObjectREFR> pick;
+  if (auto* pickData = RE::CrosshairPickData::GetSingleton()) {
+    pick = pickData->target.get();
+  }
+  RE::Actor* actor = nullptr;
+  if (pick) {
+    if (auto* mtm = RE::MenuTopicManager::GetSingleton()) {
+      auto speaker = mtm->speaker.get();
+      if (speaker && speaker.get() == pick.get()) {
+        logger::info("[verb:npc-talk] activatePickRef skipped: {:x} is "
+                     "the dialogue's speaker already",
+                     pick->formID);
+        return;
+      }
+    }
+    actor = pick->As<RE::Actor>();
+    if (actor) {
+      auto* process = actor->GetActorRuntimeData().currentProcess;
+      auto* high = process ? process->high : nullptr;
+      if (high && high->talkingToPC) {
+        logger::info("[verb:npc-talk] activatePickRef skipped: {:x} "
+                     "talks to the player already",
+                     pick->formID);
+        return;
+      }
+    }
+  }
+  if (actor) {
+    // the engine's sentinel every frame of the wait: a run re-arms the 20 s
+    // throttle, so each GetVendorFaction must find the stamp reset
+    auto& rt = actor->GetActorRuntimeData();
+    rt.calculateVendorFactionTimer.timeStamp = -FLT_MAX;
+    rt.vendorFaction = nullptr;
+    if (IsVendorActor(*actor) && !actor->GetVendorFaction()) {
+      auto* cell = actor->GetParentCell();
+      auto* calendar = RE::Calendar::GetSingleton();
+      if (vendorFramesLeft > 0) {
+        if (vendorFramesLeft == kVendorFrames || vendorFramesLeft % 10 == 0) {
+          logger::info(
+            "[verb:npc-talk] activatePickRef waits: {:x} is a vendor with "
+            "no vendor faction yet (cell {:x}, hour {:.2f}); {} frame(s) "
+            "left",
+            actor->formID, cell ? cell->formID : 0u,
+            calendar ? calendar->GetHour() : -1.f, vendorFramesLeft);
+        }
+        g_nativeCallRequirements.gameThrQ->AddTask(
+          [vendorFramesLeft](Viet::Void) {
+            ActivatePickRefTask(vendorFramesLeft - 1);
+          });
+        return;
+      }
+      logger::warn("[verb:npc-talk] activatePickRef: {:x} is a vendor with "
+                   "no vendor faction after {} frames (cell {:x}, hour "
+                   "{:.2f}); the dialogue opens anyway (H-58b)",
+                   actor->formID, kVendorFrames, cell ? cell->formID : 0u,
+                   calendar ? calendar->GetHour() : -1.f);
+    } else if (vendorFramesLeft < kVendorFrames) {
+      logger::info("[verb:npc-talk] activatePickRef: {:x}'s vendor faction "
+                   "resolved after {} frame(s)",
+                   actor->formID, kVendorFrames - vendorFramesLeft);
+    }
+  }
+  player->ActivatePickRef();
+  logger::info("[verb:npc-talk] activatePickRef ran (pick {:x})",
+               pick ? pick->formID : 0u);
+}
+} // namespace
+
 Napi::Value PuppetApi::ActivatePickRef(const Napi::CallbackInfo& info)
 {
-  g_nativeCallRequirements.gameThrQ->AddTask([](Viet::Void) {
-    auto* player = RE::PlayerCharacter::GetSingleton();
-    if (!player) {
-      return;
-    }
-    // thuum docs/research/m3/re-claimed-dialogue-state.md (the re-analyst,
-    // 2026-10-28; playtest 37's finding 19: a claimant's promoted partner
-    // reads not-in-dialogue while the menu is open): a SECOND
-    // TESNPC::Activate on an actor whose dialogue already runs clears
-    // HighProcessData::talkingToPC (its SetTalkingToPC(1)/(0) pair before
-    // the speaker test), and with the byte off the engine steps the
-    // package, drops the look at the player and times the voice as for a
-    // stranger: the wiggle, the missing head turn. One activation per
-    // claim: nothing runs while the Dialogue Menu is open, while the
-    // MenuTopicManager's speaker is the pick, or while the pick already
-    // talks to the player (HighProcessData.h:341). HYPOTHESIS H-55e until
-    // x-npc-talk-claim reads the native true on the claimant.
-    auto* ui = RE::UI::GetSingleton();
-    if (ui && ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME)) {
-      logger::info("[verb:npc-talk] activatePickRef skipped: the Dialogue "
-                   "Menu is open");
-      return;
-    }
-    RE::NiPointer<RE::TESObjectREFR> pick;
-    if (auto* pickData = RE::CrosshairPickData::GetSingleton()) {
-      pick = pickData->target.get();
-    }
-    if (pick) {
-      if (auto* mtm = RE::MenuTopicManager::GetSingleton()) {
-        auto speaker = mtm->speaker.get();
-        if (speaker && speaker.get() == pick.get()) {
-          logger::info("[verb:npc-talk] activatePickRef skipped: {:x} is "
-                       "the dialogue's speaker already",
-                       pick->formID);
-          return;
-        }
-      }
-      if (auto* actor = pick->As<RE::Actor>()) {
-        auto* process = actor->GetActorRuntimeData().currentProcess;
-        auto* high = process ? process->high : nullptr;
-        if (high && high->talkingToPC) {
-          logger::info("[verb:npc-talk] activatePickRef skipped: {:x} "
-                       "talks to the player already",
-                       pick->formID);
-          return;
-        }
-      }
-    }
-    player->ActivatePickRef();
-    logger::info("[verb:npc-talk] activatePickRef ran (pick {:x})",
-                 pick ? pick->formID : 0u);
-  });
+  g_nativeCallRequirements.gameThrQ->AddTask(
+    [](Viet::Void) { ActivatePickRefTask(kVendorFrames); });
   return Napi::Boolean::New(info.Env(), true);
 }
 
@@ -813,28 +888,22 @@ Napi::Value PuppetApi::FaceKeyframes(const Napi::CallbackInfo& info)
 }
 
 // thuum memo D52 B (playtest 37, 2026-10-28, Eli: "so both can open it but
-// they dont see a shared live updating inventory / in morrowind they do"):
-// refreshContainerMenu(refId): when the ContainerMenu is open on this seat
-// for that reference (ContainerMenu::GetTargetRefHandle), the menu hears
-// what the engine tells it when a container's items change, an
-// InventoryUpdateData for the reference on the UI message queue
-// (UI_MESSAGE_TYPE::kInventoryUpdate, the data the queue creates by
-// InterfaceStrings' name), and its item list is re-read for the container
-// (ItemList::Update(owner), CommonLib's Offset::ItemList::Update).
-// HYPOTHESIS until Eli's chest: the menu redraws from one of the two; the
-// re-read shows the chest's rows on the player's own side if that side is
-// up at the moment (then the message alone stays)
+// they dont see a shared live updating inventory / in morrowind they do";
+// docs/research/m3/re-container-menu-refresh.md): refreshContainerMenu(refId)
+// ends a batch of changes to a container whose ContainerMenu is open on this
+// seat (ContainerMenu::GetTargetRefHandle): the engine's inventory-update
+// message for that reference, posted twice from the game thread after the
+// batch's tasks (Skyrim Souls' shape: the first redraws any rows the engine
+// marked dirty, the second rebuilds both sides when none is). Each change
+// addItemEx lands under the menu already posts one (ItemMenuRefresh); this
+// is the batch's end for the paths that land otherwise (resetBase's
+// RemoveAllItems). Never ItemList::Update: it blanks the menu's selection
+// until a message is processed, playtest 37's "cannot place" (finding 30).
+// HYPOTHESIS until the shared chest redraws in place on a seat
 Napi::Value PuppetApi::RefreshContainerMenu(const Napi::CallbackInfo& info)
 {
   const auto refId = NapiHelper::ExtractUInt32(info[0], "refId");
-  // mode (playtest 37, Eli on the first live chest: "kiiiiind of working"):
-  // bit 1 posts the engine's inventory-update message, bit 2 re-reads the
-  // item list for the container; 3 both, the default. A client setting
-  // picks it (chestRedraw), so the two halves separate without a build
-  const auto mode = info.Length() > 1 && !info[1].IsUndefined()
-    ? NapiHelper::ExtractUInt32(info[1], "mode")
-    : 3u;
-  g_nativeCallRequirements.gameThrQ->AddTask([refId, mode](Viet::Void) {
+  g_nativeCallRequirements.gameThrQ->AddTask([refId](Viet::Void) {
     auto* ui = RE::UI::GetSingleton();
     auto menu = ui ? ui->GetMenu<RE::ContainerMenu>() : nullptr;
     if (!menu) {
@@ -849,34 +918,11 @@ Napi::Value PuppetApi::RefreshContainerMenu(const Napi::CallbackInfo& info)
                    refId, target ? target->formID : 0u);
       return;
     }
-    bool posted = false;
-    auto* queue = RE::UIMessageQueue::GetSingleton();
-    auto* strings = RE::InterfaceStrings::GetSingleton();
-    if ((mode & 1u) && queue && strings) {
-      auto* data = static_cast<RE::InventoryUpdateData*>(
-        queue->CreateUIMessageData(strings->inventoryUpdateData));
-      if (data) {
-        data->inventoryRef = handle;
-        data->updateObj = nullptr;
-        queue->AddMessage(strings->containerMenu,
-                          RE::UI_MESSAGE_TYPE::kInventoryUpdate, data);
-        posted = true;
-      }
-    }
-    // the item list through the runtime data: the pin declares GetItemList
-    // out of line with no body in the port's library (pipeline 3542, job
-    // 13389, LNK2019), the same shape as Actor's runtime-data accessor
-    bool listed = false;
-    if (mode & 2u) {
-      if (auto* list = menu->GetRuntimeData().itemList) {
-        list->Update(target.get());
-        listed = true;
-      }
-    }
-    logger::info("[verb:containers] refreshContainerMenu {:x} (mode {}): "
-                 "inventory update {}, item list {}",
-                 refId, mode, posted ? "posted" : "not posted",
-                 listed ? "re-read" : "not re-read");
+    const bool first = ItemMenuRefresh::Post(*target);
+    const bool second = first && ItemMenuRefresh::Post(*target);
+    logger::info("[verb:containers] refreshContainerMenu {:x}: the engine's "
+                 "inventory update {}",
+                 refId, second ? "posted twice" : "not posted");
   });
   return Napi::Boolean::New(info.Env(), true);
 }

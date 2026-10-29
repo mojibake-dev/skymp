@@ -3,6 +3,7 @@
 #include "ConsoleApi.h"
 #include "ExceptionPrinter.h"
 #include "FridaHooks.h"
+#include "ItemMenuRefresh.h"
 #include "NullPointerException.h"
 
 #include <RE/B/BSPointerHandle.h>
@@ -661,7 +662,18 @@ void TESModPlatform::AddItemEx(
   };
 
   auto ui = RE::UI::GetSingleton();
-  if (!containerRefr || !item || !ui || ui->GameIsPaused())
+  if (!containerRefr || !item || !ui)
+    return;
+  // thuum memo D52 B (playtest 37, 2026-10-28; docs/research/m3/
+  // re-container-menu-refresh.md): upstream dropped every change while the
+  // game is paused, and the ContainerMenu pauses it (CommonLib
+  // ContainerMenu.h:14, kPausesGame), so a shared chest's re-sent inventory
+  // never landed under the open menu and only a close and reopen showed it.
+  // A pause by an item menu is the one case the engine itself handles: the
+  // change lands and the menu is told below, Papyrus AddItem's shape. A pause
+  // by anything else (the map, the journal, a message box) keeps upstream's
+  // drop; the client applies again when the menu closes
+  if (ui->GameIsPaused() && !ui->IsItemMenuOpen())
     return;
 
   const auto refrId = containerRefr->GetFormID();
@@ -763,6 +775,16 @@ void TESModPlatform::AddItemEx(
       containerRefr->RemoveItem(boundObject, -countDelta,
                                 RE::ITEM_REMOVE_REASON::kRemove, optExtraList,
                                 nullptr);
+    }
+    // the engine's own word to an open item menu, after the change has
+    // landed and from the thread that landed it (RemoveItem marks its object
+    // dirty by itself, AddObjectToContainer says nothing; the message with no
+    // object redraws the dirty rows, or everything when none is dirty).
+    // HYPOTHESIS until the shared chest redraws in place on a seat
+    if (countDelta != 0 && ItemMenuRefresh::Post(*containerRefr)) {
+      logger::info("[verb:containers] addItemEx {:x}: {} x{} landed under an "
+                   "open item menu, the menu told",
+                   refrId, boundObject->GetFormID(), countDelta);
     }
   });
 

@@ -220,6 +220,11 @@ export class HostService extends ClientListener {
         this.hosted.set(cell, epoch);
         this.persist();
         logTrace(this, `hosting cell ${cell.toString(16)} at epoch ${epoch}`);
+        // thuum playtest 38's finding 66: the roster that raced this grant was
+        // dropped as nobody's and the next came seconds later; the server now
+        // replays what it held (m3-grant-roster), and this seat reports at
+        // its next poll instead of waiting out sightingsMs
+        this.lastSightings = 0;
         // the cell's puppets go live (PuppetService, docs/verbs/npc-puppet.md)
         this.controller.emitter.emit("cellHostChanged", { cell, hosted: true });
     }

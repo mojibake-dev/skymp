@@ -24,6 +24,10 @@ import { RemoteServer } from "./remoteServer";
 // does not flip a loaded actor live, playtest 34's composition). The
 // deferred kill is this service's too: every NPC this game shows holds at
 // zero until the server's word (train 52 moves the host's own to the engine).
+//
+// A dead body is no puppet on any seat (playtest 37, findings 58 and 62): its
+// loot is the engine's own ContainerMenu over the server's container, so a
+// body is never activation-blocked and a flagged one is released.
 export class PuppetService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -132,13 +136,13 @@ export class PuppetService extends ClientListener {
             // Orgnar)
             ac.clearExpressionOverride();
             this.sp.setPuppet(localId, false);
-            if (localId < 0xff000000 && ac.isDead()) {
-                // thuum docs/verbs/npc-fate.md (the deaths): a corpse stays the
-                // server's container on its new host; the promote lifted the
-                // puppet's block, the body's goes back on (deathService puts
-                // it on at the kill, Resurrect's path takes it off)
-                ac.blockActivation(true);
-            }
+            // a dead body promoted here keeps the lifted block: a corpse is
+            // never activation-blocked on any seat (npc-fate.md's rule as
+            // revised by playtest 37's findings 58 and 62; the body's re-block
+            // that stood here defeated the engine's own loot menu, and the
+            // server's activation never opened a blocked body). Promote's dead
+            // branch leaves the AI off (H-54e); the not-mine branch below
+            // releases a flagged body the same way.
             this.puppets.delete(localId);
             logTrace(this, `live ${localId.toString(16)}`);
             return;
@@ -149,6 +153,33 @@ export class PuppetService extends ClientListener {
         // every update: the gate's hang at a landing, 2026-10-21, under
         // reading: the demote must not race the loader on a half-made actor)
         host.markHosted(localId, false);
+        if (ac.isDead()) {
+            // thuum docs/verbs/npc-fate.md (the deaths, as revised by playtest
+            // 37's findings 58 and 62): a dead NPC body is never a puppet and
+            // never activation-blocked, on any seat. The loot is the server's
+            // container, opened by the engine's own activation: E on an
+            // unblocked body opens the ContainerMenu, the activate hook reports
+            // it, the server answers the record's inventory and OpenContainer,
+            // and the view lays the server's list under the open menu (memo
+            // D52 B). The design note assumed the server-triggered
+            // activate(player, true) opens a blocked body; it never opened a
+            // demoted one. c2's one good open (finding 58) came while a brief
+            // host grant had lifted the block, and after the host flipped back
+            // the body was demoted again and four E presses opened nothing. A
+            // body that died flagged (the server's word killed a puppet) is
+            // released through the promote's dead branch (PuppetApi.cpp
+            // Promote: the block lifted, the AI left off, the flag cleared) and
+            // never demoted again; the deferred kill above keeps holding it for
+            // the server's word, and the fate's resurrect (FateApi.cpp, the AI
+            // on for the call) stands it up as a live actor, which the next
+            // pass makes a puppet as before.
+            if (flagged) {
+                this.sp.setPuppet(localId, false);
+                this.puppets.delete(localId);
+                logTrace(this, `body ${localId.toString(16)}: released from the puppet state, its activation the engine's`);
+            }
+            return;
+        }
         if (flagged || !has3D) {
             return;
         }

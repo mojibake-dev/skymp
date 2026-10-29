@@ -233,9 +233,18 @@ Napi::Value FateApi::ResurrectActor(const Napi::CallbackInfo& info)
     }
     const bool puppet = Puppets::Is(refrId);
     const bool wasDead = actor->IsDead();
-    // Actor::EnableAI (A/Actor.h:521), Actor::Resurrect (A/Actor.h:369),
-    // TESObjectREFR::SetActivationBlocked (T/TESObjectREFR.h:464)
-    if (puppet) {
+    // Actor::EnableAI (A/Actor.h:521), Actor::IsAIEnabled (A/Actor.h:579),
+    // Actor::Resurrect (A/Actor.h:369), TESObjectREFR::SetActivationBlocked
+    // (T/TESObjectREFR.h:464)
+    // the AI on for the call whenever it is off, flagged or not: under AI off
+    // the engine's Resurrect does not take (x-npc-respawn 070508), and since
+    // playtest 37's findings 58 and 62 a dead body is released from the
+    // puppet state on every seat (puppetService, through Promote's dead
+    // branch: the block lifted, the AI left off, the flag cleared), so a
+    // watcher's body arrives here unflagged with its AI off, as the host's
+    // dead-promoted body did (H-54e)
+    const bool aiOff = !actor->IsAIEnabled();
+    if (aiOff) {
       actor->EnableAI(true);
     }
     actor->Resurrect(true, true);
@@ -243,12 +252,17 @@ Napi::Value FateApi::ResurrectActor(const Napi::CallbackInfo& info)
       actor->EnableAI(false);
       actor->SetActivationBlocked(true);
     } else {
+      if (aiOff && actor->IsDead()) {
+        // the resurrection did not take: the body keeps H-54e's AI off, so
+        // no package walks it (Hooks.cpp HostedResurrect's shape); a stood-up
+        // actor keeps the AI on, and a watcher's next pass demotes it
+        actor->EnableAI(false);
+      }
       actor->SetActivationBlocked(false);
     }
-    logger::info(
-      "[verb:npc-fate] resurrected {:x} (puppet {}, dead before {}, "
-      "dead after {})",
-      refrId, puppet, wasDead, actor->IsDead());
+    logger::info("[verb:npc-fate] resurrected {:x} (puppet {}, AI was off {}, "
+                 "dead before {}, dead after {})",
+                 refrId, puppet, aiOff, wasDead, actor->IsDead());
   });
   return Napi::Boolean::New(info.Env(), true);
 }

@@ -421,6 +421,127 @@ TEST_CASE("A dead game-file actor is a container to the player beside it",
   p.DestroyActor(kLooter);
 }
 
+// thuum docs/verbs/npc-fate.md (playtest 37, findings 58 and 62): a
+// server-made NPC's body is a corpse to the server as a game-file actor's
+// is. IsCorpse read the id's range, so rotfern's E on the dead necromancer
+// ff00000a (a 0xff copy) matched no branch of ProcessActivateNormal and was
+// dropped with no line. The looter need not host the body's cell, and the
+// loot stands once the host is gone: the open answers the activator alone
+// with the record's inventory and OpenContainer, the closing activation
+// releases the occupancy, and a live copy opens nothing.
+TEST_CASE("A dead server-made NPC is a corpse to any player beside it, its "
+          "host or not",
+          "[NpcFate][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  constexpr uint32_t kHost = 0xff000d32;
+  constexpr uint32_t kLooter = 0xff000d33;
+  constexpr uint32_t kMade = 0xff000d34;
+  constexpr uint32_t kBanditBase = 0x3de6f; // EncBandit01Melee2HBerserkNordM
+  constexpr uint32_t kGold = 0xf;
+
+  // the host takes the forest's cell; the looter arrives beside it
+  DoConnect(p, 0);
+  p.CreateActor(kHost, kForest, 0, kTamriel);
+  p.SetUserActor(0, kHost);
+  HostGrants(p, 0, kForestCell);
+  DoConnect(p, 1);
+  p.CreateActor(kLooter, kForest, 0, kTamriel);
+  p.SetUserActor(1, kLooter);
+  auto& host = p.worldState.GetFormAt<MpActor>(kHost);
+  auto& looter = p.worldState.GetFormAt<MpActor>(kLooter);
+
+  // the server-made bandit (the placed copy's idiom above) stands at the
+  // forest, hosted by user 0
+  MpChangeForm saved;
+  saved.recType = MpChangeForm::ACHR;
+  saved.formDesc = FormDesc::FromFormId(kMade, p.worldState.espmFiles);
+  saved.baseDesc = FormDesc::FromFormId(kBanditBase, p.worldState.espmFiles);
+  saved.worldOrCellDesc = FormDesc::Tamriel();
+  saved.position = kForest;
+  saved.angle = { 0.f, 0.f, 0.f };
+  p.worldState.LoadChangeForm(saved, p.CreateFormCallbacks());
+  p.worldState.LoadDeferredActors();
+  auto& form = p.worldState.LookupFormByIdNoLoad(kMade);
+  REQUIRE(form);
+  MpActor* made = form->AsActor();
+  REQUIRE(made);
+  REQUIRE_FALSE(made->IsCreatedAsPlayer());
+  p.worldState.fateRespawnDue.erase(kMade);
+  looter.SetPos(made->GetPos() + NiPoint3{ 60.f, 0.f, 0.f });
+  REQUIRE(p.worldState.HostOf(*made) == &host);
+
+  const auto activate = [&](Networking::UserId user, bool second) {
+    DoMessage(p, user,
+              nlohmann::json{ { "t", MsgType::Activate },
+                              { "data",
+                                { { "caster", 0x14 },
+                                  { "target", kMade },
+                                  { "isSecondActivation", second } } } });
+  };
+  const auto inventorySentTo = [&](Networking::UserId user) {
+    for (const auto& msg : SentTo<UpdatePropertyMessage>(p, user)) {
+      if (msg.idx == made->GetIdx() && msg.propName == "inventory") {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  // alive: no corpse, nothing opens on the server
+  REQUIRE_FALSE(made->IsCorpse());
+  p.Messages().clear();
+  activate(1, false);
+  REQUIRE_FALSE(made->IsOpen());
+  REQUIRE(SentTo<OpenContainerMessage>(p, 1).empty());
+
+  // dead: a corpse, the CONT branch's open for the looter, who does not
+  // host it; the host hears no OpenContainer
+  made->Kill(nullptr);
+  REQUIRE(made->IsDead());
+  REQUIRE(made->IsCorpse());
+  made->AddItem(kGold, 3);
+  // the shared world: neither inventory starts empty, so the take is read
+  // as a difference
+  const auto corpseGold = made->GetInventory().GetItemCount(kGold);
+  const auto looterGold = looter.GetInventory().GetItemCount(kGold);
+  p.Messages().clear();
+  activate(1, false);
+  REQUIRE(made->IsOpen());
+  REQUIRE(inventorySentTo(1));
+  REQUIRE(SentTo<OpenContainerMessage>(p, 1).size() == 1);
+  REQUIRE(SentTo<OpenContainerMessage>(p, 0).empty());
+  Inventory::Entry gold;
+  gold.baseId = kGold;
+  gold.count = 3;
+  made->TakeItem(looter, gold);
+  REQUIRE(looter.GetInventory().GetItemCount(kGold) == looterGold + 3);
+  REQUIRE(made->GetInventory().GetItemCount(kGold) == corpseGold - 3);
+
+  // the closing activation releases the occupancy
+  activate(1, true);
+  REQUIRE_FALSE(made->IsOpen());
+
+  // the host gone, the body opens again: the loot depends on no host
+  DoDisconnect(p, 0);
+  p.DestroyActor(kHost);
+  p.Messages().clear();
+  activate(1, false);
+  REQUIRE(made->IsOpen());
+  REQUIRE(inventorySentTo(1));
+  REQUIRE(SentTo<OpenContainerMessage>(p, 1).size() == 1);
+  activate(1, true);
+  REQUIRE_FALSE(made->IsOpen());
+
+  // the shared world
+  made->Respawn(false);
+  p.worldState.fateRespawnDue.erase(kMade);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kMade);
+  p.DestroyActor(kLooter);
+}
+
 // thuum docs/verbs/npc-fate.md (the deaths): the body's day is on the change
 // form and survives its JSON (the restart's record); an older record without
 // it reads as "no stamp"

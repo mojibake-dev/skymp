@@ -95,6 +95,20 @@ public:
   virtual void OnQuestStage(const RawMessageData& rawMsgData,
                             const QuestStageMessage& msg);
 
+  // thuum docs/verbs/prop-physics.md (ADR-058): a player's game touched a
+  // physics prop another seat simulates; the newest touch wins (R0, one
+  // epoch per prop, wire-rules props) and the word (PropOwner) goes to every
+  // listener of the prop; refused outside the prop's cell or while another
+  // player holds it grabbed
+  virtual void OnPropClaim(const RawMessageData& rawMsgData,
+                           const PropClaimMessage& msg);
+  // the same verb: the simulator's sample of a prop, taken from its owner
+  // alone (the toucher while awake or inside its lease, else the cell's
+  // host) into the reference's record (R2) and relayed to the prop's other
+  // listeners, unreliable while awake and reliable at sleep
+  virtual void OnPropTransform(const RawMessageData& rawMsgData,
+                               const PropTransformMessage& msg);
+
   // thuum docs/verbs/cell-host.md: a game's cell loaded or left its loaded
   // set; the server's election follows (wire-rules cells)
   virtual void OnCellLoaded(const RawMessageData& rawMsgData,

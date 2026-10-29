@@ -27,6 +27,7 @@ pub mod melee;
 pub mod movement;
 pub mod placements;
 pub mod player_globals;
+pub mod props;
 pub mod quest_stages;
 pub mod racemenu;
 pub mod ranged;

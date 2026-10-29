@@ -110,3 +110,25 @@ TEST_CASE("A listed global's report is recorded, an unlisted one refused, "
   REQUIRE(sent);
   Leave(p);
 }
+
+// thuum memo D51 B (2026-10-28, Eli: "that sounds good"): a listed global
+// with a killAt kills the player from the record, the server's word; the
+// test's load order lacks Survival, so GameHour stands in for the cold need
+TEST_CASE("A listed global at or past its killAt kills the player by the "
+          "server's word",
+          "[PlayerGlobals]")
+{
+  auto& p = GetPartOne();
+  p.SetPlayerGlobalsSettings(
+    R"([{"global": "38:Skyrim.esm", "killAt": 1000}])");
+  auto& ac = Player(p);
+  REQUIRE_FALSE(ac.IsDead());
+  Report(p, kGameHour, 999.f);
+  REQUIRE_FALSE(ac.IsDead());
+  Report(p, kGameHour, 1000.f);
+  REQUIRE(ac.IsDead());
+  // a dead player's further reports kill nothing twice
+  Report(p, kGameHour, 1500.f);
+  REQUIRE(ac.IsDead());
+  Leave(p);
+}

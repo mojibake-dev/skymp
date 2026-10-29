@@ -672,8 +672,10 @@ void TESModPlatform::AddItemEx(
   // A pause by an item menu is the one case the engine itself handles: the
   // change lands and the menu is told below, Papyrus AddItem's shape. A pause
   // by anything else (the map, the journal, a message box) keeps upstream's
-  // drop; the client applies again when the menu closes
-  if (ui->GameIsPaused() && !ui->IsItemMenuOpen())
+  // drop; the client applies again when the menu closes. The item menus by
+  // name (ItemMenuRefresh::ItemMenuOpen): UI::IsItemMenuOpen read false with
+  // the ContainerMenu open (playtest 37, 02:03Z), so it gated nothing
+  if (ui->GameIsPaused() && !ItemMenuRefresh::ItemMenuOpen())
     return;
 
   const auto refrId = containerRefr->GetFormID();

@@ -511,6 +511,8 @@ export class FormView {
   private lastHarvestedApply = 0;
   private lastOpenApply = 0;
   private deadCheckAt = 0;
+  // the dead word applied at this 3D load (the bind), see the dead check
+  private deadWordBound = false;
   // the node scales and texture sets applied to the 3D now loaded (false again when it goes)
   private nodeOverridesOn3D = false;
 
@@ -617,12 +619,31 @@ export class FormView {
     // in 52's gate: the record stood again while the server loaded, before
     // any host held the cell; the viewer's check resurrected its puppet, the
     // host's copy stayed dead under a guard on both directions)
+    // The bind is the exception to the host's rule (playtest 37, Eli: "i am
+    // instakilling these guys"; the records of 39fe2 and 39fe4 dead, both
+    // engines loading them alive after the relaunches, every hit the server's
+    // zero again): an engine actor the game files spawn alive while the record
+    // holds it dead (a relaunch, a cell re-entry, a reload) has no cause to die
+    // from, on the host's seat too, so the first check after its 3D loads kills
+    // it whoever simulates it; a death that comes later on a live actor is the
+    // engine's own on the host, as above. HYPOTHESIS until a relaunch into a
+    // cell with dead records shows bodies on the host's seat
+    if (!loaded3D) {
+      this.deadWordBound = false;
+    }
     if (model.isDead !== undefined && this.refrId !== 0 && this.refrId !== 0x14 && this.refrId < 0xff000000 && Date.now() >= this.deadCheckAt) {
       this.deadCheckAt = Date.now() + 2000;
       const body = Actor.from(refr);
       const want = !!model.isDead;
       const simulatedHere = SpApiInteractor.getControllerInstance().lookupListener(HostService).isMine(model, refr);
-      if (body && body.isDead() !== want && !(simulatedHere && want)) {
+      const bind = loaded3D && !this.deadWordBound;
+      if (loaded3D) {
+        this.deadWordBound = true;
+      }
+      if (body && body.isDead() !== want && (!(simulatedHere && want) || (bind && want))) {
+        if (bind && want && simulatedHere) {
+          logLab("verb:npc-fate", `dead record ${this.refrId.toString(16)} loaded alive on this host's seat: killed at the bind`);
+        }
         SpApiInteractor.getControllerInstance().emitter.emit("applyDeathStateEvent", { actor: body, isDead: want });
       }
     }

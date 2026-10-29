@@ -253,8 +253,8 @@ TEST_CASE("A melee hit on a player from beyond reach does nothing", "[Hit]")
   // (height 1.03) reaches max(141 * 1.03, 162) = 162, plus both forward
   // extents (14 * 1.03 each) and 256 for stale positions: about 447 units.
   // Since the weekend pass of 2026-10-29 (M3's "NPC melee reach and hit
-  // cone"): a humanoid NPC target (a playable race) is gated as a player is,
-  // so the created actor 2000 units away is refused too, and lands at 400.
+  // cone"): a humanoid NPC target (a playable race, not a created actor on
+  // the player's base) is gated as a player is; see CellHostTest.
   // The aggressor faces north (+y) and every target stands on its heading,
   // so the hit cone (thuum docs/verbs/hit-cone.md) never decides here but
   // for the two cases at the end.
@@ -302,8 +302,10 @@ TEST_CASE("A melee hit on a player from beyond reach does nothing", "[Hit]")
   REQUIRE(hitFrom(target, { 0, 400, 0 }));
   REQUIRE(!hitFrom(target, { 0, 500, 0 }));
   REQUIRE(!hitFrom(target, { 0, 2000, 0 }));
-  REQUIRE(!hitFrom(npc, { 0, -2000, 0 }));
-  REQUIRE(hitFrom(npc, { 0, 400, 0 }));
+  // the created actor carries the player's base (IsCreatedAsPlayer), so it is
+  // no humanoid NPC to the gate and keeps the old bound; the humanoid NPC
+  // case is CellHostTest's hosted resident
+  REQUIRE(hitFrom(npc, { 0, -2000, 0 }));
 
   // thuum docs/verbs/hit-cone.md: within reach but behind the aggressor
   // (180 degrees off its heading, past any bound: 95 for a Nord, 80 for a

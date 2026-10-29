@@ -122,7 +122,15 @@ export class HostedStateService extends ClientListener {
             }
             const localId = remoteIdToLocalId(remoteId);
             const actor = localId ? this.sp.Actor.from(this.sp.Game.getFormEx(localId)) : null;
-            if (!actor || actor.isDead()) {
+            // thuum docs/verbs/npc-fate.md (playtest 37, finding 46): the
+            // engine dresses a copy at its model's load (the biped init,
+            // re-npc-roll.md 8.1); polled before it the copy wears nothing
+            // and its hands are empty, and that report emptied the record's
+            // worn set, the fate's source, so the next fate redressed the
+            // copy naked. The server keeps its outfit against such a report
+            // now; the poll waits for the model all the same. HYPOTHESIS
+            // until a trace: the dressing precedes the 3D-loaded flag
+            if (!actor || actor.isDead() || !actor.is3DLoaded()) {
                 continue;
             }
             const right = actor.getEquippedObject(1)?.getFormID() ?? 0;

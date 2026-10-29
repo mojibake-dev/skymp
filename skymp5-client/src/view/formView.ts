@@ -58,6 +58,9 @@ export class FormView {
   // thuum docs/verbs/npc-handoff.md: the kill switch (settings
   // skymp5-client.npcHandoff, default on): off, an engine reference whose
   // record changed cell stands at the door as before train-40
+  // how long a figure's record stays unchanged before its planner is let go of
+  private static readonly quietMs = 3000;
+
   private static npcHandoffEnabled(): boolean {
     if (FormView.npcHandoff === undefined) {
       const s = settings["skymp5-client"] as Record<string, unknown> | undefined;
@@ -714,12 +717,36 @@ export class FormView {
         // push left under eight units, b-duel on train-33)
         const settle = +(model.numMovementChanges as number) === this.movState.lastNumChanges;
         this.movState.lastApply = Date.now();
+        if (!settle) {
+          this.movState.quietSince = Date.now();
+          this.movState.quietCleared = false;
+        }
         if (!alreadyHosted) {
           // a figure or a puppet: the record's movement is imposed (a
           // puppet's absolutely, docs/verbs/npc-puppet.md Rule B)
           const backup = model.movement.isWeapDrawn;
           if (forcedWeapDrawn === true || forcedWeapDrawn === false) {
             model.movement.isWeapDrawn = forcedWeapDrawn;
+          }
+          // playtest 37 (2026-10-28, Eli: "is there a way to stop a players
+          // puppet from spinning in a circle after they disconnect?"): a
+          // figure whose record has not changed for quietMs (a disconnected
+          // player's, or one standing) is let go of once: its keep-offset
+          // planner is cleared and its heading set from the record, so no
+          // planner turns it in place with nothing to chase; the next sample
+          // re-engages the planner through applyMovement. HYPOTHESIS until a
+          // disconnect is watched: that the spin is the planner's
+          const figure = this.refrId >= 0xff000000 && !puppet && !model.isMyClone;
+          if (settle && figure && this.movState.quietSince && Date.now() - this.movState.quietSince > FormView.quietMs) {
+            if (!this.movState.quietCleared && ac) {
+              ac.clearKeepOffsetFromActor();
+              ac.setAngle(model.movement.rot[0], model.movement.rot[1], model.movement.rot[2]);
+              this.movState.quietCleared = true;
+              logLab("verb:movement", `figure ${this.refrId.toString(16)} quiet ${((Date.now() - this.movState.quietSince) / 1000).toFixed(0)} s: the planner cleared, the heading set`);
+            }
+            model.movement.isWeapDrawn = backup;
+            this.movState.lastNumChanges = +(model.numMovementChanges as number);
+            return;
           }
           try {
             applyMovement(refr, model.movement, !!model.isMyClone, puppet, settle);
@@ -1286,6 +1313,8 @@ export class FormView {
   // game hosts (docs/verbs/cell-host.md)
   private hostedHereApplied = false;
   private movState = {
+    quietSince: 0,
+    quietCleared: false,
     lastNumChanges: 0,
     lastApply: 0,
     lastRehost: 0,

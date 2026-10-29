@@ -25,6 +25,10 @@ pub struct PlayerGlobals {
     /// Per listed global, the value the login sends when the record holds
     /// none; `None` sends nothing (the game's own value stands).
     defaults: Vec<Option<f32>>,
+    /// Per listed global, the recorded value at or past which the server
+    /// kills the player (memo D51 B, 2026-10-28, Eli: "that sounds good":
+    /// Survival's cold need at 1000); `None` for a global that kills nobody.
+    kill_at: Vec<Option<f32>>,
 }
 
 /// A setting's number as the record's f32 (clock.rs's shape for the one
@@ -60,16 +64,17 @@ pub enum Refusal {
 impl PlayerGlobals {
     /// The list from the `playerGlobals` block's JSON text (`[]` for none):
     /// each entry a "<hex id>:<plugin>" string, or an object with `global`
-    /// (that string) and an optional finite `default`. The error names a bad
-    /// entry: one that is neither, a default that is not a finite number, or
-    /// a global listed twice.
+    /// (that string), an optional finite `default` and an optional finite
+    /// `killAt`. The error names a bad entry: one that is neither, a default
+    /// or killAt that is not a finite number, or a global listed twice.
     pub fn from_json(text: &str) -> Result<Self, SettingsError> {
         let entries: Vec<serde_json::Value> = serde_json::from_str(text).map_err(|e| SettingsError(format!("playerGlobals: {e}")))?;
         let mut listed: Vec<FormDesc> = Vec::with_capacity(entries.len());
         let mut defaults: Vec<Option<f32>> = Vec::with_capacity(entries.len());
+        let mut kill_at: Vec<Option<f32>> = Vec::with_capacity(entries.len());
         for e in entries {
-            let (name, default) = match &e {
-                serde_json::Value::String(s) => (s.as_str(), None),
+            let (name, default, lethal) = match &e {
+                serde_json::Value::String(s) => (s.as_str(), None, None),
                 serde_json::Value::Object(o) => {
                     let Some(name) = o.get("global").and_then(serde_json::Value::as_str) else {
                         return Err(SettingsError(format!("playerGlobals: {e} has no \"global\" string")));
@@ -82,7 +87,14 @@ impl PlayerGlobals {
                             _ => return Err(SettingsError(format!("playerGlobals: {e} has a default that is not a finite number"))),
                         },
                     };
-                    (name, default)
+                    let lethal = match o.get("killAt") {
+                        None | Some(serde_json::Value::Null) => None,
+                        Some(v) => match v.as_f64() {
+                            Some(f) if f.is_finite() && narrow(f).is_finite() => Some(narrow(f)),
+                            _ => return Err(SettingsError(format!("playerGlobals: {e} has a killAt that is not a finite number"))),
+                        },
+                    };
+                    (name, default, lethal)
                 }
                 _ => return Err(SettingsError(format!("playerGlobals: {e} is neither \"<hex id>:<plugin>\" nor an object"))),
             };
@@ -92,8 +104,27 @@ impl PlayerGlobals {
             }
             listed.push(d);
             defaults.push(default);
+            kill_at.push(lethal);
         }
-        Ok(Self { listed, defaults })
+        Ok(Self { listed, defaults, kill_at })
+    }
+
+    /// The listed globals whose recorded value stands at or past their
+    /// `killAt` (memo D51 B): the server's word that the player dies of the
+    /// state it recorded, Survival's cold need at 1000 the first. The client's
+    /// own Kill is untrusted either way (rule 5).
+    #[must_use]
+    pub fn lethal(&self, record: &[GlobalValue]) -> Vec<GlobalValue> {
+        let mut out = Vec::new();
+        for (global, lethal) in self.listed.iter().zip(&self.kill_at) {
+            let Some(at) = lethal else { continue };
+            if let Some(r) = record.iter().find(|r| global.is(r.global.short_id, &r.global.file)) {
+                if r.value.is_finite() && r.value >= *at {
+                    out.push(r.clone());
+                }
+            }
+        }
+        out
     }
 
     /// Whether the server keeps the global `short_id` in `file` per player.
@@ -242,6 +273,28 @@ mod tests {
 
     fn s(short_id: u32, value: f32) -> GlobalValue {
         GlobalValue { global: FormDesc { short_id, file: SURVIVAL.to_owned() }, value }
+    }
+
+    #[test]
+    fn a_kill_at_names_the_recorded_value_the_server_kills_from() {
+        // memo D51 B (2026-10-28): Survival's cold need (81b) kills at 1000
+        const SURVIVAL: &str = "ccQDRSSE001-SurvivalMode.esl";
+        let l = PlayerGlobals::from_json(
+            r#"[{"global": "81b:ccQDRSSE001-SurvivalMode.esl", "killAt": 1000}, "81a:ccQDRSSE001-SurvivalMode.esl"]"#,
+        )
+        .unwrap_or_default();
+        let cold = |v: f32| GlobalValue { global: FormDesc { short_id: 0x81b, file: SURVIVAL.to_owned() }, value: v };
+        let hunger = |v: f32| GlobalValue { global: FormDesc { short_id: 0x81a, file: SURVIVAL.to_owned() }, value: v };
+        assert!(l.lethal(&[cold(999.0), hunger(5000.0)]).is_empty());
+        assert_eq!(l.lethal(&[cold(1000.0)]), vec![cold(1000.0)]);
+        assert_eq!(l.lethal(&[hunger(1.0), cold(1234.5)]), vec![cold(1234.5)]);
+        assert!(l.lethal(&[]).is_empty());
+        for bad in [
+            r#"[{"global": "81b:ccQDRSSE001-SurvivalMode.esl", "killAt": "a lot"}]"#,
+            r#"[{"global": "81b:ccQDRSSE001-SurvivalMode.esl", "killAt": 1e40}]"#,
+        ] {
+            assert!(PlayerGlobals::from_json(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

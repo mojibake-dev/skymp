@@ -1333,6 +1333,8 @@ mod ffi {
         fn player_globals_check(self: &PlayerGlobalsList, report: &[PlayerGlobalEntry]) -> u8;
         /// What the login sends: the recorded values still listed.
         fn player_globals_at_login(self: &PlayerGlobalsList, record: &[PlayerGlobalEntry]) -> Vec<PlayerGlobalEntry>;
+        /// memo D51 B: the recorded globals at or past their killAt, the server's word that the player dies
+        fn player_globals_lethal(self: &PlayerGlobalsList, record: &[PlayerGlobalEntry]) -> Vec<PlayerGlobalEntry>;
         /// The record after a checked report: the latest value wins.
         fn player_globals_merge(record: &[PlayerGlobalEntry], report: &[PlayerGlobalEntry]) -> Vec<PlayerGlobalEntry>;
 
@@ -2054,6 +2056,9 @@ impl PlayerGlobalsList {
 
     fn player_globals_at_login(&self, record: &[PlayerGlobalEntry]) -> Vec<PlayerGlobalEntry> {
         to_entries(&self.0.at_login(&to_values(record)))
+    }
+    fn player_globals_lethal(&self, record: &[PlayerGlobalEntry]) -> Vec<PlayerGlobalEntry> {
+        to_entries(&self.0.lethal(&to_values(record)))
     }
 }
 
@@ -2807,6 +2812,10 @@ mod tests {
         let record = player_globals_merge(&[e(0xb1c19, 3.0)], &[e(0xb1c19, 1.0), e(0x43cef, 2.0)]);
         assert_eq!(record, vec![e(0xb1c19, 1.0), e(0x43cef, 2.0)]);
         assert!(list.as_ref().is_ok_and(|l| l.player_globals_at_login(&[e(0x99999, 7.0), e(0x43cef, 2.0)]) == vec![e(0x43cef, 2.0)]));
+        // memo D51 B: a killAt on a listed global names the recorded value the server kills from
+        let lethal = new_player_globals(r#"[{"global": "43cef:Apocalypse - Magic of Skyrim.esp", "killAt": 10}]"#);
+        assert!(lethal.as_ref().is_ok_and(|l| l.player_globals_lethal(&[e(0x43cef, 9.5)]).is_empty()));
+        assert!(lethal.as_ref().is_ok_and(|l| l.player_globals_lethal(&[e(0x43cef, 10.0)]) == vec![e(0x43cef, 10.0)]));
         assert!(new_player_globals(r#"["0b1c19"]"#).is_err());
     }
 

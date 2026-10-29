@@ -326,6 +326,12 @@ export interface ProjectileFlightEvent {
   angleZ: number;
   power: number;
 }
+// thuum docs/verbs/prop-physics.md (ADR-058): the player's character controller met a prop's Havok body (the fork's hook on the proxy controller's contact callback, docs/research/m3/re-havok-contact.md), raised on the next tick, one per reference per 250 ms: the reference's form id, the body's collision layer (CommonLibSSE-NG include/RE/C/CollisionLayers.h: 4 clutter, 10 props) and its motion type (include/RE/H/hkpMotion.h: 1 dynamic, 4 keyframed, 5 fixed). No game call in its handler
+export interface PropContactEvent {
+  refrId: number;
+  layer: number;
+  motionType: number;
+}
 
 export interface OpenCloseEvent {
   target: ObjectReference
@@ -724,6 +730,9 @@ export declare function once(eventName: 'areaEffectPlaced', callback: (event: Ar
 
 export declare function on(eventName: 'projectileFlight', callback: (event: ProjectileFlightEvent) => void): EventHandle
 export declare function once(eventName: 'projectileFlight', callback: (event: ProjectileFlightEvent) => void): EventHandle
+
+export declare function on(eventName: 'propContact', callback: (event: PropContactEvent) => void): EventHandle
+export declare function once(eventName: 'propContact', callback: (event: PropContactEvent) => void): EventHandle
 
 export declare function on(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle
 export declare function once(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle

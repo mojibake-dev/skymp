@@ -142,6 +142,21 @@ inline REL::Relocation<std::uintptr_t> ContainerAdd{ REL::ID(16128) };
 // docs/research/m3/re-resurrect-hook.md, HYPOTHESIS until the trace). AE
 // only, as DamageActor.
 inline REL::Relocation<std::uintptr_t> Reanimate{ REL::ID(38820) };
+// thuum docs/verbs/prop-physics.md (ADR-058, the touch): the player's proxy
+// character controller's contact callback, bhkCharProxyController::
+// ContactPointAddedCallback, the engine's own body of
+// hkpCharacterProxyListener slot 2 (CommonLibSSE-NG include/RE/H/
+// hkpCharacterProxyListener.h:49; the controller include/RE/B/
+// bhkCharProxyController.h:11-38), `void (hkpCharacterProxyListener* this,
+// const hkpCharacterProxy*, const hkpRootCdPoint&)`. hkpCharacterProxy::
+// UpdateManifold calls it for every manifold point added, with no filter on
+// the other body's motion type, so a Keyframed prop's touch arrives here
+// where the surface-interaction pass (slot 5) skips it (the re-analyst's
+// read, docs/research/m3/re-havok-contact.md; HYPOTHESIS until
+// lab/frida/prop-contact.js). Address Library 1.6.1170 79131 (just addr,
+// 2026-10-29). AE only, as Reanimate.
+inline REL::Relocation<std::uintptr_t> CharProxyContactPointAdded{ REL::ID(
+  79131) };
 inline REL::Relocation<std::uintptr_t> ApplyMasksToRenderTargets{
   RELOCATION_ID(26454, 27040)
 };

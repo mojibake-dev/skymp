@@ -115,6 +115,19 @@ declare module "skyrimPlatform" {
     }
     function on(eventName: 'projectileFlight', callback: (event: ProjectileFlightEvent) => void): EventHandle;
     function once(eventName: 'projectileFlight', callback: (event: ProjectileFlightEvent) => void): EventHandle;
+    // thuum docs/verbs/prop-physics.md (ADR-058): the player's character
+    // controller met a prop's Havok body (the fork's hook on the proxy
+    // controller's contact callback, Address Library 79131), one event per
+    // reference per 250 ms: the reference's form id, the body's collision
+    // layer (4 clutter, 10 props) and its motion type (4 Keyframed, the body
+    // of a prop this seat does not simulate). No game call in its handler.
+    interface PropContactEvent {
+        refrId: number;
+        layer: number;
+        motionType: number;
+    }
+    function on(eventName: 'propContact', callback: (event: PropContactEvent) => void): EventHandle;
+    function once(eventName: 'propContact', callback: (event: PropContactEvent) => void): EventHandle;
     // thuum docs/verbs/npc-stream.md (the voice slice): a spoken line begins
     // on an actor this game hosts; ids alone, no game call in its handler
     interface TopicInfoEvent {

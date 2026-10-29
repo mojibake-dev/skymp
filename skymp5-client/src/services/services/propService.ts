@@ -1,4 +1,4 @@
-import { ContainerChangedEvent, GrabReleaseEvent, MotionType, ObjectReference } from "skyrimPlatform";
+import { ContainerChangedEvent, GrabReleaseEvent, MotionType, ObjectReference, PropContactEvent } from "skyrimPlatform";
 import { MsgType } from "../../messages";
 import { logError, logLab, logTrace } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
@@ -50,11 +50,13 @@ const GLIDE_MIN_MS = 50;
 const GLIDE_MAX_MS = 300;
 const GLIDE_MIN_SPEED = 8;
 const JUMP_UNITS = 256;
-// The proximity touch, the Havok contact's stand-in (ADR-058's consequences):
-// a prop this seat does not simulate that moved by itself (no sample from
-// the stream in TOUCH_QUIET_MS, no placement of ours) while the player stood
-// within TOUCH_RADIUS; read every TOUCH_READ_MS, claimed at most once per
-// CLAIM_EVERY_MS per prop
+// The proximity touch, the Havok contact's stand-in before the contact event
+// (ADR-058's consequences), behind the sub-setting propContactFallback
+// (default off): a prop this seat does not simulate that moved by itself (no
+// sample from the stream in TOUCH_QUIET_MS, no placement of ours) while the
+// player stood within TOUCH_RADIUS; read every TOUCH_READ_MS. A contact's
+// claim, the event's or the stand-in's, goes at most once per CLAIM_EVERY_MS
+// per prop
 const TOUCH_RADIUS = 128;
 const TOUCH_QUIET_MS = 300;
 const TOUCH_READ_MS = 100;
@@ -123,9 +125,11 @@ const angleDelta = (a: number, b: number): number => ((((a - b + 180) % 360) + 3
 // falls nor fights the stream. Who simulates is the server's word (PropOwner,
 // R0): the player the last word named, while the body is awake or its lease
 // holds after a sleep; with none, the cell's host (HostService). The touch is
-// what passes the simulation (PropClaim): the engine's grab and its release,
-// a drop, and, until the character controller's contact lands as a native
-// (the re-analyst's task), the proximity stand-in below. Slice one: items
+// what passes the simulation (PropClaim): the player's character controller
+// meeting the body (the fork's propContact event: FridaHooks.cpp's hook on
+// the proxy controller's contact callback, Address Library 79131, one event
+// per reference per 250 ms), the engine's grab and its release, a drop; the
+// proximity stand-in below stays behind propContactFallback. Slice one: items
 // only (FormTypeEx.isItem's types), within TRACK_RADIUS of the player, the
 // nearest TRACK_MAX. Everything the engine is asked happens on the update
 // (a message handler queues; Skyrim Platform refuses natives in its context).
@@ -136,10 +140,13 @@ const angleDelta = (a: number, b: number): number => ((((a - b + 180) % 360) + 3
 // a contact wakes them); that a glide over the sample interval reads as the
 // simulator's motion a sample behind (nothing predicts, ADR-058 decision 3);
 // that 500 ms without a stir is the body's sleep (Skyrim Platform exposes no
-// Havok state); that the proximity touch stands in for the contact (it fires
-// where a body this seat does not simulate moves locally, which a Keyframed
-// body never does: a body the arrival forcing missed, or an owner's after the
-// lease lapsed; the grab and the drop are the slice's sure touches).
+// Havok state); that the contact callback fires on this seat for a Keyframed
+// body the player walks into (the re-analyst's static read, thuum
+// docs/research/m3/re-havok-contact.md; lab/frida/prop-contact.js is its
+// trace), so a non-host's walk into a basket claims it; the grab and the
+// drop are the slice's sure touches, and the proximity stand-in
+// (propContactFallback) fires only where a body this seat does not simulate
+// moves locally, which a Keyframed body never does.
 export class PropService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -147,6 +154,7 @@ export class PropService extends ClientListener {
         this.controller.emitter.on("propOwnerMessage", (e) => this.onOwner(e));
         this.controller.emitter.on("createActorMessage", (e) => this.onCreateActor(e));
         this.controller.on("grabRelease", (e) => this.onGrabRelease(e));
+        this.controller.on("propContact", (e) => this.onPropContact(e));
         this.controller.on("containerChanged", (e) => this.onContainerChanged(e));
         this.controller.on("update", () => this.onUpdate());
     }
@@ -242,6 +250,21 @@ export class PropService extends ClientListener {
         }
     }
 
+    // The player's character controller met a prop's Havok body (the fork's
+    // hook on the proxy controller's contact callback, docs/verbs/
+    // prop-physics.md the touch; one event per reference per 250 ms). Ids
+    // alone here (the event's context allows no game call); the claim goes
+    // from the update, for a tracked prop this seat does not simulate
+    private onPropContact(e: PropContactEvent) {
+        if (!this.enabled()) {
+            return;
+        }
+        this.contacts.push({ localId: e.refrId, layer: e.layer, motionType: e.motionType });
+        if (this.contacts.length > 32) {
+            this.contacts.shift();
+        }
+    }
+
     // An item left the player's inventory for the world (oldContainer the
     // player, no new container, a reference made): the engine's own dropped
     // reference is deleted by DropItemService and the server's reference for
@@ -283,6 +306,9 @@ export class PropService extends ClientListener {
         if (this.touches.length > 0) {
             this.claimTouches(now);
         }
+        if (this.contacts.length > 0) {
+            this.claimContacts(now);
+        }
         if (this.props.size === 0) {
             return;
         }
@@ -292,15 +318,17 @@ export class PropService extends ClientListener {
         }
         const playerPos = ObjectReferenceEx.getPos(player);
         const myId = this.myId();
+        const fallback = this.contactFallback();
         for (const prop of Array.from(this.props.values())) {
-            this.tick(prop, now, myId, playerPos);
+            this.tick(prop, now, myId, playerPos, fallback);
         }
     }
 
     // One prop, one update: the simulator computed from the owner table, the
     // body's motion type set to match (once, and again when its 3D reloads),
-    // then the stream out or the stream's apply and the touch read
-    private tick(prop: Prop, now: number, myId: number, playerPos: NiPoint3) {
+    // then the stream out or the stream's apply and, under the fallback, the
+    // proximity read
+    private tick(prop: Prop, now: number, myId: number, playerPos: NiPoint3, fallback: boolean) {
         if (now - prop.trackedAt < TRACK_GRACE_MS) {
             return;
         }
@@ -318,7 +346,7 @@ export class PropService extends ClientListener {
         }
         const simulate = myId !== 0 && owner === myId;
         const near = prop.distance <= TOUCH_RADIUS + 512;
-        const touchReadDue = !simulate && near && now - prop.lastTouchReadAt >= TOUCH_READ_MS;
+        const touchReadDue = fallback && !simulate && near && now - prop.lastTouchReadAt >= TOUCH_READ_MS;
         const wantsRef = simulate || !prop.placed || prop.simulating !== simulate || prop.motionAsked === undefined
             || prop.pending !== undefined || touchReadDue;
         if (!wantsRef) {
@@ -508,7 +536,8 @@ export class PropService extends ClientListener {
         this.recordSample(prop.refr, s);
     }
 
-    // The follower: the newest sample applied, else the touch read
+    // The follower: the newest sample applied, else the proximity read (the
+    // contact's stand-in, propContactFallback)
     private follow(prop: Prop, refr: ObjectReference, now: number, playerPos: NiPoint3, touchReadDue: boolean) {
         const pending = prop.pending;
         if (pending) {
@@ -601,6 +630,37 @@ export class PropService extends ClientListener {
                 continue;
             }
             this.claim(prop, t.touch, now);
+        }
+    }
+
+    // The contacts since the last update, by local id: a tracked prop this
+    // seat does not simulate is claimed (touch 0), at most once per
+    // CLAIM_EVERY_MS per prop (a granted claim comes back as PropOwner, after
+    // which the body is this seat's and the next contacts say so); the
+    // expected body is the follower's, Keyframed (motion 4)
+    private claimContacts(now: number) {
+        const contacts = this.contacts;
+        this.contacts = [];
+        const myId = this.myId();
+        for (const c of contacts) {
+            const refr = localIdToRemoteId(c.localId);
+            const prop = refr ? this.props.get(refr) : undefined;
+            if (!prop) {
+                logTrace(this, `contact ${c.localId.toString(16)} layer ${c.layer} motion ${c.motionType}: not a tracked prop, no claim`);
+                continue;
+            }
+            const head = `contact ${prop.refr.toString(16)} layer ${c.layer} motion ${c.motionType}`;
+            const owned = prop.simulating || (myId !== 0 && prop.effective === myId);
+            if (owned) {
+                logLab(TAG, `${head}: owned, no claim`);
+                continue;
+            }
+            if (now - prop.lastClaimAt < CLAIM_EVERY_MS) {
+                logTrace(this, `${head}: claimed ${now - prop.lastClaimAt} ms ago, no claim`);
+                continue;
+            }
+            this.claim(prop, TOUCH_CONTACT, now);
+            logLab(TAG, `${head}: claimed`);
         }
     }
 
@@ -810,6 +870,13 @@ export class PropService extends ClientListener {
         return !s || s["propPhysics"] !== false;
     }
 
+    // the proximity stand-in for the contact, off by default now that the
+    // contact event exists; on for a seat whose hook never fires
+    private contactFallback(): boolean {
+        const s = this.sp.settings["skymp5-client"] as Record<string, unknown> | undefined;
+        return s !== undefined && s["propContactFallback"] === true;
+    }
+
     private static read(refr: ObjectReference, now: number): Sample {
         return {
             pos: ObjectReferenceEx.getPos(refr),
@@ -874,6 +941,8 @@ export class PropService extends ClientListener {
     private readonly echoSaid = new Set<number>();
     // the grabs and releases since the last update, by local id
     private touches: Array<{ localId: number; touch: number }> = [];
+    // the controller's contacts since the last update, by local id
+    private contacts: Array<{ localId: number; layer: number; motionType: number }> = [];
     // the player's drops awaiting the server's reference
     private drops: Array<{ baseId: number; at: number }> = [];
     private lastRescan = 0;

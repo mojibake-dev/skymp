@@ -20,7 +20,8 @@ bool ConditionFunctions::HasPerk::IsFormParameter(int index) const
 
 float ConditionFunctions::HasPerk::Execute(
   [[maybe_unused]] MpActor& actor, [[maybe_unused]] uint32_t parameter1,
-  [[maybe_unused]] uint32_t parameter2, const ConditionEvaluatorContext&)
+  [[maybe_unused]] uint32_t parameter2,
+  const ConditionEvaluatorContext& context)
 {
   // The server holds no perks yet (M5). For a recipe (the crafting caller)
   // the perk gate is the player's own game's: its menu offered only what its

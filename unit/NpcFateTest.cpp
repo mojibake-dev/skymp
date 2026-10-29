@@ -7,11 +7,14 @@
 #include "HitMessage.h"
 #include "MpChangeForms.h"
 #include "OpenContainerMessage.h"
+#include "SpSnippet.h"
 #include "TestUtils.hpp"
 #include "UpdateEquipmentMessage.h"
 #include "UpdatePropertyMessage.h"
 #include "libespm/Loader.h"
+#include "libespm/MGEF.h"
 #include "libespm/NPC_.h"
+#include "libespm/SPEL.h"
 #include "wire_bridge_cxx/rules.h"
 #include <catch2/catch_all.hpp>
 #include <chrono>
@@ -961,4 +964,177 @@ TEST_CASE("A hosted game-file actor's swing lands with the weapon its "
   DoDisconnect(p, 1);
   p.DestroyActor(kHost);
   p.DestroyActor(kOther);
+}
+
+// thuum docs/verbs/npc-fate.md ("Reanimation is any player's, on any body";
+// Eli, playtest 37: "anyone should be able to reanimate any corpse, that's
+// Just Gameplay"): a reanimate cast by a player who does not host the body's
+// cell reaches the host's game as the server's own Spell.Cast from the
+// caster's figure at the body, since only the host's engine can stand it,
+// and the relayed cast skips that host when the cast names the body. The
+// host's own cast needs nothing. Skyrim.esm: Reanimate Corpse 0x65bd7, its
+// effect ReanimateFFAimed25 0x96d0b of the Reanimate archetype (libespm
+// MGEF::EffectType::Reanimate, 22, as CommonLibSSE-NG's EffectArchetypes.h
+// kReanimate), read here from the record itself.
+TEST_CASE("A reanimate cast by a player who does not host the body's cell "
+          "is cast again on the host's engine by the server's word, once "
+          "per accepted hit; the host's own cast sends nothing",
+          "[NpcFate][Reanimate][espm]")
+{
+  constexpr uint32_t kHost = 0xff000d35;
+  constexpr uint32_t kCaster = 0xff000d36;
+  constexpr uint32_t kReanimateCorpse = 0x65bd7;
+  constexpr uint32_t kReanimateEffect = 0x96d0b;
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+
+  // the record itself: the spell's Reanimate effect is 0x96d0b
+  {
+    const auto spell =
+      espm::GetData<espm::SPEL>(kReanimateCorpse, &p.worldState);
+    REQUIRE(spell.spellItem != nullptr);
+    bool reanimates = false;
+    for (const auto& effect :
+         MpActor::EffectsOf(&p.worldState, kReanimateCorpse)) {
+      const auto mgef =
+        espm::GetData<espm::MGEF>(effect.effectId, &p.worldState);
+      if (mgef.data.effectType == espm::MGEF::EffectType::Reanimate) {
+        REQUIRE(effect.effectId == kReanimateEffect);
+        reanimates = true;
+      }
+    }
+    REQUIRE(reanimates);
+  }
+
+  // the host takes the forest's cell; the caster arrives beside the body,
+  // which lies dead, hosted by user 0
+  DoConnect(p, 0);
+  p.CreateActor(kHost, kForest, 0, kTamriel);
+  p.SetUserActor(0, kHost);
+  DoConnect(p, 1);
+  p.CreateActor(kCaster, kForest, 0, kTamriel);
+  p.SetUserActor(1, kCaster);
+  p.TickCellHosts(FateNowMs());
+  auto& form = p.worldState.LookupFormByIdNoLoad(kPredator);
+  REQUIRE(form);
+  MpActor* bodyPtr = form->AsActor();
+  REQUIRE(bodyPtr);
+  MpActor& body = *bodyPtr;
+  if (body.IsDead()) {
+    body.Respawn(false);
+  }
+  p.worldState.fateRespawnDue.erase(kPredator);
+  body.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
+  HostGrants(p, 0, kForestCell);
+  auto& host = p.worldState.GetFormAt<MpActor>(kHost);
+  auto& caster = p.worldState.GetFormAt<MpActor>(kCaster);
+  REQUIRE(p.worldState.HostOf(body) == &host);
+  body.Kill(nullptr);
+  REQUIRE(body.IsDead());
+
+  // `user`'s cast of Reanimate Corpse through the packet path, as its
+  // client's message arrives: the caster 0x14, the target the body (a
+  // client naming the crosshair's actor; the engine's own word for an aimed
+  // cast names the caster, and then the relay stands and the look doubles
+  // on the host once, RelayCast)
+  const auto casts = [&](Networking::UserId user) {
+    DoMessage(p, user,
+              nlohmann::json{
+                { "t", static_cast<int>(MsgType::SpellCast) },
+                { "data",
+                  { { "caster", 0x14 },
+                    { "target", kPredator },
+                    { "spell", kReanimateCorpse },
+                    { "isDualCasting", false },
+                    { "interruptCast", false },
+                    { "castingSource", 1 },
+                    { "aimAngle", 0.f },
+                    { "aimHeading", 0.f },
+                    { "hasLaunch", false },
+                    { "originX", 0.f },
+                    { "originY", 0.f },
+                    { "originZ", 0.f },
+                    { "launchAngleX", 0.f },
+                    { "launchAngleZ", 0.f },
+                    { "actorAnimationVariables",
+                      { { "booleans", nlohmann::json::array() },
+                        { "floats", nlohmann::json::array() },
+                        { "integers", nlohmann::json::array() } } } } } });
+  };
+  // `user`'s report of its own hit on the body with the spell
+  const auto hits = [&](Networking::UserId user) {
+    RawMessageData raw;
+    raw.userId = user;
+    HitMessage hit;
+    hit.data.aggressor = 0x14;
+    hit.data.target = kPredator;
+    hit.data.source = kReanimateCorpse;
+    p.GetActionListener().OnHit(raw, hit);
+  };
+  // the Spell.Cast snippets sent to `user` since the last clear, known by
+  // class and function (CellHostTest's idiom)
+  const auto castSnippetsTo = [&](Networking::UserId user) {
+    std::vector<nlohmann::json> out;
+    for (auto& m : p.Messages()) {
+      if (m.userId == user && m.j.is_object() && m.j.contains("t") &&
+          m.j["t"] == static_cast<int>(MsgType::SpSnippet) &&
+          m.j.contains("class") && m.j["class"] == "Spell" &&
+          m.j.contains("function") && m.j["function"] == "Cast") {
+        out.push_back(m.j);
+      }
+    }
+    return out;
+  };
+
+  SECTION("by a player who is not the host: one Spell.Cast on the host's "
+          "game, from the caster's figure at the body, and the relay skips "
+          "the host")
+  {
+    Equipment eq;
+    eq.rightSpell = kReanimateCorpse;
+    caster.SetEquipment(eq);
+    p.Messages().clear();
+    casts(1);
+    // the cast names the body the server holds dead: its host is skipped
+    REQUIRE(SentOfType(p, 0, MsgType::SpellCast) == 0);
+    hits(1);
+    p.Tick(); // snippets are deferred (SpSnippet.cpp)
+    const auto toHost = castSnippetsTo(0);
+    REQUIRE(toHost.size() == 1);
+    // the selfId is the spell's long id (a Spell is no actor, so its own)
+    REQUIRE(toHost[0]["selfId"].get<uint64_t>() ==
+            SpSnippet::MakeLongFormId(&p.worldState, kReanimateCorpse));
+    REQUIRE(toHost[0]["arguments"].size() == 2);
+    REQUIRE(toHost[0]["arguments"][0]["formId"].get<uint64_t>() == kCaster);
+    REQUIRE(toHost[0]["arguments"][0]["type"] == "ObjectReference");
+    REQUIRE(toHost[0]["arguments"][1]["formId"].get<uint64_t>() == kPredator);
+    REQUIRE(toHost[0]["arguments"][1]["type"] == "ObjectReference");
+    REQUIRE(castSnippetsTo(1).empty());
+  }
+
+  SECTION("by the host itself: no snippet, its own engine ran the effect, "
+          "and the relay reaches the other game as any cast's")
+  {
+    Equipment eq;
+    eq.rightSpell = kReanimateCorpse;
+    host.SetEquipment(eq);
+    p.Messages().clear();
+    casts(0);
+    REQUIRE(SentOfType(p, 1, MsgType::SpellCast) == 1);
+    hits(0);
+    p.Tick();
+    REQUIRE(castSnippetsTo(0).empty());
+    REQUIRE(castSnippetsTo(1).empty());
+  }
+
+  // the shared world: the body stood up again with no deadline, the fight a
+  // hit may have begun forgotten, the players gone
+  body.Respawn(false);
+  p.worldState.fateRespawnDue.erase(kPredator);
+  p.GetFights().forget(kCaster);
+  p.GetFights().forget(kHost);
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kHost);
+  p.DestroyActor(kCaster);
 }

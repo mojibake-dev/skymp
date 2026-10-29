@@ -221,6 +221,19 @@ const keepOffsetFromActor = (ac: Actor, m: Movement) => {
   if (Math.abs(offsetAngle) < 5) {
     offsetAngle = 0;
   }
+  // playtest 37 (2026-10-28, Eli: "spinning fix worked on exit not on
+  // entrance"): a keep-offset's angle is a turn that renews itself every
+  // frame (the planner's goal is the actor's own heading plus the offset,
+  // the read above), so a figure created or re-entering with a large
+  // difference to its record turned round and round until a re-apply found
+  // it near. A large difference is written as the puppet path writes its
+  // heading, absolutely, and the planner gets no angle to renew; the small
+  // ones stay the planner's smooth turn. HYPOTHESIS until an entrance is
+  // watched: that the entrance spin is this turn
+  if (Math.abs(offsetAngle) >= 30) {
+    ac.setAngle(m.rot[0], m.rot[1], m.rot[2]);
+    offsetAngle = 0;
+  }
 
   if (m.runMode === "Standing") {
     return ac.keepOffsetFromActor(ac, 0, 0, 0, 0, 0, offsetAngle, 1, 1);

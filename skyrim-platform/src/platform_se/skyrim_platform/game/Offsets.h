@@ -58,6 +58,20 @@ inline REL::Relocation<std::uintptr_t> DamageActor{ REL::ID(37335) };
 // docs/research/m3/re-puppet-head-lips.md A, HYPOTHESIS until the trace).
 // Not in CommonLibSSE-NG, the SE id unread: AE only, as DamageActor.
 inline REL::Relocation<std::uintptr_t> SendTopicInfoEvent{ REL::ID(35225) };
+// thuum docs/verbs/quest-stage.md, slice two (ADR-056's known limit: a stage
+// the server relays ran its Papyrus fragment on the applying seat too, so a
+// reward came twice): the VM's quest stage sink, SkyrimVM::ProcessEvent(const
+// TESQuestStageEvent*, BSTEventSource<TESQuestStageEvent>*) ->
+// BSEventNotifyControl, the one dispatcher of a stage's fragment.
+// CommonLibSSE-NG declares the sink sub-object at SkyrimVM+0xF0
+// (SkyrimVM.h:116; its vtable is VTABLE_SkyrimVM's entry 30,
+// Offsets_VTABLE.h:4307, AE 217115), the virtual (BSTEvent.h:146), the event
+// (TESQuestStageEvent.h:5-14) and the source (ScriptEventSourceHolder.h:95),
+// and no body or id for the function. Address Library 1.6.1170 53987, just
+// addr 2026-10-29, offset 0x9c6b70 (the re-analyst's Ghidra read,
+// docs/research/m3/re-quest-fragment.md, HYPOTHESIS until the trace). The SE
+// id unread: AE only, as DamageActor.
+inline REL::Relocation<std::uintptr_t> QuestStageSink{ REL::ID(53987) };
 // Projectile::Launch, (ProjectileHandle*, LaunchData&) -> ProjectileHandle*:
 // the engine's one launch of every projectile, an arrow's or a spell's
 // (CommonLibSSE-NG src/RE/P/Projectile.cpp:255-258, RELOCATION_ID(42928,

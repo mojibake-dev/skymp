@@ -164,6 +164,18 @@ bool Stagger(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
 bool SendStoryChangeLocation(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                              RE::Actor* actor, RE::BGSLocation* oldLocation,
                              RE::BGSLocation* newLocation);
+// The world's quest stages without their fragments (thuum
+// docs/verbs/quest-stage.md, slice two): a (quest, stage) pair the client is
+// applying from the server's relay, in before its SetStage and out at the
+// latent call's answer; while in, the VM's quest stage sink fires the stage's
+// callback and skips its Papyrus fragment (FridaHooks.cpp). False for no
+// quest or a stage outside the engine's u16
+bool SuppressQuestStageFragment(IVM* vm, StackID stackId,
+                                RE::StaticFunctionTag*, RE::TESQuest* quest,
+                                int32_t stage);
+bool ReleaseQuestStageFragment(IVM* vm, StackID stackId,
+                               RE::StaticFunctionTag*, RE::TESQuest* quest,
+                               int32_t stage);
 
 void BlockPapyrusEvents(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                         bool blocked);

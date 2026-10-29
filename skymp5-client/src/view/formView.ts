@@ -508,6 +508,28 @@ export class FormView {
     this.removeNickname();
   }
 
+  // the bind kill's move (the dead check in update): the actor to the
+  // record's position and heading, movement.pos and rot[2], by the file's
+  // setPosition and setAngle (degrees, as the quiet figure's heading is set).
+  // A record with no movement yet, or one standing in another cell than this
+  // engine has the actor (the record's coordinates are that cell's; the
+  // handoff block moves references between cells, this never does), leaves
+  // the actor where the engine spawned it. Returns the words for the log line
+  private placeAtDeadRecord(body: Actor, model: FormModel): string {
+    const m = model.movement;
+    if (!m) {
+      return "no movement on the record yet, left where the engine spawned it";
+    }
+    const engineCell = ObjectReferenceEx.getWorldOrCell(body);
+    if (engineCell !== 0 && engineCell !== m.worldOrCell) {
+      return `the record stands in ${m.worldOrCell.toString(16)} and the engine has it in ${engineCell.toString(16)}, left where the engine spawned it`;
+    }
+    const apart = ObjectReferenceEx.getDistance(ObjectReferenceEx.getPos(body), m.pos);
+    body.setPosition(m.pos[0], m.pos[1], m.pos[2]);
+    body.setAngle(0, 0, m.rot[2]);
+    return `moved ${apart.toFixed(0)} units to the record's spot (${m.pos.map((v) => v.toFixed(0)).join(", ")}, heading ${m.rot[2].toFixed(0)})`;
+  }
+
   private lastHarvestedApply = 0;
   private lastOpenApply = 0;
   private deadCheckAt = 0;
@@ -641,10 +663,32 @@ export class FormView {
         this.deadWordBound = true;
       }
       if (body && body.isDead() !== want && (!(simulatedHere && want) || (bind && want))) {
-        if (bind && want && simulatedHere) {
-          logLab("verb:npc-fate", `dead record ${this.refrId.toString(16)} loaded alive on this host's seat: killed at the bind`);
+        if (bind && want) {
+          // playtest 37 (3i lay, Eli: "they stay down but i hear a death
+          // sound and they are in different places if killed when someone
+          // else enters the cell"): the bind kill was the engine's full
+          // death where the game files spawned the actor, so the entering
+          // seat heard a death and had the body at the spawn point while the
+          // seat that saw the death had it where it fell. The record's
+          // movement is the host's last sample of the actor (the same sample
+          // deathService's restPuppetAtHost and movementApply's restBody lay
+          // a puppet's body by), so the actor is moved to it first, while it
+          // is alive and takes a setPosition (a dead ragdoll takes none,
+          // x-npc-death-host v3), and then killed silently (deathService:
+          // KillSilent, no death events, no push). On the host's seat and a
+          // watcher's alike: both bind the same record. HYPOTHESIS until a
+          // seat enters a cell with dead records and hears nothing: that
+          // KillSilent plays no death sound (CommonLibSSE-NG Actor.h:468
+          // declares KillImpl's sendEvent flag; which flags the Papyrus
+          // native clears is unread); that the silent kill still drops the
+          // body as a ragdoll at the record's spot; that the record's pos is
+          // the body's rest and not an earlier sample of the standing actor
+          const placed = this.placeAtDeadRecord(body, model);
+          logLab("verb:npc-fate", `dead record ${this.refrId.toString(16)} loaded alive on ${simulatedHere ? "this host's" : "a watcher's"} seat: ${placed}, killed silently at the bind`);
+          SpApiInteractor.getControllerInstance().emitter.emit("applyDeathStateEvent", { actor: body, isDead: true, silent: true });
+        } else {
+          SpApiInteractor.getControllerInstance().emitter.emit("applyDeathStateEvent", { actor: body, isDead: want });
         }
-        SpApiInteractor.getControllerInstance().emitter.emit("applyDeathStateEvent", { actor: body, isDead: want });
       }
     }
 

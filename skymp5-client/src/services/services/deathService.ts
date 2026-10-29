@@ -228,7 +228,7 @@ export class DeathService extends ClientListener {
       this.allowedPlayerAnimations = null;
       actor.setDontMove(false);
       this.ressurectWithPushKill(actor);
-    } else if (actor.getFormID() < 0xff000000) {
+    } else if (actor.getFormID() < 0xff000000 || this.isNpcCopy(actor)) {
       // thuum docs/verbs/npc-fate.md (the deaths): a game-file actor stands
       // again by the engine's own Resurrect (inventory and AI reset, the
       // cell reset's shape, re-npc-roll.md section 9); the server's fresh
@@ -238,7 +238,11 @@ export class DeathService extends ClientListener {
       // one game-thread task (FateApi.cpp resurrectActor): AI on for the
       // call, a puppet demoted again after it, a live actor unblocked;
       // Papyrus's Resurrect on a just-demoted corpse did not stand it up
-      // (x-npc-respawn 070508)
+      // (x-npc-respawn 070508). A server-made NPC's copy (playtest 37's
+      // finding 54: a reanimated bandit's puppet stayed a body) takes the
+      // same path: the server's live word stands its puppet up as a
+      // game-file actor's, never the delete and re-placement a player's
+      // figure takes (the throw below)
       const id = actor.getFormID();
       const queued = this.sp.resurrectActor(id);
       // the reconciler arms the deferred kill again on its next pass
@@ -250,6 +254,19 @@ export class DeathService extends ClientListener {
       throw new RespawnNeededError("needs to be respawned");
     }
   };
+
+  // a server-made NPC's copy, as remoteServer.ts's npcCopy reads the world
+  // model: a form with an NPC base (never the players' 0x7) that is not this
+  // player's own clone; a player's figure is not one
+  private isNpcCopy(actor: Actor): boolean {
+    const remoteId = localIdToRemoteId(actor.getFormID());
+    if (!remoteId) {
+      return false;
+    }
+    const world = this.controller.lookupListener(RemoteServer).getWorldModel();
+    const form = world.forms.find((f) => f !== undefined && f.refrId === remoteId);
+    return !!form && !!form.baseId && form.baseId !== 0x7 && form.isMyClone !== true;
+  }
 
   private killWithPush = (actor: Actor): void => {
     this.allowedPlayerAnimations?.push(AnimationEventName.Ragdoll);

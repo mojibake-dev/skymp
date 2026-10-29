@@ -511,8 +511,8 @@ public:
   // in `destWorldOrCell` from the cell its record holds. Inside the cell
   // the sender simulates (as its host, or as the actor's follower), or
   // into a cell it hosts: Accept. Into a cell nobody hosts that the sender
-  // vouches for (an adjacent exterior square its game has loaded, or a door
-  // with a persistent actor, either way through it): Follow, recorded in
+  // vouches for (an adjacent exterior square its game has loaded, or a door:
+  // an interior at either end, any actor's, memo D54 B): Follow, recorded in
   // the table; the sender simulates the actor there until the cell is
   // granted, it unloads the cell or leaves. Pass (ADR-047 D9, npc-handoff
   // (d)): the simulator's adjacent crossing into another live host's cell,

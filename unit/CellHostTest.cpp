@@ -7,6 +7,7 @@
 #include "HostReleaseMessage.h"
 #include "HostedActorStateMessage.h"
 #include "OpenContainerMessage.h"
+#include "TeleportMessage.h"
 #include "TestUtils.hpp"
 #include "UpdateActionMessage.h"
 #include "UpdateAnimationMessage.h"
@@ -584,9 +585,11 @@ TEST_CASE("A host follows its actor into an unhosted cell its game loads, "
   Move(p, 0, kWolf, kFar + NiPoint3{ 100.f, 0.f, 0.f });
   REQUIRE(std::abs(wolf.GetPos().x - 17550.f) < 1.f);
 
-  // the facts the door rule reads from the game files: the Sleeping Giant
+  // the facts of the game files around the door rule: the Sleeping Giant
   // Inn is an interior, Riverwood's exterior cell is not; Hod's placed
-  // reference is persistent, a server-made actor has no record
+  // reference is persistent and a server-made actor has no record, a fact
+  // the door rule stopped asking at memo D54 B (the non-persistent door
+  // cases below)
   REQUIRE(p.worldState.IsInteriorCell(0x133c6));
   REQUIRE_FALSE(p.worldState.IsInteriorCell(0x9732));
   REQUIRE(p.worldState.IsPersistentReference(0x1348a));
@@ -838,6 +841,203 @@ TEST_CASE("A hosted actor's door into a cell another live host holds passes "
   p.DestroyActor(kC1);
   p.DestroyActor(kC2);
   p.DestroyActor(kHod);
+}
+
+// thuum memo D54 (docs/research/m3/decisions-after-npc-stream.md; Eli's B,
+// 2026-10-28): the door fact asked the actor's persistence, so Hilde
+// 0x35534, Riverwood's one resident placed without the flag (her ACHR's
+// header flags are 0 where Hod's and Embry's carry 0x400; Skyrim.esm by
+// lab/esm.py; base NPC_ 0x35533 Hilde), was refused at her own door 0x1cbb0
+// into RiverwoodSvensHouse 0x1cb84 and her host's engine walked her back to
+// it for minutes. Every actor's door is judged alike now: into an interior
+// nobody hosts the record follows the host's report in and stands there,
+// frozen for every other game (a stranger's report dropped, the viewer
+// outside unsubscribed), her host's engine holding her unloaded where the
+// door put her, until a player loads the house and takes her with the
+// grant.
+TEST_CASE("A hosted non-persistent resident's door into an unhosted interior "
+          "moves the record there and leaves it frozen",
+          "[CellHost][espm]")
+{
+  constexpr uint32_t kHilde = 0x35534;
+  constexpr uint32_t kHouse = 0x1cb84;
+  // her placement's point in the house (lab/esm.py ref 0x35534)
+  const NiPoint3 kInside{ -482.f, 31.f, -15.f };
+  const NiPoint3 kOutside = kHere + NiPoint3{ 300.f, 0.f, 0.f };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  REQUIRE(p.worldState.IsInteriorCell(kHouse));
+  REQUIRE_FALSE(p.worldState.IsPersistentReference(kHilde));
+
+  auto& c1 = Player(p, 0, kC1, kHere);
+  auto& c2 = Player(p, 1, kC2, kHere + NiPoint3{ 600.f, 0.f, 0.f });
+  const auto here = p.worldState.CellOf(kTamriel, kHere);
+  REQUIRE(here.has_value());
+  CellLoaded(p, 0, *here);
+  REQUIRE(p.GetCellHost(*here).player == kC1);
+  REQUIRE_FALSE(p.GetCellHost(kHouse).hosted);
+
+  auto& form = p.worldState.LookupFormById(kHilde);
+  REQUIRE(form);
+  MpActor* hilde = form->AsActor();
+  REQUIRE(hilde);
+  hilde->SetCellOrWorldObsolete(FormDesc::Tamriel());
+  hilde->SetPos(kOutside);
+  REQUIRE(p.worldState.CellOf(*hilde) == here);
+  REQUIRE(p.SimulatorOf(*hilde) == kC1);
+  REQUIRE(hilde->GetListeners().count(&c1) == 1);
+  REQUIRE(hilde->GetListeners().count(&c2) == 1);
+  p.Messages().clear();
+
+  // the door's pre-check admits her crossing into a house nobody hosts (the
+  // refusal of D54), and records nothing
+  REQUIRE(p.worldState.npcDoorVerdict);
+  REQUIRE(p.worldState.npcDoorVerdict(*hilde, kHouse, kInside));
+  REQUIRE(p.GetFollows().empty());
+
+  // c1's engine walked her through; its report from indoors moves the
+  // record into the house as c1's follow, the house still nobody's
+  Move(p, 0, kHilde, kInside, kHouse);
+  REQUIRE(p.worldState.CellOf(*hilde) == kHouse);
+  REQUIRE(p.SimulatorOf(*hilde) == kC1);
+  const auto follows = p.GetFollows();
+  REQUIRE(follows.size() == 1);
+  REQUIRE(follows[0].actor == kHilde);
+  REQUIRE(follows[0].player == kC1);
+  REQUIRE(follows[0].cell == kHouse);
+  REQUIRE_FALSE(p.GetCellHost(kHouse).hosted);
+
+  // the viewer outside was told the move as a Teleport ahead of its
+  // unsubscribe and is dropped by the house's grid; her host stays her
+  // listener (the follow's pin)
+  bool viewerTold = false;
+  for (const auto& m : SentTo<TeleportMessage>(p, 1)) {
+    if (m.idx == hilde->GetIdx() && m.worldOrCell == kHouse) {
+      viewerTold = true;
+    }
+  }
+  REQUIRE(viewerTold);
+  REQUIRE(hilde->GetListeners().count(&c1) == 1);
+  REQUIRE(hilde->GetListeners().count(&c2) == 0);
+
+  // frozen for every other game: a stranger's report from the house is
+  // dropped; her host's low-process sample passes
+  Move(p, 1, kHilde, kInside + NiPoint3{ 100.f, 0.f, 0.f }, kHouse);
+  REQUIRE(std::abs(hilde->GetPos().x - kInside.x) < 1.f);
+  Move(p, 0, kHilde, kInside + NiPoint3{ 20.f, 0.f, 0.f }, kHouse);
+  REQUIRE(std::abs(hilde->GetPos().x - (kInside.x + 20.f)) < 1.f);
+
+  // a player loads the house: granted, the follow ends, the new host hears
+  // "not hosted by other" for her and the old follower's report is dropped
+  DoConnect(p, 2);
+  p.CreateActor(kC3, kInside, 0, kHouse);
+  p.SetUserActor(2, kC3);
+  CellLoaded(p, 2, kHouse);
+  REQUIRE(p.GetCellHost(kHouse).player == kC3);
+  REQUIRE(p.SimulatorOf(*hilde) == kC3);
+  REQUIRE(p.GetFollows().empty());
+  bool newHostLive = false;
+  for (const auto& m : SentTo<UpdatePropertyMessage>(p, 2)) {
+    if (m.idx == hilde->GetIdx() && m.propName == "isHostedByOther" &&
+        m.dataDump == "false") {
+      newHostLive = true;
+    }
+  }
+  REQUIRE(newHostLive);
+  Move(p, 0, kHilde, kInside, kHouse);
+  REQUIRE(std::abs(hilde->GetPos().x - (kInside.x + 20.f)) < 1.f);
+
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  DoDisconnect(p, 2);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+  p.DestroyActor(kC3);
+  p.DestroyActor(kHilde);
+}
+
+// the same door while another seat hosts the house from inside (the Hod
+// case's shape, ADR-047's door pass of 2026-10-28): the pass asks no
+// persistence either
+TEST_CASE("A hosted non-persistent resident's door into a cell another live "
+          "host holds passes it to that host",
+          "[CellHost][espm]")
+{
+  constexpr uint32_t kHilde = 0x35534;
+  constexpr uint32_t kHouse = 0x1cb84;
+  const NiPoint3 kInside{ -482.f, 31.f, -15.f };
+  const NiPoint3 kOutside = kHere + NiPoint3{ 300.f, 0.f, 0.f };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  REQUIRE_FALSE(p.worldState.IsPersistentReference(kHilde));
+
+  Player(p, 0, kC1, kHere);
+  DoConnect(p, 1);
+  p.CreateActor(kC2, kInside, 0, kHouse);
+  p.SetUserActor(1, kC2);
+  const auto here = p.worldState.CellOf(kTamriel, kHere);
+  REQUIRE(here.has_value());
+  CellLoaded(p, 0, *here);
+  CellLoaded(p, 1, kHouse);
+  REQUIRE(p.GetCellHost(*here).player == kC1);
+  REQUIRE(p.GetCellHost(kHouse).player == kC2);
+
+  auto& form = p.worldState.LookupFormById(kHilde);
+  REQUIRE(form);
+  MpActor* hilde = form->AsActor();
+  REQUIRE(hilde);
+  hilde->SetCellOrWorldObsolete(FormDesc::Tamriel());
+  hilde->SetPos(kOutside);
+  REQUIRE(p.worldState.CellOf(*hilde) == here);
+  REQUIRE(p.SimulatorOf(*hilde) == kC1);
+  p.Messages().clear();
+
+  // the door's pre-check admits her crossing into the hosted house
+  REQUIRE(p.worldState.npcDoorVerdict(*hilde, kHouse, kInside));
+
+  // c1's engine walked her through; its report from indoors passes her to
+  // the house's host: the record moves, no follow, the word both ways
+  Move(p, 0, kHilde, kInside, kHouse);
+  REQUIRE(p.worldState.CellOf(*hilde) == kHouse);
+  REQUIRE(p.SimulatorOf(*hilde) == kC2);
+  REQUIRE(p.GetFollows().empty());
+  bool newHostLive = false;
+  for (const auto& m : SentTo<UpdatePropertyMessage>(p, 1)) {
+    if (m.idx == hilde->GetIdx() && m.propName == "isHostedByOther" &&
+        m.dataDump == "false") {
+      newHostLive = true;
+    }
+  }
+  bool oldHostDemoted = false;
+  for (const auto& m : SentTo<UpdatePropertyMessage>(p, 0)) {
+    if (m.idx == hilde->GetIdx() && m.propName == "isHostedByOther" &&
+        m.dataDump == "true") {
+      oldHostDemoted = true;
+    }
+  }
+  REQUIRE(newHostLive);
+  REQUIRE(oldHostDemoted);
+
+  // the old host's next report from indoors is a stranger's, the house
+  // host's passes
+  Move(p, 0, kHilde, kInside + NiPoint3{ 100.f, 0.f, 0.f }, kHouse);
+  REQUIRE(std::abs(hilde->GetPos().x - kInside.x) < 1.f);
+  Move(p, 1, kHilde, kInside + NiPoint3{ 100.f, 0.f, 0.f }, kHouse);
+  REQUIRE(std::abs(hilde->GetPos().x - (kInside.x + 100.f)) < 1.f);
+
+  // her morning: the house's host walks her out into c1's square, deep
+  // inside it, and c1 takes her back
+  REQUIRE(p.worldState.npcDoorVerdict(*hilde, kTamriel, kOutside));
+  Move(p, 1, kHilde, kOutside);
+  REQUIRE(p.worldState.CellOf(*hilde) == here);
+  REQUIRE(p.SimulatorOf(*hilde) == kC1);
+  REQUIRE(p.GetFollows().empty());
+
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+  p.DestroyActor(kHilde);
 }
 
 // thuum docs/verbs/npc-puppet.md (ActorSightings, TES3MP's actor list): a

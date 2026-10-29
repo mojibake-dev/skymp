@@ -1010,8 +1010,8 @@ mod ffi {
     /// core gathers for `may_move` (ADR-047 D6): the reporting player's
     /// actor, the actor moved, the cell its record stands in and the cell
     /// the report puts it in (0 for none), whether the two exterior squares
-    /// touch in one worldspace, whether the destination is an interior
-    /// entered by a persistent actor.
+    /// touch in one worldspace, whether the move passes a door (an interior
+    /// at either end, any actor's: memo D54 B).
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct CellMove {
         /// The reporting player's actor.
@@ -1024,7 +1024,8 @@ mod ffi {
         dest: u32,
         /// Whether the two exterior grid squares touch in one worldspace.
         adjacent: bool,
-        /// Whether the destination is an interior entered by a persistent actor.
+        /// Whether the move passes a door: an interior at either end, any
+        /// actor's (memo D54 B).
         door: bool,
         /// Units from the reported position to the destination square's nearest
         /// edge (u32::MAX for an interior): the pass margin's fact (D22).

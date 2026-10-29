@@ -2084,8 +2084,8 @@ std::vector<PartOne::CellFollowEntry> PartOne::GetFollows() const
 namespace {
 // the facts the table judges a move by (npc-handoff D6): the origin and
 // destination cells, two exterior squares touching in one worldspace, or a
-// door (an interior at either end and a persistent actor, the kind the
-// engine keeps simulating off screen); none when the destination is no cell
+// door (an interior at either end, any actor's: memo D54 B); none when the
+// destination is no cell
 std::optional<skymp::rules::CellMove> CellMoveFacts(WorldState& worldState,
                                                     const MpActor& sender,
                                                     const MpActor& actor,
@@ -2098,8 +2098,17 @@ std::optional<skymp::rules::CellMove> CellMoveFacts(WorldState& worldState,
     return std::nullopt;
   }
   // the facts the table judges by (npc-handoff D6): two exterior squares
-  // touching in one worldspace, or a door (an interior at either end and a
-  // persistent actor, the kind the engine keeps simulating off screen)
+  // touching in one worldspace, or a door (an interior at either end). The
+  // door asked the actor's persistence until 2026-10-28 (the engine keeps
+  // simulating a persistent actor off screen, so its host could vouch for
+  // it indoors), and Hilde 0x35534, Riverwood's one resident placed without
+  // the flag, was refused at her own door 0x1cbb0 into RiverwoodSvensHouse
+  // 0x1cb84 while her host's engine walked her back to it for minutes
+  // (thuum memo D54, Eli's B: nothing in the engine or TES3MP treats her
+  // door differently). Every actor's door counts now: into a cell nobody
+  // hosts the record follows the host's report in and the host's engine
+  // holds the actor where the door put it, unloaded, its low-process
+  // samples the follow's; into another live host's cell the pass (D9)
   const uint32_t originWorldOrCell =
     actor.GetCellOrWorld().ToFormId(worldState.espmFiles);
   const bool destInterior = worldState.IsInteriorCell(destWorldOrCell);
@@ -2114,8 +2123,7 @@ std::optional<skymp::rules::CellMove> CellMoveFacts(WorldState& worldState,
                             static_cast<int>(std::floor(destPos.y / 4096.f)));
     adjacent = std::max(dx, dy) <= 1;
   }
-  const bool door = (destInterior || originInterior) &&
-    worldState.IsPersistentReference(actor.GetFormId());
+  const bool door = destInterior || originInterior;
   // the pass margin's fact (npc-handoff D22, 2026-10-26): how far inside the
   // destination's 4096-unit square the report stands, from its nearest edge;
   // an interior is deep by definition

@@ -481,6 +481,27 @@ fn check_host(cell: u32, epoch: u32) -> Result<(), Reject> {
     Ok(())
 }
 
+/// A form the server introduces (thuum docs/verbs/spell-placed-object.md,
+/// ADR-057): one its table placed at a caster's accepted cast names the
+/// caster in `placed_by`, a server id above 0, and is an MSTT or an ACTI,
+/// which its `base_record_type` says; any other `placed_by` is out of
+/// range. The transport refuses the message from a client by direction.
+fn check_create_actor(m: &skymp::CreateActor) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    if let Some(caster) = m.props.placed_by {
+        let placed_kind = m
+            .base_record_type
+            .as_ref()
+            .is_some_and(|t| t.as_str() == "MSTT" || t.as_str() == "ACTI");
+        if caster == 0 || !placed_kind {
+            return Err(Reject::Range);
+        }
+    }
+    Ok(())
+}
+
 fn check_player_globals(m: &skymp::PlayerGlobals) -> Result<(), Reject> {
     if !all_finite(m) {
         return Err(Reject::NonFinite);
@@ -865,6 +886,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
                 Ok(())
             }
         }
+        Message::CreateActor(m) => check_create_actor(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
         // rejects it by direction before it gets this far.
@@ -2157,5 +2179,38 @@ mod actor_jump_tests {
         assert_eq!(validate_server(&placement(1)), Ok(()));
         assert_eq!(validate_server(&placement(u32::MAX - 1)), Ok(()));
         assert_eq!(validate_server(&placement(u32::MAX)), Err(Reject::Range));
+    }
+}
+
+#[cfg(test)]
+mod spell_placed_tests {
+    use super::*;
+
+    fn placed(placed_by: Option<u32>, base_record_type: Option<&str>) -> Message {
+        Message::CreateActor(skymp::CreateActor {
+            idx: 7,
+            base_record_type: base_record_type.map(|t| t.try_into().unwrap_or_default()),
+            refr_id: Some(0xff00_0938),
+            base_id: Some(0x1a07_35e8),
+            props: skymp::CreateActorProps { placed_by, ..Default::default() },
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn a_placed_form_names_a_caster_above_zero_on_an_mstt_or_acti_alone() {
+        // thuum docs/verbs/spell-placed-object.md (ADR-057): Raise Wall's
+        // wall (MSTT) and halo (ACTI) carry their caster; a form of any other
+        // kind, or a caster of 0, is no placement the server would send
+        assert_eq!(validate_server(&placed(Some(0xff00_0000), Some("MSTT"))), Ok(()));
+        assert_eq!(validate_server(&placed(Some(0xff00_0000), Some("ACTI"))), Ok(()));
+        assert_eq!(validate_server(&placed(Some(0), Some("MSTT"))), Err(Reject::Range));
+        assert_eq!(validate_server(&placed(Some(0xff00_0000), None)), Err(Reject::Range));
+        assert_eq!(validate_server(&placed(Some(0xff00_0000), Some("DOOR"))), Err(Reject::Range));
+        assert_eq!(validate_server(&placed(Some(0xff00_0000), Some("NPC_"))), Err(Reject::Range));
+        // every other CreateActor is as it was: no placer, any base type
+        assert_eq!(validate_server(&placed(None, None)), Ok(()));
+        assert_eq!(validate_server(&placed(None, Some("DOOR"))), Ok(()));
+        assert_eq!(validate_server(&placed(None, Some("NPC_"))), Ok(()));
     }
 }

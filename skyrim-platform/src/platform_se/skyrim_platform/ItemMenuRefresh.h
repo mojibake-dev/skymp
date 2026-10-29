@@ -25,6 +25,24 @@ bool ItemMenuOpen();
 // reference while a menu was open, dozens a second, each rebuilding rows
 // the engine was not expecting to rebuild. HYPOTHESIS until the next sitting
 bool Shows(RE::TESObjectREFR& owner);
+// Why a post did not happen: the owner's inventory is not what an open item
+// menu shows (the ordinary case for every other container), the UI message
+// queue or the interface strings are missing, or the queue gave no message
+// data; named in the log so a "not posted" reads its reason at once
+enum class PostResult
+{
+  kPosted,
+  kNotShown,
+  kNoQueue,
+  kNoData
+};
+const char* Name(PostResult result);
+PostResult TryPost(RE::TESObjectREFR& owner);
+// true when a ContainerMenu is open and its target, looked up by the menu's
+// own handle, is the owner by form id; menuHandle receives that handle (0
+// when no ContainerMenu is open). The falsifier for a silent chest: the
+// target is this reference and the handle comparison in Shows still failed
+bool TargetByFormId(const RE::TESObjectREFR& owner, std::uint32_t& menuHandle);
 // true when an item menu shows the owner's inventory and the message was
 // queued
 bool Post(RE::TESObjectREFR& owner);

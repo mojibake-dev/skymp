@@ -461,10 +461,12 @@ public:
   void SetRestSettings(const std::string& restSettingsJson);
   const skymp::rules::RestSettings& GetRestSettings() const;
 
-  // The fights between players going on (thuum docs/verbs/hostility-sync.md,
-  // ADR-023; the rule and its state are Rust's, ADR-020). A hit between two
-  // players begins or keeps one; TickFights ends those that went a minute
-  // without a hit or whose players walked apart, and tells both games.
+  // The fights going on (thuum docs/verbs/hostility-sync.md, ADR-023; the
+  // rule and its state are Rust's, ADR-020): between two players, or since
+  // 2026-10-28 a player and a hosted NPC (docs/verbs/npc-stream.md, H-53h).
+  // A counted hit begins or keeps one; TickFights ends those that went a
+  // minute without a hit or whose parties walked apart, and tells the
+  // players' games.
   skymp::rules::Fights& GetFights();
   void TickFights(uint64_t nowMs);
 

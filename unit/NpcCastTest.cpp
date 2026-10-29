@@ -162,15 +162,16 @@ void Hands(PartOne& p, MpActor& predator, uint32_t rightSpell,
   p.GetActionListener().OnUpdateEquipment(raw, msg);
 }
 
-// the host's report of the predator's cast at the other player, through the
-// packet path (DoMessage), as its client's message arrives
-void Cast(PartOne& p, uint32_t spell)
+// the host's report of the predator's (or `caster`'s) cast at the other
+// player, through the packet path (DoMessage), as its client's message
+// arrives
+void Cast(PartOne& p, uint32_t spell, uint32_t caster = kPredator)
 {
   DoMessage(
     p, 0,
     nlohmann::json{ { "t", static_cast<int>(MsgType::SpellCast) },
                     { "data",
-                      { { "caster", kPredator },
+                      { { "caster", caster },
                         { "target", kOther },
                         { "spell", spell },
                         { "isDualCasting", false },
@@ -191,7 +192,7 @@ void Cast(PartOne& p, uint32_t spell)
 }
 
 // the host's report of the predator's (or `aggressor`'s) spell hit on the
-// other player
+// other player (or `target`)
 // the default logger's lines at info and above while the guard lives
 // (MarksmanTest's shape), restored at its end
 struct LogCapture
@@ -219,13 +220,14 @@ struct LogCapture
   }
 };
 
-void SpellHits(PartOne& p, uint32_t spell, uint32_t aggressor = kPredator)
+void SpellHits(PartOne& p, uint32_t spell, uint32_t aggressor = kPredator,
+               uint32_t target = kOther)
 {
   RawMessageData raw;
   raw.userId = 0;
   HitMessage hit;
   hit.data.aggressor = aggressor;
-  hit.data.target = kOther;
+  hit.data.target = target;
   hit.data.source = spell;
   p.GetActionListener().OnHit(raw, hit);
 }
@@ -244,9 +246,9 @@ std::vector<nlohmann::json> SentTo(PartOne& p, Networking::UserId user,
   return out;
 }
 
-float Health(PartOne& p)
+float Health(PartOne& p, uint32_t actor = kOther)
 {
-  return p.worldState.GetFormAt<MpActor>(kOther)
+  return p.worldState.GetFormAt<MpActor>(actor)
     .GetChangeForm()
     .actorValues.healthPercentage;
 }
@@ -254,6 +256,10 @@ float Health(PartOne& p)
 void Leave(PartOne& p)
 {
   p.worldState.GetFormAt<MpActor>(kPredator).SetEquipment(Equipment{});
+  // a hosted actor's hit on the other player begins a fight since
+  // 2026-10-28 (hostility.rs `counted`); the pair would outlive the actor
+  // in the shared world until a TickFights, so it ends here
+  p.GetFights().forget(kOther);
   DoDisconnect(p, 0);
   DoDisconnect(p, 1);
   p.DestroyActor(kHost);
@@ -388,10 +394,16 @@ TEST_CASE("A hosted caster's touch cast reaches the other game at its first "
 // thuum docs/verbs/npc-stream.md (train 53; playtest 37's flame atronach,
 // 2026-10-29): a creature's cloak is a constant-effect ability of its race,
 // never cast, so no cast of its lingered for the reach rule and every cloak
-// hit was refused E_SPELL_NO_CAST ("which it holds not")
+// hit was refused E_SPELL_NO_CAST ("which it holds not"). Its damage effect,
+// MGEF crFireDamageConcAimed 0x10fdd1, carries one CTDA, function 719
+// IsHostileToActor (H-53h), which the server answers from ADR-023's fights
+// table; that table held players alone until 2026-10-28, so the cloak burnt
+// no player server-side however long the two fought (hostility.rs `counted`)
 TEST_CASE("A hosted creature's cloak hit is claimed against the ability its "
-          "record holds, which stands as its cast; a spell no ability of its "
-          "reaches stays refused",
+          "record holds, which stands as its cast; its damage waits on a "
+          "fight between the two (IsHostileToActor) and lands once a hit of "
+          "the creature's began one; a spell no ability of its reaches "
+          "stays refused",
           "[NpcCast][espm]")
 {
   auto& p = GetPartOne();
@@ -407,25 +419,33 @@ TEST_CASE("A hosted creature's cloak hit is claimed against the ability its "
   REQUIRE(std::find(known.begin(), known.end(), 0x2f3b5u) != known.end());
   REQUIRE(p.AbilityReaching(atronach, kAtronachCloakDmg) == 0x2f3b5u);
   REQUIRE_FALSE(p.AbilityReaching(atronach, kFirebolt).has_value());
-  // beside the other player
+  // beside both players, a stranger to both
   atronach.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
   p.Messages().clear();
-  const float healthBefore = Health(p);
+  REQUIRE_FALSE(p.GetFights().in_fight(atronachId));
+  REQUIRE(Health(p) == 1.f);
 
-  // the cloak's spell with no cast of the atronach's: the ability stands as
-  // the cast and the hit is claimed. The damage itself is the effect's own
-  // conditions' question: MGEF crFireDamageConcAimed 0x10fdd1 carries one
-  // CTDA (function 719 by the record, lab/esm.py) that ADR-039's evaluation
-  // holds false in this world ("its conditions fail; not applied", the
-  // train's first T0, pipeline 3650), a read of its own in npc-stream.md, so
-  // the claim is this case's assertion and not the health
+  // the cloak's spell with no cast of the atronach's, on its own host, who
+  // stands in the cloak and never fought it (playtest 37's seat): the
+  // ability stands as the cast and the hit is claimed, and the effect's
+  // IsHostileToActor refuses it between strangers, the engine's own rule,
+  // once in ApplyEffects and once in OnSpellHit's hostility pass, the
+  // function known to the server. The host takes this hit and not the other
+  // player because a claim writes its cadence slot on its target even when
+  // the conditions then refuse it, and the other player's first report
+  // below is to count a whole cadence
+  const float hostHealthBefore = Health(p, kHost);
   {
     LogCapture log;
-    SpellHits(p, kAtronachCloakDmg, atronachId);
+    SpellHits(p, kAtronachCloakDmg, atronachId, kHost);
     REQUIRE(log.Count("ability cloak: ") == 1);
     REQUIRE(log.Count("claimed as a spell its cast reaches") == 1);
     REQUIRE(log.Count("E_SPELL_NO_CAST") == 0);
+    REQUIRE(log.Count("its conditions fail; not applied") == 2);
+    REQUIRE(log.Count("E_CONDITION_UNKNOWN") == 0);
   }
+  REQUIRE(Health(p, kHost) == Catch::Approx(hostHealthBefore));
+  REQUIRE_FALSE(p.GetFights().in_fight(atronachId));
   // a spell no ability of the record reaches, with no cast behind it: refused
   // (rule 5)
   {
@@ -434,7 +454,41 @@ TEST_CASE("A hosted creature's cloak hit is claimed against the ability its "
     REQUIRE(log.Count("E_SPELL_NO_CAST") == 1);
     REQUIRE(log.Count("ability cloak: ") == 0);
   }
-  REQUIRE(Health(p) == Catch::Approx(healthBefore));
+  REQUIRE(Health(p) == 1.f);
+
+  // the atronach's Firebolt, cast and claimed as the predator's is: 25 of
+  // the recorded 250, and a hosted creature's hit on a player begins a fight
+  // as a player's does, with NO StartCombat notice (the notice stays between
+  // players: the victim's copy of the creature is AI-off, the creature's own
+  // host engine fights by itself, the server's rest refusal is what the
+  // victim keeps); the pair outlives a TickFights, which admits a member
+  // with a host
+  p.Messages().clear();
+  Cast(p, kFirebolt, atronachId);
+  SpellHits(p, kFirebolt, atronachId);
+  REQUIRE(Health(p) == Catch::Approx(0.9f));
+  REQUIRE(p.GetFights().between(atronachId, kOther));
+  REQUIRE_FALSE(p.GetFights().between(atronachId, kHost));
+  p.Tick(); // snippets are deferred
+  size_t startCombats = 0;
+  for (const auto& j : SentTo(p, 1, MsgType::SpSnippet)) {
+    startCombats += j.value("function", std::string{}) == "StartCombat";
+  }
+  REQUIRE(startCombats == 0);
+  p.TickFights(NowMs());
+  REQUIRE(p.GetFights().between(atronachId, kOther));
+
+  // in the fight, the cloak's first report on the other player holds its
+  // conditions and counts one cadence: 0.5 s (wire-rules casts
+  // REACHED_TICK_MS) of 10 a second, 5 of 250
+  {
+    LogCapture log;
+    SpellHits(p, kAtronachCloakDmg, atronachId);
+    REQUIRE(log.Count("claimed as a spell its cast reaches") == 1);
+    REQUIRE(log.Count("its conditions fail; not applied") == 0);
+    REQUIRE(log.Count("E_CONDITION_UNKNOWN") == 0);
+  }
+  REQUIRE(Health(p) == Catch::Approx(0.88f));
 
   p.DestroyActor(atronachId);
   Leave(p);

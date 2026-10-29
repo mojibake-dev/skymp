@@ -17,6 +17,7 @@ import { ObjectReferenceEx } from "../extensions/objectReferenceEx";
 import { PlayerCharacterDataHolder } from "./playerCharacterDataHolder";
 import { setActorValuePercentage } from "../sync/actorvalues";
 import { ModelApplyUtils } from "./modelApplyUtils";
+import { ContainerApplyQueue } from "./containerApplyQueue";
 import { localIdToRemoteId } from "./worldViewMisc";
 import { SpApiInteractor } from "../services/spApiInteractor";
 import { WorldCleanerService } from "../services/services/worldCleanerService";
@@ -624,6 +625,19 @@ export class FormView {
       if (body && body.isDead() !== want && !(simulatedHere && want)) {
         SpApiInteractor.getControllerInstance().emitter.emit("applyDeathStateEvent", { actor: body, isDead: want });
       }
+    }
+
+    // thuum (playtest 37, 2026-10-28, Eli: "shouldn't be that hard to change
+    // that to on cell load right?"): a container's inventory is the server's
+    // record, in its CreateActor at the subscribe and in each change; a
+    // non-actor reference takes it as it comes, one container per tick
+    // through the queue (each entry a native call), so the copy and its
+    // crosshair label are right before any open. The crosshair-gated apply
+    // below keeps the body (an actor's inventory, under the OpenContainer
+    // that follows it) and the live chest
+    if (model.inventory && !isActor && PlayerCharacterDataHolder.getCrosshairRefId() !== this.refrId) {
+      ContainerApplyQueue.enqueue(this.refrId, model.inventory);
+      model.inventory = undefined;
     }
 
     // thuum memo D52 B (playtest 37, 2026-10-28, Eli: "so both can open it but

@@ -32,3 +32,15 @@ divergences:
     legacy: 0
     wire: 1
     reason: the shared quests at login (QuestStage, thuum docs/verbs/quest-stage.md); the legacy server has none
+
+  # thuum docs/verbs/magic-effects.md (memo D56 A, 2026-10-28): the cure. The
+  # wire server tells each player at login to drop every listed disease
+  # spell (cureSpells: DiseaseSanguinareVampiris 0xb8780) through one
+  # SpSnippet Actor.RemoveSpell on the player's own actor (selfId 0x14), and
+  # again every 60 s; every session is shorter than that. The legacy server
+  # has no cure and sends no such snippet. Matched by the spell's id, so a
+  # session's own RemoveSpell (the Rested effect at a wake) stays its own.
+  - msg: {t: 30, class: Actor, function: RemoveSpell, arguments: [{formId: 755584, type: Spell}]}
+    legacy: 0
+    wire: 1
+    reason: the cure of the listed diseases at login (SpSnippet Actor.RemoveSpell 0xb8780, thuum memo D56 A); the legacy server has none

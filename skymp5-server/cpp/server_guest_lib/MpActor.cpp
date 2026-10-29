@@ -65,6 +65,7 @@ struct MpActor::Impl
   uint32_t snippetIndex = 0;
   uint32_t respawnTimerIndex = 0;
   bool isRespawning = false;
+  bool placedDead = false;
   // ADR-050 decision 2: the server's number reached zero, the host's report
   // awaited (MpActor::BeginPendingDeath)
   bool pendingDeath = false;
@@ -1718,6 +1719,25 @@ const bool& MpActor::IsRespawning() const
   return pImpl->isRespawning;
 }
 
+void MpActor::MarkPlacedDead()
+{
+  pImpl->placedDead = true;
+  pImpl->isRespawning = false;
+  EditChangeForm(
+    [&](MpChangeForm& changeForm) {
+      changeForm.isDead = true;
+      changeForm.actorValues.healthPercentage = 0.f;
+      changeForm.actorValues.magickaPercentage = 0.f;
+      changeForm.actorValues.staminaPercentage = 0.f;
+    },
+    Mode::NoRequestSave);
+}
+
+bool MpActor::IsPlacedDead() const
+{
+  return pImpl->placedDead;
+}
+
 bool MpActor::IsSpellLearned(const uint32_t spellId) const
 {
   return ChangeForm().learnedSpells.IsSpellLearned(spellId) ||
@@ -2347,6 +2367,15 @@ void MpActor::RespawnWithDelay(bool shouldTeleport)
                 GetFormId(), pImpl->isRespawning);
 
   if (pImpl->isRespawning) {
+    return;
+  }
+  // thuum docs/verbs/npc-fate.md (finding 65): a dead-at-start placement
+  // never stands again by a clock; the engine never raises its own either.
+  // A reanimation stands it through the host's sample (Respawn(false)),
+  // which is no respawn
+  if (pImpl->placedDead) {
+    spdlog::trace("MpActor::RespawnWithDelay {:x} - placed dead, no respawn",
+                  GetFormId());
     return;
   }
   // thuum docs/research/m3/decisions-after-playtest-34.md D21: a disabled

@@ -2614,6 +2614,12 @@ uint8_t PartOne::CheckSharedQuest(const FormDesc& quest) const
                                                   quest.file);
 }
 
+bool PartOne::IsSharedQuestAllowed(const FormDesc& quest) const
+{
+  return pImpl->sharedQuests->shared_quests_allowed(quest.shortFormId,
+                                                    quest.file);
+}
+
 std::vector<FormDesc> PartOne::SharedQuestsListed() const
 {
   std::vector<FormDesc> listed;

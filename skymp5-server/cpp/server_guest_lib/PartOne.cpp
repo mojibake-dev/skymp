@@ -229,6 +229,9 @@ struct PartOne::Impl
   // `survivalFood`, its switch and its table
   std::optional<FormDesc> survivalFoodSwitch;
   std::vector<PartOne::SurvivalFoodEffect> survivalFood;
+  // the spells the server cures on every player (memo D56 A):
+  // server-settings.json's `cureSpells`
+  std::vector<FormDesc> cureSpells;
 
   // the fights between players (thuum docs/verbs/hostility-sync.md, ADR-023)
   rust::Box<skymp::rules::Fights> fights = skymp::rules::new_fights();
@@ -414,6 +417,10 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
     // quest stages follow the globals, the shared list first, then every
     // recorded stage ascending per quest
     GetActionListener().SendQuestStages(actor);
+
+    // thuum memo D56 A: the listed cure spells leave the player's game at the
+    // login and every minute after (the engine's own RemoveSpell)
+    GetActionListener().SendCures(actor);
 
     // thuum docs/verbs/actor-values.md (train-31; playtest twenty-eight's
     // test 2 relaunch): the login's record holds from the login itself, not
@@ -2685,6 +2692,30 @@ std::optional<PartOne::SurvivalFoodEffect> PartOne::SurvivalFoodOf(
 std::optional<FormDesc> PartOne::SurvivalFoodSwitch() const
 {
   return pImpl->survivalFoodSwitch;
+}
+
+void PartOne::SetCureSpellsSettings(const std::string& cureSpellsJson)
+{
+  const auto j = nlohmann::json::parse(cureSpellsJson);
+  if (!j.is_array()) {
+    throw std::runtime_error(
+      "cureSpells: a JSON list of \"<hex id>:<plugin>\" strings was expected");
+  }
+  std::vector<FormDesc> list;
+  for (const auto& e : j) {
+    if (!e.is_string()) {
+      throw std::runtime_error("cureSpells: " + e.dump() +
+                               " is not \"<hex id>:<plugin>\"");
+    }
+    list.push_back(FormDesc::FromString(e.get<std::string>()));
+  }
+  pImpl->cureSpells = std::move(list);
+  spdlog::info("PartOne::SetCureSpellsSettings - {}", cureSpellsJson);
+}
+
+const std::vector<FormDesc>& PartOne::CureSpells() const
+{
+  return pImpl->cureSpells;
 }
 
 void PartOne::SetScriptedEffectSettings(const std::string& scriptedEffectsJson)

@@ -12,6 +12,7 @@
 #include <deque>
 #include <map>
 #include <memory>
+#include <unordered_map>
 #include <utility>
 
 class ServerState;
@@ -190,6 +191,12 @@ public:
   // SetUserActor sends it right after the globals. Nothing when no quest is
   // shared.
   void SendQuestStages(MpActor& actor);
+  // thuum memo D56 A: the listed cure spells (PartOne::CureSpells) removed
+  // from the player's game at its login and every minute after, by the
+  // engine's own RemoveSpell; the minute chain stops when the actor has no
+  // user or logs in again (a new chain starts then)
+  void SendCures(MpActor& actor);
+  std::unordered_map<uint32_t, uint32_t> cureEpochs;
 
   // thuum docs/verbs/player-globals.md, the needs: listed globals written
   // into a player's record by the server's word (a food's effect, an

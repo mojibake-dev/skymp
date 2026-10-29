@@ -4,57 +4,10 @@
     "numChanges": 2987619799
   },
   "baseId": 3223487461,
+  "baseRecordType": "MSTT",
   "customPropsJsonDumps": [
     {
-      "propName": "{\u0019",
-      "propValueJsonDump": ""
-    },
-    {
-      "propName": "",
-      "propValueJsonDump": ""
-    },
-    {
-      "propName": "",
-      "propValueJsonDump": ""
-    },
-    {
-      "propName": "",
-      "propValueJsonDump": ""
-    },
-    {
-      "propName": "",
-      "propValueJsonDump": ""
-    },
-    {
-      "propName": "",
-      "propValueJsonDump": ""
-    },
-    {
-      "propName": "",
-      "propValueJsonDump": ""
-    },
-    {
-      "propName": "",
-      "propValueJsonDump": ""
-    },
-    {
-      "propName": "",
-      "propValueJsonDump": ""
-    },
-    {
-      "propName": "",
-      "propValueJsonDump": ""
-    },
-    {
-      "propName": "",
-      "propValueJsonDump": ""
-    },
-    {
-      "propName": "",
-      "propValueJsonDump": ""
-    },
-    {
-      "propName": "",
+      "propName": "\u0019",
       "propValueJsonDump": ""
     },
     {
@@ -74,6 +27,7 @@
   "isMe": false,
   "props": {
     "healRate": -1.1745227514891086e-16,
+    "placedBy": 4278190080,
     "isDisabled": true,
     "isHarvested": true,
     "lastAnimation": "\u0015",

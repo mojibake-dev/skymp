@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, effects, favorites, forms, headshots, hosted_state, hostility, magic, markers, melee, movement, player_globals, quest_stages, racemenu, ranged, rest, scripted_effects, shouts, stagger, teleports};
+use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, effects, favorites, forms, headshots, hosted_state, hostility, magic, markers, melee, movement, placements, player_globals, quest_stages, racemenu, ranged, rest, scripted_effects, shouts, stagger, teleports};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -357,6 +357,84 @@ mod ffi {
         file: String,
         /// The stage index the engine set.
         stage: u16,
+    }
+
+    /// A cast the server accepted, for Placements::cast_started (thuum
+    /// docs/verbs/spell-placed-object.md, ADR-057): who cast from which hand,
+    /// where it stood and faced, and whether a stream opened.
+    #[derive(Debug, Clone, PartialEq)]
+    struct PlacedCast {
+        /// The caster's server id.
+        caster: u32,
+        /// The hand or slot: 0 left, 1 right, 2 voice, 3 instant.
+        hand: u8,
+        /// Position.
+        x: f32,
+        /// Position.
+        y: f32,
+        /// Position.
+        z: f32,
+        /// The Z angle, degrees.
+        yaw: f32,
+        /// A stream opened (its end comes through cast_ended); false, the
+        /// cast was released whole.
+        concentration: bool,
+    }
+
+    /// One object the server places at an accepted cast (thuum
+    /// docs/verbs/spell-placed-object.md, ADR-057): its set, its caster, the
+    /// spell, the base (a FormDesc's parts) with its record type, and its
+    /// pose. A set's objects come as consecutive rows sharing `set`.
+    #[derive(Debug, Clone, PartialEq)]
+    struct PlacementRow {
+        /// The set's id, which names it in a PlacementRemoval.
+        set: u64,
+        /// The caster, whose id the object carries on the wire (placedBy).
+        caster: u32,
+        /// The spell's form id within its plugin.
+        spell_short_id: u32,
+        /// The spell's plugin.
+        spell_file: String,
+        /// The base's form id within its plugin.
+        short_id: u32,
+        /// The base's plugin.
+        file: String,
+        /// The base's record type, MSTT or ACTI.
+        record_type: String,
+        /// Position.
+        x: f32,
+        /// Position.
+        y: f32,
+        /// Position.
+        z: f32,
+        /// The Z angle, degrees.
+        yaw: f32,
+    }
+
+    /// A set whose time ran out (thuum docs/verbs/spell-placed-object.md):
+    /// `why` 0 the linger after its end, 1 its entry's maxS.
+    #[derive(Debug, Clone, PartialEq)]
+    struct PlacementRemoval {
+        /// The set's id.
+        set: u64,
+        /// Its caster.
+        caster: u32,
+        /// Why, as above.
+        why: u8,
+    }
+
+    /// A cast that placed nothing (thuum docs/verbs/spell-placed-object.md):
+    /// `why` 0 the caster's perCaster cap, 1 the server-wide cap.
+    #[derive(Debug, Clone, PartialEq)]
+    struct PlacementRefusal {
+        /// The caster.
+        caster: u32,
+        /// The spell's form id within its plugin.
+        spell_short_id: u32,
+        /// The spell's plugin.
+        spell_file: String,
+        /// Why, as above.
+        why: u8,
     }
 
     /// One actor value's base (thuum docs/verbs/actor-values.md).
@@ -1379,6 +1457,34 @@ mod ffi {
         /// within its quest.
         fn quest_stages_merge(record: &[QuestStageEntry], done: &QuestStageEntry) -> Vec<QuestStageEntry>;
 
+        /// thuum docs/verbs/spell-placed-object.md (ADR-057): the objects
+        /// server-settings.json's `spellPlacedObjects` names per spell, and
+        /// every set standing in the world.
+        type Placements;
+        /// The table from the block as JSON text (`[]` for none); the error
+        /// names the bad entry.
+        fn new_placements(settings_json: &str) -> Result<Box<Placements>>;
+        /// Whether the spell `short_id` in `file` (a FormDesc's parts) places
+        /// objects.
+        fn is_listed(self: &Placements, short_id: u32, file: &str) -> bool;
+        /// The server accepted `cast` of the spell `short_id` in `file` at
+        /// `now_ms` (a monotonic clock). True: the spell is listed and the
+        /// cast waits for the placement.
+        fn cast_started(self: &mut Placements, short_id: u32, file: &str, cast: PlacedCast, now_ms: u64) -> bool;
+        /// `caster`'s stream in `hand` ended at `now_ms`.
+        fn cast_ended(self: &mut Placements, caster: u32, hand: u8, now_ms: u64);
+        /// `caster` is gone at `now_ms`: every hand's stream ends.
+        fn caster_gone(self: &mut Placements, caster: u32, now_ms: u64);
+        /// The objects to create at `now_ms`, each set's rows together, each
+        /// set once.
+        fn due_placements(self: &mut Placements, now_ms: u64) -> Vec<PlacementRow>;
+        /// The sets whose time ran out by `now_ms`, each once.
+        fn due_removals(self: &mut Placements, now_ms: u64) -> Vec<PlacementRemoval>;
+        /// The casts that placed nothing since the last call, for the log.
+        fn take_refusals(self: &mut Placements) -> Vec<PlacementRefusal>;
+        /// Sets standing in the world.
+        fn live_sets(self: &Placements) -> usize;
+
         /// Every player actor's recent bow and crossbow shots.
         type RangedShots;
         /// No shots yet.
@@ -1539,7 +1645,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlayerGlobalEntry, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
+pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementRow, PlayerGlobalEntry, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -2155,6 +2261,92 @@ fn quest_stage_done(record: &[QuestStageEntry], done: &QuestStageEntry) -> bool 
 
 fn quest_stages_merge(record: &[QuestStageEntry], done: &QuestStageEntry) -> Vec<QuestStageEntry> {
     to_stage_entries(&quest_stages::merge(&to_stages(record), &to_stage(done)))
+}
+
+/// The spell-placed objects' table and the sets standing (wire-rules
+/// placements).
+pub struct Placements(placements::Placements);
+
+fn new_placements(settings_json: &str) -> Result<Box<Placements>, clock::SettingsError> {
+    placements::Placements::from_json(settings_json).map(|t| Box::new(Placements(t)))
+}
+
+impl Placements {
+    fn is_listed(&self, short_id: u32, file: &str) -> bool {
+        self.0.is_listed(short_id, file)
+    }
+
+    fn cast_started(&mut self, short_id: u32, file: &str, cast: PlacedCast, now_ms: u64) -> bool {
+        let PlacedCast { caster, hand, x, y, z, yaw, concentration } = cast;
+        let cast = placements::CastStart { caster, hand, pose: placements::CasterPose { x, y, z, yaw }, concentration };
+        self.0.cast_started(short_id, file, cast, now_ms)
+    }
+
+    fn cast_ended(&mut self, caster: u32, hand: u8, now_ms: u64) {
+        self.0.cast_ended(caster, hand, now_ms);
+    }
+
+    fn caster_gone(&mut self, caster: u32, now_ms: u64) {
+        self.0.caster_gone(caster, now_ms);
+    }
+
+    fn due_placements(&mut self, now_ms: u64) -> Vec<PlacementRow> {
+        self.0
+            .due_placements(now_ms)
+            .into_iter()
+            .flat_map(|p| {
+                let (set, caster, spell) = (p.set, p.caster, p.spell);
+                p.objects.into_iter().map(move |o| PlacementRow {
+                    set,
+                    caster,
+                    spell_short_id: spell.short_id,
+                    spell_file: spell.file.clone(),
+                    short_id: o.base.short_id,
+                    file: o.base.file,
+                    record_type: o.kind.record_type().to_owned(),
+                    x: o.x,
+                    y: o.y,
+                    z: o.z,
+                    yaw: o.yaw,
+                })
+            })
+            .collect()
+    }
+
+    fn due_removals(&mut self, now_ms: u64) -> Vec<PlacementRemoval> {
+        self.0
+            .due_removals(now_ms)
+            .into_iter()
+            .map(|r| PlacementRemoval {
+                set: r.set,
+                caster: r.caster,
+                why: match r.why {
+                    placements::RemovalWhy::Lingered => 0,
+                    placements::RemovalWhy::MaxReached => 1,
+                },
+            })
+            .collect()
+    }
+
+    fn take_refusals(&mut self) -> Vec<PlacementRefusal> {
+        self.0
+            .take_refusals()
+            .into_iter()
+            .map(|r| PlacementRefusal {
+                caster: r.caster,
+                spell_short_id: r.spell.short_id,
+                spell_file: r.spell.file,
+                why: match r.why {
+                    placements::Refusal::PerCaster => 0,
+                    placements::Refusal::ServerWide => 1,
+                },
+            })
+            .collect()
+    }
+
+    fn live_sets(&self) -> usize {
+        self.0.live_sets()
+    }
 }
 
 /// The cell host table (wire-rules cells, thuum docs/verbs/cell-host.md).
@@ -2924,6 +3116,40 @@ mod tests {
         assert_eq!(quest_stages_merge(&record, &e(0x74a83, 20)), record);
         assert!(list.as_ref().is_ok_and(|l| l.shared_quests_at_login(&[e(0x74a84, 5), e(0x74a83, 20), e(0x74a83, 10)]) == vec![e(0x74a83, 10), e(0x74a83, 20)]));
         assert!(new_shared_quests(r#"["074a83"]"#).is_err());
+    }
+
+    #[test]
+    fn the_bridge_places_and_removes_a_set() {
+        const PLUGIN: &str = "Apocalypse - Magic of Skyrim.esp";
+        let table = r#"[{"spell": "00cc14:Apocalypse - Magic of Skyrim.esp", "anchor": "caster",
+            "objects": [{"base": "098529:Apocalypse - Magic of Skyrim.esp", "type": "MSTT", "forward": 192, "dz": -48},
+                        {"base": "0735e8:Apocalypse - Magic of Skyrim.esp", "type": "ACTI", "forward": 192, "dz": 0}],
+            "lifetime": {"whileHeld": true, "lingerS": 5, "maxS": 120}, "perCaster": 1}]"#;
+        let parsed = new_placements(table);
+        assert!(parsed.is_ok());
+        let Ok(mut t) = parsed else {
+            return;
+        };
+        assert!(t.is_listed(0xcc14, PLUGIN));
+        assert!(!t.is_listed(0xcc14, "Skyrim.esm"));
+        let cast = |hand: u8, yaw: f32| PlacedCast { caster: 0xff00_0000, hand, x: 0.0, y: 0.0, z: 0.0, yaw, concentration: true };
+        assert!(t.cast_started(0xcc14, PLUGIN, cast(1, 90.0), 1_000));
+        assert!(t.due_placements(1_200).is_empty());
+        let rows = t.due_placements(1_250);
+        assert_eq!(rows.len(), 2);
+        assert!(rows.first().is_some_and(|r| r.set == 0 && r.caster == 0xff00_0000 && r.spell_short_id == 0xcc14 && r.spell_file == PLUGIN && r.short_id == 0x98529 && r.record_type == "MSTT" && (r.x - 192.0).abs() < 0.01 && (r.z + 48.0).abs() < 0.01 && (r.yaw - 90.0).abs() < 0.01), "{rows:?}");
+        assert!(rows.get(1).is_some_and(|r| r.set == 0 && r.short_id == 0x735e8 && r.record_type == "ACTI" && r.z.abs() < 0.01), "{rows:?}");
+        assert_eq!(t.live_sets(), 1);
+        // a second cast over the caster's cap of one is refused
+        assert!(t.cast_started(0xcc14, PLUGIN, cast(0, 0.0), 2_000));
+        assert!(t.due_placements(2_250).is_empty());
+        assert_eq!(t.take_refusals(), vec![PlacementRefusal { caster: 0xff00_0000, spell_short_id: 0xcc14, spell_file: PLUGIN.to_owned(), why: 0 }]);
+        t.cast_ended(0xff00_0000, 1, 10_000);
+        assert!(t.due_removals(14_999).is_empty());
+        assert_eq!(t.due_removals(15_000), vec![PlacementRemoval { set: 0, caster: 0xff00_0000, why: 0 }]);
+        assert_eq!(t.live_sets(), 0);
+        t.caster_gone(0xff00_0000, 20_000);
+        assert!(new_placements(r#"[{"spell": "cc14"}]"#).is_err());
     }
 
     #[test]

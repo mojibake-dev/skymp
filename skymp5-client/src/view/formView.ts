@@ -8,7 +8,7 @@ import { Appearance, applyAppearance } from "../sync/appearance";
 import { isBadMenuShown, applyEquipment, isFigureBase, keepOnlyServerSpells, applyHands } from "../sync/equipment";
 import { RespawnNeededError } from "../lib/errors";
 import * as sp from "skyrimPlatform";
-import { logLab } from "../logging";
+import { logLab, logTrace } from "../logging";
 import { FormModel } from "./model";
 import { UpdateActionMessage } from "../services/messages/updateActionMessage";
 import { applyMovement } from "../sync/movementApply";
@@ -275,6 +275,13 @@ export class FormView {
         base = Game.getFormEx(this.getAppearanceBasedBase());
       }
       if (base === null) {
+        return;
+      }
+
+      // thuum docs/verbs/spell-placed-object.md (ADR-057): the caster's own
+      // game keeps the script's copies of a spell-placed object and never
+      // places the server's over them (ownPlacedCopyStands, below)
+      if (this.ownPlacedCopyStands(model, base)) {
         return;
       }
 
@@ -552,6 +559,63 @@ export class FormView {
   // two records)
   private static isNpcModel(model: FormModel): boolean {
     return !!model.baseId && model.baseId !== 0x7;
+  }
+
+  // thuum docs/verbs/spell-placed-object.md (ADR-057; playtest 37, Eli: "im
+  // impatient, can we try getting raise wall working?"): the wall the mod's
+  // script placed existed in the caster's game alone, so the server now
+  // places a listed spell's objects itself at the accepted cast, and every
+  // seat receives them as server forms whose placedBy names the caster. The
+  // caster's engine still runs the script, so its game already holds its own
+  // copies at the same pose, and the server's copy must not stand over them.
+  // While the model names this game's player and the base is an MSTT or an
+  // ACTI, the view looks for a live reference of that base within 96 units
+  // of the server's pose that is none of the view's own copies (those carry
+  // the cleaner's protection; dropItemService tells the engine's references
+  // from the view's the same way). One found: the server's copy is never
+  // placed, and the destroy that follows the DestroyActor touches nothing,
+  // since this.refrId stays 0. None found within the window: the script's
+  // copy is gone or was never placed (the caster relaunched mid-set, or its
+  // engine took the no-room effect), and the server's copy is placed as any
+  // server form. The window: the script's wall starts 240 units below the
+  // pose and rises at 512 units a second (docs/MODS.md), so it is within the
+  // radius about 300 ms after the script's start, around when the CreateActor
+  // lands (the server waits 250 ms of open stream); two seconds cover a late
+  // message or a slow frame. HYPOTHESIS until x-raise-wall reads the
+  // caster's seat: one wall there, and the halo found by the search too.
+  private ownPlacedCopyStands(model: FormModel, base: Form): boolean {
+    if (model.placedBy === undefined) {
+      return false;
+    }
+    if (this.placedByMe !== undefined) {
+      return this.placedByMe;
+    }
+    const t = base.getType();
+    if ((t !== FormType.MovableStatic && t !== FormType.Activator) || model.placedBy !== localIdToRemoteId(0x14, true) || !model.movement) {
+      // another caster's, or no pose to search at: placed as any server form
+      this.placedByMe = false;
+      return false;
+    }
+    const now = Date.now();
+    if (this.placedSearchUntil === 0) {
+      this.placedSearchUntil = now + FormView.placedSearchMs;
+    }
+    const [x, y, z] = model.movement.pos;
+    const baseHex = base.getFormID().toString(16);
+    const remoteHex = this.getRemoteRefrId().toString(16);
+    const found = Game.findClosestReferenceOfType(base, x, y, z, FormView.placedSearchRadius);
+    if (found && !found.isDeleted() &&
+      SpApiInteractor.getControllerInstance().lookupListener(WorldCleanerService).getWcProtection(found.getFormID()) === 0) {
+      this.placedByMe = true;
+      logTrace("FormView", `spell-placed ${remoteHex}: this game's own copy of base ${baseHex} stands at the pose; the server's copy not placed`);
+      return true;
+    }
+    if (now < this.placedSearchUntil) {
+      return true;
+    }
+    this.placedByMe = false;
+    logTrace("FormView", `spell-placed ${remoteHex}: no copy of base ${baseHex} of this game's own within ${FormView.placedSearchRadius} units of the pose for ${FormView.placedSearchMs} ms; the server's copy placed`);
+    return false;
   }
 
   private applyFigureMaxima(actor: Actor | null, model: FormModel) {
@@ -1418,6 +1482,14 @@ export class FormView {
   private state = {};
   private localImmortal = false;
   private spellSweepAt = 0;
+  // thuum docs/verbs/spell-placed-object.md: for a server form this game's
+  // own cast placed, undefined until decided, true while this game's own
+  // copy stands at the pose (the server's never placed), false once the
+  // server's is to be placed as any form; and the search's deadline
+  private placedByMe: boolean | undefined = undefined;
+  private placedSearchUntil = 0;
+  private static readonly placedSearchRadius = 96;
+  private static readonly placedSearchMs = 2000;
   // the maxima set on the figure so far, by actor value name (figure-values)
   private figureMaxima = new Map<string, number>();
   private textNameId: number | undefined = undefined;

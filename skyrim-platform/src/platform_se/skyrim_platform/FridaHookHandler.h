@@ -32,7 +32,11 @@ enum HookID
   HOOK_PLACE_AREA_EFFECT,
   // thuum docs/verbs/npc-fate.md: the engine's reanimation of a body
   // (docs/research/m3/re-resurrect-hook.md, Address Library 38820)
-  HOOK_REANIMATE
+  HOOK_REANIMATE,
+  // thuum docs/verbs/prop-physics.md: the player's character controller's
+  // contact with a prop's body (docs/research/m3/re-havok-contact.md,
+  // Address Library 79131)
+  HOOK_PROP_CONTACT
 };
 
 struct Hook

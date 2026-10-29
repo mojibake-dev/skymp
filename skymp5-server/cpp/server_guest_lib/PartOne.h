@@ -217,6 +217,25 @@ public:
   MpObjectReference& WorldJournal();
   std::vector<QuestStageDone> GetQuestStages();
   bool SetQuestStages(std::vector<QuestStageDone> stages);
+
+  // thuum docs/verbs/spell-placed-object.md (ADR-057): the objects the
+  // server places at an accepted cast of a listed spell,
+  // server-settings.json's `spellPlacedObjects` (a JSON list, "[]" for
+  // none; a bad entry stops the server here, named). The rule is Rust's
+  // (wire-rules placements): a listed spell's cast waits 250 ms with its
+  // stream open, then its objects stand as server-made references (MSTT or
+  // ACTI) posed from the caster's position and yaw, every subscriber's
+  // CreateActor naming the caster (placedBy) and the base's type; the set
+  // falls lingerS after the stream's end or the caster's leaving, or at
+  // maxS. TickPlacements runs that clock (Tick calls it every
+  // kPlacementsTick). SweepSpellPlacedAtLoad deletes a loaded record's form
+  // when the record carries placedBySpell (no cast survives a restart),
+  // true when it did. SpellPlacedSets: the sets standing.
+  void SetSpellPlacedObjectsSettings(
+    const std::string& spellPlacedObjectsJson);
+  void TickPlacements(uint64_t nowMs);
+  bool SweepSpellPlacedAtLoad(const MpChangeForm& record);
+  size_t SpellPlacedSets() const;
   // thuum docs/verbs/player-globals.md, the needs (playtest 37, 2026-10-28,
   // Eli: "food doesnt replenish hunger"): server-settings.json's
   // `survivalFood`, as data: the effects a food record carries whose
@@ -654,6 +673,11 @@ private:
   void TickCellHostsEverySecond();
   void TickFateRespawnsEverySecond();
   void TickBondsEverySecond();
+  // thuum docs/verbs/spell-placed-object.md: the placements' clock from
+  // Tick; one object placed (0 when it could not be), a set's forms deleted
+  void TickPlacementsOften();
+  uint32_t PlaceSpellObject(const skymp::rules::PlacementRow& row);
+  void RemoveSpellPlacedSet(uint64_t set, const char* why);
   // thuum docs/verbs/shadowbond.md (train-28): the proc's records on both
   // and its cast in every game but the caster's; the reverse, with the
   // reason for the log

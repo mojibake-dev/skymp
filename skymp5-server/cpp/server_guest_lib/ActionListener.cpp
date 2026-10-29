@@ -1465,6 +1465,29 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
 
   std::vector<uint32_t> itemIdsToUnequip;
 
+  // thuum docs/verbs/npc-fate.md (playtest 37, 2026-10-28, findings 43 and
+  // 46): a hosted actor's engine wields what its own inventory roll gave it
+  // when the fate reached it late (an interior's actor, a login's or a
+  // teleport's neighbours): the late path redresses the outfit from the
+  // server's list and leaves the engine's rolled weapon beside the server's
+  // (FateApi.cpp RedressOnGameThread; re-npc-roll.md section 11, the dresser
+  // picks by score), so the host's hands report named a weapon the record's
+  // inventory lacked (39fe4's steel war axe, 39fe2's hunting bow), the whole
+  // report was refused and every swing fell at E_HIT_WEAPON. A worn WEAP the
+  // record lacks is the engine's own roll: recorded, R2 (rule 5), the item
+  // added to the record's inventory (the body holds what it swung) with one
+  // line, so the record's hands hold what the engine wields and the hit gate
+  // stands as it is. Anything else the record lacks refuses the report as
+  // before
+  std::vector<uint32_t> engineWeapons;
+  const auto isWeaponRecord = [&](uint32_t formId) -> bool {
+    if (!partOne.HasEspm()) {
+      return false;
+    }
+    const auto rec = partOne.GetEspm().GetBrowser().LookupById(formId).rec;
+    return rec && rec->GetType() == espm::WEAP::kType;
+  };
+
   const auto& inventory = actor->GetInventory();
   {
     auto& entries = kept.inv.entries;
@@ -1473,6 +1496,13 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
       // inventory is npc-fate's record, not this message's
       if ((hosted && it->GetWorn() == Inventory::Worn::None) ||
           inventory.HasItem(it->baseId)) {
+        ++it;
+        continue;
+      }
+      if (hosted && isWeaponRecord(it->baseId)) {
+        // the engine's own roll in a hosted actor's hands (findings 43 and
+        // 46): the entry stays in the report and is recorded below
+        engineWeapons.push_back(it->baseId);
         ++it;
         continue;
       }
@@ -1607,6 +1637,43 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     }
   } else {
     SendToNeighbours(msg.idx, rawMsgData, true);
+  }
+  if (hosted) {
+    for (const auto weaponId : engineWeapons) {
+      // the add's SetInventory goes to the actor's own user, which a hosted
+      // actor has none of (PartOne's sendToUserDeferred drops it); nothing
+      // reaches the host's game
+      actor->AddItem(weaponId, 1);
+      spdlog::info("[verb:npc-stream] E_EQUIP_UNKNOWN_WEAPON: {:x}'s hands by "
+                   "{:x} hold weapon {:x}, which its record's inventory lacks "
+                   "(the engine's own roll); recorded unvalidated, the item "
+                   "added to the record",
+                   actorFormId, myActor->GetFormId(), weaponId);
+    }
+    // finding 46 (the naked bandit): the record's worn set is the fate's
+    // worn list (PartOne's FateOf), the outfit every seat's engine dresses
+    // the copy from, and this report replaced it whole: a copy polled before
+    // its dressing (nothing worn yet) or one already undressed reported no
+    // outfit, the record kept none, and the next fate redressed the copy
+    // naked on every seat (29600, "1 worn, right 1397e left 0" accepted).
+    // The outfit is the server's roll (R0): a worn entry of the record that
+    // is no weapon and that the report lacks stays; the hands are the host's
+    // engine's and follow the report
+    size_t keptOutfit = 0;
+    for (const auto& entry : actor->GetEquipment().inv.entries) {
+      if (entry.GetWorn() == Inventory::Worn::None ||
+          kept.inv.HasItem(entry.baseId) || isWeaponRecord(entry.baseId)) {
+        continue;
+      }
+      kept.inv.AddItems({ entry });
+      ++keptOutfit;
+    }
+    if (keptOutfit > 0) {
+      spdlog::info("[verb:npc-stream] outfit kept for {:x}: {} worn item(s) "
+                   "of the server's roll the host's report lacked (a copy "
+                   "before its dressing, or undressed)",
+                   actorFormId, keptOutfit);
+    }
   }
   actor->SetEquipment(kept);
   if (hosted) {

@@ -1,16 +1,24 @@
 #include "ActionListener.h"
 #include "ActorFateMessage.h"
+#include "ActorValueRecord.h"
+#include "CellLoadedMessage.h"
 #include "ConsoleCommandMessage.h"
 #include "CreateActorMessage.h"
+#include "HitMessage.h"
 #include "MpChangeForms.h"
 #include "OpenContainerMessage.h"
 #include "TestUtils.hpp"
+#include "UpdateEquipmentMessage.h"
 #include "UpdatePropertyMessage.h"
 #include "libespm/Loader.h"
 #include "libespm/NPC_.h"
+#include "wire_bridge_cxx/rules.h"
 #include <catch2/catch_all.hpp>
+#include <chrono>
 #include <cmath>
 #include <simdjson.h>
+#include <string>
+#include <vector>
 
 PartOne& GetPartOne();
 
@@ -52,6 +60,106 @@ uint64_t FateNowMs()
     std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now().time_since_epoch())
       .count());
+}
+
+// the forest's cell, the predator's (NpcCastTest's)
+constexpr uint32_t kForestCell = 0x9810;
+
+const auto kWornRight = [] {
+  Inventory::ExtraData extra;
+  extra.worn_ = true;
+  return extra;
+}();
+
+// `user` hosts `cell`: any earlier host left at its case's end, so its grace
+// passes first, then the loaded report grants the cell (NpcCastTest's shape)
+void HostGrants(PartOne& p, Networking::UserId user, uint32_t cell)
+{
+  const auto past = FateNowMs() + skymp::rules::host_grace_ms() + 2'000;
+  p.TickCellHosts(past);
+  RawMessageData raw;
+  raw.userId = user;
+  CellLoadedMessage loaded;
+  loaded.cell = cell;
+  loaded.loaded = true;
+  p.GetActionListener().OnCellLoaded(raw, loaded);
+  p.TickCellHosts(past);
+}
+
+// the raw bytes a relayed report carries: the message as the host's client
+// would send it (SendToNeighbours forwards them as they came, and the
+// fixture types the relay by them); kept in a static for the call
+RawMessageData HostedRaw(const UpdateEquipmentMessage& msg)
+{
+  static std::string bytes;
+  nlohmann::json j;
+  msg.WriteJson(j);
+  bytes.clear();
+  bytes.push_back(static_cast<char>(Networking::MinPacketId));
+  bytes += j.dump();
+  RawMessageData raw;
+  raw.userId = 0;
+  raw.unparsed = reinterpret_cast<Networking::PacketData>(bytes.data());
+  raw.unparsedLength = bytes.size();
+  return raw;
+}
+
+// the host's report of what `actor` wears: each entry a count of one, worn
+void Wears(PartOne& p, MpActor& actor, const std::vector<uint32_t>& worn,
+           uint32_t numChanges)
+{
+  UpdateEquipmentMessage msg;
+  msg.idx = actor.GetIdx();
+  msg.data.numChanges = numChanges;
+  for (const auto baseId : worn) {
+    msg.data.inv.entries.push_back(Inventory::Entry(baseId, 1, kWornRight));
+  }
+  const RawMessageData raw = HostedRaw(msg);
+  p.GetActionListener().OnUpdateEquipment(raw, msg);
+}
+
+// the host's report of `aggressor`'s swing at `target` with `weapon`, the
+// weapon's cooldown behind it (HitTest's SetLastHitTime idiom)
+void Swings(PartOne& p, MpActor& aggressor, uint32_t target, uint32_t weapon)
+{
+  aggressor.SetLastHitTime(
+    target, std::chrono::steady_clock::now() - std::chrono::seconds(10));
+  RawMessageData raw;
+  raw.userId = 0;
+  HitMessage hit;
+  hit.data.aggressor = aggressor.GetFormId();
+  hit.data.target = target;
+  hit.data.source = weapon;
+  p.GetActionListener().OnHit(raw, hit);
+}
+
+bool Wearing(const MpActor& actor, uint32_t baseId)
+{
+  for (const auto& entry : actor.GetEquipment().inv.entries) {
+    if (entry.baseId == baseId && entry.GetWorn() != Inventory::Worn::None) {
+      return true;
+    }
+  }
+  return false;
+}
+
+float HealthOf(PartOne& p, uint32_t id)
+{
+  return p.worldState.GetFormAt<MpActor>(id)
+    .GetChangeForm()
+    .actorValues.healthPercentage;
+}
+
+size_t SentOfType(PartOne& p, Networking::UserId user, MsgType type)
+{
+  size_t n = 0;
+  for (auto& m : p.Messages()) {
+    if (m.userId == user && m.j.is_object() && m.j.contains("t") &&
+        m.j["t"] == static_cast<int>(type)) {
+      ++n;
+    }
+  }
+  return n;
 }
 }
 
@@ -609,4 +717,127 @@ TEST_CASE("A disabled actor's death schedules no respawn, a body disabled "
   p.worldState.gameTime = savedClock;
   p.worldState.fateRespawnDue.erase(kOut);
   p.DestroyActor(kOut);
+}
+
+// thuum docs/verbs/npc-fate.md (playtest 37, 2026-10-28, findings 43 and
+// 46): the server's hit gate judges a hosted actor's swing by the weapon in
+// its record's hands (E_HIT_WEAPON), and the host's engine wields what its
+// own inventory roll gave it when the fate reached it late (an interior's
+// actor, a login's neighbours: the redress dresses the outfit from the
+// server's list and leaves the engine's rolled weapon in place), so the
+// hands report named a weapon the record's inventory lacked, the report was
+// refused whole and every swing fell. The record's worn set is also the
+// fate's worn list, and a report that lacked the outfit (a copy polled
+// before its dressing) emptied it, so the next fate redressed the copy
+// naked. The predator stands for a game-file actor with a rolled record:
+// boots worn and an iron sword in hand.
+TEST_CASE("A hosted game-file actor's swing lands with the weapon its "
+          "record's hands hold, falls with one the record lacks until its "
+          "host's equipment stream names it, and the stream's weapon is "
+          "recorded beside the server's outfit, which a report lacking the "
+          "outfit never shrinks",
+          "[NpcFate][HostedEquipment][espm]")
+{
+  enum : uint32_t
+  {
+    kHost = 0xff000d30,
+    kOther = 0xff000d31,
+    // Skyrim.esm: IronSword, SteelWarAxe (the engine's roll on 39fe4,
+    // playtest 37), ArmorHideBoots, ArmorHideHelmet
+    kIronSword = 0x12eb7,
+    kSteelWarAxe = 0x13983,
+    kHideBoots = 0x13910,
+    kHideHelmet = 0x13913
+  };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  DoConnect(p, 0);
+  p.CreateActor(kHost, kForest, 0, kTamriel);
+  p.SetUserActor(0, kHost);
+  DoConnect(p, 1);
+  p.CreateActor(kOther, kForest + NiPoint3{ 200.f, 0.f, 0.f }, 0, kTamriel);
+  p.SetUserActor(1, kOther);
+  // the fate pass loads the ring; the predator stands beside the other
+  // player, alive, with no deadline
+  p.TickCellHosts(FateNowMs());
+  auto& form = p.worldState.LookupFormByIdNoLoad(kPredator);
+  REQUIRE(form);
+  MpActor* predatorPtr = form->AsActor();
+  REQUIRE(predatorPtr);
+  MpActor& predator = *predatorPtr;
+  if (predator.IsDead()) {
+    predator.Respawn(false);
+  }
+  p.worldState.fateRespawnDue.erase(kPredator);
+  predator.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
+  HostGrants(p, 0, kForestCell);
+  auto& host = p.worldState.GetFormAt<MpActor>(kHost);
+  auto& other = p.worldState.GetFormAt<MpActor>(kOther);
+  REQUIRE(p.worldState.HostOf(predator) == &host);
+  ActorValueRecord record;
+  record.bases = { { 24, 250.f } };
+  REQUIRE(other.SetActorValueRecord(record));
+
+  // the record's roll: boots worn, the sword in hand, both in its inventory
+  predator.AddItem(kIronSword, 1);
+  predator.AddItem(kHideBoots, 1);
+  Equipment rolled;
+  rolled.inv.entries.push_back(Inventory::Entry(kHideBoots, 1, kWornRight));
+  rolled.inv.entries.push_back(Inventory::Entry(kIronSword, 1, kWornRight));
+  predator.SetEquipment(rolled);
+  p.Messages().clear();
+
+  // a swing with the record's sword lands
+  const float whole = HealthOf(p, kOther);
+  Swings(p, predator, kOther, kIronSword);
+  const float afterSword = HealthOf(p, kOther);
+  REQUIRE(afterSword < whole);
+
+  // with the engine's own war axe, which the record never rolled and the
+  // stream has not named: dropped (E_HIT_WEAPON)
+  Swings(p, predator, kOther, kSteelWarAxe);
+  REQUIRE(HealthOf(p, kOther) == afterSword);
+
+  // the host's stream names the axe: recorded (R2), the item in the record's
+  // inventory, the sword out of the hands, the boots the report lacked kept;
+  // the report reaches the other game and nothing comes back to the host
+  p.Messages().clear();
+  Wears(p, predator, { kSteelWarAxe }, 1);
+  REQUIRE(predator.GetInventory().HasItem(kSteelWarAxe));
+  REQUIRE(Wearing(predator, kSteelWarAxe));
+  REQUIRE_FALSE(Wearing(predator, kIronSword));
+  REQUIRE(Wearing(predator, kHideBoots));
+  REQUIRE(predator.GetEquipment().numChanges == 1);
+  REQUIRE(SentOfType(p, 1, MsgType::UpdateEquipment) == 1);
+  REQUIRE(SentOfType(p, 0, MsgType::UpdateEquipment) == 0);
+  REQUIRE(SentOfType(p, 0, MsgType::SetInventory) == 0);
+
+  // the swing with the axe lands now
+  Swings(p, predator, kOther, kSteelWarAxe);
+  REQUIRE(HealthOf(p, kOther) < afterSword);
+
+  // a report with nothing worn (the copy polled before its dressing): the
+  // hands follow it, the outfit stays the server's
+  Wears(p, predator, {}, 2);
+  REQUIRE_FALSE(Wearing(predator, kSteelWarAxe));
+  REQUIRE(Wearing(predator, kHideBoots));
+  REQUIRE(predator.GetEquipment().numChanges == 2);
+
+  // a worn item that is no weapon and that the record lacks refuses the
+  // report as before
+  Wears(p, predator, { kHideHelmet }, 3);
+  REQUIRE_FALSE(predator.GetInventory().HasItem(kHideHelmet));
+  REQUIRE_FALSE(Wearing(predator, kHideHelmet));
+  REQUIRE(Wearing(predator, kHideBoots));
+  REQUIRE(predator.GetEquipment().numChanges == 2);
+
+  // the shared world: the predator's hands and inventory as found
+  predator.SetEquipment(Equipment{});
+  predator.RemoveItem(kIronSword, 1, nullptr);
+  predator.RemoveItem(kHideBoots, 1, nullptr);
+  predator.RemoveItem(kSteelWarAxe, 1, nullptr);
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kHost);
+  p.DestroyActor(kOther);
 }

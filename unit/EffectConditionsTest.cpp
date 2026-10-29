@@ -9,6 +9,9 @@
 #include "RunningEffect.h"
 #include "libespm/espm.h"
 #include <chrono>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
+#include <sstream>
 
 PartOne& GetPartOne();
 
@@ -70,6 +73,34 @@ bool Holds(PartOne& p, const std::vector<Condition>& conditions,
     [&](bool result, std::vector<std::string>&) { holds = result; }, context);
   return holds;
 }
+
+// the default logger's lines at info and above while the guard lives
+// (NpcCastTest's shape), restored at its end
+struct LogCapture
+{
+  std::shared_ptr<spdlog::logger> old = spdlog::default_logger();
+  std::ostringstream oss;
+  LogCapture()
+  {
+    auto sink = std::make_shared<spdlog::sinks::ostream_sink_mt>(oss);
+    auto logger =
+      std::make_shared<spdlog::logger>("effect-conditions-test", sink);
+    logger->set_pattern("%v");
+    logger->set_level(spdlog::level::info);
+    spdlog::set_default_logger(logger);
+  }
+  ~LogCapture() { spdlog::set_default_logger(old); }
+  size_t Count(const std::string& line) const
+  {
+    const std::string log = oss.str();
+    size_t n = 0;
+    for (size_t at = log.find(line); at != std::string::npos;
+         at = log.find(line, at + line.size())) {
+      ++n;
+    }
+    return n;
+  }
+};
 }
 
 TEST_CASE("Firebolt's perk rider is refused on another player while its fire "
@@ -87,8 +118,9 @@ TEST_CASE("Firebolt's perk rider is refused on another player while its fire "
       espm::GetData<espm::MGEF>(effect.effectId, &p.worldState);
     if (mgef.callsHasPerk) {
       ++riders;
-      // the record keeps its conditions now, and HasPerk is unknown to the
-      // server before M5: refused, not applied
+      // the record keeps its conditions, and HasPerk answers false before
+      // M5 (the server holds no perks), so the rider's HasPerk == 1 row
+      // fails: refused by its condition, not applied
       REQUIRE_FALSE(mgef.conditions.empty());
       REQUIRE_FALSE(MpActor::EffectConditionsHold(
         &p.worldState, effect, kFirebolt, *target, *caster));
@@ -319,5 +351,82 @@ TEST_CASE("A race's constant abilities stand in GetActorValue and the "
                 *target, *caster));
   REQUIRE(target->GetMaximumValues().magicka ==
           Catch::Approx(target->GetBaseValues().magicka + 50.f));
+  Leave(p);
+}
+
+// thuum docs/DECISIONS.md ADR-039 (playtest 37, 2026-10-28): HasPerk (448,
+// CommonLibSSE-NG include/RE/T/TESCondition.h) answers false for every actor
+// and perk until M5 holds perks. A function the evaluator lacks answers true
+// ("doesn't exist. Evaluating condition to True"), so the flip from unknown
+// to false is what a perk-gated row's == 1 failing shows.
+TEST_CASE("HasPerk is known by index and by name and answers false for every "
+          "actor and perk until M5",
+          "[Conditions]")
+{
+  PartOne& p = GetPartOne();
+  auto [caster, target] = Pair(p);
+  constexpr uint16_t kHasPerk = 448;
+  constexpr uint32_t kDarkSouls = 0x000581de; // Skyrim.esm PERK DarkSouls
+  const auto& map = p.worldState.conditionFunctionMap;
+  REQUIRE(map.GetConditionFunction(kHasPerk) != nullptr);
+  REQUIRE(map.GetConditionFunction("HasPerk").get() ==
+          map.GetConditionFunction(kHasPerk).get());
+  REQUIRE(map.GetConditionFunction(kHasPerk)->IsFormParameter(1));
+  REQUIRE_FALSE(Holds(
+    p, { Row("HasPerk", kHasPerk, "Target", "==", 1.f, kDarkSouls, "AND") },
+    *target, *caster));
+  REQUIRE(Holds(
+    p, { Row("HasPerk", kHasPerk, "Subject", "==", 0.f, kDarkSouls, "AND") },
+    *target, *caster));
+  Leave(p);
+}
+
+// Reanimate Corpse (Skyrim.esm 0x65BD7) carries three effects, their CTDAs
+// decoded from the master's bytes (2026-10-28): ReanimateFFAimed25 0x96D0B
+// (HasKeyword MagicNoReanimate 0x6F6FB == 0 on Subject),
+// ReanimateSecondayFFAimed 0xF52AB (HasKeyword ActorTypeUndead == 1 OR
+// IsUndead == 0) and PerkDarkSoulsReanimateEffect 0xCAB63, gated on its own
+// record by HasPerk (448) Dark Souls 0x581DE == 1 on Target, the caster. The
+// server refused 0xCAB63 as E_CONDITION_UNKNOWN until HasPerk existed
+// (playtest 37, finding 63); now the row fails and the effect is refused by
+// its condition, logged as such, while the two base effects hold on a living
+// player.
+TEST_CASE("Reanimate Corpse's Dark Souls rider is refused by its HasPerk "
+          "condition, not as an unknown function, and its base effects hold",
+          "[Conditions][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto [caster, target] = Pair(p);
+  constexpr uint32_t kReanimateCorpse = 0x00065bd7;
+  constexpr uint32_t kDarkSoulsRider = 0x000cab63;
+  constexpr uint16_t kHasPerk = 448;
+  const auto effects = MpActor::EffectsOf(&p.worldState, kReanimateCorpse);
+  REQUIRE(effects.size() == 3);
+  int riders = 0;
+  int bases = 0;
+  for (const auto& effect : effects) {
+    const auto mgef =
+      espm::GetData<espm::MGEF>(effect.effectId, &p.worldState);
+    LogCapture log;
+    const bool holds = MpActor::EffectConditionsHold(
+      &p.worldState, effect, kReanimateCorpse, *target, *caster);
+    REQUIRE(log.Count("E_CONDITION_UNKNOWN") == 0);
+    REQUIRE(log.Count("Unknown function index") == 0);
+    if (effect.effectId == kDarkSoulsRider) {
+      ++riders;
+      REQUIRE(mgef.callsHasPerk);
+      REQUIRE(mgef.conditions.size() == 1);
+      REQUIRE(mgef.conditions[0].functionIndex == kHasPerk);
+      REQUIRE_FALSE(holds);
+      REQUIRE(log.Count("its conditions fail; not applied") == 1);
+    } else {
+      ++bases;
+      REQUIRE_FALSE(mgef.callsHasPerk);
+      REQUIRE(holds);
+      REQUIRE(log.Count("its conditions fail; not applied") == 0);
+    }
+  }
+  REQUIRE(riders == 1);
+  REQUIRE(bases == 2);
   Leave(p);
 }

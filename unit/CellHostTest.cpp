@@ -36,6 +36,14 @@ namespace {
 constexpr uint32_t kTamriel = 0x3c;
 constexpr uint32_t kC1 = 0xff000c01;
 constexpr uint32_t kC2 = 0xff000c02;
+
+// a worn inventory entry's extra, as HitTest arms its aggressor (the helper
+// is that file's own, so it is spelled out here too)
+const auto kWornExtra = [] {
+  Inventory::ExtraData extra;
+  extra.worn_ = true;
+  return extra;
+}();
 constexpr uint32_t kWolf = 0xff000c03;
 constexpr uint32_t kC3 = 0xff000c04;
 // Whiterun's cow, an actor from Skyrim.esm (unit/NpcExists.cpp), in the
@@ -1898,7 +1906,7 @@ TEST_CASE("A hosted resident's melee hit its host reports is gated by reach",
   const uint32_t ironSword = 0x00012eb7;
   sigrid.AddItem(ironSword, 1);
   Equipment eq;
-  eq.inv.entries.push_back(Inventory::Entry(ironSword, 1, kExtraWornTrue));
+  eq.inv.entries.push_back(Inventory::Entry(ironSword, 1, kWornExtra));
   sigrid.SetEquipment(eq);
   const auto hitFrom = [&](const NiPoint3& victimPos) {
     victim.SetPos(victimPos);

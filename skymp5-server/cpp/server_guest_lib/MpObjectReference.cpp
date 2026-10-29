@@ -715,7 +715,12 @@ void MpObjectReference::TakeItem(MpActor& ac, const Inventory::Entry& e)
 // reverts both before anything equips
 void MpObjectReference::ResyncAfterRefusedMove(MpActor& ac)
 {
-  ac.SendInventoryUpdate();
+  // sent at once, not deferred: the engine's own move is already done and
+  // the next frame may equip the phantom (pipeline 3580's T0 read the
+  // deferred SetInventory nowhere)
+  SetInventoryMessage own;
+  own.inventory = ac.GetInventory();
+  ac.SendToUser(own, true);
   ac.GetActorToSendTo().SendToUser(
     CreatePropertyMessage_(this, "inventory", GetInventory().ToJson().dump()),
     true);

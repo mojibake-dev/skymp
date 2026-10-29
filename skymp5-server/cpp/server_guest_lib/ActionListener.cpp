@@ -5338,21 +5338,30 @@ void ActionListener::PlayStagger(MpActor& aggressor, MpActor& target,
 
 // thuum docs/verbs/hostility-sync.md (ADR-023): the attacker's engine marks
 // the victim an enemy when its hit lands, but the victim's engine never sees
-// that hit. When a hit between two players begins a fight (the Rust rule's
-// fights table), the victim's game starts combat between its figure of the
-// attacker and its own player (0x14 on that client). The engine then refuses
-// the victim a wait or a sleep with the attacker near, as it does the
-// attacker; PartOne::TickFights ends the fight on both games.
+// that hit. When a hit begins a fight (the Rust rule's fights table), the
+// victim's game starts combat between its figure of the attacker and its own
+// player (0x14 on that client). The engine then refuses the victim a wait or
+// a sleep with the attacker near, as it does the attacker; PartOne::TickFights
+// ends the fight on both games. Since 2026-10-28 (thuum
+// docs/verbs/npc-stream.md, H-53h) a hosted NPC is a party too: the table is
+// what IsHostileToActor reads for an effect between its two ends, and it
+// never held a creature, so an atronach's cloak burnt no player server-side
+// however long the two fought. The host's engine fights for its NPC by itself
+// (its AI is the host's, R2), so a hosted victim gets no notice.
 void ActionListener::NotifyHostility(MpActor& aggressor, MpActor& target,
                                      std::chrono::steady_clock::time_point now)
 {
   skymp::rules::HostilityFacts facts{};
   facts.aggressor_is_player =
     partOne.serverState.UserByActor(&aggressor) != Networking::InvalidUserId;
+  facts.aggressor_is_hosted = !facts.aggressor_is_player &&
+    partOne.worldState.HostOf(aggressor) != nullptr;
   facts.target_is_player =
     partOne.serverState.UserByActor(&target) != Networking::InvalidUserId;
+  facts.target_is_hosted =
+    !facts.target_is_player && partOne.worldState.HostOf(target) != nullptr;
   facts.same_actor = &aggressor == &target;
-  if (!skymp::rules::hostility_between_players(facts)) {
+  if (!skymp::rules::hostility_counted(facts)) {
     return;
   }
   const auto nowMs = static_cast<uint64_t>(
@@ -5361,6 +5370,17 @@ void ActionListener::NotifyHostility(MpActor& aggressor, MpActor& target,
       .count());
   if (!partOne.GetFights().hit(aggressor.GetFormId(), target.GetFormId(),
                                nowMs)) {
+    return;
+  }
+  if (!facts.target_is_player || !facts.aggressor_is_player) {
+    // the StartCombat notice stays between players (ADR-023): a hosted
+    // NPC's victim is its host engine's to fight, and a player's copy of a
+    // hosted creature has its AI off, so a StartCombat on it would do
+    // nothing the engine means; the server's rest refusal (in_fight) is
+    // what a player attacked by a hosted creature keeps
+    spdlog::info("ActionListener::OnWeaponHit - hostility: {:x} hit {:x}, a "
+                 "fight begins; no notice, the pair is not two players",
+                 aggressor.GetFormId(), target.GetFormId());
     return;
   }
 

@@ -928,12 +928,15 @@ TEST_CASE("A host's sighting places an interior-placed resident where its "
   sighting(1, kSigrid, far);
   REQUIRE(p.worldState.CellOf(sigrid) == cell);
   p.Tick(); // snippets are deferred (SpSnippet.cpp; pipeline 3613's red)
+  // the snippet's selfId is the long form id (SpSnippet::Execute's
+  // MakeLongFormId; pipeline 3619's red compared the short one), so the
+  // snippet is known by its class and function to this user alone
   bool hidden = false;
   for (auto& m : p.Messages()) {
     if (m.userId == 1 && m.j.is_object() && m.j.contains("t") &&
         m.j["t"] == static_cast<int>(MsgType::SpSnippet) &&
-        m.j.contains("function") && m.j["function"] == "Disable" &&
-        m.j.contains("selfId") && m.j["selfId"] == kSigrid) {
+        m.j.contains("class") && m.j["class"] == "ObjectReference" &&
+        m.j.contains("function") && m.j["function"] == "Disable") {
       hidden = true;
     }
   }

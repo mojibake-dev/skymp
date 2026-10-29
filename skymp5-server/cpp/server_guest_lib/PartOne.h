@@ -196,18 +196,23 @@ public:
   // thuum docs/verbs/quest-stage.md (ADR-056; memo D58 B): the quests whose
   // stages are the world's, server-settings.json's `sharedQuests`: a JSON
   // list of FormDescs ("[]" for none) is mode list, the object {"mode":
-  // "all", "denied": [FormDescs]} mode all; a bad entry or shape stops the
-  // server here, named. SharedQuestsMode: 0 list, 1 all, as the wire
-  // carries it. CheckSharedQuest: 0 the world's, else the rule's refusal
-  // (wire-rules quest_stages: 1 unlisted in mode list, 2 denied in mode
-  // all). Listed: what the login names as FormDescs, settings order (the
-  // list in mode list, the denied quests in mode all). AtLogin: the world's
-  // recorded stages of quests still the world's, ascending per quest.
-  // DoneAlready: the world's record holds the stage. Merge: the record with
-  // the stage added once, ascending within its quest.
+  // "all", "denied": [FormDescs], "allowed": [FormDescs]} mode all; a bad
+  // entry or shape stops the server here, named. SharedQuestsMode: 0 list,
+  // 1 all, as the wire carries it. CheckSharedQuest: 0 the world's, else
+  // the rule's refusal (wire-rules quest_stages: 1 unlisted in mode list, 2
+  // denied in mode all). IsSharedQuestAllowed: mode all's `allowed` names
+  // the quest (memo D62: a quest the game starts by itself, QUST DNAM's
+  // Start Game Enabled, is each seat's own unless allowed; the flag is the
+  // record's and the caller reads it). Listed: what the login names as
+  // FormDescs, settings order (the list in mode list, the denied quests in
+  // mode all). AtLogin: the world's recorded stages of quests still the
+  // world's, ascending per quest. DoneAlready: the world's record holds the
+  // stage. Merge: the record with the stage added once, ascending within
+  // its quest.
   void SetSharedQuestsSettings(const std::string& sharedQuestsJson);
   uint8_t SharedQuestsMode() const;
   uint8_t CheckSharedQuest(const FormDesc& quest) const;
+  bool IsSharedQuestAllowed(const FormDesc& quest) const;
   std::vector<FormDesc> SharedQuestsListed() const;
   std::vector<QuestStageDone> SharedQuestsAtLogin();
   bool QuestStageDoneAlready(const QuestStageDone& done);

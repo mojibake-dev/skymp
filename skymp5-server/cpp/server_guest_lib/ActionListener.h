@@ -90,9 +90,10 @@ public:
 
   // thuum docs/verbs/quest-stage.md (ADR-056): a player's game set a stage
   // on a quest; checked (a QUST of the load order, the world's by the
-  // sharing mode: listed in mode list, not denied in mode all; R1), recorded
-  // as the world's (R0) and relayed to every other player; a stage the world
-  // already has is a no-op
+  // sharing mode: listed in mode list, not denied in mode all and, in mode
+  // all, not a quest the game starts by itself unless allowed, memo D62;
+  // R1), recorded as the world's (R0) and relayed to every other player; a
+  // stage the world already has is a no-op
   virtual void OnQuestStage(const RawMessageData& rawMsgData,
                             const QuestStageMessage& msg);
 
@@ -191,7 +192,9 @@ public:
   // ascending per quest, for its game to set after a login; PartOne::
   // SetUserActor sends it right after the globals. In mode list, nothing
   // when no quest is listed; in mode all (memo D58 B) the first message
-  // names the denied quests, none or not, so the seat learns the mode.
+  // names the denied quests, none or not, so the seat learns the mode, and
+  // a recorded stage of a quest the game starts by itself stays unsent
+  // unless the quest is allowed (memo D62).
   void SendQuestStages(MpActor& actor);
   // thuum memo D56 A: the listed cure spells (PartOne::CureSpells) removed
   // from the player's game at its login and every minute after, by the

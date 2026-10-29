@@ -1437,7 +1437,9 @@ mod ffi {
 
         /// thuum docs/verbs/quest-stage.md (ADR-056; memo D58 B): the quests
         /// server-settings.json's `sharedQuests` makes the world's, by a list
-        /// (mode list) or by `{"mode": "all", "denied": [...]}` (mode all).
+        /// (mode list) or by `{"mode": "all", "denied": [...], "allowed":
+        /// [...]}` (mode all; `allowed` the start-game-enabled quests that
+        /// cross, memo D62).
         type SharedQuests;
         /// The setting from the block as JSON text (`[]` for none); the
         /// error names the bad entry or shape.
@@ -1451,6 +1453,10 @@ mod ffi {
         /// Judge a report's quest: 0 the world's, 1 not listed (mode list),
         /// 2 denied (mode all).
         fn shared_quests_check(self: &SharedQuests, short_id: u32, file: &str) -> u8;
+        /// Whether mode all's `allowed` names the quest (memo D62): a quest
+        /// the game starts by itself that crosses all the same. The flag is
+        /// the record's, read on the C++ side beside the check.
+        fn shared_quests_allowed(self: &SharedQuests, short_id: u32, file: &str) -> bool;
         /// What the login sends: the recorded stages of quests still the
         /// world's, ascending within each quest.
         fn shared_quests_at_login(self: &SharedQuests, record: &[QuestStageEntry]) -> Vec<QuestStageEntry>;
@@ -2257,6 +2263,10 @@ impl SharedQuests {
             Err(quest_stages::Refusal::Unlisted) => 1,
             Err(quest_stages::Refusal::Denied) => 2,
         }
+    }
+
+    fn shared_quests_allowed(&self, short_id: u32, file: &str) -> bool {
+        self.0.is_allowed(short_id, file)
     }
 
     fn shared_quests_at_login(&self, record: &[QuestStageEntry]) -> Vec<QuestStageEntry> {
@@ -3128,6 +3138,14 @@ mod tests {
         assert!(all.as_ref().is_ok_and(|a| a.shared_quests_check(0x4e50d, "Skyrim.esm") == 2));
         assert!(all.as_ref().is_ok_and(|a| a.shared_quests_at_login(&[e(0x4e50d, 5), e(0x74a84, 20), e(0x74a83, 10)]) == vec![e(0x74a84, 20), e(0x74a83, 10)]));
         assert!(new_shared_quests(r#"{"mode": "list"}"#).is_err());
+        // memo D62: the allowed list beside the denied, for the start-game-enabled
+        // quests that cross (MS13 0x39645 is one); a quest in both is refused
+        assert!(all.as_ref().is_ok_and(|a| !a.shared_quests_allowed(0x39645, "Skyrim.esm")));
+        let allowed = new_shared_quests(r#"{"mode": "all", "denied": ["04e50d:Skyrim.esm"], "allowed": ["039645:Skyrim.esm"]}"#);
+        assert!(allowed.as_ref().is_ok_and(|a| a.shared_quests_allowed(0x39645, "Skyrim.esm") && !a.shared_quests_allowed(0x4e50d, "Skyrim.esm")));
+        assert!(allowed.as_ref().is_ok_and(|a| a.shared_quests_listed() == vec![e(0x4e50d, 0)] && a.shared_quests_check(0x39645, "Skyrim.esm") == 0));
+        assert!(new_shared_quests(r#"{"mode": "all", "denied": ["039645:Skyrim.esm"], "allowed": ["39645:Skyrim.esm"]}"#).is_err());
+        assert!(list.as_ref().is_ok_and(|l| !l.shared_quests_allowed(0x74a83, "Skyrim.esm")));
         let record = quest_stages_merge(&[e(0x74a83, 20)], &e(0x74a83, 10));
         assert_eq!(record, vec![e(0x74a83, 10), e(0x74a83, 20)]);
         assert!(quest_stage_done(&record, &e(0x74a83, 20)));

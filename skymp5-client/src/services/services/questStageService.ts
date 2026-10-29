@@ -81,14 +81,29 @@ export class QuestStageService extends ClientListener {
         if (quest.isStageDone(stage)) {
             return; // the engine has it already: idempotent, nothing to report
         }
-        this.applying.set(QuestStageService.key(questId, stage), Date.now() + APPLY_ECHO_MS);
-        quest.setCurrentStageID(stage).then((ok) => {
-            logTrace(this, "the world's stage", stage, "of quest", questId.toString(16), ok ? "set" : "refused by the engine");
-            if (!ok) {
-                this.applying.delete(QuestStageService.key(questId, stage));
+        const key = QuestStageService.key(questId, stage);
+        this.applying.set(key, Date.now() + APPLY_ECHO_MS);
+        // a quest not running here is started first (Quest.Start, latent): the
+        // engine's SetStage is said to start a stopped quest by itself, but the
+        // lab's live set-stage on A Lovely Letter 0x74a83 (playtest 37, 03:59Z:
+        // stage 0, running false before and after) set nothing with no answer
+        // read, so the start is asked for on its own and each answer is logged
+        // (numidium's driver does the same under set-stage {start: true})
+        const started: Promise<boolean> = quest.isRunning() ? Promise.resolve(true) : quest.start();
+        started.then((startOk) => {
+            if (!startOk) {
+                this.applying.delete(key);
+                logTrace(this, "the world's quest", questId.toString(16), "did not start on this game (its aliases or conditions), stage", stage, "not set");
+                return;
             }
+            return quest.setCurrentStageID(stage).then((ok) => {
+                logTrace(this, "the world's stage", stage, "of quest", questId.toString(16), ok ? "set" : "refused by the engine");
+                if (!ok) {
+                    this.applying.delete(key);
+                }
+            });
         }).catch((err) => {
-            this.applying.delete(QuestStageService.key(questId, stage));
+            this.applying.delete(key);
             logError(this, "SetStage failed on quest", questId.toString(16), "stage", stage, err);
         });
     }

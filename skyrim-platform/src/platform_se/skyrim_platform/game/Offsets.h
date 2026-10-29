@@ -117,6 +117,17 @@ inline REL::Relocation<std::uintptr_t> OutfitResolve{ REL::ID(16155) };
 // (InventoryChanges*, BSScrapArray<CALCED_OBJECT>*, uint32 ordinal,
 // BGSOutfit*)`, outfit null on the container path
 inline REL::Relocation<std::uintptr_t> ContainerAdd{ REL::ID(16128) };
+// thuum docs/verbs/npc-fate.md (finding 54, the reanimated thrall): the
+// engine's reanimation proper, `void (Actor* this)`, the one function both
+// Reanimate routes reach (ReanimateEffect::Start 34750 directly when the body
+// has no live animation graph, the GetUpEnd handler 42880 after its get-up)
+// and Actor::MoveToMiddleHigh's post-load re-entry; it sets lifeState
+// kReanimate through 37612 (Actor::SetLifeState) and clears the commanding
+// actor. Not in CommonLibSSE-NG. Address Library 38820 on 1.6.1170 (`just
+// addr` 0x6c6e00; the re-analyst's Ghidra read on sky-re,
+// docs/research/m3/re-resurrect-hook.md, HYPOTHESIS until the trace). AE
+// only, as DamageActor.
+inline REL::Relocation<std::uintptr_t> Reanimate{ REL::ID(38820) };
 inline REL::Relocation<std::uintptr_t> ApplyMasksToRenderTargets{
   RELOCATION_ID(26454, 27040)
 };
@@ -195,6 +206,14 @@ inline REL::ID RemoveOutfitItems(19690);
 // 6, CommonLib name; bound at src/RE/A/Actor.cpp:1293-1298, called through
 // the member; section 8.4's open question: it counted zero in the lab read)
 inline REL::ID AddWornOutfit(19692);
+// Actor::Resurrect's body `(Actor*, bool a_resetInventory, bool a_attach3D)`,
+// the pointer Character's vtable holds at slot 0xAB (CommonLib's own
+// src/RE/A/Actor.cpp:1355; `just addr` 0x665ad0; docs/research/m3/
+// re-resurrect-hook.md). The record only, no hook sits here: the console's
+// ResurrectActor (22037) and Papyrus's functor (54639) reach it through the
+// slot, which Hooks.cpp HostedResurrect holds; PlayerCharacter's override
+// (40491) calls it for the player alone, never a hosted body.
+inline REL::ID ActorResurrect(37321);
 }
 
 namespace EventSource {

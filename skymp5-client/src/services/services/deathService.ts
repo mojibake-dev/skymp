@@ -29,7 +29,7 @@ export class DeathService extends ClientListener {
   }
 
   private onApplyDeathState(e: ApplyDeathStateEvent) {
-    this.applyDeathState(e.actor, e.isDead);
+    this.applyDeathState(e.actor, e.isDead, e.silent === true);
   }
 
   private hookDisableKillMoves() {
@@ -84,7 +84,7 @@ export class DeathService extends ClientListener {
     );
   }
 
-  private applyDeathState = (actor: Actor, isDead: boolean) => {
+  private applyDeathState = (actor: Actor, isDead: boolean, silent = false) => {
     if (isDead === true) {
       // thuum docs/verbs/headshot.md (ADR-038): the server's word confirms
       // a death this game played ahead; the real kill goes over the ragdoll
@@ -94,7 +94,7 @@ export class DeathService extends ClientListener {
       return;
     }
     if (isDead === true) {
-      this.killActor(actor, null);
+      this.killActor(actor, null, silent);
     } else {
       this.resurrectActor(actor);
     }
@@ -185,7 +185,16 @@ export class DeathService extends ClientListener {
     });
   }
 
-  private killActor = (actor: Actor, killer: Actor | null = null): void => {
+  // `silent`: the bind kill's word (formView's dead check; playtest 37, 3i
+  // lay, Eli: "they stay down but i hear a death sound and they are in
+  // different places if killed when someone else enters the cell"): an actor
+  // the game files spawned alive while the record holds it dead has no death
+  // to play, so it dies by KillSilent, the Papyrus native that sends no death
+  // events, instead of Kill's full death (the sound, the push). The server's
+  // kill mark, the puppet's rest and the loot block stay as for any kill; the
+  // player's own death never comes this way (the dead check skips 0x14), so
+  // the flag means nothing on that branch
+  private killActor = (actor: Actor, killer: Actor | null = null, silent = false): void => {
     if (this.isPlayer(actor) === true) {
       this.playerDead = true;
       this.busyForOtherReasonsCounter++;
@@ -208,7 +217,11 @@ export class DeathService extends ClientListener {
       // and the body stayed; the bodies lay 326 units apart)
       this.restPuppetAtHost(actor);
       actor.endDeferredKill();
-      actor.kill(killer);
+      if (silent) {
+        actor.killSilent(killer);
+      } else {
+        actor.kill(killer);
+      }
       if (actor.getFormID() < 0xff000000) {
         // thuum docs/verbs/npc-fate.md (the deaths): the body is the
         // server's container, its activation blocked as a CONT's is

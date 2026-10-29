@@ -282,21 +282,40 @@ void InstallPlayerHealthDamageHook()
  * screen alone, attacked nobody, and the server never learned it was alive,
  * so the other seat's puppet stayed a body. On its host a dead actor keeps
  * its AI off (PuppetApi.cpp Promote, npc-fate H-54e: a package would walk a
- * body), and under AI off the engine's own Actor::Resurrect (CommonLibSSE-NG
- * include/RE/A/Actor.h:369, vfunc 0AB) does not take: isDead stays true,
- * the lab's earlier finding and the reason FateApi::ResurrectActor wraps
- * the call in EnableAI(true) (FateApi.cpp). So for an actor this seat hosts
- * (Hosted.h, the server's word per actor) the AI is enabled before the
- * engine's own Resurrect runs, the call the reanimate effect's Start makes
- * (include/RE/R/ReanimateEffect.h:21; HYPOTHESIS, finding 54's read: that
- * Start reaches the body through this virtual). HYPOTHESIS: the AI bit
+ * body), so the engine revived a body with no AI, and it stood with no NPC
+ * in it. For an actor this seat hosts (Hosted.h, the server's word per
+ * actor) the AI is enabled before the engine's own Actor::Resurrect
+ * (CommonLibSSE-NG include/RE/A/Actor.h:369, vfunc 0AB) runs, and left on
+ * after it.
+ *
+ * The slot serves the console's ResurrectActor and Papyrus's Actor.Resurrect
+ * (the read docs/research/m3/re-resurrect-hook.md: the console executor
+ * 22037 and the VM functor 54639 both call slot 0xAB; the slot holds 37321,
+ * Actor::Resurrect's body, which CommonLib's own src/RE/A/Actor.cpp:1355
+ * relocates there on SE and AE). It does not serve the Reanimate effect:
+ * ReanimateEffect::Start (34750) never calls the slot or 37321; it reaches
+ * the body through its own function, 38820, which the Frida hook in
+ * FridaHooks.cpp (OnReanimateEnter) covers. Playtest 37's reanimation logged
+ * nothing here for that reason, not because the slot was wrong.
+ *
+ * The life state is read before and after through CommonLib's accessor
+ * (Actor::AsActorState, Actor.h:736; ActorState::GetLifeState,
+ * include/RE/A/ActorState.h:158; the enum at ActorState.h:7-18: kAlive 0,
+ * kDying 1, kDead 2, kUnconcious 3, kReanimate 4, kRecycle 5). 37321 zeroes
+ * actorState1 inside the call (38989 in the read), so the after read needs
+ * no deferral. The AI is not turned off again whatever the after read says:
+ * the dead state clears inside the call, and a body left with its AI off is
+ * finding 54's standing body. HYPOTHESIS (the read is static): the AI bit
  * (Actor::BOOL_BITS::kProcessMe, Actor.h:160, what EnableAI writes,
- * Actor.h:521) is what blocks Resurrect on an AI-off actor. The engine then
- * stands the body with isDead false; the host's sampler (skymp5-client
- * hostedStateService) reports the flip reliable and the server records the
- * resurrection (ActionListener::OnHostedActorState, a Respawn without a
- * teleport), whose live word stands the puppets up. A puppet is not touched
- * here: a watcher's copy follows the server's word as today (FateApi.cpp
+ * Actor.h:521) is what kept the lab's earlier Resurrect from taking on an
+ * AI-off actor, the reason FateApi::ResurrectActor wraps its call in
+ * EnableAI(true); the read lists no AI check inside 37321, so the two life
+ * states logged here are the evidence. The host's sampler (skymp5-client
+ * hostedStateService) then reads the flip through IsDead (Actor.h:345,
+ * actorState1 alone) and the server records the resurrection
+ * (ActionListener::OnHostedActorState, a Respawn without a teleport), whose
+ * live word stands the puppets up. A puppet is not touched here: a
+ * watcher's copy follows the server's word as today (FateApi.cpp
  * resurrectActor). The slot is written on Character's primary vtable
  * (RE::VTABLE_Character[0], include/RE/Offsets_VTABLE.h:2215), the class
  * every NPC and creature is; Character overrides no Resurrect
@@ -317,21 +336,18 @@ struct HostedResurrect
       func(a_this, a_resetInventory, a_attach3D);
       return;
     }
-    // Actor::IsDead (Actor.h:345), Actor::EnableAI (Actor.h:521)
-    const bool deadBefore = a_this->IsDead();
+    // Actor::AsActorState (Actor.h:736), ActorState::GetLifeState
+    // (ActorState.h:158), Actor::EnableAI (Actor.h:521)
+    const auto before =
+      static_cast<uint32_t>(a_this->AsActorState()->GetLifeState());
     a_this->EnableAI(true);
     func(a_this, a_resetInventory, a_attach3D);
-    const bool deadAfter = a_this->IsDead();
-    if (deadAfter) {
-      // the resurrection did not take (the hypothesis above failed): the
-      // body keeps H-54e's AI off, so no package walks it
-      a_this->EnableAI(false);
-    }
+    const auto after =
+      static_cast<uint32_t>(a_this->AsActorState()->GetLifeState());
     logger::info("[verb:npc-fate] resurrect {:x}: hosted body, AI enabled "
-                 "for the engine's own resurrection (dead before {}, dead "
-                 "after {}{})",
-                 a_this->formID, deadBefore, deadAfter,
-                 deadAfter ? ", AI off again" : "");
+                 "for the engine's own resurrection (life state before {}, "
+                 "after {})",
+                 a_this->formID, before, after);
   }
   static inline REL::Relocation<decltype(thunk)> func;
 };

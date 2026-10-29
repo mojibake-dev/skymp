@@ -1,5 +1,7 @@
 #include "ItemMenuRefresh.h"
 
+#include <RE/B/BSTCreateFactoryManager.h>
+#include <RE/B/BSTDerivedCreator.h>
 #include <RE/B/BarterMenu.h>
 #include <RE/C/ContainerMenu.h>
 #include <RE/G/GiftMenu.h>
@@ -68,7 +70,8 @@ const char* ItemMenuRefresh::Name(PostResult result)
     case PostResult::kNoQueue:
       return "no UI message queue or interface strings";
     case PostResult::kNoData:
-      return "the queue gave no message data";
+      return "the factory has no creator for the inventory update or gave "
+             "no data";
   }
   return "unknown";
 }
@@ -81,11 +84,24 @@ ItemMenuRefresh::PostResult ItemMenuRefresh::TryPost(RE::TESObjectREFR& owner)
   }
   auto* queue = RE::UIMessageQueue::GetSingleton();
   auto* strings = RE::InterfaceStrings::GetSingleton();
-  if (!queue || !strings) {
+  auto* factory = RE::MessageDataFactoryManager::GetSingleton();
+  if (!queue || !strings || !factory) {
     return PostResult::kNoQueue;
   }
-  auto* data = static_cast<RE::InventoryUpdateData*>(
-    queue->CreateUIMessageData(strings->inventoryUpdateData));
+  // the engine's own way to a fresh InventoryUpdateData (the re-analyst's
+  // read, docs/research/m3/re-inventory-update-factory.md): the creator the
+  // engine registered under "InventoryUpdateData" before WinMain, the one
+  // its Papyrus AddItem and RemoveItem reach. UIMessageQueue's
+  // CreateUIMessageData is no factory: it hands out a pre-made object from a
+  // per-name pool and no pool exists for this name, so it answered null on
+  // every post of playtest 37 ("the queue gave no message data" on both
+  // seats, the chest 371e9 and the body 29600 alike), the in-place redraw
+  // never happened and the reopen stayed the players' workaround
+  const auto* creator =
+    factory->GetCreator<RE::InventoryUpdateData>(strings->inventoryUpdateData);
+  auto* data = creator
+    ? static_cast<RE::InventoryUpdateData*>(creator->Create())
+    : nullptr;
   if (!data) {
     return PostResult::kNoData;
   }

@@ -154,6 +154,17 @@ bool ModPlayerActorValue(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
 bool Stagger(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
              RE::Actor* target, float magnitude, RE::Actor* source);
 
+// The Story Manager's Change Location event for `actor`, from `oldLocation`
+// (none allowed) to `newLocation` (none reads the actor's current location),
+// queued through the engine's own story event queue as its arrival sender
+// queues it (thuum docs/verbs/quest-stage.md H-56a,
+// docs/research/m3/re-story-location.md): a seat that logs in inside a
+// location raises none by itself, so the Story Manager starts none of the
+// location's quests there. False where nothing was queued
+bool SendStoryChangeLocation(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
+                             RE::Actor* actor, RE::BGSLocation* oldLocation,
+                             RE::BGSLocation* newLocation);
+
 void BlockPapyrusEvents(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                         bool blocked);
 

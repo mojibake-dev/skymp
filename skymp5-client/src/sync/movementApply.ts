@@ -378,9 +378,15 @@ const gTempTargetPos: NiPoint3 = [0, 0, 0];
 // (skymp5-client.movement in the settings file, read once; a plugin reload
 // re-reads them), so a motion change is a settings line and a reload, not a
 // build. The defaults are the values this file carried.
+// thuum playtest 37 (2026-10-28, Eli, on the other player's figure: "frames
+// are missing?" at leadSeconds 0.1, the yoyo at 0.2): the glide has two
+// shapes, chosen by the mode knob; the reasons are at translateTo's head
+type MovementMode = "lead" | "follow";
 type MovementKnobs = {
-  leadSeconds: number;      // the running lead, speed x this ahead of the record
+  mode: MovementMode;       // "lead": the figure is led speed x leadSeconds ahead of the record; "follow": it glides to the sample itself, timed by the measured sample spacing
+  leadSeconds: number;      // the running lead, speed x this ahead of the record (lead mode; the standing glide's time in both modes)
   leadDecay: number;        // the lead's run-out per standing sample (half)
+  followMargin: number;     // follow mode: the glide's time as a multiple of the smoothed sample spacing, over one so the glide outlasts the wait for the next sample
   deadbandMoving: number;   // units a figure may stand off a fresh sample
   deadbandStill: number;    // units it settles from when the record is still
   popDistance: number;      // a jump this far, to a place not sent, is a pop
@@ -393,14 +399,17 @@ let knobsCache: MovementKnobs | undefined;
 const localGaze = new Set<number>();
 const movementKnobs = (): MovementKnobs => {
   if (knobsCache) return knobsCache;
-  const defaults: MovementKnobs = { leadSeconds: 0.2, leadDecay: 0.5, deadbandMoving: 8, deadbandStill: 4, popDistance: 256, popWindowMs: 600, jumpDistance: 1024, localGazeRadius: 450 };
+  const defaults: MovementKnobs = { mode: "lead", leadSeconds: 0.2, leadDecay: 0.5, followMargin: 1.15, deadbandMoving: 8, deadbandStill: 4, popDistance: 256, popWindowMs: 600, jumpDistance: 1024, localGazeRadius: 450 };
   const s = settings["skymp5-client"] as Record<string, unknown> | undefined;
   const given = (s && typeof s["movement"] === "object" && s["movement"]) ? s["movement"] as Record<string, unknown> : {};
-  const out = { ...defaults } as Record<string, number>;
+  const out = { ...defaults } as Record<string, unknown>;
   for (const key of Object.keys(defaults)) {
     const v = given[key];
-    if (typeof v === "number" && Number.isFinite(v)) out[key] = v;
+    if (typeof out[key] === "number" && typeof v === "number" && Number.isFinite(v)) out[key] = v;
   }
+  // the one string knob: a known mode name overrides, anything else keeps the default, as a number knob's fallback does
+  const mode = given["mode"];
+  if (mode === "lead" || mode === "follow") out["mode"] = mode;
   knobsCache = out as MovementKnobs;
   return knobsCache;
 };
@@ -417,6 +426,34 @@ const lastTarget = new Map<number, NiPoint3>();
 // samples (halved each, gone under one unit) and the deadband stays at eight
 // until it is gone
 const leads = new Map<number, [number, number]>();
+// the samples' arrival clock, per actor, follow mode's time base: when the
+// last fresh sample was applied and the smoothed spacing between fresh
+// samples, an exponential moving average (alpha 0.3) of each measured gap
+// clamped to 0.08 to 0.4 s, so a frame hitch or a figure re-entering after
+// seconds away moves it a step and not a leap; it starts at 0.14 s, the
+// sender's 130 ms plus a frame. A settle (the view's re-apply of an unchanged
+// record) is no arrival and leaves it alone. It is cleared where the lead's
+// run-out clears the lead, lead mode's end of a run; follow mode sets no lead
+// and keeps its clock for the session
+const arrivals = new Map<number, { at: number; interval: number }>();
+const kArrivalInitial = 0.14;
+const kArrivalAlpha = 0.3;
+const kArrivalMin = 0.08;
+const kArrivalMax = 0.4;
+const trackArrival = (refrId: number, settle: boolean): number => {
+  const prev = arrivals.get(refrId);
+  if (settle) {
+    return prev ? prev.interval : kArrivalInitial;
+  }
+  const now = Date.now();
+  let interval = kArrivalInitial;
+  if (prev) {
+    const gap = Math.min(kArrivalMax, Math.max(kArrivalMin, (now - prev.at) / 1000));
+    interval = prev.interval + kArrivalAlpha * (gap - prev.interval);
+  }
+  arrivals.set(refrId, { at: now, interval });
+  return interval;
+};
 const pops = new Map<number, { at: number; pos: NiPoint3; from: NiPoint3 }>();
 
 const isStaleAfterPop = (refrId: number, real: NiPoint3, target: NiPoint3): boolean => {
@@ -444,23 +481,51 @@ const isStaleAfterPop = (refrId: number, real: NiPoint3, target: NiPoint3): bool
 
 const translateTo = (refr: ObjectReference, m: Movement, settle = false) => {
   const knobs = movementKnobs();
-  const time = knobs.leadSeconds;
+  const leadId = refr.getFormID();
+  const interval = trackArrival(leadId, settle);
+  // thuum playtest 37 (2026-10-28, Eli, on the other player's figure: at
+  // leadSeconds 0.1 "the yoyo is decreased but it looks like,, frames are
+  // missing?"; at the default 0.2 the figure overshoots the sender's stop and
+  // walks back). Samples land about every 130 ms plus a frame, 140 to 155 ms
+  // apart in practice, and a lead glide is given leadSeconds whatever that
+  // spacing is. Longer than the spacing, the figure is still running when the
+  // sender has stopped and learns of the stop a sample late: the yoyo.
+  // Shorter, the glide finishes before the next sample lands and the figure
+  // stands until it does, then runs at distance over the lead: the missing
+  // frames. Follow mode gives up the lead: the target is the sample itself and
+  // the glide is timed by the measured spacing times the margin, so the engine
+  // is still gliding when the next sample lands and the next glide starts from
+  // wherever the figure is. In the steady state the figure runs at the
+  // sender's speed about one margin of spacing behind the newest sample: one
+  // interval of delay, bought for continuous motion and a target the sender
+  // really stood at, so no overshoot. It is the trade Skyrim Together makes
+  // when it plays snapshots back on a delayed clock; upstream never
+  // interpolated between samples. A standing sample is handled as in lead
+  // mode: no lead was set, so none runs out, and the figure glides the rest
+  // of the way to the stop under the deadbands below. HYPOTHESIS until a lab
+  // probe measures both modes' stall frames and overshoot: that the follow
+  // figure reads as continuous, and that its last glide into the stop in the
+  // idle pose reads better than lead mode's walk back
+  const follow = knobs.mode === "follow" && m.runMode !== "Standing";
+  const time = follow ? interval * knobs.followMargin : knobs.leadSeconds;
 
-  // Local lag compensation
-  // TODO: Remove "|| 0" hack (added to support old MpClientPlugin)
-  const distanceAdd = (m.speed || 0) * time;
-  const direction = m.rot[2] + m.direction;
   gTempTargetPos[0] = m.pos[0];
   gTempTargetPos[1] = m.pos[1];
   gTempTargetPos[2] = m.pos[2];
 
   // We do not want to add pos in case of standing-jumping
-  const leadId = refr.getFormID();
   if (m.runMode !== "Standing") {
-    const lead: [number, number] = [Math.sin(direction / 180 * Math.PI) * distanceAdd, Math.cos(direction / 180 * Math.PI) * distanceAdd];
-    leads.set(leadId, lead);
-    gTempTargetPos[0] += lead[0];
-    gTempTargetPos[1] += lead[1];
+    // the follow target is the sample's own position; lead mode adds the lead
+    if (!follow) {
+      // Local lag compensation
+      // TODO: Remove "|| 0" hack (added to support old MpClientPlugin)
+      const distanceAdd = (m.speed || 0) * time;
+      const direction = m.rot[2] + m.direction;
+      const lead: [number, number] = [Math.sin(direction / 180 * Math.PI) * distanceAdd, Math.cos(direction / 180 * Math.PI) * distanceAdd];
+      leads.set(leadId, lead);
+      gTempTargetPos[0] += lead[0];
+      gTempTargetPos[1] += lead[1];
+    }
   } else {
     // the lead's run-out: half of what was left, until it is under one unit
     const left = leads.get(leadId);
@@ -468,6 +533,7 @@ const translateTo = (refr: ObjectReference, m: Movement, settle = false) => {
       const lead: [number, number] = [left[0] * knobs.leadDecay, left[1] * knobs.leadDecay];
       if (Math.hypot(lead[0], lead[1]) < 1) {
         leads.delete(leadId);
+        arrivals.delete(leadId);
       } else {
         leads.set(leadId, lead);
         gTempTargetPos[0] += lead[0];

@@ -129,8 +129,11 @@ void Promote(RE::Actor& actor)
   // include/RE/A/Actor.h:345); the block comes off for the loot, and the
   // AI comes on with the body's resurrection alone: the fate's resurrect
   // when the record stands again (FateApi.cpp resurrectActor), or the
-  // engine's own Resurrect on this seat, a necromancer's reanimate, through
-  // the Character vtable hook (Hooks.cpp HostedResurrect, finding 54)
+  // engine's own revival on this seat: the console's or Papyrus's Resurrect
+  // through the Character vtable hook (Hooks.cpp HostedResurrect) and a
+  // necromancer's reanimation through the hook on its one function
+  // (FridaHooks.cpp OnReanimateEnter, finding 54;
+  // docs/research/m3/re-resurrect-hook.md)
   if (actor.IsDead()) {
     logger::info("[verb:npc-puppet] promote {:x}: dead, the block lifted "
                  "and the AI left off (npc-fate H-54e)",

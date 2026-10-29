@@ -155,6 +155,20 @@ struct PartOne::Impl
 {
   simdjson::dom::parser parser;
 
+  // thuum docs/verbs/npc-puppet.md (finding 66): sightings dropped because
+  // their cell had no host yet, per cell, until the grant replays them
+  // (PartOne::ReplayHeldSightings) or kHeldSightingMs passes
+  struct HeldSighting
+  {
+    uint32_t reporter = 0;
+    uint32_t refrId = 0;
+    uint32_t worldOrCell = 0;
+    NiPoint3 pos;
+    NiPoint3 rot;
+    uint64_t heldAtMs = 0;
+  };
+  std::unordered_map<uint32_t, std::vector<HeldSighting>> heldSightings;
+
   // every player actor's ground speed budget (thuum
   // docs/verbs/movement-speed.md; the rule is Rust's, ADR-020)
   rust::Box<skymp::rules::MovementBudgets> movementBudgets =
@@ -1629,6 +1643,7 @@ void ApplyHostDecisions(PartOne& partOne,
         partOne.GetSendTarget().Send(partOne.serverState.UserByActor(host),
                                      grant, true);
         FlipHostedFlags(partOne, *host, d.cell, host);
+        partOne.ReplayHeldSightings(d.cell, *host);
         break;
       }
       case skymp::rules::HostKind::Release: {
@@ -1901,7 +1916,21 @@ void PartOne::OnActorSighting(MpActor& reporter, uint32_t refrId,
   const auto host = GetCellHost(*cell);
   if (!host.hosted || host.player != reporter.GetFormId()) {
     // another game's cell, or nobody's yet: that host reports it, or the
-    // grant comes first
+    // grant comes first and replays what it held (finding 66)
+    if (!host.hosted) {
+      auto& held = pImpl->heldSightings[*cell];
+      const uint64_t now = SteadyNowMs();
+      held.erase(std::remove_if(held.begin(), held.end(),
+                                [&](const Impl::HeldSighting& h) {
+                                  return h.refrId == refrId ||
+                                    now - h.heldAtMs > kHeldSightingMs;
+                                }),
+                 held.end());
+      if (held.size() < kHeldSightingsPerCell) {
+        held.push_back(Impl::HeldSighting{ reporter.GetFormId(), refrId,
+                                           worldOrCell, pos, rot, now });
+      }
+    }
     return drop(host.hosted ? "the cell is another game's"
                             : "the cell is nobody's yet");
   }
@@ -1965,6 +1994,30 @@ void PartOne::OnActorSighting(MpActor& reporter, uint32_t refrId,
     FormDesc::FromFormId(worldOrCell, worldState.espmFiles));
   actor->SetPos(pos);
   actor->SetAngle(rot);
+}
+
+void PartOne::ReplayHeldSightings(uint32_t cell, MpActor& host)
+{
+  auto it = pImpl->heldSightings.find(cell);
+  if (it == pImpl->heldSightings.end()) {
+    return;
+  }
+  const std::vector<Impl::HeldSighting> held = std::move(it->second);
+  pImpl->heldSightings.erase(it);
+  const uint64_t now = SteadyNowMs();
+  size_t replayed = 0;
+  for (const auto& h : held) {
+    if (h.reporter != host.GetFormId() || now - h.heldAtMs > kHeldSightingMs) {
+      continue;
+    }
+    ++replayed;
+    OnActorSighting(host, h.refrId, h.worldOrCell, h.pos, h.rot);
+  }
+  if (replayed > 0) {
+    spdlog::info("PartOne - npc-puppet: {:x} hosts cell {:x}: {} sighting(s) "
+                 "held before the grant replayed (finding 66)",
+                 host.GetFormId(), cell, replayed);
+  }
 }
 
 void PartOne::TickCellHostsEverySecond()

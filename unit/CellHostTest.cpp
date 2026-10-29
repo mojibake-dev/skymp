@@ -1158,6 +1158,59 @@ TEST_CASE("A host's sighting places an interior-placed resident where its "
   p.DestroyActor(kSigrid);
 }
 
+// thuum docs/verbs/npc-puppet.md (playtest 38's finding 66): the host's
+// roster that reaches the server before its cell's grant (the same
+// millisecond, live) is held and replayed at the grant, so the cell's
+// actors are recorded within a round trip instead of a roster later
+TEST_CASE("A sighting that arrives before its cell's grant is held and "
+          "replayed for the grant's host (finding 66)",
+          "[CellHost][espm]")
+{
+  constexpr uint32_t kSigrid = 0x13483;
+  const NiPoint3 sigridPos{ 24063.7f, -45204.2f, -40.6f };
+  const NiPoint3 landing{ 17225.f, -47204.f, -128.f };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kSigrid) == nullptr);
+
+  Player(p, 0, kC1, landing);
+  const auto cell = p.worldState.CellOf(kTamriel, sigridPos);
+  REQUIRE(cell.has_value());
+  REQUIRE_FALSE(p.GetCellHost(*cell).hosted);
+  p.Messages().clear();
+
+  // the roster first: nobody's cell yet, so dropped and held
+  DoMessage(
+    p, 0,
+    nlohmann::json{ { "t", MsgType::ActorSightings },
+                    { "sightings",
+                      nlohmann::json::array({ nlohmann::json{
+                        { "refrId", kSigrid },
+                        { "worldOrCell", kTamriel },
+                        { "pos", { sigridPos.x, sigridPos.y, sigridPos.z } },
+                        { "rot", { 0.f, 0.f, 165.3f } } } }) } });
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kSigrid) == nullptr);
+
+  // the grant: the held sighting replays for the new host at once
+  CellLoaded(p, 0, *cell);
+  REQUIRE(p.GetCellHost(*cell).player == kC1);
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kSigrid) != nullptr);
+  auto& sigrid = p.worldState.GetFormAt<MpActor>(kSigrid);
+  REQUIRE(sigrid.GetPos().x == Catch::Approx(sigridPos.x));
+  REQUIRE(sigrid.GetPos().y == Catch::Approx(sigridPos.y));
+  REQUIRE(p.worldState.HostOf(sigrid) ==
+          &p.worldState.GetFormAt<MpActor>(kC1));
+
+  // a second grant has nothing left to replay
+  p.Messages().clear();
+  p.ReplayHeldSightings(*cell, p.worldState.GetFormAt<MpActor>(kC1));
+  REQUIRE(SentTo<CreateActorMessage>(p, 0).empty());
+
+  DoDisconnect(p, 0);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kSigrid);
+}
+
 TEST_CASE("An actor from the game files travels under its own id with the "
           "server's explicit hosted word, the grant flips it, and only the "
           "host's reports move it",

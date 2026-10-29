@@ -40,6 +40,12 @@ public:
   const bool& IsRaceMenuOpen() const;
   const bool& IsDead() const;
   const bool& IsRespawning() const;
+  // thuum docs/verbs/npc-fate.md (playtest 38's finding 65): a placement
+  // that starts dead in the game files, loaded as the server's corpse: dead
+  // on the record with no death event, no death item and no respawn (the
+  // engine's own rule for it), its loot the corpse path's one roll
+  void MarkPlacedDead();
+  bool IsPlacedDead() const;
 
   bool IsSpellLearned(uint32_t spellId) const; // including from base
   bool IsSpellLearnedFromBase(uint32_t spellId) const;

@@ -238,9 +238,17 @@ export class SendInputsService extends ClientListener {
 
         const deathService = this.controller.lookupListener(DeathService);
         if (deathService.isBusy()) {
-            logTrace(this, "Not sending actor values, death service is busy");
+            // thuum playtest 38's finding 67 ("lots of 'death service is busy'
+            // errors"): the window is this seat's own death or respawn plus
+            // 7.5 s, and this ran once per frame; one line per window says
+            // the same
+            if (!this.busyLogged) {
+                this.busyLogged = true;
+                logTrace(this, "Not sending actor values, death service is busy (logged once per window)");
+            }
             return;
         }
+        this.busyLogged = false;
 
         const message: MessageWithRefrId<ChangeValuesMessage> = {
             t: MsgType.ChangeValues,
@@ -380,6 +388,7 @@ export class SendInputsService extends ClientListener {
     private isRaceSexMenuShown = false;
     private equipmentChanged = false;
     private numEquipmentChanges = 0;
+    private busyLogged = false;
     private prevValues: ActorValues = { health: 0, stamina: 0, magicka: 0 };
     private prevActorValuesUpdateTime = 0;
     private prevCastingDetectedTime = 0;

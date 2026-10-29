@@ -63,6 +63,7 @@ import {
   localIdToRemoteId,
 } from '../../view/worldViewMisc';
 import { TimeService } from './timeService';
+import { HostService } from './hostService';
 import { logTrace, logError } from '../../logging';
 
 import { SpellCastMessage } from '../messages/spellCastMessage';
@@ -1170,6 +1171,22 @@ export class RemoteServer extends ClientListener {
         return;
       }
 
+      // playtest 37, finding 53 (2026-10-28): a relayed cast on an actor this
+      // game hosts is this game's own report coming back. The server handed
+      // one copy per offline listener to that listener's host, which for a
+      // hosted caster is the reporter itself (RelayCast now skips them), and
+      // castSpellImmediate on the live actor launched a real bolt per copy:
+      // the atronach fired ten to thirteen a cast on its host's screen. The
+      // host's engine runs its actors' casts and their ends itself, so no
+      // relay for one of them is performed here, whatever the server sends.
+      if (!casterIsMe && this.controller.lookupListener(HostService).isMineLocal(ac.getFormID())) {
+        if (!this.hostedCastRelaysLogged.has(msg.data.caster)) {
+          this.hostedCastRelaysLogged.add(msg.data.caster);
+          logTrace(this, `relayed cast on an actor this game hosts, not performed: caster ${msg.data.caster.toString(16)} (local ${ac.getFormID().toString(16)}), spell ${msg.data.spell.toString(16)}`);
+        }
+        return;
+      }
+
       // a cast the server built carries no animation variables (it holds
       // none); castSpellImmediate applies the set before it casts and casts
       // nothing when the set does not apply, so the actor's own current set
@@ -1244,6 +1261,10 @@ export class RemoteServer extends ClientListener {
       }
     });
   }
+
+  // the casters whose relayed cast this game declined as their host, each
+  // logged once (finding 53)
+  private readonly hostedCastRelaysLogged = new Set<number>();
 
   // A spell with a target-location effect that has an area and no
   // projectile: the engine places its explosion at the picked point

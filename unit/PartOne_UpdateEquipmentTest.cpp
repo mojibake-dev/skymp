@@ -55,10 +55,13 @@ TEST_CASE("UpdateEquipment", "[PartOne]")
 // Skyrim.esm: LongBow 0x3B562 (MarksmanTest's), IronSword 0x12EB7
 // (CellHostTest's), Flames 0x12FCD, a starting spell of the Player NPC_
 // (FavoritesTest's, lab/esm.py), Firebolt 0x12FD0, which a fresh actor has
-// not learned (ConsoleCommandTest's).
+// not learned (ConsoleCommandTest's). The item the inventory lacks is the
+// SteelSword 0x13989: the Player base's own kit (NPC_ 0x7's CNTO rows,
+// lab/esm.py) already holds an iron sword, which the train's first T0 found
+// (pipeline 3650).
 namespace {
 constexpr uint32_t kLongBow = 0x0003b562;
-constexpr uint32_t kIronSword = 0x00012eb7;
+constexpr uint32_t kSteelSword = 0x00013989;
 constexpr uint32_t kFlames = 0x00012fcd;
 constexpr uint32_t kFirebolt = 0x00012fd0;
 constexpr uint32_t kOwner = 0xff000e30;
@@ -189,14 +192,14 @@ TEST_CASE("An equipment report with one item the player's inventory lacks "
   PartOne& p = GetPartOne();
   auto& owner = Pair(p);
   REQUIRE(owner.GetInventory().HasItem(kLongBow));
-  REQUIRE(!owner.GetInventory().HasItem(kIronSword));
+  REQUIRE(!owner.GetInventory().HasItem(kSteelSword));
   p.Messages().clear();
 
   UpdateEquipmentMessage msg;
   msg.idx = owner.GetIdx();
   msg.data.numChanges = 8;
   msg.data.inv.entries.push_back(Inventory::Entry(kLongBow, 1, kWornRight));
-  msg.data.inv.entries.push_back(Inventory::Entry(kIronSword, 1, kWornRight));
+  msg.data.inv.entries.push_back(Inventory::Entry(kSteelSword, 1, kWornRight));
   msg.data.leftSpell = kFlames;
   Report(p, msg);
 
@@ -204,7 +207,7 @@ TEST_CASE("An equipment report with one item the player's inventory lacks "
   const auto& eq = owner.GetEquipment();
   REQUIRE(eq.numChanges == 8);
   REQUIRE(eq.inv.HasItem(kLongBow));
-  REQUIRE(!eq.inv.HasItem(kIronSword));
+  REQUIRE(!eq.inv.HasItem(kSteelSword));
   REQUIRE(eq.leftSpell.value_or(0) == kFlames);
 
   // the watcher hears the kept report
@@ -220,7 +223,7 @@ TEST_CASE("An equipment report with one item the player's inventory lacks "
   REQUIRE(snippets.size() == 1);
   REQUIRE(snippets[0]["class"] == "Actor");
   REQUIRE(snippets[0]["function"] == "UnequipItem");
-  REQUIRE(snippets[0]["arguments"][0]["formId"] == kIronSword);
+  REQUIRE(snippets[0]["arguments"][0]["formId"] == kSteelSword);
   REQUIRE(Sent(p, 0, MsgType::SetInventory).size() == 1);
 
   Part(p);

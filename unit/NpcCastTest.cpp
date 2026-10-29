@@ -14,6 +14,8 @@
 #include <algorithm>
 #include <catch2/catch_all.hpp>
 #include <chrono>
+#include <spdlog/sinks/ostream_sink.h>
+#include <sstream>
 
 PartOne& GetPartOne();
 
@@ -187,6 +189,33 @@ void Cast(PartOne& p, uint32_t spell)
 
 // the host's report of the predator's (or `aggressor`'s) spell hit on the
 // other player
+// the default logger's lines at info and above while the guard lives
+// (MarksmanTest's shape), restored at its end
+struct LogCapture
+{
+  std::shared_ptr<spdlog::logger> old = spdlog::default_logger();
+  std::ostringstream oss;
+  LogCapture()
+  {
+    auto sink = std::make_shared<spdlog::sinks::ostream_sink_mt>(oss);
+    auto logger = std::make_shared<spdlog::logger>("npc-cast-test", sink);
+    logger->set_pattern("%v");
+    logger->set_level(spdlog::level::info);
+    spdlog::set_default_logger(logger);
+  }
+  ~LogCapture() { spdlog::set_default_logger(old); }
+  size_t Count(const std::string& line) const
+  {
+    const std::string log = oss.str();
+    size_t n = 0;
+    for (size_t at = log.find(line); at != std::string::npos;
+         at = log.find(line, at + line.size())) {
+      ++n;
+    }
+    return n;
+  }
+};
+
 void SpellHits(PartOne& p, uint32_t spell, uint32_t aggressor = kPredator)
 {
   RawMessageData raw;
@@ -378,16 +407,31 @@ TEST_CASE("A hosted creature's cloak hit is claimed against the ability its "
   // beside the other player
   atronach.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
   p.Messages().clear();
+  const float healthBefore = Health(p);
 
   // the cloak's spell with no cast of the atronach's: the ability stands as
-  // the cast and the first hit counts one cadence (500 ms of 10 a second,
-  // SecondHandTest's rule: 5 against the recorded 250)
-  SpellHits(p, kAtronachCloakDmg, atronachId);
-  REQUIRE(Health(p) == Catch::Approx(0.98f));
+  // the cast and the hit is claimed. The damage itself is the effect's own
+  // conditions' question: MGEF crFireDamageConcAimed 0x10fdd1 carries one
+  // CTDA (function 719 by the record, lab/esm.py) that ADR-039's evaluation
+  // holds false in this world ("its conditions fail; not applied", the
+  // train's first T0, pipeline 3650), a read of its own in npc-stream.md, so
+  // the claim is this case's assertion and not the health
+  {
+    LogCapture log;
+    SpellHits(p, kAtronachCloakDmg, atronachId);
+    REQUIRE(log.Count("ability cloak: ") == 1);
+    REQUIRE(log.Count("claimed as a spell its cast reaches") == 1);
+    REQUIRE(log.Count("E_SPELL_NO_CAST") == 0);
+  }
   // a spell no ability of the record reaches, with no cast behind it: refused
   // (rule 5)
-  SpellHits(p, kFirebolt, atronachId);
-  REQUIRE(Health(p) == Catch::Approx(0.98f));
+  {
+    LogCapture log;
+    SpellHits(p, kFirebolt, atronachId);
+    REQUIRE(log.Count("E_SPELL_NO_CAST") == 1);
+    REQUIRE(log.Count("ability cloak: ") == 0);
+  }
+  REQUIRE(Health(p) == Catch::Approx(healthBefore));
 
   p.DestroyActor(atronachId);
   Leave(p);

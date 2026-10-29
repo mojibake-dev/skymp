@@ -24,6 +24,7 @@ import { WorldCleanerService } from "../services/services/worldCleanerService";
 import { GamemodeUpdateService } from "../services/services/gamemodeUpdateService";
 import { HostService } from "../services/services/hostService";
 import { PuppetService } from "../services/services/puppetService";
+import { PropService } from "../services/services/propService";
 import { ActorFateService } from "../services/services/actorFateService";
 
 // thuum docs/verbs/cast-action.md: the want variable a hand's cast event names
@@ -852,7 +853,16 @@ export class FormView {
       SpApiInteractor.getControllerInstance().lookupListener(PuppetService).reconcile(refr.getFormID(), alreadyHosted, model.movement);
     }
 
-    if (model.movement) {
+    // thuum docs/verbs/prop-physics.md (ADR-058): a prop PropService tracks
+    // is placed by it, this seat's Havok when it simulates the prop and the
+    // stream when it follows, not by the record below: the record is the
+    // login's place, imposed once when the prop is first tracked, and a
+    // Dynamic body translated back to it every two seconds would fight its
+    // own physics. Untracked (out of reach, the switch off), the record
+    // places the reference as before, and PropService keeps that record at
+    // the last sample it saw
+    const propPlaced = !isActor && SpApiInteractor.getControllerInstance().lookupListener(PropService).placesIt(this.refrId);
+    if (model.movement && !propPlaced) {
       const ac = Actor.from(refr);
       // (the re-host on a quiet figure is gone: the server elects a cell's
       // host and passes it on at its own grace, docs/verbs/cell-host.md)

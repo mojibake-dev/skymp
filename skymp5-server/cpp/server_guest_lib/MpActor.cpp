@@ -70,6 +70,8 @@ struct MpActor::Impl
   bool pendingDeath = false;
   uint32_t pendingDeathAggressor = 0;
   uint64_t pendingDeathSinceMs = 0;
+  // npc-fate.md finding 48: the last death's time on the server's clock
+  std::chrono::steady_clock::time_point diedAt{};
   // npc-fate.md H-52b: the killer credited at the last Kill (the read)
   std::optional<uint32_t> lastKillerId;
   std::optional<UpdateActionMessage> lastAction;
@@ -1724,6 +1726,13 @@ bool MpActor::IsSpellLearned(const uint32_t spellId) const
 
 bool MpActor::IsSpellLearnedFromBase(const uint32_t spellId) const
 {
+  const auto known = KnownBaseSpells();
+  return std::find(known.begin(), known.end(), spellId) != known.end();
+}
+
+std::vector<uint32_t> MpActor::KnownBaseSpells() const
+{
+  std::vector<uint32_t> known;
   const auto npcData = espm::GetData<espm::NPC_>(GetBaseId(), GetParent());
   const auto npc = GetParent()->GetEspm().GetBrowser().LookupById(GetBaseId());
 
@@ -1733,10 +1742,7 @@ bool MpActor::IsSpellLearnedFromBase(const uint32_t spellId) const
   const auto race = GetParent()->GetEspm().GetBrowser().LookupById(raceId);
 
   for (auto npcSpellRaw : npcData.spells) {
-    const auto npcSpell = npc.ToGlobalId(npcSpellRaw);
-    if (npcSpell == spellId) {
-      return true;
-    }
+    known.push_back(npc.ToGlobalId(npcSpellRaw));
   }
 
   // thuum docs/verbs/npc-stream.md (ADR-050, train 53): the list of the
@@ -1746,29 +1752,21 @@ bool MpActor::IsSpellLearnedFromBase(const uint32_t spellId) const
   // (a hosted actor's cast of a spell outside this set is recorded, not
   // refused: ActionListener::OnSpellCast)
   std::string chainError;
-  const auto fromTemplate = EvaluateTemplateNoThrow<espm::NPC_::UseSpelllist>(
+  EvaluateTemplateNoThrow<espm::NPC_::UseSpelllist>(
     GetParent(), GetBaseId(), GetTemplateChain(),
-    [spellId](const auto& lookup, const auto& data) {
+    [&known](const auto& lookup, const auto& data) {
       for (auto raw : data.spells) {
-        if (lookup.ToGlobalId(raw) == spellId) {
-          return true;
-        }
+        known.push_back(lookup.ToGlobalId(raw));
       }
-      return false;
+      return true;
     },
     &chainError);
-  if (fromTemplate.has_value() && *fromTemplate) {
-    return true;
-  }
 
   for (auto raceSpellRaw : raceData.spells) {
-    const auto raceSpell = race.ToGlobalId(raceSpellRaw);
-    if (raceSpell == spellId) {
-      return true;
-    }
+    known.push_back(race.ToGlobalId(raceSpellRaw));
   }
 
-  return false;
+  return known;
 }
 
 std::vector<uint32_t> MpActor::GetSpellList() const
@@ -1899,6 +1897,10 @@ void MpActor::SendAndSetDeathState(bool isDead, bool shouldTeleport)
   spdlog::trace(
     "MpActor::SendAndSetDeathState {:x} - isDead: {}, shouldTeleport: {}",
     GetFormId(), isDead, shouldTeleport);
+
+  if (isDead) {
+    RecordDeathAt(std::chrono::steady_clock::now());
+  }
 
   auto position = GetSpawnPoint();
 
@@ -2540,6 +2542,21 @@ void MpActor::RespawnFated()
                "anew",
                GetFormId());
   RebuildAndRespawn(true, true);
+}
+
+void MpActor::RecordDeathAt(std::chrono::steady_clock::time_point at)
+{
+  pImpl->diedAt = at;
+}
+
+std::optional<std::chrono::milliseconds> MpActor::DiedAgo(
+  std::chrono::steady_clock::time_point now) const
+{
+  if (pImpl->diedAt == std::chrono::steady_clock::time_point()) {
+    return std::nullopt;
+  }
+  return std::chrono::duration_cast<std::chrono::milliseconds>(now -
+                                                               pImpl->diedAt);
 }
 
 void MpActor::NoteHitBy(uint32_t aggressorId,

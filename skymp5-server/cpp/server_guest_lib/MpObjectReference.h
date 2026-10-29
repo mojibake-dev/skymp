@@ -207,6 +207,12 @@ public:
   virtual void ApplyChangeForm(const MpChangeForm& changeForm);
   const DynamicFields& GetDynamicFields() const;
 
+  // thuum docs/verbs/quest-stage.md (ADR-056): the world's quest stages, as
+  // the world's journal reference keeps them in its change form
+  // (PartOne::WorldJournal); empty when none; false when unchanged
+  std::vector<QuestStageDone> GetQuestStages() const;
+  bool SetQuestStages(std::vector<QuestStageDone> stages);
+
   // This method removes ObjectReference from a current grid and doesn't attach
   // to another grid
   void SetCellOrWorldObsolete(const FormDesc& worldOrCell);

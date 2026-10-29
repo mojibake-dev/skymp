@@ -190,6 +190,34 @@ public:
   static std::vector<PlayerGlobal> MergePlayerGlobals(
     const std::vector<PlayerGlobal>& record,
     const std::vector<PlayerGlobal>& report);
+
+  // thuum docs/verbs/quest-stage.md (ADR-056): the quests whose stages are
+  // the world's, server-settings.json's `sharedQuests` (a JSON list of
+  // FormDescs, "[]" for none; a bad entry stops the server here, named).
+  // CheckSharedQuest: 0 listed, else the rule's refusal (wire-rules
+  // quest_stages: 1 unlisted). Listed: the list as FormDescs, settings
+  // order. AtLogin: the world's recorded stages of quests still listed,
+  // ascending per quest. DoneAlready: the world's record holds the stage.
+  // Merge: the record with the stage added once, ascending within its quest.
+  void SetSharedQuestsSettings(const std::string& sharedQuestsJson);
+  uint8_t CheckSharedQuest(const FormDesc& quest) const;
+  std::vector<FormDesc> SharedQuestsListed() const;
+  std::vector<QuestStageDone> SharedQuestsAtLogin();
+  bool QuestStageDoneAlready(const QuestStageDone& done);
+  std::vector<QuestStageDone> MergeQuestStage(const QuestStageDone& done);
+  // The world's journal: a server-made reference at kWorldJournalRefId (far
+  // above WorldState::GenerateFormId's walk up from 0xff000000) whose change
+  // form carries the world's quest stages, so the record saves and loads
+  // with the world's other server-made references: WorldState::
+  // LoadChangeForm recreates any reference above 0xff000000 from its
+  // record's baseDesc and applies the record whole. Made at the first call.
+  // GetQuestStages: the world's stages, empty when none. SetQuestStages:
+  // false when unchanged.
+  static constexpr uint32_t kWorldJournalRefId = 0xffffff00u;
+  MpObjectReference& WorldJournal();
+  std::vector<QuestStageDone> GetQuestStages();
+  bool SetQuestStages(std::vector<QuestStageDone> stages);
+
   float TeleportReach(uint32_t spellFormId) const;
 
   // thuum docs/verbs/shadowbond.md: server-settings.json's `bonds` (a JSON

@@ -219,6 +219,12 @@ struct PartOne::Impl
   rust::Box<skymp::rules::PlayerGlobalsList> playerGlobals =
     skymp::rules::new_player_globals("[]");
 
+  // the quests whose stages are the world's (thuum
+  // docs/verbs/quest-stage.md, ADR-056): server-settings.json's
+  // `sharedQuests`
+  rust::Box<skymp::rules::SharedQuests> sharedQuests =
+    skymp::rules::new_shared_quests("[]");
+
   // the fights between players (thuum docs/verbs/hostility-sync.md, ADR-023)
   rust::Box<skymp::rules::Fights> fights = skymp::rules::new_fights();
   std::chrono::steady_clock::time_point lastFightsTick;
@@ -398,6 +404,11 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
     // Creation's first-login box asked again (x-survival-restore-timing
     // 20261020-135028 won it; 18:23Z lost it).
     GetActionListener().SendPlayerGlobals(actor);
+
+    // thuum docs/verbs/quest-stage.md (ADR-056 decision 3): the world's
+    // quest stages follow the globals, the shared list first, then every
+    // recorded stage ascending per quest
+    GetActionListener().SendQuestStages(actor);
 
     // thuum docs/verbs/actor-values.md (train-31; playtest twenty-eight's
     // test 2 relaunch): the login's record holds from the login itself, not
@@ -2479,6 +2490,124 @@ std::vector<PlayerGlobal> PartOne::MergePlayerGlobals(
                                                        recordEntries.size()),
     rust::Slice<const skymp::rules::PlayerGlobalEntry>(reportEntries.data(),
                                                        reportEntries.size())));
+}
+
+void PartOne::SetSharedQuestsSettings(const std::string& sharedQuestsJson)
+{
+  pImpl->sharedQuests = skymp::rules::new_shared_quests(sharedQuestsJson);
+  spdlog::info("PartOne::SetSharedQuestsSettings - {}", sharedQuestsJson);
+}
+
+namespace {
+std::vector<skymp::rules::QuestStageEntry> ToStageEntries(
+  const std::vector<QuestStageDone>& stages)
+{
+  std::vector<skymp::rules::QuestStageEntry> entries;
+  entries.reserve(stages.size());
+  for (const auto& s : stages) {
+    entries.push_back(
+      { s.quest.shortFormId, rust::String(s.quest.file), s.stage });
+  }
+  return entries;
+}
+
+skymp::rules::QuestStageEntry ToStageEntry(const QuestStageDone& done)
+{
+  return { done.quest.shortFormId, rust::String(done.quest.file), done.stage };
+}
+
+std::vector<QuestStageDone> ToStages(
+  const rust::Vec<skymp::rules::QuestStageEntry>& entries)
+{
+  std::vector<QuestStageDone> stages;
+  stages.reserve(entries.size());
+  for (const auto& e : entries) {
+    stages.push_back({ FormDesc(e.short_id, std::string(e.file)), e.stage });
+  }
+  return stages;
+}
+
+// Skyrim.esm (thuum lab/esm.py on the 1.6.1170 master): STAT 0x3b XMarker,
+// the journal's base, a marker with no model in the game, placed in WRLD
+// 0x3c Tamriel (FormDesc::Tamriel) at the worldspace's far southwest, a
+// cell no seat loads
+constexpr uint32_t kWorldJournalBaseId = 0x3b;
+constexpr float kWorldJournalX = -200000.f;
+constexpr float kWorldJournalY = -200000.f;
+}
+
+uint8_t PartOne::CheckSharedQuest(const FormDesc& quest) const
+{
+  return pImpl->sharedQuests->shared_quests_check(quest.shortFormId,
+                                                  quest.file);
+}
+
+std::vector<FormDesc> PartOne::SharedQuestsListed() const
+{
+  std::vector<FormDesc> listed;
+  for (const auto& e : pImpl->sharedQuests->shared_quests_listed()) {
+    listed.push_back(FormDesc(e.short_id, std::string(e.file)));
+  }
+  return listed;
+}
+
+std::vector<QuestStageDone> PartOne::SharedQuestsAtLogin()
+{
+  const auto entries = ToStageEntries(GetQuestStages());
+  return ToStages(pImpl->sharedQuests->shared_quests_at_login(
+    rust::Slice<const skymp::rules::QuestStageEntry>(entries.data(),
+                                                     entries.size())));
+}
+
+bool PartOne::QuestStageDoneAlready(const QuestStageDone& done)
+{
+  const auto entries = ToStageEntries(GetQuestStages());
+  return skymp::rules::quest_stage_done(
+    rust::Slice<const skymp::rules::QuestStageEntry>(entries.data(),
+                                                     entries.size()),
+    ToStageEntry(done));
+}
+
+std::vector<QuestStageDone> PartOne::MergeQuestStage(
+  const QuestStageDone& done)
+{
+  const auto entries = ToStageEntries(GetQuestStages());
+  return ToStages(skymp::rules::quest_stages_merge(
+    rust::Slice<const skymp::rules::QuestStageEntry>(entries.data(),
+                                                     entries.size()),
+    ToStageEntry(done)));
+}
+
+MpObjectReference& PartOne::WorldJournal()
+{
+  if (!worldState.LookupFormById(kWorldJournalRefId)) {
+    // the constructor WorldState::LoadChangeForm uses to recreate a
+    // server-made reference from its record (recType REFR, the base's type),
+    // so a restart's form is this one; MpObjectReference::Init looks up no
+    // record for an id above 0xff000000, and the base's scripts are read
+    // lazily at the first Papyrus event (XMarker has none)
+    worldState.AddForm(
+      std::make_unique<MpObjectReference>(
+        LocationalData{ { kWorldJournalX, kWorldJournalY, 0.f },
+                        { 0.f, 0.f, 0.f },
+                        FormDesc::Tamriel() },
+        CreateFormCallbacks(), kWorldJournalBaseId, "STAT"),
+      kWorldJournalRefId);
+    spdlog::info("PartOne::WorldJournal - made the world's journal {:x} "
+                 "(thuum docs/verbs/quest-stage.md)",
+                 kWorldJournalRefId);
+  }
+  return worldState.GetFormAt<MpObjectReference>(kWorldJournalRefId);
+}
+
+std::vector<QuestStageDone> PartOne::GetQuestStages()
+{
+  return WorldJournal().GetQuestStages();
+}
+
+bool PartOne::SetQuestStages(std::vector<QuestStageDone> stages)
+{
+  return WorldJournal().SetQuestStages(std::move(stages));
 }
 
 void PartOne::SetScriptedEffectSettings(const std::string& scriptedEffectsJson)

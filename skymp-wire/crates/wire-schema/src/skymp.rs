@@ -911,6 +911,33 @@ wire_struct! {
 }
 
 wire_struct! {
+    /// MsgType 57, thuum's (docs/verbs/quest-stage.md, ADR-056): the world's
+    /// quest stages. Both directions, reliable. Client to server: one stage
+    /// its own game set on a shared quest (R1: the server checks the quest
+    /// is a QUST on its shared list, and the rate). Server to client: the
+    /// relay of another seat's stage, the replay of the world's stages after
+    /// a login, and at the login itself the shared list (`shared`, with
+    /// `quest` 0 and `stage` 0). Idempotent: a stage already done is
+    /// nothing. Reason codes: `E_VAL_RANGE` (a quest of 0 without a list, a
+    /// list naming a quest twice, a client naming a list or a quest of 0),
+    /// `E_VAL_RATE` (client to server); the list's and the record's refusals
+    /// are the server's (wire-rules `quest_stages`).
+    pub struct QuestStage {
+        /// `"t": 57`.
+        #[serde(default)]
+        pub t: MsgT<57>,
+        /// The quest's form id in the load order both ends share (the
+        /// server keeps it as a FormDesc); 0 with `shared` at a login.
+        pub quest: u32,
+        /// The stage index the engine set (Quest.SetStage's).
+        pub stage: u16,
+        /// The shared quests (server to client only, at a login).
+        #[serde(default)]
+        pub shared: Vec<u32, { cap::SHARED_QUESTS }>,
+    }
+}
+
+wire_struct! {
     /// SpellCastMessage's `data`.
     pub struct SpellCastData {
         /// Who casts.

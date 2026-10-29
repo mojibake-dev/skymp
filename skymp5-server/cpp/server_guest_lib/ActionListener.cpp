@@ -2586,6 +2586,77 @@ void ActionListener::OnPlayerGlobals(const RawMessageData& rawMsgData,
   }
 }
 
+// thuum docs/verbs/quest-stage.md (ADR-056): a player's game reports a stage
+// its engine set on a quest. The server checks the quest (a QUST of the
+// load order, on the shared list; R1), records the stage as the world's
+// (R0) and relays it to every other connected player; a stage the world
+// already has is a no-op, never an error. A client names no list and no
+// quest 0: those are the login replay's, server to client.
+void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
+                                  const QuestStageMessage& msg)
+{
+  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!actor) {
+    return spdlog::warn("OnQuestStage - no actor for user {}",
+                        rawMsgData.userId);
+  }
+  if (!msg.shared.empty() || msg.quest == 0) {
+    return spdlog::info("QuestStage: user {} actor {:x} report refused (a "
+                        "client names no shared list and no quest 0)",
+                        rawMsgData.userId, actor->GetFormId());
+  }
+  if (!partOne.HasEspm()) {
+    return spdlog::warn("OnQuestStage - no master files");
+  }
+  FormDesc quest;
+  try {
+    quest = FormDesc::FromFormId(msg.quest, partOne.worldState.espmFiles);
+  } catch (const std::exception&) {
+    return spdlog::info("E_QUEST_UNKNOWN: user {} actor {:x} reported stage "
+                        "{} of {:x}, which is in no loaded plugin",
+                        rawMsgData.userId, actor->GetFormId(), msg.stage,
+                        msg.quest);
+  }
+  const auto lookup = partOne.GetEspm().GetBrowser().LookupById(msg.quest);
+  if (!lookup.rec || lookup.rec->GetType() != "QUST") {
+    return spdlog::info("E_QUEST_UNKNOWN: user {} actor {:x} reported stage "
+                        "{} of {:x}, which is no quest",
+                        rawMsgData.userId, actor->GetFormId(), msg.stage,
+                        msg.quest);
+  }
+  if (const uint8_t refusal = partOne.CheckSharedQuest(quest)) {
+    return spdlog::info("E_QUEST_UNLISTED: user {} actor {:x} reported stage "
+                        "{} of {}, a quest the world does not share ({})",
+                        rawMsgData.userId, actor->GetFormId(), msg.stage,
+                        quest.ToString(), refusal);
+  }
+  const QuestStageDone done{ quest, msg.stage };
+  if (partOne.QuestStageDoneAlready(done)) {
+    return spdlog::debug("QuestStage: user {} actor {:x} reported stage {} "
+                         "of {}, already the world's",
+                         rawMsgData.userId, actor->GetFormId(), msg.stage,
+                         quest.ToString());
+  }
+  partOne.SetQuestStages(partOne.MergeQuestStage(done));
+
+  QuestStageMessage relay;
+  relay.quest = msg.quest;
+  relay.stage = msg.stage;
+  size_t relayed = 0;
+  for (size_t i = 0, n = partOne.serverState.maxConnectedId; i <= n; ++i) {
+    const auto userId = static_cast<Networking::UserId>(i);
+    if (userId == rawMsgData.userId ||
+        !partOne.serverState.ActorByUser(userId)) {
+      continue;
+    }
+    partOne.GetSendTarget().Send(userId, relay, true);
+    ++relayed;
+  }
+  spdlog::info("[verb:quest-stage] {:x} set {} stage {}: recorded, relayed "
+               "to {}",
+               actor->GetFormId(), quest.ToString(), msg.stage, relayed);
+}
+
 void ActionListener::OnCellLoaded(const RawMessageData& rawMsgData,
                                   const CellLoadedMessage& msg)
 {
@@ -2910,6 +2981,41 @@ void ActionListener::SendPlayerGlobals(MpActor& actor)
   spdlog::info("PlayerGlobals: actor {:x} sent {} to watch, {} values after "
                "a login",
                actor.GetFormId(), message.watch.size(), message.values.size());
+}
+
+void ActionListener::SendQuestStages(MpActor& actor)
+{
+  const auto listed = partOne.SharedQuestsListed();
+  if (listed.empty()) {
+    return;
+  }
+  QuestStageMessage list;
+  for (const auto& quest : listed) {
+    try {
+      list.shared.push_back(quest.ToFormId(partOne.worldState.espmFiles));
+    } catch (const std::exception&) {
+      // a listed quest whose plugin this load order lacks
+    }
+  }
+  if (list.shared.empty()) {
+    return;
+  }
+  actor.SendToUser(list, true);
+  size_t stages = 0;
+  for (const auto& entry : partOne.SharedQuestsAtLogin()) {
+    QuestStageMessage message;
+    try {
+      message.quest = entry.quest.ToFormId(partOne.worldState.espmFiles);
+    } catch (const std::exception&) {
+      continue; // a recorded quest whose plugin this load order lacks
+    }
+    message.stage = entry.stage;
+    actor.SendToUser(message, true);
+    ++stages;
+  }
+  spdlog::info("QuestStage: actor {:x} sent {} shared quests, {} stages "
+               "after a login",
+               actor.GetFormId(), list.shared.size(), stages);
 }
 
 void ActionListener::SendActorValues(MpActor& actor)

@@ -40,7 +40,16 @@ const PARKED_MAX = 64;
 // mode list a quest off the list stays this seat's own; in mode all (memo
 // D58 B, TES3MP's shared journal) every quest is the world's but the denied
 // ones (the main quest's intro chain, the DLC starts), which stay this
-// seat's own. A quest that refuses Quest.Start has the world's
+// seat's own. In mode all a quest the game starts by itself (the record's
+// Start Game Enabled flag: a layer's controller, MCM, version-tracker and
+// player-alias quests, the alternate start's own) is each seat's own too
+// unless the server's `allowed` list names it (memo D62); that rule is the
+// server's alone and this seat does not filter for it: Skyrim Platform's
+// Quest has no getter for the flag (skyrimPlatform.ts knows isRunning,
+// isStopped, isStarting, isStopping and isActive) and the login's one
+// `shared` list carries the denied set, so such a stage is reported as any
+// other and the server refuses it (E_QUEST_OWN_START), the asymmetry the
+// server holds. A quest that refuses Quest.Start has the world's
 // stage parked (the highest asked per quest) and applied when the engine's
 // own start of it arrives as the questStart event, because an event quest is
 // the Story Manager's alone to start (the Creation Kit's rule: "Any quest
@@ -222,7 +231,9 @@ export class QuestStageService extends ClientListener {
 
     // whether a stage this game set on the quest is the world's to report:
     // nothing before the server's login message; in mode list the listed
-    // quests; in mode all every quest but the denied (memo D58 B)
+    // quests; in mode all every quest but the denied (memo D58 B), a
+    // start-game-enabled one included, which the server refuses unless it
+    // is allowed (memo D62; the class comment says why the filter is its)
     private reports(questId: number): boolean {
         if (this.mode === undefined) {
             return false;

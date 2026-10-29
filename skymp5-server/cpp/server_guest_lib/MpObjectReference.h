@@ -105,6 +105,14 @@ public:
   // container to the player beside it
   bool IsCorpse();
   const Inventory& GetInventory() const;
+  // thuum (playtest 37, 2026-10-28, Eli: "shouldn't be that hard to change
+  // that to on cell load right?"): a container whose inventory the server
+  // has written (the base's roll at its first open, EnsureBaseContainerAdded;
+  // a script's or a gamemode's AddItem or SetInventory before one). Every
+  // player whose grid loads it hears that record at the subscribe
+  // (VisitProperties); an untouched container sends nothing, since both
+  // engines hold the base's default
+  bool HasRecordedInventory() const;
   const bool& IsHarvested() const;
   const bool& IsOpen() const;
   const bool& IsDisabled() const;

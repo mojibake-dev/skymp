@@ -191,7 +191,26 @@ public:
   // shared.
   void SendQuestStages(MpActor& actor);
 
+  // thuum docs/verbs/player-globals.md, the needs: listed globals written
+  // into a player's record by the server's word (a food's effect, an
+  // admin's SetGlobal), the written values sent to its game with the list
+  // to watch (the client takes the list from every message), and the
+  // settings' killAt read as for a report (memo D51 B). Returns whether the
+  // record changed. An unlisted global is the caller's to refuse beforehand.
+  bool RecordPlayerGlobals(MpActor& actor,
+                           const std::vector<PlayerGlobal>& values,
+                           const char* why);
+
 private:
+  // thuum docs/verbs/player-globals.md, the needs (playtest 37): the eaten
+  // record's listed effects lower the recorded needs as the Creation's own
+  // script would in the eater's game
+  void ApplySurvivalFood(MpActor& actor, uint32_t baseId);
+  // memo D51 B: a recorded global at or past its settings' killAt kills the
+  // player by the server's word, the respawn following as for any death
+  void KillByPlayerGlobals(MpActor& actor,
+                           const std::vector<PlayerGlobal>& merged);
+
   // magnitudeScale: the claimed cast's factor on the spell's magnitude
   // (thuum docs/verbs/spell-cast.md): 1 for a fire-and-forget hit, seconds
   // for a stream's

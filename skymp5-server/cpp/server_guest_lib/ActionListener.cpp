@@ -18,7 +18,9 @@
 #include "gamemode_events/EatItemEvent.h"
 #include "gamemode_events/UpdateAppearanceAttemptEvent.h"
 #include "gamemode_events/UpdateEquipmentAttemptEvent.h"
+#include "libespm/ALCH.h"
 #include "libespm/Convert.h"
+#include "libespm/GLOB.h"
 #include "libespm/GMST.h"
 #include "libespm/ObjectBounds.h"
 #include "libespm/RACE.h"
@@ -2672,16 +2674,7 @@ void ActionListener::OnPlayerGlobals(const RawMessageData& rawMsgData,
   // record reaches it the server kills the player through its own death
   // path, the respawn following as for any death, and the client's own
   // Kill stays untrusted input (rule 5; the seat's deferred kill holds it)
-  if (!actor->IsDead()) {
-    const auto lethal = partOne.LethalPlayerGlobals(merged);
-    if (!lethal.empty()) {
-      spdlog::info("PlayerGlobals: user {} actor {:x} dies by the server's "
-                   "word: global {} at {} reached its killAt (memo D51 B)",
-                   rawMsgData.userId, actor->GetFormId(),
-                   lethal.front().global.ToString(), lethal.front().value);
-      actor->Kill(nullptr, false);
-    }
-  }
+  KillByPlayerGlobals(*actor, merged);
 }
 
 // thuum docs/verbs/quest-stage.md (ADR-056): a player's game reports a stage
@@ -3116,6 +3109,172 @@ void ActionListener::SendQuestStages(MpActor& actor)
                actor.GetFormId(), list.shared.size(), stages);
 }
 
+void ActionListener::KillByPlayerGlobals(
+  MpActor& actor, const std::vector<PlayerGlobal>& merged)
+{
+  if (actor.IsDead()) {
+    return;
+  }
+  const auto lethal = partOne.LethalPlayerGlobals(merged);
+  if (lethal.empty()) {
+    return;
+  }
+  spdlog::info("PlayerGlobals: user {} actor {:x} dies by the server's "
+               "word: global {} at {} reached its killAt (memo D51 B)",
+               partOne.serverState.UserByActor(&actor), actor.GetFormId(),
+               lethal.front().global.ToString(), lethal.front().value);
+  actor.Kill(nullptr, false);
+}
+
+bool ActionListener::RecordPlayerGlobals(
+  MpActor& actor, const std::vector<PlayerGlobal>& values, const char* why)
+{
+  const auto merged =
+    PartOne::MergePlayerGlobals(actor.GetPlayerGlobals(), values);
+  const bool changed = actor.SetPlayerGlobals(merged);
+  PlayerGlobalsMessage message;
+  message.watch = partOne.PlayerGlobalsWatch();
+  for (const auto& entry : values) {
+    try {
+      message.values.push_back(
+        { entry.global.ToFormId(partOne.worldState.espmFiles), entry.value });
+    } catch (const std::exception&) {
+      // a global whose plugin this load order lacks
+    }
+  }
+  if (!message.values.empty()) {
+    actor.SendToUser(message, true);
+  }
+  spdlog::info("PlayerGlobals: actor {:x} {}: {} values written by the "
+               "server's word, {} sent to its game{}",
+               actor.GetFormId(), why, values.size(), message.values.size(),
+               changed ? "" : ", the record unchanged");
+  KillByPlayerGlobals(actor, merged);
+  return changed;
+}
+
+// thuum docs/verbs/player-globals.md, the needs (playtest 37, 2026-10-28,
+// Eli: "food doesnt replenish hunger"; numidium's live read: the hunger need
+// 81a stood at 1000 through 115 reads while Eli ate, 816 climbing). In the
+// game the Survival Mode Creation (ccQDRSSE001-SurvivalMode.esl) overrides
+// 115 food records with one of Update.esm's Survival_FoodRestoreHunger
+// effects (2ee1 VerySmall to 2ee4 Large) and its twelve hot soups with
+// Survival_FoodRestoreCold (2ee5) too; the esl's overrides of those effects
+// carry Survival_HungerRestoreEffectScript or
+// Survival_FoodColdRestoreEffectScript, whose OnEffectStart lowers the need
+// by a GLOB's amount (Survival_HungerRestore{VerySmall,Small,Medium,Large}
+// Amount 2, 18, 220, 380; Survival_ColdRestoreMediumAmount 200) through
+// Survival_NeedBase.DecrementNeed, which clamps to a floor (hunger's
+// NeedMinValue 0; cold's stage 1 value 50). That script never runs on a
+// seat, so the server does the arithmetic from the record: the eaten
+// record's effects against server-settings.json's `survivalFood`, while the
+// mode's switch (828, the toggle) is recorded on, as the effects' own
+// condition on 826 (GetGlobalValue == 1) gates them in the game. The game's
+// next need tick reads the written value and recomputes the stage.
+void ActionListener::ApplySurvivalFood(MpActor& actor, uint32_t baseId)
+{
+  WorldState& worldState = partOne.worldState;
+  const auto lookup = worldState.GetEspm().GetBrowser().LookupById(baseId);
+  if (!lookup.rec || !(lookup.rec->GetType() == "ALCH")) {
+    return;
+  }
+  const auto effects = MpActor::EffectsOf(&worldState, baseId);
+  if (effects.empty()) {
+    return;
+  }
+  try {
+    if (espm::GetData<espm::ALCH>(baseId, &worldState).isPoison) {
+      return; // on a weapon, never eaten (docs/verbs/poison.md)
+    }
+  } catch (std::exception& e) {
+    spdlog::warn("ApplySurvivalFood {:x} - {:x}: {}", actor.GetFormId(),
+                 baseId, e.what());
+    return;
+  }
+  auto& cache = worldState.GetEspmCache();
+  const auto& files = worldState.espmFiles;
+  // a listed global as the game holds it: the value written here, else the
+  // record's (with the settings' default where the record is silent), else
+  // the GLOB record's own, the game's start value
+  const auto record = partOne.PlayerGlobalsAtLogin(actor.GetPlayerGlobals());
+  std::vector<PlayerGlobal> written;
+  const auto valueOf = [&](const FormDesc& global) -> std::optional<float> {
+    for (const auto& g : written) {
+      if (g.global == global) {
+        return g.value;
+      }
+    }
+    for (const auto& g : record) {
+      if (g.global == global) {
+        return g.value;
+      }
+    }
+    try {
+      return espm::GetData<espm::GLOB>(global.ToFormId(files), &worldState)
+        .value;
+    } catch (std::exception&) {
+      return std::nullopt;
+    }
+  };
+  if (const auto switchGlobal = partOne.SurvivalFoodSwitch()) {
+    const auto on = valueOf(*switchGlobal);
+    if (!on || *on != 1.f) {
+      spdlog::debug("ApplySurvivalFood {:x} ate {:x} with the mode's switch "
+                    "{} not on: nothing moves",
+                    actor.GetFormId(), baseId, switchGlobal->ToString());
+      return;
+    }
+  }
+  const char* itemEditorId = lookup.rec->GetEditorId(cache);
+  for (const auto& effect : effects) {
+    const auto entry = partOne.SurvivalFoodOf(effect.effectId);
+    if (!entry) {
+      continue;
+    }
+    const auto before = valueOf(entry->need);
+    if (!before) {
+      spdlog::warn("ApplySurvivalFood {:x} ate {:x}: the need {} is in no "
+                   "record and no loaded plugin",
+                   actor.GetFormId(), baseId, entry->need.ToString());
+      continue;
+    }
+    const float after = std::max(entry->floor, *before - entry->amount);
+    std::string effectName = fmt::format("{:x}", effect.effectId);
+    const auto effectLookup =
+      worldState.GetEspm().GetBrowser().LookupById(effect.effectId);
+    if (effectLookup.rec && effectLookup.rec->GetEditorId(cache)) {
+      effectName = effectLookup.rec->GetEditorId(cache);
+    }
+    spdlog::info("[verb:player-globals] {:x} ate {:x} {} ({}): {} {} -> {}",
+                 actor.GetFormId(), baseId, itemEditorId ? itemEditorId : "",
+                 effectName, entry->need.ToString(), *before, after);
+    if (after == *before) {
+      continue; // at the floor already
+    }
+    bool replaced = false;
+    for (auto& g : written) {
+      if (g.global == entry->need) {
+        g.value = after; // two effects on one need add up
+        replaced = true;
+      }
+    }
+    if (!replaced) {
+      written.push_back({ entry->need, after });
+    }
+  }
+  if (written.empty()) {
+    return;
+  }
+  // the record holds listed globals only (wire-rules player_globals)
+  if (const uint8_t refusal = partOne.CheckPlayerGlobals(written)) {
+    spdlog::warn("ApplySurvivalFood {:x} ate {:x}: a need is no listed "
+                 "player global ({})",
+                 actor.GetFormId(), baseId, refusal);
+    return;
+  }
+  RecordPlayerGlobals(actor, written, "ate");
+}
+
 void ActionListener::SendActorValues(MpActor& actor)
 {
   const auto record = actor.GetActorValueRecord();
@@ -3365,7 +3524,9 @@ void ActionListener::OnEquip(const RawMessageData& rawMsgData,
       std::to_string(rawMsgData.userId));
   }
 
-  std::ignore = actor->OnEquip(msg.baseId);
+  if (actor->OnEquip(msg.baseId)) {
+    ApplySurvivalFood(*actor, msg.baseId);
+  }
 }
 
 void ActionListener::OnConsoleCommand(const RawMessageData& rawMsgData,

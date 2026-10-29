@@ -39,29 +39,38 @@ TEST_CASE("The change form keeps the world's quest stages, and older records "
 // The handler, the relay, the login and the restart, on Skyrim.esm's own
 // records (thuum lab/esm.py on the 1.6.1170 master): QUST 0x39645 MS13 is
 // the listed quest (its stage indexes include 5, 10 and 20), QUST 0xb6031
-// MS13Intro a quest off the list, STAT 0x3b XMarker no quest at all.
+// MS13Intro a quest off the list (in mode all, memo D58 B, a quest nobody
+// declared), QUST 0x4e50d MQ102 the quest mode all denies, STAT 0x3b
+// XMarker no quest at all.
 namespace {
 constexpr uint32_t kReporter = 0xff000bd0;
 constexpr uint32_t kWatcher = 0xff000bd1;
 constexpr uint32_t kMs13 = 0x39645;
 constexpr uint32_t kMs13Intro = 0xb6031;
+constexpr uint32_t kMq102 = 0x4e50d;
 constexpr uint32_t kXMarker = 0x3b;
 // a form of a sixth plugin, which the test's five-file load order lacks
 constexpr uint32_t kUnloaded = 0x05000d62;
 const char* const kSharedQuests = R"(["39645:Skyrim.esm"])";
+const char* const kDeniedQuests =
+  R"({"mode":"all","denied":["4e50d:Skyrim.esm"]})";
 
-// one QuestStage message as sent: the quest, the stage, the shared list
-using Sent = std::tuple<uint32_t, int, nlohmann::json>;
+// one QuestStage message as sent: the quest, the stage, the shared list,
+// the mode (0 list, 1 all)
+using Sent = std::tuple<uint32_t, int, nlohmann::json, int>;
 
 Sent Msg(uint32_t quest, int stage,
-         nlohmann::json shared = nlohmann::json::array())
+         nlohmann::json shared = nlohmann::json::array(), int mode = 0)
 {
-  return Sent{ quest, stage, std::move(shared) };
+  return Sent{ quest, stage, std::move(shared), mode };
 }
 
-void Enter(PartOne& p)
+void Enter(PartOne& p, const char* sharedQuests = kSharedQuests)
 {
-  p.SetSharedQuestsSettings(kSharedQuests);
+  p.SetSharedQuestsSettings(sharedQuests);
+  // the test server is shared across cases: each case starts from an empty
+  // world record
+  p.SetQuestStages({});
   DoConnect(p, 0);
   p.CreateActor(kReporter, { 0, 0, 0 }, 0, 0x3c);
   p.SetUserActor(0, kReporter);
@@ -77,7 +86,8 @@ void Report(PartOne& p, Networking::UserId user, uint32_t quest, int stage)
             nlohmann::json{ { "t", static_cast<int>(MsgType::QuestStage) },
                             { "quest", quest },
                             { "stage", stage },
-                            { "shared", nlohmann::json::array() } });
+                            { "shared", nlohmann::json::array() },
+                            { "mode", 0 } });
 }
 
 std::vector<Sent> SentTo(PartOne& p, Networking::UserId user)
@@ -88,7 +98,8 @@ std::vector<Sent> SentTo(PartOne& p, Networking::UserId user)
         m.j.value("t", -1) == static_cast<int>(MsgType::QuestStage)) {
       sent.emplace_back(m.j.value("quest", 0u), m.j.value("stage", -1),
                         m.j.contains("shared") ? m.j["shared"]
-                                               : nlohmann::json::array());
+                                               : nlohmann::json::array(),
+                        m.j.value("mode", 0));
     }
   }
   return sent;
@@ -138,7 +149,8 @@ TEST_CASE("A listed quest's stage is recorded as the world's and relayed to "
 
 TEST_CASE("A stage of a form in no loaded plugin, of a form that is no "
           "quest, or of a quest off the shared list is refused and records "
-          "nothing; so is a client's report naming the list or quest 0",
+          "nothing; so is a client's report naming the list, a mode or "
+          "quest 0",
           "[QuestStage][espm]")
 {
   PartOne& p = GetPartOne();
@@ -151,7 +163,14 @@ TEST_CASE("A stage of a form in no loaded plugin, of a form that is no "
             nlohmann::json{ { "t", static_cast<int>(MsgType::QuestStage) },
                             { "quest", kMs13 },
                             { "stage", 10 },
-                            { "shared", nlohmann::json::array({ kMs13 }) } });
+                            { "shared", nlohmann::json::array({ kMs13 }) },
+                            { "mode", 0 } });
+  DoMessage(p, 0,
+            nlohmann::json{ { "t", static_cast<int>(MsgType::QuestStage) },
+                            { "quest", kMs13 },
+                            { "stage", 10 },
+                            { "shared", nlohmann::json::array() },
+                            { "mode", 1 } });
   REQUIRE(p.GetQuestStages().empty());
   REQUIRE(SentTo(p, 1).empty());
   REQUIRE(SentTo(p, 0).empty());
@@ -174,6 +193,55 @@ TEST_CASE("The login replays the shared list, then the world's stages "
           std::vector<Sent>{ Msg(0, 0, nlohmann::json::array({ kMs13 })),
                              Msg(kMs13, 10), Msg(kMs13, 20) });
   REQUIRE(SentTo(p, 0).empty());
+  Leave(p);
+}
+
+// memo D58 B (2026-10-29): sharing mode all with a denylist
+TEST_CASE("In mode all a quest nobody declared is the world's: its stage is "
+          "recorded and relayed; a denied quest's stage is refused "
+          "(E_QUEST_DENIED); the login names mode 1 and the denied quests, "
+          "none or not, then the record",
+          "[QuestStage][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p, kDeniedQuests);
+
+  // MS13Intro is on no list: recorded and relayed all the same
+  Report(p, 0, kMs13Intro, 10);
+  const FormDesc ms13Intro = FormDesc::FromString("b6031:Skyrim.esm");
+  REQUIRE(p.GetQuestStages() ==
+          std::vector<QuestStageDone>{ { ms13Intro, 10 } });
+  REQUIRE(SentTo(p, 1) == std::vector<Sent>{ Msg(kMs13Intro, 10) });
+  REQUIRE(SentTo(p, 0).empty());
+
+  // MQ102 is denied: refused, nothing recorded, nothing relayed
+  p.Messages().clear();
+  Report(p, 0, kMq102, 10);
+  REQUIRE(p.GetQuestStages() ==
+          std::vector<QuestStageDone>{ { ms13Intro, 10 } });
+  REQUIRE(SentTo(p, 1).empty());
+  REQUIRE(SentTo(p, 0).empty());
+
+  // the login: mode 1 with the denied quest, then the world's stages
+  p.Messages().clear();
+  p.SetUserActor(1, kWatcher);
+  REQUIRE(SentTo(p, 1) ==
+          std::vector<Sent>{ Msg(0, 0, nlohmann::json::array({ kMq102 }), 1),
+                             Msg(kMs13Intro, 10) });
+  REQUIRE(SentTo(p, 0).empty());
+
+  // nothing denied: the login still names the mode, with an empty list
+  p.SetSharedQuestsSettings(R"({"mode":"all"})");
+  p.Messages().clear();
+  p.SetUserActor(1, kWatcher);
+  REQUIRE(SentTo(p, 1) ==
+          std::vector<Sent>{ Msg(0, 0, nlohmann::json::array(), 1),
+                             Msg(kMs13Intro, 10) });
+
+  // a block of another shape stops at the setting, named, and the setting
+  // in force stays
+  REQUIRE_THROWS(p.SetSharedQuestsSettings(R"({"mode":"list"})"));
+  REQUIRE(p.SharedQuestsMode() == 1);
   Leave(p);
 }
 

@@ -2790,11 +2790,12 @@ void ActionListener::OnPlayerGlobals(const RawMessageData& rawMsgData,
   KillByPlayerGlobals(*actor, merged);
 }
 
-// thuum docs/verbs/quest-stage.md (ADR-056): a player's game reports a stage
-// its engine set on a quest. The server checks the quest (a QUST of the
-// load order, on the shared list; R1), records the stage as the world's
-// (R0) and relays it to every other connected player; a stage the world
-// already has is a no-op, never an error. A client names no list and no
+// thuum docs/verbs/quest-stage.md (ADR-056; memo D58 B): a player's game
+// reports a stage its engine set on a quest. The server checks the quest (a
+// QUST of the load order, the world's by the sharing mode: listed in mode
+// list, not denied in mode all; R1), records the stage as the world's (R0)
+// and relays it to every other connected player; a stage the world already
+// has is a no-op, never an error. A client names no list, no mode and no
 // quest 0: those are the login replay's, server to client.
 void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
                                   const QuestStageMessage& msg)
@@ -2804,9 +2805,10 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
     return spdlog::warn("OnQuestStage - no actor for user {}",
                         rawMsgData.userId);
   }
-  if (!msg.shared.empty() || msg.quest == 0) {
+  if (!msg.shared.empty() || msg.mode != 0 || msg.quest == 0) {
     return spdlog::info("QuestStage: user {} actor {:x} report refused (a "
-                        "client names no shared list and no quest 0)",
+                        "client names no shared list, no mode and no quest "
+                        "0)",
                         rawMsgData.userId, actor->GetFormId());
   }
   if (!partOne.HasEspm()) {
@@ -2829,6 +2831,12 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
                         msg.quest);
   }
   if (const uint8_t refusal = partOne.CheckSharedQuest(quest)) {
+    if (refusal == 2) {
+      return spdlog::info("E_QUEST_DENIED: user {} actor {:x} reported stage "
+                          "{} of {}, a quest the world denies (memo D58 B)",
+                          rawMsgData.userId, actor->GetFormId(), msg.stage,
+                          quest.ToString());
+    }
     return spdlog::info("E_QUEST_UNLISTED: user {} actor {:x} reported stage "
                         "{} of {}, a quest the world does not share ({})",
                         rawMsgData.userId, actor->GetFormId(), msg.stage,
@@ -3189,11 +3197,17 @@ void ActionListener::SendPlayerGlobals(MpActor& actor)
 
 void ActionListener::SendQuestStages(MpActor& actor)
 {
+  // the login's first message names the sharing mode and its list (memo D58
+  // B): in mode list the shared quests, and nothing at all when none is
+  // listed; in mode all the denied quests, sent even when none is, so the
+  // seat learns the mode
+  const uint8_t mode = partOne.SharedQuestsMode();
   const auto listed = partOne.SharedQuestsListed();
-  if (listed.empty()) {
+  if (mode == 0 && listed.empty()) {
     return;
   }
   QuestStageMessage list;
+  list.mode = mode;
   for (const auto& quest : listed) {
     try {
       list.shared.push_back(quest.ToFormId(partOne.worldState.espmFiles));
@@ -3201,7 +3215,7 @@ void ActionListener::SendQuestStages(MpActor& actor)
       // a listed quest whose plugin this load order lacks
     }
   }
-  if (list.shared.empty()) {
+  if (mode == 0 && list.shared.empty()) {
     return;
   }
   actor.SendToUser(list, true);
@@ -3217,9 +3231,10 @@ void ActionListener::SendQuestStages(MpActor& actor)
     actor.SendToUser(message, true);
     ++stages;
   }
-  spdlog::info("QuestStage: actor {:x} sent {} shared quests, {} stages "
-               "after a login",
-               actor.GetFormId(), list.shared.size(), stages);
+  spdlog::info("QuestStage: actor {:x} sent mode {} with {} {} quests, {} "
+               "stages after a login",
+               actor.GetFormId(), mode, list.shared.size(),
+               mode == 0 ? "shared" : "denied", stages);
 }
 
 // thuum memo D56 A (Eli, 2026-10-28, "A for both"): the server cures the

@@ -259,6 +259,12 @@ private:
   // (thuum docs/verbs/stagger.md); `what` names the hit for the log
   void PlayStagger(MpActor& aggressor, MpActor& target, float magnitude,
                    const std::string& what);
+  // thuum docs/verbs/npc-fate.md ("Reanimation is any player's, on any
+  // body"): a reanimate's accepted hit on a dead body another game hosts,
+  // cast again by the server's word on that host's engine, from the
+  // caster's figure at the body (Spell.Cast by SpSnippet); nothing when the
+  // body's host is the caster's own game
+  void CastReanimateOnHost(MpActor& caster, MpActor& body, uint32_t spell);
 
   void SendPapyrusOnHitEvent(MpActor* aggressor, MpObjectReference* target,
                              const HitData& hitData);

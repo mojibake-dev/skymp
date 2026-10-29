@@ -550,7 +550,13 @@ fn check_actor_death(m: &skymp::ActorDeath) -> Result<(), Reject> {
     if !all_finite(m) {
         return Err(Reject::NonFinite);
     }
-    if m.refr_id == 0 || m.refr_id >= 0xff00_0000 || m.cause > 4 {
+    // thuum docs/verbs/npc-fate.md: a game-file actor's id, or since playtest
+    // 37's finding 47 (2026-10-28) a server-made actor's (0xff000000 up, the
+    // fate's own placements: a creature the server placed died by the
+    // server's word after 3 s because its host could not report it); who may
+    // report whom is the server's rule (ActionListener::OnActorDeath: the
+    // actor's simulator, a fated actor, alive)
+    if m.refr_id == 0 || m.cause > 4 {
         return Err(Reject::Range);
     }
     check_pos(&m.pos)?;
@@ -1760,7 +1766,8 @@ mod tests {
         assert_eq!(validate_server(&death(0x85547, 1, 0, [123592.5, -80301.25, 10705.0])), Ok(()));
         assert_eq!(validate_server(&death(0x85547, 4, 0x85549, [0.0, 0.0, 0.0])), Ok(()));
         assert_eq!(validate_server(&death(0, 1, 0, [0.0, 0.0, 0.0])), Err(Reject::Range));
-        assert_eq!(validate_server(&death(0xff00_0000, 1, 0, [0.0, 0.0, 0.0])), Err(Reject::Range));
+        // a server-made actor's death, reported by its host (finding 47)
+        assert_eq!(validate_server(&death(0xff00_0004, 4, 0xff00_0000, [0.0, 0.0, 0.0])), Ok(()));
         assert_eq!(validate_server(&death(0x85547, 5, 0, [0.0, 0.0, 0.0])), Err(Reject::Range));
         assert_eq!(validate_server(&death(0x85547, 1, 0, [f32::NAN, 0.0, 0.0])), Err(Reject::NonFinite));
         let mut guard = ClientGuard::default();

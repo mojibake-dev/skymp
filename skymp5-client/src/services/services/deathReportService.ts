@@ -43,7 +43,11 @@ export class DeathReportService extends ClientListener {
             return;
         }
         const localId = dying.getFormID();
-        if (localId === 0x14 || localId >= 0xff000000) {
+        // the player's own actor never; a server-made actor (0xff000000 up)
+        // since playtest 37's finding 47 (a placed atronach's death ran the
+        // server's 3 s word because its host could not report it): the host
+        // gate below (isMineLocal) keeps other players' figures out
+        if (localId === 0x14) {
             return;
         }
         if (this.controller.lookupListener(DeathService).takeServerKill(localId)) {

@@ -404,6 +404,12 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
       serverSettings.contains("sharedQuests")
         ? serverSettings.at("sharedQuests").dump()
         : std::string("[]"));
+    // the food effects that lower the needs the server keeps (thuum
+    // docs/verbs/player-globals.md, the needs): `survivalFood`, the same way
+    partOne->SetSurvivalFoodSettings(
+      serverSettings.contains("survivalFood")
+        ? serverSettings.at("survivalFood").dump()
+        : std::string("{}"));
 
     if (serverSettings["dataDir"] != nullptr) {
       dataDir = serverSettings["dataDir"];

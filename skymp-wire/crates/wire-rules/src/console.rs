@@ -76,12 +76,14 @@ const fn cmd(name: &'static str, short: &'static str, class: Class, rank: Rank, 
 /// AddShout since 2026-10-11, M2: the server's record of what a player knows
 /// of shouts, thuum docs/verbs/shouts.md, where a player's own console used
 /// to change its game alone; AddSpell the same for learned spells, M2, thuum
-/// docs/verbs/cast-teleport.md). `mp` is SkyMP's own, and carries TES3MP's player commands
+/// docs/verbs/cast-teleport.md; SetGlobal since 2026-10-28, M3: one listed
+/// player global written by the server's word, the needs lever of thuum
+/// docs/verbs/player-globals.md). `mp` is SkyMP's own, and carries TES3MP's player commands
 /// (Eli, 2026-10-08; TES3MP CoreScripts commandHandler.lua /teleport,
 /// /teleportto, moderators'): `mp list` names the players online by number,
 /// `mp tp <n>` brings that player to the caller, `mp tpto <n>` takes the
 /// caller to it, through the server's teleport wherever the two are.
-pub const TABLE: [Command; 35] = [
+pub const TABLE: [Command; 36] = [
     cmd("additem", "", Class::Server, Rank::Admin, true),
     cmd("removeitem", "", Class::Server, Rank::Admin, true),
     cmd("equipitem", "", Class::Server, Rank::Admin, true),
@@ -110,6 +112,7 @@ pub const TABLE: [Command; 35] = [
     cmd("unlockword", "", Class::Server, Rank::Admin, true),
     cmd("addshout", "", Class::Server, Rank::Admin, true),
     cmd("addspell", "", Class::Server, Rank::Admin, true),
+    cmd("setglobal", "", Class::Server, Rank::Admin, true),
     // `set <global> to <value>`: the server owns the clock's globals (ADR-021);
     // which others it owns waits for the first verb that needs one
     cmd("set", "", Class::Server, Rank::Admin, false),
@@ -236,6 +239,9 @@ mod tests {
         // thuum docs/verbs/cast-teleport.md: AddSpell too
         assert_eq!(decide("AddSpell", Rank::Admin), Decision::Run);
         assert_eq!(decide("addspell", Rank::Moderator), Decision::RankTooLow);
+        assert_eq!(decide("SetGlobal", Rank::Admin), Decision::Run);
+        assert_eq!(decide("setglobal", Rank::Owner), Decision::Run);
+        assert_eq!(decide("setglobal", Rank::Moderator), Decision::RankTooLow);
         assert_eq!(decide("whatever", Rank::Owner), Decision::Unknown);
         assert!(!refusal_line(Decision::NotServed).is_empty());
         assert!(refusal_line(Decision::Run).is_empty());

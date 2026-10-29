@@ -1,4 +1,5 @@
 #include "ConsoleCommands.h"
+#include "ActionListener.h"
 #include "ConsoleOutputMessage.h"
 #include "MpActor.h"
 #include "PartOne.h"
@@ -559,6 +560,46 @@ std::string ExecuteAddSpell(MpActor& caller,
                      added ? "recorded" : "already recorded");
 }
 
+// SetGlobal, an admin's (thuum docs/verbs/player-globals.md, the needs lever;
+// Eli, 2026-10-13: a playtest's setup is server-side, never typed in a
+// game): one listed player global written into the target's record by the
+// server's word (R0) and sent to its game, as the login sends the record,
+// the settings' killAt read as for a report. The target is the caller (0x14,
+// 0 or "self") or an actor's id; the global a FormDesc
+// ("81a:ccQDRSSE001-SurvivalMode.esl") or a form id of this load order; the
+// value a number. An unlisted global is refused: the record holds listed
+// globals only (wire-rules player_globals). The line says what was set.
+std::string ExecuteSetGlobal(
+  PartOne& partOne, MpActor& caller,
+  const std::vector<ConsoleCommands::Argument>& args)
+{
+  if (args.size() < 3) {
+    throw std::runtime_error("setglobal needs a target, a global and a value");
+  }
+  MpActor& target = args.at(0).IsString() &&
+      !Utils::stricmp(args.at(0).GetString().data(), "self")
+    ? caller
+    : ActorOf(caller, args.at(0).GetInteger());
+  const auto& files = caller.GetParent()->espmFiles;
+  const FormDesc global = args.at(1).IsString()
+    ? FormDesc::FromString(args.at(1).GetString())
+    : FormDesc::FromFormId(static_cast<uint32_t>(args.at(1).GetInteger()),
+                           files);
+  const auto value = static_cast<float>(NumberOf(args.at(2)));
+  const std::vector<PlayerGlobal> values{ { global, value } };
+  if (partOne.CheckPlayerGlobals(values) != 0) {
+    throw std::runtime_error(
+      fmt::format("{} is not a listed player global", global.ToString()));
+  }
+  partOne.GetActionListener().RecordPlayerGlobals(target, values,
+                                                  "set by a console command");
+  spdlog::info("ConsoleCommands: {:x} set the global {} to {} for {:x}",
+               caller.GetFormId(), global.ToString(), value,
+               target.GetFormId());
+  return fmt::format("{} = {} for {:x}", global.ToString(), value,
+                     target.GetFormId());
+}
+
 std::string ExecuteToggleImmortalMode(MpActor& caller)
 {
   const bool on = !caller.IsImmortal();
@@ -765,6 +806,9 @@ void ConsoleCommands::Execute(
                    false);
     } else if (!Utils::stricmp(name, "AddSpell")) {
       return Reply(me, judged + " done: " + ExecuteAddSpell(me, args), false);
+    } else if (!Utils::stricmp(name, "SetGlobal")) {
+      return Reply(
+        me, judged + " done: " + ExecuteSetGlobal(partOne, me, args), false);
     } else if (!Utils::stricmp(name, "SetAV") ||
                !Utils::stricmp(name, "SetActorValue")) {
       ExecuteActorValue(me, "set", args);

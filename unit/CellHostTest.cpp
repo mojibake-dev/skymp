@@ -927,6 +927,7 @@ TEST_CASE("A host's sighting places an interior-placed resident where its "
   p.Messages().clear();
   sighting(1, kSigrid, far);
   REQUIRE(p.worldState.CellOf(sigrid) == cell);
+  p.Tick(); // snippets are deferred (SpSnippet.cpp; pipeline 3613's red)
   bool hidden = false;
   for (auto& m : p.Messages()) {
     if (m.userId == 1 && m.j.is_object() && m.j.contains("t") &&

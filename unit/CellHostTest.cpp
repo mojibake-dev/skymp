@@ -1491,7 +1491,10 @@ TEST_CASE("A hosted actor's equipment is its host's engine's word checked "
   // Skyrim.esm's iron sword, a WEAP record (the slot rule looks it up and
   // passes it by)
   constexpr uint32_t kIronSword = 0x12eb7;
+  // Skyrim.esm's steel sword, a WEAP the record lacks, and its iron helmet
+  // ArmorIronHelmet, an ARMO the record lacks (lab/esm.py)
   constexpr uint32_t kElsewhere = 0x13989;
+  constexpr uint32_t kIronHelmet = 0x12e4d;
   const NiPoint3 kAt{ 117786.f, -81400.f, 10997.f };
   Player(p, 0, kC1, kAt + NiPoint3{ 40.f, 0.f, 0.f });
   Player(p, 1, kC2, kAt + NiPoint3{ 60.f, 0.f, 0.f });
@@ -1528,10 +1531,27 @@ TEST_CASE("A hosted actor's equipment is its host's engine's word checked "
   // the relay once, the host hears nothing, the host player's own record
   // stays as it was
   const auto c1Before = c1.GetEquipment();
+  // the record's worn outfit before the report: what no report may shrink
+  // (fate-dress, playtest 37's finding 46: the fate's worn list is the
+  // outfit every seat dresses the copy from, so a hosted report keeps the
+  // record's worn non-weapon entries it lacks)
+  const auto isWeapon = [&](uint32_t baseId) {
+    const auto rec = p.GetEspm().GetBrowser().LookupById(baseId).rec;
+    return rec && rec->GetType() == "WEAP";
+  };
+  std::vector<uint32_t> outfitBefore;
+  for (const auto& entry : actor.GetEquipment().inv.entries) {
+    if (entry.GetWorn() != Inventory::Worn::None && !isWeapon(entry.baseId)) {
+      outfitBefore.push_back(entry.baseId);
+    }
+  }
   p.Messages().clear();
   Wear(p, 0, kActor, kIronSword, 1);
-  REQUIRE(actor.GetEquipment().inv.entries.size() == 1);
-  REQUIRE(actor.GetEquipment().inv.entries.front().baseId == kIronSword);
+  REQUIRE(actor.GetEquipment().inv.HasItem(kIronSword));
+  for (const auto baseId : outfitBefore) {
+    REQUIRE(actor.GetEquipment().inv.HasItem(baseId));
+  }
+  REQUIRE(actor.GetEquipment().inv.entries.size() == 1 + outfitBefore.size());
   REQUIRE(actor.GetEquipment().numChanges == 1);
   REQUIRE(c1.GetEquipment().inv.entries.size() == c1Before.inv.entries.size());
   REQUIRE(relays(1) == 1);
@@ -1544,15 +1564,28 @@ TEST_CASE("A hosted actor's equipment is its host's engine's word checked "
   REQUIRE(relays(0) == 0);
   REQUIRE(relays(1) == 0);
 
-  // an item the actor's record lacks: refused, the record stands, and the
-  // host is sent neither an inventory (it has no idx: the player's own
-  // would be replaced) nor an unequip snippet (nothing writes to a hosted
-  // actor's engine)
+  // a WEAPON the actor's record lacks: the engine's own roll in its hands
+  // (fate-dress, finding 43: the late fate path leaves the engine's rolled
+  // weapon beside the server's), recorded R2 into the record's inventory and
+  // hands, relayed once, and the host is sent neither an inventory (it has
+  // no idx: the player's own would be replaced) nor a snippet
   p.Messages().clear();
   Wear(p, 0, kActor, kElsewhere, 3);
   p.Tick();
-  REQUIRE(actor.GetEquipment().inv.entries.front().baseId == kIronSword);
-  REQUIRE(actor.GetEquipment().numChanges == 1);
+  REQUIRE(actor.GetEquipment().inv.HasItem(kElsewhere));
+  REQUIRE(actor.GetInventory().HasItem(kElsewhere));
+  REQUIRE(actor.GetEquipment().numChanges == 3);
+  REQUIRE(relays(1) == 1);
+  REQUIRE(sentOfType(0, MsgType::SetInventory) == 0);
+  REQUIRE(sentOfType(0, MsgType::SpSnippet) == 0);
+
+  // an ARMOR the record lacks: refused as before, the record stands, nothing
+  // sent to the host
+  p.Messages().clear();
+  Wear(p, 0, kActor, kIronHelmet, 4);
+  p.Tick();
+  REQUIRE(!actor.GetEquipment().inv.HasItem(kIronHelmet));
+  REQUIRE(actor.GetEquipment().numChanges == 3);
   REQUIRE(relays(1) == 0);
   REQUIRE(sentOfType(0, MsgType::SetInventory) == 0);
   REQUIRE(sentOfType(0, MsgType::SpSnippet) == 0);

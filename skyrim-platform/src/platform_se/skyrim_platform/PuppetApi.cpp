@@ -924,11 +924,24 @@ Napi::Value PuppetApi::RefreshContainerMenu(const Napi::CallbackInfo& info)
                    refId, target ? target->formID : 0u);
       return;
     }
-    const bool first = ItemMenuRefresh::Post(*target);
-    const bool second = first && ItemMenuRefresh::Post(*target);
-    logger::info("[verb:containers] refreshContainerMenu {:x}: the engine's "
-                 "inventory update {}",
-                 refId, second ? "posted twice" : "not posted");
+    const auto first = ItemMenuRefresh::TryPost(*target);
+    const auto second = first == ItemMenuRefresh::PostResult::kPosted
+      ? ItemMenuRefresh::TryPost(*target)
+      : first;
+    if (second == ItemMenuRefresh::PostResult::kPosted) {
+      logger::info("[verb:containers] refreshContainerMenu {:x}: the engine's "
+                   "inventory update posted twice",
+                   refId);
+    } else {
+      // the reason with both handles: a "not posted" with the menu open and
+      // its target this reference has only the handle comparison or the
+      // queue left to blame (docs/research/m3/re-corpse-menu-crash.md asks)
+      logger::info("[verb:containers] refreshContainerMenu {:x}: the engine's "
+                   "inventory update not posted: {} (the menu's target handle "
+                   "{:x}, the reference's {:x})",
+                   refId, ItemMenuRefresh::Name(second), handle,
+                   target->CreateRefHandle().native_handle());
+    }
   });
   return Napi::Boolean::New(info.Env(), true);
 }

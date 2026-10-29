@@ -17,6 +17,15 @@ namespace ItemMenuRefresh {
 // (the counter the pin names numItemMenus does not count it there), so both
 // gates keyed on it dropped every change under the menu and posted nothing
 bool ItemMenuOpen();
-// true when an item menu is open and the message was queued
+// The two inventories an open item menu shows: the player's own, and the
+// ContainerMenu's target while that menu is open. Only a change to one of
+// them is worth a message (and safe to announce): playtest 37's crash on c1
+// (02:24Z, 63 s after the train's relaunch, a ContainerMenu alive) came with
+// every hosted actor's equipment apply posting an update for its own
+// reference while a menu was open, dozens a second, each rebuilding rows
+// the engine was not expecting to rebuild. HYPOTHESIS until the next sitting
+bool Shows(RE::TESObjectREFR& owner);
+// true when an item menu shows the owner's inventory and the message was
+// queued
 bool Post(RE::TESObjectREFR& owner);
 }

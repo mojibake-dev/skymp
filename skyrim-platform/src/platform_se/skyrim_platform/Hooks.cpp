@@ -2,9 +2,11 @@
 #include "EventHandler.h"
 #include "EventsApi.h"
 #include "FridaHooks.h"
+#include "Hosted.h"
 #include "JsUtils.h"
 #include "MpClientPluginApi.h"
 #include "PapyrusTESModPlatform.h"
+#include "Puppets.h"
 #include "SkyrimPlatform.h"
 #include <mutex>
 
@@ -275,6 +277,72 @@ void InstallPlayerHealthDamageHook()
 }
 
 /**
+ * thuum docs/verbs/npc-fate.md (playtest 37's finding 54): a necromancer
+ * hosted by one seat reanimated a dead bandit; the body stood on that
+ * screen alone, attacked nobody, and the server never learned it was alive,
+ * so the other seat's puppet stayed a body. On its host a dead actor keeps
+ * its AI off (PuppetApi.cpp Promote, npc-fate H-54e: a package would walk a
+ * body), and under AI off the engine's own Actor::Resurrect (CommonLibSSE-NG
+ * include/RE/A/Actor.h:369, vfunc 0AB) does not take: isDead stays true,
+ * the lab's earlier finding and the reason FateApi::ResurrectActor wraps
+ * the call in EnableAI(true) (FateApi.cpp). So for an actor this seat hosts
+ * (Hosted.h, the server's word per actor) the AI is enabled before the
+ * engine's own Resurrect runs, the call the reanimate effect's Start makes
+ * (include/RE/R/ReanimateEffect.h:21; HYPOTHESIS, finding 54's read: that
+ * Start reaches the body through this virtual). HYPOTHESIS: the AI bit
+ * (Actor::BOOL_BITS::kProcessMe, Actor.h:160, what EnableAI writes,
+ * Actor.h:521) is what blocks Resurrect on an AI-off actor. The engine then
+ * stands the body with isDead false; the host's sampler (skymp5-client
+ * hostedStateService) reports the flip reliable and the server records the
+ * resurrection (ActionListener::OnHostedActorState, a Respawn without a
+ * teleport), whose live word stands the puppets up. A puppet is not touched
+ * here: a watcher's copy follows the server's word as today (FateApi.cpp
+ * resurrectActor). The slot is written on Character's primary vtable
+ * (RE::VTABLE_Character[0], include/RE/Offsets_VTABLE.h:2215), the class
+ * every NPC and creature is; Character overrides no Resurrect
+ * (include/RE/C/Character.h:30-57), and the player has its own vtable
+ * (VTABLE_PlayerCharacter, include/RE/P/PlayerCharacter.h:245) that this
+ * write never touches. PlayerHealthDamage's shape above (write_vfunc,
+ * include/REL/Relocation.h:392-406).
+ */
+struct HostedResurrect
+{
+  static void thunk(RE::Actor* a_this, bool a_resetInventory, bool a_attach3D)
+  {
+    // Actor::IsAIEnabled (Actor.h:579), TESForm::formID (include/RE/T/
+    // TESForm.h:354); a hosted actor with its AI on has nothing to enable
+    const bool taken = a_this && !a_this->IsAIEnabled() &&
+      Hosted::Is(a_this->formID) && !Puppets::Is(a_this->formID);
+    if (!taken) {
+      func(a_this, a_resetInventory, a_attach3D);
+      return;
+    }
+    // Actor::IsDead (Actor.h:345), Actor::EnableAI (Actor.h:521)
+    const bool deadBefore = a_this->IsDead();
+    a_this->EnableAI(true);
+    func(a_this, a_resetInventory, a_attach3D);
+    const bool deadAfter = a_this->IsDead();
+    if (deadAfter) {
+      // the resurrection did not take (the hypothesis above failed): the
+      // body keeps H-54e's AI off, so no package walks it
+      a_this->EnableAI(false);
+    }
+    logger::info("[verb:npc-fate] resurrect {:x}: hosted body, AI enabled "
+                 "for the engine's own resurrection (dead before {}, dead "
+                 "after {}{})",
+                 a_this->formID, deadBefore, deadAfter,
+                 deadAfter ? ", AI off again" : "");
+  }
+  static inline REL::Relocation<decltype(thunk)> func;
+};
+
+void InstallHostedResurrectHook()
+{
+  REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_Character[0] };
+  HostedResurrect::func = vtbl.write_vfunc(0xAB, HostedResurrect::thunk);
+}
+
+/**
  * The graph's answers to a cast request (thuum docs/verbs/cast-action.md).
  * The engine's caster sets the hand's want variable and performs the Attack
  * action only when the graph answers with the BeginCastRight (BeginCastLeft,
@@ -445,6 +513,7 @@ void Hooks::Install()
   HookVirtualMachineBind();
   InstallPlayerAddTargetHook();
   InstallPlayerHealthDamageHook();
+  InstallHostedResurrectHook();
 
   logger::info("CommonLib hooks installed.");
 }

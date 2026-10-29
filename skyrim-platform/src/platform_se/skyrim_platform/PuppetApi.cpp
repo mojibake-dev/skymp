@@ -126,8 +126,10 @@ void Promote(RE::Actor& actor)
   // EvaluatePackage on a dead actor hand the engine's package a body. A dead
   // actor keeps its AI off here (Actor::IsDead, CommonLibSSE-NG
   // include/RE/A/Actor.h:345); the block comes off for the loot, and the
-  // fate's resurrect turns the AI on when the record stands again
-  // (FateApi.cpp resurrectActor)
+  // AI comes on with the body's resurrection alone: the fate's resurrect
+  // when the record stands again (FateApi.cpp resurrectActor), or the
+  // engine's own Resurrect on this seat, a necromancer's reanimate, through
+  // the Character vtable hook (Hooks.cpp HostedResurrect, finding 54)
   if (actor.IsDead()) {
     logger::info("[verb:npc-puppet] promote {:x}: dead, the block lifted "
                  "and the AI left off (npc-fate H-54e)",

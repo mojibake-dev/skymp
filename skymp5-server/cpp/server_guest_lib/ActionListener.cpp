@@ -3137,6 +3137,60 @@ void ActionListener::SendQuestStages(MpActor& actor)
                actor.GetFormId(), list.shared.size(), stages);
 }
 
+// thuum memo D56 A (Eli, 2026-10-28, "A for both"): the server cures the
+// listed spells on a player at its login and every minute after, through the
+// engine's own RemoveSpell (the shrine's cure in one line), so nobody turns
+// from a seat-side disease until the vampirism slice is built (apocrypha's
+// scout: Sanguinare Vampiris runs on the seat, its script turns the player
+// three game days later with no server record). A spell the player's game
+// does not carry is a no-op there. One info line per send.
+void ActionListener::SendCures(MpActor& actor)
+{
+  const auto& spells = partOne.CureSpells();
+  if (spells.empty()) {
+    return;
+  }
+  const uint32_t actorId = actor.GetFormId();
+  size_t sent = 0;
+  for (const auto& desc : spells) {
+    uint32_t formId = 0;
+    try {
+      formId = desc.ToFormId(partOne.worldState.espmFiles);
+    } catch (const std::exception&) {
+      continue; // a listed spell whose plugin this load order lacks
+    }
+    SendSpellSnippet(actor, "RemoveSpell", formId);
+    ++sent;
+  }
+  if (sent == 0) {
+    return;
+  }
+  spdlog::info("[verb:magic-effects] cure: actor {:x} told to drop {} listed "
+               "spell(s) (memo D56 A)",
+               actorId, sent);
+  // the minute chain: one per login, the newer login's chain the one that
+  // goes on (the epoch)
+  const uint32_t epoch = ++cureEpochs[actorId];
+  partOne.worldState.SetTimer(std::chrono::seconds(60))
+    .Then([this, actorId, epoch](Viet::Void) {
+      auto it = cureEpochs.find(actorId);
+      if (it == cureEpochs.end() || it->second != epoch) {
+        return;
+      }
+      const auto& form = partOne.worldState.LookupFormById(actorId);
+      MpActor* target = form ? form->AsActor() : nullptr;
+      if (!target ||
+          partOne.serverState.UserByActor(target) ==
+            Networking::InvalidUserId) {
+        cureEpochs.erase(it);
+        return;
+      }
+      // the same epoch goes on: SendCures bumps it, so the chain is one
+      --it->second;
+      SendCures(*target);
+    });
+}
+
 void ActionListener::KillByPlayerGlobals(
   MpActor& actor, const std::vector<PlayerGlobal>& merged)
 {

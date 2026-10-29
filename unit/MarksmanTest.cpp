@@ -1,6 +1,11 @@
 #include "TestUtils.hpp"
 #include <catch2/catch_all.hpp>
 #include <chrono>
+#include <memory>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
+#include <sstream>
+#include <string>
 
 #include "ActionListener.h"
 #include "ActorValueRecord.h"
@@ -20,6 +25,10 @@ constexpr uint32_t kLongBow = 0x0003b562;
 constexpr uint32_t kIronArrow = 0x0001397d;
 constexpr uint32_t kShooter = 0xff000000;
 constexpr uint32_t kTarget = 0xff000001;
+// a shooter of its own for the stale-hands case: the once-per-ten-seconds
+// line is kept per shooter across the process, and 0xff000000 shoots in
+// other files' cases too
+constexpr uint32_t kStaleShooter = 0xff000e20;
 
 const auto kWorn = [] {
   Inventory::ExtraData extra;
@@ -31,15 +40,15 @@ const auto kWorn = [] {
 // north, both in Tamriel; the shooter is given the long bow and ten iron
 // arrows (on top of the arrows its base starts with), equipped when
 // `equipped`
-MpActor& Range(PartOne& p, bool equipped)
+MpActor& Range(PartOne& p, bool equipped, uint32_t shooterId = kShooter)
 {
   DoConnect(p, 0);
   DoConnect(p, 1);
-  p.CreateActor(kShooter, { 0, 0, 0 }, 0, 0x3c);
-  p.SetUserActor(0, kShooter);
+  p.CreateActor(shooterId, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, shooterId);
   p.CreateActor(kTarget, { 0, 300, 0 }, 0, 0x3c);
   p.SetUserActor(1, kTarget);
-  auto& shooter = p.worldState.GetFormAt<MpActor>(kShooter);
+  auto& shooter = p.worldState.GetFormAt<MpActor>(shooterId);
   shooter.AddItem(kLongBow, 1);
   shooter.AddItem(kIronArrow, 10);
   Equipment eq;
@@ -99,13 +108,40 @@ std::vector<std::pair<Networking::UserId, nlohmann::json>> Relays(PartOne& p)
   return out;
 }
 
-void Leave(PartOne& p)
+void Leave(PartOne& p, uint32_t shooterId = kShooter)
 {
   p.DestroyActor(kTarget);
-  p.DestroyActor(kShooter);
+  p.DestroyActor(shooterId);
   DoDisconnect(p, 1);
   DoDisconnect(p, 0);
 }
+
+// the default logger's lines at info and above while the guard lives
+// (PartOneTest's shape), restored at its end
+struct LogCapture
+{
+  std::shared_ptr<spdlog::logger> old = spdlog::default_logger();
+  std::ostringstream oss;
+  LogCapture()
+  {
+    auto sink = std::make_shared<spdlog::sinks::ostream_sink_mt>(oss);
+    auto logger = std::make_shared<spdlog::logger>("marksman-test", sink);
+    logger->set_pattern("%v");
+    logger->set_level(spdlog::level::info);
+    spdlog::set_default_logger(logger);
+  }
+  ~LogCapture() { spdlog::set_default_logger(old); }
+  size_t Count(const std::string& line) const
+  {
+    const std::string log = oss.str();
+    size_t n = 0;
+    for (auto at = log.find(line); at != std::string::npos;
+         at = log.find(line, at + line.size())) {
+      ++n;
+    }
+    return n;
+  }
+};
 }
 
 TEST_CASE("A shot from a held bow takes an arrow and reaches the neighbours",
@@ -190,17 +226,88 @@ TEST_CASE("A shot launched far from the shooter changes nothing",
   Leave(p);
 }
 
-TEST_CASE("A shot from a bow the player does not hold changes nothing",
+// thuum docs/verbs/marksman.md (playtest 37's finding 45): the record's
+// hands are the client's last accepted report and lag it (a report refused
+// for one entry, the hands a login re-dresses); the inventory is the
+// server's own, so a bow and an arrow held there make the shot
+TEST_CASE("A shot from a bow the player's hands lack but its inventory holds "
+          "is accepted on the inventory, said once, and its arrow's hit lands",
+          "[Marksman][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& shooter = Range(p, false, kStaleShooter);
+  auto& target = p.worldState.GetFormAt<MpActor>(kTarget);
+  ActorValueRecord record;
+  record.bases = { { 24, 250.f } };
+  REQUIRE(target.SetActorValueRecord(record));
+  REQUIRE(shooter.GetEquipment().inv.entries.empty());
+  const auto arrows = shooter.GetInventory().GetItemCount(kIronArrow);
+  p.Messages().clear();
+
+  {
+    LogCapture log;
+    Shoot(p);
+    Shoot(p);
+    // the allowance is said once per shooter per ten seconds
+    REQUIRE(log.Count("hands stale: shot from 3b562 accepted on the "
+                      "inventory") == 1);
+    REQUIRE(log.Count("E_SHOT_NO_BOW") == 0);
+    REQUIRE(log.Count("E_SHOT_NO_ARROW") == 0);
+  }
+
+  // both shots taken: an arrow each, a relay each
+  REQUIRE(shooter.GetInventory().GetItemCount(kIronArrow) == arrows - 2);
+  REQUIRE(Relays(p).size() == 2);
+
+  // the hit claims a recorded shot through the same allowance (OnHit reads
+  // the record's hands too): the test's damage formula's 25 out of 250
+  ArrowHits(p, shooter);
+  REQUIRE(target.GetChangeForm().actorValues.healthPercentage ==
+          Catch::Approx(0.9f));
+
+  Leave(p, kStaleShooter);
+}
+
+TEST_CASE("A shot from a bow the player's inventory lacks changes nothing",
           "[Marksman][espm]")
 {
   PartOne& p = GetPartOne();
   auto& shooter = Range(p, false);
+  auto& target = p.worldState.GetFormAt<MpActor>(kTarget);
+  ActorValueRecord record;
+  record.bases = { { 24, 250.f } };
+  REQUIRE(target.SetActorValueRecord(record));
+  shooter.RemoveItem(kLongBow, shooter.GetInventory().GetItemCount(kLongBow),
+                     nullptr);
+  REQUIRE(shooter.GetInventory().GetItemCount(kLongBow) == 0);
   const auto arrows = shooter.GetInventory().GetItemCount(kIronArrow);
   p.Messages().clear();
 
+  // E_SHOT_NO_BOW: no arrow taken, nothing relayed, no shot for a hit
   Shoot(p);
 
   REQUIRE(shooter.GetInventory().GetItemCount(kIronArrow) == arrows);
+  REQUIRE(Relays(p).empty());
+  ArrowHits(p, shooter);
+  REQUIRE(target.GetChangeForm().actorValues.healthPercentage == 1.f);
+
+  Leave(p);
+}
+
+TEST_CASE("A shot whose arrow the player's inventory lacks changes nothing",
+          "[Marksman][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& shooter = Range(p, false);
+  shooter.RemoveItem(kIronArrow,
+                     shooter.GetInventory().GetItemCount(kIronArrow), nullptr);
+  REQUIRE(shooter.GetInventory().GetItemCount(kIronArrow) == 0);
+  REQUIRE(shooter.GetInventory().GetItemCount(kLongBow) > 0);
+  p.Messages().clear();
+
+  // E_SHOT_NO_ARROW: nothing relayed
+  Shoot(p);
+
   REQUIRE(Relays(p).empty());
 
   Leave(p);

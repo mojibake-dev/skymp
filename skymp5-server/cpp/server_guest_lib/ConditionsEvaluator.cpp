@@ -27,6 +27,10 @@ void ConditionsEvaluator::EvaluateConditions(
   const std::function<void(bool, std::vector<std::string>&)>& callback,
   const ConditionEvaluatorContext& context)
 {
+  // the caller travels with the context, for the functions whose answer
+  // depends on who asks (ConditionEvaluatorContext::caller)
+  ConditionEvaluatorContext ctx = context;
+  ctx.caller = caller;
   bool enableLogging = false;
 
   for (auto& callerToLog : settings.callersToLog) {
@@ -54,7 +58,7 @@ void ConditionsEvaluator::EvaluateConditions(
     conditionFunctionMap, conditions,
     enableLogging ? &conditionResolutions : nullptr,
     enableLogging ? &conditionFunctionResults : nullptr, aggressor, target,
-    context);
+    ctx);
 
   std::vector<std::string> strings;
 

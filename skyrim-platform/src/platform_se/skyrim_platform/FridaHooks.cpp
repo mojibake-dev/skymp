@@ -1240,6 +1240,106 @@ void InstallSendTopicInfoEventHook()
     reinterpret_cast<void**>(&g_sendTopicInfoEventOriginal));
 }
 
+/**
+ * The engine's reanimation of a hosted body (thuum docs/verbs/npc-fate.md,
+ * playtest 37's finding 54: a thrall raised by a hosted necromancer stood on
+ * the host's screen with no AI, "stands but gets no npc"). On its host a
+ * dead actor keeps its AI off (PuppetApi.cpp Promote, H-54e), and the
+ * Reanimate effect never passes the Character vtable's Resurrect slot that
+ * Hooks.cpp HostedResurrect holds: ReanimateEffect::Start (Address Library
+ * 34750) heals the health damage modifier, stores the caster as commanding
+ * actor and then calls the reanimation proper, 38820, either directly (no
+ * live animation graph) or from the GetUpEnd handler (42880) when the body's
+ * kActionGetUp ends; Actor::MoveToMiddleHigh (37624) calls 38820 too for a
+ * dead actor still carrying a commanding actor (the post-load re-entry).
+ * 38820 is `void (Actor* this)`: SetLifeState(kReanimate) through 37490 into
+ * 37612 (Actor::SetLifeState, CommonLibSSE-NG src/RE/A/Actor.cpp:1034),
+ * actorState2.reanimating cleared, the caster's kApplyReanimateSpell perk
+ * entry point, the commanding actor cleared. The read is
+ * docs/research/m3/re-resurrect-hook.md (the sky-re Ghidra project,
+ * 1.6.1170), HYPOTHESIS throughout until a trace; this hook's own log line
+ * is the first.
+ *
+ * Here, at 38820's entry, a hosted body with its AI off (Hosted.h; not a
+ * puppet, Puppets.h: a watcher's copy follows the server's word) gets its AI
+ * enabled (Actor::EnableAI, include/RE/A/Actor.h:521, the kProcessMe bit of
+ * Actor.h:160 that Actor::IsAIEnabled reads, Actor.h:579) and keeps it: the
+ * dead state clears inside the call, and a thrall needs its AI to follow and
+ * fight. The life state is read before and after through CommonLib's
+ * accessor (Actor::AsActorState, Actor.h:736; ActorState::GetLifeState,
+ * include/RE/A/ActorState.h:158; the enum at ActorState.h:7-18: kAlive 0,
+ * kDying 1, kDead 2, kUnconcious 3, kReanimate 4, kRecycle 5). A reanimated
+ * body lives at kReanimate for the effect's whole life, and Actor::IsDead
+ * (Actor.h:345) reads actorState1 alone, dead at kDying, kDead and kRecycle,
+ * so kReanimate reads alive. HYPOTHESIS, the lab's to confirm: the thrall's
+ * AI stays on and it follows the commanding actor's figure on the host; the
+ * host's sampler (skymp5-client hostedStateService) reads kReanimate as
+ * alive and the server records the flip; nothing else turns the AI off
+ * before the sampler's next poll; 38820 is a plain function entry Gum
+ * attaches to (Attach logs OK). The entry keeps one record per call on the
+ * thread, the DroppedArrow shape above.
+ */
+struct ReanimateSeen
+{
+  // null when the entry took nothing: not hosted, a puppet, or the AI
+  // already on
+  RE::Actor* actor = nullptr;
+  uint32_t formId = 0;
+  uint32_t lifeStateBefore = 0;
+};
+thread_local std::vector<ReanimateSeen> g_reanimations;
+
+void OnReanimateEnter(GumInvocationContext* ic)
+{
+  g_reanimations.push_back({});
+  // the one argument, this (rcx on Windows x64); TESForm::formID
+  // (include/RE/T/TESForm.h:354)
+  auto* actor = reinterpret_cast<RE::Actor*>(
+    gum_invocation_context_get_nth_argument(ic, 0));
+  if (!actor) {
+    return;
+  }
+  const uint32_t formId = actor->formID;
+  if (!Hosted::Is(formId) || Puppets::Is(formId) || actor->IsAIEnabled()) {
+    return;
+  }
+  auto& seen = g_reanimations.back();
+  seen.actor = actor;
+  seen.formId = formId;
+  seen.lifeStateBefore =
+    static_cast<uint32_t>(actor->AsActorState()->GetLifeState());
+  actor->EnableAI(true);
+}
+
+void OnReanimateLeave(GumInvocationContext* ic)
+{
+  if (g_reanimations.empty()) {
+    return;
+  }
+  const ReanimateSeen seen = g_reanimations.back();
+  g_reanimations.pop_back();
+  if (!seen.actor) {
+    return;
+  }
+  // the actor outlives its own member call; the AI stays on (see above)
+  const auto after =
+    static_cast<uint32_t>(seen.actor->AsActorState()->GetLifeState());
+  logger::info("[verb:npc-fate] reanimate {:x}: hosted body, AI enabled for "
+               "the engine's reanimation (life state before {}, after {})",
+               seen.formId, seen.lifeStateBefore, after);
+}
+
+void InstallReanimateHook()
+{
+  // AE only: the id is 1.6.1170's (game/Offsets.h)
+  if (!REL::Module::IsAE()) {
+    return;
+  }
+  Frida::HookHandler::GetSingleton()->Install(
+    Frida::HookID::HOOK_REANIMATE, Offsets::Hooks::Reanimate.address(),
+    std::make_shared<Frida::Hook>(OnReanimateEnter, OnReanimateLeave));
+}
+
 void Frida::InstallHooks()
 {
   LoadAdmittedScripts();
@@ -1253,6 +1353,8 @@ void Frida::InstallHooks()
   InstallPlaceAreaEffectHook();
   InstallDamageActorHook();
   InstallSendTopicInfoEventHook();
+  // thuum docs/verbs/npc-fate.md: a hosted body's reanimation by the engine
+  InstallReanimateHook();
   InstallQueueNinodeUpdateHook();
   InstallRenderCursorMenuHook();
 #ifdef ENABLE_SKYRIM_AE

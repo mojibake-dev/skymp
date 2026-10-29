@@ -1854,7 +1854,34 @@ void PartOne::OnActorSighting(MpActor& reporter, uint32_t refrId,
   if (MpActor* other = worldState.HostOf(*actor);
       other && other != &reporter) {
     // hosted by another game where the record stands: its word, not this
-    // one's; the records meet at a handoff (npc-handoff)
+    // one's; the records meet at a handoff (npc-handoff). Playtest 37
+    // (2026-10-28, finding 38, "we have 2 embrys"): after two fresh
+    // launches the engines disagreed about where a resident stood, the
+    // first sighting placed the record in the inn its sighter hosts, and the
+    // other game's own reference outside stayed an orphan no record drives
+    // (no promote, no demote, no move; frozen on its screen). The sighter's
+    // engine is told to hide its copy (ObjectReference.Disable, no fade),
+    // once a minute per sighter and actor; formView re-enables a disabled
+    // reference when the record comes back into that game's grid
+    static std::unordered_map<uint64_t, std::chrono::steady_clock::time_point>
+      hidden;
+    const uint64_t key =
+      (static_cast<uint64_t>(reporter.GetFormId()) << 32) | refrId;
+    const auto now = std::chrono::steady_clock::now();
+    auto& last = hidden[key];
+    if (last == std::chrono::steady_clock::time_point{} ||
+        now - last >= std::chrono::minutes(1)) {
+      last = now;
+      const std::vector<std::optional<
+        std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+        noFade{ false };
+      SpSnippet("ObjectReference", "Disable", noFade, refrId)
+        .Execute(&reporter, SpSnippetMode::kNoReturnResult);
+      spdlog::info("PartOne - npc-puppet: {:x}'s own copy of {:x} hidden (its "
+                   "record stands in {:x}, which {:x} hosts)",
+                   reporter.GetFormId(), refrId, standing.value_or(0),
+                   other->GetFormId());
+    }
     return drop("its record stands in a cell another game hosts");
   }
   spdlog::info("PartOne - npc-puppet: {:x} sights {:x} at ({:.0f}, {:.0f}, "

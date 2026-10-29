@@ -252,10 +252,12 @@ TEST_CASE("A melee hit on a player from beyond reach does nothing", "[Hit]")
   // thuum docs/verbs/melee-reach.md: an iron sword (reach 1.0) on a Nord
   // (height 1.03) reaches max(141 * 1.03, 162) = 162, plus both forward
   // extents (14 * 1.03 each) and 256 for stale positions: about 447 units.
-  // Player against player only: a target no user plays keeps the old bound.
+  // Since the weekend pass of 2026-10-29 (M3's "NPC melee reach and hit
+  // cone"): a humanoid NPC target (a playable race) is gated as a player is,
+  // so the created actor 2000 units away is refused too, and lands at 400.
   // The aggressor faces north (+y) and every target stands on its heading,
-  // so the hit cone (thuum docs/verbs/hit-cone.md) never decides here; the
-  // NPC behind it shows the cone is a player-on-player rule too.
+  // so the hit cone (thuum docs/verbs/hit-cone.md) never decides here but
+  // for the two cases at the end.
   PartOne& p = GetPartOne();
   DoConnect(p, 0);
   DoConnect(p, 1);
@@ -300,7 +302,8 @@ TEST_CASE("A melee hit on a player from beyond reach does nothing", "[Hit]")
   REQUIRE(hitFrom(target, { 0, 400, 0 }));
   REQUIRE(!hitFrom(target, { 0, 500, 0 }));
   REQUIRE(!hitFrom(target, { 0, 2000, 0 }));
-  REQUIRE(hitFrom(npc, { 0, -2000, 0 }));
+  REQUIRE(!hitFrom(npc, { 0, -2000, 0 }));
+  REQUIRE(hitFrom(npc, { 0, 400, 0 }));
 
   // thuum docs/verbs/hit-cone.md: within reach but behind the aggressor
   // (180 degrees off its heading, past any bound: 95 for a Nord, 80 for a

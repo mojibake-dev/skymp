@@ -4271,6 +4271,28 @@ float PlayerScale(const MpActor& actor, WorldState& worldState)
     .height[isFemale ? 1 : 0];
 }
 
+// thuum docs/verbs/melee-reach.md and hit-cone.md (M3's "NPC melee reach and
+// hit cone", the weekend pass of 2026-10-29): the reach and cone rules were
+// players' alone because the bounds' body extents are a humanoid's and the
+// facts' scale is a race's height. A humanoid NPC (its race playable, RACE
+// DATA flag 0x1) has the same extents and the same height table, so it is
+// gated as a player is, as a target and, when its host reports its hit, as
+// an aggressor (R1: the host computes, the server validates). Creatures and
+// the non-playable humanoid races (Elder, Dremora, the vampire races) keep
+// the old bound: a named limit until their extents are read.
+bool HumanoidNpc(const MpActor& actor, WorldState& worldState)
+{
+  if (actor.IsCreatedAsPlayer() || actor.GetRaceId() == 0) {
+    return false;
+  }
+  try {
+    return (espm::GetData<espm::RACE>(actor.GetRaceId(), &worldState).flags &
+            espm::RACE::kPlayable) != 0;
+  } catch (std::exception&) {
+    return false;
+  }
+}
+
 std::optional<skymp::rules::MeleeFacts> MeleeFacts(const MpActor& aggressor,
                                                    const MpActor& target,
                                                    WorldState& worldState)
@@ -4672,12 +4694,19 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
       hitData.isBashAttack = kept.bash;
     }
 
-    // Player against player only: the bound's body extents are a humanoid's
-    // (creatures' are larger), and a hosted NPC's scale is its own record's
+    // The reach and cone rules: a player's hit on a player or a humanoid NPC,
+    // and a humanoid NPC's hit its host reports (the bound's body extents are
+    // a humanoid's; creatures keep the old bound, HumanoidNpc above)
     MpActor* targetActor = targetRef->AsActor();
-    if (aggressor == myActor && targetActor &&
-        partOne.serverState.UserByActor(targetActor) !=
-          Networking::InvalidUserId &&
+    const bool playerSwing = aggressor == myActor;
+    const bool hostedSwing = !playerSwing &&
+      partOne.worldState.HostOf(*aggressor) == myActor &&
+      HumanoidNpc(*aggressor, partOne.worldState);
+    const bool gatedTarget = targetActor &&
+      (partOne.serverState.UserByActor(targetActor) !=
+         Networking::InvalidUserId ||
+       HumanoidNpc(*targetActor, partOne.worldState));
+    if ((playerSwing || hostedSwing) && gatedTarget &&
         !IsBowOrCrossbowShot(hitData, &partOne.worldState)) {
       if (auto facts =
             MeleeFacts(*aggressor, *targetActor, partOne.worldState)) {

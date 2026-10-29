@@ -76,6 +76,13 @@ enum class MsgType : uint8_t
   QuestStage = 57,       // thuum docs/verbs/quest-stage.md (ADR-056): a quest
                          // stage the world shares: the report up, the relay
                          // and the login replay down
+  PropTransform = 58,    // thuum docs/verbs/prop-physics.md (ADR-058): a
+                         // physics prop's transform from the one seat that
+                         // simulates it, relayed to the cell's other seats
+  PropClaim = 59,        // the same verb: a player touched a prop another
+                         // seat simulates (contact, grab, drop, impulse)
+  PropOwner = 60,        // the same verb: who simulates a prop from now, to
+                         // every listener at each owner change
 
   Max
 };

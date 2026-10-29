@@ -531,6 +531,39 @@ public:
   };
   ClaimVerdict ClaimActor(MpActor& claimant, MpActor& actor);
   bool ReleaseClaim(MpActor& claimant, MpActor& actor);
+  // thuum docs/verbs/prop-physics.md (ADR-058): one simulating seat per
+  // physics prop, the cell's host by default, the last toucher while its
+  // lease holds; the owner table's "prop" rows (wire-rules props). The
+  // handlers gather the facts (the reference, its cell, the claimant) and
+  // ask here; the word (PropOwner) is the claim handler's.
+  enum class PropClaimVerdict
+  {
+    Granted,
+    Held,
+    Same
+  };
+  PropClaimVerdict ClaimProp(const MpActor& claimant,
+                             const MpObjectReference& prop, uint32_t cell,
+                             uint8_t touch);
+  enum class PropTransformVerdict
+  {
+    Accepted,
+    NotOwner,
+    WrongCell
+  };
+  // `sender`'s sample of `prop` landing in `cell` (0 for none), the body
+  // asleep or not; the cell's host is read from the host table
+  PropTransformVerdict PropTransform(const MpActor& sender,
+                                     const MpObjectReference& prop,
+                                     uint32_t cell, bool asleep);
+  // Who simulates `prop` where its record stands: the toucher while awake or
+  // inside its lease, else its cell's host, else 0.
+  uint32_t PropOwnerOf(const MpObjectReference& prop) const;
+  // The prop's owner epoch, up at every grant; 0 before any.
+  uint32_t PropEpochOf(const MpObjectReference& prop) const;
+  // `host` now hosts `cell` (ApplyHostDecisions' grant): the props in it
+  // nobody holds live name the host, their epochs kept.
+  void PropsHostChanged(uint32_t cell, uint32_t host);
   // thuum docs/verbs/npc-fate.md (the deaths): the bodies whose deadline
   // (fateDiedAt plus WorldState::FateRespawnHours()) the installed game
   // clock has passed stand again; once a second from Tick, directly from a

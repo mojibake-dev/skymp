@@ -255,6 +255,18 @@ void PacketParser::TransformPacketIntoAction(Networking::UserId userId,
         actionListener.OnQuestStage(rawMsgData, *message);
         return;
       }
+      case MsgType::PropTransform: {
+        auto message =
+          reinterpret_cast<PropTransformMessage*>(result->message.get());
+        actionListener.OnPropTransform(rawMsgData, *message);
+        return;
+      }
+      case MsgType::PropClaim: {
+        auto message =
+          reinterpret_cast<PropClaimMessage*>(result->message.get());
+        actionListener.OnPropClaim(rawMsgData, *message);
+        return;
+      }
       default: {
         spdlog::error("PacketParser.cpp doesn't implement MsgType {}",
                       static_cast<int64_t>(result->msgType));

@@ -27,6 +27,8 @@ struct Fights;       // wire-bridge's (thuum ADR-023), opaque here
 struct BondBreak;    // wire-bridge's (thuum shadowbond.md), opaque here
 struct CellHost;     // wire-bridge's (thuum cell-host.md), opaque here
 struct HostDecision; // wire-bridge's (thuum cell-host.md), opaque here
+struct PlacementRow; // wire-bridge's (thuum spell-placed-object.md), opaque
+                     // here
 }
 
 using ProfileId = int32_t;

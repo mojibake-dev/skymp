@@ -20,10 +20,26 @@ bool ItemMenuRefresh::ItemMenuOpen()
      ui->IsMenuOpen(RE::GiftMenu::MENU_NAME));
 }
 
-bool ItemMenuRefresh::Post(RE::TESObjectREFR& owner)
+bool ItemMenuRefresh::Shows(RE::TESObjectREFR& owner)
 {
   auto* ui = RE::UI::GetSingleton();
   if (!ui || !ItemMenuOpen()) {
+    return false;
+  }
+  if (owner.formID == 0x14) {
+    return true;
+  }
+  if (!ui->IsMenuOpen(RE::ContainerMenu::MENU_NAME)) {
+    return false;
+  }
+  const auto target = RE::ContainerMenu::GetTargetRefHandle();
+  return target != 0 && target == owner.CreateRefHandle().native_handle();
+}
+
+bool ItemMenuRefresh::Post(RE::TESObjectREFR& owner)
+{
+  auto* ui = RE::UI::GetSingleton();
+  if (!ui || !Shows(owner)) {
     return false;
   }
   auto* queue = RE::UIMessageQueue::GetSingleton();

@@ -675,7 +675,7 @@ void TESModPlatform::AddItemEx(
   // drop; the client applies again when the menu closes. The item menus by
   // name (ItemMenuRefresh::ItemMenuOpen): UI::IsItemMenuOpen read false with
   // the ContainerMenu open (playtest 37, 02:03Z), so it gated nothing
-  if (ui->GameIsPaused() && !ItemMenuRefresh::ItemMenuOpen())
+  if (ui->GameIsPaused() && !ItemMenuRefresh::Shows(*containerRefr))
     return;
 
   const auto refrId = containerRefr->GetFormID();

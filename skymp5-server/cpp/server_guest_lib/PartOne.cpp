@@ -258,6 +258,9 @@ struct PartOne::Impl
   // player's last grid square (worldOrCell, floor x, floor y), so its reach
   // is recomputed only when the square moves
   rust::Box<skymp::rules::Cells> cells = skymp::rules::new_cells();
+  // the prop owner table (thuum docs/verbs/prop-physics.md, ADR-058): which
+  // seat simulates each physics prop, the cell's host by default
+  rust::Box<skymp::rules::Props> props = skymp::rules::new_props();
   std::chrono::steady_clock::time_point lastCellsTick;
   using Square = std::tuple<uint32_t, int32_t, int32_t>;
   std::unordered_map<uint32_t, Square> lastSquareByPlayer;
@@ -722,6 +725,9 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           // every cell it hosts starts its grace (thuum
           // docs/verbs/cell-host.md); the clock passes them on
           this_->pImpl->cells->gone(actor->GetFormId(), SteadyNowMs());
+          // and its props fall back to their cells' hosts (thuum
+          // docs/verbs/prop-physics.md)
+          this_->pImpl->props->props_gone(actor->GetFormId());
           this_->pImpl->lastSquareByPlayer.erase(actor->GetFormId());
           this_->pImpl->fatedSquares.erase(actor->GetFormId());
         }
@@ -1619,6 +1625,9 @@ void ApplyHostDecisions(PartOne& partOne,
       case skymp::rules::HostKind::Grant: {
         spdlog::info("PartOne - cell-host: {:x} hosts cell {:x} at epoch {}",
                      d.player, d.cell, d.epoch);
+        // the cell's props nobody holds live are the new host's (thuum
+        // docs/verbs/prop-physics.md, ADR-058 decision 1)
+        partOne.PropsHostChanged(d.cell, d.player);
         MpActor* host = PlayerActor(partOne, d.player);
         if (!host) {
           break;
@@ -2277,6 +2286,52 @@ bool PartOne::ReleaseClaim(MpActor& claimant, MpActor& actor)
     actor.UpdateHoster(SimulatorOf(actor));
   }
   return released;
+}
+
+PartOne::PropClaimVerdict PartOne::ClaimProp(const MpActor& claimant,
+                                             const MpObjectReference& prop,
+                                             uint32_t cell, uint8_t touch)
+{
+  const auto code = pImpl->props->claim_prop(
+    prop.GetFormId(), claimant.GetFormId(), cell, touch, SteadyNowMs());
+  return static_cast<PropClaimVerdict>(code);
+}
+
+PartOne::PropTransformVerdict PartOne::PropTransform(
+  const MpActor& sender, const MpObjectReference& prop, uint32_t cell,
+  bool asleep)
+{
+  uint32_t cellHost = 0;
+  if (cell != 0) {
+    const auto host = pImpl->cells->host_of(cell);
+    cellHost = host.hosted ? host.player : 0u;
+  }
+  const auto code =
+    pImpl->props->prop_transform(prop.GetFormId(), sender.GetFormId(), cell,
+                                 cellHost, asleep, SteadyNowMs());
+  return static_cast<PropTransformVerdict>(code);
+}
+
+uint32_t PartOne::PropOwnerOf(const MpObjectReference& prop) const
+{
+  const auto cell = worldState.CellOf(prop);
+  uint32_t cellHost = 0;
+  if (cell) {
+    const auto host = pImpl->cells->host_of(*cell);
+    cellHost = host.hosted ? host.player : 0u;
+  }
+  return pImpl->props->prop_owner_of(prop.GetFormId(), cellHost,
+                                     SteadyNowMs());
+}
+
+uint32_t PartOne::PropEpochOf(const MpObjectReference& prop) const
+{
+  return pImpl->props->prop_epoch_of(prop.GetFormId());
+}
+
+void PartOne::PropsHostChanged(uint32_t cell, uint32_t host)
+{
+  pImpl->props->props_host_changed(cell, host, SteadyNowMs());
 }
 
 void PartOne::SetFollowEnabled(bool enabled)

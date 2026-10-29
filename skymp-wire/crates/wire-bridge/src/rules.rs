@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, effects, favorites, forms, headshots, hosted_state, hostility, magic, markers, melee, movement, placements, player_globals, quest_stages, racemenu, ranged, rest, scripted_effects, shouts, stagger, teleports};
+use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, effects, favorites, forms, headshots, hosted_state, hostility, magic, markers, melee, movement, placements, player_globals, props, quest_stages, racemenu, ranged, rest, scripted_effects, shouts, stagger, teleports};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -1652,6 +1652,36 @@ mod ffi {
         /// The grace a host keeps its cell after leaving it, ms
         /// (wire-rules cells::GRACE_MS), for the core's timer.
         fn host_grace_ms() -> u64;
+
+        /// thuum docs/verbs/prop-physics.md (ADR-058): one simulating seat per
+        /// physics prop, the cell's host by default, the last toucher while
+        /// its lease holds; the owner table's "prop" rows.
+        type Props;
+        /// No prop claimed.
+        fn new_props() -> Box<Props>;
+        /// `player` touched `refr` in `cell` by `touch` (0 contact, 1 grab, 2
+        /// drop, 3 impulse) at `now_ms`: 0 granted (the epoch is
+        /// `prop_epoch_of`), 1 held by another's grab, 2 the claimant
+        /// simulates it already.
+        fn claim_prop(self: &mut Props, refr: u32, player: u32, cell: u32, touch: u8, now_ms: u64) -> u8;
+        /// The prop's owner epoch, up at every grant; 0 before any.
+        fn prop_epoch_of(self: &Props, refr: u32) -> u32;
+        /// `player`'s transform of `refr`, landing in `cell` (0 for none)
+        /// whose host is `cell_host` (0 while nobody), the body asleep or
+        /// not: 0 accepted (the record takes it), 1 not the owner's, 2 no
+        /// cell or an unhosted cell nobody holds (the prop freezes).
+        fn prop_transform(self: &mut Props, refr: u32, player: u32, cell: u32, cell_host: u32, asleep: bool, now_ms: u64) -> u8;
+        /// Who simulates `refr` now, given its cell's host (0 while nobody):
+        /// the toucher while awake or inside its lease, else the host.
+        fn prop_owner_of(self: &Props, refr: u32, cell_host: u32, now_ms: u64) -> u32;
+        /// `host` now hosts `cell`: the rows nobody holds live name it, their
+        /// epochs kept.
+        fn props_host_changed(self: &mut Props, cell: u32, host: u32, now_ms: u64);
+        /// `player` left: its rows fall back to their cells' hosts.
+        fn props_gone(self: &mut Props, player: u32);
+        /// The lease a toucher keeps a sleeping prop for, ms (wire-rules
+        /// props::PROP_LEASE_MS), for the core's log.
+        fn prop_lease_ms() -> u64;
     }
 }
 
@@ -2534,6 +2564,52 @@ const fn host_grace_ms() -> u64 {
     cells::GRACE_MS
 }
 
+/// The prop owner table (wire-rules props, thuum docs/verbs/prop-physics.md).
+#[derive(Debug, Default)]
+pub struct Props(props::Props);
+
+fn new_props() -> Box<Props> {
+    Box::default()
+}
+
+impl Props {
+    fn claim_prop(&mut self, refr: u32, player: u32, cell: u32, touch: u8, now_ms: u64) -> u8 {
+        match self.0.claim(refr, player, cell, touch, now_ms) {
+            props::ClaimVerdict::Granted(_) => 0,
+            props::ClaimVerdict::Held => 1,
+            props::ClaimVerdict::Same => 2,
+        }
+    }
+
+    fn prop_epoch_of(&self, refr: u32) -> u32 {
+        self.0.epoch_of(refr)
+    }
+
+    fn prop_transform(&mut self, refr: u32, player: u32, cell: u32, cell_host: u32, asleep: bool, now_ms: u64) -> u8 {
+        match self.0.transform(refr, player, cell, cell_host, asleep, now_ms) {
+            props::TransformVerdict::Accepted => 0,
+            props::TransformVerdict::NotOwner => 1,
+            props::TransformVerdict::WrongCell => 2,
+        }
+    }
+
+    fn prop_owner_of(&self, refr: u32, cell_host: u32, now_ms: u64) -> u32 {
+        self.0.owner_of(refr, cell_host, now_ms)
+    }
+
+    fn props_host_changed(&mut self, cell: u32, host: u32, now_ms: u64) {
+        self.0.host_changed(cell, host, now_ms);
+    }
+
+    fn props_gone(&mut self, player: u32) {
+        self.0.gone(player);
+    }
+}
+
+const fn prop_lease_ms() -> u64 {
+    props::PROP_LEASE_MS
+}
+
 /// The spells the server names as teleports (wire-rules teleports).
 pub struct CastTeleports(teleports::CastTeleports);
 
@@ -3015,6 +3091,28 @@ mod tests {
         assert_eq!(c.host_of(0x9732), CellHost { hosted: false, player: 0, epoch: 1 });
         assert_eq!(c.epoch_of(0x9732), 1);
         assert_eq!(c.hosts(), vec![CellHostRow { cell: 0x9732, hosted: false, player: 0, epoch: 1 }]);
+    }
+
+    #[test]
+    fn the_prop_table_crosses_as_codes() {
+        // thuum docs/verbs/prop-physics.md (ADR-058): the claim's and the
+        // transform's codes, the epoch and the lease's end as the core reads them
+        let mut p = new_props();
+        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002, 0), 0xff00_0002);
+        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 0, 1_000), 0);
+        assert_eq!(p.prop_epoch_of(0x2ad9c), 1);
+        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 1, 1_100), 2);
+        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0002, 0x9732, 0, 1_200), 1);
+        assert_eq!(p.prop_transform(0x2ad9c, 0xff00_0002, 0x9732, 0xff00_0002, false, 1_300), 1);
+        assert_eq!(p.prop_transform(0x2ad9c, 0xff00_0003, 0x9732, 0xff00_0002, true, 1_300), 0);
+        assert_eq!(p.prop_transform(0x2ad9c, 0xff00_0003, 0, 0xff00_0002, true, 1_300), 2);
+        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002, 1_300 + prop_lease_ms() - 1), 0xff00_0003);
+        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002, 1_300 + prop_lease_ms()), 0xff00_0002);
+        p.props_host_changed(0x9732, 0xff00_0004, 9_000);
+        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0004, 9_000), 0xff00_0004);
+        p.props_gone(0xff00_0004);
+        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002, 9_100), 0xff00_0002);
+        assert_eq!(p.prop_epoch_of(0x2ad9c), 1);
     }
 
     #[test]

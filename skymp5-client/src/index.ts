@@ -21,6 +21,7 @@ import { RaceMenuService } from "./services/services/raceMenuService";
 import { ActorValuesService } from "./services/services/actorValuesService";
 import { PlayerGlobalsService } from "./services/services/playerGlobalsService";
 import { QuestStageService } from "./services/services/questStageService";
+import { PropService } from "./services/services/propService";
 import { ArrowSyncService } from "./services/services/arrowSyncService";
 import { SpVersionCheckService } from "./services/services/spVersionCheckService";
 import { ConsoleCommandsService } from "./services/services/consoleCommandsService";
@@ -104,6 +105,7 @@ const main = () => {
       new ActorValuesService(sp, controller),
       new PlayerGlobalsService(sp, controller),
       new QuestStageService(sp, controller),
+      new PropService(sp, controller),
       new ArrowSyncService(sp, controller),
       new SpVersionCheckService(sp, controller),
       new ConsoleCommandsService(sp, controller),

@@ -1,0 +1,60 @@
+# thuum docs/verbs/prop-physics.md (ADR-058): one simulating seat per physics prop. c1 and
+# c2 are new characters (profiles 9 and 10), so their actors are 0xff000002 and 0xff000003
+# (melee-reach's note: the clean world holds two characters, ids start at 0xff000000). The
+# T2 spawn (startPoints: 133857, -61130, 14662 in Tamriel) has no item placement within
+# 2500 units (lab/esm.py near, 2026-10-29), so the prop is a drop: at 600 ms c1 gives itself
+# an iron dagger (0x1397e, 80254) through the console (AddItem, answered with a line as
+# smoke declares), at 1200 ms drops it (DropItem, both stacks place the reference at the
+# generator's next id, 0xff000004, and tell both clients CreateActor alike). At 2000 ms c1
+# claims the drop (PropClaim touch 2): the wire stack grants it (c1 stands in the drop's
+# cell) at epoch 1 and tells every listener of the prop, c1 and c2 (PropOwner); the legacy
+# stack knows no MsgType 59. At 2500 ms c1 sends an awake sample and at 3000 ms the sleep:
+# the wire stack writes the record and relays each to c2 alone (the two PropTransform
+# divergences); the legacy stack knows no MsgType 58. If the drop's id is not 0xff000004 on
+# a run (something else drew an id first), the claim is refused E_PROP_UNKNOWN and the three
+# relays never come: read the server log before touching the declarations. c2 steps again
+# at 5 s of its own, so it outlives c1, as in every session.
+id: prop-physics
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 0, move: {dx: 10}}
+  - {client: c1, at_ms: 600, send: {t: 12, data: {commandName: AddItem, args: [20, 80254, 1]}}}
+  - {client: c1, at_ms: 1200, send: {t: 19, baseId: 80254, count: 1}, reliable: true}
+  - {client: c1, at_ms: 2000, send: {t: 59, refr: 0xff000004, touch: 2}, reliable: true}
+  - {client: c1, at_ms: 2500, send: {t: 58, refr: 0xff000004, pos: [133900.0, -61100.0, 14662.0], rot: [0.0, 0.0, 72.0], asleep: false}, reliable: false}
+  - {client: c1, at_ms: 3000, send: {t: 58, refr: 0xff000004, pos: [133910.0, -61090.0, 14650.0], rot: [0.0, 0.0, 80.0], asleep: true}, reliable: true}
+  - {client: c2, at_ms: 0, move: {dx: 50}}
+  - {client: c2, at_ms: 5000, move: {dx: 60}}
+divergences:
+  - client: c1
+    msg: {t: 41, text: "AddItem done", refused: false}
+    legacy: 0
+    wire: 1
+    reason: the server answers every console command with a line (ConsoleOutput); the legacy server prints nothing back
+  - client: c1
+    msg: {t: 60, refr: 0xff000004, player: 0xff000002, epoch: 1}
+    legacy: 0
+    wire: 1
+    reason: the owner word to the claimant, a listener of its own drop (PropOwner, thuum docs/verbs/prop-physics.md); the legacy server knows no such message
+  - client: c2
+    msg: {t: 60, refr: 0xff000004, player: 0xff000002, epoch: 1}
+    legacy: 0
+    wire: 1
+    reason: the owner word to the prop's other listener (PropOwner, thuum docs/verbs/prop-physics.md); the legacy server knows no such message
+  - client: c2
+    msg: {t: 58, refr: 0xff000004, asleep: false}
+    legacy: 0
+    wire: 1
+    reason: the simulator's awake sample relayed to the cell's other listener (PropTransform, thuum docs/verbs/prop-physics.md); the legacy server drops the type
+  - client: c2
+    msg: {t: 58, refr: 0xff000004, asleep: true}
+    legacy: 0
+    wire: 1
+    reason: the simulator's sleep sample relayed reliable to the cell's other listener (PropTransform); the legacy server drops the type
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

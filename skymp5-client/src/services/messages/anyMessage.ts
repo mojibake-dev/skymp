@@ -56,6 +56,9 @@ import { ActorSpeechMessage } from "./actorSpeechMessage";
 import { DamageCauseMessage } from "./damageCauseMessage";
 import { ActorClaimMessage } from "./actorClaimMessage";
 import { QuestStageMessage } from "./questStageMessage";
+import { PropTransformMessage } from "./propTransformMessage";
+import { PropClaimMessage } from "./propClaimMessage";
+import { PropOwnerMessage } from "./propOwnerMessage";
 
 export type AnyMessage = ActivateMessage
     | ConsoleCommandMessage
@@ -108,6 +111,9 @@ export type AnyMessage = ActivateMessage
     | DamageCauseMessage
     | ActorClaimMessage
     | QuestStageMessage
+    | PropTransformMessage
+    | PropClaimMessage
+    | PropOwnerMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage
     | UpdatePropertyMessage

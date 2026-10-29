@@ -148,6 +148,12 @@ export class HostService extends ClientListener {
         return this.hosted;
     }
 
+    // Whether this game hosts the cell, by its id (thuum docs/verbs/
+    // prop-physics.md: a prop nobody's word names is the cell's host's)
+    hostsCell(cellId: number): boolean {
+        return cellId !== 0 && this.hosted.has(cellId);
+    }
+
     private onCellFullyLoaded(e: CellFullyLoadedEvent) {
         const id = e.cell.getFormID();
         if (this.loaded.has(id)) {

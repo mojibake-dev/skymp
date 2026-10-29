@@ -1737,3 +1737,73 @@ wire_struct! {
     }
 }
 
+wire_struct! {
+    /// MsgType 58, thuum's (docs/verbs/prop-physics.md, ADR-058 decision 2):
+    /// where a physics prop (a kicked basket, a dropped sword) is, from the
+    /// one seat that simulates it. Client to server, unreliable, at most once
+    /// per prop per 100 ms while the body is awake and once more when it
+    /// sleeps (`asleep` true), R2: the simulator's Havok computes, the server
+    /// records the last transform and the flag on the reference's record.
+    /// Server to client, the same bytes relayed to the cell's other listeners
+    /// (unreliable while awake, reliable at sleep), which impose it on a
+    /// Keyframed body. Whose transforms are taken is the server's rule
+    /// (wire-rules `props`: the prop's owner, the cell's host by default).
+    /// Reason codes: `E_VAL_RANGE` (a refr of 0), `E_VAL_NONFINITE`,
+    /// `E_VAL_OUT_OF_WORLD`, `E_VAL_RATE` (the budget, client to server).
+    pub struct PropTransform {
+        /// `"t": 58`.
+        #[serde(default)]
+        pub t: MsgT<58>,
+        /// The prop's reference form id (a game-file placement or a server-made
+        /// drop above 0xff000000); never 0.
+        pub refr: u32,
+        /// Position, engine units.
+        pub pos: Vec3,
+        /// Rotation, Euler degrees as SkyMP sends them.
+        pub rot: Vec3,
+        /// The body came to rest at this transform (the simulation island's
+        /// deactivation): the record's final sample, relayed reliable.
+        pub asleep: bool,
+    }
+}
+
+wire_struct! {
+    /// MsgType 59, thuum's (docs/verbs/prop-physics.md, ADR-058 decision 1):
+    /// a player's game touched a prop it does not simulate. Client to server,
+    /// reliable, R0: the server names the newest toucher the simulator (one
+    /// epoch per prop, newest touch wins) and tells every listener of the prop
+    /// (`PropOwner`); refused when the claimant is not in the prop's cell or
+    /// another player holds the prop grabbed. Reason codes: `E_VAL_RANGE` (a
+    /// refr of 0, a touch above 3), `E_VAL_RATE` (the budget).
+    pub struct PropClaim {
+        /// `"t": 59`.
+        #[serde(default)]
+        pub t: MsgT<59>,
+        /// The prop's reference form id; never 0.
+        pub refr: u32,
+        /// How it was touched: 0 a contact of the character controller, 1 a
+        /// grab, 2 a drop, 3 a shout's or spell's impulse; at most 3.
+        pub touch: u8,
+    }
+}
+
+wire_struct! {
+    /// MsgType 60, thuum's (docs/verbs/prop-physics.md, ADR-058 decision 1):
+    /// who simulates a prop from now, to every listener of the prop at each
+    /// owner change. Server to client, reliable, R0 output: the named seat's
+    /// body goes Dynamic with the last streamed velocity, every other seat's
+    /// goes Keyframed; a word with an older epoch than one already applied is
+    /// dropped (a fencing token, one counter per prop). Reason codes:
+    /// `E_VAL_RANGE` (a refr or a player of 0).
+    pub struct PropOwner {
+        /// `"t": 60`.
+        #[serde(default)]
+        pub t: MsgT<60>,
+        /// The prop's reference form id; never 0.
+        pub refr: u32,
+        /// The simulating player's actor form id; never 0.
+        pub player: u32,
+        /// The prop's owner epoch, up at every claim granted.
+        pub epoch: u32,
+    }
+}

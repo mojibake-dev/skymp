@@ -2400,6 +2400,15 @@ void MpObjectReference::BeforeDestroy()
 
   MpForm::BeforeDestroy();
 
+  // both directions, as PartOne::SetUserActor pairs them and this header
+  // asks: RemoveFromGridAndUnsubscribeAll alone leaves the reverse edge (an
+  // actor's listener set still naming this form) when the form was Delete()d
+  // before its destroy, since Delete's unsubscribe emptied this form's own
+  // set and the SetPos above then finds nothing to remove. The overnight
+  // train's T0 (thuum docs/verbs/spell-placed-object.md: a fallen set's forms
+  // deleted, then destroyed by the test's Leave) died with SIGSEGV in the
+  // caster's own destroy, Unsubscribe reading the freed form (2026-10-29).
+  UnsubscribeFromAll();
   RemoveFromGridAndUnsubscribeAll();
 }
 

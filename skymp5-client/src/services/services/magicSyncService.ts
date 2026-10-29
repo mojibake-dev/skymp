@@ -192,8 +192,12 @@ export class MagicSyncService extends ClientListener {
             // a hosted actor's spell launch (the native hook admits the hosted
             // set): its natives wait for the update tick, the launch event's
             // context refusing them (memo D44, playerBowShotService's hosted
-            // branch)
-            this.controller.once("update", () => this.onHostedSpellLaunch(e));
+            // branch). The puppet count below reads the native flag, so it
+            // waits with them
+            this.controller.once("update", () => {
+                this.countPuppetLaunch(e.shooter, e.spell);
+                this.onHostedSpellLaunch(e);
+            });
             return;
         }
         if (e.shooter !== this.playerId || !e.spell || e.ammo) {
@@ -524,6 +528,23 @@ export class MagicSyncService extends ClientListener {
     private hostedLaunchCasts = new Map<string, number>();
     private pendingHostedLaunches: PendingHostedLaunch[] = [];
     private static readonly hostedCastsKeptMs = 5000;
+
+    // playtest 37, finding 53 (2026-10-28): the spell launches of the puppets
+    // on this seat, counted per shooter in the console log. The read found
+    // the host's extra bolts (one per relayed copy) and left the watcher's
+    // own second bolt undetermined; with this line a run counts a puppet's
+    // launches against its relayed casts (remoteServer's "cast ... on
+    // puppet" line). A count only: the launch itself is left as it was
+    private puppetLaunchCounts = new Map<number, number>();
+
+    private countPuppetLaunch(shooter: number, spell: number): void {
+        if (!this.sp.isPuppet(shooter)) {
+            return;
+        }
+        const n = (this.puppetLaunchCounts.get(shooter) ?? 0) + 1;
+        this.puppetLaunchCounts.set(shooter, n);
+        logTrace(this, `spell launch ${spell.toString(16)} by puppet ${shooter.toString(16)}, launch ${n} of this puppet's on this seat`);
+    }
 
     private getSpellCastEventData(e: SpellCastEvent, isInterruptCast: boolean): SpellCastMsgData {
         const spellCastData: SpellCastMsgData = {

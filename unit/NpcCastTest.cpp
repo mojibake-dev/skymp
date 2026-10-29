@@ -31,6 +31,9 @@ namespace {
 constexpr uint32_t kTamriel = 0x3c;
 constexpr uint32_t kHost = 0xff000d20;
 constexpr uint32_t kOther = 0xff000d21;
+// two server-made NPCs with no user, bystanders of the relay case
+constexpr uint32_t kBystanderA = 0xff000d22;
+constexpr uint32_t kBystanderB = 0xff000d23;
 constexpr uint32_t kPredator = 0x85547;
 constexpr uint32_t kForestCell = 0x9810;
 // Skyrim.esm (SpellCastTest's ids): Firebolt, fire-and-forget, 25 against a
@@ -494,5 +497,52 @@ TEST_CASE("A hosted archer's shot is reported by its host under the actor's "
   REQUIRE(SentTo(p, 0, MsgType::ArrowShot).empty());
   predator.RemoveItem(kLongBow, 1, nullptr);
   predator.RemoveItem(kIronArrow, 2, nullptr);
+  Leave(p);
+}
+
+// playtest 37, finding 53 (2026-10-28): the flame atronach on seat c1 fired
+// ten to thirteen bolts a cast on its host's own screen. RelayCast sent one
+// SpellCast per listener through GetActorToSendTo, which hands an offline
+// listener's copy (an NPC in reach) to its cell's host, the very game that
+// reported the cast, and the host's game cast every copy on its live
+// atronach. A relay is for games: a listener with no user is skipped, as
+// UpdateHoster, CastBondProc and PlayTeleportVanish skip it.
+TEST_CASE("A hosted caster's cast relay reaches each other game once and "
+          "never its own host's, whatever offline NPCs stand in reach",
+          "[NpcCast][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  auto& predator = Gather(p);
+  auto& host = p.worldState.GetFormAt<MpActor>(kHost);
+  Hands(p, predator, kFirebolt);
+
+  // two server-made NPCs beside the predator, in the host's cell and with no
+  // user, so listeners of the predator's: a server-made actor joins the grid
+  // at its first SetPos (CellHostTest's wolf), so the position is written
+  // once after the creation and the premise is asserted before the cast
+  for (uint32_t id : { kBystanderA, kBystanderB }) {
+    p.CreateActor(id, kForest + NiPoint3{ 200.f, 0.f, 0.f }, 0, kTamriel);
+    auto& bystander = p.worldState.GetFormAt<MpActor>(id);
+    bystander.SetPos(bystander.GetPos());
+    REQUIRE(bystander.GetUserId() == Networking::InvalidUserId);
+    REQUIRE(p.worldState.HostOf(bystander) == &host);
+    const auto& listeners = predator.GetActorListeners();
+    REQUIRE(std::find(listeners.begin(), listeners.end(), &bystander) !=
+            listeners.end());
+  }
+  p.Messages().clear();
+
+  Cast(p, kFirebolt);
+  // the other game hears the cast once; the host's game, which reported it,
+  // not at all (it heard one copy per bystander before the fix)
+  const auto relays = SentTo(p, 1, MsgType::SpellCast);
+  REQUIRE(relays.size() == 1);
+  REQUIRE(relays[0]["data"]["caster"].get<uint32_t>() == kPredator);
+  REQUIRE(relays[0]["data"]["target"].get<uint32_t>() == kOther);
+  REQUIRE(SentTo(p, 0, MsgType::SpellCast).empty());
+
+  p.DestroyActor(kBystanderA);
+  p.DestroyActor(kBystanderB);
   Leave(p);
 }

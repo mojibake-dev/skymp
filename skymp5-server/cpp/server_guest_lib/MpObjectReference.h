@@ -221,6 +221,12 @@ public:
   std::vector<QuestStageDone> GetQuestStages() const;
   bool SetQuestStages(std::vector<QuestStageDone> stages);
 
+  // thuum docs/verbs/spell-placed-object.md (ADR-057): the spell whose
+  // accepted cast made the server place this reference, none for every
+  // other form; the record's mark for the sweep at load
+  std::optional<FormDesc> GetPlacedBySpell() const;
+  void SetPlacedBySpell(const FormDesc& spell);
+
   // This method removes ObjectReference from a current grid and doesn't attach
   // to another grid
   void SetCellOrWorldObsolete(const FormDesc& worldOrCell);

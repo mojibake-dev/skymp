@@ -61,6 +61,11 @@ uint64_t SteadyNowMs()
       .count());
 }
 
+// how often the placements' clock runs from Tick (thuum
+// docs/verbs/spell-placed-object.md): a listed cast's 250 ms wait lands
+// within a tick of it
+constexpr std::chrono::milliseconds kPlacementsTick{ 50 };
+
 // thuum docs/verbs/npc-fate.md (ADR-049 decision 3): one actor's fate as the
 // wire carries it: the placement, the NPC_ the roll is pinned to (the
 // chain's first leveled pick, else the placed base), the roll's level (0 for
@@ -224,6 +229,17 @@ struct PartOne::Impl
   // `sharedQuests`
   rust::Box<skymp::rules::SharedQuests> sharedQuests =
     skymp::rules::new_shared_quests("[]");
+
+  // the objects the server places at an accepted cast of a listed spell,
+  // and every set standing (thuum docs/verbs/spell-placed-object.md,
+  // ADR-057): server-settings.json's `spellPlacedObjects`; the rule is
+  // Rust's. Per set its forms, by the rule's set id; per placed form its
+  // caster, which every CreateActor of the form names (placedBy)
+  rust::Box<skymp::rules::Placements> placements =
+    skymp::rules::new_placements("[]");
+  std::unordered_map<uint64_t, std::vector<uint32_t>> placedSets;
+  std::unordered_map<uint32_t, uint32_t> placedCasterByForm;
+  std::chrono::steady_clock::time_point lastPlacementsTick;
   // the food effects that lower the needs the server keeps (thuum
   // docs/verbs/player-globals.md, the needs): server-settings.json's
   // `survivalFood`, its switch and its table
@@ -334,6 +350,7 @@ void PartOne::Tick()
   TickGameTime();
   TickFightsEverySecond();
   TickBondsEverySecond();
+  TickPlacementsOften();
   TickCellHostsEverySecond();
   TickFateRespawnsEverySecond();
   worldState.Tick();
@@ -595,6 +612,9 @@ void PartOne::AttachSaveStorage(
 
     n++;
     worldState.LoadChangeForm(changeForm, CreateFormCallbacks());
+    // thuum docs/verbs/spell-placed-object.md (ADR-057): a spell-placed
+    // form never outlives the server that placed it
+    SweepSpellPlacedAtLoad(changeForm);
     if (changeForm.profileId >= 0) {
       ++numPlayerCharacters;
     }
@@ -689,6 +709,10 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           // a departing caster's streams end with it (thuum
           // docs/verbs/spell-cast.md)
           this_->pImpl->spellCasts->forget(actor->GetFormId());
+          // and the sets its casts placed begin their linger (thuum
+          // docs/verbs/spell-placed-object.md)
+          this_->pImpl->placements->caster_gone(actor->GetFormId(),
+                                                SteadyNowMs());
           // and a teleport's look waiting for its landing
           // (docs/verbs/cast-teleport.md)
           this_->pImpl->teleportLooks.erase(actor->GetFormId());
@@ -1188,6 +1212,17 @@ void PartOne::Init()
     if (const std::string& baseType = emitter->GetBaseType();
         baseType == "DOOR" || (fromGameFiles && baseType == "NPC_")) {
       message.baseRecordType = baseType;
+    }
+
+    // thuum docs/verbs/spell-placed-object.md (ADR-057): a form the server
+    // placed at a caster's accepted cast names the caster and its base's
+    // type (MSTT or ACTI; the validator holds the pair), so the caster's own
+    // game skips it while its cast runs and every other game places it
+    if (const auto placed =
+          pImpl->placedCasterByForm.find(emitter->GetFormId());
+        placed != pImpl->placedCasterByForm.end()) {
+      message.props.placedBy = placed->second;
+      message.baseRecordType = emitter->GetBaseType();
     }
 
     message.idx = emitter->GetIdx();
@@ -2642,6 +2677,179 @@ bool PartOne::SetQuestStages(std::vector<QuestStageDone> stages)
   return WorldJournal().SetQuestStages(std::move(stages));
 }
 
+void PartOne::SetSpellPlacedObjectsSettings(
+  const std::string& spellPlacedObjectsJson)
+{
+  pImpl->placements = skymp::rules::new_placements(spellPlacedObjectsJson);
+  spdlog::info("PartOne::SetSpellPlacedObjectsSettings - {}",
+               spellPlacedObjectsJson);
+}
+
+namespace {
+// the reasons as the rule numbers them (wire-rules placements RemovalWhy
+// and Refusal)
+const char* PlacementRemovalWhy(uint8_t why)
+{
+  return why == 0 ? "its linger ran out" : "it stood for its maxS";
+}
+
+const char* PlacementRefusalWhy(uint8_t why)
+{
+  return why == 0 ? "the caster holds its perCaster sets"
+                  : "the world holds its 64 sets";
+}
+}
+
+uint32_t PartOne::PlaceSpellObject(const skymp::rules::PlacementRow& row)
+{
+  const auto caster = std::dynamic_pointer_cast<MpObjectReference>(
+    worldState.LookupFormByIdNoLoad(row.caster));
+  if (!caster) {
+    spdlog::warn("[verb:spell-placed] {:x} is gone; set {} places nothing",
+                 row.caster, row.set);
+    return 0;
+  }
+  const FormDesc baseDesc(row.short_id, std::string(row.file));
+  uint32_t baseId = 0;
+  try {
+    baseId = baseDesc.ToFormId(worldState.espmFiles);
+  } catch (std::exception& e) {
+    spdlog::warn("[verb:spell-placed] base {} of set {}: {}; not placed",
+                 baseDesc.ToString(), row.set, e.what());
+    return 0;
+  }
+  // the table's word for the base's type, checked against the record when
+  // the files are loaded: the validator refuses any other pair on the wire
+  const std::string recordType(row.record_type);
+  if (HasEspm()) {
+    const auto rec = GetEspm().GetBrowser().LookupById(baseId).rec;
+    if (!rec || rec->GetType().ToString() != recordType) {
+      spdlog::warn("[verb:spell-placed] base {} of set {} is no {}; not "
+                   "placed",
+                   baseDesc.ToString(), row.set, recordType);
+      return 0;
+    }
+  }
+  // the constructor PlaceAtMe's body uses for a script's placement
+  // (PapyrusObjectReference.cpp), the id the world hands out, the caster's
+  // cell or world; the caster's id goes into every CreateActor the form
+  // sends (onSubscribe reads placedCasterByForm), the spell into its record
+  // for the sweep at load
+  const uint32_t formId = worldState.GenerateFormId();
+  worldState.AddForm(std::make_unique<MpObjectReference>(
+                       LocationalData{ { row.x, row.y, row.z },
+                                       { 0.f, 0.f, row.yaw },
+                                       caster->GetCellOrWorld() },
+                       CreateFormCallbacks(), baseId, recordType),
+                     formId);
+  auto& refr = worldState.GetFormAt<MpObjectReference>(formId);
+  refr.SetPlacedBySpell(
+    FormDesc(row.spell_short_id, std::string(row.spell_file)));
+  pImpl->placedCasterByForm[formId] = row.caster;
+  refr.ForceSubscriptionsUpdate();
+  return formId;
+}
+
+void PartOne::RemoveSpellPlacedSet(uint64_t set, const char* why)
+{
+  const auto it = pImpl->placedSets.find(set);
+  if (it == pImpl->placedSets.end()) {
+    return;
+  }
+  size_t deleted = 0;
+  for (const uint32_t formId : it->second) {
+    pImpl->placedCasterByForm.erase(formId);
+    const auto refr = std::dynamic_pointer_cast<MpObjectReference>(
+      worldState.LookupFormByIdNoLoad(formId));
+    if (refr && !refr->IsDeleted()) {
+      // the existing destroy path: the record marked deleted, the form off
+      // the grid, every subscriber's DestroyActor (onUnsubscribe)
+      refr->Delete();
+      ++deleted;
+    }
+  }
+  spdlog::info("[verb:spell-placed] set {} removed: {} of {} forms deleted, "
+               "{}",
+               set, deleted, it->second.size(), why);
+  pImpl->placedSets.erase(it);
+}
+
+void PartOne::TickPlacements(uint64_t nowMs)
+{
+  const auto rows = pImpl->placements->due_placements(nowMs);
+  for (size_t i = 0; i < rows.size();) {
+    const skymp::rules::PlacementRow& first = rows[i];
+    const uint64_t set = first.set;
+    std::vector<uint32_t> formIds;
+    std::string ids;
+    for (; i < rows.size() && rows[i].set == set; ++i) {
+      if (const uint32_t formId = PlaceSpellObject(rows[i])) {
+        formIds.push_back(formId);
+        ids +=
+          fmt::format(" {:x} ({})", formId, std::string(rows[i].record_type));
+      }
+    }
+    spdlog::info(
+      "[verb:spell-placed] {:x} cast {}: set {} placed {} "
+      "form(s){} at ({:.0f}, {:.0f}, {:.0f}) yaw {:.0f}",
+      first.caster,
+      FormDesc(first.spell_short_id, std::string(first.spell_file)).ToString(),
+      set, formIds.size(), ids, first.x, first.y, first.z, first.yaw);
+    pImpl->placedSets[set] = std::move(formIds);
+  }
+  for (const auto& refused : pImpl->placements->take_refusals()) {
+    spdlog::info(
+      "[verb:spell-placed] {:x} cast {}: nothing placed, {}", refused.caster,
+      FormDesc(refused.spell_short_id, std::string(refused.spell_file))
+        .ToString(),
+      PlacementRefusalWhy(refused.why));
+  }
+  for (const auto& removal : pImpl->placements->due_removals(nowMs)) {
+    RemoveSpellPlacedSet(removal.set, PlacementRemovalWhy(removal.why));
+  }
+}
+
+void PartOne::TickPlacementsOften()
+{
+  const auto now = std::chrono::steady_clock::now();
+  if (now - pImpl->lastPlacementsTick < kPlacementsTick) {
+    return;
+  }
+  pImpl->lastPlacementsTick = now;
+  TickPlacements(SteadyNowMs());
+}
+
+size_t PartOne::SpellPlacedSets() const
+{
+  return pImpl->placements->live_sets();
+}
+
+bool PartOne::SweepSpellPlacedAtLoad(const MpChangeForm& record)
+{
+  if (!record.placedBySpell.has_value()) {
+    return false;
+  }
+  uint32_t formId = 0;
+  try {
+    formId = record.formDesc.ToFormId(worldState.espmFiles);
+  } catch (std::exception& e) {
+    spdlog::warn("[verb:spell-placed] {} not swept: {}",
+                 record.formDesc.ToString(), e.what());
+    return false;
+  }
+  const auto refr = std::dynamic_pointer_cast<MpObjectReference>(
+    worldState.LookupFormByIdNoLoad(formId));
+  if (!refr || refr->IsDeleted()) {
+    return false;
+  }
+  refr->Delete();
+  spdlog::info("[verb:spell-placed] swept {:x} (base {}, spell {}) at load: "
+               "no cast survives a restart",
+               formId, record.baseDesc.ToString(),
+               record.placedBySpell->ToString());
+  return true;
+}
+
 void PartOne::SetSurvivalFoodSettings(const std::string& survivalFoodJson)
 {
   const auto j = nlohmann::json::parse(survivalFoodJson);
@@ -3484,14 +3692,39 @@ skymp::rules::CastFacts CastFactsFor(WorldState& worldState, uint32_t spell,
 bool PartOne::StartCast(uint32_t actorFormId, uint32_t spell, uint8_t hand,
                         const NiPoint3& from, bool dual)
 {
-  return pImpl->spellCasts->start(
-    actorFormId, CastFactsFor(worldState, spell, hand, from, dual),
-    SteadyNowMs());
+  const auto facts = CastFactsFor(worldState, spell, hand, from, dual);
+  const uint64_t nowMs = SteadyNowMs();
+  // thuum docs/verbs/spell-placed-object.md (ADR-057): a listed spell's
+  // cast waits for its placement from where the caster stands and faces
+  // (the recorded angle's Z, the yaw the script read)
+  FormDesc spellDesc;
+  try {
+    spellDesc = FormDesc::FromFormId(spell, worldState.espmFiles);
+  } catch (std::exception&) {
+    // a spell of no loaded plugin names nothing in the table; the cast
+    // itself is judged below as before
+  }
+  if (pImpl->placements->is_listed(spellDesc.shortFormId, spellDesc.file)) {
+    const auto caster = std::dynamic_pointer_cast<MpObjectReference>(
+      worldState.LookupFormByIdNoLoad(actorFormId));
+    skymp::rules::PlacedCast cast{};
+    cast.caster = actorFormId;
+    cast.hand = hand;
+    cast.x = from.x;
+    cast.y = from.y;
+    cast.z = from.z;
+    cast.yaw = caster ? caster->GetAngle().z : 0.f;
+    cast.concentration = facts.kind == skymp::rules::CastKind::Concentration;
+    pImpl->placements->cast_started(spellDesc.shortFormId, spellDesc.file,
+                                    cast, nowMs);
+  }
+  return pImpl->spellCasts->start(actorFormId, facts, nowMs);
 }
 
 void PartOne::EndCast(uint32_t actorFormId, uint8_t hand)
 {
   pImpl->spellCasts->end(actorFormId, hand);
+  pImpl->placements->cast_ended(actorFormId, hand, SteadyNowMs());
 }
 
 std::optional<uint32_t> PartOne::AbilityReaching(const MpActor& actor,

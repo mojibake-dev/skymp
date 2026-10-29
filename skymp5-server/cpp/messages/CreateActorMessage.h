@@ -90,7 +90,8 @@ struct CreateActorMessageAdditionalProps
       .Serialize("magickaPercentage", magickaPercentage)
       .Serialize("templateChain", templateChain)
       .Serialize("inventory", inventory)
-      .Serialize("isDead", isDead);
+      .Serialize("isDead", isDead)
+      .Serialize("placedBy", placedBy);
   }
 
   std::optional<bool> isOpen;
@@ -120,6 +121,11 @@ struct CreateActorMessageAdditionalProps
 
   // TODO: take a look why doubles CreateActorMessageMainProps
   std::optional<bool> isDead;
+
+  // thuum docs/verbs/spell-placed-object.md (ADR-057): the server id of the
+  // caster whose accepted cast placed this reference (an MSTT or ACTI from
+  // the server's table); absent for every other form
+  std::optional<uint32_t> placedBy;
 };
 
 struct CreateActorMessageMainProps

@@ -193,6 +193,12 @@ public:
   // server-made reference at a fixed id), never on a player's actor
   std::optional<std::vector<QuestStageDone>> questStages;
 
+  // The spell whose accepted cast made the server place this reference
+  // (thuum docs/verbs/spell-placed-object.md, ADR-057), so a restart sweeps
+  // it (no cast ledger survives one); absent on every other form and in
+  // older records, read as none
+  std::optional<FormDesc> placedBySpell;
+
   // Please update 'ActorTest.cpp' when adding new Actor-related rows
 
   DynamicFields dynamicFields;
@@ -222,7 +228,7 @@ public:
       fateDiedAt, lastAnimation, setNodeTextureSet, setNodeScale, displayName,
       mapMarkers, ingredientEffects, favorites, raceMenuPreset,
       actorValueRecord, staffRank, runningEffects, shoutRecord, playerGlobals,
-      questStages, unresolved);
+      questStages, placedBySpell, unresolved);
   }
 
   // The record boundary (thuum docs/DECISIONS.md ADR-043; the map

@@ -28,6 +28,7 @@ import { setActorValuePercentage } from '../../sync/actorvalues';
 import { applyAppearanceToPlayer } from '../../sync/appearance';
 import { applyEquipment, isBadMenuShown } from '../../sync/equipment';
 import { Inventory, applyInventory } from '../../sync/inventory';
+import { ContainerApplyQueue } from '../../view/containerApplyQueue';
 import { Movement } from '../../sync/movement';
 import { syncSpells } from '../../sync/spell';
 import { ModelApplyUtils } from '../../view/modelApplyUtils';
@@ -322,7 +323,12 @@ export class RemoteServer extends ClientListener {
           ObjectReferenceEx.dealWithRef(refr, refr.getBaseObject() as Form);
           if (msg.props) {
             if (msg.props.inventory) {
-              ModelApplyUtils.applyModelInventory(refr, msg.props.inventory);
+              // thuum (playtest 37, 2026-10-28, Eli: "shouldn't be that hard to
+              // change that to on cell load right?"): a game-file container's
+              // record comes with its CreateActor now (the server's
+              // VisitProperties), as many as the cell has recorded containers
+              // at once; one lands per tick through the queue
+              ContainerApplyQueue.enqueue(refr.getFormID(), msg.props.inventory);
             }
             ModelApplyUtils.applyModelIsOpen(refr, !!msg.props['isOpen']);
             ModelApplyUtils.applyModelIsHarvested(

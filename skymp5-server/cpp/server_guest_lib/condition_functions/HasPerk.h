@@ -5,9 +5,12 @@ namespace ConditionFunctions {
 // thuum docs/DECISIONS.md ADR-039; UESP "Skyrim Mod:Function Indices" 448
 // (CommonLibSSE-NG include/RE/T/TESCondition.h kHasPerk). The parameter is
 // the perk's form id. The server holds no perks before M5 (docs/PLAN.md: the
-// damage formula has no perk path), so the function answers false for every
-// actor and every perk. A rider gated on HasPerk == 1 then fails its row and
-// stays out, the perk-less outcome, while the spell's base effects apply:
+// damage formula has no perk path), so the function answers by who asks: a
+// recipe's gate (the crafting caller) is taken as met, the player's own
+// game having offered the recipe by its perks; an effect's rider (the magic
+// caller) answers false for every actor and every perk. A rider gated on
+// HasPerk == 1 then fails its row and stays out, the perk-less outcome,
+// while the spell's base effects apply:
 // Reanimate Corpse's PerkDarkSoulsReanimateEffect 0xCAB63 gates on the Dark
 // Souls perk 0x581DE on Target, the caster (Skyrim.esm's bytes, 2026-10-28),
 // and its ReanimateFFAimed25 0x96D0B names no perk. Before this function the

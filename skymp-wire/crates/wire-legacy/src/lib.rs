@@ -106,9 +106,40 @@ impl<'a, 'b> De<'a, 'b> {
     }
 }
 
+/// Fields the schema gained after the old format froze (thuum ADR-057's
+/// `placedBy` on CreateActorProps first, 2026-10-28): the old C++ never wrote
+/// them, so the reader spends no bit on them and reads them as absent, and a
+/// capture still decodes field for field as the C++ wrote it. Named by the
+/// struct and the serialized (camelCase) field name serde hands the reader.
+const LEGACY_ABSENT: &[(&str, &str)] = &[("CreateActorProps", "placedBy")];
+
+/// The deserializer for a field in LEGACY_ABSENT: an optional reads as none,
+/// anything else is a schema mistake (a required field the old format lacks).
+struct Absent;
+
+impl<'de> de::Deserializer<'de> for Absent {
+    type Error = LegacyError;
+    fn deserialize_any<V: Visitor<'de>>(self, _: V) -> Result<V::Value, LegacyError> {
+        Err(LegacyError::Malformed("the legacy format lacks this field and it is not optional".into()))
+    }
+    fn deserialize_option<V: Visitor<'de>>(self, v: V) -> Result<V::Value, LegacyError> {
+        v.visit_none()
+    }
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char str string bytes
+        byte_buf unit unit_struct newtype_struct seq tuple tuple_struct map
+        struct enum identifier ignored_any
+    }
+}
+
 struct Seq<'x, 'a, 'b> {
     de: &'x mut De<'a, 'b>,
     left: usize,
+    /// the struct and its serialized field names when this is a struct's
+    /// field list (empty for a sequence), so an absent field is told by name
+    name: &'static str,
+    fields: &'static [&'static str],
+    idx: usize,
 }
 
 impl<'de, 'x, 'a, 'b> de::SeqAccess<'de> for Seq<'x, 'a, 'b> {
@@ -118,6 +149,11 @@ impl<'de, 'x, 'a, 'b> de::SeqAccess<'de> for Seq<'x, 'a, 'b> {
             return Ok(None);
         }
         self.left = self.left.saturating_sub(1);
+        let field = self.fields.get(self.idx).copied().unwrap_or("");
+        self.idx = self.idx.saturating_add(1);
+        if LEGACY_ABSENT.contains(&(self.name, field)) {
+            return seed.deserialize(Absent).map(Some);
+        }
         seed.deserialize(&mut *self.de).map(Some)
     }
     fn size_hint(&self) -> Option<usize> {
@@ -148,10 +184,10 @@ impl<'de, 'x, 'a, 'b> de::VariantAccess<'de> for Enum<'x, 'a, 'b> {
         seed.deserialize(&mut *self.de)
     }
     fn tuple_variant<V: Visitor<'de>>(self, len: usize, visitor: V) -> Result<V::Value, LegacyError> {
-        visitor.visit_seq(Seq { de: self.de, left: len })
+        visitor.visit_seq(Seq { de: self.de, left: len, name: "", fields: &[], idx: 0 })
     }
     fn struct_variant<V: Visitor<'de>>(self, fields: &'static [&'static str], visitor: V) -> Result<V::Value, LegacyError> {
-        visitor.visit_seq(Seq { de: self.de, left: fields.len() })
+        visitor.visit_seq(Seq { de: self.de, left: fields.len(), name: "", fields, idx: 0 })
     }
 }
 
@@ -238,16 +274,16 @@ impl<'de, 'x, 'a, 'b> de::Deserializer<'de> for &'x mut De<'a, 'b> {
     }
     fn deserialize_seq<V: Visitor<'de>>(self, v: V) -> Result<V::Value, LegacyError> {
         let left = self.count()?;
-        v.visit_seq(Seq { de: self, left })
+        v.visit_seq(Seq { de: self, left, name: "", fields: &[], idx: 0 })
     }
     fn deserialize_tuple<V: Visitor<'de>>(self, len: usize, v: V) -> Result<V::Value, LegacyError> {
-        v.visit_seq(Seq { de: self, left: len })
+        v.visit_seq(Seq { de: self, left: len, name: "", fields: &[], idx: 0 })
     }
     fn deserialize_tuple_struct<V: Visitor<'de>>(self, _: &'static str, len: usize, v: V) -> Result<V::Value, LegacyError> {
-        v.visit_seq(Seq { de: self, left: len })
+        v.visit_seq(Seq { de: self, left: len, name: "", fields: &[], idx: 0 })
     }
-    fn deserialize_struct<V: Visitor<'de>>(self, _: &'static str, fields: &'static [&'static str], v: V) -> Result<V::Value, LegacyError> {
-        v.visit_seq(Seq { de: self, left: fields.len() })
+    fn deserialize_struct<V: Visitor<'de>>(self, name: &'static str, fields: &'static [&'static str], v: V) -> Result<V::Value, LegacyError> {
+        v.visit_seq(Seq { de: self, left: fields.len(), name, fields, idx: 0 })
     }
     fn deserialize_enum<V: Visitor<'de>>(self, _: &'static str, _: &'static [&'static str], v: V) -> Result<V::Value, LegacyError> {
         v.visit_enum(Enum { de: self })
@@ -348,6 +384,19 @@ mod tests {
             // grows by about half (`wire_size_old_against_new`), never more
             // than double
             assert!(bytes.len() <= 2 * p.len() + 16, "packet {i}: {} vs {}", bytes.len(), p.len());
+        }
+    }
+
+    #[test]
+    fn a_field_the_legacy_format_never_carried_reads_absent() {
+        // thuum ADR-057: CreateActorProps.placedBy came after the capture;
+        // the reader spends no bit on it, so the capture's CreateActors still
+        // decode and carry no placer
+        let ps = packets();
+        let (_, create) = ps.iter().find(|(_, p)| p.get(1) == Some(&33)).expect("a CreateActor in the capture");
+        match decode_packet(create).expect("decodes") {
+            Message::CreateActor(m) => assert_eq!(m.props.placed_by, None),
+            other => panic!("{other:?}"),
         }
     }
 

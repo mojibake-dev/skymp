@@ -43,6 +43,12 @@ public:
 
   bool IsSpellLearned(uint32_t spellId) const; // including from base
   bool IsSpellLearnedFromBase(uint32_t spellId) const;
+  // thuum docs/verbs/npc-stream.md (train 53; playtest 37's flame atronach):
+  // the record's own spell set as global ids: the base's SPLO list, the
+  // template the chain names for spells (NPC_'s UseSpelllist) and the race's
+  // list. The abilities a creature bears from its birth (its cloak) are
+  // among them, which no cast event ever names
+  std::vector<uint32_t> KnownBaseSpells() const;
   std::vector<uint32_t> GetSpellList() const;
 
   std::unique_ptr<const Appearance> GetAppearance() const;
@@ -329,6 +335,13 @@ public:
   std::optional<float> DropTo(float z,
                               std::chrono::steady_clock::time_point now) const;
   static constexpr std::chrono::seconds kHeightWindow{ 4 };
+  // thuum docs/verbs/npc-fate.md (playtest 37's finding 48): when this actor
+  // last died on the server's clock, the grace a host's live sample of a
+  // dead record is read against (ActionListener::OnHostedActorState); every
+  // death passes SendAndSetDeathState, which records it; tests backdate it
+  void RecordDeathAt(std::chrono::steady_clock::time_point at);
+  std::optional<std::chrono::milliseconds> DiedAgo(
+    std::chrono::steady_clock::time_point now) const;
   void Teleport(const LocationalData& position);
   void SetSpawnPoint(const LocationalData& position);
   LocationalData GetSpawnPoint() const;

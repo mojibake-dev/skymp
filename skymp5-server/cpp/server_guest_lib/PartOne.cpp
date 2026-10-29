@@ -3451,6 +3451,31 @@ void PartOne::EndCast(uint32_t actorFormId, uint8_t hand)
   pImpl->spellCasts->end(actorFormId, hand);
 }
 
+std::optional<uint32_t> PartOne::AbilityReaching(const MpActor& actor,
+                                                 uint32_t spell)
+{
+  if (!HasEspm() || spell == 0) {
+    return std::nullopt;
+  }
+  for (const uint32_t ability : actor.KnownBaseSpells()) {
+    try {
+      const auto data = espm::GetData<espm::SPEL>(ability, &worldState);
+      if (!data.spellItem ||
+          data.spellItem->castType != espm::SPEL::CastType::ConstantEffect) {
+        continue;
+      }
+      const auto reached = ReachedSpells(worldState, ability);
+      if (std::find(reached.begin(), reached.end(), spell) != reached.end()) {
+        return ability;
+      }
+    } catch (std::exception& e) {
+      spdlog::warn("PartOne::AbilityReaching - {:x} of {:x}: {}", ability,
+                   actor.GetFormId(), e.what());
+    }
+  }
+  return std::nullopt;
+}
+
 PartOne::CastClaim PartOne::ClaimCast(uint32_t actorFormId, uint32_t spell,
                                       uint32_t target, const NiPoint3& at)
 {

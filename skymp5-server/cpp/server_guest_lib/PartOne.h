@@ -402,6 +402,14 @@ public:
   // the caster stands now (`casterAt`)
   CastClaim ClaimReached(uint32_t actorFormId, uint32_t spell, uint32_t target,
                          const NiPoint3& at, const NiPoint3& casterAt);
+  // thuum docs/verbs/npc-stream.md (train 53; playtest 37's flame atronach):
+  // the ability among the actor's record's spells (MpActor::KnownBaseSpells;
+  // a constant effect the engine runs from the actor's birth and never
+  // casts) whose records reach `spell` (a Cloak effect's associated spell,
+  // ReachedSpells), or nothing. Its standing cast is what a hosted
+  // creature's cloak hit claims (ActionListener::OnHit)
+  std::optional<uint32_t> AbilityReaching(const MpActor& actor,
+                                          uint32_t spell);
 
   // thuum docs/verbs/shouts.md: what the server knows of a shout a player's
   // game reported, and its verdict (wire-rules shouts); an accepted shout

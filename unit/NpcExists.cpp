@@ -300,3 +300,31 @@ TEST_CASE("A game-file actor whose ChangeForm the save holds is loaded onto "
   DoDisconnect(p, 0);
   p.DestroyActor(kHod);
 }
+
+// thuum docs/verbs/npc-fate.md (playtest 38's finding 65, "there is a bandit
+// that has different items on each screen. not one we killed, one you find
+// dead"): Bleak Falls Temple's floor bodies, ACHR 0x3b9ea among them (a
+// skeever that starts dead, header flag 0x200, in BleakFallsBarrow01
+// 0x371de), load as the server's corpses: dead on the record, no respawn
+// scheduled by a load or a death word, so every seat loots the one roll
+TEST_CASE("A placement that starts dead loads as a dead record with no "
+          "respawn (thuum docs/verbs/npc-fate.md, finding 65)",
+          "[NpcExists][espm]")
+{
+  auto& partOne = GetPartOne();
+  partOne.worldState.npcEnabled = true;
+  constexpr uint32_t kFloorBody = 0x3b9ea;
+  REQUIRE_NOTHROW(partOne.worldState.GetFormAt<MpActor>(kFloorBody));
+  auto& body = partOne.worldState.GetFormAt<MpActor>(kFloorBody);
+  REQUIRE(body.IsDead());
+  REQUIRE(body.IsPlacedDead());
+  REQUIRE_FALSE(body.IsRespawning());
+  REQUIRE(partOne.worldState.fateRespawnDue.count(kFloorBody) == 0);
+  REQUIRE(body.GetChangeForm().actorValues.healthPercentage == 0.f);
+  // a load's or a death word's respawn never stands it
+  body.RespawnWithDelay();
+  REQUIRE_FALSE(body.IsRespawning());
+  REQUIRE(partOne.worldState.fateRespawnDue.count(kFloorBody) == 0);
+  REQUIRE(body.IsDead());
+  partOne.DestroyActor(kFloorBody);
+}

@@ -240,6 +240,18 @@ public:
     uint32_t effectFormId) const;
   std::optional<FormDesc> SurvivalFoodSwitch() const;
 
+  // thuum memo D56 A (Eli, 2026-10-28: "A for both"): the spells the server
+  // cures on every player until their verb is built, server-settings.json's
+  // `cureSpells` (a JSON list of "<hex id>:<plugin>" strings, "[]" for none;
+  // a bad entry stops the server here, named): Sanguinare Vampiris 0xb8780
+  // first, which a seat's engine applies on a vampire's hit and whose script
+  // turns the player three game days later client-side with no server
+  // record (apocrypha's vampirism scout, ADR-055 D8's note). CureSpells: the
+  // list as FormDescs, settings order; ActionListener::SendCures sends the
+  // engine's own RemoveSpell for each at a login and every minute after.
+  void SetCureSpellsSettings(const std::string& cureSpellsJson);
+  const std::vector<FormDesc>& CureSpells() const;
+
   float TeleportReach(uint32_t spellFormId) const;
 
   // thuum docs/verbs/shadowbond.md: server-settings.json's `bonds` (a JSON

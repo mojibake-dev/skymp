@@ -410,6 +410,11 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
       serverSettings.contains("survivalFood")
         ? serverSettings.at("survivalFood").dump()
         : std::string("{}"));
+    // the spells the server cures on every player (thuum memo D56 A):
+    // `cureSpells`, the same way
+    partOne->SetCureSpellsSettings(serverSettings.contains("cureSpells")
+                                     ? serverSettings.at("cureSpells").dump()
+                                     : std::string("[]"));
 
     if (serverSettings["dataDir"] != nullptr) {
       dataDir = serverSettings["dataDir"];

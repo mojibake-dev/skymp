@@ -788,17 +788,23 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
   // NPC (a player's death is the server's own numbers), and the death older
   // than MpActor::kPendingDeathMs on the server's clock: a sample the host
   // sent before the server's kill word reached it is in flight for a round
-  // trip, not a resurrection
+  // trip, not a resurrection. A death this process never stamped (DiedAgo
+  // nothing: RecordDeathAt runs at SendAndSetDeathState alone and a body
+  // loaded dead gets none; playtest 37's finding 54, the body dead across a
+  // restart that could never be stood up) has no kill word of this process
+  // in flight, so it counts as past the grace
   if (actor->IsDead() && actor->IsFateRespawned() && msg.health > onePoint) {
     const auto diedAgo = actor->DiedAgo(now);
-    if (diedAgo &&
+    if (!diedAgo ||
         diedAgo->count() >= static_cast<int64_t>(MpActor::kPendingDeathMs)) {
-      spdlog::info("[verb:npc-fate] resurrection by its host's engine: {:x} "
-                   "stands again with health {:.3f} on {:x}'s sample, {} s "
-                   "after its death; the record's death cleared, the live "
-                   "word to every listener",
-                   actor->GetFormId(), msg.health, myActor->GetFormId(),
-                   diedAgo->count() / 1000);
+      spdlog::info(
+        "[verb:npc-fate] resurrection by its host's engine: {:x} "
+        "stands again with health {:.3f} on {:x}'s sample, {}; "
+        "the record's death cleared, the live word to every "
+        "listener",
+        actor->GetFormId(), msg.health, myActor->GetFormId(),
+        diedAgo ? fmt::format("{} s after its death", diedAgo->count() / 1000)
+                : std::string("its death before this process"));
       actor->Respawn(false);
     }
   }

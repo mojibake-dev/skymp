@@ -970,6 +970,8 @@ export class RemoteServer extends ClientListener {
           });
         } catch (e) {
           if (e instanceof RespawnNeededError) {
+            // a player's figure alone (deathService: an NPC's copy stands up
+            // through resurrectActor since playtest 37's finding 54):
             // disabled first, deleted once the engine has let it go (the
             // crash of b-cell-host 20261021-192835; formView.destroy)
             const id = actor.getFormID();

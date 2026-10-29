@@ -147,6 +147,11 @@ pub struct ClientGuard {
     /// most, so two at once and one a second after that only ever stops a
     /// flood.
     pub player_globals_budget: TokenBucket,
+    /// Budget for quest stage reports (thuum docs/verbs/quest-stage.md): a
+    /// dialogue's fragment sets a stage or two, a quest's script chain a few
+    /// within a second, so sixteen at once and four a second after that only
+    /// ever stops a flood.
+    pub quest_stage_budget: TokenBucket,
     /// Budget for CellLoaded reports (thuum docs/verbs/cell-host.md): a
     /// 5x5 grid load is 25 cells at once, then a row or column per grid
     /// shift; wire-rules cells::CELL_LOADED_BURST and CELL_LOADED_PER_SECOND,
@@ -177,6 +182,7 @@ impl Default for ClientGuard {
             claim_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             cast_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 4, last_refill_ms: 0 },
             player_globals_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
+            quest_stage_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 4, last_refill_ms: 0 },
             equip_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 8, last_refill_ms: 0 },
             // thuum docs/verbs/npc-stream.md (ADR-050): the actions a host
             // streams for every actor it simulates ride this budget with the
@@ -492,6 +498,23 @@ fn check_player_globals(m: &skymp::PlayerGlobals) -> Result<(), Reject> {
     Ok(())
 }
 
+/// A quest stage, either way (docs/verbs/quest-stage.md): a quest of 0 only
+/// carries the shared list (the login's), and the list names each quest
+/// once; from a client the list is empty and the quest named
+/// ([`validate`]). The list's membership and the record are the server's
+/// rule (wire-rules `quest_stages`).
+fn check_quest_stage(m: &skymp::QuestStage) -> Result<(), Reject> {
+    if m.quest == 0 && m.shared.is_empty() {
+        return Err(Reject::Range);
+    }
+    for (i, q) in m.shared.iter().enumerate() {
+        if *q == 0 || m.shared.iter().take(i).any(|p| p == q) {
+            return Err(Reject::Range);
+        }
+    }
+    Ok(())
+}
+
 /// A RaceMenu preset, either way: not empty (docs/verbs/racemenu-sync.md).
 /// From a client it is also its own ([`validate`]); the JSON's shape is the
 /// server's rule (wire-rules `racemenu`), past the capacity the type holds.
@@ -646,6 +669,14 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
             }
             take(&mut guard.player_globals_budget, now_ms)
         }
+        Message::QuestStage(m) => {
+            // a client reports one stage of one quest; the shared list is the
+            // server's (docs/verbs/quest-stage.md)
+            if !m.shared.is_empty() || m.quest == 0 {
+                return Err(Reject::Range);
+            }
+            take(&mut guard.quest_stage_budget, now_ms)
+        }
         Message::ConsoleCommand(_) => take(&mut guard.console_budget, now_ms),
         Message::PlayerBowShot(_) => take(&mut guard.shot_budget, now_ms),
         Message::OnHit(_) => take(&mut guard.on_hit_budget, now_ms),
@@ -764,6 +795,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::RaceMenuPreset(m) => check_preset(m),
         Message::ActorValues(m) => check_actor_values(m),
         Message::PlayerGlobals(m) => check_player_globals(m),
+        Message::QuestStage(m) => check_quest_stage(m),
         // thuum docs/verbs/cell-host.md: a cell of 0 names nothing; an
         // epoch of 0 is before any grant
         Message::CellLoaded(m) => {

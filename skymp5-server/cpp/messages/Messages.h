@@ -37,6 +37,7 @@
 #include "PlayerBowShotMessage.h"
 #include "PlayerGlobalsMessage.h"
 #include "PutItemMessage.h"
+#include "QuestStageMessage.h"
 #include "RaceMenuPresetMessage.h"
 #include "RestIntentMessage.h"
 #include "SetGameTimeMessage.h"
@@ -112,4 +113,5 @@
   REGISTER_MESSAGE(HostedActorStateMessage)                                   \
   REGISTER_MESSAGE(ActorSpeechMessage)                                        \
   REGISTER_MESSAGE(DamageCauseMessage)                                        \
-  REGISTER_MESSAGE(ActorClaimMessage)
+  REGISTER_MESSAGE(ActorClaimMessage)                                         \
+  REGISTER_MESSAGE(QuestStageMessage)

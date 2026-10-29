@@ -73,7 +73,7 @@ macro_rules! skymp_family {
             39 RaceMenuPreset, 40 ActorValues, 41 ConsoleOutput, 42 ArrowShot,
             43 MagicEffects, 44 UpdateAction, 45 PlayerGlobals, 46 ActorJump,
             47 CellLoaded, 48 HostGrant, 49 HostRelease, 50 ActorSightings,
-            51 ActorFate, 52 ActorDeath, 53 HostedActorState, 54 ActorSpeech, 55 DamageCause, 56 ActorClaim
+            51 ActorFate, 52 ActorDeath, 53 HostedActorState, 54 ActorSpeech, 55 DamageCause, 56 ActorClaim, 57 QuestStage
         }
     };
 }
@@ -350,7 +350,7 @@ mod tests {
             n += 1;
         }
         assert!(n >= 90, "{n} fixtures");
-        assert_eq!(types.len(), 56, "every SkyMP type has fixtures");
+        assert_eq!(types.len(), 57, "every SkyMP type has fixtures");
     }
 
     /// Writes the fixtures: two per SkyMP type, from arbitrary values with

@@ -87,6 +87,13 @@ public:
   virtual void OnPlayerGlobals(const RawMessageData& rawMsgData,
                                const PlayerGlobalsMessage& msg);
 
+  // thuum docs/verbs/quest-stage.md (ADR-056): a player's game set a stage
+  // on a quest; checked (a QUST of the load order, on the shared list; R1),
+  // recorded as the world's (R0) and relayed to every other player; a stage
+  // the world already has is a no-op
+  virtual void OnQuestStage(const RawMessageData& rawMsgData,
+                            const QuestStageMessage& msg);
+
   // thuum docs/verbs/cell-host.md: a game's cell loaded or left its loaded
   // set; the server's election follows (wire-rules cells)
   virtual void OnCellLoaded(const RawMessageData& rawMsgData,
@@ -177,6 +184,12 @@ public:
   // after a login. Public since train-30: PartOne::SetUserActor sends it at
   // the login itself, ahead of the other login sends.
   void SendPlayerGlobals(MpActor& actor);
+  // thuum docs/verbs/quest-stage.md (ADR-056 decision 3): the shared quests'
+  // form ids for its client to report, then the world's recorded stages,
+  // ascending per quest, for its game to set after a login; PartOne::
+  // SetUserActor sends it right after the globals. Nothing when no quest is
+  // shared.
+  void SendQuestStages(MpActor& actor);
 
 private:
   // magnitudeScale: the claimed cast's factor on the spell's magnitude

@@ -1443,6 +1443,23 @@ const DynamicFields& MpObjectReference::GetDynamicFields() const
   return ChangeForm().dynamicFields;
 }
 
+std::vector<QuestStageDone> MpObjectReference::GetQuestStages() const
+{
+  const auto& stages = ChangeForm().questStages;
+  return stages ? *stages : std::vector<QuestStageDone>();
+}
+
+bool MpObjectReference::SetQuestStages(std::vector<QuestStageDone> stages)
+{
+  if (stages == GetQuestStages()) {
+    return false;
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    changeForm.questStages = std::move(stages);
+  });
+  return true;
+}
+
 void MpObjectReference::SetCellOrWorldObsolete(const FormDesc& newWorldOrCell)
 {
   auto worldState = GetParent();

@@ -90,10 +90,7 @@ impl SharedQuests {
             }
             // insert after the last stage of the same quest that is below it,
             // keeping the first quest's block first
-            let block_end = out.iter().rposition(|o| o.quest == r.quest).map_or(out.len(), |i| i.saturating_add(1));
-            let block_start = out.iter().position(|o| o.quest == r.quest).unwrap_or(block_end);
-            let at = out[block_start..block_end].iter().position(|o| o.stage > r.stage).map_or(block_end, |i| block_start.saturating_add(i));
-            out.insert(at, r.clone());
+            out.insert(insertion_point(&out, r), r.clone());
         }
         out
     }
@@ -114,11 +111,24 @@ pub fn merge(record: &[StageDone], stage: &StageDone) -> Vec<StageDone> {
     if done(&out, stage) {
         return out;
     }
-    let block_end = out.iter().rposition(|o| o.quest == stage.quest).map_or(out.len(), |i| i.saturating_add(1));
-    let block_start = out.iter().position(|o| o.quest == stage.quest).unwrap_or(block_end);
-    let at = out[block_start..block_end].iter().position(|o| o.stage > stage.stage).map_or(block_end, |i| block_start.saturating_add(i));
-    out.insert(at, stage.clone());
+    out.insert(insertion_point(&out, stage), stage.clone());
     out
+}
+
+/// Where a stage goes in a record: inside its quest's block (the stages of
+/// one quest sit together, ascending), before the first stage above it; at
+/// the block's end when none is above it; at the record's end for a quest
+/// not yet in it. Never past the record's length, so the insert cannot panic.
+fn insertion_point(record: &[StageDone], stage: &StageDone) -> usize {
+    let block_end = record.iter().rposition(|o| o.quest == stage.quest).map_or(record.len(), |i| i.saturating_add(1));
+    let block_start = record.iter().position(|o| o.quest == stage.quest).unwrap_or(block_end);
+    record
+        .iter()
+        .enumerate()
+        .skip(block_start)
+        .take(block_end.saturating_sub(block_start))
+        .find(|(_, o)| o.stage > stage.stage)
+        .map_or(block_end, |(i, _)| i)
 }
 
 #[cfg(test)]

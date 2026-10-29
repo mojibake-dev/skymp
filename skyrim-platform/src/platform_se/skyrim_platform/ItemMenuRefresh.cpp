@@ -1,15 +1,29 @@
 #include "ItemMenuRefresh.h"
 
+#include <RE/B/BarterMenu.h>
+#include <RE/C/ContainerMenu.h>
+#include <RE/G/GiftMenu.h>
 #include <RE/I/InterfaceStrings.h>
+#include <RE/I/InventoryMenu.h>
 #include <RE/I/InventoryUpdateData.h>
 #include <RE/U/UI.h>
 #include <RE/U/UIMessage.h>
 #include <RE/U/UIMessageQueue.h>
 
+bool ItemMenuRefresh::ItemMenuOpen()
+{
+  auto* ui = RE::UI::GetSingleton();
+  return ui &&
+    (ui->IsMenuOpen(RE::ContainerMenu::MENU_NAME) ||
+     ui->IsMenuOpen(RE::InventoryMenu::MENU_NAME) ||
+     ui->IsMenuOpen(RE::BarterMenu::MENU_NAME) ||
+     ui->IsMenuOpen(RE::GiftMenu::MENU_NAME));
+}
+
 bool ItemMenuRefresh::Post(RE::TESObjectREFR& owner)
 {
   auto* ui = RE::UI::GetSingleton();
-  if (!ui || !ui->IsItemMenuOpen()) {
+  if (!ui || !ItemMenuOpen()) {
     return false;
   }
   auto* queue = RE::UIMessageQueue::GetSingleton();

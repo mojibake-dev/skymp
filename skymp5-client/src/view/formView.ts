@@ -721,11 +721,18 @@ export class FormView {
     ) {
       // Do not let actors breaking their equipment via inventory apply
       // However, actually, actors do not have inventory in their models
-      // Except your clone. A dead engine reference is the server's
-      // container (npc-fate.md): its inventory is the record's, applied
-      // before the OpenContainer that follows it
+      // Except your clone. A dead NPC, an engine reference or a server-made
+      // copy, is the server's container (npc-fate.md): its inventory is the
+      // record's, laid under the engine's own ContainerMenu (the live chest
+      // above; a body is never activation-blocked since playtest 37's
+      // findings 58 and 62, so the engine's menu opens on E and the list
+      // lands under it). The copy's branch is finding 62's: the dead
+      // necromancer ff00000a's menu got no list laid under it; the shape is
+      // remoteServer.ts's npcCopy (an NPC base, never the players' 0x7, not
+      // this player's own clone)
       const asActor = Actor.from(refr);
-      const deadBody = !!asActor && this.refrId < 0xff000000 && asActor.isDead();
+      const npcCopy = FormView.isNpcModel(model) && model.isMyClone !== true;
+      const deadBody = !!asActor && (this.refrId < 0xff000000 || npcCopy) && asActor.isDead();
       if (!asActor || deadBody) {
         // thuum docs/verbs/npc-fate.md (playtest 34, section 5): a body keeps
         // the engine's dressing (the pin made the worn sets equal); the

@@ -222,14 +222,21 @@ export class DeathService extends ClientListener {
       } else {
         actor.kill(killer);
       }
-      if (actor.getFormID() < 0xff000000) {
-        // thuum docs/verbs/npc-fate.md (the deaths): the body is the
-        // server's container, its activation blocked as a CONT's is
-        // (dealWithRef): the engine's own loot menu never opens ahead of the
-        // server's inventory and OpenContainer, while the activate hook
-        // still reports the player's activation
-        actor.blockActivation(true);
-      }
+      // thuum docs/verbs/npc-fate.md (the deaths, revised by playtest 37's
+      // findings 58 and 62): the body is NOT activation-blocked, on any seat.
+      // The block stood here (a CONT's shape, dealWithRef) on the design
+      // note's assumption that the server's OpenContainer activation with
+      // default processing opens a blocked body ahead of the engine's own
+      // menu: it never did. Every corpse that opened in the logs was the
+      // engine's own activation of an unblocked body (finding 58: c2's one
+      // good open came while a brief host grant had lifted the block; after
+      // the host flipped back the body was demoted and four E presses opened
+      // nothing). The loot is the server's container either way: E is the
+      // engine's own activation, the activate hook reports it, the server
+      // answers the record's inventory and OpenContainer, and formView lays
+      // the server's list under the open menu (memo D52 B). puppetService
+      // keeps a dead body out of the puppet state, so no native block comes
+      // back on it.
     }
   };
 

@@ -1,6 +1,6 @@
 import { QuestStageEvent, QuestStartStopEvent } from "skyrimPlatform";
 import { MsgType } from "../../messages";
-import { logError, logTrace } from "../../logging";
+import { logError, logLab, logTrace } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
 import { QuestStageMessage } from "../messages/questStageMessage";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
@@ -17,6 +17,12 @@ const APPLY_ECHO_MS = 5000;
 // How many quests may hold a parked stage at once; the oldest parking makes
 // room for a new quest
 const PARKED_MAX = 64;
+
+// How long after the login's game load the arrival waits for the player's
+// cell to carry a location before it gives up, ms (the engine attaches the
+// player's cell before its load-game event, so the first update should read
+// it; the window is a hedge the trace line reports)
+const ARRIVAL_WINDOW_MS = 3000;
 
 // thuum docs/verbs/quest-stage.md (ADR-056, memo D55 B; Eli, playtest 37:
 // "appropriately communicating the worlds shared quest state ... makes sense
@@ -36,6 +42,20 @@ const PARKED_MAX = 64;
 // the Story Manager's alone to start (the Creation Kit's rule: "Any quest
 // which specifies an Event can only be started by the Story Manager"; A
 // Lovely Letter 0x74a83 starts on the player's Change Location into Riverwood).
+//
+// The login's arrival (H-56a, docs/research/m3/re-story-location.md): the
+// engine raises the Change Location event only when the player's location
+// changes, and a seat logging in INSIDE a location (every playtest seat: the
+// camp is the landing) attaches with none to report, so its Story Manager
+// never starts the location's quests, while a seat placed in from outside
+// logged locationChanged and questStart in one millisecond
+// (x-story-manager-walk 20261029-205447). Once per login, after the server's
+// list has come and the game has loaded, this service asks
+// TESModPlatform.SendStoryChangeLocation for the same event from no location
+// to the player's current one, through the engine's own story event queue,
+// from the update pass (callNative needs the VM context). HYPOTHESIS until
+// x-story-manager-walk v3: the Story Manager then starts what an arrival
+// starts. Behind the client setting storyArrivalAtLogin (default on).
 export class QuestStageService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -43,6 +63,7 @@ export class QuestStageService extends ClientListener {
         this.controller.on("questStage", (e) => this.onQuestStage(e));
         this.controller.on("questStart", (e) => this.onQuestStart(e));
         this.controller.on("update", () => this.onUpdate());
+        this.controller.emitter.on("gameLoad", () => this.onGameLoad());
         this.resume();
     }
 
@@ -52,6 +73,9 @@ export class QuestStageService extends ClientListener {
             this.shared = new Set(m.shared.filter((id) => Number.isInteger(id) && id > 0));
             this.sp.storage[SHARED_STORAGE_KEY] = Array.from(this.shared);
             logTrace(this, "the server shares", this.shared.size, "quest(s)");
+            // the list comes once per login (PartOne::SetUserActor): the
+            // login's arrival is due once the game has loaded too
+            this.arrivalListSeen = true;
         }
         if (m.quest !== 0) {
             this.pending.push({ quest: m.quest, stage: m.stage });
@@ -61,6 +85,7 @@ export class QuestStageService extends ClientListener {
     // one stage per update, in the server's order (ascending within a quest
     // at a login's replay, so each SetStage sees the stages before it)
     private onUpdate() {
+        this.arrival();
         if (!this.enabled()) {
             this.pending = [];
             return;
@@ -207,6 +232,66 @@ export class QuestStageService extends ClientListener {
         logTrace(this, "this game set stage", e.stage, "of shared quest", questId.toString(16) + "; reported");
     }
 
+    // the login's game load (LoadGameService's gameLoad, from the engine's
+    // own load-game event, so the player's cell is attached): the other half
+    // of the arrival's condition. A reconnect with the game up spawns through
+    // MoveRefrToPosition and loads nothing, so it raises no arrival: that
+    // seat's Story Manager heard its login's
+    private onGameLoad() {
+        this.arrivalGameLoaded = true;
+    }
+
+    // the login's arrival, from the update pass: once the server's list has
+    // come and the game has loaded, the Change Location event from no location
+    // to the player's current one, once; a player in no location gets none
+    // (the engine's own event comes at the first location entered)
+    private arrival() {
+        if (!this.arrivalListSeen || !this.arrivalGameLoaded) {
+            return;
+        }
+        if (!this.arrivalEnabled()) {
+            this.arrivalDone();
+            return;
+        }
+        if (this.arrivalDeadline === 0) {
+            this.arrivalDeadline = Date.now() + ARRIVAL_WINDOW_MS;
+        }
+        const player = this.sp.Game.getPlayer();
+        const location = player ? player.getCurrentLocation() : null;
+        if (!player || !location) {
+            if (Date.now() < this.arrivalDeadline) {
+                return; // read again next update, within the window
+            }
+            this.arrivalDone();
+            logTrace(this, "no location at the login's cell; no arrival raised (the engine's own event comes at the first location entered)");
+            return;
+        }
+        this.arrivalDone();
+        const locationId = location.getFormID();
+        try {
+            const raised = this.sp.callNative("TESModPlatform", "SendStoryChangeLocation", undefined, player, null, location);
+            if (raised === true) {
+                logLab("verb:quest-stage", "arrival event raised at login for location", locationId.toString(16));
+            } else {
+                logError(this, "TESModPlatform.SendStoryChangeLocation refused for location", locationId.toString(16));
+            }
+        } catch (err) {
+            // an older dist without the native throws here
+            logError(this, "TESModPlatform.SendStoryChangeLocation failed for location", locationId.toString(16), err);
+        }
+    }
+
+    private arrivalDone() {
+        this.arrivalListSeen = false;
+        this.arrivalGameLoaded = false;
+        this.arrivalDeadline = 0;
+    }
+
+    private arrivalEnabled(): boolean {
+        const s = this.sp.settings["skymp5-client"] as Record<string, unknown> | undefined;
+        return !s || s["storyArrivalAtLogin"] !== false;
+    }
+
     // After a plugin reload: the list the last login brought, from storage
     private resume() {
         const stored: unknown = this.sp.storage[SHARED_STORAGE_KEY];
@@ -240,4 +325,9 @@ export class QuestStageService extends ClientListener {
     // refused Quest.Start here; applied at the engine's own start of each
     private parked = new Map<number, number>();
     private missing = new Set<number>();
+    // the login's arrival: the server's list has come; the game has loaded;
+    // the window's end once both hold (0 until then)
+    private arrivalListSeen = false;
+    private arrivalGameLoaded = false;
+    private arrivalDeadline = 0;
 }

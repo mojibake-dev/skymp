@@ -83,6 +83,12 @@ Bool Function ModPlayerActorValue(Int av, Float delta) global native
 ; magnitude from source, as a hit's reaction starts it (the server's verdict)
 Bool Function Stagger(Actor target, Float magnitude, Actor source) global native
 
+; thuum docs/verbs/quest-stage.md H-56a: the Story Manager's Change Location
+; event for actor, from oldLocation (none allowed) to newLocation (none reads
+; the actor's current location), queued as the engine's own arrival queues it;
+; a seat logging in inside a location raises none by itself
+Bool Function SendStoryChangeLocation(Actor actor, Location oldLocation, Location newLocation) global native
+
 ; thuum docs/verbs/marksman.md: a neighbour's arrow, launched from its figure
 ; along its shooter's aim (pitch and heading, radians) with its draw's power
 Bool Function LaunchArrow(Actor shooter, Weapon weapon, Ammo ammo, Float power, Float aimAngle, Float aimHeading) global native

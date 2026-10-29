@@ -1,5 +1,5 @@
 // @ts-expect-error (TODO: Remove in 2.10.0)
-import { settings, Actor, Form, FormType, MagicEffect, Menu, interruptCast, castSpellImmediate, placeAreaEffect, printConsole, applyAnimationVariablesToActor, getAnimationVariablesFromActor, ActorAnimationVariables } from 'skyrimPlatform';
+import { callNative, settings, Actor, Form, FormType, MagicEffect, Menu, interruptCast, castSpellImmediate, placeAreaEffect, printConsole, applyAnimationVariablesToActor, getAnimationVariablesFromActor, ActorAnimationVariables } from 'skyrimPlatform';
 import * as sp from 'skyrimPlatform';
 import { figureAimHeading } from "../../sync/figureAim";
 import { landsOnItsTarget } from "../../sync/spellDelivery";
@@ -59,6 +59,7 @@ import {
   getViewFromStorage,
   remoteIdToLocalId,
   getLocalRefrIdOfIndex,
+  localIdToRemoteId,
 } from '../../view/worldViewMisc';
 import { TimeService } from './timeService';
 import { logTrace, logError } from '../../logging';
@@ -848,9 +849,32 @@ export class RemoteServer extends ClientListener {
             // item list's re-read for the container), "both" (the default)
             const s = settings['skymp5-client'] as Record<string, unknown> | undefined;
             const pick = s ? String(s['chestRedraw'] ?? 'both') : 'both';
-            const mode = pick === 'message' ? 1 : pick === 'reread' ? 2 : 3;
-            const asked = typeof refresh === 'function' ? !!(refresh as (id: number, mode: number) => boolean)(refrId, mode) : false;
-            logTrace(this, `live chest ${refrId.toString(16)}: inventory applied under the open ContainerMenu, redraw ${asked ? `asked (${pick})` : 'unavailable on this dist'}`);
+            if (pick === 'reopen') {
+              // the fallback (playtest 37, findings 29 and 30: the list's
+              // re-read showed nothing and took the store button): the engine
+              // draws a ContainerMenu whole at its open, so the menu is closed
+              // (the engine's kHide through the platform's CloseMenu, as the
+              // lab does) and the chest is activated again through the
+              // server's own flow: the closing activation leaves, the new one
+              // brings the inventory and the OpenContainer back. A flicker per
+              // change, TES3MP's live view at that cost
+              callNative('TESModPlatform', 'CloseMenu', undefined, 'ContainerMenu');
+              const me = localIdToRemoteId(0x14);
+              if (me) {
+                (async () => {
+                  await Utility.wait(0.4);
+                  this.controller.emitter.emit('sendMessage', {
+                    message: { t: MsgType.Activate, data: { caster: me, target: refrId, isSecondActivation: false } },
+                    reliability: 'reliable',
+                  });
+                })();
+              }
+              logTrace(this, `live chest ${refrId.toString(16)}: inventory applied under the open ContainerMenu, the menu closed and the chest asked again (reopen)`);
+            } else {
+              const mode = pick === 'message' ? 1 : pick === 'reread' ? 2 : 3;
+              const asked = typeof refresh === 'function' ? !!(refresh as (id: number, mode: number) => boolean)(refrId, mode) : false;
+              logTrace(this, `live chest ${refrId.toString(16)}: inventory applied under the open ContainerMenu, redraw ${asked ? `asked (${pick})` : 'unavailable on this dist'}`);
+            }
           }
         } else if (msg.propName === 'isOpen') {
           ModelApplyUtils.applyModelIsOpen(refr, !!msgData);

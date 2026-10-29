@@ -149,8 +149,11 @@ pub struct ClientGuard {
     pub player_globals_budget: TokenBucket,
     /// Budget for quest stage reports (thuum docs/verbs/quest-stage.md): a
     /// dialogue's fragment sets a stage or two, a quest's script chain a few
-    /// within a second, so sixteen at once and four a second after that only
-    /// ever stops a flood.
+    /// within a second, and in sharing mode all (memo D58 B) the seat
+    /// reports every stage event its engine fires, a load's dozen quest
+    /// starts among them, so thirty-two at once and eight a second after
+    /// that only ever stops a flood. UNMEASURED: raised from sixteen and
+    /// four with the mode, no lab count yet.
     pub quest_stage_budget: TokenBucket,
     /// Budget for CellLoaded reports (thuum docs/verbs/cell-host.md): a
     /// 5x5 grid load is 25 cells at once, then a row or column per grid
@@ -182,7 +185,7 @@ impl Default for ClientGuard {
             claim_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             cast_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 4, last_refill_ms: 0 },
             player_globals_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
-            quest_stage_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 4, last_refill_ms: 0 },
+            quest_stage_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 8, last_refill_ms: 0 },
             equip_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 8, last_refill_ms: 0 },
             // thuum docs/verbs/npc-stream.md (ADR-050): the actions a host
             // streams for every actor it simulates ride this budget with the
@@ -519,13 +522,18 @@ fn check_player_globals(m: &skymp::PlayerGlobals) -> Result<(), Reject> {
     Ok(())
 }
 
-/// A quest stage, either way (docs/verbs/quest-stage.md): a quest of 0 only
-/// carries the shared list (the login's), and the list names each quest
-/// once; from a client the list is empty and the quest named
-/// ([`validate`]). The list's membership and the record are the server's
-/// rule (wire-rules `quest_stages`).
+/// A quest stage, either way (docs/verbs/quest-stage.md): the mode is 0
+/// (list) or 1 (all); a quest of 0 carries the login's list, which in mode
+/// 0 is never empty (in mode 1 it is the denied list, empty when nothing
+/// is denied), and the list names each quest once; from a client the list
+/// is empty, the mode 0 and the quest named ([`validate`]). The mode's
+/// membership and the record are the server's rule (wire-rules
+/// `quest_stages`).
 fn check_quest_stage(m: &skymp::QuestStage) -> Result<(), Reject> {
-    if m.quest == 0 && m.shared.is_empty() {
+    if m.mode > 1 {
+        return Err(Reject::Range);
+    }
+    if m.mode == 0 && m.quest == 0 && m.shared.is_empty() {
         return Err(Reject::Range);
     }
     for (i, q) in m.shared.iter().enumerate() {
@@ -697,9 +705,9 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
             take(&mut guard.player_globals_budget, now_ms)
         }
         Message::QuestStage(m) => {
-            // a client reports one stage of one quest; the shared list is the
-            // server's (docs/verbs/quest-stage.md)
-            if !m.shared.is_empty() || m.quest == 0 {
+            // a client reports one stage of one quest; the sharing mode and
+            // its list are the server's (docs/verbs/quest-stage.md)
+            if !m.shared.is_empty() || m.quest == 0 || m.mode != 0 {
                 return Err(Reject::Range);
             }
             take(&mut guard.quest_stage_budget, now_ms)
@@ -1759,6 +1767,52 @@ mod tests {
         assert_eq!(validate(&cell_loaded(0x9732), &mut g, 1_000), Err(Reject::Rate));
         // a cell of 0 names nothing
         assert_eq!(validate(&cell_loaded(0), &mut ClientGuard::default(), 0), Err(Reject::Range));
+    }
+
+    // thuum docs/verbs/quest-stage.md (ADR-056, memo D58 B): a seat's report
+    // names one quest and no list; the login's message names the mode and
+    // its list
+    fn quest_stage(quest: u32, stage: u16, shared: &[u32], mode: u8) -> Message {
+        use wire_schema::skymp::QuestStage;
+        let mut m = QuestStage { quest, stage, mode, ..Default::default() };
+        for q in shared {
+            if m.shared.push(*q).is_err() {
+                return Message::QuestStage(QuestStage::default());
+            }
+        }
+        Message::QuestStage(m)
+    }
+
+    #[test]
+    fn quest_stages_name_one_quest_from_a_client_and_the_mode_from_the_server() {
+        // MS13Intro 0xb6031 and MQ102 0x4e50d (Skyrim.esm, thuum lab/esm.py)
+        let mut g = ClientGuard::default();
+        assert_eq!(validate(&quest_stage(0xb6031, 10, &[], 0), &mut g, 0), Ok(()));
+        // a client names no list, no quest 0 and no mode
+        assert_eq!(validate(&quest_stage(0xb6031, 10, &[0xb6031], 0), &mut g, 0), Err(Reject::Range));
+        assert_eq!(validate(&quest_stage(0, 10, &[], 0), &mut g, 0), Err(Reject::Range));
+        assert_eq!(validate(&quest_stage(0xb6031, 10, &[], 1), &mut g, 0), Err(Reject::Range));
+        // the server's login message: mode list needs its list, mode all
+        // carries the denied list, empty or not; no third mode
+        assert_eq!(validate_server(&quest_stage(0, 0, &[0xb6031], 0)), Ok(()));
+        assert_eq!(validate_server(&quest_stage(0, 0, &[], 0)), Err(Reject::Range));
+        assert_eq!(validate_server(&quest_stage(0, 0, &[0x4e50d], 1)), Ok(()));
+        assert_eq!(validate_server(&quest_stage(0, 0, &[], 1)), Ok(()));
+        assert_eq!(validate_server(&quest_stage(0, 0, &[], 2)), Err(Reject::Range));
+        // the list names each quest once and never 0
+        assert_eq!(validate_server(&quest_stage(0, 0, &[0x4e50d, 0x4e50d], 1)), Err(Reject::Range));
+        assert_eq!(validate_server(&quest_stage(0, 0, &[0], 0)), Err(Reject::Range));
+        // thirty-two at once, then eight a second (UNMEASURED, mode all's
+        // load fires a dozen quest starts)
+        let mut g = ClientGuard::default();
+        for _ in 0..32 {
+            assert_eq!(validate(&quest_stage(0xb6031, 10, &[], 0), &mut g, 0), Ok(()));
+        }
+        assert_eq!(validate(&quest_stage(0xb6031, 10, &[], 0), &mut g, 0), Err(Reject::Rate));
+        for _ in 0..8 {
+            assert_eq!(validate(&quest_stage(0xb6031, 10, &[], 0), &mut g, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&quest_stage(0xb6031, 10, &[], 0), &mut g, 1_000), Err(Reject::Rate));
     }
 
     // thuum docs/verbs/npc-puppet.md: a host's roster names game-file actors

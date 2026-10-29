@@ -2603,6 +2603,11 @@ constexpr float kWorldJournalX = -200000.f;
 constexpr float kWorldJournalY = -200000.f;
 }
 
+uint8_t PartOne::SharedQuestsMode() const
+{
+  return pImpl->sharedQuests->shared_quests_mode();
+}
+
 uint8_t PartOne::CheckSharedQuest(const FormDesc& quest) const
 {
   return pImpl->sharedQuests->shared_quests_check(quest.shortFormId,

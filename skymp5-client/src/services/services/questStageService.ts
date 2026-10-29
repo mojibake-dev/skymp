@@ -5,10 +5,17 @@ import { ConnectionMessage } from "../events/connectionMessage";
 import { QuestStageMessage } from "../messages/questStageMessage";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 
-// The storage key of the shared list (sp.storage survives a plugin reload,
-// ADR-041's survivor): the list comes once, at the login, and a hot-reloaded
-// client keeps its connection and never logs in again
-const SHARED_STORAGE_KEY = "thuum.questStage.shared.v1";
+// The storage key of the sharing mode and its list (sp.storage survives a
+// plugin reload, ADR-041's survivor): they come once, at the login, and a
+// hot-reloaded client keeps its connection and never logs in again. v2 holds
+// {mode, ids} (memo D58 B); v1 held the list alone
+const SHARED_STORAGE_KEY = "thuum.questStage.shared.v2";
+
+// The sharing modes the server names at a login (the wire's QuestStage
+// `mode`): list, the quests in `shared` are reported; all, every quest is
+// reported but the quests in `shared`, the denied
+const MODE_LIST = 0;
+const MODE_ALL = 1;
 
 // How long a stage this service set is expected to echo back as the engine's
 // own quest-stage event, ms; after that the mark is dropped
@@ -35,8 +42,11 @@ const ARRIVAL_WINDOW_MS = 3000;
 // conditions and journal read the same quest state as the talker's. The
 // engine's event from that apply is consumed by the mark below and never
 // reported back; a stage the engine already has done is skipped. Nothing is
-// reported before the server's list arrives, and a quest off the list stays
-// this seat's own, as today. A quest that refuses Quest.Start has the world's
+// reported before the server's login message names the sharing mode: in
+// mode list a quest off the list stays this seat's own; in mode all (memo
+// D58 B, TES3MP's shared journal) every quest is the world's but the denied
+// ones (the main quest's intro chain, the DLC starts), which stay this
+// seat's own. A quest that refuses Quest.Start has the world's
 // stage parked (the highest asked per quest) and applied when the engine's
 // own start of it arrives as the questStart event, because an event quest is
 // the Story Manager's alone to start (the Creation Kit's rule: "Any quest
@@ -80,17 +90,20 @@ export class QuestStageService extends ClientListener {
 
     private onMessage(e: ConnectionMessage<QuestStageMessage>) {
         const m = e.message;
-        if (m.shared && m.shared.length > 0) {
-            this.shared = new Set(m.shared.filter((id) => Number.isInteger(id) && id > 0));
-            this.sp.storage[SHARED_STORAGE_KEY] = Array.from(this.shared);
-            logTrace(this, "the server shares", this.shared.size, "quest(s)");
+        if (m.quest === 0) {
+            // the login's message: the sharing mode and its list (the quests to
+            // report in mode list, the quests never to report in mode all)
+            const mode = m.mode === MODE_ALL ? MODE_ALL : MODE_LIST;
+            const ids = (m.shared ?? []).filter((id) => Number.isInteger(id) && id > 0);
+            this.setShared(mode, ids);
+            this.sp.storage[SHARED_STORAGE_KEY] = { mode, ids };
+            logTrace(this, "the server shares quests in mode", QuestStageService.modeName(mode) + ":", ids.length, mode === MODE_ALL ? "quest(s) denied" : "quest(s) listed");
             // the list comes once per login (PartOne::SetUserActor): the
-            // login's arrival is due once the game has loaded too
+            // login's arrival is due once the game has loaded too (H-56a)
             this.arrivalListSeen = true;
+            return;
         }
-        if (m.quest !== 0) {
-            this.pending.push({ quest: m.quest, stage: m.stage });
-        }
+        this.pending.push({ quest: m.quest, stage: m.stage });
     }
 
     // one stage per update, in the server's order (ascending within a quest
@@ -280,7 +293,7 @@ export class QuestStageService extends ClientListener {
             this.applying.delete(key); // the world's stage landing here, not this game's own
             return;
         }
-        if (!this.shared.has(questId)) {
+        if (!this.reports(questId)) {
             return;
         }
         this.controller.emitter.emit("sendMessage", {
@@ -350,17 +363,38 @@ export class QuestStageService extends ClientListener {
         return !s || s["storyArrivalAtLogin"] !== false;
     }
 
-    // After a plugin reload: the list the last login brought, from storage
+    // whether a stage this game set on the quest is the world's to report:
+    // nothing before the server's login message; in mode list the listed
+    // quests; in mode all every quest but the denied (memo D58 B)
+    private reports(questId: number): boolean {
+        if (this.mode === undefined) {
+            return false;
+        }
+        return this.mode === MODE_ALL ? !this.shared.has(questId) : this.shared.has(questId);
+    }
+
+    private setShared(mode: number, ids: number[]) {
+        this.mode = mode;
+        this.shared = new Set(ids);
+    }
+
+    // After a plugin reload: the mode and the list the last login brought,
+    // from storage
     private resume() {
-        const stored: unknown = this.sp.storage[SHARED_STORAGE_KEY];
-        if (!Array.isArray(stored) || stored.length === 0) {
+        const stored = this.sp.storage[SHARED_STORAGE_KEY] as { mode?: unknown; ids?: unknown } | undefined;
+        if (!stored || typeof stored !== "object" || !Array.isArray(stored.ids)) {
             return;
         }
-        const list = stored.filter((id): id is number => typeof id === "number" && Number.isInteger(id) && id > 0);
-        if (list.length > 0) {
-            this.shared = new Set(list);
-            logTrace(this, "resumed with", this.shared.size, "shared quest(s) after a reload");
+        if (stored.mode !== MODE_LIST && stored.mode !== MODE_ALL) {
+            return;
         }
+        const ids = stored.ids.filter((id): id is number => typeof id === "number" && Number.isInteger(id) && id > 0);
+        this.setShared(stored.mode, ids);
+        logTrace(this, "resumed after a reload in mode", QuestStageService.modeName(stored.mode) + ":", ids.length, stored.mode === MODE_ALL ? "quest(s) denied" : "quest(s) listed");
+    }
+
+    private static modeName(mode: number): string {
+        return mode === MODE_ALL ? "all" : "list";
     }
 
     private enabled(): boolean {
@@ -378,7 +412,11 @@ export class QuestStageService extends ClientListener {
         return questId.toString(16) + ":" + stage;
     }
 
-    // the quests the server shares (form ids, the load order both ends share)
+    // the sharing mode the server named at the login (0 list, 1 all); none
+    // before it, and nothing is reported until then
+    private mode: number | undefined;
+    // the quests the login named (form ids, the load order both ends share):
+    // the shared quests in mode list, the denied quests in mode all
     private shared = new Set<number>();
     // the world's stages still to apply, in the server's order
     private pending: Array<{ quest: number; stage: number }> = [];

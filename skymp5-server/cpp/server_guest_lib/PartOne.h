@@ -193,15 +193,20 @@ public:
     const std::vector<PlayerGlobal>& record,
     const std::vector<PlayerGlobal>& report);
 
-  // thuum docs/verbs/quest-stage.md (ADR-056): the quests whose stages are
-  // the world's, server-settings.json's `sharedQuests` (a JSON list of
-  // FormDescs, "[]" for none; a bad entry stops the server here, named).
-  // CheckSharedQuest: 0 listed, else the rule's refusal (wire-rules
-  // quest_stages: 1 unlisted). Listed: the list as FormDescs, settings
-  // order. AtLogin: the world's recorded stages of quests still listed,
-  // ascending per quest. DoneAlready: the world's record holds the stage.
-  // Merge: the record with the stage added once, ascending within its quest.
+  // thuum docs/verbs/quest-stage.md (ADR-056; memo D58 B): the quests whose
+  // stages are the world's, server-settings.json's `sharedQuests`: a JSON
+  // list of FormDescs ("[]" for none) is mode list, the object {"mode":
+  // "all", "denied": [FormDescs]} mode all; a bad entry or shape stops the
+  // server here, named. SharedQuestsMode: 0 list, 1 all, as the wire
+  // carries it. CheckSharedQuest: 0 the world's, else the rule's refusal
+  // (wire-rules quest_stages: 1 unlisted in mode list, 2 denied in mode
+  // all). Listed: what the login names as FormDescs, settings order (the
+  // list in mode list, the denied quests in mode all). AtLogin: the world's
+  // recorded stages of quests still the world's, ascending per quest.
+  // DoneAlready: the world's record holds the stage. Merge: the record with
+  // the stage added once, ascending within its quest.
   void SetSharedQuestsSettings(const std::string& sharedQuestsJson);
+  uint8_t SharedQuestsMode() const;
   uint8_t CheckSharedQuest(const FormDesc& quest) const;
   std::vector<FormDesc> SharedQuestsListed() const;
   std::vector<QuestStageDone> SharedQuestsAtLogin();

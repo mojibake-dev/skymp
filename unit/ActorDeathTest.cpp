@@ -193,6 +193,61 @@ TEST_CASE("A hosted NPC the record holds dead whose host samples it alive "
   Leave(p, 0, kHost);
 }
 
+// thuum docs/verbs/npc-fate.md (playtest 37's finding 54): a body dead since
+// before this server process has no death stamp (RecordDeathAt runs at
+// SendAndSetDeathState alone, nothing stamps a body loaded dead), so no kill
+// word of this process can be in flight for it, and its host's first live
+// sample is the resurrection at once
+TEST_CASE("A hosted NPC dead since before this server process stands again "
+          "at its host's first live sample: no grace guards a death this "
+          "process never stamped",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  constexpr uint32_t kForestCell = 0x9810;
+  auto& host = Arrive(p, 0, kHost);
+  Arrive(p, 1, kOther);
+  auto& actor = Standing(p, kPredator);
+  actor.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
+  Host(p, 0, kForestCell);
+  REQUIRE(p.worldState.HostOf(actor) == &host);
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  // the kill stamped the death on this process's clock; the default time
+  // point is what a body loaded dead carries (MpActor::DiedAgo answers
+  // nothing for it)
+  actor.RecordDeathAt(std::chrono::steady_clock::time_point());
+  REQUIRE_FALSE(actor.DiedAgo(std::chrono::steady_clock::now()).has_value());
+
+  // from the other game: dropped at the host gate as any sample of its
+  State(p, 1, kPredator, 1.f);
+  REQUIRE(actor.IsDead());
+
+  // from the host: taken at once, the death cleared, the live word to the
+  // other game
+  p.Messages().clear();
+  State(p, 0, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+  REQUIRE_FALSE(actor.GetChangeForm().fateDiedAt.has_value());
+  REQUIRE(p.worldState.fateRespawnDue.count(kPredator) == 0);
+  bool liveWord = false;
+  for (auto& m : p.Messages()) {
+    if (m.userId == 1 && m.j.is_object() &&
+        m.j.value("t", -1) == static_cast<int>(MsgType::UpdateProperty) &&
+        m.j.value("propName", std::string()) == "isDead" &&
+        m.j.value("refrId", 0u) == kPredator &&
+        m.j.value("dataDump", std::string()) == "false") {
+      liveWord = true;
+    }
+  }
+  REQUIRE(liveWord);
+
+  StandUp(p, actor);
+  Leave(p, 1, kOther);
+  Leave(p, 0, kHost);
+}
+
 TEST_CASE("A host's fall report is taken when its own samples show the drop "
           "and refused when they do not",
           "[ActorDeath][espm]")

@@ -9,7 +9,7 @@ import { RemoteServer } from "./remoteServer";
 import { localIdToRemoteId, remoteIdToLocalId } from "../../view/worldViewMisc";
 import { getEquipedSpell, SpellType } from "../../sync/equipment";
 import { Inventory } from "../../sync/inventory";
-import { logTrace } from "../../logging";
+import { logLab, logTrace } from "../../logging";
 
 // thuum docs/verbs/npc-stream.md (ADR-050 decision 1, slice 2): the state of
 // the actors this game simulates, read from its engine twice a second and
@@ -22,6 +22,13 @@ import { logTrace } from "../../logging";
 // package are recorded (R2) for npc-handoff and the lab. The first sample
 // for an actor goes reliable (the keyframe after a grant), the rest
 // unreliable (absolute; the newest wins). DeathReportService's poll shape.
+//
+// thuum docs/verbs/npc-fate.md (playtest 37's finding 54): the engine's
+// isDead is tracked per hosted actor, and the sample at its flip from dead
+// to alive (a necromancer's reanimate taken by the host's engine, Skyrim
+// Platform's HostedResurrect hook) goes reliable and is never swallowed as
+// unchanged: it is the server's one notice that the body stands
+// (ActionListener::OnHostedActorState clears the record's death on it).
 //
 // The package: no native reads it (Actor.getCurrentPackage answered one id
 // for every resident, npc-stream.md's Engine surface), so the package events
@@ -88,9 +95,12 @@ export class HostedStateService extends ClientListener {
             if (!actor) {
                 continue;
             }
+            const dead = actor.isDead();
+            const stoodUp = this.dead.get(localId) === true && !dead;
+            this.dead.set(localId, dead);
             const sample = this.read(actor, localId);
             const last = this.lastSent.get(localId);
-            if (last && HostedStateService.same(last, sample)) {
+            if (last && !stoodUp && HostedStateService.same(last, sample)) {
                 continue;
             }
             const message: MessageWithRefrId<HostedActorStateMessage> = {
@@ -108,9 +118,12 @@ export class HostedStateService extends ClientListener {
             };
             this.controller.emitter.emit("sendMessageWithRefrId", {
                 message,
-                reliability: last ? "unreliable" : "reliable",
+                reliability: last && !stoodUp ? "unreliable" : "reliable",
             });
             this.lastSent.set(localId, sample);
+            if (stoodUp) {
+                logLab("verb:npc-fate", `${remoteId.toString(16)} stood up on this engine: health ${sample.health.toFixed(3)}, the sample sent reliable for the server's record`);
+            }
             logTrace(this, `state ${remoteId.toString(16)}: health ${sample.health.toFixed(3)} magicka ${sample.magicka.toFixed(3)} stamina ${sample.stamina.toFixed(3)} target ${sample.combatTarget.toString(16)} package ${sample.package.toString(16)} gaze ${sample.gazeTarget.toString(16)} slot ${sample.gazeSlot} emotion ${sample.emotionType} ${sample.emotionValue}${last ? "" : " (keyframe)"}`);
         }
         // slice 5: the gaze and the face read on the game thread for the next
@@ -143,10 +156,16 @@ export class HostedStateService extends ClientListener {
             this.sendEquipment(actor, localId, remoteId, right, left);
         }
         // an actor that left the hosted list starts over at its next grant
-        // (a keyframe again); its package is forgotten with it
+        // (a keyframe again); its package and its engine's isDead are
+        // forgotten with it
         for (const id of Array.from(this.lastSent.keys())) {
             if (!seen.has(id)) {
                 this.lastSent.delete(id);
+            }
+        }
+        for (const id of Array.from(this.dead.keys())) {
+            if (!seen.has(id)) {
+                this.dead.delete(id);
             }
         }
         for (const id of Array.from(this.packages.keys())) {
@@ -260,6 +279,8 @@ export class HostedStateService extends ClientListener {
 
     private readonly packages = new Map<number, number>();
     private readonly lastSent = new Map<number, HostedStateSample>();
+    // the engine's isDead at the last poll, per hosted actor (finding 54)
+    private readonly dead = new Map<number, boolean>();
     private readonly hands = new Map<number, { right: number; left: number }>();
     private readonly equipChanges = new Map<number, number>();
     private lastPoll = 0;

@@ -161,7 +161,10 @@ pub struct CellMove {
     pub dest: u32,
     /// Whether the two exterior grid squares touch in one worldspace.
     pub adjacent: bool,
-    /// Whether the destination is an interior entered by a persistent actor.
+    /// Whether the move passes a door: an interior at either end, any actor's
+    /// (memo D54 B, 2026-10-28; the core asked the actor's persistence here
+    /// until then, and Riverwood's one resident placed without the flag paced
+    /// at her own door).
     pub door: bool,
     /// How far the reported position stands inside the destination's exterior
     /// square, in units from its nearest edge (u32::MAX for an interior or an
@@ -492,10 +495,11 @@ impl Cells {
                 // A door is a crossing too (Eli, playtest 37, 2026-10-28:
                 // Embry stood at the Sleeping Giant's door while Prisoner
                 // hosted the inn, his host's engine walking him back to it
-                // every few seconds): the simulator's persistent actor
-                // through a door into a cell another seat hosts passes to
-                // that host, so its schedule goes on indoors; an interior is
-                // deep by definition, an exit lands under the margin's brake
+                // every few seconds): the simulator's actor through a door
+                // into a cell another seat hosts passes to that host, so its
+                // schedule goes on indoors (any actor's door, memo D54 B); an
+                // interior is deep by definition, an exit lands under the
+                // margin's brake
                 if simulator == sender && (adjacent || door) {
                     if edge_units >= PASS_MARGIN_UNITS {
                         MoveVerdict::Pass
@@ -1121,6 +1125,45 @@ mod tests {
         let edge = CellMove { sender: C2, actor: EMBRY, origin: INN, dest: RIVERWOOD, adjacent: false, door: true, edge_units: PASS_MARGIN_UNITS - 1 };
         assert_eq!(d.may_move(&edge, 9_000), MoveVerdict::Follow);
         assert_eq!(d.simulator_of(EMBRY, RIVERWOOD), C2);
+    }
+
+    #[test]
+    fn the_door_fact_alone_vouches_for_any_actor_at_a_door() {
+        // memo D54 B (Eli, 2026-10-28): the core's door fact asked the actor's
+        // persistence until then, so Hilde 0x35534, Riverwood's one resident
+        // placed without the flag, was refused at her own door into
+        // RiverwoodSvensHouse 0x1cb84 and paced before it while her host's
+        // engine walked her back. The table never saw persistence; these are
+        // the facts the core sends for her now: her door into a house nobody
+        // hosts is her host's follow (the record moves, the host holds her
+        // there), a player loading the house takes her with the grant, a door
+        // into a house another seat hosts is the pass, and without the door
+        // fact a move into an interior stays refused
+        const HOUSE: u32 = 0x1cb84;
+        const HILDE: u32 = 0x35534;
+        let mut c = both_in_reach();
+        c.loaded(C1, RIVERWOOD, 1_000);
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: HILDE, origin: RIVERWOOD, dest: HOUSE, adjacent: false, door: false, edge_units: u32::MAX }, 2_000), MoveVerdict::Refuse);
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: HILDE, origin: RIVERWOOD, dest: HOUSE, adjacent: false, door: true, edge_units: u32::MAX }, 2_000), MoveVerdict::Follow);
+        assert_eq!(c.simulator_of(HILDE, HOUSE), C1);
+        assert_eq!(c.follows(), vec![(HILDE, C1, HOUSE)]);
+        // frozen for every other game: a stranger's report from the house is refused, her host's passes
+        assert_eq!(c.may_move(&CellMove { sender: C2, actor: HILDE, origin: HOUSE, dest: HOUSE, adjacent: false, door: false, edge_units: u32::MAX }, 2_100), MoveVerdict::Refuse);
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: HILDE, origin: HOUSE, dest: HOUSE, adjacent: false, door: false, edge_units: u32::MAX }, 2_200), MoveVerdict::Accept);
+        // a player loads the house: the grant ends the follow and names the simulator
+        c.reach(C2, &[RIVERWOOD, HOUSE], 2_900);
+        assert_eq!(c.loaded(C2, HOUSE, 3_000), vec![Decision::Grant { player: C2, cell: HOUSE, epoch: 1 }]);
+        assert_eq!(c.simulator_of(HILDE, HOUSE), C2);
+        assert_eq!(c.follows(), vec![]);
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: HILDE, origin: HOUSE, dest: HOUSE, adjacent: false, door: false, edge_units: u32::MAX }, 3_100), MoveVerdict::Refuse);
+        // a door into a house another seat hosts from the start: the pass
+        let mut d = both_in_reach();
+        d.reach(C2, &[RIVERWOOD, HOUSE], 0);
+        d.loaded(C1, RIVERWOOD, 1_000);
+        d.loaded(C2, HOUSE, 1_000);
+        assert_eq!(d.may_move(&CellMove { sender: C1, actor: HILDE, origin: RIVERWOOD, dest: HOUSE, adjacent: false, door: true, edge_units: u32::MAX }, 2_000), MoveVerdict::Pass);
+        assert_eq!(d.simulator_of(HILDE, HOUSE), C2);
+        assert_eq!(d.follows(), vec![]);
     }
 
     #[test]

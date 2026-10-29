@@ -1740,7 +1740,8 @@ void MpObjectReference::ProcessActivateNormal(
         // call of 2026-10-28, playtest 37, "let embry cross and hand him to
         // the inn's host": the record moves with the host's report and the
         // word flips to the destination's host, npc-handoff D9; a stranger's
-        // actor is refused) and asks
+        // actor is refused; any actor's door since memo D54 B of the same
+        // day, a non-persistent resident's into her own house too) and asks
         // the host's game to perform the activation for the actor
         // (ObjectReference.Activate with default processing, the engine's
         // own door transit); the record follows the host's next report

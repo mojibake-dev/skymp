@@ -266,7 +266,9 @@ public:
   bool IsInteriorCell(uint32_t cellOrWorld);
   // Whether `formId` is a persistent placed reference in the game files
   // (the record header's PersistentReference flag); false for a server-made
-  // form or an id no file has.
+  // form or an id no file has. The door rule asked it until memo D54 B
+  // (2026-10-28, every actor's door alike); CellHostTest reads it as that
+  // memo's premise.
   bool IsPersistentReference(uint32_t formId);
   // thuum docs/verbs/npc-fate.md (ADR-049): the game files' records at the
   // chunks around (x, y) of `cellOrWorld` (its grid squares, 4096 units),

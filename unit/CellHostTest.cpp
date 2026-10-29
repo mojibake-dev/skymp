@@ -36,6 +36,14 @@ namespace {
 constexpr uint32_t kTamriel = 0x3c;
 constexpr uint32_t kC1 = 0xff000c01;
 constexpr uint32_t kC2 = 0xff000c02;
+
+// a worn inventory entry's extra, as HitTest arms its aggressor (the helper
+// is that file's own, so it is spelled out here too)
+const auto kWornExtra = [] {
+  Inventory::ExtraData extra;
+  extra.worn_ = true;
+  return extra;
+}();
 constexpr uint32_t kWolf = 0xff000c03;
 constexpr uint32_t kC3 = 0xff000c04;
 // Whiterun's cow, an actor from Skyrim.esm (unit/NpcExists.cpp), in the
@@ -1892,6 +1900,14 @@ TEST_CASE("A hosted resident's melee hit its host reports is gated by reach",
   REQUIRE(p.worldState.LookupFormByIdNoLoad(kSigrid) != nullptr);
   auto& sigrid = p.worldState.GetFormAt<MpActor>(kSigrid);
   auto& victim = p.worldState.GetFormAt<MpActor>(kC2);
+  // her hit names a weapon her record's hands hold (an unarmed 0 is dropped by
+  // E_HIT_WEAPON before reach judges it, pipeline 3832's red): an iron sword
+  // (reach 1.0), as HitTest arms its aggressor
+  const uint32_t ironSword = 0x00012eb7;
+  sigrid.AddItem(ironSword, 1);
+  Equipment eq;
+  eq.inv.entries.push_back(Inventory::Entry(ironSword, 1, kWornExtra));
+  sigrid.SetEquipment(eq);
   const auto hitFrom = [&](const NiPoint3& victimPos) {
     victim.SetPos(victimPos);
     ActorValues full;
@@ -1906,11 +1922,11 @@ TEST_CASE("A hosted resident's melee hit its host reports is gated by reach",
     HitMessage hit;
     hit.data.aggressor = kSigrid;
     hit.data.target = kC2;
-    hit.data.source = 0;
+    hit.data.source = ironSword;
     p.GetActionListener().OnHit(raw, hit);
     return victim.GetChangeForm().actorValues.healthPercentage < 1.f;
   };
-  // 2000 units north of her: beyond any unarmed reach, refused
+  // 2000 units north of her: beyond the sword's reach, refused (E_HIT_REACH)
   REQUIRE_FALSE(hitFrom(sigridPos + NiPoint3{ 0.f, 2000.f, 0.f }));
   // 60 units north, on her heading: lands
   REQUIRE(hitFrom(sigridPos + NiPoint3{ 0.f, 60.f, 0.f }));

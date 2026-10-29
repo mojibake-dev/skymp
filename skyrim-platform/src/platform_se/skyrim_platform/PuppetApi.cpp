@@ -24,6 +24,7 @@
 #include <chrono>
 #include <cmath>
 #include <mutex>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -668,8 +669,10 @@ void ActivatePickRefTask(int vendorFramesLeft)
     // returns the value it read before recomputing (Actor.cpp:610, the local
     // taken first), so the first live run read null for all 30 frames while
     // the recompute filled the cache each frame and the menu found the shop
-    // topic anyway (playtest 37, 03:40Z, "shop worked!")
-    actor->GetVendorFaction();
+    // topic anyway (playtest 37, 03:40Z, "shop worked!"). The call is for
+    // its recompute alone; its [[nodiscard]] return is the stale value, so
+    // it is dropped on purpose (MSVC C4834 is an error in the client build)
+    std::ignore = actor->GetVendorFaction();
     if (IsVendorActor(*actor) && rt.vendorFaction == nullptr) {
       auto* cell = actor->GetParentCell();
       auto* calendar = RE::Calendar::GetSingleton();

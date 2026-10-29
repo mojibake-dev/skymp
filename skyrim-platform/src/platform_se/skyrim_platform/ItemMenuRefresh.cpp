@@ -1,5 +1,6 @@
 #include "ItemMenuRefresh.h"
 
+#include <RE/A/Actor.h>
 #include <RE/B/BarterMenu.h>
 #include <RE/C/ContainerMenu.h>
 #include <RE/G/GiftMenu.h>
@@ -29,7 +30,11 @@ bool ItemMenuRefresh::Shows(RE::TESObjectREFR& owner)
   if (owner.formID == 0x14) {
     return true;
   }
-  if (!ui->IsMenuOpen(RE::ContainerMenu::MENU_NAME)) {
+  // a body's loot menu never: Eli's repro of the crash (02:2xZ) is "crash
+  // happens when i open a corpse container", the body's inventory landing
+  // and posting as its menu builds; a dead actor's rows are the engine's own
+  // to build, the change shows at the next open as before tonight
+  if (owner.As<RE::Actor>() || !ui->IsMenuOpen(RE::ContainerMenu::MENU_NAME)) {
     return false;
   }
   const auto target = RE::ContainerMenu::GetTargetRefHandle();

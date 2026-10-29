@@ -45,6 +45,11 @@ struct ConditionEvaluatorContext
   // (the claimed cast's record, from the caster's game's report), for
   // EffectWasDualCast (724); false from every other caller
   bool effectWasDualCast = false;
+  // who asks (set by EvaluateConditions from its caller argument): a
+  // function whose server-side answer depends on the asker reads it, HasPerk
+  // first (a recipe's perk gate is the player's own game's, an effect's rider
+  // the server's; playtest 37's overnight train, 2026-10-29)
+  ConditionsEvaluatorCaller caller = ConditionsEvaluatorCaller::kMagicEffect;
 };
 
 class ConditionsEvaluator

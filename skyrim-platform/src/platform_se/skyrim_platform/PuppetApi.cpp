@@ -662,7 +662,13 @@ void ActivatePickRefTask(int vendorFramesLeft)
     auto& rt = actor->GetActorRuntimeData();
     rt.calculateVendorFactionTimer.timeStamp = -FLT_MAX;
     rt.vendorFaction = nullptr;
-    if (IsVendorActor(*actor) && !actor->GetVendorFaction()) {
+    // the recompute, then the cache read AFTER it: the pin's GetVendorFaction
+    // returns the value it read before recomputing (Actor.cpp:610, the local
+    // taken first), so the first live run read null for all 30 frames while
+    // the recompute filled the cache each frame and the menu found the shop
+    // topic anyway (playtest 37, 03:40Z, "shop worked!")
+    actor->GetVendorFaction();
+    if (IsVendorActor(*actor) && rt.vendorFaction == nullptr) {
       auto* cell = actor->GetParentCell();
       auto* calendar = RE::Calendar::GetSingleton();
       if (vendorFramesLeft > 0) {

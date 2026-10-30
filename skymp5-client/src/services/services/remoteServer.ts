@@ -217,10 +217,35 @@ export class RemoteServer extends ClientListener {
         return;
       }
 
-      refr.activate(Game.getPlayer(), true);
-
       const baseObject = refr.getBaseObject();
       const baseType = baseObject?.getType();
+
+      // thuum docs/verbs/npc-fate.md D71 (x-body-open-guest v2 215922): a body
+      // released from the puppet state at its death keeps its AI off (the
+      // promote's dead branch, H-54e: a corpse with its AI on walks), and the
+      // engine refuses every activation of it in that state, the player's E
+      // and this handler's alike; with the AI on it takes one. So the AI
+      // goes on for the open alone and off again at the first sight of the
+      // menu, or after kCorpseAiMs if none comes: the game pauses in the
+      // menu, so nothing walks while it is open.
+      let corpseAi: Actor | null = null;
+      if (baseType === FormType.NPC) {
+        const ac = Actor.from(refr);
+        if (ac && ac.isDead() && !ac.isAIEnabled()) {
+          ac.enableAI(true);
+          corpseAi = ac;
+          logTrace(this, `body ${localId.toString(16)}: AI on for the server's open (D71)`);
+        }
+      }
+      const corpseAiOff = (why: string) => {
+        if (corpseAi) {
+          corpseAi.enableAI(false);
+          corpseAi = null;
+          logTrace(this, `body ${localId.toString(16)}: AI off again, ${why} (D71, H-54e)`);
+        }
+      };
+
+      refr.activate(Game.getPlayer(), true);
 
       let functionChecker: (() => boolean) | null = null;
       // a bed's own open fact, set on the furniture path alone (F2 below)
@@ -273,20 +298,30 @@ export class RemoteServer extends ClientListener {
         // On giving up the second activation is still sent, which the server
         // takes without the reach check, so the occupant is released.
         const kOpenDeadlineMs = 15000;
+        const kCorpseAiMs = 2000;
         const openDeadline = Date.now() + kOpenDeadlineMs;
+        const corpseAiDeadline = Date.now() + kCorpseAiMs;
         let opened = true;
         logTrace(this, "onOpenContainerMesage - waiting for", factName, "to be true");
         while (!functionChecker()) {
           if (openedAsBed !== null && openedAsBed()) {
+            corpseAiOff("a bed opened instead");
             logTrace(this, "onOpenContainerMesage - the Sleep/Wait Menu opened: a bed, which seats nobody; no second activation (finding 31, F2)");
             return;
+          }
+          if (corpseAi && Date.now() > corpseAiDeadline) {
+            corpseAiOff("no menu within " + kCorpseAiMs + " ms");
           }
           if (Date.now() > openDeadline) {
             opened = false;
             break;
           }
-          await Utility.wait(0.1);
+          // menu mode: the open is seen the moment it comes, while the game
+          // pauses in the menu (D71); the wait for the close below stays game
+          // time, which resumes at the close
+          await Utility.waitMenuMode(0.1);
         }
+        corpseAiOff(opened ? "the menu is open" : "the menu never opened");
 
         if (opened) {
           logTrace(this, "onOpenContainerMesage - waiting for", factName, "to be false");

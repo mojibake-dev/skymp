@@ -348,6 +348,20 @@ public:
   void RecordDeathAt(std::chrono::steady_clock::time_point at);
   std::optional<std::chrono::milliseconds> DiedAgo(
     std::chrono::steady_clock::time_point now) const;
+  // thuum docs/verbs/npc-fate.md ("Reanimation is any player's, on any
+  // body"; finding 65's placed corpses): when the server last accepted a
+  // reanimate hit on this body (ActionListener::OnHit, ahead of
+  // CastReanimateOnHost). A placement that starts dead has no death to
+  // grace and no engine stand-up of its own to record, so its host's live
+  // sample stands it on the record only within kReanimateWindowMs of an
+  // accepted reanimate: the cast's rule, not the sample's
+  // (ActionListener::OnHostedActorState)
+  void NoteReanimateAccepted(std::chrono::steady_clock::time_point at);
+  std::optional<std::chrono::milliseconds> ReanimateAcceptedAgo(
+    std::chrono::steady_clock::time_point now) const;
+  // the host's round trip, the cast's flight on its engine and the sampler's
+  // cadence, with room; a bound of the server's policy, not an engine number
+  static constexpr uint64_t kReanimateWindowMs = 10'000;
   void Teleport(const LocationalData& position);
   void SetSpawnPoint(const LocationalData& position);
   LocationalData GetSpawnPoint() const;

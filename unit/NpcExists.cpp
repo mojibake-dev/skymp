@@ -328,3 +328,65 @@ TEST_CASE("A placement that starts dead loads as a dead record with no "
   REQUIRE(body.IsDead());
   partOne.DestroyActor(kFloorBody);
 }
+
+// the restart (the train's review, 2026-10-29): the save holds the floor
+// body's ChangeForm (dead, its loot as the seats left it), and the loader
+// applies it over the attach. MarkPlacedDead runs inside the attach, before
+// the saved form applies, so ApplyChangeForm's respawn of a dead record
+// (RespawnWithDelay) yields: the record stays the placed corpse with no
+// respawn due
+TEST_CASE("A placement that starts dead whose ChangeForm the save holds "
+          "loads dead with no respawn due (finding 65, the restart)",
+          "[NpcExists][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  constexpr uint32_t kFloorBody = 0x3b9ea;
+  constexpr uint32_t kBarrow = 0x371de;
+  const NiPoint3 kAt{ 100.f, 200.f, 0.f };
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kFloorBody) == nullptr);
+
+  // the base the game files give the placement, as a save would carry it
+  // (the Hod case above)
+  auto lookupRes = p.GetEspm().GetBrowser().LookupById(kFloorBody);
+  REQUIRE(lookupRes.rec);
+  REQUIRE(lookupRes.rec->GetType() == espm::ACHR::kType);
+  auto* refrRecord = reinterpret_cast<const espm::REFR*>(lookupRes.rec);
+  espm::CompressedFieldsCache cache;
+  const uint32_t baseId =
+    lookupRes.ToGlobalId(refrRecord->GetData(cache).baseId);
+  REQUIRE(baseId != 0);
+
+  MpChangeForm saved;
+  saved.recType = MpChangeForm::ACHR;
+  saved.formDesc = FormDesc::FromFormId(kFloorBody, p.worldState.espmFiles);
+  saved.baseDesc = FormDesc::FromFormId(baseId, p.worldState.espmFiles);
+  saved.worldOrCellDesc =
+    FormDesc::FromFormId(kBarrow, p.worldState.espmFiles);
+  saved.position = kAt;
+  saved.angle = { 0.f, 0.f, 0.f };
+  saved.isDead = true;
+  saved.actorValues.healthPercentage = 0.f;
+  saved.actorValues.magickaPercentage = 0.f;
+  saved.actorValues.staminaPercentage = 0.f;
+
+  // deferred, then the eager load applies the save over the attach
+  p.worldState.LoadChangeForm(saved, p.CreateFormCallbacks());
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kFloorBody) == nullptr);
+  p.worldState.LoadDeferredActors();
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kFloorBody) != nullptr);
+  auto& body = p.worldState.GetFormAt<MpActor>(kFloorBody);
+  REQUIRE(body.GetPos().x == Catch::Approx(kAt.x));
+  REQUIRE(body.GetPos().y == Catch::Approx(kAt.y));
+  REQUIRE(body.IsDead());
+  REQUIRE(body.IsPlacedDead());
+  REQUIRE_FALSE(body.IsRespawning());
+  REQUIRE(p.worldState.fateRespawnDue.count(kFloorBody) == 0);
+  REQUIRE(body.GetChangeForm().actorValues.healthPercentage == 0.f);
+  // a load's or a death word's respawn never stands it
+  body.RespawnWithDelay();
+  REQUIRE_FALSE(body.IsRespawning());
+  REQUIRE(p.worldState.fateRespawnDue.count(kFloorBody) == 0);
+  REQUIRE(body.IsDead());
+  p.DestroyActor(kFloorBody);
+}

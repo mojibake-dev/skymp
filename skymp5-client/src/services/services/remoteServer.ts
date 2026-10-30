@@ -213,6 +213,8 @@ export class RemoteServer extends ClientListener {
       const baseType = baseObject?.getType();
 
       let functionChecker: (() => boolean) | null = null;
+      // a bed's own open fact, set on the furniture path alone (F2 below)
+      let openedAsBed: (() => boolean) | null = null;
       let factName = "";
       let delaySeconds = -1.0;
       if (baseType === FormType.Container) {
@@ -223,6 +225,19 @@ export class RemoteServer extends ClientListener {
         functionChecker = () => !!Game.getPlayer()?.getFurnitureReference();
         factName = "'getFurnitureReference not null'";
         delaySeconds = 1.0;
+        // F2 (thuum docs/verbs/rest.md "A stuck wait", playtest 37's finding
+        // 31): a vanilla bed opens the Sleep/Wait Menu and never seats the
+        // player, which is why the server's bed branch sets no occupant
+        // (MpObjectReference::ProcessActivateNormal, IsSleepFurniture). So
+        // getFurnitureReference stayed null through every sleep, this wait
+        // ran its 15 s out while the rest was already granted, and the "gave
+        // up waiting ... releasing the occupant" line was noise for a bed
+        // with no occupant. The open menu is the bed's open fact; the flow
+        // ends there, with no second activation to send (the server's second
+        // activation of a FURN only clears an occupant, ProcessActivateSecond).
+        // A chair's path is unchanged: its menu never opens.
+        // RE::SleepWaitMenu::MENU_NAME (CommonLibSSE-NG include/RE/S/SleepWaitMenu.h:16).
+        openedAsBed = () => Ui.isMenuOpen("Sleep/Wait Menu");
       } else if (baseType === FormType.NPC && Actor.from(refr)?.isDead()) {
         // thuum docs/verbs/npc-fate.md (the deaths): a corpse is a container
         functionChecker = () => Ui.isMenuOpen("ContainerMenu");
@@ -252,6 +267,10 @@ export class RemoteServer extends ClientListener {
         let opened = true;
         logTrace(this, "onOpenContainerMesage - waiting for", factName, "to be true");
         while (!functionChecker()) {
+          if (openedAsBed !== null && openedAsBed()) {
+            logTrace(this, "onOpenContainerMesage - the Sleep/Wait Menu opened: a bed, which seats nobody; no second activation (finding 31, F2)");
+            return;
+          }
           if (Date.now() > openDeadline) {
             opened = false;
             break;

@@ -2,6 +2,9 @@
 #include "MpChangeForms.h"
 #include "MsgType.h"
 #include "TestUtils.hpp"
+#include "libespm/Convert.h"
+#include "libespm/QUST.h"
+#include <algorithm>
 #include <catch2/catch_all.hpp>
 #include <simdjson.h>
 #include <tuple>
@@ -178,6 +181,83 @@ TEST_CASE("A stage of a form in no loaded plugin, of a form that is no "
   REQUIRE(p.GetQuestStages().empty());
   REQUIRE(SentTo(p, 1).empty());
   REQUIRE(SentTo(p, 0).empty());
+  Leave(p);
+}
+
+// the review of m3-pass-train-2, finding 2 (rule 5): the stage index is
+// checked against the quest's own INDX list, read from the same browser the
+// handler reads
+TEST_CASE("A stage the quest's record does not define is refused "
+          "(E_QUEST_STAGE) and records nothing; a stage it defines passes",
+          "[QuestStage][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  const auto qust =
+    espm::Convert<espm::QUST>(p.GetEspm().GetBrowser().LookupById(kMs13).rec);
+  REQUIRE(qust);
+  std::vector<uint16_t> indexes;
+  for (const auto& stage : qust->GetQuestStages(p.worldState.GetEspmCache())) {
+    REQUIRE(stage.journalIndex);
+    indexes.push_back(static_cast<uint16_t>(stage.journalIndex->index));
+  }
+  REQUIRE(std::find(indexes.begin(), indexes.end(), 10) != indexes.end());
+  REQUIRE(std::find(indexes.begin(), indexes.end(), 9999) == indexes.end());
+
+  Report(p, 0, kMs13, 9999);
+  REQUIRE(p.GetQuestStages().empty());
+  REQUIRE(SentTo(p, 1).empty());
+  REQUIRE(SentTo(p, 0).empty());
+
+  Report(p, 0, kMs13, 10);
+  REQUIRE(p.GetQuestStages() ==
+          std::vector<QuestStageDone>{
+            { FormDesc::FromString("39645:Skyrim.esm"), 10 } });
+  REQUIRE(SentTo(p, 1) == std::vector<Sent>{ Msg(kMs13, 10) });
+  Leave(p);
+}
+
+// finding 2 (rule 12): the world's record is bounded at wire-rules
+// quest_stages' QUEST_RECORD_CAP, 4096 pairs; the record is filled directly
+// (no INDX check on the record itself, an older record's stages stay)
+TEST_CASE("A report past the record's cap is refused (E_QUEST_FULL) and "
+          "records nothing; a stage already in the full record is still a "
+          "no-op; one below the cap takes one more stage",
+          "[QuestStage][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  const FormDesc ms13 = FormDesc::FromString("39645:Skyrim.esm");
+  std::vector<QuestStageDone> full;
+  for (uint16_t stage = 11; stage <= 4106; ++stage) {
+    full.push_back({ ms13, stage });
+  }
+  REQUIRE(full.size() == 4096);
+  p.SetQuestStages(full);
+
+  // MS13's stage 10 is a stage the quest defines and the record lacks
+  Report(p, 0, kMs13, 10);
+  REQUIRE(p.GetQuestStages() == full);
+  REQUIRE(SentTo(p, 1).empty());
+  REQUIRE(SentTo(p, 0).empty());
+
+  // a stage in the record already: a no-op, as below the cap
+  Report(p, 0, kMs13, 20);
+  REQUIRE(p.GetQuestStages() == full);
+  REQUIRE(SentTo(p, 1).empty());
+
+  // one below the cap: the stage joins the record, which is then full
+  full.pop_back();
+  p.SetQuestStages(full);
+  Report(p, 0, kMs13, 10);
+  REQUIRE(p.GetQuestStages().size() == 4096);
+  REQUIRE(p.QuestStageDoneAlready({ ms13, 10 }));
+  REQUIRE(SentTo(p, 1) == std::vector<Sent>{ Msg(kMs13, 10) });
+  p.Messages().clear();
+  Report(p, 0, kMs13, 5);
+  REQUIRE(p.GetQuestStages().size() == 4096);
+  REQUIRE(!p.QuestStageDoneAlready({ ms13, 5 }));
+  REQUIRE(SentTo(p, 1).empty());
   Leave(p);
 }
 

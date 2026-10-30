@@ -2814,6 +2814,29 @@ bool IsSeatsOwnQuest(PartOne& partOne, const FormDesc& quest,
   return data.questData &&
     (data.questData->mainFlags & espm::QUST::QuestData::StartGameEnabled);
 }
+
+// Rule 5 (the review of m3-pass-train-2, finding 2): the stage index is the
+// record's to check, as the start flag is. A quest's stages are its INDX
+// fields (libespm QUST.h QuestStage::JournalIndex, QUST.cpp GetQuestStages),
+// int16 in the record and u16 on the wire, compared at the wire's width. A
+// stage the quest does not define is refused (E_QUEST_STAGE) instead of
+// recorded for every seat's engine to park in its journal.
+bool QuestHasStage(PartOne& partOne, const espm::RecordHeader* record,
+                   uint16_t stage)
+{
+  const auto qust = espm::Convert<espm::QUST>(record);
+  if (!qust) {
+    return false;
+  }
+  for (const auto& questStage :
+       qust->GetQuestStages(partOne.worldState.GetEspmCache())) {
+    if (questStage.journalIndex &&
+        static_cast<uint16_t>(questStage.journalIndex->index) == stage) {
+      return true;
+    }
+  }
+  return false;
+}
 }
 
 // thuum docs/verbs/quest-stage.md (ADR-056; memo D58 B): a player's game
@@ -2823,7 +2846,11 @@ bool IsSeatsOwnQuest(PartOne& partOne, const FormDesc& quest,
 // starts by itself unless allowed, memo D62; R1), records the stage as the
 // world's (R0) and relays it to every other connected player; a stage the
 // world already has is a no-op, never an error. A client names no list, no
-// mode and no quest 0: those are the login replay's, server to client.
+// mode and no quest 0: those are the login replay's, server to client. The
+// stage must be one the quest's record defines (QUST INDX, E_QUEST_STAGE),
+// and the world's record is bounded (wire-rules quest_stages
+// QUEST_RECORD_CAP, E_QUEST_FULL): rule 12's explicit resource bound on a
+// client-fed table.
 void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
                                   const QuestStageMessage& msg)
 {
@@ -2857,6 +2884,13 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
                         rawMsgData.userId, actor->GetFormId(), msg.stage,
                         msg.quest);
   }
+  if (!QuestHasStage(partOne, lookup.rec, msg.stage)) {
+    return spdlog::info("E_QUEST_STAGE: user {} actor {:x} reported stage {} "
+                        "of {}, a stage the quest's record does not define "
+                        "(QUST INDX)",
+                        rawMsgData.userId, actor->GetFormId(), msg.stage,
+                        quest.ToString());
+  }
   if (IsSeatsOwnQuest(partOne, quest, lookup.rec)) {
     return spdlog::info("E_QUEST_OWN_START: user {} actor {:x} reported stage "
                         "{} of {}: a start-game-enabled quest is each seat's "
@@ -2882,6 +2916,22 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
                          "of {}, already the world's",
                          rawMsgData.userId, actor->GetFormId(), msg.stage,
                          quest.ToString());
+  }
+  if (partOne.QuestRecordFull()) {
+    // the record is the world's, not a seat's, and every report past the
+    // cap says the same thing: one warn line per 10 s
+    static std::chrono::steady_clock::time_point lastFull;
+    const auto now = std::chrono::steady_clock::now();
+    if (lastFull == std::chrono::steady_clock::time_point() ||
+        now - lastFull >= std::chrono::seconds(10)) {
+      spdlog::warn("E_QUEST_FULL: user {} actor {:x} reported stage {} of {}: "
+                   "the world's quest record holds its cap of {} stages, "
+                   "refused (one line per 10 s)",
+                   rawMsgData.userId, actor->GetFormId(), msg.stage,
+                   quest.ToString(), partOne.GetQuestStages().size());
+      lastFull = now;
+    }
+    return;
   }
   partOne.SetQuestStages(partOne.MergeQuestStage(done));
 

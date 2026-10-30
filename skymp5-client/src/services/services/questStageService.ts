@@ -2,6 +2,7 @@ import { Quest, QuestStageEvent, QuestStartStopEvent } from "skyrimPlatform";
 import { MsgType } from "../../messages";
 import { logError, logLab, logTrace } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
+import { CreateActorMessage } from "../messages/createActorMessage";
 import { QuestStageMessage } from "../messages/questStageMessage";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 
@@ -68,11 +69,16 @@ const ARRIVAL_WINDOW_MS = 3000;
 // camp is the landing) attaches with none to report, so its Story Manager
 // never starts the location's quests, while a seat placed in from outside
 // logged locationChanged and questStart in one millisecond
-// (x-story-manager-walk 20261029-205447). Once per login, after the server's
-// list has come and the game has loaded, this service asks
-// TESModPlatform.SendStoryChangeLocation for the same event from no location
-// to the player's current one, through the engine's own story event queue,
-// from the update pass (callNative needs the VM context). HYPOTHESIS until
+// (x-story-manager-walk 20261029-205447). Once per login, after the server
+// has created this connection's own actor (CreateActor with isMe, the login
+// itself; HostService reads the same message for its tables) and the game
+// has loaded, this service asks TESModPlatform.SendStoryChangeLocation for
+// the same event from no location to the player's current one, through the
+// engine's own story event queue, from the update pass (callNative needs the
+// VM context). The sharing-mode message is no part of the condition: a
+// server with nothing shared sends none (the review of m3-pass-train-2,
+// finding 3), and the arrival is the login's, whatever is shared. Every new
+// connection starts the once-per-login flags over. HYPOTHESIS until
 // x-story-manager-walk v3: the Story Manager then starts what an arrival
 // starts. Behind the client setting storyArrivalAtLogin (default on).
 // Slice two (the verb doc's "Slice two", the re-analyst's read of
@@ -94,6 +100,8 @@ export class QuestStageService extends ClientListener {
         this.controller.on("questStart", (e) => this.onQuestStart(e));
         this.controller.on("update", () => this.onUpdate());
         this.controller.emitter.on("gameLoad", () => this.onGameLoad());
+        this.controller.emitter.on("createActorMessage", (e) => this.onCreateActor(e));
+        this.controller.emitter.on("connectionAccepted", () => this.onConnectionAccepted());
         this.resume();
     }
 
@@ -107,9 +115,6 @@ export class QuestStageService extends ClientListener {
             this.setShared(mode, ids);
             this.sp.storage[SHARED_STORAGE_KEY] = { mode, ids };
             logTrace(this, "the server shares quests in mode", QuestStageService.modeName(mode) + ":", ids.length, mode === MODE_ALL ? "quest(s) denied" : "quest(s) listed");
-            // the list comes once per login (PartOne::SetUserActor): the
-            // login's arrival is due once the game has loaded too (H-56a)
-            this.arrivalListSeen = true;
             return;
         }
         this.pending.push({ quest: m.quest, stage: m.stage });
@@ -321,12 +326,31 @@ export class QuestStageService extends ClientListener {
         this.arrivalGameLoaded = true;
     }
 
-    // the login's arrival, from the update pass: once the server's list has
-    // come and the game has loaded, the Change Location event from no location
-    // to the player's current one, once; a player in no location gets none
-    // (the engine's own event comes at the first location entered)
+    // the server's CreateActor of this connection's own actor (isMe: a login,
+    // a reconnect, a restart, as HostService reads it): the login half of
+    // the arrival's condition. The game's load follows it on a fresh launch
+    // (RemoteServer loads the save for the actor it was given)
+    private onCreateActor(e: ConnectionMessage<CreateActorMessage>) {
+        if (!e.message.isMe) {
+            return;
+        }
+        this.arrivalLoginSeen = true;
+    }
+
+    // a new connection (NetworkingService's connectionAccepted, before the
+    // server's CreateActor): the once-per-login flags start over, so each
+    // login's arrival is its own and none is carried across a reconnect
+    private onConnectionAccepted() {
+        this.arrivalDone();
+    }
+
+    // the login's arrival, from the update pass: once this connection's own
+    // actor has been created and the game has loaded, the Change Location
+    // event from no location to the player's current one, once; a player in
+    // no location gets none (the engine's own event comes at the first
+    // location entered)
     private arrival() {
-        if (!this.arrivalListSeen || !this.arrivalGameLoaded) {
+        if (!this.arrivalLoginSeen || !this.arrivalGameLoaded) {
             return;
         }
         if (!this.arrivalEnabled()) {
@@ -362,7 +386,7 @@ export class QuestStageService extends ClientListener {
     }
 
     private arrivalDone() {
-        this.arrivalListSeen = false;
+        this.arrivalLoginSeen = false;
         this.arrivalGameLoaded = false;
         this.arrivalDeadline = 0;
     }
@@ -438,9 +462,10 @@ export class QuestStageService extends ClientListener {
     // refused Quest.Start here; applied at the engine's own start of each
     private parked = new Map<number, number>();
     private missing = new Set<number>();
-    // the login's arrival: the server's list has come; the game has loaded;
-    // the window's end once both hold (0 until then)
-    private arrivalListSeen = false;
+    // the login's arrival: this connection's own actor has been created; the
+    // game has loaded; the window's end once both hold (0 until then). All
+    // three start over at every connectionAccepted
+    private arrivalLoginSeen = false;
     private arrivalGameLoaded = false;
     private arrivalDeadline = 0;
 }

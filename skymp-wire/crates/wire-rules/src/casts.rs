@@ -19,10 +19,28 @@ pub const CAST_WINDOW_MS: u64 = 17_000;
 /// and the target's size, as an arrow's.
 pub const RANGE_SLACK: f32 = 256.0;
 
-/// The most a concentration hit counts, seconds: a report after a longer gap
-/// (the stream's way to its target, a report lost) counts this much, so a
-/// stream never counts time it did not hold its target.
+/// What a stream's FIRST report on a target counts at most, milliseconds (the
+/// stream's way to its target), and what a report after a hole longer than
+/// `HOLE_MS` counts (a re-contact): one cadence and a little, so a stream
+/// never counts time it did not hold its target.
 pub const MAX_TICK_MS: u64 = 250;
+
+/// The longest gap between two of a stream's reports on a target that still
+/// counts in full, milliseconds (thuum docs/verbs/spell-cast.md, the stream's
+/// number under dropped reports, 2026-10-30): the engine burns every frame of
+/// contact whatever the hit events do (ADR-031), and the caster's game drops
+/// a report now and then under slow frames, so a gap of a few cadences is a
+/// lost report, not a lost target, and counts as the engine counted it; a
+/// longer gap is the stream off its target, and its next report counts one
+/// cadence (`MAX_TICK_MS`). The rule is a single stream's: with the same
+/// spell streaming from both hands the reports do not say which hand, each
+/// takes the hand that waited longest, and a hand off its target would be
+/// credited the other's time, so two hands keep the cap per report (the
+/// x-dual-stack read). b-duel's Flames hold read 14 reports with holes
+/// of two to four cadences where the engine had dealt the damage (run set
+/// 20261030-050437); under the old cap of one cadence per report those holes
+/// cost four to eight points and the claim its margin.
+pub const HOLE_MS: u64 = 1_000;
 
 /// How long after an area spell's first hit its other targets may claim the
 /// same cast, milliseconds: the server's splash window for weapons
@@ -186,6 +204,10 @@ struct Open {
     last_counted_ms: u64,
     /// As `Released::relay_pending`.
     relay_pending: bool,
+    /// A report has counted on this stream (the first counts the way to
+    /// the target, `MAX_TICK_MS` at most; the later ones their gap in full
+    /// up to `HOLE_MS`).
+    counted: bool,
 }
 
 /// A cast whose records reach other spells, kept for its linger.
@@ -265,7 +287,7 @@ impl Casts {
             }
             CastKind::Concentration => {
                 if let Some(slot) = casts.open.get_mut(hand) {
-                    *slot = Some(Open { facts, last_counted_ms: now_ms, relay_pending: facts.lands_on_target });
+                    *slot = Some(Open { facts, last_counted_ms: now_ms, relay_pending: facts.lands_on_target, counted: false });
                 }
             }
         }
@@ -303,7 +325,11 @@ impl Casts {
     }
 
     /// A hit by `actor` at `now_ms`: an open stream of the hit's spell
-    /// counts the time since its last counted hit, at most MAX_TICK_MS (with
+    /// counts the time since its last counted hit: the first report
+    /// MAX_TICK_MS at most (the way to the target), a later one of the
+    /// spell's only stream its gap in full up to HOLE_MS (a lost report is
+    /// not a lost target), and after a longer hole MAX_TICK_MS again (a
+    /// re-contact) (with
     /// a stream of that spell in each hand, the one whose last counted hit is
     /// oldest: the game runs each hand's stream as an effect of its own on
     /// the target, both working, and its hit reports do not say which hand,
@@ -320,6 +346,7 @@ impl Casts {
             return CastCheck::NoCast;
         }
         let mut any = false;
+        let mut streams = 0_u8;
         let mut oldest: Option<(usize, u64)> = None;
         for (hand, open) in casts.open.iter().enumerate() {
             let Some(open) = open else {
@@ -329,12 +356,17 @@ impl Casts {
                 continue;
             }
             any = true;
+            streams = streams.saturating_add(1);
             if within(&open.facts, x, y, z) && oldest.is_none_or(|(_, at)| open.last_counted_ms < at) {
                 oldest = Some((hand, open.last_counted_ms));
             }
         }
         if let Some(open) = oldest.and_then(|(hand, _)| casts.open.get_mut(hand)).and_then(Option::as_mut) {
-            let tick_ms = now_ms.saturating_sub(open.last_counted_ms).min(MAX_TICK_MS);
+            let gap_ms = now_ms.saturating_sub(open.last_counted_ms);
+            // one stream of the spell: a later report's gap in full up to the
+            // hole; two hands, a first report or a longer hole: the cap
+            let tick_ms = if streams == 1 && open.counted && gap_ms <= HOLE_MS { gap_ms } else { gap_ms.min(MAX_TICK_MS) };
+            open.counted = true;
             open.last_counted_ms = now_ms;
             let scale = f32::from(u16::try_from(tick_ms).unwrap_or(u16::MAX)) / 1000.0;
             let relay = std::mem::replace(&mut open.relay_pending, false);
@@ -523,6 +555,25 @@ mod tests {
         // a new stream in the same hand waits again
         assert!(c.start(1, landing(FLAMES, CastKind::Concentration), 1_000));
         assert_eq!(c.claim(1, hit(FLAMES, 2, 100.0, 0.0, 0.0), 1_100), CastCheck::Claimed { scale: 0.1, relay: true, dual: false });
+    }
+
+    #[test]
+    fn a_streams_report_after_a_hole_counts_the_hole_and_a_re_contact_one_cadence() {
+        let mut c = Casts::default();
+        assert!(c.start(1, landing(FLAMES, CastKind::Concentration), 0));
+        // the way to the target: the first report counts one cadence at most
+        assert_eq!(c.claim(1, hit(FLAMES, 2, 100.0, 0.0, 0.0), 600), CastCheck::Claimed { scale: 0.25, relay: true, dual: false });
+        // a lost report: the gap counts in full, as the engine burned it
+        assert_eq!(c.claim(1, hit(FLAMES, 2, 100.0, 0.0, 0.0), 1_300), CastCheck::Claimed { scale: 0.7, relay: false, dual: false });
+        // the engine's own cadence counts in full as before
+        assert_eq!(c.claim(1, hit(FLAMES, 2, 100.0, 0.0, 0.0), 1_483), CastCheck::Claimed { scale: 0.183, relay: false, dual: false });
+        // a hole of a second and a half: the stream was off its target, its re-contact counts one cadence
+        assert_eq!(c.claim(1, hit(FLAMES, 2, 100.0, 0.0, 0.0), 2_983), CastCheck::Claimed { scale: 0.25, relay: false, dual: false });
+        // exactly a second still counts in full
+        assert_eq!(c.claim(1, hit(FLAMES, 2, 100.0, 0.0, 0.0), 3_983), CastCheck::Claimed { scale: 1.0, relay: false, dual: false });
+        // a second stream of the same spell in the other hand: the cap per report again
+        c.start(1, cast(FLAMES, 0, CastKind::Concentration, false), 4_000);
+        assert_eq!(c.claim(1, hit(FLAMES, 2, 100.0, 0.0, 0.0), 4_700), CastCheck::Claimed { scale: 0.25, relay: false, dual: false });
     }
 
     #[test]

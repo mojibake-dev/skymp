@@ -1498,9 +1498,11 @@ bool TESModPlatform::SendStoryChangeLocation(IVM* vm, StackID stackId,
   return true;
 }
 
-// thuum docs/verbs/quest-stage.md, slice two: the pair goes to the quest
-// stage sink's replacement (FridaHooks.cpp); the stage is the engine's u16
-// (CommonLibSSE-NG TESQuestStageEvent.h:11)
+// thuum docs/verbs/quest-stage.md, slice two: one mark on the pair for the
+// quest stage sink's replacement (FridaHooks.cpp), which consumes it at the
+// pair's first event; Release is the client's safety 10 s after the apply,
+// for a mark no event claimed. The stage is the engine's u16 (CommonLibSSE-NG
+// TESQuestStageEvent.h:11)
 bool TESModPlatform::SuppressQuestStageFragment(IVM* vm, StackID stackId,
                                                 RE::StaticFunctionTag*,
                                                 RE::TESQuest* quest,

@@ -1484,8 +1484,12 @@ mod ffi {
         /// no-op).
         fn quest_stage_done(record: &[QuestStageEntry], done: &QuestStageEntry) -> bool;
         /// The record after a checked report: the stage added once, ascending
-        /// within its quest.
+        /// within its quest; unchanged when the record is full.
         fn quest_stages_merge(record: &[QuestStageEntry], done: &QuestStageEntry) -> Vec<QuestStageEntry>;
+        /// Whether the record is at wire-rules' QUEST_RECORD_CAP (4096
+        /// pairs), so a new stage is refused (E_QUEST_FULL) and the merge
+        /// would leave the record as it is.
+        fn quest_record_full(record: &[QuestStageEntry]) -> bool;
 
         /// thuum docs/verbs/spell-placed-object.md (ADR-057): the objects
         /// server-settings.json's `spellPlacedObjects` names per spell, and
@@ -2335,6 +2339,10 @@ fn quest_stage_done(record: &[QuestStageEntry], done: &QuestStageEntry) -> bool 
 
 fn quest_stages_merge(record: &[QuestStageEntry], done: &QuestStageEntry) -> Vec<QuestStageEntry> {
     to_stage_entries(&quest_stages::merge(&to_stages(record), &to_stage(done)))
+}
+
+fn quest_record_full(record: &[QuestStageEntry]) -> bool {
+    quest_stages::full(record.len())
 }
 
 /// The spell-placed objects' table and the sets standing (wire-rules
@@ -3300,6 +3308,13 @@ mod tests {
         assert_eq!(quest_stages_merge(&record, &e(0x74a83, 20)), record);
         assert!(list.as_ref().is_ok_and(|l| l.shared_quests_at_login(&[e(0x74a84, 5), e(0x74a83, 20), e(0x74a83, 10)]) == vec![e(0x74a83, 10), e(0x74a83, 20)]));
         assert!(new_shared_quests(r#"["074a83"]"#).is_err());
+        // the record's bound (review finding 2): full at QUEST_RECORD_CAP
+        // pairs, when the merge leaves it as it is
+        assert!(!quest_record_full(&record));
+        let capped: Vec<QuestStageEntry> = (0..=u16::MAX).take(quest_stages::QUEST_RECORD_CAP).map(|s| e(0x74a83, s)).collect();
+        assert_eq!(capped.len(), quest_stages::QUEST_RECORD_CAP);
+        assert!(quest_record_full(&capped));
+        assert_eq!(quest_stages_merge(&capped, &e(0x74a84, 10)), capped);
     }
 
     #[test]

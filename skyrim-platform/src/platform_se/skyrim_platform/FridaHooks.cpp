@@ -1270,17 +1270,29 @@ void InstallSendTopicInfoEventHook()
  * 53987, just addr 2026-10-29, offset 0x9c6b70): when the event's (formID,
  * stage) is a pair skymp5-client's questStageService is applying from the
  * server's relay (TESModPlatform.SuppressQuestStageFragment before its
- * SetStage, ReleaseQuestStageFragment at the promise's answer), the
- * callback's slot 1 fires if the callback is non-null and kContinue returns
- * with no lookup and no dispatch, the engine's own no-fragment branch: the
- * done bit, currentStage, the journal entry and its message, the complete
- * and fail bits and the StoryTeller's bookkeeping are the setter's before
- * the event and stay, the latent return comes from slot 1 as before; only
- * the fragment is skipped. Any other pair goes to the original. Keyed by
- * pairs, never a flag window: the VM may queue a stage on an unstarted quest
- * (53711) and set it later. HYPOTHESIS until lab/frida/quest-stage-chain.js
- * reads it (the falsifiers in the verb doc: a 54240 for a suppressed pair,
- * a 56684 with no 53763).
+ * SetStage: one mark per apply), the mark is consumed and the callback's
+ * slot 1 fires if the callback is non-null and kContinue returns with no
+ * lookup and no dispatch, the engine's own no-fragment branch: the done bit,
+ * currentStage, the journal entry and its message, the complete and fail
+ * bits and the StoryTeller's bookkeeping are the setter's before the event
+ * and stay, the latent return comes from slot 1 as before; only the
+ * fragment is skipped. Any other pair goes to the original. Keyed by pairs,
+ * never a flag window: the VM may queue a stage on an unstarted quest
+ * (53711) and set it later (53713), which is why the mark is the sink's to
+ * consume at the pair's first event and not the client's to take back at
+ * the promise's answer (the review of m3-pass-train-2, finding 4: the
+ * answer can come before the queued set, and a released mark would miss the
+ * event). ReleaseQuestStageFragment is the client's safety, 10 s after the
+ * apply: it takes back one mark if the pair still holds one (a refused
+ * stage, a quest never started), so no mark leaks; two applies of one pair
+ * are two marks and two consumes. One-shot per event is a HYPOTHESIS of its
+ * own: the static read has the setter send one event per log entry of the
+ * stage (25260), so a stage with several passing entries would run its
+ * later entries' fragments; lab/frida/quest-stage-chain.js counts the
+ * events per stage (53987) and decides whether the consume moves to the
+ * last entry (53716's count). HYPOTHESIS until that trace reads it (the
+ * falsifiers in the verb doc: a 54240 for a suppressed pair, a 56684 with
+ * no 53763).
  */
 namespace {
 using QuestStageSinkFn = RE::BSEventNotifyControl (*)(
@@ -1288,12 +1300,13 @@ using QuestStageSinkFn = RE::BSEventNotifyControl (*)(
   RE::BSTEventSource<RE::TESQuestStageEvent>* source);
 QuestStageSinkFn g_questStageSinkOriginal = nullptr;
 
-// the pairs under suppression, (quest form id, stage) -> the events of the
-// pair skipped so far (one per log entry of the stage). The natives write
-// on the VM's thread; the sink reads on the setter's (Quest.SetCurrentStageID
-// sends the event from inside its own native call, a console SetStage from
-// the game thread), so a lock, the castReady shape above; never held across
-// the callback or the original
+// the pairs under suppression, (quest form id, stage) -> the marks the pair
+// holds: one per apply in flight, each consumed by the pair's next event
+// (or taken back by the client's safety). The natives write on the VM's
+// thread; the sink reads on the setter's (Quest.SetCurrentStageID sends the
+// event from inside its own native call, a console SetStage from the game
+// thread), so a lock, the castReady shape above; never held across the
+// callback or the original
 std::mutex g_questStageSuppressMutex;
 std::unordered_map<std::uint64_t, std::uint32_t> g_questStageSuppressed;
 
@@ -1333,27 +1346,27 @@ RE::BSEventNotifyControl QuestStageSinkReplacement(
 {
   if (event) {
     bool suppressed = false;
-    std::uint32_t skipped = 0;
+    std::uint32_t left = 0;
     {
       std::lock_guard<std::mutex> lock(g_questStageSuppressMutex);
       auto it = g_questStageSuppressed.find(
         QuestStageKey(event->formID, event->stage));
       if (it != g_questStageSuppressed.end()) {
+        // one-shot: this event consumes one mark; the pair leaves the map
+        // with its last
         suppressed = true;
-        skipped = ++it->second;
+        left = --it->second;
+        if (left == 0) {
+          g_questStageSuppressed.erase(it);
+        }
       }
     }
     if (suppressed) {
-      if (skipped == 1) {
-        logger::warn("[verb:quest-stage] fragment of {:x} stage {} skipped: "
-                     "the stage is the world's, applied from the relay",
-                     event->formID, event->stage);
-      } else {
-        logger::trace("[verb:quest-stage] fragment of {:x} stage {} entry {} "
-                      "skipped too ({} of the stage's events)",
-                      event->formID, event->stage,
-                      static_cast<unsigned>(event->unk0E), skipped);
-      }
+      logger::warn("[verb:quest-stage] fragment of {:x} stage {} entry {} "
+                   "skipped: the stage is the world's, applied from the "
+                   "relay; {} mark(s) left for the pair",
+                   event->formID, event->stage,
+                   static_cast<unsigned>(event->unk0E), left);
       FireStageItemFinished(event->finishedCallback);
       return RE::BSEventNotifyControl::kContinue;
     }
@@ -1364,32 +1377,47 @@ RE::BSEventNotifyControl QuestStageSinkReplacement(
 
 void Frida::SuppressQuestStageFragment(uint32_t questFormId, uint16_t stage)
 {
+  std::uint32_t marks = 0;
   {
     std::lock_guard<std::mutex> lock(g_questStageSuppressMutex);
-    g_questStageSuppressed[QuestStageKey(questFormId, stage)] = 0;
+    marks = ++g_questStageSuppressed[QuestStageKey(questFormId, stage)];
   }
   logger::trace("[verb:quest-stage] fragment of {:x} stage {} suppressed: "
-                "the relay's apply begins",
-                questFormId, stage);
+                "the relay's apply begins ({} mark(s) for the pair)",
+                questFormId, stage, marks);
 }
 
 void Frida::ReleaseQuestStageFragment(uint32_t questFormId, uint16_t stage)
 {
-  std::uint32_t skipped = 0;
+  // the client's safety, 10 s after the apply: one mark back if the pair
+  // still holds one, so a stage whose event never came (refused by the
+  // engine, or queued on a quest that never started) leaks none. A mark the
+  // event consumed is gone already and this is a no-op.
+  std::uint32_t left = 0;
   bool had = false;
   {
     std::lock_guard<std::mutex> lock(g_questStageSuppressMutex);
     auto it = g_questStageSuppressed.find(QuestStageKey(questFormId, stage));
     if (it != g_questStageSuppressed.end()) {
       had = true;
-      skipped = it->second;
-      g_questStageSuppressed.erase(it);
+      left = --it->second;
+      if (left == 0) {
+        g_questStageSuppressed.erase(it);
+      }
     }
   }
-  logger::trace("[verb:quest-stage] fragment of {:x} stage {} released: {} "
-                "event(s) skipped{}",
-                questFormId, stage, skipped,
-                had ? "" : " (the pair was not in)");
+  if (had) {
+    logger::warn("[verb:quest-stage] fragment mark of {:x} stage {} taken "
+                 "back by the safety: no stage event claimed it within the "
+                 "window (the stage was refused, or waits on a quest not "
+                 "yet started; a later set runs its fragment); {} mark(s) "
+                 "left",
+                 questFormId, stage, left);
+  } else {
+    logger::trace("[verb:quest-stage] fragment mark of {:x} stage {}: "
+                  "nothing to release, the stage's event consumed it",
+                  questFormId, stage);
+  }
 }
 
 void InstallQuestStageSinkHook()

@@ -1202,6 +1202,177 @@ TEST_CASE("A sighting that arrives before its cell's grant is held and "
   p.DestroyActor(kSigrid);
 }
 
+// the train's review (2026-10-29): the hold keyed by reference alone let a
+// second game's roster of the same bandit, landing last, evict the first's
+// entry, and the grant replayed the host's own entries only, so with c2's
+// roster last and c1's grant nothing replayed. One entry per (reporter,
+// reference); the grant replays the new host's own and keeps the other
+// reporter's for its own grant while they last
+TEST_CASE("Held sightings are the pair's: a second reporter's roster of the "
+          "same reference keeps the first's entry, the grant replays the "
+          "host's own and keeps the other's for its own grant (finding 66)",
+          "[CellHost][espm]")
+{
+  constexpr uint32_t kSigrid = 0x13483;
+  constexpr uint32_t kHod = 0x1348a;
+  const NiPoint3 sigridPos{ 24063.7f, -45204.2f, -40.6f };
+  const NiPoint3 hodPos = sigridPos + NiPoint3{ 60.f, 0.f, 0.f };
+  const NiPoint3 landing{ 17225.f, -47204.f, -128.f };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kSigrid) == nullptr);
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kHod) == nullptr);
+  // an earlier case's leftovers expire first
+  p.SweepHeldSightings(NowMs() + PartOne::kHeldSightingMs + 1);
+  REQUIRE(p.HeldSightingsCount() == 0);
+
+  Player(p, 0, kC1, landing);
+  Player(p, 1, kC2, landing + NiPoint3{ 50.f, 0.f, 0.f });
+  const auto cell = p.worldState.CellOf(kTamriel, sigridPos);
+  REQUIRE(cell.has_value());
+  REQUIRE_FALSE(p.GetCellHost(*cell).hosted);
+  const auto sights = [&](Networking::UserId user, uint32_t refrId,
+                          const NiPoint3& at) {
+    DoMessage(p, user,
+              nlohmann::json{ { "t", MsgType::ActorSightings },
+                              { "sightings",
+                                nlohmann::json::array({ nlohmann::json{
+                                  { "refrId", refrId },
+                                  { "worldOrCell", kTamriel },
+                                  { "pos", { at.x, at.y, at.z } },
+                                  { "rot", { 0.f, 0.f, 0.f } } } }) } });
+  };
+
+  // c1's roster, twice (one entry); c2's of the same reference last (its
+  // own entry beside c1's, not over it); c2's of Hod
+  sights(0, kSigrid, sigridPos);
+  sights(0, kSigrid, sigridPos);
+  REQUIRE(p.HeldSightingsCount(*cell) == 1);
+  sights(1, kSigrid, sigridPos);
+  REQUIRE(p.HeldSightingsCount(*cell) == 2);
+  sights(1, kHod, hodPos);
+  REQUIRE(p.HeldSightingsCount(*cell) == 3);
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kSigrid) == nullptr);
+
+  // c1's grant: its own entry replays (Sigrid stands), c2's two stay held
+  CellLoaded(p, 0, *cell);
+  REQUIRE(p.GetCellHost(*cell).player == kC1);
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kSigrid) != nullptr);
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kHod) == nullptr);
+  REQUIRE(p.HeldSightingsCount(*cell) == 2);
+
+  // c1 leaves; past the grace c2, with the cell loaded, takes it and its own
+  // entries replay: Hod stands where c2's engine had it, the hold is empty
+  const uint64_t now = NowMs();
+  DoDisconnect(p, 0);
+  CellLoaded(p, 1, *cell);
+  p.TickCellHosts(now + skymp::rules::host_grace_ms() + kPastMs);
+  REQUIRE(p.GetCellHost(*cell).player == kC2);
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kHod) != nullptr);
+  auto& hod = p.worldState.GetFormAt<MpActor>(kHod);
+  REQUIRE(hod.GetPos().x == Catch::Approx(hodPos.x));
+  REQUIRE(p.HeldSightingsCount(*cell) == 0);
+
+  DoDisconnect(p, 1);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+  p.DestroyActor(kSigrid);
+  p.DestroyActor(kHod);
+}
+
+// the train's review (2026-10-29): the hold grew with no total cap, nothing
+// swept it on a tick, and a departed reporter's entries stayed. The sweep
+// runs from the once-a-second tick (TickCellHostsEverySecond); a reporter's
+// disconnect forgets its own; kHeldSightingsTotal across cells, the oldest
+// entry anywhere making room
+TEST_CASE("The hold is bounded: the sweep expires held sightings, a "
+          "reporter's disconnect forgets its own, and the total cap drops "
+          "the oldest (finding 66)",
+          "[CellHost][espm]")
+{
+  constexpr uint32_t kSigrid = 0x13483;
+  const NiPoint3 sigridPos{ 24063.7f, -45204.2f, -40.6f };
+  const NiPoint3 landing{ 17225.f, -47204.f, -128.f };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kSigrid) == nullptr);
+  p.SweepHeldSightings(NowMs() + PartOne::kHeldSightingMs + 1);
+  REQUIRE(p.HeldSightingsCount() == 0);
+  Player(p, 0, kC1, landing);
+  Player(p, 1, kC2, landing + NiPoint3{ 50.f, 0.f, 0.f });
+  const auto cell = p.worldState.CellOf(kTamriel, sigridPos);
+  REQUIRE(cell.has_value());
+  REQUIRE_FALSE(p.GetCellHost(*cell).hosted);
+  const auto sights = [&](Networking::UserId user, uint32_t refrId,
+                          const NiPoint3& at) {
+    DoMessage(p, user,
+              nlohmann::json{ { "t", MsgType::ActorSightings },
+                              { "sightings",
+                                nlohmann::json::array({ nlohmann::json{
+                                  { "refrId", refrId },
+                                  { "worldOrCell", kTamriel },
+                                  { "pos", { at.x, at.y, at.z } },
+                                  { "rot", { 0.f, 0.f, 0.f } } } }) } });
+  };
+
+  // the sweep: an entry past kHeldSightingMs goes
+  sights(0, kSigrid, sigridPos);
+  REQUIRE(p.HeldSightingsCount(*cell) == 1);
+  p.SweepHeldSightings(NowMs() + PartOne::kHeldSightingMs + 1);
+  REQUIRE(p.HeldSightingsCount(*cell) == 0);
+
+  // the disconnect: c1's entry goes with it, and the grant to c2 that
+  // follows finds nothing of c1's to replay
+  sights(0, kSigrid, sigridPos);
+  REQUIRE(p.HeldSightingsCount(*cell) == 1);
+  DoDisconnect(p, 0);
+  REQUIRE(p.HeldSightingsCount(*cell) == 0);
+  CellLoaded(p, 1, *cell);
+  REQUIRE(p.GetCellHost(*cell).player == kC2);
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kSigrid) == nullptr);
+
+  // the total cap: seventeen unhosted cells along Tamriel's x axis in the
+  // grid row above the one the other cases host (an earlier case's departed
+  // host may still hold its cell in grace, so every grace passes first), a
+  // full roster of references the server never looks up for each (the hold
+  // needs no record), kHeldSightingsPerCell apiece until the total is
+  // reached; from there each new entry costs the oldest one anywhere, and
+  // the hold is full, not closed
+  p.TickCellHosts(NowMs() + skymp::rules::host_grace_ms() + kPastMs);
+  constexpr size_t kCells = 17;
+  static_assert(kCells * PartOne::kHeldSightingsPerCell >
+                PartOne::kHeldSightingsTotal);
+  const auto capCellPos = [](size_t c) {
+    return NiPoint3{ 9000.f + 4096.f * static_cast<float>(c), 4600.f, 0.f };
+  };
+  for (size_t c = 0; c < kCells; ++c) {
+    const NiPoint3 at = capCellPos(c);
+    const auto capCell = p.worldState.CellOf(kTamriel, at);
+    REQUIRE(capCell.has_value());
+    REQUIRE_FALSE(p.GetCellHost(*capCell).hosted);
+    nlohmann::json roster = nlohmann::json::array();
+    for (size_t i = 0; i < PartOne::kHeldSightingsPerCell; ++i) {
+      roster.push_back(
+        nlohmann::json{ { "refrId", 0x00f00000 + c * 0x100 + i },
+                        { "worldOrCell", kTamriel },
+                        { "pos", { at.x, at.y, at.z } },
+                        { "rot", { 0.f, 0.f, 0.f } } });
+    }
+    DoMessage(p, 1,
+              nlohmann::json{ { "t", MsgType::ActorSightings },
+                              { "sightings", roster } });
+  }
+  REQUIRE(p.HeldSightingsCount() == PartOne::kHeldSightingsTotal);
+  sights(1, 0x00f0ffff, capCellPos(0));
+  REQUIRE(p.HeldSightingsCount() == PartOne::kHeldSightingsTotal);
+
+  p.SweepHeldSightings(NowMs() + PartOne::kHeldSightingMs + 1);
+  REQUIRE(p.HeldSightingsCount() == 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+}
+
 TEST_CASE("An actor from the game files travels under its own id with the "
           "server's explicit hosted word, the grant flips it, and only the "
           "host's reports move it",

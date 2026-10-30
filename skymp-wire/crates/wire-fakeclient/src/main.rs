@@ -14,11 +14,16 @@
 //!     step, each with "at_ms" (milliseconds since the script started) and
 //!     one of "move": {"dx", "dy", "dz", "runMode"} (an UpdateMovement at
 //!     spawn plus offset) or "send": {...SkyMP JSON...} (sent as is; the
-//!     strings "{{idx}}" and "{{worldOrCell}}" become this client's numbers),
+//!     strings "{{idx}}" and "{{worldOrCell}}" become this client's numbers,
+//!     and "{{created:<baseId>}}" the id of the latest form this client was
+//!     told of by a CreateActor with that base: a drop or a placement whose
+//!     id the server's generator chose, so a session names it without
+//!     assuming the generator's state; 0 and an error event when none came),
 //!     plus an optional "reliable" (default true).
 //! Output: one JSON object per line. Exit 0 on success, 1 on any failure or
 //! timeout, 2 on bad options.
 
+use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::time::{Duration, Instant};
 
@@ -127,6 +132,40 @@ struct Session {
     received: u64,
     failure: Option<String>,
     pending_snippets: Vec<Value>,
+    /// The latest form id each CreateActor named per base id (the
+    /// "{{created:<baseId>}}" placeholder's table).
+    created: BTreeMap<u64, u64>,
+}
+
+/// Every `"{{created:<baseId>}}"` in `raw` replaced by the form id
+/// `created` holds for that base; a base nobody created yet becomes 0 and is
+/// named in the returned list.
+fn substitute_created(raw: &str, created: &BTreeMap<u64, u64>) -> (String, Vec<u64>) {
+    const OPEN: &str = "\"{{created:";
+    const CLOSE: &str = "}}\"";
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    let mut missing = Vec::new();
+    while let Some(start) = rest.find(OPEN) {
+        out.push_str(&rest[..start]);
+        let after = &rest[start.saturating_add(OPEN.len())..];
+        let Some(end) = after.find(CLOSE) else {
+            out.push_str(&rest[start..]);
+            rest = "";
+            break;
+        };
+        let base: u64 = after[..end].trim().parse().unwrap_or(0);
+        match created.get(&base) {
+            Some(id) => out.push_str(&id.to_string()),
+            None => {
+                missing.push(base);
+                out.push('0');
+            }
+        }
+        rest = &after[end.saturating_add(CLOSE.len())..];
+    }
+    out.push_str(rest);
+    (out, missing)
 }
 
 impl Session {
@@ -145,6 +184,13 @@ impl Session {
                 self.received = self.received.saturating_add(1);
                 emit(&json!({"event": "message", "msg": msg}));
                 let t = msg.get("t").and_then(Value::as_i64).unwrap_or(-1);
+                if t == 33 {
+                    if let (Some(base), Some(refr)) =
+                        (msg.get("baseId").and_then(Value::as_u64), msg.get("refrId").and_then(Value::as_u64))
+                    {
+                        self.created.insert(base, refr);
+                    }
+                }
                 if t == 33 && msg.get("isMe").and_then(Value::as_bool).unwrap_or(false) {
                     self.me.idx = msg.get("idx").and_then(Value::as_u64);
                     if let Some(tr) = msg.get("transform") {
@@ -266,6 +312,10 @@ fn run_script(s: &mut Session, path: &str, settle_ms: u64) -> i32 {
         let raw = raw
             .replace("\"{{idx}}\"", &s.me.idx.unwrap_or(0).to_string())
             .replace("\"{{worldOrCell}}\"", &s.me.world_or_cell.to_string());
+        let (raw, missing) = substitute_created(&raw, &s.created);
+        for base in missing {
+            emit(&json!({"event": "error", "error": format!("no CreateActor with base {base} yet; {{{{created:{base}}}}} sent as 0")}));
+        }
         match serde_json::from_str::<Value>(&raw) {
             Ok(msg) => s.send(&msg, reliable),
             Err(_) => {
@@ -302,6 +352,7 @@ fn main() -> std::process::ExitCode {
         received: 0,
         failure: None,
         pending_snippets: Vec::new(),
+        created: BTreeMap::new(),
     };
     let timeout = Duration::from_millis(o.timeout_ms);
     if !s.wait_for(timeout, |s| s.client.is_connected()) {
@@ -333,4 +384,25 @@ fn main() -> std::process::ExitCode {
     emit(&json!({"event": "done", "received": s.received, "rc": rc}));
     s.client.close();
     std::process::ExitCode::from(u8::try_from(rc).unwrap_or(1))
+}
+
+#[cfg(test)]
+mod created_tests {
+    use super::*;
+
+    #[test]
+    fn the_created_placeholder_names_the_latest_form_of_its_base() {
+        let mut created = BTreeMap::new();
+        created.insert(80254, 0xff00_0005_u64);
+        let raw = r#"{"t":59,"refr":"{{created:80254}}","touch":2}"#;
+        let (out, missing) = substitute_created(raw, &created);
+        assert_eq!(out, r#"{"t":59,"refr":4278190085,"touch":2}"#);
+        assert!(missing.is_empty());
+        let (out, missing) = substitute_created(r#"{"refr":"{{created:7}}"}"#, &created);
+        assert_eq!(out, r#"{"refr":0}"#);
+        assert_eq!(missing, vec![7]);
+        let (same, none) = substitute_created(r#"{"refr":5}"#, &created);
+        assert_eq!(same, r#"{"refr":5}"#);
+        assert!(none.is_empty());
+    }
 }

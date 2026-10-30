@@ -21,6 +21,7 @@
 #include "DestroyActorMessage.h"
 #include "HostGrantMessage.h"
 #include "HostReleaseMessage.h"
+#include "PropOwnerMessage.h"
 #include "RaceMenuPresetMessage.h"
 #include "SetGameTimeMessage.h"
 #include "SetRaceMenuOpenMessage.h"
@@ -1265,6 +1266,21 @@ void PartOne::Init()
 
     sendTarget->Send(listenerUserId, message, true);
 
+    // thuum docs/verbs/prop-physics.md (ADR-058): a listener arriving while
+    // a seat simulates this prop hears who, after the create word, so it
+    // neither simulates the prop as the host's default nor drops the stream
+    // as echoes; with no live row the listener's own fallback (the cell's
+    // host) is the answer
+    if (!emitterAsActor) {
+      if (const uint32_t liveOwner = PropLiveOwner(*emitter); liveOwner != 0) {
+        PropOwnerMessage word;
+        word.refr = emitter->GetFormId();
+        word.player = liveOwner;
+        word.epoch = PropEpochOf(*emitter);
+        sendTarget->Send(listenerUserId, word, true);
+      }
+    }
+
     // thuum docs/verbs/racemenu-sync.md: a player's RaceMenu look comes
     // with its figure, after CreateActor on the same ordered channel; its
     // own client gets it after its login instead (ActionListener)
@@ -2352,17 +2368,28 @@ PartOne::PropClaimVerdict PartOne::ClaimProp(const MpActor& claimant,
 
 PartOne::PropTransformVerdict PartOne::PropTransform(
   const MpActor& sender, const MpObjectReference& prop, uint32_t cell,
-  bool asleep)
+  uint32_t recordCell, bool asleep, float moved)
 {
   uint32_t cellHost = 0;
-  if (cell != 0) {
-    const auto host = pImpl->cells->host_of(cell);
+  if (recordCell != 0) {
+    const auto host = pImpl->cells->host_of(recordCell);
     cellHost = host.hosted ? host.player : 0u;
   }
-  const auto code =
-    pImpl->props->prop_transform(prop.GetFormId(), sender.GetFormId(), cell,
-                                 cellHost, asleep, SteadyNowMs());
+  skymp::rules::PropSampleFacts facts{};
+  facts.refr = prop.GetFormId();
+  facts.player = sender.GetFormId();
+  facts.cell = cell;
+  facts.cell_host = cellHost;
+  facts.asleep = asleep;
+  facts.moved = moved;
+  facts.now_ms = SteadyNowMs();
+  const auto code = pImpl->props->prop_transform(facts);
   return static_cast<PropTransformVerdict>(code);
+}
+
+uint32_t PartOne::PropLiveOwner(const MpObjectReference& prop) const
+{
+  return pImpl->props->prop_live_owner(prop.GetFormId(), SteadyNowMs());
 }
 
 uint32_t PartOne::PropOwnerOf(const MpObjectReference& prop) const

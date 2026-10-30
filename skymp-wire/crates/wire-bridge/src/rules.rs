@@ -45,6 +45,26 @@ mod ffi {
         target_scale: f32,
     }
 
+    /// What the core knows about a simulator's sample of a physics prop
+    /// (wire-rules props, thuum docs/verbs/prop-physics.md).
+    #[derive(Debug)]
+    struct PropSampleFacts {
+        /// The prop's reference id.
+        refr: u32,
+        /// The sender's actor id.
+        player: u32,
+        /// The cell the sample's position lands in, 0 for none.
+        cell: u32,
+        /// The host of the cell the RECORD stands in, 0 while nobody.
+        cell_host: u32,
+        /// The body's reported state.
+        asleep: bool,
+        /// Units between the sample and the record.
+        moved: f32,
+        /// The server's wall clock, ms.
+        now_ms: u64,
+    }
+
     /// What the core knows about the direction of a player's melee hit on a
     /// player (thuum docs/verbs/hit-cone.md).
     #[derive(Debug)]
@@ -1668,9 +1688,14 @@ mod ffi {
         fn prop_epoch_of(self: &Props, refr: u32) -> u32;
         /// `player`'s transform of `refr`, landing in `cell` (0 for none)
         /// whose host is `cell_host` (0 while nobody), the body asleep or
-        /// not: 0 accepted (the record takes it), 1 not the owner's, 2 no
-        /// cell or an unhosted cell nobody holds (the prop freezes).
-        fn prop_transform(self: &mut Props, refr: u32, player: u32, cell: u32, cell_host: u32, asleep: bool, now_ms: u64) -> u8;
+        /// not, `moved` units from the record: 0 accepted (the record takes
+        /// it), 1 not the owner's, 2 no cell or an unhosted cell nobody holds
+        /// (the prop freezes), 3 farther than the step budget allows (the
+        /// record stands); `cell_host` hosts the cell the RECORD stands in.
+        fn prop_transform(self: &mut Props, facts: &PropSampleFacts) -> u8;
+        /// The row's owner while the row is live, else 0: the word a late
+        /// listener gets at its subscription.
+        fn prop_live_owner(self: &Props, refr: u32, now_ms: u64) -> u32;
         /// Who simulates `refr` now, given its cell's host (0 while nobody):
         /// the toucher while awake or inside its lease, else the host.
         fn prop_owner_of(self: &Props, refr: u32, cell_host: u32, now_ms: u64) -> u32;
@@ -1685,7 +1710,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementRow, PlayerGlobalEntry, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
+pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -2585,12 +2610,26 @@ impl Props {
         self.0.epoch_of(refr)
     }
 
-    fn prop_transform(&mut self, refr: u32, player: u32, cell: u32, cell_host: u32, asleep: bool, now_ms: u64) -> u8 {
-        match self.0.transform(refr, player, cell, cell_host, asleep, now_ms) {
+    fn prop_transform(&mut self, f: &PropSampleFacts) -> u8 {
+        let facts = props::SampleFacts {
+            refr: f.refr,
+            player: f.player,
+            cell: f.cell,
+            cell_host: f.cell_host,
+            asleep: f.asleep,
+            moved: f.moved,
+            now_ms: f.now_ms,
+        };
+        match self.0.transform(&facts) {
             props::TransformVerdict::Accepted => 0,
             props::TransformVerdict::NotOwner => 1,
             props::TransformVerdict::WrongCell => 2,
+            props::TransformVerdict::TooFast => 3,
         }
+    }
+
+    fn prop_live_owner(&self, refr: u32, now_ms: u64) -> u32 {
+        self.0.live_owner(refr, now_ms)
     }
 
     fn prop_owner_of(&self, refr: u32, cell_host: u32, now_ms: u64) -> u32 {
@@ -3093,6 +3132,10 @@ mod tests {
         assert_eq!(c.hosts(), vec![CellHostRow { cell: 0x9732, hosted: false, player: 0, epoch: 1 }]);
     }
 
+    fn sample(refr: u32, player: u32, cell: u32, cell_host: u32, asleep: bool, moved: f32, now_ms: u64) -> PropSampleFacts {
+        PropSampleFacts { refr, player, cell, cell_host, asleep, moved, now_ms }
+    }
+
     #[test]
     fn the_prop_table_crosses_as_codes() {
         // thuum docs/verbs/prop-physics.md (ADR-058): the claim's and the
@@ -3103,9 +3146,15 @@ mod tests {
         assert_eq!(p.prop_epoch_of(0x2ad9c), 1);
         assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 1, 1_100), 2);
         assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0002, 0x9732, 0, 1_200), 1);
-        assert_eq!(p.prop_transform(0x2ad9c, 0xff00_0002, 0x9732, 0xff00_0002, false, 1_300), 1);
-        assert_eq!(p.prop_transform(0x2ad9c, 0xff00_0003, 0x9732, 0xff00_0002, true, 1_300), 0);
-        assert_eq!(p.prop_transform(0x2ad9c, 0xff00_0003, 0, 0xff00_0002, true, 1_300), 2);
+        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0002, 0x9732, 0xff00_0002, false, 10.0, 1_300)), 1);
+        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 0x9732, 0xff00_0002, true, 10.0, 1_300)), 0);
+        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 0, 0xff00_0002, true, 10.0, 1_300)), 2);
+        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 0x9732, 0xff00_0002, true, 5_000.0, 1_300)), 3);
+        assert_eq!(p.prop_live_owner(0x2ad9c, 1_300), 0xff00_0003);
+        // the grab holds through the sleep; the holder's drop and its rest start the lease
+        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002, 1_300 + prop_lease_ms()), 0xff00_0003);
+        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 2, 1_300), 2);
+        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 0x9732, 0xff00_0002, true, 10.0, 1_300)), 0);
         assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002, 1_300 + prop_lease_ms() - 1), 0xff00_0003);
         assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002, 1_300 + prop_lease_ms()), 0xff00_0002);
         p.props_host_changed(0x9732, 0xff00_0004, 9_000);

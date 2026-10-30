@@ -2891,13 +2891,9 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
                         rawMsgData.userId, actor->GetFormId(), msg.stage,
                         quest.ToString());
   }
-  if (IsSeatsOwnQuest(partOne, quest, lookup.rec)) {
-    return spdlog::info("E_QUEST_OWN_START: user {} actor {:x} reported stage "
-                        "{} of {}: a start-game-enabled quest is each seat's "
-                        "own (D62)",
-                        rawMsgData.userId, actor->GetFormId(), msg.stage,
-                        quest.ToString());
-  }
+  // the mode's own refusal first (the review of m3-pass-train-2, finding
+  // 5): a quest both denied and start-game-enabled logs E_QUEST_DENIED, the
+  // setting's word, not the record's flag
   if (const uint8_t refusal = partOne.CheckSharedQuest(quest)) {
     if (refusal == 2) {
       return spdlog::info("E_QUEST_DENIED: user {} actor {:x} reported stage "
@@ -2909,6 +2905,31 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
                         "{} of {}, a quest the world does not share ({})",
                         rawMsgData.userId, actor->GetFormId(), msg.stage,
                         quest.ToString(), refusal);
+  }
+  if (IsSeatsOwnQuest(partOne, quest, lookup.rec)) {
+    // in mode all a seat reports every stage event of every quest it does
+    // not know to be denied (Skyrim Platform's Quest exposes no Start Game
+    // Enabled getter), so the 330 such quests of Skyrim.esm arrive here at
+    // the client's rate: one info line per seat per 10 s with the count held
+    // meanwhile (the OnActorSpeech shape; finding 5)
+    static std::unordered_map<
+      Networking::UserId,
+      std::pair<std::chrono::steady_clock::time_point, uint32_t>>
+      ownStart;
+    auto& [since, held] = ownStart[rawMsgData.userId];
+    ++held;
+    const auto now = std::chrono::steady_clock::now();
+    if (since == std::chrono::steady_clock::time_point() ||
+        now - since >= std::chrono::seconds(10)) {
+      spdlog::info("E_QUEST_OWN_START: user {} actor {:x} reported stage {} "
+                   "of {}: a start-game-enabled quest is each seat's own "
+                   "(D62); {} such report(s) since the last line",
+                   rawMsgData.userId, actor->GetFormId(), msg.stage,
+                   quest.ToString(), held);
+      since = now;
+      held = 0;
+    }
+    return;
   }
   const QuestStageDone done{ quest, msg.stage };
   if (partOne.QuestStageDoneAlready(done)) {

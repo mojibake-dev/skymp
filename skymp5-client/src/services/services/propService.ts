@@ -29,6 +29,8 @@ const RESCAN_MS = 500;
 // TRACK_MAX of them
 const TRACK_RADIUS = 1024;
 const TRACK_MAX = 64;
+// game-file item references the server subscribed this seat to, remembered from their CreateActor (see engineRefs)
+const ENGINE_REFS_MAX = 1024;
 // A prop just tracked is left alone this long: the view's SpawnProcess places
 // a server-made copy over a few frames (setPosition, enable, then its own
 // setMotionType Keyframed), and a motion type set under that chain would be
@@ -225,8 +227,22 @@ export class PropService extends ClientListener {
     // The player's own actor is created: a fresh table on the server's side
     // of this connection (a login, a reconnect, a restart), so the words and
     // their epochs clear (HostService's rule for its grants)
+    // Game-file item references the server subscribed this seat to, keyed by
+    // the engine's id (a game-file reference's record id is its engine id),
+    // with the record's pose from the CreateActor (the login's place). The
+    // view never models them: RemoteServer.skipFormViewCreation sends every
+    // reference below 0xff000000 that is no DOOR and no NPC_ to onceLoad and
+    // dealWithRef (Keyframed) and makes no FormModel and no FormView, so a
+    // rescan over the view's forms alone finds no clutter at all (x-prop-push
+    // 133010 and x-prop-pass 133232 at the union's stage: zero PropService
+    // lines on any seat across ten runs, the server untouched). Bounded; an
+    // entry whose reference is unloaded or far is simply not found at a
+    // rescan; the server's unsubscribe needs no handling here
+    private engineRefs = new Map<number, { baseId: number; pos: NiPoint3; rot: NiPoint3; worldOrCell: number }>();
+
     private onCreateActor(e: ConnectionMessage<CreateActorMessage>) {
         if (!e.message.isMe) {
+            this.noteEngineRef(e.message);
             return;
         }
         this.owners.clear();
@@ -234,6 +250,26 @@ export class PropService extends ClientListener {
         this.props.forEach((prop) => {
             prop.effective = undefined;
         });
+    }
+
+    private noteEngineRef(msg: CreateActorMessage) {
+        const refrId = msg.refrId;
+        if (refrId === undefined || refrId >= 0xff000000 || !msg.transform) {
+            return;
+        }
+        if (msg.baseRecordType === "DOOR" || msg.baseRecordType === "NPC_") {
+            return;
+        }
+        if (!this.engineRefs.has(refrId) && this.engineRefs.size >= ENGINE_REFS_MAX) {
+            const oldest = this.engineRefs.keys().next().value;
+            if (oldest !== undefined) {
+                this.engineRefs.delete(oldest);
+            }
+        }
+        const t = msg.transform;
+        const pos: NiPoint3 = [t.pos[0], t.pos[1], t.pos[2]];
+        const rot: NiPoint3 = [t.rot[0], t.rot[1], t.rot[2]];
+        this.engineRefs.set(refrId, { baseId: msg.baseId || 0, pos, rot, worldOrCell: t.worldOrCell });
     }
 
     // The engine's grab (isGrabbed true) and its release of a reference. The
@@ -411,21 +447,23 @@ export class PropService extends ClientListener {
         }
         const form = this.formOf(prop.refr);
         const m = form ? form.movement : undefined;
-        if (!m) {
+        // a game-file item has no model: its record's pose is the CreateActor's (engineRefs)
+        const pose = m ? { pos: m.pos, rot: m.rot } : this.engineRefs.get(prop.refr);
+        if (!pose) {
             prop.placed = true;
             prop.placedAt = now;
             return;
         }
         const read = PropService.read(refr, now);
-        const target: Sample = { pos: m.pos, rot: m.rot, asleep: false, at: now };
+        const target: Sample = { pos: pose.pos, rot: pose.rot, asleep: false, at: now };
         if (!PropService.apart(read, target, SAMPLE_UNITS, SAMPLE_DEGREES)) {
             prop.placed = true;
             prop.placedAt = now;
             return;
         }
         prop.placing = true;
-        const [x, y, z] = m.pos;
-        const [ax, ay, az] = m.rot;
+        const [x, y, z] = pose.pos;
+        const [ax, ay, az] = pose.rot;
         const done = (why: string) => {
             prop.placing = false;
             prop.placed = true;
@@ -746,6 +784,28 @@ export class PropService extends ClientListener {
             const cell = refr.getParentCell();
             found.push({ refr: form.refrId, localId, formIdx: i, distance, cell: cell ? cell.getFormID() : 0, baseId: form.baseId || 0 });
         }
+        // the game-file items the server subscribed this seat to (no view, no model: engineRefs)
+        this.engineRefs.forEach((rec, refrId) => {
+            if (found.some((c) => c.refr === refrId)) {
+                return;
+            }
+            if (playerWorldOrCell !== 0 && rec.worldOrCell !== playerWorldOrCell) {
+                return;
+            }
+            if (!this.isItem(refrId, refrId)) {
+                return;
+            }
+            const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(refrId));
+            if (!refr) {
+                return;
+            }
+            const distance = ObjectReferenceEx.getDistance(playerPos, ObjectReferenceEx.getPos(refr));
+            if (distance > TRACK_RADIUS) {
+                return;
+            }
+            const cell = refr.getParentCell();
+            found.push({ refr: refrId, localId: refrId, formIdx: -1, distance, cell: cell ? cell.getFormID() : 0, baseId: rec.baseId });
+        });
         found.sort((a, b) => a.distance - b.distance);
         const keep = new Set<number>();
         for (const c of found.slice(0, TRACK_MAX)) {
@@ -811,7 +871,11 @@ export class PropService extends ClientListener {
             return known.item;
         }
         const ref = this.sp.ObjectReference.from(this.sp.Game.getFormEx(localId));
-        const base = ref ? ref.getBaseObject() : null;
+        if (!ref) {
+            // not loaded in this game yet: decided when it is, so no cache entry
+            return false;
+        }
+        const base = ref.getBaseObject();
         const item = base !== null && FormTypeEx.isItem(base.getType());
         if (this.kinds.size > 4096) {
             this.kinds.clear();
@@ -858,6 +922,11 @@ export class PropService extends ClientListener {
             form.movement.pos = [s.pos[0], s.pos[1], s.pos[2]];
             form.movement.rot = [s.rot[0], s.rot[1], s.rot[2]];
         }
+        const rec = this.engineRefs.get(refr);
+        if (rec) {
+            rec.pos = [s.pos[0], s.pos[1], s.pos[2]];
+            rec.rot = [s.rot[0], s.rot[1], s.rot[2]];
+        }
     }
 
     private formOf(refr: number): FormModel | undefined {
@@ -880,9 +949,14 @@ export class PropService extends ClientListener {
         return this.controller.lookupListener(RemoteServer).getMyRemoteRefrId();
     }
 
+    // Off unless the client setting propPhysics is true: the verb has no green
+    // T3 scenario yet (rule 3, D68 of 2026-10-30), so parity's players run the
+    // engine's own physics as before while the lab's probes switch it on
+    // through their relaunch files; the default flips in the commit whose
+    // b-prop-push goes green
     private enabled(): boolean {
         const s = this.sp.settings["skymp5-client"] as Record<string, unknown> | undefined;
-        return !s || s["propPhysics"] !== false;
+        return s !== undefined && s["propPhysics"] === true;
     }
 
     // the proximity stand-in for the contact, off by default now that the

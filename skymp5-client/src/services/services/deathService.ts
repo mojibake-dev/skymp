@@ -224,11 +224,18 @@ export class DeathService extends ClientListener {
         // plays no fall, so it keeps its standing pose with its root at the
         // record's ground point. The engine's push with no force ragdolls it
         // where it stands, and the ragdoll settles on the floor as a fallen
-        // body does. HYPOTHESIS until a probe reads the pose (x-body-pose)
+        // body does. HYPOTHESIS until a probe reads the pose (x-body-pose).
+        // By id after the wait, as revertPredictedDeath above: the wrapper
+        // captured here may be stale once the tick has passed (the reference
+        // deleted or replaced), and a body no longer there or no longer dead
+        // gets no push
+        const id = actor.getFormID();
         this.sp.Utility.wait(0.1).then(() => {
-          if (actor.isDead()) {
-            actor.pushActorAway(actor, 0);
+          const again = Actor.from(this.sp.Game.getFormEx(id));
+          if (!again || !again.isDead()) {
+            return;
           }
+          again.pushActorAway(again, 0);
         });
       } else {
         actor.kill(killer);

@@ -343,12 +343,24 @@ const resetBase = (refr: ObjectReference): void => {
   }
 };
 
+// thuum playtest 38's finding 68: what an apply did to the hands. `wornAdded`
+// is set when the diff added (or re-added) an entry the server's inventory
+// holds worn or wornLeft, so the engine's equip state for it is suspect (an
+// arrow count drift from shooting re-adds the ammo and un-equips it) and a
+// hands pass is due (sync/equipment.ts applyPlayerHands). A second signal
+// beside the boolean applyInventory returns, which is crash protection's
+// "every entry landed in one apply", not "something changed"
+export interface ApplyInventoryReport {
+  wornAdded: boolean;
+}
+
 export const applyInventory = (
   refr: ObjectReference,
   newInventory: Inventory,
   enableCrashProtection: boolean,
   ignoreWorn = false,
-  resetBaseFirst = true
+  resetBaseFirst = true,
+  report?: ApplyInventoryReport
 ): boolean => {
   // thuum docs/verbs/npc-fate.md (playtest 34): a game-file body keeps the
   // engine's dressing, so its caller passes resetBaseFirst false and the
@@ -374,6 +386,9 @@ export const applyInventory = (
 
     const worn = !!e.worn;
     const wornLeft = !!e.wornLeft;
+    if (report && e.count > 0 && (worn || wornLeft)) {
+      report.wornAdded = true;
+    }
 
     let oneStepCount = e.count / absCount;
 

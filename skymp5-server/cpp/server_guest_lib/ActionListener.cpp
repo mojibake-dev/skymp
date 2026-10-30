@@ -874,18 +874,51 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
   // restart that could never be stood up) has no kill word of this process
   // in flight, so it counts as past the grace
   if (actor->IsDead() && actor->IsFateRespawned() && msg.health > onePoint) {
-    const auto diedAgo = actor->DiedAgo(now);
-    if (!diedAgo ||
-        diedAgo->count() >= static_cast<int64_t>(MpActor::kPendingDeathMs)) {
-      spdlog::info(
-        "[verb:npc-fate] resurrection by its host's engine: {:x} "
-        "stands again with health {:.3f} on {:x}'s sample, {}; "
-        "the record's death cleared, the live word to every "
-        "listener",
-        actor->GetFormId(), msg.health, myActor->GetFormId(),
-        diedAgo ? fmt::format("{} s after its death", diedAgo->count() / 1000)
-                : std::string("its death before this process"));
-      actor->Respawn(false);
+    // thuum docs/verbs/npc-fate.md (finding 65): a placement that starts
+    // dead has no death of this process to grace (DiedAgo nothing) and its
+    // host's engine spawned it as a corpse, so one live sample must not
+    // stand it (the train's review, 2026-10-29: the no-stamp reading above
+    // took the first sample above one point as a resurrection). Its
+    // stand-up is the cast's rule alone: a reanimate hit the server accepted
+    // on it within MpActor::kReanimateWindowMs (NoteReanimateAccepted at
+    // OnHit, ahead of CastReanimateOnHost). Any other live sample of it
+    // stays a sample of a dead record, judged dead below; said once in ten
+    // seconds per body, at debug
+    const auto reanimatedAgo = actor->ReanimateAcceptedAgo(now);
+    const bool reanimated = reanimatedAgo &&
+      reanimatedAgo->count() <=
+        static_cast<int64_t>(MpActor::kReanimateWindowMs);
+    if (actor->IsPlacedDead() && !reanimated) {
+      static std::unordered_map<uint32_t,
+                                std::chrono::steady_clock::time_point>
+        placedLines;
+      auto& last = placedLines[actor->GetFormId()];
+      if (last == std::chrono::steady_clock::time_point{} ||
+          now - last >= std::chrono::seconds(10)) {
+        last = now;
+        spdlog::debug("[verb:npc-fate] {:x} is a placed corpse: {:x}'s live "
+                      "sample (health {:.3f}) stands nothing; a reanimation "
+                      "is the cast's rule (finding 65)",
+                      actor->GetFormId(), myActor->GetFormId(), msg.health);
+      }
+    } else {
+      const auto diedAgo = actor->DiedAgo(now);
+      if (!diedAgo ||
+          diedAgo->count() >= static_cast<int64_t>(MpActor::kPendingDeathMs)) {
+        spdlog::info(
+          "[verb:npc-fate] resurrection by its host's engine: {:x} "
+          "stands again with health {:.3f} on {:x}'s sample, {}; "
+          "the record's death cleared, the live word to every "
+          "listener",
+          actor->GetFormId(), msg.health, myActor->GetFormId(),
+          diedAgo
+            ? fmt::format("{} s after its death", diedAgo->count() / 1000)
+            : actor->IsPlacedDead()
+            ? fmt::format("a placed corpse, the reanimate accepted {} ms ago",
+                          reanimatedAgo->count())
+            : std::string("its death before this process"));
+        actor->Respawn(false);
+      }
     }
   }
   facts.alive = !actor->IsDead() && !actor->IsRespawning();
@@ -5263,6 +5296,9 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
   // one engine that owns the body, its cell's host's
   if (targetActorPtr->IsDead() &&
       ReanimateEffectOf(&partOne.worldState, effects).has_value()) {
+    // the stamp a placed corpse's stand-up is read against
+    // (OnHostedActorState, finding 65)
+    targetActorPtr->NoteReanimateAccepted(std::chrono::steady_clock::now());
     CastReanimateOnHost(*aggressor, *targetActorPtr, hitData.source);
   }
 

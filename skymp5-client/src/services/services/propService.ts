@@ -44,6 +44,10 @@ const SAMPLE_DEGREES = 2;
 const STIR_UNITS = 0.25;
 const STIR_DEGREES = 0.25;
 const SLEEP_AFTER_MS = 500;
+// a resting body this seat simulates is read for a stir ten times a second,
+// not every frame (sixty-four host-default props at rest cost nine natives
+// each per read)
+const REST_READ_MS = 100;
 // The follower's apply: a glide over the sample interval (floored, capped)
 // under JUMP_UNITS, a placement at once from there and at sleep
 const GLIDE_MIN_MS = 50;
@@ -482,6 +486,9 @@ export class PropService extends ClientListener {
     // the sleep sample, reliable, when it has not stirred for SLEEP_AFTER_MS
     // after moving; nothing more until it moves again
     private stream(prop: Prop, refr: ObjectReference, now: number, myId: number) {
+        if (!prop.streaming && prop.lastRead && now - prop.lastRead.at < REST_READ_MS) {
+            return;
+        }
         const read = PropService.read(refr, now);
         if (!prop.lastSent) {
             // the baseline: nothing goes out until the body moves from here
@@ -819,9 +826,17 @@ export class PropService extends ClientListener {
             this.byLocal.delete(prop.localId);
         }
         if (prop.simulating) {
-            // a body this seat leaves Dynamic would move here unstreamed
+            // a body this seat leaves Dynamic would move here unstreamed: its
+            // transform goes out once more as the final sample (the server's
+            // lease starts, the record rests there, the other seats follow),
+            // then the body is parked
             const refr = this.refOf(prop);
             if (refr && refr.is3DLoaded()) {
+                if (prop.streaming) {
+                    const now = Date.now();
+                    this.send(prop, PropService.read(refr, now), true, now);
+                    prop.streaming = false;
+                }
                 refr.setMotionType(MotionType.Keyframed, false).catch((err) =>
                     logError(this, `setMotionType(Keyframed) on untracked prop ${prop.refr.toString(16)} failed`, err));
             }

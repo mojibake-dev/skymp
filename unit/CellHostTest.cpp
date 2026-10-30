@@ -3,6 +3,7 @@
 #include "ActorSpeechMessage.h"
 #include "ChangeValuesMessage.h"
 #include "CreateActorMessage.h"
+#include "HitMessage.h"
 #include "HostGrantMessage.h"
 #include "HostReleaseMessage.h"
 #include "HostedActorStateMessage.h"
@@ -35,6 +36,14 @@ namespace {
 constexpr uint32_t kTamriel = 0x3c;
 constexpr uint32_t kC1 = 0xff000c01;
 constexpr uint32_t kC2 = 0xff000c02;
+
+// a worn inventory entry's extra, as HitTest arms its aggressor (the helper
+// is that file's own, so it is spelled out here too)
+const auto kWornExtra = [] {
+  Inventory::ExtraData extra;
+  extra.worn_ = true;
+  return extra;
+}();
 constexpr uint32_t kWolf = 0xff000c03;
 constexpr uint32_t kC3 = 0xff000c04;
 // Whiterun's cow, an actor from Skyrim.esm (unit/NpcExists.cpp), in the
@@ -1149,6 +1158,230 @@ TEST_CASE("A host's sighting places an interior-placed resident where its "
   p.DestroyActor(kSigrid);
 }
 
+// thuum docs/verbs/npc-puppet.md (playtest 38's finding 66): the host's
+// roster that reaches the server before its cell's grant (the same
+// millisecond, live) is held and replayed at the grant, so the cell's
+// actors are recorded within a round trip instead of a roster later
+TEST_CASE("A sighting that arrives before its cell's grant is held and "
+          "replayed for the grant's host (finding 66)",
+          "[CellHost][espm]")
+{
+  constexpr uint32_t kSigrid = 0x13483;
+  const NiPoint3 sigridPos{ 24063.7f, -45204.2f, -40.6f };
+  const NiPoint3 landing{ 17225.f, -47204.f, -128.f };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kSigrid) == nullptr);
+
+  Player(p, 0, kC1, landing);
+  const auto cell = p.worldState.CellOf(kTamriel, sigridPos);
+  REQUIRE(cell.has_value());
+  REQUIRE_FALSE(p.GetCellHost(*cell).hosted);
+  p.Messages().clear();
+
+  // the roster first: nobody's cell yet, so dropped and held
+  DoMessage(
+    p, 0,
+    nlohmann::json{ { "t", MsgType::ActorSightings },
+                    { "sightings",
+                      nlohmann::json::array({ nlohmann::json{
+                        { "refrId", kSigrid },
+                        { "worldOrCell", kTamriel },
+                        { "pos", { sigridPos.x, sigridPos.y, sigridPos.z } },
+                        { "rot", { 0.f, 0.f, 165.3f } } } }) } });
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kSigrid) == nullptr);
+
+  // the grant: the held sighting replays for the new host at once
+  CellLoaded(p, 0, *cell);
+  REQUIRE(p.GetCellHost(*cell).player == kC1);
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kSigrid) != nullptr);
+  auto& sigrid = p.worldState.GetFormAt<MpActor>(kSigrid);
+  REQUIRE(sigrid.GetPos().x == Catch::Approx(sigridPos.x));
+  REQUIRE(sigrid.GetPos().y == Catch::Approx(sigridPos.y));
+  REQUIRE(p.worldState.HostOf(sigrid) ==
+          &p.worldState.GetFormAt<MpActor>(kC1));
+
+  // a second grant has nothing left to replay
+  p.Messages().clear();
+  p.ReplayHeldSightings(*cell, p.worldState.GetFormAt<MpActor>(kC1));
+  REQUIRE(SentTo<CreateActorMessage>(p, 0).empty());
+
+  DoDisconnect(p, 0);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kSigrid);
+}
+
+// the train's review (2026-10-29): the hold keyed by reference alone let a
+// second game's roster of the same bandit, landing last, evict the first's
+// entry, and the grant replayed the host's own entries only, so with c2's
+// roster last and c1's grant nothing replayed. One entry per (reporter,
+// reference); the grant replays the new host's own and keeps the other
+// reporter's for its own grant while they last
+TEST_CASE("Held sightings are the pair's: a second reporter's roster of the "
+          "same reference keeps the first's entry, the grant replays the "
+          "host's own and keeps the other's for its own grant (finding 66)",
+          "[CellHost][espm]")
+{
+  constexpr uint32_t kSigrid = 0x13483;
+  constexpr uint32_t kHod = 0x1348a;
+  const NiPoint3 sigridPos{ 24063.7f, -45204.2f, -40.6f };
+  const NiPoint3 hodPos = sigridPos + NiPoint3{ 60.f, 0.f, 0.f };
+  const NiPoint3 landing{ 17225.f, -47204.f, -128.f };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kSigrid) == nullptr);
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kHod) == nullptr);
+  // an earlier case's leftovers expire first
+  p.SweepHeldSightings(NowMs() + PartOne::kHeldSightingMs + 1);
+  REQUIRE(p.HeldSightingsCount() == 0);
+
+  Player(p, 0, kC1, landing);
+  Player(p, 1, kC2, landing + NiPoint3{ 50.f, 0.f, 0.f });
+  const auto cell = p.worldState.CellOf(kTamriel, sigridPos);
+  REQUIRE(cell.has_value());
+  REQUIRE_FALSE(p.GetCellHost(*cell).hosted);
+  const auto sights = [&](Networking::UserId user, uint32_t refrId,
+                          const NiPoint3& at) {
+    DoMessage(p, user,
+              nlohmann::json{ { "t", MsgType::ActorSightings },
+                              { "sightings",
+                                nlohmann::json::array({ nlohmann::json{
+                                  { "refrId", refrId },
+                                  { "worldOrCell", kTamriel },
+                                  { "pos", { at.x, at.y, at.z } },
+                                  { "rot", { 0.f, 0.f, 0.f } } } }) } });
+  };
+
+  // c1's roster, twice (one entry); c2's of the same reference last (its
+  // own entry beside c1's, not over it); c2's of Hod
+  sights(0, kSigrid, sigridPos);
+  sights(0, kSigrid, sigridPos);
+  REQUIRE(p.HeldSightingsCount(*cell) == 1);
+  sights(1, kSigrid, sigridPos);
+  REQUIRE(p.HeldSightingsCount(*cell) == 2);
+  sights(1, kHod, hodPos);
+  REQUIRE(p.HeldSightingsCount(*cell) == 3);
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kSigrid) == nullptr);
+
+  // c1's grant: its own entry replays (Sigrid stands), c2's two stay held
+  CellLoaded(p, 0, *cell);
+  REQUIRE(p.GetCellHost(*cell).player == kC1);
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kSigrid) != nullptr);
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kHod) == nullptr);
+  REQUIRE(p.HeldSightingsCount(*cell) == 2);
+
+  // c1 leaves; past the grace c2, with the cell loaded, takes it and its own
+  // entries replay: Hod stands where c2's engine had it, the hold is empty
+  const uint64_t now = NowMs();
+  DoDisconnect(p, 0);
+  CellLoaded(p, 1, *cell);
+  p.TickCellHosts(now + skymp::rules::host_grace_ms() + kPastMs);
+  REQUIRE(p.GetCellHost(*cell).player == kC2);
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kHod) != nullptr);
+  auto& hod = p.worldState.GetFormAt<MpActor>(kHod);
+  REQUIRE(hod.GetPos().x == Catch::Approx(hodPos.x));
+  REQUIRE(p.HeldSightingsCount(*cell) == 0);
+
+  DoDisconnect(p, 1);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+  p.DestroyActor(kSigrid);
+  p.DestroyActor(kHod);
+}
+
+// the train's review (2026-10-29): the hold grew with no total cap, nothing
+// swept it on a tick, and a departed reporter's entries stayed. The sweep
+// runs from the once-a-second tick (TickCellHostsEverySecond); a reporter's
+// disconnect forgets its own; kHeldSightingsTotal across cells, the oldest
+// entry anywhere making room
+TEST_CASE("The hold is bounded: the sweep expires held sightings, a "
+          "reporter's disconnect forgets its own, and the total cap drops "
+          "the oldest (finding 66)",
+          "[CellHost][espm]")
+{
+  constexpr uint32_t kSigrid = 0x13483;
+  const NiPoint3 sigridPos{ 24063.7f, -45204.2f, -40.6f };
+  const NiPoint3 landing{ 17225.f, -47204.f, -128.f };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kSigrid) == nullptr);
+  p.SweepHeldSightings(NowMs() + PartOne::kHeldSightingMs + 1);
+  REQUIRE(p.HeldSightingsCount() == 0);
+  Player(p, 0, kC1, landing);
+  Player(p, 1, kC2, landing + NiPoint3{ 50.f, 0.f, 0.f });
+  const auto cell = p.worldState.CellOf(kTamriel, sigridPos);
+  REQUIRE(cell.has_value());
+  REQUIRE_FALSE(p.GetCellHost(*cell).hosted);
+  const auto sights = [&](Networking::UserId user, uint32_t refrId,
+                          const NiPoint3& at) {
+    DoMessage(p, user,
+              nlohmann::json{ { "t", MsgType::ActorSightings },
+                              { "sightings",
+                                nlohmann::json::array({ nlohmann::json{
+                                  { "refrId", refrId },
+                                  { "worldOrCell", kTamriel },
+                                  { "pos", { at.x, at.y, at.z } },
+                                  { "rot", { 0.f, 0.f, 0.f } } } }) } });
+  };
+
+  // the sweep: an entry past kHeldSightingMs goes
+  sights(0, kSigrid, sigridPos);
+  REQUIRE(p.HeldSightingsCount(*cell) == 1);
+  p.SweepHeldSightings(NowMs() + PartOne::kHeldSightingMs + 1);
+  REQUIRE(p.HeldSightingsCount(*cell) == 0);
+
+  // the disconnect: c1's entry goes with it, and the grant to c2 that
+  // follows finds nothing of c1's to replay
+  sights(0, kSigrid, sigridPos);
+  REQUIRE(p.HeldSightingsCount(*cell) == 1);
+  DoDisconnect(p, 0);
+  REQUIRE(p.HeldSightingsCount(*cell) == 0);
+  CellLoaded(p, 1, *cell);
+  REQUIRE(p.GetCellHost(*cell).player == kC2);
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kSigrid) == nullptr);
+
+  // the total cap: seventeen unhosted cells along Tamriel's x axis in the
+  // grid row above the one the other cases host (an earlier case's departed
+  // host may still hold its cell in grace, so every grace passes first), a
+  // full roster of references the server never looks up for each (the hold
+  // needs no record), kHeldSightingsPerCell apiece until the total is
+  // reached; from there each new entry costs the oldest one anywhere, and
+  // the hold is full, not closed
+  p.TickCellHosts(NowMs() + skymp::rules::host_grace_ms() + kPastMs);
+  constexpr size_t kCells = 17;
+  static_assert(kCells * PartOne::kHeldSightingsPerCell >
+                PartOne::kHeldSightingsTotal);
+  const auto capCellPos = [](size_t c) {
+    return NiPoint3{ 9000.f + 4096.f * static_cast<float>(c), 4600.f, 0.f };
+  };
+  for (size_t c = 0; c < kCells; ++c) {
+    const NiPoint3 at = capCellPos(c);
+    const auto capCell = p.worldState.CellOf(kTamriel, at);
+    REQUIRE(capCell.has_value());
+    REQUIRE_FALSE(p.GetCellHost(*capCell).hosted);
+    nlohmann::json roster = nlohmann::json::array();
+    for (size_t i = 0; i < PartOne::kHeldSightingsPerCell; ++i) {
+      roster.push_back(
+        nlohmann::json{ { "refrId", 0x00f00000 + c * 0x100 + i },
+                        { "worldOrCell", kTamriel },
+                        { "pos", { at.x, at.y, at.z } },
+                        { "rot", { 0.f, 0.f, 0.f } } });
+    }
+    DoMessage(p, 1,
+              nlohmann::json{ { "t", MsgType::ActorSightings },
+                              { "sightings", roster } });
+  }
+  REQUIRE(p.HeldSightingsCount() == PartOne::kHeldSightingsTotal);
+  sights(1, 0x00f0ffff, capCellPos(0));
+  REQUIRE(p.HeldSightingsCount() == PartOne::kHeldSightingsTotal);
+
+  p.SweepHeldSightings(NowMs() + PartOne::kHeldSightingMs + 1);
+  REQUIRE(p.HeldSightingsCount() == 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+}
+
 TEST_CASE("An actor from the game files travels under its own id with the "
           "server's explicit hosted word, the grant flips it, and only the "
           "host's reports move it",
@@ -1858,4 +2091,81 @@ TEST_CASE("A dead player hosts nothing: the grace starts at its death, its "
   DoDisconnect(p, 0);
   p.DestroyActor(kC2);
   p.DestroyActor(kC1);
+}
+
+// thuum docs/verbs/melee-reach.md (the weekend pass, M3's "NPC melee reach and
+// hit cone"): a hosted humanoid NPC's melee hit, reported by its host, is
+// validated by reach as a player's is (R1); beyond reach it is refused and
+// the victim keeps its health; within reach it lands
+TEST_CASE("A hosted resident's melee hit its host reports is gated by reach",
+          "[CellHost][Hit][espm]")
+{
+  constexpr uint32_t kSigrid = 0x13483;
+  const NiPoint3 sigridPos{ 24063.7f, -45204.2f, -40.6f };
+  const NiPoint3 landing{ 17225.f, -47204.f, -128.f };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kSigrid) == nullptr);
+  Player(p, 0, kC1, landing);
+  Player(p, 1, kC2, sigridPos + NiPoint3{ 0.f, 2000.f, 0.f });
+  const auto cell = p.worldState.CellOf(kTamriel, sigridPos);
+  REQUIRE(cell.has_value());
+  CellLoaded(p, 0, *cell);
+  REQUIRE(p.GetCellHost(*cell).player == kC1);
+  DoMessage(
+    p, 0,
+    nlohmann::json{ { "t", MsgType::ActorSightings },
+                    { "sightings",
+                      nlohmann::json::array({ nlohmann::json{
+                        { "refrId", kSigrid },
+                        { "worldOrCell", kTamriel },
+                        { "pos", { sigridPos.x, sigridPos.y, sigridPos.z } },
+                        { "rot", { 0.f, 0.f, 0.f } } } }) } });
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kSigrid) != nullptr);
+  auto& sigrid = p.worldState.GetFormAt<MpActor>(kSigrid);
+  auto& victim = p.worldState.GetFormAt<MpActor>(kC2);
+  // her hit names a weapon her record's hands hold (an unarmed 0 is dropped by
+  // E_HIT_WEAPON before reach judges it, pipeline 3832's red): an iron sword
+  // (reach 1.0), as HitTest arms its aggressor. Armed AFTER the victim's move:
+  // the move sends the victim's new squares' fates and the roll re-dresses the
+  // resident's record, which wiped the sword in pipeline 3849 ("absent in its
+  // inventory")
+  const uint32_t ironSword = 0x00012eb7;
+  const auto arm = [&]() {
+    if (!sigrid.GetInventory().HasItem(ironSword)) {
+      sigrid.AddItem(ironSword, 1);
+    }
+    Equipment eq;
+    eq.inv.entries.push_back(Inventory::Entry(ironSword, 1, kWornExtra));
+    sigrid.SetEquipment(eq);
+  };
+  const auto hitFrom = [&](const NiPoint3& victimPos) {
+    victim.SetPos(victimPos);
+    arm();
+    ActorValues full;
+    full.healthPercentage = 1.f;
+    full.magickaPercentage = 1.f;
+    full.staminaPercentage = 1.f;
+    victim.SetPercentages(full);
+    sigrid.SetLastHitTime(
+      kC2, std::chrono::steady_clock::now() - std::chrono::seconds(10));
+    RawMessageData raw;
+    raw.userId = 0;
+    HitMessage hit;
+    hit.data.aggressor = kSigrid;
+    hit.data.target = kC2;
+    hit.data.source = ironSword;
+    p.GetActionListener().OnHit(raw, hit);
+    return victim.GetChangeForm().actorValues.healthPercentage < 1.f;
+  };
+  // 2000 units north of her: beyond the sword's reach, refused (E_HIT_REACH)
+  REQUIRE_FALSE(hitFrom(sigridPos + NiPoint3{ 0.f, 2000.f, 0.f }));
+  // 60 units north, on her heading: lands
+  REQUIRE(hitFrom(sigridPos + NiPoint3{ 0.f, 60.f, 0.f }));
+
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+  p.DestroyActor(kSigrid);
 }

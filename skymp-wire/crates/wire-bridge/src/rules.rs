@@ -1455,27 +1455,41 @@ mod ffi {
         /// The record after a checked report: the latest value wins.
         fn player_globals_merge(record: &[PlayerGlobalEntry], report: &[PlayerGlobalEntry]) -> Vec<PlayerGlobalEntry>;
 
-        /// thuum docs/verbs/quest-stage.md (ADR-056): the quests
-        /// server-settings.json's `sharedQuests` names, whose stages are the
-        /// world's.
+        /// thuum docs/verbs/quest-stage.md (ADR-056; memo D58 B): the quests
+        /// server-settings.json's `sharedQuests` makes the world's, by a list
+        /// (mode list) or by `{"mode": "all", "denied": [...], "allowed":
+        /// [...]}` (mode all; `allowed` the start-game-enabled quests that
+        /// cross, memo D62).
         type SharedQuests;
-        /// The list from the block as JSON text (`[]` for none); the error
-        /// names the bad entry.
+        /// The setting from the block as JSON text (`[]` for none); the
+        /// error names the bad entry or shape.
         fn new_shared_quests(settings_json: &str) -> Result<Box<SharedQuests>>;
-        /// The listed quests, in the settings' order (stage 0): what a client
-        /// reports.
+        /// The sharing mode as the wire carries it: 0 list, 1 all.
+        fn shared_quests_mode(self: &SharedQuests) -> u8;
+        /// What the login names, in the settings' order (stage 0): the
+        /// listed quests in mode list (what a client reports), the denied
+        /// quests in mode all (what a client never reports).
         fn shared_quests_listed(self: &SharedQuests) -> Vec<QuestStageEntry>;
-        /// Judge a report's quest: 0 listed, 1 not listed.
+        /// Judge a report's quest: 0 the world's, 1 not listed (mode list),
+        /// 2 denied (mode all).
         fn shared_quests_check(self: &SharedQuests, short_id: u32, file: &str) -> u8;
-        /// What the login sends: the recorded stages of quests still listed,
-        /// ascending within each quest.
+        /// Whether mode all's `allowed` names the quest (memo D62): a quest
+        /// the game starts by itself that crosses all the same. The flag is
+        /// the record's, read on the C++ side beside the check.
+        fn shared_quests_allowed(self: &SharedQuests, short_id: u32, file: &str) -> bool;
+        /// What the login sends: the recorded stages of quests still the
+        /// world's, ascending within each quest.
         fn shared_quests_at_login(self: &SharedQuests, record: &[QuestStageEntry]) -> Vec<QuestStageEntry>;
         /// Whether the record holds the stage already (a report of it is a
         /// no-op).
         fn quest_stage_done(record: &[QuestStageEntry], done: &QuestStageEntry) -> bool;
         /// The record after a checked report: the stage added once, ascending
-        /// within its quest.
+        /// within its quest; unchanged when the record is full.
         fn quest_stages_merge(record: &[QuestStageEntry], done: &QuestStageEntry) -> Vec<QuestStageEntry>;
+        /// Whether the record is at wire-rules' QUEST_RECORD_CAP (4096
+        /// pairs), so a new stage is refused (E_QUEST_FULL) and the merge
+        /// would leave the record as it is.
+        fn quest_record_full(record: &[QuestStageEntry]) -> bool;
 
         /// thuum docs/verbs/spell-placed-object.md (ADR-057): the objects
         /// server-settings.json's `spellPlacedObjects` names per spell, and
@@ -2294,6 +2308,10 @@ fn to_stage_entries(stages: &[quest_stages::StageDone]) -> Vec<QuestStageEntry> 
 }
 
 impl SharedQuests {
+    fn shared_quests_mode(&self) -> u8 {
+        self.0.mode().wire()
+    }
+
     fn shared_quests_listed(&self) -> Vec<QuestStageEntry> {
         self.0.listed().iter().map(|d| QuestStageEntry { short_id: d.short_id, file: d.file.clone(), stage: 0 }).collect()
     }
@@ -2302,7 +2320,12 @@ impl SharedQuests {
         match self.0.check(&forms::FormDesc { short_id, file: file.to_owned() }) {
             Ok(()) => 0,
             Err(quest_stages::Refusal::Unlisted) => 1,
+            Err(quest_stages::Refusal::Denied) => 2,
         }
+    }
+
+    fn shared_quests_allowed(&self, short_id: u32, file: &str) -> bool {
+        self.0.is_allowed(short_id, file)
     }
 
     fn shared_quests_at_login(&self, record: &[QuestStageEntry]) -> Vec<QuestStageEntry> {
@@ -2316,6 +2339,10 @@ fn quest_stage_done(record: &[QuestStageEntry], done: &QuestStageEntry) -> bool 
 
 fn quest_stages_merge(record: &[QuestStageEntry], done: &QuestStageEntry) -> Vec<QuestStageEntry> {
     to_stage_entries(&quest_stages::merge(&to_stages(record), &to_stage(done)))
+}
+
+fn quest_record_full(record: &[QuestStageEntry]) -> bool {
+    quest_stages::full(record.len())
 }
 
 /// The spell-placed objects' table and the sets standing (wire-rules
@@ -3253,9 +3280,27 @@ mod tests {
     fn the_bridge_keeps_the_shared_quests() {
         let e = |short_id: u32, stage: u16| QuestStageEntry { short_id, file: "Skyrim.esm".to_owned(), stage };
         let list = new_shared_quests(r#"["074a83:Skyrim.esm"]"#);
+        assert!(list.as_ref().is_ok_and(|l| l.shared_quests_mode() == 0));
         assert!(list.as_ref().is_ok_and(|l| l.shared_quests_listed() == vec![e(0x74a83, 0)]));
         assert!(list.as_ref().is_ok_and(|l| l.shared_quests_check(0x74a83, "Skyrim.esm") == 0));
         assert!(list.as_ref().is_ok_and(|l| l.shared_quests_check(0x74a84, "Skyrim.esm") == 1));
+        // mode all (memo D58 B): the login names the denied quests, a denied
+        // report is 2, and the login replays every recorded quest but those
+        let all = new_shared_quests(r#"{"mode": "all", "denied": ["04e50d:Skyrim.esm"]}"#);
+        assert!(all.as_ref().is_ok_and(|a| a.shared_quests_mode() == 1));
+        assert!(all.as_ref().is_ok_and(|a| a.shared_quests_listed() == vec![e(0x4e50d, 0)]));
+        assert!(all.as_ref().is_ok_and(|a| a.shared_quests_check(0x74a84, "Skyrim.esm") == 0));
+        assert!(all.as_ref().is_ok_and(|a| a.shared_quests_check(0x4e50d, "Skyrim.esm") == 2));
+        assert!(all.as_ref().is_ok_and(|a| a.shared_quests_at_login(&[e(0x4e50d, 5), e(0x74a84, 20), e(0x74a83, 10)]) == vec![e(0x74a84, 20), e(0x74a83, 10)]));
+        assert!(new_shared_quests(r#"{"mode": "list"}"#).is_err());
+        // memo D62: the allowed list beside the denied, for the start-game-enabled
+        // quests that cross (MS13 0x39645 is one); a quest in both is refused
+        assert!(all.as_ref().is_ok_and(|a| !a.shared_quests_allowed(0x39645, "Skyrim.esm")));
+        let allowed = new_shared_quests(r#"{"mode": "all", "denied": ["04e50d:Skyrim.esm"], "allowed": ["039645:Skyrim.esm"]}"#);
+        assert!(allowed.as_ref().is_ok_and(|a| a.shared_quests_allowed(0x39645, "Skyrim.esm") && !a.shared_quests_allowed(0x4e50d, "Skyrim.esm")));
+        assert!(allowed.as_ref().is_ok_and(|a| a.shared_quests_listed() == vec![e(0x4e50d, 0)] && a.shared_quests_check(0x39645, "Skyrim.esm") == 0));
+        assert!(new_shared_quests(r#"{"mode": "all", "denied": ["039645:Skyrim.esm"], "allowed": ["39645:Skyrim.esm"]}"#).is_err());
+        assert!(list.as_ref().is_ok_and(|l| !l.shared_quests_allowed(0x74a83, "Skyrim.esm")));
         let record = quest_stages_merge(&[e(0x74a83, 20)], &e(0x74a83, 10));
         assert_eq!(record, vec![e(0x74a83, 10), e(0x74a83, 20)]);
         assert!(quest_stage_done(&record, &e(0x74a83, 20)));
@@ -3263,6 +3308,13 @@ mod tests {
         assert_eq!(quest_stages_merge(&record, &e(0x74a83, 20)), record);
         assert!(list.as_ref().is_ok_and(|l| l.shared_quests_at_login(&[e(0x74a84, 5), e(0x74a83, 20), e(0x74a83, 10)]) == vec![e(0x74a83, 10), e(0x74a83, 20)]));
         assert!(new_shared_quests(r#"["074a83"]"#).is_err());
+        // the record's bound (review finding 2): full at QUEST_RECORD_CAP
+        // pairs, when the merge leaves it as it is
+        assert!(!quest_record_full(&record));
+        let capped: Vec<QuestStageEntry> = (0..=u16::MAX).take(quest_stages::QUEST_RECORD_CAP).map(|s| e(0x74a83, s)).collect();
+        assert_eq!(capped.len(), quest_stages::QUEST_RECORD_CAP);
+        assert!(quest_record_full(&capped));
+        assert_eq!(quest_stages_merge(&capped, &e(0x74a84, 10)), capped);
     }
 
     #[test]

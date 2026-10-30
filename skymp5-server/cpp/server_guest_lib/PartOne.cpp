@@ -156,6 +156,22 @@ struct PartOne::Impl
 {
   simdjson::dom::parser parser;
 
+  // thuum docs/verbs/npc-puppet.md (finding 66): sightings dropped because
+  // their cell had no host yet, per cell and one per (reporter, reference),
+  // until the grant replays the host's own (PartOne::ReplayHeldSightings),
+  // kHeldSightingMs passes (SweepHeldSightings), the reporter leaves
+  // (ForgetHeldSightings) or the total cap makes room (HoldSighting)
+  struct HeldSighting
+  {
+    uint32_t reporter = 0;
+    uint32_t refrId = 0;
+    uint32_t worldOrCell = 0;
+    NiPoint3 pos;
+    NiPoint3 rot;
+    uint64_t heldAtMs = 0;
+  };
+  std::unordered_map<uint32_t, std::vector<HeldSighting>> heldSightings;
+
   // every player actor's ground speed budget (thuum
   // docs/verbs/movement-speed.md; the rule is Rust's, ADR-020)
   rust::Box<skymp::rules::MovementBudgets> movementBudgets =
@@ -729,6 +745,9 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           // and its props fall back to their cells' hosts (thuum
           // docs/verbs/prop-physics.md)
           this_->pImpl->props->props_gone(actor->GetFormId());
+          // and the sightings it held for a grant that never came (thuum
+          // docs/verbs/npc-puppet.md, finding 66's hold)
+          this_->ForgetHeldSightings(actor->GetFormId());
           this_->pImpl->lastSquareByPlayer.erase(actor->GetFormId());
           this_->pImpl->fatedSquares.erase(actor->GetFormId());
         }
@@ -1654,6 +1673,7 @@ void ApplyHostDecisions(PartOne& partOne,
         partOne.GetSendTarget().Send(partOne.serverState.UserByActor(host),
                                      grant, true);
         FlipHostedFlags(partOne, *host, d.cell, host);
+        partOne.ReplayHeldSightings(d.cell, *host);
         break;
       }
       case skymp::rules::HostKind::Release: {
@@ -1926,7 +1946,10 @@ void PartOne::OnActorSighting(MpActor& reporter, uint32_t refrId,
   const auto host = GetCellHost(*cell);
   if (!host.hosted || host.player != reporter.GetFormId()) {
     // another game's cell, or nobody's yet: that host reports it, or the
-    // grant comes first
+    // grant comes first and replays what it held (finding 66)
+    if (!host.hosted) {
+      HoldSighting(reporter.GetFormId(), *cell, refrId, worldOrCell, pos, rot);
+    }
     return drop(host.hosted ? "the cell is another game's"
                             : "the cell is nobody's yet");
   }
@@ -1992,6 +2015,147 @@ void PartOne::OnActorSighting(MpActor& reporter, uint32_t refrId,
   actor->SetAngle(rot);
 }
 
+void PartOne::HoldSighting(uint32_t reporter, uint32_t cell, uint32_t refrId,
+                           uint32_t worldOrCell, const NiPoint3& pos,
+                           const NiPoint3& rot)
+{
+  const uint64_t now = SteadyNowMs();
+  auto& held = pImpl->heldSightings[cell];
+  // the reporter's own earlier entry for the reference gives way to this one
+  // (another reporter's is its own: a roster landing last must not evict the
+  // first's, or the first's grant replays nothing), and the cell's expired
+  // entries go with it
+  held.erase(std::remove_if(held.begin(), held.end(),
+                            [&](const Impl::HeldSighting& h) {
+                              return (h.reporter == reporter &&
+                                      h.refrId == refrId) ||
+                                now - h.heldAtMs > kHeldSightingMs;
+                            }),
+             held.end());
+  if (held.size() >= kHeldSightingsPerCell) {
+    return;
+  }
+  // the total across cells: full, the oldest entry anywhere makes room (the
+  // newest sighting is the live one), said once in ten seconds
+  if (HeldSightingsCount() >= kHeldSightingsTotal) {
+    std::vector<Impl::HeldSighting>* oldestIn = nullptr;
+    size_t oldestAt = 0;
+    for (auto& entry : pImpl->heldSightings) {
+      auto& entries = entry.second;
+      for (size_t i = 0; i < entries.size(); ++i) {
+        if (!oldestIn ||
+            entries[i].heldAtMs < (*oldestIn)[oldestAt].heldAtMs) {
+          oldestIn = &entries;
+          oldestAt = i;
+        }
+      }
+    }
+    if (oldestIn) {
+      oldestIn->erase(oldestIn->begin() +
+                      static_cast<std::ptrdiff_t>(oldestAt));
+    }
+    static uint64_t lastFullLogMs = 0;
+    if (lastFullLogMs == 0 || now - lastFullLogMs >= 10'000) {
+      lastFullLogMs = now;
+      spdlog::warn("PartOne - npc-puppet: {} sightings held across cells, "
+                   "the cap: the oldest dropped for {:x}'s sighting of {:x} "
+                   "in cell {:x}",
+                   kHeldSightingsTotal, reporter, refrId, cell);
+    }
+  }
+  held.push_back(
+    Impl::HeldSighting{ reporter, refrId, worldOrCell, pos, rot, now });
+}
+
+void PartOne::ReplayHeldSightings(uint32_t cell, MpActor& host)
+{
+  auto it = pImpl->heldSightings.find(cell);
+  if (it == pImpl->heldSightings.end()) {
+    return;
+  }
+  const uint64_t now = SteadyNowMs();
+  // the host's own entries leave the hold to replay; another reporter's stay
+  // for its own grant while they last; the expired go
+  std::vector<Impl::HeldSighting> mine;
+  std::vector<Impl::HeldSighting> kept;
+  for (const auto& h : it->second) {
+    if (now - h.heldAtMs > kHeldSightingMs) {
+      continue;
+    }
+    (h.reporter == host.GetFormId() ? mine : kept).push_back(h);
+  }
+  if (kept.empty()) {
+    pImpl->heldSightings.erase(it);
+  } else {
+    it->second = std::move(kept);
+  }
+  for (const auto& h : mine) {
+    OnActorSighting(host, h.refrId, h.worldOrCell, h.pos, h.rot);
+  }
+  if (!mine.empty()) {
+    spdlog::info("PartOne - npc-puppet: {:x} hosts cell {:x}: {} sighting(s) "
+                 "held before the grant replayed (finding 66)",
+                 host.GetFormId(), cell, mine.size());
+  }
+}
+
+void PartOne::SweepHeldSightings(uint64_t nowMs)
+{
+  for (auto it = pImpl->heldSightings.begin();
+       it != pImpl->heldSightings.end();) {
+    auto& held = it->second;
+    held.erase(std::remove_if(held.begin(), held.end(),
+                              [&](const Impl::HeldSighting& h) {
+                                return nowMs - h.heldAtMs > kHeldSightingMs;
+                              }),
+               held.end());
+    if (held.empty()) {
+      it = pImpl->heldSightings.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+void PartOne::ForgetHeldSightings(uint32_t reporter)
+{
+  size_t forgotten = 0;
+  for (auto it = pImpl->heldSightings.begin();
+       it != pImpl->heldSightings.end();) {
+    auto& held = it->second;
+    const size_t before = held.size();
+    held.erase(std::remove_if(held.begin(), held.end(),
+                              [&](const Impl::HeldSighting& h) {
+                                return h.reporter == reporter;
+                              }),
+               held.end());
+    forgotten += before - held.size();
+    if (held.empty()) {
+      it = pImpl->heldSightings.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  if (forgotten > 0) {
+    spdlog::info("PartOne - npc-puppet: {:x} left: {} held sighting(s) of "
+                 "its forgotten",
+                 reporter, forgotten);
+  }
+}
+
+size_t PartOne::HeldSightingsCount(std::optional<uint32_t> cell) const
+{
+  if (cell) {
+    const auto it = pImpl->heldSightings.find(*cell);
+    return it == pImpl->heldSightings.end() ? 0 : it->second.size();
+  }
+  size_t n = 0;
+  for (const auto& entry : pImpl->heldSightings) {
+    n += entry.second.size();
+  }
+  return n;
+}
+
 void PartOne::TickCellHostsEverySecond()
 {
   const auto now = std::chrono::steady_clock::now();
@@ -2001,6 +2165,7 @@ void PartOne::TickCellHostsEverySecond()
   pImpl->lastCellsTick = now;
   TickCellHosts(SteadyNowMs());
   TickDeaths(SteadyNowMs());
+  SweepHeldSightings(SteadyNowMs());
 }
 
 void PartOne::TickDeaths(uint64_t nowMs)
@@ -2685,10 +2850,21 @@ constexpr float kWorldJournalX = -200000.f;
 constexpr float kWorldJournalY = -200000.f;
 }
 
+uint8_t PartOne::SharedQuestsMode() const
+{
+  return pImpl->sharedQuests->shared_quests_mode();
+}
+
 uint8_t PartOne::CheckSharedQuest(const FormDesc& quest) const
 {
   return pImpl->sharedQuests->shared_quests_check(quest.shortFormId,
                                                   quest.file);
+}
+
+bool PartOne::IsSharedQuestAllowed(const FormDesc& quest) const
+{
+  return pImpl->sharedQuests->shared_quests_allowed(quest.shortFormId,
+                                                    quest.file);
 }
 
 std::vector<FormDesc> PartOne::SharedQuestsListed() const
@@ -2725,6 +2901,14 @@ std::vector<QuestStageDone> PartOne::MergeQuestStage(
     rust::Slice<const skymp::rules::QuestStageEntry>(entries.data(),
                                                      entries.size()),
     ToStageEntry(done)));
+}
+
+bool PartOne::QuestRecordFull()
+{
+  const auto entries = ToStageEntries(GetQuestStages());
+  return skymp::rules::quest_record_full(
+    rust::Slice<const skymp::rules::QuestStageEntry>(entries.data(),
+                                                     entries.size()));
 }
 
 MpObjectReference& PartOne::WorldJournal()

@@ -399,9 +399,18 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
         ? serverSettings.at("playerGlobals").dump()
         : std::string("[]"));
     // the quests whose stages are the world's (thuum
-    // docs/verbs/quest-stage.md, ADR-056): `sharedQuests`, the same way
+    // docs/verbs/quest-stage.md, ADR-056): `sharedQuests`, the curated list
+    // (mode list), or `sharedQuestsMode` {mode: "all", denied: [...],
+    // allowed: [...]} (D58 B and D62, 2026-10-29; `allowed` the
+    // start-game-enabled quests that cross). The mode is its own key so an
+    // older image, which reads only `sharedQuests`, ignores it and still
+    // starts from the same deploy file (numidium: a fallback restage,
+    // turbo-back, the nightly's clean image and the layer's stage all deploy
+    // from main); the mode key wins when both are present
     partOne->SetSharedQuestsSettings(
-      serverSettings.contains("sharedQuests")
+      serverSettings.contains("sharedQuestsMode")
+        ? serverSettings.at("sharedQuestsMode").dump()
+        : serverSettings.contains("sharedQuests")
         ? serverSettings.at("sharedQuests").dump()
         : std::string("[]"));
     // the objects the server places at an accepted cast of a listed spell

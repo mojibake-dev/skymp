@@ -154,6 +154,29 @@ bool ModPlayerActorValue(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
 bool Stagger(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
              RE::Actor* target, float magnitude, RE::Actor* source);
 
+// The Story Manager's Change Location event for `actor`, from `oldLocation`
+// (none allowed) to `newLocation` (none reads the actor's current location),
+// queued through the engine's own story event queue as its arrival sender
+// queues it (thuum docs/verbs/quest-stage.md H-56a,
+// docs/research/m3/re-story-location.md): a seat that logs in inside a
+// location raises none by itself, so the Story Manager starts none of the
+// location's quests there. False where nothing was queued
+bool SendStoryChangeLocation(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
+                             RE::Actor* actor, RE::BGSLocation* oldLocation,
+                             RE::BGSLocation* newLocation);
+// The world's quest stages without their fragments (thuum
+// docs/verbs/quest-stage.md, slice two): a (quest, stage) pair the client is
+// applying from the server's relay, in before its SetStage and out at the
+// latent call's answer; while in, the VM's quest stage sink fires the stage's
+// callback and skips its Papyrus fragment (FridaHooks.cpp). False for no
+// quest or a stage outside the engine's u16
+bool SuppressQuestStageFragment(IVM* vm, StackID stackId,
+                                RE::StaticFunctionTag*, RE::TESQuest* quest,
+                                int32_t stage);
+bool ReleaseQuestStageFragment(IVM* vm, StackID stackId,
+                               RE::StaticFunctionTag*, RE::TESQuest* quest,
+                               int32_t stage);
+
 void BlockPapyrusEvents(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                         bool blocked);
 

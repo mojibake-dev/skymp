@@ -66,6 +66,7 @@ struct MpActor::Impl
   uint32_t snippetIndex = 0;
   uint32_t respawnTimerIndex = 0;
   bool isRespawning = false;
+  bool placedDead = false;
   // ADR-050 decision 2: the server's number reached zero, the host's report
   // awaited (MpActor::BeginPendingDeath)
   bool pendingDeath = false;
@@ -73,6 +74,9 @@ struct MpActor::Impl
   uint64_t pendingDeathSinceMs = 0;
   // npc-fate.md finding 48: the last death's time on the server's clock
   std::chrono::steady_clock::time_point diedAt{};
+  // npc-fate.md finding 65: the last reanimate hit the server accepted on
+  // this body, the window a placed corpse's stand-up is read within
+  std::chrono::steady_clock::time_point reanimateAcceptedAt{};
   // npc-fate.md H-52b: the killer credited at the last Kill (the read)
   std::optional<uint32_t> lastKillerId;
   std::optional<UpdateActionMessage> lastAction;
@@ -1719,6 +1723,25 @@ const bool& MpActor::IsRespawning() const
   return pImpl->isRespawning;
 }
 
+void MpActor::MarkPlacedDead()
+{
+  pImpl->placedDead = true;
+  pImpl->isRespawning = false;
+  EditChangeForm(
+    [&](MpChangeForm& changeForm) {
+      changeForm.isDead = true;
+      changeForm.actorValues.healthPercentage = 0.f;
+      changeForm.actorValues.magickaPercentage = 0.f;
+      changeForm.actorValues.staminaPercentage = 0.f;
+    },
+    Mode::NoRequestSave);
+}
+
+bool MpActor::IsPlacedDead() const
+{
+  return pImpl->placedDead;
+}
+
 bool MpActor::IsSpellLearned(const uint32_t spellId) const
 {
   return ChangeForm().learnedSpells.IsSpellLearned(spellId) ||
@@ -2350,6 +2373,15 @@ void MpActor::RespawnWithDelay(bool shouldTeleport)
   if (pImpl->isRespawning) {
     return;
   }
+  // thuum docs/verbs/npc-fate.md (finding 65): a dead-at-start placement
+  // never stands again by a clock; the engine never raises its own either.
+  // A reanimation stands it through the host's sample (Respawn(false)),
+  // which is no respawn
+  if (pImpl->placedDead) {
+    spdlog::trace("MpActor::RespawnWithDelay {:x} - placed dead, no respawn",
+                  GetFormId());
+    return;
+  }
   // thuum docs/research/m3/decisions-after-playtest-34.md D21: a disabled
   // actor is out of the world by the server's own word (the gamemode's or
   // the lab's Disable), so its death schedules no return; playtest 34's ice
@@ -2558,6 +2590,21 @@ std::optional<std::chrono::milliseconds> MpActor::DiedAgo(
   }
   return std::chrono::duration_cast<std::chrono::milliseconds>(now -
                                                                pImpl->diedAt);
+}
+
+void MpActor::NoteReanimateAccepted(std::chrono::steady_clock::time_point at)
+{
+  pImpl->reanimateAcceptedAt = at;
+}
+
+std::optional<std::chrono::milliseconds> MpActor::ReanimateAcceptedAgo(
+  std::chrono::steady_clock::time_point now) const
+{
+  if (pImpl->reanimateAcceptedAt == std::chrono::steady_clock::time_point()) {
+    return std::nullopt;
+  }
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+    now - pImpl->reanimateAcceptedAt);
 }
 
 void MpActor::NoteHitBy(uint32_t aggressorId,

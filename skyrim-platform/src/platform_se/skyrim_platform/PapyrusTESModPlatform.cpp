@@ -6,6 +6,8 @@
 #include "ItemMenuRefresh.h"
 #include "NullPointerException.h"
 
+#include <RE/B/BGSLocation.h>
+#include <RE/B/BGSStoryEventManager.h>
 #include <RE/B/BSPointerHandle.h>
 #include <RE/C/Calendar.h>
 #include <RE/E/ExtraHotkey.h>
@@ -1411,6 +1413,122 @@ bool TESModPlatform::Stagger(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
   return true;
 }
 
+namespace {
+// The Story Manager's Change Location event as the engine queues it (thuum
+// docs/research/m3/re-story-location.md, the re-analyst's read of
+// PlayerCharacter::SetParentCell on 1.6.1170, HYPOTHESIS until the Frida
+// plan there): 0x18 bytes, the actor's handle at 0, the location left at 8,
+// the location entered at 0x10, registered as Actor R1, Old Location L1 and
+// New Location L2 under the event CLOC (SMEN 0x1320e's ENAM). The shape is
+// CommonLibSSE-NG's typed story event, BGSAddToPlayerInventoryEvent
+// (BGSAddToPlayerInventoryEvent.h:21-37): a struct whose GetIndex reads the
+// event's registered index static, which BGSStoryEventManager::AddEvent
+// passes to AddEvent_Impl with the struct (BGSStoryEventManager.h:24-42).
+// The Change Location index static is Address Library 1.6.1170 380069 (just
+// addr, 2026-10-29); CommonLibSSE-NG names it for no runtime, so the native
+// below runs on AE runtimes only (Stagger's precedent, thuum ADR-025's
+// 1.6.1170).
+struct StoryChangeLocationEvent
+{
+  [[nodiscard]] static std::uint32_t& GetIndex()
+  {
+    REL::Relocation<std::uint32_t*> index{ REL::ID(380069) };
+    return *index;
+  }
+
+  // members
+  RE::ObjectRefHandle actor;          // 0x00
+  RE::BGSLocation* oldLoc{ nullptr }; // 0x08
+  RE::BGSLocation* newLoc{ nullptr }; // 0x10
+};
+static_assert(sizeof(StoryChangeLocationEvent) == 0x18);
+static_assert(offsetof(StoryChangeLocationEvent, actor) == 0x0);
+static_assert(offsetof(StoryChangeLocationEvent, oldLoc) == 0x8);
+static_assert(offsetof(StoryChangeLocationEvent, newLoc) == 0x10);
+}
+
+// thuum docs/verbs/quest-stage.md H-56a (the read of 14:16 PDT 2026-10-29,
+// docs/research/m3/re-story-location.md): the engine's sender of the Change
+// Location event is PlayerCharacter::SetParentCell, which raises it only when
+// the player's currentLocation differs from the cell's. A seat that logs in
+// INSIDE a location (every playtest seat: the camp is the landing) attaches
+// with the two already equal, so the Story Manager hears nothing and starts
+// none of the location's quests (A Lovely Letter 0x74a83 under
+// FreeformQuestsNode), while a seat placed in from outside logged
+// locationChanged and questStart in the same millisecond (x-story-manager-walk
+// 20261029-205447). This queues the same event once, through the engine's own
+// queue: BGSStoryEventManager::GetSingleton()->AddEvent (CommonLibSSE-NG
+// BGSStoryEventManager.h:17-42; Address Library 1.6.1170 22790 and 32359 by
+// just addr, 2026-10-29), which the Story Manager consumes on its update.
+// HYPOTHESIS until x-story-manager-walk v3: every Change Location branch node
+// evaluates at the raise, as at a fast travel's arrival (the node list in the
+// research note); a quest already run is not restarted (alreadyRun); the
+// narrow call raises neither the cell events nor Skyrim Platform's
+// locationChanged. oldLocation may be none (a login reports no location
+// left); newLocation none reads the actor's current location, and an actor
+// in no location queues nothing.
+bool TESModPlatform::SendStoryChangeLocation(IVM* vm, StackID stackId,
+                                             RE::StaticFunctionTag*,
+                                             RE::Actor* actor,
+                                             RE::BGSLocation* oldLocation,
+                                             RE::BGSLocation* newLocation)
+{
+  if (!actor || !REL::Module::IsAE()) {
+    return false;
+  }
+  if (!newLocation) {
+    newLocation = actor->GetCurrentLocation();
+  }
+  if (!newLocation) {
+    return false;
+  }
+  auto manager = RE::BGSStoryEventManager::GetSingleton();
+  if (!manager) {
+    return false;
+  }
+  StoryChangeLocationEvent e{};
+  e.actor = actor->GetHandle();
+  e.oldLoc = oldLocation;
+  e.newLoc = newLocation;
+  manager->AddEvent(e);
+  logger::info("[verb:quest-stage] story change-location event queued for "
+               "{:x}: old {:x} new {:x}",
+               actor->GetFormID(), oldLocation ? oldLocation->GetFormID() : 0u,
+               newLocation->GetFormID());
+  return true;
+}
+
+// thuum docs/verbs/quest-stage.md, slice two: one mark on the pair for the
+// quest stage sink's replacement (FridaHooks.cpp), which consumes it at the
+// pair's first event; Release is the client's safety 10 s after the apply,
+// for a mark no event claimed. The stage is the engine's u16 (CommonLibSSE-NG
+// TESQuestStageEvent.h:11)
+bool TESModPlatform::SuppressQuestStageFragment(IVM* vm, StackID stackId,
+                                                RE::StaticFunctionTag*,
+                                                RE::TESQuest* quest,
+                                                int32_t stage)
+{
+  if (!quest || stage < 0 || stage > 0xFFFF) {
+    return false;
+  }
+  Frida::SuppressQuestStageFragment(quest->formID,
+                                    static_cast<uint16_t>(stage));
+  return true;
+}
+
+bool TESModPlatform::ReleaseQuestStageFragment(IVM* vm, StackID stackId,
+                                               RE::StaticFunctionTag*,
+                                               RE::TESQuest* quest,
+                                               int32_t stage)
+{
+  if (!quest || stage < 0 || stage > 0xFFFF) {
+    return false;
+  }
+  Frida::ReleaseQuestStageFragment(quest->formID,
+                                   static_cast<uint16_t>(stage));
+  return true;
+}
+
 std::vector<float> TESModPlatform::GetPlayerProgress(IVM* vm, StackID stackId,
                                                      RE::StaticFunctionTag*)
 {
@@ -1438,11 +1556,11 @@ std::vector<float> TESModPlatform::GetPlayerProgress(IVM* vm, StackID stackId,
 // Write what GetPlayerProgress reads, one skill or the player's own
 // experience at a time: Skyrim Platform's callNative passes booleans,
 // numbers, strings and game objects, and takes an array for a game object
-// (Sp3NativeValueCasts.cpp, JsValueToNativeValue), so an array argument never
-// arrives (thuum lab, x-av2-probe 20261008-110553). The level goes on the
-// player's base (ACTOR_BASE_DATA::level, TESActorBaseData.h:69). HYPOTHESIS
-// until a-actor-values: the Stats menu and the next skill use follow the
-// written experience, and the level is the console's SetLevel's.
+// (Sp3NativeValueCasts.cpp, JsValueToNativeValue), so an array argument
+// never arrives (thuum lab, x-av2-probe 20261008-110553). The level goes on
+// the player's base (ACTOR_BASE_DATA::level, TESActorBaseData.h:69).
+// HYPOTHESIS until a-actor-values: the Stats menu and the next skill use
+// follow the written experience, and the level is the console's SetLevel's.
 bool TESModPlatform::SetPlayerSkill(IVM* vm, StackID stackId,
                                     RE::StaticFunctionTag*, int32_t skill,
                                     float level, float xp, float threshold,
@@ -1697,6 +1815,23 @@ bool TESModPlatform::Register(IVM* vm)
                                      RE::StaticFunctionTag*, RE::Actor*, float,
                                      RE::Actor*>("Stagger", "TESModPlatform",
                                                  Stagger));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SendStoryChangeLocation),
+                                     bool, RE::StaticFunctionTag*, RE::Actor*,
+                                     RE::BGSLocation*, RE::BGSLocation*>(
+      "SendStoryChangeLocation", "TESModPlatform", SendStoryChangeLocation));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<
+      true, decltype(SuppressQuestStageFragment), bool, RE::StaticFunctionTag*,
+      RE::TESQuest*, int32_t>("SuppressQuestStageFragment", "TESModPlatform",
+                              SuppressQuestStageFragment));
+
+  vm->BindNativeMethod(new RE::BSScript::NativeFunction<
+                       true, decltype(ReleaseQuestStageFragment), bool,
+                       RE::StaticFunctionTag*, RE::TESQuest*, int32_t>(
+    "ReleaseQuestStageFragment", "TESModPlatform", ReleaseQuestStageFragment));
 
   static LoadGameEvent loadGameEvent;
 

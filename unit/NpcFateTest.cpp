@@ -5,6 +5,7 @@
 #include "ConsoleCommandMessage.h"
 #include "CreateActorMessage.h"
 #include "HitMessage.h"
+#include "HostedActorStateMessage.h"
 #include "MpChangeForms.h"
 #include "OpenContainerMessage.h"
 #include "SpSnippet.h"
@@ -163,6 +164,23 @@ size_t SentOfType(PartOne& p, Networking::UserId user, MsgType type)
     }
   }
   return n;
+}
+
+// `user`'s state sample of `actorId` (CellHostTest's State idiom): the
+// health, the other percentages full, no target and no package
+void State(PartOne& p, Networking::UserId user, uint32_t actorId, float health)
+{
+  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
+  RawMessageData raw;
+  raw.userId = user;
+  raw.unparsed = unparsed;
+  raw.unparsedLength = sizeof(unparsed);
+  HostedActorStateMessage msg;
+  msg.idx = p.worldState.GetFormAt<MpActor>(actorId).GetIdx();
+  msg.health = health;
+  msg.magicka = 1.f;
+  msg.stamina = 1.f;
+  p.GetActionListener().OnHostedActorState(raw, msg);
 }
 }
 
@@ -1137,4 +1155,124 @@ TEST_CASE("A reanimate cast by a player who does not host the body's cell "
   DoDisconnect(p, 1);
   p.DestroyActor(kHost);
   p.DestroyActor(kCaster);
+}
+
+// thuum docs/verbs/npc-fate.md (playtest 38's finding 65; the train's
+// review, 2026-10-29): a placement that starts dead is the server's corpse
+// with no death this process stamped, so the resurrection rule's no-stamp
+// reading (ActorDeathTest, finding 54) would stand it at its host's first
+// sample above one point: the engine's own values on a body it spawned
+// dead. A placed corpse stands on the record by the cast's rule alone: its
+// host's live sample within MpActor::kReanimateWindowMs of a reanimate hit
+// the server accepted on it
+TEST_CASE("A placed-dead body ignores its host's live sample until the "
+          "server accepts a reanimate on it: no resurrection by a sample "
+          "alone, no respawn scheduled (finding 65)",
+          "[NpcFate][espm]")
+{
+  constexpr uint32_t kFloorBody = 0x3b9ea;
+  constexpr uint32_t kBarrow = 0x371de;
+  constexpr uint32_t kHost = 0xff000d37;
+  constexpr uint32_t kReanimateCorpse = 0x65bd7;
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  REQUIRE(p.worldState.IsInteriorCell(kBarrow));
+  auto& body = p.worldState.GetFormAt<MpActor>(kFloorBody);
+  REQUIRE(body.IsDead());
+  REQUIRE(body.IsPlacedDead());
+  REQUIRE(body.IsFateRespawned());
+  REQUIRE(p.worldState.CellOf(body) == kBarrow);
+  REQUIRE_FALSE(body.DiedAgo(std::chrono::steady_clock::now()).has_value());
+
+  // the host stands in the barrow beside the body and takes the cell
+  DoConnect(p, 0);
+  p.CreateActor(kHost, body.GetPos() + NiPoint3{ 100.f, 0.f, 0.f }, 0,
+                kBarrow);
+  p.SetUserActor(0, kHost);
+  HostGrants(p, 0, kBarrow);
+  auto& host = p.worldState.GetFormAt<MpActor>(kHost);
+  REQUIRE(p.worldState.HostOf(body) == &host);
+
+  // the live words sent for the body since the last clear
+  const auto liveWords = [&]() {
+    size_t n = 0;
+    for (auto& m : p.Messages()) {
+      if (m.j.is_object() &&
+          m.j.value("t", -1) == static_cast<int>(MsgType::UpdateProperty) &&
+          m.j.value("propName", std::string()) == "isDead" &&
+          m.j.value("refrId", 0u) == kFloorBody &&
+          m.j.value("dataDump", std::string()) == "false") {
+        ++n;
+      }
+    }
+    return n;
+  };
+
+  // the host's live sample alone: the record stays the corpse, nothing
+  // scheduled, no live word
+  p.Messages().clear();
+  State(p, 0, kFloorBody, 0.9f);
+  REQUIRE(body.IsDead());
+  REQUIRE(body.IsPlacedDead());
+  REQUIRE_FALSE(body.IsRespawning());
+  REQUIRE(p.worldState.fateRespawnDue.count(kFloorBody) == 0);
+  REQUIRE(body.GetChangeForm().actorValues.healthPercentage == 0.f);
+  REQUIRE(liveWords() == 0);
+
+  // a reanimate the server accepted on it (the host's own cast, then its
+  // hit: OnHit's stamp ahead of CastReanimateOnHost, which sends nothing to
+  // the caster's own seat): the next live sample is the engine's stand-up,
+  // recorded with the live word
+  Equipment eq;
+  eq.rightSpell = kReanimateCorpse;
+  host.SetEquipment(eq);
+  DoMessage(
+    p, 0,
+    nlohmann::json{ { "t", static_cast<int>(MsgType::SpellCast) },
+                    { "data",
+                      { { "caster", 0x14 },
+                        { "target", kFloorBody },
+                        { "spell", kReanimateCorpse },
+                        { "isDualCasting", false },
+                        { "interruptCast", false },
+                        { "castingSource", 1 },
+                        { "aimAngle", 0.f },
+                        { "aimHeading", 0.f },
+                        { "hasLaunch", false },
+                        { "originX", 0.f },
+                        { "originY", 0.f },
+                        { "originZ", 0.f },
+                        { "launchAngleX", 0.f },
+                        { "launchAngleZ", 0.f },
+                        { "actorAnimationVariables",
+                          { { "booleans", nlohmann::json::array() },
+                            { "floats", nlohmann::json::array() },
+                            { "integers", nlohmann::json::array() } } } } } });
+  {
+    RawMessageData raw;
+    raw.userId = 0;
+    HitMessage hit;
+    hit.data.aggressor = 0x14;
+    hit.data.target = kFloorBody;
+    hit.data.source = kReanimateCorpse;
+    p.GetActionListener().OnHit(raw, hit);
+  }
+  REQUIRE(
+    body.ReanimateAcceptedAgo(std::chrono::steady_clock::now()).has_value());
+  p.Messages().clear();
+  State(p, 0, kFloorBody, 0.9f);
+  REQUIRE_FALSE(body.IsDead());
+  REQUIRE_FALSE(body.GetChangeForm().fateDiedAt.has_value());
+  REQUIRE(p.worldState.fateRespawnDue.count(kFloorBody) == 0);
+
+  // its next death is still the placement's: no clock stands it again
+  body.Kill(nullptr);
+  REQUIRE(body.IsDead());
+  REQUIRE_FALSE(body.IsRespawning());
+  REQUIRE(p.worldState.fateRespawnDue.count(kFloorBody) == 0);
+
+  p.GetFights().forget(kHost);
+  DoDisconnect(p, 0);
+  p.DestroyActor(kHost);
+  p.DestroyActor(kFloorBody);
 }

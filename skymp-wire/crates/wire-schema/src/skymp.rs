@@ -919,17 +919,21 @@ wire_struct! {
 }
 
 wire_struct! {
-    /// MsgType 57, thuum's (docs/verbs/quest-stage.md, ADR-056): the world's
-    /// quest stages. Both directions, reliable. Client to server: one stage
-    /// its own game set on a shared quest (R1: the server checks the quest
-    /// is a QUST on its shared list, and the rate). Server to client: the
-    /// relay of another seat's stage, the replay of the world's stages after
-    /// a login, and at the login itself the shared list (`shared`, with
-    /// `quest` 0 and `stage` 0). Idempotent: a stage already done is
-    /// nothing. Reason codes: `E_VAL_RANGE` (a quest of 0 without a list, a
-    /// list naming a quest twice, a client naming a list or a quest of 0),
-    /// `E_VAL_RATE` (client to server); the list's and the record's refusals
-    /// are the server's (wire-rules `quest_stages`).
+    /// MsgType 57, thuum's (docs/verbs/quest-stage.md, ADR-056; memo D58 B):
+    /// the world's quest stages. Both directions, reliable. Client to
+    /// server: one stage its own game set on a shared quest (R1: the server
+    /// checks the quest against its sharing mode, and the rate). Server to
+    /// client: the relay of another seat's stage, the replay of the world's
+    /// stages after a login, and at the login itself the sharing mode and
+    /// its list (`mode` and `shared`, with `quest` 0 and `stage` 0): in
+    /// mode 0 (list) `shared` names the quests the seat reports; in mode 1
+    /// (all) every quest is shared and `shared` names the DENIED quests,
+    /// which the seat never reports (it may be empty). Idempotent: a stage
+    /// already done is nothing. Reason codes: `E_VAL_RANGE` (a mode above
+    /// 1, a quest of 0 without a list in mode 0, a list naming a quest
+    /// twice, a client naming a list, a mode or a quest of 0), `E_VAL_RATE`
+    /// (client to server); the mode's and the record's refusals are the
+    /// server's (wire-rules `quest_stages`).
     pub struct QuestStage {
         /// `"t": 57`.
         #[serde(default)]
@@ -939,9 +943,14 @@ wire_struct! {
         pub quest: u32,
         /// The stage index the engine set (Quest.SetStage's).
         pub stage: u16,
-        /// The shared quests (server to client only, at a login).
+        /// The shared quests in mode 0, the denied quests in mode 1 (server
+        /// to client only, at a login).
         #[serde(default)]
         pub shared: Vec<u32, { cap::SHARED_QUESTS }>,
+        /// The sharing mode (server to client only, at a login): 0 list, 1
+        /// all. A client sends 0.
+        #[serde(default)]
+        pub mode: u8,
     }
 }
 

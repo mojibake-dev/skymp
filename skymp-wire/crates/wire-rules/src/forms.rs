@@ -3,8 +3,9 @@
 //! Settings name forms this way, "<hex form id>:<plugin>" (castTeleports,
 //! playerGlobals).
 
-/// A form within its plugin.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A form within its plugin. Hash and Eq are the exact pair (the record's
+/// own spelling); `is` is the settings' comparison, without the file's case.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FormDesc {
     /// The form id within its plugin (without the load index).
     pub short_id: u32,

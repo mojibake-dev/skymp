@@ -53,8 +53,9 @@ constexpr uint32_t kWatcher = 0xff000bd1;
 constexpr uint32_t kMs13 = 0x39645;
 constexpr uint32_t kMs13Intro = 0xb6031;
 constexpr uint32_t kMq102 = 0x4e50d;
-constexpr uint32_t kMq101 =
-  0x3372b; // Unbound: start-game-enabled, its INDX 0 a start-up stage
+// FreeformHeartwoodMill: start-game-enabled, its INDX 10 a start-up stage and
+// its 20 a plain one (a misc objective's shape, the rumor's)
+constexpr uint32_t kHeartwoodMill = 0xe3ea5;
 constexpr uint32_t kXMarker = 0x3b;
 // a form of a sixth plugin, which the test's five-file load order lacks
 constexpr uint32_t kUnloaded = 0x05000d62;
@@ -346,27 +347,40 @@ TEST_CASE("In mode all the engine's own start of a start-game-enabled quest "
   PartOne& p = GetPartOne();
   Enter(p, kDeniedQuests);
 
-  // MQ101 is Start Game Enabled and its stage 0 carries the start-up flag:
-  // the engine's own start, refused, nothing recorded, nothing relayed
-  Report(p, 0, kMq101, 0);
+  // FreeformHeartwoodMill is Start Game Enabled and its stage 10 carries the
+  // start-up flag: the engine's own start, refused, nothing recorded, nothing
+  // relayed
+  Report(p, 0, kHeartwoodMill, 10);
   REQUIRE(p.GetQuestStages().empty());
   REQUIRE(SentTo(p, 1).empty());
   REQUIRE(SentTo(p, 0).empty());
 
-  // MS13 is Start Game Enabled too and its stage 10 is no start-up stage: a
-  // world event, recorded and relayed (D69; the Aventus rumor's shape)
+  // its stage 20 is no start-up stage: a world event, recorded and relayed
+  // (D69; the Aventus rumor's shape)
+  Report(p, 0, kHeartwoodMill, 20);
+  const FormDesc mill = FormDesc::FromString("e3ea5:Skyrim.esm");
+  REQUIRE(p.GetQuestStages() == std::vector<QuestStageDone>{ { mill, 20 } });
+  REQUIRE(SentTo(p, 1) == std::vector<Sent>{ Msg(kHeartwoodMill, 20) });
+  REQUIRE(SentTo(p, 0).empty());
+
+  // MS13 is Start Game Enabled too and its stage 10 is no start-up stage:
+  // the world's as well, allowed or not
   Report(p, 0, kMs13, 10);
   const FormDesc ms13 = FormDesc::FromString("39645:Skyrim.esm");
-  REQUIRE(p.GetQuestStages() == std::vector<QuestStageDone>{ { ms13, 10 } });
-  REQUIRE(SentTo(p, 1) == std::vector<Sent>{ Msg(kMs13, 10) });
-  REQUIRE(SentTo(p, 0).empty());
+  REQUIRE(p.GetQuestStages() ==
+          std::vector<QuestStageDone>{ { mill, 20 }, { ms13, 10 } });
+  REQUIRE(SentTo(p, 1) ==
+          std::vector<Sent>{ Msg(kHeartwoodMill, 20), Msg(kMs13, 10) });
 
   // allowed: the same, a further stage
   p.SetSharedQuestsSettings(kAllowedQuests);
   Report(p, 0, kMs13, 20);
-  REQUIRE(p.GetQuestStages() ==
-          std::vector<QuestStageDone>{ { ms13, 10 }, { ms13, 20 } });
-  REQUIRE(SentTo(p, 1) == std::vector<Sent>{ Msg(kMs13, 10), Msg(kMs13, 20) });
+  REQUIRE(
+    p.GetQuestStages() ==
+    std::vector<QuestStageDone>{ { mill, 20 }, { ms13, 10 }, { ms13, 20 } });
+  REQUIRE(SentTo(p, 1) ==
+          std::vector<Sent>{ Msg(kHeartwoodMill, 20), Msg(kMs13, 10),
+                             Msg(kMs13, 20) });
   REQUIRE(SentTo(p, 0).empty());
 
   // the login names the denied quest, never the allowed (the wire's one
@@ -375,18 +389,21 @@ TEST_CASE("In mode all the engine's own start of a start-game-enabled quest "
   p.SetUserActor(1, kWatcher);
   REQUIRE(SentTo(p, 1) ==
           std::vector<Sent>{ Msg(0, 0, nlohmann::json::array({ kMq102 }), 1),
-                             Msg(kMs13, 10), Msg(kMs13, 20) });
+                             Msg(kHeartwoodMill, 20), Msg(kMs13, 10),
+                             Msg(kMs13, 20) });
 
   // allowed no more: the stages stay the world's (no start-up stage among
   // them) and the login still replays them
   p.SetSharedQuestsSettings(kDeniedQuests);
   p.Messages().clear();
   p.SetUserActor(1, kWatcher);
-  REQUIRE(p.GetQuestStages() ==
-          std::vector<QuestStageDone>{ { ms13, 10 }, { ms13, 20 } });
+  REQUIRE(
+    p.GetQuestStages() ==
+    std::vector<QuestStageDone>{ { mill, 20 }, { ms13, 10 }, { ms13, 20 } });
   REQUIRE(SentTo(p, 1) ==
           std::vector<Sent>{ Msg(0, 0, nlohmann::json::array({ kMq102 }), 1),
-                             Msg(kMs13, 10), Msg(kMs13, 20) });
+                             Msg(kHeartwoodMill, 20), Msg(kMs13, 10),
+                             Msg(kMs13, 20) });
 
   // a quest both denied and allowed stops at the setting, named, and the
   // setting in force stays

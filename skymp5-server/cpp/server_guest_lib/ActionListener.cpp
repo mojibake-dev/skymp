@@ -2880,7 +2880,8 @@ bool QuestHasStage(PartOne& partOne, const espm::RecordHeader* record,
 
 // Memo D69: the stages a start-game-enabled quest reaches by the engine's
 // own start on every seat, stage 0 and the record's start-up stages (QUST
-// INDX, the StartUpStage flag; MQ101's 0 carries it), which stay each seat's
+// INDX, the StartUpStage flag; FreeformHeartwoodMill's 10 carries it),
+// which stay each seat's
 // own; every other stage of such a quest is the world's.
 bool QuestStageIsEngineStart(PartOne& partOne,
                              const espm::RecordHeader* record, uint16_t stage)

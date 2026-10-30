@@ -310,13 +310,18 @@ export class PropService extends ClientListener {
     // reference is deleted by DropItemService and the server's reference for
     // the drop arrives as a copy; the rescan matches that copy by its base
     // within DROP_MATCH_MS and claims it by touch 2, so the drop falls on the
-    // dropper's seat from its first frame (ADR-058 decision 4)
+    // dropper's seat from its first frame (ADR-058 decision 4). The event's
+    // reference is not required: Skyrim Platform leaves it undefined when the
+    // engine's event carries an empty handle, which a drop's does, so the
+    // guard that asked for it recorded no drop at all and no claim ever left
+    // a seat (x-prop-drop v3 143937 and v4 150222: the copy tracked, the
+    // drops list empty); DropItemService's own gate accepts the same event
     private onContainerChanged(e: ContainerChangedEvent) {
         if (!this.enabled()) {
             return;
         }
         const player = this.sp.Game.getPlayer();
-        if (!player || !e.oldContainer || !e.baseObj || !e.reference) {
+        if (!player || !e.oldContainer || !e.baseObj) {
             return;
         }
         if (e.newContainer !== null && e.newContainer !== undefined) {
@@ -325,10 +330,12 @@ export class PropService extends ClientListener {
         if (e.oldContainer.getFormID() !== player.getFormID()) {
             return;
         }
-        this.drops.push({ baseId: e.baseObj.getFormID(), at: Date.now() });
+        const baseId = e.baseObj.getFormID();
+        this.drops.push({ baseId, at: Date.now() });
         if (this.drops.length > 16) {
             this.drops.shift();
         }
+        logTrace(this, `drop of base ${baseId.toString(16)} recorded for the copy's match`);
     }
 
     private onUpdate() {
@@ -813,6 +820,8 @@ export class PropService extends ClientListener {
             let prop = this.props.get(c.refr);
             if (!prop) {
                 prop = PropService.newProp(c.refr, c.localId, c.formIdx, c.cell, c.distance, now);
+                // a follower's new prop was silent (placed within two units, Keyframed from the start): one line per track
+                logTrace(this, `prop ${c.refr.toString(16)} tracked, ${Math.round(c.distance)} units off`);
                 this.props.set(c.refr, prop);
                 this.byLocal.set(c.localId, c.refr);
                 this.claimDrop(prop, c.baseId, c.distance, now);

@@ -196,7 +196,17 @@ export class RemoteServer extends ClientListener {
 
   private onOpenContainerMessage(event: ConnectionMessage<OpenContainerMessage>): void {
     once('update', async () => {
-      await Utility.wait(0.1); // Give a chance to update inventory
+      // thuum docs/verbs/npc-fate.md (the host's own open, 2026-10-30): on the
+      // seat whose engine opens the menu itself (a host looting a body, a
+      // container's native activation) the game is paused in that menu by
+      // the time this runs, and Utility.wait is game time, so it stalled
+      // until the menu closed: the "waiting ... to be true" line printed
+      // after the close, the checker then found the menu closed, waited its
+      // 15 s deadline and gave up, and the closing activation released the
+      // occupancy 15 s late (b-npc-body-release 20261030-214710, 215006).
+      // waitMenuMode runs while paused (Papyrus's own rule), so the checker
+      // sees the open menu at once and the close sends the second activation.
+      await Utility.waitMenuMode(0.1); // Give a chance to update inventory
 
       const remoteId = event.message.target;
       const localId = remoteIdToLocalId(remoteId);

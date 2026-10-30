@@ -23,6 +23,10 @@ constexpr uint32_t kTamriel = 0x3c;
 constexpr uint32_t kC1 = 0xff000d01;
 constexpr uint32_t kC2 = 0xff000d02;
 constexpr uint32_t kBasket = 0xff000d03;
+constexpr uint32_t kC3 = 0xff000d04;
+constexpr uint32_t kChest = 0xff000d05;
+// BarrelFood01_NoRespawn, a CONT of Skyrim.esm (esm.py): no prop
+constexpr uint32_t kBarrelFood01NoRespawn = 0x10e882;
 // Bucket01, a MISC of Skyrim.esm (the one Riverwood's 0x2ad9c is placed from)
 constexpr uint32_t kBucket01 = 0x12fdf;
 // the exterior grid square (2, 0) of Tamriel (CellHostTest's kHere), and the
@@ -281,4 +285,65 @@ TEST_CASE("Only the owner's transform moves the record and reaches the other "
   DoDisconnect(p, 0);
   p.DestroyActor(kC1);
   p.DestroyActor(kC2);
+}
+
+TEST_CASE("A claim on a container, a claim from beyond reach and a sample "
+          "farther than the step budget are refused, the record standing; a "
+          "listener arriving while a seat simulates the prop hears the owner",
+          "[Prop][espm]")
+{
+  auto& p = GetPartOne();
+  auto w = Enter(p);
+  auto& c2 = p.worldState.GetFormAt<MpActor>(kC2);
+
+  // a container is no prop: no word, no move
+  const NiPoint3 chestAt = kHere + NiPoint3{ 30.f, 0.f, 0.f };
+  {
+    auto chest = std::make_unique<MpObjectReference>(
+      LocationalData{ chestAt, { 0.f, 0.f, 0.f }, FormDesc::Tamriel() },
+      p.CreateFormCallbacks(), kBarrelFood01NoRespawn, "CONT");
+    p.worldState.AddForm(std::move(chest), kChest);
+    p.worldState.GetFormAt<MpObjectReference>(kChest)
+      .ForceSubscriptionsUpdate();
+  }
+  p.Messages().clear();
+  Claim(p, 1, kChest, 0);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
+  Sample(p, 0, kChest, chestAt + NiPoint3{ 0.f, 0.f, -50.f }, false);
+  REQUIRE(p.worldState.GetFormAt<MpObjectReference>(kChest).GetPos() ==
+          chestAt);
+
+  // beyond reach inside the square: refused, the host keeps the prop
+  c2.SetPos(kHere + NiPoint3{ 400.f, 0.f, 0.f });
+  Claim(p, 1, kBasket, 0);
+  REQUIRE(p.PropOwnerOf(w.prop) == kC1);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
+  c2.SetPos(kHere + NiPoint3{ 60.f, 0.f, 0.f });
+
+  // the step budget: the owner's sample from across the cell leaves the
+  // record where it stands and reaches nobody; a near sample passes
+  Claim(p, 1, kBasket, 0);
+  REQUIRE(p.PropOwnerOf(w.prop) == kC2);
+  p.Messages().clear();
+  Sample(p, 1, kBasket, kHere + NiPoint3{ 5000.f, 0.f, 0.f }, false);
+  REQUIRE(w.prop.GetPos() == kHere);
+  REQUIRE(RelaysTo(p, 0).empty());
+  const NiPoint3 near = kHere + NiPoint3{ 50.f, 0.f, 0.f };
+  Sample(p, 1, kBasket, near, false);
+  REQUIRE(w.prop.GetPos() == near);
+  REQUIRE(RelaysTo(p, 0) == std::vector<int>{ 0 });
+
+  // a third seat enters the cell while c2 simulates: its create word is
+  // followed by the owner word at the current epoch
+  p.Messages().clear();
+  Player(p, 2, kC3, kHere + NiPoint3{ 80.f, 0.f, 0.f });
+  const auto toC3 = SentTo<PropOwnerMessage>(p, 2);
+  REQUIRE(toC3.size() == 1);
+  REQUIRE(toC3[0].refr == kBasket);
+  REQUIRE(toC3[0].player == kC2);
+  REQUIRE(toC3[0].epoch == p.PropEpochOf(w.prop));
+
+  DoDisconnect(p, 2);
+  p.DestroyActor(kC3);
+  Leave(p);
 }

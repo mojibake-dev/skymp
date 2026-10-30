@@ -164,6 +164,7 @@ pub fn wire_server_bind(options: &BindOptions) -> Result<Box<Server>, BindError>
             auth: token::Auth::Unsecure,
             password: Some(options.password.clone()),
             public_addresses: Vec::new(),
+            send_interval: wire_transport::SEND_INTERVAL_DEFAULT,
         },
     )
     .map_err(|e| BindError::Bind(e.to_string()))?;

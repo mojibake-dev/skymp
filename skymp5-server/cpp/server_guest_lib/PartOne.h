@@ -540,12 +540,25 @@ public:
   // roster naming the bandit reached the server in the grant's own
   // millisecond (20:00:51.189Z) and was dropped as nobody's; the next came
   // ten seconds later, after the player had died. A sighting dropped for a
-  // missing host is held per cell for kHeldSightingMs and replayed for the
-  // grant's host here (ApplyHostDecisions calls it after the flags flip); a
-  // sighting of another game's cell is never held.
+  // missing host is held per cell, one entry per (reporter, reference), for
+  // kHeldSightingMs; the grant replays the new host's own entries here
+  // (ApplyHostDecisions calls it after the flags flip) and keeps another
+  // reporter's for that reporter's own grant while they last. A sighting of
+  // another game's cell is never held. The hold is bounded three ways (the
+  // train's review, 2026-10-29: it grew with no total, no sweep and no
+  // clear at a disconnect): per cell (kHeldSightingsPerCell), in total
+  // (kHeldSightingsTotal; full, the oldest entry anywhere makes room, said
+  // once in ten seconds) and in time (SweepHeldSightings, from the
+  // once-a-second tick, drops the expired); a reporter's disconnect forgets
+  // its entries (ForgetHeldSightings).
   void ReplayHeldSightings(uint32_t cell, MpActor& host);
+  void SweepHeldSightings(uint64_t nowMs);
+  void ForgetHeldSightings(uint32_t reporter);
+  // every held entry, or `cell`'s alone (the tests' and the lab's reading)
+  size_t HeldSightingsCount(std::optional<uint32_t> cell = std::nullopt) const;
   static constexpr uint64_t kHeldSightingMs = 30'000;
   static constexpr size_t kHeldSightingsPerCell = 64;
+  static constexpr size_t kHeldSightingsTotal = 1024;
   // Where the players' round trips come from (IServer::GetRttMs, -1 while
   // unknown), read every tick for the table's ranking; none installed, no
   // round trip is known and the earliest loaded takes a cell.
@@ -664,6 +677,11 @@ public:
   static MessageSerializer& GetMessageSerializerInstance();
 
 private:
+  // the hold behind OnActorSighting: `reporter`'s sighting of `refrId` in
+  // `cell`, which has no host yet (ReplayHeldSightings above)
+  void HoldSighting(uint32_t reporter, uint32_t cell, uint32_t refrId,
+                    uint32_t worldOrCell, const NiPoint3& pos,
+                    const NiPoint3& rot);
   void Init();
 
   enum class UserType

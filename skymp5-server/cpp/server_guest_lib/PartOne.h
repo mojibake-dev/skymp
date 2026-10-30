@@ -539,13 +539,20 @@ public:
   {
     Accepted,
     NotOwner,
-    WrongCell
+    WrongCell,
+    TooFast
   };
-  // `sender`'s sample of `prop` landing in `cell` (0 for none), the body
-  // asleep or not; the cell's host is read from the host table
+  // `sender`'s sample of `prop` landing in `cell` (0 for none), judged by
+  // the host of `recordCell` (the cell the record stands in, read from the
+  // host table), the body asleep or not, `moved` units from the record (the
+  // rule's step budget)
   PropTransformVerdict PropTransform(const MpActor& sender,
                                      const MpObjectReference& prop,
-                                     uint32_t cell, bool asleep);
+                                     uint32_t cell, uint32_t recordCell,
+                                     bool asleep, float moved);
+  // The prop's live row's owner, else 0: the word a listener arriving while a
+  // seat simulates the prop gets at its subscription (onSubscribe).
+  uint32_t PropLiveOwner(const MpObjectReference& prop) const;
   // Who simulates `prop` where its record stands: the toucher while awake or
   // inside its lease, else its cell's host, else 0.
   uint32_t PropOwnerOf(const MpObjectReference& prop) const;

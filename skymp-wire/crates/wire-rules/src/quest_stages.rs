@@ -17,10 +17,32 @@
 //! MCM, version-tracker and player-alias quests, the alternate start's own,
 //! 330 of Skyrim.esm's 1811) is each seat's own unless `allowed` names it
 //! (memo D62, 2026-10-29); the flag is the record's, so the server reads it
-//! beside this rule and asks `is_allowed` here.
+//! beside this rule and asks `is_allowed` here. The record itself is bounded
+//! at QUEST_RECORD_CAP pairs (rule 12's resource bounds: a client's reports
+//! feed it), and the stage index of a report is the record's to check (QUST
+//! INDX, read beside this rule in the handler as the start flag is).
 
 use crate::clock::SettingsError;
 use crate::forms::FormDesc;
+use std::collections::{BTreeSet, HashMap};
+
+/// How many (quest, stage) pairs the world's record holds at most. The
+/// record grows by the seats' reports (in mode all any quest a seat starts),
+/// so it is bounded here as every client-fed table is (.claude/rules/rust.md:
+/// resource bounds are explicit). 4096 is a bound, not a measurement: a few
+/// stages for each of the few hundred quests one world's playthroughs reach
+/// of Skyrim.esm's 1811 (the lab reads how far a playtest's record grows,
+/// UNMEASURED), at 4096 comparisons per report in `done` and `merge`. A
+/// report past it is refused by name (E_QUEST_FULL in the handler) and the
+/// record's stages stay.
+pub const QUEST_RECORD_CAP: usize = 4096;
+
+/// Whether a record of `pairs` entries is at QUEST_RECORD_CAP, so no new
+/// stage can enter it (a stage already in it is a no-op as ever).
+#[must_use]
+pub const fn full(pairs: usize) -> bool {
+    pairs >= QUEST_RECORD_CAP
+}
 
 /// How the server decides which quests are the world's.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -171,19 +193,30 @@ impl SharedQuests {
     /// What the login sends: the recorded stages of quests still the world's
     /// (a record made under another setting keeps the rest, unsent), in the
     /// record's quest order and ascending within a quest, so each SetStage
-    /// on the seat sees the stages before it.
+    /// on the seat sees the stages before it. One pass over the record, a
+    /// set of stages per quest (a duplicate an older record holds folds
+    /// in), so a record at QUEST_RECORD_CAP replays in its size's time, not
+    /// its square.
     #[must_use]
     pub fn at_login(&self, record: &[StageDone]) -> Vec<StageDone> {
-        let mut out: Vec<StageDone> = Vec::with_capacity(record.len());
+        let mut quests: Vec<&FormDesc> = Vec::new();
+        let mut stages: HashMap<&FormDesc, BTreeSet<u16>> = HashMap::new();
         for r in record {
-            if !self.is_shared(r.quest.short_id, &r.quest.file) || out.iter().any(|o| o.quest == r.quest && o.stage == r.stage) {
+            if !self.is_shared(r.quest.short_id, &r.quest.file) {
                 continue;
             }
-            // insert after the last stage of the same quest that is below it,
-            // keeping the first quest's block first
-            out.insert(insertion_point(&out, r), r.clone());
+            stages
+                .entry(&r.quest)
+                .or_insert_with(|| {
+                    quests.push(&r.quest);
+                    BTreeSet::new()
+                })
+                .insert(r.stage);
         }
-        out
+        quests
+            .iter()
+            .flat_map(|q| stages.get(q).into_iter().flatten().map(|s| StageDone { quest: (*q).clone(), stage: *s }))
+            .collect()
     }
 }
 
@@ -212,11 +245,13 @@ pub fn done(record: &[StageDone], stage: &StageDone) -> bool {
 
 /// The record after a checked report: the stage added once, after the
 /// stages of its quest below it (a new quest's first stage goes last), the
-/// others untouched.
+/// others untouched. A record at QUEST_RECORD_CAP takes no new stage and
+/// comes back unchanged (the handler asks `full` first and refuses the
+/// report by name); a stage already in it is a no-op either way.
 #[must_use]
 pub fn merge(record: &[StageDone], stage: &StageDone) -> Vec<StageDone> {
     let mut out = record.to_vec();
-    if done(&out, stage) {
+    if done(&out, stage) || full(out.len()) {
         return out;
     }
     out.insert(insertion_point(&out, stage), stage.clone());
@@ -355,5 +390,69 @@ mod tests {
         assert!(all.at_login(&[]).is_empty());
         let none_denied = SharedQuests::from_json(r#"{"mode": "all"}"#).unwrap_or_default();
         assert_eq!(none_denied.at_login(&record), vec![at(2, 5), at(1, 10), at(1, 20), at(1, 30), at(3, 10)]);
+    }
+
+    /// A record of exactly QUEST_RECORD_CAP pairs: quests 1 to 16, stages 0
+    /// to 255 each, in that order.
+    fn record_at_the_cap() -> Vec<StageDone> {
+        let mut record = Vec::new();
+        for q in 1..=16u32 {
+            for s in 0..=255u16 {
+                record.push(at(q, s));
+            }
+        }
+        record
+    }
+
+    #[test]
+    fn the_record_stops_at_the_cap_and_a_recorded_stage_is_still_done_there() {
+        let record = record_at_the_cap();
+        assert_eq!(record.len(), QUEST_RECORD_CAP);
+        assert!(full(record.len()));
+        // a new stage of a quest in the record, and one of a new quest: the
+        // record unchanged either way (the handler names the refusal)
+        assert_eq!(merge(&record, &at(1, 300)), record);
+        assert_eq!(merge(&record, &at(99, 10)), record);
+        // a stage already in it is done, a no-op as before the cap
+        assert!(done(&record, &at(16, 255)));
+        assert_eq!(merge(&record, &at(16, 255)), record);
+        // one below the cap takes the one stage more, then is full
+        let mut below = record.clone();
+        below.pop();
+        assert!(!full(below.len()));
+        let filled = merge(&below, &at(16, 255));
+        assert_eq!(filled, record);
+        assert!(full(filled.len()));
+        assert!(!full(0));
+    }
+
+    #[test]
+    fn the_login_replays_a_record_at_the_cap_in_one_pass() {
+        // twice the cap's pairs, each one twice (an older record's
+        // duplicate), quests and stages in reverse; quest 8 denied
+        let all = SharedQuests::from_json(r#"{"mode": "all", "denied": ["000008:Skyrim.esm"]}"#).unwrap_or_default();
+        let mut record = Vec::new();
+        for q in (1..=16u32).rev() {
+            for s in (0..=255u16).rev() {
+                record.push(at(q, s));
+                record.push(at(q, s));
+            }
+        }
+        // the quests in the record's order (16 first), ascending within each,
+        // once each, the denied quest left out
+        let mut expected = Vec::new();
+        for q in (1..=16u32).rev() {
+            if q == 8 {
+                continue;
+            }
+            for s in 0..=255u16 {
+                expected.push(at(q, s));
+            }
+        }
+        assert_eq!(all.at_login(&record), expected);
+        // the same shape under mode list, one quest listed
+        let list = SharedQuests::from_json(r#"["000003:Skyrim.esm"]"#).unwrap_or_default();
+        let listed: Vec<StageDone> = (0..=255u16).map(|s| at(3, s)).collect();
+        assert_eq!(list.at_login(&record), listed);
     }
 }

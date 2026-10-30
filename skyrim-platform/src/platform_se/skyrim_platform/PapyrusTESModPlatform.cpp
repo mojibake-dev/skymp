@@ -1495,339 +1495,343 @@ bool TESModPlatform::SendStoryChangeLocation(IVM* vm, StackID stackId,
                "{:x}: old {:x} new {:x}",
                actor->GetFormID(), oldLocation ? oldLocation->GetFormID() : 0u,
                newLocation->GetFormID());
-  // thuum docs/verbs/quest-stage.md, slice two: the pair goes to the quest
-  // stage sink's replacement (FridaHooks.cpp); the stage is the engine's u16
-  // (CommonLibSSE-NG TESQuestStageEvent.h:11)
-  bool TESModPlatform::SuppressQuestStageFragment(
-    IVM * vm, StackID stackId, RE::StaticFunctionTag*, RE::TESQuest * quest,
-    int32_t stage)
-  {
-    if (!quest || stage < 0 || stage > 0xFFFF) {
-      return false;
-    }
-    Frida::SuppressQuestStageFragment(quest->formID,
-                                      static_cast<uint16_t>(stage));
-    return true;
+  return true;
+}
+
+// thuum docs/verbs/quest-stage.md, slice two: the pair goes to the quest
+// stage sink's replacement (FridaHooks.cpp); the stage is the engine's u16
+// (CommonLibSSE-NG TESQuestStageEvent.h:11)
+bool TESModPlatform::SuppressQuestStageFragment(IVM* vm, StackID stackId,
+                                                RE::StaticFunctionTag*,
+                                                RE::TESQuest* quest,
+                                                int32_t stage)
+{
+  if (!quest || stage < 0 || stage > 0xFFFF) {
+    return false;
   }
+  Frida::SuppressQuestStageFragment(quest->formID,
+                                    static_cast<uint16_t>(stage));
+  return true;
+}
 
-  bool TESModPlatform::ReleaseQuestStageFragment(
-    IVM * vm, StackID stackId, RE::StaticFunctionTag*, RE::TESQuest * quest,
-    int32_t stage)
-  {
-    if (!quest || stage < 0 || stage > 0xFFFF) {
-      return false;
-    }
-    Frida::ReleaseQuestStageFragment(quest->formID,
-                                     static_cast<uint16_t>(stage));
-    return true;
+bool TESModPlatform::ReleaseQuestStageFragment(IVM* vm, StackID stackId,
+                                               RE::StaticFunctionTag*,
+                                               RE::TESQuest* quest,
+                                               int32_t stage)
+{
+  if (!quest || stage < 0 || stage > 0xFFFF) {
+    return false;
   }
+  Frida::ReleaseQuestStageFragment(quest->formID,
+                                   static_cast<uint16_t>(stage));
+  return true;
+}
 
-  std::vector<float> TESModPlatform::GetPlayerProgress(
-    IVM * vm, StackID stackId, RE::StaticFunctionTag*)
-  {
-    auto player = RE::PlayerCharacter::GetSingleton();
-    auto data = PlayerSkillData();
-    if (!player || !data) {
-      return {};
-    }
-    std::vector<float> out;
-    out.reserve(kProgressLength);
-    out.push_back(data->xp);
-    out.push_back(data->levelThreshold);
-    out.push_back(static_cast<float>(player->GetLevel()));
-    for (size_t i = 0; i < kSkills; ++i) {
-      out.push_back(data->skills[i].level);
-      out.push_back(data->skills[i].xp);
-      out.push_back(data->skills[i].levelThreshold);
-    }
-    for (size_t i = 0; i < kSkills; ++i) {
-      out.push_back(static_cast<float>(data->legendaryLevels[i]));
-    }
-    return out;
+std::vector<float> TESModPlatform::GetPlayerProgress(IVM* vm, StackID stackId,
+                                                     RE::StaticFunctionTag*)
+{
+  auto player = RE::PlayerCharacter::GetSingleton();
+  auto data = PlayerSkillData();
+  if (!player || !data) {
+    return {};
   }
-
-  // Write what GetPlayerProgress reads, one skill or the player's own
-  // experience at a time: Skyrim Platform's callNative passes booleans,
-  // numbers, strings and game objects, and takes an array for a game object
-  // (Sp3NativeValueCasts.cpp, JsValueToNativeValue), so an array argument
-  // never arrives (thuum lab, x-av2-probe 20261008-110553). The level goes on
-  // the player's base (ACTOR_BASE_DATA::level, TESActorBaseData.h:69).
-  // HYPOTHESIS until a-actor-values: the Stats menu and the next skill use
-  // follow the written experience, and the level is the console's SetLevel's.
-  bool TESModPlatform::SetPlayerSkill(
-    IVM * vm, StackID stackId, RE::StaticFunctionTag*, int32_t skill,
-    float level, float xp, float threshold, int32_t legendary)
-  {
-    auto data = PlayerSkillData();
-    if (!data || skill < 0 || static_cast<size_t>(skill) >= kSkills ||
-        legendary < 0 || !std::isfinite(level) || !std::isfinite(xp) ||
-        !std::isfinite(threshold) || level < 0.f || xp < 0.f ||
-        threshold < 0.f) {
-      return false;
-    }
-    auto& s = data->skills[skill];
-    s.level = level;
-    s.xp = xp;
-    s.levelThreshold = threshold;
-    data->legendaryLevels[skill] = static_cast<uint32_t>(legendary);
-    return true;
+  std::vector<float> out;
+  out.reserve(kProgressLength);
+  out.push_back(data->xp);
+  out.push_back(data->levelThreshold);
+  out.push_back(static_cast<float>(player->GetLevel()));
+  for (size_t i = 0; i < kSkills; ++i) {
+    out.push_back(data->skills[i].level);
+    out.push_back(data->skills[i].xp);
+    out.push_back(data->skills[i].levelThreshold);
   }
-
-  bool TESModPlatform::SetPlayerExperience(IVM * vm, StackID stackId,
-                                           RE::StaticFunctionTag*, float xp,
-                                           float threshold, int32_t level)
-  {
-    auto player = RE::PlayerCharacter::GetSingleton();
-    auto data = PlayerSkillData();
-    auto base = player ? player->GetActorBase() : nullptr;
-    if (!player || !data || !base || !std::isfinite(xp) ||
-        !std::isfinite(threshold) || xp < 0.f || threshold < 0.f ||
-        level < 1 || level > 65535) {
-      return false;
-    }
-    data->xp = xp;
-    data->levelThreshold = threshold;
-    base->actorData.level = static_cast<uint16_t>(level);
-    return true;
+  for (size_t i = 0; i < kSkills; ++i) {
+    out.push_back(static_cast<float>(data->legendaryLevels[i]));
   }
+  return out;
+}
 
-  bool TESModPlatform::Register(IVM * vm)
-  {
-    TESModPlatform::onPapyrusUpdate = onPapyrusUpdate;
+// Write what GetPlayerProgress reads, one skill or the player's own
+// experience at a time: Skyrim Platform's callNative passes booleans,
+// numbers, strings and game objects, and takes an array for a game object
+// (Sp3NativeValueCasts.cpp, JsValueToNativeValue), so an array argument
+// never arrives (thuum lab, x-av2-probe 20261008-110553). The level goes on
+// the player's base (ACTOR_BASE_DATA::level, TESActorBaseData.h:69).
+// HYPOTHESIS until a-actor-values: the Stats menu and the next skill use
+// follow the written experience, and the level is the console's SetLevel's.
+bool TESModPlatform::SetPlayerSkill(IVM* vm, StackID stackId,
+                                    RE::StaticFunctionTag*, int32_t skill,
+                                    float level, float xp, float threshold,
+                                    int32_t legendary)
+{
+  auto data = PlayerSkillData();
+  if (!data || skill < 0 || static_cast<size_t>(skill) >= kSkills ||
+      legendary < 0 || !std::isfinite(level) || !std::isfinite(xp) ||
+      !std::isfinite(threshold) || level < 0.f || xp < 0.f ||
+      threshold < 0.f) {
+    return false;
+  }
+  auto& s = data->skills[skill];
+  s.level = level;
+  s.xp = xp;
+  s.levelThreshold = threshold;
+  data->legendaryLevels[skill] = static_cast<uint32_t>(legendary);
+  return true;
+}
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<
-        true, decltype(Add), int32_t, RE::StaticFunctionTag*, int32_t, int32_t,
-        int32_t, int32_t, int32_t, int32_t, int32_t, int32_t, int32_t, int32_t,
-        int32_t, int32_t>("Add", "TESModPlatform", Add));
+bool TESModPlatform::SetPlayerExperience(IVM* vm, StackID stackId,
+                                         RE::StaticFunctionTag*, float xp,
+                                         float threshold, int32_t level)
+{
+  auto player = RE::PlayerCharacter::GetSingleton();
+  auto data = PlayerSkillData();
+  auto base = player ? player->GetActorBase() : nullptr;
+  if (!player || !data || !base || !std::isfinite(xp) ||
+      !std::isfinite(threshold) || xp < 0.f || threshold < 0.f || level < 1 ||
+      level > 65535) {
+    return false;
+  }
+  data->xp = xp;
+  data->levelThreshold = threshold;
+  base->actorData.level = static_cast<uint16_t>(level);
+  return true;
+}
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<
-        true, decltype(MoveRefrToPosition), void, RE::StaticFunctionTag*,
-        RE::TESObjectREFR*, RE::TESObjectCELL*, RE::TESWorldSpace*, float,
-        float, float, float, float, float>(
-        "MoveRefrToPosition", "TESModPlatform", MoveRefrToPosition));
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(SetWeaponDrawnMode),
-                                       void, RE::StaticFunctionTag*,
-                                       RE::Actor*, int>(
-        "SetWeaponDrawnMode", "TESModPlatform", SetWeaponDrawnMode));
+bool TESModPlatform::Register(IVM* vm)
+{
+  TESModPlatform::onPapyrusUpdate = onPapyrusUpdate;
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(GetNthVtableElement),
-                                       int32_t, RE::StaticFunctionTag*,
-                                       RE::TESForm*, int, int>(
-        "GetNthVtableElement", "TESModPlatform", GetNthVtableElement));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<
+      true, decltype(Add), int32_t, RE::StaticFunctionTag*, int32_t, int32_t,
+      int32_t, int32_t, int32_t, int32_t, int32_t, int32_t, int32_t, int32_t,
+      int32_t, int32_t>("Add", "TESModPlatform", Add));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(IsPlayerRunningEnabled),
-                                       bool, RE::StaticFunctionTag*>(
-        "IsPlayerRunningEnabled", "TESModPlatform", IsPlayerRunningEnabled));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<
+      true, decltype(MoveRefrToPosition), void, RE::StaticFunctionTag*,
+      RE::TESObjectREFR*, RE::TESObjectCELL*, RE::TESWorldSpace*, float, float,
+      float, float, float, float>("MoveRefrToPosition", "TESModPlatform",
+                                  MoveRefrToPosition));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SetWeaponDrawnMode), void,
+                                     RE::StaticFunctionTag*, RE::Actor*, int>(
+      "SetWeaponDrawnMode", "TESModPlatform", SetWeaponDrawnMode));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(GetSkinColor),
-                                       RE::BGSColorForm*,
-                                       RE::StaticFunctionTag*, RE::TESNPC*>(
-        "GetSkinColor", "TESModPlatform", GetSkinColor));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(GetNthVtableElement),
+                                     int32_t, RE::StaticFunctionTag*,
+                                     RE::TESForm*, int, int>(
+      "GetNthVtableElement", "TESModPlatform", GetNthVtableElement));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(CreateNpc), RE::TESNPC*,
-                                       RE::StaticFunctionTag*>(
-        "CreateNpc", "TESModPlatform", CreateNpc));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(IsPlayerRunningEnabled),
+                                     bool, RE::StaticFunctionTag*>(
+      "IsPlayerRunningEnabled", "TESModPlatform", IsPlayerRunningEnabled));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(EvaluateLeveledNpc),
-                                       RE::TESNPC*, RE::StaticFunctionTag*,
-                                       FixedString>(
-        "EvaluateLeveledNpc", "TESModPlatform", EvaluateLeveledNpc));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(GetSkinColor),
+                                     RE::BGSColorForm*, RE::StaticFunctionTag*,
+                                     RE::TESNPC*>(
+      "GetSkinColor", "TESModPlatform", GetSkinColor));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(SetNpcSex), void,
-                                       RE::StaticFunctionTag*, RE::TESNPC*,
-                                       int32_t>("SetNpcSex", "TESModPlatform",
-                                                SetNpcSex));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(CreateNpc), RE::TESNPC*,
+                                     RE::StaticFunctionTag*>(
+      "CreateNpc", "TESModPlatform", CreateNpc));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(SetNpcRace), void,
-                                       RE::StaticFunctionTag*, RE::TESNPC*,
-                                       RE::TESRace*>(
-        "SetNpcRace", "TESModPlatform", SetNpcRace));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(EvaluateLeveledNpc),
+                                     RE::TESNPC*, RE::StaticFunctionTag*,
+                                     FixedString>(
+      "EvaluateLeveledNpc", "TESModPlatform", EvaluateLeveledNpc));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(SetNpcSkinColor), void,
-                                       RE::StaticFunctionTag*, RE::TESNPC*,
-                                       int32_t>(
-        "SetNpcSkinColor", "TESModPlatform", SetNpcSkinColor));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SetNpcSex), void,
+                                     RE::StaticFunctionTag*, RE::TESNPC*,
+                                     int32_t>("SetNpcSex", "TESModPlatform",
+                                              SetNpcSex));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(SetNpcHairColor), void,
-                                       RE::StaticFunctionTag*, RE::TESNPC*,
-                                       int32_t>(
-        "SetNpcHairColor", "TESModPlatform", SetNpcHairColor));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SetNpcRace), void,
+                                     RE::StaticFunctionTag*, RE::TESNPC*,
+                                     RE::TESRace*>(
+      "SetNpcRace", "TESModPlatform", SetNpcRace));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(ResizeHeadpartsArray),
-                                       void, RE::StaticFunctionTag*,
-                                       RE::TESNPC*, int32_t>(
-        "ResizeHeadpartsArray", "TESModPlatform", ResizeHeadpartsArray));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SetNpcSkinColor), void,
+                                     RE::StaticFunctionTag*, RE::TESNPC*,
+                                     int32_t>(
+      "SetNpcSkinColor", "TESModPlatform", SetNpcSkinColor));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(ResizeTintsArray), void,
-                                       RE::StaticFunctionTag*, int32_t>(
-        "ResizeTintsArray", "TESModPlatform", ResizeTintsArray));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SetNpcHairColor), void,
+                                     RE::StaticFunctionTag*, RE::TESNPC*,
+                                     int32_t>(
+      "SetNpcHairColor", "TESModPlatform", SetNpcHairColor));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(SetFormIdUnsafe), void,
-                                       RE::StaticFunctionTag*, RE::TESForm*,
-                                       int32_t>(
-        "SetFormIdUnsafe", "TESModPlatform", SetFormIdUnsafe));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(ResizeHeadpartsArray),
+                                     void, RE::StaticFunctionTag*, RE::TESNPC*,
+                                     int32_t>(
+      "ResizeHeadpartsArray", "TESModPlatform", ResizeHeadpartsArray));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(ClearTintMasks), void,
-                                       RE::StaticFunctionTag*, RE::Actor*>(
-        "ClearTintMasks", "TESModPlatform", ClearTintMasks));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(ResizeTintsArray), void,
+                                     RE::StaticFunctionTag*, int32_t>(
+      "ResizeTintsArray", "TESModPlatform", ResizeTintsArray));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(PushTintMask), void,
-                                       RE::StaticFunctionTag*, RE::Actor*,
-                                       int32_t, uint32_t, FixedString>(
-        "PushTintMask", "TESModPlatform", PushTintMask));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SetFormIdUnsafe), void,
+                                     RE::StaticFunctionTag*, RE::TESForm*,
+                                     int32_t>(
+      "SetFormIdUnsafe", "TESModPlatform", SetFormIdUnsafe));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<
-        true, decltype(AddItemEx), void, RE::StaticFunctionTag*,
-        RE::TESObjectREFR*, RE::TESForm*, int32_t, float, RE::EnchantmentItem*,
-        int32_t, bool, float, FixedString, int32_t, RE::AlchemyItem*, int32_t>(
-        "AddItemEx", "TESModPlatform", AddItemEx));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(ClearTintMasks), void,
+                                     RE::StaticFunctionTag*, RE::Actor*>(
+      "ClearTintMasks", "TESModPlatform", ClearTintMasks));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(UpdateEquipment), void,
-                                       RE::StaticFunctionTag*, RE::Actor*,
-                                       RE::TESForm*, bool>(
-        "UpdateEquipment", "TESModPlatform", UpdateEquipment));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(PushTintMask), void,
+                                     RE::StaticFunctionTag*, RE::Actor*,
+                                     int32_t, uint32_t, FixedString>(
+      "PushTintMask", "TESModPlatform", PushTintMask));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(PushWornState), void,
-                                       RE::StaticFunctionTag*, bool, bool>(
-        "PushWornState", "TESModPlatform", PushWornState));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<
+      true, decltype(AddItemEx), void, RE::StaticFunctionTag*,
+      RE::TESObjectREFR*, RE::TESForm*, int32_t, float, RE::EnchantmentItem*,
+      int32_t, bool, float, FixedString, int32_t, RE::AlchemyItem*, int32_t>(
+      "AddItemEx", "TESModPlatform", AddItemEx));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(ResetContainer), void,
-                                       RE::StaticFunctionTag*, RE::TESForm*>(
-        "ResetContainer", "TESModPlatform", ResetContainer));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(UpdateEquipment), void,
+                                     RE::StaticFunctionTag*, RE::Actor*,
+                                     RE::TESForm*, bool>(
+      "UpdateEquipment", "TESModPlatform", UpdateEquipment));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(BlockPapyrusEvents),
-                                       void, RE::StaticFunctionTag*, bool>(
-        "BlockPapyrusEvents", "TESModPlatform", BlockPapyrusEvents));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(PushWornState), void,
+                                     RE::StaticFunctionTag*, bool, bool>(
+      "PushWornState", "TESModPlatform", PushWornState));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<
-        true, decltype(CreateReferenceAtLocation), RE::TESObjectREFR*,
-        RE::StaticFunctionTag*, RE::TESForm*, RE::TESObjectCELL*,
-        RE::TESWorldSpace*, float, float, float, float, float, float, bool>(
-        "CreateReferenceAtLocation", "TESModPlatform",
-        CreateReferenceAtLocation));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(ResetContainer), void,
+                                     RE::StaticFunctionTag*, RE::TESForm*>(
+      "ResetContainer", "TESModPlatform", ResetContainer));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(CloseMenu), void,
-                                       RE::StaticFunctionTag*,
-                                       std::string_view>(
-        "CloseMenu", "TESModPlatform", CloseMenu));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(BlockPapyrusEvents), void,
+                                     RE::StaticFunctionTag*, bool>(
+      "BlockPapyrusEvents", "TESModPlatform", BlockPapyrusEvents));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(SetGameDaysPassed), void,
-                                       RE::StaticFunctionTag*, float>(
-        "SetGameDaysPassed", "TESModPlatform", SetGameDaysPassed));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<
+      true, decltype(CreateReferenceAtLocation), RE::TESObjectREFR*,
+      RE::StaticFunctionTag*, RE::TESForm*, RE::TESObjectCELL*,
+      RE::TESWorldSpace*, float, float, float, float, float, float, bool>(
+      "CreateReferenceAtLocation", "TESModPlatform",
+      CreateReferenceAtLocation));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<
-        true, decltype(LaunchArrow), bool, RE::StaticFunctionTag*, RE::Actor*,
-        RE::TESObjectWEAP*, RE::TESAmmo*, float, float, float>(
-        "LaunchArrow", "TESModPlatform", LaunchArrow));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(CloseMenu), void,
+                                     RE::StaticFunctionTag*, std::string_view>(
+      "CloseMenu", "TESModPlatform", CloseMenu));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(LaunchArrowAt), bool,
-                                       RE::StaticFunctionTag*, RE::Actor*,
-                                       RE::TESObjectWEAP*, RE::TESAmmo*, float,
-                                       float, float, float, float, float>(
-        "LaunchArrowAt", "TESModPlatform", LaunchArrowAt));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SetGameDaysPassed), void,
+                                     RE::StaticFunctionTag*, float>(
+      "SetGameDaysPassed", "TESModPlatform", SetGameDaysPassed));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(GetFavorites),
-                                       std::vector<int32_t>,
-                                       RE::StaticFunctionTag*>(
-        "GetFavorites", "TESModPlatform", GetFavorites));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<
+      true, decltype(LaunchArrow), bool, RE::StaticFunctionTag*, RE::Actor*,
+      RE::TESObjectWEAP*, RE::TESAmmo*, float, float, float>(
+      "LaunchArrow", "TESModPlatform", LaunchArrow));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(SetFavorite), bool,
-                                       RE::StaticFunctionTag*, RE::TESForm*,
-                                       int32_t>(
-        "SetFavorite", "TESModPlatform", SetFavorite));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(LaunchArrowAt), bool,
+                                     RE::StaticFunctionTag*, RE::Actor*,
+                                     RE::TESObjectWEAP*, RE::TESAmmo*, float,
+                                     float, float, float, float, float>(
+      "LaunchArrowAt", "TESModPlatform", LaunchArrowAt));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(GetActorValueBases),
-                                       std::vector<float>,
-                                       RE::StaticFunctionTag*>(
-        "GetActorValueBases", "TESModPlatform", GetActorValueBases));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(GetFavorites),
+                                     std::vector<int32_t>,
+                                     RE::StaticFunctionTag*>(
+      "GetFavorites", "TESModPlatform", GetFavorites));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(SetActorValueBase), bool,
-                                       RE::StaticFunctionTag*, int32_t, float>(
-        "SetActorValueBase", "TESModPlatform", SetActorValueBase));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SetFavorite), bool,
+                                     RE::StaticFunctionTag*, RE::TESForm*,
+                                     int32_t>("SetFavorite", "TESModPlatform",
+                                              SetFavorite));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(GetPlayerProgress),
-                                       std::vector<float>,
-                                       RE::StaticFunctionTag*>(
-        "GetPlayerProgress", "TESModPlatform", GetPlayerProgress));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(GetActorValueBases),
+                                     std::vector<float>,
+                                     RE::StaticFunctionTag*>(
+      "GetActorValueBases", "TESModPlatform", GetActorValueBases));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(SetPlayerSkill), bool,
-                                       RE::StaticFunctionTag*, int32_t, float,
-                                       float, float, int32_t>(
-        "SetPlayerSkill", "TESModPlatform", SetPlayerSkill));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SetActorValueBase), bool,
+                                     RE::StaticFunctionTag*, int32_t, float>(
+      "SetActorValueBase", "TESModPlatform", SetActorValueBase));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(SetPlayerExperience),
-                                       bool, RE::StaticFunctionTag*, float,
-                                       float, int32_t>(
-        "SetPlayerExperience", "TESModPlatform", SetPlayerExperience));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(GetPlayerProgress),
+                                     std::vector<float>,
+                                     RE::StaticFunctionTag*>(
+      "GetPlayerProgress", "TESModPlatform", GetPlayerProgress));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(SetPotionEffectsBlocked),
-                                       void, RE::StaticFunctionTag*, bool>(
-        "SetPotionEffectsBlocked", "TESModPlatform", SetPotionEffectsBlocked));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SetPlayerSkill), bool,
+                                     RE::StaticFunctionTag*, int32_t, float,
+                                     float, float, int32_t>(
+      "SetPlayerSkill", "TESModPlatform", SetPlayerSkill));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(ModPlayerActorValue),
-                                       bool, RE::StaticFunctionTag*, int32_t,
-                                       float>(
-        "ModPlayerActorValue", "TESModPlatform", ModPlayerActorValue));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SetPlayerExperience), bool,
+                                     RE::StaticFunctionTag*, float, float,
+                                     int32_t>(
+      "SetPlayerExperience", "TESModPlatform", SetPlayerExperience));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<true, decltype(Stagger), bool,
-                                       RE::StaticFunctionTag*, RE::Actor*,
-                                       float, RE::Actor*>(
-        "Stagger", "TESModPlatform", Stagger));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SetPotionEffectsBlocked),
+                                     void, RE::StaticFunctionTag*, bool>(
+      "SetPotionEffectsBlocked", "TESModPlatform", SetPotionEffectsBlocked));
 
-    vm->BindNativeMethod(
-      new RE::BSScript::NativeFunction<
-        true, decltype(SendStoryChangeLocation), bool, RE::StaticFunctionTag*,
-        RE::Actor*, RE::BGSLocation*, RE::BGSLocation*>(
-        "SendStoryChangeLocation", "TESModPlatform", SendStoryChangeLocation));
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(ModPlayerActorValue), bool,
+                                     RE::StaticFunctionTag*, int32_t, float>(
+      "ModPlayerActorValue", "TESModPlatform", ModPlayerActorValue));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(Stagger), bool,
+                                     RE::StaticFunctionTag*, RE::Actor*, float,
+                                     RE::Actor*>("Stagger", "TESModPlatform",
+                                                 Stagger));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SendStoryChangeLocation),
+                                     bool, RE::StaticFunctionTag*, RE::Actor*,
+                                     RE::BGSLocation*, RE::BGSLocation*>(
+      "SendStoryChangeLocation", "TESModPlatform", SendStoryChangeLocation));
+
+  vm->BindNativeMethod(
     new RE::BSScript::NativeFunction<
       true, decltype(SuppressQuestStageFragment), bool, RE::StaticFunctionTag*,
       RE::TESQuest*, int32_t>("SuppressQuestStageFragment", "TESModPlatform",
                               SuppressQuestStageFragment));
 
-    vm->BindNativeMethod(new RE::BSScript::NativeFunction<
-                         true, decltype(ReleaseQuestStageFragment), bool,
-                         RE::StaticFunctionTag*, RE::TESQuest*, int32_t>(
-      "ReleaseQuestStageFragment", "TESModPlatform",
-      ReleaseQuestStageFragment));
+  vm->BindNativeMethod(new RE::BSScript::NativeFunction<
+                       true, decltype(ReleaseQuestStageFragment), bool,
+                       RE::StaticFunctionTag*, RE::TESQuest*, int32_t>(
+    "ReleaseQuestStageFragment", "TESModPlatform", ReleaseQuestStageFragment));
 
-    static LoadGameEvent loadGameEvent;
+  static LoadGameEvent loadGameEvent;
 
-    return true;
-  }
+  return true;
+}

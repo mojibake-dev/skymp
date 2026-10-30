@@ -320,6 +320,15 @@ export class PropService extends ClientListener {
         if (!this.enabled()) {
             return;
         }
+        // DropItemService's own gate: a drop is made from the inventory menu;
+        // the login's outfit removals have the same event shape (the player's
+        // container, no new one, no reference) and would be recorded as drops
+        // (x-prop-drop v4 162049: eight "drop of base ... recorded" lines per
+        // seat at the login), and a server copy of one of those bases arriving
+        // within DROP_MATCH_MS would be claimed wrongly
+        if (!this.sp.Ui.isMenuOpen("InventoryMenu")) {
+            return;
+        }
         const player = this.sp.Game.getPlayer();
         if (!player || !e.oldContainer || !e.baseObj) {
             return;

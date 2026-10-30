@@ -987,14 +987,14 @@ export class PropService extends ClientListener {
         return this.controller.lookupListener(RemoteServer).getMyRemoteRefrId();
     }
 
-    // Off unless the client setting propPhysics is true: the verb has no green
-    // T3 scenario yet (rule 3, D68 of 2026-10-30), so parity's players run the
-    // engine's own physics as before while the lab's probes switch it on
-    // through their relaunch files; the default flips in the commit whose
-    // b-prop-push goes green
+    // On unless the client setting propPhysics is false. The union merged
+    // this verb dark (off by default, rule 3 and D68 of 2026-10-30, no green
+    // T3 scenario then); this train carries b-prop-push as the verb's own
+    // scenario and merges only when it is green, so the default is on again
+    // here, and parity never sees it on with a red scenario
     private enabled(): boolean {
         const s = this.sp.settings["skymp5-client"] as Record<string, unknown> | undefined;
-        return s !== undefined && s["propPhysics"] === true;
+        return !s || s["propPhysics"] !== false;
     }
 
     // the proximity stand-in for the contact, off by default now that the

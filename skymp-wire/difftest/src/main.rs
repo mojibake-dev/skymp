@@ -77,13 +77,33 @@ impl Divergence {
     }
 
     /// The received messages (canonical JSON text, as `normalize` lists
-    /// them) this declaration covers.
-    fn matching<'a>(&self, received: &'a BTreeMap<String, i64>) -> Vec<&'a String> {
-        let want = canonical(&self.msg);
+    /// them) this declaration covers, its `"{{created:<baseId>}}"` strings
+    /// resolved through that client's `created` table first (the id the
+    /// stack's generator gave a drop or a placement, which the fakeclient
+    /// resolved the same way when it sent).
+    fn matching<'a>(&self, received: &'a BTreeMap<String, i64>, created: Option<&Value>) -> Vec<&'a String> {
+        let want = canonical(&resolve_created(&self.msg, created));
         received
             .keys()
             .filter(|text| serde_json::from_str::<Value>(text).is_ok_and(|got| covers(&want, &got)))
             .collect()
+    }
+}
+
+/// Every string `"{{created:<baseId>}}"` in `v` replaced by the number the
+/// client's `created` table (base id as a decimal string to form id) holds
+/// for it; a base the table lacks keeps the string, so the declaration then
+/// matches nothing and reads "did not occur as declared".
+fn resolve_created(v: &Value, created: Option<&Value>) -> Value {
+    match v {
+        Value::Array(a) => Value::Array(a.iter().map(|x| resolve_created(x, created)).collect()),
+        Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (k.clone(), resolve_created(x, created))).collect()),
+        Value::String(text) => text
+            .strip_prefix("{{created:")
+            .and_then(|rest| rest.strip_suffix("}}"))
+            .and_then(|base| created.and_then(|c| c.get(base.trim())).cloned())
+            .unwrap_or_else(|| v.clone()),
+        other => other.clone(),
     }
 }
 
@@ -353,6 +373,19 @@ fn rename_idx(v: &Value, names: &BTreeMap<i64, String>) -> Value {
 fn normalize(rc: i32, events: &[Value], volatile: &BTreeSet<i64>) -> Value {
     let kind = |e: &Value| e.get("event").and_then(Value::as_str).unwrap_or("").to_string();
     let names = idx_names(events);
+    // the forms this client was told of, by base id: what a session's
+    // "{{created:<baseId>}}" names on this stack (the fakeclient resolved its
+    // sends the same way)
+    let mut created = serde_json::Map::new();
+    for e in events {
+        let Some(m) = e.get("msg") else { continue };
+        if m.get("t").and_then(Value::as_i64) != Some(33) {
+            continue;
+        }
+        if let (Some(base), Some(refr)) = (m.get("baseId").and_then(Value::as_u64), m.get("refrId").and_then(Value::as_u64)) {
+            created.insert(base.to_string(), json!(refr));
+        }
+    }
     let actor = events
         .iter()
         .find(|e| kind(e) == "actor")
@@ -385,6 +418,7 @@ fn normalize(rc: i32, events: &[Value], volatile: &BTreeSet<i64>) -> Value {
         "errors": errors,
         "relays_seen": relays.into_iter().collect::<Vec<_>>(),
         "received": received,
+        "created": Value::Object(created),
     })
 }
 
@@ -435,8 +469,8 @@ fn diff(a_name: &str, a: &BTreeMap<String, Value>, b_name: &str, b: &BTreeMap<St
                 continue;
             }
             let (mx, my): (Vec<String>, Vec<String>) = (
-                d.matching(&lx).into_iter().cloned().collect(),
-                d.matching(&ly).into_iter().cloned().collect(),
+                d.matching(&lx, x.get("created")).into_iter().cloned().collect(),
+                d.matching(&ly, y.get("created")).into_iter().cloned().collect(),
             );
             let n: i64 = mx.iter().filter_map(|k| lx.get(k)).sum();
             let m: i64 = my.iter().filter_map(|k| ly.get(k)).sum();
@@ -535,6 +569,19 @@ fn main() -> std::process::ExitCode {
 #[cfg(test)]
 #[allow(clippy::panic, clippy::expect_used, clippy::indexing_slicing)]
 mod tests {
+    #[test]
+    fn a_created_placeholder_resolves_per_stack() {
+        let created = json!({"80254": 4278190085_u64});
+        let want = json!({"t": 60, "refr": "{{created:80254}}", "epoch": 1});
+        let resolved = resolve_created(&want, Some(&created));
+        assert_eq!(resolved, json!({"t": 60, "refr": 4278190085_u64, "epoch": 1}));
+        assert!(covers(&canonical(&resolved), &canonical(&json!({"t": 60, "refr": 4278190085_u64, "epoch": 1, "player": 7}))));
+        // an unknown base keeps the string: the declaration matches nothing
+        let kept = resolve_created(&json!({"refr": "{{created:9}}"}), Some(&created));
+        assert_eq!(kept, json!({"refr": "{{created:9}}"}));
+        assert_eq!(resolve_created(&want, None), want);
+    }
+
     use super::*;
 
     #[test]

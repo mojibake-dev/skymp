@@ -3,7 +3,7 @@ import { ConnectionMessage } from "../events/connectionMessage";
 import { SetGameTimeMessage } from "../messages/setGameTimeMessage";
 import { MenuOpenEvent } from "skyrimPlatform";
 import { MsgType } from "../../messages";
-import { logError } from "../../logging";
+import { logError, logTrace } from "../../logging";
 
 // The engine's time globals in Skyrim.esm (thuum lab/esm.py, 2026-10-03)
 const gameYearId = 0x35;
@@ -15,6 +15,16 @@ const timeScaleId = 0x3a;
 
 // RE::SleepWaitMenu::MENU_NAME (CommonLibSSE-NG include/RE/S/SleepWaitMenu.h)
 const sleepWaitMenu = "Sleep/Wait Menu";
+// RE::FaderMenu::MENU_NAME (CommonLibSSE-NG include/RE/F/FaderMenu.h:14): the
+// fade to black a sleep runs under
+const faderMenu = "Fader Menu";
+// Actor.GetSleepState for a player in no sleep state. The engine's states are
+// SIT_SLEEP_STATE (CommonLibSSE-NG include/RE/A/ActorState.h:65-80, kNormal 0,
+// kWantToSleep 5, kWaitingForSleepAnim 6, kIsSleeping 7, kWantToWake 8); the
+// Papyrus function reads 0 for kNormal and a non-zero value through a sleep
+// (Creation Kit wiki, GetSleepState - Actor). Only the awake value is relied
+// on here; the lab's dump-state records the values a sleep actually reads.
+const sleepStateAwake = 0;
 
 const msPerHour = 60 * 60 * 1000;
 const oneMinute = 1 / 60; // in hours
@@ -40,6 +50,18 @@ const dayCountTolerance = 0.01;
 // reported to the server, which grants its recovery; then the clock is
 // corrected as always. Only a Sleep/Wait menu counts, so a fast travel's
 // hours are corrected without a rest.
+//
+// After the menu closes the report and the correction also wait for the
+// engine's own wake (F1; playtest 37's finding 31, 2026-10-28: both players
+// froze about a minute after a server-decided sleep in a rented inn bed,
+// controls on, menus closed, the clock running). rest.md's open HYPOTHESIS,
+// "A stuck wait", is that this correction lands on the engine's sleep
+// bookkeeping, the PlayerCharacter sleeping bit, sleepSeconds and hoursToSleep
+// (CommonLibSSE-NG include/RE/P/PlayerCharacter.h:282, :475, :482), while the
+// player is still in the engine's sleep state, and that a long sleep widens
+// the window. The gate: the player's sleep state reads awake, no Fader Menu
+// is open, and the Sleep/Wait Menu has been closed for at least one tick. One
+// logTrace line per held tick, one at the release, so a probe can count them.
 export class TimeService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -85,7 +107,15 @@ export class TimeService extends ClientListener {
             return;
         }
         if (this.sp.Ui.isMenuOpen(sleepWaitMenu)) {
+            this.restMenuOpenAtLastTick = true;
             return; // a rest in progress; it is read when the menu closes
+        }
+        // the first tick after the menu closed still holds a pending rest:
+        // "closed for at least one tick" is the gate's third condition (F1)
+        const restMenuClosedThisTick = this.restMenuOpenAtLastTick;
+        this.restMenuOpenAtLastTick = false;
+        if (this.restMenuSeen && !this.restWakeGateOpen(restMenuClosedThisTick)) {
+            return;
         }
         const message = this.clock.message;
 
@@ -154,6 +184,25 @@ export class TimeService extends ClientListener {
         }
     }
 
+    // F1 (thuum docs/verbs/rest.md "A stuck wait", playtest 37's finding 31):
+    // whether a pending rest's report and correction may go on this tick. The
+    // engine must say the player is awake (Actor.GetSleepState 0), the
+    // sleep's fade (the Fader Menu) must be over, and the Sleep/Wait Menu must
+    // have been closed at the tick before. A player the engine cannot give is
+    // taken as awake, so the gate never holds for good on a missing form.
+    private restWakeGateOpen(restMenuClosedThisTick: boolean): boolean {
+        const sleepState = this.sp.Game.getPlayer()?.getSleepState() ?? sleepStateAwake;
+        const faderOpen = this.sp.Ui.isMenuOpen(faderMenu);
+        if (restMenuClosedThisTick || sleepState !== sleepStateAwake || faderOpen) {
+            this.restHeldTicks++;
+            logTrace(this, `rest: the correction waits, sleep state ${sleepState}, fader open ${faderOpen}`);
+            return false;
+        }
+        logTrace(this, `rest: the correction released, sleep state ${sleepState}, held ${this.restHeldTicks} ticks`);
+        this.restHeldTicks = 0;
+        return true;
+    }
+
     private onUpdate() {
         if (Date.now() - this.lastTimeUpd <= 2000) {
           return;
@@ -165,4 +214,8 @@ export class TimeService extends ClientListener {
     private clock?: { message: SetGameTimeMessage, receivedAt: number };
     private lastTimeUpd = 0;
     private restMenuSeen = false;
+    // the Sleep/Wait Menu was open at the last 2 s tick (F1's third condition)
+    private restMenuOpenAtLastTick = false;
+    // the ticks F1's gate has held the pending rest's report and correction
+    private restHeldTicks = 0;
 }

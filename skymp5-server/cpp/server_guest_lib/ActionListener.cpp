@@ -23,6 +23,7 @@
 #include "libespm/GLOB.h"
 #include "libespm/GMST.h"
 #include "libespm/ObjectBounds.h"
+#include "libespm/QUST.h"
 #include "libespm/RACE.h"
 #include "libespm/REFR.h"
 #include "libespm/SHOU.h"
@@ -873,18 +874,51 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
   // restart that could never be stood up) has no kill word of this process
   // in flight, so it counts as past the grace
   if (actor->IsDead() && actor->IsFateRespawned() && msg.health > onePoint) {
-    const auto diedAgo = actor->DiedAgo(now);
-    if (!diedAgo ||
-        diedAgo->count() >= static_cast<int64_t>(MpActor::kPendingDeathMs)) {
-      spdlog::info(
-        "[verb:npc-fate] resurrection by its host's engine: {:x} "
-        "stands again with health {:.3f} on {:x}'s sample, {}; "
-        "the record's death cleared, the live word to every "
-        "listener",
-        actor->GetFormId(), msg.health, myActor->GetFormId(),
-        diedAgo ? fmt::format("{} s after its death", diedAgo->count() / 1000)
-                : std::string("its death before this process"));
-      actor->Respawn(false);
+    // thuum docs/verbs/npc-fate.md (finding 65): a placement that starts
+    // dead has no death of this process to grace (DiedAgo nothing) and its
+    // host's engine spawned it as a corpse, so one live sample must not
+    // stand it (the train's review, 2026-10-29: the no-stamp reading above
+    // took the first sample above one point as a resurrection). Its
+    // stand-up is the cast's rule alone: a reanimate hit the server accepted
+    // on it within MpActor::kReanimateWindowMs (NoteReanimateAccepted at
+    // OnHit, ahead of CastReanimateOnHost). Any other live sample of it
+    // stays a sample of a dead record, judged dead below; said once in ten
+    // seconds per body, at debug
+    const auto reanimatedAgo = actor->ReanimateAcceptedAgo(now);
+    const bool reanimated = reanimatedAgo &&
+      reanimatedAgo->count() <=
+        static_cast<int64_t>(MpActor::kReanimateWindowMs);
+    if (actor->IsPlacedDead() && !reanimated) {
+      static std::unordered_map<uint32_t,
+                                std::chrono::steady_clock::time_point>
+        placedLines;
+      auto& last = placedLines[actor->GetFormId()];
+      if (last == std::chrono::steady_clock::time_point{} ||
+          now - last >= std::chrono::seconds(10)) {
+        last = now;
+        spdlog::debug("[verb:npc-fate] {:x} is a placed corpse: {:x}'s live "
+                      "sample (health {:.3f}) stands nothing; a reanimation "
+                      "is the cast's rule (finding 65)",
+                      actor->GetFormId(), myActor->GetFormId(), msg.health);
+      }
+    } else {
+      const auto diedAgo = actor->DiedAgo(now);
+      if (!diedAgo ||
+          diedAgo->count() >= static_cast<int64_t>(MpActor::kPendingDeathMs)) {
+        spdlog::info(
+          "[verb:npc-fate] resurrection by its host's engine: {:x} "
+          "stands again with health {:.3f} on {:x}'s sample, {}; "
+          "the record's death cleared, the live word to every "
+          "listener",
+          actor->GetFormId(), msg.health, myActor->GetFormId(),
+          diedAgo
+            ? fmt::format("{} s after its death", diedAgo->count() / 1000)
+            : actor->IsPlacedDead()
+            ? fmt::format("a placed corpse, the reanimate accepted {} ms ago",
+                          reanimatedAgo->count())
+            : std::string("its death before this process"));
+        actor->Respawn(false);
+      }
     }
   }
   facts.alive = !actor->IsDead() && !actor->IsRespawning();
@@ -2790,12 +2824,66 @@ void ActionListener::OnPlayerGlobals(const RawMessageData& rawMsgData,
   KillByPlayerGlobals(*actor, merged);
 }
 
-// thuum docs/verbs/quest-stage.md (ADR-056): a player's game reports a stage
-// its engine set on a quest. The server checks the quest (a QUST of the
-// load order, on the shared list; R1), records the stage as the world's
-// (R0) and relays it to every other connected player; a stage the world
-// already has is a no-op, never an error. A client names no list and no
-// quest 0: those are the login replay's, server to client.
+namespace {
+// memo D62 (2026-10-29; apocrypha's census: 42 controller, MCM,
+// version-tracker and player-alias quests in the layer plus the alternate
+// start's eighteen, every one a quest the game starts by itself; 330 of
+// Skyrim.esm's 1811 carry the flag): in mode all a quest whose record is
+// Start Game Enabled (QUST DNAM, libespm QUST.h) is each seat's own unless
+// the setting's `allowed` names it. The flag is the record's, so it is read
+// here beside the rule (wire-rules quest_stages holds the lists) and not in
+// it. Mode list is untouched: its curated list names what crosses.
+bool IsSeatsOwnQuest(PartOne& partOne, const FormDesc& quest,
+                     const espm::RecordHeader* record)
+{
+  if (partOne.SharedQuestsMode() != 1 || partOne.IsSharedQuestAllowed(quest)) {
+    return false;
+  }
+  const auto qust = espm::Convert<espm::QUST>(record);
+  if (!qust) {
+    return false;
+  }
+  const auto data = qust->GetData(partOne.worldState.GetEspmCache());
+  return data.questData &&
+    (data.questData->mainFlags & espm::QUST::QuestData::StartGameEnabled);
+}
+
+// Rule 5 (the review of m3-pass-train-2, finding 2): the stage index is the
+// record's to check, as the start flag is. A quest's stages are its INDX
+// fields (libespm QUST.h QuestStage::JournalIndex, QUST.cpp GetQuestStages),
+// int16 in the record and u16 on the wire, compared at the wire's width. A
+// stage the quest does not define is refused (E_QUEST_STAGE) instead of
+// recorded for every seat's engine to park in its journal.
+bool QuestHasStage(PartOne& partOne, const espm::RecordHeader* record,
+                   uint16_t stage)
+{
+  const auto qust = espm::Convert<espm::QUST>(record);
+  if (!qust) {
+    return false;
+  }
+  for (const auto& questStage :
+       qust->GetQuestStages(partOne.worldState.GetEspmCache())) {
+    if (questStage.journalIndex &&
+        static_cast<uint16_t>(questStage.journalIndex->index) == stage) {
+      return true;
+    }
+  }
+  return false;
+}
+}
+
+// thuum docs/verbs/quest-stage.md (ADR-056; memo D58 B): a player's game
+// reports a stage its engine set on a quest. The server checks the quest (a
+// QUST of the load order, the world's by the sharing mode: listed in mode
+// list, not denied in mode all and, in mode all, not a quest the game
+// starts by itself unless allowed, memo D62; R1), records the stage as the
+// world's (R0) and relays it to every other connected player; a stage the
+// world already has is a no-op, never an error. A client names no list, no
+// mode and no quest 0: those are the login replay's, server to client. The
+// stage must be one the quest's record defines (QUST INDX, E_QUEST_STAGE),
+// and the world's record is bounded (wire-rules quest_stages
+// QUEST_RECORD_CAP, E_QUEST_FULL): rule 12's explicit resource bound on a
+// client-fed table.
 void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
                                   const QuestStageMessage& msg)
 {
@@ -2804,9 +2892,10 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
     return spdlog::warn("OnQuestStage - no actor for user {}",
                         rawMsgData.userId);
   }
-  if (!msg.shared.empty() || msg.quest == 0) {
+  if (!msg.shared.empty() || msg.mode != 0 || msg.quest == 0) {
     return spdlog::info("QuestStage: user {} actor {:x} report refused (a "
-                        "client names no shared list and no quest 0)",
+                        "client names no shared list, no mode and no quest "
+                        "0)",
                         rawMsgData.userId, actor->GetFormId());
   }
   if (!partOne.HasEspm()) {
@@ -2828,11 +2917,52 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
                         rawMsgData.userId, actor->GetFormId(), msg.stage,
                         msg.quest);
   }
+  if (!QuestHasStage(partOne, lookup.rec, msg.stage)) {
+    return spdlog::info("E_QUEST_STAGE: user {} actor {:x} reported stage {} "
+                        "of {}, a stage the quest's record does not define "
+                        "(QUST INDX)",
+                        rawMsgData.userId, actor->GetFormId(), msg.stage,
+                        quest.ToString());
+  }
+  // the mode's own refusal first (the review of m3-pass-train-2, finding
+  // 5): a quest both denied and start-game-enabled logs E_QUEST_DENIED, the
+  // setting's word, not the record's flag
   if (const uint8_t refusal = partOne.CheckSharedQuest(quest)) {
+    if (refusal == 2) {
+      return spdlog::info("E_QUEST_DENIED: user {} actor {:x} reported stage "
+                          "{} of {}, a quest the world denies (memo D58 B)",
+                          rawMsgData.userId, actor->GetFormId(), msg.stage,
+                          quest.ToString());
+    }
     return spdlog::info("E_QUEST_UNLISTED: user {} actor {:x} reported stage "
                         "{} of {}, a quest the world does not share ({})",
                         rawMsgData.userId, actor->GetFormId(), msg.stage,
                         quest.ToString(), refusal);
+  }
+  if (IsSeatsOwnQuest(partOne, quest, lookup.rec)) {
+    // in mode all a seat reports every stage event of every quest it does
+    // not know to be denied (Skyrim Platform's Quest exposes no Start Game
+    // Enabled getter), so the 330 such quests of Skyrim.esm arrive here at
+    // the client's rate: one info line per seat per 10 s with the count held
+    // meanwhile (the OnActorSpeech shape; finding 5)
+    static std::unordered_map<
+      Networking::UserId,
+      std::pair<std::chrono::steady_clock::time_point, uint32_t>>
+      ownStart;
+    auto& [since, held] = ownStart[rawMsgData.userId];
+    ++held;
+    const auto now = std::chrono::steady_clock::now();
+    if (since == std::chrono::steady_clock::time_point() ||
+        now - since >= std::chrono::seconds(10)) {
+      spdlog::info("E_QUEST_OWN_START: user {} actor {:x} reported stage {} "
+                   "of {}: a start-game-enabled quest is each seat's own "
+                   "(D62); {} such report(s) since the last line",
+                   rawMsgData.userId, actor->GetFormId(), msg.stage,
+                   quest.ToString(), held);
+      since = now;
+      held = 0;
+    }
+    return;
   }
   const QuestStageDone done{ quest, msg.stage };
   if (partOne.QuestStageDoneAlready(done)) {
@@ -2840,6 +2970,22 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
                          "of {}, already the world's",
                          rawMsgData.userId, actor->GetFormId(), msg.stage,
                          quest.ToString());
+  }
+  if (partOne.QuestRecordFull()) {
+    // the record is the world's, not a seat's, and every report past the
+    // cap says the same thing: one warn line per 10 s
+    static std::chrono::steady_clock::time_point lastFull;
+    const auto now = std::chrono::steady_clock::now();
+    if (lastFull == std::chrono::steady_clock::time_point() ||
+        now - lastFull >= std::chrono::seconds(10)) {
+      spdlog::warn("E_QUEST_FULL: user {} actor {:x} reported stage {} of {}: "
+                   "the world's quest record holds its cap of {} stages, "
+                   "refused (one line per 10 s)",
+                   rawMsgData.userId, actor->GetFormId(), msg.stage,
+                   quest.ToString(), partOne.GetQuestStages().size());
+      lastFull = now;
+    }
+    return;
   }
   partOne.SetQuestStages(partOne.MergeQuestStage(done));
 
@@ -3387,11 +3533,19 @@ void ActionListener::SendPlayerGlobals(MpActor& actor)
 
 void ActionListener::SendQuestStages(MpActor& actor)
 {
+  // the login's first message names the sharing mode and its list (memo D58
+  // B): in mode list the shared quests, and nothing at all when none is
+  // listed; in mode all the denied quests, sent even when none is, so the
+  // seat learns the mode (the allowed quests are not named: the wire's one
+  // list is the denied, and the allowed matter to the server alone, memo
+  // D62)
+  const uint8_t mode = partOne.SharedQuestsMode();
   const auto listed = partOne.SharedQuestsListed();
-  if (listed.empty()) {
+  if (mode == 0 && listed.empty()) {
     return;
   }
   QuestStageMessage list;
+  list.mode = mode;
   for (const auto& quest : listed) {
     try {
       list.shared.push_back(quest.ToFormId(partOne.worldState.espmFiles));
@@ -3399,7 +3553,7 @@ void ActionListener::SendQuestStages(MpActor& actor)
       // a listed quest whose plugin this load order lacks
     }
   }
-  if (list.shared.empty()) {
+  if (mode == 0 && list.shared.empty()) {
     return;
   }
   actor.SendToUser(list, true);
@@ -3411,13 +3565,22 @@ void ActionListener::SendQuestStages(MpActor& actor)
     } catch (const std::exception&) {
       continue; // a recorded quest whose plugin this load order lacks
     }
+    if (mode == 1 && partOne.HasEspm() &&
+        IsSeatsOwnQuest(
+          partOne, entry.quest,
+          partOne.GetEspm().GetBrowser().LookupById(message.quest).rec)) {
+      // each seat's own (memo D62): a record made under another setting
+      // keeps the stage, unsent, as a denied quest's
+      continue;
+    }
     message.stage = entry.stage;
     actor.SendToUser(message, true);
     ++stages;
   }
-  spdlog::info("QuestStage: actor {:x} sent {} shared quests, {} stages "
-               "after a login",
-               actor.GetFormId(), list.shared.size(), stages);
+  spdlog::info("QuestStage: actor {:x} sent mode {} with {} {} quests, {} "
+               "stages after a login",
+               actor.GetFormId(), mode, list.shared.size(),
+               mode == 0 ? "shared" : "denied", stages);
 }
 
 // thuum memo D56 A (Eli, 2026-10-28, "A for both"): the server cures the
@@ -4469,6 +4632,28 @@ float PlayerScale(const MpActor& actor, WorldState& worldState)
     .height[isFemale ? 1 : 0];
 }
 
+// thuum docs/verbs/melee-reach.md and hit-cone.md (M3's "NPC melee reach and
+// hit cone", the weekend pass of 2026-10-29): the reach and cone rules were
+// players' alone because the bounds' body extents are a humanoid's and the
+// facts' scale is a race's height. A humanoid NPC (its race playable, RACE
+// DATA flag 0x1) has the same extents and the same height table, so it is
+// gated as a player is, as a target and, when its host reports its hit, as
+// an aggressor (R1: the host computes, the server validates). Creatures and
+// the non-playable humanoid races (Elder, Dremora, the vampire races) keep
+// the old bound: a named limit until their extents are read.
+bool HumanoidNpc(const MpActor& actor, WorldState& worldState)
+{
+  if (actor.IsCreatedAsPlayer() || actor.GetRaceId() == 0) {
+    return false;
+  }
+  try {
+    return (espm::GetData<espm::RACE>(actor.GetRaceId(), &worldState).flags &
+            espm::RACE::kPlayable) != 0;
+  } catch (std::exception&) {
+    return false;
+  }
+}
+
 std::optional<skymp::rules::MeleeFacts> MeleeFacts(const MpActor& aggressor,
                                                    const MpActor& target,
                                                    WorldState& worldState)
@@ -4870,12 +5055,19 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
       hitData.isBashAttack = kept.bash;
     }
 
-    // Player against player only: the bound's body extents are a humanoid's
-    // (creatures' are larger), and a hosted NPC's scale is its own record's
+    // The reach and cone rules: a player's hit on a player or a humanoid NPC,
+    // and a humanoid NPC's hit its host reports (the bound's body extents are
+    // a humanoid's; creatures keep the old bound, HumanoidNpc above)
     MpActor* targetActor = targetRef->AsActor();
-    if (aggressor == myActor && targetActor &&
-        partOne.serverState.UserByActor(targetActor) !=
-          Networking::InvalidUserId &&
+    const bool playerSwing = aggressor == myActor;
+    const bool hostedSwing = !playerSwing &&
+      partOne.worldState.HostOf(*aggressor) == myActor &&
+      HumanoidNpc(*aggressor, partOne.worldState);
+    const bool gatedTarget = targetActor &&
+      (partOne.serverState.UserByActor(targetActor) !=
+         Networking::InvalidUserId ||
+       HumanoidNpc(*targetActor, partOne.worldState));
+    if ((playerSwing || hostedSwing) && gatedTarget &&
         !IsBowOrCrossbowShot(hitData, &partOne.worldState)) {
       if (auto facts =
             MeleeFacts(*aggressor, *targetActor, partOne.worldState)) {
@@ -5302,6 +5494,9 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
   // one engine that owns the body, its cell's host's
   if (targetActorPtr->IsDead() &&
       ReanimateEffectOf(&partOne.worldState, effects).has_value()) {
+    // the stamp a placed corpse's stand-up is read against
+    // (OnHostedActorState, finding 65)
+    targetActorPtr->NoteReanimateAccepted(std::chrono::steady_clock::now());
     CastReanimateOnHost(*aggressor, *targetActorPtr, hitData.source);
   }
 

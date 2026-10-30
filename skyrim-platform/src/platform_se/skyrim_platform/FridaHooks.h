@@ -22,6 +22,20 @@ bool DamageActorOriginal(RE::Actor* victim, float damage, RE::Actor* attacker,
 // npcEngineDamage switches it
 void SetEngineDamageCut(bool on);
 
+// thuum docs/verbs/quest-stage.md, slice two: a (quest, stage) pair
+// skymp5-client's questStageService is applying from the server's relay,
+// whose Papyrus fragment the VM's quest stage sink skips at the pair's next
+// event (the Gum replacement in FridaHooks.cpp; the journal, the done bit
+// and the latent return stay the engine's). TESModPlatform's
+// SuppressQuestStageFragment puts one mark on the pair before its SetStage;
+// the sink consumes the mark at the pair's first event, so a stage the VM
+// queues on an unstarted quest and sets later still finds it;
+// ReleaseQuestStageFragment is the client's safety 10 s after the apply,
+// taking back a mark no event claimed. Two applies of one pair are two
+// marks. Threadsafe.
+void SuppressQuestStageFragment(uint32_t questFormId, uint16_t stage);
+void ReleaseQuestStageFragment(uint32_t questFormId, uint16_t stage);
+
 // thuum docs/verbs/cast-action.md: the hand whose cast start the engine's
 // action entry performed for the player and no cast event has claimed yet
 // (0 left, 1 right; the perk's dual cast is the left hand's actions), the

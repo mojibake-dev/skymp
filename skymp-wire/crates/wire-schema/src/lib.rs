@@ -32,9 +32,9 @@ use bounded::{String, Vec};
 
 /// Bump when any variant changes shape. It is part of netcode's protocol id,
 /// so peers built against another schema never complete a handshake.
-/// 21: PropTransform, PropClaim, PropOwner (thuum ADR-058, m3-prop-physics);
-/// another branch of the same train bumps it too, the train resolves the two
-/// into one bump.
+/// 21: QuestStage's mode byte (thuum D58 B, m3-quest-mode) and PropTransform,
+/// PropClaim, PropOwner (thuum ADR-058, m3-prop-physics): one bump for the
+/// train that carries both.
 pub const SCHEMA_VERSION: u16 = 21;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so

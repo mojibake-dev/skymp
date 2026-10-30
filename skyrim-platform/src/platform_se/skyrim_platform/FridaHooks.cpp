@@ -16,6 +16,7 @@
 #include <RE/A/Actor.h>
 #include <RE/A/ActorMagicCaster.h>
 #include <RE/A/ActorValues.h>
+#include <RE/B/BSTEvent.h>
 #include <RE/B/bhkCharProxyController.h>
 #include <RE/D/DialogueItem.h>
 #include <RE/E/Effect.h>
@@ -24,6 +25,7 @@
 #include <RE/H/hkpEntity.h>
 #include <RE/H/hkpRootCdPoint.h>
 #include <RE/T/TESHavokUtilities.h>
+#include <RE/T/TESQuestStageEvent.h>
 
 #include <atomic>
 #include <cctype>
@@ -1245,6 +1247,199 @@ void InstallSendTopicInfoEventHook()
 }
 
 /**
+ * The VM's quest stage sink (thuum docs/verbs/quest-stage.md, slice two;
+ * ADR-056's known limit: a world-shared stage the server relays is applied
+ * on this seat through Quest.SetCurrentStageID, and the stage's Papyrus
+ * fragment, the QF_ script's Fragment_N, ran here too, so a reward was given
+ * twice). The engine dispatches the fragment from SkyrimVM::ProcessEvent
+ * (const TESQuestStageEvent*, BSTEventSource<TESQuestStageEvent>*):
+ * CommonLibSSE-NG declares the sink sub-object at SkyrimVM+0xF0
+ * (include/RE/S/SkyrimVM.h:116, the 31st base, so its vtable is the one
+ * Offsets_VTABLE.h:4307 lists as VTABLE_SkyrimVM's entry 30, AE 217115),
+ * the virtual (BSTEvent.h:146), the event (TESQuestStageEvent.h:5-14:
+ * finishedCallback +0, formID +8, stage +0xC, unk0E +0xE, the stage's log
+ * entry index per the read) and the source (ScriptEventSourceHolder.h:95),
+ * and no body. The body is the re-analyst's Ghidra read on 1.6.1170
+ * (docs/research/m3/re-quest-fragment.md, 14:08 PDT 2026-10-29): the
+ * FragmentSystem (SkyrimVM.h:228) is asked for the stage's script and
+ * fragment names by (formID, stage, entry); found, the VM call is dispatched
+ * with a functor that fires the callback's virtual slot 1 when the stack
+ * ends; not found, slot 1 fires inline; kContinue either way. Slot 1 (the
+ * StageItemFinishedCallback's, whose vtable CommonLib names at
+ * Offsets_VTABLE.h:939 and whose class it does not declare) sends the
+ * TESQuestStageItemDoneEvent that clears the StoryTeller's wait and returns
+ * the latent SetStage.
+ *
+ * Replaced through Gum (the DamageActor shape; Address Library 1.6.1170
+ * 53987, just addr 2026-10-29, offset 0x9c6b70): when the event's (formID,
+ * stage) is a pair skymp5-client's questStageService is applying from the
+ * server's relay (TESModPlatform.SuppressQuestStageFragment before its
+ * SetStage: one mark per apply), the mark is consumed and the callback's
+ * slot 1 fires if the callback is non-null and kContinue returns with no
+ * lookup and no dispatch, the engine's own no-fragment branch: the done bit,
+ * currentStage, the journal entry and its message, the complete and fail
+ * bits and the StoryTeller's bookkeeping are the setter's before the event
+ * and stay, the latent return comes from slot 1 as before; only the
+ * fragment is skipped. Any other pair goes to the original. Keyed by pairs,
+ * never a flag window: the VM may queue a stage on an unstarted quest
+ * (53711) and set it later (53713), which is why the mark is the sink's to
+ * consume at the pair's first event and not the client's to take back at
+ * the promise's answer (the review of m3-pass-train-2, finding 4: the
+ * answer can come before the queued set, and a released mark would miss the
+ * event). ReleaseQuestStageFragment is the client's safety, 10 s after the
+ * apply: it takes back one mark if the pair still holds one (a refused
+ * stage, a quest never started), so no mark leaks; two applies of one pair
+ * are two marks and two consumes. One-shot per event is a HYPOTHESIS of its
+ * own: the static read has the setter send one event per log entry of the
+ * stage (25260), so a stage with several passing entries would run its
+ * later entries' fragments; lab/frida/quest-stage-chain.js counts the
+ * events per stage (53987) and decides whether the consume moves to the
+ * last entry (53716's count). HYPOTHESIS until that trace reads it (the
+ * falsifiers in the verb doc: a 54240 for a suppressed pair, a 56684 with
+ * no 53763).
+ */
+namespace {
+using QuestStageSinkFn = RE::BSEventNotifyControl (*)(
+  void* sink, const RE::TESQuestStageEvent* event,
+  RE::BSTEventSource<RE::TESQuestStageEvent>* source);
+QuestStageSinkFn g_questStageSinkOriginal = nullptr;
+
+// the pairs under suppression, (quest form id, stage) -> the marks the pair
+// holds: one per apply in flight, each consumed by the pair's next event
+// (or taken back by the client's safety). The natives write on the VM's
+// thread; the sink reads on the setter's (Quest.SetCurrentStageID sends the
+// event from inside its own native call, a console SetStage from the game
+// thread), so a lock, the castReady shape above; never held across the
+// callback or the original
+std::mutex g_questStageSuppressMutex;
+std::unordered_map<std::uint64_t, std::uint32_t> g_questStageSuppressed;
+
+std::uint64_t QuestStageKey(std::uint32_t questFormId, std::uint16_t stage)
+{
+  return (static_cast<std::uint64_t>(questFormId) << 16) | stage;
+}
+
+// The stage callback the event carries, called through its vtable.
+// HYPOTHESIS (docs/research/m3/re-quest-fragment.md, lines 13 to 15): a
+// StageItemFinishedCallback is 0x18 bytes, its vtable at +0 (CommonLib's
+// VTABLE___StageItemFinishedCallback, 1.6.1170 id 195903, names the table
+// and no slot), formID at +0x10, stage at +0x14, entry at +0x16; its slot 1
+// is 25234, `void (this)`, the sender of the TESQuestStageItemDoneEvent,
+// which the engine's own no-fragment branch calls inline with no other
+// argument. No CommonLib header declares the class, so the slot is read
+// here, and it runs only for a suppressed pair, never for a stage of this
+// game's own.
+struct StageItemFinishedCallbackView
+{
+  std::uintptr_t* vtbl;
+};
+using StageItemFinishedSlot1Fn = void (*)(void* self);
+
+void FireStageItemFinished(void* callback)
+{
+  auto* view = static_cast<StageItemFinishedCallbackView*>(callback);
+  if (!view || !view->vtbl) {
+    return;
+  }
+  reinterpret_cast<StageItemFinishedSlot1Fn>(view->vtbl[1])(callback);
+}
+
+RE::BSEventNotifyControl QuestStageSinkReplacement(
+  void* sink, const RE::TESQuestStageEvent* event,
+  RE::BSTEventSource<RE::TESQuestStageEvent>* source)
+{
+  if (event) {
+    bool suppressed = false;
+    std::uint32_t left = 0;
+    {
+      std::lock_guard<std::mutex> lock(g_questStageSuppressMutex);
+      auto it = g_questStageSuppressed.find(
+        QuestStageKey(event->formID, event->stage));
+      if (it != g_questStageSuppressed.end()) {
+        // one-shot: this event consumes one mark; the pair leaves the map
+        // with its last
+        suppressed = true;
+        left = --it->second;
+        if (left == 0) {
+          g_questStageSuppressed.erase(it);
+        }
+      }
+    }
+    if (suppressed) {
+      logger::warn("[verb:quest-stage] fragment of {:x} stage {} entry {} "
+                   "skipped: the stage is the world's, applied from the "
+                   "relay; {} mark(s) left for the pair",
+                   event->formID, event->stage,
+                   static_cast<unsigned>(event->unk0E), left);
+      FireStageItemFinished(event->finishedCallback);
+      return RE::BSEventNotifyControl::kContinue;
+    }
+  }
+  return g_questStageSinkOriginal(sink, event, source);
+}
+}
+
+void Frida::SuppressQuestStageFragment(uint32_t questFormId, uint16_t stage)
+{
+  std::uint32_t marks = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_questStageSuppressMutex);
+    marks = ++g_questStageSuppressed[QuestStageKey(questFormId, stage)];
+  }
+  logger::trace("[verb:quest-stage] fragment of {:x} stage {} suppressed: "
+                "the relay's apply begins ({} mark(s) for the pair)",
+                questFormId, stage, marks);
+}
+
+void Frida::ReleaseQuestStageFragment(uint32_t questFormId, uint16_t stage)
+{
+  // the client's safety, 10 s after the apply: one mark back if the pair
+  // still holds one, so a stage whose event never came (refused by the
+  // engine, or queued on a quest that never started) leaks none. A mark the
+  // event consumed is gone already and this is a no-op.
+  std::uint32_t left = 0;
+  bool had = false;
+  {
+    std::lock_guard<std::mutex> lock(g_questStageSuppressMutex);
+    auto it = g_questStageSuppressed.find(QuestStageKey(questFormId, stage));
+    if (it != g_questStageSuppressed.end()) {
+      had = true;
+      left = --it->second;
+      if (left == 0) {
+        g_questStageSuppressed.erase(it);
+      }
+    }
+  }
+  if (had) {
+    logger::warn("[verb:quest-stage] fragment mark of {:x} stage {} taken "
+                 "back by the safety: no stage event claimed it within the "
+                 "window (the stage was refused, or waits on a quest not "
+                 "yet started; a later set runs its fragment); {} mark(s) "
+                 "left",
+                 questFormId, stage, left);
+  } else {
+    logger::trace("[verb:quest-stage] fragment mark of {:x} stage {}: "
+                  "nothing to release, the stage's event consumed it",
+                  questFormId, stage);
+  }
+}
+
+void InstallQuestStageSinkHook()
+{
+  // AE only: the id is 1.6.1170's (game/Offsets.h)
+  if (!REL::Module::IsAE()) {
+    return;
+  }
+  if (!Frida::HookHandler::GetSingleton()->Replace(
+        Offsets::Hooks::QuestStageSink.address(),
+        reinterpret_cast<void*>(&QuestStageSinkReplacement),
+        reinterpret_cast<void**>(&g_questStageSinkOriginal))) {
+    logger::error("[verb:quest-stage] Gum refused the quest stage sink's "
+                  "replacement: a relayed stage runs its fragment here");
+  }
+}
+
+/**
  * The engine's reanimation of a hosted body (thuum docs/verbs/npc-fate.md,
  * playtest 37's finding 54: a thrall raised by a hosted necromancer stood on
  * the host's screen with no AI, "stands but gets no npc"). On its host a
@@ -1498,6 +1693,8 @@ void Frida::InstallHooks()
   InstallPlaceAreaEffectHook();
   InstallDamageActorHook();
   InstallSendTopicInfoEventHook();
+  // thuum docs/verbs/quest-stage.md, slice two: a relayed stage's fragment
+  InstallQuestStageSinkHook();
   // thuum docs/verbs/npc-fate.md: a hosted body's reanimation by the engine
   InstallReanimateHook();
   // thuum docs/verbs/prop-physics.md: the player's touch of a prop's body

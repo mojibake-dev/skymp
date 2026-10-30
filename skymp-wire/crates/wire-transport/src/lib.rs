@@ -202,6 +202,58 @@ fn ms(dt: Duration) -> u64 {
     u64::try_from(dt.as_millis()).unwrap_or(u64::MAX)
 }
 
+/// The outbound flush clock's default: 60 flushes a second (thuum D64,
+/// 2026-10-29). The gamemode polls the server about 800 times a second (a
+/// tick, then a 1 ms sleep), and renet sends a packet to every connection at
+/// every flush, so a flush per poll cost an idle client about 815 packets a
+/// second (x-wire-idle-rate: 814.8 against 816.4 ticks). Ingest keeps the
+/// fast tick; outbound packets leave on this clock, so a message produced
+/// between flushes waits at most one interval (Fiedler, "Fix Your Timestep!";
+/// Valve's "Source Multiplayer Networking": the tick and the update rate as
+/// separate settings).
+pub const SEND_INTERVAL_DEFAULT: Duration = Duration::from_micros(16_667);
+
+/// The flush clock: accumulates the polled time and says when a flush is
+/// due, keeping the remainder so the long-run rate is the interval's. A zero
+/// interval flushes at every poll (the shape before D64).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlushClock {
+    interval: Duration,
+    since: Duration,
+}
+
+impl FlushClock {
+    /// A clock that flushes every `interval`, due at its first tick.
+    #[must_use]
+    pub fn new(interval: Duration) -> Self {
+        Self {
+            interval,
+            since: interval,
+        }
+    }
+
+    /// Advance by `dt`; true when a flush is due now. One flush per call at
+    /// most: a long gap (a stalled tick) does not burst, the remainder is
+    /// capped at one interval.
+    pub fn tick(&mut self, dt: Duration) -> bool {
+        if self.interval.is_zero() {
+            return true;
+        }
+        self.since = self.since.saturating_add(dt);
+        if self.since < self.interval {
+            return false;
+        }
+        self.since = self.since.saturating_sub(self.interval).min(self.interval);
+        true
+    }
+
+    /// Make the next tick flush whatever `dt` it brings (a disconnect, a
+    /// message that must not wait).
+    pub fn request(&mut self) {
+        self.since = self.interval;
+    }
+}
+
 /// How a server binds: limits, authentication, and the password clients
 /// must carry in their connect token's user data (none in the lab).
 pub struct Options {
@@ -214,6 +266,9 @@ pub struct Options {
     /// Addresses clients use to reach this server, when they differ from the
     /// bound one (a container behind NAT); a secure token must name one.
     pub public_addresses: Vec<SocketAddr>,
+    /// How often outbound packets are flushed ([`SEND_INTERVAL_DEFAULT`];
+    /// zero flushes at every poll).
+    pub send_interval: Duration,
 }
 
 /// Server-side transport. Owns the renet server, the netcode transport, and
@@ -233,6 +288,7 @@ pub struct Server {
     local_addr: SocketAddr,
     unsecure: bool,
     io_errors: u64,
+    flush: FlushClock,
 }
 
 impl Server {
@@ -251,6 +307,7 @@ impl Server {
                 auth,
                 password: None,
                 public_addresses: Vec::new(),
+                send_interval: SEND_INTERVAL_DEFAULT,
             },
         )
     }
@@ -263,6 +320,7 @@ impl Server {
             auth,
             password,
             public_addresses,
+            send_interval,
         } = options;
         limits.max_clients = limits.max_clients.clamp(1, limits::NETCODE_MAX_CLIENTS);
         let socket = UdpSocket::bind(addr).map_err(|_| TransportError::Bind)?;
@@ -300,6 +358,7 @@ impl Server {
             local_addr,
             unsecure,
             io_errors: 0,
+            flush: FlushClock::new(send_interval),
         })
     }
 
@@ -369,7 +428,10 @@ impl Server {
 
     /// Advance the transport by `dt`, ingest packets, and drain events into
     /// `out`. Every message in `out` has passed limits, decode, direction, and
-    /// validation. Outgoing packets are flushed at the end.
+    /// validation. Outgoing packets are flushed at the end when the flush
+    /// clock says so ([`Options::send_interval`], D64): a message queued
+    /// between flushes waits at most one interval, and an idle connection
+    /// costs one small packet per flush instead of one per poll.
     pub fn poll(&mut self, dt: Duration, out: &mut Vec<Inbound>) {
         self.now_ms = self.now_ms.saturating_add(ms(dt));
         // renet's own clock first, then the transport's: every connection's
@@ -433,7 +495,9 @@ impl Server {
                 }
             }
         }
-        self.transport.send_packets(&mut self.renet);
+        if self.flush.tick(dt) {
+            self.transport.send_packets(&mut self.renet);
+        }
     }
 
     /// Encode and queue one message to one client on the channel its family
@@ -477,9 +541,11 @@ impl Server {
         Ok(())
     }
 
-    /// Drop a client; the reason reaches it through netcode.
+    /// Drop a client; the reason reaches it through netcode at the next
+    /// poll, which flushes whatever its `dt`.
     pub fn disconnect(&mut self, client: u64) {
         self.renet.disconnect(client);
+        self.flush.request();
     }
 }
 
@@ -709,6 +775,35 @@ mod tests {
         assert!(!client_may_send(&release));
         assert!(!server_may_send(&Message::Movement(movement(1))));
         assert!(server_may_send(&grant));
+    }
+
+    #[test]
+    fn the_flush_clock_keeps_the_interval_and_never_bursts() {
+        let mut c = FlushClock::new(Duration::from_millis(16));
+        // due at its first tick, then every 16 ms of 1 ms polls
+        assert!(c.tick(Duration::from_millis(1)));
+        let flushes = (0..1_000).filter(|_| c.tick(Duration::from_millis(1))).count();
+        assert!((61..=63).contains(&flushes), "{flushes}");
+        // 10 ms polls: the remainder carries (10 after the first flush, then
+        // 4, 14, 8, 2, 12), three flushes in the next 50 ms
+        let mut c = FlushClock::new(Duration::from_millis(16));
+        assert!(c.tick(Duration::from_millis(10)));
+        let pattern: Vec<bool> = (0..5).map(|_| c.tick(Duration::from_millis(10))).collect();
+        assert_eq!(pattern, vec![true, false, true, true, false]);
+        // a stalled tick flushes once, the remainder capped at one interval
+        let mut c = FlushClock::new(Duration::from_millis(16));
+        assert!(c.tick(Duration::from_millis(1)));
+        assert!(c.tick(Duration::from_millis(500)));
+        assert!(c.tick(Duration::from_millis(1)));
+        assert!(!c.tick(Duration::from_millis(1)));
+        // a request makes the next tick flush
+        c.request();
+        assert!(c.tick(Duration::ZERO));
+        assert!(!c.tick(Duration::from_millis(1)));
+        // a zero interval flushes at every poll
+        let mut every = FlushClock::new(Duration::ZERO);
+        assert!(every.tick(Duration::ZERO));
+        assert!(every.tick(Duration::from_millis(1)));
     }
 
     #[test]
@@ -957,6 +1052,7 @@ mod tests {
                 auth: token::Auth::Unsecure,
                 password: password.map(String::from),
                 public_addresses: Vec::new(),
+                send_interval: SEND_INTERVAL_DEFAULT,
             },
         )
         .expect("bind");

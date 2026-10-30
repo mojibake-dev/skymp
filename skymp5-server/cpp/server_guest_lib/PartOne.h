@@ -193,20 +193,33 @@ public:
     const std::vector<PlayerGlobal>& record,
     const std::vector<PlayerGlobal>& report);
 
-  // thuum docs/verbs/quest-stage.md (ADR-056): the quests whose stages are
-  // the world's, server-settings.json's `sharedQuests` (a JSON list of
-  // FormDescs, "[]" for none; a bad entry stops the server here, named).
-  // CheckSharedQuest: 0 listed, else the rule's refusal (wire-rules
-  // quest_stages: 1 unlisted). Listed: the list as FormDescs, settings
-  // order. AtLogin: the world's recorded stages of quests still listed,
-  // ascending per quest. DoneAlready: the world's record holds the stage.
-  // Merge: the record with the stage added once, ascending within its quest.
+  // thuum docs/verbs/quest-stage.md (ADR-056; memo D58 B): the quests whose
+  // stages are the world's, server-settings.json's `sharedQuests`: a JSON
+  // list of FormDescs ("[]" for none) is mode list, the object {"mode":
+  // "all", "denied": [FormDescs], "allowed": [FormDescs]} mode all; a bad
+  // entry or shape stops the server here, named. SharedQuestsMode: 0 list,
+  // 1 all, as the wire carries it. CheckSharedQuest: 0 the world's, else
+  // the rule's refusal (wire-rules quest_stages: 1 unlisted in mode list, 2
+  // denied in mode all). IsSharedQuestAllowed: mode all's `allowed` names
+  // the quest (memo D62: a quest the game starts by itself, QUST DNAM's
+  // Start Game Enabled, is each seat's own unless allowed; the flag is the
+  // record's and the caller reads it). Listed: what the login names as
+  // FormDescs, settings order (the list in mode list, the denied quests in
+  // mode all). AtLogin: the world's recorded stages of quests still the
+  // world's, ascending per quest. DoneAlready: the world's record holds the
+  // stage. Merge: the record with the stage added once, ascending within
+  // its quest (unchanged when the record is full). RecordFull: the record
+  // is at the rule's cap (wire-rules quest_stages QUEST_RECORD_CAP, 4096
+  // pairs), so a new stage is refused (E_QUEST_FULL).
   void SetSharedQuestsSettings(const std::string& sharedQuestsJson);
+  uint8_t SharedQuestsMode() const;
   uint8_t CheckSharedQuest(const FormDesc& quest) const;
+  bool IsSharedQuestAllowed(const FormDesc& quest) const;
   std::vector<FormDesc> SharedQuestsListed() const;
   std::vector<QuestStageDone> SharedQuestsAtLogin();
   bool QuestStageDoneAlready(const QuestStageDone& done);
   std::vector<QuestStageDone> MergeQuestStage(const QuestStageDone& done);
+  bool QuestRecordFull();
   // The world's journal: a server-made reference at kWorldJournalRefId (far
   // above WorldState::GenerateFormId's walk up from 0xff000000) whose change
   // form carries the world's quest stages, so the record saves and loads
@@ -575,6 +588,30 @@ public:
   void OnActorSighting(MpActor& reporter, uint32_t refrId,
                        uint32_t worldOrCell, const NiPoint3& pos,
                        const NiPoint3& rot);
+  // thuum docs/verbs/npc-puppet.md (playtest 38's finding 66, "attempted to
+  // kill a bandit outside bleakfalls. all damage was ignored"): the host's
+  // roster naming the bandit reached the server in the grant's own
+  // millisecond (20:00:51.189Z) and was dropped as nobody's; the next came
+  // ten seconds later, after the player had died. A sighting dropped for a
+  // missing host is held per cell, one entry per (reporter, reference), for
+  // kHeldSightingMs; the grant replays the new host's own entries here
+  // (ApplyHostDecisions calls it after the flags flip) and keeps another
+  // reporter's for that reporter's own grant while they last. A sighting of
+  // another game's cell is never held. The hold is bounded three ways (the
+  // train's review, 2026-10-29: it grew with no total, no sweep and no
+  // clear at a disconnect): per cell (kHeldSightingsPerCell), in total
+  // (kHeldSightingsTotal; full, the oldest entry anywhere makes room, said
+  // once in ten seconds) and in time (SweepHeldSightings, from the
+  // once-a-second tick, drops the expired); a reporter's disconnect forgets
+  // its entries (ForgetHeldSightings).
+  void ReplayHeldSightings(uint32_t cell, MpActor& host);
+  void SweepHeldSightings(uint64_t nowMs);
+  void ForgetHeldSightings(uint32_t reporter);
+  // every held entry, or `cell`'s alone (the tests' and the lab's reading)
+  size_t HeldSightingsCount(std::optional<uint32_t> cell = std::nullopt) const;
+  static constexpr uint64_t kHeldSightingMs = 30'000;
+  static constexpr size_t kHeldSightingsPerCell = 64;
+  static constexpr size_t kHeldSightingsTotal = 1024;
   // Where the players' round trips come from (IServer::GetRttMs, -1 while
   // unknown), read every tick for the table's ranking; none installed, no
   // round trip is known and the earliest loaded takes a cell.
@@ -693,6 +730,11 @@ public:
   static MessageSerializer& GetMessageSerializerInstance();
 
 private:
+  // the hold behind OnActorSighting: `reporter`'s sighting of `refrId` in
+  // `cell`, which has no host yet (ReplayHeldSightings above)
+  void HoldSighting(uint32_t reporter, uint32_t cell, uint32_t refrId,
+                    uint32_t worldOrCell, const NiPoint3& pos,
+                    const NiPoint3& rot);
   void Init();
 
   enum class UserType

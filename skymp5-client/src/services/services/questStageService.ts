@@ -1,22 +1,44 @@
-import { QuestStageEvent, QuestStartStopEvent } from "skyrimPlatform";
+import { Quest, QuestStageEvent, QuestStartStopEvent } from "skyrimPlatform";
 import { MsgType } from "../../messages";
-import { logError, logTrace } from "../../logging";
+import { logError, logLab, logTrace } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
+import { CreateActorMessage } from "../messages/createActorMessage";
 import { QuestStageMessage } from "../messages/questStageMessage";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 
-// The storage key of the shared list (sp.storage survives a plugin reload,
-// ADR-041's survivor): the list comes once, at the login, and a hot-reloaded
-// client keeps its connection and never logs in again
-const SHARED_STORAGE_KEY = "thuum.questStage.shared.v1";
+// The storage key of the sharing mode and its list (sp.storage survives a
+// plugin reload, ADR-041's survivor): they come once, at the login, and a
+// hot-reloaded client keeps its connection and never logs in again. v2 holds
+// {mode, ids} (memo D58 B); v1 held the list alone
+const SHARED_STORAGE_KEY = "thuum.questStage.shared.v2";
+
+// The sharing modes the server names at a login (the wire's QuestStage
+// `mode`): list, the quests in `shared` are reported; all, every quest is
+// reported but the quests in `shared`, the denied
+const MODE_LIST = 0;
+const MODE_ALL = 1;
 
 // How long a stage this service set is expected to echo back as the engine's
 // own quest-stage event, ms; after that the mark is dropped
 const APPLY_ECHO_MS = 5000;
 
+// How long after an apply the fragment mark it set is taken back by the
+// safety if the stage's event never claimed it, ms. The VM queues a stage set
+// on a quest not yet running and sets it at the quest's start, after the
+// latent call's answer, so the mark must outlive the promise (the review of
+// m3-pass-train-2, finding 4); past this window the engine is left its
+// fragment
+const FRAGMENT_SAFETY_MS = 10000;
+
 // How many quests may hold a parked stage at once; the oldest parking makes
 // room for a new quest
 const PARKED_MAX = 64;
+
+// How long after the login's game load the arrival waits for the player's
+// cell to carry a location before it gives up, ms (the engine attaches the
+// player's cell before its load-game event, so the first update should read
+// it; the window is a hedge the trace line reports)
+const ARRIVAL_WINDOW_MS = 3000;
 
 // thuum docs/verbs/quest-stage.md (ADR-056, memo D55 B; Eli, playtest 37:
 // "appropriately communicating the worlds shared quest state ... makes sense
@@ -29,13 +51,60 @@ const PARKED_MAX = 64;
 // conditions and journal read the same quest state as the talker's. The
 // engine's event from that apply is consumed by the mark below and never
 // reported back; a stage the engine already has done is skipped. Nothing is
-// reported before the server's list arrives, and a quest off the list stays
-// this seat's own, as today. A quest that refuses Quest.Start has the world's
+// reported before the server's login message names the sharing mode: in
+// mode list a quest off the list stays this seat's own; in mode all (memo
+// D58 B, TES3MP's shared journal) every quest is the world's but the denied
+// ones (the main quest's intro chain, the DLC starts), which stay this
+// seat's own. In mode all a quest the game starts by itself (the record's
+// Start Game Enabled flag: a layer's controller, MCM, version-tracker and
+// player-alias quests, the alternate start's own) is each seat's own too
+// unless the server's `allowed` list names it (memo D62); that rule is the
+// server's alone and this seat does not filter for it: Skyrim Platform's
+// Quest has no getter for the flag (skyrimPlatform.ts knows isRunning,
+// isStopped, isStarting, isStopping and isActive) and the login's one
+// `shared` list carries the denied set, so such a stage is reported as any
+// other and the server refuses it (E_QUEST_OWN_START), the asymmetry the
+// server holds. A quest that refuses Quest.Start has the world's
 // stage parked (the highest asked per quest) and applied when the engine's
 // own start of it arrives as the questStart event, because an event quest is
 // the Story Manager's alone to start (the Creation Kit's rule: "Any quest
 // which specifies an Event can only be started by the Story Manager"; A
 // Lovely Letter 0x74a83 starts on the player's Change Location into Riverwood).
+//
+// The login's arrival (H-56a, docs/research/m3/re-story-location.md): the
+// engine raises the Change Location event only when the player's location
+// changes, and a seat logging in INSIDE a location (every playtest seat: the
+// camp is the landing) attaches with none to report, so its Story Manager
+// never starts the location's quests, while a seat placed in from outside
+// logged locationChanged and questStart in one millisecond
+// (x-story-manager-walk 20261029-205447). Once per login, after the server
+// has created this connection's own actor (CreateActor with isMe, the login
+// itself; HostService reads the same message for its tables) and the game
+// has loaded, this service asks TESModPlatform.SendStoryChangeLocation for
+// the same event from no location to the player's current one, through the
+// engine's own story event queue, from the update pass (callNative needs the
+// VM context). The sharing-mode message is no part of the condition: a
+// server with nothing shared sends none (the review of m3-pass-train-2,
+// finding 3), and the arrival is the login's, whatever is shared. Every new
+// connection starts the once-per-login flags over. HYPOTHESIS until
+// x-story-manager-walk v3: the Story Manager then starts what an arrival
+// starts. Behind the client setting storyArrivalAtLogin (default on).
+// Slice two (the verb doc's "Slice two", the re-analyst's read of
+// 2026-10-29): a stage applied from the relay runs the engine's SetStage
+// whole, but its Papyrus fragment (the QF_ script's Fragment_N: the reward,
+// the world effect) ran on the talker's game already, so one mark on the
+// pair is handed to Skyrim Platform's replacement of the VM's quest stage
+// sink (TESModPlatform.SuppressQuestStageFragment, FridaHooks.cpp) before
+// the SetStage. The sink consumes the mark at the stage's first event,
+// whenever the VM sets the stage (a stage queued on a quest not yet running
+// is set at its start, after the promise's answer, so the answer is no
+// place to take the mark back), and the safety release FRAGMENT_SAFETY_MS
+// after the apply takes back a mark no event claimed (a refused stage, a
+// quest never started), so none leaks; two applies of one pair are two
+// marks. The journal entry, the done bit and the promise stay the engine's.
+// This seat's own stages (the report path, onQuestStage) never pass there.
+// Off under the questFragmentSuppress setting (default on). HYPOTHESIS until
+// lab/frida/quest-stage-chain.js reads the chain.
 export class QuestStageService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -43,24 +112,42 @@ export class QuestStageService extends ClientListener {
         this.controller.on("questStage", (e) => this.onQuestStage(e));
         this.controller.on("questStart", (e) => this.onQuestStart(e));
         this.controller.on("update", () => this.onUpdate());
+        this.controller.emitter.on("gameLoad", () => this.onGameLoad());
+        this.controller.emitter.on("createActorMessage", (e) => this.onCreateActor(e));
+        this.controller.emitter.on("connectionAccepted", () => this.onConnectionAccepted());
         this.resume();
     }
 
     private onMessage(e: ConnectionMessage<QuestStageMessage>) {
         const m = e.message;
-        if (m.shared && m.shared.length > 0) {
-            this.shared = new Set(m.shared.filter((id) => Number.isInteger(id) && id > 0));
-            this.sp.storage[SHARED_STORAGE_KEY] = Array.from(this.shared);
-            logTrace(this, "the server shares", this.shared.size, "quest(s)");
+        if (m.quest === 0) {
+            // the login's message: the sharing mode and its list (the quests to
+            // report in mode list, the quests never to report in mode all)
+            const mode = m.mode === MODE_ALL ? MODE_ALL : MODE_LIST;
+            const ids = (m.shared ?? []).filter((id) => Number.isInteger(id) && id > 0);
+            this.setShared(mode, ids);
+            this.sp.storage[SHARED_STORAGE_KEY] = { mode, ids };
+            logTrace(this, "the server shares quests in mode", QuestStageService.modeName(mode) + ":", ids.length, mode === MODE_ALL ? "quest(s) denied" : "quest(s) listed");
+            return;
         }
-        if (m.quest !== 0) {
-            this.pending.push({ quest: m.quest, stage: m.stage });
-        }
+        this.pending.push({ quest: m.quest, stage: m.stage });
     }
 
     // one stage per update, in the server's order (ascending within a quest
     // at a login's replay, so each SetStage sees the stages before it)
     private onUpdate() {
+        this.arrival();
+        const now = Date.now();
+        // slice two's safety: a fragment mark whose stage event never came
+        // within its window is taken back (callNative runs here, in the
+        // update pass's VM context); the list is in order of expiry, and it
+        // runs before the switch below so a switched-off service leaks none
+        while (this.fragmentReleases.length > 0 && this.fragmentReleases[0].at <= now) {
+            const due = this.fragmentReleases.shift();
+            if (due) {
+                this.releaseFragment(due.questId, due.stage);
+            }
+        }
         if (!this.enabled()) {
             this.pending = [];
             return;
@@ -70,7 +157,6 @@ export class QuestStageService extends ClientListener {
             this.apply(next.quest, next.stage);
         }
         if (this.applying.size > 0) {
-            const now = Date.now();
             this.applying.forEach((until, key) => {
                 if (until < now) {
                     this.applying.delete(key);
@@ -133,12 +219,56 @@ export class QuestStageService extends ClientListener {
             logError(this, "the world's quest", questId.toString(16), "is gone before its stage", stage, "was set");
             return Promise.resolve();
         }
+        // slice two: one mark on the pair for the native sink, consumed at the
+        // stage's event; the safety in onUpdate takes it back if none comes
+        if (this.suppressFragment(quest, questId, stage)) {
+            this.fragmentReleases.push({ questId, stage, at: Date.now() + FRAGMENT_SAFETY_MS });
+        }
         return quest.setCurrentStageID(stage).then((ok) => {
             logTrace(this, "the world's stage", stage, "of quest", questId.toString(16), ok ? "set" : "refused by the engine");
             if (!ok) {
                 this.applying.delete(key);
             }
         });
+    }
+
+    // Slice two's hand-over of one mark to the native sink (see the class
+    // comment). The suppress runs where the SetStage runs, inside the update
+    // tick's promise chain, and the safety release from the update pass
+    // itself, both the VM context callNative needs; the release looks the
+    // quest up anew, because a wrapper from an earlier tick is out of Skyrim
+    // Platform's object pool (as setStage above), and the native takes back
+    // one mark only if the pair still holds one. A refusal or a throw of the
+    // suppress leaves the fragment the engine's, logged, and the stage still
+    // applies.
+    private suppressFragment(quest: Quest, questId: number, stage: number): boolean {
+        if (!this.fragmentSuppressEnabled()) {
+            return false;
+        }
+        try {
+            const ok = this.sp.callNative("TESModPlatform", "SuppressQuestStageFragment", undefined, quest, stage);
+            if (ok !== true) {
+                logError(this, "TESModPlatform.SuppressQuestStageFragment refused quest", questId.toString(16), "stage", stage);
+                return false;
+            }
+            return true;
+        } catch (err) {
+            logError(this, "TESModPlatform.SuppressQuestStageFragment failed on quest", questId.toString(16), "stage", stage, err);
+            return false;
+        }
+    }
+
+    private releaseFragment(questId: number, stage: number) {
+        const quest = this.sp.Quest.from(this.sp.Game.getFormEx(questId));
+        if (!quest) {
+            logError(this, "the world's quest", questId.toString(16), "is gone before its stage", stage, "fragment was released");
+            return;
+        }
+        try {
+            this.sp.callNative("TESModPlatform", "ReleaseQuestStageFragment", undefined, quest, stage);
+        } catch (err) {
+            logError(this, "TESModPlatform.ReleaseQuestStageFragment failed on quest", questId.toString(16), "stage", stage, err);
+        }
     }
 
     // the highest stage the world asked for on a quest that would not start,
@@ -197,7 +327,7 @@ export class QuestStageService extends ClientListener {
             this.applying.delete(key); // the world's stage landing here, not this game's own
             return;
         }
-        if (!this.shared.has(questId)) {
+        if (!this.reports(questId)) {
             return;
         }
         this.controller.emitter.emit("sendMessage", {
@@ -207,17 +337,119 @@ export class QuestStageService extends ClientListener {
         logTrace(this, "this game set stage", e.stage, "of shared quest", questId.toString(16) + "; reported");
     }
 
-    // After a plugin reload: the list the last login brought, from storage
-    private resume() {
-        const stored: unknown = this.sp.storage[SHARED_STORAGE_KEY];
-        if (!Array.isArray(stored) || stored.length === 0) {
+    // the login's game load (LoadGameService's gameLoad, from the engine's
+    // own load-game event, so the player's cell is attached): the other half
+    // of the arrival's condition. A reconnect with the game up spawns through
+    // MoveRefrToPosition and loads nothing, so it raises no arrival: that
+    // seat's Story Manager heard its login's
+    private onGameLoad() {
+        this.arrivalGameLoaded = true;
+    }
+
+    // the server's CreateActor of this connection's own actor (isMe: a login,
+    // a reconnect, a restart, as HostService reads it): the login half of
+    // the arrival's condition. The game's load follows it on a fresh launch
+    // (RemoteServer loads the save for the actor it was given)
+    private onCreateActor(e: ConnectionMessage<CreateActorMessage>) {
+        if (!e.message.isMe) {
             return;
         }
-        const list = stored.filter((id): id is number => typeof id === "number" && Number.isInteger(id) && id > 0);
-        if (list.length > 0) {
-            this.shared = new Set(list);
-            logTrace(this, "resumed with", this.shared.size, "shared quest(s) after a reload");
+        this.arrivalLoginSeen = true;
+    }
+
+    // a new connection (NetworkingService's connectionAccepted, before the
+    // server's CreateActor): the once-per-login flags start over, so each
+    // login's arrival is its own and none is carried across a reconnect
+    private onConnectionAccepted() {
+        this.arrivalDone();
+    }
+
+    // the login's arrival, from the update pass: once this connection's own
+    // actor has been created and the game has loaded, the Change Location
+    // event from no location to the player's current one, once; a player in
+    // no location gets none (the engine's own event comes at the first
+    // location entered)
+    private arrival() {
+        if (!this.arrivalLoginSeen || !this.arrivalGameLoaded) {
+            return;
         }
+        if (!this.arrivalEnabled()) {
+            this.arrivalDone();
+            return;
+        }
+        if (this.arrivalDeadline === 0) {
+            this.arrivalDeadline = Date.now() + ARRIVAL_WINDOW_MS;
+        }
+        const player = this.sp.Game.getPlayer();
+        const location = player ? player.getCurrentLocation() : null;
+        if (!player || !location) {
+            if (Date.now() < this.arrivalDeadline) {
+                return; // read again next update, within the window
+            }
+            this.arrivalDone();
+            logTrace(this, "no location at the login's cell; no arrival raised (the engine's own event comes at the first location entered)");
+            return;
+        }
+        this.arrivalDone();
+        const locationId = location.getFormID();
+        try {
+            const raised = this.sp.callNative("TESModPlatform", "SendStoryChangeLocation", undefined, player, null, location);
+            if (raised === true) {
+                logLab("verb:quest-stage", "arrival event raised at login for location", locationId.toString(16));
+            } else {
+                logError(this, "TESModPlatform.SendStoryChangeLocation refused for location", locationId.toString(16));
+            }
+        } catch (err) {
+            // an older dist without the native throws here
+            logError(this, "TESModPlatform.SendStoryChangeLocation failed for location", locationId.toString(16), err);
+        }
+    }
+
+    private arrivalDone() {
+        this.arrivalLoginSeen = false;
+        this.arrivalGameLoaded = false;
+        this.arrivalDeadline = 0;
+    }
+
+    private arrivalEnabled(): boolean {
+        const s = this.sp.settings["skymp5-client"] as Record<string, unknown> | undefined;
+        return !s || s["storyArrivalAtLogin"] !== false;
+    }
+
+    // whether a stage this game set on the quest is the world's to report:
+    // nothing before the server's login message; in mode list the listed
+    // quests; in mode all every quest but the denied (memo D58 B), a
+    // start-game-enabled one included, which the server refuses unless it
+    // is allowed (memo D62; the class comment says why the filter is its)
+    private reports(questId: number): boolean {
+        if (this.mode === undefined) {
+            return false;
+        }
+        return this.mode === MODE_ALL ? !this.shared.has(questId) : this.shared.has(questId);
+    }
+
+    private setShared(mode: number, ids: number[]) {
+        this.mode = mode;
+        this.shared = new Set(ids);
+    }
+
+    // After a plugin reload: the mode and the list the last login brought,
+    // from storage
+    private resume() {
+        const stored = this.sp.storage[SHARED_STORAGE_KEY] as { mode?: unknown; ids?: unknown } | undefined;
+        if (!stored || typeof stored !== "object" || !Array.isArray(stored.ids)) {
+            return;
+        }
+        if (stored.mode !== MODE_LIST && stored.mode !== MODE_ALL) {
+            return;
+        }
+        const ids = stored.ids.filter((id): id is number => typeof id === "number" && Number.isInteger(id) && id > 0);
+        this.setShared(stored.mode, ids);
+        logTrace(this, "resumed after a reload in mode", QuestStageService.modeName(stored.mode) + ":", ids.length, stored.mode === MODE_ALL ? "quest(s) denied" : "quest(s) listed");
+    }
+
+    private static modeName(mode: number): string {
+        return mode === MODE_ALL ? "all" : "list";
     }
 
     private enabled(): boolean {
@@ -225,11 +457,21 @@ export class QuestStageService extends ClientListener {
         return !s || s["questStage"] !== false;
     }
 
+    // slice two's switch: a relayed stage keeps its fragment here when false
+    private fragmentSuppressEnabled(): boolean {
+        const s = this.sp.settings["skymp5-client"] as Record<string, unknown> | undefined;
+        return !s || s["questFragmentSuppress"] !== false;
+    }
+
     private static key(questId: number, stage: number): string {
         return questId.toString(16) + ":" + stage;
     }
 
-    // the quests the server shares (form ids, the load order both ends share)
+    // the sharing mode the server named at the login (0 list, 1 all); none
+    // before it, and nothing is reported until then
+    private mode: number | undefined;
+    // the quests the login named (form ids, the load order both ends share):
+    // the shared quests in mode list, the denied quests in mode all
     private shared = new Set<number>();
     // the world's stages still to apply, in the server's order
     private pending: Array<{ quest: number; stage: number }> = [];
@@ -240,4 +482,14 @@ export class QuestStageService extends ClientListener {
     // refused Quest.Start here; applied at the engine's own start of each
     private parked = new Map<number, number>();
     private missing = new Set<number>();
+    // slice two's safety: the fragment marks this service's applies set,
+    // each with the time its release is due, in that order (one apply per
+    // update tick, so at most a window's worth of entries)
+    private fragmentReleases: Array<{ questId: number; stage: number; at: number }> = [];
+    // the login's arrival: this connection's own actor has been created; the
+    // game has loaded; the window's end once both hold (0 until then). All
+    // three start over at every connectionAccepted
+    private arrivalLoginSeen = false;
+    private arrivalGameLoaded = false;
+    private arrivalDeadline = 0;
 }

@@ -23,6 +23,9 @@
 //! against wire only and are reviewed like validator changes; one that
 //! stops occurring as declared is itself a difference, so it cannot outlive
 //! its cause. Divergences every client of every session shows are declared
+//! A declaration may name per-field tolerances (`within: {"data.health": 0.001}`)
+//! for the numbers the server takes from its own clock, which no replay
+//! reproduces to the digit; every other field matches exactly.
 //! once, in `divergences.yaml` (compiled in), and apply to each client.
 //!
 //! Environment: `DIFFTEST_LEGACY_FAKECLIENT` (or the older
@@ -69,6 +72,14 @@ struct Divergence {
     legacy: i64,
     wire: i64,
     reason: String,
+    /// Tolerances by dotted field path (`"data.health": 0.001`): a number the
+    /// pattern names at such a path matches a received one within that
+    /// bound. For the numbers the server takes from its own clock (a
+    /// stream's counted gap between two reports, D66), which no replay
+    /// reproduces to the digit: 8f9c11bd's T2 on a loaded host read
+    /// 0.94792 where a quiet one had read 0.94784 (2026-10-30).
+    #[serde(default)]
+    within: BTreeMap<String, f64>,
 }
 
 impl Divergence {
@@ -85,7 +96,7 @@ impl Divergence {
         let want = canonical(&resolve_created(&self.msg, created));
         received
             .keys()
-            .filter(|text| serde_json::from_str::<Value>(text).is_ok_and(|got| covers(&want, &got)))
+            .filter(|text| serde_json::from_str::<Value>(text).is_ok_and(|got| covers_within(&want, &got, "", &self.within)))
             .collect()
     }
 }
@@ -110,11 +121,30 @@ fn resolve_created(v: &Value, created: Option<&Value>) -> Value {
 /// True when every field of `want` is in `got` with an equal value (objects
 /// recursively), and every element of a `want` array is covered by some
 /// element of the `got` array ("an inventory holding this item"); scalars
-/// compare whole.
+/// compare whole. The tests' shape; the matcher itself goes through
+/// [`covers_within`] with a declaration's tolerances.
+#[cfg(test)]
 fn covers(want: &Value, got: &Value) -> bool {
+    covers_within(want, got, "", &BTreeMap::new())
+}
+
+/// [`covers`] with tolerances: a numeric leaf at a dotted `path` named in
+/// `within` matches when the two numbers lie within the bound (an array's
+/// elements share their array's path); every other scalar compares whole.
+fn covers_within(want: &Value, got: &Value, path: &str, within: &BTreeMap<String, f64>) -> bool {
     match (want, got) {
-        (Value::Object(w), Value::Object(g)) => w.iter().all(|(k, v)| g.get(k).is_some_and(|gv| covers(v, gv))),
-        (Value::Array(w), Value::Array(g)) => w.iter().all(|wv| g.iter().any(|gv| covers(wv, gv))),
+        (Value::Object(w), Value::Object(g)) => w.iter().all(|(k, v)| {
+            let child = if path.is_empty() { k.clone() } else { format!("{path}.{k}") };
+            g.get(k).is_some_and(|gv| covers_within(v, gv, &child, within))
+        }),
+        (Value::Array(w), Value::Array(g)) => w.iter().all(|wv| g.iter().any(|gv| covers_within(wv, gv, path, within))),
+        (Value::Number(w), Value::Number(g)) => match within.get(path) {
+            Some(eps) => match (w.as_f64(), g.as_f64()) {
+                (Some(a), Some(b)) => (a - b).abs() <= *eps,
+                _ => want == got,
+            },
+            None => want == got,
+        },
         _ => want == got,
     }
 }
@@ -146,7 +176,14 @@ fn declarations(s: &Session) -> Result<Vec<Divergence>, DiffError> {
             if c.legacy == c.wire || c.legacy < 0 || c.wire < 0 || c.reason.trim().is_empty() {
                 return Err(DiffError::Session(format!("divergences.yaml: {} needs differing counts >= 0 and a reason", canonical(&c.msg))));
             }
-            all.push(Divergence { client: client.clone(), msg: c.msg.clone(), legacy: c.legacy, wire: c.wire, reason: c.reason.clone() });
+            all.push(Divergence {
+                client: client.clone(),
+                msg: c.msg.clone(),
+                legacy: c.legacy,
+                wire: c.wire,
+                reason: c.reason.clone(),
+                within: BTreeMap::new(),
+            });
         }
     }
     Ok(all)
@@ -688,7 +725,30 @@ mod tests {
     }
 
     fn destroy_c1(legacy: i64, wire: i64) -> Divergence {
-        Divergence { client: "c2".into(), msg: json!({"t": 25, "idx": 2}), legacy, wire, reason: "departure detection".into() }
+        Divergence { client: "c2".into(), msg: json!({"t": 25, "idx": 2}), legacy, wire, reason: "departure detection".into(), within: BTreeMap::new() }
+    }
+
+    #[test]
+    fn a_declared_number_matches_within_its_tolerance() {
+        // D66's counted gap is the server's clock's: 400 ms nominal, a millisecond or two of replay jitter
+        let d = Divergence {
+            client: "c2".into(),
+            msg: json!({"t": 16, "idx": "refr:ff000003", "data": {"health": 0.948}}),
+            legacy: 0,
+            wire: 1,
+            reason: "the stream's second hit by its gap".into(),
+            within: BTreeMap::from([("data.health".to_string(), 0.001)]),
+        };
+        let mut received: BTreeMap<String, i64> = BTreeMap::new();
+        received.insert(canonical(&json!({"t": 16, "idx": "refr:ff000003", "data": {"health": 0.947920024394989}})).to_string(), 1);
+        received.insert(canonical(&json!({"t": 16, "idx": "refr:ff000003", "data": {"health": 0.95}})).to_string(), 1);
+        received.insert(canonical(&json!({"t": 16, "idx": "refr:ff000003", "data": {"health": 0.9478399753570557}})).to_string(), 1);
+        let hits = d.matching(&received, None);
+        assert_eq!(hits.len(), 2, "{hits:?}");
+        assert!(hits.iter().all(|k| !k.contains("0.95")), "{hits:?}");
+        // without the tolerance the digit decides, as before
+        let exact = Divergence { within: BTreeMap::new(), ..d };
+        assert_eq!(exact.matching(&received, None).len(), 0);
     }
 
     #[test]
@@ -717,12 +777,12 @@ mod tests {
         // two different relayed moves of idx 2 on legacy, none on the wire
         let legacy = one_client(&[r#"{"data":{"pos":[1,2,3]},"idx":2,"t":2}"#, r#"{"data":{"pos":[5001,2,3]},"idx":2,"t":2}"#, r#"{"idx":3,"t":2}"#]);
         let wire = one_client(&[r#"{"idx":3,"t":2}"#]);
-        let relayed = Divergence { client: "c2".into(), msg: json!({"t": 2, "idx": 2}), legacy: 2, wire: 0, reason: "validate before relay".into() };
+        let relayed = Divergence { client: "c2".into(), msg: json!({"t": 2, "idx": 2}), legacy: 2, wire: 0, reason: "validate before relay".into(), within: BTreeMap::new() };
         let o = diff("legacy", &legacy, "wire", &wire, &[relayed]);
         assert!(o.differences.is_empty(), "{:?}", o.differences);
         assert_eq!(o.declared.len(), 1, "{:?}", o.declared);
         // a nested field narrows the pattern to one of them
-        let one = Divergence { client: "c2".into(), msg: json!({"t": 2, "data": {"pos": [5001, 2, 3]}}), legacy: 1, wire: 0, reason: "the rejected jump".into() };
+        let one = Divergence { client: "c2".into(), msg: json!({"t": 2, "data": {"pos": [5001, 2, 3]}}), legacy: 1, wire: 0, reason: "the rejected jump".into(), within: BTreeMap::new() };
         let o = diff("legacy", &legacy, "wire", &wire, &[one]);
         assert_eq!(o.differences.len(), 1, "the other idx 2 move still differs: {:?}", o.differences);
     }

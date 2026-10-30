@@ -246,7 +246,7 @@ export const keepOnlyServerSpells = (ac: Actor, eq: Equipment): number => {
 // main.cpp OnUpdate), so a count read in applyEquipment's own tick sees the
 // inventory removeAllItems just emptied; this runs a tenth of a second
 // later, as sync/appearance.ts defers its own.
-const applyPlayerHands = (ac: Actor, eq: Equipment): void => {
+export const applyPlayerHands = (ac: Actor, eq: Equipment): void => {
   if (ac.isDeleted()) {
     return;
   }

@@ -83,7 +83,22 @@ Bool Function ModPlayerActorValue(Int av, Float delta) global native
 ; magnitude from source, as a hit's reaction starts it (the server's verdict)
 Bool Function Stagger(Actor target, Float magnitude, Actor source) global native
 
+; thuum docs/verbs/quest-stage.md H-56a: the Story Manager's Change Location
+; event for actor, from oldLocation (none allowed) to newLocation (none reads
+; the actor's current location), queued as the engine's own arrival queues it;
+; a seat logging in inside a location raises none by itself
+Bool Function SendStoryChangeLocation(Actor actor, Location oldLocation, Location newLocation) global native
+
 ; thuum docs/verbs/marksman.md: a neighbour's arrow, launched from its figure
 ; along its shooter's aim (pitch and heading, radians) with its draw's power
 Bool Function LaunchArrow(Actor shooter, Weapon weapon, Ammo ammo, Float power, Float aimAngle, Float aimHeading) global native
 Bool Function LaunchArrowAt(Actor shooter, Weapon weapon, Ammo ammo, Float power, Float angleX, Float angleZ, Float originX, Float originY, Float originZ) global native
+
+; thuum docs/verbs/quest-stage.md, slice two: a stage the server relays is
+; applied here through the engine's SetStage without its Papyrus fragment
+; (the talker's game ran it): one mark on the pair before the SetStage, which
+; the VM's quest stage sink consumes at the stage's first event; Release is
+; the client's safety 10 s after the apply, for a mark no event claimed;
+; false for no quest or a stage outside 0 to 65535
+Bool Function SuppressQuestStageFragment(Quest quest, Int stage) global native
+Bool Function ReleaseQuestStageFragment(Quest quest, Int stage) global native

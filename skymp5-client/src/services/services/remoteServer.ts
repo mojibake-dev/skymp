@@ -26,8 +26,8 @@ import { IdManager } from '../../lib/idManager';
 import { nameof } from '../../lib/nameof';
 import { setActorValuePercentage } from '../../sync/actorvalues';
 import { applyAppearanceToPlayer } from '../../sync/appearance';
-import { applyEquipment, isBadMenuShown } from '../../sync/equipment';
-import { Inventory, applyInventory } from '../../sync/inventory';
+import { applyEquipment, isBadMenuShown, applyPlayerHands, Equipment } from '../../sync/equipment';
+import { Inventory, applyInventory, ApplyInventoryReport } from '../../sync/inventory';
 import { ContainerApplyQueue } from '../../view/containerApplyQueue';
 import { Movement } from '../../sync/movement';
 import { syncSpells } from '../../sync/spell';
@@ -90,10 +90,30 @@ on('update', () => {
     return;
   }
   if (Date.now() - pcInvLastApply > 5000) {
+    const firstApplyAfterSet = pcInvLastApply === 0;
     pcInvLastApply = Date.now();
     const pcInv = getPcInventory();
     if (pcInv) {
-      applyInventory(Game.getPlayer()!, pcInv, false, true);
+      const report: ApplyInventoryReport = { wornAdded: false };
+      applyInventory(Game.getPlayer()!, pcInv, false, true, true, report);
+      // thuum playtest 38's finding 68 ("after rotfern came back her bow
+      // wouldn't draw arrows"; c1's console: the login's hands pass equipped
+      // the ammo at +0.1 s, and this loop's first apply re-added the whole
+      // inventory at +5 s with nothing equipping after it): the first apply
+      // after a setInventory resets the base and lands every entry anew, and
+      // any later apply that re-adds a worn entry (an arrow count drift from
+      // shooting re-adds the ammo and un-equips it, the finding's read)
+      // leaves the hands the same way, so the hands pass runs once more when
+      // such adds have landed. The apply's own report is the one check this
+      // loop pays per five seconds
+      if (firstApplyAfterSet || report.wornAdded) {
+        Utility.wait(0.1).then(() => {
+          const player = Game.getPlayer();
+          if (player) {
+            applyPlayerHands(player, { inv: pcInv } as Equipment);
+          }
+        });
+      }
     }
   }
 });
@@ -193,6 +213,8 @@ export class RemoteServer extends ClientListener {
       const baseType = baseObject?.getType();
 
       let functionChecker: (() => boolean) | null = null;
+      // a bed's own open fact, set on the furniture path alone (F2 below)
+      let openedAsBed: (() => boolean) | null = null;
       let factName = "";
       let delaySeconds = -1.0;
       if (baseType === FormType.Container) {
@@ -203,6 +225,19 @@ export class RemoteServer extends ClientListener {
         functionChecker = () => !!Game.getPlayer()?.getFurnitureReference();
         factName = "'getFurnitureReference not null'";
         delaySeconds = 1.0;
+        // F2 (thuum docs/verbs/rest.md "A stuck wait", playtest 37's finding
+        // 31): a vanilla bed opens the Sleep/Wait Menu and never seats the
+        // player, which is why the server's bed branch sets no occupant
+        // (MpObjectReference::ProcessActivateNormal, IsSleepFurniture). So
+        // getFurnitureReference stayed null through every sleep, this wait
+        // ran its 15 s out while the rest was already granted, and the "gave
+        // up waiting ... releasing the occupant" line was noise for a bed
+        // with no occupant. The open menu is the bed's open fact; the flow
+        // ends there, with no second activation to send (the server's second
+        // activation of a FURN only clears an occupant, ProcessActivateSecond).
+        // A chair's path is unchanged: its menu never opens.
+        // RE::SleepWaitMenu::MENU_NAME (CommonLibSSE-NG include/RE/S/SleepWaitMenu.h:16).
+        openedAsBed = () => Ui.isMenuOpen("Sleep/Wait Menu");
       } else if (baseType === FormType.NPC && Actor.from(refr)?.isDead()) {
         // thuum docs/verbs/npc-fate.md (the deaths): a corpse is a container
         functionChecker = () => Ui.isMenuOpen("ContainerMenu");
@@ -232,6 +267,10 @@ export class RemoteServer extends ClientListener {
         let opened = true;
         logTrace(this, "onOpenContainerMesage - waiting for", factName, "to be true");
         while (!functionChecker()) {
+          if (openedAsBed !== null && openedAsBed()) {
+            logTrace(this, "onOpenContainerMesage - the Sleep/Wait Menu opened: a bed, which seats nobody; no second activation (finding 31, F2)");
+            return;
+          }
           if (Date.now() > openDeadline) {
             opened = false;
             break;

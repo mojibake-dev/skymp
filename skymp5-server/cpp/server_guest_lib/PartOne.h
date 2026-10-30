@@ -208,7 +208,9 @@ public:
   // mode all). AtLogin: the world's recorded stages of quests still the
   // world's, ascending per quest. DoneAlready: the world's record holds the
   // stage. Merge: the record with the stage added once, ascending within
-  // its quest.
+  // its quest (unchanged when the record is full). RecordFull: the record
+  // is at the rule's cap (wire-rules quest_stages QUEST_RECORD_CAP, 4096
+  // pairs), so a new stage is refused (E_QUEST_FULL).
   void SetSharedQuestsSettings(const std::string& sharedQuestsJson);
   uint8_t SharedQuestsMode() const;
   uint8_t CheckSharedQuest(const FormDesc& quest) const;
@@ -217,6 +219,7 @@ public:
   std::vector<QuestStageDone> SharedQuestsAtLogin();
   bool QuestStageDoneAlready(const QuestStageDone& done);
   std::vector<QuestStageDone> MergeQuestStage(const QuestStageDone& done);
+  bool QuestRecordFull();
   // The world's journal: a server-made reference at kWorldJournalRefId (far
   // above WorldState::GenerateFormId's walk up from 0xff000000) whose change
   // form carries the world's quest stages, so the record saves and loads

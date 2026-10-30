@@ -2,6 +2,7 @@ import { Quest, QuestStageEvent, QuestStartStopEvent } from "skyrimPlatform";
 import { MsgType } from "../../messages";
 import { logError, logLab, logTrace } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
+import { CreateActorMessage } from "../messages/createActorMessage";
 import { QuestStageMessage } from "../messages/questStageMessage";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 
@@ -20,6 +21,14 @@ const MODE_ALL = 1;
 // How long a stage this service set is expected to echo back as the engine's
 // own quest-stage event, ms; after that the mark is dropped
 const APPLY_ECHO_MS = 5000;
+
+// How long after an apply the fragment mark it set is taken back by the
+// safety if the stage's event never claimed it, ms. The VM queues a stage set
+// on a quest not yet running and sets it at the quest's start, after the
+// latent call's answer, so the mark must outlive the promise (the review of
+// m3-pass-train-2, finding 4); past this window the engine is left its
+// fragment
+const FRAGMENT_SAFETY_MS = 10000;
 
 // How many quests may hold a parked stage at once; the oldest parking makes
 // room for a new quest
@@ -68,21 +77,31 @@ const ARRIVAL_WINDOW_MS = 3000;
 // camp is the landing) attaches with none to report, so its Story Manager
 // never starts the location's quests, while a seat placed in from outside
 // logged locationChanged and questStart in one millisecond
-// (x-story-manager-walk 20261029-205447). Once per login, after the server's
-// list has come and the game has loaded, this service asks
-// TESModPlatform.SendStoryChangeLocation for the same event from no location
-// to the player's current one, through the engine's own story event queue,
-// from the update pass (callNative needs the VM context). HYPOTHESIS until
+// (x-story-manager-walk 20261029-205447). Once per login, after the server
+// has created this connection's own actor (CreateActor with isMe, the login
+// itself; HostService reads the same message for its tables) and the game
+// has loaded, this service asks TESModPlatform.SendStoryChangeLocation for
+// the same event from no location to the player's current one, through the
+// engine's own story event queue, from the update pass (callNative needs the
+// VM context). The sharing-mode message is no part of the condition: a
+// server with nothing shared sends none (the review of m3-pass-train-2,
+// finding 3), and the arrival is the login's, whatever is shared. Every new
+// connection starts the once-per-login flags over. HYPOTHESIS until
 // x-story-manager-walk v3: the Story Manager then starts what an arrival
 // starts. Behind the client setting storyArrivalAtLogin (default on).
 // Slice two (the verb doc's "Slice two", the re-analyst's read of
 // 2026-10-29): a stage applied from the relay runs the engine's SetStage
 // whole, but its Papyrus fragment (the QF_ script's Fragment_N: the reward,
-// the world effect) ran on the talker's game already, so the pair is handed
-// to Skyrim Platform's replacement of the VM's quest stage sink
-// (TESModPlatform.SuppressQuestStageFragment, FridaHooks.cpp) before the
-// SetStage and taken back at the latent call's answer, set or refused or
-// thrown; the journal entry, the done bit and the promise stay the engine's.
+// the world effect) ran on the talker's game already, so one mark on the
+// pair is handed to Skyrim Platform's replacement of the VM's quest stage
+// sink (TESModPlatform.SuppressQuestStageFragment, FridaHooks.cpp) before
+// the SetStage. The sink consumes the mark at the stage's first event,
+// whenever the VM sets the stage (a stage queued on a quest not yet running
+// is set at its start, after the promise's answer, so the answer is no
+// place to take the mark back), and the safety release FRAGMENT_SAFETY_MS
+// after the apply takes back a mark no event claimed (a refused stage, a
+// quest never started), so none leaks; two applies of one pair are two
+// marks. The journal entry, the done bit and the promise stay the engine's.
 // This seat's own stages (the report path, onQuestStage) never pass there.
 // Off under the questFragmentSuppress setting (default on). HYPOTHESIS until
 // lab/frida/quest-stage-chain.js reads the chain.
@@ -94,6 +113,8 @@ export class QuestStageService extends ClientListener {
         this.controller.on("questStart", (e) => this.onQuestStart(e));
         this.controller.on("update", () => this.onUpdate());
         this.controller.emitter.on("gameLoad", () => this.onGameLoad());
+        this.controller.emitter.on("createActorMessage", (e) => this.onCreateActor(e));
+        this.controller.emitter.on("connectionAccepted", () => this.onConnectionAccepted());
         this.resume();
     }
 
@@ -107,9 +128,6 @@ export class QuestStageService extends ClientListener {
             this.setShared(mode, ids);
             this.sp.storage[SHARED_STORAGE_KEY] = { mode, ids };
             logTrace(this, "the server shares quests in mode", QuestStageService.modeName(mode) + ":", ids.length, mode === MODE_ALL ? "quest(s) denied" : "quest(s) listed");
-            // the list comes once per login (PartOne::SetUserActor): the
-            // login's arrival is due once the game has loaded too (H-56a)
-            this.arrivalListSeen = true;
             return;
         }
         this.pending.push({ quest: m.quest, stage: m.stage });
@@ -119,6 +137,17 @@ export class QuestStageService extends ClientListener {
     // at a login's replay, so each SetStage sees the stages before it)
     private onUpdate() {
         this.arrival();
+        const now = Date.now();
+        // slice two's safety: a fragment mark whose stage event never came
+        // within its window is taken back (callNative runs here, in the
+        // update pass's VM context); the list is in order of expiry, and it
+        // runs before the switch below so a switched-off service leaks none
+        while (this.fragmentReleases.length > 0 && this.fragmentReleases[0].at <= now) {
+            const due = this.fragmentReleases.shift();
+            if (due) {
+                this.releaseFragment(due.questId, due.stage);
+            }
+        }
         if (!this.enabled()) {
             this.pending = [];
             return;
@@ -128,7 +157,6 @@ export class QuestStageService extends ClientListener {
             this.apply(next.quest, next.stage);
         }
         if (this.applying.size > 0) {
-            const now = Date.now();
             this.applying.forEach((until, key) => {
                 if (until < now) {
                     this.applying.delete(key);
@@ -191,31 +219,28 @@ export class QuestStageService extends ClientListener {
             logError(this, "the world's quest", questId.toString(16), "is gone before its stage", stage, "was set");
             return Promise.resolve();
         }
-        // slice two: the pair is the native sink's from here to the answer
-        const suppressed = this.suppressFragment(quest, questId, stage);
+        // slice two: one mark on the pair for the native sink, consumed at the
+        // stage's event; the safety in onUpdate takes it back if none comes
+        if (this.suppressFragment(quest, questId, stage)) {
+            this.fragmentReleases.push({ questId, stage, at: Date.now() + FRAGMENT_SAFETY_MS });
+        }
         return quest.setCurrentStageID(stage).then((ok) => {
-            if (suppressed) {
-                this.releaseFragment(questId, stage);
-            }
             logTrace(this, "the world's stage", stage, "of quest", questId.toString(16), ok ? "set" : "refused by the engine");
             if (!ok) {
                 this.applying.delete(key);
             }
-        }, (err) => {
-            if (suppressed) {
-                this.releaseFragment(questId, stage);
-            }
-            throw err;
         });
     }
 
-    // Slice two's hand-over of a pair to the native sink (see the class
-    // comment). Both calls run where the SetStage runs, inside the update
-    // tick's promise chain, the VM context callNative needs; the release
-    // looks the quest up again, because the wrapper from before the latent
-    // call is out of Skyrim Platform's object pool (as setStage above). A
-    // refusal or a throw leaves the fragment the engine's, logged, and the
-    // stage still applies.
+    // Slice two's hand-over of one mark to the native sink (see the class
+    // comment). The suppress runs where the SetStage runs, inside the update
+    // tick's promise chain, and the safety release from the update pass
+    // itself, both the VM context callNative needs; the release looks the
+    // quest up anew, because a wrapper from an earlier tick is out of Skyrim
+    // Platform's object pool (as setStage above), and the native takes back
+    // one mark only if the pair still holds one. A refusal or a throw of the
+    // suppress leaves the fragment the engine's, logged, and the stage still
+    // applies.
     private suppressFragment(quest: Quest, questId: number, stage: number): boolean {
         if (!this.fragmentSuppressEnabled()) {
             return false;
@@ -321,12 +346,31 @@ export class QuestStageService extends ClientListener {
         this.arrivalGameLoaded = true;
     }
 
-    // the login's arrival, from the update pass: once the server's list has
-    // come and the game has loaded, the Change Location event from no location
-    // to the player's current one, once; a player in no location gets none
-    // (the engine's own event comes at the first location entered)
+    // the server's CreateActor of this connection's own actor (isMe: a login,
+    // a reconnect, a restart, as HostService reads it): the login half of
+    // the arrival's condition. The game's load follows it on a fresh launch
+    // (RemoteServer loads the save for the actor it was given)
+    private onCreateActor(e: ConnectionMessage<CreateActorMessage>) {
+        if (!e.message.isMe) {
+            return;
+        }
+        this.arrivalLoginSeen = true;
+    }
+
+    // a new connection (NetworkingService's connectionAccepted, before the
+    // server's CreateActor): the once-per-login flags start over, so each
+    // login's arrival is its own and none is carried across a reconnect
+    private onConnectionAccepted() {
+        this.arrivalDone();
+    }
+
+    // the login's arrival, from the update pass: once this connection's own
+    // actor has been created and the game has loaded, the Change Location
+    // event from no location to the player's current one, once; a player in
+    // no location gets none (the engine's own event comes at the first
+    // location entered)
     private arrival() {
-        if (!this.arrivalListSeen || !this.arrivalGameLoaded) {
+        if (!this.arrivalLoginSeen || !this.arrivalGameLoaded) {
             return;
         }
         if (!this.arrivalEnabled()) {
@@ -362,7 +406,7 @@ export class QuestStageService extends ClientListener {
     }
 
     private arrivalDone() {
-        this.arrivalListSeen = false;
+        this.arrivalLoginSeen = false;
         this.arrivalGameLoaded = false;
         this.arrivalDeadline = 0;
     }
@@ -438,9 +482,14 @@ export class QuestStageService extends ClientListener {
     // refused Quest.Start here; applied at the engine's own start of each
     private parked = new Map<number, number>();
     private missing = new Set<number>();
-    // the login's arrival: the server's list has come; the game has loaded;
-    // the window's end once both hold (0 until then)
-    private arrivalListSeen = false;
+    // slice two's safety: the fragment marks this service's applies set,
+    // each with the time its release is due, in that order (one apply per
+    // update tick, so at most a window's worth of entries)
+    private fragmentReleases: Array<{ questId: number; stage: number; at: number }> = [];
+    // the login's arrival: this connection's own actor has been created; the
+    // game has loaded; the window's end once both hold (0 until then). All
+    // three start over at every connectionAccepted
+    private arrivalLoginSeen = false;
     private arrivalGameLoaded = false;
     private arrivalDeadline = 0;
 }

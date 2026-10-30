@@ -2738,6 +2738,14 @@ std::vector<QuestStageDone> PartOne::MergeQuestStage(
     ToStageEntry(done)));
 }
 
+bool PartOne::QuestRecordFull()
+{
+  const auto entries = ToStageEntries(GetQuestStages());
+  return skymp::rules::quest_record_full(
+    rust::Slice<const skymp::rules::QuestStageEntry>(entries.data(),
+                                                     entries.size()));
+}
+
 MpObjectReference& PartOne::WorldJournal()
 {
   if (!worldState.LookupFormById(kWorldJournalRefId)) {

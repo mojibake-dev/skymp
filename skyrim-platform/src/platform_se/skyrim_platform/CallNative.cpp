@@ -79,6 +79,28 @@ Variable CallNative::AnySafeToVariable(const CallNative::AnySafe& v,
           ? id
           : static_cast<RE::VMTypeID>(nativePtrRaw->formType.get());
 
+        // thuum docs/verbs/spell-placed-object.md (the observer's Raise Wall,
+        // 2026-10-30): the VM registers no Papyrus class for some form types
+        // (MovableStatic 36, as Grass), so a handle packed by such a form's
+        // own type is None (CommonLib PackHandle returns before the handle)
+        // and every native call on it aborts, kFailedAbort, "Bad call result
+        // 4" every frame on both seats of b-spell-placed-wall 063053 while the
+        // wall's base was never placed. A form whose type has no class is
+        // packed as its Papyrus base class, Form, the class every native that
+        // takes a Form accepts; CommonLib packs a TESForm* return the same
+        // way.
+        if (!isNotForm) {
+          static auto vmForClass = VM::GetSingleton();
+          RE::BSTSmartPointer<RE::BSScript::ObjectTypeInfo> classPtr;
+          if (vmForClass &&
+              (!vmForClass->GetScriptObjectType(id, classPtr) || !classPtr)) {
+            RE::VMTypeID formClass = 0;
+            if (vmForClass->GetTypeIDForScriptObject("Form", formClass)) {
+              id = formClass;
+            }
+          }
+        }
+
         RE::BSScript::PackHandle(&res, nativePtrRaw, id);
         return res;
       },

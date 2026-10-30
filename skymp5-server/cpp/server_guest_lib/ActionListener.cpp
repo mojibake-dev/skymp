@@ -2903,6 +2903,26 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
                actor->GetFormId(), quest.ToString(), msg.stage, relayed);
 }
 
+namespace {
+// thuum docs/verbs/prop-physics.md (ADR-058, slice one): a prop is an item
+// reference (libespm's item types, the client's FormTypeEx.isItem set), from
+// the game files or server-made (a drop); a door, a container, an activator
+// or an actor is no prop, whatever a seat claims or streams
+bool IsPropKind(MpObjectReference& refr)
+{
+  return !refr.AsActor() &&
+    espm::utils::IsItem(espm::Type(refr.GetBaseType().c_str()));
+}
+
+// how far a touch reaches, in units from the claimant's record to the prop's:
+// the controller's contact and the grab at arm's length, a drop at the
+// player's feet with the client's drop match slack, an impulse (a shout, a
+// spell) across a room. UNMEASURED budgets (the stage sizes them).
+constexpr float kPropTouchReach = 256.f;
+constexpr float kPropDropReach = 512.f;
+constexpr float kPropImpulseReach = 2048.f;
+}
+
 // thuum docs/verbs/prop-physics.md (ADR-058 decision 1): a player's game
 // touched a physics prop it does not simulate. The gates: the reference a
 // prop the server holds (not an actor), the claimant standing in its cell
@@ -2929,12 +2949,21 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
   if (!prop || prop->AsActor()) {
     return refuse("E_PROP_UNKNOWN", "no such reference, or an actor");
   }
+  if (!IsPropKind(*prop)) {
+    return refuse("E_PROP_KIND", "not an item reference");
+  }
   if (msg.touch > 3) {
     return refuse("E_PROP_RANGE", "a touch the contract does not name");
   }
   const auto cell = partOne.worldState.CellOf(*prop);
   if (!cell || partOne.worldState.CellOf(*myActor) != cell) {
     return refuse("E_PROP_CELL", "the claimant is not in the prop's cell");
+  }
+  const float reach = msg.touch == 3 ? kPropImpulseReach
+    : msg.touch == 2                 ? kPropDropReach
+                                     : kPropTouchReach;
+  if ((myActor->GetPos() - prop->GetPos()).Length() > reach) {
+    return refuse("E_PROP_REACH", "the claimant is too far from the prop");
   }
   const auto verdict =
     partOne.ClaimProp(*myActor, *prop, *cell, static_cast<uint8_t>(msg.touch));
@@ -2971,16 +3000,18 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
 
 // thuum docs/verbs/prop-physics.md (ADR-058 decision 2): a simulator's
 // sample of a prop. The record takes it from the prop's owner alone (the
-// toucher while awake or inside its lease, else the cell's host; wire-rules
-// props), landing in the cell the sample's position names in the prop's own
-// world or cell (HYPOTHESIS: a prop never changes world or interior by
-// physics, so the record's worldOrCell stands; a kick through a load door is
-// slice two's read); then the same bytes go to the prop's other listeners,
-// unreliable while awake and reliable at sleep (the record's final sample).
-// The write is the movement path's (OnUpdateMovement's SetPos and SetAngle):
-// saved from time to time while the body moves, at once when it rests. A
-// refusal is logged once per 10 s per prop: a seat that lost the lease keeps
-// streaming until its own timer ends.
+// toucher while awake or inside its lease, else the host of the cell the
+// RECORD stands in; wire-rules props), within the rule's step budget against
+// the record (a seat cannot carry a prop across the world in one message),
+// landing in the cell the sample's position names in the prop's own world or
+// cell (HYPOTHESIS: a prop never changes world or interior by physics, so the
+// record's worldOrCell stands; a kick through a load door is a later read);
+// then the same bytes go to the prop's other listeners, unreliable while
+// awake and reliable at sleep (the record's final sample). The write is the
+// movement path's (OnUpdateMovement's SetPos and SetAngle): saved from time
+// to time while the body moves, at once when it rests. A refusal is logged
+// once per 10 s per seat: a seat that lost the lease keeps streaming until
+// its own timer ends.
 void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
                                      const PropTransformMessage& msg)
 {
@@ -2989,12 +3020,13 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
     return;
   }
   const auto now = std::chrono::steady_clock::now();
-  static std::unordered_map<uint32_t, std::chrono::steady_clock::time_point>
+  static std::unordered_map<Networking::UserId,
+                            std::chrono::steady_clock::time_point>
     lastRefusal;
   const auto refuse = [&](const char* code, const char* why) {
     partOne.serverState.CountStream(
       rawMsgData.userId, static_cast<uint8_t>(MsgType::PropTransform), false);
-    auto& last = lastRefusal[msg.refr];
+    auto& last = lastRefusal[rawMsgData.userId];
     if (last == std::chrono::steady_clock::time_point() ||
         now - last >= std::chrono::seconds(10)) {
       spdlog::warn("[verb:prop-physics] {}: {:x} moves prop {:x}; {}", code,
@@ -3007,13 +3039,27 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
   if (!prop || prop->AsActor()) {
     return refuse("E_PROP_UNKNOWN", "no such reference, or an actor");
   }
+  if (!IsPropKind(*prop)) {
+    return refuse("E_PROP_KIND", "not an item reference");
+  }
+  // the Rust edge refuses a non-finite transform (wire-validate); the legacy
+  // path parses JSON, where 1e999 reads as infinity, so the check stands here
+  // too before any arithmetic on it
+  for (int i = 0; i < 3; ++i) {
+    if (!std::isfinite(msg.pos[i]) || !std::isfinite(msg.rot[i])) {
+      return refuse("E_PROP_RANGE", "a transform that is not a number");
+    }
+  }
   const NiPoint3 pos{ msg.pos[0], msg.pos[1], msg.pos[2] };
   const NiPoint3 rot{ msg.rot[0], msg.rot[1], msg.rot[2] };
   const uint32_t worldOrCell =
     prop->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles);
   const auto cell = partOne.worldState.CellOf(worldOrCell, pos);
+  const auto recordCell = partOne.worldState.CellOf(*prop);
+  const float moved = (pos - prop->GetPos()).Length();
   const auto verdict =
-    partOne.PropTransform(*myActor, *prop, cell.value_or(0), msg.asleep);
+    partOne.PropTransform(*myActor, *prop, cell.value_or(0),
+                          recordCell.value_or(0), msg.asleep, moved);
   switch (verdict) {
     case PartOne::PropTransformVerdict::Accepted: {
       const auto mode =
@@ -3047,6 +3093,10 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
     case PartOne::PropTransformVerdict::WrongCell:
       refuse("E_PROP_CELL",
              "no cell at the point, or a cell nobody hosts and nobody holds");
+      break;
+    case PartOne::PropTransformVerdict::TooFast:
+      refuse("E_PROP_STEP",
+             "farther from the record than the step budget allows");
       break;
   }
 }

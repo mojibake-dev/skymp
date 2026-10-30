@@ -19,6 +19,49 @@ use std::collections::HashMap;
 /// sizes it.
 pub const PROP_LEASE_MS: u64 = 3_000;
 
+/// How long an awake row stays its owner's with no accepted sample: a seat
+/// that stopped streaming (the prop left its range, its body was lost, the
+/// game hung) hands the prop back to the cell's host instead of holding it
+/// frozen mid-air for the session. The client sends at every 2 units of
+/// motion and a final asleep sample, so silence means a fault. UNMEASURED.
+pub const PROP_SILENCE_MS: u64 = 3_000;
+
+/// The longest a grab holds a prop against every other claim without the
+/// holder's drop: a safety against a release the holder's seat never
+/// reported. A grabbed row neither sleeps into a lease nor lapses in silence
+/// (a held object stands still in the hand).
+pub const PROP_GRAB_MAX_MS: u64 = 120_000;
+
+/// The step budget of one sample against the record: `PROP_MAX_SPEED_UNITS_PER_S`
+/// for the time since the last accepted sample, never less than
+/// `PROP_STEP_FLOOR_UNITS` (the first sample after a grant, jitter). A sample
+/// over the budget is refused and leaves the record where it stood: a seat
+/// cannot carry a prop across the world in one message, and no owner moves
+/// it faster than a kicked body flies. UNMEASURED: x-prop-push sizes both.
+pub const PROP_MAX_SPEED_UNITS_PER_S: f32 = 6_000.0;
+/// The least a sample may move the record without a time base (see
+/// `PROP_MAX_SPEED_UNITS_PER_S`).
+pub const PROP_STEP_FLOOR_UNITS: f32 = 128.0;
+
+/// What the core knows about a simulator's sample of a prop.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SampleFacts {
+    /// The prop's reference id.
+    pub refr: u32,
+    /// The sender's actor id.
+    pub player: u32,
+    /// The cell the sample's position lands in, 0 for none.
+    pub cell: u32,
+    /// The host of the cell the RECORD stands in, 0 while nobody hosts it.
+    pub cell_host: u32,
+    /// The body's reported state.
+    pub asleep: bool,
+    /// Units between the sample and the record.
+    pub moved: f32,
+    /// The server's wall clock, ms.
+    pub now_ms: u64,
+}
+
 /// The touch a claim reports (the wire's `PropClaim.touch`).
 pub mod touch {
     /// A contact of the player's character controller.
@@ -54,6 +97,12 @@ pub struct PropRow {
     /// the engine's grab is exclusive on the grabbing seat, so a contact
     /// from another seat cannot take it without breaking the grab there.
     pub grabbed: bool,
+    /// When this owner took the row (the grant, or the host's takeover of a
+    /// lapsed row): a grab's clock.
+    pub since_ms: u64,
+    /// The last accepted sample's time (the grant's before any): the
+    /// silence clock and the step budget's base.
+    pub last_sample_ms: u64,
 }
 
 /// The answer to a claim (ADR-058 decision 1).
@@ -79,6 +128,9 @@ pub enum TransformVerdict {
     /// The prop stands in no cell at all, or in a cell nobody hosts while
     /// nobody holds a live lease on it: it freezes at the record.
     WrongCell,
+    /// The sample is farther from the record than the step budget allows
+    /// (or not a number): refused, the record stands.
+    TooFast,
 }
 
 /// Every prop's row and every prop's epoch (kept after its row is gone).
@@ -89,10 +141,20 @@ pub struct Props {
 }
 
 impl PropRow {
-    /// Whether the row names its owner now: awake, or asleep inside the
-    /// lease; an owner of 0 never does.
+    /// Whether the row names its owner now: grabbed inside the grab's limit;
+    /// awake with a sample inside the silence window; asleep inside the
+    /// lease. An owner of 0 never does.
     fn live(&self, now_ms: u64) -> bool {
-        self.owner != 0 && (!self.asleep || self.lease_until_ms.is_some_and(|until| now_ms < until))
+        if self.owner == 0 {
+            return false;
+        }
+        if self.grabbed {
+            return now_ms < self.since_ms.saturating_add(PROP_GRAB_MAX_MS);
+        }
+        if self.asleep {
+            return self.lease_until_ms.is_some_and(|until| now_ms < until);
+        }
+        now_ms < self.last_sample_ms.saturating_add(PROP_SILENCE_MS)
     }
 }
 
@@ -114,6 +176,16 @@ impl Props {
         self.epochs.get(&refr).copied().unwrap_or(0)
     }
 
+    /// The row's owner while the row is live, else 0 (the core tells a late
+    /// listener who simulates; with 0 the listener falls back to the host).
+    #[must_use]
+    pub fn live_owner(&self, refr: u32, now_ms: u64) -> u32 {
+        match self.rows.get(&refr) {
+            Some(row) if row.live(now_ms) => row.owner,
+            _ => 0,
+        }
+    }
+
     /// `player` touched `refr`, which stands in `cell`, by `touch` at
     /// `now_ms`: the newest touch wins (Granted, the epoch up), unless the
     /// claimant simulates it already (Same) or another player holds it
@@ -125,6 +197,11 @@ impl Props {
                 if row.owner == player {
                     row.grabbed = touch == touch::GRAB;
                     row.cell = cell;
+                    // a touch wakes the row: the holder's drop is followed by
+                    // its fall samples, which pass while the silence window runs
+                    row.asleep = false;
+                    row.lease_until_ms = None;
+                    row.last_sample_ms = now_ms;
                     return ClaimVerdict::Same;
                 }
                 if row.grabbed {
@@ -136,17 +213,30 @@ impl Props {
         self.epochs.insert(refr, epoch);
         self.rows.insert(
             refr,
-            PropRow { owner: player, epoch, cell, lease_until_ms: None, asleep: false, grabbed: touch == touch::GRAB },
+            PropRow {
+                owner: player,
+                epoch,
+                cell,
+                lease_until_ms: None,
+                asleep: false,
+                grabbed: touch == touch::GRAB,
+                since_ms: now_ms,
+                last_sample_ms: now_ms,
+            },
         );
         ClaimVerdict::Granted(epoch)
     }
 
     /// `player` reports `refr`'s transform, landing in `cell` (0 for none)
-    /// whose host is `cell_host` (0 while nobody), the body `asleep` or not,
-    /// at `now_ms`: taken from the prop's owner alone (`owner_of`); a sleep
-    /// starts the lease, a wake ends it; a host's first sample of an
-    /// unclaimed prop writes its row at the kept epoch.
-    pub fn transform(&mut self, refr: u32, player: u32, cell: u32, cell_host: u32, asleep: bool, now_ms: u64) -> TransformVerdict {
+    /// whose record's cell is hosted by `cell_host` (0 while nobody), the
+    /// body `asleep` or not, `moved` units from the record, at `now_ms`:
+    /// taken from the prop's owner alone (`owner_of`) and inside the step
+    /// budget; a sleep starts the lease (a grabbed row's does not), a wake
+    /// ends it; a host's first sample of an unclaimed prop writes its row at
+    /// the kept epoch, and a host's sample of a lapsed row takes it over,
+    /// ending a grab its holder never released.
+    pub fn transform(&mut self, f: &SampleFacts) -> TransformVerdict {
+        let SampleFacts { refr, player, cell, cell_host, asleep, moved, now_ms } = *f;
         if cell == 0 {
             return TransformVerdict::WrongCell;
         }
@@ -157,6 +247,18 @@ impl Props {
         if owner != player {
             return TransformVerdict::NotOwner;
         }
+        let allowed = match self.rows.get(&refr) {
+            Some(row) if row.live(now_ms) && row.owner == player => {
+                // the time base, clamped to ten seconds: a long silence has
+                // lapsed the row already, a short one buys a short step
+                let elapsed_ms = u16::try_from(now_ms.saturating_sub(row.last_sample_ms).min(10_000)).unwrap_or(10_000);
+                (PROP_MAX_SPEED_UNITS_PER_S * f32::from(elapsed_ms) / 1_000.0).max(PROP_STEP_FLOOR_UNITS)
+            }
+            _ => PROP_STEP_FLOOR_UNITS,
+        };
+        if !moved.is_finite() || moved > allowed {
+            return TransformVerdict::TooFast;
+        }
         let epoch = self.epoch_of(refr);
         let row = self.rows.entry(refr).or_insert(PropRow {
             owner,
@@ -165,11 +267,18 @@ impl Props {
             lease_until_ms: None,
             asleep: false,
             grabbed: false,
+            since_ms: now_ms,
+            last_sample_ms: now_ms,
         });
-        row.owner = owner;
+        if row.owner != owner {
+            row.owner = owner;
+            row.grabbed = false;
+            row.since_ms = now_ms;
+        }
         row.cell = cell;
         row.asleep = asleep;
-        row.lease_until_ms = asleep.then(|| now_ms.saturating_add(PROP_LEASE_MS));
+        row.last_sample_ms = now_ms;
+        row.lease_until_ms = (asleep && !row.grabbed).then(|| now_ms.saturating_add(PROP_LEASE_MS));
         TransformVerdict::Accepted
     }
 
@@ -182,6 +291,8 @@ impl Props {
                 row.owner = host;
                 row.lease_until_ms = None;
                 row.grabbed = false;
+                row.since_ms = now_ms;
+                row.last_sample_ms = now_ms;
             }
         }
     }
@@ -213,6 +324,11 @@ mod tests {
     const BASKET: u32 = 0x2ad9c;
     const C1: u32 = 0xff00_0002;
     const C2: u32 = 0xff00_0003;
+    const C3: u32 = 0xff00_0004;
+
+    fn facts(refr: u32, player: u32, cell: u32, cell_host: u32, asleep: bool, moved: f32, now_ms: u64) -> SampleFacts {
+        SampleFacts { refr, player, cell, cell_host, asleep, moved, now_ms }
+    }
 
     #[test]
     fn an_unclaimed_prop_is_the_hosts_and_nobodys_in_an_unhosted_cell() {
@@ -252,23 +368,25 @@ mod tests {
     fn only_the_owner_moves_the_record_and_a_sleep_starts_the_lease() {
         let mut p = Props::default();
         // the host's sample of an unclaimed prop
-        assert_eq!(p.transform(BASKET, C1, CELL, C1, false, 500), TransformVerdict::Accepted);
-        assert_eq!(p.transform(BASKET, C2, CELL, C1, false, 600), TransformVerdict::NotOwner);
+        assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, false, 10.0, 500)), TransformVerdict::Accepted);
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 10.0, 600)), TransformVerdict::NotOwner);
         assert_eq!(p.claim(BASKET, C2, CELL, touch::CONTACT, 1_000), ClaimVerdict::Granted(1));
-        assert_eq!(p.transform(BASKET, C1, CELL, C1, false, 1_100), TransformVerdict::NotOwner);
-        assert_eq!(p.transform(BASKET, C2, CELL, C1, false, 1_100), TransformVerdict::Accepted);
+        assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, false, 10.0, 1_100)), TransformVerdict::NotOwner);
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 10.0, 1_100)), TransformVerdict::Accepted);
         // the body sleeps: the toucher keeps it for the lease, then the host
-        assert_eq!(p.transform(BASKET, C2, CELL, C1, true, 2_000), TransformVerdict::Accepted);
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, true, 10.0, 2_000)), TransformVerdict::Accepted);
         assert_eq!(p.owner_of(BASKET, C1, 2_000 + PROP_LEASE_MS - 1), C2);
         assert_eq!(p.owner_of(BASKET, C1, 2_000 + PROP_LEASE_MS), C1);
-        assert_eq!(p.transform(BASKET, C2, CELL, C1, false, 2_000 + PROP_LEASE_MS), TransformVerdict::NotOwner);
-        assert_eq!(p.transform(BASKET, C1, CELL, C1, false, 2_000 + PROP_LEASE_MS), TransformVerdict::Accepted);
-        // a wake inside the lease ends it
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 10.0, 2_000 + PROP_LEASE_MS)), TransformVerdict::NotOwner);
+        assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, false, 10.0, 2_000 + PROP_LEASE_MS)), TransformVerdict::Accepted);
+        // a wake inside the lease ends it: the toucher keeps the prop while it
+        // streams (the silence window), the lease's end no longer counts
         let mut q = Props::default();
         assert_eq!(q.claim(BASKET, C2, CELL, touch::CONTACT, 1_000), ClaimVerdict::Granted(1));
-        assert_eq!(q.transform(BASKET, C2, CELL, C1, true, 2_000), TransformVerdict::Accepted);
-        assert_eq!(q.transform(BASKET, C2, CELL, C1, false, 2_500), TransformVerdict::Accepted);
-        assert_eq!(q.owner_of(BASKET, C1, 9_000), C2);
+        assert_eq!(q.transform(&facts(BASKET, C2, CELL, C1, true, 10.0, 2_000)), TransformVerdict::Accepted);
+        assert_eq!(q.transform(&facts(BASKET, C2, CELL, C1, false, 10.0, 2_500)), TransformVerdict::Accepted);
+        assert_eq!(q.owner_of(BASKET, C1, 2_000 + PROP_LEASE_MS), C2);
+        assert_eq!(q.owner_of(BASKET, C1, 2_500 + PROP_SILENCE_MS - 1), C2);
         // a lapsed toucher's new touch is a grant again (the host's seat must
         // hear the word), at the next epoch
         assert_eq!(p.claim(BASKET, C2, CELL, touch::CONTACT, 6_000), ClaimVerdict::Granted(2));
@@ -277,20 +395,20 @@ mod tests {
     #[test]
     fn a_prop_in_no_cell_or_an_unhosted_unclaimed_cell_freezes() {
         let mut p = Props::default();
-        assert_eq!(p.transform(BASKET, C1, 0, C1, false, 0), TransformVerdict::WrongCell);
-        assert_eq!(p.transform(BASKET, C1, CELL, 0, false, 0), TransformVerdict::WrongCell);
+        assert_eq!(p.transform(&facts(BASKET, C1, 0, C1, false, 10.0, 0)), TransformVerdict::WrongCell);
+        assert_eq!(p.transform(&facts(BASKET, C1, CELL, 0, false, 10.0, 0)), TransformVerdict::WrongCell);
         // a live toucher keeps simulating in a cell whose host left
         assert_eq!(p.claim(BASKET, C1, CELL, touch::CONTACT, 1_000), ClaimVerdict::Granted(1));
-        assert_eq!(p.transform(BASKET, C1, CELL, 0, false, 1_100), TransformVerdict::Accepted);
-        assert_eq!(p.transform(BASKET, C1, CELL, 0, true, 1_200), TransformVerdict::Accepted);
-        assert_eq!(p.transform(BASKET, C1, CELL, 0, false, 1_200 + PROP_LEASE_MS), TransformVerdict::WrongCell);
+        assert_eq!(p.transform(&facts(BASKET, C1, CELL, 0, false, 10.0, 1_100)), TransformVerdict::Accepted);
+        assert_eq!(p.transform(&facts(BASKET, C1, CELL, 0, true, 10.0, 1_200)), TransformVerdict::Accepted);
+        assert_eq!(p.transform(&facts(BASKET, C1, CELL, 0, false, 10.0, 1_200 + PROP_LEASE_MS)), TransformVerdict::WrongCell);
     }
 
     #[test]
     fn a_host_change_takes_the_lapsed_rows_and_leaves_the_live_ones_epochs_kept() {
         let mut p = Props::default();
         assert_eq!(p.claim(BASKET, C2, CELL, touch::CONTACT, 1_000), ClaimVerdict::Granted(1));
-        assert_eq!(p.transform(BASKET, C2, CELL, C1, true, 1_500), TransformVerdict::Accepted);
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, true, 10.0, 1_500)), TransformVerdict::Accepted);
         assert_eq!(p.claim(0x54a44, C2, CELL, touch::CONTACT, 1_600), ClaimVerdict::Granted(1));
         // c1 takes the cell after the basket's lease lapsed, while the cabbage is live
         p.host_changed(CELL, C1, 1_500 + PROP_LEASE_MS);
@@ -302,7 +420,7 @@ mod tests {
         assert!(rows.iter().any(|(refr, row)| *refr == BASKET && row.owner == C1 && row.epoch == 1));
         // a row in another cell is not the grant's
         assert_eq!(p.claim(0x1234, C2, 0x9733, touch::CONTACT, 2_000), ClaimVerdict::Granted(1));
-        assert_eq!(p.transform(0x1234, C2, 0x9733, C1, true, 2_100), TransformVerdict::Accepted);
+        assert_eq!(p.transform(&facts(0x1234, C2, 0x9733, C1, true, 10.0, 2_100)), TransformVerdict::Accepted);
         p.host_changed(CELL, C1, 9_000);
         assert_eq!(p.rows().iter().find(|(refr, _)| *refr == 0x1234).map(|(_, r)| r.owner), Some(C2));
     }
@@ -316,7 +434,67 @@ mod tests {
         assert_eq!(p.owner_of(BASKET, 0, 1_100), 0);
         assert_eq!(p.epoch_of(BASKET), 1);
         // the host's samples pass; c2's return touch is a grant at epoch 2
-        assert_eq!(p.transform(BASKET, C1, CELL, C1, false, 1_200), TransformVerdict::Accepted);
+        assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, false, 10.0, 1_200)), TransformVerdict::Accepted);
         assert_eq!(p.claim(BASKET, C2, CELL, touch::CONTACT, 1_300), ClaimVerdict::Granted(2));
+    }
+
+    #[test]
+    fn an_awake_row_lapses_in_silence_and_a_touch_takes_it_back() {
+        let mut p = Props::default();
+        assert_eq!(p.claim(BASKET, C2, CELL, touch::CONTACT, 1_000), ClaimVerdict::Granted(1));
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 10.0, 1_100)), TransformVerdict::Accepted);
+        // the toucher stops streaming awake: the host simulates again, a late sample is refused
+        assert_eq!(p.owner_of(BASKET, C1, 1_100 + PROP_SILENCE_MS - 1), C2);
+        assert_eq!(p.owner_of(BASKET, C1, 1_100 + PROP_SILENCE_MS), C1);
+        assert_eq!(p.live_owner(BASKET, 1_100 + PROP_SILENCE_MS), 0);
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 10.0, 1_100 + PROP_SILENCE_MS)), TransformVerdict::NotOwner);
+        assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, false, 10.0, 1_100 + PROP_SILENCE_MS)), TransformVerdict::Accepted);
+        // a touch takes it back at the next epoch
+        assert_eq!(p.claim(BASKET, C2, CELL, touch::CONTACT, 9_000), ClaimVerdict::Granted(2));
+        assert_eq!(p.live_owner(BASKET, 9_000), C2);
+    }
+
+    #[test]
+    fn a_grab_holds_through_stillness_and_silence_until_the_drop_or_its_limit() {
+        let mut p = Props::default();
+        assert_eq!(p.claim(BASKET, C2, CELL, touch::GRAB, 1_000), ClaimVerdict::Granted(1));
+        // held still in the hand: an asleep sample starts no lease, silence does not lapse it
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, true, 10.0, 1_500)), TransformVerdict::Accepted);
+        assert_eq!(p.owner_of(BASKET, C1, 1_500 + PROP_LEASE_MS + PROP_SILENCE_MS), C2);
+        assert_eq!(p.claim(BASKET, C1, CELL, touch::CONTACT, 9_000), ClaimVerdict::Held);
+        // the drop wakes the row for the dropper, whose fall samples pass; its rest starts the lease
+        assert_eq!(p.claim(BASKET, C2, CELL, touch::DROP, 9_100), ClaimVerdict::Same);
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 10.0, 9_200)), TransformVerdict::Accepted);
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, true, 10.0, 9_300)), TransformVerdict::Accepted);
+        assert_eq!(p.owner_of(BASKET, C1, 9_300 + PROP_LEASE_MS - 1), C2);
+        assert_eq!(p.owner_of(BASKET, C1, 9_300 + PROP_LEASE_MS), C1);
+        // a grab nobody releases ends at its limit; the host's takeover clears the grab
+        let mut q = Props::default();
+        assert_eq!(q.claim(BASKET, C2, CELL, touch::GRAB, 1_000), ClaimVerdict::Granted(1));
+        assert_eq!(q.owner_of(BASKET, C1, 1_000 + PROP_GRAB_MAX_MS - 1), C2);
+        assert_eq!(q.owner_of(BASKET, C1, 1_000 + PROP_GRAB_MAX_MS), C1);
+        assert_eq!(q.transform(&facts(BASKET, C1, CELL, C1, false, 10.0, 1_000 + PROP_GRAB_MAX_MS)), TransformVerdict::Accepted);
+        assert_eq!(q.claim(BASKET, C3, CELL, touch::CONTACT, 1_100 + PROP_GRAB_MAX_MS), ClaimVerdict::Granted(2));
+    }
+
+    #[test]
+    fn a_sample_farther_than_the_step_budget_is_refused_and_leaves_the_record() {
+        let mut p = Props::default();
+        assert_eq!(p.claim(BASKET, C2, CELL, touch::CONTACT, 1_000), ClaimVerdict::Granted(1));
+        // the first sample after the grant: the floor
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, PROP_STEP_FLOOR_UNITS + 1.0, 1_010)), TransformVerdict::TooFast);
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, PROP_STEP_FLOOR_UNITS, 1_010)), TransformVerdict::Accepted);
+        // 100 ms later: 600 units at 6000 a second
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 601.0, 1_110)), TransformVerdict::TooFast);
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 600.0, 1_110)), TransformVerdict::Accepted);
+        // a refused sample moves no clock: the next is judged from the last accepted
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 5_000.0, 1_200)), TransformVerdict::TooFast);
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 539.0, 1_200)), TransformVerdict::Accepted);
+        // not a number: refused
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, f32::NAN, 1_300)), TransformVerdict::TooFast);
+        // the host's first sample of an unclaimed prop: the floor
+        let mut q = Props::default();
+        assert_eq!(q.transform(&facts(0x54a44, C1, CELL, C1, false, 200.0, 0)), TransformVerdict::TooFast);
+        assert_eq!(q.transform(&facts(0x54a44, C1, CELL, C1, false, 50.0, 0)), TransformVerdict::Accepted);
     }
 }

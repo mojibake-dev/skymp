@@ -36,6 +36,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <deque>
 #include <functional>
 #include <limits>
@@ -2953,6 +2954,19 @@ void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
   }
 
   placedObject->SetCount(count);
+
+  // thuum docs/verbs/prop-physics.md (the drop's stream at T3, 2026-10-30): a
+  // copy placed at the actor's own position wakes Dynamic inside the dropper's
+  // capsule on its seat and is thrown out of reach; a step ahead along the
+  // actor's heading it lands at the feet, as the engine's own drop does
+  {
+    constexpr float kDropAheadUnits = 64.f;
+    constexpr float kDegToRad = 3.14159265f / 180.f;
+    const float yaw = GetAngle().z * kDegToRad;
+    const NiPoint3 pos = GetPos();
+    placedObject->SetPos({ pos.x + std::sin(yaw) * kDropAheadUnits,
+                           pos.y + std::cos(yaw) * kDropAheadUnits, pos.z });
+  }
 
   uint32_t droppedItemFormId = placedObject->GetFormId();
 

@@ -37,8 +37,10 @@ TEST_CASE("Dropping an item", "[DropItemTest]")
   MpObjectReference& refr =
     partOne.worldState.GetFormAt<MpObjectReference>(0xff000001);
   REQUIRE(refr.GetBaseId() == ironDagger);
+  // a step ahead of the actor along its heading (angle z 0: north), at its
+  // feet, never inside its capsule (thuum prop-physics, the drop's stream)
   REQUIRE(refr.GetPos().x == 1.f);
-  REQUIRE(refr.GetPos().y == 2.f);
+  REQUIRE(refr.GetPos().y == 66.f);
   REQUIRE(refr.GetPos().z == 3.f);
   ac.AddItem(ironSword, 5);
   partOne.Messages().clear();

@@ -103,6 +103,7 @@ type Prop = {
     lastRead: Sample | undefined;
     stirredAt: number;
     streaming: boolean;            // awake samples went out since the last sleep
+    announce: boolean;             // a granted word named this seat: its first read goes out at once (see stream)
     // the follower's side
     pending: Sample | undefined;   // the newest sample in, applied on the next update
     lastSampleAt: number;
@@ -519,6 +520,14 @@ export class PropService extends ClientListener {
         prop.streaming = false;
         prop.stirredAt = now;
         prop.lastTouchRead = undefined;
+        // a granted touch (wake): the server's row starts its silence clock at
+        // the grant (wire-rules props.rs claim: since_ms and last_sample_ms),
+        // so the owner must be heard within PROP_SILENCE_MS whether or not the
+        // body moves, else the row lapses to the cell's host and every sample
+        // after is E_PROP_NOT_OWNER (x-prop-drop v4 162049: a dropped sword at
+        // the dropper's feet, still for 3.6 s). The host-default simulation
+        // (no wake) keeps the lazy baseline: nothing goes out until a move
+        prop.announce = simulate && wake;
         logTrace(this, `prop ${prop.refr.toString(16)} ${simulate ? "simulated here: Dynamic" : "followed: Keyframed"}`);
     }
 
@@ -545,9 +554,20 @@ export class PropService extends ClientListener {
         }
         const read = PropService.read(refr, now);
         if (!prop.lastSent) {
+            prop.lastRead = read;
+            if (prop.announce) {
+                // the grant's first sample: the stream is open from here, so the
+                // asleep sample and the server's lease follow SLEEP_AFTER_MS
+                // later when nothing stirs
+                prop.announce = false;
+                this.send(prop, read, false, now);
+                prop.streaming = true;
+                prop.stirredAt = now;
+                logLab(TAG, `stream ${prop.refr.toString(16)} started at the grant`);
+                return;
+            }
             // the baseline: nothing goes out until the body moves from here
             prop.lastSent = read;
-            prop.lastRead = read;
             prop.stirredAt = 0;
             return;
         }
@@ -1026,6 +1046,7 @@ export class PropService extends ClientListener {
             lastRead: undefined,
             stirredAt: 0,
             streaming: false,
+            announce: false,
             pending: undefined,
             lastSampleAt: 0,
             prevSampleAt: 0,

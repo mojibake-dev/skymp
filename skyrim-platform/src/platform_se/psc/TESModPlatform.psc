@@ -96,7 +96,9 @@ Bool Function LaunchArrowAt(Actor shooter, Weapon weapon, Ammo ammo, Float power
 
 ; thuum docs/verbs/quest-stage.md, slice two: a stage the server relays is
 ; applied here through the engine's SetStage without its Papyrus fragment
-; (the talker's game ran it): the pair in before the SetStage, out at the
-; latent call's answer; false for no quest or a stage outside 0 to 65535
+; (the talker's game ran it): one mark on the pair before the SetStage, which
+; the VM's quest stage sink consumes at the stage's first event; Release is
+; the client's safety 10 s after the apply, for a mark no event claimed;
+; false for no quest or a stage outside 0 to 65535
 Bool Function SuppressQuestStageFragment(Quest quest, Int stage) global native
 Bool Function ReleaseQuestStageFragment(Quest quest, Int stage) global native

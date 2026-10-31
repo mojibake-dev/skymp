@@ -385,43 +385,68 @@ export class RemoteServer extends ClientListener {
     body.enableAI(true);
     aiOn = true;
     logTrace(this, `${tag}: AI on for the server's open (D71); reads ${body.isAIEnabled()} at the switch`);
+    // v6 (D71's fifth read, x-body-open-guest-fix v2 065444 and 065821): one
+    // activate 150 ms after the switch returned false with the AI reading
+    // true, while the green read (x-body-open-guest v2 215922, leg 4) had the
+    // AI on for over five seconds before the server's open. So the activate
+    // is retried every kRetryMs until the engine takes it or
+    // kActivateDeadlineMs pass, each return logged with the body's state: the
+    // beat the engine needs is the measurement, and the first true is the
+    // open (HYPOTHESIS: the dead actor's process wants more than a frame
+    // after EnableAI before it takes an activation; a run of refusals to the
+    // deadline falsifies it and sends the read to Actor::ActivateRef).
     const kBeatMs = 150;
+    const kRetryMs = 200;
+    const kActivateDeadlineMs = 5000;
     const kPollMs = 100;
     const kOpenDeadlineMs = 3000;
-    timers.setTimeout(() => {
+    const switchedAt = Date.now();
+    let attempts = 0;
+    const pollOpen = (deadline: number) => {
+      if (Ui.isMenuOpen("ContainerMenu")) {
+        logTrace(this, `${tag}: the ContainerMenu is open`);
+        aiOff("the menu is open");
+        const pollClose = () => {
+          if (Ui.isMenuOpen("ContainerMenu")) {
+            timers.setTimeout(pollClose, kPollMs);
+            return;
+          }
+          sendClosing("the menu closed");
+        };
+        timers.setTimeout(pollClose, kPollMs);
+        return;
+      }
+      if (Date.now() > deadline) {
+        aiOff(`no menu within ${kOpenDeadlineMs} ms`);
+        sendClosing("gave up waiting for the menu; releasing the occupant");
+        return;
+      }
+      timers.setTimeout(() => pollOpen(deadline), kPollMs);
+    };
+    const tryActivate = () => {
       const ac = actorOf();
       const again = refOf();
-      logTrace(this, `${tag}: AI reads ${ac ? ac.isAIEnabled() : undefined} after ${kBeatMs} ms; activating for the server's open`);
-      if (!again) {
+      const elapsed = Date.now() - switchedAt;
+      if (!again || !ac) {
         aiOff("the reference is gone");
         return;
       }
+      attempts += 1;
       const ok = again.activate(Game.getPlayer(), true);
-      logTrace(this, `${tag}: activate returned ${ok}`);
-      const deadline = Date.now() + kOpenDeadlineMs;
-      const pollOpen = () => {
-        if (Ui.isMenuOpen("ContainerMenu")) {
-          logTrace(this, `${tag}: the ContainerMenu is open`);
-          aiOff("the menu is open");
-          const pollClose = () => {
-            if (Ui.isMenuOpen("ContainerMenu")) {
-              timers.setTimeout(pollClose, kPollMs);
-              return;
-            }
-            sendClosing("the menu closed");
-          };
-          timers.setTimeout(pollClose, kPollMs);
-          return;
-        }
-        if (Date.now() > deadline) {
-          aiOff(`no menu within ${kOpenDeadlineMs} ms`);
-          sendClosing("gave up waiting for the menu; releasing the occupant");
-          return;
-        }
-        timers.setTimeout(pollOpen, kPollMs);
-      };
-      timers.setTimeout(pollOpen, kPollMs);
-    }, kBeatMs);
+      const opened = ok || Ui.isMenuOpen("ContainerMenu");
+      logTrace(this, `${tag}: activate returned ${ok} at +${elapsed} ms (attempt ${attempts}; AI ${ac.isAIEnabled()}, dead ${ac.isDead()}, 3D ${ac.is3DLoaded()}, health ${ac.getActorValue("Health").toFixed(0)}${opened && !ok ? ", the menu open regardless" : ""})`);
+      if (opened) {
+        timers.setTimeout(() => pollOpen(Date.now() + kOpenDeadlineMs), kPollMs);
+        return;
+      }
+      if (elapsed + kRetryMs <= kActivateDeadlineMs) {
+        timers.setTimeout(tryActivate, kRetryMs);
+        return;
+      }
+      aiOff(`the activate refused ${attempts} times over ${elapsed} ms`);
+      sendClosing("the engine refused the open; releasing the occupant");
+    };
+    timers.setTimeout(tryActivate, kBeatMs);
   }
 
   private onTeleportMessage(event: ConnectionMessage<TeleportMessage> | ConnectionMessage<TeleportMessage2>): void {

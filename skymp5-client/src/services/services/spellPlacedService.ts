@@ -12,30 +12,31 @@ import { WorldCleanerService } from './worldCleanerService';
 // heading, the pitch read of 2026-10-30; the server's record carries another
 // yaw). At the accepted cast the server asks this game for the poses
 // (PlacedRequest: the set, the bases, the window); this service finds each
-// base's new reference and answers once it has settled (PlacedReport), and
-// the server places its copies there for every other seat. The search is
-// formView's own primitive for the skip (Game.findClosestReferenceOfType):
-// centred where the script stands its objects, the point `aheadUnits` along
-// the player's yaw (Papyrus angles: x += d sin(yaw), y += d cos(yaw)), within
-// `searchRadius`, skipping the view's own copies (the cleaner's protection,
-// as formView and dropItemService tell the engine's references from the
-// view's) and references already reported for an earlier set. Settled: two
-// polls `pollMs` apart within `settleUnits` (the script's wall rises from
-// 240 below at 512 units a second, so the reads differ by about 50 until it
-// stops; the halo stands at once). At the deadline (the window less a reply
-// margin) the last read goes out settled or not; a base never found is
-// traced and dropped, and the server places nothing for it.
+// base's reference and answers once it has settled (PlacedReport), and the
+// server places its copies there for every other seat. The search is centred
+// where the script stands its objects, the point `aheadUnits` along the
+// player's yaw (Papyrus angles: x += d sin(yaw), y += d cos(yaw)), within
+// `searchRadius`, over the player's cell's references of the base's form type
+// (Cell.getNumRefs and getNthRef, the lab's refs-near idiom; an exterior cell
+// is one 4096-unit square, so the engine's closest-reference search is the
+// fallback when the cell lists none), skipping the view's own copies (the
+// cleaner's protection, as formView and dropItemService tell the engine's
+// references from the view's) and references that stand disabled or deleted.
+// Settled: two polls `pollMs` apart within `settleUnits` (the script's wall
+// rises from 240 below at 512 units a second, so the reads differ by about 50
+// until it stops; the halo stands at once). At the deadline (the window less
+// a reply margin) the last read goes out settled or not; a base never found
+// is traced and dropped, and the server places nothing for it.
 //
-// The search lists the player's cell's references of the base's form type
-// (Cell.getNumRefs and getNthRef, the lab's refs-near idiom) and takes the
-// nearest to the point within the radius, falling back to the engine's
-// closest-reference search when the cell lists none (an exterior cell is one
-// 4096-unit square; the point may lie in the next). A reference reported for
-// an earlier set is skipped only while it still stands where it was reported
-// (within `movedUnits`): x-raise-wall v4 (20261031-100936) lost every second
-// cast because the first wall, still standing at the same point 29 s later,
-// was the closest reference and skipped as reported, so a new wall beside it
-// (or that same wall moved by the script) was never seen.
+// Disabled is the rule that tells an earlier cast's objects from this one's:
+// the script keeps the same two references across casts (x-raise-wall v5,
+// 20261031-104852 and -105243: cast one's ids, disabled at its release,
+// re-enabled and raised again by cast two), so a reference is never skipped
+// for having been reported before (v4's rule, which lost every second cast:
+// the halo reappears at the exact pose it was reported at) and a disabled one
+// is never reported (the first wall, faded at its release, is not where the
+// caster sees a wall). Cast two's wall began its rise about 2.3 s after the
+// request on both runs, so the server's window is 6 s (placements.rs).
 interface Watch {
   set: number;
   base: number;
@@ -113,14 +114,14 @@ export class SpellPlacedService extends ClientListener {
         w.lastYaw = refr.getAngleZ();
         w.found = refr.getFormID();
         if (settled || now >= w.deadline) {
-          this.report(w, pos, settled, now);
+          this.report(w, pos, settled);
           continue;
         }
       } else if (now >= w.deadline) {
         if (w.lastPos !== undefined) {
           // seen earlier, gone from the search now (the engine's own copy
           // moved out of the radius, or was removed): the last read goes out
-          this.report(w, w.lastPos, false, now);
+          this.report(w, w.lastPos, false);
         } else {
           logTrace(
             this,
@@ -135,8 +136,7 @@ export class SpellPlacedService extends ClientListener {
   }
 
   // the engine's own reference of the watch's base nearest the expected
-  // point: none of the view's copies (protected), none reported already and
-  // still standing where it was reported
+  // point: none of the view's copies (protected), none disabled or deleted
   private find(
     w: Watch,
     cx: number,
@@ -193,45 +193,16 @@ export class SpellPlacedService extends ClientListener {
     return found;
   }
 
-  // not deleted, not the view's own copy, and not a reference reported for an
-  // earlier set that still stands where it was reported
+  // not deleted, not disabled (an earlier cast's object, faded at its
+  // release), not the view's own copy
   private eligible(refr: ObjectReference, cleaner: WorldCleanerService): boolean {
-    if (refr.isDeleted()) {
+    if (refr.isDeleted() || refr.isDisabled()) {
       return false;
     }
-    const id = refr.getFormID();
-    if (cleaner.getWcProtection(id) !== 0) {
-      return false;
-    }
-    const reported = this.reported.get(id);
-    if (reported) {
-      const here: [number, number, number] = [
-        refr.getPositionX(),
-        refr.getPositionY(),
-        refr.getPositionZ(),
-      ];
-      if (
-        SpellPlacedService.distance(here, reported.pos) <
-        SpellPlacedService.movedUnits
-      ) {
-        return false;
-      }
-    }
-    return true;
+    return cleaner.getWcProtection(refr.getFormID()) === 0;
   }
 
-  private report(
-    w: Watch,
-    pos: [number, number, number],
-    settled: boolean,
-    now: number,
-  ) {
-    this.reported.set(w.found, { at: now, pos: [pos[0], pos[1], pos[2]] });
-    this.reported.forEach((entry, id) => {
-      if (now - entry.at > SpellPlacedService.rememberMs) {
-        this.reported.delete(id);
-      }
-    });
+  private report(w: Watch, pos: [number, number, number], settled: boolean) {
     this.controller.emitter.emit('sendMessage', {
       message: {
         t: MsgType.PlacedReport,
@@ -257,13 +228,6 @@ export class SpellPlacedService extends ClientListener {
 
   private watches: Watch[] = [];
   private lastPollAt = 0;
-  // references reported, by form id, with when and where: a later set's search
-  // skips one that still stands there
-  private reported = new Map<
-    number,
-    { at: number; pos: [number, number, number] }
-  >();
-
   // where the script stands Raise Wall's objects: 206.25 (the wall) and
   // 196.875 (the halo) ahead of the caster (x-raise-wall-pitch v1)
   private static readonly aheadUnits = 200;
@@ -274,9 +238,4 @@ export class SpellPlacedService extends ClientListener {
   private static readonly settleUnits = 0.5;
   // a round trip to the server before its window closes
   private static readonly replyMarginMs = 500;
-  // a set's longest life (maxS 120 s plus the linger) and change
-  private static readonly rememberMs = 130_000;
-  // a reported reference farther than this from where it was reported is a
-  // new placement (the script moved it, or stood a new one on the spot)
-  private static readonly movedUnits = 8;
 }

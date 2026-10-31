@@ -247,18 +247,18 @@ export class RemoteServer extends ClientListener {
       };
 
       if (corpseAi) {
-        // x-body-open-guest-fix v1 (041249): the enable and the activate in one
-        // frame opened nothing and the AI read off at the dump; the activate
-        // waits one update so the engine takes the AI state first, and the
-        // state is logged right before it (a read either way)
+        // x-body-open-guest-fix 041249, 045522, 045859: the enable and the
+        // activate in one frame open nothing (a once('update') deferral ran in
+        // the switch's own millisecond), so the activate waits a latent beat
+        // (waitMenuMode runs while paused too) for the engine to take the AI
+        // state; the state is logged right before it (a read either way)
         const corpse = corpseAi;
-        once('update', () => {
-          const again = ObjectReference.from(Game.getFormEx(localId));
-          logTrace(this, `body ${localId.toString(16)}: AI reads ${corpse.isAIEnabled()} one update later; activating for the server's open`);
-          if (again) {
-            again.activate(Game.getPlayer(), true);
-          }
-        });
+        await Utility.waitMenuMode(0.2);
+        const again = ObjectReference.from(Game.getFormEx(localId));
+        logTrace(this, `body ${localId.toString(16)}: AI reads ${corpse.isAIEnabled()} after the wait; activating for the server's open`);
+        if (again) {
+          again.activate(Game.getPlayer(), true);
+        }
       } else {
         refr.activate(Game.getPlayer(), true);
       }
@@ -314,7 +314,7 @@ export class RemoteServer extends ClientListener {
         // On giving up the second activation is still sent, which the server
         // takes without the reach check, so the occupant is released.
         const kOpenDeadlineMs = 15000;
-        const kCorpseAiMs = 2000;
+        const kCorpseAiMs = 3000;
         const openDeadline = Date.now() + kOpenDeadlineMs;
         const corpseAiDeadline = Date.now() + kCorpseAiMs;
         let opened = true;

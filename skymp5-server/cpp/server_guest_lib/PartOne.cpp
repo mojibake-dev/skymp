@@ -36,6 +36,7 @@
 #include "PacketParser.h"
 #include "SpSnippet.h"
 #include "libespm/ARMO.h"
+#include "libespm/AVIF.h"
 #include "libespm/CELL.h"
 #include "libespm/MGEF.h"
 #include "libespm/PROJ.h"

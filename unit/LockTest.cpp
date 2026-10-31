@@ -1,4 +1,5 @@
 #include "ActionListener.h"
+#include "ConsoleCommandMessage.h"
 #include "LockPromptMessage.h"
 #include "MsgType.h"
 #include "OpenContainerMessage.h"
@@ -25,6 +26,9 @@ constexpr uint32_t kLockpick = 0xa;
 constexpr uint32_t kPicker = 0xff000fe1;
 constexpr uint32_t kWatcher = 0xff000fe2;
 constexpr uint32_t kAdmin = 0xff000fe3;
+// RiverwoodAlvorHouseKey (lab/esm.py, Skyrim.esm 2026-10-31): a vanilla key
+// the console hands a player for a key lock
+constexpr uint32_t kRiverwoodKey = 0x36a3d;
 
 // the picker (user 0) at the chest, the watcher (user 1) 100 units off, in
 // the temple
@@ -253,5 +257,66 @@ TEST_CASE("Broken picks cost Lockpicks and no more than held; a report "
   novice.key = 0;
   novice.locked = true;
   chest.SetLock(novice);
+  Leave(p);
+}
+
+// thuum docs/verbs/locks.md: the console's `lock <ref> [level] [key]` sets
+// the level and names the key's base (the lab's key lock: 255 with a vanilla
+// KEYM the console then hands the player); a level alone keeps the key, 0
+// clears it; `unlock <ref>` opens. The caller's rank is the console table's
+// (ConsoleCommandTest.cpp's idiom: the flag on the actor).
+TEST_CASE("The console's Lock takes a level and a key, keeps the key under a "
+          "level alone, and Unlock opens",
+          "[Locks][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  auto& picker = p.worldState.GetFormAt<MpActor>(kPicker);
+  auto& chest = p.worldState.GetFormAt<MpObjectReference>(kBanditChest);
+  picker.SetConsoleCommandsAllowedFlag(true);
+  RawMessageData msgData;
+  msgData.userId = 0;
+
+  ConsoleCommandMessage keyed;
+  keyed.data.commandName = "lock";
+  keyed.data.args = { int64_t(kBanditChest), int64_t(255),
+                      int64_t(kRiverwoodKey) };
+  p.GetActionListener().OnConsoleCommand(msgData, keyed);
+  REQUIRE(chest.GetLock().has_value());
+  REQUIRE(chest.GetLock()->level == 255);
+  REQUIRE(chest.GetLock()->key == kRiverwoodKey);
+  REQUIRE(chest.GetLock()->locked);
+  // the watcher hears the lock as a property
+  REQUIRE_FALSE(LockProps(p, 1).empty());
+
+  // a level alone keeps the key
+  ConsoleCommandMessage releveled;
+  releveled.data.commandName = "lock";
+  releveled.data.args = { int64_t(kBanditChest), int64_t(50) };
+  p.GetActionListener().OnConsoleCommand(msgData, releveled);
+  REQUIRE(chest.GetLock()->level == 50);
+  REQUIRE(chest.GetLock()->key == kRiverwoodKey);
+
+  // 0 clears the key
+  ConsoleCommandMessage cleared;
+  cleared.data.commandName = "lock";
+  cleared.data.args = { int64_t(kBanditChest), int64_t(50), int64_t(0) };
+  p.GetActionListener().OnConsoleCommand(msgData, cleared);
+  REQUIRE(chest.GetLock()->key == 0);
+  REQUIRE(chest.GetLock()->locked);
+
+  ConsoleCommandMessage opened;
+  opened.data.commandName = "unlock";
+  opened.data.args = { int64_t(kBanditChest) };
+  p.GetActionListener().OnConsoleCommand(msgData, opened);
+  REQUIRE_FALSE(chest.GetLock()->locked);
+
+  // left as found
+  MpChangeFormREFR::Lock novice;
+  novice.level = 0;
+  novice.key = 0;
+  novice.locked = true;
+  chest.SetLock(novice);
+  picker.SetConsoleCommandsAllowedFlag(false);
   Leave(p);
 }

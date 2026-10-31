@@ -27,6 +27,7 @@
 #include "papyrus-vm/VirtualMachine.h"
 #include "script_objects/EspmGameObject.h"
 #include "script_storages/IScriptStorage.h"
+#include "wire_bridge_cxx/rules.h"
 #include <ScopedTask.h>
 #include <TimeUtils.h>
 #include <antigo/Context.h>

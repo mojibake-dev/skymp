@@ -24,6 +24,9 @@ interface Word {
   message: SetWeatherMessage;
   applied: boolean;
   reapplied: number;
+  // when the word arrived (Date.now()): the tick's late apply waits a tick
+  // for the word's own deferred apply
+  heardAt: number;
 }
 
 const hex = (n: number) => n.toString(16);
@@ -41,7 +44,12 @@ export class WeatherService extends ClientListener {
   }
 
   private onSetWeather(e: ConnectionMessage<SetWeatherMessage>) {
-    this.word = { message: e.message, applied: false, reapplied: 0 };
+    this.word = {
+      message: e.message,
+      applied: false,
+      reapplied: 0,
+      heardAt: Date.now(),
+    };
     // the apply runs on the next update: a message handler has no Papyrus VM
     // context and Skyrim Platform refuses natives there ("can't be called in
     // this context", the locks prompt's lesson of x-lockpick 20261031-144606)
@@ -59,7 +67,14 @@ export class WeatherService extends ClientListener {
       return;
     }
     if (!word.applied) {
-      this.apply('late');
+      // a word kept for a place this game is not in yet (an interior's exit
+      // brings it back) applies here; a word just heard waits for its own
+      // deferred apply, else the tick's forced cut lands first and a
+      // transition never blends (x-weather 20261031-171309: every login
+      // word applied twice, late then word, 18 ms apart)
+      if (now - word.heardAt >= WeatherService.tickMs) {
+        this.apply('late');
+      }
       return;
     }
     if (word.message.weather === 0 || this.place() !== word.message.place) {

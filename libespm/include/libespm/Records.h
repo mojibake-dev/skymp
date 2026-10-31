@@ -29,6 +29,7 @@
 #include "NAVM.h"
 #include "NPC_.h"
 #include "OTFT.h"
+#include "PERK.h"
 #include "PROJ.h"
 #include "RACE.h"
 #include "REFR.h"

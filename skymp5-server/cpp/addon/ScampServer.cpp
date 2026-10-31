@@ -277,6 +277,11 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
     if (serverSettings.find("weatherSync") != serverSettings.end()) {
       partOne->SetWeatherEnabled(serverSettings.at("weatherSync").get<bool>());
     }
+    // thuum docs/verbs/perks.md (M5): perks as the server's transactions;
+    // `perks` false (the default) leaves every game's perks local
+    if (serverSettings.find("perks") != serverSettings.end()) {
+      partOne->SetPerksEnabled(serverSettings.at("perks").get<bool>());
+    }
     // thuum docs/verbs/npc-fate.md (ADR-050 decision 2): a hosted NPC's
     // number goes to its host as a cause and its kill waits for the host's
     // report; false restores the absolute values and the kill at once

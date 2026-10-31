@@ -3190,6 +3190,22 @@ uint64_t MonotonicMs()
 }
 }
 
+// thuum docs/verbs/perks.md (M5): a player's perk pick
+void ActionListener::OnPerkPick(const RawMessageData& rawMsgData,
+                                const PerkPickMessage& msg)
+{
+  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!actor) {
+    return;
+  }
+  if (!partOne.PerksEnabled()) {
+    spdlog::debug("[verb:perks] {:x} picks {:x} with perks off; dropped",
+                  actor->GetFormId(), msg.perk);
+    return;
+  }
+  partOne.PickPerk(*actor, msg.perk);
+}
+
 // thuum docs/verbs/locks.md (M4): a player's report on a lock. The rule
 // (wire-rules locks) judges it against the record's lock, the activation
 // reach (the rule an open passes), the Lockpicks the player holds and the

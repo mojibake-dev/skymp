@@ -1919,6 +1919,30 @@ wire_struct! {
 }
 
 wire_struct! {
+    /// MsgType 66, thuum's (docs/verbs/weather.md, M4): the server's weather
+    /// for the place the player is in. Server to client, reliable, to one
+    /// player: at login, when it enters a place and at each change of the
+    /// server's pick for its worldspace (wire-rules weather). The game forces
+    /// the weather (`transition` false: a cut, as at login) or lets its engine
+    /// blend into it (`transition` true, a change the player stood through);
+    /// `weather` 0 releases the game's override (an interior, a worldspace
+    /// without a pool), so the engine's own sky stands. A game in another
+    /// place keeps the word until it gets there. Reason codes: `E_VAL_RANGE`
+    /// (a place of 0).
+    pub struct SetWeather {
+        /// `"t": 66`.
+        #[serde(default)]
+        pub t: MsgT<66>,
+        /// The worldspace, or the interior cell a release is for; never 0.
+        pub place: u32,
+        /// The WTHR form id; 0 releases the override.
+        pub weather: u32,
+        /// Blend from the current weather (true) or cut to it (false).
+        pub transition: bool,
+    }
+}
+
+wire_struct! {
     /// One skill use (docs/verbs/leveling.md): the skill by its ActorValue and
     /// the action's base amount as the engine computed it.
     pub struct SkillUseEntry {

@@ -95,5 +95,7 @@ enum class MsgType : uint8_t
                    // lockpicking attempt ended, judged into the record
   LockPrompt = 65, // the same verb: the server's word that an activation met a
                    // lock, so the game runs the engine's own on it
+  SetWeather = 66, // thuum docs/verbs/weather.md (M4): the server's weather
+                   // for the place a player is in, or a release
   Max
 };

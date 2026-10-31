@@ -50,6 +50,7 @@
 #include "SetGameTimeMessage.h"
 #include "SetInventoryMessage.h"
 #include "SetRaceMenuOpenMessage.h"
+#include "SetWeatherMessage.h"
 #include "SkillUseMessage.h"
 #include "SpSnippetMessage.h"
 #include "SpellCastMessage.h"
@@ -130,4 +131,5 @@
   REGISTER_MESSAGE(PlacedReportMessage)                                       \
   REGISTER_MESSAGE(SkillUseMessage)                                           \
   REGISTER_MESSAGE(LockReportMessage)                                         \
-  REGISTER_MESSAGE(LockPromptMessage)
+  REGISTER_MESSAGE(LockPromptMessage)                                         \
+  REGISTER_MESSAGE(SetWeatherMessage)

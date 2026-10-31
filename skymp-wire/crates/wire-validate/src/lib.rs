@@ -702,6 +702,16 @@ fn check_lock_prompt(m: &skymp::LockPrompt) -> Result<(), Reject> {
     Ok(())
 }
 
+/// The server's weather word (docs/verbs/weather.md): a place, never 0; the
+/// weather may be 0 (a release); the transport refuses it from a client by
+/// direction.
+fn check_set_weather(m: &skymp::SetWeather) -> Result<(), Reject> {
+    if m.place == 0 {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
 /// The most one skill use's base amount may carry: wire-rules leveling's
 /// MAX_BASE_PER_USE (UNMEASURED; a Daedric craft is in the thousands).
 const SKILL_USE_MAX_AMOUNT: f32 = 100_000.0;
@@ -1048,6 +1058,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::SkillUse(m) => check_skill_use(m),
         Message::LockReport(m) => check_lock_report(m),
         Message::LockPrompt(m) => check_lock_prompt(m),
+        Message::SetWeather(m) => check_set_weather(m),
         Message::CreateActor(m) => check_create_actor(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
@@ -2236,6 +2247,16 @@ mod tests {
     }
 
     #[test]
+    fn weather_words_name_a_place_and_may_release() {
+        use wire_schema::skymp::SetWeather;
+        let word = |place, weather, transition| Message::SetWeather(SetWeather { place, weather, transition, ..Default::default() });
+        assert_eq!(validate_server(&word(0x3c, 0x81a, false)), Ok(()));
+        assert_eq!(validate_server(&word(0x3c, 0x12f89, true)), Ok(()));
+        assert_eq!(validate_server(&word(0x371de, 0, false)), Ok(()), "a release in an interior");
+        assert_eq!(validate_server(&word(0, 0x81a, false)), Err(Reject::Range));
+    }
+
+    #[test]
     fn damage_causes_carry_a_percentage_for_a_victim_in_range() {
         use wire_schema::skymp::DamageCause;
         let cause = |idx, health| Message::DamageCause(DamageCause { idx, attacker: 0xff00_0001, health, kill_move: false, ..Default::default() });
@@ -2342,6 +2363,13 @@ mod tests {
             let _ = validate(&m, &mut g, now);
             prop_assert_eq!(validate_server(&m), if refr == 0 || outcome > 2 || broken > 8 { Err(Reject::Range) } else { Ok(()) });
             let _ = validate_server(&Message::LockPrompt(LockPrompt { refr, ..Default::default() }));
+        }
+
+        #[test]
+        fn weather_words_never_panic(place in any::<u32>(), weather in any::<u32>(), transition in any::<bool>()) {
+            use wire_schema::skymp::SetWeather;
+            let m = Message::SetWeather(SetWeather { place, weather, transition, ..Default::default() });
+            prop_assert_eq!(validate_server(&m), if place == 0 { Err(Reject::Range) } else { Ok(()) });
         }
 
         #[test]

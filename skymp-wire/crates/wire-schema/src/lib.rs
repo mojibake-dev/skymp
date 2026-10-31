@@ -43,7 +43,9 @@ use bounded::{String, Vec};
 /// 24: LockReport, LockPrompt and CreateActorProps.lock (thuum
 /// docs/verbs/locks.md, m4-locks): the server's lock state on every
 /// reference, the prompt and the report around the engine's minigame.
-pub const SCHEMA_VERSION: u16 = 24;
+/// 25: SetWeather (thuum docs/verbs/weather.md, m4-weather): the server's
+/// weather for the place a player is in.
+pub const SCHEMA_VERSION: u16 = 25;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -467,6 +469,8 @@ pub enum Message {
     LockReport(skymp::LockReport),
     /// 73, MsgType 65 (thuum). See [`skymp::LockPrompt`].
     LockPrompt(skymp::LockPrompt),
+    /// 74, MsgType 66 (thuum). See [`skymp::SetWeather`].
+    SetWeather(skymp::SetWeather),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -495,7 +499,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 74] = [
+const TABLE: [Row; 75] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -570,14 +574,15 @@ const TABLE: [Row; 74] = [
     row("SkillUse", 63, 128, C2S),
     row("LockReport", 64, 16, C2S),
     row("LockPrompt", 65, 8, S2C),
+    row("SetWeather", 66, 16, S2C),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 74;
-const _: () = assert!(TABLE.len() == 74, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 75;
+const _: () = assert!(TABLE.len() == 75, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -676,6 +681,7 @@ impl Message {
             Message::SkillUse(_) => 71,
             Message::LockReport(_) => 72,
             Message::LockPrompt(_) => 73,
+            Message::SetWeather(_) => 74,
         }
     }
 
@@ -772,7 +778,8 @@ mod tests {
         assert_eq!(name_of_msg_type(63), Some("SkillUse"));
         assert_eq!(name_of_msg_type(64), Some("LockReport"));
         assert_eq!(name_of_msg_type(65), Some("LockPrompt"));
-        assert_eq!(name_of_msg_type(66), None);
+        assert_eq!(name_of_msg_type(66), Some("SetWeather"));
+        assert_eq!(name_of_msg_type(67), None);
     }
 
     #[test]
@@ -867,6 +874,8 @@ mod tests {
             // a lock report and a prompt at their longest (thuum docs/verbs/locks.md)
             Message::LockReport(skymp::LockReport { refr: u32::MAX, outcome: u8::MAX, broken: u8::MAX, ..Default::default() }),
             Message::LockPrompt(skymp::LockPrompt { refr: u32::MAX, ..Default::default() }),
+            // a weather word at its longest (thuum docs/verbs/weather.md)
+            Message::SetWeather(skymp::SetWeather { place: u32::MAX, weather: u32::MAX, transition: true, ..Default::default() }),
             Message::RaceMenuPreset(skymp::RaceMenuPreset {
                 actor: u32::MAX,
                 preset: "x".repeat(cap::RACEMENU_PRESET).try_into().unwrap_or_default(),

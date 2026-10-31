@@ -4,6 +4,7 @@
 
 #include "MpObjectReference.h"
 #include "PartOne.h"
+#include "save_storages/AsyncSaveStorage.h"
 
 PartOne& GetPartOne();
 
@@ -70,9 +71,18 @@ TEST_CASE("Dropping an item", "[DropItemTest]")
   REQUIRE(ac.GetInventory().GetItemCount(ironSword) == 0);
 }
 
-TEST_CASE("A dropped copy survives a restart: a user whose actor is set after "
-          "the load hears the copy's create word (x-prop-push v15 220439: "
-          "the restored ingot reached neither seat)",
+// SaveStorageTest.cpp's helpers: a file-backed save storage under unit/data
+// and a synchronous upsert into it
+std::shared_ptr<
+  Viet::ISaveStorage<MpChangeForm, FormDesc, std::vector<FormDesc>>>
+MakeSaveStorageFile();
+void UpsertSync(
+  Viet::ISaveStorage<MpChangeForm, FormDesc, std::vector<FormDesc>>& st,
+  std::vector<std::optional<MpChangeForm>> changeForms);
+
+TEST_CASE("A dropped copy survives a restart: the save's loader keeps it and "
+          "a user whose actor is set after the load hears its create word "
+          "(x-prop-push v15 220439: upstream's loader skipped the ingot)",
           "[DropItemTest]")
 {
   constexpr uint32_t ironDagger = 0x0001397E;
@@ -91,33 +101,38 @@ TEST_CASE("A dropped copy survives a restart: a user whose actor is set after "
   MpObjectReference& copy =
     running.worldState.GetFormAt<MpObjectReference>(0xff000001);
   REQUIRE(copy.GetBaseId() == ironDagger);
-  const MpChangeForm savedActor = ac.GetChangeForm();
+  // the record as the save writes it: the actor's and the copy's
+  MpChangeForm savedActor = ac.GetChangeForm();
+  savedActor.profileId = 7; // a player character, as the save marks one
   const MpChangeForm savedCopy = copy.GetChangeForm();
   REQUIRE(savedCopy.isDisabled == false);
   REQUIRE(savedCopy.position.y == 66.f);
 
-  // the restarted server loads the records as AttachSaveStorage does, in
-  // either order (the database's iteration order is not a promise)
-  const bool copyFirst = GENERATE(false, true);
+  // the restarted server reads the save as AttachSaveStorage does
+  const bool persist = GENERATE(true, false);
+  auto storage = MakeSaveStorageFile();
+  UpsertSync(*storage, { savedActor, savedCopy });
   PartOne& restarted = GetPartOne();
-  if (copyFirst) {
-    restarted.worldState.LoadChangeForm(savedCopy,
-                                        restarted.CreateFormCallbacks());
+  restarted.SetPropsPersist(persist);
+  restarted.AttachSaveStorage(storage);
+  auto loadedForm = restarted.worldState.LookupFormById(0xff000001);
+  if (!persist) {
+    // upstream's clutter policy, kept behind the setting: the item is skipped
+    REQUIRE(loadedForm == nullptr);
+    return;
   }
-  restarted.worldState.LoadChangeForm(savedActor,
-                                      restarted.CreateFormCallbacks());
-  if (!copyFirst) {
-    restarted.worldState.LoadChangeForm(savedCopy,
-                                        restarted.CreateFormCallbacks());
-  }
+  REQUIRE(loadedForm != nullptr);
   MpObjectReference& loaded =
     restarted.worldState.GetFormAt<MpObjectReference>(0xff000001);
   REQUIRE(loaded.GetPos().y == 66.f);
   REQUIRE(loaded.IsDisabled() == false);
 
-  // the user logs in to its restored actor: the login's subscription pass
-  // must send the copy's create word, as it does for a copy created while
-  // the user is online
+  // the user logs in to its restored actor (the loader disables a player
+  // character, the login enables it): the login's subscription pass must
+  // send the copy's create word, as it does for a copy created while the
+  // user is online
+  MpActor& loadedActor = restarted.worldState.GetFormAt<MpActor>(0xff000000);
+  loadedActor.Enable();
   DoConnect(restarted, 0);
   restarted.Messages().clear();
   restarted.SetUserActor(0, 0xff000000);

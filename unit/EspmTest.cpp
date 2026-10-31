@@ -781,3 +781,27 @@ TEST_CASE("AVIF skill constants and perk tree", "[espm]")
   REQUIRE(!souls.hasSkill);
   REQUIRE(souls.nodes.empty());
 }
+
+TEST_CASE("REGN names its worldspace and its weather list", "[espm]")
+{
+  // thuum docs/verbs/weather.md: the sky's variety lives in the weather
+  // regions (SkyrimClimate's own list names one weather). WeatherTundra is
+  // overridden by Dawnguard.esm in the lab's load order, so only its shape is
+  // pinned; SovngardeIntWeather is Skyrim.esm's alone.
+  MyEspmProvider provider;
+  auto tundra = espm::GetData<espm::REGN>(0xc5858, &provider);
+  REQUIRE(std::string(tundra.editorId) == "WeatherTundra");
+  REQUIRE(tundra.worldspace == 0x3c);
+  REQUIRE(tundra.weathers.size() >= 3);
+  for (const auto& entry : tundra.weathers) {
+    REQUIRE(entry.weather != 0);
+    REQUIRE(entry.chance > 0);
+  }
+  auto sovngarde = espm::GetData<espm::REGN>(0x10ff20, &provider);
+  REQUIRE(std::string(sovngarde.editorId) == "SovngardeIntWeather");
+  REQUIRE(sovngarde.worldspace == 0x2ee41);
+  REQUIRE(sovngarde.weathers.size() == 1);
+  REQUIRE(sovngarde.weathers[0].weather == 0x10fef8);
+  REQUIRE(sovngarde.weathers[0].chance == 100);
+  REQUIRE(sovngarde.weathers[0].global == 0);
+}

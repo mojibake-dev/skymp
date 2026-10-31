@@ -26,6 +26,7 @@
 #include "RaceMenuPresetMessage.h"
 #include "SetGameTimeMessage.h"
 #include "SetRaceMenuOpenMessage.h"
+#include "SetWeatherMessage.h"
 #include "SpellCastMessage.h"
 #include "UpdateGameModeDataMessage.h"
 
@@ -198,6 +199,17 @@ struct PartOne::Impl
   rust::Box<skymp::rules::GameClock> gameClock =
     skymp::rules::new_game_clock("{}");
   bool gameTimeBroadcast = false;
+
+  // the server's weather (thuum docs/verbs/weather.md; Rust's, wire-rules
+  // weather): one per worldspace on the game clock; players hear it once
+  // weatherEnabled is set. The settings' pools wait for the load order when
+  // they name form descriptors (weatherPoolsApplied false until then)
+  rust::Box<skymp::rules::WeatherSync> weatherSync =
+    skymp::rules::new_weather_sync(120, 0);
+  bool weatherEnabled = false;
+  nlohmann::json weatherPools = nlohmann::json::object();
+  bool weatherPoolsApplied = true;
+  std::chrono::steady_clock::time_point lastWeatherTick{};
 
   // TES3MP's rest switches (thuum docs/verbs/rest.md): server-settings.json's
   // `rest` block, both on unless a server turns one off
@@ -374,6 +386,7 @@ void PartOne::Tick()
   TickPacketHistoryPlaybacks();
   TickDeferredMessages();
   TickGameTime();
+  TickWeather();
   TickFightsEverySecond();
   TickBondsEverySecond();
   TickPlacementsOften();
@@ -440,6 +453,9 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
     }
 
     actor.ForceSubscriptionsUpdate();
+
+    // the sky of the place the player stands in (thuum docs/verbs/weather.md)
+    SendWeatherWord(userId);
 
     // thuum docs/verbs/map-markers.md: show the player's discovered markers
     // once its client's world is up (the first movement after this)
@@ -596,6 +612,7 @@ void PartOne::AttachEspm(espm::Loader* espm)
   pImpl->espm = espm;
   worldState.AttachEspm(espm, [this] { return CreateFormCallbacks(); });
   LoadSkillTable();
+  LoadWeatherPools();
 }
 
 void PartOne::AttachSaveStorage(
@@ -762,6 +779,7 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
         this_->serverState.Disconnect(userId);
         this_->serverState.disconnectingUserId = Networking::InvalidUserId;
         this_->pImpl->gameClock->forget(userId);
+        this_->pImpl->weatherSync->forget(userId);
       });
 
       this_->serverState.disconnectingUserId = userId;
@@ -4389,4 +4407,265 @@ PartOne::ShotClaim PartOne::ClaimShot(uint32_t actorFormId, uint32_t weapon,
       break;
   }
   return res;
+}
+
+// thuum docs/verbs/weather.md (M4): the server's weather
+
+namespace {
+// A weather setting's form reference: a number (a global form id), a hex
+// string ("0x81a", the tests' and the lab's shorthand for Skyrim.esm's own
+// ids) or a form descriptor ("81a:Skyrim.esm"), which needs the load order
+// (0 before the game files are attached; the caller waits for them).
+uint32_t WeatherFormRef(const nlohmann::json& value,
+                        const EspmFileList& espmFiles, const std::string& what)
+{
+  if (value.is_number_unsigned()) {
+    return value.get<uint32_t>();
+  }
+  if (value.is_string()) {
+    const auto text = value.get<std::string>();
+    if (text.find(':') != std::string::npos) {
+      return espmFiles.empty()
+        ? 0
+        : FormDesc::FromString(text).ToFormId(espmFiles);
+    }
+    try {
+      return static_cast<uint32_t>(std::stoul(text, nullptr, 16));
+    } catch (const std::exception&) {
+    }
+  }
+  throw std::runtime_error(
+    fmt::format("weather: {} must be a form id (a number, \"0x81a\" or "
+                "\"81a:Skyrim.esm\"), got {}",
+                what, value.dump()));
+}
+
+// Whether any pool names a form descriptor, which only the load order
+// resolves.
+bool WeatherPoolsNeedLoadOrder(const nlohmann::json& pools)
+{
+  for (const auto& [world, list] : pools.items()) {
+    if (world.find(':') != std::string::npos) {
+      return true;
+    }
+    for (const auto& entry : list) {
+      const auto& weather = entry.at("weather");
+      if (weather.is_string() &&
+          weather.get<std::string>().find(':') != std::string::npos) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+}
+
+void PartOne::SetWeatherEnabled(bool on)
+{
+  pImpl->weatherEnabled = on;
+  spdlog::info("[verb:weather] weather sync {}", on ? "on" : "off");
+}
+
+bool PartOne::WeatherEnabled() const
+{
+  return pImpl->weatherEnabled;
+}
+
+void PartOne::SetWeatherSettings(const std::string& weatherSettingsJson)
+{
+  const auto j = nlohmann::json::parse(weatherSettingsJson);
+  if (!j.is_object()) {
+    throw std::runtime_error(
+      "weather: an object with changeGameMinutes, seed and pools");
+  }
+  for (const auto& [key, value] : j.items()) {
+    if (key != "changeGameMinutes" && key != "seed" && key != "pools") {
+      throw std::runtime_error("weather: unknown key '" + key + "'");
+    }
+  }
+  uint32_t changeGameMinutes = 120;
+  if (j.contains("changeGameMinutes")) {
+    const auto& v = j.at("changeGameMinutes");
+    if (!v.is_number_unsigned() || v.get<uint64_t>() == 0 ||
+        v.get<uint64_t>() > 1440) {
+      throw std::runtime_error("weather: changeGameMinutes must be a whole "
+                               "number of game minutes, 1 to 1440");
+    }
+    changeGameMinutes = v.get<uint32_t>();
+  }
+  uint64_t seed = 0;
+  if (j.contains("seed")) {
+    const auto& v = j.at("seed");
+    if (!v.is_number_unsigned()) {
+      throw std::runtime_error("weather: seed must be a whole number");
+    }
+    seed = v.get<uint64_t>();
+  }
+  const auto pools = j.value("pools", nlohmann::json::object());
+  if (!pools.is_object()) {
+    throw std::runtime_error(
+      "weather: pools must map a worldspace to its list of {weather, chance}");
+  }
+  for (const auto& [world, list] : pools.items()) {
+    if (!list.is_array() || list.empty()) {
+      throw std::runtime_error(fmt::format(
+        "weather: pools.{} must be a list of {{weather, chance}}", world));
+    }
+    for (const auto& entry : list) {
+      if (!entry.is_object() || !entry.contains("weather") ||
+          !entry.contains("chance") ||
+          !entry.at("chance").is_number_unsigned()) {
+        throw std::runtime_error(
+          fmt::format("weather: pools.{} entries are {{weather, chance}} with "
+                      "a whole chance",
+                      world));
+      }
+      for (const auto& [key, value] : entry.items()) {
+        if (key != "weather" && key != "chance") {
+          throw std::runtime_error(fmt::format(
+            "weather: pools.{}: unknown key '{}' in an entry", world, key));
+        }
+      }
+    }
+  }
+  pImpl->weatherSync = skymp::rules::new_weather_sync(changeGameMinutes, seed);
+  pImpl->weatherPools = pools;
+  pImpl->weatherPoolsApplied = false;
+  const bool applied = ApplySettingsWeatherPools();
+  spdlog::info("[verb:weather] settings: a slot of {} game minutes, seed {}, "
+               "{} pinned pool(s){}",
+               changeGameMinutes, seed, pools.size(),
+               applied ? "" : " (resolved when the game files attach)");
+}
+
+bool PartOne::ApplySettingsWeatherPools()
+{
+  if (pImpl->weatherPoolsApplied) {
+    return true;
+  }
+  if (WeatherPoolsNeedLoadOrder(pImpl->weatherPools) && !HasEspm()) {
+    return false;
+  }
+  for (const auto& [world, list] : pImpl->weatherPools.items()) {
+    const auto worldId = WeatherFormRef(nlohmann::json(world),
+                                        worldState.espmFiles, "a pools key");
+    std::vector<uint32_t> weathers;
+    std::vector<uint32_t> chances;
+    for (const auto& entry : list) {
+      weathers.push_back(
+        WeatherFormRef(entry.at("weather"), worldState.espmFiles,
+                       fmt::format("pools.{}'s weather", world)));
+      chances.push_back(entry.at("chance").get<uint32_t>());
+    }
+    const auto n = pImpl->weatherSync->set_pool(
+      worldId, rust::Slice<const uint32_t>(weathers.data(), weathers.size()),
+      rust::Slice<const uint32_t>(chances.data(), chances.size()), true);
+    if (n == 0) {
+      throw std::runtime_error(
+        fmt::format("weather: pools.{} needs a weather with a chance above 0 "
+                    "(and at most 64 weathers)",
+                    world));
+    }
+    spdlog::info("[verb:weather] worldspace {:x}: {} weather(s) pinned by the "
+                 "settings",
+                 worldId, n);
+  }
+  pImpl->weatherPoolsApplied = true;
+  return true;
+}
+
+void PartOne::LoadWeatherPools()
+{
+  if (!HasEspm()) {
+    return;
+  }
+  size_t regions = 0;
+  std::set<uint32_t> worlds;
+  for (const auto& lookup :
+       GetEspm().GetBrowser().GetDistinctRecordsByType("REGN")) {
+    if (!lookup.rec) {
+      continue;
+    }
+    const auto data = espm::GetData<espm::REGN>(
+      lookup.ToGlobalId(lookup.rec->GetId()), &worldState);
+    if (data.weathers.empty() || data.worldspace == 0) {
+      continue;
+    }
+    const auto world = lookup.ToGlobalId(data.worldspace);
+    std::vector<uint32_t> weathers;
+    std::vector<uint32_t> chances;
+    for (const auto& entry : data.weathers) {
+      weathers.push_back(lookup.ToGlobalId(entry.weather));
+      chances.push_back(entry.chance);
+    }
+    if (pImpl->weatherSync->set_pool(
+          world, rust::Slice<const uint32_t>(weathers.data(), weathers.size()),
+          rust::Slice<const uint32_t>(chances.data(), chances.size()),
+          false) > 0) {
+      ++regions;
+      worlds.insert(world);
+    }
+  }
+  spdlog::info(
+    "[verb:weather] pools from the game files: {} weather "
+    "region(s) over {} worldspace(s); Tamriel's holds {} weather(s)",
+    regions, worlds.size(), pImpl->weatherSync->pool_len(0x3c));
+  if (!ApplySettingsWeatherPools()) {
+    spdlog::warn("[verb:weather] the settings' pools did not resolve against "
+                 "the load order");
+  }
+}
+
+void PartOne::SendWeatherWord(Networking::UserId userId)
+{
+  if (!pImpl->weatherEnabled) {
+    return;
+  }
+  auto actor = serverState.ActorByUser(userId);
+  if (!actor) {
+    return;
+  }
+  const uint32_t place =
+    actor->GetCellOrWorld().ToFormId(worldState.espmFiles);
+  if (place == 0) {
+    return;
+  }
+  bool isWorld = false;
+  if (HasEspm()) {
+    const auto lookup = GetEspm().GetBrowser().LookupById(place);
+    isWorld = lookup.rec && lookup.rec->GetType() == "WRLD";
+  } else {
+    isWorld = pImpl->weatherSync->pool_len(place) > 0;
+  }
+  const double gameMinutes =
+    static_cast<double>(GetGameTime().daysPassed) * 1440.0;
+  const auto word =
+    pImpl->weatherSync->due(userId, place, isWorld, gameMinutes);
+  if (!word.some) {
+    return;
+  }
+  SetWeatherMessage message;
+  message.place = word.place;
+  message.weather = word.weather;
+  message.transition = word.transition;
+  pImpl->sendTarget->Send(userId, message, true);
+  spdlog::info("[verb:weather] user {} hears {:x} for {:x} slot {} ({})",
+               userId, word.weather, word.place, word.slot,
+               word.weather == 0 ? "release"
+                                 : (word.transition ? "transition" : "cut"));
+}
+
+void PartOne::TickWeather()
+{
+  if (!pImpl->weatherEnabled) {
+    return;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  if (now - pImpl->lastWeatherTick < std::chrono::milliseconds(500)) {
+    return;
+  }
+  pImpl->lastWeatherTick = now;
+  for (size_t i = 0, n = serverState.maxConnectedId; i <= n; ++i) {
+    SendWeatherWord(static_cast<Networking::UserId>(i));
+  }
 }

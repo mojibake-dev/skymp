@@ -267,6 +267,16 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
       partOne->worldState.locksEnabled =
         serverSettings.at("locks").get<bool>();
     }
+    // thuum docs/verbs/weather.md (M4): the server's weather per worldspace;
+    // `weather` holds the slot, the seed and the pinned pools, every key
+    // optional (a bad value stops the server here, named); `weatherSync`
+    // false (the default) leaves every game's own sky alone
+    if (serverSettings.contains("weather")) {
+      partOne->SetWeatherSettings(serverSettings.at("weather").dump());
+    }
+    if (serverSettings.find("weatherSync") != serverSettings.end()) {
+      partOne->SetWeatherEnabled(serverSettings.at("weatherSync").get<bool>());
+    }
     // thuum docs/verbs/npc-fate.md (ADR-050 decision 2): a hosted NPC's
     // number goes to its host as a cause and its kill waits for the host's
     // report; false restores the absolute values and the kill at once

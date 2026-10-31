@@ -32,6 +32,7 @@
 #include "PROJ.h"
 #include "RACE.h"
 #include "REFR.h"
+#include "REGN.h"
 #include "SCRL.h"
 #include "SHOU.h"
 #include "SLGM.h"

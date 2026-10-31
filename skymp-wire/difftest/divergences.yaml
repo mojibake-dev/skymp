@@ -33,6 +33,17 @@ divergences:
     wire: 1
     reason: the shared quests at login (QuestStage, thuum docs/verbs/quest-stage.md); the legacy server has none
 
+  # thuum docs/verbs/weather.md (M4): the server's weather. With weatherSync
+  # on (the lab's deployed settings, which T2 copies), the wire server tells
+  # each player the sky of the place it stands in at the login itself
+  # (SetWeather, MsgType 66): T2 pins Tamriel's pool to one weather and a
+  # slot of a game day (lab/tools/test-proto.sh), so no session hears a
+  # change. The legacy server has no such message.
+  - msg: {t: 66}
+    legacy: 0
+    wire: 1
+    reason: the sky at login (SetWeather, thuum docs/verbs/weather.md); the legacy server has none
+
   # thuum docs/verbs/magic-effects.md (memo D56 A, 2026-10-28): the cure. The
   # wire server tells each player at login to drop every listed disease
   # spell (cureSpells: DiseaseSanguinareVampiris 0xb8780) through one

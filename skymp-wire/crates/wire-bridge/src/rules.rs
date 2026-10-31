@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, effects, favorites, forms, headshots, hosted_state, hostility, magic, markers, melee, movement, placements, player_globals, props, quest_stages, racemenu, ranged, rest, scripted_effects, shouts, stagger, teleports};
+use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, effects, favorites, forms, headshots, hosted_state, hostility, leveling, magic, markers, melee, movement, placements, player_globals, props, quest_stages, racemenu, ranged, rest, scripted_effects, shouts, stagger, teleports};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -522,6 +522,59 @@ mod ffi {
         distance: f32,
         /// The reported pose's height above or below the caster.
         dz: f32,
+    }
+
+    /// A skill's standing as the record holds it (thuum docs/verbs/
+    /// leveling.md): the skill by its ActorValue (6 to 23), its level and the
+    /// experience toward the next.
+    #[derive(Debug, Clone, PartialEq)]
+    struct LevelingSkill {
+        /// The skill's ActorValue, 6 to 23.
+        skill_av: u8,
+        /// The level, 15 to 100.
+        level: u8,
+        /// Experience toward the next level.
+        xp: f32,
+    }
+
+    /// The character's standing (thuum docs/verbs/leveling.md).
+    #[derive(Debug, Clone, PartialEq)]
+    struct LevelingCharacter {
+        /// The level, 1 and up.
+        level: u16,
+        /// Experience toward the next level.
+        xp: f32,
+    }
+
+    /// What a skill use changed (thuum docs/verbs/leveling.md): `kind` 0 a
+    /// skill reached `level` (the skill at `skill_av`), 1 the character
+    /// reached `level`.
+    #[derive(Debug, Clone, PartialEq)]
+    struct LevelingEvent {
+        /// 0 a skill level, 1 a character level.
+        kind: u8,
+        /// The skill's ActorValue for kind 0; 0 otherwise.
+        skill_av: u8,
+        /// The level reached.
+        level: u16,
+    }
+
+    /// A skill use judged (thuum docs/verbs/leveling.md): accepted, or `why`
+    /// 1 no skill at that ActorValue, 2 an amount that is not a number, 3 an
+    /// amount of 0 or below or over the bound; the eighteen skills after (in
+    /// ActorValue order), the character after, and what changed in order.
+    #[derive(Debug, Clone, PartialEq)]
+    struct LevelingOutcome {
+        /// Accepted.
+        accepted: bool,
+        /// Why not, as above; 0 when accepted.
+        why: u8,
+        /// Every skill after, 6 to 23.
+        skills: Vec<LevelingSkill>,
+        /// The character after.
+        character: LevelingCharacter,
+        /// What changed, in order.
+        events: Vec<LevelingEvent>,
     }
 
     /// One actor value's base (thuum docs/verbs/actor-values.md).
@@ -1587,6 +1640,24 @@ mod ffi {
         fn take_requests(self: &mut Placements) -> Vec<PlacementRequestRow>;
         /// A caster's report for one base of a requested set, judged (shape A).
         fn report_placed(self: &mut Placements, report: PlacementReport, now_ms: u64) -> PlacementReportVerdict;
+
+        /// The eighteen skills' experience constants (thuum docs/verbs/leveling.md): UESP's until the
+        /// game files' AVIF rows are set on it.
+        type LevelingTable;
+        fn new_leveling_table() -> Box<LevelingTable>;
+        /// A skill's constants from its AVIF record; false for an ActorValue that is no skill or a
+        /// constant that is not a number.
+        fn set_skill(self: &mut LevelingTable, skill_av: u8, use_mult: f32, use_offset: f32, improve_mult: f32, improve_offset: f32) -> bool;
+        /// The experience one use of the skill at `skill_av` earns from the action's `base` amount
+        /// (0 for no skill).
+        fn use_xp(self: &LevelingTable, skill_av: u8, base: f32) -> f32;
+        /// The experience the step from `level` to the next costs (0 for no skill).
+        fn level_cost(self: &LevelingTable, skill_av: u8, level: u8) -> f32;
+        /// A use applied to a player's standing: the skills the record holds (a skill not listed
+        /// stands at the floor), the character, the use.
+        fn apply_use(self: &LevelingTable, skills: &[LevelingSkill], character: LevelingCharacter, skill_av: u8, base: f32) -> LevelingOutcome;
+        /// The character experience the step from `level` to the next needs.
+        fn leveling_character_threshold(level: u16) -> f32;
         /// Sets standing in the world.
         fn live_sets(self: &Placements) -> usize;
 
@@ -1785,7 +1856,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
+pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -2414,6 +2485,81 @@ fn quest_stages_merge(record: &[QuestStageEntry], done: &QuestStageEntry) -> Vec
 
 fn quest_record_full(record: &[QuestStageEntry]) -> bool {
     quest_stages::full(record.len())
+}
+
+/// The eighteen skills' constants (wire-rules leveling).
+pub struct LevelingTable(leveling::Table);
+
+fn new_leveling_table() -> Box<LevelingTable> {
+    Box::new(LevelingTable(leveling::Table::uesp()))
+}
+
+fn leveling_character_threshold(level: u16) -> f32 {
+    leveling::character_threshold(level)
+}
+
+impl LevelingTable {
+    fn set_skill(&mut self, skill_av: u8, use_mult: f32, use_offset: f32, improve_mult: f32, improve_offset: f32) -> bool {
+        let Some(skill) = leveling::Skill::from_actor_value(skill_av) else {
+            return false;
+        };
+        let constants = leveling::Constants { use_mult, use_offset, improve_mult, improve_offset };
+        let before = self.0.constants(skill);
+        self.0.set(skill, constants);
+        self.0.constants(skill) == constants || before == constants
+    }
+
+    fn use_xp(&self, skill_av: u8, base: f32) -> f32 {
+        leveling::Skill::from_actor_value(skill_av).map_or(0.0, |skill| leveling::use_xp(&self.0, skill, base))
+    }
+
+    fn level_cost(&self, skill_av: u8, level: u8) -> f32 {
+        leveling::Skill::from_actor_value(skill_av).map_or(0.0, |skill| leveling::level_cost(&self.0, skill, level))
+    }
+
+    fn apply_use(&self, skills: &[LevelingSkill], character: LevelingCharacter, skill_av: u8, base: f32) -> LevelingOutcome {
+        let mut standing = [leveling::SkillProgress { level: leveling::SKILL_FLOOR, xp: 0.0 }; 18];
+        for s in skills {
+            if let Some(skill) = leveling::Skill::from_actor_value(s.skill_av) {
+                if let Some(slot) = standing.get_mut(usize::from(skill.index())) {
+                    *slot = leveling::SkillProgress { level: s.level.clamp(leveling::SKILL_FLOOR, leveling::SKILL_CAP), xp: if s.xp.is_finite() && s.xp >= 0.0 { s.xp } else { 0.0 } };
+                }
+            }
+        }
+        let mut progress = leveling::Progress::from_record(
+            standing,
+            leveling::Character { level: character.level.clamp(1, leveling::LEVEL_CAP), xp: if character.xp.is_finite() && character.xp >= 0.0 { character.xp } else { 0.0 } },
+        );
+        let (accepted, why, events) = match progress.apply_use(&self.0, skill_av, base) {
+            Ok(events) => (
+                true,
+                0,
+                events
+                    .into_iter()
+                    .map(|e| match e {
+                        leveling::Event::SkillLevel { skill, level } => LevelingEvent { kind: 0, skill_av: skill.actor_value(), level: u16::from(level) },
+                        leveling::Event::CharacterLevel { level } => LevelingEvent { kind: 1, skill_av: 0, level },
+                    })
+                    .collect(),
+            ),
+            Err(leveling::Refusal::Skill) => (false, 1, Vec::new()),
+            Err(leveling::Refusal::NonFinite) => (false, 2, Vec::new()),
+            Err(leveling::Refusal::Range) => (false, 3, Vec::new()),
+        };
+        LevelingOutcome {
+            accepted,
+            why,
+            skills: leveling::Skill::ALL
+                .iter()
+                .map(|skill| {
+                    let s = progress.skill(*skill);
+                    LevelingSkill { skill_av: skill.actor_value(), level: s.level, xp: s.xp }
+                })
+                .collect(),
+            character: LevelingCharacter { level: progress.character.level, xp: progress.character.xp },
+            events,
+        }
+    }
 }
 
 /// The spell-placed objects' table and the sets standing (wire-rules
@@ -3486,6 +3632,41 @@ mod tests {
         assert!(new_placements(r#"[{"spell": "cc14"}]"#).is_err());
         // shape C's offsets are read and ignored
         assert!(new_placements(r#"[{"spell": "00cc14:Apocalypse - Magic of Skyrim.esp", "anchor": "caster", "objects": [{"base": "098529:Apocalypse - Magic of Skyrim.esp", "type": "MSTT", "forward": 192, "dz": -48}], "lifetime": {"whileHeld": true, "lingerS": 5, "maxS": 120}, "perCaster": 1}]"#).is_ok());
+    }
+
+    #[test]
+    fn the_bridge_levels_a_skill_from_the_records_constants() {
+        let mut t = new_leveling_table();
+        assert!((t.use_xp(6, 10.0) - 63.0).abs() < 0.001);
+        // Skyrim.esm's Smithing AVSK replaces UESP's reading
+        assert!(t.set_skill(10, 160.0, 0.0, 0.25, 300.0));
+        assert!((t.use_xp(10, 1.0) - 160.0).abs() < 0.001);
+        assert!(!t.set_skill(5, 1.0, 0.0, 1.0, 0.0));
+        assert!(!t.set_skill(10, f32::NAN, 0.0, 1.0, 0.0));
+        assert!((t.use_xp(10, 1.0) - 160.0).abs() < 0.001);
+        assert!((t.level_cost(6, 15) - 2.0 * 15.0f32.powf(1.95)).abs() < 0.01);
+        assert_eq!(t.use_xp(5, 10.0), 0.0);
+        assert_eq!(leveling_character_threshold(1), 100.0);
+        // seven hits of a base of 10: One-handed 15 to 16, the character at 16 toward 100
+        let mut skills = vec![LevelingSkill { skill_av: 6, level: 15, xp: 0.0 }];
+        let mut character = LevelingCharacter { level: 1, xp: 0.0 };
+        let mut outcome = LevelingOutcome { accepted: false, why: 0, skills: Vec::new(), character: character.clone(), events: Vec::new() };
+        for _ in 0..7 {
+            outcome = t.apply_use(&skills, character.clone(), 6, 10.0);
+            assert!(outcome.accepted, "{outcome:?}");
+            skills = outcome.skills.clone();
+            character = outcome.character.clone();
+        }
+        assert_eq!(outcome.events, vec![LevelingEvent { kind: 0, skill_av: 6, level: 16 }]);
+        assert_eq!(skills.len(), 18);
+        assert!(skills.iter().any(|s| s.skill_av == 6 && s.level == 16));
+        assert!(skills.iter().any(|s| s.skill_av == 23 && s.level == 15 && s.xp == 0.0));
+        assert_eq!(character.level, 1);
+        assert!((character.xp - 16.0).abs() < 0.001);
+        // the refusals by number
+        assert_eq!(t.apply_use(&skills, character.clone(), 5, 10.0).why, 1);
+        assert_eq!(t.apply_use(&skills, character.clone(), 6, f32::NAN).why, 2);
+        assert_eq!(t.apply_use(&skills, character.clone(), 6, 0.0).why, 3);
     }
 
     #[test]

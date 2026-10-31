@@ -83,7 +83,7 @@ const fn cmd(name: &'static str, short: &'static str, class: Class, rank: Rank, 
 /// /teleportto, moderators'): `mp list` names the players online by number,
 /// `mp tp <n>` brings that player to the caller, `mp tpto <n>` takes the
 /// caller to it, through the server's teleport wherever the two are.
-pub const TABLE: [Command; 36] = [
+pub const TABLE: [Command; 38] = [
     cmd("additem", "", Class::Server, Rank::Admin, true),
     cmd("removeitem", "", Class::Server, Rank::Admin, true),
     cmd("equipitem", "", Class::Server, Rank::Admin, true),
@@ -113,6 +113,10 @@ pub const TABLE: [Command; 36] = [
     cmd("addshout", "", Class::Server, Rank::Admin, true),
     cmd("addspell", "", Class::Server, Rank::Admin, true),
     cmd("setglobal", "", Class::Server, Rank::Admin, true),
+    // thuum docs/verbs/locks.md: the server's lock state on a reference, so
+    // the game's own lock and unlock run nowhere but here
+    cmd("lock", "", Class::Server, Rank::Admin, true),
+    cmd("unlock", "", Class::Server, Rank::Admin, true),
     // `set <global> to <value>`: the server owns the clock's globals (ADR-021);
     // which others it owns waits for the first verb that needs one
     cmd("set", "", Class::Server, Rank::Admin, false),

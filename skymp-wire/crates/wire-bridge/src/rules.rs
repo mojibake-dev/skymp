@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, effects, favorites, forms, headshots, hosted_state, hostility, leveling, magic, markers, melee, movement, placements, player_globals, props, quest_stages, racemenu, ranged, rest, scripted_effects, shouts, stagger, teleports};
+use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, placements, player_globals, props, quest_stages, racemenu, ranged, rest, scripted_effects, shouts, stagger, teleports};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -522,6 +522,50 @@ mod ffi {
         distance: f32,
         /// The reported pose's height above or below the caster.
         dz: f32,
+    }
+
+    /// A reference's lock as the record holds it (thuum docs/verbs/locks.md):
+    /// the XLOC level byte, the key's base form id (0 none), locked now, picks
+    /// broken on it.
+    #[derive(Debug, Clone, PartialEq)]
+    struct LockStateRow {
+        /// The level byte: 0 or 1 Novice, 25, 50, 75, 100, 255 requires key.
+        level: u8,
+        /// The key's base form id, 0 for none.
+        key: u32,
+        /// Locked now.
+        locked: bool,
+        /// Picks broken on it so far.
+        broken: u32,
+    }
+
+    /// What an activation of a locked reference met (thuum docs/verbs/
+    /// locks.md): `verdict` 0 open (not locked), 1 opened with the key the
+    /// player holds, 2 locked (the seat's menu is the path); the state after.
+    #[derive(Debug, Clone, PartialEq)]
+    struct LockActivationVerdict {
+        /// 0 open, 1 opened with the key, 2 locked.
+        verdict: u8,
+        /// The lock after.
+        state: LockStateRow,
+    }
+
+    /// A lock report judged (thuum docs/verbs/locks.md): accepted, or `why` 1
+    /// not locked, 2 out of reach, 3 a key lock, 4 no pick held, 5 a broken
+    /// count out of range, 6 inside the gap; `change` 0 nothing, 1 unlocked,
+    /// 2 picks broken (`picks` of them leave the record); the state after.
+    #[derive(Debug, Clone, PartialEq)]
+    struct LockReportVerdict {
+        /// Accepted.
+        accepted: bool,
+        /// Why not, as above; 0 when accepted.
+        why: u8,
+        /// 0 nothing, 1 unlocked, 2 picks broken.
+        change: u8,
+        /// Lockpicks to remove from the record for change 2.
+        picks: u8,
+        /// The lock after.
+        state: LockStateRow,
     }
 
     /// A skill's standing as the record holds it (thuum docs/verbs/
@@ -1658,6 +1702,14 @@ mod ffi {
         fn apply_use(self: &LevelingTable, skills: &[LevelingSkill], character: LevelingCharacter, skill_av: u8, base: f32) -> LevelingOutcome;
         /// The character experience the step from `level` to the next needs.
         fn leveling_character_threshold(level: u16) -> f32;
+
+        /// An activation of a reference whose lock is `state` by a player who holds its key or not
+        /// (thuum docs/verbs/locks.md).
+        fn lock_activation(state: &LockStateRow, has_key: bool) -> LockActivationVerdict;
+        /// A player's report on a lock (`outcome` 0 picked, 1 broken `broken` picks, 2 left), judged
+        /// against the state, the player's reach, the Lockpicks it holds and the gap since its last
+        /// report on this lock (u64::MAX for none).
+        fn lock_report(state: &LockStateRow, outcome: u8, broken: u8, within_reach: bool, picks_held: u32, since_last_ms: u64) -> LockReportVerdict;
         /// Sets standing in the world.
         fn live_sets(self: &Placements) -> usize;
 
@@ -1856,7 +1908,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
+pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -2485,6 +2537,59 @@ fn quest_stages_merge(record: &[QuestStageEntry], done: &QuestStageEntry) -> Vec
 
 fn quest_record_full(record: &[QuestStageEntry]) -> bool {
     quest_stages::full(record.len())
+}
+
+fn lock_state_of(row: &LockStateRow) -> locks::LockState {
+    locks::LockState { level: row.level, key: row.key, locked: row.locked, broken: row.broken }
+}
+
+fn lock_row_of(state: locks::LockState) -> LockStateRow {
+    LockStateRow { level: state.level, key: state.key, locked: state.locked, broken: state.broken }
+}
+
+fn lock_activation(state: &LockStateRow, has_key: bool) -> LockActivationVerdict {
+    let (verdict, after) = locks::activation(lock_state_of(state), has_key);
+    LockActivationVerdict {
+        verdict: match verdict {
+            locks::Activation::Open => 0,
+            locks::Activation::OpenedWithKey => 1,
+            locks::Activation::Locked => 2,
+        },
+        state: lock_row_of(after),
+    }
+}
+
+fn lock_report(state: &LockStateRow, outcome: u8, broken: u8, within_reach: bool, picks_held: u32, since_last_ms: u64) -> LockReportVerdict {
+    let outcome = match outcome {
+        0 => locks::Outcome::Picked,
+        1 => locks::Outcome::Broken(broken),
+        _ => locks::Outcome::Left,
+    };
+    let since = (since_last_ms != u64::MAX).then_some(since_last_ms);
+    match locks::report(lock_state_of(state), outcome, within_reach, picks_held, since) {
+        Ok((change, after)) => {
+            let (change, picks) = match change {
+                locks::Change::Nothing => (0, 0),
+                locks::Change::Unlocked => (1, 0),
+                locks::Change::PicksBroken(n) => (2, n),
+            };
+            LockReportVerdict { accepted: true, why: 0, change, picks, state: lock_row_of(after) }
+        }
+        Err(why) => LockReportVerdict {
+            accepted: false,
+            why: match why {
+                locks::Refusal::Open => 1,
+                locks::Refusal::Reach => 2,
+                locks::Refusal::Key => 3,
+                locks::Refusal::NoPick => 4,
+                locks::Refusal::Range => 5,
+                locks::Refusal::Rate => 6,
+            },
+            change: 0,
+            picks: 0,
+            state: state.clone(),
+        },
+    }
 }
 
 /// The eighteen skills' constants (wire-rules leveling).
@@ -3667,6 +3772,30 @@ mod tests {
         assert_eq!(t.apply_use(&skills, character.clone(), 5, 10.0).why, 1);
         assert_eq!(t.apply_use(&skills, character.clone(), 6, f32::NAN).why, 2);
         assert_eq!(t.apply_use(&skills, character.clone(), 6, 0.0).why, 3);
+    }
+
+    #[test]
+    fn the_bridge_judges_a_lock() {
+        let novice = LockStateRow { level: 0, key: 0, locked: true, broken: 0 };
+        let keyed = LockStateRow { level: 255, key: 0x1234, locked: true, broken: 0 };
+        assert_eq!(lock_activation(&novice, false).verdict, 2);
+        assert_eq!(lock_activation(&keyed, false).verdict, 2);
+        let opened = lock_activation(&keyed, true);
+        assert_eq!(opened.verdict, 1);
+        assert!(!opened.state.locked);
+        assert_eq!(lock_activation(&opened.state, false).verdict, 0);
+        let picked = lock_report(&novice, 0, 0, true, 2, u64::MAX);
+        assert!(picked.accepted && picked.change == 1 && !picked.state.locked, "{picked:?}");
+        assert_eq!(lock_report(&picked.state, 0, 0, true, 2, u64::MAX).why, 1);
+        assert_eq!(lock_report(&novice, 0, 0, false, 2, u64::MAX).why, 2);
+        assert_eq!(lock_report(&keyed, 0, 0, true, 2, u64::MAX).why, 3);
+        assert_eq!(lock_report(&novice, 0, 0, true, 0, u64::MAX).why, 4);
+        assert_eq!(lock_report(&novice, 1, 0, true, 2, u64::MAX).why, 5);
+        assert_eq!(lock_report(&novice, 0, 0, true, 2, 100).why, 6);
+        let broke = lock_report(&novice, 1, 5, true, 2, u64::MAX);
+        assert!(broke.accepted && broke.change == 2 && broke.picks == 2 && broke.state.locked && broke.state.broken == 2, "{broke:?}");
+        let left = lock_report(&novice, 2, 0, true, 0, u64::MAX);
+        assert!(left.accepted && left.change == 0 && left.state == novice, "{left:?}");
     }
 
     #[test]

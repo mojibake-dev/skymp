@@ -7,35 +7,36 @@
 //! itself is the seat's (R3): its outcome cannot be recomputed here, so it is
 //! judged by what the lock allows and what the player holds.
 //!
-//! The tiers are the game's (UESP, Skyrim:Lockpicking; the Creation Kit's lock
-//! levels): Novice 1 to 25, Apprentice 26 to 50, Adept 51 to 75, Expert 76 to
-//! 99, Master 100; "requires key" is the Creation Kit's own value, which the
-//! engine reports as LOCK_LEVEL kRequiresKey (CommonLibSSE-NG ExtraLock.h:17).
-//! HYPOTHESIS: the XLOC byte that means "requires key" (the Creation Kit
-//! writes 255; the server's reader confirms it against a known door).
+//! The tiers are the game's (UESP, "Skyrim Mod:Mod File Format/REFR" XLOC: the
+//! level byte is 0 or 1 Novice, 25 Apprentice, 50 Adept, 75 Expert, 100
+//! Master, and -1 (255) requires its key; Skyrim.esm's Bleak Falls Temple
+//! chests read 0, 25 and 0, lab/esm.py 2026-10-31). The bands between the
+//! Creation Kit's values follow the engine's LOCK_LEVEL (CommonLibSSE-NG
+//! ExtraLock.h:9-18): HYPOTHESIS on where exactly a value between two of them
+//! falls (a leveled lock, flag 0x04, writes such a value at runtime).
 
 /// A lock's tier, as the engine names it (CommonLibSSE-NG ExtraLock.h:9-18,
 /// LOCK_LEVEL).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
-    /// kUnlocked.
+    /// kUnlocked: the state says unlocked, whatever the level byte.
     Unlocked,
-    /// kVeryEasy: Novice, 1 to 25.
+    /// kVeryEasy: Novice, the byte 0 to 24 (the Creation Kit writes 0 or 1).
     Novice,
-    /// kEasy: Apprentice, 26 to 50.
+    /// kEasy: Apprentice, 25 to 49.
     Apprentice,
-    /// kAverage: Adept, 51 to 75.
+    /// kAverage: Adept, 50 to 74.
     Adept,
-    /// kHard: Expert, 76 to 99.
+    /// kHard: Expert, 75 to 99.
     Expert,
-    /// kVeryHard: Master, 100.
+    /// kVeryHard: Master, 100 to 254.
     Master,
-    /// kRequiresKey: no pick opens it.
+    /// kRequiresKey: 255 (the Creation Kit's -1); no pick opens it.
     RequiresKey,
 }
 
-/// The XLOC level byte the Creation Kit writes for a lock that needs its key
-/// (HYPOTHESIS, the module doc).
+/// The XLOC level byte for a lock that needs its key: the Creation Kit's -1
+/// (UESP's REFR page).
 pub const REQUIRES_KEY_LEVEL: u8 = 255;
 /// The shortest gap between two reports on one lock from one player,
 /// milliseconds (UNMEASURED: a pick attempt takes longer than this).
@@ -48,13 +49,12 @@ impl Tier {
     #[must_use]
     pub fn of_level(level: u8) -> Self {
         match level {
-            0 => Self::Unlocked,
-            1..=25 => Self::Novice,
-            26..=50 => Self::Apprentice,
-            51..=75 => Self::Adept,
-            76..=99 => Self::Expert,
-            100 => Self::Master,
-            _ => Self::RequiresKey,
+            0..=24 => Self::Novice,
+            25..=49 => Self::Apprentice,
+            50..=74 => Self::Adept,
+            75..=99 => Self::Expert,
+            100..=254 => Self::Master,
+            REQUIRES_KEY_LEVEL => Self::RequiresKey,
         }
     }
 
@@ -87,10 +87,11 @@ pub struct LockState {
 }
 
 impl LockState {
-    /// A lock from the game files' XLOC: level, key and the locked flag.
+    /// A lock from the game files' XLOC: level, key and whether it stands
+    /// locked (a reference with an XLOC starts locked).
     #[must_use]
     pub fn from_xloc(level: u8, key: u32, locked: bool) -> Self {
-        Self { level, key, locked: locked && level != 0, broken: 0 }
+        Self { level, key, locked, broken: 0 }
     }
 
     /// The lock's tier.
@@ -227,24 +228,27 @@ mod tests {
 
     #[test]
     fn the_tiers_follow_the_games_levels() {
-        assert_eq!(Tier::of_level(0), Tier::Unlocked);
+        // the Creation Kit's values (UESP's REFR page), and Skyrim.esm's own
+        // chests: Bleak Falls Temple's 0x371e9 and 0x54b11 at 0, 0x3fa69 at 25
+        assert_eq!(Tier::of_level(0), Tier::Novice);
         assert_eq!(Tier::of_level(1), Tier::Novice);
-        assert_eq!(Tier::of_level(25), Tier::Novice);
-        assert_eq!(Tier::of_level(26), Tier::Apprentice);
-        assert_eq!(Tier::of_level(50), Tier::Apprentice);
-        assert_eq!(Tier::of_level(51), Tier::Adept);
-        assert_eq!(Tier::of_level(75), Tier::Adept);
-        assert_eq!(Tier::of_level(76), Tier::Expert);
+        assert_eq!(Tier::of_level(24), Tier::Novice);
+        assert_eq!(Tier::of_level(25), Tier::Apprentice);
+        assert_eq!(Tier::of_level(49), Tier::Apprentice);
+        assert_eq!(Tier::of_level(50), Tier::Adept);
+        assert_eq!(Tier::of_level(74), Tier::Adept);
+        assert_eq!(Tier::of_level(75), Tier::Expert);
         assert_eq!(Tier::of_level(99), Tier::Expert);
         assert_eq!(Tier::of_level(100), Tier::Master);
+        assert_eq!(Tier::of_level(254), Tier::Master);
         assert_eq!(Tier::of_level(REQUIRES_KEY_LEVEL), Tier::RequiresKey);
-        assert_eq!(Tier::of_level(101), Tier::RequiresKey);
         for (tier, value) in [(Tier::Unlocked, -1), (Tier::Novice, 0), (Tier::Master, 4), (Tier::RequiresKey, 5)] {
             assert_eq!(tier.engine_value(), value);
         }
-        // an unlocked record reads unlocked whatever its level
+        // an unlocked record reads unlocked whatever its level; a locked one
+        // at 0 is a Novice lock
         assert_eq!(LockState::from_xloc(50, 0, false).tier(), Tier::Unlocked);
-        assert_eq!(LockState::from_xloc(0, 0, true).tier(), Tier::Unlocked);
+        assert_eq!(LockState::from_xloc(0, 0, true).tier(), Tier::Novice);
         assert_eq!(novice().tier(), Tier::Novice);
     }
 

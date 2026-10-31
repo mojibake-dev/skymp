@@ -30,6 +30,8 @@
 #include "HostStopMessage.h"
 #include "HostedActorStateMessage.h"
 #include "IngredientEffectsKnownMessage.h"
+#include "LockPromptMessage.h"
+#include "LockReportMessage.h"
 #include "MagicEffectsMessage.h"
 #include "MapMarkerDiscoveredMessage.h"
 #include "OnEquipMessage.h"
@@ -126,4 +128,6 @@
   REGISTER_MESSAGE(PropOwnerMessage)                                          \
   REGISTER_MESSAGE(PlacedRequestMessage)                                      \
   REGISTER_MESSAGE(PlacedReportMessage)                                       \
-  REGISTER_MESSAGE(SkillUseMessage)
+  REGISTER_MESSAGE(SkillUseMessage)                                           \
+  REGISTER_MESSAGE(LockReportMessage)                                         \
+  REGISTER_MESSAGE(LockPromptMessage)

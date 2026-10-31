@@ -261,6 +261,13 @@ wire_struct! {
         pub inventory: Option<Inventory>,
         /// Dead state (also in the main props; SkyMP writes both).
         pub is_dead: Option<bool>,
+        /// thuum docs/verbs/locks.md: the reference's lock as the server
+        /// holds it (the XLOC's level byte, the key's form id or 0, locked
+        /// now); absent for a reference the game files leave unlocked. The
+        /// client applies it to its own reference instead of stripping the
+        /// lock, so the engine's own lockpicking runs when the server
+        /// prompts it (`LockPrompt`).
+        pub lock: Option<LockProp>,
         /// thuum docs/verbs/spell-placed-object.md (ADR-057): the server id
         /// of the caster whose accepted cast of a listed spell placed this
         /// reference (the server's own MSTT or ACTI from its table); absent
@@ -1855,6 +1862,59 @@ wire_struct! {
         pub pos: Vec3,
         /// Its Z angle, degrees.
         pub yaw: f32,
+    }
+}
+
+wire_struct! {
+    /// A reference's lock (docs/verbs/locks.md), on CreateActor's props and
+    /// as the `lock` property's value.
+    pub struct LockProp {
+        /// The XLOC level byte: 0 or 1 Novice, 25 Apprentice, 50 Adept, 75
+        /// Expert, 100 Master, 255 requires its key.
+        pub level: u8,
+        /// The key's base form id, 0 for none.
+        pub key: u32,
+        /// Locked now.
+        pub locked: bool,
+    }
+}
+
+wire_struct! {
+    /// MsgType 64, thuum's (docs/verbs/locks.md, M4): a player's game reports
+    /// how its lockpicking attempt on a locked reference ended. Client to
+    /// server, reliable, R1: the engine ran the minigame, the server judges
+    /// the report (the reference locked and within the activation reach, the
+    /// lock's tier open to picks, a Lockpick held, a gap between reports;
+    /// wire-rules locks) and writes the unlock or takes the broken picks from
+    /// the record. Reason codes: `E_VAL_RANGE` (a refr of 0, an outcome past
+    /// 2, more than 8 picks broken), `E_VAL_RATE`.
+    pub struct LockReport {
+        /// `"t": 64`.
+        #[serde(default)]
+        pub t: MsgT<64>,
+        /// The reference's form id; never 0.
+        pub refr: u32,
+        /// 0 the lock turned, 1 picks broke and the lock stands, 2 the menu
+        /// was left with the lock standing.
+        pub outcome: u8,
+        /// Picks broken in this attempt, 0 to 8.
+        pub broken: u8,
+    }
+}
+
+wire_struct! {
+    /// MsgType 65, thuum's (docs/verbs/locks.md, M4): the server tells the
+    /// player's game that its activation met a lock without the key, so the
+    /// game runs the engine's own activation on its locked reference (the
+    /// lockpicking menu, or the "requires key" box). Server to client,
+    /// reliable, to the activating player alone. Reason codes: `E_VAL_RANGE`
+    /// (a refr of 0).
+    pub struct LockPrompt {
+        /// `"t": 65`.
+        #[serde(default)]
+        pub t: MsgT<65>,
+        /// The reference's form id; never 0.
+        pub refr: u32,
     }
 }
 

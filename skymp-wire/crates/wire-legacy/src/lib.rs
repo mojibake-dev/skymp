@@ -111,7 +111,7 @@ impl<'a, 'b> De<'a, 'b> {
 /// them, so the reader spends no bit on them and reads them as absent, and a
 /// capture still decodes field for field as the C++ wrote it. Named by the
 /// struct and the serialized (camelCase) field name serde hands the reader.
-const LEGACY_ABSENT: &[(&str, &str)] = &[("CreateActorProps", "placedBy")];
+const LEGACY_ABSENT: &[(&str, &str)] = &[("CreateActorProps", "placedBy"), ("CreateActorProps", "lock")];
 
 /// The deserializer for a field in LEGACY_ABSENT: an optional reads as none,
 /// anything else is a schema mistake (a required field the old format lacks).
@@ -395,7 +395,11 @@ mod tests {
         let ps = packets();
         let (_, create) = ps.iter().find(|(_, p)| p.get(1) == Some(&33)).expect("a CreateActor in the capture");
         match decode_packet(create).expect("decodes") {
-            Message::CreateActor(m) => assert_eq!(m.props.placed_by, None),
+            Message::CreateActor(m) => {
+                assert_eq!(m.props.placed_by, None);
+                // thuum docs/verbs/locks.md: the lock prop too (2026-10-31)
+                assert_eq!(m.props.lock, None);
+            }
             other => panic!("{other:?}"),
         }
     }

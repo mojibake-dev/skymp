@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, placements, player_globals, props, quest_stages, racemenu, ranged, rest, scripted_effects, shouts, stagger, teleports};
+use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, placements, player_globals, props, quest_stages, racemenu, ranged, rest, scripted_effects, shouts, stagger, teleports, weather};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -1102,6 +1102,24 @@ mod ffi {
         bash: bool,
     }
 
+    /// A weather word for one player (thuum docs/verbs/weather.md): the
+    /// weather of the place it is in, or a release (`weather` 0) in an
+    /// interior or a worldspace without a pool; `some` false when nothing is
+    /// owed.
+    #[derive(Debug)]
+    struct WeatherWord {
+        /// Whether a word is owed.
+        some: bool,
+        /// The worldspace, or the interior cell the release is for.
+        place: u32,
+        /// The WTHR form id; 0 releases.
+        weather: u32,
+        /// The slot it stands for.
+        slot: u64,
+        /// Blend (true) or cut (false).
+        transition: bool,
+    }
+
     /// The game clock at one instant, as the engine's six time globals hold
     /// it (thuum docs/verbs/time.md).
     #[derive(Debug)]
@@ -1797,6 +1815,27 @@ mod ffi {
         /// A player left.
         fn forget(self: &mut GameClock, user: u32);
 
+        /// thuum docs/verbs/weather.md (M4): the server's weather per
+        /// worldspace and who has heard it (wire-rules weather).
+        type WeatherSync;
+        /// From server-settings.json's `weather.changeGameMinutes` (1 to
+        /// 1440) and `weather.seed`; the error names the bad value.
+        fn new_weather_sync(change_game_minutes: u32, seed: u64) -> Result<Box<WeatherSync>>;
+        /// A worldspace's pool, `weathers[i]` with `chances[i]`: from the
+        /// game files (`pinned` false, joined with the worldspace's) or the
+        /// settings (`pinned` true, outranking the files'). The pool's size
+        /// after; 0 when refused (a length mismatch, no weather with a
+        /// chance above 0, more than 64).
+        fn set_pool(self: &mut WeatherSync, world: u32, weathers: &[u32], chances: &[u32], pinned: bool) -> usize;
+        /// The word `user` is owed standing in `place` (a worldspace when
+        /// `is_world`) at `game_minutes` of the clock; a returned word
+        /// counts as heard.
+        fn due(self: &mut WeatherSync, user: u32, place: u32, is_world: bool, game_minutes: f64) -> WeatherWord;
+        /// A player left.
+        fn forget(self: &mut WeatherSync, user: u32);
+        /// The size of the pool in force for `world`, 0 for none.
+        fn pool_len(self: &WeatherSync, world: u32) -> usize;
+
         /// thuum docs/verbs/cell-host.md (ADR-035): which player's game runs
         /// each cell's NPCs, the grace and the epochs.
         type Cells;
@@ -1908,7 +1947,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
+pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -3450,6 +3489,40 @@ impl GameClock {
 
     fn forget(&mut self, user: u32) {
         self.0.forget(user);
+    }
+}
+
+/// The server's weather (wire-rules weather).
+#[derive(Debug)]
+pub struct WeatherSync(weather::Weather);
+
+fn new_weather_sync(change_game_minutes: u32, seed: u64) -> Result<Box<WeatherSync>, weather::SettingsError> {
+    weather::Weather::new(change_game_minutes, seed).map(|w| Box::new(WeatherSync(w)))
+}
+
+impl WeatherSync {
+    fn set_pool(&mut self, world: u32, weathers: &[u32], chances: &[u32], pinned: bool) -> usize {
+        if weathers.len() != chances.len() {
+            return 0;
+        }
+        let entries: Vec<weather::Entry> =
+            weathers.iter().zip(chances).map(|(&weather, &chance)| weather::Entry { weather, chance }).collect();
+        self.0.set_pool(world, &entries, pinned).unwrap_or(0)
+    }
+
+    fn due(&mut self, user: u32, place: u32, is_world: bool, game_minutes: f64) -> WeatherWord {
+        match self.0.due(user, place, is_world, game_minutes) {
+            Some(w) => WeatherWord { some: true, place: w.place, weather: w.weather, slot: w.slot, transition: w.transition },
+            None => WeatherWord { some: false, place: 0, weather: 0, slot: 0, transition: false },
+        }
+    }
+
+    fn forget(&mut self, user: u32) {
+        self.0.forget(user);
+    }
+
+    fn pool_len(&self, world: u32) -> usize {
+        self.0.pool(world).map_or(0, <[weather::Entry]>::len)
     }
 }
 

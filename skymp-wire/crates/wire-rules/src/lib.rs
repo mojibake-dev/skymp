@@ -38,6 +38,7 @@ pub mod scripted_effects;
 pub mod shouts;
 pub mod stagger;
 pub mod teleports;
+pub mod weather;
 
 /// A decision and the bound it was made against, for the server's log.
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -25,6 +25,7 @@ import { PropService } from "./services/services/propService";
 import { SpellPlacedService } from "./services/services/spellPlacedService";
 import { LockService } from "./services/services/lockService";
 import { WeatherService } from "./services/services/weatherService";
+import { SkillUseService } from "./services/services/skillUseService";
 import { ArrowSyncService } from "./services/services/arrowSyncService";
 import { SpVersionCheckService } from "./services/services/spVersionCheckService";
 import { ConsoleCommandsService } from "./services/services/consoleCommandsService";
@@ -112,6 +113,7 @@ const main = () => {
       new SpellPlacedService(sp, controller),
       new LockService(sp, controller),
       new WeatherService(sp, controller),
+      new SkillUseService(sp, controller),
       new ArrowSyncService(sp, controller),
       new SpVersionCheckService(sp, controller),
       new ConsoleCommandsService(sp, controller),

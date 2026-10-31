@@ -38,7 +38,9 @@ use bounded::{String, Vec};
 /// 22: PlacedRequest and PlacedReport (thuum ADR-057 shape A, D70,
 /// m3-wall-pose): the server asks the caster where its engine stands a
 /// listed spell's objects and places its copies as reported.
-pub const SCHEMA_VERSION: u16 = 22;
+/// 23: SkillUse (thuum docs/verbs/leveling.md, m5-leveling): a player's
+/// skill uses batched for the server's formulas.
+pub const SCHEMA_VERSION: u16 = 23;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -114,6 +116,9 @@ pub mod cap {
     /// Bases one PlacedRequest asks for: wire-rules placements' MAX_OBJECTS
     /// (Raise Wall's two, with room for a cage's walls).
     pub const PLACED_BASES: usize = 8;
+    /// Skill uses one SkillUse carries: one per skill, the eighteen skills
+    /// (docs/verbs/leveling.md).
+    pub const SKILL_USES: usize = 18;
     /// Quests whose stages are the world's (thuum docs/verbs/quest-stage.md:
     /// the server's `sharedQuests` list, Riverwood's first).
     pub const SHARED_QUESTS: usize = 256;
@@ -453,6 +458,8 @@ pub enum Message {
     PlacedRequest(skymp::PlacedRequest),
     /// 70, MsgType 62 (thuum). See [`skymp::PlacedReport`].
     PlacedReport(skymp::PlacedReport),
+    /// 71, MsgType 63 (thuum). See [`skymp::SkillUse`].
+    SkillUse(skymp::SkillUse),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -481,7 +488,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 71] = [
+const TABLE: [Row; 72] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -553,14 +560,15 @@ const TABLE: [Row; 71] = [
     row("PropOwner", 60, 32, S2C),
     row("PlacedRequest", 61, 64, S2C),
     row("PlacedReport", 62, 48, C2S),
+    row("SkillUse", 63, 128, C2S),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 71;
-const _: () = assert!(TABLE.len() == 71, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 72;
+const _: () = assert!(TABLE.len() == 72, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -656,6 +664,7 @@ impl Message {
             Message::PropOwner(_) => 68,
             Message::PlacedRequest(_) => 69,
             Message::PlacedReport(_) => 70,
+            Message::SkillUse(_) => 71,
         }
     }
 
@@ -749,7 +758,8 @@ mod tests {
         assert_eq!(name_of_msg_type(60), Some("PropOwner"));
         assert_eq!(name_of_msg_type(61), Some("PlacedRequest"));
         assert_eq!(name_of_msg_type(62), Some("PlacedReport"));
-        assert_eq!(name_of_msg_type(63), None);
+        assert_eq!(name_of_msg_type(63), Some("SkillUse"));
+        assert_eq!(name_of_msg_type(64), None);
     }
 
     #[test]
@@ -832,6 +842,15 @@ mod tests {
                 ..Default::default()
             }),
             Message::PlacedReport(skymp::PlacedReport { set: u64::MAX, base: u32::MAX, pos: [f32::MAX; 3], yaw: f32::MAX, ..Default::default() }),
+            // every skill used at once, each amount carried (thuum docs/verbs/leveling.md)
+            Message::SkillUse(skymp::SkillUse {
+                uses: (0..cap::SKILL_USES)
+                    .map(|_| skymp::SkillUseEntry { skill: u8::MAX, amount: f32::MAX })
+                    .collect::<alloc::vec::Vec<_>>()
+                    .try_into()
+                    .unwrap_or_default(),
+                ..Default::default()
+            }),
             Message::RaceMenuPreset(skymp::RaceMenuPreset {
                 actor: u32::MAX,
                 preset: "x".repeat(cap::RACEMENU_PRESET).try_into().unwrap_or_default(),

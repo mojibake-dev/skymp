@@ -175,6 +175,10 @@ pub struct ClientGuard {
     /// two a cast, two sets a caster; a burst of 8 then 2 a second
     /// (UNMEASURED).
     pub placed_report_budget: TokenBucket,
+    /// Budget for a player's skill use batches (SkillUse, thuum docs/verbs/
+    /// leveling.md): one a second by design; a burst of 8 then 2 a second
+    /// (UNMEASURED).
+    pub skill_use_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -213,6 +217,7 @@ impl Default for ClientGuard {
             prop_budget: TokenBucket { tokens: 20, capacity: 20, refill_per_s: 10, last_refill_ms: 0 },
             prop_claim_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             placed_report_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
+            skill_use_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
         }
     }
 }
@@ -673,6 +678,37 @@ fn check_placed_report(m: &skymp::PlacedReport) -> Result<(), Reject> {
     Ok(())
 }
 
+/// The most one skill use's base amount may carry: wire-rules leveling's
+/// MAX_BASE_PER_USE (UNMEASURED; a Daedric craft is in the thousands).
+const SKILL_USE_MAX_AMOUNT: f32 = 100_000.0;
+
+/// A player's skill uses (docs/verbs/leveling.md): one to eighteen entries,
+/// each skill (ActorValue 6 to 23) once, each amount finite and within 0
+/// exclusive to the bound. What a use earns is the server's rule (wire-rules
+/// leveling).
+fn check_skill_use(m: &skymp::SkillUse) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    if m.uses.is_empty() {
+        return Err(Reject::Range);
+    }
+    let mut seen = [false; 18];
+    for u in m.uses.iter() {
+        let Some(index) = u.skill.checked_sub(6).map(usize::from) else {
+            return Err(Reject::Range);
+        };
+        let Some(slot) = seen.get_mut(index) else {
+            return Err(Reject::Range);
+        };
+        if *slot || u.amount <= 0.0 || u.amount > SKILL_USE_MAX_AMOUNT {
+            return Err(Reject::Range);
+        }
+        *slot = true;
+    }
+    Ok(())
+}
+
 /// A host's state report for an actor it simulates (docs/verbs/npc-stream.md,
 /// ADR-050): three percentages, each a number within 0 and 1, and an actor
 /// index below u32::MAX (ActorJump's idiom). Whether the sender hosts the
@@ -807,6 +843,7 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::PropTransform(_) => take(&mut guard.prop_budget, now_ms),
         Message::PropClaim(_) => take(&mut guard.prop_claim_budget, now_ms),
         Message::PlacedReport(_) => take(&mut guard.placed_report_budget, now_ms),
+        Message::SkillUse(_) => take(&mut guard.skill_use_budget, now_ms),
         _ => Ok(()),
     }
 }
@@ -983,6 +1020,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::PropOwner(m) => check_prop_owner(m),
         Message::PlacedRequest(m) => check_placed_request(m),
         Message::PlacedReport(m) => check_placed_report(m),
+        Message::SkillUse(m) => check_skill_use(m),
         Message::CreateActor(m) => check_create_actor(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
@@ -2123,6 +2161,33 @@ mod tests {
     }
 
     #[test]
+    fn skill_uses_name_each_skill_once_with_a_bounded_amount_and_are_rate_limited() {
+        use wire_schema::skymp::{SkillUse, SkillUseEntry};
+        let uses = |entries: &[(u8, f32)]| {
+            Message::SkillUse(SkillUse {
+                uses: entries.iter().map(|(skill, amount)| SkillUseEntry { skill: *skill, amount: *amount }).collect::<std::vec::Vec<_>>().try_into().unwrap_or_default(),
+                ..Default::default()
+            })
+        };
+        assert_eq!(validate_server(&uses(&[(6, 10.0)])), Ok(()));
+        assert_eq!(validate_server(&uses(&[(6, 10.0), (23, 1.0)])), Ok(()));
+        assert_eq!(validate_server(&uses(&[])), Err(Reject::Range));
+        assert_eq!(validate_server(&uses(&[(5, 10.0)])), Err(Reject::Range));
+        assert_eq!(validate_server(&uses(&[(24, 10.0)])), Err(Reject::Range));
+        assert_eq!(validate_server(&uses(&[(6, 10.0), (6, 1.0)])), Err(Reject::Range));
+        assert_eq!(validate_server(&uses(&[(6, 0.0)])), Err(Reject::Range));
+        assert_eq!(validate_server(&uses(&[(6, -1.0)])), Err(Reject::Range));
+        assert_eq!(validate_server(&uses(&[(6, 100_001.0)])), Err(Reject::Range));
+        assert_eq!(validate_server(&uses(&[(6, f32::NAN)])), Err(Reject::NonFinite));
+        let mut guard = ClientGuard::default();
+        for _ in 0..8 {
+            assert_eq!(validate(&uses(&[(6, 10.0)]), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&uses(&[(6, 10.0)]), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&uses(&[(6, 10.0)]), &mut guard, 1_500), Ok(()));
+    }
+
+    #[test]
     fn damage_causes_carry_a_percentage_for_a_victim_in_range() {
         use wire_schema::skymp::DamageCause;
         let cause = |idx, health| Message::DamageCause(DamageCause { idx, attacker: 0xff00_0001, health, kill_move: false, ..Default::default() });
@@ -2216,6 +2281,21 @@ mod tests {
         #[test]
         fn speech_never_panics(idx in any::<u32>(), topic in any::<u32>(), info in any::<u32>(), now in any::<u64>()) {
             let m = Message::ActorSpeech(wire_schema::skymp::ActorSpeech { idx, topic, info, ..Default::default() });
+            let mut g = ClientGuard::default();
+            let _ = validate(&m, &mut g, now);
+            let _ = validate_server(&m);
+        }
+
+        #[test]
+        fn skill_uses_never_panic(
+            entries in proptest::collection::vec((any::<u8>(), any::<f32>()), 0..=cap::SKILL_USES),
+            now in any::<u64>(),
+        ) {
+            use wire_schema::skymp::{SkillUse, SkillUseEntry};
+            let m = Message::SkillUse(SkillUse {
+                uses: entries.iter().map(|(skill, amount)| SkillUseEntry { skill: *skill, amount: *amount }).collect::<std::vec::Vec<_>>().try_into().unwrap_or_default(),
+                ..Default::default()
+            });
             let mut g = ClientGuard::default();
             let _ = validate(&m, &mut g, now);
             let _ = validate_server(&m);

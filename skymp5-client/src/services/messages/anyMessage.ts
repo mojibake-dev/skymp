@@ -61,6 +61,7 @@ import { PropClaimMessage } from "./propClaimMessage";
 import { PropOwnerMessage } from "./propOwnerMessage";
 import { PlacedRequestMessage } from "./placedRequestMessage";
 import { PlacedReportMessage } from "./placedReportMessage";
+import { SkillUseMessage } from "./skillUseMessage";
 
 export type AnyMessage = ActivateMessage
     | ConsoleCommandMessage
@@ -118,6 +119,7 @@ export type AnyMessage = ActivateMessage
     | PropOwnerMessage
     | PlacedRequestMessage
     | PlacedReportMessage
+    | SkillUseMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage
     | UpdatePropertyMessage

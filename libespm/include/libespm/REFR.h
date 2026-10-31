@@ -123,6 +123,18 @@ public:
     uint32_t enableParentId = 0;
     uint32_t enableParentFlags = 0;
 
+    // XLOC: the lock (thuum docs/verbs/locks.md). The reference is locked
+    // when the record carries it: the level byte (0 and 1 Novice, 25
+    // Apprentice, 50 Adept, 75 Expert, 100 Master; the Creation Kit's
+    // requires-key as 255), the key's form id (0 for none) and the flags byte
+    // (0x04 leveled). UESP, "Skyrim Mod:Mod File Format/REFR" XLOC; a 20-byte
+    // field in Skyrim.esm (Bleak Falls Temple's bandit chest 0x371e9: level 0,
+    // no key, lab/esm.py 2026-10-31).
+    bool hasLock = false;
+    uint8_t lockLevel = 0;
+    uint32_t lockKey = 0;
+    uint8_t lockFlags = 0;
+
     // FULL: in-game name of the map marker.
     lstring mapMarkerName = 0;
 

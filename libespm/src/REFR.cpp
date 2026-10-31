@@ -36,6 +36,13 @@ REFR::Data REFR::GetData(
         } else if (dataSize == 4) {
           result.linkedRefId = *reinterpret_cast<const uint32_t*>(data);
         }
+      } else if (!std::memcmp(type, "XLOC", 4)) {
+        [[likely]] if (dataSize >= 12) {
+          result.hasLock = true;
+          result.lockLevel = *reinterpret_cast<const uint8_t*>(data);
+          result.lockKey = *reinterpret_cast<const uint32_t*>(data + 4);
+          result.lockFlags = *reinterpret_cast<const uint8_t*>(data + 8);
+        }
       } else if (!std::memcmp(type, "XOWN", 4)) {
         result.ownerFaction = *reinterpret_cast<const uint32_t*>(data);
       } else if (!std::memcmp(type, "XESP", 4)) {

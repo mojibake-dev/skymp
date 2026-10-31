@@ -18,6 +18,7 @@
 #include "GMST.h"
 #include "HDPT.h"
 #include "INGR.h"
+#include "KEYM.h"
 #include "KYWD.h"
 #include "LCTN.h"
 #include "LIGH.h"

@@ -51,6 +51,13 @@ public:
 
   VarValue SetOpen(VarValue self, const std::vector<VarValue>& arguments);
 
+  // thuum docs/verbs/locks.md: the server's lock state (R0)
+  VarValue Lock(VarValue self, const std::vector<VarValue>& arguments);
+  VarValue IsLocked(VarValue self, const std::vector<VarValue>& arguments);
+  VarValue GetLockLevel(VarValue self, const std::vector<VarValue>& arguments);
+  VarValue SetLockLevel(VarValue self, const std::vector<VarValue>& arguments);
+  VarValue GetKey(VarValue self, const std::vector<VarValue>& arguments);
+
   VarValue Is3DLoaded(VarValue self, const std::vector<VarValue>& arguments);
 
   VarValue GetLinkedRef(VarValue self, const std::vector<VarValue>& arguments);

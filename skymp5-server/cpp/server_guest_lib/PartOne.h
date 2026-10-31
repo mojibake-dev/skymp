@@ -237,18 +237,24 @@ public:
   // server places at an accepted cast of a listed spell,
   // server-settings.json's `spellPlacedObjects` (a JSON list, "[]" for
   // none; a bad entry stops the server here, named). The rule is Rust's
-  // (wire-rules placements): a listed spell's cast waits 250 ms with its
-  // stream open, then its objects stand as server-made references (MSTT or
-  // ACTI) posed from the caster's position and yaw, every subscriber's
-  // CreateActor naming the caster (placedBy) and the base's type; the set
-  // falls lingerS after the stream's end or the caster's leaving, or at
-  // maxS. TickPlacements runs that clock (Tick calls it every
-  // kPlacementsTick). SweepSpellPlacedAtLoad deletes a loaded record's form
-  // when the record carries placedBySpell (no cast survives a restart),
+  // (wire-rules placements), shape A since D70: a listed spell's accepted
+  // cast asks the caster's game where its engine stands the entry's bases
+  // (PlacedRequest, the caster alone, SendPlacementRequests); each
+  // PlacedReport the rule accepts (ReportPlacedObject: the set this
+  // caster's and open, the base asked for once, the pose 150 to 260 units
+  // from where the caster stood) stands as a server-made reference (MSTT or
+  // ACTI) at the reported pose, every subscriber's CreateActor naming the
+  // caster (placedBy) and the base's type; the set falls lingerS after the
+  // stream's end or the caster's leaving, or at maxS; no report within the
+  // window places nothing. TickPlacements runs that clock (Tick calls it
+  // every kPlacementsTick). SweepSpellPlacedAtLoad deletes a loaded record's
+  // form when the record carries placedBySpell (no cast survives a restart),
   // true when it did. SpellPlacedSets: the sets standing.
   void SetSpellPlacedObjectsSettings(
     const std::string& spellPlacedObjectsJson);
   void TickPlacements(uint64_t nowMs);
+  bool ReportPlacedObject(MpActor& caster, uint64_t set, uint32_t baseId,
+                          const NiPoint3& pos, float yaw);
   bool SweepSpellPlacedAtLoad(const MpChangeForm& record);
   size_t SpellPlacedSets() const;
   // thuum docs/verbs/player-globals.md, the needs (playtest 37, 2026-10-28,
@@ -762,6 +768,9 @@ private:
   void TickPlacementsOften();
   uint32_t PlaceSpellObject(const skymp::rules::PlacementRow& row);
   void RemoveSpellPlacedSet(uint64_t set, const char* why);
+  // shape A: the requests the rule queued at an accepted cast, one message
+  // a set, to the caster alone
+  void SendPlacementRequests();
   // thuum docs/verbs/shadowbond.md (train-28): the proc's records on both
   // and its cast in every game but the caster's; the reverse, with the
   // reason for the log

@@ -21,6 +21,7 @@
 #include "DestroyActorMessage.h"
 #include "HostGrantMessage.h"
 #include "HostReleaseMessage.h"
+#include "PlacedRequestMessage.h"
 #include "PropOwnerMessage.h"
 #include "RaceMenuPresetMessage.h"
 #include "SetGameTimeMessage.h"
@@ -2973,8 +2974,36 @@ const char* PlacementRemovalWhy(uint8_t why)
 
 const char* PlacementRefusalWhy(uint8_t why)
 {
-  return why == 0 ? "the caster holds its perCaster sets"
-                  : "the world holds its 64 sets";
+  switch (why) {
+    case 0:
+      return "the caster holds its perCaster sets";
+    case 1:
+      return "the world holds its 64 sets";
+    default:
+      return "the caster's game reported no base within the window";
+  }
+}
+
+// the report verdicts as the rule numbers them (wire-rules placements
+// ReportRefusal through the bridge's PlacementReportVerdict)
+const char* PlacementReportCode(uint8_t why)
+{
+  switch (why) {
+    case 1:
+      return "E_PLACED_SET";
+    case 2:
+      return "E_PLACED_LATE";
+    case 3:
+      return "E_PLACED_BASE";
+    case 4:
+      return "E_PLACED_REPEAT";
+    case 5:
+      return "E_PLACED_NAN";
+    case 6:
+      return "E_PLACED_RANGE";
+    default:
+      return "E_PLACED_UNKNOWN";
+  }
 }
 }
 
@@ -3056,28 +3085,105 @@ void PartOne::RemoveSpellPlacedSet(uint64_t set, const char* why)
   pImpl->placedSets.erase(it);
 }
 
-void PartOne::TickPlacements(uint64_t nowMs)
+void PartOne::SendPlacementRequests()
 {
-  const auto rows = pImpl->placements->due_placements(nowMs);
+  const auto rows = pImpl->placements->take_requests();
   for (size_t i = 0; i < rows.size();) {
-    const skymp::rules::PlacementRow& first = rows[i];
+    const skymp::rules::PlacementRequestRow& first = rows[i];
     const uint64_t set = first.set;
-    std::vector<uint32_t> formIds;
-    std::string ids;
+    PlacedRequestMessage ask;
+    ask.set = set;
+    ask.windowMs =
+      static_cast<uint32_t>(std::min<uint64_t>(first.window_ms, 10'000));
+    std::string names;
     for (; i < rows.size() && rows[i].set == set; ++i) {
-      if (const uint32_t formId = PlaceSpellObject(rows[i])) {
-        formIds.push_back(formId);
-        ids +=
-          fmt::format(" {:x} ({})", formId, std::string(rows[i].record_type));
+      const FormDesc baseDesc(rows[i].short_id, std::string(rows[i].file));
+      try {
+        ask.bases.push_back(baseDesc.ToFormId(worldState.espmFiles));
+        names += fmt::format(" {} ({})", baseDesc.ToString(),
+                             std::string(rows[i].record_type));
+      } catch (std::exception& e) {
+        spdlog::warn("[verb:spell-placed] base {} of set {}: {}; not asked",
+                     baseDesc.ToString(), set, e.what());
       }
     }
+    const auto spell =
+      FormDesc(first.spell_short_id, std::string(first.spell_file)).ToString();
+    const auto caster = std::dynamic_pointer_cast<MpActor>(
+      worldState.LookupFormByIdNoLoad(first.caster));
+    const auto userId = caster ? serverState.UserByActor(caster.get())
+                               : Networking::InvalidUserId;
+    if (ask.bases.empty() || userId == Networking::InvalidUserId) {
+      spdlog::warn("[verb:spell-placed] {:x} cast {}: set {} asks nothing "
+                   "({} base(s), user {})",
+                   first.caster, spell, set, ask.bases.size(),
+                   static_cast<int64_t>(userId));
+      continue;
+    }
+    GetSendTarget().Send(userId, ask, true);
+    spdlog::info("[verb:spell-placed] {:x} cast {}: set {} requested, {} "
+                 "base(s){} within {} ms",
+                 first.caster, spell, set, ask.bases.size(), names,
+                 ask.windowMs);
+  }
+}
+
+bool PartOne::ReportPlacedObject(MpActor& caster, uint64_t set,
+                                 uint32_t baseId, const NiPoint3& pos,
+                                 float yaw)
+{
+  FormDesc baseDesc;
+  try {
+    baseDesc = FormDesc::FromFormId(baseId, worldState.espmFiles);
+  } catch (std::exception& e) {
+    spdlog::warn("[verb:spell-placed] E_PLACED_BASE: {:x} reports set {} "
+                 "base {:x}: {}",
+                 caster.GetFormId(), set, baseId, e.what());
+    return false;
+  }
+  skymp::rules::PlacementReport report{};
+  report.caster = caster.GetFormId();
+  report.set = set;
+  report.short_id = baseDesc.shortFormId;
+  report.file = baseDesc.file;
+  report.x = pos.x;
+  report.y = pos.y;
+  report.z = pos.z;
+  report.yaw = yaw;
+  const uint64_t nowMs = SteadyNowMs();
+  const auto verdict = pImpl->placements->report_placed(report, nowMs);
+  if (!verdict.accepted) {
+    spdlog::warn("[verb:spell-placed] {}: {:x} reports set {} base {} at "
+                 "({:.0f}, {:.0f}, {:.0f}) yaw {:.0f}; {:.0f} on the ground "
+                 "and {:.0f} up from the cast",
+                 PlacementReportCode(verdict.why), caster.GetFormId(), set,
+                 baseDesc.ToString(), pos.x, pos.y, pos.z, yaw,
+                 verdict.distance, verdict.dz);
+    return false;
+  }
+  spdlog::info("[verb:spell-placed] {:x} reports set {} base {} at ({:.0f}, "
+               "{:.0f}, {:.0f}) yaw {:.0f}: accepted",
+               caster.GetFormId(), set, baseDesc.ToString(), pos.x, pos.y,
+               pos.z, yaw);
+  TickPlacements(nowMs);
+  return true;
+}
+
+void PartOne::TickPlacements(uint64_t nowMs)
+{
+  for (const skymp::rules::PlacementRow& row :
+       pImpl->placements->due_placements(nowMs)) {
+    const uint32_t formId = PlaceSpellObject(row);
+    if (formId) {
+      pImpl->placedSets[row.set].push_back(formId);
+    }
     spdlog::info(
-      "[verb:spell-placed] {:x} cast {}: set {} placed {} "
-      "form(s){} at ({:.0f}, {:.0f}, {:.0f}) yaw {:.0f}",
-      first.caster,
-      FormDesc(first.spell_short_id, std::string(first.spell_file)).ToString(),
-      set, formIds.size(), ids, first.x, first.y, first.z, first.yaw);
-    pImpl->placedSets[set] = std::move(formIds);
+      "[verb:spell-placed] {:x} cast {}: set {} placed {} form(s) {:x} ({}) "
+      "at ({:.0f}, {:.0f}, {:.0f}) yaw {:.0f}, as reported",
+      row.caster,
+      FormDesc(row.spell_short_id, std::string(row.spell_file)).ToString(),
+      row.set, formId ? 1 : 0, formId, std::string(row.record_type), row.x,
+      row.y, row.z, row.yaw);
   }
   for (const auto& refused : pImpl->placements->take_refusals()) {
     spdlog::info(
@@ -3999,6 +4105,7 @@ bool PartOne::StartCast(uint32_t actorFormId, uint32_t spell, uint8_t hand,
     cast.concentration = facts.kind == skymp::rules::CastKind::Concentration;
     pImpl->placements->cast_started(spellDesc.shortFormId, spellDesc.file,
                                     cast, nowMs);
+    SendPlacementRequests();
   }
   return pImpl->spellCasts->start(actorFormId, facts, nowMs);
 }

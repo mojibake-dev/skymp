@@ -3900,6 +3900,22 @@ bool MpActor::IsGodMode() const noexcept
   return pImpl->godMode;
 }
 
+const std::set<MpObjectReference*>& MpActor::OccupiedContainers()
+  const noexcept
+{
+  return occupiedContainers;
+}
+
+void MpActor::MarkContainerOccupied(MpObjectReference* container,
+                                    bool occupied)
+{
+  if (occupied) {
+    occupiedContainers.insert(container);
+  } else {
+    occupiedContainers.erase(container);
+  }
+}
+
 void MpActor::SetGodMode(bool on) noexcept
 {
   pImpl->godMode = on;

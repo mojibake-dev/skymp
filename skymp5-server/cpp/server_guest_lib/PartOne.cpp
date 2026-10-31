@@ -739,6 +739,15 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           // TGM and TIM are the session's (thuum docs/verbs/god-mode.md)
           actor->SetGodMode(false);
           actor->SetImmortal(false);
+          // and the containers it stood in let it go (thuum
+          // docs/verbs/containers.md: a disconnect neither destroys nor
+          // disables the actor, so the occupant sinks never fired and the
+          // chest stayed open for everyone else)
+          for (auto* container : std::vector<MpObjectReference*>(
+                 actor->OccupiedContainers().begin(),
+                 actor->OccupiedContainers().end())) {
+            container->RemoveContainerOccupant(*actor);
+          }
           // every cell it hosts starts its grace (thuum
           // docs/verbs/cell-host.md); the clock passes them on
           this_->pImpl->cells->gone(actor->GetFormId(), SteadyNowMs());

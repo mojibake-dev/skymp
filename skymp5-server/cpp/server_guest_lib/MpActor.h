@@ -496,6 +496,12 @@ public:
   // health stops at one point instead of reaching nothing
   bool IsGodMode() const noexcept;
   void SetGodMode(bool on) noexcept;
+  // thuum docs/verbs/containers.md (memo D52's occupant set): the
+  // containers this actor stands in, kept by the container's add and remove,
+  // so a disconnect can release them (a disconnect neither destroys nor
+  // disables the actor, and the occupant sinks fire on those alone)
+  const std::set<MpObjectReference*>& OccupiedContainers() const noexcept;
+  void MarkContainerOccupied(MpObjectReference* container, bool occupied);
   bool IsImmortal() const noexcept;
   void SetImmortal(bool on) noexcept;
   // MagicEffects to `listener`'s player: the effects running on this actor,
@@ -547,6 +553,7 @@ public:
   uint32_t GetHostedEmotionValue() const;
 
 private:
+  std::set<MpObjectReference*> occupiedContainers;
   // the two EndRunningEffects above: removes the MGEFs named, gives a buff's
   // modifier back, tells every game; false for none
   bool EndRunningEffectIds(const std::vector<uint32_t>& ending);

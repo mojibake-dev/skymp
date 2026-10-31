@@ -152,6 +152,13 @@ public:
   void SetOpen(bool open);
   void PutItem(MpActor& actor, const Inventory::Entry& entry);
   void TakeItem(MpActor& actor, const Inventory::Entry& entry);
+  // thuum docs/verbs/containers.md: a mover whose put or take the server
+  // refused (a reach, a missing item) hears both inventories again
+  void ResyncAfterRefusedMove(MpActor& ac);
+  // memo D52's occupant set, read by the tests and released by a player's
+  // disconnect (PartOne; docs/verbs/containers.md)
+  bool IsContainerOccupant(const MpActor* actor) const;
+  void RemoveContainerOccupant(MpActor& actor);
   void SetRelootTime(std::chrono::system_clock::duration newRelootTime);
   void SetChanceNoneOverride(uint8_t chanceNone);
   void SetCellOrWorld(const FormDesc& worldOrCell);
@@ -278,12 +285,9 @@ private:
   // thuum memo D52 (playtest 37, Eli: "i WOULD like two people to be able to
   // be in one container at once"): a container's or a corpse's occupants, as
   // many as open it; furniture keeps the one occupant below
-  bool IsContainerOccupant(const MpActor* actor) const;
   void AddContainerOccupant(MpActor& actor);
-  void RemoveContainerOccupant(MpActor& actor);
   void PruneContainerOccupants(float reach);
   void SendInventoryToContainerOccupants(const MpActor* except);
-  void ResyncAfterRefusedMove(MpActor& ac);
   bool CheckIfObjectCanStartOccupyThis(MpObjectReference& activationSource,
                                        float occupationReach);
 

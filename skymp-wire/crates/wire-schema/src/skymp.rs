@@ -1807,3 +1807,53 @@ wire_struct! {
         pub epoch: u32,
     }
 }
+
+wire_struct! {
+    /// MsgType 61, thuum's (docs/verbs/spell-placed-object.md, ADR-057 shape
+    /// A, D70): the server asks the caster's game where its engine stands the
+    /// objects a listed spell's script placed. Server to client, reliable, to
+    /// the caster alone at its accepted cast (wire-rules placements): the
+    /// set's id, the bases to find (the server's form ids, the load order
+    /// both ends share) and the window in milliseconds within which the
+    /// reports are taken. The caster's game answers one `PlacedReport` per
+    /// base once the reference has settled. Reason codes: `E_VAL_RANGE` (no
+    /// base, a base of 0, a window of 0 or over ten seconds).
+    pub struct PlacedRequest {
+        /// `"t": 61`.
+        #[serde(default)]
+        pub t: MsgT<61>,
+        /// The set's id, which the reports name.
+        pub set: u64,
+        /// The bases to find, each a form id; one to eight, none 0.
+        pub bases: Vec<u32, { cap::PLACED_BASES }>,
+        /// How long from the cast the reports are taken, milliseconds; 1 to
+        /// 10,000.
+        pub window_ms: u32,
+    }
+}
+
+wire_struct! {
+    /// MsgType 62, thuum's (docs/verbs/spell-placed-object.md, ADR-057 shape
+    /// A, D70): where the caster's engine stands one base of a requested
+    /// set. Client to server, reliable, once per base per set, R1: the
+    /// caster's game computes (the script's placement), the server validates
+    /// (the set its own request to this caster and still open, the base one
+    /// the set asked for and not yet reported, the pose a number 150 to 260
+    /// units from where the caster stood at the cast on the ground plane and
+    /// within 256 of its height; wire-rules placements) and places its copy
+    /// there for every other seat. Reason codes: `E_VAL_RANGE` (a base of
+    /// 0), `E_VAL_NONFINITE`, `E_VAL_OUT_OF_WORLD`, `E_VAL_RATE` (the budget).
+    pub struct PlacedReport {
+        /// `"t": 62`.
+        #[serde(default)]
+        pub t: MsgT<62>,
+        /// The set named by the request.
+        pub set: u64,
+        /// The base found, a form id; never 0.
+        pub base: u32,
+        /// Where it stands, engine units.
+        pub pos: Vec3,
+        /// Its Z angle, degrees.
+        pub yaw: f32,
+    }
+}

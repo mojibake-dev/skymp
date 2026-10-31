@@ -46,6 +46,16 @@ inline REL::Relocation<std::uintptr_t> PerformAction{ REL::ID(38949) };
 // docs/research/re-37335-and-rune-landing.md). Not in CommonLibSSE-NG, the
 // SE id unread: AE only, as PerformAction.
 inline REL::Relocation<std::uintptr_t> DamageActor{ REL::ID(37335) };
+// thuum docs/verbs/leveling.md: the player's UseSkill, PlayerCharacter's
+// vtable slot 0xF7 (CommonLibSSE-NG include/RE/A/Actor.h:445; the same
+// address CommonLibSSE-NG's src/RE/P/PlayerCharacter.cpp:238-243 names
+// AddSkillExperience, RELOCATION_ID(39413, 40488)): (PlayerCharacter* this,
+// ActorValue skill, float points in XMM2, TESForm* source) -> void, called
+// once per landed hit with the weapon's base damage as the points, the
+// skill's use mult applied inside (x-skill-use-read v3, 20261031-094735; the
+// lab's `just addr 40488` reads 0x736e20 on 1.6.1170). AE only, as
+// DamageActor.
+inline REL::Relocation<std::uintptr_t> UseSkill{ REL::ID(40488) };
 // thuum docs/verbs/npc-stream.md (the voice slice; playtest 37, 2026-10-28,
 // Eli: "if i ask 'what do you have for sale' the trading menue is opened for
 // both people"): DialogueItem::SendTopicInfoEvent, (DialogueItem* item,

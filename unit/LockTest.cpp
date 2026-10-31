@@ -118,6 +118,9 @@ TEST_CASE("A locked chest's activation prompts the player's game instead of "
   Enter(p);
   auto& chest = p.worldState.GetFormAt<MpObjectReference>(kBanditChest);
   auto& picker = p.worldState.GetFormAt<MpActor>(kPicker);
+  // the counts below are exact: whatever the picker was created holding
+  // (pipeline 4155 read ten Lockpicks on it) leaves first
+  picker.RemoveAllItems();
   picker.AddItem(kLockpick, 2);
 
   // the activation meets the lock: a prompt to the picker, no container
@@ -191,6 +194,7 @@ TEST_CASE("Broken picks cost Lockpicks and no more than held; a report "
   auto& chest = p.worldState.GetFormAt<MpObjectReference>(kBanditChest);
   auto& picker = p.worldState.GetFormAt<MpActor>(kPicker);
   REQUIRE(chest.GetLock()->locked);
+  picker.RemoveAllItems();
   picker.AddItem(kLockpick, 2);
 
   // three broke, two held: two leave, the lock stands with two broken on it

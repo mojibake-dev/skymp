@@ -3484,7 +3484,8 @@ mod tests {
         assert_eq!(t.take_refusals().first().map(|r| r.why), Some(2));
         t.caster_gone(0xff00_0000, 30_000);
         assert!(new_placements(r#"[{"spell": "cc14"}]"#).is_err());
-        assert!(new_placements(r#"[{"spell": "00cc14:Apocalypse - Magic of Skyrim.esp", "anchor": "caster", "objects": [{"base": "098529:Apocalypse - Magic of Skyrim.esp", "type": "MSTT", "forward": 192, "dz": -48}], "lifetime": {"whileHeld": true, "lingerS": 5, "maxS": 120}, "perCaster": 1}]"#).is_err());
+        // shape C's offsets are read and ignored
+        assert!(new_placements(r#"[{"spell": "00cc14:Apocalypse - Magic of Skyrim.esp", "anchor": "caster", "objects": [{"base": "098529:Apocalypse - Magic of Skyrim.esp", "type": "MSTT", "forward": 192, "dz": -48}], "lifetime": {"whileHeld": true, "lingerS": 5, "maxS": 120}, "perCaster": 1}]"#).is_ok());
     }
 
     #[test]

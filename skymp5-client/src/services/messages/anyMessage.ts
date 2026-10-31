@@ -59,6 +59,8 @@ import { QuestStageMessage } from "./questStageMessage";
 import { PropTransformMessage } from "./propTransformMessage";
 import { PropClaimMessage } from "./propClaimMessage";
 import { PropOwnerMessage } from "./propOwnerMessage";
+import { PlacedRequestMessage } from "./placedRequestMessage";
+import { PlacedReportMessage } from "./placedReportMessage";
 
 export type AnyMessage = ActivateMessage
     | ConsoleCommandMessage
@@ -114,6 +116,8 @@ export type AnyMessage = ActivateMessage
     | PropTransformMessage
     | PropClaimMessage
     | PropOwnerMessage
+    | PlacedRequestMessage
+    | PlacedReportMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage
     | UpdatePropertyMessage

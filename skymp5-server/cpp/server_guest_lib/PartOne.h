@@ -264,6 +264,18 @@ public:
   bool LevelingEnabled() const;
   float SkillUseXp(uint8_t skillAv, float base) const;
   float SkillLevelCost(uint8_t skillAv, uint8_t level) const;
+
+  // thuum docs/verbs/weather.md (M4): one weather per worldspace, picked
+  // here on the game clock from the worldspace's pool (the game files'
+  // weather regions, read at AttachEspm, or server-settings.json's
+  // `weather.pools`) and told to each player in it: at login, when it
+  // enters a place, and at each change (SetWeather). An interior hears a
+  // release. The switch is `weatherSync` (false: nothing is sent, every
+  // game's own sky stands). SetWeatherSettings takes the `weather` block
+  // as JSON text ("{}" for every default) and throws naming a bad key.
+  void SetWeatherEnabled(bool on);
+  bool WeatherEnabled() const;
+  void SetWeatherSettings(const std::string& weatherSettingsJson);
   bool ApplySkillUse(MpActor& actor, uint8_t skillAv, float amount);
   void TickPlacements(uint64_t nowMs);
   bool ReportPlacedObject(MpActor& caster, uint64_t set, uint32_t baseId,
@@ -787,6 +799,10 @@ private:
   // thuum docs/verbs/leveling.md: the skills' AVSK rows from the game files
   // (AVOneHanded 0x44c to AVEnchanting 0x45d, one per ActorValue 6 to 23)
   void LoadSkillTable();
+  void LoadWeatherPools();
+  bool ApplySettingsWeatherPools();
+  void TickWeather();
+  void SendWeatherWord(Networking::UserId userId);
   // thuum docs/verbs/shadowbond.md (train-28): the proc's records on both
   // and its cast in every game but the caster's; the reverse, with the
   // reason for the log

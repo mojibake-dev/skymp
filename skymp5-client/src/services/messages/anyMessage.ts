@@ -66,6 +66,7 @@ import { LockPromptMessage } from "./lockPromptMessage";
 import { SetWeatherMessage } from "./setWeatherMessage";
 import { PerkPickMessage } from "./perkPickMessage";
 import { PerkStateMessage } from "./perkStateMessage";
+import { SkillUseMessage } from "./skillUseMessage";
 
 export type AnyMessage = ActivateMessage
     | ConsoleCommandMessage
@@ -128,6 +129,7 @@ export type AnyMessage = ActivateMessage
     | SetWeatherMessage
     | PerkPickMessage
     | PerkStateMessage
+    | SkillUseMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage
     | UpdatePropertyMessage

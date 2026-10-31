@@ -3849,7 +3849,7 @@ mod tests {
         // the request: one row per base, both on set 0, the window the rule's
         let rows = t.take_requests();
         assert_eq!(rows.len(), 2);
-        assert!(rows.first().is_some_and(|r| r.set == 0 && r.caster == 0xff00_0000 && r.spell_short_id == 0xcc14 && r.spell_file == PLUGIN && r.short_id == 0x98529 && r.record_type == "MSTT" && r.window_ms == 3_000), "{rows:?}");
+        assert!(rows.first().is_some_and(|r| r.set == 0 && r.caster == 0xff00_0000 && r.spell_short_id == 0xcc14 && r.spell_file == PLUGIN && r.short_id == 0x98529 && r.record_type == "MSTT" && r.window_ms == placements::REPORT_WINDOW_MS), "{rows:?}");
         assert!(rows.get(1).is_some_and(|r| r.set == 0 && r.short_id == 0x735e8 && r.record_type == "ACTI"), "{rows:?}");
         assert!(t.take_requests().is_empty());
         assert!(t.due_placements(1_200).is_empty());
@@ -3880,7 +3880,7 @@ mod tests {
         // a cast nobody reports is noted when its window closes
         assert!(t.cast_started(0xcc14, PLUGIN, cast(1, 90.0), 20_000));
         assert_eq!(t.take_requests().len(), 2);
-        assert!(t.due_placements(23_001).is_empty());
+        assert!(t.due_placements(20_000 + placements::REPORT_WINDOW_MS + 1).is_empty());
         assert_eq!(t.take_refusals().first().map(|r| r.why), Some(2));
         t.caster_gone(0xff00_0000, 30_000);
         assert!(new_placements(r#"[{"spell": "cc14"}]"#).is_err());

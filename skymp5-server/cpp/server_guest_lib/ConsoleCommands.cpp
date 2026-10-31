@@ -253,6 +253,40 @@ void ExecuteEnable(MpActor& caller,
   target.Enable();
 }
 
+// Lock and Unlock (thuum docs/verbs/locks.md): the server's lock state on a
+// reference. `lock <ref> [level]` locks it at the level (the XLOC byte: 0 or
+// 1 Novice, 25 Apprentice, 50 Adept, 75 Expert, 100 Master, 255 requires its
+// key; the record's own level when none is typed), `unlock <ref>` opens it.
+// The game's own console commands of these names are sent here by the
+// client (consoleCommandsService) instead of running locally.
+void ExecuteLock(MpActor& caller,
+                 const std::vector<ConsoleCommands::Argument>& args)
+{
+  MpObjectReference& target = ReferenceOf(caller, args.at(0).GetInteger());
+  auto lock = target.GetLock().value_or(MpChangeFormREFR::Lock{});
+  if (args.size() > 1 && args.at(1).IsInteger()) {
+    const auto level = args.at(1).GetInteger();
+    if (level < 0 || level > 255) {
+      throw std::runtime_error("a lock level is 0 to 255");
+    }
+    lock.level = static_cast<uint8_t>(level);
+  }
+  lock.locked = true;
+  target.SetLock(lock);
+}
+
+void ExecuteUnlock(MpActor& caller,
+                   const std::vector<ConsoleCommands::Argument>& args)
+{
+  MpObjectReference& target = ReferenceOf(caller, args.at(0).GetInteger());
+  auto lock = target.GetLock();
+  if (!lock) {
+    throw std::runtime_error("the reference has no lock");
+  }
+  lock->locked = false;
+  target.SetLock(*lock);
+}
+
 // Kill: the server's death (docs/verbs/hostility-sync.md and m0-death), the
 // killer the second reference when the console names one
 void ExecuteKill(MpActor& caller,
@@ -764,6 +798,10 @@ void ConsoleCommands::Execute(
       ExecuteRemoveItem(me, args);
     } else if (!Utils::stricmp(name, "Enable")) {
       ExecuteEnable(me, args);
+    } else if (!Utils::stricmp(name, "Lock")) {
+      ExecuteLock(me, args);
+    } else if (!Utils::stricmp(name, "Unlock")) {
+      ExecuteUnlock(me, args);
     } else if (!Utils::stricmp(name, "Kill")) {
       ExecuteKill(me, args);
     } else if (!Utils::stricmp(name, "Resurrect")) {

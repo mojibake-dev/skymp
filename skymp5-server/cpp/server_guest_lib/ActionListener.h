@@ -126,6 +126,13 @@ public:
   virtual void OnSkillUse(const RawMessageData& rawMsgData,
                           const SkillUseMessage& msg);
 
+  // thuum docs/verbs/locks.md (M4): how a player's lockpicking attempt ended;
+  // judged by the rule (the reference locked and within the activation
+  // reach, its tier open to picks, a Lockpick held, a gap between reports)
+  // into the record: the unlock, or the broken picks taken
+  virtual void OnLockReport(const RawMessageData& rawMsgData,
+                            const LockReportMessage& msg);
+
   // thuum docs/verbs/cell-host.md: a game's cell loaded or left its loaded
   // set; the server's election follows (wire-rules cells)
   virtual void OnCellLoaded(const RawMessageData& rawMsgData,
@@ -344,6 +351,9 @@ private:
                  const SpellCastData& data);
 
   PartOne& partOne;
+  // thuum docs/verbs/locks.md: when each player last reported on each lock
+  // (monotonic ms), for the rule's gap
+  std::map<std::pair<uint32_t, uint32_t>, uint64_t> lastLockReportMs;
   // thuum docs/verbs/spell-cast.md (train-27): a cast delivered to its
   // target (touch, target actor) whose relay waits for its first hit, by
   // the caster's form id and hand; the hit's claim (CastClaim::relay)

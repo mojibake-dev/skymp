@@ -767,6 +767,90 @@ VarValue PapyrusObjectReference::SetOpen(
   return VarValue::None();
 }
 
+// thuum docs/verbs/locks.md: the lock natives read and write the server's
+// record (R0); the client's games follow the `lock` property. Lock(abLock,
+// abAsOwner): abAsOwner is the engine's ownership bookkeeping, which the
+// server does not keep (ignored). GetLockLevel returns the XLOC level byte
+// the Creation Kit writes (0 or 1 Novice, 25, 50, 75, 100, 255 requires its
+// key), 0 for a reference with no lock; SetLockLevel writes it.
+VarValue PapyrusObjectReference::Lock(VarValue self,
+                                      const std::vector<VarValue>& arguments)
+{
+  auto selfRefr = GetFormPtr<MpObjectReference>(self);
+  if (!selfRefr) {
+    spdlog::error("Lock: self is not a reference");
+    return VarValue::None();
+  }
+  const bool locked =
+    arguments.empty() ? true : static_cast<bool>(arguments[0].CastToBool());
+  auto lock = selfRefr->GetLock().value_or(MpChangeFormREFR::Lock{});
+  lock.locked = locked;
+  selfRefr->SetLock(lock);
+  return VarValue::None();
+}
+
+VarValue PapyrusObjectReference::IsLocked(VarValue self,
+                                          const std::vector<VarValue>&)
+{
+  if (auto selfRefr = GetFormPtr<MpObjectReference>(self)) {
+    const auto lock = selfRefr->GetLock();
+    return VarValue(lock.has_value() && lock->locked);
+  }
+  return VarValue(false);
+}
+
+VarValue PapyrusObjectReference::GetLockLevel(VarValue self,
+                                              const std::vector<VarValue>&)
+{
+  if (auto selfRefr = GetFormPtr<MpObjectReference>(self)) {
+    if (const auto lock = selfRefr->GetLock()) {
+      return VarValue(static_cast<int32_t>(lock->level));
+    }
+  }
+  return VarValue(0);
+}
+
+VarValue PapyrusObjectReference::SetLockLevel(
+  VarValue self, const std::vector<VarValue>& arguments)
+{
+  auto selfRefr = GetFormPtr<MpObjectReference>(self);
+  if (!selfRefr) {
+    spdlog::error("SetLockLevel: self is not a reference");
+    return VarValue::None();
+  }
+  if (arguments.empty()) {
+    spdlog::error("SetLockLevel: not enough arguments");
+    return VarValue::None();
+  }
+  const auto level = static_cast<int>(arguments[0]);
+  if (level < 0 || level > 255) {
+    spdlog::error("SetLockLevel: a lock level is 0 to 255, got {}", level);
+    return VarValue::None();
+  }
+  auto lock = selfRefr->GetLock().value_or(MpChangeFormREFR::Lock{});
+  lock.level = static_cast<uint8_t>(level);
+  selfRefr->SetLock(lock);
+  return VarValue::None();
+}
+
+VarValue PapyrusObjectReference::GetKey(VarValue self,
+                                        const std::vector<VarValue>&)
+{
+  if (auto selfRefr = GetFormPtr<MpObjectReference>(self)) {
+    const auto lock = selfRefr->GetLock();
+    if (lock && lock->key) {
+      if (auto worldState = selfRefr->GetParent()) {
+        auto lookupRes =
+          worldState->GetEspm().GetBrowser().LookupById(lock->key);
+        if (lookupRes.rec) {
+          return VarValue(std::make_shared<EspmGameObject>(lookupRes));
+        }
+      }
+    }
+  }
+  return VarValue::None();
+}
+
 VarValue PapyrusObjectReference::Is3DLoaded(VarValue,
                                             const std::vector<VarValue>&)
 {
@@ -985,6 +1069,11 @@ void PapyrusObjectReference::Register(
             &PapyrusObjectReference::PlayGamebryoAnimation);
   AddMethod(vm, "MoveTo", &PapyrusObjectReference::MoveTo);
   AddMethod(vm, "SetOpen", &PapyrusObjectReference::SetOpen);
+  AddMethod(vm, "Lock", &PapyrusObjectReference::Lock);
+  AddMethod(vm, "IsLocked", &PapyrusObjectReference::IsLocked);
+  AddMethod(vm, "GetLockLevel", &PapyrusObjectReference::GetLockLevel);
+  AddMethod(vm, "SetLockLevel", &PapyrusObjectReference::SetLockLevel);
+  AddMethod(vm, "GetKey", &PapyrusObjectReference::GetKey);
   AddMethod(vm, "Is3DLoaded", &PapyrusObjectReference::Is3DLoaded);
   AddMethod(vm, "GetLinkedRef", &PapyrusObjectReference::GetLinkedRef);
   AddMethod(vm, "GetNthLinkedRef", &PapyrusObjectReference::GetNthLinkedRef);

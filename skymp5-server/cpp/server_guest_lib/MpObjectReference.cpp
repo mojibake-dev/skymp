@@ -35,6 +35,7 @@
 #include <numeric>
 #include <optional>
 
+#include "LockPromptMessage.h"
 #include "OpenContainerMessage.h"
 #include "SetInventoryMessage.h"
 #include "SpSnippet.h"
@@ -408,6 +409,15 @@ void MpObjectReference::VisitProperties(CreateActorMessage& message,
     message.props.isOpen = true;
   }
 
+  // thuum docs/verbs/locks.md: the lock the client applies to its reference
+  if (const auto lock = GetLock()) {
+    LockProp prop;
+    prop.level = lock->level;
+    prop.key = lock->key;
+    prop.locked = lock->locked;
+    message.props.lock = prop;
+  }
+
   if (auto actor = AsActor(); actor && actor->IsDead()) {
     message.props.isDead = true;
   } else if (actor && !actor->IsCreatedAsPlayer()) {
@@ -680,6 +690,59 @@ void MpObjectReference::SetOpen(bool open)
     SendMessageToActorListeners(
       CreatePropertyMessage_(this, "isOpen", open ? "true" : "false"), true);
   }
+}
+
+std::optional<MpChangeFormREFR::Lock> MpObjectReference::GetLock() const
+{
+  auto worldState = GetParent();
+  if (!worldState || !worldState->locksEnabled) {
+    return std::nullopt;
+  }
+  if (ChangeForm().lock.has_value()) {
+    return ChangeForm().lock;
+  }
+  if (!worldState->HasEspm() || !IsEspmForm()) {
+    return std::nullopt;
+  }
+  const auto lookupRes =
+    worldState->GetEspm().GetBrowser().LookupById(GetFormId());
+  const auto refr = espm::Convert<espm::REFR>(lookupRes.rec);
+  if (!refr) {
+    return std::nullopt;
+  }
+  const auto data = refr->GetData(worldState->GetEspmCache());
+  if (!data.hasLock) {
+    return std::nullopt;
+  }
+  MpChangeFormREFR::Lock lock;
+  lock.level = data.lockLevel;
+  lock.key = data.lockKey ? lookupRes.ToGlobalId(data.lockKey) : 0;
+  lock.locked = true;
+  return lock;
+}
+
+void MpObjectReference::SetLock(const MpChangeFormREFR::Lock& lock)
+{
+  const auto before = GetLock();
+  EditChangeForm(
+    [&](MpChangeFormREFR& changeForm) { changeForm.lock = lock; });
+  if (!before || !(*before == lock)) {
+    const nlohmann::json value = { { "level", lock.level },
+                                   { "key", lock.key },
+                                   { "locked", lock.locked } };
+    SendMessageToActorListeners(
+      CreatePropertyMessage_(this, "lock", value.dump()), true);
+    spdlog::info("[verb:locks] {:x} {} (level {}, key {:x}, {} broken)",
+                 GetFormId(), lock.locked ? "locked" : "unlocked", lock.level,
+                 lock.key, lock.broken);
+  }
+}
+
+void MpObjectReference::SendLockPrompt(MpActor& to)
+{
+  LockPromptMessage prompt;
+  prompt.refr = GetFormId();
+  to.SendToUser(prompt, true);
 }
 
 void MpObjectReference::PutItem(MpActor& ac, const Inventory::Entry& e)
@@ -1695,6 +1758,39 @@ void MpObjectReference::ProcessActivateNormal(
   }
 
   auto t = base.rec->GetType();
+
+  // thuum docs/verbs/locks.md: a player's activation of a locked door or
+  // container opens for its key alone (R0); without it the player's game is
+  // told to run the engine's own activation on its locked reference (the
+  // lockpicking menu, the "requires key" box), and the unlock comes back as
+  // a LockReport. A host's report or a non-actor activator (a script, a
+  // parent) passes the lock as the engine's own linked activations do.
+  if (actorActivator && !reportedByHost) {
+    if (const auto lock = GetLock(); lock && lock->locked) {
+      skymp::rules::LockStateRow row{};
+      row.level = lock->level;
+      row.key = lock->key;
+      row.locked = lock->locked;
+      row.broken = lock->broken;
+      const bool hasKey = lock->key != 0 &&
+        actorActivator->GetInventory().GetItemCount(lock->key) > 0;
+      const auto verdict = skymp::rules::lock_activation(row, hasKey);
+      if (verdict.verdict == 1) {
+        MpChangeFormREFR::Lock opened = *lock;
+        opened.locked = false;
+        spdlog::info("[verb:locks] {:x} opens {:x} with its key {:x}",
+                     actorActivator->GetFormId(), GetFormId(), lock->key);
+        SetLock(opened);
+      } else if (verdict.verdict == 2) {
+        spdlog::info("[verb:locks] E_ACTIVATE_LOCKED: {:x} activates {:x} "
+                     "(level {}, key {:x}); the player's game is prompted",
+                     actorActivator->GetFormId(), GetFormId(), lock->level,
+                     lock->key);
+        SendLockPrompt(*actorActivator);
+        return;
+      }
+    }
+  }
 
   bool pickable = espm::utils::Is<espm::TREE>(t) ||
     espm::utils::Is<espm::FLOR>(t) || espm::utils::IsItem(t);

@@ -261,6 +261,12 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
     if (serverSettings.find("leveling") != serverSettings.end()) {
       partOne->SetLevelingEnabled(serverSettings.at("leveling").get<bool>());
     }
+    // thuum docs/verbs/locks.md (M4): the server's lock state; false (the
+    // default) leaves locks to the client's strip as before
+    if (serverSettings.find("locks") != serverSettings.end()) {
+      partOne->worldState.locksEnabled =
+        serverSettings.at("locks").get<bool>();
+    }
     // thuum docs/verbs/npc-fate.md (ADR-050 decision 2): a hosted NPC's
     // number goes to its host as a cause and its kill waits for the host's
     // report; false restores the absolute values and the kill at once

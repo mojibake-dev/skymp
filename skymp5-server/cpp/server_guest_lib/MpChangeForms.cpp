@@ -517,6 +517,15 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
     res["placedBySpell"] = changeForm.placedBySpell->ToString();
   }
 
+  // thuum docs/verbs/locks.md; absent in older records, read as the game
+  // files' lock
+  if (changeForm.lock.has_value()) {
+    res["lock"] = nlohmann::json{ { "level", changeForm.lock->level },
+                                  { "key", changeForm.lock->key },
+                                  { "locked", changeForm.lock->locked },
+                                  { "broken", changeForm.lock->broken } };
+  }
+
   // thuum docs/verbs/shouts.md; absent in older records, read as none
   if (changeForm.shoutRecord.has_value() && !changeForm.shoutRecord->Empty()) {
     res["shoutRecord"] = {
@@ -660,6 +669,10 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
   static const JsonPointer playerGlobals("playerGlobals");
   static const JsonPointer questStages("questStages");
   static const JsonPointer placedBySpell("placedBySpell");
+  static const JsonPointer lockLevel("lock/level");
+  static const JsonPointer lockKey("lock/key");
+  static const JsonPointer lockLocked("lock/locked");
+  static const JsonPointer lockBroken("lock/broken");
   static const JsonPointer favorites("favorites");
   static const JsonPointer raceMenuPreset("raceMenuPreset");
   static const JsonPointer staffRank("staffRank");
@@ -1039,6 +1052,22 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
     const char* placedTmp;
     ReadEx(element, placedBySpell, &placedTmp);
     res.placedBySpell = FormDesc::FromString(placedTmp);
+  }
+
+  if (element.at_pointer(lockLevel.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    MpChangeFormREFR::Lock lockTmp;
+    int64_t level = 0;
+    int64_t key = 0;
+    int64_t broken = 0;
+    ReadEx(element, lockLevel, &level);
+    ReadEx(element, lockKey, &key);
+    ReadEx(element, lockLocked, &lockTmp.locked);
+    ReadEx(element, lockBroken, &broken);
+    lockTmp.level = static_cast<uint8_t>(level);
+    lockTmp.key = static_cast<uint32_t>(key);
+    lockTmp.broken = static_cast<uint32_t>(broken);
+    res.lock = lockTmp;
   }
 
   if (element.at_pointer(shoutRecord.GetData()).error() ==

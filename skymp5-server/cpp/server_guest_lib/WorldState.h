@@ -349,6 +349,10 @@ public:
   // (ActionListener::OnActorDeath); false refuses every report (A: the
   // server's number alone kills)
   bool npcDeathReports = true;
+  // thuum docs/verbs/locks.md (M4): the server's lock state on doors and
+  // containers; false (the default until its T3) leaves every lock to the
+  // client's strip as before, the records untouched
+  bool locksEnabled = false;
   // thuum docs/verbs/npc-fate.md (ADR-050 decision 2, deaths by the engine):
   // the server's number for a hit on a hosted NPC goes to its host as a
   // cause (DamageCause) and the kill at zero waits for the host's report up

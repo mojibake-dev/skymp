@@ -150,6 +150,15 @@ public:
                 SetAngleMode setAngleMode = SetAngleMode::Other);
   void SetHarvested(bool harvested);
   void SetOpen(bool open);
+  // thuum docs/verbs/locks.md: the reference's lock as the server holds it
+  // (the record's, else the game files' XLOC with the key made global; none
+  // for a reference the files leave unlocked), its write (the record and the
+  // `lock` property to every listener), and the word to a player whose
+  // activation met the lock without its key (the engine's own activation on
+  // the player's locked reference runs the minigame)
+  std::optional<MpChangeFormREFR::Lock> GetLock() const;
+  void SetLock(const MpChangeFormREFR::Lock& lock);
+  void SendLockPrompt(MpActor& to);
   void PutItem(MpActor& actor, const Inventory::Entry& entry);
   void TakeItem(MpActor& actor, const Inventory::Entry& entry);
   void SetRelootTime(std::chrono::system_clock::duration newRelootTime);

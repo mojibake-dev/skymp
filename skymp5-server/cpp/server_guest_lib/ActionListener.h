@@ -111,6 +111,21 @@ public:
   virtual void OnPropTransform(const RawMessageData& rawMsgData,
                                const PropTransformMessage& msg);
 
+  // thuum docs/verbs/spell-placed-object.md (ADR-057 shape A, D70): the
+  // caster's game reports where its engine stands one base of a set the
+  // server asked for at its accepted cast; judged by the rule (the set this
+  // caster's and open, the base asked for and not yet reported, the pose
+  // inside the band from where the caster stood; wire-rules placements) and
+  // placed for every other seat (R1)
+  virtual void OnPlacedReport(const RawMessageData& rawMsgData,
+                              const PlacedReportMessage& msg);
+
+  // thuum docs/verbs/leveling.md (M5): a player's skill uses of the last
+  // second; each is taken into the record by the game's formulas (R1 the
+  // amount, R0 the rest) when the server's `leveling` switch is on
+  virtual void OnSkillUse(const RawMessageData& rawMsgData,
+                          const SkillUseMessage& msg);
+
   // thuum docs/verbs/cell-host.md: a game's cell loaded or left its loaded
   // set; the server's election follows (wire-rules cells)
   virtual void OnCellLoaded(const RawMessageData& rawMsgData,

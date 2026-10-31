@@ -170,6 +170,15 @@ pub struct ClientGuard {
     /// grab, a drop or an impulse each a claim; the claim idiom's 8 at once,
     /// 2 a second after (UNMEASURED).
     pub prop_claim_budget: TokenBucket,
+    /// Budget for a caster's placement reports (PlacedReport, thuum docs/verbs/
+    /// spell-placed-object.md, shape A): one per base per set, Raise Wall's
+    /// two a cast, two sets a caster; a burst of 8 then 2 a second
+    /// (UNMEASURED).
+    pub placed_report_budget: TokenBucket,
+    /// Budget for a player's skill use batches (SkillUse, thuum docs/verbs/
+    /// leveling.md): one a second by design; a burst of 8 then 2 a second
+    /// (UNMEASURED).
+    pub skill_use_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -207,6 +216,8 @@ impl Default for ClientGuard {
             cell_loaded_budget: TokenBucket { tokens: 128, capacity: 128, refill_per_s: 32, last_refill_ms: 0 },
             prop_budget: TokenBucket { tokens: 20, capacity: 20, refill_per_s: 10, last_refill_ms: 0 },
             prop_claim_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
+            placed_report_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
+            skill_use_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
         }
     }
 }
@@ -640,6 +651,64 @@ fn check_prop_owner(m: &skymp::PropOwner) -> Result<(), Reject> {
     Ok(())
 }
 
+/// The server's request for a listed spell's placed objects (docs/verbs/
+/// spell-placed-object.md, shape A): one to eight bases, none 0, and a
+/// window of 1 to 10,000 ms; the transport refuses it from a client by
+/// direction.
+fn check_placed_request(m: &skymp::PlacedRequest) -> Result<(), Reject> {
+    if m.bases.is_empty() || m.bases.contains(&0) || m.window_ms == 0 || m.window_ms > 10_000 {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
+/// A caster's report of where its engine stands one base of a requested set
+/// (docs/verbs/spell-placed-object.md, shape A): a base (never 0) and a
+/// finite pose inside the world. Whether the set is this caster's and open,
+/// the base the set's, and the pose inside the band from the caster is the
+/// server's rule (wire-rules placements).
+fn check_placed_report(m: &skymp::PlacedReport) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    if m.base == 0 {
+        return Err(Reject::Range);
+    }
+    check_pos(&m.pos)?;
+    Ok(())
+}
+
+/// The most one skill use's base amount may carry: wire-rules leveling's
+/// MAX_BASE_PER_USE (UNMEASURED; a Daedric craft is in the thousands).
+const SKILL_USE_MAX_AMOUNT: f32 = 100_000.0;
+
+/// A player's skill uses (docs/verbs/leveling.md): one to eighteen entries,
+/// each skill (ActorValue 6 to 23) once, each amount finite and within 0
+/// exclusive to the bound. What a use earns is the server's rule (wire-rules
+/// leveling).
+fn check_skill_use(m: &skymp::SkillUse) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    if m.uses.is_empty() {
+        return Err(Reject::Range);
+    }
+    let mut seen = [false; 18];
+    for u in m.uses.iter() {
+        let Some(index) = u.skill.checked_sub(6).map(usize::from) else {
+            return Err(Reject::Range);
+        };
+        let Some(slot) = seen.get_mut(index) else {
+            return Err(Reject::Range);
+        };
+        if *slot || u.amount <= 0.0 || u.amount > SKILL_USE_MAX_AMOUNT {
+            return Err(Reject::Range);
+        }
+        *slot = true;
+    }
+    Ok(())
+}
+
 /// A host's state report for an actor it simulates (docs/verbs/npc-stream.md,
 /// ADR-050): three percentages, each a number within 0 and 1, and an actor
 /// index below u32::MAX (ActorJump's idiom). Whether the sender hosts the
@@ -773,6 +842,8 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::ActorClaim(_) => take(&mut guard.claim_budget, now_ms),
         Message::PropTransform(_) => take(&mut guard.prop_budget, now_ms),
         Message::PropClaim(_) => take(&mut guard.prop_claim_budget, now_ms),
+        Message::PlacedReport(_) => take(&mut guard.placed_report_budget, now_ms),
+        Message::SkillUse(_) => take(&mut guard.skill_use_budget, now_ms),
         _ => Ok(()),
     }
 }
@@ -947,6 +1018,9 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::PropTransform(m) => check_prop_transform(m),
         Message::PropClaim(m) => check_prop_claim(m),
         Message::PropOwner(m) => check_prop_owner(m),
+        Message::PlacedRequest(m) => check_placed_request(m),
+        Message::PlacedReport(m) => check_placed_report(m),
+        Message::SkillUse(m) => check_skill_use(m),
         Message::CreateActor(m) => check_create_actor(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
@@ -2058,6 +2132,62 @@ mod tests {
     }
 
     #[test]
+    fn placed_requests_name_bases_and_a_window() {
+        use wire_schema::skymp::PlacedRequest;
+        let ask = |bases: &[u32], window_ms| Message::PlacedRequest(PlacedRequest { set: 3, bases: bases.to_vec().try_into().unwrap_or_default(), window_ms, ..Default::default() });
+        assert_eq!(validate_server(&ask(&[0x1a09_8529, 0x1a07_35e8], 3_000)), Ok(()));
+        assert_eq!(validate_server(&ask(&[0x1a09_8529], 1)), Ok(()));
+        assert_eq!(validate_server(&ask(&[], 3_000)), Err(Reject::Range));
+        assert_eq!(validate_server(&ask(&[0x1a09_8529, 0], 3_000)), Err(Reject::Range));
+        assert_eq!(validate_server(&ask(&[0x1a09_8529], 0)), Err(Reject::Range));
+        assert_eq!(validate_server(&ask(&[0x1a09_8529], 10_001)), Err(Reject::Range));
+    }
+
+    #[test]
+    fn placed_reports_name_a_base_at_a_finite_place_and_are_rate_limited() {
+        use wire_schema::skymp::PlacedReport;
+        let report = |base, pos, yaw| Message::PlacedReport(PlacedReport { set: 3, base, pos, yaw, ..Default::default() });
+        assert_eq!(validate_server(&report(0x1a09_8529, [23_877.5, -45_485.25, 8.0], 72.5)), Ok(()));
+        assert_eq!(validate_server(&report(0, [0.0, 0.0, 0.0], 0.0)), Err(Reject::Range));
+        assert_eq!(validate_server(&report(0x1a09_8529, [f32::NAN, 0.0, 0.0], 0.0)), Err(Reject::NonFinite));
+        assert_eq!(validate_server(&report(0x1a09_8529, [0.0, 0.0, 0.0], f32::INFINITY)), Err(Reject::NonFinite));
+        assert_eq!(validate_server(&report(0x1a09_8529, [3.0e6, 0.0, 0.0], 0.0)), Err(Reject::OutOfWorld));
+        let mut guard = ClientGuard::default();
+        for _ in 0..8 {
+            assert_eq!(validate(&report(0x1a09_8529, [0.0, 0.0, 0.0], 0.0), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&report(0x1a09_8529, [0.0, 0.0, 0.0], 0.0), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&report(0x1a09_8529, [0.0, 0.0, 0.0], 0.0), &mut guard, 1_500), Ok(()));
+    }
+
+    #[test]
+    fn skill_uses_name_each_skill_once_with_a_bounded_amount_and_are_rate_limited() {
+        use wire_schema::skymp::{SkillUse, SkillUseEntry};
+        let uses = |entries: &[(u8, f32)]| {
+            Message::SkillUse(SkillUse {
+                uses: entries.iter().map(|(skill, amount)| SkillUseEntry { skill: *skill, amount: *amount }).collect::<std::vec::Vec<_>>().try_into().unwrap_or_default(),
+                ..Default::default()
+            })
+        };
+        assert_eq!(validate_server(&uses(&[(6, 10.0)])), Ok(()));
+        assert_eq!(validate_server(&uses(&[(6, 10.0), (23, 1.0)])), Ok(()));
+        assert_eq!(validate_server(&uses(&[])), Err(Reject::Range));
+        assert_eq!(validate_server(&uses(&[(5, 10.0)])), Err(Reject::Range));
+        assert_eq!(validate_server(&uses(&[(24, 10.0)])), Err(Reject::Range));
+        assert_eq!(validate_server(&uses(&[(6, 10.0), (6, 1.0)])), Err(Reject::Range));
+        assert_eq!(validate_server(&uses(&[(6, 0.0)])), Err(Reject::Range));
+        assert_eq!(validate_server(&uses(&[(6, -1.0)])), Err(Reject::Range));
+        assert_eq!(validate_server(&uses(&[(6, 100_001.0)])), Err(Reject::Range));
+        assert_eq!(validate_server(&uses(&[(6, f32::NAN)])), Err(Reject::NonFinite));
+        let mut guard = ClientGuard::default();
+        for _ in 0..8 {
+            assert_eq!(validate(&uses(&[(6, 10.0)]), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&uses(&[(6, 10.0)]), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&uses(&[(6, 10.0)]), &mut guard, 1_500), Ok(()));
+    }
+
+    #[test]
     fn damage_causes_carry_a_percentage_for_a_victim_in_range() {
         use wire_schema::skymp::DamageCause;
         let cause = |idx, health| Message::DamageCause(DamageCause { idx, attacker: 0xff00_0001, health, kill_move: false, ..Default::default() });
@@ -2154,6 +2284,38 @@ mod tests {
             let mut g = ClientGuard::default();
             let _ = validate(&m, &mut g, now);
             let _ = validate_server(&m);
+        }
+
+        #[test]
+        fn skill_uses_never_panic(
+            entries in proptest::collection::vec((any::<u8>(), any::<f32>()), 0..=cap::SKILL_USES),
+            now in any::<u64>(),
+        ) {
+            use wire_schema::skymp::{SkillUse, SkillUseEntry};
+            let m = Message::SkillUse(SkillUse {
+                uses: entries.iter().map(|(skill, amount)| SkillUseEntry { skill: *skill, amount: *amount }).collect::<std::vec::Vec<_>>().try_into().unwrap_or_default(),
+                ..Default::default()
+            });
+            let mut g = ClientGuard::default();
+            let _ = validate(&m, &mut g, now);
+            let _ = validate_server(&m);
+        }
+
+        #[test]
+        fn placed_messages_never_panic(
+            set in any::<u64>(), base in any::<u32>(), x in any::<f32>(), y in any::<f32>(), z in any::<f32>(),
+            yaw in any::<f32>(), window_ms in any::<u32>(), now in any::<u64>(),
+            bases in proptest::collection::vec(any::<u32>(), 0..=cap::PLACED_BASES),
+        ) {
+            use wire_schema::skymp::{PlacedReport, PlacedRequest};
+            let mut g = ClientGuard::default();
+            let report = Message::PlacedReport(PlacedReport { set, base, pos: [x, y, z], yaw, ..Default::default() });
+            let _ = validate(&report, &mut g, now);
+            let _ = validate_server(&report);
+            let ask = Message::PlacedRequest(PlacedRequest { set, bases: bases.clone().try_into().unwrap_or_default(), window_ms, ..Default::default() });
+            let _ = validate(&ask, &mut g, now);
+            let want = if bases.is_empty() || bases.contains(&0) || window_ms == 0 || window_ms > 10_000 { Err(Reject::Range) } else { Ok(()) };
+            prop_assert_eq!(validate_server(&ask), want);
         }
 
         #[test]

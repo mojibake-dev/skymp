@@ -26,7 +26,9 @@
 //! anchor (`caster` in v1: the band is measured from the caster; `hit-target`
 //! and `impact` are the corpus's other two families and are refused until
 //! their rules land), the objects (base and type, MSTT or ACTI; the pose is
-//! the engine's, so the table carries no offsets since shape A), a lifetime
+//! the engine's since shape A, and shape C's `forward` and `dz` are read and
+//! ignored so one settings file serves a server of either shape until the
+//! train merges), a lifetime
 //! (`whileHeld`: the set stands while the stream holds, `lingerS` after its
 //! end, `maxS` from the cast start against a stream that never ends) and
 //! `perCaster`, the sets one caster may hold at once; MAX_SETS bounds the
@@ -294,6 +296,14 @@ struct ObjectJson {
     base: String,
     #[serde(rename = "type")]
     kind: String,
+    /// Shape C's step along the caster's yaw: read and ignored since shape A.
+    #[serde(default)]
+    #[allow(dead_code)]
+    forward: Option<f32>,
+    /// Shape C's height offset: read and ignored since shape A.
+    #[serde(default)]
+    #[allow(dead_code)]
+    dz: Option<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -440,8 +450,9 @@ impl Placements {
     /// none). The error names a bad entry: a form that is not "<hex
     /// id>:<plugin>", an anchor other than `caster`, no objects or more than
     /// MAX_OBJECTS, a type other than MSTT or ACTI, a base named twice, a
-    /// maxS of 0, a perCaster outside 1 to MAX_SETS, an unknown key (shape
-    /// C's `forward` and `dz` among them), a spell listed twice.
+    /// maxS of 0, a perCaster outside 1 to MAX_SETS, an unknown key, a spell
+    /// listed twice. Shape C's `forward` and `dz` on an object are read and
+    /// ignored.
     pub fn from_json(text: &str) -> Result<Self, SettingsError> {
         let entries: Vec<EntryJson> = serde_json::from_str(text).map_err(|e| SettingsError(format!("spellPlacedObjects: {e}")))?;
         let mut parsed: Vec<Entry> = Vec::with_capacity(entries.len());
@@ -803,6 +814,10 @@ mod tests {
         assert_eq!(BaseKind::Mstt.record_type(), "MSTT");
         assert_eq!(BaseKind::Acti.record_type(), "ACTI");
         assert!(Placements::from_json("[]").is_ok_and(|t| t.entries().is_empty()));
+        // shape C's offsets on an object are read and ignored: the deploy
+        // settings keep them while a server of either shape may load them
+        let with_offsets = raise_wall(2, true, 5, 120).replace(r#""type": "MSTT""#, r#""type": "MSTT", "forward": 192, "dz": -48"#);
+        assert!(Placements::from_json(&with_offsets).is_ok_and(|t| t.entries().first().is_some_and(|e| e.objects.len() == 2)), "{with_offsets}");
     }
 
     #[test]
@@ -813,7 +828,6 @@ mod tests {
             (good.replace(r#""anchor": "caster""#, r#""anchor": "impact""#), "impact"),
             (good.replace(r#""anchor": "caster""#, r#""anchor": "sky""#), "unknown anchor"),
             (good.replace(r#""type": "MSTT""#, r#""type": "DOOR""#), "DOOR"),
-            (good.replace(r#""type": "MSTT""#, r#""type": "MSTT", "forward": 192, "dz": -48"#), "shape C's offsets"),
             (good.replace("0735e8:", "098529:"), "a base twice"),
             (raise_wall(0, true, 5, 120), "perCaster 0"),
             (raise_wall(65, true, 5, 120), "perCaster over MAX_SETS"),

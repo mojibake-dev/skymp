@@ -1857,3 +1857,33 @@ wire_struct! {
         pub yaw: f32,
     }
 }
+
+wire_struct! {
+    /// One skill use (docs/verbs/leveling.md): the skill by its ActorValue and
+    /// the action's base amount as the engine computed it.
+    pub struct SkillUseEntry {
+        /// The skill's ActorValue, 6 (One-handed) to 23 (Enchanting).
+        pub skill: u8,
+        /// The action's base amount (damage dealt, magicka spent, gold traded
+        /// and so on), summed over the second; finite and above 0.
+        pub amount: f32,
+    }
+}
+
+wire_struct! {
+    /// MsgType 63, thuum's (docs/verbs/leveling.md, M5 Progression): the skill
+    /// uses a player's engine made in the last second, batched. Client to
+    /// server, reliable, R1: the engine computes each action's base amount
+    /// (its own skill experience is off), the server bounds it and runs the
+    /// game's formulas (wire-rules leveling) into the record, answering with
+    /// ActorValues (MsgType 40) when a level moves. Reason codes:
+    /// `E_VAL_RANGE` (a skill outside 6 to 23 or listed twice, an amount of 0
+    /// or below or over 1e6, no use at all), `E_VAL_NONFINITE`, `E_VAL_RATE`.
+    pub struct SkillUse {
+        /// `"t": 63`.
+        #[serde(default)]
+        pub t: MsgT<63>,
+        /// The uses, each skill once; 1 to 18.
+        pub uses: Vec<SkillUseEntry, { cap::SKILL_USES }>,
+    }
+}

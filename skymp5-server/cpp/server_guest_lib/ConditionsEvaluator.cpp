@@ -74,6 +74,27 @@ void ConditionsEvaluator::EvaluateConditions(
   }
 }
 
+std::string ConditionsEvaluator::FirstFailingRow(
+  const ConditionFunctionMap& conditionFunctionMap,
+  const std::vector<Condition>& conditions, const MpActor& aggressor,
+  const MpActor& target, const ConditionEvaluatorContext& context)
+{
+  for (const auto& condition : conditions) {
+    const auto [holds, result] = EvaluateCondition(
+      conditionFunctionMap, condition, aggressor, target, context);
+    if (holds) {
+      continue;
+    }
+    return fmt::format("{}({}, {}) on {} {} {:g}: got {:g}",
+                       condition.function.empty() ? "?" : condition.function,
+                       condition.parameter1.empty() ? "0" : condition.parameter1,
+                       condition.parameter2.empty() ? "0" : condition.parameter2,
+                       condition.runsOn.empty() ? "?" : condition.runsOn,
+                       condition.comparison, condition.value, result);
+  }
+  return "";
+}
+
 bool ConditionsEvaluator::EvaluateConditionsImpl(
   const ConditionFunctionMap& conditionFunctionMap,
   const std::vector<Condition>& conditions,

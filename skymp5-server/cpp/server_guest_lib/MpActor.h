@@ -484,12 +484,15 @@ public:
   // the caster (the engine's reading for a magic effect's conditions,
   // HYPOTHESIS until a lab run shows a Target row; CK wiki "Condition
   // Functions"). A function the server cannot evaluate refuses the effect
-  // and logs E_CONDITION_UNKNOWN; no conditions hold trivially
+  // and logs E_CONDITION_UNKNOWN; no conditions hold trivially. A refusal
+  // names the first row that fails (failedRow, the same text as its line;
+  // the pile's "refusal line naming its row", 2026-10-31)
   static bool EffectConditionsHold(WorldState* worldState,
                                    const espm::Effects::Effect& effect,
                                    uint32_t source, const MpActor& victim,
                                    const MpActor& caster,
-                                   bool dualCast = false);
+                                   bool dualCast = false,
+                                   std::string* failedRow = nullptr);
   // thuum docs/verbs/god-mode.md: TGM and TIM, the server's flags for the
   // player's session (cleared at its departure). A god actor takes no
   // damage from another actor and spends no arrow; an immortal actor's

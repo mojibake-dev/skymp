@@ -223,6 +223,11 @@ public:
     it->second->BeforeDestroy();
 
     if (auto formIndex = dynamic_cast<FormIndex*>(form.get())) {
+      // the idx's unreliable slot points at this form: cleared with it, or
+      // the next form given the idx is found through a freed pointer
+      if (formIndex->idx < refrByIdxUnreliable.size()) {
+        refrByIdxUnreliable[formIndex->idx] = nullptr;
+      }
       if (formIdxManager && !formIdxManager->DestroyID(formIndex->idx))
         throw std::runtime_error("DestroyID failed");
     }

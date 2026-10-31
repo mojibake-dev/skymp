@@ -485,8 +485,9 @@ public:
   // HYPOTHESIS until a lab run shows a Target row; CK wiki "Condition
   // Functions"). A function the server cannot evaluate refuses the effect
   // and logs E_CONDITION_UNKNOWN; no conditions hold trivially. A refusal
-  // names the first row that fails (failedRow, the same text as its line;
-  // the pile's "refusal line naming its row", 2026-10-31)
+  // names the rows that fail on their own (failedRow, the text its line
+  // carries after "failing:"; the pile's "refusal line naming its row",
+  // 2026-10-31)
   static bool EffectConditionsHold(WorldState* worldState,
                                    const espm::Effects::Effect& effect,
                                    uint32_t source, const MpActor& victim,

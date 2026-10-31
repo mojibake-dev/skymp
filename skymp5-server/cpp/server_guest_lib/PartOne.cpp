@@ -746,6 +746,9 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           for (auto* container : std::vector<MpObjectReference*>(
                  actor->OccupiedContainers().begin(),
                  actor->OccupiedContainers().end())) {
+            spdlog::info("[verb:containers] {:x} released from {:x} by its "
+                         "disconnect",
+                         actor->GetFormId(), container->GetFormId());
             container->RemoveContainerOccupant(*actor);
           }
           // every cell it hosts starts its grace (thuum

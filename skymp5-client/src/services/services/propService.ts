@@ -82,7 +82,9 @@ const APPLIED_LOG_MS = 10_000;
 // last awake sample; then, and REST_DYNAMIC_MS after an asleep sample's
 // apply, it is Dynamic and may wake, so a kick or a grab acts on it at once
 const STREAM_LIVE_MS = 1000;
-const REST_DYNAMIC_MS = 150;
+const REST_DYNAMIC_MS = 300;
+// a jump's translate lands within this (the translate's speed is the distance over it), ms
+const JUMP_MS = 100;
 
 type Sample = { pos: NiPoint3; rot: NiPoint3; asleep: boolean; at: number };
 
@@ -497,6 +499,17 @@ export class PropService extends ClientListener {
             prop.placedAt = Date.now();
             logTrace(this, `prop ${prop.refr.toString(16)} placed at its record${why}`);
         };
+        if (prop.loaded3D) {
+            // H-P4: the placement by the engine's keyframed translate, the
+            // collision moving with the node (a setPosition'd body flew at its
+            // later Dynamic set, pass v10b 025124)
+            const distance = ObjectReferenceEx.getDistance(read.pos, target.pos);
+            const speed = Math.max(GLIDE_MIN_SPEED, distance / (JUMP_MS / 1000));
+            refr.stopTranslation();
+            refr.translateTo(x, y, z, ax, ay, az, speed, 0);
+            done(" (translated)");
+            return;
+        }
         // the reference is looked up again after a latent call's answer (a
         // wrapper from an earlier frame is out of Skyrim Platform's pool)
         refr.setPosition(x, y, z)
@@ -724,12 +737,22 @@ export class PropService extends ClientListener {
         const [ax, ay, az] = s.rot;
         if (s.asleep || distance >= JUMP_UNITS) {
             refr.stopTranslation();
-            refr.setPosition(x, y, z)
-                .then(() => {
-                    const again = this.refOf(prop);
-                    return again ? again.setAngle(ax, ay, az) : undefined;
-                })
-                .catch((err) => logError(this, `placing prop ${prop.refr.toString(16)} at its sample failed`, err));
+            if (prop.loaded3D) {
+                // H-P4 (pass v10b 025124): a body placed by setPosition and later
+                // set Dynamic flew on every seat it happened to, the drop's copy
+                // that was never placed did not; the engine's keyframed translate
+                // moves the collision with the node, so a jump translates at a
+                // speed that lands within JUMP_MS
+                const speed = Math.max(GLIDE_MIN_SPEED, distance / (JUMP_MS / 1000));
+                refr.translateTo(x, y, z, ax, ay, az, speed, 0);
+            } else {
+                refr.setPosition(x, y, z)
+                    .then(() => {
+                        const again = this.refOf(prop);
+                        return again ? again.setAngle(ax, ay, az) : undefined;
+                    })
+                    .catch((err) => logError(this, `placing prop ${prop.refr.toString(16)} at its sample failed`, err));
+            }
         } else if (distance < 0.1) {
             refr.setAngle(ax, ay, az).catch((err) => logError(this, `turning prop ${prop.refr.toString(16)} failed`, err));
         } else {

@@ -70,7 +70,10 @@ export class PerkService extends ClientListener {
       applied: false,
     };
     this.reported.clear();
-    this.apply();
+    // the apply runs on the next update: a message handler has no Papyrus
+    // VM context and Skyrim Platform refuses natives there ("can't be called
+    // in this context", the locks verb's prompt, x-lockpick 20261031-144606)
+    this.controller.once('update', () => this.apply());
   }
 
   private onMenuClose(e: MenuCloseEvent) {

@@ -120,6 +120,12 @@ public:
   virtual void OnPlacedReport(const RawMessageData& rawMsgData,
                               const PlacedReportMessage& msg);
 
+  // thuum docs/verbs/leveling.md (M5): a player's skill uses of the last
+  // second; each is taken into the record by the game's formulas (R1 the
+  // amount, R0 the rest) when the server's `leveling` switch is on
+  virtual void OnSkillUse(const RawMessageData& rawMsgData,
+                          const SkillUseMessage& msg);
+
   // thuum docs/verbs/cell-host.md: a game's cell loaded or left its loaded
   // set; the server's election follows (wire-rules cells)
   virtual void OnCellLoaded(const RawMessageData& rawMsgData,

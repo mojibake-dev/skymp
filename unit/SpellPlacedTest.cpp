@@ -287,7 +287,7 @@ TEST_CASE("A listed spell's accepted cast asks the caster alone for the "
   const auto asked = RequestsTo(p, 0);
   REQUIRE(asked.size() == 1);
   REQUIRE(asked[0].bases == std::vector<uint32_t>{ msttId, actiId });
-  REQUIRE(asked[0].windowMs == 3000);
+  REQUIRE(asked[0].windowMs == 6000);
   REQUIRE(RequestsTo(p, 1).empty());
   const uint64_t set = asked[0].set;
 

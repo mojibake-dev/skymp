@@ -255,6 +255,12 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
       partOne->worldState.npcDeathReports =
         serverSettings.at("npcDeathReports").get<bool>();
     }
+    // thuum docs/verbs/leveling.md (M5): skills by use and the character by
+    // skill gains, computed by the server; false (the default) drops the
+    // uses and leaves today's recorded snapshots alone
+    if (serverSettings.find("leveling") != serverSettings.end()) {
+      partOne->SetLevelingEnabled(serverSettings.at("leveling").get<bool>());
+    }
     // thuum docs/verbs/npc-fate.md (ADR-050 decision 2): a hosted NPC's
     // number goes to its host as a cause and its kill waits for the host's
     // report; false restores the absolute values and the kill at once

@@ -3192,6 +3192,29 @@ void ActionListener::OnPlacedReport(const RawMessageData& rawMsgData,
                              msg.yaw);
 }
 
+// thuum docs/verbs/leveling.md (M5): the uses a player's engine made in the
+// last second. Dropped whole while the server's `leveling` switch is off
+// (the client's own advance is off as before, so nothing moves); otherwise
+// each use runs the formulas into the record (PartOne::ApplySkillUse), the
+// Rust edge having bounded the shape and the rate.
+void ActionListener::OnSkillUse(const RawMessageData& rawMsgData,
+                                const SkillUseMessage& msg)
+{
+  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!actor) {
+    return;
+  }
+  if (!partOne.LevelingEnabled()) {
+    spdlog::debug("[verb:leveling] {:x} reports {} use(s) with leveling off; "
+                  "dropped",
+                  actor->GetFormId(), msg.uses.size());
+    return;
+  }
+  for (const auto& use : msg.uses) {
+    partOne.ApplySkillUse(*actor, use.skill, use.amount);
+  }
+}
+
 // thuum docs/verbs/prop-physics.md (ADR-058 decision 2): a simulator's
 // sample of a prop. The record takes it from the prop's owner alone (the
 // toucher while awake or inside its lease, else the host of the cell the

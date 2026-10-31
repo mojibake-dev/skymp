@@ -15,9 +15,11 @@
 //! level gained adds `level * fXPPerSkillRank` (1) to the character's
 //! experience, whose threshold at level N is `fXPLevelUpBase +
 //! fXPLevelUpMult * N` (75 + 25 N). The four AVSK floats per skill are the
-//! game files' (ActorValueInfo::Skill, CommonLibSSE-NG ActorValueInfo.h:34-41);
-//! libespm reads no AVIF yet, so the table here carries UESP's reading of
-//! them, to be replaced by the records when the reader lands.
+//! game files' (ActorValueInfo::Skill, CommonLibSSE-NG ActorValueInfo.h:34-41),
+//! read by libespm's AVIF reader into a [`Table`] the server fills at start;
+//! [`Table::uesp`] carries UESP's reading of them as the fallback and the
+//! tests' expected numbers (Smithing's use mult reads 160 in Skyrim.esm where
+//! the page writes 1: the record is the source).
 
 /// The eighteen skills in the engine's ActorValue order, kOneHanded 6 to
 /// kEnchanting 23 (CommonLibSSE-NG ActorValues.h).
@@ -159,10 +161,10 @@ impl Skill {
         }
     }
 
-    /// The skill's AVSK constants (UESP's table until libespm reads the AVIF
-    /// records).
+    /// UESP's reading of the skill's AVSK constants (Skyrim:Leveling), the
+    /// fallback when the records are not read.
     #[must_use]
-    pub fn constants(self) -> Constants {
+    pub fn uesp_constants(self) -> Constants {
         let c = |use_mult: f32, use_offset: f32, improve_mult: f32, improve_offset: f32| Constants {
             use_mult,
             use_offset,
@@ -192,18 +194,54 @@ impl Skill {
     }
 }
 
+/// The eighteen skills' constants, as the server read them from the game
+/// files (libespm AVIF) or as UESP lists them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Table {
+    constants: [Constants; 18],
+}
+
+impl Table {
+    /// UESP's table.
+    #[must_use]
+    pub fn uesp() -> Self {
+        Self { constants: Skill::ALL.map(Skill::uesp_constants) }
+    }
+
+    /// `skill`'s constants.
+    #[must_use]
+    pub fn constants(&self, skill: Skill) -> Constants {
+        self.constants.get(usize::from(skill.index())).copied().unwrap_or_else(|| skill.uesp_constants())
+    }
+
+    /// `skill`'s constants from a record; a constant that is not a number
+    /// keeps the table's.
+    pub fn set(&mut self, skill: Skill, constants: Constants) {
+        let finite = [constants.use_mult, constants.use_offset, constants.improve_mult, constants.improve_offset].iter().all(|c| c.is_finite());
+        if let (true, Some(slot)) = (finite, self.constants.get_mut(usize::from(skill.index()))) {
+            *slot = constants;
+        }
+    }
+}
+
+impl Default for Table {
+    fn default() -> Self {
+        Self::uesp()
+    }
+}
+
 /// The skill experience one use of `skill` earns from the action's `base`
 /// amount.
 #[must_use]
-pub fn use_xp(skill: Skill, base: f32) -> f32 {
-    let c = skill.constants();
+pub fn use_xp(table: &Table, skill: Skill, base: f32) -> f32 {
+    let c = table.constants(skill);
     c.use_mult * base + c.use_offset
 }
 
 /// The experience the step from `level` to the next costs for `skill`.
 #[must_use]
-pub fn level_cost(skill: Skill, level: u8) -> f32 {
-    let c = skill.constants();
+pub fn level_cost(table: &Table, skill: Skill, level: u8) -> f32 {
+    let c = table.constants(skill);
     c.improve_mult * f32::from(level).powf(SKILL_USE_CURVE) + c.improve_offset
 }
 
@@ -301,12 +339,13 @@ impl Progress {
     }
 
     /// A use of the skill at ActorValue `skill_av` with the action's `base`
-    /// amount: the skill's experience rises by [`use_xp`], each level step it
+    /// amount under `table`'s constants: the skill's experience rises by
+    /// [`use_xp`], each level step it
     /// affords is taken (the remainder carried), each skill level gained adds
     /// to the character's experience, and each character threshold met is a
     /// level. A skill at the cap earns nothing and changes nothing. Returns
     /// what changed, in order.
-    pub fn apply_use(&mut self, skill_av: u8, base: f32) -> Result<Vec<Event>, Refusal> {
+    pub fn apply_use(&mut self, table: &Table, skill_av: u8, base: f32) -> Result<Vec<Event>, Refusal> {
         let skill = Skill::from_actor_value(skill_av).ok_or(Refusal::Skill)?;
         if !base.is_finite() {
             return Err(Refusal::NonFinite);
@@ -315,7 +354,7 @@ impl Progress {
             return Err(Refusal::Range);
         }
         let mut events = Vec::new();
-        let gained = use_xp(skill, base);
+        let gained = use_xp(table, skill, base);
         let mut character_gain = 0.0f32;
         if let Some(s) = self.skills.get_mut(usize::from(skill.index())) {
             if s.level >= SKILL_CAP {
@@ -323,7 +362,7 @@ impl Progress {
             }
             s.xp += gained;
             while s.level < SKILL_CAP {
-                let cost = level_cost(skill, s.level);
+                let cost = level_cost(table, skill, s.level);
                 if s.xp < cost {
                     break;
                 }
@@ -362,7 +401,8 @@ mod tests {
     }
 
     fn total_15_to_100(skill: Skill) -> f32 {
-        (SKILL_FLOOR..SKILL_CAP).map(|level| level_cost(skill, level)).sum()
+        let table = Table::uesp();
+        (SKILL_FLOOR..SKILL_CAP).map(|level| level_cost(&table, skill, level)).sum()
     }
 
     #[test]
@@ -396,16 +436,16 @@ mod tests {
             assert!(near(got, want, 0.5), "{skill:?}: {got} against {want}");
         }
         // the first step and the last
-        assert!(near(level_cost(Skill::OneHanded, 15), 2.0 * 15.0f32.powf(1.95), 0.01));
-        assert!(near(level_cost(Skill::Smithing, 99), 0.25 * 99.0f32.powf(1.95) + 300.0, 0.01));
+        assert!(near(level_cost(&Table::uesp(), Skill::OneHanded, 15), 2.0 * 15.0f32.powf(1.95), 0.01));
+        assert!(near(level_cost(&Table::uesp(), Skill::Smithing, 99), 0.25 * 99.0f32.powf(1.95) + 300.0, 0.01));
     }
 
     #[test]
     fn a_use_earns_mult_times_base_plus_offset() {
-        assert!(near(use_xp(Skill::OneHanded, 10.0), 63.0, 0.001));
-        assert!(near(use_xp(Skill::Lockpicking, 2.0), 100.0, 0.001));
-        assert!(near(use_xp(Skill::Speech, 100.0), 36.0, 0.001));
-        assert!(near(use_xp(Skill::Enchanting, 1.0), 900.0, 0.001));
+        assert!(near(use_xp(&Table::uesp(), Skill::OneHanded, 10.0), 63.0, 0.001));
+        assert!(near(use_xp(&Table::uesp(), Skill::Lockpicking, 2.0), 100.0, 0.001));
+        assert!(near(use_xp(&Table::uesp(), Skill::Speech, 100.0), 36.0, 0.001));
+        assert!(near(use_xp(&Table::uesp(), Skill::Enchanting, 1.0), 900.0, 0.001));
     }
 
     #[test]
@@ -420,15 +460,15 @@ mod tests {
         let mut p = Progress::new([15; 18], 1);
         // 2 * 15^1.95 is about 392.6; a base of 10 earns 63 a hit
         for hit in 1..=6 {
-            assert_eq!(p.apply_use(6, 10.0), Ok(vec![]), "hit {hit}");
+            assert_eq!(p.apply_use(&Table::uesp(), 6, 10.0), Ok(vec![]), "hit {hit}");
         }
         assert_eq!(p.skill(Skill::OneHanded).level, 15);
         assert!(near(p.skill(Skill::OneHanded).xp, 378.0, 0.01));
-        let events = p.apply_use(6, 10.0);
+        let events = p.apply_use(&Table::uesp(), 6, 10.0);
         assert_eq!(events, Ok(vec![Event::SkillLevel { skill: Skill::OneHanded, level: 16 }]));
         let s = p.skill(Skill::OneHanded);
         assert_eq!(s.level, 16);
-        assert!(near(s.xp, 441.0 - level_cost(Skill::OneHanded, 15), 0.01));
+        assert!(near(s.xp, 441.0 - level_cost(&Table::uesp(), Skill::OneHanded, 15), 0.01));
         // the character took 16 toward its 100
         assert_eq!(p.character.level, 1);
         assert!(near(p.character.xp, 16.0, 0.001));
@@ -441,14 +481,14 @@ mod tests {
         let mut p = Progress::new([15; 18], 1);
         // Enchanting earns 900 an item: the first steps cost 170 + 15^1.95
         // (about 367), 170 + 16^1.95 (about 393) and so on
-        let events = p.apply_use(23, 1.0).unwrap_or_default();
+        let events = p.apply_use(&Table::uesp(), 23, 1.0).unwrap_or_default();
         assert_eq!(events, vec![Event::SkillLevel { skill: Skill::Enchanting, level: 16 }, Event::SkillLevel { skill: Skill::Enchanting, level: 17 }]);
         assert_eq!(p.skill(Skill::Enchanting).level, 17);
         assert!(near(p.character.xp, 16.0 + 17.0, 0.001));
         // four more items: levels 18 to 21 or so, the character past 100
         let mut all = Vec::new();
         for _ in 0..4 {
-            all.extend(p.apply_use(23, 1.0).unwrap_or_default());
+            all.extend(p.apply_use(&Table::uesp(), 23, 1.0).unwrap_or_default());
         }
         assert!(all.contains(&Event::CharacterLevel { level: 2 }), "{all:?}");
         assert_eq!(p.character.level, 2);
@@ -459,7 +499,7 @@ mod tests {
     #[test]
     fn a_skill_at_the_cap_earns_nothing_and_the_cap_holds() {
         let mut p = Progress::new([100; 18], 10);
-        assert_eq!(p.apply_use(6, 50.0), Ok(vec![]));
+        assert_eq!(p.apply_use(&Table::uesp(), 6, 50.0), Ok(vec![]));
         assert_eq!(p.skill(Skill::OneHanded), SkillProgress { level: 100, xp: 0.0 });
         assert_eq!(p.character, Character { level: 10, xp: 0.0 });
         // a skill at 99 with enough for two steps takes one and stops at the cap
@@ -467,7 +507,7 @@ mod tests {
             Progress::new([99; 18], 1).skills,
             Character { level: 1, xp: 0.0 },
         );
-        let events = q.apply_use(23, 100.0).unwrap_or_default();
+        let events = q.apply_use(&Table::uesp(), 23, 100.0).unwrap_or_default();
         assert_eq!(events, vec![Event::SkillLevel { skill: Skill::Enchanting, level: 100 }, Event::CharacterLevel { level: 2 }]);
         assert_eq!(q.skill(Skill::Enchanting), SkillProgress { level: 100, xp: 0.0 });
     }
@@ -476,18 +516,31 @@ mod tests {
     fn refusals_are_named_and_change_nothing() {
         let mut p = Progress::new([15; 18], 1);
         let before = p.clone();
-        assert_eq!(p.apply_use(5, 10.0), Err(Refusal::Skill));
-        assert_eq!(p.apply_use(24, 10.0), Err(Refusal::Skill));
-        assert_eq!(p.apply_use(6, f32::NAN), Err(Refusal::NonFinite));
-        assert_eq!(p.apply_use(6, f32::INFINITY), Err(Refusal::NonFinite));
-        assert_eq!(p.apply_use(6, 0.0), Err(Refusal::Range));
-        assert_eq!(p.apply_use(6, -1.0), Err(Refusal::Range));
-        assert_eq!(p.apply_use(6, MAX_BASE_PER_USE + 1.0), Err(Refusal::Range));
+        assert_eq!(p.apply_use(&Table::uesp(), 5, 10.0), Err(Refusal::Skill));
+        assert_eq!(p.apply_use(&Table::uesp(), 24, 10.0), Err(Refusal::Skill));
+        assert_eq!(p.apply_use(&Table::uesp(), 6, f32::NAN), Err(Refusal::NonFinite));
+        assert_eq!(p.apply_use(&Table::uesp(), 6, f32::INFINITY), Err(Refusal::NonFinite));
+        assert_eq!(p.apply_use(&Table::uesp(), 6, 0.0), Err(Refusal::Range));
+        assert_eq!(p.apply_use(&Table::uesp(), 6, -1.0), Err(Refusal::Range));
+        assert_eq!(p.apply_use(&Table::uesp(), 6, MAX_BASE_PER_USE + 1.0), Err(Refusal::Range));
         assert_eq!(p, before);
         // the floor and the cap clamp a record's levels at construction
         let clamped = Progress::new([0, 200, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15], 0);
         assert_eq!(clamped.skill(Skill::OneHanded).level, SKILL_FLOOR);
         assert_eq!(clamped.skill(Skill::TwoHanded).level, SKILL_CAP);
         assert_eq!(clamped.character.level, 1);
+    }
+
+    #[test]
+    fn a_record_s_constants_replace_uesps_and_a_bad_one_is_kept_out() {
+        let mut table = Table::uesp();
+        assert_eq!(table.constants(Skill::Smithing).use_mult, 1.0);
+        // Skyrim.esm's Smithing AVSK (lab/esm.py, 2026-10-31)
+        table.set(Skill::Smithing, Constants { use_mult: 160.0, use_offset: 0.0, improve_mult: 0.25, improve_offset: 300.0 });
+        assert_eq!(table.constants(Skill::Smithing).use_mult, 160.0);
+        assert!(near(use_xp(&table, Skill::Smithing, 1.0), 160.0, 0.001));
+        table.set(Skill::Smithing, Constants { use_mult: f32::NAN, use_offset: 0.0, improve_mult: 0.25, improve_offset: 300.0 });
+        assert_eq!(table.constants(Skill::Smithing).use_mult, 160.0);
+        assert_eq!(Table::default(), Table::uesp());
     }
 }

@@ -63,6 +63,7 @@ import { PlacedRequestMessage } from "./placedRequestMessage";
 import { PlacedReportMessage } from "./placedReportMessage";
 import { LockReportMessage } from "./lockReportMessage";
 import { LockPromptMessage } from "./lockPromptMessage";
+import { SkillUseMessage } from "./skillUseMessage";
 
 export type AnyMessage = ActivateMessage
     | ConsoleCommandMessage
@@ -122,6 +123,7 @@ export type AnyMessage = ActivateMessage
     | PlacedReportMessage
     | LockReportMessage
     | LockPromptMessage
+    | SkillUseMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage
     | UpdatePropertyMessage

@@ -41,7 +41,8 @@ TEST_CASE("Dropping an item", "[DropItemTest]")
   // feet, never inside its capsule (thuum prop-physics, the drop's stream)
   REQUIRE(refr.GetPos().x == 1.f);
   REQUIRE(refr.GetPos().y == 66.f);
-  REQUIRE(refr.GetPos().z == 3.f);
+  REQUIRE(refr.GetPos().z ==
+          51.f); // the feet's 3 plus the 48 lift (prop-physics.md)
   ac.AddItem(ironSword, 5);
   partOne.Messages().clear();
   REQUIRE(partOne.Messages().size() == 0);

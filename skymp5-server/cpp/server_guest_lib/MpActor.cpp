@@ -3005,14 +3005,21 @@ void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
   // thuum docs/verbs/prop-physics.md (the drop's stream at T3, 2026-10-30): a
   // copy placed at the actor's own position wakes Dynamic inside the dropper's
   // capsule on its seat and is thrown out of reach; a step ahead along the
-  // actor's heading it lands at the feet, as the engine's own drop does
+  // actor's heading it lands at the feet, as the engine's own drop does. The
+  // feet's z is the ground's: a copy spawned there sat half inside the
+  // terrain and fell through to the cell's floor on both seats (x-prop-drop
+  // v4 022528, v5 030029: about 150 units below the ground, the stream
+  // faithful to the fall), so it spawns a lift above the feet and falls onto
+  // the ground, as the engine's own drop falls from the hand
   {
     constexpr float kDropAheadUnits = 64.f;
+    constexpr float kDropLiftUnits = 48.f;
     constexpr float kDegToRad = 3.14159265f / 180.f;
     const float yaw = GetAngle().z * kDegToRad;
     const NiPoint3 pos = GetPos();
     placedObject->SetPos({ pos.x + std::sin(yaw) * kDropAheadUnits,
-                           pos.y + std::cos(yaw) * kDropAheadUnits, pos.z });
+                           pos.y + std::cos(yaw) * kDropAheadUnits,
+                           pos.z + kDropLiftUnits });
   }
 
   uint32_t droppedItemFormId = placedObject->GetFormId();

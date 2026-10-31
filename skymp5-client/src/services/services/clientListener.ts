@@ -128,6 +128,21 @@ declare module "skyrimPlatform" {
     }
     function on(eventName: 'propContact', callback: (event: PropContactEvent) => void): EventHandle;
     function once(eventName: 'propContact', callback: (event: PropContactEvent) => void): EventHandle;
+
+    // thuum docs/verbs/leveling.md (M5): the player's UseSkill (the fork's hook on
+    // PlayerCharacter's vtable slot 0xF7, Address Library 40488), raised on the next
+    // tick once per landed hit, cast or craft: the skill as its actor value
+    // (CommonLibSSE-NG include/RE/A/ActorValues.h, 6 One-handed to 23 Enchanting),
+    // the action's base amount (the weapon's base damage for a melee hit) and the
+    // source form's id (0 for none). Definitions.txt carries the same; this
+    // augmentation is what the client's build sees over the published package
+    interface SkillUseEvent {
+        skill: number;
+        points: number;
+        source: number;
+    }
+    function on(eventName: 'skillUse', callback: (event: SkillUseEvent) => void): EventHandle;
+    function once(eventName: 'skillUse', callback: (event: SkillUseEvent) => void): EventHandle;
     // thuum docs/verbs/npc-stream.md (the voice slice): a spoken line begins
     // on an actor this game hosts; ids alone, no game call in its handler
     interface TopicInfoEvent {

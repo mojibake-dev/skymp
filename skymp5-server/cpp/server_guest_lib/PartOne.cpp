@@ -257,6 +257,10 @@ struct PartOne::Impl
     skymp::rules::new_placements("[]");
   std::unordered_map<uint64_t, std::vector<uint32_t>> placedSets;
   std::unordered_map<uint32_t, uint32_t> placedCasterByForm;
+  // thuum docs/verbs/leveling.md
+  rust::Box<skymp::rules::LevelingTable> leveling =
+    skymp::rules::new_leveling_table();
+  bool levelingEnabled = false;
   std::chrono::steady_clock::time_point lastPlacementsTick;
   // the food effects that lower the needs the server keeps (thuum
   // docs/verbs/player-globals.md, the needs): server-settings.json's
@@ -590,6 +594,7 @@ void PartOne::AttachEspm(espm::Loader* espm)
 {
   pImpl->espm = espm;
   worldState.AttachEspm(espm, [this] { return CreateFormCallbacks(); });
+  LoadSkillTable();
 }
 
 void PartOne::AttachSaveStorage(
@@ -2942,6 +2947,151 @@ std::vector<QuestStageDone> PartOne::GetQuestStages()
 bool PartOne::SetQuestStages(std::vector<QuestStageDone> stages)
 {
   return WorldJournal().SetQuestStages(std::move(stages));
+}
+
+namespace {
+// the eighteen skills' AVIF records, one per ActorValue 6 to 23 (Skyrim.esm as
+// lab/esm.py read it, 2026-10-31: AVOneHanded 0x44c through AVEnchanting
+// 0x45d, in the engine's order)
+constexpr uint32_t kFirstSkillAvif = 0x44c;
+constexpr uint8_t kFirstSkillAv = 6;
+constexpr uint8_t kSkillCount = 18;
+}
+
+void PartOne::LoadSkillTable()
+{
+  if (!HasEspm()) {
+    return;
+  }
+  int fromFiles = 0;
+  for (uint8_t i = 0; i < kSkillCount; ++i) {
+    const uint32_t formId = kFirstSkillAvif + i;
+    const uint8_t skillAv = static_cast<uint8_t>(kFirstSkillAv + i);
+    const auto lookup = GetEspm().GetBrowser().LookupById(formId);
+    if (!lookup.rec || lookup.rec->GetType() != "AVIF") {
+      spdlog::warn("[verb:leveling] skill {}: no AVIF at {:x}; UESP's "
+                   "constants stand",
+                   skillAv, formId);
+      continue;
+    }
+    const auto data = espm::GetData<espm::AVIF>(formId, &worldState);
+    if (!data.hasSkill) {
+      spdlog::warn("[verb:leveling] skill {}: AVIF {:x} ({}) carries no AVSK; "
+                   "UESP's constants stand",
+                   skillAv, formId, data.editorId);
+      continue;
+    }
+    if (pImpl->leveling->set_skill(
+          skillAv, data.skill.useMult, data.skill.useOffset,
+          data.skill.improveMult, data.skill.improveOffset)) {
+      ++fromFiles;
+    }
+  }
+  spdlog::info("[verb:leveling] skill table: {} of {} skills from the game "
+               "files",
+               fromFiles, kSkillCount);
+}
+
+void PartOne::SetLevelingEnabled(bool on)
+{
+  pImpl->levelingEnabled = on;
+  spdlog::info("[verb:leveling] leveling {}", on ? "on" : "off");
+}
+
+bool PartOne::LevelingEnabled() const
+{
+  return pImpl->levelingEnabled;
+}
+
+float PartOne::SkillUseXp(uint8_t skillAv, float base) const
+{
+  return pImpl->leveling->use_xp(skillAv, base);
+}
+
+float PartOne::SkillLevelCost(uint8_t skillAv, uint8_t level) const
+{
+  return pImpl->leveling->level_cost(skillAv, level);
+}
+
+bool PartOne::ApplySkillUse(MpActor& actor, uint8_t skillAv, float amount)
+{
+  auto record = actor.GetActorValueRecord();
+  if (!record) {
+    spdlog::info("[verb:leveling] E_SKILL_NO_RECORD: {:x} uses skill {} "
+                 "before its first actor values report; dropped",
+                 actor.GetFormId(), skillAv);
+    return false;
+  }
+  std::vector<skymp::rules::LevelingSkill> skills;
+  for (const auto& s : record->skills) {
+    skymp::rules::LevelingSkill standing{};
+    standing.skill_av = static_cast<uint8_t>(s.skill + kFirstSkillAv);
+    standing.level = static_cast<uint8_t>(std::clamp(s.level, 0.f, 255.f));
+    standing.xp = s.xp;
+    skills.push_back(standing);
+  }
+  skymp::rules::LevelingCharacter character{};
+  character.level = record->level;
+  character.xp = record->xp;
+  const rust::Slice<const skymp::rules::LevelingSkill> slice(skills.data(),
+                                                             skills.size());
+  const auto outcome =
+    pImpl->leveling->apply_use(slice, character, skillAv, amount);
+  if (!outcome.accepted) {
+    static const char* const kWhy[] = { "accepted", "E_SKILL_NONE",
+                                        "E_SKILL_NAN", "E_SKILL_RANGE" };
+    spdlog::warn("[verb:leveling] {}: {:x} uses skill {} with {}; dropped",
+                 outcome.why < 4 ? kWhy[outcome.why] : "E_SKILL_UNKNOWN",
+                 actor.GetFormId(), skillAv, amount);
+    return false;
+  }
+  // the used skill's standing into the record: its progress entry (by the
+  // engine's skill index) and its base (the level the game shows)
+  const uint8_t skillIndex = static_cast<uint8_t>(skillAv - kFirstSkillAv);
+  for (const auto& s : outcome.skills) {
+    if (s.skill_av != skillAv) {
+      continue;
+    }
+    const float threshold = pImpl->leveling->level_cost(s.skill_av, s.level);
+    auto it = std::find_if(
+      record->skills.begin(), record->skills.end(),
+      [&](const ActorValueRecord::Skill& r) { return r.skill == skillIndex; });
+    if (it == record->skills.end()) {
+      record->skills.push_back(ActorValueRecord::Skill{
+        skillIndex, static_cast<float>(s.level), s.xp, threshold });
+    } else {
+      it->level = static_cast<float>(s.level);
+      it->xp = s.xp;
+      it->threshold = threshold;
+    }
+    auto base = std::find_if(
+      record->bases.begin(), record->bases.end(),
+      [&](const std::pair<uint8_t, float>& b) { return b.first == skillAv; });
+    if (base == record->bases.end()) {
+      record->bases.emplace_back(skillAv, static_cast<float>(s.level));
+    } else {
+      base->second = static_cast<float>(s.level);
+    }
+  }
+  record->level = outcome.character.level;
+  record->xp = outcome.character.xp;
+  record->threshold =
+    skymp::rules::leveling_character_threshold(outcome.character.level);
+  actor.SetActorValueRecord(*record);
+  for (const auto& e : outcome.events) {
+    if (e.kind == 0) {
+      spdlog::info("[verb:leveling] {:x} skill {} reaches level {}",
+                   actor.GetFormId(), e.skill_av, e.level);
+    } else {
+      spdlog::info("[verb:leveling] {:x} reaches character level {}",
+                   actor.GetFormId(), e.level);
+    }
+  }
+  if (!outcome.events.empty()) {
+    // the game shows the new level and the bar from the record (R0)
+    actor.SendActorValueRecord();
+  }
+  return true;
 }
 
 void PartOne::SetSpellPlacedObjectsSettings(

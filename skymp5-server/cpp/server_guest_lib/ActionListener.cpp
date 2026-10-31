@@ -2833,6 +2833,13 @@ namespace {
 // the setting's `allowed` names it. The flag is the record's, so it is read
 // here beside the rule (wire-rules quest_stages holds the lists) and not in
 // it. Mode list is untouched: its curated list names what crosses.
+// Memo D69 (2026-10-30; playtest 38's finding 76, the Aventus rumor DB01Misc,
+// start-game-enabled, whose stage 10 a dialogue sets): what is each seat's
+// own is the engine's OWN START of such a quest, stage 0 and the record's
+// start-up stages (QUST INDX flag, libespm QUST.h JournalIndex::StartUpStage),
+// which every seat's game sets by itself; a later stage of the same quest is
+// a world event like any other quest's and crosses (QuestStageIsEngineStart,
+// below, beside this flag test).
 bool IsSeatsOwnQuest(PartOne& partOne, const FormDesc& quest,
                      const espm::RecordHeader* record)
 {
@@ -2866,6 +2873,32 @@ bool QuestHasStage(PartOne& partOne, const espm::RecordHeader* record,
     if (questStage.journalIndex &&
         static_cast<uint16_t>(questStage.journalIndex->index) == stage) {
       return true;
+    }
+  }
+  return false;
+}
+
+// Memo D69: the stages a start-game-enabled quest reaches by the engine's
+// own start on every seat, stage 0 and the record's start-up stages (QUST
+// INDX, the StartUpStage flag; FreeformHeartwoodMill's 10 carries it),
+// which stay each seat's
+// own; every other stage of such a quest is the world's.
+bool QuestStageIsEngineStart(PartOne& partOne,
+                             const espm::RecordHeader* record, uint16_t stage)
+{
+  if (stage == 0) {
+    return true;
+  }
+  const auto qust = espm::Convert<espm::QUST>(record);
+  if (!qust) {
+    return false;
+  }
+  for (const auto& questStage :
+       qust->GetQuestStages(partOne.worldState.GetEspmCache())) {
+    if (questStage.journalIndex &&
+        static_cast<uint16_t>(questStage.journalIndex->index) == stage) {
+      return (questStage.journalIndex->flags &
+              espm::QUST::QuestStage::JournalIndex::StartUpStage) != 0;
     }
   }
   return false;
@@ -2939,7 +2972,8 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
                         rawMsgData.userId, actor->GetFormId(), msg.stage,
                         quest.ToString(), refusal);
   }
-  if (IsSeatsOwnQuest(partOne, quest, lookup.rec)) {
+  if (IsSeatsOwnQuest(partOne, quest, lookup.rec) &&
+      QuestStageIsEngineStart(partOne, lookup.rec, msg.stage)) {
     // in mode all a seat reports every stage event of every quest it does
     // not know to be denied (Skyrim Platform's Quest exposes no Start Game
     // Enabled getter), so the 330 such quests of Skyrim.esm arrive here at
@@ -2955,8 +2989,9 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
     if (since == std::chrono::steady_clock::time_point() ||
         now - since >= std::chrono::seconds(10)) {
       spdlog::info("E_QUEST_OWN_START: user {} actor {:x} reported stage {} "
-                   "of {}: a start-game-enabled quest is each seat's own "
-                   "(D62); {} such report(s) since the last line",
+                   "of {}: the engine's own start of a start-game-enabled "
+                   "quest is each seat's own (D62, D69); {} such report(s) "
+                   "since the last line",
                    rawMsgData.userId, actor->GetFormId(), msg.stage,
                    quest.ToString(), held);
       since = now;
@@ -3565,13 +3600,15 @@ void ActionListener::SendQuestStages(MpActor& actor)
     } catch (const std::exception&) {
       continue; // a recorded quest whose plugin this load order lacks
     }
-    if (mode == 1 && partOne.HasEspm() &&
-        IsSeatsOwnQuest(
-          partOne, entry.quest,
-          partOne.GetEspm().GetBrowser().LookupById(message.quest).rec)) {
-      // each seat's own (memo D62): a record made under another setting
-      // keeps the stage, unsent, as a denied quest's
-      continue;
+    if (mode == 1 && partOne.HasEspm()) {
+      const auto rec =
+        partOne.GetEspm().GetBrowser().LookupById(message.quest).rec;
+      if (IsSeatsOwnQuest(partOne, entry.quest, rec) &&
+          QuestStageIsEngineStart(partOne, rec, entry.stage)) {
+        // each seat's own (memos D62 and D69): a record made under another
+        // setting keeps the stage, unsent, as a denied quest's
+        continue;
+      }
     }
     message.stage = entry.stage;
     actor.SendToUser(message, true);

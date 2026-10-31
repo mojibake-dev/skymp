@@ -53,6 +53,9 @@ constexpr uint32_t kWatcher = 0xff000bd1;
 constexpr uint32_t kMs13 = 0x39645;
 constexpr uint32_t kMs13Intro = 0xb6031;
 constexpr uint32_t kMq102 = 0x4e50d;
+// FreeformHeartwoodMill: start-game-enabled, its INDX 10 a start-up stage and
+// its 20 a plain one (a misc objective's shape, the rumor's)
+constexpr uint32_t kHeartwoodMill = 0xe3ea5;
 constexpr uint32_t kXMarker = 0x3b;
 // a form of a sixth plugin, which the test's five-file load order lacks
 constexpr uint32_t kUnloaded = 0x05000d62;
@@ -330,47 +333,77 @@ TEST_CASE("In mode all a quest nobody declared is the world's: its stage is "
 }
 
 // memo D62 (2026-10-29): in mode all a quest the game starts by itself is
-// each seat's own unless allowed
-TEST_CASE("In mode all a start-game-enabled quest's stage is refused "
-          "(E_QUEST_OWN_START) and records nothing, unless the setting allows "
-          "the quest, when it is recorded, relayed and replayed; the login "
-          "names the denied quests alone, and a recorded stage of a quest no "
-          "longer allowed stays unsent",
+// each seat's own unless allowed; memo D69 (2026-10-30, playtest 38's finding
+// 76): what is each seat's own is the engine's own start of such a quest,
+// stage 0 and the record's start-up stages, and its later stages are the
+// world's like any other quest's
+TEST_CASE("In mode all the engine's own start of a start-game-enabled quest "
+          "(stage 0, a start-up stage) is refused (E_QUEST_OWN_START) and "
+          "records nothing, while its later stages are recorded, relayed and "
+          "replayed like any other quest's; the login names the denied quests "
+          "alone",
           "[QuestStage][espm]")
 {
   PartOne& p = GetPartOne();
   Enter(p, kDeniedQuests);
 
-  // MS13 is Start Game Enabled: refused, nothing recorded, nothing relayed
-  Report(p, 0, kMs13, 10);
+  // FreeformHeartwoodMill is Start Game Enabled and its stage 10 carries the
+  // start-up flag: the engine's own start, refused, nothing recorded, nothing
+  // relayed
+  Report(p, 0, kHeartwoodMill, 10);
   REQUIRE(p.GetQuestStages().empty());
   REQUIRE(SentTo(p, 1).empty());
   REQUIRE(SentTo(p, 0).empty());
 
-  // allowed: the world's, as any other quest in mode all
-  p.SetSharedQuestsSettings(kAllowedQuests);
+  // its stage 20 is no start-up stage: a world event, recorded and relayed
+  // (D69; the Aventus rumor's shape)
+  Report(p, 0, kHeartwoodMill, 20);
+  const FormDesc mill = FormDesc::FromString("e3ea5:Skyrim.esm");
+  REQUIRE(p.GetQuestStages() == std::vector<QuestStageDone>{ { mill, 20 } });
+  REQUIRE(SentTo(p, 1) == std::vector<Sent>{ Msg(kHeartwoodMill, 20) });
+  REQUIRE(SentTo(p, 0).empty());
+
+  // MS13 is Start Game Enabled too and its stage 10 is no start-up stage:
+  // the world's as well, allowed or not
   Report(p, 0, kMs13, 10);
   const FormDesc ms13 = FormDesc::FromString("39645:Skyrim.esm");
-  REQUIRE(p.GetQuestStages() == std::vector<QuestStageDone>{ { ms13, 10 } });
-  REQUIRE(SentTo(p, 1) == std::vector<Sent>{ Msg(kMs13, 10) });
+  REQUIRE(p.GetQuestStages() ==
+          std::vector<QuestStageDone>{ { mill, 20 }, { ms13, 10 } });
+  REQUIRE(SentTo(p, 1) ==
+          std::vector<Sent>{ Msg(kHeartwoodMill, 20), Msg(kMs13, 10) });
+
+  // allowed: the same, a further stage
+  p.SetSharedQuestsSettings(kAllowedQuests);
+  Report(p, 0, kMs13, 20);
+  REQUIRE(
+    p.GetQuestStages() ==
+    std::vector<QuestStageDone>{ { mill, 20 }, { ms13, 10 }, { ms13, 20 } });
+  REQUIRE(SentTo(p, 1) ==
+          std::vector<Sent>{ Msg(kHeartwoodMill, 20), Msg(kMs13, 10),
+                             Msg(kMs13, 20) });
   REQUIRE(SentTo(p, 0).empty());
 
   // the login names the denied quest, never the allowed (the wire's one
-  // list), then replays the allowed quest's stage
+  // list), then replays the world's stages
   p.Messages().clear();
   p.SetUserActor(1, kWatcher);
   REQUIRE(SentTo(p, 1) ==
           std::vector<Sent>{ Msg(0, 0, nlohmann::json::array({ kMq102 }), 1),
-                             Msg(kMs13, 10) });
+                             Msg(kHeartwoodMill, 20), Msg(kMs13, 10),
+                             Msg(kMs13, 20) });
 
-  // allowed no more: the record keeps the stage, the login leaves it unsent
+  // allowed no more: the stages stay the world's (no start-up stage among
+  // them) and the login still replays them
   p.SetSharedQuestsSettings(kDeniedQuests);
   p.Messages().clear();
   p.SetUserActor(1, kWatcher);
-  REQUIRE(p.GetQuestStages() == std::vector<QuestStageDone>{ { ms13, 10 } });
   REQUIRE(
-    SentTo(p, 1) ==
-    std::vector<Sent>{ Msg(0, 0, nlohmann::json::array({ kMq102 }), 1) });
+    p.GetQuestStages() ==
+    std::vector<QuestStageDone>{ { mill, 20 }, { ms13, 10 }, { ms13, 20 } });
+  REQUIRE(SentTo(p, 1) ==
+          std::vector<Sent>{ Msg(0, 0, nlohmann::json::array({ kMq102 }), 1),
+                             Msg(kHeartwoodMill, 20), Msg(kMs13, 10),
+                             Msg(kMs13, 20) });
 
   // a quest both denied and allowed stops at the setting, named, and the
   // setting in force stays

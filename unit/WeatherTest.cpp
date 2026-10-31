@@ -66,19 +66,24 @@ TEST_CASE("A player hears its worldspace's weather at login, once, and "
   REQUIRE_FALSE(again[0]->transition);
 }
 
-TEST_CASE("An interior, or a worldspace without a pool, hears a release",
+TEST_CASE("A place without a pool (an interior, a skyless worldspace) hears "
+          "a release",
           "[Weather]")
 {
+  // a core without the game files resolves no game-file cell but Tamriel
+  // (FormDesc::FromFormId's one workaround), so the place is a server-made
+  // cell id: no pool, hence a release, as an interior gets
+  constexpr uint32_t kInterior = 0xff000001;
   PartOne partOne;
   partOne.SetWeatherSettings(kOneCloudy);
   partOne.SetWeatherEnabled(true);
-  partOne.CreateActor(0xff000ABC, { 1.f, 2.f, 3.f }, 180.f, 0x371de);
+  partOne.CreateActor(0xff000ABC, { 1.f, 2.f, 3.f }, 180.f, kInterior);
   DoConnect(partOne, 0);
   partOne.SetUserActor(0, 0xff000ABC);
 
   auto words = WeatherWords(partOne, 0);
   REQUIRE(words.size() == 1);
-  REQUIRE(words[0]->place == 0x371de);
+  REQUIRE(words[0]->place == kInterior);
   REQUIRE(words[0]->weather == 0);
   REQUIRE_FALSE(words[0]->transition);
   partOne.Tick();

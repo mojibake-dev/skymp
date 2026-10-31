@@ -11,6 +11,7 @@
 #include "libespm/LCTN.h"
 #include "libespm/NAVM.h"
 #include "libespm/NavMeshKey.h"
+#include "libespm/PERK.h"
 #include "libespm/QUST.h"
 #include "libespm/REFR.h"
 #include "libespm/REGN.h"
@@ -53,6 +54,7 @@ struct Browser::Impl
   std::vector<const RecordHeader*> quests;
   std::vector<const RecordHeader*> worlds;
   std::vector<const RecordHeader*> regions;
+  std::vector<const RecordHeader*> perks;
   std::vector<const RecordHeader*> cells;
 
   GroupStack grStack;
@@ -157,9 +159,12 @@ const std::vector<const RecordHeader*>& Browser::GetRecordsByType(
   if (!std::strcmp(type, espm::REGN::kType)) {
     return pImpl->regions;
   }
+  if (!std::strcmp(type, espm::PERK::kType)) {
+    return pImpl->perks;
+  }
   throw std::runtime_error("GetRecordsByType currently supports only REFR, "
-                           "COBJ, KYWD, LCTN, FACT, QUST, WRLD, CELL and "
-                           "REGN records");
+                           "COBJ, KYWD, LCTN, FACT, QUST, WRLD, CELL, REGN "
+                           "and PERK records");
 }
 
 const std::vector<const RecordHeader*>& Browser::GetRecordsAtPos(
@@ -284,6 +289,10 @@ bool Browser::ReadAny(const GroupStack* parentGrStack)
 
     if (utils::Is<espm::REGN>(t)) {
       pImpl->regions.push_back(recHeader);
+    }
+
+    if (utils::Is<espm::PERK>(t)) {
+      pImpl->perks.push_back(recHeader);
     }
 
     if (utils::Is<espm::NAVM>(t)) {

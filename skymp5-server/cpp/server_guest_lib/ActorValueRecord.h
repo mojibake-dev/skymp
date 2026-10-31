@@ -8,7 +8,9 @@
 // docs/verbs/actor-values.md): each actor value's base (0 to 163,
 // CommonLibSSE-NG's RE::ActorValue), each skill's progress (0 to 17,
 // PlayerSkills::Skills), the character's experience, threshold and level,
-// and how many times each skill was made legendary.
+// how many times each skill was made legendary, and the perks held (thuum
+// docs/verbs/perks.md: sorted form ids; the points left are one a level past
+// the first less these).
 struct ActorValueRecord
 {
   struct Skill
@@ -40,10 +42,12 @@ struct ActorValueRecord
   float threshold = 0.f;
   uint16_t level = 1;
   std::vector<std::pair<uint8_t, uint16_t>> legendary;
+  std::vector<uint32_t> perks;
 
   auto ToTuple() const
   {
-    return std::make_tuple(bases, skills, xp, threshold, level, legendary);
+    return std::make_tuple(bases, skills, xp, threshold, level, legendary,
+                           perks);
   }
 
   friend bool operator==(const ActorValueRecord& lhs,

@@ -285,6 +285,12 @@ void PacketParser::TransformPacketIntoAction(Networking::UserId userId,
         actionListener.OnLockReport(rawMsgData, *message);
         return;
       }
+      case MsgType::PerkPick: {
+        auto message =
+          reinterpret_cast<PerkPickMessage*>(result->message.get());
+        actionListener.OnPerkPick(rawMsgData, *message);
+        return;
+      }
       default: {
         spdlog::error("PacketParser.cpp doesn't implement MsgType {}",
                       static_cast<int64_t>(result->msgType));

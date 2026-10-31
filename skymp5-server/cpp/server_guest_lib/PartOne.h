@@ -276,6 +276,16 @@ public:
   void SetWeatherEnabled(bool on);
   bool WeatherEnabled() const;
   void SetWeatherSettings(const std::string& weatherSettingsJson);
+
+  // thuum docs/verbs/perks.md (M5): a player's perk pick judged by the perk
+  // record's own conditions and the points left (wire-rules perks, the table
+  // read from every PERK of the load order at AttachEspm), written to the
+  // record and answered with PerkState; a refused pick is undone by that
+  // answer. The switch is server-settings.json's `perks` (false: picks are
+  // dropped and no state is sent, the game's perks stay local as before).
+  void SetPerksEnabled(bool on);
+  bool PerksEnabled() const;
+  bool PickPerk(MpActor& actor, uint32_t perk);
   bool ApplySkillUse(MpActor& actor, uint8_t skillAv, float amount);
   void TickPlacements(uint64_t nowMs);
   bool ReportPlacedObject(MpActor& caster, uint64_t set, uint32_t baseId,
@@ -801,6 +811,7 @@ private:
   void LoadSkillTable();
   void LoadWeatherPools();
   bool ApplySettingsWeatherPools();
+  void LoadPerkTable();
   void TickWeather();
   void SendWeatherWord(Networking::UserId userId);
   // thuum docs/verbs/shadowbond.md (train-28): the proc's records on both

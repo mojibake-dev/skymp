@@ -44,6 +44,16 @@ divergences:
     wire: 1
     reason: the sky at login (SetWeather, thuum docs/verbs/weather.md); the legacy server has none
 
+  # thuum docs/verbs/perks.md (M5): the server's perks. With `perks` on (the
+  # lab's deployed settings, which T2 copies), the wire server tells each
+  # player its perk set and points at the login itself (PerkState, MsgType
+  # 68); a session that picks a perk declares its own further states. The
+  # legacy server has no such message.
+  - msg: {t: 68}
+    legacy: 0
+    wire: 1
+    reason: the perk set at login (PerkState, thuum docs/verbs/perks.md); the legacy server has none
+
   # thuum docs/verbs/magic-effects.md (memo D56 A, 2026-10-28): the cure. The
   # wire server tells each player at login to drop every listed disease
   # spell (cureSpells: DiseaseSanguinareVampiris 0xb8780) through one

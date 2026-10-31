@@ -16,6 +16,7 @@
 #include "MathUtils.h"
 #include "MpChangeForms.h"
 #include "MsgType.h"
+#include "PerkStateMessage.h"
 #include "ServerState.h"
 #include "SpSnippet.h"
 #include "SpSnippetFunctionGen.h"
@@ -1617,6 +1618,60 @@ void MpActor::SendActorValueRecord()
   for (const auto& [skill, count] : record->legendary) {
     message.legendary.push_back(ActorValuesMessage::Legendary{ skill, count });
   }
+  SendToUser(message, true);
+}
+
+bool MpActor::HasPerk(uint32_t perk) const
+{
+  const auto record = GetActorValueRecord();
+  return record &&
+    std::binary_search(record->perks.begin(), record->perks.end(), perk);
+}
+
+bool MpActor::AddPerkByServer(uint32_t perk)
+{
+  if (perk == 0 || HasPerk(perk)) {
+    return false;
+  }
+  auto record = GetActorValueRecord().value_or(ActorValueRecord{});
+  record.perks.insert(
+    std::upper_bound(record.perks.begin(), record.perks.end(), perk), perk);
+  SetActorValueRecord(record);
+  return true;
+}
+
+bool MpActor::RemovePerkByServer(uint32_t perk)
+{
+  auto record = GetActorValueRecord();
+  if (!record) {
+    return false;
+  }
+  const auto range =
+    std::equal_range(record->perks.begin(), record->perks.end(), perk);
+  if (range.first == range.second) {
+    return false;
+  }
+  record->perks.erase(range.first, range.second);
+  SetActorValueRecord(*record);
+  return true;
+}
+
+uint16_t MpActor::PerkPoints() const
+{
+  const auto record = GetActorValueRecord();
+  if (!record) {
+    return 0;
+  }
+  return skymp::rules::perk_points(record->level, record->perks.size());
+}
+
+void MpActor::SendPerkState()
+{
+  PerkStateMessage message;
+  if (const auto record = GetActorValueRecord()) {
+    message.perks = record->perks;
+  }
+  message.points = PerkPoints();
   SendToUser(message, true);
 }
 

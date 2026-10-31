@@ -133,6 +133,12 @@ public:
   virtual void OnLockReport(const RawMessageData& rawMsgData,
                             const LockReportMessage& msg);
 
+  // thuum docs/verbs/perks.md (M5): the perk a player's Skills menu took,
+  // judged by the rule into the record when the server's `perks` switch is
+  // on; the player's state answers either way
+  virtual void OnPerkPick(const RawMessageData& rawMsgData,
+                          const PerkPickMessage& msg);
+
   // thuum docs/verbs/cell-host.md: a game's cell loaded or left its loaded
   // set; the server's election follows (wire-rules cells)
   virtual void OnCellLoaded(const RawMessageData& rawMsgData,

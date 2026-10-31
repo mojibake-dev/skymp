@@ -77,6 +77,11 @@ public:
 
   VarValue RemoveSpell(VarValue self, const std::vector<VarValue>& arguments);
 
+  // thuum docs/verbs/perks.md (M5): the record's perks (R0)
+  VarValue AddPerk(VarValue self, const std::vector<VarValue>& arguments);
+  VarValue RemovePerk(VarValue self, const std::vector<VarValue>& arguments);
+  VarValue HasPerk(VarValue self, const std::vector<VarValue>& arguments);
+
   VarValue GetRace(VarValue self, const std::vector<VarValue>& arguments);
 
   VarValue GetSpellCount(VarValue self,

@@ -787,6 +787,70 @@ VarValue PapyrusActor::RemoveFromFaction(
   return VarValue();
 }
 
+namespace {
+// thuum docs/verbs/perks.md: the PERK a native names, as a global form id;
+// 0 for anything else
+uint32_t PerkIdOf(const VarValue& argument)
+{
+  const auto& perk = GetRecordPtr(argument);
+  if (!perk.rec || perk.rec->GetType().ToString() != "PERK") {
+    return 0;
+  }
+  return perk.ToGlobalId(perk.rec->GetId());
+}
+}
+
+VarValue PapyrusActor::AddPerk(VarValue self,
+                               const std::vector<VarValue>& arguments)
+{
+  if (auto actor = GetFormPtr<MpActor>(self)) {
+    if (arguments.empty()) {
+      throw std::runtime_error("Actor.AddPerk requires one argument");
+    }
+    const uint32_t perkId = PerkIdOf(arguments[0]);
+    if (perkId == 0) {
+      spdlog::error("Actor.AddPerk - the argument is not a PERK");
+      return VarValue::None();
+    }
+    if (actor->AddPerkByServer(perkId)) {
+      actor->SendPerkState();
+    }
+  }
+  return VarValue::None();
+}
+
+VarValue PapyrusActor::RemovePerk(VarValue self,
+                                  const std::vector<VarValue>& arguments)
+{
+  if (auto actor = GetFormPtr<MpActor>(self)) {
+    if (arguments.empty()) {
+      throw std::runtime_error("Actor.RemovePerk requires one argument");
+    }
+    const uint32_t perkId = PerkIdOf(arguments[0]);
+    if (perkId == 0) {
+      spdlog::error("Actor.RemovePerk - the argument is not a PERK");
+      return VarValue::None();
+    }
+    if (actor->RemovePerkByServer(perkId)) {
+      actor->SendPerkState();
+    }
+  }
+  return VarValue::None();
+}
+
+VarValue PapyrusActor::HasPerk(VarValue self,
+                               const std::vector<VarValue>& arguments)
+{
+  if (auto actor = GetFormPtr<MpActor>(self)) {
+    if (arguments.empty()) {
+      throw std::runtime_error("Actor.HasPerk requires one argument");
+    }
+    const uint32_t perkId = PerkIdOf(arguments[0]);
+    return VarValue(perkId != 0 && actor->HasPerk(perkId));
+  }
+  return VarValue(false);
+}
+
 VarValue PapyrusActor::AddSpell(VarValue self,
                                 const std::vector<VarValue>& arguments)
 {
@@ -1016,6 +1080,9 @@ void PapyrusActor::Register(
   AddMethod(vm, "GetFactions", &PapyrusActor::GetFactions);
   AddMethod(vm, "RemoveFromFaction", &PapyrusActor::RemoveFromFaction);
   AddMethod(vm, "AddSpell", &PapyrusActor::AddSpell);
+  AddMethod(vm, "AddPerk", &PapyrusActor::AddPerk);
+  AddMethod(vm, "RemovePerk", &PapyrusActor::RemovePerk);
+  AddMethod(vm, "HasPerk", &PapyrusActor::HasPerk);
   AddMethod(vm, "RemoveSpell", &PapyrusActor::RemoveSpell);
   AddMethod(vm, "GetRace", &PapyrusActor::GetRace);
   AddMethod(vm, "GetSpellCount", &PapyrusActor::GetSpellCount);

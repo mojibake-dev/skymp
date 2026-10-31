@@ -21,6 +21,7 @@
 #include "DestroyActorMessage.h"
 #include "HostGrantMessage.h"
 #include "HostReleaseMessage.h"
+#include "PerkStateMessage.h"
 #include "PlacedRequestMessage.h"
 #include "PropOwnerMessage.h"
 #include "RaceMenuPresetMessage.h"
@@ -210,6 +211,12 @@ struct PartOne::Impl
   nlohmann::json weatherPools = nlohmann::json::object();
   bool weatherPoolsApplied = true;
   std::chrono::steady_clock::time_point lastWeatherTick{};
+
+  // the perks' rule (thuum docs/verbs/perks.md; Rust's, wire-rules perks):
+  // every PERK of the load order with its own conditions, read at AttachEspm
+  rust::Box<skymp::rules::PerkTable> perkTable =
+    skymp::rules::new_perk_table();
+  bool perksEnabled = false;
 
   // TES3MP's rest switches (thuum docs/verbs/rest.md): server-settings.json's
   // `rest` block, both on unless a server turns one off
@@ -457,6 +464,11 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
     // the sky of the place the player stands in (thuum docs/verbs/weather.md)
     SendWeatherWord(userId);
 
+    // the perks held and the points left (thuum docs/verbs/perks.md)
+    if (pImpl->perksEnabled) {
+      actor.SendPerkState();
+    }
+
     // thuum docs/verbs/map-markers.md: show the player's discovered markers
     // once its client's world is up (the first movement after this)
     actor.SetMapMarkersPending(true);
@@ -613,6 +625,7 @@ void PartOne::AttachEspm(espm::Loader* espm)
   worldState.AttachEspm(espm, [this] { return CreateFormCallbacks(); });
   LoadSkillTable();
   LoadWeatherPools();
+  LoadPerkTable();
 }
 
 void PartOne::AttachSaveStorage(
@@ -3109,6 +3122,10 @@ bool PartOne::ApplySkillUse(MpActor& actor, uint8_t skillAv, float amount)
   if (!outcome.events.empty()) {
     // the game shows the new level and the bar from the record (R0)
     actor.SendActorValueRecord();
+    // a level moves the perk points (thuum docs/verbs/perks.md)
+    if (pImpl->perksEnabled) {
+      actor.SendPerkState();
+    }
   }
   return true;
 }
@@ -4668,4 +4685,107 @@ void PartOne::TickWeather()
   for (size_t i = 0, n = serverState.maxConnectedId; i <= n; ++i) {
     SendWeatherWord(static_cast<Networking::UserId>(i));
   }
+}
+
+// thuum docs/verbs/perks.md (M5): perks as transactions
+
+void PartOne::SetPerksEnabled(bool on)
+{
+  pImpl->perksEnabled = on;
+  spdlog::info("[verb:perks] perks {}", on ? "on" : "off");
+}
+
+bool PartOne::PerksEnabled() const
+{
+  return pImpl->perksEnabled;
+}
+
+void PartOne::LoadPerkTable()
+{
+  if (!HasEspm()) {
+    return;
+  }
+  // HasPerk's parameter is a perk's form id (CommonLibSSE-NG TESCondition.h
+  // FUNCTION_DATA::FunctionID::kHasPerk 448), the file's own: made global
+  // through the record's lookup, as the perk's own id is
+  constexpr uint16_t kHasPerk = 448;
+  size_t playable = 0;
+  size_t conditions = 0;
+  for (const auto& lookup :
+       GetEspm().GetBrowser().GetDistinctRecordsByType("PERK")) {
+    if (!lookup.rec) {
+      continue;
+    }
+    const auto perkId = lookup.ToGlobalId(lookup.rec->GetId());
+    const auto data = espm::GetData<espm::PERK>(perkId, &worldState);
+    pImpl->perkTable->add_perk(perkId, data.isPlayable, data.isHidden);
+    if (data.isPlayable && !data.isHidden) {
+      ++playable;
+    }
+    for (const auto& ctda : data.conditions) {
+      uint32_t param1 = ctda.GetDefaultData().firstParameter;
+      if (ctda.functionIndex == kHasPerk) {
+        param1 = lookup.ToGlobalId(param1);
+      }
+      if (pImpl->perkTable->add_condition(
+            perkId, ctda.functionIndex, ctda.operatorFlag,
+            ctda.comparisonValue, param1,
+            static_cast<uint32_t>(ctda.runOnType))) {
+        ++conditions;
+      }
+    }
+  }
+  spdlog::info("[verb:perks] perk table: {} perk(s) from the game files, {} "
+               "playable, {} condition(s)",
+               pImpl->perkTable->perk_count(), playable, conditions);
+}
+
+bool PartOne::PickPerk(MpActor& actor, uint32_t perk)
+{
+  auto record = actor.GetActorValueRecord();
+  if (!record) {
+    spdlog::info("[verb:perks] E_PERK_NO_RECORD: {:x} picks {:x} before its "
+                 "actor values are recorded; refused",
+                 actor.GetFormId(), perk);
+    return false;
+  }
+  // the values the conditions read: the record's bases first (the server's
+  // own writes land there, SetActorValueBaseByServer, and the leveling path
+  // mirrors a skill's level into them), then a skill's level for a skill the
+  // bases do not name (the record's Skill.skill is PlayerSkills' index, 0
+  // for One-handed: ActorValue 6 to 23)
+  std::vector<uint8_t> avs;
+  std::vector<float> values;
+  for (const auto& [av, base] : record->bases) {
+    avs.push_back(av);
+    values.push_back(base);
+  }
+  for (const auto& skill : record->skills) {
+    const auto av = static_cast<uint8_t>(skill.skill + 6);
+    if (std::find(avs.begin(), avs.end(), av) == avs.end()) {
+      avs.push_back(av);
+      values.push_back(skill.level);
+    }
+  }
+  const auto verdict = pImpl->perkTable->pick(
+    record->level,
+    rust::Slice<const uint32_t>(record->perks.data(), record->perks.size()),
+    rust::Slice<const uint8_t>(avs.data(), avs.size()),
+    rust::Slice<const float>(values.data(), values.size()), perk);
+  if (!verdict.accepted) {
+    spdlog::info(
+      "[verb:perks] {}: {:x} picks {:x} at level {} with {} perk(s) "
+      "(detail {:x}); refused, its state resent",
+      std::string(verdict.code), actor.GetFormId(), perk, record->level,
+      record->perks.size(), verdict.detail);
+    actor.SendPerkState();
+    return false;
+  }
+  actor.AddPerkByServer(perk);
+  spdlog::info("[verb:perks] {:x} takes perk {:x} at level {}: {} perk(s) "
+               "held, {} point(s) left",
+               actor.GetFormId(), perk, record->level,
+               record->perks.size() + 1, actor.PerkPoints());
+  actor.SendPerkState();
+  return true;
 }

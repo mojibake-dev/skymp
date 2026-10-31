@@ -266,6 +266,14 @@ public:
   // The record to the player, as after a login but without waiting for a
   // report to show it applied
   void SendActorValueRecord();
+  // thuum docs/verbs/perks.md (M5): the perks the record holds (sorted), the
+  // server's writes to it (the console's and the natives', R0, no rule) and
+  // the whole set with the points left to the player (PerkState)
+  bool HasPerk(uint32_t perk) const;
+  bool AddPerkByServer(uint32_t perk);
+  bool RemovePerkByServer(uint32_t perk);
+  uint16_t PerkPoints() const;
+  void SendPerkState();
   // The server takes a RaceMenu look only from a race menu it opened, the
   // rule SkyMP keeps for an appearance (ActionListener::OnUpdateAppearance):
   // one look per opening, whether it comes before or after the appearance

@@ -805,3 +805,37 @@ TEST_CASE("REGN names its worldspace and its weather list", "[espm]")
   REQUIRE(sovngarde.weathers[0].chance == 100);
   REQUIRE(sovngarde.weathers[0].global == 0);
 }
+
+TEST_CASE("PERK carries its DATA, its next rank and the conditions before "
+          "its sections",
+          "[espm]")
+{
+  // thuum docs/verbs/perks.md: Armsman's ranks by NNAM, the rank's own
+  // conditions (the skill's level and the rank before) as the Skills menu
+  // checks them, read in Skyrim.esm with lab/esm.py on 2026-10-31
+  MyEspmProvider provider;
+  auto armsman = espm::GetData<espm::PERK>(0xbabe4, &provider);
+  REQUIRE(std::string(armsman.editorId) == "Armsman00");
+  REQUIRE(armsman.isPlayable);
+  REQUIRE_FALSE(armsman.isHidden);
+  REQUIRE_FALSE(armsman.isTrait);
+  REQUIRE(armsman.nextPerk == 0x79343);
+  REQUIRE(armsman.conditions.empty());
+  auto armsman20 = espm::GetData<espm::PERK>(0x79343, &provider);
+  REQUIRE(std::string(armsman20.editorId) == "Armsman20");
+  REQUIRE(armsman20.nextPerk == 0x79342);
+  REQUIRE(armsman20.conditions.size() == 2);
+  REQUIRE(armsman20.conditions[0].functionIndex == 277); // GetBaseActorValue
+  REQUIRE(armsman20.conditions[0].GetDefaultData().firstParameter == 6);
+  REQUIRE(armsman20.conditions[0].comparisonValue == 20.f);
+  REQUIRE(armsman20.conditions[0].GetOperator() ==
+          espm::CTDA::Operator::GreaterThenOrEqualTo);
+  REQUIRE(armsman20.conditions[1].functionIndex == 448); // HasPerk
+  REQUIRE(armsman20.conditions[1].GetDefaultData().firstParameter == 0xbabe4);
+  REQUIRE(armsman20.conditions[1].comparisonValue == 1.f);
+  REQUIRE(armsman20.conditions[1].GetOperator() ==
+          espm::CTDA::Operator::EqualTo);
+  auto last = espm::GetData<espm::PERK>(0x79345, &provider);
+  REQUIRE(std::string(last.editorId) == "Armsman80");
+  REQUIRE(last.nextPerk == 0);
+}

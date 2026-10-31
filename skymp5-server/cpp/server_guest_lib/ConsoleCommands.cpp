@@ -287,6 +287,48 @@ void ExecuteUnlock(MpActor& caller,
   target.SetLock(*lock);
 }
 
+// AddPerk, RemovePerk and SetLevel (thuum docs/verbs/perks.md): the record's
+// perks written straight (an admin's word, no rule) and the character level
+// the perk points come from; the player's state follows each
+void ExecuteAddPerk(MpActor& caller,
+                    const std::vector<ConsoleCommands::Argument>& args)
+{
+  MpActor& target = ActorOf(caller, args.at(0).GetInteger());
+  const auto perk = args.at(1).GetInteger();
+  if (perk <= 0 || perk > 0xffffffffLL) {
+    throw std::runtime_error("a perk is a form id");
+  }
+  target.AddPerkByServer(static_cast<uint32_t>(perk));
+  target.SendPerkState();
+}
+
+void ExecuteRemovePerk(MpActor& caller,
+                       const std::vector<ConsoleCommands::Argument>& args)
+{
+  MpActor& target = ActorOf(caller, args.at(0).GetInteger());
+  const auto perk = args.at(1).GetInteger();
+  if (perk <= 0 || perk > 0xffffffffLL) {
+    throw std::runtime_error("a perk is a form id");
+  }
+  target.RemovePerkByServer(static_cast<uint32_t>(perk));
+  target.SendPerkState();
+}
+
+void ExecuteSetLevel(MpActor& caller,
+                     const std::vector<ConsoleCommands::Argument>& args)
+{
+  MpActor& target = ActorOf(caller, args.at(0).GetInteger());
+  const auto level = args.at(1).GetInteger();
+  if (level < 1 || level > 65535) {
+    throw std::runtime_error("a level is 1 to 65535");
+  }
+  auto record = target.GetActorValueRecord().value_or(ActorValueRecord{});
+  record.level = static_cast<uint16_t>(level);
+  target.SetActorValueRecord(record);
+  target.SendActorValueRecord();
+  target.SendPerkState();
+}
+
 // Kill: the server's death (docs/verbs/hostility-sync.md and m0-death), the
 // killer the second reference when the console names one
 void ExecuteKill(MpActor& caller,
@@ -802,6 +844,12 @@ void ConsoleCommands::Execute(
       ExecuteLock(me, args);
     } else if (!Utils::stricmp(name, "Unlock")) {
       ExecuteUnlock(me, args);
+    } else if (!Utils::stricmp(name, "AddPerk")) {
+      ExecuteAddPerk(me, args);
+    } else if (!Utils::stricmp(name, "RemovePerk")) {
+      ExecuteRemovePerk(me, args);
+    } else if (!Utils::stricmp(name, "SetLevel")) {
+      ExecuteSetLevel(me, args);
     } else if (!Utils::stricmp(name, "Kill")) {
       ExecuteKill(me, args);
     } else if (!Utils::stricmp(name, "Resurrect")) {

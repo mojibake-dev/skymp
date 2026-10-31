@@ -1220,12 +1220,18 @@ void InstallUseSkillHook()
 {
   // AE only: the id is 1.6.1170's (game/Offsets.h)
   if (!REL::Module::IsAE()) {
+    logger::info("[verb:leveling] UseSkill hook not installed: not AE");
     return;
   }
   Frida::HookHandler::GetSingleton()->Replace(
     Offsets::Hooks::UseSkill.address(),
     reinterpret_cast<void*>(&UseSkillReplacement),
     reinterpret_cast<void**>(&g_useSkillOriginal));
+  // the lab tells one platform build from another by these install lines
+  // (x-skill-use v1's read, 2026-10-31: two seats compared by them)
+  logger::info("[verb:leveling] UseSkill hook installed: "
+               "PlayerCharacter::AddSkillExperience (Address Library 40488), "
+               "one skillUse per call");
 }
 
 // thuum docs/verbs/npc-stream.md (the voice slice), playtest 37 (2026-10-28,

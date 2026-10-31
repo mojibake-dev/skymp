@@ -1916,6 +1916,38 @@ float ActivationTargetSize(MpObjectReference& target)
   }
   return size;
 }
+
+// thuum docs/verbs/containers.md (M4's row, "a distance check on PutItem and
+// TakeItem"): a move in or out of a container is taken from a player in the
+// container's cell or world and within the activation reach of it (the rule
+// an open passes, wire-rules activation); the occupant set is pruned at
+// opens alone, so a player who walked off with the menu open, or a forged
+// message, could otherwise move items across the cell (R1). A refusal
+// resyncs the mover's and the container's inventories, as a refused move
+// does (memo D52), since the engine moved the item locally already.
+bool ContainerMoveWithinReach(MpActor& actor, MpObjectReference& container,
+                              const char* what)
+{
+  if (actor.GetCellOrWorld() != container.GetCellOrWorld()) {
+    spdlog::warn("[verb:containers] E_CONTAINER_CELL: {:x} {}s {:x} from "
+                 "another cell or world; refused",
+                 actor.GetFormId(), what, container.GetFormId());
+    container.ResyncAfterRefusedMove(actor);
+    return false;
+  }
+  const float distance = (actor.GetPos() - container.GetPos()).Length();
+  const auto verdict = skymp::rules::activation_within_reach(
+    distance, ActivationTargetSize(container));
+  if (!verdict.allowed) {
+    spdlog::warn("[verb:containers] E_CONTAINER_REACH: {:x} {}s {:x} from "
+                 "{:.0f} units, reach {:.0f}; refused",
+                 actor.GetFormId(), what, container.GetFormId(), distance,
+                 verdict.bound);
+    container.ResyncAfterRefusedMove(actor);
+    return false;
+  }
+  return true;
+}
 }
 
 void ActionListener::OnActivate(const RawMessageData& rawMsgData,
@@ -2069,6 +2101,9 @@ void ActionListener::OnPutItem(const RawMessageData& rawMsgData,
     static_cast<const Inventory::ExtraData&>(msg);
   entry.SetWorn(Inventory::Worn::None);
 
+  if (!ContainerMoveWithinReach(*actor, ref, "put")) {
+    return;
+  }
   ref.PutItem(*actor, entry);
 }
 
@@ -2098,6 +2133,9 @@ void ActionListener::OnTakeItem(const RawMessageData& rawMsgData,
   static_cast<Inventory::ExtraData&>(entry) =
     static_cast<const Inventory::ExtraData&>(msg);
 
+  if (!ContainerMoveWithinReach(*actor, ref, "take")) {
+    return;
+  }
   ref.TakeItem(*actor, entry);
 }
 

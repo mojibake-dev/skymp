@@ -253,7 +253,9 @@ export class RemoteServer extends ClientListener {
         // (waitMenuMode runs while paused too) for the engine to take the AI
         // state; the state is logged right before it (a read either way)
         const corpse = corpseAi;
-        await Utility.waitMenuMode(0.2);
+        // game time: on a seat with no menu open it runs (the menu-mode wait
+        // hung here in 045522 and 045859, HYPOTHESIS until the onResult lines)
+        await Utility.wait(0.15);
         const again = ObjectReference.from(Game.getFormEx(localId));
         logTrace(this, `body ${localId.toString(16)}: AI reads ${corpse.isAIEnabled()} after the wait; activating for the server's open`);
         if (again) {
@@ -332,10 +334,11 @@ export class RemoteServer extends ClientListener {
             opened = false;
             break;
           }
-          // menu mode: the open is seen the moment it comes, while the game
-          // pauses in the menu (D71); the wait for the close below stays game
-          // time, which resumes at the close
-          await Utility.waitMenuMode(0.1);
+          // game time, as the original loop (its 15 s give-up printed on
+          // schedule in earlier runs); once the menu opens the game pauses
+          // and this wait resumes at the close, so the AI's off for a guest's
+          // open lands at the close, under the pause nothing walks
+          await Utility.wait(0.1);
         }
         corpseAiOff(opened ? "the menu is open" : "the menu never opened");
 

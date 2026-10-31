@@ -44,8 +44,11 @@ use serde::Deserialize;
 /// How long after an accepted cast the caster's reports are taken,
 /// milliseconds: the script's wall rises from 240 below at 512 units a
 /// second (docs/MODS.md), the caster's game reports a settled pose, and a
-/// round trip each way with room for a slow frame.
-pub const REPORT_WINDOW_MS: u64 = 3_000;
+/// round trip each way with room for a slow frame. Six seconds, not three:
+/// a second cast re-uses the first cast's references and its wall began its
+/// rise about 2.3 s after the request on both x-raise-wall v5 runs
+/// (20261031-104852 and -105243), leaving a 3 s window no settle time.
+pub const REPORT_WINDOW_MS: u64 = 6_000;
 /// The nearest a reported object may stand to where the caster stood at the
 /// cast, on the ground plane, units: the engine stands Raise Wall's wall at
 /// 206.25 and its halo at 196.875 whatever the pitch (x-raise-wall-pitch v1,

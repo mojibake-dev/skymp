@@ -52,7 +52,8 @@ TEST_CASE("Dropping an item", "[DropItemTest]")
       if (m.j["t"] == MsgType::CreateActor &&
           m.j["refrId"] == refr.GetFormId()) {
         ++creates;
-        REQUIRE(m.j["pos"] == nlohmann::json::array({ 1.f, 66.f, 51.f }));
+        REQUIRE(m.j["transform"]["pos"] ==
+                nlohmann::json::array({ 1.f, 66.f, 51.f }));
       }
     }
     REQUIRE(creates == 1);

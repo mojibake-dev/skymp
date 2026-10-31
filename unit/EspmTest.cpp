@@ -723,3 +723,59 @@ TEST_CASE("The exterior cell at a worldspace's origin is the map's, not the "
   REQUIRE(spawn.ToGlobalId(spawn.rec->GetId()) == 0xbbb1);
   REQUIRE_FALSE(br.FindExteriorCell(0x3c, 200, 200).rec);
 }
+
+// thuum docs/verbs/leveling.md: Skyrim.esm's skill records as lab/esm.py read
+// them (2026-10-31): One-handed's AVSK is 6.3, 0, 2, 0 (UESP's table agrees),
+// Smithing's 160, 0, 0.25, 300 (UESP writes 1 for its use mult: the record is
+// the source); the perk tree's root node carries PNAM 0 and INAM 0 and points
+// at Armsman00 0xbabe4, whose node is INAM 7 at grid (2, 0) with five
+// connections; Smithing's tree has eleven nodes and eleven connections; a
+// plain actor value (AVDragonSouls 0x62c) has neither skill nor tree.
+TEST_CASE("AVIF skill constants and perk tree", "[espm]")
+{
+  MyEspmProvider provider;
+  auto oneHanded = espm::GetData<espm::AVIF>(0x44c, &provider);
+  REQUIRE(std::string(oneHanded.editorId) == "AVOneHanded");
+  REQUIRE(std::string(oneHanded.abbreviation) == "1H");
+  REQUIRE(oneHanded.category == 1);
+  REQUIRE(oneHanded.hasSkill);
+  REQUIRE(oneHanded.skill.useMult == Catch::Approx(6.3f));
+  REQUIRE(oneHanded.skill.useOffset == 0.f);
+  REQUIRE(oneHanded.skill.improveMult == 2.f);
+  REQUIRE(oneHanded.skill.improveOffset == 0.f);
+  REQUIRE(oneHanded.nodes.size() >= 10);
+  const auto& root = oneHanded.nodes[0];
+  REQUIRE(root.perk == 0);
+  REQUIRE(root.index == 0);
+  REQUIRE(root.skill == 0x44c);
+  REQUIRE(root.x == 1);
+  REQUIRE(root.y == 1);
+  REQUIRE(root.connections == std::vector<uint32_t>{ 7 });
+  const auto& armsman = oneHanded.nodes[1];
+  REQUIRE(armsman.perk == 0xbabe4);
+  REQUIRE(armsman.index == 7);
+  REQUIRE(armsman.x == 2);
+  REQUIRE(armsman.y == 0);
+  REQUIRE(armsman.h == Catch::Approx(0.186667f));
+  REQUIRE(armsman.v == Catch::Approx(-0.04f));
+  REQUIRE(armsman.connections == std::vector<uint32_t>{ 4, 3, 5, 1, 6 });
+
+  auto smithing = espm::GetData<espm::AVIF>(0x450, &provider);
+  REQUIRE(std::string(smithing.editorId) == "AVSmithing");
+  REQUIRE(smithing.hasSkill);
+  REQUIRE(smithing.skill.useMult == 160.f);
+  REQUIRE(smithing.skill.useOffset == 0.f);
+  REQUIRE(smithing.skill.improveMult == 0.25f);
+  REQUIRE(smithing.skill.improveOffset == 300.f);
+  REQUIRE(smithing.nodes.size() == 11);
+  size_t connections = 0;
+  for (const auto& node : smithing.nodes) {
+    connections += node.connections.size();
+  }
+  REQUIRE(connections == 11);
+
+  auto souls = espm::GetData<espm::AVIF>(0x62c, &provider);
+  REQUIRE(std::string(souls.editorId) == "AVDragonSouls");
+  REQUIRE(!souls.hasSkill);
+  REQUIRE(souls.nodes.empty());
+}

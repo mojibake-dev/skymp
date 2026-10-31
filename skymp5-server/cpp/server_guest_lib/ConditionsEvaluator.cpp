@@ -89,12 +89,13 @@ std::string ConditionsEvaluator::FailingRows(
     if (!rows.empty()) {
       rows += "; ";
     }
-    rows += fmt::format("{}({}, {}) on {} {} {:g}: got {:g}",
-                        condition.function.empty() ? "?" : condition.function,
-                        condition.parameter1.empty() ? "0" : condition.parameter1,
-                        condition.parameter2.empty() ? "0" : condition.parameter2,
-                        condition.runsOn.empty() ? "?" : condition.runsOn,
-                        condition.comparison, condition.value, result);
+    rows +=
+      fmt::format("{}({}, {}) on {} {} {:g}: got {:g}",
+                  condition.function.empty() ? "?" : condition.function,
+                  condition.parameter1.empty() ? "0" : condition.parameter1,
+                  condition.parameter2.empty() ? "0" : condition.parameter2,
+                  condition.runsOn.empty() ? "?" : condition.runsOn,
+                  condition.comparison, condition.value, result);
   }
   return rows;
 }

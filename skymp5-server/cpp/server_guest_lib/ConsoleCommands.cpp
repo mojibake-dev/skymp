@@ -254,11 +254,14 @@ void ExecuteEnable(MpActor& caller,
 }
 
 // Lock and Unlock (thuum docs/verbs/locks.md): the server's lock state on a
-// reference. `lock <ref> [level]` locks it at the level (the XLOC byte: 0 or
-// 1 Novice, 25 Apprentice, 50 Adept, 75 Expert, 100 Master, 255 requires its
-// key; the record's own level when none is typed), `unlock <ref>` opens it.
-// The game's own console commands of these names are sent here by the
-// client (consoleCommandsService) instead of running locally.
+// reference. `lock <ref> [level] [key]` locks it at the level (the XLOC byte:
+// 0 or 1 Novice, 25 Apprentice, 50 Adept, 75 Expert, 100 Master, 255 requires
+// its key; the record's own level when none is typed) and, with a third
+// argument, names the key's base form id (0 for none: the lab's key lock is
+// the game's 255 with a vanilla KEYM the console then hands the player),
+// `unlock <ref>` opens it. The game's own console commands of these names are
+// sent here by the client (consoleCommandsService) instead of running
+// locally.
 void ExecuteLock(MpActor& caller,
                  const std::vector<ConsoleCommands::Argument>& args)
 {
@@ -270,6 +273,13 @@ void ExecuteLock(MpActor& caller,
       throw std::runtime_error("a lock level is 0 to 255");
     }
     lock.level = static_cast<uint8_t>(level);
+  }
+  if (args.size() > 2 && args.at(2).IsInteger()) {
+    const auto key = args.at(2).GetInteger();
+    if (key < 0 || key > 0xffffffffLL) {
+      throw std::runtime_error("a lock's key is a form id, 0 for none");
+    }
+    lock.key = static_cast<uint32_t>(key);
   }
   lock.locked = true;
   target.SetLock(lock);

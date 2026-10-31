@@ -682,14 +682,19 @@ bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
     form.reset(
       new MpActor(formLocationalData, formCallbacksFactory(), baseId));
   }
-  MpActor* placedDead =
-    isNpc && startsDead ? static_cast<MpActor*>(form.get()) : nullptr;
   AddForm(std::move(form), formId, true, changeForm);
-  if (placedDead) {
+  if (isNpc && startsDead) {
     // after Init rolled its inventory and before any saved ChangeForm
     // applies over it (ApplyChangeForm's respawn of a dead record yields
-    // to the mark)
-    placedDead->MarkPlacedDead();
+    // to the mark); through the map, never the pointer moved into AddForm:
+    // its insert drops a duplicate id and the form with it, and the first
+    // cut wrote the mark into the freed actor (the Windows coverage run's
+    // access violation since 0e23c820, 2026-10-31; the reviewer agent's read)
+    auto it = forms.find(formId);
+    MpActor* actor = it != forms.end() ? it->second->AsActor() : nullptr;
+    if (actor && !actor->IsPlacedDead()) {
+      actor->MarkPlacedDead();
+    }
   }
 
   // Do not TriggerFormInitEvent here, doing it later after changeForm apply
@@ -706,6 +711,18 @@ bool WorldState::LoadForm(uint32_t formId, std::stringstream* optionalOutTrace,
 {
   ANTIGO_CONTEXT_INIT(ctx);
   ctx.AddUnsigned(formId);
+
+  // a record attached already (a lookup by id, a sighting or a deferred save
+  // load ahead of its square's chunk) is never attached twice: the chunk load
+  // the attach's own ForceSubscriptionsUpdate runs reaches the record's own
+  // square, AddForm's insert then dropped the duplicate silently, leaked its
+  // idx and applied the deferred ChangeForm a second time, re-entrantly
+  if (forms.find(formId) != forms.end()) {
+    if (optionalOutTrace) {
+      *optionalOutTrace << "LoadForm - already loaded" << std::endl;
+    }
+    return true;
+  }
 
   auto& br = GetEspm().GetBrowser();
 

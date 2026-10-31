@@ -416,8 +416,18 @@ export class PropService extends ClientListener {
         const simulate = myId !== 0 && owner === myId;
         const near = prop.distance <= TOUCH_RADIUS + 512;
         const touchReadDue = fallback && !simulate && near && now - prop.lastTouchReadAt >= TOUCH_READ_MS;
+        // D73's rest: a follower's Keyframed body goes Dynamic REST_DYNAMIC_MS after
+        // the asleep sample or STREAM_LIVE_MS after the last awake one, so a kick
+        // or a grab acts on it at once; the check below needs the reference, so
+        // the tick must reach it (x-prop-grab v8 202618: with no pending sample
+        // and the touch fallback off the tick returned here every time, no seat
+        // ever logged "at rest: Dynamic", and c2's E on the still-Keyframed basket
+        // picked it up instead of grabbing it)
+        const restDue = !simulate && prop.placed && prop.motionAsked === MotionType.Keyframed
+            && ((prop.restAt !== 0 && now - prop.restAt >= REST_DYNAMIC_MS)
+                || (!prop.lastSampleAsleep && now - prop.lastSampleAt >= STREAM_LIVE_MS));
         const wantsRef = simulate || !prop.placed || prop.simulating !== simulate || prop.motionAsked === undefined
-            || prop.pending !== undefined || touchReadDue;
+            || prop.pending !== undefined || touchReadDue || restDue;
         if (!wantsRef) {
             return;
         }

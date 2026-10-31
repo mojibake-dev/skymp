@@ -61,6 +61,28 @@ struct CustomPropsEntry
   std::string propValueJsonDump;
 };
 
+// thuum docs/verbs/locks.md: a reference's lock as the server holds it (the
+// XLOC's level byte, the key's base form id or 0, locked now); on
+// CreateActor's props and as the `lock` property's value
+struct LockProp
+{
+  template <class Archive>
+  void Serialize(Archive& archive)
+  {
+    archive.Serialize("level", level)
+      .Serialize("key", key)
+      .Serialize("locked", locked);
+  }
+  friend bool operator==(const LockProp& lhs, const LockProp& rhs)
+  {
+    return lhs.level == rhs.level && lhs.key == rhs.key &&
+      lhs.locked == rhs.locked;
+  }
+  uint32_t level = 0; // 0 or 1 Novice, 25, 50, 75, 100, 255 requires key
+  uint32_t key = 0;   // the key's base form id, 0 for none
+  bool locked = false;
+};
+
 struct CreateActorMessageAdditionalProps
 {
   template <class Archive>
@@ -91,7 +113,8 @@ struct CreateActorMessageAdditionalProps
       .Serialize("templateChain", templateChain)
       .Serialize("inventory", inventory)
       .Serialize("isDead", isDead)
-      .Serialize("placedBy", placedBy);
+      .Serialize("placedBy", placedBy)
+      .Serialize("lock", lock);
   }
 
   std::optional<bool> isOpen;
@@ -126,6 +149,10 @@ struct CreateActorMessageAdditionalProps
   // caster whose accepted cast placed this reference (an MSTT or ACTI from
   // the server's table); absent for every other form
   std::optional<uint32_t> placedBy;
+
+  // thuum docs/verbs/locks.md: the lock the client applies to its own
+  // reference; absent for a reference the game files leave unlocked
+  std::optional<LockProp> lock;
 };
 
 struct CreateActorMessageMainProps

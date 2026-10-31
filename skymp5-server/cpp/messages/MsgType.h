@@ -89,7 +89,11 @@ enum class MsgType : uint8_t
                       // its engine stands a listed spell's placed objects
   PlacedReport = 62,  // the same verb: the caster's answer for one base,
                       // validated and placed for every other seat
-  SkillUse = 63, // thuum docs/verbs/leveling.md (M5): a player's skill uses
-                 // of the last second, batched, for the server's formulas
+  SkillUse = 63,   // thuum docs/verbs/leveling.md (M5): a player's skill uses
+                   // of the last second, batched, for the server's formulas
+  LockReport = 64, // thuum docs/verbs/locks.md (M4): how a player's
+                   // lockpicking attempt ended, judged into the record
+  LockPrompt = 65, // the same verb: the server's word that an activation met a
+                   // lock, so the game runs the engine's own on it
   Max
 };

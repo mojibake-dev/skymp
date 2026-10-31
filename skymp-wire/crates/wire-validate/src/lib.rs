@@ -179,6 +179,9 @@ pub struct ClientGuard {
     /// leveling.md): one a second by design; a burst of 8 then 2 a second
     /// (UNMEASURED).
     pub skill_use_budget: TokenBucket,
+    /// Budget for a player's lock reports (LockReport, thuum docs/verbs/
+    /// locks.md): one per attempt; a burst of 8 then 2 a second (UNMEASURED).
+    pub lock_report_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -218,6 +221,7 @@ impl Default for ClientGuard {
             prop_claim_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             placed_report_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             skill_use_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
+            lock_report_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
         }
     }
 }
@@ -678,6 +682,26 @@ fn check_placed_report(m: &skymp::PlacedReport) -> Result<(), Reject> {
     Ok(())
 }
 
+/// A player's lock report (docs/verbs/locks.md): a reference (never 0), an
+/// outcome the contract names (0 picked, 1 broken, 2 left) and at most 8
+/// picks broken. The rest (locked, the reach, the tier, the picks held, the
+/// gap) is the server's rule (wire-rules locks).
+fn check_lock_report(m: &skymp::LockReport) -> Result<(), Reject> {
+    if m.refr == 0 || m.outcome > 2 || m.broken > 8 {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
+/// The server's lock prompt (docs/verbs/locks.md): a reference, never 0; the
+/// transport refuses it from a client by direction.
+fn check_lock_prompt(m: &skymp::LockPrompt) -> Result<(), Reject> {
+    if m.refr == 0 {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
 /// The most one skill use's base amount may carry: wire-rules leveling's
 /// MAX_BASE_PER_USE (UNMEASURED; a Daedric craft is in the thousands).
 const SKILL_USE_MAX_AMOUNT: f32 = 100_000.0;
@@ -844,6 +868,7 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::PropClaim(_) => take(&mut guard.prop_claim_budget, now_ms),
         Message::PlacedReport(_) => take(&mut guard.placed_report_budget, now_ms),
         Message::SkillUse(_) => take(&mut guard.skill_use_budget, now_ms),
+        Message::LockReport(_) => take(&mut guard.lock_report_budget, now_ms),
         _ => Ok(()),
     }
 }
@@ -1021,6 +1046,8 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::PlacedRequest(m) => check_placed_request(m),
         Message::PlacedReport(m) => check_placed_report(m),
         Message::SkillUse(m) => check_skill_use(m),
+        Message::LockReport(m) => check_lock_report(m),
+        Message::LockPrompt(m) => check_lock_prompt(m),
         Message::CreateActor(m) => check_create_actor(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
@@ -2188,6 +2215,27 @@ mod tests {
     }
 
     #[test]
+    fn lock_reports_name_a_reference_an_outcome_and_a_bounded_break_count_and_are_rate_limited() {
+        use wire_schema::skymp::{LockPrompt, LockReport};
+        let report = |refr, outcome, broken| Message::LockReport(LockReport { refr, outcome, broken, ..Default::default() });
+        assert_eq!(validate_server(&report(0x371e9, 0, 0)), Ok(()));
+        assert_eq!(validate_server(&report(0x371e9, 1, 3)), Ok(()));
+        assert_eq!(validate_server(&report(0x371e9, 2, 0)), Ok(()));
+        assert_eq!(validate_server(&report(0, 0, 0)), Err(Reject::Range));
+        assert_eq!(validate_server(&report(0x371e9, 3, 0)), Err(Reject::Range));
+        assert_eq!(validate_server(&report(0x371e9, 1, 9)), Err(Reject::Range));
+        let mut guard = ClientGuard::default();
+        for _ in 0..8 {
+            assert_eq!(validate(&report(0x371e9, 2, 0), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&report(0x371e9, 2, 0), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&report(0x371e9, 2, 0), &mut guard, 1_500), Ok(()));
+        let prompt = |refr| Message::LockPrompt(LockPrompt { refr, ..Default::default() });
+        assert_eq!(validate_server(&prompt(0x371e9)), Ok(()));
+        assert_eq!(validate_server(&prompt(0)), Err(Reject::Range));
+    }
+
+    #[test]
     fn damage_causes_carry_a_percentage_for_a_victim_in_range() {
         use wire_schema::skymp::DamageCause;
         let cause = |idx, health| Message::DamageCause(DamageCause { idx, attacker: 0xff00_0001, health, kill_move: false, ..Default::default() });
@@ -2284,6 +2332,16 @@ mod tests {
             let mut g = ClientGuard::default();
             let _ = validate(&m, &mut g, now);
             let _ = validate_server(&m);
+        }
+
+        #[test]
+        fn lock_messages_never_panic(refr in any::<u32>(), outcome in any::<u8>(), broken in any::<u8>(), now in any::<u64>()) {
+            use wire_schema::skymp::{LockPrompt, LockReport};
+            let mut g = ClientGuard::default();
+            let m = Message::LockReport(LockReport { refr, outcome, broken, ..Default::default() });
+            let _ = validate(&m, &mut g, now);
+            prop_assert_eq!(validate_server(&m), if refr == 0 || outcome > 2 || broken > 8 { Err(Reject::Range) } else { Ok(()) });
+            let _ = validate_server(&Message::LockPrompt(LockPrompt { refr, ..Default::default() }));
         }
 
         #[test]

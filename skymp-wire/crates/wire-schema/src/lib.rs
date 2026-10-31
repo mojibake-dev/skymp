@@ -40,7 +40,10 @@ use bounded::{String, Vec};
 /// listed spell's objects and places its copies as reported.
 /// 23: SkillUse (thuum docs/verbs/leveling.md, m5-leveling): a player's
 /// skill uses batched for the server's formulas.
-pub const SCHEMA_VERSION: u16 = 23;
+/// 24: LockReport, LockPrompt and CreateActorProps.lock (thuum
+/// docs/verbs/locks.md, m4-locks): the server's lock state on every
+/// reference, the prompt and the report around the engine's minigame.
+pub const SCHEMA_VERSION: u16 = 24;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -460,6 +463,10 @@ pub enum Message {
     PlacedReport(skymp::PlacedReport),
     /// 71, MsgType 63 (thuum). See [`skymp::SkillUse`].
     SkillUse(skymp::SkillUse),
+    /// 72, MsgType 64 (thuum). See [`skymp::LockReport`].
+    LockReport(skymp::LockReport),
+    /// 73, MsgType 65 (thuum). See [`skymp::LockPrompt`].
+    LockPrompt(skymp::LockPrompt),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -488,7 +495,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 72] = [
+const TABLE: [Row; 74] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -561,14 +568,16 @@ const TABLE: [Row; 72] = [
     row("PlacedRequest", 61, 64, S2C),
     row("PlacedReport", 62, 48, C2S),
     row("SkillUse", 63, 128, C2S),
+    row("LockReport", 64, 16, C2S),
+    row("LockPrompt", 65, 8, S2C),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 72;
-const _: () = assert!(TABLE.len() == 72, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 74;
+const _: () = assert!(TABLE.len() == 74, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -665,6 +674,8 @@ impl Message {
             Message::PlacedRequest(_) => 69,
             Message::PlacedReport(_) => 70,
             Message::SkillUse(_) => 71,
+            Message::LockReport(_) => 72,
+            Message::LockPrompt(_) => 73,
         }
     }
 
@@ -759,7 +770,9 @@ mod tests {
         assert_eq!(name_of_msg_type(61), Some("PlacedRequest"));
         assert_eq!(name_of_msg_type(62), Some("PlacedReport"));
         assert_eq!(name_of_msg_type(63), Some("SkillUse"));
-        assert_eq!(name_of_msg_type(64), None);
+        assert_eq!(name_of_msg_type(64), Some("LockReport"));
+        assert_eq!(name_of_msg_type(65), Some("LockPrompt"));
+        assert_eq!(name_of_msg_type(66), None);
     }
 
     #[test]
@@ -851,6 +864,9 @@ mod tests {
                     .unwrap_or_default(),
                 ..Default::default()
             }),
+            // a lock report and a prompt at their longest (thuum docs/verbs/locks.md)
+            Message::LockReport(skymp::LockReport { refr: u32::MAX, outcome: u8::MAX, broken: u8::MAX, ..Default::default() }),
+            Message::LockPrompt(skymp::LockPrompt { refr: u32::MAX, ..Default::default() }),
             Message::RaceMenuPreset(skymp::RaceMenuPreset {
                 actor: u32::MAX,
                 preset: "x".repeat(cap::RACEMENU_PRESET).try_into().unwrap_or_default(),

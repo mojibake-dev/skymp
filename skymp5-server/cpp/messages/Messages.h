@@ -48,6 +48,7 @@
 #include "SetGameTimeMessage.h"
 #include "SetInventoryMessage.h"
 #include "SetRaceMenuOpenMessage.h"
+#include "SkillUseMessage.h"
 #include "SpSnippetMessage.h"
 #include "SpellCastMessage.h"
 #include "TakeItemMessage.h"
@@ -124,4 +125,5 @@
   REGISTER_MESSAGE(PropClaimMessage)                                          \
   REGISTER_MESSAGE(PropOwnerMessage)                                          \
   REGISTER_MESSAGE(PlacedRequestMessage)                                      \
-  REGISTER_MESSAGE(PlacedReportMessage)
+  REGISTER_MESSAGE(PlacedReportMessage)                                       \
+  REGISTER_MESSAGE(SkillUseMessage)

@@ -252,6 +252,19 @@ public:
   // true when it did. SpellPlacedSets: the sets standing.
   void SetSpellPlacedObjectsSettings(
     const std::string& spellPlacedObjectsJson);
+  // thuum docs/verbs/leveling.md (M5): skills rise by use and the character
+  // levels by skill gains, computed here from the game's formulas (wire-rules
+  // leveling) with the eighteen skills' constants read from the game files'
+  // AVIF records at AttachEspm (LoadSkillTable). ApplySkillUse takes one
+  // reported use (R1: the engine's base amount, bounded by the rule) into the
+  // player's actor value record and sends the record to its game when a
+  // level moves. The switch is server-settings.json's `leveling` (false:
+  // reports are dropped, the client's own advance stays off as before).
+  void SetLevelingEnabled(bool on);
+  bool LevelingEnabled() const;
+  float SkillUseXp(uint8_t skillAv, float base) const;
+  float SkillLevelCost(uint8_t skillAv, uint8_t level) const;
+  bool ApplySkillUse(MpActor& actor, uint8_t skillAv, float amount);
   void TickPlacements(uint64_t nowMs);
   bool ReportPlacedObject(MpActor& caster, uint64_t set, uint32_t baseId,
                           const NiPoint3& pos, float yaw);
@@ -771,6 +784,9 @@ private:
   // shape A: the requests the rule queued at an accepted cast, one message
   // a set, to the caster alone
   void SendPlacementRequests();
+  // thuum docs/verbs/leveling.md: the skills' AVSK rows from the game files
+  // (AVOneHanded 0x44c to AVEnchanting 0x45d, one per ActorValue 6 to 23)
+  void LoadSkillTable();
   // thuum docs/verbs/shadowbond.md (train-28): the proc's records on both
   // and its cast in every game but the caster's; the reverse, with the
   // reason for the log

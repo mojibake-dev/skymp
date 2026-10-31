@@ -28,6 +28,8 @@ void EventManager::InitCustom()
   // thuum docs/verbs/prop-physics.md (ADR-058): the player's character
   // controller touched a prop's Havok body (FridaHooks' propContact)
   manager->EmplaceEvent("propContact");
+  // thuum docs/verbs/leveling.md: the player's UseSkill (FridaHooks' skillUse)
+  manager->EmplaceEvent("skillUse");
   manager->EmplaceEvent("ipcMessage");
 
   // skse messages

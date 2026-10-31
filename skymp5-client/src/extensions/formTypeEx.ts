@@ -11,6 +11,9 @@ export class FormTypeEx {
       type === FormType.ScrollItem ||
       type === FormType.SoulGem ||
       type === FormType.Weapon ||
-      type === FormType.Misc;
+      type === FormType.Misc ||
+      // thuum docs/verbs/locks.md: a key is held as an item (the server's
+      // utils::IsItem names KEYM too)
+      type === FormType.Key;
   }
 }

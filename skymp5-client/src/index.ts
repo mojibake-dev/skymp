@@ -23,6 +23,7 @@ import { PlayerGlobalsService } from "./services/services/playerGlobalsService";
 import { QuestStageService } from "./services/services/questStageService";
 import { PropService } from "./services/services/propService";
 import { SpellPlacedService } from "./services/services/spellPlacedService";
+import { LockService } from "./services/services/lockService";
 import { ArrowSyncService } from "./services/services/arrowSyncService";
 import { SpVersionCheckService } from "./services/services/spVersionCheckService";
 import { ConsoleCommandsService } from "./services/services/consoleCommandsService";
@@ -108,6 +109,7 @@ const main = () => {
       new QuestStageService(sp, controller),
       new PropService(sp, controller),
       new SpellPlacedService(sp, controller),
+      new LockService(sp, controller),
       new ArrowSyncService(sp, controller),
       new SpVersionCheckService(sp, controller),
       new ConsoleCommandsService(sp, controller),

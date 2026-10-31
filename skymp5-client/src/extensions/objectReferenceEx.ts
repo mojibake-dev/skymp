@@ -34,7 +34,7 @@ export class ObjectReferenceEx {
     return Math.sqrt(deltaX * deltaX + deltaY * deltaY);
   };
 
-  static dealWithRef(self: ObjectReference, base: Form): void {
+  static dealWithRef(self: ObjectReference, base: Form, lock?: { level: number; key: number; locked: boolean }): void {
     const t = base.getType();
     const isItem = FormTypeEx.isItem(t);
 
@@ -55,7 +55,14 @@ export class ObjectReferenceEx {
       self.blockActivation(false);
     }
 
-    if (self.isLocked()) {
+    // thuum docs/verbs/locks.md: the server's lock stands on this game's
+    // reference when it sends one (the engine's own lockpicking runs at the
+    // server's prompt); a reference the server sends no lock for is unlocked
+    // here as before
+    if (lock) {
+      self.setLockLevel(lock.level);
+      self.lock(lock.locked, false);
+    } else if (self.isLocked()) {
       self.lock(false, false);
     }
 

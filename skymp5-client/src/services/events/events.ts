@@ -34,6 +34,7 @@ import { QuestStageMessage } from "../messages/questStageMessage";
 import { PropTransformMessage } from "../messages/propTransformMessage";
 import { PropOwnerMessage } from "../messages/propOwnerMessage";
 import { PlacedRequestMessage } from "../messages/placedRequestMessage";
+import { LockPromptMessage } from "../messages/lockPromptMessage";
 import { ActorJumpMessage } from "../messages/actorJumpMessage";
 import { SpSnippetMessage } from "../messages/spSnippetMessage";
 import { TeleportMessage } from "../messages/teleportMessage";
@@ -112,6 +113,7 @@ type EventTypes = {
     'propTransformMessage': [ConnectionMessage<PropTransformMessage>],
     'propOwnerMessage': [ConnectionMessage<PropOwnerMessage>],
     'placedRequestMessage': [ConnectionMessage<PlacedRequestMessage>],
+    'lockPromptMessage': [ConnectionMessage<LockPromptMessage>],
     'actorJumpMessage': [ConnectionMessage<ActorJumpMessage>],
     'hostGrantMessage': [ConnectionMessage<HostGrantMessage>],
     'actorFateMessage': [ConnectionMessage<ActorFateMessage>],

@@ -18,7 +18,7 @@ enum CmdArgument {
 
 type CmdName = "additem" | "equipitem" | "placeatme" | "disable" | "mp" | "setav" | "modav" | "forceav"
     | "removeitem" | "enable" | "kill" | "resurrect" | "setpos" | "setangle" | "moveto" | "coc"
-    | "teachword" | "unlockword" | "addshout" | "addspell";
+    | "teachword" | "unlockword" | "addshout" | "addspell" | "lock" | "unlock";
 
 export class ConsoleCommandsService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
@@ -38,6 +38,10 @@ export class ConsoleCommandsService extends ClientListener {
         schemas.set("equipitem", [CmdArgument.ObjectReference, CmdArgument.BaseForm]);
         schemas.set("placeatme", [CmdArgument.ObjectReference, CmdArgument.BaseForm]);
         schemas.set("disable", [CmdArgument.ObjectReference]);
+        // thuum docs/verbs/locks.md: the server's lock state; the game's own
+        // lock and unlock would change this game alone
+        schemas.set("lock", [CmdArgument.ObjectReference, CmdArgument.Int]);
+        schemas.set("unlock", [CmdArgument.ObjectReference]);
         schemas.set("mp", [CmdArgument.ObjectReference, CmdArgument.String]);
         // thuum docs/verbs/console-commands.md: the server's actor value
         // natives (docs/verbs/actor-values.md); Skyrim Platform passes an

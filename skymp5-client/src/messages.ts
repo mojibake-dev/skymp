@@ -64,5 +64,8 @@ export enum MsgType {
   PropClaim = 59, // the same verb: this player touched a prop another seat simulates (contact, grab, drop, impulse)
   PropOwner = 60, // the same verb: who simulates a prop from now, to every listener at each owner change
   PlacedRequest = 61, // thuum docs/verbs/spell-placed-object.md (ADR-057 shape A): the server asks this game where its engine stands a listed spell's placed objects
-  PlacedReport = 62 // the same verb: this game's answer for one base, which the server validates and places for every other seat
+  PlacedReport = 62, // the same verb: this game's answer for one base, which the server validates and places for every other seat
+  SkillUse = 63, // thuum docs/verbs/leveling.md (M5): this game's skill uses of the last second, for the server's formulas
+  LockReport = 64, // thuum docs/verbs/locks.md (M4): how this game's lockpicking attempt ended, judged by the server into the record
+  LockPrompt = 65 // the same verb: the server's word that an activation met a lock, so this game runs the engine's own activation on it
 }

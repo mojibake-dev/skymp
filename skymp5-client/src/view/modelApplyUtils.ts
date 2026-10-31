@@ -34,6 +34,21 @@ export class ModelApplyUtils {
     }
   }
 
+  // thuum docs/verbs/locks.md: the server's lock on this game's reference
+  // (the `lock` prop at creation and the property at a change). The engine
+  // then runs its own lockpicking when the server prompts it.
+  static applyModelLock(refr: ObjectReference, lock: { level: number; key: number; locked: boolean } | undefined): void {
+    if (!lock) {
+      if (refr.isLocked()) {
+        refr.lock(false, false);
+      }
+      return;
+    }
+    refr.setLockLevel(lock.level);
+    refr.lock(lock.locked, false);
+    logTrace("ModelApplyUtils", `lock ${refr.getFormID().toString(16)} applied: ${lock.locked ? "locked" : "unlocked"}, level ${lock.level}, key ${lock.key.toString(16)}`);
+  }
+
   static applyModelIsDisabled(refr: ObjectReference, disabled: boolean): void {
     const wasDisabled: boolean = refr.isDisabled();
     if (wasDisabled == disabled) {

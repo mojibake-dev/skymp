@@ -70,4 +70,7 @@ export interface CreateActorMessageAdditionalProps {
 
     // thuum docs/verbs/spell-placed-object.md (ADR-057): the server id of the caster whose accepted cast placed this MSTT or ACTI; absent for every other form
     placedBy?: number;
+    // thuum docs/verbs/locks.md: the reference's lock as the server holds it;
+    // applied to this game's reference instead of the old strip
+    lock?: { level: number; key: number; locked: boolean };
 }

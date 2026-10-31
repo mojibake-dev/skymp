@@ -36,6 +36,7 @@ import { PropOwnerMessage } from "../messages/propOwnerMessage";
 import { PlacedRequestMessage } from "../messages/placedRequestMessage";
 import { LockPromptMessage } from "../messages/lockPromptMessage";
 import { SetWeatherMessage } from "../messages/setWeatherMessage";
+import { PerkStateMessage } from "../messages/perkStateMessage";
 import { ActorJumpMessage } from "../messages/actorJumpMessage";
 import { SpSnippetMessage } from "../messages/spSnippetMessage";
 import { TeleportMessage } from "../messages/teleportMessage";
@@ -116,6 +117,7 @@ type EventTypes = {
     'placedRequestMessage': [ConnectionMessage<PlacedRequestMessage>],
     'lockPromptMessage': [ConnectionMessage<LockPromptMessage>],
     'setWeatherMessage': [ConnectionMessage<SetWeatherMessage>],
+    'perkStateMessage': [ConnectionMessage<PerkStateMessage>],
     'actorJumpMessage': [ConnectionMessage<ActorJumpMessage>],
     'hostGrantMessage': [ConnectionMessage<HostGrantMessage>],
     'actorFateMessage': [ConnectionMessage<ActorFateMessage>],

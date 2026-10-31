@@ -68,5 +68,7 @@ export enum MsgType {
   SkillUse = 63, // thuum docs/verbs/leveling.md (M5): this game's skill uses of the last second, for the server's formulas
   LockReport = 64, // thuum docs/verbs/locks.md (M4): how this game's lockpicking attempt ended, judged by the server into the record
   LockPrompt = 65, // the same verb: the server's word that an activation met a lock, so this game runs the engine's own activation on it
-  SetWeather = 66 // thuum docs/verbs/weather.md (M4): the server's weather for the place this game is in (a cut or a blend), or a release in an interior
+  SetWeather = 66, // thuum docs/verbs/weather.md (M4): the server's weather for the place this game is in (a cut or a blend), or a release in an interior
+  PerkPick = 67, // thuum docs/verbs/perks.md (M5): the perk this game's Skills menu took, for the server to judge
+  PerkState = 68 // the same verb: the server's whole perk set and the points left for this player
 }

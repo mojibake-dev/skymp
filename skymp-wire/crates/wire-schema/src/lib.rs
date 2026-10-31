@@ -35,7 +35,10 @@ use bounded::{String, Vec};
 /// 21: QuestStage's mode byte (thuum D58 B, m3-quest-mode) and PropTransform,
 /// PropClaim, PropOwner (thuum ADR-058, m3-prop-physics): one bump for the
 /// train that carries both.
-pub const SCHEMA_VERSION: u16 = 21;
+/// 22: PlacedRequest and PlacedReport (thuum ADR-057 shape A, D70,
+/// m3-wall-pose): the server asks the caster where its engine stands a
+/// listed spell's objects and places its copies as reported.
+pub const SCHEMA_VERSION: u16 = 22;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -108,6 +111,9 @@ pub mod cap {
     /// Globals the server keeps per player (thuum docs/verbs/player-globals.md:
     /// Apocalypse's 55 with room for more mods).
     pub const PLAYER_GLOBALS: usize = 256;
+    /// Bases one PlacedRequest asks for: wire-rules placements' MAX_OBJECTS
+    /// (Raise Wall's two, with room for a cage's walls).
+    pub const PLACED_BASES: usize = 8;
     /// Quests whose stages are the world's (thuum docs/verbs/quest-stage.md:
     /// the server's `sharedQuests` list, Riverwood's first).
     pub const SHARED_QUESTS: usize = 256;
@@ -443,6 +449,10 @@ pub enum Message {
     PropClaim(skymp::PropClaim),
     /// 68, MsgType 60 (thuum). See [`skymp::PropOwner`].
     PropOwner(skymp::PropOwner),
+    /// 69, MsgType 61 (thuum). See [`skymp::PlacedRequest`].
+    PlacedRequest(skymp::PlacedRequest),
+    /// 70, MsgType 62 (thuum). See [`skymp::PlacedReport`].
+    PlacedReport(skymp::PlacedReport),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -471,7 +481,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 69] = [
+const TABLE: [Row; 71] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -541,14 +551,16 @@ const TABLE: [Row; 69] = [
     row("PropTransform", 58, 64, Both),
     row("PropClaim", 59, 16, C2S),
     row("PropOwner", 60, 32, S2C),
+    row("PlacedRequest", 61, 64, S2C),
+    row("PlacedReport", 62, 48, C2S),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 69;
-const _: () = assert!(TABLE.len() == 69, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 71;
+const _: () = assert!(TABLE.len() == 71, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -642,6 +654,8 @@ impl Message {
             Message::PropTransform(_) => 66,
             Message::PropClaim(_) => 67,
             Message::PropOwner(_) => 68,
+            Message::PlacedRequest(_) => 69,
+            Message::PlacedReport(_) => 70,
         }
     }
 
@@ -733,7 +747,9 @@ mod tests {
         assert_eq!(name_of_msg_type(58), Some("PropTransform"));
         assert_eq!(name_of_msg_type(59), Some("PropClaim"));
         assert_eq!(name_of_msg_type(60), Some("PropOwner"));
-        assert_eq!(name_of_msg_type(61), None);
+        assert_eq!(name_of_msg_type(61), Some("PlacedRequest"));
+        assert_eq!(name_of_msg_type(62), Some("PlacedReport"));
+        assert_eq!(name_of_msg_type(63), None);
     }
 
     #[test]
@@ -806,6 +822,16 @@ mod tests {
             Message::PropTransform(skymp::PropTransform { refr: u32::MAX, pos: [f32::MAX; 3], rot: [f32::MAX; 3], asleep: true, ..Default::default() }),
             Message::PropClaim(skymp::PropClaim { refr: u32::MAX, touch: u8::MAX, ..Default::default() }),
             Message::PropOwner(skymp::PropOwner { refr: u32::MAX, player: u32::MAX, epoch: u32::MAX, ..Default::default() }),
+            // a placement request with every base slot full and a report
+            // with every float carried (thuum docs/verbs/spell-placed-object.md,
+            // ADR-057 shape A)
+            Message::PlacedRequest(skymp::PlacedRequest {
+                set: u64::MAX,
+                bases: (0..cap::PLACED_BASES).map(|_| u32::MAX).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default(),
+                window_ms: u32::MAX,
+                ..Default::default()
+            }),
+            Message::PlacedReport(skymp::PlacedReport { set: u64::MAX, base: u32::MAX, pos: [f32::MAX; 3], yaw: f32::MAX, ..Default::default() }),
             Message::RaceMenuPreset(skymp::RaceMenuPreset {
                 actor: u32::MAX,
                 preset: "x".repeat(cap::RACEMENU_PRESET).try_into().unwrap_or_default(),

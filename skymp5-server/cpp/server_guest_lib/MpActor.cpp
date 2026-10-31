@@ -3760,18 +3760,20 @@ bool MpActor::EffectConditionsHold(WorldState* worldState,
     ConditionsEvaluatorCaller::kMagicEffect, conditions, victim, caster,
     [&](bool result, std::vector<std::string>&) { holds = result; }, context);
   if (!holds) {
-    // the row that fails, named (the pile's "refusal line naming its row",
-    // 2026-10-31): the first row false on its own, in the record's order
-    const auto row = ConditionsEvaluator::FirstFailingRow(
+    // the rows that fail, named (the pile's "refusal line naming its row",
+    // 2026-10-31): every row false on its own, in the record's order; the
+    // line's first clause is kept as it was (tests and readers count it)
+    const auto rows = ConditionsEvaluator::FailingRows(
       map, conditions, victim, caster, context);
     if (failedRow) {
-      *failedRow = row;
+      *failedRow = rows;
     }
     spdlog::info("MpActor::EffectConditionsHold - effect {:x} of {:x} by {:x} "
-                 "at {:x}: its conditions fail on {}; not applied (thuum "
-                 "ADR-039)",
+                 "at {:x}: its conditions fail; not applied (thuum ADR-039); "
+                 "failing: {}",
                  effect.effectId, source, caster.GetFormId(),
-                 victim.GetFormId(), row.empty() ? "no row of its own" : row);
+                 victim.GetFormId(),
+                 rows.empty() ? "no row on its own (a group)" : rows);
   }
   return holds;
 }

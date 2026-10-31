@@ -62,5 +62,7 @@ export enum MsgType {
   QuestStage = 57, // thuum docs/verbs/quest-stage.md (ADR-056): a quest stage this game set, reported; the world's stages and the shared list, from the server
   PropTransform = 58, // thuum docs/verbs/prop-physics.md (ADR-058): a physics prop's transform from the one seat that simulates it; relayed to the cell's other seats
   PropClaim = 59, // the same verb: this player touched a prop another seat simulates (contact, grab, drop, impulse)
-  PropOwner = 60 // the same verb: who simulates a prop from now, to every listener at each owner change
+  PropOwner = 60, // the same verb: who simulates a prop from now, to every listener at each owner change
+  PlacedRequest = 61, // thuum docs/verbs/spell-placed-object.md (ADR-057 shape A): the server asks this game where its engine stands a listed spell's placed objects
+  PlacedReport = 62 // the same verb: this game's answer for one base, which the server validates and places for every other seat
 }

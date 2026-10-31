@@ -338,6 +338,13 @@ export interface PropContactEvent {
   motionType: number;
 }
 
+// thuum docs/verbs/leveling.md (M5): the player's UseSkill (the fork's hook on PlayerCharacter's vtable slot 0xF7, Address Library 40488), raised on the next tick once per landed hit, cast or craft: the skill as its actor value (CommonLibSSE-NG include/RE/A/ActorValues.h, 6 One-handed to 23 Enchanting), the action's base amount (the weapon's base damage for a melee hit) and the source form's id (0 for none). No game call in its handler
+export interface SkillUseEvent {
+  skill: number;
+  points: number;
+  source: number;
+}
+
 export interface OpenCloseEvent {
   target: ObjectReference
   cause: ObjectReference | undefined
@@ -738,6 +745,8 @@ export declare function once(eventName: 'projectileFlight', callback: (event: Pr
 
 export declare function on(eventName: 'propContact', callback: (event: PropContactEvent) => void): EventHandle
 export declare function once(eventName: 'propContact', callback: (event: PropContactEvent) => void): EventHandle
+export declare function on(eventName: 'skillUse', callback: (event: SkillUseEvent) => void): EventHandle
+export declare function once(eventName: 'skillUse', callback: (event: SkillUseEvent) => void): EventHandle
 
 export declare function on(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle
 export declare function once(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle

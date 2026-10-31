@@ -1179,6 +1179,61 @@ void InstallDamageActorHook()
     reinterpret_cast<void**>(&g_damageActorOriginal));
 }
 
+/**
+ * thuum docs/verbs/leveling.md (M5): the player's skill experience is the
+ * server's. The engine's one funnel for it is PlayerCharacter::UseSkill
+ * (game/Offsets.h UseSkill, 40488), called once per landed hit, cast or
+ * craft with the skill, the action's base amount (an iron sword's 7, the
+ * weapon's base damage) and the source form, the skill's use mult applied
+ * inside (x-skill-use-read v3, 20261031-094735). Replaced through Gum: the
+ * replacement raises `skillUse` to JS on the next tick (the skill as its
+ * ActorValue, the points, the source's form id) and calls the original, whose
+ * write is nothing under skymp5-client's zeroed mults
+ * (DisableSkillAdvanceService); skillUseService batches a second's uses into
+ * SkillUse (MsgType 63) for the server's formulas (wire-rules leveling).
+ */
+namespace {
+using UseSkillFn = void (*)(RE::PlayerCharacter* self, RE::ActorValue skill,
+                            float points, RE::TESForm* source);
+UseSkillFn g_useSkillOriginal = nullptr;
+
+void UseSkillReplacement(RE::PlayerCharacter* self, RE::ActorValue skill,
+                         float points, RE::TESForm* source)
+{
+  const uint32_t skillId = static_cast<uint32_t>(skill);
+  const uint32_t sourceId = source ? source->formID : 0;
+  SkyrimPlatform::GetSingleton()->AddTickTask(
+    [skillId, points, sourceId](Napi::Env env) {
+      auto obj = Napi::Object::New(env);
+      AddObjProperty(&obj, "skill", skillId);
+      AddObjProperty(&obj, "points", points);
+      AddObjProperty(&obj, "source", sourceId);
+      EventsApi::SendEvent("skillUse", { obj });
+    });
+  if (g_useSkillOriginal) {
+    g_useSkillOriginal(self, skill, points, source);
+  }
+}
+}
+
+void InstallUseSkillHook()
+{
+  // AE only: the id is 1.6.1170's (game/Offsets.h)
+  if (!REL::Module::IsAE()) {
+    logger::info("[verb:leveling] UseSkill hook not installed: not AE");
+    return;
+  }
+  Frida::HookHandler::GetSingleton()->Replace(
+    Offsets::Hooks::UseSkill.address(),
+    reinterpret_cast<void*>(&UseSkillReplacement),
+    reinterpret_cast<void**>(&g_useSkillOriginal));
+  // the lab tells one platform build from another by these install lines
+  // (x-skill-use v1's read, 2026-10-31: two seats compared by them)
+  logger::info("[verb:leveling] UseSkill hook installed: "
+               "PlayerCharacter::AddSkillExperience (Address Library 40488), "
+               "one skillUse per call");
+}
+
 // thuum docs/verbs/npc-stream.md (the voice slice), playtest 37 (2026-10-28,
 // Eli: "if i ask 'what do you have for sale' the trading menue is opened for
 // both people"): a relayed line a puppet says here runs its info's script
@@ -1692,6 +1747,8 @@ void Frida::InstallHooks()
   InstallProjectileInitVelocityHook();
   InstallPlaceAreaEffectHook();
   InstallDamageActorHook();
+  // thuum docs/verbs/leveling.md: the player's skill uses to JS
+  InstallUseSkillHook();
   InstallSendTopicInfoEventHook();
   // thuum docs/verbs/quest-stage.md, slice two: a relayed stage's fragment
   InstallQuestStageSinkHook();

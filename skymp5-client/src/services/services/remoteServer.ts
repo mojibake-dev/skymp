@@ -234,18 +234,34 @@ export class RemoteServer extends ClientListener {
         if (ac && ac.isDead() && !ac.isAIEnabled()) {
           ac.enableAI(true);
           corpseAi = ac;
-          logTrace(this, `body ${localId.toString(16)}: AI on for the server's open (D71)`);
+          logTrace(this, `body ${localId.toString(16)}: AI on for the server's open (D71); reads ${ac.isAIEnabled()} at the switch`);
         }
       }
       const corpseAiOff = (why: string) => {
         if (corpseAi) {
+          const wasOn = corpseAi.isAIEnabled();
           corpseAi.enableAI(false);
           corpseAi = null;
-          logTrace(this, `body ${localId.toString(16)}: AI off again, ${why} (D71, H-54e)`);
+          logTrace(this, `body ${localId.toString(16)}: AI off again, ${why}; it read ${wasOn} before the off (D71, H-54e)`);
         }
       };
 
-      refr.activate(Game.getPlayer(), true);
+      if (corpseAi) {
+        // x-body-open-guest-fix v1 (041249): the enable and the activate in one
+        // frame opened nothing and the AI read off at the dump; the activate
+        // waits one update so the engine takes the AI state first, and the
+        // state is logged right before it (a read either way)
+        const corpse = corpseAi;
+        once('update', () => {
+          const again = ObjectReference.from(Game.getFormEx(localId));
+          logTrace(this, `body ${localId.toString(16)}: AI reads ${corpse.isAIEnabled()} one update later; activating for the server's open`);
+          if (again) {
+            again.activate(Game.getPlayer(), true);
+          }
+        });
+      } else {
+        refr.activate(Game.getPlayer(), true);
+      }
 
       let functionChecker: (() => boolean) | null = null;
       // a bed's own open fact, set on the furniture path alone (F2 below)

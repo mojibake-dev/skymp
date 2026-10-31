@@ -3672,7 +3672,8 @@ bool MpActor::IsConditionGated(WorldState* worldState,
 bool MpActor::EffectConditionsHold(WorldState* worldState,
                                    const espm::Effects::Effect& effect,
                                    uint32_t source, const MpActor& victim,
-                                   const MpActor& caster, bool dualCast)
+                                   const MpActor& caster, bool dualCast,
+                                   std::string* failedRow)
 {
   if (!worldState) {
     return false;
@@ -3759,10 +3760,18 @@ bool MpActor::EffectConditionsHold(WorldState* worldState,
     ConditionsEvaluatorCaller::kMagicEffect, conditions, victim, caster,
     [&](bool result, std::vector<std::string>&) { holds = result; }, context);
   if (!holds) {
+    // the row that fails, named (the pile's "refusal line naming its row",
+    // 2026-10-31): the first row false on its own, in the record's order
+    const auto row = ConditionsEvaluator::FirstFailingRow(
+      map, conditions, victim, caster, context);
+    if (failedRow) {
+      *failedRow = row;
+    }
     spdlog::info("MpActor::EffectConditionsHold - effect {:x} of {:x} by {:x} "
-                 "at {:x}: its conditions fail; not applied (thuum ADR-039)",
+                 "at {:x}: its conditions fail on {}; not applied (thuum "
+                 "ADR-039)",
                  effect.effectId, source, caster.GetFormId(),
-                 victim.GetFormId());
+                 victim.GetFormId(), row.empty() ? "no row of its own" : row);
   }
   return holds;
 }

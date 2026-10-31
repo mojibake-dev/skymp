@@ -66,6 +66,16 @@ public:
   // A condition parameter's text ("0x2B", a decimal) as the number it names
   static uint32_t ExtractParameter(const std::string& parameter1);
 
+  // thuum ADR-039: the first row that fails on its own, named for a refusal
+  // line ("HasPerk(0x58F7D, 0x0) on Subject == 1: got 0"), or "" when every
+  // row holds. Evaluates each row alone, so an OR group's failing member is
+  // named even when the group holds; the caller has already judged the
+  // whole. Nothing is logged here.
+  static std::string FirstFailingRow(
+    const ConditionFunctionMap& conditionFunctionMap,
+    const std::vector<Condition>& conditions, const MpActor& aggressor,
+    const MpActor& target, const ConditionEvaluatorContext& context);
+
 private:
   static bool EvaluateConditionsImpl(
     const ConditionFunctionMap& conditionFunctionMap,

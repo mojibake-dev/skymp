@@ -679,6 +679,12 @@ void MpObjectReference::SetOpen(bool open)
       [&](MpChangeFormREFR& changeForm) { changeForm.isOpen = open; });
     SendMessageToActorListeners(
       CreatePropertyMessage_(this, "isOpen", open ? "true" : "false"), true);
+    // thuum docs/verbs/containers.md: the lab reads a container's state here
+    if (baseType == "CONT") {
+      spdlog::info("[verb:containers] {:x} {} with {} occupant(s)",
+                   GetFormId(), open ? "open" : "shut",
+                   containerOccupants.size());
+    }
   }
 }
 
@@ -1443,6 +1449,9 @@ void MpObjectReference::ApplyChangeForm(const MpChangeForm& changeForm)
       // back shut; a door keeps the state its record says
       if (f.isOpen && baseType == "CONT") {
         f.isOpen = false;
+        spdlog::info("[verb:containers] {:x} saved open came back shut at "
+                     "load",
+                     GetFormId());
       }
     },
     Mode::NoRequestSave);

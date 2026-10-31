@@ -34,6 +34,7 @@ import { syncSpells } from '../../sync/spell';
 import { ModelApplyUtils } from '../../view/modelApplyUtils';
 import { FormModel, WorldModel } from '../../view/model';
 import { LoadGameService } from './loadGameService';
+import { TimersService } from './timersService';
 import { UpdateMovementMessage } from '../messages/updateMovementMessage';
 import { ChangeValuesMessage } from '../messages/changeValuesMessage';
 import { UpdateAnimationMessage } from '../messages/updateAnimationMessage';
@@ -196,7 +197,17 @@ export class RemoteServer extends ClientListener {
 
   private onOpenContainerMessage(event: ConnectionMessage<OpenContainerMessage>): void {
     once('update', async () => {
-      await Utility.wait(0.1); // Give a chance to update inventory
+      // thuum docs/verbs/npc-fate.md (the host's own open, 2026-10-30): on the
+      // seat whose engine opens the menu itself (a host looting a body, a
+      // container's native activation) the game is paused in that menu by
+      // the time this runs, and Utility.wait is game time, so it stalled
+      // until the menu closed: the "waiting ... to be true" line printed
+      // after the close, the checker then found the menu closed, waited its
+      // 15 s deadline and gave up, and the closing activation released the
+      // occupancy 15 s late (b-npc-body-release 20261030-214710, 215006).
+      // waitMenuMode runs while paused (Papyrus's own rule), so the checker
+      // sees the open menu at once and the close sends the second activation.
+      await Utility.waitMenuMode(0.1); // Give a chance to update inventory
 
       const remoteId = event.message.target;
       const localId = remoteIdToLocalId(remoteId);
@@ -207,10 +218,36 @@ export class RemoteServer extends ClientListener {
         return;
       }
 
-      refr.activate(Game.getPlayer(), true);
-
       const baseObject = refr.getBaseObject();
       const baseType = baseObject?.getType();
+
+      // thuum docs/verbs/npc-fate.md D71 (x-body-open-guest v2 215922): a body
+      // released from the puppet state at its death keeps its AI off (the
+      // promote's dead branch, H-54e: a corpse with its AI on walks), and the
+      // engine refuses every activation of it in that state, the player's E
+      // and this handler's alike; with the AI on it takes one. So the AI
+      // goes on for the open alone and off again at the first sight of the
+      // menu, or after kCorpseAiMs if none comes: the game pauses in the
+      // menu, so nothing walks while it is open.
+      // thuum docs/verbs/npc-fate.md D71 (x-body-open-guest v2 215922): a body
+      // released from the puppet state at its death keeps its AI off (the
+      // promote's dead branch, H-54e: a corpse with its AI on walks), and the
+      // engine refuses every activation of it in that state; with the AI on it
+      // takes one. The open of such a body runs on the timers service with no
+      // await after the switch: on v2 and v4 (045522, 045859, 053012, 053335)
+      // the handler's next await after enableAI(true) never resumed, whatever
+      // it awaited, while the plugin ran on. The timers' callbacks run inside
+      // the game's update (TimersService processes them on 'update' when the
+      // player exists), so the natives are legal there.
+      if (baseType === FormType.NPC) {
+        const ac = Actor.from(refr);
+        if (ac && ac.isDead() && !ac.isAIEnabled()) {
+          this.openBodyOnTimers(localId, event.message.target, ac);
+          return;
+        }
+      }
+
+      refr.activate(Game.getPlayer(), true);
 
       let functionChecker: (() => boolean) | null = null;
       // a bed's own open fact, set on the furniture path alone (F2 below)
@@ -275,6 +312,10 @@ export class RemoteServer extends ClientListener {
             opened = false;
             break;
           }
+          // game time, as the original loop (its 15 s give-up printed on
+          // schedule in earlier runs); once the menu opens the game pauses
+          // and this wait resumes at the close, so the AI's off for a guest's
+          // open lands at the close, under the pause nothing walks
           await Utility.wait(0.1);
         }
 
@@ -303,8 +344,109 @@ export class RemoteServer extends ClientListener {
 
           logTrace(this, "onOpenContainerMesage - sent ActivateMessage", message);
         });
-      })();
+      })().catch((err) => logError(this, "onOpenContainerMesage - the open's chain threw", err));
     });
+  }
+
+  // D71: a released body's open, step by step on the timers service (the
+  // handler's awaits after the AI switch never resumed in four lab runs):
+  // the AI on now; 150 ms later the activate, its return logged; then a poll
+  // every 100 ms: at the open the AI goes off (the game pauses in the menu,
+  // so nothing walks) and the poll waits for the close to send the closing
+  // activation; with no open within 3 s the AI goes off and the closing
+  // activation releases the occupant as the give-up does. Every callback
+  // runs inside the game's update.
+  private openBodyOnTimers(localId: number, remoteTarget: number, body: Actor): void {
+    const timers = this.controller.lookupListener(TimersService);
+    const tag = `body ${localId.toString(16)}`;
+    const refOf = () => ObjectReference.from(Game.getFormEx(localId));
+    const actorOf = () => Actor.from(Game.getFormEx(localId));
+    let aiOn = false;
+    const aiOff = (why: string) => {
+      if (!aiOn) {
+        return;
+      }
+      aiOn = false;
+      const ac = actorOf();
+      const wasOn = ac ? ac.isAIEnabled() : undefined;
+      if (ac) {
+        ac.enableAI(false);
+      }
+      logTrace(this, `${tag}: AI off again, ${why}; it read ${wasOn} before the off (D71, H-54e)`);
+    };
+    const sendClosing = (why: string) => {
+      const message: ActivateMessage = {
+        t: messages.MsgType.Activate,
+        data: { caster: 0x14, target: remoteTarget, isSecondActivation: true },
+      };
+      this.controller.emitter.emit("sendMessage", { message, reliability: "reliable" });
+      logTrace(this, `${tag}: closing activation sent, ${why}`);
+    };
+    body.enableAI(true);
+    aiOn = true;
+    logTrace(this, `${tag}: AI on for the server's open (D71); reads ${body.isAIEnabled()} at the switch`);
+    // v6 (D71's fifth read, x-body-open-guest-fix v2 065444 and 065821): one
+    // activate 150 ms after the switch returned false with the AI reading
+    // true, while the green read (x-body-open-guest v2 215922, leg 4) had the
+    // AI on for over five seconds before the server's open. So the activate
+    // is retried every kRetryMs until the engine takes it or
+    // kActivateDeadlineMs pass, each return logged with the body's state: the
+    // beat the engine needs is the measurement, and the first true is the
+    // open (HYPOTHESIS: the dead actor's process wants more than a frame
+    // after EnableAI before it takes an activation; a run of refusals to the
+    // deadline falsifies it and sends the read to Actor::ActivateRef).
+    const kBeatMs = 150;
+    const kRetryMs = 200;
+    const kActivateDeadlineMs = 5000;
+    const kPollMs = 100;
+    const kOpenDeadlineMs = 3000;
+    const switchedAt = Date.now();
+    let attempts = 0;
+    const pollOpen = (deadline: number) => {
+      if (Ui.isMenuOpen("ContainerMenu")) {
+        logTrace(this, `${tag}: the ContainerMenu is open`);
+        aiOff("the menu is open");
+        const pollClose = () => {
+          if (Ui.isMenuOpen("ContainerMenu")) {
+            timers.setTimeout(pollClose, kPollMs);
+            return;
+          }
+          sendClosing("the menu closed");
+        };
+        timers.setTimeout(pollClose, kPollMs);
+        return;
+      }
+      if (Date.now() > deadline) {
+        aiOff(`no menu within ${kOpenDeadlineMs} ms`);
+        sendClosing("gave up waiting for the menu; releasing the occupant");
+        return;
+      }
+      timers.setTimeout(() => pollOpen(deadline), kPollMs);
+    };
+    const tryActivate = () => {
+      const ac = actorOf();
+      const again = refOf();
+      const elapsed = Date.now() - switchedAt;
+      if (!again || !ac) {
+        aiOff("the reference is gone");
+        return;
+      }
+      attempts += 1;
+      const ok = again.activate(Game.getPlayer(), true);
+      const opened = ok || Ui.isMenuOpen("ContainerMenu");
+      logTrace(this, `${tag}: activate returned ${ok} at +${elapsed} ms (attempt ${attempts}; AI ${ac.isAIEnabled()}, dead ${ac.isDead()}, 3D ${ac.is3DLoaded()}, health ${ac.getActorValue("Health").toFixed(0)}${opened && !ok ? ", the menu open regardless" : ""})`);
+      if (opened) {
+        timers.setTimeout(() => pollOpen(Date.now() + kOpenDeadlineMs), kPollMs);
+        return;
+      }
+      if (elapsed + kRetryMs <= kActivateDeadlineMs) {
+        timers.setTimeout(tryActivate, kRetryMs);
+        return;
+      }
+      aiOff(`the activate refused ${attempts} times over ${elapsed} ms`);
+      sendClosing("the engine refused the open; releasing the occupant");
+    };
+    timers.setTimeout(tryActivate, kBeatMs);
   }
 
   private onTeleportMessage(event: ConnectionMessage<TeleportMessage> | ConnectionMessage<TeleportMessage2>): void {

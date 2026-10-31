@@ -314,6 +314,13 @@ public:
   std::function<bool(MpActor& actor, uint32_t destWorldOrCell,
                      const NiPoint3& destPos)>
     npcDoorVerdict;
+  // thuum docs/verbs/leveling.md: the experience a skill's step from `level`
+  // costs, from the AVIF table PartOne loads at AttachEspm; installed by
+  // PartOne. A server set of a skill's base (the console's SetAV, a script's
+  // Actor.SetActorValue) moves the record's progress entry with the base
+  // through this (MpActor::SetActorValueBaseByServer); none installed, the
+  // base moves alone and a line says so
+  std::function<float(uint8_t skillAv, uint8_t level)> skillLevelCost;
   // thuum docs/verbs/npc-fate.md (ADR-049 decision 1): the level the next
   // game-file actors loaded roll their template chain and outfit at (the
   // player whose arrival loads them), set by PartOne around the fate pass's

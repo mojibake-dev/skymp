@@ -1055,6 +1055,12 @@ void PartOne::Init()
   worldState.simulatorOf = [this](uint32_t actor, uint32_t cell) {
     return pImpl->cells->simulator_of(actor, cell);
   };
+  // thuum docs/verbs/leveling.md: the skill table's cost of a level, for a
+  // server set of a skill (MpActor::SetActorValueBaseByServer moves the
+  // progress entry with the base; x-lockpick v4's read, 2026-10-31)
+  worldState.skillLevelCost = [this](uint8_t skillAv, uint8_t level) {
+    return SkillLevelCost(skillAv, level);
+  };
   // and a hosted NPC's door (npc-handoff D6, and D9's pass through a door
   // since 2026-10-28): the crossing judged by the move verdict for its
   // simulator before the host's engine walks it

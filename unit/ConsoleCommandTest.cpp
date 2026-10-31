@@ -315,6 +315,19 @@ TEST_CASE("SetAV, ModAV and ForceAV run through the server's actor value "
   // which the player's own game keeps (docs/verbs/actor-values.md), so the
   // base stays and the native runs there
   REQUIRE(ac.GetRecordedActorValueBase(8) == std::optional<float>(45.f));
+  // and the leveling progress entry with it (docs/verbs/leveling.md: the
+  // base is the progress level shown; Marksman is skill 2): the level set,
+  // no experience toward the next, the table's cost of the step from 45
+  {
+    const auto record = ac.GetActorValueRecord();
+    REQUIRE(record.has_value());
+    REQUIRE(record->skills.size() == 1);
+    REQUIRE(record->skills[0].skill == 2);
+    REQUIRE(record->skills[0].level == 45.f);
+    REQUIRE(record->skills[0].xp == 0.f);
+    REQUIRE(record->skills[0].threshold ==
+            Catch::Approx(p.SkillLevelCost(8, 45)));
+  }
   REQUIRE(Lines(p) ==
           std::vector<std::pair<std::string, bool>>{
             { "setav done", false }, { "modav done", false } });

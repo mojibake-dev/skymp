@@ -1575,6 +1575,39 @@ bool MpActor::SetActorValueBaseByServer(uint8_t av, float value)
   } else {
     bases.emplace_back(av, value);
   }
+  // thuum docs/verbs/leveling.md: a skill's number is its progress entry's
+  // level and the base is that level shown, so a set of a skill moves the
+  // progress with the base (the level set, no experience toward the next,
+  // the table's cost of the next step); else the skill's next use recomputes
+  // the base from the old progress and the set snaps back (x-lockpick v4's
+  // read, 2026-10-31)
+  const int16_t skillIndex = skymp::rules::actor_values_skill_index(av);
+  if (skillIndex >= 0) {
+    const float cost = (GetParent() && GetParent()->skillLevelCost)
+      ? GetParent()->skillLevelCost(
+          av, static_cast<uint8_t>(std::clamp(value, 0.f, 255.f)))
+      : 0.f;
+    if (cost > 0.f) {
+      auto& skills = record->skills;
+      auto skillIt = std::find_if(
+        skills.begin(), skills.end(), [&](const ActorValueRecord::Skill& s) {
+          return s.skill == static_cast<uint8_t>(skillIndex);
+        });
+      if (skillIt == skills.end()) {
+        skills.push_back(ActorValueRecord::Skill{
+          static_cast<uint8_t>(skillIndex), value, 0.f, cost });
+      } else {
+        skillIt->level = value;
+        skillIt->xp = 0.f;
+        skillIt->threshold = cost;
+      }
+    } else {
+      spdlog::warn("[verb:leveling] E_SKILL_SET_NO_COST: {:x} skill av {} set "
+                   "to {} with no level cost (no skill table installed); the "
+                   "base moves alone",
+                   GetFormId(), av, value);
+    }
+  }
   SetActorValueRecord(std::move(*record));
   SendActorValueRecord();
   return true;

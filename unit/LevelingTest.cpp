@@ -8,11 +8,13 @@
 PartOne& GetPartOne();
 
 // thuum docs/verbs/leveling.md (M5 Progression): a player's skill uses run
-// the game's formulas on the server. The constants come from Skyrim.esm's
-// AVIF records (lab/esm.py, 2026-10-31: One-handed 6.3, 0, 2, 0; Smithing
-// 160, 0, 0.25, 300), the step from level 15 costs 2 * 15^1.95 (about 392.6)
-// for One-handed, a use of a base of 10 earns 63, so the seventh hit takes
-// the skill to 16 and the character 16 toward its first 100.
+// the game's formulas on the server. The constants come from the load
+// order's AVIF records (lab/esm.py, 2026-10-31: One-handed 6.3, 0, 2, 0 in
+// Skyrim.esm; Smithing 160, 0, 0.25, 300 in Skyrim.esm, overridden by
+// Update.esm to 1, 0, 0.25, 300, which the browser returns and UESP's table
+// shows), the step from level 15 costs 2 * 15^1.95 (about 392.6) for
+// One-handed, a use of a base of 10 earns 63, so the seventh hit takes the
+// skill to 16 and the character 16 toward its first 100.
 
 namespace {
 constexpr uint32_t kActor = 0xff000fd1;
@@ -85,7 +87,8 @@ TEST_CASE("The skill table is read from the game files at start",
 {
   PartOne& p = GetPartOne();
   REQUIRE(p.SkillUseXp(kOneHanded, 10.f) == Catch::Approx(63.f));
-  REQUIRE(p.SkillUseXp(kSmithing, 1.f) == Catch::Approx(160.f));
+  // Update.esm's override of Smithing wins over Skyrim.esm's 160
+  REQUIRE(p.SkillUseXp(kSmithing, 1.f) == Catch::Approx(1.f));
   REQUIRE(p.SkillLevelCost(kOneHanded, 15) ==
           Catch::Approx(2.f * std::pow(15.f, 1.95f)).margin(0.01));
   REQUIRE(p.SkillLevelCost(kSmithing, 15) ==

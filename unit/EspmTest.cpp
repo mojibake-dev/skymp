@@ -724,13 +724,15 @@ TEST_CASE("The exterior cell at a worldspace's origin is the map's, not the "
   REQUIRE_FALSE(br.FindExteriorCell(0x3c, 200, 200).rec);
 }
 
-// thuum docs/verbs/leveling.md: Skyrim.esm's skill records as lab/esm.py read
-// them (2026-10-31): One-handed's AVSK is 6.3, 0, 2, 0 (UESP's table agrees),
-// Smithing's 160, 0, 0.25, 300 (UESP writes 1 for its use mult: the record is
-// the source); the perk tree's root node carries PNAM 0 and INAM 0 and points
-// at Armsman00 0xbabe4, whose node is INAM 7 at grid (2, 0) with five
-// connections; Smithing's tree has eleven nodes and eleven connections; a
-// plain actor value (AVDragonSouls 0x62c) has neither skill nor tree.
+// thuum docs/verbs/leveling.md: the load order's skill records as lab/esm.py
+// read them (2026-10-31): One-handed's AVSK is 6.3, 0, 2, 0 (Skyrim.esm;
+// UESP's table agrees), Smithing's 160, 0, 0.25, 300 in Skyrim.esm but 1, 0,
+// 0.25, 300 in Update.esm's override, which the browser returns (the load
+// order is the source; UESP's table shows the patched game); the perk tree's
+// root node carries PNAM 0 and INAM 0 and points at Armsman00 0xbabe4, whose
+// node is INAM 7 at grid (2, 0) with five connections; Smithing's tree has
+// eleven nodes and eleven connections; a plain actor value (AVDragonSouls
+// 0x62c) has neither skill nor tree.
 TEST_CASE("AVIF skill constants and perk tree", "[espm]")
 {
   MyEspmProvider provider;
@@ -763,7 +765,7 @@ TEST_CASE("AVIF skill constants and perk tree", "[espm]")
   auto smithing = espm::GetData<espm::AVIF>(0x450, &provider);
   REQUIRE(std::string(smithing.editorId) == "AVSmithing");
   REQUIRE(smithing.hasSkill);
-  REQUIRE(smithing.skill.useMult == 160.f);
+  REQUIRE(smithing.skill.useMult == 1.f);
   REQUIRE(smithing.skill.useOffset == 0.f);
   REQUIRE(smithing.skill.improveMult == 0.25f);
   REQUIRE(smithing.skill.improveOffset == 300.f);

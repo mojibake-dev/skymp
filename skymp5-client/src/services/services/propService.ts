@@ -77,6 +77,12 @@ const DROP_MATCH_MS = 3000;
 const DROP_MATCH_UNITS = 512;
 // "applied from the stream" is said once per prop per this
 const APPLIED_LOG_MS = 10_000;
+// D73 (docs/DECISIONS.md, ADR-058 decision 3 refined): a follower's body is
+// Keyframed only while another seat streams it awake, this long after the
+// last awake sample; then, and REST_DYNAMIC_MS after an asleep sample's
+// apply, it is Dynamic and may wake, so a kick or a grab acts on it at once
+const STREAM_LIVE_MS = 1000;
+const REST_DYNAMIC_MS = 150;
 
 type Sample = { pos: NiPoint3; rot: NiPoint3; asleep: boolean; at: number };
 
@@ -112,6 +118,8 @@ type Prop = {
     lastTouchRead: Sample | undefined;
     lastTouchReadAt: number;
     lastClaimAt: number;
+    lastSampleAsleep: boolean;     // the newest sample in said asleep (the stream ended there)
+    restAt: number;                // when the asleep sample came, for the Dynamic set after its apply (0 none)
 };
 
 type Owner = { player: number; epoch: number; leaseUntil: number };
@@ -208,6 +216,8 @@ export class PropService extends ClientListener {
         prop.pending = sample;
         prop.prevSampleAt = prop.lastSampleAt;
         prop.lastSampleAt = now;
+        prop.lastSampleAsleep = sample.asleep;
+        prop.restAt = sample.asleep ? now : 0;
     }
 
     // The server's word on who simulates a prop from now; an epoch not above
@@ -431,7 +441,7 @@ export class PropService extends ClientListener {
             // the host's default clutter rests until a contact wakes it
             this.flip(prop, refr, simulate, simulate && named, now);
         } else if (loaded3D && prop.motionAsked === undefined) {
-            this.setMotion(prop, refr, simulate ? MotionType.Dynamic : MotionType.Keyframed, simulate);
+            this.setMotion(prop, refr, this.restMotion(prop, simulate, now), true);
         }
         if (prop.simulating) {
             this.stream(prop, refr, now, myId);
@@ -511,13 +521,18 @@ export class PropService extends ClientListener {
         if (simulate) {
             refr.stopTranslation();
             prop.pending = undefined;
+            // D73: a body already Dynamic (a resting follower kicked or grabbed
+            // here, the claim granted) takes no motion set, so the hand's hold
+            // and the kick's motion carry on; a Keyframed one (claimed while
+            // another seat streamed it) goes Dynamic and may wake (x-prop-push
+            // v9 021439: a Dynamic body denied activation took no contact)
+            if (prop.motionAsked !== MotionType.Dynamic) {
+                this.setMotion(prop, refr, MotionType.Dynamic, true);
+            }
         }
-        // the body may wake whenever this seat simulates it (x-prop-push v9
-        // 021439: a Dynamic body denied activation took no contact from the
-        // host standing in it nor from its run through it, where the same
-        // body awake at its spawn had been ejected with a contact); `wake`
-        // keeps its other meaning below, the grant's first sample
-        this.setMotion(prop, refr, simulate ? MotionType.Dynamic : MotionType.Keyframed, simulate);
+        // the loss of the simulation sets no motion here: the new owner's
+        // first awake sample makes the body Keyframed (follow), and a body
+        // nobody streams rests Dynamic (D73)
         prop.simulating = simulate;
         prop.lastSent = undefined;
         prop.lastRead = undefined;
@@ -534,6 +549,16 @@ export class PropService extends ClientListener {
         // (no wake) keeps the lazy baseline: nothing goes out until a move
         prop.announce = simulate && wake;
         logTrace(this, `prop ${prop.refr.toString(16)} ${simulate ? "simulated here: Dynamic" : "followed: Keyframed"}`);
+    }
+
+    // D73: the motion a body takes when first set: Dynamic unless another seat
+    // streams it awake right now (a sample within STREAM_LIVE_MS, not asleep)
+    private restMotion(prop: Prop, simulate: boolean, now: number): MotionType {
+        if (simulate) {
+            return MotionType.Dynamic;
+        }
+        const live = prop.lastSampleAt !== 0 && !prop.lastSampleAsleep && now - prop.lastSampleAt < STREAM_LIVE_MS;
+        return live ? MotionType.Keyframed : MotionType.Dynamic;
     }
 
     // abAllowActivate is Havok's leave to wake: a Dynamic body denied it took
@@ -629,11 +654,28 @@ export class PropService extends ClientListener {
         const pending = prop.pending;
         if (pending) {
             prop.pending = undefined;
+            // D73: the stream drives a Keyframed body; the first awake sample of
+            // a burst sets it (a resting body is Dynamic)
+            if (!pending.asleep && prop.loaded3D && prop.motionAsked !== MotionType.Keyframed) {
+                this.setMotion(prop, refr, MotionType.Keyframed, true);
+            }
             this.apply(prop, refr, pending, now);
             // the stream moved it: the touch read starts over after the glide
             prop.lastTouchRead = undefined;
             prop.lastTouchReadAt = now;
             return;
+        }
+        // D73: back to Dynamic once the stream ended (REST_DYNAMIC_MS after the
+        // asleep sample's apply) or went quiet (STREAM_LIVE_MS after the last
+        // awake sample), so the resting body takes a kick or a grab at once
+        if (prop.loaded3D && prop.motionAsked === MotionType.Keyframed) {
+            const rested = prop.restAt !== 0 && now - prop.restAt >= REST_DYNAMIC_MS;
+            const quiet = !prop.lastSampleAsleep && now - prop.lastSampleAt >= STREAM_LIVE_MS;
+            if (rested || quiet) {
+                prop.restAt = 0;
+                this.setMotion(prop, refr, MotionType.Dynamic, true);
+                logTrace(this, `prop ${prop.refr.toString(16)} at rest: Dynamic (${rested ? "the stream ended" : "the stream went quiet"})`);
+            }
         }
         if (!touchReadDue) {
             return;
@@ -1060,6 +1102,8 @@ export class PropService extends ClientListener {
             lastTouchRead: undefined,
             lastTouchReadAt: 0,
             lastClaimAt: 0,
+            lastSampleAsleep: false,
+            restAt: 0,
         };
     }
 

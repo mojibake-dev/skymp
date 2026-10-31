@@ -247,13 +247,14 @@ TEST_CASE("Console commands follow the caller's staff rank",
           std::vector<std::pair<std::string, bool>>{
             { "Not enough permissions to use this command", true } });
 
-  // an admin may; a save is nobody's; SetLevel is listed, not run yet; a
-  // name the table does not know is unknown
+  // an admin may; a save is nobody's; AdvSkill is listed, not run yet
+  // (SetLevel runs since the perks verb, docs/verbs/perks.md); a name the
+  // table does not know is unknown
   ac.SetStaffRank(2);
   p.Messages().clear();
   Send(p, "additem", { int64_t(0x14), int64_t(0x12eb7), int64_t(1) });
   Send(p, "save", { int64_t(0), std::string("x") });
-  Send(p, "setlevel", { int64_t(0), int64_t(5) });
+  Send(p, "advskill", { int64_t(0), std::string("onehanded"), int64_t(5) });
   Send(p, "nosuchcommand", {});
   p.Tick();
   REQUIRE(

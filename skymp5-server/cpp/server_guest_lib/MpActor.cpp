@@ -2981,27 +2981,6 @@ void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
   spdlog::trace("MpActor::DropItem - dropping {}", editorId);
   RemoveItems({ entry });
 
-  PapyrusObjectReference papyrusObjectReference;
-  auto baseForm = VarValue(std::make_shared<EspmGameObject>(lookupRes));
-  auto aCount = VarValue(count);
-  auto aForcePersist = VarValue(false);
-  auto aInitiallyDisabled = VarValue(false);
-
-  VarValue placedObjectWrap = papyrusObjectReference.PlaceAtMe(
-    this->ToVarValue(),
-    { baseForm, aCount, aForcePersist, aInitiallyDisabled });
-  MpObjectReference* placedObject =
-    GetFormPtr<MpObjectReference>(placedObjectWrap);
-
-  if (!placedObject) {
-    spdlog::error("MpActor::DropItem - placedObject was null, disabling "
-                  "DropItem for all players");
-    g_dropItemDisabledGlobally = true;
-    return;
-  }
-
-  placedObject->SetCount(count);
-
   // thuum docs/verbs/prop-physics.md (the drop's stream at T3, 2026-10-30): a
   // copy placed at the actor's own position wakes Dynamic inside the dropper's
   // capsule on its seat and is thrown out of reach; a step ahead along the
@@ -3010,17 +2989,27 @@ void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
   // terrain and fell through to the cell's floor on both seats (x-prop-drop
   // v4 022528, v5 030029: about 150 units below the ground, the stream
   // faithful to the fall), so it spawns a lift above the feet and falls onto
-  // the ground, as the engine's own drop falls from the hand
-  {
-    constexpr float kDropAheadUnits = 64.f;
-    constexpr float kDropLiftUnits = 48.f;
-    constexpr float kDegToRad = 3.14159265f / 180.f;
-    const float yaw = GetAngle().z * kDegToRad;
-    const NiPoint3 pos = GetPos();
-    placedObject->SetPos({ pos.x + std::sin(yaw) * kDropAheadUnits,
-                           pos.y + std::cos(yaw) * kDropAheadUnits,
-                           pos.z + kDropLiftUnits });
-  }
+  // the ground, as the engine's own drop falls from the hand. The copy is
+  // CREATED there (PapyrusObjectReference::PlaceAt), not placed at the actor
+  // and moved: the create word carries the position the clients spawn at,
+  // and a move after it never reached the dropper's copy, which spawned
+  // inside the capsule and was ejected at the first Havok step (x-prop-launch
+  // v3 190643: 595 units a second).
+  constexpr float kDropAheadUnits = 64.f;
+  constexpr float kDropLiftUnits = 48.f;
+  constexpr float kDegToRad = 3.14159265f / 180.f;
+  const float yaw = GetAngle().z * kDegToRad;
+  const NiPoint3 pos = GetPos();
+  const LocationalData dropPoint = {
+    { pos.x + std::sin(yaw) * kDropAheadUnits,
+      pos.y + std::cos(yaw) * kDropAheadUnits, pos.z + kDropLiftUnits },
+    { 0, 0, GetAngle().z }, // PlaceAtMe's own rot (its degrees/radians TODO)
+    GetCellOrWorld()
+  };
+  MpObjectReference* placedObject =
+    &PapyrusObjectReference::PlaceAt(*this, lookupRes, dropPoint);
+
+  placedObject->SetCount(count);
 
   uint32_t droppedItemFormId = placedObject->GetFormId();
 

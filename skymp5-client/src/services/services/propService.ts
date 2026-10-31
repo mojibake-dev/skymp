@@ -597,6 +597,13 @@ export class PropService extends ClientListener {
             return;
         }
         const read = PropService.read(refr, now);
+        // a paused world (a menu, the console) stirs nothing, so the sleep clock
+        // holds until the world runs again: x-prop-launch v3 190643 read a drop's
+        // copy "asleep" under the dropper's InventoryMenu and the server leased
+        // it while the body had never settled (it was ejected at the unpause)
+        if (prop.streaming && this.sp.Utility.isInMenuMode()) {
+            prop.stirredAt = now;
+        }
         if (!prop.lastSent) {
             prop.lastRead = read;
             if (prop.announce) {

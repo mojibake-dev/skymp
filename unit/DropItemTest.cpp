@@ -43,6 +43,20 @@ TEST_CASE("Dropping an item", "[DropItemTest]")
   REQUIRE(refr.GetPos().y == 66.f);
   REQUIRE(refr.GetPos().z ==
           51.f); // the feet's 3 plus the 48 lift (prop-physics.md)
+  // and the create word carries that position: the copy is created at the
+  // drop point, never moved there after (x-prop-launch v3 190643: a copy
+  // created at the dropper spawned inside its capsule on its own seat)
+  {
+    int creates = 0;
+    for (auto& m : partOne.Messages()) {
+      if (m.j["t"] == MsgType::CreateActor &&
+          m.j["refrId"] == refr.GetFormId()) {
+        ++creates;
+        REQUIRE(m.j["pos"] == nlohmann::json::array({ 1.f, 66.f, 51.f }));
+      }
+    }
+    REQUIRE(creates == 1);
+  }
   ac.AddItem(ironSword, 5);
   partOne.Messages().clear();
   REQUIRE(partOne.Messages().size() == 0);

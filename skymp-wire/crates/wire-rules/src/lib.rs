@@ -27,6 +27,7 @@ pub mod magic;
 pub mod markers;
 pub mod melee;
 pub mod movement;
+pub mod perks;
 pub mod placements;
 pub mod player_globals;
 pub mod props;

@@ -97,5 +97,9 @@ enum class MsgType : uint8_t
                    // lock, so the game runs the engine's own on it
   SetWeather = 66, // thuum docs/verbs/weather.md (M4): the server's weather
                    // for the place a player is in, or a release
+  PerkPick = 67,   // thuum docs/verbs/perks.md (M5): the perk a player's menu
+                   // took, judged into the record
+  PerkState = 68,  // the same verb: the server's perk set and points to the
+                   // player
   Max
 };

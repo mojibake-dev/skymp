@@ -42,7 +42,10 @@ export class WeatherService extends ClientListener {
 
   private onSetWeather(e: ConnectionMessage<SetWeatherMessage>) {
     this.word = { message: e.message, applied: false, reapplied: 0 };
-    this.apply('word');
+    // the apply runs on the next update: a message handler has no Papyrus VM
+    // context and Skyrim Platform refuses natives there ("can't be called in
+    // this context", the locks prompt's lesson of x-lockpick 20261031-144606)
+    this.controller.once('update', () => this.apply('word'));
   }
 
   private onUpdate() {

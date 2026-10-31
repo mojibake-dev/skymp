@@ -17,14 +17,27 @@ export class ModelApplyUtils {
     // for observers"): the server's isOpen is a container's state from its
     // first open to its last close (memo D52), and SetOpen moves a door, not a
     // chest's lid; the lid takes the engine's own Open and Close animation
-    // events (the activation plays them in the opener's game). HYPOTHESIS
-    // until x-container-rest reads it on the watcher's screen: the opener's
-    // own game hears the same property and plays Open on a lid already open,
-    // which the graph is expected to ignore. The sound is the activation's,
-    // not the animation's: a later slice.
+    // events (the activation plays them in the opener's game). Played only
+    // when the state this game last applied changes, and at the first apply
+    // only for an open chest: a cell's load creates hundreds of closed
+    // containers and formView re-applies its references every 133 ms.
+    // HYPOTHESIS until x-container-rest reads it on the watcher's screen: the
+    // opener's own game hears the same property and plays Open on a lid
+    // already open, which the graph is expected to ignore. The sound is the
+    // activation's, not the animation's: a later slice.
     if (refr.getBaseObject()?.getType() === FormType.Container) {
-      refr.playAnimation(isOpen ? "Open" : "Close");
-      logTrace("ModelApplyUtils", `container ${refr.getFormID().toString(16)} lid ${isOpen ? "Open" : "Close"} played for the server's isOpen`);
+      const id = refr.getFormID();
+      const last = ModelApplyUtils.lidState.get(id);
+      if (last !== isOpen) {
+        if (ModelApplyUtils.lidState.size > ModelApplyUtils.lidStateMax) {
+          ModelApplyUtils.lidState.clear();
+        }
+        ModelApplyUtils.lidState.set(id, isOpen);
+        if (last !== undefined || isOpen) {
+          refr.playAnimation(isOpen ? "Open" : "Close");
+          logTrace("ModelApplyUtils", `container ${id.toString(16)} lid ${isOpen ? "Open" : "Close"} played for the server's isOpen`);
+        }
+      }
     }
 
     // See also objectReferenceEx.ts
@@ -47,6 +60,11 @@ export class ModelApplyUtils {
       }
     }
   }
+
+  // the isOpen last applied per container reference (the lid's animation
+  // plays on a change alone)
+  private static lidState = new Map<number, boolean>();
+  private static readonly lidStateMax = 4096;
 
   static applyModelIsDisabled(refr: ObjectReference, disabled: boolean): void {
     const wasDisabled: boolean = refr.isDisabled();

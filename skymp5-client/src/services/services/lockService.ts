@@ -50,6 +50,15 @@ export class LockService extends ClientListener {
 
   private onPrompt(e: ConnectionMessage<LockPromptMessage>) {
     const remoteId = e.message.refr;
+    // a message handler has no Papyrus VM context: Skyrim Platform refuses
+    // natives here ("'Game.getFormEx' can't be called in this context",
+    // x-lockpick 20261031-144606), so the lookup, the lock read and the
+    // engine's activation wait for the next update, as remoteServer's
+    // teleport does
+    this.controller.once('update', () => this.prompt(remoteId));
+  }
+
+  private prompt(remoteId: number) {
     const refr = ObjectReference.from(this.sp.Game.getFormEx(remoteId));
     if (!refr) {
       logTrace(

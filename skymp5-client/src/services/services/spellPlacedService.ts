@@ -25,6 +25,17 @@ import { WorldCleanerService } from './worldCleanerService';
 // stops; the halo stands at once). At the deadline (the window less a reply
 // margin) the last read goes out settled or not; a base never found is
 // traced and dropped, and the server places nothing for it.
+//
+// The search lists the player's cell's references of the base's form type
+// (Cell.getNumRefs and getNthRef, the lab's refs-near idiom) and takes the
+// nearest to the point within the radius, falling back to the engine's
+// closest-reference search when the cell lists none (an exterior cell is one
+// 4096-unit square; the point may lie in the next). A reference reported for
+// an earlier set is skipped only while it still stands where it was reported
+// (within `movedUnits`): x-raise-wall v4 (20261031-100936) lost every second
+// cast because the first wall, still standing at the same point 29 s later,
+// was the closest reference and skipped as reported, so a new wall beside it
+// (or that same wall moved by the script) was never seen.
 interface Watch {
   set: number;
   base: number;
@@ -124,7 +135,8 @@ export class SpellPlacedService extends ClientListener {
   }
 
   // the engine's own reference of the watch's base nearest the expected
-  // point: none of the view's copies (protected), none reported already
+  // point: none of the view's copies (protected), none reported already and
+  // still standing where it was reported
   private find(
     w: Watch,
     cx: number,
@@ -136,6 +148,38 @@ export class SpellPlacedService extends ClientListener {
     if (!base) {
       return null;
     }
+    const player = this.sp.Game.getPlayer();
+    const cell = player ? player.getParentCell() : null;
+    let best: ObjectReference | null = null;
+    let bestDistance = SpellPlacedService.searchRadius;
+    if (cell) {
+      const type = base.getType();
+      const n = cell.getNumRefs(type);
+      for (let i = 0; i < n; ++i) {
+        const refr = cell.getNthRef(i, type);
+        if (!refr) {
+          continue;
+        }
+        const refrBase = refr.getBaseObject();
+        if (!refrBase || refrBase.getFormID() !== w.base) {
+          continue;
+        }
+        if (!this.eligible(refr, cleaner)) {
+          continue;
+        }
+        const d = SpellPlacedService.distance(
+          [refr.getPositionX(), refr.getPositionY(), refr.getPositionZ()],
+          [cx, cy, cz],
+        );
+        if (d < bestDistance) {
+          best = refr;
+          bestDistance = d;
+        }
+      }
+    }
+    if (best) {
+      return best;
+    }
     const found = this.sp.Game.findClosestReferenceOfType(
       base,
       cx,
@@ -143,17 +187,37 @@ export class SpellPlacedService extends ClientListener {
       cz,
       SpellPlacedService.searchRadius,
     );
-    if (!found || found.isDeleted()) {
-      return null;
-    }
-    const id = found.getFormID();
-    if (cleaner.getWcProtection(id) !== 0) {
-      return null;
-    }
-    if (this.reported.has(id)) {
+    if (!found || !this.eligible(found, cleaner)) {
       return null;
     }
     return found;
+  }
+
+  // not deleted, not the view's own copy, and not a reference reported for an
+  // earlier set that still stands where it was reported
+  private eligible(refr: ObjectReference, cleaner: WorldCleanerService): boolean {
+    if (refr.isDeleted()) {
+      return false;
+    }
+    const id = refr.getFormID();
+    if (cleaner.getWcProtection(id) !== 0) {
+      return false;
+    }
+    const reported = this.reported.get(id);
+    if (reported) {
+      const here: [number, number, number] = [
+        refr.getPositionX(),
+        refr.getPositionY(),
+        refr.getPositionZ(),
+      ];
+      if (
+        SpellPlacedService.distance(here, reported.pos) <
+        SpellPlacedService.movedUnits
+      ) {
+        return false;
+      }
+    }
+    return true;
   }
 
   private report(
@@ -162,9 +226,9 @@ export class SpellPlacedService extends ClientListener {
     settled: boolean,
     now: number,
   ) {
-    this.reported.set(w.found, now);
-    this.reported.forEach((at, id) => {
-      if (now - at > SpellPlacedService.rememberMs) {
+    this.reported.set(w.found, { at: now, pos: [pos[0], pos[1], pos[2]] });
+    this.reported.forEach((entry, id) => {
+      if (now - entry.at > SpellPlacedService.rememberMs) {
         this.reported.delete(id);
       }
     });
@@ -193,8 +257,12 @@ export class SpellPlacedService extends ClientListener {
 
   private watches: Watch[] = [];
   private lastPollAt = 0;
-  // references reported, by form id, with when: a later set's search skips them
-  private reported = new Map<number, number>();
+  // references reported, by form id, with when and where: a later set's search
+  // skips one that still stands there
+  private reported = new Map<
+    number,
+    { at: number; pos: [number, number, number] }
+  >();
 
   // where the script stands Raise Wall's objects: 206.25 (the wall) and
   // 196.875 (the halo) ahead of the caster (x-raise-wall-pitch v1)
@@ -208,4 +276,7 @@ export class SpellPlacedService extends ClientListener {
   private static readonly replyMarginMs = 500;
   // a set's longest life (maxS 120 s plus the linger) and change
   private static readonly rememberMs = 130_000;
+  // a reported reference farther than this from where it was reported is a
+  // new placement (the script moved it, or stood a new one on the spot)
+  private static readonly movedUnits = 8;
 }

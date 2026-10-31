@@ -64,6 +64,8 @@ import { PlacedReportMessage } from "./placedReportMessage";
 import { LockReportMessage } from "./lockReportMessage";
 import { LockPromptMessage } from "./lockPromptMessage";
 import { SetWeatherMessage } from "./setWeatherMessage";
+import { PerkPickMessage } from "./perkPickMessage";
+import { PerkStateMessage } from "./perkStateMessage";
 
 export type AnyMessage = ActivateMessage
     | ConsoleCommandMessage
@@ -124,6 +126,8 @@ export type AnyMessage = ActivateMessage
     | LockReportMessage
     | LockPromptMessage
     | SetWeatherMessage
+    | PerkPickMessage
+    | PerkStateMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage
     | UpdatePropertyMessage

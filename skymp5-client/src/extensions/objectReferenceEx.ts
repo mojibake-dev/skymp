@@ -1,6 +1,7 @@
 import { Flora, Form, FormType, MotionType, ObjectReference } from "skyrimPlatform";
 import { NiPoint3 } from "../sync/movement";
 import { FormTypeEx } from "./formTypeEx";
+import { logTrace } from "../logging";
 
 export class ObjectReferenceEx {
   static getWorldOrCell(self: ObjectReference): number {
@@ -58,10 +59,13 @@ export class ObjectReferenceEx {
     // thuum docs/verbs/locks.md: the server's lock stands on this game's
     // reference when it sends one (the engine's own lockpicking runs at the
     // server's prompt); a reference the server sends no lock for is unlocked
-    // here as before
+    // here as before. The line is the lab's read of the lock at creation
+    // (x-lockpick 20261031-134850 counted the property change's line, which
+    // no creation writes); a change later logs "lock <id> applied" instead.
     if (lock) {
       self.setLockLevel(lock.level);
       self.lock(lock.locked, false);
+      logTrace("ObjectReferenceEx", `lock ${self.getFormID().toString(16)} set at creation: ${lock.locked ? "locked" : "unlocked"}, level ${lock.level}, key ${lock.key.toString(16)}`);
     } else if (self.isLocked()) {
       self.lock(false, false);
     }

@@ -431,7 +431,7 @@ export class PropService extends ClientListener {
             // the host's default clutter rests until a contact wakes it
             this.flip(prop, refr, simulate, simulate && named, now);
         } else if (loaded3D && prop.motionAsked === undefined) {
-            this.setMotion(prop, refr, simulate ? MotionType.Dynamic : MotionType.Keyframed, false);
+            this.setMotion(prop, refr, simulate ? MotionType.Dynamic : MotionType.Keyframed, simulate);
         }
         if (prop.simulating) {
             this.stream(prop, refr, now, myId);
@@ -512,7 +512,12 @@ export class PropService extends ClientListener {
             refr.stopTranslation();
             prop.pending = undefined;
         }
-        this.setMotion(prop, refr, simulate ? MotionType.Dynamic : MotionType.Keyframed, simulate && wake);
+        // the body may wake whenever this seat simulates it (x-prop-push v9
+        // 021439: a Dynamic body denied activation took no contact from the
+        // host standing in it nor from its run through it, where the same
+        // body awake at its spawn had been ejected with a contact); `wake`
+        // keeps its other meaning below, the grant's first sample
+        this.setMotion(prop, refr, simulate ? MotionType.Dynamic : MotionType.Keyframed, simulate);
         prop.simulating = simulate;
         prop.lastSent = undefined;
         prop.lastRead = undefined;
@@ -531,11 +536,12 @@ export class PropService extends ClientListener {
         logTrace(this, `prop ${prop.refr.toString(16)} ${simulate ? "simulated here: Dynamic" : "followed: Keyframed"}`);
     }
 
-    // abAllowActivate is Havok's wake: Dynamic without it, the body rests as
-    // the file's clutter does until a contact wakes it, so the host's props do
-    // not settle and stream all at once at each cell; with it (a granted
-    // touch) the body is live at once. Keyframed as dealWithRef sets it.
-    // HYPOTHESIS: a clutter body takes both switches at runtime
+    // abAllowActivate is Havok's leave to wake: a Dynamic body denied it took
+    // no contact from the host standing in it or running through it (x-prop-push
+    // v9 021439 on the physics stage), so every body this seat simulates is set
+    // Dynamic with it; the stream's lazy baseline (nothing out until a move)
+    // keeps a resting cell's clutter silent. Keyframed as dealWithRef sets it.
+    // HYPOTHESIS until v10: a body denied activation is inert to the controller
     private setMotion(prop: Prop, refr: ObjectReference, type: MotionType, wake: boolean) {
         prop.motionAsked = type;
         refr.setMotionType(type, wake).catch((err) => {

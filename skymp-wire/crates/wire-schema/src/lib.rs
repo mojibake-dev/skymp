@@ -45,7 +45,9 @@ use bounded::{String, Vec};
 /// reference, the prompt and the report around the engine's minigame.
 /// 25: SetWeather (thuum docs/verbs/weather.md, m4-weather): the server's
 /// weather for the place a player is in.
-pub const SCHEMA_VERSION: u16 = 25;
+/// 26: PerkPick and PerkState (thuum docs/verbs/perks.md, m5-perks): a perk
+/// pick judged by the server, the perk set and points it holds.
+pub const SCHEMA_VERSION: u16 = 26;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -124,6 +126,9 @@ pub mod cap {
     /// Skill uses one SkillUse carries: one per skill, the eighteen skills
     /// (docs/verbs/leveling.md).
     pub const SKILL_USES: usize = 18;
+    /// The most perks one PerkState carries (docs/verbs/perks.md; Skyrim's trees
+    /// hold 251 ranks).
+    pub const PERKS: usize = 512;
     /// Quests whose stages are the world's (thuum docs/verbs/quest-stage.md:
     /// the server's `sharedQuests` list, Riverwood's first).
     pub const SHARED_QUESTS: usize = 256;
@@ -471,6 +476,10 @@ pub enum Message {
     LockPrompt(skymp::LockPrompt),
     /// 74, MsgType 66 (thuum). See [`skymp::SetWeather`].
     SetWeather(skymp::SetWeather),
+    /// 75, MsgType 67 (thuum). See [`skymp::PerkPick`].
+    PerkPick(skymp::PerkPick),
+    /// 76, MsgType 68 (thuum). See [`skymp::PerkState`].
+    PerkState(skymp::PerkState),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -499,7 +508,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 75] = [
+const TABLE: [Row; 77] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -575,14 +584,16 @@ const TABLE: [Row; 75] = [
     row("LockReport", 64, 16, C2S),
     row("LockPrompt", 65, 8, S2C),
     row("SetWeather", 66, 16, S2C),
+    row("PerkPick", 67, 8, C2S),
+    row("PerkState", 68, 4 * KIB, S2C),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 75;
-const _: () = assert!(TABLE.len() == 75, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 77;
+const _: () = assert!(TABLE.len() == 77, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -682,6 +693,8 @@ impl Message {
             Message::LockReport(_) => 72,
             Message::LockPrompt(_) => 73,
             Message::SetWeather(_) => 74,
+            Message::PerkPick(_) => 75,
+            Message::PerkState(_) => 76,
         }
     }
 
@@ -779,7 +792,9 @@ mod tests {
         assert_eq!(name_of_msg_type(64), Some("LockReport"));
         assert_eq!(name_of_msg_type(65), Some("LockPrompt"));
         assert_eq!(name_of_msg_type(66), Some("SetWeather"));
-        assert_eq!(name_of_msg_type(67), None);
+        assert_eq!(name_of_msg_type(67), Some("PerkPick"));
+        assert_eq!(name_of_msg_type(68), Some("PerkState"));
+        assert_eq!(name_of_msg_type(69), None);
     }
 
     #[test]
@@ -876,6 +891,13 @@ mod tests {
             Message::LockPrompt(skymp::LockPrompt { refr: u32::MAX, ..Default::default() }),
             // a weather word at its longest (thuum docs/verbs/weather.md)
             Message::SetWeather(skymp::SetWeather { place: u32::MAX, weather: u32::MAX, transition: true, ..Default::default() }),
+            // a perk pick and the fullest perk set (thuum docs/verbs/perks.md)
+            Message::PerkPick(skymp::PerkPick { perk: u32::MAX, ..Default::default() }),
+            Message::PerkState(skymp::PerkState {
+                perks: core::iter::repeat_n(u32::MAX, cap::PERKS).collect::<alloc::vec::Vec<u32>>().try_into().unwrap_or_default(),
+                points: u16::MAX,
+                ..Default::default()
+            }),
             Message::RaceMenuPreset(skymp::RaceMenuPreset {
                 actor: u32::MAX,
                 preset: "x".repeat(cap::RACEMENU_PRESET).try_into().unwrap_or_default(),

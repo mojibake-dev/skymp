@@ -36,6 +36,8 @@
 #include "MapMarkerDiscoveredMessage.h"
 #include "OnEquipMessage.h"
 #include "OpenContainerMessage.h"
+#include "PerkPickMessage.h"
+#include "PerkStateMessage.h"
 #include "PlacedReportMessage.h"
 #include "PlacedRequestMessage.h"
 #include "PlayerBowShotMessage.h"
@@ -132,4 +134,6 @@
   REGISTER_MESSAGE(SkillUseMessage)                                           \
   REGISTER_MESSAGE(LockReportMessage)                                         \
   REGISTER_MESSAGE(LockPromptMessage)                                         \
-  REGISTER_MESSAGE(SetWeatherMessage)
+  REGISTER_MESSAGE(SetWeatherMessage)                                         \
+  REGISTER_MESSAGE(PerkPickMessage)                                           \
+  REGISTER_MESSAGE(PerkStateMessage)

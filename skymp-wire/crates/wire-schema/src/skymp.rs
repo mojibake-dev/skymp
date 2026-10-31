@@ -1943,6 +1943,40 @@ wire_struct! {
 }
 
 wire_struct! {
+    /// MsgType 67, thuum's (docs/verbs/perks.md, M5): a player's game reports
+    /// the perk its Skills menu took. Client to server, reliable, R1: the
+    /// server judges the pick by the perk record's own conditions and the
+    /// points left (wire-rules perks), writes it to the record and answers
+    /// with `PerkState`; a refused pick is undone by that answer. Reason
+    /// codes: `E_VAL_RANGE` (a perk of 0), `E_VAL_RATE`.
+    pub struct PerkPick {
+        /// `"t": 67`.
+        #[serde(default)]
+        pub t: MsgT<67>,
+        /// The perk's form id; never 0.
+        pub perk: u32,
+    }
+}
+
+wire_struct! {
+    /// MsgType 68, thuum's (docs/verbs/perks.md, M5): the server's whole perk
+    /// set and the points left for one player: at login, after each pick
+    /// (accepted or refused), after a level change and after the console's
+    /// AddPerk, RemovePerk or SetLevel. Server to client, reliable. The game
+    /// sets its perk points, adds what it lacks and drops a tree perk the set
+    /// lacks. Reason codes: `E_VAL_RANGE` (a perk of 0 in the set).
+    pub struct PerkState {
+        /// `"t": 68`.
+        #[serde(default)]
+        pub t: MsgT<68>,
+        /// The perks held, none 0; at most 512.
+        pub perks: Vec<u32, { cap::PERKS }>,
+        /// The points left to spend.
+        pub points: u16,
+    }
+}
+
+wire_struct! {
     /// One skill use (docs/verbs/leveling.md): the skill by its ActorValue and
     /// the action's base amount as the engine computed it.
     pub struct SkillUseEntry {

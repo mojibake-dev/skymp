@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, placements, player_globals, props, quest_stages, racemenu, ranged, rest, scripted_effects, shouts, stagger, teleports, weather};
+use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, placements, player_globals, props, quest_stages, racemenu, ranged, rest, perks, scripted_effects, shouts, stagger, teleports, weather};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -1102,6 +1102,20 @@ mod ffi {
         bash: bool,
     }
 
+    /// The judgement of a perk pick (thuum docs/verbs/perks.md): accepted, or
+    /// refused with its reason code and a detail (the perk a prerequisite
+    /// names, the actor value a requirement names, the function the rule
+    /// cannot judge; 0 otherwise).
+    #[derive(Debug)]
+    struct PerkVerdict {
+        /// Accepted.
+        accepted: bool,
+        /// The reason code when refused (E_PERK_...), empty when accepted.
+        code: String,
+        /// The code's detail.
+        detail: u32,
+    }
+
     /// A weather word for one player (thuum docs/verbs/weather.md): the
     /// weather of the place it is in, or a release (`weather` 0) in an
     /// interior or a worldspace without a pool; `some` false when nothing is
@@ -1836,6 +1850,29 @@ mod ffi {
         /// The size of the pool in force for `world`, 0 for none.
         fn pool_len(self: &WeatherSync, world: u32) -> usize;
 
+        /// thuum docs/verbs/perks.md (M5): every perk of the load order and
+        /// its own conditions (wire-rules perks).
+        type PerkTable;
+        /// An empty table.
+        fn new_perk_table() -> Box<PerkTable>;
+        /// A perk with its DATA bytes; a repeated id replaces the entry.
+        fn add_perk(self: &mut PerkTable, perk: u32, playable: bool, hidden: bool);
+        /// One of `perk`'s own conditions from its CTDA: the function id, the
+        /// first byte, the comparison value, the first parameter (a form id
+        /// made global by the caller for HasPerk, an actor value otherwise)
+        /// and the run-on type; false for a perk not added.
+        fn add_condition(self: &mut PerkTable, perk: u32, function: u16, byte0: u8, value: f32, param1: u32, run_on: u32) -> bool;
+        /// How many perks the table knows.
+        fn perk_count(self: &PerkTable) -> usize;
+        /// Whether the table knows `perk`.
+        fn knows(self: &PerkTable, perk: u32) -> bool;
+        /// The judgement of `perk` for a player at `level` holding `perks`,
+        /// whose actor values the conditions may read are `avs[i]` at
+        /// `values[i]` (a skill's level, a base otherwise).
+        fn pick(self: &PerkTable, level: u16, perks: &[u32], avs: &[u8], values: &[f32], perk: u32) -> PerkVerdict;
+        /// The perk points left: one a level past the first, less the perks held.
+        fn perk_points(level: u16, held: usize) -> u16;
+
         /// thuum docs/verbs/cell-host.md (ADR-035): which player's game runs
         /// each cell's NPCs, the grace and the epochs.
         type Cells;
@@ -1947,7 +1984,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
+pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -3489,6 +3526,45 @@ impl GameClock {
 
     fn forget(&mut self, user: u32) {
         self.0.forget(user);
+    }
+}
+
+/// Every perk's conditions (wire-rules perks).
+#[derive(Debug, Default)]
+pub struct PerkTable(perks::Table);
+
+fn new_perk_table() -> Box<PerkTable> {
+    Box::default()
+}
+
+fn perk_points(level: u16, held: usize) -> u16 {
+    perks::points(level, held)
+}
+
+impl PerkTable {
+    fn add_perk(&mut self, perk: u32, playable: bool, hidden: bool) {
+        self.0.add_perk(perk, playable, hidden);
+    }
+
+    fn add_condition(&mut self, perk: u32, function: u16, byte0: u8, value: f32, param1: u32, run_on: u32) -> bool {
+        self.0.add_condition(perk, perks::Condition::from_ctda(function, byte0, value, param1, run_on))
+    }
+
+    fn perk_count(&self) -> usize {
+        self.0.len()
+    }
+
+    fn knows(&self, perk: u32) -> bool {
+        self.0.get(perk).is_some()
+    }
+
+    fn pick(&self, level: u16, held: &[u32], avs: &[u8], values: &[f32], perk: u32) -> PerkVerdict {
+        let pairs: Vec<(u8, f32)> = avs.iter().copied().zip(values.iter().copied()).collect();
+        let record = perks::Record { level, perks: held, values: &pairs };
+        match perks::pick(&self.0, &record, perk) {
+            Ok(()) => PerkVerdict { accepted: true, code: String::new(), detail: 0 },
+            Err(refusal) => PerkVerdict { accepted: false, code: refusal.code().to_owned(), detail: refusal.detail() },
+        }
     }
 }
 

@@ -83,7 +83,7 @@ const fn cmd(name: &'static str, short: &'static str, class: Class, rank: Rank, 
 /// /teleportto, moderators'): `mp list` names the players online by number,
 /// `mp tp <n>` brings that player to the caller, `mp tpto <n>` takes the
 /// caller to it, through the server's teleport wherever the two are.
-pub const TABLE: [Command; 38] = [
+pub const TABLE: [Command; 40] = [
     cmd("additem", "", Class::Server, Rank::Admin, true),
     cmd("removeitem", "", Class::Server, Rank::Admin, true),
     cmd("equipitem", "", Class::Server, Rank::Admin, true),
@@ -103,7 +103,8 @@ pub const TABLE: [Command; 38] = [
     cmd("setactorvalue", "setav", Class::Server, Rank::Admin, true),
     cmd("modactorvalue", "modav", Class::Server, Rank::Admin, true),
     cmd("forceactorvalue", "forceav", Class::Server, Rank::Admin, true),
-    cmd("setlevel", "", Class::Server, Rank::Admin, false),
+    // thuum docs/verbs/perks.md: served since m5-perks (the record's level, the perk points' source)
+    cmd("setlevel", "", Class::Server, Rank::Admin, true),
     cmd("advancepcskill", "advskill", Class::Server, Rank::Admin, false),
     cmd("toggleimmortalmode", "tim", Class::Server, Rank::Admin, true),
     cmd("togglegodmode", "tgm", Class::Server, Rank::Admin, true),
@@ -117,6 +118,10 @@ pub const TABLE: [Command; 38] = [
     // the game's own lock and unlock run nowhere but here
     cmd("lock", "", Class::Server, Rank::Admin, true),
     cmd("unlock", "", Class::Server, Rank::Admin, true),
+    // thuum docs/verbs/perks.md: the record's perks written straight (an
+    // admin's word, no rule)
+    cmd("addperk", "", Class::Server, Rank::Admin, true),
+    cmd("removeperk", "", Class::Server, Rank::Admin, true),
     // `set <global> to <value>`: the server owns the clock's globals (ADR-021);
     // which others it owns waits for the first verb that needs one
     cmd("set", "", Class::Server, Rank::Admin, false),
@@ -226,7 +231,10 @@ mod tests {
 
     #[test]
     fn listed_commands_the_server_does_not_run_yet_say_so() {
-        assert_eq!(decide("setlevel", Rank::Owner), Decision::NotServed);
+        assert_eq!(decide("advskill", Rank::Owner), Decision::NotServed);
+        // served since m5-perks (thuum docs/verbs/perks.md)
+        assert_eq!(decide("setlevel", Rank::Admin), Decision::Run);
+        assert_eq!(decide("addperk", Rank::Moderator), Decision::RankTooLow);
         assert_eq!(decide("kill", Rank::Moderator), Decision::Run);
         assert_eq!(decide("setpos", Rank::Player), Decision::RankTooLow);
         assert_eq!(decide("removeitem", Rank::Moderator), Decision::RankTooLow);

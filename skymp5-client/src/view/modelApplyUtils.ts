@@ -13,6 +13,20 @@ export class ModelApplyUtils {
   static applyModelIsOpen(refr: ObjectReference, isOpen: boolean) {
     refr.setOpen(isOpen);
 
+    // thuum docs/verbs/containers.md (M4's row, "the open animation and sound
+    // for observers"): the server's isOpen is a container's state from its
+    // first open to its last close (memo D52), and SetOpen moves a door, not a
+    // chest's lid; the lid takes the engine's own Open and Close animation
+    // events (the activation plays them in the opener's game). HYPOTHESIS
+    // until x-container-rest reads it on the watcher's screen: the opener's
+    // own game hears the same property and plays Open on a lid already open,
+    // which the graph is expected to ignore. The sound is the activation's,
+    // not the animation's: a later slice.
+    if (refr.getBaseObject()?.getType() === FormType.Container) {
+      refr.playAnimation(isOpen ? "Open" : "Close");
+      logTrace("ModelApplyUtils", `container ${refr.getFormID().toString(16)} lid ${isOpen ? "Open" : "Close"} played for the server's isOpen`);
+    }
+
     // See also objectReferenceEx.ts
     const caveGSecretDoor01 = 0x6f703;
 

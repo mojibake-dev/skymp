@@ -3137,6 +3137,46 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
   }
 }
 
+// thuum docs/verbs/spell-placed-object.md (ADR-057 shape A, D70): the
+// caster's answer to the server's PlacedRequest for one base. The sender
+// must be a player with an actor; the rest (the set, the base, the band) is
+// the rule's, judged and logged in PartOne::ReportPlacedObject, which places
+// the object for every other seat when the report stands.
+void ActionListener::OnPlacedReport(const RawMessageData& rawMsgData,
+                                    const PlacedReportMessage& msg)
+{
+  MpActor* myActor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!myActor) {
+    return;
+  }
+  partOne.ReportPlacedObject(*myActor, msg.set, msg.base,
+                             NiPoint3{ msg.pos[0], msg.pos[1], msg.pos[2] },
+                             msg.yaw);
+}
+
+// thuum docs/verbs/leveling.md (M5): the uses a player's engine made in the
+// last second. Dropped whole while the server's `leveling` switch is off
+// (the client's own advance is off as before, so nothing moves); otherwise
+// each use runs the formulas into the record (PartOne::ApplySkillUse), the
+// Rust edge having bounded the shape and the rate.
+void ActionListener::OnSkillUse(const RawMessageData& rawMsgData,
+                                const SkillUseMessage& msg)
+{
+  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!actor) {
+    return;
+  }
+  if (!partOne.LevelingEnabled()) {
+    spdlog::debug("[verb:leveling] {:x} reports {} use(s) with leveling off; "
+                  "dropped",
+                  actor->GetFormId(), msg.uses.size());
+    return;
+  }
+  for (const auto& use : msg.uses) {
+    partOne.ApplySkillUse(*actor, use.skill, use.amount);
+  }
+}
+
 // thuum docs/verbs/prop-physics.md (ADR-058 decision 2): a simulator's
 // sample of a prop. The record takes it from the prop's owner alone (the
 // toucher while awake or inside its lease, else the host of the cell the

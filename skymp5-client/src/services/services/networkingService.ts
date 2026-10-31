@@ -266,6 +266,10 @@ export class NetworkingService extends ClientListener {
             const event = { message: msgAny };
             this.controller.emitter.emit("propOwnerMessage", event);
             this.controller.emitter.emit("anyMessage", event);
+          } else if (msgAny.t === MsgType.PlacedRequest) {
+            const event = { message: msgAny };
+            this.controller.emitter.emit("placedRequestMessage", event);
+            this.controller.emitter.emit("anyMessage", event);
           } else if (msgAny.t === MsgType.ActorJump) {
             const event = { message: msgAny };
             this.controller.emitter.emit("actorJumpMessage", event);

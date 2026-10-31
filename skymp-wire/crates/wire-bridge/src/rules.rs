@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, effects, favorites, forms, headshots, hosted_state, hostility, magic, markers, melee, movement, placements, player_globals, props, quest_stages, racemenu, ranged, rest, scripted_effects, shouts, stagger, teleports};
+use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, effects, favorites, forms, headshots, hosted_state, hostility, leveling, magic, markers, melee, movement, placements, player_globals, props, quest_stages, racemenu, ranged, rest, scripted_effects, shouts, stagger, teleports};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -444,7 +444,8 @@ mod ffi {
     }
 
     /// A cast that placed nothing (thuum docs/verbs/spell-placed-object.md):
-    /// `why` 0 the caster's perCaster cap, 1 the server-wide cap.
+    /// `why` 0 the caster's perCaster cap, 1 the server-wide cap, 2 no
+    /// report from the caster's game within the window (shape A).
     #[derive(Debug, Clone, PartialEq)]
     struct PlacementRefusal {
         /// The caster.
@@ -455,6 +456,125 @@ mod ffi {
         spell_file: String,
         /// Why, as above.
         why: u8,
+    }
+
+    /// One base the server asks the caster's game to report at an accepted
+    /// cast (thuum docs/verbs/spell-placed-object.md, shape A): the set the
+    /// reports will name, the caster, the spell, the base (a FormDesc's
+    /// parts) with its record type and the window. A set's bases come as
+    /// consecutive rows sharing `set`; PartOne sends one PlacedRequest a set.
+    #[derive(Debug, Clone, PartialEq)]
+    struct PlacementRequestRow {
+        /// The set's id, which the caster's reports name.
+        set: u64,
+        /// The caster asked.
+        caster: u32,
+        /// The spell's form id within its plugin.
+        spell_short_id: u32,
+        /// The spell's plugin.
+        spell_file: String,
+        /// The base's form id within its plugin.
+        short_id: u32,
+        /// The base's plugin.
+        file: String,
+        /// The base's record type, MSTT or ACTI.
+        record_type: String,
+        /// How long the reports are taken from the cast, milliseconds.
+        window_ms: u64,
+    }
+
+    /// A caster's report of where its engine stands one base of a requested
+    /// set (thuum docs/verbs/spell-placed-object.md, shape A; the
+    /// PlacedReport message, the base already read as a FormDesc).
+    #[derive(Debug, Clone, PartialEq)]
+    struct PlacementReport {
+        /// The caster answering.
+        caster: u32,
+        /// The set named by the request.
+        set: u64,
+        /// The base's form id within its plugin.
+        short_id: u32,
+        /// The base's plugin.
+        file: String,
+        /// Position.
+        x: f32,
+        /// Position.
+        y: f32,
+        /// Position.
+        z: f32,
+        /// The Z angle, degrees.
+        yaw: f32,
+    }
+
+    /// What a report earned: accepted (the object is queued for
+    /// due_placements), or `why` 1 no such set of the caster's, 2 late (the
+    /// window closed or the set's time ran out), 3 a base the entry does not
+    /// name, 4 the base reported already, 5 not a number, 6 outside the band
+    /// (`distance` on the ground plane and `dz` from where the caster stood
+    /// carry the numbers for the log).
+    #[derive(Debug, Clone, PartialEq)]
+    struct PlacementReportVerdict {
+        /// Accepted.
+        accepted: bool,
+        /// Why not, as above; 0 when accepted.
+        why: u8,
+        /// The reported pose's distance from the caster on the ground plane.
+        distance: f32,
+        /// The reported pose's height above or below the caster.
+        dz: f32,
+    }
+
+    /// A skill's standing as the record holds it (thuum docs/verbs/
+    /// leveling.md): the skill by its ActorValue (6 to 23), its level and the
+    /// experience toward the next.
+    #[derive(Debug, Clone, PartialEq)]
+    struct LevelingSkill {
+        /// The skill's ActorValue, 6 to 23.
+        skill_av: u8,
+        /// The level, 15 to 100.
+        level: u8,
+        /// Experience toward the next level.
+        xp: f32,
+    }
+
+    /// The character's standing (thuum docs/verbs/leveling.md).
+    #[derive(Debug, Clone, PartialEq)]
+    struct LevelingCharacter {
+        /// The level, 1 and up.
+        level: u16,
+        /// Experience toward the next level.
+        xp: f32,
+    }
+
+    /// What a skill use changed (thuum docs/verbs/leveling.md): `kind` 0 a
+    /// skill reached `level` (the skill at `skill_av`), 1 the character
+    /// reached `level`.
+    #[derive(Debug, Clone, PartialEq)]
+    struct LevelingEvent {
+        /// 0 a skill level, 1 a character level.
+        kind: u8,
+        /// The skill's ActorValue for kind 0; 0 otherwise.
+        skill_av: u8,
+        /// The level reached.
+        level: u16,
+    }
+
+    /// A skill use judged (thuum docs/verbs/leveling.md): accepted, or `why`
+    /// 1 no skill at that ActorValue, 2 an amount that is not a number, 3 an
+    /// amount of 0 or below or over the bound; the eighteen skills after (in
+    /// ActorValue order), the character after, and what changed in order.
+    #[derive(Debug, Clone, PartialEq)]
+    struct LevelingOutcome {
+        /// Accepted.
+        accepted: bool,
+        /// Why not, as above; 0 when accepted.
+        why: u8,
+        /// Every skill after, 6 to 23.
+        skills: Vec<LevelingSkill>,
+        /// The character after.
+        character: LevelingCharacter,
+        /// What changed, in order.
+        events: Vec<LevelingEvent>,
     }
 
     /// One actor value's base (thuum docs/verbs/actor-values.md).
@@ -1516,6 +1636,28 @@ mod ffi {
         fn due_removals(self: &mut Placements, now_ms: u64) -> Vec<PlacementRemoval>;
         /// The casts that placed nothing since the last call, for the log.
         fn take_refusals(self: &mut Placements) -> Vec<PlacementRefusal>;
+        /// The requests to send since the last call (shape A): one row per base, a set's rows consecutive.
+        fn take_requests(self: &mut Placements) -> Vec<PlacementRequestRow>;
+        /// A caster's report for one base of a requested set, judged (shape A).
+        fn report_placed(self: &mut Placements, report: PlacementReport, now_ms: u64) -> PlacementReportVerdict;
+
+        /// The eighteen skills' experience constants (thuum docs/verbs/leveling.md): UESP's until the
+        /// game files' AVIF rows are set on it.
+        type LevelingTable;
+        fn new_leveling_table() -> Box<LevelingTable>;
+        /// A skill's constants from its AVIF record; false for an ActorValue that is no skill or a
+        /// constant that is not a number.
+        fn set_skill(self: &mut LevelingTable, skill_av: u8, use_mult: f32, use_offset: f32, improve_mult: f32, improve_offset: f32) -> bool;
+        /// The experience one use of the skill at `skill_av` earns from the action's `base` amount
+        /// (0 for no skill).
+        fn use_xp(self: &LevelingTable, skill_av: u8, base: f32) -> f32;
+        /// The experience the step from `level` to the next costs (0 for no skill).
+        fn level_cost(self: &LevelingTable, skill_av: u8, level: u8) -> f32;
+        /// A use applied to a player's standing: the skills the record holds (a skill not listed
+        /// stands at the floor), the character, the use.
+        fn apply_use(self: &LevelingTable, skills: &[LevelingSkill], character: LevelingCharacter, skill_av: u8, base: f32) -> LevelingOutcome;
+        /// The character experience the step from `level` to the next needs.
+        fn leveling_character_threshold(level: u16) -> f32;
         /// Sets standing in the world.
         fn live_sets(self: &Placements) -> usize;
 
@@ -1714,7 +1856,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
+pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -2345,6 +2487,81 @@ fn quest_record_full(record: &[QuestStageEntry]) -> bool {
     quest_stages::full(record.len())
 }
 
+/// The eighteen skills' constants (wire-rules leveling).
+pub struct LevelingTable(leveling::Table);
+
+fn new_leveling_table() -> Box<LevelingTable> {
+    Box::new(LevelingTable(leveling::Table::uesp()))
+}
+
+fn leveling_character_threshold(level: u16) -> f32 {
+    leveling::character_threshold(level)
+}
+
+impl LevelingTable {
+    fn set_skill(&mut self, skill_av: u8, use_mult: f32, use_offset: f32, improve_mult: f32, improve_offset: f32) -> bool {
+        let Some(skill) = leveling::Skill::from_actor_value(skill_av) else {
+            return false;
+        };
+        let constants = leveling::Constants { use_mult, use_offset, improve_mult, improve_offset };
+        let before = self.0.constants(skill);
+        self.0.set(skill, constants);
+        self.0.constants(skill) == constants || before == constants
+    }
+
+    fn use_xp(&self, skill_av: u8, base: f32) -> f32 {
+        leveling::Skill::from_actor_value(skill_av).map_or(0.0, |skill| leveling::use_xp(&self.0, skill, base))
+    }
+
+    fn level_cost(&self, skill_av: u8, level: u8) -> f32 {
+        leveling::Skill::from_actor_value(skill_av).map_or(0.0, |skill| leveling::level_cost(&self.0, skill, level))
+    }
+
+    fn apply_use(&self, skills: &[LevelingSkill], character: LevelingCharacter, skill_av: u8, base: f32) -> LevelingOutcome {
+        let mut standing = [leveling::SkillProgress { level: leveling::SKILL_FLOOR, xp: 0.0 }; 18];
+        for s in skills {
+            if let Some(skill) = leveling::Skill::from_actor_value(s.skill_av) {
+                if let Some(slot) = standing.get_mut(usize::from(skill.index())) {
+                    *slot = leveling::SkillProgress { level: s.level.clamp(leveling::SKILL_FLOOR, leveling::SKILL_CAP), xp: if s.xp.is_finite() && s.xp >= 0.0 { s.xp } else { 0.0 } };
+                }
+            }
+        }
+        let mut progress = leveling::Progress::from_record(
+            standing,
+            leveling::Character { level: character.level.clamp(1, leveling::LEVEL_CAP), xp: if character.xp.is_finite() && character.xp >= 0.0 { character.xp } else { 0.0 } },
+        );
+        let (accepted, why, events) = match progress.apply_use(&self.0, skill_av, base) {
+            Ok(events) => (
+                true,
+                0,
+                events
+                    .into_iter()
+                    .map(|e| match e {
+                        leveling::Event::SkillLevel { skill, level } => LevelingEvent { kind: 0, skill_av: skill.actor_value(), level: u16::from(level) },
+                        leveling::Event::CharacterLevel { level } => LevelingEvent { kind: 1, skill_av: 0, level },
+                    })
+                    .collect(),
+            ),
+            Err(leveling::Refusal::Skill) => (false, 1, Vec::new()),
+            Err(leveling::Refusal::NonFinite) => (false, 2, Vec::new()),
+            Err(leveling::Refusal::Range) => (false, 3, Vec::new()),
+        };
+        LevelingOutcome {
+            accepted,
+            why,
+            skills: leveling::Skill::ALL
+                .iter()
+                .map(|skill| {
+                    let s = progress.skill(*skill);
+                    LevelingSkill { skill_av: skill.actor_value(), level: s.level, xp: s.xp }
+                })
+                .collect(),
+            character: LevelingCharacter { level: progress.character.level, xp: progress.character.xp },
+            events,
+        }
+    }
+}
+
 /// The spell-placed objects' table and the sets standing (wire-rules
 /// placements).
 pub struct Placements(placements::Placements);
@@ -2421,9 +2638,49 @@ impl Placements {
                 why: match r.why {
                     placements::Refusal::PerCaster => 0,
                     placements::Refusal::ServerWide => 1,
+                    placements::Refusal::NoReport => 2,
                 },
             })
             .collect()
+    }
+
+    fn take_requests(&mut self) -> Vec<PlacementRequestRow> {
+        self.0
+            .take_requests()
+            .into_iter()
+            .flat_map(|r| {
+                let (set, caster, spell, window_ms) = (r.set, r.caster, r.spell, r.window_ms);
+                r.objects.into_iter().map(move |o| PlacementRequestRow {
+                    set,
+                    caster,
+                    spell_short_id: spell.short_id,
+                    spell_file: spell.file.clone(),
+                    short_id: o.base.short_id,
+                    file: o.base.file,
+                    record_type: o.kind.record_type().to_owned(),
+                    window_ms,
+                })
+            })
+            .collect()
+    }
+
+    fn report_placed(&mut self, report: PlacementReport, now_ms: u64) -> PlacementReportVerdict {
+        let PlacementReport { caster, set, short_id, file, x, y, z, yaw } = report;
+        let report = placements::Report { caster, set, base: forms::FormDesc { short_id, file }, x, y, z, yaw };
+        match self.0.report_placed(report, now_ms) {
+            Ok(()) => PlacementReportVerdict { accepted: true, why: 0, distance: 0.0, dz: 0.0 },
+            Err(why) => {
+                let (code, distance, dz) = match why {
+                    placements::ReportRefusal::NoSet => (1, 0.0, 0.0),
+                    placements::ReportRefusal::Late => (2, 0.0, 0.0),
+                    placements::ReportRefusal::Base => (3, 0.0, 0.0),
+                    placements::ReportRefusal::Repeated => (4, 0.0, 0.0),
+                    placements::ReportRefusal::NonFinite => (5, 0.0, 0.0),
+                    placements::ReportRefusal::Range { distance, dz } => (6, distance, dz),
+                };
+                PlacementReportVerdict { accepted: false, why: code, distance, dz }
+            }
+        }
     }
 
     fn live_sets(&self) -> usize {
@@ -3318,11 +3575,11 @@ mod tests {
     }
 
     #[test]
-    fn the_bridge_places_and_removes_a_set() {
+    fn the_bridge_asks_places_as_reported_and_removes_a_set() {
         const PLUGIN: &str = "Apocalypse - Magic of Skyrim.esp";
         let table = r#"[{"spell": "00cc14:Apocalypse - Magic of Skyrim.esp", "anchor": "caster",
-            "objects": [{"base": "098529:Apocalypse - Magic of Skyrim.esp", "type": "MSTT", "forward": 192, "dz": -48},
-                        {"base": "0735e8:Apocalypse - Magic of Skyrim.esp", "type": "ACTI", "forward": 192, "dz": 0}],
+            "objects": [{"base": "098529:Apocalypse - Magic of Skyrim.esp", "type": "MSTT"},
+                        {"base": "0735e8:Apocalypse - Magic of Skyrim.esp", "type": "ACTI"}],
             "lifetime": {"whileHeld": true, "lingerS": 5, "maxS": 120}, "perCaster": 1}]"#;
         let parsed = new_placements(table);
         assert!(parsed.is_ok());
@@ -3332,23 +3589,84 @@ mod tests {
         assert!(t.is_listed(0xcc14, PLUGIN));
         assert!(!t.is_listed(0xcc14, "Skyrim.esm"));
         let cast = |hand: u8, yaw: f32| PlacedCast { caster: 0xff00_0000, hand, x: 0.0, y: 0.0, z: 0.0, yaw, concentration: true };
+        let report = |set: u64, short_id: u32, x: f32, y: f32, z: f32| PlacementReport { caster: 0xff00_0000, set, short_id, file: PLUGIN.to_owned(), x, y, z, yaw: 90.0 };
+        assert!(t.take_requests().is_empty());
         assert!(t.cast_started(0xcc14, PLUGIN, cast(1, 90.0), 1_000));
-        assert!(t.due_placements(1_200).is_empty());
-        let rows = t.due_placements(1_250);
+        // the request: one row per base, both on set 0, the window the rule's
+        let rows = t.take_requests();
         assert_eq!(rows.len(), 2);
-        assert!(rows.first().is_some_and(|r| r.set == 0 && r.caster == 0xff00_0000 && r.spell_short_id == 0xcc14 && r.spell_file == PLUGIN && r.short_id == 0x98529 && r.record_type == "MSTT" && (r.x - 192.0).abs() < 0.01 && (r.z + 48.0).abs() < 0.01 && (r.yaw - 90.0).abs() < 0.01), "{rows:?}");
-        assert!(rows.get(1).is_some_and(|r| r.set == 0 && r.short_id == 0x735e8 && r.record_type == "ACTI" && r.z.abs() < 0.01), "{rows:?}");
+        assert!(rows.first().is_some_and(|r| r.set == 0 && r.caster == 0xff00_0000 && r.spell_short_id == 0xcc14 && r.spell_file == PLUGIN && r.short_id == 0x98529 && r.record_type == "MSTT" && r.window_ms == 3_000), "{rows:?}");
+        assert!(rows.get(1).is_some_and(|r| r.set == 0 && r.short_id == 0x735e8 && r.record_type == "ACTI"), "{rows:?}");
+        assert!(t.take_requests().is_empty());
+        assert!(t.due_placements(1_200).is_empty());
+        // a report outside the band carries its numbers; one inside places
+        let far = t.report_placed(report(0, 0x98529, 300.0, 0.0, 0.0), 1_300);
+        assert!(!far.accepted && far.why == 6 && (far.distance - 300.0).abs() < 0.01, "{far:?}");
+        let wall = t.report_placed(report(0, 0x98529, 206.25, 0.0, -48.0), 1_400);
+        assert!(wall.accepted && wall.why == 0, "{wall:?}");
+        let rows = t.due_placements(1_400);
+        assert_eq!(rows.len(), 1);
+        assert!(rows.first().is_some_and(|r| r.set == 0 && r.caster == 0xff00_0000 && r.spell_short_id == 0xcc14 && r.short_id == 0x98529 && r.record_type == "MSTT" && (r.x - 206.25).abs() < 0.01 && (r.z + 48.0).abs() < 0.01 && (r.yaw - 90.0).abs() < 0.01), "{rows:?}");
         assert_eq!(t.live_sets(), 1);
-        // a second cast over the caster's cap of one is refused
+        let again = t.report_placed(report(0, 0x98529, 206.25, 0.0, -48.0), 1_500);
+        assert!(!again.accepted && again.why == 4, "{again:?}");
+        let halo = t.report_placed(report(0, 0x735e8, 196.875, 0.0, 0.0), 1_600);
+        assert!(halo.accepted, "{halo:?}");
+        assert!(t.due_placements(1_600).first().is_some_and(|r| r.set == 0 && r.short_id == 0x735e8 && r.record_type == "ACTI" && r.z.abs() < 0.01));
+        let none = t.report_placed(report(9, 0x735e8, 196.875, 0.0, 0.0), 1_700);
+        assert!(!none.accepted && none.why == 1, "{none:?}");
+        // a second cast over the caster's cap of one is refused at the cast
         assert!(t.cast_started(0xcc14, PLUGIN, cast(0, 0.0), 2_000));
-        assert!(t.due_placements(2_250).is_empty());
+        assert!(t.take_requests().is_empty());
         assert_eq!(t.take_refusals(), vec![PlacementRefusal { caster: 0xff00_0000, spell_short_id: 0xcc14, spell_file: PLUGIN.to_owned(), why: 0 }]);
         t.cast_ended(0xff00_0000, 1, 10_000);
         assert!(t.due_removals(14_999).is_empty());
         assert_eq!(t.due_removals(15_000), vec![PlacementRemoval { set: 0, caster: 0xff00_0000, why: 0 }]);
         assert_eq!(t.live_sets(), 0);
-        t.caster_gone(0xff00_0000, 20_000);
+        // a cast nobody reports is noted when its window closes
+        assert!(t.cast_started(0xcc14, PLUGIN, cast(1, 90.0), 20_000));
+        assert_eq!(t.take_requests().len(), 2);
+        assert!(t.due_placements(23_001).is_empty());
+        assert_eq!(t.take_refusals().first().map(|r| r.why), Some(2));
+        t.caster_gone(0xff00_0000, 30_000);
         assert!(new_placements(r#"[{"spell": "cc14"}]"#).is_err());
+        // shape C's offsets are read and ignored
+        assert!(new_placements(r#"[{"spell": "00cc14:Apocalypse - Magic of Skyrim.esp", "anchor": "caster", "objects": [{"base": "098529:Apocalypse - Magic of Skyrim.esp", "type": "MSTT", "forward": 192, "dz": -48}], "lifetime": {"whileHeld": true, "lingerS": 5, "maxS": 120}, "perCaster": 1}]"#).is_ok());
+    }
+
+    #[test]
+    fn the_bridge_levels_a_skill_from_the_records_constants() {
+        let mut t = new_leveling_table();
+        assert!((t.use_xp(6, 10.0) - 63.0).abs() < 0.001);
+        // Skyrim.esm's Smithing AVSK replaces UESP's reading
+        assert!(t.set_skill(10, 160.0, 0.0, 0.25, 300.0));
+        assert!((t.use_xp(10, 1.0) - 160.0).abs() < 0.001);
+        assert!(!t.set_skill(5, 1.0, 0.0, 1.0, 0.0));
+        assert!(!t.set_skill(10, f32::NAN, 0.0, 1.0, 0.0));
+        assert!((t.use_xp(10, 1.0) - 160.0).abs() < 0.001);
+        assert!((t.level_cost(6, 15) - 2.0 * 15.0f32.powf(1.95)).abs() < 0.01);
+        assert_eq!(t.use_xp(5, 10.0), 0.0);
+        assert_eq!(leveling_character_threshold(1), 100.0);
+        // seven hits of a base of 10: One-handed 15 to 16, the character at 16 toward 100
+        let mut skills = vec![LevelingSkill { skill_av: 6, level: 15, xp: 0.0 }];
+        let mut character = LevelingCharacter { level: 1, xp: 0.0 };
+        let mut outcome = LevelingOutcome { accepted: false, why: 0, skills: Vec::new(), character: character.clone(), events: Vec::new() };
+        for _ in 0..7 {
+            outcome = t.apply_use(&skills, character.clone(), 6, 10.0);
+            assert!(outcome.accepted, "{outcome:?}");
+            skills = outcome.skills.clone();
+            character = outcome.character.clone();
+        }
+        assert_eq!(outcome.events, vec![LevelingEvent { kind: 0, skill_av: 6, level: 16 }]);
+        assert_eq!(skills.len(), 18);
+        assert!(skills.iter().any(|s| s.skill_av == 6 && s.level == 16));
+        assert!(skills.iter().any(|s| s.skill_av == 23 && s.level == 15 && s.xp == 0.0));
+        assert_eq!(character.level, 1);
+        assert!((character.xp - 16.0).abs() < 0.001);
+        // the refusals by number
+        assert_eq!(t.apply_use(&skills, character.clone(), 5, 10.0).why, 1);
+        assert_eq!(t.apply_use(&skills, character.clone(), 6, f32::NAN).why, 2);
+        assert_eq!(t.apply_use(&skills, character.clone(), 6, 0.0).why, 3);
     }
 
     #[test]

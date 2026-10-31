@@ -21,6 +21,7 @@ pub mod forms;
 pub mod headshots;
 pub mod hosted_state;
 pub mod hostility;
+pub mod leveling;
 pub mod locks;
 pub mod magic;
 pub mod markers;

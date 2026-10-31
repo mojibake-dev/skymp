@@ -4,6 +4,7 @@
 #include "ALCH.h"
 #include "AMMO.h"
 #include "ARMO.h"
+#include "AVIF.h"
 #include "BOOK.h"
 #include "CELL.h"
 #include "COBJ.h"

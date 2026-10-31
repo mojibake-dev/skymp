@@ -21,6 +21,7 @@
 #include "DestroyActorMessage.h"
 #include "HostGrantMessage.h"
 #include "HostReleaseMessage.h"
+#include "PlacedRequestMessage.h"
 #include "PropOwnerMessage.h"
 #include "RaceMenuPresetMessage.h"
 #include "SetGameTimeMessage.h"
@@ -35,6 +36,7 @@
 #include "PacketParser.h"
 #include "SpSnippet.h"
 #include "libespm/ARMO.h"
+#include "libespm/AVIF.h"
 #include "libespm/CELL.h"
 #include "libespm/MGEF.h"
 #include "libespm/PROJ.h"
@@ -256,6 +258,10 @@ struct PartOne::Impl
     skymp::rules::new_placements("[]");
   std::unordered_map<uint64_t, std::vector<uint32_t>> placedSets;
   std::unordered_map<uint32_t, uint32_t> placedCasterByForm;
+  // thuum docs/verbs/leveling.md
+  rust::Box<skymp::rules::LevelingTable> leveling =
+    skymp::rules::new_leveling_table();
+  bool levelingEnabled = false;
   std::chrono::steady_clock::time_point lastPlacementsTick;
   // the food effects that lower the needs the server keeps (thuum
   // docs/verbs/player-globals.md, the needs): server-settings.json's
@@ -589,6 +595,7 @@ void PartOne::AttachEspm(espm::Loader* espm)
 {
   pImpl->espm = espm;
   worldState.AttachEspm(espm, [this] { return CreateFormCallbacks(); });
+  LoadSkillTable();
 }
 
 void PartOne::AttachSaveStorage(
@@ -2943,6 +2950,151 @@ bool PartOne::SetQuestStages(std::vector<QuestStageDone> stages)
   return WorldJournal().SetQuestStages(std::move(stages));
 }
 
+namespace {
+// the eighteen skills' AVIF records, one per ActorValue 6 to 23 (Skyrim.esm as
+// lab/esm.py read it, 2026-10-31: AVOneHanded 0x44c through AVEnchanting
+// 0x45d, in the engine's order)
+constexpr uint32_t kFirstSkillAvif = 0x44c;
+constexpr uint8_t kFirstSkillAv = 6;
+constexpr uint8_t kSkillCount = 18;
+}
+
+void PartOne::LoadSkillTable()
+{
+  if (!HasEspm()) {
+    return;
+  }
+  int fromFiles = 0;
+  for (uint8_t i = 0; i < kSkillCount; ++i) {
+    const uint32_t formId = kFirstSkillAvif + i;
+    const uint8_t skillAv = static_cast<uint8_t>(kFirstSkillAv + i);
+    const auto lookup = GetEspm().GetBrowser().LookupById(formId);
+    if (!lookup.rec || lookup.rec->GetType() != "AVIF") {
+      spdlog::warn("[verb:leveling] skill {}: no AVIF at {:x}; UESP's "
+                   "constants stand",
+                   skillAv, formId);
+      continue;
+    }
+    const auto data = espm::GetData<espm::AVIF>(formId, &worldState);
+    if (!data.hasSkill) {
+      spdlog::warn("[verb:leveling] skill {}: AVIF {:x} ({}) carries no AVSK; "
+                   "UESP's constants stand",
+                   skillAv, formId, data.editorId);
+      continue;
+    }
+    if (pImpl->leveling->set_skill(
+          skillAv, data.skill.useMult, data.skill.useOffset,
+          data.skill.improveMult, data.skill.improveOffset)) {
+      ++fromFiles;
+    }
+  }
+  spdlog::info("[verb:leveling] skill table: {} of {} skills from the game "
+               "files",
+               fromFiles, kSkillCount);
+}
+
+void PartOne::SetLevelingEnabled(bool on)
+{
+  pImpl->levelingEnabled = on;
+  spdlog::info("[verb:leveling] leveling {}", on ? "on" : "off");
+}
+
+bool PartOne::LevelingEnabled() const
+{
+  return pImpl->levelingEnabled;
+}
+
+float PartOne::SkillUseXp(uint8_t skillAv, float base) const
+{
+  return pImpl->leveling->use_xp(skillAv, base);
+}
+
+float PartOne::SkillLevelCost(uint8_t skillAv, uint8_t level) const
+{
+  return pImpl->leveling->level_cost(skillAv, level);
+}
+
+bool PartOne::ApplySkillUse(MpActor& actor, uint8_t skillAv, float amount)
+{
+  auto record = actor.GetActorValueRecord();
+  if (!record) {
+    spdlog::info("[verb:leveling] E_SKILL_NO_RECORD: {:x} uses skill {} "
+                 "before its first actor values report; dropped",
+                 actor.GetFormId(), skillAv);
+    return false;
+  }
+  std::vector<skymp::rules::LevelingSkill> skills;
+  for (const auto& s : record->skills) {
+    skymp::rules::LevelingSkill standing{};
+    standing.skill_av = static_cast<uint8_t>(s.skill + kFirstSkillAv);
+    standing.level = static_cast<uint8_t>(std::clamp(s.level, 0.f, 255.f));
+    standing.xp = s.xp;
+    skills.push_back(standing);
+  }
+  skymp::rules::LevelingCharacter character{};
+  character.level = record->level;
+  character.xp = record->xp;
+  const rust::Slice<const skymp::rules::LevelingSkill> slice(skills.data(),
+                                                             skills.size());
+  const auto outcome =
+    pImpl->leveling->apply_use(slice, character, skillAv, amount);
+  if (!outcome.accepted) {
+    static const char* const kWhy[] = { "accepted", "E_SKILL_NONE",
+                                        "E_SKILL_NAN", "E_SKILL_RANGE" };
+    spdlog::warn("[verb:leveling] {}: {:x} uses skill {} with {}; dropped",
+                 outcome.why < 4 ? kWhy[outcome.why] : "E_SKILL_UNKNOWN",
+                 actor.GetFormId(), skillAv, amount);
+    return false;
+  }
+  // the used skill's standing into the record: its progress entry (by the
+  // engine's skill index) and its base (the level the game shows)
+  const uint8_t skillIndex = static_cast<uint8_t>(skillAv - kFirstSkillAv);
+  for (const auto& s : outcome.skills) {
+    if (s.skill_av != skillAv) {
+      continue;
+    }
+    const float threshold = pImpl->leveling->level_cost(s.skill_av, s.level);
+    auto it = std::find_if(
+      record->skills.begin(), record->skills.end(),
+      [&](const ActorValueRecord::Skill& r) { return r.skill == skillIndex; });
+    if (it == record->skills.end()) {
+      record->skills.push_back(ActorValueRecord::Skill{
+        skillIndex, static_cast<float>(s.level), s.xp, threshold });
+    } else {
+      it->level = static_cast<float>(s.level);
+      it->xp = s.xp;
+      it->threshold = threshold;
+    }
+    auto base = std::find_if(
+      record->bases.begin(), record->bases.end(),
+      [&](const std::pair<uint8_t, float>& b) { return b.first == skillAv; });
+    if (base == record->bases.end()) {
+      record->bases.emplace_back(skillAv, static_cast<float>(s.level));
+    } else {
+      base->second = static_cast<float>(s.level);
+    }
+  }
+  record->level = outcome.character.level;
+  record->xp = outcome.character.xp;
+  record->threshold =
+    skymp::rules::leveling_character_threshold(outcome.character.level);
+  actor.SetActorValueRecord(*record);
+  for (const auto& e : outcome.events) {
+    if (e.kind == 0) {
+      spdlog::info("[verb:leveling] {:x} skill {} reaches level {}",
+                   actor.GetFormId(), e.skill_av, e.level);
+    } else {
+      spdlog::info("[verb:leveling] {:x} reaches character level {}",
+                   actor.GetFormId(), e.level);
+    }
+  }
+  if (!outcome.events.empty()) {
+    // the game shows the new level and the bar from the record (R0)
+    actor.SendActorValueRecord();
+  }
+  return true;
+}
+
 void PartOne::SetSpellPlacedObjectsSettings(
   const std::string& spellPlacedObjectsJson)
 {
@@ -2961,8 +3113,36 @@ const char* PlacementRemovalWhy(uint8_t why)
 
 const char* PlacementRefusalWhy(uint8_t why)
 {
-  return why == 0 ? "the caster holds its perCaster sets"
-                  : "the world holds its 64 sets";
+  switch (why) {
+    case 0:
+      return "the caster holds its perCaster sets";
+    case 1:
+      return "the world holds its 64 sets";
+    default:
+      return "the caster's game reported no base within the window";
+  }
+}
+
+// the report verdicts as the rule numbers them (wire-rules placements
+// ReportRefusal through the bridge's PlacementReportVerdict)
+const char* PlacementReportCode(uint8_t why)
+{
+  switch (why) {
+    case 1:
+      return "E_PLACED_SET";
+    case 2:
+      return "E_PLACED_LATE";
+    case 3:
+      return "E_PLACED_BASE";
+    case 4:
+      return "E_PLACED_REPEAT";
+    case 5:
+      return "E_PLACED_NAN";
+    case 6:
+      return "E_PLACED_RANGE";
+    default:
+      return "E_PLACED_UNKNOWN";
+  }
 }
 }
 
@@ -3044,28 +3224,105 @@ void PartOne::RemoveSpellPlacedSet(uint64_t set, const char* why)
   pImpl->placedSets.erase(it);
 }
 
-void PartOne::TickPlacements(uint64_t nowMs)
+void PartOne::SendPlacementRequests()
 {
-  const auto rows = pImpl->placements->due_placements(nowMs);
+  const auto rows = pImpl->placements->take_requests();
   for (size_t i = 0; i < rows.size();) {
-    const skymp::rules::PlacementRow& first = rows[i];
+    const skymp::rules::PlacementRequestRow& first = rows[i];
     const uint64_t set = first.set;
-    std::vector<uint32_t> formIds;
-    std::string ids;
+    PlacedRequestMessage ask;
+    ask.set = set;
+    ask.windowMs =
+      static_cast<uint32_t>(std::min<uint64_t>(first.window_ms, 10'000));
+    std::string names;
     for (; i < rows.size() && rows[i].set == set; ++i) {
-      if (const uint32_t formId = PlaceSpellObject(rows[i])) {
-        formIds.push_back(formId);
-        ids +=
-          fmt::format(" {:x} ({})", formId, std::string(rows[i].record_type));
+      const FormDesc baseDesc(rows[i].short_id, std::string(rows[i].file));
+      try {
+        ask.bases.push_back(baseDesc.ToFormId(worldState.espmFiles));
+        names += fmt::format(" {} ({})", baseDesc.ToString(),
+                             std::string(rows[i].record_type));
+      } catch (std::exception& e) {
+        spdlog::warn("[verb:spell-placed] base {} of set {}: {}; not asked",
+                     baseDesc.ToString(), set, e.what());
       }
     }
+    const auto spell =
+      FormDesc(first.spell_short_id, std::string(first.spell_file)).ToString();
+    const auto caster = std::dynamic_pointer_cast<MpActor>(
+      worldState.LookupFormByIdNoLoad(first.caster));
+    const auto userId = caster ? serverState.UserByActor(caster.get())
+                               : Networking::InvalidUserId;
+    if (ask.bases.empty() || userId == Networking::InvalidUserId) {
+      spdlog::warn("[verb:spell-placed] {:x} cast {}: set {} asks nothing "
+                   "({} base(s), user {})",
+                   first.caster, spell, set, ask.bases.size(),
+                   static_cast<int64_t>(userId));
+      continue;
+    }
+    GetSendTarget().Send(userId, ask, true);
+    spdlog::info("[verb:spell-placed] {:x} cast {}: set {} requested, {} "
+                 "base(s){} within {} ms",
+                 first.caster, spell, set, ask.bases.size(), names,
+                 ask.windowMs);
+  }
+}
+
+bool PartOne::ReportPlacedObject(MpActor& caster, uint64_t set,
+                                 uint32_t baseId, const NiPoint3& pos,
+                                 float yaw)
+{
+  FormDesc baseDesc;
+  try {
+    baseDesc = FormDesc::FromFormId(baseId, worldState.espmFiles);
+  } catch (std::exception& e) {
+    spdlog::warn("[verb:spell-placed] E_PLACED_BASE: {:x} reports set {} "
+                 "base {:x}: {}",
+                 caster.GetFormId(), set, baseId, e.what());
+    return false;
+  }
+  skymp::rules::PlacementReport report{};
+  report.caster = caster.GetFormId();
+  report.set = set;
+  report.short_id = baseDesc.shortFormId;
+  report.file = baseDesc.file;
+  report.x = pos.x;
+  report.y = pos.y;
+  report.z = pos.z;
+  report.yaw = yaw;
+  const uint64_t nowMs = SteadyNowMs();
+  const auto verdict = pImpl->placements->report_placed(report, nowMs);
+  if (!verdict.accepted) {
+    spdlog::warn("[verb:spell-placed] {}: {:x} reports set {} base {} at "
+                 "({:.0f}, {:.0f}, {:.0f}) yaw {:.0f}; {:.0f} on the ground "
+                 "and {:.0f} up from the cast",
+                 PlacementReportCode(verdict.why), caster.GetFormId(), set,
+                 baseDesc.ToString(), pos.x, pos.y, pos.z, yaw,
+                 verdict.distance, verdict.dz);
+    return false;
+  }
+  spdlog::info("[verb:spell-placed] {:x} reports set {} base {} at ({:.0f}, "
+               "{:.0f}, {:.0f}) yaw {:.0f}: accepted",
+               caster.GetFormId(), set, baseDesc.ToString(), pos.x, pos.y,
+               pos.z, yaw);
+  TickPlacements(nowMs);
+  return true;
+}
+
+void PartOne::TickPlacements(uint64_t nowMs)
+{
+  for (const skymp::rules::PlacementRow& row :
+       pImpl->placements->due_placements(nowMs)) {
+    const uint32_t formId = PlaceSpellObject(row);
+    if (formId) {
+      pImpl->placedSets[row.set].push_back(formId);
+    }
     spdlog::info(
-      "[verb:spell-placed] {:x} cast {}: set {} placed {} "
-      "form(s){} at ({:.0f}, {:.0f}, {:.0f}) yaw {:.0f}",
-      first.caster,
-      FormDesc(first.spell_short_id, std::string(first.spell_file)).ToString(),
-      set, formIds.size(), ids, first.x, first.y, first.z, first.yaw);
-    pImpl->placedSets[set] = std::move(formIds);
+      "[verb:spell-placed] {:x} cast {}: set {} placed {} form(s) {:x} ({}) "
+      "at ({:.0f}, {:.0f}, {:.0f}) yaw {:.0f}, as reported",
+      row.caster,
+      FormDesc(row.spell_short_id, std::string(row.spell_file)).ToString(),
+      row.set, formId ? 1 : 0, formId, std::string(row.record_type), row.x,
+      row.y, row.z, row.yaw);
   }
   for (const auto& refused : pImpl->placements->take_refusals()) {
     spdlog::info(
@@ -3987,6 +4244,7 @@ bool PartOne::StartCast(uint32_t actorFormId, uint32_t spell, uint8_t hand,
     cast.concentration = facts.kind == skymp::rules::CastKind::Concentration;
     pImpl->placements->cast_started(spellDesc.shortFormId, spellDesc.file,
                                     cast, nowMs);
+    SendPlacementRequests();
   }
   return pImpl->spellCasts->start(actorFormId, facts, nowMs);
 }

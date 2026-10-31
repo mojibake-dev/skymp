@@ -84,5 +84,12 @@ enum class MsgType : uint8_t
   PropOwner = 60,        // the same verb: who simulates a prop from now, to
                          // every listener at each owner change
 
+  PlacedRequest = 61, // thuum docs/verbs/spell-placed-object.md (ADR-057
+                      // shape A): the server asks the caster's game where
+                      // its engine stands a listed spell's placed objects
+  PlacedReport = 62,  // the same verb: the caster's answer for one base,
+                      // validated and placed for every other seat
+  SkillUse = 63, // thuum docs/verbs/leveling.md (M5): a player's skill uses
+                 // of the last second, batched, for the server's formulas
   Max
 };

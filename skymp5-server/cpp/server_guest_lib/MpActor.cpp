@@ -3818,8 +3818,8 @@ bool MpActor::EffectConditionsHold(WorldState* worldState,
     // the rows that fail, named (the pile's "refusal line naming its row",
     // 2026-10-31): every row false on its own, in the record's order; the
     // line's first clause is kept as it was (tests and readers count it)
-    const auto rows = ConditionsEvaluator::FailingRows(
-      map, conditions, victim, caster, context);
+    const auto rows = ConditionsEvaluator::FailingRows(map, conditions, victim,
+                                                       caster, context);
     if (failedRow) {
       *failedRow = rows;
     }

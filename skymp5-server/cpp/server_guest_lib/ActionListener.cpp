@@ -3175,6 +3175,23 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
   }
 }
 
+// thuum docs/verbs/spell-placed-object.md (ADR-057 shape A, D70): the
+// caster's answer to the server's PlacedRequest for one base. The sender
+// must be a player with an actor; the rest (the set, the base, the band) is
+// the rule's, judged and logged in PartOne::ReportPlacedObject, which places
+// the object for every other seat when the report stands.
+void ActionListener::OnPlacedReport(const RawMessageData& rawMsgData,
+                                    const PlacedReportMessage& msg)
+{
+  MpActor* myActor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!myActor) {
+    return;
+  }
+  partOne.ReportPlacedObject(*myActor, msg.set, msg.base,
+                             NiPoint3{ msg.pos[0], msg.pos[1], msg.pos[2] },
+                             msg.yaw);
+}
+
 // thuum docs/verbs/prop-physics.md (ADR-058 decision 2): a simulator's
 // sample of a prop. The record takes it from the prop's owner alone (the
 // toucher while awake or inside its lease, else the host of the cell the

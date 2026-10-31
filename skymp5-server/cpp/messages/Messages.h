@@ -34,6 +34,8 @@
 #include "MapMarkerDiscoveredMessage.h"
 #include "OnEquipMessage.h"
 #include "OpenContainerMessage.h"
+#include "PlacedReportMessage.h"
+#include "PlacedRequestMessage.h"
 #include "PlayerBowShotMessage.h"
 #include "PlayerGlobalsMessage.h"
 #include "PropClaimMessage.h"
@@ -120,4 +122,6 @@
   REGISTER_MESSAGE(QuestStageMessage)                                         \
   REGISTER_MESSAGE(PropTransformMessage)                                      \
   REGISTER_MESSAGE(PropClaimMessage)                                          \
-  REGISTER_MESSAGE(PropOwnerMessage)
+  REGISTER_MESSAGE(PropOwnerMessage)                                          \
+  REGISTER_MESSAGE(PlacedRequestMessage)                                      \
+  REGISTER_MESSAGE(PlacedReportMessage)

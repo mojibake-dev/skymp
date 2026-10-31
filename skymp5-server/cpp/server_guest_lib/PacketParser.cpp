@@ -267,6 +267,12 @@ void PacketParser::TransformPacketIntoAction(Networking::UserId userId,
         actionListener.OnPropClaim(rawMsgData, *message);
         return;
       }
+      case MsgType::PlacedReport: {
+        auto message =
+          reinterpret_cast<PlacedReportMessage*>(result->message.get());
+        actionListener.OnPlacedReport(rawMsgData, *message);
+        return;
+      }
       default: {
         spdlog::error("PacketParser.cpp doesn't implement MsgType {}",
                       static_cast<int64_t>(result->msgType));

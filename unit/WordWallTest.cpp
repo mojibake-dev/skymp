@@ -7,9 +7,11 @@ PartOne& GetPartOne();
 
 // thuum docs/verbs/word-wall.md (M4): a word wall's word into the shout
 // record. Bleak Falls Sanctum 0x371dd (lab/esm.py cellrefs, 2026-10-31): the
-// trigger 0x709d2 (ACTI 0x5095e WordWallTrigger, its script's myWord the WOOP
-// WordFus 0x13e22) at (-7601, -154, 674); the wall 0x709d1 itself (ACTI
-// 0x7098e) teaches nothing.
+// trigger 0x709d2 (ACTI 0x5095e WordWallTrigger, its script's myWord01 the
+// WOOP WordFus 0x13e22, its wordWall01 the wall 0x709d1) at (-7601, -154,
+// 674); the wall 0x709d1 itself (ACTI 0x7098e, at (-7802, 100, 521)) teaches
+// nothing and is what the reach is measured to (the trigger's bounds are a
+// 4,000-unit box, lab/esm.py 2026-11-01).
 namespace {
 constexpr uint32_t kReader = 0xff000fd1;
 constexpr uint32_t kSanctum = 0x371dd;

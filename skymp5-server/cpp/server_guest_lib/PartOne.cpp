@@ -4756,7 +4756,8 @@ bool PartOne::PerksEnabled() const
 // reference's own value over its base ACTI's, as ScriptVariablesHolder reads
 // a script's properties) and made global through that record's lookup; none
 // for a reference that is no word wall trigger, or whose word is no WOOP
-std::optional<uint32_t> PartOne::WordOfWall(const MpObjectReference& wall)
+std::optional<PartOne::WordWall> PartOne::WordOfWall(
+  const MpObjectReference& trigger)
 {
   if (!worldState.HasEspm()) {
     return std::nullopt;
@@ -4764,6 +4765,7 @@ std::optional<uint32_t> PartOne::WordOfWall(const MpObjectReference& wall)
   auto& browser = worldState.GetEspm().GetBrowser();
   auto& cache = worldState.GetEspmCache();
   std::optional<uint32_t> word;
+  uint32_t wallRef = 0;
   const auto read = [&](const espm::LookupResult& lookup) {
     if (!lookup.rec) {
       return;
@@ -4782,26 +4784,34 @@ std::optional<uint32_t> PartOne::WordOfWall(const MpObjectReference& wall)
         // references carry it with the wall's other eight properties, the
         // base ACTI's copy of the script the shared five: lab/esm.py's VMAD
         // decode of 0x709d2 and 0x5095e, 2026-11-01)
-        if (property.type == espm::Property::Type::Object &&
-            (!Utils::stricmp(property.name.data(), "myWord01") ||
-             !Utils::stricmp(property.name.data(), "myWord")) &&
-            property.value.formId) {
+        if (property.type != espm::Property::Type::Object ||
+            !property.value.formId) {
+          continue;
+        }
+        if (!Utils::stricmp(property.name.data(), "myWord01") ||
+            !Utils::stricmp(property.name.data(), "myWord")) {
           word = lookup.ToGlobalId(property.value.formId);
+        } else if (!Utils::stricmp(property.name.data(), "wordWall01")) {
+          // the wall the trigger stands for: the reach is measured to it, as
+          // the trigger's own bounds are the chamber (WordWallTrigger's OBND
+          // is a box of about 4,000 units a side)
+          wallRef = lookup.ToGlobalId(property.value.formId);
         }
       }
     }
   };
-  read(browser.LookupById(wall.GetBaseId()));
-  if (wall.IsEspmForm()) {
-    read(browser.LookupById(wall.GetFormId()));
+  read(browser.LookupById(trigger.GetBaseId()));
+  if (trigger.IsEspmForm()) {
+    read(browser.LookupById(trigger.GetFormId()));
   }
-  if (word) {
-    const auto lookup = browser.LookupById(*word);
-    if (!lookup.rec || !(lookup.rec->GetType() == "WOOP")) {
-      return std::nullopt;
-    }
+  if (!word) {
+    return std::nullopt;
   }
-  return word;
+  const auto lookup = browser.LookupById(*word);
+  if (!lookup.rec || !(lookup.rec->GetType() == "WOOP")) {
+    return std::nullopt;
+  }
+  return WordWall{ *word, wallRef };
 }
 
 void PartOne::LoadPerkTable()

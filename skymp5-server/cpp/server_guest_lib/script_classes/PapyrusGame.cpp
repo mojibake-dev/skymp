@@ -1,9 +1,9 @@
 #include "PapyrusGame.h"
-#include "EspmGameObject.h"
 #include "FormDesc.h"
 #include "MpActor.h"
 #include "PapyrusFormList.h"
 #include "ShoutSnippets.h"
+#include "script_objects/EspmGameObject.h"
 
 #include "SpSnippetFunctionGen.h"
 #include "WorldState.h"

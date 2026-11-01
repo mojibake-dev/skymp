@@ -858,3 +858,164 @@ TEST_CASE("Regress: LvlGiant mustn't have Fox race health", "[PartOne][espm]")
 
   REQUIRE(baseActorValues.health == 250.f);
 }
+
+// thuum docs/verbs/containers.md (M4's row): the rest of the container row.
+// The barrel is BarrelFood01 0x20570 at (21272, -7816, -3608) in Whiterun
+// 0x1a26f, the test world's one container.
+
+TEST_CASE("A put or a take from beyond the activation reach is refused and "
+          "the mover resynced; within reach it is taken",
+          "[PartOne][espm][Containers]")
+{
+  auto& partOne = GetPartOne();
+  auto refrId = 0x20570;
+  auto& ref = partOne.worldState.GetFormAt<MpObjectReference>(refrId);
+  ref.SetRelootTime(kRelootWindow);
+
+  DoConnect(partOne, 0);
+  partOne.CreateActor(0xff000000, { 21272.0000, -7816.0000, -3608.0000 }, 0,
+                      0x1a26f);
+  partOne.SetUserActor(0, 0xff000000);
+  auto& actor = partOne.worldState.GetFormAt<MpActor>(0xff000000);
+  actor.RemoveAllItems();
+  ref.SetChanceNoneOverride(0);
+  ref.Activate(actor);
+  REQUIRE(ref.IsContainerOccupant(&actor));
+  actor.AddItem(0x12eb7, 2);
+
+  // the mover walked 900 units off with the menu open: the put is refused,
+  // nothing moves, the mover hears both inventories again
+  actor.SetPos({ 21272.0000 + 900.f, -7816.0000, -3608.0000 });
+  partOne.Messages().clear();
+  DoMessage(partOne, 0,
+            { { "t", MsgType::PutItem },
+              { "baseId", 0x12eb7 },
+              { "count", 2 },
+              { "target", refrId } });
+  partOne.Tick();
+  REQUIRE(actor.GetInventory().GetItemCount(0x12eb7) == 2);
+  REQUIRE(ref.GetInventory().GetItemCount(0x12eb7) == 0);
+  bool resynced = false;
+  for (auto& m : partOne.Messages()) {
+    if (m.userId == 0 && m.j["t"] == MsgType::SetInventory) {
+      resynced = true;
+    }
+  }
+  REQUIRE(resynced);
+
+  // back at the barrel: the put is taken
+  actor.SetPos({ 21272.0000, -7816.0000, -3608.0000 });
+  partOne.Messages().clear();
+  DoMessage(partOne, 0,
+            { { "t", MsgType::PutItem },
+              { "baseId", 0x12eb7 },
+              { "count", 2 },
+              { "target", refrId } });
+  partOne.Tick();
+  REQUIRE(actor.GetInventory().GetItemCount(0x12eb7) == 0);
+  REQUIRE(ref.GetInventory().GetItemCount(0x12eb7) == 2);
+
+  // and a take from afar is refused the same way
+  actor.SetPos({ 21272.0000, -7816.0000 + 900.f, -3608.0000 });
+  DoMessage(partOne, 0,
+            { { "t", MsgType::TakeItem },
+              { "baseId", 0x12eb7 },
+              { "count", 2 },
+              { "target", refrId } });
+  partOne.Tick();
+  REQUIRE(ref.GetInventory().GetItemCount(0x12eb7) == 2);
+  REQUIRE(actor.GetInventory().GetItemCount(0x12eb7) == 0);
+
+  // the barrel left as found
+  actor.SetPos({ 21272.0000, -7816.0000, -3608.0000 });
+  ref.TakeItem(actor, { 0x12eb7, 2 });
+  actor.RemoveAllItems();
+  ref.Activate(actor, false, true);
+  DoDisconnect(partOne, 0);
+  partOne.DestroyActor(0xff000000);
+}
+
+TEST_CASE("A reloot asked for a time keeps that moment in the record, so a "
+          "restart's remaining time is not pushed a full window later",
+          "[PartOne][espm][Containers]")
+{
+  auto& partOne = GetPartOne();
+  auto& ref = partOne.worldState.GetFormAt<MpObjectReference>(0x20570);
+  ref.SetRelootTime(kRelootWindow);
+  REQUIRE(!ref.GetNextRelootMoment());
+
+  const auto before = std::chrono::system_clock::now();
+  ref.RequestReloot(std::chrono::seconds(3));
+  const auto moment = ref.GetNextRelootMoment();
+  REQUIRE(moment);
+  // the record says about 3 s from now, not the 1 s window (the record holds
+  // whole seconds, so the bounds allow one each way)
+  REQUIRE(*moment - before >= std::chrono::milliseconds(1'900));
+  REQUIRE(*moment - before <= std::chrono::milliseconds(4'100));
+
+  // a restart's load asks for the remaining time and keeps the moment
+  MpChangeForm saved = ref.GetChangeForm();
+  partOne.worldState.LoadChangeForm(saved, partOne.CreateFormCallbacks());
+  const auto again = ref.GetNextRelootMoment();
+  REQUIRE(again);
+  REQUIRE(*again - before >= std::chrono::milliseconds(900));
+  REQUIRE(*again - before <= std::chrono::milliseconds(4'100));
+
+  // left as found: the reloot fired by hand clears the moment
+  ref.DoReloot();
+  REQUIRE(!ref.GetNextRelootMoment());
+}
+
+TEST_CASE("A container saved open comes back shut at load, with nobody in it",
+          "[PartOne][espm][Containers]")
+{
+  auto& partOne = GetPartOne();
+  auto& ref = partOne.worldState.GetFormAt<MpObjectReference>(0x20570);
+  MpChangeForm saved = ref.GetChangeForm();
+  saved.isOpen = true;
+  partOne.worldState.LoadChangeForm(saved, partOne.CreateFormCallbacks());
+  REQUIRE(!ref.IsOpen());
+}
+
+TEST_CASE("A disconnect releases the player's container: the chest shuts "
+          "for the others when it was the last in it",
+          "[PartOne][espm][Containers]")
+{
+  auto& partOne = GetPartOne();
+  auto refrId = 0x20570;
+  auto& ref = partOne.worldState.GetFormAt<MpObjectReference>(refrId);
+  ref.SetRelootTime(kRelootWindow);
+
+  DoConnect(partOne, 0);
+  partOne.CreateActor(0xff000000, { 21272.0000, -7816.0000, -3608.0000 }, 0,
+                      0x1a26f);
+  partOne.SetUserActor(0, 0xff000000);
+  DoConnect(partOne, 1);
+  partOne.CreateActor(0xff000001, { 21272.0000, -7716.0000, -3608.0000 }, 0,
+                      0x1a26f);
+  partOne.SetUserActor(1, 0xff000001);
+  auto& actor = partOne.worldState.GetFormAt<MpActor>(0xff000000);
+  ref.SetChanceNoneOverride(0);
+  ref.Activate(actor);
+  REQUIRE(ref.IsOpen());
+  REQUIRE(ref.IsContainerOccupant(&actor));
+  REQUIRE(actor.OccupiedContainers().count(&ref) == 1);
+
+  partOne.Messages().clear();
+  DoDisconnect(partOne, 0);
+  REQUIRE(!ref.IsOpen());
+  REQUIRE(!ref.IsContainerOccupant(&actor));
+  REQUIRE(actor.OccupiedContainers().empty());
+  bool told = false;
+  for (auto& m : partOne.Messages()) {
+    if (m.userId == 1 && m.j["t"] == MsgType::UpdateProperty &&
+        m.j["propName"] == "isOpen" && m.j["dataDump"] == "false") {
+      told = true;
+    }
+  }
+  REQUIRE(told);
+
+  DoDisconnect(partOne, 1);
+  partOne.DestroyActor(0xff000000);
+  partOne.DestroyActor(0xff000001);
+}

@@ -679,6 +679,12 @@ void MpObjectReference::SetOpen(bool open)
       [&](MpChangeFormREFR& changeForm) { changeForm.isOpen = open; });
     SendMessageToActorListeners(
       CreatePropertyMessage_(this, "isOpen", open ? "true" : "false"), true);
+    // thuum docs/verbs/containers.md: the lab reads a container's state here
+    if (baseType == "CONT") {
+      spdlog::info("[verb:containers] {:x} {} with {} occupant(s)",
+                   GetFormId(), open ? "open" : "shut",
+                   containerOccupants.size());
+    }
   }
 }
 
@@ -767,11 +773,13 @@ void MpObjectReference::AddContainerOccupant(MpActor& actor)
   actor.AddEventSink(destroySink);
   actor.AddEventSink(disableSink);
   containerOccupantSinks[&actor] = { destroySink, disableSink };
+  actor.MarkContainerOccupied(this, true);
 }
 
 void MpObjectReference::RemoveContainerOccupant(MpActor& actor)
 {
   containerOccupants.erase(&actor);
+  actor.MarkContainerOccupied(this, false);
   const auto it = containerOccupantSinks.find(&actor);
   if (it != containerOccupantSinks.end()) {
     actor.RemoveEventSink(it->second.first);
@@ -1335,9 +1343,14 @@ void MpObjectReference::RequestReloot(
     time = GetRelootTime();
 
   if (!ChangeForm().nextRelootDatetime) {
+    // thuum docs/verbs/containers.md: the record keeps the moment asked for,
+    // not a full window from now; ApplyChangeForm asks for the time left at
+    // a restart, and the full window here pushed every reloot a window later
+    // per restart (M4's row, "the reloot timer that each restart pushes
+    // later")
     EditChangeForm([&](MpChangeFormREFR& changeForm) {
       changeForm.nextRelootDatetime = std::chrono::system_clock::to_time_t(
-        std::chrono::system_clock::now() + GetRelootTime());
+        std::chrono::system_clock::now() + *time);
     });
 
     GetParent()->RequestReloot(*this, *time);
@@ -1430,6 +1443,16 @@ void MpObjectReference::ApplyChangeForm(const MpChangeForm& changeForm)
 
       // Fix: RequestReloot doesn't work with non-zero 'nextRelootDatetime'
       f.nextRelootDatetime = 0;
+
+      // thuum docs/verbs/containers.md: a container saved open has nobody in
+      // it after a load (the occupant set is the session's), so it comes
+      // back shut; a door keeps the state its record says
+      if (f.isOpen && baseType == "CONT") {
+        f.isOpen = false;
+        spdlog::info("[verb:containers] {:x} saved open came back shut at "
+                     "load",
+                     GetFormId());
+      }
     },
     Mode::NoRequestSave);
   if (changeForm.nextRelootDatetime) {

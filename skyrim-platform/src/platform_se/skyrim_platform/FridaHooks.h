@@ -22,6 +22,14 @@ bool DamageActorOriginal(RE::Actor* victim, float damage, RE::Actor* attacker,
 // npcEngineDamage switches it
 void SetEngineDamageCut(bool on);
 
+// thuum docs/DECISIONS.md ADR-059 decision 1: the cells this game hosts, so a
+// Papyrus event to a reference standing in one of them passes the event block
+// when its script is on a host-scoped row of the admitted list ("<plugin>
+// host: <class> ..." in Data/Platform/papyrus-scripts.txt). skymp5-client's
+// hostService tells it at every grant and release (TESModPlatform's
+// SetCellHosted). Threadsafe.
+void SetCellHosted(uint32_t cellFormId, bool hosted);
+
 // thuum docs/verbs/quest-stage.md, slice two: a (quest, stage) pair
 // skymp5-client's questStageService is applying from the server's relay,
 // whose Papyrus fragment the VM's quest stage sink skips at the pair's next

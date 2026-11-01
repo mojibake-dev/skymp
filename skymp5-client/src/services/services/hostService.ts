@@ -143,6 +143,26 @@ export class HostService extends ClientListener {
         return this.streamEnabled;
     }
 
+    // thuum docs/DECISIONS.md ADR-059 decision 1: the platform's event block
+    // admits a host-scoped script's events only to references in a cell this
+    // game hosts; the hosted set is told to it at every grant, release, clear
+    // and restore, on the next update (a message handler may call no native).
+    // A platform without the native (an older dist) throws: harmless, logged
+    // once.
+    private tellPlatform(cell: number, hosted: boolean) {
+        this.controller.once("update", () => {
+            try {
+                this.sp.callNative("TESModPlatform", "SetCellHosted", undefined, cell, hosted);
+            } catch (e) {
+                if (!this.platformToldOnce) {
+                    this.platformToldOnce = true;
+                    logTrace(this, `SetCellHosted unavailable on this platform: ${e}`);
+                }
+            }
+        });
+    }
+    private platformToldOnce = false;
+
     // The cells this game hosts, with their epochs.
     hostedCells(): ReadonlyMap<number, number> {
         return this.hosted;
@@ -218,6 +238,7 @@ export class HostService extends ClientListener {
         }
         this.lastEpoch.set(cell, epoch);
         this.hosted.set(cell, epoch);
+        this.tellPlatform(cell, true);
         this.persist();
         logTrace(this, `hosting cell ${cell.toString(16)} at epoch ${epoch}`);
         // thuum playtest 38's finding 66: the roster that raced this grant was
@@ -237,6 +258,7 @@ export class HostService extends ClientListener {
             return;
         }
         this.hosted.delete(cell);
+        this.tellPlatform(cell, false);
         if (epoch > (this.lastEpoch.get(cell) ?? 0)) {
             this.lastEpoch.set(cell, epoch);
         }
@@ -255,6 +277,7 @@ export class HostService extends ClientListener {
         }
         for (const cell of Array.from(this.hosted.keys())) {
             this.controller.emitter.emit("cellHostChanged", { cell, hosted: false });
+            this.tellPlatform(cell, false);
         }
         this.hosted.clear();
         this.lastEpoch.clear();
@@ -402,6 +425,7 @@ export class HostService extends ClientListener {
         const ids = (v: unknown): number[] => Array.isArray(v) ? v.filter((x): x is number => typeof x === "number") : [];
         for (const [cell, epoch] of pairs(stored.hosted)) {
             this.hosted.set(cell, epoch);
+            this.tellPlatform(cell, true);
         }
         for (const [cell, epoch] of pairs(stored.lastEpoch)) {
             this.lastEpoch.set(cell, epoch);

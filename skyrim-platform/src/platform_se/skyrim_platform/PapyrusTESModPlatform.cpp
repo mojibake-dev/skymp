@@ -1047,6 +1047,13 @@ void TESModPlatform::CloseMenu(IVM* vm, StackID stackId,
     name, RE::UI_MESSAGE_TYPE::kHide, nullptr);
 }
 
+void TESModPlatform::SetCellHosted(IVM* vm, StackID stackId,
+                                   RE::StaticFunctionTag*, int32_t cellFormId,
+                                   bool hosted)
+{
+  Frida::SetCellHosted(static_cast<uint32_t>(cellFormId), hosted);
+}
+
 // The engine's clock step rebuilds GameDaysPassed every frame as GameHour /
 // 24 plus Calendar::rawDaysPassed (CommonLibSSE-NG Calendar.h; the step is
 // Address Library 36291 on 1.7.104, read in Ghidra: HYPOTHESIS until the lab
@@ -1740,6 +1747,11 @@ bool TESModPlatform::Register(IVM* vm)
     new RE::BSScript::NativeFunction<true, decltype(CloseMenu), void,
                                      RE::StaticFunctionTag*, std::string_view>(
       "CloseMenu", "TESModPlatform", CloseMenu));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SetCellHosted), void,
+                                     RE::StaticFunctionTag*, int32_t, bool>(
+      "SetCellHosted", "TESModPlatform", SetCellHosted));
 
   vm->BindNativeMethod(
     new RE::BSScript::NativeFunction<true, decltype(SetGameDaysPassed), void,

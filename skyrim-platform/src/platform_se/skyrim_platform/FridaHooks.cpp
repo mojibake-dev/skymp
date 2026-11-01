@@ -58,6 +58,11 @@
 // the behavior before train-29. Names compare without case (Papyrus's rule).
 namespace {
 std::unordered_set<std::string> g_admittedScripts;
+// ADR-059 decision 1: the host-scoped rows' names, admitted only for an
+// event on a reference in a cell this game hosts, and that set of cells
+std::unordered_set<std::string> g_hostAdmittedScripts;
+std::mutex g_hostedCellsMutex;
+std::unordered_set<uint32_t> g_hostedCells;
 
 std::string LowerAscii(const char* s)
 {
@@ -71,6 +76,7 @@ std::string LowerAscii(const char* s)
 void LoadAdmittedScripts()
 {
   g_admittedScripts.clear();
+  g_hostAdmittedScripts.clear();
   std::ifstream file("Data/Platform/papyrus-scripts.txt");
   if (!file.is_open()) {
     logger::info("[verb:papyrus-events] no Data/Platform/papyrus-scripts.txt: "
@@ -88,6 +94,15 @@ void LoadAdmittedScripts()
       continue;
     }
     ++plugins;
+    // "<plugin> host: ..." scopes the row to cells this game hosts (ADR-059)
+    std::string plugin = LowerAscii(line.substr(0, colon).c_str());
+    while (!plugin.empty() &&
+           (plugin.back() == ' ' || plugin.back() == '\t')) {
+      plugin.pop_back();
+    }
+    const bool hostScope =
+      plugin.size() > 5 && plugin.compare(plugin.size() - 5, 5, " host") == 0;
+    auto& target = hostScope ? g_hostAdmittedScripts : g_admittedScripts;
     std::string rest = line.substr(colon + 2);
     size_t pos = 0;
     while (pos < rest.size()) {
@@ -101,7 +116,7 @@ void LoadAdmittedScripts()
           name.pop_back();
         }
         if (!name.empty()) {
-          g_admittedScripts.insert(LowerAscii(name.c_str()));
+          target.insert(LowerAscii(name.c_str()));
         }
       }
       pos = end + 1;
@@ -109,15 +124,18 @@ void LoadAdmittedScripts()
   }
   logger::info(
     "[verb:papyrus-events] {} script class name(s) admitted from {} "
-    "plugin line(s) in Data/Platform/papyrus-scripts.txt",
-    g_admittedScripts.size(), plugins);
+    "plugin line(s) in Data/Platform/papyrus-scripts.txt, {} of them on the "
+    "hosting seat alone",
+    g_admittedScripts.size() + g_hostAdmittedScripts.size(), plugins,
+    g_hostAdmittedScripts.size());
 }
 
 // A script passes if it, or any class it extends, is SkyUI's (SKI_*) or is
 // named by an admitted plugin's line. The chain is ObjectTypeInfo's
 // parentTypeInfo (CommonLibSSE-NG include/RE/O/ObjectTypeInfo.h:127-128,
 // :178); it ends at a null parent, and the walk stops at 16 either way.
-bool AdmittedByChain(const RE::BSScript::ObjectTypeInfo* info)
+bool AdmittedByChain(const RE::BSScript::ObjectTypeInfo* info,
+                     bool inHostedCell)
 {
   for (int depth = 0; info && depth < 16; ++depth, info = info->GetParent()) {
     auto name = LowerAscii(info->GetName());
@@ -127,9 +145,26 @@ bool AdmittedByChain(const RE::BSScript::ObjectTypeInfo* info)
     if (!g_admittedScripts.empty() && g_admittedScripts.count(name)) {
       return true;
     }
+    // ADR-059 decision 1: a host-scoped name passes for a reference in a
+    // cell this game hosts (the world's traps, levers and pillars run on
+    // the cell's host, nowhere else)
+    if (inHostedCell && !g_hostAdmittedScripts.empty() &&
+        g_hostAdmittedScripts.count(name)) {
+      return true;
+    }
   }
   return false;
 }
+}
+
+void Frida::SetCellHosted(uint32_t cellFormId, bool hosted)
+{
+  std::lock_guard<std::mutex> lock(g_hostedCellsMutex);
+  if (hosted) {
+    g_hostedCells.insert(cellFormId);
+  } else {
+    g_hostedCells.erase(cellFormId);
+  }
 }
 
 /**
@@ -148,6 +183,9 @@ void OnSendEventEnter(GumInvocationContext* ic)
   auto vm = VM::GetSingleton();
 
   uint32_t selfId = 0;
+  // the cell the event's reference stands in (ADR-059 decision 1's gate);
+  // an actor's, a quest's or an effect's event has none
+  uint32_t selfCell = 0;
 
   auto policy = vm->GetObjectHandlePolicy();
   if (policy) {
@@ -158,7 +196,17 @@ void OnSendEventEnter(GumInvocationContext* ic)
     if (auto refr =
           policy->GetObjectForHandle(RE::FormType::Reference, handle)) {
       selfId = refr->GetFormID();
+      if (auto ref = static_cast<RE::TESObjectREFR*>(refr)) {
+        if (auto cell = ref->GetParentCell()) {
+          selfCell = cell->GetFormID();
+        }
+      }
     }
+  }
+  bool inHostedCell = false;
+  if (selfCell != 0) {
+    std::lock_guard<std::mutex> lock(g_hostedCellsMutex);
+    inHostedCell = g_hostedCells.count(selfCell) > 0;
   }
 
   auto eventNameStr = std::string(*eventName);
@@ -210,7 +258,7 @@ void OnSendEventEnter(GumInvocationContext* ic)
         auto info = script->GetTypeInfo();
         auto name = info->GetName();
 
-        if (AdmittedByChain(info)) {
+        if (AdmittedByChain(info, inHostedCell)) {
           blockEvents = false;
           break;
         } else if (!strnicmp(name, "RaceMenu", 8)) {

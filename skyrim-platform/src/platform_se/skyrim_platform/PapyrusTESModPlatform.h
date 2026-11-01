@@ -92,6 +92,13 @@ void ResetContainer(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
 void CloseMenu(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                std::string_view name);
 
+// thuum docs/DECISIONS.md ADR-059 decision 1: a cell this game hosts (or no
+// longer hosts), for the Papyrus event block's host-scoped admitted scripts
+// (Frida::SetCellHosted); skymp5-client's hostService calls it at every
+// grant and release
+void SetCellHosted(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
+                   int32_t cellFormId, bool hosted);
+
 // Sets the engine's day count so that GameDaysPassed reads daysPassed and
 // runs on from it (thuum docs/verbs/time.md)
 void SetGameDaysPassed(IVM* vm, StackID stackId, RE::StaticFunctionTag*,

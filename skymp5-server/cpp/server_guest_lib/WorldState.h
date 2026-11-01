@@ -330,6 +330,15 @@ public:
   // through this (MpActor::SetActorValueBaseByServer); none installed, the
   // base moves alone and a line says so
   std::function<float(uint8_t skillAv, uint8_t level)> skillLevelCost;
+  // thuum docs/verbs/perks.md (the second half): a value through the perk
+  // records' entry points the owner's held perks carry (wire-rules perks),
+  // installed by PartOne with its perk table; the formulas call it with the
+  // entry point (CommonLibSSE-NG BGSEntryPoint.h), the running value and the
+  // subject's keywords (the weapon's, the armor piece's). None installed, or
+  // perks off, the value passes unchanged.
+  std::function<float(const MpActor& owner, uint8_t entryPoint, float value,
+                      const std::vector<uint32_t>& subjectKeywords)>
+    applyPerkEntryPoint;
   // thuum docs/verbs/npc-fate.md (ADR-049 decision 1): the level the next
   // game-file actors loaded roll their template chain and outfit at (the
   // player whose arrival loads them), set by PartOne around the fate pass's

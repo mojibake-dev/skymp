@@ -34,6 +34,21 @@ pub const FLAG_SWAP_SUBJECT: u8 = 0x10;
 /// holds; the groups are ANDed (the engine's reading, which the perk trees
 /// use for a perk with two parents).
 pub const FLAG_OR: u8 = 0x01;
+/// HasKeyword (CommonLibSSE-NG TESCondition.h:690): a perk effect's subject
+/// tab reads it against the weapon's or the armor piece's keywords.
+pub const FN_HAS_KEYWORD: u16 = 560;
+/// The entry points the server's formulas take (CommonLibSSE-NG
+/// include/RE/B/BGSEntryPoint.h:13-106): kModAttackDamage.
+pub const ENTRY_MOD_ATTACK_DAMAGE: u8 = 35;
+/// kModArmorRating.
+pub const ENTRY_MOD_ARMOR_RATING: u8 = 85;
+/// The entry functions the rule applies (BGSEntryPointPerkEntry.h:20-37):
+/// SetValue.
+pub const EFFECT_SET_VALUE: u8 = 1;
+/// AddValue.
+pub const EFFECT_ADD_VALUE: u8 = 2;
+/// MultiplyValue.
+pub const EFFECT_MULTIPLY_VALUE: u8 = 3;
 /// The highest actor value index (CommonLibSSE-NG ActorValues.h, kTotal 164).
 pub const MAX_ACTOR_VALUE: u32 = 163;
 
@@ -101,6 +116,15 @@ pub enum Condition {
         /// The value compared against.
         value: f32,
     },
+    /// HasKeyword(keyword) == 1 (`wanted` true) or == 0, judged against a
+    /// subject's keywords (an effect's weapon or armor piece); a perk's own
+    /// condition on it refuses the pick (the record carries no keywords).
+    HasKeyword {
+        /// The keyword's form id.
+        keyword: u32,
+        /// Carried (true) or not (false).
+        wanted: bool,
+    },
     /// GetLevel against `value`.
     Level {
         /// The comparison.
@@ -139,6 +163,11 @@ impl Condition {
                 _ => Condition::Unknown { function },
             },
             FN_GET_LEVEL => Condition::Level { op, value },
+            FN_HAS_KEYWORD => match op {
+                Op::Eq => Condition::HasKeyword { keyword: param1, wanted: value >= 0.5 },
+                Op::Ne => Condition::HasKeyword { keyword: param1, wanted: value < 0.5 },
+                _ => Condition::Unknown { function },
+            },
             other => Condition::Unknown { function: other },
         }
     }
@@ -153,6 +182,29 @@ pub struct Clause {
     pub or_next: bool,
 }
 
+/// One of a perk's entry point effects (a PRKE section with a one-float
+/// value): what the server's formulas apply when the perk is held.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Effect {
+    /// The entry point (BGSEntryPoint.h).
+    pub entry_point: u8,
+    /// The function (SetValue, AddValue, MultiplyValue judged; others not).
+    pub function: u8,
+    /// EPFD's value.
+    pub value: f32,
+    /// PRKE's rank.
+    pub rank: u8,
+    /// PRKE's priority: the order the effects apply in.
+    pub priority: u8,
+    /// The first tab's conditions, on the perk owner (the pick's judge).
+    pub owner: Vec<Clause>,
+    /// The second tab's conditions, on the subject (keywords).
+    pub subject: Vec<Clause>,
+    /// Whether the formulas judge it: a judged function and no condition on a
+    /// third tab.
+    pub judged: bool,
+}
+
 /// A perk record's parts the rule reads.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Entry {
@@ -163,6 +215,8 @@ pub struct Entry {
     /// The conditions before the first PRKE section, in order, grouped by the
     /// OR flag ([`FLAG_OR`]): every group must hold.
     pub conditions: Vec<Clause>,
+    /// The entry point effects, in the record's order.
+    pub effects: Vec<Effect>,
 }
 
 /// Every perk of the load order the rule knows.
@@ -178,7 +232,7 @@ impl Table {
         if perk == 0 {
             return;
         }
-        self.entries.insert(perk, Entry { playable, hidden, conditions: Vec::new() });
+        self.entries.insert(perk, Entry { playable, hidden, conditions: Vec::new(), effects: Vec::new() });
     }
 
     /// A condition of `perk` (added before) standing on its own (no OR to the
@@ -197,6 +251,43 @@ impl Table {
             }
             None => false,
         }
+    }
+
+    /// An entry point effect of `perk` (added before): its index among the
+    /// perk's effects; None for a perk not added.
+    pub fn add_effect(&mut self, perk: u32, entry_point: u8, function: u8, value: f32, rank: u8, priority: u8) -> Option<usize> {
+        let e = self.entries.get_mut(&perk)?;
+        let judged = matches!(function, EFFECT_SET_VALUE | EFFECT_ADD_VALUE | EFFECT_MULTIPLY_VALUE);
+        e.effects.push(Effect { entry_point, function, value, rank, priority, owner: Vec::new(), subject: Vec::new(), judged });
+        Some(e.effects.len().saturating_sub(1))
+    }
+
+    /// A condition of that effect on `tab` (0 the perk owner, 1 the subject)
+    /// with its OR flag to the next; false when it lands on a third tab,
+    /// which leaves the effect out, or names no effect.
+    pub fn add_effect_condition(&mut self, perk: u32, effect: usize, tab: u8, condition: Condition, or_next: bool) -> bool {
+        let Some(e) = self.entries.get_mut(&perk).and_then(|e| e.effects.get_mut(effect)) else {
+            return false;
+        };
+        match tab {
+            0 => e.owner.push(Clause { condition, or_next }),
+            1 => e.subject.push(Clause { condition, or_next }),
+            _ => {
+                e.judged = false;
+                return false;
+            }
+        }
+        true
+    }
+
+    /// How many effects the formulas judge.
+    pub fn judged_effects(&self) -> usize {
+        self.entries.values().flat_map(|e| e.effects.iter()).filter(|f| f.judged).count()
+    }
+
+    /// How many effects are left out (another function, a third tab).
+    pub fn unjudged_effects(&self) -> usize {
+        self.entries.values().flat_map(|e| e.effects.iter()).filter(|f| !f.judged).count()
     }
 
     /// The entry of `perk`.
@@ -305,14 +396,18 @@ pub fn pick(table: &Table, record: &Record<'_>, perk: u32) -> Result<(), Refusal
     if points(record.level, record.perks.len()) == 0 {
         return Err(Refusal::NoPoints);
     }
-    // the clauses in order: a run joined by the OR flag and the clause after
-    // it is one group, held when any member holds; every group must hold,
-    // and a failing group refuses with its first member's refusal
+    groups_hold(&entry.conditions, |condition| judge(record, condition))
+}
+
+/// The clauses in order: a run joined by the OR flag and the clause after it
+/// is one group, held when any member holds; every group must hold, and a
+/// failing group refuses with its first member's refusal.
+fn groups_hold(clauses: &[Clause], mut judge_one: impl FnMut(Condition) -> Result<(), Refusal>) -> Result<(), Refusal> {
     let mut holds = false;
     let mut first_failure: Option<Refusal> = None;
-    for clause in &entry.conditions {
+    for clause in clauses {
         if !holds {
-            match judge(record, clause.condition) {
+            match judge_one(clause.condition) {
                 Ok(()) => holds = true,
                 Err(refusal) => {
                     if first_failure.is_none() {
@@ -340,6 +435,58 @@ pub fn pick(table: &Table, record: &Record<'_>, perk: u32) -> Result<(), Refusal
     Ok(())
 }
 
+/// One condition against a subject's keywords (an effect's weapon or armor
+/// piece): HasKeyword alone is judged there.
+fn judge_subject(keywords: &[u32], condition: Condition) -> Result<(), Refusal> {
+    match condition {
+        Condition::HasKeyword { keyword, wanted } if keywords.contains(&keyword) == wanted => Ok(()),
+        Condition::HasKeyword { .. } => Err(Refusal::Condition(FN_HAS_KEYWORD)),
+        Condition::HasPerk { .. } => Err(Refusal::Condition(FN_HAS_PERK)),
+        Condition::ActorValue { .. } => Err(Refusal::Condition(FN_GET_ACTOR_VALUE)),
+        Condition::Level { .. } => Err(Refusal::Condition(FN_GET_LEVEL)),
+        Condition::Unknown { function } => Err(Refusal::Condition(function)),
+    }
+}
+
+/// `start` through the held perks' effects on `entry_point` whose owner
+/// conditions hold for the record and whose subject conditions hold for
+/// `subject_keywords`, in (priority, perk id) order: SetValue replaces,
+/// AddValue adds, MultiplyValue multiplies; an effect the formulas do not
+/// judge, or whose conditions do not hold, leaves the value alone (thuum
+/// docs/verbs/perks.md, the second half).
+#[must_use]
+pub fn apply_entry_point(table: &Table, entry_point: u8, start: f32, record: &Record<'_>, subject_keywords: &[u32]) -> f32 {
+    let mut applicable: Vec<(u8, u32, &Effect)> = Vec::new();
+    for &perk in record.perks {
+        let Some(entry) = table.get(perk) else {
+            continue;
+        };
+        for effect in &entry.effects {
+            if effect.entry_point != entry_point || !effect.judged {
+                continue;
+            }
+            if groups_hold(&effect.owner, |c| judge(record, c)).is_err() {
+                continue;
+            }
+            if groups_hold(&effect.subject, |c| judge_subject(subject_keywords, c)).is_err() {
+                continue;
+            }
+            applicable.push((effect.priority, perk, effect));
+        }
+    }
+    applicable.sort_by_key(|(priority, perk, _)| (*priority, *perk));
+    let mut value = start;
+    for (_, _, effect) in applicable {
+        value = match effect.function {
+            EFFECT_SET_VALUE => effect.value,
+            EFFECT_ADD_VALUE => value + effect.value,
+            EFFECT_MULTIPLY_VALUE => value * effect.value,
+            _ => value,
+        };
+    }
+    value
+}
+
 /// One condition against the record.
 fn judge(record: &Record<'_>, condition: Condition) -> Result<(), Refusal> {
     match condition {
@@ -358,6 +505,9 @@ fn judge(record: &Record<'_>, condition: Condition) -> Result<(), Refusal> {
                 return Err(Refusal::Level);
             }
         }
+        // the record carries no keywords: a perk's own HasKeyword refuses, as
+        // the unjudged function it was before the effects read it
+        Condition::HasKeyword { .. } => return Err(Refusal::Condition(FN_HAS_KEYWORD)),
         Condition::Unknown { function } => return Err(Refusal::Condition(function)),
     }
     Ok(())
@@ -544,5 +694,73 @@ mod tests {
         t.add_clause(TWO_PARENTS, Condition::from_ctda(FN_HAS_PERK, EQ | FLAG_OR, 1.0, PARENT_A, 0), true);
         assert_eq!(pick(&t, &Record { level: 10, perks: &[PARENT_A], values: &[] }, TWO_PARENTS), Ok(()));
         assert_eq!(pick(&t, &Record { level: 10, perks: &[], values: &[] }, TWO_PARENTS), Err(Refusal::Prerequisite(PARENT_A)));
+    }
+
+    // the weapon school's effects as Skyrim.esm reads them (lab/esm.py,
+    // 2026-11-01): Armsman00 multiplies by 1.2 on kModAttackDamage while
+    // Armsman20 is not held, for a weapon carrying one of the one-handed
+    // keywords (OR, the last flagged too); Armsman20 by 1.4 the same way
+    const SWORD: u32 = 0x1e711;
+    const DAGGER: u32 = 0x1e713;
+    const BOW: u32 = 0x1e715;
+
+    fn weapon_school() -> Table {
+        let mut t = Table::default();
+        t.add_perk(ARMSMAN, true, false);
+        t.add_perk(ARMSMAN20, true, false);
+        t.add_perk(ARMSMAN40, true, false);
+        for (perk, next, value) in [(ARMSMAN, ARMSMAN20, 1.2), (ARMSMAN20, ARMSMAN40, 1.4)] {
+            let e = t.add_effect(perk, ENTRY_MOD_ATTACK_DAMAGE, EFFECT_MULTIPLY_VALUE, value, 0, 0).unwrap();
+            assert!(t.add_effect_condition(perk, e, 0, Condition::from_ctda(FN_HAS_PERK, EQ, 0.0, next, 0), false));
+            assert!(t.add_effect_condition(perk, e, 1, Condition::from_ctda(FN_HAS_KEYWORD, EQ | FLAG_OR, 1.0, SWORD, 0), true));
+            assert!(t.add_effect_condition(perk, e, 1, Condition::from_ctda(FN_HAS_KEYWORD, EQ | FLAG_OR, 1.0, DAGGER, 0), true));
+        }
+        t
+    }
+
+    #[test]
+    fn a_weapon_perk_multiplies_a_hit_with_its_school_keyword() {
+        let t = weapon_school();
+        let held = Record { level: 5, perks: &[ARMSMAN], values: &[] };
+        assert_eq!(apply_entry_point(&t, ENTRY_MOD_ATTACK_DAMAGE, 10.0, &held, &[SWORD, 0x1234]), 12.0);
+        assert_eq!(apply_entry_point(&t, ENTRY_MOD_ATTACK_DAMAGE, 10.0, &held, &[DAGGER]), 12.0);
+        assert_eq!(apply_entry_point(&t, ENTRY_MOD_ATTACK_DAMAGE, 10.0, &held, &[BOW]), 10.0, "not the school's weapon");
+        assert_eq!(apply_entry_point(&t, ENTRY_MOD_ATTACK_DAMAGE, 10.0, &held, &[]), 10.0, "unarmed carries no keyword");
+        assert_eq!(apply_entry_point(&t, ENTRY_MOD_ARMOR_RATING, 10.0, &held, &[SWORD]), 10.0, "another entry point");
+        let none = Record { level: 5, perks: &[], values: &[] };
+        assert_eq!(apply_entry_point(&t, ENTRY_MOD_ATTACK_DAMAGE, 10.0, &none, &[SWORD]), 10.0);
+    }
+
+    #[test]
+    fn the_rank_held_above_excludes_the_rank_below() {
+        let t = weapon_school();
+        let both = Record { level: 5, perks: &[ARMSMAN20, ARMSMAN], values: &[] };
+        assert_eq!(apply_entry_point(&t, ENTRY_MOD_ATTACK_DAMAGE, 10.0, &both, &[SWORD]), 14.0);
+    }
+
+    #[test]
+    fn effects_apply_in_priority_order_and_an_unjudged_one_is_left_out() {
+        let mut t = Table::default();
+        t.add_perk(ARMSMAN, true, false);
+        // priority 1 multiplies, priority 0 adds: 10 -> 12 -> 24
+        let m = t.add_effect(ARMSMAN, ENTRY_MOD_ATTACK_DAMAGE, EFFECT_MULTIPLY_VALUE, 2.0, 0, 1).unwrap();
+        let a = t.add_effect(ARMSMAN, ENTRY_MOD_ATTACK_DAMAGE, EFFECT_ADD_VALUE, 2.0, 0, 0).unwrap();
+        // a third-tab condition leaves this one out, and so does a function the rule does not apply
+        let third = t.add_effect(ARMSMAN, ENTRY_MOD_ATTACK_DAMAGE, EFFECT_SET_VALUE, 1.0, 0, 0).unwrap();
+        assert!(!t.add_effect_condition(ARMSMAN, third, 2, Condition::from_ctda(FN_HAS_KEYWORD, EQ, 1.0, SWORD, 0), false));
+        let _spell = t.add_effect(ARMSMAN, ENTRY_MOD_ATTACK_DAMAGE, 10, 0.0, 0, 0).unwrap();
+        assert_ne!(m, a);
+        assert_eq!((t.judged_effects(), t.unjudged_effects()), (2, 2));
+        let held = Record { level: 5, perks: &[ARMSMAN], values: &[] };
+        assert_eq!(apply_entry_point(&t, ENTRY_MOD_ATTACK_DAMAGE, 10.0, &held, &[]), 24.0);
+        assert!(t.add_effect(0x9999, ENTRY_MOD_ATTACK_DAMAGE, EFFECT_ADD_VALUE, 1.0, 0, 0).is_none(), "a perk not added");
+    }
+
+    #[test]
+    fn a_perks_own_has_keyword_still_refuses_the_pick() {
+        let mut t = Table::default();
+        t.add_perk(ARMSMAN, true, false);
+        t.add_condition(ARMSMAN, Condition::from_ctda(FN_HAS_KEYWORD, EQ, 1.0, SWORD, 0));
+        assert_eq!(pick(&t, &Record { level: 5, perks: &[], values: &[] }, ARMSMAN), Err(Refusal::Condition(FN_HAS_KEYWORD)));
     }
 }

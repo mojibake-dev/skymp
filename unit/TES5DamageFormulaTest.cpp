@@ -215,3 +215,80 @@ TEST_CASE("A sneak attack's multiplier is the game's for the weapon type",
   p.DestroyActor(0xff000000);
   DoDisconnect(p, 0);
 }
+
+// thuum docs/verbs/perks.md (the second half): Armsman00 0xbabe4 multiplies a
+// one-handed weapon's damage by 1.2 (Skyrim.esm's kModAttackDamage entry,
+// lab/esm.py 2026-11-01), Armsman20 0x79343 by 1.4 with the rank below
+// excluded; a bow carries no one-handed keyword. Iron sword 0x12eb7 deals 7,
+// long bow 0x3b562 6 (no arrow equipped here).
+TEST_CASE("A held weapon perk multiplies the hit by its rank, for its "
+          "school's weapons alone",
+          "[TES5DamageFormula]")
+{
+  PartOne& p = GetPartOne();
+  p.SetPerksEnabled(true);
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, 0xff000000);
+  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
+  ac.SetEquipment(Equipment());
+  HitData hitData;
+  hitData.target = 0x14;
+  hitData.aggressor = 0x14;
+  hitData.source = 0x12eb7;
+  TES5DamageFormula formula{};
+  REQUIRE(formula.CalculateDamage(ac, ac, hitData) == 7.0f);
+
+  ActorValueRecord record;
+  record.level = 5;
+  record.perks = { 0xbabe4 };
+  ac.SetActorValueRecord(record);
+  REQUIRE(formula.CalculateDamage(ac, ac, hitData) == Catch::Approx(8.4f));
+
+  record.perks = { 0x79343, 0xbabe4 };
+  ac.SetActorValueRecord(record);
+  REQUIRE(formula.CalculateDamage(ac, ac, hitData) == Catch::Approx(9.8f));
+
+  hitData.source = 0x3b562;
+  REQUIRE(formula.CalculateDamage(ac, ac, hitData) == 6.0f);
+
+  // the switch off: the number as before
+  p.SetPerksEnabled(false);
+  hitData.source = 0x12eb7;
+  REQUIRE(formula.CalculateDamage(ac, ac, hitData) == 7.0f);
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+// Juggernaut00 0xbcd2a: a heavy piece's rating times 1.2 (kModArmorRating
+// with the piece's ArmorHeavy keyword 0x6bbd2 and not the shield's); Iron
+// Gauntlets 0x12e46 rate 10 and are heavy. 4 * 0.01 * (100 - 10 * 0.12) =
+// 3.952 bare, 4 * 0.01 * (100 - 12 * 0.12) = 3.9424 with the perk.
+TEST_CASE("A held armor perk multiplies a worn piece's rating",
+          "[TES5DamageFormula]")
+{
+  PartOne& p = GetPartOne();
+  p.SetPerksEnabled(true);
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, 0xff000000);
+  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
+  Equipment eq;
+  eq.inv.entries.push_back(Inventory::Entry(0x12e46, 1, kExtraWornTrue));
+  ac.SetEquipment(eq);
+  HitData hitData;
+  hitData.target = 0x14;
+  hitData.aggressor = 0x14;
+  hitData.source = 0x0001397E; // iron dagger 4 damage
+  TES5DamageFormula formula{};
+  REQUIRE(formula.CalculateDamage(ac, ac, hitData) == Catch::Approx(3.952f));
+
+  ActorValueRecord record;
+  record.level = 5;
+  record.perks = { 0xbcd2a };
+  ac.SetActorValueRecord(record);
+  REQUIRE(formula.CalculateDamage(ac, ac, hitData) == Catch::Approx(3.9424f));
+  p.SetPerksEnabled(false);
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}

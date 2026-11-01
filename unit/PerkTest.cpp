@@ -66,6 +66,7 @@ void Report(PartOne& p, uint16_t level, float oneHanded)
   ActorValuesMessage::Skill skill;
   skill.skill = kOneHandedIndex;
   skill.level = oneHanded;
+  skill.threshold = 100.f; // the rule refuses a skill threshold of 0
   msg.skills.push_back(skill);
   msg.level = level;
   msg.xp = 0.f;
@@ -247,6 +248,8 @@ TEST_CASE("An accepted actor values report keeps the perks held",
   // the seat's report after the pick (its echo of the record, or a bar it
   // moved): the perks ride no report, so the merged record carries them
   Report(p, 3, 15.f);
+  // the report was taken (its threshold landed), and the perks survived it
+  REQUIRE(picker.GetActorValueRecord()->threshold == 100.f);
   REQUIRE(picker.HasPerk(kArmsman));
   REQUIRE(picker.GetActorValueRecord()->perks ==
           std::vector<uint32_t>{ kArmsman });
@@ -322,6 +325,7 @@ TEST_CASE("The console's SetLevel moves the points and sends the state",
   PartOne& p = GetPartOne();
   Enter(p, 1, 15.f);
   auto& picker = p.worldState.GetFormAt<MpActor>(kPicker);
+  picker.SetConsoleCommandsAllowedFlag(true); // the console is an admin's
   Console(p, "SetLevel", { int64_t(0x14), int64_t(5) });
   REQUIRE(picker.GetActorValueRecord()->level == 5);
   REQUIRE(picker.PerkPoints() == 4);

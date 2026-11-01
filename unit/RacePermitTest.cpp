@@ -108,6 +108,24 @@ TEST_CASE("A restricted race passes the race menu for a listed profile alone",
 
   REQUIRE_THROWS(partOne.SetRestrictedRacesSettings(R"({"13747": [1]})"));
   REQUIRE_THROWS(partOne.SetRestrictedRacesSettings("[]"));
+  REQUIRE_THROWS(
+    partOne.SetRestrictedRacesSettings(R"({"zzz:Skyrim.esm": [1]})"));
+  REQUIRE_THROWS(
+    partOne.SetRestrictedRacesSettings(R"({"0:Skyrim.esm": [1]})"));
+  REQUIRE_THROWS(
+    partOne.SetRestrictedRacesSettings(R"({"13747:Skyrim.esm": ["1"]})"));
+  REQUIRE_THROWS(
+    partOne.SetRestrictedRacesSettings(R"({"0800aa00:Skyrim.esm": [1]})"));
+  // two spellings of one plugin are one key, their profiles merged
+  partOne.SetRestrictedRacesSettings(
+    R"({"13747:Skyrim.esm": [1], "13747:skyrim.esm": [2]})");
+  REQUIRE(partOne.worldState.RestrictedRaceIds() ==
+          std::vector<uint32_t>{ kOrcRace });
+  REQUIRE(partOne.worldState.PermittedRaceIds(1) ==
+          std::vector<uint32_t>{ kOrcRace });
+  REQUIRE(partOne.worldState.PermittedRaceIds(2) ==
+          std::vector<uint32_t>{ kOrcRace });
+  partOne.SetRestrictedRacesSettings("{}");
 
   DoDisconnect(partOne, 0);
   DoDisconnect(partOne, 1);

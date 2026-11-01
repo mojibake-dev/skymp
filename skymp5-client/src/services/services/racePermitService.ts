@@ -38,7 +38,10 @@ export class RacePermitService extends ClientListener {
         const permitted = msg.props?.permittedRaces ?? [];
         this.hidden = restricted.filter((id) => permitted.indexOf(id) === -1);
         logTrace(this, "restricted races", JSON.stringify(restricted.map(hex)), "permitted here", JSON.stringify(permitted.map(hex)), "hidden", JSON.stringify(this.hidden.map(hex)));
-        this.apply();
+        // natives have no VM context inside a message handler (the review of
+        // 2026-11-01: a throw here would stop the own CreateActor from reaching
+        // RemoteServer), so the flags are set on the next update
+        this.controller.once("update", () => this.apply());
     }
 
     // the menu builds its race list from the Playable flags as it opens

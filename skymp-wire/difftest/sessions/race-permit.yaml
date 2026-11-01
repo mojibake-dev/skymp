@@ -7,9 +7,10 @@
 # permit: it takes the race, closes the menu and relays the look to c2 and
 # back to c1. The fixed server refuses it (E_APPEARANCE_RACE) and keeps the
 # menu open, so at 4.5 s c1's OrcRace (79687, 0x13747, playable and
-# unrestricted) is taken there and relayed to c2 (the fixed server echoes no
-# look to its sender), while the legacy server refuses it, its menu closed at
-# the first. c2 steps aside as in every session so it outlives c1.
+# unrestricted) is taken there, relayed to c2 and echoed back to c1 (a
+# player's own report keeps the echo it always had, RelayToListeners), while
+# the legacy server refuses it, its menu closed at the first. c2 steps aside
+# as in every session so it outlives c1.
 #
 # Timing (DIFFTEST_CLIENT_GAP_MS 1500) as character-creation: c2 joins before
 # c1's choices and outlives c1, so c2 also sees c1's departure the way smoke
@@ -35,13 +36,18 @@ divergences:
     legacy: 1
     wire: 0
     reason: the same look relayed to the neighbour; refused on the fixed server
+  - client: c1
+    msg: {t: 4, data: {raceId: 79687}}
+    legacy: 0
+    wire: 1
+    reason: the second look, an unrestricted playable race, taken by the fixed server whose menu stayed open and echoed back to its sender; refused by the legacy server, its menu closed at the first
   - client: c2
     msg: {t: 4, data: {raceId: 79687}}
     legacy: 0
     wire: 1
-    reason: the second look, an unrestricted playable race, taken and relayed by the fixed server whose menu stayed open; refused by the legacy server, its menu closed at the first
+    reason: the second look relayed to the neighbour by the fixed server; refused by the legacy server
   - client: c2
-    msg: {t: 25, idx: 2}
+    msg: {t: 25, idx: "refr:ff000002"}
     legacy: 0
     wire: 1
     reason: departure detection, graceful close on the wire against RakNet's timeout

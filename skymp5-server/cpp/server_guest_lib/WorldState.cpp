@@ -1411,6 +1411,12 @@ uint32_t RaceIdInLoadOrder(const FormDesc& race, const EspmFileList& files)
   };
   const auto it = std::find_if(files.begin(), files.end(), same);
   if (it == files.end()) {
+    static std::set<std::string> warned;
+    if (!files.empty() && warned.insert(race.file).second) {
+      spdlog::warn("[verb:character-creation] restrictedRaces names {}:{}, a "
+                   "plugin the server does not load; it restricts nothing",
+                   race.shortFormId, race.file);
+    }
     return 0;
   }
   return FormDesc(race.shortFormId, *it).ToFormId(files);

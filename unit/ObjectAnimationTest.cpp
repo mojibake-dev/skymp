@@ -17,7 +17,10 @@ constexpr uint32_t kHostActor = 0xff000fe3;
 constexpr uint32_t kGuestActor = 0xff000fe4;
 constexpr uint32_t kTemple = 0x371de;
 constexpr uint32_t kPortcullis = 0x3b9f1;
-constexpr uint32_t kBandit = 0x39fe4;
+// a game-file NPC the server loads under npcEnabled (NpcExists: Alvor
+// 0x13482 in Riverwood); the actor check precedes the cell check, so his
+// cell does not matter
+constexpr uint32_t kAlvor = 0x13482;
 const NiPoint3 kByThePortcullis{ 4992.f, -1508.f, -768.f };
 
 uint64_t NowMs()
@@ -135,16 +138,17 @@ TEST_CASE("A world-object animation from a guest, on an actor, on no "
   REQUIRE(RelayedTo(p, 0).empty());
   REQUIRE(RelayedTo(p, 1).empty());
   // an actor is no world object: a server-made one by its range, a game-file
-  // one (MS13BanditCampfire01 0x39fe4, the temple's entrance bandit) as an
-  // actor
+  // one (Alvor, loaded under npcEnabled as NpcExists loads him) as an actor
   Animate(p, 0, kGuestActor, "Turned01");
   REQUIRE(RelayedTo(p, 1).empty());
   REQUIRE(!p.worldState.GetFormAt<MpActor>(kGuestActor)
              .GetChangeForm()
              .lastAnimation.has_value());
-  Animate(p, 0, kBandit, "Turned01");
+  p.worldState.npcEnabled = true;
+  REQUIRE_NOTHROW(p.worldState.GetFormAt<MpActor>(kAlvor));
+  Animate(p, 0, kAlvor, "Turned01");
   REQUIRE(RelayedTo(p, 1).empty());
-  REQUIRE(!p.worldState.GetFormAt<MpActor>(kBandit)
+  REQUIRE(!p.worldState.GetFormAt<MpActor>(kAlvor)
              .GetChangeForm()
              .lastAnimation.has_value());
   // a form the server never loads, and an empty event

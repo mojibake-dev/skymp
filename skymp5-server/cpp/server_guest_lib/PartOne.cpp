@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -2886,6 +2887,55 @@ void PartOne::SetSharedQuestsSettings(const std::string& sharedQuestsJson)
 {
   pImpl->sharedQuests = skymp::rules::new_shared_quests(sharedQuestsJson);
   spdlog::info("PartOne::SetSharedQuestsSettings - {}", sharedQuestsJson);
+}
+
+void PartOne::SetRestrictedRacesSettings(
+  const std::string& restrictedRacesJson)
+{
+  const auto j = nlohmann::json::parse(restrictedRacesJson);
+  if (!j.is_object()) {
+    throw std::runtime_error("restrictedRaces must be an object: "
+                             "{\"<shortid>:<plugin>\": [profile ids]}");
+  }
+  std::map<FormDesc, std::vector<int32_t>> table;
+  for (const auto& [key, profiles] : j.items()) {
+    // "<shortid>:<plugin>": one to six hex digits (FormDesc::FromString
+    // checks nothing, so "zzz:x.esp" would read as id 0), then the plugin's
+    // file name, kept in lower case so two spellings of one plugin are one
+    // key (the engine compares names without case)
+    const auto colon = key.find(':');
+    const std::string idPart =
+      colon == std::string::npos ? std::string() : key.substr(0, colon);
+    std::string file =
+      colon == std::string::npos ? std::string() : key.substr(colon + 1);
+    const bool hexId = !idPart.empty() && idPart.size() <= 6 &&
+      std::all_of(idPart.begin(), idPart.end(),
+                  [](unsigned char c) { return std::isxdigit(c) != 0; });
+    if (!hexId || file.empty() || !profiles.is_array()) {
+      throw std::runtime_error("restrictedRaces: bad entry \"" + key +
+                               "\" (want \"<shortid>:<plugin>\": [profile "
+                               "ids], the short id one to six hex digits)");
+    }
+    const auto shortId =
+      static_cast<uint32_t>(std::stoul(idPart, nullptr, 16));
+    if (shortId == 0) {
+      throw std::runtime_error("restrictedRaces: \"" + key +
+                               "\" names no form (short id 0)");
+    }
+    std::transform(file.begin(), file.end(), file.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    auto& list = table[FormDesc(shortId, file)];
+    for (const auto& profile : profiles) {
+      if (!profile.is_number_integer()) {
+        throw std::runtime_error("restrictedRaces: \"" + key +
+                                 "\" lists a profile id that is no integer");
+      }
+      list.push_back(profile.get<int32_t>());
+    }
+  }
+  worldState.restrictedRaces = std::move(table);
+  spdlog::info("PartOne::SetRestrictedRacesSettings - {} race(s): {}",
+               worldState.restrictedRaces.size(), restrictedRacesJson);
 }
 
 namespace {

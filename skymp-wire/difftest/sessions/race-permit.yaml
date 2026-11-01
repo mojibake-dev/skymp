@@ -1,0 +1,53 @@
+# difftest race-permit (M5, thuum docs/verbs/character-creation.md, "The
+# permit"): c1 logs in as a new character (profile 9 has none in the clean
+# world), so the server opens its race menu. At 3 s c1 answers with rotfern's
+# race, a Playable race the deployed settings restrict to profile 1
+# (server-settings.json restrictedRaces; 134261248 is 0x0800aa00, rotfern.esp
+# the ninth full plugin of T2's pinned load order). The legacy server knows no
+# permit: it takes the race, closes the menu and relays the look to c2 and
+# back to c1. The fixed server refuses it (E_APPEARANCE_RACE) and keeps the
+# menu open, so at 4.5 s c1's OrcRace (79687, 0x13747, playable and
+# unrestricted) is taken there, relayed to c2 and echoed back to c1 (a
+# player's own report keeps the echo it always had, RelayToListeners), while
+# the legacy server refuses it, its menu closed at the first. c2 steps aside
+# as in every session so it outlives c1.
+#
+# Timing (DIFFTEST_CLIENT_GAP_MS 1500) as character-creation: c2 joins before
+# c1's choices and outlives c1, so c2 also sees c1's departure the way smoke
+# declares it. T2 takes every key but the load order from the deployed
+# settings, so this session wants the permit's setting deployed first.
+id: race-permit
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 3000, send: {t: 4, idx: "{{idx}}", data: {isFemale: false, raceId: 134261248, weight: 50, skinColor: 0, hairColor: 0, headpartIds: [], headTextureSetId: 0, options: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], presets: [0, 0, 0, 0], tints: [], name: difftest}}}
+  - {client: c1, at_ms: 4500, send: {t: 4, idx: "{{idx}}", data: {isFemale: false, raceId: 79687, weight: 50, skinColor: 0, hairColor: 0, headpartIds: [], headTextureSetId: 0, options: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], presets: [0, 0, 0, 0], tints: [], name: difftest}}}
+  - {client: c2, at_ms: 0, move: {dy: 30}}
+  - {client: c2, at_ms: 2500, move: {dy: 60}}
+divergences:
+  - client: c1
+    msg: {t: 4, data: {raceId: 134261248}}
+    legacy: 1
+    wire: 0
+    reason: a restricted race from an unlisted profile, taken and echoed back on the legacy server; refused on the fixed one (the permit)
+  - client: c2
+    msg: {t: 4, data: {raceId: 134261248}}
+    legacy: 1
+    wire: 0
+    reason: the same look relayed to the neighbour; refused on the fixed server
+  - client: c1
+    msg: {t: 4, data: {raceId: 79687}}
+    legacy: 0
+    wire: 1
+    reason: the second look, an unrestricted playable race, taken by the fixed server whose menu stayed open and echoed back to its sender; refused by the legacy server, its menu closed at the first
+  - client: c2
+    msg: {t: 4, data: {raceId: 79687}}
+    legacy: 0
+    wire: 1
+    reason: the second look relayed to the neighbour by the fixed server; refused by the legacy server
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

@@ -163,6 +163,12 @@ export class RemoteServer extends ClientListener {
     this.controller.emitter.on("teleportMessage2", (e) => this.onTeleportMessage(e));
     this.controller.emitter.on("createActorMessage", (e) => this.onCreateActorMessage(e));
     this.controller.emitter.on("destroyActorMessage", (e) => this.onDestroyActorMessage(e));
+    // the references whose props wait for the engine to load them (onceLoad):
+    // swept every PENDING_LOAD_SWEEP_MS on the update thread (natives live
+    // there), at once after a cell loads or attaches
+    this.controller.on("update", () => this.sweepPendingLoads());
+    this.controller.on("cellFullyLoaded", () => { this.pendingLoadSweepAt = 0; });
+    this.controller.on("cellAttach", () => { this.pendingLoadSweepAt = 0; });
     this.controller.emitter.on("setRaceMenuOpenMessage", (e) => this.onSetRaceMenuOpenMessage(e));
     this.controller.emitter.on("updatePropertyMessage", (e) => this.onUpdatePropertyMessage(e));
     this.controller.emitter.on("deathStateContainerMessage", (e) => this.onDeathStateContainerMessage(e));
@@ -886,6 +892,10 @@ export class RemoteServer extends ClientListener {
     const msg = event.message;
 
     const i = this.getIdManager().getId(msg.idx);
+    const pendingRefrId = this.worldModel.forms[i]?.refrId;
+    if (pendingRefrId !== undefined) {
+      this.pendingLoads.delete(pendingRefrId);
+    }
     this.worldModel.forms[i] = undefined;
     getViewFromStorage()?.syncFormArray(this.worldModel);
 
@@ -1290,11 +1300,50 @@ export class RemoteServer extends ClientListener {
         if (maxAttempts > 0) {
           once('update', () => this.onceLoad(refrId, callback, maxAttempts));
         } else {
-          logError(this, 'Failed to load object reference ' + refrId.toString(16));
+          // thuum docs/verbs/locks.md (b-locks claim 17, run 20261101-212155):
+          // a CreateActor for a game-file reference lands while the engine is
+          // still loading its cell on a slow landing (9.6 s on c1), so these
+          // frames ran out on 0x371e9 and its lock was never applied. The
+          // props wait for the reference instead of being dropped
+          this.pendingLoads.set(refrId, { callback, since: Date.now() });
+          logTrace(this, 'object reference', refrId.toString(16), 'not loaded after', String(RemoteServer.ONCE_LOAD_FRAMES), 'frames; its props wait for its cell');
         }
       }
     });
   };
+
+  // The references whose CreateActor came before the engine loaded them
+  // (onceLoad's frames ran out): tried again as a cell loads or attaches and
+  // on a slow sweep, applied once the engine has the reference, dropped with
+  // one line after PENDING_LOAD_MS; a newer CreateActor for the same
+  // reference replaces the wait, its DestroyActor ends it
+  private pendingLoads = new Map<number, { callback: (refr: ObjectReference) => void; since: number }>();
+  private pendingLoadSweepAt = 0;
+  private static readonly ONCE_LOAD_FRAMES = 120;
+  private static readonly PENDING_LOAD_MS = 120_000;
+  private static readonly PENDING_LOAD_SWEEP_MS = 2_000;
+
+  private sweepPendingLoads() {
+    if (this.pendingLoads.size === 0) {
+      return;
+    }
+    const now = Date.now();
+    if (now < this.pendingLoadSweepAt) {
+      return;
+    }
+    this.pendingLoadSweepAt = now + RemoteServer.PENDING_LOAD_SWEEP_MS;
+    for (const [refrId, pending] of Array.from(this.pendingLoads.entries())) {
+      const refr = ObjectReference.from(Game.getFormEx(refrId));
+      if (refr) {
+        this.pendingLoads.delete(refrId);
+        logTrace(this, 'object reference', refrId.toString(16), 'loaded after', String(now - pending.since), 'ms; its props apply now');
+        pending.callback(refr);
+      } else if (now - pending.since > RemoteServer.PENDING_LOAD_MS) {
+        this.pendingLoads.delete(refrId);
+        logError(this, 'Failed to load object reference ' + refrId.toString(16), 'within', String(RemoteServer.PENDING_LOAD_MS), 'ms');
+      }
+    }
+  }
 
   private skipFormViewCreation(
     msg: UpdatePropertyMessage | CreateActorMessage,

@@ -1022,6 +1022,15 @@ bool IsAllowedRace(PartOne& partOne, const MpActor& actor, uint32_t raceId)
     facts.is_playable_race = race &&
       (race->GetData(partOne.worldState.GetEspmCache()).flags &
        espm::RACE::kPlayable);
+    // the permit: a restricted race passes for a listed profile alone; the
+    // profile is the login's, never the client's word
+    const auto restricted = partOne.worldState.RestrictedRaceIds();
+    facts.is_restricted = std::find(restricted.begin(), restricted.end(),
+                                    raceId) != restricted.end();
+    const auto permitted =
+      partOne.worldState.PermittedRaceIds(actor.GetProfileId());
+    facts.is_permitted =
+      std::find(permitted.begin(), permitted.end(), raceId) != permitted.end();
   }
   return skymp::rules::race_allowed(facts);
 }
@@ -1177,9 +1186,9 @@ void ActionListener::OnUpdateAppearance(const RawMessageData& rawMsgData,
 
   if (isRaceMenuOpen && !isAllowed) {
     spdlog::warn("ActionListener::OnUpdateAppearance - E_APPEARANCE_RACE: "
-                 "{:x} chose race {:x}, which the race menu does not offer; "
-                 "refused",
-                 actor->GetFormId(), msg.data->raceId);
+                 "{:x} chose race {:x}, which the race menu does not offer "
+                 "or profile {} may not wear; refused",
+                 actor->GetFormId(), msg.data->raceId, actor->GetProfileId());
   }
 
   if (isAllowed) {

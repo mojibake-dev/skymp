@@ -114,7 +114,9 @@ struct CreateActorMessageAdditionalProps
       .Serialize("inventory", inventory)
       .Serialize("isDead", isDead)
       .Serialize("placedBy", placedBy)
-      .Serialize("lock", lock);
+      .Serialize("lock", lock)
+      .Serialize("restrictedRaces", restrictedRaces)
+      .Serialize("permittedRaces", permittedRaces);
   }
 
   std::optional<bool> isOpen;
@@ -153,6 +155,14 @@ struct CreateActorMessageAdditionalProps
   // thuum docs/verbs/locks.md: the lock the client applies to its own
   // reference; absent for a reference the game files leave unlocked
   std::optional<LockProp> lock;
+
+  // thuum docs/verbs/character-creation.md (the permit): the races the
+  // server restricts to listed profiles and, of those, the ones this
+  // player's profile may wear (form ids in the shared load order); on the
+  // player's own CreateActor alone, and only while the server restricts a
+  // race
+  std::optional<std::vector<uint32_t>> restrictedRaces;
+  std::optional<std::vector<uint32_t>> permittedRaces;
 };
 
 struct CreateActorMessageMainProps

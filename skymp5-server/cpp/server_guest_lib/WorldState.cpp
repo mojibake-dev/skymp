@@ -21,6 +21,7 @@
 #include <Timer.h>
 #include <algorithm>
 #include <antigo/Context.h>
+#include <cctype>
 #include <cmath>
 #include <deque>
 #include <fmt/format.h>
@@ -1390,6 +1391,62 @@ std::optional<uint32_t> WorldState::CellOf(uint32_t cellOrWorld,
 std::optional<uint32_t> WorldState::CellOf(const MpObjectReference& ref) const
 {
   return CellOf(ref.GetCellOrWorld().ToFormId(espmFiles), ref.GetPos());
+}
+
+namespace {
+// thuum docs/verbs/character-creation.md (the permit): a restricted race's
+// form id in the server's load order, plugin names compared as the engine
+// compares them (case-insensitively), light plugins numbered as the engine
+// numbers them (FormDesc::ToFormId's EspmFileList overload, ADR-043); 0 for
+// a plugin the server does not load, which ToFormId would throw on
+uint32_t RaceIdInLoadOrder(const FormDesc& race, const EspmFileList& files)
+{
+  const auto same = [&](const std::string& file) {
+    return file.size() == race.file.size() &&
+      std::equal(file.begin(), file.end(), race.file.begin(),
+                 [](char a, char b) {
+                   return std::tolower(static_cast<unsigned char>(a)) ==
+                     std::tolower(static_cast<unsigned char>(b));
+                 });
+  };
+  const auto it = std::find_if(files.begin(), files.end(), same);
+  if (it == files.end()) {
+    static std::set<std::string> warned;
+    if (!files.empty() && warned.insert(race.file).second) {
+      spdlog::warn("[verb:character-creation] restrictedRaces names {}:{}, a "
+                   "plugin the server does not load; it restricts nothing",
+                   race.shortFormId, race.file);
+    }
+    return 0;
+  }
+  return FormDesc(race.shortFormId, *it).ToFormId(files);
+}
+}
+
+std::vector<uint32_t> WorldState::RestrictedRaceIds() const
+{
+  std::vector<uint32_t> ids;
+  for (const auto& [race, profiles] : restrictedRaces) {
+    if (const auto id = RaceIdInLoadOrder(race, espmFiles)) {
+      ids.push_back(id);
+    }
+  }
+  return ids;
+}
+
+std::vector<uint32_t> WorldState::PermittedRaceIds(int32_t profileId) const
+{
+  std::vector<uint32_t> ids;
+  for (const auto& [race, profiles] : restrictedRaces) {
+    if (std::find(profiles.begin(), profiles.end(), profileId) ==
+        profiles.end()) {
+      continue;
+    }
+    if (const auto id = RaceIdInLoadOrder(race, espmFiles)) {
+      ids.push_back(id);
+    }
+  }
+  return ids;
 }
 
 MpActor* WorldState::HostOf(const MpObjectReference& ref)

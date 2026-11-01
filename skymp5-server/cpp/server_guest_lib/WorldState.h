@@ -387,6 +387,19 @@ public:
   // false (the default) drops every pick and lets no perk state leave the
   // server, the console's and the natives' writes included
   bool perksEnabled = false;
+  // thuum docs/verbs/character-creation.md (the permit, M5): the races the
+  // race menu offers only to listed profiles, keyed as server-settings.json's
+  // restrictedRaces names them ("<shortid>:<plugin>"), each with its profile
+  // ids (PartOne::SetRestrictedRacesSettings). Resolved against the load
+  // order when judged, since the settings are read before the game files
+  // load; the rule is wire-rules appearance::race_allowed, the client's menu
+  // hides from CreateActor's restrictedRaces and permittedRaces
+  std::map<FormDesc, std::vector<int32_t>> restrictedRaces;
+  // the restricted races as form ids in the load order (a race from a
+  // plugin the server does not load restricts nothing), and the ones a
+  // profile may wear
+  std::vector<uint32_t> RestrictedRaceIds() const;
+  std::vector<uint32_t> PermittedRaceIds(int32_t profileId) const;
   // thuum docs/verbs/npc-fate.md (ADR-050 decision 2, deaths by the engine):
   // the server's number for a hit on a hosted NPC goes to its host as a
   // cause (DamageCause) and the kill at zero waits for the host's report up

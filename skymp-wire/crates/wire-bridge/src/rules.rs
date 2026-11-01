@@ -1872,6 +1872,8 @@ mod ffi {
         fn pick(self: &PerkTable, level: u16, perks: &[u32], avs: &[u8], values: &[f32], perk: u32) -> PerkVerdict;
         /// The perk points left: one a level past the first, less the perks held.
         fn perk_points(level: u16, held: usize) -> u16;
+        /// The most perks a record holds (the wire's cap on PerkState).
+        fn perks_max() -> usize;
 
         /// thuum docs/verbs/cell-host.md (ADR-035): which player's game runs
         /// each cell's NPCs, the grace and the epochs.
@@ -3541,13 +3543,18 @@ fn perk_points(level: u16, held: usize) -> u16 {
     perks::points(level, held)
 }
 
+fn perks_max() -> usize {
+    perks::MAX_PERKS
+}
+
 impl PerkTable {
     fn add_perk(&mut self, perk: u32, playable: bool, hidden: bool) {
         self.0.add_perk(perk, playable, hidden);
     }
 
     fn add_condition(&mut self, perk: u32, function: u16, byte0: u8, value: f32, param1: u32, run_on: u32) -> bool {
-        self.0.add_condition(perk, perks::Condition::from_ctda(function, byte0, value, param1, run_on))
+        // the OR flag joins this condition to the next (wire-rules perks FLAG_OR)
+        self.0.add_clause(perk, perks::Condition::from_ctda(function, byte0, value, param1, run_on), byte0 & perks::FLAG_OR != 0)
     }
 
     fn perk_count(&self) -> usize {

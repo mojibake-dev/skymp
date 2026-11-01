@@ -29,6 +29,11 @@ pub const FN_HAS_PERK: u16 = 448;
 pub const FLAG_USE_GLOBAL: u8 = 0x04;
 /// The CTDA flag bit for a swapped subject (not judged here).
 pub const FLAG_SWAP_SUBJECT: u8 = 0x10;
+/// The CTDA flag bit joining a condition to the next by OR: a run of flagged
+/// conditions and the one after them is a group that holds when any member
+/// holds; the groups are ANDed (the engine's reading, which the perk trees
+/// use for a perk with two parents).
+pub const FLAG_OR: u8 = 0x01;
 /// The highest actor value index (CommonLibSSE-NG ActorValues.h, kTotal 164).
 pub const MAX_ACTOR_VALUE: u32 = 163;
 
@@ -139,6 +144,15 @@ impl Condition {
     }
 }
 
+/// One condition of a perk with its place in the OR grouping.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Clause {
+    /// The condition.
+    pub condition: Condition,
+    /// Whether the CTDA's OR flag joins it to the next clause.
+    pub or_next: bool,
+}
+
 /// A perk record's parts the rule reads.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Entry {
@@ -146,9 +160,9 @@ pub struct Entry {
     pub playable: bool,
     /// DATA's isHidden byte.
     pub hidden: bool,
-    /// The conditions before the first PRKE section, in order (all must hold:
-    /// the OR flag is not honoured, which only refuses more).
-    pub conditions: Vec<Condition>,
+    /// The conditions before the first PRKE section, in order, grouped by the
+    /// OR flag ([`FLAG_OR`]): every group must hold.
+    pub conditions: Vec<Clause>,
 }
 
 /// Every perk of the load order the rule knows.
@@ -167,11 +181,18 @@ impl Table {
         self.entries.insert(perk, Entry { playable, hidden, conditions: Vec::new() });
     }
 
-    /// A condition of `perk` (added before); false for a perk not added.
+    /// A condition of `perk` (added before) standing on its own (no OR to the
+    /// next); false for a perk not added.
     pub fn add_condition(&mut self, perk: u32, condition: Condition) -> bool {
+        self.add_clause(perk, condition, false)
+    }
+
+    /// A condition of `perk` (added before) with its OR flag to the next
+    /// clause; false for a perk not added.
+    pub fn add_clause(&mut self, perk: u32, condition: Condition, or_next: bool) -> bool {
         match self.entries.get_mut(&perk) {
             Some(e) => {
-                e.conditions.push(condition);
+                e.conditions.push(Clause { condition, or_next });
                 true
             }
             None => false,
@@ -284,25 +305,60 @@ pub fn pick(table: &Table, record: &Record<'_>, perk: u32) -> Result<(), Refusal
     if points(record.level, record.perks.len()) == 0 {
         return Err(Refusal::NoPoints);
     }
-    for condition in &entry.conditions {
-        match *condition {
-            Condition::HasPerk { perk: wanted_perk, wanted } => {
-                if record.perks.contains(&wanted_perk) != wanted {
-                    return Err(Refusal::Prerequisite(wanted_perk));
+    // the clauses in order: a run joined by the OR flag and the clause after
+    // it is one group, held when any member holds; every group must hold,
+    // and a failing group refuses with its first member's refusal
+    let mut holds = false;
+    let mut first_failure: Option<Refusal> = None;
+    for clause in &entry.conditions {
+        if !holds {
+            match judge(record, clause.condition) {
+                Ok(()) => holds = true,
+                Err(refusal) => {
+                    if first_failure.is_none() {
+                        first_failure = Some(refusal);
+                    }
                 }
             }
-            Condition::ActorValue { av, op, value } => {
-                if !op.holds(record.value(av), value) {
-                    return Err(Refusal::Value(av));
-                }
-            }
-            Condition::Level { op, value } => {
-                if !op.holds(f32::from(record.level), value) {
-                    return Err(Refusal::Level);
-                }
-            }
-            Condition::Unknown { function } => return Err(Refusal::Condition(function)),
         }
+        if !clause.or_next {
+            if !holds {
+                if let Some(refusal) = first_failure {
+                    return Err(refusal);
+                }
+            }
+            holds = false;
+            first_failure = None;
+        }
+    }
+    // a last clause flagged OR with nothing after it closes its group here
+    if !holds {
+        if let Some(refusal) = first_failure {
+            return Err(refusal);
+        }
+    }
+    Ok(())
+}
+
+/// One condition against the record.
+fn judge(record: &Record<'_>, condition: Condition) -> Result<(), Refusal> {
+    match condition {
+        Condition::HasPerk { perk: wanted_perk, wanted } => {
+            if record.perks.contains(&wanted_perk) != wanted {
+                return Err(Refusal::Prerequisite(wanted_perk));
+            }
+        }
+        Condition::ActorValue { av, op, value } => {
+            if !op.holds(record.value(av), value) {
+                return Err(Refusal::Value(av));
+            }
+        }
+        Condition::Level { op, value } => {
+            if !op.holds(f32::from(record.level), value) {
+                return Err(Refusal::Level);
+            }
+        }
+        Condition::Unknown { function } => return Err(Refusal::Condition(function)),
     }
     Ok(())
 }
@@ -431,5 +487,62 @@ mod tests {
         // perk 0 is never an entry
         t.add_perk(0, true, false);
         assert_eq!(t.get(0), None);
+    }
+
+    // a perk with two parents (Skyrim's Paralyzing Strike, Warmaster,
+    // Bullseye, Locksmith, Purity...): HasPerk(A) OR HasPerk(B), AND a skill
+    const TWO_PARENTS: u32 = 0x5555;
+    const PARENT_A: u32 = 0x1111;
+    const PARENT_B: u32 = 0x2222;
+
+    fn two_parents() -> Table {
+        let mut t = Table::default();
+        t.add_perk(PARENT_A, true, false);
+        t.add_perk(PARENT_B, true, false);
+        t.add_perk(TWO_PARENTS, true, false);
+        t.add_clause(TWO_PARENTS, Condition::from_ctda(FN_HAS_PERK, EQ | FLAG_OR, 1.0, PARENT_A, 0), true);
+        t.add_clause(TWO_PARENTS, Condition::from_ctda(FN_HAS_PERK, EQ, 1.0, PARENT_B, 0), false);
+        t.add_clause(TWO_PARENTS, Condition::from_ctda(FN_GET_BASE_ACTOR_VALUE, GE, 30.0, u32::from(ONE_HANDED), 0), false);
+        t
+    }
+
+    #[test]
+    fn an_or_group_holds_with_either_parent_and_the_groups_are_anded() {
+        let t = two_parents();
+        let thirty = [(ONE_HANDED, 30.0)];
+        let ten = [(ONE_HANDED, 10.0)];
+        assert_eq!(pick(&t, &Record { level: 10, perks: &[PARENT_A], values: &thirty }, TWO_PARENTS), Ok(()));
+        assert_eq!(pick(&t, &Record { level: 10, perks: &[PARENT_B], values: &thirty }, TWO_PARENTS), Ok(()));
+        assert_eq!(
+            pick(&t, &Record { level: 10, perks: &[], values: &thirty }, TWO_PARENTS),
+            Err(Refusal::Prerequisite(PARENT_A)),
+            "neither parent: the group's first refusal"
+        );
+        assert_eq!(
+            pick(&t, &Record { level: 10, perks: &[PARENT_A], values: &ten }, TWO_PARENTS),
+            Err(Refusal::Value(ONE_HANDED)),
+            "the parent group holds, the skill group does not"
+        );
+    }
+
+    #[test]
+    fn an_unknown_clause_inside_a_held_or_group_refuses_nothing() {
+        let mut t = Table::default();
+        t.add_perk(PARENT_A, true, false);
+        t.add_perk(TWO_PARENTS, true, false);
+        t.add_clause(TWO_PARENTS, Condition::from_ctda(FN_HAS_PERK, EQ | FLAG_OR, 1.0, PARENT_A, 0), true);
+        t.add_clause(TWO_PARENTS, Condition::from_ctda(999, EQ, 1.0, 0, 0), false);
+        assert_eq!(pick(&t, &Record { level: 10, perks: &[PARENT_A], values: &[] }, TWO_PARENTS), Ok(()));
+        assert_eq!(pick(&t, &Record { level: 10, perks: &[], values: &[] }, TWO_PARENTS), Err(Refusal::Prerequisite(PARENT_A)));
+    }
+
+    #[test]
+    fn a_trailing_or_flag_closes_its_group_at_the_end() {
+        let mut t = Table::default();
+        t.add_perk(PARENT_A, true, false);
+        t.add_perk(TWO_PARENTS, true, false);
+        t.add_clause(TWO_PARENTS, Condition::from_ctda(FN_HAS_PERK, EQ | FLAG_OR, 1.0, PARENT_A, 0), true);
+        assert_eq!(pick(&t, &Record { level: 10, perks: &[PARENT_A], values: &[] }, TWO_PARENTS), Ok(()));
+        assert_eq!(pick(&t, &Record { level: 10, perks: &[], values: &[] }, TWO_PARENTS), Err(Refusal::Prerequisite(PARENT_A)));
     }
 }

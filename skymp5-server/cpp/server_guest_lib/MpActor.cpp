@@ -1635,6 +1635,12 @@ bool MpActor::AddPerkByServer(uint32_t perk)
     return false;
   }
   auto record = GetActorValueRecord().value_or(ActorValueRecord{});
+  if (record.perks.size() >= skymp::rules::perks_max()) {
+    spdlog::warn("[verb:perks] E_PERK_FULL: {:x} holds {} perk(s), the "
+                 "wire's most; {:x} not added",
+                 GetFormId(), record.perks.size(), perk);
+    return false;
+  }
   record.perks.insert(
     std::upper_bound(record.perks.begin(), record.perks.end(), perk), perk);
   SetActorValueRecord(record);
@@ -1668,6 +1674,12 @@ uint16_t MpActor::PerkPoints() const
 
 void MpActor::SendPerkState()
 {
+  // the switch off: no state leaves the server (the console's SetLevel or a
+  // gamemode's Actor.AddPerk would otherwise strip a seat's own perks)
+  if (auto* worldState = GetParent();
+      !worldState || !worldState->perksEnabled) {
+    return;
+  }
   PerkStateMessage message;
   if (const auto record = GetActorValueRecord()) {
     message.perks = record->perks;

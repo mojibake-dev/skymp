@@ -139,14 +139,22 @@ private:
   {
     ValueType res;
     res.type = typeInfo.GetUnmangledRawType();
-    // An object array's class is its elements' (TypeInfo::GetTypeInfo reads
-    // the element type for kObjectArray too), so Sp3Api stamps it on the
-    // array and sp3.js wraps each element. With the name left empty, every
-    // array a native returned threw in wrapObject (ActorValueInfo.getPerks,
-    // thuum docs/verbs/perks.md).
-    if (res.type == TypeInfo::RawType::kObject ||
-        res.type == TypeInfo::RawType::kObjectArray) {
-      auto objTypeInfo = typeInfo.GetTypeInfo();
+    // An object's raw type is its class pointer; an object array's is that
+    // pointer with its first bit set (CommonLibSSE-NG TypeInfo.h, the RawType
+    // comment), so the element class comes from the same bits and Sp3Api
+    // stamps it on the array for sp3.js to wrap each element. With the name
+    // left empty, every array a native returned threw in wrapObject
+    // (ActorValueInfo.getPerks, thuum docs/verbs/perks.md).
+    // TypeInfo::GetTypeInfo masks kObjectArray (0xB) off an array's raw
+    // type, which also clears a pointer's bit 3 and sent an 8-byte-aligned
+    // class to a wrong address (two launch crashes on 2b8c7592, 2026-11-01):
+    // the one bit is masked here instead. A raw type below kArraysEnd (a
+    // literal kObjectArray, an array of none) names no class and keeps the
+    // empty name, as every array did before.
+    if (typeInfo.IsObject() || typeInfo.IsObjectArray()) {
+      const auto raw = static_cast<std::size_t>(typeInfo.GetRawType());
+      auto objTypeInfo = reinterpret_cast<decltype(typeInfo.GetTypeInfo())>(
+        raw & ~static_cast<std::size_t>(TypeInfo::RawType::kObject));
       if (!objTypeInfo)
         throw NullPointerException("objTypeInfo");
       res.className = objTypeInfo->GetName();

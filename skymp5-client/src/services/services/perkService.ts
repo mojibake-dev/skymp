@@ -61,6 +61,16 @@ export class PerkService extends ClientListener {
     this.controller.emitter.on('perkStateMessage', (e) => this.onPerkState(e));
     this.controller.on('menuClose', (e) => this.onMenuClose(e));
     this.controller.on('update', () => this.onUpdate());
+    this.controller.on('loadGame', () => this.onLoadGame());
+  }
+
+  // a save loaded after the state's apply (the login's own load, a reconnect
+  // mid-game) brings the save's perks back: the server's set goes on again
+  private onLoadGame() {
+    if (this.state) {
+      this.state.applied = false;
+      this.controller.once('update', () => this.apply());
+    }
   }
 
   private onPerkState(e: ConnectionMessage<PerkStateMessage>) {
@@ -98,20 +108,32 @@ export class PerkService extends ClientListener {
     this.report();
   }
 
-  // the tree perks the player holds now, within the universe
+  // the tree perks the player holds now: each tree's own list of the owned
+  // ranks (eighteen natives a tick, not a hasPerk per perk of the universe;
+  // form ids are kept, never the objects, which do not outlive a tick)
   private heldTreePerks(player: Actor): Set<number> {
-    const universe = this.universe();
     const held = new Set<number>();
-    universe.forEach((id) => {
-      const perk = Perk.from(this.sp.Game.getFormEx(id));
-      if (perk && player.hasPerk(perk)) {
-        held.add(id);
+    for (const name of skillNames) {
+      const info = ActorValueInfo.getActorValueInfoByName(name);
+      if (!info) {
+        continue;
       }
-    });
+      const list = info.getPerks(player, false, true);
+      if (!list) {
+        continue;
+      }
+      for (const entry of list) {
+        const perk = Perk.from(entry);
+        if (perk) {
+          held.add(perk.getFormID());
+        }
+      }
+    }
     return held;
   }
 
-  // every perk of the eighteen trees, all ranks, owned or not: read once
+  // every perk of the eighteen trees, all ranks, owned or not: read once,
+  // the sign that the game's perk data is up
   private universe(): Set<number> {
     if (this.treePerks) {
       return this.treePerks;

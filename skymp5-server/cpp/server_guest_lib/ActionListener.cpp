@@ -2736,6 +2736,13 @@ ActorValueRecord ToRecord(const skymp::rules::AvSnapshot& snapshot)
   return out;
 }
 
+// the eighteen skills' actor values (CommonLibSSE-NG include/RE/A/
+// ActorValues.h: kOneHanded 6 to kEnchanting 23), the ones leveling owns
+bool IsSkillActorValue(uint8_t av)
+{
+  return av >= 6 && av <= 23;
+}
+
 std::vector<skymp::rules::AvBase> ToAvBases(
   const std::vector<std::pair<uint8_t, float>>& values)
 {
@@ -2799,7 +2806,36 @@ void ActionListener::OnActorValues(const RawMessageData& rawMsgData,
   }
   const bool holding = !stillHeld.empty();
   actor->SetHeldActorValues(std::move(stillHeld));
-  const bool changed = actor->SetActorValueRecord(ToRecord(merged.record));
+  auto next = ToRecord(merged.record);
+  if (record) {
+    // thuum docs/verbs/perks.md: the perks are the server's (R0) and ride no
+    // report, so the merged record carries the ones held
+    next.perks = record->perks;
+    // thuum docs/verbs/leveling.md: with leveling on, the skills, the
+    // experience and the level are the server's (R0); the report's numbers
+    // for them are its echo at best and stay out of the record, so a pick's
+    // conditions (perks.md) read what the server wrote. The bases of the
+    // skills' actor values go the same way: the leveling path mirrors a
+    // skill's level into them, and a pick reads the bases first.
+    if (partOne.LevelingEnabled()) {
+      next.skills = record->skills;
+      next.xp = record->xp;
+      next.threshold = record->threshold;
+      next.level = record->level;
+      next.legendary = record->legendary;
+      next.bases.erase(std::remove_if(next.bases.begin(), next.bases.end(),
+                                      [](const std::pair<uint8_t, float>& b) {
+                                        return IsSkillActorValue(b.first);
+                                      }),
+                       next.bases.end());
+      for (const auto& base : record->bases) {
+        if (IsSkillActorValue(base.first)) {
+          next.bases.push_back(base);
+        }
+      }
+    }
+  }
+  const bool changed = actor->SetActorValueRecord(std::move(next));
   spdlog::info("ActorValues: user {} actor {:x} recorded {} bases, level "
                "{}{}",
                rawMsgData.userId, actor->GetFormId(), msg.bases.size(),

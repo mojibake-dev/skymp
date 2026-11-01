@@ -1,4 +1,6 @@
 #include "ActionListener.h"
+#include "ActorValuesMessage.h"
+#include "ConsoleCommandMessage.h"
 #include "MsgType.h"
 #include "PerkStateMessage.h"
 #include "TestUtils.hpp"
@@ -19,6 +21,7 @@ namespace {
 constexpr uint32_t kArmsman = 0xbabe4;
 constexpr uint32_t kArmsman20 = 0x79343;
 constexpr uint32_t kFightingStance = 0x52d50;
+constexpr uint32_t kArmsman40 = 0x79342; // wants Armsman 20 and One-handed 40
 constexpr uint32_t kPicker = 0xff000fc1;
 constexpr uint8_t kOneHandedIndex = 0; // PlayerSkills' index of One-handed
 
@@ -49,6 +52,49 @@ void Pick(PartOne& p, uint32_t perk)
   DoMessage(p, 0,
             nlohmann::json{ { "t", static_cast<int>(MsgType::PerkPick) },
                             { "perk", perk } });
+}
+
+// the seat's own actor values report, One-handed and the level as it says
+// them (ActorValuesTest covers the report itself)
+void Report(PartOne& p, uint16_t level, float oneHanded)
+{
+  ActorValuesMessage msg;
+  ActorValuesMessage::Base base;
+  base.av = 6; // One-handed (CommonLibSSE-NG ActorValues.h kOneHanded)
+  base.base = oneHanded;
+  msg.bases.push_back(base);
+  ActorValuesMessage::Skill skill;
+  skill.skill = kOneHandedIndex;
+  skill.level = oneHanded;
+  msg.skills.push_back(skill);
+  msg.level = level;
+  msg.xp = 0.f;
+  msg.threshold = 100.f;
+  RawMessageData raw;
+  raw.userId = 0;
+  p.GetActionListener().OnActorValues(raw, msg);
+}
+
+// a console command from the seat (ConsoleCommandTest's shape)
+void Console(PartOne& p, const std::string& name,
+             std::vector<std::variant<int64_t, std::string>> args)
+{
+  RawMessageData raw;
+  raw.userId = 0;
+  ConsoleCommandMessage msg;
+  msg.data.commandName = name;
+  msg.data.args = std::move(args);
+  p.GetActionListener().OnConsoleCommand(raw, msg);
+}
+
+float RecordedOneHandedBase(const ActorValueRecord& record)
+{
+  for (const auto& [av, base] : record.bases) {
+    if (av == 6) {
+      return base;
+    }
+  }
+  return -1.f;
 }
 
 std::vector<PerkStateMessage> States(PartOne& p)
@@ -181,5 +227,106 @@ TEST_CASE("The server's own writes need no rule, and the switch off drops "
   Pick(p, kArmsman);
   REQUIRE_FALSE(picker.HasPerk(kArmsman));
   REQUIRE(States(p).empty());
+  // and a server write sends no state either (the console's SetLevel would
+  // otherwise strip a seat's own perks with an empty set)
+  REQUIRE(picker.AddPerkByServer(kArmsman));
+  picker.SendPerkState();
+  REQUIRE(States(p).empty());
+  REQUIRE(picker.RemovePerkByServer(kArmsman));
+  Leave(p);
+}
+
+TEST_CASE("An accepted actor values report keeps the perks held",
+          "[Perks][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p, 3, 15.f);
+  auto& picker = p.worldState.GetFormAt<MpActor>(kPicker);
+  Pick(p, kArmsman);
+  REQUIRE(picker.HasPerk(kArmsman));
+  // the seat's report after the pick (its echo of the record, or a bar it
+  // moved): the perks ride no report, so the merged record carries them
+  Report(p, 3, 15.f);
+  REQUIRE(picker.HasPerk(kArmsman));
+  REQUIRE(picker.GetActorValueRecord()->perks ==
+          std::vector<uint32_t>{ kArmsman });
+  REQUIRE(picker.PerkPoints() == 1);
+  Leave(p);
+}
+
+TEST_CASE("With leveling on, a report moves no skill, experience or level, "
+          "so a pick reads the server's numbers; with it off the seat's "
+          "numbers stand",
+          "[Perks][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p, 5, 20.f);
+  p.SetLevelingEnabled(true);
+  auto& picker = p.worldState.GetFormAt<MpActor>(kPicker);
+  Pick(p, kArmsman);
+  Pick(p, kArmsman20);
+  REQUIRE(picker.HasPerk(kArmsman20));
+  REQUIRE(picker.PerkPoints() == 2);
+  // a report claiming One-handed 100 at level 50: inside the wire's bounds,
+  // outside the record (the server computes both under leveling)
+  Report(p, 50, 100.f);
+  {
+    const auto record = *picker.GetActorValueRecord();
+    REQUIRE(record.level == 5);
+    REQUIRE(record.skills.at(0).level == 20.f);
+    REQUIRE(RecordedOneHandedBase(record) == -1.f);
+  }
+  // Armsman 40 wants One-handed 40: the server's 20 refuses it
+  Pick(p, kArmsman40);
+  REQUIRE_FALSE(picker.HasPerk(kArmsman40));
+  REQUIRE(picker.PerkPoints() == 2);
+  // leveling off: the seat's numbers are the record's (R1, bounded), and
+  // the same pick takes
+  p.SetLevelingEnabled(false);
+  Report(p, 50, 100.f);
+  {
+    const auto record = *picker.GetActorValueRecord();
+    REQUIRE(record.level == 50);
+    REQUIRE(record.skills.at(0).level == 100.f);
+    REQUIRE(RecordedOneHandedBase(record) == 100.f);
+    REQUIRE(record.perks == std::vector<uint32_t>{ kArmsman20, kArmsman });
+  }
+  Pick(p, kArmsman40);
+  REQUIRE(picker.HasPerk(kArmsman40));
+  Leave(p);
+}
+
+TEST_CASE("A pick before the actor values are recorded is refused with the "
+          "state sent",
+          "[Perks][espm]")
+{
+  PartOne& p = GetPartOne();
+  p.SetPerksEnabled(true);
+  DoConnect(p, 0);
+  p.CreateActor(kPicker, { 1.f, 2.f, 3.f }, 0, 0x3c);
+  p.SetUserActor(0, kPicker);
+  auto& picker = p.worldState.GetFormAt<MpActor>(kPicker);
+  p.Messages().clear();
+  Pick(p, kArmsman);
+  REQUIRE_FALSE(picker.HasPerk(kArmsman));
+  auto states = States(p);
+  REQUIRE(states.size() == 1);
+  REQUIRE(states[0].perks.empty());
+  REQUIRE(states[0].points == 0);
+  Leave(p);
+}
+
+TEST_CASE("The console's SetLevel moves the points and sends the state",
+          "[Perks][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p, 1, 15.f);
+  auto& picker = p.worldState.GetFormAt<MpActor>(kPicker);
+  Console(p, "SetLevel", { int64_t(0x14), int64_t(5) });
+  REQUIRE(picker.GetActorValueRecord()->level == 5);
+  REQUIRE(picker.PerkPoints() == 4);
+  auto states = States(p);
+  REQUIRE(states.size() == 1);
+  REQUIRE(states[0].points == 4);
   Leave(p);
 }

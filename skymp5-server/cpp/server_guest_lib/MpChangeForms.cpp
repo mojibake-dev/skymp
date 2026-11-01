@@ -1215,6 +1215,11 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
     if (jTmp.at_pointer(perks.GetData()).error() ==
         simdjson::error_code::SUCCESS) {
       ReadVector(jTmp, perks, &record.perks);
+      // sorted and unique, as HasPerk's binary search reads them (a
+      // hand-edited record is the one way they would not be)
+      std::sort(record.perks.begin(), record.perks.end());
+      record.perks.erase(std::unique(record.perks.begin(), record.perks.end()),
+                         record.perks.end());
     }
     double xpTmp = 0, thresholdTmp = 0;
     uint32_t levelTmp = 1;

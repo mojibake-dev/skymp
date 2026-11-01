@@ -4721,6 +4721,7 @@ void PartOne::TickWeather()
 void PartOne::SetPerksEnabled(bool on)
 {
   pImpl->perksEnabled = on;
+  worldState.perksEnabled = on;
   spdlog::info("[verb:perks] perks {}", on ? "on" : "off");
 }
 
@@ -4774,8 +4775,9 @@ bool PartOne::PickPerk(MpActor& actor, uint32_t perk)
   auto record = actor.GetActorValueRecord();
   if (!record) {
     spdlog::info("[verb:perks] E_PERK_NO_RECORD: {:x} picks {:x} before its "
-                 "actor values are recorded; refused",
+                 "actor values are recorded; refused, its state resent",
                  actor.GetFormId(), perk);
+    actor.SendPerkState(); // an empty set and no point: the game's pick undone
     return false;
   }
   // the values the conditions read: the record's bases first (the server's

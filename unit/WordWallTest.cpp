@@ -72,7 +72,8 @@ TEST_CASE("A word wall's trigger teaches its word into the record once, "
   REQUIRE(reader.GetShoutRecord().wordsKnown.size() == 1);
   REQUIRE(TeachWordsTold(p) == 1);
   // the record outlives the actor's form as saved
-  REQUIRE(reader.GetChangeForm().shoutRecord.wordsKnown.size() == 1);
+  REQUIRE(reader.GetChangeForm().shoutRecord.has_value());
+  REQUIRE(reader.GetChangeForm().shoutRecord->wordsKnown.size() == 1);
   Leave(p);
 }
 

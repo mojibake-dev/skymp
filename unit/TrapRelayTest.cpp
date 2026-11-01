@@ -11,7 +11,10 @@ PartOne& GetPartOne();
 // Falls Temple 0x371de: the spike wall 0x54b15's one activation parent is the
 // plate 0x567f2 (unit/ActivateParentTest), the portcullis 0x3b9f1's name the
 // lever 0x6a9e2 (lab/esm.py 2026-11-01, XAPR e2a90600). The plate stands at
-// (8589, -5338, -2054), the portcullis at (4992, -1408, -768).
+// (8589, -5338, -2054), the portcullis at (4992, -1408, -768). The portcullis
+// is an ACTI (NorPortcullisLarge01 0x3e726), not a DOOR: its rise is each
+// engine's script on the relayed activation, and the server keeps no open
+// state for it (pipeline 4392 read IsOpen false after the lever's report).
 namespace {
 constexpr uint32_t kHostActor = 0xff000fe1;
 constexpr uint32_t kGuestActor = 0xff000fe2;
@@ -119,15 +122,14 @@ TEST_CASE("The host's linked activation is recorded through the reference's "
   REQUIRE(RelayedTo(p, 1)[0].target == kWall);
   REQUIRE(RelayedTo(p, 1)[0].caster == kPlate);
   REQUIRE(RelayedTo(p, 0).empty());
-  // the lever opens the portcullis for the record (Activate's own door path)
+  // the lever's activation of the portcullis (an ACTI: the rise is the
+  // engines' own on the relay) reaches the guest with the lever as caster
   Stand(p, kByThePortcullis);
   p.Messages().clear();
-  auto& door = p.worldState.GetFormAt<MpObjectReference>(kPortcullis);
-  REQUIRE_FALSE(door.IsOpen());
   Linked(p, 0, kLever, kPortcullis);
-  REQUIRE(door.IsOpen());
   REQUIRE(RelayedTo(p, 1).size() == 1);
   REQUIRE(RelayedTo(p, 1)[0].target == kPortcullis);
+  REQUIRE(RelayedTo(p, 1)[0].caster == kLever);
   Leave(p);
 }
 
@@ -144,8 +146,6 @@ TEST_CASE("A linked activation from a guest, an unlinked pair or past the "
   // the plate is no activation parent of the portcullis
   Linked(p, 0, kPlate, kPortcullis);
   REQUIRE(RelayedTo(p, 1).empty());
-  REQUIRE_FALSE(
-    p.worldState.GetFormAt<MpObjectReference>(kPortcullis).IsOpen());
   // eight in a second pass, the ninth is dropped
   for (int i = 0; i < 8; ++i) {
     Linked(p, 0, kPlate, kWall);

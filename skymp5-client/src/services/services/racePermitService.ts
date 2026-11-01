@@ -12,14 +12,19 @@ import { ClientListener, CombinedController, Sp } from "./clientListener";
 // restricted races (props.restrictedRaces) and the ones this profile may wear
 // (props.permittedRaces), both global race form ids in the shared load order,
 // absent or empty for a profile with no permit. The restricted races the
-// login does not permit are taken off the race menu with the engine's own
-// Race.MakeUnplayable (RaceSexMenu lists the races whose RACE record carries
-// the Playable flag, read when the menu opens; MakeUnplayable clears that flag
-// in memory, so the plugin's bytes and the load order stay identical on every
-// seat). The typed bindings carry Race.isPlayable but not MakeUnplayable, so
-// the native is called by name. A race the player's own base already wears is
-// never hidden: the server keeps a recorded race (is_recorded_race), and the
-// menu rebuilds its lists from the actor's race, which must stay offered.
+// login does not permit are the ones to take off the race menu (RaceSexMenu
+// lists the races whose RACE record carries the Playable flag, read when the
+// menu opens; clearing that flag in memory keeps the plugin's bytes and the
+// load order identical on every seat). The hide itself is OFF for now: the
+// seats' loaded Race.pex defines MakeUnplayable as a script function, not a
+// native one, so callNative throws "Function is not native" (b-race-permit
+// 20261101-232833); it returns with a TESModPlatform native declared through
+// lab/pex.py add-native (the pex rule) or SKSE's own Race.pex laid by the
+// layer. Until then this service checks the lists and logs them, and the
+// server's refusal (E_APPEARANCE_RACE) is the whole enforcement. A race the
+// player's own base already wears is never hidden: the server keeps a
+// recorded race (is_recorded_race), and the menu rebuilds its lists from the
+// actor's race, which must stay offered.
 export class RacePermitService extends ClientListener {
     private hidden: number[] = [];
 
@@ -73,8 +78,9 @@ export class RacePermitService extends ClientListener {
             if (!race.isPlayable()) {
                 continue;
             }
-            this.sp.callNative("Race", "MakeUnplayable", race);
-            logTrace(this, "race", hex(id), "taken off the menu; playable now:", race.isPlayable());
+            // the hide's native is not on the seats yet (see the header); the
+            // server refuses the race whatever the menu lists
+            logTrace(this, "race", hex(id), "stays listed; the hide awaits its native");
         }
     }
 }

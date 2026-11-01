@@ -4,6 +4,8 @@
 
 use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, placements, player_globals, props, quest_stages, racemenu, ranged, rest, perks, scripted_effects, shouts, stagger, teleports, weather};
 
+// the perk table's effect calls carry a CTDA's five parts flat, as add_condition does
+#[allow(clippy::too_many_arguments)]
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
     /// A decision and the bound it was made against (units), for the log.
@@ -1878,6 +1880,23 @@ mod ffi {
         fn perk_points(level: u16, held: usize) -> u16;
         /// The most perks a record holds (the wire's cap on PerkState).
         fn perks_max() -> usize;
+        /// One of `perk`'s entry point effects (a PRKE section with a one-float
+        /// value): its index among the perk's effects, -1 for a perk not added
+        /// (thuum docs/verbs/perks.md, the second half).
+        fn add_effect(self: &mut PerkTable, perk: u32, entry_point: u8, function: u8, value: f32, rank: u8, priority: u8) -> i32;
+        /// A condition of that effect on `tab` (0 the perk owner, 1 the subject:
+        /// the weapon or the armor piece), from its CTDA as `add_condition`
+        /// takes one; false when it lands on a third tab, which leaves the
+        /// effect out, or names no effect.
+        fn add_effect_condition(self: &mut PerkTable, perk: u32, effect: i32, tab: u8, function: u16, byte0: u8, value: f32, param1: u32, run_on: u32) -> bool;
+        /// How many effects the formulas judge.
+        fn judged_effects(self: &PerkTable) -> usize;
+        /// How many effects are left out (another function, a third tab).
+        fn unjudged_effects(self: &PerkTable) -> usize;
+        /// `start` through the held perks' effects on `entry_point` whose owner
+        /// conditions hold for the record (as `pick` reads it) and whose subject
+        /// conditions hold for `subject_keywords`, in priority order.
+        fn apply_entry_point(self: &PerkTable, entry_point: u8, start: f32, level: u16, perks: &[u32], avs: &[u8], values: &[f32], subject_keywords: &[u32]) -> f32;
 
         /// thuum docs/verbs/cell-host.md (ADR-035): which player's game runs
         /// each cell's NPCs, the grace and the epochs.
@@ -3571,6 +3590,33 @@ impl PerkTable {
 
     fn knows(&self, perk: u32) -> bool {
         self.0.get(perk).is_some()
+    }
+
+    fn add_effect(&mut self, perk: u32, entry_point: u8, function: u8, value: f32, rank: u8, priority: u8) -> i32 {
+        self.0.add_effect(perk, entry_point, function, value, rank, priority).and_then(|i| i32::try_from(i).ok()).unwrap_or(-1)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn add_effect_condition(&mut self, perk: u32, effect: i32, tab: u8, function: u16, byte0: u8, value: f32, param1: u32, run_on: u32) -> bool {
+        let Ok(effect) = usize::try_from(effect) else {
+            return false;
+        };
+        self.0.add_effect_condition(perk, effect, tab, perks::Condition::from_ctda(function, byte0, value, param1, run_on), byte0 & perks::FLAG_OR != 0)
+    }
+
+    fn judged_effects(&self) -> usize {
+        self.0.judged_effects()
+    }
+
+    fn unjudged_effects(&self) -> usize {
+        self.0.unjudged_effects()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_entry_point(&self, entry_point: u8, start: f32, level: u16, perks: &[u32], avs: &[u8], values: &[f32], subject_keywords: &[u32]) -> f32 {
+        let pairs: Vec<(u8, f32)> = avs.iter().copied().zip(values.iter().copied()).collect();
+        let record = perks::Record { level, perks, values: &pairs };
+        perks::apply_entry_point(&self.0, entry_point, start, &record, subject_keywords)
     }
 
     fn pick(&self, level: u16, held: &[u32], avs: &[u8], values: &[f32], perk: u32) -> PerkVerdict {

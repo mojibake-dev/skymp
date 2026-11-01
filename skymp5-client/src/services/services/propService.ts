@@ -77,6 +77,14 @@ const DROP_MATCH_MS = 3000;
 const DROP_MATCH_UNITS = 512;
 // "applied from the stream" is said once per prop per this
 const APPLIED_LOG_MS = 10_000;
+// D73 (docs/DECISIONS.md, ADR-058 decision 3 refined): a follower's body is
+// Keyframed only while another seat streams it awake, this long after the
+// last awake sample; then, and REST_DYNAMIC_MS after an asleep sample's
+// apply, it is Dynamic and may wake, so a kick or a grab acts on it at once
+const STREAM_LIVE_MS = 1000;
+const REST_DYNAMIC_MS = 300;
+// a jump's translate lands within this (the translate's speed is the distance over it), ms
+const JUMP_MS = 100;
 
 type Sample = { pos: NiPoint3; rot: NiPoint3; asleep: boolean; at: number };
 
@@ -103,6 +111,7 @@ type Prop = {
     lastRead: Sample | undefined;
     stirredAt: number;
     streaming: boolean;            // awake samples went out since the last sleep
+    announce: boolean;             // a granted word named this seat: its first read goes out at once (see stream)
     // the follower's side
     pending: Sample | undefined;   // the newest sample in, applied on the next update
     lastSampleAt: number;
@@ -111,6 +120,8 @@ type Prop = {
     lastTouchRead: Sample | undefined;
     lastTouchReadAt: number;
     lastClaimAt: number;
+    lastSampleAsleep: boolean;     // the newest sample in said asleep (the stream ended there)
+    restAt: number;                // when the asleep sample came, for the Dynamic set after its apply (0 none)
 };
 
 type Owner = { player: number; epoch: number; leaseUntil: number };
@@ -207,6 +218,8 @@ export class PropService extends ClientListener {
         prop.pending = sample;
         prop.prevSampleAt = prop.lastSampleAt;
         prop.lastSampleAt = now;
+        prop.lastSampleAsleep = sample.asleep;
+        prop.restAt = sample.asleep ? now : 0;
     }
 
     // The server's word on who simulates a prop from now; an epoch not above
@@ -320,6 +333,15 @@ export class PropService extends ClientListener {
         if (!this.enabled()) {
             return;
         }
+        // DropItemService's own gate: a drop is made from the inventory menu;
+        // the login's outfit removals have the same event shape (the player's
+        // container, no new one, no reference) and would be recorded as drops
+        // (x-prop-drop v4 162049: eight "drop of base ... recorded" lines per
+        // seat at the login), and a server copy of one of those bases arriving
+        // within DROP_MATCH_MS would be claimed wrongly
+        if (!this.sp.Ui.isMenuOpen("InventoryMenu")) {
+            return;
+        }
         const player = this.sp.Game.getPlayer();
         if (!player || !e.oldContainer || !e.baseObj) {
             return;
@@ -394,8 +416,18 @@ export class PropService extends ClientListener {
         const simulate = myId !== 0 && owner === myId;
         const near = prop.distance <= TOUCH_RADIUS + 512;
         const touchReadDue = fallback && !simulate && near && now - prop.lastTouchReadAt >= TOUCH_READ_MS;
+        // D73's rest: a follower's Keyframed body goes Dynamic REST_DYNAMIC_MS after
+        // the asleep sample or STREAM_LIVE_MS after the last awake one, so a kick
+        // or a grab acts on it at once; the check below needs the reference, so
+        // the tick must reach it (x-prop-grab v8 202618: with no pending sample
+        // and the touch fallback off the tick returned here every time, no seat
+        // ever logged "at rest: Dynamic", and c2's E on the still-Keyframed basket
+        // picked it up instead of grabbing it)
+        const restDue = !simulate && prop.placed && prop.motionAsked === MotionType.Keyframed
+            && ((prop.restAt !== 0 && now - prop.restAt >= REST_DYNAMIC_MS)
+                || (!prop.lastSampleAsleep && now - prop.lastSampleAt >= STREAM_LIVE_MS));
         const wantsRef = simulate || !prop.placed || prop.simulating !== simulate || prop.motionAsked === undefined
-            || prop.pending !== undefined || touchReadDue;
+            || prop.pending !== undefined || touchReadDue || restDue;
         if (!wantsRef) {
             return;
         }
@@ -421,7 +453,7 @@ export class PropService extends ClientListener {
             // the host's default clutter rests until a contact wakes it
             this.flip(prop, refr, simulate, simulate && named, now);
         } else if (loaded3D && prop.motionAsked === undefined) {
-            this.setMotion(prop, refr, simulate ? MotionType.Dynamic : MotionType.Keyframed, false);
+            this.setMotion(prop, refr, this.restMotion(prop, simulate, now), true);
         }
         if (prop.simulating) {
             this.stream(prop, refr, now, myId);
@@ -477,6 +509,17 @@ export class PropService extends ClientListener {
             prop.placedAt = Date.now();
             logTrace(this, `prop ${prop.refr.toString(16)} placed at its record${why}`);
         };
+        if (prop.loaded3D) {
+            // H-P4: the placement by the engine's keyframed translate, the
+            // collision moving with the node (a setPosition'd body flew at its
+            // later Dynamic set, pass v10b 025124)
+            const distance = ObjectReferenceEx.getDistance(read.pos, target.pos);
+            const speed = Math.max(GLIDE_MIN_SPEED, distance / (JUMP_MS / 1000));
+            refr.stopTranslation();
+            refr.translateTo(x, y, z, ax, ay, az, speed, 0);
+            done(" (translated)");
+            return;
+        }
         // the reference is looked up again after a latent call's answer (a
         // wrapper from an earlier frame is out of Skyrim Platform's pool)
         refr.setPosition(x, y, z)
@@ -501,8 +544,18 @@ export class PropService extends ClientListener {
         if (simulate) {
             refr.stopTranslation();
             prop.pending = undefined;
+            // D73: a body already Dynamic (a resting follower kicked or grabbed
+            // here, the claim granted) takes no motion set, so the hand's hold
+            // and the kick's motion carry on; a Keyframed one (claimed while
+            // another seat streamed it) goes Dynamic and may wake (x-prop-push
+            // v9 021439: a Dynamic body denied activation took no contact)
+            if (prop.motionAsked !== MotionType.Dynamic) {
+                this.setMotion(prop, refr, MotionType.Dynamic, true);
+            }
         }
-        this.setMotion(prop, refr, simulate ? MotionType.Dynamic : MotionType.Keyframed, simulate && wake);
+        // the loss of the simulation sets no motion here: the new owner's
+        // first awake sample makes the body Keyframed (follow), and a body
+        // nobody streams rests Dynamic (D73)
         prop.simulating = simulate;
         prop.lastSent = undefined;
         prop.lastRead = undefined;
@@ -510,14 +563,33 @@ export class PropService extends ClientListener {
         prop.streaming = false;
         prop.stirredAt = now;
         prop.lastTouchRead = undefined;
+        // a granted touch (wake): the server's row starts its silence clock at
+        // the grant (wire-rules props.rs claim: since_ms and last_sample_ms),
+        // so the owner must be heard within PROP_SILENCE_MS whether or not the
+        // body moves, else the row lapses to the cell's host and every sample
+        // after is E_PROP_NOT_OWNER (x-prop-drop v4 162049: a dropped sword at
+        // the dropper's feet, still for 3.6 s). The host-default simulation
+        // (no wake) keeps the lazy baseline: nothing goes out until a move
+        prop.announce = simulate && wake;
         logTrace(this, `prop ${prop.refr.toString(16)} ${simulate ? "simulated here: Dynamic" : "followed: Keyframed"}`);
     }
 
-    // abAllowActivate is Havok's wake: Dynamic without it, the body rests as
-    // the file's clutter does until a contact wakes it, so the host's props do
-    // not settle and stream all at once at each cell; with it (a granted
-    // touch) the body is live at once. Keyframed as dealWithRef sets it.
-    // HYPOTHESIS: a clutter body takes both switches at runtime
+    // D73: the motion a body takes when first set: Dynamic unless another seat
+    // streams it awake right now (a sample within STREAM_LIVE_MS, not asleep)
+    private restMotion(prop: Prop, simulate: boolean, now: number): MotionType {
+        if (simulate) {
+            return MotionType.Dynamic;
+        }
+        const live = prop.lastSampleAt !== 0 && !prop.lastSampleAsleep && now - prop.lastSampleAt < STREAM_LIVE_MS;
+        return live ? MotionType.Keyframed : MotionType.Dynamic;
+    }
+
+    // abAllowActivate is Havok's leave to wake: a Dynamic body denied it took
+    // no contact from the host standing in it or running through it (x-prop-push
+    // v9 021439 on the physics stage), so every body this seat simulates is set
+    // Dynamic with it; the stream's lazy baseline (nothing out until a move)
+    // keeps a resting cell's clutter silent. Keyframed as dealWithRef sets it.
+    // HYPOTHESIS until v10: a body denied activation is inert to the controller
     private setMotion(prop: Prop, refr: ObjectReference, type: MotionType, wake: boolean) {
         prop.motionAsked = type;
         refr.setMotionType(type, wake).catch((err) => {
@@ -535,10 +607,28 @@ export class PropService extends ClientListener {
             return;
         }
         const read = PropService.read(refr, now);
+        // a paused world (a menu, the console) stirs nothing, so the sleep clock
+        // holds until the world runs again: x-prop-launch v3 190643 read a drop's
+        // copy "asleep" under the dropper's InventoryMenu and the server leased
+        // it while the body had never settled (it was ejected at the unpause)
+        if (prop.streaming && this.sp.Utility.isInMenuMode()) {
+            prop.stirredAt = now;
+        }
         if (!prop.lastSent) {
+            prop.lastRead = read;
+            if (prop.announce) {
+                // the grant's first sample: the stream is open from here, so the
+                // asleep sample and the server's lease follow SLEEP_AFTER_MS
+                // later when nothing stirs
+                prop.announce = false;
+                this.send(prop, read, false, now);
+                prop.streaming = true;
+                prop.stirredAt = now;
+                logLab(TAG, `stream ${prop.refr.toString(16)} started at the grant`);
+                return;
+            }
             // the baseline: nothing goes out until the body moves from here
             prop.lastSent = read;
-            prop.lastRead = read;
             prop.stirredAt = 0;
             return;
         }
@@ -594,11 +684,28 @@ export class PropService extends ClientListener {
         const pending = prop.pending;
         if (pending) {
             prop.pending = undefined;
+            // D73: the stream drives a Keyframed body; the first awake sample of
+            // a burst sets it (a resting body is Dynamic)
+            if (!pending.asleep && prop.loaded3D && prop.motionAsked !== MotionType.Keyframed) {
+                this.setMotion(prop, refr, MotionType.Keyframed, true);
+            }
             this.apply(prop, refr, pending, now);
             // the stream moved it: the touch read starts over after the glide
             prop.lastTouchRead = undefined;
             prop.lastTouchReadAt = now;
             return;
+        }
+        // D73: back to Dynamic once the stream ended (REST_DYNAMIC_MS after the
+        // asleep sample's apply) or went quiet (STREAM_LIVE_MS after the last
+        // awake sample), so the resting body takes a kick or a grab at once
+        if (prop.loaded3D && prop.motionAsked === MotionType.Keyframed) {
+            const rested = prop.restAt !== 0 && now - prop.restAt >= REST_DYNAMIC_MS;
+            const quiet = !prop.lastSampleAsleep && now - prop.lastSampleAt >= STREAM_LIVE_MS;
+            if (rested || quiet) {
+                prop.restAt = 0;
+                this.setMotion(prop, refr, MotionType.Dynamic, true);
+                logTrace(this, `prop ${prop.refr.toString(16)} at rest: Dynamic (${rested ? "the stream ended" : "the stream went quiet"})`);
+            }
         }
         if (!touchReadDue) {
             return;
@@ -647,12 +754,22 @@ export class PropService extends ClientListener {
         const [ax, ay, az] = s.rot;
         if (s.asleep || distance >= JUMP_UNITS) {
             refr.stopTranslation();
-            refr.setPosition(x, y, z)
-                .then(() => {
-                    const again = this.refOf(prop);
-                    return again ? again.setAngle(ax, ay, az) : undefined;
-                })
-                .catch((err) => logError(this, `placing prop ${prop.refr.toString(16)} at its sample failed`, err));
+            if (prop.loaded3D) {
+                // H-P4 (pass v10b 025124): a body placed by setPosition and later
+                // set Dynamic flew on every seat it happened to, the drop's copy
+                // that was never placed did not; the engine's keyframed translate
+                // moves the collision with the node, so a jump translates at a
+                // speed that lands within JUMP_MS
+                const speed = Math.max(GLIDE_MIN_SPEED, distance / (JUMP_MS / 1000));
+                refr.translateTo(x, y, z, ax, ay, az, speed, 0);
+            } else {
+                refr.setPosition(x, y, z)
+                    .then(() => {
+                        const again = this.refOf(prop);
+                        return again ? again.setAngle(ax, ay, az) : undefined;
+                    })
+                    .catch((err) => logError(this, `placing prop ${prop.refr.toString(16)} at its sample failed`, err));
+            }
         } else if (distance < 0.1) {
             refr.setAngle(ax, ay, az).catch((err) => logError(this, `turning prop ${prop.refr.toString(16)} failed`, err));
         } else {
@@ -958,14 +1075,14 @@ export class PropService extends ClientListener {
         return this.controller.lookupListener(RemoteServer).getMyRemoteRefrId();
     }
 
-    // Off unless the client setting propPhysics is true: the verb has no green
-    // T3 scenario yet (rule 3, D68 of 2026-10-30), so parity's players run the
-    // engine's own physics as before while the lab's probes switch it on
-    // through their relaunch files; the default flips in the commit whose
-    // b-prop-push goes green
+    // On unless the client setting propPhysics is false. The union merged
+    // this verb dark (off by default, rule 3 and D68 of 2026-10-30, no green
+    // T3 scenario then); this train carries b-prop-push as the verb's own
+    // scenario and merges only when it is green, so the default is on again
+    // here, and parity never sees it on with a red scenario
     private enabled(): boolean {
         const s = this.sp.settings["skymp5-client"] as Record<string, unknown> | undefined;
-        return s !== undefined && s["propPhysics"] === true;
+        return !s || s["propPhysics"] !== false;
     }
 
     // the proximity stand-in for the contact, off by default now that the
@@ -1017,6 +1134,7 @@ export class PropService extends ClientListener {
             lastRead: undefined,
             stirredAt: 0,
             streaming: false,
+            announce: false,
             pending: undefined,
             lastSampleAt: 0,
             prevSampleAt: 0,
@@ -1024,6 +1142,8 @@ export class PropService extends ClientListener {
             lastTouchRead: undefined,
             lastTouchReadAt: 0,
             lastClaimAt: 0,
+            lastSampleAsleep: false,
+            restAt: 0,
         };
     }
 

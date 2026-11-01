@@ -12,16 +12,18 @@ import { ClientListener, CombinedController, Sp } from "./clientListener";
 // restricted races (props.restrictedRaces) and the ones this profile may wear
 // (props.permittedRaces), both global race form ids in the shared load order,
 // absent or empty for a profile with no permit. The restricted races the
-// login does not permit are the ones to take off the race menu (RaceSexMenu
-// lists the races whose RACE record carries the Playable flag, read when the
-// menu opens; clearing that flag in memory keeps the plugin's bytes and the
-// load order identical on every seat). The hide itself is OFF for now: the
-// seats' loaded Race.pex defines MakeUnplayable as a script function, not a
-// native one, so callNative throws "Function is not native" (b-race-permit
-// 20261101-232833); it returns with a TESModPlatform native declared through
-// lab/pex.py add-native (the pex rule) or SKSE's own Race.pex laid by the
-// layer. Until then this service checks the lists and logs them, and the
-// server's refusal (E_APPEARANCE_RACE) is the whole enforcement. A race the
+// login does not permit are taken off the race menu by clearing the Playable
+// bit of the RACE record in memory (RaceSexMenu lists the races whose RACE
+// DATA flags carry bit 0x1, Playable, read when the menu opens; UESP, "Skyrim
+// Mod:Mod File Format/RACE"), so the plugin's bytes and the load order stay
+// identical on every seat. The natives are SKSE's Race.IsRaceFlagSet and
+// Race.ClearRaceFlag, declared in the Race.pex the seats load loose (SKSE's,
+// Data/Scripts/Source/Race.psc in its archive) and typed by Skyrim Platform;
+// that script's IsPlayable and MakeUnplayable are wrappers over them, which
+// Skyrim Platform refuses as "Function is not native" (b-race-permit
+// 20261101-232833, c2), and Form.isPlayable, which the typed binding
+// resolved to, reads the form's own flag, not the race's. The server's
+// refusal (E_APPEARANCE_RACE) is the enforcement either way. A race the
 // player's own base already wears is never hidden: the server keeps a
 // recorded race (is_recorded_race), and the menu rebuilds its lists from the
 // actor's race, which must stay offered.
@@ -75,14 +77,16 @@ export class RacePermitService extends ClientListener {
                 logError(this, "E_RACE_PERMIT: restricted race", hex(id), "is not a race in this game's load order");
                 continue;
             }
-            if (!race.isPlayable()) {
+            if (!race.isRaceFlagSet(PLAYABLE)) {
                 continue;
             }
-            // the hide's native is not on the seats yet (see the header); the
-            // server refuses the race whatever the menu lists
-            logTrace(this, "race", hex(id), "stays listed; the hide awaits its native");
+            race.clearRaceFlag(PLAYABLE);
+            logTrace(this, "race", hex(id), "taken off the menu; playable now:", race.isRaceFlagSet(PLAYABLE));
         }
     }
 }
+
+// RACE DATA flags bit 0, Playable (SKSE's Race.psc: kRace_Playable)
+const PLAYABLE = 0x1;
 
 const hex = (id: number): string => id.toString(16);

@@ -40,6 +40,21 @@ const PARKED_MAX = 64;
 // it; the window is a hedge the trace line reports)
 const ARRIVAL_WINDOW_MS = 3000;
 
+// A report equal to the last one this game sent for the quest within this
+// window is dropped and counted (docs/verbs/quest-stage.md, the stage-0
+// churn: DLC1VCController 0x0201a428 restarts itself in bursts of 32 and
+// every restart fires its stage-0 event; the server treats a repeated
+// (quest, stage) as a no-op already, so nothing is lost), ms. UNMEASURED
+// beyond the burst's shape in x-quest-mode v5's 151127
+const REPORT_REPEAT_MS = 30000;
+
+// How many quests the repeat memory holds; the oldest entry makes room
+const REPORT_MEMORY_MAX = 256;
+
+// How often the update pass writes the dropped count of a window that ended
+// with no further report, ms
+const REPEAT_FLUSH_MS = 5000;
+
 // thuum docs/verbs/quest-stage.md (ADR-056, memo D55 B; Eli, playtest 37:
 // "appropriately communicating the worlds shared quest state ... makes sense
 // to start now as part of the dialogue work"): the world's quest stages. A
@@ -138,6 +153,7 @@ export class QuestStageService extends ClientListener {
     private onUpdate() {
         this.arrival();
         const now = Date.now();
+        this.flushRepeats(now);
         // slice two's safety: a fragment mark whose stage event never came
         // within its window is taken back (callNative runs here, in the
         // update pass's VM context); the list is in order of expiry, and it
@@ -330,6 +346,9 @@ export class QuestStageService extends ClientListener {
         if (!this.reports(questId)) {
             return;
         }
+        if (this.repeated(questId, e.stage)) {
+            return; // the same stage again within its window: dropped and counted
+        }
         this.controller.emitter.emit("sendMessage", {
             message: { t: MsgType.QuestStage, quest: questId, stage: e.stage },
             reliability: "reliable",
@@ -421,6 +440,51 @@ export class QuestStageService extends ClientListener {
     // quests; in mode all every quest but the denied (memo D58 B), a
     // start-game-enabled one included, which the server refuses unless it
     // is allowed (memo D62; the class comment says why the filter is its)
+    // the repeat window: true when this game reported the same stage of the
+    // quest within REPORT_REPEAT_MS (the repeat is counted and dropped); a
+    // new stage, or the same one past the window, starts a new window and
+    // writes the old one's count
+    private repeated(questId: number, stage: number): boolean {
+        const now = Date.now();
+        const last = this.lastReports.get(questId);
+        if (last && last.stage === stage && now - last.since < REPORT_REPEAT_MS) {
+            last.dropped++;
+            return true;
+        }
+        if (last) {
+            this.closeRepeatWindow(questId, last, now);
+        } else if (this.lastReports.size >= REPORT_MEMORY_MAX) {
+            const oldest = this.lastReports.keys().next().value;
+            if (oldest !== undefined) {
+                this.lastReports.delete(oldest);
+            }
+        }
+        this.lastReports.set(questId, { stage, since: now, dropped: 0 });
+        return false;
+    }
+
+    // one line per window that dropped anything, when the window ends (the
+    // next report of the quest, or the update pass's flush)
+    private closeRepeatWindow(questId: number, last: { stage: number; since: number; dropped: number }, now: number) {
+        if (last.dropped > 0) {
+            logTrace(this, "stage", last.stage, "of quest", questId.toString(16), "repeated", last.dropped, "times in", Math.round((now - last.since) / 1000), "s; dropped");
+            last.dropped = 0;
+        }
+    }
+
+    private flushRepeats(now: number) {
+        if (now < this.nextRepeatFlush) {
+            return;
+        }
+        this.nextRepeatFlush = now + REPEAT_FLUSH_MS;
+        this.lastReports.forEach((last, questId) => {
+            if (now - last.since >= REPORT_REPEAT_MS) {
+                this.closeRepeatWindow(questId, last, now);
+                this.lastReports.delete(questId);
+            }
+        });
+    }
+
     private reports(questId: number): boolean {
         if (this.mode === undefined) {
             return false;
@@ -481,6 +545,10 @@ export class QuestStageService extends ClientListener {
     // the highest stage the world asked for, by quest, on the quests that
     // refused Quest.Start here; applied at the engine's own start of each
     private parked = new Map<number, number>();
+    // the last stage this game reported per quest: when its window began and
+    // how many repeats of it were dropped since (REPORT_REPEAT_MS)
+    private lastReports = new Map<number, { stage: number; since: number; dropped: number }>();
+    private nextRepeatFlush = 0;
     private missing = new Set<number>();
     // slice two's safety: the fragment marks this service's applies set,
     // each with the time its release is due, in that order (one apply per

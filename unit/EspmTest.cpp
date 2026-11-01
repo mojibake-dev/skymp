@@ -839,3 +839,60 @@ TEST_CASE("PERK carries its DATA, its next rank and the conditions before "
   REQUIRE(std::string(last.editorId) == "Armsman80");
   REQUIRE(last.nextPerk == 0);
 }
+
+TEST_CASE("PERK's sections carry its effects: the entry point, the function, "
+          "the value and the conditions by tab",
+          "[espm]")
+{
+  // thuum docs/verbs/perks.md (the second half), Skyrim.esm with lab/esm.py
+  // on 2026-11-01: Armsman00's one PRKE (type 2) with DATA 23 03 03
+  // (kModAttackDamage 35, MultiplyValue 3, three tabs), PRKC 0
+  // HasPerk(Armsman20)
+  // == 0, PRKC 1 HasKeyword of the four one-handed types each flagged OR,
+  // EPFT 1, EPFD 1.2; Juggernaut00's DATA 55 03 02 (kModArmorRating 85) with
+  // the piece's ArmorHeavy and not the shield keyword
+  MyEspmProvider provider;
+  auto armsman = espm::GetData<espm::PERK>(0xbabe4, &provider);
+  REQUIRE(armsman.entries.size() == 1);
+  const auto& e = armsman.entries[0];
+  REQUIRE(e.type == 2);
+  REQUIRE(e.rank == 0);
+  REQUIRE(e.priority == 0);
+  REQUIRE(e.entryPoint == 35);
+  REQUIRE(e.function == 3);
+  REQUIRE(e.tabCount == 3);
+  REQUIRE(e.dataType == 1);
+  REQUIRE(e.value == 1.2f);
+  REQUIRE(e.conditions.size() == 5);
+  REQUIRE(e.conditions[0].first == 0);
+  REQUIRE(e.conditions[0].second.functionIndex == 448); // HasPerk
+  REQUIRE(e.conditions[0].second.GetDefaultData().firstParameter == 0x79343);
+  REQUIRE(e.conditions[0].second.comparisonValue == 0.f);
+  for (size_t i = 1; i < 5; ++i) {
+    REQUIRE(e.conditions[i].first == 1);
+    REQUIRE(e.conditions[i].second.functionIndex == 560); // HasKeyword
+    REQUIRE((e.conditions[i].second.operatorFlag & 0x01) == 0x01); // OR
+    REQUIRE(e.conditions[i].second.comparisonValue == 1.f);
+  }
+  REQUIRE(e.conditions[1].second.GetDefaultData().firstParameter == 0x1e714);
+  REQUIRE(e.conditions[2].second.GetDefaultData().firstParameter == 0x1e711);
+  REQUIRE(e.conditions[3].second.GetDefaultData().firstParameter == 0x1e712);
+  REQUIRE(e.conditions[4].second.GetDefaultData().firstParameter == 0x1e713);
+
+  auto juggernaut = espm::GetData<espm::PERK>(0xbcd2a, &provider);
+  REQUIRE(juggernaut.entries.size() == 1);
+  const auto& j = juggernaut.entries[0];
+  REQUIRE(j.entryPoint == 85);
+  REQUIRE(j.function == 3);
+  REQUIRE(j.tabCount == 2);
+  REQUIRE(j.value == 1.2f);
+  REQUIRE(j.conditions.size() == 3);
+  REQUIRE(j.conditions[0].first == 0);
+  REQUIRE(j.conditions[0].second.GetDefaultData().firstParameter == 0x7935e);
+  REQUIRE(j.conditions[1].first == 1);
+  REQUIRE(j.conditions[1].second.functionIndex == 560);
+  REQUIRE(j.conditions[1].second.GetDefaultData().firstParameter == 0x6bbd2);
+  REQUIRE(j.conditions[1].second.comparisonValue == 1.f);
+  REQUIRE(j.conditions[2].second.GetDefaultData().firstParameter == 0x965b2);
+  REQUIRE(j.conditions[2].second.comparisonValue == 0.f);
+}

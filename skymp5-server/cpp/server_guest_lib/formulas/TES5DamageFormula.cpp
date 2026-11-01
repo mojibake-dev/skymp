@@ -16,6 +16,12 @@ bool IsUnarmedAttack(const uint32_t sourceFormId)
   return sourceFormId == 0x1f4;
 }
 
+// thuum docs/verbs/perks.md (the second half): the perk entry points this
+// formula asks the record's perks about (CommonLibSSE-NG include/RE/B/
+// BGSEntryPoint.h ENTRY_POINT: kModAttackDamage 35, kModArmorRating 85)
+constexpr uint8_t kModAttackDamage = 35;
+constexpr uint8_t kModArmorRating = 85;
+
 class TES5DamageFormulaImpl
 {
   using Effects = std::vector<espm::Effects::Effect>;
@@ -44,6 +50,10 @@ private:
   [[nodiscard]] float DetermineDamageFromSource(uint32_t source) const;
   [[nodiscard]] float CalcUnarmedDamage() const;
   [[nodiscard]] float CalcArmorDamagePenalty() const;
+  [[nodiscard]] std::vector<uint32_t> KeywordsOf(uint32_t baseId) const;
+  [[nodiscard]] float ApplyPerkEntryPoint(
+    const MpActor& owner, uint8_t entryPoint, float value,
+    const std::vector<uint32_t>& subjectKeywords) const;
 };
 
 TES5DamageFormulaImpl::TES5DamageFormulaImpl(const MpActor& aggressor_,
@@ -54,6 +64,40 @@ TES5DamageFormulaImpl::TES5DamageFormulaImpl(const MpActor& aggressor_,
   , hitData(hitData_)
   , espmProvider(aggressor.GetParent())
 {
+}
+
+// a record's keywords made global (the HasKeyword condition's idiom): the
+// subject a perk effect's second tab reads (the weapon's school keyword, the
+// armor piece's heavy or light keyword)
+std::vector<uint32_t> TES5DamageFormulaImpl::KeywordsOf(uint32_t baseId) const
+{
+  std::vector<uint32_t> out;
+  if (!espmProvider || baseId == 0) {
+    return out;
+  }
+  const auto lookup = espmProvider->GetEspm().GetBrowser().LookupById(baseId);
+  if (!lookup.rec) {
+    return out;
+  }
+  for (uint32_t keyword :
+       lookup.rec->GetKeywordIds(espmProvider->GetEspmCache())) {
+    out.push_back(lookup.ToGlobalId(keyword));
+  }
+  return out;
+}
+
+// the value through the owner's held perks' effects on one entry point
+// (WorldState::applyPerkEntryPoint, PartOne's perk table); unchanged with no
+// table installed or perks off
+float TES5DamageFormulaImpl::ApplyPerkEntryPoint(
+  const MpActor& owner, uint8_t entryPoint, float value,
+  const std::vector<uint32_t>& subjectKeywords) const
+{
+  if (!espmProvider || !espmProvider->applyPerkEntryPoint) {
+    return value;
+  }
+  return espmProvider->applyPerkEntryPoint(owner, entryPoint, value,
+                                           subjectKeywords);
 }
 
 float TES5DamageFormulaImpl::GetBaseWeaponDamage() const
@@ -123,6 +167,11 @@ float TES5DamageFormulaImpl::CalcArmorRatingComponent(
       espm::GetData<espm::ARMO>(opponentEquipmentEntry.baseId, espmProvider);
     // TODO(#458): take other components into account
     auto ac = static_cast<float>(armorData.baseRatingX100) / 100;
+    // the target's armor perks on this piece (Juggernaut, Agile Defender:
+    // kModArmorRating with the piece's heavy or light keyword; HYPOTHESIS
+    // that the engine applies it per piece, thuum docs/verbs/perks.md)
+    ac = ApplyPerkEntryPoint(target, kModArmorRating, ac,
+                             KeywordsOf(opponentEquipmentEntry.baseId));
     if (armorData.enchantmentFormId) {
       // TODO(#632) refactor this effect with actor effect system
       const auto enchantmentData =
@@ -158,7 +207,15 @@ float TES5DamageFormulaImpl::CalcUnarmedDamage() const
 
 float TES5DamageFormulaImpl::DetermineDamageFromSource(uint32_t source) const
 {
-  return IsUnarmedAttack(source) ? CalcUnarmedDamage() : CalcWeaponRating();
+  // the aggressor's weapon perks (Armsman, Barbarian, Overdraw and every
+  // rank on kModAttackDamage) with the weapon's keywords as the subject;
+  // unarmed carries no keywords, so the weapon schools leave it alone
+  if (IsUnarmedAttack(source)) {
+    return ApplyPerkEntryPoint(aggressor, kModAttackDamage,
+                               CalcUnarmedDamage(), {});
+  }
+  return ApplyPerkEntryPoint(aggressor, kModAttackDamage, CalcWeaponRating(),
+                             KeywordsOf(source));
 }
 
 float TES5DamageFormulaImpl::CalcArmorDamagePenalty() const

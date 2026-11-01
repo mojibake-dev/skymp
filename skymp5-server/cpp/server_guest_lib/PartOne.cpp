@@ -4812,95 +4812,160 @@ std::optional<PartOne::WordWall> PartOne::WordOfWall(
     return std::nullopt;
   }
   return WordWall{ *word, wallRef };
-}
 
-void PartOne::LoadPerkTable()
-{
-  if (!HasEspm()) {
-    return;
-  }
-  // HasPerk's parameter is a perk's form id (CommonLibSSE-NG TESCondition.h
-  // FUNCTION_DATA::FunctionID::kHasPerk 448), the file's own: made global
-  // through the record's lookup, as the perk's own id is
-  constexpr uint16_t kHasPerk = 448;
-  size_t playable = 0;
-  size_t conditions = 0;
-  for (const auto& lookup :
-       GetEspm().GetBrowser().GetDistinctRecordsByType("PERK")) {
-    if (!lookup.rec) {
-      continue;
-    }
-    const auto perkId = lookup.ToGlobalId(lookup.rec->GetId());
-    const auto data = espm::GetData<espm::PERK>(perkId, &worldState);
-    pImpl->perkTable->add_perk(perkId, data.isPlayable, data.isHidden);
-    if (data.isPlayable && !data.isHidden) {
-      ++playable;
-    }
-    for (const auto& ctda : data.conditions) {
-      uint32_t param1 = ctda.GetDefaultData().firstParameter;
-      if (ctda.functionIndex == kHasPerk) {
-        param1 = lookup.ToGlobalId(param1);
-      }
-      if (pImpl->perkTable->add_condition(
-            perkId, ctda.functionIndex, ctda.operatorFlag,
-            ctda.comparisonValue, param1,
-            static_cast<uint32_t>(ctda.runOnType))) {
-        ++conditions;
-      }
-    }
-  }
-  spdlog::info("[verb:perks] perk table: {} perk(s) from the game files, {} "
-               "playable, {} condition(s)",
-               pImpl->perkTable->perk_count(), playable, conditions);
-}
-
-bool PartOne::PickPerk(MpActor& actor, uint32_t perk)
-{
-  auto record = actor.GetActorValueRecord();
-  if (!record) {
-    spdlog::info("[verb:perks] E_PERK_NO_RECORD: {:x} picks {:x} before its "
-                 "actor values are recorded; refused, its state resent",
-                 actor.GetFormId(), perk);
-    actor.SendPerkState(); // an empty set and no point: the game's pick undone
-    return false;
-  }
-  // the values the conditions read: the record's bases first (the server's
-  // own writes land there, SetActorValueBaseByServer, and the leveling path
-  // mirrors a skill's level into them), then a skill's level for a skill the
-  // bases do not name (the record's Skill.skill is PlayerSkills' index, 0
-  // for One-handed: ActorValue 6 to 23)
-  std::vector<uint8_t> avs;
-  std::vector<float> values;
-  for (const auto& [av, base] : record->bases) {
-    avs.push_back(av);
-    values.push_back(base);
-  }
-  for (const auto& skill : record->skills) {
-    const auto av = static_cast<uint8_t>(skill.skill + 6);
-    if (std::find(avs.begin(), avs.end(), av) == avs.end()) {
+  namespace {
+  // the values a perk's conditions read: the record's bases first (the
+  // server's own writes land there, SetActorValueBaseByServer, and the
+  // leveling path mirrors a skill's level into them), then a skill's level for
+  // a skill the bases do not name (the record's Skill.skill is PlayerSkills'
+  // index, 0 for One-handed: ActorValue 6 to 23)
+  void RecordConditionValues(const ActorValueRecord& record,
+                             std::vector<uint8_t>& avs,
+                             std::vector<float>& values)
+  {
+    for (const auto& [av, base] : record.bases) {
       avs.push_back(av);
-      values.push_back(skill.level);
+      values.push_back(base);
+    }
+    for (const auto& skill : record.skills) {
+      const auto av = static_cast<uint8_t>(skill.skill + 6);
+      if (std::find(avs.begin(), avs.end(), av) == avs.end()) {
+        avs.push_back(av);
+        values.push_back(skill.level);
+      }
     }
   }
-  const auto verdict = pImpl->perkTable->pick(
-    record->level,
-    rust::Slice<const uint32_t>(record->perks.data(), record->perks.size()),
-    rust::Slice<const uint8_t>(avs.data(), avs.size()),
-    rust::Slice<const float>(values.data(), values.size()), perk);
-  if (!verdict.accepted) {
-    spdlog::info(
-      "[verb:perks] {}: {:x} picks {:x} at level {} with {} perk(s) "
-      "(detail {:x}); refused, its state resent",
-      std::string(verdict.code), actor.GetFormId(), perk, record->level,
-      record->perks.size(), verdict.detail);
-    actor.SendPerkState();
-    return false;
   }
-  actor.AddPerkByServer(perk);
-  spdlog::info("[verb:perks] {:x} takes perk {:x} at level {}: {} perk(s) "
-               "held, {} point(s) left",
-               actor.GetFormId(), perk, record->level,
-               record->perks.size() + 1, actor.PerkPoints());
-  actor.SendPerkState();
-  return true;
-}
+
+  void PartOne::LoadPerkTable()
+  {
+    if (!HasEspm()) {
+      return;
+    }
+    // HasPerk's parameter is a perk's form id (CommonLibSSE-NG TESCondition.h
+    // FUNCTION_DATA::FunctionID::kHasPerk 448), the file's own: made global
+    // through the record's lookup, as the perk's own id is
+    constexpr uint16_t kHasPerk = 448;
+    // HasKeyword's parameter is a keyword's form id (TESCondition.h
+    // FunctION_DATA::FunctionID::kHasKeyword 560), made global the same way
+    constexpr uint16_t kHasKeyword = 560;
+    size_t playable = 0;
+    size_t conditions = 0;
+    size_t effects = 0;
+    for (const auto& lookup :
+         GetEspm().GetBrowser().GetDistinctRecordsByType("PERK")) {
+      if (!lookup.rec) {
+        continue;
+      }
+      const auto perkId = lookup.ToGlobalId(lookup.rec->GetId());
+      const auto data = espm::GetData<espm::PERK>(perkId, &worldState);
+      pImpl->perkTable->add_perk(perkId, data.isPlayable, data.isHidden);
+      if (data.isPlayable && !data.isHidden) {
+        ++playable;
+      }
+      for (const auto& ctda : data.conditions) {
+        uint32_t param1 = ctda.GetDefaultData().firstParameter;
+        if (ctda.functionIndex == kHasPerk) {
+          param1 = lookup.ToGlobalId(param1);
+        }
+        if (pImpl->perkTable->add_condition(
+              perkId, ctda.functionIndex, ctda.operatorFlag,
+              ctda.comparisonValue, param1,
+              static_cast<uint32_t>(ctda.runOnType))) {
+          ++conditions;
+        }
+      }
+      // the perk's effects (thuum docs/verbs/perks.md, the second half): each
+      // entry point section with a one-float value, its conditions by tab
+      for (const auto& entry : data.entries) {
+        if (entry.type != 2 || entry.dataType != 1) {
+          continue;
+        }
+        const int32_t effect = pImpl->perkTable->add_effect(
+          perkId, entry.entryPoint, entry.function, entry.value, entry.rank,
+          entry.priority);
+        if (effect < 0) {
+          continue;
+        }
+        ++effects;
+        for (const auto& [tab, ctda] : entry.conditions) {
+          uint32_t param1 = ctda.GetDefaultData().firstParameter;
+          if (ctda.functionIndex == kHasPerk ||
+              ctda.functionIndex == kHasKeyword) {
+            param1 = lookup.ToGlobalId(param1);
+          }
+          pImpl->perkTable->add_effect_condition(
+            perkId, effect, tab, ctda.functionIndex, ctda.operatorFlag,
+            ctda.comparisonValue, param1,
+            static_cast<uint32_t>(ctda.runOnType));
+        }
+      }
+    }
+    spdlog::info("[verb:perks] perk table: {} perk(s) from the game files, {} "
+                 "playable, {} condition(s), {} effect(s) ({} the formulas "
+                 "judge, {} left out: another function or a third tab)",
+                 pImpl->perkTable->perk_count(), playable, conditions, effects,
+                 pImpl->perkTable->judged_effects(),
+                 pImpl->perkTable->unjudged_effects());
+    // the formulas' way in (TES5DamageFormula): a value through the owner's
+    // held perks' effects on one entry point, perks off passing it unchanged
+    worldState.applyPerkEntryPoint =
+      [this](const MpActor& owner, uint8_t entryPoint, float value,
+             const std::vector<uint32_t>& subjectKeywords) {
+        if (!pImpl->perksEnabled) {
+          return value;
+        }
+        const auto record = owner.GetActorValueRecord();
+        if (!record || record->perks.empty()) {
+          return value;
+        }
+        std::vector<uint8_t> avs;
+        std::vector<float> values;
+        RecordConditionValues(*record, avs, values);
+        return pImpl->perkTable->apply_entry_point(
+          entryPoint, value, record->level,
+          rust::Slice<const uint32_t>(record->perks.data(),
+                                      record->perks.size()),
+          rust::Slice<const uint8_t>(avs.data(), avs.size()),
+          rust::Slice<const float>(values.data(), values.size()),
+          rust::Slice<const uint32_t>(subjectKeywords.data(),
+                                      subjectKeywords.size()));
+      };
+  }
+
+  bool PartOne::PickPerk(MpActor & actor, uint32_t perk)
+  {
+    auto record = actor.GetActorValueRecord();
+    if (!record) {
+      spdlog::info("[verb:perks] E_PERK_NO_RECORD: {:x} picks {:x} before its "
+                   "actor values are recorded; refused, its state resent",
+                   actor.GetFormId(), perk);
+      actor
+        .SendPerkState(); // an empty set and no point: the game's pick undone
+      return false;
+    }
+    std::vector<uint8_t> avs;
+    std::vector<float> values;
+    RecordConditionValues(*record, avs, values);
+    const auto verdict = pImpl->perkTable->pick(
+      record->level,
+      rust::Slice<const uint32_t>(record->perks.data(), record->perks.size()),
+      rust::Slice<const uint8_t>(avs.data(), avs.size()),
+      rust::Slice<const float>(values.data(), values.size()), perk);
+    if (!verdict.accepted) {
+      spdlog::info(
+        "[verb:perks] {}: {:x} picks {:x} at level {} with {} perk(s) "
+        "(detail {:x}); refused, its state resent",
+        std::string(verdict.code), actor.GetFormId(), perk, record->level,
+        record->perks.size(), verdict.detail);
+      actor.SendPerkState();
+      return false;
+    }
+    actor.AddPerkByServer(perk);
+    spdlog::info("[verb:perks] {:x} takes perk {:x} at level {}: {} perk(s) "
+                 "held, {} point(s) left",
+                 actor.GetFormId(), perk, record->level,
+                 record->perks.size() + 1, actor.PerkPoints());
+    actor.SendPerkState();
+    return true;
+  }

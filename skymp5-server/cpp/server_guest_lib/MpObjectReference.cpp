@@ -32,6 +32,7 @@
 #include <TimeUtils.h>
 #include <antigo/Context.h>
 #include <antigo/ResolvedContext.h>
+#include <cctype>
 #include <map>
 #include <numeric>
 #include <optional>
@@ -1675,6 +1676,47 @@ void MpObjectReference::Init(WorldState* parent, uint32_t formId,
       // load) other references during OnInit
       parent->activationChildsByActivationParent[activationParent].insert(
         { refrId, info.delay });
+    }
+    // thuum docs/DECISIONS.md ADR-059 decision 2: a link a script carries as a
+    // property joins the same table, from the parent's side and with no
+    // delay (a script's Activate is immediate). Bleak Falls Temple's puzzle
+    // lever 0xaa8c3 carries defaultPillarPuzzleLever: refActOnSuccess01 and
+    // refActOnFailure01..04 are the portcullis and the dart traps it fires,
+    // puzzleDoorActivator the marker whose activation parents open the gate
+    // (lab/esm.py's VMAD decode, 2026-11-01). So the host's report of that
+    // script's Activate on them is a linked activation the server knows
+    // (ActionListener::OnLinkedActivation), not E_TRAP_UNLINKED.
+    if (lookupRes.rec) {
+      espm::ScriptData scriptData;
+      lookupRes.rec->GetScriptData(&scriptData, parent->GetEspmCache());
+      const auto lower = [](const std::string& text) {
+        std::string out = text;
+        for (auto& c : out) {
+          c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        return out;
+      };
+      for (const auto& script : scriptData.scripts) {
+        if (script.status == 3 ||
+            Utils::stricmp(script.scriptName.data(),
+                           "defaultPillarPuzzleLever") != 0) {
+          continue;
+        }
+        for (const auto& property : script.properties) {
+          if (property.type != espm::Property::Type::Object ||
+              !property.value.formId) {
+            continue;
+          }
+          const std::string name = lower(property.name);
+          if (name.rfind("refacton", 0) != 0 &&
+              name != "puzzledooractivator") {
+            continue;
+          }
+          const auto child = lookupRes.ToGlobalId(property.value.formId);
+          parent->activationChildsByActivationParent[refrId].insert(
+            { child, 0.f });
+        }
+      }
     }
   }
 }

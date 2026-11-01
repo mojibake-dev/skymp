@@ -1999,14 +1999,27 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
   // activation the cell's host reports; its own path, before the hosted
   // caster's rule below throws on it
   if (msg.data.caster != 0x14) {
-    const auto& casterForm = partOne.worldState.LookupFormById(
-      static_cast<uint32_t>(msg.data.caster));
+    const auto casterId = static_cast<uint32_t>(msg.data.caster);
+    const auto& casterForm = partOne.worldState.LookupFormById(casterId);
     MpObjectReference* casterRef =
       casterForm ? casterForm->AsObjectReference() : nullptr;
     if (casterRef && !casterRef->AsActor()) {
-      OnLinkedActivation(rawMsgData, *ac, *casterRef,
+      OnLinkedActivation(rawMsgData, *ac, casterId, casterRef,
                          static_cast<uint32_t>(msg.data.target));
       return;
+    }
+    // ADR-059 decision 2: a caster the server never loads as a form (the
+    // loader skips STAT bases: Bleak Falls Temple's puzzle marker 0x3e728,
+    // whose activation parents open the portcullis 0x3b9f1) still names a
+    // link in the game files; judged by its id alone, with no server-side
+    // activation of the target through it
+    if (!casterForm && partOne.HasEspm()) {
+      const auto rec = partOne.GetEspm().GetBrowser().LookupById(casterId).rec;
+      if (rec && rec->GetType() == espm::REFR::kType) {
+        OnLinkedActivation(rawMsgData, *ac, casterId, nullptr,
+                           static_cast<uint32_t>(msg.data.target));
+        return;
+      }
     }
   }
   // thuum docs/verbs/cell-host.md: a hosted caster is its cell's host's;
@@ -3387,16 +3400,18 @@ void ActionListener::OnWordWall(const RawMessageData& rawMsgData,
 // play it with that caster (R2: the host's engine computed it). Every refusal
 // is logged by name.
 void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
-                                        MpActor& reporter,
-                                        MpObjectReference& caster,
+                                        MpActor& reporter, uint32_t casterId,
+                                        MpObjectReference* casterRef,
                                         uint32_t targetId)
 {
   auto targetPtr = std::dynamic_pointer_cast<MpObjectReference>(
     partOne.worldState.LookupFormById(targetId));
   if (!targetPtr) {
+    // a target the server never loads (a marker) is no world object of the
+    // server's; its own consequence arrives as its own linked activation
     spdlog::info("[verb:traps] E_TRAP_NO_REF: {:x} reports {:x} activating "
                  "{:x}, no such reference",
-                 reporter.GetFormId(), caster.GetFormId(), targetId);
+                 reporter.GetFormId(), casterId, targetId);
     return;
   }
   const auto cell = partOne.worldState.CellOf(
@@ -3405,26 +3420,25 @@ void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
   if (!cell) {
     spdlog::info("[verb:traps] E_TRAP_NO_CELL: {:x} reports {:x} activating "
                  "{:x}, whose cell is unknown",
-                 reporter.GetFormId(), caster.GetFormId(), targetId);
+                 reporter.GetFormId(), casterId, targetId);
     return;
   }
   const auto host = partOne.GetCellHost(*cell);
   if (!host.hosted || host.player != reporter.GetFormId()) {
     spdlog::info("[verb:traps] E_TRAP_NOT_HOST: {:x} reports {:x} activating "
                  "{:x} in cell {:x}, which it does not host",
-                 reporter.GetFormId(), caster.GetFormId(), targetId, *cell);
+                 reporter.GetFormId(), casterId, targetId, *cell);
     return;
   }
   const auto children =
-    partOne.worldState.activationChildsByActivationParent.find(
-      caster.GetFormId());
+    partOne.worldState.activationChildsByActivationParent.find(casterId);
   if (children ==
         partOne.worldState.activationChildsByActivationParent.end() ||
       children->second.find(targetPtr->GetFormId()) ==
         children->second.end()) {
     spdlog::info("[verb:traps] E_TRAP_UNLINKED: {:x} reports {:x} activating "
                  "{:x}, whose activation parents do not name it",
-                 reporter.GetFormId(), caster.GetFormId(), targetId);
+                 reporter.GetFormId(), casterId, targetId);
     return;
   }
   const uint64_t nowMs = MonotonicMs();
@@ -3437,7 +3451,7 @@ void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
     spdlog::info(
       "[verb:traps] E_TRAP_RATE: {:x} reports {:x} activating {:x}, "
       "the ninth in a second; dropped",
-      reporter.GetFormId(), caster.GetFormId(), targetId);
+      reporter.GetFormId(), casterId, targetId);
     return;
   }
   ++window.count;
@@ -3446,17 +3460,19 @@ void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
     constexpr bool kDefaultProcessingOnlyFalse = false;
     constexpr bool kNotASecondActivation = false;
     constexpr bool kReportedByHost = true;
-    targetPtr->Activate(caster, kDefaultProcessingOnlyFalse,
-                        kNotASecondActivation, kReportedByHost);
+    if (casterRef) {
+      targetPtr->Activate(*casterRef, kDefaultProcessingOnlyFalse,
+                          kNotASecondActivation, kReportedByHost);
+    }
   } catch (std::exception& e) {
     spdlog::info("[verb:traps] E_TRAP_ACTIVATE: {:x} reports {:x} activating "
                  "{:x}: {}",
-                 reporter.GetFormId(), caster.GetFormId(), targetId, e.what());
+                 reporter.GetFormId(), casterId, targetId, e.what());
     return;
   }
   RelayedActivationMessage relay;
   relay.target = targetPtr->GetFormId();
-  relay.caster = caster.GetFormId();
+  relay.caster = casterId;
   size_t sent = 0;
   for (auto listener : targetPtr->GetActorListeners()) {
     if (listener == &reporter) {
@@ -3470,8 +3486,8 @@ void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
   }
   spdlog::info("[verb:traps] {:x} activates {:x} in cell {:x} (its host {:x} "
                "reports): relayed to {} game(s)",
-               caster.GetFormId(), targetPtr->GetFormId(), *cell,
-               reporter.GetFormId(), sent);
+               casterId, targetPtr->GetFormId(), *cell, reporter.GetFormId(),
+               sent);
 }
 
 // thuum docs/verbs/locks.md (M4): a player's report on a lock. The rule

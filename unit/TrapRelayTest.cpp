@@ -23,8 +23,17 @@ constexpr uint32_t kPlate = 0x567f2;
 constexpr uint32_t kWall = 0x54b15;
 constexpr uint32_t kLever = 0x6a9e2;
 constexpr uint32_t kPortcullis = 0x3b9f1;
+// the puzzle room (ADR-059 decision 2): the lever LeverPushAnimatingNoPlayer
+// 0xaa8c3 carries defaultPillarPuzzleLever, whose properties name the dart
+// trap 0x3720f (refActOnFailure02) and the marker 0x3e728
+// (puzzleDoorActivator), the marker's activation parents the portcullis
+// (XAPR); the marker is a STAT reference the server never loads
+constexpr uint32_t kPuzzleLever = 0xaa8c3;
+constexpr uint32_t kDart = 0x3720f;
+constexpr uint32_t kMarker = 0x3e728;
 const NiPoint3 kByThePlate{ 8589.f, -5438.f, -2054.f };
 const NiPoint3 kByThePortcullis{ 4992.f, -1508.f, -768.f };
+const NiPoint3 kByThePuzzleLever{ 5002.f, -1003.f, -754.f };
 
 uint64_t NowMs()
 {
@@ -153,5 +162,41 @@ TEST_CASE("A linked activation from a guest, an unlinked pair or past the "
   REQUIRE(RelayedTo(p, 1).size() == 8);
   Linked(p, 0, kPlate, kWall);
   REQUIRE(RelayedTo(p, 1).size() == 8);
+  Leave(p);
+}
+
+TEST_CASE("The puzzle lever's script properties are links, and a marker the "
+          "server never loads is a caster by its id (ADR-059 decision 2)",
+          "[Traps][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  // the lever's own Init fills its links; the dart is an ACTI the loader takes
+  p.worldState.GetFormAt<MpObjectReference>(kPuzzleLever);
+  p.worldState.GetFormAt<MpObjectReference>(kDart);
+  Stand(p, kByThePuzzleLever);
+  p.Messages().clear();
+  // the failure's dart trap, linked by refActOnFailure02
+  Linked(p, 0, kPuzzleLever, kDart);
+  REQUIRE(RelayedTo(p, 1).size() == 1);
+  REQUIRE(RelayedTo(p, 1)[0].target == kDart);
+  REQUIRE(RelayedTo(p, 1)[0].caster == kPuzzleLever);
+  // the marker as a target is no form of the server's: refused, no relay (its
+  // consequence is the next report)
+  p.Messages().clear();
+  Linked(p, 0, kPuzzleLever, kMarker);
+  REQUIRE(RelayedTo(p, 1).empty());
+  // the marker as the caster of the portcullis's activation: the portcullis's
+  // XAPR names it, so the link holds by id although the marker never loads
+  Stand(p, kByThePortcullis);
+  p.Messages().clear();
+  Linked(p, 0, kMarker, kPortcullis);
+  REQUIRE(RelayedTo(p, 1).size() == 1);
+  REQUIRE(RelayedTo(p, 1)[0].target == kPortcullis);
+  REQUIRE(RelayedTo(p, 1)[0].caster == kMarker);
+  // a stranger's id that is no reference at all is still refused
+  p.Messages().clear();
+  Linked(p, 0, 0x12345, kPortcullis);
+  REQUIRE(RelayedTo(p, 1).empty());
   Leave(p);
 }

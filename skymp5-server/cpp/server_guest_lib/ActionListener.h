@@ -149,8 +149,12 @@ public:
   // reports (a reference that is no actor activating the reference whose
   // activation parents name it): recorded through Activate's own path, and
   // relayed to the cell's other games as RelayedActivation under a budget
+  // casterRef is null for a caster the server never loads as a form (ADR-059
+  // decision 2: a marker named by activation parents); the link is judged by
+  // casterId and no server-side activation runs through it
   void OnLinkedActivation(const RawMessageData& rawMsgData, MpActor& reporter,
-                          MpObjectReference& caster, uint32_t targetId);
+                          uint32_t casterId, MpObjectReference* casterRef,
+                          uint32_t targetId);
 
   // thuum docs/verbs/cell-host.md: a game's cell loaded or left its loaded
   // set; the server's election follows (wire-rules cells)

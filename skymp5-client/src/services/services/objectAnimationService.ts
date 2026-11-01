@@ -17,13 +17,22 @@ import { logTrace } from '../../logging';
 // A relayed ObjectAnimation plays on this seat through the engine's own
 // PlayAnimation, as remoteServer replays a CreateActor's lastAnimation.
 //
-// The family (lab/esm.py's scripts, docs/verbs/traps.md): the puzzle pillars'
+// The family, from the scripts' own names (the game's pex files and the base
+// records' VMAD, read 2026-11-01; docs/verbs/traps.md): the puzzle pillars'
 // Trigger0N and Turned0N (defaultPuzzlePillarScript), a lever's FullPull and
-// FullPulledDown (NorLever01SCRIPT), a two-state activator's open and close
-// (default2StateActivator), a swinging wall's Reset and Idle
-// (TrapSwingingWall). Lines for the lab: "object animation <refr> <event>
-// reported" on the host, "object animation <refr> <event> played" on a guest.
-const EVENT_PATTERNS = ['Trigger*', 'Turned*', 'FullPull*', 'open', 'close', 'Open', 'Close', 'Reset', 'Idle'];
+// FullPulledDown (NorLever01SCRIPT), a two-state activator's open, close and
+// opened (default2StateActivator: a portcullis), a pressure plate's Down
+// (PressurePlate), a swinging wall's 90For/180For/270For, the Half, End and
+// Back of each, and Rearm (TrapSwingingWall's anim properties; TransStart,
+// TransHalf, TransStop and Done are the graph's own events back to the
+// script, not sent to it), a trap's Reset and Idle (TrapBase). The engine's
+// exact set is HYPOTHESIS until x-object-anim reads it. Lines for the lab:
+// "object animation <refr> <event> reported" on the host, "object animation
+// <refr> <event> played" on a guest.
+const EVENT_PATTERNS = [
+  'Trigger*', 'Turned*', 'FullPull*', 'open', 'opened', 'close', 'Open', 'Close',
+  'Down', '90*', '180*', '270*', 'Rearm', 'Reset', 'Idle',
+];
 // game-file references end where the server's copies begin
 const LAST_GAME_FILE_ID = 0xfeffffff;
 

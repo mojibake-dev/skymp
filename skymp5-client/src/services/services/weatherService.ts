@@ -80,11 +80,14 @@ export class WeatherService extends ClientListener {
     if (word.message.weather === 0 || this.place() !== word.message.place) {
       return;
     }
+    // the engine's current weather is a blend's target as soon as the blend
+    // starts, so our own transition toward the word returns here; any other
+    // current, blending or settled, is a drift and the word goes back on as
+    // a cut (b-weather 20261101-091049: a guard on the blend's progress kept
+    // the watcher quiet through a forced 24 s blend until the next slot's
+    // word absorbed it, and "re-applied" never fired)
     const current = Weather.getCurrentWeather();
     if (current && current.getFormID() === word.message.weather) {
-      return;
-    }
-    if (Weather.getCurrentWeatherTransition() < 1) {
       return;
     }
     this.apply('re-applied');
@@ -107,6 +110,13 @@ export class WeatherService extends ClientListener {
   private apply(how: 'word' | 'late' | 're-applied') {
     const word = this.word;
     if (!word) {
+      return;
+    }
+    // a word the late path already applied this tick needs no second apply
+    // (x-weather 20261031-171309 and b-weather 20261101-091049: the login's
+    // word applied twice at the same ms when the first update came two
+    // seconds or more after it)
+    if (how === 'word' && word.applied) {
       return;
     }
     const m = word.message;

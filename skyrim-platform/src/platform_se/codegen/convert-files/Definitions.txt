@@ -1631,8 +1631,12 @@ export declare namespace SendPapyrusEventHook {
     readonly storage: Map<string, unknown>
   }
 
+  // thuum: the native wraps enter AND leave (Handler.cpp); a handler without
+  // leave throws "Invalid argument" at the add and kills the plugin's start
+  // (wordWallService, the traps stage of 2026-11-01), so both are required
   class Handler {
     enter(ctx: Context): void
+    leave(ctx: Context): void
   }
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars

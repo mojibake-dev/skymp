@@ -1,4 +1,4 @@
-import { ObjectReference } from 'skyrimPlatform';
+import { ObjectReference, SendPapyrusEventHook } from 'skyrimPlatform';
 import { ClientListener, CombinedController, Sp } from './clientListener';
 import { MsgType } from '../../messages';
 import { logTrace } from '../../logging';
@@ -29,12 +29,21 @@ export class WordWallService extends ClientListener {
   ) {
     super();
     const self = this;
-    this.sp.hooks.sendPapyrusEvent.add(
-      {
-        enter(ctx) {
-          self.pending.add(ctx.selfId);
-        },
+    // Skyrim Platform's Handler takes enter AND leave (Handler.cpp wraps both
+    // unconditionally): without leave the add throws "Invalid argument" at the
+    // plugin's start and the seat never logs in (the traps stage of
+    // 2026-11-01, numidium's read; the lab driver met the same in 0844cbef).
+    // The published 2.8.0 typing declares enter alone, so the handler is a
+    // variable, not a literal (no excess-property check); the fork's own
+    // Definitions.txt declares both
+    const handler = {
+      enter(ctx: SendPapyrusEventHook.Context) {
+        self.pending.add(ctx.selfId);
       },
+      leave() {},
+    };
+    this.sp.hooks.sendPapyrusEvent.add(
+      handler,
       1,
       WordWallService.lastGameFileId,
       'OnTrigger',

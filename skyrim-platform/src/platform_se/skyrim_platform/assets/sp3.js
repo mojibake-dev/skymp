@@ -113,6 +113,21 @@
       if (obj === null || typeof obj !== "object") {
         return obj;
       }
+      // An array result: the native stamps the elements' class on the array
+      // (Sp3Api.cpp, from the function's return type; empty for a primitive
+      // array) and each element is wrapped on its own. Before this the array
+      // itself went to the class lookup, so every array a native returned
+      // threw "Cannot read properties of undefined (reading 'prototype')"
+      // (ActorValueInfo.getPerks, thuum docs/verbs/perks.md).
+      if (Array.isArray(obj)) {
+        const elementType = obj._sp3ObjectType;
+        return obj.map((element) => {
+          if (elementType && element !== null && typeof element === "object" && element._sp3ObjectType === undefined) {
+            element._sp3ObjectType = elementType;
+          }
+          return wrapObject(element);
+        });
+      }
       const ctor = sp[obj._sp3ObjectType];
       const resWithClass = Object.create(ctor.prototype);
       assign(resWithClass, obj);

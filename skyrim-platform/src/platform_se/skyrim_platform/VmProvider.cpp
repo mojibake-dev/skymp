@@ -139,7 +139,13 @@ private:
   {
     ValueType res;
     res.type = typeInfo.GetUnmangledRawType();
-    if (res.type == TypeInfo::RawType::kObject) {
+    // An object array's class is its elements' (TypeInfo::GetTypeInfo reads
+    // the element type for kObjectArray too), so Sp3Api stamps it on the
+    // array and sp3.js wraps each element. With the name left empty, every
+    // array a native returned threw in wrapObject (ActorValueInfo.getPerks,
+    // thuum docs/verbs/perks.md).
+    if (res.type == TypeInfo::RawType::kObject ||
+        res.type == TypeInfo::RawType::kObjectArray) {
       auto objTypeInfo = typeInfo.GetTypeInfo();
       if (!objTypeInfo)
         throw NullPointerException("objTypeInfo");

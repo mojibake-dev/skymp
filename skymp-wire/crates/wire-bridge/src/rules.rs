@@ -1397,6 +1397,10 @@ mod ffi {
         fn actor_value_index(name: &str) -> i16;
         /// Whether the server may set an actor value's base to a value (R0).
         fn actor_values_set_ok(av: u8, value: f32) -> bool;
+        /// A skill actor value's progress index (0 to 17), -1 for any other
+        /// value: a server set of a skill moves the record's progress entry
+        /// with the base (thuum docs/verbs/leveling.md).
+        fn actor_values_skill_index(av: u8) -> i16;
         /// Arms a hold on a percentage the server raised (thuum
         /// docs/verbs/attributes.md).
         fn percentages_hold(holds: &mut Vec<PercentHold>, av: u8, value: f32, now_ms: u64);
@@ -2286,6 +2290,10 @@ fn attributes_applied_within() -> f32 {
 
 fn actor_values_set_ok(av: u8, value: f32) -> bool {
     actor_values::set_ok(av, value)
+}
+
+fn actor_values_skill_index(av: u8) -> i16 {
+    actor_values::skill_index(av).map_or(-1, i16::from)
 }
 
 fn favorites_kept(report: &[FavoriteFacts]) -> Vec<FavoriteEntry> {

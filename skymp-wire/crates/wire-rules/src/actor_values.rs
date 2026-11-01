@@ -197,6 +197,21 @@ pub fn set_ok(av: u8, value: f32) -> bool {
     usize::from(av) < ACTOR_VALUES && value.is_finite() && value.abs() <= BASE_MAX
 }
 
+/// The progress index (0 to 17) of a skill actor value (6 to 23), or `None`
+/// for any other value: the record's skill entries are keyed by this index,
+/// its bases by the actor value. A server set of a skill's base moves the
+/// progress entry with it (thuum docs/verbs/leveling.md: the base is the
+/// progress level shown; else the skill's next use recomputes the base
+/// from the old progress and the set snaps back).
+#[must_use]
+pub fn skill_index(av: u8) -> Option<u8> {
+    if SKILL_AVS.contains(&av) {
+        av.checked_sub(*SKILL_AVS.start())
+    } else {
+        None
+    }
+}
+
 /// The actor values' Papyrus names by index, as the game resolves them: each
 /// a Skyrim.esm AVIF editor ID less its "AV", which SKSE's
 /// ActorValueInfo.GetActorValueInfoByName finds at the form the game lists
@@ -497,6 +512,16 @@ mod tests {
         assert_eq!(index_of(""), None);
         assert_eq!(index_of("NoSuchValue"), None);
         assert_eq!(NAMES.iter().filter(|n| n.is_some()).count(), 140);
+    }
+
+    #[test]
+    fn a_skill_actor_value_has_a_progress_index_and_nothing_else_does() {
+        assert_eq!(skill_index(6), Some(0)); // OneHanded
+        assert_eq!(skill_index(8), Some(2)); // Marksman
+        assert_eq!(skill_index(23), Some(17)); // Enchanting
+        assert_eq!(skill_index(5), None);
+        assert_eq!(skill_index(24), None); // Health
+        assert_eq!(skill_index(163), None);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 #include "ActionListener.h"
 #include "ActorValuesMessage.h"
+#include "ConsoleCommandMessage.h"
 #include "MsgType.h"
 #include "TestUtils.hpp"
 #include <catch2/catch_all.hpp>
@@ -164,4 +165,58 @@ TEST_CASE("A use before the player's first actor values report is dropped",
   REQUIRE(!ac.GetActorValueRecord().has_value());
   REQUIRE(RecordsTo(p, 0).empty());
   Leave(p, kActorNoRecord);
+}
+
+TEST_CASE("A server set of a skill (the console's SetAV) moves the progress "
+          "entry with the base, and the skill's next use continues from the "
+          "set level instead of snapping back",
+          "[Leveling][espm]")
+{
+  PartOne& p = GetPartOne();
+  p.worldState.enableConsoleCommandsForAll = true;
+  auto& ac = Player(p, kActor);
+  FirstReport(p);
+  p.SetLevelingEnabled(true);
+  p.Messages().clear();
+
+  RawMessageData msgData;
+  msgData.userId = 0;
+  ConsoleCommandMessage msg;
+  msg.data.commandName = "setav";
+  msg.data.args = { int64_t(0x14), std::string("OneHanded"), int64_t(50) };
+  p.GetActionListener().OnConsoleCommand(msgData, msg);
+
+  auto record = ac.GetActorValueRecord();
+  REQUIRE(record.has_value());
+  REQUIRE(record->skills.size() == 1);
+  REQUIRE(record->skills[0].skill == 0);
+  REQUIRE(record->skills[0].level == 50.f);
+  REQUIRE(record->skills[0].xp == 0.f);
+  REQUIRE(record->skills[0].threshold ==
+          Catch::Approx(2.f * std::pow(50.f, 1.95f)).margin(0.01));
+  REQUIRE(record->bases ==
+          std::vector<std::pair<uint8_t, float>>{ { kOneHanded, 50.f } });
+  // the record went to the player's game whole: the base and the progress
+  const auto sent = RecordsTo(p, 0);
+  REQUIRE(sent.size() == 1);
+  REQUIRE(sent[0].skills.size() == 1);
+  REQUIRE(sent[0].skills[0].level == 50.f);
+  REQUIRE(sent[0].skills[0].xp == 0.f);
+  REQUIRE(sent[0].bases.size() == 1);
+  REQUIRE(sent[0].bases[0].base == 50.f);
+
+  // the next use continues from 50: a base of 10 earns 63 toward the step
+  // from 50 (about 4,088), the level and the base stay 50 (before this the
+  // use recomputed the base from the progress at 15 and the set snapped back)
+  p.Messages().clear();
+  Use(p, kOneHanded, 10.f);
+  record = ac.GetActorValueRecord();
+  REQUIRE(record->skills[0].level == 50.f);
+  REQUIRE(record->skills[0].xp == Catch::Approx(63.f));
+  REQUIRE(ac.GetRecordedActorValueBase(kOneHanded) ==
+          std::optional<float>(50.f));
+  REQUIRE(RecordsTo(p, 0).empty());
+
+  p.worldState.enableConsoleCommandsForAll = false;
+  Leave(p, kActor);
 }

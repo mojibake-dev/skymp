@@ -28,6 +28,7 @@
 #include "libespm/REFR.h"
 #include "libespm/SHOU.h"
 #include "libespm/SPEL.h"
+#include "libespm/ScriptData.h"
 #include "libespm/Utils.h"
 #include "libespm/WEAP.h"
 #include "script_objects/EspmGameObject.h"
@@ -2008,6 +2009,19 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
                          static_cast<uint32_t>(msg.data.target));
       return;
     }
+    // ADR-059 decision 2: a played actor other than the reporter's own as the
+    // caster is the host's engine echoing the relay below (the guest's figure
+    // activated the object there); nothing more to do with it
+    if (casterRef && casterRef->AsActor() &&
+        partOne.serverState.UserByActor(casterRef->AsActor()) !=
+          Networking::InvalidUserId &&
+        casterRef->GetFormId() != ac->GetFormId()) {
+      spdlog::debug(
+        "ActionListener::OnActivate - {:x} reports {:x} activating "
+        "{:x}: a relayed activation's echo",
+        ac->GetFormId(), casterId, static_cast<uint32_t>(msg.data.target));
+      return;
+    }
     // ADR-059 decision 2: a caster the server never loads as a form (the
     // loader skips STAT bases: Bleak Falls Temple's puzzle marker 0x3e728,
     // whose activation parents open the portcullis 0x3b9f1) still names a
@@ -2080,6 +2094,9 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
   // lately, a hazard death's evidence
   if (!msg.data.isSecondActivation) {
     NoteActivation(*targetPtr, std::chrono::steady_clock::now());
+  }
+  if (msg.data.caster == 0x14 && !msg.data.isSecondActivation) {
+    RelayActivationToHost(*ac, *targetPtr);
   }
 
   constexpr bool kDefaultProcessingOnlyFalse = false;
@@ -3390,6 +3407,86 @@ void ActionListener::OnWordWall(const RawMessageData& rawMsgData,
                "units off the wall {:x})",
                actor->GetFormId(), word, msg.wall, distance,
                near->GetFormId());
+}
+
+// thuum docs/DECISIONS.md ADR-059 decision 2: whether a reference's own
+// record or its base carries a script (a puzzle pillar, a lever, a plate: the
+// vanilla world's mechanisms are Papyrus); the base's answer is read once
+bool ActionListener::IsScriptedWorldObject(const MpObjectReference& target)
+{
+  if (!partOne.HasEspm()) {
+    return false;
+  }
+  auto& browser = partOne.GetEspm().GetBrowser();
+  auto& cache = partOne.worldState.GetEspmCache();
+  const auto scripted = [&](uint32_t formId) {
+    const auto lookup = browser.LookupById(formId);
+    if (!lookup.rec) {
+      return false;
+    }
+    espm::ScriptData scriptData;
+    lookup.rec->GetScriptData(&scriptData, cache);
+    for (const auto& script : scriptData.scripts) {
+      if (script.status != 3) {
+        return true;
+      }
+    }
+    return false;
+  };
+  const auto baseId = target.GetBaseId();
+  auto it = scriptedBases.find(baseId);
+  if (it == scriptedBases.end()) {
+    it = scriptedBases.emplace(baseId, scripted(baseId)).first;
+  }
+  if (it->second) {
+    return true;
+  }
+  return target.IsEspmForm() && scripted(target.GetFormId());
+}
+
+void ActionListener::RelayActivationToHost(MpActor& player,
+                                           MpObjectReference& target)
+{
+  const auto& baseType = target.GetBaseType();
+  if (baseType != "ACTI" && baseType != "FURN") {
+    return;
+  }
+  if (!IsScriptedWorldObject(target)) {
+    return;
+  }
+  const auto cell = partOne.worldState.CellOf(
+    target.GetCellOrWorld().ToFormId(partOne.worldState.espmFiles),
+    target.GetPos());
+  if (!cell) {
+    return;
+  }
+  const auto host = partOne.GetCellHost(*cell);
+  if (!host.hosted) {
+    return;
+  }
+  // every other game in the cell gets it: the host's, so the cell's
+  // simulation counts the press, and the guests', whose engines run the same
+  // script while the layer admits it everywhere (the hosted-cell gate's
+  // train replaces the guests' share with the host's animations, ADR-059
+  // decision 3); the sender's own engine ran it already
+  RelayedActivationMessage relay;
+  relay.target = target.GetFormId();
+  relay.caster = player.GetFormId();
+  size_t sent = 0;
+  for (auto listener : target.GetActorListeners()) {
+    if (listener == &player) {
+      continue;
+    }
+    if (partOne.serverState.UserByActor(listener) !=
+        Networking::InvalidUserId) {
+      listener->SendToUser(relay, true);
+      ++sent;
+    }
+  }
+  spdlog::info(
+    "[verb:traps] {:x} activates {:x} in cell {:x} (its host {:x}): "
+    "relayed to {} other game(s)",
+    player.GetFormId(), target.GetFormId(), *cell, host.player, sent);
 }
 
 // thuum docs/verbs/traps.md (M4): the cell's host reports its engine's linked

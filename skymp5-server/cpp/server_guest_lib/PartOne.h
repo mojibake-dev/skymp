@@ -295,11 +295,18 @@ public:
   void SetPerksEnabled(bool on);
   bool PerksEnabled() const;
 
-  // thuum docs/verbs/word-wall.md (M4): the word a wall trigger reference
-  // teaches, from its WordWallTriggerScript's myWord property (the
-  // reference's own over its base's); none for a reference that is no word
-  // wall trigger
-  std::optional<uint32_t> WordOfWall(const MpObjectReference& wall);
+  // thuum docs/verbs/word-wall.md (M4): what a wall trigger reference's
+  // WordWallTriggerScript names (the reference's own properties over its
+  // base's): the word it teaches (myWord01) and the wall itself (wordWall01,
+  // the reference the reach is measured to; 0 when the script names none)
+  struct WordWall
+  {
+    uint32_t word = 0;
+    uint32_t wall = 0;
+  };
+  // none for a reference that is no word wall trigger, or whose word is no
+  // WOOP
+  std::optional<WordWall> WordOfWall(const MpObjectReference& trigger);
   bool PickPerk(MpActor& actor, uint32_t perk);
   bool ApplySkillUse(MpActor& actor, uint8_t skillAv, float amount);
   void TickPlacements(uint64_t nowMs);

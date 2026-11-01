@@ -3316,40 +3316,52 @@ void ActionListener::OnWordWall(const RawMessageData& rawMsgData,
                  actor->GetFormId(), msg.wall);
     return;
   }
-  const auto word = partOne.WordOfWall(*wall);
-  if (!word) {
+  const auto wordWall = partOne.WordOfWall(*wall);
+  if (!wordWall) {
     spdlog::info("[verb:word-wall] E_WORDWALL_NOT_A_WALL: {:x} reports {:x}, "
                  "which teaches no word",
                  actor->GetFormId(), msg.wall);
     return;
   }
-  if (actor->GetCellOrWorld() != wall->GetCellOrWorld()) {
+  const uint32_t word = wordWall->word;
+  // the reach is measured to the wall the trigger's script names when it is
+  // loaded (the trigger's own bounds are the chamber), else to the trigger
+  MpObjectReference* near = wall;
+  if (wordWall->wall != 0) {
+    const auto& wallForm = partOne.worldState.LookupFormById(wordWall->wall);
+    if (auto* wallRef = wallForm ? wallForm->AsObjectReference() : nullptr) {
+      near = wallRef;
+    }
+  }
+  if (actor->GetCellOrWorld() != near->GetCellOrWorld()) {
     spdlog::info("[verb:word-wall] E_WORDWALL_CELL: {:x} reports {:x} from "
                  "another cell",
                  actor->GetFormId(), msg.wall);
     return;
   }
-  const float distance = (actor->GetPos() - wall->GetPos()).Length();
+  const float distance = (actor->GetPos() - near->GetPos()).Length();
   const auto reach = skymp::rules::activation_within_reach(
-    distance, ActivationTargetSize(*wall));
+    distance, ActivationTargetSize(*near));
   if (!reach.allowed) {
     spdlog::info("[verb:word-wall] E_WORDWALL_REACH: {:x} reports {:x} from "
-                 "{:.0f} units, the bound {:.0f}",
-                 actor->GetFormId(), msg.wall, distance, reach.bound);
+                 "{:.0f} units off the wall {:x}, the bound {:.0f}",
+                 actor->GetFormId(), msg.wall, distance, near->GetFormId(),
+                 reach.bound);
     return;
   }
   const bool added = actor->RecordShoutEntry(
     MpActor::ShoutEntry::WordKnown,
-    FormDesc::FromFormId(*word, partOne.worldState.espmFiles));
+    FormDesc::FromFormId(word, partOne.worldState.espmFiles));
   if (!added) {
     spdlog::info("[verb:word-wall] {:x} at wall {:x}: word {:x} known already",
-                 actor->GetFormId(), msg.wall, *word);
+                 actor->GetFormId(), msg.wall, word);
     return;
   }
-  SendShoutEntry(*actor, MpActor::ShoutEntry::WordKnown, *word);
+  SendShoutEntry(*actor, MpActor::ShoutEntry::WordKnown, word);
   spdlog::info("[verb:word-wall] {:x} learns word {:x} at wall {:x} ({:.0f} "
-               "units)",
-               actor->GetFormId(), *word, msg.wall, distance);
+               "units off the wall {:x})",
+               actor->GetFormId(), word, msg.wall, distance,
+               near->GetFormId());
 }
 
 // thuum docs/verbs/traps.md (M4): the cell's host reports its engine's linked

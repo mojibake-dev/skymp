@@ -262,6 +262,11 @@ public:
   // reports are dropped, the client's own advance stays off as before).
   void SetLevelingEnabled(bool on);
   bool LevelingEnabled() const;
+  // thuum docs/verbs/prop-physics.md (ADR-058): whether dropped items persist
+  // as props (the loader keeps 0xff items, the drop deletes nothing); the
+  // server setting propsPersist, true by default
+  void SetPropsPersist(bool on);
+  bool PropsPersist() const;
   float SkillUseXp(uint8_t skillAv, float base) const;
   float SkillLevelCost(uint8_t skillAv, uint8_t level) const;
 

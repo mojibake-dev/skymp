@@ -412,29 +412,39 @@ VarValue PapyrusObjectReference::PlaceAtMe(
     return VarValue::None();
   }
 
-  auto baseId = akFormToPlace.ToGlobalId(akFormToPlace.rec->GetId());
-
   float angleZDegrees = selfRefr->GetAngle().z;
   float angleZRadians = angleZDegrees; // TODO: fix Degrees/radians mismatch
   // TODO: support angleX, angleY
   LocationalData locationalData = { selfRefr->GetPos(),
                                     { 0, 0, angleZRadians },
                                     selfRefr->GetCellOrWorld() };
-  FormCallbacks callbacks = selfRefr->GetCallbacks();
-  std::string type = akFormToPlace.rec->GetType().ToString();
+  auto& refr = PlaceAt(*selfRefr, akFormToPlace, locationalData);
+
+  if (abInitiallyDisabled) {
+    refr.Disable();
+  }
+  return VarValue(std::make_shared<MpFormGameObject>(&refr));
+}
+
+MpObjectReference& PapyrusObjectReference::PlaceAt(
+  MpObjectReference& anchor, const espm::LookupResult& form,
+  const LocationalData& where)
+{
+  auto baseId = form.ToGlobalId(form.rec->GetId());
+  FormCallbacks callbacks = anchor.GetCallbacks();
+  std::string type = form.rec->GetType().ToString();
 
   std::unique_ptr<MpObjectReference> newRefr;
 
-  if (akFormToPlace.rec->GetType() == "NPC_") {
-    auto actor = new MpActor(locationalData, callbacks, baseId);
+  if (form.rec->GetType() == "NPC_") {
+    auto actor = new MpActor(where, callbacks, baseId);
     newRefr.reset(actor);
-    actor->SetSpawnPoint(locationalData);
+    actor->SetSpawnPoint(where);
   } else {
-    newRefr.reset(
-      new MpObjectReference(locationalData, callbacks, baseId, type));
+    newRefr.reset(new MpObjectReference(where, callbacks, baseId, type));
   }
 
-  auto worldState = selfRefr->GetParent();
+  auto worldState = anchor.GetParent();
   auto newRefrId = worldState->GenerateFormId();
   worldState->AddForm(std::move(newRefr), newRefrId);
 
@@ -449,7 +459,7 @@ VarValue PapyrusObjectReference::PlaceAtMe(
   // server's roll inside its placement, as a game-file actor's does at its
   // init, so the host's hands are the record's and nothing dresses it after.
   if (auto actor = refr.AsActor(); actor && worldState->fateRollLevelAt) {
-    const uint16_t level = worldState->fateRollLevelAt(*selfRefr);
+    const uint16_t level = worldState->fateRollLevelAt(anchor);
     if (actor->RollFateIfUnrolled(level)) {
       spdlog::info("PlaceAtMe - {:x} (base {:x}) fated at level {}", newRefrId,
                    baseId, level);
@@ -457,11 +467,7 @@ VarValue PapyrusObjectReference::PlaceAtMe(
   }
 
   refr.ForceSubscriptionsUpdate();
-
-  if (abInitiallyDisabled) {
-    refr.Disable();
-  }
-  return VarValue(std::make_shared<MpFormGameObject>(&refr));
+  return refr;
 }
 
 VarValue PapyrusObjectReference::SetAngle(

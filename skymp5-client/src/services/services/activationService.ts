@@ -55,9 +55,34 @@ export class ActivationService extends ClientListener {
           // checks a hazard death against it. Every seat's engine runs the
           // trap for itself (a puppet steps on the plate too), so only the
           // host's word travels.
-          const trigger = caster === target
-            && this.controller.lookupListener(HostService).isHostedHere(e.target);
-          if (!trigger) {
+          const hostedHere = this.controller.lookupListener(HostService).isHostedHere(e.target);
+          if (!hostedHere) {
+            return;
+          }
+          if (caster !== target) {
+            // thuum docs/verbs/traps.md (M4): the host's engine's linked
+            // activation (a plate firing its spike wall, a lever opening its
+            // portcullis) reported for the server to judge against the game
+            // files' activation parents and relay to the cell's other games;
+            // at most eight a second leave this game (the server's own bound),
+            // the rest are dropped here. HYPOTHESIS until x-bleak-traps: how
+            // many engine-internal activations a dungeon cell raises.
+            if (!this.linkedBudget.take()) {
+              return;
+            }
+            const remoteCaster = localIdToRemoteId(caster);
+            const remoteTarget = localIdToRemoteId(target);
+            if (!remoteCaster || !remoteTarget) {
+              return;
+            }
+            this.controller.emitter.emit("sendMessage", {
+                message: {
+                    t: MsgType.Activate,
+                    data: { caster: remoteCaster, target: remoteTarget, isSecondActivation: false }
+                },
+                reliability: "reliable"
+            });
+            logTrace(this, `Sent a linked activation of `, remoteTarget.toString(16), `by`, remoteCaster.toString(16));
             return;
           }
           const remoteTrigger = localIdToRemoteId(target);
@@ -124,4 +149,27 @@ export class ActivationService extends ClientListener {
 
         logTrace(this, `Sent activation for caster=`, caster.toString(16), `and target=`, target.toString(16));
     }
+
+  // eight linked activations a second from this game (thuum docs/verbs/traps.md)
+  private readonly linkedBudget = new SecondWindow(8);
+
 };
+
+// a count within a rolling one-second window
+class SecondWindow {
+  constructor(private readonly most: number) {}
+  take(): boolean {
+    const now = Date.now();
+    if (now - this.startMs >= 1000) {
+      this.startMs = now;
+      this.count = 0;
+    }
+    if (this.count >= this.most) {
+      return false;
+    }
+    this.count += 1;
+    return true;
+  }
+  private startMs = 0;
+  private count = 0;
+}

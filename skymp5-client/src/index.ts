@@ -27,6 +27,7 @@ import { LockService } from "./services/services/lockService";
 import { WeatherService } from "./services/services/weatherService";
 import { PerkService } from "./services/services/perkService";
 import { WordWallService } from "./services/services/wordWallService";
+import { RelayedActivationService } from "./services/services/relayedActivationService";
 import { SkillUseService } from "./services/services/skillUseService";
 import { ArrowSyncService } from "./services/services/arrowSyncService";
 import { SpVersionCheckService } from "./services/services/spVersionCheckService";
@@ -117,6 +118,7 @@ const main = () => {
       new WeatherService(sp, controller),
       new PerkService(sp, controller),
       new WordWallService(sp, controller),
+      new RelayedActivationService(sp, controller),
       new SkillUseService(sp, controller),
       new ArrowSyncService(sp, controller),
       new SpVersionCheckService(sp, controller),

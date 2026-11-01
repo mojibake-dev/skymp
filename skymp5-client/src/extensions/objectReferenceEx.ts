@@ -1,4 +1,4 @@
-import { Flora, Form, FormType, MotionType, ObjectReference } from "skyrimPlatform";
+import { Flora, Form, FormType, MotionType, ObjectReference, settings } from "skyrimPlatform";
 import { NiPoint3 } from "../sync/movement";
 import { FormTypeEx } from "./formTypeEx";
 import { logTrace } from "../logging";
@@ -35,6 +35,35 @@ export class ObjectReferenceEx {
     return Math.sqrt(deltaX * deltaX + deltaY * deltaY);
   };
 
+  // the base form ids the client settings name (activationUnblockedBases: a list
+  // of numbers or hex strings, or one string of hex ids split on spaces and
+  // commas, the shape the lab's relaunch step can write), read once; a missing
+  // or malformed key unblocks nothing
+  private static activationUnblocked(baseId: number): boolean {
+    if (ObjectReferenceEx.unblockedBases === undefined) {
+      const ids = new Set<number>();
+      try {
+        const s = settings["skymp5-client"] as Record<string, unknown> | undefined;
+        const raw = s?.["activationUnblockedBases"];
+        const items: unknown[] = Array.isArray(raw) ? raw : typeof raw === "string" ? raw.split(/[\s,]+/) : [];
+        for (const v of items) {
+          const n = typeof v === "number" ? v : typeof v === "string" && v !== "" ? parseInt(v, 16) : NaN;
+          if (Number.isFinite(n) && n > 0) {
+            ids.add(n >>> 0);
+          }
+        }
+      } catch (e) {
+        logTrace("ObjectReferenceEx", `activationUnblockedBases unreadable: ${e}`);
+      }
+      ObjectReferenceEx.unblockedBases = ids;
+      if (ids.size > 0) {
+        logTrace("ObjectReferenceEx", `activation kept on ${ids.size} base(s): ${Array.from(ids).map((x) => x.toString(16)).join(" ")}`);
+      }
+    }
+    return ObjectReferenceEx.unblockedBases.has(baseId >>> 0);
+  }
+  private static unblockedBases: Set<number> | undefined;
+
   static dealWithRef(self: ObjectReference, base: Form, lock?: { level: number; key: number; locked: boolean }): void {
     const t = base.getType();
     const isItem = FormTypeEx.isItem(t);
@@ -45,13 +74,19 @@ export class ObjectReferenceEx {
     const caveGSecretDoor01 = 0x6f703;
 
     // You can also block for t === FormType.Flora || t === FormType.Tree, but I don't think it's necessary.
+    // thuum docs/DECISIONS.md ADR-059 (traps, puzzles): a scripted world object
+    // whose base the client settings name in activationUnblockedBases keeps the
+    // engine's own activation processing, so its Papyrus script (admitted by
+    // name through the layer's papyrus-scripts.txt) hears OnActivate and runs
+    // the trap, the lever or the pillar on this game; the read x-bleak-traps v4
+    // is its first use, the hosted-cell gate its next shape. Default: none.
     if (t === FormType.Furniture
       || t === FormType.Activator
       || t === FormType.Container
       || isItem
       || t === FormType.NPC
       || (t === FormType.Door && self.getBaseObject()?.getFormID() !== caveGSecretDoor01)) {
-      self.blockActivation(true);
+      self.blockActivation(!ObjectReferenceEx.activationUnblocked(base.getFormID()));
     } else {
       self.blockActivation(false);
     }

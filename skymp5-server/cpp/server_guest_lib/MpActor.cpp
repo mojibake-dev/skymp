@@ -36,6 +36,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <deque>
 #include <functional>
 #include <limits>
@@ -3013,104 +3014,121 @@ void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
   spdlog::trace("MpActor::DropItem - dropping {}", editorId);
   RemoveItems({ entry });
 
-  PapyrusObjectReference papyrusObjectReference;
-  auto baseForm = VarValue(std::make_shared<EspmGameObject>(lookupRes));
-  auto aCount = VarValue(count);
-  auto aForcePersist = VarValue(false);
-  auto aInitiallyDisabled = VarValue(false);
-
-  VarValue placedObjectWrap = papyrusObjectReference.PlaceAtMe(
-    this->ToVarValue(),
-    { baseForm, aCount, aForcePersist, aInitiallyDisabled });
+  // thuum docs/verbs/prop-physics.md (the drop's stream at T3, 2026-10-30): a
+  // copy placed at the actor's own position wakes Dynamic inside the dropper's
+  // capsule on its seat and is thrown out of reach; a step ahead along the
+  // actor's heading it lands at the feet, as the engine's own drop does. The
+  // feet's z is the ground's: a copy spawned there sat half inside the
+  // terrain and fell through to the cell's floor on both seats (x-prop-drop
+  // v4 022528, v5 030029: about 150 units below the ground, the stream
+  // faithful to the fall), so it spawns a lift above the feet and falls onto
+  // the ground, as the engine's own drop falls from the hand. The copy is
+  // CREATED there (PapyrusObjectReference::PlaceAt), not placed at the actor
+  // and moved: the create word carries the position the clients spawn at,
+  // and a move after it never reached the dropper's copy, which spawned
+  // inside the capsule and was ejected at the first Havok step (x-prop-launch
+  // v3 190643: 595 units a second).
+  constexpr float kDropAheadUnits = 64.f;
+  constexpr float kDropLiftUnits = 48.f;
+  constexpr float kDegToRad = 3.14159265f / 180.f;
+  const float yaw = GetAngle().z * kDegToRad;
+  const NiPoint3 pos = GetPos();
+  const LocationalData dropPoint = {
+    { pos.x + std::sin(yaw) * kDropAheadUnits,
+      pos.y + std::cos(yaw) * kDropAheadUnits, pos.z + kDropLiftUnits },
+    { 0, 0, GetAngle().z }, // PlaceAtMe's own rot (its degrees/radians TODO)
+    GetCellOrWorld()
+  };
   MpObjectReference* placedObject =
-    GetFormPtr<MpObjectReference>(placedObjectWrap);
-
-  if (!placedObject) {
-    spdlog::error("MpActor::DropItem - placedObject was null, disabling "
-                  "DropItem for all players");
-    g_dropItemDisabledGlobally = true;
-    return;
-  }
+    &PapyrusObjectReference::PlaceAt(*this, lookupRes, dropPoint);
 
   placedObject->SetCount(count);
 
   uint32_t droppedItemFormId = placedObject->GetFormId();
 
-  // Filter our dropped items queue
-  pImpl->droppedItemsQueue.erase(
-    std::remove_if(
-      pImpl->droppedItemsQueue.begin(), pImpl->droppedItemsQueue.end(),
-      [worldState](const std::pair<uint32_t, MpObjectReference*>& pair) {
-        auto [referenceFormId, reference] = pair;
-        bool referenceAlive =
-          reference == worldState->LookupFormById(referenceFormId).get();
-        if (!referenceAlive) {
-          return true;
-        }
-        if (reference->IsDeleted() || reference->IsHarvested()) {
-          return true;
-        }
-        return false;
-      }),
-    pImpl->droppedItemsQueue.end());
+  // thuum docs/verbs/prop-physics.md (ADR-058): a dropped item's copy is a
+  // prop the world keeps; upstream's two clutter policies below (the
+  // dropper's queue of ten and the deletion two minutes after the drop)
+  // hold only when props do not persist (server-settings.json
+  // propsPersist false)
+  if (!worldState->propsPersist) {
+    // Filter our dropped items queue
+    pImpl->droppedItemsQueue.erase(
+      std::remove_if(
+        pImpl->droppedItemsQueue.begin(), pImpl->droppedItemsQueue.end(),
+        [worldState](const std::pair<uint32_t, MpObjectReference*>& pair) {
+          auto [referenceFormId, reference] = pair;
+          bool referenceAlive =
+            reference == worldState->LookupFormById(referenceFormId).get();
+          if (!referenceAlive) {
+            return true;
+          }
+          if (reference->IsDeleted() || reference->IsHarvested()) {
+            return true;
+          }
+          return false;
+        }),
+      pImpl->droppedItemsQueue.end());
 
-  while (!pImpl->droppedItemsQueue.empty() &&
-         pImpl->droppedItemsQueue.size() >= kDroppedItemsQueueMax) {
-    auto [referenceFormId, reference] = pImpl->droppedItemsQueue.front();
-    bool referenceAlive =
-      reference == worldState->LookupFormById(referenceFormId).get();
-    if (referenceAlive) {
-      if (!reference->IsDeleted()) {
-        spdlog::trace("MpActor::DropItem - deleting previously dropped {}",
-                      editorId);
-        reference->Delete();
+    while (!pImpl->droppedItemsQueue.empty() &&
+           pImpl->droppedItemsQueue.size() >= kDroppedItemsQueueMax) {
+      auto [referenceFormId, reference] = pImpl->droppedItemsQueue.front();
+      bool referenceAlive =
+        reference == worldState->LookupFormById(referenceFormId).get();
+      if (referenceAlive) {
+        if (!reference->IsDeleted()) {
+          spdlog::trace("MpActor::DropItem - deleting previously dropped {}",
+                        editorId);
+          reference->Delete();
+        } else {
+          spdlog::warn("MpActor::DropItem - reference in queue was deleted");
+        }
       } else {
-        spdlog::warn("MpActor::DropItem - reference in queue was deleted");
+        spdlog::warn("MpActor::DropItem - reference in queue was invalidated");
       }
-    } else {
-      spdlog::warn("MpActor::DropItem - reference in queue was invalidated");
+      pImpl->droppedItemsQueue.erase(pImpl->droppedItemsQueue.begin());
     }
-    pImpl->droppedItemsQueue.erase(pImpl->droppedItemsQueue.begin());
+
+    pImpl->droppedItemsQueue.push_back(
+      std::make_pair(droppedItemFormId, placedObject));
+
+    auto time =
+      Viet::TimeUtils::To<std::chrono::milliseconds>(kDeletionTimeSeconds);
+
+    uint32_t formId = GetFormId();
+
+    // TODO: make timer group for better performance
+    worldState->SetTimer(time).Then([placedObject, worldState,
+                                     droppedItemFormId, editorId, this,
+                                     formId](Viet::Void) {
+      bool actorStillAlive = this == worldState->LookupFormById(formId).get();
+      if (!actorStillAlive) {
+        return;
+      }
+      bool formStillAlive =
+        placedObject == worldState->LookupFormById(droppedItemFormId).get();
+      if (!formStillAlive) {
+        return;
+      }
+
+      if (placedObject->IsDeleted()) {
+        return;
+      }
+
+      spdlog::trace("MpActor::DropItem - deleting previously dropped {}",
+                    editorId);
+
+      // Item deleted, not in queue anymore
+      auto it = std::remove(this->pImpl->droppedItemsQueue.begin(),
+                            this->pImpl->droppedItemsQueue.end(),
+                            std::make_pair(droppedItemFormId, placedObject));
+      this->pImpl->droppedItemsQueue.erase(
+        it, this->pImpl->droppedItemsQueue.end());
+
+      placedObject->Delete();
+      ++g_numDrops;
+    });
   }
-
-  pImpl->droppedItemsQueue.push_back(
-    std::make_pair(droppedItemFormId, placedObject));
-
-  auto time =
-    Viet::TimeUtils::To<std::chrono::milliseconds>(kDeletionTimeSeconds);
-
-  uint32_t formId = GetFormId();
-
-  // TODO: make timer group for better performance
-  worldState->SetTimer(time).Then([placedObject, worldState, droppedItemFormId,
-                                   editorId, this, formId](Viet::Void) {
-    bool actorStillAlive = this == worldState->LookupFormById(formId).get();
-    if (!actorStillAlive) {
-      return;
-    }
-    bool formStillAlive =
-      placedObject == worldState->LookupFormById(droppedItemFormId).get();
-    if (!formStillAlive) {
-      return;
-    }
-
-    if (placedObject->IsDeleted()) {
-      return;
-    }
-
-    spdlog::trace("MpActor::DropItem - deleting previously dropped {}",
-                  editorId);
-
-    // Item deleted, not in queue anymore
-    auto it = std::remove(this->pImpl->droppedItemsQueue.begin(),
-                          this->pImpl->droppedItemsQueue.end(),
-                          std::make_pair(droppedItemFormId, placedObject));
-    this->pImpl->droppedItemsQueue.erase(it,
-                                         this->pImpl->droppedItemsQueue.end());
-
-    placedObject->Delete();
-    ++g_numDrops;
-  });
 }
 
 void MpActor::SetIsBlockActive(bool active)

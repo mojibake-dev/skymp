@@ -395,6 +395,14 @@ public:
   std::unordered_map<std::string, NpcSettingsEntry> npcSettings;
   NpcSettingsEntry defaultSetting;
   bool enableConsoleCommandsForAll = false;
+  // thuum docs/verbs/prop-physics.md (ADR-058, the record keeps a prop's
+  // rest): a dropped item's copy is a prop the world keeps, so the save's
+  // loader takes 0xff item references and MpActor::DropItem neither trims the
+  // dropper's queue nor deletes the copy two minutes later (upstream's two
+  // clutter policies, which x-prop-push v15 220439 met at its restart:
+  // "Skipping FF item 2 (type is MISC)"); false (server-settings.json
+  // propsPersist) restores both. Set by PartOne::SetPropsPersist.
+  bool propsPersist = true;
 
   bool disableVanillaScriptsInExterior = true;
 

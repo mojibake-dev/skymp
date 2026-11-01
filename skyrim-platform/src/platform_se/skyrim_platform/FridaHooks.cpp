@@ -130,6 +130,34 @@ bool AdmittedByChain(const RE::BSScript::ObjectTypeInfo* info)
   }
   return false;
 }
+
+// thuum docs/verbs/shadowbond.md (b-shadowbond's second half, 2026-11-01):
+// scripts whose events stay blocked in every game whatever the rules below
+// admit, because the server owns their one consequence. Apocalypse's
+// WB_InvisProcTeleport_Script polls both bonded actors' invisibility every
+// 0.2 s and swaps their places itself the first time either is visible; with
+// the player as the caster the ADR-031 effect rule would run it, and the
+// server's own dispel at a bond's run-out tripped its swap (run
+// 20261101-224953: the caster moved to the target's place, the figure to the
+// box, 131 units carried to the server as movement). The server casts the
+// procs, swaps at a break and dispels at the run-out (PartOne::RecordBond,
+// BreakBondsOf, TickBonds); the script's sound and visual effects at the
+// swap are the caster's loss until a snippet carries them. Names compare
+// without case, through the parent chain, as the admitted ones do.
+const char* const kNeverAdmitted[] = { "wb_invisprocteleport_script" };
+
+bool NeverAdmittedByChain(const RE::BSScript::ObjectTypeInfo* info)
+{
+  for (int depth = 0; info && depth < 16; ++depth, info = info->GetParent()) {
+    auto name = LowerAscii(info->GetName());
+    for (auto never : kNeverAdmitted) {
+      if (name == never) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 }
 
 /**
@@ -165,6 +193,30 @@ void OnSendEventEnter(GumInvocationContext* ic)
   EventsApi::SendPapyrusEventEnter(selfId, eventNameStr);
 
   auto blockEvents = TESModPlatform::GetPapyrusEventsBlocked();
+
+  // thuum docs/verbs/shadowbond.md: a script on the never-admitted list keeps
+  // its events blanked before any rule below could admit them
+  if (blockEvents && vm) {
+    bool never = false;
+    vm->attachedScriptsLock.Lock();
+    auto attached = vm->attachedScripts.find(handle);
+    if (attached != vm->attachedScripts.end()) {
+      auto& scripts = attached->second;
+      for (size_t i = 0; i < scripts.size(); i++) {
+        auto script = scripts[i].get();
+        if (script && NeverAdmittedByChain(script->GetTypeInfo())) {
+          never = true;
+          break;
+        }
+      }
+    }
+    vm->attachedScriptsLock.Unlock();
+    if (never) {
+      static const auto fsEmptyNever = new FixedString("");
+      gum_invocation_context_replace_nth_argument(ic, 2, fsEmptyNever);
+      return;
+    }
+  }
 
   // thuum docs/verbs/push.md (ADR-031; ADR-029's A1, test 1): an event on
   // an effect the player bears, or one the player cast, runs in this game,

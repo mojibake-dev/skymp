@@ -144,6 +144,12 @@ public:
   virtual void Disable();
   virtual void Enable();
 
+  // thuum docs/verbs/cell-host.md: whether the record holds an edit the saving
+  // policy skipped (the position moved inside IsLocationSavingNeeded's 30 s),
+  // and the save request for it; WorldState::FlushSaveStorage asks every form
+  // at a stop
+  using ChangeFormGuard::HasUnsavedEdit;
+  void FlushUnsavedEdit();
   void SetPos(const NiPoint3& newPos,
               SetPosMode setPosMode = SetPosMode::Other);
   void SetAngle(const NiPoint3& newAngle,

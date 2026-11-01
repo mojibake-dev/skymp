@@ -102,6 +102,10 @@ public:
   void SetOnActorStreamIn(OnActorStreamIn callback);
 
   void AttachEspm(espm::Loader* espm);
+  // thuum docs/verbs/cell-host.md: the records flushed at a stop (the Node
+  // entry's SIGTERM and SIGINT handlers call it before the exit); true when
+  // the save storage drained within the budget
+  bool FlushSaves(std::chrono::milliseconds budget);
   void AttachSaveStorage(
     std::shared_ptr<
       Viet::ISaveStorage<MpChangeForm, FormDesc, std::vector<FormDesc>>>

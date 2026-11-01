@@ -628,6 +628,20 @@ void PartOne::AttachEspm(espm::Loader* espm)
   LoadPerkTable();
 }
 
+bool PartOne::FlushSaves(std::chrono::milliseconds budget)
+{
+  const auto start = std::chrono::steady_clock::now();
+  size_t requested = 0;
+  const bool drained = worldState.FlushSaveStorage(budget, &requested);
+  const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::steady_clock::now() - start);
+  pImpl->logger->info(
+    "FlushSaves - {} unsaved record(s) requested, the storage "
+    "{} in {} ms",
+    requested, drained ? "drained" : "NOT drained (budget)", took.count());
+  return drained;
+}
+
 void PartOne::AttachSaveStorage(
   std::shared_ptr<
     Viet::ISaveStorage<MpChangeForm, FormDesc, std::vector<FormDesc>>>
@@ -1102,6 +1116,12 @@ void PartOne::Init()
   // sighting gate read this one
   worldState.simulatorOf = [this](uint32_t actor, uint32_t cell) {
     return pImpl->cells->simulator_of(actor, cell);
+  };
+  // thuum docs/verbs/leveling.md: the skill table's cost of a level, for a
+  // server set of a skill (MpActor::SetActorValueBaseByServer moves the
+  // progress entry with the base; x-lockpick v4's read, 2026-10-31)
+  worldState.skillLevelCost = [this](uint8_t skillAv, uint8_t level) {
+    return SkillLevelCost(skillAv, level);
   };
   // and a hosted NPC's door (npc-handoff D6, and D9's pass through a door
   // since 2026-10-28): the crossing judged by the move verdict for its

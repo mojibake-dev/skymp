@@ -85,6 +85,7 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
     env, "ScampServer",
     { InstanceMethod("_setSelf", &ScampServer::_SetSelf),
       InstanceMethod("attachSaveStorage", &ScampServer::AttachSaveStorage),
+      InstanceMethod("flushSaves", &ScampServer::FlushSaves),
       InstanceMethod("tick", &ScampServer::Tick),
       InstanceMethod("on", &ScampServer::On),
       InstanceMethod("createActor", &ScampServer::CreateActor),
@@ -624,6 +625,25 @@ Napi::Value ScampServer::_SetSelf(const Napi::CallbackInfo& info)
     throw Napi::Error::New(info.Env(), (std::string)e.what());
   }
   return info.Env().Undefined();
+}
+
+Napi::Value ScampServer::FlushSaves(const Napi::CallbackInfo& info)
+{
+  // thuum docs/verbs/cell-host.md: the records flushed before an exit
+  // (skymp5-server/ts/index.ts on SIGTERM and SIGINT); arg0 the budget in ms
+  // (5000 by default, under Docker's 10 s grace); returns whether the save
+  // storage drained
+  try {
+    uint32_t budgetMs = 5000;
+    if (info.Length() > 0 && info[0].IsNumber()) {
+      budgetMs = info[0].As<Napi::Number>().Uint32Value();
+    }
+    const bool drained =
+      partOne->FlushSaves(std::chrono::milliseconds(budgetMs));
+    return Napi::Boolean::New(info.Env(), drained);
+  } catch (std::exception& e) {
+    throw Napi::Error::New(info.Env(), (std::string)e.what());
+  }
 }
 
 Napi::Value ScampServer::AttachSaveStorage(const Napi::CallbackInfo& info)

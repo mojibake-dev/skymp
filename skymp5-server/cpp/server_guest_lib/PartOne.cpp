@@ -4750,6 +4750,30 @@ bool PartOne::PerksEnabled() const
   return pImpl->perksEnabled;
 }
 
+namespace {
+// the values a perk's conditions read: the record's bases first (the
+// server's own writes land there, SetActorValueBaseByServer, and the
+// leveling path mirrors a skill's level into them), then a skill's level for
+// a skill the bases do not name (the record's Skill.skill is PlayerSkills'
+// index, 0 for One-handed: ActorValue 6 to 23)
+void RecordConditionValues(const ActorValueRecord& record,
+                           std::vector<uint8_t>& avs,
+                           std::vector<float>& values)
+{
+  for (const auto& [av, base] : record.bases) {
+    avs.push_back(av);
+    values.push_back(base);
+  }
+  for (const auto& skill : record.skills) {
+    const auto av = static_cast<uint8_t>(skill.skill + 6);
+    if (std::find(avs.begin(), avs.end(), av) == avs.end()) {
+      avs.push_back(av);
+      values.push_back(skill.level);
+    }
+  }
+}
+}
+
 void PartOne::LoadPerkTable()
 {
   if (!HasEspm()) {
@@ -4843,30 +4867,6 @@ void PartOne::LoadPerkTable()
         rust::Slice<const uint32_t>(subjectKeywords.data(),
                                     subjectKeywords.size()));
     };
-}
-
-namespace {
-// the values a perk's conditions read: the record's bases first (the
-// server's own writes land there, SetActorValueBaseByServer, and the
-// leveling path mirrors a skill's level into them), then a skill's level for
-// a skill the bases do not name (the record's Skill.skill is PlayerSkills'
-// index, 0 for One-handed: ActorValue 6 to 23)
-void RecordConditionValues(const ActorValueRecord& record,
-                           std::vector<uint8_t>& avs,
-                           std::vector<float>& values)
-{
-  for (const auto& [av, base] : record.bases) {
-    avs.push_back(av);
-    values.push_back(base);
-  }
-  for (const auto& skill : record.skills) {
-    const auto av = static_cast<uint8_t>(skill.skill + 6);
-    if (std::find(avs.begin(), avs.end(), av) == avs.end()) {
-      avs.push_back(av);
-      values.push_back(skill.level);
-    }
-  }
-}
 }
 
 bool PartOne::PickPerk(MpActor& actor, uint32_t perk)

@@ -194,6 +194,11 @@ struct PrimitiveData
 {
   NiPoint3 boundsDiv2;
   GeoProc::GeoPolygonProc polygonProc;
+  // libespm REFR XPRM type: 2 is a sphere, judged by distance; the rest by
+  // the box the vertices make (thuum docs/verbs/word-wall.md: a rotated
+  // box of the sphere's extents reaches 2,920 units on its diagonals where
+  // the engine's sphere fires at 2,065)
+  uint32_t type = 0;
 };
 
 struct MpObjectReference::Impl
@@ -241,7 +246,7 @@ MpChangeForm MakeChangeForm(const LocationalData& locationalData)
 MpObjectReference::MpObjectReference(
   const LocationalData& locationalData_, const FormCallbacks& callbacks_,
   uint32_t baseId_, std::string baseType_,
-  std::optional<NiPoint3> primitiveBoundsDiv2)
+  std::optional<NiPoint3> primitiveBoundsDiv2, uint32_t primitiveType)
   : callbacks(new FormCallbacks(callbacks_))
   , baseId(baseId_)
   , baseType(baseType_)
@@ -251,7 +256,7 @@ MpObjectReference::MpObjectReference(
   asObjectReference = this;
 
   if (primitiveBoundsDiv2)
-    SetPrimitive(*primitiveBoundsDiv2);
+    SetPrimitive(*primitiveBoundsDiv2, primitiveType);
 }
 
 const NiPoint3& MpObjectReference::GetPos() const
@@ -367,6 +372,9 @@ bool MpObjectReference::GetAnimationVariableBool(const char* name) const
 bool MpObjectReference::IsPointInsidePrimitive(const NiPoint3& point) const
 {
   if (pImpl->primitive) {
+    if (pImpl->primitive->type == 2) {
+      return (point - GetPos()).Length() <= pImpl->primitive->boundsDiv2.x;
+    }
     return Primitive::IsInside(point, pImpl->primitive->polygonProc);
   }
   return false;
@@ -963,11 +971,13 @@ void MpObjectReference::ForceSubscriptionsUpdate()
   everSubscribedOrListened = true;
 }
 
-void MpObjectReference::SetPrimitive(const NiPoint3& boundsDiv2)
+void MpObjectReference::SetPrimitive(const NiPoint3& boundsDiv2,
+                                     uint32_t primitiveType)
 {
   auto vertices = Primitive::GetVertices(GetPos(), GetAngle(), boundsDiv2);
   pImpl->primitive =
-    PrimitiveData{ boundsDiv2, Primitive::CreateGeoPolygonProc(vertices) };
+    PrimitiveData{ boundsDiv2, Primitive::CreateGeoPolygonProc(vertices),
+                   primitiveType };
 }
 
 // thuum docs/verbs/cell-host.md: the host's own game sees this actor as its

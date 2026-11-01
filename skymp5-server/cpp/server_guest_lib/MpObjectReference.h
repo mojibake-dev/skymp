@@ -91,10 +91,11 @@ public:
   static const char* Type() { return "ObjectReference"; }
   const char* GetFormType() const override { return "ObjectReference"; }
 
-  MpObjectReference(
-    const LocationalData& locationalData, const FormCallbacks& callbacks,
-    uint32_t baseId, std::string baseType,
-    std::optional<NiPoint3> primitiveBoundsDiv2 = std::nullopt);
+  MpObjectReference(const LocationalData& locationalData,
+                    const FormCallbacks& callbacks, uint32_t baseId,
+                    std::string baseType,
+                    std::optional<NiPoint3> primitiveBoundsDiv2 = std::nullopt,
+                    uint32_t primitiveType = 0);
 
   const NiPoint3& GetPos() const;
   const NiPoint3& GetAngle() const;
@@ -181,7 +182,9 @@ public:
                                 bool value);
   void SetActivationBlocked(bool blocked);
   void ForceSubscriptionsUpdate();
-  void SetPrimitive(const NiPoint3& boundsDiv2);
+  // the trigger volume's shape: 0 or 1 the box the vertices make, 2 a
+  // sphere of the bounds' radius (libespm REFR XPRM type)
+  void SetPrimitive(const NiPoint3& boundsDiv2, uint32_t primitiveType = 0);
   void UpdateHoster(uint32_t newHosterId);
   void TellHostedByOther(MpActor& game);
   void SetPropertyValueDump(const std::string& propertyName,

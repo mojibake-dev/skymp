@@ -20,6 +20,9 @@ REFR::Data REFR::GetData(
         result.teleport = reinterpret_cast<const DoorTeleport*>(data);
       } else if (!std::memcmp(type, "XPRM", 4)) {
         result.boundsDiv2 = reinterpret_cast<const float*>(data);
+        if (dataSize >= 32) {
+          result.primitiveType = *reinterpret_cast<const uint32_t*>(data + 28);
+        }
       } else if (!std::memcmp(type, "XCNT", 4)) {
         result.count = *reinterpret_cast<const uint32_t*>(data);
       } else if (!std::memcmp(type, "XAPD", 4)) {

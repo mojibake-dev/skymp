@@ -3339,15 +3339,27 @@ void ActionListener::OnWordWall(const RawMessageData& rawMsgData,
                  actor->GetFormId(), msg.wall);
     return;
   }
+  // the engine fires the trigger's OnTrigger for a player anywhere inside its
+  // primitive (Bleak Falls Sanctum's is a sphere of radius 2,065 around the
+  // trigger, lab/esm.py's XPRM; the read x-word-wall-read 20261101-131832),
+  // and the seat reports once per session, so the server's condition is the
+  // engine's: inside the trigger's primitive (the box the loader keeps for
+  // it, MpObjectReference::IsPointInsidePrimitive) when the trigger has one,
+  // else within the activation reach of the wall
   const float distance = (actor->GetPos() - near->GetPos()).Length();
-  const auto reach = skymp::rules::activation_within_reach(
-    distance, ActivationTargetSize(*near));
-  if (!reach.allowed) {
-    spdlog::info("[verb:word-wall] E_WORDWALL_REACH: {:x} reports {:x} from "
-                 "{:.0f} units off the wall {:x}, the bound {:.0f}",
-                 actor->GetFormId(), msg.wall, distance, near->GetFormId(),
-                 reach.bound);
-    return;
+  const bool insideTrigger =
+    wall->HasPrimitive() && wall->IsPointInsidePrimitive(actor->GetPos());
+  if (!insideTrigger) {
+    const auto reach = skymp::rules::activation_within_reach(
+      distance, ActivationTargetSize(*near));
+    if (!reach.allowed) {
+      spdlog::info("[verb:word-wall] E_WORDWALL_REACH: {:x} reports {:x} from "
+                   "{:.0f} units off the wall {:x}, the bound {:.0f}, outside "
+                   "the trigger's primitive",
+                   actor->GetFormId(), msg.wall, distance, near->GetFormId(),
+                   reach.bound);
+      return;
+    }
   }
   const bool added = actor->RecordShoutEntry(
     MpActor::ShoutEntry::WordKnown,

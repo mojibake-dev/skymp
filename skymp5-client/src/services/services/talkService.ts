@@ -50,6 +50,12 @@ export class TalkService extends ClientListener {
         if (e.code !== (this.key as DxScanCode) || !e.isPressed || e.heldDuration > 0) {
             return;
         }
+        // an E typed into the open console (or any menu) is the menu's, not a
+        // talk (x-prop-launch v1 20261031-071449: four "nothing or no actor"
+        // lines for "player.placeatme 12fe7", one per e typed)
+        if (Ui.isMenuOpen("Console") || Ui.isMenuOpen("InventoryMenu") || Ui.isMenuOpen("ContainerMenu") || Ui.isMenuOpen("Dialogue Menu")) {
+            return;
+        }
         if (this.pending) {
             logTrace(this, `E: claim ${this.pending.remoteId.toString(16)} still pending, ignored`);
             return;

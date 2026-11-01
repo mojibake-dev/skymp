@@ -4771,13 +4771,20 @@ std::optional<uint32_t> PartOne::WordOfWall(const MpObjectReference& wall)
     espm::ScriptData scriptData;
     lookup.rec->GetScriptData(&scriptData, cache);
     for (const auto& script : scriptData.scripts) {
+      // the vanilla trigger script; a removed script (status 3) is no script
       if (Utils::stricmp(script.scriptName.data(), "WordWallTriggerScript") !=
-          0) {
+            0 ||
+          script.status == 3) {
         continue;
       }
       for (const auto& property : script.properties) {
+        // the wall's word is the script's myWord01 (Skyrim.esm's trigger
+        // references carry it with the wall's other eight properties, the
+        // base ACTI's copy of the script the shared five: lab/esm.py's VMAD
+        // decode of 0x709d2 and 0x5095e, 2026-11-01)
         if (property.type == espm::Property::Type::Object &&
-            !Utils::stricmp(property.name.data(), "myWord") &&
+            (!Utils::stricmp(property.name.data(), "myWord01") ||
+             !Utils::stricmp(property.name.data(), "myWord")) &&
             property.value.formId) {
           word = lookup.ToGlobalId(property.value.formId);
         }

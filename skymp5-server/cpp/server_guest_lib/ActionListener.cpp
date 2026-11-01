@@ -2020,6 +2020,9 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
                            static_cast<uint32_t>(msg.data.target));
         return;
       }
+      // a caster that is no form and no record falls to the hosted caster
+      // rule below, whose throw the dispatcher logs (PartOne_ActivateTest's
+      // "Activate with bad hoster" keeps that shape)
     }
   }
   // thuum docs/verbs/cell-host.md: a hosted caster is its cell's host's;

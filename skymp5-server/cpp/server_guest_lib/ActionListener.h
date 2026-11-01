@@ -156,10 +156,11 @@ public:
                           uint32_t casterId, MpObjectReference* casterRef,
                           uint32_t targetId);
   // ADR-059 decision 2: a player's activation of a scripted world object (an
-  // ACTI or FURN whose record or base carries a script) in a cell another
-  // game hosts goes to that host's engine as a RelayedActivation with the
-  // player's actor as the activator, so the host's scripts run where the
-  // cell is simulated (a puzzle pillar's turn counts on its lever there)
+  // ACTI or FURN whose record or base carries a script) goes to every other
+  // game in the cell as a RelayedActivation with the player's actor as the
+  // activator: the host's engine, so the cell's simulation counts it (a
+  // puzzle pillar's turn on its lever), and the guests' while the layer
+  // admits the scripts everywhere
   void RelayActivationToHost(MpActor& player, MpObjectReference& target);
   bool IsScriptedWorldObject(const MpObjectReference& target);
 

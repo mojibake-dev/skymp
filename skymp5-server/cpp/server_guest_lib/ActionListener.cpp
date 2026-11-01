@@ -3461,24 +3461,32 @@ void ActionListener::RelayActivationToHost(MpActor& player,
     return;
   }
   const auto host = partOne.GetCellHost(*cell);
-  if (!host.hosted || host.player == player.GetFormId()) {
-    // the host's own engine ran the script for its own press
+  if (!host.hosted) {
     return;
   }
-  const auto& hostForm = partOne.worldState.LookupFormById(host.player);
-  MpActor* hostActor = hostForm ? hostForm->AsActor() : nullptr;
-  if (!hostActor ||
-      partOne.serverState.UserByActor(hostActor) ==
-        Networking::InvalidUserId) {
-    return;
-  }
+  // every other game in the cell gets it: the host's, so the cell's
+  // simulation counts the press, and the guests', whose engines run the same
+  // script while the layer admits it everywhere (the hosted-cell gate's
+  // train replaces the guests' share with the host's animations, ADR-059
+  // decision 3); the sender's own engine ran it already
   RelayedActivationMessage relay;
   relay.target = target.GetFormId();
   relay.caster = player.GetFormId();
-  hostActor->SendToUser(relay, true);
-  spdlog::info("[verb:traps] {:x} activates {:x} in cell {:x}: relayed to its "
-               "host {:x}'s engine",
-               player.GetFormId(), target.GetFormId(), *cell, host.player);
+  size_t sent = 0;
+  for (auto listener : target.GetActorListeners()) {
+    if (listener == &player) {
+      continue;
+    }
+    if (partOne.serverState.UserByActor(listener) !=
+        Networking::InvalidUserId) {
+      listener->SendToUser(relay, true);
+      ++sent;
+    }
+  }
+  spdlog::info(
+    "[verb:traps] {:x} activates {:x} in cell {:x} (its host {:x}): "
+    "relayed to {} other game(s)",
+    player.GetFormId(), target.GetFormId(), *cell, host.player, sent);
 }
 
 // thuum docs/verbs/traps.md (M4): the cell's host reports its engine's linked

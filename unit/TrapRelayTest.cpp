@@ -207,9 +207,9 @@ TEST_CASE("The puzzle lever's script properties are links, and a marker the "
   Leave(p);
 }
 
-TEST_CASE("A guest's activation of a scripted world object goes to the "
-          "cell's host's engine with the guest as the activator, and the "
-          "host's echo of it is quiet (ADR-059 decision 2)",
+TEST_CASE("A player's activation of a scripted world object goes to the "
+          "cell's other games with the player as the activator, and an "
+          "echo of it is quiet (ADR-059 decision 2)",
           "[Traps][espm]")
 {
   PartOne& p = GetPartOne();
@@ -228,9 +228,16 @@ TEST_CASE("A guest's activation of a scripted world object goes to the "
   Linked(p, 0, kGuestActor, kPillar);
   REQUIRE(RelayedTo(p, 0).empty());
   REQUIRE(RelayedTo(p, 1).empty());
-  // the host's own turn runs on its own engine: no relay to anyone
+  // the host's own turn goes to the guest's engine the same way
   p.Messages().clear();
   Linked(p, 0, 0x14, kPillar);
+  REQUIRE(RelayedTo(p, 0).empty());
+  REQUIRE(RelayedTo(p, 1).size() == 1);
+  REQUIRE(RelayedTo(p, 1)[0].target == kPillar);
+  REQUIRE(RelayedTo(p, 1)[0].caster == kHostActor);
+  // and the guest's echo of the host's figure is quiet too
+  p.Messages().clear();
+  Linked(p, 1, kHostActor, kPillar);
   REQUIRE(RelayedTo(p, 0).empty());
   REQUIRE(RelayedTo(p, 1).empty());
   Leave(p);

@@ -1,11 +1,29 @@
 #pragma once
 #include "IPapyrusClass.h"
 
+class MpObjectReference;
+struct LocationalData;
+namespace espm {
+struct LookupResult;
+}
+
 class PapyrusObjectReference final
   : public IPapyrusClass<PapyrusObjectReference>
 {
 public:
   const char* GetName() override { return "ObjectReference"; }
+
+  // The one creation path for a server-placed form (PlaceAtMe's core): the
+  // reference or actor built at `where` with the anchor's callbacks, fated
+  // when an NPC (ADR-050 decision 3), its create word sent from `where`.
+  // MpActor::DropItem places the dropped copy through it at the drop point
+  // directly, because a copy created at the anchor and moved after is created
+  // on the clients where the create word said (thuum docs/verbs/
+  // prop-physics.md, x-prop-launch v3 190643: the copy spawned inside the
+  // dropper's capsule and was ejected at the first Havok step).
+  static MpObjectReference& PlaceAt(MpObjectReference& anchor,
+                                    const espm::LookupResult& form,
+                                    const LocationalData& where);
 
   VarValue IsHarvested(VarValue self, const std::vector<VarValue>& arguments);
   VarValue IsDisabled(VarValue self, const std::vector<VarValue>& arguments);

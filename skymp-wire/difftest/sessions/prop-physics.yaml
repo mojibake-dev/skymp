@@ -31,6 +31,31 @@ steps:
   - {client: c2, at_ms: 0, move: {dx: 50}}
   - {client: c2, at_ms: 5000, move: {dx: 60}}
 divergences:
+  # the drop's copy: the legacy server creates it at the dropper's own position and the branch at the
+  # drop point, 64 units ahead along the dropper's heading (72 degrees: +60.868, +19.777) and 48 up
+  # (MpActor::DropItem through PapyrusObjectReference::PlaceAt, m3-prop-physics 967ba8c8; thuum
+  # docs/verbs/prop-physics.md, D75: the create word carries the position the clients spawn at, so the
+  # copy never spawns inside the dropper's capsule). The numbers are the harness's printed f32 values.
+  - client: c1
+    msg: {t: 33, baseId: 80254, transform: {pos: [133867, -61130, 14662]}}
+    legacy: 1
+    wire: 0
+    reason: the dropped copy's create word at the dropper's position (the legacy server's PlaceAtMe); the branch creates it at the drop point (967ba8c8, thuum docs/verbs/prop-physics.md)
+  - client: c1
+    msg: {t: 33, baseId: 80254, transform: {pos: [133927.875, -61110.22265625, 14710]}}
+    legacy: 0
+    wire: 1
+    reason: the dropped copy's create word at the drop point, 64 ahead along the dropper's heading of 72 degrees and 48 up (967ba8c8, D75); the legacy server places it at the dropper
+  - client: c2
+    msg: {t: 33, baseId: 80254, transform: {pos: [133867, -61130, 14662]}}
+    legacy: 1
+    wire: 0
+    reason: the same create word to the drop's other listener, at the dropper's position on the legacy server
+  - client: c2
+    msg: {t: 33, baseId: 80254, transform: {pos: [133927.875, -61110.22265625, 14710]}}
+    legacy: 0
+    wire: 1
+    reason: the same create word to the drop's other listener, at the drop point on the branch (967ba8c8, D75)
   - client: c1
     msg: {t: 41, text: "AddItem done", refused: false}
     legacy: 0

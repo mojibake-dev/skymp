@@ -312,16 +312,20 @@ export class RemoteServer extends ClientListener {
             opened = false;
             break;
           }
-          // game time, as the original loop (its 15 s give-up printed on
-          // schedule in earlier runs); once the menu opens the game pauses
-          // and this wait resumes at the close, so the AI's off for a guest's
-          // open lands at the close, under the pause nothing walks
-          await Utility.wait(0.1);
+          // thuum docs/verbs/containers.md (x-locks-open v2 20261101-140443):
+          // Utility.wait is suspended in menu mode, so a wait begun before
+          // the menu opened resumed only at its close, the open was never
+          // seen, and the occupant left by the give-up path at the deadline
+          // (15 s late for a short open; every open since the seats run
+          // Skyrim Souls RE, whose unpaused menus keep the VM's menu mode).
+          // waitMenuMode runs through a menu, as the closing delay below
+          // already does, so the open is seen and the close is timely
+          await Utility.waitMenuMode(0.1);
         }
 
         if (opened) {
           logTrace(this, "onOpenContainerMesage - waiting for", factName, "to be false");
-          while (functionChecker()) await Utility.wait(0.1);
+          while (functionChecker()) await Utility.waitMenuMode(0.1);
           logTrace(this, "onOpenContainerMesage - menu closed", factName);
         } else {
           logTrace(this, "onOpenContainerMesage - gave up waiting for", factName, "after", kOpenDeadlineMs, "ms; releasing the occupant");

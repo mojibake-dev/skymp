@@ -533,6 +533,18 @@ void MpActor::VisitProperties(CreateActorMessage& message,
     message.props.isRaceMenuOpen = true;
   }
 
+  // thuum docs/verbs/character-creation.md (the permit): the player's own
+  // CreateActor names the races the server restricts and the ones its
+  // profile may wear, so its race menu can hide the rest (a courtesy: the
+  // rule is the server's at UpdateAppearance). Nothing travels while the
+  // server restricts no race
+  if (mode == VisitPropertiesMode::All && worldState &&
+      !worldState->restrictedRaces.empty()) {
+    message.props.restrictedRaces = worldState->RestrictedRaceIds();
+    message.props.permittedRaces =
+      worldState->PermittedRaceIds(GetProfileId());
+  }
+
   if (mode == VisitPropertiesMode::All) {
     baseActorValues.VisitBaseActorValuesAndPercentages(baseActorValues,
                                                        changeForm, message);

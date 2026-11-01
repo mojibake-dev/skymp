@@ -111,7 +111,12 @@ impl<'a, 'b> De<'a, 'b> {
 /// them, so the reader spends no bit on them and reads them as absent, and a
 /// capture still decodes field for field as the C++ wrote it. Named by the
 /// struct and the serialized (camelCase) field name serde hands the reader.
-const LEGACY_ABSENT: &[(&str, &str)] = &[("CreateActorProps", "placedBy"), ("CreateActorProps", "lock")];
+const LEGACY_ABSENT: &[(&str, &str)] = &[
+    ("CreateActorProps", "placedBy"),
+    ("CreateActorProps", "lock"),
+    ("CreateActorProps", "restrictedRaces"),
+    ("CreateActorProps", "permittedRaces"),
+];
 
 /// The deserializer for a field in LEGACY_ABSENT: an optional reads as none,
 /// anything else is a schema mistake (a required field the old format lacks).
@@ -399,6 +404,10 @@ mod tests {
                 assert_eq!(m.props.placed_by, None);
                 // thuum docs/verbs/locks.md: the lock prop too (2026-10-31)
                 assert_eq!(m.props.lock, None);
+                // thuum docs/verbs/character-creation.md: the permit's two
+                // (2026-11-01)
+                assert_eq!(m.props.restricted_races, None);
+                assert_eq!(m.props.permitted_races, None);
             }
             other => panic!("{other:?}"),
         }

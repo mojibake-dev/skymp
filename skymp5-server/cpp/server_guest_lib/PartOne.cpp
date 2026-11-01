@@ -2888,6 +2888,32 @@ void PartOne::SetSharedQuestsSettings(const std::string& sharedQuestsJson)
   spdlog::info("PartOne::SetSharedQuestsSettings - {}", sharedQuestsJson);
 }
 
+void PartOne::SetRestrictedRacesSettings(
+  const std::string& restrictedRacesJson)
+{
+  const auto j = nlohmann::json::parse(restrictedRacesJson);
+  if (!j.is_object()) {
+    throw std::runtime_error("restrictedRaces must be an object: "
+                             "{\"<shortid>:<plugin>\": [profile ids]}");
+  }
+  std::map<FormDesc, std::vector<int32_t>> table;
+  for (const auto& [key, profiles] : j.items()) {
+    const auto race = FormDesc::FromString(key);
+    if (race.file.empty() || !profiles.is_array()) {
+      throw std::runtime_error("restrictedRaces: bad entry \"" + key +
+                               "\" (want \"<shortid>:<plugin>\": [profile "
+                               "ids])");
+    }
+    auto& list = table[race];
+    for (const auto& profile : profiles) {
+      list.push_back(profile.get<int32_t>());
+    }
+  }
+  worldState.restrictedRaces = std::move(table);
+  spdlog::info("PartOne::SetRestrictedRacesSettings - {} race(s): {}",
+               worldState.restrictedRaces.size(), restrictedRacesJson);
+}
+
 namespace {
 std::vector<skymp::rules::QuestStageEntry> ToStageEntries(
   const std::vector<QuestStageDone>& stages)

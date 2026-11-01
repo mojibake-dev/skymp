@@ -276,6 +276,16 @@ wire_struct! {
         /// own copies. Nonzero, and only with `base_record_type` MSTT or
         /// ACTI (`E_VAL_RANGE`).
         pub placed_by: Option<u32>,
+        /// thuum docs/verbs/character-creation.md (the permit, M5): the
+        /// races the server restricts to listed profiles (server setting
+        /// `restrictedRaces`), as form ids in the load order both ends
+        /// share; on a player's own CreateActor (`is_me`) alone, and only
+        /// while the server restricts a race. The client takes the ones its
+        /// `permitted_races` does not name off its race menu (courtesy: the
+        /// rule is the server's, wire-rules appearance::race_allowed).
+        pub restricted_races: Option<Vec<u32, { cap::RACES }>>,
+        /// Of `restricted_races`, the ones this player's profile may wear.
+        pub permitted_races: Option<Vec<u32, { cap::RACES }>>,
     }
 }
 

@@ -31,9 +31,13 @@ constexpr uint32_t kPortcullis = 0x3b9f1;
 constexpr uint32_t kPuzzleLever = 0xaa8c3;
 constexpr uint32_t kDart = 0x3720f;
 constexpr uint32_t kMarker = 0x3e728;
+// the first pillar NorDefaultPuzzlePillar01 0xaa8cb at (5656, -896, -768),
+// defaultPuzzlePillarScript on the REFR and on the base
+constexpr uint32_t kPillar = 0xaa8cb;
 const NiPoint3 kByThePlate{ 8589.f, -5438.f, -2054.f };
 const NiPoint3 kByThePortcullis{ 4992.f, -1508.f, -768.f };
 const NiPoint3 kByThePuzzleLever{ 5002.f, -1003.f, -754.f };
+const NiPoint3 kByThePillar{ 5500.f, -896.f, -768.f };
 
 uint64_t NowMs()
 {
@@ -199,6 +203,35 @@ TEST_CASE("The puzzle lever's script properties are links, and a marker the "
   p.Messages().clear();
   REQUIRE_THROWS_WITH(Linked(p, 0, 0x12345, kPortcullis),
                       Catch::Matchers::ContainsSubstring("Bad hoster"));
+  REQUIRE(RelayedTo(p, 1).empty());
+  Leave(p);
+}
+
+TEST_CASE("A guest's activation of a scripted world object goes to the "
+          "cell's host's engine with the guest as the activator, and the "
+          "host's echo of it is quiet (ADR-059 decision 2)",
+          "[Traps][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  p.worldState.GetFormAt<MpObjectReference>(kPillar);
+  Stand(p, kByThePillar);
+  p.Messages().clear();
+  // the guest (user 1) turns the pillar: the host (user 0) gets the relay
+  Linked(p, 1, 0x14, kPillar);
+  REQUIRE(RelayedTo(p, 0).size() == 1);
+  REQUIRE(RelayedTo(p, 0)[0].target == kPillar);
+  REQUIRE(RelayedTo(p, 0)[0].caster == kGuestActor);
+  REQUIRE(RelayedTo(p, 1).empty());
+  // the host's engine echoes it as the figure's activation: taken quietly
+  p.Messages().clear();
+  Linked(p, 0, kGuestActor, kPillar);
+  REQUIRE(RelayedTo(p, 0).empty());
+  REQUIRE(RelayedTo(p, 1).empty());
+  // the host's own turn runs on its own engine: no relay to anyone
+  p.Messages().clear();
+  Linked(p, 0, 0x14, kPillar);
+  REQUIRE(RelayedTo(p, 0).empty());
   REQUIRE(RelayedTo(p, 1).empty());
   Leave(p);
 }

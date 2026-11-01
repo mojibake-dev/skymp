@@ -155,6 +155,13 @@ public:
   void OnLinkedActivation(const RawMessageData& rawMsgData, MpActor& reporter,
                           uint32_t casterId, MpObjectReference* casterRef,
                           uint32_t targetId);
+  // ADR-059 decision 2: a player's activation of a scripted world object (an
+  // ACTI or FURN whose record or base carries a script) in a cell another
+  // game hosts goes to that host's engine as a RelayedActivation with the
+  // player's actor as the activator, so the host's scripts run where the
+  // cell is simulated (a puzzle pillar's turn counts on its lever there)
+  void RelayActivationToHost(MpActor& player, MpObjectReference& target);
+  bool IsScriptedWorldObject(const MpObjectReference& target);
 
   // thuum docs/verbs/cell-host.md: a game's cell loaded or left its loaded
   // set; the server's election follows (wire-rules cells)
@@ -386,6 +393,8 @@ private:
   };
   std::unordered_map<Networking::UserId, LinkedActivationWindow>
     linkedActivationWindows;
+  // base form id to whether its record carries a script (the VMAD read once)
+  std::unordered_map<uint32_t, bool> scriptedBases;
   // thuum docs/verbs/spell-cast.md (train-27): a cast delivered to its
   // target (touch, target actor) whose relay waits for its first hit, by
   // the caster's form id and hand; the hit's claim (CastClaim::relay)

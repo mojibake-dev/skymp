@@ -50,7 +50,19 @@ constexpr size_t kMockServerIdx = 1;
 
 std::shared_ptr<spdlog::logger>& GetLogger()
 {
-  static auto g_logger = spdlog::stdout_color_mt("console");
+  static auto g_logger = [] {
+    auto logger = spdlog::stdout_color_mt("console");
+    // thuum docs/verbs/cell-host.md (the restart's flush): every info line
+    // reaches the pipe as it is written. Under docker stdout is a pipe and the
+    // C library holds it until the buffer fills, so a killed process lost its
+    // last lines (x-invis-recast 20261016-074205) and the lab wrapped node in
+    // uutils' stdbuf, which spawns node as a child and dies on SIGTERM without
+    // forwarding it: the flush-on-stop handler never ran (c-riverwood
+    // 20261101-085158). With the sink flushing itself, node can be PID 1 and
+    // the signal reaches it.
+    logger->flush_on(spdlog::level::info);
+    return logger;
+  }();
   return g_logger;
 }
 

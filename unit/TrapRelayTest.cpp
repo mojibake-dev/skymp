@@ -194,9 +194,11 @@ TEST_CASE("The puzzle lever's script properties are links, and a marker the "
   REQUIRE(RelayedTo(p, 1).size() == 1);
   REQUIRE(RelayedTo(p, 1)[0].target == kPortcullis);
   REQUIRE(RelayedTo(p, 1)[0].caster == kMarker);
-  // a stranger's id that is no reference at all is still refused
+  // a stranger's id that is no reference at all falls to the hosted caster
+  // rule's throw (PartOne_ActivateTest's "Activate with bad hoster")
   p.Messages().clear();
-  Linked(p, 0, 0x12345, kPortcullis);
+  REQUIRE_THROWS_WITH(Linked(p, 0, 0x12345, kPortcullis),
+                      Catch::Matchers::ContainsSubstring("Bad hoster"));
   REQUIRE(RelayedTo(p, 1).empty());
   Leave(p);
 }

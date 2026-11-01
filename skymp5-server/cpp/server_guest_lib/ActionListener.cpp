@@ -2020,13 +2020,9 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
                            static_cast<uint32_t>(msg.data.target));
         return;
       }
-      // a caster that is no form and no record is untrusted input (rule 5):
-      // refused by name, never the hosted caster rule's throw
-      spdlog::info("[verb:traps] E_TRAP_NO_REF: {:x} reports {:x} activating "
-                   "{:x}, no such caster",
-                   ac->GetFormId(), casterId,
-                   static_cast<uint32_t>(msg.data.target));
-      return;
+      // a caster that is no form and no record falls to the hosted caster
+      // rule below, whose throw the dispatcher logs (PartOne_ActivateTest's
+      // "Activate with bad hoster" keeps that shape)
     }
   }
   // thuum docs/verbs/cell-host.md: a hosted caster is its cell's host's;

@@ -266,6 +266,14 @@ public:
   // The record to the player, as after a login but without waiting for a
   // report to show it applied
   void SendActorValueRecord();
+  // thuum docs/verbs/perks.md (M5): the perks the record holds (sorted), the
+  // server's writes to it (the console's and the natives', R0, no rule) and
+  // the whole set with the points left to the player (PerkState)
+  bool HasPerk(uint32_t perk) const;
+  bool AddPerkByServer(uint32_t perk);
+  bool RemovePerkByServer(uint32_t perk);
+  uint16_t PerkPoints() const;
+  void SendPerkState();
   // The server takes a RaceMenu look only from a race menu it opened, the
   // rule SkyMP keeps for an appearance (ActionListener::OnUpdateAppearance):
   // one look per opening, whether it comes before or after the appearance
@@ -484,12 +492,16 @@ public:
   // the caster (the engine's reading for a magic effect's conditions,
   // HYPOTHESIS until a lab run shows a Target row; CK wiki "Condition
   // Functions"). A function the server cannot evaluate refuses the effect
-  // and logs E_CONDITION_UNKNOWN; no conditions hold trivially
+  // and logs E_CONDITION_UNKNOWN; no conditions hold trivially. A refusal
+  // names the rows that fail on their own (failedRow, the text its line
+  // carries after "failing:"; the pile's "refusal line naming its row",
+  // 2026-10-31)
   static bool EffectConditionsHold(WorldState* worldState,
                                    const espm::Effects::Effect& effect,
                                    uint32_t source, const MpActor& victim,
                                    const MpActor& caster,
-                                   bool dualCast = false);
+                                   bool dualCast = false,
+                                   std::string* failedRow = nullptr);
   // thuum docs/verbs/god-mode.md: TGM and TIM, the server's flags for the
   // player's session (cleared at its departure). A god actor takes no
   // damage from another actor and spends no arrow; an immortal actor's

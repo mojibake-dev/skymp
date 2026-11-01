@@ -502,7 +502,7 @@ export class RemoteServer extends ClientListener {
       const refrId = msg.refrId!;
       this.onceLoad(refrId, (refr: ObjectReference) => {
         if (refr) {
-          ObjectReferenceEx.dealWithRef(refr, refr.getBaseObject() as Form);
+          ObjectReferenceEx.dealWithRef(refr, refr.getBaseObject() as Form, msg.props?.lock);
           if (msg.props) {
             if (msg.props.inventory) {
               // thuum (playtest 37, 2026-10-28, Eli: "shouldn't be that hard to
@@ -1066,6 +1066,8 @@ export class RemoteServer extends ClientListener {
           }
         } else if (msg.propName === 'isOpen') {
           ModelApplyUtils.applyModelIsOpen(refr, !!msgData);
+        } else if (msg.propName === 'lock') {
+          ModelApplyUtils.applyModelLock(refr, msgData as { level: number; key: number; locked: boolean } | undefined);
         } else if (msg.propName === 'isHarvested') {
           ModelApplyUtils.applyModelIsHarvested(refr, !!msgData);
         } else if (msg.propName === 'disabled') {

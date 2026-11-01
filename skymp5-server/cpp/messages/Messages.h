@@ -30,10 +30,14 @@
 #include "HostStopMessage.h"
 #include "HostedActorStateMessage.h"
 #include "IngredientEffectsKnownMessage.h"
+#include "LockPromptMessage.h"
+#include "LockReportMessage.h"
 #include "MagicEffectsMessage.h"
 #include "MapMarkerDiscoveredMessage.h"
 #include "OnEquipMessage.h"
 #include "OpenContainerMessage.h"
+#include "PerkPickMessage.h"
+#include "PerkStateMessage.h"
 #include "PlacedReportMessage.h"
 #include "PlacedRequestMessage.h"
 #include "PlayerBowShotMessage.h"
@@ -48,6 +52,7 @@
 #include "SetGameTimeMessage.h"
 #include "SetInventoryMessage.h"
 #include "SetRaceMenuOpenMessage.h"
+#include "SetWeatherMessage.h"
 #include "SkillUseMessage.h"
 #include "SpSnippetMessage.h"
 #include "SpellCastMessage.h"
@@ -126,4 +131,9 @@
   REGISTER_MESSAGE(PropOwnerMessage)                                          \
   REGISTER_MESSAGE(PlacedRequestMessage)                                      \
   REGISTER_MESSAGE(PlacedReportMessage)                                       \
-  REGISTER_MESSAGE(SkillUseMessage)
+  REGISTER_MESSAGE(SkillUseMessage)                                           \
+  REGISTER_MESSAGE(LockReportMessage)                                         \
+  REGISTER_MESSAGE(LockPromptMessage)                                         \
+  REGISTER_MESSAGE(SetWeatherMessage)                                         \
+  REGISTER_MESSAGE(PerkPickMessage)                                           \
+  REGISTER_MESSAGE(PerkStateMessage)

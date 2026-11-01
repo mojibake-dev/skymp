@@ -61,6 +61,11 @@ import { PropClaimMessage } from "./propClaimMessage";
 import { PropOwnerMessage } from "./propOwnerMessage";
 import { PlacedRequestMessage } from "./placedRequestMessage";
 import { PlacedReportMessage } from "./placedReportMessage";
+import { LockReportMessage } from "./lockReportMessage";
+import { LockPromptMessage } from "./lockPromptMessage";
+import { SetWeatherMessage } from "./setWeatherMessage";
+import { PerkPickMessage } from "./perkPickMessage";
+import { PerkStateMessage } from "./perkStateMessage";
 import { SkillUseMessage } from "./skillUseMessage";
 
 export type AnyMessage = ActivateMessage
@@ -119,6 +124,11 @@ export type AnyMessage = ActivateMessage
     | PropOwnerMessage
     | PlacedRequestMessage
     | PlacedReportMessage
+    | LockReportMessage
+    | LockPromptMessage
+    | SetWeatherMessage
+    | PerkPickMessage
+    | PerkStateMessage
     | SkillUseMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage

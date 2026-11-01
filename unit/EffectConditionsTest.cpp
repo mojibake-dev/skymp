@@ -130,8 +130,13 @@ TEST_CASE("Firebolt's perk rider is refused on another player while its fire "
       // M5 (the server holds no perks), so the rider's HasPerk == 1 row
       // fails: refused by its condition, not applied
       REQUIRE_FALSE(mgef.conditions.empty());
+      // the refusal names the rows that fail on their own: the HasPerk row,
+      // wanted 1, got 0 (the server holds no perks)
+      std::string rows;
       REQUIRE_FALSE(MpActor::EffectConditionsHold(
-        &p.worldState, effect, kFirebolt, *target, *caster));
+        &p.worldState, effect, kFirebolt, *target, *caster, false, &rows));
+      REQUIRE(rows.find("HasPerk(") != std::string::npos);
+      REQUIRE(rows.find("== 1: got 0") != std::string::npos);
     } else if (mgef.data.effectType == espm::MGEF::EffectType::ValueMod &&
                mgef.data.primaryAV == espm::ActorValue::Health) {
       ++damages;

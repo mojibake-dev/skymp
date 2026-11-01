@@ -23,6 +23,9 @@ import { PlayerGlobalsService } from "./services/services/playerGlobalsService";
 import { QuestStageService } from "./services/services/questStageService";
 import { PropService } from "./services/services/propService";
 import { SpellPlacedService } from "./services/services/spellPlacedService";
+import { LockService } from "./services/services/lockService";
+import { WeatherService } from "./services/services/weatherService";
+import { PerkService } from "./services/services/perkService";
 import { SkillUseService } from "./services/services/skillUseService";
 import { ArrowSyncService } from "./services/services/arrowSyncService";
 import { SpVersionCheckService } from "./services/services/spVersionCheckService";
@@ -109,6 +112,9 @@ const main = () => {
       new QuestStageService(sp, controller),
       new PropService(sp, controller),
       new SpellPlacedService(sp, controller),
+      new LockService(sp, controller),
+      new WeatherService(sp, controller),
+      new PerkService(sp, controller),
       new SkillUseService(sp, controller),
       new ArrowSyncService(sp, controller),
       new SpVersionCheckService(sp, controller),

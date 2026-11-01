@@ -16,6 +16,7 @@
 #include "MathUtils.h"
 #include "MpChangeForms.h"
 #include "MsgType.h"
+#include "PerkStateMessage.h"
 #include "ServerState.h"
 #include "SpSnippet.h"
 #include "SpSnippetFunctionGen.h"
@@ -1651,6 +1652,72 @@ void MpActor::SendActorValueRecord()
   for (const auto& [skill, count] : record->legendary) {
     message.legendary.push_back(ActorValuesMessage::Legendary{ skill, count });
   }
+  SendToUser(message, true);
+}
+
+bool MpActor::HasPerk(uint32_t perk) const
+{
+  const auto record = GetActorValueRecord();
+  return record &&
+    std::binary_search(record->perks.begin(), record->perks.end(), perk);
+}
+
+bool MpActor::AddPerkByServer(uint32_t perk)
+{
+  if (perk == 0 || HasPerk(perk)) {
+    return false;
+  }
+  auto record = GetActorValueRecord().value_or(ActorValueRecord{});
+  if (record.perks.size() >= skymp::rules::perks_max()) {
+    spdlog::warn("[verb:perks] E_PERK_FULL: {:x} holds {} perk(s), the "
+                 "wire's most; {:x} not added",
+                 GetFormId(), record.perks.size(), perk);
+    return false;
+  }
+  record.perks.insert(
+    std::upper_bound(record.perks.begin(), record.perks.end(), perk), perk);
+  SetActorValueRecord(record);
+  return true;
+}
+
+bool MpActor::RemovePerkByServer(uint32_t perk)
+{
+  auto record = GetActorValueRecord();
+  if (!record) {
+    return false;
+  }
+  const auto range =
+    std::equal_range(record->perks.begin(), record->perks.end(), perk);
+  if (range.first == range.second) {
+    return false;
+  }
+  record->perks.erase(range.first, range.second);
+  SetActorValueRecord(*record);
+  return true;
+}
+
+uint16_t MpActor::PerkPoints() const
+{
+  const auto record = GetActorValueRecord();
+  if (!record) {
+    return 0;
+  }
+  return skymp::rules::perk_points(record->level, record->perks.size());
+}
+
+void MpActor::SendPerkState()
+{
+  // the switch off: no state leaves the server (the console's SetLevel or a
+  // gamemode's Actor.AddPerk would otherwise strip a seat's own perks)
+  if (auto* worldState = GetParent();
+      !worldState || !worldState->perksEnabled) {
+    return;
+  }
+  PerkStateMessage message;
+  if (const auto record = GetActorValueRecord()) {
+    message.perks = record->perks;
+  }
+  message.points = PerkPoints();
   SendToUser(message, true);
 }
 
@@ -3723,7 +3790,8 @@ bool MpActor::IsConditionGated(WorldState* worldState,
 bool MpActor::EffectConditionsHold(WorldState* worldState,
                                    const espm::Effects::Effect& effect,
                                    uint32_t source, const MpActor& victim,
-                                   const MpActor& caster, bool dualCast)
+                                   const MpActor& caster, bool dualCast,
+                                   std::string* failedRow)
 {
   if (!worldState) {
     return false;
@@ -3810,10 +3878,20 @@ bool MpActor::EffectConditionsHold(WorldState* worldState,
     ConditionsEvaluatorCaller::kMagicEffect, conditions, victim, caster,
     [&](bool result, std::vector<std::string>&) { holds = result; }, context);
   if (!holds) {
+    // the rows that fail, named (the pile's "refusal line naming its row",
+    // 2026-10-31): every row false on its own, in the record's order; the
+    // line's first clause is kept as it was (tests and readers count it)
+    const auto rows = ConditionsEvaluator::FailingRows(map, conditions, victim,
+                                                       caster, context);
+    if (failedRow) {
+      *failedRow = rows;
+    }
     spdlog::info("MpActor::EffectConditionsHold - effect {:x} of {:x} by {:x} "
-                 "at {:x}: its conditions fail; not applied (thuum ADR-039)",
+                 "at {:x}: its conditions fail; not applied (thuum ADR-039); "
+                 "failing: {}",
                  effect.effectId, source, caster.GetFormId(),
-                 victim.GetFormId());
+                 victim.GetFormId(),
+                 rows.empty() ? "no row on its own (a group)" : rows);
   }
   return holds;
 }

@@ -2736,6 +2736,13 @@ ActorValueRecord ToRecord(const skymp::rules::AvSnapshot& snapshot)
   return out;
 }
 
+// the eighteen skills' actor values (CommonLibSSE-NG include/RE/A/
+// ActorValues.h: kOneHanded 6 to kEnchanting 23), the ones leveling owns
+bool IsSkillActorValue(uint8_t av)
+{
+  return av >= 6 && av <= 23;
+}
+
 std::vector<skymp::rules::AvBase> ToAvBases(
   const std::vector<std::pair<uint8_t, float>>& values)
 {
@@ -2799,7 +2806,36 @@ void ActionListener::OnActorValues(const RawMessageData& rawMsgData,
   }
   const bool holding = !stillHeld.empty();
   actor->SetHeldActorValues(std::move(stillHeld));
-  const bool changed = actor->SetActorValueRecord(ToRecord(merged.record));
+  auto next = ToRecord(merged.record);
+  if (record) {
+    // thuum docs/verbs/perks.md: the perks are the server's (R0) and ride no
+    // report, so the merged record carries the ones held
+    next.perks = record->perks;
+    // thuum docs/verbs/leveling.md: with leveling on, the skills, the
+    // experience and the level are the server's (R0); the report's numbers
+    // for them are its echo at best and stay out of the record, so a pick's
+    // conditions (perks.md) read what the server wrote. The bases of the
+    // skills' actor values go the same way: the leveling path mirrors a
+    // skill's level into them, and a pick reads the bases first.
+    if (partOne.LevelingEnabled()) {
+      next.skills = record->skills;
+      next.xp = record->xp;
+      next.threshold = record->threshold;
+      next.level = record->level;
+      next.legendary = record->legendary;
+      next.bases.erase(std::remove_if(next.bases.begin(), next.bases.end(),
+                                      [](const std::pair<uint8_t, float>& b) {
+                                        return IsSkillActorValue(b.first);
+                                      }),
+                       next.bases.end());
+      for (const auto& base : record->bases) {
+        if (IsSkillActorValue(base.first)) {
+          next.bases.push_back(base);
+        }
+      }
+    }
+  }
+  const bool changed = actor->SetActorValueRecord(std::move(next));
   spdlog::info("ActorValues: user {} actor {:x} recorded {} bases, level "
                "{}{}",
                rawMsgData.userId, actor->GetFormId(), msg.bases.size(),
@@ -3212,6 +3248,126 @@ void ActionListener::OnSkillUse(const RawMessageData& rawMsgData,
   }
   for (const auto& use : msg.uses) {
     partOne.ApplySkillUse(*actor, use.skill, use.amount);
+  }
+}
+
+namespace {
+// the Lockpick, Skyrim.esm MISC 0xa (lab/esm.py, 2026-10-31)
+constexpr uint32_t kLockpick = 0xa;
+
+uint64_t MonotonicMs()
+{
+  return static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch())
+      .count());
+}
+}
+
+// thuum docs/verbs/perks.md (M5): a player's perk pick
+void ActionListener::OnPerkPick(const RawMessageData& rawMsgData,
+                                const PerkPickMessage& msg)
+{
+  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!actor) {
+    return;
+  }
+  if (!partOne.PerksEnabled()) {
+    spdlog::debug("[verb:perks] {:x} picks {:x} with perks off; dropped",
+                  actor->GetFormId(), msg.perk);
+    return;
+  }
+  partOne.PickPerk(*actor, msg.perk);
+}
+
+// thuum docs/verbs/locks.md (M4): a player's report on a lock. The rule
+// (wire-rules locks) judges it against the record's lock, the activation
+// reach (the rule an open passes), the Lockpicks the player holds and the
+// gap since its last report on this lock; an accepted pick unlocks the
+// record (the `lock` property to every listener), accepted broken picks
+// leave the record's inventory, a refusal is logged by name.
+void ActionListener::OnLockReport(const RawMessageData& rawMsgData,
+                                  const LockReportMessage& msg)
+{
+  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!actor) {
+    return;
+  }
+  const auto form = partOne.worldState.LookupFormByIdNoLoad(msg.refr);
+  MpObjectReference* ref = form ? form->AsObjectReference() : nullptr;
+  if (!ref) {
+    spdlog::warn("[verb:locks] E_LOCK_NO_REF: {:x} reports on {:x}, no such "
+                 "reference",
+                 actor->GetFormId(), msg.refr);
+    return;
+  }
+  const auto lock = ref->GetLock();
+  if (!lock) {
+    spdlog::info("[verb:locks] E_LOCK_OPEN: {:x} reports on {:x}, which has "
+                 "no lock",
+                 actor->GetFormId(), msg.refr);
+    return;
+  }
+  bool withinReach = actor->GetCellOrWorld() == ref->GetCellOrWorld();
+  if (withinReach) {
+    const float distance = (actor->GetPos() - ref->GetPos()).Length();
+    withinReach = skymp::rules::activation_within_reach(
+                    distance, ActivationTargetSize(*ref))
+                    .allowed;
+  }
+  const uint32_t picksHeld = actor->GetInventory().GetItemCount(kLockpick);
+  const auto key = std::make_pair(actor->GetFormId(), ref->GetFormId());
+  const uint64_t now = MonotonicMs();
+  uint64_t sinceLast = UINT64_MAX;
+  if (const auto it = lastLockReportMs.find(key);
+      it != lastLockReportMs.end()) {
+    sinceLast = now - it->second;
+  }
+  skymp::rules::LockStateRow row{};
+  row.level = lock->level;
+  row.key = lock->key;
+  row.locked = lock->locked;
+  row.broken = lock->broken;
+  const auto verdict = skymp::rules::lock_report(
+    row, static_cast<uint8_t>(std::min<uint32_t>(msg.outcome, 255)),
+    static_cast<uint8_t>(std::min<uint32_t>(msg.broken, 255)), withinReach,
+    picksHeld, sinceLast);
+  if (!verdict.accepted) {
+    static const char* const kWhy[] = { "accepted",       "E_LOCK_OPEN",
+                                        "E_LOCK_REACH",   "E_LOCK_KEY",
+                                        "E_LOCK_NO_PICK", "E_LOCK_RANGE",
+                                        "E_LOCK_RATE" };
+    spdlog::warn("[verb:locks] {}: {:x} reports outcome {} ({} broken) on "
+                 "{:x} (level {}, {} picks held, reach {}); refused",
+                 verdict.why < 7 ? kWhy[verdict.why] : "E_LOCK_UNKNOWN",
+                 actor->GetFormId(), msg.outcome, msg.broken, ref->GetFormId(),
+                 lock->level, picksHeld, withinReach);
+    return;
+  }
+  lastLockReportMs[key] = now;
+  MpChangeFormREFR::Lock after;
+  after.level = verdict.state.level;
+  after.key = verdict.state.key;
+  after.locked = verdict.state.locked;
+  after.broken = verdict.state.broken;
+  switch (verdict.change) {
+    case 1:
+      spdlog::info("[verb:locks] {:x} picks {:x} open (level {})",
+                   actor->GetFormId(), ref->GetFormId(), lock->level);
+      ref->SetLock(after);
+      break;
+    case 2:
+      spdlog::info("[verb:locks] {:x} breaks {} pick(s) on {:x} (level {}, "
+                   "{} held)",
+                   actor->GetFormId(), verdict.picks, ref->GetFormId(),
+                   lock->level, picksHeld);
+      actor->RemoveItem(kLockpick, verdict.picks, nullptr);
+      ref->SetLock(after);
+      break;
+    default:
+      spdlog::info("[verb:locks] {:x} leaves {:x} locked", actor->GetFormId(),
+                   ref->GetFormId());
+      break;
   }
 }
 

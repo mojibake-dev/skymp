@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, effects, favorites, forms, headshots, hosted_state, hostility, leveling, magic, markers, melee, movement, placements, player_globals, props, quest_stages, racemenu, ranged, rest, scripted_effects, shouts, stagger, teleports};
+use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, placements, player_globals, props, quest_stages, racemenu, ranged, rest, perks, scripted_effects, shouts, stagger, teleports, weather};
 
 #[cxx::bridge(namespace = "skymp::rules")]
 mod ffi {
@@ -522,6 +522,50 @@ mod ffi {
         distance: f32,
         /// The reported pose's height above or below the caster.
         dz: f32,
+    }
+
+    /// A reference's lock as the record holds it (thuum docs/verbs/locks.md):
+    /// the XLOC level byte, the key's base form id (0 none), locked now, picks
+    /// broken on it.
+    #[derive(Debug, Clone, PartialEq)]
+    struct LockStateRow {
+        /// The level byte: 0 or 1 Novice, 25, 50, 75, 100, 255 requires key.
+        level: u8,
+        /// The key's base form id, 0 for none.
+        key: u32,
+        /// Locked now.
+        locked: bool,
+        /// Picks broken on it so far.
+        broken: u32,
+    }
+
+    /// What an activation of a locked reference met (thuum docs/verbs/
+    /// locks.md): `verdict` 0 open (not locked), 1 opened with the key the
+    /// player holds, 2 locked (the seat's menu is the path); the state after.
+    #[derive(Debug, Clone, PartialEq)]
+    struct LockActivationVerdict {
+        /// 0 open, 1 opened with the key, 2 locked.
+        verdict: u8,
+        /// The lock after.
+        state: LockStateRow,
+    }
+
+    /// A lock report judged (thuum docs/verbs/locks.md): accepted, or `why` 1
+    /// not locked, 2 out of reach, 3 a key lock, 4 no pick held, 5 a broken
+    /// count out of range, 6 inside the gap; `change` 0 nothing, 1 unlocked,
+    /// 2 picks broken (`picks` of them leave the record); the state after.
+    #[derive(Debug, Clone, PartialEq)]
+    struct LockReportVerdict {
+        /// Accepted.
+        accepted: bool,
+        /// Why not, as above; 0 when accepted.
+        why: u8,
+        /// 0 nothing, 1 unlocked, 2 picks broken.
+        change: u8,
+        /// Lockpicks to remove from the record for change 2.
+        picks: u8,
+        /// The lock after.
+        state: LockStateRow,
     }
 
     /// A skill's standing as the record holds it (thuum docs/verbs/
@@ -1056,6 +1100,38 @@ mod ffi {
         sneak: bool,
         /// Bash kept (thuum docs/verbs/blocking.md).
         bash: bool,
+    }
+
+    /// The judgement of a perk pick (thuum docs/verbs/perks.md): accepted, or
+    /// refused with its reason code and a detail (the perk a prerequisite
+    /// names, the actor value a requirement names, the function the rule
+    /// cannot judge; 0 otherwise).
+    #[derive(Debug)]
+    struct PerkVerdict {
+        /// Accepted.
+        accepted: bool,
+        /// The reason code when refused (E_PERK_...), empty when accepted.
+        code: String,
+        /// The code's detail.
+        detail: u32,
+    }
+
+    /// A weather word for one player (thuum docs/verbs/weather.md): the
+    /// weather of the place it is in, or a release (`weather` 0) in an
+    /// interior or a worldspace without a pool; `some` false when nothing is
+    /// owed.
+    #[derive(Debug)]
+    struct WeatherWord {
+        /// Whether a word is owed.
+        some: bool,
+        /// The worldspace, or the interior cell the release is for.
+        place: u32,
+        /// The WTHR form id; 0 releases.
+        weather: u32,
+        /// The slot it stands for.
+        slot: u64,
+        /// Blend (true) or cut (false).
+        transition: bool,
     }
 
     /// The game clock at one instant, as the engine's six time globals hold
@@ -1662,6 +1738,14 @@ mod ffi {
         fn apply_use(self: &LevelingTable, skills: &[LevelingSkill], character: LevelingCharacter, skill_av: u8, base: f32) -> LevelingOutcome;
         /// The character experience the step from `level` to the next needs.
         fn leveling_character_threshold(level: u16) -> f32;
+
+        /// An activation of a reference whose lock is `state` by a player who holds its key or not
+        /// (thuum docs/verbs/locks.md).
+        fn lock_activation(state: &LockStateRow, has_key: bool) -> LockActivationVerdict;
+        /// A player's report on a lock (`outcome` 0 picked, 1 broken `broken` picks, 2 left), judged
+        /// against the state, the player's reach, the Lockpicks it holds and the gap since its last
+        /// report on this lock (u64::MAX for none).
+        fn lock_report(state: &LockStateRow, outcome: u8, broken: u8, within_reach: bool, picks_held: u32, since_last_ms: u64) -> LockReportVerdict;
         /// Sets standing in the world.
         fn live_sets(self: &Placements) -> usize;
 
@@ -1748,6 +1832,52 @@ mod ffi {
         fn resync_due(self: &mut GameClock, user: u32, now_ms: i64) -> bool;
         /// A player left.
         fn forget(self: &mut GameClock, user: u32);
+
+        /// thuum docs/verbs/weather.md (M4): the server's weather per
+        /// worldspace and who has heard it (wire-rules weather).
+        type WeatherSync;
+        /// From server-settings.json's `weather.changeGameMinutes` (1 to
+        /// 1440) and `weather.seed`; the error names the bad value.
+        fn new_weather_sync(change_game_minutes: u32, seed: u64) -> Result<Box<WeatherSync>>;
+        /// A worldspace's pool, `weathers[i]` with `chances[i]`: from the
+        /// game files (`pinned` false, joined with the worldspace's) or the
+        /// settings (`pinned` true, outranking the files'). The pool's size
+        /// after; 0 when refused (a length mismatch, no weather with a
+        /// chance above 0, more than 64).
+        fn set_pool(self: &mut WeatherSync, world: u32, weathers: &[u32], chances: &[u32], pinned: bool) -> usize;
+        /// The word `user` is owed standing in `place` (a worldspace when
+        /// `is_world`) at `game_minutes` of the clock; a returned word
+        /// counts as heard.
+        fn due(self: &mut WeatherSync, user: u32, place: u32, is_world: bool, game_minutes: f64) -> WeatherWord;
+        /// A player left.
+        fn forget(self: &mut WeatherSync, user: u32);
+        /// The size of the pool in force for `world`, 0 for none.
+        fn pool_len(self: &WeatherSync, world: u32) -> usize;
+
+        /// thuum docs/verbs/perks.md (M5): every perk of the load order and
+        /// its own conditions (wire-rules perks).
+        type PerkTable;
+        /// An empty table.
+        fn new_perk_table() -> Box<PerkTable>;
+        /// A perk with its DATA bytes; a repeated id replaces the entry.
+        fn add_perk(self: &mut PerkTable, perk: u32, playable: bool, hidden: bool);
+        /// One of `perk`'s own conditions from its CTDA: the function id, the
+        /// first byte, the comparison value, the first parameter (a form id
+        /// made global by the caller for HasPerk, an actor value otherwise)
+        /// and the run-on type; false for a perk not added.
+        fn add_condition(self: &mut PerkTable, perk: u32, function: u16, byte0: u8, value: f32, param1: u32, run_on: u32) -> bool;
+        /// How many perks the table knows.
+        fn perk_count(self: &PerkTable) -> usize;
+        /// Whether the table knows `perk`.
+        fn knows(self: &PerkTable, perk: u32) -> bool;
+        /// The judgement of `perk` for a player at `level` holding `perks`,
+        /// whose actor values the conditions may read are `avs[i]` at
+        /// `values[i]` (a skill's level, a base otherwise).
+        fn pick(self: &PerkTable, level: u16, perks: &[u32], avs: &[u8], values: &[f32], perk: u32) -> PerkVerdict;
+        /// The perk points left: one a level past the first, less the perks held.
+        fn perk_points(level: u16, held: usize) -> u16;
+        /// The most perks a record holds (the wire's cap on PerkState).
+        fn perks_max() -> usize;
 
         /// thuum docs/verbs/cell-host.md (ADR-035): which player's game runs
         /// each cell's NPCs, the grace and the epochs.
@@ -1860,7 +1990,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, TeleportLook, Verdict, VoiceFacts, VoiceRefusal};
+pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -2493,6 +2623,59 @@ fn quest_stages_merge(record: &[QuestStageEntry], done: &QuestStageEntry) -> Vec
 
 fn quest_record_full(record: &[QuestStageEntry]) -> bool {
     quest_stages::full(record.len())
+}
+
+fn lock_state_of(row: &LockStateRow) -> locks::LockState {
+    locks::LockState { level: row.level, key: row.key, locked: row.locked, broken: row.broken }
+}
+
+fn lock_row_of(state: locks::LockState) -> LockStateRow {
+    LockStateRow { level: state.level, key: state.key, locked: state.locked, broken: state.broken }
+}
+
+fn lock_activation(state: &LockStateRow, has_key: bool) -> LockActivationVerdict {
+    let (verdict, after) = locks::activation(lock_state_of(state), has_key);
+    LockActivationVerdict {
+        verdict: match verdict {
+            locks::Activation::Open => 0,
+            locks::Activation::OpenedWithKey => 1,
+            locks::Activation::Locked => 2,
+        },
+        state: lock_row_of(after),
+    }
+}
+
+fn lock_report(state: &LockStateRow, outcome: u8, broken: u8, within_reach: bool, picks_held: u32, since_last_ms: u64) -> LockReportVerdict {
+    let outcome = match outcome {
+        0 => locks::Outcome::Picked,
+        1 => locks::Outcome::Broken(broken),
+        _ => locks::Outcome::Left,
+    };
+    let since = (since_last_ms != u64::MAX).then_some(since_last_ms);
+    match locks::report(lock_state_of(state), outcome, within_reach, picks_held, since) {
+        Ok((change, after)) => {
+            let (change, picks) = match change {
+                locks::Change::Nothing => (0, 0),
+                locks::Change::Unlocked => (1, 0),
+                locks::Change::PicksBroken(n) => (2, n),
+            };
+            LockReportVerdict { accepted: true, why: 0, change, picks, state: lock_row_of(after) }
+        }
+        Err(why) => LockReportVerdict {
+            accepted: false,
+            why: match why {
+                locks::Refusal::Open => 1,
+                locks::Refusal::Reach => 2,
+                locks::Refusal::Key => 3,
+                locks::Refusal::NoPick => 4,
+                locks::Refusal::Range => 5,
+                locks::Refusal::Rate => 6,
+            },
+            change: 0,
+            picks: 0,
+            state: state.clone(),
+        },
+    }
 }
 
 /// The eighteen skills' constants (wire-rules leveling).
@@ -3356,6 +3539,84 @@ impl GameClock {
     }
 }
 
+/// Every perk's conditions (wire-rules perks).
+#[derive(Debug, Default)]
+pub struct PerkTable(perks::Table);
+
+fn new_perk_table() -> Box<PerkTable> {
+    Box::default()
+}
+
+fn perk_points(level: u16, held: usize) -> u16 {
+    perks::points(level, held)
+}
+
+fn perks_max() -> usize {
+    perks::MAX_PERKS
+}
+
+impl PerkTable {
+    fn add_perk(&mut self, perk: u32, playable: bool, hidden: bool) {
+        self.0.add_perk(perk, playable, hidden);
+    }
+
+    fn add_condition(&mut self, perk: u32, function: u16, byte0: u8, value: f32, param1: u32, run_on: u32) -> bool {
+        // the OR flag joins this condition to the next (wire-rules perks FLAG_OR)
+        self.0.add_clause(perk, perks::Condition::from_ctda(function, byte0, value, param1, run_on), byte0 & perks::FLAG_OR != 0)
+    }
+
+    fn perk_count(&self) -> usize {
+        self.0.len()
+    }
+
+    fn knows(&self, perk: u32) -> bool {
+        self.0.get(perk).is_some()
+    }
+
+    fn pick(&self, level: u16, held: &[u32], avs: &[u8], values: &[f32], perk: u32) -> PerkVerdict {
+        let pairs: Vec<(u8, f32)> = avs.iter().copied().zip(values.iter().copied()).collect();
+        let record = perks::Record { level, perks: held, values: &pairs };
+        match perks::pick(&self.0, &record, perk) {
+            Ok(()) => PerkVerdict { accepted: true, code: String::new(), detail: 0 },
+            Err(refusal) => PerkVerdict { accepted: false, code: refusal.code().to_owned(), detail: refusal.detail() },
+        }
+    }
+}
+
+/// The server's weather (wire-rules weather).
+#[derive(Debug)]
+pub struct WeatherSync(weather::Weather);
+
+fn new_weather_sync(change_game_minutes: u32, seed: u64) -> Result<Box<WeatherSync>, weather::SettingsError> {
+    weather::Weather::new(change_game_minutes, seed).map(|w| Box::new(WeatherSync(w)))
+}
+
+impl WeatherSync {
+    fn set_pool(&mut self, world: u32, weathers: &[u32], chances: &[u32], pinned: bool) -> usize {
+        if weathers.len() != chances.len() {
+            return 0;
+        }
+        let entries: Vec<weather::Entry> =
+            weathers.iter().zip(chances).map(|(&weather, &chance)| weather::Entry { weather, chance }).collect();
+        self.0.set_pool(world, &entries, pinned).unwrap_or(0)
+    }
+
+    fn due(&mut self, user: u32, place: u32, is_world: bool, game_minutes: f64) -> WeatherWord {
+        match self.0.due(user, place, is_world, game_minutes) {
+            Some(w) => WeatherWord { some: true, place: w.place, weather: w.weather, slot: w.slot, transition: w.transition },
+            None => WeatherWord { some: false, place: 0, weather: 0, slot: 0, transition: false },
+        }
+    }
+
+    fn forget(&mut self, user: u32) {
+        self.0.forget(user);
+    }
+
+    fn pool_len(&self, world: u32) -> usize {
+        self.0.pool(world).map_or(0, <[weather::Entry]>::len)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3675,6 +3936,30 @@ mod tests {
         assert_eq!(t.apply_use(&skills, character.clone(), 5, 10.0).why, 1);
         assert_eq!(t.apply_use(&skills, character.clone(), 6, f32::NAN).why, 2);
         assert_eq!(t.apply_use(&skills, character.clone(), 6, 0.0).why, 3);
+    }
+
+    #[test]
+    fn the_bridge_judges_a_lock() {
+        let novice = LockStateRow { level: 0, key: 0, locked: true, broken: 0 };
+        let keyed = LockStateRow { level: 255, key: 0x1234, locked: true, broken: 0 };
+        assert_eq!(lock_activation(&novice, false).verdict, 2);
+        assert_eq!(lock_activation(&keyed, false).verdict, 2);
+        let opened = lock_activation(&keyed, true);
+        assert_eq!(opened.verdict, 1);
+        assert!(!opened.state.locked);
+        assert_eq!(lock_activation(&opened.state, false).verdict, 0);
+        let picked = lock_report(&novice, 0, 0, true, 2, u64::MAX);
+        assert!(picked.accepted && picked.change == 1 && !picked.state.locked, "{picked:?}");
+        assert_eq!(lock_report(&picked.state, 0, 0, true, 2, u64::MAX).why, 1);
+        assert_eq!(lock_report(&novice, 0, 0, false, 2, u64::MAX).why, 2);
+        assert_eq!(lock_report(&keyed, 0, 0, true, 2, u64::MAX).why, 3);
+        assert_eq!(lock_report(&novice, 0, 0, true, 0, u64::MAX).why, 4);
+        assert_eq!(lock_report(&novice, 1, 0, true, 2, u64::MAX).why, 5);
+        assert_eq!(lock_report(&novice, 0, 0, true, 2, 100).why, 6);
+        let broke = lock_report(&novice, 1, 5, true, 2, u64::MAX);
+        assert!(broke.accepted && broke.change == 2 && broke.picks == 2 && broke.state.locked && broke.state.broken == 2, "{broke:?}");
+        let left = lock_report(&novice, 2, 0, true, 0, u64::MAX);
+        assert!(left.accepted && left.change == 0 && left.state == novice, "{left:?}");
     }
 
     #[test]

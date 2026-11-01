@@ -266,6 +266,15 @@ TEST_CASE("The change form keeps a player's actor values, and older records "
   REQUIRE(MpChangeForm::JsonToChangeForm(element).actorValueRecord ==
           changeForm.actorValueRecord);
 
+  // the perks held (thuum docs/verbs/perks.md) read back sorted and unique,
+  // as HasPerk's binary search wants them
+  changeForm.actorValueRecord->perks = { 0x79343, 0xbabe4, 0x52d50, 0x79343 };
+  const std::string withPerks = MpChangeForm::ToJson(changeForm).dump();
+  auto perksElement = parser.parse(withPerks).value();
+  REQUIRE(
+    MpChangeForm::JsonToChangeForm(perksElement).actorValueRecord->perks ==
+    std::vector<uint32_t>{ 0x52d50, 0x79343, 0xbabe4 });
+
   const std::string older = MpChangeForm::ToJson(MpChangeForm()).dump();
   REQUIRE(older.find("actorValueRecord") == std::string::npos);
   auto olderElement = parser.parse(older).value();

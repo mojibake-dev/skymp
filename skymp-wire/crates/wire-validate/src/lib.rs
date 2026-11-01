@@ -179,6 +179,12 @@ pub struct ClientGuard {
     /// leveling.md): one a second by design; a burst of 8 then 2 a second
     /// (UNMEASURED).
     pub skill_use_budget: TokenBucket,
+    /// Budget for a player's lock reports (LockReport, thuum docs/verbs/
+    /// locks.md): one per attempt; a burst of 8 then 2 a second (UNMEASURED).
+    pub lock_report_budget: TokenBucket,
+    /// Budget for a player's perk picks (PerkPick, thuum docs/verbs/perks.md):
+    /// one per pick; a burst of 8 then 2 a second (UNMEASURED).
+    pub perk_pick_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -218,6 +224,8 @@ impl Default for ClientGuard {
             prop_claim_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             placed_report_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             skill_use_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
+            lock_report_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
+            perk_pick_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
         }
     }
 }
@@ -678,6 +686,54 @@ fn check_placed_report(m: &skymp::PlacedReport) -> Result<(), Reject> {
     Ok(())
 }
 
+/// A player's lock report (docs/verbs/locks.md): a reference (never 0), an
+/// outcome the contract names (0 picked, 1 broken, 2 left) and at most 8
+/// picks broken. The rest (locked, the reach, the tier, the picks held, the
+/// gap) is the server's rule (wire-rules locks).
+fn check_lock_report(m: &skymp::LockReport) -> Result<(), Reject> {
+    if m.refr == 0 || m.outcome > 2 || m.broken > 8 {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
+/// The server's lock prompt (docs/verbs/locks.md): a reference, never 0; the
+/// transport refuses it from a client by direction.
+fn check_lock_prompt(m: &skymp::LockPrompt) -> Result<(), Reject> {
+    if m.refr == 0 {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
+/// A player's perk pick (docs/verbs/perks.md): a perk, never 0. The rest (the
+/// record's conditions, the points) is the server's rule (wire-rules perks).
+fn check_perk_pick(m: &skymp::PerkPick) -> Result<(), Reject> {
+    if m.perk == 0 {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
+/// The server's perk state (docs/verbs/perks.md): no perk of 0 in the set;
+/// the transport refuses it from a client by direction.
+fn check_perk_state(m: &skymp::PerkState) -> Result<(), Reject> {
+    if m.perks.contains(&0) {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
+/// The server's weather word (docs/verbs/weather.md): a place, never 0; the
+/// weather may be 0 (a release); the transport refuses it from a client by
+/// direction.
+fn check_set_weather(m: &skymp::SetWeather) -> Result<(), Reject> {
+    if m.place == 0 {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
 /// The most one skill use's base amount may carry: wire-rules leveling's
 /// MAX_BASE_PER_USE (UNMEASURED; a Daedric craft is in the thousands).
 const SKILL_USE_MAX_AMOUNT: f32 = 100_000.0;
@@ -844,6 +900,8 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::PropClaim(_) => take(&mut guard.prop_claim_budget, now_ms),
         Message::PlacedReport(_) => take(&mut guard.placed_report_budget, now_ms),
         Message::SkillUse(_) => take(&mut guard.skill_use_budget, now_ms),
+        Message::LockReport(_) => take(&mut guard.lock_report_budget, now_ms),
+        Message::PerkPick(_) => take(&mut guard.perk_pick_budget, now_ms),
         _ => Ok(()),
     }
 }
@@ -1021,6 +1079,11 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::PlacedRequest(m) => check_placed_request(m),
         Message::PlacedReport(m) => check_placed_report(m),
         Message::SkillUse(m) => check_skill_use(m),
+        Message::LockReport(m) => check_lock_report(m),
+        Message::LockPrompt(m) => check_lock_prompt(m),
+        Message::SetWeather(m) => check_set_weather(m),
+        Message::PerkPick(m) => check_perk_pick(m),
+        Message::PerkState(m) => check_perk_state(m),
         Message::CreateActor(m) => check_create_actor(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
@@ -2188,6 +2251,55 @@ mod tests {
     }
 
     #[test]
+    fn lock_reports_name_a_reference_an_outcome_and_a_bounded_break_count_and_are_rate_limited() {
+        use wire_schema::skymp::{LockPrompt, LockReport};
+        let report = |refr, outcome, broken| Message::LockReport(LockReport { refr, outcome, broken, ..Default::default() });
+        assert_eq!(validate_server(&report(0x371e9, 0, 0)), Ok(()));
+        assert_eq!(validate_server(&report(0x371e9, 1, 3)), Ok(()));
+        assert_eq!(validate_server(&report(0x371e9, 2, 0)), Ok(()));
+        assert_eq!(validate_server(&report(0, 0, 0)), Err(Reject::Range));
+        assert_eq!(validate_server(&report(0x371e9, 3, 0)), Err(Reject::Range));
+        assert_eq!(validate_server(&report(0x371e9, 1, 9)), Err(Reject::Range));
+        let mut guard = ClientGuard::default();
+        for _ in 0..8 {
+            assert_eq!(validate(&report(0x371e9, 2, 0), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&report(0x371e9, 2, 0), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&report(0x371e9, 2, 0), &mut guard, 1_500), Ok(()));
+        let prompt = |refr| Message::LockPrompt(LockPrompt { refr, ..Default::default() });
+        assert_eq!(validate_server(&prompt(0x371e9)), Ok(()));
+        assert_eq!(validate_server(&prompt(0)), Err(Reject::Range));
+    }
+
+    #[test]
+    fn perk_picks_name_a_perk_and_are_rate_limited_and_the_state_holds_no_zero() {
+        use wire_schema::skymp::{PerkPick, PerkState};
+        let pick = |perk| Message::PerkPick(PerkPick { perk, ..Default::default() });
+        assert_eq!(validate_server(&pick(0xbabe4)), Ok(()));
+        assert_eq!(validate_server(&pick(0)), Err(Reject::Range));
+        let mut guard = ClientGuard::default();
+        for _ in 0..8 {
+            assert_eq!(validate(&pick(0xbabe4), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&pick(0xbabe4), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&pick(0xbabe4), &mut guard, 1_500), Ok(()));
+        let state = |perks: &[u32], points| Message::PerkState(PerkState { perks: perks.to_vec().try_into().unwrap_or_default(), points, ..Default::default() });
+        assert_eq!(validate_server(&state(&[], 0)), Ok(()));
+        assert_eq!(validate_server(&state(&[0xbabe4, 0x79343], 1)), Ok(()));
+        assert_eq!(validate_server(&state(&[0xbabe4, 0], 1)), Err(Reject::Range));
+    }
+
+    #[test]
+    fn weather_words_name_a_place_and_may_release() {
+        use wire_schema::skymp::SetWeather;
+        let word = |place, weather, transition| Message::SetWeather(SetWeather { place, weather, transition, ..Default::default() });
+        assert_eq!(validate_server(&word(0x3c, 0x81a, false)), Ok(()));
+        assert_eq!(validate_server(&word(0x3c, 0x12f89, true)), Ok(()));
+        assert_eq!(validate_server(&word(0x371de, 0, false)), Ok(()), "a release in an interior");
+        assert_eq!(validate_server(&word(0, 0x81a, false)), Err(Reject::Range));
+    }
+
+    #[test]
     fn damage_causes_carry_a_percentage_for_a_victim_in_range() {
         use wire_schema::skymp::DamageCause;
         let cause = |idx, health| Message::DamageCause(DamageCause { idx, attacker: 0xff00_0001, health, kill_move: false, ..Default::default() });
@@ -2284,6 +2396,35 @@ mod tests {
             let mut g = ClientGuard::default();
             let _ = validate(&m, &mut g, now);
             let _ = validate_server(&m);
+        }
+
+        #[test]
+        fn lock_messages_never_panic(refr in any::<u32>(), outcome in any::<u8>(), broken in any::<u8>(), now in any::<u64>()) {
+            use wire_schema::skymp::{LockPrompt, LockReport};
+            let mut g = ClientGuard::default();
+            let m = Message::LockReport(LockReport { refr, outcome, broken, ..Default::default() });
+            let _ = validate(&m, &mut g, now);
+            prop_assert_eq!(validate_server(&m), if refr == 0 || outcome > 2 || broken > 8 { Err(Reject::Range) } else { Ok(()) });
+            let _ = validate_server(&Message::LockPrompt(LockPrompt { refr, ..Default::default() }));
+        }
+
+        #[test]
+        fn perk_messages_never_panic(perk in any::<u32>(), perks in proptest::collection::vec(any::<u32>(), 0..=8), points in any::<u16>(), now in any::<u64>()) {
+            use wire_schema::skymp::{PerkPick, PerkState};
+            let mut g = ClientGuard::default();
+            let m = Message::PerkPick(PerkPick { perk, ..Default::default() });
+            let _ = validate(&m, &mut g, now);
+            prop_assert_eq!(validate_server(&m), if perk == 0 { Err(Reject::Range) } else { Ok(()) });
+            let has_zero = perks.contains(&0);
+            let s = Message::PerkState(PerkState { perks: perks.try_into().unwrap_or_default(), points, ..Default::default() });
+            prop_assert_eq!(validate_server(&s), if has_zero { Err(Reject::Range) } else { Ok(()) });
+        }
+
+        #[test]
+        fn weather_words_never_panic(place in any::<u32>(), weather in any::<u32>(), transition in any::<bool>()) {
+            use wire_schema::skymp::SetWeather;
+            let m = Message::SetWeather(SetWeather { place, weather, transition, ..Default::default() });
+            prop_assert_eq!(validate_server(&m), if place == 0 { Err(Reject::Range) } else { Ok(()) });
         }
 
         #[test]

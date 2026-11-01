@@ -274,6 +274,27 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
     if (serverSettings.find("leveling") != serverSettings.end()) {
       partOne->SetLevelingEnabled(serverSettings.at("leveling").get<bool>());
     }
+    // thuum docs/verbs/locks.md (M4): the server's lock state; false (the
+    // default) leaves locks to the client's strip as before
+    if (serverSettings.find("locks") != serverSettings.end()) {
+      partOne->worldState.locksEnabled =
+        serverSettings.at("locks").get<bool>();
+    }
+    // thuum docs/verbs/weather.md (M4): the server's weather per worldspace;
+    // `weather` holds the slot, the seed and the pinned pools, every key
+    // optional (a bad value stops the server here, named); `weatherSync`
+    // false (the default) leaves every game's own sky alone
+    if (serverSettings.contains("weather")) {
+      partOne->SetWeatherSettings(serverSettings.at("weather").dump());
+    }
+    if (serverSettings.find("weatherSync") != serverSettings.end()) {
+      partOne->SetWeatherEnabled(serverSettings.at("weatherSync").get<bool>());
+    }
+    // thuum docs/verbs/perks.md (M5): perks as the server's transactions;
+    // `perks` false (the default) leaves every game's perks local
+    if (serverSettings.find("perks") != serverSettings.end()) {
+      partOne->SetPerksEnabled(serverSettings.at("perks").get<bool>());
+    }
     // thuum docs/verbs/prop-physics.md (ADR-058): dropped items persist as
     // props (the default); false restores upstream's load skip and the
     // drop's timed deletion

@@ -199,6 +199,31 @@ public:
   // older records, read as none
   std::optional<FormDesc> placedBySpell;
 
+  // thuum docs/verbs/locks.md: the reference's lock as the server holds it
+  // (the XLOC's level byte, the key's base form id or 0, locked now, picks
+  // broken on it); absent in older records and in records that never touched
+  // the lock, read as the game files' state
+  struct Lock
+  {
+    uint8_t level = 0;
+    uint32_t key = 0;
+    bool locked = false;
+    uint32_t broken = 0;
+    auto ToTuple() const
+    {
+      return std::make_tuple(level, key, locked, broken);
+    }
+    friend bool operator==(const Lock& lhs, const Lock& rhs)
+    {
+      return lhs.ToTuple() == rhs.ToTuple();
+    }
+    friend bool operator<(const Lock& lhs, const Lock& rhs)
+    {
+      return lhs.ToTuple() < rhs.ToTuple();
+    }
+  };
+  std::optional<Lock> lock;
+
   // Please update 'ActorTest.cpp' when adding new Actor-related rows
 
   DynamicFields dynamicFields;
@@ -228,7 +253,7 @@ public:
       fateDiedAt, lastAnimation, setNodeTextureSet, setNodeScale, displayName,
       mapMarkers, ingredientEffects, favorites, raceMenuPreset,
       actorValueRecord, staffRank, runningEffects, shoutRecord, playerGlobals,
-      questStages, placedBySpell, unresolved);
+      questStages, placedBySpell, lock, unresolved);
   }
 
   // The record boundary (thuum docs/DECISIONS.md ADR-043; the map

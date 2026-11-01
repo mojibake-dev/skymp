@@ -22,10 +22,12 @@ pub mod headshots;
 pub mod hosted_state;
 pub mod hostility;
 pub mod leveling;
+pub mod locks;
 pub mod magic;
 pub mod markers;
 pub mod melee;
 pub mod movement;
+pub mod perks;
 pub mod placements;
 pub mod player_globals;
 pub mod props;
@@ -37,6 +39,7 @@ pub mod scripted_effects;
 pub mod shouts;
 pub mod stagger;
 pub mod teleports;
+pub mod weather;
 
 /// A decision and the bound it was made against, for the server's log.
 #[derive(Debug, Clone, Copy, PartialEq)]

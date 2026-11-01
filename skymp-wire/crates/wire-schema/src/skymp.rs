@@ -261,6 +261,13 @@ wire_struct! {
         pub inventory: Option<Inventory>,
         /// Dead state (also in the main props; SkyMP writes both).
         pub is_dead: Option<bool>,
+        /// thuum docs/verbs/locks.md: the reference's lock as the server
+        /// holds it (the XLOC's level byte, the key's form id or 0, locked
+        /// now); absent for a reference the game files leave unlocked. The
+        /// client applies it to its own reference instead of stripping the
+        /// lock, so the engine's own lockpicking runs when the server
+        /// prompts it (`LockPrompt`).
+        pub lock: Option<LockProp>,
         /// thuum docs/verbs/spell-placed-object.md (ADR-057): the server id
         /// of the caster whose accepted cast of a listed spell placed this
         /// reference (the server's own MSTT or ACTI from its table); absent
@@ -1855,6 +1862,117 @@ wire_struct! {
         pub pos: Vec3,
         /// Its Z angle, degrees.
         pub yaw: f32,
+    }
+}
+
+wire_struct! {
+    /// A reference's lock (docs/verbs/locks.md), on CreateActor's props and
+    /// as the `lock` property's value.
+    pub struct LockProp {
+        /// The XLOC level byte: 0 or 1 Novice, 25 Apprentice, 50 Adept, 75
+        /// Expert, 100 Master, 255 requires its key.
+        pub level: u8,
+        /// The key's base form id, 0 for none.
+        pub key: u32,
+        /// Locked now.
+        pub locked: bool,
+    }
+}
+
+wire_struct! {
+    /// MsgType 64, thuum's (docs/verbs/locks.md, M4): a player's game reports
+    /// how its lockpicking attempt on a locked reference ended. Client to
+    /// server, reliable, R1: the engine ran the minigame, the server judges
+    /// the report (the reference locked and within the activation reach, the
+    /// lock's tier open to picks, a Lockpick held, a gap between reports;
+    /// wire-rules locks) and writes the unlock or takes the broken picks from
+    /// the record. Reason codes: `E_VAL_RANGE` (a refr of 0, an outcome past
+    /// 2, more than 8 picks broken), `E_VAL_RATE`.
+    pub struct LockReport {
+        /// `"t": 64`.
+        #[serde(default)]
+        pub t: MsgT<64>,
+        /// The reference's form id; never 0.
+        pub refr: u32,
+        /// 0 the lock turned, 1 picks broke and the lock stands, 2 the menu
+        /// was left with the lock standing.
+        pub outcome: u8,
+        /// Picks broken in this attempt, 0 to 8.
+        pub broken: u8,
+    }
+}
+
+wire_struct! {
+    /// MsgType 65, thuum's (docs/verbs/locks.md, M4): the server tells the
+    /// player's game that its activation met a lock without the key, so the
+    /// game runs the engine's own activation on its locked reference (the
+    /// lockpicking menu, or the "requires key" box). Server to client,
+    /// reliable, to the activating player alone. Reason codes: `E_VAL_RANGE`
+    /// (a refr of 0).
+    pub struct LockPrompt {
+        /// `"t": 65`.
+        #[serde(default)]
+        pub t: MsgT<65>,
+        /// The reference's form id; never 0.
+        pub refr: u32,
+    }
+}
+
+wire_struct! {
+    /// MsgType 66, thuum's (docs/verbs/weather.md, M4): the server's weather
+    /// for the place the player is in. Server to client, reliable, to one
+    /// player: at login, when it enters a place and at each change of the
+    /// server's pick for its worldspace (wire-rules weather). The game forces
+    /// the weather (`transition` false: a cut, as at login) or lets its engine
+    /// blend into it (`transition` true, a change the player stood through);
+    /// `weather` 0 releases the game's override (an interior, a worldspace
+    /// without a pool), so the engine's own sky stands. A game in another
+    /// place keeps the word until it gets there. Reason codes: `E_VAL_RANGE`
+    /// (a place of 0).
+    pub struct SetWeather {
+        /// `"t": 66`.
+        #[serde(default)]
+        pub t: MsgT<66>,
+        /// The worldspace, or the interior cell a release is for; never 0.
+        pub place: u32,
+        /// The WTHR form id; 0 releases the override.
+        pub weather: u32,
+        /// Blend from the current weather (true) or cut to it (false).
+        pub transition: bool,
+    }
+}
+
+wire_struct! {
+    /// MsgType 67, thuum's (docs/verbs/perks.md, M5): a player's game reports
+    /// the perk its Skills menu took. Client to server, reliable, R1: the
+    /// server judges the pick by the perk record's own conditions and the
+    /// points left (wire-rules perks), writes it to the record and answers
+    /// with `PerkState`; a refused pick is undone by that answer. Reason
+    /// codes: `E_VAL_RANGE` (a perk of 0), `E_VAL_RATE`.
+    pub struct PerkPick {
+        /// `"t": 67`.
+        #[serde(default)]
+        pub t: MsgT<67>,
+        /// The perk's form id; never 0.
+        pub perk: u32,
+    }
+}
+
+wire_struct! {
+    /// MsgType 68, thuum's (docs/verbs/perks.md, M5): the server's whole perk
+    /// set and the points left for one player: at login, after each pick
+    /// (accepted or refused), after a level change and after the console's
+    /// AddPerk, RemovePerk or SetLevel. Server to client, reliable. The game
+    /// sets its perk points, adds what it lacks and drops a tree perk the set
+    /// lacks. Reason codes: `E_VAL_RANGE` (a perk of 0 in the set).
+    pub struct PerkState {
+        /// `"t": 68`.
+        #[serde(default)]
+        pub t: MsgT<68>,
+        /// The perks held, none 0; at most 512.
+        pub perks: Vec<u32, { cap::PERKS }>,
+        /// The points left to spend.
+        pub points: u16,
     }
 }
 

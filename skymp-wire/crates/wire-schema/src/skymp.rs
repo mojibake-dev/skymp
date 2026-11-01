@@ -2013,6 +2013,26 @@ wire_struct! {
 }
 
 wire_struct! {
+    /// MsgType 71, thuum's (docs/verbs/traps.md, ADR-059 decision 3): a world
+    /// object's animation event as the cell's host's engine played it (a
+    /// puzzle pillar's Turned01, a lever's FullPull, a portcullis's Open),
+    /// reported by the host and told to the cell's other games, whose engines
+    /// run no world script; the server records it as the reference's
+    /// lastAnimation, so a late joiner replays it from CreateActor. Both
+    /// directions, reliable. Reason codes: `E_VAL_RANGE` (a refr of 0, an
+    /// empty event), `E_VAL_RATE` (the sender's budget).
+    pub struct ObjectAnimation {
+        /// `"t": 71`.
+        #[serde(default)]
+        pub t: MsgT<71>,
+        /// The animated reference, a game-file world object; never 0.
+        pub refr: u32,
+        /// The behavior graph event name; never empty.
+        pub event: String<{ cap::ANIM_EVENT }>,
+    }
+}
+
+wire_struct! {
     /// One skill use (docs/verbs/leveling.md): the skill by its ActorValue and
     /// the action's base amount as the engine computed it.
     pub struct SkillUseEntry {

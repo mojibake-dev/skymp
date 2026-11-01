@@ -34,6 +34,7 @@
 #include "LockReportMessage.h"
 #include "MagicEffectsMessage.h"
 #include "MapMarkerDiscoveredMessage.h"
+#include "ObjectAnimationMessage.h"
 #include "OnEquipMessage.h"
 #include "OpenContainerMessage.h"
 #include "PerkPickMessage.h"
@@ -140,4 +141,5 @@
   REGISTER_MESSAGE(PerkPickMessage)                                           \
   REGISTER_MESSAGE(PerkStateMessage)                                          \
   REGISTER_MESSAGE(WordWallMessage)                                           \
-  REGISTER_MESSAGE(RelayedActivationMessage)
+  REGISTER_MESSAGE(RelayedActivationMessage)                                  \
+  REGISTER_MESSAGE(ObjectAnimationMessage)

@@ -189,6 +189,11 @@ pub struct ClientGuard {
     /// docs/verbs/word-wall.md): one per wall; a burst of 2 then 1 a second
     /// (UNMEASURED).
     pub word_wall_budget: TokenBucket,
+    /// Budget for a host's world-object animation reports (ObjectAnimation,
+    /// thuum docs/verbs/traps.md, ADR-059 decision 3): a pillar's turn is two
+    /// events, a plate's press a wall's swing and reset; a burst of 32 then 8
+    /// a second (UNMEASURED).
+    pub object_animation_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -231,6 +236,7 @@ impl Default for ClientGuard {
             lock_report_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             perk_pick_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             word_wall_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
+            object_animation_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 8, last_refill_ms: 0 },
         }
     }
 }
@@ -747,6 +753,16 @@ fn check_relayed_activation(m: &skymp::RelayedActivation) -> Result<(), Reject> 
     Ok(())
 }
 
+/// A world object's animation event (docs/verbs/traps.md, ADR-059 decision
+/// 3): a reference, never 0, and an event name, never empty; the host's
+/// budget is `object_animation_budget`, the same shape both ways.
+fn check_object_animation(m: &skymp::ObjectAnimation) -> Result<(), Reject> {
+    if m.refr == 0 || m.event.as_str().is_empty() {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
 /// The server's weather word (docs/verbs/weather.md): a place, never 0; the
 /// weather may be 0 (a release); the transport refuses it from a client by
 /// direction.
@@ -926,6 +942,7 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::LockReport(_) => take(&mut guard.lock_report_budget, now_ms),
         Message::PerkPick(_) => take(&mut guard.perk_pick_budget, now_ms),
         Message::WordWall(_) => take(&mut guard.word_wall_budget, now_ms),
+        Message::ObjectAnimation(_) => take(&mut guard.object_animation_budget, now_ms),
         _ => Ok(()),
     }
 }
@@ -1110,6 +1127,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::PerkState(m) => check_perk_state(m),
         Message::WordWall(m) => check_word_wall(m),
         Message::RelayedActivation(m) => check_relayed_activation(m),
+        Message::ObjectAnimation(m) => check_object_animation(m),
         Message::CreateActor(m) => check_create_actor(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
@@ -2326,6 +2344,23 @@ mod tests {
         assert_eq!(validate(&report(0x709d2), &mut guard, 1_000), Ok(()));
         assert_eq!(validate(&report(0x709d2), &mut guard, 1_000), Err(Reject::Rate));
         assert_eq!(validate(&report(0x709d2), &mut guard, 2_000), Ok(()));
+    }
+
+    #[test]
+    fn object_animations_name_a_reference_and_an_event_and_are_rate_limited() {
+        use wire_schema::skymp::ObjectAnimation;
+        let anim = |refr, event: &str| {
+            Message::ObjectAnimation(ObjectAnimation { refr, event: event.try_into().unwrap_or_default(), ..Default::default() })
+        };
+        assert_eq!(validate_server(&anim(0xaa8cb, "Turned01")), Ok(()));
+        assert_eq!(validate_server(&anim(0, "Turned01")), Err(Reject::Range));
+        assert_eq!(validate_server(&anim(0xaa8cb, "")), Err(Reject::Range));
+        let mut guard = ClientGuard::default();
+        for _ in 0..32 {
+            assert_eq!(validate(&anim(0xaa8cb, "Trigger01"), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&anim(0xaa8cb, "Trigger01"), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&anim(0xaa8cb, "Trigger01"), &mut guard, 2_000), Ok(()));
     }
 
     #[test]

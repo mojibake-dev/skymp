@@ -106,5 +106,8 @@ enum class MsgType : uint8_t
   RelayedActivation =
     70, // thuum docs/verbs/traps.md (M4): a linked activation
         // the cell's host reported, to the cell's other games
+  ObjectAnimation =
+    71, // thuum docs/verbs/traps.md (ADR-059 decision 3): a world object's
+        // animation event the cell's host reported, recorded and relayed
   Max
 };

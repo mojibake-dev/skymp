@@ -145,6 +145,14 @@ public:
   virtual void OnWordWall(const RawMessageData& rawMsgData,
                           const WordWallMessage& msg);
 
+  // thuum docs/verbs/traps.md (ADR-059 decision 3): a world object's
+  // animation event the cell's host reports (a game-file reference that is
+  // no actor and no door, in a cell the reporter hosts): recorded as the
+  // reference's lastAnimation and relayed to the cell's other games as the
+  // same message, at most 8 a second per reference (UNMEASURED)
+  virtual void OnObjectAnimation(const RawMessageData& rawMsgData,
+                                 const ObjectAnimationMessage& msg);
+
   // thuum docs/verbs/traps.md (M4): a linked activation the cell's host
   // reports (a reference that is no actor activating the reference whose
   // activation parents name it): recorded through Activate's own path, and
@@ -386,6 +394,9 @@ private:
   };
   std::unordered_map<Networking::UserId, LinkedActivationWindow>
     linkedActivationWindows;
+  // thuum docs/verbs/traps.md (ADR-059 decision 3): one reference's reported
+  // animation events, at most 8 in any second (UNMEASURED)
+  std::unordered_map<uint32_t, LinkedActivationWindow> objectAnimationWindows;
   // thuum docs/verbs/spell-cast.md (train-27): a cast delivered to its
   // target (touch, target actor) whose relay waits for its first hit, by
   // the caster's form id and hand; the hit's claim (CastClaim::relay)

@@ -3392,6 +3392,95 @@ void ActionListener::OnWordWall(const RawMessageData& rawMsgData,
                near->GetFormId());
 }
 
+void ActionListener::OnObjectAnimation(const RawMessageData& rawMsgData,
+                                       const ObjectAnimationMessage& msg)
+{
+  MpActor* reporter = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!reporter) {
+    return;
+  }
+  if (msg.refr == 0 || msg.event.empty()) {
+    spdlog::info("[verb:traps] E_OBJANIM_RANGE: {:x} reports an animation "
+                 "with refr {:x} and event '{}'",
+                 reporter->GetFormId(), msg.refr, msg.event);
+    return;
+  }
+  if (msg.refr >= 0xff000000) {
+    // a server-made copy's animation is the server's Papyrus's
+    // (PlayAnimation), never a host's report
+    spdlog::info("[verb:traps] E_OBJANIM_RANGE: {:x} reports '{}' on {:x}, "
+                 "not a game-file reference",
+                 reporter->GetFormId(), msg.event, msg.refr);
+    return;
+  }
+  auto refrPtr = std::dynamic_pointer_cast<MpObjectReference>(
+    partOne.worldState.LookupFormById(msg.refr));
+  if (!refrPtr) {
+    spdlog::info("[verb:traps] E_OBJANIM_NO_REF: {:x} reports '{}' on {:x}, "
+                 "no such reference",
+                 reporter->GetFormId(), msg.event, msg.refr);
+    return;
+  }
+  if (dynamic_cast<MpActor*>(refrPtr.get())) {
+    // an actor's animations are UpdateAnimation's and the stream's
+    spdlog::info("[verb:traps] E_OBJANIM_ACTOR: {:x} reports '{}' on {:x}, "
+                 "an actor",
+                 reporter->GetFormId(), msg.event, msg.refr);
+    return;
+  }
+  if (refrPtr->GetBaseType() == "DOOR") {
+    // a door's open is isOpen's (Activate's path), not an animation
+    return;
+  }
+  const auto cell = partOne.worldState.CellOf(
+    refrPtr->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles),
+    refrPtr->GetPos());
+  if (!cell) {
+    spdlog::info("[verb:traps] E_OBJANIM_NO_CELL: {:x} reports '{}' on {:x}, "
+                 "whose cell is unknown",
+                 reporter->GetFormId(), msg.event, msg.refr);
+    return;
+  }
+  const auto host = partOne.GetCellHost(*cell);
+  if (!host.hosted || host.player != reporter->GetFormId()) {
+    spdlog::info("[verb:traps] E_OBJANIM_NOT_HOST: {:x} reports '{}' on {:x} "
+                 "in cell {:x}, which it does not host",
+                 reporter->GetFormId(), msg.event, msg.refr, *cell);
+    return;
+  }
+  const uint64_t nowMs = MonotonicMs();
+  auto& window = objectAnimationWindows[msg.refr];
+  if (nowMs - window.startMs >= 1000) {
+    window.startMs = nowMs;
+    window.count = 0;
+  }
+  if (window.count >= 8) {
+    spdlog::info("[verb:traps] E_OBJANIM_RATE: {:x} reports '{}' on {:x}, "
+                 "the ninth in a second on that reference; dropped",
+                 reporter->GetFormId(), msg.event, msg.refr);
+    return;
+  }
+  ++window.count;
+  refrPtr->SetLastAnimation(msg.event);
+  ObjectAnimationMessage relay;
+  relay.refr = msg.refr;
+  relay.event = msg.event;
+  size_t relayed = 0;
+  for (auto listener : refrPtr->GetActorListeners()) {
+    if (listener == reporter ||
+        partOne.serverState.UserByActor(listener) ==
+          Networking::InvalidUserId) {
+      continue;
+    }
+    listener->SendToUser(relay, true);
+    ++relayed;
+  }
+  spdlog::info("[verb:traps] {:x} animates {:x} '{}' in cell {:x} (its host "
+               "{:x} reports): recorded, relayed to {} game(s)",
+               msg.refr, msg.refr, msg.event, *cell, reporter->GetFormId(),
+               relayed);
+}
+
 // thuum docs/verbs/traps.md (M4): the cell's host reports its engine's linked
 // activation. The pair must be the game files' (the target's activation
 // parents name the caster: WorldState's table, filled as the target loaded;

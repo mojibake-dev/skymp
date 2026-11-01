@@ -68,6 +68,7 @@ import { PerkPickMessage } from "./perkPickMessage";
 import { PerkStateMessage } from "./perkStateMessage";
 import { WordWallMessage } from "./wordWallMessage";
 import { RelayedActivationMessage } from "./relayedActivationMessage";
+import { ObjectAnimationMessage } from "./objectAnimationMessage";
 import { SkillUseMessage } from "./skillUseMessage";
 
 export type AnyMessage = ActivateMessage
@@ -133,6 +134,7 @@ export type AnyMessage = ActivateMessage
     | PerkStateMessage
     | WordWallMessage
     | RelayedActivationMessage
+    | ObjectAnimationMessage
     | SkillUseMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage

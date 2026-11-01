@@ -278,6 +278,10 @@ export class NetworkingService extends ClientListener {
             const event = { message: msgAny };
             this.controller.emitter.emit("relayedActivationMessage", event);
             this.controller.emitter.emit("anyMessage", event);
+          } else if (msgAny.t === MsgType.ObjectAnimation) {
+            const event = { message: msgAny };
+            this.controller.emitter.emit("objectAnimationMessage", event);
+            this.controller.emitter.emit("anyMessage", event);
           } else if (msgAny.t === MsgType.SetWeather) {
             const event = { message: msgAny };
             this.controller.emitter.emit("setWeatherMessage", event);

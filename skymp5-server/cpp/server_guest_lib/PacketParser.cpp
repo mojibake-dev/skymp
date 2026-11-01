@@ -297,6 +297,12 @@ void PacketParser::TransformPacketIntoAction(Networking::UserId userId,
         actionListener.OnWordWall(rawMsgData, *message);
         return;
       }
+      case MsgType::ObjectAnimation: {
+        auto message =
+          reinterpret_cast<ObjectAnimationMessage*>(result->message.get());
+        actionListener.OnObjectAnimation(rawMsgData, *message);
+        return;
+      }
       default: {
         spdlog::error("PacketParser.cpp doesn't implement MsgType {}",
                       static_cast<int64_t>(result->msgType));

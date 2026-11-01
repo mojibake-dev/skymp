@@ -624,7 +624,12 @@ void PartOne::AttachSaveStorage(
 
     bool isFF = changeForm.formDesc.file.empty();
 
-    if (isFF) {
+    // thuum docs/verbs/prop-physics.md (ADR-058): a dropped item's copy is a
+    // prop the record keeps across a restart, so the skip below (upstream's,
+    // for items its drop deletes two minutes later anyway) holds only when
+    // props do not persist (x-prop-push v15 220439: the restored ingot
+    // reached neither seat, "Skipping FF item 2 (type is MISC)")
+    if (isFF && !worldState.propsPersist) {
       auto baseId = changeForm.baseDesc.ToFormId(worldState.espmFiles);
       auto lookupRes = GetEspm().GetBrowser().LookupById(baseId);
 
@@ -3009,6 +3014,18 @@ void PartOne::SetLevelingEnabled(bool on)
 {
   pImpl->levelingEnabled = on;
   spdlog::info("[verb:leveling] leveling {}", on ? "on" : "off");
+}
+
+void PartOne::SetPropsPersist(bool on)
+{
+  worldState.propsPersist = on;
+  spdlog::info("[verb:prop-physics] dropped items {}",
+               on ? "persist as props" : "follow upstream's clutter policies");
+}
+
+bool PartOne::PropsPersist() const
+{
+  return worldState.propsPersist;
 }
 
 bool PartOne::LevelingEnabled() const

@@ -37,6 +37,10 @@ public:
                    const std::vector<VarValue>& arguments) const noexcept;
   VarValue GetFormEx(VarValue self,
                      const std::vector<VarValue>& arguments) const noexcept;
+  VarValue TeachWord(VarValue self, const std::vector<VarValue>& arguments);
+  VarValue UnlockWord(VarValue self, const std::vector<VarValue>& arguments);
+  VarValue IsWordUnlocked(VarValue self,
+                          const std::vector<VarValue>& arguments);
   VarValue ShakeController(VarValue self,
                            const std::vector<VarValue>& arguments);
 

@@ -1977,6 +1977,42 @@ wire_struct! {
 }
 
 wire_struct! {
+    /// MsgType 69, thuum's (docs/verbs/word-wall.md, M4): a player's game
+    /// reports the word wall trigger its engine fired. Client to server,
+    /// reliable, R1: the server reads the word from the trigger reference's
+    /// own record (the WordWallTriggerScript's myWord property), wants the
+    /// player within the activation reach of it in the same cell, and writes
+    /// the word into the shout record (R0), told back as the console's
+    /// TeachWord is; a word known already changes nothing. Nothing of the word
+    /// travels. Reason codes: `E_VAL_RANGE` (a wall of 0), `E_VAL_RATE`.
+    pub struct WordWall {
+        /// `"t": 69`.
+        #[serde(default)]
+        pub t: MsgT<69>,
+        /// The wall trigger's reference id; never 0.
+        pub wall: u32,
+    }
+}
+
+wire_struct! {
+    /// MsgType 70, thuum's (docs/verbs/traps.md, M4): a linked activation the
+    /// cell's host reported (a pressure plate firing its spike wall, a lever
+    /// opening its portcullis: the target's activation parents name the
+    /// caster in the game files), told to the cell's other games so each
+    /// engine plays it with the caster the host's did. Server to client,
+    /// reliable. Reason codes: `E_VAL_RANGE` (a target or caster of 0).
+    pub struct RelayedActivation {
+        /// `"t": 70`.
+        #[serde(default)]
+        pub t: MsgT<70>,
+        /// The activated reference; never 0.
+        pub target: u32,
+        /// The reference that activated it; never 0.
+        pub caster: u32,
+    }
+}
+
+wire_struct! {
     /// One skill use (docs/verbs/leveling.md): the skill by its ActorValue and
     /// the action's base amount as the engine computed it.
     pub struct SkillUseEntry {

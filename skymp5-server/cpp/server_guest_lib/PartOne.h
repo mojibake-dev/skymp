@@ -294,6 +294,19 @@ public:
   // dropped and no state is sent, the game's perks stay local as before).
   void SetPerksEnabled(bool on);
   bool PerksEnabled() const;
+
+  // thuum docs/verbs/word-wall.md (M4): what a wall trigger reference's
+  // WordWallTriggerScript names (the reference's own properties over its
+  // base's): the word it teaches (myWord01) and the wall itself (wordWall01,
+  // the reference the reach is measured to; 0 when the script names none)
+  struct WordWall
+  {
+    uint32_t word = 0;
+    uint32_t wall = 0;
+  };
+  // none for a reference that is no word wall trigger, or whose word is no
+  // WOOP
+  std::optional<WordWall> WordOfWall(const MpObjectReference& trigger);
   bool PickPerk(MpActor& actor, uint32_t perk);
   bool ApplySkillUse(MpActor& actor, uint8_t skillAv, float amount);
   void TickPlacements(uint64_t nowMs);

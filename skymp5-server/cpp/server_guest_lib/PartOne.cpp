@@ -1,6 +1,7 @@
 #include "PartOne.h"
 #include "ActorFateMessage.h"
 #include "LocationalData.h"
+#include "libespm/Property.h"
 #include "wire_bridge_cxx/rules.h"
 #include <algorithm>
 #include <array>
@@ -4748,6 +4749,69 @@ void PartOne::SetPerksEnabled(bool on)
 bool PartOne::PerksEnabled() const
 {
   return pImpl->perksEnabled;
+}
+
+// thuum docs/verbs/word-wall.md (M4): the word a wall trigger teaches, read
+// from the WordWallTriggerScript's myWord property on the trigger (the
+// reference's own value over its base ACTI's, as ScriptVariablesHolder reads
+// a script's properties) and made global through that record's lookup; none
+// for a reference that is no word wall trigger, or whose word is no WOOP
+std::optional<PartOne::WordWall> PartOne::WordOfWall(
+  const MpObjectReference& trigger)
+{
+  if (!worldState.HasEspm()) {
+    return std::nullopt;
+  }
+  auto& browser = worldState.GetEspm().GetBrowser();
+  auto& cache = worldState.GetEspmCache();
+  std::optional<uint32_t> word;
+  uint32_t wallRef = 0;
+  const auto read = [&](const espm::LookupResult& lookup) {
+    if (!lookup.rec) {
+      return;
+    }
+    espm::ScriptData scriptData;
+    lookup.rec->GetScriptData(&scriptData, cache);
+    for (const auto& script : scriptData.scripts) {
+      // the vanilla trigger script; a removed script (status 3) is no script
+      if (Utils::stricmp(script.scriptName.data(), "WordWallTriggerScript") !=
+            0 ||
+          script.status == 3) {
+        continue;
+      }
+      for (const auto& property : script.properties) {
+        // the wall's word is the script's myWord01 (Skyrim.esm's trigger
+        // references carry it with the wall's other eight properties, the
+        // base ACTI's copy of the script the shared five: lab/esm.py's VMAD
+        // decode of 0x709d2 and 0x5095e, 2026-11-01)
+        if (property.type != espm::Property::Type::Object ||
+            !property.value.formId) {
+          continue;
+        }
+        if (!Utils::stricmp(property.name.data(), "myWord01") ||
+            !Utils::stricmp(property.name.data(), "myWord")) {
+          word = lookup.ToGlobalId(property.value.formId);
+        } else if (!Utils::stricmp(property.name.data(), "wordWall01")) {
+          // the wall the trigger stands for: the reach is measured to it, as
+          // the trigger's own bounds are the chamber (WordWallTrigger's OBND
+          // is a box of about 4,000 units a side)
+          wallRef = lookup.ToGlobalId(property.value.formId);
+        }
+      }
+    }
+  };
+  read(browser.LookupById(trigger.GetBaseId()));
+  if (trigger.IsEspmForm()) {
+    read(browser.LookupById(trigger.GetFormId()));
+  }
+  if (!word) {
+    return std::nullopt;
+  }
+  const auto lookup = browser.LookupById(*word);
+  if (!lookup.rec || !(lookup.rec->GetType() == "WOOP")) {
+    return std::nullopt;
+  }
+  return WordWall{ *word, wallRef };
 }
 
 namespace {

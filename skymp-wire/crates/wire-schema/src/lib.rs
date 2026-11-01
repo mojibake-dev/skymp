@@ -47,7 +47,11 @@ use bounded::{String, Vec};
 /// weather for the place a player is in.
 /// 26: PerkPick and PerkState (thuum docs/verbs/perks.md, m5-perks): a perk
 /// pick judged by the server, the perk set and points it holds.
-pub const SCHEMA_VERSION: u16 = 26;
+/// 27: WordWall (thuum docs/verbs/word-wall.md, m4-word-wall): a word wall
+/// trigger reported by the player's game, the word the server's.
+/// 28: RelayedActivation (thuum docs/verbs/traps.md, m4-traps): a linked
+/// activation the cell's host reported, told to the cell's other games.
+pub const SCHEMA_VERSION: u16 = 28;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -480,6 +484,10 @@ pub enum Message {
     PerkPick(skymp::PerkPick),
     /// 76, MsgType 68 (thuum). See [`skymp::PerkState`].
     PerkState(skymp::PerkState),
+    /// 77, MsgType 69 (thuum). See [`skymp::WordWall`].
+    WordWall(skymp::WordWall),
+    /// 78, MsgType 70 (thuum). See [`skymp::RelayedActivation`].
+    RelayedActivation(skymp::RelayedActivation),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -508,7 +516,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 77] = [
+const TABLE: [Row; 79] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -586,14 +594,16 @@ const TABLE: [Row; 77] = [
     row("SetWeather", 66, 16, S2C),
     row("PerkPick", 67, 8, C2S),
     row("PerkState", 68, 4 * KIB, S2C),
+    row("WordWall", 69, 8, C2S),
+    row("RelayedActivation", 70, 16, S2C),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 77;
-const _: () = assert!(TABLE.len() == 77, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 79;
+const _: () = assert!(TABLE.len() == 79, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -695,6 +705,8 @@ impl Message {
             Message::SetWeather(_) => 74,
             Message::PerkPick(_) => 75,
             Message::PerkState(_) => 76,
+            Message::WordWall(_) => 77,
+            Message::RelayedActivation(_) => 78,
         }
     }
 
@@ -794,7 +806,9 @@ mod tests {
         assert_eq!(name_of_msg_type(66), Some("SetWeather"));
         assert_eq!(name_of_msg_type(67), Some("PerkPick"));
         assert_eq!(name_of_msg_type(68), Some("PerkState"));
-        assert_eq!(name_of_msg_type(69), None);
+        assert_eq!(name_of_msg_type(69), Some("WordWall"));
+        assert_eq!(name_of_msg_type(70), Some("RelayedActivation"));
+        assert_eq!(name_of_msg_type(71), None);
     }
 
     #[test]
@@ -893,6 +907,10 @@ mod tests {
             Message::SetWeather(skymp::SetWeather { place: u32::MAX, weather: u32::MAX, transition: true, ..Default::default() }),
             // a perk pick and the fullest perk set (thuum docs/verbs/perks.md)
             Message::PerkPick(skymp::PerkPick { perk: u32::MAX, ..Default::default() }),
+            // a word wall report (thuum docs/verbs/word-wall.md)
+            Message::WordWall(skymp::WordWall { wall: u32::MAX, ..Default::default() }),
+            // a linked activation relayed (thuum docs/verbs/traps.md)
+            Message::RelayedActivation(skymp::RelayedActivation { target: u32::MAX, caster: u32::MAX, ..Default::default() }),
             Message::PerkState(skymp::PerkState {
                 perks: core::iter::repeat_n(u32::MAX, cap::PERKS).collect::<alloc::vec::Vec<u32>>().try_into().unwrap_or_default(),
                 points: u16::MAX,

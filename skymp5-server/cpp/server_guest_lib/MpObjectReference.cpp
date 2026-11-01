@@ -32,6 +32,7 @@
 #include <TimeUtils.h>
 #include <antigo/Context.h>
 #include <antigo/ResolvedContext.h>
+#include <cctype>
 #include <map>
 #include <numeric>
 #include <optional>
@@ -194,6 +195,11 @@ struct PrimitiveData
 {
   NiPoint3 boundsDiv2;
   GeoProc::GeoPolygonProc polygonProc;
+  // libespm REFR XPRM type: 2 is a sphere, judged by distance; the rest by
+  // the box the vertices make (thuum docs/verbs/word-wall.md: a rotated
+  // box of the sphere's extents reaches 2,920 units on its diagonals where
+  // the engine's sphere fires at 2,065)
+  uint32_t type = 0;
 };
 
 struct MpObjectReference::Impl
@@ -241,7 +247,7 @@ MpChangeForm MakeChangeForm(const LocationalData& locationalData)
 MpObjectReference::MpObjectReference(
   const LocationalData& locationalData_, const FormCallbacks& callbacks_,
   uint32_t baseId_, std::string baseType_,
-  std::optional<NiPoint3> primitiveBoundsDiv2)
+  std::optional<NiPoint3> primitiveBoundsDiv2, uint32_t primitiveType)
   : callbacks(new FormCallbacks(callbacks_))
   , baseId(baseId_)
   , baseType(baseType_)
@@ -251,7 +257,7 @@ MpObjectReference::MpObjectReference(
   asObjectReference = this;
 
   if (primitiveBoundsDiv2)
-    SetPrimitive(*primitiveBoundsDiv2);
+    SetPrimitive(*primitiveBoundsDiv2, primitiveType);
 }
 
 const NiPoint3& MpObjectReference::GetPos() const
@@ -367,6 +373,9 @@ bool MpObjectReference::GetAnimationVariableBool(const char* name) const
 bool MpObjectReference::IsPointInsidePrimitive(const NiPoint3& point) const
 {
   if (pImpl->primitive) {
+    if (pImpl->primitive->type == 2) {
+      return (point - GetPos()).Length() <= pImpl->primitive->boundsDiv2.x;
+    }
     return Primitive::IsInside(point, pImpl->primitive->polygonProc);
   }
   return false;
@@ -963,11 +972,13 @@ void MpObjectReference::ForceSubscriptionsUpdate()
   everSubscribedOrListened = true;
 }
 
-void MpObjectReference::SetPrimitive(const NiPoint3& boundsDiv2)
+void MpObjectReference::SetPrimitive(const NiPoint3& boundsDiv2,
+                                     uint32_t primitiveType)
 {
   auto vertices = Primitive::GetVertices(GetPos(), GetAngle(), boundsDiv2);
   pImpl->primitive =
-    PrimitiveData{ boundsDiv2, Primitive::CreateGeoPolygonProc(vertices) };
+    PrimitiveData{ boundsDiv2, Primitive::CreateGeoPolygonProc(vertices),
+                   primitiveType };
 }
 
 // thuum docs/verbs/cell-host.md: the host's own game sees this actor as its
@@ -1665,6 +1676,47 @@ void MpObjectReference::Init(WorldState* parent, uint32_t formId,
       // load) other references during OnInit
       parent->activationChildsByActivationParent[activationParent].insert(
         { refrId, info.delay });
+    }
+    // thuum docs/DECISIONS.md ADR-059 decision 2: a link a script carries as a
+    // property joins the same table, from the parent's side and with no
+    // delay (a script's Activate is immediate). Bleak Falls Temple's puzzle
+    // lever 0xaa8c3 carries defaultPillarPuzzleLever: refActOnSuccess01 and
+    // refActOnFailure01..04 are the portcullis and the dart traps it fires,
+    // puzzleDoorActivator the marker whose activation parents open the gate
+    // (lab/esm.py's VMAD decode, 2026-11-01). So the host's report of that
+    // script's Activate on them is a linked activation the server knows
+    // (ActionListener::OnLinkedActivation), not E_TRAP_UNLINKED.
+    if (lookupRes.rec) {
+      espm::ScriptData scriptData;
+      lookupRes.rec->GetScriptData(&scriptData, parent->GetEspmCache());
+      const auto lower = [](const std::string& text) {
+        std::string out = text;
+        for (auto& c : out) {
+          c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        return out;
+      };
+      for (const auto& script : scriptData.scripts) {
+        if (script.status == 3 ||
+            Utils::stricmp(script.scriptName.data(),
+                           "defaultPillarPuzzleLever") != 0) {
+          continue;
+        }
+        for (const auto& property : script.properties) {
+          if (property.type != espm::Property::Type::Object ||
+              !property.value.formId) {
+            continue;
+          }
+          const std::string name = lower(property.name);
+          if (name.rfind("refacton", 0) != 0 &&
+              name != "puzzledooractivator") {
+            continue;
+          }
+          const auto child = lookupRes.ToGlobalId(property.value.formId);
+          parent->activationChildsByActivationParent[refrId].insert(
+            { child, 0.f });
+        }
+      }
     }
   }
 }

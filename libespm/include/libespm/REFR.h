@@ -109,6 +109,12 @@ public:
     const LocationalData* loc = nullptr;
     const DoorTeleport* teleport = nullptr;
     const float* boundsDiv2 = nullptr;
+    // XPRM's shape (UESP, Skyrim mod file format, REFR XPRM: three bounds,
+    // a colour, an unknown float, then the type): 1 a box, 2 a sphere, 3 a
+    // portal box; 0 when the record has none. A sphere's bounds are its
+    // radius three times (Bleak Falls Sanctum's word wall trigger 0x709d2,
+    // 2,065; thuum docs/verbs/word-wall.md).
+    uint32_t primitiveType = 0;
     uint32_t count = 0;
     uint8_t isParentActivationOnly = 0;
     std::vector<ActivationParentInfo> activationParents;

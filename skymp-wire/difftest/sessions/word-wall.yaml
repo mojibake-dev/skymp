@@ -1,0 +1,19 @@
+# difftest word-wall (M4, thuum docs/verbs/word-wall.md): c1 reports Bleak
+# Falls Sanctum's word wall trigger 0x709d2 (461266) from the spawn, another
+# cell, at 2 s: the wire server refuses it by name (E_WORDWALL_CELL) and
+# sends nothing; the legacy server has no such message and drops it. The
+# teaching itself is T0's (WordWallTest) and T3's (b-word-wall). c2 steps
+# aside at 4 s so it outlives c1, as in every session.
+id: word-wall
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 2000, send: {t: 69, wall: 461266}, reliable: true}
+  - {client: c2, at_ms: 4000, move: {dx: 1, dy: 0}}
+divergences:
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

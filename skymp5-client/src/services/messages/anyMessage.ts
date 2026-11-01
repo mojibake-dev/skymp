@@ -66,6 +66,8 @@ import { LockPromptMessage } from "./lockPromptMessage";
 import { SetWeatherMessage } from "./setWeatherMessage";
 import { PerkPickMessage } from "./perkPickMessage";
 import { PerkStateMessage } from "./perkStateMessage";
+import { WordWallMessage } from "./wordWallMessage";
+import { RelayedActivationMessage } from "./relayedActivationMessage";
 import { SkillUseMessage } from "./skillUseMessage";
 
 export type AnyMessage = ActivateMessage
@@ -129,6 +131,8 @@ export type AnyMessage = ActivateMessage
     | SetWeatherMessage
     | PerkPickMessage
     | PerkStateMessage
+    | WordWallMessage
+    | RelayedActivationMessage
     | SkillUseMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage

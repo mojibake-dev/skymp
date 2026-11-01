@@ -185,6 +185,10 @@ pub struct ClientGuard {
     /// Budget for a player's perk picks (PerkPick, thuum docs/verbs/perks.md):
     /// one per pick; a burst of 8 then 2 a second (UNMEASURED).
     pub perk_pick_budget: TokenBucket,
+    /// Budget for a player's word wall reports (WordWall, thuum
+    /// docs/verbs/word-wall.md): one per wall; a burst of 2 then 1 a second
+    /// (UNMEASURED).
+    pub word_wall_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -226,6 +230,7 @@ impl Default for ClientGuard {
             skill_use_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             lock_report_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             perk_pick_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
+            word_wall_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
         }
     }
 }
@@ -724,6 +729,15 @@ fn check_perk_state(m: &skymp::PerkState) -> Result<(), Reject> {
     Ok(())
 }
 
+/// A player's word wall report (docs/verbs/word-wall.md): a wall reference,
+/// never 0. The word, the reach and the record are the server's.
+fn check_word_wall(m: &skymp::WordWall) -> Result<(), Reject> {
+    if m.wall == 0 {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
 /// The server's weather word (docs/verbs/weather.md): a place, never 0; the
 /// weather may be 0 (a release); the transport refuses it from a client by
 /// direction.
@@ -902,6 +916,7 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::SkillUse(_) => take(&mut guard.skill_use_budget, now_ms),
         Message::LockReport(_) => take(&mut guard.lock_report_budget, now_ms),
         Message::PerkPick(_) => take(&mut guard.perk_pick_budget, now_ms),
+        Message::WordWall(_) => take(&mut guard.word_wall_budget, now_ms),
         _ => Ok(()),
     }
 }
@@ -1084,6 +1099,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::SetWeather(m) => check_set_weather(m),
         Message::PerkPick(m) => check_perk_pick(m),
         Message::PerkState(m) => check_perk_state(m),
+        Message::WordWall(m) => check_word_wall(m),
         Message::CreateActor(m) => check_create_actor(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
@@ -2290,6 +2306,19 @@ mod tests {
     }
 
     #[test]
+    fn word_wall_reports_name_a_wall_and_are_rate_limited() {
+        use wire_schema::skymp::WordWall;
+        let report = |wall| Message::WordWall(WordWall { wall, ..Default::default() });
+        assert_eq!(validate_server(&report(0x709d2)), Ok(()));
+        assert_eq!(validate_server(&report(0)), Err(Reject::Range));
+        let mut guard = ClientGuard::default();
+        assert_eq!(validate(&report(0x709d2), &mut guard, 1_000), Ok(()));
+        assert_eq!(validate(&report(0x709d2), &mut guard, 1_000), Ok(()));
+        assert_eq!(validate(&report(0x709d2), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&report(0x709d2), &mut guard, 2_000), Ok(()));
+    }
+
+    #[test]
     fn weather_words_name_a_place_and_may_release() {
         use wire_schema::skymp::SetWeather;
         let word = |place, weather, transition| Message::SetWeather(SetWeather { place, weather, transition, ..Default::default() });
@@ -2418,6 +2447,15 @@ mod tests {
             let has_zero = perks.contains(&0);
             let s = Message::PerkState(PerkState { perks: perks.try_into().unwrap_or_default(), points, ..Default::default() });
             prop_assert_eq!(validate_server(&s), if has_zero { Err(Reject::Range) } else { Ok(()) });
+        }
+
+        #[test]
+        fn word_wall_reports_never_panic(wall in any::<u32>(), now in any::<u64>()) {
+            use wire_schema::skymp::WordWall;
+            let mut g = ClientGuard::default();
+            let m = Message::WordWall(WordWall { wall, ..Default::default() });
+            let _ = validate(&m, &mut g, now);
+            prop_assert_eq!(validate_server(&m), if wall == 0 { Err(Reject::Range) } else { Ok(()) });
         }
 
         #[test]

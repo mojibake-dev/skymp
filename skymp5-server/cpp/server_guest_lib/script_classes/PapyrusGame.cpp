@@ -1,5 +1,9 @@
 #include "PapyrusGame.h"
+#include "EspmGameObject.h"
+#include "FormDesc.h"
+#include "MpActor.h"
 #include "PapyrusFormList.h"
+#include "ShoutSnippets.h"
 
 #include "SpSnippetFunctionGen.h"
 #include "WorldState.h"
@@ -250,4 +254,76 @@ void PapyrusGame::Register(VirtualMachine& vm,
   AddStatic(vm, "GetForm", &PapyrusGame::GetForm);
   AddStatic(vm, "GetFormEx", &PapyrusGame::GetFormEx);
   AddStatic(vm, "ShakeController", &PapyrusGame::ShakeController);
+  // thuum docs/verbs/word-wall.md (M4): the shout record's words on the
+  // server VM (R0), as the console writes them
+  AddStatic(vm, "TeachWord", &PapyrusGame::TeachWord);
+  AddStatic(vm, "UnlockWord", &PapyrusGame::UnlockWord);
+  AddStatic(vm, "IsWordUnlocked", &PapyrusGame::IsWordUnlocked);
+}
+
+namespace {
+// a word of power's global id from a native's argument, 0 for anything else
+uint32_t WordIdOf(const VarValue& argument)
+{
+  const auto& word = GetRecordPtr(argument);
+  if (!word.rec || word.rec->GetType().ToString() != "WOOP") {
+    return 0;
+  }
+  return word.ToGlobalId(word.rec->GetId());
+}
+
+// thuum docs/verbs/word-wall.md: Game.TeachWord and Game.UnlockWord write the
+// default actor's shout record and tell its game, as the console does (R0); a
+// script's own word wall on the server teaches the same way
+VarValue ShoutWordEntry(IPapyrusCompatibilityPolicy& policy, VarValue self,
+                        const std::vector<VarValue>& arguments,
+                        const char* name, MpActor::ShoutEntry kind)
+{
+  auto actor = policy.GetDefaultActor("Game", name, self.GetMetaStackId());
+  if (!actor) {
+    return VarValue::None();
+  }
+  if (arguments.empty()) {
+    throw std::runtime_error(
+      fmt::format("Game.{} requires one argument", name));
+  }
+  const uint32_t word = WordIdOf(arguments[0]);
+  if (word == 0) {
+    spdlog::error("Game.{} - the argument is not a WOOP", name);
+    return VarValue::None();
+  }
+  if (actor->RecordShoutEntry(
+        kind, FormDesc::FromFormId(word, actor->GetParent()->espmFiles))) {
+    SendShoutEntry(*actor, kind, word);
+  }
+  return VarValue::None();
+}
+}
+
+VarValue PapyrusGame::TeachWord(VarValue self,
+                                const std::vector<VarValue>& arguments)
+{
+  return ShoutWordEntry(*compatibilityPolicy, self, arguments, "TeachWord",
+                        MpActor::ShoutEntry::WordKnown);
+}
+
+VarValue PapyrusGame::UnlockWord(VarValue self,
+                                 const std::vector<VarValue>& arguments)
+{
+  return ShoutWordEntry(*compatibilityPolicy, self, arguments, "UnlockWord",
+                        MpActor::ShoutEntry::WordUnlocked);
+}
+
+VarValue PapyrusGame::IsWordUnlocked(VarValue self,
+                                     const std::vector<VarValue>& arguments)
+{
+  auto actor = compatibilityPolicy->GetDefaultActor("Game", "IsWordUnlocked",
+                                                    self.GetMetaStackId());
+  if (!actor || arguments.empty()) {
+    return VarValue(false);
+  }
+  const uint32_t word = WordIdOf(arguments[0]);
+  return VarValue(
+    word != 0 &&
+    actor->HasShoutEntry(MpActor::ShoutEntry::WordUnlocked, word));
 }

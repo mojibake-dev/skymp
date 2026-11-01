@@ -1977,6 +1977,24 @@ wire_struct! {
 }
 
 wire_struct! {
+    /// MsgType 69, thuum's (docs/verbs/word-wall.md, M4): a player's game
+    /// reports the word wall trigger its engine fired. Client to server,
+    /// reliable, R1: the server reads the word from the trigger reference's
+    /// own record (the WordWallTriggerScript's myWord property), wants the
+    /// player within the activation reach of it in the same cell, and writes
+    /// the word into the shout record (R0), told back as the console's
+    /// TeachWord is; a word known already changes nothing. Nothing of the word
+    /// travels. Reason codes: `E_VAL_RANGE` (a wall of 0), `E_VAL_RATE`.
+    pub struct WordWall {
+        /// `"t": 69`.
+        #[serde(default)]
+        pub t: MsgT<69>,
+        /// The wall trigger's reference id; never 0.
+        pub wall: u32,
+    }
+}
+
+wire_struct! {
     /// One skill use (docs/verbs/leveling.md): the skill by its ActorValue and
     /// the action's base amount as the engine computed it.
     pub struct SkillUseEntry {

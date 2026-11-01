@@ -3280,6 +3280,63 @@ void ActionListener::OnPerkPick(const RawMessageData& rawMsgData,
   partOne.PickPerk(*actor, msg.perk);
 }
 
+// thuum docs/verbs/word-wall.md (M4): a player's game reports the word wall
+// trigger its engine fired. The wall's word is the trigger reference's own
+// (PartOne::WordOfWall), the player must stand within the activation reach of
+// it in the same cell, and the word goes into the shout record once (R0), the
+// seat told as the console's TeachWord tells it; every refusal is logged by
+// name and nothing of a refused report lands.
+void ActionListener::OnWordWall(const RawMessageData& rawMsgData,
+                                const WordWallMessage& msg)
+{
+  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!actor) {
+    return;
+  }
+  const auto& form = partOne.worldState.LookupFormById(msg.wall);
+  MpObjectReference* wall = form ? form->AsObjectReference() : nullptr;
+  if (!wall) {
+    spdlog::info("[verb:word-wall] E_WORDWALL_NO_REF: {:x} reports {:x}, no "
+                 "such reference",
+                 actor->GetFormId(), msg.wall);
+    return;
+  }
+  const auto word = partOne.WordOfWall(*wall);
+  if (!word) {
+    spdlog::info("[verb:word-wall] E_WORDWALL_NOT_A_WALL: {:x} reports {:x}, "
+                 "which teaches no word",
+                 actor->GetFormId(), msg.wall);
+    return;
+  }
+  if (actor->GetCellOrWorld() != wall->GetCellOrWorld()) {
+    spdlog::info("[verb:word-wall] E_WORDWALL_CELL: {:x} reports {:x} from "
+                 "another cell",
+                 actor->GetFormId(), msg.wall);
+    return;
+  }
+  const float distance = (actor->GetPos() - wall->GetPos()).Length();
+  const auto reach = skymp::rules::activation_within_reach(
+    distance, ActivationTargetSize(*wall));
+  if (!reach.allowed) {
+    spdlog::info("[verb:word-wall] E_WORDWALL_REACH: {:x} reports {:x} from "
+                 "{:.0f} units, the bound {:.0f}",
+                 actor->GetFormId(), msg.wall, distance, reach.bound);
+    return;
+  }
+  const bool added = actor->RecordShoutEntry(
+    MpActor::ShoutEntry::WordKnown,
+    FormDesc::FromFormId(*word, partOne.worldState.espmFiles));
+  if (!added) {
+    spdlog::info("[verb:word-wall] {:x} at wall {:x}: word {:x} known already",
+                 actor->GetFormId(), msg.wall, *word);
+    return;
+  }
+  SendShoutEntry(*actor, MpActor::ShoutEntry::WordKnown, *word);
+  spdlog::info("[verb:word-wall] {:x} learns word {:x} at wall {:x} ({:.0f} "
+               "units)",
+               actor->GetFormId(), *word, msg.wall, distance);
+}
+
 // thuum docs/verbs/locks.md (M4): a player's report on a lock. The rule
 // (wire-rules locks) judges it against the record's lock, the activation
 // reach (the rule an open passes), the Lockpicks the player holds and the

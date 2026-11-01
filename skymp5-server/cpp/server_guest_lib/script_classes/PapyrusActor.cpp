@@ -1,4 +1,5 @@
 #include "PapyrusActor.h"
+#include "ShoutSnippets.h"
 
 #include "MpActor.h"
 #include "SpSnippetFunctionGen.h"
@@ -800,6 +801,34 @@ uint32_t PerkIdOf(const VarValue& argument)
 }
 }
 
+// thuum docs/verbs/word-wall.md (M4): Actor.AddShout writes the shout into
+// the record and tells the game, as the console does (R0); true when the
+// record grew
+VarValue PapyrusActor::AddShout(VarValue self,
+                                const std::vector<VarValue>& arguments)
+{
+  auto actor = GetFormPtr<MpActor>(self);
+  if (!actor) {
+    return VarValue(false);
+  }
+  if (arguments.empty()) {
+    throw std::runtime_error("Actor.AddShout requires one argument");
+  }
+  const auto& shout = GetRecordPtr(arguments[0]);
+  if (!shout.rec || shout.rec->GetType().ToString() != "SHOU") {
+    spdlog::error("Actor.AddShout - the argument is not a SHOU");
+    return VarValue(false);
+  }
+  const uint32_t shoutId = shout.ToGlobalId(shout.rec->GetId());
+  const bool added = actor->RecordShoutEntry(
+    MpActor::ShoutEntry::Shout,
+    FormDesc::FromFormId(shoutId, actor->GetParent()->espmFiles));
+  if (added) {
+    SendShoutEntry(*actor, MpActor::ShoutEntry::Shout, shoutId);
+  }
+  return VarValue(added);
+}
+
 VarValue PapyrusActor::AddPerk(VarValue self,
                                const std::vector<VarValue>& arguments)
 {
@@ -1081,6 +1110,7 @@ void PapyrusActor::Register(
   AddMethod(vm, "RemoveFromFaction", &PapyrusActor::RemoveFromFaction);
   AddMethod(vm, "AddSpell", &PapyrusActor::AddSpell);
   AddMethod(vm, "AddPerk", &PapyrusActor::AddPerk);
+  AddMethod(vm, "AddShout", &PapyrusActor::AddShout);
   AddMethod(vm, "RemovePerk", &PapyrusActor::RemovePerk);
   AddMethod(vm, "HasPerk", &PapyrusActor::HasPerk);
   AddMethod(vm, "RemoveSpell", &PapyrusActor::RemoveSpell);

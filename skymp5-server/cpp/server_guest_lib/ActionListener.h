@@ -139,6 +139,12 @@ public:
   virtual void OnPerkPick(const RawMessageData& rawMsgData,
                           const PerkPickMessage& msg);
 
+  // thuum docs/verbs/word-wall.md (M4): the word wall trigger a player's game
+  // fired; the wall's own word into the shout record when the player stands
+  // within reach of it, told back as the console's TeachWord is
+  virtual void OnWordWall(const RawMessageData& rawMsgData,
+                          const WordWallMessage& msg);
+
   // thuum docs/verbs/cell-host.md: a game's cell loaded or left its loaded
   // set; the server's election follows (wire-rules cells)
   virtual void OnCellLoaded(const RawMessageData& rawMsgData,

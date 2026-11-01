@@ -1,6 +1,7 @@
 #include "PartOne.h"
 #include "ActorFateMessage.h"
 #include "LocationalData.h"
+#include "libespm/Property.h"
 #include "wire_bridge_cxx/rules.h"
 #include <algorithm>
 #include <array>
@@ -4748,6 +4749,52 @@ void PartOne::SetPerksEnabled(bool on)
 bool PartOne::PerksEnabled() const
 {
   return pImpl->perksEnabled;
+}
+
+// thuum docs/verbs/word-wall.md (M4): the word a wall trigger teaches, read
+// from the WordWallTriggerScript's myWord property on the trigger (the
+// reference's own value over its base ACTI's, as ScriptVariablesHolder reads
+// a script's properties) and made global through that record's lookup; none
+// for a reference that is no word wall trigger, or whose word is no WOOP
+std::optional<uint32_t> PartOne::WordOfWall(const MpObjectReference& wall)
+{
+  if (!worldState.HasEspm()) {
+    return std::nullopt;
+  }
+  auto& browser = worldState.GetEspm().GetBrowser();
+  auto& cache = worldState.GetEspmCache();
+  std::optional<uint32_t> word;
+  const auto read = [&](const espm::LookupResult& lookup) {
+    if (!lookup.rec) {
+      return;
+    }
+    espm::ScriptData scriptData;
+    lookup.rec->GetScriptData(&scriptData, cache);
+    for (const auto& script : scriptData.scripts) {
+      if (Utils::stricmp(script.scriptName.data(), "WordWallTriggerScript") !=
+          0) {
+        continue;
+      }
+      for (const auto& property : script.properties) {
+        if (property.type == espm::Property::Type::Object &&
+            !Utils::stricmp(property.name.data(), "myWord") &&
+            property.value.formId) {
+          word = lookup.ToGlobalId(property.value.formId);
+        }
+      }
+    }
+  };
+  read(browser.LookupById(wall.GetBaseId()));
+  if (wall.IsEspmForm()) {
+    read(browser.LookupById(wall.GetFormId()));
+  }
+  if (word) {
+    const auto lookup = browser.LookupById(*word);
+    if (!lookup.rec || !(lookup.rec->GetType() == "WOOP")) {
+      return std::nullopt;
+    }
+  }
+  return word;
 }
 
 void PartOne::LoadPerkTable()

@@ -101,5 +101,7 @@ enum class MsgType : uint8_t
                    // took, judged into the record
   PerkState = 68,  // the same verb: the server's perk set and points to the
                    // player
+  WordWall = 69,   // thuum docs/verbs/word-wall.md (M4): the word wall trigger
+                   // a player's game fired, its word the server's
   Max
 };

@@ -277,6 +277,12 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
     if (serverSettings.find("weatherSync") != serverSettings.end()) {
       partOne->SetWeatherEnabled(serverSettings.at("weatherSync").get<bool>());
     }
+    // thuum docs/verbs/prop-physics.md (ADR-058): dropped items persist as
+    // props (the default); false restores upstream's load skip and the
+    // drop's timed deletion
+    if (serverSettings.find("propsPersist") != serverSettings.end()) {
+      partOne->SetPropsPersist(serverSettings.at("propsPersist").get<bool>());
+    }
     // thuum docs/verbs/npc-fate.md (ADR-050 decision 2): a hosted NPC's
     // number goes to its host as a cause and its kill waits for the host's
     // report; false restores the absolute values and the kill at once

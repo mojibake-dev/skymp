@@ -738,6 +738,15 @@ fn check_word_wall(m: &skymp::WordWall) -> Result<(), Reject> {
     Ok(())
 }
 
+/// The server's relayed activation (docs/verbs/traps.md): a target and a
+/// caster, neither 0; the transport refuses it from a client by direction.
+fn check_relayed_activation(m: &skymp::RelayedActivation) -> Result<(), Reject> {
+    if m.target == 0 || m.caster == 0 {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
 /// The server's weather word (docs/verbs/weather.md): a place, never 0; the
 /// weather may be 0 (a release); the transport refuses it from a client by
 /// direction.
@@ -1100,6 +1109,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::PerkPick(m) => check_perk_pick(m),
         Message::PerkState(m) => check_perk_state(m),
         Message::WordWall(m) => check_word_wall(m),
+        Message::RelayedActivation(m) => check_relayed_activation(m),
         Message::CreateActor(m) => check_create_actor(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
@@ -2319,6 +2329,15 @@ mod tests {
     }
 
     #[test]
+    fn relayed_activations_name_both_references() {
+        use wire_schema::skymp::RelayedActivation;
+        let relay = |target, caster| Message::RelayedActivation(RelayedActivation { target, caster, ..Default::default() });
+        assert_eq!(validate_server(&relay(0x54b15, 0x567f2)), Ok(()));
+        assert_eq!(validate_server(&relay(0, 0x567f2)), Err(Reject::Range));
+        assert_eq!(validate_server(&relay(0x54b15, 0)), Err(Reject::Range));
+    }
+
+    #[test]
     fn weather_words_name_a_place_and_may_release() {
         use wire_schema::skymp::SetWeather;
         let word = |place, weather, transition| Message::SetWeather(SetWeather { place, weather, transition, ..Default::default() });
@@ -2456,6 +2475,13 @@ mod tests {
             let m = Message::WordWall(WordWall { wall, ..Default::default() });
             let _ = validate(&m, &mut g, now);
             prop_assert_eq!(validate_server(&m), if wall == 0 { Err(Reject::Range) } else { Ok(()) });
+        }
+
+        #[test]
+        fn relayed_activations_never_panic(target in any::<u32>(), caster in any::<u32>()) {
+            use wire_schema::skymp::RelayedActivation;
+            let m = Message::RelayedActivation(RelayedActivation { target, caster, ..Default::default() });
+            prop_assert_eq!(validate_server(&m), if target == 0 || caster == 0 { Err(Reject::Range) } else { Ok(()) });
         }
 
         #[test]

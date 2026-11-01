@@ -1994,6 +1994,21 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
     return;
   }
 
+  // thuum docs/verbs/traps.md (M4): a reference that is no actor activating
+  // another (a plate its spike wall, a lever its portcullis) is a linked
+  // activation the cell's host reports; its own path, before the hosted
+  // caster's rule below throws on it
+  if (msg.data.caster != 0x14) {
+    const auto& casterForm = partOne.worldState.LookupFormById(
+      static_cast<uint32_t>(msg.data.caster));
+    MpObjectReference* casterRef =
+      casterForm ? casterForm->AsObjectReference() : nullptr;
+    if (casterRef && !casterRef->AsActor()) {
+      OnLinkedActivation(rawMsgData, *ac, *casterRef,
+                         static_cast<uint32_t>(msg.data.target));
+      return;
+    }
+  }
   // thuum docs/verbs/cell-host.md: a hosted caster is its cell's host's;
   // an actor a user plays is nobody's to report for
   uint32_t hosterId = 0;
@@ -3335,6 +3350,104 @@ void ActionListener::OnWordWall(const RawMessageData& rawMsgData,
   spdlog::info("[verb:word-wall] {:x} learns word {:x} at wall {:x} ({:.0f} "
                "units)",
                actor->GetFormId(), *word, msg.wall, distance);
+}
+
+// thuum docs/verbs/traps.md (M4): the cell's host reports its engine's linked
+// activation. The pair must be the game files' (the target's activation
+// parents name the caster: WorldState's table, filled as the target loaded;
+// Bleak Falls' spike wall names its plate and its portcullis names the lever,
+// lab/esm.py 2026-11-01), the reporter must host the target's cell, and a
+// game sends at most eight a second. The server records it through Activate's
+// own path with the caster the engine named (a door's open, the hazard note,
+// the target's own children) and relays it to the cell's other games, which
+// play it with that caster (R2: the host's engine computed it). Every refusal
+// is logged by name.
+void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
+                                        MpActor& reporter,
+                                        MpObjectReference& caster,
+                                        uint32_t targetId)
+{
+  auto targetPtr = std::dynamic_pointer_cast<MpObjectReference>(
+    partOne.worldState.LookupFormById(targetId));
+  if (!targetPtr) {
+    spdlog::info("[verb:traps] E_TRAP_NO_REF: {:x} reports {:x} activating "
+                 "{:x}, no such reference",
+                 reporter.GetFormId(), caster.GetFormId(), targetId);
+    return;
+  }
+  const auto cell = partOne.worldState.CellOf(
+    targetPtr->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles),
+    targetPtr->GetPos());
+  if (!cell) {
+    spdlog::info("[verb:traps] E_TRAP_NO_CELL: {:x} reports {:x} activating "
+                 "{:x}, whose cell is unknown",
+                 reporter.GetFormId(), caster.GetFormId(), targetId);
+    return;
+  }
+  const auto host = partOne.GetCellHost(*cell);
+  if (!host.hosted || host.player != reporter.GetFormId()) {
+    spdlog::info("[verb:traps] E_TRAP_NOT_HOST: {:x} reports {:x} activating "
+                 "{:x} in cell {:x}, which it does not host",
+                 reporter.GetFormId(), caster.GetFormId(), targetId, *cell);
+    return;
+  }
+  const auto children =
+    partOne.worldState.activationChildsByActivationParent.find(
+      caster.GetFormId());
+  if (children ==
+        partOne.worldState.activationChildsByActivationParent.end() ||
+      children->second.find(targetPtr->GetFormId()) ==
+        children->second.end()) {
+    spdlog::info("[verb:traps] E_TRAP_UNLINKED: {:x} reports {:x} activating "
+                 "{:x}, whose activation parents do not name it",
+                 reporter.GetFormId(), caster.GetFormId(), targetId);
+    return;
+  }
+  const uint64_t nowMs = MonotonicMs();
+  auto& window = linkedActivationWindows[rawMsgData.userId];
+  if (nowMs - window.startMs >= 1000) {
+    window.startMs = nowMs;
+    window.count = 0;
+  }
+  if (window.count >= 8) {
+    spdlog::info(
+      "[verb:traps] E_TRAP_RATE: {:x} reports {:x} activating {:x}, "
+      "the ninth in a second; dropped",
+      reporter.GetFormId(), caster.GetFormId(), targetId);
+    return;
+  }
+  ++window.count;
+  NoteActivation(*targetPtr, std::chrono::steady_clock::now());
+  try {
+    constexpr bool kDefaultProcessingOnlyFalse = false;
+    constexpr bool kNotASecondActivation = false;
+    constexpr bool kReportedByHost = true;
+    targetPtr->Activate(caster, kDefaultProcessingOnlyFalse,
+                        kNotASecondActivation, kReportedByHost);
+  } catch (std::exception& e) {
+    spdlog::info("[verb:traps] E_TRAP_ACTIVATE: {:x} reports {:x} activating "
+                 "{:x}: {}",
+                 reporter.GetFormId(), caster.GetFormId(), targetId, e.what());
+    return;
+  }
+  RelayedActivationMessage relay;
+  relay.target = targetPtr->GetFormId();
+  relay.caster = caster.GetFormId();
+  size_t sent = 0;
+  for (auto listener : targetPtr->GetActorListeners()) {
+    if (listener == &reporter) {
+      continue;
+    }
+    if (partOne.serverState.UserByActor(listener) !=
+        Networking::InvalidUserId) {
+      listener->SendToUser(relay, true);
+      ++sent;
+    }
+  }
+  spdlog::info("[verb:traps] {:x} activates {:x} in cell {:x} (its host {:x} "
+               "reports): relayed to {} game(s)",
+               caster.GetFormId(), targetPtr->GetFormId(), *cell,
+               reporter.GetFormId(), sent);
 }
 
 // thuum docs/verbs/locks.md (M4): a player's report on a lock. The rule

@@ -48,6 +48,7 @@
 #include "PutItemMessage.h"
 #include "QuestStageMessage.h"
 #include "RaceMenuPresetMessage.h"
+#include "RelayedActivationMessage.h"
 #include "RestIntentMessage.h"
 #include "SetGameTimeMessage.h"
 #include "SetInventoryMessage.h"
@@ -138,4 +139,5 @@
   REGISTER_MESSAGE(SetWeatherMessage)                                         \
   REGISTER_MESSAGE(PerkPickMessage)                                           \
   REGISTER_MESSAGE(PerkStateMessage)                                          \
-  REGISTER_MESSAGE(WordWallMessage)
+  REGISTER_MESSAGE(WordWallMessage)                                           \
+  REGISTER_MESSAGE(RelayedActivationMessage)

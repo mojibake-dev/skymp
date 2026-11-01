@@ -103,5 +103,8 @@ enum class MsgType : uint8_t
                    // player
   WordWall = 69,   // thuum docs/verbs/word-wall.md (M4): the word wall trigger
                    // a player's game fired, its word the server's
+  RelayedActivation =
+    70, // thuum docs/verbs/traps.md (M4): a linked activation
+        // the cell's host reported, to the cell's other games
   Max
 };

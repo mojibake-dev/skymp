@@ -1995,6 +1995,24 @@ wire_struct! {
 }
 
 wire_struct! {
+    /// MsgType 70, thuum's (docs/verbs/traps.md, M4): a linked activation the
+    /// cell's host reported (a pressure plate firing its spike wall, a lever
+    /// opening its portcullis: the target's activation parents name the
+    /// caster in the game files), told to the cell's other games so each
+    /// engine plays it with the caster the host's did. Server to client,
+    /// reliable. Reason codes: `E_VAL_RANGE` (a target or caster of 0).
+    pub struct RelayedActivation {
+        /// `"t": 70`.
+        #[serde(default)]
+        pub t: MsgT<70>,
+        /// The activated reference; never 0.
+        pub target: u32,
+        /// The reference that activated it; never 0.
+        pub caster: u32,
+    }
+}
+
+wire_struct! {
     /// One skill use (docs/verbs/leveling.md): the skill by its ActorValue and
     /// the action's base amount as the engine computed it.
     pub struct SkillUseEntry {

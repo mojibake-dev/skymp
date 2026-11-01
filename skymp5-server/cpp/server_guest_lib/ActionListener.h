@@ -145,6 +145,13 @@ public:
   virtual void OnWordWall(const RawMessageData& rawMsgData,
                           const WordWallMessage& msg);
 
+  // thuum docs/verbs/traps.md (M4): a linked activation the cell's host
+  // reports (a reference that is no actor activating the reference whose
+  // activation parents name it): recorded through Activate's own path, and
+  // relayed to the cell's other games as RelayedActivation under a budget
+  void OnLinkedActivation(const RawMessageData& rawMsgData, MpActor& reporter,
+                          MpObjectReference& caster, uint32_t targetId);
+
   // thuum docs/verbs/cell-host.md: a game's cell loaded or left its loaded
   // set; the server's election follows (wire-rules cells)
   virtual void OnCellLoaded(const RawMessageData& rawMsgData,
@@ -366,6 +373,15 @@ private:
   // thuum docs/verbs/locks.md: when each player last reported on each lock
   // (monotonic ms), for the rule's gap
   std::map<std::pair<uint32_t, uint32_t>, uint64_t> lastLockReportMs;
+  // thuum docs/verbs/traps.md: a reporting game's linked activations, at
+  // most 8 in any second (UNMEASURED; the read counts the engine's own)
+  struct LinkedActivationWindow
+  {
+    uint64_t startMs = 0;
+    uint32_t count = 0;
+  };
+  std::unordered_map<Networking::UserId, LinkedActivationWindow>
+    linkedActivationWindows;
   // thuum docs/verbs/spell-cast.md (train-27): a cast delivered to its
   // target (touch, target actor) whose relay waits for its first hit, by
   // the caster's form id and hand; the hit's claim (CastClaim::relay)

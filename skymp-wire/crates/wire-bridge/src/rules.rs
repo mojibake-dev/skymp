@@ -26,6 +26,10 @@ mod ffi {
         is_recorded_race: bool,
         /// The form is a RACE with the Playable flag.
         is_playable_race: bool,
+        /// The race is on the core's restricted list (`restrictedRaces`).
+        is_restricted: bool,
+        /// The actor's profile is on the race's permit list.
+        is_permitted: bool,
     }
 
     /// What the core knows about a player's melee hit on another player.
@@ -2024,6 +2028,8 @@ fn race_allowed(f: &RaceFacts) -> bool {
         has_game_files: f.has_game_files,
         is_recorded_race: f.is_recorded_race,
         is_playable_race: f.is_playable_race,
+        is_restricted: f.is_restricted,
+        is_permitted: f.is_permitted,
     })
 }
 
@@ -3747,7 +3753,20 @@ mod tests {
     #[test]
     fn the_bridge_passes_the_rules_through() {
         assert!(!activation_within_reach(1509.0, 0.0).allowed);
-        assert!(race_allowed(&RaceFacts { has_game_files: true, is_recorded_race: false, is_playable_race: true }));
+        assert!(race_allowed(&RaceFacts {
+            has_game_files: true,
+            is_recorded_race: false,
+            is_playable_race: true,
+            is_restricted: false,
+            is_permitted: false,
+        }));
+        assert!(!race_allowed(&RaceFacts {
+            has_game_files: true,
+            is_recorded_race: false,
+            is_playable_race: true,
+            is_restricted: true,
+            is_permitted: false,
+        }));
         let v = melee_within_reach(&MeleeFacts {
             distance: 500.0,
             combat_distance: 141.0,

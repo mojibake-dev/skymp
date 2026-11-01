@@ -538,6 +538,26 @@ fn check_create_actor(m: &skymp::CreateActor) -> Result<(), Reject> {
             return Err(Reject::Range);
         }
     }
+    // thuum docs/verbs/character-creation.md (the permit): the restricted
+    // races and the ones this profile may wear travel together, on the
+    // player's own CreateActor alone; no race id is 0 or repeated, and every
+    // permitted race is a restricted one. Any other shape is out of range
+    match (&m.props.restricted_races, &m.props.permitted_races) {
+        (None, None) => {}
+        (Some(restricted), Some(permitted)) => {
+            let distinct = |ids: &[u32]| {
+                ids.iter().enumerate().all(|(i, id)| *id != 0 && !ids.iter().take(i).any(|p| p == id))
+            };
+            if !m.is_me
+                || !distinct(restricted)
+                || !distinct(permitted)
+                || permitted.iter().any(|p| !restricted.iter().any(|r| r == p))
+            {
+                return Err(Reject::Range);
+            }
+        }
+        _ => return Err(Reject::Range),
+    }
     Ok(())
 }
 
@@ -2754,5 +2774,47 @@ mod spell_placed_tests {
         assert_eq!(validate_server(&placed(None, None)), Ok(()));
         assert_eq!(validate_server(&placed(None, Some("DOOR"))), Ok(()));
         assert_eq!(validate_server(&placed(None, Some("NPC_"))), Ok(()));
+    }
+}
+
+#[cfg(test)]
+mod race_permit_tests {
+    use super::*;
+
+    fn permit(is_me: bool, restricted: Option<&[u32]>, permitted: Option<&[u32]>) -> Message {
+        let list = |ids: &[u32]| ids.to_vec().try_into().unwrap_or_default();
+        Message::CreateActor(skymp::CreateActor {
+            idx: 7,
+            is_me,
+            refr_id: Some(0xff00_0000),
+            base_id: Some(0x7),
+            props: skymp::CreateActorProps {
+                restricted_races: restricted.map(list),
+                permitted_races: permitted.map(list),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn the_permit_travels_whole_on_the_players_own_create_actor() {
+        // thuum docs/verbs/character-creation.md (the permit): rotfern's two
+        // races restricted, one profile permitted both, another none
+        const A: u32 = 0x0800_aa00;
+        const B: u32 = 0x0801_9d08;
+        assert_eq!(validate_server(&permit(true, Some(&[A, B]), Some(&[A, B]))), Ok(()));
+        assert_eq!(validate_server(&permit(true, Some(&[A, B]), Some(&[]))), Ok(()));
+        assert_eq!(validate_server(&permit(true, Some(&[]), Some(&[]))), Ok(()));
+        assert_eq!(validate_server(&permit(true, None, None)), Ok(()));
+        // half a permit, a figure's, a race of 0, a repeat, a permitted race
+        // that is not restricted: none is a shape the server sends
+        assert_eq!(validate_server(&permit(true, Some(&[A]), None)), Err(Reject::Range));
+        assert_eq!(validate_server(&permit(true, None, Some(&[A]))), Err(Reject::Range));
+        assert_eq!(validate_server(&permit(false, Some(&[A]), Some(&[A]))), Err(Reject::Range));
+        assert_eq!(validate_server(&permit(true, Some(&[A, 0]), Some(&[]))), Err(Reject::Range));
+        assert_eq!(validate_server(&permit(true, Some(&[A, A]), Some(&[]))), Err(Reject::Range));
+        assert_eq!(validate_server(&permit(true, Some(&[A]), Some(&[B]))), Err(Reject::Range));
+        assert_eq!(validate_server(&permit(true, Some(&[A, B]), Some(&[A, A]))), Err(Reject::Range));
     }
 }

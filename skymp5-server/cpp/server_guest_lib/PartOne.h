@@ -223,6 +223,14 @@ public:
   std::vector<QuestStageDone> SharedQuestsAtLogin();
   bool QuestStageDoneAlready(const QuestStageDone& done);
   std::vector<QuestStageDone> MergeQuestStage(const QuestStageDone& done);
+
+  // thuum docs/verbs/character-creation.md (the permit, M5): the races the
+  // race menu offers only to listed profiles, from server-settings.json's
+  // `restrictedRaces` ({"<shortid>:<plugin>": [profile ids]}). The table is
+  // the world's (WorldState::restrictedRaces), resolved against the load
+  // order when a race is judged or a player's own CreateActor is written,
+  // since the settings are read before the game files load
+  void SetRestrictedRacesSettings(const std::string& restrictedRacesJson);
   bool QuestRecordFull();
   // The world's journal: a server-made reference at kWorldJournalRefId (far
   // above WorldState::GenerateFormId's walk up from 0xff000000) whose change

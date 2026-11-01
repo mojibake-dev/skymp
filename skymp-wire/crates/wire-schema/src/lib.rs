@@ -51,7 +51,11 @@ use bounded::{String, Vec};
 /// trigger reported by the player's game, the word the server's.
 /// 28: RelayedActivation (thuum docs/verbs/traps.md, m4-traps): a linked
 /// activation the cell's host reported, told to the cell's other games.
-pub const SCHEMA_VERSION: u16 = 28;
+/// 29: CreateActorProps.restricted_races and .permitted_races (thuum
+/// docs/verbs/character-creation.md, the permit, m5-race-permit): the races
+/// the server restricts to listed profiles and the ones the player's own
+/// profile may wear, on its own CreateActor.
+pub const SCHEMA_VERSION: u16 = 29;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -91,6 +95,9 @@ pub mod cap {
     pub const FATE_WORN: usize = 32;
     /// Leveled templates one NPC resolves through.
     pub const TEMPLATE_CHAIN: usize = 64;
+    /// Races a server restricts to listed profiles (Skyrim.esm has 99 RACE
+    /// records, ten of them playable; a mod list's custom races are a few).
+    pub const RACES: usize = 128;
     /// Node overrides on one reference.
     pub const NODES: usize = 256;
     /// A node name in a model.

@@ -66,6 +66,13 @@ export interface CreateActorMessageAdditionalProps {
     templateChain?: number[];
     inventory?: Inventory;
 
+    // thuum docs/verbs/character-creation.md, the race permit: on the
+    // player's own actor, the races the server restricts and the ones this
+    // profile may wear (global race form ids); absent or empty for a profile
+    // with no permit
+    restrictedRaces?: number[];
+    permittedRaces?: number[];
+
     isDead?: boolean; // TODO: take a look why doubles CreateActorMessageMainProps
 
     // thuum docs/verbs/spell-placed-object.md (ADR-057): the server id of the caster whose accepted cast placed this MSTT or ACTI; absent for every other form

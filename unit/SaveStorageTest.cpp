@@ -257,11 +257,14 @@ TEST_CASE("FlushSaveStorage writes the position the movement policy left "
   p.AttachSaveStorage(storage);
   p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
   auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
-  // the first movement sample requests a save (no save request yet); the
-  // second, inside IsLocationSavingNeeded's 30 s, is left to the record alone
+  // the creation requested a save of its own (MpObjectReference::Init, a new
+  // form with no change form; WorldState::RequestSave copies the change form
+  // then), so both movement samples fall inside IsLocationSavingNeeded's 30 s
+  // and are left to the record alone
   ac.SetPos({ 100, 0, 0 }, SetPosMode::CalledByUpdateMovement);
   ac.SetPos({ 200, 0, 0 }, SetPosMode::CalledByUpdateMovement);
   REQUIRE(ac.GetPos().x == 200.f);
+  REQUIRE(ac.HasUnsavedEdit() == true);
 
   auto saved = [&]() -> std::optional<float> {
     std::optional<float> x;
@@ -273,18 +276,17 @@ TEST_CASE("FlushSaveStorage writes the position the movement policy left "
     return x;
   };
 
-  // the storage drained without the flush holds the first sample: the lag a
-  // restart restores
+  // the storage drained without the flush holds the creation's position: the
+  // lag a restart restores
   const auto start = std::chrono::steady_clock::now();
   while (std::chrono::steady_clock::now() - start < std::chrono::seconds(5)) {
     p.Tick(); // the world's tick drives the save storage (TickSaveStorage)
-    auto x = saved();
-    if (x && *x == 100.f) {
+    if (saved()) {
       break;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
-  REQUIRE(saved() == std::optional<float>(100.f));
+  REQUIRE(saved() == std::optional<float>(0.f));
 
   // the flush requests the unsaved edit and drains the storage
   size_t requested = 0;

@@ -1605,6 +1605,14 @@ void MpObjectReference::Init(WorldState* parent, uint32_t formId,
   }
 }
 
+void MpObjectReference::FlushUnsavedEdit()
+{
+  if (!HasUnsavedEdit()) {
+    return;
+  }
+  EditChangeForm([](MpChangeForm&) {}, Mode::RequestSave);
+}
+
 bool MpObjectReference::IsLocationSavingNeeded() const
 {
   auto last = GetLastSaveRequestMoment();

@@ -216,6 +216,23 @@ const main = async () => {
   }
   const ctx = { svr: server, gm: new EventEmitter() };
 
+  // thuum docs/verbs/cell-host.md: a stop flushes the records before the exit
+  // (Docker's restart sends SIGTERM, then SIGKILL after 10 s), so a resident
+  // walking at the restart comes back where she stood, not where the save
+  // last caught her (c-riverwood's restart leg, 20261101-052926: 800 to 1,200
+  // units back; the movement policy saves a record every 30 s at most)
+  const stopOnSignal = (signal: string) => {
+    try {
+      const drained = server.flushSaves(5000);
+      console.log(`${signal}: saves flushed ${drained ? "whole" : "partly (the 5 s budget ran out)"}`);
+    } catch (e) {
+      console.error(`${signal}: flushing saves failed: ${e}`);
+    }
+    process.exit(0);
+  };
+  process.on("SIGTERM", () => stopOnSignal("SIGTERM"));
+  process.on("SIGINT", () => stopOnSignal("SIGINT"));
+
   console.log(`Current process ID is ${pid}`);
 
   (async () => {

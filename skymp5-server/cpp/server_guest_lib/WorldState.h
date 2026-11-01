@@ -107,6 +107,15 @@ public:
                      std::chrono::system_clock::duration time);
 
   void RequestSave(MpObjectReference& ref);
+  // thuum docs/verbs/cell-host.md: at a stop, every record's unsaved edit is
+  // requested and the save storage driven until nothing is pending or in
+  // flight, within the budget; true when drained. `requested` receives the
+  // number of forms whose unsaved edit the flush requested. A process that
+  // exits on SIGTERM without it loses up to 30 s of a moving record (the
+  // movement policy) and the batch in flight (c-riverwood's restart leg,
+  // 20261101-052926: a walking resident back 800 to 1,200 units)
+  bool FlushSaveStorage(std::chrono::milliseconds budget,
+                        size_t* requested = nullptr);
   bool HasEspmFile(std::string_view filename) const noexcept;
 
   template <typename T>

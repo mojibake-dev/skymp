@@ -30,7 +30,15 @@ public:
     f(changeForm);
     if (!blockSaving && mode == Mode::RequestSave) {
       lastSaveRequest = std::chrono::system_clock::now();
+      unsavedEdit = false;
       ChangeFormGuard_::RequestSave(self);
+    } else if (!blockSaving) {
+      // thuum docs/verbs/cell-host.md: an edit the saving policy skipped (a
+      // movement sample inside IsLocationSavingNeeded's 30 s) stays in the
+      // record alone until the next requested save; a stop flushes it
+      // (WorldState::FlushSaveStorage), else a resident walking at a restart
+      // comes back where the save last caught her (c-riverwood 2026-11-01)
+      unsavedEdit = true;
     }
   }
 
@@ -38,10 +46,14 @@ public:
 
   auto GetLastSaveRequestMoment() const { return lastSaveRequest; }
 
+  // whether the record holds an edit no save request carried yet
+  bool HasUnsavedEdit() const noexcept { return unsavedEdit; }
+
   bool blockSaving = false;
 
 private:
   MpChangeForm changeForm;
   MpObjectReference* const self;
   std::optional<std::chrono::system_clock::time_point> lastSaveRequest;
+  bool unsavedEdit = false;
 };

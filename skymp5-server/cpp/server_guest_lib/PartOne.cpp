@@ -598,6 +598,20 @@ void PartOne::AttachEspm(espm::Loader* espm)
   LoadSkillTable();
 }
 
+bool PartOne::FlushSaves(std::chrono::milliseconds budget)
+{
+  const auto start = std::chrono::steady_clock::now();
+  size_t requested = 0;
+  const bool drained = worldState.FlushSaveStorage(budget, &requested);
+  const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::steady_clock::now() - start);
+  pImpl->logger->info(
+    "FlushSaves - {} unsaved record(s) requested, the storage "
+    "{} in {} ms",
+    requested, drained ? "drained" : "NOT drained (budget)", took.count());
+  return drained;
+}
+
 void PartOne::AttachSaveStorage(
   std::shared_ptr<
     Viet::ISaveStorage<MpChangeForm, FormDesc, std::vector<FormDesc>>>

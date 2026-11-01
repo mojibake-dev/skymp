@@ -30,6 +30,7 @@
 #include <save_storages/AsyncSaveStorage.h> // UpsertFailedException
 #include <save_storages/ISaveStorage.h>
 #include <set>
+#include <thread>
 #include <unordered_map>
 
 namespace {
@@ -847,6 +848,39 @@ void WorldState::TickSaveStorage(const std::chrono::system_clock::time_point&)
   if (!recycleSuccess) {
     // Just resize to previous size, at least not to resize every RequestSave
     pImpl->changesByIdx.resize(previousSize);
+  }
+}
+
+bool WorldState::FlushSaveStorage(std::chrono::milliseconds budget,
+                                  size_t* requested)
+{
+  if (!pImpl->saveStorage) {
+    if (requested) {
+      *requested = 0;
+    }
+    return true;
+  }
+  size_t n = 0;
+  for (auto& [formId, form] : forms) {
+    MpObjectReference* refr = form ? form->AsObjectReference() : nullptr;
+    if (refr && refr->HasUnsavedEdit()) {
+      refr->FlushUnsavedEdit();
+      ++n;
+    }
+  }
+  if (requested) {
+    *requested = n;
+  }
+  const auto deadline = std::chrono::steady_clock::now() + budget;
+  while (true) {
+    TickSaveStorage(std::chrono::system_clock::now());
+    if (!pImpl->saveStorageBusy && pImpl->changesByIdxEmpty) {
+      return true;
+    }
+    if (std::chrono::steady_clock::now() >= deadline) {
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 }
 

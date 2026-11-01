@@ -10,8 +10,11 @@ PartOne& GetPartOne();
 // trigger 0x709d2 (ACTI 0x5095e WordWallTrigger, its script's myWord01 the
 // WOOP WordFus 0x13e22, its wordWall01 the wall 0x709d1) at (-7601, -154,
 // 674); the wall 0x709d1 itself (ACTI 0x7098e, at (-7802, 100, 521)) teaches
-// nothing and is what the reach is measured to (the trigger's bounds are a
-// 4,000-unit box, lab/esm.py 2026-11-01).
+// nothing; the trigger's primitive is a sphere of radius 2,065 around it
+// (XPRM type 2, lab/esm.py 2026-11-01), and the engine sends OnTrigger to
+// a player anywhere inside it (x-word-wall-read 20261101-131832), so a
+// report from inside the sphere is accepted however far the wall is, and
+// one from outside it falls to the activation reach of the wall.
 namespace {
 constexpr uint32_t kReader = 0xff000fd1;
 constexpr uint32_t kSanctum = 0x371dd;
@@ -79,11 +82,29 @@ TEST_CASE("A word wall's trigger teaches its word into the record once, "
   Leave(p);
 }
 
+TEST_CASE("A word wall report from inside the trigger's sphere, far from "
+          "the wall, teaches the word (the engine's own condition)",
+          "[WordWall][espm]")
+{
+  PartOne& p = GetPartOne();
+  // 1,500 units south of the trigger: inside its 2,065 sphere, about 1,770
+  // off the wall, far past the activation reach
+  Enter(p, { -7601.f, -154.f - 1500.f, 674.f }, kSanctum);
+  auto& reader = p.worldState.GetFormAt<MpActor>(kReader);
+  ReportWall(p, kTrigger);
+  REQUIRE(reader.HasShoutEntry(MpActor::ShoutEntry::WordKnown, kWord));
+  REQUIRE(TeachWordsTold(p) == 1);
+  Leave(p);
+}
+
 TEST_CASE("A word wall report from afar, from another cell, naming the wall "
           "itself or no reference teaches nothing",
           "[WordWall][espm]")
 {
   PartOne& p = GetPartOne();
+  // 2,400 units north of the trigger: outside its sphere (a box of the
+  // same extents would still hold it on this heading, which is why the
+  // shape is read), and far past the wall's reach
   Enter(p, { -7601.f, -254.f + 2500.f, 674.f }, kSanctum);
   auto& reader = p.worldState.GetFormAt<MpActor>(kReader);
   ReportWall(p, kTrigger); // afar

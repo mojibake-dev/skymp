@@ -676,9 +676,9 @@ bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
 
   MpChangeFormREFR* changeForm = nullptr;
   if (!isNpc) {
-    form.reset(new MpObjectReference(formLocationalData,
-                                     formCallbacksFactory(), baseId,
-                                     typeStr.data(), primitiveBoundsDiv2));
+    form.reset(new MpObjectReference(
+      formLocationalData, formCallbacksFactory(), baseId, typeStr.data(),
+      primitiveBoundsDiv2, data.primitiveType));
   } else {
     form.reset(
       new MpActor(formLocationalData, formCallbacksFactory(), baseId));

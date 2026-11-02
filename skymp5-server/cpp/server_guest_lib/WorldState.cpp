@@ -428,12 +428,40 @@ const std::shared_ptr<MpForm>& WorldState::LookupFormByIdNoLoad(
   return it->second;
 }
 
+namespace {
+// a listed form's id in the server's load order, the plugin's name compared
+// as the engine compares it (case-insensitively: the settings' keys are kept
+// in lower case, the load order spells "Skyrim.esm"); 0 for a plugin the
+// server does not load, which FormDesc::ToFormId would throw on
+uint32_t ListedFormId(const FormDesc& desc, const EspmFileList& files)
+{
+  const auto same = [&](const std::string& file) {
+    return file.size() == desc.file.size() &&
+      std::equal(file.begin(), file.end(), desc.file.begin(),
+                 [](char a, char b) {
+                   return std::tolower(static_cast<unsigned char>(a)) ==
+                     std::tolower(static_cast<unsigned char>(b));
+                 });
+  };
+  const auto it = std::find_if(files.begin(), files.end(), same);
+  if (it == files.end()) {
+    return 0;
+  }
+  return FormDesc(desc.shortFormId, *it).ToFormId(files);
+}
+}
+
 bool WorldState::IsPropStatic(uint32_t baseId) const
 {
-  if (propStaticBases.empty()) {
+  if (baseId == 0 || propStaticBases.empty()) {
     return false;
   }
-  return propStaticBases.count(FormDesc::FromFormId(baseId, espmFiles)) != 0;
+  // the train's first T0 (pipeline 4685, 2026-11-02): a FormDesc compare
+  // missed on the plugin's case; the ids are compared instead
+  return std::any_of(propStaticBases.begin(), propStaticBases.end(),
+                     [&](const FormDesc& desc) {
+                       return ListedFormId(desc, espmFiles) == baseId;
+                     });
 }
 
 bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,

@@ -3957,16 +3957,21 @@ void PartOne::CastBondProc(const skymp::rules::BondBreak& bond,
   }
   // the proc as a cast relay (SpellCast, the message every resolved cast
   // travels on): each bonded actor casts the proc on itself, through its
-  // instant caster (castingSource 3), in every game that sees it but the
-  // caster's own, where the mod's script cast both. An observer's game casts
-  // it on the actor's figure through castSpellImmediate's Self branch, the
-  // primitive b-invis-recast proves nightly; the target's own game reads a
-  // caster that is its own player as 0x14 (remoteServer.ts). A Papyrus
-  // Spell.Cast snippet completed in the target's game and applied nothing
-  // (b-shadowbond 20261019-215816, playtest twenty-five), as the driver's
-  // own Spell.Cast never applied anything either (push.md); no cast of the
-  // proc comes back to the server (Skyrim Platform reports only a cast of an
-  // equipped spell), so it is never an act against the bond
+  // instant caster (castingSource 3), in every game that sees it, the
+  // caster's own included since the mod's script is blocked everywhere
+  // (Skyrim Platform's never-admitted list, m2-shadowbond-script-block,
+  // 2026-11-01: until then the caster's game ran the script, which cast both
+  // procs itself, and the relay skipped it; b-shadowbond 20261102-023146 read
+  // the caster's game never invisible once the script was gone). An
+  // observer's game casts it on the actor's figure through
+  // castSpellImmediate's Self branch, the primitive b-invis-recast proves
+  // nightly; a game whose own player the cast names reads the caster as 0x14
+  // (remoteServer.ts, casterIsMe). A Papyrus Spell.Cast snippet completed in
+  // the target's game and applied nothing (b-shadowbond 20261019-215816,
+  // playtest twenty-five), as the driver's own Spell.Cast never applied
+  // anything either (push.md); no cast of the proc comes back to the server
+  // (Skyrim Platform reports only a cast of an equipped spell), so it is
+  // never an act against the bond
   int games = 0;
   for (MpActor* actor : { caster.get(), target.get() }) {
     SpellCastMessage cast;
@@ -3975,8 +3980,7 @@ void PartOne::CastBondProc(const skymp::rules::BondBreak& bond,
     cast.data.spell = procId;
     cast.data.castingSource = 3; // MagicSystem::CastingSource::kInstant
     for (auto* listener : actor->GetActorListeners()) {
-      if (listener == caster.get() ||
-          serverState.UserByActor(listener) == Networking::InvalidUserId) {
+      if (serverState.UserByActor(listener) == Networking::InvalidUserId) {
         continue;
       }
       listener->GetActorToSendTo().SendToUser(cast, true);

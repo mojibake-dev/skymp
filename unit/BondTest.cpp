@@ -303,12 +303,14 @@ TEST_CASE("A bond's claimed hit conceals both for the bond's time, cast in "
     WARN("the proc's delay passed before the wait could be read; skipped");
   }
   CastsFire(p);
-  // the target's game is told of the caster's instant cast (its figure
-  // there) and of its own (0x14 there); the caster's game, where the mod's
-  // script cast both, hears nothing, and no Papyrus snippet carries it
+  // each game is told of the caster's instant cast and of the target's (its
+  // own player as 0x14 there, the other as its figure): the caster's game
+  // too, since the mod's script that cast both there is blocked everywhere
+  // (m2-shadowbond-script-block; b-shadowbond 20261102-023146 read the
+  // caster's game never invisible without this); no Papyrus snippet carries it
   REQUIRE(ProcCastsOn(p, 1) == std::vector<uint32_t>{ kCaster, kTarget });
-  REQUIRE(ProcCastsOn(p, 0).empty());
-  REQUIRE(Sent(p, 0, MsgType::SpellCast) == 0);
+  REQUIRE(ProcCastsOn(p, 0) == std::vector<uint32_t>{ kCaster, kTarget });
+  REQUIRE(Sent(p, 0, MsgType::SpellCast) == 2);
   REQUIRE(Snippets(p, 1, "Spell", "Cast") == 0);
   REQUIRE(Snippets(p, 1, "Actor", "DispelSpell") == 0);
   Leave(p);

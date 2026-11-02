@@ -9,10 +9,11 @@
 # at 3.4 s its hit on c2 names the target: the fixed server relays the cast
 # to c2 with c2's id, records the bond, records the proc's Invisibility on
 # both for the bond's 20 s (MagicEffects to both games) and, 500 ms later,
-# relays the proc as each actor's own instant cast to c2's game (two
-# SpellCast messages, castingSource 3, the caster its own target: one c2
-# casts on c1's figure, one on its own player; c1's own game, where the mod's
-# script casts both, hears none);
+# relays the proc as each actor's own instant cast to both games (two
+# SpellCast messages each, castingSource 3, the caster its own target: a game
+# casts one on the other's figure and one on its own player; c1's own game
+# hears them too since fork m2-shadowbond-script-block blocks the mod's
+# script, which used to cast both there, in every game);
 # the hit begins no fight: Shadowbond's effect is neither hostile nor
 # detrimental by its record (Recover, No Magnitude, No Area, FX Persist), and
 # since train-31 only such an effect's hit begins one (docs/verbs/magic-effects.md,
@@ -109,7 +110,12 @@ divergences:
     msg: {t: 23, data: {spell: 201677618, castingSource: 3}}
     legacy: 0
     wire: 2
-    reason: the proc relayed as each bonded actor's own instant cast (castingSource 3, no launch) to c2's game, which casts it on c1's figure and on its own player (every game but the caster's own, where the mod's script casts both); the legacy server knows no bond
+    reason: the proc relayed as each bonded actor's own instant cast (castingSource 3, no launch) to c2's game, which casts it on c1's figure and on its own player
+  - client: c1
+    msg: {t: 23, data: {spell: 201677618, castingSource: 3}}
+    legacy: 0
+    wire: 2
+    reason: the same two proc casts reach the caster's own game since the mod's script is blocked everywhere (fork m2-shadowbond-script-block, 2026-11-01): its game casts one on its own player and one on c2's figure through castSpellImmediate's Self branch; the legacy server knows no bond
   - client: c1
     msg: {t: 20}
     legacy: 0

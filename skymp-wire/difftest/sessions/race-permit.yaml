@@ -9,13 +9,14 @@
 # menu open, so at 4.5 s c1's OrcRace (79687, 0x13747, playable and
 # unrestricted) is taken there, relayed to c2 and echoed back to c1 (a
 # player's own report keeps the echo it always had, RelayToListeners), while
-# the legacy server refuses it, its menu closed at the first. c2 steps aside
-# as in every session so it outlives c1.
+# the legacy server refuses it, its menu closed at the first.
 #
-# Timing (DIFFTEST_CLIENT_GAP_MS 1500) as character-creation: c2 joins before
-# c1's choices and outlives c1, so c2 also sees c1's departure the way smoke
-# declares it. T2 takes every key but the load order from the deployed
-# settings, so this session wants the permit's setting deployed first.
+# Timing (DIFFTEST_CLIENT_GAP_MS 1500): c2's steps end at 2.5 s and c1's at
+# 4.5 s, so here c1 outlives c2 and the departure the wire detects is c2's,
+# seen by c1 (refr:ff000003), the reverse of character-creation's (T2 of the
+# permit train 25c00758 read it so). T2 takes every key but the load order
+# from the deployed settings, so this session wants the permit's setting
+# deployed first.
 id: race-permit
 clients:
   c1: {profile_id: 9}
@@ -46,8 +47,8 @@ divergences:
     legacy: 0
     wire: 1
     reason: the second look relayed to the neighbour by the fixed server; refused by the legacy server
-  - client: c2
-    msg: {t: 25, idx: "refr:ff000002"}
+  - client: c1
+    msg: {t: 25, idx: "refr:ff000003"}
     legacy: 0
     wire: 1
-    reason: departure detection, graceful close on the wire against RakNet's timeout
+    reason: departure detection, graceful close on the wire against RakNet's timeout; c1 outlives c2 here, so it sees c2's

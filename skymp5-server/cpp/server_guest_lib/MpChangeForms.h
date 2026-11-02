@@ -63,6 +63,42 @@ private:
   Data _learnedSpellIds{};
 };
 
+// thuum docs/verbs/leveling.md (skill books): the skill books this actor has
+// read, by base id, so each raises its skill once per character (the game's
+// kHasBeenRead sits on the base form of the reader's game, which no seat
+// keeps for us). Stored as "readBooks" beside learnedSpells; a record without
+// it reads empty (rule 6's migration).
+struct ReadBooks
+{
+  using Data = std::set<uint32_t>;
+
+  void MarkRead(Data::key_type baseId);
+
+  [[nodiscard]] bool IsRead(Data::key_type baseId) const;
+
+  [[nodiscard]] size_t Count() const noexcept;
+
+  std::vector<Data::key_type> GetReadBooks() const;
+
+  friend bool operator==(const ReadBooks& lhs, const ReadBooks& rhs)
+  {
+    return lhs._bookIds == rhs._bookIds;
+  }
+
+  friend bool operator!=(const ReadBooks& lhs, const ReadBooks& rhs)
+  {
+    return !(lhs == rhs);
+  }
+
+  friend bool operator<(const ReadBooks& lhs, const ReadBooks& rhs)
+  {
+    return lhs._bookIds < rhs._bookIds;
+  }
+
+private:
+  Data _bookIds{};
+};
+
 class MpChangeFormREFR
 {
 public:
@@ -80,6 +116,7 @@ public:
   FormDesc worldOrCellDesc;
   Inventory inv;
   LearnedSpells learnedSpells;
+  ReadBooks readBooks;
 
   bool isHarvested = false;
   bool isOpen = false;
@@ -249,9 +286,9 @@ public:
       count, isRaceMenuOpen, isDead, consoleCommandsAllowed, appearanceDump,
       equipment.ToJson(), actorValues.ToTuple(), healthRespawnPercentage,
       magickaRespawnPercentage, staminaRespawnPercentage, spawnPoint,
-      dynamicFields, spawnDelay, learnedSpells, templateChain, fateLevel,
-      fateDiedAt, lastAnimation, setNodeTextureSet, setNodeScale, displayName,
-      mapMarkers, ingredientEffects, favorites, raceMenuPreset,
+      dynamicFields, spawnDelay, learnedSpells, readBooks, templateChain,
+      fateLevel, fateDiedAt, lastAnimation, setNodeTextureSet, setNodeScale,
+      displayName, mapMarkers, ingredientEffects, favorites, raceMenuPreset,
       actorValueRecord, staffRank, runningEffects, shoutRecord, playerGlobals,
       questStages, placedBySpell, lock, unresolved);
   }

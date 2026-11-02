@@ -556,6 +556,11 @@ public:
   void AddSpell(uint32_t spellId);
   void RemoveSpell(uint32_t spellId);
 
+  // thuum docs/verbs/leveling.md (skill books): the books this actor has
+  // read, each raising its skill once (the record's readBooks)
+  bool IsBookRead(uint32_t baseId) const;
+  void MarkBookRead(uint32_t baseId);
+
   void SetLastAnimEvent(const std::optional<AnimationData>& animationData);
   std::optional<AnimationData> GetLastAnimEvent() const;
 

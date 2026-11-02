@@ -1125,6 +1125,11 @@ void PartOne::Init()
   worldState.skillLevelCost = [this](uint8_t skillAv, uint8_t level) {
     return SkillLevelCost(skillAv, level);
   };
+  // and a skill book's level (ReadBookEvent's skill branch): the increment
+  // is the server's (leveling.md, skill books)
+  worldState.applySkillBook = [this](MpActor& actor, uint8_t skillAv) {
+    return ApplySkillBook(actor, skillAv);
+  };
   // and a hosted NPC's door (npc-handoff D6, and D9's pass through a door
   // since 2026-10-28): the crossing judged by the move verdict for its
   // simulator before the host's engine walks it
@@ -3145,17 +3150,15 @@ float PartOne::SkillLevelCost(uint8_t skillAv, uint8_t level) const
   return pImpl->leveling->level_cost(skillAv, level);
 }
 
-bool PartOne::ApplySkillUse(MpActor& actor, uint8_t skillAv, float amount)
+namespace {
+// the record's standing in the rule's shape: the skills it lists (by their
+// ActorValue; one not listed stands at the floor) and the character
+std::pair<std::vector<skymp::rules::LevelingSkill>,
+          skymp::rules::LevelingCharacter>
+LevelingStanding(const ActorValueRecord& record)
 {
-  auto record = actor.GetActorValueRecord();
-  if (!record) {
-    spdlog::info("[verb:leveling] E_SKILL_NO_RECORD: {:x} uses skill {} "
-                 "before its first actor values report; dropped",
-                 actor.GetFormId(), skillAv);
-    return false;
-  }
   std::vector<skymp::rules::LevelingSkill> skills;
-  for (const auto& s : record->skills) {
+  for (const auto& s : record.skills) {
     skymp::rules::LevelingSkill standing{};
     standing.skill_av = static_cast<uint8_t>(s.skill + kFirstSkillAv);
     standing.level = static_cast<uint8_t>(std::clamp(s.level, 0.f, 255.f));
@@ -3163,33 +3166,40 @@ bool PartOne::ApplySkillUse(MpActor& actor, uint8_t skillAv, float amount)
     skills.push_back(standing);
   }
   skymp::rules::LevelingCharacter character{};
-  character.level = record->level;
-  character.xp = record->xp;
-  const rust::Slice<const skymp::rules::LevelingSkill> slice(skills.data(),
-                                                             skills.size());
-  const auto outcome =
-    pImpl->leveling->apply_use(slice, character, skillAv, amount);
-  if (!outcome.accepted) {
-    static const char* const kWhy[] = { "accepted", "E_SKILL_NONE",
-                                        "E_SKILL_NAN", "E_SKILL_RANGE" };
-    spdlog::warn("[verb:leveling] {}: {:x} uses skill {} with {}; dropped",
-                 outcome.why < 4 ? kWhy[outcome.why] : "E_SKILL_UNKNOWN",
-                 actor.GetFormId(), skillAv, amount);
-    return false;
-  }
-  // the used skill's standing into the record: its progress entry (by the
-  // engine's skill index) and its base (the level the game shows)
+  character.level = record.level;
+  character.xp = record.xp;
+  return { std::move(skills), character };
+}
+
+const char* LevelingRefusal(uint8_t why)
+{
+  static const char* const kWhy[] = { "accepted", "E_SKILL_NONE",
+                                      "E_SKILL_NAN", "E_SKILL_RANGE" };
+  return why < 4 ? kWhy[why] : "E_SKILL_UNKNOWN";
+}
+
+// the judged standing into the record: the skill's progress entry (by the
+// engine's skill index) and its base (the level the game shows), the
+// character; then the record to the actor and the events to the log. The
+// record goes to the game when a level moved, or always with `sendAlways`
+// (a skill book's read: the seat's own increment is replaced by this number)
+void WriteLevelingOutcome(MpActor& actor, ActorValueRecord& record,
+                          uint8_t skillAv,
+                          const skymp::rules::LevelingOutcome& outcome,
+                          const skymp::rules::LevelingTable& leveling,
+                          bool perksEnabled, bool sendAlways)
+{
   const uint8_t skillIndex = static_cast<uint8_t>(skillAv - kFirstSkillAv);
   for (const auto& s : outcome.skills) {
     if (s.skill_av != skillAv) {
       continue;
     }
-    const float threshold = pImpl->leveling->level_cost(s.skill_av, s.level);
+    const float threshold = leveling.level_cost(s.skill_av, s.level);
     auto it = std::find_if(
-      record->skills.begin(), record->skills.end(),
+      record.skills.begin(), record.skills.end(),
       [&](const ActorValueRecord::Skill& r) { return r.skill == skillIndex; });
-    if (it == record->skills.end()) {
-      record->skills.push_back(ActorValueRecord::Skill{
+    if (it == record.skills.end()) {
+      record.skills.push_back(ActorValueRecord::Skill{
         skillIndex, static_cast<float>(s.level), s.xp, threshold });
     } else {
       it->level = static_cast<float>(s.level);
@@ -3197,19 +3207,19 @@ bool PartOne::ApplySkillUse(MpActor& actor, uint8_t skillAv, float amount)
       it->threshold = threshold;
     }
     auto base = std::find_if(
-      record->bases.begin(), record->bases.end(),
+      record.bases.begin(), record.bases.end(),
       [&](const std::pair<uint8_t, float>& b) { return b.first == skillAv; });
-    if (base == record->bases.end()) {
-      record->bases.emplace_back(skillAv, static_cast<float>(s.level));
+    if (base == record.bases.end()) {
+      record.bases.emplace_back(skillAv, static_cast<float>(s.level));
     } else {
       base->second = static_cast<float>(s.level);
     }
   }
-  record->level = outcome.character.level;
-  record->xp = outcome.character.xp;
-  record->threshold =
+  record.level = outcome.character.level;
+  record.xp = outcome.character.xp;
+  record.threshold =
     skymp::rules::leveling_character_threshold(outcome.character.level);
-  actor.SetActorValueRecord(*record);
+  actor.SetActorValueRecord(record);
   for (const auto& e : outcome.events) {
     if (e.kind == 0) {
       spdlog::info("[verb:leveling] {:x} skill {} reaches level {}",
@@ -3219,14 +3229,74 @@ bool PartOne::ApplySkillUse(MpActor& actor, uint8_t skillAv, float amount)
                    actor.GetFormId(), e.level);
     }
   }
-  if (!outcome.events.empty()) {
+  if (sendAlways || !outcome.events.empty()) {
     // the game shows the new level and the bar from the record (R0)
     actor.SendActorValueRecord();
     // a level moves the perk points (thuum docs/verbs/perks.md)
-    if (pImpl->perksEnabled) {
+    if (perksEnabled && !outcome.events.empty()) {
       actor.SendPerkState();
     }
   }
+}
+}
+
+bool PartOne::ApplySkillUse(MpActor& actor, uint8_t skillAv, float amount)
+{
+  auto record = actor.GetActorValueRecord();
+  if (!record) {
+    spdlog::info("[verb:leveling] E_SKILL_NO_RECORD: {:x} uses skill {} "
+                 "before its first actor values report; dropped",
+                 actor.GetFormId(), skillAv);
+    return false;
+  }
+  const auto [skills, character] = LevelingStanding(*record);
+  const rust::Slice<const skymp::rules::LevelingSkill> slice(skills.data(),
+                                                             skills.size());
+  const auto outcome =
+    pImpl->leveling->apply_use(slice, character, skillAv, amount);
+  if (!outcome.accepted) {
+    spdlog::warn("[verb:leveling] {}: {:x} uses skill {} with {}; dropped",
+                 LevelingRefusal(outcome.why), actor.GetFormId(), skillAv,
+                 amount);
+    return false;
+  }
+  WriteLevelingOutcome(actor, *record, skillAv, outcome, *pImpl->leveling,
+                       pImpl->perksEnabled, false);
+  return true;
+}
+
+bool PartOne::ApplySkillBook(MpActor& actor, uint8_t skillAv)
+{
+  if (!pImpl->levelingEnabled) {
+    spdlog::debug("[verb:leveling] {:x} reads a skill book for skill {} with "
+                  "leveling off; dropped",
+                  actor.GetFormId(), skillAv);
+    return false;
+  }
+  auto record = actor.GetActorValueRecord();
+  if (!record) {
+    spdlog::info("[verb:leveling] E_SKILL_NO_RECORD: {:x} reads a skill book "
+                 "for skill {} before its first actor values report; dropped",
+                 actor.GetFormId(), skillAv);
+    return false;
+  }
+  const auto [skills, character] = LevelingStanding(*record);
+  const rust::Slice<const skymp::rules::LevelingSkill> slice(skills.data(),
+                                                             skills.size());
+  const auto outcome = pImpl->leveling->apply_book(slice, character, skillAv);
+  if (!outcome.accepted) {
+    spdlog::warn("[verb:leveling] {}: {:x} reads a skill book for skill {}; "
+                 "dropped",
+                 LevelingRefusal(outcome.why), actor.GetFormId(), skillAv);
+    return false;
+  }
+  if (outcome.events.empty()) {
+    spdlog::info("[verb:leveling] {:x} reads a skill book for skill {} at the "
+                 "cap: the book is spent, nothing moves",
+                 actor.GetFormId(), skillAv);
+  }
+  WriteLevelingOutcome(actor, *record, skillAv, outcome, *pImpl->leveling,
+                       pImpl->perksEnabled, true);
   return true;
 }
 

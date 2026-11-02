@@ -330,6 +330,12 @@ public:
   // through this (MpActor::SetActorValueBaseByServer); none installed, the
   // base moves alone and a line says so
   std::function<float(uint8_t skillAv, uint8_t level)> skillLevelCost;
+  // thuum docs/verbs/leveling.md (skill books): a skill book's one level for
+  // `actor`'s skill at `skillAv` through PartOne's leveling table and record
+  // write (ApplySkillBook); installed by PartOne. True when the record took
+  // it (the book is spent for this character); none installed, or leveling
+  // off, false and the read stands nowhere
+  std::function<bool(MpActor& actor, uint8_t skillAv)> applySkillBook;
   // thuum docs/verbs/perks.md (the second half): a value through the perk
   // records' entry points the owner's held perks carry (wire-rules perks),
   // installed by PartOne with its perk table; the formulas call it with the

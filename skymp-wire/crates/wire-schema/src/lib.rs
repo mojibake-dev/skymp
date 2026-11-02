@@ -58,7 +58,10 @@ use bounded::{String, Vec};
 /// 30: ObjectAnimation (thuum docs/verbs/traps.md, ADR-059 decision 3,
 /// m4-object-animation): a world object's animation event the cell's host
 /// reported, recorded as its lastAnimation and told to the cell's other games.
-pub const SCHEMA_VERSION: u16 = 30;
+/// 31: TrapHit (thuum docs/verbs/traps.md, ADR-059 decision 4, m4-trap-hit):
+/// a trap's hit on another player's body as the cell's host's engine dealt
+/// it, checked against the trap's own table and applied to the record.
+pub const SCHEMA_VERSION: u16 = 31;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -500,6 +503,8 @@ pub enum Message {
     RelayedActivation(skymp::RelayedActivation),
     /// 79, MsgType 71 (thuum). See [`skymp::ObjectAnimation`].
     ObjectAnimation(skymp::ObjectAnimation),
+    /// 80, MsgType 72 (thuum). See [`skymp::TrapHit`].
+    TrapHit(skymp::TrapHit),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -528,7 +533,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 80] = [
+const TABLE: [Row; 81] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -609,14 +614,15 @@ const TABLE: [Row; 80] = [
     row("WordWall", 69, 8, C2S),
     row("RelayedActivation", 70, 16, S2C),
     row("ObjectAnimation", 71, 160, Both),
+    row("TrapHit", 72, 32, C2S),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 80;
-const _: () = assert!(TABLE.len() == 80, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 81;
+const _: () = assert!(TABLE.len() == 81, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -721,6 +727,7 @@ impl Message {
             Message::WordWall(_) => 77,
             Message::RelayedActivation(_) => 78,
             Message::ObjectAnimation(_) => 79,
+            Message::TrapHit(_) => 80,
         }
     }
 
@@ -823,7 +830,8 @@ mod tests {
         assert_eq!(name_of_msg_type(69), Some("WordWall"));
         assert_eq!(name_of_msg_type(70), Some("RelayedActivation"));
         assert_eq!(name_of_msg_type(71), Some("ObjectAnimation"));
-        assert_eq!(name_of_msg_type(72), None);
+        assert_eq!(name_of_msg_type(72), Some("TrapHit"));
+        assert_eq!(name_of_msg_type(73), None);
     }
 
     #[test]
@@ -931,6 +939,8 @@ mod tests {
                 event: "x".repeat(cap::ANIM_EVENT).try_into().unwrap_or_default(),
                 ..Default::default()
             }),
+            // a trap's hit on another player's body (thuum docs/verbs/traps.md)
+            Message::TrapHit(skymp::TrapHit { refr: u32::MAX, target: u32::MAX, damage: f32::MAX, ..Default::default() }),
             Message::PerkState(skymp::PerkState {
                 perks: core::iter::repeat_n(u32::MAX, cap::PERKS).collect::<alloc::vec::Vec<u32>>().try_into().unwrap_or_default(),
                 points: u16::MAX,

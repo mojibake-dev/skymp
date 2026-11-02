@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, placements, player_globals, props, quest_stages, racemenu, ranged, rest, perks, scripted_effects, shouts, stagger, teleports, weather};
+use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, placements, player_globals, props, quest_stages, racemenu, ranged, rest, perks, scripted_effects, shouts, stagger, teleports, traps, weather};
 
 // the perk table's effect calls carry a CTDA's five parts flat, as add_condition does
 #[allow(clippy::too_many_arguments)]
@@ -572,6 +572,21 @@ mod ffi {
         picks: u8,
         /// The lock after.
         state: LockStateRow,
+    }
+
+    /// A host's trap hit report judged (thuum docs/verbs/traps.md, ADR-059
+    /// decision 4, wire-rules traps): accepted with the table's `damage` to
+    /// apply, or `why` 1 no damage table on the reference, 2 a number not
+    /// finite or below zero, 3 out of the trap's reach, 4 a number the trap's
+    /// scripts could not pick.
+    #[derive(Debug, Clone, PartialEq)]
+    struct TrapHitVerdict {
+        /// Accepted.
+        accepted: bool,
+        /// Why not, as above; 0 when accepted.
+        why: u8,
+        /// The table's value to apply; 0 when refused.
+        damage: f32,
     }
 
     /// A skill's standing as the record holds it (thuum docs/verbs/
@@ -1752,6 +1767,14 @@ mod ffi {
         /// against the state, the player's reach, the Lockpicks it holds and the gap since its last
         /// report on this lock (u64::MAX for none).
         fn lock_report(state: &LockStateRow, outcome: u8, broken: u8, within_reach: bool, picks_held: u32, since_last_ms: u64) -> LockReportVerdict;
+        /// A host's trap hit report (thuum docs/verbs/traps.md, ADR-059 decision
+        /// 4): the trap's damage table from its scripts' properties, the number
+        /// the host's engine dealt, the distance from the trap's origin to the
+        /// target's recorded position.
+        fn trap_hit(table: &[f32], reported: f32, distance: f32) -> TrapHitVerdict;
+        /// How far from a trap's origin a hit body may stand (wire-rules
+        /// traps::REACH), for the core's log.
+        fn trap_reach() -> f32;
         /// Sets standing in the world.
         fn live_sets(self: &Placements) -> usize;
 
@@ -2013,7 +2036,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
+pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, TrapHitVerdict, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -2701,6 +2724,26 @@ fn lock_report(state: &LockStateRow, outcome: u8, broken: u8, within_reach: bool
             state: state.clone(),
         },
     }
+}
+
+fn trap_hit(table: &[f32], reported: f32, distance: f32) -> TrapHitVerdict {
+    match traps::hit(table, reported, distance) {
+        Ok(damage) => TrapHitVerdict { accepted: true, why: 0, damage },
+        Err(why) => TrapHitVerdict {
+            accepted: false,
+            why: match why {
+                traps::Refusal::Table => 1,
+                traps::Refusal::Range => 2,
+                traps::Refusal::Reach => 3,
+                traps::Refusal::Damage => 4,
+            },
+            damage: 0.0,
+        },
+    }
+}
+
+fn trap_reach() -> f32 {
+    traps::REACH
 }
 
 /// The eighteen skills' constants (wire-rules leveling).
@@ -4001,6 +4044,18 @@ mod tests {
         assert_eq!(t.apply_use(&skills, character.clone(), 5, 10.0).why, 1);
         assert_eq!(t.apply_use(&skills, character.clone(), 6, f32::NAN).why, 2);
         assert_eq!(t.apply_use(&skills, character.clone(), 6, 0.0).why, 3);
+    }
+
+    #[test]
+    fn trap_hits_pass_the_tables_values_within_reach() {
+        let wall = [75.0, 100.0, 125.0, 150.0, 175.0, 200.0];
+        let ok = trap_hit(&wall, 75.0, 100.0);
+        assert!(ok.accepted);
+        assert_eq!(ok.damage, 75.0);
+        assert_eq!(trap_hit(&wall, 76.0, 100.0).why, 4);
+        assert_eq!(trap_hit(&wall, 75.0, trap_reach() + 1.0).why, 3);
+        assert_eq!(trap_hit(&wall, f32::NAN, 100.0).why, 2);
+        assert_eq!(trap_hit(&[], 75.0, 100.0).why, 1);
     }
 
     #[test]

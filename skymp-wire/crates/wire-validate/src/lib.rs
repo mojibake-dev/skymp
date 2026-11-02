@@ -194,6 +194,11 @@ pub struct ClientGuard {
     /// events, a plate's press a wall's swing and reset; a burst of 32 then 8
     /// a second (UNMEASURED).
     pub object_animation_budget: TokenBucket,
+    /// Budget for a host's trap hit reports (TrapHit, thuum
+    /// docs/verbs/traps.md, ADR-059 decision 4): one per body a trap strikes,
+    /// a swinging wall's two swings a second at most; a burst of 16 then 8 a
+    /// second (UNMEASURED).
+    pub trap_hit_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -237,6 +242,7 @@ impl Default for ClientGuard {
             perk_pick_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             word_wall_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
             object_animation_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 8, last_refill_ms: 0 },
+            trap_hit_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 8, last_refill_ms: 0 },
         }
     }
 }
@@ -783,6 +789,20 @@ fn check_object_animation(m: &skymp::ObjectAnimation) -> Result<(), Reject> {
     Ok(())
 }
 
+/// A trap's hit on another player's body (docs/verbs/traps.md, ADR-059
+/// decision 4): a trap reference and a target, never 0, and a damage that is
+/// finite and not below zero; the table and the reach are the core's rule
+/// (wire-rules traps), the host's budget is `trap_hit_budget`.
+fn check_trap_hit(m: &skymp::TrapHit) -> Result<(), Reject> {
+    if !m.damage.is_finite() {
+        return Err(Reject::NonFinite);
+    }
+    if m.refr == 0 || m.target == 0 || m.damage < 0.0 {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
 /// The server's weather word (docs/verbs/weather.md): a place, never 0; the
 /// weather may be 0 (a release); the transport refuses it from a client by
 /// direction.
@@ -963,6 +983,7 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::PerkPick(_) => take(&mut guard.perk_pick_budget, now_ms),
         Message::WordWall(_) => take(&mut guard.word_wall_budget, now_ms),
         Message::ObjectAnimation(_) => take(&mut guard.object_animation_budget, now_ms),
+        Message::TrapHit(_) => take(&mut guard.trap_hit_budget, now_ms),
         _ => Ok(()),
     }
 }
@@ -1148,6 +1169,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::WordWall(m) => check_word_wall(m),
         Message::RelayedActivation(m) => check_relayed_activation(m),
         Message::ObjectAnimation(m) => check_object_animation(m),
+        Message::TrapHit(m) => check_trap_hit(m),
         Message::CreateActor(m) => check_create_actor(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
@@ -2364,6 +2386,25 @@ mod tests {
         assert_eq!(validate(&report(0x709d2), &mut guard, 1_000), Ok(()));
         assert_eq!(validate(&report(0x709d2), &mut guard, 1_000), Err(Reject::Rate));
         assert_eq!(validate(&report(0x709d2), &mut guard, 2_000), Ok(()));
+    }
+
+    #[test]
+    fn trap_hits_name_a_trap_and_a_target_with_a_finite_damage_and_are_rate_limited() {
+        use wire_schema::skymp::TrapHit;
+        let hit = |refr, target, damage| Message::TrapHit(TrapHit { refr, target, damage, ..Default::default() });
+        assert_eq!(validate_server(&hit(0x54b15, 0xff000003, 75.0)), Ok(()));
+        assert_eq!(validate_server(&hit(0x54b15, 0xff000003, 0.0)), Ok(()));
+        assert_eq!(validate_server(&hit(0, 0xff000003, 75.0)), Err(Reject::Range));
+        assert_eq!(validate_server(&hit(0x54b15, 0, 75.0)), Err(Reject::Range));
+        assert_eq!(validate_server(&hit(0x54b15, 0xff000003, -1.0)), Err(Reject::Range));
+        assert_eq!(validate_server(&hit(0x54b15, 0xff000003, f32::NAN)), Err(Reject::NonFinite));
+        assert_eq!(validate_server(&hit(0x54b15, 0xff000003, f32::INFINITY)), Err(Reject::NonFinite));
+        let mut guard = ClientGuard::default();
+        for _ in 0..16 {
+            assert_eq!(validate(&hit(0x54b15, 0xff000003, 75.0), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&hit(0x54b15, 0xff000003, 75.0), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&hit(0x54b15, 0xff000003, 75.0), &mut guard, 2_000), Ok(()));
     }
 
     #[test]

@@ -2043,6 +2043,29 @@ wire_struct! {
 }
 
 wire_struct! {
+    /// MsgType 72, thuum's (docs/verbs/traps.md, ADR-059 decision 4): a trap's
+    /// hit on another player's body as the cell's host's engine dealt it (the
+    /// swinging wall's leveled damage through the engine's ProcessTrapHit),
+    /// reported by the host. Client to server, reliable, R1: the server checks
+    /// the number against the trap's own table from the game files and the hit
+    /// against the trap's reach (wire-rules traps), applies the table's value
+    /// to the target's record and answers with ChangeValues. Reason codes:
+    /// `E_VAL_RANGE` (a refr or target of 0, a damage below 0),
+    /// `E_VAL_NONFINITE`, `E_VAL_RATE` (the sender's budget).
+    pub struct TrapHit {
+        /// `"t": 72`.
+        #[serde(default)]
+        pub t: MsgT<72>,
+        /// The trap reference, a game-file world object; never 0.
+        pub refr: u32,
+        /// The hit actor, another player's; never 0.
+        pub target: u32,
+        /// The damage the host's engine dealt; finite, 0 or above.
+        pub damage: f32,
+    }
+}
+
+wire_struct! {
     /// One skill use (docs/verbs/leveling.md): the skill by its ActorValue and
     /// the action's base amount as the engine computed it.
     pub struct SkillUseEntry {

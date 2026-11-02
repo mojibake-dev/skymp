@@ -61,6 +61,7 @@
 #include "TakeItemMessage.h"
 #include "TeleportMessage.h"
 #include "TeleportMessage2.h"
+#include "TrapHitMessage.h"
 #include "UpdateActionMessage.h"
 #include "UpdateAnimVariablesMessage.h"
 #include "UpdateAnimationMessage.h"
@@ -142,4 +143,5 @@
   REGISTER_MESSAGE(PerkStateMessage)                                          \
   REGISTER_MESSAGE(WordWallMessage)                                           \
   REGISTER_MESSAGE(RelayedActivationMessage)                                  \
-  REGISTER_MESSAGE(ObjectAnimationMessage)
+  REGISTER_MESSAGE(ObjectAnimationMessage)                                    \
+  REGISTER_MESSAGE(TrapHitMessage)

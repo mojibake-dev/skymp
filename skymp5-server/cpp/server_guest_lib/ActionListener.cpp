@@ -44,6 +44,7 @@
 #include <optional>
 #include <random>
 #include <spdlog/spdlog.h>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -3505,6 +3506,200 @@ void ActionListener::OnObjectAnimation(const RawMessageData& rawMsgData,
                "{:x} reports): recorded, relayed to {} game(s)",
                msg.refr, msg.refr, msg.event, *cell, reporter->GetFormId(),
                relayed);
+}
+
+namespace {
+// defined below, in this unnamed namespace, with OnWeaponHit's formula
+float CalculateCurrentHealthPercentage(const MpActor& actor, float damage,
+                                       float healthPercentage,
+                                       float* outBaseHealth);
+}
+
+std::vector<float> ActionListener::TrapDamageTable(
+  const MpObjectReference& trap)
+{
+  std::vector<float> table;
+  if (!partOne.HasEspm()) {
+    return table;
+  }
+  auto& browser = partOne.GetEspm().GetBrowser();
+  auto& cache = partOne.worldState.GetEspmCache();
+  const auto sameName = [](std::string_view a, std::string_view b) {
+    if (a.size() != b.size()) {
+      return false;
+    }
+    for (size_t i = 0; i < a.size(); ++i) {
+      if (std::tolower(static_cast<unsigned char>(a[i])) !=
+          std::tolower(static_cast<unsigned char>(b[i]))) {
+        return false;
+      }
+    }
+    return true;
+  };
+  // MovingTrap's leveled pick (TrapBase::fireTrap resolves one of the six by
+  // the engine's encounter level) and TrapHitBase's own damage
+  static constexpr std::string_view kNames[] = { "LvlDamage1", "LvlDamage2",
+                                                 "LvlDamage3", "LvlDamage4",
+                                                 "LvlDamage5", "LvlDamage6",
+                                                 "damage" };
+  const auto collect = [&](uint32_t formId) {
+    const auto lookup = browser.LookupById(formId);
+    if (!lookup.rec) {
+      return;
+    }
+    espm::ScriptData scriptData;
+    lookup.rec->GetScriptData(&scriptData, cache);
+    for (const auto& script : scriptData.scripts) {
+      if (script.status == 3) {
+        continue;
+      }
+      for (const auto& prop : script.properties) {
+        if (prop.status ==
+            static_cast<uint8_t>(espm::Property::Status::Removed)) {
+          continue;
+        }
+        const bool named = std::any_of(
+          std::begin(kNames), std::end(kNames),
+          [&](std::string_view name) { return sameName(prop.name, name); });
+        if (!named) {
+          continue;
+        }
+        if (prop.type == espm::Property::Type::Int) {
+          table.push_back(static_cast<float>(prop.value.integer));
+        } else if (prop.type == espm::Property::Type::Float) {
+          table.push_back(prop.value.floatingPoint);
+        }
+      }
+    }
+  };
+  collect(trap.GetBaseId());
+  if (trap.IsEspmForm()) {
+    collect(trap.GetFormId());
+  }
+  return table;
+}
+
+void ActionListener::OnTrapHit(const RawMessageData& rawMsgData,
+                               const TrapHitMessage& msg)
+{
+  MpActor* reporter = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!reporter) {
+    return;
+  }
+  if (msg.refr == 0 || msg.target == 0 || msg.refr >= 0xff000000 ||
+      !std::isfinite(msg.damage) || msg.damage < 0.f) {
+    spdlog::info("[verb:traps] E_TRAPHIT_RANGE: {:x} reports trap {:x} "
+                 "hitting {:x} for {}",
+                 reporter->GetFormId(), msg.refr, msg.target, msg.damage);
+    return;
+  }
+  auto trapPtr = std::dynamic_pointer_cast<MpObjectReference>(
+    partOne.worldState.LookupFormById(msg.refr));
+  if (!trapPtr) {
+    spdlog::info("[verb:traps] E_TRAPHIT_NO_REF: {:x} reports trap {:x} "
+                 "hitting {:x}, no such reference",
+                 reporter->GetFormId(), msg.refr, msg.target);
+    return;
+  }
+  if (dynamic_cast<MpActor*>(trapPtr.get())) {
+    spdlog::info("[verb:traps] E_TRAPHIT_ACTOR: {:x} reports trap {:x} "
+                 "hitting {:x}, but {:x} is an actor",
+                 reporter->GetFormId(), msg.refr, msg.target, msg.refr);
+    return;
+  }
+  const auto cell = partOne.worldState.CellOf(
+    trapPtr->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles),
+    trapPtr->GetPos());
+  if (!cell) {
+    spdlog::info("[verb:traps] E_TRAPHIT_NO_CELL: {:x} reports trap {:x} "
+                 "hitting {:x}, the trap's cell unknown",
+                 reporter->GetFormId(), msg.refr, msg.target);
+    return;
+  }
+  const auto host = partOne.GetCellHost(*cell);
+  if (!host.hosted || host.player != reporter->GetFormId()) {
+    spdlog::info("[verb:traps] E_TRAPHIT_NOT_HOST: {:x} reports trap {:x} "
+                 "hitting {:x} in cell {:x}, which it does not host",
+                 reporter->GetFormId(), msg.refr, msg.target, *cell);
+    return;
+  }
+  auto targetPtr = std::dynamic_pointer_cast<MpActor>(
+    partOne.worldState.LookupFormById(msg.target));
+  if (!targetPtr || targetPtr.get() == reporter ||
+      partOne.serverState.UserByActor(targetPtr.get()) ==
+        Networking::InvalidUserId) {
+    // another player's body alone: the host's own takes the engine's number
+    // as its own ChangeValues (the actor-values report), an NPC's values are
+    // the host's HostedActorState
+    spdlog::info("[verb:traps] E_TRAPHIT_TARGET: {:x} reports trap {:x} "
+                 "hitting {:x}, not another player's actor",
+                 reporter->GetFormId(), msg.refr, msg.target);
+    return;
+  }
+  const auto targetCell = partOne.worldState.CellOf(
+    targetPtr->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles),
+    targetPtr->GetPos());
+  if (!targetCell || *targetCell != *cell) {
+    spdlog::info("[verb:traps] E_TRAPHIT_CELL: {:x} reports trap {:x} "
+                 "hitting {:x}, whose record stands in another cell",
+                 reporter->GetFormId(), msg.refr, msg.target);
+    return;
+  }
+  const uint64_t nowMs = MonotonicMs();
+  auto& window = trapHitWindows[msg.refr];
+  if (nowMs - window.startMs >= 1000) {
+    window.startMs = nowMs;
+    window.count = 0;
+  }
+  if (window.count >= 8) {
+    spdlog::info("[verb:traps] E_TRAPHIT_RATE: {:x} reports trap {:x} "
+                 "hitting {:x}, the ninth report in a second on that trap; "
+                 "dropped",
+                 reporter->GetFormId(), msg.refr, msg.target);
+    return;
+  }
+  ++window.count;
+  const auto table = TrapDamageTable(*trapPtr);
+  const float distance = (targetPtr->GetPos() - trapPtr->GetPos()).Length();
+  const auto verdict = skymp::rules::trap_hit(
+    rust::Slice<const float>(table.data(), table.size()), msg.damage,
+    distance);
+  if (!verdict.accepted) {
+    static constexpr const char* kWhy[] = {
+      "E_TRAPHIT_DAMAGE", "E_TRAPHIT_TABLE", "E_TRAPHIT_RANGE",
+      "E_TRAPHIT_REACH", "E_TRAPHIT_DAMAGE"
+    };
+    const char* code = verdict.why < 5 ? kWhy[verdict.why] : kWhy[0];
+    spdlog::info("[verb:traps] {}: trap {:x} hitting {:x} for {} (host {:x} "
+                 "reports; {:.0f} units, reach {:.0f}; table [{}])",
+                 code, msg.refr, msg.target, msg.damage, reporter->GetFormId(),
+                 distance, skymp::rules::trap_reach(), fmt::join(table, ", "));
+    return;
+  }
+  float damage = verdict.damage;
+  if (targetPtr->IsGodMode()) {
+    // thuum docs/verbs/god-mode.md: TGM, no damage taken
+    damage = 0.f;
+  }
+  if (targetPtr->HasRunningEffectOfType(espm::MGEF::EffectType::Etherealize)) {
+    // thuum docs/verbs/self-cast.md: an ethereal target takes nothing
+    damage = 0.f;
+  }
+  ActorValues values = targetPtr->GetChangeForm().actorValues;
+  const float before = values.healthPercentage;
+  float baseHealth = 0.f;
+  values.healthPercentage =
+    CalculateCurrentHealthPercentage(*targetPtr, damage, before, &baseHealth);
+  values.healthPercentage =
+    values.healthPercentage < 0.f ? 0.f : values.healthPercentage;
+  targetPtr->NetSetPercentages(
+    values, nullptr,
+    std::vector<espm::ActorValue>{ espm::ActorValue::Health });
+  targetPtr->SetLastHitTakenTime(std::chrono::steady_clock::now());
+  spdlog::info("[verb:traps] trap {:x} hits {:x} for {:.0f} of {:.0f} (host "
+               "{:x} reports {}; {:.0f} units): health {:.3f} -> {:.3f}",
+               msg.refr, msg.target, damage, baseHealth, reporter->GetFormId(),
+               msg.damage, distance, before, values.healthPercentage);
 }
 
 // thuum docs/DECISIONS.md ADR-059 decision 2: whether a reference's own

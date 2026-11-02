@@ -153,6 +153,16 @@ public:
   virtual void OnObjectAnimation(const RawMessageData& rawMsgData,
                                  const ObjectAnimationMessage& msg);
 
+  // thuum docs/verbs/traps.md (ADR-059 decision 4): a trap's hit on another
+  // player's body the cell's host reports (a game-file world object in a
+  // cell the reporter hosts, a target that is another player's actor in that
+  // cell): the number checked against the trap's own table and the hit
+  // against its reach (wire-rules traps), the table's value applied to the
+  // target's record, ChangeValues to its game; at most 8 reports a second
+  // per trap (UNMEASURED)
+  virtual void OnTrapHit(const RawMessageData& rawMsgData,
+                         const TrapHitMessage& msg);
+
   // thuum docs/verbs/traps.md (M4): a linked activation the cell's host
   // reports (a reference that is no actor activating the reference whose
   // activation parents name it): recorded through Activate's own path, and
@@ -171,6 +181,11 @@ public:
   // admits the scripts everywhere
   void RelayActivationToHost(MpActor& player, MpObjectReference& target);
   bool IsScriptedWorldObject(const MpObjectReference& target);
+  // thuum docs/verbs/traps.md (ADR-059 decision 4): the damages a trap's
+  // scripts could pick, from its base's and its own VMAD (MovingTrap's
+  // LvlDamage1 to LvlDamage6, TrapHitBase's damage where a record sets it);
+  // empty for a reference that is no trap
+  std::vector<float> TrapDamageTable(const MpObjectReference& trap);
 
   // thuum docs/verbs/cell-host.md: a game's cell loaded or left its loaded
   // set; the server's election follows (wire-rules cells)
@@ -405,6 +420,9 @@ private:
   // thuum docs/verbs/traps.md (ADR-059 decision 3): one reference's reported
   // animation events, at most 8 in any second (UNMEASURED)
   std::unordered_map<uint32_t, LinkedActivationWindow> objectAnimationWindows;
+  // thuum docs/verbs/traps.md (ADR-059 decision 4): one trap's reported
+  // hits, at most 8 in any second (UNMEASURED)
+  std::unordered_map<uint32_t, LinkedActivationWindow> trapHitWindows;
   // base form id to whether its record carries a script (the VMAD read once)
   std::unordered_map<uint32_t, bool> scriptedBases;
   // thuum docs/verbs/spell-cast.md (train-27): a cast delivered to its

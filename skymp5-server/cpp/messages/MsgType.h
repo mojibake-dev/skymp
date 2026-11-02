@@ -109,5 +109,7 @@ enum class MsgType : uint8_t
   ObjectAnimation =
     71, // thuum docs/verbs/traps.md (ADR-059 decision 3): a world object's
         // animation event the cell's host reported, recorded and relayed
+  TrapHit = 72, // thuum docs/verbs/traps.md (ADR-059 decision 4): a trap's
+                // hit on another player's body the cell's host reported
   Max
 };

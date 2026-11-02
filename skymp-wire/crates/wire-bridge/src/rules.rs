@@ -3934,8 +3934,8 @@ mod tests {
         assert!(t.take_requests().is_empty());
         assert!(t.due_placements(1_200).is_empty());
         // a report outside the band carries its numbers; one inside places
-        let far = t.report_placed(report(0, 0x98529, 300.0, 0.0, 0.0), 1_300);
-        assert!(!far.accepted && far.why == 6 && (far.distance - 300.0).abs() < 0.01, "{far:?}");
+        let far = t.report_placed(report(0, 0x98529, 400.0, 0.0, 0.0), 1_300);
+        assert!(!far.accepted && far.why == 6 && (far.distance - 400.0).abs() < 0.01, "{far:?}");
         let wall = t.report_placed(report(0, 0x98529, 206.25, 0.0, -48.0), 1_400);
         assert!(wall.accepted && wall.why == 0, "{wall:?}");
         let rows = t.due_placements(1_400);

@@ -453,6 +453,43 @@ TEST_CASE("A script's kill, an unnamed cause and a body far from the record "
   Leave(p, 0, kHost);
 }
 
+// thuum docs/verbs/npc-fate.md (playtest 40's F5, 2026-11-02): a reanimated
+// body's spell ends and the engine kills it with no hit, drop or activation
+// the server saw; the host's report of that death is the reanimation's end
+// when the server stood the body up after an accepted reanimate within
+// kReanimatedEndMs, and nothing without the stand-up
+TEST_CASE("A host's unnamed-cause report on a body the server stood up after "
+          "a reanimate is the reanimation's end; without the stand-up it is "
+          "refused",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  p.worldState.npcDeathReports = true;
+  Arrive(p, 0, kHost);
+  auto& actor = Standing(p, kPredator);
+  const auto cell = p.worldState.CellOf(actor);
+  REQUIRE(cell.has_value());
+  Host(p, 0, *cell);
+  REQUIRE(p.SimulatorOf(actor) == kHost);
+  const NiPoint3 body = actor.GetPos();
+  const auto now = std::chrono::steady_clock::now();
+  // no stand-up on record: the unnamed cause has nothing behind it
+  Report(p, 0, kPredator, 0, 0, body);
+  REQUIRE_FALSE(actor.IsDead());
+  // a reanimate accepted and the host's engine stood the body up 40 s ago
+  actor.NoteReanimateAccepted(now - std::chrono::seconds(45));
+  actor.NoteHostStoodUp(now - std::chrono::seconds(40));
+  Report(p, 0, kPredator, 0, 0, body);
+  REQUIRE(actor.IsDead());
+  StandUp(p, actor);
+  // too long after the stand-up: the spell's span is over, nothing behind it
+  actor.NoteHostStoodUp(now - std::chrono::seconds(120));
+  Report(p, 0, kPredator, 0, 0, body);
+  REQUIRE_FALSE(actor.IsDead());
+  Leave(p, 0, kHost);
+}
+
 // thuum docs/verbs/npc-fate.md (playtest 34, section 5): a body is a
 // container with one occupant within 512 units, and its looter's closing
 // activation must release it. ProcessActivateSecond shared the CONT branch's

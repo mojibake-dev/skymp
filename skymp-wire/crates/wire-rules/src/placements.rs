@@ -50,12 +50,19 @@ use serde::Deserialize;
 /// (20261031-104852 and -105243), leaving a 3 s window no settle time.
 pub const REPORT_WINDOW_MS: u64 = 6_000;
 /// The nearest a reported object may stand to where the caster stood at the
-/// cast, on the ground plane, units: the engine stands Raise Wall's wall at
-/// 206.25 and its halo at 196.875 whatever the pitch (x-raise-wall-pitch v1,
-/// 2026-10-30), with the caster's own motion inside the cast's window.
-pub const REPORT_MIN_UNITS: f32 = 150.0;
-/// The farthest, the same read.
-pub const REPORT_MAX_UNITS: f32 = 260.0;
+/// cast, on the ground plane, units. On flat ground the engine stands Raise
+/// Wall's wall at 206.25 and its halo at 196.875 whatever the pitch
+/// (x-raise-wall-pitch v1, 2026-10-30), with the caster's own motion inside
+/// the cast's window; on the real terrain of playtest 40's Riverwood camp
+/// (2026-11-02) the same cast stood the wall 145 units out at ground level
+/// and the halo 131 out and 48 up, both refused by the first band of 150 to
+/// 260 (thuum docs/verbs/spell-placed-object.md). The band is a forgery
+/// bound, not a measurement of the engine: a wall closer than a body's width
+/// or farther than a wall's length from the caster is the forgery to refuse,
+/// so the floor is a body (64) and the ceiling a wall and a half (320).
+pub const REPORT_MIN_UNITS: f32 = 64.0;
+/// The farthest, the same reasoning.
+pub const REPORT_MAX_UNITS: f32 = 320.0;
 /// The most a reported object may stand above or below where the caster
 /// stood, units: a wall on the slope ahead.
 pub const REPORT_MAX_DZ: f32 = 256.0;
@@ -907,13 +914,14 @@ mod tests {
         assert_eq!(t.report_placed(report(CASTER, 0, WALL, f32::NAN, 0.0, 0.0, 90.0), 1_500), Err(ReportRefusal::NonFinite));
         assert_eq!(t.report_placed(report(CASTER, 0, WALL, 200.0, 0.0, 0.0, f32::INFINITY), 1_500), Err(ReportRefusal::NonFinite));
         // outside the band: too near, too far, too high; the distance on the ground plane
-        assert!(matches!(t.report_placed(report(CASTER, 0, WALL, 149.0, 0.0, 0.0, 90.0), 1_500), Err(ReportRefusal::Range { distance, .. }) if near(distance, 149.0)));
-        assert!(matches!(t.report_placed(report(CASTER, 0, WALL, 0.0, 261.0, 0.0, 90.0), 1_500), Err(ReportRefusal::Range { distance, .. }) if near(distance, 261.0)));
+        assert!(matches!(t.report_placed(report(CASTER, 0, WALL, 63.0, 0.0, 0.0, 90.0), 1_500), Err(ReportRefusal::Range { distance, .. }) if near(distance, 63.0)));
+        assert!(matches!(t.report_placed(report(CASTER, 0, WALL, 0.0, 321.0, 0.0, 90.0), 1_500), Err(ReportRefusal::Range { distance, .. }) if near(distance, 321.0)));
         assert!(matches!(t.report_placed(report(CASTER, 0, WALL, 200.0, 0.0, 300.0, 90.0), 1_500), Err(ReportRefusal::Range { dz, .. }) if near(dz, 300.0)));
         assert!(matches!(t.report_placed(report(CASTER, 0, WALL, 0.0, 0.0, 200.0, 90.0), 1_500), Err(ReportRefusal::Range { distance, .. }) if near(distance, 0.0)));
-        // the band's edges stand
-        assert_eq!(t.report_placed(report(CASTER, 0, WALL, 150.0, 0.0, -256.0, 90.0), 1_500), Ok(()));
-        assert_eq!(t.report_placed(report(CASTER, 0, HALO, 0.0, -260.0, 0.0, 90.0), 1_500), Ok(()));
+        // inside the band: playtest 40's camp casts (2026-11-02; the wall 145 out at ground level, the halo 131 out and 48 up,
+        // both refused by the first band of 150 to 260), the wall at the dz edge
+        assert_eq!(t.report_placed(report(CASTER, 0, WALL, 145.0, 0.0, -256.0, 90.0), 1_500), Ok(()));
+        assert_eq!(t.report_placed(report(CASTER, 0, HALO, 0.0, 131.0, 48.0, 90.0), 1_500), Ok(()));
         assert_eq!(t.due_placements(1_500).len(), 2);
         // the same base again: the request is complete, so no set of the caster's is open
         assert_eq!(t.report_placed(wall_report(CASTER, 0), 1_600), Err(ReportRefusal::NoSet));

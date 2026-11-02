@@ -918,6 +918,7 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
             ? fmt::format("a placed corpse, the reanimate accepted {} ms ago",
                           reanimatedAgo->count())
             : std::string("its death before this process"));
+        actor->NoteHostStoodUp(now);
         actor->Respawn(false);
       }
     }
@@ -3454,8 +3455,11 @@ void ActionListener::OnObjectAnimation(const RawMessageData& rawMsgData,
                  reporter->GetFormId(), msg.event, msg.refr);
     return;
   }
-  if (refrPtr->GetBaseType() == "DOOR") {
-    // a door's open is isOpen's (Activate's path), not an animation
+  if (refrPtr->GetBaseType() == "DOOR" || refrPtr->GetBaseType() == "CONT") {
+    // a door's open is isOpen's (Activate's path), not an animation; so is a
+    // container's lid (thuum playtest 40's F8: the host's chest Close relayed
+    // onto the guest's chest under its open ContainerMenu lost the menu its
+    // target)
     return;
   }
   const auto cell = partOne.worldState.CellOf(
@@ -4163,6 +4167,19 @@ void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
           fmt::format("a drop of {:.0f} units in the host's samples", *drop);
       } else if (hazardSeen) {
         evidence = "an activation beside the body";
+      } else if (const auto stoodUp = actor->HostStoodUpAgo(now); stoodUp &&
+                 actor->ReanimateAcceptedAgo(now) &&
+                 stoodUp->count() <=
+                   static_cast<int64_t>(MpActor::kReanimatedEndMs)) {
+        // thuum docs/verbs/npc-fate.md (playtest 40's F5): a reanimated body
+        // dies again when its spell ends, the engine's own death with no hit,
+        // drop or activation behind it; the server stood this body up on its
+        // host's sample after an accepted reanimate, so the host's report
+        // within the reanimation's span is the spell's end
+        evidence = fmt::format("the reanimation's end: its host's engine "
+                               "stood it up {} s ago after an accepted "
+                               "reanimate",
+                               stoodUp->count() / 1000);
       } else {
         refuse("E_DEATH_UNCHECKED",
                "no hit, drop or activation the server saw");

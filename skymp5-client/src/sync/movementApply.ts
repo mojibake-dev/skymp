@@ -129,13 +129,19 @@ export const applyMovement = (refr: ObjectReference, m: Movement, isMyClone?: bo
 };
 
 
-// thuum docs/verbs/npc-fate.md (ADR-050 decision 2, train 52): a dead
-// puppet's body lies where the host's body lies. Each seat's own ragdoll put
-// the body somewhere (playtest 34: about 112 units apart), so once the host's
-// body has settled (two seconds after this seat saw the death) the host's
-// sample places the puppet's body there, once; the ragdoll's pose stays this
-// seat's. A sample the host sends while its actor is alive again (a respawn)
-// clears the mark.
+// thuum docs/verbs/npc-fate.md (ADR-050 decision 2, train 52, as memo D78
+// settles it, 2026-11-02): a dead body lies where THIS seat's ragdoll dropped
+// it. Train 52 moved a dead puppet to the host's spot two seconds after the
+// death; a settled ragdoll takes no setPosition (x-npc-death-host v3), and
+// where the move did take, the body froze into the ground (playtest 40's F3:
+// "dead things fall on one screen, on the other they freeze and are embedded
+// in the ground", Hod and Faendal killed by the host's bow, their puppets
+// here dead 1.7 s ahead of the server's word by the relayed arrow and then
+// moved 118 units). D78's C: each game's own fall, within a stride; the
+// same spot on every screen is M4's pose replication with corpse dragging.
+// So the body is never moved: the host's distance is logged once, for the
+// lab, and the ragdoll's rest stays this seat's. A sample the host sends
+// while its actor is alive again (a respawn) clears the mark.
 const deadSince = new Map<number, number>();
 const restBodyDone = new Set<number>();
 const restBody = (ac: Actor, m: Movement) => {
@@ -154,11 +160,7 @@ const restBody = (ac: Actor, m: Movement) => {
   const dy = m.pos[1] - ac.getPositionY();
   const dz = m.pos[2] - ac.getPositionZ();
   const apart = Math.sqrt(dx * dx + dy * dy + dz * dz);
-  if (apart < 64) {
-    return;
-  }
-  ac.setPosition(m.pos[0], m.pos[1], m.pos[2]);
-  printConsole(`npc-fate: body ${id.toString(16)} rested at the host's spot, ${apart.toFixed(0)} units away`);
+  printConsole(`npc-fate: body ${id.toString(16)} lies where it fell, ${apart.toFixed(0)} units from the host's (D78 C)`);
 };
 
 // the shortest signed turn from heading b to heading a, in (-180, 180]

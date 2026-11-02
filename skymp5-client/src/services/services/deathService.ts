@@ -142,6 +142,8 @@ export class DeathService extends ClientListener {
 
   private readonly serverKills = new Map<number, number>();
   private static readonly serverKillMarkMs = 10_000;
+  private readonly resurrectQueuedAt = new Map<number, number>();
+  private static readonly resurrectOnceMs = 2_000;
 
   // the puppet to the host's last sample of its actor (the world model's
   // movement for the form), when it stands more than 64 units from it
@@ -282,6 +284,16 @@ export class DeathService extends ClientListener {
       // game-file actor's, never the delete and re-placement a player's
       // figure takes (the throw below)
       const id = actor.getFormID();
+      // thuum playtest 40's F4 (2026-11-02): the live word reached the guest
+      // five times in one tick (five isDead updates while the engine still
+      // read the body dead) and queued five Resurrects, and the body stayed
+      // lying, sliding on the stream. One resurrect per body per two seconds;
+      // the reconciler's grace below keeps the AI on for the get-up
+      const last = this.resurrectQueuedAt.get(id);
+      if (last !== undefined && Date.now() - last < DeathService.resurrectOnceMs) {
+        return;
+      }
+      this.resurrectQueuedAt.set(id, Date.now());
       const queued = this.sp.resurrectActor(id);
       // the reconciler arms the deferred kill again on its next pass
       // (ADR-050 decision 3: the stood-up actor holds at zero for the

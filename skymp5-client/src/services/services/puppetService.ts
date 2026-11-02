@@ -199,6 +199,13 @@ export class PuppetService extends ClientListener {
             return;
         }
         if (!flagged) {
+            const stoodUp = this.resurrectedAt.get(localId);
+            if (stoodUp !== undefined) {
+                if (Date.now() - stoodUp < PuppetService.resurrectGraceMs) {
+                    return;
+                }
+                this.resurrectedAt.delete(localId);
+            }
             if (!this.sp.setPuppet(localId, true)) {
                 logError(this, `setPuppet(${localId.toString(16)}, true) found no actor`);
                 return;
@@ -318,6 +325,14 @@ export class PuppetService extends ClientListener {
     // the server's word: the deferred kill is re-armed on the next pass.
     onResurrected(localId: number): void {
         this.deferredArmed.delete(localId);
+        // thuum playtest 40's F4: the engine's Resurrect stands a body up
+        // through its own get-up, which needs the AI on; the reconciler
+        // flagged the stood-up actor a puppet (AI off) 36 ms after the
+        // resurrect was queued (c2's console, 20:12:18.432 and .468), and the
+        // body stayed lying, sliding on the stream. The puppet flag waits
+        // this grace after a resurrect (HYPOTHESIS: the get-up completes
+        // within it; the probe reads the time)
+        this.resurrectedAt.set(localId, Date.now());
     }
 
     // thuum docs/verbs/npc-stream.md, playtest 37 finding 60 (the visuals
@@ -521,6 +536,9 @@ export class PuppetService extends ClientListener {
     ]);
     private readonly attached = new Set<number>();
     private readonly deferredArmed = new Set<number>();
+    // the puppet flag's grace after a resurrect (playtest 40's F4)
+    private readonly resurrectedAt = new Map<number, number>();
+    private static readonly resurrectGraceMs = 1_500;
     private readonly unloadedSince = new Map<number, number>();
     private lastPoll = 0;
     private static readonly pollMs = 2000;

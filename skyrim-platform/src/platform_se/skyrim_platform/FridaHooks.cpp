@@ -803,6 +803,9 @@ struct LaunchSeen
   float angleX = 0, angleZ = 0;
   float power = 0;
   bool useOrigin = false;
+  // thuum docs/verbs/spell-cast.md: LaunchData's contactNormal (the pick's
+  // normal a target-location launch carries, Projectile.h:82)
+  float contactNormalX = 0, contactNormalY = 0, contactNormalZ = 0;
 };
 
 // one entry per Launch on the thread, pushed at the enter and popped at the
@@ -877,6 +880,9 @@ void OnProjectileLaunchEnter(GumInvocationContext* ic)
   seen.angleZ = data->angleZ;
   seen.power = data->power;
   seen.useOrigin = data->useOrigin;
+  seen.contactNormalX = data->contactNormal.x;
+  seen.contactNormalY = data->contactNormal.y;
+  seen.contactNormalZ = data->contactNormal.z;
   SkyrimPlatform::GetSingleton()->AddTickTask([seen](Napi::Env env) {
     auto obj = Napi::Object::New(env);
     AddObjProperty(&obj, "shooter", seen.shooter);
@@ -897,6 +903,12 @@ void OnProjectileLaunchEnter(GumInvocationContext* ic)
             Napi::Number::New(env, static_cast<double>(seen.angleZ)));
     obj.Set("power", Napi::Number::New(env, static_cast<double>(seen.power)));
     AddObjProperty(&obj, "useOrigin", seen.useOrigin);
+    obj.Set("contactNormalX",
+            Napi::Number::New(env, static_cast<double>(seen.contactNormalX)));
+    obj.Set("contactNormalY",
+            Napi::Number::New(env, static_cast<double>(seen.contactNormalY)));
+    obj.Set("contactNormalZ",
+            Napi::Number::New(env, static_cast<double>(seen.contactNormalZ)));
     EventsApi::SendEvent("projectileLaunched", { obj });
   });
 }
@@ -1051,6 +1063,96 @@ void InstallPlaceAreaEffectHook()
     Frida::HookID::HOOK_PLACE_AREA_EFFECT,
     Offsets::Hooks::PlaceAreaEffect.address(),
     std::make_shared<Frida::Hook>(OnPlaceAreaEffectEnter, nullptr));
+}
+
+/**
+ * thuum docs/verbs/spell-cast.md (the rune's glyph on the observer): the
+ * engine's decal placement (game/Offsets.h RuneDecal, Address Library 44186),
+ * which the magic caster's target-location launch 34452 calls right after
+ * Projectile::Launch for a grenade projectile with (the projectile, &origin,
+ * &normal scaled to 69.99, the material id from 44190, 1, 0, the decal group,
+ * 1): the re-analyst's read, CONFIRMED on the caster's seat by the lab's
+ * trace (lab/frida/rune-decal-trace.js, x-rune-decal-frida 20261020-102818:
+ * one call per cast, the rune PGRE, the pick's position, a normal of length
+ * 69.99). Read at the entry for the player's own projectile alone (rule 9:
+ * the shooter handle against the player) and raised to JS as runeDecal on
+ * the next tick with the projectile's base form, the origin, the unit normal
+ * and the material id; magicSyncService sends them with the cast
+ * (SpellCastData.decal), and each observer's game hands them to the same
+ * placement after its relayed launch (MagicApi PlaceRelayedDecal). Nothing
+ * here changes the call.
+ */
+struct RuneDecalSeen
+{
+  uint32_t projectile = 0;
+  float originX = 0, originY = 0, originZ = 0;
+  float normalX = 0, normalY = 0, normalZ = 0;
+  uint32_t materialId = 0;
+};
+
+void OnRuneDecalEnter(GumInvocationContext* ic)
+{
+  auto* projectile = static_cast<RE::Projectile*>(
+    gum_invocation_context_get_nth_argument(ic, 0));
+  auto* origin = static_cast<const RE::NiPoint3*>(
+    gum_invocation_context_get_nth_argument(ic, 1));
+  auto* normal = static_cast<const RE::NiPoint3*>(
+    gum_invocation_context_get_nth_argument(ic, 2));
+  const auto materialId = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(
+    gum_invocation_context_get_nth_argument(ic, 3)));
+  if (!projectile || !origin || !normal) {
+    return;
+  }
+  // the player's own projectile alone (Projectile.h's runtime data: the
+  // shooter's handle at 0x120)
+  const auto shooter = projectile->GetProjectileRuntimeData().shooter.get();
+  if (!shooter || shooter->formID != 0x14) {
+    return;
+  }
+  RuneDecalSeen seen;
+  seen.projectile =
+    projectile->GetBaseObject() ? projectile->GetBaseObject()->formID : 0;
+  seen.originX = origin->x;
+  seen.originY = origin->y;
+  seen.originZ = origin->z;
+  const float length = normal->Length();
+  if (length > 0.f && std::isfinite(length)) {
+    seen.normalX = normal->x / length;
+    seen.normalY = normal->y / length;
+    seen.normalZ = normal->z / length;
+  }
+  seen.materialId = materialId;
+  SkyrimPlatform::GetSingleton()->AddTickTask([seen](Napi::Env env) {
+    auto obj = Napi::Object::New(env);
+    AddObjProperty(&obj, "projectile", seen.projectile);
+    obj.Set("originX",
+            Napi::Number::New(env, static_cast<double>(seen.originX)));
+    obj.Set("originY",
+            Napi::Number::New(env, static_cast<double>(seen.originY)));
+    obj.Set("originZ",
+            Napi::Number::New(env, static_cast<double>(seen.originZ)));
+    obj.Set("normalX",
+            Napi::Number::New(env, static_cast<double>(seen.normalX)));
+    obj.Set("normalY",
+            Napi::Number::New(env, static_cast<double>(seen.normalY)));
+    obj.Set("normalZ",
+            Napi::Number::New(env, static_cast<double>(seen.normalZ)));
+    AddObjProperty(&obj, "materialId", seen.materialId);
+    EventsApi::SendEvent("runeDecal", { obj });
+  });
+}
+
+void InstallRuneDecalHook()
+{
+  // AE only: the id is 1.6.1170's (game/Offsets.h)
+  if (!REL::Module::IsAE()) {
+    return;
+  }
+  Frida::HookHandler::GetSingleton()->Install(
+    Frida::HookID::HOOK_RUNE_DECAL, Offsets::Hooks::RuneDecal.address(),
+    std::make_shared<Frida::Hook>(OnRuneDecalEnter, nullptr));
+  logger::info("[verb:spell-cast] rune decal hook installed: the decal "
+               "placement (Address Library 44186), the player's own launches");
 }
 
 void InstallProjectileLaunchHook()
@@ -1924,6 +2026,7 @@ void Frida::InstallHooks()
   InstallPlayAnimationHook();
   InstallPerformActionHook();
   InstallProjectileLaunchHook();
+  InstallRuneDecalHook();
   InstallProjectileInitVelocityHook();
   InstallPlaceAreaEffectHook();
   InstallDamageActorHook();

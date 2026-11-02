@@ -36,7 +36,13 @@
     "aimHeading": -2.5236752033233643,
     "caster": 663349836,
     "castingSource": -835677453,
-    "hasLaunch": false,
+    "decal": {
+      "materialId": 3838712995,
+      "normalX": 0.0,
+      "normalY": 0.0,
+      "normalZ": 1.0
+    },
+    "hasLaunch": true,
     "interruptCast": true,
     "isDualCasting": true,
     "launchAngleX": 20.37763786315918,

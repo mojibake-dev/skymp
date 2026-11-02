@@ -122,7 +122,11 @@ export class ObjectAnimationService extends ClientListener {
       if (!refr || this.sp.Actor.from(refr)) {
         continue;
       }
-      if (refr.getBaseObject()?.getType() === FormType.Door) {
+      const baseType = refr.getBaseObject()?.getType();
+      if (baseType === FormType.Door || baseType === FormType.Container) {
+        // a door's open is isOpen's; so is a container's lid (playtest 40's
+        // F8: the host's chest "Close" relayed onto the guest's chest while
+        // the guest's ContainerMenu was open, and the menu lost its target)
         continue;
       }
       if (!host.isHostedHere(refr)) {
@@ -145,6 +149,12 @@ export class ObjectAnimationService extends ClientListener {
     const localId = remoteIdToLocalId(remoteRefr);
     const refr = ObjectReference.from(this.sp.Game.getFormEx(localId));
     if (!refr) {
+      return;
+    }
+    const baseType = refr.getBaseObject()?.getType();
+    if (baseType === FormType.Door || baseType === FormType.Container) {
+      // the same rule on the way in: a relay from an older server never plays
+      // on a lid or a door here (playtest 40's F8)
       return;
     }
     this.markSelfPlayed(localId, event);

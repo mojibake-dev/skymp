@@ -115,7 +115,7 @@ divergences:
     msg: {t: 23, data: {spell: 201677618, castingSource: 3}}
     legacy: 0
     wire: 2
-    reason: the same two proc casts reach the caster's own game since the mod's script is blocked everywhere (fork m2-shadowbond-script-block, 2026-11-01): its game casts one on its own player and one on c2's figure through castSpellImmediate's Self branch; the legacy server knows no bond
+    reason: the same two proc casts reach the caster's own game since the mod's script is blocked everywhere (fork m2-shadowbond-script-block, 2026-11-01); its game casts one on its own player and one on c2's figure through castSpellImmediate's Self branch; the legacy server knows no bond
   - client: c1
     msg: {t: 20}
     legacy: 0

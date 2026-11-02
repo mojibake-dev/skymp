@@ -36,7 +36,11 @@ enum HookID
   // thuum docs/verbs/prop-physics.md: the player's character controller's
   // contact with a prop's body (docs/research/m3/re-havok-contact.md,
   // Address Library 79131)
-  HOOK_PROP_CONTACT
+  HOOK_PROP_CONTACT,
+  // thuum docs/verbs/traps.md (ADR-059 decision 3): a world object's
+  // NiControllerManager sequence as the engine plays it
+  // (TESObjectREFR::PlayAnimation_Impl, CommonLibSSE-NG Offsets.h:546)
+  HOOK_PLAY_ANIMATION
 };
 
 struct Hook

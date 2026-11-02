@@ -24,6 +24,7 @@
 #include <RE/H/HighProcessData.h>
 #include <RE/H/hkpEntity.h>
 #include <RE/H/hkpRootCdPoint.h>
+#include <RE/N/NiControllerSequence.h>
 #include <RE/T/TESHavokUtilities.h>
 #include <RE/T/TESQuestStageEvent.h>
 
@@ -134,8 +135,34 @@ void LoadAdmittedScripts()
 // named by an admitted plugin's line. The chain is ObjectTypeInfo's
 // parentTypeInfo (CommonLibSSE-NG include/RE/O/ObjectTypeInfo.h:127-128,
 // :178); it ends at a null parent, and the walk stops at 16 either way.
+// ADR-059 decision 1's lifecycle events: the engine telling a script the
+// world's state (its reference loaded, its cell attached, a reset), not a
+// player's act. A host-scoped script takes these on every seat, because they
+// come before any seat hosts the cell (x-object-anim v3 20261102-051618: the
+// temple loaded at c1's teleport and c1 hosted it 3.5 s later, so the puzzle
+// pillars' defaultPuzzlePillarScript never got its OnCellLoad, stayed in its
+// empty state with no onActivate, and c1's turn did nothing) and because a
+// guest's pillar should stand on its initial face (OnCellLoad's StartState02
+// and StartState03). What a lifecycle handler does beyond state (a
+// mid-firing trap's fireTrap at onCellAttach) plays as a visual on a guest;
+// the harm, OnTrapHitStart, stays the host's.
+bool IsLifecycleEvent(const std::string& lowerName)
+{
+  static const char* const kLifecycle[] = {
+    "oninit",       "onload",       "onunload",         "oncellload",
+    "oncellattach", "oncelldetach", "onattachedtocell", "ondetachedfromcell",
+    "onreset"
+  };
+  for (const char* name : kLifecycle) {
+    if (lowerName == name) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool AdmittedByChain(const RE::BSScript::ObjectTypeInfo* info,
-                     bool inHostedCell)
+                     bool inHostedCell, bool lifecycle)
 {
   for (int depth = 0; info && depth < 16; ++depth, info = info->GetParent()) {
     auto name = LowerAscii(info->GetName());
@@ -147,8 +174,8 @@ bool AdmittedByChain(const RE::BSScript::ObjectTypeInfo* info,
     }
     // ADR-059 decision 1: a host-scoped name passes for a reference in a
     // cell this game hosts (the world's traps, levers and pillars run on
-    // the cell's host, nowhere else)
-    if (inHostedCell && !g_hostAdmittedScripts.empty() &&
+    // the cell's host, nowhere else), and for a lifecycle event anywhere
+    if ((inHostedCell || lifecycle) && !g_hostAdmittedScripts.empty() &&
         g_hostAdmittedScripts.count(name)) {
       return true;
     }
@@ -239,6 +266,7 @@ void OnSendEventEnter(GumInvocationContext* ic)
 
   auto eventNameStr = std::string(*eventName);
   EventsApi::SendPapyrusEventEnter(selfId, eventNameStr);
+  const bool lifecycle = IsLifecycleEvent(LowerAscii(eventNameStr.c_str()));
 
   auto blockEvents = TESModPlatform::GetPapyrusEventsBlocked();
 
@@ -310,7 +338,7 @@ void OnSendEventEnter(GumInvocationContext* ic)
         auto info = script->GetTypeInfo();
         auto name = info->GetName();
 
-        if (AdmittedByChain(info, inHostedCell)) {
+        if (AdmittedByChain(info, inHostedCell, lifecycle)) {
           blockEvents = false;
           break;
         } else if (!strnicmp(name, "RaceMenu", 8)) {
@@ -490,6 +518,57 @@ void InstallSendAnimationEventHook()
     Offsets::Hooks::SendAnimation.address(),
     std::make_shared<Frida::Hook>(OnSendAnimationEventEnter,
                                   OnSendAnimationEventLeave));
+}
+
+/**
+ * thuum docs/verbs/traps.md (ADR-059 decision 3): the engine's other
+ * animation family. A world object without a behavior graph animates by
+ * NiControllerManager sequences (a puzzle pillar's Trigger01 and Turned01, a
+ * door's Open), which Papyrus's PlayAnimation and PlayAnimationAndWait reach
+ * through TESObjectREFR::PlayAnimation(from, to) and its
+ * PlayAnimation_Impl(manager, toSeq, fromSeq, bool) (CommonLibSSE-NG
+ * src/RE/T/TESObjectREFR.cpp:812-840, :927-932), never through the graph's
+ * NotifyAnimationGraph that the hook above sees (x-object-anim v3
+ * 20261102-051618: the swinging wall's 180For and the plate's Down reached
+ * JS, a pillar's turn could not). This hook raises the sequence's name as
+ * the same sendAnimationEvent on the reference, so one JS family (the
+ * ObjectAnimationService's patterns and ranges) covers both; the sequence's
+ * name is NiControllerSequence::name (include/RE/N/NiControllerSequence.h:87).
+ * rcx this, rdx manager, r8 toSeq, r9 fromSeq.
+ */
+void OnPlayAnimationEnter(GumInvocationContext* ic)
+{
+  if (Override::IsOverriden()) {
+    return;
+  }
+  auto refr = reinterpret_cast<RE::TESObjectREFR*>(ic->cpu_context->rcx);
+  auto toSeq = reinterpret_cast<RE::NiControllerSequence*>(
+    gum_invocation_context_get_nth_argument(ic, 2));
+  if (!refr || !toSeq) {
+    return;
+  }
+  const char* name = toSeq->name.c_str();
+  if (!name || !*name) {
+    return;
+  }
+  std::string str = name;
+  EventsApi::SendAnimationEventEnter(refr->formID, str);
+}
+
+void OnPlayAnimationLeave(GumInvocationContext* ic)
+{
+  if (Override::IsOverriden()) {
+    return;
+  }
+  EventsApi::SendAnimationEventLeave(true);
+}
+
+void InstallPlayAnimationHook()
+{
+  Frida::HookHandler::GetSingleton()->Install(
+    Frida::HookID::HOOK_PLAY_ANIMATION,
+    Offsets::Hooks::PlayAnimation.address(),
+    std::make_shared<Frida::Hook>(OnPlayAnimationEnter, OnPlayAnimationLeave));
 }
 
 /**
@@ -1842,6 +1921,7 @@ void Frida::InstallHooks()
   InstallDrawSheatheWeaponPcHook();
   InstallDrawSheatheWeaponActorHook();
   InstallSendAnimationEventHook();
+  InstallPlayAnimationHook();
   InstallPerformActionHook();
   InstallProjectileLaunchHook();
   InstallProjectileInitVelocityHook();

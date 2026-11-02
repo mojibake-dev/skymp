@@ -31,6 +31,14 @@ inline REL::Relocation<std::uintptr_t> DrawSheatheWeaponActor{ RELOCATION_ID(
   36289, 37279) };
 inline REL::Relocation<std::uintptr_t> SendAnimation{ RELOCATION_ID(37020,
                                                                     38048) };
+// thuum docs/verbs/traps.md (ADR-059 decision 3): the engine's other
+// animation family for a world object, a NiControllerManager sequence
+// (a puzzle pillar's Trigger01, a door's Open), played through
+// TESObjectREFR::PlayAnimation_Impl(manager, toSeq, fromSeq, bool); the ids
+// are CommonLibSSE-NG's (include/RE/Offsets.h:546, Offset::TESObjectREFR::
+// PlayAnimation), 1.6.1170's address 0x1d50a0 by `just addr 14297`
+inline REL::Relocation<std::uintptr_t> PlayAnimation{ RELOCATION_ID(14189,
+                                                                    14297) };
 // thuum docs/verbs/cast-action.md: the engine's action entry,
 // ActorMediator::PerformAction, (ActorMediator*, TESActionData*) -> bool. AE
 // only: 1.6.1170's id by lab/addr.py, the function SourceActionMap::DoAction

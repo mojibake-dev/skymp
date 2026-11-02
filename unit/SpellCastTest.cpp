@@ -304,7 +304,8 @@ TEST_CASE("A cast launched beyond its spell's reach reaches the neighbour "
   Leave(p);
 }
 
-TEST_CASE("A stream counts the time it held its target, until its end",
+TEST_CASE("A stream counts the time it held its target, and one report past "
+          "its end",
           "[SpellCast][espm]")
 {
   PartOne& p = GetPartOne();
@@ -319,7 +320,10 @@ TEST_CASE("A stream counts the time it held its target, until its end",
   REQUIRE(afterTick <= 1.f - 0.9f / 250.f);
   REQUIRE(afterTick >= 1.f - 2.05f / 250.f);
 
-  // its end, even with the hand changed since: no more hits
+  // its end, even with the hand changed since: one last report within the
+  // hole counts its gap (the engine's last hit report follows the hand's
+  // equipped event by up to a cadence: fork m2-stream-end-grace, thuum
+  // docs/verbs/spell-cast.md, b-duel's Flames leg), the next nothing
   Equipment eq;
   p.worldState.GetFormAt<MpActor>(kCaster).SetEquipment(eq);
   p.Messages().clear();
@@ -340,7 +344,12 @@ TEST_CASE("A stream counts the time it held its target, until its end",
   p.worldState.GetFormAt<MpActor>(kCaster).SetEquipment(eq);
   std::this_thread::sleep_for(60ms);
   SpellHits(p, kFlames);
-  REQUIRE(Health(p) == Catch::Approx(afterTick));
+  const float afterLast = Health(p);
+  REQUIRE(afterLast < afterTick);
+  // its gap at most HOLE_MS of Flames' 8 a second on 250 health
+  REQUIRE(afterLast >= afterTick - 8.f / 250.f);
+  SpellHits(p, kFlames);
+  REQUIRE(Health(p) == Catch::Approx(afterLast));
   Leave(p);
 }
 

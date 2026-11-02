@@ -15,13 +15,18 @@
 # fixed server, at most 250 ms (the gaps are 400 ms, so each counts the cap
 # whatever the network's jitter: 2 of Flames' 8), where the legacy server
 # counts each report as a whole second of it. At 4 s c1 ends the stream (each
-# relays the end as it relayed the start), and its hit at 4.3 s is refused by
-# the fixed server (no open stream) and counted by the legacy one. c2 steps
+# relays the end as it relayed the start), and its hit at 4.3 s, the stream's
+# last report, lands 300 ms after the end: the fixed server counts it under
+# the end grace (one report within HOLE_MS of an ended stream that counted,
+# wire-rules casts.rs, 2026-11-01; the engine burned those 500 ms of Flames
+# on the target before the game reported them) and the legacy one counts it
+# as a whole second, as it counts every report. c2 steps
 # again at 4 s of its own (5.5 s of c1's), so it outlives c1, as in every
 # session. The numbers are the first run's (T2 2026-10-10, fork m2-spell
 # 3aef8c78): c2's base health is 100, so the legacy server's four hits leave
-# 0.92, 0.84, 0.76 and 0.68, and the fixed server's two leave 0.98 and about 0.948 (the second
-# tick's 400 ms gap counted in full under the hole rule, wire-rules casts HOLE_MS, 2026-10-30).
+# 0.92, 0.84, 0.76 and 0.68, and the fixed server's three leave 0.98, about 0.948 (the second
+# tick's 400 ms gap counted in full under the hole rule, wire-rules casts HOLE_MS, 2026-10-30)
+# and about 0.908 (the last report's 500 ms gap under the end grace, 2026-11-01).
 # The relays' declarations are from T2 on fork m2-relay dd3f729c
 # (2026-10-13).
 id: spell-cast
@@ -68,7 +73,7 @@ divergences:
     msg: {t: 16, idx: "refr:ff000003", data: {health: 0.6800000667572021}}
     legacy: 1
     wire: 0
-    reason: the legacy server counts a hit after the stream's end; the fixed server refuses it (no open stream)
+    reason: the legacy server counts the report after the stream's end as a whole second of Flames; the fixed server counts it by its gap under the end grace (0.908 below)
   - client: c2
     msg: {t: 16, idx: "refr:ff000003", data: {health: 0.9800000190734863}}
     legacy: 0
@@ -80,6 +85,12 @@ divergences:
     legacy: 0
     wire: 1
     reason: the fixed server counts the stream's second hit by its gap, 400 ms after the first and under the hole rule's second (wire-rules casts HOLE_MS, a lost report is not a lost target, the engine burned the whole gap), so (98 - 3.2) / 100, the f32 nearest 0.948; before 2026-10-30 the 250 ms cap made it 0.96
+  - client: c2
+    msg: {t: 16, idx: "refr:ff000003", data: {health: 0.908}}
+    within: {"data.health": 0.001}
+    legacy: 0
+    wire: 1
+    reason: the fixed server counts the stream's last report, 300 ms after the end, under the end grace (wire-rules casts.rs, 2026-11-01), by its gap since the last counted report, 500 ms, so (94.8 - 4) / 100; the legacy server counts it as a whole second (0.68 above)
   - client: c1
     msg: {t: 23, data: {caster: 20}}
     legacy: 2

@@ -12,9 +12,14 @@ import { logTrace } from '../../logging';
 // world scripts, so guests see what the host's engine SHOWS. On every seat
 // Skyrim Platform's sendAnimationEvent hook, matched in native to the
 // world-object event family (rule 9; HookPattern: exact, or one '*' at an
-// end), notes an event on a game-file reference; on the next update (natives
-// live there) the seat that hosts the reference's cell reports it as
-// ObjectAnimation, never for an actor (the stream's) or a door (isOpen's).
+// end), notes an event on a game-file reference, from either engine family:
+// a behavior graph's event (NotifyAnimationGraph: the swinging wall, the
+// plate) or a NiControllerManager sequence (TESObjectREFR::PlayAnimation_Impl:
+// the puzzle pillars; the platform raises the sequence's name as the same
+// hook, x-object-anim v3 20261102-051618 read the pillar silent without it);
+// on the next update (natives live there) the seat that hosts the reference's
+// cell reports it as ObjectAnimation, never for an actor (the stream's) or a
+// door (isOpen's).
 // A relayed ObjectAnimation plays on this seat through the engine's own
 // PlayAnimation, as remoteServer replays a CreateActor's lastAnimation.
 //

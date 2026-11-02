@@ -484,6 +484,12 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
       serverSettings.contains("restrictedRaces")
         ? serverSettings.at("restrictedRaces").dump()
         : std::string("{}"));
+    // the movable statics that are physics props (thuum
+    // docs/verbs/prop-physics.md, ADR-058 slice two): `propStatics`,
+    // ["<shortid>:<plugin>", ...], the same way
+    partOne->SetPropStaticsSettings(serverSettings.contains("propStatics")
+                                      ? serverSettings.at("propStatics").dump()
+                                      : std::string("[]"));
 
     if (serverSettings["dataDir"] != nullptr) {
       dataDir = serverSettings["dataDir"];

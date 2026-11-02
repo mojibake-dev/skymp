@@ -147,8 +147,10 @@ const angleDelta = (a: number, b: number): number => ((((a - b + 180) % 360) + 3
 // the proxy controller's contact callback, Address Library 79131, one event
 // per reference per 250 ms), the engine's grab and its release, a drop; the
 // proximity stand-in below stays behind propContactFallback. Slice one: items
-// only (FormTypeEx.isItem's types), within TRACK_RADIUS of the player, the
-// nearest TRACK_MAX. Everything the engine is asked happens on the update
+// only (FormTypeEx.isItem's types); slice two adds the movable statics the
+// server's settings list (FormTypeEx.isProp: the server sends records for
+// those alone); within TRACK_RADIUS of the player, the nearest TRACK_MAX.
+// Everything the engine is asked happens on the update
 // (a message handler queues; Skyrim Platform refuses natives in its context).
 //
 // HYPOTHESIS, until x-prop-push and x-prop-pass: that setMotionType flips a
@@ -894,7 +896,7 @@ export class PropService extends ClientListener {
             if (form.movement && playerWorldOrCell !== 0 && form.movement.worldOrCell !== playerWorldOrCell) {
                 continue;
             }
-            if (!this.isItem(localId, form.refrId)) {
+            if (!this.isPropKind(localId, form.refrId)) {
                 continue;
             }
             const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(localId));
@@ -916,7 +918,7 @@ export class PropService extends ClientListener {
             if (playerWorldOrCell !== 0 && rec.worldOrCell !== playerWorldOrCell) {
                 return;
             }
-            if (!this.isItem(refrId, refrId)) {
+            if (!this.isPropKind(refrId, refrId)) {
                 return;
             }
             const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(refrId));
@@ -989,9 +991,10 @@ export class PropService extends ClientListener {
         this.claim(prop, TOUCH_DROP, now);
     }
 
-    // Whether the reference's base is an item (FormTypeEx.isItem's types),
-    // read once per binding of a local id to a record
-    private isItem(localId: number, refr: number): boolean {
+    // Whether the reference's base can be a prop (FormTypeEx.isProp: an item,
+    // or a movable static the server listed), read once per binding of a
+    // local id to a record
+    private isPropKind(localId: number, refr: number): boolean {
         const known = this.kinds.get(localId);
         if (known && known.refr === refr) {
             return known.item;
@@ -1002,7 +1005,7 @@ export class PropService extends ClientListener {
             return false;
         }
         const base = ref.getBaseObject();
-        const item = base !== null && FormTypeEx.isItem(base.getType());
+        const item = base !== null && FormTypeEx.isProp(base.getType());
         if (this.kinds.size > 4096) {
             this.kinds.clear();
         }

@@ -3177,12 +3177,23 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
 namespace {
 // thuum docs/verbs/prop-physics.md (ADR-058, slice one): a prop is an item
 // reference (libespm's item types, the client's FormTypeEx.isItem set), from
-// the game files or server-made (a drop); a door, a container, an activator
-// or an actor is no prop, whatever a seat claims or streams
+// the game files or server-made (a drop), and since slice two a movable
+// static whose base the settings list (WorldState::IsPropStatic, the
+// client's FormTypeEx.isProp); a door, a container, an activator, any other
+// MSTT (a Raise Wall's) or an actor is no prop, whatever a seat claims or
+// streams
 bool IsPropKind(MpObjectReference& refr)
 {
-  return !refr.AsActor() &&
-    espm::utils::IsItem(espm::Type(refr.GetBaseType().c_str()));
+  if (refr.AsActor()) {
+    return false;
+  }
+  const espm::Type type(refr.GetBaseType().c_str());
+  if (espm::utils::IsItem(type)) {
+    return true;
+  }
+  const auto* worldState = refr.GetParent();
+  return type == "MSTT" && worldState &&
+    worldState->IsPropStatic(refr.GetBaseId());
 }
 
 // how far a touch reaches, in units from the claimant's record to the prop's:

@@ -155,6 +155,81 @@ void Leave(PartOne& p)
 }
 }
 
+// thuum docs/verbs/prop-physics.md (ADR-058 slice two): a movable static the
+// settings list (`propStatics`) is a prop; any other MSTT is not. The bases:
+// HandCart01Wheel, Skyrim.esm's MSTT 0x1c0c3 (lab/esm.py 2026-11-02: the
+// Riverwood smithy's cart wheel, placed as 0x1c0c2 and 0x14201), and the
+// Raise Wall's BFXSmashedBarrelWithOil 0xeee0d (SpellPlacedTest's MSTT)
+namespace {
+constexpr uint32_t kHandCartWheel = 0x1c0c3;
+constexpr uint32_t kWallBase = 0xeee0d;
+constexpr uint32_t kWheel = 0xff000d06;
+constexpr uint32_t kWall = 0xff000d07;
+
+MpObjectReference& Static(PartOne& p, uint32_t id, uint32_t base,
+                          const NiPoint3& pos)
+{
+  auto refr = std::make_unique<MpObjectReference>(
+    LocationalData{ pos, { 0.f, 0.f, 0.f }, FormDesc::Tamriel() },
+    p.CreateFormCallbacks(), base, "MSTT");
+  p.worldState.AddForm(std::move(refr), id);
+  auto& placed = p.worldState.GetFormAt<MpObjectReference>(id);
+  placed.ForceSubscriptionsUpdate();
+  return placed;
+}
+}
+
+TEST_CASE("A movable static the settings list is a prop: a claim on it is "
+          "granted and its owner's sample moves the record; an unlisted "
+          "movable static (a Raise Wall's) is refused as no prop; a bad "
+          "entry throws",
+          "[Prop][espm]")
+{
+  auto& p = GetPartOne();
+  p.SetPropStaticsSettings("[\"1c0c3:Skyrim.esm\"]");
+  REQUIRE(p.worldState.IsPropStatic(kHandCartWheel));
+  REQUIRE_FALSE(p.worldState.IsPropStatic(kWallBase));
+
+  Player(p, 0, kC1, kHere + NiPoint3{ 40.f, 0.f, 0.f });
+  Player(p, 1, kC2, kHere + NiPoint3{ 60.f, 0.f, 0.f });
+  auto& wheel = Static(p, kWheel, kHandCartWheel, kHere);
+  auto& wall = Static(p, kWall, kWallBase, kHere + NiPoint3{ 20.f, 0.f, 0.f });
+  const auto cell = p.worldState.CellOf(wheel);
+  REQUIRE(cell.has_value());
+  CellLoaded(p, 0, *cell);
+  REQUIRE(p.GetCellHost(*cell).player == kC1);
+  REQUIRE(p.PropOwnerOf(wheel) == kC1);
+  p.Messages().clear();
+
+  // c2 touches the wheel: granted, both seats hear the word
+  Claim(p, 1, kWheel, 0);
+  REQUIRE(p.PropOwnerOf(wheel) == kC2);
+  REQUIRE(p.PropEpochOf(wheel) == 1);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 0).size() == 1);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).size() == 1);
+  // its sample moves the record and reaches the other seat
+  p.Messages().clear();
+  const NiPoint3 rolled = kHere + NiPoint3{ 50.f, 0.f, 0.f };
+  Sample(p, 1, kWheel, rolled, false);
+  REQUIRE(wheel.GetPos() == rolled);
+  REQUIRE(RelaysTo(p, 0) == std::vector<int>{ 0 });
+
+  // the wall is no prop: no word, no move
+  p.Messages().clear();
+  Claim(p, 1, kWall, 0);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
+  Sample(p, 0, kWall, kHere + NiPoint3{ 20.f, 0.f, -50.f }, false);
+  REQUIRE(wall.GetPos() == kHere + NiPoint3{ 20.f, 0.f, 0.f });
+
+  // the list cleared, the wheel is no prop either; a bad entry throws
+  p.SetPropStaticsSettings("[]");
+  REQUIRE_FALSE(p.worldState.IsPropStatic(kHandCartWheel));
+  REQUIRE_THROWS(p.SetPropStaticsSettings("[\"zz:Skyrim.esm\"]"));
+  REQUIRE_THROWS(p.SetPropStaticsSettings("[\"0:Skyrim.esm\"]"));
+  REQUIRE_THROWS(p.SetPropStaticsSettings("{}"));
+  Leave(p);
+}
+
 TEST_CASE("A claim by a player in the prop's cell is granted and the owner "
           "word reaches every listener; a second player's claim takes the "
           "prop at the next epoch; the same player's again changes nothing",

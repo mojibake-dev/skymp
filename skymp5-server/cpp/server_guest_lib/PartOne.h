@@ -279,6 +279,10 @@ public:
   // server setting propsPersist, true by default
   void SetPropsPersist(bool on);
   bool PropsPersist() const;
+  // ADR-058 slice two: the movable static bases that are physics props,
+  // server-settings.json's `propStatics` (["<shortid>:<plugin>", ...]) as
+  // JSON text ("[]" for none); throws naming a bad entry
+  void SetPropStaticsSettings(const std::string& propStaticsJson);
   float SkillUseXp(uint8_t skillAv, float base) const;
   float SkillLevelCost(uint8_t skillAv, uint8_t level) const;
 

@@ -388,8 +388,8 @@ TEST_CASE("A spell off the list asks nothing; a listed cast nobody reports "
   Report(p, 0, set + 1000, msttId, 200.f, 0.f, 0.f, 90.f);
   Report(p, 1, set, msttId, 200.f, 0.f, 0.f, 90.f);
   Report(p, 0, set, kFlames, 200.f, 0.f, 0.f, 90.f);
-  Report(p, 0, set, msttId, 149.f, 0.f, 0.f, 90.f);
-  Report(p, 0, set, msttId, 0.f, 261.f, 0.f, 90.f);
+  Report(p, 0, set, msttId, 63.f, 0.f, 0.f, 90.f);
+  Report(p, 0, set, msttId, 0.f, 321.f, 0.f, 90.f);
   Report(p, 0, set, msttId, 200.f, 0.f, 300.f, 90.f);
   REQUIRE(PlacedTo(p, 1).empty());
   REQUIRE(p.SpellPlacedSets() == 0);

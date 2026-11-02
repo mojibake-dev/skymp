@@ -26,9 +26,17 @@ const TOUCH_DROP = 2;
 // How often the tracked set is rebuilt from the view's references, ms
 const RESCAN_MS = 500;
 // A prop is tracked within this many units of the player, the nearest
-// TRACK_MAX of them
-const TRACK_RADIUS = 1024;
-const TRACK_MAX = 64;
+// TRACK_MAX of them. Playtest 41 (Eli, 2026-11-02: the mine's cart "DOES
+// move until they're too far apart, then it stops syncing. same with physics
+// items u can pick up"): 1024 was the cutoff on both ends, the simulator
+// streaming only what it tracked and the watcher applying only what it
+// tracked, so two players a cell apart saw nothing of each other's props.
+// An exterior cell is 4096 units and the server subscribes a seat to the
+// grid around it, so the radius is a cell now; the nearest TRACK_MAX still
+// bound the work (UNMEASURED: the per-frame read of 96 bodies on the
+// simulator; the probe x-prop-range reads it)
+const TRACK_RADIUS = 4096;
+const TRACK_MAX = 96;
 // game-file item references the server subscribed this seat to, remembered from their CreateActor (see engineRefs)
 const ENGINE_REFS_MAX = 1024;
 // A prop just tracked is left alone this long: the view's SpawnProcess places

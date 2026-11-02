@@ -231,6 +231,7 @@ export class PuppetService extends ClientListener {
             // thread, b-invis-recast on gate 20261023-031111)
             logTrace(this, `puppet ${localId.toString(16)}`);
         }
+        this.stopLocalScene(localId, ac);
         if (ac.isDead()) {
             // a corpse carries no ability on the engine either
             this.stopCloakLook(localId, ac);
@@ -331,6 +332,34 @@ export class PuppetService extends ClientListener {
 
     isHiddenByCell(localId: number): boolean {
         return this.hiddenByCell.has(localId);
+    }
+
+    // playtest 41's Sven scene (Eli, 2026-11-02: "the sven scene is wack, it
+    // starts over when the other player walks up and animations play for
+    // neither"): DialogueRiverwoodIntroScene (quest 0x954d9) started on BOTH
+    // engines when each player arrived (22:55:54Z, 0.6 s apart); the host's
+    // ran its phases over its live actors and relayed their lines, faces and
+    // idles, while this seat's own copy drove the same actors as puppets with
+    // no AI, held their behavior against the relayed idles, and restarted at
+    // the walk-up. Scenes are the host's (CLAUDE.md: we do not reimplement
+    // what a host client runs for us; a guest renders the relay), so a scene
+    // the engine plays here on a puppet is stopped (Papyrus Scene.Stop), once
+    // per scene and actor until the engine starts it again (the poll re-stops
+    // it). A live actor's scene (this seat hosts it) is left alone.
+    private stopLocalScene(localId: number, ac: Actor): void {
+        const scene = ac.getCurrentScene();
+        if (!scene || !scene.isPlaying()) {
+            this.scenesStopped.delete(localId);
+            return;
+        }
+        const sceneId = scene.getFormID();
+        if (this.scenesStopped.get(localId) === sceneId) {
+            return;
+        }
+        this.scenesStopped.set(localId, sceneId);
+        const quest = scene.getOwningQuest();
+        scene.stop();
+        logTrace(this, `scene ${sceneId.toString(16)} of quest ${quest ? quest.getFormID().toString(16) : "none"} stopped on this seat: ${localId.toString(16)} is the host's puppet (playtest 41's Sven scene)`);
     }
 
     // Whether this game switched the actor's AI off (by its local form id):
@@ -541,6 +570,7 @@ export class PuppetService extends ClientListener {
         this.deferredArmed.delete(localId);
         this.unloadedSince.delete(localId);
         this.hiddenByCell.delete(localId);
+        this.scenesStopped.delete(localId);
     }
 
     // An actor attaching to a cell is loaded here from this moment, whatever
@@ -620,6 +650,8 @@ export class PuppetService extends ClientListener {
     // playtest 40's F2: the engine references disabled here because their
     // record stands in a cell this game has not loaded, each with that cell
     private readonly hiddenByCell = new Map<number, number>();
+    // playtest 41's Sven scene: the scene this seat last stopped on each puppet
+    private readonly scenesStopped = new Map<number, number>();
     private lastPoll = 0;
     private static readonly pollMs = 2000;
     // two polls: a 3D the late fate dropped comes back within it (train-47b

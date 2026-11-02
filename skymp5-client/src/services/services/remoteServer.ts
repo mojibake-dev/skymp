@@ -953,6 +953,8 @@ export class RemoteServer extends ClientListener {
   // the server's word that the next report of this actor is a jump; kept a
   // second, long past the report that follows it on the same connection
   private readonly placedIdx = new Map<number, number>();
+  // playtest 40's F8: one engine redraw per batch of live changes on an open chest
+  private readonly liveChestRedraw = new Map<number, ReturnType<typeof setTimeout>>();
   private onActorJumpMessage(event: ConnectionMessage<ActorJumpMessage>): void {
     this.placedIdx.set(event.message.idx, Date.now() + 1000);
   }

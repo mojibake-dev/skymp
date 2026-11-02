@@ -73,5 +73,6 @@ export enum MsgType {
   PerkState = 68, // the same verb: the server's whole perk set and the points left for this player
   WordWall = 69, // thuum docs/verbs/word-wall.md (M4): the word wall trigger this game fired, its word the server's
   RelayedActivation = 70, // thuum docs/verbs/traps.md (M4): a linked activation the cell's host reported, for this game's engine to play
-  ObjectAnimation = 71 // thuum docs/verbs/traps.md (ADR-059 decision 3): a world object's animation event the cell's host reported, recorded and relayed
+  ObjectAnimation = 71, // thuum docs/verbs/traps.md (ADR-059 decision 3): a world object's animation event the cell's host reported, recorded and relayed
+  TrapHit = 72 // thuum docs/verbs/traps.md (ADR-059 decision 4): a trap's hit on another player's body the cell's host reports
 }

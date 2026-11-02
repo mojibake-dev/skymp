@@ -36,7 +36,10 @@ enum HookID
   // thuum docs/verbs/prop-physics.md: the player's character controller's
   // contact with a prop's body (docs/research/m3/re-havok-contact.md,
   // Address Library 79131)
-  HOOK_PROP_CONTACT
+  HOOK_PROP_CONTACT,
+  // thuum docs/verbs/traps.md (ADR-059 decision 4): the Papyrus native
+  // ObjectReference.ProcessTrapHit's callback (Address Library 56212)
+  HOOK_PROCESS_TRAP_HIT
 };
 
 struct Hook

@@ -30,6 +30,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cstring>
 #include <fmt/format.h>
 #include <fstream>
 #include <mutex>
@@ -1280,6 +1281,82 @@ void InstallDamageActorHook()
 }
 
 /**
+ * thuum docs/verbs/traps.md (ADR-059 decision 4, TrapHit): a trap's hit on a
+ * body in this game, read where the script hands it to the engine. The
+ * cell's host runs TrapHitBase.OnTrapHitStart, which calls the Papyrus
+ * native ObjectReference.ProcessTrapHit(akTrap, afDamage, afPushback, the
+ * velocity, the position, aeMaterial, afStagger) on the hit reference. Its
+ * registered callback (game/Offsets.h ProcessTrapHit, 56212; the
+ * re-analyst's read on sky-re, 2026-11-01, HYPOTHESIS until the lab's
+ * trap-path-trace.js confirms it) is entered with the VM in rcx, the stack
+ * id in edx, the hit reference in r8, the trap in r9 and the Papyrus
+ * arguments after them as stack arguments (afDamage the fifth argument,
+ * afPushback the sixth, aeMaterial the thirteenth, afStagger the fourteenth;
+ * a float32 in each slot's low dword). Observed only: the engine's DoTrap1,
+ * ProcessHitVictim and DamageActor follow as they do (the DamageActor
+ * replacement below cuts a figure's number). Raised to JS on the next tick
+ * as `trapHit` {trap, target, damage, pushback, stagger}; TrapHitService
+ * reports TrapHit (MsgType 72) when this game hosts the trap's cell and the
+ * target is another player's figure.
+ */
+namespace {
+float StackFloatArgument(GumInvocationContext* ic, unsigned index)
+{
+  const auto raw = reinterpret_cast<uintptr_t>(
+    gum_invocation_context_get_nth_argument(ic, index));
+  const uint32_t bits = static_cast<uint32_t>(raw);
+  float value = 0.f;
+  std::memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+}
+
+void OnProcessTrapHitEnter(GumInvocationContext* ic)
+{
+  if (Override::IsOverriden()) {
+    return;
+  }
+  auto target = reinterpret_cast<RE::TESObjectREFR*>(
+    gum_invocation_context_get_nth_argument(ic, 2));
+  auto trap = reinterpret_cast<RE::TESObjectREFR*>(
+    gum_invocation_context_get_nth_argument(ic, 3));
+  if (!target || !trap) {
+    return;
+  }
+  const uint32_t targetId = target->formID;
+  const uint32_t trapId = trap->formID;
+  const float damage = StackFloatArgument(ic, 4);
+  const float pushback = StackFloatArgument(ic, 5);
+  const float stagger = StackFloatArgument(ic, 13);
+  SkyrimPlatform::GetSingleton()->AddTickTask(
+    [targetId, trapId, damage, pushback, stagger](Napi::Env env) {
+      auto obj = Napi::Object::New(env);
+      AddObjProperty(&obj, "trap", trapId);
+      AddObjProperty(&obj, "target", targetId);
+      AddObjProperty(&obj, "damage", damage);
+      AddObjProperty(&obj, "pushback", pushback);
+      AddObjProperty(&obj, "stagger", stagger);
+      EventsApi::SendEvent("trapHit", { obj });
+    });
+}
+
+void InstallProcessTrapHitHook()
+{
+  if (!REL::Module::IsAE()) {
+    logger::info("[verb:traps] ProcessTrapHit hook not installed: not AE");
+    return;
+  }
+  Frida::HookHandler::GetSingleton()->Install(
+    Frida::HookID::HOOK_PROCESS_TRAP_HIT,
+    Offsets::Hooks::ProcessTrapHit.address(),
+    std::make_shared<Frida::Hook>(OnProcessTrapHitEnter, nullptr));
+  // the lab tells one platform build from another by these install lines
+  logger::info("[verb:traps] ProcessTrapHit hook installed: the Papyrus "
+               "native's callback (Address Library 56212), one trapHit per "
+               "call");
+}
+
+/**
  * thuum docs/verbs/leveling.md (M5): the player's skill experience is the
  * server's. The engine's one funnel for it is PlayerCharacter::UseSkill
  * (game/Offsets.h UseSkill, 40488), called once per landed hit, cast or
@@ -1849,6 +1926,7 @@ void Frida::InstallHooks()
   InstallDamageActorHook();
   // thuum docs/verbs/leveling.md: the player's skill uses to JS
   InstallUseSkillHook();
+  InstallProcessTrapHitHook();
   InstallSendTopicInfoEventHook();
   // thuum docs/verbs/quest-stage.md, slice two: a relayed stage's fragment
   InstallQuestStageSinkHook();

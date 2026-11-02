@@ -340,6 +340,15 @@ export interface SkillUseEvent {
   source: number;
 }
 
+// thuum docs/verbs/traps.md (ADR-059 decision 4): a trap's hit on a body in this game, read at the Papyrus native ObjectReference.ProcessTrapHit (the fork's hook, Address Library 56212) and raised on the next tick: the trap reference's id, the hit reference's id, the script's damage (the leveled pick), its pushback and its stagger. No game call in its handler
+export interface TrapHitEvent {
+  trap: number;
+  target: number;
+  damage: number;
+  pushback: number;
+  stagger: number;
+}
+
 export interface OpenCloseEvent {
   target: ObjectReference
   cause: ObjectReference | undefined
@@ -742,6 +751,8 @@ export declare function on(eventName: 'propContact', callback: (event: PropConta
 export declare function once(eventName: 'propContact', callback: (event: PropContactEvent) => void): EventHandle
 export declare function on(eventName: 'skillUse', callback: (event: SkillUseEvent) => void): EventHandle
 export declare function once(eventName: 'skillUse', callback: (event: SkillUseEvent) => void): EventHandle
+export declare function on(eventName: 'trapHit', callback: (event: TrapHitEvent) => void): EventHandle
+export declare function once(eventName: 'trapHit', callback: (event: TrapHitEvent) => void): EventHandle
 
 export declare function on(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle
 export declare function once(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle

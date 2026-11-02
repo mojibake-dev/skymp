@@ -56,6 +56,13 @@ inline REL::Relocation<std::uintptr_t> DamageActor{ REL::ID(37335) };
 // lab's `just addr 40488` reads 0x736e20 on 1.6.1170). AE only, as
 // DamageActor.
 inline REL::Relocation<std::uintptr_t> UseSkill{ REL::ID(40488) };
+// thuum docs/verbs/traps.md (ADR-059 decision 4): the Papyrus native
+// ObjectReference.ProcessTrapHit's registered callback, the one place the
+// trap, the hit reference and the script's damage meet before the engine's
+// own hit path (the re-analyst on sky-re, 2026-11-01, Ghidra on 1.6.1170:
+// the registration pairs the string "ProcessTrapHit" with it; `just addr
+// 56212` reads 0xa2f3b0). AE only, as DamageActor; the SE id is unread.
+inline REL::Relocation<std::uintptr_t> ProcessTrapHit{ REL::ID(56212) };
 // thuum docs/verbs/npc-stream.md (the voice slice; playtest 37, 2026-10-28,
 // Eli: "if i ask 'what do you have for sale' the trading menue is opened for
 // both people"): DialogueItem::SendTopicInfoEvent, (DialogueItem* item,

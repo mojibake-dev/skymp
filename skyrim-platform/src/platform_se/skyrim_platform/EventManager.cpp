@@ -30,6 +30,9 @@ void EventManager::InitCustom()
   manager->EmplaceEvent("propContact");
   // thuum docs/verbs/leveling.md: the player's UseSkill (FridaHooks' skillUse)
   manager->EmplaceEvent("skillUse");
+  // thuum docs/verbs/traps.md (ADR-059 decision 4): a trap's hit on a body in
+  // this game, at the Papyrus native ProcessTrapHit (FridaHooks' trapHit)
+  manager->EmplaceEvent("trapHit");
   manager->EmplaceEvent("ipcMessage");
 
   // skse messages

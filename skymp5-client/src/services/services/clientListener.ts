@@ -143,6 +143,21 @@ declare module "skyrimPlatform" {
     }
     function on(eventName: 'skillUse', callback: (event: SkillUseEvent) => void): EventHandle;
     function once(eventName: 'skillUse', callback: (event: SkillUseEvent) => void): EventHandle;
+    // thuum docs/verbs/traps.md (ADR-059 decision 4): a trap's hit on a body in
+    // this game, read at the Papyrus native ObjectReference.ProcessTrapHit (the
+    // fork's hook, Address Library 56212) and raised on the next tick: the trap
+    // reference's id, the hit reference's id, the script's damage (the leveled
+    // pick), its pushback and its stagger. Definitions.txt carries the same; no
+    // game call in its handler
+    interface TrapHitEvent {
+        trap: number;
+        target: number;
+        damage: number;
+        pushback: number;
+        stagger: number;
+    }
+    function on(eventName: 'trapHit', callback: (event: TrapHitEvent) => void): EventHandle;
+    function once(eventName: 'trapHit', callback: (event: TrapHitEvent) => void): EventHandle;
     // thuum docs/verbs/npc-stream.md (the voice slice): a spoken line begins
     // on an actor this game hosts; ids alone, no game call in its handler
     interface TopicInfoEvent {

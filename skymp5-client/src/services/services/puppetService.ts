@@ -201,9 +201,29 @@ export class PuppetService extends ClientListener {
             // on for the call) stands it up as a live actor, which the next
             // pass makes a puppet as before.
             if (flagged) {
+                // playtest 41's item 5 (Eli, 2026-11-02: "still have frozen
+                // peeps on death"; playtest 40's F3 read the same): a body
+                // released at the instant of its death has its AI off and
+                // its flag cleared, so neither the engine (its kProcessMe
+                // gate skips AI-off actors) nor the puppet detour (flagged
+                // actors alone) ticks its animation graph, and the death
+                // ragdoll never runs: the mesh freezes mid-pose and sinks.
+                // The flag stays through the ragdoll's settle, the detour
+                // keeps the graph ticking, then the release as before
+                // (HYPOTHESIS until x-npc-death-freeze: the detour's job
+                // drives the ragdoll; the settle fits ragdollSettleMs)
+                const since = this.deadFlaggedSince.get(localId);
+                if (since === undefined) {
+                    this.deadFlaggedSince.set(localId, now);
+                    return;
+                }
+                if (now - since < PuppetService.ragdollSettleMs) {
+                    return;
+                }
+                this.deadFlaggedSince.delete(localId);
                 this.sp.setPuppet(localId, false);
                 this.puppets.delete(localId);
-                logTrace(this, `body ${localId.toString(16)}: released from the puppet state, its activation the engine's`);
+                logTrace(this, `body ${localId.toString(16)}: released from the puppet state after the ragdoll's ${((now - since) / 1000).toFixed(1)} s, its activation the engine's`);
             }
             return;
         }
@@ -571,6 +591,7 @@ export class PuppetService extends ClientListener {
         this.unloadedSince.delete(localId);
         this.hiddenByCell.delete(localId);
         this.scenesStopped.delete(localId);
+        this.deadFlaggedSince.delete(localId);
     }
 
     // An actor attaching to a cell is loaded here from this moment, whatever
@@ -645,7 +666,15 @@ export class PuppetService extends ClientListener {
     private readonly deferredArmed = new Set<number>();
     // the puppet flag's grace after a resurrect (playtest 40's F4)
     private readonly resurrectedAt = new Map<number, number>();
-    private static readonly resurrectGraceMs = 1_500;
+    // playtest 41's item 5 ("resurrection appears as broken as before"): the
+    // 1.5 s grace of playtest 40's F4 ended before the engine's get-up, and
+    // the demote's AI off left the body lying in its ragdoll, sliding on the
+    // stream; a get-up from a ragdoll takes several seconds, so the grace is
+    // six (HYPOTHESIS until x-npc-death-freeze's resurrect leg reads the time)
+    private static readonly resurrectGraceMs = 6_000;
+    // the moment a dead puppet was first seen dead here (the flag's settle)
+    private readonly deadFlaggedSince = new Map<number, number>();
+    private static readonly ragdollSettleMs = 4_000;
     private readonly unloadedSince = new Map<number, number>();
     // playtest 40's F2: the engine references disabled here because their
     // record stands in a cell this game has not loaded, each with that cell

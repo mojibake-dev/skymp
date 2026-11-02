@@ -889,7 +889,31 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
     const bool reanimated = reanimatedAgo &&
       reanimatedAgo->count() <=
         static_cast<int64_t>(MpActor::kReanimateWindowMs);
-    if (actor->IsPlacedDead() && !reanimated) {
+    const auto diedAgoForGuard = actor->DiedAgo(now);
+    if (!diedAgoForGuard && !actor->IsPlacedDead() && !reanimated &&
+        !actor->HostSampledDead()) {
+      // thuum docs/verbs/npc-fate.md (playtest 40's F9): a body dead since
+      // before this process (no stamp) is loaded alive by its host's engine
+      // for a frame before the kill word lands, and that frame's sample read
+      // here as a resurrection after a restart and a relaunch ("1066df stands
+      // again ... its death before this process", 20:20:35Z; Faendal with
+      // it). A live sample stands such a body only after its host has
+      // sampled it dead once (the engine's own respawn or a reanimation
+      // follows a corpse), or within a reanimate's window; said once in ten
+      // seconds per body, at debug
+      static std::unordered_map<uint32_t,
+                                std::chrono::steady_clock::time_point>
+        unstampedLines;
+      auto& last = unstampedLines[actor->GetFormId()];
+      if (last == std::chrono::steady_clock::time_point{} ||
+          now - last >= std::chrono::seconds(10)) {
+        last = now;
+        spdlog::debug("[verb:npc-fate] {:x} is dead since before this "
+                      "process: {:x}'s live sample (health {:.3f}) before any "
+                      "dead one stands nothing (playtest 40's F9)",
+                      actor->GetFormId(), myActor->GetFormId(), msg.health);
+      }
+    } else if (actor->IsPlacedDead() && !reanimated) {
       static std::unordered_map<uint32_t,
                                 std::chrono::steady_clock::time_point>
         placedLines;
@@ -918,9 +942,15 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
             ? fmt::format("a placed corpse, the reanimate accepted {} ms ago",
                           reanimatedAgo->count())
             : std::string("its death before this process"));
+        actor->ClearHostSampledDead();
         actor->Respawn(false);
       }
     }
+  } else if (actor->IsDead() && actor->IsFateRespawned() &&
+             msg.health <= onePoint) {
+    // the host has this body dead too (playtest 40's F9): a later live
+    // sample of its may stand it
+    actor->NoteHostSampledDead();
   }
   facts.alive = !actor->IsDead() && !actor->IsRespawning();
   facts.one_point = onePoint;

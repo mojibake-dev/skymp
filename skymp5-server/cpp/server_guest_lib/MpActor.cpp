@@ -78,6 +78,7 @@ struct MpActor::Impl
   // npc-fate.md finding 65: the last reanimate hit the server accepted on
   // this body, the window a placed corpse's stand-up is read within
   std::chrono::steady_clock::time_point reanimateAcceptedAt{};
+  bool hostSampledDead = false;
   // npc-fate.md H-52b: the killer credited at the last Kill (the read)
   std::optional<uint32_t> lastKillerId;
   std::optional<UpdateActionMessage> lastAction;
@@ -2717,6 +2718,21 @@ std::optional<std::chrono::milliseconds> MpActor::ReanimateAcceptedAgo(
   }
   return std::chrono::duration_cast<std::chrono::milliseconds>(
     now - pImpl->reanimateAcceptedAt);
+}
+
+void MpActor::NoteHostSampledDead()
+{
+  pImpl->hostSampledDead = true;
+}
+
+bool MpActor::HostSampledDead() const
+{
+  return pImpl->hostSampledDead;
+}
+
+void MpActor::ClearHostSampledDead()
+{
+  pImpl->hostSampledDead = false;
 }
 
 void MpActor::NoteHitBy(uint32_t aggressorId,

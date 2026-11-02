@@ -208,6 +208,11 @@ struct Open {
     /// the target, `MAX_TICK_MS` at most; the later ones their gap in full
     /// up to `HOLE_MS`).
     counted: bool,
+    /// The stream's end has come; one more report within `HOLE_MS` of the
+    /// last counted one still counts its gap, then the hand closes (thuum
+    /// docs/verbs/spell-cast.md, b-duel's Flames leg: the engine's last hit
+    /// report follows the hand's equipped event by up to a cadence).
+    ending: bool,
 }
 
 /// A cast whose records reach other spells, kept for its linger.
@@ -252,7 +257,7 @@ fn lingers(l: &Lingering, open: &[Option<Open>; 4], now_ms: u64) -> bool {
         && open
             .get(usize::from(l.facts.hand))
             .and_then(Option::as_ref)
-            .is_some_and(|o| o.facts.spell == l.facts.spell)
+            .is_some_and(|o| o.facts.spell == l.facts.spell && !o.ending)
 }
 
 impl Casts {
@@ -287,7 +292,7 @@ impl Casts {
             }
             CastKind::Concentration => {
                 if let Some(slot) = casts.open.get_mut(hand) {
-                    *slot = Some(Open { facts, last_counted_ms: now_ms, relay_pending: facts.lands_on_target, counted: false });
+                    *slot = Some(Open { facts, last_counted_ms: now_ms, relay_pending: facts.lands_on_target, counted: false, ending: false });
                 }
             }
         }
@@ -305,23 +310,32 @@ impl Casts {
     }
 
     /// `actor`'s stream in `hand` ended (its stop, or the server's own end of
-    /// it).
+    /// it). A stream that counted a report keeps the hand for one more
+    /// report within `HOLE_MS` of its last counted one (the engine's last hit
+    /// report follows the hand's equipped event by up to a cadence; refused,
+    /// it cost b-duel's Flames leg its margin, 2026-11-01); one that never
+    /// counted closes at once.
     pub fn end(&mut self, actor: u32, hand: u8) {
         if let Some(slot) = self
             .per_actor
             .get_mut(&actor)
             .and_then(|c| c.open.get_mut(usize::from(hand)))
         {
-            *slot = None;
+            match slot {
+                Some(open) if open.counted && !open.ending => open.ending = true,
+                _ => *slot = None,
+            }
         }
     }
 
-    /// Whether `actor` holds a stream open in `hand`.
+    /// Whether `actor` holds a stream open in `hand` (an ending one, waiting
+    /// for its last report, is not open).
     pub fn is_open(&self, actor: u32, hand: u8) -> bool {
         self.per_actor
             .get(&actor)
             .and_then(|c| c.open.get(usize::from(hand)))
-            .is_some_and(Option::is_some)
+            .and_then(Option::as_ref)
+            .is_some_and(|o| !o.ending)
     }
 
     /// A hit by `actor` at `now_ms`: an open stream of the hit's spell
@@ -355,22 +369,41 @@ impl Casts {
             if open.facts.spell != spell {
                 continue;
             }
+            // an ended stream takes one last report within the hole of its
+            // last counted one and nothing later
+            if open.ending && now_ms.saturating_sub(open.last_counted_ms) > HOLE_MS {
+                continue;
+            }
             any = true;
             streams = streams.saturating_add(1);
             if within(&open.facts, x, y, z) && oldest.is_none_or(|(_, at)| open.last_counted_ms < at) {
                 oldest = Some((hand, open.last_counted_ms));
             }
         }
-        if let Some(open) = oldest.and_then(|(hand, _)| casts.open.get_mut(hand)).and_then(Option::as_mut) {
-            let gap_ms = now_ms.saturating_sub(open.last_counted_ms);
-            // one stream of the spell: a later report's gap in full up to the
-            // hole; two hands, a first report or a longer hole: the cap
-            let tick_ms = if streams == 1 && open.counted && gap_ms <= HOLE_MS { gap_ms } else { gap_ms.min(MAX_TICK_MS) };
-            open.counted = true;
-            open.last_counted_ms = now_ms;
-            let scale = f32::from(u16::try_from(tick_ms).unwrap_or(u16::MAX)) / 1000.0;
-            let relay = std::mem::replace(&mut open.relay_pending, false);
-            return CastCheck::Claimed { scale, relay, dual: open.facts.dual };
+        if let Some((hand, _)) = oldest {
+            if let Some(slot) = casts.open.get_mut(hand) {
+                if let Some(open) = slot.as_mut() {
+                    let gap_ms = now_ms.saturating_sub(open.last_counted_ms);
+                    // one stream of the spell: a later report's gap in full up to the
+                    // hole; two hands, a first report or a longer hole: the cap
+                    let tick_ms = if streams == 1 && open.counted && gap_ms <= HOLE_MS { gap_ms } else { gap_ms.min(MAX_TICK_MS) };
+                    open.counted = true;
+                    open.last_counted_ms = now_ms;
+                    let scale = f32::from(u16::try_from(tick_ms).unwrap_or(u16::MAX)) / 1000.0;
+                    let relay = std::mem::replace(&mut open.relay_pending, false);
+                    let dual = open.facts.dual;
+                    if open.ending {
+                        *slot = None;
+                    }
+                    return CastCheck::Claimed { scale, relay, dual };
+                }
+            }
+        }
+        // an ended stream past its hole closes for good
+        for slot in casts.open.iter_mut() {
+            if slot.as_ref().is_some_and(|o| o.ending && now_ms.saturating_sub(o.last_counted_ms) > HOLE_MS) {
+                *slot = None;
+            }
         }
         casts.released.retain(|c| now_ms.saturating_sub(c.at_ms) <= c.facts.hazard_ms.max(CAST_WINDOW_MS));
         for cast in casts.released.iter_mut().rev() {
@@ -637,10 +670,35 @@ mod tests {
         // five reports a second count a fifth of a second each
         assert_eq!(c.claim(1, hit(FLAMES, 2, 150.0, 0.0, 0.0), 800), CastCheck::Claimed { scale: 0.2, relay: false, dual: false });
         assert_eq!(c.claim(1, hit(FLAMES, 2, 150.0, 0.0, 0.0), 1_000), CastCheck::Claimed { scale: 0.2, relay: false, dual: false });
-        // ended: nothing more
+        // ended: one last report within the hole counts its gap (the engine's
+        // last hit report follows the hand's equipped event), then nothing
         c.end(1, 1);
         assert!(!c.is_open(1, 1));
-        assert_eq!(c.claim(1, hit(FLAMES, 2, 150.0, 0.0, 0.0), 1_200), CastCheck::NoCast);
+        assert_eq!(c.claim(1, hit(FLAMES, 2, 150.0, 0.0, 0.0), 1_200), CastCheck::Claimed { scale: 0.2, relay: false, dual: false });
+        assert_eq!(c.claim(1, hit(FLAMES, 2, 150.0, 0.0, 0.0), 1_400), CastCheck::NoCast);
+    }
+
+    #[test]
+    fn an_ended_streams_last_report_counts_within_the_hole_alone() {
+        // thuum docs/verbs/spell-cast.md, b-duel's Flames leg (2026-11-01): a
+        // report past HOLE_MS of the last counted one is no last report
+        let mut c = Casts::default();
+        c.start(1, cast(FLAMES, 1, CastKind::Concentration, false), 0);
+        assert_eq!(c.claim(1, hit(FLAMES, 2, 150.0, 0.0, 0.0), 500), CastCheck::Claimed { scale: 0.25, relay: false, dual: false });
+        c.end(1, 1);
+        assert_eq!(c.claim(1, hit(FLAMES, 2, 150.0, 0.0, 0.0), 1_600), CastCheck::NoCast);
+        assert!(!c.is_open(1, 1));
+        // a stream that never counted closes at its end
+        c.start(1, cast(FLAMES, 1, CastKind::Concentration, false), 2_000);
+        c.end(1, 1);
+        assert_eq!(c.claim(1, hit(FLAMES, 2, 150.0, 0.0, 0.0), 2_100), CastCheck::NoCast);
+        // a new stream in the hand replaces an ending one
+        c.start(1, cast(FLAMES, 1, CastKind::Concentration, false), 3_000);
+        assert_eq!(c.claim(1, hit(FLAMES, 2, 150.0, 0.0, 0.0), 3_200), CastCheck::Claimed { scale: 0.2, relay: false, dual: false });
+        c.end(1, 1);
+        c.start(1, cast(FLAMES, 1, CastKind::Concentration, false), 3_300);
+        assert!(c.is_open(1, 1));
+        assert_eq!(c.claim(1, hit(FLAMES, 2, 150.0, 0.0, 0.0), 3_500), CastCheck::Claimed { scale: 0.2, relay: false, dual: false });
     }
 
     #[test]

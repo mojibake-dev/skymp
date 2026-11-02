@@ -27,7 +27,7 @@ import { nameof } from '../../lib/nameof';
 import { setActorValuePercentage } from '../../sync/actorvalues';
 import { applyAppearanceToPlayer } from '../../sync/appearance';
 import { applyEquipment, isBadMenuShown, applyPlayerHands, Equipment } from '../../sync/equipment';
-import { Inventory, applyInventory, ApplyInventoryReport } from '../../sync/inventory';
+import { Inventory, Entry, applyInventory, ApplyInventoryReport, getInventory } from '../../sync/inventory';
 import { ContainerApplyQueue } from '../../view/containerApplyQueue';
 import { Movement } from '../../sync/movement';
 import { syncSpells } from '../../sync/spell';
@@ -1050,7 +1050,32 @@ export class RemoteServer extends ClientListener {
           return;
         }
         if (msg.propName === 'inventory') {
-          ModelApplyUtils.applyModelInventory(refr, msgData as Inventory);
+          // thuum playtest 41's item 7 (Eli: "changes are initially reflected,
+          // then they stop being reflected and prisoner cannot place items,
+          // they just become 'use' item instead"; 40's F8 the same): with the
+          // ContainerMenu open on a shared chest, each re-sent record (the
+          // other occupant's next store) re-added c1's view of an Iron War Axe
+          // that was already there (three addItemEx(b6fdc, 13790, 1) for one
+          // store, 23:18:43 to :49Z), while a garnet beside it was added once:
+          // the apply's diff against the engine's read matched the MISC and
+          // missed the WEAP (its extras, HYPOTHESIS: x-shared-chest-phantom
+          // reads which), so the chest filled with phantoms, a take of one was
+          // refused by the server and the views split. Under an open menu a
+          // container's record is applied by base counts: what the record
+          // holds of each base against what the engine holds, the shortfall
+          // added with the record's extras and the surplus removed, so a
+          // re-sent record changes nothing and a real change moves only the
+          // difference. The closed-menu path stays the full apply.
+          const base = refr.getBaseObject();
+          if (Ui.isMenuOpen('ContainerMenu') && base && base.getType() === FormType.Container) {
+            const applied = this.applyContainerByCounts(refr, msgData as Inventory);
+            logTrace(this, `live chest ${refrId.toString(16)}: the record applied by base counts under the open ContainerMenu (${applied.added} added, ${applied.removed} removed)`);
+            if (applied.added === 0 && applied.removed === 0) {
+              return;
+            }
+          } else {
+            ModelApplyUtils.applyModelInventory(refr, msgData as Inventory);
+          }
           // thuum memo D52 B (playtest 37, 2026-10-28): this is the path a shared
           // chest's re-sent inventory takes while this seat's ContainerMenu is
           // open on it (c1's addItemEx on 36c37 within 0.4 s of c2's puts and
@@ -1375,6 +1400,57 @@ export class RemoteServer extends ClientListener {
         logError(this, 'Failed to load object reference ' + refrId.toString(16), 'within', String(RemoteServer.PENDING_LOAD_MS), 'ms');
       }
     }
+  }
+
+  // the record's inventory onto a container by base counts (the item 7 path
+  // above): the engine's entries summed per base, the record's summed per
+  // base, the shortfall added through TESModPlatform.addItemEx with the
+  // record entry's extras (the first entry of that base), the surplus removed
+  private applyContainerByCounts(refr: sp.ObjectReference, inv: Inventory): { added: number; removed: number } {
+    const want = new Map<number, number>();
+    const sample = new Map<number, Entry>();
+    for (const e of inv.entries) {
+      want.set(e.baseId, (want.get(e.baseId) ?? 0) + e.count);
+      if (!sample.has(e.baseId)) {
+        sample.set(e.baseId, e);
+      }
+    }
+    const have = new Map<number, number>();
+    for (const e of getInventory(refr).entries) {
+      have.set(e.baseId, (have.get(e.baseId) ?? 0) + e.count);
+    }
+    let added = 0;
+    let removed = 0;
+    const bases = new Set<number>();
+    want.forEach((_, baseId) => bases.add(baseId));
+    have.forEach((_, baseId) => bases.add(baseId));
+    bases.forEach((baseId) => {
+      const delta = (want.get(baseId) ?? 0) - (have.get(baseId) ?? 0);
+      const form = Game.getFormEx(baseId);
+      if (!form || delta === 0) {
+        return;
+      }
+      if (delta > 0) {
+        const e = sample.get(baseId);
+        sp.TESModPlatform.addItemEx(
+          refr, form, delta,
+          e && e.health ? e.health : 1,
+          e && e.enchantmentId ? sp.Enchantment.from(Game.getFormEx(e.enchantmentId)) : null,
+          e && e.maxCharge ? e.maxCharge : 0,
+          !!(e && e.removeEnchantmentOnUnequip),
+          e && e.chargePercent ? e.chargePercent : 0,
+          e && e.name ? e.name : "",
+          e && e.soul ? e.soul : 0,
+          e && e.poisonId ? sp.Potion.from(Game.getFormEx(e.poisonId)) : null,
+          e && e.poisonCount ? e.poisonCount : 0,
+        );
+        added += delta;
+      } else {
+        refr.removeItem(form, -delta, true, null);
+        removed += -delta;
+      }
+    });
+    return { added, removed };
   }
 
   private skipFormViewCreation(

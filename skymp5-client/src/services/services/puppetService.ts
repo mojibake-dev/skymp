@@ -97,6 +97,18 @@ export class PuppetService extends ClientListener {
             this.deferredArmed.delete(localId);
         }
 
+        if (!loadedHere && this.hiddenByCell.has(localId)) {
+            // playtest 40's F2 (2026-11-02): an actor hidden here because its
+            // record stands in a cell this game has not loaded is nobody's
+            // to run here: no release to its schedule (the release put
+            // Hilde's AI back on inside a house c1 never loaded, her own
+            // package walked her out again, and she stood on the street as
+            // a ghost under the puppet flag while her record sat indoors);
+            // shown again and reconciled when the record is back in a loaded
+            // cell (recordCellSeen)
+            host.markHosted(localId, false);
+            return;
+        }
         if (!loadedHere) {
             // thuum ADR-051 (npc-handoff D11; b-npc-handoff-night 092208,
             // 114904): an actor this engine no longer loads is simulated by
@@ -248,6 +260,70 @@ export class PuppetService extends ClientListener {
             }
             this.reconcile(id);
         });
+    }
+
+    // playtest 40's F2 (2026-11-02; npc-handoff D6 on the viewing seat): the
+    // record of an actor this game does not simulate stands in `cell`. An
+    // interior this game has not loaded (Cell.isAttached false) means the
+    // actor is out of this game's world: its engine reference is disabled
+    // here (the server's own once-a-minute Disable snippet says the same)
+    // and never released to its schedule while hidden. A record back in a
+    // loaded cell (the actor came out, or this game walked in) shows the
+    // reference at the record and the next reconcile decides its state. The
+    // host's own reference is never hidden: its engine leads.
+    recordCellSeen(localId: number, cell: number, pos: [number, number, number], rot: [number, number, number], mine: boolean): void {
+        if (!this.enabled || localId === 0x14 || localId >= 0xff000000) {
+            return;
+        }
+        const form = this.sp.Game.getFormEx(cell);
+        const cellForm = form ? this.sp.Cell.from(form) : null;
+        const unloadedInterior = !mine && cellForm !== null && cellForm.isInterior() && !cellForm.isAttached();
+        if (unloadedInterior) {
+            this.hideInUnloadedCell(localId, cell);
+            return;
+        }
+        this.showIfHidden(localId, cell, pos, rot);
+    }
+
+    hideInUnloadedCell(localId: number, cell: number): void {
+        if (!this.enabled || localId === 0x14 || localId >= 0xff000000 || this.hiddenByCell.has(localId)) {
+            return;
+        }
+        const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(localId));
+        const ac = refr ? this.sp.Actor.from(refr) : null;
+        if (!ac) {
+            return;
+        }
+        this.hiddenByCell.set(localId, cell);
+        this.controller.lookupListener(HostService).markHosted(localId, false);
+        ac.disable(false);
+        logTrace(this, `hidden ${localId.toString(16)}: its record stands in ${cell.toString(16)}, which this game has not loaded (npc-handoff D6, playtest 40's F2)`);
+    }
+
+    private showIfHidden(localId: number, cell: number, pos: [number, number, number], rot: [number, number, number]): void {
+        if (!this.hiddenByCell.has(localId)) {
+            return;
+        }
+        const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(localId));
+        if (!refr) {
+            return;
+        }
+        this.hiddenByCell.delete(localId);
+        const form = this.sp.Game.getFormEx(cell);
+        refr.enable(false);
+        this.sp.TESModPlatform.moveRefrToPosition(
+            refr,
+            form ? this.sp.Cell.from(form) : null,
+            form ? this.sp.WorldSpace.from(form) : null,
+            pos[0], pos[1], pos[2],
+            rot[0] * Math.PI / 180, rot[1] * Math.PI / 180, rot[2] * Math.PI / 180,
+        );
+        logTrace(this, `shown ${localId.toString(16)}: its record is back in ${cell.toString(16)}, placed at it`);
+        this.reconcile(localId);
+    }
+
+    isHiddenByCell(localId: number): boolean {
+        return this.hiddenByCell.has(localId);
     }
 
     // Whether this game switched the actor's AI off (by its local form id):
@@ -449,6 +525,7 @@ export class PuppetService extends ClientListener {
         this.attached.delete(localId);
         this.deferredArmed.delete(localId);
         this.unloadedSince.delete(localId);
+        this.hiddenByCell.delete(localId);
     }
 
     // An actor attaching to a cell is loaded here from this moment, whatever
@@ -522,6 +599,9 @@ export class PuppetService extends ClientListener {
     private readonly attached = new Set<number>();
     private readonly deferredArmed = new Set<number>();
     private readonly unloadedSince = new Map<number, number>();
+    // playtest 40's F2: the engine references disabled here because their
+    // record stands in a cell this game has not loaded, each with that cell
+    private readonly hiddenByCell = new Map<number, number>();
     private lastPoll = 0;
     private static readonly pollMs = 2000;
     // two polls: a 3D the late fate dropped comes back within it (train-47b

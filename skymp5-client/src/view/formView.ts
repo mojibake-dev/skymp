@@ -122,6 +122,21 @@ export class FormView {
         // per record cell, never destroyed; the npcHandoff switch leaves it
         // standing where the engine put it
         this.lastWorldOrCell = model.movement.worldOrCell;
+        // playtest 40's F2: the record's cell, seen here every update, hides
+        // the reference while the cell is an interior this game has not
+        // loaded and shows it at the record when it is loaded again
+        // (PuppetService.recordCellSeen; the Teleport ahead of an unsubscribe
+        // reaches RemoteServer's handler, which asks the same)
+        if (FormView.npcHandoffEnabled()) {
+          const seenRefr = ObjectReference.from(Game.getFormEx(this.refrId));
+          const seenMine = !!seenRefr && SpApiInteractor.getControllerInstance().lookupListener(HostService).isMine(model, seenRefr);
+          SpApiInteractor.getControllerInstance().lookupListener(PuppetService).recordCellSeen(
+            this.refrId, model.movement.worldOrCell,
+            [model.movement.pos[0], model.movement.pos[1], model.movement.pos[2]],
+            [model.movement.rot[0], model.movement.rot[1], model.movement.rot[2]],
+            seenMine,
+          );
+        }
         if (FormView.npcHandoffEnabled() && this.movedInto !== model.movement.worldOrCell) {
           const refr = ObjectReference.from(Game.getFormEx(this.refrId));
           const engineCell = refr ? ObjectReferenceEx.getWorldOrCell(refr) : 0;

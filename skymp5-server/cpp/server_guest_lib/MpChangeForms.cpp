@@ -1,5 +1,7 @@
 #include "MpChangeForms.h"
 #include "JsonUtils.h"
+#include <algorithm>
+#include <limits>
 #include <spdlog/spdlog.h>
 
 namespace {
@@ -628,12 +630,15 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
     for (const auto& [skill, count] : record.legendary) {
       legendary.push_back({ { "skill", skill }, { "count", count } });
     }
-    res["actorValueRecord"] = {
-      { "bases", bases },        { "skills", skills },
-      { "xp", record.xp },       { "threshold", record.threshold },
-      { "level", record.level }, { "legendary", legendary },
-      { "perks", record.perks } // thuum docs/verbs/perks.md
-    };
+    res["actorValueRecord"] = { { "bases", bases },
+                                { "skills", skills },
+                                { "xp", record.xp },
+                                { "threshold", record.threshold },
+                                { "level", record.level },
+                                { "legendary", legendary },
+                                { "perks",
+                                  record.perks }, // thuum docs/verbs/perks.md
+                                { "perkPicks", record.perkPicks } };
   }
 
   // ADR-043: with the running order every stored form goes plugin-relative
@@ -1226,7 +1231,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
     static const JsonPointer bases("bases"), skills("skills"),
       legendary("legendary"), av("av"), base("base"), skill("skill"),
       level("level"), xp("xp"), threshold("threshold"), count("count"),
-      perks("perks");
+      perks("perks"), perkPicks("perkPicks");
     ActorValueRecord record;
 
     std::vector<simdjson::dom::element> parsed;
@@ -1279,6 +1284,21 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
     record.xp = static_cast<float>(xpTmp);
     record.threshold = static_cast<float>(thresholdTmp);
     record.level = static_cast<uint16_t>(levelTmp);
+    // the picks the server granted (thuum docs/verbs/perks.md): absent in a
+    // record from before the counter, which counted every perk held against
+    // the points; read as the perks held capped at the points the level
+    // earned, so such a record keeps the points it showed
+    if (jTmp.at_pointer(perkPicks.GetData()).error() ==
+        simdjson::error_code::SUCCESS) {
+      uint32_t picksTmp = 0;
+      ReadEx(jTmp, perkPicks, &picksTmp);
+      record.perkPicks = static_cast<uint16_t>(
+        std::min<uint32_t>(picksTmp, std::numeric_limits<uint16_t>::max()));
+    } else {
+      const size_t earned = record.level > 0 ? record.level - 1 : 0;
+      record.perkPicks =
+        static_cast<uint16_t>(std::min(earned, record.perks.size()));
+    }
     res.actorValueRecord = record;
   }
 

@@ -5073,18 +5073,18 @@ bool PartOne::PickPerk(MpActor& actor, uint32_t perk)
   const auto verdict = pImpl->perkTable->pick(
     record->level,
     rust::Slice<const uint32_t>(record->perks.data(), record->perks.size()),
-    rust::Slice<const uint8_t>(avs.data(), avs.size()),
+    record->perkPicks, rust::Slice<const uint8_t>(avs.data(), avs.size()),
     rust::Slice<const float>(values.data(), values.size()), perk);
   if (!verdict.accepted) {
     spdlog::info(
-      "[verb:perks] {}: {:x} picks {:x} at level {} with {} perk(s) "
-      "(detail {:x}); refused, its state resent",
+      "[verb:perks] {}: {:x} picks {:x} at level {} with {} perk(s) and {} "
+      "pick(s) spent (detail {:x}); refused, its state resent",
       std::string(verdict.code), actor.GetFormId(), perk, record->level,
-      record->perks.size(), verdict.detail);
+      record->perks.size(), record->perkPicks, verdict.detail);
     actor.SendPerkState();
     return false;
   }
-  actor.AddPerkByServer(perk);
+  actor.AddPerkByServer(perk, true); // the pick spends a point
   spdlog::info("[verb:perks] {:x} takes perk {:x} at level {}: {} perk(s) "
                "held, {} point(s) left",
                actor.GetFormId(), perk, record->level,

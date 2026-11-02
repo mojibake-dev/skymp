@@ -1742,6 +1742,11 @@ mod ffi {
         /// A use applied to a player's standing: the skills the record holds (a skill not listed
         /// stands at the floor), the character, the use.
         fn apply_use(self: &LevelingTable, skills: &[LevelingSkill], character: LevelingCharacter, skill_av: u8, base: f32) -> LevelingOutcome;
+        /// A skill book read applied to a player's standing: the skill at `skill_av` one level up
+        /// (nothing at the cap), its experience carried as the same share of the new step, the
+        /// character credited the level (thuum docs/verbs/leveling.md, skill books). Once per
+        /// book per character is the caller's record.
+        fn apply_book(self: &LevelingTable, skills: &[LevelingSkill], character: LevelingCharacter, skill_av: u8) -> LevelingOutcome;
         /// The character experience the step from `level` to the next needs.
         fn leveling_character_threshold(level: u16) -> f32;
 
@@ -2734,6 +2739,20 @@ impl LevelingTable {
     }
 
     fn apply_use(&self, skills: &[LevelingSkill], character: LevelingCharacter, skill_av: u8, base: f32) -> LevelingOutcome {
+        self.judge(skills, character, |progress, table| progress.apply_use(table, skill_av, base))
+    }
+
+    fn apply_book(&self, skills: &[LevelingSkill], character: LevelingCharacter, skill_av: u8) -> LevelingOutcome {
+        self.judge(skills, character, |progress, table| progress.apply_book(table, skill_av))
+    }
+
+    /// The record's standing judged by `step`, the outcome in the bridge's shape.
+    fn judge(
+        &self,
+        skills: &[LevelingSkill],
+        character: LevelingCharacter,
+        step: impl FnOnce(&mut leveling::Progress, &leveling::Table) -> Result<Vec<leveling::Event>, leveling::Refusal>,
+    ) -> LevelingOutcome {
         let mut standing = [leveling::SkillProgress { level: leveling::SKILL_FLOOR, xp: 0.0 }; 18];
         for s in skills {
             if let Some(skill) = leveling::Skill::from_actor_value(s.skill_av) {
@@ -2746,7 +2765,7 @@ impl LevelingTable {
             standing,
             leveling::Character { level: character.level.clamp(1, leveling::LEVEL_CAP), xp: if character.xp.is_finite() && character.xp >= 0.0 { character.xp } else { 0.0 } },
         );
-        let (accepted, why, events) = match progress.apply_use(&self.0, skill_av, base) {
+        let (accepted, why, events) = match step(&mut progress, &self.0) {
             Ok(events) => (
                 true,
                 0,
@@ -4001,6 +4020,17 @@ mod tests {
         assert_eq!(t.apply_use(&skills, character.clone(), 5, 10.0).why, 1);
         assert_eq!(t.apply_use(&skills, character.clone(), 6, f32::NAN).why, 2);
         assert_eq!(t.apply_use(&skills, character.clone(), 6, 0.0).why, 3);
+        // a skill book: One-handed 16 to 17 at once, the character credited 17 more (33 toward 100)
+        let book = t.apply_book(&skills, character.clone(), 6);
+        assert!(book.accepted, "{book:?}");
+        assert_eq!(book.events, vec![LevelingEvent { kind: 0, skill_av: 6, level: 17 }]);
+        assert!(book.skills.iter().any(|s| s.skill_av == 6 && s.level == 17));
+        assert!((book.character.xp - 33.0).abs() < 0.001);
+        // for no skill: refused by number, nothing moved
+        let none = t.apply_book(&skills, character.clone(), 5);
+        assert!(!none.accepted);
+        assert_eq!(none.why, 1);
+        assert!(none.skills.iter().any(|s| s.skill_av == 6 && s.level == 16));
     }
 
     #[test]

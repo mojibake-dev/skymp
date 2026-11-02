@@ -311,6 +311,29 @@ void DescribeLearnedSpells(nlohmann::json& res, const MpChangeForm& changeForm,
   res["learnedSpells"] = std::move(spells);
 }
 
+// thuum docs/verbs/leveling.md (skill books): the read books as the spells
+// are written, each a form of the running order
+void DescribeReadBooks(nlohmann::json& res, const MpChangeForm& changeForm,
+                       const EspmFileList& files, const std::string& record)
+{
+  auto books = nlohmann::json::array();
+  for (const uint32_t formId : changeForm.readBooks.GetReadBooks()) {
+    if (const auto desc = Describe(formId, files)) {
+      books.push_back(*desc);
+    } else {
+      spdlog::error("MpChangeForm::ToJson {} - read book {:#x} belongs to "
+                    "no loaded plugin, dropping it",
+                    record, formId);
+    }
+  }
+  for (const auto& parked : changeForm.unresolved) {
+    if (parked.field == "readBooks") {
+      books.push_back(parked.form.ToString());
+    }
+  }
+  res["readBooks"] = std::move(books);
+}
+
 // Every stored form of the written record as "<hex>:<plugin>" under `files`,
 // and the version mark that says so
 void DescribeForms(nlohmann::json& res, const MpChangeForm& changeForm,
@@ -335,6 +358,7 @@ void DescribeForms(nlohmann::json& res, const MpChangeForm& changeForm,
   }
 
   DescribeLearnedSpells(res, changeForm, files, record);
+  DescribeReadBooks(res, changeForm, files, record);
   DescribeAppearance(res, changeForm, files, record);
 }
 
@@ -397,6 +421,7 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
   res["equipmentDump"] = changeForm.equipment.ToJson();
 
   res["learnedSpells"] = changeForm.learnedSpells.GetLearnedSpells();
+  res["readBooks"] = changeForm.readBooks.GetReadBooks();
 
   res["healthPercentage"] = changeForm.actorValues.healthPercentage;
   res["magickaPercentage"] = changeForm.actorValues.magickaPercentage;
@@ -644,6 +669,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
   static const JsonPointer appearanceDump("appearanceDump");
   static const JsonPointer equipmentDump("equipmentDump");
   static const JsonPointer learnedSpells("learnedSpells");
+  static const JsonPointer readBooks("readBooks");
   static const JsonPointer dynamicFields("dynamicFields");
   static const JsonPointer healthPercentage("healthPercentage");
   static const JsonPointer magickaPercentage("magickaPercentage");
@@ -815,6 +841,30 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
 
       for (const auto spellId : learnedSpellsData) {
         res.learnedSpells.LearnSpell(spellId);
+      }
+    }
+  }
+
+  // thuum docs/verbs/leveling.md (skill books): absent in records written
+  // before the field, which read as no book read
+  if (element.at_pointer(readBooks.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    if (pluginRelative) {
+      std::vector<std::string> stored;
+      ReadVector(element, readBooks, &stored);
+      for (const auto& text : stored) {
+        const FormDesc form = FormDesc::FromString(text);
+        if (const auto bookId = Resolve(form, *files)) {
+          res.readBooks.MarkRead(*bookId);
+        } else {
+          res.unresolved.push_back(UnresolvedForm{ "readBooks", form, "" });
+        }
+      }
+    } else {
+      std::vector<ReadBooks::Data::key_type> readBooksData;
+      ReadVector(element, readBooks, &readBooksData);
+      for (const auto bookId : readBooksData) {
+        res.readBooks.MarkRead(bookId);
       }
     }
   }
@@ -1274,4 +1324,24 @@ std::vector<LearnedSpells::Data::key_type> LearnedSpells::GetLearnedSpells()
   const
 {
   return std::vector(_learnedSpellIds.begin(), _learnedSpellIds.end());
+}
+
+void ReadBooks::MarkRead(const Data::key_type baseId)
+{
+  _bookIds.emplace(baseId);
+}
+
+bool ReadBooks::IsRead(const Data::key_type baseId) const
+{
+  return _bookIds.count(baseId) != 0;
+}
+
+size_t ReadBooks::Count() const noexcept
+{
+  return _bookIds.size();
+}
+
+std::vector<ReadBooks::Data::key_type> ReadBooks::GetReadBooks() const
+{
+  return std::vector(_bookIds.begin(), _bookIds.end());
 }

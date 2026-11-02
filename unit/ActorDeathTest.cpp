@@ -195,12 +195,14 @@ TEST_CASE("A hosted NPC the record holds dead whose host samples it alive "
 
 // thuum docs/verbs/npc-fate.md (playtest 37's finding 54): a body dead since
 // before this server process has no death stamp (RecordDeathAt runs at
-// SendAndSetDeathState alone, nothing stamps a body loaded dead), so no kill
-// word of this process can be in flight for it, and its host's first live
-// sample is the resurrection at once
+// SendAndSetDeathState alone, nothing stamps a body loaded dead). Playtest
+// 40's F9 (2026-11-02): the host's engine loads such a corpse alive for a
+// frame before the kill word lands, and that first live sample stood the
+// body up after a restart and a relaunch; so a live sample stands a body
+// dead before this process only after its host has sampled it dead once
 TEST_CASE("A hosted NPC dead since before this server process stands again "
-          "at its host's first live sample: no grace guards a death this "
-          "process never stamped",
+          "at its host's live sample only after its host has sampled it "
+          "dead once",
           "[ActorDeath][espm]")
 {
   auto& p = GetPartOne();
@@ -224,8 +226,14 @@ TEST_CASE("A hosted NPC dead since before this server process stands again "
   State(p, 1, kPredator, 1.f);
   REQUIRE(actor.IsDead());
 
-  // from the host: taken at once, the death cleared, the live word to the
-  // other game
+  // from the host, before any dead sample: the corpse's loading frame, not
+  // a resurrection (playtest 40's F9)
+  State(p, 0, kPredator, 1.f);
+  REQUIRE(actor.IsDead());
+  // the host samples it dead, then alive: the engine's own respawn, taken,
+  // the death cleared, the live word to the other game
+  State(p, 0, kPredator, 0.f);
+  REQUIRE(actor.IsDead());
   p.Messages().clear();
   State(p, 0, kPredator, 1.f);
   REQUIRE_FALSE(actor.IsDead());

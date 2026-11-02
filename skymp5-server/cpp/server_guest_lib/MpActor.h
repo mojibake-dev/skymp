@@ -370,6 +370,16 @@ public:
   // the host's round trip, the cast's flight on its engine and the sampler's
   // cadence, with room; a bound of the server's policy, not an engine number
   static constexpr uint64_t kReanimateWindowMs = 10'000;
+  // thuum docs/verbs/npc-fate.md (playtest 40's F9, 2026-11-02): whether this
+  // body's host has sampled it dead (at or under one point) in this server
+  // process. A death before this process has no stamp, and the host's engine
+  // loads the corpse alive for a frame before the kill word lands, so its
+  // first live sample is a race, not a resurrection; a live sample stands
+  // such a body only after a dead one from its host (the engine's own
+  // respawn or reanimation) or within a reanimate's window
+  void NoteHostSampledDead();
+  bool HostSampledDead() const;
+  void ClearHostSampledDead();
   // thuum docs/verbs/npc-fate.md (playtest 40's F5, 2026-11-02): when this
   // body last stood again by its host's engine on the server's word
   // (ActionListener::OnHostedActorState's resurrection branch). A reanimated
@@ -545,6 +555,11 @@ public:
 
   void AddSpell(uint32_t spellId);
   void RemoveSpell(uint32_t spellId);
+
+  // thuum docs/verbs/leveling.md (skill books): the books this actor has
+  // read, each raising its skill once (the record's readBooks)
+  bool IsBookRead(uint32_t baseId) const;
+  void MarkBookRead(uint32_t baseId);
 
   void SetLastAnimEvent(const std::optional<AnimationData>& animationData);
   std::optional<AnimationData> GetLastAnimEvent() const;

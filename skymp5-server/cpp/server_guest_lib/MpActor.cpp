@@ -78,6 +78,7 @@ struct MpActor::Impl
   // npc-fate.md finding 65: the last reanimate hit the server accepted on
   // this body, the window a placed corpse's stand-up is read within
   std::chrono::steady_clock::time_point reanimateAcceptedAt{};
+  bool hostSampledDead = false;
   std::chrono::steady_clock::time_point hostStoodUpAt{};
   // npc-fate.md H-52b: the killer credited at the last Kill (the read)
   std::optional<uint32_t> lastKillerId;
@@ -298,6 +299,17 @@ void MpActor::RemoveSpell(const uint32_t spellId)
   EditChangeForm([&](MpChangeForm& changeForm) {
     changeForm.learnedSpells.ForgetSpell(spellId);
   });
+}
+
+bool MpActor::IsBookRead(const uint32_t baseId) const
+{
+  return ChangeForm().readBooks.IsRead(baseId);
+}
+
+void MpActor::MarkBookRead(const uint32_t baseId)
+{
+  EditChangeForm(
+    [&](MpChangeForm& changeForm) { changeForm.readBooks.MarkRead(baseId); });
 }
 
 void MpActor::SetLastAnimEvent(
@@ -2718,6 +2730,21 @@ std::optional<std::chrono::milliseconds> MpActor::ReanimateAcceptedAgo(
   }
   return std::chrono::duration_cast<std::chrono::milliseconds>(
     now - pImpl->reanimateAcceptedAt);
+}
+
+void MpActor::NoteHostSampledDead()
+{
+  pImpl->hostSampledDead = true;
+}
+
+bool MpActor::HostSampledDead() const
+{
+  return pImpl->hostSampledDead;
+}
+
+void MpActor::ClearHostSampledDead()
+{
+  pImpl->hostSampledDead = false;
 }
 
 void MpActor::NoteHostStoodUp(std::chrono::steady_clock::time_point at)

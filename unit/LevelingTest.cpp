@@ -2,6 +2,7 @@
 #include "ActorValuesMessage.h"
 #include "ConsoleCommandMessage.h"
 #include "MsgType.h"
+#include "OnEquipMessage.h"
 #include "TestUtils.hpp"
 #include <catch2/catch_all.hpp>
 #include <cmath>
@@ -218,5 +219,94 @@ TEST_CASE("A server set of a skill (the console's SetAV) moves the progress "
   REQUIRE(RecordsTo(p, 0).empty());
 
   p.worldState.enableConsoleCommandsForAll = false;
+  Leave(p, kActor);
+}
+
+namespace {
+// Skyrim.esm's One-handed skill books (lab/esm.py find BOOK SkillOneHanded,
+// 2026-11-02: DATA flags 0x01 TeachesSkill, teaches 6 the ActorValue)
+constexpr uint32_t kOneHandedBook = 0x1afe3;  // SkillOneHanded1
+constexpr uint32_t kOneHandedBook2 = 0x1afd9; // SkillOneHanded2
+
+// the seat's read of a book from its inventory arrives as the equip report
+// (MpActor::OnEquip, ReadBookEvent), as a spell tome's does
+void Read(PartOne& p, uint32_t bookId)
+{
+  RawMessageData raw;
+  raw.userId = 0;
+  OnEquipMessage msg;
+  msg.baseId = bookId;
+  p.GetActionListener().OnEquip(raw, msg);
+}
+}
+
+TEST_CASE("A skill book read takes its skill one level and the base, carries "
+          "the bar's share, credits the character, keeps the book and sends "
+          "the record; the same book read again moves nothing and re-sends "
+          "the record; the read rides the change form; with leveling off a "
+          "read is dropped and the book is not spent",
+          "[Leveling][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& ac = Player(p, kActor);
+  FirstReport(p);
+  p.SetLevelingEnabled(true);
+  // six hits first: 378 of the 392.6 the step from 15 costs, so the book's
+  // step carries the bar's share (378 / 392.6 of the step from 16)
+  for (int hit = 1; hit <= 6; ++hit) {
+    Use(p, kOneHanded, 10.f);
+  }
+  ac.AddItem(kOneHandedBook, 1);
+  p.Messages().clear();
+
+  Read(p, kOneHandedBook);
+  auto record = ac.GetActorValueRecord();
+  REQUIRE(record.has_value());
+  REQUIRE(record->skills.size() == 1);
+  REQUIRE(record->skills[0].level == 16.f);
+  const float cost15 = p.SkillLevelCost(kOneHanded, 15);
+  const float cost16 = p.SkillLevelCost(kOneHanded, 16);
+  REQUIRE(record->skills[0].xp ==
+          Catch::Approx(378.f / cost15 * cost16).margin(0.05));
+  REQUIRE(record->skills[0].threshold == Catch::Approx(cost16).margin(0.01));
+  REQUIRE(record->bases ==
+          std::vector<std::pair<uint8_t, float>>{ { kOneHanded, 16.f } });
+  REQUIRE(record->level == 1);
+  REQUIRE(record->xp == Catch::Approx(16.f));
+  REQUIRE(ac.IsBookRead(kOneHandedBook));
+  // the book stays: a spell tome goes, a skill book is read in place
+  REQUIRE(ac.GetInventory().GetItemCount(kOneHandedBook) == 1);
+  // the record went to the player's game whole
+  const auto sent = RecordsTo(p, 0);
+  REQUIRE(sent.size() == 1);
+  REQUIRE(sent[0].bases.size() == 1);
+  REQUIRE(sent[0].bases[0].base == 16.f);
+  REQUIRE(sent[0].skills.size() == 1);
+  REQUIRE(sent[0].skills[0].level == 16.f);
+
+  // the same book again: nothing moves, the record goes back to the game
+  // (its engine raised the skill on its own when the book opened)
+  p.Messages().clear();
+  Read(p, kOneHandedBook);
+  record = ac.GetActorValueRecord();
+  REQUIRE(record->skills[0].level == 16.f);
+  REQUIRE(record->xp == Catch::Approx(16.f));
+  REQUIRE(RecordsTo(p, 0).size() == 1);
+  REQUIRE(ac.GetInventory().GetItemCount(kOneHandedBook) == 1);
+
+  // the change form carries the read (readBooks, persisted with the record)
+  REQUIRE(ac.GetChangeForm().readBooks.GetReadBooks() ==
+          std::vector<uint32_t>{ kOneHandedBook });
+
+  // leveling off: another book's read is dropped and that book is not spent
+  p.SetLevelingEnabled(false);
+  ac.AddItem(kOneHandedBook2, 1);
+  p.Messages().clear();
+  Read(p, kOneHandedBook2);
+  record = ac.GetActorValueRecord();
+  REQUIRE(record->skills[0].level == 16.f);
+  REQUIRE(!ac.IsBookRead(kOneHandedBook2));
+  REQUIRE(RecordsTo(p, 0).empty());
+
   Leave(p, kActor);
 }

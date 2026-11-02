@@ -1074,8 +1074,26 @@ export class RemoteServer extends ClientListener {
               }
               logTrace(this, `live chest ${refrId.toString(16)}: inventory applied under the open ContainerMenu, the menu closed and the chest asked again (reopen)`);
             } else {
-              const asked = typeof refresh === 'function' ? !!(refresh as (id: number) => boolean)(refrId) : false;
-              logTrace(this, `live chest ${refrId.toString(16)}: inventory applied under the open ContainerMenu, the engine's redraw ${asked ? 'asked' : 'unavailable on this dist'}`);
+              // thuum playtest 40's F8: a batch of server changes (a take and two
+              // puts within seconds) asked the engine's redraw for each, and the
+              // menu's selection ended on the player's pane, where the next press
+              // on a book ran EquipItem (the server read the stored book) instead
+              // of the transfer: one redraw per batch, 300 ms after its last
+              // change (HYPOTHESIS: playtest 38's repoint, fewer rebuilds)
+              const pending = this.liveChestRedraw.get(refrId);
+              if (pending !== undefined) {
+                clearTimeout(pending);
+              }
+              this.liveChestRedraw.set(refrId, setTimeout(() => {
+                this.liveChestRedraw.delete(refrId);
+                if (!Ui.isMenuOpen('ContainerMenu')) {
+                  return;
+                }
+                const askedLater = typeof refresh === 'function' ? !!(refresh as (id: number) => boolean)(refrId) : false;
+                logTrace(this, `live chest ${refrId.toString(16)}: the batch's redraw ${askedLater ? 'asked' : 'unavailable on this dist'}`);
+              }, 300));
+              const asked = typeof refresh === 'function';
+              logTrace(this, `live chest ${refrId.toString(16)}: inventory applied under the open ContainerMenu, the engine's redraw ${asked ? 'queued for the batch' : 'unavailable on this dist'}`);
             }
           }
         } else if (msg.propName === 'isOpen') {

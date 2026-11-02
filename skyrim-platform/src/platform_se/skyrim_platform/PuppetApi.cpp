@@ -932,13 +932,19 @@ Napi::Value PuppetApi::RefreshContainerMenu(const Napi::CallbackInfo& info)
                    refId, target ? target->formID : 0u);
       return;
     }
-    const auto first = ItemMenuRefresh::TryPost(*target);
-    const auto second = first == ItemMenuRefresh::PostResult::kPosted
-      ? ItemMenuRefresh::TryPost(*target)
-      : first;
+    // thuum playtest 40's F8 (2026-11-02, Eli: "changes are initially
+    // reflected, then they stop being reflected and prisoner cannot place
+    // items, they just become 'use' item instead"): every such press was a
+    // book in the player's pane that the engine ran as EquipItem (the
+    // server's ReadBook on a stored book), playtest 38's selection repoint
+    // after a rebuild. One accepted message rebuilds both sides
+    // (re-container-menu-refresh.md Q2), so this posts once, not twice, and
+    // remoteServer coalesces a batch's changes into one call; HYPOTHESIS
+    // until a sitting stores a book after a live change
+    const auto second = ItemMenuRefresh::TryPost(*target);
     if (second == ItemMenuRefresh::PostResult::kPosted) {
       logger::info("[verb:containers] refreshContainerMenu {:x}: the engine's "
-                   "inventory update posted twice",
+                   "inventory update posted once",
                    refId);
     } else {
       // the reason with both handles: a "not posted" with the menu open and

@@ -48,6 +48,11 @@ ObjectReference Function CreateReferenceAtLocation(Form baseForm, Cell cell, Wor
 
 Function CloseMenu(string name) global native
 
+; ADR-059 decision 1 (thuum docs/verbs/traps.md): the cells this seat hosts, so the
+; Papyrus event block admits a host-scoped script's events here alone (the client's
+; HostService calls it at every grant and release; the platform keeps the set).
+Function SetCellHosted(Int cellFormId, Bool hosted) global native
+
 Function SetGameDaysPassed(Float daysPassed) global native
 
 ; thuum docs/verbs/favorites.md: the player's favorites as (form id, hotkey) pairs,

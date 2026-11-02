@@ -42,6 +42,7 @@ import { UpdateEquipmentMessage } from '../messages/updateEquipmentMessage';
 import { RagdollService } from './ragdollService';
 import { UpdateAppearanceMessage } from '../messages/updateAppearanceMessage';
 import { TeleportMessage } from '../messages/teleportMessage';
+import { PuppetService } from './puppetService';
 import { DeathStateContainerMessage } from '../messages/deathStateContainerMessage';
 import { RespawnNeededError } from '../../lib/errors';
 import { OpenContainerMessage } from '../messages/openContainerMessage';
@@ -502,6 +503,17 @@ export class RemoteServer extends ClientListener {
         ragdollService.safeRemoveRagdollFromWorld(actor, removeRagdollCallback);
       } else {
         removeRagdollCallback();
+      }
+      // playtest 40's F2 (2026-11-02): a hosted actor's Teleport into an
+      // interior this game has not loaded arrives in the same tick as the
+      // unsubscribe that destroys its view, so the view's own cell rule never
+      // sees it; the hide is asked here (PuppetService.recordCellSeen's rule)
+      if (actor && refrId !== undefined && refrId !== 0x14 && refrId < 0xff000000) {
+        const cellForm = Game.getFormEx(msg.worldOrCell);
+        const cell = cellForm ? Cell.from(cellForm) : null;
+        if (cell && cell.isInterior() && !cell.isAttached()) {
+          this.controller.lookupListener(PuppetService).hideInUnloadedCell(refrId, msg.worldOrCell);
+        }
       }
     });
   }

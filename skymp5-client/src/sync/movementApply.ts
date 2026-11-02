@@ -416,6 +416,46 @@ const movementKnobs = (): MovementKnobs => {
   return knobsCache;
 };
 const lastSent = new Map<number, NiPoint3>();
+
+// thuum playtest 40's F2: a puppet the engine holds in furniture (a coffin's
+// ambush, a bed, a chair) while its record stands far away. Per actor: when
+// the hold was first seen, when IdleFurnitureExit went out, when it was last
+// placed by setPosition. The exit is the event Papyrus scripts send an actor
+// to leave its furniture (HYPOTHESIS that an AI-off puppet plays it; the
+// probe x-puppet-furniture reads it); the placement is the fallback the
+// settle's translateTo cannot be, once per FURNITURE_PLACE_EVERY_MS
+type FurnitureHold = { since: number; exitSentAt: number; placedAt: number };
+const furnitureHold = new Map<number, FurnitureHold>();
+const FURNITURE_FAR_UNITS = 64;
+const FURNITURE_EXIT_WAIT_MS = 1500;
+const FURNITURE_PLACE_EVERY_MS = 5000;
+
+const settleFurnitureHold = (actor: Actor, refrId: number, offBy: number, target: NiPoint3, m: Transform): boolean => {
+  const held = actor.getSitState() !== 0 || actor.getFurnitureReference() !== null;
+  if (!held || offBy < FURNITURE_FAR_UNITS) {
+    return false;
+  }
+  const now = Date.now();
+  let hold = furnitureHold.get(refrId);
+  if (!hold) {
+    hold = { since: now, exitSentAt: 0, placedAt: 0 };
+    furnitureHold.set(refrId, hold);
+  }
+  if (hold.exitSentAt === 0) {
+    Debug.sendAnimationEvent(actor, "IdleFurnitureExit");
+    hold.exitSentAt = now;
+    printConsole(`settle ${refrId.toString(16)}: held by furniture ${offBy.toFixed(1)} units from its record, told to leave (sit state ${actor.getSitState()})`);
+    return true;
+  }
+  if (now - hold.exitSentAt < FURNITURE_EXIT_WAIT_MS || now - hold.placedAt < FURNITURE_PLACE_EVERY_MS) {
+    return true;
+  }
+  hold.placedAt = now;
+  actor.setPosition(target[0], target[1], target[2]);
+  actor.setAngle(m.rot[0], m.rot[1], m.rot[2]);
+  printConsole(`settle ${refrId.toString(16)}: still held by furniture ${((now - hold.since) / 1000).toFixed(1)} s after the exit, placed at its record`);
+  return true;
+};
 const lastReal = new Map<number, NiPoint3>();
 // the record's target at the previous apply, per actor (its stillness)
 const lastTarget = new Map<number, NiPoint3>();
@@ -591,6 +631,17 @@ const translateTo = (refr: ObjectReference, m: Movement, settle = false) => {
     if (actor && actor.isDead()) {
       return;
     }
+    // thuum playtest 40's F2 (2026-11-02): a puppet held by furniture never
+    // moves by translateTo, and the settle repeated every host sample for
+    // minutes ("settle f4a39: 300.9 units" at 130 ms on c2: a draugr still in
+    // its ambush coffin while the host's had walked 300 units; the same loop
+    // for a server-made copy 663 units off). The record far from a puppet in
+    // furniture is the host's actor out of it: the puppet is told to leave
+    // and, still held after the exit's time, placed at its record
+    if (actor && offBy > deadband && settleFurnitureHold(actor, refrId0, offBy, gTempTargetPos, m)) {
+      return;
+    }
+    furnitureHold.delete(refrId0);
     if (m.runMode === "Standing" && offBy > deadband && deadband === knobs.deadbandStill) {
       // the settle, on the in-game console (rare: a standing figure or puppet
       // found off its still record); the watch's track is the lab's read

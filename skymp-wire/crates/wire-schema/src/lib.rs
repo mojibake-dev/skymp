@@ -98,6 +98,9 @@ pub mod cap {
     pub const FATE_WORN: usize = 32;
     /// Leveled templates one NPC resolves through.
     pub const TEMPLATE_CHAIN: usize = 64;
+    /// Races a server restricts to listed profiles (Skyrim.esm has 99 RACE
+    /// records, ten of them playable; a mod list's custom races are a few).
+    pub const RACES: usize = 128;
     /// Node overrides on one reference.
     pub const NODES: usize = 256;
     /// A node name in a model.

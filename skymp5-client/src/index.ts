@@ -18,6 +18,7 @@ import { MapMarkersService } from "./services/services/mapMarkersService";
 import { IngredientEffectsService } from "./services/services/ingredientEffectsService";
 import { FavoritesService } from "./services/services/favoritesService";
 import { RaceMenuService } from "./services/services/raceMenuService";
+import { RacePermitService } from "./services/services/racePermitService";
 import { ActorValuesService } from "./services/services/actorValuesService";
 import { PlayerGlobalsService } from "./services/services/playerGlobalsService";
 import { QuestStageService } from "./services/services/questStageService";
@@ -110,6 +111,7 @@ const main = () => {
       new IngredientEffectsService(sp, controller),
       new FavoritesService(sp, controller),
       new RaceMenuService(sp, controller),
+      new RacePermitService(sp, controller),
       new ActorValuesService(sp, controller),
       new PlayerGlobalsService(sp, controller),
       new QuestStageService(sp, controller),

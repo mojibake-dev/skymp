@@ -477,6 +477,13 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
     partOne->SetCureSpellsSettings(serverSettings.contains("cureSpells")
                                      ? serverSettings.at("cureSpells").dump()
                                      : std::string("[]"));
+    // the races the race menu offers only to listed profiles (thuum
+    // docs/verbs/character-creation.md, the permit): `restrictedRaces`,
+    // {"<shortid>:<plugin>": [profile ids]}, the same way
+    partOne->SetRestrictedRacesSettings(
+      serverSettings.contains("restrictedRaces")
+        ? serverSettings.at("restrictedRaces").dump()
+        : std::string("{}"));
 
     if (serverSettings["dataDir"] != nullptr) {
       dataDir = serverSettings["dataDir"];

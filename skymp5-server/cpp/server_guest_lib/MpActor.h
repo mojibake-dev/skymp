@@ -370,6 +370,18 @@ public:
   // the host's round trip, the cast's flight on its engine and the sampler's
   // cadence, with room; a bound of the server's policy, not an engine number
   static constexpr uint64_t kReanimateWindowMs = 10'000;
+  // thuum docs/verbs/npc-fate.md (playtest 40's F5, 2026-11-02): when this
+  // body last stood again by its host's engine on the server's word
+  // (ActionListener::OnHostedActorState's resurrection branch). A reanimated
+  // body dies again when its spell ends, a death the engine alone plays, so
+  // the host's report of it names no hit, drop or activation; the server
+  // takes that report as the reanimation's end within kReanimatedEndMs of
+  // the stand-up (Reanimate Corpse and its kin last 60 s; Dead Thrall's end
+  // is a hit's) when a reanimate was accepted on the body
+  void NoteHostStoodUp(std::chrono::steady_clock::time_point at);
+  std::optional<std::chrono::milliseconds> HostStoodUpAgo(
+    std::chrono::steady_clock::time_point now) const;
+  static constexpr uint64_t kReanimatedEndMs = 90'000;
   void Teleport(const LocationalData& position);
   void SetSpawnPoint(const LocationalData& position);
   LocationalData GetSpawnPoint() const;

@@ -84,6 +84,11 @@ MpChangeForm Record()
   res.learnedSpells.LearnSpell(0x03001234); // Apocalypse.esp
   res.learnedSpells.LearnSpell(0x0001c789); // Skyrim.esm
   res.learnedSpells.LearnSpell(0xfe000900); // Light.esp
+
+  // thuum docs/verbs/leveling.md (skill books): the read books, one per
+  // plugin kind the slots can move
+  res.readBooks.MarkRead(0x0001afe3); // Skyrim.esm, SkillOneHanded1
+  res.readBooks.MarkRead(0x02000e00); // rotfern.esp
   return res;
 }
 
@@ -143,6 +148,8 @@ TEST_CASE("The twelve raw fields round-trip plugin-relative under one order",
   REQUIRE(j.at("learnedSpells") ==
           nlohmann::json(
             { "1c789:Skyrim.esm", "1234:Apocalypse.esp", "900:Light.esp" }));
+  REQUIRE(j.at("readBooks") ==
+          nlohmann::json({ "1afe3:Skyrim.esm", "e00:rotfern.esp" }));
 
   const MpChangeForm loaded = Load(j, &a);
   REQUIRE(loaded.formVersion == MpChangeForm::kFormVersion);
@@ -161,6 +168,7 @@ TEST_CASE("Without a load order the record keeps the raw shape",
   REQUIRE(j.at("inv").at("entries").at(0).at("baseId") == 0x02000c00);
   REQUIRE(j.at("equipmentDump").at("leftSpell") == 0x03001234);
   REQUIRE(j.at("learnedSpells").at(0) == 0x0001c789);
+  REQUIRE(j.at("readBooks").at(0) == 0x0001afe3);
 
   const MpChangeForm loaded = Load(j, nullptr);
   REQUIRE(loaded.formVersion == 1);
@@ -212,6 +220,9 @@ TEST_CASE("Saved under order A and loaded under order B, the runtime ids "
 
   REQUIRE(loaded.learnedSpells.GetLearnedSpells() ==
           std::vector<uint32_t>{ 0x0001c789, 0x04001234, 0xfe001900 });
+  // the read books follow rotfern's slot (02 to 03)
+  REQUIRE(loaded.readBooks.GetReadBooks() ==
+          std::vector<uint32_t>{ 0x0001afe3, 0x03000e00 });
 
   // the same records: written back under B every stored form reads as it
   // did under A; only the dump's numbers are B's

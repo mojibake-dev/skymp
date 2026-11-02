@@ -317,6 +317,12 @@ public:
   std::optional<WordWall> WordOfWall(const MpObjectReference& trigger);
   bool PickPerk(MpActor& actor, uint32_t perk);
   bool ApplySkillUse(MpActor& actor, uint8_t skillAv, float amount);
+  // a skill book's read (leveling.md, skill books): one level for the skill
+  // (R0: the rule's apply_book), the record sent whatever moved so the
+  // seat's own increment is replaced by this number; once per book per
+  // character is the caller's (ReadBookEvent and the record's readBooks).
+  // False with leveling off or before the first actor values report
+  bool ApplySkillBook(MpActor& actor, uint8_t skillAv);
   void TickPlacements(uint64_t nowMs);
   bool ReportPlacedObject(MpActor& caster, uint64_t set, uint32_t baseId,
                           const NiPoint3& pos, float yaw);

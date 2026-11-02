@@ -299,6 +299,17 @@ void MpActor::RemoveSpell(const uint32_t spellId)
   });
 }
 
+bool MpActor::IsBookRead(const uint32_t baseId) const
+{
+  return ChangeForm().readBooks.IsRead(baseId);
+}
+
+void MpActor::MarkBookRead(const uint32_t baseId)
+{
+  EditChangeForm(
+    [&](MpChangeForm& changeForm) { changeForm.readBooks.MarkRead(baseId); });
+}
+
 void MpActor::SetLastAnimEvent(
   const std::optional<AnimationData>& animationData)
 {

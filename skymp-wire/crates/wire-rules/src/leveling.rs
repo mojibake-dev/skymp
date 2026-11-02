@@ -20,6 +20,14 @@
 //! [`Table::uesp`] carries UESP's reading of them as the fallback and the
 //! tests' expected numbers (Smithing's use mult reads 160 in Skyrim.esm where
 //! the page writes 1: the record is the source).
+//!
+//! A skill book ([`Progress::apply_book`]) is the one increment outside the
+//! use formula: the skill's level rises by one (the character credited as for
+//! any skill level), once per book per character, which the server's record
+//! of read books keeps; the experience toward the next level is carried as
+//! the same share of the new step's cost (HYPOTHESIS until the engine's own
+//! rule is read: TESObjectBOOK::Read's skill branch, leveling.md's Dynamic
+//! plan).
 
 /// The eighteen skills in the engine's ActorValue order, kOneHanded 6 to
 /// kEnchanting 23 (CommonLibSSE-NG ActorValues.h).
@@ -375,20 +383,71 @@ impl Progress {
                 s.xp = 0.0;
             }
         }
-        if character_gain > 0.0 {
-            self.character.xp += character_gain;
-            while self.character.level < LEVEL_CAP {
-                let threshold = character_threshold(self.character.level);
-                if self.character.xp < threshold {
-                    break;
-                }
-                self.character.xp -= threshold;
-                self.character.level = self.character.level.saturating_add(1);
-                events.push(Event::CharacterLevel { level: self.character.level });
-            }
-        }
+        self.credit_character(character_gain, &mut events);
         Ok(events)
     }
+
+    /// A skill book read for the skill at ActorValue `skill_av`: the skill
+    /// rises one level (nothing at the cap: the book is still spent), the
+    /// experience toward the next level is carried as the same share of the
+    /// new step's cost, and the character is credited the new level as for
+    /// any skill level. Whether this book was read before is the caller's
+    /// record (the server's `readBooks`), not this rule's. Returns what
+    /// changed, in order.
+    pub fn apply_book(&mut self, table: &Table, skill_av: u8) -> Result<Vec<Event>, Refusal> {
+        let skill = Skill::from_actor_value(skill_av).ok_or(Refusal::Skill)?;
+        let mut events = Vec::new();
+        let mut character_gain = 0.0f32;
+        if let Some(s) = self.skills.get_mut(usize::from(skill.index())) {
+            if s.level >= SKILL_CAP {
+                return Ok(events);
+            }
+            let old_cost = level_cost(table, skill, s.level);
+            s.level = s.level.saturating_add(1);
+            let new_cost = level_cost(table, skill, s.level);
+            s.xp = carry_after_step(s.xp, old_cost, new_cost);
+            if s.level >= SKILL_CAP {
+                s.xp = 0.0;
+            }
+            character_gain = f32::from(s.level) * XP_PER_SKILL_RANK;
+            events.push(Event::SkillLevel { skill, level: s.level });
+        }
+        self.credit_character(character_gain, &mut events);
+        Ok(events)
+    }
+
+    /// `gain` skill-level experience to the character, each threshold met a
+    /// level, recorded in `events`.
+    fn credit_character(&mut self, gain: f32, events: &mut Vec<Event>) {
+        if gain <= 0.0 {
+            return;
+        }
+        self.character.xp += gain;
+        while self.character.level < LEVEL_CAP {
+            let threshold = character_threshold(self.character.level);
+            if self.character.xp < threshold {
+                break;
+            }
+            self.character.xp -= threshold;
+            self.character.level = self.character.level.saturating_add(1);
+            events.push(Event::CharacterLevel { level: self.character.level });
+        }
+    }
+}
+
+/// The experience carried through a one-level step that is no use: the same
+/// share of the new step's cost as of the old (a bar that keeps its fill),
+/// never the new cost or more, 0 for a step whose old cost is nothing.
+fn carry_after_step(xp: f32, old_cost: f32, new_cost: f32) -> f32 {
+    let costly = old_cost.is_finite() && old_cost > 0.0 && new_cost.is_finite() && new_cost > 0.0;
+    if !costly || !xp.is_finite() || xp <= 0.0 {
+        return 0.0;
+    }
+    let carried = xp / old_cost * new_cost;
+    if !carried.is_finite() || carried < 0.0 {
+        return 0.0;
+    }
+    carried.min(new_cost)
 }
 
 #[cfg(test)]
@@ -510,6 +569,66 @@ mod tests {
         let events = q.apply_use(&Table::uesp(), 23, 100.0).unwrap_or_default();
         assert_eq!(events, vec![Event::SkillLevel { skill: Skill::Enchanting, level: 100 }, Event::CharacterLevel { level: 2 }]);
         assert_eq!(q.skill(Skill::Enchanting), SkillProgress { level: 100, xp: 0.0 });
+    }
+
+    #[test]
+    fn a_skill_book_takes_one_level_and_keeps_the_bar_s_share_and_credits_the_character() {
+        let mut p = Progress::new([15; 18], 1);
+        // six hits: 378 of the 392.6 the step from 15 costs
+        for _ in 0..6 {
+            assert_eq!(p.apply_use(&Table::uesp(), 6, 10.0), Ok(vec![]));
+        }
+        let before = p.skill(Skill::OneHanded);
+        let share = before.xp / level_cost(&Table::uesp(), Skill::OneHanded, 15);
+        let events = p.apply_book(&Table::uesp(), 6);
+        assert_eq!(events, Ok(vec![Event::SkillLevel { skill: Skill::OneHanded, level: 16 }]));
+        let after = p.skill(Skill::OneHanded);
+        assert_eq!(after.level, 16);
+        assert!(near(after.xp, share * level_cost(&Table::uesp(), Skill::OneHanded, 16), 0.01), "{after:?}");
+        assert!(after.xp < level_cost(&Table::uesp(), Skill::OneHanded, 16));
+        // the character took 16 toward its 100, as for a level by use
+        assert_eq!(p.character.level, 1);
+        assert!(near(p.character.xp, 16.0, 0.001));
+        // the next book from a bar at 0 carries 0
+        let mut fresh = Progress::new([15; 18], 1);
+        assert_eq!(fresh.apply_book(&Table::uesp(), 7), Ok(vec![Event::SkillLevel { skill: Skill::TwoHanded, level: 16 }]));
+        assert_eq!(fresh.skill(Skill::TwoHanded), SkillProgress { level: 16, xp: 0.0 });
+        // the other skills untouched
+        assert_eq!(p.skill(Skill::TwoHanded), SkillProgress { level: 15, xp: 0.0 });
+    }
+
+    #[test]
+    fn skill_books_level_the_character_when_the_threshold_is_met_and_do_nothing_at_the_cap() {
+        let mut p = Progress::new([15; 18], 1);
+        // 16 + 17 + 18 + 19 + 20 = 90, then 21 makes 111 over the 100
+        let mut all = Vec::new();
+        for _ in 0..6 {
+            all.extend(p.apply_book(&Table::uesp(), 6).unwrap_or_default());
+        }
+        assert_eq!(p.skill(Skill::OneHanded).level, 21);
+        assert!(all.contains(&Event::CharacterLevel { level: 2 }), "{all:?}");
+        assert_eq!(p.character.level, 2);
+        assert!(near(p.character.xp, 11.0, 0.001));
+        // at the cap a book changes nothing and says so
+        let mut capped = Progress::new([100; 18], 1);
+        assert_eq!(capped.apply_book(&Table::uesp(), 6), Ok(vec![]));
+        assert_eq!(capped.skill(Skill::OneHanded), SkillProgress { level: 100, xp: 0.0 });
+        assert_eq!(capped.character.xp, 0.0);
+        // a book for no skill is refused and changes nothing
+        assert_eq!(capped.apply_book(&Table::uesp(), 5), Err(Refusal::Skill));
+        assert_eq!(capped.apply_book(&Table::uesp(), 24), Err(Refusal::Skill));
+    }
+
+    #[test]
+    fn the_carry_through_a_step_keeps_the_share_and_never_reaches_the_new_cost() {
+        assert!(near(carry_after_step(50.0, 100.0, 200.0), 100.0, 0.001));
+        assert_eq!(carry_after_step(0.0, 100.0, 200.0), 0.0);
+        assert_eq!(carry_after_step(50.0, 0.0, 200.0), 0.0);
+        assert_eq!(carry_after_step(50.0, 100.0, 0.0), 0.0);
+        assert_eq!(carry_after_step(f32::NAN, 100.0, 200.0), 0.0);
+        // a record's experience past its own step (no consistent record's) still carries under the new cost
+        assert!(near(carry_after_step(90.0, 100.0, 50.0), 45.0, 0.001));
+        assert_eq!(carry_after_step(150.0, 100.0, 50.0), 50.0);
     }
 
     #[test]

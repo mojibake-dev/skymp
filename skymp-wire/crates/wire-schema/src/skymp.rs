@@ -1017,6 +1017,30 @@ wire_struct! {
         pub launch_angle_z: f32,
         /// The caster's behavior graph variables.
         pub actor_animation_variables: ActorAnimationVariables,
+        /// thuum docs/verbs/spell-cast.md (the rune's glyph on the observer,
+        /// queued by Eli 2026-11-02): the surface the caster's own
+        /// target-location launch picked, read in its game from the engine's
+        /// decal placement (Skyrim Platform's runeDecal), so each observer's
+        /// game places the same glyph after its relayed launch. Only with
+        /// `has_launch` (`E_VAL_RANGE` otherwise); absent for every other
+        /// cast and for a sender that saw no decal.
+        pub decal: Option<SpellDecal>,
+    }
+}
+
+wire_struct! {
+    /// A target-location launch's surface (docs/verbs/spell-cast.md): the
+    /// pick's unit normal and the surface's material.
+    pub struct SpellDecal {
+        /// The pick's normal, x (unit length within 0.05, `E_VAL_RANGE`).
+        pub normal_x: f32,
+        /// The pick's normal, y.
+        pub normal_y: f32,
+        /// The pick's normal, z.
+        pub normal_z: f32,
+        /// The surface's MATERIAL_ID (CommonLibSSE-NG MaterialIDs.h, a
+        /// uint32 hash of the material's name), 0 for none known.
+        pub material_id: u32,
     }
 }
 

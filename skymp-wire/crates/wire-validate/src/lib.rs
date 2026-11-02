@@ -432,7 +432,31 @@ fn check_spell_cast(m: &skymp::SpellCast) -> Result<(), Reject> {
     {
         return Err(Reject::Range);
     }
-    check_launch(d.has_launch, &[d.origin_x, d.origin_y, d.origin_z], d.launch_angle_x, d.launch_angle_z)
+    check_launch(d.has_launch, &[d.origin_x, d.origin_y, d.origin_z], d.launch_angle_x, d.launch_angle_z)?;
+    check_decal(d.has_launch, d.decal.as_ref())
+}
+
+/// A cast's decal (docs/verbs/spell-cast.md, the rune's glyph): only with
+/// the launch it belongs to, its normal finite and of unit length within
+/// [`DECAL_NORMAL_TOLERANCE`]; the material id is any number (0 for none).
+pub const DECAL_NORMAL_TOLERANCE: f32 = 0.05;
+
+fn check_decal(has_launch: bool, decal: Option<&skymp::SpellDecal>) -> Result<(), Reject> {
+    let Some(d) = decal else {
+        return Ok(());
+    };
+    if !has_launch {
+        return Err(Reject::Range);
+    }
+    let parts = [d.normal_x, d.normal_y, d.normal_z];
+    if parts.iter().any(|v| !v.is_finite()) {
+        return Err(Reject::NonFinite);
+    }
+    let length = parts.iter().map(|v| v * v).sum::<f32>().sqrt();
+    if (length - 1.0).abs() > DECAL_NORMAL_TOLERANCE {
+        return Err(Reject::Range);
+    }
+    Ok(())
 }
 
 /// A rest's hours: the Sleep/Wait menu's range, one hour to a day
@@ -1684,6 +1708,38 @@ mod tests {
             },
             ..Default::default()
         })
+    }
+
+    // the cast's decal (docs/verbs/spell-cast.md, the rune's glyph): with its launch, a unit normal
+    fn cast_with_decal(has_launch: bool, nx: f32, ny: f32, nz: f32) -> Message {
+        Message::SpellCast(skymp::SpellCast {
+            data: skymp::SpellCastData {
+                spell: 0x6796f,
+                casting_source: 1,
+                aim_angle: 0.1,
+                has_launch,
+                origin_x: if has_launch { 1234.5 } else { 0.0 },
+                origin_y: if has_launch { -300.25 } else { 0.0 },
+                origin_z: if has_launch { 96.0 } else { 0.0 },
+                launch_angle_x: 0.0,
+                launch_angle_z: if has_launch { 1.57 } else { 0.0 },
+                decal: Some(skymp::SpellDecal { normal_x: nx, normal_y: ny, normal_z: nz, material_id: 0xe4d39ca3 }),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn a_cast_s_decal_rides_its_launch_with_a_unit_normal() {
+        assert_eq!(validate(&cast_with_decal(true, 0.0, 0.0, 1.0), &mut ClientGuard::default(), 0), Ok(()));
+        assert_eq!(validate(&cast_with_decal(true, 0.083, -0.996, 0.0), &mut ClientGuard::default(), 0), Ok(()));
+        // the normal the caster's engine hands the placement is scaled to 69.99: the client unitizes it, the wire refuses it raw
+        assert_eq!(validate(&cast_with_decal(true, 5.83, -69.75, 0.0), &mut ClientGuard::default(), 0), Err(Reject::Range));
+        assert_eq!(validate(&cast_with_decal(true, 0.0, 0.0, 0.0), &mut ClientGuard::default(), 0), Err(Reject::Range));
+        assert_eq!(validate(&cast_with_decal(true, f32::NAN, 0.0, 1.0), &mut ClientGuard::default(), 0), Err(Reject::NonFinite));
+        // a decal without the launch it belongs to
+        assert_eq!(validate(&cast_with_decal(false, 0.0, 0.0, 1.0), &mut ClientGuard::default(), 0), Err(Reject::Range));
     }
 
     #[test]

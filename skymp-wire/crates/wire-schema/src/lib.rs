@@ -58,7 +58,7 @@ use bounded::{String, Vec};
 /// 30: ObjectAnimation (thuum docs/verbs/traps.md, ADR-059 decision 3,
 /// m4-object-animation): a world object's animation event the cell's host
 /// reported, recorded as its lastAnimation and told to the cell's other games.
-pub const SCHEMA_VERSION: u16 = 30;
+pub const SCHEMA_VERSION: u16 = 32;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -1023,6 +1023,7 @@ mod tests {
                         floats: alloc::vec![u8::MAX; cap::ANIM_VARS].try_into().unwrap_or_default(),
                         integers: alloc::vec![u8::MAX; cap::ANIM_VARS].try_into().unwrap_or_default(),
                     },
+                    decal: Some(skymp::SpellDecal { normal_x: f32::MAX, normal_y: f32::MAX, normal_z: f32::MAX, material_id: u32::MAX }),
                 },
                 ..Default::default()
             }),

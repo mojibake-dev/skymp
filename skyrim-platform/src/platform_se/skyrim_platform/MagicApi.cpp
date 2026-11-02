@@ -160,7 +160,7 @@ bool IsMine(RE::Projectile& projectile)
     return false;
   }
   return base->data.flags.any(
-           RE::BGSProjectile::BGSProjectileFlags::kExplosionAltTrigger) &&
+           RE::BGSProjectileData::BGSProjectileFlags::kExplosionAltTrigger) &&
     base->data.explosionProximity > 0.f;
 }
 
@@ -214,7 +214,7 @@ void PlaceRelayedDecal(const RE::ProjectileHandle& handle, uint32_t shooterId,
                  shooterId, projectile->formID);
     return;
   }
-  REL::Relocation<PlaceDecalFn> place{ Offsets::Hooks::RuneDecal };
+  REL::Relocation<PlaceDecalFn> place{ Offsets::Hooks::RuneDecal.address() };
   place(projectile.get(), &origin, &decal.normal, material, 1, nullptr,
         projectile->GetDecalGroup(), 1);
   logger::info("[verb:spell-cast] placed the caster's decal for the figure "

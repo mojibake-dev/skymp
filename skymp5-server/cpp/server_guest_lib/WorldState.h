@@ -387,6 +387,16 @@ public:
   // false (the default) drops every pick and lets no perk state leave the
   // server, the console's and the natives' writes included
   bool perksEnabled = false;
+  // thuum docs/verbs/prop-physics.md (ADR-058 slice two): the movable static
+  // bases (MSTT) that are physics props, as server-settings.json's
+  // `propStatics` names them ("<shortid>:<plugin>"; Riverwood's cart wheel
+  // HandCart01Wheel 1c0c3:Skyrim.esm first). A listed base's references load
+  // from the game files as items do (AttachEspmRecord) and take claims and
+  // transforms (ActionListener's IsPropKind); every other MSTT (a Raise
+  // Wall's, an effect, a sign) stays out. Resolved against the load order
+  // when asked, since the settings are read before the game files load
+  std::set<FormDesc> propStaticBases;
+  bool IsPropStatic(uint32_t baseId) const;
   // thuum docs/verbs/character-creation.md (the permit, M5): the races the
   // race menu offers only to listed profiles, keyed as server-settings.json's
   // restrictedRaces names them ("<shortid>:<plugin>"), each with its profile

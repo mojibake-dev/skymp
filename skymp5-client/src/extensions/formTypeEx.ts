@@ -16,4 +16,13 @@ export class FormTypeEx {
       // utils::IsItem names KEYM too)
       type === FormType.Key;
   }
+
+  // thuum docs/verbs/prop-physics.md (ADR-058 slice two): what a physics
+  // prop may be: an item, or a movable static. The server creates records
+  // for the movable statics its settings list alone (propStatics, the
+  // Riverwood cart wheel first), so a MovableStatic this seat was told
+  // about is a prop; every other MSTT never reaches the prop scan
+  static isProp(type: FormType) {
+    return FormTypeEx.isItem(type) || type === FormType.MovableStatic;
+  }
 }

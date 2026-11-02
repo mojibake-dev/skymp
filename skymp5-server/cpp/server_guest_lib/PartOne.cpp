@@ -3130,6 +3130,49 @@ bool PartOne::PropsPersist() const
   return worldState.propsPersist;
 }
 
+void PartOne::SetPropStaticsSettings(const std::string& propStaticsJson)
+{
+  const auto j = nlohmann::json::parse(propStaticsJson);
+  if (!j.is_array()) {
+    throw std::runtime_error(
+      "propStatics must be an array: [\"<shortid>:<plugin>\", ...]");
+  }
+  std::set<FormDesc> bases;
+  for (const auto& entry : j) {
+    if (!entry.is_string()) {
+      throw std::runtime_error("propStatics: an entry that is no string");
+    }
+    // "<shortid>:<plugin>", the restrictedRaces key's shape: one to six hex
+    // digits, never 0, the plugin's name kept in lower case
+    const std::string key = entry.get<std::string>();
+    const auto colon = key.find(':');
+    const std::string idPart =
+      colon == std::string::npos ? std::string() : key.substr(0, colon);
+    std::string file =
+      colon == std::string::npos ? std::string() : key.substr(colon + 1);
+    const bool hexId = !idPart.empty() && idPart.size() <= 6 &&
+      std::all_of(idPart.begin(), idPart.end(),
+                  [](unsigned char c) { return std::isxdigit(c) != 0; });
+    if (!hexId || file.empty()) {
+      throw std::runtime_error("propStatics: bad entry \"" + key +
+                               "\" (want \"<shortid>:<plugin>\", the short "
+                               "id one to six hex digits)");
+    }
+    const auto shortId =
+      static_cast<uint32_t>(std::stoul(idPart, nullptr, 16));
+    if (shortId == 0) {
+      throw std::runtime_error("propStatics: \"" + key +
+                               "\" names no form (short id 0)");
+    }
+    std::transform(file.begin(), file.end(), file.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    bases.insert(FormDesc(shortId, file));
+  }
+  worldState.propStaticBases = std::move(bases);
+  spdlog::info("[verb:prop-physics] {} movable static base(s) are props: {}",
+               worldState.propStaticBases.size(), propStaticsJson);
+}
+
 bool PartOne::LevelingEnabled() const
 {
   return pImpl->levelingEnabled;

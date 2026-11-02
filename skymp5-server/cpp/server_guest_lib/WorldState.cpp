@@ -428,6 +428,14 @@ const std::shared_ptr<MpForm>& WorldState::LookupFormByIdNoLoad(
   return it->second;
 }
 
+bool WorldState::IsPropStatic(uint32_t baseId) const
+{
+  if (propStaticBases.empty()) {
+    return false;
+  }
+  return propStaticBases.count(FormDesc::FromFormId(baseId, espmFiles)) != 0;
+}
+
 bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
                                   const espm::RecordHeader* record,
                                   const espm::IdMapping& mapping,
@@ -462,9 +470,13 @@ bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
     reinterpret_cast<const espm::FLOR*>(base.rec)->GetData(cache).resultItem;
   bool isTree = t == "TREE" &&
     reinterpret_cast<const espm::TREE*>(base.rec)->GetData(cache).resultItem;
+  // thuum docs/verbs/prop-physics.md (ADR-058 slice two): a movable static
+  // the settings list is a prop and loads; the rest of the MSTTs (effects,
+  // signs, animated statics) stay the game's own
+  bool isPropStatic = t == "MSTT" && IsPropStatic(baseId);
 
   if (!isNpc && !isFurniture && !isActivator && !espm::utils::IsItem(t) &&
-      !isDoor && !isContainer && !isFlor && !isTree) {
+      !isDoor && !isContainer && !isFlor && !isTree && !isPropStatic) {
     if (optionalOutTrace) {
       *optionalOutTrace << fmt::format(
         "AttachEspmRecord - the server skips base type {} \n", t.ToString());

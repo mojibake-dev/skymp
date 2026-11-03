@@ -44,6 +44,35 @@ export class DeathService extends ClientListener {
       0xffffffff,
       "KillMove*"
     );
+    // thuum docs/verbs/npc-fate.md (the guest's half-up body, 2026-11-03): a
+    // puppet's death is the server's word (ADR-050 decision 2), so a kill
+    // move's victim half never reaches a puppet's graph, whichever mouth it
+    // comes by (the action replay, dropped in formView.replayActions, or the
+    // event relay, which a creature's events and a humanoid event outside the
+    // PerformAction entry ride): the figures' blank widened to the game-file
+    // range with the puppet read inside the hook, the animation.ts idiom; the
+    // id range and the patterns filter in native (rule 9), the puppet read
+    // costs one native per matching event. The names are the idles' ENAMs
+    // less "pa_" (lab/esm.py on Skyrim.esm and Update.esm, numidium's read):
+    // KillMove1HMStabUpFace and KillMoveD seen in the lab; KillingBlow (three
+    // bleed-out idles), 2HWKillMoveA and KillWerewolfPaired* in the tree,
+    // HYPOTHESIS beyond the two seen
+    const sp = this.sp;
+    for (const pattern of ["KillMove*", "KillingBlow*", "2HWKillMove*", "KillWerewolf*"]) {
+      this.sp.hooks.sendAnimationEvent.add(
+        {
+          enter(ctx) {
+            if (sp.isPuppet(ctx.selfId)) {
+              ctx.animEventName = "";
+            }
+          },
+          leave() { },
+        },
+        0,
+        0xfeffffff,
+        pattern
+      );
+    }
   }
 
   // A figure staggers only by its own player's relayed stagger, which the

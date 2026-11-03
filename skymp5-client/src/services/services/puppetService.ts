@@ -228,6 +228,14 @@ export class PuppetService extends ClientListener {
             }
             return;
         }
+        // the body is alive here: a stand-up that took (the fate's resurrect
+        // lands on the game thread after the JS tick, so the clear cannot sit
+        // in onResurrected: the same tick's reconcile still saw the body dead
+        // and restamped it; numidium's review of db0e19a5). The ragdoll settle
+        // clock forgets the death that was undone, so a later death gets its
+        // whole settle (x-npc-death-freeze 140538 and 152912: the release came
+        // 1 to 1.85 s into the second fall and froze the skeleton)
+        this.deadFlaggedSince.delete(localId);
         if (!has3D) {
             return;
         }
@@ -382,19 +390,14 @@ export class PuppetService extends ClientListener {
     }
 
     // A stood-up actor (deathService's resurrect) holds at zero again for
-    // the server's word: the deferred kill is re-armed on the next pass, and
-    // the ragdoll settle clock forgets the death that was undone, so a later
-    // death gets its whole settle. x-npc-death-freeze 140538 and 152912 (the
-    // guest's body half-up): the copy died early, the dead check stood it up
-    // under the live record, the server's word killed it again, and the
-    // release came 0.75 to 1.0 s into the SECOND fall because the clock still
-    // counted from the first death; setPuppet(false) with the AI off then
-    // froze the skeleton mid-fall (the head 13 and 55 units above the root,
-    // identical across three reads). The green run (141811) died once and
-    // lay flat after its 4.0 s.
+    // the server's word: the deferred kill is re-armed on the next pass. The
+    // ragdoll settle clock is cleared in reconcile's live path, not here: the
+    // resurrect is queued to the game thread and this tick's reconcile still
+    // sees the body dead (x-npc-death-freeze 140538 and 152912, the guest's
+    // body half-up: the release came into the SECOND fall with the clock
+    // counting from the first death).
     onResurrected(localId: number): void {
         this.deferredArmed.delete(localId);
-        this.deadFlaggedSince.delete(localId);
     }
 
     // thuum docs/verbs/npc-stream.md, playtest 37 finding 60 (the visuals

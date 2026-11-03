@@ -1155,7 +1155,12 @@ TEST_CASE("A host's sighting places an interior-placed resident where its "
 
   // playtest 37 (finding 38, "we have 2 embrys"): a game whose engine has
   // the resident in a cell it hosts, while her record stands in another
-  // game's cell, is told to hide its copy and the record stays
+  // game's cell, is told to MOVE its copy to the record and the record
+  // stays (ADR-067 decision 5, playtest 42's F1: the Disable snippet this
+  // block once sent never reached the copy, its long selfId needing a view
+  // the sighter no longer had; the move travels as a static call with the
+  // copy as an argument, the record's cell-or-world typed as both the Cell
+  // and the WorldSpace argument)
   const NiPoint3 far = landing + NiPoint3{ 0.f, -40000.f, 0.f };
   const auto farCell = p.worldState.CellOf(kTamriel, far);
   REQUIRE(farCell.has_value());
@@ -1165,19 +1170,35 @@ TEST_CASE("A host's sighting places an interior-placed resident where its "
   sighting(1, kSigrid, far);
   REQUIRE(p.worldState.CellOf(sigrid) == cell);
   p.Tick(); // snippets are deferred (SpSnippet.cpp; pipeline 3613's red)
-  // the snippet's selfId is the long form id (SpSnippet::Execute's
-  // MakeLongFormId; pipeline 3619's red compared the short one), so the
-  // snippet is known by its class and function to this user alone
-  bool hidden = false;
+  bool moved = false;
+  bool disabled = false;
   for (auto& m : p.Messages()) {
-    if (m.userId == 1 && m.j.is_object() && m.j.contains("t") &&
-        m.j["t"] == static_cast<int>(MsgType::SpSnippet) &&
-        m.j.contains("class") && m.j["class"] == "ObjectReference" &&
-        m.j.contains("function") && m.j["function"] == "Disable") {
-      hidden = true;
+    if (!(m.userId == 1 && m.j.is_object() && m.j.contains("t") &&
+          m.j["t"] == static_cast<int>(MsgType::SpSnippet) &&
+          m.j.contains("class") && m.j.contains("function"))) {
+      continue;
+    }
+    if (m.j["class"] == "ObjectReference" && m.j["function"] == "Disable") {
+      disabled = true;
+    }
+    if (m.j["class"] == "TESModPlatform" &&
+        m.j["function"] == "moveRefrToPosition") {
+      moved = true;
+      const auto& args = m.j["arguments"];
+      REQUIRE(args.is_array());
+      REQUIRE(args.size() == 9);
+      REQUIRE(args[0]["formId"] == kSigrid);
+      REQUIRE(args[0]["type"] == "ObjectReference");
+      REQUIRE(args[1]["type"] == "Cell");
+      REQUIRE(args[2]["type"] == "WorldSpace");
+      REQUIRE(args[1]["formId"] == args[2]["formId"]);
+      REQUIRE(std::abs(args[3].get<double>() - sigridPos.x) < 1.0);
+      REQUIRE(std::abs(args[4].get<double>() - sigridPos.y) < 1.0);
+      REQUIRE(std::abs(args[5].get<double>() - sigridPos.z) < 1.0);
     }
   }
-  REQUIRE(hidden);
+  REQUIRE(moved);
+  REQUIRE_FALSE(disabled);
 
   DoDisconnect(p, 0);
   DoDisconnect(p, 1);

@@ -826,10 +826,12 @@ export class FormView {
       // However, actually, actors do not have inventory in their models
       // Except your clone. A dead NPC, an engine reference or a server-made
       // copy, is the server's container (npc-fate.md): its inventory is the
-      // record's, laid under the engine's own ContainerMenu (the live chest
-      // above; a body is never activation-blocked since playtest 37's
-      // findings 58 and 62, so the engine's menu opens on E and the list
-      // lands under it). The copy's branch is finding 62's: the dead
+      // record's, laid under the ContainerMenu the server's OpenContainer
+      // opens (remoteServer's handler; the body is activation-blocked like a
+      // CONT since ADR-067 decision 6, PuppetService.blockDeadBody, so E
+      // sends Activate and the record's list, sent ahead of the
+      // OpenContainer, lands before the menu). The copy's branch is finding
+      // 62's: the dead
       // necromancer ff00000a's menu got no list laid under it; the shape is
       // remoteServer.ts's npcCopy (an NPC base, never the players' 0x7, not
       // this player's own clone)

@@ -300,21 +300,29 @@ export class DeathService extends ClientListener {
       // word never takes a held record over this seat's own engine's death
       // of an actor it simulates
       this.controller.lookupListener(ChangeFormService).onKilledHere(actor.getFormID(), silent);
-      // thuum docs/verbs/npc-fate.md (the deaths, revised by playtest 37's
-      // findings 58 and 62): the body is NOT activation-blocked, on any seat.
-      // The block stood here (a CONT's shape, dealWithRef) on the design
-      // note's assumption that the server's OpenContainer activation with
-      // default processing opens a blocked body ahead of the engine's own
-      // menu: it never did. Every corpse that opened in the logs was the
-      // engine's own activation of an unblocked body (finding 58: c2's one
-      // good open came while a brief host grant had lifted the block; after
-      // the host flipped back the body was demoted and four E presses opened
-      // nothing). The loot is the server's container either way: E is the
-      // engine's own activation, the activate hook reports it, the server
-      // answers the record's inventory and OpenContainer, and formView lays
-      // the server's list under the open menu (memo D52 B). puppetService
-      // keeps a dead body out of the puppet state, so no native block comes
-      // back on it.
+      // thuum ADR-067 decision 6 (the exclusive container hold;
+      // docs/private/container-hold-scope.md D-C2 A): the body is the
+      // server's container, its activation blocked as a CONT's is
+      // (dealWithRef's shape), so the engine's own loot menu never opens
+      // ahead of the server's word: E sends Activate, the server admits one
+      // looter and answers OpenContainer, remoteServer's handler opens the
+      // ContainerMenu, and a refused looter sees the notification and no
+      // menu. The block is PuppetService's (blockDeadBody: once per body, a
+      // figure never, re-asserted a tick or two after each native lift);
+      // laid here at the server's word and at the bind's silent kill, at the
+      // death's start for this seat's own engine deaths, and from the
+      // reconciler's passes. The block that stood here until c1de7167 was
+      // taken out on
+      // playtest 37's findings 58 and 62 ("the server's activation never
+      // opened a blocked body"); D71 then read the refusal as the released
+      // body's AI off (engine model E25), which openBodyOnTimers switches on
+      // for the open, and the promote's re-block went out in the promote's
+      // own tick, which its task would have undone (a source reading, no
+      // trace). That the engine's activate(player, true) opens the loot menu
+      // on a blocked dead actor as it opens a blocked CONT is the HYPOTHESIS
+      // x-container-hold's corpse leg reads.
+      // formView lays the server's list under the menu as before (memo D52 B).
+      this.controller.lookupListener(PuppetService).blockDeadBody(actor.getFormID(), actor, silent ? "the bind's silent kill" : "the server's word");
     }
   };
 

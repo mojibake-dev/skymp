@@ -1246,10 +1246,12 @@ mod tests {
         d.set_pass_settle_ms(0);
         assert_eq!(d.may_move(&inward, 2_000), MoveVerdict::Pass);
         assert_eq!(d.may_move(&outward, 2_100), MoveVerdict::Pass);
+        // a longer window holds longer, and it reads the standing pass too (the exit's row of 2_100)
         d.set_pass_settle_ms(5_000);
-        assert_eq!(d.may_move(&inward, 3_000), MoveVerdict::Pass);
-        assert_eq!(d.may_move(&outward, 3_000 + 4_999), MoveVerdict::Stale);
-        assert_eq!(d.may_move(&outward, 3_000 + 5_000), MoveVerdict::Pass);
+        assert_eq!(d.may_move(&inward, 3_000), MoveVerdict::Stale);
+        assert_eq!(d.may_move(&inward, 2_100 + 5_000), MoveVerdict::Pass);
+        assert_eq!(d.may_move(&outward, 7_100 + 4_999), MoveVerdict::Stale);
+        assert_eq!(d.may_move(&outward, 7_100 + 5_000), MoveVerdict::Pass);
     }
 
     #[test]

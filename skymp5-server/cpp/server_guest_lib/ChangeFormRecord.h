@@ -11,10 +11,11 @@
 // the sender's hex (two lowercase characters a byte, never rewritten: the
 // receiver re-encodes its type-0 ids from the rows itself), the hash the wire
 // checked, the sender's remap rows untranslated, who sent it at which host
-// epoch and when (wall-clock ms). Stored raw: the record's own ids are bound
-// to the load order it was written under already (a type-1 id carries its
-// load index), so the rows' form ids keep the same binding instead of
-// ADR-043's plugin-relative spelling. Absent in older records and on actors
+// epoch and when (wall-clock ms). Stored raw: ADR-065 risk 2 makes one load
+// order the server's precondition (the modlock), and a changed order
+// invalidates the body's kind-1 ids (load-index-00 forms, D6) as much as the
+// rows' form ids, so ADR-043's plugin-relative spelling would buy the rows
+// nothing. Absent in older records and on actors
 // nobody reported, read as none: an optional key, formVersion kept (this
 // fork's migration for a new field).
 struct ChangeFormRecord

@@ -58,11 +58,18 @@ use bounded::{String, Vec};
 /// 30: ObjectAnimation (thuum docs/verbs/traps.md, ADR-059 decision 3,
 /// m4-object-animation): a world object's animation event the cell's host
 /// reported, recorded as its lastAnimation and told to the cell's other games.
-/// 31: ChangeForm, ChangeFormAck and ChangeFormApply (thuum
+/// 31: TrapHit (m4-trap-hit, thuum docs/WIRE.md). 32: m2-rune-glyph.
+/// 33: ChangeForm, ChangeFormAck and ChangeFormApply (thuum
 /// docs/verbs/change-form.md, ADR-065 system 1, adr065-sys1-wire): an
 /// actor's change form as the owner's engine serialized it, recorded by the
 /// server, acked by its hash and served to every seat that sees the actor.
-pub const SCHEMA_VERSION: u16 = 31;
+/// Their `t` numbers 72 to 74 and wire ids 80 to 82 are positional (the wire
+/// id is `t` plus 8, the variant index; the tests below pin both) and collide
+/// with TrapHit's 72 in the doc of record (thuum docs/WIRE.md, m4-trap-hit):
+/// the branch that lands on parity second renumbers, the ids shifting with
+/// the variant order either way. 33 so that no two builds at 31 disagree on
+/// what a 72 means.
+pub const SCHEMA_VERSION: u16 = 33;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.

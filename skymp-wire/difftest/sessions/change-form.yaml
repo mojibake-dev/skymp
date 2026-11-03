@@ -1,7 +1,7 @@
 # difftest change-form (ADR-065 system 1, thuum docs/verbs/change-form.md):
 # c1, hosting nothing, reports at 2 s a well-formed ACHR record (the header
 # byte type 1 and size code 0, the version 0x4e, length1 4, one kind-0 id
-# remapped) for Sven 0x13480 (79,  = 78976), an actor the server never holds
+# remapped) for Sven 0x13480 (0x13480 = 78976), an actor the server never holds
 # at the spawn: the wire takes the shape and the core refuses it by name
 # (E_CHANGEFORM_RANGE, "the server holds no such actor") and sends nothing.
 # At 2.2 s the same record with a wrong hash: the edge refuses it

@@ -3956,7 +3956,8 @@ void ActionListener::OnChangeForm(const RawMessageData& rawMsgData,
   // one warn line a minute per sender and form, the rest counted
   // (OnActorDeath's shape): a host reports a record at most once a frame per
   // actor, and a wrong premise would repeat it at every change
-  const auto refuse = [&](const char* code, const std::string& why) {
+  const auto refuse = [&](const char* code, const std::string& why,
+                          bool foreign) {
     static std::map<std::pair<uint32_t, uint32_t>,
                     std::pair<std::chrono::steady_clock::time_point, uint32_t>>
       refusals;
@@ -3964,7 +3965,7 @@ void ActionListener::OnChangeForm(const RawMessageData& rawMsgData,
     ++count;
     partOne.serverState.CountStream(rawMsgData.userId,
                                     static_cast<uint8_t>(MsgType::ChangeForm),
-                                    false, true);
+                                    false, foreign);
     if (since.time_since_epoch().count() != 0 &&
         now - since < std::chrono::minutes(1)) {
       return;
@@ -3984,23 +3985,26 @@ void ActionListener::OnChangeForm(const RawMessageData& rawMsgData,
   if (msg.formId == 0 || msg.formId >= 0xff000000) {
     refuse("E_CHANGEFORM_RANGE",
            "a form id of 0 or a player's: a change form names a game-file "
-           "actor alone");
+           "actor alone",
+           false);
     return;
   }
   if (msg.body.size() < 8 || msg.body.size() % 2 != 0) {
-    refuse("E_CHANGEFORM_SIZE", "a body too short for any record header");
+    refuse("E_CHANGEFORM_SIZE", "a body too short for any record header",
+           false);
     return;
   }
   // no load: an actor the server never held is nobody's to report
   auto& form = partOne.worldState.LookupFormByIdNoLoad(msg.formId);
   MpActor* actor = form ? form->AsActor() : nullptr;
   if (!actor) {
-    refuse("E_CHANGEFORM_RANGE", "the server holds no such actor");
+    refuse("E_CHANGEFORM_RANGE", "the server holds no such actor", false);
     return;
   }
   const auto cell = partOne.worldState.CellOf(*actor);
   if (!cell) {
-    refuse("E_CHANGEFORM_OWNER", "the actor's cell is unknown to the server");
+    refuse("E_CHANGEFORM_OWNER", "the actor's cell is unknown to the server",
+           true);
     return;
   }
   const auto host = partOne.GetCellHost(*cell);
@@ -4008,13 +4012,15 @@ void ActionListener::OnChangeForm(const RawMessageData& rawMsgData,
     refuse("E_CHANGEFORM_OWNER",
            host.hosted ? fmt::format("{:x} hosts cell {:x}, not the reporter",
                                      host.player, *cell)
-                       : fmt::format("nobody hosts cell {:x}", *cell));
+                       : fmt::format("nobody hosts cell {:x}", *cell),
+           true);
     return;
   }
   if (msg.epoch != host.epoch) {
     refuse("E_CHANGEFORM_EPOCH",
            fmt::format("cell {:x} stands at epoch {}, the report names {}",
-                       *cell, host.epoch, msg.epoch));
+                       *cell, host.epoch, msg.epoch),
+           true);
     return;
   }
 

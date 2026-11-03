@@ -45,9 +45,10 @@ pub enum Reject {
     /// docs/verbs/change-form.md).
     #[error("E_CHANGEFORM_RANGE")]
     ChangeFormRange,
-    /// A change form's header disagrees with its body: a size code the pack
-    /// never writes, the type byte against `formType`, a version other than
-    /// 0x4E, the lengths against the body's size.
+    /// A change form's header disagrees with its body: a character that is
+    /// not lowercase hex, a size code the pack never writes, the type byte
+    /// against `formType`, a version other than 0x4E, the lengths against the
+    /// body's size.
     #[error("E_CHANGEFORM_HEADER")]
     ChangeFormHeader,
     /// A change form's FNV-1a 32 over the body differs from `fnv1a`.
@@ -1103,9 +1104,6 @@ pub fn decode_record_hex(hex: &str) -> Result<Vec<u8>, Reject> {
 /// the shared shape, then the hash over the record bytes
 /// (`E_CHANGEFORM_HASH`).
 fn check_change_form(m: &skymp::ChangeForm) -> Result<(), Reject> {
-    if m.form_id == 0 || m.form_id >= PLAYER_FORMS || m.form_type > 0x3f {
-        return Err(Reject::ChangeFormRange);
-    }
     let body = decode_record_hex(m.body.as_str())?;
     check_change_form_shape(m.form_id, m.form_type, m.version, &body, &m.remap)?;
     if fnv1a_32(&body) != m.fnv1a {
@@ -1118,9 +1116,6 @@ fn check_change_form(m: &skymp::ChangeForm) -> Result<(), Reject> {
 /// shared shape; no hash travels. The transport refuses it from a client by
 /// direction.
 fn check_change_form_apply(m: &skymp::ChangeFormApply) -> Result<(), Reject> {
-    if m.form_id == 0 || m.form_id >= PLAYER_FORMS || m.form_type > 0x3f {
-        return Err(Reject::ChangeFormRange);
-    }
     let body = decode_record_hex(m.body.as_str())?;
     check_change_form_shape(m.form_id, m.form_type, m.version, &body, &m.remap).map(|_| ())
 }

@@ -9,6 +9,9 @@
 #include "ActorValuesMessage.h"
 #include "ArrowShotMessage.h"
 #include "CellLoadedMessage.h"
+#include "ChangeFormAckMessage.h"
+#include "ChangeFormApplyMessage.h"
+#include "ChangeFormMessage.h"
 #include "ChangeValuesMessage.h"
 #include "ConsoleCommandMessage.h"
 #include "ConsoleOutputMessage.h"
@@ -142,4 +145,7 @@
   REGISTER_MESSAGE(PerkStateMessage)                                          \
   REGISTER_MESSAGE(WordWallMessage)                                           \
   REGISTER_MESSAGE(RelayedActivationMessage)                                  \
-  REGISTER_MESSAGE(ObjectAnimationMessage)
+  REGISTER_MESSAGE(ObjectAnimationMessage)                                    \
+  REGISTER_MESSAGE(ChangeFormMessage)                                         \
+  REGISTER_MESSAGE(ChangeFormAckMessage)                                      \
+  REGISTER_MESSAGE(ChangeFormApplyMessage)

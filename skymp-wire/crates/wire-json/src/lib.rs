@@ -74,7 +74,8 @@ macro_rules! skymp_family {
             43 MagicEffects, 44 UpdateAction, 45 PlayerGlobals, 46 ActorJump,
             47 CellLoaded, 48 HostGrant, 49 HostRelease, 50 ActorSightings,
             51 ActorFate, 52 ActorDeath, 53 HostedActorState, 54 ActorSpeech, 55 DamageCause, 56 ActorClaim, 57 QuestStage,
-            58 PropTransform, 59 PropClaim, 60 PropOwner, 61 PlacedRequest, 62 PlacedReport, 63 SkillUse, 64 LockReport, 65 LockPrompt, 66 SetWeather, 67 PerkPick, 68 PerkState, 69 WordWall, 70 RelayedActivation, 71 ObjectAnimation
+            58 PropTransform, 59 PropClaim, 60 PropOwner, 61 PlacedRequest, 62 PlacedReport, 63 SkillUse, 64 LockReport, 65 LockPrompt, 66 SetWeather, 67 PerkPick, 68 PerkState, 69 WordWall, 70 RelayedActivation, 71 ObjectAnimation,
+            72 ChangeForm, 73 ChangeFormAck, 74 ChangeFormApply
         }
     };
 }
@@ -351,7 +352,7 @@ mod tests {
             n += 1;
         }
         assert!(n >= 90, "{n} fixtures");
-        assert_eq!(types.len(), 71, "every SkyMP type has fixtures");
+        assert_eq!(types.len(), 74, "every SkyMP type has fixtures");
     }
 
     /// Writes the fixtures: two per SkyMP type, from arbitrary values with
@@ -384,6 +385,36 @@ mod tests {
             };
         }
         skymp_family!(each);
+    }
+
+    /// thuum docs/verbs/change-form.md (ADR-065): the ChangeForm fixtures
+    /// are the contract's refusals as well as its shapes. 0 and 1 are
+    /// records the validator takes (an ACHR with one remap row, the lab's
+    /// own REFR record); 2 to 6 each break one rule and name its code, so
+    /// the C++ contract test reads the refused shapes too and the client's
+    /// agent can replay them against its own encoder.
+    #[test]
+    fn change_form_fixtures_validate_as_named() {
+        use wire_validate::{validate_server, Reject};
+        let verdicts: [(&str, Result<(), Reject>); 7] = [
+            ("72-ChangeForm-0.json", Ok(())),
+            ("72-ChangeForm-1.json", Ok(())),
+            ("72-ChangeForm-2.json", Err(Reject::ChangeFormRange)),
+            ("72-ChangeForm-3.json", Err(Reject::ChangeFormHeader)),
+            ("72-ChangeForm-4.json", Err(Reject::ChangeFormHash)),
+            ("72-ChangeForm-5.json", Err(Reject::ChangeFormRemap)),
+            ("72-ChangeForm-6.json", Err(Reject::ChangeFormSize)),
+        ];
+        for (name, want) in verdicts {
+            let text = std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+            let m = recognize(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(validate_server(&m), want, "{name}");
+        }
+        for name in ["73-ChangeFormAck-0.json", "73-ChangeFormAck-1.json", "74-ChangeFormApply-0.json", "74-ChangeFormApply-1.json"] {
+            let text = std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+            let m = recognize(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(validate_server(&m), Ok(()), "{name}");
+        }
     }
 
     #[test]

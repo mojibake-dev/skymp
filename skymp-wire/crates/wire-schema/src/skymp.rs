@@ -2045,6 +2045,124 @@ wire_struct! {
 }
 
 wire_struct! {
+    /// One remap row of a change-form record (thuum docs/verbs/change-form.md,
+    /// D6): the record's body names a form by a three-byte id of kind 0, an
+    /// index into the SENDER's form-id map (a seat-and-session number), so
+    /// the row carries where that id sits in the body, the form's full id in
+    /// the load order both ends share, and the index the bytes decode to. The
+    /// receiver re-encodes the form through its own engine's SetNumericID
+    /// (35928) at that offset; the server stores the rows untranslated.
+    pub struct ChangeFormRemap {
+        /// The byte offset of the three-byte id inside `body`; the three
+        /// bytes fit inside it.
+        pub offset: u32,
+        /// The form the id stands for, as the shared load order numbers it;
+        /// never 0, never a load-index-00 or a created (0xff) form, which the
+        /// engine encodes as kinds 1 and 2 on every seat and no row remaps.
+        pub form_id: u32,
+        /// The 22-bit index the three bytes decode to on the sender.
+        pub index: u32,
+    }
+}
+
+wire_struct! {
+    /// MsgType 72, thuum's (docs/verbs/change-form.md, ADR-065 system 1): an
+    /// actor's change form as the owner's engine serialized it at the frame's
+    /// end (the pack 36081's record: a header byte of type index and size
+    /// code, the version 0x4E, two lengths of the code's width, the data).
+    /// Client to server, reliable, R2: the cell's host reports the actors it
+    /// simulates, the server validates the shape against the decoded body
+    /// and records it; ownership and the epoch are the server's handler's
+    /// (ActionListener::OnChangeForm, the cells table). Reason codes:
+    /// `E_CHANGEFORM_RANGE` (a form id of 0 or a player's, 0xff000000 and
+    /// up, or a type past the header's six bits), `E_CHANGEFORM_SIZE` (a hex
+    /// body of odd length, past its cap or too short for any header),
+    /// `E_CHANGEFORM_HEADER` (a character that is not lowercase hex, the type
+    /// byte, the version or the lengths against the decoded body),
+    /// `E_CHANGEFORM_HASH` (the FNV-1a 32 of the decoded body against
+    /// `fnv1a`), `E_CHANGEFORM_REMAP` (a row outside the decoded body's data,
+    /// not decoding to kind 0 and its index, a form no row may remap, an
+    /// offset twice), `E_VAL_RATE` (the budget).
+    pub struct ChangeForm {
+        /// `"t": 72`.
+        #[serde(default)]
+        pub t: MsgT<72>,
+        /// The cell's host epoch the owner holds (HostGrant's); a stale one is
+        /// refused by the server (E_CHANGEFORM_EPOCH).
+        pub epoch: u32,
+        /// The actor's form id in the load order both ends share; never 0,
+        /// never a player's.
+        pub form_id: u32,
+        /// The record's save-type index (0 REFR, 1 ACHR), equal to the header
+        /// byte's low six bits.
+        pub form_type: u8,
+        /// The change flags the owner's engine marked (the header's
+        /// changeFlags).
+        pub flags: u32,
+        /// The form version byte, 0x4E on 1.6.1170.
+        pub version: u8,
+        /// The whole packed record, header and data, as two lowercase hex
+        /// characters a byte (the native's bodyHex, forwarded as is); even
+        /// length, at most cap::CHANGE_FORM_BODY_HEX characters; its header's
+        /// lengths match its decoded size.
+        pub body: String<{ cap::CHANGE_FORM_BODY_HEX }>,
+        /// FNV-1a 32 over the decoded record bytes (offset 0x811c9dc5, prime
+        /// 0x01000193), the owner's compare baseline once acked.
+        pub fnv1a: u32,
+        /// The census of kind-0 ids the body names (D6).
+        pub remap: Vec<ChangeFormRemap, { cap::CHANGE_FORM_REMAP }>,
+    }
+}
+
+wire_struct! {
+    /// MsgType 73, thuum's (docs/verbs/change-form.md): the server's receipt
+    /// of a recorded change form, the hash the owner compares its next
+    /// serialization against (equal bytes send nothing, amendment A). Server
+    /// to client, reliable, R0. Reason codes: `E_CHANGEFORM_RANGE` (a form
+    /// id of 0).
+    pub struct ChangeFormAck {
+        /// `"t": 73`.
+        #[serde(default)]
+        pub t: MsgT<73>,
+        /// The actor's form id; never 0.
+        pub form_id: u32,
+        /// The recorded body's FNV-1a 32.
+        pub fnv1a: u32,
+    }
+}
+
+wire_struct! {
+    /// MsgType 74, thuum's (docs/verbs/change-form.md): a recorded change
+    /// form served to a seat that sees the actor, before the actor's first
+    /// frame there: with the CreateActor word, at a cell's load for the
+    /// cell's actors with a record, and at once to a seat already listening
+    /// when the record arrives. The remap rows are the sender's,
+    /// untranslated: the receiver re-encodes them through its own engine.
+    /// Server to client, reliable, R0 output. Reason codes: the shape rules
+    /// ChangeForm's body and rows obey (`E_CHANGEFORM_RANGE`,
+    /// `E_CHANGEFORM_SIZE`, `E_CHANGEFORM_HEADER`, `E_CHANGEFORM_REMAP`); no
+    /// hash travels.
+    pub struct ChangeFormApply {
+        /// `"t": 74`.
+        #[serde(default)]
+        pub t: MsgT<74>,
+        /// The actor's form id; never 0.
+        pub form_id: u32,
+        /// The record's save-type index.
+        pub form_type: u8,
+        /// The change flags the record was marked with.
+        pub flags: u32,
+        /// The form version byte.
+        pub version: u8,
+        /// The whole packed record as the sender's hex, unchanged; the
+        /// receiver computes its hash.
+        pub body: String<{ cap::CHANGE_FORM_BODY_HEX }>,
+        /// The sender's census rows.
+        pub remap: Vec<ChangeFormRemap, { cap::CHANGE_FORM_REMAP }>,
+    }
+}
+
+wire_struct! {
     /// One skill use (docs/verbs/leveling.md): the skill by its ActorValue and
     /// the action's base amount as the engine computed it.
     pub struct SkillUseEntry {

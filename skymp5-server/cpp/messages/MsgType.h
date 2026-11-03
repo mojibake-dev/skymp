@@ -109,5 +109,12 @@ enum class MsgType : uint8_t
   ObjectAnimation =
     71, // thuum docs/verbs/traps.md (ADR-059 decision 3): a world object's
         // animation event the cell's host reported, recorded and relayed
+  ChangeForm = 72,    // thuum docs/verbs/change-form.md (ADR-065 system 1): an
+                      // actor's change form as its owner's engine serialized
+                      // it, recorded by the server
+  ChangeFormAck = 73, // the same verb: the server's receipt, the body's
+                      // hash the owner compares against
+  ChangeFormApply = 74, // the same verb: a recorded change form served to a
+                        // seat before the actor's first frame there
   Max
 };

@@ -1,0 +1,17 @@
+{
+  "body": "014e04000000057f",
+  "epoch": 1,
+  "flags": 67109927,
+  "fnv1a": 2318855054,
+  "formId": 4278190080,
+  "formType": 1,
+  "remap": [
+    {
+      "formId": 33598413,
+      "index": 5,
+      "offset": 4
+    }
+  ],
+  "t": 72,
+  "version": 78
+}

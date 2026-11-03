@@ -624,6 +624,14 @@ public:
   };
   ClaimVerdict ClaimActor(MpActor& claimant, MpActor& actor);
   bool ReleaseClaim(MpActor& claimant, MpActor& actor);
+  // thuum docs/engine/non-owning-seat.md section 3: the actor's record (its
+  // transform and flags, as a movement message) to the game about to
+  // simulate it, reliable and ahead of the hoster word on the same channel,
+  // so its promote places the copy at the record and its first report comes
+  // from there (the pass sends the passing report itself; a grant, a claim,
+  // a release and a lease end send this). Nothing is sent to a game with no
+  // user.
+  void SendActorKeyframe(MpActor& actor, MpActor& to);
   // thuum docs/verbs/prop-physics.md (ADR-058): one simulating seat per
   // physics prop, the cell's host by default, the last toucher while its
   // lease holds; the owner table's "prop" rows (wire-rules props). The

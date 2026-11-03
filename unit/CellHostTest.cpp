@@ -2268,3 +2268,56 @@ TEST_CASE("A hosted resident's melee hit its host reports is gated by reach",
   p.DestroyActor(kC2);
   p.DestroyActor(kSigrid);
 }
+
+TEST_CASE("A grant sends the cell's actors' records to the new host ahead of "
+          "its hoster words (docs/engine/non-owning-seat.md section 3: the "
+          "promote places the copy at the record, not where the engine had "
+          "it; the grant bounce of 20261103-055217 and 060106)",
+          "[CellHost]")
+{
+  auto& p = GetPartOne();
+  Player(p, 0, kC1, kHere);
+  const auto here = p.worldState.CellOf(kTamriel, kHere);
+  REQUIRE(here.has_value());
+  // the wolf stands in a cell nobody hosts yet, frozen at its record
+  p.CreateActor(kWolf, kHere + NiPoint3{ 300.f, 0.f, 0.f }, 0, kTamriel);
+  auto& wolf = p.worldState.GetFormAt<MpActor>(kWolf);
+  wolf.SetPos(kHere + NiPoint3{ 300.f, 0.f, 0.f });
+  REQUIRE(p.SimulatorOf(wolf) == 0);
+  p.Messages().clear();
+
+  // c1's load grants it the cell: for the wolf, its record as a movement
+  // message to c1 first, reliable, then the word
+  CellLoaded(p, 0, *here);
+  REQUIRE(p.SimulatorOf(wolf) == kC1);
+  const auto& sent = p.Messages();
+  size_t keyframeAt = sent.size();
+  size_t wordAt = sent.size();
+  for (size_t i = 0; i < sent.size(); ++i) {
+    const auto& m = sent[i];
+    if (m.userId != 0 || !m.j.is_object()) {
+      continue;
+    }
+    if (keyframeAt == sent.size() && m.reliable &&
+        m.j.value("t", -1) == static_cast<int>(MsgType::UpdateMovement) &&
+        m.j.value("idx", 0u) == wolf.GetIdx()) {
+      keyframeAt = i;
+      REQUIRE(std::abs(m.j["data"]["pos"][0].get<float>() -
+                       (kHere.x + 300.f)) < 1.f);
+      REQUIRE(m.j["data"]["worldOrCell"].get<uint32_t>() == kTamriel);
+    }
+    if (wordAt == sent.size() &&
+        m.j.value("propName", std::string()) == "isHostedByOther" &&
+        m.j.value("dataDump", std::string()) == "false" &&
+        m.j.value("refrId", 0u) == kWolf) {
+      wordAt = i;
+    }
+  }
+  REQUIRE(keyframeAt < sent.size());
+  REQUIRE(wordAt < sent.size());
+  REQUIRE(keyframeAt < wordAt);
+
+  DoDisconnect(p, 0);
+  p.DestroyActor(kWolf);
+  p.DestroyActor(kC1);
+}

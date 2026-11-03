@@ -1038,6 +1038,8 @@ export class RemoteServer extends ClientListener {
   }
 
   private onUpdatePropertyMessage(event: ConnectionMessage<UpdatePropertyMessage>): void {
+    // a server-made NPC's copy: a base that is not a player's, not this seat's own clone
+    const npcCopyOf = (f: FormModel) => !!f.baseId && f.baseId !== 0x7 && f.isMyClone !== true;
     const msg = event.message;
     const msgData = this.extractUpdatePropertyMessageData(msg);
 
@@ -1131,7 +1133,46 @@ export class RemoteServer extends ClientListener {
       logTrace(this, `UpdateProperty ${msg.propName} for idx ${msg.idx} (refr ${msg.refrId.toString(16)}): no form held, skipped`);
       return;
     }
+    const hostedBefore = form.isHostedByOther;
     (form as Record<string, unknown>)[msg.propName] = msgData;
+
+    // docs/engine/non-owning-seat.md section 3 and P8 (the instrumented runs
+    // 065955 and 070357 on the parent): the word's flip to "mine" is a
+    // promotion, and the copy must stand at the record BEFORE this seat's
+    // first report goes out, or the engine's own position (the day copy at
+    // the mill) becomes the record and the other side's copy passes the actor
+    // back. So the flip holds the actor's stream (HostService), and the next
+    // update places the copy at the record (the server's keyframe sent ahead
+    // of the word, or the last sample held) and releases it; only a FLIP
+    // places (a re-sent word for an actor this seat already runs would yank
+    // its live copy to a stale model). The flip back demotes on the same tick.
+    const npcForm = !!form && typeof form.refrId === 'number' && form.isMyClone !== true && (form.refrId < 0xff000000 || npcCopyOf(form));
+    if (npcForm && msg.propName === 'isHostedByOther') {
+      const remoteId = form.refrId as number;
+      const host = this.controller.lookupListener(HostService);
+      const puppets = this.controller.lookupListener(PuppetService);
+      if (msgData === false && hostedBefore !== false) {
+        host.holdUntilPlaced(remoteId);
+        const last = form.movement;
+        once('update', () => {
+          try {
+            const refr = ObjectReference.from(Game.getFormEx(remoteIdToLocalId(remoteId)));
+            if (refr) {
+              puppets.ensureLive(refr, last);
+            }
+          } finally {
+            host.placed(remoteId);
+          }
+        });
+      } else if (msgData === true && hostedBefore === false) {
+        once('update', () => {
+          const refr = ObjectReference.from(Game.getFormEx(remoteIdToLocalId(remoteId)));
+          if (refr) {
+            puppets.ensurePuppet(refr);
+          }
+        });
+      }
+    }
 
     // thuum docs/verbs/npc-fate.md, ADR-048's seam: a game-file actor's death
     // is the server's word on every seat (the server broadcasts isDead to the

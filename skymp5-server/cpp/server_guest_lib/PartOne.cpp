@@ -32,6 +32,7 @@
 #include "SetWeatherMessage.h"
 #include "SpellCastMessage.h"
 #include "UpdateGameModeDataMessage.h"
+#include "UpdateMovementMessage.h"
 
 #include "ActionListener.h"
 #include "FormCallbacks.h"
@@ -1732,8 +1733,13 @@ void FlipHostedFlags(PartOne& partOne, MpActor& viewer, uint32_t cell,
     // (ADR-047's follows, D22's margin hold, ADR-052's claims): the word
     // names the simulator the table answers, which is the host for an actor
     // with no row (a grant into the cell ends the rows into it)
-    (void)host;
-    actor->UpdateHoster(partOne.SimulatorOf(*actor));
+    const uint32_t simulator = partOne.SimulatorOf(*actor);
+    // the record ahead of the word for the game that takes the actor here
+    // (non-owning-seat.md section 3; the grant bounce of 055217 and 060106)
+    if (host && simulator == host->GetFormId()) {
+      partOne.SendActorKeyframe(*actor, *host);
+    }
+    actor->UpdateHoster(simulator);
   }
 }
 
@@ -1791,7 +1797,11 @@ void ApplyHostDecisions(PartOne& partOne,
                      "with its lease; the cell's rule stands",
                      d.actor, d.cell);
         if (actor) {
-          actor->UpdateHoster(partOne.SimulatorOf(*actor));
+          const uint32_t simulator = partOne.SimulatorOf(*actor);
+          if (MpActor* sim = PlayerActor(partOne, simulator)) {
+            partOne.SendActorKeyframe(*actor, *sim);
+          }
+          actor->UpdateHoster(simulator);
         }
         break;
       }
@@ -2538,7 +2548,9 @@ PartOne::ClaimVerdict PartOne::ClaimActor(MpActor& claimant, MpActor& actor)
     actor.GetFormId(), claimant.GetFormId(), *cell, SteadyNowMs());
   const auto verdict = static_cast<ClaimVerdict>(code);
   if (verdict == ClaimVerdict::Granted || verdict == ClaimVerdict::Reclaimed) {
-    // the word to every listening game: the claimant simulates it now
+    // the record ahead of the word, then the word to every listening game:
+    // the claimant simulates it now
+    SendActorKeyframe(actor, claimant);
     actor.UpdateHoster(claimant.GetFormId());
   }
   return verdict;
@@ -2549,9 +2561,35 @@ bool PartOne::ReleaseClaim(MpActor& claimant, MpActor& actor)
   const bool released =
     pImpl->cells->release_claim(actor.GetFormId(), claimant.GetFormId());
   if (released) {
-    actor.UpdateHoster(SimulatorOf(actor));
+    const uint32_t simulator = SimulatorOf(actor);
+    auto& form = worldState.LookupFormByIdNoLoad(simulator);
+    if (MpActor* sim = form ? form->AsActor() : nullptr) {
+      SendActorKeyframe(actor, *sim);
+    }
+    actor.UpdateHoster(simulator);
   }
   return released;
+}
+
+void PartOne::SendActorKeyframe(MpActor& actor, MpActor& to)
+{
+  const auto userId = serverState.UserByActor(&to);
+  if (userId == Networking::InvalidUserId) {
+    return;
+  }
+  UpdateMovementMessage msg;
+  msg.idx = actor.GetIdx();
+  msg.data.worldOrCell = actor.GetCellOrWorld().ToFormId(worldState.espmFiles);
+  const auto& pos = actor.GetPos();
+  const auto& rot = actor.GetAngle();
+  msg.data.pos = { pos.x, pos.y, pos.z };
+  msg.data.rot = { rot.x, rot.y, rot.z };
+  msg.data.runMode = "Standing";
+  msg.data.isWeapDrawn = actor.IsWeaponDrawn();
+  msg.data.isDead = actor.IsDead();
+  msg.data.healthPercentage =
+    actor.GetChangeForm().actorValues.healthPercentage;
+  GetSendTarget().Send(userId, msg, true);
 }
 
 PartOne::PropClaimVerdict PartOne::ClaimProp(const MpActor& claimant,

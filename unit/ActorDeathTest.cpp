@@ -259,6 +259,43 @@ TEST_CASE("A new host's first live sample of a dead NPC stands nothing until "
   REQUIRE_FALSE(actor.IsDead());
 }
 
+// round six's exemption, asked by numidium's review (2026-11-03): the cast's
+// rule survives the host's stamp. A reanimate the server accepted at OnHit
+// (NoteReanimateAccepted, finding 65) stands the body at the host's next live
+// sample within kReanimateWindowMs with NO dead sample from that host first;
+// only a live sample with neither the host's dead sample nor an accepted
+// reanimate stands nothing
+TEST_CASE("An accepted reanimate stands a dead NPC at its host's live sample "
+          "without a dead sample first; a live sample with neither stands "
+          "nothing",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  constexpr uint32_t kForestCell = 0x9810;
+  auto& host = Arrive(p, 0, kHost);
+  Arrive(p, 1, kOther);
+  auto& actor = Standing(p, kPredator);
+  actor.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
+  Host(p, 0, kForestCell);
+  REQUIRE(p.worldState.HostOf(actor) == &host);
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  const auto now = std::chrono::steady_clock::now();
+  actor.RecordDeathAt(
+    now - std::chrono::milliseconds(MpActor::kPendingDeathMs + 1000));
+
+  // no dead sample, no reanimate: the live sample stands nothing
+  State(p, 0, kPredator, 1.f);
+  REQUIRE(actor.IsDead());
+
+  // the reanimate hit the server accepted a moment ago, still no dead
+  // sample: the live sample stands the body (the cast's rule)
+  actor.NoteReanimateAccepted(now);
+  State(p, 0, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+}
+
 TEST_CASE("A hosted NPC dead since before this server process stands again "
           "at its host's live sample only after its host has sampled it "
           "dead once",

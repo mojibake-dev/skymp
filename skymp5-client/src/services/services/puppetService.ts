@@ -1,4 +1,4 @@
-import { Actor, CellAttachDetachEvent, CombatEvent, ObjectReference, Spell } from "skyrimPlatform";
+import { Actor, CellAttachDetachEvent, CombatEvent, DeathEvent, ObjectReference, Spell } from "skyrimPlatform";
 import { logError, logLab, logTrace } from "../../logging";
 import { Movement } from "../../sync/movement";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
@@ -26,9 +26,19 @@ import { RemoteServer } from "./remoteServer";
 // deferred kill is this service's too: every NPC this game shows holds at
 // zero until the server's word (train 52 moves the host's own to the engine).
 //
-// A dead body is no puppet on any seat (playtest 37, findings 58 and 62): its
-// loot is the engine's own ContainerMenu over the server's container, so a
-// body is never activation-blocked and a flagged one is released.
+// A dead body is no puppet on any seat (playtest 37, findings 58 and 62): a
+// flagged one is released once its ragdoll has settled. Its loot is the
+// server's container, and since ADR-067 decision 6 (the exclusive container
+// hold; docs/private/container-hold-scope.md D-C2 A) a body is
+// activation-blocked like a CONT on every seat: E sends Activate, the server
+// admits one looter and answers OpenContainer, and the ContainerMenu opens
+// through remoteServer's handler alone; a refused looter sees the server's
+// notification and no menu. The block is this service's (blockDeadBody): the
+// state function below asserts it on every dead body loaded here, and
+// re-asserts it on a later tick after each native lift (the promote, the
+// release, the fate's resurrect), since those land on the game thread after
+// the JavaScript tick (skyrim-platform main.cpp OnUpdate: JsTick, then
+// gameThrQ->Update) and would undo a block issued in the lift's own tick.
 
 // one look played on a puppet: an effect shader, or the VisualEffect that
 // wraps an effect's hit effect art (artId 0 for a shader)
@@ -52,6 +62,11 @@ export class PuppetService extends ClientListener {
         this.controller.on("cellAttach", (e) => this.onCellAttach(e));
         this.controller.on("cellDetach", (e) => this.onCellDetach(e));
         this.controller.on("combatState", (e) => this.onCombatState(e));
+        // ADR-067 decision 6 (D-C2 A): the engine's own death of an actor this
+        // seat simulates (ADR-050 decision 2) reaches no kill of deathService's,
+        // and formView's dead check skips a body already dead, so the block is
+        // laid at the death's start; the poll below is its backstop
+        this.controller.on("deathStart", (e) => this.onDeathStart(e));
         this.controller.on("update", () => this.onUpdate());
     }
 
@@ -116,6 +131,11 @@ export class PuppetService extends ClientListener {
             if (flagged && now - since >= PuppetService.releaseGraceMs) {
                 this.sp.releasePuppet(localId);
                 this.puppets.delete(localId);
+                // the release lifts the block natively (PuppetApi.cpp
+                // ReleasePuppet: AI on, flag and block off), for a live actor's
+                // schedule; a body comes back under the block at its next load
+                // here (ADR-067 decision 6)
+                this.markLifted(localId);
                 logTrace(this, `released ${localId.toString(16)}: no 3D here, left to its schedule (npc-handoff D11)`);
             }
             return;
@@ -127,6 +147,22 @@ export class PuppetService extends ClientListener {
             // game simulates the actor: its actions stream from here (the
             // hosted set the action hook reads)
             host.markHosted(localId, true);
+            // ADR-067 decision 6 (D-C2 A): a body this seat hosts is blocked
+            // like a CONT. The dead read (a native) runs on the poll's pass and
+            // on the first pass two tick counts after a native lift, not on
+            // the view's per-frame call: the death's start lays the block at
+            // once (onDeathStart), the poll re-asserts it within pollMs (a
+            // body the engine's own Resurrect, a reanimation or a failed fate
+            // resurrect left unblocked), and a stood-up actor this seat hosts
+            // gets its activation back, as the promote gives a live one
+            const lifted = this.liftedAt.get(localId);
+            if (mine === undefined || (lifted !== undefined && this.tick >= lifted + 2)) {
+                if (ac.isDead()) {
+                    this.blockDeadBody(localId, ac, "hosted here");
+                } else {
+                    this.standsAgain(localId, ac, true);
+                }
+            }
             if (!flagged) {
                 return;
             }
@@ -164,13 +200,17 @@ export class PuppetService extends ClientListener {
             ac.clearExpressionOverride();
             this.stopCloakLook(localId, ac);
             this.sp.setPuppet(localId, false);
-            // a dead body promoted here keeps the lifted block: a corpse is
-            // never activation-blocked on any seat (npc-fate.md's rule as
-            // revised by playtest 37's findings 58 and 62; the body's re-block
-            // that stood here defeated the engine's own loot menu, and the
-            // server's activation never opened a blocked body). Promote's dead
-            // branch leaves the AI off (H-54e); the not-mine branch below
-            // releases a flagged body the same way.
+            // the native promote lifts the block for a live actor and a dead
+            // one alike (PuppetApi.cpp Promote; its dead branch leaves the AI
+            // off, H-54e). A body promoted here comes back under the block on
+            // a later pass (ADR-067 decision 6, D-C2 A), never in this tick:
+            // the re-block that stood here until c1de7167 went out in the same
+            // tick as the promote, whose task lands after the tick (main.cpp
+            // OnUpdate) and so would have undone it (a reading of the source,
+            // no trace); that, with D71's AI-off refusal (engine model E25),
+            // is the reading of playtest 37's "the server's activation never
+            // opened a blocked body".
+            this.markLifted(localId);
             this.puppets.delete(localId);
             logTrace(this, `live ${localId.toString(16)}`);
             return;
@@ -183,24 +223,31 @@ export class PuppetService extends ClientListener {
         host.markHosted(localId, false);
         if (ac.isDead()) {
             // thuum docs/verbs/npc-fate.md (the deaths, as revised by playtest
-            // 37's findings 58 and 62): a dead NPC body is never a puppet and
-            // never activation-blocked, on any seat. The loot is the server's
-            // container, opened by the engine's own activation: E on an
-            // unblocked body opens the ContainerMenu, the activate hook reports
-            // it, the server answers the record's inventory and OpenContainer,
-            // and the view lays the server's list under the open menu (memo
-            // D52 B). The design note assumed the server-triggered
-            // activate(player, true) opens a blocked body; it never opened a
-            // demoted one. c2's one good open (finding 58) came while a brief
-            // host grant had lifted the block, and after the host flipped back
-            // the body was demoted again and four E presses opened nothing. A
-            // body that died flagged (the server's word killed a puppet) is
-            // released through the promote's dead branch (PuppetApi.cpp
-            // Promote: the block lifted, the AI left off, the flag cleared) and
-            // never demoted again; the deferred kill above keeps holding it for
-            // the server's word, and the fate's resurrect (FateApi.cpp, the AI
-            // on for the call) stands it up as a live actor, which the next
-            // pass makes a puppet as before.
+            // 37's findings 58 and 62): a dead NPC body is never a puppet, on
+            // any seat. A body that died flagged (the server's word killed a
+            // puppet) is released through the promote's dead branch
+            // (PuppetApi.cpp Promote: the block lifted, the AI left off, the
+            // flag cleared) and never demoted again; the deferred kill above
+            // keeps holding it for the server's word, and the fate's resurrect
+            // (FateApi.cpp, the AI on for the call) stands it up as a live
+            // actor, which the next pass makes a puppet as before.
+            // ADR-067 decision 6 (D-C2 A, docs/private/container-hold-scope.md):
+            // the loot is the server's container and the body is
+            // activation-blocked like a CONT: E sends Activate (the hook
+            // reports a blocked reference's activation as it does a chest's),
+            // the server admits one looter and answers OpenContainer, and
+            // remoteServer's handler opens the ContainerMenu (openBodyOnTimers
+            // for a released body: the AI on for the open alone, D71). Finding
+            // 58's "the server's activation never opened a blocked body" read
+            // the AI-off refusal (engine model E25: a dead actor with no
+            // AIProcess refuses the activation) and, by the source, a re-block
+            // lost to the same tick as a promote; that the engine's
+            // activate(player, true) opens the loot menu on a blocked dead
+            // actor as it opens a blocked CONT is the HYPOTHESIS
+            // x-container-hold's corpse leg reads. The view lays the server's
+            // list under the menu as before (memo D52 B). The block lands two
+            // tick counts after the release below, never in its tick (the
+            // release's task runs after that tick's JavaScript).
             if (flagged) {
                 // playtest 41's item 5 (Eli, 2026-11-02: "still have frozen
                 // peeps on death"; playtest 40's F3 read the same): a body
@@ -224,8 +271,15 @@ export class PuppetService extends ClientListener {
                 this.deadFlaggedSince.delete(localId);
                 this.sp.setPuppet(localId, false);
                 this.puppets.delete(localId);
+                this.markLifted(localId);
                 logTrace(this, `body ${localId.toString(16)}: released from the puppet state after the ragdoll's ${((now - since) / 1000).toFixed(1)} s, its activation the engine's`);
+                return;
             }
+            // released, or never flagged here (a body that died under this
+            // seat's own engine before the host flipped, a body loaded dead):
+            // blocked like a CONT, once per load (the mark), two tick counts
+            // after any native lift (ADR-067 decision 6)
+            this.blockDeadBody(localId, ac, "on a seat that does not host it");
             return;
         }
         // the body is alive here: a stand-up that took (the fate's resurrect
@@ -237,6 +291,10 @@ export class PuppetService extends ClientListener {
         // 0.75 to 1.0 s into the second fall and froze the skeleton, and would
         // still have come 1.0 to 1.85 s into it with db0e19a5's clear)
         this.deadFlaggedSince.delete(localId);
+        // a body that stood up on a seat that does not host it: the demote
+        // below blocks it as a puppet, so the dead block's mark is dropped
+        // (a later death lays it again)
+        this.standsAgain(localId, ac, false);
         if (!has3D) {
             return;
         }
@@ -276,6 +334,11 @@ export class PuppetService extends ClientListener {
     // nobody's and left alone; a copy with a view goes through the view's
     // own call as well.
     private onUpdate() {
+        // the JavaScript tick's count, the clock the dead block's re-assert
+        // reads (blockDeadBody): a native lift queued in tick N lands after
+        // tick N's JavaScript, so a block is safe once the count has moved
+        // twice since the lift (a call later in tick N may already see N + 1)
+        this.tick += 1;
         if (!this.enabled) {
             return;
         }
@@ -399,6 +462,76 @@ export class PuppetService extends ClientListener {
     // counting from the first death).
     onResurrected(localId: number): void {
         this.deferredArmed.delete(localId);
+        // the fate's resurrect sets the block natively after this tick
+        // (FateApi.cpp resurrectActor: a puppet blocked, a live actor
+        // unblocked, a body the call left dead unblocked too): the dead
+        // block's mark is dropped and a later pass reads the body again
+        this.markLifted(localId);
+    }
+
+    // ADR-067 decision 6 (the exclusive container hold; docs/private/
+    // container-hold-scope.md D-C2 A): a dead NPC body is the server's
+    // container and is activation-blocked like a CONT, on every seat, so its E
+    // sends Activate and its loot menu opens on the server's OpenContainer
+    // alone (remoteServer's handler). Once per body per load (the mark);
+    // never a player's figure (no corpse to the server: IsCorpse excludes an
+    // actor created as a player, and a figure is blocked at its spawn anyway,
+    // spawnProcess's dealWithRef); never in the tick of a native lift
+    // (markLifted: the lift's task lands after that tick's JavaScript and
+    // would undo the block; two counts of the tick clock rule that tick
+    // out). Called at the death's start here, at the server's kill
+    // (deathService.killActor) and from reconcile's passes.
+    blockDeadBody(localId: number, ac: Actor, why: string): void {
+        if (localId === 0x14 || this.deadBlocked.has(localId)) {
+            return;
+        }
+        const lifted = this.liftedAt.get(localId);
+        if (lifted !== undefined && this.tick < lifted + 2) {
+            return;
+        }
+        if (this.isFigure(localId)) {
+            return;
+        }
+        ac.blockActivation(true);
+        this.deadBlocked.add(localId);
+        this.liftedAt.delete(localId);
+        logLab("verb:containers", `body ${localId.toString(16)}: activation blocked, the loot is the server's container (${why}; ADR-067 decision 6)`);
+    }
+
+    // a native lift of the block in this tick (the promote, the release, the
+    // fate's resurrect): the mark comes off and a pass two tick counts on
+    // reads the body again
+    private markLifted(localId: number): void {
+        this.deadBlocked.delete(localId);
+        this.liftedAt.set(localId, this.tick);
+    }
+
+    // the body is alive: the dead block's mark is dropped; on the seat that
+    // hosts it the block itself comes off when this service laid it (the
+    // engine's own Resurrect, a necromancer's reanimation: Hooks.cpp
+    // HostedResurrect sets the AI alone), as the promote gives a live actor;
+    // elsewhere the demote blocks it as a puppet
+    private standsAgain(localId: number, ac: Actor, hostedHere: boolean): void {
+        this.liftedAt.delete(localId);
+        if (!this.deadBlocked.delete(localId)) {
+            return;
+        }
+        if (hostedHere) {
+            ac.blockActivation(false);
+            logLab("verb:containers", `body ${localId.toString(16)}: stood up on its host's seat, its activation the engine's again`);
+        }
+    }
+
+    private onDeathStart(e: DeathEvent) {
+        const dying = e.actorDying ? this.sp.Actor.from(e.actorDying) : null;
+        if (!dying) {
+            return;
+        }
+        const localId = dying.getFormID();
+        if (localId === 0x14) {
+            return;
+        }
+        this.blockDeadBody(localId, dying, "its death started here");
     }
 
     // thuum docs/verbs/npc-stream.md, playtest 37 finding 60 (the visuals
@@ -532,6 +665,8 @@ export class PuppetService extends ClientListener {
         this.unloadedSince.delete(localId);
         this.scenesStopped.delete(localId);
         this.deadFlaggedSince.delete(localId);
+        this.deadBlocked.delete(localId);
+        this.liftedAt.delete(localId);
     }
 
     // An actor attaching to a cell is loaded here from this moment, whatever
@@ -607,6 +742,11 @@ export class PuppetService extends ClientListener {
     // the moment a dead puppet was first seen dead here (the flag's settle)
     private readonly deadFlaggedSince = new Map<number, number>();
     private static readonly ragdollSettleMs = 4_000;
+    // ADR-067 decision 6: the dead bodies this service has blocked (once per
+    // load), the tick of each body's last native lift, and the tick count
+    private readonly deadBlocked = new Set<number>();
+    private readonly liftedAt = new Map<number, number>();
+    private tick = 0;
     private readonly unloadedSince = new Map<number, number>();
     // playtest 41's Sven scene: the scene this seat last stopped on each puppet
     private readonly scenesStopped = new Map<number, number>();

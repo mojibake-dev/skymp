@@ -66,7 +66,7 @@ import {
 import { TimeService } from './timeService';
 import { HostService } from './hostService';
 import { PuppetService } from "./puppetService";
-import { logTrace, logError } from '../../logging';
+import { logTrace, logError, logLab } from '../../logging';
 
 import { SpellCastMessage } from '../messages/spellCastMessage';
 import { ActorJumpMessage } from '../messages/actorJumpMessage';
@@ -246,11 +246,28 @@ export class RemoteServer extends ClientListener {
       // it awaited, while the plugin ran on. The timers' callbacks run inside
       // the game's update (TimersService processes them on 'update' when the
       // player exists), so the natives are legal there.
+      // thuum ADR-067 decision 6 (the exclusive container hold;
+      // docs/private/container-hold-scope.md D-C2 A): a dead body is
+      // activation-blocked like a CONT on every seat (PuppetService.
+      // blockDeadBody), so this handler is the one way its loot menu opens,
+      // for the one looter the server admitted. The activate(player, true)
+      // below and openBodyOnTimers' run with default processing only
+      // (TESObjectREFR::ActivateRef's a_defaultProcessingOnly, CommonLibSSE-NG
+      // include/RE/T/TESObjectREFR.h:367; the block is ExtraFlags
+      // kBlockActivate, src/RE/T/TESObjectREFR.cpp:843), the call that opens
+      // a blocked chest in every container scenario. That it opens the loot
+      // ContainerMenu on a blocked dead actor too (the NPC base's Activate
+      // and OpenContainer(kLoot), engine model E25) is a HYPOTHESIS until
+      // x-container-hold's corpse leg reads it; the block's state is logged
+      // at each open for that read.
       if (baseType === FormType.NPC) {
         const ac = Actor.from(refr);
-        if (ac && ac.isDead() && !ac.isAIEnabled()) {
-          this.openBodyOnTimers(localId, event.message.target, ac);
-          return;
+        if (ac && ac.isDead()) {
+          if (!ac.isAIEnabled()) {
+            this.openBodyOnTimers(localId, event.message.target, ac);
+            return;
+          }
+          logLab("verb:containers", `body ${localId.toString(16)}: the server's open on ${refr.isActivationBlocked() ? "a blocked" : "an unblocked"} body with its AI on (D-C2 A)`);
         }
       }
 
@@ -445,7 +462,7 @@ export class RemoteServer extends ClientListener {
       attempts += 1;
       const ok = again.activate(Game.getPlayer(), true);
       const opened = ok || Ui.isMenuOpen("ContainerMenu");
-      logTrace(this, `${tag}: activate returned ${ok} at +${elapsed} ms (attempt ${attempts}; AI ${ac.isAIEnabled()}, dead ${ac.isDead()}, 3D ${ac.is3DLoaded()}, health ${ac.getActorValue("Health").toFixed(0)}${opened && !ok ? ", the menu open regardless" : ""})`);
+      logTrace(this, `${tag}: activate returned ${ok} at +${elapsed} ms (attempt ${attempts}; AI ${ac.isAIEnabled()}, dead ${ac.isDead()}, 3D ${ac.is3DLoaded()}, blocked ${again.isActivationBlocked()}, health ${ac.getActorValue("Health").toFixed(0)}${opened && !ok ? ", the menu open regardless" : ""})`);
       if (opened) {
         timers.setTimeout(() => pollOpen(Date.now() + kOpenDeadlineMs), kPollMs);
         return;

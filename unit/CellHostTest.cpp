@@ -841,6 +841,34 @@ TEST_CASE("A hosted actor's door into a cell another live host holds passes "
   }
   REQUIRE(newHostLive);
   REQUIRE(oldHostDemoted);
+  // the passing report reached the new host's game reliably, ahead of the
+  // word (the settle's half (a), 019921fb, on m3-system1 without the
+  // window: its promote places the copy at the door's far side, not where
+  // the copy stood); the test's raw report is the empty object the harness
+  // parses it to
+  {
+    const auto& sent = p.Messages();
+    size_t reportAt = sent.size();
+    size_t wordAt = sent.size();
+    for (size_t i = 0; i < sent.size(); ++i) {
+      const auto& m = sent[i];
+      if (m.userId != 1 || !m.j.is_object()) {
+        continue;
+      }
+      if (reportAt == sent.size() && m.reliable && m.j.empty()) {
+        reportAt = i;
+      }
+      if (wordAt == sent.size() &&
+          m.j.value("propName", std::string()) == "isHostedByOther" &&
+          m.j.value("dataDump", std::string()) == "false" &&
+          m.j.value("refrId", 0u) == kHod) {
+        wordAt = i;
+      }
+    }
+    REQUIRE(reportAt < sent.size());
+    REQUIRE(wordAt < sent.size());
+    REQUIRE(reportAt < wordAt);
+  }
 
   // the old host's next report from indoors is a stranger's, the inn
   // host's passes

@@ -792,6 +792,11 @@ public:
   };
   MoveVerdict MayMoveActor(const MpActor& sender, const MpActor& actor,
                            uint32_t destWorldOrCell, const NiPoint3& destPos);
+  // server-settings.json's handoffPassSettleMs (npc-handoff D9's settle): the
+  // window after a pass in which the new host's report back into the cell the
+  // actor came from is a stale copy's sample; 0 switches it off (the mutation
+  // run), unset keeps wire-rules' PASS_SETTLE_MS
+  void SetPassSettleMs(uint64_t ms);
   // The same verdict without recording anything (no follow written or
   // ended): the door's pre-check, before the host's engine is asked to walk
   // the actor through; the follow is recorded by the host's report.

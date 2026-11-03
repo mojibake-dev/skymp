@@ -896,13 +896,48 @@ TEST_CASE("A hosted actor's door into a cell another live host holds passes "
   std::this_thread::sleep_for(
     std::chrono::milliseconds(skymp::rules::pass_settle_ms() + 100));
 
-  // the exit by schedule: the inn's host walks him out into c1's square,
-  // deep inside it, and c1 takes him back
+  // the exit by schedule, the playtest's own direction: the inn's host
+  // walks him out into c1's square, deep inside it, and c1 takes him back;
+  // the passing report reaches c1's game reliably ahead of its word
   REQUIRE(p.worldState.npcDoorVerdict(*hod, kTamriel, kOutside));
+  p.Messages().clear();
   Move(p, 1, kHod, kOutside);
   REQUIRE(p.worldState.CellOf(*hod) == here);
   REQUIRE(p.SimulatorOf(*hod) == kC1);
   REQUIRE(p.GetFollows().empty());
+  {
+    const auto& sent = p.Messages();
+    size_t reportAt = sent.size();
+    size_t wordAt = sent.size();
+    for (size_t i = 0; i < sent.size(); ++i) {
+      const auto& m = sent[i];
+      if (m.userId != 0 || !m.j.is_object()) {
+        continue;
+      }
+      if (reportAt == sent.size() && m.reliable && m.j.empty()) {
+        reportAt = i;
+      }
+      if (wordAt == sent.size() &&
+          m.j.value("propName", std::string()) == "isHostedByOther" &&
+          m.j.value("dataDump", std::string()) == "false" &&
+          m.j.value("refrId", 0u) == kHod) {
+        wordAt = i;
+      }
+    }
+    REQUIRE(reportAt < sent.size());
+    REQUIRE(wordAt < sent.size());
+    REQUIRE(reportAt < wordAt);
+  }
+  // the old host's report from indoors is a stranger's; the new host's
+  // report back indoors inside the window is its stale copy's (the promote
+  // before the passing report landed): both dropped, the record outdoors
+  // under c1
+  Move(p, 1, kHod, kInside, kInn);
+  REQUIRE(p.worldState.CellOf(*hod) == here);
+  REQUIRE(p.SimulatorOf(*hod) == kC1);
+  Move(p, 0, kHod, kInside, kInn);
+  REQUIRE(p.worldState.CellOf(*hod) == here);
+  REQUIRE(p.SimulatorOf(*hod) == kC1);
 
   DoDisconnect(p, 0);
   DoDisconnect(p, 1);

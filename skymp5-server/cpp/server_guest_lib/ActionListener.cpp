@@ -296,15 +296,27 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
         // thuum docs/verbs/npc-handoff.md D9's settle (playtest 41, Hod at
         // the Sleeping Giant's door, 2026-11-03): a sample taken before the
         // engine's transit, or a just-promoted copy still on the other side
-        // of the door, moving the actor back out of the cell it was followed
-        // or passed into within the settle window; dropped as stale, the
-        // sender's right to report untouched
-        spdlog::info("ActionListener::OnUpdateMovement - npc-handoff: {:x}'s "
-                     "report of {:x} into cell {:x} within the settle window "
-                     "of its hand-off dropped as a stale copy's sample (D9's "
-                     "settle)",
-                     myActor->GetFormId(), moved->GetFormId(),
-                     destCell.value_or(0));
+        // of the door, moving the actor back into the cell it came from
+        // within the settle window; dropped as stale, the sender's right to
+        // report untouched; one info line per actor per 10 s with the count
+        static std::unordered_map<
+          uint32_t, std::pair<std::chrono::steady_clock::time_point, uint32_t>>
+          stale;
+        auto& [since, count] = stale[moved->GetFormId()];
+        const auto now = std::chrono::steady_clock::now();
+        ++count;
+        if (since.time_since_epoch().count() == 0 ||
+            now - since >= std::chrono::seconds(10)) {
+          spdlog::info(
+            "ActionListener::OnUpdateMovement - npc-handoff: {:x}'s "
+            "report of {:x} into cell {:x} within the settle "
+            "window of its hand-off dropped as a stale copy's "
+            "sample (D9's settle); {} such since the last line",
+            myActor->GetFormId(), moved->GetFormId(), destCell.value_or(0),
+            count);
+          since = now;
+          count = 0;
+        }
         partOne.serverState.CountStream(
           rawMsgData.userId, static_cast<uint8_t>(MsgType::UpdateMovement),
           false);

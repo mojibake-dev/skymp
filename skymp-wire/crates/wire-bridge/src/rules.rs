@@ -1985,6 +1985,9 @@ mod ffi {
         /// cells::PASS_SETTLE_MS, npc-handoff D9): the new host's report out
         /// of the cell within it is a stale copy's sample (verdict 4).
         fn pass_settle_ms() -> u64;
+        /// The server's setting for the pass's settle window
+        /// (handoffPassSettleMs): 0 switches the settle off.
+        fn set_pass_settle_ms(self: &mut Cells, ms: u64);
 
         /// thuum docs/verbs/prop-physics.md (ADR-058): one simulating seat per
         /// physics prop, the cell's host by default, the last toucher while
@@ -2977,6 +2980,10 @@ impl Cells {
     fn gone(&mut self, player: u32, now_ms: u64) -> Vec<HostDecision> {
         let decisions = self.0.gone(player, now_ms);
         host_decisions(&self.0, decisions)
+    }
+
+    fn set_pass_settle_ms(&mut self, ms: u64) {
+        self.0.set_pass_settle_ms(ms);
     }
 
     fn stale(&mut self, player: u32, now_ms: u64) -> Vec<HostDecision> {

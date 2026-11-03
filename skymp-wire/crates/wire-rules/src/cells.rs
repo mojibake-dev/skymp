@@ -251,11 +251,13 @@ struct PlayerState {
 }
 
 /// A hand-off between live hosts (ADR-047 D9): who the actor was passed to,
-/// into which cell and when, for the settle window (PASS_SETTLE_MS).
+/// into which cell, from which, and when, for the settle window: the stale
+/// copy's shape is a report back into the cell the actor came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Pass {
     host: u32,
     cell: u32,
+    from: u32,
     since_ms: u64,
 }
 
@@ -269,9 +271,23 @@ pub struct Cells {
     passes: HashMap<u32, Pass>,
     /// The first grant's time, the cold start's window opening; None until it.
     first_grant_ms: Option<u64>,
+    /// The settle window the server set (handoffPassSettleMs): None the
+    /// default PASS_SETTLE_MS, Some(0) the settle off (the mutation run's
+    /// switch), Some(ms) its length.
+    pass_settle_ms: Option<u64>,
 }
 
 impl Cells {
+    /// The server's setting for the pass's settle window, ms; 0 switches
+    /// the settle off (the follow's own window is untouched).
+    pub fn set_pass_settle_ms(&mut self, ms: u64) {
+        self.pass_settle_ms = Some(ms);
+    }
+
+    fn pass_settle_window(&self) -> u64 {
+        self.pass_settle_ms.unwrap_or(PASS_SETTLE_MS)
+    }
+
     /// The cells the server's grid gives `player` now (its 3x3 of 4096-unit
     /// chunks, one exterior grid cell each, or its interior) at `now_ms`:
     /// a cell newly reached that the game has loaded and nobody hosts is
@@ -488,8 +504,11 @@ impl Cells {
                     return MoveVerdict::Stale;
                 }
             }
+            // the stale copy's shape alone: the new host's report back into
+            // the cell the actor came from; a move onward to a third cell is
+            // judged as any other
             if let Some(p) = self.passes.get(&actor) {
-                if p.cell == origin && p.host == sender && now_ms.saturating_sub(p.since_ms) < PASS_SETTLE_MS {
+                if p.cell == origin && p.host == sender && dest == p.from && now_ms.saturating_sub(p.since_ms) < self.pass_settle_window() {
                     return MoveVerdict::Stale;
                 }
             }
@@ -597,7 +616,7 @@ impl Cells {
                 // ends, and the pass is remembered for its settle window
                 self.follows.remove(&m.actor);
                 if let Some((host, _)) = self.host_of(m.dest) {
-                    self.passes.insert(m.actor, Pass { host, cell: m.dest, since_ms: now_ms });
+                    self.passes.insert(m.actor, Pass { host, cell: m.dest, from: m.origin, since_ms: now_ms });
                 }
             }
             _ => {}
@@ -693,6 +712,10 @@ impl Cells {
     /// to the visitor with the cell loaded and in reach whose round trip is
     /// lowest (earliest loaded on a tie), or to nobody.
     pub fn tick(&mut self, now_ms: u64) -> Vec<Decision> {
+        // a pass past its settle window is history (the table stays the
+        // last second's)
+        let window = self.pass_settle_window();
+        self.passes.retain(|_, p| now_ms.saturating_sub(p.since_ms) < window);
         // a claim past its lease ends (ADR-052)
         let mut ended: Vec<(u32, u32)> = self
             .follows
@@ -1204,11 +1227,29 @@ mod tests {
         assert_eq!(c.may_move(&CellMove { sender: C2, actor: HOD, origin: INN, dest: INN, adjacent: false, door: false, edge_units: u32::MAX }, 2_200), MoveVerdict::Accept);
         assert_eq!(c.may_move(&outward, 2_999), MoveVerdict::Stale);
         assert_eq!(c.may_move(&CellMove { sender: C1, actor: HOD, origin: INN, dest: RIVERWOOD, adjacent: false, door: true, edge_units: u32::MAX }, 2_300), MoveVerdict::Refuse);
+        // a move onward to a third cell inside the window is no stale copy's: judged as any other (a teleport across
+        // squares here, refused as before; a door into an unhosted cell would be the simulator's follow)
+        assert_eq!(c.may_move(&CellMove { sender: C2, actor: HOD, origin: INN, dest: 0x9733, adjacent: false, door: false, edge_units: u32::MAX }, 2_400), MoveVerdict::Refuse);
         // the real exit after the window passes him back, and that pass has its own window
         assert_eq!(c.may_move(&outward, 2_000 + PASS_SETTLE_MS), MoveVerdict::Pass);
         assert_eq!(c.simulator_of(HOD, RIVERWOOD), C1);
         assert_eq!(c.may_move(&inward, 2_000 + PASS_SETTLE_MS + 100), MoveVerdict::Stale);
         assert_eq!(c.may_move(&inward, 2_000 + 2 * PASS_SETTLE_MS), MoveVerdict::Pass);
+        // the tick prunes a pass past its window
+        assert_eq!(c.tick(2_000 + 3 * PASS_SETTLE_MS + 1), vec![]);
+        assert_eq!(c.may_move(&outward, 2_000 + 3 * PASS_SETTLE_MS + 2), MoveVerdict::Pass);
+        // the server's setting: 0 switches the settle off (the mutation run), a longer window holds longer
+        let mut d = both_in_reach();
+        d.reach(C2, &[RIVERWOOD, INN], 0);
+        d.loaded(C1, RIVERWOOD, 1_000);
+        d.loaded(C2, INN, 1_000);
+        d.set_pass_settle_ms(0);
+        assert_eq!(d.may_move(&inward, 2_000), MoveVerdict::Pass);
+        assert_eq!(d.may_move(&outward, 2_100), MoveVerdict::Pass);
+        d.set_pass_settle_ms(5_000);
+        assert_eq!(d.may_move(&inward, 3_000), MoveVerdict::Pass);
+        assert_eq!(d.may_move(&outward, 3_000 + 4_999), MoveVerdict::Stale);
+        assert_eq!(d.may_move(&outward, 3_000 + 5_000), MoveVerdict::Pass);
     }
 
     #[test]

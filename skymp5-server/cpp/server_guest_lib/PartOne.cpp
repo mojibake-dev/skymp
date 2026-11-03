@@ -4924,6 +4924,14 @@ bool PartOne::PerksEnabled() const
 // thuum docs/verbs/containers.md (ADR-061 decision 3): the switch between
 // the shared live view and one occupant per container
 
+void PartOne::SetPassSettleMs(uint64_t ms)
+{
+  pImpl->cells->set_pass_settle_ms(ms);
+  spdlog::info("[verb:npc-handoff] handoffPassSettleMs {}: the pass's settle "
+               "window {}",
+               ms, ms == 0 ? "off" : "set");
+}
+
 void PartOne::SetContainerSharing(const std::string& mode)
 {
   if (mode != "shared" && mode != "exclusive") {

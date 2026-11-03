@@ -1294,7 +1294,7 @@ export class FormView {
     if (model.isDead === true && model.actionQueue && model.actionQueue.length > 0) {
       const dropped = model.actionQueue.length;
       model.actionQueue.splice(0, dropped);
-      logLab("verb:npc-fate", `${dropped} carried action(s) of the dead record ${this.refrId.toString(16)} dropped, not replayed (the body is bound dead instead)`);
+      logLab("verb:npc-fate", `${dropped} carried action(s) of the dead record ${this.refrId.toString(16)} dropped, not replayed (the record is dead)`);
       return;
     }
     if (FormView.isNpcModel(model) && !FormView.streamSwitch("npcStreamActions")) {

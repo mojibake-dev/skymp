@@ -2752,8 +2752,9 @@ void MpActor::NoteHostSampledDead(uint32_t hostId, uint32_t hostLogin,
   pImpl->deadStampAt = at;
 }
 
-bool MpActor::HostSampledDeadBy(uint32_t hostId, uint32_t hostLogin,
-                                std::chrono::steady_clock::time_point now) const
+bool MpActor::HostSampledDeadBy(
+  uint32_t hostId, uint32_t hostLogin,
+  std::chrono::steady_clock::time_point now) const
 {
   if (!pImpl->deadStamped || pImpl->deadStampHost != hostId ||
       pImpl->deadStampLogin != hostLogin) {

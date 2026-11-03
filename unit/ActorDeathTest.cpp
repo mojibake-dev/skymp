@@ -200,6 +200,209 @@ TEST_CASE("A hosted NPC the record holds dead whose host samples it alive "
   Leave(p, 0, kHost);
 }
 
+// numidium's reviews of rounds six and seven (2026-11-03): the host's
+// dead-sample stamp names its WITNESS (the host's id and login generation)
+// and its time. The cases below: the cast's rule survives it; a NEW host's
+// first live sample stands nothing until it has sampled the body dead; a
+// RELAUNCHED host (a clean quit, the Release gone while it was away, the
+// same id back) must sample the body dead again; a host that WALKED OFF
+// before its quit (the cell unhosted, no Release flip reaching the body) the
+// same; the engine's death first (the host's zero on a still-alive record)
+// is that death's stamp; a bleedout's zero long before a later death is not;
+// the host's reliable death report is a stamp too
+
+static void BackdatePastGrace(MpActor& actor)
+{
+  actor.RecordDeathAt(
+    std::chrono::steady_clock::now() -
+    std::chrono::milliseconds(MpActor::kPendingDeathMs + 1000));
+}
+
+static MpActor& HostedPredator(PartOne& p, MpActor*& hostOut, bool withOther)
+{
+  constexpr uint32_t kForestCell = 0x9810;
+  auto& host = Arrive(p, 0, kHost);
+  if (withOther) {
+    Arrive(p, 1, kOther);
+  }
+  auto& actor = Standing(p, kPredator);
+  actor.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
+  Host(p, 0, kForestCell);
+  REQUIRE(p.worldState.HostOf(actor) == &host);
+  hostOut = &host;
+  return actor;
+}
+
+TEST_CASE("An accepted reanimate stands a dead NPC at its host's live sample "
+          "without a dead sample first; a live sample with neither stands "
+          "nothing",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  BackdatePastGrace(actor);
+  State(p, 0, kPredator, 1.f);
+  REQUIRE(actor.IsDead());
+  actor.NoteReanimateAccepted(std::chrono::steady_clock::now());
+  State(p, 0, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+}
+
+TEST_CASE("A new host's first live sample of a dead NPC stands nothing until "
+          "that host has sampled the body dead",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  constexpr uint32_t kForestCell = 0x9810;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  auto& other = p.worldState.GetFormAt<MpActor>(kOther);
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  BackdatePastGrace(actor);
+  State(p, 0, kPredator, 0.f);
+  REQUIRE(actor.IsDead());
+  {
+    RawMessageData raw;
+    raw.userId = 0;
+    CellLoadedMessage unloaded;
+    unloaded.cell = kForestCell;
+    unloaded.loaded = false;
+    p.GetActionListener().OnCellLoaded(raw, unloaded);
+  }
+  host->SetPos(kForest + NiPoint3{ 60000.f, 60000.f, 0.f });
+  Host(p, 1, kForestCell);
+  REQUIRE(p.worldState.HostOf(actor) == &other);
+  State(p, 1, kPredator, 1.f);
+  REQUIRE(actor.IsDead());
+  State(p, 1, kPredator, 0.f);
+  REQUIRE(actor.IsDead());
+  State(p, 1, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+}
+
+TEST_CASE("The host's zero sample on a still-alive record is its dead-sample "
+          "stamp, so a later stand-up with no claimed hit stands the body",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  State(p, 0, kPredator, 0.f);
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  BackdatePastGrace(actor);
+  State(p, 0, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+}
+
+TEST_CASE("A host that quit cleanly and hosts again under the same id must "
+          "sample the body dead again before a live sample stands it",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  constexpr uint32_t kForestCell = 0x9810;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, false);
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  BackdatePastGrace(actor);
+  State(p, 0, kPredator, 0.f);
+  REQUIRE(actor.IsDead());
+  // the clean quit; the grace passes while the player is away (the Release
+  // reaches no game of its); the same id back, a new login generation
+  Leave(p, 0, kHost);
+  p.TickCellHosts(NowMs() + skymp::rules::host_grace_ms() + 2'000);
+  auto& again = Arrive(p, 0, kHost);
+  Host(p, 0, kForestCell);
+  REQUIRE(p.worldState.HostOf(actor) == &again);
+  State(p, 0, kPredator, 1.f);
+  REQUIRE(actor.IsDead());
+  State(p, 0, kPredator, 0.f);
+  REQUIRE(actor.IsDead());
+  State(p, 0, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+}
+
+TEST_CASE("A host that walked off, quit and came back first must sample the "
+          "body dead again (its stamp named the old login)",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  constexpr uint32_t kForestCell = 0x9810;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, false);
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  BackdatePastGrace(actor);
+  State(p, 0, kPredator, 0.f);
+  REQUIRE(actor.IsDead());
+  // the host walks off: the cell unhosted after the grace, no Release flip
+  // reaching the body; then the quit, the grace again, the same id back
+  host->SetPos(kForest + NiPoint3{ 60000.f, 60000.f, 0.f });
+  p.TickCellHosts(NowMs() + skymp::rules::host_grace_ms() + 2'000);
+  Leave(p, 0, kHost);
+  p.TickCellHosts(NowMs() + skymp::rules::host_grace_ms() + 2'000);
+  auto& again = Arrive(p, 0, kHost);
+  Host(p, 0, kForestCell);
+  REQUIRE(p.worldState.HostOf(actor) == &again);
+  State(p, 0, kPredator, 1.f);
+  REQUIRE(actor.IsDead());
+  State(p, 0, kPredator, 0.f);
+  REQUIRE(actor.IsDead());
+  State(p, 0, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+}
+
+TEST_CASE("A bleedout's zero long before a later death is not that death's "
+          "stamp; the host must sample the body dead again",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  const auto now = std::chrono::steady_clock::now();
+  // the host's zero on the living actor twenty seconds ago (a test-only
+  // backdate of the stamp, as RecordDeathAt is of the death)
+  actor.NoteHostSampledDead(kHost, host->LoginGeneration(),
+                            now - std::chrono::seconds(20));
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  BackdatePastGrace(actor);
+  State(p, 0, kPredator, 1.f);
+  REQUIRE(actor.IsDead());
+  State(p, 0, kPredator, 0.f);
+  REQUIRE(actor.IsDead());
+  State(p, 0, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+}
+
+TEST_CASE("The host's reliable death report is its dead-sample stamp",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  p.worldState.npcDeathReports = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  // the host reports the death (a fall): the record dies and the report is
+  // the stamp; no hosted-state zero follows
+  Report(p, 0, kPredator, 1, 0, actor.GetPos());
+  REQUIRE(actor.IsDead());
+  BackdatePastGrace(actor);
+  State(p, 0, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+}
+
 // thuum docs/verbs/npc-fate.md (playtest 37's finding 54): a body dead since
 // before this server process has no death stamp (RecordDeathAt runs at
 // SendAndSetDeathState alone, nothing stamps a body loaded dead). Playtest
@@ -260,113 +463,6 @@ TEST_CASE("A new host's first live sample of a dead NPC stands nothing until "
   State(p, 1, kPredator, 0.f);
   REQUIRE(actor.IsDead());
   State(p, 1, kPredator, 1.f);
-  REQUIRE_FALSE(actor.IsDead());
-}
-
-// round six's exemption, asked by numidium's review (2026-11-03): the cast's
-// rule survives the host's stamp. A reanimate the server accepted at OnHit
-// (NoteReanimateAccepted, finding 65) stands the body at the host's next live
-// sample within kReanimateWindowMs with NO dead sample from that host first;
-// only a live sample with neither the host's dead sample nor an accepted
-// reanimate stands nothing
-TEST_CASE("An accepted reanimate stands a dead NPC at its host's live sample "
-          "without a dead sample first; a live sample with neither stands "
-          "nothing",
-          "[ActorDeath][espm]")
-{
-  auto& p = GetPartOne();
-  p.worldState.npcEnabled = true;
-  constexpr uint32_t kForestCell = 0x9810;
-  auto& host = Arrive(p, 0, kHost);
-  Arrive(p, 1, kOther);
-  auto& actor = Standing(p, kPredator);
-  actor.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
-  Host(p, 0, kForestCell);
-  REQUIRE(p.worldState.HostOf(actor) == &host);
-  actor.Kill(nullptr);
-  REQUIRE(actor.IsDead());
-  const auto now = std::chrono::steady_clock::now();
-  actor.RecordDeathAt(
-    now - std::chrono::milliseconds(MpActor::kPendingDeathMs + 1000));
-
-  // no dead sample, no reanimate: the live sample stands nothing
-  State(p, 0, kPredator, 1.f);
-  REQUIRE(actor.IsDead());
-
-  // the reanimate hit the server accepted a moment ago, still no dead
-  // sample: the live sample stands the body (the cast's rule)
-  actor.NoteReanimateAccepted(now);
-  State(p, 0, kPredator, 1.f);
-  REQUIRE_FALSE(actor.IsDead());
-}
-
-// numidium's review of round six, item 3: under ADR-050's order the engine's
-// death comes first and the host's zero sample can reach a record still alive
-// (floored, no death yet); that zero is the host's stamp too, so a later
-// stand-up with no claimed reanimate hit (a script's Resurrect, the console)
-// stands the body as it did before round six
-TEST_CASE("The host's zero sample on a still-alive record is its dead-sample "
-          "stamp, so a later stand-up with no claimed hit stands the body",
-          "[ActorDeath][espm]")
-{
-  auto& p = GetPartOne();
-  p.worldState.npcEnabled = true;
-  constexpr uint32_t kForestCell = 0x9810;
-  auto& host = Arrive(p, 0, kHost);
-  Arrive(p, 1, kOther);
-  auto& actor = Standing(p, kPredator);
-  actor.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
-  Host(p, 0, kForestCell);
-  REQUIRE(p.worldState.HostOf(actor) == &host);
-  // the engine's death first: the host's zero on the alive record
-  State(p, 0, kPredator, 0.f);
-  // then the server's word, past the grace
-  actor.Kill(nullptr);
-  REQUIRE(actor.IsDead());
-  actor.RecordDeathAt(
-    std::chrono::steady_clock::now() -
-    std::chrono::milliseconds(MpActor::kPendingDeathMs + 1000));
-  // the stand-up with no claimed hit: the host's live sample stands the body
-  State(p, 0, kPredator, 1.f);
-  REQUIRE_FALSE(actor.IsDead());
-}
-
-// numidium's review of round six, item 4: a clean quit sends no Release flip
-// and the same id may host again after a reconnect, so the stamps of the
-// actors a player hosted clear at its disconnect
-TEST_CASE("A host that quit cleanly and hosts again under the same id must "
-          "sample the body dead again before a live sample stands it",
-          "[ActorDeath][espm]")
-{
-  auto& p = GetPartOne();
-  p.worldState.npcEnabled = true;
-  constexpr uint32_t kForestCell = 0x9810;
-  auto& host = Arrive(p, 0, kHost);
-  Arrive(p, 1, kOther);
-  auto& actor = Standing(p, kPredator);
-  actor.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
-  Host(p, 0, kForestCell);
-  REQUIRE(p.worldState.HostOf(actor) == &host);
-  actor.Kill(nullptr);
-  REQUIRE(actor.IsDead());
-  actor.RecordDeathAt(
-    std::chrono::steady_clock::now() -
-    std::chrono::milliseconds(MpActor::kPendingDeathMs + 1000));
-  // the host samples it dead: its stamp
-  State(p, 0, kPredator, 0.f);
-  REQUIRE(actor.IsDead());
-  // the clean quit and the same id back, hosting again
-  Leave(p, 0, kHost);
-  auto& again = Arrive(p, 0, kHost);
-  Host(p, 0, kForestCell);
-  REQUIRE(p.worldState.HostOf(actor) == &again);
-  // its first live sample stands nothing: the stamp cleared at the quit
-  State(p, 0, kPredator, 1.f);
-  REQUIRE(actor.IsDead());
-  // dead then live: the body stands
-  State(p, 0, kPredator, 0.f);
-  REQUIRE(actor.IsDead());
-  State(p, 0, kPredator, 1.f);
   REQUIRE_FALSE(actor.IsDead());
 }
 

@@ -905,7 +905,9 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
     const bool reanimated = reanimatedAgo &&
       reanimatedAgo->count() <=
         static_cast<int64_t>(MpActor::kReanimateWindowMs);
-    if (!actor->IsPlacedDead() && !reanimated && !actor->HostSampledDead()) {
+    if (!actor->IsPlacedDead() && !reanimated &&
+        !actor->HostSampledDeadBy(myActor->GetFormId(),
+                                  myActor->LoginGeneration(), now)) {
       // thuum docs/verbs/npc-fate.md (playtest 40's F9, and
       // x-npc-death-reentry v4's run 20261103-100946): a host's engine that
       // has not seen the death loads the body alive (a corpse's loading frame
@@ -915,10 +917,10 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
       // sample, 171 s after its death"). A live sample stands a body only
       // after ITS HOST has sampled it dead once (the engine's own respawn or a
       // reanimation follows a corpse), or within a reanimate's window; the
-      // stamp is the host's (cleared at every change of host,
-      // MpActor::NoteHoster), not the death's, so a death stamped in this
-      // process is guarded the same. Said once in ten seconds per body, at
-      // info: the lab reads it
+      // stamp names its WITNESS (the host's id and login generation) and its
+      // time (MpActor::HostSampledDeadBy), so a relaunch, a reconnect or
+      // another host is a new witness and a bleedout's old zero is not a
+      // death's. Said once in ten seconds per body, at info: the lab reads it
       static std::unordered_map<uint32_t,
                                 std::chrono::steady_clock::time_point>
         unstampedLines;
@@ -974,7 +976,8 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
     // stamp too, so a later stand-up with no claimed hit (a script's
     // Resurrect, the console) is not refused (numidium's review of round
     // six, item 3)
-    actor->NoteHostSampledDead();
+    actor->NoteHostSampledDead(myActor->GetFormId(),
+                               myActor->LoginGeneration(), now);
   }
   facts.alive = !actor->IsDead() && !actor->IsRespawning();
   facts.one_point = onePoint;
@@ -4121,6 +4124,13 @@ void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
            fmt::format("{:x} simulates it, not the reporter", simulator));
     return;
   }
+  // the host's reliable report of the death is its dead-sample stamp too,
+  // already dead here or not (the hosted state's zero is sent once,
+  // unreliable, then suppressed as unchanged: numidium's review of round
+  // seven, item 4b)
+  actor->NoteHostSampledDead(reporter->GetFormId(),
+                             reporter->LoginGeneration(),
+                             std::chrono::steady_clock::now());
   if (actor->IsDead()) {
     // the server's own kill reached the host first, or a second report:
     // nothing to do and no warning, the race is the expected one

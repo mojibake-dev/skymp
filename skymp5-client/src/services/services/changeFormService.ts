@@ -106,7 +106,7 @@ export const fnv1a32Hex = (hex: string): number => {
 };
 
 // SerializeChangeForm's answer as the message carries it
-export type ChangeFormRecord = { formType: number; flags: number; version: number; bodyHex: string; fnv1a: number; remap: ChangeFormRemapRow[] };
+export type ChangeFormRecord = { formType: number; flags: number; version: number; bodyHex: string; fnv1a: number; remap: ChangeFormRemapRow[]; remapTruncated: boolean; censusDropped: number };
 // ApplyChangeForm's answer: the three the service reads, the rest of the
 // JSON kept as text for the lab line
 export type ChangeFormApplyResult = { applied: boolean; reason: string; fnvPatched: number; detail: string };
@@ -115,7 +115,9 @@ const asNumber = (v: unknown): number | undefined => (typeof v === "number" && N
 
 // the serialize JSON into the record: the u32 flags and hash read back
 // unsigned, the census rows' three numbers (a fourth key, formType, is the
-// native's diagnostic); undefined for an answer without the record's keys
+// native's diagnostic), the two completeness flags (remapTruncated: the
+// native's row cap; census.dropped: id writes past its census cap);
+// undefined for an answer without the record's keys
 const parseRecord = (raw: string): ChangeFormRecord | undefined => {
     const o = JSON.parse(raw) as Record<string, unknown> | null;
     if (!o || typeof o !== "object") {
@@ -142,7 +144,9 @@ const parseRecord = (raw: string): ChangeFormRecord | undefined => {
             }
         }
     }
-    return { formType, flags: flags >>> 0, version, bodyHex, fnv1a: fnv1a >>> 0, remap: rows };
+    const census = (o["census"] && typeof o["census"] === "object" ? o["census"] : {}) as Record<string, unknown>;
+    const censusDropped = asNumber(census["dropped"]);
+    return { formType, flags: flags >>> 0, version, bodyHex, fnv1a: fnv1a >>> 0, remap: rows, remapTruncated: o["remapTruncated"] === true, censusDropped: censusDropped === undefined ? 0 : censusDropped };
 };
 
 const parseApplyResult = (raw: string): ChangeFormApplyResult | undefined => {
@@ -223,6 +227,15 @@ export class ChangeFormService extends ClientListener {
         }
         if (!rec) {
             logLab("verb:npc-fate", `changeform ${hex} not serialized: the native's answer has not the record's keys`);
+            return;
+        }
+        // an incomplete remap list (the native's 256-row cap, or id writes
+        // past its census cap) means a seat-local id the receiver cannot
+        // remap: the record would land with a foreign id or be refused
+        // (E_CHANGEFORM_REMAP), so it does not travel (the native layer's
+        // review, note 7)
+        if (rec.remapTruncated || rec.censusDropped > 0) {
+            logLab("verb:npc-fate", `changeform ${hex} not sent: the remap list is incomplete (truncated ${rec.remapTruncated}, census dropped ${rec.censusDropped} id writes); a record with an unmapped seat-local id never travels`);
             return;
         }
         const acked = this.acked.get(remoteId);

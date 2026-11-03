@@ -2,6 +2,8 @@
 #include "ActorValueRecord.h"
 #include "AnimationData.h"
 #include "Appearance.h"
+#include "ChangeFormApplyMessage.h"
+#include "ChangeFormRecord.h"
 #include "Equipment.h"
 #include "Favorite.h"
 #include "GetBaseActorValues.h"
@@ -650,6 +652,19 @@ public:
   uint32_t GetHostedGazeSlot() const;
   uint32_t GetHostedEmotionType() const;
   uint32_t GetHostedEmotionValue() const;
+
+  // thuum docs/verbs/change-form.md (ADR-065 system 1): the latest change
+  // form the actor's owner reported, kept on its change form (persisted,
+  // rule 6; none until a report); the apply built from it (false without a
+  // record), and its trip to one listening game as ChangeFormApply, the
+  // sender's hex and rows untranslated (the receiver re-encodes). Served
+  // after the create word (PartOne's onSubscribe), at a cell's load
+  // (PartOne::OnCellLoaded) and at once to a listener present when the
+  // record arrives (ActionListener::OnChangeForm)
+  void SetChangeFormRecord(std::optional<ChangeFormRecord> record);
+  std::optional<ChangeFormRecord> GetChangeFormRecord() const;
+  bool BuildChangeFormApply(ChangeFormApplyMessage& out) const;
+  void SendChangeFormRecordTo(MpActor& listener);
 
 private:
   std::set<MpObjectReference*> occupiedContainers;

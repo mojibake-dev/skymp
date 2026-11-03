@@ -172,6 +172,18 @@ public:
   void RelayActivationToHost(MpActor& player, MpObjectReference& target);
   bool IsScriptedWorldObject(const MpObjectReference& target);
 
+  // thuum docs/verbs/change-form.md (ADR-065 system 1): an actor's change
+  // form as the owner's engine serialized it. The wire validated the shape
+  // (the header against the body, the hash, the remap rows); here the owner
+  // and the epoch are judged against the cells table (the sender hosts the
+  // actor's cell at the report's epoch), the record is kept on the actor
+  // (persisted), its hash acked to the sender (ChangeFormAck) and the record
+  // served at once to every other game listening to the actor
+  // (ChangeFormApply); every refusal logged once a minute per sender and
+  // form by its code (E_CHANGEFORM_RANGE, _SIZE, _OWNER, _EPOCH)
+  virtual void OnChangeForm(const RawMessageData& rawMsgData,
+                            const ChangeFormMessage& msg);
+
   // thuum docs/verbs/cell-host.md: a game's cell loaded or left its loaded
   // set; the server's election follows (wire-rules cells)
   virtual void OnCellLoaded(const RawMessageData& rawMsgData,

@@ -3,6 +3,7 @@
 #include "ActorValueRecord.h"
 #include "ActorValues.h"
 #include "Appearance.h"
+#include "ChangeFormRecord.h"
 #include "DynamicFields.h"
 #include "Equipment.h"
 #include "Faction.h"
@@ -261,6 +262,13 @@ public:
   };
   std::optional<Lock> lock;
 
+  // thuum docs/verbs/change-form.md (ADR-065 system 1): the latest change
+  // form the actor's owner reported, as the engine packed it, with its hash,
+  // the sender's remap rows, the epoch, the sender and the time
+  // (ChangeFormRecord.h); absent in older records and on actors nobody
+  // reported, read as none
+  std::optional<ChangeFormRecord> changeFormRecord;
+
   // Please update 'ActorTest.cpp' when adding new Actor-related rows
 
   DynamicFields dynamicFields;
@@ -290,7 +298,7 @@ public:
       fateLevel, fateDiedAt, lastAnimation, setNodeTextureSet, setNodeScale,
       displayName, mapMarkers, ingredientEffects, favorites, raceMenuPreset,
       actorValueRecord, staffRank, runningEffects, shoutRecord, playerGlobals,
-      questStages, placedBySpell, lock, unresolved);
+      questStages, placedBySpell, lock, changeFormRecord, unresolved);
   }
 
   // The record boundary (thuum docs/DECISIONS.md ADR-043; the map

@@ -360,6 +360,41 @@ void MpActor::SetJudgedPercentages(std::optional<float> health,
   SetLastAttributesPercentagesUpdate(std::chrono::steady_clock::now());
 }
 
+void MpActor::SetChangeFormRecord(std::optional<ChangeFormRecord> record)
+{
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    changeForm.changeFormRecord = std::move(record);
+  });
+}
+
+std::optional<ChangeFormRecord> MpActor::GetChangeFormRecord() const
+{
+  return ChangeForm().changeFormRecord;
+}
+
+bool MpActor::BuildChangeFormApply(ChangeFormApplyMessage& out) const
+{
+  const auto& record = ChangeForm().changeFormRecord;
+  if (!record) {
+    return false;
+  }
+  out.formId = GetFormId();
+  out.formType = record->formType;
+  out.flags = record->flags;
+  out.version = record->version;
+  out.body = record->bodyHex;
+  out.remap = record->remap;
+  return true;
+}
+
+void MpActor::SendChangeFormRecordTo(MpActor& listener)
+{
+  ChangeFormApplyMessage apply;
+  if (BuildChangeFormApply(apply)) {
+    listener.SendToUser(apply, true);
+  }
+}
+
 void MpActor::SetHostedState(uint32_t combatTarget, uint32_t package)
 {
   pImpl->hostedCombatTarget = combatTarget;

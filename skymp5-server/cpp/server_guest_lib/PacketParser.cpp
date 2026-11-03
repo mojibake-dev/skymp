@@ -303,6 +303,12 @@ void PacketParser::TransformPacketIntoAction(Networking::UserId userId,
         actionListener.OnObjectAnimation(rawMsgData, *message);
         return;
       }
+      case MsgType::ChangeForm: {
+        auto message =
+          reinterpret_cast<ChangeFormMessage*>(result->message.get());
+        actionListener.OnChangeForm(rawMsgData, *message);
+        return;
+      }
       default: {
         spdlog::error("PacketParser.cpp doesn't implement MsgType {}",
                       static_cast<int64_t>(result->msgType));

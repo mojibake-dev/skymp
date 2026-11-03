@@ -1,0 +1,26 @@
+# difftest change-form (ADR-065 system 1, thuum docs/verbs/change-form.md):
+# c1, hosting nothing, reports at 2 s a well-formed ACHR record (the header
+# byte type 1 and size code 0, the version 0x4e, length1 4, one kind-0 id
+# remapped) for Sven 0x13480 (0x13480 = 78976), an actor the server never holds
+# at the spawn: the wire takes the shape and the core refuses it by name
+# (E_CHANGEFORM_RANGE, "the server holds no such actor") and sends nothing.
+# At 2.2 s the same record with a wrong hash: the edge refuses it
+# (E_CHANGEFORM_HASH, reason 210) before the core sees it. The legacy server
+# has no such message and drops both. The record's keeping, its ack and its
+# serve are T0's (unit/ChangeFormTest) and the lab's (the fake clients host
+# no actor's cell). c2 steps aside at 4 s so it outlives c1, as in every
+# session.
+id: change-form
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 2000, send: {t: 72, epoch: 1, formId: 78976, formType: 1, flags: 67109927, version: 78, body: "014e04000000057f", fnv1a: 2318855054, remap: [{offset: 4, formId: 33598413, index: 5}]}, reliable: true}
+  - {client: c1, at_ms: 2200, send: {t: 72, epoch: 1, formId: 78976, formType: 1, flags: 67109927, version: 78, body: "014e04000000057f", fnv1a: 3735928559, remap: []}, reliable: true}
+  - {client: c2, at_ms: 4000, move: {dx: 1, dy: 0}}
+divergences:
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

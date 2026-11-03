@@ -40,6 +40,29 @@ pub enum Reject {
     /// A field outside its legal range (a calendar field, a negative rate).
     #[error("E_VAL_RANGE")]
     Range,
+    /// A change form names a form id of 0 or a player's (0xff000000 and up),
+    /// or a save-type index past the header byte's six bits (thuum
+    /// docs/verbs/change-form.md).
+    #[error("E_CHANGEFORM_RANGE")]
+    ChangeFormRange,
+    /// A change form's header disagrees with its body: a character that is
+    /// not lowercase hex, a size code the pack never writes, the type byte
+    /// against `formType`, a version other than 0x4E, the lengths against the
+    /// body's size.
+    #[error("E_CHANGEFORM_HEADER")]
+    ChangeFormHeader,
+    /// A change form's FNV-1a 32 over the body differs from `fnv1a`.
+    #[error("E_CHANGEFORM_HASH")]
+    ChangeFormHash,
+    /// A change form's remap row lies outside the body's data, does not
+    /// decode to kind 0 with its own index, names a form no row may remap
+    /// (0, a load-index-00 form, a created one), or repeats an offset.
+    #[error("E_CHANGEFORM_REMAP")]
+    ChangeFormRemap,
+    /// A change form's body is too short for any header, or a collection
+    /// stands past its cap.
+    #[error("E_CHANGEFORM_SIZE")]
+    ChangeFormSize,
 }
 
 /// World bounds in engine units. Tamriel's worldspace fits comfortably; a
@@ -194,6 +217,13 @@ pub struct ClientGuard {
     /// events, a plate's press a wall's swing and reset; a burst of 32 then 8
     /// a second (UNMEASURED).
     pub object_animation_budget: TokenBucket,
+    /// Budget for a host's change-form reports (ChangeForm, thuum
+    /// docs/verbs/change-form.md, ADR-065): one per changed actor at the
+    /// frame's end, only when the body's hash moved; a grant into a village
+    /// marks its residents at once. UNMEASURED: 32 at once, 8 a second,
+    /// until a lab run reads a host's rate; the transport's byte budget
+    /// bounds the bytes.
+    pub change_form_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -237,6 +267,7 @@ impl Default for ClientGuard {
             perk_pick_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             word_wall_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
             object_animation_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 8, last_refill_ms: 0 },
+            change_form_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 8, last_refill_ms: 0 },
         }
     }
 }
@@ -890,6 +921,213 @@ fn check_favorites(m: &skymp::Favorites) -> Result<(), Reject> {
     Ok(())
 }
 
+/// The form version byte every record on 1.6.1170 carries (the constant
+/// 35740 writes; docs/research/adr065-serialize-on-demand-2026-11-03.md).
+pub const CHANGE_FORM_VERSION: u8 = 0x4e;
+
+/// Where the players' and the server-made forms begin: a change form names
+/// a game-file actor alone (thuum docs/verbs/change-form.md).
+const PLAYER_FORMS: u32 = 0xff00_0000;
+
+/// The shortest packed record: a one-byte size code's header with no data.
+const RECORD_MIN_LEN: usize = 4;
+
+/// FNV-1a 32 over `bytes` (offset basis 0x811c9dc5, prime 0x01000193): the
+/// variant the lab's Frida scripts (serialize-on-demand.js, apply-on-demand.js)
+/// and skymp5-client compute over a packed record. The multiplication wraps
+/// by the hash's definition, the one place a wrap is the meaning.
+pub fn fnv1a_32(bytes: &[u8]) -> u32 {
+    bytes
+        .iter()
+        .fold(0x811c_9dc5_u32, |h, b| (h ^ u32::from(*b)).wrapping_mul(0x0100_0193))
+}
+
+/// A packed change-form record's header as the engine's pack (Address
+/// Library 36081) writes it: byte 0 the save-type index in its low six bits
+/// and the size code in its top two, byte 1 the form version, then length1
+/// (the data's size) and length2 (the inflated size when deflated, 0 when
+/// raw), each of the code's width (0 one byte, 1 two, 2 four; the pack never
+/// writes 3). docs/research/adr065-serialize-on-demand-2026-11-03.md Q3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordHeader {
+    /// The save-type index (0 REFR, 1 ACHR).
+    pub form_type: u8,
+    /// The lengths' width code.
+    pub size_code: u8,
+    /// The form version byte.
+    pub version: u8,
+    /// The data's size in bytes.
+    pub length1: u32,
+    /// The inflated size when deflated, 0 for a raw record.
+    pub length2: u32,
+    /// Where the data starts: 2 plus twice the lengths' width.
+    pub header_len: usize,
+}
+
+/// The header at the start of `body`, or `None` for a body too short for
+/// its own header or a size code the pack never writes.
+pub fn read_record_header(body: &[u8]) -> Option<RecordHeader> {
+    let b0 = *body.first()?;
+    let version = *body.get(1)?;
+    let size_code = b0.checked_shr(6).unwrap_or(0);
+    let width: usize = match size_code {
+        0 => 1,
+        1 => 2,
+        2 => 4,
+        _ => return None,
+    };
+    let read_len = |at: usize| -> Option<u32> {
+        let bytes = body.get(at..at.checked_add(width)?)?;
+        let mut value: u32 = 0;
+        for (i, b) in bytes.iter().enumerate() {
+            let shift = u32::try_from(i.checked_mul(8)?).ok()?;
+            value |= u32::from(*b).checked_shl(shift)?;
+        }
+        Some(value)
+    };
+    let length1 = read_len(2)?;
+    let length2 = read_len(2usize.checked_add(width)?)?;
+    let header_len = 2usize.checked_add(width.checked_mul(2)?)?;
+    Some(RecordHeader {
+        form_type: b0 & 0x3f,
+        size_code,
+        version,
+        length1,
+        length2,
+        header_len,
+    })
+}
+
+/// The shape a change-form record and its remap rows must have, shared by
+/// the host's report and the server's apply (thuum docs/verbs/change-form.md),
+/// over the DECODED record bytes ([`decode_record_hex`] runs first):
+/// a game-file actor's id and a six-bit type (`E_CHANGEFORM_RANGE`); a body
+/// long enough for a header and no collection past its cap
+/// (`E_CHANGEFORM_SIZE`); a header whose type byte is `form_type`, whose
+/// version and the message's are 0x4E, whose length1 is the data's size and
+/// whose length2 stays within the body cap (`E_CHANGEFORM_HEADER`); every
+/// remap row inside the data, its three bytes kind 0 (top two bits clear)
+/// decoding to the row's index, its form one a row may remap (never 0,
+/// never load index 00, never a created form) and no offset twice
+/// (`E_CHANGEFORM_REMAP`). Whose record it is and at which epoch is the
+/// server's handler's rule.
+fn check_change_form_shape(
+    form_id: u32,
+    form_type: u8,
+    version: u8,
+    body: &[u8],
+    remap: &[skymp::ChangeFormRemap],
+) -> Result<RecordHeader, Reject> {
+    if form_id == 0 || form_id >= PLAYER_FORMS || form_type > 0x3f {
+        return Err(Reject::ChangeFormRange);
+    }
+    if body.len() < RECORD_MIN_LEN
+        || body.len() > wire_schema::cap::CHANGE_FORM_BODY
+        || remap.len() > wire_schema::cap::CHANGE_FORM_REMAP
+    {
+        return Err(Reject::ChangeFormSize);
+    }
+    let header = read_record_header(body).ok_or(Reject::ChangeFormHeader)?;
+    if header.form_type != form_type
+        || header.version != CHANGE_FORM_VERSION
+        || version != CHANGE_FORM_VERSION
+    {
+        return Err(Reject::ChangeFormHeader);
+    }
+    let data_len = body.len().checked_sub(header.header_len).ok_or(Reject::ChangeFormHeader)?;
+    if usize::try_from(header.length1).ok() != Some(data_len) {
+        return Err(Reject::ChangeFormHeader);
+    }
+    if usize::try_from(header.length2).map_or(true, |n| n > wire_schema::cap::CHANGE_FORM_BODY) {
+        return Err(Reject::ChangeFormHeader);
+    }
+    for (i, row) in remap.iter().enumerate() {
+        let at = usize::try_from(row.offset).map_err(|_| Reject::ChangeFormRemap)?;
+        if at < header.header_len {
+            return Err(Reject::ChangeFormRemap);
+        }
+        let end = at.checked_add(3).ok_or(Reject::ChangeFormRemap)?;
+        let bytes = body.get(at..end).ok_or(Reject::ChangeFormRemap)?;
+        let (d1, d2, d3) = match (bytes.first(), bytes.get(1), bytes.get(2)) {
+            (Some(a), Some(b), Some(c)) => (*a, *b, *c),
+            _ => return Err(Reject::ChangeFormRemap),
+        };
+        if d1 & 0xc0 != 0 {
+            return Err(Reject::ChangeFormRemap);
+        }
+        let high = u32::from(d1 & 0x3f).checked_shl(16).ok_or(Reject::ChangeFormRemap)?;
+        let mid = u32::from(d2).checked_shl(8).ok_or(Reject::ChangeFormRemap)?;
+        if high | mid | u32::from(d3) != row.index {
+            return Err(Reject::ChangeFormRemap);
+        }
+        // the engine encodes a load-index-00 form as kind 1 and a created one
+        // as kind 2 on every seat: no row remaps either (apply-on-demand.js
+        // v2.3's rule)
+        if row.form_id < 0x0100_0000 || row.form_id >= PLAYER_FORMS {
+            return Err(Reject::ChangeFormRemap);
+        }
+        if remap.iter().take(i).any(|earlier| earlier.offset == row.offset) {
+            return Err(Reject::ChangeFormRemap);
+        }
+    }
+    Ok(header)
+}
+
+/// The record bytes behind a message's hex body (docs/verbs/change-form.md):
+/// two lowercase hex characters a byte, the spelling the native's serializer
+/// hands the client. An odd length or a string past the cap is
+/// `E_CHANGEFORM_SIZE`; a character that is not lowercase hex is
+/// `E_CHANGEFORM_HEADER` (such a body holds no record at all).
+pub fn decode_record_hex(hex: &str) -> Result<Vec<u8>, Reject> {
+    if !hex.len().is_multiple_of(2) || hex.len() > wire_schema::cap::CHANGE_FORM_BODY_HEX {
+        return Err(Reject::ChangeFormSize);
+    }
+    let nibble = |c: u8| -> Result<u8, Reject> {
+        match c {
+            b'0'..=b'9' => Ok(c.wrapping_sub(b'0')),
+            b'a'..=b'f' => Ok(c.wrapping_sub(b'a').saturating_add(10)),
+            _ => Err(Reject::ChangeFormHeader),
+        }
+    };
+    let mut out = Vec::with_capacity(hex.len() / 2);
+    for pair in hex.as_bytes().chunks_exact(2) {
+        let (high, low) = match (pair.first(), pair.get(1)) {
+            (Some(h), Some(l)) => (nibble(*h)?, nibble(*l)?),
+            _ => return Err(Reject::ChangeFormSize),
+        };
+        out.push(high.checked_shl(4).unwrap_or(0) | low);
+    }
+    Ok(out)
+}
+
+/// A host's change-form report (docs/verbs/change-form.md): the hex decoded,
+/// the shared shape, then the hash over the record bytes
+/// (`E_CHANGEFORM_HASH`).
+fn check_change_form(m: &skymp::ChangeForm) -> Result<(), Reject> {
+    let body = decode_record_hex(m.body.as_str())?;
+    check_change_form_shape(m.form_id, m.form_type, m.version, &body, &m.remap)?;
+    if fnv1a_32(&body) != m.fnv1a {
+        return Err(Reject::ChangeFormHash);
+    }
+    Ok(())
+}
+
+/// The server's apply (docs/verbs/change-form.md): the hex decoded and the
+/// shared shape; no hash travels. The transport refuses it from a client by
+/// direction.
+fn check_change_form_apply(m: &skymp::ChangeFormApply) -> Result<(), Reject> {
+    let body = decode_record_hex(m.body.as_str())?;
+    check_change_form_shape(m.form_id, m.form_type, m.version, &body, &m.remap).map(|_| ())
+}
+
+/// The server's receipt (docs/verbs/change-form.md): a form, never 0.
+fn check_change_form_ack(m: &skymp::ChangeFormAck) -> Result<(), Reject> {
+    if m.form_id == 0 {
+        return Err(Reject::ChangeFormRange);
+    }
+    Ok(())
+}
+
 /// Validate one inbound message from a client against its guard state: the
 /// message's shape ([`validate_server`]'s rules) and then what only a
 /// server's view of a client adds, replay order and rate budgets.
@@ -963,6 +1201,7 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::PerkPick(_) => take(&mut guard.perk_pick_budget, now_ms),
         Message::WordWall(_) => take(&mut guard.word_wall_budget, now_ms),
         Message::ObjectAnimation(_) => take(&mut guard.object_animation_budget, now_ms),
+        Message::ChangeForm(_) => take(&mut guard.change_form_budget, now_ms),
         _ => Ok(()),
     }
 }
@@ -1148,6 +1387,9 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::WordWall(m) => check_word_wall(m),
         Message::RelayedActivation(m) => check_relayed_activation(m),
         Message::ObjectAnimation(m) => check_object_animation(m),
+        Message::ChangeForm(m) => check_change_form(m),
+        Message::ChangeFormAck(m) => check_change_form_ack(m),
+        Message::ChangeFormApply(m) => check_change_form_apply(m),
         Message::CreateActor(m) => check_create_actor(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
@@ -2851,5 +3093,289 @@ mod race_permit_tests {
         assert_eq!(validate_server(&permit(true, Some(&[A, A]), Some(&[]))), Err(Reject::Range));
         assert_eq!(validate_server(&permit(true, Some(&[A]), Some(&[B]))), Err(Reject::Range));
         assert_eq!(validate_server(&permit(true, Some(&[A, B]), Some(&[A, A]))), Err(Reject::Range));
+    }
+}
+
+// thuum docs/verbs/change-form.md (ADR-065 system 1): the host's change form
+#[cfg(test)]
+mod change_form_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use wire_schema::{skymp, Message};
+
+    // thuum docs/verbs/change-form.md (ADR-065 system 1): a host's change
+    // form is a packed record whose header must agree with its body, whose
+    // hash must be the body's, and whose remap rows must decode to what
+    // they claim; whose record it is and at which epoch is the server's
+
+    /// A packed record of `form_type` around `data`: the pack's one-byte
+    /// lengths under 0x100, two-byte ones under 0x10000 (35522's rule).
+    fn record(form_type: u8, data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        if data.len() < 0x100 {
+            out.push(form_type);
+            out.push(CHANGE_FORM_VERSION);
+            out.push(u8::try_from(data.len()).unwrap_or(0));
+            out.push(0);
+        } else {
+            out.push(form_type | 0x40);
+            out.push(CHANGE_FORM_VERSION);
+            let len = u16::try_from(data.len()).unwrap_or(0).to_le_bytes();
+            out.extend_from_slice(&len);
+            out.extend_from_slice(&[0, 0]);
+        }
+        out.extend_from_slice(data);
+        out
+    }
+
+    /// The record's hex as the native spells it: two lowercase digits a byte.
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn change_form(form_id: u32, form_type: u8, body: Vec<u8>, remap: &[(u32, u32, u32)]) -> Message {
+        let fnv1a = fnv1a_32(&body);
+        change_form_hex(form_id, form_type, hex(&body), fnv1a, remap)
+    }
+
+    fn change_form_hex(form_id: u32, form_type: u8, body: String, fnv1a: u32, remap: &[(u32, u32, u32)]) -> Message {
+        Message::ChangeForm(skymp::ChangeForm {
+            epoch: 1,
+            form_id,
+            form_type,
+            flags: 0x0400_0427,
+            version: CHANGE_FORM_VERSION,
+            body: body.try_into().unwrap_or_default(),
+            fnv1a,
+            remap: remap
+                .iter()
+                .map(|(offset, form_id, index)| skymp::ChangeFormRemap { offset: *offset, form_id: *form_id, index: *index })
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap_or_default(),
+            ..Default::default()
+        })
+    }
+
+    fn with_fnv(m: Message, fnv1a: u32) -> Message {
+        match m {
+            Message::ChangeForm(mut c) => {
+                c.fnv1a = fnv1a;
+                Message::ChangeForm(c)
+            }
+            other => other,
+        }
+    }
+
+    fn with_version(m: Message, version: u8) -> Message {
+        match m {
+            Message::ChangeForm(mut c) => {
+                c.version = version;
+                Message::ChangeForm(c)
+            }
+            other => other,
+        }
+    }
+
+    // the lab's own REFR record (run 20261103-131511: the Sleeping Giant's
+    // door 0xe3a7a at `lock 50`), 40 bytes, FNV-1a 0x4ebbb261 as the Frida
+    // script read it
+    const LAB_REFR_RECORD: [u8; 40] = [
+        0x00, 0x4e, 0x24, 0x00, 0x08, 0x32, 0x4e, 0x3a, 0x7a, 0x00, 0x2a, 0x32, 0x01, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x05, 0x00, 0x43, 0x6c, 0x6f, 0x73,
+        0x65, 0x00, 0x2a, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
+
+    #[test]
+    fn the_labs_own_record_reads_and_hashes_as_the_frida_script_read_it() {
+        let header = read_record_header(&LAB_REFR_RECORD);
+        assert_eq!(
+            header,
+            Some(RecordHeader { form_type: 0, size_code: 0, version: 0x4e, length1: 36, length2: 0, header_len: 4 })
+        );
+        assert_eq!(fnv1a_32(&LAB_REFR_RECORD), 0x4ebb_b261);
+        assert_eq!(validate_server(&change_form(0xe3a7a, 0, LAB_REFR_RECORD.to_vec(), &[])), Ok(()));
+        assert_eq!(validate_server(&change_form(0xe3a7a, 1, LAB_REFR_RECORD.to_vec(), &[])), Err(Reject::ChangeFormHeader));
+    }
+
+    #[test]
+    fn a_change_form_names_a_game_file_actor_and_a_six_bit_type() {
+        let body = record(1, &[0x00, 0x00, 0x05, 0x7f]);
+        assert_eq!(validate_server(&change_form(0x13480, 1, body.clone(), &[])), Ok(()));
+        assert_eq!(validate_server(&change_form(0, 1, body.clone(), &[])), Err(Reject::ChangeFormRange));
+        assert_eq!(validate_server(&change_form(0xff00_0000, 1, body.clone(), &[])), Err(Reject::ChangeFormRange));
+        assert_eq!(validate_server(&change_form(0x13480, 0x40, body, &[])), Err(Reject::ChangeFormRange));
+    }
+
+    #[test]
+    fn a_change_forms_body_holds_at_least_a_header() {
+        assert_eq!(validate_server(&change_form(0x13480, 1, Vec::new(), &[])), Err(Reject::ChangeFormSize));
+        assert_eq!(validate_server(&change_form(0x13480, 1, vec![0x01, 0x4e, 0x00], &[])), Err(Reject::ChangeFormSize));
+        // the shortest record: a header and no data
+        assert_eq!(validate_server(&change_form(0x13480, 1, record(1, &[]), &[])), Ok(()));
+    }
+
+    #[test]
+    fn a_change_forms_body_is_lowercase_hex_of_even_length() {
+        let body = record(1, &[0x00, 0x00, 0x05, 0x7f]);
+        let fnv1a = fnv1a_32(&body);
+        let good = hex(&body);
+        assert_eq!(validate_server(&change_form_hex(0x13480, 1, good.clone(), fnv1a, &[])), Ok(()));
+        // the native's hex is lowercase; the record decodes to the same bytes
+        // either way, but one spelling is the contract
+        assert_eq!(validate_server(&change_form_hex(0x13480, 1, good.to_uppercase(), fnv1a, &[])), Err(Reject::ChangeFormHeader));
+        // a character that is not hex at all, a sign from_str_radix would take
+        let mut bad = good.clone();
+        bad.replace_range(4..5, "g");
+        assert_eq!(validate_server(&change_form_hex(0x13480, 1, bad, fnv1a, &[])), Err(Reject::ChangeFormHeader));
+        let mut signed = good.clone();
+        signed.replace_range(4..5, "+");
+        assert_eq!(validate_server(&change_form_hex(0x13480, 1, signed, fnv1a, &[])), Err(Reject::ChangeFormHeader));
+        // an odd length holds no whole byte
+        let mut odd = good.clone();
+        odd.pop();
+        assert_eq!(validate_server(&change_form_hex(0x13480, 1, odd, fnv1a, &[])), Err(Reject::ChangeFormSize));
+        // the decoded bytes are what the header, the hash and the rows see
+        assert_eq!(decode_record_hex(&good), Ok(body));
+        assert_eq!(decode_record_hex(""), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn a_change_forms_header_agrees_with_its_body() {
+        let data = [0x00, 0x00, 0x05, 0x7f];
+        // the type byte against formType
+        assert_eq!(validate_server(&change_form(0x13480, 1, record(0, &data), &[])), Err(Reject::ChangeFormHeader));
+        // the version byte, and the message's version
+        let mut old = record(1, &data);
+        if let Some(v) = old.get_mut(1) {
+            *v = 0x4d;
+        }
+        assert_eq!(validate_server(&change_form(0x13480, 1, old, &[])), Err(Reject::ChangeFormHeader));
+        assert_eq!(
+            validate_server(&with_version(change_form(0x13480, 1, record(1, &data), &[]), 0x4d)),
+            Err(Reject::ChangeFormHeader)
+        );
+        // length1 off the body by one, either way
+        let mut long = record(1, &data);
+        if let Some(l) = long.get_mut(2) {
+            *l = 5;
+        }
+        assert_eq!(validate_server(&change_form(0x13480, 1, long, &[])), Err(Reject::ChangeFormHeader));
+        let mut short = record(1, &data);
+        if let Some(l) = short.get_mut(2) {
+            *l = 3;
+        }
+        assert_eq!(validate_server(&change_form(0x13480, 1, short, &[])), Err(Reject::ChangeFormHeader));
+        // a size code the pack never writes
+        let mut three = record(1, &data);
+        if let Some(b) = three.get_mut(0) {
+            *b |= 0xc0;
+        }
+        assert_eq!(validate_server(&change_form(0x13480, 1, three, &[])), Err(Reject::ChangeFormHeader));
+        // a header whose lengths run past the body
+        assert_eq!(validate_server(&change_form(0x13480, 1, vec![0x41, 0x4e, 0x10, 0x00], &[])), Err(Reject::ChangeFormHeader));
+        // a two-byte-length record (an actor at kDying is 4,789 bytes)
+        let big = vec![0x7a; 4789];
+        assert_eq!(validate_server(&change_form(0x13480, 1, record(1, &big), &[])), Ok(()));
+        // a deflated record's inflated size is bounded like the body
+        let mut inflated = record(1, &big);
+        if let Some(l) = inflated.get_mut(4..6) {
+            l.copy_from_slice(&[0xff, 0xff]);
+        }
+        assert_eq!(validate_server(&change_form(0x13480, 1, inflated, &[])), Ok(()));
+        let mut bomb = record(1, &big);
+        if let Some(b) = bomb.get_mut(0) {
+            *b = 0x81;
+        }
+        bomb.splice(2..6, [0xb5, 0x12, 0x00, 0x00, 0xff, 0xff, 0xff, 0x7f]);
+        assert_eq!(validate_server(&change_form(0x13480, 1, bomb, &[])), Err(Reject::ChangeFormHeader));
+    }
+
+    #[test]
+    fn a_change_forms_hash_is_the_bodys() {
+        let body = record(1, &[0x00, 0x00, 0x05, 0x7f]);
+        let good = change_form(0x13480, 1, body, &[]);
+        assert_eq!(validate_server(&good), Ok(()));
+        assert_eq!(validate_server(&with_fnv(good, 0xdead_beef)), Err(Reject::ChangeFormHash));
+    }
+
+    #[test]
+    fn a_change_forms_remap_rows_decode_to_what_they_claim() {
+        // the data: a kind-0 id (index 5) at offset 4, a kind-1 id at 7, pad
+        let data = [0x00, 0x00, 0x05, 0x4e, 0x3a, 0x7a, 0x00, 0x00];
+        let body = record(1, &data);
+        const FORM: u32 = 0x0200_abcd;
+        assert_eq!(validate_server(&change_form(0x13480, 1, body.clone(), &[(4, FORM, 5)])), Ok(()));
+        // the index against the bytes
+        assert_eq!(validate_server(&change_form(0x13480, 1, body.clone(), &[(4, FORM, 6)])), Err(Reject::ChangeFormRemap));
+        // kind 1 bytes (a portable id needs no row)
+        assert_eq!(validate_server(&change_form(0x13480, 1, body.clone(), &[(7, FORM, 0x0e3a7a)])), Err(Reject::ChangeFormRemap));
+        // outside the data: in the header, past the end, at the very end
+        assert_eq!(validate_server(&change_form(0x13480, 1, body.clone(), &[(1, FORM, 0x4e0000)])), Err(Reject::ChangeFormRemap));
+        assert_eq!(validate_server(&change_form(0x13480, 1, body.clone(), &[(12, FORM, 0)])), Err(Reject::ChangeFormRemap));
+        assert_eq!(validate_server(&change_form(0x13480, 1, body.clone(), &[(10, FORM, 0)])), Err(Reject::ChangeFormRemap));
+        assert_eq!(validate_server(&change_form(0x13480, 1, body.clone(), &[(u32::MAX, FORM, 0)])), Err(Reject::ChangeFormRemap));
+        // forms no row may remap: 0, a load-index-00 form, a created one
+        assert_eq!(validate_server(&change_form(0x13480, 1, body.clone(), &[(4, 0, 5)])), Err(Reject::ChangeFormRemap));
+        assert_eq!(validate_server(&change_form(0x13480, 1, body.clone(), &[(4, 0x0001_2345, 5)])), Err(Reject::ChangeFormRemap));
+        assert_eq!(validate_server(&change_form(0x13480, 1, body.clone(), &[(4, 0xff00_0001, 5)])), Err(Reject::ChangeFormRemap));
+        // an offset twice
+        assert_eq!(
+            validate_server(&change_form(0x13480, 1, body, &[(4, FORM, 5), (4, 0x0200_abce, 5)])),
+            Err(Reject::ChangeFormRemap)
+        );
+    }
+
+    #[test]
+    fn change_forms_are_rate_limited_per_host() {
+        let body = record(1, &[0x00, 0x00, 0x05, 0x7f]);
+        let report = change_form(0x13480, 1, body, &[]);
+        let mut guard = ClientGuard::default();
+        for _ in 0..32 {
+            assert_eq!(validate(&report, &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&report, &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&report, &mut guard, 2_000), Ok(()));
+    }
+
+    #[test]
+    fn the_servers_ack_and_apply_keep_the_records_shape() {
+        use wire_schema::skymp::{ChangeFormAck, ChangeFormApply, ChangeFormRemap};
+        assert_eq!(validate_server(&Message::ChangeFormAck(ChangeFormAck { form_id: 0x13480, fnv1a: 1, ..Default::default() })), Ok(()));
+        assert_eq!(validate_server(&Message::ChangeFormAck(ChangeFormAck { form_id: 0, fnv1a: 1, ..Default::default() })), Err(Reject::ChangeFormRange));
+        let data = [0x00, 0x00, 0x05, 0x7f];
+        let apply = |form_type: u8, body: Vec<u8>, remap: &[(u32, u32, u32)]| {
+            Message::ChangeFormApply(ChangeFormApply {
+                form_id: 0x13480,
+                form_type,
+                flags: 0x0400_0427,
+                version: CHANGE_FORM_VERSION,
+                body: hex(&body).try_into().unwrap_or_default(),
+                remap: remap
+                    .iter()
+                    .map(|(offset, form_id, index)| ChangeFormRemap { offset: *offset, form_id: *form_id, index: *index })
+                    .collect::<Vec<_>>()
+                    .try_into()
+                    .unwrap_or_default(),
+                ..Default::default()
+            })
+        };
+        assert_eq!(validate_server(&apply(1, record(1, &data), &[(4, 0x0200_abcd, 5)])), Ok(()));
+        assert_eq!(validate_server(&apply(0, record(1, &data), &[])), Err(Reject::ChangeFormHeader));
+        assert_eq!(validate_server(&apply(1, record(1, &data), &[(4, 0x0200_abcd, 6)])), Err(Reject::ChangeFormRemap));
+        assert_eq!(validate_server(&apply(1, Vec::new(), &[])), Err(Reject::ChangeFormSize));
+    }
+
+    proptest! {
+        // any bytes and rows: a verdict, never a panic (the fuzz target's
+        // property in miniature)
+        #[test]
+        fn change_form_checks_never_panic(body in proptest::collection::vec(any::<u8>(), 0..300),
+                                          text in "[0-9a-fA-Fxyz+ ]{0,80}",
+                                          rows in proptest::collection::vec((any::<u32>(), any::<u32>(), any::<u32>()), 0..8),
+                                          form_id in any::<u32>(), form_type in any::<u8>(), fnv1a in any::<u32>()) {
+            let _ = validate_server(&change_form(form_id, form_type, body, &rows));
+            let _ = validate_server(&change_form_hex(form_id, form_type, text, fnv1a, &rows));
+        }
     }
 }

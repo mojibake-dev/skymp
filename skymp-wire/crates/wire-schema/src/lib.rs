@@ -58,7 +58,18 @@ use bounded::{String, Vec};
 /// 30: ObjectAnimation (thuum docs/verbs/traps.md, ADR-059 decision 3,
 /// m4-object-animation): a world object's animation event the cell's host
 /// reported, recorded as its lastAnimation and told to the cell's other games.
-pub const SCHEMA_VERSION: u16 = 30;
+/// 31: TrapHit (m4-trap-hit, thuum docs/WIRE.md). 32: m2-rune-glyph.
+/// 33: ChangeForm, ChangeFormAck and ChangeFormApply (thuum
+/// docs/verbs/change-form.md, ADR-065 system 1, adr065-sys1-wire): an
+/// actor's change form as the owner's engine serialized it, recorded by the
+/// server, acked by its hash and served to every seat that sees the actor.
+/// Their `t` numbers 72 to 74 and wire ids 80 to 82 are positional (the wire
+/// id is `t` plus 8, the variant index; the tests below pin both) and collide
+/// with TrapHit's 72 in the doc of record (thuum docs/WIRE.md, m4-trap-hit):
+/// the branch that lands on parity second renumbers, the ids shifting with
+/// the variant order either way. 33 so that no two builds at 31 disagree on
+/// what a 72 means.
+pub const SCHEMA_VERSION: u16 = 33;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -175,6 +186,19 @@ pub mod cap {
     pub const GAMEMODE_SOURCE: usize = 256 * 1024;
     /// Gamemode properties on one form.
     pub const CUSTOM_PROPS: usize = 256;
+    /// A change-form record's body as the engine packs it (thuum
+    /// docs/verbs/change-form.md, ADR-065): the research note's largest
+    /// actor record is 4,795 bytes (an ACHR at kDying with its process
+    /// block), so 64 KiB holds a record with its inventory many times over
+    /// and still stops a flood at the shape.
+    pub const CHANGE_FORM_BODY: usize = 65536;
+    /// The same body as it travels: two lowercase hex characters a byte, the
+    /// spelling the native's serializer hands the client and the client
+    /// forwards as is (the JSON form and the wire's are one string).
+    pub const CHANGE_FORM_BODY_HEX: usize = 2 * CHANGE_FORM_BODY;
+    /// Remap rows one record carries: the type-0 ids its body names
+    /// (Sven's kDead record had 152 ids, 103 of them portable; D6's census).
+    pub const CHANGE_FORM_REMAP: usize = 256;
 }
 
 /// Newtype over an engine form id. Validated against the server's load order
@@ -500,6 +524,12 @@ pub enum Message {
     RelayedActivation(skymp::RelayedActivation),
     /// 79, MsgType 71 (thuum). See [`skymp::ObjectAnimation`].
     ObjectAnimation(skymp::ObjectAnimation),
+    /// 80, MsgType 72 (thuum). See [`skymp::ChangeForm`].
+    ChangeForm(skymp::ChangeForm),
+    /// 81, MsgType 73 (thuum). See [`skymp::ChangeFormAck`].
+    ChangeFormAck(skymp::ChangeFormAck),
+    /// 82, MsgType 74 (thuum). See [`skymp::ChangeFormApply`].
+    ChangeFormApply(skymp::ChangeFormApply),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -528,7 +558,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 80] = [
+const TABLE: [Row; 83] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -609,14 +639,19 @@ const TABLE: [Row; 80] = [
     row("WordWall", 69, 8, C2S),
     row("RelayedActivation", 70, 16, S2C),
     row("ObjectAnimation", 71, 160, Both),
+    // a record's hex body at its cap (128 KiB) plus every remap row at
+    // five-byte varints and the scalars, with room (docs/verbs/change-form.md)
+    row("ChangeForm", 72, 136 * KIB, C2S),
+    row("ChangeFormAck", 73, 16, S2C),
+    row("ChangeFormApply", 74, 136 * KIB, S2C),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 80;
-const _: () = assert!(TABLE.len() == 80, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 83;
+const _: () = assert!(TABLE.len() == 83, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -721,6 +756,9 @@ impl Message {
             Message::WordWall(_) => 77,
             Message::RelayedActivation(_) => 78,
             Message::ObjectAnimation(_) => 79,
+            Message::ChangeForm(_) => 80,
+            Message::ChangeFormAck(_) => 81,
+            Message::ChangeFormApply(_) => 82,
         }
     }
 
@@ -823,7 +861,10 @@ mod tests {
         assert_eq!(name_of_msg_type(69), Some("WordWall"));
         assert_eq!(name_of_msg_type(70), Some("RelayedActivation"));
         assert_eq!(name_of_msg_type(71), Some("ObjectAnimation"));
-        assert_eq!(name_of_msg_type(72), None);
+        assert_eq!(name_of_msg_type(72), Some("ChangeForm"));
+        assert_eq!(name_of_msg_type(73), Some("ChangeFormAck"));
+        assert_eq!(name_of_msg_type(74), Some("ChangeFormApply"));
+        assert_eq!(name_of_msg_type(75), None);
     }
 
     #[test]
@@ -929,6 +970,38 @@ mod tests {
             Message::ObjectAnimation(skymp::ObjectAnimation {
                 refr: u32::MAX,
                 event: "x".repeat(cap::ANIM_EVENT).try_into().unwrap_or_default(),
+                ..Default::default()
+            }),
+            // a change-form record at its fullest: the body at its cap,
+            // every remap row carried at five-byte varints, every scalar at
+            // its widest (thuum docs/verbs/change-form.md, ADR-065)
+            Message::ChangeForm(skymp::ChangeForm {
+                epoch: u32::MAX,
+                form_id: 0xfeff_ffff,
+                form_type: u8::MAX,
+                flags: u32::MAX,
+                version: u8::MAX,
+                body: "f".repeat(cap::CHANGE_FORM_BODY_HEX).try_into().unwrap_or_default(),
+                fnv1a: u32::MAX,
+                remap: (0..cap::CHANGE_FORM_REMAP)
+                    .map(|_| skymp::ChangeFormRemap { offset: u32::MAX, form_id: u32::MAX, index: u32::MAX })
+                    .collect::<alloc::vec::Vec<_>>()
+                    .try_into()
+                    .unwrap_or_default(),
+                ..Default::default()
+            }),
+            Message::ChangeFormAck(skymp::ChangeFormAck { form_id: u32::MAX, fnv1a: u32::MAX, ..Default::default() }),
+            Message::ChangeFormApply(skymp::ChangeFormApply {
+                form_id: 0xfeff_ffff,
+                form_type: u8::MAX,
+                flags: u32::MAX,
+                version: u8::MAX,
+                body: "f".repeat(cap::CHANGE_FORM_BODY_HEX).try_into().unwrap_or_default(),
+                remap: (0..cap::CHANGE_FORM_REMAP)
+                    .map(|_| skymp::ChangeFormRemap { offset: u32::MAX, form_id: u32::MAX, index: u32::MAX })
+                    .collect::<alloc::vec::Vec<_>>()
+                    .try_into()
+                    .unwrap_or_default(),
                 ..Default::default()
             }),
             Message::PerkState(skymp::PerkState {

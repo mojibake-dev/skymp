@@ -18,6 +18,7 @@
 #include <RE/T/TESQuest.h>
 #include <array>
 #include <chrono>
+#include <cstdio>
 #include <map>
 #include <mutex>
 #include <string>
@@ -304,9 +305,16 @@ void OnNativeEnter(GumInvocationContext* ic)
     case SelfKind::Form:
     case SelfKind::Alias: {
       // a quest's, a global's or an alias's call has no cell and every seat
-      // runs the script: counted, flushed with the census, no per-call event
+      // runs the script: counted, flushed with the census, no per-call event;
+      // the row names the self (the quest, the global, the alias's quest), so
+      // the census says WHICH script calls (x-script-natives v3, run
+      // 20261103-062800: "Quest.Start 40" per 30 s on every seat, the caller
+      // unknown)
       std::lock_guard<std::mutex> lock(g_mutex);
-      Tally(NameOf(native), now);
+      char row[96];
+      std::snprintf(row, sizeof row, "%s on %x", NameOf(native).c_str(),
+                    static_cast<unsigned>(selfId));
+      Tally(std::string(row), now);
       return;
     }
   }

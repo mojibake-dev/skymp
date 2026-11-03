@@ -454,6 +454,9 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
     actor.RemoveFromGridAndUnsubscribeAll();
 
     serverState.actorsMap.Set(userId, &actor);
+    // the login generation: a dead-sample stamp's witness names it, so a
+    // relaunch or a reconnect is a new witness (MpActor::HostSampledDeadBy)
+    actor.BumpLoginGeneration();
 
     // The clock first, so the client knows the time before its own
     // CreateActor loads the save (thuum docs/verbs/time.md)
@@ -813,16 +816,6 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           // every cell it hosts starts its grace (thuum
           // docs/verbs/cell-host.md); the clock passes them on
           this_->pImpl->cells->gone(actor->GetFormId(), SteadyNowMs());
-          // and the dead-sample stamps of the actors it hosted: a clean quit
-          // sends no Release flip, and the same id may host again after a
-          // reconnect, so whoever hosts them next must sample the body dead
-          // first (numidium's review of round six, item 4)
-          for (MpObjectReference* emitter : actor->GetEmitters()) {
-            auto* hosted = dynamic_cast<MpActor*>(emitter);
-            if (hosted && hosted->HosterNoted() == actor->GetFormId()) {
-              hosted->NoteHoster(0);
-            }
-          }
           // and its props fall back to their cells' hosts (thuum
           // docs/verbs/prop-physics.md)
           this_->pImpl->props->props_gone(actor->GetFormId());

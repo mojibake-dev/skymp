@@ -986,11 +986,6 @@ void MpObjectReference::SetPrimitive(const NiPoint3& boundsDiv2,
 // unhosted cell, frozen at its record), sees it hosted by other
 void MpObjectReference::UpdateHoster(uint32_t newHosterId)
 {
-  // a change of host clears the dead-sample stamp (MpActor::NoteHoster):
-  // the new host's game has not seen the body dead yet
-  if (auto* actor = dynamic_cast<MpActor*>(this)) {
-    actor->NoteHoster(newHosterId);
-  }
   // thuum docs/verbs/npc-puppet.md: an actor from the game files travels
   // under its own id, and since the client binds a view to it the property
   // under that id reaches it (2026-10-22; it did not reach the copy of

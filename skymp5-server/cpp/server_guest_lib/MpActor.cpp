@@ -78,8 +78,11 @@ struct MpActor::Impl
   // npc-fate.md finding 65: the last reanimate hit the server accepted on
   // this body, the window a placed corpse's stand-up is read within
   std::chrono::steady_clock::time_point reanimateAcceptedAt{};
-  bool hostSampledDead = false;
-  uint32_t hosterNoted = 0;
+  bool deadStamped = false;
+  uint32_t deadStampHost = 0;
+  uint32_t deadStampLogin = 0;
+  std::chrono::steady_clock::time_point deadStampAt{};
+  uint32_t loginGeneration = 0;
   std::chrono::steady_clock::time_point hostStoodUpAt{};
   // npc-fate.md H-52b: the killer credited at the last Kill (the read)
   std::optional<uint32_t> lastKillerId;
@@ -2572,6 +2575,9 @@ void MpActor::Respawn(bool shouldTeleport)
   // the sweep's, the console's Resurrect, the lab's respawn-ref; the body's
   // stamp and its place in the due set end with it, so the next death
   // counts from its own day
+  // every stand-up ends the death the host's dead-sample stamp belonged to
+  // (numidium's review of round seven, item 3)
+  pImpl->deadStamped = false;
   if (ChangeForm().fateDiedAt.has_value()) {
     EditChangeForm(
       [&](MpChangeForm& changeForm) { changeForm.fateDiedAt.reset(); },
@@ -2700,7 +2706,7 @@ void MpActor::RespawnFated()
   // the server's own stand-up ends the death; the host's dead-sample stamp
   // belongs to that death, not the next one (numidium's review of round
   // six, item 8)
-  pImpl->hostSampledDead = false;
+  pImpl->deadStamped = false;
   spdlog::info("[verb:npc-fate] {:x} stands again at its placement, rolled "
                "anew",
                GetFormId());
@@ -2737,32 +2743,48 @@ std::optional<std::chrono::milliseconds> MpActor::ReanimateAcceptedAgo(
     now - pImpl->reanimateAcceptedAt);
 }
 
-void MpActor::NoteHostSampledDead()
+void MpActor::NoteHostSampledDead(uint32_t hostId, uint32_t hostLogin,
+                                  std::chrono::steady_clock::time_point at)
 {
-  pImpl->hostSampledDead = true;
+  pImpl->deadStamped = true;
+  pImpl->deadStampHost = hostId;
+  pImpl->deadStampLogin = hostLogin;
+  pImpl->deadStampAt = at;
 }
 
-bool MpActor::HostSampledDead() const
+bool MpActor::HostSampledDeadBy(uint32_t hostId, uint32_t hostLogin,
+                                std::chrono::steady_clock::time_point now) const
 {
-  return pImpl->hostSampledDead;
+  if (!pImpl->deadStamped || pImpl->deadStampHost != hostId ||
+      pImpl->deadStampLogin != hostLogin) {
+    return false;
+  }
+  // a stamp counts only as the DEATH's: taken no more than kPendingDeathMs
+  // before the recorded death (a bleedout's zero long before a later death
+  // is not that death's witness); a body dead since before this process has
+  // no recorded death, and any stamp of the witness counts
+  const auto diedAgo = DiedAgo(now);
+  if (!diedAgo) {
+    return true;
+  }
+  const auto deathAt = now - *diedAgo;
+  return pImpl->deadStampAt + std::chrono::milliseconds(kPendingDeathMs) >=
+    deathAt;
 }
 
 void MpActor::ClearHostSampledDead()
 {
-  pImpl->hostSampledDead = false;
+  pImpl->deadStamped = false;
 }
 
-void MpActor::NoteHoster(uint32_t hosterId)
+void MpActor::BumpLoginGeneration()
 {
-  if (hosterId != pImpl->hosterNoted) {
-    pImpl->hosterNoted = hosterId;
-    pImpl->hostSampledDead = false;
-  }
+  ++pImpl->loginGeneration;
 }
 
-uint32_t MpActor::HosterNoted() const
+uint32_t MpActor::LoginGeneration() const
 {
-  return pImpl->hosterNoted;
+  return pImpl->loginGeneration;
 }
 
 void MpActor::NoteHostStoodUp(std::chrono::steady_clock::time_point at)

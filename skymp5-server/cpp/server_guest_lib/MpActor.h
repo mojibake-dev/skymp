@@ -377,15 +377,22 @@ public:
   // first live sample is a race, not a resurrection; a live sample stands
   // such a body only after a dead one from its host (the engine's own
   // respawn or reanimation) or within a reanimate's window
-  void NoteHostSampledDead();
-  bool HostSampledDead() const;
+  // the host's dead-sample stamp names its WITNESS (the host's form id and
+  // its login generation) and its time: a live sample stands a dead body only
+  // when the same game, in the same login, sampled the body dead no more than
+  // kPendingDeathMs before the recorded death (or at any time for a body dead
+  // since before this process), or an accepted reanimate is in its window
+  // (numidium's reviews of rounds six and seven; x-npc-death-reentry v4's
+  // run 20261103-100946: a fresh process's first sample stood Hilde up)
+  void NoteHostSampledDead(uint32_t hostId, uint32_t hostLogin,
+                           std::chrono::steady_clock::time_point at);
+  bool HostSampledDeadBy(uint32_t hostId, uint32_t hostLogin,
+                         std::chrono::steady_clock::time_point now) const;
   void ClearHostSampledDead();
-  // the hoster word's target, noted so a CHANGE of host clears the stamp: a
-  // new host (a relaunched one, a later joiner) must sample the body dead
-  // before any live sample of its stands it (x-npc-death-reentry v4, run
-  // 20261103-100946: a fresh process's first sample stood Hilde up)
-  void NoteHoster(uint32_t hosterId);
-  uint32_t HosterNoted() const;
+  // a player's login generation, bumped at every SetUserActor: the witness's
+  // second half (a relaunch or a reconnect is a new generation)
+  void BumpLoginGeneration();
+  uint32_t LoginGeneration() const;
   // thuum docs/verbs/npc-fate.md (playtest 40's F5, 2026-11-02): when this
   // body last stood again by its host's engine on the server's word
   // (ActionListener::OnHostedActorState's resurrection branch). A reanimated

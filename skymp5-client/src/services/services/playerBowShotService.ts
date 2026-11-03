@@ -116,7 +116,7 @@ export class PlayerBowShotService extends ClientListener {
     // the launch the engine made; the server relays it as ArrowShot and the
     // other games' puppets launch it the same way a figure's arrow flies
     private onHostedLaunch(e: { shooter: number; ammo: number; weapon: number; power: number; originX: number; originY: number; originZ: number; angleX: number; angleZ: number }) {
-        if (!this.controller.lookupListener(HostService).isMineLocal(e.shooter)) {
+        if (!this.controller.lookupListener(HostService).isReportable(e.shooter)) {
             return;
         }
         const remoteId = localIdToRemoteId(e.shooter);

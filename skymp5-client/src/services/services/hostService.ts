@@ -1,12 +1,14 @@
-import { CellAttachDetachEvent, CellFullyLoadedEvent, ObjectReference } from "skyrimPlatform";
+import { Cell, CellAttachDetachEvent, CellFullyLoadedEvent, Game, ObjectReference, TESModPlatform, WorldSpace } from "skyrimPlatform";
 import { MsgType } from "../../messages";
-import { logError, logTrace } from "../../logging";
+import { logError, logLab, logTrace } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
 import { CreateActorMessage } from "../messages/createActorMessage";
 import { HostGrantMessage } from "../messages/hostGrantMessage";
 import { HostReleaseMessage } from "../messages/hostReleaseMessage";
 import { ActorSightingsMessage } from "../messages/actorSightingsMessage";
 import { FormModel } from "../../view/model";
+import { Movement } from "../../sync/movement";
+import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { localIdToRemoteId, remoteIdToLocalId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { RemoteServer } from "./remoteServer";
@@ -53,6 +55,7 @@ export class HostService extends ClientListener {
         // the engine's actors in reach, for the roster (docs/verbs/npc-puppet.md,
         // ActorSightings): an actor the server does not hold is reported to it
         // while this game hosts the cell the actor stands in
+        this.controller.on("update", () => this.checkPlacements());
         this.controller.on("cellAttach", (e) => this.onActorAttach(e));
         this.controller.on("cellDetach", (e) => this.onActorDetach(e));
         this.restore();
@@ -113,11 +116,10 @@ export class HostService extends ClientListener {
                 return;
             }
             // docs/engine/non-owning-seat.md P8: a promoted actor's reports
-            // wait until its copy is placed at the record (remoteServer's
-            // word handler places it on the next update), so the first
-            // report never carries the engine's stale position (065955,
-            // 070357: the day copy at the mill reported 88 ms after the
-            // gate's decision and before its move landed)
+            // wait until its copy STANDS at the record (checkPlacements), so
+            // the first report never carries the engine's stale position
+            // (065955, 070357: the day copy at the mill reported 88 ms after
+            // the gate's decision and before its move landed)
             if (this.pendingPlacement.has(remoteId)) {
                 return;
             }
@@ -179,20 +181,75 @@ export class HostService extends ClientListener {
 
     // Whether this game hosts the cell, by its id (thuum docs/verbs/
     // prop-physics.md: a prop nobody's word names is the cell's host's)
-    // the word named this seat for `remoteId`; its stream holds until placed()
-    holdUntilPlaced(remoteId: number): void {
-        this.pendingPlacement.add(remoteId);
-    }
-
-    placed(remoteId: number): void {
-        this.pendingPlacement.delete(remoteId);
-    }
-
-    private readonly pendingPlacement = new Set<number>();
-
     hostsCell(cellId: number): boolean {
         return cellId !== 0 && this.hosted.has(cellId);
     }
+
+    // docs/engine/non-owning-seat.md P8 and section 3: the word named this
+    // seat for `remoteId`, and its reports hold until the engine's copy
+    // STANDS at the record (the engine's cell the record's and the position
+    // within placedWithinUnits), checked each update; the check asks the move
+    // itself once if nothing else has (the view's gate and the puppet
+    // reconcile also place), and gives up after placementTimeoutMs with a
+    // line naming both positions (a new owner publishes only after its
+    // hand-off completes). A missing form or record releases at once, so no
+    // actor is held for good.
+    holdUntilPlaced(remoteId: number, record: Movement | undefined): void {
+        if (!record) {
+            logTrace(this, `hold for ${remoteId.toString(16)}: no record held, nothing to place at`);
+            return;
+        }
+        this.pendingPlacement.set(remoteId, { since: Date.now(), record, asked: false });
+    }
+
+    // the senders of a report that carries a position (a death, a shot's or a
+    // cast's origin): the word and the placement
+    isReportable(localId: number): boolean {
+        return this.isMineLocal(localId) && !this.pendingPlacement.has(localIdToRemoteId(localId));
+    }
+
+    private checkPlacements(): void {
+        if (this.pendingPlacement.size === 0) {
+            return;
+        }
+        const now = Date.now();
+        this.pendingPlacement.forEach((hold, remoteId) => {
+            const refr = ObjectReference.from(Game.getFormEx(remoteIdToLocalId(remoteId)));
+            if (!refr) {
+                this.pendingPlacement.delete(remoteId);
+                logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: no form here, released`);
+                return;
+            }
+            const r = hold.record;
+            const engineCell = ObjectReferenceEx.getWorldOrCell(refr);
+            const ex = refr.getPositionX(), ey = refr.getPositionY(), ez = refr.getPositionZ();
+            const dist = Math.sqrt((ex - r.pos[0]) ** 2 + (ey - r.pos[1]) ** 2 + (ez - r.pos[2]) ** 2);
+            const engineAt = `(${ex.toFixed(0)}, ${ey.toFixed(0)}, ${ez.toFixed(0)}) in ${engineCell.toString(16)}`;
+            const recordAt = `(${r.pos[0].toFixed(0)}, ${r.pos[1].toFixed(0)}, ${r.pos[2].toFixed(0)}) in ${r.worldOrCell.toString(16)}`;
+            if (engineCell === r.worldOrCell && dist <= HostService.placedWithinUnits) {
+                this.pendingPlacement.delete(remoteId);
+                logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: placed at the record after ${now - hold.since} ms, the engine at ${engineAt}, the record at ${recordAt}; released`);
+                return;
+            }
+            if (!hold.asked) {
+                hold.asked = true;
+                const target = Game.getFormEx(r.worldOrCell);
+                if (target) {
+                    TESModPlatform.moveRefrToPosition(refr, Cell.from(target), WorldSpace.from(target), r.pos[0], r.pos[1], r.pos[2],
+                        r.rot[0] * Math.PI / 180, r.rot[1] * Math.PI / 180, r.rot[2] * Math.PI / 180);
+                }
+                return;
+            }
+            if (now - hold.since >= HostService.placementTimeoutMs) {
+                this.pendingPlacement.delete(remoteId);
+                logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: not placed after ${now - hold.since} ms, the engine at ${engineAt}, the record at ${recordAt}; released on the timeout`);
+            }
+        });
+    }
+
+    private readonly pendingPlacement = new Map<number, { since: number; record: Movement; asked: boolean }>();
+    private static readonly placedWithinUnits = 64;
+    private static readonly placementTimeoutMs = 2000;
 
     private onCellFullyLoaded(e: CellFullyLoadedEvent) {
         const id = e.cell.getFormID();

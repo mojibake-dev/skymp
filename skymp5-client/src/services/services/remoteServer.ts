@@ -681,7 +681,12 @@ export class RemoteServer extends ClientListener {
 
     // TODO: move to a separate module
 
-    if (msg.props && !msg.props.isHostedByOther) {
+    // a promotion inside the create word (this seat simulates the actor from
+    // its first sight of it: a late joiner hosting, a grant at a login): the
+    // same hold as a flip's, until the engine's copy stands at the record
+    if (msg.props && !msg.props.isHostedByOther && !msg.isMe && movement !== undefined && msg.refrId !== undefined &&
+        (msg.baseRecordType === 'NPC_' || (msg.refrId >= 0xff000000 && msg.baseId !== undefined && msg.baseId !== 0x7))) {
+      this.controller.lookupListener(HostService).holdUntilPlaced(msg.refrId, movement);
     }
 
     if (msg.props && msg.props.isRaceMenuOpen && msg.isMe) {
@@ -1106,38 +1111,30 @@ export class RemoteServer extends ClientListener {
 
     // docs/engine/non-owning-seat.md section 3 and P8 (the instrumented runs
     // 065955 and 070357 on the parent): the word's flip to "mine" is a
-    // promotion, and the copy must stand at the record BEFORE this seat's
+    // promotion, and the copy must STAND at the record BEFORE this seat's
     // first report goes out, or the engine's own position (the day copy at
     // the mill) becomes the record and the other side's copy passes the actor
-    // back. So the flip holds the actor's stream (HostService), and the next
-    // update places the copy at the record (the server's keyframe sent ahead
-    // of the word, or the last sample held) and releases it; only a FLIP
-    // places (a re-sent word for an actor this seat already runs would yank
-    // its live copy to a stale model). The flip back demotes on the same tick.
+    // back. So the flip holds the actor's stream (HostService) until its
+    // check reads the engine's copy at the record (the server's keyframe sent
+    // ahead of the word, or the last sample held), asking the move itself if
+    // nothing else has; only a FLIP holds and places (a re-sent word for an
+    // actor this seat already runs would yank its live copy to a stale
+    // model). The reconcile runs on the next update for either flip.
     const npcForm = !!form && typeof form.refrId === 'number' && form.isMyClone !== true && (form.refrId < 0xff000000 || npcCopyOf(form));
     if (npcForm && msg.propName === 'isHostedByOther') {
       const remoteId = form.refrId as number;
       const host = this.controller.lookupListener(HostService);
       const puppets = this.controller.lookupListener(PuppetService);
       if (msgData === false && hostedBefore !== false) {
-        host.holdUntilPlaced(remoteId);
-        const last = form.movement;
+        // the hold ends when the copy stands at the record (HostService's
+        // check each update asks the move and reads the engine), never here
+        host.holdUntilPlaced(remoteId, form.movement);
+      }
+      if ((msgData === false && hostedBefore !== false) || (msgData === true && hostedBefore === false)) {
+        // the reconcile reads the word as it stands when it runs (a flip and
+        // a flip back inside one frame toggle nothing twice)
         once('update', () => {
-          try {
-            const refr = ObjectReference.from(Game.getFormEx(remoteIdToLocalId(remoteId)));
-            if (refr) {
-              puppets.ensureLive(refr, last);
-            }
-          } finally {
-            host.placed(remoteId);
-          }
-        });
-      } else if (msgData === true && hostedBefore === false) {
-        once('update', () => {
-          const refr = ObjectReference.from(Game.getFormEx(remoteIdToLocalId(remoteId)));
-          if (refr) {
-            puppets.ensurePuppet(refr);
-          }
+          puppets.reconcile(remoteIdToLocalId(remoteId));
         });
       }
     }

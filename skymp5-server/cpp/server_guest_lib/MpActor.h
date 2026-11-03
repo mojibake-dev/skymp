@@ -270,7 +270,10 @@ public:
   // server's writes to it (the console's and the natives', R0, no rule) and
   // the whole set with the points left to the player (PerkState)
   bool HasPerk(uint32_t perk) const;
-  bool AddPerkByServer(uint32_t perk);
+  // asPick: the perk is a player's pick the rule accepted, so it spends a
+  // point (the picks counter); the console's, a quest's or a gamemode's add
+  // spends nothing
+  bool AddPerkByServer(uint32_t perk, bool asPick = false);
   bool RemovePerkByServer(uint32_t perk);
   uint16_t PerkPoints() const;
   void SendPerkState();

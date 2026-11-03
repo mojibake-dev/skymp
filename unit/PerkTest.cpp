@@ -1,10 +1,12 @@
 #include "ActionListener.h"
 #include "ActorValuesMessage.h"
 #include "ConsoleCommandMessage.h"
+#include "MpChangeForms.h"
 #include "MsgType.h"
 #include "PerkStateMessage.h"
 #include "TestUtils.hpp"
 #include <catch2/catch_all.hpp>
+#include <simdjson.h>
 
 PartOne& GetPartOne();
 
@@ -333,4 +335,88 @@ TEST_CASE("The console's SetLevel moves the points and sends the state",
   REQUIRE(states.size() == 1);
   REQUIRE(states[0].points == 4);
   Leave(p);
+}
+
+// playtest 41's item 6 (2026-11-02): a perk the console, a quest or a mod
+// granted counted against the points, so a seat set up with AddPerk had no
+// pick at its level-up. The points are a counter now: one a level past the
+// first, less the picks the rule accepted; a server-side add spends nothing.
+TEST_CASE("A perk granted outside a pick spends no point; the pick does",
+          "[Perks][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p, 2, 25.f);
+  auto& picker = p.worldState.GetFormAt<MpActor>(kPicker);
+  REQUIRE(picker.PerkPoints() == 1);
+
+  // the console's or a gamemode's add: held, the point untouched
+  REQUIRE(picker.AddPerkByServer(kArmsman));
+  REQUIRE(picker.HasPerk(kArmsman));
+  REQUIRE(picker.PerkPoints() == 1);
+  REQUIRE(picker.GetActorValueRecord()->perkPicks == 0);
+
+  // the pick of the perk that wants Armsman takes and spends the point
+  p.Messages().clear();
+  Pick(p, kFightingStance);
+  REQUIRE(picker.HasPerk(kFightingStance));
+  REQUIRE(picker.GetActorValueRecord()->perkPicks == 1);
+  REQUIRE(picker.PerkPoints() == 0);
+  auto states = States(p);
+  REQUIRE(states.size() == 1);
+  REQUIRE(states[0].points == 0);
+
+  // no point left: refused, the two perks held stay
+  p.Messages().clear();
+  Pick(p, kArmsman20);
+  REQUIRE_FALSE(picker.HasPerk(kArmsman20));
+  REQUIRE(picker.GetActorValueRecord()->perkPicks == 1);
+  REQUIRE(States(p).size() == 1);
+
+  // the counter rides the record across a load
+  simdjson::dom::parser parser;
+  const std::string dump = MpChangeForm::ToJson(picker.GetChangeForm()).dump();
+  auto element = parser.parse(dump).value();
+  REQUIRE(
+    MpChangeForm::JsonToChangeForm(element).actorValueRecord->perkPicks == 1);
+  Leave(p);
+}
+
+TEST_CASE("A record from before the picks counter reads its picks as the "
+          "perks held, capped at the points its level earned",
+          "[Perks]")
+{
+  MpChangeForm changeForm;
+  changeForm.recType = MpChangeForm::ACHR;
+  ActorValueRecord record;
+  record.level = 5;
+  record.perks = { kArmsman, kFightingStance };
+  record.perkPicks = 7; // written, then erased below as an older save lacks it
+  changeForm.actorValueRecord = record;
+
+  simdjson::dom::parser parser;
+  auto older = MpChangeForm::ToJson(changeForm);
+  REQUIRE(older["actorValueRecord"].erase("perkPicks") == 1);
+  const std::string dump = older.dump();
+  auto element = parser.parse(dump).value();
+  // level 5 earned 4 points; two perks held read as two picks
+  REQUIRE(
+    MpChangeForm::JsonToChangeForm(element).actorValueRecord->perkPicks == 2);
+
+  // more perks than points (a seat set up with AddPerk): the cap, so the
+  // record shows no negative count and no free point either
+  changeForm.actorValueRecord->level = 2;
+  changeForm.actorValueRecord->perks = { kArmsman, kArmsman20,
+                                         kFightingStance };
+  older = MpChangeForm::ToJson(changeForm);
+  REQUIRE(older["actorValueRecord"].erase("perkPicks") == 1);
+  const std::string capped = older.dump();
+  auto cappedElement = parser.parse(capped).value();
+  REQUIRE(MpChangeForm::JsonToChangeForm(cappedElement)
+            .actorValueRecord->perkPicks == 1);
+
+  // a record carrying the counter reads it as written
+  const std::string current = MpChangeForm::ToJson(changeForm).dump();
+  auto currentElement = parser.parse(current).value();
+  REQUIRE(MpChangeForm::JsonToChangeForm(currentElement)
+            .actorValueRecord->perkPicks == 7);
 }

@@ -1884,9 +1884,10 @@ mod ffi {
         /// The judgement of `perk` for a player at `level` holding `perks`,
         /// whose actor values the conditions may read are `avs[i]` at
         /// `values[i]` (a skill's level, a base otherwise).
-        fn pick(self: &PerkTable, level: u16, perks: &[u32], avs: &[u8], values: &[f32], perk: u32) -> PerkVerdict;
+        fn pick(self: &PerkTable, level: u16, perks: &[u32], picks: u16, avs: &[u8], values: &[f32], perk: u32) -> PerkVerdict;
         /// The perk points left: one a level past the first, less the perks held.
-        fn perk_points(level: u16, held: usize) -> u16;
+        /// The perk points left: one a level past the first, less the picks the server granted (not the perks held).
+        fn perk_points(level: u16, picks: u16) -> u16;
         /// The most perks a record holds (the wire's cap on PerkState).
         fn perks_max() -> usize;
         /// One of `perk`'s entry point effects (a PRKE section with a one-float
@@ -3591,8 +3592,8 @@ fn new_perk_table() -> Box<PerkTable> {
     Box::default()
 }
 
-fn perk_points(level: u16, held: usize) -> u16 {
-    perks::points(level, held)
+fn perk_points(level: u16, picks: u16) -> u16 {
+    perks::points(level, picks)
 }
 
 fn perks_max() -> usize {
@@ -3640,13 +3641,14 @@ impl PerkTable {
     #[allow(clippy::too_many_arguments)]
     fn apply_entry_point(&self, entry_point: u8, start: f32, level: u16, perks: &[u32], avs: &[u8], values: &[f32], subject_keywords: &[u32]) -> f32 {
         let pairs: Vec<(u8, f32)> = avs.iter().copied().zip(values.iter().copied()).collect();
-        let record = perks::Record { level, perks, values: &pairs };
+        // the picks play no part in an entry point's number
+        let record = perks::Record { level, perks, picks: 0, values: &pairs };
         perks::apply_entry_point(&self.0, entry_point, start, &record, subject_keywords)
     }
 
-    fn pick(&self, level: u16, held: &[u32], avs: &[u8], values: &[f32], perk: u32) -> PerkVerdict {
+    fn pick(&self, level: u16, held: &[u32], picks: u16, avs: &[u8], values: &[f32], perk: u32) -> PerkVerdict {
         let pairs: Vec<(u8, f32)> = avs.iter().copied().zip(values.iter().copied()).collect();
-        let record = perks::Record { level, perks: held, values: &pairs };
+        let record = perks::Record { level, perks: held, picks, values: &pairs };
         match perks::pick(&self.0, &record, perk) {
             Ok(()) => PerkVerdict { accepted: true, code: String::new(), detail: 0 },
             Err(refusal) => PerkVerdict { accepted: false, code: refusal.code().to_owned(), detail: refusal.detail() },

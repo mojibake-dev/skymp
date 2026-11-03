@@ -16,7 +16,7 @@ import { RemoteServer } from "./remoteServer";
 // one actor's hold: the record to stand at, the word's arrival, the asks made
 // (the gate's move counts as the first), the checks run and the reports
 // deferred past it
-type PendingPlacement = { since: number; record: Movement; asks: number; askedAt: number; checks: number; deferred: Array<() => void>; dead: boolean };
+type PendingPlacement = { since: number; record: Movement; asks: number; askedAt: number; checks: number; deferred: Array<() => void>; dead: boolean; loadedAt: number };
 // deferred reports released by a hold run on the next update, never inline
 // (a release from the tick thread, where natives are refused: numidium's
 // review of r3, item 1)
@@ -233,18 +233,28 @@ export class HostService extends ClientListener {
                 logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: dead at the word, a body is never moved (D78 C); the hold waits for the body to be dead here${live.deferred.length > 0 ? `, ${live.deferred.length} deferred report(s) dropped (the server's word stands)` : ""}`);
                 live.deferred = [];
             } else {
-                this.pendingPlacement.set(remoteId, { since: Date.now(), record, asks: 0, askedAt: 0, checks: 0, deferred: [], dead: true });
+                this.pendingPlacement.set(remoteId, { since: Date.now(), record, asks: 0, askedAt: 0, checks: 0, deferred: [], dead: true, loadedAt: 0 });
                 logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: dead at the word, a body is never moved (D78 C); the reports wait for the body to be dead here`);
             }
             return;
         }
         if (live) {
             // a re-sent word mid-hold refreshes the record and keeps the hold's
-            // deferred reports and its asks (review item 7)
+            // deferred reports and its asks (review item 7); a live word on a
+            // dead hold turns it back into a placing hold (round six's
+            // review, item 6)
             live.record = record;
+            if (live.dead) {
+                live.dead = false;
+                live.since = Date.now();
+                live.asks = 0;
+                live.askedAt = 0;
+                live.checks = 0;
+                logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: the word is live again, the hold places`);
+            }
             return;
         }
-        this.pendingPlacement.set(remoteId, { since: Date.now(), record, asks: 0, askedAt: 0, checks: 0, deferred: [], dead: false });
+        this.pendingPlacement.set(remoteId, { since: Date.now(), record, asks: 0, askedAt: 0, checks: 0, deferred: [], dead: false, loadedAt: 0 });
     }
 
     // a demote (the word names another game) or any other end of the
@@ -345,14 +355,19 @@ export class HostService extends ClientListener {
             return;
         }
         if (hold.dead) {
+            // the bind needs the copy's 3D, so the budget counts from the 3D
+            // load, not the word (round six's review, item 5), under a far cap
             const body = Actor.from(refr);
+            if (hold.loadedAt === 0 && refr.is3DLoaded()) {
+                hold.loadedAt = now;
+            }
             if (body && body.isDead()) {
                 this.pendingPlacement.delete(remoteId);
-                logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: the body is dead here after ${now - hold.since} ms (the bind); released`);
+                logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: the body is dead here after ${now - hold.since} ms; released`);
                 this.runDeferred(remoteId, hold.deferred);
-            } else if (now - hold.since >= HostService.deadBindTimeoutMs) {
+            } else if ((hold.loadedAt !== 0 && now - hold.loadedAt >= HostService.deadBindTimeoutMs) || now - hold.since >= HostService.deadHoldCapMs) {
                 this.pendingPlacement.delete(remoteId);
-                logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: dead at the word but alive here after ${now - hold.since} ms; released (the server's host stamp holds the death)`);
+                logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: dead at the word but alive here after ${now - hold.since} ms${hold.loadedAt !== 0 ? ` (${now - hold.loadedAt} ms since its 3D loaded)` : " (its 3D never loaded)"}; released, the server's rules decide`);
                 this.runDeferred(remoteId, hold.deferred);
             }
             return;
@@ -420,6 +435,8 @@ export class HostService extends ClientListener {
     // a dead word's hold: the bind kill runs within formView's 2 s check once
     // the 3D loads; past this the server's host stamp holds the death anyway
     private static readonly deadBindTimeoutMs = 8000;
+    // a dead hold whose copy never loads 3D is released at this cap
+    private static readonly deadHoldCapMs = 120000;
 
     private onCellFullyLoaded(e: CellFullyLoadedEvent) {
         const id = e.cell.getFormID();

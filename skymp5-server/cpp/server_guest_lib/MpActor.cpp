@@ -2697,6 +2697,10 @@ void MpActor::RespawnFated()
   if (!IsDead()) {
     return;
   }
+  // the server's own stand-up ends the death; the host's dead-sample stamp
+  // belongs to that death, not the next one (numidium's review of round
+  // six, item 8)
+  pImpl->hostSampledDead = false;
   spdlog::info("[verb:npc-fate] {:x} stands again at its placement, rolled "
                "anew",
                GetFormId());
@@ -2754,6 +2758,11 @@ void MpActor::NoteHoster(uint32_t hosterId)
     pImpl->hosterNoted = hosterId;
     pImpl->hostSampledDead = false;
   }
+}
+
+uint32_t MpActor::HosterNoted() const
+{
+  return pImpl->hosterNoted;
 }
 
 void MpActor::NoteHostStoodUp(std::chrono::steady_clock::time_point at)

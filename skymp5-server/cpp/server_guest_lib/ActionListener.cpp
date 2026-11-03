@@ -966,10 +966,14 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
         actor->Respawn(false);
       }
     }
-  } else if (actor->IsDead() && actor->IsFateRespawned() &&
-             msg.health <= onePoint) {
-    // the host has this body dead too (playtest 40's F9): a later live
-    // sample of its may stand it
+  } else if (actor->IsFateRespawned() && msg.health <= onePoint) {
+    // the host has this body down (playtest 40's F9): a later live sample of
+    // its may stand it. The record may still be alive here: under ADR-050's
+    // order the engine's death comes first and the host's zero reaches the
+    // record before the server's word, floored, and that zero is the host's
+    // stamp too, so a later stand-up with no claimed hit (a script's
+    // Resurrect, the console) is not refused (numidium's review of round
+    // six, item 3)
     actor->NoteHostSampledDead();
   }
   facts.alive = !actor->IsDead() && !actor->IsRespawning();

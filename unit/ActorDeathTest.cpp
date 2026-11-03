@@ -229,7 +229,11 @@ TEST_CASE("A new host's first live sample of a dead NPC stands nothing until "
   REQUIRE(p.worldState.HostOf(actor) == &host);
   actor.Kill(nullptr);
   REQUIRE(actor.IsDead());
-  REQUIRE(actor.DiedAgo(std::chrono::steady_clock::now()).has_value());
+  // past the grace (a live sample inside kPendingDeathMs is a sample in
+  // flight, never a resurrection)
+  actor.RecordDeathAt(
+    std::chrono::steady_clock::now() -
+    std::chrono::milliseconds(MpActor::kPendingDeathMs + 1000));
   // the first host samples it dead: its stamp
   State(p, 0, kPredator, 0.f);
   REQUIRE(actor.IsDead());
@@ -292,6 +296,76 @@ TEST_CASE("An accepted reanimate stands a dead NPC at its host's live sample "
   // the reanimate hit the server accepted a moment ago, still no dead
   // sample: the live sample stands the body (the cast's rule)
   actor.NoteReanimateAccepted(now);
+  State(p, 0, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+}
+
+// numidium's review of round six, item 3: under ADR-050's order the engine's
+// death comes first and the host's zero sample can reach a record still alive
+// (floored, no death yet); that zero is the host's stamp too, so a later
+// stand-up with no claimed reanimate hit (a script's Resurrect, the console)
+// stands the body as it did before round six
+TEST_CASE("The host's zero sample on a still-alive record is its dead-sample "
+          "stamp, so a later stand-up with no claimed hit stands the body",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  constexpr uint32_t kForestCell = 0x9810;
+  auto& host = Arrive(p, 0, kHost);
+  Arrive(p, 1, kOther);
+  auto& actor = Standing(p, kPredator);
+  actor.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
+  Host(p, 0, kForestCell);
+  REQUIRE(p.worldState.HostOf(actor) == &host);
+  // the engine's death first: the host's zero on the alive record
+  State(p, 0, kPredator, 0.f);
+  // then the server's word, past the grace
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  actor.RecordDeathAt(
+    std::chrono::steady_clock::now() -
+    std::chrono::milliseconds(MpActor::kPendingDeathMs + 1000));
+  // the stand-up with no claimed hit: the host's live sample stands the body
+  State(p, 0, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+}
+
+// numidium's review of round six, item 4: a clean quit sends no Release flip
+// and the same id may host again after a reconnect, so the stamps of the
+// actors a player hosted clear at its disconnect
+TEST_CASE("A host that quit cleanly and hosts again under the same id must "
+          "sample the body dead again before a live sample stands it",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  constexpr uint32_t kForestCell = 0x9810;
+  auto& host = Arrive(p, 0, kHost);
+  Arrive(p, 1, kOther);
+  auto& actor = Standing(p, kPredator);
+  actor.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
+  Host(p, 0, kForestCell);
+  REQUIRE(p.worldState.HostOf(actor) == &host);
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  actor.RecordDeathAt(
+    std::chrono::steady_clock::now() -
+    std::chrono::milliseconds(MpActor::kPendingDeathMs + 1000));
+  // the host samples it dead: its stamp
+  State(p, 0, kPredator, 0.f);
+  REQUIRE(actor.IsDead());
+  // the clean quit and the same id back, hosting again
+  Leave(p, 0, kHost);
+  auto& again = Arrive(p, 0, kHost);
+  Host(p, 0, kForestCell);
+  REQUIRE(p.worldState.HostOf(actor) == &again);
+  // its first live sample stands nothing: the stamp cleared at the quit
+  State(p, 0, kPredator, 1.f);
+  REQUIRE(actor.IsDead());
+  // dead then live: the body stands
+  State(p, 0, kPredator, 0.f);
+  REQUIRE(actor.IsDead());
   State(p, 0, kPredator, 1.f);
   REQUIRE_FALSE(actor.IsDead());
 }

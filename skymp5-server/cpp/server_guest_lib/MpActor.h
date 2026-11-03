@@ -386,12 +386,16 @@ public:
   // run 20261103-100946: a fresh process's first sample stood Hilde up)
   void NoteHostSampledDead(uint32_t hostId, uint32_t hostLogin,
                            std::chrono::steady_clock::time_point at);
-  bool HostSampledDeadBy(uint32_t hostId, uint32_t hostLogin,
-                         std::chrono::steady_clock::time_point now) const;
+  // nothing when the stamp counts for this witness now; else why not (the
+  // lab reads the reason in the guard's line)
+  std::optional<std::string> DeadStampGap(
+    uint32_t hostId, uint32_t hostLogin,
+    std::chrono::steady_clock::time_point now) const;
   void ClearHostSampledDead();
-  // a player's login generation, bumped at every SetUserActor: the witness's
-  // second half (a relaunch or a reconnect is a new generation)
-  void BumpLoginGeneration();
+  // a player's login generation, a process-wide serial set at every
+  // SetUserActor: the witness's second half (a relaunch, a reconnect or a
+  // recreated actor is a new generation)
+  void SetLoginGeneration(uint32_t serial);
   uint32_t LoginGeneration() const;
   // thuum docs/verbs/npc-fate.md (playtest 40's F5, 2026-11-02): when this
   // body last stood again by its host's engine on the server's word

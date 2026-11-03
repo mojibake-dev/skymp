@@ -905,9 +905,9 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
     const bool reanimated = reanimatedAgo &&
       reanimatedAgo->count() <=
         static_cast<int64_t>(MpActor::kReanimateWindowMs);
-    if (!actor->IsPlacedDead() && !reanimated &&
-        !actor->HostSampledDeadBy(myActor->GetFormId(),
-                                  myActor->LoginGeneration(), now)) {
+    const auto stampGap = actor->DeadStampGap(myActor->GetFormId(),
+                                              myActor->LoginGeneration(), now);
+    if (!actor->IsPlacedDead() && !reanimated && stampGap) {
       // thuum docs/verbs/npc-fate.md (playtest 40's F9, and
       // x-npc-death-reentry v4's run 20261103-100946): a host's engine that
       // has not seen the death loads the body alive (a corpse's loading frame
@@ -929,10 +929,9 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
           now - last >= std::chrono::seconds(10)) {
         last = now;
         spdlog::info("[verb:npc-fate] {:x}'s live sample (health {:.3f}) of "
-                     "{:x} stands nothing: its game has not sampled the body "
-                     "dead (a fresh process, a new host, or the corpse's "
-                     "loading frame); the record stays dead",
-                     myActor->GetFormId(), msg.health, actor->GetFormId());
+                     "{:x} stands nothing: {}; the record stays dead",
+                     myActor->GetFormId(), msg.health, actor->GetFormId(),
+                     *stampGap);
       }
     } else if (actor->IsPlacedDead() && !reanimated) {
       static std::unordered_map<uint32_t,

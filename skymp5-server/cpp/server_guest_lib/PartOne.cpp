@@ -308,6 +308,10 @@ struct PartOne::Impl
   rust::Box<skymp::rules::Props> props = skymp::rules::new_props();
   std::chrono::steady_clock::time_point lastCellsTick;
   using Square = std::tuple<uint32_t, int32_t, int32_t>;
+  // one serial per login across the process: a dead-sample stamp's witness
+  // names it, and a destroyed-and-recreated actor must never bring an old
+  // witness back
+  uint32_t loginSerial = 0;
   std::unordered_map<uint32_t, Square> lastSquareByPlayer;
   std::function<int64_t(Networking::UserId)> roundTripSource;
   // the quitting host (docs/verbs/cell-host.md): each connection's silence
@@ -456,7 +460,7 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
     serverState.actorsMap.Set(userId, &actor);
     // the login generation: a dead-sample stamp's witness names it, so a
     // relaunch or a reconnect is a new witness (MpActor::HostSampledDeadBy)
-    actor.BumpLoginGeneration();
+    actor.SetLoginGeneration(++pImpl->loginSerial);
 
     // The clock first, so the client knows the time before its own
     // CreateActor loads the save (thuum docs/verbs/time.md)

@@ -386,6 +386,61 @@ TEST_CASE("A bleedout's zero long before a later death is not that death's "
   REQUIRE_FALSE(actor.IsDead());
 }
 
+TEST_CASE("A dead-sample stamp counts within kPendingDeathMs before the "
+          "recorded death and not beyond it",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  const auto now = std::chrono::steady_clock::now();
+  // the death four seconds ago; a stamp two seconds before it, inside the
+  // window: the live sample stands the body
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  BackdatePastGrace(actor);
+  actor.NoteHostSampledDead(kHost, host->LoginGeneration(),
+                            now - std::chrono::seconds(6));
+  State(p, 0, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+  // the same body dead again; a stamp four seconds before the death, past
+  // the window: the live sample stands nothing until a fresh dead sample
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  BackdatePastGrace(actor);
+  actor.NoteHostSampledDead(kHost, host->LoginGeneration(),
+                            now - std::chrono::seconds(8));
+  State(p, 0, kPredator, 1.f);
+  REQUIRE(actor.IsDead());
+  State(p, 0, kPredator, 0.f);
+  REQUIRE(actor.IsDead());
+  State(p, 0, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+}
+
+TEST_CASE("A live sample inside kPendingDeathMs of the death is a sample in "
+          "flight, not a resurrection, with the host's stamp or without it",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  // the death now, the host's dead sample now, a live sample at once: the
+  // grace refuses it although the stamp is the witness's
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  State(p, 0, kPredator, 0.f);
+  REQUIRE(actor.IsDead());
+  State(p, 0, kPredator, 1.f);
+  REQUIRE(actor.IsDead());
+  // past the grace (the stamp taken after the death counts): the body stands
+  BackdatePastGrace(actor);
+  State(p, 0, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+}
+
 TEST_CASE("The host's reliable death report is its dead-sample stamp",
           "[ActorDeath][espm]")
 {
@@ -394,9 +449,14 @@ TEST_CASE("The host's reliable death report is its dead-sample stamp",
   p.worldState.npcDeathReports = true;
   MpActor* host = nullptr;
   auto& actor = HostedPredator(p, host, true);
-  // the host reports the death (a fall): the record dies and the report is
-  // the stamp; no hosted-state zero follows
-  Report(p, 0, kPredator, 1, 0, actor.GetPos());
+  // the host reports the death (a fall, with the height samples the fall
+  // rule checks): the record dies and the report is the stamp; no
+  // hosted-state zero follows
+  const NiPoint3 body = actor.GetPos();
+  const auto fell = std::chrono::steady_clock::now();
+  actor.RecordHeight(body.z + 500.f, fell - std::chrono::seconds(2));
+  actor.RecordHeight(body.z, fell);
+  Report(p, 0, kPredator, 1, 0, body);
   REQUIRE(actor.IsDead());
   BackdatePastGrace(actor);
   State(p, 0, kPredator, 1.f);

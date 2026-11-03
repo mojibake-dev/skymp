@@ -1159,9 +1159,9 @@ export class RemoteServer extends ClientListener {
       const engineRefrId = form.refrId;
       const isDead = !!msgData;
       if (!isDead) {
-        // the live word (the RespawnEvent): a dead hold ends, the body stands
-        // (numidium's review of round seven, item 5)
-        this.controller.lookupListener(HostService).releaseHold(engineRefrId, "the record is alive again (the live word)");
+        // the live word (the RespawnEvent): a dead hold turns back into a
+        // placing hold (numidium's reviews of rounds seven and eight)
+        this.controller.lookupListener(HostService).reviveHold(engineRefrId, form.movement);
       }
       once('update', () => {
         const actor = Actor.from(Game.getFormEx(remoteIdToLocalId(engineRefrId)));

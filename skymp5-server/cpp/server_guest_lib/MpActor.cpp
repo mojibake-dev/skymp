@@ -2752,13 +2752,19 @@ void MpActor::NoteHostSampledDead(uint32_t hostId, uint32_t hostLogin,
   pImpl->deadStampAt = at;
 }
 
-bool MpActor::HostSampledDeadBy(
+std::optional<std::string> MpActor::DeadStampGap(
   uint32_t hostId, uint32_t hostLogin,
   std::chrono::steady_clock::time_point now) const
 {
-  if (!pImpl->deadStamped || pImpl->deadStampHost != hostId ||
-      pImpl->deadStampLogin != hostLogin) {
-    return false;
+  if (!pImpl->deadStamped) {
+    return std::string("no dead sample from any host yet");
+  }
+  if (pImpl->deadStampHost != hostId) {
+    return fmt::format("the dead sample is another host's ({:x})",
+                       pImpl->deadStampHost);
+  }
+  if (pImpl->deadStampLogin != hostLogin) {
+    return std::string("the dead sample is this host's earlier login");
   }
   // a stamp counts only as the DEATH's: taken no more than kPendingDeathMs
   // before the recorded death (a bleedout's zero long before a later death
@@ -2766,11 +2772,18 @@ bool MpActor::HostSampledDeadBy(
   // no recorded death, and any stamp of the witness counts
   const auto diedAgo = DiedAgo(now);
   if (!diedAgo) {
-    return true;
+    return std::nullopt;
   }
   const auto deathAt = now - *diedAgo;
-  return pImpl->deadStampAt + std::chrono::milliseconds(kPendingDeathMs) >=
-    deathAt;
+  if (pImpl->deadStampAt + std::chrono::milliseconds(kPendingDeathMs) <
+      deathAt) {
+    const auto early = std::chrono::duration_cast<std::chrono::milliseconds>(
+      deathAt - pImpl->deadStampAt);
+    return fmt::format("the dead sample is {} ms before the death, past its "
+                       "{} ms window",
+                       early.count(), kPendingDeathMs);
+  }
+  return std::nullopt;
 }
 
 void MpActor::ClearHostSampledDead()
@@ -2778,9 +2791,9 @@ void MpActor::ClearHostSampledDead()
   pImpl->deadStamped = false;
 }
 
-void MpActor::BumpLoginGeneration()
+void MpActor::SetLoginGeneration(uint32_t serial)
 {
-  ++pImpl->loginGeneration;
+  pImpl->loginGeneration = serial;
 }
 
 uint32_t MpActor::LoginGeneration() const

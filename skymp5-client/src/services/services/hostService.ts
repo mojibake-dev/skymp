@@ -272,6 +272,27 @@ export class HostService extends ClientListener {
         logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: released after ${Date.now() - hold.since} ms, ${why}${hold.deferred.length > 0 ? `; ${hold.deferred.length} deferred report(s) dropped with it (not this seat's to send)` : ""}`);
     }
 
+    // the live word (isDead false, the RespawnEvent): a dead hold turns back
+    // into a placing hold with the record refreshed, never a bare release (a
+    // teleporting respawn lands frames later behind the ragdoll's removal, and
+    // reports let loose first would overwrite the spawn point with the
+    // corpse's place: numidium's review of round eight, item 4)
+    reviveHold(remoteId: number, record: Movement | undefined): void {
+        const live = this.pendingPlacement.get(remoteId);
+        if (!live || !live.dead) {
+            return;
+        }
+        if (record) {
+            live.record = record;
+        }
+        live.dead = false;
+        live.since = Date.now();
+        live.asks = 0;
+        live.askedAt = 0;
+        live.checks = 0;
+        logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: the record is alive again (the live word), the hold places`);
+    }
+
     // the senders of a report that carries a position (a death, a shot's or a
     // cast's origin): the word and the placement
     isReportable(localId: number): boolean {

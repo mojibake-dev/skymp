@@ -412,6 +412,46 @@ public:
   std::optional<std::chrono::milliseconds> HostStoodUpAgo(
     std::chrono::steady_clock::time_point now) const;
   static constexpr uint64_t kReanimatedEndMs = 90'000;
+  // thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067 decision 4): a
+  // corpse is a physics object under the prop rule. One mover simulates the
+  // ragdoll, the engine that owned the actor at its death (the simulator,
+  // PartOne::SimulatorOf; 0 when none, and the first simulator to report
+  // inside the window claims it); for WorldState::bodySettleMs from the
+  // recorded death its movement samples move the record (R2: recorded, not
+  // judged, inside the movement bounds), and every other seat's are refused
+  // (E_BODY_NOT_OWNER). The body is AT REST when two accepted samples in a
+  // row agree within kBodyRestUnits and kBodyRestDegrees, or when the window
+  // ends (PartOne::TickBodies); from then every sample is refused
+  // (E_BODY_AT_REST) until a later claim (a drag or a push: the prop claim,
+  // not this slice). A resurrection (Respawn, every stand-up's path) clears
+  // it. Begun by SendAndSetDeathState for a game-file or server-made NPC;
+  // a body dead since before this process or placed dead has no window and
+  // keeps the host's samples as before (TODO: its rest at load, with the
+  // prop claim). Times are the TickDeaths clock (monotonic ms)
+  void BeginBodySettle(uint64_t nowMs);
+  // a death of this process recorded for this body (settling or at rest)
+  bool HasBodySettle() const;
+  // dead, a death of this process recorded and not at rest yet
+  bool IsBodySettling() const;
+  bool IsBodyAtRest() const;
+  // when the rest was set; 0 while not at rest
+  uint64_t BodyRestAtMs() const;
+  uint64_t BodyDiedAtMs() const;
+  uint32_t BodyOwnerId() const;
+  void ClaimBodyOwner(uint32_t ownerId);
+  uint32_t BodySampleCount() const;
+  // whether `pos` and `rot` agree with the last accepted sample (the rest's
+  // test, read before the relay so the resting sample goes reliably)
+  bool BodySampleRests(const NiPoint3& pos, const NiPoint3& rot) const;
+  // the owner's accepted sample, after the record took it: counted, kept
+  // as the last; true when it put the body at rest
+  bool NoteBodySample(const NiPoint3& pos, const NiPoint3& rot,
+                      uint64_t nowMs);
+  // the window's end: true when the body came to rest now
+  bool SettleBodyIfDue(uint64_t nowMs);
+  void ClearBodyRest();
+  static constexpr float kBodyRestUnits = 2.f;
+  static constexpr float kBodyRestDegrees = 2.f;
   void Teleport(const LocationalData& position);
   void SetSpawnPoint(const LocationalData& position);
   LocationalData GetSpawnPoint() const;
@@ -627,6 +667,9 @@ private:
   void ApplyAttributeDeltas(const std::array<float, 3>& deltas,
                             const std::array<bool, 3>& touched,
                             const BaseActorValues& maxBefore, uint32_t caster);
+  // thuum docs/verbs/npc-fate.md ("The body's rest"): the body at rest now,
+  // by `why`: the state, the record's save at once, the one log line
+  void SettleBody(uint64_t nowMs, const char* why);
 
   struct Impl;
   std::shared_ptr<Impl> pImpl;

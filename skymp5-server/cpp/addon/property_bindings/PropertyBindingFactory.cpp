@@ -5,6 +5,7 @@
 #include "AngleBinding.h"
 #include "AppearanceBinding.h"
 #include "BaseDescBinding.h"
+#include "BodyRestBinding.h"
 #include "CellFollowsBinding.h"
 #include "CellHostsBinding.h"
 #include "ConsoleCommandsAllowedBinding.h"
@@ -49,6 +50,7 @@ PropertyBindingFactory::CreateStandardPropertyBindings()
   result["cellFollows"] = std::make_shared<CellFollowsBinding>();
   result["streamCounters"] = std::make_shared<StreamCountersBinding>();
   result["actorFate"] = std::make_shared<ActorFateBinding>();
+  result["bodyRest"] = std::make_shared<BodyRestBinding>();
   result["gameTime"] = std::make_shared<GameTimeBinding>();
   result["inventory"] = std::make_shared<InventoryBinding>();
   result["isDead"] = std::make_shared<IsDeadBinding>();

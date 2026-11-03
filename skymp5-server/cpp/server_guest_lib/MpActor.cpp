@@ -84,6 +84,18 @@ struct MpActor::Impl
   std::chrono::steady_clock::time_point deadStampAt{};
   uint32_t loginGeneration = 0;
   std::chrono::steady_clock::time_point hostStoodUpAt{};
+  // npc-fate.md "The body's rest" (ADR-067): the corpse as a physics object.
+  // The simulator at the death owns the ragdoll (0 none); the window runs
+  // from the recorded death on the TickDeaths clock; the owner's accepted
+  // samples are counted and the last kept, so two in a row that agree are
+  // the rest; restAtMs is 0 until then
+  uint32_t bodyOwner = 0;
+  uint64_t bodyDiedAtMs = 0;
+  bool bodyAtRest = false;
+  uint64_t bodyRestAtMs = 0;
+  uint32_t bodySamples = 0;
+  NiPoint3 bodyLastPos;
+  NiPoint3 bodyLastRot;
   // npc-fate.md H-52b: the killer credited at the last Kill (the read)
   std::optional<uint32_t> lastKillerId;
   std::optional<UpdateActionMessage> lastAction;
@@ -2058,6 +2070,14 @@ void MpActor::SendAndSetDeathState(bool isDead, bool shouldTeleport)
 
   if (isDead) {
     RecordDeathAt(std::chrono::steady_clock::now());
+    // thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067): an NPC's
+    // corpse settles under its simulator from here, for the window
+    if (IsFateRespawned()) {
+      BeginBodySettle(static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count()));
+    }
   }
 
   auto position = GetSpawnPoint();
@@ -2586,6 +2606,9 @@ void MpActor::Respawn(bool shouldTeleport)
   // death's window far too early and admit the stamps it means to refuse
   pImpl->deadStamped = false;
   pImpl->pendingDeathSinceMs = 0;
+  // thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067): a body that
+  // stands again is no body; its rest ends with the death
+  ClearBodyRest();
   // a death that bypassed Kill (SetIsDead during a pending death) left the
   // pending phase armed, and BeginPendingDeath would refuse the next one for
   // good (numidium's review of round ten, item 1)
@@ -2851,6 +2874,159 @@ std::optional<std::chrono::milliseconds> MpActor::HostStoodUpAgo(
   }
   return std::chrono::duration_cast<std::chrono::milliseconds>(
     now - pImpl->hostStoodUpAt);
+}
+
+// thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067 decision 4)
+
+void MpActor::BeginBodySettle(uint64_t nowMs)
+{
+  MpActor* host = HostedBy();
+  pImpl->bodyOwner = host ? host->GetFormId() : 0u;
+  pImpl->bodyDiedAtMs = nowMs;
+  pImpl->bodyAtRest = false;
+  pImpl->bodyRestAtMs = 0;
+  pImpl->bodySamples = 0;
+  if (auto worldState = GetParent()) {
+    worldState->settlingBodies.insert(GetFormId());
+  }
+}
+
+bool MpActor::HasBodySettle() const
+{
+  return pImpl->bodyDiedAtMs != 0;
+}
+
+bool MpActor::IsBodySettling() const
+{
+  return IsDead() && pImpl->bodyDiedAtMs != 0 && !pImpl->bodyAtRest;
+}
+
+bool MpActor::IsBodyAtRest() const
+{
+  return pImpl->bodyAtRest;
+}
+
+uint64_t MpActor::BodyRestAtMs() const
+{
+  return pImpl->bodyRestAtMs;
+}
+
+uint64_t MpActor::BodyDiedAtMs() const
+{
+  return pImpl->bodyDiedAtMs;
+}
+
+uint32_t MpActor::BodyOwnerId() const
+{
+  return pImpl->bodyOwner;
+}
+
+void MpActor::ClaimBodyOwner(uint32_t ownerId)
+{
+  spdlog::info("[verb:npc-fate] body {:x} had no simulator at its death; "
+               "{:x} simulates it now and owns its ragdoll",
+               GetFormId(), ownerId);
+  pImpl->bodyOwner = ownerId;
+}
+
+uint32_t MpActor::BodySampleCount() const
+{
+  return pImpl->bodySamples;
+}
+
+namespace {
+// the wire's angles are degrees (the client's getAngleX/Y/Z); a turn's
+// wrap counts as no turn
+bool BodyAnglesAgree(const NiPoint3& a, const NiPoint3& b, float degrees)
+{
+  const float d[3] = { a.x - b.x, a.y - b.y, a.z - b.z };
+  for (const float delta : d) {
+    if (std::fabs(std::remainder(delta, 360.f)) > degrees) {
+      return false;
+    }
+  }
+  return true;
+}
+}
+
+bool MpActor::BodySampleRests(const NiPoint3& pos, const NiPoint3& rot) const
+{
+  if (!IsBodySettling() || pImpl->bodySamples == 0) {
+    return false;
+  }
+  return (pos - pImpl->bodyLastPos).Length() <= kBodyRestUnits &&
+    BodyAnglesAgree(rot, pImpl->bodyLastRot, kBodyRestDegrees);
+}
+
+bool MpActor::NoteBodySample(const NiPoint3& pos, const NiPoint3& rot,
+                             uint64_t nowMs)
+{
+  if (!IsBodySettling()) {
+    return false;
+  }
+  const bool rests = BodySampleRests(pos, rot);
+  const bool first = pImpl->bodySamples == 0;
+  pImpl->bodyLastPos = pos;
+  pImpl->bodyLastRot = rot;
+  ++pImpl->bodySamples;
+  if (first) {
+    spdlog::info("[verb:npc-fate] body {:x} settling under {:x}: ({:.0f}, "
+                 "{:.0f}, {:.0f})",
+                 GetFormId(), pImpl->bodyOwner, pos.x, pos.y, pos.z);
+    return false;
+  }
+  if (!rests) {
+    return false;
+  }
+  SettleBody(nowMs, "two samples in a row agree");
+  return true;
+}
+
+bool MpActor::SettleBodyIfDue(uint64_t nowMs)
+{
+  if (!IsBodySettling()) {
+    return false;
+  }
+  auto worldState = GetParent();
+  const uint64_t settleMs = worldState ? worldState->bodySettleMs : 15000u;
+  if (nowMs < pImpl->bodyDiedAtMs + settleMs) {
+    return false;
+  }
+  SettleBody(nowMs, "the settle window ended");
+  return true;
+}
+
+void MpActor::SettleBody(uint64_t nowMs, const char* why)
+{
+  pImpl->bodyAtRest = true;
+  pImpl->bodyRestAtMs = nowMs;
+  if (auto worldState = GetParent()) {
+    worldState->settlingBodies.erase(GetFormId());
+  }
+  // the rest pose is the record's final sample: saved at once, as a prop's
+  // is at sleep (ADR-058), not at the movement path's 30 s
+  FlushUnsavedEdit();
+  const auto& at = GetPos();
+  spdlog::info("[verb:npc-fate] body {:x} at rest at ({:.0f}, {:.0f}, {:.0f}) "
+               "after {} ms, {} samples; {} (owner {:x})",
+               GetFormId(), at.x, at.y, at.z,
+               nowMs >= pImpl->bodyDiedAtMs ? nowMs - pImpl->bodyDiedAtMs : 0u,
+               pImpl->bodySamples, why, pImpl->bodyOwner);
+}
+
+void MpActor::ClearBodyRest()
+{
+  if (pImpl->bodyDiedAtMs == 0 && !pImpl->bodyAtRest) {
+    return;
+  }
+  pImpl->bodyOwner = 0;
+  pImpl->bodyDiedAtMs = 0;
+  pImpl->bodyAtRest = false;
+  pImpl->bodyRestAtMs = 0;
+  pImpl->bodySamples = 0;
+  if (auto worldState = GetParent()) {
+    worldState->settlingBodies.erase(GetFormId());
+  }
 }
 
 void MpActor::NoteHitBy(uint32_t aggressorId,

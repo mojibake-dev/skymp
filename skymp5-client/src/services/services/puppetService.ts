@@ -512,6 +512,22 @@ export class PuppetService extends ClientListener {
     // HostedResurrect sets the AI alone), as the promote gives a live actor;
     // elsewhere the demote blocks it as a puppet
     private standsAgain(localId: number, ac: Actor, hostedHere: boolean): void {
+        // the hold's fresh review, note 3: whether Actor::IsDead (CommonLibSSE-NG
+        // include/RE/A/Actor.h:345, a vtable slot) answers true at lifeState
+        // kDying (include/RE/A/ActorState.h:10) before kDead (:11) is unread:
+        // HYPOTHESIS. If it answers false there, a poll pass between the
+        // death's start and kDead would read the dying body as alive and, on
+        // its host's seat, unblock it for up to one poll. So within the
+        // ragdoll settle window of the death's start (onDeathStart's stamp)
+        // nothing here is undone; the stamp is dropped once the window has
+        // passed and the body reads alive
+        const dying = this.dyingSince.get(localId);
+        if (dying !== undefined) {
+            if (Date.now() - dying < PuppetService.ragdollSettleMs) {
+                return;
+            }
+            this.dyingSince.delete(localId);
+        }
         this.liftedAt.delete(localId);
         if (!this.deadBlocked.delete(localId)) {
             return;
@@ -531,6 +547,8 @@ export class PuppetService extends ClientListener {
         if (localId === 0x14) {
             return;
         }
+        // the death's start, for standsAgain's settle window (review note 3)
+        this.dyingSince.set(localId, Date.now());
         this.blockDeadBody(localId, dying, "its death started here");
     }
 
@@ -667,6 +685,7 @@ export class PuppetService extends ClientListener {
         this.deadFlaggedSince.delete(localId);
         this.deadBlocked.delete(localId);
         this.liftedAt.delete(localId);
+        this.dyingSince.delete(localId);
     }
 
     // An actor attaching to a cell is loaded here from this moment, whatever
@@ -694,6 +713,18 @@ export class PuppetService extends ClientListener {
         }
         const id = e.refr.getFormID();
         this.attached.delete(id);
+        // the hold's fresh review, note 1: a cell re-entry respawns a game-file
+        // actor alive as a fresh reference, with no kBlockActivate on it and no
+        // dealWithRef (formView.ts's dead check binds and kills it silently,
+        // its premise at formView.ts:751-763), and an unloaded body sits in
+        // none of the poll's sets, so forget never ran for it: a mark kept
+        // here would make blockDeadBody return at deadBlocked.has and the
+        // engine's own loot menu would open on E. The marks go with the
+        // detach; the re-block at the next load costs one blockActivation
+        // (idempotent) per reload per body.
+        this.deadBlocked.delete(id);
+        this.liftedAt.delete(id);
+        this.dyingSince.delete(id);
         this.controller.lookupListener(HostService).markHosted(id, false);
         this.reconcile(id);
     }
@@ -747,6 +778,9 @@ export class PuppetService extends ClientListener {
     private readonly deadBlocked = new Set<number>();
     private readonly liftedAt = new Map<number, number>();
     private tick = 0;
+    // the moment each body's death started here (review note 3: standsAgain's
+    // settle window against an IsDead that may read false at kDying)
+    private readonly dyingSince = new Map<number, number>();
     private readonly unloadedSince = new Map<number, number>();
     // playtest 41's Sven scene: the scene this seat last stopped on each puppet
     private readonly scenesStopped = new Map<number, number>();

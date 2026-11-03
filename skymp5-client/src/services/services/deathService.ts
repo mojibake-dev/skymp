@@ -271,11 +271,14 @@ export class DeathService extends ClientListener {
           if (!again || !again.isDead()) {
             return;
           }
-          // thuum ADR-067 by ADR-065's path (ChangeFormService): a body the
-          // owner's change-form record laid right after this kill is not
+          // thuum ADR-067 by ADR-065's path (ChangeFormService): a body with
+          // a change-form record held for this kill or laid on it is not
           // pushed; the push's ragdoll would undo the record's pose and start
-          // playtest 42's F4 slide again
-          if (this.controller.lookupListener(ChangeFormService).hasAppliedRecord(localIdToRemoteId(id) || id)) {
+          // playtest 42's F4 slide again (the kill above is deferred and the
+          // apply lands with it, a frame or two in, so the record is still
+          // "held" at this wait's end: docs/research/adr062/
+          // papyrus-native-entries.md:73)
+          if (this.controller.lookupListener(ChangeFormService).hasRecord(localIdToRemoteId(id) || id)) {
             logLab("verb:npc-fate", `body ${id.toString(16)}: no push, the change-form record laid it`);
             return;
           }
@@ -287,11 +290,15 @@ export class DeathService extends ClientListener {
       // thuum ADR-067 by ADR-065's path (ChangeFormService, docs/verbs/
       // change-form.md): a change-form record of the body the server served
       // (the owner's own save of its corpse) and held for this kill is
-      // applied now, the engine's own load laying the body in the owner's
-      // pose at the owner's place; a record that comes later is applied at
-      // its arrival, the body dead already. The bind (silent) applies on any
-      // seat; a kill by the word never takes a held record over this seat's
-      // own engine's death of an actor it simulates
+      // applied as the kill lands (the kill above is deferred: Kill and
+      // KillSilent queue a type-10 task and the actor is alive at the
+      // native's return, docs/research/adr062/papyrus-native-entries.md:73;
+      // the service tries every update until the copy reads dead), the
+      // engine's own load laying the body in the owner's pose at the owner's
+      // place; a record that comes later is applied at its arrival, the body
+      // dead already. The bind (silent) applies on any seat; a kill by the
+      // word never takes a held record over this seat's own engine's death
+      // of an actor it simulates
       this.controller.lookupListener(ChangeFormService).onKilledHere(actor.getFormID(), silent);
       // thuum docs/verbs/npc-fate.md (the deaths, revised by playtest 37's
       // findings 58 and 62): the body is NOT activation-blocked, on any seat.

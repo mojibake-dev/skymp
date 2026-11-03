@@ -3441,16 +3441,10 @@ export declare class SoundDescriptor extends Form {
   setFrequencyVariance(frequencyVariance: number): void
 }
 
-// thuum docs/verbs/change-form.md (ADR-065): the engine's own change form of a reference, serialized on demand by the fork's native (the engine's SaveGame into a buffer plus the id census) and applied through the engine's own load after the remap rows' re-encode; declared ahead of the natives on adr065-sys1-native, the client codes against these names
-export interface ChangeFormRemapRow { offset: number; formId: number; index: number }
-export interface ChangeFormRecord { formType: number; flags: number; version: number; bodyHex: string; fnv1a: number; remap: ChangeFormRemapRow[] }
-export interface ChangeFormApplyResult { applied: boolean; reason: string; fnvPatched: number }
-
 // Based on TESModPlatform.pex
 export declare class TESModPlatform extends PapyrusObject {
   static from(papyrusObject: PapyrusObject | null): TESModPlatform | null
   static addItemEx(containerRefr: ObjectReference | null, item: Form | null, countDelta: number, health: number, enchantment: Enchantment | null, maxCharge: number, removeEnchantmentOnUnequip: boolean, chargePercent: number, textDisplayData: string, soul: number, poison: Potion | null, poisonCount: number): void
-  static applyChangeForm(refr: ObjectReference | null, bodyHex: string, flags: number, version: number, remapRows: ChangeFormRemapRow[]): ChangeFormApplyResult | null
   static clearTintMasks(targetActor: Actor | null): void
   static createNpc(): ActorBase | null
   static evaluateLeveledNpc(commaSeparatedListOfIds: string): ActorBase | null
@@ -3463,7 +3457,6 @@ export declare class TESModPlatform extends PapyrusObject {
   static resetContainer(container: Form | null): void
   static resizeHeadpartsArray(npc: ActorBase | null, newSize: number): void
   static resizeTintsArray(newSize: number): void
-  static serializeChangeForm(refr: ObjectReference | null): ChangeFormRecord | null
   static setFormIdUnsafe(Form: Form | null, newId: number): void
   static setNpcHairColor(npc: ActorBase | null, hairColor: number): void
   static setNpcRace(npc: ActorBase | null, race: Race | null): void

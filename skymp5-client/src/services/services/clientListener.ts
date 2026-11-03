@@ -196,21 +196,6 @@ declare module "skyrimPlatform" {
     function resurrectActor(refrId: number): boolean;
     function redressActor(refrId: number): boolean;
     function actorFateCount(): number;
-
-    // thuum docs/verbs/change-form.md (ADR-065): the engine's own change form
-    // of a reference, serialized on demand (the engine's SaveGame into a
-    // buffer plus the id census: the body as hex, FNV-1a 32 over its bytes,
-    // one remap row per seat-local id) and applied through the engine's own
-    // load after the rows' re-encode; the fork's natives on adr065-sys1-native,
-    // declared here ahead of them by name and shape (the published package
-    // has neither; the codegen's skyrimPlatform.ts carries the same)
-    interface ChangeFormRemapRow { offset: number; formId: number; index: number }
-    interface ChangeFormRecord { formType: number; flags: number; version: number; bodyHex: string; fnv1a: number; remap: ChangeFormRemapRow[] }
-    interface ChangeFormApplyResult { applied: boolean; reason: string; fnvPatched: number }
-    namespace TESModPlatform {
-        function serializeChangeForm(refr: ObjectReference | null): ChangeFormRecord | null;
-        function applyChangeForm(refr: ObjectReference | null, bodyHex: string, flags: number, version: number, remapRows: ChangeFormRemapRow[]): ChangeFormApplyResult | null;
-    }
 }
 
 export type Sp = Omit<typeof sp, "on" | "once">;

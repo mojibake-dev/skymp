@@ -276,6 +276,13 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
   MpActor* actor = nullptr;
   bool hostedCellChange = false;
   bool passed = false;
+  // thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067): the report is
+  // a dead NPC's, from the body's owner, inside its settle window
+  bool bodySample = false;
+  const uint64_t nowMs = static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch())
+      .count());
   {
     // thuum docs/verbs/cell-host.md, the cell-change rule: a hosted actor's
     // report is its cell's host's; one naming another cell is accepted when
@@ -290,8 +297,93 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
                               msg.data.pos[2] };
       const auto destCell =
         partOne.worldState.CellOf(msg.data.worldOrCell, destPos);
-      const auto verdict =
+      // thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067 decision
+      // 4): a dead NPC's movement report is a BODY sample, never a
+      // stand-up: the message's healthPercentage and isDead are not read
+      // on this path, and a stand-up is OnHostedActorState's alone, from
+      // the health the host samples. The corpse is a physics object under
+      // the prop rule: its owner, the engine that simulated the actor at
+      // its death, moves the record with its ragdoll for the settle window
+      // (WorldState::bodySettleMs) and the record keeps the pose the
+      // ragdoll rests at (two samples in a row that agree), so a watcher
+      // places its corpse there and the loot reach measures from it
+      // (playtest 42's F4 and F6: a watcher's body 1,700 units down Bleak
+      // Falls' slope while the record kept the death point). Every other
+      // seat's report is refused, and once at rest so is the owner's, until
+      // a later claim (a drag or a push: the prop claim, not this slice).
+      // R2 (rule 5): the owner's ragdoll is recorded, not judged, inside
+      // the movement bounds below. Each refusal is said once a minute per
+      // sender and body, the rest counted. A body dead since before this
+      // process or placed dead has no window here and keeps the host's
+      // samples as before (TODO: its rest at load, with the prop claim)
+      if (moved->IsDead() && moved->IsFateRespawned() &&
+          moved->HasBodySettle()) {
+        const auto refuseBody = [&](const char* code, const std::string& why) {
+          static std::map<
+            std::pair<uint32_t, uint32_t>,
+            std::pair<std::chrono::steady_clock::time_point, uint32_t>>
+            refusals;
+          auto& [since, count] =
+            refusals[{ myActor->GetFormId(), moved->GetFormId() }];
+          const auto now = std::chrono::steady_clock::now();
+          ++count;
+          if (since.time_since_epoch().count() == 0 ||
+              now - since >= std::chrono::minutes(1)) {
+            spdlog::warn("[verb:npc-fate] {}: {:x} moves body {:x} to "
+                         "({:.0f}, {:.0f}, {:.0f}); {}; dropped, {} "
+                         "refusal(s) since the last line",
+                         code, myActor->GetFormId(), moved->GetFormId(),
+                         destPos.x, destPos.y, destPos.z, why, count);
+            since = now;
+            count = 0;
+          }
+          partOne.serverState.CountStream(
+            rawMsgData.userId, static_cast<uint8_t>(MsgType::UpdateMovement),
+            false);
+        };
+        // the window may have ended since the last sweep
+        moved->SettleBodyIfDue(nowMs);
+        if (moved->IsBodyAtRest()) {
+          const auto& rest = moved->GetPos();
+          refuseBody(
+            "E_BODY_AT_REST",
+            fmt::format("the body is at rest at ({:.0f}, {:.0f}, {:.0f}) "
+                        "since {} ms; a later claim (a drag, a push: the "
+                        "prop claim) wakes it",
+                        rest.x, rest.y, rest.z,
+                        nowMs >= moved->BodyRestAtMs()
+                          ? nowMs - moved->BodyRestAtMs()
+                          : 0u));
+          return;
+        }
+        if (moved->BodyOwnerId() == 0 &&
+            partOne.SimulatorOf(*moved) == myActor->GetFormId()) {
+          moved->ClaimBodyOwner(myActor->GetFormId());
+        }
+        if (moved->BodyOwnerId() != myActor->GetFormId()) {
+          refuseBody("E_BODY_NOT_OWNER",
+                     moved->BodyOwnerId()
+                       ? fmt::format("{:x} owns the body (the engine that "
+                                     "simulated it at its death)",
+                                     moved->BodyOwnerId())
+                       : std::string("nobody simulated it at its death and "
+                                     "the sender does not simulate it now"));
+          return;
+        }
+        bodySample = true;
+      }
+      auto verdict =
         partOne.MayMoveActor(*myActor, *moved, msg.data.worldOrCell, destPos);
+      if (verdict == PartOne::MoveVerdict::Refuse && bodySample &&
+          destCell.has_value() &&
+          destCell == partOne.worldState.CellOf(*moved)) {
+        // the body's owner inside the record's cell: the cell-host rule
+        // stands aside for the ragdoll's owner within the window (ADR-063,
+        // ownership, not permission; a host change mid-ragdoll leaves the
+        // body with its mover); a roll across a cell border keeps the
+        // cell-change rule
+        verdict = PartOne::MoveVerdict::Accept;
+      }
       if (verdict == PartOne::MoveVerdict::Refuse) {
         // one warn line a minute per actor, the rest counted (npc-handoff
         // (e): Stump's 751 lines in five minutes, playtest 32)
@@ -447,8 +539,18 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       }
     }
 
+    // thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067): the sample
+    // that puts a body at rest is the record's final one, so it goes to
+    // the other games reliably, as a prop's does at sleep (ADR-058); the
+    // ragdoll's samples before it ride the unreliable relay as any step
+    const NiPoint3 reportedPos{ msg.data.pos[0], msg.data.pos[1],
+                                msg.data.pos[2] };
+    const NiPoint3 reportedRot{ msg.data.rot[0], msg.data.rot[1],
+                                msg.data.rot[2] };
+    const bool bodyRests =
+      bodySample && actor->BodySampleRests(reportedPos, reportedRot);
     RelayToListeners(*actor, rawMsgData.unparsed, rawMsgData.unparsedLength,
-                     false, rawMsgData.userId);
+                     bodyRests, rawMsgData.userId);
 
     // thuum docs/verbs/cell-host.md: the player's grid square may have
     // moved, and with it the cells the server's grid gives it (a cell
@@ -547,6 +649,11 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     actor->SetAngle(
       NiPoint3{ msg.data.rot[0], msg.data.rot[1], msg.data.rot[2] },
       SetAngleMode::CalledByUpdateMovement);
+    // the body's sample, after the record took it: the rest, when two in a
+    // row agree, saves the record at once and ends the window
+    if (bodySample) {
+      actor->NoteBodySample(reportedPos, reportedRot, nowMs);
+    }
     actor->SetAnimationVariableBool(
       AnimationVariableBool::kVariable_bInJumpState, msg.data.isInJumpState);
     actor->SetAnimationVariableBool(

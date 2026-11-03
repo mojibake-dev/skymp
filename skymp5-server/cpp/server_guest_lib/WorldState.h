@@ -412,6 +412,16 @@ public:
   // to kPendingDeathMs; false restores the absolute values and the kill at
   // once (a bisect switch, server setting npcEngineDeaths)
   bool npcEngineDeaths = true;
+  // thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067 decision 4): a
+  // corpse is a physics object under the prop rule. After a death this
+  // process records, the body's owner (the simulator at the death) moves the
+  // record with its ragdoll's samples for bodySettleMs (server setting), or
+  // until two in a row agree (MpActor::kBodyRestUnits, kBodyRestDegrees);
+  // the body is then at rest and every later sample is refused until a
+  // later claim. The ids whose window runs; PartOne::TickBodies ends the
+  // ones past it
+  uint32_t bodySettleMs = 15000;
+  std::unordered_set<uint32_t> settlingBodies;
   // the sneak attack multiplier for bows, staffs and crossbows, which the
   // game names no setting for: measured against the engine (x-npc-sneak-shot)
   // and set here (server setting sneakRangedMult); 0 keeps SkyMP's 1.3

@@ -600,6 +600,10 @@ public:
   // server number reached zero dies by the server's word when its host
   // reported nothing within MpActor::kPendingDeathMs
   void TickDeaths(uint64_t nowMs);
+  // thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067): a corpse
+  // whose settle window passed with no two agreeing samples from its owner
+  // is at rest where the record has it (MpActor::SettleBodyIfDue)
+  void TickBodies(uint64_t nowMs);
   // thuum docs/verbs/npc-talk.md (ADR-052): a player's claim on an NPC for a
   // dialogue, the per-actor row beside the cell's host; the word follows
   enum class ClaimVerdict

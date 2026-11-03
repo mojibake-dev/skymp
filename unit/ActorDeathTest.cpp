@@ -8,6 +8,7 @@
 #include "HostedActorStateMessage.h"
 #include "MsgType.h"
 #include "TestUtils.hpp"
+#include "UpdateMovementMessage.h"
 #include "libespm/Loader.h"
 #include "wire_bridge_cxx/rules.h"
 #include <algorithm>
@@ -1064,6 +1065,309 @@ TEST_CASE("A hosted NPC at zero with no report dies by the server's word "
   p.worldState.npcEngineDeaths = true;
 
   StandUp(p, predator);
+  Leave(p, 1, kOther);
+  Leave(p, 0, kHost);
+}
+
+// thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067 decision 4): a
+// corpse is a physics object under the prop rule. The engine that simulated
+// the NPC at its death owns its ragdoll: for WorldState::bodySettleMs its
+// movement reports for the dead actor move the record and reach the other
+// games (R2, recorded not judged); any other seat's are refused
+// (E_BODY_NOT_OWNER). Two accepted samples in a row that agree within
+// MpActor::kBodyRestUnits and kBodyRestDegrees, or the window's end
+// (PartOne::TickBodies), put the body at rest, and every later report is
+// refused (E_BODY_AT_REST) until a resurrection clears it. A dead actor's
+// movement report is a body sample and never a stand-up: the stand-up reads
+// the health the host samples (OnHostedActorState), not the body's place.
+
+namespace {
+// `user`'s movement report for `actorId` at `pos` and `rot` (CellHostTest's
+// Move idiom). Its health and isDead are a live actor's on purpose: the body
+// path reads neither
+void MoveBody(PartOne& p, Networking::UserId user, uint32_t actorId,
+              const NiPoint3& pos, const NiPoint3& rot = { 0.f, 0.f, 0.f })
+{
+  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
+  RawMessageData raw;
+  raw.userId = user;
+  raw.unparsed = unparsed;
+  raw.unparsedLength = sizeof(unparsed);
+  UpdateMovementMessage msg;
+  msg.idx = p.worldState.GetFormAt<MpActor>(actorId).GetIdx();
+  msg.data.worldOrCell = kTamriel;
+  msg.data.pos = { pos.x, pos.y, pos.z };
+  msg.data.rot = { rot.x, rot.y, rot.z };
+  msg.data.runMode = "Standing";
+  msg.data.healthPercentage = 1.f;
+  msg.data.isDead = false;
+  p.GetActionListener().OnUpdateMovement(raw, msg);
+}
+
+// the movement relays `user` received since the last clear: the raw `{}`
+// bytes the fixture parses to an empty object; `reliable` counts those sent
+// reliably alone
+size_t RelaysTo(PartOne& p, Networking::UserId user, bool reliable = false)
+{
+  size_t n = 0;
+  for (auto& m : p.Messages()) {
+    if (m.userId == user && m.j.is_object() && m.j.empty() &&
+        (!reliable || m.reliable)) {
+      ++n;
+    }
+  }
+  return n;
+}
+
+// the isDead "false" words `user` heard for `refrId` (a stand-up's)
+size_t LiveWordsTo(PartOne& p, Networking::UserId user, uint32_t refrId)
+{
+  size_t n = 0;
+  for (auto& m : p.Messages()) {
+    if (m.userId == user && m.j.is_object() &&
+        m.j.value("t", -1) == static_cast<int>(MsgType::UpdateProperty) &&
+        m.j.value("propName", std::string()) == "isDead" &&
+        m.j.value("refrId", 0u) == refrId &&
+        m.j.value("dataDump", std::string()) == "false") {
+      ++n;
+    }
+  }
+  return n;
+}
+}
+
+TEST_CASE("The body's rest: its owner's movement report for a dead NPC inside "
+          "the settle window moves the record and reaches the other game",
+          "[ActorDeath][BodyRest][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  const NiPoint3 deathPoint = actor.GetPos();
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  REQUIRE(actor.HasBodySettle());
+  REQUIRE(actor.IsBodySettling());
+  REQUIRE_FALSE(actor.IsBodyAtRest());
+  REQUIRE(actor.BodyRestAtMs() == 0);
+  REQUIRE(actor.BodyOwnerId() == kHost);
+  REQUIRE(p.worldState.settlingBodies.count(kPredator) == 1);
+
+  // the ragdoll slid down the slope (playtest 42's F4): the record follows
+  const NiPoint3 slid = deathPoint + NiPoint3{ 700.f, 0.f, -300.f };
+  const NiPoint3 lying{ 90.f, 0.f, 45.f };
+  p.Messages().clear();
+  MoveBody(p, 0, kPredator, slid, lying);
+  REQUIRE(actor.GetPos() == slid);
+  REQUIRE(actor.GetAngle() == lying);
+  REQUIRE(actor.IsDead());
+  REQUIRE(actor.IsBodySettling());
+  REQUIRE(actor.BodySampleCount() == 1);
+  // relayed to the other game as a live hosted actor's step, unreliable
+  REQUIRE(RelaysTo(p, 1) == 1);
+  REQUIRE(RelaysTo(p, 1, true) == 0);
+
+  StandUp(p, actor);
+  Leave(p, 1, kOther);
+  Leave(p, 0, kHost);
+}
+
+TEST_CASE("The body's rest: a report from a game that does not own the body "
+          "is refused (E_BODY_NOT_OWNER) and moves nothing",
+          "[ActorDeath][BodyRest][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  actor.Kill(nullptr);
+  REQUIRE(actor.BodyOwnerId() == kHost);
+  const NiPoint3 deathPoint = actor.GetPos();
+
+  p.Messages().clear();
+  MoveBody(p, 1, kPredator, deathPoint + NiPoint3{ 300.f, 0.f, 0.f });
+  REQUIRE(actor.GetPos() == deathPoint);
+  REQUIRE(actor.BodySampleCount() == 0);
+  REQUIRE(actor.IsBodySettling());
+  REQUIRE(RelaysTo(p, 0) == 0);
+  REQUIRE(RelaysTo(p, 1) == 0);
+
+  // the owner's report right after is taken: the refusal held nothing back
+  MoveBody(p, 0, kPredator, deathPoint + NiPoint3{ 100.f, 0.f, 0.f });
+  REQUIRE(actor.GetPos() == deathPoint + NiPoint3{ 100.f, 0.f, 0.f });
+  REQUIRE(actor.BodySampleCount() == 1);
+
+  StandUp(p, actor);
+  Leave(p, 1, kOther);
+  Leave(p, 0, kHost);
+}
+
+TEST_CASE("The body's rest: two accepted samples in a row that agree within "
+          "2 units and 2 degrees put the body at rest, the resting sample "
+          "goes reliably, and the next report is refused (E_BODY_AT_REST)",
+          "[ActorDeath][BodyRest][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  actor.Kill(nullptr);
+  const NiPoint3 deathPoint = actor.GetPos();
+
+  // still rolling: 10 units and 30 degrees apart is no rest
+  const NiPoint3 a = deathPoint + NiPoint3{ 200.f, 0.f, -50.f };
+  MoveBody(p, 0, kPredator, a, NiPoint3{ 0.f, 0.f, 10.f });
+  MoveBody(p, 0, kPredator, a + NiPoint3{ 10.f, 0.f, 0.f },
+           NiPoint3{ 0.f, 0.f, 40.f });
+  REQUIRE_FALSE(actor.IsBodyAtRest());
+  REQUIRE(actor.BodySampleCount() == 2);
+  // the third keeps the place and turns 41 degrees: the place agrees, the
+  // angle does not, no rest
+  MoveBody(p, 0, kPredator, a + NiPoint3{ 10.f, 0.f, 0.f },
+           NiPoint3{ 0.f, 0.f, 359.f });
+  REQUIRE_FALSE(actor.IsBodyAtRest());
+  // the fourth moves 1 unit and turns 1.5 degrees through the wrap (359 to
+  // 0.5): both agree, the body is at rest at this sample
+  const NiPoint3 rest = a + NiPoint3{ 11.f, 0.f, 0.f };
+  p.Messages().clear();
+  MoveBody(p, 0, kPredator, rest, NiPoint3{ 0.f, 0.f, 0.5f });
+  REQUIRE(actor.IsBodyAtRest());
+  REQUIRE_FALSE(actor.IsBodySettling());
+  REQUIRE(actor.BodyRestAtMs() != 0);
+  REQUIRE(actor.BodySampleCount() == 4);
+  REQUIRE(actor.GetPos() == rest);
+  REQUIRE(p.worldState.settlingBodies.count(kPredator) == 0);
+  REQUIRE(RelaysTo(p, 1, true) == 1);
+
+  // from then every report for the body is refused, the owner's included
+  const auto restAt = actor.BodyRestAtMs();
+  p.Messages().clear();
+  MoveBody(p, 0, kPredator, rest + NiPoint3{ 500.f, 0.f, 0.f });
+  MoveBody(p, 1, kPredator, rest + NiPoint3{ 500.f, 0.f, 0.f });
+  REQUIRE(actor.GetPos() == rest);
+  REQUIRE(actor.BodySampleCount() == 4);
+  REQUIRE(actor.BodyRestAtMs() == restAt);
+  REQUIRE(RelaysTo(p, 1) == 0);
+  REQUIRE(RelaysTo(p, 0) == 0);
+
+  StandUp(p, actor);
+  Leave(p, 1, kOther);
+  Leave(p, 0, kHost);
+}
+
+TEST_CASE("The body's rest: the settle window's end (bodySettleMs) puts the "
+          "body at rest where the record has it, by the sweep or by the "
+          "next report",
+          "[ActorDeath][BodyRest][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  p.worldState.bodySettleMs = 5'000;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  const uint64_t t0 = NowMs();
+  actor.Kill(nullptr);
+  const NiPoint3 deathPoint = actor.GetPos();
+  REQUIRE(actor.BodyDiedAtMs() >= t0);
+
+  // the sweep inside the window: nothing; past it: at rest at the record
+  p.TickBodies(t0 + 2'500);
+  REQUIRE_FALSE(actor.IsBodyAtRest());
+  REQUIRE(actor.IsBodySettling());
+  p.TickBodies(t0 + 5'000 + 2'000);
+  REQUIRE(actor.IsBodyAtRest());
+  REQUIRE(actor.BodyRestAtMs() == t0 + 7'000);
+  REQUIRE(actor.GetPos() == deathPoint);
+  REQUIRE(p.worldState.settlingBodies.count(kPredator) == 0);
+  MoveBody(p, 0, kPredator, deathPoint + NiPoint3{ 300.f, 0.f, 0.f });
+  REQUIRE(actor.GetPos() == deathPoint);
+
+  // the same end read by the movement path when no sweep ran since: a
+  // report after the window is refused, the body at rest
+  StandUp(p, actor);
+  p.worldState.bodySettleMs = 0;
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsBodySettling());
+  MoveBody(p, 0, kPredator, deathPoint + NiPoint3{ 300.f, 0.f, 0.f });
+  REQUIRE(actor.IsBodyAtRest());
+  REQUIRE(actor.GetPos() == deathPoint);
+  REQUIRE(actor.BodySampleCount() == 0);
+  p.worldState.bodySettleMs = 15'000;
+
+  StandUp(p, actor);
+  Leave(p, 1, kOther);
+  Leave(p, 0, kHost);
+}
+
+TEST_CASE("The body's rest: a respawn clears the rest, and the next death "
+          "settles anew under its simulator",
+          "[ActorDeath][BodyRest][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  actor.Kill(nullptr);
+  const NiPoint3 deathPoint = actor.GetPos();
+  const NiPoint3 rest = deathPoint + NiPoint3{ 150.f, 0.f, 0.f };
+  MoveBody(p, 0, kPredator, rest);
+  MoveBody(p, 0, kPredator, rest);
+  REQUIRE(actor.IsBodyAtRest());
+
+  actor.Respawn(false);
+  REQUIRE_FALSE(actor.IsDead());
+  REQUIRE_FALSE(actor.IsBodyAtRest());
+  REQUIRE_FALSE(actor.IsBodySettling());
+  REQUIRE_FALSE(actor.HasBodySettle());
+  REQUIRE(actor.BodyRestAtMs() == 0);
+  REQUIRE(actor.BodyOwnerId() == 0);
+  REQUIRE(actor.BodySampleCount() == 0);
+  REQUIRE(p.worldState.settlingBodies.count(kPredator) == 0);
+
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsBodySettling());
+  REQUIRE_FALSE(actor.IsBodyAtRest());
+  REQUIRE(actor.BodyOwnerId() == kHost);
+  REQUIRE(actor.BodySampleCount() == 0);
+  REQUIRE(p.worldState.settlingBodies.count(kPredator) == 1);
+
+  StandUp(p, actor);
+  Leave(p, 1, kOther);
+  Leave(p, 0, kHost);
+}
+
+TEST_CASE("The body's rest: a dead actor's movement report is a body sample "
+          "and never a stand-up, whatever health the message carries",
+          "[ActorDeath][BodyRest][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  // the fate's day and its due as the kill left them (scheduled by the
+  // respawn path when it ran): the body sample must change neither
+  const bool dayStamped = actor.GetChangeForm().fateDiedAt.has_value();
+  const size_t due = p.worldState.fateRespawnDue.count(kPredator);
+  // past the grace and with the host's dead stamp: the state a live HOSTED
+  // STATE sample would stand the body from (the first case of this file)
+  BackdatePastGrace(actor);
+  State(p, 0, kPredator, 0.f);
+  const NiPoint3 deathPoint = actor.GetPos();
+
+  p.Messages().clear();
+  // MoveBody's message says health 1.0 and isDead false: not read
+  MoveBody(p, 0, kPredator, deathPoint + NiPoint3{ 120.f, 0.f, -40.f });
+  REQUIRE(actor.IsDead());
+  REQUIRE(actor.GetChangeForm().fateDiedAt.has_value() == dayStamped);
+  REQUIRE(p.worldState.fateRespawnDue.count(kPredator) == due);
+  REQUIRE(LiveWordsTo(p, 1, kPredator) == 0);
+  REQUIRE(actor.GetPos() == deathPoint + NiPoint3{ 120.f, 0.f, -40.f });
+  REQUIRE(actor.IsBodySettling());
+
+  StandUp(p, actor);
   Leave(p, 1, kOther);
   Leave(p, 0, kHost);
 }

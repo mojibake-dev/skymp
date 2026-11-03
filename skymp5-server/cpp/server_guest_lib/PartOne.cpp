@@ -2266,7 +2266,26 @@ void PartOne::TickCellHostsEverySecond()
   pImpl->lastCellsTick = now;
   TickCellHosts(SteadyNowMs());
   TickDeaths(SteadyNowMs());
+  TickBodies(SteadyNowMs());
   SweepHeldSightings(SteadyNowMs());
+}
+
+void PartOne::TickBodies(uint64_t nowMs)
+{
+  if (worldState.settlingBodies.empty()) {
+    return;
+  }
+  const std::vector<uint32_t> ids(worldState.settlingBodies.begin(),
+                                  worldState.settlingBodies.end());
+  for (const auto id : ids) {
+    auto& form = worldState.LookupFormByIdNoLoad(id);
+    MpActor* actor = form ? form->AsActor() : nullptr;
+    if (!actor || !actor->IsBodySettling()) {
+      worldState.settlingBodies.erase(id);
+      continue;
+    }
+    actor->SettleBodyIfDue(nowMs);
+  }
 }
 
 void PartOne::TickDeaths(uint64_t nowMs)

@@ -308,6 +308,13 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
       partOne->worldState.npcEngineDeaths =
         serverSettings.at("npcEngineDeaths").get<bool>();
     }
+    // thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067): how long
+    // after an NPC's death its owner's ragdoll samples move the record
+    // before the body is at rest where it lies; default 15000
+    if (serverSettings.find("bodySettleMs") != serverSettings.end()) {
+      partOne->worldState.bodySettleMs =
+        serverSettings.at("bodySettleMs").get<uint32_t>();
+    }
     // the ranged sneak attack multiplier the engine uses, measured by the lab
     // (x-npc-sneak-shot); absent or 0, SkyMP's 1.3 stands
     if (serverSettings.find("sneakRangedMult") != serverSettings.end()) {

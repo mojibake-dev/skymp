@@ -626,7 +626,7 @@ TEST_CASE("A player's unload of a cell returns its live props there to the "
   Sample(p, 1, kBasket, kHere + NiPoint3{ 22.f, 0.f, 0.f }, true);
   REQUIRE(p.PropLiveOwner(w.prop) == 0);
   REQUIRE(p.PropEpochOf(w.prop) == 4);
-  Move(p, 1, kC2, kHere + NiPoint3{ 60.f, 0.f, 0.f });
+  c2.SetPos(kHere + NiPoint3{ 60.f, 0.f, 0.f });
   // the host's own kick woke it (a word by id); its unload returns it too
   p.Messages().clear();
   Sample(p, 0, kBasket, kHere + NiPoint3{ 25.f, 0.f, 0.f }, false);

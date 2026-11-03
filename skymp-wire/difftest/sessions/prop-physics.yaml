@@ -10,7 +10,9 @@
 # cell) at epoch 1 and tells every listener of the prop, c1 and c2 (PropOwner); the legacy
 # stack knows no MsgType 59. At 2500 ms c1 sends an awake sample and at 3000 ms the sleep:
 # the wire stack writes the record and relays each to c2 alone (the two PropTransform
-# divergences); the legacy stack knows no MsgType 58. If the drop's id were assumed and wrong on
+# divergences), and the sleep returns the prop to the cell's host by default (ADR-063
+# decision 4's arbitration, 2026-11-03: every return is a word), so both clients hear a
+# PropOwner with player 0 at epoch 2; the legacy stack knows no MsgType 58. If the drop's id were assumed and wrong on
 # a run (something else drew an id first: in a full T2 the sessions before this one allocate
 # forms on the same server, and P3's first T2 read exactly that, 2026-10-29), nothing here
 # assumes it: the sends and the declarations name the drop as "{{created:80254}}", which the
@@ -81,6 +83,16 @@ divergences:
     legacy: 0
     wire: 1
     reason: the simulator's sleep sample relayed reliable to the cell's other listener (PropTransform); the legacy server drops the type
+  - client: c1
+    msg: {t: 60, refr: "{{created:80254}}", player: 0, epoch: 2}
+    legacy: 0
+    wire: 1
+    reason: the owner word at the body's rest (nobody hosts the cell in this session, so the asleep sample returns the prop to the host by default, player 0, at epoch 2; ADR-063 decision 4, the arbitration of 2026-11-03); the legacy server knows no such message
+  - client: c2
+    msg: {t: 60, refr: "{{created:80254}}", player: 0, epoch: 2}
+    legacy: 0
+    wire: 1
+    reason: the same return word to the prop's other listener; the legacy server knows no such message
   - client: c2
     msg: {t: 25, idx: "refr:ff000002"}
     legacy: 0

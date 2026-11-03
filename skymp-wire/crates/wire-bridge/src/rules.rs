@@ -1992,31 +1992,40 @@ mod ffi {
         /// (wire-rules cells::GRACE_MS), for the core's timer.
         fn host_grace_ms() -> u64;
 
-        /// thuum docs/verbs/prop-physics.md (ADR-058): one simulating seat per
-        /// physics prop, the cell's host by default, the last toucher while
-        /// its lease holds; the owner table's "prop" rows.
+        /// thuum docs/verbs/prop-physics.md (ADR-058; ADR-063 decision 4's
+        /// arbitration): one simulating seat per physics prop, the cell's
+        /// host by default, the toucher while it moves, a grabber until its
+        /// release; ownership changes by the word alone; the owner table's
+        /// "prop" rows.
         type Props;
         /// No prop claimed.
         fn new_props() -> Box<Props>;
         /// `player` touched `refr` in `cell` by `touch` (0 contact, 1 grab, 2
         /// drop, 3 impulse) at `now_ms`: 0 granted (the epoch is
         /// `prop_epoch_of`), 1 held by another's grab, 2 the claimant
-        /// simulates it already.
+        /// simulates it already, 3 another seat streams it awake and the
+        /// touch is no grab.
         fn claim_prop(self: &mut Props, refr: u32, player: u32, cell: u32, touch: u8, now_ms: u64) -> u8;
-        /// The prop's owner epoch, up at every grant; 0 before any.
+        /// The prop's owner epoch, up at every word (a grant, a return); 0
+        /// before any.
         fn prop_epoch_of(self: &Props, refr: u32) -> u32;
         /// `player`'s transform of `refr`, landing in `cell` (0 for none)
         /// whose host is `cell_host` (0 while nobody), the body asleep or
         /// not, `moved` units from the record: 0 accepted (the record takes
         /// it), 1 not the owner's, 2 no cell or an unhosted cell nobody holds
         /// (the prop freezes), 3 farther than the step budget allows (the
-        /// record stands); `cell_host` hosts the cell the RECORD stands in.
+        /// record stands), 4 accepted and the rest returned the prop to the
+        /// host (the word with player 0 at `prop_epoch_of`), 5 refused as a
+        /// grab past its cap (returned, the word), 6 an asleep sample over
+        /// the budget (the rest taken and returned, the position not, the
+        /// word); `cell_host` hosts the cell the RECORD stands in.
         fn prop_transform(self: &mut Props, facts: &PropSampleFacts) -> u8;
         /// The row's owner while the row is live, else 0: the word a late
-        /// listener gets at its subscription.
+        /// listener gets at its subscription (with the epoch, 0 names the
+        /// host by default).
         fn prop_live_owner(self: &Props, refr: u32, now_ms: u64) -> u32;
         /// Who simulates `refr` now, given its cell's host (0 while nobody):
-        /// the toucher while awake or inside its lease, else the host.
+        /// the toucher while awake or held, else the host.
         fn prop_owner_of(self: &Props, refr: u32, cell_host: u32, now_ms: u64) -> u32;
         /// `host` now hosts `cell`: the rows nobody holds live name it, their
         /// epochs kept.
@@ -3142,6 +3151,8 @@ impl Props {
             props::TransformVerdict::WrongCell => 2,
             props::TransformVerdict::TooFast => 3,
             props::TransformVerdict::Returned(_) => 4,
+            props::TransformVerdict::Capped(_) => 5,
+            props::TransformVerdict::RestRefused(_) => 6,
         }
     }
 

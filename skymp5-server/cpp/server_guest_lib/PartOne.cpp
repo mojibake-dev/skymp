@@ -1357,17 +1357,18 @@ void PartOne::Init()
 
     sendTarget->Send(listenerUserId, message, true);
 
-    // thuum docs/verbs/prop-physics.md (ADR-058): a listener arriving while
-    // a seat simulates this prop hears who, after the create word, so it
+    // thuum docs/verbs/prop-physics.md (ADR-058; ADR-063 decision 4): a
+    // listener arriving at a prop that ever had a word hears the current one
+    // after the create word (the live owner, or 0 for the host by default),
+    // so a seat that missed a return never keeps an older word, and it
     // neither simulates the prop as the host's default nor drops the stream
-    // as echoes; with no live row the listener's own fallback (the cell's
-    // host) is the answer
+    // as echoes; a prop with no word yet is the host's on every seat
     if (!emitterAsActor) {
-      if (const uint32_t liveOwner = PropLiveOwner(*emitter); liveOwner != 0) {
+      if (const uint32_t epoch = PropEpochOf(*emitter); epoch != 0) {
         PropOwnerMessage word;
         word.refr = emitter->GetFormId();
-        word.player = liveOwner;
-        word.epoch = PropEpochOf(*emitter);
+        word.player = PropLiveOwner(*emitter);
+        word.epoch = epoch;
         sendTarget->Send(listenerUserId, word, true);
       }
     }
@@ -2610,6 +2611,35 @@ uint32_t PartOne::PropEpochOf(const MpObjectReference& prop) const
 void PartOne::PropsHostChanged(uint32_t cell, uint32_t host)
 {
   pImpl->props->props_host_changed(cell, host, SteadyNowMs());
+}
+
+void PartOne::AnswerPropWord(Networking::UserId user,
+                             const MpObjectReference& prop)
+{
+  // keyed by user and prop; pruned when it grows, so the map stays the size
+  // of the recent refusals and never outlives a test's PartOne by much
+  static std::unordered_map<uint64_t, std::chrono::steady_clock::time_point>
+    answered;
+  const auto now = std::chrono::steady_clock::now();
+  if (answered.size() > 1024) {
+    for (auto it = answered.begin(); it != answered.end();) {
+      it = now - it->second > std::chrono::seconds(10) ? answered.erase(it)
+                                                       : std::next(it);
+    }
+  }
+  const uint64_t key = (static_cast<uint64_t>(user) << 32) |
+    static_cast<uint64_t>(prop.GetFormId());
+  auto& at = answered[key];
+  if (at != std::chrono::steady_clock::time_point() &&
+      now - at < std::chrono::seconds(1)) {
+    return;
+  }
+  at = now;
+  PropOwnerMessage word;
+  word.refr = prop.GetFormId();
+  word.player = PropLiveOwner(prop);
+  word.epoch = PropEpochOf(prop);
+  GetSendTarget().Send(user, word, true);
 }
 
 size_t PartOne::SendPropOwnerWord(uint32_t refr, uint32_t player,

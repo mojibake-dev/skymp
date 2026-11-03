@@ -649,7 +649,13 @@ public:
     TooFast,
     // taken, and the owner's rest returned the prop to the cell's host at a
     // new epoch: the word with player 0 goes out (ADR-063 decision 4)
-    Returned
+    Returned,
+    // refused: the holder's first sample past the grab's cap; the prop is
+    // the host's again at a new epoch, the word goes out
+    Capped,
+    // refused as over the step budget, but asleep: the rest is taken (the
+    // host's again, the word), the position is not (the record stands)
+    RestRefused
   };
   // `sender`'s sample of `prop` landing in `cell` (0 for none), judged by
   // the host of `recordCell` (the cell the record stands in, read from the
@@ -676,6 +682,10 @@ public:
   // cell's host by default (ADR-063 decision 4). Returns how many were told.
   size_t SendPropOwnerWord(uint32_t refr, uint32_t player, uint32_t epoch,
                            uint32_t exceptActor = 0);
+  // The current word (the live owner or 0, the epoch) to one user, at most
+  // once per prop per second: the answer to a refused sample or claim, so a
+  // seat whose mirror diverged hears who owns the prop (ADR-063 decision 4).
+  void AnswerPropWord(Networking::UserId user, const MpObjectReference& prop);
   // thuum docs/verbs/npc-fate.md (the deaths): the bodies whose deadline
   // (fateDiedAt plus WorldState::FateRespawnHours()) the installed game
   // clock has passed stand again; once a second from Tick, directly from a

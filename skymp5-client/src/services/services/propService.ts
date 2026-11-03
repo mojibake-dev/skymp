@@ -69,6 +69,10 @@ const SAMPLE_DEGREES = 2;
 const STIR_UNITS = 0.25;
 const STIR_DEGREES = 0.25;
 const SLEEP_AFTER_MS = 500;
+// a prop this seat holds (the grab event, until its release) streams an awake
+// sample at least this often while still, so no follower's copy rests and
+// falls where the hand is (ADR-063 decision 4's review, 2026-11-03)
+const HOLD_SAMPLE_MS = 500;
 // a resting body this seat simulates is read for a stir ten times a second,
 // not every frame (sixty-four host-default props at rest cost nine natives
 // each per read)
@@ -131,6 +135,7 @@ type Prop = {
     stirredAt: number;
     streaming: boolean;            // awake samples went out since the last sleep
     announce: boolean;             // a granted word named this seat: its first read goes out at once (see stream)
+    held: boolean;                 // this seat's engine holds it (the grab event, until its release)
     // the follower's side
     pending: Sample | undefined;   // the newest sample in, applied on the next update
     lastSampleAt: number;
@@ -311,8 +316,8 @@ export class PropService extends ClientListener {
     // tracked prop. The release is PropClaim touch 2 (wire-rules props.rs:
     // "a grabbed prop let go"): the server holds a grabbed prop against every
     // other claim until its holder's drop, so a release that said nothing
-    // would hold the prop for the session; the holder keeps the simulation
-    // until its lease lapses either way
+    // would hold the prop until the grab's cap; the holder keeps the
+    // simulation until the body rests after the release (ADR-063 decision 4)
     private onGrabRelease(e: GrabReleaseEvent) {
         if (!e.refr) {
             return;
@@ -579,7 +584,15 @@ export class PropService extends ClientListener {
         }
         // the loss of the simulation sets no motion here: the new owner's
         // first awake sample makes the body Keyframed (follow), and a body
-        // nobody streams rests Dynamic (D73)
+        // nobody streams rests Dynamic (D73); except a prop this seat still
+        // holds in its hand, which another seat now owns (a double grab lost,
+        // the server's word answering the refused claim): the hold ends here,
+        // Keyframed, so no two hands move one prop (ADR-063 decision 3)
+        if (!simulate && prop.held) {
+            prop.held = false;
+            this.setMotion(prop, refr, MotionType.Keyframed, false);
+            logLab(TAG, `prop ${prop.refr.toString(16)}: another seat owns it while this hand held it; the hold ends`);
+        }
         prop.simulating = simulate;
         prop.lastSent = undefined;
         prop.lastRead = undefined;
@@ -640,8 +653,8 @@ export class PropService extends ClientListener {
             prop.lastRead = read;
             if (prop.announce) {
                 // the grant's first sample: the stream is open from here, so the
-                // asleep sample and the server's lease follow SLEEP_AFTER_MS
-                // later when nothing stirs
+                // asleep sample follows SLEEP_AFTER_MS later when nothing
+                // stirs, and the server returns the prop on it
                 prop.announce = false;
                 this.send(prop, read, false, now);
                 prop.streaming = true;
@@ -670,6 +683,16 @@ export class PropService extends ClientListener {
             return;
         }
         if (prop.streaming && now - prop.stirredAt >= SLEEP_AFTER_MS) {
+            if (prop.held) {
+                // a held prop never rests on the wire: an awake sample at least
+                // every HOLD_SAMPLE_MS keeps the followers on the stream (their
+                // copies Keyframed in the hand's place) and the server's row
+                // awake and grabbed; the release's fall and rest end the hold
+                if (now - prop.lastSendAt >= HOLD_SAMPLE_MS) {
+                    this.send(prop, read, false, now);
+                }
+                return;
+            }
             // the owner's own final sample: the server returns the prop to the
             // cell's host on it and its word (player 0) comes back; nothing is
             // inferred here (ADR-063 decision 4)
@@ -820,6 +843,9 @@ export class PropService extends ClientListener {
                 logTrace(this, `touch ${t.touch} on ${t.localId.toString(16)}: not a tracked prop, no claim`);
                 continue;
             }
+            // the hold's own mark: while this seat holds the prop its stream
+            // never rests (a follower's copy would fall where the hand is)
+            prop.held = t.touch === TOUCH_GRAB;
             this.claim(prop, t.touch, now);
         }
     }
@@ -1037,9 +1063,9 @@ export class PropService extends ClientListener {
         }
         if (prop.simulating) {
             // a body this seat leaves Dynamic would move here unstreamed: its
-            // transform goes out once more as the final sample (the server's
-            // lease starts, the record rests there, the other seats follow),
-            // then the body is parked
+            // transform goes out once more as the final sample (the server
+            // returns the prop to the host on it, the record rests there, the
+            // other seats follow), then the body is parked
             const refr = this.refOf(prop);
             if (refr && refr.is3DLoaded()) {
                 if (prop.streaming) {
@@ -1155,6 +1181,7 @@ export class PropService extends ClientListener {
             stirredAt: 0,
             streaming: false,
             announce: false,
+            held: false,
             pending: undefined,
             lastSampleAt: 0,
             prevSampleAt: 0,

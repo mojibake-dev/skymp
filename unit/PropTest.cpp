@@ -26,6 +26,7 @@ constexpr uint32_t kC2 = 0xff000d02;
 constexpr uint32_t kBasket = 0xff000d03;
 constexpr uint32_t kC3 = 0xff000d04;
 constexpr uint32_t kChest = 0xff000d05;
+constexpr uint32_t kC4 = 0xff000d08;
 // BarrelFood01_NoRespawn, a CONT of Skyrim.esm (esm.py): no prop
 constexpr uint32_t kBarrelFood01NoRespawn = 0x10e882;
 // Bucket01, a MISC of Skyrim.esm (the one Riverwood's 0x2ad9c is placed from)
@@ -257,12 +258,16 @@ TEST_CASE("A claim by a player in the prop's cell is granted and the owner "
   REQUIRE(toC1[0].player == kC2);
 
   // c1 walks into it while c2 streams it awake: refused as moving (ADR-063
-  // decision 4, playtest 41), no word, the owner and the epoch stand
+  // decision 4, playtest 41), the owner and the epoch stand, and the
+  // claimant alone hears the current word
   p.Messages().clear();
   Claim(p, 0, kBasket, 0);
   REQUIRE(p.PropOwnerOf(w.prop) == kC2);
   REQUIRE(p.PropEpochOf(w.prop) == 1);
-  REQUIRE(SentTo<PropOwnerMessage>(p, 0).empty());
+  const auto answered = SentTo<PropOwnerMessage>(p, 0);
+  REQUIRE(answered.size() == 1);
+  REQUIRE(answered[0].player == kC2);
+  REQUIRE(answered[0].epoch == 1);
   REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
 
   // c2's body rests: the host's again at once, at epoch 2, both seats told
@@ -324,7 +329,7 @@ TEST_CASE("A claim on an unknown reference or on a grabbed prop is refused: "
   REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
 
   // c1 grabs it while c2 streams it (a grab beats a touch, epoch 2); c2's
-  // contact cannot take it out of c1's hands
+  // contact cannot take it out of c1's hands, and c2 hears the word
   Claim(p, 0, kBasket, 1);
   REQUIRE(p.PropOwnerOf(w.prop) == kC1);
   REQUIRE(p.PropEpochOf(w.prop) == 2);
@@ -332,18 +337,28 @@ TEST_CASE("A claim on an unknown reference or on a grabbed prop is refused: "
   Claim(p, 1, kBasket, 0);
   REQUIRE(p.PropOwnerOf(w.prop) == kC1);
   REQUIRE(p.PropEpochOf(w.prop) == 2);
-  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
+  const auto held = SentTo<PropOwnerMessage>(p, 1);
+  REQUIRE(held.size() == 1);
+  REQUIRE(held[0].player == kC1);
+  REQUIRE(held[0].epoch == 2);
   // c1's drop: the fall is c1's (c2's contact on it is moving, refused); its
-  // rest keeps it the host's (c1 hosts, no word), then c2's contact takes it
+  // rest returns it to the host by a word (c1 hosts: the word says player 0
+  // all the same, epoch 3), then c2's contact takes it at 4
   Claim(p, 0, kBasket, 2);
+  p.Messages().clear();
   Claim(p, 1, kBasket, 0);
   REQUIRE(p.PropOwnerOf(w.prop) == kC1);
   REQUIRE(p.PropEpochOf(w.prop) == 2);
+  p.Messages().clear();
   Sample(p, 0, kBasket, kHere + NiPoint3{ 10.f, 0.f, 0.f }, true);
-  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
+  REQUIRE(p.PropEpochOf(w.prop) == 3);
+  const auto rested = SentTo<PropOwnerMessage>(p, 1);
+  REQUIRE(rested.size() == 1);
+  REQUIRE(rested[0].player == 0);
+  REQUIRE(rested[0].epoch == 3);
   Claim(p, 1, kBasket, 0);
   REQUIRE(p.PropOwnerOf(w.prop) == kC2);
-  REQUIRE(p.PropEpochOf(w.prop) == 3);
+  REQUIRE(p.PropEpochOf(w.prop) == 4);
   Leave(p);
 }
 
@@ -472,11 +487,26 @@ TEST_CASE("A claim on a container is refused and one from beyond reach is "
   REQUIRE(RelaysTo(p, 0) == std::vector<int>{ 0 });
 
   // a third seat enters the cell while c2 simulates: its create word is
-  // followed by the owner word at the current epoch
+  // followed by the owner word at the current epoch; a fourth, after c2's
+  // rest returned the prop, hears the host's word (player 0) at the epoch
+  // the return gave it, so no late seat keeps an older owner
   p.Messages().clear();
   Player(p, 2, kC3, kHere + NiPoint3{ 80.f, 0.f, 0.f });
   const auto toC3 = SentTo<PropOwnerMessage>(p, 2);
   REQUIRE(toC3.size() == 1);
+  {
+    Sample(p, 1, kBasket, near + NiPoint3{ 5.f, 0.f, 0.f }, true);
+    const auto epochAtRest = p.PropEpochOf(w.prop);
+    REQUIRE(epochAtRest == toC3[0].epoch + 1);
+    p.Messages().clear();
+    Player(p, 3, kC4, kHere + NiPoint3{ 90.f, 0.f, 0.f });
+    const auto toC4 = SentTo<PropOwnerMessage>(p, 3);
+    REQUIRE(toC4.size() == 1);
+    REQUIRE(toC4[0].player == 0);
+    REQUIRE(toC4[0].epoch == epochAtRest);
+    DoDisconnect(p, 3);
+    p.DestroyActor(kC4);
+  }
   REQUIRE(toC3[0].refr == kBasket);
   REQUIRE(toC3[0].player == kC2);
   REQUIRE(toC3[0].epoch == p.PropEpochOf(w.prop));

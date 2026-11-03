@@ -58,7 +58,7 @@ use bounded::{String, Vec};
 /// 30: ObjectAnimation (thuum docs/verbs/traps.md, ADR-059 decision 3,
 /// m4-object-animation): a world object's animation event the cell's host
 /// reported, recorded as its lastAnimation and told to the cell's other games.
-pub const SCHEMA_VERSION: u16 = 32;
+pub const SCHEMA_VERSION: u16 = 33;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.

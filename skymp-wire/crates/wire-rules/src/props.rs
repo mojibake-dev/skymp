@@ -153,11 +153,22 @@ pub enum TransformVerdict {
     /// (or not a number): refused, the record stands.
     TooFast,
     /// Taken, and the body's rest returned the prop to the cell's host at
-    /// this epoch (the owner was not the host): the word `PropOwner` with
+    /// this epoch, the host's own rest included: the word `PropOwner` with
     /// player 0 goes to every listener (ADR-063 decision 4: ownership
     /// returns to the host only at rest on the owner's screen, by the
-    /// owner's own final sample, and the return is a word).
+    /// owner's own final sample, and every return is a word, so no seat is
+    /// left holding an older word).
     Returned(u32),
+    /// Refused: the sender held the prop grabbed past PROP_GRAB_MAX_MS and
+    /// this sample is the first the table sees after the cap; the prop is the
+    /// host's again at this epoch and the word goes out (the cap ends by a
+    /// word, never by a silent drop).
+    Capped(u32),
+    /// Refused as farther than the step budget allows, but the sample said
+    /// asleep: the rest is taken (the prop is the host's again at this
+    /// epoch, the word goes out), the position is not (the record stands);
+    /// without it a refused final sample left a live row nobody could move.
+    RestRefused(u32),
 }
 
 /// Every prop's row and every prop's epoch (kept after its row is gone).
@@ -229,6 +240,11 @@ impl Props {
         if let Some(row) = self.rows.get_mut(&refr) {
             if row.live(now_ms) {
                 if row.owner == player {
+                    // a grab restarts the cap's clock (the host's grab of a
+                    // prop it has streamed for a while is still a fresh hold)
+                    if touch == touch::GRAB && !row.grabbed {
+                        row.since_ms = now_ms;
+                    }
                     row.grabbed = touch == touch::GRAB;
                     row.cell = cell;
                     // a touch wakes the row: the holder's drop is followed by
@@ -276,6 +292,19 @@ impl Props {
         if cell == 0 {
             return TransformVerdict::WrongCell;
         }
+        // the grab's cap, noticed at the holder's first sample past it: the
+        // prop is the host's again by a word, the sample refused
+        if let Some(row) = self.rows.get_mut(&refr) {
+            if row.owner == player && row.grabbed && now_ms >= row.since_ms.saturating_add(PROP_GRAB_MAX_MS) {
+                row.owner = 0;
+                row.grabbed = false;
+                row.asleep = true;
+                let next = row.epoch.saturating_add(1);
+                row.epoch = next;
+                self.epochs.insert(refr, next);
+                return TransformVerdict::Capped(next);
+            }
+        }
         let owner = self.owner_of(refr, cell_host, now_ms);
         if owner == 0 {
             return TransformVerdict::WrongCell;
@@ -296,6 +325,25 @@ impl Props {
             _ => PROP_FIRST_SAMPLE_UNITS,
         };
         if !moved.is_finite() || moved > allowed {
+            if asleep && !self.rows.get(&refr).is_some_and(|r| r.grabbed) {
+                // a refused final sample still ends the owner's turn: the
+                // record stands where it was, the prop is the host's again
+                let next = self.epoch_of(refr).saturating_add(1);
+                self.epochs.insert(refr, next);
+                let row = self.rows.entry(refr).or_insert(PropRow {
+                    owner: 0,
+                    epoch: next,
+                    cell,
+                    asleep: true,
+                    grabbed: false,
+                    since_ms: now_ms,
+                    last_sample_ms: now_ms,
+                });
+                row.owner = 0;
+                row.asleep = true;
+                row.epoch = next;
+                return TransformVerdict::RestRefused(next);
+            }
             return TransformVerdict::TooFast;
         }
         let epoch = self.epoch_of(refr);
@@ -318,9 +366,10 @@ impl Props {
         row.cell = cell;
         row.asleep = asleep;
         row.last_sample_ms = now_ms;
-        if asleep && !row.grabbed && owner != cell_host {
-            // the toucher's body rests: the prop is the host's again, by
-            // this very sample, and every listener hears it
+        if asleep && !row.grabbed {
+            // the body rests: the prop is the host's again by this very
+            // sample, the host's own rest included, and every listener hears
+            // it (a seat holding an older word would otherwise keep it)
             row.owner = 0;
             let next = epoch.saturating_add(1);
             row.epoch = next;
@@ -443,41 +492,52 @@ mod tests {
         assert_eq!(p.transform(&facts(BASKET, C1, CELL, C2, true, 10.0, 9_300)), TransformVerdict::Returned(3));
         assert_eq!(p.owner_of(BASKET, C2, 9_300), C2);
         assert_eq!(p.epoch_of(BASKET), 3);
-        // a grab nobody releases ends at its cap: the next touch takes it, the ex-holder's sample is NotOwner
+        // a grab nobody releases ends at its cap, by a word: the holder's first sample past it is refused as
+        // Capped and the prop is the host's at the next epoch; the next touch takes it
         let mut q = Props::default();
         assert_eq!(q.claim(BASKET, C2, CELL, touch::GRAB, 1_000), ClaimVerdict::Granted(1));
         assert_eq!(q.owner_of(BASKET, C1, 1_000 + PROP_GRAB_MAX_MS - 1), C2);
         assert_eq!(q.owner_of(BASKET, C1, 1_000 + PROP_GRAB_MAX_MS), C1);
-        assert_eq!(q.transform(&facts(BASKET, C2, CELL, C1, false, 10.0, 1_000 + PROP_GRAB_MAX_MS)), TransformVerdict::NotOwner);
-        assert_eq!(q.claim(BASKET, C3, CELL, touch::CONTACT, 1_100 + PROP_GRAB_MAX_MS), ClaimVerdict::Granted(2));
+        assert_eq!(q.transform(&facts(BASKET, C2, CELL, C1, false, 10.0, 1_000 + PROP_GRAB_MAX_MS)), TransformVerdict::Capped(2));
+        assert_eq!(q.epoch_of(BASKET), 2);
+        assert_eq!(q.transform(&facts(BASKET, C2, CELL, C1, false, 10.0, 1_100 + PROP_GRAB_MAX_MS)), TransformVerdict::NotOwner);
+        assert_eq!(q.claim(BASKET, C3, CELL, touch::CONTACT, 1_200 + PROP_GRAB_MAX_MS), ClaimVerdict::Granted(3));
+        // a grab on a prop the holder already streamed restarts the cap's clock (the host's own grab)
+        let mut r = Props::default();
+        assert_eq!(r.claim(BASKET, C2, CELL, touch::CONTACT, 1_000), ClaimVerdict::Granted(1));
+        assert_eq!(r.transform(&facts(BASKET, C2, CELL, C1, false, 10.0, 60_000)), TransformVerdict::Accepted);
+        assert_eq!(r.claim(BASKET, C2, CELL, touch::GRAB, 60_100), ClaimVerdict::Same);
+        assert_eq!(r.owner_of(BASKET, C1, 60_100 + PROP_GRAB_MAX_MS - 1), C2);
+        assert_eq!(r.owner_of(BASKET, C1, 60_100 + PROP_GRAB_MAX_MS), C1);
     }
 
     #[test]
     fn only_the_owner_moves_the_record_and_its_rest_returns_the_prop_to_the_host_as_a_word() {
         let mut p = Props::default();
-        // the host's sample of an unclaimed prop writes its row; its rest keeps it the host's, no word
+        // the host's sample of an unclaimed prop writes its row; its rest returns it with a word too
+        // (the host's own, so every seat's word reads "the host by default", epoch 1)
         assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, false, 10.0, 500)), TransformVerdict::Accepted);
         assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 10.0, 600)), TransformVerdict::NotOwner);
-        assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, true, 10.0, 700)), TransformVerdict::Accepted);
-        assert_eq!(p.epoch_of(BASKET), 0);
+        assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, true, 10.0, 700)), TransformVerdict::Returned(1));
+        assert_eq!(p.epoch_of(BASKET), 1);
         assert_eq!(p.owner_of(BASKET, C1, 700), C1);
         // c2's touch at rest: granted; only c2's samples pass
-        assert_eq!(p.claim(BASKET, C2, CELL, touch::CONTACT, 1_000), ClaimVerdict::Granted(1));
+        assert_eq!(p.claim(BASKET, C2, CELL, touch::CONTACT, 1_000), ClaimVerdict::Granted(2));
         assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, false, 10.0, 1_100)), TransformVerdict::NotOwner);
         assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 10.0, 1_100)), TransformVerdict::Accepted);
         // no timer hands it back: a long quiet keeps c2 the owner
         assert_eq!(p.owner_of(BASKET, C1, 60_000), C2);
         assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, false, 10.0, 60_000)), TransformVerdict::NotOwner);
         // c2's own asleep sample: the host's again at once, at the next epoch, and the word goes out
-        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, true, 10.0, 61_000)), TransformVerdict::Returned(2));
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, true, 10.0, 61_000)), TransformVerdict::Returned(3));
         assert_eq!(p.owner_of(BASKET, C1, 61_000), C1);
         assert_eq!(p.live_owner(BASKET, 61_000), 0);
-        assert_eq!(p.epoch_of(BASKET), 2);
+        assert_eq!(p.epoch_of(BASKET), 3);
         assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 10.0, 61_100)), TransformVerdict::NotOwner);
         assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, false, 10.0, 61_100)), TransformVerdict::Accepted);
-        // c2's new touch at rest is a grant again, at the next epoch
-        assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, true, 10.0, 61_200)), TransformVerdict::Accepted);
-        assert_eq!(p.claim(BASKET, C2, CELL, touch::CONTACT, 62_000), ClaimVerdict::Granted(3));
+        // the host's rest returns it again (epoch 4); c2's new touch at rest is a grant at 5
+        assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, true, 10.0, 61_200)), TransformVerdict::Returned(4));
+        assert_eq!(p.claim(BASKET, C2, CELL, touch::CONTACT, 62_000), ClaimVerdict::Granted(5));
     }
 
     #[test]
@@ -526,11 +586,11 @@ mod tests {
         assert_eq!(p.epoch_of(BASKET), 2);
         assert_eq!(p.epoch_of(0x1234), 2);
         // the host's samples pass and it streams the prop awake: c2's return
-        // touch waits for the host's rest, then is a grant at epoch 3
+        // touch waits for the host's rest (a word, epoch 3), then is a grant at 4
         assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, false, 10.0, 2_200)), TransformVerdict::Accepted);
         assert_eq!(p.claim(BASKET, C2, CELL, touch::CONTACT, 2_300), ClaimVerdict::Moving);
-        assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, true, 10.0, 2_400)), TransformVerdict::Accepted);
-        assert_eq!(p.claim(BASKET, C2, CELL, touch::CONTACT, 2_500), ClaimVerdict::Granted(3));
+        assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, true, 10.0, 2_400)), TransformVerdict::Returned(3));
+        assert_eq!(p.claim(BASKET, C2, CELL, touch::CONTACT, 2_500), ClaimVerdict::Granted(4));
         // nothing of c3's: nothing returned
         assert_eq!(p.gone(C3, 3_000), vec![]);
     }
@@ -550,6 +610,10 @@ mod tests {
         assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 539.0, 1_200)), TransformVerdict::Accepted);
         // not a number: refused
         assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, f32::NAN, 1_300)), TransformVerdict::TooFast);
+        // an asleep sample over the budget: the rest is taken (the prop the host's again, a word), the position not
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, true, 5_000.0, 1_400)), TransformVerdict::RestRefused(2));
+        assert_eq!(p.owner_of(BASKET, C1, 1_400), C1);
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 10.0, 1_500)), TransformVerdict::NotOwner);
         // the host's first sample of an unclaimed prop: half a second of
         // flight (PROP_FIRST_SAMPLE_UNITS, playtest 41's cabbages), then the
         // row's elapsed budget

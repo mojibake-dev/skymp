@@ -21425,6 +21425,48 @@
                 {
                     "arguments": [
                         {
+                            "name": "refr",
+                            "type": {
+                                "objectTypeName": "ObjectReference",
+                                "rawType": "Object"
+                            }
+                        },
+                        {
+                            "name": "bodyHex",
+                            "type": {
+                                "rawType": "String"
+                            }
+                        },
+                        {
+                            "name": "flags",
+                            "type": {
+                                "rawType": "Int"
+                            }
+                        },
+                        {
+                            "name": "version",
+                            "type": {
+                                "rawType": "Int"
+                            }
+                        },
+                        {
+                            "name": "remapRows",
+                            "type": {
+                                "rawType": "String"
+                            }
+                        }
+                    ],
+                    "isLatent": false,
+                    "name": "ApplyChangeForm",
+                    "offset": "0",
+                    "returnType": {
+                        "rawType": "String"
+                    },
+                    "useLongSignature": false
+                },
+                {
+                    "arguments": [
+                        {
                             "name": "targetActor",
                             "type": {
                                 "objectTypeName": "Actor",
@@ -21714,6 +21756,24 @@
                         "rawType": "None"
                     },
                     "useLongSignature": true
+                },
+                {
+                    "arguments": [
+                        {
+                            "name": "refr",
+                            "type": {
+                                "objectTypeName": "ObjectReference",
+                                "rawType": "Object"
+                            }
+                        }
+                    ],
+                    "isLatent": false,
+                    "name": "SerializeChangeForm",
+                    "offset": "0",
+                    "returnType": {
+                        "rawType": "String"
+                    },
+                    "useLongSignature": false
                 },
                 {
                     "arguments": [

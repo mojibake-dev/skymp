@@ -1,5 +1,6 @@
 #include "PapyrusTESModPlatform.h"
 #include "CallNativeApi.h"
+#include "ChangeForm.h"
 #include "ConsoleApi.h"
 #include "ExceptionPrinter.h"
 #include "FridaHooks.h"
@@ -1606,6 +1607,29 @@ bool TESModPlatform::SetPlayerExperience(IVM* vm, StackID stackId,
   return true;
 }
 
+// thuum docs/verbs/change-form.md (ADR-065): the engine's own change form of
+// a loaded actor, on demand (ChangeForm.cpp holds the recipe, the premises
+// and the HYPOTHESIS list). A String return since callNative returns no
+// object: "" is the null the contract names, the reason logged
+RE::BSFixedString TESModPlatform::SerializeChangeForm(IVM* vm, StackID stackId,
+                                                      RE::StaticFunctionTag*,
+                                                      RE::TESObjectREFR* refr)
+{
+  return RE::BSFixedString(ChangeForm::Serialize(refr));
+}
+
+// the served record applied to this seat's loaded copy through the engine's
+// own LoadGame and finish pass, the REMAP step first (ChangeForm.cpp)
+RE::BSFixedString TESModPlatform::ApplyChangeForm(
+  IVM* vm, StackID stackId, RE::StaticFunctionTag*, RE::TESObjectREFR* refr,
+  std::string_view bodyHex, int32_t flags, int32_t version,
+  std::string_view remapRows)
+{
+  return RE::BSFixedString(
+    ChangeForm::Apply(refr, bodyHex, static_cast<uint32_t>(flags),
+                      static_cast<uint32_t>(version), remapRows));
+}
+
 bool TESModPlatform::Register(IVM* vm)
 {
   TESModPlatform::onPapyrusUpdate = onPapyrusUpdate;
@@ -1844,6 +1868,19 @@ bool TESModPlatform::Register(IVM* vm)
                        true, decltype(ReleaseQuestStageFragment), bool,
                        RE::StaticFunctionTag*, RE::TESQuest*, int32_t>(
     "ReleaseQuestStageFragment", "TESModPlatform", ReleaseQuestStageFragment));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SerializeChangeForm),
+                                     RE::BSFixedString, RE::StaticFunctionTag*,
+                                     RE::TESObjectREFR*>(
+      "SerializeChangeForm", "TESModPlatform", SerializeChangeForm));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(ApplyChangeForm),
+                                     RE::BSFixedString, RE::StaticFunctionTag*,
+                                     RE::TESObjectREFR*, std::string_view,
+                                     int32_t, int32_t, std::string_view>(
+      "ApplyChangeForm", "TESModPlatform", ApplyChangeForm));
 
   static LoadGameEvent loadGameEvent;
 

@@ -3227,24 +3227,23 @@ bool IsPropKind(MpObjectReference& refr)
     worldState->IsPropStatic(refr.GetBaseId());
 }
 
-// how far a touch reaches, in units from the claimant's record to the prop's:
-// the controller's contact and the grab at arm's length, a drop at the
-// player's feet with the client's drop match slack, an impulse (a shout, a
-// spell) across a room. UNMEASURED budgets (the stage sizes them).
-constexpr float kPropTouchReach = 256.f;
-constexpr float kPropDropReach = 512.f;
-constexpr float kPropImpulseReach = 2048.f;
 }
 
-// thuum docs/verbs/prop-physics.md (ADR-058 decision 1): a player's game
-// touched a physics prop it does not simulate. The gates: the reference a
-// prop the server holds (not an actor), the claimant standing in its cell
-// (the cell the record's position names, WorldState::CellOf); then the rule
-// (wire-rules props): the newest touch wins, one epoch per prop, unless the
-// claimant simulates it already or another player holds it grabbed. Granted,
-// the word (PropOwner) goes reliable to every listener of the prop with a
-// user, the claimant among them (it learns its epoch); the old simulator's
-// seat goes Keyframed on it, the claimant's Dynamic.
+// thuum docs/verbs/prop-physics.md (ADR-058 decision 1; ADR-063 decision 4,
+// playtest 41, 2026-11-02): a player's game touched a physics prop it does
+// not simulate. The gates: the reference a prop the server holds (not an
+// actor), a touch the contract names; then the rule (wire-rules props): the
+// newest touch wins, one epoch per prop, unless the claimant simulates it
+// already or another player holds it grabbed. Granted, the word (PropOwner)
+// goes reliable to every listener of the prop with a user, the claimant
+// among them (it learns its epoch); the old simulator's seat goes Keyframed
+// on it, the claimant's Dynamic. The two owner validations that stood here
+// (the claimant in the prop's cell, within 256, 512 or 2048 units of the
+// record) are retired by ADR-063: a carried bucket's drop was refused
+// E_PROP_REACH and a grab E_PROP_CELL against a record the carrier had
+// already moved (01:37Z and 01:38Z), so the carrier's own seat lost the prop
+// it was carrying. Ownership is arbitrated, not permitted: the server
+// records who touched last and relays the word.
 void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
                                  const PropClaimMessage& msg)
 {
@@ -3268,15 +3267,10 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
   if (msg.touch > 3) {
     return refuse("E_PROP_RANGE", "a touch the contract does not name");
   }
+  // the prop's own cell is the rule's row key, not a gate on the claimant
   const auto cell = partOne.worldState.CellOf(*prop);
-  if (!cell || partOne.worldState.CellOf(*myActor) != cell) {
-    return refuse("E_PROP_CELL", "the claimant is not in the prop's cell");
-  }
-  const float reach = msg.touch == 3 ? kPropImpulseReach
-    : msg.touch == 2                 ? kPropDropReach
-                                     : kPropTouchReach;
-  if ((myActor->GetPos() - prop->GetPos()).Length() > reach) {
-    return refuse("E_PROP_REACH", "the claimant is too far from the prop");
+  if (!cell) {
+    return refuse("E_PROP_CELL", "the prop's record stands in no cell");
   }
   const auto verdict =
     partOne.ClaimProp(*myActor, *prop, *cell, static_cast<uint8_t>(msg.touch));

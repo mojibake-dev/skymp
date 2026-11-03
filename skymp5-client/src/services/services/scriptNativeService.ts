@@ -60,7 +60,14 @@ export class ScriptNativeService extends ClientListener {
 
     // the census, once a window: how many calls of each native this seat's
     // scripts made, the filtered ones by their suffix (the lab reads it;
-    // slice 2 sizes its rows by it)
+    // slice 2 sizes its rows by it). A key is the native's name
+    // ("Quest.Start") plus the suffix the platform tallied it under:
+    // " (platform)" for the platform's own call, " (not hosted)" for a call
+    // the cell gate filtered, " on <id>" for a quest's, global's or alias's
+    // call with its self (the quest, the global, the alias's quest; up to
+    // kSelvesPerRow distinct selves a row a window, ScriptNatives.cpp) and
+    // " on others" for that row's selves past the cap; no suffix is a live
+    // call this seat reported.
     private onUpdate() {
         const now = Date.now();
         if (now - this.lastSummary < ScriptNativeService.summaryMs) {

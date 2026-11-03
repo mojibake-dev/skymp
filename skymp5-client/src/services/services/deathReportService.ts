@@ -53,13 +53,26 @@ export class DeathReportService extends ClientListener {
         if (this.controller.lookupListener(DeathService).takeServerKill(localId)) {
             return;
         }
-        if (!this.controller.lookupListener(HostService).isReportable(localId)) {
+        const host = this.controller.lookupListener(HostService);
+        if (!host.isMineLocal(localId)) {
             return;
         }
         const killer = e.actorKiller ? this.sp.Actor.from(e.actorKiller) : null;
         const killerLocal = killer ? killer.getFormID() : 0;
-        this.send(dying, localIdToRemoteId(localId), killerLocal !== 0 ? 4 : 0,
-            killerLocal !== 0 ? localIdToRemoteId(killerLocal, true) : 0, "deathStart");
+        const cause = killerLocal !== 0 ? 4 : 0;
+        const killerRemote = killerLocal !== 0 ? localIdToRemoteId(killerLocal, true) : 0;
+        // a death during a promotion's hold waits for the hold's end (the
+        // engine's kill stands here; the report carries the body's place,
+        // which the hold is settling), never dropped (review item 4)
+        if (host.deferPastHold(localId, "the death report", () => {
+            const again = this.sp.Actor.from(this.sp.Game.getFormEx(localId));
+            if (again) {
+                this.send(again, localIdToRemoteId(localId), cause, killerRemote, "deathStart, deferred past the hold");
+            }
+        })) {
+            return;
+        }
+        this.send(dying, localIdToRemoteId(localId), cause, killerRemote, "deathStart");
     }
 
     private send(actor: Actor, refrId: number, cause: number, killer: number, how: string) {

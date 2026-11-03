@@ -411,9 +411,11 @@ TEST_CASE("A hazard report is checked against an activation beside the body",
   Leave(p, 0, kHost);
 }
 
-TEST_CASE("A script's kill, an unnamed cause and a body far from the record "
-          "are refused, a dead actor's report is nothing, and the setting "
-          "off refuses everything",
+// (a script's kill, cause 3, was refused here until ADR-062 decision 2 made
+// it the host's word; its case is the last in this file)
+TEST_CASE("An unnamed cause and a body far from the record are refused, a "
+          "dead actor's report is nothing, and the setting off refuses "
+          "everything",
           "[ActorDeath][espm]")
 {
   auto& p = GetPartOne();
@@ -430,8 +432,6 @@ TEST_CASE("A script's kill, an unnamed cause and a body far from the record "
   actor.RecordHeight(body.z + 500.f, now - std::chrono::seconds(2));
   actor.RecordHeight(body.z, now);
 
-  Report(p, 0, kPredator, 3, 0, body);
-  REQUIRE_FALSE(actor.IsDead());
   Report(p, 0, kPredator, 7, 0, body);
   REQUIRE_FALSE(actor.IsDead());
   // the drop would pass, but the body lies 3000 units away

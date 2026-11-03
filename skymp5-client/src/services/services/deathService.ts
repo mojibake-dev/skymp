@@ -220,6 +220,37 @@ export class DeathService extends ClientListener {
       this.restPuppetAtHost(actor);
       actor.endDeferredKill();
       if (silent) {
+        // thuum playtest 41 (2026-11-03, Eli: "NPC's stay dead but on a cell
+        // reentry i hear their deaths again which is weird"): the bind kill
+        // below IS KillSilent, so the death sound is not the OnDeath events'
+        // (the HYPOTHESIS in formView's bind was wrong): it rides the kill's
+        // own animation. Which event carries it is the read: the body's
+        // animation events are logged for 2 s around this kill ("body <id>:
+        // anim event <name> during the silent kill"), so the next cell
+        // re-entry names the event to blank for a dead record's load
+        // (rule 3: a reloading engine renders the dead state and does not
+        // re-run the death). The trace costs one hook on this id.
+        const traced = actor.getFormID();
+        const until = Date.now() + 2000;
+        const handle = this.sp.hooks.sendAnimationEvent.add(
+          {
+            enter: (ctx) => {
+              if (Date.now() <= until && ctx.animEventName) {
+                logLab("verb:npc-fate", `body ${traced.toString(16)}: anim event ${ctx.animEventName} during the silent kill`);
+              }
+            },
+            leave() { },
+          },
+          traced,
+          traced,
+        );
+        this.sp.Utility.wait(2.5).then(() => {
+          try {
+            this.sp.hooks.sendAnimationEvent.remove(handle);
+          } catch (e) {
+            logTrace(this, `the silent kill's anim trace could not be removed: ${e}`);
+          }
+        });
         actor.killSilent(killer);
         // thuum playtest 38's finding 71 ("essentially t posing half stuck in
         // the ground"): a body moved to its record's spot and killed silently

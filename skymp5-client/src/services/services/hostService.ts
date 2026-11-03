@@ -1,4 +1,4 @@
-import { Cell, CellAttachDetachEvent, CellFullyLoadedEvent, Game, ObjectReference, TESModPlatform, WorldSpace } from "skyrimPlatform";
+import { Actor, Cell, CellAttachDetachEvent, CellFullyLoadedEvent, Game, ObjectReference, TESModPlatform, WorldSpace } from "skyrimPlatform";
 import { MsgType } from "../../messages";
 import { logError, logLab, logTrace } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
@@ -12,6 +12,11 @@ import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { localIdToRemoteId, remoteIdToLocalId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { RemoteServer } from "./remoteServer";
+
+// one actor's hold: the record to stand at, the word's arrival, the asks made
+// (the gate's move counts as the first), the checks run and the reports
+// deferred past it
+type PendingPlacement = { since: number; record: Movement; asks: number; askedAt: number; checks: number; deferred: Array<() => void> };
 
 // The storage key of the state a plugin reload must not lose (sp.storage
 // survives one, ADR-041)
@@ -188,18 +193,50 @@ export class HostService extends ClientListener {
     // docs/engine/non-owning-seat.md P8 and section 3: the word named this
     // seat for `remoteId`, and its reports hold until the engine's copy
     // STANDS at the record (the engine's cell the record's and the position
-    // within placedWithinUnits), checked each update; the check asks the move
-    // itself once if nothing else has (the view's gate and the puppet
-    // reconcile also place), and gives up after placementTimeoutMs with a
-    // line naming both positions (a new owner publishes only after its
-    // hand-off completes). A missing form or record releases at once, so no
-    // actor is held for good.
+    // within placedWithinUnits), checked each update. One mover per
+    // promotion: the view's gate moves across cells at the word and tells
+    // the hold (noteMovedLocal); if nothing moved the copy by the second
+    // check the hold asks the move itself, and it re-asks once a second
+    // after an ask that did not land (MoveRefrToPosition is a no-op for about
+    // 50 Papyrus updates after a load, LoadGame.cpp); the timeout counts from
+    // the last ask, so a late landing is waited for and a stuck one is
+    // released with a line naming both positions (numidium's review of
+    // 0b61fc80, item 1). A body is never moved (D78 C): a dead record is not
+    // held and a copy found dead is released unmoved (item 2). A missing form
+    // or record releases at once, so no actor is held for good. Reports
+    // deferred past the hold (a death) run at its release (item 4).
     holdUntilPlaced(remoteId: number, record: Movement | undefined): void {
         if (!record) {
             logTrace(this, `hold for ${remoteId.toString(16)}: no record held, nothing to place at`);
             return;
         }
-        this.pendingPlacement.set(remoteId, { since: Date.now(), record, asked: false });
+        if (record.isDead) {
+            logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: dead at the word, a body is never moved (D78 C); not held`);
+            return;
+        }
+        this.pendingPlacement.set(remoteId, { since: Date.now(), record, asks: 0, askedAt: 0, checks: 0, deferred: [] });
+    }
+
+    // the view's gate moved this actor's copy to the record at its
+    // promotion: that is the hold's first ask (one mover, not two)
+    noteMovedLocal(localId: number): void {
+        const hold = this.pendingPlacement.get(localIdToRemoteId(localId));
+        if (hold && hold.asks === 0) {
+            hold.asks = 1;
+            hold.askedAt = Date.now();
+        }
+    }
+
+    // a demote (the word names another game) or any other end of the
+    // reason to hold: the hold ends with its deferred reports run
+    releaseHold(remoteId: number, why: string): void {
+        const hold = this.pendingPlacement.get(remoteId);
+        if (!hold) {
+            return;
+        }
+        this.pendingPlacement.delete(remoteId);
+        logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: released after ${Date.now() - hold.since} ms, ${why}`);
+        this.runDeferred(remoteId, hold.deferred);
     }
 
     // the senders of a report that carries a position (a death, a shot's or a
@@ -208,47 +245,108 @@ export class HostService extends ClientListener {
         return this.isMineLocal(localId) && !this.pendingPlacement.has(localIdToRemoteId(localId));
     }
 
+    isHeld(localId: number): boolean {
+        return this.pendingPlacement.has(localIdToRemoteId(localId));
+    }
+
+    // a report that can wait (a death: the engine's kill stands on this seat
+    // and the server's word is late, never lost) runs when the hold ends,
+    // placed or not; true when deferred, false when there is no hold
+    deferPastHold(localId: number, what: string, run: () => void): boolean {
+        const remoteId = localIdToRemoteId(localId);
+        const hold = this.pendingPlacement.get(remoteId);
+        if (!hold) {
+            return false;
+        }
+        hold.deferred.push(run);
+        logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: ${what} deferred past the hold`);
+        return true;
+    }
+
+    private runDeferred(remoteId: number, deferred: Array<() => void>): void {
+        for (const run of deferred) {
+            try {
+                run();
+            } catch (e) {
+                logError(this, `hold ${remoteId.toString(16)}: a deferred report threw: ${e}`);
+            }
+        }
+    }
+
     private checkPlacements(): void {
         if (this.pendingPlacement.size === 0) {
             return;
         }
         const now = Date.now();
         this.pendingPlacement.forEach((hold, remoteId) => {
-            const refr = ObjectReference.from(Game.getFormEx(remoteIdToLocalId(remoteId)));
-            if (!refr) {
+            // a throw inside one hold's check must not stop the others' or
+            // hold this actor for good (item 8)
+            try {
+                this.checkPlacement(hold, remoteId, now);
+            } catch (e) {
                 this.pendingPlacement.delete(remoteId);
-                logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: no form here, released`);
-                return;
-            }
-            const r = hold.record;
-            const engineCell = ObjectReferenceEx.getWorldOrCell(refr);
-            const ex = refr.getPositionX(), ey = refr.getPositionY(), ez = refr.getPositionZ();
-            const dist = Math.sqrt((ex - r.pos[0]) ** 2 + (ey - r.pos[1]) ** 2 + (ez - r.pos[2]) ** 2);
-            const engineAt = `(${ex.toFixed(0)}, ${ey.toFixed(0)}, ${ez.toFixed(0)}) in ${engineCell.toString(16)}`;
-            const recordAt = `(${r.pos[0].toFixed(0)}, ${r.pos[1].toFixed(0)}, ${r.pos[2].toFixed(0)}) in ${r.worldOrCell.toString(16)}`;
-            if (engineCell === r.worldOrCell && dist <= HostService.placedWithinUnits) {
-                this.pendingPlacement.delete(remoteId);
-                logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: placed at the record after ${now - hold.since} ms, the engine at ${engineAt}, the record at ${recordAt}; released`);
-                return;
-            }
-            if (!hold.asked) {
-                hold.asked = true;
-                const target = Game.getFormEx(r.worldOrCell);
-                if (target) {
-                    TESModPlatform.moveRefrToPosition(refr, Cell.from(target), WorldSpace.from(target), r.pos[0], r.pos[1], r.pos[2],
-                        r.rot[0] * Math.PI / 180, r.rot[1] * Math.PI / 180, r.rot[2] * Math.PI / 180);
-                }
-                return;
-            }
-            if (now - hold.since >= HostService.placementTimeoutMs) {
-                this.pendingPlacement.delete(remoteId);
-                logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: not placed after ${now - hold.since} ms, the engine at ${engineAt}, the record at ${recordAt}; released on the timeout`);
+                logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: the check threw (${e}); released`);
+                this.runDeferred(remoteId, hold.deferred);
             }
         });
     }
 
-    private readonly pendingPlacement = new Map<number, { since: number; record: Movement; asked: boolean }>();
+    private checkPlacement(hold: PendingPlacement, remoteId: number, now: number): void {
+        hold.checks += 1;
+        const refr = ObjectReference.from(Game.getFormEx(remoteIdToLocalId(remoteId)));
+        if (!refr) {
+            this.pendingPlacement.delete(remoteId);
+            logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: no form here, released`);
+            this.runDeferred(remoteId, hold.deferred);
+            return;
+        }
+        const r = hold.record;
+        const engineCell = ObjectReferenceEx.getWorldOrCell(refr);
+        const ex = refr.getPositionX(), ey = refr.getPositionY(), ez = refr.getPositionZ();
+        const dist = Math.sqrt((ex - r.pos[0]) ** 2 + (ey - r.pos[1]) ** 2 + (ez - r.pos[2]) ** 2);
+        const engineAt = `(${ex.toFixed(0)}, ${ey.toFixed(0)}, ${ez.toFixed(0)}) in ${engineCell.toString(16)}`;
+        const recordAt = `(${r.pos[0].toFixed(0)}, ${r.pos[1].toFixed(0)}, ${r.pos[2].toFixed(0)}) in ${r.worldOrCell.toString(16)}`;
+        const asked = hold.asks === 0 ? "never asked" : `asked ${hold.asks} time(s), the last at +${hold.askedAt - hold.since} ms`;
+        if (engineCell === r.worldOrCell && dist <= HostService.placedWithinUnits) {
+            this.pendingPlacement.delete(remoteId);
+            logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: placed at the record after ${now - hold.since} ms (${asked}), the engine at ${engineAt}, the record at ${recordAt}; released`);
+            this.runDeferred(remoteId, hold.deferred);
+            return;
+        }
+        const actor = Actor.from(refr);
+        if (actor && actor.isDead()) {
+            this.pendingPlacement.delete(remoteId);
+            logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: dead on this seat after ${now - hold.since} ms, a body is never moved (D78 C), the engine at ${engineAt}, the record at ${recordAt}; released unmoved`);
+            this.runDeferred(remoteId, hold.deferred);
+            return;
+        }
+        // the first check leaves the frame to the view's gate (its move is
+        // the first ask, noteMovedLocal); the second asks if nobody did
+        const askNow = (hold.asks === 0 && hold.checks >= 2) ||
+            (hold.asks === 1 && now - hold.askedAt >= HostService.reaskAfterMs);
+        if (askNow) {
+            hold.asks += 1;
+            hold.askedAt = now;
+            const target = Game.getFormEx(r.worldOrCell);
+            if (target) {
+                TESModPlatform.moveRefrToPosition(refr, Cell.from(target), WorldSpace.from(target), r.pos[0], r.pos[1], r.pos[2],
+                    r.rot[0] * Math.PI / 180, r.rot[1] * Math.PI / 180, r.rot[2] * Math.PI / 180);
+            }
+            logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: ${hold.asks === 1 ? "asked" : "re-asked"} the move at +${now - hold.since} ms${target ? "" : " (the record's cell is not a form here)"}, the engine at ${engineAt}`);
+            return;
+        }
+        if (hold.asks >= 2 && now - hold.askedAt >= HostService.placementTimeoutMs) {
+            this.pendingPlacement.delete(remoteId);
+            logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: not placed after ${now - hold.since} ms (${asked}), the engine at ${engineAt}, the record at ${recordAt}; released on the timeout`);
+            this.runDeferred(remoteId, hold.deferred);
+        }
+    }
+
+    private readonly pendingPlacement = new Map<number, PendingPlacement>();
     private static readonly placedWithinUnits = 64;
+    // a second ask when the first did not land within a second; the release
+    // two seconds after the last ask
+    private static readonly reaskAfterMs = 1000;
     private static readonly placementTimeoutMs = 2000;
 
     private onCellFullyLoaded(e: CellFullyLoadedEvent) {

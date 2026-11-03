@@ -4882,9 +4882,9 @@ void PartOne::SetContainerSharing(const std::string& mode)
 {
   if (mode != "shared" && mode != "exclusive") {
     spdlog::warn("[verb:containers] containerSharing \"{}\" is neither "
-                 "\"shared\" nor \"exclusive\"; shared kept",
+                 "\"shared\" nor \"exclusive\"; exclusive kept",
                  mode);
-    worldState.containerSharingExclusive = false;
+    worldState.containerSharingExclusive = true;
     return;
   }
   worldState.containerSharingExclusive = mode == "exclusive";

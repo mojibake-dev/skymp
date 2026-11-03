@@ -393,11 +393,13 @@ public:
   // false (the default) drops every pick and lets no perk state leave the
   // server, the console's and the natives' writes included
   bool perksEnabled = false;
-  // thuum docs/verbs/containers.md (ADR-061 decision 3): one occupant per
-  // container when true (server-settings.json's containerSharing
-  // "exclusive"); false (the default, "shared") keeps memo D52's shared live
-  // view, every player who opens a container in it
-  bool containerSharingExclusive = false;
+  // thuum docs/verbs/containers.md (ADR-061 decision 3; Eli, playtest 41:
+  // "revert to one person is allowed to interact with a chest at a time",
+  // and no menu is ever closed and reopened under a player to sync it): one
+  // occupant per container, a chest's or a corpse's, the default
+  // (server-settings.json's containerSharing "exclusive"); "shared" keeps
+  // memo D52's live view for the backlog's next attempt
+  bool containerSharingExclusive = true;
   // thuum docs/verbs/character-creation.md (the permit, M5): the races the
   // race menu offers only to listed profiles, keyed as server-settings.json's
   // restrictedRaces names them ("<shortid>:<plugin>"), each with its profile

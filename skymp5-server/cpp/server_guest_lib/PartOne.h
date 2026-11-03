@@ -304,11 +304,12 @@ public:
   bool PerksEnabled() const;
 
   // thuum docs/verbs/containers.md (ADR-061 decision 3):
-  // server-settings.json's containerSharing, "shared" (the default: every
-  // player who opens a container is in it, memo D52) or "exclusive" (one
-  // occupant at a time; a second player's activation is refused with
-  // E_CONTAINER_BUSY and a notification on its seat, the occupant's close
-  // frees the container)
+  // server-settings.json's containerSharing, "exclusive" (the default: one
+  // occupant at a time, a chest's or a corpse's; a second player's activation
+  // is refused with E_CONTAINER_BUSY and a notification on its seat, the
+  // occupant's close frees the container) or "shared" (every player who opens
+  // a container is in it, memo D52's live view, backlogged by Eli's word in
+  // playtest 41)
   void SetContainerSharing(const std::string& mode);
 
   // thuum docs/verbs/word-wall.md (M4): what a wall trigger reference's

@@ -112,6 +112,15 @@ export class HostService extends ClientListener {
             if (remoteId === undefined) {
                 return;
             }
+            // docs/engine/non-owning-seat.md P8: a promoted actor's reports
+            // wait until its copy is placed at the record (remoteServer's
+            // word handler places it on the next update), so the first
+            // report never carries the engine's stale position (065955,
+            // 070357: the day copy at the mill reported 88 ms after the
+            // gate's decision and before its move landed)
+            if (this.pendingPlacement.has(remoteId)) {
+                return;
+            }
             const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(remoteIdToLocalId(remoteId)));
             if (refr && this.sp.Actor.from(refr) && this.isMine(form, refr)) {
                 out.push(remoteId);
@@ -170,6 +179,17 @@ export class HostService extends ClientListener {
 
     // Whether this game hosts the cell, by its id (thuum docs/verbs/
     // prop-physics.md: a prop nobody's word names is the cell's host's)
+    // the word named this seat for `remoteId`; its stream holds until placed()
+    holdUntilPlaced(remoteId: number): void {
+        this.pendingPlacement.add(remoteId);
+    }
+
+    placed(remoteId: number): void {
+        this.pendingPlacement.delete(remoteId);
+    }
+
+    private readonly pendingPlacement = new Set<number>();
+
     hostsCell(cellId: number): boolean {
         return cellId !== 0 && this.hosted.has(cellId);
     }

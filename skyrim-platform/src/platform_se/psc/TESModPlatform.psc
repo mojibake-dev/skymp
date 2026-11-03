@@ -107,3 +107,14 @@ Bool Function LaunchArrowAt(Actor shooter, Weapon weapon, Ammo ammo, Float power
 ; false for no quest or a stage outside 0 to 65535
 Bool Function SuppressQuestStageFragment(Quest quest, Int stage) global native
 Bool Function ReleaseQuestStageFragment(Quest quest, Int stage) global native
+
+; thuum docs/verbs/change-form.md (ADR-065, system 1): the reference's change
+; form serialized on demand by the engine's own SaveGame (a JSON string:
+; formType, flags, version, bodyHex, fnv1a, remap rows; "" when a premise
+; refused, the reason in skyrim-platform.log), and a served record applied to
+; this seat's loaded copy through the engine's own LoadGame and finish pass (a
+; JSON string: applied, reason, fnvPatched). remapRows is
+; "offset:formId:index,..." since callNative takes no array; flags is the
+; sender's u32 as an Int
+String Function SerializeChangeForm(ObjectReference refr) global native
+String Function ApplyChangeForm(ObjectReference refr, String bodyHex, Int flags, Int version, String remapRows) global native

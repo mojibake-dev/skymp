@@ -184,6 +184,24 @@ bool ReleaseQuestStageFragment(IVM* vm, StackID stackId,
                                RE::StaticFunctionTag*, RE::TESQuest* quest,
                                int32_t stage);
 
+// thuum docs/verbs/change-form.md (ADR-065, system 1): the reference's change
+// form, serialized on demand by the engine's own SaveGame on the owner's seat
+// (a JSON string: formType, flags, version, bodyHex, fnv1a, the remap rows;
+// "" for null, the reason in skyrim-platform.log), and a served record
+// applied to this seat's loaded copy through the engine's own LoadGame and
+// finish pass (a JSON string: applied, reason, fnvPatched). The JSON shapes
+// and the premises are ChangeForm.h's. remapRows is "offset:formId:index,..."
+// since callNative takes no array; flags is the sender's u32 as a Papyrus
+// Int (`flags | 0` in JS)
+RE::BSFixedString SerializeChangeForm(IVM* vm, StackID stackId,
+                                      RE::StaticFunctionTag*,
+                                      RE::TESObjectREFR* refr);
+RE::BSFixedString ApplyChangeForm(IVM* vm, StackID stackId,
+                                  RE::StaticFunctionTag*,
+                                  RE::TESObjectREFR* refr,
+                                  std::string_view bodyHex, int32_t flags,
+                                  int32_t version, std::string_view remapRows);
+
 void BlockPapyrusEvents(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                         bool blocked);
 

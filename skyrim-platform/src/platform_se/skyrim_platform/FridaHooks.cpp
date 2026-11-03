@@ -1,4 +1,5 @@
 #include "FridaHooks.h"
+#include "ChangeForm.h"
 #include "EventsApi.h"
 #include "Fates.h"
 #include "FridaHookHandler.h"
@@ -1947,6 +1948,9 @@ void Frida::InstallHooks()
   // thuum docs/verbs/npc-fate.md: the roll's two detours, inert until
   // setActorFateEnabled(true)
   Fates::InstallHooks();
+  // thuum docs/verbs/change-form.md (ADR-065): the id census on 35928 and
+  // the address proof line of the change-form natives
+  ChangeForm::InstallHooks();
 
   logger::info("Frida hooks installed.");
 }

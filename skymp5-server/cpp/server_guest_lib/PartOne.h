@@ -784,7 +784,11 @@ public:
     Refuse = 0,
     Accept = 1,
     Follow = 2,
-    Pass = 3
+    Pass = 3,
+    // dropped as a stale copy's sample (npc-handoff D9's settle, playtest
+    // 41): a report out of a cell the actor was followed or passed into
+    // younger than the settle window; not a refusal of the sender's right
+    Stale = 4
   };
   MoveVerdict MayMoveActor(const MpActor& sender, const MpActor& actor,
                            uint32_t destWorldOrCell, const NiPoint3& destPos);

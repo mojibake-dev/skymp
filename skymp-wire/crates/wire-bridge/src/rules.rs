@@ -1981,6 +1981,10 @@ mod ffi {
         /// The grace a host keeps its cell after leaving it, ms
         /// (wire-rules cells::GRACE_MS), for the core's timer.
         fn host_grace_ms() -> u64;
+        /// The settle window after a hand-off (wire-rules
+        /// cells::PASS_SETTLE_MS, npc-handoff D9): the new host's report out
+        /// of the cell within it is a stale copy's sample (verdict 4).
+        fn pass_settle_ms() -> u64;
 
         /// thuum docs/verbs/prop-physics.md (ADR-058): one simulating seat per
         /// physics prop, the cell's host by default, the last toucher while
@@ -3035,6 +3039,7 @@ impl Cells {
             cells::MoveVerdict::Accept => 1,
             cells::MoveVerdict::Follow => 2,
             cells::MoveVerdict::Pass => 3,
+            cells::MoveVerdict::Stale => 4,
         }
     }
 
@@ -3053,6 +3058,7 @@ impl Cells {
             cells::MoveVerdict::Accept => 1,
             cells::MoveVerdict::Follow => 2,
             cells::MoveVerdict::Pass => 3,
+            cells::MoveVerdict::Stale => 4,
         }
     }
 
@@ -3088,6 +3094,10 @@ impl Cells {
 
 const fn host_grace_ms() -> u64 {
     cells::GRACE_MS
+}
+
+const fn pass_settle_ms() -> u64 {
+    cells::PASS_SETTLE_MS
 }
 
 /// The prop owner table (wire-rules props, thuum docs/verbs/prop-physics.md).

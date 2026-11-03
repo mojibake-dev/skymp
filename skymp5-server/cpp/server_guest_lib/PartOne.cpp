@@ -1139,9 +1139,12 @@ void PartOne::Init()
     // (x-handoff-door 20261024-001915 read a follow removed at the exit
     // door before the host lookup, hence a false "no host")
     MpActor* host = worldState.HostOf(actor);
-    return host &&
-      WouldMoveActor(*host, actor, destWorldOrCell, destPos) !=
-      MoveVerdict::Refuse;
+    if (!host) {
+      return false;
+    }
+    const auto verdict =
+      WouldMoveActor(*host, actor, destWorldOrCell, destPos);
+    return verdict != MoveVerdict::Refuse && verdict != MoveVerdict::Stale;
   };
   // thuum docs/verbs/npc-fate.md (ADR-049 decision 2): a fate rolled anew
   // at a respawn goes to every user and the fate pass at a player's square

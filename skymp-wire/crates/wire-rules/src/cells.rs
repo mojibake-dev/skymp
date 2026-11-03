@@ -38,6 +38,15 @@ pub const COLD_START_MS: u64 = 5_000;
 /// passes as before. UNMEASURED placeholder.
 pub const FOLLOW_SETTLE_MS: u64 = 1_000;
 
+/// How long after a pass (D9) the new host's report moving the actor out of
+/// the cell it was passed into is dropped as a stale copy's sample (playtest
+/// 41, 2026-11-03 02:08Z: Hod 0x1348a walked through the Sleeping Giant's
+/// door to the street's host, whose copy of him still stood inside; its first
+/// report handed him straight back and the two games traded him twice a
+/// second). The follow's window, the same shape. UNMEASURED placeholder;
+/// b-npc-handoff-door-hosts sizes it.
+pub const PASS_SETTLE_MS: u64 = 1_000;
+
 /// The pass's hysteresis (ADR-047 D22, its brake; thuum docs/verbs/npc-handoff.md,
 /// 2026-10-26): a simulator's crossing into another live host's cell passes the
 /// actor only once the report stands this many units inside the destination's
@@ -78,6 +87,13 @@ pub enum MoveVerdict {
     /// between the players and every crossing was refused, seven a second,
     /// one engine walking her live where the other held the record.
     Pass = 3,
+    /// Dropped as a stale copy's sample, not as a refusal of the sender's
+    /// right: the sender's report moves the actor out of a cell it was
+    /// followed or passed into younger than the settle window (a sample taken
+    /// before the engine's transit, one reordered on the unreliable channel,
+    /// or a just-promoted copy still on the other side of the door, playtest
+    /// 41). The core logs it as such.
+    Stale = 4,
 }
 
 /// How many CellLoaded reports a client may send at once; the validator's
@@ -234,13 +250,23 @@ struct PlayerState {
     dead: bool,
 }
 
+/// A hand-off between live hosts (ADR-047 D9): who the actor was passed to,
+/// into which cell and when, for the settle window (PASS_SETTLE_MS).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Pass {
+    host: u32,
+    cell: u32,
+    since_ms: u64,
+}
+
 /// Every cell's host and every player's loaded set, grid and round trip,
-/// and the follows (ADR-047 D6).
+/// the follows (ADR-047 D6) and the last pass per actor (D9's settle).
 #[derive(Debug, Default)]
 pub struct Cells {
     cells: HashMap<u32, CellState>,
     players: HashMap<u32, PlayerState>,
     follows: HashMap<u32, Follow>,
+    passes: HashMap<u32, Pass>,
     /// The first grant's time, the cold start's window opening; None until it.
     first_grant_ms: Option<u64>,
 }
@@ -452,11 +478,19 @@ impl Cells {
             return MoveVerdict::Accept;
         }
         // a report putting the actor back where it stood before a follow
-        // younger than the settle window is a stale sample, not a return
+        // younger than the settle window is a stale sample, not a return;
+        // the same for the new host's report out of the cell its actor was
+        // just passed into (D9's settle, playtest 41: the promoted copy still
+        // stood on the other side of the door)
         if dest != origin && dest != 0 && origin != 0 {
             if let Some(f) = self.follows.get(&actor) {
                 if f.cell == origin && f.player == sender && now_ms.saturating_sub(f.since_ms) < FOLLOW_SETTLE_MS {
-                    return MoveVerdict::Refuse;
+                    return MoveVerdict::Stale;
+                }
+            }
+            if let Some(p) = self.passes.get(&actor) {
+                if p.cell == origin && p.host == sender && now_ms.saturating_sub(p.since_ms) < PASS_SETTLE_MS {
+                    return MoveVerdict::Stale;
                 }
             }
         }
@@ -545,8 +579,10 @@ impl Cells {
                 // into a cell nobody hosts (D6), or another host's within the margin (D22)
                 let kind = if self.host_of(m.dest).is_some() { FollowKind::Margin } else { FollowKind::Follow };
                 self.follows.insert(m.actor, Follow { player: m.sender, cell: m.dest, since_ms: now_ms, kind, lease_until_ms: None });
+                self.passes.remove(&m.actor);
             }
             MoveVerdict::Accept if m.dest != m.origin => {
+                self.passes.remove(&m.actor);
                 // a claim follows its actor into the new cell (ADR-052)
                 if let Some(f) = self.follows.get_mut(&m.actor) {
                     if f.kind == FollowKind::Claim && f.player == m.sender {
@@ -557,8 +593,12 @@ impl Cells {
                 self.follows.remove(&m.actor);
             }
             MoveVerdict::Pass => {
-                // the destination's host simulates it from here: any follow ends
+                // the destination's host simulates it from here: any follow
+                // ends, and the pass is remembered for its settle window
                 self.follows.remove(&m.actor);
+                if let Some((host, _)) = self.host_of(m.dest) {
+                    self.passes.insert(m.actor, Pass { host, cell: m.dest, since_ms: now_ms });
+                }
             }
             _ => {}
         }
@@ -1069,7 +1109,8 @@ mod tests {
         assert_eq!(c.may_move(&CellMove { sender: C2, actor: SIGRID, origin: EAST, dest: RIVERWOOD, adjacent: true, door: false, edge_units: u32::MAX }, 3_000), MoveVerdict::Pass);
         assert_eq!(c.simulator_of(SIGRID, RIVERWOOD), C1);
         // a crossing that is no adjacent walk (a teleport across squares) and a stranger's report stay refused
-        assert_eq!(c.may_move(&CellMove { sender: C1, actor: SIGRID, origin: RIVERWOOD, dest: EAST, adjacent: false, door: false, edge_units: u32::MAX }, 3_100), MoveVerdict::Refuse);
+        // (the teleport past the pass's settle window: inside it any move out by the new host is a stale copy's)
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: SIGRID, origin: RIVERWOOD, dest: EAST, adjacent: false, door: false, edge_units: u32::MAX }, 3_000 + PASS_SETTLE_MS), MoveVerdict::Refuse);
         assert_eq!(c.may_move(&CellMove { sender: C2, actor: SIGRID, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false, edge_units: u32::MAX }, 3_200), MoveVerdict::Refuse);
     }
 
@@ -1136,6 +1177,38 @@ mod tests {
         let edge = CellMove { sender: C2, actor: EMBRY, origin: INN, dest: RIVERWOOD, adjacent: false, door: true, edge_units: PASS_MARGIN_UNITS - 1 };
         assert_eq!(d.may_move(&edge, 9_000), MoveVerdict::Follow);
         assert_eq!(d.simulator_of(EMBRY, RIVERWOOD), C2);
+    }
+
+    #[test]
+    fn a_passed_actors_report_back_within_the_settle_window_is_a_stale_copys_sample() {
+        // playtest 41 (2026-11-03 02:08Z): Hod 0x1348a walked through the
+        // Sleeping Giant's door to the street's host, whose copy of him still
+        // stood inside; its first report handed him straight back and the two
+        // games traded him twice a second. The new host's report out of the
+        // cell it was passed into, younger than PASS_SETTLE_MS, is a stale
+        // copy's sample; its sample inside the cell is its own; the old host's
+        // late sample is a stranger's; the exit after the window passes
+        const INN: u32 = 0x133c6;
+        const HOD: u32 = 0x1348a;
+        let mut c = both_in_reach();
+        c.reach(C2, &[RIVERWOOD, INN], 0);
+        c.loaded(C1, RIVERWOOD, 1_000);
+        c.loaded(C2, INN, 1_000);
+        let inward = CellMove { sender: C1, actor: HOD, origin: RIVERWOOD, dest: INN, adjacent: false, door: true, edge_units: u32::MAX };
+        assert_eq!(c.may_move(&inward, 2_000), MoveVerdict::Pass);
+        assert_eq!(c.simulator_of(HOD, INN), C2);
+        let outward = CellMove { sender: C2, actor: HOD, origin: INN, dest: RIVERWOOD, adjacent: false, door: true, edge_units: u32::MAX };
+        assert_eq!(c.judge(&outward, 2_100), MoveVerdict::Stale);
+        assert_eq!(c.may_move(&outward, 2_100), MoveVerdict::Stale);
+        assert_eq!(c.simulator_of(HOD, INN), C2);
+        assert_eq!(c.may_move(&CellMove { sender: C2, actor: HOD, origin: INN, dest: INN, adjacent: false, door: false, edge_units: u32::MAX }, 2_200), MoveVerdict::Accept);
+        assert_eq!(c.may_move(&outward, 2_999), MoveVerdict::Stale);
+        assert_eq!(c.may_move(&CellMove { sender: C1, actor: HOD, origin: INN, dest: RIVERWOOD, adjacent: false, door: true, edge_units: u32::MAX }, 2_300), MoveVerdict::Refuse);
+        // the real exit after the window passes him back, and that pass has its own window
+        assert_eq!(c.may_move(&outward, 2_000 + PASS_SETTLE_MS), MoveVerdict::Pass);
+        assert_eq!(c.simulator_of(HOD, RIVERWOOD), C1);
+        assert_eq!(c.may_move(&inward, 2_000 + PASS_SETTLE_MS + 100), MoveVerdict::Stale);
+        assert_eq!(c.may_move(&inward, 2_000 + 2 * PASS_SETTLE_MS), MoveVerdict::Pass);
     }
 
     #[test]
@@ -1238,7 +1311,7 @@ mod tests {
         assert_eq!(c.may_move(&inward, 10_000), MoveVerdict::Follow);
         // the host's next sample, taken before the engine's transit, says the exterior
         let outward = CellMove { sender: C1, actor: ALVOR, origin: INN, dest: RIVERWOOD, adjacent: false, door: true, edge_units: u32::MAX };
-        assert_eq!(c.may_move(&outward, 10_133), MoveVerdict::Refuse);
+        assert_eq!(c.may_move(&outward, 10_133), MoveVerdict::Stale);
         assert_eq!(c.follows(), vec![(ALVOR, C1, INN)]);
         // a real return after the window passes and ends the follow
         assert_eq!(c.may_move(&outward, 10_000 + FOLLOW_SETTLE_MS), MoveVerdict::Accept);

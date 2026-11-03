@@ -21,6 +21,7 @@
 #include <chrono>
 #include <cmath>
 #include <map>
+#include <thread>
 
 PartOne& GetPartOne();
 
@@ -841,6 +842,33 @@ TEST_CASE("A hosted actor's door into a cell another live host holds passes "
   }
   REQUIRE(newHostLive);
   REQUIRE(oldHostDemoted);
+  // the passing report reached the new host's game reliably, ahead of the
+  // word (D9's settle, playtest 41: its promote places the copy at the
+  // door's far side, not where the copy stood); the test's raw report is
+  // the empty object the harness parses it to
+  {
+    const auto& sent = p.Messages();
+    size_t reportAt = sent.size();
+    size_t wordAt = sent.size();
+    for (size_t i = 0; i < sent.size(); ++i) {
+      const auto& m = sent[i];
+      if (m.userId != 1 || !m.j.is_object()) {
+        continue;
+      }
+      if (reportAt == sent.size() && m.reliable && m.j.empty()) {
+        reportAt = i;
+      }
+      if (wordAt == sent.size() &&
+          m.j.value("propName", std::string()) == "isHostedByOther" &&
+          m.j.value("dataDump", std::string()) == "false" &&
+          m.j.value("refrId", 0u) == kHod) {
+        wordAt = i;
+      }
+    }
+    REQUIRE(reportAt < sent.size());
+    REQUIRE(wordAt < sent.size());
+    REQUIRE(reportAt < wordAt);
+  }
 
   // the old host's next report from indoors is a stranger's, the inn
   // host's passes
@@ -848,6 +876,16 @@ TEST_CASE("A hosted actor's door into a cell another live host holds passes "
   REQUIRE(std::abs(hod->GetPos().x - kInside.x) < 1.f);
   Move(p, 1, kHod, kInside + NiPoint3{ 100.f, 0.f, 0.f }, kInn);
   REQUIRE(std::abs(hod->GetPos().x - (kInside.x + 100.f)) < 1.f);
+
+  // the inn host's copy still outside (its promote before the passing
+  // report landed, playtest 41): its report back out within the settle
+  // window is a stale copy's sample, dropped; he stays indoors, the inn
+  // host's
+  Move(p, 1, kHod, kOutside);
+  REQUIRE(p.worldState.CellOf(*hod) == kInn);
+  REQUIRE(p.SimulatorOf(*hod) == kC2);
+  std::this_thread::sleep_for(
+    std::chrono::milliseconds(skymp::rules::pass_settle_ms() + 100));
 
   // the exit by schedule: the inn's host walks him out into c1's square,
   // deep inside it, and c1 takes him back

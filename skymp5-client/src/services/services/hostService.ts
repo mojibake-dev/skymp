@@ -198,14 +198,15 @@ export class HostService extends ClientListener {
     // seat for `remoteId`, and its reports hold until the engine's copy
     // STANDS at the record (the engine's cell the record's and the position
     // within placedWithinUnits), checked each update. One mover per
-    // promotion: the view's gate moves across cells at the word and tells
-    // the hold (noteMovedLocal); if nothing moved the copy by the second
-    // check the hold asks the move itself, and it re-asks once a second
-    // after an ask that did not land (MoveRefrToPosition is a no-op for about
-    // 50 Papyrus updates after a load, LoadGame.cpp); the timeout counts from
-    // the last ask, so a late landing is waited for and a stuck one is
-    // released with a line naming both positions (numidium's review of
-    // 0b61fc80, item 1). A body is never moved (D78 C): a dead record is not
+    // promotion: the hold (the view's gate defers to a standing hold,
+    // formView); the hold asks the move on its second check and asks again
+    // every reaskAfterMs while an ask has not landed, up to maxAsks (the last
+    // at about 6 s, past a cold login's load block, where MoveRefrToPosition
+    // is a no-op for 50 Papyrus updates of 80 ms or more, LoadGame.cpp: at
+    // least 4 s, 5 by its own comment); the timeout counts from the last ask,
+    // so a late landing is waited for and a stuck one is released with a
+    // line naming both positions (numidium's reviews of 0b61fc80 item 1 and
+    // of m3-system1 item 3). A body is never moved (D78 C): a dead record is not
     // held and a copy found dead is released unmoved (item 2). A missing form
     // or record releases at once, so no actor is held for good. Reports
     // deferred past the hold (a death) run at its release (item 4).
@@ -214,13 +215,20 @@ export class HostService extends ClientListener {
             logTrace(this, `hold for ${remoteId.toString(16)}: no record held, nothing to place at`);
             return;
         }
+        const live = this.pendingPlacement.get(remoteId);
         // the word's own dead flag (the create word's isDead, the model's), not
-        // the movement's, which the create word builds false (review item 2)
+        // the movement's, which the create word builds false (review item 2); a
+        // dead word ends a live hold unmoved, its deferred reports dropped (the
+        // server's word stands)
         if (deadByTheWord || record.isDead) {
-            logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: dead at the word, a body is never moved (D78 C); not held`);
+            if (live) {
+                this.pendingPlacement.delete(remoteId);
+                logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: dead at the word, a body is never moved (D78 C); the hold released unmoved${live.deferred.length > 0 ? `, ${live.deferred.length} deferred report(s) dropped (the server's word stands)` : ""}`);
+            } else {
+                logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: dead at the word, a body is never moved (D78 C); not held`);
+            }
             return;
         }
-        const live = this.pendingPlacement.get(remoteId);
         if (live) {
             // a re-sent word mid-hold refreshes the record and keeps the hold's
             // deferred reports and its asks (review item 7)
@@ -228,16 +236,6 @@ export class HostService extends ClientListener {
             return;
         }
         this.pendingPlacement.set(remoteId, { since: Date.now(), record, asks: 0, askedAt: 0, checks: 0, deferred: [] });
-    }
-
-    // the view's gate moved this actor's copy to the record at its
-    // promotion: that is the hold's first ask (one mover, not two)
-    noteMovedLocal(localId: number): void {
-        const hold = this.pendingPlacement.get(localIdToRemoteId(localId));
-        if (hold && hold.asks === 0) {
-            hold.asks = 1;
-            hold.askedAt = Date.now();
-        }
     }
 
     // a demote (the word names another game) or any other end of the
@@ -359,9 +357,9 @@ export class HostService extends ClientListener {
         }
         // the hold is the one mover while it stands (the view's gate defers to
         // it, formView): the first check leaves a frame for the word's apply,
-        // the second asks, and an ask that did not land is repeated a second
-        // later up to maxAsks (a load's first 50 Papyrus updates make the move
-        // a no-op, LoadGame.cpp, about 4 s: review item 3's load block)
+        // the second asks, and an ask that did not land is repeated every
+        // reaskAfterMs up to maxAsks (a cold login's first 50 Papyrus updates
+        // make the move a no-op, LoadGame.cpp, 4 to 5 s: the load block)
         const askNow = (hold.asks === 0 && hold.checks >= 2) ||
             (hold.asks >= 1 && hold.asks < HostService.maxAsks && now - hold.askedAt >= HostService.reaskAfterMs);
         if (askNow) {
@@ -385,15 +383,16 @@ export class HostService extends ClientListener {
     private readonly pendingPlacement = new Map<number, PendingPlacement>();
     private released: Released[] = [];
     private static readonly placedWithinUnits = 64;
-    // another ask when the last did not land within a second, up to three
-    // asks (a load block of about 4 s is covered); the release two seconds
-    // after the last ask, so a stuck placement holds the actor for about 5 s
-    // at most; a copy whose form never appears is released at the same
-    // budget. Known limit (review item 6): a death deferred that long carries
-    // the engine's position at the hold's end and may miss the server's hit
-    // window or its 2048-unit bound, where the server's refusal line says so.
-    private static readonly reaskAfterMs = 1000;
-    private static readonly maxAsks = 3;
+    // another ask every 1.5 s while the last did not land, up to five asks
+    // (the last at about 6 s, past a cold login's load block of at least 4 s,
+    // 5 by LoadGame.cpp's own comment); the release two seconds after the
+    // last ask, so a stuck placement holds the actor for about 8 s at most; a
+    // copy whose form never appears is released at noFormTimeoutMs. Known
+    // limit (review item 6): a death deferred that long carries the engine's
+    // position at the hold's end and may miss the server's hit window or its
+    // 2048-unit bound, where the server's refusal line says so.
+    private static readonly reaskAfterMs = 1500;
+    private static readonly maxAsks = 5;
     private static readonly placementTimeoutMs = 2000;
     private static readonly noFormTimeoutMs = 5000;
 

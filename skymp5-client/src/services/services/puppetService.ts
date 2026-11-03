@@ -289,70 +289,6 @@ export class PuppetService extends ClientListener {
         });
     }
 
-    // playtest 40's F2 (2026-11-02; npc-handoff D6 on the viewing seat): the
-    // record of an actor this game does not simulate stands in `cell`. An
-    // interior this game has not loaded (Cell.isAttached false) means the
-    // actor is out of this game's world: its engine reference is disabled
-    // here (the server's own once-a-minute Disable snippet says the same)
-    // and never released to its schedule while hidden. A record back in a
-    // loaded cell (the actor came out, or this game walked in) shows the
-    // reference at the record and the next reconcile decides its state. The
-    // host's own reference is never hidden: its engine leads.
-    recordCellSeen(localId: number, cell: number, pos: [number, number, number], rot: [number, number, number], mine: boolean): void {
-        if (!this.enabled || localId === 0x14 || localId >= 0xff000000) {
-            return;
-        }
-        const form = this.sp.Game.getFormEx(cell);
-        const cellForm = form ? this.sp.Cell.from(form) : null;
-        const unloadedInterior = !mine && cellForm !== null && cellForm.isInterior() && !cellForm.isAttached();
-        if (unloadedInterior) {
-            this.hideInUnloadedCell(localId, cell);
-            return;
-        }
-        this.showIfHidden(localId, cell, pos, rot);
-    }
-
-    hideInUnloadedCell(localId: number, cell: number): void {
-        if (!this.enabled || localId === 0x14 || localId >= 0xff000000 || this.hiddenByCell.has(localId)) {
-            return;
-        }
-        const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(localId));
-        const ac = refr ? this.sp.Actor.from(refr) : null;
-        if (!ac) {
-            return;
-        }
-        this.hiddenByCell.set(localId, cell);
-        this.controller.lookupListener(HostService).markHosted(localId, false);
-        ac.disable(false);
-        logTrace(this, `hidden ${localId.toString(16)}: its record stands in ${cell.toString(16)}, which this game has not loaded (npc-handoff D6, playtest 40's F2)`);
-    }
-
-    private showIfHidden(localId: number, cell: number, pos: [number, number, number], rot: [number, number, number]): void {
-        if (!this.hiddenByCell.has(localId)) {
-            return;
-        }
-        const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(localId));
-        if (!refr) {
-            return;
-        }
-        this.hiddenByCell.delete(localId);
-        const form = this.sp.Game.getFormEx(cell);
-        refr.enable(false);
-        this.sp.TESModPlatform.moveRefrToPosition(
-            refr,
-            form ? this.sp.Cell.from(form) : null,
-            form ? this.sp.WorldSpace.from(form) : null,
-            pos[0], pos[1], pos[2],
-            rot[0] * Math.PI / 180, rot[1] * Math.PI / 180, rot[2] * Math.PI / 180,
-        );
-        logTrace(this, `shown ${localId.toString(16)}: its record is back in ${cell.toString(16)}, placed at it`);
-        this.reconcile(localId);
-    }
-
-    isHiddenByCell(localId: number): boolean {
-        return this.hiddenByCell.has(localId);
-    }
-
     // playtest 41's Sven scene (Eli, 2026-11-02: "the sven scene is wack, it
     // starts over when the other player walks up and animations play for
     // neither"): DialogueRiverwoodIntroScene (quest 0x954d9) started on BOTH
@@ -580,7 +516,6 @@ export class PuppetService extends ClientListener {
         this.attached.delete(localId);
         this.deferredArmed.delete(localId);
         this.unloadedSince.delete(localId);
-        this.hiddenByCell.delete(localId);
         this.scenesStopped.delete(localId);
         this.deadFlaggedSince.delete(localId);
     }
@@ -655,21 +590,10 @@ export class PuppetService extends ClientListener {
     ]);
     private readonly attached = new Set<number>();
     private readonly deferredArmed = new Set<number>();
-    // the puppet flag's grace after a resurrect (playtest 40's F4)
-    private readonly resurrectedAt = new Map<number, number>();
-    // playtest 41's item 5 ("resurrection appears as broken as before"): the
-    // 1.5 s grace of playtest 40's F4 ended before the engine's get-up, and
-    // the demote's AI off left the body lying in its ragdoll, sliding on the
-    // stream; a get-up from a ragdoll takes several seconds, so the grace is
-    // six (HYPOTHESIS until x-npc-death-freeze's resurrect leg reads the time)
-    private static readonly resurrectGraceMs = 6_000;
     // the moment a dead puppet was first seen dead here (the flag's settle)
     private readonly deadFlaggedSince = new Map<number, number>();
     private static readonly ragdollSettleMs = 4_000;
     private readonly unloadedSince = new Map<number, number>();
-    // playtest 40's F2: the engine references disabled here because their
-    // record stands in a cell this game has not loaded, each with that cell
-    private readonly hiddenByCell = new Map<number, number>();
     // playtest 41's Sven scene: the scene this seat last stopped on each puppet
     private readonly scenesStopped = new Map<number, number>();
     private lastPoll = 0;

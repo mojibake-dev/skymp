@@ -65,6 +65,12 @@ export class DeathReportService extends ClientListener {
         // engine's kill stands here; the report carries the body's place,
         // which the hold is settling), never dropped (review item 4)
         if (host.deferPastHold(localId, "the death report", () => {
+            // the word may have changed while the report waited (a demote in
+            // the release's frame): the server would refuse it, E_DEATH_NOT_HOST
+            if (!host.isMineLocal(localId)) {
+                logLab("verb:npc-handoff", `hold ${localIdToRemoteId(localId).toString(16)}: the deferred death report dropped, not this seat's any more`);
+                return;
+            }
             const again = this.sp.Actor.from(this.sp.Game.getFormEx(localId));
             if (again) {
                 this.send(again, localIdToRemoteId(localId), cause, killerRemote, "deathStart, deferred past the hold");

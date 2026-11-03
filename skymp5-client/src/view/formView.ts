@@ -168,8 +168,9 @@ export class FormView {
           // the hold asks the move, not the gate (review item 4); and a body
           // is never moved (D78 C, review item 2)
           const held = !!refr && SpApiInteractor.getControllerInstance().lookupListener(HostService).isHeld(this.refrId);
-          const deadHere = model.isDead === true || (!!refr && (Actor.from(refr)?.isDead() ?? false));
-          if (refr && target && (!mine || promotedNow) && !held && !deadHere && engineCell !== 0 && engineCell !== model.movement.worldOrCell) {
+          // the dead read (a native) only when every cheaper condition holds
+          if (refr && target && (!mine || promotedNow) && !held && engineCell !== 0 && engineCell !== model.movement.worldOrCell &&
+              model.isDead !== true && !(Actor.from(refr)?.isDead() ?? false)) {
             const pos = model.movement.pos;
             const rot = model.movement.rot;
             TESModPlatform.moveRefrToPosition(
@@ -180,8 +181,6 @@ export class FormView {
               rot[0] * Math.PI / 180, rot[1] * Math.PI / 180, rot[2] * Math.PI / 180,
             );
             this.movedInto = model.movement.worldOrCell;
-            // the hold's first ask is this move (one mover per promotion)
-            SpApiInteractor.getControllerInstance().lookupListener(HostService).noteMovedLocal(this.refrId);
             logLab("verb:npc-handoff", `moved ${this.refrId.toString(16)} into ${model.movement.worldOrCell.toString(16)} (the engine had it in ${engineCell.toString(16)}${promotedNow ? ", at its promotion" : ""})`);
           }
         }

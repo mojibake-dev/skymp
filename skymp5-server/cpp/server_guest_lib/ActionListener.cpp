@@ -3311,6 +3311,16 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
              "takes a prop at rest, a grab takes it at once");
       partOne.AnswerPropWord(rawMsgData.userId, *prop);
       break;
+    case PartOne::PropClaimVerdict::Away:
+      // the unload is a state (the review of 2026-11-03): the claimant's game
+      // reported the prop's cell unloaded and has not reported it loaded
+      // since, so this claim is a late one (a grab release after a door, a
+      // report that raced the unload); the row returned to the host at the
+      // unload and stays there
+      refuse("E_PROP_AWAY",
+             "its game unloaded the prop's cell and has not loaded it since");
+      partOne.AnswerPropWord(rawMsgData.userId, *prop);
+      break;
   }
 }
 
@@ -4009,6 +4019,13 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
     case PartOne::PropTransformVerdict::TooFast:
       refuse("E_PROP_STEP",
              "farther from the record than the step budget allows");
+      break;
+    case PartOne::PropTransformVerdict::Away:
+      // a late sample after the sender's unload report, or an unloading
+      // host still in its grace waking the prop it just left (the review of
+      // 2026-11-03): refused until its load report, the record standing
+      refuse("E_PROP_AWAY",
+             "its game unloaded the cell and has not loaded it since");
       break;
   }
 }

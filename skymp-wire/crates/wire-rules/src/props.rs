@@ -21,7 +21,7 @@
 //! record stands, the wall clock) and asks here; nothing here knows a
 //! position.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// How recent the owner's last accepted awake sample must be for the prop to
 /// count as MOVING, which a contact, a drop or an impulse from another seat
@@ -138,6 +138,10 @@ pub enum ClaimVerdict {
     /// takes a moving prop); nothing changes, the claimant's copy stays on
     /// the stream.
     Moving,
+    /// The claimant's game reported the prop's cell unloaded and has not
+    /// reported it loaded since (`unloaded`, `loaded`): its 3D of the prop
+    /// is gone, so a claim from it there is a late one; nothing changes.
+    Away,
 }
 
 /// The answer to a simulator's transform (ADR-058 decision 2).
@@ -178,6 +182,11 @@ pub enum TransformVerdict {
     /// 2026-11-03: a word of player 0 over a row naming the host stranded the
     /// prop after a host change, nobody simulating it).
     Woken(u32),
+    /// The sender's game reported the sample's cell unloaded and has not
+    /// reported it loaded since: a late sample, or an unloading host still
+    /// in its grace waking the prop it just left (the review of 2026-11-03);
+    /// nothing changes.
+    Away,
 }
 
 /// Every prop's row and every prop's epoch (kept after its row is gone).
@@ -185,6 +194,11 @@ pub enum TransformVerdict {
 pub struct Props {
     rows: HashMap<u32, PropRow>,
     epochs: HashMap<u32, u32>,
+    /// (player, cell) pairs a player's game reported unloaded and not
+    /// loaded again since: an unload is a state, not a moment, so the
+    /// player's claims and samples there are refused (Away) until its load
+    /// report; a gate on the seat's own report, not on a position.
+    away: HashSet<(u32, u32)>,
 }
 
 impl PropRow {
@@ -246,6 +260,9 @@ impl Props {
     /// (Granted, the epoch up, the word to every listener). The claimant's
     /// cell and distance are no gate (ADR-063).
     pub fn claim(&mut self, refr: u32, player: u32, cell: u32, touch: u8, now_ms: u64) -> ClaimVerdict {
+        if self.away.contains(&(player, cell)) {
+            return ClaimVerdict::Away;
+        }
         if let Some(row) = self.rows.get_mut(&refr) {
             if row.live(now_ms) {
                 if row.owner == player {
@@ -301,6 +318,9 @@ impl Props {
         let SampleFacts { refr, player, cell, cell_host, asleep, moved, now_ms } = *f;
         if cell == 0 {
             return TransformVerdict::WrongCell;
+        }
+        if self.away.contains(&(player, cell)) {
+            return TransformVerdict::Away;
         }
         // the grab's cap, noticed at the holder's first sample past it: the
         // prop is the host's again by a word, the sample refused
@@ -419,6 +439,7 @@ impl Props {
     /// departure's would; a resting row names nobody already. Returns
     /// (refr, epoch) per returned prop, sorted.
     pub fn unloaded(&mut self, player: u32, cell: u32, _now_ms: u64) -> Vec<(u32, u32)> {
+        self.away.insert((player, cell));
         let mut returned = Vec::new();
         for (&refr, row) in self.rows.iter_mut().filter(|(_, r)| r.cell == cell && r.owner == player) {
             row.owner = 0;
@@ -441,6 +462,7 @@ impl Props {
     /// host's already (its rest's word said so). Returns (refr, epoch) per
     /// returned prop, sorted.
     pub fn gone(&mut self, player: u32, _now_ms: u64) -> Vec<(u32, u32)> {
+        self.away.retain(|(p, _)| *p != player);
         let mut returned = Vec::new();
         for (&refr, row) in self.rows.iter_mut().filter(|(_, r)| r.owner == player) {
             row.owner = 0;
@@ -455,6 +477,12 @@ impl Props {
         }
         returned.sort_unstable();
         returned
+    }
+
+    /// `player`'s game reported `cell` loaded: its claims and samples there
+    /// are judged again (the end of `unloaded`'s state).
+    pub fn loaded(&mut self, player: u32, cell: u32) {
+        self.away.remove(&(player, cell));
     }
 
     /// The table's clock, once a second from the core: every grab past its
@@ -675,12 +703,25 @@ mod tests {
         assert_eq!(p.epoch_of(BASKET), 2);
         assert_eq!(p.live_owner(0x54a44, 2_000), C2);
         assert_eq!(p.live_owner(0x5678, 2_000), C1);
-        // the holder's unload drops its grab too (a grab carried through a door stays in no hand)
+        // the unload is a state: until c1's game reports the cell loaded again, its claims and samples there are
+        // refused (an unloading host still hosts through its grace, and its late sample would wake the prop by id
+        // again; the same seat's claim would be granted again), while its rows elsewhere stand
+        assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, false, 10.0, 2_050)), TransformVerdict::Away);
+        assert_eq!(p.claim(BASKET, C1, CELL, touch::CONTACT, 2_060), ClaimVerdict::Away);
+        assert_eq!(p.transform(&facts(0x5678, C1, 0x9733, C1, false, 10.0, 2_070)), TransformVerdict::Accepted);
+        p.loaded(C1, CELL);
+        assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, false, 10.0, 2_080)), TransformVerdict::Woken(3));
+        assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, true, 10.0, 2_090)), TransformVerdict::Returned(4));
+        // the holder's unload drops its grab too (a grab carried through a door stays in no hand), and its claim
+        // there waits for its load report as well; a departure clears the state
         assert_eq!(p.unloaded(C2, CELL, 2_100), vec![(0x54a44, 2)]);
         assert_eq!(p.live_owner(0x54a44, 2_100), 0);
+        assert_eq!(p.claim(0x54a44, C2, CELL, touch::GRAB, 2_150), ClaimVerdict::Away);
+        assert_eq!(p.gone(C2, 2_200), vec![]);
+        assert_eq!(p.claim(0x54a44, C2, CELL, touch::CONTACT, 2_300), ClaimVerdict::Granted(3));
         // nothing of c3's, and nothing twice
-        assert_eq!(p.unloaded(C3, CELL, 2_200), vec![]);
-        assert_eq!(p.unloaded(C1, CELL, 2_300), vec![]);
+        assert_eq!(p.unloaded(C3, CELL, 2_400), vec![]);
+        assert_eq!(p.unloaded(C1, CELL, 2_500), vec![]);
     }
 
     #[test]

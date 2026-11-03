@@ -2005,6 +2005,8 @@ mod ffi {
         /// `prop_epoch_of`), 1 held by another's grab, 2 the claimant
         /// simulates it already, 3 another seat streams it awake and the
         /// touch is no grab.
+        /// 4 refused: the claimant's game reported the prop's cell unloaded
+        /// and not loaded since (Away).
         fn claim_prop(self: &mut Props, refr: u32, player: u32, cell: u32, touch: u8, now_ms: u64) -> u8;
         /// The prop's owner epoch, up at every word (a grant, a return); 0
         /// before any.
@@ -2021,7 +2023,9 @@ mod ffi {
         /// word), 7 woken by the host's own sample of a prop that was not
         /// its live row (a resting prop its engine moved, a grab past its
         /// cap: the row the host's at a new epoch, the word NAMING THE HOST
-        /// by id); `cell_host` hosts the cell the RECORD stands in.
+        /// by id), 8 refused: the sender's game reported the sample's cell
+        /// unloaded and not loaded since (Away); `cell_host` hosts the cell
+        /// the RECORD stands in.
         fn prop_transform(self: &mut Props, facts: &PropSampleFacts) -> u8;
         /// The row's owner while the row is live, else 0: the word a late
         /// listener gets at its subscription (with the epoch, 0 names the
@@ -2038,6 +2042,9 @@ mod ffi {
         /// past its cap) returns to the host by default at a new epoch; the
         /// core sends `PropOwner` with player 0 for every (refr, epoch).
         fn props_unloaded(self: &mut Props, player: u32, cell: u32, now_ms: u64) -> Vec<PropReturn>;
+        /// `player`'s game reported `cell` loaded: the end of the unload's
+        /// state, its claims and samples there judged again.
+        fn props_loaded(self: &mut Props, player: u32, cell: u32);
         /// `player` left: its live rows (awake or held) return to their
         /// cells' hosts at a new epoch each; the core sends `PropOwner` with
         /// player 0 for every (refr, epoch) returned.
@@ -3140,6 +3147,7 @@ impl Props {
             props::ClaimVerdict::Held => 1,
             props::ClaimVerdict::Same => 2,
             props::ClaimVerdict::Moving => 3,
+            props::ClaimVerdict::Away => 4,
         }
     }
 
@@ -3166,6 +3174,7 @@ impl Props {
             props::TransformVerdict::Capped(_) => 5,
             props::TransformVerdict::RestRefused(_) => 6,
             props::TransformVerdict::Woken(_) => 7,
+            props::TransformVerdict::Away => 8,
         }
     }
 
@@ -3183,6 +3192,10 @@ impl Props {
 
     fn props_gone(&mut self, player: u32, now_ms: u64) -> Vec<PropReturn> {
         self.0.gone(player, now_ms).into_iter().map(|(refr, epoch)| PropReturn { refr, epoch }).collect()
+    }
+
+    fn props_loaded(&mut self, player: u32, cell: u32) {
+        self.0.loaded(player, cell);
     }
 
     fn props_unloaded(&mut self, player: u32, cell: u32, now_ms: u64) -> Vec<PropReturn> {

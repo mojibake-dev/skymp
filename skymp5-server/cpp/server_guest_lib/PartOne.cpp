@@ -1983,7 +1983,11 @@ void PartOne::OnCellLoaded(MpActor& player, uint32_t cell, bool loaded)
 {
   RefreshReach(player);
   const auto nowMs = SteadyNowMs();
-  if (!loaded) {
+  if (loaded) {
+    // the end of the unload's state below: the player's prop claims and
+    // samples in the cell are judged again
+    pImpl->props->props_loaded(player.GetFormId(), cell);
+  } else {
     // thuum docs/verbs/prop-physics.md (A7, the review of 2026-11-03): the
     // player's 3D of every prop in the cell went with the cell, so its stream
     // ends with no final sample; its rows there return to the host by default
@@ -1996,6 +2000,9 @@ void PartOne::OnCellLoaded(MpActor& player, uint32_t cell, bool loaded)
                    "word to {} listener(s)",
                    r.refr, player.GetFormId(), cell, r.epoch, told);
     }
+    // and until its load report the player's claims and samples there are
+    // refused (Away): an unloading host still hosts through its grace, and
+    // a late sample or claim would otherwise take the prop back
   }
   ApplyHostDecisions(
     *this,

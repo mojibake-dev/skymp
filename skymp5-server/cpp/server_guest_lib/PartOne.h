@@ -638,7 +638,11 @@ public:
     Same,
     // another seat streams the prop awake and the touch is no grab (ADR-063
     // decision 4: a non-owner's contact never takes a moving prop)
-    Moving
+    Moving,
+    // the claimant's game reported the prop's cell unloaded and not loaded
+    // since: a late claim, refused until its load report (the unload is a
+    // state, not a moment)
+    Away
   };
   PropClaimVerdict ClaimProp(const MpActor& claimant,
                              const MpObjectReference& prop, uint32_t cell,
@@ -662,7 +666,11 @@ public:
     // row (a resting prop its engine moved, a grab past its cap); the row is
     // the host's at a new epoch and the word names the host BY ID, so a
     // host change leaves the old host streaming until its rest
-    Woken
+    Woken,
+    // the sender's game reported the sample's cell unloaded and not loaded
+    // since: a late sample, or an unloading host in its grace waking the
+    // prop it just left; refused
+    Away
   };
   // `sender`'s sample of `prop` landing in `cell` (0 for none), judged by
   // the host of `recordCell` (the cell the record stands in, read from the

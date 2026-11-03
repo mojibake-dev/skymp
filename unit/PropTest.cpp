@@ -599,10 +599,11 @@ TEST_CASE("A player's unload of a cell returns its live props there to the "
   p.Messages().clear();
   Sample(p, 1, kBasket, kHere + NiPoint3{ 40.f, 0.f, 0.f }, false);
   REQUIRE(std::abs(w.prop.GetPos().x - (kHere.x + 20.f)) < 1.f);
-  const auto answered = SentTo<PropOwnerMessage>(p, 1);
-  REQUIRE(answered.size() == 1);
-  REQUIRE(answered[0].player == 0);
-  REQUIRE(answered[0].epoch == 2);
+  // the unload is a state: c2's claim there is refused until its game
+  // reports the cell loaded again (the review of 2026-11-03)
+  Claim(p, 1, kBasket, 0);
+  REQUIRE(p.PropLiveOwner(w.prop) == 0);
+  REQUIRE(p.PropEpochOf(w.prop) == 2);
   // the host's own kick woke it (a word by id); its unload returns it too
   p.Messages().clear();
   Sample(p, 0, kBasket, kHere + NiPoint3{ 25.f, 0.f, 0.f }, false);
@@ -616,5 +617,15 @@ TEST_CASE("A player's unload of a cell returns its live props there to the "
   REQUIRE(toC2.size() == 1);
   REQUIRE(toC2[0].player == 0);
   REQUIRE(toC2[0].epoch == 4);
+  // the host still hosts through its grace, but its late awake sample wakes
+  // nothing until its game reports the cell loaded again; then it does
+  Sample(p, 0, kBasket, kHere + NiPoint3{ 35.f, 0.f, 0.f }, false);
+  REQUIRE(p.PropLiveOwner(w.prop) == 0);
+  REQUIRE(p.PropEpochOf(w.prop) == 4);
+  REQUIRE(std::abs(w.prop.GetPos().x - (kHere.x + 32.f)) < 1.f);
+  CellLoaded(p, 0, w.cell, true);
+  Sample(p, 0, kBasket, kHere + NiPoint3{ 36.f, 0.f, 0.f }, false);
+  REQUIRE(p.PropLiveOwner(w.prop) == kC1);
+  REQUIRE(p.PropEpochOf(w.prop) == 5);
   Leave(p);
 }

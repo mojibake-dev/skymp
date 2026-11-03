@@ -689,7 +689,7 @@ export class RemoteServer extends ClientListener {
     // so an absent field (a prop, a door) is no promotion (review item 5)
     if (msg.props && msg.props.isHostedByOther === false && !msg.isMe && movement !== undefined && msg.refrId !== undefined &&
         (msg.baseRecordType === 'NPC_' || (msg.refrId >= 0xff000000 && msg.baseId !== undefined && msg.baseId !== 0x7))) {
-      this.controller.lookupListener(HostService).holdUntilPlaced(msg.refrId, movement);
+      this.controller.lookupListener(HostService).holdUntilPlaced(msg.refrId, movement, msg.isDead === true);
     }
 
     if (msg.props && msg.props.isRaceMenuOpen && msg.isMe) {
@@ -1131,7 +1131,7 @@ export class RemoteServer extends ClientListener {
       if (msgData === false && hostedBefore !== false) {
         // the hold ends when the copy stands at the record (HostService's
         // check each update asks the move and reads the engine), never here
-        host.holdUntilPlaced(remoteId, form.movement);
+        host.holdUntilPlaced(remoteId, form.movement, form.isDead === true);
       }
       if (msgData === true && hostedBefore === false) {
         // a demote ends any hold: the word names another game now

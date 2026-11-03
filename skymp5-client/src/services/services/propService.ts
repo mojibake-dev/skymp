@@ -30,6 +30,13 @@ const TOUCH_DROP = 2;
 // E_PROP_REACH and the blown cabbages stayed the host's)
 const TOUCH_IMPULSE = 3;
 const IMPULSE_WINDOW_MS = 1500;
+// how far a blast reaches: inside the window every tracked prop this seat
+// does not simulate within this many units of the player is read for a move
+// of its own (the server's kPropImpulseReach), whatever the contact fallback
+// says; playtest 41's break two (Eli: "the cabbages launched but i didnt see
+// where they went"): the window alone claimed nothing, since the only reads
+// were the contact stand-in's, off by default and 128 units deep
+const IMPULSE_REACH = 2048;
 
 // How often the tracked set is rebuilt from the view's references, ms
 const RESCAN_MS = 500;
@@ -433,7 +440,9 @@ export class PropService extends ClientListener {
         }
         const simulate = myId !== 0 && owner === myId;
         const near = prop.distance <= TOUCH_RADIUS + 512;
-        const touchReadDue = fallback && !simulate && near && now - prop.lastTouchReadAt >= TOUCH_READ_MS;
+        const inImpulse = now - this.impulseAt <= IMPULSE_WINDOW_MS;
+        const impulseReadDue = inImpulse && !simulate && prop.distance <= IMPULSE_REACH && now - prop.lastTouchReadAt >= TOUCH_READ_MS;
+        const touchReadDue = impulseReadDue || (fallback && !simulate && near && now - prop.lastTouchReadAt >= TOUCH_READ_MS);
         // D73's rest: a follower's Keyframed body goes Dynamic REST_DYNAMIC_MS after
         // the asleep sample or STREAM_LIVE_MS after the last awake one, so a kick
         // or a grab acts on it at once; the check below needs the reference, so
@@ -742,7 +751,10 @@ export class PropService extends ClientListener {
         if (now - prop.lastSampleAt < TOUCH_QUIET_MS + GLIDE_MAX_MS || now - prop.placedAt < TOUCH_QUIET_MS + GLIDE_MAX_MS) {
             return;
         }
-        if (ObjectReferenceEx.getDistance(playerPos, read.pos) > TOUCH_RADIUS) {
+        // the contact's stand-in reads a prop within arm's reach; a blast's read
+        // (inside the window of this seat's own shout or cast) reaches the room
+        const reach = now - this.impulseAt <= IMPULSE_WINDOW_MS ? IMPULSE_REACH : TOUCH_RADIUS;
+        if (ObjectReferenceEx.getDistance(playerPos, read.pos) > reach) {
             return;
         }
         if (now - prop.lastClaimAt < CLAIM_EVERY_MS) {

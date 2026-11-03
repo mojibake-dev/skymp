@@ -1266,18 +1266,19 @@ TEST_CASE("The body's rest: the settle window's end (bodySettleMs) puts the "
   p.worldState.bodySettleMs = 5'000;
   MpActor* host = nullptr;
   auto& actor = HostedPredator(p, host, true);
-  const uint64_t t0 = NowMs();
   actor.Kill(nullptr);
   const NiPoint3 deathPoint = actor.GetPos();
-  REQUIRE(actor.BodyDiedAtMs() >= t0);
+  // the ticks against the record's own death stamp: no wall-clock slack
+  const uint64_t d = actor.BodyDiedAtMs();
+  REQUIRE(d != 0);
 
   // the sweep inside the window: nothing; past it: at rest at the record
-  p.TickBodies(t0 + 2'500);
+  p.TickBodies(d + 2'500);
   REQUIRE_FALSE(actor.IsBodyAtRest());
   REQUIRE(actor.IsBodySettling());
-  p.TickBodies(t0 + 5'000 + 2'000);
+  p.TickBodies(d + 7'000);
   REQUIRE(actor.IsBodyAtRest());
-  REQUIRE(actor.BodyRestAtMs() == t0 + 7'000);
+  REQUIRE(actor.BodyRestAtMs() == d + 7'000);
   REQUIRE(actor.GetPos() == deathPoint);
   REQUIRE(p.worldState.settlingBodies.count(kPredator) == 0);
   MoveBody(p, 0, kPredator, deathPoint + NiPoint3{ 300.f, 0.f, 0.f });
@@ -1366,6 +1367,60 @@ TEST_CASE("The body's rest: a dead actor's movement report is a body sample "
   REQUIRE(LiveWordsTo(p, 1, kPredator) == 0);
   REQUIRE(actor.GetPos() == deathPoint + NiPoint3{ 120.f, 0.f, -40.f });
   REQUIRE(actor.IsBodySettling());
+
+  StandUp(p, actor);
+  Leave(p, 1, kOther);
+  Leave(p, 0, kHost);
+}
+
+TEST_CASE("The body's rest: a host change mid-ragdoll leaves the body with "
+          "its mover: the old host's in-cell samples are taken past the "
+          "cell-host rule, the new host's are refused, and a roll into the "
+          "next cell keeps the cell-change rule",
+          "[ActorDeath][BodyRest][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  constexpr uint32_t kForestCell = 0x9810;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  auto& other = p.worldState.GetFormAt<MpActor>(kOther);
+  actor.Kill(nullptr);
+  REQUIRE(actor.BodyOwnerId() == kHost);
+  const NiPoint3 deathPoint = actor.GetPos();
+
+  // the mover's game unloads the cell and walks away; the other game hosts
+  {
+    RawMessageData raw;
+    raw.userId = 0;
+    CellLoadedMessage unloaded;
+    unloaded.cell = kForestCell;
+    unloaded.loaded = false;
+    p.GetActionListener().OnCellLoaded(raw, unloaded);
+  }
+  host->SetPos(kForest + NiPoint3{ 60000.f, 60000.f, 0.f });
+  Host(p, 1, kForestCell);
+  REQUIRE(p.worldState.HostOf(actor) == &other);
+  REQUIRE(actor.BodyOwnerId() == kHost);
+
+  // the mover's in-cell sample: the cell-host rule stands aside for the
+  // body's owner within the window
+  p.Messages().clear();
+  MoveBody(p, 0, kPredator, deathPoint + NiPoint3{ 100.f, 0.f, 0.f });
+  REQUIRE(actor.GetPos() == deathPoint + NiPoint3{ 100.f, 0.f, 0.f });
+  REQUIRE(actor.BodySampleCount() == 1);
+  REQUIRE(RelaysTo(p, 1) == 1);
+
+  // the new host's sample: not the owner
+  MoveBody(p, 1, kPredator, deathPoint + NiPoint3{ 200.f, 0.f, 0.f });
+  REQUIRE(actor.GetPos() == deathPoint + NiPoint3{ 100.f, 0.f, 0.f });
+  REQUIRE(actor.BodySampleCount() == 1);
+
+  // the mover's roll into the next cell: the cell-change rule, which the
+  // owner no longer satisfies, refuses it
+  MoveBody(p, 0, kPredator, deathPoint + NiPoint3{ 4000.f, 0.f, 0.f });
+  REQUIRE(actor.GetPos() == deathPoint + NiPoint3{ 100.f, 0.f, 0.f });
+  REQUIRE(actor.BodySampleCount() == 1);
 
   StandUp(p, actor);
   Leave(p, 1, kOther);

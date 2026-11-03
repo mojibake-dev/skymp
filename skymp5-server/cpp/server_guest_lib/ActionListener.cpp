@@ -319,12 +319,14 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       if (moved->IsDead() && moved->IsFateRespawned() &&
           moved->HasBodySettle()) {
         const auto refuseBody = [&](const char* code, const std::string& why) {
+          // the throttle per code, sender and body: a NOT_OWNER line must
+          // not silence an AT_REST line seconds later, nor mix their counts
           static std::map<
-            std::pair<uint32_t, uint32_t>,
+            std::tuple<std::string, uint32_t, uint32_t>,
             std::pair<std::chrono::steady_clock::time_point, uint32_t>>
             refusals;
-          auto& [since, count] =
-            refusals[{ myActor->GetFormId(), moved->GetFormId() }];
+          auto& [since, count] = refusals[{
+            std::string(code), myActor->GetFormId(), moved->GetFormId() }];
           const auto now = std::chrono::steady_clock::now();
           ++count;
           if (since.time_since_epoch().count() == 0 ||
@@ -337,9 +339,11 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
             since = now;
             count = 0;
           }
+          // a foreign refusal in the stream counters, as ActorUpdatableBy's
+          // "not the host" is
           partOne.serverState.CountStream(
             rawMsgData.userId, static_cast<uint8_t>(MsgType::UpdateMovement),
-            false);
+            false, true);
         };
         // the window may have ended since the last sweep
         moved->SettleBodyIfDue(nowMs);

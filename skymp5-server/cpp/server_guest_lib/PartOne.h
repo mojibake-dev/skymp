@@ -668,9 +668,9 @@ public:
     // host change leaves the old host streaming until its rest
     Woken,
     // a wake by a sender whose game reported the sample's cell unloaded and
-    // not loaded or reached since: a late sample, or an unloading host in
-    // its grace waking the prop it just left; refused (a live owner's own
-    // stream passes)
+    // not loaded or reached since: an unloading host in its grace waking the
+    // prop it just left; refused (a live owner's own stream passes, and a
+    // guest's late sample is NotOwner, answered)
     Away
   };
   // `sender`'s sample of `prop` landing in `cell` (0 for none), judged by

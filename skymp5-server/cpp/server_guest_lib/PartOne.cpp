@@ -2006,9 +2006,10 @@ void PartOne::OnCellLoaded(MpActor& player, uint32_t cell, bool loaded)
                    "word to {} listener(s)",
                    r.refr, player.GetFormId(), cell, r.epoch, told);
     }
-    // and until its load report the player's claims and samples there are
-    // refused (Away): an unloading host still hosts through its grace, and
-    // a late sample or claim would otherwise take the prop back
+    // and until its load report, or the cell's return to its reach, the
+    // player's grants and wakes there are refused (Away): an unloading host
+    // still hosts through its grace, and its late wake or claim would
+    // otherwise take the prop back
   }
   ApplyHostDecisions(
     *this,

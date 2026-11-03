@@ -2006,7 +2006,7 @@ mod ffi {
         /// simulates it already, 3 another seat streams it awake and the
         /// touch is no grab.
         /// 4 refused: the claimant's game reported the prop's cell unloaded
-        /// and not loaded since (Away).
+        /// and not loaded or reached since (Away).
         fn claim_prop(self: &mut Props, refr: u32, player: u32, cell: u32, touch: u8, now_ms: u64) -> u8;
         /// The prop's owner epoch, up at every word (a grant, a return); 0
         /// before any.

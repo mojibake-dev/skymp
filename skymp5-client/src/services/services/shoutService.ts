@@ -5,6 +5,7 @@ import { MsgType } from "../../messages";
 import { logError, logTrace } from "../../logging";
 import { noSpellLaunch, SpellCastMsgData } from "../messages/spellCastMessage";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
+import { PropService } from "./propService";
 
 // thuum docs/verbs/shouts.md: a shout fires no spellCast (x-shout-probe
 // 20261011-060059), so the server heard none. The player's game plays
@@ -90,6 +91,9 @@ export class ShoutService extends ClientListener {
                     // of the first report, were read as the first breath's
                     // (x-tgm-breath4 20261015-035032: three shouts taken of four)
                     this.releasedAt = Date.now();
+                    // a prop blown by this shout is this seat's claim (touch
+                    // IMPULSE, prop-physics.md)
+                    this.controller.lookupListener(PropService).noteImpulse();
                     shoutGate.pending = true;
                     this.shoutStartedAt = 0;
                 },

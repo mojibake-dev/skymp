@@ -65,6 +65,7 @@ import {
 } from '../../view/worldViewMisc';
 import { TimeService } from './timeService';
 import { HostService } from './hostService';
+import { PuppetService } from "./puppetService";
 import { logTrace, logError } from '../../logging';
 
 import { SpellCastMessage } from '../messages/spellCastMessage';

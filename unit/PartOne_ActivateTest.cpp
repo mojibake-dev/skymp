@@ -1058,6 +1058,7 @@ TEST_CASE("Exclusive container sharing: a second player is refused while the "
   // the second is refused: no OpenContainer, a notification, no occupancy
   partOne.Messages().clear();
   ref.Activate(second);
+  partOne.Tick(); // snippets are deferred (SpSnippet.cpp)
   auto& messages = partOne.Messages();
   const auto openedFor = [&](Networking::UserId user) {
     return std::any_of(

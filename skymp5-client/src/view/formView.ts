@@ -1451,6 +1451,22 @@ export class FormView {
       // action's event, as the relay sent it; no variables, no retries. The
       // first such event per puppet is said once (the lab's read of the
       // path: x-npc-stream-p4's claim since v2)
+      if (next.eventName && next.eventName.startsWith("KillMove")) {
+        // a puppet's death is the server's word (ADR-050 decision 2): the
+        // host's kill move, replayed as its event, ran the victim animation
+        // whose KillActor tag killed the copy at its own time (2.7 s after
+        // the event on c2 in x-npc-death-freeze 140538 and 152912), 3 s ahead
+        // of the record; the dead check stood it up, the word killed it again
+        // and the second ragdoll froze half-up (HYPOTHESIS on the tag, the
+        // timing is the runs'). The figures' kill moves are blanked at the
+        // hook (deathService.hookDisableKillMoves); a puppet's are dropped
+        // here, once said per puppet
+        if (!FormView.killMoveSaid.has(this.refrId)) {
+          FormView.killMoveSaid.add(this.refrId);
+          logLab("verb:npc-fate", `${this.refrId.toString(16)}: the host's ${next.eventName} not replayed on the puppet, a puppet's death is the server's word`);
+        }
+        return;
+      }
       if (next.eventName) {
         Debug.sendAnimationEvent(refr, next.eventName);
         if (!FormView.eventPathSaid.has(this.refrId)) {
@@ -1506,6 +1522,8 @@ export class FormView {
   }
 
   private static readonly eventPathSaid = new Set<number>();
+  // the puppets whose kill-move replay was dropped and said once
+  private static readonly killMoveSaid = new Set<number>();
   private static readonly castRetryLimit = 15;
   // updates to wait for the queue's answer before counting it refused
   private static readonly answerWaitLimit = 6;

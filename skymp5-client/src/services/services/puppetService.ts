@@ -382,9 +382,19 @@ export class PuppetService extends ClientListener {
     }
 
     // A stood-up actor (deathService's resurrect) holds at zero again for
-    // the server's word: the deferred kill is re-armed on the next pass.
+    // the server's word: the deferred kill is re-armed on the next pass, and
+    // the ragdoll settle clock forgets the death that was undone, so a later
+    // death gets its whole settle. x-npc-death-freeze 140538 and 152912 (the
+    // guest's body half-up): the copy died early, the dead check stood it up
+    // under the live record, the server's word killed it again, and the
+    // release came 0.75 to 1.0 s into the SECOND fall because the clock still
+    // counted from the first death; setPuppet(false) with the AI off then
+    // froze the skeleton mid-fall (the head 13 and 55 units above the root,
+    // identical across three reads). The green run (141811) died once and
+    // lay flat after its 4.0 s.
     onResurrected(localId: number): void {
         this.deferredArmed.delete(localId);
+        this.deadFlaggedSince.delete(localId);
     }
 
     // thuum docs/verbs/npc-stream.md, playtest 37 finding 60 (the visuals

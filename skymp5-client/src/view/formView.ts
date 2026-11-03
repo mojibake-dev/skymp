@@ -153,7 +153,13 @@ export class FormView {
             const p = model.movement.pos;
             const engineAt = `(${refr0.getPositionX().toFixed(0)}, ${refr0.getPositionY().toFixed(0)}, ${refr0.getPositionZ().toFixed(0)}) in ${e.toString(16)}`;
             const recordAt = `(${p[0].toFixed(0)}, ${p[1].toFixed(0)}, ${p[2].toFixed(0)}) in ${r.toString(16)}`;
-            const why = !promoted0 ? "demoted" : e === r ? "not moved here (the same cell)" : this.movedInto === r ? "not moved here (moved into this record cell once already)" : "moved to the record below";
+            // a promotion resets the one-shot: the gate's move may run at
+            // every promotion (non-owning-seat.md P2b), the word's placement
+            // (remoteServer) having run already on an earlier update
+            if (promoted0) {
+              this.movedInto = 0;
+            }
+            const why = !promoted0 ? "demoted" : e === r ? "not moved here (the same cell)" : "moved to the record below";
             logLab("verb:npc-handoff", `${promoted0 ? "promote" : "demote"} gate ${this.refrId.toString(16)}: the engine at ${engineAt}, the record at ${recordAt}; ${why}`);
           }
         }

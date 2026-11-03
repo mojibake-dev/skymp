@@ -1310,6 +1310,11 @@ uint64_t MpActor::PendingDeathSinceMs() const
   return pImpl->pendingDeathSinceMs;
 }
 
+void MpActor::RecordPendingDeathAt(uint64_t sinceMs)
+{
+  pImpl->pendingDeathSinceMs = sinceMs;
+}
+
 uint32_t MpActor::PendingDeathAggressor() const
 {
   return pImpl->pendingDeathAggressor;
@@ -2774,13 +2779,26 @@ std::optional<std::string> MpActor::DeadStampGap(
   if (!diedAgo) {
     return std::nullopt;
   }
-  const auto deathAt = now - *diedAgo;
+  // the window's anchor is the earlier of the recorded death and the pending
+  // death's start: the host's engine dies at the DamageCause sent beside
+  // BeginPendingDeath and its flip lands within half a second of it, while
+  // TickDeaths records the death 3 to 4 s later (numidium's review of round
+  // nine, item 2)
+  auto anchor = now - *diedAgo;
+  if (pImpl->pendingDeathSinceMs != 0) {
+    const auto pendingAt = std::chrono::steady_clock::time_point(
+      std::chrono::milliseconds(pImpl->pendingDeathSinceMs));
+    if (pendingAt < anchor) {
+      anchor = pendingAt;
+    }
+  }
   if (pImpl->deadStampAt + std::chrono::milliseconds(kPendingDeathMs) <
-      deathAt) {
+      anchor) {
     const auto early = std::chrono::duration_cast<std::chrono::milliseconds>(
-      deathAt - pImpl->deadStampAt);
-    return fmt::format("the dead sample is {} ms before the death, past its "
-                       "{} ms window",
+      anchor - pImpl->deadStampAt);
+    return fmt::format("the dead sample is {} ms before the death (its "
+                       "pending start where there was one), past its {} ms "
+                       "window",
                        early.count(), kPendingDeathMs);
   }
   return std::nullopt;

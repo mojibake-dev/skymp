@@ -1202,6 +1202,15 @@ export class RemoteServer extends ClientListener {
     once('update', () => this.onUpdatePropertyMessage({ message: msg.tIsDead }));
 
     if (msg.tTeleport) {
+      // a respawn that teleports: a dead hold on this actor turns back into a
+      // placing hold with the TELEPORT's place as its record, ahead of the
+      // standalone live word, so the hold never asks the corpse's place over
+      // the spawn point (numidium's review of round nine, item 1)
+      if (msgData === false && form && typeof form.refrId === 'number' && form.movement) {
+        const t = msg.tTeleport;
+        const record = { ...form.movement, pos: [t.pos[0], t.pos[1], t.pos[2]] as [number, number, number], rot: [t.rot[0], t.rot[1], t.rot[2]] as [number, number, number], worldOrCell: t.worldOrCell, isDead: false };
+        this.controller.lookupListener(HostService).reviveHold(form.refrId, record);
+      }
       this.onTeleportMessage({ message: msg.tTeleport });
     }
 

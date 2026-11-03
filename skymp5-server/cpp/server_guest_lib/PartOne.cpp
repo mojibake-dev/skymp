@@ -459,7 +459,7 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
 
     serverState.actorsMap.Set(userId, &actor);
     // the login generation: a dead-sample stamp's witness names it, so a
-    // relaunch or a reconnect is a new witness (MpActor::HostSampledDeadBy)
+    // relaunch or a reconnect is a new witness (MpActor::DeadStampGap)
     actor.SetLoginGeneration(++pImpl->loginSerial);
 
     // The clock first, so the client knows the time before its own

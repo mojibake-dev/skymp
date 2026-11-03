@@ -441,6 +441,36 @@ TEST_CASE("A live sample inside kPendingDeathMs of the death is a sample in "
   REQUIRE_FALSE(actor.IsDead());
 }
 
+TEST_CASE("A dead-sample stamp inside the window of the PENDING death's "
+          "start counts although TickDeaths recorded the death seconds later",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  const auto now = std::chrono::steady_clock::now();
+  const auto nowMs = static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      now.time_since_epoch())
+      .count());
+  // the pending death began 7.4 s ago (the server's number reached zero), the
+  // host's engine died at the DamageCause and its flip landed 0.4 s later,
+  // and TickDeaths recorded the death 3.4 s after the start (4 s ago now,
+  // past the grace)
+  actor.BeginPendingDeath(nullptr);
+  actor.RecordPendingDeathAt(nowMs - 7400);
+  actor.NoteHostSampledDead(kHost, host->LoginGeneration(),
+                            now - std::chrono::milliseconds(7000));
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  BackdatePastGrace(actor);
+  // the stamp is 3 s before the recorded death but 0.4 s after the pending
+  // start, so it counts: the body stands at the host's live sample
+  State(p, 0, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+}
+
 TEST_CASE("The host's reliable death report is its dead-sample stamp",
           "[ActorDeath][espm]")
 {

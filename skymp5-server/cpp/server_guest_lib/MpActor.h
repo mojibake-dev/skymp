@@ -310,6 +310,8 @@ public:
                                   const std::vector<espm::ActorValue>& touched,
                                   MpActor* host);
   uint64_t PendingDeathSinceMs() const;
+  // tests backdate the pending start, as RecordDeathAt backdates the death
+  void RecordPendingDeathAt(uint64_t sinceMs);
   uint32_t PendingDeathAggressor() const;
   static constexpr uint64_t kPendingDeathMs = 3000;
   void Respawn(bool shouldTeleport = true);

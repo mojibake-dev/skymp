@@ -1637,8 +1637,10 @@ wire_struct! {
 
 wire_struct! {
     /// MsgType 53, thuum's (docs/verbs/npc-stream.md, ADR-050 decision 1):
-    /// client to server, unreliable (the first for an actor after a grant
-    /// marked reliable, the keyframe), at most once per 500 ms per hosted
+    /// client to server, unreliable except three samples sent reliable (the
+    /// first for an actor after a grant, the keyframe; a stand-up, finding
+    /// 54; the alive-to-dead flip, the host's dead-sample stamp on the
+    /// server), at most once per 500 ms per hosted
     /// actor and only on a change, R2 bounded by the server's numbers. The
     /// state of an actor the sender's game simulates (cell-host's host of the
     /// actor's cell) as its engine has it: the three percentages, its combat

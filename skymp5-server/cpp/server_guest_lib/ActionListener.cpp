@@ -918,7 +918,7 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
       // after ITS HOST has sampled it dead once (the engine's own respawn or a
       // reanimation follows a corpse), or within a reanimate's window; the
       // stamp names its WITNESS (the host's id and login generation) and its
-      // time (MpActor::HostSampledDeadBy), so a relaunch, a reconnect or
+      // time (MpActor::DeadStampGap), so a relaunch, a reconnect or
       // another host is a new witness and a bleedout's old zero is not a
       // death's. Said once in ten seconds per body, at info: the lab reads it
       static std::unordered_map<uint32_t,

@@ -521,10 +521,26 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     // engine walked Sigrid live where the other game held her record.
     if (passed) {
       MpActor* newHost = partOne.worldState.HostOf(*actor);
+      // thuum docs/verbs/npc-handoff.md D9's settle (playtest 41, 2026-11-03,
+      // Hod 0x1348a at the Sleeping Giant's door): the passing report itself
+      // goes to the new host's game reliably, ahead of the word on the same
+      // channel, so its promote places the copy at the door's far side (the
+      // puppet's last sample, puppetService) and not where the copy stood;
+      // the unreliable relay of the same report may land after the word, on
+      // a live actor that ignores it, or not at all
+      const auto newHostUser = newHost
+        ? partOne.serverState.UserByActor(newHost)
+        : Networking::InvalidUserId;
+      if (newHostUser != Networking::InvalidUserId && rawMsgData.unparsed &&
+          rawMsgData.unparsedLength > 0) {
+        partOne.GetSendTarget().Send(newHostUser, rawMsgData.unparsed,
+                                     rawMsgData.unparsedLength, true);
+      }
       actor->UpdateHoster(newHost ? newHost->GetFormId() : 0);
       spdlog::info("ActionListener::OnUpdateMovement - npc-handoff D9: {:x} "
-                   "now simulates {:x} in cell {:x}; the sender's game is "
-                   "told to demote",
+                   "now simulates {:x} in cell {:x} from the passing report, "
+                   "sent to it reliably ahead of the word; the sender's game "
+                   "is told to demote",
                    newHost ? newHost->GetFormId() : 0u, actor->GetFormId(),
                    partOne.worldState.CellOf(*actor).value_or(0));
     }

@@ -463,6 +463,7 @@ export class HostService extends ClientListener {
 
     private onCellFullyLoaded(e: CellFullyLoadedEvent) {
         const id = e.cell.getFormID();
+        this.detached.delete(id);
         if (this.loaded.has(id)) {
             return;
         }
@@ -493,6 +494,14 @@ export class HostService extends ClientListener {
                 this.report(id, false);
             }
         }
+        while (this.detached.size > HostService.reattachMaxCells) {
+            // Map iteration is insertion order: the oldest detach goes first
+            const oldest = this.detached.keys().next().value;
+            if (oldest === undefined) {
+                break;
+            }
+            this.detached.delete(oldest);
+        }
         // the player's own cell, without waiting for an event: at a teleport
         // the engine's cellFullyLoaded for the destination cell itself can go
         // missing while its neighbours' arrive (x-npc-legs 20261022-211702:
@@ -518,6 +527,10 @@ export class HostService extends ClientListener {
         for (const [id, at] of Array.from(this.detached.entries())) {
             if (now - at > HostService.reattachWindowMs || this.loaded.has(id)) {
                 this.detached.delete(id);
+                continue;
+            }
+            if (at === now) {
+                // detached in this very poll: read again next second
                 continue;
             }
             const cell = this.sp.Cell.from(this.sp.Game.getFormEx(id));
@@ -757,9 +770,14 @@ export class HostService extends ClientListener {
     }
 
     private static readonly refreshMs = 30_000;
-    // how long a detached cell is watched for a silent re-attach (the engine's
-    // cell buffer holds recent cells; a visit and its return fit well inside)
-    private static readonly reattachWindowMs = 10 * 60_000;
+    // how many detached cells are watched for a silent re-attach: the engine's
+    // exterior cell buffer is count-bound (uExterior Cell Buffer, 36 by
+    // default; the eviction order HYPOTHESIS), so the newest cells are the
+    // ones that can come back without an event; 64 covers an ini above the
+    // default. The time window is a backstop for a cell the buffer must have
+    // dropped long ago (the fresh review of 31167a9b, note 1)
+    private static readonly reattachMaxCells = 64;
+    private static readonly reattachWindowMs = 60 * 60_000;
     private static readonly sightingsMs = 2000;
     private static readonly sightingsMax = 64;
     private readonly enabled: boolean;

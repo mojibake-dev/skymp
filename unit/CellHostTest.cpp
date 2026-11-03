@@ -1095,6 +1095,11 @@ TEST_CASE("A hosted non-persistent resident's door into a cell another live "
 
   // her morning: the house's host walks her out into c1's square, deep
   // inside it, and c1 takes her back
+  // the exit's pre-check inside the settle window is a stale copy's move,
+  // refused (D9's settle); past the window the door is hers to walk
+  REQUIRE_FALSE(p.worldState.npcDoorVerdict(*hilde, kTamriel, kOutside));
+  std::this_thread::sleep_for(
+    std::chrono::milliseconds(skymp::rules::pass_settle_ms() + 100));
   REQUIRE(p.worldState.npcDoorVerdict(*hilde, kTamriel, kOutside));
   Move(p, 1, kHilde, kOutside);
   REQUIRE(p.worldState.CellOf(*hilde) == here);

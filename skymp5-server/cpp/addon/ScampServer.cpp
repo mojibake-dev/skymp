@@ -295,6 +295,12 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
     if (serverSettings.find("perks") != serverSettings.end()) {
       partOne->SetPerksEnabled(serverSettings.at("perks").get<bool>());
     }
+    // thuum docs/verbs/containers.md (ADR-061 decision 3): "exclusive" (the
+    // default, one occupant per container) or "shared" (the live view)
+    if (serverSettings.find("containerSharing") != serverSettings.end()) {
+      partOne->SetContainerSharing(
+        serverSettings.at("containerSharing").get<std::string>());
+    }
     // thuum docs/verbs/prop-physics.md (ADR-058): dropped items persist as
     // props (the default); false restores upstream's load skip and the
     // drop's timed deletion

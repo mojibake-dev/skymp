@@ -96,6 +96,15 @@ inline REL::Relocation<std::uintptr_t> QuestStageSink{ REL::ID(53987) };
 // 44108); include/RE/P/Projectile.h:78-107 the LaunchData). AE id; thuum
 // docs/verbs/marksman.md, the arrow's path identical on both screens.
 inline REL::Relocation<std::uintptr_t> ProjectileLaunch{ REL::ID(44108) };
+// thuum docs/verbs/spell-cast.md (the rune's glyph on the observer): the
+// engine's decal placement, called by the magic caster's target-location
+// launch (34452) right after Projectile::Launch for a grenade projectile
+// with the pick's position and normal and the surface's material id; its
+// callers are 34452 and the impact-effects pass 44213 (the re-analyst's REA
+// read of 2026-10-20, docs/research/re-37335-and-rune-landing.md, CONFIRMED
+// on the caster by lab/frida/rune-decal-trace.js, x-rune-decal-frida
+// 20261020-102818). AE only (1.6.1170)
+inline REL::Relocation<std::uintptr_t> RuneDecal{ REL::ID(44186) };
 // A missile's velocity set on its first update, Projectile vfunc called as
 // (Projectile*): the angles here are its final ones, the player's arrow's
 // after the engine's auto-aim rewrote them (41248), which Launch's entry does

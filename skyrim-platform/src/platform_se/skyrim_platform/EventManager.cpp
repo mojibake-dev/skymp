@@ -19,6 +19,9 @@ void EventManager::InitCustom()
   manager->EmplaceEvent("actionPerformed");
   manager->EmplaceEvent("skseAction");
   manager->EmplaceEvent("projectileLaunched");
+  // thuum docs/verbs/spell-cast.md: the engine's decal placement for the
+  // player's own target-location launch (FridaHooks' runeDecal)
+  manager->EmplaceEvent("runeDecal");
   manager->EmplaceEvent("projectileFlight");
   // thuum docs/research/apocalypse/target-location.md: a target-location
   // explosion placed at the caster's point (FridaHooks' areaEffectPlaced);

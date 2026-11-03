@@ -1572,9 +1572,13 @@ export class RemoteServer extends ClientListener {
         const target = atPlayer && landsOnItsTarget(spell)
           ? 0x14
           : remoteIdToLocalId(msg.data.target);
+        // the launch's surface, when the cast carries one (the rune's glyph:
+        // the observer's game places the caster's decal after its launch)
+        const decal = msg.data.hasLaunch ? msg.data.decal : undefined;
         castSpellImmediate(ac.getFormID(), msg.data.castingSource, spell.getFormID(), target,
           msg.data.aimAngle, msg.data.aimHeading, actorAnimationVariables,
-          msg.data.hasLaunch, msg.data.originX, msg.data.originY, msg.data.originZ, msg.data.launchAngleX, msg.data.launchAngleZ);
+          msg.data.hasLaunch, msg.data.originX, msg.data.originY, msg.data.originZ, msg.data.launchAngleX, msg.data.launchAngleZ,
+          !!decal, decal ? decal.normalX : 0, decal ? decal.normalY : 0, decal ? decal.normalZ : 0, decal ? decal.materialId : 0);
         if (onPuppet) {
           logTrace(this, `cast ${spell.getFormID().toString(16)} on puppet ${ac.getFormID().toString(16)} hand ${msg.data.castingSource} at ${msg.data.target.toString(16)}`);
         }

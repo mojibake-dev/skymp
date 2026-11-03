@@ -58,7 +58,8 @@ use bounded::{String, Vec};
 /// 30: ObjectAnimation (thuum docs/verbs/traps.md, ADR-059 decision 3,
 /// m4-object-animation): a world object's animation event the cell's host
 /// reported, recorded as its lastAnimation and told to the cell's other games.
-/// 31: TrapHit (m4-trap-hit, thuum docs/WIRE.md). 32: m2-rune-glyph.
+/// 31: TrapHit (m4-trap-hit, thuum docs/WIRE.md). 32: m2-rune-glyph's
+/// `decal` on SpellCast alone (the rune's glyph on the observer).
 /// 33: ChangeForm, ChangeFormAck and ChangeFormApply (thuum
 /// docs/verbs/change-form.md, ADR-065 system 1, adr065-sys1-wire): an
 /// actor's change form as the owner's engine serialized it, recorded by the
@@ -69,7 +70,11 @@ use bounded::{String, Vec};
 /// the branch that lands on parity second renumbers, the ids shifting with
 /// the variant order either way. 33 so that no two builds at 31 disagree on
 /// what a 72 means.
-pub const SCHEMA_VERSION: u16 = 33;
+/// 34: 33's three messages with 32's `decal` on SpellCast, merged on
+/// m3-turbo3-sys2-container-r2 (Eli's prop check: "runes no longer show
+/// up"); a 33 image without the field is on the lab, so the union is a new
+/// number.
+pub const SCHEMA_VERSION: u16 = 34;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -1096,6 +1101,7 @@ mod tests {
                         floats: alloc::vec![u8::MAX; cap::ANIM_VARS].try_into().unwrap_or_default(),
                         integers: alloc::vec![u8::MAX; cap::ANIM_VARS].try_into().unwrap_or_default(),
                     },
+                    decal: Some(skymp::SpellDecal { normal_x: f32::MAX, normal_y: f32::MAX, normal_z: f32::MAX, material_id: u32::MAX }),
                 },
                 ..Default::default()
             }),

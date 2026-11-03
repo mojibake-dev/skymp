@@ -234,7 +234,8 @@ export class PuppetService extends ClientListener {
         // and restamped it; numidium's review of db0e19a5). The ragdoll settle
         // clock forgets the death that was undone, so a later death gets its
         // whole settle (x-npc-death-freeze 140538 and 152912: the release came
-        // 1 to 1.85 s into the second fall and froze the skeleton)
+        // 0.75 to 1.0 s into the second fall and froze the skeleton, and would
+        // still have come 1.0 to 1.85 s into it with db0e19a5's clear)
         this.deadFlaggedSince.delete(localId);
         if (!has3D) {
             return;

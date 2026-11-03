@@ -57,6 +57,12 @@ export class DeathService extends ClientListener {
     // KillMove1HMStabUpFace and KillMoveD seen in the lab; KillingBlow (three
     // bleed-out idles), 2HWKillMoveA and KillWerewolfPaired* in the tree,
     // HYPOTHESIS beyond the two seen
+    // the whole id range: a server-made NPC's copy (0xff000000 and up) is a
+    // puppet on the seats that do not host it and takes the replay and the
+    // event relay like any NPC model; the puppet read keeps figures out (a
+    // figure is never flagged), and a KillMove* the figures' handler already
+    // blanked reaches these as "" and matches nothing (the fresh review of
+    // 7d0d4d7e, note 1)
     const sp = this.sp;
     for (const pattern of ["KillMove*", "KillingBlow*", "2HWKillMove*", "KillWerewolf*"]) {
       this.sp.hooks.sendAnimationEvent.add(
@@ -69,7 +75,7 @@ export class DeathService extends ClientListener {
           leave() { },
         },
         0,
-        0xfeffffff,
+        0xffffffff,
         pattern
       );
     }

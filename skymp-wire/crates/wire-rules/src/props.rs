@@ -42,6 +42,15 @@ pub const PROP_MAX_SPEED_UNITS_PER_S: f32 = 6_000.0;
 /// The least a sample may move the record without a time base (see
 /// `PROP_MAX_SPEED_UNITS_PER_S`).
 pub const PROP_STEP_FLOOR_UNITS: f32 = 128.0;
+/// The budget of a simulator's FIRST sample of a prop with no live row (the
+/// host's sample of a prop nobody touched, or a lapsed row's): half a second
+/// of flight. Playtest 41 (2026-11-02, Eli: "just blast a bunch of cabbages
+/// ... only some stayed synced"): a shout's blast moved a cabbage farther
+/// than the floor before the host's first sample, the sample was refused
+/// and no row was written, so every later sample was measured against the
+/// never-moving record and the prop never synced again. The row is written
+/// at the first accepted sample and the elapsed budget takes over.
+pub const PROP_FIRST_SAMPLE_UNITS: f32 = PROP_MAX_SPEED_UNITS_PER_S / 2.0;
 
 /// What the core knows about a simulator's sample of a prop.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -254,7 +263,9 @@ impl Props {
                 let elapsed_ms = u16::try_from(now_ms.saturating_sub(row.last_sample_ms).min(10_000)).unwrap_or(10_000);
                 (PROP_MAX_SPEED_UNITS_PER_S * f32::from(elapsed_ms) / 1_000.0).max(PROP_STEP_FLOOR_UNITS)
             }
-            _ => PROP_STEP_FLOOR_UNITS,
+            // no live row of this simulator's: the first sample of a prop at
+            // rest, which may have flown half a second already (a blast)
+            _ => PROP_FIRST_SAMPLE_UNITS,
         };
         if !moved.is_finite() || moved > allowed {
             return TransformVerdict::TooFast;
@@ -492,9 +503,29 @@ mod tests {
         assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 539.0, 1_200)), TransformVerdict::Accepted);
         // not a number: refused
         assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, f32::NAN, 1_300)), TransformVerdict::TooFast);
-        // the host's first sample of an unclaimed prop: the floor
+        // the host's first sample of an unclaimed prop: half a second of
+        // flight (PROP_FIRST_SAMPLE_UNITS, playtest 41's cabbages), then the
+        // row's elapsed budget
         let mut q = Props::default();
-        assert_eq!(q.transform(&facts(0x54a44, C1, CELL, C1, false, 200.0, 0)), TransformVerdict::TooFast);
-        assert_eq!(q.transform(&facts(0x54a44, C1, CELL, C1, false, 50.0, 0)), TransformVerdict::Accepted);
+        assert_eq!(q.transform(&facts(0x54a44, C1, CELL, C1, false, PROP_FIRST_SAMPLE_UNITS + 1.0, 0)), TransformVerdict::TooFast);
+        assert_eq!(q.transform(&facts(0x54a44, C1, CELL, C1, false, 200.0, 0)), TransformVerdict::Accepted);
+        assert_eq!(q.transform(&facts(0x54a44, C1, CELL, C1, false, 200.0, 10)), TransformVerdict::TooFast);
+        assert_eq!(q.transform(&facts(0x54a44, C1, CELL, C1, false, 50.0, 10)), TransformVerdict::Accepted);
+    }
+
+    #[test]
+    fn a_hosts_first_sample_of_a_blasted_prop_passes_and_writes_the_row() {
+        // playtest 41's cabbages: the host's first sample after a shout's
+        // blast moved 500 units with no row; refused by the floor, the prop
+        // never synced again. The first sample has half a second of flight
+        let mut p = Props::default();
+        assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, false, 500.0, 1_000)), TransformVerdict::Accepted);
+        // the row is written: the next sample has the elapsed budget (100 ms
+        // at the top speed is 600 units) and the floor under it
+        assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, false, 590.0, 1_100)), TransformVerdict::Accepted);
+        assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, false, 700.0, 1_200)), TransformVerdict::TooFast);
+        // a first sample beyond half a second of flight is still a teleport
+        let mut q = Props::default();
+        assert_eq!(q.transform(&facts(0x54a44, C1, CELL, C1, false, PROP_FIRST_SAMPLE_UNITS + 1.0, 1_000)), TransformVerdict::TooFast);
     }
 }

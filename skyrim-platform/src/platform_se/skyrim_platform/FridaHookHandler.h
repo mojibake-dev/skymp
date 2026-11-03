@@ -70,6 +70,11 @@ public:
 
   bool Attach(HookID id, uintptr_t address);
   void Install(HookID id, uintptr_t address, std::shared_ptr<Hook> hook);
+  // Register the hook's callbacks without an address, at plugin load, so a
+  // later Attach (kDataLoaded, when the entries are known) never inserts
+  // into the map the live hooks read (thuum ADR-062 slice 1b's review: the
+  // map is unguarded and a Robin Hood insert moves entries)
+  void Register(HookID id, std::shared_ptr<Hook> hook);
   // Replace the function at address with replacement (Gum's
   // gum_interceptor_replace, frida-gum 16.0.19 gum/guminterceptor.h:49-51),
   // the original left callable through *original; false when Gum refused

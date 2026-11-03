@@ -3,6 +3,7 @@
 #include "GetNativeFunctionAddr.h"
 #include "NullPointerException.h"
 #include "Overloaded.h"
+#include "PlatformCall.h"
 #include "SendAnimationEvent.h"
 #include "SkyrimPlatform.h"
 #include "StringHolder.h"
@@ -501,8 +502,14 @@ CallNative::AnySafe CallNative::CallNativeSafe(Arguments& args_)
         cb(env, VariableToAnySafe(result, funcReturnType));
       });
     };
-    VmCall::Run(*vmImpl, fsClassName, fsClassFunc, &selfScriptObject,
-                vmFuncArgs, onResult, nullptr);
+    {
+      // the platform's own latent call, marked for the script hooks while
+      // the VM dispatches it (ScriptNatives.cpp; thuum ADR-062 decision 2;
+      // HYPOTHESIS: a latent native's body runs inside the dispatch)
+      PlatformCall::Scope platformCall;
+      VmCall::Run(*vmImpl, fsClassName, fsClassFunc, &selfScriptObject,
+                  vmFuncArgs, onResult, nullptr);
+    }
     return ObjectPtr();
   }
 

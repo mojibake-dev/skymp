@@ -10,5 +10,9 @@
 // never from a pinned offset (rule 1); the offsets found are logged for the
 // reader to hold against docs/research/adr062/papyrus-native-entries.md.
 namespace ScriptNatives {
+// at plugin load: the hook's callbacks registered with the handler (no
+// address yet; the map the live hooks read is never touched later)
+void Register();
+// at kDataLoaded: each native's entry attached (Hooks::GetBoundNatives)
 void InstallHooks();
 }

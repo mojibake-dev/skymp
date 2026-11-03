@@ -19,6 +19,7 @@
 #include "MagicApi.h"
 #include "MpClientPluginApi.h"
 #include "ObjectReferenceApi.h"
+#include "PlatformCall.h"
 #include "PuppetApi.h"
 #include "Sp3Api.h"
 #include "TextApi.h"
@@ -385,7 +386,12 @@ struct SkyrimPlatform::Impl
                       RE::BSScript::Internal::VirtualMachine* vm,
                       RE::BSScript::IFunction::CallResult* ret)
   {
-    *ret = fPtr->Call(stack, logger, vm, false);
+    {
+      // the platform's own call, marked for the script hooks
+      // (ScriptNatives.cpp; thuum ADR-062 decision 2)
+      PlatformCall::Scope platformCall;
+      *ret = fPtr->Call(stack, logger, vm, false);
+    }
     std::lock_guard<std::mutex> lock(syncLock);
     complete = true;
     conditionalVariable.notify_all();

@@ -155,6 +155,10 @@ declare module "skyrimPlatform" {
         cell: number;
         actor: boolean;
         stackId: number;
+        // 1 for a live call; a census event (self 0) folds this many calls
+        // (the quest, global and alias rows, " (not hosted)", " (platform)",
+        // " (over budget)" suffixes), every 30 s
+        count: number;
     }
     function on(eventName: 'scriptNative', callback: (event: ScriptNativeEvent) => void): EventHandle;
     function once(eventName: 'scriptNative', callback: (event: ScriptNativeEvent) => void): EventHandle;

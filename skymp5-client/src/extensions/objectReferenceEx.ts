@@ -108,8 +108,12 @@ export class ObjectReferenceEx {
     // name through the layer's papyrus-scripts.txt) hears OnActivate and runs
     // the trap, the lever or the pillar on this game; the read x-bleak-traps v4
     // is its first use, the hosted-cell gate its next shape. Default: none.
+    // a movable static joins the blocked kinds (ADR-062 slice 1b's review: the
+    // host's release re-blocks ACTI and MSTT alike, hostService.liftCellActivation,
+    // so a seat that never hosted and a former host must agree)
     if (t === FormType.Furniture
       || t === FormType.Activator
+      || t === FormType.MovableStatic
       || t === FormType.Container
       || isItem
       || t === FormType.NPC

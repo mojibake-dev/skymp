@@ -231,13 +231,16 @@ DLLEXPORT bool SKSEAPI SKSEPlugin_Load_Impl(const SKSE::LoadInterface* skse)
       if (a_msg && a_msg->type == SKSE::MessagingInterface::kDataLoaded) {
         Hooks::InstallCastAnswerSink();
         // thuum ADR-062 decision 2: the natives' entries, from the VM's
-        // bindings recorded by then
+        // bindings recorded by then, attached to the registered hook
         ScriptNatives::InstallHooks();
       }
     });
 
   Hooks::Install();
   Frida::InstallHooks();
+  // thuum ADR-062 decision 2: the script hooks' callbacks registered now,
+  // their entries attached at kDataLoaded (ScriptNatives)
+  ScriptNatives::Register();
 
   // init custom events first
   // and the rest at DataLoaded, to be safe

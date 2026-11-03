@@ -743,8 +743,11 @@ TEST_CASE("A host's report of a script's kill (cause 3) is taken as the "
   Report(p, 1, kPredator, 3, 0, actor.GetPos());
   REQUIRE_FALSE(actor.IsDead());
 
-  // the host's: taken, the killer the script named credited
-  Report(p, 0, kPredator, 3, kHost, actor.GetPos());
+  // the host's: taken, the killer the script named credited; the body's
+  // distance to the record is no gate for a script's kill (ADR-063 decision
+  // 4: the host streams the record itself; KillEssential's flag the same)
+  Report(p, 0, kPredator, 3, kHost,
+         actor.GetPos() + NiPoint3{ 3000.f, 0.f, 0.f });
   REQUIRE(actor.IsDead());
 
   StandUp(p, actor);

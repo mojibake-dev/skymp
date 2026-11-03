@@ -1609,15 +1609,18 @@ wire_struct! {
 
 wire_struct! {
     /// MsgType 52, thuum's (docs/verbs/npc-fate.md, ADR-048's B): client to
-    /// server, reliable, once per death, R1. The host of a game-file actor,
-    /// or of a server-made one (0xff000000 up; playtest 37's finding 47),
+    /// server, reliable, once per death. The host of a game-file actor, or
+    /// of a server-made one (0xff000000 up; playtest 37's finding 47),
     /// reports a death its engine played that the server has no number for:
-    /// the actor, the host's reading of the cause, the killer when an actor,
-    /// the point. The server accepts it only when it can check the cause by
-    /// its own evidence (a fall by the record's height history, a hazard by
-    /// an activation it saw near the point, an NPC's hit by a recent hit it
-    /// numbered), refuses and logs the rest, and caps a host's reports. Reason
-    /// codes: `E_VAL_RANGE` (an actor id of 0, a cause above 4),
+    /// the actor, the host's reading of the cause, the killer when an actor
+    /// (cause 4, or the one a script named for cause 3), the point. Causes
+    /// 0, 1, 2 and 4 are R1: the server accepts them only when it can check
+    /// the cause by its own evidence (a fall by the record's height history,
+    /// a hazard by an activation it saw near the point, an NPC's hit by a
+    /// recent hit it numbered) and refuses and logs the rest; cause 3, a
+    /// host-run script's kill, is R2 since ADR-062 decision 2: the host's
+    /// word, recorded. A host's reports are capped. Reason codes:
+    /// `E_VAL_RANGE` (an actor id of 0, a cause above 4),
     /// `E_VAL_OUT_OF_WORLD`, `E_VAL_NONFINITE`, `E_VAL_RATE`.
     pub struct ActorDeath {
         /// `"t": 52`.
@@ -1626,9 +1629,11 @@ wire_struct! {
         /// The dead actor's own form id, under 0xff000000.
         pub refr_id: u32,
         /// The host's reading of the cause: 0 unknown, 1 fall, 2 hazard,
-        /// 3 script, 4 an actor's hit (the killer named).
+        /// 3 a script's kill (R2, the host's word), 4 an actor's hit (the
+        /// killer named).
         pub cause: u8,
-        /// The killer's form id when the cause is an actor's hit, else 0.
+        /// The killer's form id when the cause is an actor's hit, or the
+        /// one a script's Kill named, else 0.
         pub killer: u32,
         /// Where the body fell.
         pub pos: Vec3,

@@ -161,8 +161,7 @@ bool IsLifecycleEvent(const std::string& lowerName)
   return false;
 }
 
-bool AdmittedByChain(const RE::BSScript::ObjectTypeInfo* info,
-                     bool inHostedCell, bool lifecycle)
+bool AdmittedByChain(const RE::BSScript::ObjectTypeInfo* info, bool lifecycle)
 {
   for (int depth = 0; info && depth < 16; ++depth, info = info->GetParent()) {
     auto name = LowerAscii(info->GetName());
@@ -172,10 +171,11 @@ bool AdmittedByChain(const RE::BSScript::ObjectTypeInfo* info,
     if (!g_admittedScripts.empty() && g_admittedScripts.count(name)) {
       return true;
     }
-    // ADR-059 decision 1: a host-scoped name passes for a reference in a
-    // cell this game hosts (the world's traps, levers and pillars run on
-    // the cell's host, nowhere else), and for a lifecycle event anywhere
-    if ((inHostedCell || lifecycle) && !g_hostAdmittedScripts.empty() &&
+    // ADR-059 decision 1's lifecycle rule for a layer that still carries
+    // host rows (an older papyrus-scripts.txt): a lifecycle event passes
+    // anywhere for a name on them; the hosted-cell case is ADR-062's rule
+    // in OnSendEventEnter, for every world script, named or not
+    if (lifecycle && !g_hostAdmittedScripts.empty() &&
         g_hostAdmittedScripts.count(name)) {
       return true;
     }
@@ -238,15 +238,26 @@ void OnSendEventEnter(GumInvocationContext* ic)
   auto vm = VM::GetSingleton();
 
   uint32_t selfId = 0;
-  // the cell the event's reference stands in (ADR-059 decision 1's gate);
-  // an actor's, a quest's or an effect's event has none
+  // the cell the event's reference stands in (ADR-059 decision 1's gate,
+  // ADR-062 decision 1's rule); a quest's or an effect's event has none
   uint32_t selfCell = 0;
+  // the self is an actor (ADR-062: an actor's script runs where the actor
+  // is simulated, so a hosted live actor's passes and a puppet's stays
+  // blanked; before ADR-062 an actor's event never saw the cell rule, the
+  // spider's masterAmbushScript among them, playtest 41)
+  bool selfIsActor = false;
 
   auto policy = vm->GetObjectHandlePolicy();
   if (policy) {
     if (auto actor =
           policy->GetObjectForHandle(RE::FormType::ActorCharacter, handle)) {
       selfId = actor->GetFormID();
+      selfIsActor = true;
+      if (auto ref = static_cast<RE::TESObjectREFR*>(actor)) {
+        if (auto cell = ref->GetParentCell()) {
+          selfCell = cell->GetFormID();
+        }
+      }
     }
     if (auto refr =
           policy->GetObjectForHandle(RE::FormType::Reference, handle)) {
@@ -263,10 +274,28 @@ void OnSendEventEnter(GumInvocationContext* ic)
     std::lock_guard<std::mutex> lock(g_hostedCellsMutex);
     inHostedCell = g_hostedCells.count(selfCell) > 0;
   }
+  // thuum docs/DECISIONS.md ADR-062 decision 1 (Eli, playtest 41: "shouldn't
+  // 'scripts work' be a holistic fix?"): in a cell this game hosts every
+  // WORLD OBJECT's script runs, whatever its name, and a live ACTOR's runs
+  // when this game simulates the actor (Hosted.h, not a puppet); a player's
+  // own actor (0x14) and the figures (0xff000000 and up) keep ADR-044's
+  // rules, their scripts being a player's effects. Outside a hosted cell
+  // nothing changes. The names of the layer's host rows retire with this.
 
   auto eventNameStr = std::string(*eventName);
   EventsApi::SendPapyrusEventEnter(selfId, eventNameStr);
   const bool lifecycle = IsLifecycleEvent(LowerAscii(eventNameStr.c_str()));
+  // A world object's script: in a hosted cell every event, elsewhere the
+  // lifecycle events alone (ADR-059 decision 1's reason: they come before
+  // any seat hosts the cell, and a guest's pillar must stand on its initial
+  // face). A live actor's script: wherever this game simulates the actor
+  // (a follow's actor outside the hosted cell included); a puppet's never.
+  const bool ownedByAPlayer = selfId == 0x14 || selfId >= 0xff000000;
+  const bool worldObject = !selfIsActor && selfCell != 0 && !ownedByAPlayer;
+  const bool simulatedActor = selfIsActor && !ownedByAPlayer &&
+    Hosted::Is(selfId) && !Puppets::Is(selfId);
+  const bool hostedWorldScript =
+    (worldObject && (inHostedCell || lifecycle)) || simulatedActor;
 
   auto blockEvents = TESModPlatform::GetPapyrusEventsBlocked();
 
@@ -338,7 +367,7 @@ void OnSendEventEnter(GumInvocationContext* ic)
         auto info = script->GetTypeInfo();
         auto name = info->GetName();
 
-        if (AdmittedByChain(info, inHostedCell, lifecycle)) {
+        if (hostedWorldScript || AdmittedByChain(info, lifecycle)) {
           blockEvents = false;
           break;
         } else if (!strnicmp(name, "RaceMenu", 8)) {

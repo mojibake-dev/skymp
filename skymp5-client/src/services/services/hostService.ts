@@ -163,6 +163,37 @@ export class HostService extends ClientListener {
     }
     private platformToldOnce = false;
 
+    // thuum docs/DECISIONS.md ADR-062 decision 1: the engine's own activation
+    // of the cell's scripted world objects (activators and movable statics) is
+    // lifted on the host at the grant and blocked again at the release, so a
+    // plate's activation parents fire its spike wall and a lever's its
+    // portcullis on the hosting seat alone (objectReferenceEx.dealWithRef
+    // reads the same rule at a reference's creation). The pass walks the
+    // cell's references by kind (Cell.getNumRefs and getNthRef, Papyrus's
+    // own), on the next update (natives need the game thread)
+    private liftCellActivation(cell: number, hosted: boolean) {
+        this.controller.once("update", () => {
+            const form = this.sp.Game.getFormEx(cell);
+            const cellForm = form ? this.sp.Cell.from(form) : null;
+            if (!cellForm) {
+                return;
+            }
+            let touched = 0;
+            for (const kind of [this.sp.FormType.Activator, this.sp.FormType.MovableStatic]) {
+                const n = cellForm.getNumRefs(kind);
+                for (let i = 0; i < n; i++) {
+                    const ref = cellForm.getNthRef(i, kind);
+                    if (!ref) {
+                        continue;
+                    }
+                    ref.blockActivation(!hosted);
+                    touched++;
+                }
+            }
+            logTrace(this, `cell ${cell.toString(16)}: the engine's activation ${hosted ? "lifted" : "blocked"} on ${touched} scripted world object(s) (ADR-062)`);
+        });
+    }
+
     // The cells this game hosts, with their epochs.
     hostedCells(): ReadonlyMap<number, number> {
         return this.hosted;
@@ -239,6 +270,7 @@ export class HostService extends ClientListener {
         this.lastEpoch.set(cell, epoch);
         this.hosted.set(cell, epoch);
         this.tellPlatform(cell, true);
+        this.liftCellActivation(cell, true);
         this.persist();
         logTrace(this, `hosting cell ${cell.toString(16)} at epoch ${epoch}`);
         // thuum playtest 38's finding 66: the roster that raced this grant was
@@ -259,6 +291,7 @@ export class HostService extends ClientListener {
         }
         this.hosted.delete(cell);
         this.tellPlatform(cell, false);
+        this.liftCellActivation(cell, false);
         if (epoch > (this.lastEpoch.get(cell) ?? 0)) {
             this.lastEpoch.set(cell, epoch);
         }
@@ -278,6 +311,7 @@ export class HostService extends ClientListener {
         for (const cell of Array.from(this.hosted.keys())) {
             this.controller.emitter.emit("cellHostChanged", { cell, hosted: false });
             this.tellPlatform(cell, false);
+            this.liftCellActivation(cell, false);
         }
         this.hosted.clear();
         this.lastEpoch.clear();

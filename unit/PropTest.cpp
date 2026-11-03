@@ -622,7 +622,9 @@ TEST_CASE("A player's unload of a cell returns its live props there to the "
   Sample(p, 0, kBasket, kHere + NiPoint3{ 35.f, 0.f, 0.f }, false);
   REQUIRE(p.PropLiveOwner(w.prop) == 0);
   REQUIRE(p.PropEpochOf(w.prop) == 4);
-  REQUIRE(std::abs(w.prop.GetPos().x - (kHere.x + 32.f)) < 1.f);
+  // the record stands where the wake's sample put it (pipeline 4848: this
+  // line once expected a rest sample the case never sends)
+  REQUIRE(std::abs(w.prop.GetPos().x - (kHere.x + 25.f)) < 1.f);
   CellLoaded(p, 0, w.cell, true);
   Sample(p, 0, kBasket, kHere + NiPoint3{ 36.f, 0.f, 0.f }, false);
   REQUIRE(p.PropLiveOwner(w.prop) == kC1);

@@ -116,8 +116,14 @@ uint64_t g_lastFlushMs = 0;
 // the selves a quest's, global's or alias's row names in one window: at most
 // kSelvesPerRow distinct ids per row ("Quest.Start on 30002859"), the rest
 // under "on others", so a census line per self never grows past the window's
-// bound (the review of 2026-11-03: unbounded selves were unbounded lines)
-constexpr size_t kSelvesPerRow = 8;
+// bound (the review of 2026-11-03: unbounded selves were unbounded lines).
+// 32, not 8: a rare row names every self (x-script-natives v6, run
+// 20261103-073235: SetCurrentStageID ran 11 times on 10 selves in the guest's
+// load window, two of them under "on others", so a claim reading "on 10d3bb"
+// could not rule the stage in or out); a probe that leans on a row's self
+// lines also claims that row's "on others" line absent, so the bound biting
+// reads as a red, never as a pass
+constexpr size_t kSelvesPerRow = 32;
 std::map<std::string, std::set<uint32_t>> g_selves;
 
 uint64_t NowMs()

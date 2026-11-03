@@ -293,6 +293,7 @@ TEST_CASE("A claim on an unknown reference or on a grabbed prop is refused: "
   REQUIRE_FALSE(SentTo<PropOwnerMessage>(p, 0).empty());
   REQUIRE_FALSE(SentTo<PropOwnerMessage>(p, 1).empty());
   c2.SetPos(kHere + NiPoint3{ 60.f, 0.f, 0.f });
+  p.Messages().clear();
 
   // a reference the server does not hold, and a player's actor
   Claim(p, 1, 0xff000dff, 0);

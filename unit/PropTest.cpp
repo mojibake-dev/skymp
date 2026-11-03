@@ -82,25 +82,6 @@ RawMessageData Raw(Networking::UserId user)
 }
 
 // `user`'s touch of the prop `refr`
-// `user`'s movement report for its own actor (the square change refreshes
-// its reach, PartOne::RefreshReach)
-void Move(PartOne& p, Networking::UserId user, uint32_t actorId,
-          const NiPoint3& pos)
-{
-  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
-  RawMessageData raw;
-  raw.userId = user;
-  raw.unparsed = unparsed;
-  raw.unparsedLength = sizeof(unparsed);
-  UpdateMovementMessage msg;
-  msg.idx = p.worldState.GetFormAt<MpActor>(actorId).GetIdx();
-  msg.data.pos = { pos.x, pos.y, pos.z };
-  msg.data.rot = { 0, 0, 0 };
-  msg.data.worldOrCell = 0x3c;
-  msg.data.runMode = "Standing";
-  p.GetActionListener().OnUpdateMovement(raw, msg);
-}
-
 void Claim(PartOne& p, Networking::UserId user, uint32_t refr, uint32_t touch)
 {
   PropClaimMessage msg;
@@ -599,6 +580,7 @@ TEST_CASE("A player's unload of a cell returns its live props there to the "
 {
   auto& p = GetPartOne();
   auto w = Enter(p);
+  auto& c2 = p.worldState.GetFormAt<MpActor>(kC2);
   // c2 kicks the basket and streams it awake, then its game unloads the
   // cell (a door): the row returns to the host at a new epoch, both seats
   // told with player 0; c2's late sample is refused NotOwner and answered
@@ -626,10 +608,18 @@ TEST_CASE("A player's unload of a cell returns its live props there to the "
   Claim(p, 1, kBasket, 0);
   REQUIRE(p.PropLiveOwner(w.prop) == 0);
   REQUIRE(p.PropEpochOf(w.prop) == 2);
-  // c2 steps into the next square (a report may move an actor 4096 at most):
-  // its reach is refreshed, the cell is in it, the state ends, the claim is
-  // granted (round seven's reach exit, the follows' shape)
-  Move(p, 1, kC2, kHere + NiPoint3{ 3900.f, 0.f, 0.f });
+  // c2 stands in the next square (the server's own placement, as a teleport
+  // is) and its game reports THAT cell loaded, never the old one: the load
+  // report refreshes its reach, the old cell is in it, the state ends and
+  // the claim is granted (round seven's reach exit, the follows' shape;
+  // pipeline 4865: a 3900-unit movement report was the speed rule's to
+  // refuse, so the square never changed by that path)
+  const NiPoint3 nextSquare = kHere + NiPoint3{ 3900.f, 0.f, 0.f };
+  c2.SetPos(nextSquare);
+  const auto nextCell = p.worldState.CellOf(kTamriel, nextSquare);
+  REQUIRE(nextCell.has_value());
+  REQUIRE(*nextCell != w.cell);
+  CellLoaded(p, 1, *nextCell, true);
   Claim(p, 1, kBasket, 0);
   REQUIRE(p.PropLiveOwner(w.prop) == kC2);
   REQUIRE(p.PropEpochOf(w.prop) == 3);

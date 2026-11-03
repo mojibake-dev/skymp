@@ -164,7 +164,12 @@ export class FormView {
           // moment, so the new host moves its own reference to it when the
           // engine has it in another cell; after that the host's engine leads
           const promotedNow = mine && model.isHostedByOther === false && this.hostedBefore !== false;
-          if (refr && target && (!mine || promotedNow) && engineCell !== 0 && engineCell !== model.movement.worldOrCell) {
+          // one mover: while HostService holds this actor for its placement
+          // the hold asks the move, not the gate (review item 4); and a body
+          // is never moved (D78 C, review item 2)
+          const held = !!refr && SpApiInteractor.getControllerInstance().lookupListener(HostService).isHeld(this.refrId);
+          const deadHere = model.isDead === true || (!!refr && (Actor.from(refr)?.isDead() ?? false));
+          if (refr && target && (!mine || promotedNow) && !held && !deadHere && engineCell !== 0 && engineCell !== model.movement.worldOrCell) {
             const pos = model.movement.pos;
             const rot = model.movement.rot;
             TESModPlatform.moveRefrToPosition(

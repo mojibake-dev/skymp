@@ -17,6 +17,10 @@ import { RemoteServer } from "./remoteServer";
 // (the gate's move counts as the first), the checks run and the reports
 // deferred past it
 type PendingPlacement = { since: number; record: Movement; asks: number; askedAt: number; checks: number; deferred: Array<() => void> };
+// deferred reports released by a hold run on the next update, never inline
+// (a release from the tick thread, where natives are refused: numidium's
+// review of r3, item 1)
+type Released = { remoteId: number; deferred: Array<() => void> };
 
 // The storage key of the state a plugin reload must not lose (sp.storage
 // survives one, ADR-041)
@@ -205,13 +209,22 @@ export class HostService extends ClientListener {
     // held and a copy found dead is released unmoved (item 2). A missing form
     // or record releases at once, so no actor is held for good. Reports
     // deferred past the hold (a death) run at its release (item 4).
-    holdUntilPlaced(remoteId: number, record: Movement | undefined): void {
+    holdUntilPlaced(remoteId: number, record: Movement | undefined, deadByTheWord = false): void {
         if (!record) {
             logTrace(this, `hold for ${remoteId.toString(16)}: no record held, nothing to place at`);
             return;
         }
-        if (record.isDead) {
+        // the word's own dead flag (the create word's isDead, the model's), not
+        // the movement's, which the create word builds false (review item 2)
+        if (deadByTheWord || record.isDead) {
             logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: dead at the word, a body is never moved (D78 C); not held`);
+            return;
+        }
+        const live = this.pendingPlacement.get(remoteId);
+        if (live) {
+            // a re-sent word mid-hold refreshes the record and keeps the hold's
+            // deferred reports and its asks (review item 7)
+            live.record = record;
             return;
         }
         this.pendingPlacement.set(remoteId, { since: Date.now(), record, asks: 0, askedAt: 0, checks: 0, deferred: [] });
@@ -235,8 +248,11 @@ export class HostService extends ClientListener {
             return;
         }
         this.pendingPlacement.delete(remoteId);
-        logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: released after ${Date.now() - hold.since} ms, ${why}`);
-        this.runDeferred(remoteId, hold.deferred);
+        // a demote: this seat is no longer the actor's reporter, so a death it
+        // deferred cannot be reported by it (the server would refuse it,
+        // E_DEATH_NOT_HOST); the new host's engine or the server's word carries
+        // it, and the drop is said (review item 1)
+        logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: released after ${Date.now() - hold.since} ms, ${why}${hold.deferred.length > 0 ? `; ${hold.deferred.length} deferred report(s) dropped with it (not this seat's to send)` : ""}`);
     }
 
     // the senders of a report that carries a position (a death, a shot's or a
@@ -263,17 +279,33 @@ export class HostService extends ClientListener {
         return true;
     }
 
+    // queued for the next update (never run inline: a release can come from
+    // the tick thread, where natives are refused)
     private runDeferred(remoteId: number, deferred: Array<() => void>): void {
-        for (const run of deferred) {
-            try {
-                run();
-            } catch (e) {
-                logError(this, `hold ${remoteId.toString(16)}: a deferred report threw: ${e}`);
+        if (deferred.length > 0) {
+            this.released.push({ remoteId, deferred });
+        }
+    }
+
+    private runReleased(): void {
+        if (this.released.length === 0) {
+            return;
+        }
+        const batch = this.released;
+        this.released = [];
+        for (const r of batch) {
+            for (const run of r.deferred) {
+                try {
+                    run();
+                } catch (e) {
+                    logError(this, `hold ${r.remoteId.toString(16)}: a deferred report threw: ${e}`);
+                }
             }
         }
     }
 
     private checkPlacements(): void {
+        this.runReleased();
         if (this.pendingPlacement.size === 0) {
             return;
         }
@@ -295,9 +327,14 @@ export class HostService extends ClientListener {
         hold.checks += 1;
         const refr = ObjectReference.from(Game.getFormEx(remoteIdToLocalId(remoteId)));
         if (!refr) {
-            this.pendingPlacement.delete(remoteId);
-            logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: no form here, released`);
-            this.runDeferred(remoteId, hold.deferred);
+            // a server-made copy's form follows its create word by frames (the
+            // client places it); the hold waits for it and releases only when
+            // none appears within the whole budget (review item 7)
+            if (now - hold.since >= HostService.noFormTimeoutMs) {
+                this.pendingPlacement.delete(remoteId);
+                logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: no form here after ${now - hold.since} ms, released`);
+                this.runDeferred(remoteId, hold.deferred);
+            }
             return;
         }
         const r = hold.record;
@@ -320,10 +357,13 @@ export class HostService extends ClientListener {
             this.runDeferred(remoteId, hold.deferred);
             return;
         }
-        // the first check leaves the frame to the view's gate (its move is
-        // the first ask, noteMovedLocal); the second asks if nobody did
+        // the hold is the one mover while it stands (the view's gate defers to
+        // it, formView): the first check leaves a frame for the word's apply,
+        // the second asks, and an ask that did not land is repeated a second
+        // later up to maxAsks (a load's first 50 Papyrus updates make the move
+        // a no-op, LoadGame.cpp, about 4 s: review item 3's load block)
         const askNow = (hold.asks === 0 && hold.checks >= 2) ||
-            (hold.asks === 1 && now - hold.askedAt >= HostService.reaskAfterMs);
+            (hold.asks >= 1 && hold.asks < HostService.maxAsks && now - hold.askedAt >= HostService.reaskAfterMs);
         if (askNow) {
             hold.asks += 1;
             hold.askedAt = now;
@@ -335,7 +375,7 @@ export class HostService extends ClientListener {
             logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: ${hold.asks === 1 ? "asked" : "re-asked"} the move at +${now - hold.since} ms${target ? "" : " (the record's cell is not a form here)"}, the engine at ${engineAt}`);
             return;
         }
-        if (hold.asks >= 2 && now - hold.askedAt >= HostService.placementTimeoutMs) {
+        if (hold.asks >= HostService.maxAsks && now - hold.askedAt >= HostService.placementTimeoutMs) {
             this.pendingPlacement.delete(remoteId);
             logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: not placed after ${now - hold.since} ms (${asked}), the engine at ${engineAt}, the record at ${recordAt}; released on the timeout`);
             this.runDeferred(remoteId, hold.deferred);
@@ -343,11 +383,19 @@ export class HostService extends ClientListener {
     }
 
     private readonly pendingPlacement = new Map<number, PendingPlacement>();
+    private released: Released[] = [];
     private static readonly placedWithinUnits = 64;
-    // a second ask when the first did not land within a second; the release
-    // two seconds after the last ask
+    // another ask when the last did not land within a second, up to three
+    // asks (a load block of about 4 s is covered); the release two seconds
+    // after the last ask, so a stuck placement holds the actor for about 5 s
+    // at most; a copy whose form never appears is released at the same
+    // budget. Known limit (review item 6): a death deferred that long carries
+    // the engine's position at the hold's end and may miss the server's hit
+    // window or its 2048-unit bound, where the server's refusal line says so.
     private static readonly reaskAfterMs = 1000;
+    private static readonly maxAsks = 3;
     private static readonly placementTimeoutMs = 2000;
+    private static readonly noFormTimeoutMs = 5000;
 
     private onCellFullyLoaded(e: CellFullyLoadedEvent) {
         const id = e.cell.getFormID();

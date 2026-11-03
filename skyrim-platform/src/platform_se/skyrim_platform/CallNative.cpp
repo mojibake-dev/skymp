@@ -484,8 +484,18 @@ CallNative::AnySafe CallNative::CallNativeSafe(Arguments& args_)
     // function, the first three of each and then every 1000th with its count
     const std::string latentName =
       std::string(className) + "." + std::string(classFunc);
-    auto onResult = [cb, funcReturnType, jsThrQPtr,
-                     latentName](const Variable& result) {
+    // the platform's own latent call, noted by (row, self) for the script
+    // hooks: the VM only enqueues it and runs the body later on its own
+    // thread under a new stack id, so the entry hook takes the note by the
+    // self it sees; the key is the resolved function's own class and name
+    // (a call through a subclass resolves to the parent's row); the note is
+    // forgotten when the dispatch is refused or the call's stack returns
+    // (ScriptNatives.cpp; thuum ADR-062 decision 2)
+    const uint64_t latentToken = PlatformCall::NoteLatent(
+      f->GetObjectTypeName().data(), f->GetName().data(), rawSelf);
+    auto onResult = [cb, funcReturnType, jsThrQPtr, latentName,
+                     latentToken](const Variable& result) {
+      PlatformCall::ForgetLatent(latentToken);
       static std::mutex countsMutex;
       static std::unordered_map<std::string, uint64_t> counts;
       uint64_t n = 0;
@@ -502,13 +512,12 @@ CallNative::AnySafe CallNative::CallNativeSafe(Arguments& args_)
         cb(env, VariableToAnySafe(result, funcReturnType));
       });
     };
-    // the platform's own latent call, noted by (row, self) for the script
-    // hooks: the VM only enqueues it and runs the body later on its own
-    // thread under a new stack id, so the entry hook takes the note by the
-    // self it sees (ScriptNatives.cpp; thuum ADR-062 decision 2)
-    PlatformCall::NoteLatent(className.data(), classFunc.data(), rawSelf);
-    VmCall::Run(*vmImpl, fsClassName, fsClassFunc, &selfScriptObject,
-                vmFuncArgs, onResult, nullptr);
+    const bool dispatched =
+      VmCall::Run(*vmImpl, fsClassName, fsClassFunc, &selfScriptObject,
+                  vmFuncArgs, onResult, nullptr);
+    if (!dispatched) {
+      PlatformCall::ForgetLatent(latentToken);
+    }
     return ObjectPtr();
   }
 

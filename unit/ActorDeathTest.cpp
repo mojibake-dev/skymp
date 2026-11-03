@@ -783,7 +783,9 @@ TEST_CASE("A host's report of a script's kill on an essential base is taken "
   REQUIRE(p.worldState.HostOf(actor) == &host);
   REQUIRE_FALSE(actor.MayDie(nullptr));
 
-  // an actor's hit on her: the engine's rule, refused
+  // an actor's hit on her, the hit the server numbered a moment before so
+  // that only the essential rule can refuse it: refused
+  actor.NoteHitBy(kHost, std::chrono::steady_clock::now());
   Report(p, 0, kDelphine, 4, kHost, actor.GetPos());
   REQUIRE_FALSE(actor.IsDead());
 

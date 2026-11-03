@@ -125,11 +125,14 @@ std::string NameOf(const Native& n)
   return std::string(n.cls) + "." + n.name;
 }
 
-// MSVC SEH: no object with a destructor lives in this function. Reads the
-// self as a form of the row's kind; false on a fault or another kind (the
+// MSVC SEH: no object with a destructor lives in this function, and no
+// virtual call either (a wrong but readable pointer would run another
+// class's slot; SEH catches faults, not calls). Reads the self's form type
+// field as a form of the row's kind; false on a fault or another kind (the
 // convention HYPOTHESIS failing for this row). A reference of any placed
-// kind passes (REFR, ACHR, the placed missiles, arrows, beams, flames,
-// cones, barriers and hazards: TESForm::AsReference answers for them all)
+// kind passes: REFR, ACHR, the placed missiles, arrows, grenades, beams,
+// flames, cones, barriers and hazards (CommonLibSSE-NG FormTypes.h:201-210)
+// and an Explosion (:227, a placed BGSExplosion)
 bool ProbeSelf(void* selfPtr, int kind) noexcept
 {
   __try {
@@ -142,10 +145,13 @@ bool ProbeSelf(void* selfPtr, int kind) noexcept
       return quest->GetFormType() == RE::FormType::Quest;
     }
     auto* form = reinterpret_cast<RE::TESForm*>(selfPtr);
-    if (kind == 0) {
-      return form->AsReference() != nullptr;
-    }
     const auto type = form->GetFormType();
+    if (kind == 0) {
+      const auto t = static_cast<uint8_t>(type);
+      return (t >= static_cast<uint8_t>(RE::FormType::Reference) &&
+              t <= static_cast<uint8_t>(RE::FormType::PlacedHazard)) ||
+        type == RE::FormType::Explosion;
+    }
     return type == RE::FormType::Quest || type == RE::FormType::Global;
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     return false;
@@ -233,9 +239,9 @@ void OnNativeEnter(GumInvocationContext* ic)
   const auto now = NowMs();
   const auto stackId = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(
     gum_invocation_context_get_nth_argument(ic, 1)));
-  // the platform's own call (callNative's worker, a latent dispatch, an
-  // SpSnippet): the client applying the server's word is no script's
-  // consequence; counted apart
+  // the platform's own direct call (callNative's worker inside OnUpdate, a
+  // non-latent SpSnippet): the client applying the server's word is no
+  // script's consequence; counted apart. The latent path is the notes below
   if (PlatformCall::Active() ||
       (g_nativeCallRequirements.stackId != 0 &&
        stackId == g_nativeCallRequirements.stackId)) {
@@ -342,6 +348,7 @@ void ScriptNatives::Register()
   for (size_t idx = 0; idx < kNatives.size(); ++idx) {
     g_lowerKeys[idx] =
       PlatformCall::LatentKey(kNatives[idx].cls, kNatives[idx].name);
+    PlatformCall::WatchKey(g_lowerKeys[idx]);
   }
   Frida::HookHandler::GetSingleton()->Register(
     Frida::HookID::HOOK_SCRIPT_NATIVE,

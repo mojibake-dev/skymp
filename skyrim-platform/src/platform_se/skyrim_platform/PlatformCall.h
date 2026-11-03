@@ -19,8 +19,13 @@
 //   the call and runs the body later on its own thread under a new stack id,
 //   so no thread or stack mark can see it; the call is noted here by (row,
 //   self) before the dispatch and consumed by the hook at the entry
-//   (NoteLatent, TakeLatent). A note nobody consumes expires after
-//   kLatentExpiryMs (a refused or failed dispatch).
+//   (NoteLatent, TakeLatent); the note is forgotten when the dispatch is
+//   refused or when the call's stack returns (ForgetLatent), and a note
+//   older than kLatentExpiryMs is dropped at the next look, the backstop.
+//   Known limit: a note carries no call id, so a script calling the same
+//   native on the same self inside the window takes the platform's note and
+//   the platform's call goes out live (the counts are right, the attribution
+//   swapped once).
 namespace PlatformCall {
 inline thread_local int t_depth = 0;
 
@@ -41,6 +46,7 @@ constexpr uint64_t kLatentExpiryMs = 15'000;
 
 struct LatentNote
 {
+  uint64_t token;
   std::string key;
   const void* self;
   uint64_t atMs;
@@ -56,6 +62,15 @@ inline std::vector<LatentNote>& LatentNotes()
 {
   static std::vector<LatentNote> notes;
   return notes;
+}
+
+// the lower-case "Class.Function" keys the script hooks watch (ScriptNatives
+// registers its rows at plugin load); a latent call outside them is never
+// noted, so Utility.wait and kin cost nothing here
+inline std::vector<std::string>& WatchedKeys()
+{
+  static std::vector<std::string> keys;
+  return keys;
 }
 
 inline uint64_t LatentNowMs()
@@ -76,8 +91,59 @@ inline std::string LatentKey(const char* cls, const char* func)
   return key;
 }
 
-// the platform is about to dispatch a latent native on `self`
-inline void NoteLatent(const char* cls, const char* func, const void* self)
+inline void WatchKey(const std::string& lowerKey)
+{
+  std::lock_guard<std::mutex> lock(LatentMutex());
+  auto& keys = WatchedKeys();
+  if (std::find(keys.begin(), keys.end(), lowerKey) == keys.end()) {
+    keys.push_back(lowerKey);
+  }
+}
+
+// the platform is about to dispatch a latent native of `cls.func` (the
+// resolved function's own names) on `self`: the note's token, or 0 when the
+// row is not watched or the self is null (nothing to take at the entry)
+inline uint64_t NoteLatent(const char* cls, const char* func, const void* self)
+{
+  if (!self) {
+    return 0;
+  }
+  const auto key = LatentKey(cls, func);
+  const auto now = LatentNowMs();
+  std::lock_guard<std::mutex> lock(LatentMutex());
+  auto& keys = WatchedKeys();
+  if (std::find(keys.begin(), keys.end(), key) == keys.end()) {
+    return 0;
+  }
+  static uint64_t nextToken = 1;
+  auto& notes = LatentNotes();
+  notes.erase(std::remove_if(notes.begin(), notes.end(),
+                             [now](const LatentNote& n) {
+                               return now - n.atMs > kLatentExpiryMs;
+                             }),
+              notes.end());
+  const auto token = nextToken++;
+  notes.push_back(LatentNote{ token, key, self, now });
+  return token;
+}
+
+// the dispatch failed or the call's stack returned: the note is spent
+inline void ForgetLatent(uint64_t token)
+{
+  if (token == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(LatentMutex());
+  auto& notes = LatentNotes();
+  notes.erase(
+    std::remove_if(notes.begin(), notes.end(),
+                   [token](const LatentNote& n) { return n.token == token; }),
+    notes.end());
+}
+
+// the hook at the entry of `lowerKey` on `self`: the oldest live note for
+// that pair, taken once (an aged note is dropped, not taken: the backstop)
+inline bool TakeLatent(const std::string& lowerKey, const void* self)
 {
   const auto now = LatentNowMs();
   std::lock_guard<std::mutex> lock(LatentMutex());
@@ -87,14 +153,6 @@ inline void NoteLatent(const char* cls, const char* func, const void* self)
                                return now - n.atMs > kLatentExpiryMs;
                              }),
               notes.end());
-  notes.push_back(LatentNote{ LatentKey(cls, func), self, now });
-}
-
-// the hook at the entry of `cls.func` on `self`: true once per note
-inline bool TakeLatent(const std::string& lowerKey, const void* self)
-{
-  std::lock_guard<std::mutex> lock(LatentMutex());
-  auto& notes = LatentNotes();
   auto it = std::find_if(notes.begin(), notes.end(), [&](const LatentNote& n) {
     return n.self == self && n.key == lowerKey;
   });

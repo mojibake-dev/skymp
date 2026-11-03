@@ -428,9 +428,7 @@ TEST_CASE("Two players in one container: both open it, a take reaches the "
   auto& ref = partOne.worldState.GetFormAt<MpObjectReference>(refrId);
   ref.SetRelootTime(kRelootWindow);
   ref.SetChanceNoneOverride(0);
-  // memo D52's shared view, behind the setting since ADR-061 (the default
-  // is one occupant per container)
-  partOne.SetContainerSharing("shared");
+  partOne.SetContainerSharing("shared"); // the default (ADR-061)
 
   DoConnect(partOne, 0);
   partOne.CreateActor(0xff000000, { 21272.0000, -7816.0000, -3608.0000 }, 0,
@@ -506,7 +504,6 @@ TEST_CASE("Two players in one container: both open it, a take reaches the "
     ContainsSubstring("Actor 0xff000000 doesn't occupy ref 0x20570"));
   ref.Activate(second, false, true);
   REQUIRE_FALSE(ref.IsOpen());
-  partOne.SetContainerSharing("exclusive");
 
   DoDisconnect(partOne, 0);
   DoDisconnect(partOne, 1);
@@ -1038,7 +1035,9 @@ TEST_CASE("Exclusive container sharing: a second player is refused while the "
   auto& ref = partOne.worldState.GetFormAt<MpObjectReference>(refrId);
   ref.SetRelootTime(kRelootWindow);
   ref.SetChanceNoneOverride(0);
-  REQUIRE(partOne.worldState.containerSharingExclusive); // the default
+  REQUIRE_FALSE(
+    partOne.worldState.containerSharingExclusive); // shared by default
+  partOne.SetContainerSharing("exclusive");
 
   DoConnect(partOne, 0);
   partOne.CreateActor(0xff000000, { 21272.0000, -7816.0000, -3608.0000 }, 0,
@@ -1089,7 +1088,7 @@ TEST_CASE("Exclusive container sharing: a second player is refused while the "
   ref.Activate(second, false, true);
   REQUIRE_FALSE(ref.IsOpen());
 
-  // shared (the backlog's live view): both are in it, as the case above
+  // shared again (the default): both are in it, as the case above
   partOne.SetContainerSharing("shared");
   ref.Activate(first);
   ref.Activate(second);
@@ -1098,7 +1097,6 @@ TEST_CASE("Exclusive container sharing: a second player is refused while the "
   ref.Activate(first, false, true);
   ref.Activate(second, false, true);
   REQUIRE_FALSE(ref.IsOpen());
-  partOne.SetContainerSharing("exclusive");
 
   DoDisconnect(partOne, 0);
   DoDisconnect(partOne, 1);

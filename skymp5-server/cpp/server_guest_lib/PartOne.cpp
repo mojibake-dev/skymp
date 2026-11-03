@@ -812,9 +812,13 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           // every cell it hosts starts its grace (thuum
           // docs/verbs/cell-host.md); the clock passes them on
           this_->pImpl->cells->gone(actor->GetFormId(), SteadyNowMs());
-          // and its props fall back to their cells' hosts (thuum
-          // docs/verbs/prop-physics.md)
-          this_->pImpl->props->props_gone(actor->GetFormId());
+          // and its live props return to their cells' hosts, each with the
+          // word, player 0 (thuum docs/verbs/prop-physics.md, ADR-063
+          // decision 4: the return is a word, never a silent lapse)
+          for (const auto& r : this_->pImpl->props->props_gone(
+                 actor->GetFormId(), SteadyNowMs())) {
+            this_->SendPropOwnerWord(r.refr, 0, r.epoch, actor->GetFormId());
+          }
           // and the sightings it held for a grant that never came (thuum
           // docs/verbs/npc-puppet.md, finding 66's hold)
           this_->ForgetHeldSightings(actor->GetFormId());
@@ -2606,6 +2610,32 @@ uint32_t PartOne::PropEpochOf(const MpObjectReference& prop) const
 void PartOne::PropsHostChanged(uint32_t cell, uint32_t host)
 {
   pImpl->props->props_host_changed(cell, host, SteadyNowMs());
+}
+
+size_t PartOne::SendPropOwnerWord(uint32_t refr, uint32_t player,
+                                  uint32_t epoch, uint32_t exceptActor)
+{
+  auto& form = worldState.LookupFormByIdNoLoad(refr);
+  MpObjectReference* prop = form ? form->AsObjectReference() : nullptr;
+  if (!prop) {
+    return 0;
+  }
+  PropOwnerMessage word;
+  word.refr = refr;
+  word.player = player;
+  word.epoch = epoch;
+  size_t told = 0;
+  for (auto listener : prop->GetActorListeners()) {
+    if (exceptActor != 0 && listener->GetFormId() == exceptActor) {
+      continue;
+    }
+    const auto userId = serverState.UserByActor(listener);
+    if (userId != Networking::InvalidUserId) {
+      GetSendTarget().Send(userId, word, true);
+      ++told;
+    }
+  }
+  return told;
 }
 
 void PartOne::SetFollowEnabled(bool enabled)

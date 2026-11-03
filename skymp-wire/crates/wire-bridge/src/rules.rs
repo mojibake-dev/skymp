@@ -51,6 +51,16 @@ mod ffi {
         target_scale: f32,
     }
 
+    /// A prop returned to its cell's host by a departure (props_gone): the
+    /// reference and the new epoch the word carries.
+    #[derive(Debug)]
+    struct PropReturn {
+        /// The prop's reference id.
+        refr: u32,
+        /// The epoch the word carries.
+        epoch: u32,
+    }
+
     /// What the core knows about a simulator's sample of a physics prop
     /// (wire-rules props, thuum docs/verbs/prop-physics.md).
     #[derive(Debug)]
@@ -2011,15 +2021,19 @@ mod ffi {
         /// `host` now hosts `cell`: the rows nobody holds live name it, their
         /// epochs kept.
         fn props_host_changed(self: &mut Props, cell: u32, host: u32, now_ms: u64);
-        /// `player` left: its rows fall back to their cells' hosts.
-        fn props_gone(self: &mut Props, player: u32);
-        /// The lease a toucher keeps a sleeping prop for, ms (wire-rules
-        /// props::PROP_LEASE_MS), for the core's log.
-        fn prop_lease_ms() -> u64;
+        /// `player` left: its live rows (awake or held) return to their
+        /// cells' hosts at a new epoch each; the core sends `PropOwner` with
+        /// player 0 for every (refr, epoch) returned.
+        fn props_gone(self: &mut Props, player: u32, now_ms: u64) -> Vec<PropReturn>;
+        /// How recent the owner's last awake sample must be for a prop to
+        /// count as moving (wire-rules props::PROP_MOVING_MS): a contact, a
+        /// drop or an impulse from another seat is refused on it (claim
+        /// verdict 3).
+        fn prop_moving_ms() -> u64;
     }
 }
 
-pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
+pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropReturn, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -3104,6 +3118,7 @@ impl Props {
             props::ClaimVerdict::Granted(_) => 0,
             props::ClaimVerdict::Held => 1,
             props::ClaimVerdict::Same => 2,
+            props::ClaimVerdict::Moving => 3,
         }
     }
 
@@ -3126,6 +3141,7 @@ impl Props {
             props::TransformVerdict::NotOwner => 1,
             props::TransformVerdict::WrongCell => 2,
             props::TransformVerdict::TooFast => 3,
+            props::TransformVerdict::Returned(_) => 4,
         }
     }
 
@@ -3141,13 +3157,13 @@ impl Props {
         self.0.host_changed(cell, host, now_ms);
     }
 
-    fn props_gone(&mut self, player: u32) {
-        self.0.gone(player);
+    fn props_gone(&mut self, player: u32, now_ms: u64) -> Vec<PropReturn> {
+        self.0.gone(player, now_ms).into_iter().map(|(refr, epoch)| PropReturn { refr, epoch }).collect()
     }
 }
 
-const fn prop_lease_ms() -> u64 {
-    props::PROP_LEASE_MS
+const fn prop_moving_ms() -> u64 {
+    props::PROP_MOVING_MS
 }
 
 /// The spells the server names as teleports (wire-rules teleports).
@@ -3745,8 +3761,11 @@ mod tests {
 
     #[test]
     fn the_prop_table_crosses_as_codes() {
-        // thuum docs/verbs/prop-physics.md (ADR-058): the claim's and the
-        // transform's codes, the epoch and the lease's end as the core reads them
+        // thuum docs/verbs/prop-physics.md (ADR-058; the arbitration of
+        // ADR-063 decision 4): the claim's codes (0 granted, 1 held, 2 same,
+        // 3 moving), the transform's (0 accepted, 1 not owner, 2 wrong cell,
+        // 3 too fast, 4 accepted and returned to the host), the epoch and the
+        // departure's returns as the core reads them
         let mut p = new_props();
         assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002, 0), 0xff00_0002);
         assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 0, 1_000), 0);
@@ -3758,17 +3777,22 @@ mod tests {
         assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 0, 0xff00_0002, true, 10.0, 1_300)), 2);
         assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 0x9732, 0xff00_0002, true, 5_000.0, 1_300)), 3);
         assert_eq!(p.prop_live_owner(0x2ad9c, 1_300), 0xff00_0003);
-        // the grab holds through the sleep; the holder's drop and its rest start the lease
-        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002, 1_300 + prop_lease_ms()), 0xff00_0003);
+        // the holder's drop clears the grab; a contact on the falling prop is moving (3); its rest returns it (4)
         assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 2, 1_300), 2);
-        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 0x9732, 0xff00_0002, true, 10.0, 1_300)), 0);
-        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002, 1_300 + prop_lease_ms() - 1), 0xff00_0003);
-        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002, 1_300 + prop_lease_ms()), 0xff00_0002);
+        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 0x9732, 0xff00_0002, false, 10.0, 1_400)), 0);
+        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0002, 0x9732, 0, 1_500), 3);
+        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 0x9732, 0xff00_0002, true, 10.0, 1_600)), 4);
+        assert_eq!(p.prop_epoch_of(0x2ad9c), 2);
+        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002, 1_600), 0xff00_0002);
+        assert_eq!(p.prop_live_owner(0x2ad9c, 1_600), 0);
         p.props_host_changed(0x9732, 0xff00_0004, 9_000);
         assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0004, 9_000), 0xff00_0004);
-        p.props_gone(0xff00_0004);
-        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002, 9_100), 0xff00_0002);
-        assert_eq!(p.prop_epoch_of(0x2ad9c), 1);
+        // a departure returns the live rows with their new epochs
+        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 1, 9_100), 0);
+        let returned = p.props_gone(0xff00_0003, 9_200);
+        assert_eq!(returned.iter().map(|r| (r.refr, r.epoch)).collect::<Vec<_>>(), vec![(0x2ad9c, 4)]);
+        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002, 9_300), 0xff00_0002);
+        assert!(prop_moving_ms() >= 100);
     }
 
     #[test]

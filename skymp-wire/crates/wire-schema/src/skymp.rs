@@ -1811,11 +1811,13 @@ wire_struct! {
 wire_struct! {
     /// MsgType 59, thuum's (docs/verbs/prop-physics.md, ADR-058 decision 1):
     /// a player's game touched a prop it does not simulate. Client to server,
-    /// reliable, R0: the server names the newest toucher the simulator (one
-    /// epoch per prop, newest touch wins) and tells every listener of the prop
-    /// (`PropOwner`); refused when the claimant is not in the prop's cell or
-    /// another player holds the prop grabbed. Reason codes: `E_VAL_RANGE` (a
-    /// refr of 0, a touch above 3), `E_VAL_RATE` (the budget).
+    /// reliable, R0: the server arbitrates (ADR-063 decision 4): a prop at
+    /// rest or stalled is the newest toucher's (one epoch per prop) and every
+    /// listener hears the word (`PropOwner`); a prop another seat streams
+    /// awake is refused to a contact, a drop or an impulse (E_PROP_MOVING), a
+    /// grab takes it; a grabbed prop refuses everything (E_PROP_HELD). The
+    /// claimant's cell and distance are no gate. Reason codes: `E_VAL_RANGE`
+    /// (a refr of 0, a touch above 3), `E_VAL_RATE` (the budget).
     pub struct PropClaim {
         /// `"t": 59`.
         #[serde(default)]
@@ -1831,20 +1833,24 @@ wire_struct! {
 wire_struct! {
     /// MsgType 60, thuum's (docs/verbs/prop-physics.md, ADR-058 decision 1):
     /// who simulates a prop from now, to every listener of the prop at each
-    /// owner change. Server to client, reliable, R0 output: the named seat's
-    /// body goes Dynamic with the last streamed velocity, every other seat's
-    /// goes Keyframed; a word with an older epoch than one already applied is
-    /// dropped (a fencing token, one counter per prop). Reason codes:
-    /// `E_VAL_RANGE` (a refr or a player of 0).
+    /// owner change: a grant, the return to the cell's host at the owner's
+    /// own asleep sample, a departure (ADR-063 decision 4: ownership changes
+    /// by this word alone, no seat infers it from a timer). Server to client,
+    /// reliable, R0 output: the named seat simulates (its body Dynamic, the
+    /// others' on the stream); player 0 names the cell's host by default,
+    /// whoever that is at the time; a word with an older epoch than one
+    /// already applied is dropped (a fencing token, one counter per prop).
+    /// Reason codes: `E_VAL_RANGE` (a refr of 0).
     pub struct PropOwner {
         /// `"t": 60`.
         #[serde(default)]
         pub t: MsgT<60>,
         /// The prop's reference form id; never 0.
         pub refr: u32,
-        /// The simulating player's actor form id; never 0.
+        /// The simulating player's actor form id; 0 for the cell's host by
+        /// default (the return at rest, a departure).
         pub player: u32,
-        /// The prop's owner epoch, up at every claim granted.
+        /// The prop's owner epoch, up at every word (a grant, a return).
         pub epoch: u32,
     }
 }

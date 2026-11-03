@@ -705,10 +705,11 @@ fn check_prop_claim(m: &skymp::PropClaim) -> Result<(), Reject> {
 }
 
 /// The server's owner word for a prop (docs/verbs/prop-physics.md): a
-/// reference and a player, neither 0; the transport refuses it from a client
-/// by direction.
+/// reference, never 0, and a player, where 0 is the cell's host by default
+/// (the return at rest, a departure; ADR-063 decision 4, 2026-11-03); the
+/// transport refuses it from a client by direction.
 fn check_prop_owner(m: &skymp::PropOwner) -> Result<(), Reject> {
-    if m.refr == 0 || m.player == 0 {
+    if m.refr == 0 {
         return Err(Reject::Range);
     }
     Ok(())
@@ -2311,7 +2312,8 @@ mod tests {
         assert_eq!(validate_server(&word(0x54a44, 0xff00_0002, 1)), Ok(()));
         assert_eq!(validate_server(&word(0x54a44, 0xff00_0002, 0)), Ok(()));
         assert_eq!(validate_server(&word(0, 0xff00_0002, 1)), Err(Reject::Range));
-        assert_eq!(validate_server(&word(0x54a44, 0, 1)), Err(Reject::Range));
+        // player 0: the cell's host by default (the return at rest, ADR-063 decision 4)
+        assert_eq!(validate_server(&word(0x54a44, 0, 2)), Ok(()));
     }
 
     #[test]

@@ -633,7 +633,10 @@ public:
   {
     Granted,
     Held,
-    Same
+    Same,
+    // another seat streams the prop awake and the touch is no grab (ADR-063
+    // decision 4: a non-owner's contact never takes a moving prop)
+    Moving
   };
   PropClaimVerdict ClaimProp(const MpActor& claimant,
                              const MpObjectReference& prop, uint32_t cell,
@@ -643,7 +646,10 @@ public:
     Accepted,
     NotOwner,
     WrongCell,
-    TooFast
+    TooFast,
+    // taken, and the owner's rest returned the prop to the cell's host at a
+    // new epoch: the word with player 0 goes out (ADR-063 decision 4)
+    Returned
   };
   // `sender`'s sample of `prop` landing in `cell` (0 for none), judged by
   // the host of `recordCell` (the cell the record stands in, read from the
@@ -657,13 +663,19 @@ public:
   // seat simulates the prop gets at its subscription (onSubscribe).
   uint32_t PropLiveOwner(const MpObjectReference& prop) const;
   // Who simulates `prop` where its record stands: the toucher while awake or
-  // inside its lease, else its cell's host, else 0.
+  // held, else its cell's host, else 0.
   uint32_t PropOwnerOf(const MpObjectReference& prop) const;
-  // The prop's owner epoch, up at every grant; 0 before any.
+  // The prop's owner epoch, up at every word (a grant, a return); 0 before
+  // any.
   uint32_t PropEpochOf(const MpObjectReference& prop) const;
   // `host` now hosts `cell` (ApplyHostDecisions' grant): the props in it
-  // nobody holds live name the host, their epochs kept.
+  // nobody holds live are the host's by default, their epochs kept.
   void PropsHostChanged(uint32_t cell, uint32_t host);
+  // The word PropOwner {refr, player, epoch} to every listener of the prop
+  // with a user but `exceptActor` (0 for none), reliable; player 0 names the
+  // cell's host by default (ADR-063 decision 4). Returns how many were told.
+  size_t SendPropOwnerWord(uint32_t refr, uint32_t player, uint32_t epoch,
+                           uint32_t exceptActor = 0);
   // thuum docs/verbs/npc-fate.md (the deaths): the bodies whose deadline
   // (fateDiedAt plus WorldState::FateRespawnHours()) the installed game
   // clock has passed stand again; once a second from Tick, directly from a

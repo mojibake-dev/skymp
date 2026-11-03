@@ -14,9 +14,10 @@ PartOne& GetPartOne();
 // and every listener of the prop hears the word (PropOwner); only the
 // owner's transforms move the record (R2) and reach the prop's other
 // listeners, unreliable while the body is awake and reliable at its sleep;
-// a toucher that leaves hands its props back to the host. The lease's end
-// (PROP_LEASE_MS after the sleep) is the Rust rule's test (wire-rules
-// props.rs): the clock cannot be advanced from here.
+// a toucher's rest or departure hands its props back to the host with the
+// word (player 0). The arbitration's clocks (the moving window, the grab's
+// cap) are the Rust rule's tests (wire-rules props.rs): the clock cannot be
+// advanced from here.
 
 namespace {
 constexpr uint32_t kTamriel = 0x3c;
@@ -231,8 +232,9 @@ TEST_CASE("A movable static the settings list is a prop: a claim on it is "
 }
 
 TEST_CASE("A claim by a player in the prop's cell is granted and the owner "
-          "word reaches every listener; a second player's claim takes the "
-          "prop at the next epoch; the same player's again changes nothing",
+          "word reaches every listener; a second player's contact is refused "
+          "while the first streams it and takes the prop at the next epoch "
+          "once it rests; the same player's again changes nothing",
           "[Prop][espm]")
 {
   auto& p = GetPartOne();
@@ -254,20 +256,41 @@ TEST_CASE("A claim by a player in the prop's cell is granted and the owner "
   REQUIRE(toC2[0].epoch == 1);
   REQUIRE(toC1[0].player == kC2);
 
-  // c1 kicks it back: the owner flips at epoch 2
+  // c1 walks into it while c2 streams it awake: refused as moving (ADR-063
+  // decision 4, playtest 41), no word, the owner and the epoch stand
+  p.Messages().clear();
+  Claim(p, 0, kBasket, 0);
+  REQUIRE(p.PropOwnerOf(w.prop) == kC2);
+  REQUIRE(p.PropEpochOf(w.prop) == 1);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 0).empty());
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
+
+  // c2's body rests: the host's again at once, at epoch 2, both seats told
+  // with player 0 (the host by default)
+  Sample(p, 1, kBasket, kHere + NiPoint3{ 30.f, 0.f, 0.f }, true);
+  REQUIRE(p.PropOwnerOf(w.prop) == kC1);
+  REQUIRE(p.PropEpochOf(w.prop) == 2);
+  const auto rest1 = SentTo<PropOwnerMessage>(p, 0);
+  const auto rest2 = SentTo<PropOwnerMessage>(p, 1);
+  REQUIRE(rest1.size() == 1);
+  REQUIRE(rest2.size() == 1);
+  REQUIRE(rest2[0].player == 0);
+  REQUIRE(rest2[0].epoch == 2);
+
+  // c1 kicks it at rest: the owner flips at epoch 3
   p.Messages().clear();
   Claim(p, 0, kBasket, 0);
   REQUIRE(p.PropOwnerOf(w.prop) == kC1);
-  REQUIRE(p.PropEpochOf(w.prop) == 2);
+  REQUIRE(p.PropEpochOf(w.prop) == 3);
   const auto back = SentTo<PropOwnerMessage>(p, 1);
   REQUIRE(back.size() == 1);
   REQUIRE(back[0].player == kC1);
-  REQUIRE(back[0].epoch == 2);
+  REQUIRE(back[0].epoch == 3);
 
   // the same player again: nothing goes out, the epoch stands
   p.Messages().clear();
   Claim(p, 0, kBasket, 0);
-  REQUIRE(p.PropEpochOf(w.prop) == 2);
+  REQUIRE(p.PropEpochOf(w.prop) == 3);
   REQUIRE(SentTo<PropOwnerMessage>(p, 0).empty());
   REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
   Leave(p);
@@ -300,8 +323,8 @@ TEST_CASE("A claim on an unknown reference or on a grabbed prop is refused: "
   Claim(p, 1, kC1, 0);
   REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
 
-  // c1 grabs it (the newest touch, epoch 2); c2's contact cannot take it
-  // out of c1's hands, c1's drop lets the next touch through
+  // c1 grabs it while c2 streams it (a grab beats a touch, epoch 2); c2's
+  // contact cannot take it out of c1's hands
   Claim(p, 0, kBasket, 1);
   REQUIRE(p.PropOwnerOf(w.prop) == kC1);
   REQUIRE(p.PropEpochOf(w.prop) == 2);
@@ -310,7 +333,14 @@ TEST_CASE("A claim on an unknown reference or on a grabbed prop is refused: "
   REQUIRE(p.PropOwnerOf(w.prop) == kC1);
   REQUIRE(p.PropEpochOf(w.prop) == 2);
   REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
+  // c1's drop: the fall is c1's (c2's contact on it is moving, refused); its
+  // rest keeps it the host's (c1 hosts, no word), then c2's contact takes it
   Claim(p, 0, kBasket, 2);
+  Claim(p, 1, kBasket, 0);
+  REQUIRE(p.PropOwnerOf(w.prop) == kC1);
+  REQUIRE(p.PropEpochOf(w.prop) == 2);
+  Sample(p, 0, kBasket, kHere + NiPoint3{ 10.f, 0.f, 0.f }, true);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
   Claim(p, 1, kBasket, 0);
   REQUIRE(p.PropOwnerOf(w.prop) == kC2);
   REQUIRE(p.PropEpochOf(w.prop) == 3);
@@ -319,8 +349,9 @@ TEST_CASE("A claim on an unknown reference or on a grabbed prop is refused: "
 
 TEST_CASE("Only the owner's transform moves the record and reaches the other "
           "listener, unreliable while awake and reliable at sleep; a "
-          "non-owner's writes nothing; a departed toucher's prop is the "
-          "host's again",
+          "non-owner's writes nothing and is answered with the word; the "
+          "owner's rest returns the prop to the host with the word, and so "
+          "does its departure",
           "[Prop][espm]")
 {
   auto& p = GetPartOne();
@@ -329,12 +360,18 @@ TEST_CASE("Only the owner's transform moves the record and reaches the other "
   REQUIRE(p.PropOwnerOf(w.prop) == kC2);
   p.Messages().clear();
 
-  // the host is not the owner now: refused, the record untouched
+  // the host is not the owner now: refused, the record untouched, and the
+  // sender hears the current word (ADR-063 decision 4: a divergent mirror
+  // heals instead of streaming into refusals)
   const NiPoint3 kicked = kHere + NiPoint3{ 100.f, 20.f, 0.f };
   Sample(p, 0, kBasket, kicked, false);
   REQUIRE(w.prop.GetPos() == kHere);
   REQUIRE(RelaysTo(p, 0).empty());
   REQUIRE(RelaysTo(p, 1).empty());
+  const auto answer = SentTo<PropOwnerMessage>(p, 0);
+  REQUIRE(answer.size() == 1);
+  REQUIRE(answer[0].player == kC2);
+  REQUIRE(answer[0].epoch == 1);
 
   // the owner's sample: the record moves, c1 alone hears it, unreliable
   Sample(p, 1, kBasket, kicked, false);
@@ -343,20 +380,36 @@ TEST_CASE("Only the owner's transform moves the record and reaches the other "
   REQUIRE(RelaysTo(p, 1).empty());
   REQUIRE(RelaysTo(p, 0) == std::vector<int>{ 0 });
 
-  // the body rests: the final sample, reliable; the toucher keeps the prop
-  // for the lease
+  // the body rests: the final sample, reliable, and the prop is the host's
+  // again at once, both seats told with player 0 at epoch 2 (ADR-063
+  // decision 4: the return is a word, by the owner's own final sample)
   p.Messages().clear();
   const NiPoint3 rested = kicked + NiPoint3{ 20.f, 0.f, -10.f };
   Sample(p, 1, kBasket, rested, true);
   REQUIRE(w.prop.GetPos() == rested);
   REQUIRE(RelaysTo(p, 0) == std::vector<int>{ 1 });
-  REQUIRE(p.PropOwnerOf(w.prop) == kC2);
+  REQUIRE(p.PropOwnerOf(w.prop) == kC1);
+  REQUIRE(p.PropEpochOf(w.prop) == 2);
+  const auto rest1 = SentTo<PropOwnerMessage>(p, 0);
+  const auto rest2 = SentTo<PropOwnerMessage>(p, 1);
+  REQUIRE(rest1.size() == 1);
+  REQUIRE(rest2.size() == 1);
+  REQUIRE(rest2[0].player == 0);
+  REQUIRE(rest2[0].epoch == 2);
 
-  // the toucher leaves: the host simulates it again, the epoch kept, and the
-  // host's samples pass
+  // the toucher takes it again and leaves mid-flight: the departure returns
+  // it to the host with the word (epoch 4), and the host's samples pass
+  Claim(p, 1, kBasket, 0);
+  REQUIRE(p.PropOwnerOf(w.prop) == kC2);
+  REQUIRE(p.PropEpochOf(w.prop) == 3);
+  p.Messages().clear();
   DoDisconnect(p, 1);
   REQUIRE(p.PropOwnerOf(w.prop) == kC1);
-  REQUIRE(p.PropEpochOf(w.prop) == 1);
+  REQUIRE(p.PropEpochOf(w.prop) == 4);
+  const auto left = SentTo<PropOwnerMessage>(p, 0);
+  REQUIRE(left.size() == 1);
+  REQUIRE(left[0].player == 0);
+  REQUIRE(left[0].epoch == 4);
   p.Messages().clear();
   const NiPoint3 again = rested + NiPoint3{ 5.f, 0.f, 0.f };
   Sample(p, 0, kBasket, again, false);
@@ -368,9 +421,10 @@ TEST_CASE("Only the owner's transform moves the record and reaches the other "
   p.DestroyActor(kC2);
 }
 
-TEST_CASE("A claim on a container, a claim from beyond reach and a sample "
-          "farther than the step budget are refused, the record standing; a "
-          "listener arriving while a seat simulates the prop hears the owner",
+TEST_CASE("A claim on a container is refused and one from beyond reach is "
+          "granted (ADR-063); a sample farther than the step budget is "
+          "refused, the record standing; a listener arriving while a seat "
+          "simulates the prop hears the owner",
           "[Prop][espm]")
 {
   auto& p = GetPartOne();

@@ -90,10 +90,6 @@ const TOUCH_RADIUS = 128;
 const TOUCH_QUIET_MS = 300;
 const TOUCH_READ_MS = 100;
 const CLAIM_EVERY_MS = 2000;
-// The lease's mirror: after an asleep sample a named owner lapses to the
-// cell's host after this long (wire-rules props.rs PROP_LEASE_MS, UNMEASURED
-// there too)
-const PROP_LEASE_MS = 3000;
 // A drop's claim: the server's reference for an item this player dropped is
 // matched by its base within this window and this distance of the player
 const DROP_MATCH_MS = 3000;
@@ -147,7 +143,9 @@ type Prop = {
     restAt: number;                // when the asleep sample came, for the Dynamic set after its apply (0 none)
 };
 
-type Owner = { player: number; epoch: number; leaseUntil: number };
+// the server's last word on a prop: the player (0 the cell's host by
+// default) and its epoch; no lease and no timer here (ADR-063 decision 4)
+type Owner = { player: number; epoch: number };
 
 // the shortest signed turn from heading b to heading a, in (-180, 180]
 // (sync/movementApply.ts's)
@@ -162,9 +160,11 @@ const angleDelta = (a: number, b: number): number => ((((a - b + 180) % 360) + 3
 // records); every other seat's body stays Keyframed, as the view forces every
 // item on arrival (objectReferenceEx.ts dealWithRef, spawnProcess.ts), and
 // takes the stream's transform glided over the sample interval, so it neither
-// falls nor fights the stream. Who simulates is the server's word (PropOwner,
-// R0): the player the last word named, while the body is awake or its lease
-// holds after a sleep; with none, the cell's host (HostService). The touch is
+// falls nor fights the stream. Who simulates is the server's word alone
+// (PropOwner, R0): the player the last word named, or the cell's host when the
+// word names nobody (player 0: the return at rest, a departure) or none came
+// (HostService); no timer here hands a prop back (ADR-063 decision 4,
+// playtest 41: the lease mirror demoted owners mid-flight). The touch is
 // what passes the simulation (PropClaim): the player's character controller
 // meeting the body (the fork's propContact event: FridaHooks.cpp's hook on
 // the proxy controller's contact callback, Address Library 79131, one event
@@ -222,11 +222,6 @@ export class PropService extends ClientListener {
             at: now,
         };
         this.recordSample(m.refr, sample);
-        const owner = this.owners.get(m.refr);
-        if (owner) {
-            // the lease's mirror: a sleep starts it, a wake ends it
-            owner.leaseUntil = m.asleep ? now + PROP_LEASE_MS : 0;
-        }
         const prop = this.props.get(m.refr);
         if (!prop) {
             return;
@@ -257,9 +252,9 @@ export class PropService extends ClientListener {
             logTrace(this, `owner word for prop ${m.refr.toString(16)} at epoch ${m.epoch} ignored: epoch ${known.epoch} known`);
             return;
         }
-        this.owners.set(m.refr, { player: m.player, epoch: m.epoch, leaseUntil: 0 });
+        this.owners.set(m.refr, { player: m.player, epoch: m.epoch });
         const mine = m.player !== 0 && m.player === this.myId();
-        logLab(TAG, `prop ${m.refr.toString(16)} owner ${m.player.toString(16)} epoch ${m.epoch} (${mine ? "mine" : "theirs"})`);
+        logLab(TAG, `prop ${m.refr.toString(16)} owner ${m.player.toString(16)} epoch ${m.epoch} (${m.player === 0 ? "the host" : mine ? "mine" : "theirs"})`);
     }
 
     // The player's own actor is created: a fresh table on the server's side
@@ -431,9 +426,9 @@ export class PropService extends ClientListener {
         const named = word !== undefined && word.player === owner;
         if (owner !== prop.effective) {
             if (!named && prop.effective !== undefined) {
-                // the fallback to the cell's host after a word: the lease
-                // lapsed or the owner left (a prop first tracked under the
-                // host's default says nothing; the word's own line is onOwner's)
+                // the cell's host by default: no word yet, or the word named
+                // nobody (a prop first tracked under the host's default says
+                // nothing; the word's own line is onOwner's)
                 logLab(TAG, `prop ${prop.refr.toString(16)} owner ${owner.toString(16)} epoch ${word ? word.epoch : 0} (host)`);
             }
             prop.effective = owner;
@@ -489,14 +484,16 @@ export class PropService extends ClientListener {
         }
     }
 
-    // Who simulates the prop as this seat reads the table: the player the
-    // last word named while that word is live (awake, or asleep inside the
-    // lease) and the player is still in this seat's world; else the cell's
-    // host, this seat when it hosts the prop's cell and 0 (another seat's,
-    // or nobody's: an unhosted cell's prop freezes) otherwise
-    private ownerOf(prop: Prop, now: number, myId: number): number {
+    // Who simulates the prop as this seat reads the table (ADR-063 decision
+    // 4: by the server's word alone): the player the last word named; with no
+    // word, or a word naming nobody (player 0, the host by default), the
+    // cell's host, this seat when it hosts the prop's cell and 0 (another
+    // seat's, or nobody's: an unhosted cell's prop freezes) otherwise. No
+    // lease, no silence and no presence test here: each of those demoted an
+    // owner the server still named (playtest 41)
+    private ownerOf(prop: Prop, _now: number, myId: number): number {
         const word = this.owners.get(prop.refr);
-        if (word && word.player !== 0 && (word.leaseUntil === 0 || now < word.leaseUntil) && this.present.has(word.player)) {
+        if (word && word.player !== 0) {
             return word.player;
         }
         return this.controller.lookupListener(HostService).hostsCell(prop.cell) ? myId : 0;
@@ -590,12 +587,10 @@ export class PropService extends ClientListener {
         prop.streaming = false;
         prop.stirredAt = now;
         prop.lastTouchRead = undefined;
-        // a granted touch (wake): the server's row starts its silence clock at
-        // the grant (wire-rules props.rs claim: since_ms and last_sample_ms),
-        // so the owner must be heard within PROP_SILENCE_MS whether or not the
-        // body moves, else the row lapses to the cell's host and every sample
-        // after is E_PROP_NOT_OWNER (x-prop-drop v4 162049: a dropped sword at
-        // the dropper's feet, still for 3.6 s). The host-default simulation
+        // a granted touch (wake): the first sample goes out at once, so the
+        // server's row and the other seats start from the owner's baseline
+        // (the moving window and the step budget run from it; no silence
+        // lapses a row since ADR-063 decision 4). The host-default simulation
         // (no wake) keeps the lazy baseline: nothing goes out until a move
         prop.announce = simulate && wake;
         logTrace(this, `prop ${prop.refr.toString(16)} ${simulate ? "simulated here: Dynamic" : "followed: Keyframed"}`);
@@ -675,15 +670,12 @@ export class PropService extends ClientListener {
             return;
         }
         if (prop.streaming && now - prop.stirredAt >= SLEEP_AFTER_MS) {
+            // the owner's own final sample: the server returns the prop to the
+            // cell's host on it and its word (player 0) comes back; nothing is
+            // inferred here (ADR-063 decision 4)
             this.send(prop, read, true, now);
             prop.streaming = false;
             logLab(TAG, `stream ${prop.refr.toString(16)} asleep`);
-            // the lease's mirror on the owner's own seat: the server starts
-            // the lease at this sample, and after it the cell's host simulates
-            const word = this.owners.get(prop.refr);
-            if (word && word.player === myId) {
-                word.leaseUntil = now + PROP_LEASE_MS;
-            }
         }
     }
 
@@ -854,6 +846,14 @@ export class PropService extends ClientListener {
                 logLab(TAG, `${head}: owned, no claim`);
                 continue;
             }
+            // ADR-063 decision 4: a non-owner's contact never takes a moving
+            // prop; the server would refuse it (E_PROP_MOVING), so the claim
+            // stays home while another seat's awake stream is live here
+            const streamed = prop.lastSampleAt !== 0 && !prop.lastSampleAsleep && now - prop.lastSampleAt < STREAM_LIVE_MS;
+            if (streamed) {
+                logLab(TAG, `${head}: another seat streams it awake, no claim`);
+                continue;
+            }
             if (now - prop.lastClaimAt < CLAIM_EVERY_MS) {
                 logTrace(this, `${head}: claimed ${now - prop.lastClaimAt} ms ago, no claim`);
                 continue;
@@ -875,8 +875,7 @@ export class PropService extends ClientListener {
     // The tracked set, from the view's references: every bound view whose
     // record is no actor's and whose base is an item (read once per binding),
     // in the player's world or cell, within TRACK_RADIUS; the nearest
-    // TRACK_MAX are tracked, the rest let go. The players and NPCs present
-    // (the owner rule's "still here") are the records' ids
+    // TRACK_MAX are tracked, the rest let go
     private rescan(now: number) {
         const view = getViewFromStorage();
         const player = this.sp.Game.getPlayer();
@@ -884,16 +883,6 @@ export class PropService extends ClientListener {
             return;
         }
         const world = this.controller.lookupListener(RemoteServer).getWorldModel();
-        const myId = this.myId();
-        this.present.clear();
-        for (const f of world.forms) {
-            if (f && f.refrId !== undefined) {
-                this.present.add(f.refrId);
-            }
-        }
-        if (myId) {
-            this.present.add(myId);
-        }
         const playerPos = ObjectReferenceEx.getPos(player);
         const playerWorldOrCell = ObjectReferenceEx.getWorldOrCell(player);
         const views = view.getFormViews();
@@ -1183,8 +1172,6 @@ export class PropService extends ClientListener {
     private readonly byLocal = new Map<number, number>();
     // the server's words, by prop, tracked or not
     private readonly owners = new Map<number, Owner>();
-    // the records' ids present in this seat's world at the last rescan
-    private readonly present = new Set<number>();
     // each local id's base verdict, by the record it is bound to
     private readonly kinds = new Map<number, { refr: number; item: boolean }>();
     private readonly echoSaid = new Set<number>();

@@ -3276,22 +3276,13 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
     partOne.ClaimProp(*myActor, *prop, *cell, static_cast<uint8_t>(msg.touch));
   switch (verdict) {
     case PartOne::PropClaimVerdict::Granted: {
-      PropOwnerMessage word;
-      word.refr = prop->GetFormId();
-      word.player = myActor->GetFormId();
-      word.epoch = partOne.PropEpochOf(*prop);
-      size_t told = 0;
-      for (auto listener : prop->GetActorListeners()) {
-        const auto targetUserId = partOne.serverState.UserByActor(listener);
-        if (targetUserId != Networking::InvalidUserId) {
-          partOne.GetSendTarget().Send(targetUserId, word, true);
-          ++told;
-        }
-      }
+      const auto epoch = partOne.PropEpochOf(*prop);
+      const size_t told = partOne.SendPropOwnerWord(
+        prop->GetFormId(), myActor->GetFormId(), epoch);
       spdlog::info("[verb:prop-physics] {:x} claims prop {:x} by touch {}: "
                    "granted, epoch {}; {} listener(s) told",
-                   myActor->GetFormId(), prop->GetFormId(), msg.touch,
-                   word.epoch, told);
+                   myActor->GetFormId(), prop->GetFormId(), msg.touch, epoch,
+                   told);
       break;
     }
     case PartOne::PropClaimVerdict::Held:
@@ -3301,6 +3292,15 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
       spdlog::debug("[verb:prop-physics] {:x} claims prop {:x} by touch {}: "
                     "it simulates it already",
                     myActor->GetFormId(), prop->GetFormId(), msg.touch);
+      break;
+    case PartOne::PropClaimVerdict::Moving:
+      // thuum docs/verbs/prop-physics.md, ADR-063 decision 4 (playtest 41:
+      // the newest touch from any copy took a prop the other seat was
+      // moving): a consistency refusal between two owners, not a check on
+      // the claimant
+      refuse("E_PROP_MOVING",
+             "another seat streams it awake: a contact, a drop or an impulse "
+             "takes a prop at rest, a grab takes it at once");
       break;
   }
 }
@@ -3831,9 +3831,11 @@ void ActionListener::OnLockReport(const RawMessageData& rawMsgData,
 // read); then the same bytes go to the prop's other listeners, unreliable
 // while awake and reliable at sleep (the record's final sample). The write
 // is the movement path's (OnUpdateMovement's SetPos and SetAngle): saved
-// from time to time while the body moves, at once when it rests. A refusal
-// is logged once per 10 s per seat: a seat that lost the lease keeps
-// streaming until its own timer ends.
+// from time to time while the body moves, at once when it rests. A toucher's
+// asleep sample returns the prop to the cell's host at once, and the word
+// (player 0) goes to every listener; a NotOwner refusal is answered with the
+// current word, once per prop per second per seat, so a divergent mirror
+// heals (ADR-063 decision 4). Refusals are logged once per 10 s per seat.
 void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
                                      const PropTransformMessage& msg)
 {
@@ -3882,26 +3884,31 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
   const auto verdict =
     partOne.PropTransform(*myActor, *prop, cell.value_or(0),
                           recordCell.value_or(0), msg.asleep, moved);
+  // the record takes the sample and the bytes go to the other listeners
+  const auto applyAndRelay = [&]() -> size_t {
+    const auto mode =
+      msg.asleep ? SetPosMode::Other : SetPosMode::CalledByUpdateMovement;
+    prop->SetPos(pos, mode);
+    prop->SetAngle(rot, mode);
+    size_t sent = 0;
+    for (auto listener : prop->GetActorListeners()) {
+      if (listener == myActor) {
+        continue;
+      }
+      const auto targetUserId = partOne.serverState.UserByActor(listener);
+      if (targetUserId != Networking::InvalidUserId) {
+        partOne.GetSendTarget().Send(targetUserId, rawMsgData.unparsed,
+                                     rawMsgData.unparsedLength, msg.asleep);
+        ++sent;
+      }
+    }
+    partOne.serverState.CountStream(
+      rawMsgData.userId, static_cast<uint8_t>(MsgType::PropTransform), true);
+    return sent;
+  };
   switch (verdict) {
     case PartOne::PropTransformVerdict::Accepted: {
-      const auto mode =
-        msg.asleep ? SetPosMode::Other : SetPosMode::CalledByUpdateMovement;
-      prop->SetPos(pos, mode);
-      prop->SetAngle(rot, mode);
-      size_t sent = 0;
-      for (auto listener : prop->GetActorListeners()) {
-        if (listener == myActor) {
-          continue;
-        }
-        const auto targetUserId = partOne.serverState.UserByActor(listener);
-        if (targetUserId != Networking::InvalidUserId) {
-          partOne.GetSendTarget().Send(targetUserId, rawMsgData.unparsed,
-                                       rawMsgData.unparsedLength, msg.asleep);
-          ++sent;
-        }
-      }
-      partOne.serverState.CountStream(
-        rawMsgData.userId, static_cast<uint8_t>(MsgType::PropTransform), true);
+      const auto sent = applyAndRelay();
       spdlog::trace(
         "[verb:prop-physics] prop {:x} by {:x} at ({:.0f}, {:.0f}, "
         "{:.0f}){} in cell {:x}; relayed to {} listener(s)",
@@ -3909,9 +3916,44 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
         msg.asleep ? ", asleep" : "", cell.value_or(0), sent);
       break;
     }
-    case PartOne::PropTransformVerdict::NotOwner:
-      refuse("E_PROP_NOT_OWNER", "another seat simulates it");
+    case PartOne::PropTransformVerdict::Returned: {
+      // thuum docs/verbs/prop-physics.md, ADR-063 decision 4: ownership
+      // returns to the host only at rest on the owner's screen, by the
+      // owner's own final sample, and the return is a word (player 0, the
+      // host by default), never a timer's silent lapse (playtest 41: a
+      // blasted prop's owner refused while it still flew)
+      const auto sent = applyAndRelay();
+      const auto epoch = partOne.PropEpochOf(*prop);
+      const auto told = partOne.SendPropOwnerWord(prop->GetFormId(), 0, epoch);
+      spdlog::info("[verb:prop-physics] prop {:x} rests on {:x}'s screen at "
+                   "({:.0f}, {:.0f}, {:.0f}): the host's again at epoch {}; "
+                   "the sample relayed to {} listener(s), the word to {}",
+                   prop->GetFormId(), myActor->GetFormId(), pos.x, pos.y,
+                   pos.z, epoch, sent, told);
       break;
+    }
+    case PartOne::PropTransformVerdict::NotOwner: {
+      refuse("E_PROP_NOT_OWNER", "another seat simulates it");
+      // the answer: the current word to the sender, once per prop per second
+      // (ADR-063 decision 4: a seat whose mirror diverged hears who owns the
+      // prop instead of streaming into refusals)
+      static std::unordered_map<uint64_t,
+                                std::chrono::steady_clock::time_point>
+        lastAnswer;
+      const uint64_t key = (static_cast<uint64_t>(rawMsgData.userId) << 32) |
+        static_cast<uint64_t>(prop->GetFormId());
+      auto& answeredAt = lastAnswer[key];
+      if (answeredAt == std::chrono::steady_clock::time_point() ||
+          now - answeredAt >= std::chrono::seconds(1)) {
+        PropOwnerMessage word;
+        word.refr = prop->GetFormId();
+        word.player = partOne.PropLiveOwner(*prop);
+        word.epoch = partOne.PropEpochOf(*prop);
+        partOne.GetSendTarget().Send(rawMsgData.userId, word, true);
+        answeredAt = now;
+      }
+      break;
+    }
     case PartOne::PropTransformVerdict::WrongCell:
       refuse("E_PROP_CELL",
              "no cell at the point, or a cell nobody hosts and nobody holds");

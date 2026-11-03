@@ -6,9 +6,11 @@
 
 // thuum docs/verbs/prop-physics.md (ADR-058 decision 1): a player's game
 // touched a prop it does not simulate. Client to server, reliable, R0: the
-// server names the newest toucher the simulator (one epoch per prop) and
-// tells every listener of the prop (PropOwner); refused when the claimant is
-// not in the prop's cell or another player holds the prop grabbed
+// server arbitrates (ADR-063 decision 4): a prop at rest or stalled is the
+// newest toucher's (one epoch per prop) and every listener hears the word
+// (PropOwner); a prop another seat streams awake is refused to a contact, a
+// drop or an impulse (E_PROP_MOVING), a grab takes it; a grabbed prop refuses
+// everything (E_PROP_HELD); the claimant's cell and distance are no gate
 // (ActionListener::OnPropClaim, wire-rules props). Touches: 0 a contact of
 // the character controller, 1 a grab, 2 a drop, 3 a shout's or spell's
 // impulse (wire-validate's bound). The contract is skymp-wire's (wire-schema

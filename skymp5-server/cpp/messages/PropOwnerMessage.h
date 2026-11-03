@@ -4,13 +4,15 @@
 #include <cstdint>
 #include <type_traits>
 
-// thuum docs/verbs/prop-physics.md (ADR-058 decision 1): who simulates a
-// prop from now, to every listener of the prop at each owner change. Server
-// to client, reliable, R0 output: the named player's seat makes its body
-// Dynamic with the last streamed velocity, every other seat's goes
-// Keyframed; a word with an epoch below one already applied is dropped (a
-// fencing token, one counter per prop). The contract is skymp-wire's
-// (wire-schema skymp.rs, PropOwner, MsgType 60, wire id 68).
+// thuum docs/verbs/prop-physics.md (ADR-058 decision 1; ADR-063 decision 4):
+// who simulates a prop from now, to every listener of the prop at each owner
+// change: a grant, the return to the cell's host at the owner's own asleep
+// sample, a departure. Server to client, reliable, R0 output: the named
+// player's seat simulates (its body Dynamic), every other seat's follows the
+// stream; player 0 names the cell's host by default; a word with an epoch
+// below one already applied is dropped (a fencing token, one counter per
+// prop). The contract is skymp-wire's (wire-schema skymp.rs, PropOwner,
+// MsgType 60, wire id 68).
 struct PropOwnerMessage : public MessageBase<PropOwnerMessage>
 {
   static constexpr auto kMsgType =

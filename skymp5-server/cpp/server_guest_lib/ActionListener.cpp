@@ -207,30 +207,12 @@ void ActionListener::RelayCast(MpActor& caster, const MpActor& sender,
 {
   SpellCastMessage relay;
   relay.data = data;
-  // thuum docs/verbs/npc-fate.md ("Reanimation is any player's, on any
-  // body"): a reanimate cast at a dead body another game hosts reaches that
-  // host as the server's own Spell.Cast at the hit (CastReanimateOnHost),
-  // so the host is not handed the relayed cast as well: its figure of the
-  // caster would launch the spell there twice. Every other listener keeps
-  // the relay, its look of the cast. The skip needs the cast to name the
-  // body, which is the caster's game's word at the cast: the client names
-  // the crosshair's actor for a spell delivered to its target and keeps the
-  // engine's word for an aimed one, and the engine's MagicTarget names the
-  // caster itself (magicSyncService's castTarget). A cast naming no body
-  // the server holds dead is relayed as it stands, and the snippet then
-  // doubles the look on the host once: the trade for a reanimation that
-  // stands on every screen.
-  const MpActor* bodyHost = nullptr;
-  if (data.target != 0 && CarriesReanimate(&partOne.worldState, data.spell)) {
-    const auto& targetForm =
-      partOne.worldState.LookupFormByIdNoLoad(data.target);
-    MpActor* body = targetForm ? targetForm->AsActor() : nullptr;
-    MpActor* host =
-      body && body->IsDead() ? partOne.worldState.HostOf(*body) : nullptr;
-    if (host && host != &sender) {
-      bodyHost = host;
-    }
-  }
+  // thuum docs/verbs/npc-fate.md (ADR-060): a reanimate at a dead body
+  // reaches every other game as any cast's look; the body's host used to be
+  // skipped for the server's own Spell.Cast snippet there, retired with
+  // the commanded claim (the caster's own engine runs the effect, the body
+  // is its seat's from the hit; the former host's copy is a puppet and
+  // stands by the server's live word, HYPOTHESIS H1 of ADR-060)
   for (auto listener : caster.GetActorListeners()) {
     // A relay is one game's report for the other games, so only a listener
     // with a user hears it, and directly. GetActorToSendTo hands an offline
@@ -244,14 +226,6 @@ void ActionListener::RelayCast(MpActor& caster, const MpActor& sender,
     if (listener == &sender ||
         partOne.serverState.UserByActor(listener) ==
           Networking::InvalidUserId) {
-      continue;
-    }
-    if (listener == bodyHost) {
-      spdlog::info("[verb:npc-fate] reanimate {:x} by {:x} at {:x}: the "
-                   "relay skips the body's host {:x}, which casts it by the "
-                   "server's word at the hit",
-                   data.spell, caster.GetFormId(), data.target,
-                   listener->GetFormId());
       continue;
     }
     listener->SendToUser(relay, true);
@@ -882,7 +856,7 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
     // took the first sample above one point as a resurrection). Its
     // stand-up is the cast's rule alone: a reanimate hit the server accepted
     // on it within MpActor::kReanimateWindowMs (NoteReanimateAccepted at
-    // OnHit, ahead of CastReanimateOnHost). Any other live sample of it
+    // OnHit, ahead of ClaimReanimated). Any other live sample of it
     // stays a sample of a dead record, judged dead below; said once in ten
     // seconds per body, at debug
     const auto reanimatedAgo = actor->ReanimateAcceptedAgo(now);
@@ -6222,14 +6196,15 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
                               std::chrono::steady_clock::now());
   }
   // thuum docs/verbs/npc-fate.md ("Reanimation is any player's, on any
-  // body"): a reanimate's accepted hit on a dead body stands it through the
-  // one engine that owns the body, its cell's host's
+  // body"; ADR-060): a reanimate's accepted hit on a dead body hands the
+  // body to the caster's seat, whose engine ran the spell and runs the
+  // effect; its samples stand the record up (the hosted-state rule)
   if (targetActorPtr->IsDead() &&
       ReanimateEffectOf(&partOne.worldState, effects).has_value()) {
     // the stamp a placed corpse's stand-up is read against
     // (OnHostedActorState, finding 65)
     targetActorPtr->NoteReanimateAccepted(std::chrono::steady_clock::now());
-    CastReanimateOnHost(*aggressor, *targetActorPtr, hitData.source);
+    ClaimReanimated(*aggressor, *targetActorPtr, hitData.source, effects);
   }
 
   // thuum docs/verbs/stagger.md: a spell's Stagger effect (Unrelenting
@@ -6641,38 +6616,54 @@ void ActionListener::NotifyHostility(MpActor& aggressor, MpActor& target,
 // player and its host's for a hosted caster (a necromancer's cast at a body
 // in another game's cell). The record's life stays R0, the thrall's
 // behaviour R2.
-void ActionListener::CastReanimateOnHost(MpActor& caster, MpActor& body,
-                                         uint32_t spell)
+void ActionListener::ClaimReanimated(
+  MpActor& caster, MpActor& body, uint32_t spell,
+  const std::vector<espm::Effects::Effect>& effects)
 {
-  MpActor* host = partOne.worldState.HostOf(body);
-  if (!host) {
-    return;
-  }
-  MpActor* casterSeat =
+  // the seat whose engine ran the spell: the caster when a user plays it,
+  // else the caster's host (a hosted necromancer's thrall is its host's)
+  MpActor* commander =
     partOne.serverState.UserByActor(&caster) != Networking::InvalidUserId
     ? &caster
     : partOne.worldState.HostOf(caster);
-  if (host == casterSeat) {
+  if (!commander) {
+    spdlog::info("[verb:npc-fate] reanimate {:x} by {:x} on {:x}: no seat "
+                 "runs the caster; the body stays its cell's",
+                 spell, caster.GetFormId(), body.GetFormId());
     return;
   }
-  // the two by their server ids, which the host's game resolves to its
-  // figure of the caster and its copy of the body (spSnippetService's
-  // deserializeArg, remoteIdToLocalId); the spell's own id is the selfId, a
-  // method call on the Spell form
-  SpSnippetObjectArgument source;
-  source.formId = caster.GetFormId();
-  source.type = "ObjectReference";
-  SpSnippetObjectArgument target;
-  target.formId = body.GetFormId();
-  target.type = "ObjectReference";
-  const std::vector<std::optional<
-    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
-    args{ source, target };
-  SpSnippet("Spell", "Cast", args, spell)
-    .Execute(host, SpSnippetMode::kNoReturnResult);
-  spdlog::info("[verb:npc-fate] reanimate {:x} by {:x} on {:x}: cast on its "
-               "host {:x} for the engine's own effect",
-               spell, caster.GetFormId(), body.GetFormId(), host->GetFormId());
+  // the lease is the effect's duration (the record's EFIT, seconds) plus a
+  // margin; 0 (Dead Thrall) is for good, until the thrall's death or the
+  // commander's departure
+  constexpr uint64_t kLeaseMarginMs = 10'000;
+  uint64_t leaseMs = 0;
+  const auto effectId = ReanimateEffectOf(&partOne.worldState, effects);
+  for (const auto& effect : effects) {
+    if (effectId && effect.effectId == *effectId && effect.duration > 0) {
+      leaseMs = static_cast<uint64_t>(effect.duration) * 1000 + kLeaseMarginMs;
+    }
+  }
+  const auto verdict = partOne.ClaimCommanded(*commander, body, leaseMs);
+  switch (verdict) {
+    case PartOne::ClaimVerdict::Granted:
+    case PartOne::ClaimVerdict::Reclaimed:
+      spdlog::info(
+        "[verb:npc-fate] reanimate {:x} by {:x} on {:x}: {:x} "
+        "commands it for {} (ADR-060){}",
+        spell, caster.GetFormId(), body.GetFormId(), commander->GetFormId(),
+        leaseMs ? fmt::format("{} s", leaseMs / 1000) : std::string("good"),
+        verdict == PartOne::ClaimVerdict::Reclaimed ? ", renewed" : "");
+      break;
+    case PartOne::ClaimVerdict::Unloaded:
+      spdlog::warn("[verb:npc-fate] E_COMMAND_UNLOADED: reanimate {:x} by "
+                   "{:x} on {:x}: {:x} has not loaded the body's cell; the "
+                   "body stays its cell's",
+                   spell, caster.GetFormId(), body.GetFormId(),
+                   commander->GetFormId());
+      break;
+    case PartOne::ClaimVerdict::Held:
+      break;
+  }
 }
 
 void ActionListener::SendPapyrusOnHitEvent(MpActor* aggressor,

@@ -1978,6 +1978,16 @@ void PartOne::OnCellLoaded(MpActor& player, uint32_t cell, bool loaded)
 
 void PartOne::OnDeathState(MpActor& actor, bool isDead)
 {
+  // thuum docs/verbs/npc-fate.md (ADR-060): a commanded actor's death ends
+  // its commander's claim (the effect's end kills the thrall in the
+  // commander's engine, vanilla's ash pile); the cell's rule simulates it
+  if (isDead) {
+    if (const uint32_t commander = ReleaseAnyClaim(actor); commander != 0) {
+      spdlog::info("[verb:npc-fate] {:x} died under {:x}'s command: the "
+                   "claim ends, {:x} simulates it (ADR-060)",
+                   actor.GetFormId(), commander, SimulatorOf(actor));
+    }
+  }
   // a player's actor alone: an NPC's death is npc-fate's and hosts nothing
   if (serverState.UserByActor(&actor) == Networking::InvalidUserId) {
     return;
@@ -2549,6 +2559,32 @@ bool PartOne::ReleaseClaim(MpActor& claimant, MpActor& actor)
     actor.UpdateHoster(SimulatorOf(actor));
   }
   return released;
+}
+
+PartOne::ClaimVerdict PartOne::ClaimCommanded(MpActor& commander,
+                                              MpActor& actor, uint64_t leaseMs)
+{
+  const auto cell = worldState.CellOf(actor);
+  if (!cell) {
+    return ClaimVerdict::Unloaded;
+  }
+  const auto code = pImpl->cells->claim_commanded(
+    actor.GetFormId(), commander.GetFormId(), *cell, leaseMs, SteadyNowMs());
+  const auto verdict = static_cast<ClaimVerdict>(code);
+  if (verdict == ClaimVerdict::Granted || verdict == ClaimVerdict::Reclaimed) {
+    // the word to every listening game: the commander simulates it now
+    actor.UpdateHoster(commander.GetFormId());
+  }
+  return verdict;
+}
+
+uint32_t PartOne::ReleaseAnyClaim(MpActor& actor)
+{
+  const uint32_t former = pImpl->cells->release_any_claim(actor.GetFormId());
+  if (former != 0) {
+    actor.UpdateHoster(SimulatorOf(actor));
+  }
+  return former;
 }
 
 PartOne::PropClaimVerdict PartOne::ClaimProp(const MpActor& claimant,

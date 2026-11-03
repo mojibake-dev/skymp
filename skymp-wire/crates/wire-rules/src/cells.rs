@@ -183,6 +183,15 @@ pub enum FollowKind {
     Margin,
     /// A player's claim for a dialogue (ADR-052).
     Claim,
+    /// A commanded actor's commander (ADR-060): the player whose spell
+    /// reanimated it simulates it for the effect's life.
+    Commanded,
+}
+
+/// A claim in either shape: a dialogue's (ADR-052) or a commander's
+/// (ADR-060). Both travel with the actor, both end by their lease.
+const fn is_claim(kind: FollowKind) -> bool {
+    matches!(kind, FollowKind::Claim | FollowKind::Commanded)
 }
 
 /// A host simulating an actor in a cell nobody hosts (ADR-047 D6), or, within
@@ -448,7 +457,7 @@ impl Cells {
         // the claim ended with no word, the client's flag never cleared): the
         // claimant's report into any cell is accepted, the row keeps its kind
         // and its lease and names the new cell (may_move)
-        if dest != 0 && self.follows.get(&actor).is_some_and(|f| f.kind == FollowKind::Claim && f.player == sender) {
+        if dest != 0 && self.follows.get(&actor).is_some_and(|f| is_claim(f.kind) && f.player == sender) {
             return MoveVerdict::Accept;
         }
         // a report putting the actor back where it stood before a follow
@@ -538,7 +547,7 @@ impl Cells {
             MoveVerdict::Accept if m.dest != m.origin => {
                 // a claim follows its actor into the new cell (ADR-052)
                 if let Some(f) = self.follows.get_mut(&m.actor) {
-                    if f.kind == FollowKind::Claim && f.player == m.sender {
+                    if is_claim(f.kind) && f.player == m.sender {
                         f.cell = m.dest;
                         return verdict;
                     }
@@ -565,7 +574,10 @@ impl Cells {
             return ClaimVerdict::Unloaded;
         }
         let verdict = match self.follows.get(&actor) {
-            Some(f) if f.kind == FollowKind::Claim && f.player != player => return ClaimVerdict::Held,
+            Some(f) if is_claim(f.kind) && f.player != player => return ClaimVerdict::Held,
+            // the commander's own dialogue with its thrall: the commanded row
+            // stands as it is, nothing to renew
+            Some(f) if f.kind == FollowKind::Commanded => return ClaimVerdict::Reclaimed,
             Some(f) if f.kind == FollowKind::Claim => ClaimVerdict::Reclaimed,
             _ => ClaimVerdict::Granted,
         };
@@ -576,10 +588,31 @@ impl Cells {
         verdict
     }
 
+    /// `player`'s spell commands `actor`, which stands in `cell` (ADR-060, a
+    /// reanimation the server accepted): the player simulates the actor for
+    /// `lease_ms` (0: for good, until the actor's death, the player's
+    /// departure or a grant that outranks nothing: a commanded row ends by
+    /// `release_any_claim` or `gone` alone). The newest commander wins; a
+    /// dialogue's claim gives way. Unloaded when the player has not loaded
+    /// the cell; Reclaimed when it commanded the actor already (the lease
+    /// starts over).
+    pub fn claim_commanded(&mut self, actor: u32, player: u32, cell: u32, lease_ms: u64, now_ms: u64) -> ClaimVerdict {
+        if !self.players.get(&player).is_some_and(|p| p.loaded.contains_key(&cell)) {
+            return ClaimVerdict::Unloaded;
+        }
+        let verdict = match self.follows.get(&actor) {
+            Some(f) if f.kind == FollowKind::Commanded && f.player == player => ClaimVerdict::Reclaimed,
+            _ => ClaimVerdict::Granted,
+        };
+        let lease_until_ms = (lease_ms > 0).then(|| now_ms.saturating_add(lease_ms));
+        self.follows.insert(actor, Follow { player, cell, since_ms: now_ms, kind: FollowKind::Commanded, lease_until_ms });
+        verdict
+    }
+
     /// `player` releases its claim on `actor`; false when it holds none.
     pub fn release_claim(&mut self, actor: u32, player: u32) -> bool {
         match self.follows.get(&actor) {
-            Some(f) if f.kind == FollowKind::Claim && f.player == player => {
+            Some(f) if is_claim(f.kind) && f.player == player => {
                 self.follows.remove(&actor);
                 true
             }
@@ -587,11 +620,25 @@ impl Cells {
         }
     }
 
-    /// Every claim, by actor id: the actor, its claimant and the cell.
+    /// Any claim on `actor` ends (its death, ADR-060): the claimant it had,
+    /// 0 when none.
+    pub fn release_any_claim(&mut self, actor: u32) -> u32 {
+        match self.follows.get(&actor) {
+            Some(f) if is_claim(f.kind) => {
+                let player = f.player;
+                self.follows.remove(&actor);
+                player
+            }
+            _ => 0,
+        }
+    }
+
+    /// Every claim, by actor id: the actor, its claimant and the cell (a
+    /// dialogue's and a commander's alike).
     #[must_use]
     pub fn claims(&self) -> Vec<(u32, u32, u32)> {
         let mut rows: Vec<(u32, u32, u32)> =
-            self.follows.iter().filter(|(_, f)| f.kind == FollowKind::Claim).map(|(&a, f)| (a, f.player, f.cell)).collect();
+            self.follows.iter().filter(|(_, f)| is_claim(f.kind)).map(|(&a, f)| (a, f.player, f.cell)).collect();
         rows.sort_unstable();
         rows
     }
@@ -646,7 +693,7 @@ impl Cells {
         let mut ended: Vec<(u32, u32)> = self
             .follows
             .iter()
-            .filter(|(_, f)| f.kind == FollowKind::Claim && f.lease_until_ms.is_some_and(|t| now_ms >= t))
+            .filter(|(_, f)| is_claim(f.kind) && f.lease_until_ms.is_some_and(|t| now_ms >= t))
             .map(|(&a, f)| (a, f.cell))
             .collect();
         ended.sort_unstable();
@@ -1359,5 +1406,54 @@ mod tests {
         assert_eq!(c.tick(3_000 + CLAIM_LEASE_MS), vec![Decision::ClaimEnded { actor: HILDE, cell: WEST }]);
         assert_eq!(c.simulator_of(HILDE, WEST), C1);
         assert_eq!(c.claims(), vec![]);
+    }
+
+    // ADR-060: a reanimated actor is its commander's for the effect's life
+    #[test]
+    fn a_commanded_claim_names_the_commander_until_its_lease_the_death_or_the_departure() {
+        const SVEN: u32 = 0x13491;
+        const WEST: u32 = 0x9731;
+        let mut c = Cells::default();
+        c.reach(C1, &[RIVERWOOD], 1_000);
+        c.loaded(C1, RIVERWOOD, 1_000);
+        c.reach(C2, &[RIVERWOOD], 1_100);
+        c.loaded(C2, RIVERWOOD, 1_100);
+        c.tick(1_200);
+        assert_eq!(c.host_of(RIVERWOOD).map(|(p, _)| p), Some(C1));
+        // c2's reanimate: c2 simulates Sven, the host stands aside
+        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, 70_000, 2_000), ClaimVerdict::Granted);
+        assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C2);
+        assert_eq!(c.claims(), vec![(SVEN, C2, RIVERWOOD)]);
+        // a dialogue claim by the host gives way to the command; the
+        // commander's own dialogue renews nothing
+        assert_eq!(c.claim(SVEN, C1, RIVERWOOD, 2_500), ClaimVerdict::Held);
+        assert_eq!(c.claim(SVEN, C2, RIVERWOOD, 2_500), ClaimVerdict::Reclaimed);
+        assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C2);
+        // the thrall walks with its commander into another cell: accepted,
+        // the row follows
+        assert_eq!(
+            c.may_move(&CellMove { sender: C2, actor: SVEN, origin: RIVERWOOD, dest: WEST, adjacent: true, door: false, edge_units: 0 }, 3_000),
+            MoveVerdict::Accept
+        );
+        assert_eq!(c.simulator_of(SVEN, WEST), C2);
+        // the lease ends it: ClaimEnded, the cell's rule names the host again
+        assert_eq!(c.tick(2_000 + 70_000 - 1), vec![]);
+        assert_eq!(c.tick(2_000 + 70_000), vec![Decision::ClaimEnded { actor: SVEN, cell: WEST }]);
+        assert_eq!(c.claims(), vec![]);
+        // a second command is a new row; the thrall's death ends it at once
+        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, 70_000, 80_000), ClaimVerdict::Granted);
+        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, 70_000, 80_500), ClaimVerdict::Reclaimed);
+        assert_eq!(c.release_any_claim(SVEN), C2);
+        assert_eq!(c.release_any_claim(SVEN), 0);
+        assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C1);
+        // a permanent command (Dead Thrall, duration 0) outlives any tick
+        // and ends with its commander's departure
+        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, 0, 90_000), ClaimVerdict::Granted);
+        assert_eq!(c.tick(90_000 + CLAIM_LEASE_MS * 10), vec![]);
+        assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C2);
+        c.gone(C2, 2_000_000);
+        assert_eq!(c.claims(), vec![]);
+        // a commander who has not loaded the cell commands nothing
+        assert_eq!(c.claim_commanded(SVEN, 0xff000009, RIVERWOOD, 70_000, 2_000_100), ClaimVerdict::Unloaded);
     }
 }

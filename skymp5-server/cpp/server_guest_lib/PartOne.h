@@ -611,6 +611,16 @@ public:
   };
   ClaimVerdict ClaimActor(MpActor& claimant, MpActor& actor);
   bool ReleaseClaim(MpActor& claimant, MpActor& actor);
+  // thuum docs/verbs/npc-fate.md (ADR-060): a commanded NPC is simulated by
+  // its commander's game for the effect's life. `commander` is the seat
+  // whose engine ran the spell (the caster when a user plays it, else the
+  // caster's host); `leaseMs` the effect's duration plus a margin, 0 for
+  // good (Dead Thrall). The word is UpdateHoster to every listening game.
+  ClaimVerdict ClaimCommanded(MpActor& commander, MpActor& actor,
+                              uint64_t leaseMs);
+  // any claim on `actor` ends (its death): the claimant it had, 0 for none;
+  // the cell's rule names the simulator again and the word follows
+  uint32_t ReleaseAnyClaim(MpActor& actor);
   // thuum docs/verbs/prop-physics.md (ADR-058): one simulating seat per
   // physics prop, the cell's host by default, the last toucher while its
   // lease holds; the owner table's "prop" rows (wire-rules props). The

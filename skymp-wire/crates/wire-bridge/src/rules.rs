@@ -1973,8 +1973,13 @@ mod ffi {
         /// granted, 1 held by another, 2 the claimant has not loaded the
         /// cell, 3 renewed.
         fn claim_actor(self: &mut Cells, actor: u32, player: u32, cell: u32, now_ms: u64) -> u8;
+        /// ADR-060: `player`'s spell commands `actor` in `cell` for
+        /// `lease_ms` (0 for good): the same codes as claim_actor.
+        fn claim_commanded(self: &mut Cells, actor: u32, player: u32, cell: u32, lease_ms: u64, now_ms: u64) -> u8;
         /// `player` releases its claim on `actor`; false when it holds none.
         fn release_claim(self: &mut Cells, actor: u32, player: u32) -> bool;
+        /// Any claim on `actor` ends (its death): the claimant it had, 0 when none.
+        fn release_any_claim(self: &mut Cells, actor: u32) -> u32;
         /// Every follow, by actor id.
         fn follows(self: &Cells) -> Vec<CellFollowRow>;
         /// The grace a host keeps its cell after leaving it, ms
@@ -3064,8 +3069,21 @@ impl Cells {
         }
     }
 
+    fn claim_commanded(&mut self, actor: u32, player: u32, cell: u32, lease_ms: u64, now_ms: u64) -> u8 {
+        match self.0.claim_commanded(actor, player, cell, lease_ms, now_ms) {
+            cells::ClaimVerdict::Granted => 0,
+            cells::ClaimVerdict::Held => 1,
+            cells::ClaimVerdict::Unloaded => 2,
+            cells::ClaimVerdict::Reclaimed => 3,
+        }
+    }
+
     fn release_claim(&mut self, actor: u32, player: u32) -> bool {
         self.0.release_claim(actor, player)
+    }
+
+    fn release_any_claim(&mut self, actor: u32) -> u32 {
+        self.0.release_any_claim(actor)
     }
 
     fn simulator_of(&self, actor: u32, cell: u32) -> u32 {

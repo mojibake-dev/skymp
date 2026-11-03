@@ -344,7 +344,12 @@ private:
   // cast again by the server's word on that host's engine, from the
   // caster's figure at the body (Spell.Cast by SpSnippet); nothing when the
   // body's host is the caster's own game
-  void CastReanimateOnHost(MpActor& caster, MpActor& body, uint32_t spell);
+  // thuum docs/verbs/npc-fate.md (ADR-060): an accepted reanimate hands the
+  // body to the caster's seat for the effect's life (the cells rule's
+  // commanded claim); the caster's own engine ran the spell and runs the
+  // effect, the get-up, the shader and the commanded packages
+  void ClaimReanimated(MpActor& caster, MpActor& body, uint32_t spell,
+                       const std::vector<espm::Effects::Effect>& effects);
 
   void SendPapyrusOnHitEvent(MpActor* aggressor, MpObjectReference* target,
                              const HitData& hitData);

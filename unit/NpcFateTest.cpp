@@ -986,17 +986,21 @@ TEST_CASE("A hosted game-file actor's swing lands with the weapon its "
 
 // thuum docs/verbs/npc-fate.md ("Reanimation is any player's, on any body";
 // Eli, playtest 37: "anyone should be able to reanimate any corpse, that's
-// Just Gameplay"): a reanimate cast by a player who does not host the body's
-// cell reaches the host's game as the server's own Spell.Cast from the
-// caster's figure at the body, since only the host's engine can stand it,
-// and the relayed cast skips that host when the cast names the body. The
-// host's own cast needs nothing. Skyrim.esm: Reanimate Corpse 0x65bd7, its
-// effect ReanimateFFAimed25 0x96d0b of the Reanimate archetype (libespm
+// Just Gameplay"; ADR-060, playtest 41, Eli: "and yes go with A"): a
+// reanimate's accepted hit hands the body to the caster's seat for the
+// effect's life (the cells rule's commanded claim, UpdateHoster to every
+// game); the caster's own engine ran the spell and runs the effect, so the
+// get-up, the shader and the commanded packages play where the commander
+// is. The former host hears the relayed cast as any cast's look; the
+// snippet that cast the spell again on the host's engine (playtest 41: the
+// effect ran there with a figure as the commander, "puts him back on his
+// normal path") is gone. Skyrim.esm: Reanimate Corpse 0x65bd7, its effect
+// ReanimateFFAimed25 0x96d0b of the Reanimate archetype (libespm
 // MGEF::EffectType::Reanimate, 22, as CommonLibSSE-NG's EffectArchetypes.h
 // kReanimate), read here from the record itself.
-TEST_CASE("A reanimate cast by a player who does not host the body's cell "
-          "is cast again on the host's engine by the server's word, once "
-          "per accepted hit; the host's own cast sends nothing",
+TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
+          "for the effect's life; its death ends the claim; the host's own "
+          "cast keeps the body its own",
           "[NpcFate][Reanimate][espm]")
 {
   constexpr uint32_t kHost = 0xff000d35;
@@ -1104,34 +1108,59 @@ TEST_CASE("A reanimate cast by a player who does not host the body's cell "
     return out;
   };
 
-  SECTION("by a player who is not the host: one Spell.Cast on the host's "
-          "game, from the caster's figure at the body, and the relay skips "
-          "the host")
+  // UpdateProperty isHostedByOther for the body sent to `user` since the
+  // last clear (UpdateHoster's word)
+  const auto hosterWordsTo = [&](Networking::UserId user) {
+    size_t count = 0;
+    for (auto& m : p.Messages()) {
+      if (m.userId == user && m.j.is_object() && m.j.contains("t") &&
+          m.j["t"] == static_cast<int>(MsgType::UpdateProperty) &&
+          m.j.contains("propName") && m.j["propName"] == "isHostedByOther" &&
+          m.j.contains("idx") && m.j["idx"] == body.GetIdx()) {
+        ++count;
+      }
+    }
+    return count;
+  };
+
+  SECTION("by a player who is not the host: the body is the caster's seat's "
+          "from the hit, both games hear the word, no snippet, the relay "
+          "reaches the host as any cast's; the body's death ends the claim")
   {
     Equipment eq;
     eq.rightSpell = kReanimateCorpse;
     caster.SetEquipment(eq);
     p.Messages().clear();
     casts(1);
-    // the cast names the body the server holds dead: its host is skipped
-    REQUIRE(SentOfType(p, 0, MsgType::SpellCast) == 0);
+    // the relay reaches the host as any cast's look (the skip is gone)
+    REQUIRE(SentOfType(p, 0, MsgType::SpellCast) == 1);
     hits(1);
-    p.Tick(); // snippets are deferred (SpSnippet.cpp)
-    const auto toHost = castSnippetsTo(0);
-    REQUIRE(toHost.size() == 1);
-    // the selfId is the spell's long id (a Spell is no actor, so its own)
-    REQUIRE(toHost[0]["selfId"].get<uint64_t>() ==
-            SpSnippet::MakeLongFormId(&p.worldState, kReanimateCorpse));
-    REQUIRE(toHost[0]["arguments"].size() == 2);
-    REQUIRE(toHost[0]["arguments"][0]["formId"].get<uint64_t>() == kCaster);
-    REQUIRE(toHost[0]["arguments"][0]["type"] == "ObjectReference");
-    REQUIRE(toHost[0]["arguments"][1]["formId"].get<uint64_t>() == kPredator);
-    REQUIRE(toHost[0]["arguments"][1]["type"] == "ObjectReference");
+    p.Tick(); // snippets would be deferred (SpSnippet.cpp): none come
+    REQUIRE(castSnippetsTo(0).empty());
     REQUIRE(castSnippetsTo(1).empty());
+    // the caster's seat simulates the body from the hit (ADR-060)
+    REQUIRE(p.SimulatorOf(body) == kCaster);
+    REQUIRE(p.worldState.HostOf(body) == &caster);
+    REQUIRE(hosterWordsTo(0) >= 1);
+    REQUIRE(hosterWordsTo(1) >= 1);
+    // a second hit renews the command, nothing else
+    hits(1);
+    REQUIRE(p.SimulatorOf(body) == kCaster);
+    // the thrall's death (the effect's end in the commander's engine, its
+    // report) ends the claim: the cell's host simulates the body again
+    body.Respawn(false);
+    REQUIRE(p.SimulatorOf(body) == kCaster);
+    p.Messages().clear();
+    body.Kill(nullptr);
+    REQUIRE(body.IsDead());
+    REQUIRE(p.SimulatorOf(body) == kHost);
+    REQUIRE(p.worldState.HostOf(body) == &host);
+    REQUIRE(hosterWordsTo(0) >= 1);
+    REQUIRE(hosterWordsTo(1) >= 1);
   }
 
-  SECTION("by the host itself: no snippet, its own engine ran the effect, "
-          "and the relay reaches the other game as any cast's")
+  SECTION("by the host itself: no snippet, the body stays the host's, the "
+          "relay reaches the other game as any cast's")
   {
     Equipment eq;
     eq.rightSpell = kReanimateCorpse;
@@ -1143,10 +1172,14 @@ TEST_CASE("A reanimate cast by a player who does not host the body's cell "
     p.Tick();
     REQUIRE(castSnippetsTo(0).empty());
     REQUIRE(castSnippetsTo(1).empty());
+    REQUIRE(p.SimulatorOf(body) == kHost);
+    REQUIRE(p.ReleaseAnyClaim(body) == kHost);
+    REQUIRE(p.SimulatorOf(body) == kHost);
   }
 
-  // the shared world: the body stood up again with no deadline, the fight a
-  // hit may have begun forgotten, the players gone
+  // the shared world: no claim on the body, the body stood up again with no
+  // deadline, the fight a hit may have begun forgotten, the players gone
+  p.ReleaseAnyClaim(body);
   body.Respawn(false);
   p.worldState.fateRespawnDue.erase(kPredator);
   p.GetFights().forget(kCaster);

@@ -359,7 +359,7 @@ public:
   // thuum docs/verbs/npc-fate.md ("Reanimation is any player's, on any
   // body"; finding 65's placed corpses): when the server last accepted a
   // reanimate hit on this body (ActionListener::OnHit, ahead of
-  // CastReanimateOnHost). A placement that starts dead has no death to
+  // ClaimReanimated). A placement that starts dead has no death to
   // grace and no engine stand-up of its own to record, so its host's live
   // sample stands it on the record only within kReanimateWindowMs of an
   // accepted reanimate: the cast's rule, not the sample's

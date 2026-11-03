@@ -450,25 +450,73 @@ TEST_CASE("A dead-sample stamp inside the window of the PENDING death's "
   MpActor* host = nullptr;
   auto& actor = HostedPredator(p, host, true);
   const auto now = std::chrono::steady_clock::now();
-  const auto nowMs = static_cast<uint64_t>(
-    std::chrono::duration_cast<std::chrono::milliseconds>(
-      now.time_since_epoch())
-      .count());
-  // the pending death began 7.4 s ago (the server's number reached zero), the
+  // the pending death began 8 s ago (the server's number reached zero), the
   // host's engine died at the DamageCause and its flip landed 0.4 s later,
-  // and TickDeaths recorded the death 3.4 s after the start (4 s ago now,
+  // and TickDeaths recorded the death 4 s after the start (4 s ago now,
   // past the grace)
   actor.BeginPendingDeath(nullptr);
-  actor.RecordPendingDeathAt(nowMs - 7400);
+  actor.RecordPendingDeathAt(NowMs() - 8000);
   actor.NoteHostSampledDead(kHost, host->LoginGeneration(),
-                            now - std::chrono::milliseconds(7000));
+                            now - std::chrono::milliseconds(7600));
   actor.Kill(nullptr);
   REQUIRE(actor.IsDead());
   BackdatePastGrace(actor);
-  // the stamp is 3 s before the recorded death but 0.4 s after the pending
-  // start, so it counts: the body stands at the host's live sample
+  // the stamp is 3.6 s before the recorded death (refused by 600 ms under a
+  // window anchored there) but 0.4 s after the pending start, so it counts
+  // by 3.4 s: the body stands at the host's live sample
   State(p, 0, kPredator, 1.f);
   REQUIRE_FALSE(actor.IsDead());
+}
+
+TEST_CASE("A stale pending start from an earlier life never anchors the next "
+          "death's window: the stand-up clears it",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  const auto now = std::chrono::steady_clock::now();
+  // life one: a pending death that began 60 s ago, the kill, the stand-up
+  actor.BeginPendingDeath(nullptr);
+  actor.RecordPendingDeathAt(NowMs() - 60000);
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  actor.Respawn(false);
+  REQUIRE_FALSE(actor.IsDead());
+  // life two: the host's zero sample 20 s ago, then a death with no pending
+  // phase (OnActorDeath's kill, a script's, the console's) recorded 4 s ago:
+  // the stamp is 16 s before the death, past its window, although it follows
+  // life one's pending start; the live sample stands nothing
+  actor.NoteHostSampledDead(kHost, host->LoginGeneration(),
+                            now - std::chrono::seconds(20));
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  BackdatePastGrace(actor);
+  State(p, 0, kPredator, 1.f);
+  REQUIRE(actor.IsDead());
+}
+
+TEST_CASE("A death through SetIsDead during a pending death leaves the "
+          "pending phase armed until the stand-up clears it, so the next "
+          "pending death arms",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  actor.BeginPendingDeath(nullptr);
+  REQUIRE(actor.HasPendingDeath());
+  // the death lands by the property, not by Kill (the lab's isDead write)
+  actor.SetIsDead(true);
+  REQUIRE(actor.IsDead());
+  actor.Respawn(false);
+  REQUIRE_FALSE(actor.IsDead());
+  REQUIRE_FALSE(actor.HasPendingDeath());
+  REQUIRE(p.worldState.pendingDeaths.count(kPredator) == 0);
+  actor.BeginPendingDeath(nullptr);
+  REQUIRE(actor.HasPendingDeath());
 }
 
 TEST_CASE("The host's reliable death report is its dead-sample stamp",

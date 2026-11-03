@@ -2581,8 +2581,20 @@ void MpActor::Respawn(bool shouldTeleport)
   // stamp and its place in the due set end with it, so the next death
   // counts from its own day
   // every stand-up ends the death the host's dead-sample stamp belonged to
-  // (numidium's review of round seven, item 3)
+  // (numidium's review of round seven, item 3), and the pending start that
+  // anchored its window: a stale start from this life would anchor the next
+  // death's window far too early and admit the stamps it means to refuse
   pImpl->deadStamped = false;
+  pImpl->pendingDeathSinceMs = 0;
+  // a death that bypassed Kill (SetIsDead during a pending death) left the
+  // pending phase armed, and BeginPendingDeath would refuse the next one for
+  // good (numidium's review of round ten, item 1)
+  if (pImpl->pendingDeath) {
+    pImpl->pendingDeath = false;
+    if (auto worldState = GetParent()) {
+      worldState->pendingDeaths.erase(GetFormId());
+    }
+  }
   if (ChangeForm().fateDiedAt.has_value()) {
     EditChangeForm(
       [&](MpChangeForm& changeForm) { changeForm.fateDiedAt.reset(); },
@@ -2710,8 +2722,15 @@ void MpActor::RespawnFated()
   }
   // the server's own stand-up ends the death; the host's dead-sample stamp
   // belongs to that death, not the next one (numidium's review of round
-  // six, item 8)
+  // six, item 8); the pending start that anchored the window ends with it
   pImpl->deadStamped = false;
+  pImpl->pendingDeathSinceMs = 0;
+  if (pImpl->pendingDeath) {
+    pImpl->pendingDeath = false;
+    if (auto worldState = GetParent()) {
+      worldState->pendingDeaths.erase(GetFormId());
+    }
+  }
   spdlog::info("[verb:npc-fate] {:x} stands again at its placement, rolled "
                "anew",
                GetFormId());

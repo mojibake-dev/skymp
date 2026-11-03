@@ -53,7 +53,7 @@ export class DeathReportService extends ClientListener {
         if (this.controller.lookupListener(DeathService).takeServerKill(localId)) {
             return;
         }
-        if (!this.controller.lookupListener(HostService).isMineLocal(localId)) {
+        if (!this.controller.lookupListener(HostService).isReportable(localId)) {
             return;
         }
         const killer = e.actorKiller ? this.sp.Actor.from(e.actorKiller) : null;

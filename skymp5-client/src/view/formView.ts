@@ -154,8 +154,9 @@ export class FormView {
             const engineAt = `(${refr0.getPositionX().toFixed(0)}, ${refr0.getPositionY().toFixed(0)}, ${refr0.getPositionZ().toFixed(0)}) in ${e.toString(16)}`;
             const recordAt = `(${p[0].toFixed(0)}, ${p[1].toFixed(0)}, ${p[2].toFixed(0)}) in ${r.toString(16)}`;
             // a promotion resets the one-shot: the gate's move may run at
-            // every promotion (non-owning-seat.md P2b), the word's placement
-            // (remoteServer) having run already on an earlier update
+            // every promotion (non-owning-seat.md P2b); HostService's hold
+            // keeps the actor's reports until the engine's copy stands at the
+            // record, by this move or its own
             if (promoted0) {
               this.movedInto = 0;
             }

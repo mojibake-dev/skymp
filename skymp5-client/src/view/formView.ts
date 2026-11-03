@@ -26,6 +26,7 @@ import { HostService } from "../services/services/hostService";
 import { PuppetService } from "../services/services/puppetService";
 import { PropService } from "../services/services/propService";
 import { ActorFateService } from "../services/services/actorFateService";
+import { ChangeFormService } from "../services/services/changeFormService";
 
 // thuum docs/verbs/cast-action.md: the want variable a hand's cast event names
 // (MRh_ the right hand's, MLh_ and the perk's DualMagic_ the left hand's actions)
@@ -781,7 +782,13 @@ export class FormView {
           // native clears is unread); that the silent kill still drops the
           // body as a ragdoll at the record's spot; that the record's pos is
           // the body's rest and not an earlier sample of the standing actor
-          const placed = this.placeAtDeadRecord(body, model);
+          // thuum ADR-067 by ADR-065's path (ChangeFormService, docs/verbs/
+          // change-form.md): a body whose change-form record the server
+          // served (held for this kill, or applied already) is laid by the
+          // record right after the kill, in the owner's pose at the owner's
+          // place; the move by coordinates is for a body with no record
+          const recorded = SpApiInteractor.getControllerInstance().lookupListener(ChangeFormService).hasRecord(this.refrId);
+          const placed = recorded ? "a change-form record stands for it (the apply lays it after the kill), not moved" : this.placeAtDeadRecord(body, model);
           logLab("verb:npc-fate", `dead record ${this.refrId.toString(16)} loaded alive on ${simulatedHere ? "this host's" : "a watcher's"} seat: ${placed}, killed silently at the bind`);
           SpApiInteractor.getControllerInstance().emitter.emit("applyDeathStateEvent", { actor: body, isDead: true, silent: true });
         } else {

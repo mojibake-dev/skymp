@@ -22,7 +22,10 @@ import { UpdateAppearanceMessage } from "../messages/updateAppearanceMessage";
 import { RemoteServer } from "./remoteServer";
 import { HostService } from "./hostService";
 import { DeathService } from "./deathService";
-import { logTrace } from "../../logging";
+import { logLab, logTrace } from "../../logging";
+import { ChangeFormService, CORPSE_SETTLE_MS, corpseSamplesAgree } from "./changeFormService";
+import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
+import { Movement, NiPoint3 } from "../../sync/movement";
 
 const playerFormId = 0x14;
 
@@ -125,6 +128,16 @@ export class SendInputsService extends ClientListener {
                 this.lastAnimationSent.delete(key);
             }
         });
+        // a body whose actor left the hosted list starts over at its next
+        // grant (ADR-067, the rest below is per hosted body)
+        if (this.bodies.size > 0) {
+            const hostedKeys = new Set<string>(hosted.map((remoteId) => `${remoteId}`));
+            this.bodies.forEach((_, key) => {
+                if (!hostedKeys.has(key)) {
+                    this.bodies.delete(key);
+                }
+            });
+        }
 
         const modelSource = this.controller.lookupListener(RemoteServer);
 
@@ -161,14 +174,68 @@ export class SendInputsService extends ClientListener {
         const now = Date.now();
         const last = this.lastSendMovementMoment.get(refrIdStr);
         if (!last || now - last > sendMovementRateMs) {
+            // thuum docs/DECISIONS.md ADR-067 decision 4, the owner's half
+            // (docs/verbs/npc-fate.md, "The watcher's corpse"; docs/verbs/
+            // change-form.md): a hosted actor dead on this engine goes on
+            // being sampled and sent, the body's fall as the engine's
+            // reference reports it, which the server applies to the record
+            // and relays through its settle window, until the body is at
+            // rest: two consecutive samples agreeing within CORPSE_REST_UNITS
+            // and CORPSE_REST_DEGREES (the server's own rule: it marks the
+            // record at rest on the same two and refuses later reports,
+            // E_BODY_AT_REST), the second of them reliable as the record's
+            // final sample, or CORPSE_SETTLE_MS after the first dead sample;
+            // then nothing more for that body until the engine has it alive
+            // again (the live word's Resurrect). The at-rest moment is the
+            // TRIGGER of the body's change-form record (ChangeFormService:
+            // the engine's own save of the corpse, serialized and sent once).
+            // HYPOTHESIS, the lab's first read: that the reference position
+            // follows the ragdoll's root as it settles; the line carries the
+            // distance from the first dead sample, so a reference that never
+            // moved reads 0 there and rests at the second sample
+            // the engine's own dead flag decides (the sample's isDead carries
+            // the record's too, which a reanimate's stand-up clears a report
+            // later than the engine does)
+            let body = _refrId !== undefined ? this.bodies.get(refrIdStr) : undefined;
+            if (_refrId !== undefined && body && body.atRest) {
+                if (owner.isDead()) {
+                    this.lastSendMovementMoment.set(refrIdStr, now);
+                    return;
+                }
+                this.bodies.delete(refrIdStr);
+                body = undefined;
+                logTrace(this, `body ${_refrId.toString(16)} alive again on this engine, its samples run as before`);
+            }
+            const data = getMovement(owner, form);
+            let reliability: "unreliable" | "reliable" = "unreliable";
+            if (_refrId !== undefined) {
+                if (!owner.isDead()) {
+                    if (body) {
+                        this.bodies.delete(refrIdStr);
+                    }
+                } else if (!body) {
+                    this.bodies.set(refrIdStr, { since: now, first: [data.pos[0], data.pos[1], data.pos[2]], last: data, atRest: false });
+                } else {
+                    const agree = corpseSamplesAgree(body.last, data);
+                    const windowOver = now - body.since >= CORPSE_SETTLE_MS;
+                    body.last = data;
+                    if (agree || windowOver) {
+                        body.atRest = true;
+                        reliability = "reliable";
+                        const moved = ObjectReferenceEx.getDistance(body.first, data.pos);
+                        logLab("verb:npc-fate", `body ${_refrId.toString(16)} at rest on this engine after ${now - body.since} ms: (${data.pos[0].toFixed(0)}, ${data.pos[1].toFixed(0)}, ${data.pos[2].toFixed(0)}); ${moved.toFixed(0)} units from the first dead sample, ${agree ? "two samples agree" : "the settle window ended"}`);
+                        this.controller.lookupListener(ChangeFormService).onBodyAtRest(_refrId, owner, data.pos);
+                    }
+                }
+            }
             const message: MessageWithRefrId<UpdateMovementMessage> = {
                 t: MsgType.UpdateMovement,
-                data: getMovement(owner, form),
+                data,
                 _refrId
             };
             this.controller.emitter.emit("sendMessageWithRefrId", {
                 message,
-                reliability: "unreliable"
+                reliability
             });
             this.lastSendMovementMoment.set(refrIdStr, now);
         }
@@ -382,6 +449,10 @@ export class SendInputsService extends ClientListener {
     }
 
     private lastSendMovementMoment = new Map<string, number>();
+    // ADR-067: the hosted bodies dead on this engine, by the sender's key
+    // (the remote id's string): the first dead sample's time and position,
+    // the last sample sent, whether the rest was sent
+    private readonly bodies = new Map<string, { since: number; first: NiPoint3; last: Movement; atRest: boolean }>();
     private playerAnimSource = new Map<string, AnimationSource>(); // TODO: make service
     private lastAnimationSent = new Map<string, Animation>();
     private actorValuesNeedUpdate = false;

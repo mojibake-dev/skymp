@@ -70,6 +70,9 @@ import { WordWallMessage } from "./wordWallMessage";
 import { RelayedActivationMessage } from "./relayedActivationMessage";
 import { ObjectAnimationMessage } from "./objectAnimationMessage";
 import { SkillUseMessage } from "./skillUseMessage";
+import { ChangeFormMessage } from "./changeFormMessage";
+import { ChangeFormAckMessage } from "./changeFormAckMessage";
+import { ChangeFormApplyMessage } from "./changeFormApplyMessage";
 
 export type AnyMessage = ActivateMessage
     | ConsoleCommandMessage
@@ -136,6 +139,9 @@ export type AnyMessage = ActivateMessage
     | RelayedActivationMessage
     | ObjectAnimationMessage
     | SkillUseMessage
+    | ChangeFormMessage
+    | ChangeFormAckMessage
+    | ChangeFormApplyMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage
     | UpdatePropertyMessage

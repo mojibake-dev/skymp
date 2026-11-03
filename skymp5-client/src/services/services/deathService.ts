@@ -6,6 +6,7 @@ import { RespawnNeededError } from "../../lib/errors";
 import { AnimationEventName, takeRelayedStagger } from "../../sync/animation";
 import { RagdollService } from "./ragdollService";
 import { PuppetService } from "./puppetService";
+import { ChangeFormService } from "./changeFormService";
 import { RemoteServer } from "./remoteServer";
 import { localIdToRemoteId } from "../../view/worldViewMisc";
 
@@ -270,11 +271,28 @@ export class DeathService extends ClientListener {
           if (!again || !again.isDead()) {
             return;
           }
+          // thuum ADR-067 by ADR-065's path (ChangeFormService): a body the
+          // owner's change-form record laid right after this kill is not
+          // pushed; the push's ragdoll would undo the record's pose and start
+          // playtest 42's F4 slide again
+          if (this.controller.lookupListener(ChangeFormService).hasAppliedRecord(localIdToRemoteId(id) || id)) {
+            logLab("verb:npc-fate", `body ${id.toString(16)}: no push, the change-form record laid it`);
+            return;
+          }
           again.pushActorAway(again, 0);
         });
       } else {
         actor.kill(killer);
       }
+      // thuum ADR-067 by ADR-065's path (ChangeFormService, docs/verbs/
+      // change-form.md): a change-form record of the body the server served
+      // (the owner's own save of its corpse) and held for this kill is
+      // applied now, the engine's own load laying the body in the owner's
+      // pose at the owner's place; a record that comes later is applied at
+      // its arrival, the body dead already. The bind (silent) applies on any
+      // seat; a kill by the word never takes a held record over this seat's
+      // own engine's death of an actor it simulates
+      this.controller.lookupListener(ChangeFormService).onKilledHere(actor.getFormID(), silent);
       // thuum docs/verbs/npc-fate.md (the deaths, revised by playtest 37's
       // findings 58 and 62): the body is NOT activation-blocked, on any seat.
       // The block stood here (a CONT's shape, dealWithRef) on the design
@@ -317,6 +335,9 @@ export class DeathService extends ClientListener {
       // game-file actor's, never the delete and re-placement a player's
       // figure takes (the throw below)
       const id = actor.getFormID();
+      // thuum ADR-065's path (ChangeFormService): a dead record held for this
+      // body is stale once the live word stands it up
+      this.controller.lookupListener(ChangeFormService).onStoodUp(id);
       const queued = this.sp.resurrectActor(id);
       // the reconciler arms the deferred kill again on its next pass
       // (ADR-050 decision 3: the stood-up actor holds at zero for the

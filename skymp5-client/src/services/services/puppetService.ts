@@ -1,6 +1,7 @@
 import { Actor, CellAttachDetachEvent, CombatEvent, ObjectReference, Spell } from "skyrimPlatform";
-import { logError, logTrace } from "../../logging";
+import { logError, logLab, logTrace } from "../../logging";
 import { Movement } from "../../sync/movement";
+import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { localIdToRemoteId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { HostService } from "./hostService";
@@ -129,6 +130,18 @@ export class PuppetService extends ClientListener {
             if (!flagged) {
                 return;
             }
+            // docs/engine/non-owning-seat.md R1: the promote's placement, read
+            // before the code changes it (the instrumented run on the parent):
+            // where the engine had the copy, what it is placed from, and the
+            // cell the record (the last sample this seat holds) names
+            {
+                const eCell = refr ? ObjectReferenceEx.getWorldOrCell(refr) : 0;
+                const at = `(${ac.getPositionX().toFixed(0)}, ${ac.getPositionY().toFixed(0)}, ${ac.getPositionZ().toFixed(0)}) in ${eCell.toString(16)}`;
+                const from = last
+                    ? `placed from the last sample at (${last.pos[0].toFixed(0)}, ${last.pos[1].toFixed(0)}, ${last.pos[2].toFixed(0)}) in ${last.worldOrCell.toString(16)}`
+                    : "no sample to place from, the engine's own stands";
+                logLab("verb:npc-handoff", `promote ${localId.toString(16)}: ${from}; the engine had it at ${at}`);
+            }
             if (last) {
                 // the record's last point and heading first: the relay stops
                 // at the grant (the native promote leaves the transform alone)
@@ -204,6 +217,11 @@ export class PuppetService extends ClientListener {
                 return;
             }
             this.puppets.add(localId);
+            // non-owning-seat.md R1: the demote's side of the same read
+            {
+                const eCell = refr ? ObjectReferenceEx.getWorldOrCell(refr) : 0;
+                logLab("verb:npc-handoff", `demote ${localId.toString(16)}: the engine had it at (${ac.getPositionX().toFixed(0)}, ${ac.getPositionY().toFixed(0)}, ${ac.getPositionZ().toFixed(0)}) in ${eCell.toString(16)}; the record's cell ${last ? last.worldOrCell.toString(16) : "unknown here"}`);
+            }
             // the engine's activation (Talk, trade, pickpocket) is the host's
             // alone: the native demote blocks it, so nothing Papyrus-backed runs
             // here, at the load's first attaches (train-34's first head: the one

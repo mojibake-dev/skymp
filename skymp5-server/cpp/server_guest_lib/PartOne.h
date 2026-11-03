@@ -303,6 +303,14 @@ public:
   void SetPerksEnabled(bool on);
   bool PerksEnabled() const;
 
+  // thuum docs/verbs/containers.md (ADR-061 decision 3):
+  // server-settings.json's containerSharing, "shared" (the default: every
+  // player who opens a container is in it, memo D52) or "exclusive" (one
+  // occupant at a time; a second player's activation is refused with
+  // E_CONTAINER_BUSY and a notification on its seat, the occupant's close
+  // frees the container)
+  void SetContainerSharing(const std::string& mode);
+
   // thuum docs/verbs/word-wall.md (M4): what a wall trigger reference's
   // WordWallTriggerScript names (the reference's own properties over its
   // base's): the word it teaches (myWord01) and the wall itself (wordWall01,

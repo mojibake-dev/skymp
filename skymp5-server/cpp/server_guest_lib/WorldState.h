@@ -393,6 +393,11 @@ public:
   // false (the default) drops every pick and lets no perk state leave the
   // server, the console's and the natives' writes included
   bool perksEnabled = false;
+  // thuum docs/verbs/containers.md (ADR-061 decision 3): one occupant per
+  // container when true (server-settings.json's containerSharing
+  // "exclusive"); false (the default, "shared") keeps memo D52's shared live
+  // view, every player who opens a container in it
+  bool containerSharingExclusive = false;
   // thuum docs/verbs/character-creation.md (the permit, M5): the races the
   // race menu offers only to listed profiles, keyed as server-settings.json's
   // restrictedRaces names them ("<shortid>:<plugin>"), each with its profile

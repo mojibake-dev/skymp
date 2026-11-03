@@ -38,8 +38,8 @@ pub const COLD_START_MS: u64 = 5_000;
 /// passes as before. UNMEASURED placeholder.
 pub const FOLLOW_SETTLE_MS: u64 = 1_000;
 
-/// How long after a pass (D9) the new host's report moving the actor out of
-/// the cell it was passed into is dropped as a stale copy's sample (playtest
+/// How long after a pass (D9) the new host's report moving the actor back
+/// into the cell it came from is dropped as a stale copy's sample (playtest
 /// 41, 2026-11-03 02:08Z: Hod 0x1348a walked through the Sleeping Giant's
 /// door to the street's host, whose copy of him still stood inside; its first
 /// report handed him straight back and the two games traded him twice a
@@ -209,6 +209,9 @@ pub enum FollowKind {
 struct Follow {
     player: u32,
     cell: u32,
+    /// The cell the actor came from when the row was written (0 for a
+    /// claim): the stale copy's shape is a report back into it.
+    from: u32,
     since_ms: u64,
     kind: FollowKind,
     /// A claim's lease; none for the other kinds.
@@ -495,12 +498,13 @@ impl Cells {
         }
         // a report putting the actor back where it stood before a follow
         // younger than the settle window is a stale sample, not a return;
-        // the same for the new host's report out of the cell its actor was
-        // just passed into (D9's settle, playtest 41: the promoted copy still
-        // stood on the other side of the door)
+        // the same for the new host's report back into the cell its actor
+        // was just passed from (D9's settle, playtest 41: the promoted copy
+        // still stood on the other side of the door); a move onward to a
+        // third cell is judged as any other
         if dest != origin && dest != 0 && origin != 0 {
             if let Some(f) = self.follows.get(&actor) {
-                if f.cell == origin && f.player == sender && now_ms.saturating_sub(f.since_ms) < FOLLOW_SETTLE_MS {
+                if f.cell == origin && f.player == sender && dest == f.from && now_ms.saturating_sub(f.since_ms) < FOLLOW_SETTLE_MS {
                     return MoveVerdict::Stale;
                 }
             }
@@ -597,7 +601,7 @@ impl Cells {
             MoveVerdict::Follow => {
                 // into a cell nobody hosts (D6), or another host's within the margin (D22)
                 let kind = if self.host_of(m.dest).is_some() { FollowKind::Margin } else { FollowKind::Follow };
-                self.follows.insert(m.actor, Follow { player: m.sender, cell: m.dest, since_ms: now_ms, kind, lease_until_ms: None });
+                self.follows.insert(m.actor, Follow { player: m.sender, cell: m.dest, from: m.origin, since_ms: now_ms, kind, lease_until_ms: None });
                 self.passes.remove(&m.actor);
             }
             MoveVerdict::Accept if m.dest != m.origin => {
@@ -613,10 +617,14 @@ impl Cells {
             }
             MoveVerdict::Pass => {
                 // the destination's host simulates it from here: any follow
-                // ends, and the pass is remembered for its settle window
+                // ends, and the pass is remembered for its settle window with
+                // the cell the actor came from (a margin follow deepening into
+                // its pass reports inside one cell, so the follow row's origin
+                // is the one that counts)
+                let from = if m.dest == m.origin { self.follows.get(&m.actor).map_or(m.origin, |f| f.from) } else { m.origin };
                 self.follows.remove(&m.actor);
                 if let Some((host, _)) = self.host_of(m.dest) {
-                    self.passes.insert(m.actor, Pass { host, cell: m.dest, from: m.origin, since_ms: now_ms });
+                    self.passes.insert(m.actor, Pass { host, cell: m.dest, from, since_ms: now_ms });
                 }
             }
             _ => {}
@@ -641,7 +649,7 @@ impl Cells {
         };
         self.follows.insert(
             actor,
-            Follow { player, cell, since_ms: now_ms, kind: FollowKind::Claim, lease_until_ms: Some(now_ms.saturating_add(CLAIM_LEASE_MS)) },
+            Follow { player, cell, from: 0, since_ms: now_ms, kind: FollowKind::Claim, lease_until_ms: Some(now_ms.saturating_add(CLAIM_LEASE_MS)) },
         );
         verdict
     }
@@ -1191,6 +1199,17 @@ mod tests {
         let outward = CellMove { sender: C2, actor: EMBRY, origin: INN, dest: RIVERWOOD, adjacent: false, door: true, edge_units: u32::MAX };
         assert_eq!(c.may_move(&outward, 9_000), MoveVerdict::Pass);
         assert_eq!(c.simulator_of(EMBRY, RIVERWOOD), C1);
+        // a margin follow that deepens into its pass remembers the cell the actor came from (the follow's origin), so the
+        // settle reads a report back across the border as the stale copy's
+        const EAST: u32 = 0x9733;
+        let mut e = both_in_reach();
+        e.reach(C2, &[RIVERWOOD, EAST], 0);
+        e.loaded(C1, RIVERWOOD, 1_000);
+        e.loaded(C2, EAST, 1_000);
+        assert_eq!(e.may_move(&CellMove { sender: C1, actor: EMBRY, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false, edge_units: 100 }, 2_000), MoveVerdict::Follow);
+        assert_eq!(e.may_move(&CellMove { sender: C1, actor: EMBRY, origin: EAST, dest: EAST, adjacent: false, door: false, edge_units: 500 }, 2_100), MoveVerdict::Pass);
+        assert_eq!(e.simulator_of(EMBRY, EAST), C2);
+        assert_eq!(e.may_move(&CellMove { sender: C2, actor: EMBRY, origin: EAST, dest: RIVERWOOD, adjacent: true, door: false, edge_units: u32::MAX }, 2_200), MoveVerdict::Stale);
         // an exit landing within the pass margin of the exterior square stays the inn host's follow (D22's brake)
         let mut d = both_in_reach();
         d.reach(C2, &[RIVERWOOD, INN], 0);
@@ -1235,9 +1254,11 @@ mod tests {
         assert_eq!(c.simulator_of(HOD, RIVERWOOD), C1);
         assert_eq!(c.may_move(&inward, 2_000 + PASS_SETTLE_MS + 100), MoveVerdict::Stale);
         assert_eq!(c.may_move(&inward, 2_000 + 2 * PASS_SETTLE_MS), MoveVerdict::Pass);
-        // the tick prunes a pass past its window
+        // the tick prunes a pass past its window: a window set longer afterwards finds no row to read
         assert_eq!(c.tick(2_000 + 3 * PASS_SETTLE_MS + 1), vec![]);
+        c.set_pass_settle_ms(100_000);
         assert_eq!(c.may_move(&outward, 2_000 + 3 * PASS_SETTLE_MS + 2), MoveVerdict::Pass);
+        c.set_pass_settle_ms(PASS_SETTLE_MS);
         // the server's setting: 0 switches the settle off (the mutation run), a longer window holds longer
         let mut d = both_in_reach();
         d.reach(C2, &[RIVERWOOD, INN], 0);

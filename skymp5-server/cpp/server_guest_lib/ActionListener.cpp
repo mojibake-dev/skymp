@@ -309,9 +309,10 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
             now - since >= std::chrono::seconds(10)) {
           spdlog::info(
             "ActionListener::OnUpdateMovement - npc-handoff: {:x}'s "
-            "report of {:x} into cell {:x} within the settle "
-            "window of its hand-off dropped as a stale copy's "
-            "sample (D9's settle); {} such since the last line",
+            "report of {:x} back into cell {:x} within the settle "
+            "window of its follow or pass dropped as a stale copy's "
+            "sample (the follow's rule since x-handoff-door 013234, D9's "
+            "settle since playtest 41); {} such since the last line",
             myActor->GetFormId(), moved->GetFormId(), destCell.value_or(0),
             count);
           since = now;

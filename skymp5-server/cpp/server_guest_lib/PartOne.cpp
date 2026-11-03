@@ -4924,14 +4924,6 @@ bool PartOne::PerksEnabled() const
 // thuum docs/verbs/containers.md (ADR-061 decision 3): the switch between
 // the shared live view and one occupant per container
 
-void PartOne::SetPassSettleMs(uint64_t ms)
-{
-  pImpl->cells->set_pass_settle_ms(ms);
-  spdlog::info("[verb:npc-handoff] handoffPassSettleMs {}: the pass's settle "
-               "window {}",
-               ms, ms == 0 ? "off" : "set");
-}
-
 void PartOne::SetContainerSharing(const std::string& mode)
 {
   if (mode != "shared" && mode != "exclusive") {
@@ -4943,6 +4935,31 @@ void PartOne::SetContainerSharing(const std::string& mode)
   }
   worldState.containerSharingExclusive = mode == "exclusive";
   spdlog::info("[verb:containers] containerSharing {}", mode);
+}
+
+// thuum docs/verbs/npc-handoff.md (D9's settle): server-settings.json's
+// handoffPassSettleMs, bounded to 0 (the settle off) to 60 s; a value
+// outside it is a mistake, said once and clamped (a huge window would hold
+// every passed actor out of the cell it came from for good, the door's
+// pre-check refusing its return)
+void PartOne::SetPassSettleMs(int64_t ms)
+{
+  constexpr int64_t kMaxMs = 60'000;
+  int64_t clamped = ms;
+  if (ms < 0) {
+    clamped = 0;
+  } else if (ms > kMaxMs) {
+    clamped = kMaxMs;
+  }
+  if (clamped != ms) {
+    spdlog::warn("[verb:npc-handoff] handoffPassSettleMs {} is outside 0 to "
+                 "{}; {} used",
+                 ms, kMaxMs, clamped);
+  }
+  pImpl->cells->set_pass_settle_ms(static_cast<uint64_t>(clamped));
+  spdlog::info("[verb:npc-handoff] handoffPassSettleMs {}: the pass's settle "
+               "window {}",
+               clamped, clamped == 0 ? "off" : "set");
 }
 
 // thuum docs/verbs/word-wall.md (M4): the word a wall trigger teaches, read

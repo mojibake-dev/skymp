@@ -1962,10 +1962,15 @@ mod ffi {
         /// neighbour), the nearness the cold start ranks by (ADR-047 D10).
         fn reach_ranked(self: &mut Cells, player: u32, cells: &[u32], rings: &[u8], now_ms: u64) -> Vec<HostDecision>;
         /// A simulator's report moving an actor between cells: 0 Refuse,
-        /// 1 Accept, 2 Follow (recorded here) (ADR-047 D6).
+        /// 1 Accept, 2 Follow (recorded here), 3 Pass to the destination's
+        /// host (recorded here), 4 Stale (a copy's sample back into the cell
+        /// the actor came from, inside the settle window; dropped, no
+        /// refusal) (ADR-047 D6, D9).
         fn may_move(self: &mut Cells, report: &CellMove, now_ms: u64) -> u8;
         /// `may_move`'s verdict without recording anything (the door's
         /// pre-check, ADR-047 D6).
+        /// Verdicts: 0 refused, 1 accepted, 2 followed, 3 passed to the
+        /// destination's host, 4 a stale copy's sample (dropped, no refusal).
         fn judge_move(self: &Cells, report: &CellMove, now_ms: u64) -> u8;
         /// Who simulates `actor` standing in `cell`: the host, else the
         /// follower, else 0.
@@ -1982,8 +1987,9 @@ mod ffi {
         /// (wire-rules cells::GRACE_MS), for the core's timer.
         fn host_grace_ms() -> u64;
         /// The settle window after a hand-off (wire-rules
-        /// cells::PASS_SETTLE_MS, npc-handoff D9): the new host's report out
-        /// of the cell within it is a stale copy's sample (verdict 4).
+        /// cells::PASS_SETTLE_MS, npc-handoff D9): the new host's report back
+        /// into the cell the actor came from, inside it, is a stale copy's
+        /// sample (verdict 4).
         fn pass_settle_ms() -> u64;
         /// The server's setting for the pass's settle window
         /// (handoffPassSettleMs): 0 switches the settle off.

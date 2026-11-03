@@ -299,7 +299,7 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
     // in which the new host's report back is a stale copy's; 0 off
     if (serverSettings.find("handoffPassSettleMs") != serverSettings.end()) {
       partOne->SetPassSettleMs(
-        serverSettings.at("handoffPassSettleMs").get<uint64_t>());
+        serverSettings.at("handoffPassSettleMs").get<int64_t>());
     }
     // thuum docs/verbs/containers.md (ADR-061 decision 3): "exclusive" (the
     // default, one occupant per container) or "shared" (the live view)

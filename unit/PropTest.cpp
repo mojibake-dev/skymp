@@ -273,21 +273,25 @@ TEST_CASE("A claim by a player in the prop's cell is granted and the owner "
   Leave(p);
 }
 
-TEST_CASE("A claim from outside the prop's cell, on an unknown reference or "
-          "on a grabbed prop is refused: no word, the owner stands",
+TEST_CASE("A claim on an unknown reference or on a grabbed prop is refused: "
+          "no word, the owner stands; a claim from outside the prop's cell is "
+          "granted (ADR-063 decision 4)",
           "[Prop][espm]")
 {
   auto& p = GetPartOne();
   auto w = Enter(p);
   auto& c2 = p.worldState.GetFormAt<MpActor>(kC2);
 
-  // c2 steps into the next square and touches from there
+  // c2 steps into the next square and touches from there: granted all the
+  // same (thuum docs/DECISIONS.md ADR-063 decision 4, playtest 41's carried
+  // bucket: the claimant's cell and its distance to a record it may already
+  // have moved are no gate; ownership is arbitrated, not permitted)
   c2.SetPos(kEast);
   Claim(p, 1, kBasket, 0);
-  REQUIRE(p.PropOwnerOf(w.prop) == kC1);
-  REQUIRE(p.PropEpochOf(w.prop) == 0);
-  REQUIRE(SentTo<PropOwnerMessage>(p, 0).empty());
-  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
+  REQUIRE(p.PropOwnerOf(w.prop) == kC2);
+  REQUIRE(p.PropEpochOf(w.prop) == 1);
+  REQUIRE_FALSE(SentTo<PropOwnerMessage>(p, 0).empty());
+  REQUIRE_FALSE(SentTo<PropOwnerMessage>(p, 1).empty());
   c2.SetPos(kHere + NiPoint3{ 60.f, 0.f, 0.f });
 
   // a reference the server does not hold, and a player's actor
@@ -295,19 +299,20 @@ TEST_CASE("A claim from outside the prop's cell, on an unknown reference or "
   Claim(p, 1, kC1, 0);
   REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
 
-  // c1 grabs it; c2's contact cannot take it out of c1's hands, c1's drop
-  // lets the next touch through
+  // c1 grabs it (the newest touch, epoch 2); c2's contact cannot take it
+  // out of c1's hands, c1's drop lets the next touch through
   Claim(p, 0, kBasket, 1);
-  REQUIRE(p.PropEpochOf(w.prop) == 1);
+  REQUIRE(p.PropOwnerOf(w.prop) == kC1);
+  REQUIRE(p.PropEpochOf(w.prop) == 2);
   p.Messages().clear();
   Claim(p, 1, kBasket, 0);
   REQUIRE(p.PropOwnerOf(w.prop) == kC1);
-  REQUIRE(p.PropEpochOf(w.prop) == 1);
+  REQUIRE(p.PropEpochOf(w.prop) == 2);
   REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
   Claim(p, 0, kBasket, 2);
   Claim(p, 1, kBasket, 0);
   REQUIRE(p.PropOwnerOf(w.prop) == kC2);
-  REQUIRE(p.PropEpochOf(w.prop) == 2);
+  REQUIRE(p.PropEpochOf(w.prop) == 3);
   Leave(p);
 }
 
@@ -388,11 +393,14 @@ TEST_CASE("A claim on a container, a claim from beyond reach and a sample "
   REQUIRE(p.worldState.GetFormAt<MpObjectReference>(kChest).GetPos() ==
           chestAt);
 
-  // beyond reach inside the square: refused, the host keeps the prop
+  // beyond arm's reach inside the square: granted all the same (ADR-063
+  // decision 4: the distance to the record is no gate; the reach budgets of
+  // 256, 512 and 2048 units are gone with it)
   c2.SetPos(kHere + NiPoint3{ 400.f, 0.f, 0.f });
+  p.Messages().clear();
   Claim(p, 1, kBasket, 0);
-  REQUIRE(p.PropOwnerOf(w.prop) == kC1);
-  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
+  REQUIRE(p.PropOwnerOf(w.prop) == kC2);
+  REQUIRE_FALSE(SentTo<PropOwnerMessage>(p, 1).empty());
   c2.SetPos(kHere + NiPoint3{ 60.f, 0.f, 0.f });
 
   // the step budget: the owner's sample from across the cell leaves the

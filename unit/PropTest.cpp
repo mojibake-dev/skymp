@@ -519,43 +519,54 @@ TEST_CASE("A claim on a container is refused and one from beyond reach is "
   Leave(p);
 }
 
-TEST_CASE("The host's sample of a prop whose owner stopped streaming takes it "
-          "over at a new epoch with the word (ADR-063 decision 4)",
+TEST_CASE("The host's own sample of a resting prop wakes it: the row the "
+          "host's at a new epoch and the word names the host by id, so a "
+          "host change leaves it streaming until its rest (ADR-063 decision "
+          "4, the review of 2026-11-03)",
           "[Prop][espm]")
 {
   auto& p = GetPartOne();
   auto w = Enter(p);
-  // c2 kicks the basket and streams one sample, then falls silent (a final
-  // sample lost on the unreliable channel); inside PROP_MOVING_MS the
-  // host's sample is refused as any non-owner's
-  Claim(p, 1, kBasket, 0);
-  Sample(p, 1, kBasket, kHere + NiPoint3{ 20.f, 0.f, 0.f }, false);
-  REQUIRE(p.PropOwnerOf(w.prop) == kC2);
-  REQUIRE(p.PropEpochOf(w.prop) == 1);
-  Sample(p, 0, kBasket, kHere + NiPoint3{ 25.f, 0.f, 0.f }, false);
-  REQUIRE(p.PropOwnerOf(w.prop) == kC2);
-  REQUIRE(std::abs(w.prop.GetPos().x - (kHere.x + 20.f)) < 1.f);
-
-  // past the window the host's sample takes the row over: written, the
-  // epoch up, both seats told with player 0
-  std::this_thread::sleep_for(
-    std::chrono::milliseconds(skymp::rules::prop_moving_ms() + 100));
+  // the host's engine kicks the untouched basket: its first awake sample
+  // wakes it, both seats hear the host by name at epoch 1
   p.Messages().clear();
-  Sample(p, 0, kBasket, kHere + NiPoint3{ 30.f, 0.f, 0.f }, false);
+  Sample(p, 0, kBasket, kHere + NiPoint3{ 20.f, 0.f, 0.f }, false);
   REQUIRE(p.PropOwnerOf(w.prop) == kC1);
-  REQUIRE(p.PropEpochOf(w.prop) == 2);
-  REQUIRE(std::abs(w.prop.GetPos().x - (kHere.x + 30.f)) < 1.f);
-  const auto toC2 = SentTo<PropOwnerMessage>(p, 1);
-  REQUIRE(toC2.size() == 1);
-  REQUIRE(toC2[0].player == 0);
-  REQUIRE(toC2[0].epoch == 2);
-  // the silent seat's late sample is refused and answered with that word
+  REQUIRE(p.PropLiveOwner(w.prop) == kC1);
+  REQUIRE(p.PropEpochOf(w.prop) == 1);
+  REQUIRE(std::abs(w.prop.GetPos().x - (kHere.x + 20.f)) < 1.f);
+  const auto woke1 = SentTo<PropOwnerMessage>(p, 0);
+  const auto woke2 = SentTo<PropOwnerMessage>(p, 1);
+  REQUIRE(woke1.size() == 1);
+  REQUIRE(woke2.size() == 1);
+  REQUIRE(woke2[0].player == kC1);
+  REQUIRE(woke2[0].epoch == 1);
+  // the next awake sample is the live row's: no word
   p.Messages().clear();
-  Sample(p, 1, kBasket, kHere + NiPoint3{ 40.f, 0.f, 0.f }, false);
-  REQUIRE(std::abs(w.prop.GetPos().x - (kHere.x + 30.f)) < 1.f);
+  Sample(p, 0, kBasket, kHere + NiPoint3{ 25.f, 0.f, 0.f }, false);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
+
+  // the props table's half of a grant to c2 mid-flight (the cells table's
+  // is the rules test's): c1's live row survives, c2's sample is refused
+  // and answered with c1's name, c1's samples still pass, and c1's rest
+  // returns the prop to the host by default with the word (player 0)
+  p.PropsHostChanged(w.cell, kC2);
+  p.Messages().clear();
+  Sample(p, 1, kBasket, kHere + NiPoint3{ 60.f, 0.f, 0.f }, false);
+  REQUIRE(std::abs(w.prop.GetPos().x - (kHere.x + 25.f)) < 1.f);
   const auto answered = SentTo<PropOwnerMessage>(p, 1);
   REQUIRE(answered.size() == 1);
   REQUIRE(answered[0].player == kC1);
-  REQUIRE(answered[0].epoch == 2);
+  REQUIRE(answered[0].epoch == 1);
+  Sample(p, 0, kBasket, kHere + NiPoint3{ 30.f, 0.f, 0.f }, false);
+  REQUIRE(std::abs(w.prop.GetPos().x - (kHere.x + 30.f)) < 1.f);
+  p.Messages().clear();
+  Sample(p, 0, kBasket, kHere + NiPoint3{ 32.f, 0.f, 0.f }, true);
+  REQUIRE(p.PropEpochOf(w.prop) == 2);
+  REQUIRE(p.PropLiveOwner(w.prop) == 0);
+  const auto rested = SentTo<PropOwnerMessage>(p, 1);
+  REQUIRE(rested.size() == 1);
+  REQUIRE(rested[0].player == 0);
+  REQUIRE(rested[0].epoch == 2);
   Leave(p);
 }

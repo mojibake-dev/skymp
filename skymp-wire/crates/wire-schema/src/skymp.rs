@@ -1835,8 +1835,8 @@ wire_struct! {
     /// who simulates a prop from now, to every listener of the prop at each
     /// owner change: a grant; the return to the cell's host at any owner's
     /// own asleep sample, the host's included; a grab past its cap; a refused
-    /// final sample (the rest taken, the position not); the host's takeover
-    /// of an owner that stopped streaming; a departure (ADR-063 decision 4:
+    /// final sample (the rest taken, the position not); the host's own wake
+    /// of a resting prop, the word naming the host by id; a departure (ADR-063 decision 4:
     /// ownership changes by this word alone, no seat infers it from a
     /// timer). To one seat alone as the answer to its refused claim or
     /// sample (the current owner and epoch). Server to client, reliable, R0

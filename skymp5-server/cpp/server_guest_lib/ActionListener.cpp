@@ -3845,7 +3845,8 @@ void ActionListener::OnLockReport(const RawMessageData& rawMsgData,
 // asleep sample (the host's own included) returns the prop to the cell's
 // host at once with the word (player 0) to every listener; so do a grab past
 // its cap, a refused final sample (the rest taken, the position not) and the
-// host's takeover of an owner that stopped streaming; a NotOwner refusal is
+// host's own wake of a resting prop (a word naming it by id); a NotOwner
+// refusal is
 // answered with the current word, once per prop per second per seat, so a
 // divergent mirror heals (ADR-063 decision 4). Refusals are logged once per
 // 10 s per seat.
@@ -3982,20 +3983,23 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
                    prop->GetFormId(), myActor->GetFormId(), epoch, told);
       break;
     }
-    case PartOne::PropTransformVerdict::TakenOver: {
-      // the host's sample of a prop whose owner stopped streaming (no
-      // accepted sample for PROP_MOVING_MS, awake, not held: a final sample
-      // lost on the unreliable channel, a client that stopped): the host
-      // takes the row over at a new epoch and every listener hears it
-      // (player 0), so no prop is left that nobody may move (ADR-063
-      // decision 4: a change of owner is a word)
+    case PartOne::PropTransformVerdict::Woken: {
+      // the host's own engine moved a prop that was not its live row (a
+      // resting prop kicked, a grab past its cap): the row is the host's at
+      // a new epoch and every listener hears the word NAMING THE HOST, so
+      // the seat that streams is the seat every word names and a host
+      // change leaves it streaming until its rest (the review of 2026-11-03:
+      // a word of player 0 over a row naming the host left a prop nobody
+      // simulated after a host change)
       const auto sent = applyAndRelay();
       const auto epoch = partOne.PropEpochOf(*prop);
-      const auto told = partOne.SendPropOwnerWord(prop->GetFormId(), 0, epoch);
-      spdlog::info("[verb:prop-physics] prop {:x}: its owner stopped "
-                   "streaming; the host {:x} takes it over at epoch {}; the "
-                   "sample relayed to {} listener(s), the word to {}",
-                   prop->GetFormId(), myActor->GetFormId(), epoch, sent, told);
+      const auto told = partOne.SendPropOwnerWord(prop->GetFormId(),
+                                                  myActor->GetFormId(), epoch);
+      spdlog::info("[verb:prop-physics] prop {:x} woken by its host {:x} at "
+                   "({:.0f}, {:.0f}, {:.0f}): the host's by name at epoch {}; "
+                   "the sample relayed to {} listener(s), the word to {}",
+                   prop->GetFormId(), myActor->GetFormId(), pos.x, pos.y,
+                   pos.z, epoch, sent, told);
       break;
     }
     case PartOne::PropTransformVerdict::WrongCell:

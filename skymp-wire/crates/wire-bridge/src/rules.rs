@@ -2018,9 +2018,10 @@ mod ffi {
         /// host (the word with player 0 at `prop_epoch_of`), 5 refused as a
         /// grab past its cap (returned, the word), 6 an asleep sample over
         /// the budget (the rest taken and returned, the position not, the
-        /// word), 7 taken over by the host from an owner that stopped
-        /// streaming (the word); `cell_host` hosts the cell the RECORD
-        /// stands in.
+        /// word), 7 woken by the host's own sample of a prop that was not
+        /// its live row (a resting prop its engine moved, a grab past its
+        /// cap: the row the host's at a new epoch, the word NAMING THE HOST
+        /// by id); `cell_host` hosts the cell the RECORD stands in.
         fn prop_transform(self: &mut Props, facts: &PropSampleFacts) -> u8;
         /// The row's owner while the row is live, else 0: the word a late
         /// listener gets at its subscription (with the epoch, 0 names the
@@ -3159,7 +3160,7 @@ impl Props {
             props::TransformVerdict::Returned(_) => 4,
             props::TransformVerdict::Capped(_) => 5,
             props::TransformVerdict::RestRefused(_) => 6,
-            props::TransformVerdict::TakenOver(_) => 7,
+            props::TransformVerdict::Woken(_) => 7,
         }
     }
 

@@ -61,7 +61,8 @@ use bounded::{String, Vec};
 /// 31 and 32: bumps of 2026-10-30 to 2026-11-02 whose notes were not
 /// written here (docs/LOG.md carries them).
 /// 33: PropOwner.player 0 names the cell's host by default (the return at
-/// rest, a departure, the cap, the takeover; thuum docs/verbs/prop-physics.md,
+/// rest, a departure, the cap; the host's own wake of a resting prop names
+/// the host by id; thuum docs/verbs/prop-physics.md,
 /// ADR-063 decision 4, 2026-11-03): a semantic bump, no shape change; an
 /// older client would drop every player-0 word and keep its last owner. A
 /// word at the epoch already applied replaces it on the client (the answer

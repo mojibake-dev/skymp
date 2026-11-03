@@ -626,7 +626,8 @@ public:
   bool ReleaseClaim(MpActor& claimant, MpActor& actor);
   // thuum docs/verbs/prop-physics.md (ADR-058): one simulating seat per
   // physics prop, the cell's host by default, the last toucher until its
-  // rest, its departure, the grab's cap or the host's takeover, each a word
+  // rest, its departure or the grab's cap, the host by name from its own
+  // wake of a resting prop until its rest, each a word
   // (ADR-063 decision 4); the owner table's "prop" rows (wire-rules props).
   // The handlers gather the facts (the reference, its cell, the claimant) and
   // ask here; the word (PropOwner) is the claim handler's.
@@ -657,10 +658,11 @@ public:
     // refused as over the step budget, but asleep: the rest is taken (the
     // host's again, the word), the position is not (the record stands)
     RestRefused,
-    // taken: the host's sample of a prop whose owner stopped streaming (no
-    // accepted sample for PROP_MOVING_MS, awake, not held); the row is the
-    // host's at a new epoch and the word (player 0) goes out
-    TakenOver
+    // woken: the host's own awake sample of a prop that was not its live
+    // row (a resting prop its engine moved, a grab past its cap); the row is
+    // the host's at a new epoch and the word names the host BY ID, so a
+    // host change leaves the old host streaming until its rest
+    Woken
   };
   // `sender`'s sample of `prop` landing in `cell` (0 for none), judged by
   // the host of `recordCell` (the cell the record stands in, read from the
@@ -671,7 +673,8 @@ public:
                                      uint32_t cell, uint32_t recordCell,
                                      bool asleep, float moved);
   // The prop's live row's owner, else 0: the word a listener arriving while a
-  // seat simulates the prop gets at its subscription (onSubscribe).
+  // seat simulates the prop gets at its subscription (onSubscribe), the
+  // host's own live row by its id like any other's.
   uint32_t PropLiveOwner(const MpObjectReference& prop) const;
   // The host of the cell `prop`'s record stands in, else 0: the owner table's
   // default owner, worded as player 0.
@@ -679,8 +682,8 @@ public:
   // Who simulates `prop` where its record stands: the toucher while awake or
   // held, else its cell's host, else 0.
   uint32_t PropOwnerOf(const MpObjectReference& prop) const;
-  // The prop's owner epoch, up at every word (a grant, a return, the cap, a
-  // takeover, a departure); 0 before any.
+  // The prop's owner epoch, up at every word (a grant, a return, the cap,
+  // the host's wake, a departure); 0 before any.
   uint32_t PropEpochOf(const MpObjectReference& prop) const;
   // `host` now hosts `cell` (ApplyHostDecisions' grant): the props in it
   // nobody holds live are the host's by default, their epochs kept.

@@ -589,7 +589,7 @@ export class PropService extends ClientListener {
         // nobody streams rests Dynamic (D73); except a prop this seat still
         // holds in its hand, which another seat now owns (a double grab lost,
         // the server's word answering the refused claim; the cap's word from
-        // the server's clock; the host's takeover): the hold ends here,
+        // the server's clock): the hold ends here,
         // Keyframed, so no two hands move one prop (ADR-063 decision 3)
         if (!simulate && prop.held) {
             prop.held = false;

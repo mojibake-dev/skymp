@@ -1373,10 +1373,9 @@ void PartOne::Init()
       if (const uint32_t epoch = PropEpochOf(*emitter); epoch != 0) {
         PropOwnerMessage word;
         word.refr = emitter->GetFormId();
-        // the host's own live row is worded as the default (player 0), the
-        // word every other seat holds for it
-        const uint32_t live = PropLiveOwner(*emitter);
-        word.player = live != 0 && live == PropCellHost(*emitter) ? 0u : live;
+        // the live owner by id, the host's own live row included (its wake
+        // word named it so), else 0 for the host by default
+        word.player = PropLiveOwner(*emitter);
         word.epoch = epoch;
         sendTarget->Send(listenerUserId, word, true);
       }

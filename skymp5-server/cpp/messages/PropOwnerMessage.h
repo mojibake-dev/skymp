@@ -8,8 +8,9 @@
 // who simulates a prop from now, to every listener of the prop at each owner
 // change: a grant, the return to the cell's host at any owner's own asleep
 // sample (the host's included), a grab past its cap, a refused final sample,
-// the host's takeover of an owner that stopped streaming, a departure; to one
-// seat alone as the answer to its refused claim or sample. Server to client,
+// the host's own wake of a resting prop (the word names the host by id), a
+// departure; to one seat alone as the answer to its refused claim or sample.
+// Server to client,
 // reliable, R0 output: the named player's seat simulates (its body Dynamic),
 // every other seat's follows the stream; player 0 names the cell's host by
 // default; a word with an epoch below one already applied is dropped and an

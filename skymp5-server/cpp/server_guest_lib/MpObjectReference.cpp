@@ -857,6 +857,13 @@ void MpObjectReference::ResyncAfterRefusedMove(MpActor& ac)
   SetInventoryMessage own;
   own.inventory = ac.GetInventory();
   ac.SendToUser(own, true);
+  // a living actor's inventory is its owner's alone (VisitProperties sends
+  // it in mode All only); only a container's or a corpse's record is the
+  // mover's to hear, else a forged move naming another player within reach
+  // would read that player's inventory (rule 5; the hold's fresh review)
+  if (baseType != "CONT" && !IsCorpse()) {
+    return;
+  }
   ac.GetActorToSendTo().SendToUser(
     CreatePropertyMessage_(this, "inventory", GetInventory().ToJson().dump()),
     true);

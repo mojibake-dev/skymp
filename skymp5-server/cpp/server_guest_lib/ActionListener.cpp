@@ -3314,11 +3314,12 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
     case PartOne::PropClaimVerdict::Away:
       // the unload is a state (the review of 2026-11-03): the claimant's game
       // reported the prop's cell unloaded and has not reported it loaded
-      // since, so this claim is a late one (a grab release after a door, a
-      // report that raced the unload); the row returned to the host at the
-      // unload and stays there
+      // since, nor had the cell back in its reach, so this claim is a late
+      // one (a grab release after a door, a report that raced the unload);
+      // the row returned to the host at the unload and stays there
       refuse("E_PROP_AWAY",
-             "its game unloaded the prop's cell and has not loaded it since");
+             "its game unloaded the prop's cell and has not loaded or "
+             "reached it since");
       partOne.AnswerPropWord(rawMsgData.userId, *prop);
       break;
   }
@@ -4021,11 +4022,12 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
              "farther from the record than the step budget allows");
       break;
     case PartOne::PropTransformVerdict::Away:
-      // a late sample after the sender's unload report, or an unloading
-      // host still in its grace waking the prop it just left (the review of
-      // 2026-11-03): refused until its load report, the record standing
+      // a wake by an unloading host still in its grace (the review of
+      // 2026-11-03): refused until its load report or the cell's return to
+      // its reach, the record standing; a live owner's own stream passes
       refuse("E_PROP_AWAY",
-             "its game unloaded the cell and has not loaded it since");
+             "its game unloaded the cell and has not loaded or reached it "
+             "since");
       break;
   }
 }

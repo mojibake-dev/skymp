@@ -3,6 +3,7 @@
 #include "PropOwnerMessage.h"
 #include "PropTransformMessage.h"
 #include "TestUtils.hpp"
+#include "UpdateMovementMessage.h"
 #include "wire_bridge_cxx/rules.h"
 #include <catch2/catch_all.hpp>
 #include <chrono>
@@ -81,6 +82,25 @@ RawMessageData Raw(Networking::UserId user)
 }
 
 // `user`'s touch of the prop `refr`
+// `user`'s movement report for its own actor (the square change refreshes
+// its reach, PartOne::RefreshReach)
+void Move(PartOne& p, Networking::UserId user, uint32_t actorId,
+          const NiPoint3& pos)
+{
+  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
+  RawMessageData raw;
+  raw.userId = user;
+  raw.unparsed = unparsed;
+  raw.unparsedLength = sizeof(unparsed);
+  UpdateMovementMessage msg;
+  msg.idx = p.worldState.GetFormAt<MpActor>(actorId).GetIdx();
+  msg.data.pos = { pos.x, pos.y, pos.z };
+  msg.data.rot = { 0, 0, 0 };
+  msg.data.worldOrCell = 0x3c;
+  msg.data.runMode = "Standing";
+  p.GetActionListener().OnUpdateMovement(raw, msg);
+}
+
 void Claim(PartOne& p, Networking::UserId user, uint32_t refr, uint32_t touch)
 {
   PropClaimMessage msg;
@@ -581,8 +601,8 @@ TEST_CASE("A player's unload of a cell returns its live props there to the "
   auto w = Enter(p);
   // c2 kicks the basket and streams it awake, then its game unloads the
   // cell (a door): the row returns to the host at a new epoch, both seats
-  // told with player 0; c2's late sample is refused (a sample's Away is not
-  // answered; a claim's is)
+  // told with player 0; c2's late sample is refused NotOwner and answered
+  // (a guest's; Away is a host's wake or a claim)
   Claim(p, 1, kBasket, 0);
   Sample(p, 1, kBasket, kHere + NiPoint3{ 20.f, 0.f, 0.f }, false);
   REQUIRE(p.PropLiveOwner(w.prop) == kC2);
@@ -601,34 +621,46 @@ TEST_CASE("A player's unload of a cell returns its live props there to the "
   Sample(p, 1, kBasket, kHere + NiPoint3{ 40.f, 0.f, 0.f }, false);
   REQUIRE(std::abs(w.prop.GetPos().x - (kHere.x + 20.f)) < 1.f);
   // the unload is a state: c2's claim there is refused until its game
-  // reports the cell loaded again (the review of 2026-11-03)
+  // reports the cell loaded again or has the cell back in its reach (the
+  // review of 2026-11-03)
   Claim(p, 1, kBasket, 0);
   REQUIRE(p.PropLiveOwner(w.prop) == 0);
   REQUIRE(p.PropEpochOf(w.prop) == 2);
+  // c2 steps into the next square (a report may move an actor 4096 at most):
+  // its reach is refreshed, the cell is in it, the state ends, the claim is
+  // granted (round seven's reach exit, the follows' shape)
+  Move(p, 1, kC2, kHere + NiPoint3{ 3900.f, 0.f, 0.f });
+  Claim(p, 1, kBasket, 0);
+  REQUIRE(p.PropLiveOwner(w.prop) == kC2);
+  REQUIRE(p.PropEpochOf(w.prop) == 3);
+  Sample(p, 1, kBasket, kHere + NiPoint3{ 22.f, 0.f, 0.f }, true);
+  REQUIRE(p.PropLiveOwner(w.prop) == 0);
+  REQUIRE(p.PropEpochOf(w.prop) == 4);
+  Move(p, 1, kC2, kHere + NiPoint3{ 60.f, 0.f, 0.f });
   // the host's own kick woke it (a word by id); its unload returns it too
   p.Messages().clear();
   Sample(p, 0, kBasket, kHere + NiPoint3{ 25.f, 0.f, 0.f }, false);
   REQUIRE(p.PropLiveOwner(w.prop) == kC1);
-  REQUIRE(p.PropEpochOf(w.prop) == 3);
+  REQUIRE(p.PropEpochOf(w.prop) == 5);
   p.Messages().clear();
   CellLoaded(p, 0, w.cell, false);
   REQUIRE(p.PropLiveOwner(w.prop) == 0);
-  REQUIRE(p.PropEpochOf(w.prop) == 4);
+  REQUIRE(p.PropEpochOf(w.prop) == 6);
   const auto toC2 = SentTo<PropOwnerMessage>(p, 1);
   REQUIRE(toC2.size() == 1);
   REQUIRE(toC2[0].player == 0);
-  REQUIRE(toC2[0].epoch == 4);
+  REQUIRE(toC2[0].epoch == 6);
   // the host still hosts through its grace, but its late awake sample wakes
   // nothing until its game reports the cell loaded again; then it does
   Sample(p, 0, kBasket, kHere + NiPoint3{ 35.f, 0.f, 0.f }, false);
   REQUIRE(p.PropLiveOwner(w.prop) == 0);
-  REQUIRE(p.PropEpochOf(w.prop) == 4);
+  REQUIRE(p.PropEpochOf(w.prop) == 6);
   // the record stands where the wake's sample put it (pipeline 4848: this
   // line once expected a rest sample the case never sends)
   REQUIRE(std::abs(w.prop.GetPos().x - (kHere.x + 25.f)) < 1.f);
   CellLoaded(p, 0, w.cell, true);
   Sample(p, 0, kBasket, kHere + NiPoint3{ 36.f, 0.f, 0.f }, false);
   REQUIRE(p.PropLiveOwner(w.prop) == kC1);
-  REQUIRE(p.PropEpochOf(w.prop) == 5);
+  REQUIRE(p.PropEpochOf(w.prop) == 7);
   Leave(p);
 }

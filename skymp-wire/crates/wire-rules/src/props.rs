@@ -139,8 +139,9 @@ pub enum ClaimVerdict {
     /// the stream.
     Moving,
     /// The claimant's game reported the prop's cell unloaded and has not
-    /// reported it loaded since (`unloaded`, `loaded`): its 3D of the prop
-    /// is gone, so a claim from it there is a late one; nothing changes.
+    /// reported it loaded since, nor had the cell back in its reach
+    /// (`unloaded`, `loaded`, `reached`): its 3D of the prop is gone, so a
+    /// claim from it there is a late one; nothing changes.
     Away,
 }
 
@@ -182,9 +183,10 @@ pub enum TransformVerdict {
     /// 2026-11-03: a word of player 0 over a row naming the host stranded the
     /// prop after a host change, nobody simulating it).
     Woken(u32),
-    /// The sender's game reported the sample's cell unloaded and has not
-    /// reported it loaded since: a late sample, or an unloading host still
-    /// in its grace waking the prop it just left (the review of 2026-11-03);
+    /// A wake by a sender whose game reported the sample's cell unloaded
+    /// and has not reported it loaded since, nor had the cell back in its
+    /// reach: an unloading host still in its grace waking the prop it just
+    /// left (the review of 2026-11-03); a live owner's own stream passes;
     /// nothing changes.
     Away,
 }
@@ -195,9 +197,10 @@ pub struct Props {
     rows: HashMap<u32, PropRow>,
     epochs: HashMap<u32, u32>,
     /// (player, cell) pairs a player's game reported unloaded and not
-    /// loaded again since: an unload is a state, not a moment, so the
-    /// player's claims and samples there are refused (Away) until its load
-    /// report; a gate on the seat's own report, not on a position.
+    /// loaded again since, nor had back in its reach: an unload is a state,
+    /// not a moment, so the player's grants and wakes there are refused
+    /// (Away) until its load report or the cell's return to its reach; a
+    /// gate on the seat's own report, not on a position.
     away: HashSet<(u32, u32)>,
 }
 

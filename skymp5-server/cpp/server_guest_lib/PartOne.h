@@ -640,8 +640,8 @@ public:
     // decision 4: a non-owner's contact never takes a moving prop)
     Moving,
     // the claimant's game reported the prop's cell unloaded and not loaded
-    // since: a late claim, refused until its load report (the unload is a
-    // state, not a moment)
+    // since, nor had it back in its reach: a late claim, refused until then
+    // (the unload is a state, not a moment)
     Away
   };
   PropClaimVerdict ClaimProp(const MpActor& claimant,

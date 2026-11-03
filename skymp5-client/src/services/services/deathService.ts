@@ -240,7 +240,33 @@ export class DeathService extends ClientListener {
           again.pushActorAway(again, 0);
         });
       } else {
+        // thuum playtest 41 (2026-11-02, Eli: "on prisoners screen instead of
+        // ragdolling it froze"): the giant frostbite spider, killed by the host
+        // while it hung in its ambush furniture, died on the guest's screen in
+        // the furniture idle with no fall: a puppet killed inside a furniture
+        // or ambush animation plays no death fall, the deaths2 flag keep ticks
+        // a graph that never leaves the idle, and the body stands frozen. The
+        // engine's push with no force (the silent branch's cure above, playtest
+        // 38's finding 71) ragdolls any dead actor where it stands, so after
+        // the kill the body that has not dropped a stride within 300 ms gets
+        // the push; a body already falling is left to its fall. HYPOTHESIS
+        // until x-npc-death-ambush reads a creature killed in its ambush
+        // furniture on the guest's screen
+        const id = actor.getFormID();
+        const zBefore = actor.getPositionZ();
         actor.kill(killer);
+        this.sp.Utility.wait(0.3).then(() => {
+          const again = Actor.from(this.sp.Game.getFormEx(id));
+          if (!again || !again.isDead()) {
+            return;
+          }
+          const dropped = Math.abs(again.getPositionZ() - zBefore);
+          if (dropped >= 16) {
+            return;
+          }
+          again.pushActorAway(again, 0);
+          logLab("verb:npc-fate", `body ${id.toString(16)}: no fall ${dropped.toFixed(0)} units after the kill, pushed to ragdoll (playtest 41's spider)`);
+        });
       }
       // thuum docs/verbs/npc-fate.md (the deaths, revised by playtest 37's
       // findings 58 and 62): the body is NOT activation-blocked, on any seat.

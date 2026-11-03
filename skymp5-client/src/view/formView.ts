@@ -122,6 +122,41 @@ export class FormView {
         // per record cell, never destroyed; the npcHandoff switch leaves it
         // standing where the engine put it
         this.lastWorldOrCell = model.movement.worldOrCell;
+        // playtest 40's F2: the record's cell, seen here every update, hides
+        // the reference while the cell is an interior this game has not
+        // loaded and shows it at the record when it is loaded again
+        // (PuppetService.recordCellSeen; the Teleport ahead of an unsubscribe
+        // reaches RemoteServer's handler, which asks the same)
+        if (FormView.npcHandoffEnabled()) {
+          const seenRefr = ObjectReference.from(Game.getFormEx(this.refrId));
+          const seenMine = !!seenRefr && SpApiInteractor.getControllerInstance().lookupListener(HostService).isMine(model, seenRefr);
+          SpApiInteractor.getControllerInstance().lookupListener(PuppetService).recordCellSeen(
+            this.refrId, model.movement.worldOrCell,
+            [model.movement.pos[0], model.movement.pos[1], model.movement.pos[2]],
+            [model.movement.rot[0], model.movement.rot[1], model.movement.rot[2]],
+            seenMine,
+          );
+        }
+        // docs/engine/non-owning-seat.md R1: the view's gate at the word's flip,
+        // logged whatever it decides (the instrumented run on the parent):
+        // the engine's cell and position against the record's, and why the
+        // move below runs or not (the same cell; moved into this record cell
+        // once already; moved now)
+        if (FormView.npcHandoffEnabled()) {
+          const refr0 = ObjectReference.from(Game.getFormEx(this.refrId));
+          const mine0 = !!refr0 && SpApiInteractor.getControllerInstance().lookupListener(HostService).isMine(model, refr0);
+          const promoted0 = mine0 && model.isHostedByOther === false && this.hostedBefore !== false;
+          const demoted0 = !mine0 && model.isHostedByOther === true && this.hostedBefore === false;
+          if (refr0 && (promoted0 || demoted0)) {
+            const e = ObjectReferenceEx.getWorldOrCell(refr0);
+            const r = model.movement.worldOrCell;
+            const p = model.movement.pos;
+            const engineAt = `(${refr0.getPositionX().toFixed(0)}, ${refr0.getPositionY().toFixed(0)}, ${refr0.getPositionZ().toFixed(0)}) in ${e.toString(16)}`;
+            const recordAt = `(${p[0].toFixed(0)}, ${p[1].toFixed(0)}, ${p[2].toFixed(0)}) in ${r.toString(16)}`;
+            const why = !promoted0 ? "demoted" : e === r ? "not moved here (the same cell)" : this.movedInto === r ? "not moved here (moved into this record cell once already)" : "moved to the record below";
+            logLab("verb:npc-handoff", `${promoted0 ? "promote" : "demote"} gate ${this.refrId.toString(16)}: the engine at ${engineAt}, the record at ${recordAt}; ${why}`);
+          }
+        }
         if (FormView.npcHandoffEnabled() && this.movedInto !== model.movement.worldOrCell) {
           const refr = ObjectReference.from(Game.getFormEx(this.refrId));
           const engineCell = refr ? ObjectReferenceEx.getWorldOrCell(refr) : 0;

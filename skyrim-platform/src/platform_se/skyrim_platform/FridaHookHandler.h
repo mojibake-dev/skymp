@@ -40,7 +40,11 @@ enum HookID
   // thuum docs/verbs/traps.md (ADR-059 decision 3): a world object's
   // NiControllerManager sequence as the engine plays it
   // (TESObjectREFR::PlayAnimation_Impl, CommonLibSSE-NG Offsets.h:546)
-  HOOK_PLAY_ANIMATION
+  HOOK_PLAY_ANIMATION,
+  // thuum docs/DECISIONS.md ADR-062 decision 2: the Papyrus natives that
+  // change server-owned state, one listener for every entry
+  // (ScriptNatives.cpp; the entries resolved at kDataLoaded)
+  HOOK_SCRIPT_NATIVE
 };
 
 struct Hook

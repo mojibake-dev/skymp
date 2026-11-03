@@ -4217,10 +4217,19 @@ void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
       }
       break;
     case 3:
-      refuse("E_DEATH_SCRIPT",
-             "a script's kill is the server's to run (scripted-effects.md), "
-             "not a host's to report");
-      return;
+      // thuum docs/DECISIONS.md ADR-062 decision 2 (Eli: "trust should
+      // LARGELY be the default"): a host-run script's Kill, reported by the
+      // host whose engine ran it (the platform's hook on Actor.Kill marks
+      // the actor, DeathReportService names cause 3 within its window), is
+      // the host's word, R2, declared unvalidated (npc-fate.md); before
+      // ADR-062 it was refused as the server's to run, and the server's own
+      // scripted kills (scripted-effects.md) stay its own
+      evidence = "a host-run script's kill (ADR-062, R2, unvalidated)";
+      if (killer) {
+        evidence += fmt::format(", the killer {:x} the script named",
+                                killer->GetFormId());
+      }
+      break;
     default:
       refuse("E_DEATH_CAUSE", "a cause the contract does not name");
       return;

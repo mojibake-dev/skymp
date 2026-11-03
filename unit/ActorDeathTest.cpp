@@ -719,3 +719,35 @@ TEST_CASE("A hosted NPC at zero with no report dies by the server's word "
   Leave(p, 1, kOther);
   Leave(p, 0, kHost);
 }
+
+// thuum docs/DECISIONS.md ADR-062 decision 2 (Eli, playtest 41: "trust
+// should LARGELY be the default"): a host-run script's kill, reported by the
+// host whose engine ran it, is the host's word (R2, declared unvalidated);
+// before ADR-062 cause 3 was refused as the server's to run
+TEST_CASE("A host's report of a script's kill (cause 3) is taken as the "
+          "host's word; another game's is not the host's to make",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  p.worldState.npcDeathReports = true;
+  constexpr uint32_t kForestCell = 0x9810;
+  auto& host = Arrive(p, 0, kHost);
+  Arrive(p, 1, kOther);
+  auto& actor = Standing(p, kPredator);
+  actor.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
+  Host(p, 0, kForestCell);
+  REQUIRE(p.worldState.HostOf(actor) == &host);
+
+  // the other game does not simulate the actor: its report is nobody's
+  Report(p, 1, kPredator, 3, 0, actor.GetPos());
+  REQUIRE_FALSE(actor.IsDead());
+
+  // the host's: taken, the killer the script named credited
+  Report(p, 0, kPredator, 3, kHost, actor.GetPos());
+  REQUIRE(actor.IsDead());
+
+  StandUp(p, actor);
+  Leave(p, 1, kOther);
+  Leave(p, 0, kHost);
+}

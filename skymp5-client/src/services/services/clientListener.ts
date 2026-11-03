@@ -143,6 +143,21 @@ declare module "skyrimPlatform" {
     }
     function on(eventName: 'skillUse', callback: (event: SkillUseEvent) => void): EventHandle;
     function once(eventName: 'skillUse', callback: (event: SkillUseEvent) => void): EventHandle;
+    // thuum docs/DECISIONS.md ADR-062 decision 2: a script's call of a native that
+    // changes server-owned state, on this seat, for a world object in a hosted cell,
+    // an actor this game simulates, a quest, a global or an alias (ScriptNatives.cpp).
+    // No game call in its handler.
+    interface ScriptNativeEvent {
+        native: string;
+        self: number;
+        arg: number;
+        value: number;
+        cell: number;
+        actor: boolean;
+        stackId: number;
+    }
+    function on(eventName: 'scriptNative', callback: (event: ScriptNativeEvent) => void): EventHandle;
+    function once(eventName: 'scriptNative', callback: (event: ScriptNativeEvent) => void): EventHandle;
     // thuum docs/verbs/npc-stream.md (the voice slice): a spoken line begins
     // on an actor this game hosts; ids alone, no game call in its handler
     interface TopicInfoEvent {

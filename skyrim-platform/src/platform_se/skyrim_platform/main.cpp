@@ -14,6 +14,7 @@
 #include "IPC.h"
 #include "InputConverter.h"
 #include "PapyrusTESModPlatform.h"
+#include "ScriptNatives.h"
 #include "Settings.h"
 #include "SkyrimPlatform.h"
 #include "TPOverlayService.h"
@@ -229,6 +230,9 @@ DLLEXPORT bool SKSEAPI SKSEPlugin_Load_Impl(const SKSE::LoadInterface* skse)
       BrowserApiNirnLab::GetInstance().HandleSkseMessage(a_msg);
       if (a_msg && a_msg->type == SKSE::MessagingInterface::kDataLoaded) {
         Hooks::InstallCastAnswerSink();
+        // thuum ADR-062 decision 2: the natives' entries, from the VM's
+        // bindings recorded by then
+        ScriptNatives::InstallHooks();
       }
     });
 

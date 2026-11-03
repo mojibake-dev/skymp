@@ -344,6 +344,16 @@ export interface SkillUseEvent {
   points: number;
   source: number;
 }
+// thuum docs/DECISIONS.md ADR-062 decision 2: a Papyrus native that changes server-owned state, called by a script on this seat for a world object in a cell this game hosts, an actor it simulates, a quest, a global or an alias (the platform's hook on the native's own entry, resolved by class and name from the VM's bindings; ScriptNatives.cpp), raised on the next tick: the native as "Class.Name", the self's form id (an alias's owning quest), the acting or target form id or 0, the numeric argument (a bool as 0 or 1, an int, an alias's id) or 0, the self's cell or 0, whether the self is an actor, the Papyrus stack id. No game call in its handler
+export interface ScriptNativeEvent {
+  native: string;
+  self: number;
+  arg: number;
+  value: number;
+  cell: number;
+  actor: boolean;
+  stackId: number;
+}
 
 export interface OpenCloseEvent {
   target: ObjectReference
@@ -747,6 +757,8 @@ export declare function on(eventName: 'propContact', callback: (event: PropConta
 export declare function once(eventName: 'propContact', callback: (event: PropContactEvent) => void): EventHandle
 export declare function on(eventName: 'skillUse', callback: (event: SkillUseEvent) => void): EventHandle
 export declare function once(eventName: 'skillUse', callback: (event: SkillUseEvent) => void): EventHandle
+export declare function on(eventName: 'scriptNative', callback: (event: ScriptNativeEvent) => void): EventHandle
+export declare function once(eventName: 'scriptNative', callback: (event: ScriptNativeEvent) => void): EventHandle
 
 export declare function on(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle
 export declare function once(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle

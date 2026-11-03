@@ -222,6 +222,12 @@ void Frida::SetCellHosted(uint32_t cellFormId, bool hosted)
   }
 }
 
+bool Frida::IsCellHosted(uint32_t cellFormId)
+{
+  std::lock_guard<std::mutex> lock(g_hostedCellsMutex);
+  return g_hostedCells.count(cellFormId) > 0;
+}
+
 /**
  * Send Event hook
  */

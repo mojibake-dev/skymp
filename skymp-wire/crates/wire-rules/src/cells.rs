@@ -514,8 +514,19 @@ impl Cells {
                 if simulator != sender {
                     return MoveVerdict::Refuse;
                 }
-                let loads = self.players.get(&sender).is_some_and(|p| p.loaded.contains_key(&dest));
-                if (adjacent && loads) || door {
+                // the sender vouches for the cell when its game reports it
+                // loaded OR when the cell is within its reach (the server's
+                // own 3x3 around the player: the engine loads at least that
+                // grid, so a neighbour in reach is loaded whatever the report
+                // says). Playtest 41's restart (2026-11-03 01:09Z): c1's
+                // re-reported loaded set lacked Riverwood's other half, 9731,
+                // for 57 s and every walk into it was refused, the records
+                // standing while the host's engine walked on
+                let vouches = self
+                    .players
+                    .get(&sender)
+                    .is_some_and(|p| p.loaded.contains_key(&dest) || p.reach.contains_key(&dest));
+                if (adjacent && vouches) || door {
                     MoveVerdict::Follow
                 } else {
                     MoveVerdict::Refuse
@@ -1359,5 +1370,27 @@ mod tests {
         assert_eq!(c.tick(3_000 + CLAIM_LEASE_MS), vec![Decision::ClaimEnded { actor: HILDE, cell: WEST }]);
         assert_eq!(c.simulator_of(HILDE, WEST), C1);
         assert_eq!(c.claims(), vec![]);
+    }
+
+    #[test]
+    fn a_neighbour_within_reach_is_vouched_for_without_a_loaded_report() {
+        // playtest 41's restart: the host's re-reported loaded set lacked
+        // Riverwood's other half for 57 s; its reach (the server's own grid
+        // around the player) had it all along
+        const WEST: u32 = 0x9731;
+        const HILDE: u32 = 0x35534;
+        let mut c = Cells::default();
+        c.reach(C1, &[RIVERWOOD, WEST], 1_000);
+        assert_eq!(c.loaded(C1, RIVERWOOD, 1_000), vec![Decision::Grant { player: C1, cell: RIVERWOOD, epoch: 1 }]);
+        assert_eq!(c.host_of(WEST), None);
+        let walk = CellMove { sender: C1, actor: HILDE, origin: RIVERWOOD, dest: WEST, adjacent: true, door: false, edge_units: 0 };
+        assert_eq!(c.judge(&walk, 2_000), MoveVerdict::Follow);
+        // a cell neither reported nor in reach is still nobody's to vouch for
+        let far = CellMove { sender: C1, actor: HILDE, origin: RIVERWOOD, dest: 0x9712, adjacent: true, door: false, edge_units: 0 };
+        assert_eq!(c.judge(&far, 2_000), MoveVerdict::Refuse);
+        // the report of the neighbour grants it to c1 (loaded and in reach), and
+        // the same walk is then into a cell it hosts
+        assert_eq!(c.loaded(C1, WEST, 2_500), vec![Decision::Grant { player: C1, cell: WEST, epoch: 1 }]);
+        assert_eq!(c.judge(&walk, 3_000), MoveVerdict::Accept);
     }
 }

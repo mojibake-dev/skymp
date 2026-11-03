@@ -28,7 +28,9 @@ const HOST_STORAGE_KEY = "hostServiceState";
 
 // thuum docs/verbs/cell-host.md (ADR-035): one player's game runs a cell's
 // NPCs and the server decides which. This game reports its loaded set, one
-// CellLoaded per cell as the engine fully loads it (cellFullyLoaded) and as
+// CellLoaded per cell as the engine fully loads it (cellFullyLoaded, or the
+// once-a-second read of a recently detached cell standing attached again,
+// since a re-attach from the engine's buffer fires no event) and as
 // it leaves the loaded set (Cell.isAttached read once a second); the server
 // elects from those reports and its own grid, and tells this game with
 // HostGrant and HostRelease, each carrying the cell's epoch. The hosted set
@@ -487,6 +489,7 @@ export class HostService extends ClientListener {
             const cell = this.sp.Cell.from(this.sp.Game.getFormEx(id));
             if (cell === null || !cell.isAttached()) {
                 this.loaded.delete(id);
+                this.detached.set(id, now);
                 this.report(id, false);
             }
         }
@@ -504,6 +507,26 @@ export class HostService extends ClientListener {
             this.loaded.add(id);
             this.report(id, true);
             logTrace(this, `own cell ${id.toString(16)} reported without its load event`);
+        }
+        // a cell the engine re-attaches from its buffer fires no cellFullyLoaded
+        // either (thuum b-npc-handoff-door-hosts 20261103-134832: c1's warm exit
+        // from the inn re-attached Riverwood's exterior with no event, so only
+        // its own cell was re-reported and 9731 stayed unhosted for the run,
+        // while a cold exit from lab-spawn fires 27 events; docs/verbs/
+        // cell-host.md), so a cell detached within the window is read again
+        // each second and reported when it stands attached again
+        for (const [id, at] of Array.from(this.detached.entries())) {
+            if (now - at > HostService.reattachWindowMs || this.loaded.has(id)) {
+                this.detached.delete(id);
+                continue;
+            }
+            const cell = this.sp.Cell.from(this.sp.Game.getFormEx(id));
+            if (cell !== null && cell.isAttached()) {
+                this.detached.delete(id);
+                this.loaded.add(id);
+                this.report(id, true);
+                logLab("verb:cell-host", `cell ${id.toString(16)} re-attached without its load event, reported ${now - at} ms after its detach`);
+            }
         }
         if (now - this.lastRefresh >= HostService.refreshMs) {
             this.lastRefresh = now;
@@ -693,6 +716,7 @@ export class HostService extends ClientListener {
             hosted: Array.from(this.hosted.entries()),
             lastEpoch: Array.from(this.lastEpoch.entries()),
             loaded: Array.from(this.loaded),
+            detached: Array.from(this.detached.entries()),
             hostedActors: Array.from(this.hostedActors),
             attached: Array.from(this.attached.keys()),
         };
@@ -703,7 +727,7 @@ export class HostService extends ClientListener {
         if (!raw || typeof raw !== "object") {
             return;
         }
-        const stored = raw as Partial<Record<"hosted" | "lastEpoch" | "loaded" | "hostedActors" | "attached", unknown>>;
+        const stored = raw as Partial<Record<"hosted" | "lastEpoch" | "loaded" | "detached" | "hostedActors" | "attached", unknown>>;
         const pairs = (v: unknown): Array<[number, number]> => Array.isArray(v)
             ? v.filter((x): x is [number, number] => Array.isArray(x) && x.length === 2 && typeof x[0] === "number" && typeof x[1] === "number")
             : [];
@@ -718,6 +742,9 @@ export class HostService extends ClientListener {
         for (const id of ids(stored.loaded)) {
             this.loaded.add(id);
         }
+        for (const [cell, at] of pairs(stored.detached)) {
+            this.detached.set(cell, at);
+        }
         for (const id of ids(stored.hostedActors)) {
             this.hostedActors.add(id);
         }
@@ -730,10 +757,15 @@ export class HostService extends ClientListener {
     }
 
     private static readonly refreshMs = 30_000;
+    // how long a detached cell is watched for a silent re-attach (the engine's
+    // cell buffer holds recent cells; a visit and its return fit well inside)
+    private static readonly reattachWindowMs = 10 * 60_000;
     private static readonly sightingsMs = 2000;
     private static readonly sightingsMax = 64;
     private readonly enabled: boolean;
     private readonly loaded = new Set<number>();
+    // the cells that left the loaded set, by the poll's time of the detach
+    private readonly detached = new Map<number, number>();
     private readonly hosted = new Map<number, number>();
     // the actors whose actions stream from here (npc-stream), by local id
     private readonly hostedActors = new Set<number>();

@@ -2053,6 +2053,10 @@ void PartOne::OnDeathState(MpActor& actor, bool isDead)
   }
 }
 
+// degrees to radians for the snippet's rotation arguments (the client's
+// moveRefrToPosition takes radians, as remoteServer's teleport converts)
+static constexpr float kDegToRad = 3.14159265358979323846f / 180.0f;
+
 void PartOne::OnActorSighting(MpActor& reporter, uint32_t refrId,
                               uint32_t worldOrCell, const NiPoint3& pos,
                               const NiPoint3& rot)
@@ -2072,6 +2076,87 @@ void PartOne::OnActorSighting(MpActor& reporter, uint32_t refrId,
                  reporter.GetFormId(), refrId, pos.x, pos.y, pos.z,
                  worldOrCell, why);
   };
+  // playtest 42's F1 and F2 (2026-11-03): a sighter's own copy of an actor
+  // standing where the record does not (the record in a cell another game
+  // hosts, or the copy in another game's cell while the record stands
+  // elsewhere) is told to MOVE to the record, cell and position, through the
+  // native the client uses for a player's own cross-cell move
+  // (TESModPlatform's moveRefrToPosition, the call formView's gate makes when
+  // a view exists). Playtest 37's finding 38 ("we have 2 embrys") first met
+  // this orphan and sent ObjectReference.Disable; playtest 42's F1 (c2's
+  // Embry solid at the inn's porch while the record sat inside under c1, Hod
+  // walking into it) showed the Disable never REACHED the copy: its selfId
+  // went through MakeLongFormId's actor branch and the client resolves a
+  // long id through a view this game no longer had (runMethod threw "Unable
+  // to find form with id 0"), so the roster kept sighting the porch copy
+  // every 10 s after each hide. Playtest 40's F2 (Hilde's ghost) is the
+  // other shape: D11's release after a move indoors walking a copy back out.
+  // The copy now travels as an ARGUMENT with its raw id and selfId 0 (a
+  // static call), which the client maps to itself. A copy moved into an
+  // interior this game has not loaded loses its 3D and its collision here and
+  // stands at the record when that game walks in. The record's cell-or-world
+  // form goes typed as both the Cell and the WorldSpace argument: the
+  // client's deserializer casts and yields null for the one that does not
+  // fit, so no null travels (a null argument would fault its deserializer).
+  // Once a minute per sighter and actor. The move itself is npc-handoff's H5
+  // (CONFIRMED at T3 for an engine reference moved into an unloaded interior
+  // through this native). HYPOTHESIS until the lab: a copy with no view and
+  // the puppet flag lands the same; and, after D11's release 4 s later, the
+  // copy's own schedule may walk it off the record (Hod's porch record while
+  // nobody hosts the street), the minute's cadence then showing as a pop.
+  static std::unordered_map<uint64_t, std::chrono::steady_clock::time_point>
+    moved;
+  const auto tellToMoveToRecord = [&](MpActor& actor, uint32_t recordCell,
+                                      const char* hostedBy) {
+    // a body is never moved (D78 C): a dead record's copy is npc-fate's,
+    // killed where it stands when its view arrives
+    if (actor.IsDead()) {
+      return;
+    }
+    const uint64_t key =
+      (static_cast<uint64_t>(reporter.GetFormId()) << 32) | refrId;
+    const auto now = std::chrono::steady_clock::now();
+    auto& last = moved[key];
+    if (last != std::chrono::steady_clock::time_point{} &&
+        now - last < std::chrono::minutes(1)) {
+      return;
+    }
+    last = now;
+    const uint32_t recordCellOrWorld =
+      actor.GetCellOrWorld().ToFormId(worldState.espmFiles);
+    const NiPoint3 recordPos = actor.GetPos();
+    const NiPoint3 recordRot = actor.GetAngle();
+    SpSnippetObjectArgument copy;
+    copy.formId = refrId;
+    copy.type = "ObjectReference";
+    SpSnippetObjectArgument asCell;
+    asCell.formId = recordCellOrWorld;
+    asCell.type = "Cell";
+    SpSnippetObjectArgument asWorld;
+    asWorld.formId = recordCellOrWorld;
+    asWorld.type = "WorldSpace";
+    const std::vector<std::optional<
+      std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+      toRecord{ copy,
+                asCell,
+                asWorld,
+                static_cast<double>(recordPos.x),
+                static_cast<double>(recordPos.y),
+                static_cast<double>(recordPos.z),
+                static_cast<double>(recordRot.x * kDegToRad),
+                static_cast<double>(recordRot.y * kDegToRad),
+                static_cast<double>(recordRot.z * kDegToRad) };
+    SpSnippet("TESModPlatform", "moveRefrToPosition", toRecord, 0)
+      .Execute(&reporter, SpSnippetMode::kNoReturnResult);
+    spdlog::info(
+      "PartOne - npc-puppet: {:x}'s own copy of {:x} told to move "
+      "to the record at ({:.0f}, {:.0f}, {:.0f}) in {:x} (the "
+      "record's cell {:x} is {}; the copy stood at ({:.0f}, {:.0f}, "
+      "{:.0f}) in {:x} here)",
+      reporter.GetFormId(), refrId, recordPos.x, recordPos.y, recordPos.z,
+      recordCellOrWorld, recordCell, hostedBy, pos.x, pos.y, pos.z,
+      worldOrCell);
+  };
   // a game-file actor alone (the validator's bound too); a player's actor
   // never
   if (refrId >= 0xff000000) {
@@ -2087,6 +2172,30 @@ void PartOne::OnActorSighting(MpActor& reporter, uint32_t refrId,
     // grant comes first and replays what it held (finding 66)
     if (!host.hosted) {
       HoldSighting(reporter.GetFormId(), *cell, refrId, worldOrCell, pos, rot);
+    } else {
+      // playtest 42's F2: c2's engine walked Hod through the inn's door after
+      // c2's demote and sighted him inside c1's inn while the record stayed
+      // at the porch outside; the copy follows the record, never the record
+      // the copy
+      // a record the server holds already; an actor with no record is its
+      // host's roster's to create (the loader's disabled filters yield to the
+      // host's engine alone, rule 5)
+      const auto& sightedForm = worldState.LookupFormByIdNoLoad(refrId);
+      MpActor* sighted = sightedForm ? sightedForm->AsActor() : nullptr;
+      if (sighted &&
+          serverState.UserByActor(sighted) == Networking::InvalidUserId) {
+        const auto recordCell = worldState.CellOf(*sighted);
+        if (recordCell && *recordCell != *cell) {
+          const MpActor* recordHost = worldState.HostOf(*sighted);
+          // never the record's own host: its engine is the truth (branch (a)'s
+          // rule and the view's gate's, formView)
+          if (recordHost != &reporter) {
+            tellToMoveToRecord(*sighted, *recordCell,
+                               recordHost ? "another game's"
+                                          : "nobody's, frozen at the record");
+          }
+        }
+      }
     }
     return drop(host.hosted ? "the cell is another game's"
                             : "the cell is nobody's yet");
@@ -2110,34 +2219,9 @@ void PartOne::OnActorSighting(MpActor& reporter, uint32_t refrId,
   if (MpActor* other = worldState.HostOf(*actor);
       other && other != &reporter) {
     // hosted by another game where the record stands: its word, not this
-    // one's; the records meet at a handoff (npc-handoff). Playtest 37
-    // (2026-10-28, finding 38, "we have 2 embrys"): after two fresh
-    // launches the engines disagreed about where a resident stood, the
-    // first sighting placed the record in the inn its sighter hosts, and the
-    // other game's own reference outside stayed an orphan no record drives
-    // (no promote, no demote, no move; frozen on its screen). The sighter's
-    // engine is told to hide its copy (ObjectReference.Disable, no fade),
-    // once a minute per sighter and actor; formView re-enables a disabled
-    // reference when the record comes back into that game's grid
-    static std::unordered_map<uint64_t, std::chrono::steady_clock::time_point>
-      hidden;
-    const uint64_t key =
-      (static_cast<uint64_t>(reporter.GetFormId()) << 32) | refrId;
-    const auto now = std::chrono::steady_clock::now();
-    auto& last = hidden[key];
-    if (last == std::chrono::steady_clock::time_point{} ||
-        now - last >= std::chrono::minutes(1)) {
-      last = now;
-      const std::vector<std::optional<
-        std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
-        noFade{ false };
-      SpSnippet("ObjectReference", "Disable", noFade, refrId)
-        .Execute(&reporter, SpSnippetMode::kNoReturnResult);
-      spdlog::info("PartOne - npc-puppet: {:x}'s own copy of {:x} hidden (its "
-                   "record stands in {:x}, which {:x} hosts)",
-                   reporter.GetFormId(), refrId, standing.value_or(0),
-                   other->GetFormId());
-    }
+    // one's; the records meet at a handoff (npc-handoff); the sighter's copy
+    // goes to the record (tellToMoveToRecord above)
+    tellToMoveToRecord(*actor, standing.value_or(0), "another game's");
     return drop("its record stands in a cell another game hosts");
   }
   spdlog::info("PartOne - npc-puppet: {:x} sights {:x} at ({:.0f}, {:.0f}, "

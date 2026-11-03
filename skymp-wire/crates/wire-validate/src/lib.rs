@@ -1089,13 +1089,16 @@ pub fn decode_record_hex(hex: &str) -> Result<Vec<u8>, Reject> {
             _ => Err(Reject::ChangeFormHeader),
         }
     };
-    let mut out = Vec::with_capacity(hex.len() / 2);
-    for pair in hex.as_bytes().chunks_exact(2) {
-        let (high, low) = match (pair.first(), pair.get(1)) {
-            (Some(h), Some(l)) => (nibble(*h)?, nibble(*l)?),
-            _ => return Err(Reject::ChangeFormSize),
-        };
-        out.push(high.checked_shl(4).unwrap_or(0) | low);
+    // as_chunks (stable since 1.88): the CI's clippy (1.99) refuses
+    // chunks_exact with a constant size; the remainder is empty after the
+    // even-length check above, refused as SIZE if it ever were not
+    let (pairs, rest) = hex.as_bytes().as_chunks::<2>();
+    if !rest.is_empty() {
+        return Err(Reject::ChangeFormSize);
+    }
+    let mut out = Vec::with_capacity(pairs.len());
+    for &[high, low] in pairs {
+        out.push(nibble(high)?.checked_shl(4).unwrap_or(0) | nibble(low)?);
     }
     Ok(out)
 }

@@ -581,7 +581,8 @@ TEST_CASE("A player's unload of a cell returns its live props there to the "
   auto w = Enter(p);
   // c2 kicks the basket and streams it awake, then its game unloads the
   // cell (a door): the row returns to the host at a new epoch, both seats
-  // told with player 0; c2's late sample is refused and answered with it
+  // told with player 0; c2's late sample is refused (a sample's Away is not
+  // answered; a claim's is)
   Claim(p, 1, kBasket, 0);
   Sample(p, 1, kBasket, kHere + NiPoint3{ 20.f, 0.f, 0.f }, false);
   REQUIRE(p.PropLiveOwner(w.prop) == kC2);

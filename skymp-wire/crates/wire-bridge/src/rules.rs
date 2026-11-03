@@ -2023,9 +2023,10 @@ mod ffi {
         /// word), 7 woken by the host's own sample of a prop that was not
         /// its live row (a resting prop its engine moved, a grab past its
         /// cap: the row the host's at a new epoch, the word NAMING THE HOST
-        /// by id), 8 refused: the sender's game reported the sample's cell
-        /// unloaded and not loaded since (Away); `cell_host` hosts the cell
-        /// the RECORD stands in.
+        /// by id), 8 refused: a wake by a sender whose game reported the
+        /// sample's cell unloaded and not loaded or reached since (Away; a
+        /// live owner's own stream passes); `cell_host` hosts the cell the
+        /// RECORD stands in.
         fn prop_transform(self: &mut Props, facts: &PropSampleFacts) -> u8;
         /// The row's owner while the row is live, else 0: the word a late
         /// listener gets at its subscription (with the epoch, 0 names the
@@ -2045,6 +2046,9 @@ mod ffi {
         /// `player`'s game reported `cell` loaded: the end of the unload's
         /// state, its claims and samples there judged again.
         fn props_loaded(self: &mut Props, player: u32, cell: u32);
+        /// `cells` are in `player`'s reach now (RefreshReach): the unload's
+        /// state ends for each, as a follow vouches by loaded or reach.
+        fn props_reached(self: &mut Props, player: u32, cells: &[u32]);
         /// `player` left: its live rows (awake or held) return to their
         /// cells' hosts at a new epoch each; the core sends `PropOwner` with
         /// player 0 for every (refr, epoch) returned.
@@ -3196,6 +3200,10 @@ impl Props {
 
     fn props_loaded(&mut self, player: u32, cell: u32) {
         self.0.loaded(player, cell);
+    }
+
+    fn props_reached(&mut self, player: u32, cells: &[u32]) {
+        self.0.reached(player, cells);
     }
 
     fn props_unloaded(&mut self, player: u32, cell: u32, now_ms: u64) -> Vec<PropReturn> {

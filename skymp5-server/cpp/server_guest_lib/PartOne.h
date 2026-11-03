@@ -667,9 +667,10 @@ public:
     // the host's at a new epoch and the word names the host BY ID, so a
     // host change leaves the old host streaming until its rest
     Woken,
-    // the sender's game reported the sample's cell unloaded and not loaded
-    // since: a late sample, or an unloading host in its grace waking the
-    // prop it just left; refused
+    // a wake by a sender whose game reported the sample's cell unloaded and
+    // not loaded or reached since: a late sample, or an unloading host in
+    // its grace waking the prop it just left; refused (a live owner's own
+    // stream passes)
     Away
   };
   // `sender`'s sample of `prop` landing in `cell` (0 for none), judged by

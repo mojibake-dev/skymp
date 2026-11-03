@@ -319,9 +319,6 @@ impl Props {
         if cell == 0 {
             return TransformVerdict::WrongCell;
         }
-        if self.away.contains(&(player, cell)) {
-            return TransformVerdict::Away;
-        }
         // the grab's cap, noticed at the holder's first sample past it: the
         // prop is the host's again by a word, the sample refused
         if let Some(row) = self.rows.get_mut(&refr) {
@@ -341,6 +338,15 @@ impl Props {
         }
         if owner != player {
             return TransformVerdict::NotOwner;
+        }
+        // the unload's state gates a WAKE alone: a live owner streaming its
+        // own row into a cell its game reported unloaded (a missed load
+        // report) keeps streaming, its row never stranded; a host's sample
+        // that would take a resting row there waits for the load report or
+        // the cell's return to its reach
+        let own_live = self.rows.get(&refr).is_some_and(|r| r.live(now_ms) && r.owner == player);
+        if !own_live && self.away.contains(&(player, cell)) {
+            return TransformVerdict::Away;
         }
         let allowed = match self.rows.get(&refr) {
             Some(row) if row.live(now_ms) && row.owner == player => {
@@ -483,6 +489,17 @@ impl Props {
     /// are judged again (the end of `unloaded`'s state).
     pub fn loaded(&mut self, player: u32, cell: u32) {
         self.away.remove(&(player, cell));
+    }
+
+    /// `cells` are in `player`'s reach now (the core's RefreshReach at a
+    /// square change): the unload's state ends for each, the way a follow
+    /// vouches by loaded or reach; a seat whose load report for a neighbour
+    /// never fired (playtest 41: 9731 missing from c1's loaded set for 57 s)
+    /// is not refused there for good.
+    pub fn reached(&mut self, player: u32, cells: &[u32]) {
+        for &cell in cells {
+            self.away.remove(&(player, cell));
+        }
     }
 
     /// The table's clock, once a second from the core: every grab past its
@@ -703,15 +720,22 @@ mod tests {
         assert_eq!(p.epoch_of(BASKET), 2);
         assert_eq!(p.live_owner(0x54a44, 2_000), C2);
         assert_eq!(p.live_owner(0x5678, 2_000), C1);
-        // the unload is a state: until c1's game reports the cell loaded again, its claims and samples there are
-        // refused (an unloading host still hosts through its grace, and its late sample would wake the prop by id
-        // again; the same seat's claim would be granted again), while its rows elsewhere stand
+        // the unload is a state: until c1's game reports the cell loaded again (or the cell is in its reach again), its
+        // grants and wakes there are refused (an unloading host still hosts through its grace, and its late sample would
+        // wake the prop by id again; the same seat's claim would be granted again), while its rows elsewhere stand and a
+        // live row of its own streams on wherever the sample lands (a missed load report never strands a stream)
         assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, false, 10.0, 2_050)), TransformVerdict::Away);
         assert_eq!(p.claim(BASKET, C1, CELL, touch::CONTACT, 2_060), ClaimVerdict::Away);
         assert_eq!(p.transform(&facts(0x5678, C1, 0x9733, C1, false, 10.0, 2_070)), TransformVerdict::Accepted);
-        p.loaded(C1, CELL);
+        assert_eq!(p.transform(&facts(0x5678, C1, CELL, C1, false, 10.0, 2_075)), TransformVerdict::Accepted);
+        p.reached(C1, &[0x9733, CELL]);
         assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, false, 10.0, 2_080)), TransformVerdict::Woken(3));
         assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, true, 10.0, 2_090)), TransformVerdict::Returned(4));
+        assert_eq!(p.unloaded(C1, CELL, 2_095), vec![]);
+        assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, false, 10.0, 2_096)), TransformVerdict::Away);
+        p.loaded(C1, CELL);
+        assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, false, 10.0, 2_097)), TransformVerdict::Woken(5));
+        assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, true, 10.0, 2_098)), TransformVerdict::Returned(6));
         // the holder's unload drops its grab too (a grab carried through a door stays in no hand), and its claim
         // there waits for its load report as well; a departure clears the state
         assert_eq!(p.unloaded(C2, CELL, 2_100), vec![(0x54a44, 2)]);
@@ -719,6 +743,10 @@ mod tests {
         assert_eq!(p.claim(0x54a44, C2, CELL, touch::GRAB, 2_150), ClaimVerdict::Away);
         assert_eq!(p.gone(C2, 2_200), vec![]);
         assert_eq!(p.claim(0x54a44, C2, CELL, touch::CONTACT, 2_300), ClaimVerdict::Granted(3));
+        // the live owner's own stream into a cell it reported unloaded passes (its row is live), a wake there does not
+        assert_eq!(p.unloaded(C2, 0x9733, 2_400), vec![]);
+        assert_eq!(p.transform(&facts(0x54a44, C2, 0x9733, C1, false, 10.0, 2_410)), TransformVerdict::Accepted);
+        assert_eq!(p.transform(&facts(0x54a44, C2, 0x9733, C1, true, 10.0, 2_420)), TransformVerdict::Returned(4));
         // nothing of c3's, and nothing twice
         assert_eq!(p.unloaded(C3, CELL, 2_400), vec![]);
         assert_eq!(p.unloaded(C1, CELL, 2_500), vec![]);

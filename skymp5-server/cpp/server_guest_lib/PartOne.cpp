@@ -1834,6 +1834,12 @@ void PartOne::RefreshReach(MpActor& player)
     cells.push_back(cell);
     rings.push_back(ring);
   }
+  // thuum docs/verbs/prop-physics.md (A7): a cell in the player's reach ends
+  // its unload state for props there, as a follow vouches by loaded or reach
+  // (a load report a seat never sent would otherwise refuse it for good)
+  pImpl->props->props_reached(
+    player.GetFormId(),
+    rust::Slice<const uint32_t>(cells.data(), cells.size()));
   ApplyHostDecisions(*this,
                      pImpl->cells->reach_ranked(
                        player.GetFormId(),

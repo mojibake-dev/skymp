@@ -24,6 +24,7 @@
 #include "PercentagesBinding.h"
 #include "PosBinding.h"
 #include "ProfileIdBinding.h"
+#include "RespawnFatedBinding.h"
 #include "RespawnPercentagesBinding.h"
 #include "RunningEffectsBinding.h"
 #include "ShoutsBinding.h"
@@ -51,6 +52,7 @@ PropertyBindingFactory::CreateStandardPropertyBindings()
   result["gameTime"] = std::make_shared<GameTimeBinding>();
   result["inventory"] = std::make_shared<InventoryBinding>();
   result["isDead"] = std::make_shared<IsDeadBinding>();
+  result["respawnFated"] = std::make_shared<RespawnFatedBinding>();
   result["isDisabled"] = std::make_shared<IsDisabledBinding>();
   result["isOnline"] = std::make_shared<IsOnlineBinding>();
   result["isOpen"] = std::make_shared<IsOpenBinding>();

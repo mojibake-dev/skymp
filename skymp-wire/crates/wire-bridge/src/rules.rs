@@ -1963,9 +1963,10 @@ mod ffi {
         fn reach_ranked(self: &mut Cells, player: u32, cells: &[u32], rings: &[u8], now_ms: u64) -> Vec<HostDecision>;
         /// A simulator's report moving an actor between cells: 0 Refuse,
         /// 1 Accept, 2 Follow (recorded here), 3 Pass to the destination's
-        /// host (recorded here), 4 Stale (a copy's sample back into the cell
-        /// the actor came from, inside the settle window; dropped, no
-        /// refusal) (ADR-047 D6, D9).
+        /// host (recorded here), 4 Stale (a follower's report out of the
+        /// cell it followed the actor into within FOLLOW_SETTLE_MS, or the
+        /// new host's report back into the cell the actor came from within
+        /// the pass's settle window; dropped, no refusal) (ADR-047 D6, D9).
         fn may_move(self: &mut Cells, report: &CellMove, now_ms: u64) -> u8;
         /// `may_move`'s verdict without recording anything (the door's
         /// pre-check, ADR-047 D6).

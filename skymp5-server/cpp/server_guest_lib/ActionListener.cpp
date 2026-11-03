@@ -293,12 +293,14 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       const auto verdict =
         partOne.MayMoveActor(*myActor, *moved, msg.data.worldOrCell, destPos);
       if (verdict == PartOne::MoveVerdict::Stale) {
-        // thuum docs/verbs/npc-handoff.md D9's settle (playtest 41, Hod at
-        // the Sleeping Giant's door, 2026-11-03): a sample taken before the
-        // engine's transit, or a just-promoted copy still on the other side
-        // of the door, moving the actor back into the cell it came from
-        // within the settle window; dropped as stale, the sender's right to
-        // report untouched; one info line per actor per 10 s with the count
+        // thuum docs/verbs/npc-handoff.md: a follower's report out of the
+        // cell it followed the actor into within FOLLOW_SETTLE_MS (a sample
+        // taken before the engine's transit, x-handoff-door 013234), or the
+        // new host's report back into the cell the actor came from within
+        // the pass's settle window (a just-promoted copy still on the other
+        // side of the door, D9's settle, playtest 41); dropped as stale, the
+        // sender's right to report untouched; one info line per actor per
+        // 10 s with the count
         static std::unordered_map<
           uint32_t, std::pair<std::chrono::steady_clock::time_point, uint32_t>>
           stale;
@@ -309,10 +311,12 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
             now - since >= std::chrono::seconds(10)) {
           spdlog::info(
             "ActionListener::OnUpdateMovement - npc-handoff: {:x}'s "
-            "report of {:x} back into cell {:x} within the settle "
-            "window of its follow or pass dropped as a stale copy's "
-            "sample (the follow's rule since x-handoff-door 013234, D9's "
-            "settle since playtest 41); {} such since the last line",
+            "report of {:x} into cell {:x} within the settle window of "
+            "its follow or pass dropped as a stale copy's sample (a "
+            "follower's report out of the cell it followed the actor "
+            "into, x-handoff-door 013234; the new host's back into the "
+            "cell the actor came from, D9's settle since playtest 41); {} "
+            "such since the last line",
             myActor->GetFormId(), moved->GetFormId(), destCell.value_or(0),
             count);
           since = now;

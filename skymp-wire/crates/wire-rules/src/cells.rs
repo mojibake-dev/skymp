@@ -30,12 +30,13 @@ pub const GRACE_MS: u64 = 5_000;
 /// b-npc-handoff's restart step sizes it.
 pub const COLD_START_MS: u64 = 5_000;
 
-/// How long after a follow through a door a report putting the actor back
-/// in the cell it left is refused as stale (x-handoff-door 20261024-013234:
-/// the host's report 133 ms after the follow said the exterior again and the
-/// record bounced out; a sample taken before the engine's transit, or
-/// reordered on the unreliable channel). A real return after the window
-/// passes as before. UNMEASURED placeholder.
+/// How long after a follow a follower's report moving the actor out of the
+/// cell it was followed into is dropped as a stale copy's sample, verdict
+/// Stale (x-handoff-door 20261024-013234: the host's report 133 ms after
+/// the follow through the door said the exterior again and the record
+/// bounced out; a sample taken before the engine's transit, or reordered on
+/// the unreliable channel; a refusal then, the same drop now). A real move
+/// after the window is judged as before. UNMEASURED placeholder.
 pub const FOLLOW_SETTLE_MS: u64 = 1_000;
 
 /// The longest window a server may set (`set_pass_settle_ms` clamps to it):

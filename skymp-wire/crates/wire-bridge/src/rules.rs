@@ -2018,7 +2018,9 @@ mod ffi {
         /// host (the word with player 0 at `prop_epoch_of`), 5 refused as a
         /// grab past its cap (returned, the word), 6 an asleep sample over
         /// the budget (the rest taken and returned, the position not, the
-        /// word); `cell_host` hosts the cell the RECORD stands in.
+        /// word), 7 taken over by the host from an owner that stopped
+        /// streaming (the word); `cell_host` hosts the cell the RECORD
+        /// stands in.
         fn prop_transform(self: &mut Props, facts: &PropSampleFacts) -> u8;
         /// The row's owner while the row is live, else 0: the word a late
         /// listener gets at its subscription (with the epoch, 0 names the
@@ -2034,6 +2036,10 @@ mod ffi {
         /// cells' hosts at a new epoch each; the core sends `PropOwner` with
         /// player 0 for every (refr, epoch) returned.
         fn props_gone(self: &mut Props, player: u32, now_ms: u64) -> Vec<PropReturn>;
+        /// The table's clock, once a second: every grab past its cap returns
+        /// to the host at a new epoch; the core sends `PropOwner` with
+        /// player 0 for every (refr, epoch) returned.
+        fn props_tick(self: &mut Props, now_ms: u64) -> Vec<PropReturn>;
         /// How recent the owner's last awake sample must be for a prop to
         /// count as moving (wire-rules props::PROP_MOVING_MS): a contact, a
         /// drop or an impulse from another seat is refused on it (claim
@@ -3153,6 +3159,7 @@ impl Props {
             props::TransformVerdict::Returned(_) => 4,
             props::TransformVerdict::Capped(_) => 5,
             props::TransformVerdict::RestRefused(_) => 6,
+            props::TransformVerdict::TakenOver(_) => 7,
         }
     }
 
@@ -3170,6 +3177,10 @@ impl Props {
 
     fn props_gone(&mut self, player: u32, now_ms: u64) -> Vec<PropReturn> {
         self.0.gone(player, now_ms).into_iter().map(|(refr, epoch)| PropReturn { refr, epoch }).collect()
+    }
+
+    fn props_tick(&mut self, now_ms: u64) -> Vec<PropReturn> {
+        self.0.tick(now_ms).into_iter().map(|(refr, epoch)| PropReturn { refr, epoch }).collect()
     }
 }
 

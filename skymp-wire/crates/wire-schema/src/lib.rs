@@ -58,6 +58,14 @@ use bounded::{String, Vec};
 /// 30: ObjectAnimation (thuum docs/verbs/traps.md, ADR-059 decision 3,
 /// m4-object-animation): a world object's animation event the cell's host
 /// reported, recorded as its lastAnimation and told to the cell's other games.
+/// 31 and 32: bumps of 2026-10-30 to 2026-11-02 whose notes were not
+/// written here (docs/LOG.md carries them).
+/// 33: PropOwner.player 0 names the cell's host by default (the return at
+/// rest, a departure, the cap, the takeover; thuum docs/verbs/prop-physics.md,
+/// ADR-063 decision 4, 2026-11-03): a semantic bump, no shape change; an
+/// older client would drop every player-0 word and keep its last owner. A
+/// word at the epoch already applied replaces it on the client (the answer
+/// to a refused claim or sample repeats the standing word).
 pub const SCHEMA_VERSION: u16 = 33;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so

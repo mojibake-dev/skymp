@@ -305,6 +305,11 @@ struct PartOne::Impl
   // the prop owner table (thuum docs/verbs/prop-physics.md, ADR-058): which
   // seat simulates each physics prop, the cell's host by default
   rust::Box<skymp::rules::Props> props = skymp::rules::new_props();
+  std::chrono::steady_clock::time_point lastPropsTick;
+  // the answers to refused prop claims and samples, by (user, prop): one
+  // word a second each at most (AnswerPropWord)
+  std::unordered_map<uint64_t, std::chrono::steady_clock::time_point>
+    propWordsAnswered;
   std::chrono::steady_clock::time_point lastCellsTick;
   using Square = std::tuple<uint32_t, int32_t, int32_t>;
   std::unordered_map<uint32_t, Square> lastSquareByPlayer;
@@ -400,6 +405,7 @@ void PartOne::Tick()
   TickBondsEverySecond();
   TickPlacementsOften();
   TickCellHostsEverySecond();
+  TickPropsEverySecond();
   TickFateRespawnsEverySecond();
   worldState.Tick();
 }
@@ -1367,7 +1373,10 @@ void PartOne::Init()
       if (const uint32_t epoch = PropEpochOf(*emitter); epoch != 0) {
         PropOwnerMessage word;
         word.refr = emitter->GetFormId();
-        word.player = PropLiveOwner(*emitter);
+        // the host's own live row is worded as the default (player 0), the
+        // word every other seat holds for it
+        const uint32_t live = PropLiveOwner(*emitter);
+        word.player = live != 0 && live == PropCellHost(*emitter) ? 0u : live;
         word.epoch = epoch;
         sendTarget->Send(listenerUserId, word, true);
       }
@@ -2255,6 +2264,25 @@ void PartOne::TickCellHostsEverySecond()
   SweepHeldSightings(SteadyNowMs());
 }
 
+// thuum docs/verbs/prop-physics.md (A2, ADR-063 decision 4): the one timer
+// the owner table keeps, the grab's cap, ends by a word whether or not the
+// holder ever samples again: every grab past PROP_GRAB_MAX_MS returns to its
+// cell's host at a new epoch and every listener hears it
+void PartOne::TickPropsEverySecond()
+{
+  const auto now = std::chrono::steady_clock::now();
+  if (now - pImpl->lastPropsTick < std::chrono::seconds(1)) {
+    return;
+  }
+  pImpl->lastPropsTick = now;
+  for (const auto& r : pImpl->props->props_tick(SteadyNowMs())) {
+    const auto told = SendPropOwnerWord(r.refr, 0, r.epoch);
+    spdlog::info("[verb:prop-physics] prop {:x} held past the grab's cap: "
+                 "the host's again at epoch {}; the word to {} listener(s)",
+                 r.refr, r.epoch, told);
+  }
+}
+
 void PartOne::TickDeaths(uint64_t nowMs)
 {
   if (worldState.pendingDeaths.empty()) {
@@ -2591,15 +2619,19 @@ uint32_t PartOne::PropLiveOwner(const MpObjectReference& prop) const
   return pImpl->props->prop_live_owner(prop.GetFormId(), SteadyNowMs());
 }
 
-uint32_t PartOne::PropOwnerOf(const MpObjectReference& prop) const
+uint32_t PartOne::PropCellHost(const MpObjectReference& prop) const
 {
   const auto cell = worldState.CellOf(prop);
-  uint32_t cellHost = 0;
-  if (cell) {
-    const auto host = pImpl->cells->host_of(*cell);
-    cellHost = host.hosted ? host.player : 0u;
+  if (!cell) {
+    return 0;
   }
-  return pImpl->props->prop_owner_of(prop.GetFormId(), cellHost,
+  const auto host = pImpl->cells->host_of(*cell);
+  return host.hosted ? host.player : 0u;
+}
+
+uint32_t PartOne::PropOwnerOf(const MpObjectReference& prop) const
+{
+  return pImpl->props->prop_owner_of(prop.GetFormId(), PropCellHost(prop),
                                      SteadyNowMs());
 }
 
@@ -2617,9 +2649,8 @@ void PartOne::AnswerPropWord(Networking::UserId user,
                              const MpObjectReference& prop)
 {
   // keyed by user and prop; pruned when it grows, so the map stays the size
-  // of the recent refusals and never outlives a test's PartOne by much
-  static std::unordered_map<uint64_t, std::chrono::steady_clock::time_point>
-    answered;
+  // of the recent refusals
+  auto& answered = pImpl->propWordsAnswered;
   const auto now = std::chrono::steady_clock::now();
   if (answered.size() > 1024) {
     for (auto it = answered.begin(); it != answered.end();) {

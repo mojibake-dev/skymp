@@ -5,6 +5,8 @@
 #include "TestUtils.hpp"
 #include "wire_bridge_cxx/rules.h"
 #include <catch2/catch_all.hpp>
+#include <chrono>
+#include <thread>
 
 PartOne& GetPartOne();
 
@@ -271,7 +273,8 @@ TEST_CASE("A claim by a player in the prop's cell is granted and the owner "
   REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
 
   // c2's body rests: the host's again at once, at epoch 2, both seats told
-  // with player 0 (the host by default)
+  // with player 0 (the host by default); the answer above cleared first
+  p.Messages().clear();
   Sample(p, 1, kBasket, kHere + NiPoint3{ 30.f, 0.f, 0.f }, true);
   REQUIRE(p.PropOwnerOf(w.prop) == kC1);
   REQUIRE(p.PropEpochOf(w.prop) == 2);
@@ -302,8 +305,8 @@ TEST_CASE("A claim by a player in the prop's cell is granted and the owner "
 }
 
 TEST_CASE("A claim on an unknown reference or on a grabbed prop is refused: "
-          "no word, the owner stands; a claim from outside the prop's cell is "
-          "granted (ADR-063 decision 4)",
+          "the claimant alone hears the current word, the owner stands; a "
+          "claim from outside the prop's cell is granted (ADR-063 decision 4)",
           "[Prop][espm]")
 {
   auto& p = GetPartOne();
@@ -494,6 +497,9 @@ TEST_CASE("A claim on a container is refused and one from beyond reach is "
   Player(p, 2, kC3, kHere + NiPoint3{ 80.f, 0.f, 0.f });
   const auto toC3 = SentTo<PropOwnerMessage>(p, 2);
   REQUIRE(toC3.size() == 1);
+  REQUIRE(toC3[0].refr == kBasket);
+  REQUIRE(toC3[0].player == kC2);
+  REQUIRE(toC3[0].epoch == p.PropEpochOf(w.prop));
   {
     Sample(p, 1, kBasket, near + NiPoint3{ 5.f, 0.f, 0.f }, true);
     const auto epochAtRest = p.PropEpochOf(w.prop);
@@ -507,11 +513,49 @@ TEST_CASE("A claim on a container is refused and one from beyond reach is "
     DoDisconnect(p, 3);
     p.DestroyActor(kC4);
   }
-  REQUIRE(toC3[0].refr == kBasket);
-  REQUIRE(toC3[0].player == kC2);
-  REQUIRE(toC3[0].epoch == p.PropEpochOf(w.prop));
 
   DoDisconnect(p, 2);
   p.DestroyActor(kC3);
+  Leave(p);
+}
+
+TEST_CASE("The host's sample of a prop whose owner stopped streaming takes it "
+          "over at a new epoch with the word (ADR-063 decision 4)",
+          "[Prop][espm]")
+{
+  auto& p = GetPartOne();
+  auto w = Enter(p);
+  // c2 kicks the basket and streams one sample, then falls silent (a final
+  // sample lost on the unreliable channel); inside PROP_MOVING_MS the
+  // host's sample is refused as any non-owner's
+  Claim(p, 1, kBasket, 0);
+  Sample(p, 1, kBasket, kHere + NiPoint3{ 20.f, 0.f, 0.f }, false);
+  REQUIRE(p.PropOwnerOf(w.prop) == kC2);
+  REQUIRE(p.PropEpochOf(w.prop) == 1);
+  Sample(p, 0, kBasket, kHere + NiPoint3{ 25.f, 0.f, 0.f }, false);
+  REQUIRE(p.PropOwnerOf(w.prop) == kC2);
+  REQUIRE(std::abs(w.prop.GetPos().x - (kHere.x + 20.f)) < 1.f);
+
+  // past the window the host's sample takes the row over: written, the
+  // epoch up, both seats told with player 0
+  std::this_thread::sleep_for(
+    std::chrono::milliseconds(skymp::rules::prop_moving_ms() + 100));
+  p.Messages().clear();
+  Sample(p, 0, kBasket, kHere + NiPoint3{ 30.f, 0.f, 0.f }, false);
+  REQUIRE(p.PropOwnerOf(w.prop) == kC1);
+  REQUIRE(p.PropEpochOf(w.prop) == 2);
+  REQUIRE(std::abs(w.prop.GetPos().x - (kHere.x + 30.f)) < 1.f);
+  const auto toC2 = SentTo<PropOwnerMessage>(p, 1);
+  REQUIRE(toC2.size() == 1);
+  REQUIRE(toC2[0].player == 0);
+  REQUIRE(toC2[0].epoch == 2);
+  // the silent seat's late sample is refused and answered with that word
+  p.Messages().clear();
+  Sample(p, 1, kBasket, kHere + NiPoint3{ 40.f, 0.f, 0.f }, false);
+  REQUIRE(std::abs(w.prop.GetPos().x - (kHere.x + 30.f)) < 1.f);
+  const auto answered = SentTo<PropOwnerMessage>(p, 1);
+  REQUIRE(answered.size() == 1);
+  REQUIRE(answered[0].player == kC1);
+  REQUIRE(answered[0].epoch == 2);
   Leave(p);
 }

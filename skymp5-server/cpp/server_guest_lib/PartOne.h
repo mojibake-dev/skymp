@@ -625,9 +625,10 @@ public:
   ClaimVerdict ClaimActor(MpActor& claimant, MpActor& actor);
   bool ReleaseClaim(MpActor& claimant, MpActor& actor);
   // thuum docs/verbs/prop-physics.md (ADR-058): one simulating seat per
-  // physics prop, the cell's host by default, the last toucher while its
-  // lease holds; the owner table's "prop" rows (wire-rules props). The
-  // handlers gather the facts (the reference, its cell, the claimant) and
+  // physics prop, the cell's host by default, the last toucher until its
+  // rest, its departure, the grab's cap or the host's takeover, each a word
+  // (ADR-063 decision 4); the owner table's "prop" rows (wire-rules props).
+  // The handlers gather the facts (the reference, its cell, the claimant) and
   // ask here; the word (PropOwner) is the claim handler's.
   enum class PropClaimVerdict
   {
@@ -655,7 +656,11 @@ public:
     Capped,
     // refused as over the step budget, but asleep: the rest is taken (the
     // host's again, the word), the position is not (the record stands)
-    RestRefused
+    RestRefused,
+    // taken: the host's sample of a prop whose owner stopped streaming (no
+    // accepted sample for PROP_MOVING_MS, awake, not held); the row is the
+    // host's at a new epoch and the word (player 0) goes out
+    TakenOver
   };
   // `sender`'s sample of `prop` landing in `cell` (0 for none), judged by
   // the host of `recordCell` (the cell the record stands in, read from the
@@ -668,11 +673,14 @@ public:
   // The prop's live row's owner, else 0: the word a listener arriving while a
   // seat simulates the prop gets at its subscription (onSubscribe).
   uint32_t PropLiveOwner(const MpObjectReference& prop) const;
+  // The host of the cell `prop`'s record stands in, else 0: the owner table's
+  // default owner, worded as player 0.
+  uint32_t PropCellHost(const MpObjectReference& prop) const;
   // Who simulates `prop` where its record stands: the toucher while awake or
   // held, else its cell's host, else 0.
   uint32_t PropOwnerOf(const MpObjectReference& prop) const;
-  // The prop's owner epoch, up at every word (a grant, a return); 0 before
-  // any.
+  // The prop's owner epoch, up at every word (a grant, a return, the cap, a
+  // takeover, a departure); 0 before any.
   uint32_t PropEpochOf(const MpObjectReference& prop) const;
   // `host` now hosts `cell` (ApplyHostDecisions' grant): the props in it
   // nobody holds live are the host's by default, their epochs kept.
@@ -867,6 +875,7 @@ private:
   void TickGameTime();
   void TickFightsEverySecond();
   void TickCellHostsEverySecond();
+  void TickPropsEverySecond();
   void TickFateRespawnsEverySecond();
   void TickBondsEverySecond();
   // thuum docs/verbs/spell-placed-object.md: the placements' clock from

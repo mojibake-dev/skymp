@@ -3841,11 +3841,14 @@ void ActionListener::OnLockReport(const RawMessageData& rawMsgData,
 // read); then the same bytes go to the prop's other listeners, unreliable
 // while awake and reliable at sleep (the record's final sample). The write
 // is the movement path's (OnUpdateMovement's SetPos and SetAngle): saved
-// from time to time while the body moves, at once when it rests. A toucher's
-// asleep sample returns the prop to the cell's host at once, and the word
-// (player 0) goes to every listener; a NotOwner refusal is answered with the
-// current word, once per prop per second per seat, so a divergent mirror
-// heals (ADR-063 decision 4). Refusals are logged once per 10 s per seat.
+// from time to time while the body moves, at once when it rests. Any owner's
+// asleep sample (the host's own included) returns the prop to the cell's
+// host at once with the word (player 0) to every listener; so do a grab past
+// its cap, a refused final sample (the rest taken, the position not) and the
+// host's takeover of an owner that stopped streaming; a NotOwner refusal is
+// answered with the current word, once per prop per second per seat, so a
+// divergent mirror heals (ADR-063 decision 4). Refusals are logged once per
+// 10 s per seat.
 void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
                                      const PropTransformMessage& msg)
 {
@@ -3977,6 +3980,22 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
                    "sample rests it where the record stands; the host's "
                    "again at epoch {}; the word to {} listener(s)",
                    prop->GetFormId(), myActor->GetFormId(), epoch, told);
+      break;
+    }
+    case PartOne::PropTransformVerdict::TakenOver: {
+      // the host's sample of a prop whose owner stopped streaming (no
+      // accepted sample for PROP_MOVING_MS, awake, not held: a final sample
+      // lost on the unreliable channel, a client that stopped): the host
+      // takes the row over at a new epoch and every listener hears it
+      // (player 0), so no prop is left that nobody may move (ADR-063
+      // decision 4: a change of owner is a word)
+      const auto sent = applyAndRelay();
+      const auto epoch = partOne.PropEpochOf(*prop);
+      const auto told = partOne.SendPropOwnerWord(prop->GetFormId(), 0, epoch);
+      spdlog::info("[verb:prop-physics] prop {:x}: its owner stopped "
+                   "streaming; the host {:x} takes it over at epoch {}; the "
+                   "sample relayed to {} listener(s), the word to {}",
+                   prop->GetFormId(), myActor->GetFormId(), epoch, sent, told);
       break;
     }
     case PartOne::PropTransformVerdict::WrongCell:

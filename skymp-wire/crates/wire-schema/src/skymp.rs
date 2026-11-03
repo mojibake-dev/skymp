@@ -1833,14 +1833,18 @@ wire_struct! {
 wire_struct! {
     /// MsgType 60, thuum's (docs/verbs/prop-physics.md, ADR-058 decision 1):
     /// who simulates a prop from now, to every listener of the prop at each
-    /// owner change: a grant, the return to the cell's host at the owner's
-    /// own asleep sample, a departure (ADR-063 decision 4: ownership changes
-    /// by this word alone, no seat infers it from a timer). Server to client,
-    /// reliable, R0 output: the named seat simulates (its body Dynamic, the
-    /// others' on the stream); player 0 names the cell's host by default,
-    /// whoever that is at the time; a word with an older epoch than one
-    /// already applied is dropped (a fencing token, one counter per prop).
-    /// Reason codes: `E_VAL_RANGE` (a refr of 0).
+    /// owner change: a grant; the return to the cell's host at any owner's
+    /// own asleep sample, the host's included; a grab past its cap; a refused
+    /// final sample (the rest taken, the position not); the host's takeover
+    /// of an owner that stopped streaming; a departure (ADR-063 decision 4:
+    /// ownership changes by this word alone, no seat infers it from a
+    /// timer). To one seat alone as the answer to its refused claim or
+    /// sample (the current owner and epoch). Server to client, reliable, R0
+    /// output: the named seat simulates (its body Dynamic, the others' on the
+    /// stream); player 0 names the cell's host by default, whoever that is
+    /// at the time; a word with an epoch below one already applied is
+    /// dropped and an equal one replaces (a fencing token, one counter per
+    /// prop). Reason codes: `E_VAL_RANGE` (a refr of 0).
     pub struct PropOwner {
         /// `"t": 60`.
         #[serde(default)]

@@ -247,13 +247,15 @@ export class PropService extends ClientListener {
         prop.restAt = sample.asleep ? now : 0;
     }
 
-    // The server's word on who simulates a prop from now; an epoch not above
-    // the known one is a late word (one counter per prop, the server's). The
-    // body's motion type follows on the update
+    // The server's word on who simulates a prop from now; an epoch below the
+    // known one is a late word (one counter per prop, the server's) and an
+    // equal one replaces (the answer to a refused claim or sample repeats the
+    // standing word, so a seat that applied it wrongly heals). The body's
+    // motion type follows on the update
     private onOwner(e: ConnectionMessage<PropOwnerMessage>) {
         const m = e.message;
         const known = this.owners.get(m.refr);
-        if (known && m.epoch <= known.epoch) {
+        if (known && m.epoch < known.epoch) {
             logTrace(this, `owner word for prop ${m.refr.toString(16)} at epoch ${m.epoch} ignored: epoch ${known.epoch} known`);
             return;
         }
@@ -586,7 +588,8 @@ export class PropService extends ClientListener {
         // first awake sample makes the body Keyframed (follow), and a body
         // nobody streams rests Dynamic (D73); except a prop this seat still
         // holds in its hand, which another seat now owns (a double grab lost,
-        // the server's word answering the refused claim): the hold ends here,
+        // the server's word answering the refused claim; the cap's word from
+        // the server's clock; the host's takeover): the hold ends here,
         // Keyframed, so no two hands move one prop (ADR-063 decision 3)
         if (!simulate && prop.held) {
             prop.held = false;

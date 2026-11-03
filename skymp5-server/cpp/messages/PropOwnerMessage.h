@@ -6,13 +6,15 @@
 
 // thuum docs/verbs/prop-physics.md (ADR-058 decision 1; ADR-063 decision 4):
 // who simulates a prop from now, to every listener of the prop at each owner
-// change: a grant, the return to the cell's host at the owner's own asleep
-// sample, a departure. Server to client, reliable, R0 output: the named
-// player's seat simulates (its body Dynamic), every other seat's follows the
-// stream; player 0 names the cell's host by default; a word with an epoch
-// below one already applied is dropped (a fencing token, one counter per
-// prop). The contract is skymp-wire's (wire-schema skymp.rs, PropOwner,
-// MsgType 60, wire id 68).
+// change: a grant, the return to the cell's host at any owner's own asleep
+// sample (the host's included), a grab past its cap, a refused final sample,
+// the host's takeover of an owner that stopped streaming, a departure; to one
+// seat alone as the answer to its refused claim or sample. Server to client,
+// reliable, R0 output: the named player's seat simulates (its body Dynamic),
+// every other seat's follows the stream; player 0 names the cell's host by
+// default; a word with an epoch below one already applied is dropped and an
+// equal one replaces (a fencing token, one counter per prop). The contract is
+// skymp-wire's (wire-schema skymp.rs, PropOwner, MsgType 60, wire id 68).
 struct PropOwnerMessage : public MessageBase<PropOwnerMessage>
 {
   static constexpr auto kMsgType =

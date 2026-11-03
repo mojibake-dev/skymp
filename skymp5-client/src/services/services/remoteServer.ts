@@ -27,7 +27,7 @@ import { nameof } from '../../lib/nameof';
 import { setActorValuePercentage } from '../../sync/actorvalues';
 import { applyAppearanceToPlayer } from '../../sync/appearance';
 import { applyEquipment, isBadMenuShown, applyPlayerHands, Equipment } from '../../sync/equipment';
-import { Inventory, Entry, applyInventory, ApplyInventoryReport, getInventory } from '../../sync/inventory';
+import { Inventory, applyInventory, ApplyInventoryReport } from '../../sync/inventory';
 import { ContainerApplyQueue } from '../../view/containerApplyQueue';
 import { Movement } from '../../sync/movement';
 import { syncSpells } from '../../sync/spell';
@@ -73,6 +73,8 @@ import { ActorJumpMessage } from '../messages/actorJumpMessage';
 import { UpdateAnimVariablesMessage } from '../messages/updateAnimVariablesMessage';
 import { UpdateActionMessage } from '../messages/updateActionMessage';
 import { MsgType } from '../../messages';
+import { applyLiveContainer } from '../../view/liveContainer';
+import { PlayerCharacterDataHolder } from '../../view/playerCharacterDataHolder';
 
 export const getPcInventory = (): Inventory | undefined => {
   const res = storage['pcInv'];
@@ -966,7 +968,6 @@ export class RemoteServer extends ClientListener {
   // second, long past the report that follows it on the same connection
   private readonly placedIdx = new Map<number, number>();
   // playtest 40's F8: one engine redraw per batch of live changes on an open chest
-  private readonly liveChestRedraw = new Map<number, ReturnType<typeof setTimeout>>();
   private onActorJumpMessage(event: ConnectionMessage<ActorJumpMessage>): void {
     this.placedIdx.set(event.message.idx, Date.now() + 1000);
   }
@@ -1050,90 +1051,22 @@ export class RemoteServer extends ClientListener {
           return;
         }
         if (msg.propName === 'inventory') {
-          // thuum playtest 41's item 7 (Eli: "changes are initially reflected,
-          // then they stop being reflected and prisoner cannot place items,
-          // they just become 'use' item instead"; 40's F8 the same): with the
-          // ContainerMenu open on a shared chest, each re-sent record (the
-          // other occupant's next store) re-added c1's view of an Iron War Axe
-          // that was already there (three addItemEx(b6fdc, 13790, 1) for one
-          // store, 23:18:43 to :49Z), while a garnet beside it was added once:
-          // the apply's diff against the engine's read matched the MISC and
-          // missed the WEAP (its extras, HYPOTHESIS: x-shared-chest-phantom
-          // reads which), so the chest filled with phantoms, a take of one was
-          // refused by the server and the views split. Under an open menu a
-          // container's record is applied by base counts: what the record
-          // holds of each base against what the engine holds, the shortfall
-          // added with the record's extras and the surplus removed, so a
-          // re-sent record changes nothing and a real change moves only the
-          // difference. The closed-menu path stays the full apply.
+          // thuum ADR-061 (playtest 41's item 7, 40's F8, 37's findings 29 and
+          // 30): a container's record under this seat's open ContainerMenu on
+          // it is the live container's apply (view/liveContainer.ts: the
+          // record by base counts, this seat's own echo drawing nothing,
+          // another occupant's change followed by the menu's reopen); a
+          // record for any other reference, or with no menu open, is the
+          // full apply as before. A game-file CONT has no view, so its
+          // records land here; a corpse's land in formView (its view)
           const base = refr.getBaseObject();
-          if (Ui.isMenuOpen('ContainerMenu') && base && base.getType() === FormType.Container) {
-            const applied = this.applyContainerByCounts(refr, msgData as Inventory);
-            logTrace(this, `live chest ${refrId.toString(16)}: the record applied by base counts under the open ContainerMenu (${applied.added} added, ${applied.removed} removed)`);
-            if (applied.added === 0 && applied.removed === 0) {
-              return;
-            }
+          const baseType = base ? base.getType() : -1;
+          const corpse = baseType === FormType.NPC && !!Actor.from(refr)?.isDead();
+          const underMyMenu = Ui.isMenuOpen('ContainerMenu') && PlayerCharacterDataHolder.getCrosshairRefId() === refrId;
+          if (underMyMenu && (baseType === FormType.Container || corpse)) {
+            applyLiveContainer(refr, refrId, msgData as Inventory, corpse);
           } else {
             ModelApplyUtils.applyModelInventory(refr, msgData as Inventory);
-          }
-          // thuum memo D52 B (playtest 37, 2026-10-28): this is the path a shared
-          // chest's re-sent inventory takes while this seat's ContainerMenu is
-          // open on it (c1's addItemEx on 36c37 within 0.4 s of c2's puts and
-          // take, 22:49Z); the engine does not redraw the menu from the apply,
-          // so the platform's refreshContainerMenu is asked (it checks the menu's
-          // own target; absent on an older dist). HYPOTHESIS until the chest
-          if (Ui.isMenuOpen('ContainerMenu')) {
-            const api = sp as unknown as Record<string, unknown>;
-            const refresh = api['refreshContainerMenu'];
-            // the setting chestRedraw: unset, the engine's in-place redraw (the
-            // apply lands under the paused menu and the platform posts the
-            // engine's inventory-update message, re-container-menu-refresh.md);
-            // "reopen", the flicker fallback below
-            const s = settings['skymp5-client'] as Record<string, unknown> | undefined;
-            const pick = s ? String(s['chestRedraw'] ?? 'inplace') : 'inplace';
-            if (pick === 'reopen') {
-              // the fallback (playtest 37, findings 29 and 30: the list's
-              // re-read showed nothing and took the store button): the engine
-              // draws a ContainerMenu whole at its open, so the menu is closed
-              // (the engine's kHide through the platform's CloseMenu, as the
-              // lab does) and the chest is activated again through the
-              // server's own flow: the closing activation leaves, the new one
-              // brings the inventory and the OpenContainer back. A flicker per
-              // change, TES3MP's live view at that cost
-              callNative('TESModPlatform', 'CloseMenu', undefined, 'ContainerMenu');
-              const me = localIdToRemoteId(0x14);
-              if (me) {
-                (async () => {
-                  await Utility.wait(0.4);
-                  this.controller.emitter.emit('sendMessage', {
-                    message: { t: MsgType.Activate, data: { caster: me, target: refrId, isSecondActivation: false } },
-                    reliability: 'reliable',
-                  });
-                })();
-              }
-              logTrace(this, `live chest ${refrId.toString(16)}: inventory applied under the open ContainerMenu, the menu closed and the chest asked again (reopen)`);
-            } else {
-              // thuum playtest 40's F8: a batch of server changes (a take and two
-              // puts within seconds) asked the engine's redraw for each, and the
-              // menu's selection ended on the player's pane, where the next press
-              // on a book ran EquipItem (the server read the stored book) instead
-              // of the transfer: one redraw per batch, 300 ms after its last
-              // change (HYPOTHESIS: playtest 38's repoint, fewer rebuilds)
-              const pending = this.liveChestRedraw.get(refrId);
-              if (pending !== undefined) {
-                clearTimeout(pending);
-              }
-              this.liveChestRedraw.set(refrId, setTimeout(() => {
-                this.liveChestRedraw.delete(refrId);
-                if (!Ui.isMenuOpen('ContainerMenu')) {
-                  return;
-                }
-                const askedLater = typeof refresh === 'function' ? !!(refresh as (id: number) => boolean)(refrId) : false;
-                logTrace(this, `live chest ${refrId.toString(16)}: the batch's redraw ${askedLater ? 'asked' : 'unavailable on this dist'}`);
-              }, 300));
-              const asked = typeof refresh === 'function';
-              logTrace(this, `live chest ${refrId.toString(16)}: inventory applied under the open ContainerMenu, the engine's redraw ${asked ? 'queued for the batch' : 'unavailable on this dist'}`);
-            }
           }
         } else if (msg.propName === 'isOpen') {
           ModelApplyUtils.applyModelIsOpen(refr, !!msgData);
@@ -1400,57 +1333,6 @@ export class RemoteServer extends ClientListener {
         logError(this, 'Failed to load object reference ' + refrId.toString(16), 'within', String(RemoteServer.PENDING_LOAD_MS), 'ms');
       }
     }
-  }
-
-  // the record's inventory onto a container by base counts (the item 7 path
-  // above): the engine's entries summed per base, the record's summed per
-  // base, the shortfall added through TESModPlatform.addItemEx with the
-  // record entry's extras (the first entry of that base), the surplus removed
-  private applyContainerByCounts(refr: sp.ObjectReference, inv: Inventory): { added: number; removed: number } {
-    const want = new Map<number, number>();
-    const sample = new Map<number, Entry>();
-    for (const e of inv.entries) {
-      want.set(e.baseId, (want.get(e.baseId) ?? 0) + e.count);
-      if (!sample.has(e.baseId)) {
-        sample.set(e.baseId, e);
-      }
-    }
-    const have = new Map<number, number>();
-    for (const e of getInventory(refr).entries) {
-      have.set(e.baseId, (have.get(e.baseId) ?? 0) + e.count);
-    }
-    let added = 0;
-    let removed = 0;
-    const bases = new Set<number>();
-    want.forEach((_, baseId) => bases.add(baseId));
-    have.forEach((_, baseId) => bases.add(baseId));
-    bases.forEach((baseId) => {
-      const delta = (want.get(baseId) ?? 0) - (have.get(baseId) ?? 0);
-      const form = Game.getFormEx(baseId);
-      if (!form || delta === 0) {
-        return;
-      }
-      if (delta > 0) {
-        const e = sample.get(baseId);
-        sp.TESModPlatform.addItemEx(
-          refr, form, delta,
-          e && e.health ? e.health : 1,
-          e && e.enchantmentId ? sp.Enchantment.from(Game.getFormEx(e.enchantmentId)) : null,
-          e && e.maxCharge ? e.maxCharge : 0,
-          !!(e && e.removeEnchantmentOnUnequip),
-          e && e.chargePercent ? e.chargePercent : 0,
-          e && e.name ? e.name : "",
-          e && e.soul ? e.soul : 0,
-          e && e.poisonId ? sp.Potion.from(Game.getFormEx(e.poisonId)) : null,
-          e && e.poisonCount ? e.poisonCount : 0,
-        );
-        added += delta;
-      } else {
-        refr.removeItem(form, -delta, true, null);
-        removed += -delta;
-      }
-    });
-    return { added, removed };
   }
 
   private skipFormViewCreation(

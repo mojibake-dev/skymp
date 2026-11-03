@@ -71,10 +71,11 @@ export class ScriptNativeService extends ClientListener {
         if (this.counts.size === 0) {
             return;
         }
-        // one row per line: the console log the lab reads cuts a line near
-        // 100 characters (x-script-natives v3, run 20261103-062800: every
-        // summary ended in "ObjectReference.Se..." and the rows past the cut,
-        // the relayed stage's "(platform)" key among them, never reached it)
+        // one row per line: printConsole cuts a line at 128 bytes
+        // (InGameConsolePrinter.cpp:26-30), so x-script-natives v3 (run
+        // 20261103-062800) lost every summary row past "ObjectReference.Se...",
+        // the relayed stage's "(platform)" key among them; the longest census
+        // line is about 85 characters, the total line 83
         const names = Array.from(this.counts.keys()).sort();
         let total = 0;
         for (const name of names) {

@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <unordered_map>
 
@@ -112,6 +113,12 @@ uint32_t g_inWindow = 0;
 constexpr uint64_t kFlushMs = 30'000;
 std::map<std::string, uint32_t> g_tally;
 uint64_t g_lastFlushMs = 0;
+// the selves a quest's, global's or alias's row names in one window: at most
+// kSelvesPerRow distinct ids per row ("Quest.Start on 30002859"), the rest
+// under "on others", so a census line per self never grows past the window's
+// bound (the review of 2026-11-03: unbounded selves were unbounded lines)
+constexpr size_t kSelvesPerRow = 8;
+std::map<std::string, std::set<uint32_t>> g_selves;
 
 uint64_t NowMs()
 {
@@ -170,6 +177,22 @@ uint32_t ReadFormId(void* formPtr) noexcept
   }
 }
 
+// an alias's quest's form id (BGSBaseAlias.h:76 owningQuest, then the form
+// id field; two plain reads, no virtual call), 0 on a fault or no quest
+uint32_t ReadAliasQuestId(void* aliasPtr) noexcept
+{
+  __try {
+    if (!aliasPtr) {
+      return 0u;
+    }
+    RE::TESQuest* quest =
+      reinterpret_cast<RE::BGSBaseAlias*>(aliasPtr)->owningQuest;
+    return quest ? quest->formID : 0u;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return 0u;
+  }
+}
+
 void Emit(const std::string& name, uint32_t selfId, uint32_t formArg,
           int32_t value, uint32_t cell, bool actor, uint32_t stackId,
           uint32_t count)
@@ -215,6 +238,7 @@ void FlushIfDue(uint64_t now)
                "row(s) flushed to the census",
                total, kFlushMs / 1000, g_tally.size());
   g_tally.clear();
+  g_selves.clear();
 }
 
 // under g_mutex: count one call under `key`
@@ -310,10 +334,19 @@ void OnNativeEnter(GumInvocationContext* ic)
       // the census says WHICH script calls (x-script-natives v3, run
       // 20261103-062800: "Quest.Start 40" per 30 s on every seat, the caller
       // unknown)
+      selfId = native.self == SelfKind::Alias ? ReadAliasQuestId(selfPtr)
+                                              : ReadFormId(selfPtr);
       std::lock_guard<std::mutex> lock(g_mutex);
+      const std::string name = NameOf(native);
+      auto& selves = g_selves[name];
       char row[96];
-      std::snprintf(row, sizeof row, "%s on %x", NameOf(native).c_str(),
-                    static_cast<unsigned>(selfId));
+      if (selves.count(selfId) != 0 || selves.size() < kSelvesPerRow) {
+        selves.insert(selfId);
+        std::snprintf(row, sizeof row, "%s on %x", name.c_str(),
+                      static_cast<unsigned>(selfId));
+      } else {
+        std::snprintf(row, sizeof row, "%s on others", name.c_str());
+      }
       Tally(std::string(row), now);
       return;
     }

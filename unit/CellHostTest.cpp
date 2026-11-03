@@ -312,15 +312,27 @@ TEST_CASE("The first loader in reach hosts the cell and alone moves its "
   REQUIRE(relays(0) == 0);
 
   // the cell-change rule: the wolf into the next cell east, which nobody
-  // hosts: dropped; once c1 has it loaded (and so hosts it), the same move
-  // passes, 4500 units in one report
+  // hosts and c1's game has not reported loaded. Before the follow's vouch
+  // (playtest 41's restart, 2026-11-03) the move was dropped; now the east
+  // square is within c1's reach (the server's own 3x3 around its player),
+  // so the host follows its wolf there, 4500 units in one report, and the
+  // follow is recorded; once c1 reports the cell loaded it hosts it and the
+  // follow ends, the next report passing as the host's own
   const auto east = p.worldState.CellOf(kTamriel, kEast);
   REQUIRE(east.has_value());
   REQUIRE(east != cell);
   Move(p, 0, kWolf, kEast);
-  REQUIRE(wolf.GetPos().x == Catch::Approx(kHere.x + 60.f));
+  REQUIRE(wolf.GetPos().x == Catch::Approx(kEast.x));
+  {
+    const auto follows = p.GetFollows();
+    REQUIRE(follows.size() == 1);
+    REQUIRE(follows[0].actor == kWolf);
+    REQUIRE(follows[0].player == kC1);
+    REQUIRE(follows[0].cell == *east);
+  }
   CellLoaded(p, 0, *east);
   REQUIRE(p.GetCellHost(*east).player == kC1);
+  REQUIRE(p.GetFollows().empty());
   Move(p, 0, kWolf, kEast);
   REQUIRE(wolf.GetPos().x == Catch::Approx(kEast.x));
   REQUIRE(p.worldState.CellOf(wolf) == east);

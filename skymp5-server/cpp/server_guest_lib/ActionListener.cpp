@@ -2899,6 +2899,7 @@ void ActionListener::OnActorValues(const RawMessageData& rawMsgData,
     // thuum docs/verbs/perks.md: the perks are the server's (R0) and ride no
     // report, so the merged record carries the ones held
     next.perks = record->perks;
+    next.perkPicks = record->perkPicks; // the picks ride no report either
     // thuum docs/verbs/leveling.md: with leveling on, the skills, the
     // experience and the level are the server's (R0); the report's numbers
     // for them are its echo at best and stay out of the record, so a pick's

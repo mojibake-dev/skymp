@@ -708,9 +708,13 @@ bool ParseNumber(const std::string& s, std::uint64_t& out)
   if (s.empty() || s[0] == '-') {
     return false;
   }
+  // decimal or 0x-prefixed hex only: strtoull's base 0 would read a leading
+  // zero as octal ("010" as 8) where the script's num() read 10
+  const int base =
+    (s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) ? 16 : 10;
   char* end = nullptr;
   errno = 0;
-  const unsigned long long v = std::strtoull(s.c_str(), &end, 0);
+  const unsigned long long v = std::strtoull(s.c_str(), &end, base);
   if (errno != 0 || end == s.c_str() || *end != '\0') {
     return false;
   }
@@ -809,11 +813,14 @@ std::string ParseRemap(std::string_view text, std::vector<RemapRow>& rows)
   return problems;
 }
 
+// at info for this slice (one call per corpse, about twenty rows): the seat
+// runs at info by default (main.cpp's LogLevel) and the first lab runs read
+// the premise rows from the log, the refusal line carrying the failed ones
 void LogChecks(const char* native, RE::FormID formId, const Premises& p)
 {
   for (const auto& c : p.checks) {
-    logger::debug("[verb:change-form] {} {:#x} check {}: {} {}", native,
-                  formId, c.name, c.value, c.ok ? "ok" : "FAILED");
+    logger::info("[verb:change-form] {} {:#x} check {}: {} {}", native, formId,
+                 c.name, c.value, c.ok ? "ok" : "FAILED");
   }
 }
 
@@ -902,7 +909,10 @@ void ChangeForm::InstallHooks()
                g_censusInstalled ? "installed" : "NOT installed");
 }
 
-std::string ChangeForm::Serialize(RE::TESObjectREFR* refr)
+namespace {
+
+// the body of Serialize; the public wrapper at the end catches what it throws
+std::string SerializeImpl(RE::TESObjectREFR* refr)
 {
   const auto t0 = std::chrono::steady_clock::now();
   const RE::FormID formId = refr ? refr->formID : 0;
@@ -937,6 +947,7 @@ std::string ChangeForm::Serialize(RE::TESObjectREFR* refr)
   census.rows.reserve(512); // an actor record carries about 180 ids
   nlohmann::json result = nlohmann::json::object();
   void* record = nullptr;
+  std::vector<std::uint8_t> recordBytes; // the pack's bytes, read back below
   std::string refusal;
   {
     CensusGuard guard(&census);
@@ -995,6 +1006,7 @@ std::string ChangeForm::Serialize(RE::TESObjectREFR* refr)
           result["plainFnv1a"] = plainFnv;
           result["deflated"] = false;
           result["bodyStart"] = h.bodyStart;
+          recordBytes.assign(rec, rec + h.total);
         }
       }
     }
@@ -1033,12 +1045,32 @@ std::string ChangeForm::Serialize(RE::TESObjectREFR* refr)
     if (row.kind != 0 || row.id == 0) {
       continue;
     }
+    // the read-back (H3): a varint placeholder patched after an id write
+    // grows by a byte and 36057 shifts the tail, so a row written between
+    // the placeholder and its patch carries an offset one short; the
+    // record's own bytes there must decode to kind 0 with the census's
+    // index, else the record would never land (the server's
+    // E_CHANGEFORM_REMAP or the receiver's check) with the owner none the
+    // wiser: refused here, the reason in the owner's log
+    const std::size_t at = bodyStart + row.offset;
+    const bool inRecord = at + 3 <= recordBytes.size();
+    const std::uint32_t back = inRecord
+      ? ((static_cast<std::uint32_t>(recordBytes[at] & 0x3f) << 16) |
+         (static_cast<std::uint32_t>(recordBytes[at + 1]) << 8) |
+         static_cast<std::uint32_t>(recordBytes[at + 2]))
+      : 0xffffffffu;
+    if (!inRecord || (recordBytes[at] >> 6) != 0 || back != row.value) {
+      return refuse(fmt::format(
+        "remap row {:#x} at record offset {} reads back kind {} index {}, "
+        "census said index {} (a varint patch shifted the tail, H3)",
+        row.id, at, inRecord ? recordBytes[at] >> 6 : 9, back, row.value));
+    }
     if (remap.size() >= kRemapCap) {
       truncated = true;
       continue;
     }
     nlohmann::json r = nlohmann::json::object();
-    r["offset"] = bodyStart + row.offset;
+    r["offset"] = at;
     r["formId"] = row.id;
     r["index"] = row.value;
     remap.push_back(r);
@@ -1077,13 +1109,13 @@ std::string ChangeForm::Serialize(RE::TESObjectREFR* refr)
     result["fnv1a"].get<std::uint32_t>(), result["flags"].get<std::uint32_t>(),
     result["kind"].get<std::uint32_t>(), remap.size(), census.rows.size(),
     byKind[0], byKind[2], p.thread, p.mainThread);
-  return result.dump();
+  return result.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 }
 
-std::string ChangeForm::Apply(RE::TESObjectREFR* refr,
-                              std::string_view bodyHex, std::uint32_t flags,
-                              std::uint32_t version,
-                              std::string_view remapRows)
+// the body of Apply; the public wrapper at the end catches what it throws
+std::string ApplyImpl(RE::TESObjectREFR* refr, std::string_view bodyHex,
+                      std::uint32_t flags, std::uint32_t version,
+                      std::string_view remapRows)
 {
   const auto t0 = std::chrono::steady_clock::now();
   const RE::FormID formId = refr ? refr->formID : 0;
@@ -1096,7 +1128,8 @@ std::string ChangeForm::Apply(RE::TESObjectREFR* refr,
     result["ms"] = std::chrono::duration_cast<std::chrono::milliseconds>(
                      std::chrono::steady_clock::now() - t0)
                      .count();
-    return result.dump();
+    return result.dump(-1, ' ', false,
+                       nlohmann::json::error_handler_t::replace);
   };
   auto refuse = [&](const std::string& step, const std::string& reason) {
     result["reason"] = "at " + step + ": " + reason;
@@ -1382,4 +1415,45 @@ std::string ChangeForm::Apply(RE::TESObjectREFR* refr,
     result["rootAfterFinish"].get<bool>(), p.lifeState,
     result["lifeStateAfter"].get<std::uint32_t>(), p.thread, p.mainThread);
   return finish();
+}
+
+} // namespace
+
+// The public natives: the bodies above under a catch. The dispatch between
+// callNative and TESModPlatform::Add has none (SkyrimPlatform.cpp's
+// RunInIOContext calls the function bare and StartWorker is a bare
+// ioContext.run()), so a throw out of a native lands in Add's catch with the
+// worker's completion never set and the JS pool thread waits forever in
+// PushToWorkerAndWait: a frozen seat. The realistic throws here are few
+// (nlohmann's dump on a non-UTF-8 byte in a refusal text, bad_alloc); a
+// throw inside the serialize's recipe window leaks the scratch buffer's data
+// and the packed record (no RAII holder yet), which beats the freeze.
+std::string ChangeForm::Serialize(RE::TESObjectREFR* refr)
+{
+  try {
+    return SerializeImpl(refr);
+  } catch (const std::exception& e) {
+    logger::error("[verb:change-form] SerializeChangeForm {:#x} threw: {}",
+                  refr ? refr->formID : 0u, e.what());
+    return std::string();
+  }
+}
+
+std::string ChangeForm::Apply(RE::TESObjectREFR* refr,
+                              std::string_view bodyHex, std::uint32_t flags,
+                              std::uint32_t version,
+                              std::string_view remapRows)
+{
+  try {
+    return ApplyImpl(refr, bodyHex, flags, version, remapRows);
+  } catch (const std::exception& e) {
+    logger::error("[verb:change-form] ApplyChangeForm {:#x} threw: {}",
+                  refr ? refr->formID : 0u, e.what());
+    nlohmann::json r = nlohmann::json::object();
+    r["applied"] = false;
+    r["reason"] = std::string("exception: ") + e.what();
+    r["fnvPatched"] = 0;
+    r["formId"] = refr ? refr->formID : 0u;
+    return r.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+  }
 }

@@ -55,7 +55,9 @@ void InstallHooks();
 //     type1, type2, type3, nulls, headerKind, dropped}, entryUntouched,
 //     thread, mainThread, onMainThread, ms }
 // or "" (JS null) when a premise refused, the reason in skyrim-platform.log
-// as `[verb:change-form] SerializeChangeForm refused`.
+// as `[verb:change-form] SerializeChangeForm refused`, or when the body
+// threw (logged as `SerializeChangeForm ... threw`; a throw never leaves the
+// native: past TESModPlatform::Add it would freeze the seat).
 std::string Serialize(RE::TESObjectREFR* refr);
 
 // ApplyChangeForm(refr, bodyHex, flags, version, remapRows): a served record
@@ -82,6 +84,7 @@ std::string Serialize(RE::TESObjectREFR* refr);
 //     entryAfterApply, pendingAfterApply, pendingAfterFinish, rootBefore,
 //     rootAfterApply, rootAfterFinish, lifeStateBefore, lifeStateAfter,
 //     thread, mainThread, onMainThread, ms }.
+// A throw inside the body answers { applied false, reason "exception: ..." }.
 std::string Apply(RE::TESObjectREFR* refr, std::string_view bodyHex,
                   std::uint32_t flags, std::uint32_t version,
                   std::string_view remapRows);

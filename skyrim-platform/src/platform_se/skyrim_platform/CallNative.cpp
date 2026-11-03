@@ -502,14 +502,13 @@ CallNative::AnySafe CallNative::CallNativeSafe(Arguments& args_)
         cb(env, VariableToAnySafe(result, funcReturnType));
       });
     };
-    {
-      // the platform's own latent call, marked for the script hooks while
-      // the VM dispatches it (ScriptNatives.cpp; thuum ADR-062 decision 2;
-      // HYPOTHESIS: a latent native's body runs inside the dispatch)
-      PlatformCall::Scope platformCall;
-      VmCall::Run(*vmImpl, fsClassName, fsClassFunc, &selfScriptObject,
-                  vmFuncArgs, onResult, nullptr);
-    }
+    // the platform's own latent call, noted by (row, self) for the script
+    // hooks: the VM only enqueues it and runs the body later on its own
+    // thread under a new stack id, so the entry hook takes the note by the
+    // self it sees (ScriptNatives.cpp; thuum ADR-062 decision 2)
+    PlatformCall::NoteLatent(className.data(), classFunc.data(), rawSelf);
+    VmCall::Run(*vmImpl, fsClassName, fsClassFunc, &selfScriptObject,
+                vmFuncArgs, onResult, nullptr);
     return ObjectPtr();
   }
 

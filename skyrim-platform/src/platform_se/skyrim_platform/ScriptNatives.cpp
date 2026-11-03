@@ -96,6 +96,8 @@ std::array<bool, kNatives.size()> g_bad{};
 // how many calls of each row were probed so far
 std::array<uint32_t, kNatives.size()> g_probed{};
 constexpr uint32_t kProbeCalls = 3;
+// each row's lower-case key for the latent notes (PlatformCall::TakeLatent)
+std::array<std::string, kNatives.size()> g_lowerKeys{};
 // the budget of per-call events crossing into JS: at most kBudget a second
 // (rule 9), the rest tallied; a kill row is never dropped (the death
 // report's evidence)
@@ -125,7 +127,9 @@ std::string NameOf(const Native& n)
 
 // MSVC SEH: no object with a destructor lives in this function. Reads the
 // self as a form of the row's kind; false on a fault or another kind (the
-// convention HYPOTHESIS failing for this row)
+// convention HYPOTHESIS failing for this row). A reference of any placed
+// kind passes (REFR, ACHR, the placed missiles, arrows, beams, flames,
+// cones, barriers and hazards: TESForm::AsReference answers for them all)
 bool ProbeSelf(void* selfPtr, int kind) noexcept
 {
   __try {
@@ -138,14 +142,24 @@ bool ProbeSelf(void* selfPtr, int kind) noexcept
       return quest->GetFormType() == RE::FormType::Quest;
     }
     auto* form = reinterpret_cast<RE::TESForm*>(selfPtr);
-    const auto type = form->GetFormType();
     if (kind == 0) {
-      return type == RE::FormType::Reference ||
-        type == RE::FormType::ActorCharacter;
+      return form->AsReference() != nullptr;
     }
+    const auto type = form->GetFormType();
     return type == RE::FormType::Quest || type == RE::FormType::Global;
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     return false;
+  }
+}
+
+// the form id behind a form argument, 0 on a fault (the argument's slot is
+// the convention's HYPOTHESIS too; MSVC SEH, no destructors here)
+uint32_t ReadFormId(void* formPtr) noexcept
+{
+  __try {
+    return formPtr ? reinterpret_cast<RE::TESForm*>(formPtr)->formID : 0u;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return 0u;
   }
 }
 
@@ -169,11 +183,11 @@ void Emit(const std::string& name, uint32_t selfId, uint32_t formArg,
   });
 }
 
-// under g_mutex: count one call under `key`, and flush every tally as one
-// event per key once the window has passed
-void Tally(const std::string& key, uint64_t now)
+// under g_mutex: flush every tally as one event per key once the window
+// has passed (called at every tally and from the update's Tick, so a quiet
+// seat emits its last window too)
+void FlushIfDue(uint64_t now)
 {
-  ++g_tally[key];
   if (g_lastFlushMs == 0) {
     g_lastFlushMs = now;
     return;
@@ -182,6 +196,9 @@ void Tally(const std::string& key, uint64_t now)
     return;
   }
   g_lastFlushMs = now;
+  if (g_tally.empty()) {
+    return;
+  }
   uint32_t total = 0;
   for (const auto& [name, count] : g_tally) {
     total += count;
@@ -191,6 +208,13 @@ void Tally(const std::string& key, uint64_t now)
                "row(s) flushed to the census",
                total, kFlushMs / 1000, g_tally.size());
   g_tally.clear();
+}
+
+// under g_mutex: count one call under `key`
+void Tally(const std::string& key, uint64_t now)
+{
+  ++g_tally[key];
+  FlushIfDue(now);
 }
 
 void OnNativeEnter(GumInvocationContext* ic)
@@ -221,6 +245,13 @@ void OnNativeEnter(GumInvocationContext* ic)
   }
   auto* selfPtr = gum_invocation_context_get_nth_argument(ic, 2);
   if (!selfPtr) {
+    return;
+  }
+  // the platform's own latent call, noted by (row, self) before its dispatch
+  // (CallNative.cpp): the same self pointer the native receives
+  if (PlatformCall::TakeLatent(g_lowerKeys[idx], selfPtr)) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    Tally(NameOf(native) + " (platform)", now);
     return;
   }
   {
@@ -275,11 +306,8 @@ void OnNativeEnter(GumInvocationContext* ic)
   }
   uint32_t formArg = 0;
   if (native.formArg >= 0) {
-    auto* f = reinterpret_cast<RE::TESForm*>(
+    formArg = ReadFormId(
       gum_invocation_context_get_nth_argument(ic, 3 + native.formArg));
-    if (f) {
-      formArg = f->formID;
-    }
   }
   int32_t value = 0;
   if (native.numberArg >= 0) {
@@ -311,9 +339,19 @@ void OnNativeLeave(GumInvocationContext*)
 
 void ScriptNatives::Register()
 {
+  for (size_t idx = 0; idx < kNatives.size(); ++idx) {
+    g_lowerKeys[idx] =
+      PlatformCall::LatentKey(kNatives[idx].cls, kNatives[idx].name);
+  }
   Frida::HookHandler::GetSingleton()->Register(
     Frida::HookID::HOOK_SCRIPT_NATIVE,
     std::make_shared<Frida::Hook>(OnNativeEnter, OnNativeLeave));
+}
+
+void ScriptNatives::Tick()
+{
+  std::lock_guard<std::mutex> lock(g_mutex);
+  FlushIfDue(NowMs());
 }
 
 void ScriptNatives::InstallHooks()

@@ -15,4 +15,7 @@ namespace ScriptNatives {
 void Register();
 // at kDataLoaded: each native's entry attached (Hooks::GetBoundNatives)
 void InstallHooks();
+// every frame from the platform's OnUpdate: the census flushed on time (a
+// quiet seat emits its last window; the review's medium finding)
+void Tick();
 }

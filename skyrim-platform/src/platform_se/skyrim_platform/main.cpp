@@ -120,6 +120,7 @@ void UpdateDumpFunctions()
 void OnUpdate(IVM* vm, StackID stackId)
 {
   UpdateDumpFunctions();
+  ScriptNatives::Tick();
 
   g_nativeCallRequirements.stackId = stackId;
   g_nativeCallRequirements.vm = vm;

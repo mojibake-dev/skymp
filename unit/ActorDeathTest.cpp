@@ -754,3 +754,43 @@ TEST_CASE("A host's report of a script's kill (cause 3) is taken as the "
   Leave(p, 1, kOther);
   Leave(p, 0, kHost);
 }
+
+// thuum docs/DECISIONS.md ADR-062 decision 2 and ADR-063 decision 4 (slice
+// 1b's review, finding 7): the engine's essential rule is a check on the
+// owner's engine, not on consistency (KillEssential clears the flag and
+// kills; the server's base still reads essential), so a host-run script's
+// kill (cause 3) passes MayDie where an actor's hit (cause 4) is refused
+TEST_CASE("A host's report of a script's kill on an essential base is taken "
+          "where an actor's hit on it is refused as immortal",
+          "[ActorDeath][espm]")
+{
+  // Delphine 0x13485 in the Sleeping Giant 0x133c6 (lab/esm.py refs-of
+  // 0x13478: her base's ACBS flags carry Essential); the host stands inside
+  // the inn so its loaded report is granted the interior
+  constexpr uint32_t kInn = 0x133c6;
+  constexpr uint32_t kDelphine = 0x13485;
+  const NiPoint3 kInside{ -250.f, -360.f, 0.f };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  p.worldState.npcDeathReports = true;
+  DoConnect(p, 0);
+  p.CreateActor(kHost, kInside, 0, kInn);
+  p.SetUserActor(0, kHost);
+  p.TickCellHosts(NowMs());
+  auto& host = p.worldState.GetFormAt<MpActor>(kHost);
+  auto& actor = Standing(p, kDelphine);
+  Host(p, 0, kInn);
+  REQUIRE(p.worldState.HostOf(actor) == &host);
+  REQUIRE_FALSE(actor.MayDie(nullptr));
+
+  // an actor's hit on her: the engine's rule, refused
+  Report(p, 0, kDelphine, 4, kHost, actor.GetPos());
+  REQUIRE_FALSE(actor.IsDead());
+
+  // a script's kill on her: the host's word, taken
+  Report(p, 0, kDelphine, 3, 0, actor.GetPos());
+  REQUIRE(actor.IsDead());
+
+  StandUp(p, actor);
+  Leave(p, 0, kHost);
+}

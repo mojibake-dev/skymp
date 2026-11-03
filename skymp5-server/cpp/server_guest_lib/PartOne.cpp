@@ -2046,23 +2046,36 @@ void PartOne::OnActorSighting(MpActor& reporter, uint32_t refrId,
   // native the client uses for a player's own cross-cell move
   // (TESModPlatform's moveRefrToPosition, the call formView's gate makes when
   // a view exists). Playtest 37's finding 38 ("we have 2 embrys") first met
-  // this orphan and sent ObjectReference.Disable; playtest 40's F2 (Hilde's
-  // ghost) and 42's F1 (c2's Embry solid at the inn's porch while the record
-  // sat inside under c1, Hod walking into it) both showed the Disable never
-  // held a puppet-flagged copy (the roster kept sighting the porch copy
-  // every 10 s after each hide). A copy moved into an interior this game has
-  // not loaded loses its 3D and its collision here and stands at the record
-  // when that game walks in. The record's cell-or-world form goes typed as
-  // both the Cell and the WorldSpace argument: the client's deserializer
-  // casts and yields null for the one that does not fit, so no null travels
-  // (a null argument would fault its deserializer). Once a minute per
-  // sighter and actor. HYPOTHESIS until the lab: a move into a cell the
-  // mover has not loaded lands for an NPC copy (the player's own teleport
-  // takes this path).
+  // this orphan and sent ObjectReference.Disable; playtest 42's F1 (c2's
+  // Embry solid at the inn's porch while the record sat inside under c1, Hod
+  // walking into it) showed the Disable never REACHED the copy: its selfId
+  // went through MakeLongFormId's actor branch and the client resolves a
+  // long id through a view this game no longer had (runMethod threw "Unable
+  // to find form with id 0"), so the roster kept sighting the porch copy
+  // every 10 s after each hide. Playtest 40's F2 (Hilde's ghost) is the
+  // other shape: D11's release after a move indoors walking a copy back out.
+  // The copy now travels as an ARGUMENT with its raw id and selfId 0 (a
+  // static call), which the client maps to itself. A copy moved into an
+  // interior this game has not loaded loses its 3D and its collision here and
+  // stands at the record when that game walks in. The record's cell-or-world
+  // form goes typed as both the Cell and the WorldSpace argument: the
+  // client's deserializer casts and yields null for the one that does not
+  // fit, so no null travels (a null argument would fault its deserializer).
+  // Once a minute per sighter and actor. The move itself is npc-handoff's H5
+  // (CONFIRMED at T3 for an engine reference moved into an unloaded interior
+  // through this native). HYPOTHESIS until the lab: a copy with no view and
+  // the puppet flag lands the same; and, after D11's release 4 s later, the
+  // copy's own schedule may walk it off the record (Hod's porch record while
+  // nobody hosts the street), the minute's cadence then showing as a pop.
   static std::unordered_map<uint64_t, std::chrono::steady_clock::time_point>
     moved;
   const auto tellToMoveToRecord = [&](MpActor& actor, uint32_t recordCell,
                                       const char* hostedBy) {
+    // a body is never moved (D78 C): a dead record's copy is npc-fate's,
+    // killed where it stands when its view arrives
+    if (actor.IsDead()) {
+      return;
+    }
     const uint64_t key =
       (static_cast<uint64_t>(reporter.GetFormId()) << 32) | refrId;
     const auto now = std::chrono::steady_clock::now();
@@ -2098,13 +2111,14 @@ void PartOne::OnActorSighting(MpActor& reporter, uint32_t refrId,
                 static_cast<double>(recordRot.z * kDegToRad) };
     SpSnippet("TESModPlatform", "moveRefrToPosition", toRecord, 0)
       .Execute(&reporter, SpSnippetMode::kNoReturnResult);
-    spdlog::info("PartOne - npc-puppet: {:x}'s own copy of {:x} told to move "
-                 "to the record at ({:.0f}, {:.0f}, {:.0f}) in {:x} (the "
-                 "record's cell {:x} is {}; the copy stood at ({:.0f}, {:.0f}, "
-                 "{:.0f}) in {:x} here)",
-                 reporter.GetFormId(), refrId, recordPos.x, recordPos.y,
-                 recordPos.z, recordCellOrWorld, recordCell, hostedBy, pos.x,
-                 pos.y, pos.z, worldOrCell);
+    spdlog::info(
+      "PartOne - npc-puppet: {:x}'s own copy of {:x} told to move "
+      "to the record at ({:.0f}, {:.0f}, {:.0f}) in {:x} (the "
+      "record's cell {:x} is {}; the copy stood at ({:.0f}, {:.0f}, "
+      "{:.0f}) in {:x} here)",
+      reporter.GetFormId(), refrId, recordPos.x, recordPos.y, recordPos.z,
+      recordCellOrWorld, recordCell, hostedBy, pos.x, pos.y, pos.z,
+      worldOrCell);
   };
   // a game-file actor alone (the validator's bound too); a player's actor
   // never
@@ -2126,14 +2140,23 @@ void PartOne::OnActorSighting(MpActor& reporter, uint32_t refrId,
       // c2's demote and sighted him inside c1's inn while the record stayed
       // at the porch outside; the copy follows the record, never the record
       // the copy
-      const auto& sightedForm = worldState.LookupFormById(refrId, nullptr, true);
+      // a record the server holds already; an actor with no record is its
+      // host's roster's to create (the loader's disabled filters yield to the
+      // host's engine alone, rule 5)
+      const auto& sightedForm = worldState.LookupFormByIdNoLoad(refrId);
       MpActor* sighted = sightedForm ? sightedForm->AsActor() : nullptr;
-      if (sighted && serverState.UserByActor(sighted) == Networking::InvalidUserId) {
+      if (sighted &&
+          serverState.UserByActor(sighted) == Networking::InvalidUserId) {
         const auto recordCell = worldState.CellOf(*sighted);
         if (recordCell && *recordCell != *cell) {
           const MpActor* recordHost = worldState.HostOf(*sighted);
-          tellToMoveToRecord(*sighted, *recordCell,
-                             recordHost ? "another game's" : "nobody's, frozen at the record");
+          // never the record's own host: its engine is the truth (branch (a)'s
+          // rule and the view's gate's, formView)
+          if (recordHost != &reporter) {
+            tellToMoveToRecord(*sighted, *recordCell,
+                               recordHost ? "another game's"
+                                          : "nobody's, frozen at the record");
+          }
         }
       }
     }

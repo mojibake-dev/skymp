@@ -757,9 +757,18 @@ TEST_CASE("A hosted actor crossing into another live host's cell passes to "
   Move(p, 1, kWolf, kDeep + NiPoint3{ 100.f, 0.f, 0.f });
   REQUIRE(std::abs(wolf.GetPos().x - (kDeep.x + 100.f)) < 1.f);
 
-  // and back across, the margin deep on the other side: passed to c1 the
-  // same way
+  // the new host's copy still on the far side (D9's settle, playtest 41):
+  // its report back across within the settle window is a stale copy's
+  // sample, dropped; the wolf stays in c2's square under c2
   const NiPoint3 kBack{ 11900.f, 500.f, 0.f };
+  Move(p, 1, kWolf, kBack);
+  REQUIRE(p.worldState.CellOf(wolf) != here);
+  REQUIRE(p.SimulatorOf(wolf) == kC2);
+  std::this_thread::sleep_for(
+    std::chrono::milliseconds(skymp::rules::pass_settle_ms() + 100));
+
+  // and back across after the window, the margin deep on the other side:
+  // passed to c1 the same way
   Move(p, 1, kWolf, kBack);
   REQUIRE(p.worldState.CellOf(wolf) == here);
   REQUIRE(p.SimulatorOf(wolf) == kC1);

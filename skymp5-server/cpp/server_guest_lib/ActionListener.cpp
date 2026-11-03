@@ -3942,6 +3942,143 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
   }
 }
 
+void ActionListener::OnChangeForm(const RawMessageData& rawMsgData,
+                                  const ChangeFormMessage& msg)
+{
+  MpActor* sender = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!sender) {
+    spdlog::warn("ActionListener::OnChangeForm - user {} has no actor; its "
+                 "record for {:x} ignored",
+                 rawMsgData.userId, msg.formId);
+    return;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  // one warn line a minute per sender and form, the rest counted
+  // (OnActorDeath's shape): a host reports a record at most once a frame per
+  // actor, and a wrong premise would repeat it at every change
+  const auto refuse = [&](const char* code, const std::string& why) {
+    static std::map<std::pair<uint32_t, uint32_t>,
+                    std::pair<std::chrono::steady_clock::time_point, uint32_t>>
+      refusals;
+    auto& [since, count] = refusals[{ sender->GetFormId(), msg.formId }];
+    ++count;
+    partOne.serverState.CountStream(rawMsgData.userId,
+                                    static_cast<uint8_t>(MsgType::ChangeForm),
+                                    false, true);
+    if (since.time_since_epoch().count() != 0 &&
+        now - since < std::chrono::minutes(1)) {
+      return;
+    }
+    spdlog::warn("[verb:change-form] {}: {:x} reports {:x} (type {}, flags "
+                 "{:#x}, {} bytes, fnv {:08x}, epoch {}): {}; refused, {} "
+                 "since the last line",
+                 code, sender->GetFormId(), msg.formId, msg.formType,
+                 msg.flags, msg.body.size() / 2, msg.fnv1a, msg.epoch, why,
+                 count);
+    since = now;
+    count = 0;
+  };
+  // the wire refused these shapes already (wire-validate check_change_form);
+  // the core keeps the two it stores by, so a record it holds is never a
+  // player's or empty
+  if (msg.formId == 0 || msg.formId >= 0xff000000) {
+    refuse("E_CHANGEFORM_RANGE",
+           "a form id of 0 or a player's: a change form names a game-file "
+           "actor alone");
+    return;
+  }
+  if (msg.body.size() < 8 || msg.body.size() % 2 != 0) {
+    refuse("E_CHANGEFORM_SIZE", "a body too short for any record header");
+    return;
+  }
+  // no load: an actor the server never held is nobody's to report
+  auto& form = partOne.worldState.LookupFormByIdNoLoad(msg.formId);
+  MpActor* actor = form ? form->AsActor() : nullptr;
+  if (!actor) {
+    refuse("E_CHANGEFORM_RANGE", "the server holds no such actor");
+    return;
+  }
+  const auto cell = partOne.worldState.CellOf(*actor);
+  if (!cell) {
+    refuse("E_CHANGEFORM_OWNER", "the actor's cell is unknown to the server");
+    return;
+  }
+  const auto host = partOne.GetCellHost(*cell);
+  if (!host.hosted || host.player != sender->GetFormId()) {
+    refuse("E_CHANGEFORM_OWNER",
+           host.hosted ? fmt::format("{:x} hosts cell {:x}, not the reporter",
+                                     host.player, *cell)
+                       : fmt::format("nobody hosts cell {:x}", *cell));
+    return;
+  }
+  if (msg.epoch != host.epoch) {
+    refuse("E_CHANGEFORM_EPOCH",
+           fmt::format("cell {:x} stands at epoch {}, the report names {}",
+                       *cell, host.epoch, msg.epoch));
+    return;
+  }
+
+  ChangeFormRecord record;
+  record.epoch = msg.epoch;
+  record.flags = msg.flags;
+  record.version = static_cast<uint8_t>(msg.version);
+  record.formType = static_cast<uint8_t>(msg.formType);
+  record.bodyHex = msg.body;
+  record.fnv1a = msg.fnv1a;
+  record.remap = msg.remap;
+  record.sender = sender->GetFormId();
+  record.atMs = static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch())
+      .count());
+  actor->SetChangeFormRecord(std::move(record));
+  partOne.serverState.CountStream(
+    rawMsgData.userId, static_cast<uint8_t>(MsgType::ChangeForm), true);
+
+  // the receipt to the owner: its compare baseline (amendment A)
+  ChangeFormAckMessage ack;
+  ack.formId = msg.formId;
+  ack.fnv1a = msg.fnv1a;
+  sender->SendToUser(ack, true);
+
+  // the record at once to every other game listening to the actor (the
+  // watcher present at the death); a seat that subscribes or loads the cell
+  // later hears it with the create word or at the load (PartOne)
+  size_t served = 0;
+  for (MpActor* listener : actor->GetActorListeners()) {
+    if (listener == sender ||
+        partOne.serverState.UserByActor(listener) ==
+          Networking::InvalidUserId) {
+      continue;
+    }
+    actor->SendChangeFormRecordTo(*listener);
+    ++served;
+  }
+  // one info line a minute per form with the count, the rest at debug: a
+  // moving actor's host reports at every changed frame
+  static std::unordered_map<
+    uint32_t, std::pair<std::chrono::steady_clock::time_point, uint32_t>>
+    accepted;
+  auto& [since, count] = accepted[msg.formId];
+  ++count;
+  if (since.time_since_epoch().count() == 0 ||
+      now - since >= std::chrono::minutes(1)) {
+    spdlog::info("[verb:change-form] recorded {:x} from {:x}: type {}, flags "
+                 "{:#x}, {} bytes, fnv {:08x}, {} remap row(s), epoch {}, "
+                 "served to {} listener(s); {} record(s) since the last line",
+                 msg.formId, sender->GetFormId(), msg.formType, msg.flags,
+                 msg.body.size() / 2, msg.fnv1a, msg.remap.size(), msg.epoch,
+                 served, count);
+    since = now;
+    count = 0;
+  } else {
+    spdlog::debug("[verb:change-form] recorded {:x} from {:x}: flags {:#x}, "
+                  "{} bytes, fnv {:08x}, served to {}",
+                  msg.formId, sender->GetFormId(), msg.flags,
+                  msg.body.size() / 2, msg.fnv1a, served);
+  }
+}
+
 void ActionListener::OnCellLoaded(const RawMessageData& rawMsgData,
                                   const CellLoadedMessage& msg)
 {

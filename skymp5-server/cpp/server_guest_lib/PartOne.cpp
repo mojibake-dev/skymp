@@ -1361,6 +1361,16 @@ void PartOne::Init()
 
     sendTarget->Send(listenerUserId, message, true);
 
+    // thuum docs/verbs/change-form.md (ADR-065 system 1): the actor's
+    // recorded change form rides behind its create word on the same ordered
+    // channel, so the seat applies it before the actor's first frame there
+    if (emitterAsActor && !isMe) {
+      ChangeFormApplyMessage apply;
+      if (emitterAsActor->BuildChangeFormApply(apply)) {
+        sendTarget->Send(listenerUserId, apply, true);
+      }
+    }
+
     // thuum docs/verbs/prop-physics.md (ADR-058): a listener arriving while
     // a seat simulates this prop hears who, after the create word, so it
     // neither simulates the prop as the host's default nor drops the stream
@@ -1988,6 +1998,33 @@ void PartOne::SendFates(MpActor& player, uint32_t cellOrWorld,
 void PartOne::OnCellLoaded(MpActor& player, uint32_t cell, bool loaded)
 {
   RefreshReach(player);
+  // thuum docs/verbs/change-form.md (ADR-065 system 1): the cell's actors
+  // with a record are served again at the load, so a seat whose engine
+  // attached the cell applies each record before the actor's first frame
+  // there (the create word's copy may predate the record, or the engine's
+  // 5x5 may run ahead of the server's 3x3); the receiver's hash compare
+  // makes a repeat free
+  if (loaded) {
+    size_t served = 0;
+    for (MpObjectReference* emitter : player.GetEmitters()) {
+      MpActor* actor = emitter ? emitter->AsActor() : nullptr;
+      if (!actor || actor == &player ||
+          serverState.UserByActor(actor) != Networking::InvalidUserId ||
+          worldState.CellOf(*actor) != cell) {
+        continue;
+      }
+      ChangeFormApplyMessage apply;
+      if (actor->BuildChangeFormApply(apply)) {
+        player.SendToUser(apply, true);
+        ++served;
+      }
+    }
+    if (served > 0) {
+      spdlog::info("[verb:change-form] cell {:x} loaded by {:x}: {} record(s) "
+                   "served",
+                   cell, player.GetFormId(), served);
+    }
+  }
   const auto nowMs = SteadyNowMs();
   ApplyHostDecisions(
     *this,

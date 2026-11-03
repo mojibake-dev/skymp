@@ -551,6 +551,30 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
                                   { "broken", changeForm.lock->broken } };
   }
 
+  // thuum docs/verbs/change-form.md (ADR-065): the owner's latest change
+  // form, its body the sender's hex as received, its rows raw
+  // (ChangeFormRecord.h says why); absent in older records and on actors
+  // nobody reported, read as none
+  if (changeForm.changeFormRecord.has_value()) {
+    const auto& record = *changeForm.changeFormRecord;
+    auto rows = nlohmann::json::array();
+    for (const auto& row : record.remap) {
+      rows.push_back({ { "offset", row.offset },
+                       { "formId", row.formId },
+                       { "index", row.index } });
+    }
+    res["changeFormRecord"] =
+      nlohmann::json{ { "epoch", record.epoch },
+                      { "flags", record.flags },
+                      { "version", static_cast<uint32_t>(record.version) },
+                      { "formType", static_cast<uint32_t>(record.formType) },
+                      { "body", record.bodyHex },
+                      { "fnv1a", record.fnv1a },
+                      { "remap", std::move(rows) },
+                      { "sender", record.sender },
+                      { "at", record.atMs } };
+  }
+
   // thuum docs/verbs/shouts.md; absent in older records, read as none
   if (changeForm.shoutRecord.has_value() && !changeForm.shoutRecord->Empty()) {
     res["shoutRecord"] = {
@@ -700,6 +724,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
   static const JsonPointer lockKey("lock/key");
   static const JsonPointer lockLocked("lock/locked");
   static const JsonPointer lockBroken("lock/broken");
+  static const JsonPointer changeFormRecord("changeFormRecord");
   static const JsonPointer favorites("favorites");
   static const JsonPointer raceMenuPreset("raceMenuPreset");
   static const JsonPointer staffRank("staffRank");
@@ -1119,6 +1144,46 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
     lockTmp.key = static_cast<uint32_t>(key);
     lockTmp.broken = static_cast<uint32_t>(broken);
     res.lock = lockTmp;
+  }
+
+  // thuum docs/verbs/change-form.md (ADR-065): the record as ToJson writes
+  // it, the body's hex kept as the string it is (the wire validated it once;
+  // the server never decodes it)
+  if (element.at_pointer(changeFormRecord.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, changeFormRecord, &jTmp);
+    static const JsonPointer recordEpoch("epoch"), recordFlags("flags"),
+      recordVersion("version"), recordFormType("formType"), recordBody("body"),
+      recordFnv("fnv1a"), recordRemap("remap"), recordSender("sender"),
+      recordAt("at"), rowOffset("offset"), rowFormId("formId"),
+      rowIndex("index");
+    ChangeFormRecord record;
+    ReadEx(jTmp, recordEpoch, &record.epoch);
+    ReadEx(jTmp, recordFlags, &record.flags);
+    uint32_t versionTmp = 0;
+    uint32_t formTypeTmp = 0;
+    ReadEx(jTmp, recordVersion, &versionTmp);
+    ReadEx(jTmp, recordFormType, &formTypeTmp);
+    record.version = static_cast<uint8_t>(versionTmp);
+    record.formType = static_cast<uint8_t>(formTypeTmp);
+    ReadEx(jTmp, recordFnv, &record.fnv1a);
+    ReadEx(jTmp, recordSender, &record.sender);
+    int64_t atTmp = 0;
+    ReadEx(jTmp, recordAt, &atTmp);
+    record.atMs = static_cast<uint64_t>(atTmp);
+    const char* bodyTmp = "";
+    ReadEx(jTmp, recordBody, &bodyTmp);
+    std::vector<simdjson::dom::element> rows;
+    ReadVector(jTmp, recordRemap, &rows);
+    for (auto& row : rows) {
+      ChangeFormRemapRow parsed;
+      ReadEx(row, rowOffset, &parsed.offset);
+      ReadEx(row, rowFormId, &parsed.formId);
+      ReadEx(row, rowIndex, &parsed.index);
+      record.remap.push_back(parsed);
+    }
+    record.bodyHex = bodyTmp;
+    res.changeFormRecord = std::move(record);
   }
 
   if (element.at_pointer(shoutRecord.GetData()).error() ==

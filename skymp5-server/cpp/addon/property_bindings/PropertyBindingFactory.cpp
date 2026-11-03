@@ -7,6 +7,7 @@
 #include "BaseDescBinding.h"
 #include "CellFollowsBinding.h"
 #include "CellHostsBinding.h"
+#include "ChangeFormRecordBinding.h"
 #include "ConsoleCommandsAllowedBinding.h"
 #include "CustomPropertyBinding.h"
 #include "EquipmentBinding.h"
@@ -49,6 +50,7 @@ PropertyBindingFactory::CreateStandardPropertyBindings()
   result["cellFollows"] = std::make_shared<CellFollowsBinding>();
   result["streamCounters"] = std::make_shared<StreamCountersBinding>();
   result["actorFate"] = std::make_shared<ActorFateBinding>();
+  result["changeFormRecord"] = std::make_shared<ChangeFormRecordBinding>();
   result["gameTime"] = std::make_shared<GameTimeBinding>();
   result["inventory"] = std::make_shared<InventoryBinding>();
   result["isDead"] = std::make_shared<IsDeadBinding>();

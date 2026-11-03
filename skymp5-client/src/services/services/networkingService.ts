@@ -302,6 +302,14 @@ export class NetworkingService extends ClientListener {
             const event = { message: msgAny };
             this.controller.emitter.emit("hostReleaseMessage", event);
             this.controller.emitter.emit("anyMessage", event);
+          } else if (msgAny.t === MsgType.ChangeFormAck) {
+            const event = { message: msgAny };
+            this.controller.emitter.emit("changeFormAckMessage", event);
+            this.controller.emitter.emit("anyMessage", event);
+          } else if (msgAny.t === MsgType.ChangeFormApply) {
+            const event = { message: msgAny };
+            this.controller.emitter.emit("changeFormApplyMessage", event);
+            this.controller.emitter.emit("anyMessage", event);
           } else if (msgAny.t === MsgType.ActorFate) {
             const event = { message: msgAny };
             this.controller.emitter.emit("actorFateMessage", event);

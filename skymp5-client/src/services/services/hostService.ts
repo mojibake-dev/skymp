@@ -196,6 +196,33 @@ export class HostService extends ClientListener {
         return cellId !== 0 && this.hosted.has(cellId);
     }
 
+    // thuum docs/verbs/change-form.md (ADR-065, Ownership): the epoch a
+    // report of an actor's record carries, the host epoch this client holds
+    // for the actor's cell (ADR-066's stamp): its parent cell's grant; for a
+    // persistent reference, whose parent cell is the worldspace's persistent
+    // cell (isMine's note above), the player's own cell's grant when both
+    // stand in one worldspace and one 4096-unit grid square (the exterior
+    // cell's size, movementApply's cellWidth); 0 when neither names a hosted
+    // cell, which the server refuses (E_CHANGEFORM_EPOCH) and the sender's
+    // line says
+    epochForActor(refr: ObjectReference): number {
+        const cell = refr.getParentCell();
+        const own = cell ? this.hosted.get(cell.getFormID()) : undefined;
+        if (own !== undefined) {
+            return own;
+        }
+        const player = this.sp.Game.getPlayer();
+        const playerCell = player ? player.getParentCell() : null;
+        const world = refr.getWorldSpace();
+        const playerWorld = player ? player.getWorldSpace() : null;
+        if (!player || !playerCell || !world || !playerWorld || world.getFormID() !== playerWorld.getFormID()) {
+            return 0;
+        }
+        const sameSquare = Math.floor(refr.getPositionX() / 4096) === Math.floor(player.getPositionX() / 4096)
+            && Math.floor(refr.getPositionY() / 4096) === Math.floor(player.getPositionY() / 4096);
+        return sameSquare ? (this.hosted.get(playerCell.getFormID()) ?? 0) : 0;
+    }
+
     // docs/engine/non-owning-seat.md P8 and section 3: the word named this
     // seat for `remoteId`, and its reports hold until the engine's copy
     // STANDS at the record (the engine's cell the record's and the position

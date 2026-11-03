@@ -781,6 +781,11 @@ export class FormView {
           // native clears is unread); that the silent kill still drops the
           // body as a ragdoll at the record's spot; that the record's pos is
           // the body's rest and not an earlier sample of the standing actor
+          // thuum ADR-067 by ADR-065's path (ChangeFormService): a served
+          // change-form record lays the body as this kill lands, and moves
+          // it anyway (read 1: 1,150 units in one call), so the move by
+          // coordinates stays regardless, harmless, and the owner's early
+          // dead samples then come from the record's spot
           const placed = this.placeAtDeadRecord(body, model);
           logLab("verb:npc-fate", `dead record ${this.refrId.toString(16)} loaded alive on ${simulatedHere ? "this host's" : "a watcher's"} seat: ${placed}, killed silently at the bind`);
           SpApiInteractor.getControllerInstance().emitter.emit("applyDeathStateEvent", { actor: body, isDead: true, silent: true });

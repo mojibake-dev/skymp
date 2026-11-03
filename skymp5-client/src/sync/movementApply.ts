@@ -101,11 +101,11 @@ export const applyMovement = (refr: ObjectReference, m: Movement, isMyClone?: bo
   }
 
   if (puppet) {
-    if (ac.isDead()) {
-      restBody(ac, m);
-    } else {
-      restBodyDone.delete(ac.getFormID());
-      deadSince.delete(ac.getFormID());
+    // thuum ADR-067 by ADR-065's path (ChangeFormService, docs/verbs/
+    // change-form.md): a dead puppet is laid by the owner's change-form
+    // record through the engine's own load; nothing here moves a body (the
+    // one-shot setPosition to the host's sample that stood here is gone)
+    if (!ac.isDead()) {
       applyPuppetPose(ac, m);
     }
   } else {
@@ -128,38 +128,6 @@ export const applyMovement = (refr: ObjectReference, m: Movement, isMyClone?: bo
   }
 };
 
-
-// thuum docs/verbs/npc-fate.md (ADR-050 decision 2, train 52): a dead
-// puppet's body lies where the host's body lies. Each seat's own ragdoll put
-// the body somewhere (playtest 34: about 112 units apart), so once the host's
-// body has settled (two seconds after this seat saw the death) the host's
-// sample places the puppet's body there, once; the ragdoll's pose stays this
-// seat's. A sample the host sends while its actor is alive again (a respawn)
-// clears the mark.
-const deadSince = new Map<number, number>();
-const restBodyDone = new Set<number>();
-const restBody = (ac: Actor, m: Movement) => {
-  const id = ac.getFormID();
-  const now = Date.now();
-  const since = deadSince.get(id);
-  if (since === undefined) {
-    deadSince.set(id, now);
-    return;
-  }
-  if (!m.isDead || restBodyDone.has(id) || now - since < 2000) {
-    return;
-  }
-  restBodyDone.add(id);
-  const dx = m.pos[0] - ac.getPositionX();
-  const dy = m.pos[1] - ac.getPositionY();
-  const dz = m.pos[2] - ac.getPositionZ();
-  const apart = Math.sqrt(dx * dx + dy * dy + dz * dz);
-  if (apart < 64) {
-    return;
-  }
-  ac.setPosition(m.pos[0], m.pos[1], m.pos[2]);
-  printConsole(`npc-fate: body ${id.toString(16)} rested at the host's spot, ${apart.toFixed(0)} units away`);
-};
 
 // the shortest signed turn from heading b to heading a, in (-180, 180]
 const angleDelta = (a: number, b: number): number => ((((a - b + 180) % 360) + 360) % 360) - 180;

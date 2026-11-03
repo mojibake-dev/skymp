@@ -62,6 +62,8 @@ import { CustomPacketMessage } from "../messages/customPacketMessage";
 import { HostGrantMessage } from "../messages/hostGrantMessage";
 import { ActorFateMessage } from "../messages/actorFateMessage";
 import { HostReleaseMessage } from "../messages/hostReleaseMessage";
+import { ChangeFormAckMessage } from "../messages/changeFormAckMessage";
+import { ChangeFormApplyMessage } from "../messages/changeFormApplyMessage";
 
 import { AnyRawMessageEvent } from "./anyRawMessageEvent";
 import { NicknameCreateEvent } from "./nicknameCreateEvent";
@@ -128,6 +130,9 @@ type EventTypes = {
     // thuum docs/verbs/npc-puppet.md: HostService's grant or release of a cell, for PuppetService
     'cellHostChanged': [{ cell: number; hosted: boolean }],
     'hostReleaseMessage': [ConnectionMessage<HostReleaseMessage>],
+    // thuum docs/verbs/change-form.md (ADR-065): the server's ack of this seat's record, and a record served for a reference here
+    'changeFormAckMessage': [ConnectionMessage<ChangeFormAckMessage>],
+    'changeFormApplyMessage': [ConnectionMessage<ChangeFormApplyMessage>],
     'customPacketMessage': [ConnectionMessage<CustomPacketMessage>]
 
     'browserWindowLoaded': [BrowserWindowLoadedEvent],

@@ -169,10 +169,12 @@ public:
   void PutItem(MpActor& actor, const Inventory::Entry& entry);
   void TakeItem(MpActor& actor, const Inventory::Entry& entry);
   // thuum docs/verbs/containers.md: a mover whose put or take the server
-  // refused (a reach, a missing item) hears both inventories again
+  // refused (a reach, a missing item, no hold on the container) hears both
+  // inventories again
   void ResyncAfterRefusedMove(MpActor& ac);
-  // memo D52's occupant set, read by the tests and released by a player's
-  // disconnect (PartOne; docs/verbs/containers.md)
+  // the container's holder (ADR-067 decision 6: one at a time; memo D52's
+  // set kept), read by the tests and released by a player's disconnect
+  // (PartOne; docs/verbs/containers.md)
   bool IsContainerOccupant(const MpActor* actor) const;
   void RemoveContainerOccupant(MpActor& actor);
   void SetRelootTime(std::chrono::system_clock::duration newRelootTime);
@@ -300,12 +302,12 @@ private:
   void GivePickupItemsToActivationSource(MpObjectReference& activationSource,
                                          const espm::LookupResult& base);
   void ActivateChilds();
-  // thuum memo D52 (playtest 37, Eli: "i WOULD like two people to be able to
-  // be in one container at once"): a container's or a corpse's occupants, as
-  // many as open it; furniture keeps the one occupant below
+  // thuum docs/verbs/containers.md (ADR-067 decision 6): a container's or a
+  // corpse's holder, one at a time (memo D52's shared set of playtest 37,
+  // kept as the set it was and holding one); furniture keeps the one
+  // occupant below
   void AddContainerOccupant(MpActor& actor);
   void PruneContainerOccupants(float reach);
-  void SendInventoryToContainerOccupants(const MpActor* except);
   bool CheckIfObjectCanStartOccupyThis(MpObjectReference& activationSource,
                                        float occupationReach);
 
@@ -329,9 +331,10 @@ private:
   MpActor* occupant = nullptr;
   std::shared_ptr<OccupantDestroyEventSink> occupantDestroySink;
   std::shared_ptr<OccupantDisableEventSink> occupantDisableSink;
-  // the container's occupants (memo D52) and each one's sinks; the sinks
-  // leave with the actor on its normal way out (the closing activation, the
-  // pruning), never from inside their own callback
+  // the container's holder (one at most, ADR-067 decision 6; memo D52's set
+  // kept) and its sinks; the sinks leave with the actor on its normal way
+  // out (the closing activation, the pruning), never from inside their own
+  // callback
   std::set<MpActor*> containerOccupants;
   std::map<MpActor*,
            std::pair<std::shared_ptr<OccupantDestroyEventSink>,

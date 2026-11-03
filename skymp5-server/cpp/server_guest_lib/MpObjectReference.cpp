@@ -699,11 +699,38 @@ void MpObjectReference::SetOpen(bool open)
       [&](MpChangeFormREFR& changeForm) { changeForm.isOpen = open; });
     SendMessageToActorListeners(
       CreatePropertyMessage_(this, "isOpen", open ? "true" : "false"), true);
+    const bool container = baseType == "CONT" || IsCorpse();
+    // thuum docs/verbs/containers.md (ADR-067 decision 1, Eli after playtest
+    // 42: "fuck live updates of containers"): a container's contents sync at
+    // its open (the record to the opener, ProcessActivateNormal) and at its
+    // close: the record to every listener of the reference, the same
+    // property the open sends, so a watcher's engine copy and the next
+    // opener's crosshair hold the record without a reload. The shut is here
+    // and not in RemoveContainerOccupant since a holder's destroy or
+    // disable (the sinks above), a reloot and a script shut it here too.
+    // Never while open: no two seats see one container's contents change
+    // under them (decision 6 holds the menu to one seat). An untouched
+    // container (no record, baseContainerAdded unset: every engine holds
+    // the base's own roll) sends none, as the subscribe-time send does
+    // (HasRecordedInventory), else a script's shut would blank the copies.
+    const bool synced = container && !open && ChangeForm().baseContainerAdded;
+    if (synced) {
+      SendMessageToActorListeners(
+        CreatePropertyMessage_(this, "inventory",
+                               GetInventory().ToJson().dump()),
+        true);
+    }
     // thuum docs/verbs/containers.md: the lab reads a container's state here
     if (baseType == "CONT") {
-      spdlog::info("[verb:containers] {:x} {} with {} occupant(s)",
-                   GetFormId(), open ? "open" : "shut",
-                   containerOccupants.size());
+      if (open) {
+        spdlog::info("[verb:containers] {:x} open with {} occupant(s)",
+                     GetFormId(), containerOccupants.size());
+      } else {
+        spdlog::info("[verb:containers] {:x} shut with {} occupant(s); "
+                     "inventory sent to {} listener(s)",
+                     GetFormId(), containerOccupants.size(),
+                     synced ? GetActorListeners().size() : 0);
+      }
     }
   }
 }
@@ -761,14 +788,33 @@ void MpObjectReference::SendLockPrompt(MpActor& to)
   to.SendToUser(prompt, true);
 }
 
+namespace {
+// thuum docs/verbs/containers.md (ADR-067 decision 6): a move in or out of a
+// container is its holder's alone. A mover not in it (its hold released by
+// its close or the prune, a corpse's loot menu its engine opened before the
+// server's word, a forged message) is refused, and as every refused move
+// (memo D52) it hears both inventories again, since its engine moved the
+// item already. A refusal and not a throw: the throw reached the tick's
+// catch (ScampServer::Tick) as an error line and left the mover's engine
+// holding the phantom.
+bool ContainerMoveByOccupant(MpActor& actor, MpObjectReference& container)
+{
+  if (container.IsContainerOccupant(&actor)) {
+    return true;
+  }
+  spdlog::warn("[verb:containers] E_CONTAINER_OCCUPANT: {:x} doesn't occupy "
+               "{:x}; the move refused, the mover resynced",
+               actor.GetFormId(), container.GetFormId());
+  container.ResyncAfterRefusedMove(actor);
+  return false;
+}
+}
+
 void MpObjectReference::PutItem(MpActor& ac, const Inventory::Entry& e)
 {
   CheckInteractionAbility(ac);
-  if (!IsContainerOccupant(&ac)) {
-    std::stringstream err;
-    err << std::hex << "Actor 0x" << ac.GetFormId() << " doesn't occupy ref 0x"
-        << GetFormId();
-    throw std::runtime_error(err.str());
+  if (!ContainerMoveByOccupant(ac, *this)) {
+    return;
   }
 
   PutItemEvent putItemEvent(&ac, this, e);
@@ -778,18 +824,13 @@ void MpObjectReference::PutItem(MpActor& ac, const Inventory::Entry& e)
     ResyncAfterRefusedMove(ac);
     throw;
   }
-  // memo D52: the other players in this container see the move
-  SendInventoryToContainerOccupants(&ac);
 }
 
 void MpObjectReference::TakeItem(MpActor& ac, const Inventory::Entry& e)
 {
   CheckInteractionAbility(ac);
-  if (!IsContainerOccupant(&ac)) {
-    std::stringstream err;
-    err << std::hex << "Actor 0x" << ac.GetFormId() << " doesn't occupy ref 0x"
-        << GetFormId();
-    throw std::runtime_error(err.str());
+  if (!ContainerMoveByOccupant(ac, *this)) {
+    return;
   }
 
   TakeItemEvent takeItemEvent(&ac, this, e);
@@ -799,7 +840,6 @@ void MpObjectReference::TakeItem(MpActor& ac, const Inventory::Entry& e)
     ResyncAfterRefusedMove(ac);
     throw;
   }
-  SendInventoryToContainerOccupants(&ac);
 }
 
 // thuum memo D52 (playtest 37, 23:32Z): two players on one stack, the loser's
@@ -822,13 +862,13 @@ void MpObjectReference::ResyncAfterRefusedMove(MpActor& ac)
     true);
 }
 
-// thuum memo D52 (playtest 37, Eli: "i WOULD like two people to be able to be
-// in one container at once"): a container or a corpse holds every player who
-// opens it. The inventory is the server's already (every take and put a
-// validated transfer), so two menus are two views of one record; on a change
-// the record goes to every other player in it. HYPOTHESIS until the probe:
-// the engine's ContainerMenu redraws when the reference's inventory changes
-// under it (skymp5-client applies the property through ModelApplyUtils).
+// thuum docs/verbs/containers.md (ADR-067 decision 6, Eli after playtest 43:
+// "wrap the exclusive container hold"): a container or a corpse holds the one
+// player who opened it, and every other player's activation is refused
+// while it does (ProcessActivateNormal). The set is memo D52's (playtest 37's
+// shared view, every opener in it, the record redrawn under the others'
+// menus), kept as the set it was and holding one; its sinks and the prune
+// are the hold's releases beside the holder's own close.
 bool MpObjectReference::IsContainerOccupant(const MpActor* actor) const
 {
   return actor && containerOccupants.count(const_cast<MpActor*>(actor)) > 0;
@@ -877,22 +917,6 @@ void MpObjectReference::PruneContainerOccupants(float reach)
   }
   for (auto* a : gone) {
     RemoveContainerOccupant(*a);
-  }
-}
-
-void MpObjectReference::SendInventoryToContainerOccupants(
-  const MpActor* except)
-{
-  if (containerOccupants.size() < 2) {
-    return;
-  }
-  const auto msg =
-    CreatePropertyMessage_(this, "inventory", GetInventory().ToJson().dump());
-  for (auto* a : containerOccupants) {
-    if (a == except) {
-      continue;
-    }
-    a->GetActorToSendTo().SendToUser(msg, true);
   }
 }
 
@@ -2005,38 +2029,37 @@ void MpObjectReference::ProcessActivateNormal(
 
     constexpr float kOccupationReach = 512.f;
 
-    // memo D52: every player who opens it is in it (the one-occupant rule
-    // was the engine's own for furniture, carried over); the ones gone out
-    // of reach, disabled or to another cell leave first
+    // a holder gone out of reach, disabled or to another cell has no menu
+    // open here any more and leaves first, so a stale hold never outlives
+    // its seat's distance
     PruneContainerOccupants(kOccupationReach);
-    // thuum docs/verbs/containers.md (ADR-061 decision 3, Eli: "revert to one
-    // person is allowed to interact with a chest at a time"): under
-    // containerSharing "exclusive" a container with an occupant refuses
-    // every other player's activation; the occupant's close, or its leaving
-    // reach (the prune above), frees it. The refused seat hears why.
-    if (worldState->containerSharingExclusive && !containerOccupants.empty() &&
-        !IsContainerOccupant(actorActivator)) {
+    // thuum docs/verbs/containers.md (ADR-067 decision 6, Eli after playtest
+    // 43: "wrap the exclusive container hold"): one seat holds a container,
+    // a chest's or a corpse's, at a time; another seat's activation is
+    // refused while it is held, and the holder's close or its leaving reach
+    // (the prune above) frees it. With decision 1 (the contents sync at the
+    // open and at the close, SetOpen) no two seats see one container's
+    // contents change under them. The refused seat hears who holds it: the
+    // holder's name as PartOne::GetActorName reads it (the appearance's),
+    // "Someone" when it has none.
+    if (!containerOccupants.empty() && !IsContainerOccupant(actorActivator)) {
       const MpActor* holder = *containerOccupants.begin();
       spdlog::info("[verb:containers] E_CONTAINER_BUSY: {:x} activates {:x} "
-                   "held by {:x}; refused (containerSharing exclusive)",
+                   "held by {:x}; refused",
                    actorActivator->GetFormId(), GetFormId(),
                    holder->GetFormId());
+      const auto appearance = holder->GetAppearance();
+      const std::string text = appearance && !appearance->name.empty()
+        ? appearance->name + " is searching this"
+        : std::string("Someone is using this");
       const std::vector<std::optional<
         std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
-        args{ std::string("Someone is using this") };
+        args{ text };
       SpSnippet("Debug", "Notification", args, 0)
         .Execute(actorActivator, SpSnippetMode::kNoReturnResult);
       return;
     }
-    if (!IsContainerOccupant(actorActivator)) {
-      AddContainerOccupant(*actorActivator);
-      if (containerOccupants.size() > 1) {
-        spdlog::info("MpObjectReference::ProcessActivate {:x} - {} players in "
-                     "the container now (activationSource = {:x})",
-                     GetFormId(), containerOccupants.size(),
-                     activationSource.GetFormId());
-      }
-    }
+    AddContainerOccupant(*actorActivator);
     SetOpen(true);
     actorActivator->GetActorToSendTo().SendToUser(
       CreatePropertyMessage_(this, "inventory",

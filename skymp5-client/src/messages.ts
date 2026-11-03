@@ -74,7 +74,7 @@ export enum MsgType {
   WordWall = 69, // thuum docs/verbs/word-wall.md (M4): the word wall trigger this game fired, its word the server's
   RelayedActivation = 70, // thuum docs/verbs/traps.md (M4): a linked activation the cell's host reported, for this game's engine to play
   ObjectAnimation = 71, // thuum docs/verbs/traps.md (ADR-059 decision 3): a world object's animation event the cell's host reported, recorded and relayed
-  ChangeForm = 72, // thuum docs/verbs/change-form.md (ADR-065): an owner's engine's own change form of a reference, serialized at the corpse's rest (ADR-067); the server validates, records, acks
-  ChangeFormAck = 73, // the same verb: the server's hash of the record it holds, the owner's compare baseline
-  ChangeFormApply = 74 // the same verb: a recorded change form served to a seat with the reference, applied through its engine's own load
+  ChangeForm = 73, // thuum docs/verbs/change-form.md (ADR-065): an owner's engine's own change form of a reference, serialized at the corpse's rest (ADR-067); the server validates, records, acks
+  ChangeFormAck = 74, // the same verb: the server's hash of the record it holds, the owner's compare baseline
+  ChangeFormApply = 75 // the same verb: a recorded change form served to a seat with the reference, applied through its engine's own load
 }

@@ -169,6 +169,13 @@ TEST_CASE("A hosted NPC the record holds dead whose host samples it alive "
   State(p, 1, kPredator, 1.f);
   REQUIRE(actor.IsDead());
 
+  // the host samples the body dead first: its stamp (round six, run
+  // 20261103-100946: a host whose game never sampled the body dead stands
+  // nothing with a live sample, whatever the death's own stamp; the
+  // necromancer's host had the skeever dead on its engine before the spell)
+  State(p, 0, kPredator, 0.f);
+  REQUIRE(actor.IsDead());
+
   // from the host: the death cleared, the body's day and its due ended, the
   // live word to the other game
   p.Messages().clear();

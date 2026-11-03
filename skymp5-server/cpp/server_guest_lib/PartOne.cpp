@@ -2576,6 +2576,12 @@ void PartOne::SendActorKeyframe(MpActor& actor, MpActor& to)
   if (userId == Networking::InvalidUserId) {
     return;
   }
+  // only to a game that sees the actor: a Release's flip walks the old
+  // host's emitters, and a keyframe for a form the new host lacks is "Form
+  // with idx N not found" there (numidium's review of 0b61fc80, item 7)
+  if (to.GetEmitters().count(&actor) == 0) {
+    return;
+  }
   UpdateMovementMessage msg;
   msg.idx = actor.GetIdx();
   msg.data.worldOrCell = actor.GetCellOrWorld().ToFormId(worldState.espmFiles);

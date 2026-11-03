@@ -684,7 +684,9 @@ export class RemoteServer extends ClientListener {
     // a promotion inside the create word (this seat simulates the actor from
     // its first sight of it: a late joiner hosting, a grant at a login): the
     // same hold as a flip's, until the engine's copy stands at the record
-    if (msg.props && !msg.props.isHostedByOther && !msg.isMe && movement !== undefined && msg.refrId !== undefined &&
+    // isHostedByOther === false: the server sets the field for actors alone,
+    // so an absent field (a prop, a door) is no promotion (review item 5)
+    if (msg.props && msg.props.isHostedByOther === false && !msg.isMe && movement !== undefined && msg.refrId !== undefined &&
         (msg.baseRecordType === 'NPC_' || (msg.refrId >= 0xff000000 && msg.baseId !== undefined && msg.baseId !== 0x7))) {
       this.controller.lookupListener(HostService).holdUntilPlaced(msg.refrId, movement);
     }
@@ -1129,6 +1131,10 @@ export class RemoteServer extends ClientListener {
         // the hold ends when the copy stands at the record (HostService's
         // check each update asks the move and reads the engine), never here
         host.holdUntilPlaced(remoteId, form.movement);
+      }
+      if (msgData === true && hostedBefore === false) {
+        // a demote ends any hold: the word names another game now
+        host.releaseHold(remoteId, "demoted by the word");
       }
       if ((msgData === false && hostedBefore !== false) || (msgData === true && hostedBefore === false)) {
         // the reconcile reads the word as it stands when it runs (a flip and

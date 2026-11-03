@@ -6,7 +6,7 @@ import { SpellCastEvent, Actor, printConsole, Game, getAnimationVariablesFromAct
 import { Spell, MagicEffect } from 'skyrimPlatform';
 import { ClientListener, CombinedController, Sp } from './clientListener';
 import { HostService } from './hostService';
-import { logTrace } from '../../logging';
+import { logLab, logTrace } from '../../logging';
 import { landsOnItsTarget } from "../../sync/spellDelivery";
 
 import { MsgType } from "../../messages";
@@ -573,7 +573,14 @@ export class MagicSyncService extends ClientListener {
     // thuum docs/verbs/cell-host.md: an actor this game hosts (its cell
     // granted here, the server marking it nobody else's)
     private isHostedByMe(localId: number): boolean {
-        return this.controller.lookupListener(HostService).isReportable(localId);
+        const host = this.controller.lookupListener(HostService);
+        const reportable = host.isReportable(localId);
+        if (!reportable && host.isHeld(localId)) {
+            // a cast from the stale copy's place cannot be deferred, so the
+            // drop is said (review item 4)
+            logLab("verb:npc-handoff", `hold ${localIdToRemoteId(localId).toString(16)}: a cast by the held actor not reported`);
+        }
+        return reportable;
     }
 
     // thuum docs/verbs/npc-stream.md (train 53, H-53b): a hosted caster's cast

@@ -190,6 +190,8 @@ export class FormView {
               rot[0] * Math.PI / 180, rot[1] * Math.PI / 180, rot[2] * Math.PI / 180,
             );
             this.movedInto = model.movement.worldOrCell;
+            // the hold's first ask is this move (one mover per promotion)
+            SpApiInteractor.getControllerInstance().lookupListener(HostService).noteMovedLocal(this.refrId);
             logLab("verb:npc-handoff", `moved ${this.refrId.toString(16)} into ${model.movement.worldOrCell.toString(16)} (the engine had it in ${engineCell.toString(16)}${promotedNow ? ", at its promotion" : ""})`);
           }
         }

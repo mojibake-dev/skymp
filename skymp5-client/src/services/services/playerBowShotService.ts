@@ -3,7 +3,7 @@ import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { MsgType } from "../../messages";
 import { getEquipment } from "../../sync/equipment";
 import { QueryBlockSetInventoryEvent } from "../events/queryBlockSetInventoryEvent";
-import { logError, logTrace } from "../../logging";
+import { logError, logLab, logTrace } from "../../logging";
 import { PlayerBowShotMessage } from "../messages/playerBowShotMessage";
 import { MessageWithRefrId } from "../events/sendMessageWithRefrIdEvent";
 import { HostService } from "./hostService";
@@ -116,7 +116,13 @@ export class PlayerBowShotService extends ClientListener {
     // the launch the engine made; the server relays it as ArrowShot and the
     // other games' puppets launch it the same way a figure's arrow flies
     private onHostedLaunch(e: { shooter: number; ammo: number; weapon: number; power: number; originX: number; originY: number; originZ: number; angleX: number; angleZ: number }) {
-        if (!this.controller.lookupListener(HostService).isReportable(e.shooter)) {
+        const host = this.controller.lookupListener(HostService);
+        if (!host.isReportable(e.shooter)) {
+            if (host.isHeld(e.shooter)) {
+                // the arrow flew from the stale copy's place; it cannot be
+                // deferred, so the drop is said (review item 4)
+                logLab("verb:npc-handoff", `hold ${localIdToRemoteId(e.shooter).toString(16)}: a shot by the held actor not reported`);
+            }
             return;
         }
         const remoteId = localIdToRemoteId(e.shooter);

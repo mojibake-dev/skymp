@@ -6,6 +6,7 @@ import { SpellCastEvent, Actor, printConsole, Game, getAnimationVariablesFromAct
 import { Spell, MagicEffect } from 'skyrimPlatform';
 import { ClientListener, CombinedController, Sp } from './clientListener';
 import { HostService } from './hostService';
+import { PropService } from './propService';
 import { logTrace } from '../../logging';
 import { landsOnItsTarget } from "../../sync/spellDelivery";
 
@@ -204,6 +205,9 @@ export class MagicSyncService extends ClientListener {
     }
 
     private sendCast(msg: SpellCastMsgData) {
+        // a prop blown by this cast's blast is this seat's claim (touch
+        // IMPULSE, prop-physics.md)
+        this.controller.lookupListener(PropService).noteImpulse();
         this.controller.emitter.emit("sendMessage", {
             message: { t: MsgType.SpellCast, data: msg },
             reliability: "reliable"

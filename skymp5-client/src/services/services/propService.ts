@@ -22,6 +22,14 @@ const TAG = "verb:prop-physics";
 const TOUCH_CONTACT = 0;
 const TOUCH_GRAB = 1;
 const TOUCH_DROP = 2;
+// a shout's or spell's impulse (the server's reach for it is the cast's,
+// kPropImpulseReach, not the contact's): a prop that moved by itself within
+// IMPULSE_WINDOW_MS of this seat's own shout or cast release is claimed by
+// it (playtest 41, 2026-11-02, Eli: "just blast a bunch of cabbages ... only
+// some stayed synced": the contact's claims from 735 units were refused as
+// E_PROP_REACH and the blown cabbages stayed the host's)
+const TOUCH_IMPULSE = 3;
+const IMPULSE_WINDOW_MS = 1500;
 
 // How often the tracked set is rebuilt from the view's references, ms
 const RESCAN_MS = 500;
@@ -730,7 +738,7 @@ export class PropService extends ClientListener {
         if (now - prop.lastClaimAt < CLAIM_EVERY_MS) {
             return;
         }
-        this.claim(prop, TOUCH_CONTACT, now);
+        this.claim(prop, this.contactTouch(now), now);
     }
 
     // The stream's transform on the Keyframed body: at sleep or from
@@ -828,7 +836,7 @@ export class PropService extends ClientListener {
                 logTrace(this, `${head}: claimed ${now - prop.lastClaimAt} ms ago, no claim`);
                 continue;
             }
-            this.claim(prop, TOUCH_CONTACT, now);
+            this.claim(prop, this.contactTouch(now), now);
             logLab(TAG, `${head}: claimed`);
         }
     }
@@ -1164,4 +1172,18 @@ export class PropService extends ClientListener {
     // the player's drops awaiting the server's reference
     private drops: Array<{ baseId: number; at: number }> = [];
     private lastRescan = 0;
+    // when this seat last released a shout or a cast (ShoutService,
+    // MagicSyncService): a prop moving on its own inside the window is the
+    // blast's, claimed by touch IMPULSE
+    private impulseAt = 0;
+
+    noteImpulse(): void {
+        this.impulseAt = Date.now();
+    }
+
+    // the touch a prop that moved by itself is claimed with: the blast's
+    // inside the window of this seat's own release, the contact's otherwise
+    private contactTouch(now: number): number {
+        return now - this.impulseAt <= IMPULSE_WINDOW_MS ? TOUCH_IMPULSE : TOUCH_CONTACT;
+    }
 }

@@ -4918,6 +4918,22 @@ bool PartOne::PerksEnabled() const
   return pImpl->perksEnabled;
 }
 
+// thuum docs/verbs/containers.md (ADR-061 decision 3): the switch between
+// the shared live view and one occupant per container
+
+void PartOne::SetContainerSharing(const std::string& mode)
+{
+  if (mode != "shared" && mode != "exclusive") {
+    spdlog::warn("[verb:containers] containerSharing \"{}\" is neither "
+                 "\"shared\" nor \"exclusive\"; exclusive kept",
+                 mode);
+    worldState.containerSharingExclusive = true;
+    return;
+  }
+  worldState.containerSharingExclusive = mode == "exclusive";
+  spdlog::info("[verb:containers] containerSharing {}", mode);
+}
+
 // thuum docs/verbs/word-wall.md (M4): the word a wall trigger teaches, read
 // from the WordWallTriggerScript's myWord property on the trigger (the
 // reference's own value over its base ACTI's, as ScriptVariablesHolder reads

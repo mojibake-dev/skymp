@@ -428,6 +428,7 @@ TEST_CASE("Two players in one container: both open it, a take reaches the "
   auto& ref = partOne.worldState.GetFormAt<MpObjectReference>(refrId);
   ref.SetRelootTime(kRelootWindow);
   ref.SetChanceNoneOverride(0);
+  partOne.SetContainerSharing("shared"); // the default (ADR-061)
 
   DoConnect(partOne, 0);
   partOne.CreateActor(0xff000000, { 21272.0000, -7816.0000, -3608.0000 }, 0,
@@ -1015,6 +1016,89 @@ TEST_CASE("A disconnect releases the player's container: the chest shuts "
   }
   REQUIRE(told);
 
+  DoDisconnect(partOne, 1);
+  partOne.DestroyActor(0xff000000);
+  partOne.DestroyActor(0xff000001);
+}
+
+// thuum docs/verbs/containers.md (ADR-061 decision 3, Eli: "revert to one
+// person is allowed to interact with a chest at a time"): under
+// containerSharing "exclusive" a second player's activation of an occupied
+// container is refused with a notification on its seat; the occupant's close
+// frees the container; "shared" is memo D52's view as before
+TEST_CASE("Exclusive container sharing: a second player is refused while the "
+          "first is in it, and admitted once the first leaves",
+          "[PartOne][espm]")
+{
+  auto& partOne = GetPartOne();
+  auto refrId = 0x20570;
+  auto& ref = partOne.worldState.GetFormAt<MpObjectReference>(refrId);
+  ref.SetRelootTime(kRelootWindow);
+  ref.SetChanceNoneOverride(0);
+  REQUIRE_FALSE(
+    partOne.worldState.containerSharingExclusive); // shared by default
+  partOne.SetContainerSharing("exclusive");
+
+  DoConnect(partOne, 0);
+  partOne.CreateActor(0xff000000, { 21272.0000, -7816.0000, -3608.0000 }, 0,
+                      0x1a26f);
+  partOne.SetUserActor(0, 0xff000000);
+  DoConnect(partOne, 1);
+  partOne.CreateActor(0xff000001, { 21300.0000, -7816.0000, -3608.0000 }, 0,
+                      0x1a26f);
+  partOne.SetUserActor(1, 0xff000001);
+  auto& first = partOne.worldState.GetFormAt<MpActor>(0xff000000);
+  auto& second = partOne.worldState.GetFormAt<MpActor>(0xff000001);
+
+  ref.Activate(first);
+  REQUIRE(ref.IsOpen());
+  REQUIRE(ref.IsContainerOccupant(&first));
+
+  // the second is refused: no OpenContainer, a notification, no occupancy
+  partOne.Messages().clear();
+  ref.Activate(second);
+  partOne.Tick(); // snippets are deferred (SpSnippet.cpp)
+  auto& messages = partOne.Messages();
+  const auto openedFor = [&](Networking::UserId user) {
+    return std::any_of(
+      messages.begin(), messages.end(), [&](PartOne::Message& m) {
+        return m.userId == user && m.j.is_object() && m.j.contains("t") &&
+          m.j["t"] == static_cast<int>(MsgType::OpenContainer);
+      });
+  };
+  const bool notified =
+    std::any_of(messages.begin(), messages.end(), [&](PartOne::Message& m) {
+      return m.userId == 1 && m.j.is_object() && m.j.contains("t") &&
+        m.j["t"] == static_cast<int>(MsgType::SpSnippet) &&
+        m.j["class"] == "Debug" && m.j["function"] == "Notification";
+    });
+  REQUIRE_FALSE(openedFor(1));
+  REQUIRE(notified);
+  REQUIRE_FALSE(ref.IsContainerOccupant(&second));
+  REQUIRE(ref.IsContainerOccupant(&first));
+
+  // the first leaves: shut; the second's activation now opens it
+  ref.Activate(first, false, true);
+  REQUIRE_FALSE(ref.IsOpen());
+  partOne.Messages().clear();
+  ref.Activate(second);
+  REQUIRE(ref.IsOpen());
+  REQUIRE(openedFor(1));
+  REQUIRE(ref.IsContainerOccupant(&second));
+  ref.Activate(second, false, true);
+  REQUIRE_FALSE(ref.IsOpen());
+
+  // shared again (the default): both are in it, as the case above
+  partOne.SetContainerSharing("shared");
+  ref.Activate(first);
+  ref.Activate(second);
+  REQUIRE(ref.IsContainerOccupant(&first));
+  REQUIRE(ref.IsContainerOccupant(&second));
+  ref.Activate(first, false, true);
+  ref.Activate(second, false, true);
+  REQUIRE_FALSE(ref.IsOpen());
+
+  DoDisconnect(partOne, 0);
   DoDisconnect(partOne, 1);
   partOne.DestroyActor(0xff000000);
   partOne.DestroyActor(0xff000001);

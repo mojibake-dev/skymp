@@ -2009,6 +2009,25 @@ void MpObjectReference::ProcessActivateNormal(
     // was the engine's own for furniture, carried over); the ones gone out
     // of reach, disabled or to another cell leave first
     PruneContainerOccupants(kOccupationReach);
+    // thuum docs/verbs/containers.md (ADR-061 decision 3, Eli: "revert to one
+    // person is allowed to interact with a chest at a time"): under
+    // containerSharing "exclusive" a container with an occupant refuses
+    // every other player's activation; the occupant's close, or its leaving
+    // reach (the prune above), frees it. The refused seat hears why.
+    if (worldState->containerSharingExclusive && !containerOccupants.empty() &&
+        !IsContainerOccupant(actorActivator)) {
+      const MpActor* holder = *containerOccupants.begin();
+      spdlog::info("[verb:containers] E_CONTAINER_BUSY: {:x} activates {:x} "
+                   "held by {:x}; refused (containerSharing exclusive)",
+                   actorActivator->GetFormId(), GetFormId(),
+                   holder->GetFormId());
+      const std::vector<std::optional<
+        std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+        args{ std::string("Someone is using this") };
+      SpSnippet("Debug", "Notification", args, 0)
+        .Execute(actorActivator, SpSnippetMode::kNoReturnResult);
+      return;
+    }
     if (!IsContainerOccupant(actorActivator)) {
       AddContainerOccupant(*actorActivator);
       if (containerOccupants.size() > 1) {

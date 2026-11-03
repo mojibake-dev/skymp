@@ -2030,9 +2030,14 @@ mod ffi {
         /// Who simulates `refr` now, given its cell's host (0 while nobody):
         /// the toucher while awake or held, else the host.
         fn prop_owner_of(self: &Props, refr: u32, cell_host: u32, now_ms: u64) -> u32;
-        /// `host` now hosts `cell`: the rows nobody holds live name it, their
-        /// epochs kept.
+        /// `host` now hosts `cell`: no row changes (a resting row names
+        /// nobody already, a live row stays its owner's, a grab past its cap
+        /// waits for the tick's word).
         fn props_host_changed(self: &mut Props, cell: u32, host: u32, now_ms: u64);
+        /// `player`'s game unloaded `cell`: every row of its there (live or
+        /// past its cap) returns to the host by default at a new epoch; the
+        /// core sends `PropOwner` with player 0 for every (refr, epoch).
+        fn props_unloaded(self: &mut Props, player: u32, cell: u32, now_ms: u64) -> Vec<PropReturn>;
         /// `player` left: its live rows (awake or held) return to their
         /// cells' hosts at a new epoch each; the core sends `PropOwner` with
         /// player 0 for every (refr, epoch) returned.
@@ -3178,6 +3183,10 @@ impl Props {
 
     fn props_gone(&mut self, player: u32, now_ms: u64) -> Vec<PropReturn> {
         self.0.gone(player, now_ms).into_iter().map(|(refr, epoch)| PropReturn { refr, epoch }).collect()
+    }
+
+    fn props_unloaded(&mut self, player: u32, cell: u32, now_ms: u64) -> Vec<PropReturn> {
+        self.0.unloaded(player, cell, now_ms).into_iter().map(|(refr, epoch)| PropReturn { refr, epoch }).collect()
     }
 
     fn props_tick(&mut self, now_ms: u64) -> Vec<PropReturn> {

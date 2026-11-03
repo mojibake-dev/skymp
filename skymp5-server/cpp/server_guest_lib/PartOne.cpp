@@ -1983,6 +1983,20 @@ void PartOne::OnCellLoaded(MpActor& player, uint32_t cell, bool loaded)
 {
   RefreshReach(player);
   const auto nowMs = SteadyNowMs();
+  if (!loaded) {
+    // thuum docs/verbs/prop-physics.md (A7, the review of 2026-11-03): the
+    // player's 3D of every prop in the cell went with the cell, so its stream
+    // ends with no final sample; its rows there return to the host by default
+    // with the word (player 0), as its departure's would
+    for (const auto& r :
+         pImpl->props->props_unloaded(player.GetFormId(), cell, nowMs)) {
+      const auto told = SendPropOwnerWord(r.refr, 0, r.epoch);
+      spdlog::info("[verb:prop-physics] prop {:x}: its simulator {:x} "
+                   "unloaded cell {:x}; the host's again at epoch {}; the "
+                   "word to {} listener(s)",
+                   r.refr, player.GetFormId(), cell, r.epoch, told);
+    }
+  }
   ApplyHostDecisions(
     *this,
     loaded ? pImpl->cells->loaded(player.GetFormId(), cell, nowMs)

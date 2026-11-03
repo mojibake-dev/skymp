@@ -47,12 +47,13 @@ MpActor& Player(PartOne& p, Networking::UserId user, uint32_t id,
   return p.worldState.GetFormAt<MpActor>(id);
 }
 
-void CellLoaded(PartOne& p, Networking::UserId user, uint32_t cell)
+void CellLoaded(PartOne& p, Networking::UserId user, uint32_t cell,
+                bool loaded = true)
 {
   DoMessage(p, user,
             nlohmann::json{ { "t", MsgType::CellLoaded },
                             { "cell", cell },
-                            { "loaded", true } });
+                            { "loaded", loaded } });
 }
 
 // a server-made item reference at `pos`, the shape a drop takes
@@ -568,5 +569,52 @@ TEST_CASE("The host's own sample of a resting prop wakes it: the row the "
   REQUIRE(rested.size() == 1);
   REQUIRE(rested[0].player == 0);
   REQUIRE(rested[0].epoch == 2);
+  Leave(p);
+}
+
+TEST_CASE("A player's unload of a cell returns its live props there to the "
+          "host with a word each: the 3D went with the cell before any final "
+          "sample (the review of 2026-11-03, D2)",
+          "[Prop][espm]")
+{
+  auto& p = GetPartOne();
+  auto w = Enter(p);
+  // c2 kicks the basket and streams it awake, then its game unloads the
+  // cell (a door): the row returns to the host at a new epoch, both seats
+  // told with player 0; c2's late sample is refused and answered with it
+  Claim(p, 1, kBasket, 0);
+  Sample(p, 1, kBasket, kHere + NiPoint3{ 20.f, 0.f, 0.f }, false);
+  REQUIRE(p.PropLiveOwner(w.prop) == kC2);
+  REQUIRE(p.PropEpochOf(w.prop) == 1);
+  p.Messages().clear();
+  CellLoaded(p, 1, w.cell, false);
+  REQUIRE(p.PropLiveOwner(w.prop) == 0);
+  REQUIRE(p.PropOwnerOf(w.prop) == kC1);
+  REQUIRE(p.PropEpochOf(w.prop) == 2);
+  const auto toC1 = SentTo<PropOwnerMessage>(p, 0);
+  REQUIRE(toC1.size() == 1);
+  REQUIRE(toC1[0].player == 0);
+  REQUIRE(toC1[0].epoch == 2);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).size() == 1);
+  p.Messages().clear();
+  Sample(p, 1, kBasket, kHere + NiPoint3{ 40.f, 0.f, 0.f }, false);
+  REQUIRE(std::abs(w.prop.GetPos().x - (kHere.x + 20.f)) < 1.f);
+  const auto answered = SentTo<PropOwnerMessage>(p, 1);
+  REQUIRE(answered.size() == 1);
+  REQUIRE(answered[0].player == 0);
+  REQUIRE(answered[0].epoch == 2);
+  // the host's own kick woke it (a word by id); its unload returns it too
+  p.Messages().clear();
+  Sample(p, 0, kBasket, kHere + NiPoint3{ 25.f, 0.f, 0.f }, false);
+  REQUIRE(p.PropLiveOwner(w.prop) == kC1);
+  REQUIRE(p.PropEpochOf(w.prop) == 3);
+  p.Messages().clear();
+  CellLoaded(p, 0, w.cell, false);
+  REQUIRE(p.PropLiveOwner(w.prop) == 0);
+  REQUIRE(p.PropEpochOf(w.prop) == 4);
+  const auto toC2 = SentTo<PropOwnerMessage>(p, 1);
+  REQUIRE(toC2.size() == 1);
+  REQUIRE(toC2[0].player == 0);
+  REQUIRE(toC2[0].epoch == 4);
   Leave(p);
 }

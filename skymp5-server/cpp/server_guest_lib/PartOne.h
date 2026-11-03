@@ -685,8 +685,9 @@ public:
   // The prop's owner epoch, up at every word (a grant, a return, the cap,
   // the host's wake, a departure); 0 before any.
   uint32_t PropEpochOf(const MpObjectReference& prop) const;
-  // `host` now hosts `cell` (ApplyHostDecisions' grant): the props in it
-  // nobody holds live are the host's by default, their epochs kept.
+  // `host` now hosts `cell` (ApplyHostDecisions' grant): no prop row changes
+  // (a resting row names nobody already, a live row stays its owner's, a
+  // grab past its cap waits for the tick's word); the moment is named here.
   void PropsHostChanged(uint32_t cell, uint32_t host);
   // The word PropOwner {refr, player, epoch} to every listener of the prop
   // with a user but `exceptActor` (0 for none), reliable; player 0 names the

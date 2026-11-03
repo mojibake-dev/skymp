@@ -400,20 +400,39 @@ impl Props {
         TransformVerdict::Accepted
     }
 
-    /// `host` now hosts `cell` (a grant): the rows in the cell nobody holds
-    /// live (resting, or a grab past its cap) are the host's by default
-    /// (owner 0; `owner_of` names the new host), their epochs kept; a live
-    /// toucher's row survives the grant, as the cells rule's claims do, and
-    /// so does the old host's live row (its wake word named it by id, so it
-    /// streams until its rest).
-    pub fn host_changed(&mut self, cell: u32, _host: u32, now_ms: u64) {
-        for row in self.rows.values_mut().filter(|r| r.cell == cell) {
-            if !row.live(now_ms) {
-                row.owner = 0;
-                row.grabbed = false;
-                row.since_ms = now_ms;
-            }
+    /// `host` now hosts `cell` (a grant): no row changes. A resting row
+    /// names nobody already (`owner_of` names the new host), a live
+    /// toucher's row survives the grant as the cells rule's claims do, so
+    /// does the old host's live row (its wake word named it by id, so it
+    /// streams until its rest), and a grab past its cap waits for the
+    /// tick's word (clearing it here left the followers holding the
+    /// holder's id with no word, the review of 2026-11-03). The entry stays
+    /// so the core's grant path names the moment.
+    pub fn host_changed(&mut self, _cell: u32, _host: u32, _now_ms: u64) {}
+
+    /// `player`'s game unloaded `cell` (a door, a teleport, a square
+    /// leaving its grid): its 3D of every prop there is gone, and the
+    /// client's rescan untracks the prop before any final sample
+    /// (HYPOTHESIS: the client's order, until a run), so every row of its in
+    /// the cell (live or past its cap) falls back to the host by default at
+    /// a new epoch, and the core sends the word (player 0) for each, as a
+    /// departure's would; a resting row names nobody already. Returns
+    /// (refr, epoch) per returned prop, sorted.
+    pub fn unloaded(&mut self, player: u32, cell: u32, _now_ms: u64) -> Vec<(u32, u32)> {
+        let mut returned = Vec::new();
+        for (&refr, row) in self.rows.iter_mut().filter(|(_, r)| r.cell == cell && r.owner == player) {
+            row.owner = 0;
+            row.grabbed = false;
+            row.asleep = true;
+            let next = row.epoch.saturating_add(1);
+            row.epoch = next;
+            returned.push((refr, next));
         }
+        for &(refr, epoch) in &returned {
+            self.epochs.insert(refr, epoch);
+        }
+        returned.sort_unstable();
+        returned
     }
 
     /// `player` left the server: every row still naming it (live or past
@@ -630,6 +649,38 @@ mod tests {
         assert_eq!(p.claim(0x1234, C2, 0x9733, touch::CONTACT, 2_000), ClaimVerdict::Granted(1));
         p.host_changed(CELL, C1, 9_000);
         assert_eq!(p.rows().iter().find(|(refr, _)| *refr == 0x1234).map(|(_, r)| r.owner), Some(C2));
+        // a grab past its cap survives the grant and the tick words it (the grant used to clear it with no word)
+        let mut q = Props::default();
+        assert_eq!(q.claim(BASKET, C2, CELL, touch::GRAB, 1_000), ClaimVerdict::Granted(1));
+        q.host_changed(CELL, C3, 1_000 + PROP_GRAB_MAX_MS + 1);
+        assert_eq!(q.owner_of(BASKET, C3, 1_000 + PROP_GRAB_MAX_MS + 1), C3);
+        assert_eq!(q.tick(1_000 + PROP_GRAB_MAX_MS + 2), vec![(BASKET, 2)]);
+    }
+
+    #[test]
+    fn a_players_unload_of_a_cell_returns_its_live_rows_there_with_a_word_each() {
+        // the review of 2026-11-03 (D2): the old host's cell unloads mid-flight (a door, a teleport); its 3D of the prop is
+        // gone and the rescan untracks it before any final sample, so the row would stay live naming it and nobody would
+        // stream; the unload returns its rows there to the host by default with a word each, as a departure does
+        let mut p = Props::default();
+        assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, false, 10.0, 1_000)), TransformVerdict::Woken(1));
+        assert_eq!(p.claim(0x54a44, C2, CELL, touch::GRAB, 1_100), ClaimVerdict::Granted(1));
+        // a resting row and another cell's row are not the unload's
+        assert_eq!(p.claim(0x1234, C1, CELL, touch::CONTACT, 1_200), ClaimVerdict::Granted(1));
+        assert_eq!(p.transform(&facts(0x1234, C1, CELL, C1, true, 10.0, 1_300)), TransformVerdict::Returned(2));
+        assert_eq!(p.claim(0x5678, C1, 0x9733, touch::CONTACT, 1_400), ClaimVerdict::Granted(1));
+        assert_eq!(p.unloaded(C1, CELL, 2_000), vec![(BASKET, 2)]);
+        assert_eq!(p.owner_of(BASKET, C2, 2_000), C2);
+        assert_eq!(p.live_owner(BASKET, 2_000), 0);
+        assert_eq!(p.epoch_of(BASKET), 2);
+        assert_eq!(p.live_owner(0x54a44, 2_000), C2);
+        assert_eq!(p.live_owner(0x5678, 2_000), C1);
+        // the holder's unload drops its grab too (a grab carried through a door stays in no hand)
+        assert_eq!(p.unloaded(C2, CELL, 2_100), vec![(0x54a44, 2)]);
+        assert_eq!(p.live_owner(0x54a44, 2_100), 0);
+        // nothing of c3's, and nothing twice
+        assert_eq!(p.unloaded(C3, CELL, 2_200), vec![]);
+        assert_eq!(p.unloaded(C1, CELL, 2_300), vec![]);
     }
 
     #[test]

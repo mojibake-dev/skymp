@@ -71,13 +71,18 @@ export class ScriptNativeService extends ClientListener {
         if (this.counts.size === 0) {
             return;
         }
-        const parts: string[] = [];
+        // one row per line: the console log the lab reads cuts a line near
+        // 100 characters (x-script-natives v3, run 20261103-062800: every
+        // summary ended in "ObjectReference.Se..." and the rows past the cut,
+        // the relayed stage's "(platform)" key among them, never reached it)
+        const names = Array.from(this.counts.keys()).sort();
         let total = 0;
-        this.counts.forEach((n, name) => {
+        for (const name of names) {
+            const n = this.counts.get(name) ?? 0;
             total += n;
-            parts.push(`${name} ${n}`);
-        });
-        logLab("verb:scripts", `${total} native call(s) in ${ScriptNativeService.summaryMs / 1000} s: ${parts.sort().join(", ")}`);
+            logLab("verb:scripts", `census ${name} ${n} in ${ScriptNativeService.summaryMs / 1000} s`);
+        }
+        logLab("verb:scripts", `${total} native call(s) in ${ScriptNativeService.summaryMs / 1000} s: ${names.length} row(s), one census line each`);
         this.counts.clear();
         logTrace(this, `${this.kills.size} script kill mark(s) held`);
     }

@@ -79,6 +79,7 @@ struct MpActor::Impl
   // this body, the window a placed corpse's stand-up is read within
   std::chrono::steady_clock::time_point reanimateAcceptedAt{};
   bool hostSampledDead = false;
+  uint32_t hosterNoted = 0;
   std::chrono::steady_clock::time_point hostStoodUpAt{};
   // npc-fate.md H-52b: the killer credited at the last Kill (the read)
   std::optional<uint32_t> lastKillerId;
@@ -2745,6 +2746,14 @@ bool MpActor::HostSampledDead() const
 void MpActor::ClearHostSampledDead()
 {
   pImpl->hostSampledDead = false;
+}
+
+void MpActor::NoteHoster(uint32_t hosterId)
+{
+  if (hosterId != pImpl->hosterNoted) {
+    pImpl->hosterNoted = hosterId;
+    pImpl->hostSampledDead = false;
+  }
 }
 
 void MpActor::NoteHostStoodUp(std::chrono::steady_clock::time_point at)

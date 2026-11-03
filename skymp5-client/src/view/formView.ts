@@ -1286,6 +1286,17 @@ export class FormView {
   // P4: the puppet's graph (AI off, the detours feeding it) takes an attack
   // through the entry
   private replayActions(refr: ObjectReference, model: FormModel): void {
+    // a dead record's carried action (the create word's lastAction, train
+    // 56's late-join replay) is never played: the body is bound dead instead
+    // (x-npc-death-reentry v4's run 20261103-100946 on the watcher: the carried
+    // death Ragdoll played as an event beside the bind's own, two replays at
+    // one re-entry)
+    if (model.isDead === true && model.actionQueue && model.actionQueue.length > 0) {
+      const dropped = model.actionQueue.length;
+      model.actionQueue.splice(0, dropped);
+      logLab("verb:npc-fate", `${dropped} carried action(s) of the dead record ${this.refrId.toString(16)} dropped, not replayed (the body is bound dead instead)`);
+      return;
+    }
     if (FormView.isNpcModel(model) && !FormView.streamSwitch("npcStreamActions")) {
       // the bisect switch: an NPC puppet's queue is dropped unplayed
       if (model.actionQueue && model.actionQueue.length > 0) {

@@ -16,7 +16,7 @@ import { RemoteServer } from "./remoteServer";
 // one actor's hold: the record to stand at, the word's arrival, the asks made
 // (the gate's move counts as the first), the checks run and the reports
 // deferred past it
-type PendingPlacement = { since: number; record: Movement; asks: number; askedAt: number; checks: number; deferred: Array<() => void> };
+type PendingPlacement = { since: number; record: Movement; asks: number; askedAt: number; checks: number; deferred: Array<() => void>; dead: boolean };
 // deferred reports released by a hold run on the next update, never inline
 // (a release from the tick thread, where natives are refused: numidium's
 // review of r3, item 1)
@@ -221,11 +221,20 @@ export class HostService extends ClientListener {
         // dead word ends a live hold unmoved, its deferred reports dropped (the
         // server's word stands)
         if (deadByTheWord || record.isDead) {
+            // a dead word: no move ever (D78 C), but the reports hold until the
+            // engine's copy IS dead here (formView's bind kill at its first
+            // check with 3D) or deadBindTimeoutMs pass, so a fresh process whose
+            // engine loaded the body alive never sends an alive sample of a dead
+            // record (x-npc-death-reentry v4's run 20261103-100946: the server
+            // took such a sample as a resurrection by the host's engine)
             if (live) {
-                this.pendingPlacement.delete(remoteId);
-                logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: dead at the word, a body is never moved (D78 C); the hold released unmoved${live.deferred.length > 0 ? `, ${live.deferred.length} deferred report(s) dropped (the server's word stands)` : ""}`);
+                live.record = record;
+                live.dead = true;
+                logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: dead at the word, a body is never moved (D78 C); the hold waits for the body to be dead here${live.deferred.length > 0 ? `, ${live.deferred.length} deferred report(s) dropped (the server's word stands)` : ""}`);
+                live.deferred = [];
             } else {
-                logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: dead at the word, a body is never moved (D78 C); not held`);
+                this.pendingPlacement.set(remoteId, { since: Date.now(), record, asks: 0, askedAt: 0, checks: 0, deferred: [], dead: true });
+                logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: dead at the word, a body is never moved (D78 C); the reports wait for the body to be dead here`);
             }
             return;
         }
@@ -235,7 +244,7 @@ export class HostService extends ClientListener {
             live.record = record;
             return;
         }
-        this.pendingPlacement.set(remoteId, { since: Date.now(), record, asks: 0, askedAt: 0, checks: 0, deferred: [] });
+        this.pendingPlacement.set(remoteId, { since: Date.now(), record, asks: 0, askedAt: 0, checks: 0, deferred: [], dead: false });
     }
 
     // a demote (the word names another game) or any other end of the
@@ -335,6 +344,19 @@ export class HostService extends ClientListener {
             }
             return;
         }
+        if (hold.dead) {
+            const body = Actor.from(refr);
+            if (body && body.isDead()) {
+                this.pendingPlacement.delete(remoteId);
+                logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: the body is dead here after ${now - hold.since} ms (the bind); released`);
+                this.runDeferred(remoteId, hold.deferred);
+            } else if (now - hold.since >= HostService.deadBindTimeoutMs) {
+                this.pendingPlacement.delete(remoteId);
+                logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: dead at the word but alive here after ${now - hold.since} ms; released (the server's host stamp holds the death)`);
+                this.runDeferred(remoteId, hold.deferred);
+            }
+            return;
+        }
         const r = hold.record;
         const engineCell = ObjectReferenceEx.getWorldOrCell(refr);
         const ex = refr.getPositionX(), ey = refr.getPositionY(), ez = refr.getPositionZ();
@@ -395,6 +417,9 @@ export class HostService extends ClientListener {
     private static readonly maxAsks = 5;
     private static readonly placementTimeoutMs = 2000;
     private static readonly noFormTimeoutMs = 5000;
+    // a dead word's hold: the bind kill runs within formView's 2 s check once
+    // the 3D loads; past this the server's host stamp holds the death anyway
+    private static readonly deadBindTimeoutMs = 8000;
 
     private onCellFullyLoaded(e: CellFullyLoadedEvent) {
         const id = e.cell.getFormID();

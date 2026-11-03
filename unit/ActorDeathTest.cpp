@@ -200,6 +200,58 @@ TEST_CASE("A hosted NPC the record holds dead whose host samples it alive "
 // frame before the kill word lands, and that first live sample stood the
 // body up after a restart and a relaunch; so a live sample stands a body
 // dead before this process only after its host has sampled it dead once
+// x-npc-death-reentry v4's run 20261103-100946 on playtest 41's break-3 build:
+// a host RELAUNCHED after the death (a fresh process) loaded Hilde alive and
+// its first sample stood her up ("35534 stands again with health 1.000 on
+// ff000000's sample, 171 s after its death"); the F9 guard keyed on the
+// death's stamp, which this process held. The stamp is the host's now: a
+// change of host clears it, so any host whose game has not sampled the body
+// dead stands nothing with a live sample
+TEST_CASE("A new host's first live sample of a dead NPC stands nothing until "
+          "that host has sampled the body dead",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  constexpr uint32_t kForestCell = 0x9810;
+  auto& host = Arrive(p, 0, kHost);
+  auto& other = Arrive(p, 1, kOther);
+  auto& actor = Standing(p, kPredator);
+  actor.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
+  Host(p, 0, kForestCell);
+  REQUIRE(p.worldState.HostOf(actor) == &host);
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  REQUIRE(actor.DiedAgo(std::chrono::steady_clock::now()).has_value());
+  // the first host samples it dead: its stamp
+  State(p, 0, kPredator, 0.f);
+  REQUIRE(actor.IsDead());
+
+  // the first host leaves the cell and the ring; after the grace the other
+  // game hosts it, and the word to the new host clears the stamp
+  {
+    RawMessageData raw;
+    raw.userId = 0;
+    CellLoadedMessage unloaded;
+    unloaded.cell = kForestCell;
+    unloaded.loaded = false;
+    p.GetActionListener().OnCellLoaded(raw, unloaded);
+  }
+  host.SetPos(kForest + NiPoint3{ 60000.f, 60000.f, 0.f });
+  Host(p, 1, kForestCell);
+  REQUIRE(p.worldState.HostOf(actor) == &other);
+
+  // the new host's first live sample: its game has not sampled the body
+  // dead, so the record stays dead
+  State(p, 1, kPredator, 1.f);
+  REQUIRE(actor.IsDead());
+  // it samples the body dead, then alive: the engine's own respawn, taken
+  State(p, 1, kPredator, 0.f);
+  REQUIRE(actor.IsDead());
+  State(p, 1, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+}
+
 TEST_CASE("A hosted NPC dead since before this server process stands again "
           "at its host's live sample only after its host has sampled it "
           "dead once",

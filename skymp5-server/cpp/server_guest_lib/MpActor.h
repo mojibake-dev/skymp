@@ -380,6 +380,11 @@ public:
   void NoteHostSampledDead();
   bool HostSampledDead() const;
   void ClearHostSampledDead();
+  // the hoster word's target, noted so a CHANGE of host clears the stamp: a
+  // new host (a relaunched one, a later joiner) must sample the body dead
+  // before any live sample of its stands it (x-npc-death-reentry v4, run
+  // 20261103-100946: a fresh process's first sample stood Hilde up)
+  void NoteHoster(uint32_t hosterId);
   // thuum docs/verbs/npc-fate.md (playtest 40's F5, 2026-11-02): when this
   // body last stood again by its host's engine on the server's word
   // (ActionListener::OnHostedActorState's resurrection branch). A reanimated

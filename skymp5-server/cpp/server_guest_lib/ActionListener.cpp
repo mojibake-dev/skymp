@@ -905,18 +905,20 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
     const bool reanimated = reanimatedAgo &&
       reanimatedAgo->count() <=
         static_cast<int64_t>(MpActor::kReanimateWindowMs);
-    const auto diedAgoForGuard = actor->DiedAgo(now);
-    if (!diedAgoForGuard && !actor->IsPlacedDead() && !reanimated &&
-        !actor->HostSampledDead()) {
-      // thuum docs/verbs/npc-fate.md (playtest 40's F9): a body dead since
-      // before this process (no stamp) is loaded alive by its host's engine
-      // for a frame before the kill word lands, and that frame's sample read
-      // here as a resurrection after a restart and a relaunch ("1066df stands
-      // again ... its death before this process", 20:20:35Z; Faendal with
-      // it). A live sample stands such a body only after its host has
-      // sampled it dead once (the engine's own respawn or a reanimation
-      // follows a corpse), or within a reanimate's window; said once in ten
-      // seconds per body, at debug
+    if (!actor->IsPlacedDead() && !reanimated && !actor->HostSampledDead()) {
+      // thuum docs/verbs/npc-fate.md (playtest 40's F9, and
+      // x-npc-death-reentry v4's run 20261103-100946): a host's engine that
+      // has not seen the death loads the body alive (a corpse's loading frame
+      // before the kill word lands; a fresh process after a relaunch; a later
+      // joiner that hosts), and its first live sample read here as a
+      // resurrection ("35534 stands again with health 1.000 on ff000000's
+      // sample, 171 s after its death"). A live sample stands a body only
+      // after ITS HOST has sampled it dead once (the engine's own respawn or a
+      // reanimation follows a corpse), or within a reanimate's window; the
+      // stamp is the host's (cleared at every change of host,
+      // MpActor::NoteHoster), not the death's, so a death stamped in this
+      // process is guarded the same. Said once in ten seconds per body, at
+      // info: the lab reads it
       static std::unordered_map<uint32_t,
                                 std::chrono::steady_clock::time_point>
         unstampedLines;
@@ -924,10 +926,11 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
       if (last == std::chrono::steady_clock::time_point{} ||
           now - last >= std::chrono::seconds(10)) {
         last = now;
-        spdlog::debug("[verb:npc-fate] {:x} is dead since before this "
-                      "process: {:x}'s live sample (health {:.3f}) before any "
-                      "dead one stands nothing (playtest 40's F9)",
-                      actor->GetFormId(), myActor->GetFormId(), msg.health);
+        spdlog::info("[verb:npc-fate] {:x}'s live sample (health {:.3f}) of "
+                     "{:x} stands nothing: its game has not sampled the body "
+                     "dead (a fresh process, a new host, or the corpse's "
+                     "loading frame); the record stays dead",
+                     myActor->GetFormId(), msg.health, actor->GetFormId());
       }
     } else if (actor->IsPlacedDead() && !reanimated) {
       static std::unordered_map<uint32_t,

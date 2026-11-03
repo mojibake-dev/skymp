@@ -1734,10 +1734,12 @@ void FlipHostedFlags(PartOne& partOne, MpActor& viewer, uint32_t cell,
     // names the simulator the table answers, which is the host for an actor
     // with no row (a grant into the cell ends the rows into it)
     const uint32_t simulator = partOne.SimulatorOf(*actor);
-    // the record ahead of the word for the game that takes the actor here
-    // (non-owning-seat.md section 3; the grant bounce of 055217 and 060106)
-    if (host && simulator == host->GetFormId()) {
-      partOne.SendActorKeyframe(*actor, *host);
+    // the record ahead of EVERY word to the game the word names, the host's
+    // or another's (non-owning-seat.md section 3; the grant bounce of 055217
+    // and 060106; a host swap's Release runs after the grant has named the
+    // new host, so its flip names the new host too and carries the keyframe)
+    if (MpActor* sim = PlayerActor(partOne, simulator)) {
+      partOne.SendActorKeyframe(*actor, *sim);
     }
     actor->UpdateHoster(simulator);
   }
@@ -2587,8 +2589,11 @@ void PartOne::SendActorKeyframe(MpActor& actor, MpActor& to)
   msg.data.runMode = "Standing";
   msg.data.isWeapDrawn = actor.IsWeaponDrawn();
   msg.data.isDead = actor.IsDead();
+  // the edge validates the keyframe like any movement (wire-validate's
+  // bounds), so a record's health is clamped to its range rather than
+  // refused silently while the word still goes
   msg.data.healthPercentage =
-    actor.GetChangeForm().actorValues.healthPercentage;
+    std::clamp(actor.GetChangeForm().actorValues.healthPercentage, 0.f, 1.f);
   GetSendTarget().Send(userId, msg, true);
 }
 

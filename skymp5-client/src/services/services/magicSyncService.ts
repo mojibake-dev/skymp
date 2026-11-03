@@ -601,7 +601,7 @@ export class MagicSyncService extends ClientListener {
     // thuum docs/verbs/cell-host.md: an actor this game hosts (its cell
     // granted here, the server marking it nobody else's)
     private isHostedByMe(localId: number): boolean {
-        return this.controller.lookupListener(HostService).isMineLocal(localId);
+        return this.controller.lookupListener(HostService).isReportable(localId);
     }
 
     // thuum docs/verbs/npc-stream.md (train 53, H-53b): a hosted caster's cast

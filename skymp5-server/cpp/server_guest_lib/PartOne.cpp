@@ -4938,28 +4938,28 @@ void PartOne::SetContainerSharing(const std::string& mode)
 }
 
 // thuum docs/verbs/npc-handoff.md (D9's settle): server-settings.json's
-// handoffPassSettleMs, bounded to 0 (the settle off) to 60 s; a value
-// outside it is a mistake, said once and clamped (a huge window would hold
-// every passed actor out of the cell it came from for good, the door's
-// pre-check refusing its return)
+// handoffPassSettleMs; a negative value is a mistake read as 0 (the settle
+// off), and the rule's own cap (wire-rules cells::PASS_SETTLE_MAX_MS, 60 s)
+// clamps the rest, each said once
 void PartOne::SetPassSettleMs(int64_t ms)
 {
-  constexpr int64_t kMaxMs = 60'000;
-  int64_t clamped = ms;
+  uint64_t asked = 0;
   if (ms < 0) {
-    clamped = 0;
-  } else if (ms > kMaxMs) {
-    clamped = kMaxMs;
+    spdlog::warn("[verb:npc-handoff] handoffPassSettleMs {} is negative; 0 "
+                 "(the settle off) used",
+                 ms);
+  } else {
+    asked = static_cast<uint64_t>(ms);
   }
-  if (clamped != ms) {
-    spdlog::warn("[verb:npc-handoff] handoffPassSettleMs {} is outside 0 to "
-                 "{}; {} used",
-                 ms, kMaxMs, clamped);
+  const uint64_t used = pImpl->cells->set_pass_settle_ms(asked);
+  if (used != asked) {
+    spdlog::warn("[verb:npc-handoff] handoffPassSettleMs {} is above the "
+                 "rule's cap; {} used",
+                 asked, used);
   }
-  pImpl->cells->set_pass_settle_ms(static_cast<uint64_t>(clamped));
   spdlog::info("[verb:npc-handoff] handoffPassSettleMs {}: the pass's settle "
                "window {}",
-               clamped, clamped == 0 ? "off" : "set");
+               used, used == 0 ? "off" : "set");
 }
 
 // thuum docs/verbs/word-wall.md (M4): the word a wall trigger teaches, read

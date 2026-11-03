@@ -1993,7 +1993,9 @@ mod ffi {
         fn pass_settle_ms() -> u64;
         /// The server's setting for the pass's settle window
         /// (handoffPassSettleMs): 0 switches the settle off.
-        fn set_pass_settle_ms(self: &mut Cells, ms: u64);
+        /// Returns the window set: `ms` clamped to wire-rules
+        /// cells::PASS_SETTLE_MAX_MS (60 s), so the core can warn.
+        fn set_pass_settle_ms(self: &mut Cells, ms: u64) -> u64;
 
         /// thuum docs/verbs/prop-physics.md (ADR-058): one simulating seat per
         /// physics prop, the cell's host by default, the last toucher while
@@ -2988,8 +2990,8 @@ impl Cells {
         host_decisions(&self.0, decisions)
     }
 
-    fn set_pass_settle_ms(&mut self, ms: u64) {
-        self.0.set_pass_settle_ms(ms);
+    fn set_pass_settle_ms(&mut self, ms: u64) -> u64 {
+        self.0.set_pass_settle_ms(ms)
     }
 
     fn stale(&mut self, player: u32, now_ms: u64) -> Vec<HostDecision> {

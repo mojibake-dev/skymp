@@ -785,9 +785,11 @@ public:
     Accept = 1,
     Follow = 2,
     Pass = 3,
-    // dropped as a stale copy's sample (npc-handoff D9's settle, playtest
-    // 41): a report out of a cell the actor was followed or passed into
-    // younger than the settle window; not a refusal of the sender's right
+    // dropped as a stale copy's sample, not a refusal of the sender's right:
+    // a follower's report out of the cell it followed the actor into within
+    // FOLLOW_SETTLE_MS (x-handoff-door 013234), or the new host's report
+    // back into the cell the actor came from within the pass's settle window
+    // (npc-handoff D9's settle, playtest 41)
     Stale = 4
   };
   MoveVerdict MayMoveActor(const MpActor& sender, const MpActor& actor,
@@ -796,7 +798,8 @@ public:
   // window after a pass in which the new host's report back into the cell the
   // actor came from is a stale copy's sample; 0 switches the settle off
   // (the reliable copy of the passing report still runs), unset keeps
-  // wire-rules' PASS_SETTLE_MS; bounded to 0 to 60 s
+  // wire-rules' PASS_SETTLE_MS; a negative value reads as 0 and the rule
+  // clamps to its PASS_SETTLE_MAX_MS (60 s)
   void SetPassSettleMs(int64_t ms);
   // The same verdict without recording anything (no follow written or
   // ended): the door's pre-check, before the host's engine is asked to walk

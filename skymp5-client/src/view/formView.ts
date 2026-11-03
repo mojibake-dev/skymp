@@ -18,6 +18,7 @@ import { PlayerCharacterDataHolder } from "./playerCharacterDataHolder";
 import { setActorValuePercentage } from "../sync/actorvalues";
 import { ModelApplyUtils } from "./modelApplyUtils";
 import { ContainerApplyQueue } from "./containerApplyQueue";
+import { applyLiveContainer } from "./liveContainer";
 import { localIdToRemoteId } from "./worldViewMisc";
 import { SpApiInteractor } from "../services/spApiInteractor";
 import { WorldCleanerService } from "../services/services/worldCleanerService";
@@ -814,18 +815,19 @@ export class FormView {
       const npcCopy = FormView.isNpcModel(model) && model.isMyClone !== true;
       const deadBody = !!asActor && (this.refrId < 0xff000000 || npcCopy) && asActor.isDead();
       if (!asActor || deadBody) {
-        // thuum docs/verbs/npc-fate.md (playtest 34, section 5): a body keeps
-        // the engine's dressing (the pin made the worn sets equal); the
-        // server's list is the loot rows, laid in as a diff alone, never
-        // through resetBase's removeAllItems and resetContainer
-        ModelApplyUtils.applyModelInventory(refr, model.inventory, !deadBody);
-        model.inventory = undefined;
         if (liveChest) {
-          const api = sp as unknown as Record<string, unknown>;
-          const refresh = api["refreshContainerMenu"];
-          const redrawn = typeof refresh === "function" ? !!(refresh as (id: number) => boolean)(this.refrId) : false;
-          logLab("verb:containers", `live chest ${this.refrId.toString(16)}: the server's inventory applied under the open menu, redraw ${redrawn ? "asked" : "unavailable"}`);
+          // thuum ADR-061: under this seat's open menu the record is the live
+          // container's apply (by base counts, the menu reopened on another
+          // occupant's change; view/liveContainer.ts), a body's as a chest's
+          applyLiveContainer(refr, this.refrId, model.inventory, deadBody);
+        } else {
+          // thuum docs/verbs/npc-fate.md (playtest 34, section 5): a body keeps
+          // the engine's dressing (the pin made the worn sets equal); the
+          // server's list is the loot rows, laid in as a diff alone, never
+          // through resetBase's removeAllItems and resetContainer
+          ModelApplyUtils.applyModelInventory(refr, model.inventory, !deadBody);
         }
+        model.inventory = undefined;
       }
     }
 

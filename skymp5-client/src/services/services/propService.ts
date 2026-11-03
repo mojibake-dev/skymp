@@ -22,13 +22,36 @@ const TAG = "verb:prop-physics";
 const TOUCH_CONTACT = 0;
 const TOUCH_GRAB = 1;
 const TOUCH_DROP = 2;
+// a shout's or spell's impulse (the server's reach for it is the cast's,
+// kPropImpulseReach, not the contact's): a prop that moved by itself within
+// IMPULSE_WINDOW_MS of this seat's own shout or cast release is claimed by
+// it (playtest 41, 2026-11-02, Eli: "just blast a bunch of cabbages ... only
+// some stayed synced": the contact's claims from 735 units were refused as
+// E_PROP_REACH and the blown cabbages stayed the host's)
+const TOUCH_IMPULSE = 3;
+const IMPULSE_WINDOW_MS = 1500;
+// how far a blast reaches: inside the window every tracked prop this seat
+// does not simulate within this many units of the player is read for a move
+// of its own (the server's kPropImpulseReach), whatever the contact fallback
+// says; playtest 41's break two (Eli: "the cabbages launched but i didnt see
+// where they went"): the window alone claimed nothing, since the only reads
+// were the contact stand-in's, off by default and 128 units deep
+const IMPULSE_REACH = 2048;
 
 // How often the tracked set is rebuilt from the view's references, ms
 const RESCAN_MS = 500;
 // A prop is tracked within this many units of the player, the nearest
-// TRACK_MAX of them
-const TRACK_RADIUS = 1024;
-const TRACK_MAX = 64;
+// TRACK_MAX of them. Playtest 41 (Eli, 2026-11-02: the mine's cart "DOES
+// move until they're too far apart, then it stops syncing. same with physics
+// items u can pick up"): 1024 was the cutoff on both ends, the simulator
+// streaming only what it tracked and the watcher applying only what it
+// tracked, so two players a cell apart saw nothing of each other's props.
+// An exterior cell is 4096 units and the server subscribes a seat to the
+// grid around it, so the radius is a cell now; the nearest TRACK_MAX still
+// bound the work (UNMEASURED: the per-frame read of 96 bodies on the
+// simulator; the probe x-prop-range reads it)
+const TRACK_RADIUS = 4096;
+const TRACK_MAX = 96;
 // game-file item references the server subscribed this seat to, remembered from their CreateActor (see engineRefs)
 const ENGINE_REFS_MAX = 1024;
 // A prop just tracked is left alone this long: the view's SpawnProcess places
@@ -417,7 +440,9 @@ export class PropService extends ClientListener {
         }
         const simulate = myId !== 0 && owner === myId;
         const near = prop.distance <= TOUCH_RADIUS + 512;
-        const touchReadDue = fallback && !simulate && near && now - prop.lastTouchReadAt >= TOUCH_READ_MS;
+        const inImpulse = now - this.impulseAt <= IMPULSE_WINDOW_MS;
+        const impulseReadDue = inImpulse && !simulate && prop.distance <= IMPULSE_REACH && now - prop.lastTouchReadAt >= TOUCH_READ_MS;
+        const touchReadDue = impulseReadDue || (fallback && !simulate && near && now - prop.lastTouchReadAt >= TOUCH_READ_MS);
         // D73's rest: a follower's Keyframed body goes Dynamic REST_DYNAMIC_MS after
         // the asleep sample or STREAM_LIVE_MS after the last awake one, so a kick
         // or a grab acts on it at once; the check below needs the reference, so
@@ -726,13 +751,16 @@ export class PropService extends ClientListener {
         if (now - prop.lastSampleAt < TOUCH_QUIET_MS + GLIDE_MAX_MS || now - prop.placedAt < TOUCH_QUIET_MS + GLIDE_MAX_MS) {
             return;
         }
-        if (ObjectReferenceEx.getDistance(playerPos, read.pos) > TOUCH_RADIUS) {
+        // the contact's stand-in reads a prop within arm's reach; a blast's read
+        // (inside the window of this seat's own shout or cast) reaches the room
+        const reach = now - this.impulseAt <= IMPULSE_WINDOW_MS ? IMPULSE_REACH : TOUCH_RADIUS;
+        if (ObjectReferenceEx.getDistance(playerPos, read.pos) > reach) {
             return;
         }
         if (now - prop.lastClaimAt < CLAIM_EVERY_MS) {
             return;
         }
-        this.claim(prop, TOUCH_CONTACT, now);
+        this.claim(prop, this.contactTouch(now), now);
     }
 
     // The stream's transform on the Keyframed body: at sleep or from
@@ -830,7 +858,7 @@ export class PropService extends ClientListener {
                 logTrace(this, `${head}: claimed ${now - prop.lastClaimAt} ms ago, no claim`);
                 continue;
             }
-            this.claim(prop, TOUCH_CONTACT, now);
+            this.claim(prop, this.contactTouch(now), now);
             logLab(TAG, `${head}: claimed`);
         }
     }
@@ -1167,4 +1195,18 @@ export class PropService extends ClientListener {
     // the player's drops awaiting the server's reference
     private drops: Array<{ baseId: number; at: number }> = [];
     private lastRescan = 0;
+    // when this seat last released a shout or a cast (ShoutService,
+    // MagicSyncService): a prop moving on its own inside the window is the
+    // blast's, claimed by touch IMPULSE
+    private impulseAt = 0;
+
+    noteImpulse(): void {
+        this.impulseAt = Date.now();
+    }
+
+    // the touch a prop that moved by itself is claimed with: the blast's
+    // inside the window of this seat's own release, the contact's otherwise
+    private contactTouch(now: number): number {
+        return now - this.impulseAt <= IMPULSE_WINDOW_MS ? TOUCH_IMPULSE : TOUCH_CONTACT;
+    }
 }

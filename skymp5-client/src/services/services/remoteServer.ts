@@ -73,6 +73,8 @@ import { ActorJumpMessage } from '../messages/actorJumpMessage';
 import { UpdateAnimVariablesMessage } from '../messages/updateAnimVariablesMessage';
 import { UpdateActionMessage } from '../messages/updateActionMessage';
 import { MsgType } from '../../messages';
+import { applyLiveContainer } from '../../view/liveContainer';
+import { PlayerCharacterDataHolder } from '../../view/playerCharacterDataHolder';
 
 export const getPcInventory = (): Inventory | undefined => {
   const res = storage['pcInv'];
@@ -966,7 +968,6 @@ export class RemoteServer extends ClientListener {
   // second, long past the report that follows it on the same connection
   private readonly placedIdx = new Map<number, number>();
   // playtest 40's F8: one engine redraw per batch of live changes on an open chest
-  private readonly liveChestRedraw = new Map<number, ReturnType<typeof setTimeout>>();
   private onActorJumpMessage(event: ConnectionMessage<ActorJumpMessage>): void {
     this.placedIdx.set(event.message.idx, Date.now() + 1000);
   }
@@ -1050,65 +1051,22 @@ export class RemoteServer extends ClientListener {
           return;
         }
         if (msg.propName === 'inventory') {
-          ModelApplyUtils.applyModelInventory(refr, msgData as Inventory);
-          // thuum memo D52 B (playtest 37, 2026-10-28): this is the path a shared
-          // chest's re-sent inventory takes while this seat's ContainerMenu is
-          // open on it (c1's addItemEx on 36c37 within 0.4 s of c2's puts and
-          // take, 22:49Z); the engine does not redraw the menu from the apply,
-          // so the platform's refreshContainerMenu is asked (it checks the menu's
-          // own target; absent on an older dist). HYPOTHESIS until the chest
-          if (Ui.isMenuOpen('ContainerMenu')) {
-            const api = sp as unknown as Record<string, unknown>;
-            const refresh = api['refreshContainerMenu'];
-            // the setting chestRedraw: unset, the engine's in-place redraw (the
-            // apply lands under the paused menu and the platform posts the
-            // engine's inventory-update message, re-container-menu-refresh.md);
-            // "reopen", the flicker fallback below
-            const s = settings['skymp5-client'] as Record<string, unknown> | undefined;
-            const pick = s ? String(s['chestRedraw'] ?? 'inplace') : 'inplace';
-            if (pick === 'reopen') {
-              // the fallback (playtest 37, findings 29 and 30: the list's
-              // re-read showed nothing and took the store button): the engine
-              // draws a ContainerMenu whole at its open, so the menu is closed
-              // (the engine's kHide through the platform's CloseMenu, as the
-              // lab does) and the chest is activated again through the
-              // server's own flow: the closing activation leaves, the new one
-              // brings the inventory and the OpenContainer back. A flicker per
-              // change, TES3MP's live view at that cost
-              callNative('TESModPlatform', 'CloseMenu', undefined, 'ContainerMenu');
-              const me = localIdToRemoteId(0x14);
-              if (me) {
-                (async () => {
-                  await Utility.wait(0.4);
-                  this.controller.emitter.emit('sendMessage', {
-                    message: { t: MsgType.Activate, data: { caster: me, target: refrId, isSecondActivation: false } },
-                    reliability: 'reliable',
-                  });
-                })();
-              }
-              logTrace(this, `live chest ${refrId.toString(16)}: inventory applied under the open ContainerMenu, the menu closed and the chest asked again (reopen)`);
-            } else {
-              // thuum playtest 40's F8: a batch of server changes (a take and two
-              // puts within seconds) asked the engine's redraw for each, and the
-              // menu's selection ended on the player's pane, where the next press
-              // on a book ran EquipItem (the server read the stored book) instead
-              // of the transfer: one redraw per batch, 300 ms after its last
-              // change (HYPOTHESIS: playtest 38's repoint, fewer rebuilds)
-              const pending = this.liveChestRedraw.get(refrId);
-              if (pending !== undefined) {
-                clearTimeout(pending);
-              }
-              this.liveChestRedraw.set(refrId, setTimeout(() => {
-                this.liveChestRedraw.delete(refrId);
-                if (!Ui.isMenuOpen('ContainerMenu')) {
-                  return;
-                }
-                const askedLater = typeof refresh === 'function' ? !!(refresh as (id: number) => boolean)(refrId) : false;
-                logTrace(this, `live chest ${refrId.toString(16)}: the batch's redraw ${askedLater ? 'asked' : 'unavailable on this dist'}`);
-              }, 300));
-              const asked = typeof refresh === 'function';
-              logTrace(this, `live chest ${refrId.toString(16)}: inventory applied under the open ContainerMenu, the engine's redraw ${asked ? 'queued for the batch' : 'unavailable on this dist'}`);
-            }
+          // thuum ADR-061 (playtest 41's item 7, 40's F8, 37's findings 29 and
+          // 30): a container's record under this seat's open ContainerMenu on
+          // it is the live container's apply (view/liveContainer.ts: the
+          // record by base counts, this seat's own echo drawing nothing,
+          // another occupant's change followed by the menu's reopen); a
+          // record for any other reference, or with no menu open, is the
+          // full apply as before. A game-file CONT has no view, so its
+          // records land here; a corpse's land in formView (its view)
+          const base = refr.getBaseObject();
+          const baseType = base ? base.getType() : -1;
+          const corpse = baseType === FormType.NPC && !!Actor.from(refr)?.isDead();
+          const underMyMenu = Ui.isMenuOpen('ContainerMenu') && PlayerCharacterDataHolder.getCrosshairRefId() === refrId;
+          if (underMyMenu && (baseType === FormType.Container || corpse)) {
+            applyLiveContainer(refr, refrId, msgData as Inventory, corpse);
+          } else {
+            ModelApplyUtils.applyModelInventory(refr, msgData as Inventory);
           }
         } else if (msg.propName === 'isOpen') {
           ModelApplyUtils.applyModelIsOpen(refr, !!msgData);

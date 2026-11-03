@@ -220,6 +220,37 @@ export class DeathService extends ClientListener {
       this.restPuppetAtHost(actor);
       actor.endDeferredKill();
       if (silent) {
+        // thuum playtest 41 (2026-11-03, Eli: "NPC's stay dead but on a cell
+        // reentry i hear their deaths again which is weird"): the bind kill
+        // below IS KillSilent, so the death sound is not the OnDeath events'
+        // (the HYPOTHESIS in formView's bind was wrong): it rides the kill's
+        // own animation. Which event carries it is the read: the body's
+        // animation events are logged for 2 s around this kill ("body <id>:
+        // anim event <name> during the silent kill"), so the next cell
+        // re-entry names the event to blank for a dead record's load
+        // (rule 3: a reloading engine renders the dead state and does not
+        // re-run the death). The trace costs one hook on this id.
+        const traced = actor.getFormID();
+        const until = Date.now() + 2000;
+        const handle = this.sp.hooks.sendAnimationEvent.add(
+          {
+            enter: (ctx) => {
+              if (Date.now() <= until && ctx.animEventName) {
+                logLab("verb:npc-fate", `body ${traced.toString(16)}: anim event ${ctx.animEventName} during the silent kill`);
+              }
+            },
+            leave() { },
+          },
+          traced,
+          traced,
+        );
+        this.sp.Utility.wait(2.5).then(() => {
+          try {
+            this.sp.hooks.sendAnimationEvent.remove(handle);
+          } catch (e) {
+            logTrace(this, `the silent kill's anim trace could not be removed: ${e}`);
+          }
+        });
         actor.killSilent(killer);
         // thuum playtest 38's finding 71 ("essentially t posing half stuck in
         // the ground"): a body moved to its record's spot and killed silently
@@ -240,7 +271,33 @@ export class DeathService extends ClientListener {
           again.pushActorAway(again, 0);
         });
       } else {
+        // thuum playtest 41 (2026-11-02, Eli: "on prisoners screen instead of
+        // ragdolling it froze"): the giant frostbite spider, killed by the host
+        // while it hung in its ambush furniture, died on the guest's screen in
+        // the furniture idle with no fall: a puppet killed inside a furniture
+        // or ambush animation plays no death fall, the deaths2 flag keep ticks
+        // a graph that never leaves the idle, and the body stands frozen. The
+        // engine's push with no force (the silent branch's cure above, playtest
+        // 38's finding 71) ragdolls any dead actor where it stands, so after
+        // the kill the body that has not dropped a stride within 300 ms gets
+        // the push; a body already falling is left to its fall. HYPOTHESIS
+        // until x-npc-death-ambush reads a creature killed in its ambush
+        // furniture on the guest's screen
+        const id = actor.getFormID();
+        const zBefore = actor.getPositionZ();
         actor.kill(killer);
+        this.sp.Utility.wait(0.3).then(() => {
+          const again = Actor.from(this.sp.Game.getFormEx(id));
+          if (!again || !again.isDead()) {
+            return;
+          }
+          const dropped = Math.abs(again.getPositionZ() - zBefore);
+          if (dropped >= 16) {
+            return;
+          }
+          again.pushActorAway(again, 0);
+          logLab("verb:npc-fate", `body ${id.toString(16)}: no fall ${dropped.toFixed(0)} units after the kill, pushed to ragdoll (playtest 41's spider)`);
+        });
       }
       // thuum docs/verbs/npc-fate.md (the deaths, revised by playtest 37's
       // findings 58 and 62): the body is NOT activation-blocked, on any seat.

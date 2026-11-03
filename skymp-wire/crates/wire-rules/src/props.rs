@@ -731,7 +731,8 @@ mod tests {
         p.reached(C1, &[0x9733, CELL]);
         assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, false, 10.0, 2_080)), TransformVerdict::Woken(3));
         assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, true, 10.0, 2_090)), TransformVerdict::Returned(4));
-        assert_eq!(p.unloaded(C1, CELL, 2_095), vec![]);
+        // the second unload returns the cabbage alone: its stream landed it in this cell at 2_075, the basket rests
+        assert_eq!(p.unloaded(C1, CELL, 2_095), vec![(0x5678, 2)]);
         assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, false, 10.0, 2_096)), TransformVerdict::Away);
         p.loaded(C1, CELL);
         assert_eq!(p.transform(&facts(BASKET, C1, CELL, C1, false, 10.0, 2_097)), TransformVerdict::Woken(5));

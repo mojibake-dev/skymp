@@ -2016,6 +2016,10 @@ void PartOne::OnDeathState(MpActor& actor, bool isDead)
   }
 }
 
+// degrees to radians for the snippet's rotation arguments (the client's
+// moveRefrToPosition takes radians, as remoteServer's teleport converts)
+static constexpr float kDegToRad = 3.14159265358979323846f / 180.0f;
+
 void PartOne::OnActorSighting(MpActor& reporter, uint32_t refrId,
                               uint32_t worldOrCell, const NiPoint3& pos,
                               const NiPoint3& rot)
@@ -2078,28 +2082,67 @@ void PartOne::OnActorSighting(MpActor& reporter, uint32_t refrId,
     // launches the engines disagreed about where a resident stood, the
     // first sighting placed the record in the inn its sighter hosts, and the
     // other game's own reference outside stayed an orphan no record drives
-    // (no promote, no demote, no move; frozen on its screen). The sighter's
-    // engine is told to hide its copy (ObjectReference.Disable, no fade),
-    // once a minute per sighter and actor; formView re-enables a disabled
-    // reference when the record comes back into that game's grid
+    // (no promote, no demote, no move; frozen on its screen). Playtest 40's
+    // F2 (Hilde's ghost) and playtest 42's F1 (2026-11-03, "a duplicate
+    // embry": c2's own Embry stood solid at the inn's porch while the record
+    // sat inside under c1, and Hod walked into it) read the same way, and
+    // both showed that the Disable snippet this block sent does not hold a
+    // puppet-flagged copy (its roster kept sighting the porch copy every
+    // 10 s after each hide). So the sighter's engine is now told to MOVE its
+    // copy to the record, cell and position, through the native the client
+    // uses for a player's own cross-cell move (TESModPlatform's
+    // moveRefrToPosition, the same call formView's gate makes when a view
+    // exists): a copy moved into an interior this game has not loaded loses
+    // its 3D and its collision here, and stands at the record when that game
+    // walks in. The record's cell-or-world form goes as both the Cell and
+    // the WorldSpace argument, typed each way: the client's deserializer
+    // casts and yields null for the one that does not fit, so no null
+    // travels (a null argument would fault its deserializer). Once a minute
+    // per sighter and actor, as before. HYPOTHESIS until the lab: a move
+    // into a cell the mover has not loaded lands (the client's player
+    // teleport takes this path; an NPC copy is the first read).
     static std::unordered_map<uint64_t, std::chrono::steady_clock::time_point>
-      hidden;
+      moved;
     const uint64_t key =
       (static_cast<uint64_t>(reporter.GetFormId()) << 32) | refrId;
     const auto now = std::chrono::steady_clock::now();
-    auto& last = hidden[key];
+    auto& last = moved[key];
     if (last == std::chrono::steady_clock::time_point{} ||
         now - last >= std::chrono::minutes(1)) {
       last = now;
+      const uint32_t recordCellOrWorld =
+        actor->GetCellOrWorld().ToFormId(worldState.espmFiles);
+      const NiPoint3 recordPos = actor->GetPos();
+      const NiPoint3 recordRot = actor->GetAngle();
+      SpSnippetObjectArgument copy;
+      copy.formId = refrId;
+      copy.type = "ObjectReference";
+      SpSnippetObjectArgument asCell;
+      asCell.formId = recordCellOrWorld;
+      asCell.type = "Cell";
+      SpSnippetObjectArgument asWorld;
+      asWorld.formId = recordCellOrWorld;
+      asWorld.type = "WorldSpace";
       const std::vector<std::optional<
         std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
-        noFade{ false };
-      SpSnippet("ObjectReference", "Disable", noFade, refrId)
+        toRecord{ copy,
+                  asCell,
+                  asWorld,
+                  static_cast<double>(recordPos.x),
+                  static_cast<double>(recordPos.y),
+                  static_cast<double>(recordPos.z),
+                  static_cast<double>(recordRot.x * kDegToRad),
+                  static_cast<double>(recordRot.y * kDegToRad),
+                  static_cast<double>(recordRot.z * kDegToRad) };
+      SpSnippet("TESModPlatform", "moveRefrToPosition", toRecord, 0)
         .Execute(&reporter, SpSnippetMode::kNoReturnResult);
-      spdlog::info("PartOne - npc-puppet: {:x}'s own copy of {:x} hidden (its "
-                   "record stands in {:x}, which {:x} hosts)",
-                   reporter.GetFormId(), refrId, standing.value_or(0),
-                   other->GetFormId());
+      spdlog::info("PartOne - npc-puppet: {:x}'s own copy of {:x} told to move "
+                   "to the record at ({:.0f}, {:.0f}, {:.0f}) in {:x} (its "
+                   "record stands in {:x}, which {:x} hosts; it stood at ({:.0f}, "
+                   "{:.0f}, {:.0f}) in {:x} here)",
+                   reporter.GetFormId(), refrId, recordPos.x, recordPos.y,
+                   recordPos.z, recordCellOrWorld, standing.value_or(0),
+                   other->GetFormId(), pos.x, pos.y, pos.z, worldOrCell);
     }
     return drop("its record stands in a cell another game hosts");
   }

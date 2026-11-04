@@ -1,4 +1,4 @@
-import { FormType, Game, ObjectReference, Utility } from 'skyrimPlatform';
+import { FormType, ObjectReference, Utility } from 'skyrimPlatform';
 import { ClientListener, CombinedController, Sp } from './clientListener';
 import { ConnectionMessage } from '../events/connectionMessage';
 import { ObjectAnimationMessage } from '../messages/objectAnimationMessage';
@@ -6,7 +6,7 @@ import { CreateActorMessage } from '../messages/createActorMessage';
 import { MsgType } from '../../messages';
 import { HostService } from './hostService';
 import { localIdToRemoteId, remoteIdToLocalId } from '../../view/worldViewMisc';
-import { logLab, logTrace } from '../../logging';
+import { logError, logLab, logTrace } from '../../logging';
 
 // thuum docs/verbs/traps.md (ADR-059 decision 3): the cell's host runs the
 // world scripts, so guests see what the host's engine SHOWS. On every seat
@@ -102,9 +102,12 @@ export class ObjectAnimationService extends ClientListener {
     // on its script's initial side and feeds its own script the record's
     // side as activations, so script, graph and record agree before the
     // first press
-    this.controller.emitter.on('cellHostChanged', (e: { cell: number; hosted: boolean }) => {
+    // a message handler may call no native (hostService's rule, the
+    // platform's gameThrQ is the update's): the grant's work waits for the
+    // next update (the review of 30839d4b, F1)
+    this.controller.emitter.on('cellHostChanged', (e) => {
       if (e.hosted) {
-        this.onCellHosted(e.cell);
+        this.controller.once('update', () => this.onCellHosted(e.cell));
       }
     });
     for (const pattern of EVENT_PATTERNS) {
@@ -130,7 +133,7 @@ export class ObjectAnimationService extends ClientListener {
     const msg = e.message;
     const event = msg.props?.lastAnimation;
     if (typeof event === 'string' && msg.refrId !== undefined && msg.refrId < 0xff000000) {
-      this.noteRecord(msg.refrId, event);
+      this.noteRecord(remoteIdToLocalId(msg.refrId), event);
     }
     if (typeof event !== 'string' || msg.refrId === undefined || msg.refrId >= 0xff000000) {
       return;
@@ -175,14 +178,16 @@ export class ObjectAnimationService extends ClientListener {
       if (!took && !pillarTrigger) {
         continue;
       }
-      // the engine's own StartState0N at a cell load is the local script's
-      // jump to the reference's initial side (OnCellLoad runs on every seat;
-      // a TypeScript play never re-enters the hook); the first one seen is
-      // the initial side, and any Trigger0N or StartState0N names a pillar
+      // every genuine hook event on a pillar is the local script's own act
+      // (a TypeScript play never re-enters the hook): StartState0N at a cell
+      // load puts the script on side N, its own Trigger0N moves it to N+1,
+      // so the LAST side-naming event is the script's side, which a seat
+      // that hosted, turned and walked out keeps in its Papyrus state (the
+      // review of 30839d4b, F3)
       this.notePillar(selfId, event);
-      const jump = /^StartState0([1-3])$/.exec(event);
-      if (jump && !this.initialSide.has(selfId)) {
-        this.initialSide.set(selfId, Number(jump[1]));
+      const side = sideOfRecord(event);
+      if (side !== undefined) {
+        this.scriptSide.set(selfId, side);
       }
       if (this.wasSelfPlayed(selfId, event)) {
         // rule 8: the mark's hit is logged so a run says whether a replay
@@ -295,11 +300,11 @@ export class ObjectAnimationService extends ClientListener {
   }
 
   private isPillar(refr: ObjectReference): boolean {
-    if (this.pillars.has(refr.getFormID())) {
-      return true;
-    }
     const base = refr.getBaseObject()?.getFormID() ?? 0;
-    return PILLAR_BASES.has(base);
+    if (base !== 0) {
+      return PILLAR_BASES.has(base);
+    }
+    return this.pillars.has(refr.getFormID());
   }
 
   private onCellHosted(cell: number) {
@@ -317,57 +322,67 @@ export class ObjectAnimationService extends ClientListener {
       if (!parent || parent.getFormID() !== cell) {
         return;
       }
-      const initial = this.initialSide.get(id) ?? 1;
+      const initial = this.scriptSide.get(id) ?? 1;
       const record = this.recordEvent.get(id);
-      const target = (record !== undefined ? sideOfRecord(record) : undefined) ?? initial;
+      const recordSide = record !== undefined ? sideOfRecord(record) : undefined;
+      if (record !== undefined && recordSide === undefined) {
+        logLab('verb:traps', `pillar ${id.toString(16)} at the grant of ${cell.toString(16)}: the record's event ${record} names no side, the script's side ${initial} stands`);
+      }
+      const target = recordSide ?? initial;
       const turns = (((target - initial) % PILLAR_CYCLE) + PILLAR_CYCLE) % PILLAR_CYCLE;
       void this.resync(refr, id, cell, initial, turns, record ?? 'none', target);
     });
   }
 
-  // the graph back on the script's initial side, then the record's side fed
-  // to the script as the host's own activations (each reported as the host's
-  // turn, relayed to the guests, recorded); the pillar is activation-blocked
-  // while its graph is reset (a press inside a turn finds the script's
-  // trigger refused and sticks it), and the script's own busy window makes a
-  // press during the feed harmless
+  // the graph back on the script's side, then the record's side fed to the
+  // script as the host's own activations (each reported as the host's turn,
+  // relayed to the guests, recorded). The reset is one turn at most: a jump
+  // for Side02/03; for Side01, which has no jump event, StartState03 (instant
+  // from 01 or 02, refused on 03) then Trigger03. No activation block: the
+  // Creation Kit's BlockActivation withholds default processing alone and
+  // OnActivate still reaches the script (the review of 30839d4b, F2), so a
+  // press inside the reset's turn (under three seconds at a grant) is the
+  // known limit, the hold of the cell's scripts through the gate its next
+  // shape. A TypeScript play never re-enters the hook, so nothing here is
+  // marked self-played (F6). The feed stops the moment this seat no longer
+  // hosts the cell (F5)
   private async resync(refr: ObjectReference, id: number, cell: number, initial: number, turns: number, record: string, target: number): Promise<void> {
-    this.resyncing.add(id);
-    const wasBlocked = refr.isActivationBlocked();
+    const host = this.controller.lookupListener(HostService);
     try {
-      refr.blockActivation(true);
+      this.resyncing.add(id);
       if (initial === 1) {
-        // no StartState01 exists: the round brings any side to Side01
-        // (Side02 takes Trigger02 then Trigger03, Side03 Trigger03 alone,
-        // Side01 refuses both)
-        for (const round of ['Trigger02', 'Trigger03']) {
-          this.markSelfPlayed(id, round);
-          if (refr.playAnimation(round)) {
-            await Utility.wait(PILLAR_TURN_S);
-          }
+        refr.playAnimation('StartState03');
+        await Utility.wait(0.5);
+        if (!host.hostsCell(cell)) {
+          return;
+        }
+        if (refr.playAnimation('Trigger03')) {
+          await Utility.wait(PILLAR_TURN_S);
         }
       } else {
-        const jump = `StartState0${initial}`;
-        this.markSelfPlayed(id, jump);
-        refr.playAnimation(jump);
+        refr.playAnimation(`StartState0${initial}`);
         await Utility.wait(0.5);
       }
-      refr.blockActivation(wasBlocked);
       const player = this.sp.Game.getPlayer();
       for (let i = 0; i < turns && player; i++) {
+        if (!host.hostsCell(cell)) {
+          logLab('verb:traps', `pillar ${id.toString(16)}: the re-sync at the grant of ${cell.toString(16)} stopped, this seat no longer hosts the cell (${i} of ${turns} turn(s) fed)`);
+          return;
+        }
         refr.activate(player, false);
         await Utility.wait(PILLAR_TURN_S + 0.5);
       }
-      logLab('verb:traps', `pillar ${id.toString(16)} re-synced at the grant of ${cell.toString(16)}: the script's initial side ${initial}, the record ${record} (side ${target}), ${turns} turn(s) fed to the script`);
+      logLab('verb:traps', `pillar ${id.toString(16)} re-synced at the grant of ${cell.toString(16)}: the script's side ${initial}, the record ${record} (side ${target}), ${turns} turn(s) fed to the script`);
+    } catch (e) {
+      logError(this, `pillar ${id.toString(16)} re-sync at the grant of ${cell.toString(16)} failed: ${e}`);
     } finally {
-      refr.blockActivation(wasBlocked);
       this.resyncing.delete(id);
     }
   }
 
   private noted: { selfId: number; event: string; took: boolean }[] = [];
   private selfPlayed = new Map<string, number>();
-  private initialSide = new Map<number, number>();
+  private scriptSide = new Map<number, number>();
   private recordEvent = new Map<number, string>();
   private pillars = new Set<number>();
   private resyncing = new Set<number>();

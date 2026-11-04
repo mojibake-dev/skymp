@@ -16,6 +16,13 @@ TEST_CASE("MS13BanditCampfire01 in BleakFalls should have inventory/equipment "
   uint32_t actorId = 0x39fe4;
   auto& bandit = p.worldState.GetFormAt<MpActor>(actorId);
 
+  // thuum docs/verbs/npc-fate.md (playtest 44's 1c): a fate-able actor's base
+  // rolls once, at its fate, so the template chain's inventory stands after
+  // the roll, not at Init (the fate pass calls this at the first loader's
+  // level; NpcFateTest reads the pass itself)
+  REQUIRE(bandit.GetEquipment().inv.entries.empty());
+  REQUIRE(bandit.RollFateIfUnrolled(1));
+
   REQUIRE(bandit.GetEquipment().inv.ToJson().size() > 0);
 
   int numWeaps = 0;

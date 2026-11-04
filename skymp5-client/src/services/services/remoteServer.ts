@@ -582,7 +582,9 @@ export class RemoteServer extends ClientListener {
                     logTrace(this, `object animation ${refrid.toString(16)} ${animation} not replayed: hosted here`);
                     break;
                   }
-                  if (this.controller.lookupListener(ObjectAnimationService).playRelayed(again, animation, "the record", undefined, false)) {
+                  // a guest's replay carries the jump to the trigger's side (the record's
+                  // side is then this seat's); the host never gets here
+                  if (this.controller.lookupListener(ObjectAnimationService).playRelayed(again, animation, "the record")) {
                     break;
                   }
                 }

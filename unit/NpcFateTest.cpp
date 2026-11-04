@@ -17,6 +17,7 @@
 #include "libespm/NPC_.h"
 #include "libespm/SPEL.h"
 #include "wire_bridge_cxx/rules.h"
+#include <algorithm>
 #include <catch2/catch_all.hpp>
 #include <chrono>
 #include <cmath>
@@ -228,6 +229,32 @@ TEST_CASE("A player's arrival rolls the ring's leveled actors at its level "
   REQUIRE(actor->GetTemplateChain().size() >= 2);
   REQUIRE(actor->GetFateBaseId() == predator->baseId);
   REQUIRE(actor->GetFateBaseId() != actor->GetBaseId());
+
+  // thuum docs/verbs/npc-fate.md (playtest 44's 1c): the fate carries the
+  // record's inventory rows apart from the worn items: no row names a worn
+  // base, and the rows' counts sum to the inventory less the worn (the
+  // review of 7c3c9f79, finding 1: the inventory's entries carry no worn
+  // flag of their own, the Equipment record does)
+  {
+    int64_t total = 0;
+    for (const auto& e : actor->GetInventory().entries) {
+      total += e.count;
+    }
+    int64_t worn = 0;
+    for (const auto& e : actor->GetEquipment().inv.entries) {
+      if (e.GetWorn() != Inventory::Worn::None) {
+        worn += e.count;
+      }
+    }
+    int64_t rows = 0;
+    for (const auto& row : predator->inv) {
+      REQUIRE(row.count > 0);
+      REQUIRE(std::find(predator->worn.begin(), predator->worn.end(),
+                        row.baseId) == predator->worn.end());
+      rows += row.count;
+    }
+    REQUIRE(rows == total - worn);
+  }
 
   // the same squares again: nothing new
   p.Messages().clear();
@@ -451,6 +478,16 @@ TEST_CASE("A dead game-file actor is a container to the player beside it",
   REQUIRE(looter.GetInventory().GetItemCount(kLongBow) == looterBows);
   REQUIRE(actor->GetInventory().GetItemCount(kLongBow) == corpseBows);
   REQUIRE(SentOfType(p, 0, MsgType::SetInventory) >= 1);
+  {
+    // the body's record too (a corpse is a container to its looter)
+    bool bodySent = false;
+    for (const auto& msg : SentTo<UpdatePropertyMessage>(p, 0)) {
+      if (msg.idx == actor->GetIdx() && msg.propName == "inventory") {
+        bodySent = true;
+      }
+    }
+    REQUIRE(bodySent);
+  }
 
   actor->Respawn(false);
   p.worldState.fateRespawnDue.erase(kPredator);

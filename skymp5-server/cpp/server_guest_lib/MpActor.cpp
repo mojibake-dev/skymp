@@ -3419,6 +3419,18 @@ void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
 
   const int count = entry.count;
 
+  // thuum docs/verbs/npc-fate.md (1c; the review of 7c3c9f79, finding 8): a
+  // drop of what the record does not hold is refused by name, no throw, the
+  // dropper resynced, as a take or a put is
+  if (GetInventory().GetItemCount(baseId) < static_cast<uint32_t>(count)) {
+    spdlog::warn("[verb:containers] E_DROP_NOT_HELD: {:x} drops {} of {:x} "
+                 "but its record holds {}; refused, the dropper resynced",
+                 GetFormId(), count, baseId,
+                 GetInventory().GetItemCount(baseId));
+    ResyncAfterRefusedMove(*this);
+    return;
+  }
+
   DropItemEvent dropEvent(GetFormId(), baseId, count);
   bool success = dropEvent.Fire(GetParent());
 

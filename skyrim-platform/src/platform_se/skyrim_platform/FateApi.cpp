@@ -133,9 +133,12 @@ void ReconcileInventoryOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
   size_t removed = 0;
   size_t added = 0;
   size_t kept = 0;
-  auto inventory = actor->GetInventory();
+  // the leveled-list bases the engine lists for a container with no rolled
+  // entry yet are no items (the review of 7c3c9f79, finding 3): left out
+  auto inventory = actor->GetInventory(
+    [](RE::TESBoundObject& o) { return !o.Is(RE::FormType::LeveledItem); });
   for (auto& [object, entry] : inventory) {
-    if (!object) {
+    if (!object || entry.first <= 0) {
       continue;
     }
     const int32_t have = entry.first;

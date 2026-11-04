@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <limits>
+#include <map>
 #include <set>
 #include <string>
 #include <tuple>
@@ -97,19 +98,35 @@ ActorFateMessage::Fate FateOf(const WorldState& worldState,
   }
   // thuum docs/verbs/npc-fate.md (playtest 44's 1c): the record's other rows,
   // the server's own container roll (EnsureBaseContainerAdded), so every
-  // seat's copy carries them instead of its engine's roll; a row of nothing
-  // is no row (the validator refuses a count of 0)
+  // seat's copy carries them instead of its engine's roll. The worn set lives
+  // in the Equipment record alone (the inventory's entries carry no worn flag
+  // of their own: the review of 7c3c9f79, finding 1), so a base's row is its
+  // inventory count less its worn count, and a base whose whole count is
+  // worn makes no row (the validator refuses a count of 0)
+  std::map<uint32_t, int64_t> rows;
   for (const auto& entry : actor.GetInventory().entries) {
-    if (entry.GetWorn() != Inventory::Worn::None || entry.count == 0 ||
-        entry.baseId == 0) {
+    if (entry.baseId != 0) {
+      rows[entry.baseId] += entry.count;
+    }
+  }
+  for (const auto& entry : actor.GetEquipment().inv.entries) {
+    if (entry.GetWorn() != Inventory::Worn::None && entry.baseId != 0) {
+      rows[entry.baseId] -= entry.count;
+    }
+  }
+  for (const auto& [baseId, net] : rows) {
+    if (net <= 0) {
       continue;
     }
     if (fate.inv.size() >= kFateInvMax) {
+      spdlog::debug("PartOne - npc-fate: {:x}'s fate carries {} of its {} "
+                    "inventory rows (the wire's cap)",
+                    actor.GetFormId(), kFateInvMax, rows.size());
       break;
     }
     ActorFateMessage::InvRow row;
-    row.baseId = entry.baseId;
-    row.count = entry.count;
+    row.baseId = baseId;
+    row.count = static_cast<uint32_t>(net);
     fate.inv.push_back(row);
   }
   return fate;

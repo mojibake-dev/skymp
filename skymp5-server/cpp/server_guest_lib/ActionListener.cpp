@@ -2356,6 +2356,10 @@ void ActionListener::OnTakeItem(const RawMessageData& rawMsgData,
   entry.count = msg.count;
   static_cast<Inventory::ExtraData&>(entry) =
     static_cast<const Inventory::ExtraData&>(msg);
+  // as the put strips it (the review of 7c3c9f79, finding 7): the record's
+  // row matches by every extra but the count, and the taker's worn flag is
+  // its own engine's, never the container's
+  entry.SetWorn(Inventory::Worn::None);
 
   if (!ContainerMoveWithinReach(*actor, ref, "take")) {
     return;

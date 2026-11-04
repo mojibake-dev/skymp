@@ -60,7 +60,7 @@ struct ActorFateMessage : public MessageBase<ActorFateMessage>
     uint32_t baseId = 0; // the NPC_ the roll chose; 0 when it chose none
     uint32_t level = 0;  // the level the roll used (0: the old rule's roll)
     std::vector<uint32_t> worn; // the outfit roll's items, by form id
-    std::vector<InvRow> inv;    // the record's other rows (wire cap 64)
+    std::vector<InvRow> inv;    // the record's other rows (wire cap 32)
   };
 
   template <class Archive>

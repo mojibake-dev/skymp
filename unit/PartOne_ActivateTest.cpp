@@ -791,8 +791,26 @@ TEST_CASE("BarrelFood01 PutItem/TakeItem", "[PartOne][espm]")
   // thuum docs/verbs/npc-fate.md (playtest 44's 1c): a put of what the
   // mover's record does not hold is refused by name (E_PUT_NOT_HELD), no
   // throw, the mover resynced; nothing moves
+  // ... and the mover hears both inventories again (its own SetInventory
+  // and the chest's "inventory" property: a CONT)
+  partOne.Messages().clear();
   REQUIRE_NOTHROW(ref.PutItem(actor, { 0x12eb7, 2 }));
   REQUIRE(ref.GetInventory().GetItemCount(0x12eb7) == 0);
+  {
+    bool ownSent = false;
+    bool chestSent = false;
+    for (const auto& m : partOne.Messages()) {
+      if (m.j["t"] == MsgType::SetInventory) {
+        ownSent = true;
+      }
+      if (m.j["t"] == MsgType::UpdateProperty &&
+          m.j["propName"] == "inventory" && m.j["idx"] == ref.GetIdx()) {
+        chestSent = true;
+      }
+    }
+    REQUIRE(ownSent);
+    REQUIRE(chestSent);
+  }
 
   actor.AddItem(0x12eb7, 1);
   REQUIRE_NOTHROW(ref.PutItem(actor, { 0x12eb7, 2 }));

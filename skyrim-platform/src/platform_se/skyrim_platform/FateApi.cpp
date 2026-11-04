@@ -112,6 +112,62 @@ Napi::Value FateApi::SetActorFateEnabled(const Napi::CallbackInfo& info)
 }
 
 namespace {
+// thuum docs/verbs/npc-fate.md THE RAGDOLL CRASH READ (c1-crash-2026-11-04-
+// 12-30-04 in x-fate-inventory 20261104-202729): the fate's engine work (a
+// re-roll's Set3D and Load3D, a redress, a resurrect) runs on the game's MAIN
+// thread through SKSE's UI task queue, the thread the engine does its own
+// attach on, the shape change-form's apply has (ChangeForm.cpp, CONFIRMED
+// there on the "thread {} main {}" line). On the Papyrus VM thread, where
+// gameThrQ drains (main.cpp's OnUpdate), TESObjectREFR::Set3D (19730) asks
+// TaskQueueInterface::ShouldUseTaskQueue (39033) and DEFERS the old 3D's
+// DetachHavok (37307) to the main thread as task 0x32 (36933); a Load3D that
+// follows on the VM thread binds the new skeleton (63596, 63792) while the
+// main thread's drain reads the NEW 3D and pulls its collision objects from
+// the world, and the ragdoll collector (78536) walks a constraints buffer
+// freed under it (the re-analyst's read, HYPOTHESIS until
+// lab/frida/reroll-main-trace.js reads the drain against the bind). Without
+// the interface the work is refused, as the apply refuses (never the VM
+// thread, the path this exists to remove); a throw inside the task is caught
+// and said, since SKSE's UI drain has no net of its own (the review of
+// cc5c82b6, findings 2 and 8).
+bool QueueFateTask(const char* what, uint32_t refrId,
+                   std::function<void()> task)
+{
+  auto* tasks = SKSE::GetTaskInterface();
+  if (!tasks) {
+    static bool said = false;
+    if (!said) {
+      said = true;
+      logger::warn("[verb:npc-fate] {}({:x}): no SKSE task interface, the "
+                   "fate's engine work is refused",
+                   what, refrId);
+    }
+    return false;
+  }
+  tasks->AddUITask([what, refrId, task = std::move(task)]() {
+    try {
+      task();
+    } catch (const std::exception& e) {
+      logger::error("[verb:npc-fate] {}({:x}) threw on the main thread: {}",
+                    what, refrId, e.what());
+    }
+  });
+  return true;
+}
+
+// the thread a fate task ran on, beside Main's (Main.h:87 threadID), the
+// witness the lab reads
+std::string FateThreadNote()
+{
+  const auto* main = RE::Main::GetSingleton();
+  const auto thread = static_cast<uint32_t>(::GetCurrentThreadId());
+  const uint32_t mainThread = main ? main->threadID : 0u;
+  return "thread " + std::to_string(thread) + " main " +
+    std::to_string(mainThread);
+}
+}
+
+namespace {
 // re-npc-roll.md 8.4's late path on the game thread: the actor looked up
 // here (setPuppet's shape, the 2026-10-21 hang), the outfit stripped, the
 // server's worn list added tagged as the detour adds it, worn again
@@ -343,10 +399,10 @@ void RedressOnGameThread(uint32_t refrId, const Fates::Fate& fate)
   actor->AddWornOutfit(outfit, false);
   logger::info("[verb:npc-fate] redressed {:x} from the server's roll: {} "
                "of {} tagged for outfit {:x} and worn ({} already tagged, "
-               "3D loaded {}), the record's rows reconciled first, the "
+               "3D loaded {}), the record's rows reconciled first, the  on {}"
                "dress unqueued",
                refrId, dressed.added, fate.worn.size(), outfit->formID,
-               dressed.carried, actor->Is3DLoaded());
+               dressed.carried, actor->Is3DLoaded(), FateThreadNote());
 }
 }
 
@@ -359,17 +415,6 @@ namespace {
 // late fate reached the copy while it was still dead, reconcile-only, and
 // nothing re-asked after the stand-up, so the stood-up copy kept its old
 // pick); a dead copy reconciles its inventory alone.
-// the thread a fate task ran on, beside Main's (Main.h:78 threadID), the
-// witness the lab reads
-std::string FateThreadNote()
-{
-  const auto* main = RE::Main::GetSingleton();
-  const auto thread = static_cast<uint32_t>(::GetCurrentThreadId());
-  const uint32_t mainThread = main ? main->threadID : 0u;
-  return "thread " + std::to_string(thread) + " main " +
-    std::to_string(mainThread);
-}
-
 void RerollOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
                         uint32_t refrId)
 {
@@ -482,39 +527,6 @@ void RerollOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
 }
 }
 
-// thuum docs/verbs/npc-fate.md THE RAGDOLL CRASH READ (c1-crash-2026-11-04-
-// 12-30-04 in x-fate-inventory 20261104-202729): the fate's engine work (a
-// re-roll's Set3D and Load3D, a redress, a resurrect) runs on the game's MAIN
-// thread through SKSE's UI task queue, the thread the engine does its own
-// attach on, the shape change-form's apply has (ChangeForm.cpp, CONFIRMED
-// there on the "thread {} main {}" line). On the Papyrus VM thread, where
-// gameThrQ drains (main.cpp's OnUpdate), TESObjectREFR::Set3D (19730) asks
-// TaskQueueInterface::ShouldUseTaskQueue (39033) and DEFERS the old 3D's
-// DetachHavok (37307) to the main thread as task 0x32 (36933); a Load3D that
-// follows on the VM thread binds the new skeleton (63596, 63792) while the
-// main thread's drain reads the NEW 3D and pulls its collision objects from
-// the world, and the ragdoll collector (78536) walks a constraints buffer
-// freed under it (the re-analyst's read, HYPOTHESIS until
-// lab/frida/reroll-main-trace.js reads the drain against the bind). Without
-// the interface the task runs where it ran before, said once.
-void QueueFateTask(const char* what, uint32_t refrId,
-                   std::function<void()> task)
-{
-  if (auto* tasks = SKSE::GetTaskInterface()) {
-    tasks->AddUITask(std::move(task));
-    return;
-  }
-  static bool said = false;
-  if (!said) {
-    said = true;
-    logger::warn("[verb:npc-fate] {}({:x}): no SKSE task interface, the "
-                 "fate's engine work runs on the VM thread",
-                 what, refrId);
-  }
-  g_nativeCallRequirements.gameThrQ->AddTask(
-    [task = std::move(task)](Viet::Void) { task(); });
-}
-
 Napi::Value FateApi::RerollActor(const Napi::CallbackInfo& info)
 {
   const auto refrId = NapiHelper::ExtractUInt32(info[0], "refrId");
@@ -528,7 +540,7 @@ Napi::Value FateApi::RerollActor(const Napi::CallbackInfo& info)
   // while the game thread waits for this tick, and a cell load holding that
   // lock hung a landing, 2026-10-21), where the re-roll has to run anyway:
   // it drops the 3D and re-initializes the inventory
-  QueueFateTask("rerollActor", refrId, [refrId, fate]() {
+  const bool queued = QueueFateTask("rerollActor", refrId, [refrId, fate]() {
     auto* actor = RE::TESForm::LookupByID<RE::Actor>(refrId);
     if (!actor) {
       logger::warn("[verb:npc-fate] rerollActor({:x}): no such actor", refrId);
@@ -536,7 +548,7 @@ Napi::Value FateApi::RerollActor(const Napi::CallbackInfo& info)
     }
     RerollOnGameThread(actor, fate, refrId);
   });
-  return Napi::Boolean::New(info.Env(), true);
+  return Napi::Boolean::New(info.Env(), queued);
 }
 
 Napi::Value FateApi::RedressActor(const Napi::CallbackInfo& info)
@@ -550,9 +562,10 @@ Napi::Value FateApi::RedressActor(const Napi::CallbackInfo& info)
   // the actor is looked up on the game thread alone (rerollActor's and
   // setPuppet's shape, the 2026-10-21 hang), where the three engine calls
   // have to run anyway; the fate travels by value
-  QueueFateTask("redressActor", refrId,
-                [refrId, fate]() { RedressOnGameThread(refrId, fate); });
-  return Napi::Boolean::New(info.Env(), true);
+  const bool queued = QueueFateTask("redressActor", refrId, [refrId, fate]() {
+    RedressOnGameThread(refrId, fate);
+  });
+  return Napi::Boolean::New(info.Env(), queued);
 }
 
 Napi::Value FateApi::ResurrectActor(const Napi::CallbackInfo& info)
@@ -561,7 +574,7 @@ Napi::Value FateApi::ResurrectActor(const Napi::CallbackInfo& info)
   if (refrId == 0 || refrId == 0x14) {
     return Napi::Boolean::New(info.Env(), false);
   }
-  QueueFateTask("resurrectActor", refrId, [refrId]() {
+  const bool queued = QueueFateTask("resurrectActor", refrId, [refrId]() {
     auto* actor = RE::TESForm::LookupByID<RE::Actor>(refrId);
     if (!actor) {
       logger::warn("[verb:npc-fate] resurrectActor({:x}): no such actor",
@@ -588,13 +601,18 @@ Napi::Value FateApi::ResurrectActor(const Napi::CallbackInfo& info)
     if (puppet) {
       actor->EnableAI(false);
       actor->SetActivationBlocked(true);
-    } else {
-      if (aiOff && actor->IsDead()) {
-        // the resurrection did not take: the body keeps H-54e's AI off, so
-        // no package walks it (Hooks.cpp HostedResurrect's shape); a stood-up
-        // actor keeps the AI on, and a watcher's next pass demotes it
+    } else if (actor->IsDead()) {
+      // the resurrection did not take: the body keeps H-54e's AI off, so
+      // no package walks it (Hooks.cpp HostedResurrect's shape), and keeps
+      // its block (ADR-067 decision 6): the puppet service's dead mark still
+      // holds it, and an unblocked body under that mark would open the
+      // engine's loot menu (the review of cc5c82b6, finding 3)
+      if (aiOff) {
         actor->EnableAI(false);
       }
+    } else {
+      // a stood-up actor keeps the AI on, and a watcher's next pass demotes
+      // it; its block from the kill comes off
       actor->SetActivationBlocked(false);
     }
     // thuum docs/verbs/npc-fate.md 1e (x-fate-dress-bleak v5 20261104-070209,
@@ -613,10 +631,12 @@ Napi::Value FateApi::ResurrectActor(const Napi::CallbackInfo& info)
       fated = true;
     }
     logger::info("[verb:npc-fate] resurrected {:x} (puppet {}, AI was off {}, "
-                 "dead before {}, dead after {}, dressed from the fate {})",
-                 refrId, puppet, aiOff, wasDead, actor->IsDead(), fated);
+                 "dead before {}, dead after {}, dressed from the fate {}) "
+                 "on {}",
+                 refrId, puppet, aiOff, wasDead, actor->IsDead(), fated,
+                 FateThreadNote());
   });
-  return Napi::Boolean::New(info.Env(), true);
+  return Napi::Boolean::New(info.Env(), queued);
 }
 
 Napi::Value FateApi::ActorFateCount(const Napi::CallbackInfo& info)

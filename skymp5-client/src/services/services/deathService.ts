@@ -343,7 +343,8 @@ export class DeathService extends ClientListener {
       // roll follows through ActorFate's late path and its placement through
       // the death container's teleport; never the copy's delete. A puppet
       // keeps its block; the host's own actor gets its engine behavior back
-      // one game-thread task (FateApi.cpp resurrectActor): AI on for the
+      // one main-thread task (FateApi.cpp resurrectActor, SKSE's UI task
+      // queue since fork cc5c82b6): AI on for the
       // call, a puppet demoted again after it, a live actor unblocked;
       // Papyrus's Resurrect on a just-demoted corpse did not stand it up
       // (x-npc-respawn 070508). A server-made NPC's copy (playtest 37's

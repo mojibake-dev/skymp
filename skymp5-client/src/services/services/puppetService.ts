@@ -87,6 +87,18 @@ export class PuppetService extends ClientListener {
         if (this.isFigure(localId)) {
             return;
         }
+        // the fate's resurrect runs on the main thread, unordered against this
+        // tick since fork cc5c82b6: while one is in flight for this actor
+        // (deathService's RESURRECT_INFLIGHT_MS, mirrored here) no demote,
+        // release or block of ours races its AI and activation writes (the
+        // review of cc5c82b6, finding 4)
+        const inFlightUntil = this.resurrectInFlightUntil.get(localId);
+        if (inFlightUntil !== undefined) {
+            if (Date.now() < inFlightUntil) {
+                return;
+            }
+            this.resurrectInFlightUntil.delete(localId);
+        }
         const host = this.controller.lookupListener(HostService);
         const word = mine ?? host.isMineLocal(localId);
         const has3D = ac.is3DLoaded();
@@ -456,17 +468,20 @@ export class PuppetService extends ClientListener {
     // A stood-up actor (deathService's resurrect) holds at zero again for
     // the server's word: the deferred kill is re-armed on the next pass. The
     // ragdoll settle clock is cleared in reconcile's live path, not here: the
-    // resurrect is queued to the game thread and this tick's reconcile still
+    // resurrect is queued to the main thread and this tick's reconcile still
     // sees the body dead (x-npc-death-freeze 140538 and 152912, the guest's
     // body half-up: the release came into the SECOND fall with the clock
     // counting from the first death).
     onResurrected(localId: number): void {
         this.deferredArmed.delete(localId);
-        // the fate's resurrect sets the block natively after this tick
-        // (FateApi.cpp resurrectActor: a puppet blocked, a live actor
-        // unblocked, a body the call left dead unblocked too): the dead
-        // block's mark is dropped and a later pass reads the body again
+        // the fate's resurrect runs on the game's main thread at its next UI
+        // drain, unordered against this tick since fork cc5c82b6 (FateApi.cpp
+        // resurrectActor: a puppet blocked, a live actor that stood up
+        // unblocked, a body the call left dead kept blocked): the dead
+        // block's mark is dropped, a later pass reads the body again, and
+        // reconcile stands aside while the resurrect is in flight
         this.markLifted(localId);
+        this.resurrectInFlightUntil.set(localId, Date.now() + PuppetService.resurrectInFlightMs);
     }
 
     // ADR-067 decision 6 (the exclusive container hold; docs/private/
@@ -477,9 +492,11 @@ export class PuppetService extends ClientListener {
     // never a player's figure (no corpse to the server: IsCorpse excludes an
     // actor created as a player, and a figure is blocked at its spawn anyway,
     // spawnProcess's dealWithRef); never in the tick of a native lift
-    // (markLifted: the lift's task lands after that tick's JavaScript and
-    // would undo the block; two counts of the tick clock rule that tick
-    // out). Called at the death's start here, at the server's kill
+    // (markLifted: a lift queued in this tick lands after it, on the VM
+    // thread's drain for the puppet natives or on the main thread's next UI
+    // drain for the fate's resurrect, and would undo the block; two counts
+    // of the tick clock rule that tick out, and the resurrect's in-flight
+    // window keeps reconcile away). Called at the death's start here, at the server's kill
     // (deathService.killActor) and from reconcile's passes.
     blockDeadBody(localId: number, ac: Actor, why: string): void {
         if (localId === 0x14 || this.deadBlocked.has(localId)) {
@@ -752,6 +769,9 @@ export class PuppetService extends ClientListener {
     private readonly scenesStopped = new Map<number, number>();
     private lastPoll = 0;
     private static readonly pollMs = 2000;
+    // deathService's RESURRECT_INFLIGHT_MS, the window a queued resurrect owns the actor's AI and block
+    private static readonly resurrectInFlightMs = 2000;
+    private readonly resurrectInFlightUntil = new Map<number, number>();
     // two polls: a 3D the late fate dropped comes back within it (train-47b
     // reloads it), and a walk out of reach is a release either way
     private static readonly releaseGraceMs = 4000;

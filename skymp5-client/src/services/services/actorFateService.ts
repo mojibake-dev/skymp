@@ -117,7 +117,7 @@ export class ActorFateService extends ClientListener {
             return;
         }
         this.pending.delete(refrId);
-        // the export decides on the game thread by the engine's own mark
+        // the export decides on the main thread by the engine's own mark
         // (ExtraLeveledCreature): a clone is re-rolled through the detours, a
         // plain base is redressed. The Papyrus getBaseObject read before
         // answered a clone's placed base, so no re-roll ever ran

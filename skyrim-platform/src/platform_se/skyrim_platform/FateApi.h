@@ -22,7 +22,8 @@ Napi::Value ClearActorFate(const Napi::CallbackInfo& info);
 // setActorFateEnabled(on): the runtime switch over both detours, default off
 Napi::Value SetActorFateEnabled(const Napi::CallbackInfo& info);
 // rerollActor(refrId): the late path for a fate that arrived after the roll
-// (one visible pop): on the game thread, a leveled clone (ExtraLeveledCreature
+// (one visible pop): on the main thread (SKSE's UI task queue, the apply's
+// shape; fork cc5c82b6), a leveled clone (ExtraLeveledCreature
 // on the reference) takes the engine's own re-roll (37323(actor, -1),
 // re-npc-roll.md section 3 (b)) through the detours, any other actor the
 // redress below; the decision is the engine's mark, never a Papyrus base
@@ -31,24 +32,26 @@ Napi::Value SetActorFateEnabled(const Napi::CallbackInfo& info);
 // roll its own.
 Napi::Value RerollActor(const Napi::CallbackInfo& info);
 // redressActor(refrId): for a fate that arrives after an unleveled actor was
-// dressed (re-npc-roll.md section 8.4's late path): on the game thread, for
+// dressed (re-npc-roll.md section 8.4's late path): on the main thread, for
 // a fated actor with a base defaultOutfit, the engine's RemoveOutfitItems
 // with that outfit, the server's worn list added tagged exactly as the
 // outfit detour adds it, then AddWornOutfit with a_forceUpdate: one pop.
 // False when the id is invalid, the reference holds no fate or the switch is
 // off; a reference the game cannot find, or a base with no default outfit,
-// is a warn on the game thread (the lookup runs there, setPuppet's shape).
+// is a warn on the main thread (the lookup runs there).
 Napi::Value RedressActor(const Napi::CallbackInfo& info);
 // resurrectActor(refrId): a game-file actor's respawn, the engine's own
 // Resurrect (A/Actor.h:369: the inventory reset, the 3D attached) run with
-// its AI on, in one game-thread task: a puppet is given its AI back for the
+// its AI on, in one main-thread task (SKSE's UI task queue): a puppet is
+// given its AI back for the
 // call and demoted again after it (EnableAI false, activation blocked), a
-// live actor is unblocked (the body's block from the kill). x-npc-respawn
+// live actor that stood up is unblocked (the body's block from the kill), a
+// body the call left dead keeps its block. x-npc-respawn
 // 070508: Resurrect from Papyrus on a corpse a reconnecting viewer had just
 // demoted (AI off, after an AI-on death) did not stand it up, while the
 // same corpse stood up on the seat whose promote (AI on) ran 40 ms before.
-// False for an invalid id; a reference the game cannot find is a warn on
-// the game thread (the lookup runs there, setPuppet's shape).
+// False for an invalid id or without SKSE's task interface; a reference the
+// game cannot find is a warn on the main thread (the lookup runs there).
 Napi::Value ResurrectActor(const Napi::CallbackInfo& info);
 // actorFateCount(): the table's size
 Napi::Value ActorFateCount(const Napi::CallbackInfo& info);

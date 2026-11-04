@@ -5008,14 +5008,17 @@ void ActionListener::OnPlayerBowShot(const RawMessageData& rawMsgData,
   }
 
   if (hosted) {
-    if (ac->GetInventory().GetItemCount(msg.ammoId) > 0) {
-      ac->RemoveItem(msg.ammoId, 1, nullptr);
-    } else {
-      spdlog::info("[verb:npc-stream] E_SHOT_QUIVER: {:x}'s shot of {:x} by "
-                   "{:x} spends no arrow; its record holds none (the "
-                   "engine's quiver, recorded)",
-                   ac->GetFormId(), msg.ammoId, myActor->GetFormId());
-    }
+    // thuum docs/verbs/npc-fate.md 1c (x-fate-inventory 20261104-201910 on
+    // the hands pair): the engine spends none of an NPC's arrows at its
+    // shot (the host's copy of the archer's body held 16 after one shot
+    // while this record had spent one to 15, and the take of 16 was
+    // refused E_TAKE_NOT_IN_RECORD; UESP's Ammunition: a follower given one
+    // arrow of a kind shoots it without end), so the record spends none
+    // either, R2 as the engine, and the body's loot is what the host sees
+    spdlog::info("[verb:npc-stream] E_SHOT_QUIVER: {:x}'s shot of {:x} by "
+                 "{:x} spends no record arrow (the engine spends none of an "
+                 "NPC's; its quiver is recorded, never depleted)",
+                 ac->GetFormId(), msg.ammoId, myActor->GetFormId());
   } else if (!ac->IsGodMode()) {
     // thuum docs/verbs/god-mode.md: TGM, unlimited arrows
     ac->RemoveItem(msg.ammoId, 1, nullptr);

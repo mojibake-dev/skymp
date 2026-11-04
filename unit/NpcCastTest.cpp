@@ -495,9 +495,10 @@ TEST_CASE("A hosted creature's cloak hit is claimed against the ability its "
 }
 
 TEST_CASE("A hosted archer's shot is reported by its host under the actor's "
-          "id: it spends the record's arrow, reaches the other game as "
-          "ArrowShot, and its hit is claimed once at the shot's power; a "
-          "shot by a player who is not the host changes nothing",
+          "id: it spends no record arrow (the engine spends none of an "
+          "NPC's), reaches the other game as ArrowShot, and its hit is "
+          "claimed once at the shot's power; a shot by a player who is not "
+          "the host changes nothing",
           "[NpcCast][espm]")
 {
   auto& p = GetPartOne();
@@ -522,8 +523,15 @@ TEST_CASE("A hosted archer's shot is reported by its host under the actor's "
   shot.power = 0.5f;
   shot.aimAngle = 0.f;
   shot.aimHeading = 1.5f;
-  p.GetActionListener().OnPlayerBowShot(raw, shot);
-  REQUIRE(predator.GetInventory().GetItemCount(kIronArrow) == 2);
+  {
+    LogCapture log;
+    p.GetActionListener().OnPlayerBowShot(raw, shot);
+    REQUIRE(log.Count("E_SHOT_QUIVER") == 1);
+  }
+  // the quiver as the engine keeps it: three before, three after (the
+  // archer's body loots what the host's game shows, x-fate-inventory
+  // 20261104-201910's refused take of 16 against a record of 15)
+  REQUIRE(predator.GetInventory().GetItemCount(kIronArrow) == 3);
   const auto relays = SentTo(p, 1, MsgType::ArrowShot);
   REQUIRE(relays.size() == 1);
   REQUIRE(relays[0]["idx"].get<uint32_t>() == predator.GetIdx());
@@ -547,10 +555,10 @@ TEST_CASE("A hosted archer's shot is reported by its host under the actor's "
   RawMessageData other;
   other.userId = 1;
   p.GetActionListener().OnPlayerBowShot(other, shot);
-  REQUIRE(predator.GetInventory().GetItemCount(kIronArrow) == 2);
+  REQUIRE(predator.GetInventory().GetItemCount(kIronArrow) == 3);
   REQUIRE(SentTo(p, 0, MsgType::ArrowShot).empty());
   predator.RemoveItem(kLongBow, 1, nullptr);
-  predator.RemoveItem(kIronArrow, 2, nullptr);
+  predator.RemoveItem(kIronArrow, 3, nullptr);
   Leave(p);
 }
 

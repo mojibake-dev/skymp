@@ -1,5 +1,6 @@
 #include "LeveledListUtils.h"
 #include "EvaluateTemplate.h"
+#include <algorithm>
 #include <optional>
 #include <random>
 #include <spdlog/spdlog.h>
@@ -103,7 +104,13 @@ std::map<uint32_t, uint32_t> LeveledListUtils::EvaluateListRecurse(
       continue;
     }
     if (IsLeveledType(eLookupRes)) {
-      auto childRes = EvaluateListRecurse(br, eLookupRes, 1, pcLevel);
+      // the entry's count is the nested list's multiplier (UESP, LVLO:
+      // count; a child with "calculate for each item in count" rolls once
+      // per count, else once times the count): LItemBanditWeaponArrows
+      // names BaseArrowIron75 x20, which gave one arrow at most while the
+      // count was dropped here (x-fate-inventory v1b, 2026-11-04)
+      auto childRes = EvaluateListRecurse(
+        br, eLookupRes, std::max<uint32_t>(1, e.count), pcLevel);
       for (auto& p : childRes) {
         res[p.first] += p.second;
       }

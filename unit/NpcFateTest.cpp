@@ -1329,3 +1329,99 @@ TEST_CASE("A placed-dead body ignores its host's live sample until the "
   p.DestroyActor(kHost);
   p.DestroyActor(kFloorBody);
 }
+
+// thuum docs/verbs/npc-fate.md (playtest 44's 1c; x-fate-inventory v1b
+// 20261104-062409): MS13BanditCampfire02's placement 0x39fe2 in Bleak Falls
+// Temple keeps its own rows (base 0x39fe5, UseInventory unset: an IronDagger,
+// LItemBanditWeaponArrows x1 and LItemBanditWeaponBow x1, both lists at
+// chanceNone 0 and all levels), yet the probe's record held the dagger alone
+// after the fate and lost the 10 gold put before it (finding 1: the roll's
+// reset replaced Init's level-0 roll and the put with it). Here Init rolls
+// nothing for an actor the fate pass will roll, the put stays, and the roll
+// lands beside it at the loader's level: one bow in hand (the best weapon),
+// the arrows by the nested count (BaseArrowIron75 x20 at 75 percent each),
+// the dagger kept; the fate's rows name everything but the worn bow.
+TEST_CASE("The campfire bandit's own rows roll at its fate and a put made "
+          "before the roll stays in the record",
+          "[NpcFate][espm]")
+{
+  constexpr uint32_t kBandit = 0x39fe2;
+  constexpr uint32_t kBarrow = 0x371de;
+  constexpr uint32_t kPlayer = 0xff000d41;
+  constexpr uint32_t kGold = 0xf;
+  constexpr uint32_t kIronDagger = 0x1397e;
+  constexpr uint32_t kIronArrow = 0x1397d;
+  constexpr uint32_t kHuntingBow = 0x13985;
+  constexpr uint32_t kLongBow = 0x3b562;
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  REQUIRE(p.worldState.IsInteriorCell(kBarrow));
+  auto& bandit = p.worldState.GetFormAt<MpActor>(kBandit);
+  REQUIRE(p.worldState.CellOf(bandit) == kBarrow);
+  REQUIRE_FALSE(bandit.GetFateLevel().has_value());
+  REQUIRE(bandit.CanRollFate());
+  // Init rolled nothing for an actor the fate pass will roll
+  REQUIRE_FALSE(bandit.GetChangeForm().baseContainerAdded);
+  REQUIRE(bandit.GetInventory().GetItemCount(kIronDagger) == 0);
+
+  // the put before the first loader (lab-api's server-console AddItem)
+  bandit.AddItem(kGold, 10);
+  REQUIRE(bandit.GetInventory().GetItemCount(kGold) == 10);
+  REQUIRE(bandit.CanRollFate());
+
+  DoConnect(p, 0);
+  p.CreateActor(kPlayer, { -3400.f, 700.f, 583.f }, 0, kBarrow);
+  p.SetUserActor(0, kPlayer);
+  auto& player = p.worldState.GetFormAt<MpActor>(kPlayer);
+  ActorValueRecord record;
+  record.level = 1;
+  player.SetActorValueRecord(record);
+  p.Messages().clear();
+  p.TickCellHosts(FateNowMs());
+
+  REQUIRE(bandit.GetFateLevel() == std::optional<uint16_t>{ 1 });
+  REQUIRE_FALSE(bandit.CanRollFate());
+  const Inventory inv = bandit.GetInventory();
+  INFO("gold " << inv.GetItemCount(kGold) << " dagger "
+               << inv.GetItemCount(kIronDagger) << " arrows "
+               << inv.GetItemCount(kIronArrow) << " hunting "
+               << inv.GetItemCount(kHuntingBow) << " long "
+               << inv.GetItemCount(kLongBow));
+  REQUIRE(inv.GetItemCount(kGold) == 10);
+  REQUIRE(inv.GetItemCount(kIronDagger) == 1);
+  REQUIRE(inv.GetItemCount(kHuntingBow) + inv.GetItemCount(kLongBow) == 1);
+  REQUIRE(inv.GetItemCount(kIronArrow) >= 1);
+  REQUIRE(inv.GetItemCount(kIronArrow) <= 20);
+  // the best weapon in hand: a bow over the dagger
+  REQUIRE((Wearing(bandit, kHuntingBow) || Wearing(bandit, kLongBow)));
+  REQUIRE_FALSE(Wearing(bandit, kIronDagger));
+
+  // the fate's rows: the record apart from the worn (the gold, the arrows,
+  // the dagger; no bow, it is in hand)
+  const auto fates = SentTo<ActorFateMessage>(p, 0);
+  const ActorFateMessage::Fate* sent = nullptr;
+  for (const auto& msg : fates) {
+    for (const auto& f : msg.fates) {
+      if (f.refrId == kBandit) {
+        sent = &f;
+      }
+    }
+  }
+  REQUIRE(sent != nullptr);
+  REQUIRE(sent->level == 1);
+  auto rowOf = [&](uint32_t baseId) -> uint32_t {
+    for (const auto& r : sent->inv) {
+      if (r.baseId == baseId) {
+        return r.count;
+      }
+    }
+    return 0;
+  };
+  REQUIRE(rowOf(kGold) == 10);
+  REQUIRE(rowOf(kIronDagger) == 1);
+  REQUIRE(rowOf(kIronArrow) == inv.GetItemCount(kIronArrow));
+  REQUIRE(rowOf(kHuntingBow) + rowOf(kLongBow) == 0);
+
+  DoDisconnect(p, 0);
+  p.DestroyActor(kPlayer);
+}

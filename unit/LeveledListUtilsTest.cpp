@@ -247,3 +247,52 @@ TEST_CASE("Evaluate LvlMudcrab template", "[espm]")
   // usually diff is less than 100, but we don't want to fail tests randomly
   REQUIRE(std::abs(countA - countB) < 2000);
 }
+
+// thuum docs/verbs/npc-fate.md (playtest 44's 1c): the bandits' own weapon
+// lists (Skyrim.esm, read by lab/esm.py on 2026-11-04). LItemBanditWeaponBow
+// 0x39d2e: chanceNone 0, all levels, 24 entries, the eight at level 1 a
+// LongBow or a HuntingBow x1 each.
+TEST_CASE("Evaluate LItemBanditWeaponBow at level 1: one bow", "[espm]")
+{
+  constexpr uint32_t LItemBanditWeaponBow = 0x39d2e;
+  constexpr uint32_t HuntingBow = 0x13985;
+  constexpr uint32_t LongBow = 0x3b562;
+  auto& br = GetEspmLoader().GetBrowser();
+  auto list = br.LookupById(LItemBanditWeaponBow);
+  for (int i = 0; i < 200; ++i) {
+    auto res = LeveledListUtils::EvaluateListRecurse(br, list, 1, 1);
+    REQUIRE(res.size() == 1);
+    REQUIRE((res.count(HuntingBow) == 1 || res.count(LongBow) == 1));
+    REQUIRE(res.begin()->second == 1);
+  }
+}
+
+// LItemBanditWeaponArrows 0x39d2f: chanceNone 0, all levels, its level-1
+// entries BaseArrowIron75 0x37c0d x20, a list of one IronArrow at chanceNone
+// 25 with "calculate for each item in count": 20 rolls at 75 percent each,
+// 15 arrows on average. The entry's count was dropped by the recursion
+// before (one arrow at most, x-fate-inventory v1b).
+TEST_CASE("Evaluate LItemBanditWeaponArrows at level 1: the nested count "
+          "rolls once per arrow",
+          "[espm]")
+{
+  constexpr uint32_t LItemBanditWeaponArrows = 0x39d2f;
+  constexpr uint32_t IronArrow = 0x1397d;
+  auto& br = GetEspmLoader().GetBrowser();
+  auto list = br.LookupById(LItemBanditWeaponArrows);
+  int total = 0;
+  for (int i = 0; i < 200; ++i) {
+    auto res = LeveledListUtils::EvaluateListRecurse(br, list, 1, 1);
+    if (res.empty()) {
+      continue;
+    }
+    REQUIRE(res.size() == 1);
+    REQUIRE(res.count(IronArrow) == 1);
+    REQUIRE(res[IronArrow] <= 20);
+    total += res[IronArrow];
+  }
+  // 200 rolls of Binomial(20, 0.75): 3000 on average, within a few hundred;
+  // the dropped count summed to 150 at most
+  REQUIRE(total > 2400);
+  REQUIRE(total < 3600);
+}

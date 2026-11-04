@@ -1527,6 +1527,31 @@ std::string ChangeForm::Apply(RE::TESObjectREFR* refr,
       // (FateApi's shape: a lookup under the forms map's lock belongs where
       // the engine takes that lock itself)
       auto* again = RE::TESForm::LookupByID<RE::TESObjectREFR>(formId);
+      // thuum docs/verbs/change-form.md Dynamic read 5 (the re-analyst,
+      // 2026-11-03 night): a copy killed by the server's word sits in
+      // kDying because the engine completes a death inside the high
+      // process's AI update (fDyingTimer, 2.0 s, ticked there alone,
+      // Actor::KillImmediate at its end), which a puppet with its AI off
+      // never enters, and the fork's release at death returns on IsDead
+      // (kDying counts) before EnableAI(true): a timer nobody ticks. The
+      // record is the server's word that this body is dead, so its
+      // completion is called here, on the main thread the task runs on,
+      // through the engine's own completion (Actor::KillImmediate,
+      // include/RE/A/Actor.h:610: SetLifeState(kDead), the death event, the
+      // sounds and combat ended; Havok untouched, no death items), and the
+      // apply's dead-only premise follows. HYPOTHESIS until x-corpse-record
+      // reads the lay on a watcher's live-death copy.
+      if (auto* actor = again ? again->As<RE::Actor>() : nullptr) {
+        const auto before = actor->AsActorState()->GetLifeState();
+        if (before == RE::ACTOR_LIFE_STATE::kDying) {
+          actor->KillImmediate();
+          logger::info(
+            "[verb:change-form] completed {:#x}'s dying death "
+            "before the apply: lifeState {} -> {} (read 5)",
+            formId, static_cast<std::uint32_t>(before),
+            static_cast<std::uint32_t>(actor->AsActorState()->GetLifeState()));
+        }
+      }
       answer = again ? ApplyImpl(again, body, flags, version, rows)
                      : ApplyRefusal(formId, "at task: the reference is gone");
     } catch (const std::exception& e) {

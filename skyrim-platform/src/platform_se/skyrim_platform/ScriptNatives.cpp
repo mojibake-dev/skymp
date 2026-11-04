@@ -441,7 +441,10 @@ void OnNativeCallEnter(GumInvocationContext* ic)
       }
     }
   }
-  PlatformCall::EnterCall(raise);
+  // the entry stack pointer, the stranded-level guard's key (PlatformCall.h);
+  // the house reads Gum's registers this way (FridaHooks.cpp's rcx)
+  PlatformCall::EnterCall(raise,
+                          static_cast<std::uintptr_t>(ic->cpu_context->rsp));
 }
 
 void OnNativeCallLeave(GumInvocationContext*)

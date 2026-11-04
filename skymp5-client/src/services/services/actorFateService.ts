@@ -153,7 +153,7 @@ export class ActorFateService extends ClientListener {
 
     // The server's fate for a server-made NPC by its remote id (ADR-050
     // decision 3), read by the view at the copy's spawn.
-    fateForCopy(remoteId: number): { baseId: number; worn: number[] } | undefined {
+    fateForCopy(remoteId: number): { baseId: number; worn: number[]; inv: number[] } | undefined {
         return this.copyFates.get(remoteId);
     }
 

@@ -436,6 +436,22 @@ TEST_CASE("A dead game-file actor is a container to the player beside it",
   REQUIRE(looter.GetInventory().GetItemCount(kGold) == looterGold + 3);
   REQUIRE(actor->GetInventory().GetItemCount(kGold) == corpseGold - 3);
 
+  // thuum docs/verbs/npc-fate.md (playtest 44's 1c, the longbow): a take of
+  // what the body's record never held is refused by name
+  // (E_TAKE_NOT_IN_RECORD), no throw, the looter's engine resynced (its
+  // own inventory and the body's), nothing moves
+  constexpr uint32_t kLongBow = 0x3b562; // Skyrim.esm LongBow
+  const auto corpseBows = actor->GetInventory().GetItemCount(kLongBow);
+  const auto looterBows = looter.GetInventory().GetItemCount(kLongBow);
+  Inventory::Entry bow;
+  bow.baseId = kLongBow;
+  bow.count = corpseBows + 1;
+  p.Messages().clear();
+  REQUIRE_NOTHROW(actor->TakeItem(looter, bow));
+  REQUIRE(looter.GetInventory().GetItemCount(kLongBow) == looterBows);
+  REQUIRE(actor->GetInventory().GetItemCount(kLongBow) == corpseBows);
+  REQUIRE(SentOfType(p, 0, MsgType::SetInventory) >= 1);
+
   actor->Respawn(false);
   p.worldState.fateRespawnDue.erase(kPredator);
   DoDisconnect(p, 0);

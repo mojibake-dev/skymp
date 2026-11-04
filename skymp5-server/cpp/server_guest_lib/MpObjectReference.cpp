@@ -818,6 +818,17 @@ void MpObjectReference::PutItem(MpActor& ac, const Inventory::Entry& e)
   if (!ContainerMoveByOccupant(ac, *this)) {
     return;
   }
+  // the take's twin (npc-fate.md 1c): a put of what the mover's record does
+  // not hold is refused by name, no throw, the mover resynced
+  const auto held = ac.GetInventory().GetItemCount(e.baseId);
+  if (held < e.count) {
+    spdlog::warn("[verb:containers] E_PUT_NOT_HELD: {:x} puts {} of {:x} "
+                 "into {:x} but its record holds {}; refused, the mover "
+                 "resynced",
+                 ac.GetFormId(), e.count, e.baseId, GetFormId(), held);
+    ResyncAfterRefusedMove(ac);
+    return;
+  }
 
   PutItemEvent putItemEvent(&ac, this, e);
   try {
@@ -832,6 +843,21 @@ void MpObjectReference::TakeItem(MpActor& ac, const Inventory::Entry& e)
 {
   CheckInteractionAbility(ac);
   if (!ContainerMoveByOccupant(ac, *this)) {
+    return;
+  }
+  // thuum docs/verbs/npc-fate.md (playtest 44's 1c, the longbow): the
+  // mover's engine moved an item the server's record never had (a
+  // late-fated actor's own container roll in its loot window), RemoveItems
+  // threw into the tick's catch with no code and the engine kept the
+  // phantom. The record is the truth: a take the record cannot cover is
+  // refused by name and the mover hears both inventories again (rule 5)
+  const auto held = GetInventory().GetItemCount(e.baseId);
+  if (held < e.count) {
+    spdlog::warn("[verb:containers] E_TAKE_NOT_IN_RECORD: {:x} takes {} of "
+                 "{:x} from {:x}, whose record holds {}; refused, the mover "
+                 "resynced",
+                 ac.GetFormId(), e.count, e.baseId, GetFormId(), held);
+    ResyncAfterRefusedMove(ac);
     return;
   }
 

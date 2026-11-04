@@ -106,6 +106,22 @@ export class ActorFateService extends ClientListener {
             }
             return;
         }
+        // thuum docs/verbs/npc-fate.md 1e (playtest 44's naked khajiit; x-fate-dress-bleak v5
+        // 20261104-070209, c1-relaunch-080: "redressed 39fe4" at :534 and the stand-up's
+        // "resurrected 39fe4" in the same millisecond, its inventory reset re-dressing the
+        // engine's own outfit over the redress): a copy that is dead here is never re-rolled
+        // or redressed. A respawn's fate arrives with the live word, so the redress waits
+        // for the stand-up (deathService's resurrect lands on the game thread a frame or
+        // more later) and then runs on the living copy, the record's last word; a corpse
+        // whose record stays dead keeps its look (the change-form record lays it, ADR-065)
+        // and is forgotten after PENDING_MAX_MS. The natives refuse a dead actor as well.
+        if (actor.isDead()) {
+            if (!this.pending.has(refrId)) {
+                this.pending.set(refrId, Date.now());
+                logLab("verb:npc-fate", `late fate for ${refrId.toString(16)}: the copy is dead here, the redress waits for its stand-up (a corpse keeps its look)`);
+            }
+            return;
+        }
         this.pending.delete(refrId);
         // the export decides on the game thread by the engine's own mark
         // (ExtraLeveledCreature): a clone is re-rolled through the detours, a

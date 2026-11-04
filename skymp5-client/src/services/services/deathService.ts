@@ -127,6 +127,8 @@ export class DeathService extends ClientListener {
       this.predicted.delete(actor.getFormID());
     }
     if (actor.isDead() === isDead && this.isPlayer(actor) === false) {
+      // the word and the engine agree: a queued stand-up has landed
+      this.resurrectQueuedAt.delete(actor.getFormID());
       return;
     }
     if (isDead === true) {
@@ -350,6 +352,19 @@ export class DeathService extends ClientListener {
       // game-file actor's, never the delete and re-placement a player's
       // figure takes (the throw below)
       const id = actor.getFormID();
+      // thuum docs/verbs/npc-fate.md 1e (x-fate-dress-bleak v5 20261104-070209:
+      // "resurrect 39fe4 (puppet false) queued" 33 times a respawn): the live
+      // word is applied by every view update, movement and property message
+      // while the engine still reads the copy dead, and the native's task
+      // lands a frame or more later, so each tick queued another stand-up.
+      // One in flight per actor: a second ask within RESURRECT_INFLIGHT_MS
+      // is dropped, the mark cleared when the word and the engine agree
+      const now = Date.now();
+      const queuedAt = this.resurrectQueuedAt.get(id);
+      if (queuedAt !== undefined && now - queuedAt < DeathService.RESURRECT_INFLIGHT_MS) {
+        return;
+      }
+      this.resurrectQueuedAt.set(id, now);
       // thuum ADR-065's path (ChangeFormService): a dead record held for this
       // body is stale once the live word stands it up
       this.controller.lookupListener(ChangeFormService).onStoodUp(id);
@@ -407,6 +422,9 @@ export class DeathService extends ClientListener {
   private readonly playerActorId = 0x14;
 
   private playerDead = false;
+  // the stand-ups queued to the game thread and not yet seen landed, by actor
+  private resurrectQueuedAt = new Map<number, number>();
+  private static readonly RESURRECT_INFLIGHT_MS = 2000;
 
   private busyForOtherReasonsCounter = 0;
 }

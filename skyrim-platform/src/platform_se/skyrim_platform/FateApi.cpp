@@ -235,6 +235,16 @@ void RedressOnGameThread(uint32_t refrId, const Fates::Fate& fate)
     logger::warn("[verb:npc-fate] redressActor({:x}): no such actor", refrId);
     return;
   }
+  // thuum docs/verbs/npc-fate.md 1e: a corpse keeps its look; the record
+  // (ADR-065) lays it and a respawn's fate waits for the stand-up on the
+  // JS side (actorFateService), this the belt (Actor::IsDead, include/RE/
+  // A/Actor.h)
+  if (actor->IsDead()) {
+    logger::info("[verb:npc-fate] redressActor({:x}): the copy is dead here, "
+                 "a corpse keeps its look (no redress)",
+                 refrId);
+    return;
+  }
   // Actor::GetActorBase (include/RE/A/Actor.h:524), TESNPC::defaultOutfit
   // (include/RE/T/TESNPC.h:281): no default outfit, nothing the engine
   // would dress by (the lab spawn's figures and puppets, re-npc-roll.md
@@ -302,6 +312,16 @@ Napi::Value FateApi::RerollActor(const Napi::CallbackInfo& info)
     auto* actor = RE::TESForm::LookupByID<RE::Actor>(refrId);
     if (!actor) {
       logger::warn("[verb:npc-fate] rerollActor({:x}): no such actor", refrId);
+      return;
+    }
+    // thuum docs/verbs/npc-fate.md 1e (playtest 44's khajiit: a dead clone
+    // re-rolled through the engine toward a respawn's new pick came out
+    // half-built, naked and headless): a corpse is never re-rolled nor
+    // redressed; the fate waits for the stand-up on the JS side
+    if (actor->IsDead()) {
+      logger::info("[verb:npc-fate] rerollActor({:x}): the copy is dead "
+                   "here, a corpse keeps its look (no re-roll, no redress)",
+                   refrId);
       return;
     }
     // the decision is the engine's own mark: a leveled pick is a clone that

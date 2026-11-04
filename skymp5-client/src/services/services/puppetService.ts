@@ -273,6 +273,9 @@ export class PuppetService extends ClientListener {
                 this.puppets.delete(localId);
                 this.markLifted(localId);
                 logTrace(this, `body ${localId.toString(16)}: released from the puppet state after the ragdoll's ${((now - since) / 1000).toFixed(1)} s, its activation the engine's`);
+                // ADR-067 decision 4: the body is settled; a change-form record
+                // held for it lays it now (ChangeFormService.onBodyReleased)
+                this.controller.emitter.emit("bodyReleased", { localId, settledMs: now - since });
                 return;
             }
             // released, or never flagged here (a body that died under this
@@ -393,6 +396,16 @@ export class PuppetService extends ClientListener {
     // the native flag, the detours' truth.
     isPuppet(localId: number): boolean {
         return this.sp.isPuppet(localId);
+    }
+
+    // the ragdoll settle still to run for a body flagged dead here, in ms
+    // (ChangeFormService's wait line); undefined for a body not flagged dead
+    ragdollSettleLeftMs(localId: number): number | undefined {
+        const since = this.deadFlaggedSince.get(localId);
+        if (since === undefined) {
+            return undefined;
+        }
+        return Math.max(0, PuppetService.ragdollSettleMs - (Date.now() - since));
     }
 
     // Whether the actor is a player's figure or the player's own clone: a
@@ -772,7 +785,9 @@ export class PuppetService extends ClientListener {
     private readonly deferredArmed = new Set<number>();
     // the moment a dead puppet was first seen dead here (the flag's settle)
     private readonly deadFlaggedSince = new Map<number, number>();
-    private static readonly ragdollSettleMs = 4_000;
+    // public since ADR-067 decision 4's settle wait: ChangeFormService's
+    // backstop measures from it
+    static readonly ragdollSettleMs = 4_000;
     // ADR-067 decision 6: the dead bodies this service has blocked (once per
     // load), the tick of each body's last native lift, and the tick count
     private readonly deadBlocked = new Set<number>();

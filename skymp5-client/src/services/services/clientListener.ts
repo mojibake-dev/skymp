@@ -78,9 +78,32 @@ declare module "skyrimPlatform" {
         angleZ: number;
         power: number;
         useOrigin: boolean;
+        // thuum docs/verbs/spell-cast.md: LaunchData's contactNormal (the
+        // pick's normal a target-location launch carries; (0, 0, 1) for a
+        // launch with no pick)
+        contactNormalX: number;
+        contactNormalY: number;
+        contactNormalZ: number;
     }
     function on(eventName: 'projectileLaunched', callback: (event: ProjectileLaunchedEvent) => void): EventHandle;
     function once(eventName: 'projectileLaunched', callback: (event: ProjectileLaunchedEvent) => void): EventHandle;
+    // thuum docs/verbs/spell-cast.md (the rune's glyph on the observer): the
+    // engine's decal placement for the player's own target-location launch
+    // (the fork's hook on 44186): the projectile's base form, the pick's
+    // position, its unit normal and the surface's material id. No game
+    // call in its handler.
+    interface RuneDecalEvent {
+        projectile: number;
+        originX: number;
+        originY: number;
+        originZ: number;
+        normalX: number;
+        normalY: number;
+        normalZ: number;
+        materialId: number;
+    }
+    function on(eventName: 'runeDecal', callback: (event: RuneDecalEvent) => void): EventHandle;
+    function once(eventName: 'runeDecal', callback: (event: RuneDecalEvent) => void): EventHandle;
     // thuum docs/verbs/spell-cast.md: a magic effect applied to an actor,
     // with its caster (Skyrim Platform's magicEffectApply; its event type is
     // skyrimPlatform's own)

@@ -6260,6 +6260,8 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
       spellCastData.originZ = 0.f;
       spellCastData.launchAngleX = 0.f;
       spellCastData.launchAngleZ = 0.f;
+      // the launch's surface goes with the launch (the rune's glyph)
+      spellCastData.decal.reset();
     }
   }
 

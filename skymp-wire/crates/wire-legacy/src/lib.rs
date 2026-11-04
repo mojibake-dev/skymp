@@ -116,6 +116,7 @@ const LEGACY_ABSENT: &[(&str, &str)] = &[
     ("CreateActorProps", "lock"),
     ("CreateActorProps", "restrictedRaces"),
     ("CreateActorProps", "permittedRaces"),
+    ("SpellCastData", "decal"),
 ];
 
 /// The deserializer for a field in LEGACY_ABSENT: an optional reads as none,

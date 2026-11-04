@@ -69,7 +69,11 @@ use bounded::{String, Vec};
 /// the branch that lands on parity second renumbers, the ids shifting with
 /// the variant order either way. 33 so that no two builds at 31 disagree on
 /// what a 72 means.
-pub const SCHEMA_VERSION: u16 = 33;
+/// 34: 33's three messages with 32's `decal` on SpellCast (the rune's glyph
+/// on the observer, m2-rune-glyph) merged on m3-canon-1, Eli's baseline of
+/// everything known to work; a 33 image without the field is on the lab, so
+/// the union is a new number.
+pub const SCHEMA_VERSION: u16 = 34;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -1096,6 +1100,7 @@ mod tests {
                         floats: alloc::vec![u8::MAX; cap::ANIM_VARS].try_into().unwrap_or_default(),
                         integers: alloc::vec![u8::MAX; cap::ANIM_VARS].try_into().unwrap_or_default(),
                     },
+                    decal: Some(skymp::SpellDecal { normal_x: f32::MAX, normal_y: f32::MAX, normal_z: f32::MAX, material_id: u32::MAX }),
                 },
                 ..Default::default()
             }),

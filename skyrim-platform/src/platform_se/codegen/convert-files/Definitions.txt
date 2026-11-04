@@ -311,6 +311,21 @@ export interface ProjectileLaunchedEvent {
   angleZ: number;
   power: number;
   useOrigin: boolean;
+  // thuum docs/verbs/spell-cast.md: LaunchData's contactNormal (the pick's normal a target-location launch carries; (0, 0, 1) for a launch with no pick)
+  contactNormalX: number;
+  contactNormalY: number;
+  contactNormalZ: number;
+}
+// thuum docs/verbs/spell-cast.md (the rune's glyph on the observer): the engine's decal placement for the player's own target-location launch (the fork's hook on Address Library 44186): the projectile's base form, the pick's position, its unit normal and the surface's material id. No game call in its handler
+export interface RuneDecalEvent {
+  projectile: number;
+  originX: number;
+  originY: number;
+  originZ: number;
+  normalX: number;
+  normalY: number;
+  normalZ: number;
+  materialId: number;
 }
 // thuum docs/verbs/marksman.md: an arrow's flight as it starts (its first update's angles, after the player's auto-aim), for the player's and the figures' arrows, raised on the next tick. No game call in its handler
 export interface ProjectileFlightEvent {
@@ -737,6 +752,8 @@ export declare function once(eventName: 'areaEffectPlaced', callback: (event: Ar
 
 export declare function on(eventName: 'projectileFlight', callback: (event: ProjectileFlightEvent) => void): EventHandle
 export declare function once(eventName: 'projectileFlight', callback: (event: ProjectileFlightEvent) => void): EventHandle
+export declare function on(eventName: 'runeDecal', callback: (event: RuneDecalEvent) => void): EventHandle
+export declare function once(eventName: 'runeDecal', callback: (event: RuneDecalEvent) => void): EventHandle
 
 export declare function on(eventName: 'propContact', callback: (event: PropContactEvent) => void): EventHandle
 export declare function once(eventName: 'propContact', callback: (event: PropContactEvent) => void): EventHandle
@@ -1738,7 +1755,7 @@ export interface ActorAnimationVariables {
 export declare function setInventory(formId: number, inventory: Inventory): void;
 
 // thuum docs/verbs/spell-cast.md: with hasLaunch, a target-location spell is launched at the caster's own launch (the point its game picked, engine units) with its angles (radians), not from the figure
-export declare function castSpellImmediate(actorCasterFormId: number, castingSource: SpellType, formIdSpell: number, formIdTarget: number, aimAngle: number, aimHeading: number, animationVariables: ActorAnimationVariables, hasLaunch?: boolean, originX?: number, originY?: number, originZ?: number, launchAngleX?: number, launchAngleZ?: number): void;
+export declare function castSpellImmediate(actorCasterFormId: number, castingSource: SpellType, formIdSpell: number, formIdTarget: number, aimAngle: number, aimHeading: number, animationVariables: ActorAnimationVariables, hasLaunch?: boolean, originX?: number, originY?: number, originZ?: number, launchAngleX?: number, launchAngleZ?: number, hasDecal?: boolean, decalNormalX?: number, decalNormalY?: number, decalNormalZ?: number, decalMaterialId?: number): void;
 export declare function interruptCast(actorCasterFormId: number, castingSource: SpellType, animationVariables: ActorAnimationVariables): void;
 // thuum docs/verbs/cast-action.md: performs a BGSAction on an actor through the engine's action entry, with the event and idle the caster's engine chose (an actionPerformed event's fields), the caster's variables applied first by applyAnimationVariablesToActor; the figure's cast animation. Queued to the game thread, which performs it right after this update; returns true when queued
 export declare function performAction(actorFormId: number, actionFormId: number, idleFormId: number, eventName: string, type: number): boolean;

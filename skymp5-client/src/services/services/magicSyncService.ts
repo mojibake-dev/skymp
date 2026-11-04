@@ -50,6 +50,13 @@ export class MagicSyncService extends ClientListener {
         // as a bow shot carries its arrow's launch (playerBowShotService)
         this.controller.on("projectileLaunched", (e) => this.onProjectileLaunched(e));
         this.controller.on("projectileFlight", (e) => this.onProjectileFlight(e));
+        // thuum docs/verbs/spell-cast.md (the rune's glyph on the observer):
+        // the engine's decal placement for the player's own target-location
+        // launch (the fork's runeDecal: the projectile's base, the pick's
+        // unit normal, the surface's material), kept beside the launch so
+        // the cast carries the surface and each observer's game places the
+        // same glyph after its relayed launch
+        this.controller.on("runeDecal", (e) => this.onRuneDecal(e));
         // and the point a target-location cast with no projectile placed its
         // explosion at (the fork's areaEffectPlaced, the engine's placer
         // 34413; docs/research/apocalypse/target-location.md): carried as
@@ -415,6 +422,16 @@ export class MagicSyncService extends ClientListener {
         this.noteLaunch(e.spell, e.x, e.y, e.z, 0, 0);
     }
 
+    private onRuneDecal(e: { projectile: number; originX: number; originY: number; originZ: number; normalX: number; normalY: number; normalZ: number; materialId: number }) {
+        const now = Date.now();
+        this.decals = this.decals.filter((d) => now - d.at <= MagicSyncService.launchMatchMs);
+        this.decals.push({ at: now, projectile: e.projectile, normalX: e.normalX, normalY: e.normalY, normalZ: e.normalZ, materialId: e.materialId });
+        if (this.decals.length > MagicSyncService.launchesKept) {
+            this.decals.shift();
+        }
+        this.flushCasts(false);
+    }
+
     private noteLaunch(spell: number, originX: number, originY: number, originZ: number, angleX: number, angleZ: number, projectile = 0) {
         const now = Date.now();
         this.launches = this.launches.filter((l) => now - l.at <= MagicSyncService.launchMatchMs);
@@ -468,6 +485,13 @@ export class MagicSyncService extends ClientListener {
             const withLaunch = !!origin && !!angles && Number.isFinite(origin.x) && Number.isFinite(origin.y) && Number.isFinite(origin.z)
                 && Number.isFinite(angles.x) && Number.isFinite(angles.z);
             if (withLaunch && origin && angles) {
+                // the launch's surface: the decal the engine placed for this
+                // projectile within the match window (a target-location cast's
+                // glyph), unitized by the hook; none for a bolt
+                const d = launch && launch.projectile !== 0
+                    ? this.decals.findIndex((x) => x.projectile === launch.projectile && now - x.at <= MagicSyncService.launchMatchMs)
+                    : -1;
+                const decal = d < 0 ? undefined : this.decals.splice(d, 1)[0];
                 this.sendCast({
                     ...pending.msg,
                     hasLaunch: true,
@@ -476,7 +500,11 @@ export class MagicSyncService extends ClientListener {
                     originZ: origin.z,
                     launchAngleX: MagicSyncService.pitch(angles.x),
                     launchAngleZ: angles.z,
+                    ...(decal ? { decal: { normalX: decal.normalX, normalY: decal.normalY, normalZ: decal.normalZ, materialId: decal.materialId } } : {}),
                 });
+                if (decal) {
+                    logTrace(this, "cast sent with its launch's surface", "spell", pending.msg.spell.toString(16), "material", decal.materialId.toString(16));
+                }
                 if (!flight && launch && launch.projectile !== 0) {
                     logTrace(this, "cast sent with its launch's angles (no flight seen)", "spell", pending.msg.spell.toString(16));
                 }
@@ -756,6 +784,8 @@ export class MagicSyncService extends ClientListener {
     private lastSendUpdateAnimationVariables: number = 0;
     private pendingCasts: { msg: SpellCastMsgData; waited: number }[] = [];
     private launches: { at: number; spell: number; originX: number; originY: number; originZ: number; angleX: number; angleZ: number; projectile: number }[] = [];
+    // the engine's decal placements for the player's own launches (runeDecal), by projectile base
+    private decals: { at: number; projectile: number; normalX: number; normalY: number; normalZ: number; materialId: number }[] = [];
     private flights: { at: number; spell: number; x: number; y: number; z: number; angleX: number; angleZ: number }[] = [];
     // a launch this close to its cast is the cast's, and a cast waits this
     // many updates for one: the bow shot's numbers (playerBowShotService)

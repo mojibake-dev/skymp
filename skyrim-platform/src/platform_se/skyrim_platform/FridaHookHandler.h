@@ -40,7 +40,10 @@ enum HookID
   // thuum docs/verbs/traps.md (ADR-059 decision 3): a world object's
   // NiControllerManager sequence as the engine plays it
   // (TESObjectREFR::PlayAnimation_Impl, CommonLibSSE-NG Offsets.h:546)
-  HOOK_PLAY_ANIMATION
+  HOOK_PLAY_ANIMATION,
+  // thuum docs/verbs/spell-cast.md (the rune's glyph): the engine's decal
+  // placement after a target-location launch (Address Library 44186)
+  HOOK_RUNE_DECAL
 };
 
 struct Hook

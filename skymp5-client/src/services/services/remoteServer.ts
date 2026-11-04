@@ -562,11 +562,12 @@ export class RemoteServer extends ClientListener {
                 for (let i = 0; i < 5; i++) {
                   // retry. pillars in bleakfalls are not reliable for some reason
                   // (2026-11-04: a Trigger0N replayed from the graph's default Side01 has no
-                  // transition, which is what "not reliable" was; playRelayed jumps the graph to
-                  // the trigger's side first, objectAnimationService's read of Behavior00.hkx)
+                  // transition, which is what "not reliable" was; the jump to the trigger's side
+                  // is a live relay's alone, since the host replays this too and its graph is
+                  // its script's: playtest 46's dead pillars, objectAnimationService.playRelayed)
                   const again = ObjectReference.from(Game.getFormEx(refrid));
                   const res2 = again
-                    ? this.controller.lookupListener(ObjectAnimationService).playRelayed(again, animation, "the record")
+                    ? this.controller.lookupListener(ObjectAnimationService).playRelayed(again, animation, "the record", undefined, false)
                     : false;
                   if (res2) {
                     break;

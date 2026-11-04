@@ -169,10 +169,23 @@ export class ObjectAnimationService extends ClientListener {
   // other event. The line keeps "object animation <refr> <event> played" as
   // its head (b-puzzle-relay's claim). HYPOTHESIS until x-puzzle-guest-view
   // v2 reads the node on the guest's screen.
-  playRelayed(refr: ObjectReference, event: string, how: string, remoteRefr?: number): boolean {
+  // The jump is for a LIVE relay alone (a seat that does not host the
+  // reference: the host receives no relay of its own reports). The record's
+  // replay at a load (remoteServer, every seat, the host included) plays the
+  // plain trigger as it always did: playtest 46 (2026-11-04 22:42Z, 843fed95
+  // live): with the jump in the replay, the host's graph was moved to the
+  // record's side while its script stayed on its own start state, so the
+  // script's first Trigger0N had no transition, PlayAnimationAndWait never
+  // saw its Turned0N and the script stayed busy for good: no pillar turned
+  // on either seat. The host's graph is its script's; the record reaches
+  // the host's script through its activations (ADR-059 decision 5), not
+  // through graph events. A guest's replay therefore still lands on the
+  // record's side only when the trigger matches its default side, the old
+  // limit, until the host's script state is fed from the record.
+  playRelayed(refr: ObjectReference, event: string, how: string, remoteRefr?: number, jumpFirst = true): boolean {
     const localId = refr.getFormID();
     const id = (remoteRefr ?? localId).toString(16);
-    const m = /^Trigger0([23])$/.exec(event);
+    const m = jumpFirst ? /^Trigger0([23])$/.exec(event) : null;
     let jump = "";
     if (m) {
       const jumpEvent = `StartState0${m[1]}`;

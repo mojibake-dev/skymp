@@ -235,13 +235,14 @@ void RedressOnGameThread(uint32_t refrId, const Fates::Fate& fate)
     logger::warn("[verb:npc-fate] redressActor({:x}): no such actor", refrId);
     return;
   }
-  // thuum docs/verbs/npc-fate.md 1e: a corpse keeps its look; the record
-  // (ADR-065) lays it and a respawn's fate waits for the stand-up on the
-  // JS side (actorFateService), this the belt (Actor::IsDead, include/RE/
-  // A/Actor.h)
+  // thuum docs/verbs/npc-fate.md 1e and 1c: a corpse keeps its look (the
+  // change-form record lays it, ADR-065) and its inventory is the record
+  // (Actor::IsDead, include/RE/A/Actor.h); the stand-up dresses it later
   if (actor->IsDead()) {
+    ReconcileInventoryOnGameThread(actor, fate, refrId);
     logger::info("[verb:npc-fate] redressActor({:x}): the copy is dead here, "
-                 "a corpse keeps its look (no redress)",
+                 "a corpse keeps its look (no redress); its inventory "
+                 "reconciled to the record",
                  refrId);
     return;
   }
@@ -316,11 +317,15 @@ Napi::Value FateApi::RerollActor(const Napi::CallbackInfo& info)
     }
     // thuum docs/verbs/npc-fate.md 1e (playtest 44's khajiit: a dead clone
     // re-rolled through the engine toward a respawn's new pick came out
-    // half-built, naked and headless): a corpse is never re-rolled nor
-    // redressed; the fate waits for the stand-up on the JS side
+    // half-built, naked and headless) and 1c (the body's inventory is the
+    // record): a corpse is never re-rolled nor redressed, it keeps its look
+    // and its inventory is reconciled to the record alone; a stand-up
+    // (resurrectActor) dresses the living copy from the fate itself
     if (actor->IsDead()) {
+      ReconcileInventoryOnGameThread(actor, fate, refrId);
       logger::info("[verb:npc-fate] rerollActor({:x}): the copy is dead "
-                   "here, a corpse keeps its look (no re-roll, no redress)",
+                   "here, a corpse keeps its look (no re-roll, no redress); "
+                   "its inventory reconciled to the record",
                    refrId);
       return;
     }
@@ -438,9 +443,21 @@ Napi::Value FateApi::ResurrectActor(const Napi::CallbackInfo& info)
       }
       actor->SetActivationBlocked(false);
     }
+    // thuum docs/verbs/npc-fate.md 1e (x-fate-dress-bleak v5 20261104-070209,
+    // c1-relaunch-080: "redressed 39fe4" at :534 and this stand-up in the
+    // same millisecond, Resurrect(true, true)'s inventory reset re-dressing
+    // the engine's own outfit over the redress): the record's dress follows
+    // the reset HERE, in the same task, so the stood-up copy wears the fate
+    // (the pick's swap, if any, is the late fate's rerollActor after this)
+    Fates::Fate fate;
+    bool redressed = false;
+    if (!actor->IsDead() && Fates::Enabled() && Fates::Get(refrId, fate)) {
+      RedressOnGameThread(refrId, fate);
+      redressed = true;
+    }
     logger::info("[verb:npc-fate] resurrected {:x} (puppet {}, AI was off {}, "
-                 "dead before {}, dead after {})",
-                 refrId, puppet, aiOff, wasDead, actor->IsDead());
+                 "dead before {}, dead after {}, redressed from the fate {})",
+                 refrId, puppet, aiOff, wasDead, actor->IsDead(), redressed);
   });
   return Napi::Boolean::New(info.Env(), true);
 }

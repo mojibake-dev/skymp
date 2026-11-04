@@ -73,7 +73,7 @@ use bounded::{String, Vec};
 /// on the observer, m2-rune-glyph) merged on m3-canon-1, Eli's baseline of
 /// everything known to work; a 33 image without the field is on the lab, so
 /// the union is a new number.
-pub const SCHEMA_VERSION: u16 = 34;
+pub const SCHEMA_VERSION: u16 = 35;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -111,6 +111,11 @@ pub mod cap {
     pub const ACTOR_FATES: usize = 64;
     /// Worn items the server's outfit roll put on one actor.
     pub const FATE_WORN: usize = 32;
+    /// Inventory rows the server's container roll put in one actor's record
+    /// apart from the worn items (playtest 44's 1c): a bandit's loot is a
+    /// handful; a vendor's wares sit in its chest, not on it. Sixty-four
+    /// fates of thirty-two rows keep ActorFate's bound at 32 KiB.
+    pub const FATE_INV: usize = 32;
     /// Leveled templates one NPC resolves through.
     pub const TEMPLATE_CHAIN: usize = 64;
     /// Races a server restricts to listed profiles (Skyrim.esm has 99 RACE
@@ -622,7 +627,7 @@ const TABLE: [Row; 83] = [
     row("HostGrant", 48, 32, S2C),
     row("HostRelease", 49, 32, S2C),
     row("ActorSightings", 50, 4 * KIB, C2S),
-    row("ActorFate", 51, 16 * KIB, S2C),
+    row("ActorFate", 51, 32 * KIB, S2C),
     row("ActorDeath", 52, KIB, C2S),
     row("HostedActorState", 53, 64, Both),
     row("ActorSpeech", 54, 32, Both),
@@ -918,6 +923,7 @@ mod tests {
                         base_id: u32::MAX,
                         level: u16::MAX,
                         worn: (0..cap::FATE_WORN).map(|_| u32::MAX).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default(),
+                        inv: (0..cap::FATE_INV).map(|_| skymp::FateInvRow { base_id: u32::MAX, count: u32::MAX }).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default(),
                     })
                     .collect::<alloc::vec::Vec<_>>()
                     .try_into()

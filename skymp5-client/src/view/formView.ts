@@ -382,8 +382,8 @@ export class FormView {
         if (typeof model.refrId === "number" && model.refrId >= 0xff000000 && FormView.isNpcModel(model) && base.getType() === FormType.NPC) {
           const fate = SpApiInteractor.getControllerInstance().lookupListener(ActorFateService).fateForCopy(model.refrId);
           if (fate) {
-            const armed = armActorFate(base.getFormID(), fate.baseId, fate.worn);
-            logLab("verb:npc-fate", `copy ${model.refrId.toString(16)} of ${base.getFormID().toString(16)}: fate armed ${armed} (${fate.worn.length} worn)`);
+            const armed = armActorFate(base.getFormID(), fate.baseId, fate.worn, fate.inv);
+            logLab("verb:npc-fate", `copy ${model.refrId.toString(16)} of ${base.getFormID().toString(16)}: fate armed ${armed} (${fate.worn.length} worn, ${fate.inv.length / 2} inventory row(s))`);
           } else {
             logLab("verb:npc-fate", `copy ${model.refrId.toString(16)} of ${base.getFormID().toString(16)}: no fate held, the engine's own roll`);
           }

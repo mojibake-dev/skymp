@@ -1,5 +1,5 @@
 import { logLab, logTrace } from "../../logging";
-import { ActorFateMessage } from "../messages/actorFateMessage";
+import { ActorFateMessage, flatInvRows } from "../messages/actorFateMessage";
 import { ConnectionMessage } from "../events/connectionMessage";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 
@@ -52,11 +52,12 @@ export class ActorFateService extends ClientListener {
                 // where the detours bind it to the copy's own id. No native
                 // table entry under the remote id and no late path: the copy
                 // is this game's to place
-                this.copyFates.set(fate.refrId, { baseId: fate.baseId, worn: fate.worn.slice() });
+                this.copyFates.set(fate.refrId, { baseId: fate.baseId, worn: fate.worn.slice(), inv: flatInvRows(fate.inv) });
                 continue;
             }
-            this.sp.setActorFate(fate.refrId, fate.baseId, fate.worn);
-            const key = `${fate.baseId}:${fate.worn.join(",")}`;
+            const inv = flatInvRows(fate.inv);
+            this.sp.setActorFate(fate.refrId, fate.baseId, fate.worn, inv);
+            const key = `${fate.baseId}:${fate.worn.join(",")}:${inv.join(",")}`;
             const before = this.applied.get(fate.refrId);
             this.applied.set(fate.refrId, key);
             if (this.enabled && before !== key) {
@@ -95,7 +96,17 @@ export class ActorFateService extends ClientListener {
         const refr = this.sp.Game.getFormEx(refrId);
         const actor = refr ? this.sp.Actor.from(refr) : null;
         if (!actor) {
-            this.pending.delete(refrId);
+            // thuum docs/verbs/npc-fate.md 1c (x-fate-inventory v1b 20261104-062409: the
+            // early path's copy held two HuntingBows no detoured call passed): a fate
+            // for a reference the engine does not hold yet (an interior's actors
+            // before the cell attaches) waits in `pending` for its load like a late
+            // one, so every loaded copy passes rerollActor once (the record's dress
+            // and inventory, idempotent over the detours' own work); one path for
+            // early and late. Forgotten after PENDING_MAX_MS, as before
+            if (!this.pending.has(refrId)) {
+                this.pending.set(refrId, Date.now());
+                logLab("verb:npc-fate", `late fate for ${refrId.toString(16)}: not in the engine yet, the redress waits for its load`);
+            }
             return;
         }
         if (!actor.is3DLoaded()) {
@@ -152,13 +163,13 @@ export class ActorFateService extends ClientListener {
 
     // The server's fate for a server-made NPC by its remote id (ADR-050
     // decision 3), read by the view at the copy's spawn.
-    fateForCopy(remoteId: number): { baseId: number; worn: number[] } | undefined {
+    fateForCopy(remoteId: number): { baseId: number; worn: number[]; inv: number[] } | undefined {
         return this.copyFates.get(remoteId);
     }
 
     // the last fate applied per reference (base and worn), so a repeated fate
     // for the same roll re-rolls nothing
     private applied = new Map<number, string>();
-    private copyFates = new Map<number, { baseId: number; worn: number[] }>();
+    private copyFates = new Map<number, { baseId: number; worn: number[]; inv: number[] }>();
     private enabled: boolean;
 }

@@ -3,7 +3,11 @@
 #include "Fates.h"
 #include "Puppets.h"
 #include "game/Offsets.h"
+#include <algorithm>
 #include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 extern CallNativeApi::NativeCallRequirements g_nativeCallRequirements;
 
@@ -15,6 +19,34 @@ namespace {
 // re-initializes the inventory and switches the race; a_arg == -1 skips its
 // level check. RE this: its return type (called as void, the value unread).
 using ActorRerollFn = void (*)(RE::Actor* actor, std::int32_t arg);
+}
+
+namespace {
+// the inventory rows as the TS side passes them: one flat array of numbers,
+// [formId, count, formId, count, ...]; absent or empty: no rows (an older
+// bundle, a server whose fate carries none)
+void ParseInvRows(const Napi::CallbackInfo& info, size_t index,
+                  Fates::Fate& fate)
+{
+  if (info.Length() <= index || info[index].IsUndefined() ||
+      info[index].IsNull()) {
+    return;
+  }
+  const auto flat = NapiHelper::ExtractArray(info[index], "inv");
+  const uint32_t n = flat.Length();
+  fate.inv.reserve(n / 2);
+  for (uint32_t i = 0; i + 1 < n; i += 2) {
+    const std::string idName = "inv[" + std::to_string(i) + "]";
+    const std::string countName = "inv[" + std::to_string(i + 1) + "]";
+    const auto baseId = NapiHelper::ExtractUInt32(flat.Get(i), idName.c_str());
+    const auto count =
+      NapiHelper::ExtractUInt32(flat.Get(i + 1), countName.c_str());
+    if (baseId == 0 || count == 0) {
+      continue;
+    }
+    fate.inv.emplace_back(baseId, count);
+  }
+}
 }
 
 Napi::Value FateApi::SetActorFate(const Napi::CallbackInfo& info)
@@ -34,6 +66,7 @@ Napi::Value FateApi::SetActorFate(const Napi::CallbackInfo& info)
     fate.worn.push_back(
       NapiHelper::ExtractUInt32(worn.Get(i), subArgName.c_str()));
   }
+  ParseInvRows(info, 3, fate);
   Fates::Set(refrId, fate);
   return Napi::Boolean::New(info.Env(), true);
 }
@@ -55,6 +88,7 @@ Napi::Value FateApi::ArmActorFate(const Napi::CallbackInfo& info)
     fate.worn.push_back(
       NapiHelper::ExtractUInt32(worn.Get(i), subArgName.c_str()));
   }
+  ParseInvRows(info, 3, fate);
   Fates::Arm(baseId, fate);
   return Napi::Boolean::New(info.Env(), true);
 }
@@ -78,11 +112,138 @@ namespace {
 // re-npc-roll.md 8.4's late path on the game thread: the actor looked up
 // here (setPuppet's shape, the 2026-10-21 hang), the outfit stripped, the
 // server's worn list added tagged as the detour adds it, worn again
+// thuum docs/verbs/npc-fate.md (playtest 44's 1c, the longbow): a copy
+// loaded before its fate carries its own engine's container roll (the Long
+// Bow and arrows the record never had, in the loot window). The record's
+// rows are the truth: every non-worn count is brought to the fate's rows and
+// the worn set to the fate's worn list, by the engine's own adder and
+// remover on the game thread (TESObjectREFR::AddObjectToContainer and
+// RemoveItem, include/RE/T/TESObjectREFR.h:282-286; the counts read through
+// GetInventory, :400). HYPOTHESIS until x-fate-inventory reads the window
+// equal to the record on a late joiner.
+void ReconcileInventoryOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
+                                    uint32_t refrId)
+{
+  std::unordered_map<uint32_t, int32_t> want;
+  for (const auto& [baseId, count] : fate.inv) {
+    want[baseId] += static_cast<int32_t>(count);
+  }
+  for (const auto wornId : fate.worn) {
+    want[wornId] += 1;
+  }
+  size_t removed = 0;
+  size_t added = 0;
+  size_t kept = 0;
+  size_t unequipped = 0;
+  // the leveled-list bases the engine lists for a container with no rolled
+  // entry yet are no items (the review of 7c3c9f79, finding 3): left out
+  auto inventory = actor->GetInventory(
+    [](RE::TESBoundObject& o) { return !o.Is(RE::FormType::LeveledItem); });
+  for (auto& [object, entry] : inventory) {
+    if (!object || entry.first <= 0) {
+      continue;
+    }
+    const int32_t have = entry.first;
+    const auto it = want.find(object->formID);
+    const int32_t target = it == want.end() ? 0 : it->second;
+    if (have > target) {
+      // thuum docs/verbs/npc-fate.md 1c, the 06:12Z crashes on 18531 (the
+      // re-analyst's static read of the three stacks, 2026-11-04,
+      // HYPOTHESIS until the Frida trace): Actor::RemoveItem of a weapon
+      // queues the next-best weapon's equip on the process (MiddleHigh
+      // ProcessData::itemstoEquipUnequip, include/RE/M/
+      // MiddleHighProcessData.h:157) with that entry's ExtraDataList, and
+      // purges queued nodes only where the node's list is the a_extraList
+      // passed (nullptr matched none of them); this loop then removed the
+      // queued weapon too, freed its list, and the next actor-update job
+      // on a job thread read it (39814 to EquipObject/UnequipObject, three
+      // of three). The engine's own order instead: a worn stack is
+      // unequipped first with the queue off and applied now (ActorEquip
+      // Manager::UnequipObject, include/RE/A/ActorEquipManager.h:22), and
+      // every stack is removed BY ITS OWN LIST (InventoryEntryData::
+      // extraLists, include/RE/I/InventoryEntryData.h:61; ExtraDataList::
+      // GetCount and HasType, include/RE/E/ExtraDataList.h) so the purge
+      // matches; the listless remainder goes with nullptr as before. The
+      // lists are copied out first: a removal frees the list it is given.
+      int32_t toRemove = have - target;
+      std::vector<RE::ExtraDataList*> lists;
+      if (entry.second && entry.second->extraLists) {
+        for (auto* list : *entry.second->extraLists) {
+          if (list) {
+            lists.push_back(list);
+          }
+        }
+      }
+      auto* equipManager = RE::ActorEquipManager::GetSingleton();
+      for (auto* list : lists) {
+        if (toRemove <= 0) {
+          break;
+        }
+        const int32_t inList = std::max<int32_t>(1, list->GetCount());
+        const int32_t n = std::min(inList, toRemove);
+        if (equipManager &&
+            (list->HasType(RE::ExtraDataType::kWorn) ||
+             list->HasType(RE::ExtraDataType::kWornLeft))) {
+          equipManager->UnequipObject(actor, object, list,
+                                      static_cast<std::uint32_t>(n), nullptr,
+                                      false, false, false, true);
+          ++unequipped;
+        }
+        // TESObjectREFR::RemoveItem (include/RE/T/TESObjectREFR.h:282),
+        // the handle it answers unread
+        (void)actor->RemoveItem(object, n, RE::ITEM_REMOVE_REASON::kRemove,
+                                list, nullptr);
+        toRemove -= n;
+      }
+      if (toRemove > 0) {
+        (void)actor->RemoveItem(
+          object, toRemove, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+      }
+      removed += static_cast<size_t>(have - target);
+    } else {
+      kept += static_cast<size_t>(have);
+    }
+    if (it != want.end()) {
+      it->second = target - std::min(have, target);
+    }
+  }
+  for (const auto& [baseId, missing] : want) {
+    if (missing <= 0) {
+      continue;
+    }
+    auto* bound = RE::TESForm::LookupByID<RE::TESBoundObject>(baseId);
+    if (!bound) {
+      logger::warn("[verb:npc-fate] inventory row {:x} for {:x} is no bound "
+                   "object in this game, skipped",
+                   baseId, refrId);
+      continue;
+    }
+    actor->AddObjectToContainer(bound, nullptr, missing, nullptr);
+    added += static_cast<size_t>(missing);
+  }
+  logger::info("[verb:npc-fate] inventory of {:x} reconciled to the record: "
+               "{} row(s) and {} worn, {} removed ({} worn stack(s) "
+               "unequipped first), {} added, {} kept",
+               refrId, fate.inv.size(), fate.worn.size(), removed, unequipped,
+               added, kept);
+}
+
 void RedressOnGameThread(uint32_t refrId, const Fates::Fate& fate)
 {
   auto* actor = RE::TESForm::LookupByID<RE::Actor>(refrId);
   if (!actor) {
     logger::warn("[verb:npc-fate] redressActor({:x}): no such actor", refrId);
+    return;
+  }
+  // thuum docs/verbs/npc-fate.md 1e and 1c: a corpse keeps its look (the
+  // change-form record lays it, ADR-065) and its inventory is the record
+  // (Actor::IsDead, include/RE/A/Actor.h); the stand-up dresses it later
+  if (actor->IsDead()) {
+    ReconcileInventoryOnGameThread(actor, fate, refrId);
+    logger::info("[verb:npc-fate] redressActor({:x}): the copy is dead here, "
+                 "a corpse keeps its look (no redress); its inventory "
+                 "reconciled to the record",
+                 refrId);
     return;
   }
   // Actor::GetActorBase (include/RE/A/Actor.h:524), TESNPC::defaultOutfit
@@ -118,10 +279,18 @@ void RedressOnGameThread(uint32_t refrId, const Fates::Fate& fate)
   // with a_forceUpdate true: one pop
   actor->RemoveOutfitItems(outfit);
   const auto dressed = Fates::AddWornTagged(changes, outfit, fate, refrId);
-  actor->AddWornOutfit(outfit, true);
+  // the record's rows before the dress and the dress without the equip
+  // queue (Actor::AddWornOutfit's second argument reaches the queue flag
+  // of every tagged entry's equip; the engine's own dresser passes 0): the
+  // crash read above, SetDefaultOutfit's order, remove first and dress
+  // last with nothing queued across a removal. HYPOTHESIS until three
+  // logins into Bleak Falls on this dist pass where 18531 crashed thrice.
+  ReconcileInventoryOnGameThread(actor, fate, refrId);
+  actor->AddWornOutfit(outfit, false);
   logger::info("[verb:npc-fate] redressed {:x} from the server's roll: {} "
                "of {} tagged for outfit {:x} and worn ({} already tagged, "
-               "3D loaded {})",
+               "3D loaded {}), the record's rows reconciled first, the "
+               "dress unqueued",
                refrId, dressed.added, fate.worn.size(), outfit->formID,
                dressed.carried, actor->Is3DLoaded());
 }
@@ -144,6 +313,20 @@ Napi::Value FateApi::RerollActor(const Napi::CallbackInfo& info)
     auto* actor = RE::TESForm::LookupByID<RE::Actor>(refrId);
     if (!actor) {
       logger::warn("[verb:npc-fate] rerollActor({:x}): no such actor", refrId);
+      return;
+    }
+    // thuum docs/verbs/npc-fate.md 1e (playtest 44's khajiit: a dead clone
+    // re-rolled through the engine toward a respawn's new pick came out
+    // half-built, naked and headless) and 1c (the body's inventory is the
+    // record): a corpse is never re-rolled nor redressed, it keeps its look
+    // and its inventory is reconciled to the record alone; a stand-up
+    // (resurrectActor) dresses the living copy from the fate itself
+    if (actor->IsDead()) {
+      ReconcileInventoryOnGameThread(actor, fate, refrId);
+      logger::info("[verb:npc-fate] rerollActor({:x}): the copy is dead "
+                   "here, a corpse keeps its look (no re-roll, no redress); "
+                   "its inventory reconciled to the record",
+                   refrId);
       return;
     }
     // the decision is the engine's own mark: a leveled pick is a clone that
@@ -260,9 +443,21 @@ Napi::Value FateApi::ResurrectActor(const Napi::CallbackInfo& info)
       }
       actor->SetActivationBlocked(false);
     }
+    // thuum docs/verbs/npc-fate.md 1e (x-fate-dress-bleak v5 20261104-070209,
+    // c1-relaunch-080: "redressed 39fe4" at :534 and this stand-up in the
+    // same millisecond, Resurrect(true, true)'s inventory reset re-dressing
+    // the engine's own outfit over the redress): the record's dress follows
+    // the reset HERE, in the same task, so the stood-up copy wears the fate
+    // (the pick's swap, if any, is the late fate's rerollActor after this)
+    Fates::Fate fate;
+    bool redressed = false;
+    if (!actor->IsDead() && Fates::Enabled() && Fates::Get(refrId, fate)) {
+      RedressOnGameThread(refrId, fate);
+      redressed = true;
+    }
     logger::info("[verb:npc-fate] resurrected {:x} (puppet {}, AI was off {}, "
-                 "dead before {}, dead after {})",
-                 refrId, puppet, aiOff, wasDead, actor->IsDead());
+                 "dead before {}, dead after {}, redressed from the fate {})",
+                 refrId, puppet, aiOff, wasDead, actor->IsDead(), redressed);
   });
   return Napi::Boolean::New(info.Env(), true);
 }

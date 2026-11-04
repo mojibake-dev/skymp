@@ -83,6 +83,10 @@ public:
   // decision 1: a record rolled before the rule keeps it), as does a dead
   // one and one already fated. Returns whether it rolled.
   bool RollFateIfUnrolled(uint16_t level);
+  // the roll's preconditions (npc-fate.md, playtest 44's 1c): a living
+  // game-file or placed actor this process has not fated and did not load from
+  // a save; Init leaves such an actor's base unrolled for the fate pass
+  bool CanRollFate() const;
   bool IsCreatedAsPlayer() const;
   const ActorValues& GetActorValues() const;
   const ActiveMagicEffectsMap& GetActiveMagicEffects() const;

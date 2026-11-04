@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <unordered_map>
 #include <vector>
 
 // thuum docs/verbs/npc-fate.md (ADR-046 decision 1, ADR-049): the two detours
@@ -352,14 +353,17 @@ Fates::Dressing Fates::AddWornTagged(RE::InventoryChanges* changes,
 // WEAP rows (the base's weapon list, LItemBanditWeapon1H for a bandit,
 // section 10) are dropped and the fate's worn WEAP forms written in their
 // place (count 1, the pads written as the 14752 detour does), once per init
-// pass (the first weapon-bearing ordinal arms, later ones only drop: the
-// rare second weapon of a loot list); then the original runs and tags them
-// as the engine would (the ordinal, the count, the entry, the change flag).
-// Rows that are not weapons (gold, loot) stay the engine's: the corpse's
-// menu is the server's inventory. Re-asked at every re-init (the first
+// pass (the first ordinal arms, later ones only drop); then the original
+// runs and tags them as the engine would (the ordinal, the count, the entry,
+// the change flag). Since playtest 44's 1c (thuum docs/verbs/npc-fate.md)
+// every row of a fated owner is the server's: the engine's picks are dropped
+// whole, weapons and loot alike, and the fate's inventory rows are written at
+// the arming entry, each less what the copy already holds (the base's fixed
+// CNTO rows the engine keeps without a changes entry, and the changes
+// already made), so a row lands once. Re-asked at every re-init (the first
 // InitItemImpl, the attach's ResetInventory, SetOutfit), idempotent like
-// 16155's. HYPOTHESIS until x-npc-fate-outfit v3 holds the worn equality
-// with the hands counted.
+// 16155's. HYPOTHESIS until x-fate-inventory reads a copy equal to the
+// record.
 using ContainerAddFn = void (*)(RE::InventoryChanges* changes,
                                 RE::BSScrapArray<RE::CALCED_OBJECT>* picks,
                                 std::uint32_t ordinal, RE::BGSOutfit* outfit);
@@ -385,33 +389,26 @@ void ContainerAddReplacement(RE::InventoryChanges* changes,
         Fates::Get(changes->owner->formID, fate))) {
     return g_containerAddOriginal(changes, picks, ordinal, outfit);
   }
-  bool hadWeapon = false;
-  for (const auto& row : *picks) {
-    // TESForm::IsWeapon (include/RE/T/TESForm.h:347)
-    if (row.form && row.form->IsWeapon()) {
-      hadWeapon = true;
-      break;
-    }
-  }
-  if (!hadWeapon) {
-    return g_containerAddOriginal(changes, picks, ordinal, outfit);
-  }
+  // thuum docs/verbs/npc-fate.md (playtest 44's 1c): for a fated owner the
+  // engine's container roll is dropped whole, weapons and loot alike, and
+  // the record's own rows are written at the arming entry beside the fate's
+  // worn weapons: the copy's inventory is the server's record, so its loot
+  // window lists what a take can move. Before 1c the weapons alone were
+  // the server's and the rest stayed the engine's (the longbow's leak).
   const auto ownerId = changes->owner->formID;
   const bool arm = !(t_armedOwner == ownerId && ordinal > t_armedOrdinal);
-  std::vector<RE::CALCED_OBJECT> kept;
   std::size_t dropped = 0;
+  std::size_t droppedWeapons = 0;
   for (const auto& row : *picks) {
+    ++dropped;
+    // TESForm::IsWeapon (include/RE/T/TESForm.h:347)
     if (row.form && row.form->IsWeapon()) {
-      ++dropped;
-    } else {
-      kept.push_back(row);
+      ++droppedWeapons;
     }
   }
   picks->clear();
-  for (const auto& row : kept) {
-    picks->emplace_back() = row;
-  }
   std::size_t written = 0;
+  std::size_t rows = 0;
   if (arm) {
     for (const auto id : fate.worn) {
       auto* weapon = RE::TESForm::LookupByID<RE::TESObjectWEAP>(id);
@@ -425,12 +422,60 @@ void ContainerAddReplacement(RE::InventoryChanges* changes,
       pick.pad0C = 0;
       ++written;
     }
+    // the record's rows, each less what the copy holds already: the base's
+    // fixed (non-leveled) CNTO rows the engine keeps without a changes entry
+    // (TESContainer::ForEachContainerObject, include/RE/T/TESContainer.h:44;
+    // the owner's base is a TESNPC, a TESContainer) and the changes made so
+    // far (InventoryChanges::entryList, include/RE/I/InventoryChanges.h:63;
+    // the entry's countDelta), so a reconciled or re-rolled copy gets no
+    // second copy (the review of 7c3c9f79, findings 2 and 4)
+    std::unordered_map<std::uint32_t, std::int64_t> held;
+    if (auto* base = changes->owner->GetBaseObject()) {
+      if (auto* container = base->As<RE::TESContainer>()) {
+        container->ForEachContainerObject([&](RE::ContainerObject& co) {
+          if (co.obj && !co.obj->Is(RE::FormType::LeveledItem)) {
+            held[co.obj->formID] += co.count;
+          }
+          return RE::BSContainer::ForEachResult::kContinue;
+        });
+      }
+    }
+    if (changes->entryList) {
+      for (auto* entry : *changes->entryList) {
+        if (entry && entry->object) {
+          held[entry->object->formID] += entry->countDelta;
+        }
+      }
+    }
+    for (const auto& [baseId, count] : fate.inv) {
+      auto* bound = RE::TESForm::LookupByID<RE::TESBoundObject>(baseId);
+      if (!bound || count == 0) {
+        continue;
+      }
+      const auto it = held.find(baseId);
+      const std::int64_t have = it == held.end() ? 0 : it->second;
+      const std::int64_t missing = static_cast<std::int64_t>(count) - have;
+      if (missing <= 0) {
+        continue;
+      }
+      auto& pick = picks->emplace_back();
+      pick.form = bound;
+      pick.count = static_cast<std::int32_t>(missing);
+      pick.pad0A = 0;
+      pick.pad0C = 0;
+      ++rows;
+    }
     t_armedOwner = ownerId;
     t_armedOrdinal = ordinal;
+    logger::info("[verb:npc-fate] armed {:x} from the server's roll at entry "
+                 "{}: {} engine pick(s) dropped ({} weapon(s)), {} of the "
+                 "server's weapons and {} inventory row(s) written",
+                 ownerId, ordinal, dropped, droppedWeapons, written, rows);
+  } else {
+    logger::debug("[verb:npc-fate] {:x}'s entry {}: {} engine pick(s) "
+                  "dropped, the record's rows written at entry {}",
+                  ownerId, ordinal, dropped, t_armedOrdinal);
   }
-  logger::info("[verb:npc-fate] armed {:x} from the server's roll at entry "
-               "{}: {} engine weapon(s) dropped, {} of the server's written",
-               ownerId, ordinal, dropped, written);
   return g_containerAddOriginal(changes, picks, ordinal, outfit);
 }
 

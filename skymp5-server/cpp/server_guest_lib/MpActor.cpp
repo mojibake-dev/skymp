@@ -2236,7 +2236,7 @@ uint32_t MpActor::GetFateBaseId() const
   return pick ? pick : GetBaseId();
 }
 
-bool MpActor::RollFateIfUnrolled(uint16_t level)
+bool MpActor::CanRollFate() const
 {
   auto worldState = GetParent();
   if (!worldState || !worldState->HasEspm() || pImpl->fromSave || IsDead() ||
@@ -2247,14 +2247,22 @@ bool MpActor::RollFateIfUnrolled(uint16_t level)
   // under a 0xff id, is fated through the same roll as a game-file actor
   // (PapyrusObjectReference::PlaceAtMe rolls it before its create word);
   // only a player's actor (the player base) and a baseless one are refused
-  const auto baseId = GetBaseId();
-  if (baseId <= 0x7) {
+  return GetBaseId() > 0x7;
+}
+
+bool MpActor::RollFateIfUnrolled(uint16_t level)
+{
+  if (!CanRollFate()) {
     return false;
   }
+  auto worldState = GetParent();
   worldState->fateLoaderLevel = level;
+  // the inventory stays: Init rolled nothing for this actor (CanRollFate
+  // held there too), so what it holds was put, and the roll lands beside
+  // it (finding 1 of x-fate-inventory v1b: the reset here took a put with
+  // the level-0 roll it replaced)
   EditChangeForm([&](MpChangeForm& changeForm) {
     changeForm.templateChain.clear();
-    changeForm.inv = Inventory();
     changeForm.baseContainerAdded = false;
   });
   EnsureTemplateChainEvaluated(worldState->GetEspm());
@@ -2513,10 +2521,22 @@ void MpActor::Init(WorldState* worldState, uint32_t formId, bool hasChangeForm)
   if (worldState->HasEspm()) {
     auto& espm = worldState->GetEspm();
     EnsureTemplateChainEvaluated(espm);
-    EnsureBaseContainerAdded(espm); // template chain needed here
+    // thuum docs/verbs/npc-fate.md (playtest 44's 1c; x-fate-inventory v1b
+    // 20261104-062409, finding 1): an actor the fate pass will roll keeps
+    // no roll of its own until then. Init's roll ran at level 0 and the
+    // fate's re-roll reset the inventory to replace it, taking every item
+    // put before the first loader arrived with it (the probe's 10 gold; a
+    // script's gift). The engine's own shape: the base's rows resolve once,
+    // at the first load, at the loader's level. So a fate-able actor waits
+    // for RollFateIfUnrolled, which adds the roll beside what the inventory
+    // holds; an actor from a save, a dead one or a player's keeps the old
+    // rule here (a body's first open rolls it, EnsureBaseContainerAdded)
+    if (!CanRollFate()) {
+      EnsureBaseContainerAdded(espm); // template chain needed here
 
-    // TODO: implement "gearedUpWeapons" flag
-    EquipBestWeapon();
+      // TODO: implement "gearedUpWeapons" flag
+      EquipBestWeapon();
+    }
   }
 }
 
@@ -3438,6 +3458,18 @@ void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
   }
 
   const int count = entry.count;
+
+  // thuum docs/verbs/npc-fate.md (1c; the review of 7c3c9f79, finding 8): a
+  // drop of what the record does not hold is refused by name, no throw, the
+  // dropper resynced, as a take or a put is
+  if (GetInventory().GetItemCount(baseId) < static_cast<uint32_t>(count)) {
+    spdlog::warn("[verb:containers] E_DROP_NOT_HELD: {:x} drops {} of {:x} "
+                 "but its record holds {}; refused, the dropper resynced",
+                 GetFormId(), count, baseId,
+                 GetInventory().GetItemCount(baseId));
+    ResyncAfterRefusedMove(*this);
+    return;
+  }
 
   DropItemEvent dropEvent(GetFormId(), baseId, count);
   bool success = dropEvent.Fire(GetParent());

@@ -1254,6 +1254,10 @@ fn check_fates(m: &skymp::ActorFate) -> Result<(), Reject> {
         if f.worn.contains(&0) {
             return Err(Reject::Range);
         }
+        // the record's inventory rows (playtest 44's 1c): a real item, a count
+        if f.inv.iter().any(|row| row.base_id == 0 || row.count == 0) {
+            return Err(Reject::Range);
+        }
     }
     Ok(())
 }
@@ -2486,6 +2490,7 @@ mod tests {
                     base_id,
                     level,
                     worn: worn.to_vec().try_into().unwrap_or_default(),
+                    ..Default::default()
                 })
                 .collect::<Vec<_>>()
                 .try_into()
@@ -2725,6 +2730,35 @@ mod tests {
         assert_eq!(validate_server(&fates(&[(0xff00_0c03, 0x1bcd8, 25, &[0x1397f])])), Ok(()));
         assert_eq!(validate_server(&fates(&[(0, 0x7, 1, &[])])), Err(Reject::Range));
         assert_eq!(validate_server(&fates(&[(0x85547, 0x7, 1, &[0])])), Err(Reject::Range));
+    }
+
+    #[test]
+    fn actor_fates_carry_the_records_inventory_rows_with_ids_and_counts() {
+        use wire_schema::skymp::{ActorFate, ActorFateEntry, FateInvRow};
+        let with_inv = |rows: &[(u32, u32)]| {
+            Message::ActorFate(ActorFate {
+                fates: vec![ActorFateEntry {
+                    refr_id: 0x39fe2,
+                    base_id: 0x1bcd8,
+                    level: 7,
+                    worn: vec![0x13982].try_into().unwrap_or_default(),
+                    inv: rows
+                        .iter()
+                        .map(|&(base_id, count)| FateInvRow { base_id, count })
+                        .collect::<Vec<_>>()
+                        .try_into()
+                        .unwrap_or_default(),
+                }]
+                .try_into()
+                .unwrap_or_default(),
+                ..Default::default()
+            })
+        };
+        // the longbow and twenty arrows the host's engine used to roll alone
+        assert_eq!(validate_server(&with_inv(&[(0x3b562, 1), (0x1397d, 20), (0xf, 43)])), Ok(()));
+        assert_eq!(validate_server(&with_inv(&[])), Ok(()));
+        assert_eq!(validate_server(&with_inv(&[(0, 1)])), Err(Reject::Range));
+        assert_eq!(validate_server(&with_inv(&[(0x3b562, 0)])), Err(Reject::Range));
     }
 
     #[test]

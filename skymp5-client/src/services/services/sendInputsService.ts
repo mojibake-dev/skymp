@@ -22,7 +22,7 @@ import { UpdateAppearanceMessage } from "../messages/updateAppearanceMessage";
 import { RemoteServer } from "./remoteServer";
 import { HostService } from "./hostService";
 import { DeathService } from "./deathService";
-import { logLab, logTrace } from "../../logging";
+import { logError, logLab, logTrace } from "../../logging";
 import { ChangeFormService, CORPSE_SETTLE_MS, corpseSamplesAgree } from "./changeFormService";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { Movement, NiPoint3 } from "../../sync/movement";
@@ -152,12 +152,31 @@ export class SendInputsService extends ClientListener {
         }
 
         targets.forEach((target) => {
-            const targetFormModel = target ? this.getForm(target, world) : this.getForm(undefined, world);
-            this.sendMovement(target, targetFormModel);
-            this.sendAnimation(target);
-            this.sendAppearance(target);
-            this.sendEquipment(target);
-            this.sendActorValuePercentage(target, targetFormModel);
+            // thuum playtest 45 (2026-11-04): a native throwing inside one
+            // target's sends ("Expected 'objectTypeInfo' to not to be
+            // nullptr", tens a second on the host) left this forEach, so the
+            // targets after it got no movement, animation or equipment from
+            // this seat for as long as it held, and the throwing target's
+            // send stamp was never written, so it threw again next frame.
+            // One target's fault is said once in ten seconds and the loop
+            // goes on; the fault itself is read from the platform's line
+            // (CallNative.cpp names the class and the form type)
+            try {
+                const targetFormModel = target ? this.getForm(target, world) : this.getForm(undefined, world);
+                this.sendMovement(target, targetFormModel);
+                this.sendAnimation(target);
+                this.sendAppearance(target);
+                this.sendEquipment(target);
+                this.sendActorValuePercentage(target, targetFormModel);
+            } catch (e) {
+                const key = target === undefined ? "self" : target.toString(16);
+                const now = Date.now();
+                const said = this.sendFaultSaidAt.get(key);
+                if (said === undefined || now - said >= SendInputsService.sendFaultSayMs) {
+                    this.sendFaultSaidAt.set(key, now);
+                    logError(this, `hosted sends for ${key} threw (the loop goes on): ${e}`);
+                }
+            }
         });
     }
 
@@ -449,6 +468,9 @@ export class SendInputsService extends ClientListener {
     }
 
     private lastSendMovementMoment = new Map<string, number>();
+    // a target's send fault said once in this window (playtest 45's per-frame throw)
+    private static readonly sendFaultSayMs = 10_000;
+    private sendFaultSaidAt = new Map<string, number>();
     // ADR-067: the hosted bodies dead on this engine, by the sender's key
     // (the remote id's string): the first dead sample's time and position,
     // the last sample sent, whether the rest was sent

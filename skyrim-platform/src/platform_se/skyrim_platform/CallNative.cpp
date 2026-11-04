@@ -129,10 +129,12 @@ CallNative::ObjectPtr GetSingleObjectPtr(
   auto policy = vmImpl->GetObjectHandlePolicy();
 
   void* objPtr = nullptr;
+  int resolvedType = -1;
 
   for (int i = 0; i < static_cast<int>(RE::FormType::Max); ++i) {
     if (policy->HandleIsType(i, object->handle)) {
       objPtr = object->Resolve(i);
+      resolvedType = i;
       break;
     }
   }
@@ -140,7 +142,18 @@ CallNative::ObjectPtr GetSingleObjectPtr(
   if (objPtr) {
     auto objectTypeInfo = r.varType.GetTypeInfo();
     if (!objectTypeInfo) {
-      throw NullPointerException("objectTypeInfo");
+      // thuum playtest 45 (2026-11-04): this threw every frame on the host's
+      // hosted-actor loop ("on('update'): Expected 'objectTypeInfo' to not to
+      // be nullptr", tens a second) and named nothing, so the native stayed
+      // unknown; the message now carries the declared class of the native's
+      // return and the handle's resolved form type (RE::FormType's number)
+      const std::string what =
+        std::string("objectTypeInfo (a native returned a live object of "
+                    "class ") +
+        (className.has_value() && *className ? *className : "?") +
+        " resolved as form type " + std::to_string(resolvedType) +
+        " with no script type loaded for it)";
+      throw NullPointerException(what.c_str());
     }
     return std::make_shared<Object>(
       className.has_value() ? *className : objectTypeInfo->GetName(), objPtr);

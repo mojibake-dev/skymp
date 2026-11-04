@@ -1743,7 +1743,7 @@ bool MpActor::HasPerk(uint32_t perk) const
     std::binary_search(record->perks.begin(), record->perks.end(), perk);
 }
 
-bool MpActor::AddPerkByServer(uint32_t perk)
+bool MpActor::AddPerkByServer(uint32_t perk, bool asPick)
 {
   if (perk == 0 || HasPerk(perk)) {
     return false;
@@ -1757,6 +1757,9 @@ bool MpActor::AddPerkByServer(uint32_t perk)
   }
   record.perks.insert(
     std::upper_bound(record.perks.begin(), record.perks.end(), perk), perk);
+  if (asPick && record.perkPicks < std::numeric_limits<uint16_t>::max()) {
+    ++record.perkPicks;
+  }
   SetActorValueRecord(record);
   return true;
 }
@@ -1783,7 +1786,7 @@ uint16_t MpActor::PerkPoints() const
   if (!record) {
     return 0;
   }
-  return skymp::rules::perk_points(record->level, record->perks.size());
+  return skymp::rules::perk_points(record->level, record->perkPicks);
 }
 
 void MpActor::SendPerkState()

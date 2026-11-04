@@ -81,8 +81,9 @@ std::string Serialize(RE::TESObjectREFR* refr);
 // the game's main thread: this call checks the arguments, queues the task and
 // returns at once { applied false, queued true, formId, thread }, or
 // { applied false, queued false, reason "at queue: ..." } when it could not
-// queue (no reference, no task interface, an apply in flight for the form, an
-// unread answer). The task's answer is read once by ApplyResult below:
+// queue (no reference, no task interface, an apply in flight for the form); a
+// stale unread answer for the form is discarded by the new queue, logged. The
+// task's answer is read once by ApplyResult below:
 //   { applied (bool), reason (string, "" when applied), fnvPatched (u32 over
 //     the bytes 35509 handed the engine, 0 when refused), and the
 //     diagnostics: formId, applyReturn, remapRows, rows: [{offset, formId,

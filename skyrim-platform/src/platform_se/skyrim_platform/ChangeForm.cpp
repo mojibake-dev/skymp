@@ -1457,7 +1457,8 @@ namespace {
 // run where the engine loads its own change forms: the game's main thread,
 // through SKSE's task interface (the fork's TickHandler idiom). The native
 // queues and answers {queued}; the task's answer waits here for
-// ApplyChangeFormResult, read once; one in-flight apply per form.
+// ApplyChangeFormResult, read once; one in-flight apply per form; a stale
+// unread answer is discarded by the next queue for the form.
 std::mutex g_applyMutex;
 std::unordered_set<RE::FormID> g_applyInFlight;
 std::unordered_map<RE::FormID, std::string> g_applyAnswers;
@@ -1497,10 +1498,14 @@ std::string ChangeForm::Apply(RE::TESObjectREFR* refr,
       return ApplyRefusal(formId,
                           "at queue: an apply is in flight for this form");
     }
-    if (g_applyAnswers.count(formId) != 0) {
-      return ApplyRefusal(formId,
-                          "at queue: an unread answer waits for this form "
-                          "(ApplyChangeFormResult first)");
+    if (g_applyAnswers.erase(formId) != 0) {
+      // the caller's record went before it read the answer (a re-serve with
+      // new bytes, the copy stood up, the seat's 15 s give-up): a stale
+      // answer is discarded here, never a wedge on the form (the review of
+      // faff697c, finding 1); the in-flight set alone guards the queue
+      logger::info("[verb:change-form] ApplyChangeForm {:#x}: a stale unread "
+                   "answer discarded at the queue",
+                   formId);
     }
     g_applyInFlight.insert(formId);
   }

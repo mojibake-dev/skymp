@@ -467,6 +467,11 @@ export class ChangeFormService extends ClientListener {
             }
             return;
         }
+        if (rec.queuedAt > 0) {
+            // an apply is in flight on the main thread (onKilledHere's call,
+            // the poll): its answer decides, no second attempt meanwhile
+            return;
+        }
         const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(rec.formId));
         const ac = refr ? this.sp.Actor.from(refr) : null;
         if (!refr || !ac) {
@@ -557,8 +562,14 @@ export class ChangeFormService extends ClientListener {
     // record up after queueWaitMs
     private pollQueued(rec: HeldRecord, now: number): void {
         const hex = rec.formId.toString(16);
+        const late = now - rec.queuedAt >= ChangeFormService.queueWaitMs;
         const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(rec.formId));
         if (!refr) {
+            if (late) {
+                rec.queuedAt = 0;
+                rec.applied = true;
+                logLab("verb:npc-fate", `corpse ${hex} not applied: no actor form here to read the main thread's answer for ${ChangeFormService.queueWaitMs} ms`);
+            }
             return;
         }
         let raw: unknown;
@@ -571,7 +582,7 @@ export class ChangeFormService extends ClientListener {
             return;
         }
         if (typeof raw !== "string" || raw === "") {
-            if (now - rec.queuedAt >= ChangeFormService.queueWaitMs) {
+            if (late) {
                 rec.queuedAt = 0;
                 rec.applied = true;
                 logLab("verb:npc-fate", `corpse ${hex} not applied: no answer from the main thread's task in ${ChangeFormService.queueWaitMs} ms`);

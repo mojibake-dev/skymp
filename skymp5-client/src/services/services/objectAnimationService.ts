@@ -111,10 +111,10 @@ export class ObjectAnimationService extends ClientListener {
       const handler = {
         enter: () => { },
         leave: (ctx: { selfId: number; animEventName: string; animationSucceeded: boolean }) => {
-          if (!ctx.animationSucceeded) {
-            return;
-          }
-          this.noted.push({ selfId: ctx.selfId, event: ctx.animEventName });
+          // the engine's return flag (NotifyAnimationGraph's) is kept on the
+          // note: a pillar's Trigger0N is reported whatever it says (below),
+          // every other event only when it took
+          this.noted.push({ selfId: ctx.selfId, event: ctx.animEventName, took: ctx.animationSucceeded });
         },
       };
       // two native ranges around the player's id
@@ -159,7 +159,22 @@ export class ObjectAnimationService extends ClientListener {
     const noted = this.noted;
     this.noted = [];
     const host = this.controller.lookupListener(HostService);
-    for (const { selfId, event } of noted) {
+    for (const { selfId, event, took } of noted) {
+      // playtest 46 (2026-11-04 23:36Z), and 45's and the green relay run's
+      // server logs before it: the host never reported a pillar's Trigger02,
+      // only Trigger01 and Trigger03, so a guest sat one side behind until
+      // the cycle passed it (44's "resumed syncing once the rotation passed
+      // the one it was desynced ON"; with the side jump, the visible double
+      // catch-up). The whale turn's Trigger02 comes back from the engine
+      // with the flag false while the pillar visibly turns (HYPOTHESIS on
+      // the why: Behavior00's Turn02 a different transition kind than
+      // Turn01 and Turn03, Havok's handleEvent answering false for it), so a
+      // pillar's Trigger0N is reported whatever the flag says: the script
+      // sends a Trigger only when it turns, and a refused one is said
+      const pillarTrigger = /^Trigger0[1-3]$/.test(event);
+      if (!took && !pillarTrigger) {
+        continue;
+      }
       // the engine's own StartState0N at a cell load is the local script's
       // jump to the reference's initial side (OnCellLoad runs on every seat;
       // a TypeScript play never re-enters the hook); the first one seen is
@@ -190,7 +205,7 @@ export class ObjectAnimationService extends ClientListener {
         message: { t: MsgType.ObjectAnimation, refr: localIdToRemoteId(selfId), event },
         reliability: 'reliable',
       });
-      logTrace(this, `object animation ${selfId.toString(16)} ${event} reported`);
+      logTrace(this, `object animation ${selfId.toString(16)} ${event} reported${took ? "" : " (the graph's flag said refused)"}`);
     }
   }
 
@@ -350,7 +365,7 @@ export class ObjectAnimationService extends ClientListener {
     }
   }
 
-  private noted: { selfId: number; event: string }[] = [];
+  private noted: { selfId: number; event: string; took: boolean }[] = [];
   private selfPlayed = new Map<string, number>();
   private initialSide = new Map<number, number>();
   private recordEvent = new Map<number, string>();

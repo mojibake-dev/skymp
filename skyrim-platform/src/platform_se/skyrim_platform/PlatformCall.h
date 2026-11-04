@@ -93,15 +93,32 @@ inline bool IsLiveCallback(const void* callback)
 // leave lowers it, never another. Call nests on the OnUpdate thread already
 // (the platform's direct natives run inside the OnUpdate native's own Call),
 // hence a stack of bits and not one flag; a level past the stack's width is
-// never raised, so no raise is ever lost.
+// never raised, so no raise is ever lost. A throw or longjmp through a hooked
+// Call skips its leave and would strand the level (a stale raised level keeps
+// the depth at 1 on that thread for the process's life, a stale unraised one
+// drifts the nesting), so every level records its entry stack pointer and the
+// next enter pops the levels whose recorded pointer sits at or below its own:
+// x64's stack grows down, so a live enclosing frame's entry pointer is
+// strictly above a nested call's (the N1 note of the flip's review,
+// 2026-11-03).
 inline thread_local std::uint64_t t_callRaised = 0;
 inline thread_local unsigned t_callNest = 0;
+inline thread_local std::uintptr_t t_callSp[64] = {};
 
-inline void EnterCall(bool raise)
+inline void LeaveCall();
+
+inline void EnterCall(bool raise, std::uintptr_t sp)
 {
+  // levels this thread left without a leave (a throw through Call): a
+  // recorded entry sp at or below this call's cannot be a live frame
+  while (t_callNest > 0 && t_callNest <= 64 &&
+         t_callSp[t_callNest - 1] <= sp) {
+    LeaveCall();
+  }
   const bool tracked = t_callNest < 64;
   raise = raise && tracked;
   if (tracked) {
+    t_callSp[t_callNest] = sp;
     t_callRaised = (t_callRaised << 1) | (raise ? 1u : 0u);
   }
   ++t_callNest;

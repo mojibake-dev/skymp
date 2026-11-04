@@ -358,20 +358,32 @@ void RerollOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
   const bool had3D = actor->Is3DLoaded();
   REL::Relocation<ActorRerollFn> reroll{ Offsets::Fate::ActorReroll };
   reroll(actor, -1);
-  // the re-roll drops the 3D (re-npc-roll.md:53, Set3D(nullptr, true))
-  // and nothing reloads it on an attached actor: a live actor with no
-  // model, on the compass and detecting (D23). The model is asked back
-  // through the reference's own loader (TESObjectREFR::Load3D,
-  // include/RE/T/TESObjectREFR.h:302, Actor's override A/Actor.h:315);
-  // HYPOTHESIS until the lab reads 3D loaded true after a late fate (the
-  // fallback is Disable then Enable(false), the resurrect path's shape)
-  if (had3D && !actor->Is3DLoaded()) {
-    actor->Load3D(false);
+  // thuum docs/verbs/npc-fate.md 1e, H1 (playtest 44's 39fe1, the host's own
+  // live bandit naked and headless after "rerolled ... from pick 37c06
+  // toward 9a549"; Eli: "fix the living case before 45"). The engine's
+  // attach caller pairs 37323 with ResetInventory and loads the 3D whole
+  // afterwards (re-npc-roll.md section 9); on a LOADED copy 37323 drops the
+  // 3D and Load3D(false) built the base model alone, no biped pass, no
+  // facegen head. The engine's own rebuild for a living actor with a
+  // process instead: the inventory reset (TESObjectREFR::ResetInventory,
+  // include/RE/T/TESObjectREFR.h:338, Actor's override A/Actor.h:335; its
+  // init rolls through the detours, which dress the fate's worn), the
+  // record's dress and rows (RedressOnGameThread), then Actor::DoReset3D
+  // (A/Actor.h:520), which flags the process's model, skin, head and face
+  // passes (RESET_3D_FLAGS, M/MiddleHighProcessData.h:39-50) for the next
+  // update; the race is the resolver's own SwitchRace (section 1, step 6).
+  // HYPOTHESIS until x-fate-dress-bleak v7 reads the swapped copy dressed,
+  // its race the fate's and its facegen node present on both seats.
+  actor->ResetInventory(false);
+  RedressOnGameThread(refrId, fate);
+  if (had3D) {
+    actor->DoReset3D(false);
   }
   logger::info("[verb:npc-fate] rerolled {:x} through the engine from pick "
-               "{:x} toward the fate's {:x} (3D loaded {} before, {} after "
-               "the reload)",
-               refrId, pickedId, fate.baseId, had3D, actor->Is3DLoaded());
+               "{:x} toward the fate's {:x} (3D loaded {} before; the "
+               "inventory reset, the record dressed, the 3D reset for the "
+               "process's rebuild)",
+               refrId, pickedId, fate.baseId, had3D);
 }
 }
 

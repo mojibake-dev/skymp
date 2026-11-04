@@ -2752,7 +2752,14 @@ void MpActor::ScheduleFateRespawn()
     return;
   }
   pImpl->isRespawning = true;
-  if (!ChangeForm().fateDiedAt.has_value()) {
+  // the death stamps the day once; a dead body loaded from the record (a
+  // restart, MpActor::ApplyChangeForm's "respawning dead actor") passes here
+  // again with the day already held, and says so: x-corpse-record v5
+  // (20261104-072601) counted "died at day" twice across a restart for one
+  // death, the clock unchanged. The load's line is its own, the death's
+  // line counts deaths alone
+  const bool loaded = ChangeForm().fateDiedAt.has_value();
+  if (!loaded) {
     const float day =
       worldState->gameTime ? worldState->gameTime().daysPassed : 0.f;
     EditChangeForm(
@@ -2764,16 +2771,29 @@ void MpActor::ScheduleFateRespawn()
     unique = espm::GetData<espm::NPC_>(GetBaseId(), worldState).isUnique;
   }
   if (unique) {
-    spdlog::info("[verb:npc-fate] {:x} died at day {:.4f}: a unique base, "
-                 "the body stays (the engine's rule)",
-                 GetFormId(), diedAt);
+    if (loaded) {
+      spdlog::info("[verb:npc-fate] {:x} lies dead since day {:.4f} (loaded "
+                   "from the record): a unique base, the body stays (the "
+                   "engine's rule)",
+                   GetFormId(), diedAt);
+    } else {
+      spdlog::info("[verb:npc-fate] {:x} died at day {:.4f}: a unique base, "
+                   "the body stays (the engine's rule)",
+                   GetFormId(), diedAt);
+    }
     return;
   }
   const float hours = worldState->FateRespawnHours();
   worldState->fateRespawnDue.insert(GetFormId());
-  spdlog::info("[verb:npc-fate] {:x} died at day {:.4f}; the body lies until "
-               "day {:.4f} ({} h)",
-               GetFormId(), diedAt, diedAt + hours / 24.f, hours);
+  if (loaded) {
+    spdlog::info("[verb:npc-fate] {:x} lies dead since day {:.4f} (loaded "
+                 "from the record); the body lies until day {:.4f} ({} h)",
+                 GetFormId(), diedAt, diedAt + hours / 24.f, hours);
+  } else {
+    spdlog::info("[verb:npc-fate] {:x} died at day {:.4f}; the body lies "
+                 "until day {:.4f} ({} h)",
+                 GetFormId(), diedAt, diedAt + hours / 24.f, hours);
+  }
 }
 
 void MpActor::RespawnFated()

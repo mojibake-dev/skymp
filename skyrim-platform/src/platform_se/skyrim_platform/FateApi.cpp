@@ -296,6 +296,85 @@ void RedressOnGameThread(uint32_t refrId, const Fates::Fate& fate)
 }
 }
 
+namespace {
+// The re-roll's decision for a copy the engine holds, on the game thread:
+// rerollActor's task (a late fate on a loaded copy) and the stand-up's
+// (resurrectActor, right after Actor::Resurrect) run the same body, so a
+// respawn whose fate names another pick is re-rolled through the engine on
+// the living copy too (x-fate-dress-bleak v6 20261104-082903 on canon-4: the
+// late fate reached the copy while it was still dead, reconcile-only, and
+// nothing re-asked after the stand-up, so the stood-up copy kept its old
+// pick); a dead copy reconciles its inventory alone.
+void RerollOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
+                        uint32_t refrId)
+{
+  // thuum docs/verbs/npc-fate.md 1e (playtest 44's khajiit: a dead clone
+  // re-rolled through the engine toward a respawn's new pick came out
+  // half-built, naked and headless) and 1c (the body's inventory is the
+  // record): a corpse is never re-rolled nor redressed, it keeps its look
+  // and its inventory is reconciled to the record alone; a stand-up
+  // (resurrectActor) dresses the living copy from the fate itself
+  if (actor->IsDead()) {
+    ReconcileInventoryOnGameThread(actor, fate, refrId);
+    logger::info("[verb:npc-fate] rerollActor({:x}): the copy is dead "
+                 "here, a corpse keeps its look (no re-roll, no redress); "
+                 "its inventory reconciled to the record",
+                 refrId);
+    return;
+  }
+  // the decision is the engine's own mark: a leveled pick is a clone that
+  // carries ExtraLeveledCreature (ExtraDataList::HasType, include/RE/E/
+  // ExtraDataList.h:163; kLeveledCreature, E/ExtraDataTypes.h:219). The
+  // Papyrus GetBaseObject the client read before answers that extra's
+  // originalBase (the placed NPC_, an esm id) for every clone, so the
+  // re-roll branch was never taken (b-npc-respawn 120743: the respawn's
+  // new pick stayed the old species on both seats)
+  if (!actor->extraList.HasType(RE::ExtraDataType::kLeveledCreature)) {
+    logger::info("[verb:npc-fate] rerollActor({:x}): not a leveled clone, "
+                 "redress instead",
+                 refrId);
+    RedressOnGameThread(refrId, fate);
+    return;
+  }
+  // thuum docs/research/m3/decisions-after-playtest-34.md D23 (playtest 34,
+  // section 4): a seat that logs in inside a dungeon loads its leveled
+  // clones from the save before the fates arrive, and the save kept the
+  // roll the server pinned, so the loaded clone IS the fate's pick in the
+  // common case; the engine's re-roll below would drop its 3D for nothing
+  // (thirteen invisible NPCs on test 2). The clone's pick is the extra's
+  // templateBase (CommonLibSSE-NG include/RE/E/ExtraLeveledCreature.h:24;
+  // HYPOTHESIS for the field's meaning, the log prints both ids): equal,
+  // redress alone
+  const auto* leveled = actor->extraList.GetByType<RE::ExtraLeveledCreature>();
+  const uint32_t pickedId =
+    leveled && leveled->templateBase ? leveled->templateBase->formID : 0;
+  if (pickedId != 0 && pickedId == fate.baseId) {
+    logger::info("[verb:npc-fate] rerollActor({:x}): the loaded clone is "
+                 "the fate's pick {:x} already (3D loaded {}), redress alone",
+                 refrId, pickedId, actor->Is3DLoaded());
+    RedressOnGameThread(refrId, fate);
+    return;
+  }
+  const bool had3D = actor->Is3DLoaded();
+  REL::Relocation<ActorRerollFn> reroll{ Offsets::Fate::ActorReroll };
+  reroll(actor, -1);
+  // the re-roll drops the 3D (re-npc-roll.md:53, Set3D(nullptr, true))
+  // and nothing reloads it on an attached actor: a live actor with no
+  // model, on the compass and detecting (D23). The model is asked back
+  // through the reference's own loader (TESObjectREFR::Load3D,
+  // include/RE/T/TESObjectREFR.h:302, Actor's override A/Actor.h:315);
+  // HYPOTHESIS until the lab reads 3D loaded true after a late fate (the
+  // fallback is Disable then Enable(false), the resurrect path's shape)
+  if (had3D && !actor->Is3DLoaded()) {
+    actor->Load3D(false);
+  }
+  logger::info("[verb:npc-fate] rerolled {:x} through the engine from pick "
+               "{:x} toward the fate's {:x} (3D loaded {} before, {} after "
+               "the reload)",
+               refrId, pickedId, fate.baseId, had3D, actor->Is3DLoaded());
+}
+}
+
 Napi::Value FateApi::RerollActor(const Napi::CallbackInfo& info)
 {
   const auto refrId = NapiHelper::ExtractUInt32(info[0], "refrId");
@@ -315,72 +394,7 @@ Napi::Value FateApi::RerollActor(const Napi::CallbackInfo& info)
       logger::warn("[verb:npc-fate] rerollActor({:x}): no such actor", refrId);
       return;
     }
-    // thuum docs/verbs/npc-fate.md 1e (playtest 44's khajiit: a dead clone
-    // re-rolled through the engine toward a respawn's new pick came out
-    // half-built, naked and headless) and 1c (the body's inventory is the
-    // record): a corpse is never re-rolled nor redressed, it keeps its look
-    // and its inventory is reconciled to the record alone; a stand-up
-    // (resurrectActor) dresses the living copy from the fate itself
-    if (actor->IsDead()) {
-      ReconcileInventoryOnGameThread(actor, fate, refrId);
-      logger::info("[verb:npc-fate] rerollActor({:x}): the copy is dead "
-                   "here, a corpse keeps its look (no re-roll, no redress); "
-                   "its inventory reconciled to the record",
-                   refrId);
-      return;
-    }
-    // the decision is the engine's own mark: a leveled pick is a clone that
-    // carries ExtraLeveledCreature (ExtraDataList::HasType, include/RE/E/
-    // ExtraDataList.h:163; kLeveledCreature, E/ExtraDataTypes.h:219). The
-    // Papyrus GetBaseObject the client read before answers that extra's
-    // originalBase (the placed NPC_, an esm id) for every clone, so the
-    // re-roll branch was never taken (b-npc-respawn 120743: the respawn's
-    // new pick stayed the old species on both seats)
-    if (!actor->extraList.HasType(RE::ExtraDataType::kLeveledCreature)) {
-      logger::info("[verb:npc-fate] rerollActor({:x}): not a leveled clone, "
-                   "redress instead",
-                   refrId);
-      RedressOnGameThread(refrId, fate);
-      return;
-    }
-    // thuum docs/research/m3/decisions-after-playtest-34.md D23 (playtest 34,
-    // section 4): a seat that logs in inside a dungeon loads its leveled
-    // clones from the save before the fates arrive, and the save kept the
-    // roll the server pinned, so the loaded clone IS the fate's pick in the
-    // common case; the engine's re-roll below would drop its 3D for nothing
-    // (thirteen invisible NPCs on test 2). The clone's pick is the extra's
-    // templateBase (CommonLibSSE-NG include/RE/E/ExtraLeveledCreature.h:24;
-    // HYPOTHESIS for the field's meaning, the log prints both ids): equal,
-    // redress alone
-    const auto* leveled =
-      actor->extraList.GetByType<RE::ExtraLeveledCreature>();
-    const uint32_t pickedId =
-      leveled && leveled->templateBase ? leveled->templateBase->formID : 0;
-    if (pickedId != 0 && pickedId == fate.baseId) {
-      logger::info(
-        "[verb:npc-fate] rerollActor({:x}): the loaded clone is "
-        "the fate's pick {:x} already (3D loaded {}), redress alone",
-        refrId, pickedId, actor->Is3DLoaded());
-      RedressOnGameThread(refrId, fate);
-      return;
-    }
-    const bool had3D = actor->Is3DLoaded();
-    REL::Relocation<ActorRerollFn> reroll{ Offsets::Fate::ActorReroll };
-    reroll(actor, -1);
-    // the re-roll drops the 3D (re-npc-roll.md:53, Set3D(nullptr, true))
-    // and nothing reloads it on an attached actor: a live actor with no
-    // model, on the compass and detecting (D23). The model is asked back
-    // through the reference's own loader (TESObjectREFR::Load3D,
-    // include/RE/T/TESObjectREFR.h:302, Actor's override A/Actor.h:315);
-    // HYPOTHESIS until the lab reads 3D loaded true after a late fate (the
-    // fallback is Disable then Enable(false), the resurrect path's shape)
-    if (had3D && !actor->Is3DLoaded()) {
-      actor->Load3D(false);
-    }
-    logger::info("[verb:npc-fate] rerolled {:x} through the engine from pick "
-                 "{:x} toward the fate's {:x} (3D loaded {} before, {} after "
-                 "the reload)",
-                 refrId, pickedId, fate.baseId, had3D, actor->Is3DLoaded());
+    RerollOnGameThread(actor, fate, refrId);
   });
   return Napi::Boolean::New(info.Env(), true);
 }
@@ -450,14 +464,17 @@ Napi::Value FateApi::ResurrectActor(const Napi::CallbackInfo& info)
     // the reset HERE, in the same task, so the stood-up copy wears the fate
     // (the pick's swap, if any, is the late fate's rerollActor after this)
     Fates::Fate fate;
-    bool redressed = false;
+    bool fated = false;
     if (!actor->IsDead() && Fates::Enabled() && Fates::Get(refrId, fate)) {
-      RedressOnGameThread(refrId, fate);
-      redressed = true;
+      // the whole decision, not the redress alone: a respawn's fate that
+      // names another pick re-rolls the stood-up clone through the engine
+      // here, in the same task, after the engine's reset
+      RerollOnGameThread(actor, fate, refrId);
+      fated = true;
     }
     logger::info("[verb:npc-fate] resurrected {:x} (puppet {}, AI was off {}, "
-                 "dead before {}, dead after {}, redressed from the fate {})",
-                 refrId, puppet, aiOff, wasDead, actor->IsDead(), redressed);
+                 "dead before {}, dead after {}, dressed from the fate {})",
+                 refrId, puppet, aiOff, wasDead, actor->IsDead(), fated);
   });
   return Napi::Boolean::New(info.Env(), true);
 }

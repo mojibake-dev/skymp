@@ -158,6 +158,11 @@ void Promote(RE::Actor& actor)
           Offsets::Voice::ClearGreetTopic
         };
         clearGreet(process);
+        // and the done bits the cleared line's END would have restored, so
+        // the live actor's own first say passes the busy test (37266)
+        actor.GetActorRuntimeData().boolBits.set(
+          RE::Actor::BOOL_BITS::kSoundFileDone,
+          RE::Actor::BOOL_BITS::kVoiceFileDone);
         logger::info("[verb:npc-puppet] promote {:x}: a puppet line's item "
                      "cleared before the AI (in flight {}, handle {})",
                      actor.formID, high->greetingPlayer,
@@ -461,6 +466,11 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
             Offsets::Voice::ClearGreetTopic
           };
           clearGreetBefore(runtime.currentProcess);
+          // the stopped line's END never runs either: its done bits restored
+          // so this say passes the busy test (the same reason as the
+          // inaudible branch below)
+          runtime.boolBits.set(RE::Actor::BOOL_BITS::kSoundFileDone,
+                               RE::Actor::BOOL_BITS::kVoiceFileDone);
           precleared = true;
         }
         const bool returned = repeat
@@ -502,6 +512,21 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
             clearGreet(runtime.currentProcess);
             cleared = true;
           }
+          // The engine's END restores the done bits; an inaudible start never
+          // reaches it: the voice-file start (39772) clears kVoiceFileDone
+          // after SpeakSoundFunction returned at its audibility gate with the
+          // timer at -1, and the item above is cleared by the engine's own
+          // ClearGreetTopic, which leaves the bits alone. So the next say on
+          // this puppet failed the busy test (37266: both done bits set and
+          // the timer at or below 0) and every later line answered "refused":
+          // one line heard, the rest never (playtests 43 and 44's F9; Eli,
+          // 2026-11-03: voice lines after the first one worked historically
+          // for everything but scripted scenes, and a scene's first line is
+          // the one most often inaudible, the guest far). Restored here as END
+          // would (Actor.h:166-167). HYPOTHESIS until say-verdict.js reads a
+          // started or played say after an inaudible one on the same puppet.
+          runtime.boolBits.set(RE::Actor::BOOL_BITS::kSoundFileDone,
+                               RE::Actor::BOOL_BITS::kVoiceFileDone);
         } else {
           result = 2;
         }

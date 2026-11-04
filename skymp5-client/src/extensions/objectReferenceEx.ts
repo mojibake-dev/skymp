@@ -1,4 +1,6 @@
 import { Flora, Form, FormType, MotionType, ObjectReference, settings } from "skyrimPlatform";
+import { SpApiInteractor } from "../services/spApiInteractor";
+import { HostService } from "../services/services/hostService";
 import { NiPoint3 } from "../sync/movement";
 import { FormTypeEx } from "./formTypeEx";
 import { logTrace } from "../logging";
@@ -64,6 +66,32 @@ export class ObjectReferenceEx {
   }
   private static unblockedBases: Set<number> | undefined;
 
+  // thuum docs/DECISIONS.md ADR-062 decision 1 (Eli, playtest 41: "shouldn't
+  // 'scripts work' be a holistic fix?"): a world object in a cell this game
+  // HOSTS keeps the engine's own activation processing, so its script hears
+  // OnActivate and its activation parents fire (the plate's spike wall, the
+  // lever's portcullis); every other seat keeps the block and renders the
+  // relays. The lifted kinds are the activators and the movable statics,
+  // the world's scripted objects; doors, containers, furniture and items keep
+  // the server's own flows (their activations travel to the server as
+  // before). Read through HostService at the reference's creation and at
+  // every grant and release (HostService.liftCellActivation).
+  static liftsInHostedCell(t: number): boolean {
+    return t === FormType.Activator || t === FormType.MovableStatic;
+  }
+
+  static hostedHere(self: ObjectReference): boolean {
+    try {
+      const cell = self.getParentCell();
+      if (!cell) {
+        return false;
+      }
+      return SpApiInteractor.getControllerInstance().lookupListener(HostService).hostsCell(cell.getFormID());
+    } catch (e) {
+      return false;
+    }
+  }
+
   static dealWithRef(self: ObjectReference, base: Form, lock?: { level: number; key: number; locked: boolean }): void {
     const t = base.getType();
     const isItem = FormTypeEx.isItem(t);
@@ -80,13 +108,20 @@ export class ObjectReferenceEx {
     // name through the layer's papyrus-scripts.txt) hears OnActivate and runs
     // the trap, the lever or the pillar on this game; the read x-bleak-traps v4
     // is its first use, the hosted-cell gate its next shape. Default: none.
+    // a movable static joins the blocked kinds (ADR-062 slice 1b's review: the
+    // host's release re-blocks ACTI and MSTT alike, hostService.liftCellActivation,
+    // so a seat that never hosted and a former host must agree)
     if (t === FormType.Furniture
       || t === FormType.Activator
+      || t === FormType.MovableStatic
       || t === FormType.Container
       || isItem
       || t === FormType.NPC
       || (t === FormType.Door && self.getBaseObject()?.getFormID() !== caveGSecretDoor01)) {
-      self.blockActivation(!ObjectReferenceEx.activationUnblocked(base.getFormID()));
+      // ADR-062: lifted in a cell this game hosts for the scripted world
+      // kinds; the settings list stays the lab's lever (activationUnblockedBases)
+      const lifted = ObjectReferenceEx.liftsInHostedCell(t) && ObjectReferenceEx.hostedHere(self);
+      self.blockActivation(!(lifted || ObjectReferenceEx.activationUnblocked(base.getFormID())));
     } else {
       self.blockActivation(false);
     }

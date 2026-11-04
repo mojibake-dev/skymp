@@ -23,6 +23,7 @@ import { ActorValuesService } from "./services/services/actorValuesService";
 import { PlayerGlobalsService } from "./services/services/playerGlobalsService";
 import { QuestStageService } from "./services/services/questStageService";
 import { PropService } from "./services/services/propService";
+import { ScriptNativeService } from "./services/services/scriptNativeService";
 import { SpellPlacedService } from "./services/services/spellPlacedService";
 import { LockService } from "./services/services/lockService";
 import { WeatherService } from "./services/services/weatherService";
@@ -117,6 +118,7 @@ const main = () => {
       new PlayerGlobalsService(sp, controller),
       new QuestStageService(sp, controller),
       new PropService(sp, controller),
+      new ScriptNativeService(sp, controller),
       new SpellPlacedService(sp, controller),
       new LockService(sp, controller),
       new WeatherService(sp, controller),

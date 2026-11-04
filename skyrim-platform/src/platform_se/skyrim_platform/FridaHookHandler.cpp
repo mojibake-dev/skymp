@@ -119,6 +119,16 @@ void HookHandler::Install(HookID id, uintptr_t address,
     hooks.emplace(id, hook);
 }
 
+void HookHandler::Register(HookID id, std::shared_ptr<Hook> hook)
+{
+  if (hooks.contains(id)) {
+    logger::critical("Failed to register hook: id {} already registered.",
+                     static_cast<uint64_t>(id));
+    return;
+  }
+  hooks.emplace(id, hook);
+}
+
 bool HookHandler::Replace(uintptr_t address, void* replacement,
                           void** original)
 {

@@ -1,4 +1,5 @@
 import { ActivateEvent, Actor } from "skyrimPlatform";
+import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { MsgType } from "../../messages";
 import { getInventory } from "../../sync/inventory";
@@ -98,6 +99,23 @@ export class ActivationService extends ClientListener {
           });
           logTrace(this, `Sent a trigger's own activation for `, remoteTrigger.toString(16));
           return;
+        }
+
+        // thuum docs/DECISIONS.md ADR-062 decision 1: the player's own press on
+        // an activator or movable static in a cell this game hosts is the
+        // engine's to process (its block is lifted there: the script hears
+        // OnActivate, the activation parents fire), so no Activate goes to the
+        // server for it; the consequences travel as the host's reports (the
+        // linked activations above, the object animations, the natives'
+        // hooks). Everything else (doors, containers, items, furniture, any
+        // cell this game does not host) goes to the server as before
+        if (caster === 0x14 && e.target) {
+            const base = e.target.getBaseObject();
+            const kind = base ? base.getType() : -1;
+            if (ObjectReferenceEx.liftsInHostedCell(kind) && ObjectReferenceEx.hostedHere(e.target)) {
+                logTrace(this, `the engine's own activation of ${target.toString(16)} in a hosted cell; its consequences travel as the host's reports (ADR-062)`);
+                return;
+            }
         }
 
         // thuum docs/verbs/npc-handoff.md D6: a hosted actor's activation is

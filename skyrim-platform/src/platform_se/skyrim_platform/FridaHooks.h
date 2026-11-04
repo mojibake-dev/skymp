@@ -29,6 +29,9 @@ void SetEngineDamageCut(bool on);
 // hostService tells it at every grant and release (TESModPlatform's
 // SetCellHosted). Threadsafe.
 void SetCellHosted(uint32_t cellFormId, bool hosted);
+// whether this game hosts the cell (ADR-059 decision 1's set), for the hooks
+// outside this file (ScriptNatives.cpp)
+bool IsCellHosted(uint32_t cellFormId);
 
 // thuum docs/verbs/quest-stage.md, slice two: a (quest, stage) pair
 // skymp5-client's questStageService is applying from the server's relay,

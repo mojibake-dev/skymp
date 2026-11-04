@@ -385,33 +385,26 @@ void ContainerAddReplacement(RE::InventoryChanges* changes,
         Fates::Get(changes->owner->formID, fate))) {
     return g_containerAddOriginal(changes, picks, ordinal, outfit);
   }
-  bool hadWeapon = false;
-  for (const auto& row : *picks) {
-    // TESForm::IsWeapon (include/RE/T/TESForm.h:347)
-    if (row.form && row.form->IsWeapon()) {
-      hadWeapon = true;
-      break;
-    }
-  }
-  if (!hadWeapon) {
-    return g_containerAddOriginal(changes, picks, ordinal, outfit);
-  }
+  // thuum docs/verbs/npc-fate.md (playtest 44's 1c): for a fated owner the
+  // engine's container roll is dropped whole, weapons and loot alike, and
+  // the record's own rows are written at the arming entry beside the fate's
+  // worn weapons: the copy's inventory is the server's record, so its loot
+  // window lists what a take can move. Before 1c the weapons alone were
+  // the server's and the rest stayed the engine's (the longbow's leak).
   const auto ownerId = changes->owner->formID;
   const bool arm = !(t_armedOwner == ownerId && ordinal > t_armedOrdinal);
-  std::vector<RE::CALCED_OBJECT> kept;
   std::size_t dropped = 0;
+  std::size_t droppedWeapons = 0;
   for (const auto& row : *picks) {
+    ++dropped;
+    // TESForm::IsWeapon (include/RE/T/TESForm.h:347)
     if (row.form && row.form->IsWeapon()) {
-      ++dropped;
-    } else {
-      kept.push_back(row);
+      ++droppedWeapons;
     }
   }
   picks->clear();
-  for (const auto& row : kept) {
-    picks->emplace_back() = row;
-  }
   std::size_t written = 0;
+  std::size_t rows = 0;
   if (arm) {
     for (const auto id : fate.worn) {
       auto* weapon = RE::TESForm::LookupByID<RE::TESObjectWEAP>(id);
@@ -425,12 +418,25 @@ void ContainerAddReplacement(RE::InventoryChanges* changes,
       pick.pad0C = 0;
       ++written;
     }
+    for (const auto& [baseId, count] : fate.inv) {
+      auto* bound = RE::TESForm::LookupByID<RE::TESBoundObject>(baseId);
+      if (!bound || count == 0) {
+        continue;
+      }
+      auto& pick = picks->emplace_back();
+      pick.form = bound;
+      pick.count = static_cast<std::int32_t>(count);
+      pick.pad0A = 0;
+      pick.pad0C = 0;
+      ++rows;
+    }
     t_armedOwner = ownerId;
     t_armedOrdinal = ordinal;
   }
   logger::info("[verb:npc-fate] armed {:x} from the server's roll at entry "
-               "{}: {} engine weapon(s) dropped, {} of the server's written",
-               ownerId, ordinal, dropped, written);
+               "{}: {} engine pick(s) dropped ({} weapon(s)), {} of the "
+               "server's weapons and {} inventory row(s) written",
+               ownerId, ordinal, dropped, droppedWeapons, written, rows);
   return g_containerAddOriginal(changes, picks, ordinal, outfit);
 }
 

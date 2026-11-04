@@ -1,5 +1,5 @@
 import { logLab, logTrace } from "../../logging";
-import { ActorFateMessage } from "../messages/actorFateMessage";
+import { ActorFateMessage, flatInvRows } from "../messages/actorFateMessage";
 import { ConnectionMessage } from "../events/connectionMessage";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 
@@ -52,11 +52,12 @@ export class ActorFateService extends ClientListener {
                 // where the detours bind it to the copy's own id. No native
                 // table entry under the remote id and no late path: the copy
                 // is this game's to place
-                this.copyFates.set(fate.refrId, { baseId: fate.baseId, worn: fate.worn.slice() });
+                this.copyFates.set(fate.refrId, { baseId: fate.baseId, worn: fate.worn.slice(), inv: flatInvRows(fate.inv) });
                 continue;
             }
-            this.sp.setActorFate(fate.refrId, fate.baseId, fate.worn);
-            const key = `${fate.baseId}:${fate.worn.join(",")}`;
+            const inv = flatInvRows(fate.inv);
+            this.sp.setActorFate(fate.refrId, fate.baseId, fate.worn, inv);
+            const key = `${fate.baseId}:${fate.worn.join(",")}:${inv.join(",")}`;
             const before = this.applied.get(fate.refrId);
             this.applied.set(fate.refrId, key);
             if (this.enabled && before !== key) {
@@ -159,6 +160,6 @@ export class ActorFateService extends ClientListener {
     // the last fate applied per reference (base and worn), so a repeated fate
     // for the same roll re-rolls nothing
     private applied = new Map<number, string>();
-    private copyFates = new Map<number, { baseId: number; worn: number[] }>();
+    private copyFates = new Map<number, { baseId: number; worn: number[]; inv: number[] }>();
     private enabled: boolean;
 }

@@ -3,7 +3,10 @@
 #include "Fates.h"
 #include "Puppets.h"
 #include "game/Offsets.h"
+#include <algorithm>
 #include <string>
+#include <unordered_map>
+#include <utility>
 
 extern CallNativeApi::NativeCallRequirements g_nativeCallRequirements;
 
@@ -15,6 +18,34 @@ namespace {
 // re-initializes the inventory and switches the race; a_arg == -1 skips its
 // level check. RE this: its return type (called as void, the value unread).
 using ActorRerollFn = void (*)(RE::Actor* actor, std::int32_t arg);
+}
+
+namespace {
+// the inventory rows as the TS side passes them: one flat array of numbers,
+// [formId, count, formId, count, ...]; absent or empty: no rows (an older
+// bundle, a server whose fate carries none)
+void ParseInvRows(const Napi::CallbackInfo& info, size_t index,
+                  Fates::Fate& fate)
+{
+  if (info.Length() <= index || info[index].IsUndefined() ||
+      info[index].IsNull()) {
+    return;
+  }
+  const auto flat = NapiHelper::ExtractArray(info[index], "inv");
+  const uint32_t n = flat.Length();
+  fate.inv.reserve(n / 2);
+  for (uint32_t i = 0; i + 1 < n; i += 2) {
+    const std::string idName = "inv[" + std::to_string(i) + "]";
+    const std::string countName = "inv[" + std::to_string(i + 1) + "]";
+    const auto baseId = NapiHelper::ExtractUInt32(flat.Get(i), idName.c_str());
+    const auto count =
+      NapiHelper::ExtractUInt32(flat.Get(i + 1), countName.c_str());
+    if (baseId == 0 || count == 0) {
+      continue;
+    }
+    fate.inv.emplace_back(baseId, count);
+  }
+}
 }
 
 Napi::Value FateApi::SetActorFate(const Napi::CallbackInfo& info)
@@ -34,6 +65,7 @@ Napi::Value FateApi::SetActorFate(const Napi::CallbackInfo& info)
     fate.worn.push_back(
       NapiHelper::ExtractUInt32(worn.Get(i), subArgName.c_str()));
   }
+  ParseInvRows(info, 3, fate);
   Fates::Set(refrId, fate);
   return Napi::Boolean::New(info.Env(), true);
 }
@@ -55,6 +87,7 @@ Napi::Value FateApi::ArmActorFate(const Napi::CallbackInfo& info)
     fate.worn.push_back(
       NapiHelper::ExtractUInt32(worn.Get(i), subArgName.c_str()));
   }
+  ParseInvRows(info, 3, fate);
   Fates::Arm(baseId, fate);
   return Napi::Boolean::New(info.Env(), true);
 }
@@ -78,6 +111,70 @@ namespace {
 // re-npc-roll.md 8.4's late path on the game thread: the actor looked up
 // here (setPuppet's shape, the 2026-10-21 hang), the outfit stripped, the
 // server's worn list added tagged as the detour adds it, worn again
+// thuum docs/verbs/npc-fate.md (playtest 44's 1c, the longbow): a copy
+// loaded before its fate carries its own engine's container roll (the Long
+// Bow and arrows the record never had, in the loot window). The record's
+// rows are the truth: every non-worn count is brought to the fate's rows and
+// the worn set to the fate's worn list, by the engine's own adder and
+// remover on the game thread (TESObjectREFR::AddObjectToContainer and
+// RemoveItem, include/RE/T/TESObjectREFR.h:282-286; the counts read through
+// GetInventory, :400). HYPOTHESIS until x-fate-inventory reads the window
+// equal to the record on a late joiner.
+void ReconcileInventoryOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
+                                    uint32_t refrId)
+{
+  std::unordered_map<uint32_t, int32_t> want;
+  for (const auto& [baseId, count] : fate.inv) {
+    want[baseId] += static_cast<int32_t>(count);
+  }
+  for (const auto wornId : fate.worn) {
+    want[wornId] += 1;
+  }
+  size_t removed = 0;
+  size_t added = 0;
+  size_t kept = 0;
+  auto inventory = actor->GetInventory();
+  for (auto& [object, entry] : inventory) {
+    if (!object) {
+      continue;
+    }
+    const int32_t have = entry.first;
+    const auto it = want.find(object->formID);
+    const int32_t target = it == want.end() ? 0 : it->second;
+    if (have > target) {
+      // TESObjectREFR::RemoveItem (include/RE/T/TESObjectREFR.h:282), the
+      // handle it answers unread
+      (void)actor->RemoveItem(object, have - target,
+                              RE::ITEM_REMOVE_REASON::kRemove, nullptr,
+                              nullptr);
+      removed += static_cast<size_t>(have - target);
+    } else {
+      kept += static_cast<size_t>(have);
+    }
+    if (it != want.end()) {
+      it->second = target - std::min(have, target);
+    }
+  }
+  for (const auto& [baseId, missing] : want) {
+    if (missing <= 0) {
+      continue;
+    }
+    auto* bound = RE::TESForm::LookupByID<RE::TESBoundObject>(baseId);
+    if (!bound) {
+      logger::warn("[verb:npc-fate] inventory row {:x} for {:x} is no bound "
+                   "object in this game, skipped",
+                   baseId, refrId);
+      continue;
+    }
+    actor->AddObjectToContainer(bound, nullptr, missing, nullptr);
+    added += static_cast<size_t>(missing);
+  }
+  logger::info("[verb:npc-fate] inventory of {:x} reconciled to the record: "
+               "{} row(s) and {} worn, {} removed, {} added, {} kept",
+               refrId, fate.inv.size(), fate.worn.size(), removed, added,
+               kept);
+}
+
 void RedressOnGameThread(uint32_t refrId, const Fates::Fate& fate)
 {
   auto* actor = RE::TESForm::LookupByID<RE::Actor>(refrId);
@@ -124,6 +221,7 @@ void RedressOnGameThread(uint32_t refrId, const Fates::Fate& fate)
                "3D loaded {})",
                refrId, dressed.added, fate.worn.size(), outfit->formID,
                dressed.carried, actor->Is3DLoaded());
+  ReconcileInventoryOnGameThread(actor, fate, refrId);
 }
 }
 

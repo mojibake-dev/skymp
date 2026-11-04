@@ -210,9 +210,9 @@ declare module "skyrimPlatform" {
     // thuum docs/verbs/npc-fate.md (ADR-046 decision 1, ADR-049): the
     // server's roll for a leveled placement, held ahead of the engine's own
     // roll and imposed by two detours behind a runtime switch (default off)
-    function setActorFate(refrId: number, baseId: number, worn: number[]): boolean;
+    function setActorFate(refrId: number, baseId: number, worn: number[], inv: number[]): boolean;
     // ADR-050 decision 3 (train 51): a server-made NPC's fate armed by its base before the copy's spawn
-    function armActorFate(baseId: number, fateBaseId: number, worn: number[]): boolean;
+    function armActorFate(baseId: number, fateBaseId: number, worn: number[], inv: number[]): boolean;
     function clearActorFate(refrId: number): boolean;
     function setActorFateEnabled(on: boolean): void;
     function rerollActor(refrId: number): boolean;

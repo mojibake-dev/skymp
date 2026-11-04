@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 namespace RE {
@@ -25,6 +26,12 @@ struct Fate
 {
   uint32_t baseId = 0;
   std::vector<uint32_t> worn;
+  // thuum docs/verbs/npc-fate.md (playtest 44's 1c): the record's inventory
+  // rows apart from the worn items, {form id, count}: the server's own
+  // container roll, written by the container-path detour at the engine's
+  // init instead of its roll, and reconciled onto a loaded copy by the late
+  // redress
+  std::vector<std::pair<uint32_t, uint32_t>> inv;
 };
 
 // The runtime switch, default off: both detours are installed at startup

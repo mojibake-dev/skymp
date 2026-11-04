@@ -7,6 +7,7 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 extern CallNativeApi::NativeCallRequirements g_nativeCallRequirements;
 
@@ -133,6 +134,7 @@ void ReconcileInventoryOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
   size_t removed = 0;
   size_t added = 0;
   size_t kept = 0;
+  size_t unequipped = 0;
   // the leveled-list bases the engine lists for a container with no rolled
   // entry yet are no items (the review of 7c3c9f79, finding 3): left out
   auto inventory = actor->GetInventory(
@@ -145,11 +147,58 @@ void ReconcileInventoryOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
     const auto it = want.find(object->formID);
     const int32_t target = it == want.end() ? 0 : it->second;
     if (have > target) {
-      // TESObjectREFR::RemoveItem (include/RE/T/TESObjectREFR.h:282), the
-      // handle it answers unread
-      (void)actor->RemoveItem(object, have - target,
-                              RE::ITEM_REMOVE_REASON::kRemove, nullptr,
-                              nullptr);
+      // thuum docs/verbs/npc-fate.md 1c, the 06:12Z crashes on 18531 (the
+      // re-analyst's static read of the three stacks, 2026-11-04,
+      // HYPOTHESIS until the Frida trace): Actor::RemoveItem of a weapon
+      // queues the next-best weapon's equip on the process (MiddleHigh
+      // ProcessData::itemstoEquipUnequip, include/RE/M/
+      // MiddleHighProcessData.h:157) with that entry's ExtraDataList, and
+      // purges queued nodes only where the node's list is the a_extraList
+      // passed (nullptr matched none of them); this loop then removed the
+      // queued weapon too, freed its list, and the next actor-update job
+      // on a job thread read it (39814 to EquipObject/UnequipObject, three
+      // of three). The engine's own order instead: a worn stack is
+      // unequipped first with the queue off and applied now (ActorEquip
+      // Manager::UnequipObject, include/RE/A/ActorEquipManager.h:22), and
+      // every stack is removed BY ITS OWN LIST (InventoryEntryData::
+      // extraLists, include/RE/I/InventoryEntryData.h:61; ExtraDataList::
+      // GetCount and HasType, include/RE/E/ExtraDataList.h) so the purge
+      // matches; the listless remainder goes with nullptr as before. The
+      // lists are copied out first: a removal frees the list it is given.
+      int32_t toRemove = have - target;
+      std::vector<RE::ExtraDataList*> lists;
+      if (entry.second && entry.second->extraLists) {
+        for (auto* list : *entry.second->extraLists) {
+          if (list) {
+            lists.push_back(list);
+          }
+        }
+      }
+      auto* equipManager = RE::ActorEquipManager::GetSingleton();
+      for (auto* list : lists) {
+        if (toRemove <= 0) {
+          break;
+        }
+        const int32_t inList = std::max<int32_t>(1, list->GetCount());
+        const int32_t n = std::min(inList, toRemove);
+        if (equipManager &&
+            (list->HasType(RE::ExtraDataType::kWorn) ||
+             list->HasType(RE::ExtraDataType::kWornLeft))) {
+          equipManager->UnequipObject(actor, object, list,
+                                      static_cast<std::uint32_t>(n), nullptr,
+                                      false, false, false, true);
+          ++unequipped;
+        }
+        // TESObjectREFR::RemoveItem (include/RE/T/TESObjectREFR.h:282),
+        // the handle it answers unread
+        (void)actor->RemoveItem(object, n, RE::ITEM_REMOVE_REASON::kRemove,
+                                list, nullptr);
+        toRemove -= n;
+      }
+      if (toRemove > 0) {
+        (void)actor->RemoveItem(
+          object, toRemove, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+      }
       removed += static_cast<size_t>(have - target);
     } else {
       kept += static_cast<size_t>(have);
@@ -173,9 +222,10 @@ void ReconcileInventoryOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
     added += static_cast<size_t>(missing);
   }
   logger::info("[verb:npc-fate] inventory of {:x} reconciled to the record: "
-               "{} row(s) and {} worn, {} removed, {} added, {} kept",
-               refrId, fate.inv.size(), fate.worn.size(), removed, added,
-               kept);
+               "{} row(s) and {} worn, {} removed ({} worn stack(s) "
+               "unequipped first), {} added, {} kept",
+               refrId, fate.inv.size(), fate.worn.size(), removed, unequipped,
+               added, kept);
 }
 
 void RedressOnGameThread(uint32_t refrId, const Fates::Fate& fate)
@@ -218,13 +268,20 @@ void RedressOnGameThread(uint32_t refrId, const Fates::Fate& fate)
   // with a_forceUpdate true: one pop
   actor->RemoveOutfitItems(outfit);
   const auto dressed = Fates::AddWornTagged(changes, outfit, fate, refrId);
-  actor->AddWornOutfit(outfit, true);
+  // the record's rows before the dress and the dress without the equip
+  // queue (Actor::AddWornOutfit's second argument reaches the queue flag
+  // of every tagged entry's equip; the engine's own dresser passes 0): the
+  // crash read above, SetDefaultOutfit's order, remove first and dress
+  // last with nothing queued across a removal. HYPOTHESIS until three
+  // logins into Bleak Falls on this dist pass where 18531 crashed thrice.
+  ReconcileInventoryOnGameThread(actor, fate, refrId);
+  actor->AddWornOutfit(outfit, false);
   logger::info("[verb:npc-fate] redressed {:x} from the server's roll: {} "
                "of {} tagged for outfit {:x} and worn ({} already tagged, "
-               "3D loaded {})",
+               "3D loaded {}), the record's rows reconciled first, the "
+               "dress unqueued",
                refrId, dressed.added, fate.worn.size(), outfit->formID,
                dressed.carried, actor->Is3DLoaded());
-  ReconcileInventoryOnGameThread(actor, fate, refrId);
 }
 }
 

@@ -21768,6 +21768,24 @@
                         }
                     ],
                     "isLatent": false,
+                    "name": "ApplyChangeFormResult",
+                    "offset": "0",
+                    "returnType": {
+                        "rawType": "String"
+                    },
+                    "useLongSignature": false
+                },
+                {
+                    "arguments": [
+                        {
+                            "name": "refr",
+                            "type": {
+                                "objectTypeName": "ObjectReference",
+                                "rawType": "Object"
+                            }
+                        }
+                    ],
+                    "isLatent": false,
                     "name": "SerializeChangeForm",
                     "offset": "0",
                     "returnType": {

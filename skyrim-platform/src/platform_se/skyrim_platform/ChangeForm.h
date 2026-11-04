@@ -76,7 +76,13 @@ std::string Serialize(RE::TESObjectREFR* refr);
 // REMAP param; callNative takes no array). flags and version are the
 // sender's `flags` and `version` as the serialize returned them (flags as a
 // u32 reinterpreted as a Papyrus Int: `flags | 0` in JS).
-// Returns a JSON object as a string:
+// Since playtest 44 (2026-11-03, H1 FALSIFIED the thread premise: three
+// deadlocks on the OnUpdate thread) the engine steps run as an SKSE task on
+// the game's main thread: this call checks the arguments, queues the task and
+// returns at once { applied false, queued true, formId, thread }, or
+// { applied false, queued false, reason "at queue: ..." } when it could not
+// queue (no reference, no task interface, an apply in flight for the form, an
+// unread answer). The task's answer is read once by ApplyResult below:
 //   { applied (bool), reason (string, "" when applied), fnvPatched (u32 over
 //     the bytes 35509 handed the engine, 0 when refused), and the
 //     diagnostics: formId, applyReturn, remapRows, rows: [{offset, formId,
@@ -88,4 +94,12 @@ std::string Serialize(RE::TESObjectREFR* refr);
 std::string Apply(RE::TESObjectREFR* refr, std::string_view bodyHex,
                   std::uint32_t flags, std::uint32_t version,
                   std::string_view remapRows);
+
+// ApplyChangeFormResult(refr): the queued apply's answer for the reference's
+// form, the JSON object Apply's comment names (with thread, mainThread and
+// onMainThread read inside the task), removed as it is read; "" while the
+// task has not run or nothing was queued. The log pairs each answer with
+// "[verb:change-form] ApplyChangeForm <id> answered on the main thread"
+// (or "another thread": the probe's claim).
+std::string ApplyResult(RE::TESObjectREFR* refr);
 }

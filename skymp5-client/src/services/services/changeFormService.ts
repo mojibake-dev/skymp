@@ -153,6 +153,21 @@ const parseRecord = (raw: string): ChangeFormRecord | undefined => {
     return { formType, flags: flags >>> 0, version, bodyHex, fnv1a: fnv1a >>> 0, remap: rows, remapTruncated: o["remapTruncated"] === true, censusDropped: censusDropped === undefined ? 0 : censusDropped };
 };
 
+// ApplyChangeForm's own answer: {queued: true} when the main thread's task
+// took the apply (the result comes through ApplyChangeFormResult), else a
+// refusal at the queue or an older platform's whole result
+const parseQueuedAnswer = (raw: string): { queued: boolean } | undefined => {
+    try {
+        const o = JSON.parse(raw) as Record<string, unknown> | null;
+        if (!o || typeof o !== "object") {
+            return undefined;
+        }
+        return { queued: o["queued"] === true };
+    } catch (e) {
+        return undefined;
+    }
+};
+
 const parseApplyResult = (raw: string): ChangeFormApplyResult | undefined => {
     const o = JSON.parse(raw) as Record<string, unknown> | null;
     if (!o || typeof o !== "object") {
@@ -180,6 +195,8 @@ type HeldRecord = {
     heldLogged: boolean;
     killedHereAt: number;  // deathService's kill of the copy, in flight (the task queue) or landed
     bindKill: boolean;     // that kill was the bind's (applies on the owner's own seat too)
+    queuedAt: number;      // the apply queued to the main thread's task (ApplyChangeForm answered {queued}); 0 when none
+    queuedWhen: string;    // that attempt's "when", for the answer's line
 };
 
 // the owner's message waiting for an epoch or an ack
@@ -419,7 +436,7 @@ export class ChangeFormService extends ClientListener {
                 }
             }
         }
-        this.records.set(m.formId, { formId: m.formId, formType: m.formType, flags: m.flags, version: m.version, body: m.body, remap: m.remap, fnv, receivedAt: Date.now(), applied: false, laid: false, attempts: 0, lastAttemptAt: 0, heldLogged: false, killedHereAt: 0, bindKill: false });
+        this.records.set(m.formId, { formId: m.formId, formType: m.formType, flags: m.flags, version: m.version, body: m.body, remap: m.remap, fnv, receivedAt: Date.now(), applied: false, laid: false, queuedAt: 0, queuedWhen: "", attempts: 0, lastAttemptAt: 0, heldLogged: false, killedHereAt: 0, bindKill: false });
         this.controller.once("update", () => {
             const rec = this.records.get(m.formId);
             if (rec && !rec.applied && rec.fnv === fnv) {
@@ -428,15 +445,14 @@ export class ChangeFormService extends ClientListener {
         });
     }
 
-    // Playtest 44's hotfix (2026-11-03, Eli's live playtest, numidium's ask): the
-    // watcher's apply is OFF on this build. ApplyChangeForm froze c1 at a server
-    // restart on a DEAD copy (its own headshot kill 0x29602, re-served at the
-    // reconnect) with the call off the main thread (H1, thuum
-    // docs/verbs/change-form.md), after the dying premise hung the watcher in the
-    // same playtest, so no seat calls the native until it runs on the main thread
-    // under its own probe. The owner's record is still serialized, sent and
-    // stored; a served record is held here and never laid, said once per record.
-    private static readonly watcherApplyOff = true;
+    // Playtest 44's switch (2026-11-03): true turned the watcher's apply OFF
+    // for the rest of the playtest after ApplyChangeForm froze c1 at a server
+    // restart on a DEAD copy (the call off the main thread, H1; thuum
+    // docs/verbs/change-form.md). Since then the native queues the engine steps
+    // to the main thread (an SKSE task) and this seat reads the answer at its
+    // updates (pollQueued), so the switch is false; it stays as the emergency
+    // lever (true: a served record is held here and never laid, said once).
+    private static readonly watcherApplyOff = false;
 
     // the apply, in the update's context: the copy must be dead here (else
     // the record is held for the kill, said once, and said not at all while
@@ -476,21 +492,49 @@ export class ChangeFormService extends ClientListener {
         const now = Date.now();
         rec.attempts += 1;
         rec.lastAttemptAt = now;
-        let result: ChangeFormApplyResult | undefined;
+        let raw: unknown;
         try {
             const rows = rec.remap.map((r) => `${r.offset}:${r.formId}:${r.index}`).join(",");
-            const raw = this.sp.callNative("TESModPlatform", "ApplyChangeForm", undefined, refr, rec.body, rec.flags | 0, rec.version, rows);
-            if (typeof raw !== "string" || raw === "") {
-                rec.applied = true;
-                logLab("verb:npc-fate", `corpse ${hex} not applied: the native answered ${typeof raw === "string" ? "an empty string" : `no string (${typeof raw})`}`);
-                return;
-            }
-            result = parseApplyResult(raw);
+            raw = this.sp.callNative("TESModPlatform", "ApplyChangeForm", undefined, refr, rec.body, rec.flags | 0, rec.version, rows);
         } catch (e) {
             rec.applied = true;
-            logLab("verb:npc-fate", `corpse ${hex} not applied: the native is missing on this platform or answered no JSON (${e})`);
+            logLab("verb:npc-fate", `corpse ${hex} not applied: the native is missing on this platform (${e})`);
             return;
         }
+        if (typeof raw !== "string" || raw === "") {
+            rec.applied = true;
+            logLab("verb:npc-fate", `corpse ${hex} not applied: the native answered ${typeof raw === "string" ? "an empty string" : `no string (${typeof raw})`}`);
+            return;
+        }
+        const queued = parseQueuedAnswer(raw);
+        if (queued === undefined) {
+            rec.applied = true;
+            logLab("verb:npc-fate", `corpse ${hex} not applied: the native's answer is no object`);
+            return;
+        }
+        if (queued.queued) {
+            // the engine steps run as the main thread's task; the answer is
+            // read by onUpdate's pollQueued through ApplyChangeFormResult
+            rec.queuedAt = now;
+            rec.queuedWhen = when;
+            logTrace(this, `changeform ${hex}: apply queued to the main thread (${when})`);
+            return;
+        }
+        // answered at once: a refusal at the queue (an apply in flight, no
+        // task interface) or an older platform's whole result
+        let result: ChangeFormApplyResult | undefined;
+        try {
+            result = parseApplyResult(raw);
+        } catch (e) {
+            result = undefined;
+        }
+        this.onApplyResult(rec, result, when);
+    }
+
+    // the apply's answer, from the main thread's task or the queue's refusal
+    private onApplyResult(rec: HeldRecord, result: ChangeFormApplyResult | undefined, when: string): void {
+        const hex = rec.formId.toString(16);
+        const now = Date.now();
         if (!result) {
             rec.applied = true;
             logLab("verb:npc-fate", `corpse ${hex} not applied: the native's answer is no object`);
@@ -508,6 +552,42 @@ export class ChangeFormService extends ClientListener {
         logLab("verb:npc-fate", `corpse ${hex} applied from the record: fnv ${rec.fnv.toString(16)}, ${rec.remap.length} rows remapped; patched fnv ${result.fnvPatched.toString(16)}, ${when}, ${now - rec.receivedAt} ms after the record came; ${result.detail}`);
     }
 
+    // every update while an apply is queued: the main thread's answer, read
+    // once through ApplyChangeFormResult; a task that never answers gives the
+    // record up after queueWaitMs
+    private pollQueued(rec: HeldRecord, now: number): void {
+        const hex = rec.formId.toString(16);
+        const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(rec.formId));
+        if (!refr) {
+            return;
+        }
+        let raw: unknown;
+        try {
+            raw = this.sp.callNative("TESModPlatform", "ApplyChangeFormResult", undefined, refr);
+        } catch (e) {
+            rec.queuedAt = 0;
+            rec.applied = true;
+            logLab("verb:npc-fate", `corpse ${hex} not applied: ApplyChangeFormResult is missing on this platform (${e})`);
+            return;
+        }
+        if (typeof raw !== "string" || raw === "") {
+            if (now - rec.queuedAt >= ChangeFormService.queueWaitMs) {
+                rec.queuedAt = 0;
+                rec.applied = true;
+                logLab("verb:npc-fate", `corpse ${hex} not applied: no answer from the main thread's task in ${ChangeFormService.queueWaitMs} ms`);
+            }
+            return;
+        }
+        rec.queuedAt = 0;
+        let result: ChangeFormApplyResult | undefined;
+        try {
+            result = parseApplyResult(raw);
+        } catch (e) {
+            result = undefined;
+        }
+        this.onApplyResult(rec, result, rec.queuedWhen);
+    }
+
     // every update: the kill in flight (deferred, papyrus-native-entries.md:
     // 73) lands within a frame or two, and the record whose body deathService
     // just killed is tried until it does, for killLandsMs, the first attempt
@@ -519,6 +599,11 @@ export class ChangeFormService extends ClientListener {
         const now = Date.now();
         if (this.records.size > 0) {
             this.records.forEach((rec) => {
+                if (rec.queuedAt > 0) {
+                    this.pollQueued(rec, now);
+                }
+            });
+            this.records.forEach((rec) => {
                 if (!rec.applied && rec.attempts === 0 && rec.killedHereAt > 0 && now - rec.killedHereAt < ChangeFormService.killLandsMs) {
                     this.tryApply(rec, "as the kill landed", rec.bindKill);
                 }
@@ -527,7 +612,7 @@ export class ChangeFormService extends ClientListener {
         if (now - this.lastPoll >= ChangeFormService.pollMs) {
             this.lastPoll = now;
             this.records.forEach((rec, formId) => {
-                if (rec.applied) {
+                if (rec.applied || rec.queuedAt > 0) {
                     return;
                 }
                 if (now - rec.receivedAt >= ChangeFormService.holdMs) {
@@ -560,6 +645,7 @@ export class ChangeFormService extends ClientListener {
     private static readonly maxAttempts = 5;
     private static readonly maxRecords = 128;
     private static readonly killLandsMs = 3000;
+    private static readonly queueWaitMs = 15_000;
     private static readonly resendMs = 5000;
     private static readonly maxTries = 3;
 }

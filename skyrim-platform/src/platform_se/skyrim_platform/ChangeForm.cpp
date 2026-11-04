@@ -24,7 +24,10 @@
 #include <cstring>
 #include <fmt/format.h>
 #include <iterator>
+#include <mutex>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 /**
@@ -907,6 +910,12 @@ void ChangeForm::InstallHooks()
     reinterpret_cast<void**>(&g_setNumericIdOriginal));
   logger::info("[verb:change-form] census hook on 35928: {}",
                g_censusInstalled ? "installed" : "NOT installed");
+  // the apply's thread (H1): every ApplyChangeForm runs its engine steps as
+  // an SKSE task on the main thread; the interface is queried again at each
+  // call, this line says what it was at install
+  logger::info("[verb:change-form] apply deferral at install: SKSE task "
+               "interface {}",
+               SKSE::GetTaskInterface() ? "present" : "absent");
 }
 
 namespace {
@@ -1439,21 +1448,111 @@ std::string ChangeForm::Serialize(RE::TESObjectREFR* refr)
   }
 }
 
+namespace {
+
+// Playtest 44 (2026-11-03, thuum docs/verbs/change-form.md FALSIFIED further,
+// Dynamic read 6): the apply deadlocked three times on the thread callNative
+// runs a native on (Skyrim Platform's OnUpdate thread, H1), twice on a dying
+// copy and once on a DEAD copy re-served at a reconnect, so the engine steps
+// run where the engine loads its own change forms: the game's main thread,
+// through SKSE's task interface (the fork's TickHandler idiom). The native
+// queues and answers {queued}; the task's answer waits here for
+// ApplyChangeFormResult, read once; one in-flight apply per form.
+std::mutex g_applyMutex;
+std::unordered_set<RE::FormID> g_applyInFlight;
+std::unordered_map<RE::FormID, std::string> g_applyAnswers;
+
+std::string ApplyRefusal(RE::FormID formId, const std::string& reason)
+{
+  nlohmann::json r = nlohmann::json::object();
+  r["applied"] = false;
+  r["queued"] = false;
+  r["reason"] = reason;
+  r["fnvPatched"] = 0;
+  r["formId"] = formId;
+  r["thread"] = ThreadId();
+  const auto* main = RE::Main::GetSingleton();
+  r["mainThread"] = main ? main->threadID : 0u;
+  return r.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
+} // namespace
+
 std::string ChangeForm::Apply(RE::TESObjectREFR* refr,
                               std::string_view bodyHex, std::uint32_t flags,
                               std::uint32_t version,
                               std::string_view remapRows)
 {
-  try {
-    return ApplyImpl(refr, bodyHex, flags, version, remapRows);
-  } catch (const std::exception& e) {
-    logger::error("[verb:change-form] ApplyChangeForm {:#x} threw: {}",
-                  refr ? refr->formID : 0u, e.what());
-    nlohmann::json r = nlohmann::json::object();
-    r["applied"] = false;
-    r["reason"] = std::string("exception: ") + e.what();
-    r["fnvPatched"] = 0;
-    r["formId"] = refr ? refr->formID : 0u;
-    return r.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+  const RE::FormID formId = refr ? refr->formID : 0;
+  if (!refr) {
+    return ApplyRefusal(formId, "at queue: no reference");
   }
+  const auto* tasks = SKSE::GetTaskInterface();
+  if (!tasks) {
+    return ApplyRefusal(formId, "at queue: no SKSE task interface");
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_applyMutex);
+    if (g_applyInFlight.count(formId) != 0) {
+      return ApplyRefusal(formId,
+                          "at queue: an apply is in flight for this form");
+    }
+    if (g_applyAnswers.count(formId) != 0) {
+      return ApplyRefusal(formId,
+                          "at queue: an unread answer waits for this form "
+                          "(ApplyChangeFormResult first)");
+    }
+    g_applyInFlight.insert(formId);
+  }
+  const std::uint32_t from = ThreadId();
+  tasks->AddTask([formId, body = std::string(bodyHex), flags, version,
+                  rows = std::string(remapRows), from]() {
+    std::string answer;
+    try {
+      // the reference looked up on the thread that runs the apply
+      // (FateApi's shape: a lookup under the forms map's lock belongs where
+      // the engine takes that lock itself)
+      auto* again = RE::TESForm::LookupByID<RE::TESObjectREFR>(formId);
+      answer = again ? ApplyImpl(again, body, flags, version, rows)
+                     : ApplyRefusal(formId, "at task: the reference is gone");
+    } catch (const std::exception& e) {
+      logger::error("[verb:change-form] ApplyChangeForm {:#x} threw: {}",
+                    formId, e.what());
+      answer = ApplyRefusal(formId, std::string("exception: ") + e.what());
+    }
+    const auto* main = RE::Main::GetSingleton();
+    const std::uint32_t here = ThreadId();
+    const bool onMain = main != nullptr && main->threadID == here;
+    logger::info("[verb:change-form] ApplyChangeForm {:#x} answered on {} "
+                 "(thread {} main {}, queued from {})",
+                 formId, onMain ? "the main thread" : "another thread", here,
+                 main ? main->threadID : 0u, from);
+    std::lock_guard<std::mutex> lock(g_applyMutex);
+    g_applyInFlight.erase(formId);
+    g_applyAnswers[formId] = std::move(answer);
+  });
+  logger::info("[verb:change-form] ApplyChangeForm {:#x} queued to the main "
+               "thread ({} hex chars, {} remap chars) from thread {}",
+               formId, bodyHex.size(), remapRows.size(), from);
+  nlohmann::json r = nlohmann::json::object();
+  r["applied"] = false;
+  r["queued"] = true;
+  r["reason"] = "";
+  r["fnvPatched"] = 0;
+  r["formId"] = formId;
+  r["thread"] = from;
+  return r.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
+std::string ChangeForm::ApplyResult(RE::TESObjectREFR* refr)
+{
+  const RE::FormID formId = refr ? refr->formID : 0;
+  std::lock_guard<std::mutex> lock(g_applyMutex);
+  auto it = g_applyAnswers.find(formId);
+  if (it == g_applyAnswers.end()) {
+    return std::string();
+  }
+  std::string out = std::move(it->second);
+  g_applyAnswers.erase(it);
+  return out;
 }

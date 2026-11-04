@@ -1630,6 +1630,14 @@ RE::BSFixedString TESModPlatform::ApplyChangeForm(
                       static_cast<uint32_t>(version), remapRows));
 }
 
+// the queued apply's answer, "" while the main thread's task has not run
+// (ChangeForm.cpp; playtest 44's H1)
+RE::BSFixedString TESModPlatform::ApplyChangeFormResult(
+  IVM* vm, StackID stackId, RE::StaticFunctionTag*, RE::TESObjectREFR* refr)
+{
+  return RE::BSFixedString(ChangeForm::ApplyResult(refr));
+}
+
 bool TESModPlatform::Register(IVM* vm)
 {
   TESModPlatform::onPapyrusUpdate = onPapyrusUpdate;
@@ -1881,6 +1889,12 @@ bool TESModPlatform::Register(IVM* vm)
                                      RE::TESObjectREFR*, std::string_view,
                                      int32_t, int32_t, std::string_view>(
       "ApplyChangeForm", "TESModPlatform", ApplyChangeForm));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(ApplyChangeFormResult),
+                                     RE::BSFixedString, RE::StaticFunctionTag*,
+                                     RE::TESObjectREFR*>(
+      "ApplyChangeFormResult", "TESModPlatform", ApplyChangeFormResult));
 
   static LoadGameEvent loadGameEvent;
 

@@ -118,3 +118,6 @@ Bool Function ReleaseQuestStageFragment(Quest quest, Int stage) global native
 ; sender's u32 as an Int
 String Function SerializeChangeForm(ObjectReference refr) global native
 String Function ApplyChangeForm(ObjectReference refr, String bodyHex, Int flags, Int version, String remapRows) global native
+; the queued apply's answer (the apply runs as an SKSE task on the main thread
+; since playtest 44): the JSON object above once, "" while the task has not run
+String Function ApplyChangeFormResult(ObjectReference refr) global native

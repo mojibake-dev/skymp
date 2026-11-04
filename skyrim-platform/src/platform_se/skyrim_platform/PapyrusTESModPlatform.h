@@ -193,6 +193,9 @@ bool ReleaseQuestStageFragment(IVM* vm, StackID stackId,
 // and the premises are ChangeForm.h's. remapRows is "offset:formId:index,..."
 // since callNative takes no array; flags is the sender's u32 as a Papyrus
 // Int (`flags | 0` in JS)
+RE::BSFixedString ApplyChangeFormResult(IVM* vm, StackID stackId,
+                                        RE::StaticFunctionTag*,
+                                        RE::TESObjectREFR* refr);
 RE::BSFixedString SerializeChangeForm(IVM* vm, StackID stackId,
                                       RE::StaticFunctionTag*,
                                       RE::TESObjectREFR* refr);

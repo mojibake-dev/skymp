@@ -92,10 +92,11 @@ void ResetContainer(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
 void CloseMenu(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                std::string_view name);
 
-// thuum docs/DECISIONS.md ADR-059 decision 1: a cell this game hosts (or no
-// longer hosts), for the Papyrus event block's host-scoped admitted scripts
-// (Frida::SetCellHosted); skymp5-client's hostService calls it at every
-// grant and release
+// thuum docs/DECISIONS.md ADR-059 decision 1 and ADR-062 decision 1: a cell
+// this game hosts (or no longer hosts), where every world script's events
+// pass the Papyrus event block and the script hooks count a call as the
+// host's (Frida::SetCellHosted); skymp5-client's hostService calls it at
+// every grant and release
 void SetCellHosted(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                    int32_t cellFormId, bool hosted);
 

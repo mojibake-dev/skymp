@@ -12,11 +12,15 @@
 #include <RE/A/Actor.h>
 #include <RE/B/BGSBaseAlias.h>
 #include <RE/F/FormTypes.h>
+#include <RE/I/IFunction.h>
+#include <RE/I/IStackCallbackFunctor.h>
+#include <RE/S/Stack.h>
 #include <RE/T/TESForm.h>
 #include <RE/T/TESObjectCELL.h>
 #include <RE/T/TESObjectREFR.h>
 #include <RE/T/TESQuest.h>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <map>
@@ -24,6 +28,7 @@
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 // the platform's current direct-call stack (main.cpp's OnUpdate): a native
 // entered on it is the platform's own call, not a script frame's
@@ -98,8 +103,12 @@ std::array<bool, kNatives.size()> g_bad{};
 // how many calls of each row were probed so far
 std::array<uint32_t, kNatives.size()> g_probed{};
 constexpr uint32_t kProbeCalls = 3;
-// each row's lower-case key for the latent notes (PlatformCall::TakeLatent)
-std::array<std::string, kNatives.size()> g_lowerKeys{};
+// the IFunction pointers of the rows' bound natives (Hooks.cpp
+// BindNativeMethod's record): written by InstallHooks before the dispatch
+// hook attaches and never after, so OnNativeCallEnter reads it with no lock
+std::unordered_set<const void*> g_boundFunctions;
+// the dispatch hook's raises, logged for the first three and every 1000th
+std::atomic<uint64_t> g_callRaises{ 0 };
 // the budget of per-call events crossing into JS: at most kBudget a second
 // (rule 9), the rest tallied; a kill row is never dropped (the death
 // report's evidence)
@@ -270,9 +279,11 @@ void OnNativeEnter(GumInvocationContext* ic)
   const auto now = NowMs();
   const auto stackId = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(
     gum_invocation_context_get_nth_argument(ic, 1)));
-  // the platform's own direct call (callNative's worker inside OnUpdate, a
-  // non-latent SpSnippet): the client applying the server's word is no
-  // script's consequence; counted apart. The latent path is the notes below
+  // the platform's own call, direct (callNative's worker inside OnUpdate, a
+  // non-latent SpSnippet: PlatformCall::Scope) or latent (the dispatched
+  // stack's callback is the platform's, so OnNativeCallEnter below raised the
+  // same depth on this thread for the call's extent): the client applying
+  // the server's word is no script's consequence; counted apart
   if (PlatformCall::Active() ||
       (g_nativeCallRequirements.stackId != 0 &&
        stackId == g_nativeCallRequirements.stackId)) {
@@ -282,13 +293,6 @@ void OnNativeEnter(GumInvocationContext* ic)
   }
   auto* selfPtr = gum_invocation_context_get_nth_argument(ic, 2);
   if (!selfPtr) {
-    return;
-  }
-  // the platform's own latent call, noted by (row, self) before its dispatch
-  // (CallNative.cpp): the same self pointer the native receives
-  if (PlatformCall::TakeLatent(g_lowerKeys[idx], selfPtr)) {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    Tally(NameOf(native) + " (platform)", now);
     return;
   }
   {
@@ -388,18 +392,75 @@ void OnNativeEnter(GumInvocationContext* ic)
 void OnNativeLeave(GumInvocationContext*)
 {
 }
+
+// thuum docs/verbs/papyrus-events.md (ADR-062's flip, the native lane): the
+// VM's one native dispatch, BSScript::NF_util::NativeFunctionBase::Call
+// (CommonLibSSE-NG include/RE/N/NativeFunctionBase.h:47, slot 0x0F; Address
+// Library 104651, game/Offsets.h NativeFunctionCall). A latent call the
+// platform dispatches (VmCall::Run) runs its body later on a Papyrus thread
+// under a new stack id, inside this Call with the dispatched Stack as the
+// argument, and that Stack's callback is the VmCallback the platform handed
+// the dispatch; when it is a live one (PlatformCall::IsLiveCallback) the
+// platform's depth is raised here for the call's extent, so OnNativeEnter
+// reads Active() exactly as it does on the direct path. This replaced the
+// (row, self) notes and their 15 s expiry. The cost on every native call in
+// the game: Gum's bracket and one hash lookup of `this` against the bound
+// entries; a call outside them does nothing more.
+// HYPOTHESIS H-L1: the dispatched stack's callback is the functor VmCall::Run
+// passed, unwrapped (the VM keeps the smart pointer it was given). H-L2: the
+// native's body runs within Call's extent on the same thread (statically
+// yes: Call marshals the frame and calls MarshallAndDispatch,
+// NativeFunction.h:81). H-L3: Stack's stackID at +0x80 and callback at
+// +0x90 (Stack.h:80 and :83) hold on 1.6.1170 (the header's static layout,
+// unmeasured). The trace that settles them: Frida on 104651 (this, the
+// Stack's +0x80 and +0x90, the thread) beside the 24 entries and
+// DispatchMethodCall2 on a guest applying a relayed stage, expecting
+// Dispatch(F) then Call(S, S.callback == F, S.id == N) then the entry with N
+// on the same thread.
+void OnNativeCallEnter(GumInvocationContext* ic)
+{
+  const void* function = gum_invocation_context_get_nth_argument(ic, 0);
+  bool raise = false;
+  if (g_boundFunctions.count(function) != 0) {
+    // the first argument is a const BSTSmartPointer<Stack>&: a pointer to
+    // the smart pointer, whose one member is the Stack pointer
+    auto* stackSlot = reinterpret_cast<RE::BSScript::Stack* const*>(
+      gum_invocation_context_get_nth_argument(ic, 1));
+    RE::BSScript::Stack* stack = stackSlot ? *stackSlot : nullptr;
+    const void* callback = stack ? stack->callback.get() : nullptr;
+    raise = PlatformCall::IsLiveCallback(callback);
+    if (raise) {
+      const auto n = ++g_callRaises;
+      if (n <= 3 || n % 1000 == 0) {
+        auto* fn = static_cast<const RE::BSScript::IFunction*>(function);
+        logger::info("[verb:scripts] native {}.{} dispatched by the platform "
+                     "on stack {} (latent call {}): marked on the VM's thread "
+                     "for its extent",
+                     fn->GetObjectTypeName().data(), fn->GetName().data(),
+                     stack->stackID, n);
+      }
+    }
+  }
+  PlatformCall::EnterCall(raise);
+}
+
+void OnNativeCallLeave(GumInvocationContext*)
+{
+  PlatformCall::LeaveCall();
+}
 }
 
 void ScriptNatives::Register()
 {
-  for (size_t idx = 0; idx < kNatives.size(); ++idx) {
-    g_lowerKeys[idx] =
-      PlatformCall::LatentKey(kNatives[idx].cls, kNatives[idx].name);
-    PlatformCall::WatchKey(g_lowerKeys[idx]);
-  }
-  Frida::HookHandler::GetSingleton()->Register(
+  auto* handler = Frida::HookHandler::GetSingleton();
+  handler->Register(
     Frida::HookID::HOOK_SCRIPT_NATIVE,
     std::make_shared<Frida::Hook>(OnNativeEnter, OnNativeLeave));
+  // the dispatch hook's callbacks too, attached at kDataLoaded after the
+  // entries (InstallHooks), once the bound set is known
+  handler->Register(
+    Frida::HookID::HOOK_NATIVE_CALL,
+    std::make_shared<Frida::Hook>(OnNativeCallEnter, OnNativeCallLeave));
 }
 
 void ScriptNatives::Tick()
@@ -419,10 +480,12 @@ void ScriptNatives::InstallHooks()
   for (size_t idx = 0; idx < kNatives.size(); ++idx) {
     const Native& native = kNatives[idx];
     uintptr_t entry = 0;
+    const void* function = nullptr;
     for (const auto& [cls, name, func, moduleBase, offset, longSig] : bound) {
       if (moduleBase == gameBase && _stricmp(cls.c_str(), native.cls) == 0 &&
           _stricmp(name.c_str(), native.name) == 0) {
         entry = moduleBase + offset;
+        function = func;
         break;
       }
     }
@@ -432,6 +495,10 @@ void ScriptNatives::InstallHooks()
                    NameOf(native));
       continue;
     }
+    // the row's IFunction, the `this` of its every dispatch: in the set
+    // before the dispatch hook attaches below (two rows over one body are
+    // two functions, both in)
+    g_boundFunctions.insert(function);
     {
       std::lock_guard<std::mutex> lock(g_mutex);
       if (g_byEntry.count(entry)) {
@@ -461,4 +528,20 @@ void ScriptNatives::InstallHooks()
   logger::info("[verb:scripts] {} of {} native entries hooked (ADR-062 "
                "slice 1b)",
                attached, kNatives.size());
+  // the dispatch hook (OnNativeCallEnter), attached once the bound set is
+  // complete, so it never reads a set being written
+  const auto callAddress = Offsets::Hooks::NativeFunctionCall.address();
+  if (Frida::HookHandler::GetSingleton()->Attach(
+        Frida::HookID::HOOK_NATIVE_CALL, callAddress)) {
+    logger::info("[verb:scripts] native dispatch hook on "
+                 "NativeFunctionBase::Call at +{:x} (Address Library 104651): "
+                 "the platform's latent calls marked on the VM's thread for "
+                 "{} bound entries",
+                 callAddress - gameBase, g_boundFunctions.size());
+  } else {
+    logger::warn("[verb:scripts] NativeFunctionBase::Call at +{:x}: Gum "
+                 "refused the attach; the platform's latent calls count as a "
+                 "script's",
+                 callAddress - gameBase);
+  }
 }

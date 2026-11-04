@@ -1,31 +1,30 @@
 #pragma once
-#include <algorithm>
-#include <cctype>
-#include <chrono>
 #include <cstdint>
 #include <mutex>
-#include <string>
-#include <vector>
+#include <unordered_set>
 
-// thuum docs/DECISIONS.md ADR-062 decision 2 (slice 1b's reviews, 2026-11-03):
-// the platform's own native calls reach the same entries the script hooks
-// watch, so a hook must tell the platform's call from a script frame's.
-// Two marks, one per path:
+// thuum docs/DECISIONS.md ADR-062 decision 2 (slice 1b's reviews, 2026-11-03;
+// the flip's native lane, docs/verbs/papyrus-events.md): the platform's own
+// native calls reach the same entries the script hooks watch
+// (ScriptNatives.cpp), so a hook must tell the platform's call from a script
+// frame's. One mark, a thread-local depth that Active() reads at the entry,
+// raised on two paths:
 // - the direct path (callNative's worker inside OnUpdate, every non-latent
 //   SpSnippet, the client applying the server's word through setOpen, lock,
 //   activate, kill, setValue): the native body runs inside fPtr->Call on the
-//   calling thread, so a thread-local depth (Scope) marks it;
-// - the latent path (VmCall::Run, DispatchMethodCall2): the VM only enqueues
-//   the call and runs the body later on its own thread under a new stack id,
-//   so no thread or stack mark can see it; the call is noted here by (row,
-//   self) before the dispatch and consumed by the hook at the entry
-//   (NoteLatent, TakeLatent); the note is forgotten when the dispatch is
-//   refused or when the call's stack returns (ForgetLatent), and a note
-//   older than kLatentExpiryMs is dropped at the next look, the backstop.
-//   Known limit: a note carries no call id, so a script calling the same
-//   native on the same self inside the window takes the platform's note and
-//   the platform's call goes out live (the counts are right, the attribution
-//   swapped once).
+//   calling thread, so Scope brackets the call (SkyrimPlatform.cpp);
+// - the latent path (VmCall::Run through DispatchMethodCall2 or
+//   DispatchStaticCall): the VM only enqueues the call and runs the body
+//   later on a Papyrus thread under a new stack id, inside
+//   NativeFunctionBase::Call with the dispatched Stack as the argument, and
+//   that Stack's callback is the VmCallback the platform handed the dispatch.
+//   The live callbacks are kept here (NoteCallback at the dispatch,
+//   ForgetCallback when the callback runs or dies), and the hook on Call
+//   (ScriptNatives.cpp, Address Library 104651) raises the depth for the
+//   call's extent when the Stack's callback is one of them, so the entry sees
+//   Active() on the running thread exactly as the direct path does. This
+//   replaced the (row, self) notes with their 15 s expiry and the known limit
+//   of a script's call on the same self inside the window.
 namespace PlatformCall {
 inline thread_local int t_depth = 0;
 
@@ -42,124 +41,88 @@ inline bool Active()
   return t_depth > 0;
 }
 
-constexpr uint64_t kLatentExpiryMs = 15'000;
-
-struct LatentNote
-{
-  uint64_t token;
-  std::string key;
-  const void* self;
-  uint64_t atMs;
-};
-
-inline std::mutex& LatentMutex()
+inline std::mutex& CallbackMutex()
 {
   static std::mutex m;
   return m;
 }
 
-inline std::vector<LatentNote>& LatentNotes()
+// the IStackCallbackFunctor pointers of the platform's VmCallbacks whose
+// dispatch is pending or whose stack has not returned yet
+inline std::unordered_set<const void*>& LiveCallbacks()
 {
-  static std::vector<LatentNote> notes;
-  return notes;
+  static std::unordered_set<const void*> set;
+  return set;
 }
 
-// the lower-case "Class.Function" keys the script hooks watch (ScriptNatives
-// registers its rows at plugin load); a latent call outside them is never
-// noted, so Utility.wait and kin cost nothing here
-inline std::vector<std::string>& WatchedKeys()
+// the platform is about to dispatch a latent call with this callback: noted
+// before the dispatch, since the VM may start the stack before the
+// dispatcher returns
+inline void NoteCallback(const void* callback)
 {
-  static std::vector<std::string> keys;
-  return keys;
-}
-
-inline uint64_t LatentNowMs()
-{
-  return static_cast<uint64_t>(
-    std::chrono::duration_cast<std::chrono::milliseconds>(
-      std::chrono::steady_clock::now().time_since_epoch())
-      .count());
-}
-
-// "Class.Function", lower case: the JS side spells the function in camel
-// case and the VM's binding in its own
-inline std::string LatentKey(const char* cls, const char* func)
-{
-  std::string key = std::string(cls ? cls : "") + "." + (func ? func : "");
-  std::transform(key.begin(), key.end(), key.begin(),
-                 [](unsigned char c) { return std::tolower(c); });
-  return key;
-}
-
-inline void WatchKey(const std::string& lowerKey)
-{
-  std::lock_guard<std::mutex> lock(LatentMutex());
-  auto& keys = WatchedKeys();
-  if (std::find(keys.begin(), keys.end(), lowerKey) == keys.end()) {
-    keys.push_back(lowerKey);
-  }
-}
-
-// the platform is about to dispatch a latent native of `cls.func` (the
-// resolved function's own names) on `self`: the note's token, or 0 when the
-// row is not watched or the self is null (nothing to take at the entry)
-inline uint64_t NoteLatent(const char* cls, const char* func, const void* self)
-{
-  if (!self) {
-    return 0;
-  }
-  const auto key = LatentKey(cls, func);
-  const auto now = LatentNowMs();
-  std::lock_guard<std::mutex> lock(LatentMutex());
-  auto& keys = WatchedKeys();
-  if (std::find(keys.begin(), keys.end(), key) == keys.end()) {
-    return 0;
-  }
-  static uint64_t nextToken = 1;
-  auto& notes = LatentNotes();
-  notes.erase(std::remove_if(notes.begin(), notes.end(),
-                             [now](const LatentNote& n) {
-                               return now - n.atMs > kLatentExpiryMs;
-                             }),
-              notes.end());
-  const auto token = nextToken++;
-  notes.push_back(LatentNote{ token, key, self, now });
-  return token;
-}
-
-// the dispatch failed or the call's stack returned: the note is spent
-inline void ForgetLatent(uint64_t token)
-{
-  if (token == 0) {
+  if (!callback) {
     return;
   }
-  std::lock_guard<std::mutex> lock(LatentMutex());
-  auto& notes = LatentNotes();
-  notes.erase(
-    std::remove_if(notes.begin(), notes.end(),
-                   [token](const LatentNote& n) { return n.token == token; }),
-    notes.end());
+  std::lock_guard<std::mutex> lock(CallbackMutex());
+  LiveCallbacks().insert(callback);
 }
 
-// the hook at the entry of `lowerKey` on `self`: the oldest live note for
-// that pair, taken once (an aged note is dropped, not taken: the backstop)
-inline bool TakeLatent(const std::string& lowerKey, const void* self)
+// the callback ran (the call's stack returned), the dispatch was refused, or
+// the callback died unrun: the mark is spent
+inline void ForgetCallback(const void* callback)
 {
-  const auto now = LatentNowMs();
-  std::lock_guard<std::mutex> lock(LatentMutex());
-  auto& notes = LatentNotes();
-  notes.erase(std::remove_if(notes.begin(), notes.end(),
-                             [now](const LatentNote& n) {
-                               return now - n.atMs > kLatentExpiryMs;
-                             }),
-              notes.end());
-  auto it = std::find_if(notes.begin(), notes.end(), [&](const LatentNote& n) {
-    return n.self == self && n.key == lowerKey;
-  });
-  if (it == notes.end()) {
+  if (!callback) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(CallbackMutex());
+  LiveCallbacks().erase(callback);
+}
+
+inline bool IsLiveCallback(const void* callback)
+{
+  if (!callback) {
     return false;
   }
-  notes.erase(it);
-  return true;
+  std::lock_guard<std::mutex> lock(CallbackMutex());
+  return LiveCallbacks().count(callback) > 0;
+}
+
+// the Call hook's bracket on the running thread: Gum's onEnter and onLeave
+// nest strictly on one thread (a call returns where it began), so a bit per
+// nesting level says whether that level raised the depth, and the matching
+// leave lowers it, never another. Call nests on the OnUpdate thread already
+// (the platform's direct natives run inside the OnUpdate native's own Call),
+// hence a stack of bits and not one flag; a level past the stack's width is
+// never raised, so no raise is ever lost.
+inline thread_local std::uint64_t t_callRaised = 0;
+inline thread_local unsigned t_callNest = 0;
+
+inline void EnterCall(bool raise)
+{
+  const bool tracked = t_callNest < 64;
+  raise = raise && tracked;
+  if (tracked) {
+    t_callRaised = (t_callRaised << 1) | (raise ? 1u : 0u);
+  }
+  ++t_callNest;
+  if (raise) {
+    ++t_depth;
+  }
+}
+
+inline void LeaveCall()
+{
+  if (t_callNest == 0) {
+    // a leave with no enter of ours: the thread was inside Call when the
+    // hook attached
+    return;
+  }
+  --t_callNest;
+  if (t_callNest < 64) {
+    if ((t_callRaised & 1u) != 0) {
+      --t_depth;
+    }
+    t_callRaised >>= 1;
+  }
 }
 }

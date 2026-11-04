@@ -10,10 +10,13 @@
 // never from a pinned offset (rule 1); the offsets found are logged for the
 // reader to hold against docs/research/adr062/papyrus-native-entries.md.
 namespace ScriptNatives {
-// at plugin load: the hook's callbacks registered with the handler (no
-// address yet; the map the live hooks read is never touched later)
+// at plugin load: the hooks' callbacks registered with the handler (the
+// entries' and the dispatch's; no address yet, so the map the live hooks
+// read is never touched later)
 void Register();
-// at kDataLoaded: each native's entry attached (Hooks::GetBoundNatives)
+// at kDataLoaded: each native's entry attached (Hooks::GetBoundNatives), then
+// the VM's one dispatch (NativeFunctionBase::Call) once the bound set is
+// known, where the platform's latent calls are marked (PlatformCall.h)
 void InstallHooks();
 // every frame from the platform's OnUpdate: the census flushed on time (a
 // quiet seat emits its last window; the review's medium finding)

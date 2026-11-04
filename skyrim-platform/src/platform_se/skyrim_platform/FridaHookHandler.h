@@ -47,7 +47,11 @@ enum HookID
   // thuum docs/DECISIONS.md ADR-062 decision 2: the Papyrus natives that
   // change server-owned state, one listener for every entry
   // (ScriptNatives.cpp; the entries resolved at kDataLoaded)
-  HOOK_SCRIPT_NATIVE
+  HOOK_SCRIPT_NATIVE,
+  // and the VM's one native dispatch, NativeFunctionBase::Call (Address
+  // Library 104651), where the platform's latent calls are told from a
+  // script's on the VM's own thread (ScriptNatives.cpp, PlatformCall.h)
+  HOOK_NATIVE_CALL
 };
 
 struct Hook

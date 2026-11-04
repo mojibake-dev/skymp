@@ -60,9 +60,8 @@
 // the behavior before train-29. Names compare without case (Papyrus's rule).
 namespace {
 std::unordered_set<std::string> g_admittedScripts;
-// ADR-059 decision 1: the host-scoped rows' names, admitted only for an
-// event on a reference in a cell this game hosts, and that set of cells
-std::unordered_set<std::string> g_hostAdmittedScripts;
+// ADR-059 decision 1, ADR-062 decision 1: the cells this game hosts
+// (SetCellHosted), where every world script runs
 std::mutex g_hostedCellsMutex;
 std::unordered_set<uint32_t> g_hostedCells;
 
@@ -78,7 +77,6 @@ std::string LowerAscii(const char* s)
 void LoadAdmittedScripts()
 {
   g_admittedScripts.clear();
-  g_hostAdmittedScripts.clear();
   std::ifstream file("Data/Platform/papyrus-scripts.txt");
   if (!file.is_open()) {
     logger::info("[verb:papyrus-events] no Data/Platform/papyrus-scripts.txt: "
@@ -87,6 +85,7 @@ void LoadAdmittedScripts()
   }
   std::string line;
   size_t plugins = 0;
+  size_t hostRows = 0;
   while (std::getline(file, line)) {
     if (line.empty() || line[0] == '#') {
       continue;
@@ -95,16 +94,21 @@ void LoadAdmittedScripts()
     if (colon == std::string::npos) {
       continue;
     }
-    ++plugins;
-    // "<plugin> host: ..." scopes the row to cells this game hosts (ADR-059)
     std::string plugin = LowerAscii(line.substr(0, colon).c_str());
     while (!plugin.empty() &&
            (plugin.back() == ' ' || plugin.back() == '\t')) {
       plugin.pop_back();
     }
-    const bool hostScope =
-      plugin.size() > 5 && plugin.compare(plugin.size() - 5, 5, " host") == 0;
-    auto& target = hostScope ? g_hostAdmittedScripts : g_admittedScripts;
+    // "<plugin> host: ..." was ADR-059's host-scoped row, retired by ADR-062
+    // decision 1 (in a cell this game hosts every world script runs, named
+    // or not): an older layer file's row is skipped, its names admitted
+    // nowhere
+    if (plugin.size() > 5 &&
+        plugin.compare(plugin.size() - 5, 5, " host") == 0) {
+      ++hostRows;
+      continue;
+    }
+    ++plugins;
     std::string rest = line.substr(colon + 2);
     size_t pos = 0;
     while (pos < rest.size()) {
@@ -118,7 +122,7 @@ void LoadAdmittedScripts()
           name.pop_back();
         }
         if (!name.empty()) {
-          target.insert(LowerAscii(name.c_str()));
+          g_admittedScripts.insert(LowerAscii(name.c_str()));
         }
       }
       pos = end + 1;
@@ -126,10 +130,9 @@ void LoadAdmittedScripts()
   }
   logger::info(
     "[verb:papyrus-events] {} script class name(s) admitted from {} "
-    "plugin line(s) in Data/Platform/papyrus-scripts.txt, {} of them on the "
-    "hosting seat alone",
-    g_admittedScripts.size() + g_hostAdmittedScripts.size(), plugins,
-    g_hostAdmittedScripts.size());
+    "plugin line(s) in Data/Platform/papyrus-scripts.txt, {} host-scoped "
+    "row(s) skipped (ADR-062 decision 1)",
+    g_admittedScripts.size(), plugins, hostRows);
 }
 
 // A script passes if it, or any class it extends, is SkyUI's (SKI_*) or is
@@ -138,15 +141,15 @@ void LoadAdmittedScripts()
 // :178); it ends at a null parent, and the walk stops at 16 either way.
 // ADR-059 decision 1's lifecycle events: the engine telling a script the
 // world's state (its reference loaded, its cell attached, a reset), not a
-// player's act. A host-scoped script takes these on every seat, because they
-// come before any seat hosts the cell (x-object-anim v3 20261102-051618: the
-// temple loaded at c1's teleport and c1 hosted it 3.5 s later, so the puzzle
-// pillars' defaultPuzzlePillarScript never got its OnCellLoad, stayed in its
-// empty state with no onActivate, and c1's turn did nothing) and because a
-// guest's pillar should stand on its initial face (OnCellLoad's StartState02
-// and StartState03). What a lifecycle handler does beyond state (a
-// mid-firing trap's fireTrap at onCellAttach) plays as a visual on a guest;
-// the harm, OnTrapHitStart, stays the host's.
+// player's act. A world object's script takes these on every seat
+// (OnSendEventEnter's rule), because they come before any seat hosts the cell
+// (x-object-anim v3 20261102-051618: the temple loaded at c1's teleport and c1
+// hosted it 3.5 s later, so the puzzle pillars' defaultPuzzlePillarScript
+// never got its OnCellLoad, stayed in its empty state with no onActivate, and
+// c1's turn did nothing) and because a guest's pillar should stand on its
+// initial face (OnCellLoad's StartState02 and StartState03). What a lifecycle
+// handler does beyond state (a mid-firing trap's fireTrap at onCellAttach)
+// plays as a visual on a guest; the harm, OnTrapHitStart, stays the host's.
 bool IsLifecycleEvent(const std::string& lowerName)
 {
   static const char* const kLifecycle[] = {
@@ -162,7 +165,7 @@ bool IsLifecycleEvent(const std::string& lowerName)
   return false;
 }
 
-bool AdmittedByChain(const RE::BSScript::ObjectTypeInfo* info, bool lifecycle)
+bool AdmittedByChain(const RE::BSScript::ObjectTypeInfo* info)
 {
   for (int depth = 0; info && depth < 16; ++depth, info = info->GetParent()) {
     auto name = LowerAscii(info->GetName());
@@ -170,14 +173,6 @@ bool AdmittedByChain(const RE::BSScript::ObjectTypeInfo* info, bool lifecycle)
       return true;
     }
     if (!g_admittedScripts.empty() && g_admittedScripts.count(name)) {
-      return true;
-    }
-    // ADR-059 decision 1's lifecycle rule for a layer that still carries
-    // host rows (an older papyrus-scripts.txt): a lifecycle event passes
-    // anywhere for a name on them; the hosted-cell case is ADR-062's rule
-    // in OnSendEventEnter, for every world script, named or not
-    if (lifecycle && !g_hostAdmittedScripts.empty() &&
-        g_hostAdmittedScripts.count(name)) {
       return true;
     }
   }
@@ -374,7 +369,7 @@ void OnSendEventEnter(GumInvocationContext* ic)
         auto info = script->GetTypeInfo();
         auto name = info->GetName();
 
-        if (hostedWorldScript || AdmittedByChain(info, lifecycle)) {
+        if (hostedWorldScript || AdmittedByChain(info)) {
           blockEvents = false;
           break;
         } else if (!strnicmp(name, "RaceMenu", 8)) {

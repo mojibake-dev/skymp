@@ -36,7 +36,7 @@ import { logTrace } from '../../logging';
 // "object animation <refr> <event> reported" on the host, "object animation
 // <refr> <event> played" on a guest.
 const EVENT_PATTERNS = [
-  'Trigger*', 'Turned*', 'FullPull*', 'open', 'opened', 'close', 'Open', 'Close',
+  'Trigger*', 'Turned*', 'StartState*', 'FullPull*', 'open', 'opened', 'close', 'Open', 'Close',
   'Down', '90*', '180*', '270*', 'Rearm', 'Reset', 'Idle',
 ];
 // game-file references end where the server's copies begin; the player 0x14 is
@@ -147,9 +147,43 @@ export class ObjectAnimationService extends ClientListener {
     if (!refr) {
       return;
     }
+    this.playRelayed(refr, event, "relayed", remoteRefr);
+  }
+
+  // Behavior00.hkx, the puzzle pillar's graph (RuinsPuzzlePillar01.hkx's
+  // project, read from Skyrim - Animations.bsa on 2026-11-04): a state
+  // machine of Side01, Side02 and Side03 whose Turn0N fires on Trigger0N from
+  // Side0N ALONE; StartState02 and StartState03 jump to a side without a
+  // turn, and Side01 is the default. A seat whose graph sits on another side
+  // than the host's drops every relayed Trigger silently until the host's
+  // cycle passes its side: the host's own script jumps its graph at the load
+  // with StartState0N, which the relay never carried, and a late joiner's
+  // replay of the record's Trigger0N from Side01 has no transition either
+  // (playtest 44: "2nd pillar STARTED desynced ... resumed syncing once the
+  // rotation passed the one it was desynced ON"; playtest 45: the guest's own
+  // turn on the host's screen alone, the gate opening on the host's state;
+  // numidium's read of the graph, 2026-11-04). So a relayed or replayed
+  // Trigger0N is played after the graph's own jump to Side0N (StartState0N;
+  // Side01 has none, so Trigger01 plays alone), which makes every relayed
+  // turn its own side sync; StartState* is relayed and recorded like any
+  // other event. The line keeps "object animation <refr> <event> played" as
+  // its head (b-puzzle-relay's claim). HYPOTHESIS until x-puzzle-guest-view
+  // v2 reads the node on the guest's screen.
+  playRelayed(refr: ObjectReference, event: string, how: string, remoteRefr?: number): boolean {
+    const localId = refr.getFormID();
+    const id = (remoteRefr ?? localId).toString(16);
+    const m = /^Trigger0([23])$/.exec(event);
+    let jump = "";
+    if (m) {
+      const jumpEvent = `StartState0${m[1]}`;
+      this.markSelfPlayed(localId, jumpEvent);
+      const taken = refr.playAnimation(jumpEvent);
+      jump = `, after ${jumpEvent} ${taken ? "taken" : "refused"}`;
+    }
     this.markSelfPlayed(localId, event);
-    refr.playAnimation(event);
-    logTrace(this, `object animation ${remoteRefr.toString(16)} ${event} played`);
+    const played = refr.playAnimation(event);
+    logTrace(this, `object animation ${id} ${event} played (${how}, ${played ? "taken" : "refused"}${jump})`);
+    return played;
   }
 
   private noted: { selfId: number; event: string }[] = [];

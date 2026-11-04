@@ -65,6 +65,7 @@ import {
 } from '../../view/worldViewMisc';
 import { TimeService } from './timeService';
 import { HostService } from './hostService';
+import { ObjectAnimationService } from './objectAnimationService';
 import { PuppetService } from "./puppetService";
 import { logTrace, logError, logLab } from '../../logging';
 
@@ -560,7 +561,13 @@ export class RemoteServer extends ClientListener {
               (async () => {
                 for (let i = 0; i < 5; i++) {
                   // retry. pillars in bleakfalls are not reliable for some reason
-                  let res2 = ObjectReference.from(Game.getFormEx(refrid))?.playAnimation(animation);
+                  // (2026-11-04: a Trigger0N replayed from the graph's default Side01 has no
+                  // transition, which is what "not reliable" was; playRelayed jumps the graph to
+                  // the trigger's side first, objectAnimationService's read of Behavior00.hkx)
+                  const again = ObjectReference.from(Game.getFormEx(refrid));
+                  const res2 = again
+                    ? this.controller.lookupListener(ObjectAnimationService).playRelayed(again, animation, "the record")
+                    : false;
                   if (res2) {
                     break;
                   }

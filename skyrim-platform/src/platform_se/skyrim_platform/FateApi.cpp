@@ -427,52 +427,43 @@ void RerollOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
   // HYPOTHESIS until x-fate-dress-bleak v7 reads the swapped copy dressed,
   // its race the fate's and its facegen node present on both seats.
   actor->ResetInventory(false);
-  RedressOnGameThread(refrId, fate);
+  // oracle v4 20261104-184338 on cb944530: the redress ran while the model
+  // was gone ("3D loaded FALSE" in its line) and the reload's biped init 28
+  // ms later wore its own set (four of the fate's five, the cuirass missing),
+  // while a respawn's re-roll with the same order happened to stick. The
+  // order is the late path's own now: the model back FIRST through the
+  // reference's loader (Actor::Load3D, A/Actor.h:315; 37323 drops the 3D
+  // and nothing reloads it on an attached actor, D23), THEN the record's
+  // dress and rows on the loaded model (RedressOnGameThread, idempotent
+  // when the reset's own init dressed it through the detours), THEN the
+  // skin, head and face passes flagged on the process and run at once
+  // (AIProcess::Set3DUpdateFlag, A/AIProcess.h:188; RESET_3D_FLAGS,
+  // M/MiddleHighProcessData.h:39-50; Actor::Update3DModel, A/Actor.h:633),
+  // the head's own fix of cb944530 (dress v8 183635, oracle v4 184338: the
+  // facegen node present after a respawn's and a login's re-roll). No
+  // DoReset3D: on a model-less actor it only parked flags the reload
+  // consumed (v8 104705's invisible copy was the drop with no reload).
+  // HYPOTHESIS until oracle v4 reads the fate's worn beside faceNode true.
   bool reloaded = false;
   bool updated = false;
-  if (had3D) {
-    actor->DoReset3D(false);
-    // x-fate-dress-bleak v8 20261104-104705 (the first login at roll 25 that
-    // survived): on a copy that had just stood up the process never rebuilt
-    // the model DoReset3D dropped (is3DLoaded false 25 s later, the copy
-    // invisible on both seats, worn and race the fate's). The model is
-    // asked back through the reference's own loader (Actor::Load3D,
-    // A/Actor.h:315, the call x-npc-late-3d 231926 read non-null), now that
-    // the inventory and the dress are the record's, and the flagged skin,
-    // head and face passes run on it at once (Actor::Update3DModel,
-    // A/Actor.h:633, through AIProcess::Update3DModel, AIProcess.h:191,
-    // which wants the process: ACTOR_RUNTIME_DATA::currentProcess behind
-    // GetActorRuntimeData, A/Actor.h:651, 710). HYPOTHESIS until v8 reads
-    // is3DLoaded true and faceNode true after a respawn on both seats.
-    if (!actor->Is3DLoaded()) {
-      actor->Load3D(false);
-      reloaded = true;
-    }
-    // x-fate-dress-bleak v8 20261104-111949: the model and the outfit came
-    // back, the new pick's facegen head did not (BSFaceGenNiNodeSkinned
-    // absent 25 s later, both seats): DoReset3D's flags were set while the
-    // model was gone and the pass that ran on the reloaded model rebuilt
-    // body and skin alone. The head, face and skin passes are flagged on
-    // the process AFTER the model is back (AIProcess::Set3DUpdateFlag,
-    // include/RE/A/AIProcess.h:188; RESET_3D_FLAGS kSkin, kHead, kFace,
-    // include/RE/M/MiddleHighProcessData.h:39-50) and run at once
-    // (Actor::Update3DModel). HYPOTHESIS until v8 reads faceNode true after
-    // a respawn; the fallback is the engine's full reload of the reference
-    // (Disable, Enable).
-    if (actor->Is3DLoaded()) {
-      if (auto* process = actor->GetActorRuntimeData().currentProcess) {
-        process->Set3DUpdateFlag(RE::RESET_3D_FLAGS::kSkin);
-        process->Set3DUpdateFlag(RE::RESET_3D_FLAGS::kHead);
-        process->Set3DUpdateFlag(RE::RESET_3D_FLAGS::kFace);
-        actor->Update3DModel();
-        updated = true;
-      }
+  if (had3D && !actor->Is3DLoaded()) {
+    actor->Load3D(false);
+    reloaded = true;
+  }
+  RedressOnGameThread(refrId, fate);
+  if (had3D && actor->Is3DLoaded()) {
+    if (auto* process = actor->GetActorRuntimeData().currentProcess) {
+      process->Set3DUpdateFlag(RE::RESET_3D_FLAGS::kSkin);
+      process->Set3DUpdateFlag(RE::RESET_3D_FLAGS::kHead);
+      process->Set3DUpdateFlag(RE::RESET_3D_FLAGS::kFace);
+      actor->Update3DModel();
+      updated = true;
     }
   }
   logger::info("[verb:npc-fate] rerolled {:x} through the engine from pick "
                "{:x} toward the fate's {:x} (3D loaded {} before, {} after; "
-               "the inventory reset, the record dressed, the 3D reset, "
-               "reloaded {}, the skin, head and face passes run {})",
+               "the inventory reset, the model reloaded {}, the record "
+               "dressed on it, the skin, head and face passes run {})",
                refrId, pickedId, fate.baseId, had3D, actor->Is3DLoaded(),
                reloaded, updated);
 }

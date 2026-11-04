@@ -554,6 +554,18 @@ export class ChangeFormService extends ClientListener {
         }
         rec.applied = true;
         rec.laid = true;
+        // thuum docs/verbs/npc-fate.md ("canon-4's merge review", finding 1):
+        // the record carries the owner's at-rest inventory (kInventory) and the
+        // lay just imposed it, over the fate's reconcile of the server's rows;
+        // the body's container contents are the server's (R0), so the fate's
+        // native runs once more after the lay: on a dead copy it reconciles
+        // the inventory alone and leaves the laid body as it is
+        try {
+            const reconciled = this.sp.rerollActor(rec.formId);
+            logLab("verb:npc-fate", `corpse ${hex}: the record's inventory reconciled after the lay (${reconciled ? "queued" : "refused: no fate here"})`);
+        } catch (e) {
+            logLab("verb:npc-fate", `corpse ${hex}: no reconcile after the lay, the native is missing on this platform (${e})`);
+        }
         logLab("verb:npc-fate", `corpse ${hex} applied from the record: fnv ${rec.fnv.toString(16)}, ${rec.remap.length} rows remapped; patched fnv ${result.fnvPatched.toString(16)}, ${when}, ${now - rec.receivedAt} ms after the record came; ${result.detail}`);
     }
 

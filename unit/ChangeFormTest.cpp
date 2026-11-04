@@ -375,3 +375,33 @@ TEST_CASE("A change-form record survives a save and a load of the actor's "
   auto olderElement = parser.parse(olderDump).value();
   REQUIRE(!MpChangeForm::JsonToChangeForm(olderElement).changeFormRecord);
 }
+
+// thuum docs/verbs/npc-fate.md ("canon-4's merge review", finding 2): the
+// record a host serialized for a body is that body's; the server's stand-up
+// (RespawnFated) ends the body, so the record goes with it and no later
+// arrival is served a corpse's record over the living copy
+TEST_CASE("A fated respawn drops the body's held change-form record",
+          "[ChangeForm][NpcFate][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  auto& host = Arrive(p, 0, kHost);
+  auto& actor = Standing(p, kPredator);
+  actor.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
+  actor.SetChangeFormRecord(std::nullopt);
+  Host(p, 0, kForestCell);
+  REQUIRE(p.worldState.HostOf(actor) == &host);
+  const auto cellHost = p.GetCellHost(kForestCell);
+  REQUIRE(cellHost.hosted);
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  p.Messages().clear();
+  Report(p, 0, Record(cellHost.epoch, kPredator, kRecordHex));
+  REQUIRE(actor.GetChangeFormRecord().has_value());
+
+  actor.RespawnFated();
+  REQUIRE_FALSE(actor.IsDead());
+  REQUIRE_FALSE(actor.GetChangeFormRecord().has_value());
+
+  Leave(p, 0, kHost);
+}

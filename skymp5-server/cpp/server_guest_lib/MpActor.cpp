@@ -2832,9 +2832,17 @@ void MpActor::RespawnFated()
       worldState->pendingDeaths.erase(GetFormId());
     }
   }
+  // thuum docs/verbs/npc-fate.md ("canon-4's merge review", finding 2): the
+  // held change-form record describes the body this stand-up ends; served
+  // to a later arrival it would lay a corpse over the living copy (the
+  // apply's dead premise refuses it, but the record is stale either way)
+  const bool hadRecord = ChangeForm().changeFormRecord.has_value();
+  if (hadRecord) {
+    SetChangeFormRecord(std::nullopt);
+  }
   spdlog::info("[verb:npc-fate] {:x} stands again at its placement, rolled "
-               "anew",
-               GetFormId());
+               "anew{}",
+               GetFormId(), hadRecord ? "; the body's record dropped" : "");
   RebuildAndRespawn(true, true);
 }
 

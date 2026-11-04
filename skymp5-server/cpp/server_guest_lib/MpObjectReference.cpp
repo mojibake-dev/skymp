@@ -720,8 +720,10 @@ void MpObjectReference::SetOpen(bool open)
                                GetInventory().ToJson().dump()),
         true);
     }
-    // thuum docs/verbs/containers.md: the lab reads a container's state here
-    if (baseType == "CONT") {
+    // thuum docs/verbs/containers.md: the lab reads a container's state here,
+    // a chest's and a corpse's alike (x-container-hold v2 002233: the body's
+    // open never printed, the claim could not hold)
+    if (container) {
       if (open) {
         spdlog::info("[verb:containers] {:x} open with {} occupant(s)",
                      GetFormId(), containerOccupants.size());

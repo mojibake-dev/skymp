@@ -3,7 +3,9 @@
 #include "Fates.h"
 #include "Puppets.h"
 #include "game/Offsets.h"
+#include <RE/M/Main.h>
 #include <algorithm>
+#include <functional>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -463,10 +465,54 @@ void RerollOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
   logger::info("[verb:npc-fate] rerolled {:x} through the engine from pick "
                "{:x} toward the fate's {:x} (3D loaded {} before, {} after; "
                "the inventory reset, the model reloaded {}, the record "
-               "dressed on it, the skin, head and face passes run {})",
+               "dressed on it, the skin, head and face passes run {}) on {}",
                refrId, pickedId, fate.baseId, had3D, actor->Is3DLoaded(),
-               reloaded, updated);
+               reloaded, updated, FateThreadNote());
 }
+}
+
+// thuum docs/verbs/npc-fate.md THE RAGDOLL CRASH READ (c1-crash-2026-11-04-
+// 12-30-04 in x-fate-inventory 20261104-202729): the fate's engine work (a
+// re-roll's Set3D and Load3D, a redress, a resurrect) runs on the game's MAIN
+// thread through SKSE's UI task queue, the thread the engine does its own
+// attach on, the shape change-form's apply has (ChangeForm.cpp, CONFIRMED
+// there on the "thread {} main {}" line). On the Papyrus VM thread, where
+// gameThrQ drains (main.cpp's OnUpdate), TESObjectREFR::Set3D (19730) asks
+// TaskQueueInterface::ShouldUseTaskQueue (39033) and DEFERS the old 3D's
+// DetachHavok (37307) to the main thread as task 0x32 (36933); a Load3D that
+// follows on the VM thread binds the new skeleton (63596, 63792) while the
+// main thread's drain reads the NEW 3D and pulls its collision objects from
+// the world, and the ragdoll collector (78536) walks a constraints buffer
+// freed under it (the re-analyst's read, HYPOTHESIS until
+// lab/frida/reroll-main-trace.js reads the drain against the bind). Without
+// the interface the task runs where it ran before, said once.
+void QueueFateTask(const char* what, uint32_t refrId,
+                   std::function<void()> task)
+{
+  if (auto* tasks = SKSE::GetTaskInterface()) {
+    tasks->AddUITask(std::move(task));
+    return;
+  }
+  static bool said = false;
+  if (!said) {
+    said = true;
+    logger::warn("[verb:npc-fate] {}({:x}): no SKSE task interface, the "
+                 "fate's engine work runs on the VM thread",
+                 what, refrId);
+  }
+  g_nativeCallRequirements.gameThrQ->AddTask(
+    [task = std::move(task)](Viet::Void) { task(); });
+}
+
+// the thread a fate task ran on, beside Main's (Main.h:78 threadID), the
+// witness the lab reads
+std::string FateThreadNote()
+{
+  const auto* main = RE::Main::GetSingleton();
+  const auto thread = static_cast<uint32_t>(::GetCurrentThreadId());
+  const uint32_t mainThread = main ? main->threadID : 0u;
+  return "thread " + std::to_string(thread) + " main " +
+    std::to_string(mainThread);
 }
 
 Napi::Value FateApi::RerollActor(const Napi::CallbackInfo& info)
@@ -482,7 +528,7 @@ Napi::Value FateApi::RerollActor(const Napi::CallbackInfo& info)
   // while the game thread waits for this tick, and a cell load holding that
   // lock hung a landing, 2026-10-21), where the re-roll has to run anyway:
   // it drops the 3D and re-initializes the inventory
-  g_nativeCallRequirements.gameThrQ->AddTask([refrId, fate](Viet::Void) {
+  QueueFateTask("rerollActor", refrId, [refrId, fate]() {
     auto* actor = RE::TESForm::LookupByID<RE::Actor>(refrId);
     if (!actor) {
       logger::warn("[verb:npc-fate] rerollActor({:x}): no such actor", refrId);
@@ -504,8 +550,8 @@ Napi::Value FateApi::RedressActor(const Napi::CallbackInfo& info)
   // the actor is looked up on the game thread alone (rerollActor's and
   // setPuppet's shape, the 2026-10-21 hang), where the three engine calls
   // have to run anyway; the fate travels by value
-  g_nativeCallRequirements.gameThrQ->AddTask(
-    [refrId, fate](Viet::Void) { RedressOnGameThread(refrId, fate); });
+  QueueFateTask("redressActor", refrId,
+                [refrId, fate]() { RedressOnGameThread(refrId, fate); });
   return Napi::Boolean::New(info.Env(), true);
 }
 
@@ -515,7 +561,7 @@ Napi::Value FateApi::ResurrectActor(const Napi::CallbackInfo& info)
   if (refrId == 0 || refrId == 0x14) {
     return Napi::Boolean::New(info.Env(), false);
   }
-  g_nativeCallRequirements.gameThrQ->AddTask([refrId](Viet::Void) {
+  QueueFateTask("resurrectActor", refrId, [refrId]() {
     auto* actor = RE::TESForm::LookupByID<RE::Actor>(refrId);
     if (!actor) {
       logger::warn("[verb:npc-fate] resurrectActor({:x}): no such actor",

@@ -1552,6 +1552,33 @@ std::string ChangeForm::Apply(RE::TESObjectREFR* refr,
             static_cast<std::uint32_t>(actor->AsActorState()->GetLifeState()));
         }
       }
+      // x-fate-dress-bleak v8 20261104-183635 (c2 at 10:40:56 PST applying
+      // the record of 39fe4's third kill: SkyrimSE.exe+0x184FBF reading a
+      // null's +0x20, no stack; the re-analyst's static read, 2026-11-04,
+      // HYPOTHESIS until a Frida read of 11577 and 12782 under an apply):
+      // the engine's loader of the record's attached-arrows block
+      // (ExtraAttachedArrows3D, extra type 0x98, Address Library 12782)
+      // reads an extra the copy's own list no longer holds. ExtraDataList::
+      // LoadGame (12095) marks at its start every extra type the copy has
+      // whose mask meets the record's flags and later fetches a marked one
+      // by GetByType; the leveled-creature block (0x2D) before the arrows'
+      // calls Set3D(nullptr) while kLoading is clear (this apply's premise),
+      // and Actor::Set3D with a model present removes the copy's own
+      // attached arrows; so a copy with arrows in it, laid from a record
+      // with arrows in it, hands 12782 a null. The copy's own arrows go
+      // first (ExtraDataList::RemoveByType, include/RE/E/ExtraDataList.h:
+      // 179; kAttachedArrows3D, E/ExtraDataTypes.h:326): the block then
+      // takes the loader's allocate-and-add path and the finish pass
+      // re-attaches the record's arrows by bone, the record being the body's
+      // state (ADR-065); a copy without arrows is untouched.
+      if (again &&
+          again->extraList.HasType(RE::ExtraDataType::kAttachedArrows3D)) {
+        again->extraList.RemoveByType(RE::ExtraDataType::kAttachedArrows3D);
+        logger::info("[verb:change-form] {:#x}: the copy's own attached "
+                     "arrows removed before the lay (the record's come with "
+                     "it)",
+                     formId);
+      }
       answer = again ? ApplyImpl(again, body, flags, version, rows)
                      : ApplyRefusal(formId, "at task: the reference is gone");
       // x-corpse-record v4 (20261104-063832): every lay answered "lifeState

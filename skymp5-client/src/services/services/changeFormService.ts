@@ -428,12 +428,29 @@ export class ChangeFormService extends ClientListener {
         });
     }
 
+    // Playtest 44's hotfix (2026-11-03, Eli's live playtest, numidium's ask): the
+    // watcher's apply is OFF on this build. ApplyChangeForm froze c1 at a server
+    // restart on a DEAD copy (its own headshot kill 0x29602, re-served at the
+    // reconnect) with the call off the main thread (H1, thuum
+    // docs/verbs/change-form.md), after the dying premise hung the watcher in the
+    // same playtest, so no seat calls the native until it runs on the main thread
+    // under its own probe. The owner's record is still serialized, sent and
+    // stored; a served record is held here and never laid, said once per record.
+    private static readonly watcherApplyOff = true;
+
     // the apply, in the update's context: the copy must be dead here (else
     // the record is held for the kill, said once, and said not at all while
     // deathService's kill is in flight); `bind` is the kill's own call or
     // the pass for a bind kill, which applies on the owner's seat too
     private tryApply(rec: HeldRecord, when: string, bind: boolean): void {
         const hex = rec.formId.toString(16);
+        if (ChangeFormService.watcherApplyOff) {
+            if (!rec.heldLogged) {
+                rec.heldLogged = true;
+                logLab("verb:npc-fate", `corpse ${hex} record held, the watcher apply is off on this build`);
+            }
+            return;
+        }
         const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(rec.formId));
         const ac = refr ? this.sp.Actor.from(refr) : null;
         if (!refr || !ac) {

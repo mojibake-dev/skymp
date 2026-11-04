@@ -77,8 +77,10 @@ std::string Serialize(RE::TESObjectREFR* refr);
 // sender's `flags` and `version` as the serialize returned them (flags as a
 // u32 reinterpreted as a Papyrus Int: `flags | 0` in JS).
 // Since playtest 44 (2026-11-03, H1 FALSIFIED the thread premise: three
-// deadlocks on the OnUpdate thread) the engine steps run as an SKSE task on
-// the game's main thread: this call checks the arguments, queues the task and
+// deadlocks on the OnUpdate thread) the engine steps run as an SKSE UI task,
+// drained in Main::Update on the game's main thread (AddTask's queue drains
+// on a job thread's stage in play, run 043219): this call checks the
+// arguments, queues the task and
 // returns at once { applied false, queued true, formId, thread }, or
 // { applied false, queued false, reason "at queue: ..." } when it could not
 // queue (no reference, no task interface, an apply in flight for the form); a

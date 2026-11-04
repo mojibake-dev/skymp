@@ -1454,9 +1454,18 @@ namespace {
 // Dynamic read 6): the apply deadlocked three times on the thread callNative
 // runs a native on (Skyrim Platform's OnUpdate thread, H1), twice on a dying
 // copy and once on a DEAD copy re-served at a reconnect, so the engine steps
-// run where the engine loads its own change forms: the game's main thread,
-// through SKSE's task interface (the fork's TickHandler idiom). The native
-// queues and answers {queued}; the task's answer waits here for
+// run where the engine loads its own change forms: the game's main thread.
+// Not through SKSE's AddTask: run 20261104-043219 answered on four pool
+// threads and never on Main.threadID, and the re-analyst's read 7 (thuum
+// docs/verbs/change-form.md) has skse64 draining that queue in the frame's
+// "Post process" stage on a job thread during play (at Main::Update+0xB9C
+// only while paused). SKSE's UI task queue (AddUITask, CommonLibSSE-NG
+// include/SKSE/Interfaces.h:198) is drained by skse64's hook in
+// UI::ProcessMessages, which Main::Update calls every frame on the thread
+// that owns Main (HYPOTHESIS until the "answered on the main thread" line
+// reads equal ids; the fallback is a detour on Main::Update, the fork's
+// Offsets::Hooks::FrameUpdate). The native queues and answers {queued}; the
+// task's answer waits here for
 // ApplyChangeFormResult, read once; one in-flight apply per form; a stale
 // unread answer is discarded by the next queue for the form.
 std::mutex g_applyMutex;
@@ -1510,8 +1519,8 @@ std::string ChangeForm::Apply(RE::TESObjectREFR* refr,
     g_applyInFlight.insert(formId);
   }
   const std::uint32_t from = ThreadId();
-  tasks->AddTask([formId, body = std::string(bodyHex), flags, version,
-                  rows = std::string(remapRows), from]() {
+  tasks->AddUITask([formId, body = std::string(bodyHex), flags, version,
+                    rows = std::string(remapRows), from]() {
     std::string answer;
     try {
       // the reference looked up on the thread that runs the apply
@@ -1537,7 +1546,8 @@ std::string ChangeForm::Apply(RE::TESObjectREFR* refr,
     g_applyAnswers[formId] = std::move(answer);
   });
   logger::info("[verb:change-form] ApplyChangeForm {:#x} queued to the main "
-               "thread ({} hex chars, {} remap chars) from thread {}",
+               "thread's UI task queue ({} hex chars, {} remap chars) from "
+               "thread {}",
                formId, bodyHex.size(), remapRows.size(), from);
   nlohmann::json r = nlohmann::json::object();
   r["applied"] = false;

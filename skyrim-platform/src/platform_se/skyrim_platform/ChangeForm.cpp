@@ -588,21 +588,10 @@ Premises CheckPremises(RE::TESObjectREFR* refr, bool forApply)
       static_cast<std::uint32_t>(p.actor->AsActorState()->GetLifeState());
   }
   if (forApply) {
-    // dead or dying: a puppet whose own engine started the death (the host's
-    // damage landing before the server's word) sits in kDying with its AI
-    // off, and the dying-to-dead completion is the actor's process's, which
-    // an AI-off puppet never runs (x-corpse-record v2 002847: five refusals
-    // at lifeState 1); the record's actor block carries the owner's kDead and
-    // the finish pass applies it, so the record completes the death.
-    // HYPOTHESIS until the run reads green: a dying copy's ragdoll is live
-    // while the Havok block lands (the same class as v2.4's LIVE read)
-    const bool deadOrDying = p.actor != nullptr &&
-      (p.lifeState ==
-         static_cast<std::uint32_t>(RE::ACTOR_LIFE_STATE::kDead) ||
-       p.lifeState ==
-         static_cast<std::uint32_t>(RE::ACTOR_LIFE_STATE::kDying));
-    add("actor dead or dying (lifeState 2 or 1)", std::to_string(p.lifeState),
-        deadOrDying);
+    add("actor dead (lifeState 2)", std::to_string(p.lifeState),
+        p.actor != nullptr &&
+          p.lifeState ==
+            static_cast<std::uint32_t>(RE::ACTOR_LIFE_STATE::kDead));
   }
   p.pending = game ? static_cast<std::uint32_t>(game->unk318.size()) : 0;
   if (forApply) {

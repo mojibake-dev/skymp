@@ -19,7 +19,7 @@ export interface ChangeFormMessage {
     t: MsgType.ChangeForm;
     epoch: number;     // the cell's host epoch this client holds for the actor's cell (ADR-066's stamp)
     formId: number;    // the shared load order's id (a game-file actor's own)
-    formType: number;  // the change form's type byte
+    formType: number;  // the record's save-type index (0 REFR, 1 ACHR), the header byte's low six bits; not the engine's form type
     flags: number;     // the change flags, u32
     version: number;   // the save version byte, 0x4E
     body: string;      // the record's bytes as hex (cap 65536 bytes)

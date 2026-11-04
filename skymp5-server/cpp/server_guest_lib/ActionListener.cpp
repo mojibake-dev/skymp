@@ -1806,12 +1806,24 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   // stands as it is. Anything else the record lacks refuses the report as
   // before
   std::vector<uint32_t> engineWeapons;
-  const auto isWeaponRecord = [&](uint32_t formId) -> bool {
+  const auto recordTypeIs = [&](uint32_t formId, const char* type) -> bool {
     if (!partOne.HasEspm()) {
       return false;
     }
     const auto rec = partOne.GetEspm().GetBrowser().LookupById(formId).rec;
-    return rec && rec->GetType() == espm::WEAP::kType;
+    return rec && rec->GetType() == type;
+  };
+  // thuum docs/verbs/npc-fate.md (Eli's word of 2026-11-04 after oracle v4
+  // 190713's Torch01): a hosted actor's HANDS are its host's engine's, a
+  // weapon or a light its AI took up (a torch lit in a dark hall), recorded
+  // R2 as reported; its DRESS is the server's roll, the armor the fate
+  // dresses every copy from
+  const auto isHandRecord = [&](uint32_t formId) -> bool {
+    return recordTypeIs(formId, espm::WEAP::kType) ||
+      recordTypeIs(formId, espm::LIGH::kType);
+  };
+  const auto isArmorRecord = [&](uint32_t formId) -> bool {
+    return recordTypeIs(formId, espm::ARMO::kType);
   };
 
   const auto& inventory = actor->GetInventory();
@@ -1825,9 +1837,10 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
         ++it;
         continue;
       }
-      if (hosted && isWeaponRecord(it->baseId)) {
+      if (hosted && isHandRecord(it->baseId)) {
         // the engine's own roll in a hosted actor's hands (findings 43 and
-        // 46): the entry stays in the report and is recorded below
+        // 46), a light its AI lit the same: the entry stays in the report
+        // and is recorded below
         engineWeapons.push_back(it->baseId);
         ++it;
         continue;
@@ -1971,7 +1984,8 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
       // reaches the host's game
       actor->AddItem(weaponId, 1);
       spdlog::info("[verb:npc-stream] E_EQUIP_UNKNOWN_WEAPON: {:x}'s hands by "
-                   "{:x} hold weapon {:x}, which its record's inventory lacks "
+                   "{:x} hold {:x} (a weapon or a light), which its record's "
+                   "inventory lacks "
                    "(the engine's own roll); recorded unvalidated, the item "
                    "added to the record",
                    actorFormId, myActor->GetFormId(), weaponId);
@@ -1982,13 +1996,16 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     // its dressing (nothing worn yet) or one already undressed reported no
     // outfit, the record kept none, and the next fate redressed the copy
     // naked on every seat (29600, "1 worn, right 1397e left 0" accepted).
-    // The outfit is the server's roll (R0): a worn entry of the record that
-    // is no weapon and that the report lacks stays; the hands are the host's
-    // engine's and follow the report
+    // The outfit is the server's roll (R0): a worn ARMOR entry of the record
+    // that the report lacks stays; everything else worn (a weapon, a light,
+    // the ammo) is the host's engine's hands and follows the report, so a
+    // torch the AI put away leaves the record's hands as it left the host's
+    // (oracle v4 190713 kept Torch01 worn in the record 25 s after the
+    // re-roll while the host's actor held nothing)
     size_t keptOutfit = 0;
     for (const auto& entry : actor->GetEquipment().inv.entries) {
       if (entry.GetWorn() == Inventory::Worn::None ||
-          kept.inv.HasItem(entry.baseId) || isWeaponRecord(entry.baseId)) {
+          kept.inv.HasItem(entry.baseId) || !isArmorRecord(entry.baseId)) {
         continue;
       }
       kept.inv.AddItems({ entry });

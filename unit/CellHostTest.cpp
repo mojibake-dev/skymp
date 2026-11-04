@@ -1779,6 +1779,8 @@ TEST_CASE("A hosted actor's equipment is its host's engine's word checked "
   // its own (3b's first T0, "outfit kept ... 4 worn item(s)", right 12e4d)
   constexpr uint32_t kElsewhere = 0x13989;
   constexpr uint32_t kSteelHelmet = 0x13954;
+  // Skyrim.esm's Torch01, a LIGH record the record lacks
+  constexpr uint32_t kTorch = 0x1d4ec;
   const NiPoint3 kAt{ 117786.f, -81400.f, 10997.f };
   Player(p, 0, kC1, kAt + NiPoint3{ 40.f, 0.f, 0.f });
   Player(p, 1, kC2, kAt + NiPoint3{ 60.f, 0.f, 0.f });
@@ -1818,14 +1820,15 @@ TEST_CASE("A hosted actor's equipment is its host's engine's word checked "
   // the record's worn outfit before the report: what no report may shrink
   // (fate-dress, playtest 37's finding 46: the fate's worn list is the
   // outfit every seat dresses the copy from, so a hosted report keeps the
-  // record's worn non-weapon entries it lacks)
-  const auto isWeapon = [&](uint32_t baseId) {
+  // record's worn ARMOR entries it lacks; the hands, a weapon or a light,
+  // are the host's and follow the report, Eli's word of 2026-11-04)
+  const auto isArmor = [&](uint32_t baseId) {
     const auto rec = p.GetEspm().GetBrowser().LookupById(baseId).rec;
-    return rec && rec->GetType() == "WEAP";
+    return rec && rec->GetType() == "ARMO";
   };
   std::vector<uint32_t> outfitBefore;
   for (const auto& entry : actor.GetEquipment().inv.entries) {
-    if (entry.GetWorn() != Inventory::Worn::None && !isWeapon(entry.baseId)) {
+    if (entry.GetWorn() != Inventory::Worn::None && isArmor(entry.baseId)) {
       outfitBefore.push_back(entry.baseId);
     }
   }
@@ -1873,6 +1876,35 @@ TEST_CASE("A hosted actor's equipment is its host's engine's word checked "
   REQUIRE(relays(1) == 0);
   REQUIRE(sentOfType(0, MsgType::SetInventory) == 0);
   REQUIRE(sentOfType(0, MsgType::SpSnippet) == 0);
+
+  // a LIGHT the record lacks, lit by the host's AI (Skyrim.esm Torch01
+  // 0x1d4ec; thuum docs/verbs/npc-fate.md, Eli's word of 2026-11-04 after
+  // oracle v4 190713: the AI's torch is an equip every seat shows, the hands
+  // are the host's): recorded R2 like the engine's own weapon, relayed once
+  p.Messages().clear();
+  Wear(p, 0, kActor, kTorch, 5);
+  p.Tick();
+  REQUIRE(actor.GetEquipment().inv.HasItem(kTorch));
+  REQUIRE(actor.GetInventory().HasItem(kTorch));
+  REQUIRE(actor.GetEquipment().numChanges == 5);
+  REQUIRE(relays(1) == 1);
+  REQUIRE(sentOfType(0, MsgType::SetInventory) == 0);
+
+  // the host's next report without it (the AI put the torch away): the
+  // torch leaves the record's hands and stays in its inventory, while the
+  // roll's armor the report lacks is kept as before (the dress is the
+  // server's, the hands the host's)
+  p.Messages().clear();
+  Wear(p, 0, kActor, kIronSword, 6);
+  p.Tick();
+  REQUIRE(!actor.GetEquipment().inv.HasItem(kTorch));
+  REQUIRE(actor.GetInventory().HasItem(kTorch));
+  REQUIRE(actor.GetEquipment().inv.HasItem(kIronSword));
+  for (const auto baseId : outfitBefore) {
+    REQUIRE(actor.GetEquipment().inv.HasItem(baseId));
+  }
+  REQUIRE(actor.GetEquipment().numChanges == 6);
+  REQUIRE(relays(1) == 1);
 
   DoDisconnect(p, 0);
   DoDisconnect(p, 1);

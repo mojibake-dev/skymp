@@ -1274,6 +1274,20 @@ export class RemoteServer extends ClientListener {
   private onChangeValuesMessage(event: ConnectionMessage<ChangeValuesMessage>): void {
     const msg = event.message;
 
+    // thuum ADR-067 decision 2 (x-corpse-record v2 20261104-001821): the
+    // server's health for the actor is kept on its model for formView's dead
+    // check (a zero with the record alive is the death word in flight, so
+    // the check waits instead of standing the body up); the engine apply
+    // below is as it was. HYPOTHESIS, that run's reading: this apply at zero
+    // reached the watcher's puppet a second before the isDead property and
+    // killed it (an AI-off actor under the deferred kill dies of a zero,
+    // x-npc-death 20261023-054215, the reason movementApply floors the
+    // relayed sample at 0.01), which the dead check then undid
+    const form = this.worldModel.forms[msg.idx];
+    if (form && typeof msg.data.health === "number") {
+      form.serverHealthPercentage = msg.data.health;
+    }
+
     once('update', () => {
       const id = this.getIdManager().getId(msg.idx);
       const refr = id === this.getMyActorIndex() ? Game.getPlayer() : getObjectReference(id);

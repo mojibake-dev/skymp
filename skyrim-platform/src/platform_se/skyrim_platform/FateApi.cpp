@@ -4,6 +4,7 @@
 #include "Puppets.h"
 #include "game/Offsets.h"
 #include <algorithm>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -228,6 +229,25 @@ void ReconcileInventoryOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
                added, kept);
 }
 
+// The copy's worn set against the fate's worn list, as sets of base ids: the
+// entries GetInventory lists as worn (InventoryEntryData::IsWorn, include/
+// RE/I/InventoryEntryData.h:50; the leveled-list bases left out as in the
+// reconcile). Equal, the detours or an earlier redress dressed this copy
+// already and the strip, the re-add and the dress have nothing to do.
+bool WornSetEquals(RE::Actor* actor, const Fates::Fate& fate)
+{
+  std::set<uint32_t> want(fate.worn.begin(), fate.worn.end());
+  std::set<uint32_t> have;
+  auto inventory = actor->GetInventory(
+    [](RE::TESBoundObject& o) { return !o.Is(RE::FormType::LeveledItem); });
+  for (auto& [object, entry] : inventory) {
+    if (object && entry.first > 0 && entry.second && entry.second->IsWorn()) {
+      have.insert(object->formID);
+    }
+  }
+  return have == want;
+}
+
 void RedressOnGameThread(uint32_t refrId, const Fates::Fate& fate)
 {
   auto* actor = RE::TESForm::LookupByID<RE::Actor>(refrId);
@@ -268,6 +288,27 @@ void RedressOnGameThread(uint32_t refrId, const Fates::Fate& fate)
     logger::warn("[verb:npc-fate] redressActor({:x}): no inventory "
                  "changes",
                  refrId);
+    return;
+  }
+  // thuum docs/verbs/npc-fate.md 1e (x-fate-dress-bleak v8 20261104-100832:
+  // both seats crashed in the equip queue's flush, 11696 under EquipObject
+  // under 39814, within a second of a redress of 383ec that the detours had
+  // dressed three seconds before, its reconcile "0 removed, 0 added"): the
+  // strip (Actor::RemoveOutfitItems, the engine's own removal of the tagged
+  // worn entries), the re-add and the dress on an already dressed living
+  // copy free and re-make the very lists the AI process's equip queue
+  // holds, for nothing. The engine's dresser skips an entry carrying its tag
+  // (re-npc-roll.md 8.2); this does the same by the record: the copy's worn
+  // set equal to the fate's, no strip, no re-add, no dress, the inventory
+  // reconciled alone (itself a no-op when it matches). Since every loaded
+  // copy passes rerollActor once (b763f766), this is the common case at a
+  // cell's load. HYPOTHESIS until v8 reads the Temple's load with no crash.
+  if (WornSetEquals(actor, fate)) {
+    ReconcileInventoryOnGameThread(actor, fate, refrId);
+    logger::info("[verb:npc-fate] redressActor({:x}): the copy wears the "
+                 "fate's {} already (3D loaded {}), no redress; its "
+                 "inventory reconciled to the record",
+                 refrId, fate.worn.size(), actor->Is3DLoaded());
     return;
   }
   // re-npc-roll.md 8.4's three calls, CommonLib's SetDefaultOutfit

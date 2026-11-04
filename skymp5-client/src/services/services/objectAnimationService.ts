@@ -1,4 +1,4 @@
-import { FormType, ObjectReference } from 'skyrimPlatform';
+import { FormType, Game, ObjectReference, Utility } from 'skyrimPlatform';
 import { ClientListener, CombinedController, Sp } from './clientListener';
 import { ConnectionMessage } from '../events/connectionMessage';
 import { ObjectAnimationMessage } from '../messages/objectAnimationMessage';
@@ -6,7 +6,7 @@ import { CreateActorMessage } from '../messages/createActorMessage';
 import { MsgType } from '../../messages';
 import { HostService } from './hostService';
 import { localIdToRemoteId, remoteIdToLocalId } from '../../view/worldViewMisc';
-import { logTrace } from '../../logging';
+import { logLab, logTrace } from '../../logging';
 
 // thuum docs/verbs/traps.md (ADR-059 decision 3): the cell's host runs the
 // world scripts, so guests see what the host's engine SHOWS. On every seat
@@ -43,6 +43,30 @@ const EVENT_PATTERNS = [
 // left out of the hook's native range (rule 9: nothing of its graph crosses)
 const LAST_GAME_FILE_ID = 0xfeffffff;
 const PLAYER_ID = 0x14;
+// the Nordic puzzle pillar (docs/verbs/traps.md "The pillar's side"): its
+// graph Behavior00.hkx is a three-cycle, Side01, Side02, Side03, turned by
+// Trigger0N from Side0N alone; StartState02/03 jump to a side, Side01 is
+// the graph's own start; a reference is known as one by the base
+// NorDefaultPuzzlePillar01 or by a Trigger0N or StartState0N it played
+const PILLAR_BASES = new Set<number>([0xaa8ce]);
+const PILLAR_CYCLE = 3;
+// one turn's animation, the script's busy window (UNMEASURED: the lab's read
+// in x-puzzle-handoff; 46's server log puts a report 66 ms after the press
+// and the next accepted press about two seconds on)
+const PILLAR_TURN_S = 2.5;
+// the side a pillar's record puts it on: StartState0M is M (a jump at a load,
+// no turn since), Trigger0N turns from N to the next
+const sideOfRecord = (event: string): number | undefined => {
+  const jump = /^StartState0([1-3])$/.exec(event);
+  if (jump) {
+    return Number(jump[1]);
+  }
+  const turn = /^Trigger0([1-3])$/.exec(event);
+  if (turn) {
+    return (Number(turn[1]) % PILLAR_CYCLE) + 1;
+  }
+  return undefined;
+};
 // an event this seat played itself (a CreateActor's lastAnimation replay in
 // remoteServer, a relayed ObjectAnimation here) re-enters the hook like the
 // engine's own; it is no report (the review of 2026-11-01: the host would
@@ -68,6 +92,21 @@ export class ObjectAnimationService extends ClientListener {
     this.controller.emitter.on('createActorMessage', (e) =>
       this.onCreateActor(e),
     );
+    // the hand-off (docs/verbs/traps.md "The next build: the hand-off",
+    // playtest 46's second lay): a seat's pillar graphs move while it is a
+    // guest (the record's replay at its load, every relay after), its
+    // scripts sit on their initial sides, and the seat that inherits the
+    // cell has scripts whose first Trigger0N has no transition on graphs it
+    // never moved: PlayAnimationAndWait never returns and the pillar is dead
+    // for every seat. At a grant the new host puts each pillar's graph back
+    // on its script's initial side and feeds its own script the record's
+    // side as activations, so script, graph and record agree before the
+    // first press
+    this.controller.emitter.on('cellHostChanged', (e: { cell: number; hosted: boolean }) => {
+      if (e.hosted) {
+        this.onCellHosted(e.cell);
+      }
+    });
     for (const pattern of EVENT_PATTERNS) {
       const handler = {
         enter: () => { },
@@ -90,6 +129,9 @@ export class ObjectAnimationService extends ClientListener {
   private onCreateActor(e: ConnectionMessage<CreateActorMessage>) {
     const msg = e.message;
     const event = msg.props?.lastAnimation;
+    if (typeof event === 'string' && msg.refrId !== undefined && msg.refrId < 0xff000000) {
+      this.noteRecord(msg.refrId, event);
+    }
     if (typeof event !== 'string' || msg.refrId === undefined || msg.refrId >= 0xff000000) {
       return;
     }
@@ -118,6 +160,15 @@ export class ObjectAnimationService extends ClientListener {
     this.noted = [];
     const host = this.controller.lookupListener(HostService);
     for (const { selfId, event } of noted) {
+      // the engine's own StartState0N at a cell load is the local script's
+      // jump to the reference's initial side (OnCellLoad runs on every seat;
+      // a TypeScript play never re-enters the hook); the first one seen is
+      // the initial side, and any Trigger0N or StartState0N names a pillar
+      this.notePillar(selfId, event);
+      const jump = /^StartState0([1-3])$/.exec(event);
+      if (jump && !this.initialSide.has(selfId)) {
+        this.initialSide.set(selfId, Number(jump[1]));
+      }
       if (this.wasSelfPlayed(selfId, event)) {
         // rule 8: the mark's hit is logged so a run says whether a replay
         // ever re-enters the hook (zero lines with a record present means
@@ -176,10 +227,9 @@ export class ObjectAnimationService extends ClientListener {
   // other event. The line keeps "object animation <refr> <event> played" as
   // its head (b-puzzle-relay's claim). HYPOTHESIS until x-puzzle-guest-view
   // v2 reads the node on the guest's screen.
-  // The jump is for a LIVE relay alone (a seat that does not host the
-  // reference: the host receives no relay of its own reports). The record's
-  // replay at a load (remoteServer) plays the plain event and skips a seat
-  // that hosts the cell: playtest 46 (2026-11-04 22:42Z, 843fed95 live):
+  // The jump is a guest's (a seat that does not host the reference: the
+  // host receives no relay of its own reports and never replays the record,
+  // remoteServer's host-skip): playtest 46 (2026-11-04 22:42Z, 843fed95 live):
   // with the jump in the replay, the host's graph was moved to the record's
   // side while its script stayed on its own initial state, so the script's
   // first Trigger0N had no transition, PlayAnimationAndWait never saw its
@@ -198,6 +248,7 @@ export class ObjectAnimationService extends ClientListener {
   playRelayed(refr: ObjectReference, event: string, how: string, remoteRefr?: number, jumpFirst = true): boolean {
     const localId = refr.getFormID();
     const id = (remoteRefr ?? localIdToRemoteId(localId)).toString(16);
+    this.noteRecord(localId, event);
     const m = jumpFirst ? /^Trigger0([23])$/.exec(event) : null;
     let jump = "";
     if (m) {
@@ -215,6 +266,94 @@ export class ObjectAnimationService extends ClientListener {
     return played;
   }
 
+  // the server's last event for a reference as this seat knows it
+  // (CreateActor's lastAnimation, then every relayed or replayed event)
+  private noteRecord(localId: number, event: string) {
+    this.recordEvent.set(localId, event);
+    this.notePillar(localId, event);
+  }
+
+  private notePillar(localId: number, event: string) {
+    if (/^(Trigger|StartState)0[1-3]$/.test(event)) {
+      this.pillars.add(localId);
+    }
+  }
+
+  private isPillar(refr: ObjectReference): boolean {
+    if (this.pillars.has(refr.getFormID())) {
+      return true;
+    }
+    const base = refr.getBaseObject()?.getFormID() ?? 0;
+    return PILLAR_BASES.has(base);
+  }
+
+  private onCellHosted(cell: number) {
+    const ids = new Set<number>(this.pillars);
+    this.recordEvent.forEach((_e, id) => ids.add(id));
+    ids.forEach((id) => {
+      if (this.resyncing.has(id)) {
+        return;
+      }
+      const refr = ObjectReference.from(this.sp.Game.getFormEx(id));
+      if (!refr || !this.isPillar(refr)) {
+        return;
+      }
+      const parent = refr.getParentCell();
+      if (!parent || parent.getFormID() !== cell) {
+        return;
+      }
+      const initial = this.initialSide.get(id) ?? 1;
+      const record = this.recordEvent.get(id);
+      const target = (record !== undefined ? sideOfRecord(record) : undefined) ?? initial;
+      const turns = (((target - initial) % PILLAR_CYCLE) + PILLAR_CYCLE) % PILLAR_CYCLE;
+      void this.resync(refr, id, cell, initial, turns, record ?? 'none', target);
+    });
+  }
+
+  // the graph back on the script's initial side, then the record's side fed
+  // to the script as the host's own activations (each reported as the host's
+  // turn, relayed to the guests, recorded); the pillar is activation-blocked
+  // while its graph is reset (a press inside a turn finds the script's
+  // trigger refused and sticks it), and the script's own busy window makes a
+  // press during the feed harmless
+  private async resync(refr: ObjectReference, id: number, cell: number, initial: number, turns: number, record: string, target: number): Promise<void> {
+    this.resyncing.add(id);
+    const wasBlocked = refr.isActivationBlocked();
+    try {
+      refr.blockActivation(true);
+      if (initial === 1) {
+        // no StartState01 exists: the round brings any side to Side01
+        // (Side02 takes Trigger02 then Trigger03, Side03 Trigger03 alone,
+        // Side01 refuses both)
+        for (const round of ['Trigger02', 'Trigger03']) {
+          this.markSelfPlayed(id, round);
+          if (refr.playAnimation(round)) {
+            await Utility.wait(PILLAR_TURN_S);
+          }
+        }
+      } else {
+        const jump = `StartState0${initial}`;
+        this.markSelfPlayed(id, jump);
+        refr.playAnimation(jump);
+        await Utility.wait(0.5);
+      }
+      refr.blockActivation(wasBlocked);
+      const player = this.sp.Game.getPlayer();
+      for (let i = 0; i < turns && player; i++) {
+        refr.activate(player, false);
+        await Utility.wait(PILLAR_TURN_S + 0.5);
+      }
+      logLab('verb:traps', `pillar ${id.toString(16)} re-synced at the grant of ${cell.toString(16)}: the script's initial side ${initial}, the record ${record} (side ${target}), ${turns} turn(s) fed to the script`);
+    } finally {
+      refr.blockActivation(wasBlocked);
+      this.resyncing.delete(id);
+    }
+  }
+
   private noted: { selfId: number; event: string }[] = [];
   private selfPlayed = new Map<string, number>();
+  private initialSide = new Map<number, number>();
+  private recordEvent = new Map<number, string>();
+  private pillars = new Set<number>();
+  private resyncing = new Set<number>();
 }

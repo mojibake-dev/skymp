@@ -1594,6 +1594,19 @@ wire_struct! {
 }
 
 wire_struct! {
+    /// One inventory row of a fate (docs/verbs/npc-fate.md, playtest 44's
+    /// 1c): an item the server's container roll put in the actor's record
+    /// (worn items travel in `worn`), so every engine's copy carries the
+    /// record's loot and not its own roll.
+    pub struct FateInvRow {
+        /// The item's form id, never 0.
+        pub base_id: u32,
+        /// How many, never 0.
+        pub count: u32,
+    }
+}
+
+wire_struct! {
     /// One placement's fate (docs/verbs/npc-fate.md, ADR-046 decision 1,
     /// ADR-049): the server's roll for a game-file actor, for every engine to
     /// take instead of its own.
@@ -1610,6 +1623,10 @@ wire_struct! {
         pub level: u16,
         /// The worn items the server's outfit roll chose, by form id.
         pub worn: Vec<u32, { cap::FATE_WORN }>,
+        /// The record's inventory rows apart from the worn items (the
+        /// server's own container roll, playtest 44's 1c), at most
+        /// [`cap::FATE_INV`].
+        pub inv: Vec<FateInvRow, { cap::FATE_INV }>,
     }
 }
 
@@ -1621,7 +1638,8 @@ wire_struct! {
     /// own roll at the reference's load, and again at a respawn. The client
     /// pins the engine's roll from it; a fate arriving after the engine rolled
     /// goes through the engine's own re-roll. Reason codes: `E_VAL_RANGE` (a
-    /// placement id of 0 or at or above 0xff000000, a worn id of 0).
+    /// placement id of 0 or at or above 0xff000000, a worn id of 0, an
+    /// inventory row with a base id or count of 0).
     pub struct ActorFate {
         /// `"t": 51`.
         #[serde(default)]

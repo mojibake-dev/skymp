@@ -80,6 +80,7 @@ constexpr std::chrono::milliseconds kPlacementsTick{ 50 };
 // the old rule's) and the worn list, at most the wire's 32 entries
 constexpr size_t kFatesPerMessage = 64;
 constexpr size_t kFateWornMax = 32;
+constexpr size_t kFateInvMax = 32; // wire-schema cap::FATE_INV
 
 ActorFateMessage::Fate FateOf(const WorldState& worldState,
                               const MpActor& actor)
@@ -93,6 +94,23 @@ ActorFateMessage::Fate FateOf(const WorldState& worldState,
         fate.worn.size() < kFateWornMax) {
       fate.worn.push_back(entry.baseId);
     }
+  }
+  // thuum docs/verbs/npc-fate.md (playtest 44's 1c): the record's other rows,
+  // the server's own container roll (EnsureBaseContainerAdded), so every
+  // seat's copy carries them instead of its engine's roll; a row of nothing
+  // is no row (the validator refuses a count of 0)
+  for (const auto& entry : actor.GetInventory().entries) {
+    if (entry.GetWorn() != Inventory::Worn::None || entry.count == 0 ||
+        entry.baseId == 0) {
+      continue;
+    }
+    if (fate.inv.size() >= kFateInvMax) {
+      break;
+    }
+    ActorFateMessage::InvRow row;
+    row.baseId = entry.baseId;
+    row.count = entry.count;
+    fate.inv.push_back(row);
   }
   return fate;
 }

@@ -1554,6 +1554,27 @@ std::string ChangeForm::Apply(RE::TESObjectREFR* refr,
       }
       answer = again ? ApplyImpl(again, body, flags, version, rows)
                      : ApplyRefusal(formId, "at task: the reference is gone");
+      // x-corpse-record v4 (20261104-063832): every lay answered "lifeState
+      // 2 then 1", the owner's own reconnect apply included. The record's
+      // actor block carries what the owner's engine held at its at-rest
+      // serialize, which is kDying when the rest (about 1.5 s) comes before
+      // fDyingTimer's flip (2.0 s, or the death action's length), so the lay
+      // puts the copy back where no AI ticks it and the next apply would
+      // need the completion again. The same completion runs after the lay:
+      // a laid body is dead on every seat whatever the record carries, and
+      // the owner's serialize stays its engine's own state. HYPOTHESIS until
+      // x-corpse-record reads "after the lay" and the copy kDead.
+      if (auto* actor = again ? again->As<RE::Actor>() : nullptr) {
+        const auto laid = actor->AsActorState()->GetLifeState();
+        if (laid == RE::ACTOR_LIFE_STATE::kDying) {
+          actor->KillImmediate();
+          logger::info(
+            "[verb:change-form] completed {:#x}'s dying death after the "
+            "lay: lifeState {} -> {} (read 5)",
+            formId, static_cast<std::uint32_t>(laid),
+            static_cast<std::uint32_t>(actor->AsActorState()->GetLifeState()));
+        }
+      }
     } catch (const std::exception& e) {
       logger::error("[verb:change-form] ApplyChangeForm {:#x} threw: {}",
                     formId, e.what());

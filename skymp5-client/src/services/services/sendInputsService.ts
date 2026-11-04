@@ -169,7 +169,9 @@ export class SendInputsService extends ClientListener {
                 this.sendEquipment(target);
                 this.sendActorValuePercentage(target, targetFormModel);
             } catch (e) {
-                const key = target === undefined ? "self" : target.toString(16);
+                // targets is typed undefined[] (the `[undefined].concat(hosted as any)` above), so the id is read past the type
+                const id = target as unknown as number | undefined;
+                const key = id === undefined ? "self" : id.toString(16);
                 const now = Date.now();
                 const said = this.sendFaultSaidAt.get(key);
                 if (said === undefined || now - said >= SendInputsService.sendFaultSayMs) {

@@ -229,19 +229,30 @@ void ReconcileInventoryOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
                added, kept);
 }
 
-// The copy's worn set against the fate's worn list, as sets of base ids: the
+// The copy's worn OUTFIT set against the fate's, as sets of base ids: the
 // entries GetInventory lists as worn (InventoryEntryData::IsWorn, include/
 // RE/I/InventoryEntryData.h:50; the leveled-list bases left out as in the
-// reconcile). Equal, the detours or an earlier redress dressed this copy
+// reconcile), weapons left out on both sides (TESForm::IsWeapon, include/
+// RE/T/TESForm.h:347): the redress is the outfit's, the fate's weapons are
+// the container detour's rows and the AI equips them in its own time (a
+// weapon not yet in hand three seconds after the load must not force a
+// strip). Equal, the detours or an earlier redress dressed this copy
 // already and the strip, the re-add and the dress have nothing to do.
-bool WornSetEquals(RE::Actor* actor, const Fates::Fate& fate)
+bool WornOutfitEquals(RE::Actor* actor, const Fates::Fate& fate)
 {
-  std::set<uint32_t> want(fate.worn.begin(), fate.worn.end());
+  std::set<uint32_t> want;
+  for (const auto id : fate.worn) {
+    auto* form = RE::TESForm::LookupByID(id);
+    if (form && !form->IsWeapon()) {
+      want.insert(id);
+    }
+  }
   std::set<uint32_t> have;
   auto inventory = actor->GetInventory(
     [](RE::TESBoundObject& o) { return !o.Is(RE::FormType::LeveledItem); });
   for (auto& [object, entry] : inventory) {
-    if (object && entry.first > 0 && entry.second && entry.second->IsWorn()) {
+    if (object && !object->IsWeapon() && entry.first > 0 && entry.second &&
+        entry.second->IsWorn()) {
       have.insert(object->formID);
     }
   }
@@ -303,12 +314,12 @@ void RedressOnGameThread(uint32_t refrId, const Fates::Fate& fate)
   // reconciled alone (itself a no-op when it matches). Since every loaded
   // copy passes rerollActor once (b763f766), this is the common case at a
   // cell's load. HYPOTHESIS until v8 reads the Temple's load with no crash.
-  if (WornSetEquals(actor, fate)) {
+  if (WornOutfitEquals(actor, fate)) {
     ReconcileInventoryOnGameThread(actor, fate, refrId);
     logger::info("[verb:npc-fate] redressActor({:x}): the copy wears the "
-                 "fate's {} already (3D loaded {}), no redress; its "
+                 "fate's outfit already (3D loaded {}), no redress; its "
                  "inventory reconciled to the record",
-                 refrId, fate.worn.size(), actor->Is3DLoaded());
+                 refrId, actor->Is3DLoaded());
     return;
   }
   // re-npc-roll.md 8.4's three calls, CommonLib's SetDefaultOutfit

@@ -48,7 +48,13 @@ const PLAYER_ID = 0x14;
 // engine's own; it is no report (the review of 2026-11-01: the host would
 // re-report its own replay and every guest would spin a stale event). The
 // mark outlives remoteServer's five 2 s retries
-const SELF_PLAYED_MS = 20_000;
+// one retry interval of remoteServer's record replay: a mark hides an engine
+// event equal to the marked one for this long and is consumed on its hit
+// (the review of 843fed95, F2: a TypeScript playAnimation runs under
+// CallNativeApi's Override, which the animation hooks return early under,
+// so no replay re-enters the hook; the marks only ever hid genuine reports,
+// the host's first turn within 20 s of a pillar's CreateActor among them)
+const SELF_PLAYED_MS = 3_000;
 
 export class ObjectAnimationService extends ClientListener {
   constructor(
@@ -100,11 +106,8 @@ export class ObjectAnimationService extends ClientListener {
     if (until === undefined) {
       return false;
     }
-    if (Date.now() > until) {
-      this.selfPlayed.delete(key);
-      return false;
-    }
-    return true;
+    this.selfPlayed.delete(key);
+    return Date.now() <= until;
   }
 
   private onUpdate() {
@@ -116,6 +119,10 @@ export class ObjectAnimationService extends ClientListener {
     const host = this.controller.lookupListener(HostService);
     for (const { selfId, event } of noted) {
       if (this.wasSelfPlayed(selfId, event)) {
+        // rule 8: the mark's hit is logged so a run says whether a replay
+        // ever re-enters the hook (zero lines with a record present means
+        // the marks can go)
+        logTrace(this, `object animation ${selfId.toString(16)} ${event} dropped as self-played`);
         continue;
       }
       const refr = ObjectReference.from(this.sp.Game.getFormEx(selfId));
@@ -154,7 +161,7 @@ export class ObjectAnimationService extends ClientListener {
   // project, read from Skyrim - Animations.bsa on 2026-11-04): a state
   // machine of Side01, Side02 and Side03 whose Turn0N fires on Trigger0N from
   // Side0N ALONE; StartState02 and StartState03 jump to a side without a
-  // turn, and Side01 is the default. A seat whose graph sits on another side
+  // turn, Side01 the graph's own start. A seat whose graph sits on another side
   // than the host's drops every relayed Trigger silently until the host's
   // cycle passes its side: the host's own script jumps its graph at the load
   // with StartState0N, which the relay never carried, and a late joiner's
@@ -171,20 +178,26 @@ export class ObjectAnimationService extends ClientListener {
   // v2 reads the node on the guest's screen.
   // The jump is for a LIVE relay alone (a seat that does not host the
   // reference: the host receives no relay of its own reports). The record's
-  // replay at a load (remoteServer, every seat, the host included) plays the
-  // plain trigger as it always did: playtest 46 (2026-11-04 22:42Z, 843fed95
-  // live): with the jump in the replay, the host's graph was moved to the
-  // record's side while its script stayed on its own start state, so the
-  // script's first Trigger0N had no transition, PlayAnimationAndWait never
-  // saw its Turned0N and the script stayed busy for good: no pillar turned
-  // on either seat. The host's graph is its script's; the record reaches
-  // the host's script through its activations (ADR-059 decision 5), not
-  // through graph events. A guest's replay therefore still lands on the
-  // record's side only when the trigger matches its default side, the old
-  // limit, until the host's script state is fed from the record.
+  // replay at a load (remoteServer) plays the plain event and skips a seat
+  // that hosts the cell: playtest 46 (2026-11-04 22:42Z, 843fed95 live):
+  // with the jump in the replay, the host's graph was moved to the record's
+  // side while its script stayed on its own initial state, so the script's
+  // first Trigger0N had no transition, PlayAnimationAndWait never saw its
+  // Turned0N and the script stayed busy for good: no pillar turned on either
+  // seat. The host's graph is its script's; the record reaches the host's
+  // script through its activations (ADR-059 decision 5), not through graph
+  // events. Every seat's script runs OnCellLoad (a lifecycle event passes
+  // the gate everywhere) and jumps its graph to the reference's initial
+  // side, so a guest sits on the host's initial side at a load; a plain
+  // replay of a recorded Trigger0N on a guest moves it one side past a host
+  // whose script restarted, and the next live relay's jump brings it back
+  // (one turn of drift, self-healing), the limit until the host's script
+  // state is fed from the record. "after StartState0N refused" on a guest
+  // already on Side0N is the expected word (a self-transition the graph may
+  // refuse, HYPOTHESIS), not a fault.
   playRelayed(refr: ObjectReference, event: string, how: string, remoteRefr?: number, jumpFirst = true): boolean {
     const localId = refr.getFormID();
-    const id = (remoteRefr ?? localId).toString(16);
+    const id = (remoteRefr ?? localIdToRemoteId(localId)).toString(16);
     const m = jumpFirst ? /^Trigger0([23])$/.exec(event) : null;
     let jump = "";
     if (m) {
@@ -195,7 +208,10 @@ export class ObjectAnimationService extends ClientListener {
     }
     this.markSelfPlayed(localId, event);
     const played = refr.playAnimation(event);
-    logTrace(this, `object animation ${id} ${event} played (${how}, ${played ? "taken" : "refused"}${jump})`);
+    // "played" is the live relay's word (b-puzzle-relay's claim on a guest);
+    // the record's replay says "replayed", which that claim's " played" never
+    // matches, so a host's refused replays do not count as plays
+    logTrace(this, `object animation ${id} ${event} ${jumpFirst ? "played" : "replayed"} (${how}, ${played ? "taken" : "refused"}${jump})`);
     return played;
   }
 

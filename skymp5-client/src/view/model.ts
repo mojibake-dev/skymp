@@ -10,6 +10,12 @@ import { UpdateActionMessage } from "src/services/messages/updateActionMessage";
 export interface FormModel extends CreateActorMessageAdditionalProps, CreateActorMessageMainProps{
   idx?: number;
   movement?: Movement;
+  // thuum ADR-067 decision 2 (x-corpse-record v2 20261104-001821): the last
+  // health percentage the server sent for this actor (ChangeValues: the host's
+  // HostedActorState relayed, or the server's own number), kept for formView's
+  // dead check: a zero here while the record still reads alive is a death
+  // word in flight, and no resurrect runs over it
+  serverHealthPercentage?: number;
   numMovementChanges?: number;
   numAppearanceChanges?: number;
   isMyClone?: boolean;

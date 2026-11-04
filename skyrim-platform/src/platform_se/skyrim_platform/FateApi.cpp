@@ -359,6 +359,17 @@ namespace {
 // late fate reached the copy while it was still dead, reconcile-only, and
 // nothing re-asked after the stand-up, so the stood-up copy kept its old
 // pick); a dead copy reconciles its inventory alone.
+// the thread a fate task ran on, beside Main's (Main.h:78 threadID), the
+// witness the lab reads
+std::string FateThreadNote()
+{
+  const auto* main = RE::Main::GetSingleton();
+  const auto thread = static_cast<uint32_t>(::GetCurrentThreadId());
+  const uint32_t mainThread = main ? main->threadID : 0u;
+  return "thread " + std::to_string(thread) + " main " +
+    std::to_string(mainThread);
+}
+
 void RerollOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
                         uint32_t refrId)
 {
@@ -502,17 +513,6 @@ void QueueFateTask(const char* what, uint32_t refrId,
   }
   g_nativeCallRequirements.gameThrQ->AddTask(
     [task = std::move(task)](Viet::Void) { task(); });
-}
-
-// the thread a fate task ran on, beside Main's (Main.h:78 threadID), the
-// witness the lab reads
-std::string FateThreadNote()
-{
-  const auto* main = RE::Main::GetSingleton();
-  const auto thread = static_cast<uint32_t>(::GetCurrentThreadId());
-  const uint32_t mainThread = main ? main->threadID : 0u;
-  return "thread " + std::to_string(thread) + " main " +
-    std::to_string(mainThread);
 }
 
 Napi::Value FateApi::RerollActor(const Napi::CallbackInfo& info)

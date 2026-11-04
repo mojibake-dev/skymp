@@ -428,14 +428,37 @@ void RerollOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
   // its race the fate's and its facegen node present on both seats.
   actor->ResetInventory(false);
   RedressOnGameThread(refrId, fate);
+  bool reloaded = false;
+  bool updated = false;
   if (had3D) {
     actor->DoReset3D(false);
+    // x-fate-dress-bleak v8 20261104-104705 (the first login at roll 25 that
+    // survived): on a copy that had just stood up the process never rebuilt
+    // the model DoReset3D dropped (is3DLoaded false 25 s later, the copy
+    // invisible on both seats, worn and race the fate's). The model is
+    // asked back through the reference's own loader (Actor::Load3D,
+    // A/Actor.h:315, the call x-npc-late-3d 231926 read non-null), now that
+    // the inventory and the dress are the record's, and the flagged skin,
+    // head and face passes run on it at once (Actor::Update3DModel,
+    // A/Actor.h:633, through AIProcess::Update3DModel, AIProcess.h:191,
+    // which wants the process: ACTOR_RUNTIME_DATA::currentProcess behind
+    // GetActorRuntimeData, A/Actor.h:651, 710). HYPOTHESIS until v8 reads
+    // is3DLoaded true and faceNode true after a respawn on both seats.
+    if (!actor->Is3DLoaded()) {
+      actor->Load3D(false);
+      reloaded = true;
+    }
+    if (actor->Is3DLoaded() && actor->GetActorRuntimeData().currentProcess) {
+      actor->Update3DModel();
+      updated = true;
+    }
   }
   logger::info("[verb:npc-fate] rerolled {:x} through the engine from pick "
-               "{:x} toward the fate's {:x} (3D loaded {} before; the "
-               "inventory reset, the record dressed, the 3D reset for the "
-               "process's rebuild)",
-               refrId, pickedId, fate.baseId, had3D);
+               "{:x} toward the fate's {:x} (3D loaded {} before, {} after; "
+               "the inventory reset, the record dressed, the 3D reset, "
+               "reloaded {}, the model passes run {})",
+               refrId, pickedId, fate.baseId, had3D, actor->Is3DLoaded(),
+               reloaded, updated);
 }
 }
 

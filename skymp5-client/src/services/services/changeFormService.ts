@@ -31,7 +31,7 @@ import { HostService } from "./hostService";
 // Skyrim Platform's OnUpdate thread), so no typing of the client's own:
 // SerializeChangeForm(refr) answers "" on a refusal (the reason in the
 // platform log, "[verb:change-form] SerializeChangeForm refused <id>:
-// <reason>") or a JSON object whose keys formType, flags, version, bodyHex
+// <reason>") or a JSON object whose keys recordType (the wire's formType), flags, version, bodyHex
 // (the WHOLE record's bytes, lowercase hex), fnv1a (over those bytes) and
 // remap ([{offset, formId, index}], offset a RECORD offset with the header's
 // width, the convention the wire's validator shares) make the message, the
@@ -123,7 +123,11 @@ const parseRecord = (raw: string): ChangeFormRecord | undefined => {
     if (!o || typeof o !== "object") {
         return undefined;
     }
-    const formType = asNumber(o["formType"]);
+    // the wire's formType is the RECORD's save-type index (0 REFR, 1 ACHR: the header byte's low six bits, what the
+    // validator compares the header against), which the native answers as recordType; the native's formType key is the
+    // engine's form type (0x3E for an ACHR) and does not travel (x-corpse-record v2 001821: every send refused
+    // E_CHANGEFORM_HEADER, 62 against the header's 1)
+    const formType = asNumber(o["recordType"]);
     const flags = asNumber(o["flags"]);
     const version = asNumber(o["version"]);
     const fnv1a = asNumber(o["fnv1a"]);

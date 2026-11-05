@@ -201,11 +201,7 @@ export class ObjectAnimationService extends ClientListener {
       // so the LAST side-naming event is the script's side, which a seat
       // that hosted, turned and walked out keeps in its Papyrus state (the
       // review of 30839d4b, F3)
-      this.notePillar(selfId, event);
-      const side = sideOfRecord(event);
-      if (side !== undefined) {
-        this.scriptSide.set(selfId, side);
-      }
+      this.noteScriptSide(selfId, event);
       if (this.wasSelfPlayed(selfId, event)) {
         // rule 8: the mark's hit is logged so a run says whether a replay
         // ever re-enters the hook (zero lines with a record present means
@@ -311,6 +307,21 @@ export class ObjectAnimationService extends ClientListener {
   private noteRecord(localId: number, event: string) {
     this.recordEvent.set(localId, event);
     this.notePillar(localId, event);
+  }
+
+  // ADR-068 (rung 2): a script's animation of a world object this seat owns
+  // is reported at the boundary, and the seam silences the animation hooks
+  // for the call's extent, so the host's own pillar turns and its OnCellLoad
+  // jump never reach onUpdate; ScriptCallService feeds each such call here
+  // instead, so the hand-off re-sync still reads the script's last
+  // side-naming act (until rung 3's record retires the re-sync). JS state
+  // alone: safe in the scriptCalls event's context, where no native runs
+  noteScriptSide(localId: number, event: string) {
+    this.notePillar(localId, event);
+    const side = sideOfRecord(event);
+    if (side !== undefined) {
+      this.scriptSide.set(localId, side);
+    }
   }
 
   private notePillar(localId: number, event: string) {

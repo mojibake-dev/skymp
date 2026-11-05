@@ -6,6 +6,7 @@ import { SpSnippetArgument } from "../messages/spSnippetMessage";
 import { localIdToRemoteId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { HostService } from "./hostService";
+import { ObjectAnimationService } from "./objectAnimationService";
 
 // thuum docs/DECISIONS.md ADR-068 (rung 2, the one seam; docs/research/
 // scripts-one-system-2026-11-05.md 6.2 to 6.4): the platform's one hook on the
@@ -76,6 +77,12 @@ export class ScriptCallService extends ClientListener {
             }
             if (call.kind === "action") {
                 this.pending.push(call);
+                // the hooks never see an owned call's animation (the seam's
+                // mark), so a pillar's side is noted from the call itself
+                const event = call.args[0];
+                if (ScriptCallService.isAnimationRow(call) && typeof event === "string") {
+                    this.controller.lookupListener(ObjectAnimationService).noteScriptSide(call.self, event);
+                }
             }
         }
     }

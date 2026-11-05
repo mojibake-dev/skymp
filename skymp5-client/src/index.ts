@@ -31,6 +31,7 @@ import { PerkService } from "./services/services/perkService";
 import { WordWallService } from "./services/services/wordWallService";
 import { RelayedActivationService } from "./services/services/relayedActivationService";
 import { ObjectAnimationService } from "./services/services/objectAnimationService";
+import { TrapResultService } from "./services/services/trapResultService";
 import { SkillUseService } from "./services/services/skillUseService";
 import { ArrowSyncService } from "./services/services/arrowSyncService";
 import { SpVersionCheckService } from "./services/services/spVersionCheckService";
@@ -126,6 +127,7 @@ const main = () => {
       new WordWallService(sp, controller),
       new RelayedActivationService(sp, controller),
       new ObjectAnimationService(sp, controller),
+      new TrapResultService(sp, controller),
       new SkillUseService(sp, controller),
       new ArrowSyncService(sp, controller),
       new SpVersionCheckService(sp, controller),

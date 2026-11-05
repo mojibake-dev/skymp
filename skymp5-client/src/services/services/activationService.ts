@@ -9,7 +9,12 @@ import { isSyncedActorId, localIdToRemoteId } from "../../view/worldViewMisc";
 
 import { LastInvService } from "./lastInvService";
 import { HostService } from "./hostService";
-import { logError, logTrace } from "../../logging";
+import { RelayedActivationService } from "./relayedActivationService";
+import { logError, logLab, logTrace } from "../../logging";
+
+// a reference as the lab's lines name it: its server id (a game-file
+// reference's own), else this engine's
+const idOf = (localId: number): string => (localIdToRemoteId(localId) || localId).toString(16);
 
 export class ActivationService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
@@ -57,33 +62,46 @@ export class ActivationService extends ClientListener {
           // trap for itself (a puppet steps on the plate too), so only the
           // host's word travels.
           const hostedHere = this.controller.lookupListener(HostService).isHostedHere(e.target);
-          if (!hostedHere) {
+          if (caster !== target) {
+            // thuum docs/DECISIONS.md ADR-068 D-S3 (traps follow the
+            // interaction; docs/research/trap-slice-d-s3-2026-11-05.md), read
+            // on every seat, since every seat's engine fires the trap family
+            // itself (point 1). Phase 2 first (Eli's requirement: any seat
+            // triggers): a trigger that answers its own player alone
+            // (TrapTriggerBase's playerOnlyTrigger: the trigger boxes 0x86018
+            // in the Temple and 0x4e42b in the Sanctum; the platform's read is
+            // HYPOTHESIS H-PO1) fires on the seat whose player entered it and
+            // on no other, so its pair is reported from whichever seat it
+            // fired on, and the server admits it from a reporter with the cell
+            // loaded. The relay's own play of such a pair here comes back
+            // through this event and is not reported again (else the two seats
+            // would relay it to each other)
+            const trigger = ObjectReferenceEx.trapRole(caster);
+            if (trigger !== null && trigger.playerOnly) {
+              if (this.controller.lookupListener(RelayedActivationService).wasPlayedHere(target, caster)) {
+                logLab("verb:traps", `trap ${idOf(target)} fired here by ${idOf(caster)}: the relay's own play, not reported again (D-S3 phase 2)`);
+                return;
+              }
+              logLab("verb:traps", `trap ${idOf(target)} fired here by ${idOf(caster)}: a player-only trigger, reported from this seat (D-S3 phase 2)`);
+              this.reportLinked(caster, target);
+              return;
+            }
+            // point 5 (the relay): a pair whose trigger AND target are both in
+            // the family fires on every seat by itself, so it travels nowhere;
+            // a pair with a mechanism on either side (a pull chain's blades,
+            // the puzzle lever's darts: the design's F3) is the host's to
+            // report and the server's to relay, as before
+            if (trigger !== null && trigger.family && ObjectReferenceEx.isTrapFamily(target)) {
+              logLab("verb:traps", `trap ${idOf(target)} fired here by ${idOf(caster)}: every seat fires the trap family itself, not reported (D-S3)`);
+              return;
+            }
+            if (!hostedHere) {
+              return;
+            }
+            this.reportLinked(caster, target);
             return;
           }
-          if (caster !== target) {
-            // thuum docs/verbs/traps.md (M4): the host's engine's linked
-            // activation (a plate firing its spike wall, a lever opening its
-            // portcullis) reported for the server to judge against the game
-            // files' activation parents and relay to the cell's other games;
-            // at most eight a second leave this game (the server's own bound),
-            // the rest are dropped here. HYPOTHESIS until x-bleak-traps: how
-            // many engine-internal activations a dungeon cell raises.
-            if (!this.linkedBudget.take()) {
-              return;
-            }
-            const remoteCaster = localIdToRemoteId(caster);
-            const remoteTarget = localIdToRemoteId(target);
-            if (!remoteCaster || !remoteTarget) {
-              return;
-            }
-            this.controller.emitter.emit("sendMessage", {
-                message: {
-                    t: MsgType.Activate,
-                    data: { caster: remoteCaster, target: remoteTarget, isSecondActivation: false }
-                },
-                reliability: "reliable"
-            });
-            logTrace(this, `Sent a linked activation of `, remoteTarget.toString(16), `by`, remoteCaster.toString(16));
+          if (!hostedHere) {
             return;
           }
           const remoteTrigger = localIdToRemoteId(target);
@@ -167,6 +185,32 @@ export class ActivationService extends ClientListener {
 
         logTrace(this, `Sent activation for caster=`, caster.toString(16), `and target=`, target.toString(16));
     }
+
+  // thuum docs/verbs/traps.md (M4): a linked activation this game's engine
+  // ran (a plate firing its spike wall, a lever opening its portcullis)
+  // reported for the server to judge against the game files' activation
+  // parents and relay to the cell's other games; at most eight a second leave
+  // this game (the server's own bound), the rest are dropped here. HYPOTHESIS
+  // until x-bleak-traps: how many engine-internal activations a dungeon cell
+  // raises.
+  private reportLinked(caster: number, target: number) {
+    if (!this.linkedBudget.take()) {
+      return;
+    }
+    const remoteCaster = localIdToRemoteId(caster);
+    const remoteTarget = localIdToRemoteId(target);
+    if (!remoteCaster || !remoteTarget) {
+      return;
+    }
+    this.controller.emitter.emit("sendMessage", {
+        message: {
+            t: MsgType.Activate,
+            data: { caster: remoteCaster, target: remoteTarget, isSecondActivation: false }
+        },
+        reliability: "reliable"
+    });
+    logTrace(this, `Sent a linked activation of `, remoteTarget.toString(16), `by`, remoteCaster.toString(16));
+  }
 
   // eight linked activations a second from this game (thuum docs/verbs/traps.md)
   private readonly linkedBudget = new SecondWindow(8);

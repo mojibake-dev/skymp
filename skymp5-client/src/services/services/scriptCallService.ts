@@ -7,6 +7,8 @@ import { localIdToRemoteId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { HostService } from "./hostService";
 import { ObjectAnimationService } from "./objectAnimationService";
+import { PropService } from "./propService";
+import { TrapResultService } from "./trapResultService";
 
 // thuum docs/DECISIONS.md ADR-068 (rung 2, the one seam; docs/research/
 // scripts-one-system-2026-11-05.md 6.2 to 6.4): the platform's one hook on the
@@ -27,6 +29,13 @@ import { ObjectAnimationService } from "./objectAnimationService";
 // probes' claims on them read on, and the host's report of a world object's
 // animation keeps ObjectAnimationService's line, "object animation <refr>
 // <event> reported" (b-puzzle-relay's and b-object-anim's claim).
+// ADR-068 D-S3 (traps follow the interaction): on a trap family reference the
+// platform runs the state rows on every seat and batches some of them here
+// (kind "state"), which this service, the batch's one reader, hands to their
+// readers: SetDestroyed to TrapResultService (the single-use result), and
+// SetMotionType and ApplyHavokImpulse to PropService (the trap body's claim);
+// a body another seat streams runs its two motion calls neutralized and never
+// reaches the batch.
 export class ScriptCallService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -74,6 +83,12 @@ export class ScriptCallService extends ClientListener {
                 }
                 const killer = call.args[0];
                 this.kills.set(call.self, { at: Date.now(), killer: killer !== null && typeof killer === "object" ? killer.formId : 0 });
+            }
+            if (call.cls === "ObjectReference" && call.fn === "SetDestroyed") {
+                this.controller.lookupListener(TrapResultService).noteSetDestroyed(call.self, call.args[0] === true);
+            }
+            if (call.cls === "ObjectReference" && (call.fn === "SetMotionType" || call.fn === "ApplyHavokImpulse")) {
+                this.controller.lookupListener(PropService).noteTrapMotion(call.self, call.fn, call.args);
             }
             if (call.kind === "action") {
                 this.pending.push(call);

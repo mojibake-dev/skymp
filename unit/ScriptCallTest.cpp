@@ -5,6 +5,7 @@
 #include "wire_bridge_cxx/rules.h"
 #include <catch2/catch_all.hpp>
 #include <chrono>
+#include <fmt/format.h>
 #include <spdlog/sinks/ostream_sink.h>
 #include <spdlog/spdlog.h>
 #include <sstream>
@@ -25,7 +26,11 @@ PartOne& GetPartOne();
 // never attaches) at (128, -320, -256), which HallofStoriesKeyholeScript's
 // openDoor plays FXDoorOpen on (lab/esm.py, 2026-11-05; no override in
 // Update.esm or the three DLCs); the temple's draugr 0x380b4, an ACHR the
-// fresh world never loads (npcEnabled false; TrapRelayTest's).
+// fresh world never loads (npcEnabled false; TrapRelayTest's). An exterior
+// placement (the hall door's FX review, finding 4): the forest motes 0xb15e6
+// by Riverwood, a REFR of FXMotesForest01 0xb15e4 (an MSTT) at (17697.3,
+// -46985.8, -100.1) in Tamriel 0x3c (lab/esm.py, 2026-11-05; no override in
+// Update.esm or the three DLCs), in the cell of the grid square there.
 namespace {
 using Arg = std::optional<
   std::variant<bool, double, std::string, SpSnippetObjectArgument>>;
@@ -42,6 +47,10 @@ constexpr uint32_t kDoorFx = 0x5256c;
 constexpr uint32_t kDoorFxBase = 0x52172;
 constexpr uint32_t kDraugrUnloaded = 0x380b4;
 const NiPoint3 kByTheDoorFx{ 128.f, -220.f, -256.f };
+constexpr uint32_t kTamriel = 0x3c;
+constexpr uint32_t kForestMotes = 0xb15e6;
+// the motes' DATA position rounded, in the record's grid square (4, -12)
+const NiPoint3 kAtTheMotes{ 17697.f, -46986.f, -100.f };
 
 uint64_t NowMs()
 {
@@ -97,31 +106,38 @@ uint32_t Enter(PartOne& p, const NiPoint3& where = kByThePortcullis)
   return p.GetCellHost(kTemple).epoch;
 }
 
-// the host (user 0) and the guest (user 1) by the door FX in the Sanctum, the
-// host hosting it and the guest's game reporting it loaded; returns the
-// grant's epoch
-uint32_t EnterSanctum(PartOne& p)
+// the host (user 0) and the guest (user 1) at `where` in `worldOrCell`, the
+// host hosting `cell` (an interior itself, or the grid square's cell in a
+// world) and the guest's game reporting it loaded; returns the grant's epoch
+uint32_t EnterLoaded(PartOne& p, uint32_t worldOrCell, const NiPoint3& where,
+                     uint32_t cell)
 {
   DoConnect(p, 0);
-  p.CreateActor(kHostActor, kByTheDoorFx, 0, kSanctum);
+  p.CreateActor(kHostActor, where, 0, worldOrCell);
   p.SetUserActor(0, kHostActor);
   DoConnect(p, 1);
-  p.CreateActor(kGuestActor, kByTheDoorFx, 0, kSanctum);
+  p.CreateActor(kGuestActor, where, 0, worldOrCell);
   p.SetUserActor(1, kGuestActor);
   for (uint32_t id : { kHostActor, kGuestActor }) {
     auto& actor = p.worldState.GetFormAt<MpActor>(id);
-    actor.SetPos(kByTheDoorFx);
+    actor.SetPos(where);
     actor.ForceSubscriptionsUpdate();
   }
-  Host(p, 0, kSanctum);
-  Loaded(p, 1, kSanctum, true);
+  Host(p, 0, cell);
+  Loaded(p, 1, cell, true);
   // the second loader takes nothing from the host
-  REQUIRE(p.GetCellHost(kSanctum).hosted);
-  REQUIRE(p.GetCellHost(kSanctum).player == kHostActor);
+  REQUIRE(p.GetCellHost(cell).hosted);
+  REQUIRE(p.GetCellHost(cell).player == kHostActor);
   const std::vector<uint32_t> bothGames{ kHostActor, kGuestActor };
-  REQUIRE(p.GetCellLoaders(kSanctum) == bothGames);
+  REQUIRE(p.GetCellLoaders(cell) == bothGames);
   p.Messages().clear();
-  return p.GetCellHost(kSanctum).epoch;
+  return p.GetCellHost(cell).epoch;
+}
+
+// the two by the door FX in the Sanctum
+uint32_t EnterSanctum(PartOne& p)
+{
+  return EnterLoaded(p, kSanctum, kByTheDoorFx, kSanctum);
 }
 
 void Leave(PartOne& p)
@@ -553,5 +569,79 @@ TEST_CASE("A script call on an actor's placement or on a record that is no "
   REQUIRE(p.worldState.LookupFormByIdNoLoad(kDoorFxBase) == nullptr);
   REQUIRE(SnippetsTo(p, 0).empty());
   REQUIRE(SnippetsTo(p, 1).empty());
+  Leave(p);
+}
+
+TEST_CASE("The host's script call on an exterior placement the server never "
+          "loads is judged by its record's grid square and mirrored to a "
+          "game with that cell loaded; a guest's is refused",
+          "[ScriptCall][espm]")
+{
+  PartOne& p = GetPartOne();
+  // the cell the handler places the record in (its world and its DATA
+  // position, WorldState::CellOf), read the same way here, never a literal
+  const auto cell = p.worldState.CellOf(kTamriel, kAtTheMotes);
+  REQUIRE(cell.has_value());
+  REQUIRE(*cell != 0);
+  REQUIRE(*cell != kTamriel);
+  const uint32_t epoch = EnterLoaded(p, kTamriel, kAtTheMotes, *cell);
+  const std::string cellHex = fmt::format("{:x}", *cell);
+  // the event is a value the server never judges (ADR-062's amendment)
+  const auto play = [&](Networking::UserId user) {
+    Call(p, user, epoch, kForestMotes, "ObjectReference", "PlayAnimation",
+         { Text("PlayAnim01") });
+  };
+  {
+    LogCapture log;
+    play(0);
+    REQUIRE(log.Count("[verb:traps] b15e6 animates b15e6 'PlayAnim01' in "
+                      "cell " +
+                      cellHex +
+                      " (its host ff000fe3 reports): recorded, relayed to 1 "
+                      "game(s)") == 1);
+    REQUIRE(log.Count("[verb:scripts] ff000fe3 reports "
+                      "ObjectReference.PlayAnimation on b15e6 in cell " +
+                      cellHex + " (epoch " + std::to_string(epoch) +
+                      ", from default2StateActivator.onActivate): seq 1, "
+                      "relayed to 1 game(s) as "
+                      "ObjectReference.PlayAnimation") == 1);
+    REQUIRE(log.Count("E_SCRIPTCALL_") == 0);
+  }
+  // judged by its record: the server made no reference of it
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kForestMotes) == nullptr);
+  auto relayed = SnippetsTo(p, 1);
+  REQUIRE(relayed.size() == 1);
+  REQUIRE(relayed[0]["class"] == "ObjectReference");
+  REQUIRE(relayed[0]["function"] == "PlayAnimation");
+  REQUIRE(relayed[0]["selfId"] == kForestMotes);
+  REQUIRE(relayed[0]["arguments"] == nlohmann::json::array({ "PlayAnim01" }));
+  REQUIRE(relayed[0]["seq"] == 1);
+  // never back to the reporter
+  REQUIRE(SnippetsTo(p, 0).empty());
+
+  // E_SCRIPTCALL_OWNER: the guest has the cell loaded but does not host it
+  p.Messages().clear();
+  {
+    LogCapture log;
+    play(1);
+    REQUIRE(log.Count("[verb:scripts] E_SCRIPTCALL_OWNER: ff000fe4 reports "
+                      "ObjectReference.PlayAnimation on b15e6 (epoch " +
+                      std::to_string(epoch) +
+                      ", from default2StateActivator.onActivate): ff000fe3 "
+                      "hosts cell " +
+                      cellHex +
+                      ", not the reporter (a reference the server does not "
+                      "load, placed by its game-file record); refused, 1 "
+                      "since the last line") == 1);
+    REQUIRE(log.Count(" animates ") == 0);
+  }
+  REQUIRE(SnippetsTo(p, 0).empty());
+  REQUIRE(SnippetsTo(p, 1).empty());
+
+  // and the refusal took no sequence: the host's next call is the second
+  play(0);
+  relayed = SnippetsTo(p, 1);
+  REQUIRE(relayed.size() == 1);
+  REQUIRE(relayed[0]["seq"] == 2);
   Leave(p);
 }

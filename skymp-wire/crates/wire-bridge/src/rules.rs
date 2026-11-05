@@ -4616,4 +4616,43 @@ mod tests {
         let spent = b.judge(at.row, &[text, text], &facts, 0);
         assert_eq!((spent.code, spent.name.as_str()), (ScriptCallCode::Rate, "E_SCRIPTCALL_RATE"));
     }
+
+    #[test]
+    fn the_bridge_runs_the_shape_step_before_the_owner_step() {
+        // the hall door's FX review, finding 1: the core asks `shape` before
+        // it reads anything of the subject; a call it refuses spends the
+        // reporter's token and leaves `owner` nothing to judge, so a flood
+        // of malformed calls is cut off by the rate
+        let text = ScriptArg { kind: 3, form_id: 0 };
+        let at = script_call_subject("ObjectReference", "PlayAnimation", 0xaa8cb, &[text]);
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3 };
+        let mut s = new_script_calls();
+        // a shape that holds names the subject whose facts the core gathers
+        let shaped = s.shape(at.row, &[text], facts.sender, facts.self_id, 0);
+        assert_eq!((shaped.code, shaped.subject, shaped.seq, shaped.name.as_str()), (ScriptCallCode::Accepted, 0xaa8cb, 0, ""));
+        // the owner step judges it once: a second ask finds no call waiting
+        let v = s.owner(&facts);
+        assert_eq!((v.code, v.subject, v.seq), (ScriptCallCode::Accepted, 0xaa8cb, 1));
+        assert_eq!(s.owner(&facts).code, ScriptCallCode::Skipped);
+        // the rest of the burst on malformed calls, each refused by its name
+        // at the shape step, none left waiting for the owner step
+        let one = [text];
+        let malformed: [(i32, &[ScriptArg], &str); 2] = [(-1, &one, "E_SCRIPTCALL_ROW"), (at.row, &[], "E_SCRIPTCALL_ARGS")];
+        for (n, (row, args, name)) in (1..natives::BURST).zip(malformed.iter().cycle()) {
+            assert_eq!(s.shape(*row, args, facts.sender, facts.self_id, 0).name, *name, "call {n}");
+            assert_eq!(s.owner(&facts).code, ScriptCallCode::Skipped, "call {n}");
+        }
+        // the burst is spent: cut off by the rate at the shape step
+        let spent = s.shape(at.row, &[text], facts.sender, facts.self_id, 0);
+        assert_eq!((spent.code, spent.name.as_str()), (ScriptCallCode::Rate, "E_SCRIPTCALL_RATE"));
+        assert_eq!(s.owner(&facts).code, ScriptCallCode::Skipped);
+        // no refusal took a sequence: a token later the next relay is the
+        // object's second
+        assert_eq!(s.shape(at.row, &[text], facts.sender, facts.self_id, 125).code, ScriptCallCode::Accepted);
+        assert_eq!(s.owner(&facts).seq, 2);
+        // a later shape step drops a call no owner step took
+        assert_eq!(s.shape(at.row, &[text], facts.sender, facts.self_id, 250).code, ScriptCallCode::Accepted);
+        assert_eq!(s.shape(-1, &[text], facts.sender, facts.self_id, 375).code, ScriptCallCode::Row);
+        assert_eq!(s.owner(&facts).code, ScriptCallCode::Skipped);
+    }
 }

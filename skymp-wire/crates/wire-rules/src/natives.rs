@@ -659,6 +659,10 @@ mod tests {
         }
     }
 
+    fn refused_by(shaped: Result<Shaped, Refusal>) -> Option<Code> {
+        shaped.err().map(|r| r.code)
+    }
+
     #[test]
     fn the_hosts_animation_is_relayed_with_the_pillars_next_sequence() {
         let mut s = ScriptCalls::default();
@@ -843,6 +847,80 @@ mod tests {
             assert_eq!(code(&fresh.judge(row, &[], &f, 0)), Some(Code::Args));
         }
         assert_eq!(code(&fresh.judge(row, &[Arg::String], &f, 0)), Some(Code::Rate));
+    }
+
+    #[test]
+    fn a_shape_refusal_spends_a_token_and_never_reaches_the_owner_step() {
+        // the hall door's FX review, finding 1: the core gathers a subject's
+        // facts (for one the server does not hold, a read of its game-file
+        // record) only for a call the shape step passed, and every call the
+        // shape step sees spends the reporter's token, so a flood of
+        // malformed calls is cut off by the rate before the core reads
+        // anything
+        let mut s = ScriptCalls::default();
+        let play = row("ObjectReference", "PlayAnimation");
+        // E_SCRIPTCALL_ROW: a pair the table lacks, a state row;
+        // E_SCRIPTCALL_ARGS: the row's count, a figure the server names
+        let malformed: [(Option<&Row>, &[Arg], u32, Code); 4] = [
+            (None, &[], PILLAR, Code::Row),
+            (row("ObjectReference", "Enable"), &[Arg::Bool], PILLAR, Code::Row),
+            (play, &[], PILLAR, Code::Args),
+            (play, &[Arg::String], 0xff00_0002, Code::Args),
+        ];
+        // each refused at the shape step, which makes no shaped call for the
+        // owner step to judge
+        for (n, (r, args, self_id, want)) in (0..BURST).zip(malformed.iter().cycle()) {
+            assert_eq!(refused_by(s.shape(*r, args, HOST, *self_id, 0)), Some(*want), "call {n}");
+        }
+        // the burst is spent: a well-formed call is cut off by the rate, and
+        // a malformed one before its row is read
+        assert_eq!(refused_by(s.shape(play, &[Arg::String], HOST, PILLAR, 0)), Some(Code::Rate));
+        assert_eq!(refused_by(s.shape(None, &[], HOST, PILLAR, 0)), Some(Code::Rate));
+        // whatever facts the core would hold, a shape refusal is the verdict:
+        // never the owner step's quiet drop of a door, nor its no reference
+        let door = Facts { kind: SubjectKind::DoorOrContainer, ..hosted(PILLAR) };
+        let unheld = Facts { kind: SubjectKind::Unknown, ..hosted(PILLAR) };
+        assert_eq!(code(&s.judge(play, &[Arg::String], &door, 0)), Some(Code::Rate));
+        let mut fresh = ScriptCalls::default();
+        assert_eq!(code(&fresh.judge(None, &[], &door, 0)), Some(Code::Row));
+        assert_eq!(code(&fresh.judge(play, &[], &unheld, 0)), Some(Code::Args));
+        assert_eq!(fresh.judge(play, &[Arg::String], &door, 0), Verdict::Skip, "a shaped call reaches the owner step");
+        // no refusal took a sequence; the budget is the reporter's (another's
+        // is full) and a token comes back in 125 ms
+        assert_eq!(s.seq_of(PILLAR), 0);
+        assert_eq!(s.shape(play, &[Arg::String], GUEST, PILLAR, 0).map(|shaped| shaped.subject()), Ok(PILLAR));
+        assert!(matches!(s.judge(play, &[Arg::String], &hosted(PILLAR), 125), Verdict::Accept(Accept { seq: 1, .. })));
+    }
+
+    #[test]
+    fn the_owner_step_judges_the_subject_the_shape_step_names() {
+        // the subject whose facts the core gathers is the shaped call's: the
+        // self of a method row, the target of a static one (named again as
+        // selfId), the reporter's own player as 0x14
+        let mut s = ScriptCalls::default();
+        let play = row("ObjectReference", "PlayAnimation");
+        let send = row("Debug", "SendAnimationEvent");
+        let subject = |shaped: &Result<Shaped, Refusal>| shaped.as_ref().map(Shaped::subject).map_err(|r| r.code);
+        let fx = s.shape(play, &[Arg::String], HOST, DOOR_FX, 0);
+        let target = s.shape(send, &[Arg::Object(u64::from(PILLAR)), Arg::String], HOST, PILLAR, 0);
+        let own = s.shape(play, &[Arg::String], HOST, 0x14, 0);
+        assert_eq!((subject(&fx), subject(&target), subject(&own)), (Ok(DOOR_FX), Ok(PILLAR), Ok(0x14)));
+        let (Ok(fx), Ok(target), Ok(own)) = (fx, target, own) else {
+            panic!("all three shaped");
+        };
+        // the owner step over each one's facts: the record's cell, the held
+        // pillar's, an actor's (the streams')
+        let a = accepted(&s.owner(fx, &Facts { kind: SubjectKind::Record, cell: SANCTUM, ..hosted(DOOR_FX) }));
+        assert_eq!((a.subject, a.seq, a.relay_self), (DOOR_FX, 1, DOOR_FX));
+        let t = accepted(&s.owner(target, &hosted(PILLAR)));
+        assert_eq!((t.subject, t.seq, t.relay_self), (PILLAR, 1, 0));
+        assert_eq!(code(&s.owner(own, &Facts { kind: SubjectKind::Actor, ..hosted(0x14) })), Some(Code::Row));
+        // the owner step spends no token: the three shapes took three of the
+        // burst
+        for _ in 3..BURST {
+            assert!(s.shape(play, &[Arg::String], HOST, PILLAR, 0).is_ok());
+        }
+        assert_eq!(refused_by(s.shape(play, &[Arg::String], HOST, PILLAR, 0)), Some(Code::Rate));
     }
 
     #[test]

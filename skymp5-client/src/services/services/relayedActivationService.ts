@@ -15,6 +15,12 @@ import { logTrace } from '../../logging';
 // script on a scripted activate call; a relayed trap this game's own engine
 // also fires (both players on one plate) plays twice.
 //
+// A played pair comes back through the engine's own activate event, which
+// ActivationService reads; since ADR-068 D-S3's phase 2 a player-only
+// trigger's pair is reported from any seat, so each play is marked here and
+// ActivationService consumes the mark (wasPlayedHere) instead of reporting the
+// relay's own play, which the server would relay back to its reporter.
+//
 // Line for the lab: "relayed activation <target> by <caster>".
 export class RelayedActivationService extends ClientListener {
   constructor(
@@ -42,10 +48,40 @@ export class RelayedActivationService extends ClientListener {
     if (!target || !caster) {
       return;
     }
+    this.markPlayed(target.getFormID(), caster.getFormID());
     target.activate(caster, false);
     logTrace(
       this,
       `relayed activation ${remoteTarget.toString(16)} by ${remoteCaster.toString(16)}`,
     );
   }
+
+  // Whether this seat just played the pair (local ids, the activate event's);
+  // the mark is consumed by its hit
+  wasPlayedHere(localTarget: number, localCaster: number): boolean {
+    const key = `${localTarget}:${localCaster}`;
+    const until = this.played.get(key);
+    if (until === undefined) {
+      return false;
+    }
+    this.played.delete(key);
+    return Date.now() <= until;
+  }
+
+  private markPlayed(localTarget: number, localCaster: number) {
+    if (this.played.size >= RelayedActivationService.playedMax) {
+      this.played.clear();
+    }
+    this.played.set(
+      `${localTarget}:${localCaster}`,
+      Date.now() + RelayedActivationService.playedMs,
+    );
+  }
+
+  // the pairs played here, until when their activate event counts as the
+  // relay's own (UNMEASURED: the engine raises it within a frame or two of
+  // the activate call)
+  private readonly played = new Map<string, number>();
+  private static readonly playedMs = 2000;
+  private static readonly playedMax = 64;
 }

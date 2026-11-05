@@ -569,13 +569,25 @@ export class RemoteServer extends ClientListener {
                 // reliable" was a trigger refused by a graph not yet loaded, or on
                 // another side). A grant slower than the interval still lets a host
                 // replay once: the limit until the server sends the record to
-                // non-host loaders alone (the review of 843fed95, F1)
+                // non-host loaders alone (the review of 843fed95, F1).
+                // thuum docs/DECISIONS.md ADR-068 D-S3 point 1: a trap family
+                // reference (a plate, a swinging wall, a blade) is never
+                // replayed: every seat fires the family itself, so its record's
+                // last event is no state to catch up on (a record kept from
+                // before D-S3; the seam records none of its calls now), and a
+                // replay would swing the wall at a late joiner for nothing.
+                // Read after the wait, on the form taken again, when its
+                // scripts are bound
                 const host = this.controller.lookupListener(HostService);
                 for (let i = 0; i < 5; i++) {
                   await Utility.wait(2);
                   const again = ObjectReference.from(Game.getFormEx(refrid));
                   if (!again) {
                     continue;
+                  }
+                  if (ObjectReferenceEx.isTrapFamily(refrid)) {
+                    logTrace(this, `object animation ${refrid.toString(16)} ${animation} not replayed: a trap reference, every seat fires the trap family itself (D-S3)`);
+                    break;
                   }
                   const cell = again.getParentCell();
                   if (cell && host.hostsCell(cell.getFormID())) {

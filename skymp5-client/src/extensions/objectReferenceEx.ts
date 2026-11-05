@@ -1,9 +1,9 @@
-import { Flora, Form, FormType, MotionType, ObjectReference } from "skyrimPlatform";
+import { Flora, Form, FormType, MotionType, ObjectReference, getTrapRole } from "skyrimPlatform";
 import { SpApiInteractor } from "../services/spApiInteractor";
 import { HostService } from "../services/services/hostService";
 import { NiPoint3 } from "../sync/movement";
 import { FormTypeEx } from "./formTypeEx";
-import { logTrace } from "../logging";
+import { logError, logTrace } from "../logging";
 
 export class ObjectReferenceEx {
   static getWorldOrCell(self: ObjectReference): number {
@@ -63,6 +63,37 @@ export class ObjectReferenceEx {
     }
   }
 
+  // thuum docs/DECISIONS.md ADR-068 D-S3 (traps follow the interaction;
+  // docs/research/trap-slice-d-s3-2026-11-05.md): a reference's trap role as
+  // the fork's Skyrim Platform reads it (getTrapRole, through the gate's own
+  // walk of the attached scripts): family when every script attached to the
+  // reference is in the trap family (the class chain of TrapBase,
+  // TrapTriggerBase and TrapHitBase, its roots in the platform's
+  // TrapFamily.cpp), playerOnly a trigger's playerOnlyTrigger (HYPOTHESIS
+  // H-PO1), destroyed its destroyed flag; null with no form or no attached
+  // script. The client's one read of it, so every rule that asks (the
+  // activation block, the linked relay, the record's replay, the trap bodies,
+  // the trap results) asks the same way. A game read: an update's or a game
+  // event's context, never a network message handler's. A platform without
+  // the export (an older dist) answers null, said once
+  static trapRole(formId: number): ReturnType<typeof getTrapRole> {
+    try {
+      return getTrapRole(formId);
+    } catch (e) {
+      if (!ObjectReferenceEx.trapRoleMissingSaid) {
+        ObjectReferenceEx.trapRoleMissingSaid = true;
+        logError("ObjectReferenceEx", `getTrapRole unavailable on this platform: ${e}`);
+      }
+      return null;
+    }
+  }
+
+  static isTrapFamily(formId: number): boolean {
+    return ObjectReferenceEx.trapRole(formId)?.family === true;
+  }
+
+  private static trapRoleMissingSaid = false;
+
   static dealWithRef(self: ObjectReference, base: Form, lock?: { level: number; key: number; locked: boolean }): void {
     const t = base.getType();
     const isItem = FormTypeEx.isItem(t);
@@ -82,7 +113,18 @@ export class ObjectReferenceEx {
     // a movable static joins the blocked kinds (ADR-062 slice 1b's review: the
     // host's release re-blocks ACTI and MSTT alike, hostService.liftCellActivation,
     // so a seat that never hosted and a former host must agree)
-    if (t === FormType.Furniture
+    // thuum docs/DECISIONS.md ADR-068 D-S3 point 1 (every seat fires the trap
+    // family itself): a family reference (trapRole above) keeps the engine's
+    // own activation processing on every seat, so a plate fires its spike wall
+    // on whichever seat a body steps on it; the client never sets the block on
+    // one, in either direction (here at its creation, and
+    // HostService.liftCellActivation at a grant and a release), and a block
+    // its own script sets stands. HYPOTHESIS: the reference's scripts are
+    // bound when onceLoad answers, so this read sees them (one read too early
+    // keeps the kind's rule below)
+    if (ObjectReferenceEx.isTrapFamily(self.getFormID())) {
+      logTrace("ObjectReferenceEx", `trap ${self.getFormID().toString(16)}: the engine's own activation, never blocked here (D-S3)`);
+    } else if (t === FormType.Furniture
       || t === FormType.Activator
       || t === FormType.MovableStatic
       || t === FormType.Container

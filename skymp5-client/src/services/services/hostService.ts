@@ -192,7 +192,10 @@ export class HostService extends ClientListener {
     // portcullis on the hosting seat alone (objectReferenceEx.dealWithRef
     // reads the same rule at a reference's creation). The pass walks the
     // cell's references by kind (Cell.getNumRefs and getNthRef, Papyrus's
-    // own), on the next update (natives need the game thread)
+    // own), on the next update (natives need the game thread). A trap family
+    // reference is passed over both ways (ADR-068 D-S3 point 1: every seat
+    // fires the family itself, so its activation is never lifted here nor
+    // blocked again; objectReferenceEx.dealWithRef keeps the same rule)
     private liftCellActivation(cell: number, hosted: boolean) {
         this.controller.once("update", () => {
             const form = this.sp.Game.getFormEx(cell);
@@ -201,6 +204,7 @@ export class HostService extends ClientListener {
                 return;
             }
             let touched = 0;
+            let traps = 0;
             for (const kind of [this.sp.FormType.Activator, this.sp.FormType.MovableStatic]) {
                 const n = cellForm.getNumRefs(kind);
                 for (let i = 0; i < n; i++) {
@@ -208,11 +212,15 @@ export class HostService extends ClientListener {
                     if (!ref) {
                         continue;
                     }
+                    if (ObjectReferenceEx.isTrapFamily(ref.getFormID())) {
+                        traps++;
+                        continue;
+                    }
                     ref.blockActivation(!hosted);
                     touched++;
                 }
             }
-            logTrace(this, `cell ${cell.toString(16)}: the engine's activation ${hosted ? "lifted" : "blocked"} on ${touched} scripted world object(s) (ADR-062)`);
+            logTrace(this, `cell ${cell.toString(16)}: the engine's activation ${hosted ? "lifted" : "blocked"} on ${touched} scripted world object(s) (ADR-062)${traps > 0 ? `, ${traps} trap reference(s) left to the engine (D-S3)` : ""}`);
         });
     }
 

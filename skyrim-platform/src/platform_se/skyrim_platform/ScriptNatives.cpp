@@ -859,7 +859,7 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
   // or skipped by the lever
   if (!isActor && ref->formID < 0xff000000 && ref->GetParentCell()) {
     const RE::BSScript::Object* object = ObjectOf(*subject);
-    if (object && TrapFamily::IsFamily(object->GetHandle())) {
+    if (object && TrapFamily::IsFamily(ref, object->GetHandle())) {
       return OnFamilyCall(row, info, stack, top, page, ref->formID);
     }
   }

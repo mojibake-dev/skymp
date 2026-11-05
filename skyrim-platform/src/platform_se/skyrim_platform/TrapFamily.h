@@ -17,25 +17,28 @@ class ObjectTypeInfo;
 // trap family, one test shared by the Papyrus event gate (FridaHooks.cpp
 // OnSendEventEnter), the native seam (ScriptNatives.cpp OnCall) and
 // skymp5-client (getTrapRole, PuppetApi.cpp). A reference is in the family
-// when every script attached to it extends one of the family's roots, which
-// TrapFamily.cpp names in one place. Every seat runs a family reference's
-// scripts itself: the gate passes its events in any cell and the seam counts
-// it as every seat's own, so a trap fires wherever its trigger is met, and
-// what crosses is its single-use result (DestructionStage, from the batch's
-// SetDestroyed) and its bodies' motion (the prop stream, from the batch's
-// SetMotionType and ApplyHavokImpulse). Beside the test, two sets in
-// Hosted.h's idiom, written by skymp5-client on the JS thread with no game
+// when every script attached to it is a trap class (its parent chain reaches
+// one of the family's roots, or its own name begins with the family's
+// prefix, both named in one place in TrapFamily.cpp; Eli's D-T1) and its
+// base is no inventory object (a pickup is the inventory's). Every seat runs a
+// family reference's scripts itself: the gate passes its events in any cell
+// and the seam counts it as every seat's own, so a trap fires wherever its
+// trigger is met, and what crosses is its single-use result (DestructionStage,
+// from the batch's SetDestroyed) and its bodies' motion (the prop stream, from
+// the batch's SetMotionType and ApplyHavokImpulse). Beside the test, two sets
+// in Hosted.h's idiom, written by skymp5-client on the JS thread with no game
 // call: the trap bodies another seat streams, and the references whose
 // server record is being applied.
 namespace TrapFamily {
-// a script class is in the family: it, or a class it extends, is one of the
-// roots; the parent chain is walked once per class and the verdict kept, so
-// the gate's cost stays flat (rule 9)
+// a script class is in the family: its own name begins with the prefix, or
+// it, or a class it extends, is one of the roots; the parent chain is walked
+// once per class and the verdict kept, so the gate's cost stays flat (rule 9)
 bool IsFamilyType(const RE::BSScript::ObjectTypeInfo* info);
-// every script attached to the VM handle is in the family; false for a
-// handle with no attached script. The VM's attached scripts are read under
-// the VM's own lock, the gate's walk
-bool IsFamily(RE::VMHandle handle);
+// the reference is in the family: its base is no inventory object and every
+// script attached to its VM handle is in the family; false for a null
+// reference or a handle with no attached script. The VM's attached scripts
+// are read under the VM's own lock, the gate's walk
+bool IsFamily(const RE::TESObjectREFR* ref, RE::VMHandle handle);
 // the reference's destroyed flag (TESForm's kDestroyed, the bit
 // ObjectReference.SetDestroyed sets and clears)
 bool Destroyed(const RE::TESObjectREFR* ref);

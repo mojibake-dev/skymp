@@ -3,6 +3,7 @@
 #include <RE/I/IObjectHandlePolicy.h>
 #include <RE/O/Object.h>
 #include <RE/O/ObjectTypeInfo.h>
+#include <RE/T/TESBoundObject.h>
 #include <RE/T/TESForm.h>
 #include <RE/T/TESObjectREFR.h>
 #include <RE/V/Variable.h>
@@ -16,26 +17,47 @@
 
 namespace {
 // ==== THE ONE PLACE THE FAMILY IS NAMED ====
-// The roots of the trap family as ADR-068's D-S3 accepted it (point 1): the
-// class chains of TrapBase, TrapTriggerBase and TrapHitBase, read from the
-// scripts' parent classes in the lab's archives (thuum
-// docs/research/trap-census-2026-11-05.md, USSEP's copies winning where it
-// ships one): PressurePlate, Tripwire, SoundTrap and TrapLever under
-// TrapTriggerBase; MovingTrap (TrapSwingingWall, BladeTrap), DartTrap,
-// PhysicsTrap and TrapRiggedRockfall under TrapBase; PhysicsTrapHit under
-// TrapHitBase.
-// PENDING, Eli's D-T1 (the design's finding F1): the oil lamp's
-// TrapFallingOilLampColLayer and TrapExplosiveGas (so TrapOilPool), like
-// trapRockfallEffects, extend ObjectReference and sit outside these chains.
-// Option A, a "trap" name prefix beside the chains (ADR-044's SKI_ shape,
-// measured over every script first), is a prefix test in IsFamilyName; B,
-// the two outliers as named roots, is two names in kFamilyRoots; C changes
-// nothing here (the lamps stay the cell host's).
+// The trap family as ADR-068's D-S3 accepted it (point 1) and Eli's D-T1
+// widened it (2026-11-05: "all traps should be equally triggerable by both
+// guest and host"), measured over every script in the lab's load order
+// (thuum docs/research/trap-prefix-census-2026-11-05.md; USSEP's copies win
+// where it ships one). A script class is a trap class when its parent chain
+// reaches one of the roots, or when its own name begins with the prefix:
+// - The roots. TrapBase, TrapTriggerBase and TrapHitBase, D-S3's chains
+//   (docs/research/trap-census-2026-11-05.md): PressurePlate, Tripwire,
+//   SoundTrap and TrapLever under TrapTriggerBase; MovingTrap
+//   (TrapSwingingWall, BladeTrap), DartTrap, MagicTrap (the soul gem trap's
+//   caster), PhysicsTrap and TrapRiggedRockfall under TrapBase;
+//   PhysicsTrapHit under TrapHitBase. And HazardBase, a trap's hit script
+//   outside them (ProcessTrapHit from its OnTrapHitStart), alone on 34 spike
+//   beds and beside TrapNorPlatform on 15 Nordic platforms.
+// - The prefix. 32 scripts' names begin with "trap" in some case, four in
+//   lower case (trapRockfallEffects and trapSoulGemController among them);
+//   19 reach the three chains and 13 do not: on references the oil pool's
+//   TrapOilPool, the bear trap's TrapBear (beside TrapHitBase), the oil
+//   lamp's TrapFallingOilLampColLayer, TrapExplosiveGas, trapRockfallEffects,
+//   TrapPoisonGas and the soul gem's trapSoulGemController; a magic effect's
+//   TrapPoisonGasCough; five on nothing. The prefix is read on the class's
+//   own name and never inherited through a parent that is not a root:
+//   TG02Beehive and TGTQ04BannerBurnScript extend TrapExplosiveGas to carry
+//   quest state (TG02's HiveGone, SetStage(TGTQ04, 65)), so their nine
+//   references stay with the cell's host.
+// Which references that makes is IsFamily's (a pickup never is). Measured on
+// sky-srv over the load order's 33,142 scripted references, 4,887 against
+// the three chains' 3,622: TrapOilPool's 793, TrapBear's 179,
+// TrapFallingOilLampColLayer's 145, TrapExplosiveGas's 49, HazardBase's 48
+// (one platform, 0xea269, carries USSEP's
+// usleep_disablelinkedrefonactivation too), trapRockfallEffects' 37 and
+// TrapPoisonGas's 14 join; no reference of the three chains' family leaves;
+// the 52 soul gems carrying trapSoulGemController stay out as pickups, and
+// 950 references with a trap class beside another script stay mixed (the
+// design's F2: the levers and pull chains, five DLC1VC_EmbersToggleable)
 constexpr const char* kFamilyRoots[] = { "TrapBase", "TrapTriggerBase",
-                                         "TrapHitBase" };
+                                         "TrapHitBase", "HazardBase" };
+constexpr const char kFamilyPrefix[] = "trap";
 
 // one class's own name against the roots, without case (Papyrus's rule)
-bool IsFamilyName(const char* name)
+bool IsRootName(const char* name)
 {
   if (!name) {
     return false;
@@ -46,6 +68,13 @@ bool IsFamilyName(const char* name)
     }
   }
   return false;
+}
+
+// one class's own name begins with the prefix, without case
+bool HasFamilyPrefix(const char* name)
+{
+  return name &&
+    _strnicmp(name, kFamilyPrefix, sizeof(kFamilyPrefix) - 1) == 0;
 }
 // ==== END OF THE ONE PLACE ====
 
@@ -149,6 +178,20 @@ size_t SizeOf(FlagSet& set)
   std::lock_guard l(set.m);
   return set.ids.size();
 }
+
+// a pickup: a reference whose base is an inventory object (CommonLibSSE-NG's
+// TESForm::IsInventoryObject, include/RE/T/TESForm.h:329, its form types at
+// src/RE/T/TESForm.cpp:192-214; the base by TESObjectREFR::GetBaseObject,
+// include/RE/T/TESObjectREFR.h:384). Taking it is the inventory's (R0), one
+// owner, whatever script rides it: the 52 soul gems whose
+// trapSoulGemController hands the presser the gem and disables it (base SLGM
+// DummySoulGem 0x6a0c2, Skyrim.esm) stay the cell host's, while the trap
+// that guards one, MagicTrap under TrapBase, fires on every seat
+bool IsPickup(const RE::TESObjectREFR* ref)
+{
+  const RE::TESBoundObject* base = ref ? ref->GetBaseObject() : nullptr;
+  return base && base->IsInventoryObject();
+}
 }
 
 bool TrapFamily::IsFamilyType(const RE::BSScript::ObjectTypeInfo* info)
@@ -161,22 +204,26 @@ bool TrapFamily::IsFamilyType(const RE::BSScript::ObjectTypeInfo* info)
   if (it != g_classes.family.end()) {
     return it->second;
   }
-  // AdmittedByChain's walk (FridaHooks.cpp): ObjectTypeInfo's parent chain
+  // the prefix on the class's own name alone; then AdmittedByChain's walk
+  // (FridaHooks.cpp) for a root: ObjectTypeInfo's parent chain
   // (CommonLibSSE-NG include/RE/O/ObjectTypeInfo.h:127-128, :178) to a null
   // parent, 16 classes at most
-  bool family = false;
+  bool family = HasFamilyPrefix(info->GetName());
   const RE::BSScript::ObjectTypeInfo* cls = info;
   for (int depth = 0; cls && depth < 16 && !family;
        ++depth, cls = cls->GetParent()) {
-    family = IsFamilyName(cls->GetName());
+    family = IsRootName(cls->GetName());
   }
   info->IncRef();
   g_classes.family.emplace(info, family);
   return family;
 }
 
-bool TrapFamily::IsFamily(RE::VMHandle handle)
+bool TrapFamily::IsFamily(const RE::TESObjectREFR* ref, RE::VMHandle handle)
 {
+  if (!ref || IsPickup(ref)) {
+    return false;
+  }
   bool every = true;
   const bool any = ForEachAttached(handle, [&](RE::BSScript::Object* script) {
     every = every && script && IsFamilyType(script->GetTypeInfo());
@@ -227,7 +274,8 @@ std::optional<TrapFamily::Role> TrapFamily::RoleOf(uint32_t formId)
   if (!any) {
     return std::nullopt;
   }
-  role.family = every;
+  // IsFamily's test, read in the same walk
+  role.family = every && !IsPickup(ref);
   role.destroyed = Destroyed(ref);
   return role;
 }
@@ -277,8 +325,9 @@ void TrapFamily::LogReady()
     roots += root;
   }
   logger::info("[verb:traps] trap family ready: {} root(s) by class chain "
-               "({}; TrapFamily.cpp, D-T1's names pending), read by the "
-               "event gate and the native seam; 3 export(s): getTrapRole, "
-               "setPropFollowed, setRecordApplying",
-               std::size(kFamilyRoots), roots);
+               "({}) and the class's own name's prefix '{}', a pickup never "
+               "(TrapFamily.cpp, D-T1), read by the event gate and the "
+               "native seam; 3 export(s): getTrapRole, setPropFollowed, "
+               "setRecordApplying",
+               std::size(kFamilyRoots), roots, kFamilyPrefix);
 }

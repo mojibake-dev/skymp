@@ -394,7 +394,7 @@ void OnSendEventEnter(GumInvocationContext* ic)
   // for one. The family's verdict is cached per class
   const bool trapFamily = blockEvents && worldObject && !lifecycle &&
     (!inHostedCell || TrapFamily::Destroyed(selfRef)) &&
-    TrapFamily::IsFamily(handle);
+    TrapFamily::IsFamily(selfRef, handle);
   const bool hostedWorldScript =
     (worldObject && (inHostedCell || lifecycle || trapFamily)) ||
     simulatedActor;
@@ -433,9 +433,9 @@ void OnSendEventEnter(GumInvocationContext* ic)
   // state, and possibly the destroying stage's own event (HYPOTHESIS H-DS1:
   // whether the engine sets the destroyed flag before it raises that stage's
   // event is unread; passed either way, the stage's handler keeps its
-  // consequence, the oil pool's explosion should D-T1 bring TrapExplosiveGas
-  // into the family). JS still hears the event (the hook above); trapFamily
-  // is never asked for a lifecycle event
+  // consequence, the oil pool's explosion among them, TrapExplosiveGas being
+  // in the family since D-T1). JS still hears the event (the hook above);
+  // trapFamily is never asked for a lifecycle event
   if (trapFamily && TrapFamily::Destroyed(selfRef) &&
       _stricmp(eventNameStr.c_str(), "OnDestructionStageChanged") != 0) {
     static std::atomic<uint64_t> s_spentBlanked{ 0 };

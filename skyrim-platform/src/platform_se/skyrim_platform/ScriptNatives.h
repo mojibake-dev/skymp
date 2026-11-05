@@ -14,9 +14,11 @@ namespace ScriptNatives {
 // entries' and the dispatch's; no address yet, so the map the live hooks
 // read is never touched later)
 void Register();
-// at kDataLoaded: each native's entry attached (Hooks::GetBoundNatives), then
-// the VM's one dispatch (NativeFunctionBase::Call) once the bound set is
-// known, where the platform's latent calls are marked (PlatformCall.h)
+// at kDataLoaded: the table's rows (NativeRows.inc) bound from the VM's
+// bindings and each native's entry attached (Hooks::GetBoundNatives), then
+// the VM's one dispatch (NativeFunctionBase::Call) once the table's map is
+// complete, where every tabled call is judged from its frame (thuum ADR-068,
+// rung 2) and the platform's latent calls are marked (PlatformCall.h)
 void InstallHooks();
 // every frame from the platform's OnUpdate: the census flushed on time (a
 // quiet seat emits its last window; the review's medium finding)

@@ -351,9 +351,20 @@ export class ObjectAnimationService extends ClientListener {
   // known limit, the hold of the cell's scripts through the gate its next
   // shape. A TypeScript play never re-enters the hook, so nothing here is
   // marked self-played (F6). The feed stops the moment this seat no longer
-  // hosts the cell (F5)
+  // hosts the cell (F5). A form's wrapper lives one Papyrus update: the
+  // platform's object pool forgets every wrapper at the next update
+  // (Sp3NativeValueCasts.cpp, NativeObjectToJsObject's ForgetAll), and a
+  // wrapper kept across a wait throws "Invalid _skyrimPlatform_indexInPool"
+  // at its next native (x-puzzle-handoff-late v2 20261105-060929: the
+  // Trigger03 after the reset's first wait), so after every wait the pillar
+  // and the player are taken again by id (Skyrim Platform's docs/native.md:
+  // "Form references may be already lost"; remoteServer's replay does the
+  // same), and the error line names the step before the platform's text,
+  // which the console cuts
   private async resync(refr: ObjectReference, id: number, cell: number, initial: number, turns: number, record: string, target: number): Promise<void> {
     const host = this.controller.lookupListener(HostService);
+    const pillarAgain = (): ObjectReference | null => ObjectReference.from(this.sp.Game.getFormEx(id));
+    let step = `StartState0${initial === 1 ? 3 : initial}`;
     try {
       this.resyncing.add(id);
       if (initial === 1) {
@@ -362,25 +373,37 @@ export class ObjectAnimationService extends ClientListener {
         if (!host.hostsCell(cell)) {
           return;
         }
-        if (refr.playAnimation('Trigger03')) {
+        step = 'Trigger03';
+        const again = pillarAgain();
+        if (!again) {
+          logLab('verb:traps', `pillar ${id.toString(16)}: the re-sync at the grant of ${cell.toString(16)} stopped, the pillar is gone (the reset's Trigger03)`);
+          return;
+        }
+        if (again.playAnimation('Trigger03')) {
           await Utility.wait(PILLAR_TURN_S);
         }
       } else {
         refr.playAnimation(`StartState0${initial}`);
         await Utility.wait(0.5);
       }
-      const player = this.sp.Game.getPlayer();
-      for (let i = 0; i < turns && player; i++) {
+      for (let i = 0; i < turns; i++) {
         if (!host.hostsCell(cell)) {
           logLab('verb:traps', `pillar ${id.toString(16)}: the re-sync at the grant of ${cell.toString(16)} stopped, this seat no longer hosts the cell (${i} of ${turns} turn(s) fed)`);
           return;
         }
-        refr.activate(player, false);
+        step = `turn ${i + 1} of ${turns}`;
+        const again = pillarAgain();
+        const player = this.sp.Game.getPlayer();
+        if (!again || !player) {
+          logLab('verb:traps', `pillar ${id.toString(16)}: the re-sync at the grant of ${cell.toString(16)} stopped, the ${again ? 'player' : 'pillar'} is gone (${i} of ${turns} turn(s) fed)`);
+          return;
+        }
+        again.activate(player, false);
         await Utility.wait(PILLAR_TURN_S + 0.5);
       }
       logLab('verb:traps', `pillar ${id.toString(16)} re-synced at the grant of ${cell.toString(16)}: the script's side ${initial}, the record ${record} (side ${target}), ${turns} turn(s) fed to the script`);
     } catch (e) {
-      logError(this, `pillar ${id.toString(16)} re-sync at the grant of ${cell.toString(16)} failed: ${e}`);
+      logError(this, `pillar ${id.toString(16)} re-sync at the grant of ${cell.toString(16)} failed at ${step}: ${e}`);
     } finally {
       this.resyncing.delete(id);
     }

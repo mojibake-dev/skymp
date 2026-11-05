@@ -183,23 +183,29 @@ export class ObjectAnimationService extends ClientListener {
       if (!took && !pillarTrigger) {
         continue;
       }
-      // every genuine hook event on a pillar is the local script's own act
-      // (a TypeScript play never re-enters the hook): StartState0N at a cell
-      // load puts the script on side N, its own Trigger0N moves it to N+1,
-      // so the LAST side-naming event is the script's side, which a seat
-      // that hosted, turned and walked out keeps in its Papyrus state (the
-      // review of 30839d4b, F3)
       this.notePillar(selfId, event);
-      const side = sideOfRecord(event);
-      if (side !== undefined) {
-        this.scriptSide.set(selfId, side);
-      }
       if (this.wasSelfPlayed(selfId, event)) {
         // rule 8: the mark's hit is logged so a run says whether a replay
         // ever re-enters the hook (zero lines with a record present means
         // the marks can go)
         logTrace(this, `object animation ${selfId.toString(16)} ${event} dropped as self-played`);
         continue;
+      }
+      // a hook event on a pillar that this seat did not play itself is the
+      // local script's own act: StartState0N at a cell load puts the script
+      // on side N, its own Trigger0N moves it to N+1, so the LAST such
+      // side-naming event is the script's side, which a seat that hosted,
+      // turned and walked out keeps in its Papyrus state (the review of
+      // 30839d4b, F3). A TypeScript play (the relay's, the record's replay)
+      // DOES re-enter the hook and is marked self-played, so it is dropped
+      // above before it can name the script's side: x-puzzle-handoff v3
+      // 20261105-041840 read a guest's relayed Trigger01 setting the side to
+      // 2 while its script still stood on 1, so the inheriting host fed no
+      // turn, jumped the graph to Side02, and its first press (the script's
+      // Trigger01) was refused there: busy for good, no report
+      const side = sideOfRecord(event);
+      if (side !== undefined) {
+        this.scriptSide.set(selfId, side);
       }
       const refr = ObjectReference.from(this.sp.Game.getFormEx(selfId));
       if (!refr || this.sp.Actor.from(refr)) {

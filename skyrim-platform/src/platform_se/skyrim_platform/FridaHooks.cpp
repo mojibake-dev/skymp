@@ -383,11 +383,18 @@ void OnSendEventEnter(GumInvocationContext* ic)
   // object whose every attached script is in the trap family runs its events
   // in every game, in any cell, as a hosted cell's world objects do: each
   // seat fires its own copy where its trigger is met (D-S2 B's cosmetic
-  // copies, R3 per seat for the firing), and the seam counts the reference as
-  // every seat's own (ScriptNatives.cpp). Asked under the block alone; the
-  // family's verdict is cached per class (rule 9)
-  const bool trapFamily =
-    blockEvents && worldObject && TrapFamily::IsFamily(handle);
+  // copies, R3 per seat for the firing; HYPOTHESIS H-T2, the design's: an
+  // unblocked plate on a seat that does not host its cell fires its children
+  // there, x-trap-dodge v1), and the seam counts the reference as every
+  // seat's own (ScriptNatives.cpp). Asked under the block alone, and
+  // only where the answer decides something (rule 9: a hosted cell's live
+  // objects cost what they did): outside a hosted cell, where it passes the
+  // event, and on a destroyed reference anywhere, the spent trap below; a
+  // lifecycle event passes a world object either way, so it is never asked
+  // for one. The family's verdict is cached per class
+  const bool trapFamily = blockEvents && worldObject && !lifecycle &&
+    (!inHostedCell || TrapFamily::Destroyed(selfRef)) &&
+    TrapFamily::IsFamily(handle);
   const bool hostedWorldScript =
     (worldObject && (inHostedCell || lifecycle || trapFamily)) ||
     simulatedActor;
@@ -427,8 +434,9 @@ void OnSendEventEnter(GumInvocationContext* ic)
   // whether the engine sets the destroyed flag before it raises that stage's
   // event is unread; passed either way, the stage's handler keeps its
   // consequence, the oil pool's explosion should D-T1 bring TrapExplosiveGas
-  // into the family). JS still hears the event (the hook above)
-  if (trapFamily && !lifecycle && TrapFamily::Destroyed(selfRef) &&
+  // into the family). JS still hears the event (the hook above); trapFamily
+  // is never asked for a lifecycle event
+  if (trapFamily && TrapFamily::Destroyed(selfRef) &&
       _stricmp(eventNameStr.c_str(), "OnDestructionStageChanged") != 0) {
     static std::atomic<uint64_t> s_spentBlanked{ 0 };
     const auto n = ++s_spentBlanked;

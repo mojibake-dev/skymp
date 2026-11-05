@@ -3381,7 +3381,8 @@ bool IsPropKind(MpObjectReference& refr)
 // rocks and its tripwire, ACTIs: thuum docs/research/trap-census-2026-11-05.md
 // rows 18 and the tripwire's), joins the prop stream by the impulse touch
 // alone; an actor, a door, a container or furniture never does, and an item
-// is a prop by IsPropKind
+// is a prop by IsPropKind. Point 3: a world body is also the one kind whose
+// destruction a seat's report records (OnDestructionStage, E_DESTRUCTION_KIND)
 bool IsWorldBodyKind(MpObjectReference& refr)
 {
   if (refr.AsActor() || IsPropKind(refr)) {
@@ -4498,11 +4499,14 @@ void ActionListener::OnLockReport(const RawMessageData& rawMsgData,
 // true) and an equal or a lower report changes nothing. Its checks first: a
 // game-file reference the server holds or loads (LookupFormById: a trap's
 // lamp may stand outside the chunks loaded around the players), no actor
-// (an actor's death is the NPC fate's), and the reference's cell loaded in
-// the reporter's game (PartOne::GetCellLoaders): the seat whose engine
-// reached the step reports it, the cell's host or a guest alike (R2: the
-// engine computed it, the server records it, nothing of it validated beyond
-// these checks). A recorded step goes onto the reference's record (saved)
+// (an actor's death is the NPC fate's), a world body (IsWorldBodyKind: the
+// lamp and the tripwire are ACTIs; a door, a container, furniture or an item
+// is no trap's result, whatever a seat reports, the review of 9ff1895e's
+// finding 1), and the reference's cell loaded in the reporter's game
+// (PartOne::GetCellLoaders): the seat whose engine reached the step reports
+// it, the cell's host or a guest alike (R2: the engine computed it, the
+// server records it, nothing of it validated beyond these checks). A
+// recorded step goes onto the reference's record (saved)
 // and at once to its other listeners (served false); a late subscriber, or
 // any after a restart, hears the record behind the reference's create word
 // (PartOne's onSubscribe, served true).
@@ -4532,6 +4536,10 @@ void ActionListener::OnDestructionStage(const RawMessageData& rawMsgData,
   if (refrPtr->AsActor()) {
     return refuse("E_DESTRUCTION_ACTOR",
                   "an actor, whose death is the NPC fate's");
+  }
+  if (!IsWorldBodyKind(*refrPtr)) {
+    return refuse("E_DESTRUCTION_KIND",
+                  "not a trap or destructible world body");
   }
   const auto cell = partOne.worldState.CellOf(*refrPtr);
   if (!cell) {

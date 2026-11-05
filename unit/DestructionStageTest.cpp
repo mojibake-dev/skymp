@@ -22,8 +22,10 @@ PartOne& GetPartOne();
 // 0x90efc, an ACTI, destructible: OilTrapDestroyed.nif, then
 // FXEmptyObject.nif); Embershard Mine 0xb6be6's tripwire 0xb6d3f
 // (TrapTripwire01 0x22f54, an ACTI, SetDestroyed(true) once fired); the
-// temple's draugr 0x380b3 (an ACHR, TrapRelayTest's). The players stand by
-// each reference where the loaded reference stands, never a typed position.
+// temple's draugr 0x380b3 (an ACHR, TrapRelayTest's); the temple's bandit
+// chest TreasBanditChest 0x371e9 at (-3420, 732, 575), a CONT (LockTest's,
+// lab/esm.py 2026-10-31). The players stand by each reference where the
+// loaded reference stands, never a typed position.
 namespace {
 constexpr uint32_t kHostActor = 0xff000fe5;
 constexpr uint32_t kGuestActor = 0xff000fe6;
@@ -33,6 +35,7 @@ constexpr uint32_t kLamp = 0x9b0fb;
 constexpr uint32_t kEmbershard = 0xb6be6;
 constexpr uint32_t kTripwire = 0xb6d3f;
 constexpr uint32_t kDraugr = 0x380b3;
+constexpr uint32_t kBanditChest = 0x371e9;
 
 using Destruction = MpChangeFormREFR::Destruction;
 
@@ -332,6 +335,36 @@ TEST_CASE("A destruction report on no reference, on an actor or from a game "
   REQUIRE(lamp.GetDestruction() ==
           std::optional<Destruction>(Destruction{ 1, false }));
   REQUIRE(SentTo(p, 0).size() == 1);
+  Leave(p);
+}
+
+// the review of 9ff1895e (finding 1): before the kind check any reference
+// that was no actor could be recorded destroyed, a container's or a door's
+// as well as a trap's; IsWorldBodyKind refuses a door, a container,
+// furniture and an item alike, and the temple's chest stands for them
+TEST_CASE("A destruction report on a container, which is no world body, is "
+          "refused and records nothing: a trap's result is a world body's",
+          "[Traps][espm]")
+{
+  PartOne& p = GetPartOne();
+  // both games have the temple loaded, so only the kind refuses
+  auto& chest = Enter(p, kTemple, kBanditChest);
+  REQUIRE(chest.GetBaseType() == "CONT");
+  {
+    LogCapture log;
+    Report(p, 1, kBanditChest, 1, false);
+    Report(p, 0, kBanditChest, 0, true);
+    REQUIRE(log.Count("[verb:traps] E_DESTRUCTION_KIND: ff000fe6 reports "
+                      "371e9 at stage 1, destroyed false: not a trap or "
+                      "destructible world body") == 1);
+    REQUIRE(log.Count("[verb:traps] E_DESTRUCTION_KIND: ff000fe5 reports "
+                      "371e9 at stage 0, destroyed true: not a trap or "
+                      "destructible world body") == 1);
+    REQUIRE(log.Count("recorded") == 0);
+  }
+  REQUIRE(!chest.GetDestruction().has_value());
+  REQUIRE(SentTo(p, 0).empty());
+  REQUIRE(SentTo(p, 1).empty());
   Leave(p);
 }
 

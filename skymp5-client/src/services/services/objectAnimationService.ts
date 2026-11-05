@@ -35,9 +35,14 @@ import { logError, logLab, logTrace } from '../../logging';
 // exact set is HYPOTHESIS until x-object-anim reads it. Lines for the lab:
 // "object animation <refr> <event> reported" on the host, "object animation
 // <refr> <event> played" on a guest.
+// The platform's native filter matches an event name's case exactly (Handler::Matches compares bytes), while the
+// engine matches a graph event without case; a script may name its event in either: defaultPuzzlePillarScript turns
+// the whale with PlayAnimationAndWait("trigger02", "Turned02") (x-native-frame 20261105-033116, the script's own call
+// read at NativeFunctionBase::Call), so 'Trigger*' never let the whale turn through and no seat ever reported it
+// (playtests 44 to 46). Each pillar pattern is registered in both cases; every match on a name below is case-blind.
 const EVENT_PATTERNS = [
-  'Trigger*', 'Turned*', 'StartState*', 'FullPull*', 'open', 'opened', 'close', 'Open', 'Close',
-  'Down', '90*', '180*', '270*', 'Rearm', 'Reset', 'Idle',
+  'Trigger*', 'trigger*', 'Turned*', 'turned*', 'StartState*', 'startState*', 'startstate*', 'FullPull*', 'open', 'opened',
+  'close', 'Open', 'Close', 'Down', '90*', '180*', '270*', 'Rearm', 'Reset', 'Idle',
 ];
 // game-file references end where the server's copies begin; the player 0x14 is
 // left out of the hook's native range (rule 9: nothing of its graph crosses)
@@ -57,11 +62,11 @@ const PILLAR_TURN_S = 2.5;
 // the side a pillar's record puts it on: StartState0M is M (a jump at a load,
 // no turn since), Trigger0N turns from N to the next
 const sideOfRecord = (event: string): number | undefined => {
-  const jump = /^StartState0([1-3])$/.exec(event);
+  const jump = /^StartState0([1-3])$/i.exec(event);
   if (jump) {
     return Number(jump[1]);
   }
-  const turn = /^Trigger0([1-3])$/.exec(event);
+  const turn = /^Trigger0([1-3])$/i.exec(event);
   if (turn) {
     return (Number(turn[1]) % PILLAR_CYCLE) + 1;
   }
@@ -174,7 +179,7 @@ export class ObjectAnimationService extends ClientListener {
       // Turn01 and Turn03, Havok's handleEvent answering false for it), so a
       // pillar's Trigger0N is reported whatever the flag says: the script
       // sends a Trigger only when it turns, and a refused one is said
-      const pillarTrigger = /^Trigger0[1-3]$/.test(event);
+      const pillarTrigger = /^Trigger0[1-3]$/i.test(event);
       if (!took && !pillarTrigger) {
         continue;
       }
@@ -269,7 +274,7 @@ export class ObjectAnimationService extends ClientListener {
     const localId = refr.getFormID();
     const id = (remoteRefr ?? localIdToRemoteId(localId)).toString(16);
     this.noteRecord(localId, event);
-    const m = jumpFirst ? /^Trigger0([23])$/.exec(event) : null;
+    const m = jumpFirst ? /^Trigger0([23])$/i.exec(event) : null;
     let jump = "";
     if (m) {
       const jumpEvent = `StartState0${m[1]}`;
@@ -294,7 +299,7 @@ export class ObjectAnimationService extends ClientListener {
   }
 
   private notePillar(localId: number, event: string) {
-    if (/^(Trigger|StartState)0[1-3]$/.test(event)) {
+    if (/^(Trigger|StartState)0[1-3]$/i.test(event)) {
       this.pillars.add(localId);
     }
   }

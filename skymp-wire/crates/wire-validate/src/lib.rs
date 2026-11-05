@@ -185,9 +185,13 @@ pub struct ClientGuard {
     pub cell_loaded_budget: TokenBucket,
     /// Budget for a simulator's prop samples (PropTransform, thuum docs/verbs/
     /// prop-physics.md, ADR-058): one per awake prop per 100 ms and one at
-    /// its sleep, a kicked shelf's worth of bodies at once. UNMEASURED: 20 at
-    /// once and 10 a second after that, bodies and props on one budget, until
-    /// x-prop-push reads a seat's rate.
+    /// its sleep, a kicked shelf's worth of bodies at once, and since D-S3
+    /// (traps follow the interaction, point 4) a trap's bodies on the same
+    /// stream: one firing streams eight (Embershard's tripwire 0xb6d3f, which
+    /// its own script sets Dynamic, and its seven falling rocks), eighty
+    /// samples a second for the length of the fall. UNMEASURED: 128 at once
+    /// and 96 a second after that (20 and 10 before the trap bodies), bodies
+    /// and props on one budget, until x-trap-boulders reads a seat's rate.
     pub prop_budget: TokenBucket,
     /// Budget for a seat's prop claims (PropClaim, the same verb): a touch, a
     /// grab, a drop or an impulse each a claim; the claim idiom's 8 at once,
@@ -263,7 +267,7 @@ impl Default for ClientGuard {
             // burst on top; P3 replaces it
             action_budget: TokenBucket { tokens: 48, capacity: 48, refill_per_s: 16, last_refill_ms: 0 },
             cell_loaded_budget: TokenBucket { tokens: 128, capacity: 128, refill_per_s: 32, last_refill_ms: 0 },
-            prop_budget: TokenBucket { tokens: 20, capacity: 20, refill_per_s: 10, last_refill_ms: 0 },
+            prop_budget: TokenBucket { tokens: 128, capacity: 128, refill_per_s: 96, last_refill_ms: 0 },
             prop_claim_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             placed_report_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             skill_use_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
@@ -2570,7 +2574,8 @@ mod tests {
 
     // thuum docs/verbs/prop-physics.md (ADR-058): a simulator's prop sample
     // names a reference, a finite point in the world and a finite rotation;
-    // 20 at once, 10 a second after that (UNMEASURED)
+    // 128 at once, 96 a second after that (UNMEASURED; raised from 20 and 10
+    // for a trap's bodies, thuum D-S3 point 4)
     fn prop(refr: u32, pos: [f32; 3], rot: [f32; 3], asleep: bool) -> Message {
         Message::PropTransform(wire_schema::skymp::PropTransform { refr, pos, rot, asleep, ..Default::default() })
     }
@@ -2585,11 +2590,33 @@ mod tests {
         assert_eq!(validate_server(&prop(0x54a44, basket, [0.0, f32::INFINITY, 0.0], false)), Err(Reject::NonFinite));
         assert_eq!(validate_server(&prop(0x54a44, [2.0e6, 0.0, 0.0], [0.0, 0.0, 0.0], false)), Err(Reject::OutOfWorld));
         let mut guard = ClientGuard::default();
-        for _ in 0..20 {
+        for _ in 0..128 {
             assert_eq!(validate(&prop(0x54a44, basket, [0.0, 0.0, 0.0], false), &mut guard, 1_000), Ok(()));
         }
         assert_eq!(validate(&prop(0x54a44, basket, [0.0, 0.0, 0.0], false), &mut guard, 1_000), Err(Reject::Rate));
-        assert_eq!(validate(&prop(0x54a44, basket, [0.0, 0.0, 0.0], true), &mut guard, 1_100), Ok(()));
+        // 100 ms buys nine samples at 96 a second (9.6, the fraction carried
+        // to the next refill), and no tenth
+        for _ in 0..9 {
+            assert_eq!(validate(&prop(0x54a44, basket, [0.0, 0.0, 0.0], true), &mut guard, 1_100), Ok(()));
+        }
+        assert_eq!(validate(&prop(0x54a44, basket, [0.0, 0.0, 0.0], true), &mut guard, 1_100), Err(Reject::Rate));
+        // one firing's eight bodies (Embershard's tripwire 0xb6d3f and its
+        // seven falling rocks, thuum docs/research/trap-census-2026-11-05.md
+        // rows 18 and the tripwire's) at 10 Hz for three seconds of fall, 240
+        // samples at 80 a second, all pass (the old 20 and 10 refuse them
+        // from the third tick)
+        let bodies = [0xb6d3f, 0xb6d45, 0xb6d48, 0xb6d49, 0xb6d4a, 0xb6d4b, 0xb6d4c, 0xb6d4d];
+        let mut seat = ClientGuard::default();
+        let mut refused = 0u32;
+        for tick in 0..30u64 {
+            let now = 10_000u64.saturating_add(tick.saturating_mul(100));
+            for body in bodies {
+                if validate(&prop(body, basket, [0.0, 0.0, 0.0], false), &mut seat, now) != Ok(()) {
+                    refused = refused.saturating_add(1);
+                }
+            }
+        }
+        assert_eq!(refused, 0);
     }
 
     #[test]

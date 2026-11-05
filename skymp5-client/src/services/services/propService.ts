@@ -360,8 +360,13 @@ export class PropService extends ClientListener {
         // record (after a restart, at a re-subscription): placed at it on the
         // next tick, unless this seat streams the body (its record is this
         // seat's own samples)
+        // not while this seat's own firing of the body is fresh: its grant may
+        // still be on the way, and a re-place would yank a falling rock (the
+        // platform-and-client review, finding 5)
         const prop = this.props.get(refrId);
-        if (prop && prop.trap && !prop.simulating) {
+        const body = this.trapBodies.get(refrId);
+        const firing = body !== undefined && Date.now() - body.claimedAt < TRAP_FIRING_MS;
+        if (prop && prop.trap && !prop.simulating && !firing) {
             prop.placed = false;
         }
     }

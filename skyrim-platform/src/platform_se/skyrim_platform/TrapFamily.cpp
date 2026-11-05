@@ -187,8 +187,9 @@ bool TrapFamily::IsFamily(RE::VMHandle handle)
 // TESForm::RecordFlags::kDestroyed on formFlags (CommonLibSSE-NG
 // include/RE/T/TESForm.h:91, the accessor at :287). ObjectReference's
 // SetDestroyed native sets and clears that bit and nothing else of the
-// reference (CONFIRMED-STATIC, sky-re's Ghidra on 1.6.1170, 2026-11-05: its
-// body flips bit 23 of formFlags, then calls AddChange with kFlags,
+// reference (HYPOTHESIS by decompile, ADR-064 decision 1; sky-re's Ghidra on
+// 1.6.1170, 2026-11-05: its body flips bit 23 of formFlags, then calls
+// AddChange with kFlags,
 // TESForm.h:46 and :133). HYPOTHESIS H-DF1: a destruction reaching a stage
 // that destroys the object sets the same bit (unread; x-trap-lamp v1's shot
 // lamp reading getTrapRole(0x9b0fb).destroyed true settles it)
@@ -196,16 +197,6 @@ bool TrapFamily::Destroyed(const RE::TESObjectREFR* ref)
 {
   return ref &&
     (ref->GetFormFlags() & RE::TESForm::RecordFlags::kDestroyed) != 0;
-}
-
-bool TrapFamily::PlayerOnly(RE::VMHandle handle)
-{
-  const FixedString& name = PlayerOnlyName();
-  bool playerOnly = false;
-  ForEachAttached(handle, [&](RE::BSScript::Object* script) {
-    playerOnly = playerOnly || PlayerOnlyScript(script, name);
-  });
-  return playerOnly;
 }
 
 // the reference by its id (TESForm::LookupByID, under the form table's own

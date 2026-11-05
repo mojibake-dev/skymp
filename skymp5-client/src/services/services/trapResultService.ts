@@ -34,9 +34,15 @@ const DAMAGE_MAX = 32;
 const DAMAGE_CALLS = 64;
 // a reference stays this seat's own apply this long after its last call, so
 // a stage change of a live relay's apply (which no blank covers) is not
-// reported back (UNMEASURED); a served record's blank is lifted at once, the
-// platform's blank running before the event hook and the engine raising the
-// stage's events inside the calls (the platform layer's note)
+// reported back (UNMEASURED); a served record's blank is lifted one update
+// after the last call (the platform's blank runs before the event hook), not
+// in the same turn: DamageObject is latent, and whether the engine raises the
+// stage's events inside the calls or after their promises resolve is
+// unread (HYPOTHESIS H-DS1; the platform-and-client review, finding 1;
+// x-trap-lamp's restart leg reads the platform's "blanked: raised while the
+// server's record is applied to it" line). The engine's own stage effects
+// (a destructible's stage explosion placed by its stage data, script or
+// not) are no Papyrus event, so no blank covers them: a declared limit
 const SETTLE_MS = 500;
 const KNOWN_MAX = 4096;
 
@@ -89,11 +95,21 @@ export class TrapResultService extends ClientListener {
       },
       leave() {},
     };
+    // the hook's patterns are case-exact (Handler.cpp) while the engine's
+    // events are case-blind, and a vanilla script may intern another casing
+    // (docs/engine/scripts.md S1, the whale's cause): both spellings
+    // registered, as the pillars' patterns are (the review's finding 3)
     this.sp.hooks.sendPapyrusEvent.add(
       handler,
       1,
       LAST_GAME_FILE_ID,
       'OnDestructionStageChanged',
+    );
+    this.sp.hooks.sendPapyrusEvent.add(
+      handler,
+      1,
+      LAST_GAME_FILE_ID,
+      'onDestructionStageChanged',
     );
     this.controller.emitter.on('destructionStageMessage', (e) =>
       this.onRecord(e),
@@ -316,9 +332,10 @@ export class TrapResultService extends ClientListener {
         );
       }
     } finally {
-      // the last DamageObject has resolved and SetDestroyed returned
+      // the last DamageObject has resolved and SetDestroyed returned; the
+      // blank stays up one more update (H-DS1)
       if (rec.served) {
-        this.setApplying(localId, false);
+        this.controller.once('update', () => this.setApplying(localId, false));
       }
       this.applying.delete(localId);
       this.settling.set(localId, Date.now() + SETTLE_MS);

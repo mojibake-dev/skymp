@@ -39,9 +39,6 @@ bool IsFamily(RE::VMHandle handle);
 // the reference's destroyed flag (TESForm's kDestroyed, the bit
 // ObjectReference.SetDestroyed sets and clears)
 bool Destroyed(const RE::TESObjectREFR* ref);
-// a script attached to the VM handle has its playerOnlyTrigger property true
-// (TrapTriggerBase's; HYPOTHESIS H-PO1, TrapFamily.cpp)
-bool PlayerOnly(RE::VMHandle handle);
 
 // getTrapRole's answer for a reference with an attached script; no answer
 // (std::nullopt) for an id that names no reference or one with no attached

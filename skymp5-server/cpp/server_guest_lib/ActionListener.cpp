@@ -18,6 +18,7 @@
 #include "gamemode_events/EatItemEvent.h"
 #include "gamemode_events/UpdateAppearanceAttemptEvent.h"
 #include "gamemode_events/UpdateEquipmentAttemptEvent.h"
+#include "libespm/ACHR.h"
 #include "libespm/ALCH.h"
 #include "libespm/Convert.h"
 #include "libespm/GLOB.h"
@@ -3797,6 +3798,31 @@ void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
 {
   auto targetPtr = std::dynamic_pointer_cast<MpObjectReference>(
     partOne.worldState.LookupFormById(targetId));
+  // thuum docs/DECISIONS.md ADR-068 (an actor's script and AI run on the seat
+  // that simulates it, and the NPC stream carries what follows): a linked
+  // activation whose target is an ACTOR is that actor waking on its
+  // simulator, an ambush's draugr roused by its trigger (Bleak Falls Temple's
+  // 0x38098 and its four ACHR children 0x380b3, 0x380b4, 0x380b5, 0x380b9,
+  // whose XAPR name it; x-bleak-traps-npcs 20261105-023048). The server
+  // neither judges nor relays it: a relay would run the engine's activation
+  // on a watcher's puppet, which renders and never simulates (ADR-063
+  // decision 3). Before this rule the pair read E_TRAP_UNLINKED (the
+  // activation-parent table is filled for non-actor references alone,
+  // MpObjectReference::InitScripts) or E_TRAP_NO_REF (an actor the server
+  // never loaded, judged here by its game-file record).
+  const bool targetIsActor = targetPtr
+    ? targetPtr->AsActor() != nullptr
+    : (partOne.HasEspm() &&
+       partOne.GetEspm().GetBrowser().LookupById(targetId).rec &&
+       partOne.GetEspm().GetBrowser().LookupById(targetId).rec->GetType() ==
+         espm::ACHR::kType);
+  if (targetIsActor) {
+    spdlog::info("[verb:traps] {:x} reports {:x} activating actor {:x}: the "
+                 "actor's simulator's (the NPC stream carries it), not "
+                 "relayed",
+                 reporter.GetFormId(), casterId, targetId);
+    return;
+  }
   if (!targetPtr) {
     // a target the server never loads (a marker) is no world object of the
     // server's; its own consequence arrives as its own linked activation

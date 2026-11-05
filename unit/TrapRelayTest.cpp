@@ -207,6 +207,32 @@ TEST_CASE("The puzzle lever's script properties are links, and a marker the "
   Leave(p);
 }
 
+TEST_CASE("A host's linked activation of an actor is the actor's "
+          "simulator's: neither judged nor relayed (ADR-068)",
+          "[Traps][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  // the ambush trigger defaultActivateSelfTRIG 0x38098 at (7921, -4613, -1795)
+  // and two of its ACHR children (their XAPR name it, lab/esm.py 2026-11-05):
+  // 0x380b3 at (8657, -5215, -2055) and 0x380b4 at (9016, -4725, -2054)
+  constexpr uint32_t kAmbushTrigger = 0x38098;
+  constexpr uint32_t kDraugr = 0x380b3;
+  constexpr uint32_t kDraugrUnloaded = 0x380b4;
+  p.worldState.GetFormAt<MpObjectReference>(kAmbushTrigger);
+  p.Messages().clear();
+  // a loaded or unloaded actor target: no relay to the guest, no throw
+  REQUIRE_NOTHROW(Linked(p, 0, kAmbushTrigger, kDraugr));
+  REQUIRE_NOTHROW(Linked(p, 0, kAmbushTrigger, kDraugrUnloaded));
+  REQUIRE(RelayedTo(p, 1).empty());
+  REQUIRE(RelayedTo(p, 0).empty());
+  // the plate's spike wall still relays beside it
+  Linked(p, 0, kPlate, kWall);
+  REQUIRE(RelayedTo(p, 1).size() == 1);
+  REQUIRE(RelayedTo(p, 1)[0].target == kWall);
+  Leave(p);
+}
+
 TEST_CASE("A player's activation of a scripted world object goes to the "
           "cell's other games with the player as the activator, and an "
           "echo of it is quiet (ADR-059 decision 2)",

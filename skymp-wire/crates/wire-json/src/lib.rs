@@ -75,7 +75,8 @@ macro_rules! skymp_family {
             47 CellLoaded, 48 HostGrant, 49 HostRelease, 50 ActorSightings,
             51 ActorFate, 52 ActorDeath, 53 HostedActorState, 54 ActorSpeech, 55 DamageCause, 56 ActorClaim, 57 QuestStage,
             58 PropTransform, 59 PropClaim, 60 PropOwner, 61 PlacedRequest, 62 PlacedReport, 63 SkillUse, 64 LockReport, 65 LockPrompt, 66 SetWeather, 67 PerkPick, 68 PerkState, 69 WordWall, 70 RelayedActivation, 71 ObjectAnimation,
-            72 ChangeForm, 73 ChangeFormAck, 74 ChangeFormApply, 75 ScriptCall
+            72 ChangeForm, 73 ChangeFormAck, 74 ChangeFormApply, 75 ScriptCall,
+            78 DestructionStage
         }
     };
 }
@@ -352,7 +353,7 @@ mod tests {
             n += 1;
         }
         assert!(n >= 90, "{n} fixtures");
-        assert_eq!(types.len(), 75, "every SkyMP type has fixtures");
+        assert_eq!(types.len(), 76, "every SkyMP type has fixtures");
     }
 
     /// Writes the fixtures: two per SkyMP type, from arbitrary values with
@@ -452,6 +453,34 @@ mod tests {
             let m = recognize(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(matches!(&m, Message::SpSnippet(s) if s.seq.is_none()), "{name}");
             assert!(!render(&m).unwrap_or_default().contains("\"seq\""), "{name}: an absent sequence is no key");
+        }
+    }
+
+    /// thuum D-S3 (ADR-068's DestructionStage row): one fixture each way.
+    /// 0 is a seat's report, Bleak Falls Temple's oil lamp 0x9b0fb at its
+    /// first stage (the census's TrapFallingOilLampColLayer, its first shot's
+    /// DamageObject); 1 the server's record served behind a create word,
+    /// Embershard Mine's tripwire 0xb6d3f spent (SetDestroyed true after its
+    /// firing, docs/research/trap-census-2026-11-05.md). Named by MsgType,
+    /// 78, as every fixture is.
+    #[test]
+    fn destruction_stage_fixtures_validate_as_named() {
+        use wire_validate::validate_server;
+        let wants: [(&str, u32, u8, bool, bool); 2] = [
+            ("78-DestructionStage-0.json", 0x9b0fb, 1, false, false),
+            ("78-DestructionStage-1.json", 0xb6d3f, 0, true, true),
+        ];
+        for (name, refr, stage, destroyed, served) in wants {
+            let text = std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+            match recognize(&text) {
+                Ok(m @ Message::DestructionStage(_)) => {
+                    assert_eq!(validate_server(&m), Ok(()), "{name}");
+                    if let Message::DestructionStage(d) = m {
+                        assert_eq!((d.refr, d.stage, d.destroyed, d.served), (refr, stage, destroyed, served), "{name}");
+                    }
+                }
+                other => panic!("{name}: {other:?}"),
+            }
         }
     }
 

@@ -15,6 +15,7 @@ pub mod cells;
 pub mod clock;
 pub mod console;
 pub mod damage;
+pub mod destruction;
 pub mod effects;
 pub mod favorites;
 pub mod forms;

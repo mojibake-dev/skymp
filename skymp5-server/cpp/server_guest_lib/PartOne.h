@@ -638,11 +638,17 @@ public:
   {
     Granted,
     Held,
-    Same
+    Same,
+    Moving
   };
+  // `worldBody`: the prop is a trap's world body (thuum D-S3 point 4: a
+  // world object a seat's own script set moving, claimed by the impulse
+  // alone), whose first firing wins: Moving while another seat's firing has
+  // it awake (wire-rules props' claim_world_body); an item's claim keeps
+  // ADR-058's newest touch wins
   PropClaimVerdict ClaimProp(const MpActor& claimant,
                              const MpObjectReference& prop, uint32_t cell,
-                             uint8_t touch);
+                             uint8_t touch, bool worldBody);
   enum class PropTransformVerdict
   {
     Accepted,

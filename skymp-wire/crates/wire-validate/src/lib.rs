@@ -185,9 +185,13 @@ pub struct ClientGuard {
     pub cell_loaded_budget: TokenBucket,
     /// Budget for a simulator's prop samples (PropTransform, thuum docs/verbs/
     /// prop-physics.md, ADR-058): one per awake prop per 100 ms and one at
-    /// its sleep, a kicked shelf's worth of bodies at once. UNMEASURED: 20 at
-    /// once and 10 a second after that, bodies and props on one budget, until
-    /// x-prop-push reads a seat's rate.
+    /// its sleep, a kicked shelf's worth of bodies at once, and since D-S3
+    /// (traps follow the interaction, point 4) a trap's bodies on the same
+    /// stream: one firing streams eight (Embershard's tripwire 0xb6d3f, which
+    /// its own script sets Dynamic, and its seven falling rocks), eighty
+    /// samples a second for the length of the fall. UNMEASURED: 128 at once
+    /// and 96 a second after that (20 and 10 before the trap bodies), bodies
+    /// and props on one budget, until x-trap-boulders reads a seat's rate.
     pub prop_budget: TokenBucket,
     /// Budget for a seat's prop claims (PropClaim, the same verb): a touch, a
     /// grab, a drop or an impulse each a claim; the claim idiom's 8 at once,
@@ -224,6 +228,10 @@ pub struct ClientGuard {
     /// until a lab run reads a host's rate; the transport's byte budget
     /// bounds the bytes.
     pub change_form_budget: TokenBucket,
+    /// Budget for a seat's destruction reports (DestructionStage, thuum
+    /// D-S3): one per stage rise or destruction its engine caused or saw
+    /// first, a trap's result once; 8 at once, 2 a second after (UNMEASURED).
+    pub destruction_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -259,7 +267,7 @@ impl Default for ClientGuard {
             // burst on top; P3 replaces it
             action_budget: TokenBucket { tokens: 48, capacity: 48, refill_per_s: 16, last_refill_ms: 0 },
             cell_loaded_budget: TokenBucket { tokens: 128, capacity: 128, refill_per_s: 32, last_refill_ms: 0 },
-            prop_budget: TokenBucket { tokens: 20, capacity: 20, refill_per_s: 10, last_refill_ms: 0 },
+            prop_budget: TokenBucket { tokens: 128, capacity: 128, refill_per_s: 96, last_refill_ms: 0 },
             prop_claim_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             placed_report_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             skill_use_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
@@ -268,6 +276,7 @@ impl Default for ClientGuard {
             word_wall_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
             object_animation_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 8, last_refill_ms: 0 },
             change_form_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 8, last_refill_ms: 0 },
+            destruction_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
         }
     }
 }
@@ -838,6 +847,25 @@ fn check_object_animation(m: &skymp::ObjectAnimation) -> Result<(), Reject> {
     Ok(())
 }
 
+/// The highest destruction stage a report or a record may name (thuum
+/// D-S3): wire-rules destruction's MAX_STAGE, the same number (wire-bridge's
+/// test pins the two together).
+pub const DESTRUCTION_MAX_STAGE: u8 = 127;
+
+/// A reference's destruction stage (thuum D-S3, ADR-068's DestructionStage
+/// row): a game-file reference, never 0 nor one the server names
+/// (0xff000000 and up), and a stage of at most [`DESTRUCTION_MAX_STAGE`]; the
+/// same shape both ways (a seat's report, the server's relay and its served
+/// record). Whether the reference is one the server holds, no actor, in a
+/// cell the reporter's game has loaded, and whether the report moves the
+/// record is the server's rule (wire-rules destruction).
+fn check_destruction_stage(m: &skymp::DestructionStage) -> Result<(), Reject> {
+    if m.refr == 0 || m.refr >= PLAYER_FORMS || m.stage > DESTRUCTION_MAX_STAGE {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
 /// The server's weather word (docs/verbs/weather.md): a place, never 0; the
 /// weather may be 0 (a release); the transport refuses it from a client by
 /// direction.
@@ -1256,6 +1284,7 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::WordWall(_) => take(&mut guard.word_wall_budget, now_ms),
         Message::ObjectAnimation(_) => take(&mut guard.object_animation_budget, now_ms),
         Message::ChangeForm(_) => take(&mut guard.change_form_budget, now_ms),
+        Message::DestructionStage(_) => take(&mut guard.destruction_budget, now_ms),
         _ => Ok(()),
     }
 }
@@ -1449,6 +1478,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::ChangeFormAck(m) => check_change_form_ack(m),
         Message::ChangeFormApply(m) => check_change_form_apply(m),
         Message::ScriptCall(m) => check_script_call(m),
+        Message::DestructionStage(m) => check_destruction_stage(m),
         Message::CreateActor(m) => check_create_actor(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
@@ -2544,7 +2574,8 @@ mod tests {
 
     // thuum docs/verbs/prop-physics.md (ADR-058): a simulator's prop sample
     // names a reference, a finite point in the world and a finite rotation;
-    // 20 at once, 10 a second after that (UNMEASURED)
+    // 128 at once, 96 a second after that (UNMEASURED; raised from 20 and 10
+    // for a trap's bodies, thuum D-S3 point 4)
     fn prop(refr: u32, pos: [f32; 3], rot: [f32; 3], asleep: bool) -> Message {
         Message::PropTransform(wire_schema::skymp::PropTransform { refr, pos, rot, asleep, ..Default::default() })
     }
@@ -2559,11 +2590,33 @@ mod tests {
         assert_eq!(validate_server(&prop(0x54a44, basket, [0.0, f32::INFINITY, 0.0], false)), Err(Reject::NonFinite));
         assert_eq!(validate_server(&prop(0x54a44, [2.0e6, 0.0, 0.0], [0.0, 0.0, 0.0], false)), Err(Reject::OutOfWorld));
         let mut guard = ClientGuard::default();
-        for _ in 0..20 {
+        for _ in 0..128 {
             assert_eq!(validate(&prop(0x54a44, basket, [0.0, 0.0, 0.0], false), &mut guard, 1_000), Ok(()));
         }
         assert_eq!(validate(&prop(0x54a44, basket, [0.0, 0.0, 0.0], false), &mut guard, 1_000), Err(Reject::Rate));
-        assert_eq!(validate(&prop(0x54a44, basket, [0.0, 0.0, 0.0], true), &mut guard, 1_100), Ok(()));
+        // 100 ms buys nine samples at 96 a second (9.6, the fraction carried
+        // to the next refill), and no tenth
+        for _ in 0..9 {
+            assert_eq!(validate(&prop(0x54a44, basket, [0.0, 0.0, 0.0], true), &mut guard, 1_100), Ok(()));
+        }
+        assert_eq!(validate(&prop(0x54a44, basket, [0.0, 0.0, 0.0], true), &mut guard, 1_100), Err(Reject::Rate));
+        // one firing's eight bodies (Embershard's tripwire 0xb6d3f and its
+        // seven falling rocks, thuum docs/research/trap-census-2026-11-05.md
+        // rows 18 and the tripwire's) at 10 Hz for three seconds of fall, 240
+        // samples at 80 a second, all pass (the old 20 and 10 refuse them
+        // from the third tick)
+        let bodies = [0xb6d3f, 0xb6d45, 0xb6d48, 0xb6d49, 0xb6d4a, 0xb6d4b, 0xb6d4c, 0xb6d4d];
+        let mut seat = ClientGuard::default();
+        let mut refused = 0u32;
+        for tick in 0..30u64 {
+            let now = 10_000u64.saturating_add(tick.saturating_mul(100));
+            for body in bodies {
+                if validate(&prop(body, basket, [0.0, 0.0, 0.0], false), &mut seat, now) != Ok(()) {
+                    refused = refused.saturating_add(1);
+                }
+            }
+        }
+        assert_eq!(refused, 0);
     }
 
     #[test]
@@ -2715,6 +2768,35 @@ mod tests {
         }
         assert_eq!(validate(&anim(0xaa8cb, "Trigger01"), &mut guard, 1_000), Err(Reject::Rate));
         assert_eq!(validate(&anim(0xaa8cb, "Trigger01"), &mut guard, 2_000), Ok(()));
+    }
+
+    #[test]
+    fn destruction_stages_name_a_game_file_reference_and_a_bounded_stage_and_are_rate_limited() {
+        // thuum D-S3: Bleak Falls Temple's oil lamp 0x9b0fb at its first
+        // stage, Embershard's spent tripwire 0xb6d3f served after a create
+        // word, the bound's edges
+        use wire_schema::skymp::DestructionStage;
+        let stage = |refr, stage, destroyed, served| Message::DestructionStage(DestructionStage { refr, stage, destroyed, served, ..Default::default() });
+        assert_eq!(validate_server(&stage(0x9b0fb, 1, false, false)), Ok(()));
+        assert_eq!(validate_server(&stage(0xb6d3f, 0, true, true)), Ok(()));
+        assert_eq!(validate_server(&stage(0xfeff_ffff, DESTRUCTION_MAX_STAGE, true, false)), Ok(()));
+        assert_eq!(validate_server(&stage(0, 1, false, false)), Err(Reject::Range));
+        assert_eq!(validate_server(&stage(0xff00_0000, 1, false, false)), Err(Reject::Range));
+        assert_eq!(validate_server(&stage(u32::MAX, 0, true, false)), Err(Reject::Range));
+        assert_eq!(validate_server(&stage(0x9b0fb, DESTRUCTION_MAX_STAGE.saturating_add(1), false, false)), Err(Reject::Range));
+        assert_eq!(validate_server(&stage(0x9b0fb, u8::MAX, false, false)), Err(Reject::Range));
+        let mut guard = ClientGuard::default();
+        for _ in 0..8 {
+            assert_eq!(validate(&stage(0x9b0fb, 1, false, false), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&stage(0x9b0fb, 1, false, false), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&stage(0x9b0fb, 2, false, false), &mut guard, 1_500), Ok(()));
+        // a refused shape spends no token: the shape is judged first
+        let mut fresh = ClientGuard::default();
+        for _ in 0..20 {
+            assert_eq!(validate(&stage(0, 1, false, false), &mut fresh, 1_000), Err(Reject::Range));
+        }
+        assert_eq!(validate(&stage(0x9b0fb, 1, false, false), &mut fresh, 1_000), Ok(()));
     }
 
     #[test]
@@ -2893,6 +2975,16 @@ mod tests {
             let m = Message::WordWall(WordWall { wall, ..Default::default() });
             let _ = validate(&m, &mut g, now);
             prop_assert_eq!(validate_server(&m), if wall == 0 { Err(Reject::Range) } else { Ok(()) });
+        }
+
+        #[test]
+        fn destruction_stages_never_panic(refr in any::<u32>(), stage in any::<u8>(), destroyed in any::<bool>(), served in any::<bool>(), now in any::<u64>()) {
+            use wire_schema::skymp::DestructionStage;
+            let mut g = ClientGuard::default();
+            let m = Message::DestructionStage(DestructionStage { refr, stage, destroyed, served, ..Default::default() });
+            let _ = validate(&m, &mut g, now);
+            let want = if refr == 0 || refr >= 0xff00_0000 || stage > DESTRUCTION_MAX_STAGE { Err(Reject::Range) } else { Ok(()) };
+            prop_assert_eq!(validate_server(&m), want);
         }
 
         #[test]

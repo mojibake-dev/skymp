@@ -2268,6 +2268,43 @@ wire_struct! {
 }
 
 wire_struct! {
+    /// MsgType 78, thuum's (D-S3, traps follow the interaction; ADR-068's
+    /// DestructionStage row; docs/research/trap-slice-d-s3-2026-11-05.md
+    /// point 3): a single-use result recorded once. Every seat runs the trap
+    /// family itself, so one oil lamp's fall or one tripwire's snap happens
+    /// on several engines; the world keeps one result. Client to server,
+    /// reliable, R2: a seat reports a reference's destruction stage rise, or
+    /// its destruction (SetDestroyed), that its engine caused or saw first
+    /// (`served` false); the server records the first report of each step
+    /// (wire-rules destruction: the stage only rises, destroyed only goes
+    /// true) for a reference it holds or loads, no actor, in a cell the
+    /// reporter's game has loaded. Server to client, reliable: a newly
+    /// recorded step relayed to the reference's other listeners (`served`
+    /// false), and the record served to a seat right after the reference's
+    /// create word, a late joiner's or after a restart (`served` true), which
+    /// the receiver applies without replaying the firing. Reason codes:
+    /// `E_VAL_RANGE` (a refr of 0 or 0xff000000 and up, a stage past 127),
+    /// `E_VAL_RATE` (the sender's budget); the server logs
+    /// `E_DESTRUCTION_NO_REF`, `E_DESTRUCTION_ACTOR` and
+    /// `E_DESTRUCTION_CELL` by name.
+    pub struct DestructionStage {
+        /// `"t": 78`.
+        #[serde(default)]
+        pub t: MsgT<78>,
+        /// The reference, a game-file placement (below 0xff000000); never 0.
+        pub refr: u32,
+        /// The destruction stage the engine reached, 0 for none; at most 127.
+        pub stage: u8,
+        /// The reference is destroyed (a spent trap).
+        pub destroyed: bool,
+        /// The server's record served behind the reference's create word
+        /// (a late joiner, a restart) rather than a step just recorded; false
+        /// on every report.
+        pub served: bool,
+    }
+}
+
+wire_struct! {
     /// One skill use (docs/verbs/leveling.md): the skill by its ActorValue and
     /// the action's base amount as the engine computed it.
     pub struct SkillUseEntry {

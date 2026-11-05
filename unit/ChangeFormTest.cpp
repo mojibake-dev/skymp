@@ -376,6 +376,60 @@ TEST_CASE("A change-form record survives a save and a load of the actor's "
   REQUIRE(!MpChangeForm::JsonToChangeForm(olderElement).changeFormRecord);
 }
 
+// thuum D-S3 (traps follow the interaction; ADR-068's DestructionStage row):
+// a reference's destruction record (the stage its engine reached, the
+// destroyed flag, from the first seat to report each step) survives a save
+// and a load of the reference's change form and travels with it as a whole;
+// a record written before the field (no key) reads as none, the game files'
+// state (rule 6's migration)
+TEST_CASE("A destruction record survives a save and a load of the "
+          "reference's change form, and an older record without one reads "
+          "as the game files' state",
+          "[ChangeForm][Traps]")
+{
+  MpChangeForm changeForm;
+  changeForm.recType = MpChangeForm::REFR;
+  MpChangeFormREFR::Destruction destruction;
+  destruction.stage = 2;
+  destruction.destroyed = true;
+  changeForm.destruction = destruction;
+
+  simdjson::dom::parser parser;
+  const nlohmann::json saved = MpChangeForm::ToJson(changeForm);
+  REQUIRE(saved.contains("destruction"));
+  REQUIRE(saved["destruction"]["stage"] == 2);
+  REQUIRE(saved["destruction"]["destroyed"] == true);
+  const std::string dump = saved.dump();
+  auto element = parser.parse(dump).value();
+  const auto loaded = MpChangeForm::JsonToChangeForm(element);
+  REQUIRE(loaded.destruction.has_value());
+  REQUIRE(*loaded.destruction == destruction);
+
+  // the record travels with the reference's change form as a whole
+  MpObjectReference refr(LocationalData(), FormCallbacks::DoNothing(), 0,
+                         "ACTI");
+  REQUIRE(!refr.GetDestruction().has_value());
+  refr.ApplyChangeForm(loaded);
+  REQUIRE(refr.GetDestruction().has_value());
+  REQUIRE(*refr.GetDestruction() == destruction);
+
+  // a stage alone, not destroyed, keeps both fields
+  MpChangeForm staged;
+  staged.recType = MpChangeForm::REFR;
+  staged.destruction = MpChangeFormREFR::Destruction{ 1, false };
+  const std::string stagedDump = MpChangeForm::ToJson(staged).dump();
+  auto stagedElement = parser.parse(stagedDump).value();
+  const auto stagedLoaded = MpChangeForm::JsonToChangeForm(stagedElement);
+  REQUIRE(stagedLoaded.destruction == staged.destruction);
+
+  // a record written before the field: no key, read as none
+  nlohmann::json older = MpChangeForm::ToJson(MpChangeForm());
+  REQUIRE(!older.contains("destruction"));
+  const std::string olderDump = older.dump();
+  auto olderElement = parser.parse(olderDump).value();
+  REQUIRE(!MpChangeForm::JsonToChangeForm(olderElement).destruction);
+}
+
 // thuum docs/verbs/npc-fate.md ("canon-4's merge review", finding 2): the
 // record a host serialized for a body is that body's; the server's stand-up
 // (RespawnFated) ends the body, so the record goes with it and no later

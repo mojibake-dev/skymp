@@ -78,7 +78,14 @@ use bounded::{String, Vec};
 /// 36: ScriptCall and SpSnippet's `seq` (thuum ADR-068, the one seam,
 /// m4-scripts-2): a tabled native the subject's owner ran, reported at the
 /// native boundary, and its relay with the subject's sequence.
-pub const SCHEMA_VERSION: u16 = 36;
+/// 37: DestructionStage (thuum D-S3, traps follow the interaction; ADR-068's
+/// DestructionStage 78, pulled ahead of rung 4, m4-scripts-2b-traps): a
+/// reference's destruction stage and destroyed flag, reported by the seat
+/// whose engine reached the step first, recorded once and served to a late
+/// seat; and the two reserved rows at ids 84 and 85 (ADR-068's ScriptState
+/// 76 and ScriptStateApply 77, rung 3's, numbered ahead of their shapes), so
+/// MsgType 78 keeps `wire id = MsgType + 8` (ADR-019 decision 1).
+pub const SCHEMA_VERSION: u16 = 37;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -550,10 +557,24 @@ pub enum Message {
     ChangeFormApply(skymp::ChangeFormApply),
     /// 83, MsgType 75 (thuum). See [`skymp::ScriptCall`].
     ScriptCall(skymp::ScriptCall),
+    /// Id 84: MsgType 76's place, ADR-068's ScriptState (rung 3, the script
+    /// record), reserved: ADR-068 numbered its rows by rung and D-S3 builds
+    /// DestructionStage (78) first, so this row stands where 76 lands and
+    /// 78's wire id stays MsgType plus 8 (ADR-019 decision 1). Never sent;
+    /// no MsgType and no JSON form until rung 3 gives it its shape; server
+    /// to client in the table, so the transport refuses it from a client by
+    /// direction.
+    ReservedScriptState,
+    /// Id 85: MsgType 77's place, ADR-068's ScriptStateApply (rung 3),
+    /// reserved the same way.
+    ReservedScriptStateApply,
+    /// 86, MsgType 78 (thuum). See [`skymp::DestructionStage`].
+    DestructionStage(skymp::DestructionStage),
 }
 
-/// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
-/// cap the codec enforces before decoding, and the direction.
+/// One row per wire id: name, SkyMP MsgType (0 for the M0 family and the
+/// reserved rows), the byte cap the codec enforces before decoding, and the
+/// direction.
 struct Row {
     name: &'static str,
     msg_type: u8,
@@ -578,7 +599,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 84] = [
+const TABLE: [Row; 87] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -667,14 +688,21 @@ const TABLE: [Row; 84] = [
     // eleven arguments at SNIPPET_STRING's 16 KiB each and the four names at
     // PAPYRUS_NAME, with room (180,812 bytes at the fullest; thuum ADR-068)
     row("ScriptCall", 75, 180 * KIB, C2S),
+    // ADR-068's ScriptState (76) and ScriptStateApply (77), rung 3's, held by
+    // id until their shapes land: a unit variant each, sent by nobody
+    row("ReservedScriptState", 0, 8, S2C),
+    row("ReservedScriptStateApply", 0, 8, S2C),
+    // a reference, a stage byte and two flags (thuum D-S3; 9 bytes at the
+    // longest, pinned by wire_id_matches_postcard_variant_index)
+    row("DestructionStage", 78, 16, Both),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 84;
-const _: () = assert!(TABLE.len() == 84, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 87;
+const _: () = assert!(TABLE.len() == 87, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -783,6 +811,9 @@ impl Message {
             Message::ChangeFormAck(_) => 81,
             Message::ChangeFormApply(_) => 82,
             Message::ScriptCall(_) => 83,
+            Message::ReservedScriptState => 84,
+            Message::ReservedScriptStateApply => 85,
+            Message::DestructionStage(_) => 86,
         }
     }
 
@@ -826,6 +857,9 @@ mod tests {
         assert_eq!(Message::Refuse { reason: 0 }.name(), "Refuse");
         assert_eq!(Message::HostGrant(skymp::HostGrant::default()).name(), "HostGrant");
         assert_eq!(Message::ReservedHostGrant { cell: FormId(1) }.name(), "ReservedHostGrant");
+        assert_eq!(Message::ReservedScriptState.name(), "ReservedScriptState");
+        assert_eq!(Message::ReservedScriptStateApply.name(), "ReservedScriptStateApply");
+        assert_eq!(Message::DestructionStage(skymp::DestructionStage::default()).name(), "DestructionStage");
         assert_eq!(
             Message::CreateActor(skymp::CreateActor::default()).name(),
             "CreateActor"
@@ -889,7 +923,16 @@ mod tests {
         assert_eq!(name_of_msg_type(73), Some("ChangeFormAck"));
         assert_eq!(name_of_msg_type(74), Some("ChangeFormApply"));
         assert_eq!(name_of_msg_type(75), Some("ScriptCall"));
+        // ADR-068's 76 and 77 are reserved by id, no MsgType yet (thuum D-S3)
         assert_eq!(name_of_msg_type(76), None);
+        assert_eq!(name_of_msg_type(77), None);
+        assert_eq!(name_of_msg_type(78), Some("DestructionStage"));
+        assert_eq!(name_of_msg_type(79), None);
+        assert_eq!(Message::ReservedScriptState.msg_type(), None);
+        assert_eq!(Message::ReservedScriptStateApply.msg_type(), None);
+        assert_eq!(Message::ReservedScriptState.direction(), Direction::ServerToClient);
+        assert_eq!(Message::ReservedScriptStateApply.direction(), Direction::ServerToClient);
+        assert_eq!(Message::DestructionStage(skymp::DestructionStage::default()).direction(), Direction::Both);
     }
 
     #[test]
@@ -1048,6 +1091,12 @@ mod tests {
                 latent: true,
                 ..Default::default()
             }),
+            // the two reserved rows, and a destruction report at its longest:
+            // the reference a five-byte varint, the stage and both flags
+            // (thuum D-S3)
+            Message::ReservedScriptState,
+            Message::ReservedScriptStateApply,
+            Message::DestructionStage(skymp::DestructionStage { refr: u32::MAX, stage: u8::MAX, destroyed: true, served: true, ..Default::default() }),
             // and its relay, the sequence carried (thuum ADR-068)
             Message::SpSnippet(skymp::SpSnippet {
                 class: "ObjectReference".try_into().unwrap_or_default(),

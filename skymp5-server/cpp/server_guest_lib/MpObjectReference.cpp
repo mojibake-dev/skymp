@@ -790,6 +790,23 @@ void MpObjectReference::SendLockPrompt(MpActor& to)
   to.SendToUser(prompt, true);
 }
 
+std::optional<MpChangeFormREFR::Destruction>
+MpObjectReference::GetDestruction() const
+{
+  return ChangeForm().destruction;
+}
+
+void MpObjectReference::SetDestruction(
+  const MpChangeFormREFR::Destruction& destruction)
+{
+  if (ChangeForm().destruction == destruction) {
+    return;
+  }
+  EditChangeForm([&](MpChangeFormREFR& changeForm) {
+    changeForm.destruction = destruction;
+  });
+}
+
 namespace {
 // thuum docs/verbs/containers.md (ADR-067 decision 6): a move in or out of a
 // container is its holder's alone. A mover not in it (its hold released by

@@ -22,6 +22,7 @@
 #include "CreateActorMessage.h"
 #include "CustomPacketMessage.h"
 #include "DestroyActorMessage.h"
+#include "DestructionStageMessage.h"
 #include "HostGrantMessage.h"
 #include "HostReleaseMessage.h"
 #include "PerkStateMessage.h"
@@ -1425,6 +1426,27 @@ void PartOne::Init()
       }
     }
 
+    // thuum D-S3 (traps follow the interaction; ADR-068's DestructionStage
+    // row): a reference's recorded destruction (a spent tripwire, an oil
+    // lamp's fallen stage) rides behind its create word on the same ordered
+    // channel, served, so the late seat applies the record without replaying
+    // the firing; after a restart the record is the saved one
+    if (!emitterAsActor) {
+      if (const auto destruction = emitter->GetDestruction()) {
+        DestructionStageMessage served;
+        served.refr = emitter->GetFormId();
+        served.stage = destruction->stage;
+        served.destroyed = destruction->destroyed;
+        served.served = true;
+        sendTarget->Send(listenerUserId, served, true);
+        spdlog::info("[verb:traps] {:x}'s record (stage {}, destroyed {}) "
+                     "served to {:x} after its create word",
+                     emitter->GetFormId(),
+                     static_cast<int>(destruction->stage),
+                     destruction->destroyed, listenerAsActor->GetFormId());
+      }
+    }
+
     // thuum docs/verbs/racemenu-sync.md: a player's RaceMenu look comes
     // with its figure, after CreateActor on the same ordered channel; its
     // own client gets it after its login instead (ActionListener)
@@ -2802,10 +2824,14 @@ void PartOne::SendActorKeyframe(MpActor& actor, MpActor& to)
 
 PartOne::PropClaimVerdict PartOne::ClaimProp(const MpActor& claimant,
                                              const MpObjectReference& prop,
-                                             uint32_t cell, uint8_t touch)
+                                             uint32_t cell, uint8_t touch,
+                                             bool worldBody)
 {
-  const auto code = pImpl->props->claim_prop(
-    prop.GetFormId(), claimant.GetFormId(), cell, touch, SteadyNowMs());
+  const auto code = worldBody
+    ? pImpl->props->claim_prop_world_body(
+        prop.GetFormId(), claimant.GetFormId(), cell, SteadyNowMs())
+    : pImpl->props->claim_prop(prop.GetFormId(), claimant.GetFormId(), cell,
+                               touch, SteadyNowMs());
   return static_cast<PropClaimVerdict>(code);
 }
 

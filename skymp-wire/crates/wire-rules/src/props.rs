@@ -116,6 +116,11 @@ pub enum ClaimVerdict {
     /// The claimant simulates it already (a live row); nothing changes but
     /// the grab mark.
     Same,
+    /// A trap's world body another seat's firing set moving, still awake
+    /// under that seat's live row: the impulse claim of a second firing is
+    /// refused, the first firing wins (thuum D-S3 point 4,
+    /// `Props::claim_world_body`); nothing changes.
+    Moving,
 }
 
 /// The answer to a simulator's transform (ADR-058 decision 2).
@@ -225,6 +230,25 @@ impl Props {
             },
         );
         ClaimVerdict::Granted(epoch)
+    }
+
+    /// `player`'s seat claims `refr`, a trap's world body (thuum D-S3 point 4:
+    /// a world object a seat's own script set moving, Embershard's falling
+    /// rocks; never an item, which `claim` judges), standing in `cell`, at
+    /// `now_ms`. A world body joins the stream by the impulse alone (the core
+    /// admits no other touch on it), so this is `claim` with
+    /// `touch::IMPULSE`, but the first firing wins: while another player's
+    /// live row has the body awake (moving under that seat's firing, from its
+    /// grant to its rest sample), the claim is Moving and nothing changes. A
+    /// body at rest (asleep, its lease running) or a lapsed row is any new
+    /// firing's to take, and the claimant's own row is Same.
+    pub fn claim_world_body(&mut self, refr: u32, player: u32, cell: u32, now_ms: u64) -> ClaimVerdict {
+        if let Some(row) = self.rows.get(&refr) {
+            if row.live(now_ms) && row.owner != player && !row.grabbed && !row.asleep {
+                return ClaimVerdict::Moving;
+            }
+        }
+        self.claim(refr, player, cell, touch::IMPULSE, now_ms)
     }
 
     /// `player` reports `refr`'s transform, landing in `cell` (0 for none)
@@ -475,6 +499,53 @@ mod tests {
         assert_eq!(q.owner_of(BASKET, C1, 1_000 + PROP_GRAB_MAX_MS), C1);
         assert_eq!(q.transform(&facts(BASKET, C1, CELL, C1, false, 10.0, 1_000 + PROP_GRAB_MAX_MS)), TransformVerdict::Accepted);
         assert_eq!(q.claim(BASKET, C3, CELL, touch::CONTACT, 1_100 + PROP_GRAB_MAX_MS), ClaimVerdict::Granted(2));
+    }
+
+    // thuum D-S3 point 4: Embershard Mine 0xb6be6's falling rocks (0xb6d45 and
+    // its six siblings, thuum docs/research/trap-census-2026-11-05.md row 18)
+    const MINE: u32 = 0xb6be6;
+    const ROCK: u32 = 0xb6d45;
+
+    #[test]
+    fn a_trap_bodys_first_firing_wins_while_it_moves() {
+        let mut p = Props::default();
+        // c2's firing set the rock moving: its impulse claim is granted
+        assert_eq!(p.claim_world_body(ROCK, C2, MINE, 1_000), ClaimVerdict::Granted(1));
+        assert_eq!(p.owner_of(ROCK, C1, 1_000), C2);
+        // c1's own copy of the same firing: refused while the body moves,
+        // before and after c2's first awake sample, the epoch unmoved
+        assert_eq!(p.claim_world_body(ROCK, C1, MINE, 1_050), ClaimVerdict::Moving);
+        assert_eq!(p.transform(&facts(ROCK, C2, MINE, C1, false, 40.0, 1_100)), TransformVerdict::Accepted);
+        assert_eq!(p.claim_world_body(ROCK, C1, MINE, 1_150), ClaimVerdict::Moving);
+        assert_eq!(p.claim_world_body(ROCK, C3, MINE, 1_150), ClaimVerdict::Moving);
+        assert_eq!(p.owner_of(ROCK, C1, 1_150), C2);
+        assert_eq!(p.epoch_of(ROCK), 1);
+        // the firing seat's own claim again is Same
+        assert_eq!(p.claim_world_body(ROCK, C2, MINE, 1_200), ClaimVerdict::Same);
+        // the rest sample: the body sleeps, the lease runs, and a new firing
+        // takes the resting body at the next epoch
+        assert_eq!(p.transform(&facts(ROCK, C2, MINE, C1, true, 40.0, 1_300)), TransformVerdict::Accepted);
+        assert_eq!(p.claim_world_body(ROCK, C1, MINE, 1_400), ClaimVerdict::Granted(2));
+        assert_eq!(p.owner_of(ROCK, C2, 1_400), C1);
+    }
+
+    #[test]
+    fn a_trap_bodys_row_lapsed_in_silence_is_any_firings() {
+        let mut p = Props::default();
+        assert_eq!(p.claim_world_body(ROCK, C2, MINE, 1_000), ClaimVerdict::Granted(1));
+        // c2 never streams: the row lapses, and c1's firing takes the body
+        assert_eq!(p.claim_world_body(ROCK, C1, MINE, 1_000 + PROP_SILENCE_MS - 1), ClaimVerdict::Moving);
+        assert_eq!(p.claim_world_body(ROCK, C1, MINE, 1_000 + PROP_SILENCE_MS), ClaimVerdict::Granted(2));
+    }
+
+    #[test]
+    fn an_items_impulse_still_takes_it_from_another_seat() {
+        // ADR-058's newest touch wins stands for items: a shout's impulse on a
+        // basket another seat kicked is granted while it flies
+        let mut p = Props::default();
+        assert_eq!(p.claim(BASKET, C2, CELL, touch::CONTACT, 1_000), ClaimVerdict::Granted(1));
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 10.0, 1_100)), TransformVerdict::Accepted);
+        assert_eq!(p.claim(BASKET, C1, CELL, touch::IMPULSE, 1_150), ClaimVerdict::Granted(2));
     }
 
     #[test]

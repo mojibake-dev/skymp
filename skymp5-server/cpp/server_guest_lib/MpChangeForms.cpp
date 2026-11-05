@@ -553,6 +553,14 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
                                   { "broken", changeForm.lock->broken } };
   }
 
+  // thuum D-S3 (ADR-068's DestructionStage row); absent in older records and
+  // on references nobody reported, read as the game files' state
+  if (changeForm.destruction.has_value()) {
+    res["destruction"] =
+      nlohmann::json{ { "stage", changeForm.destruction->stage },
+                      { "destroyed", changeForm.destruction->destroyed } };
+  }
+
   // thuum docs/verbs/change-form.md (ADR-065): the owner's latest change
   // form, its body the sender's hex as received, its rows raw
   // (ChangeFormRecord.h says why); absent in older records and on actors
@@ -729,6 +737,8 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
   static const JsonPointer lockKey("lock/key");
   static const JsonPointer lockLocked("lock/locked");
   static const JsonPointer lockBroken("lock/broken");
+  static const JsonPointer destructionStage("destruction/stage");
+  static const JsonPointer destructionDestroyed("destruction/destroyed");
   static const JsonPointer changeFormRecord("changeFormRecord");
   static const JsonPointer favorites("favorites");
   static const JsonPointer raceMenuPreset("raceMenuPreset");
@@ -1149,6 +1159,16 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
     lockTmp.key = static_cast<uint32_t>(key);
     lockTmp.broken = static_cast<uint32_t>(broken);
     res.lock = lockTmp;
+  }
+
+  if (element.at_pointer(destructionStage.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    MpChangeFormREFR::Destruction destructionTmp;
+    int64_t stage = 0;
+    ReadEx(element, destructionStage, &stage);
+    ReadEx(element, destructionDestroyed, &destructionTmp.destroyed);
+    destructionTmp.stage = static_cast<uint8_t>(stage);
+    res.destruction = destructionTmp;
   }
 
   // thuum docs/verbs/change-form.md (ADR-065): the record as ToJson writes

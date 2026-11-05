@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, placements, player_globals, props, quest_stages, racemenu, ranged, rest, perks, scripted_effects, shouts, stagger, teleports, weather};
+use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, destruction, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, placements, player_globals, props, quest_stages, racemenu, ranged, rest, perks, scripted_effects, shouts, stagger, teleports, weather};
 
 // the perk table's effect calls carry a CTDA's five parts flat, as add_condition does
 #[allow(clippy::too_many_arguments)]
@@ -572,6 +572,31 @@ mod ffi {
         picks: u8,
         /// The lock after.
         state: LockStateRow,
+    }
+
+    /// A reference's destruction as the record holds it (thuum D-S3, traps
+    /// follow the interaction; ADR-068's DestructionStage row): the stage the
+    /// engine reached and the destroyed flag; a reference with no record
+    /// reads as the game files' state, stage 0 and not destroyed.
+    #[derive(Debug, Clone, PartialEq)]
+    struct DestructionRow {
+        /// The destruction stage, 0 for none.
+        stage: u8,
+        /// Destroyed (a spent trap).
+        destroyed: bool,
+    }
+
+    /// A destruction report judged (wire-rules destruction): `verdict` 0
+    /// recorded (the first report of a step: `record` is the state after, to
+    /// write and relay), 1 the record stands (an equal or a lower report:
+    /// `record` is the record unchanged), 2 a stage past the bound (`record`
+    /// unchanged).
+    #[derive(Debug, Clone, PartialEq)]
+    struct DestructionVerdict {
+        /// 0 recorded, 1 the record stands, 2 a stage past the bound.
+        verdict: u8,
+        /// The record after the report.
+        record: DestructionRow,
     }
 
     /// A skill's standing as the record holds it (thuum docs/verbs/
@@ -1859,6 +1884,16 @@ mod ffi {
         /// against the state, the player's reach, the Lockpicks it holds and the gap since its last
         /// report on this lock (u64::MAX for none).
         fn lock_report(state: &LockStateRow, outcome: u8, broken: u8, within_reach: bool, picks_held: u32, since_last_ms: u64) -> LockReportVerdict;
+
+        /// A seat's report of a reference's destruction `stage` and
+        /// `destroyed` flag against its record (thuum D-S3; the game files'
+        /// state, stage 0 and not destroyed, for a reference with none): the
+        /// stage only rises, destroyed only goes true, the first report of
+        /// each step wins.
+        fn destruction_report(record: &DestructionRow, stage: u8, destroyed: bool) -> DestructionVerdict;
+        /// The highest stage a report may name (wire-rules
+        /// destruction::MAX_STAGE, wire-validate's bound).
+        fn destruction_max_stage() -> u8;
         /// Sets standing in the world.
         fn live_sets(self: &Placements) -> usize;
 
@@ -2099,6 +2134,13 @@ mod ffi {
         /// `prop_epoch_of`), 1 held by another's grab, 2 the claimant
         /// simulates it already.
         fn claim_prop(self: &mut Props, refr: u32, player: u32, cell: u32, touch: u8, now_ms: u64) -> u8;
+        /// thuum D-S3 point 4: `player`'s seat claims `refr`, a trap's world
+        /// body in `cell` (a world object its own script set moving; the core
+        /// admits it by the impulse touch alone), at `now_ms`: the codes of
+        /// `claim_prop`, and 3 Moving, another seat's firing set the body
+        /// moving and it is awake under that seat's live row (the first firing
+        /// wins).
+        fn claim_prop_world_body(self: &mut Props, refr: u32, player: u32, cell: u32, now_ms: u64) -> u8;
         /// The prop's owner epoch, up at every grant; 0 before any.
         fn prop_epoch_of(self: &Props, refr: u32) -> u32;
         /// `player`'s transform of `refr`, landing in `cell` (0 for none)
@@ -2150,7 +2192,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
+pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -2840,6 +2882,26 @@ fn lock_report(state: &LockStateRow, outcome: u8, broken: u8, within_reach: bool
     }
 }
 
+fn destruction_of(row: &DestructionRow) -> destruction::Destruction {
+    destruction::Destruction { stage: row.stage, destroyed: row.destroyed }
+}
+
+fn destruction_row_of(d: destruction::Destruction) -> DestructionRow {
+    DestructionRow { stage: d.stage, destroyed: d.destroyed }
+}
+
+fn destruction_report(record: &DestructionRow, stage: u8, destroyed: bool) -> DestructionVerdict {
+    match destruction::report(destruction_of(record), stage, destroyed) {
+        destruction::ReportVerdict::Recorded(after) => DestructionVerdict { verdict: 0, record: destruction_row_of(after) },
+        destruction::ReportVerdict::Stands(kept) => DestructionVerdict { verdict: 1, record: destruction_row_of(kept) },
+        destruction::ReportVerdict::Range => DestructionVerdict { verdict: 2, record: record.clone() },
+    }
+}
+
+const fn destruction_max_stage() -> u8 {
+    destruction::MAX_STAGE
+}
+
 /// The eighteen skills' constants (wire-rules leveling).
 pub struct LevelingTable(leveling::Table);
 
@@ -3225,6 +3287,17 @@ const fn host_grace_ms() -> u64 {
     cells::GRACE_MS
 }
 
+/// A claim's verdict as the core's code: 0 granted, 1 held, 2 the same
+/// simulator, 3 a world body another seat's firing moves (thuum D-S3).
+fn claim_code(verdict: props::ClaimVerdict) -> u8 {
+    match verdict {
+        props::ClaimVerdict::Granted(_) => 0,
+        props::ClaimVerdict::Held => 1,
+        props::ClaimVerdict::Same => 2,
+        props::ClaimVerdict::Moving => 3,
+    }
+}
+
 /// The prop owner table (wire-rules props, thuum docs/verbs/prop-physics.md).
 #[derive(Debug, Default)]
 pub struct Props(props::Props);
@@ -3235,11 +3308,11 @@ fn new_props() -> Box<Props> {
 
 impl Props {
     fn claim_prop(&mut self, refr: u32, player: u32, cell: u32, touch: u8, now_ms: u64) -> u8 {
-        match self.0.claim(refr, player, cell, touch, now_ms) {
-            props::ClaimVerdict::Granted(_) => 0,
-            props::ClaimVerdict::Held => 1,
-            props::ClaimVerdict::Same => 2,
-        }
+        claim_code(self.0.claim(refr, player, cell, touch, now_ms))
+    }
+
+    fn claim_prop_world_body(&mut self, refr: u32, player: u32, cell: u32, now_ms: u64) -> u8 {
+        claim_code(self.0.claim_world_body(refr, player, cell, now_ms))
     }
 
     fn prop_epoch_of(&self, refr: u32) -> u32 {
@@ -4045,6 +4118,22 @@ mod tests {
     }
 
     #[test]
+    fn a_trap_bodys_claim_crosses_as_codes() {
+        // thuum D-S3 point 4: Embershard's rock 0xb6d45 in the mine 0xb6be6;
+        // the firing seat's grant, the second firing's Moving (3), the
+        // firing seat's own Same (2); an item's impulse keeps its grant
+        let mut p = new_props();
+        assert_eq!(p.claim_prop_world_body(0xb6d45, 0xff00_0003, 0xb6be6, 1_000), 0);
+        assert_eq!(p.prop_epoch_of(0xb6d45), 1);
+        assert_eq!(p.claim_prop_world_body(0xb6d45, 0xff00_0002, 0xb6be6, 1_050), 3);
+        assert_eq!(p.claim_prop_world_body(0xb6d45, 0xff00_0003, 0xb6be6, 1_100), 2);
+        assert_eq!(p.prop_epoch_of(0xb6d45), 1);
+        assert_eq!(p.prop_live_owner(0xb6d45, 1_100), 0xff00_0003);
+        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 0, 1_000), 0);
+        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0002, 0x9732, 3, 1_050), 0);
+    }
+
+    #[test]
     fn the_bridge_passes_the_rules_through() {
         assert!(!activation_within_reach(1509.0, 0.0).allowed);
         assert!(race_allowed(&RaceFacts {
@@ -4330,6 +4419,27 @@ mod tests {
         assert!(broke.accepted && broke.change == 2 && broke.picks == 2 && broke.state.locked && broke.state.broken == 2, "{broke:?}");
         let left = lock_report(&novice, 2, 0, true, 0, u64::MAX);
         assert!(left.accepted && left.change == 0 && left.state == novice, "{left:?}");
+    }
+
+    #[test]
+    fn the_bridge_judges_a_destruction_report() {
+        // thuum D-S3: the lamp's first shot over the game files' state, the
+        // second seat's copy, a lower report, the spent tripwire, the bound
+        let none = DestructionRow { stage: 0, destroyed: false };
+        let first = destruction_report(&none, 1, false);
+        assert_eq!(first, DestructionVerdict { verdict: 0, record: DestructionRow { stage: 1, destroyed: false } });
+        assert_eq!(destruction_report(&first.record, 1, false), DestructionVerdict { verdict: 1, record: first.record.clone() });
+        let two = destruction_report(&first.record, 2, false).record;
+        assert_eq!(destruction_report(&two, 1, false).verdict, 1);
+        assert_eq!(destruction_report(&two, 1, false).record, two);
+        let spent = destruction_report(&none, 0, true);
+        assert_eq!(spent.record, DestructionRow { stage: 0, destroyed: true });
+        assert_eq!(destruction_report(&spent.record, 0, false).verdict, 1);
+        assert_eq!(destruction_max_stage(), destruction::MAX_STAGE);
+        // the rule's bound is the edge's (wire-validate refuses past it)
+        assert_eq!(destruction_max_stage(), wire_validate::DESTRUCTION_MAX_STAGE);
+        let past = destruction_report(&two, destruction_max_stage().saturating_add(1), true);
+        assert_eq!(past, DestructionVerdict { verdict: 2, record: two });
     }
 
     #[test]

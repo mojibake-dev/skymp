@@ -168,6 +168,19 @@ public:
   virtual void OnScriptCall(const RawMessageData& rawMsgData,
                             const ScriptCallMessage& msg);
 
+  // thuum D-S3 (traps follow the interaction; ADR-068's DestructionStage
+  // row): a seat's report of a reference's destruction stage rise or its
+  // destruction, which its engine caused or saw first. The reference is one
+  // the server holds or loads, no actor, in a cell the reporter's game has
+  // loaded (PartOne::GetCellLoaders); the rule (wire-rules destruction: the
+  // stage only rises, destroyed only goes true) records the first report of
+  // each step on the reference's record and the step goes at once to the
+  // reference's other listeners (served false); an equal or a lower report
+  // changes nothing. A late subscriber hears the record behind the
+  // reference's create word (PartOne's onSubscribe, served true)
+  virtual void OnDestructionStage(const RawMessageData& rawMsgData,
+                                  const DestructionStageMessage& msg);
+
   // thuum docs/verbs/traps.md (M4): a linked activation the cell's host
   // reports (a reference that is no actor activating the reference whose
   // activation parents name it): recorded through Activate's own path, and
@@ -439,6 +452,9 @@ private:
     scriptCallRefusals;
   // base form id to whether its record carries a script (the VMAD read once)
   std::unordered_map<uint32_t, bool> scriptedBases;
+  // thuum D-S3 phase 2: trigger reference to whether its record sets
+  // playerOnlyTrigger (the base's VMAD and its own, read once)
+  std::unordered_map<uint32_t, bool> playerOnlyTriggers;
   // thuum docs/verbs/spell-cast.md (train-27): a cast delivered to its
   // target (touch, target actor) whose relay waits for its first hit, by
   // the caster's form id and hand; the hit's claim (CastClaim::relay)

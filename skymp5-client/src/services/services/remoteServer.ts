@@ -65,6 +65,7 @@ import {
 } from '../../view/worldViewMisc';
 import { TimeService } from './timeService';
 import { HostService } from './hostService';
+import { ObjectAnimationService } from './objectAnimationService';
 import { PuppetService } from "./puppetService";
 import { logTrace, logError, logLab } from '../../logging';
 
@@ -558,13 +559,34 @@ export class RemoteServer extends ClientListener {
               const refrid = refr.getFormID();
 
               (async () => {
+                // the record's replay is a guest's view of a scripted object; a seat
+                // that hosts the cell never replays it, since its script owns the
+                // graph and a replayed event moves the graph off the script's state
+                // (playtest 46's dead pillars; objectAnimationService.playRelayed).
+                // The first attempt waits one interval: the host grant follows this
+                // seat's CellLoaded report by one round trip, and the engine's graph
+                // is rarely there at onceLoad anyway ("pillars in bleakfalls are not
+                // reliable" was a trigger refused by a graph not yet loaded, or on
+                // another side). A grant slower than the interval still lets a host
+                // replay once: the limit until the server sends the record to
+                // non-host loaders alone (the review of 843fed95, F1)
+                const host = this.controller.lookupListener(HostService);
                 for (let i = 0; i < 5; i++) {
-                  // retry. pillars in bleakfalls are not reliable for some reason
-                  let res2 = ObjectReference.from(Game.getFormEx(refrid))?.playAnimation(animation);
-                  if (res2) {
+                  await Utility.wait(2);
+                  const again = ObjectReference.from(Game.getFormEx(refrid));
+                  if (!again) {
+                    continue;
+                  }
+                  const cell = again.getParentCell();
+                  if (cell && host.hostsCell(cell.getFormID())) {
+                    logTrace(this, `object animation ${refrid.toString(16)} ${animation} not replayed: hosted here`);
                     break;
                   }
-                  await Utility.wait(2);
+                  // a guest's replay carries the jump to the trigger's side (the record's
+                  // side is then this seat's); the host never gets here
+                  if (this.controller.lookupListener(ObjectAnimationService).playRelayed(again, animation, "the record")) {
+                    break;
+                  }
                 }
               })();
             }

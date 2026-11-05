@@ -4,6 +4,9 @@
 #include "wire_bridge_cxx/rules.h"
 #include <catch2/catch_all.hpp>
 #include <chrono>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
+#include <sstream>
 
 PartOne& GetPartOne();
 
@@ -121,6 +124,33 @@ std::vector<RelayedActivationMessage> RelayedTo(PartOne& p,
   }
   return out;
 }
+
+// the default logger's lines at info and above while the guard lives
+// (EffectConditionsTest's shape), restored at its end
+struct LogCapture
+{
+  std::shared_ptr<spdlog::logger> old = spdlog::default_logger();
+  std::ostringstream oss;
+  LogCapture()
+  {
+    auto sink = std::make_shared<spdlog::sinks::ostream_sink_mt>(oss);
+    auto logger = std::make_shared<spdlog::logger>("trap-relay-test", sink);
+    logger->set_pattern("%v");
+    logger->set_level(spdlog::level::info);
+    spdlog::set_default_logger(logger);
+  }
+  ~LogCapture() { spdlog::set_default_logger(old); }
+  size_t Count(const std::string& line) const
+  {
+    const std::string log = oss.str();
+    size_t n = 0;
+    for (size_t at = log.find(line); at != std::string::npos;
+         at = log.find(line, at + line.size())) {
+      ++n;
+    }
+    return n;
+  }
+};
 }
 
 TEST_CASE("The host's linked activation is recorded through the reference's "
@@ -221,9 +251,36 @@ TEST_CASE("A host's linked activation of an actor is the actor's "
   constexpr uint32_t kDraugrUnloaded = 0x380b4;
   p.worldState.GetFormAt<MpObjectReference>(kAmbushTrigger);
   p.Messages().clear();
-  // a loaded or unloaded actor target: no relay to the guest, no throw
-  REQUIRE_NOTHROW(Linked(p, 0, kAmbushTrigger, kDraugr));
-  REQUIRE_NOTHROW(Linked(p, 0, kAmbushTrigger, kDraugrUnloaded));
+  // an actor the server never loaded, judged by its game-file record (ACHR):
+  // reported while the fresh world loads no NPC (npcEnabled false), so the
+  // report's own lookup cannot load it, whatever its record's flags
+  {
+    LogCapture log;
+    REQUIRE_NOTHROW(Linked(p, 0, kAmbushTrigger, kDraugrUnloaded));
+    REQUIRE(log.Count("[verb:traps] ff000fe1 reports 38098 activating actor "
+                      "380b4: the actor's simulator's (the NPC stream "
+                      "carries it), not relayed") == 1);
+    REQUIRE(log.Count("E_TRAP_") == 0);
+  }
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kDraugrUnloaded) == nullptr);
+  REQUIRE(RelayedTo(p, 1).empty());
+  REQUIRE(RelayedTo(p, 0).empty());
+  // a loaded actor, through the loaded reference's own path: NPCs on, the
+  // draugr loaded by its id (NpcFateTest's shape), simulated by the reporter,
+  // which hosts the temple
+  p.worldState.npcEnabled = true;
+  auto& draugr = p.worldState.GetFormAt<MpActor>(kDraugr);
+  REQUIRE(p.worldState.HostOf(draugr) ==
+          &p.worldState.GetFormAt<MpActor>(kHostActor));
+  p.Messages().clear();
+  {
+    LogCapture log;
+    REQUIRE_NOTHROW(Linked(p, 0, kAmbushTrigger, kDraugr));
+    REQUIRE(log.Count("[verb:traps] ff000fe1 reports 38098 activating actor "
+                      "380b3: the actor's simulator's (the NPC stream "
+                      "carries it), not relayed") == 1);
+    REQUIRE(log.Count("E_TRAP_") == 0);
+  }
   REQUIRE(RelayedTo(p, 1).empty());
   REQUIRE(RelayedTo(p, 0).empty());
   // the plate's spike wall still relays beside it

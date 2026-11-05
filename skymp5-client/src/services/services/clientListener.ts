@@ -166,25 +166,44 @@ declare module "skyrimPlatform" {
     }
     function on(eventName: 'skillUse', callback: (event: SkillUseEvent) => void): EventHandle;
     function once(eventName: 'skillUse', callback: (event: SkillUseEvent) => void): EventHandle;
-    // thuum docs/DECISIONS.md ADR-062 decision 2: a script's call of a native that
-    // changes server-owned state, on this seat, for a world object in a hosted cell,
-    // an actor this game simulates, a quest, a global or an alias (ScriptNatives.cpp).
-    // No game call in its handler.
-    interface ScriptNativeEvent {
-        native: string;
+    // thuum docs/DECISIONS.md ADR-068 (rung 2, the one seam): the tabled natives
+    // (docs/NATIVES.md's kind column) a script called in this frame on a subject
+    // this seat owns, as the platform's hook on the VM's native dispatch
+    // (NativeFunctionBase::Call, CommonLibSSE-NG include/RE/Offsets.h:130;
+    // ScriptNatives.cpp) read them from the typed frame, one batch a frame at
+    // most: cls and fn the native's class and name, kind its row's, self the
+    // subject's form id (a static row's first argument; 0 for none), args the
+    // script's arguments by the native's declared types (a form as its id; null
+    // for None or an argument the hook could not read; a row with an array
+    // parameter never reaches the batch), caller and handler the calling script
+    // and function (the frame below the native's), latent the native's flag,
+    // stackId the Papyrus stack. No game call in its handler.
+    interface ScriptCall {
+        cls: string;
+        fn: string;
+        kind: "action" | "state" | "everyone";
         self: number;
-        arg: number;
-        value: number;
-        cell: number;
-        actor: boolean;
+        args: (boolean | number | string | { formId: number } | null)[];
+        caller: string;
+        handler: string;
+        latent: boolean;
         stackId: number;
-        // 1 for a live call; a census event (self 0) folds this many calls
-        // (the quest, global and alias rows, " (not hosted)", " (platform)",
-        // " (over budget)" suffixes), every 30 s
-        count: number;
     }
-    function on(eventName: 'scriptNative', callback: (event: ScriptNativeEvent) => void): EventHandle;
-    function once(eventName: 'scriptNative', callback: (event: ScriptNativeEvent) => void): EventHandle;
+    interface ScriptCallsEvent {
+        calls: ScriptCall[];
+    }
+    // the same hook's tallies, every 30 s, one row per key: "<Class.Name>" with
+    // " (platform)" for the platform's own call, " (not hosted)" for a call on a
+    // subject this seat does not own, " on <id>" for a quest's, global's or
+    // alias's call with its self (" on others" past the row's cap of selves). No
+    // game call in its handler.
+    interface ScriptCensusEvent {
+        rows: { row: string; count: number }[];
+    }
+    function on(eventName: 'scriptCalls', callback: (event: ScriptCallsEvent) => void): EventHandle;
+    function once(eventName: 'scriptCalls', callback: (event: ScriptCallsEvent) => void): EventHandle;
+    function on(eventName: 'scriptCensus', callback: (event: ScriptCensusEvent) => void): EventHandle;
+    function once(eventName: 'scriptCensus', callback: (event: ScriptCensusEvent) => void): EventHandle;
     // thuum docs/verbs/npc-stream.md (the voice slice): a spoken line begins
     // on an actor this game hosts; ids alone, no game call in its handler
     interface TopicInfoEvent {

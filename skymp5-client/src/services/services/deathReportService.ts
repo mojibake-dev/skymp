@@ -5,7 +5,7 @@ import { MsgType } from "../../messages";
 import { ActorDeathMessage } from "../messages/actorDeathMessage";
 import { HostService } from "./hostService";
 import { DeathService } from "./deathService";
-import { ScriptNativeService } from "./scriptNativeService";
+import { ScriptCallService } from "./scriptCallService";
 import { localIdToRemoteId } from "../../view/worldViewMisc";
 
 // thuum docs/verbs/npc-fate.md (ADR-048's B): this game's report of a death
@@ -59,11 +59,11 @@ export class DeathReportService extends ClientListener {
             return;
         }
         // thuum docs/DECISIONS.md ADR-062 decision 2 (slice 1b): a script this
-        // seat ran called Kill on the actor within the window (ScriptNativeService's
-        // mark from the platform's hook on Actor.Kill): the death is the script's,
-        // cause 3, with the killer the script named, and the server takes it as the
-        // host's word (R2)
-        const scripted = this.controller.lookupListener(ScriptNativeService).scriptKill(localId);
+        // seat ran called Kill on the actor within the window (ScriptCallService's
+        // mark from the platform's boundary on Actor.Kill, ADR-068's one seam): the
+        // death is the script's, cause 3, with the killer the script named, and the
+        // server takes it as the host's word (R2)
+        const scripted = this.controller.lookupListener(ScriptCallService).scriptKill(localId);
         if (scripted) {
             const named = scripted.killer !== 0 ? localIdToRemoteId(scripted.killer, true) : 0;
             this.send(dying, localIdToRemoteId(localId), 3, named, "deathStart after a script's Kill");

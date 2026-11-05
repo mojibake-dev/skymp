@@ -73,7 +73,12 @@ use bounded::{String, Vec};
 /// on the observer, m2-rune-glyph) merged on m3-canon-1, Eli's baseline of
 /// everything known to work; a 33 image without the field is on the lab, so
 /// the union is a new number.
-pub const SCHEMA_VERSION: u16 = 35;
+/// 35: ActorFateEntry.inv (thuum docs/verbs/npc-fate.md, playtest 44's 1c):
+/// the record's inventory rows on the fate.
+/// 36: ScriptCall and SpSnippet's `seq` (thuum ADR-068, the one seam,
+/// m4-scripts-2): a tabled native the subject's owner ran, reported at the
+/// native boundary, and its relay with the subject's sequence.
+pub const SCHEMA_VERSION: u16 = 36;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -187,6 +192,10 @@ pub mod cap {
     pub const PAPYRUS_NAME: usize = 128;
     /// Arguments of one delegated Papyrus call.
     pub const SNIPPET_ARGS: usize = 64;
+    /// Arguments of one reported native call (thuum ADR-068): the most a
+    /// native takes (CommonLibSSE-NG src/RE/N/NativeFunctionBase.cpp:15,
+    /// "native supports max 11").
+    pub const SCRIPT_CALL_ARGS: usize = 11;
     /// A Papyrus string argument or return value.
     pub const SNIPPET_STRING: usize = 16 * 1024;
     /// Entries in one gamemode code list.
@@ -539,6 +548,8 @@ pub enum Message {
     ChangeFormAck(skymp::ChangeFormAck),
     /// 82, MsgType 74 (thuum). See [`skymp::ChangeFormApply`].
     ChangeFormApply(skymp::ChangeFormApply),
+    /// 83, MsgType 75 (thuum). See [`skymp::ScriptCall`].
+    ScriptCall(skymp::ScriptCall),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -567,7 +578,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 83] = [
+const TABLE: [Row; 84] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -653,14 +664,17 @@ const TABLE: [Row; 83] = [
     row("ChangeForm", 72, 136 * KIB, C2S),
     row("ChangeFormAck", 73, 16, S2C),
     row("ChangeFormApply", 74, 136 * KIB, S2C),
+    // eleven arguments at SNIPPET_STRING's 16 KiB each and the four names at
+    // PAPYRUS_NAME, with room (180,812 bytes at the fullest; thuum ADR-068)
+    row("ScriptCall", 75, 180 * KIB, C2S),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 83;
-const _: () = assert!(TABLE.len() == 83, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 84;
+const _: () = assert!(TABLE.len() == 84, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -768,6 +782,7 @@ impl Message {
             Message::ChangeForm(_) => 80,
             Message::ChangeFormAck(_) => 81,
             Message::ChangeFormApply(_) => 82,
+            Message::ScriptCall(_) => 83,
         }
     }
 
@@ -873,7 +888,8 @@ mod tests {
         assert_eq!(name_of_msg_type(72), Some("ChangeForm"));
         assert_eq!(name_of_msg_type(73), Some("ChangeFormAck"));
         assert_eq!(name_of_msg_type(74), Some("ChangeFormApply"));
-        assert_eq!(name_of_msg_type(75), None);
+        assert_eq!(name_of_msg_type(75), Some("ScriptCall"));
+        assert_eq!(name_of_msg_type(76), None);
     }
 
     #[test]
@@ -1012,6 +1028,33 @@ mod tests {
                     .collect::<alloc::vec::Vec<_>>()
                     .try_into()
                     .unwrap_or_default(),
+                ..Default::default()
+            }),
+            // a reported native call at its fullest: eleven arguments, each a
+            // string at its cap, every name at its cap, every number a
+            // five-byte varint (thuum ADR-068)
+            Message::ScriptCall(skymp::ScriptCall {
+                epoch: u32::MAX,
+                self_id: 0xfeff_ffff,
+                cls: "x".repeat(cap::PAPYRUS_NAME).try_into().unwrap_or_default(),
+                func: "x".repeat(cap::PAPYRUS_NAME).try_into().unwrap_or_default(),
+                args: (0..cap::SCRIPT_CALL_ARGS)
+                    .map(|_| Some(skymp::SnippetArg::String("x".repeat(cap::SNIPPET_STRING).try_into().unwrap_or_default())))
+                    .collect::<alloc::vec::Vec<_>>()
+                    .try_into()
+                    .unwrap_or_default(),
+                caller: "x".repeat(cap::PAPYRUS_NAME).try_into().unwrap_or_default(),
+                handler: "x".repeat(cap::PAPYRUS_NAME).try_into().unwrap_or_default(),
+                latent: true,
+                ..Default::default()
+            }),
+            // and its relay, the sequence carried (thuum ADR-068)
+            Message::SpSnippet(skymp::SpSnippet {
+                class: "ObjectReference".try_into().unwrap_or_default(),
+                function: "PlayAnimation".try_into().unwrap_or_default(),
+                self_id: 0xfeff_ffff,
+                snippet_idx: i64::from(u32::MAX),
+                seq: Some(u32::MAX),
                 ..Default::default()
             }),
             Message::PerkState(skymp::PerkState {

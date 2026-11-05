@@ -1,0 +1,17 @@
+{
+  "args": [
+    {
+      "formId": 1107653,
+      "type": "ObjectReference"
+    },
+    "Open"
+  ],
+  "caller": "",
+  "cls": "Debug",
+  "epoch": 1,
+  "fn": "SendAnimationEvent",
+  "handler": "",
+  "latent": false,
+  "selfId": 1107653,
+  "t": 75
+}

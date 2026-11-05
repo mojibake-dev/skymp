@@ -75,7 +75,7 @@ macro_rules! skymp_family {
             47 CellLoaded, 48 HostGrant, 49 HostRelease, 50 ActorSightings,
             51 ActorFate, 52 ActorDeath, 53 HostedActorState, 54 ActorSpeech, 55 DamageCause, 56 ActorClaim, 57 QuestStage,
             58 PropTransform, 59 PropClaim, 60 PropOwner, 61 PlacedRequest, 62 PlacedReport, 63 SkillUse, 64 LockReport, 65 LockPrompt, 66 SetWeather, 67 PerkPick, 68 PerkState, 69 WordWall, 70 RelayedActivation, 71 ObjectAnimation,
-            72 ChangeForm, 73 ChangeFormAck, 74 ChangeFormApply
+            72 ChangeForm, 73 ChangeFormAck, 74 ChangeFormApply, 75 ScriptCall
         }
     };
 }
@@ -352,7 +352,7 @@ mod tests {
             n += 1;
         }
         assert!(n >= 90, "{n} fixtures");
-        assert_eq!(types.len(), 74, "every SkyMP type has fixtures");
+        assert_eq!(types.len(), 75, "every SkyMP type has fixtures");
     }
 
     /// Writes the fixtures: two per SkyMP type, from arbitrary values with
@@ -414,6 +414,44 @@ mod tests {
             let text = std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
             let m = recognize(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert_eq!(validate_server(&m), Ok(()), "{name}");
+        }
+    }
+
+    /// thuum ADR-068 (the one seam): the ScriptCall fixtures are the
+    /// contract's shapes and its refusals, as the ChangeForm ones are. 0 is
+    /// the puzzle pillar's turn on Bleak Falls Temple's 0xaa8cb (a method
+    /// native, latent, two strings; docs/verbs/traps.md's census of
+    /// defaultPuzzlePillarScript), 1 a static native on a world object (the
+    /// subject first among the arguments and named again as `selfId`); 2 and
+    /// 3 each name a form the server names (an object argument, a subject at
+    /// 0xff000000 and up) and are refused by the shape. The SpSnippet
+    /// fixture 2 is the pillar's relay with the subject's sequence; 0 and 1,
+    /// the snippets without one, render no `seq`.
+    #[test]
+    fn script_call_fixtures_validate_as_named() {
+        use wire_validate::{validate_server, Reject};
+        let verdicts: [(&str, Result<(), Reject>); 4] = [
+            ("75-ScriptCall-0.json", Ok(())),
+            ("75-ScriptCall-1.json", Ok(())),
+            ("75-ScriptCall-2.json", Err(Reject::Range)),
+            ("75-ScriptCall-3.json", Err(Reject::Range)),
+        ];
+        for (name, want) in verdicts {
+            let text = std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+            let m = recognize(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(matches!(m, Message::ScriptCall(_)), "{name}");
+            assert_eq!(validate_server(&m), want, "{name}");
+        }
+        let text = std::fs::read_to_string(fixtures_dir().join("30-SpSnippet-2.json")).unwrap_or_default();
+        match recognize(&text) {
+            Ok(Message::SpSnippet(s)) => assert_eq!(s.seq, Some(1)),
+            other => panic!("{other:?}"),
+        }
+        for name in ["30-SpSnippet-0.json", "30-SpSnippet-1.json"] {
+            let text = std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+            let m = recognize(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(matches!(&m, Message::SpSnippet(s) if s.seq.is_none()), "{name}");
+            assert!(!render(&m).unwrap_or_default().contains("\"seq\""), "{name}: an absent sequence is no key");
         }
     }
 

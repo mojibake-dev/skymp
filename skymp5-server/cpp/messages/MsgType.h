@@ -116,5 +116,9 @@ enum class MsgType : uint8_t
                       // hash the owner compares against
   ChangeFormApply = 74, // the same verb: a recorded change form served to a
                         // seat before the actor's first frame there
+  ScriptCall = 75, // thuum ADR-068 (the one seam): a tabled native a script
+                   // ran on the engine that owns its subject, reported at the
+                   // native boundary and relayed as SpSnippet with the
+                   // subject's sequence
   Max
 };

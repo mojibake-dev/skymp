@@ -1192,6 +1192,13 @@ wire_struct! {
         pub self_id: u64,
         /// The call's number, echoed by FinishSpSnippet.
         pub snippet_idx: i64,
+        /// thuum ADR-068 (the one seam): the server's sequence for the
+        /// subject of a relayed script call (ScriptCall, MsgType 75), up by
+        /// one at every accepted call on that object; absent for every
+        /// other snippet, the server VM's own among them. A receiver applies
+        /// the relayed calls for one subject in this order and drops one at
+        /// or below the last it applied.
+        pub seq: Option<u32>,
     }
 }
 
@@ -2206,6 +2213,57 @@ wire_struct! {
         pub body: String<{ cap::CHANGE_FORM_BODY_HEX }>,
         /// The sender's census rows.
         pub remap: Vec<ChangeFormRemap, { cap::CHANGE_FORM_REMAP }>,
+    }
+}
+
+wire_struct! {
+    /// MsgType 75, thuum's (ADR-068, the one seam; docs/research/
+    /// scripts-one-system-2026-11-05.md 6.4): a tabled native a script ran
+    /// on the engine that owns the call's subject, read at the native
+    /// boundary (NativeFunctionBase::Call) from the call's typed frame and
+    /// reported as it ran. Client to server, reliable, R2: the server judges
+    /// the shape alone (wire-rules natives: the pair an action row of the
+    /// table, the arguments the row's count and kinds, the sender within its
+    /// budget and the subject's owner at the epoch) and relays an accepted
+    /// call to the subject's other listeners as SpSnippet 30 with the
+    /// subject's sequence (`seq`); a value is never judged (ADR-062's
+    /// amendment). Reason codes: `E_VAL_RANGE` (an empty class or function,
+    /// a subject or an object argument the server names, 0xff000000 and
+    /// up, or an object id past 32 bits), `E_VAL_NONFINITE`; the server's
+    /// rule logs `E_SCRIPTCALL_ROW`, `E_SCRIPTCALL_ARGS`,
+    /// `E_SCRIPTCALL_OWNER` and `E_SCRIPTCALL_RATE` by name.
+    pub struct ScriptCall {
+        /// `"t": 75`.
+        #[serde(default)]
+        pub t: MsgT<75>,
+        /// The subject's owner epoch the sender holds: the cell's host epoch
+        /// of HostGrant for a world object (ADR-066 decision 3).
+        pub epoch: u32,
+        /// The call's subject as the sender's engine numbers it: the self of
+        /// a method native, the target argument (the first) of a static one;
+        /// a form of the load order both ends share, or 0x14 for the
+        /// sender's own player; never 0xff000000 and up, which the server
+        /// names.
+        pub self_id: u32,
+        /// The native's Papyrus class, `ObjectReference`.
+        pub cls: String<{ cap::PAPYRUS_NAME }>,
+        /// The native's name, `PlayAnimation`.
+        #[serde(rename = "fn")]
+        pub func: String<{ cap::PAPYRUS_NAME }>,
+        /// The call's arguments in the native's order, read by their
+        /// declared types (an object as its form id and type name); JSON
+        /// null for one the boundary could not read. At most eleven, the
+        /// engine's limit for a native (CommonLibSSE-NG
+        /// src/RE/N/NativeFunctionBase.cpp:15).
+        pub args: Vec<Option<SnippetArg>, { cap::SCRIPT_CALL_ARGS }>,
+        /// The calling script's type (the caller frame's owningObjectType),
+        /// for the server's log.
+        pub caller: String<{ cap::PAPYRUS_NAME }>,
+        /// The calling function (the caller frame's owningFunction), for the
+        /// server's log.
+        pub handler: String<{ cap::PAPYRUS_NAME }>,
+        /// The native is latent: a receiver runs its row's non-latent twin.
+        pub latent: bool,
     }
 }
 

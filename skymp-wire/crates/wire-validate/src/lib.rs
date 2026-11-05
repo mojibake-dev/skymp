@@ -1155,6 +1155,33 @@ fn check_change_form_ack(m: &skymp::ChangeFormAck) -> Result<(), Reject> {
     Ok(())
 }
 
+/// A tabled native an owner's engine ran (thuum ADR-068, the one seam;
+/// docs/research/scripts-one-system-2026-11-05.md 6.11 item 13, "the shape
+/// is the gate"): a class and a function, neither empty; a subject the
+/// client may name (a load-order form or its own 0x14; the server names
+/// 0xff000000 and up, its own forms and the players' figures), and every
+/// object argument the same, its id a form's 32 bits; every number finite.
+/// The count (at most `cap::SCRIPT_CALL_ARGS`) and every string's length
+/// hold at decode. Whether the pair is a tabled action row, the arguments
+/// its count and kinds, the subject the sender's at the epoch and the
+/// sender within its budget is the server's rule (wire-rules natives); a
+/// value is never judged.
+fn check_script_call(m: &skymp::ScriptCall) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    if m.cls.as_str().is_empty() || m.func.as_str().is_empty() || m.self_id >= PLAYER_FORMS {
+        return Err(Reject::Range);
+    }
+    let server_named = |a: &Option<skymp::SnippetArg>| {
+        matches!(a, Some(skymp::SnippetArg::Object(o)) if o.form_id >= u64::from(PLAYER_FORMS))
+    };
+    if m.args.iter().any(server_named) {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
 /// Validate one inbound message from a client against its guard state: the
 /// message's shape ([`validate_server`]'s rules) and then what only a
 /// server's view of a client adds, replay order and rate budgets.
@@ -1421,6 +1448,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::ChangeForm(m) => check_change_form(m),
         Message::ChangeFormAck(m) => check_change_form_ack(m),
         Message::ChangeFormApply(m) => check_change_form_apply(m),
+        Message::ScriptCall(m) => check_script_call(m),
         Message::CreateActor(m) => check_create_actor(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
@@ -3469,6 +3497,83 @@ mod change_form_tests {
                                           form_id in any::<u32>(), form_type in any::<u8>(), fnv1a in any::<u32>()) {
             let _ = validate_server(&change_form(form_id, form_type, body, &rows));
             let _ = validate_server(&change_form_hex(form_id, form_type, text, fnv1a, &rows));
+        }
+    }
+}
+
+#[cfg(test)]
+mod script_call_tests {
+    use super::*;
+    use wire_schema::cap;
+    use wire_schema::skymp::{ScriptCall, SnippetArg, SnippetObject};
+
+    fn object(form_id: u64, kind: &str) -> Option<SnippetArg> {
+        Some(SnippetArg::Object(SnippetObject { form_id, kind: kind.try_into().unwrap_or_default() }))
+    }
+
+    fn text(s: &str) -> Option<SnippetArg> {
+        Some(SnippetArg::String(s.try_into().unwrap_or_default()))
+    }
+
+    fn call(self_id: u32, cls: &str, func: &str, args: Vec<Option<SnippetArg>>) -> Message {
+        Message::ScriptCall(ScriptCall {
+            epoch: 3,
+            self_id,
+            cls: cls.try_into().unwrap_or_default(),
+            func: func.try_into().unwrap_or_default(),
+            args: args.try_into().unwrap_or_default(),
+            caller: "defaultPuzzlePillarScript".try_into().unwrap_or_default(),
+            handler: "onActivate".try_into().unwrap_or_default(),
+            latent: true,
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn a_reported_call_names_a_class_a_function_and_a_subject_the_client_may_name() {
+        // thuum ADR-068: the pillar's turn (Bleak Falls Temple's 0xaa8cb), a
+        // static call on a world object, the player's own 0x14, an absent
+        // argument; the row, the kinds and the owner are the server's rule
+        assert_eq!(validate_server(&call(0xaa8cb, "ObjectReference", "PlayAnimationAndWait", vec![text("Trigger02"), text("Turned02")])), Ok(()));
+        assert_eq!(validate_server(&call(0x10e6c5, "Debug", "SendAnimationEvent", vec![object(0x10e6c5, "ObjectReference"), text("Open")])), Ok(()));
+        assert_eq!(validate_server(&call(0x14, "ObjectReference", "PlayAnimation", vec![text("Open")])), Ok(()));
+        assert_eq!(validate_server(&call(0xaa8cb, "ObjectReference", "PlayAnimation", vec![None])), Ok(()));
+        assert_eq!(validate_server(&call(0xaa8cb, "Debug", "Notification", vec![])), Ok(()), "an untabled pair is the rule's to refuse");
+        // the names, never empty
+        assert_eq!(validate_server(&call(0xaa8cb, "", "PlayAnimation", vec![text("Open")])), Err(Reject::Range));
+        assert_eq!(validate_server(&call(0xaa8cb, "ObjectReference", "", vec![text("Open")])), Err(Reject::Range));
+        // what the server names: its own forms and the players' figures, as
+        // the subject or as an object argument, and no form past 32 bits
+        assert_eq!(validate_server(&call(0xff00_0002, "ObjectReference", "PlayAnimation", vec![text("Open")])), Err(Reject::Range));
+        assert_eq!(validate_server(&call(0xfeff_ffff, "ObjectReference", "PlayAnimation", vec![text("Open")])), Ok(()));
+        assert_eq!(validate_server(&call(0x10e6c5, "Debug", "SendAnimationEvent", vec![object(0xff00_0002, "Actor"), text("Open")])), Err(Reject::Range));
+        assert_eq!(validate_server(&call(0x10e6c5, "Debug", "SendAnimationEvent", vec![object(0x1_0010_e6c5, "ObjectReference"), text("Open")])), Err(Reject::Range));
+        // every number a number
+        assert_eq!(validate_server(&call(0xaa8cb, "ObjectReference", "SetAnimationVariableFloat", vec![text("fSpeed"), Some(SnippetArg::Number(f64::NAN))])), Err(Reject::NonFinite));
+        assert_eq!(validate_server(&call(0xaa8cb, "ObjectReference", "SetAnimationVariableFloat", vec![text("fSpeed"), Some(SnippetArg::Number(1.5))])), Ok(()));
+    }
+
+    #[test]
+    fn the_arguments_stop_at_the_engines_eleven() {
+        // CommonLibSSE-NG src/RE/N/NativeFunctionBase.cpp:15: a native takes
+        // at most eleven; a twelfth fails at decode, before any check
+        let eleven: Vec<Option<SnippetArg>> = (0..cap::SCRIPT_CALL_ARGS).map(|_| Some(SnippetArg::Bool(true))).collect();
+        let held: Result<wire_schema::bounded::Vec<Option<SnippetArg>, { cap::SCRIPT_CALL_ARGS }>, _> = eleven.clone().try_into();
+        assert!(held.is_ok());
+        let mut twelve = eleven;
+        twelve.push(Some(SnippetArg::Bool(true)));
+        let over: Result<wire_schema::bounded::Vec<Option<SnippetArg>, { cap::SCRIPT_CALL_ARGS }>, _> = twelve.try_into();
+        assert!(over.is_err());
+    }
+
+    #[test]
+    fn the_rate_is_the_rules_not_the_edges() {
+        // thuum ADR-068: the sender's budget (32 then 8 a second) is the
+        // server's rule's, E_SCRIPTCALL_RATE by name (wire-rules natives);
+        // the edge takes every well-formed call
+        let mut guard = ClientGuard::default();
+        for _ in 0..100 {
+            assert_eq!(validate(&call(0xaa8cb, "ObjectReference", "PlayAnimation", vec![text("Open")]), &mut guard, 0), Ok(()));
         }
     }
 }

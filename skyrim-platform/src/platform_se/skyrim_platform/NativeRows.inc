@@ -41,3 +41,6 @@
 { "GlobalVariable", "SetValue", NativeKind::Everyone, NativeSubject::Self, "none" },
 { "ReferenceAlias", "ForceRefTo", NativeKind::Everyone, NativeSubject::Self, "none" },
 { "Game", "GetPlayer", NativeKind::Local, NativeSubject::None, "none" },
+{ "ObjectReference", "ProcessTrapHit", NativeKind::State, NativeSubject::Self, "none" },
+{ "ObjectReference", "SetMotionType", NativeKind::State, NativeSubject::Self, "none" },
+{ "ObjectReference", "ApplyHavokImpulse", NativeKind::State, NativeSubject::Self, "none" },

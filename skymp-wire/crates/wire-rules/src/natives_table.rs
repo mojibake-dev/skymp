@@ -12,7 +12,8 @@
 
 /// Every tabled native (thuum ADR-068 decision 3): rung 2's set, the six
 /// action rows, the flip's twenty-four state and everyone rows and
-/// Game.GetPlayer, local. A native with no row has no channel.
+/// Game.GetPlayer, local; then D-S3's three trap rows (ProcessTrapHit,
+/// SetMotionType, ApplyHavokImpulse). A native with no row has no channel.
 pub const TABLE: &[Row] = &[
     // the actions: relayed to the subject's listeners as the row's relay native
     Row { cls: "ObjectReference", func: "PlayAnimation", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Last, params: &[Param::String] },
@@ -49,4 +50,11 @@ pub const TABLE: &[Row] = &[
     Row { cls: "ReferenceAlias", func: "ForceRefTo", kind: Kind::Everyone, subject: Subject::SelfRef, owner: Owner::Nobody, audience: Audience::Everyone, relay: Relay::Never, keep: Keep::Nothing, params: &[Param::Object] },
     // local: the seat's own (rung 5 adds the acting player's scope)
     Row { cls: "Game", func: "GetPlayer", kind: Kind::Local, subject: Subject::Nothing, owner: Owner::Player, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, params: &[] },
+    // ADR-068 D-S3 (traps follow the interaction): a trap's hit is the hit
+    // actor's own seat's (its self, the hit actor, owned there alone, so a
+    // non-owner's copy skips it), and a trap body's motion is the seat whose
+    // firing moved it; appended so no earlier row's place moves
+    Row { cls: "ObjectReference", func: "ProcessTrapHit", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, params: &[Param::Object, Param::Float, Param::Float, Param::Float, Param::Float, Param::Float, Param::Float, Param::Float, Param::Float, Param::Int, Param::Float] },
+    Row { cls: "ObjectReference", func: "SetMotionType", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Toucher, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, params: &[Param::Int, Param::Bool] },
+    Row { cls: "ObjectReference", func: "ApplyHavokImpulse", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Toucher, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, params: &[Param::Float, Param::Float, Param::Float, Param::Float] },
 ];

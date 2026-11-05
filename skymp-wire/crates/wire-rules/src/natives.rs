@@ -76,6 +76,9 @@ pub enum Owner {
     Player,
     /// A quest's, a global's, an alias's: nobody's (D-F1 C).
     Nobody,
+    /// A trap body's: the seat whose firing moved it (ADR-068 D-S3 point 4,
+    /// ADR-058's toucher rule for props).
+    Toucher,
 }
 
 /// Who hears an accepted call.
@@ -945,8 +948,9 @@ mod tests {
 
     #[test]
     fn the_table_is_rung_twos_and_holds_together() {
-        // the six action rows, the flip's twenty-four, Game.GetPlayer
-        assert_eq!(TABLE.len(), 31);
+        // the six action rows, the flip's twenty-four, Game.GetPlayer, and
+        // D-S3's three trap rows
+        assert_eq!(TABLE.len(), 34);
         let actions: Vec<&str> = TABLE.iter().filter(|r| r.kind == Kind::Action).map(|r| r.func).collect();
         assert_eq!(actions, ["PlayAnimation", "PlayAnimationAndWait", "SendAnimationEvent", "SetAnimationVariableBool", "SetAnimationVariableInt", "SetAnimationVariableFloat"]);
         for (i, r) in TABLE.iter().enumerate() {
@@ -973,7 +977,8 @@ mod tests {
         }
         let everyone: Vec<String> = TABLE.iter().filter(|r| r.kind == Kind::Everyone).map(|r| format!("{}.{}", r.cls, r.func)).collect();
         assert_eq!(everyone, ["Quest.SetCurrentStageID", "Quest.Start", "Quest.Stop", "GlobalVariable.SetValue", "ReferenceAlias.ForceRefTo"]);
-        assert_eq!(TABLE.iter().filter(|r| r.kind == Kind::State).count(), 19);
+        // the flip's nineteen state rows and D-S3's three
+        assert_eq!(TABLE.iter().filter(|r| r.kind == Kind::State).count(), 22);
         assert_eq!(row("Game", "GetPlayer").map(|r| r.kind), Some(Kind::Local));
     }
 }

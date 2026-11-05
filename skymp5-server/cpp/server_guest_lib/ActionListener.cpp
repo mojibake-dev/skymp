@@ -3400,6 +3400,15 @@ bool IsWorldBodyKind(MpObjectReference& refr)
 constexpr float kPropTouchReach = 256.f;
 constexpr float kPropDropReach = 512.f;
 constexpr float kPropImpulseReach = 2048.f;
+
+// thuum D-S3 point 4 (the review of 9ff1895e, finding 2): how far a world
+// body's sample may stand from the body's game-file position. "A trap's
+// world body" admits almost every world object (IsWorldBodyKind), and a
+// crafted seat could claim one by the impulse and carry it off for good at
+// the step budget's pace; the tether keeps every one within a fall of where
+// the game files place it. UNMEASURED: a fall's extent (x-trap-boulders
+// reads Embershard's rocks)
+constexpr float kWorldBodyTether = 2048.f;
 }
 
 // thuum docs/verbs/prop-physics.md (ADR-058 decision 1): a player's game
@@ -4607,6 +4616,8 @@ void ActionListener::OnDestructionStage(const RawMessageData& rawMsgData,
 // toucher while awake or inside its lease, else the host of the cell the
 // RECORD stands in; wire-rules props), within the rule's step budget against
 // the record (a seat cannot carry a prop across the world in one message),
+// a trap's world body within kWorldBodyTether of its game-file position (nor
+// carry one off over many: E_PROP_FAR, thuum D-S3 point 4's review),
 // landing in the cell the sample's position names in the prop's own world or
 // cell (HYPOTHESIS: a prop never changes world or interior by physics, so
 // the record's worldOrCell stands; a kick through a load door is a later
@@ -4663,6 +4674,24 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
   }
   const NiPoint3 pos{ msg.pos[0], msg.pos[1], msg.pos[2] };
   const NiPoint3 rot{ msg.rot[0], msg.rot[1], msg.rot[2] };
+  // thuum D-S3 point 4 (the review of 9ff1895e, finding 2): a world body's
+  // sample lands within kWorldBodyTether of the body's game-file position
+  // (its REFR record's, PlacementOfRecord), whoever owns it, before the rule
+  // judges or spends anything; one with no game-file placement (no REFR
+  // record of the load order: a server-made reference) has nothing to be
+  // held to and takes no sample
+  if (worldBody) {
+    const auto placement =
+      PlacementOfRecord(partOne.worldState, prop->GetFormId());
+    if (!placement) {
+      return refuse("E_PROP_FAR", "a world body with no game-file position");
+    }
+    if ((pos - placement->pos).Length() > kWorldBodyTether) {
+      return refuse("E_PROP_FAR",
+                    "farther from its game-file position than the tether "
+                    "allows");
+    }
+  }
   const uint32_t worldOrCell =
     prop->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles);
   const auto cell = partOne.worldState.CellOf(worldOrCell, pos);

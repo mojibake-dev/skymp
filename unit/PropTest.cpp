@@ -470,3 +470,47 @@ TEST_CASE("A trap's world body joins the stream by the impulse touch alone: "
   REQUIRE(RelaysTo(p, 1).empty());
   Leave(p);
 }
+
+// the review of 9ff1895e (finding 2): "a trap's world body" admits almost
+// every world object, so a crafted seat could claim one by the impulse and
+// carry it off for good, a step budget at a time; a world body's sample now
+// lands within the tether (2048 units, UNMEASURED: a fall's extent) of its
+// game-file position or is refused E_PROP_FAR
+TEST_CASE("A trap's world body takes no sample farther than the tether from "
+          "its game-file position, the record standing; a sample within it "
+          "is taken",
+          "[Prop][Traps][espm]")
+{
+  auto& p = GetPartOne();
+  Player(p, 0, kC1, kByTheRocks, kEmbershard);
+  Player(p, 1, kC2, kByTheRocks + NiPoint3{ 20.f, 0.f, 0.f }, kEmbershard);
+  CellLoaded(p, 0, kEmbershard);
+  REQUIRE(p.GetCellHost(kEmbershard).player == kC1);
+  // the rock loads where its record places it: its game-file position
+  auto& rock = p.worldState.GetFormAt<MpObjectReference>(kRock);
+  const NiPoint3 placed = rock.GetPos();
+  Claim(p, 1, kRock, 3);
+  REQUIRE(p.PropOwnerOf(rock) == kC2);
+  // the record stands 2000 units below the place already (an earlier fall's
+  // samples), so each sample here is a short step inside the step budget
+  // and the tether alone judges it
+  const NiPoint3 low = placed + NiPoint3{ 0.f, 0.f, -2000.f };
+  rock.SetPos(low);
+  p.Messages().clear();
+
+  // 2100 below the place, 100 from the record: past the tether, refused, the
+  // record standing and nothing relayed (the refusal's line is once per 10 s
+  // per seat, so its effect is read here)
+  Sample(p, 1, kRock, placed + NiPoint3{ 0.f, 0.f, -2100.f }, false);
+  REQUIRE(rock.GetPos() == low);
+  REQUIRE(RelaysTo(p, 0).empty());
+  REQUIRE(RelaysTo(p, 1).empty());
+
+  // 2040 below the place, 40 from the record: inside the tether, taken and
+  // relayed to the host's game
+  const NiPoint3 inside = placed + NiPoint3{ 0.f, 0.f, -2040.f };
+  Sample(p, 1, kRock, inside, false);
+  REQUIRE(rock.GetPos() == inside);
+  REQUIRE(RelaysTo(p, 0) == std::vector<int>{ 0 });
+  Leave(p);
+}

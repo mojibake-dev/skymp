@@ -286,6 +286,24 @@ void OnSendEventEnter(GumInvocationContext* ic)
 
   auto eventNameStr = std::string(*eventName);
   EventsApi::SendPapyrusEventEnter(selfId, eventNameStr);
+  // A death the platform completes from the server's record runs no script
+  // (ChangeForm::CompletingRecordDeath, ChangeForm.h; rung 1's review,
+  // finding 2): the actor's death was the world's once, where it happened.
+  if (ChangeForm::CompletingRecordDeath()) {
+    const auto lowerName = LowerAscii(eventNameStr.c_str());
+    if (lowerName == "ondying" || lowerName == "ondeath") {
+      static std::atomic<uint64_t> s_recordDeathBlanked{ 0 };
+      const auto n = ++s_recordDeathBlanked;
+      if (n <= 3 || n % 100 == 0) {
+        logger::info("[verb:scripts] {} to {:x} blanked: a death completed "
+                     "from the record, not a world death ({} so far)",
+                     eventNameStr, selfId, n);
+      }
+      static const auto fsEmptyRecordDeath = new FixedString("");
+      gum_invocation_context_replace_nth_argument(ic, 2, fsEmptyRecordDeath);
+      return;
+    }
+  }
   const bool lifecycle = IsLifecycleEvent(LowerAscii(eventNameStr.c_str()));
   // A world object's script: in a hosted cell every event, elsewhere the
   // lifecycle events alone (ADR-059 decision 1's reason: they come before

@@ -130,6 +130,25 @@
  * nothing into the engine before every check has passed.
  */
 namespace {
+// the depth CompletingRecordDeath() reads (ChangeForm.h): one per thread,
+// raised only around the apply's two KillImmediate calls
+thread_local int t_recordDeathDepth = 0;
+
+struct RecordDeathScope
+{
+  RecordDeathScope() { ++t_recordDeathDepth; }
+  ~RecordDeathScope() { --t_recordDeathDepth; }
+  RecordDeathScope(const RecordDeathScope&) = delete;
+  RecordDeathScope& operator=(const RecordDeathScope&) = delete;
+};
+} // namespace
+
+bool ChangeForm::CompletingRecordDeath()
+{
+  return t_recordDeathDepth > 0;
+}
+
+namespace {
 
 // The thread premise's switch (H1). false: reported; true: a refusal.
 constexpr bool kRequireMainThread = false;
@@ -1544,7 +1563,10 @@ std::string ChangeForm::Apply(RE::TESObjectREFR* refr,
       if (auto* actor = again ? again->As<RE::Actor>() : nullptr) {
         const auto before = actor->AsActorState()->GetLifeState();
         if (before == RE::ACTOR_LIFE_STATE::kDying) {
-          actor->KillImmediate();
+          {
+            RecordDeathScope recordDeath;
+            actor->KillImmediate();
+          }
           logger::info(
             "[verb:change-form] completed {:#x}'s dying death "
             "before the apply: lifeState {} -> {} (read 5)",
@@ -1594,7 +1616,10 @@ std::string ChangeForm::Apply(RE::TESObjectREFR* refr,
       if (auto* actor = again ? again->As<RE::Actor>() : nullptr) {
         const auto laid = actor->AsActorState()->GetLifeState();
         if (laid == RE::ACTOR_LIFE_STATE::kDying) {
-          actor->KillImmediate();
+          {
+            RecordDeathScope recordDeath;
+            actor->KillImmediate();
+          }
           logger::info(
             "[verb:change-form] completed {:#x}'s dying death after the "
             "lay: lifeState {} -> {} (read 5)",

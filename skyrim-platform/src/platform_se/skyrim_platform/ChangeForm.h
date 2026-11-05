@@ -24,6 +24,19 @@ class TESObjectREFR;
 // run says otherwise.
 namespace ChangeForm {
 
+// True on the thread that is completing a laid body's death from the
+// server's record (the apply's Actor::KillImmediate calls, before and after
+// the lay): the death events that completion raises are no world death, so
+// the Papyrus gate (FridaHooks.cpp OnSendEventEnter) blanks OnDying and
+// OnDeath while it holds. The actor died once, on the seat that simulated
+// it, and its scripts ran there; since ADR-062's flip a simulated actor's
+// events pass the gate, so without this the owner's own reconnect apply
+// would run its corpse's death scripts a second time (rung 1's review,
+// finding 2, 2026-11-05). Narrower than PlatformCall::Active() on purpose:
+// a death the platform applies from the server's word on a live actor is
+// the world's first, and its scripts must run.
+bool CompletingRecordDeath();
+
 // The two seat-side hooks of this slice, installed once from
 // Frida::InstallHooks (AE only, 1.6.1170's ids): the id census, a Gum
 // replacement of BGSNumericIDIndex::SetNumericID (35928) that records every

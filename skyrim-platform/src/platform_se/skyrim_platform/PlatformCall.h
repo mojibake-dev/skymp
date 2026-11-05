@@ -4,11 +4,11 @@
 #include <unordered_set>
 
 // thuum docs/DECISIONS.md ADR-062 decision 2 (slice 1b's reviews, 2026-11-03;
-// the flip's native lane, docs/verbs/papyrus-events.md): the platform's own
-// native calls reach the same entries the script hooks watch
-// (ScriptNatives.cpp), so a hook must tell the platform's call from a script
-// frame's. One mark, a thread-local depth that Active() reads at the entry,
-// raised on two paths:
+// the flip's native lane, docs/verbs/papyrus-events.md) and ADR-068 (rung
+// 2's one seam): the platform's own native calls reach the same dispatch the
+// seam judges (ScriptNatives.cpp, NativeFunctionBase::Call), so the seam
+// must tell the platform's call from a script frame's. One mark, a
+// thread-local depth that Active() reads, raised on two paths:
 // - the direct path (callNative's worker inside OnUpdate, every non-latent
 //   SpSnippet, the client applying the server's word through setOpen, lock,
 //   activate, kill, setValue): the native body runs inside fPtr->Call on the
@@ -20,11 +20,11 @@
 //   that Stack's callback is the VmCallback the platform handed the dispatch.
 //   The live callbacks are kept here (NoteCallback at the dispatch,
 //   ForgetCallback when the callback runs or dies), and the hook on Call
-//   (ScriptNatives.cpp, Address Library 104651) raises the depth for the
-//   call's extent when the Stack's callback is one of them, so the entry sees
-//   Active() on the running thread exactly as the direct path does. This
-//   replaced the (row, self) notes with their 15 s expiry and the known limit
-//   of a script's call on the same self inside the window.
+//   (ScriptNatives.cpp, Address Library 104651) counts a call whose Stack's
+//   callback is one of them as the platform's and raises the depth for its
+//   extent, as the direct path's Scope does. This replaced the (row, self)
+//   notes with their 15 s expiry and the known limit of a script's call on
+//   the same self inside the window.
 namespace PlatformCall {
 inline thread_local int t_depth = 0;
 

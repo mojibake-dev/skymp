@@ -222,6 +222,8 @@ declare module "skyrimPlatform" {
     // slice 5: the gaze and the face read on the game thread per poll ([target, slot, emotionType, emotionValue, exprOverride, exprIndex, exprValue])
     function pollHostedGaze(actorFormIds: number[]): void;
     function hostedGaze(actorFormId: number): number[] | null;
+    function pollNodeRotation(refrId: number, nodeNames: string[]): void;
+    function nodeRotation(refrId: number): Array<{ node: string; has: boolean; world: number[]; local: number[] }> | null;
     function setEngineDamageCut(on: boolean): void;
     // thuum docs/verbs/npc-talk.md (ADR-052): the player's activation of its crosshair pick on the game thread
     function activatePickRef(): boolean;

@@ -1810,6 +1810,8 @@ export declare function sayTopicInfoResult(actorFormId: number): number;
 // thuum docs/verbs/npc-stream.md (slice 5, the gaze and the face): the actors' highest set head-track slot and their emotion read on the game thread into a table (one task per poll; rule 9), then answered per actor as [targetFormId, slot, emotionType, emotionValue, exprOverride (0 or 1), exprIndex, exprValue] from the last poll, or null before one; the last three are the face as FaceGen animates it (the strongest expression keyframe's index and value, and whether an override holds it: Actor::GetFaceGenAnimationData, BSFaceGenAnimationData's expressionKeyFrame and exprOverride), a puppet's and a host's alike for the lab's comparison
 export declare function pollHostedGaze(actorFormIds: number[]): void;
 export declare function hostedGaze(actorFormId: number): number[] | null;
+export declare function pollNodeRotation(refrId: number, nodeNames: string[]): void;
+export declare function nodeRotation(refrId: number): Array<{ node: string; has: boolean; world: number[]; local: number[] }> | null;
 // thuum playtest 37 (the probe before any head build): the actor's FaceGen keyframes copied on the game thread (BSFaceGenAnimationData's expression, modifier and phoneme keyframes and its override flag); faceKeyframes answers the last read as [expression[], modifier[], phoneme[], override, sets[][]], or null; sets are every keyframe set of BSFaceGenAnimationData, 0x20 to 0x180 in header order (the lip sync's set is among the unnamed ones, 2026-10-28)
 export declare function pollFaceKeyframes(actorFormId: number): void;
 export declare function faceKeyframes(actorFormId: number): [number[], number[], number[], boolean, number[][]] | null;

@@ -23,7 +23,6 @@ SpSnippet::SpSnippet(
 Viet::Promise<VarValue> SpSnippet::Execute(MpActor* actorExecutor,
                                            SpSnippetMode mode)
 {
-  auto worldState = actorExecutor->GetParent();
   if (!actorExecutor->IsCreatedAsPlayer()) {
     // Return promise that never resolves in this case
     // TODO: somehow detect user instead as this breaks potential feature of
@@ -37,20 +36,7 @@ Viet::Promise<VarValue> SpSnippet::Execute(MpActor* actorExecutor,
     ? actorExecutor->NextSnippetIndex(promise)
     : std::numeric_limits<uint32_t>::max();
 
-  // Player character is always 0x14 on client, but 0xff000000+ in our server
-  // See also SpSnippetFunctionGen.cpp
-  const uint32_t targetSelfId =
-    (selfId < 0xff000000 || selfId != actorExecutor->GetFormId()) ? selfId
-                                                                  : 0x14;
-
-  const uint64_t targetSelfIdLong = MakeLongFormId(worldState, targetSelfId);
-
-  SpSnippetMessage message;
-  message.class_ = cl;
-  message.function = func;
-  message.arguments = args;
-  message.selfId = targetSelfIdLong;
-  message.snippetIdx = static_cast<int64_t>(snippetIdx);
+  SpSnippetMessage message = MakeMessage(actorExecutor, snippetIdx);
 
   // TODO: change to SendToUser, probably was deferred only for ability to send
   // text packets
@@ -58,6 +44,35 @@ Viet::Promise<VarValue> SpSnippet::Execute(MpActor* actorExecutor,
   actorExecutor->SendToUserDeferred(message, true, kChannelSpSnippet, false);
 
   return promise;
+}
+
+void SpSnippet::Relay(MpActor* listener, uint32_t seq)
+{
+  if (!listener->IsCreatedAsPlayer()) {
+    return;
+  }
+  SpSnippetMessage message =
+    MakeMessage(listener, std::numeric_limits<uint32_t>::max());
+  message.seq = seq;
+  listener->SendToUser(message, true);
+}
+
+SpSnippetMessage SpSnippet::MakeMessage(MpActor* actorExecutor,
+                                        uint32_t snippetIdx) const
+{
+  // Player character is always 0x14 on client, but 0xff000000+ in our server
+  // See also SpSnippetFunctionGen.cpp
+  const uint32_t targetSelfId =
+    (selfId < 0xff000000 || selfId != actorExecutor->GetFormId()) ? selfId
+                                                                  : 0x14;
+
+  SpSnippetMessage message;
+  message.class_ = cl;
+  message.function = func;
+  message.arguments = args;
+  message.selfId = MakeLongFormId(actorExecutor->GetParent(), targetSelfId);
+  message.snippetIdx = static_cast<int64_t>(snippetIdx);
+  return message;
 }
 
 VarValue SpSnippet::VarValueFromSpSnippetReturnValue(

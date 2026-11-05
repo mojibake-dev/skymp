@@ -3508,6 +3508,29 @@ uint64_t MonotonicMs()
       std::chrono::steady_clock::now().time_since_epoch())
       .count());
 }
+
+// thuum ADR-068: a reported argument as the rule reads it, its kind and an
+// object's form id (wire-bridge's ScriptArg: 0 null, 1 bool, 2 number, 3
+// string, 4 object); its value travels as it came
+skymp::rules::ScriptArg ScriptArgOf(
+  const std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>& arg)
+{
+  skymp::rules::ScriptArg out{};
+  if (!arg) {
+    out.kind = 0;
+  } else if (std::holds_alternative<bool>(*arg)) {
+    out.kind = 1;
+  } else if (std::holds_alternative<double>(*arg)) {
+    out.kind = 2;
+  } else if (std::holds_alternative<std::string>(*arg)) {
+    out.kind = 3;
+  } else if (auto object = std::get_if<SpSnippetObjectArgument>(&*arg)) {
+    out.kind = 4;
+    out.form_id = object->formId;
+  }
+  return out;
+}
 }
 
 // thuum docs/verbs/perks.md (M5): a player's perk pick
@@ -3697,6 +3720,157 @@ void ActionListener::OnObjectAnimation(const RawMessageData& rawMsgData,
                "{:x} reports): recorded, relayed to {} game(s)",
                msg.refr, msg.refr, msg.event, *cell, reporter->GetFormId(),
                relayed);
+}
+
+// thuum ADR-068 (the one seam; docs/research/scripts-one-system-2026-11-05.md
+// 6.4 and 6.11 items 1, 8 and 13): the core gathers the subject's facts (the
+// reference the server holds, its kind, the host of its cell and that host's
+// epoch; no load: a reference the server never loaded stands in no cell a
+// player hosts), and the rule judges the shape alone. An accepted action
+// goes at once (SpSnippet::Relay, never the deferred queue) to the subject's
+// listeners but the reporter as the row's relay native (PlayAnimationAndWait
+// as PlayAnimation), with the subject's sequence; the PlayAnimation pair's
+// event stays the reference's lastAnimation until rung 7, and a call relayed
+// as a graph event writes ObjectAnimation's "animates" line byte for byte
+// (b-puzzle-relay claims it) before the call's own line.
+void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
+                                  const ScriptCallMessage& msg)
+{
+  MpActor* reporter = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!reporter) {
+    return;
+  }
+  std::vector<skymp::rules::ScriptArg> args;
+  args.reserve(msg.args.size());
+  for (const auto& arg : msg.args) {
+    args.push_back(ScriptArgOf(arg));
+  }
+  const rust::Slice<const skymp::rules::ScriptArg> argSlice(args.data(),
+                                                            args.size());
+  const auto at =
+    skymp::rules::script_call_subject(msg.cls, msg.fn, msg.selfId, argSlice);
+
+  // the facts: subject_kind 0 no reference, 1 a world object, 2 a door or a
+  // container, 3 an actor; the owner and its epoch are the cell's host's
+  skymp::rules::ScriptCallFacts facts{};
+  facts.sender = reporter->GetFormId();
+  facts.self_id = msg.selfId;
+  facts.epoch = msg.epoch;
+  MpObjectReference* subject = nullptr;
+  if (at.subject == 0x14) {
+    // the reporter's own player, an actor: its animations are the streams'
+    facts.subject_kind = 3;
+  } else if (at.subject != 0) {
+    const auto& form = partOne.worldState.LookupFormByIdNoLoad(at.subject);
+    subject = form ? form->AsObjectReference() : nullptr;
+    if (!subject) {
+      facts.subject_kind = 0;
+    } else if (subject->AsActor()) {
+      facts.subject_kind = 3;
+    } else if (subject->GetBaseType() == "DOOR" ||
+               subject->GetBaseType() == "CONT") {
+      facts.subject_kind = 2;
+    } else {
+      facts.subject_kind = 1;
+      const auto cell = partOne.worldState.CellOf(
+        subject->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles),
+        subject->GetPos());
+      if (cell) {
+        facts.cell = *cell;
+        const auto host = partOne.GetCellHost(*cell);
+        if (host.hosted) {
+          facts.owner = host.player;
+          facts.owner_epoch = host.epoch;
+        }
+      }
+    }
+  }
+
+  const auto verdict =
+    partOne.GetScriptCalls().judge(at.row, argSlice, facts, MonotonicMs());
+  if (verdict.code == skymp::rules::ScriptCallCode::Skipped) {
+    // a door's open is isOpen's (Activate's path), not an animation; so is a
+    // container's lid (OnObjectAnimation's rule, thuum playtest 40's F8)
+    return;
+  }
+  if (verdict.code != skymp::rules::ScriptCallCode::Accepted) {
+    // one line a minute per reporter and code, the rest counted
+    // (OnChangeForm's shape): a script repeats its call at every turn
+    const auto now = std::chrono::steady_clock::now();
+    auto& [since, count] = scriptCallRefusals[{
+      reporter->GetFormId(), static_cast<uint8_t>(verdict.code) }];
+    ++count;
+    if (since.time_since_epoch().count() != 0 &&
+        now - since < std::chrono::minutes(1)) {
+      return;
+    }
+    spdlog::info("[verb:scripts] {}: {:x} reports {}.{} on {:x} (epoch {}, "
+                 "from {}.{}): {}; refused, {} since the last line",
+                 std::string(verdict.name), reporter->GetFormId(), msg.cls,
+                 msg.fn, msg.selfId, msg.epoch, msg.caller, msg.handler,
+                 std::string(verdict.why), count);
+    since = now;
+    count = 0;
+    return;
+  }
+  if (!subject) {
+    // the rule accepts a world object the server holds alone
+    return;
+  }
+
+  // the call's behavior graph event, the argument the row names
+  std::string event;
+  if (verdict.event_arg >= 0 &&
+      static_cast<size_t>(verdict.event_arg) < msg.args.size()) {
+    const auto& arg = msg.args[static_cast<size_t>(verdict.event_arg)];
+    if (arg) {
+      if (auto text = std::get_if<std::string>(&*arg)) {
+        event = *text;
+      }
+    }
+  }
+  if (verdict.keep_last && !event.empty()) {
+    subject->SetLastAnimation(event);
+  }
+
+  std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+    relayArgs;
+  relayArgs.reserve(verdict.relay_args.size());
+  for (uint8_t i : verdict.relay_args) {
+    if (i < msg.args.size()) {
+      relayArgs.push_back(msg.args[i]);
+    }
+  }
+  const std::string relayCls(verdict.relay_cls);
+  const std::string relayFn(verdict.relay_fn);
+  SpSnippet relay(relayCls.c_str(), relayFn.c_str(), relayArgs,
+                  verdict.relay_self);
+  size_t relayed = 0;
+  // audience 0: the subject's listeners (every action row's at rung 2)
+  if (verdict.audience == 0) {
+    for (auto listener : subject->GetActorListeners()) {
+      if (listener == reporter ||
+          partOne.serverState.UserByActor(listener) ==
+            Networking::InvalidUserId) {
+        continue;
+      }
+      relay.Relay(listener, verdict.seq);
+      ++relayed;
+    }
+  }
+  if (verdict.event_arg >= 0) {
+    spdlog::info("[verb:traps] {:x} animates {:x} '{}' in cell {:x} (its host "
+                 "{:x} reports): recorded, relayed to {} game(s)",
+                 subject->GetFormId(), subject->GetFormId(), event, facts.cell,
+                 reporter->GetFormId(), relayed);
+  }
+  spdlog::info("[verb:scripts] {:x} reports {}.{} on {:x} in cell {:x} "
+               "(epoch {}, from {}.{}): seq {}, relayed to {} game(s) as "
+               "{}.{}",
+               reporter->GetFormId(), msg.cls, msg.fn, subject->GetFormId(),
+               facts.cell, msg.epoch, msg.caller, msg.handler, verdict.seq,
+               relayed, relayCls, relayFn);
 }
 
 // thuum docs/DECISIONS.md ADR-059 decision 2: whether a reference's own

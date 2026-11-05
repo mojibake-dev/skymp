@@ -153,6 +153,17 @@ public:
   virtual void OnObjectAnimation(const RawMessageData& rawMsgData,
                                  const ObjectAnimationMessage& msg);
 
+  // thuum ADR-068 (the one seam): a tabled native a script ran on the engine
+  // that owns its subject. The rule (wire-rules natives, PartOne::
+  // GetScriptCalls) judges the row, the arguments, the reporter's budget and
+  // the subject's owner at the epoch over the facts gathered here; an
+  // accepted action takes the subject's next sequence and is relayed at
+  // once to the subject's other listeners as SpSnippet with it; a door's or
+  // a container's is dropped quietly, each refusal logged once a minute per
+  // reporter and code
+  virtual void OnScriptCall(const RawMessageData& rawMsgData,
+                            const ScriptCallMessage& msg);
+
   // thuum docs/verbs/traps.md (M4): a linked activation the cell's host
   // reports (a reference that is no actor activating the reference whose
   // activation parents name it): recorded through Activate's own path, and
@@ -417,6 +428,11 @@ private:
   // thuum docs/verbs/traps.md (ADR-059 decision 3): one reference's reported
   // animation events, at most 8 in any second (UNMEASURED)
   std::unordered_map<uint32_t, LinkedActivationWindow> objectAnimationWindows;
+  // thuum ADR-068: when each reporter's refusal of each code was last said
+  // (one line a minute, the rest counted), by reporter actor and code
+  std::map<std::pair<uint32_t, uint8_t>,
+           std::pair<std::chrono::steady_clock::time_point, uint32_t>>
+    scriptCallRefusals;
   // base form id to whether its record carries a script (the VMAD read once)
   std::unordered_map<uint32_t, bool> scriptedBases;
   // thuum docs/verbs/spell-cast.md (train-27): a cast delivered to its

@@ -341,6 +341,10 @@ struct PartOne::Impl
   // the prop owner table (thuum docs/verbs/prop-physics.md, ADR-058): which
   // seat simulates each physics prop, the cell's host by default
   rust::Box<skymp::rules::Props> props = skymp::rules::new_props();
+  // the script calls' budgets and sequences (thuum ADR-068, wire-rules
+  // natives): runtime only, every budget full and every sequence 0 at a start
+  rust::Box<skymp::rules::ScriptCalls> scriptCalls =
+    skymp::rules::new_script_calls();
   std::chrono::steady_clock::time_point lastCellsTick;
   using Square = std::tuple<uint32_t, int32_t, int32_t>;
   // one serial per login across the process: a dead-sample stamp's witness
@@ -1643,6 +1647,11 @@ void PartOne::TickGameTime()
 skymp::rules::Fights& PartOne::GetFights()
 {
   return *pImpl->fights;
+}
+
+skymp::rules::ScriptCalls& PartOne::GetScriptCalls()
+{
+  return *pImpl->scriptCalls;
 }
 
 void PartOne::TickFightsEverySecond()

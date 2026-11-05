@@ -413,3 +413,89 @@ TEST_CASE("A player's activation of a scripted world object goes to the "
   REQUIRE(RelayedTo(p, 1).empty());
   Leave(p);
 }
+
+// thuum D-S3 phase 2 (any seat triggers, Eli's requirement): Bleak Falls
+// Temple's trigger box 0x86018 (TrapTriggerBox 0x7617a) at (8211.7, -6621.7,
+// -2112.0), whose own VMAD sets TrapTriggerBase {TriggerType 3,
+// playerOnlyTrigger true}, and one of the swinging blades it fires, 0x3ac33
+// (TrapBladeSwinging01 0x1cdd0) at (6464, -7168, -2304), whose XAPR names the
+// box and the pull chain 0xfda45 (lab/esm.py on Skyrim.esm, 2026-11-05; the
+// census's row 4). The plate 0x567f2 sets no playerOnlyTrigger (its record
+// has no VMAD, its base's PressurePlate none of the property).
+TEST_CASE("A player-only trigger's linked activation is taken from a guest "
+          "whose game has the cell loaded, and every other pair stays the "
+          "host's",
+          "[Traps][espm]")
+{
+  constexpr uint32_t kPlayerOnlyBox = 0x86018;
+  constexpr uint32_t kBlade = 0x3ac33;
+  const NiPoint3 kByTheBlade{ 6464.f, -7068.f, -2304.f };
+  PartOne& p = GetPartOne();
+  Enter(p);
+  p.worldState.GetFormAt<MpObjectReference>(kPlayerOnlyBox);
+  p.worldState.GetFormAt<MpObjectReference>(kBlade);
+  Stand(p, kByTheBlade);
+  p.Messages().clear();
+
+  // the guest's game has not reported the temple loaded: refused as before
+  {
+    LogCapture log;
+    Linked(p, 1, kPlayerOnlyBox, kBlade);
+    REQUIRE(log.Count("[verb:traps] E_TRAP_NOT_HOST: ff000fe2 reports 86018 "
+                      "activating 3ac33 in cell 371de, which it does not "
+                      "host") == 1);
+  }
+  REQUIRE(RelayedTo(p, 0).empty());
+  REQUIRE(RelayedTo(p, 1).empty());
+
+  // the guest's game reports the temple loaded: the box's pair is taken from
+  // it, recorded through the blade's own path and relayed to the host
+  {
+    RawMessageData raw;
+    raw.userId = 1;
+    CellLoadedMessage loaded;
+    loaded.cell = kTemple;
+    loaded.loaded = true;
+    p.GetActionListener().OnCellLoaded(raw, loaded);
+  }
+  REQUIRE(p.GetCellHost(kTemple).player == kHostActor);
+  {
+    LogCapture log;
+    Linked(p, 1, kPlayerOnlyBox, kBlade);
+    REQUIRE(log.Count("[verb:traps] 86018 activates 3ac33 in cell 371de (a "
+                      "player-only trigger, ff000fe2 reports with the cell "
+                      "loaded): relayed to 1 game(s)") == 1);
+    REQUIRE(log.Count("E_TRAP_") == 0);
+  }
+  REQUIRE(RelayedTo(p, 0).size() == 1);
+  REQUIRE(RelayedTo(p, 0)[0].target == kBlade);
+  REQUIRE(RelayedTo(p, 0)[0].caster == kPlayerOnlyBox);
+  REQUIRE(RelayedTo(p, 1).empty());
+
+  // the plate sets no playerOnlyTrigger: the guest's report of its spike
+  // wall stays refused with the cell loaded
+  Stand(p, kByThePlate);
+  p.Messages().clear();
+  {
+    LogCapture log;
+    Linked(p, 1, kPlate, kWall);
+    REQUIRE(log.Count("[verb:traps] E_TRAP_NOT_HOST: ff000fe2 reports 567f2 "
+                      "activating 54b15 in cell 371de, which it does not "
+                      "host") == 1);
+  }
+  REQUIRE(RelayedTo(p, 0).empty());
+
+  // the host's own report of the box's pair is the cell path's, its line
+  // unchanged
+  Stand(p, kByTheBlade);
+  p.Messages().clear();
+  {
+    LogCapture log;
+    Linked(p, 0, kPlayerOnlyBox, kBlade);
+    REQUIRE(log.Count("[verb:traps] 86018 activates 3ac33 in cell 371de (its "
+                      "host ff000fe1 reports): relayed to 1 game(s)") == 1);
+  }
+  REQUIRE(RelayedTo(p, 1).size() == 1);
+  REQUIRE(RelayedTo(p, 1)[0].caster == kPlayerOnlyBox);
+  Leave(p);
+}

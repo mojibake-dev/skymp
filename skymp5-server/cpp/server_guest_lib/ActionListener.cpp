@@ -33,6 +33,7 @@
 #include "libespm/ScriptData.h"
 #include "libespm/Utils.h"
 #include "libespm/WEAP.h"
+#include "papyrus-vm/Utils.h" // stricmp
 #include "script_objects/EspmGameObject.h"
 #include "wire_bridge_cxx/rules.h"
 #include <algorithm>
@@ -3610,6 +3611,56 @@ std::optional<RecordPlacement> PlacementOfRecord(WorldState& worldState,
   out.pos = LocationalDataUtils::GetPos(data.loc);
   return out;
 }
+
+// thuum D-S3 phase 2 (the player-only boxes, Bleak Falls Temple's 0x86018 and
+// the Sanctum's 0x4e42b, TrapTriggerBox 0x7617a): whether a trigger's record
+// sets TrapTriggerBase's playerOnlyTrigger, so its engine fires it for a
+// player's own body alone. Read from the base's VMAD and then the
+// reference's own, the reference's value over its base's (PartOne::
+// WordOfWall's order); any script of the record may carry the property
+// (TrapTriggerBase's, inherited by PressurePlate and the family's other
+// triggers), a removed script or property (status 3) is none. 0x86018's own
+// VMAD carries TrapTriggerBase {TriggerType 3, playerOnlyTrigger true}, its
+// base's no playerOnlyTrigger (lab/esm.py on Skyrim.esm, 2026-11-05). False
+// for an id with no REFR record.
+bool RecordSetsPlayerOnlyTrigger(WorldState& worldState, uint32_t refrId)
+{
+  if (!worldState.HasEspm()) {
+    return false;
+  }
+  const auto& browser = worldState.GetEspm().GetBrowser();
+  auto& cache = worldState.GetEspmCache();
+  const auto lookup = browser.LookupById(refrId);
+  const auto* refr = espm::Convert<espm::REFR>(lookup.rec);
+  if (!refr) {
+    return false;
+  }
+  std::optional<bool> playerOnly;
+  const auto read = [&](const espm::LookupResult& record) {
+    if (!record.rec) {
+      return;
+    }
+    espm::ScriptData scriptData;
+    record.rec->GetScriptData(&scriptData, cache);
+    for (const auto& script : scriptData.scripts) {
+      if (script.status == 3) {
+        continue;
+      }
+      for (const auto& property : script.properties) {
+        if (property.type != espm::Property::Type::Bool ||
+            property.status == 3 ||
+            Utils::stricmp(property.name.data(), "playerOnlyTrigger") != 0) {
+          continue;
+        }
+        playerOnly = property.value.boolean != 0;
+      }
+    }
+  };
+  const auto data = refr->GetData(cache);
+  read(browser.LookupById(lookup.ToGlobalId(data.baseId)));
+  read(lookup);
+  return playerOnly.value_or(false);
+}
 }
 
 // thuum docs/verbs/perks.md (M5): a player's perk pick
@@ -4262,11 +4313,33 @@ void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
     return;
   }
   const auto host = partOne.GetCellHost(*cell);
+  // thuum D-S3 phase 2: a trigger whose record sets playerOnlyTrigger fires
+  // for a player's own body alone, so the game that fires it is the player's
+  // who walked in, whichever seat hosts the cell: such a trigger's pair is
+  // taken from any game that has the cell loaded (PartOne::GetCellLoaders),
+  // its host's or a guest's; every other pair still the host's alone
+  bool playerOnlyFromLoader = false;
   if (!host.hosted || host.player != reporter.GetFormId()) {
-    spdlog::info("[verb:traps] E_TRAP_NOT_HOST: {:x} reports {:x} activating "
-                 "{:x} in cell {:x}, which it does not host",
-                 reporter.GetFormId(), casterId, targetId, *cell);
-    return;
+    const auto loaders = partOne.GetCellLoaders(*cell);
+    const bool loaded = std::find(loaders.begin(), loaders.end(),
+                                  reporter.GetFormId()) != loaders.end();
+    if (loaded) {
+      auto known = playerOnlyTriggers.find(casterId);
+      if (known == playerOnlyTriggers.end()) {
+        known =
+          playerOnlyTriggers
+            .emplace(casterId,
+                     RecordSetsPlayerOnlyTrigger(partOne.worldState, casterId))
+            .first;
+      }
+      playerOnlyFromLoader = known->second;
+    }
+    if (!playerOnlyFromLoader) {
+      spdlog::info("[verb:traps] E_TRAP_NOT_HOST: {:x} reports {:x} "
+                   "activating {:x} in cell {:x}, which it does not host",
+                   reporter.GetFormId(), casterId, targetId, *cell);
+      return;
+    }
   }
   const auto children =
     partOne.worldState.activationChildsByActivationParent.find(casterId);
@@ -4310,6 +4383,14 @@ void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
       listener->SendToUser(relay, true);
       ++sent;
     }
+  }
+  if (playerOnlyFromLoader) {
+    spdlog::info("[verb:traps] {:x} activates {:x} in cell {:x} (a "
+                 "player-only trigger, {:x} reports with the cell loaded): "
+                 "relayed to {} game(s)",
+                 casterId, targetPtr->GetFormId(), *cell, reporter.GetFormId(),
+                 sent);
+    return;
   }
   spdlog::info("[verb:traps] {:x} activates {:x} in cell {:x} (its host {:x} "
                "reports): relayed to {} game(s)",

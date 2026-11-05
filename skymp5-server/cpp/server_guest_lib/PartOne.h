@@ -29,6 +29,7 @@ struct CellHost;     // wire-bridge's (thuum cell-host.md), opaque here
 struct HostDecision; // wire-bridge's (thuum cell-host.md), opaque here
 struct PlacementRow; // wire-bridge's (thuum spell-placed-object.md), opaque
                      // here
+struct ScriptCalls;  // wire-bridge's (thuum ADR-068), opaque here
 }
 
 using ProfileId = int32_t;
@@ -580,6 +581,11 @@ public:
   // players' games.
   skymp::rules::Fights& GetFights();
   void TickFights(uint64_t nowMs);
+
+  // thuum ADR-068 (the one seam): every reporter's script-call budget and
+  // every subject's sequence (the rule and its state are Rust's, wire-rules
+  // natives); ActionListener::OnScriptCall asks it for each reported call
+  skymp::rules::ScriptCalls& GetScriptCalls();
 
   // thuum docs/verbs/cell-host.md (ADR-035): the cell host table (wire-rules
   // cells, through the bridge). The facts: a game's CellLoaded report

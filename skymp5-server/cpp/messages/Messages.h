@@ -54,6 +54,7 @@
 #include "RaceMenuPresetMessage.h"
 #include "RelayedActivationMessage.h"
 #include "RestIntentMessage.h"
+#include "ScriptCallMessage.h"
 #include "SetGameTimeMessage.h"
 #include "SetInventoryMessage.h"
 #include "SetRaceMenuOpenMessage.h"
@@ -148,4 +149,5 @@
   REGISTER_MESSAGE(ObjectAnimationMessage)                                    \
   REGISTER_MESSAGE(ChangeFormMessage)                                         \
   REGISTER_MESSAGE(ChangeFormAckMessage)                                      \
-  REGISTER_MESSAGE(ChangeFormApplyMessage)
+  REGISTER_MESSAGE(ChangeFormApplyMessage)                                    \
+  REGISTER_MESSAGE(ScriptCallMessage)

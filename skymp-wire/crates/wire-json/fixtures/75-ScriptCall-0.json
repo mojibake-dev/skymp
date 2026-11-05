@@ -1,0 +1,14 @@
+{
+  "args": [
+    "Trigger02",
+    "Turned02"
+  ],
+  "caller": "defaultPuzzlePillarScript",
+  "cls": "ObjectReference",
+  "epoch": 3,
+  "fn": "PlayAnimationAndWait",
+  "handler": "onActivate",
+  "latent": true,
+  "selfId": 698571,
+  "t": 75
+}

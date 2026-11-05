@@ -28,7 +28,8 @@ struct SpSnippetMessage : public MessageBase<SpSnippetMessage>
       .Serialize("function", function)
       .Serialize("arguments", arguments)
       .Serialize("selfId", selfId)
-      .Serialize("snippetIdx", snippetIdx);
+      .Serialize("snippetIdx", snippetIdx)
+      .Serialize("seq", seq);
   }
 
   std::string class_;
@@ -38,4 +39,8 @@ struct SpSnippetMessage : public MessageBase<SpSnippetMessage>
     arguments;
   uint64_t selfId = 0;
   int64_t snippetIdx = 0;
+  // thuum ADR-068 (the one seam): the server's sequence for the subject of a
+  // relayed script call (ScriptCall), up by one at every accepted call on
+  // that object; empty, and no key, for every other snippet
+  std::optional<uint32_t> seq;
 };

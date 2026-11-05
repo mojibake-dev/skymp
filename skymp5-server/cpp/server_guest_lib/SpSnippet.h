@@ -27,12 +27,23 @@ public:
   // actorExecutor will be used to detect userId to execute SpSnippet on
   Viet::Promise<VarValue> Execute(MpActor* actorExecutor, SpSnippetMode mode);
 
+  // thuum ADR-068 (the one seam): a script call the subject's owner reported,
+  // relayed to one listener's game: no return value, the subject's sequence
+  // `seq` on the message, sent at once (MpActor::SendToUser, reliable),
+  // never through the deferred queue Execute's snippets take (6.11 item 1: a
+  // relay must not land behind the object's later record or relay)
+  void Relay(MpActor* listener, uint32_t seq);
+
   static VarValue VarValueFromSpSnippetReturnValue(
     const std::optional<std::variant<bool, double, std::string>>& returnValue);
 
   static uint64_t MakeLongFormId(WorldState* worldState, uint32_t formId);
 
 private:
+  // the message to `actorExecutor`'s game, its self as that engine numbers it
+  SpSnippetMessage MakeMessage(MpActor* actorExecutor,
+                               uint32_t snippetIdx) const;
+
   const char* const cl;
   const char* const func;
   const std::vector<std::optional<

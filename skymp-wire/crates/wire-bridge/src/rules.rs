@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, placements, player_globals, props, quest_stages, racemenu, ranged, rest, perks, scripted_effects, shouts, stagger, teleports, weather};
+use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, placements, player_globals, props, quest_stages, racemenu, ranged, rest, perks, scripted_effects, shouts, stagger, teleports, weather};
 
 // the perk table's effect calls carry a CTDA's five parts flat, as add_condition does
 #[allow(clippy::too_many_arguments)]
@@ -1385,6 +1385,103 @@ mod ffi {
         epoch: u32,
     }
 
+    /// A reported script call's row and subject (thuum ADR-068, wire-rules
+    /// natives), for the core to gather the subject's facts before it asks
+    /// for the verdict.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct ScriptCallSubject {
+        /// The row's place in the table, -1 when the pair has none.
+        row: i32,
+        /// The subject's form id as the reporter named it (0x14 for its own
+        /// player), 0 when the call names none the reporter may name.
+        subject: u32,
+    }
+
+    /// One argument of a reported script call as the core parsed it: its
+    /// kind and an object's form id; the value is never judged.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct ScriptArg {
+        /// 0 null (unread, or a None object), 1 bool, 2 number, 3 string,
+        /// 4 object.
+        kind: u8,
+        /// The object's form id (kind 4 alone).
+        form_id: u64,
+    }
+
+    /// What the core knows of a reported script call (wire-rules
+    /// natives::Facts).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct ScriptCallFacts {
+        /// The reporter's actor.
+        sender: u32,
+        /// The message's selfId: the call's subject.
+        self_id: u32,
+        /// The message's epoch.
+        epoch: u32,
+        /// What the server holds at the subject: 0 no reference, 1 a world
+        /// object, 2 a door or a container, 3 an actor.
+        subject_kind: u8,
+        /// The subject's cell, 0 when the server cannot place it.
+        cell: u32,
+        /// The host of that cell, 0 while nobody hosts it (0 for every kind
+        /// but a world object).
+        owner: u32,
+        /// That host's standing epoch.
+        owner_epoch: u32,
+    }
+
+    /// The rule's word on a reported script call.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ScriptCallCode {
+        /// Relayed to the audience but the reporter.
+        Accepted,
+        /// Dropped quietly: a door's or a container's.
+        Skipped,
+        /// E_SCRIPTCALL_ROW: no tabled action row the server relays.
+        Row,
+        /// E_SCRIPTCALL_ARGS: not the row's count and kinds, or no subject
+        /// the reporter may name.
+        Args,
+        /// E_SCRIPTCALL_OWNER: the reporter does not own the subject at the
+        /// epoch.
+        Owner,
+        /// E_SCRIPTCALL_RATE: the reporter's budget is spent.
+        Rate,
+    }
+
+    /// The verdict on one reported script call.
+    #[derive(Debug)]
+    struct ScriptCallVerdict {
+        /// Which word.
+        code: ScriptCallCode,
+        /// The refusal's stable name for the log, empty when accepted or
+        /// skipped.
+        name: String,
+        /// Why, for the log; empty when accepted or skipped.
+        why: String,
+        /// The subject's form id (accepted).
+        subject: u32,
+        /// The subject's sequence after this call, 1 for its first
+        /// (accepted).
+        seq: u32,
+        /// The relay native's class (accepted).
+        relay_cls: String,
+        /// The relay native's name (accepted).
+        relay_fn: String,
+        /// The call's arguments the relay carries, by index, in order.
+        relay_args: Vec<u8>,
+        /// The relay's self: the subject for a method native, 0 for a static
+        /// one.
+        relay_self: u32,
+        /// Who hears it: 0 the subject's listeners, 1 every seat, 2 none.
+        audience: u8,
+        /// The call's graph event becomes the subject's lastAnimation.
+        keep_last: bool,
+        /// The argument naming the call's behavior graph event, for the
+        /// "animates" line; -1 for none.
+        event_arg: i8,
+    }
+
     extern "Rust" {
         /// A client's first activation of a target `distance` units away,
         /// `target_size` being its bounds' farthest point times its scale.
@@ -2016,10 +2113,23 @@ mod ffi {
         /// The lease a toucher keeps a sleeping prop for, ms (wire-rules
         /// props::PROP_LEASE_MS), for the core's log.
         fn prop_lease_ms() -> u64;
+
+        /// thuum ADR-068 (the one seam): the row of a reported script call
+        /// and its subject, for the core to gather the subject's facts.
+        fn script_call_subject(cls: &str, func: &str, self_id: u32, args: &[ScriptArg]) -> ScriptCallSubject;
+        /// Every reporter's budget and every subject's sequence (wire-rules
+        /// natives).
+        type ScriptCalls;
+        /// Every budget full, every sequence at 0.
+        fn new_script_calls() -> Box<ScriptCalls>;
+        /// The verdict on one reported call of the table's `row` (-1 for a
+        /// pair it lacks) at `now_ms` on a monotonic clock; an accepted call
+        /// takes its subject's next sequence.
+        fn judge(self: &mut ScriptCalls, row: i32, args: &[ScriptArg], facts: &ScriptCallFacts, now_ms: u64) -> ScriptCallVerdict;
     }
 }
 
-pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
+pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -3690,6 +3800,95 @@ impl WeatherSync {
     }
 }
 
+/// thuum ADR-068: a reported argument as wire-rules natives reads it; a kind
+/// the core never sends reads as null.
+fn native_arg(a: &ScriptArg) -> natives::Arg {
+    match a.kind {
+        1 => natives::Arg::Bool,
+        2 => natives::Arg::Number,
+        3 => natives::Arg::String,
+        4 => natives::Arg::Object(a.form_id),
+        _ => natives::Arg::Absent,
+    }
+}
+
+fn native_args(args: &[ScriptArg]) -> Vec<natives::Arg> {
+    args.iter().map(native_arg).collect()
+}
+
+fn script_call_subject(cls: &str, func: &str, self_id: u32, args: &[ScriptArg]) -> ScriptCallSubject {
+    let Some(index) = natives::row_index(cls, func) else {
+        return ScriptCallSubject { row: -1, subject: 0 };
+    };
+    let subject = natives::TABLE.get(index).and_then(|row| natives::subject_of(row, self_id, &native_args(args))).unwrap_or(0);
+    ScriptCallSubject { row: i32::try_from(index).unwrap_or(-1), subject }
+}
+
+/// Every reporter's budget and every subject's sequence (wire-rules natives).
+#[derive(Debug, Default)]
+pub struct ScriptCalls(natives::ScriptCalls);
+
+fn new_script_calls() -> Box<ScriptCalls> {
+    Box::default()
+}
+
+impl ScriptCalls {
+    fn judge(&mut self, row: i32, args: &[ScriptArg], f: &ScriptCallFacts, now_ms: u64) -> ScriptCallVerdict {
+        let row = usize::try_from(row).ok().and_then(|i| natives::TABLE.get(i));
+        let kind = match f.subject_kind {
+            1 => natives::SubjectKind::WorldObject,
+            2 => natives::SubjectKind::DoorOrContainer,
+            3 => natives::SubjectKind::Actor,
+            _ => natives::SubjectKind::Unknown,
+        };
+        let facts = natives::Facts { sender: f.sender, self_id: f.self_id, epoch: f.epoch, kind, cell: f.cell, owner: f.owner, owner_epoch: f.owner_epoch };
+        let mut out = ScriptCallVerdict {
+            code: ScriptCallCode::Skipped,
+            name: String::new(),
+            why: String::new(),
+            subject: 0,
+            seq: 0,
+            relay_cls: String::new(),
+            relay_fn: String::new(),
+            relay_args: Vec::new(),
+            relay_self: 0,
+            audience: 2,
+            keep_last: false,
+            event_arg: -1,
+        };
+        match self.0.judge(row, &native_args(args), &facts, now_ms) {
+            natives::Verdict::Accept(a) => {
+                out.code = ScriptCallCode::Accepted;
+                out.subject = a.subject;
+                out.seq = a.seq;
+                out.relay_cls = a.relay_cls.to_owned();
+                out.relay_fn = a.relay_fn.to_owned();
+                out.relay_args = a.relay_args.to_vec();
+                out.relay_self = a.relay_self;
+                out.audience = match a.audience {
+                    natives::Audience::Listeners => 0,
+                    natives::Audience::Everyone => 1,
+                    natives::Audience::Nobody => 2,
+                };
+                out.keep_last = a.keep == natives::Keep::Last;
+                out.event_arg = a.graph_event_arg.and_then(|i| i8::try_from(i).ok()).unwrap_or(-1);
+            }
+            natives::Verdict::Skip => {}
+            natives::Verdict::Refuse(r) => {
+                out.code = match r.code {
+                    natives::Code::Row => ScriptCallCode::Row,
+                    natives::Code::Args => ScriptCallCode::Args,
+                    natives::Code::Owner => ScriptCallCode::Owner,
+                    natives::Code::Rate => ScriptCallCode::Rate,
+                };
+                out.name = r.code.name().to_owned();
+                out.why = r.why;
+            }
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4295,5 +4494,41 @@ mod tests {
         assert!(c.resync_due(3, epoch + clock::RESYNC_MS));
         c.forget(3);
         assert!(new_game_clock(r#"{"timeScale": 0}"#).is_err());
+    }
+
+    #[test]
+    fn the_bridge_passes_script_calls_through() {
+        // thuum ADR-068: Bleak Falls Temple's pillar 0xaa8cb turned by its
+        // host 0xff000000 at epoch 3, a guest 0xff000001 beside it
+        let text = ScriptArg { kind: 3, form_id: 0 };
+        let pillar = ScriptArg { kind: 4, form_id: 0xaa8cb };
+        let at = script_call_subject("ObjectReference", "PlayAnimationAndWait", 0xaa8cb, &[text, text]);
+        assert!(at.row >= 0);
+        assert_eq!(at.subject, 0xaa8cb);
+        let send = script_call_subject("Debug", "SendAnimationEvent", 0xaa8cb, &[pillar, text]);
+        assert_eq!(send.subject, 0xaa8cb);
+        assert_eq!(script_call_subject("Debug", "Notification", 0, &[text]), ScriptCallSubject { row: -1, subject: 0 });
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3 };
+        let mut s = new_script_calls();
+        let v = s.judge(at.row, &[text, text], &facts, 0);
+        assert_eq!((v.code, v.subject, v.seq, v.relay_self), (ScriptCallCode::Accepted, 0xaa8cb, 1, 0xaa8cb));
+        assert_eq!((v.relay_cls.as_str(), v.relay_fn.as_str(), v.relay_args.as_slice()), ("ObjectReference", "PlayAnimation", &[0u8][..]));
+        assert_eq!((v.audience, v.keep_last, v.event_arg, v.name.as_str()), (0, true, 0, ""));
+        let static_call = s.judge(send.row, &[pillar, text], &facts, 0);
+        assert_eq!((static_call.code, static_call.relay_self, static_call.seq, static_call.event_arg), (ScriptCallCode::Accepted, 0, 2, 1));
+        assert_eq!(static_call.relay_args, vec![0u8, 1]);
+        // the refusals cross with their names
+        let guest = s.judge(at.row, &[text, text], &ScriptCallFacts { sender: 0xff00_0001, ..facts }, 0);
+        assert_eq!((guest.code, guest.name.as_str()), (ScriptCallCode::Owner, "E_SCRIPTCALL_OWNER"));
+        assert_eq!(s.judge(-1, &[text], &facts, 0).name, "E_SCRIPTCALL_ROW");
+        assert_eq!(s.judge(at.row, &[text], &facts, 0).name, "E_SCRIPTCALL_ARGS");
+        assert_eq!(s.judge(at.row, &[text, text], &ScriptCallFacts { subject_kind: 2, ..facts }, 0).code, ScriptCallCode::Skipped);
+        // the budget, wire-rules natives' burst (the bridge names it, never a literal)
+        let mut b = new_script_calls();
+        for _ in 0..natives::BURST {
+            assert_eq!(b.judge(at.row, &[text, text], &facts, 0).code, ScriptCallCode::Accepted);
+        }
+        let spent = b.judge(at.row, &[text, text], &facts, 0);
+        assert_eq!((spent.code, spent.name.as_str()), (ScriptCallCode::Rate, "E_SCRIPTCALL_RATE"));
     }
 }

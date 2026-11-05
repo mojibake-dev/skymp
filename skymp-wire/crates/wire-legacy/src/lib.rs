@@ -117,6 +117,8 @@ const LEGACY_ABSENT: &[(&str, &str)] = &[
     ("CreateActorProps", "restrictedRaces"),
     ("CreateActorProps", "permittedRaces"),
     ("SpellCastData", "decal"),
+    // thuum ADR-068: a relayed script call's sequence (2026-11-05)
+    ("SpSnippet", "seq"),
 ];
 
 /// The deserializer for a field in LEGACY_ABSENT: an optional reads as none,
@@ -409,6 +411,26 @@ mod tests {
                 // (2026-11-01)
                 assert_eq!(m.props.restricted_races, None);
                 assert_eq!(m.props.permitted_races, None);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_snippet_from_the_legacy_format_reads_without_a_sequence() {
+        // thuum ADR-068: SpSnippet's seq came after the format froze. The old
+        // C++ wrote class, function, the arguments' count, selfId and
+        // snippetIdx (here "A", "B", none, 0x14, 7, every field whole bytes)
+        // and nothing more, so the reader spends no bit on the sequence
+        let mut p = vec![0x86u8, 0x1e];
+        p.extend([0, 0, 0, 1, b'A', 0, 0, 0, 1, b'B', 0, 0, 0, 0]);
+        p.extend(0x14u64.to_be_bytes());
+        p.extend(7i64.to_be_bytes());
+        match decode_packet(&p) {
+            Ok(Message::SpSnippet(s)) => {
+                assert_eq!((s.class.as_str(), s.function.as_str(), s.self_id, s.snippet_idx), ("A", "B", 0x14, 7));
+                assert!(s.arguments.is_empty());
+                assert_eq!(s.seq, None);
             }
             other => panic!("{other:?}"),
         }

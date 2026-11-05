@@ -303,6 +303,21 @@ TEST_CASE("A host's linked activation of an actor another seat simulates "
   p.worldState.npcEnabled = true;
   auto& draugr = p.worldState.GetFormAt<MpActor>(kDraugr);
   auto& guest = p.worldState.GetFormAt<MpActor>(kGuestActor);
+  // before any claim the cell's host simulates the draugr, so a guest's
+  // report of the pair would wake the host's own actor: refused, since the
+  // guest does not host the cell the trigger stands in
+  REQUIRE(p.worldState.HostOf(draugr) ==
+          &p.worldState.GetFormAt<MpActor>(kHostActor));
+  {
+    LogCapture log;
+    REQUIRE_NOTHROW(Linked(p, 1, kAmbushTrigger, kDraugr));
+    REQUIRE(log.Count("[verb:traps] E_TRAP_NOT_HOST: ff000fe2 reports 38098 "
+                      "activating actor 380b3, its trigger in a cell it does "
+                      "not host") == 1);
+    REQUIRE(log.Count("relayed to it") == 0);
+  }
+  REQUIRE(RelayedTo(p, 0).empty());
+  REQUIRE(RelayedTo(p, 1).empty());
   // the guest loads the temple and claims the draugr (ADR-052, CellHostTest's
   // claim): its game simulates the actor in the host's cell. The claim is the
   // per-actor row this branch has; a thrall's commander (ADR-060, once its
@@ -345,6 +360,19 @@ TEST_CASE("A host's linked activation of an actor another seat simulates "
   REQUIRE(RelayedTo(p, 1)[0].target == kDraugr);
   REQUIRE(RelayedTo(p, 1)[0].caster == kAmbushTrigger);
   REQUIRE(RelayedTo(p, 0).empty());
+  // the plate is no activation parent of the draugr (its record's XAPR names
+  // the trigger alone): refused, nothing relayed
+  p.worldState.GetFormAt<MpObjectReference>(kPlate);
+  p.Messages().clear();
+  {
+    LogCapture log;
+    REQUIRE_NOTHROW(Linked(p, 0, kPlate, kDraugr));
+    REQUIRE(log.Count("[verb:traps] E_TRAP_UNLINKED: ff000fe1 reports 567f2 "
+                      "activating actor 380b3, whose activation parents do "
+                      "not name it") == 1);
+    REQUIRE(log.Count("relayed to it") == 0);
+  }
+  REQUIRE(RelayedTo(p, 1).empty());
   Leave(p);
 }
 

@@ -3855,6 +3855,51 @@ void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
     if (simulator && simulator != &reporter &&
         partOne.serverState.UserByActor(simulator) !=
           Networking::InvalidUserId) {
+      // the relay runs another seat's engine, so the report meets the cell
+      // path's two consistency checks first (rule 5): the reporter hosts
+      // the cell its trigger stands in (a guest's report would otherwise
+      // wake the host's own actor), and the actor's own activation parents,
+      // read from its game-file record as InitScripts reads a non-actor's
+      // (its XAPR, which the table skips for actors), name the trigger
+      std::optional<uint32_t> casterCell;
+      if (casterRef) {
+        casterCell = partOne.worldState.CellOf(
+          casterRef->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles),
+          casterRef->GetPos());
+      }
+      const auto casterHost = casterCell ? partOne.GetCellHost(*casterCell)
+                                         : skymp::rules::CellHost{};
+      if (!casterHost.hosted || casterHost.player != reporter.GetFormId()) {
+        spdlog::info("[verb:traps] E_TRAP_NOT_HOST: {:x} reports {:x} "
+                     "activating actor {:x}, its trigger in a cell it does "
+                     "not host",
+                     reporter.GetFormId(), casterId, targetId);
+        return;
+      }
+      bool linked = false;
+      if (partOne.HasEspm()) {
+        try {
+          const auto lookup =
+            partOne.GetEspm().GetBrowser().LookupById(targetId);
+          const auto data =
+            espm::GetData<espm::ACHR>(targetId, &partOne.worldState);
+          for (const auto& info : data.activationParents) {
+            if (lookup.ToGlobalId(info.refrId) == casterId) {
+              linked = true;
+              break;
+            }
+          }
+        } catch (std::exception&) {
+          linked = false;
+        }
+      }
+      if (!linked) {
+        spdlog::info("[verb:traps] E_TRAP_UNLINKED: {:x} reports {:x} "
+                     "activating actor {:x}, whose activation parents do not "
+                     "name it",
+                     reporter.GetFormId(), casterId, targetId);
+        return;
+      }
       if (!withinBudget()) {
         return;
       }

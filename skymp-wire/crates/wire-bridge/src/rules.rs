@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, placements, player_globals, props, quest_stages, racemenu, ranged, rest, perks, scripted_effects, shouts, stagger, teleports, weather};
+use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, destruction, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, placements, player_globals, props, quest_stages, racemenu, ranged, rest, perks, scripted_effects, shouts, stagger, teleports, weather};
 
 // the perk table's effect calls carry a CTDA's five parts flat, as add_condition does
 #[allow(clippy::too_many_arguments)]
@@ -572,6 +572,31 @@ mod ffi {
         picks: u8,
         /// The lock after.
         state: LockStateRow,
+    }
+
+    /// A reference's destruction as the record holds it (thuum D-S3, traps
+    /// follow the interaction; ADR-068's DestructionStage row): the stage the
+    /// engine reached and the destroyed flag; a reference with no record
+    /// reads as the game files' state, stage 0 and not destroyed.
+    #[derive(Debug, Clone, PartialEq)]
+    struct DestructionRow {
+        /// The destruction stage, 0 for none.
+        stage: u8,
+        /// Destroyed (a spent trap).
+        destroyed: bool,
+    }
+
+    /// A destruction report judged (wire-rules destruction): `verdict` 0
+    /// recorded (the first report of a step: `record` is the state after, to
+    /// write and relay), 1 the record stands (an equal or a lower report:
+    /// `record` is the record unchanged), 2 a stage past the bound (`record`
+    /// unchanged).
+    #[derive(Debug, Clone, PartialEq)]
+    struct DestructionVerdict {
+        /// 0 recorded, 1 the record stands, 2 a stage past the bound.
+        verdict: u8,
+        /// The record after the report.
+        record: DestructionRow,
     }
 
     /// A skill's standing as the record holds it (thuum docs/verbs/
@@ -1859,6 +1884,16 @@ mod ffi {
         /// against the state, the player's reach, the Lockpicks it holds and the gap since its last
         /// report on this lock (u64::MAX for none).
         fn lock_report(state: &LockStateRow, outcome: u8, broken: u8, within_reach: bool, picks_held: u32, since_last_ms: u64) -> LockReportVerdict;
+
+        /// A seat's report of a reference's destruction `stage` and
+        /// `destroyed` flag against its record (thuum D-S3; the game files'
+        /// state, stage 0 and not destroyed, for a reference with none): the
+        /// stage only rises, destroyed only goes true, the first report of
+        /// each step wins.
+        fn destruction_report(record: &DestructionRow, stage: u8, destroyed: bool) -> DestructionVerdict;
+        /// The highest stage a report may name (wire-rules
+        /// destruction::MAX_STAGE, wire-validate's bound).
+        fn destruction_max_stage() -> u8;
         /// Sets standing in the world.
         fn live_sets(self: &Placements) -> usize;
 
@@ -2150,7 +2185,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
+pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -2838,6 +2873,26 @@ fn lock_report(state: &LockStateRow, outcome: u8, broken: u8, within_reach: bool
             state: state.clone(),
         },
     }
+}
+
+fn destruction_of(row: &DestructionRow) -> destruction::Destruction {
+    destruction::Destruction { stage: row.stage, destroyed: row.destroyed }
+}
+
+fn destruction_row_of(d: destruction::Destruction) -> DestructionRow {
+    DestructionRow { stage: d.stage, destroyed: d.destroyed }
+}
+
+fn destruction_report(record: &DestructionRow, stage: u8, destroyed: bool) -> DestructionVerdict {
+    match destruction::report(destruction_of(record), stage, destroyed) {
+        destruction::ReportVerdict::Recorded(after) => DestructionVerdict { verdict: 0, record: destruction_row_of(after) },
+        destruction::ReportVerdict::Stands(kept) => DestructionVerdict { verdict: 1, record: destruction_row_of(kept) },
+        destruction::ReportVerdict::Range => DestructionVerdict { verdict: 2, record: record.clone() },
+    }
+}
+
+const fn destruction_max_stage() -> u8 {
+    destruction::MAX_STAGE
 }
 
 /// The eighteen skills' constants (wire-rules leveling).
@@ -4330,6 +4385,25 @@ mod tests {
         assert!(broke.accepted && broke.change == 2 && broke.picks == 2 && broke.state.locked && broke.state.broken == 2, "{broke:?}");
         let left = lock_report(&novice, 2, 0, true, 0, u64::MAX);
         assert!(left.accepted && left.change == 0 && left.state == novice, "{left:?}");
+    }
+
+    #[test]
+    fn the_bridge_judges_a_destruction_report() {
+        // thuum D-S3: the lamp's first shot over the game files' state, the
+        // second seat's copy, a lower report, the spent tripwire, the bound
+        let none = DestructionRow { stage: 0, destroyed: false };
+        let first = destruction_report(&none, 1, false);
+        assert_eq!(first, DestructionVerdict { verdict: 0, record: DestructionRow { stage: 1, destroyed: false } });
+        assert_eq!(destruction_report(&first.record, 1, false), DestructionVerdict { verdict: 1, record: first.record.clone() });
+        let two = destruction_report(&first.record, 2, false).record;
+        assert_eq!(destruction_report(&two, 1, false).verdict, 1);
+        assert_eq!(destruction_report(&two, 1, false).record, two);
+        let spent = destruction_report(&none, 0, true);
+        assert_eq!(spent.record, DestructionRow { stage: 0, destroyed: true });
+        assert_eq!(destruction_report(&spent.record, 0, false).verdict, 1);
+        assert_eq!(destruction_max_stage(), destruction::MAX_STAGE);
+        let past = destruction_report(&two, destruction_max_stage().saturating_add(1), true);
+        assert_eq!(past, DestructionVerdict { verdict: 2, record: two });
     }
 
     #[test]

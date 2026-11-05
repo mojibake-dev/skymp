@@ -167,8 +167,9 @@ export class RagdollService extends ClientListener {
     // 20261105-154820; 60 at 1.0). D-T4 B (Eli, 2026-11-05: "traps should be
     // scaled to difficulty"): the six keep the engine's own values, the
     // game's table for the difficulty in force (Update.esm's
-    // fDiffMultHPToPCL 3.0 for Legendary, which skymp5-client pins,
-    // DisableDifficultySelectionService), so this returns no number and
+    // fDiffMultHPToPCL 3.0 for Legendary; the difficulty in force is the
+    // player's own field, which the INI pin never reaches, x-trap-hit-difficulty
+    // 20261105-205713, DisableDifficultySelectionService), so this returns no number and
     // nothing is written. A fall read unzeroed under the old 0 (b-push), so
     // whether a fall passes through these at all is HYPOTHESIS, and the
     // static read of DamageActor (re-37335 (a)) skips them for a fall at 1.0

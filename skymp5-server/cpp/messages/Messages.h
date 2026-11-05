@@ -22,6 +22,7 @@
 #include "DamageCauseMessage.h"
 #include "DeathStateContainerMessage.h"
 #include "DestroyActorMessage.h"
+#include "DestructionStageMessage.h"
 #include "DropItemMessage.h"
 #include "FavoritesMessage.h"
 #include "FinishSpSnippetMessage.h"
@@ -150,4 +151,5 @@
   REGISTER_MESSAGE(ChangeFormMessage)                                         \
   REGISTER_MESSAGE(ChangeFormAckMessage)                                      \
   REGISTER_MESSAGE(ChangeFormApplyMessage)                                    \
-  REGISTER_MESSAGE(ScriptCallMessage)
+  REGISTER_MESSAGE(ScriptCallMessage)                                         \
+  REGISTER_MESSAGE(DestructionStageMessage)

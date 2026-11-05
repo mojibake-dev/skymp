@@ -120,5 +120,12 @@ enum class MsgType : uint8_t
                    // ran on the engine that owns its subject, reported at the
                    // native boundary and relayed as SpSnippet with the
                    // subject's sequence
+  // 76 and 77 are ADR-068's ScriptState and ScriptStateApply (rung 3), held
+  // by id in skymp-wire (wire-schema's reserved rows 84 and 85) until their
+  // shapes land
+  DestructionStage = 78, // thuum D-S3 (traps follow the interaction): a
+                         // reference's destruction stage or destroyed flag,
+                         // reported by the seat that reached it first,
+                         // recorded once and served behind a create word
   Max
 };

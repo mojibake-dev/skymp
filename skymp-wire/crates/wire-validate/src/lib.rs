@@ -224,6 +224,10 @@ pub struct ClientGuard {
     /// until a lab run reads a host's rate; the transport's byte budget
     /// bounds the bytes.
     pub change_form_budget: TokenBucket,
+    /// Budget for a seat's destruction reports (DestructionStage, thuum
+    /// D-S3): one per stage rise or destruction its engine caused or saw
+    /// first, a trap's result once; 8 at once, 2 a second after (UNMEASURED).
+    pub destruction_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -268,6 +272,7 @@ impl Default for ClientGuard {
             word_wall_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
             object_animation_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 8, last_refill_ms: 0 },
             change_form_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 8, last_refill_ms: 0 },
+            destruction_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
         }
     }
 }
@@ -838,6 +843,25 @@ fn check_object_animation(m: &skymp::ObjectAnimation) -> Result<(), Reject> {
     Ok(())
 }
 
+/// The highest destruction stage a report or a record may name (thuum
+/// D-S3): wire-rules destruction's MAX_STAGE, the same number (wire-bridge's
+/// test pins the two together).
+pub const DESTRUCTION_MAX_STAGE: u8 = 127;
+
+/// A reference's destruction stage (thuum D-S3, ADR-068's DestructionStage
+/// row): a game-file reference, never 0 nor one the server names
+/// (0xff000000 and up), and a stage of at most [`DESTRUCTION_MAX_STAGE`]; the
+/// same shape both ways (a seat's report, the server's relay and its served
+/// record). Whether the reference is one the server holds, no actor, in a
+/// cell the reporter's game has loaded, and whether the report moves the
+/// record is the server's rule (wire-rules destruction).
+fn check_destruction_stage(m: &skymp::DestructionStage) -> Result<(), Reject> {
+    if m.refr == 0 || m.refr >= PLAYER_FORMS || m.stage > DESTRUCTION_MAX_STAGE {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
 /// The server's weather word (docs/verbs/weather.md): a place, never 0; the
 /// weather may be 0 (a release); the transport refuses it from a client by
 /// direction.
@@ -1256,6 +1280,7 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::WordWall(_) => take(&mut guard.word_wall_budget, now_ms),
         Message::ObjectAnimation(_) => take(&mut guard.object_animation_budget, now_ms),
         Message::ChangeForm(_) => take(&mut guard.change_form_budget, now_ms),
+        Message::DestructionStage(_) => take(&mut guard.destruction_budget, now_ms),
         _ => Ok(()),
     }
 }
@@ -1449,6 +1474,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::ChangeFormAck(m) => check_change_form_ack(m),
         Message::ChangeFormApply(m) => check_change_form_apply(m),
         Message::ScriptCall(m) => check_script_call(m),
+        Message::DestructionStage(m) => check_destruction_stage(m),
         Message::CreateActor(m) => check_create_actor(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
@@ -2718,6 +2744,35 @@ mod tests {
     }
 
     #[test]
+    fn destruction_stages_name_a_game_file_reference_and_a_bounded_stage_and_are_rate_limited() {
+        // thuum D-S3: Bleak Falls Temple's oil lamp 0x9b0fb at its first
+        // stage, Embershard's spent tripwire 0xb6d3f served after a create
+        // word, the bound's edges
+        use wire_schema::skymp::DestructionStage;
+        let stage = |refr, stage, destroyed, served| Message::DestructionStage(DestructionStage { refr, stage, destroyed, served, ..Default::default() });
+        assert_eq!(validate_server(&stage(0x9b0fb, 1, false, false)), Ok(()));
+        assert_eq!(validate_server(&stage(0xb6d3f, 0, true, true)), Ok(()));
+        assert_eq!(validate_server(&stage(0xfeff_ffff, DESTRUCTION_MAX_STAGE, true, false)), Ok(()));
+        assert_eq!(validate_server(&stage(0, 1, false, false)), Err(Reject::Range));
+        assert_eq!(validate_server(&stage(0xff00_0000, 1, false, false)), Err(Reject::Range));
+        assert_eq!(validate_server(&stage(u32::MAX, 0, true, false)), Err(Reject::Range));
+        assert_eq!(validate_server(&stage(0x9b0fb, DESTRUCTION_MAX_STAGE.saturating_add(1), false, false)), Err(Reject::Range));
+        assert_eq!(validate_server(&stage(0x9b0fb, u8::MAX, false, false)), Err(Reject::Range));
+        let mut guard = ClientGuard::default();
+        for _ in 0..8 {
+            assert_eq!(validate(&stage(0x9b0fb, 1, false, false), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&stage(0x9b0fb, 1, false, false), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&stage(0x9b0fb, 2, false, false), &mut guard, 1_500), Ok(()));
+        // a refused shape spends no token: the shape is judged first
+        let mut fresh = ClientGuard::default();
+        for _ in 0..20 {
+            assert_eq!(validate(&stage(0, 1, false, false), &mut fresh, 1_000), Err(Reject::Range));
+        }
+        assert_eq!(validate(&stage(0x9b0fb, 1, false, false), &mut fresh, 1_000), Ok(()));
+    }
+
+    #[test]
     fn relayed_activations_name_both_references() {
         use wire_schema::skymp::RelayedActivation;
         let relay = |target, caster| Message::RelayedActivation(RelayedActivation { target, caster, ..Default::default() });
@@ -2893,6 +2948,16 @@ mod tests {
             let m = Message::WordWall(WordWall { wall, ..Default::default() });
             let _ = validate(&m, &mut g, now);
             prop_assert_eq!(validate_server(&m), if wall == 0 { Err(Reject::Range) } else { Ok(()) });
+        }
+
+        #[test]
+        fn destruction_stages_never_panic(refr in any::<u32>(), stage in any::<u8>(), destroyed in any::<bool>(), served in any::<bool>(), now in any::<u64>()) {
+            use wire_schema::skymp::DestructionStage;
+            let mut g = ClientGuard::default();
+            let m = Message::DestructionStage(DestructionStage { refr, stage, destroyed, served, ..Default::default() });
+            let _ = validate(&m, &mut g, now);
+            let want = if refr == 0 || refr >= 0xff00_0000 || stage > DESTRUCTION_MAX_STAGE { Err(Reject::Range) } else { Ok(()) };
+            prop_assert_eq!(validate_server(&m), want);
         }
 
         #[test]

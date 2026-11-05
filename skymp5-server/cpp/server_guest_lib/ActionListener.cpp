@@ -4375,6 +4375,111 @@ void ActionListener::OnLockReport(const RawMessageData& rawMsgData,
   }
 }
 
+// thuum D-S3 (traps follow the interaction; ADR-068's DestructionStage row;
+// docs/research/trap-slice-d-s3-2026-11-05.md point 3): a seat's report of a
+// reference's destruction stage rise or its destruction, which its engine
+// caused or saw first. Every seat runs the trap family itself, so one firing
+// is reported by more than one seat: the rule (wire-rules destruction) keeps
+// the first report of each step (the stage only rises, destroyed only goes
+// true) and an equal or a lower report changes nothing. Its checks first: a
+// game-file reference the server holds or loads (LookupFormById: a trap's
+// lamp may stand outside the chunks loaded around the players), no actor
+// (an actor's death is the NPC fate's), and the reference's cell loaded in
+// the reporter's game (PartOne::GetCellLoaders): the seat whose engine
+// reached the step reports it, the cell's host or a guest alike (R2: the
+// engine computed it, the server records it, nothing of it validated beyond
+// these checks). A recorded step goes onto the reference's record (saved)
+// and at once to its other listeners (served false); a late subscriber, or
+// any after a restart, hears the record behind the reference's create word
+// (PartOne's onSubscribe, served true).
+void ActionListener::OnDestructionStage(const RawMessageData& rawMsgData,
+                                        const DestructionStageMessage& msg)
+{
+  MpActor* reporter = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!reporter) {
+    return;
+  }
+  const auto refuse = [&](const char* code, const std::string& why) {
+    spdlog::info("[verb:traps] {}: {:x} reports {:x} at stage {}, destroyed "
+                 "{}: {}",
+                 code, reporter->GetFormId(), msg.refr, msg.stage,
+                 msg.destroyed, why);
+  };
+  if (msg.refr == 0 || msg.refr >= 0xff000000) {
+    // a server-made reference's destruction is the server's own (the edge
+    // refuses the id first, E_VAL_RANGE)
+    return refuse("E_DESTRUCTION_NO_REF", "not a game-file reference");
+  }
+  auto refrPtr = std::dynamic_pointer_cast<MpObjectReference>(
+    partOne.worldState.LookupFormById(msg.refr));
+  if (!refrPtr) {
+    return refuse("E_DESTRUCTION_NO_REF", "no such reference");
+  }
+  if (refrPtr->AsActor()) {
+    return refuse("E_DESTRUCTION_ACTOR",
+                  "an actor, whose death is the NPC fate's");
+  }
+  const auto cell = partOne.worldState.CellOf(*refrPtr);
+  if (!cell) {
+    return refuse("E_DESTRUCTION_CELL", "the reference's cell is unknown");
+  }
+  const auto loaders = partOne.GetCellLoaders(*cell);
+  if (std::find(loaders.begin(), loaders.end(), reporter->GetFormId()) ==
+      loaders.end()) {
+    return refuse("E_DESTRUCTION_CELL",
+                  fmt::format("its game does not have the reference's cell "
+                              "{:x} loaded",
+                              *cell));
+  }
+  // the record, or the game files' state for a reference nobody reported
+  const auto before =
+    refrPtr->GetDestruction().value_or(MpChangeFormREFR::Destruction{});
+  skymp::rules::DestructionRow record{};
+  record.stage = before.stage;
+  record.destroyed = before.destroyed;
+  const auto verdict = skymp::rules::destruction_report(
+    record, static_cast<uint8_t>(std::min<uint32_t>(msg.stage, 255)),
+    msg.destroyed);
+  if (verdict.verdict == 2) {
+    // the edge refuses a stage past the bound first (E_VAL_RANGE)
+    return refuse(
+      "E_DESTRUCTION_RANGE",
+      fmt::format("a stage past {}",
+                  static_cast<int>(skymp::rules::destruction_max_stage())));
+  }
+  if (verdict.verdict != 0) {
+    spdlog::info("[verb:traps] {:x} reports {:x} at stage {}, destroyed {}: "
+                 "the record stands (stage {}, destroyed {}); dropped",
+                 reporter->GetFormId(), msg.refr, msg.stage, msg.destroyed,
+                 static_cast<int>(verdict.record.stage),
+                 verdict.record.destroyed);
+    return;
+  }
+  MpChangeFormREFR::Destruction after;
+  after.stage = verdict.record.stage;
+  after.destroyed = verdict.record.destroyed;
+  refrPtr->SetDestruction(after);
+  DestructionStageMessage relay;
+  relay.refr = msg.refr;
+  relay.stage = after.stage;
+  relay.destroyed = after.destroyed;
+  relay.served = false;
+  size_t relayed = 0;
+  for (auto listener : refrPtr->GetActorListeners()) {
+    if (listener == reporter ||
+        partOne.serverState.UserByActor(listener) ==
+          Networking::InvalidUserId) {
+      continue;
+    }
+    listener->SendToUser(relay, true);
+    ++relayed;
+  }
+  spdlog::info("[verb:traps] {:x} reports {:x} at stage {}, destroyed {}: "
+               "recorded (the first report), relayed to {} game(s)",
+               reporter->GetFormId(), msg.refr, msg.stage, msg.destroyed,
+               relayed);
+}
+
 // thuum docs/verbs/prop-physics.md (ADR-058 decision 2): a simulator's
 // sample of a prop. The record takes it from the prop's owner alone (the
 // toucher while awake or inside its lease, else the host of the cell the

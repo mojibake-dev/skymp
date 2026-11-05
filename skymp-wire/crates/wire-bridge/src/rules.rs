@@ -4402,6 +4402,8 @@ mod tests {
         assert_eq!(spent.record, DestructionRow { stage: 0, destroyed: true });
         assert_eq!(destruction_report(&spent.record, 0, false).verdict, 1);
         assert_eq!(destruction_max_stage(), destruction::MAX_STAGE);
+        // the rule's bound is the edge's (wire-validate refuses past it)
+        assert_eq!(destruction_max_stage(), wire_validate::DESTRUCTION_MAX_STAGE);
         let past = destruction_report(&two, destruction_max_stage().saturating_add(1), true);
         assert_eq!(past, DestructionVerdict { verdict: 2, record: two });
     }

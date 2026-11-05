@@ -22,6 +22,7 @@
 #include "CreateActorMessage.h"
 #include "CustomPacketMessage.h"
 #include "DestroyActorMessage.h"
+#include "DestructionStageMessage.h"
 #include "HostGrantMessage.h"
 #include "HostReleaseMessage.h"
 #include "PerkStateMessage.h"
@@ -1422,6 +1423,27 @@ void PartOne::Init()
         word.player = liveOwner;
         word.epoch = PropEpochOf(*emitter);
         sendTarget->Send(listenerUserId, word, true);
+      }
+    }
+
+    // thuum D-S3 (traps follow the interaction; ADR-068's DestructionStage
+    // row): a reference's recorded destruction (a spent tripwire, an oil
+    // lamp's fallen stage) rides behind its create word on the same ordered
+    // channel, served, so the late seat applies the record without replaying
+    // the firing; after a restart the record is the saved one
+    if (!emitterAsActor) {
+      if (const auto destruction = emitter->GetDestruction()) {
+        DestructionStageMessage served;
+        served.refr = emitter->GetFormId();
+        served.stage = destruction->stage;
+        served.destroyed = destruction->destroyed;
+        served.served = true;
+        sendTarget->Send(listenerUserId, served, true);
+        spdlog::info("[verb:traps] {:x}'s record (stage {}, destroyed {}) "
+                     "served to {:x} after its create word",
+                     emitter->GetFormId(),
+                     static_cast<int>(destruction->stage),
+                     destruction->destroyed, listenerAsActor->GetFormId());
       }
     }
 

@@ -66,7 +66,10 @@ struct WorldState::Impl
   std::vector<std::unique_ptr<IPapyrusClassBase>> classes;
   std::array<std::shared_ptr<std::vector<uint32_t>>, 0x100>
     allFormsByModIndexCache;
-  std::vector<uint32_t> attachEspmRecordFailures;
+  // the records LoadForm could not attach, each id once: a lookup of one the
+  // loader never attaches repeats (a moving static a script call names, the
+  // hall door's FX review, finding 1); GetAllForms drops each from its list
+  std::set<uint32_t> attachEspmRecordFailures;
   // thuum docs/verbs/magic-effects.md: actors with running effects and when
   // they were last advanced
   std::set<uint32_t> actorsWithEffects;
@@ -744,7 +747,7 @@ bool WorldState::LoadForm(uint32_t formId, std::stringstream* optionalOutTrace,
   }
 
   if (!attached) {
-    pImpl->attachEspmRecordFailures.push_back(formId);
+    pImpl->attachEspmRecordFailures.insert(formId);
   }
 
   if (attached) {

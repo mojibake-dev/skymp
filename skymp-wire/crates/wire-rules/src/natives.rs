@@ -10,16 +10,22 @@
 //! it (keep) and its parameters' types.
 //!
 //! The server never understands an action: the shape is the gate, judged in
-//! this order. The pair is a tabled action row the server relays
-//! (`E_SCRIPTCALL_ROW`); the arguments are the row's count and kinds and the
-//! subject is one the reporter may name (`E_SCRIPTCALL_ARGS`); the reporter is
-//! within its budget, [`BURST`] then [`PER_SECOND`] a second
-//! (`E_SCRIPTCALL_RATE`); the subject is a world object whose cell the
-//! reporter hosts at the reported epoch (`E_SCRIPTCALL_OWNER`), a reference
-//! the server holds or a game-file placement it holds none for, placed by its
-//! record ([`SubjectKind::Record`]: the loader attaches no moving static, so
-//! Bleak Falls Sanctum's door FX is no reference of the server's). A door's
-//! or a container's call is dropped quietly (its open is Activate's isOpen, as
+//! two steps. The shape step ([`ScriptCalls::shape`]) comes first, before the
+//! core reads anything of the subject: the reporter is within its budget,
+//! [`BURST`] then [`PER_SECOND`] a second, a token spent by every call that
+//! reaches the step, refused or not (`E_SCRIPTCALL_RATE`); the pair is a
+//! tabled action row the server relays (`E_SCRIPTCALL_ROW`); the arguments
+//! are the row's count and kinds and the subject is one the reporter may name
+//! (`E_SCRIPTCALL_ARGS`). So a flood of malformed calls is cut off by the
+//! rate, and a call refused there costs the core no lookup (a subject the
+//! server does not hold is read from its game-file record). The owner step
+//! ([`ScriptCalls::owner`]) judges a shaped call over the facts the core then
+//! gathers for its subject: a world object whose cell the reporter hosts at
+//! the reported epoch (`E_SCRIPTCALL_OWNER`), a reference the server holds or
+//! a game-file placement it holds none for, placed by its record
+//! ([`SubjectKind::Record`]: the loader attaches no moving static, so Bleak
+//! Falls Sanctum's door FX is no reference of the server's). A door's or a
+//! container's call is dropped quietly (its open is Activate's isOpen, as
 //! ObjectAnimation's handler drops it) and an actor's is refused as the
 //! streams' (`E_SCRIPTCALL_ROW`: the row is local for an actor). A value is
 //! never judged (ADR-062's amendment). An accepted call takes its subject's
@@ -398,8 +404,35 @@ pub enum Verdict {
     Refuse(Refusal),
 }
 
+fn refusal(code: Code, why: String) -> Refusal {
+    Refusal { code, why }
+}
+
 fn refuse(code: Code, why: String) -> Verdict {
-    Verdict::Refuse(Refusal { code, why })
+    Verdict::Refuse(refusal(code, why))
+}
+
+/// A reported call the shape step passed: its row, the subject it names and
+/// the native a receiver runs for it, for the core to gather the subject's
+/// facts and ask the owner step. Only [`ScriptCalls::shape`] makes one, after
+/// it took the reporter's token, and [`ScriptCalls::owner`] takes it by
+/// value, so the owner step judges each shaped call once and never a call
+/// the shape step refused.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Shaped {
+    row: Row,
+    subject: u32,
+    relay_cls: &'static str,
+    relay_fn: &'static str,
+}
+
+impl Shaped {
+    /// The subject's form id as the reporter named it (0x14 for its own
+    /// player): the call's selfId, a form the reporter may name.
+    #[must_use]
+    pub fn subject(&self) -> u32 {
+        self.subject
+    }
 }
 
 /// How many calls a reporter may send at once (a pillar's turn is two, a
@@ -455,42 +488,55 @@ pub struct ScriptCalls {
 }
 
 impl ScriptCalls {
-    /// The verdict on one reported call of `row` (none for a pair the table
-    /// lacks) with `args`, from `facts.sender` at `now_ms` on a monotonic
-    /// clock; an accepted call takes its subject's next sequence.
-    pub fn judge(&mut self, row: Option<&Row>, args: &[Arg], facts: &Facts, now_ms: u64) -> Verdict {
+    /// The shape step on one reported call of `row` (none for a pair the
+    /// table lacks) with `args`, from `sender` naming `self_id`, at `now_ms`
+    /// on a monotonic clock: the core asks it before it reads anything of
+    /// the subject. The reporter's token comes first, spent by every call
+    /// that reaches the step, refused or not, so a flood of malformed calls
+    /// is cut off by the rate; then the row, the arguments and the subject's
+    /// form. A call refused here costs the core no lookup.
+    pub fn shape(&mut self, row: Option<&Row>, args: &[Arg], sender: u32, self_id: u32, now_ms: u64) -> Result<Shaped, Refusal> {
+        if !self.budgets.entry(sender).or_insert_with(|| Bucket::full(now_ms)).take(now_ms) {
+            return Err(refusal(Code::Rate, format!("past the reporter's {BURST} at once and {PER_SECOND} a second")));
+        }
         let Some(row) = row else {
-            return refuse(Code::Row, "the pair has no row in the table".to_owned());
+            return Err(refusal(Code::Row, "the pair has no row in the table".to_owned()));
         };
         match row.kind {
             Kind::Action => {}
-            Kind::State => return refuse(Code::Row, "a state row: its consequence travels as the object's record (rung 4), never as an action".to_owned()),
-            Kind::Everyone => return refuse(Code::Row, "an everyone row: every seat runs it (rung 5), never relayed as an action".to_owned()),
-            Kind::Local => return refuse(Code::Row, "a local row: its consequence stays on its seat".to_owned()),
+            Kind::State => return Err(refusal(Code::Row, "a state row: its consequence travels as the object's record (rung 4), never as an action".to_owned())),
+            Kind::Everyone => return Err(refusal(Code::Row, "an everyone row: every seat runs it (rung 5), never relayed as an action".to_owned())),
+            Kind::Local => return Err(refusal(Code::Row, "a local row: its consequence stays on its seat".to_owned())),
         }
         let Some((relay_cls, relay_fn)) = row.relay_target() else {
-            return refuse(Code::Row, "an action row the table never relays".to_owned());
+            return Err(refusal(Code::Row, "an action row the table never relays".to_owned()));
         };
         if row.owner != Owner::CellHost || row.audience != Audience::Listeners {
-            return refuse(Code::Row, format!("an action row owned by the {:?} for the {:?}: no relay before its rung", row.owner, row.audience));
+            return Err(refusal(Code::Row, format!("an action row owned by the {:?} for the {:?}: no relay before its rung", row.owner, row.audience)));
         }
         if args.len() != row.params.len() {
-            return refuse(Code::Args, format!("{} argument(s), the row's {}", args.len(), row.params.len()));
+            return Err(refusal(Code::Args, format!("{} argument(s), the row's {}", args.len(), row.params.len())));
         }
         for (i, (arg, param)) in args.iter().zip(row.params.iter()).enumerate() {
             if !arg.fits(*param) {
-                return refuse(Code::Args, format!("argument {i} is {}, the row's {param:?}", arg.name()));
+                return Err(refusal(Code::Args, format!("argument {i} is {}, the row's {param:?}", arg.name())));
             }
         }
-        let Some(subject) = subject_of(row, facts.self_id, args) else {
-            return refuse(Code::Args, format!("no subject the reporter may name (selfId {:x})", facts.self_id));
+        let Some(subject) = subject_of(row, self_id, args) else {
+            return Err(refusal(Code::Args, format!("no subject the reporter may name (selfId {self_id:x})")));
         };
-        if subject != facts.self_id {
-            return refuse(Code::Args, format!("selfId {:x} is not the call's subject {subject:x}", facts.self_id));
+        if subject != self_id {
+            return Err(refusal(Code::Args, format!("selfId {self_id:x} is not the call's subject {subject:x}")));
         }
-        if !self.budgets.entry(facts.sender).or_insert_with(|| Bucket::full(now_ms)).take(now_ms) {
-            return refuse(Code::Rate, format!("past the reporter's {BURST} at once and {PER_SECOND} a second"));
-        }
+        Ok(Shaped { row: *row, subject, relay_cls, relay_fn })
+    }
+
+    /// The owner step on a call the shape step passed, over the `facts` the
+    /// core gathered for its subject: the subject's kind, its cell, that
+    /// cell's host and the host's epoch, against `facts.sender` and
+    /// `facts.epoch`. An accepted call takes its subject's next sequence.
+    pub fn owner(&mut self, shaped: Shaped, facts: &Facts) -> Verdict {
+        let Shaped { row, subject, relay_cls, relay_fn } = shaped;
         match facts.kind {
             SubjectKind::WorldObject | SubjectKind::Record => {}
             SubjectKind::DoorOrContainer => return Verdict::Skip,
@@ -525,6 +571,17 @@ impl ScriptCalls {
             keep: row.keep,
             graph_event_arg: row.graph_event_arg(),
         })
+    }
+
+    /// Both steps on one call in the core's order, the shape step and then
+    /// the owner step on a call it passed, for the tests, whose facts are at
+    /// hand before the call (the core gathers them only for a shaped call).
+    #[cfg(test)]
+    fn judge(&mut self, row: Option<&Row>, args: &[Arg], facts: &Facts, now_ms: u64) -> Verdict {
+        match self.shape(row, args, facts.sender, facts.self_id, now_ms) {
+            Ok(shaped) => self.owner(shaped, facts),
+            Err(refused) => Verdict::Refuse(refused),
+        }
     }
 
     /// The subject's sequence: its accepted calls so far.
@@ -778,12 +835,14 @@ mod tests {
             assert!(matches!(s.judge(row, &[Arg::String], &f, 2_125), Verdict::Accept(_)));
         }
         assert_eq!(code(&s.judge(row, &[Arg::String], &f, 2_125)), Some(Code::Rate));
-        // a shape refusal spends nothing
+        // a shape refusal spends a token as an accepted call does (the hall
+        // door's FX review, finding 1): a burst of malformed calls leaves
+        // none for a well-formed one
         let mut fresh = ScriptCalls::default();
-        for _ in 0..100 {
+        for _ in 0..BURST {
             assert_eq!(code(&fresh.judge(row, &[], &f, 0)), Some(Code::Args));
         }
-        assert!(matches!(fresh.judge(row, &[Arg::String], &f, 0), Verdict::Accept(_)));
+        assert_eq!(code(&fresh.judge(row, &[Arg::String], &f, 0)), Some(Code::Rate));
     }
 
     #[test]

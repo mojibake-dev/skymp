@@ -155,8 +155,10 @@ public:
 
   // thuum ADR-068 (the one seam): a tabled native a script ran on the engine
   // that owns its subject. The rule (wire-rules natives, PartOne::
-  // GetScriptCalls) judges the row, the arguments, the reporter's budget and
-  // the subject's owner at the epoch over the facts gathered here; an
+  // GetScriptCalls) judges the reporter's budget, the row and the arguments
+  // before anything of the subject is read (its shape step, a token spent by
+  // every call, so a refused one costs no lookup), then the subject's owner
+  // at the epoch over the facts gathered here (its owner step); an
   // accepted action takes the subject's next sequence and is relayed at
   // once to the subject's other listeners as SpSnippet with it (for a
   // game-file placement the server holds no reference for, judged by its

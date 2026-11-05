@@ -3769,11 +3769,18 @@ void ActionListener::OnObjectAnimation(const RawMessageData& rawMsgData,
 }
 
 // thuum ADR-068 (the one seam; docs/research/scripts-one-system-2026-11-05.md
-// 6.4 and 6.11 items 1, 8 and 13): the core gathers the subject's facts (the
+// 6.4 and 6.11 items 1, 8 and 13): the rule judges the shape alone, in two
+// steps. Its shape step comes first, before the server reads anything of the
+// subject: the reporter's budget (a token for every call that reaches it,
+// refused or not), the row, the arguments and the subject's form, so a call
+// it refuses costs no lookup (the hall door's FX review, finding 1: a lookup
+// of a subject the server does not hold tries LoadForm, then reads its
+// record). For a shaped call the core gathers the subject's facts (the
 // reference the server holds, loaded as OnObjectAnimation loads it: the
 // server loads references by chunk around players, so a far gate a lever
 // turns may not be loaded yet; rung 2's review, finding 3), its kind, the
-// host of its cell and that host's epoch, and the rule judges the shape alone.
+// host of its cell and that host's epoch, and the rule's owner step judges
+// them.
 // A game-file placement the loader never attaches (a moving static: the hall
 // door's FX, rung 2's merged-head review) is judged by its record instead:
 // its record's cell, its listeners the games that report that cell loaded,
@@ -3801,10 +3808,42 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
   const auto at =
     skymp::rules::script_call_subject(msg.cls, msg.fn, msg.selfId, argSlice);
 
-  // the facts: subject_kind 0 no reference, 1 a world object, 2 a door or a
-  // container, 3 an actor, 4 a world object the server holds no reference
-  // for, placed by its game-file record; the owner and its epoch are the
-  // host's of the cell the subject stands in
+  // a refusal's line, either step's: one a minute per reporter and code, the
+  // rest counted (OnChangeForm's shape): a script repeats its call at every
+  // turn
+  const auto refused = [&](const skymp::rules::ScriptCallVerdict& verdict) {
+    const auto now = std::chrono::steady_clock::now();
+    auto& [since, count] = scriptCallRefusals[{
+      reporter->GetFormId(), static_cast<uint8_t>(verdict.code) }];
+    ++count;
+    if (since.time_since_epoch().count() != 0 &&
+        now - since < std::chrono::minutes(1)) {
+      return;
+    }
+    spdlog::info("[verb:scripts] {}: {:x} reports {}.{} on {:x} (epoch {}, "
+                 "from {}.{}): {}; refused, {} since the last line",
+                 std::string(verdict.name), reporter->GetFormId(), msg.cls,
+                 msg.fn, msg.selfId, msg.epoch, msg.caller, msg.handler,
+                 std::string(verdict.why), count);
+    since = now;
+    count = 0;
+  };
+
+  // the shape step, before anything of the subject is read: a spent budget,
+  // a row or arguments the table refuses, a subject the reporter may not
+  // name; a refusal here costs no lookup
+  auto& scriptCalls = partOne.GetScriptCalls();
+  const auto shape = scriptCalls.shape(at.row, argSlice, reporter->GetFormId(),
+                                       msg.selfId, MonotonicMs());
+  if (shape.code != skymp::rules::ScriptCallCode::Accepted) {
+    refused(shape);
+    return;
+  }
+
+  // the shaped subject's facts: subject_kind 0 no reference, 1 a world
+  // object, 2 a door or a container, 3 an actor, 4 a world object the server
+  // holds no reference for, placed by its game-file record; the owner and
+  // its epoch are the host's of the cell the subject stands in
   skymp::rules::ScriptCallFacts facts{};
   facts.sender = reporter->GetFormId();
   facts.self_id = msg.selfId;
@@ -3813,17 +3852,19 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
   // a world object's world or cell and position, the reference's or its
   // record's
   std::optional<std::pair<uint32_t, NiPoint3>> place;
-  if (at.subject == 0x14) {
+  if (shape.subject == 0x14) {
     // the reporter's own player, an actor: its animations are the streams'
     facts.subject_kind = 3;
-  } else if (at.subject != 0) {
-    const auto& form = partOne.worldState.LookupFormById(at.subject);
+  } else {
+    // a form the reporter may name (the shape step's: never 0, never one
+    // the server names)
+    const auto& form = partOne.worldState.LookupFormById(shape.subject);
     subject = form ? form->AsObjectReference() : nullptr;
     if (!subject) {
       // no reference of the server's: a game-file placement the loader
       // never attaches is judged by its record (its base's kind as a held
       // reference's, its record's cell), anything else stays unknown
-      const auto record = PlacementOfRecord(partOne.worldState, at.subject);
+      const auto record = PlacementOfRecord(partOne.worldState, shape.subject);
       if (!record) {
         facts.subject_kind = 0;
       } else if (record->doorOrContainer) {
@@ -3856,31 +3897,15 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
     }
   }
 
-  const auto verdict =
-    partOne.GetScriptCalls().judge(at.row, argSlice, facts, MonotonicMs());
+  // the owner step on the shaped call, over its subject's facts
+  const auto verdict = scriptCalls.owner(facts);
   if (verdict.code == skymp::rules::ScriptCallCode::Skipped) {
     // a door's open is isOpen's (Activate's path), not an animation; so is a
     // container's lid (OnObjectAnimation's rule, thuum playtest 40's F8)
     return;
   }
   if (verdict.code != skymp::rules::ScriptCallCode::Accepted) {
-    // one line a minute per reporter and code, the rest counted
-    // (OnChangeForm's shape): a script repeats its call at every turn
-    const auto now = std::chrono::steady_clock::now();
-    auto& [since, count] = scriptCallRefusals[{
-      reporter->GetFormId(), static_cast<uint8_t>(verdict.code) }];
-    ++count;
-    if (since.time_since_epoch().count() != 0 &&
-        now - since < std::chrono::minutes(1)) {
-      return;
-    }
-    spdlog::info("[verb:scripts] {}: {:x} reports {}.{} on {:x} (epoch {}, "
-                 "from {}.{}): {}; refused, {} since the last line",
-                 std::string(verdict.name), reporter->GetFormId(), msg.cls,
-                 msg.fn, msg.selfId, msg.epoch, msg.caller, msg.handler,
-                 std::string(verdict.why), count);
-    since = now;
-    count = 0;
+    refused(verdict);
     return;
   }
   if (!subject && facts.subject_kind != 4) {

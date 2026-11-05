@@ -1386,8 +1386,8 @@ mod ffi {
     }
 
     /// A reported script call's row and subject (thuum ADR-068, wire-rules
-    /// natives), for the core to gather the subject's facts before it asks
-    /// for the verdict.
+    /// natives): the row the core hands the shape step before it reads
+    /// anything of the subject.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct ScriptCallSubject {
         /// The row's place in the table, -1 when the pair has none.
@@ -1436,7 +1436,9 @@ mod ffi {
     /// The rule's word on a reported script call.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum ScriptCallCode {
-        /// Relayed to the audience but the reporter.
+        /// Relayed to the audience but the reporter (the owner step); from
+        /// the shape step, the shape holds and the core gathers the
+        /// subject's facts for the owner step.
         Accepted,
         /// Dropped quietly: a door's or a container's.
         Skipped,
@@ -2122,17 +2124,29 @@ mod ffi {
         fn prop_lease_ms() -> u64;
 
         /// thuum ADR-068 (the one seam): the row of a reported script call
-        /// and its subject, for the core to gather the subject's facts.
+        /// and its subject, the row for the core's shape step.
         fn script_call_subject(cls: &str, func: &str, self_id: u32, args: &[ScriptArg]) -> ScriptCallSubject;
         /// Every reporter's budget and every subject's sequence (wire-rules
-        /// natives).
+        /// natives), and the call the shape step passed until the owner
+        /// step takes it.
         type ScriptCalls;
         /// Every budget full, every sequence at 0.
         fn new_script_calls() -> Box<ScriptCalls>;
-        /// The verdict on one reported call of the table's `row` (-1 for a
-        /// pair it lacks) at `now_ms` on a monotonic clock; an accepted call
-        /// takes its subject's next sequence.
-        fn judge(self: &mut ScriptCalls, row: i32, args: &[ScriptArg], facts: &ScriptCallFacts, now_ms: u64) -> ScriptCallVerdict;
+        /// The shape step on one reported call of the table's `row` (-1 for
+        /// a pair it lacks) from `sender` naming `self_id`, at `now_ms` on a
+        /// monotonic clock, which the core asks before it reads anything of
+        /// the subject: the reporter's token (spent by every call that
+        /// reaches the step, refused or not), the row, the arguments and the
+        /// subject's form. Accepted with the subject when the shape holds,
+        /// the call then waiting for `owner`; Row, Args or Rate otherwise,
+        /// and the core looks nothing up.
+        fn shape(self: &mut ScriptCalls, row: i32, args: &[ScriptArg], sender: u32, self_id: u32, now_ms: u64) -> ScriptCallVerdict;
+        /// The owner step on the call the last `shape` accepted, over the
+        /// facts the core gathered for its subject (its kind, its cell, that
+        /// cell's host and the host's epoch); an accepted call takes its
+        /// subject's next sequence. Skipped, nothing relayed, when no shaped
+        /// call waits, so each shaped call is judged once.
+        fn owner(self: &mut ScriptCalls, facts: &ScriptCallFacts) -> ScriptCallVerdict;
     }
 }
 
@@ -3835,17 +3849,69 @@ fn script_call_subject(cls: &str, func: &str, self_id: u32, args: &[ScriptArg]) 
     ScriptCallSubject { row: i32::try_from(index).unwrap_or(-1), subject }
 }
 
-/// Every reporter's budget and every subject's sequence (wire-rules natives).
+/// Every reporter's budget and every subject's sequence (wire-rules natives),
+/// and the call the shape step passed, held until the owner step takes it
+/// (natives::Shaped, which the shape step alone makes).
 #[derive(Debug, Default)]
-pub struct ScriptCalls(natives::ScriptCalls);
+pub struct ScriptCalls(natives::ScriptCalls, Option<natives::Shaped>);
 
 fn new_script_calls() -> Box<ScriptCalls> {
     Box::default()
 }
 
+/// A script call's verdict before any word: skipped, nothing relayed.
+fn quiet_script_call() -> ScriptCallVerdict {
+    ScriptCallVerdict {
+        code: ScriptCallCode::Skipped,
+        name: String::new(),
+        why: String::new(),
+        subject: 0,
+        seq: 0,
+        relay_cls: String::new(),
+        relay_fn: String::new(),
+        relay_args: Vec::new(),
+        relay_self: 0,
+        audience: 2,
+        keep_last: false,
+        event_arg: -1,
+    }
+}
+
+/// A refused script call, by its code and its name, either step's.
+fn refused_script_call(r: natives::Refusal) -> ScriptCallVerdict {
+    let mut out = quiet_script_call();
+    out.code = match r.code {
+        natives::Code::Row => ScriptCallCode::Row,
+        natives::Code::Args => ScriptCallCode::Args,
+        natives::Code::Owner => ScriptCallCode::Owner,
+        natives::Code::Rate => ScriptCallCode::Rate,
+    };
+    out.name = r.code.name().to_owned();
+    out.why = r.why;
+    out
+}
+
 impl ScriptCalls {
-    fn judge(&mut self, row: i32, args: &[ScriptArg], f: &ScriptCallFacts, now_ms: u64) -> ScriptCallVerdict {
+    fn shape(&mut self, row: i32, args: &[ScriptArg], sender: u32, self_id: u32, now_ms: u64) -> ScriptCallVerdict {
         let row = usize::try_from(row).ok().and_then(|i| natives::TABLE.get(i));
+        // one call at a time: a shape step drops a call no owner step took
+        self.1 = None;
+        match self.0.shape(row, &native_args(args), sender, self_id, now_ms) {
+            Ok(shaped) => {
+                let mut out = quiet_script_call();
+                out.code = ScriptCallCode::Accepted;
+                out.subject = shaped.subject();
+                self.1 = Some(shaped);
+                out
+            }
+            Err(r) => refused_script_call(r),
+        }
+    }
+
+    fn owner(&mut self, f: &ScriptCallFacts) -> ScriptCallVerdict {
+        let Some(shaped) = self.1.take() else {
+            return quiet_script_call();
+        };
         let kind = match f.subject_kind {
             1 => natives::SubjectKind::WorldObject,
             2 => natives::SubjectKind::DoorOrContainer,
@@ -3854,21 +3920,8 @@ impl ScriptCalls {
             _ => natives::SubjectKind::Unknown,
         };
         let facts = natives::Facts { sender: f.sender, self_id: f.self_id, epoch: f.epoch, kind, cell: f.cell, owner: f.owner, owner_epoch: f.owner_epoch };
-        let mut out = ScriptCallVerdict {
-            code: ScriptCallCode::Skipped,
-            name: String::new(),
-            why: String::new(),
-            subject: 0,
-            seq: 0,
-            relay_cls: String::new(),
-            relay_fn: String::new(),
-            relay_args: Vec::new(),
-            relay_self: 0,
-            audience: 2,
-            keep_last: false,
-            event_arg: -1,
-        };
-        match self.0.judge(row, &native_args(args), &facts, now_ms) {
+        let mut out = quiet_script_call();
+        match self.0.owner(shaped, &facts) {
             natives::Verdict::Accept(a) => {
                 out.code = ScriptCallCode::Accepted;
                 out.subject = a.subject;
@@ -3886,18 +3939,21 @@ impl ScriptCalls {
                 out.event_arg = a.graph_event_arg.and_then(|i| i8::try_from(i).ok()).unwrap_or(-1);
             }
             natives::Verdict::Skip => {}
-            natives::Verdict::Refuse(r) => {
-                out.code = match r.code {
-                    natives::Code::Row => ScriptCallCode::Row,
-                    natives::Code::Args => ScriptCallCode::Args,
-                    natives::Code::Owner => ScriptCallCode::Owner,
-                    natives::Code::Rate => ScriptCallCode::Rate,
-                };
-                out.name = r.code.name().to_owned();
-                out.why = r.why;
-            }
+            natives::Verdict::Refuse(r) => out = refused_script_call(r),
         }
         out
+    }
+
+    /// Both steps on one call in the core's order, the shape step and then
+    /// the owner step on a call it accepted, for the tests, whose facts are
+    /// at hand before the call.
+    #[cfg(test)]
+    fn judge(&mut self, row: i32, args: &[ScriptArg], facts: &ScriptCallFacts, now_ms: u64) -> ScriptCallVerdict {
+        let shaped = self.shape(row, args, facts.sender, facts.self_id, now_ms);
+        if shaped.code != ScriptCallCode::Accepted {
+            return shaped;
+        }
+        self.owner(facts)
     }
 }
 

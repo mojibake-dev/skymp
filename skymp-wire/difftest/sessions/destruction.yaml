@@ -1,0 +1,65 @@
+# difftest destruction (thuum ADR-068 D-S3, traps follow the interaction: a
+# single-use result recorded once; docs/WIRE.md's DestructionStage, MsgType
+# 78, wire id 86): c1 and c2 are new characters (profiles 9 and 10, actors
+# 0xff000002 and 0xff000003, see melee-reach), both at the spawn in Tamriel's
+# exterior cell (32, -15), form 0xbbb1 (cell-host's read); c2 starts 1.5 s
+# after c1, and each client's times below are its own. At 1 s c1 reports the
+# cell loaded and is granted it, HostGrant {cell 0xbbb1, epoch 1}, as in
+# cell-host; at 2 s c2 reports it loaded too and gets nothing (the cell is
+# hosted), so both games count among the cell's loaders, the one check a
+# reporter must pass. The subject is the ore vein 0x10e6c5 (ACTI
+# MineOreIron01_LFallForestDirt at (134931, -58398, 10752), script-call's
+# subject, a world object the server loads with the spawn's chunk): a world
+# body by its kind (no door, container, furniture or actor). At 3 s c1
+# reports it at stage 1, not destroyed: the first report of that step,
+# recorded and relayed at once to its other listener, c2, as DestructionStage
+# {stage 1, destroyed false, served false}. At 3.5 s c2 reports the same
+# stage, its own engine's copy of the same firing: the record stands and
+# nothing is sent. At 3.7 s c2 reports stage 2 and destroyed: recorded and
+# relayed to c1. Three reports send nothing, each said in the wire server's
+# log: at 3.8 s c1 reports the pickaxe marker 0x10e6c6 (FURN
+# PickaxeMiningWallMarker at (135049, -58262, 10688), the same cell; lab/esm.py,
+# 2026-11-05) at stage 1 (E_DESTRUCTION_KIND: furniture is no trap's result);
+# at 4 s c1 reports the vein at stage 1 again, behind the record (the record
+# stands); at 4.2 s c1 reports the vein at stage 200, past wire-validate's
+# bound of 127 (E_VAL_RANGE at the edge). The legacy server knows no MsgType
+# 78 and drops all six. At 4.5 s c2 reports the cell gone from its loaded
+# set, so c1's departure leaves the cell unhosted after the grace with
+# nothing to c2, as in script-call; c2 steps aside at 7.5 s so it outlives
+# c1, as in every session.
+id: destruction
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 1000, send: {t: 47, cell: 0xbbb1, loaded: true}, reliable: true}
+  - {client: c2, at_ms: 500, send: {t: 47, cell: 0xbbb1, loaded: true}, reliable: true}
+  - {client: c1, at_ms: 3000, send: {t: 78, refr: 0x10e6c5, stage: 1, destroyed: false, served: false}, reliable: true}
+  - {client: c2, at_ms: 2000, send: {t: 78, refr: 0x10e6c5, stage: 1, destroyed: false, served: false}, reliable: true}
+  - {client: c2, at_ms: 2200, send: {t: 78, refr: 0x10e6c5, stage: 2, destroyed: true, served: false}, reliable: true}
+  - {client: c1, at_ms: 3800, send: {t: 78, refr: 0x10e6c6, stage: 1, destroyed: false, served: false}, reliable: true}
+  - {client: c1, at_ms: 4000, send: {t: 78, refr: 0x10e6c5, stage: 1, destroyed: false, served: false}, reliable: true}
+  - {client: c1, at_ms: 4200, send: {t: 78, refr: 0x10e6c5, stage: 200, destroyed: false, served: false}, reliable: true}
+  - {client: c2, at_ms: 3000, send: {t: 47, cell: 0xbbb1, loaded: false}, reliable: true}
+  - {client: c2, at_ms: 6000, move: {dx: 1, dy: 0}}
+divergences:
+  - client: c1
+    msg: {t: 48, cell: 0xbbb1, epoch: 1}
+    legacy: 0
+    wire: 1
+    reason: the first loader in reach hosts the cell (HostGrant, thuum docs/verbs/cell-host.md); the legacy server has no cell hosts
+  - client: c2
+    msg: {t: 78, refr: 0x10e6c5, stage: 1, destroyed: false, served: false}
+    legacy: 0
+    wire: 1
+    reason: the first report of a destruction step recorded and relayed to the reference's other listener (DestructionStage, thuum ADR-068 D-S3); the legacy server knows no MsgType 78
+  - client: c1
+    msg: {t: 78, refr: 0x10e6c5, stage: 2, destroyed: true, served: false}
+    legacy: 0
+    wire: 1
+    reason: the guest's report of the next step recorded and relayed to the host, any loader reporting (DestructionStage, thuum ADR-068 D-S3); the legacy server knows no MsgType 78
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

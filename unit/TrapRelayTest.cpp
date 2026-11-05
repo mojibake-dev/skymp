@@ -320,9 +320,11 @@ TEST_CASE("A host's linked activation of an actor another seat simulates "
   REQUIRE(RelayedTo(p, 1).empty());
   // the guest loads the temple and claims the draugr (ADR-052, CellHostTest's
   // claim): its game simulates the actor in the host's cell. The claim is the
-  // per-actor row this branch has; a thrall's commander (ADR-060, once its
-  // row lands) and the host of the next cell an exterior ambush's actor
-  // stands in are the same shape to this rule, another seat in HostOf's answer
+  // per-actor row this branch has; a pass-margin follow and a thrall's
+  // commander (ADR-060, once its row lands) are the same shape to this rule,
+  // another seat in HostOf's answer (an exterior ambush's actor in a cell
+  // another seat hosts never reaches the server: the client reports only for
+  // a target in a cell its seat hosts)
   {
     RawMessageData raw;
     raw.userId = 1;

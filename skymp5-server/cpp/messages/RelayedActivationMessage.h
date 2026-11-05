@@ -7,7 +7,9 @@
 // thuum docs/verbs/traps.md (M4): a linked activation the cell's host reported
 // (a pressure plate firing its spike wall, a lever opening its portcullis),
 // told to the cell's other games so each engine plays it with the caster the
-// host's did (ActionListener::OnLinkedActivation). Server to client,
+// host's did (ActionListener::OnLinkedActivation). An actor target (ADR-068)
+// is never told to the cell's other games: it goes to the one other seat
+// that simulates the actor, or nowhere. Server to client,
 // reliable. The contract is skymp-wire's (wire-schema skymp.rs,
 // RelayedActivation, MsgType 70, wire id 78).
 struct RelayedActivationMessage : public MessageBase<RelayedActivationMessage>

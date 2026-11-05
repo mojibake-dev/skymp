@@ -3801,8 +3801,9 @@ void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
   auto targetPtr = std::dynamic_pointer_cast<MpObjectReference>(
     partOne.worldState.LookupFormById(targetId));
   // the linked activations the server relays for one game, at most eight in
-  // any second, through the actor's relay or the cell's; a report dropped or
-  // refused before its relay spends none
+  // any second, through the actor's relay or the cell's; a report a check
+  // drops or refuses spends none (an E_TRAP_ACTIVATE, the server's own
+  // activation failing after the budget, has spent it)
   const auto withinBudget = [&] {
     const uint64_t nowMs = MonotonicMs();
     auto& window = linkedActivationWindows[rawMsgData.userId];
@@ -3833,15 +3834,18 @@ void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
   // claim names, else the cell's host, else nobody). The reporter, or nobody:
   // the report is dropped, since the reporter's engine ran the waking or no
   // engine runs the actor. Another seat (a dialogue's claimant, ADR-052; a
-  // thrall's commander once ADR-060's row lands; the host of the cell an
-  // exterior ambush's actor stands in while its trigger stands in the
-  // reporter's): the activation goes to that seat's game alone, the one
-  // engine that runs the actor, within the reporter's budget. A simulator
-  // with no game connected counts as nobody, and an actor the server never
-  // loaded has no simulator it knows of. Before this rule the pair read
+  // pass-margin follow into the reporter's cell; a thrall's commander once
+  // ADR-060's row lands): the activation goes to that seat's game alone, the
+  // one engine that runs the actor, within the reporter's budget. An exterior
+  // ambush whose actor stands in a cell another seat hosts never reaches
+  // here: the client reports a linked activation only when its seat hosts
+  // the target's cell (activationService.ts), and the trigger's host does
+  // not, so that case is open (docs/verbs/traps.md). A simulator with no
+  // game connected counts as nobody, and an actor the server never loaded
+  // has no simulator it knows of. Before this rule the pair read
   // E_TRAP_UNLINKED (the activation-parent table is filled for non-actor
-  // references alone, MpObjectReference::InitScripts) or E_TRAP_NO_REF (an
-  // actor the server never loaded, judged here by its game-file record).
+  // references alone, MpObjectReference::Init) or E_TRAP_NO_REF (an actor
+  // the server never loaded, judged here by its game-file record).
   MpActor* targetActor = targetPtr ? targetPtr->AsActor() : nullptr;
   const bool targetIsActor = targetPtr
     ? targetActor != nullptr
@@ -3859,16 +3863,23 @@ void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
       // path's two consistency checks first (rule 5): the reporter hosts
       // the cell its trigger stands in (a guest's report would otherwise
       // wake the host's own actor), and the actor's own activation parents,
-      // read from its game-file record as InitScripts reads a non-actor's
-      // (its XAPR, which the table skips for actors), name the trigger
+      // read from its game-file record as MpObjectReference::Init reads a
+      // non-actor's (its XAPR, which the table skips for actors), name the
+      // trigger. A trigger the server never loads (a marker, OnActivate's
+      // record path) has no cell the server knows: refused by that name
       std::optional<uint32_t> casterCell;
       if (casterRef) {
         casterCell = partOne.worldState.CellOf(
           casterRef->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles),
           casterRef->GetPos());
       }
-      const auto casterHost = casterCell ? partOne.GetCellHost(*casterCell)
-                                         : skymp::rules::CellHost{};
+      if (!casterCell) {
+        spdlog::info("[verb:traps] E_TRAP_NO_CELL: {:x} reports {:x} "
+                     "activating actor {:x}, its trigger's cell is unknown",
+                     reporter.GetFormId(), casterId, targetId);
+        return;
+      }
+      const auto casterHost = partOne.GetCellHost(*casterCell);
       if (!casterHost.hosted || casterHost.player != reporter.GetFormId()) {
         spdlog::info("[verb:traps] E_TRAP_NOT_HOST: {:x} reports {:x} "
                      "activating actor {:x}, its trigger in a cell it does "

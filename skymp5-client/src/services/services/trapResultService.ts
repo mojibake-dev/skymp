@@ -32,10 +32,11 @@ const APPLY_WAIT_MS = 10_000;
 const DAMAGE_FIRST = 1;
 const DAMAGE_MAX = 32;
 const DAMAGE_CALLS = 64;
-// a reference stays this seat's own apply this long after its last call: its
-// stage changes are not reported back, and a served record's apply blank is
-// cleared only then (HYPOTHESIS: the engine raises OnDestructionStageChanged
-// within the damage's own frames)
+// a reference stays this seat's own apply this long after its last call, so
+// a stage change of a live relay's apply (which no blank covers) is not
+// reported back (UNMEASURED); a served record's blank is lifted at once, the
+// platform's blank running before the event hook and the engine raising the
+// stage's events inside the calls (the platform layer's note)
 const SETTLE_MS = 500;
 const KNOWN_MAX = 4096;
 
@@ -315,24 +316,21 @@ export class TrapResultService extends ClientListener {
         );
       }
     } finally {
+      // the last DamageObject has resolved and SetDestroyed returned
+      if (rec.served) {
+        this.setApplying(localId, false);
+      }
       this.applying.delete(localId);
-      this.settling.set(localId, {
-        until: Date.now() + SETTLE_MS,
-        blank: rec.served,
-      });
+      this.settling.set(localId, Date.now() + SETTLE_MS);
     }
   }
 
   // the applies' tails: a reference's own stage changes count as reports
-  // again, and a served record's blank is lifted
+  // again
   private settle(now: number) {
-    for (const [localId, s] of Array.from(this.settling.entries())) {
-      if (now < s.until) {
-        continue;
-      }
-      this.settling.delete(localId);
-      if (s.blank) {
-        this.setApplying(localId, false);
+    for (const [localId, until] of Array.from(this.settling.entries())) {
+      if (now >= until) {
+        this.settling.delete(localId);
       }
     }
   }
@@ -387,10 +385,8 @@ export class TrapResultService extends ClientListener {
     { stage: number; destroyed: boolean }
   >();
   private readonly applying = new Set<number>();
-  private readonly settling = new Map<
-    number,
-    { until: number; blank: boolean }
-  >();
+  // the applies' tails, until when (Date.now())
+  private readonly settling = new Map<number, number>();
   private tokens = REPORT_BURST;
   private refilledAt = Date.now();
   private applyingMissingSaid = false;

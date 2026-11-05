@@ -3790,7 +3790,9 @@ void ActionListener::RelayActivationToHost(MpActor& player,
 // it through Activate's own path with the caster the engine named (a door's
 // open, the hazard note, the target's own children) and relays it to the
 // cell's other games, which play it with that caster (R2: the host's engine
-// computed it). Every refusal is logged by name.
+// computed it). Every refusal is logged by name. An actor target is its
+// simulator's (ADR-068, the rule below): dropped, or relayed to the one seat
+// that simulates it when that seat is not the reporter.
 void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
                                         MpActor& reporter, uint32_t casterId,
                                         MpObjectReference* casterRef,
@@ -3798,25 +3800,74 @@ void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
 {
   auto targetPtr = std::dynamic_pointer_cast<MpObjectReference>(
     partOne.worldState.LookupFormById(targetId));
+  // the linked activations the server relays for one game, at most eight in
+  // any second, through the actor's relay or the cell's; a report dropped or
+  // refused before its relay spends none
+  const auto withinBudget = [&] {
+    const uint64_t nowMs = MonotonicMs();
+    auto& window = linkedActivationWindows[rawMsgData.userId];
+    if (nowMs - window.startMs >= 1000) {
+      window.startMs = nowMs;
+      window.count = 0;
+    }
+    if (window.count >= 8) {
+      spdlog::info(
+        "[verb:traps] E_TRAP_RATE: {:x} reports {:x} activating {:x}, "
+        "the ninth in a second; dropped",
+        reporter.GetFormId(), casterId, targetId);
+      return false;
+    }
+    ++window.count;
+    return true;
+  };
   // thuum docs/DECISIONS.md ADR-068 (an actor's script and AI run on the seat
   // that simulates it, and the NPC stream carries what follows): a linked
   // activation whose target is an ACTOR is that actor waking on its
   // simulator, an ambush's draugr roused by its trigger (Bleak Falls Temple's
   // 0x38098 and its four ACHR children 0x380b3, 0x380b4, 0x380b5, 0x380b9,
-  // whose XAPR name it; x-bleak-traps-npcs 20261105-023048). The server
-  // neither judges nor relays it: a relay would run the engine's activation
-  // on a watcher's puppet, which renders and never simulates (ADR-063
-  // decision 3). Before this rule the pair read E_TRAP_UNLINKED (the
-  // activation-parent table is filled for non-actor references alone,
-  // MpObjectReference::InitScripts) or E_TRAP_NO_REF (an actor the server
-  // never loaded, judged here by its game-file record).
+  // whose XAPR name it; x-bleak-traps-npcs 20261105-023048). The server does
+  // not judge it and never relays it to the cell's other games: a relay there
+  // would run the engine's activation on a watcher's puppet, which renders
+  // and never simulates (ADR-063 decision 3). Who simulates a loaded actor is
+  // the world's answer (WorldState::HostOf: the player a follow or a dialogue
+  // claim names, else the cell's host, else nobody). The reporter, or nobody:
+  // the report is dropped, since the reporter's engine ran the waking or no
+  // engine runs the actor. Another seat (a dialogue's claimant, ADR-052; a
+  // thrall's commander once ADR-060's row lands; the host of the cell an
+  // exterior ambush's actor stands in while its trigger stands in the
+  // reporter's): the activation goes to that seat's game alone, the one
+  // engine that runs the actor, within the reporter's budget. A simulator
+  // with no game connected counts as nobody, and an actor the server never
+  // loaded has no simulator it knows of. Before this rule the pair read
+  // E_TRAP_UNLINKED (the activation-parent table is filled for non-actor
+  // references alone, MpObjectReference::InitScripts) or E_TRAP_NO_REF (an
+  // actor the server never loaded, judged here by its game-file record).
+  MpActor* targetActor = targetPtr ? targetPtr->AsActor() : nullptr;
   const bool targetIsActor = targetPtr
-    ? targetPtr->AsActor() != nullptr
+    ? targetActor != nullptr
     : (partOne.HasEspm() &&
        partOne.GetEspm().GetBrowser().LookupById(targetId).rec &&
        partOne.GetEspm().GetBrowser().LookupById(targetId).rec->GetType() ==
          espm::ACHR::kType);
   if (targetIsActor) {
+    MpActor* simulator =
+      targetActor ? partOne.worldState.HostOf(*targetActor) : nullptr;
+    if (simulator && simulator != &reporter &&
+        partOne.serverState.UserByActor(simulator) !=
+          Networking::InvalidUserId) {
+      if (!withinBudget()) {
+        return;
+      }
+      RelayedActivationMessage relay;
+      relay.target = targetActor->GetFormId();
+      relay.caster = casterId;
+      simulator->SendToUser(relay, true);
+      spdlog::info("[verb:traps] {:x} reports {:x} activating actor {:x}: its "
+                   "simulator {:x} is another seat's, relayed to it",
+                   reporter.GetFormId(), casterId, targetId,
+                   simulator->GetFormId());
+      return;
+    }
     spdlog::info("[verb:traps] {:x} reports {:x} activating actor {:x}: the "
                  "actor's simulator's (the NPC stream carries it), not "
                  "relayed",
@@ -3858,20 +3909,9 @@ void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
                  reporter.GetFormId(), casterId, targetId);
     return;
   }
-  const uint64_t nowMs = MonotonicMs();
-  auto& window = linkedActivationWindows[rawMsgData.userId];
-  if (nowMs - window.startMs >= 1000) {
-    window.startMs = nowMs;
-    window.count = 0;
-  }
-  if (window.count >= 8) {
-    spdlog::info(
-      "[verb:traps] E_TRAP_RATE: {:x} reports {:x} activating {:x}, "
-      "the ninth in a second; dropped",
-      reporter.GetFormId(), casterId, targetId);
+  if (!withinBudget()) {
     return;
   }
-  ++window.count;
   NoteActivation(*targetPtr, std::chrono::steady_clock::now());
   try {
     constexpr bool kDefaultProcessingOnlyFalse = false;

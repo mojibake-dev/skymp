@@ -290,6 +290,64 @@ TEST_CASE("A host's linked activation of an actor is the actor's "
   Leave(p);
 }
 
+TEST_CASE("A host's linked activation of an actor another seat simulates "
+          "goes to that seat's game alone (ADR-068)",
+          "[Traps][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  // the ambush trigger and its loaded draugr, as the case above has them
+  constexpr uint32_t kAmbushTrigger = 0x38098;
+  constexpr uint32_t kDraugr = 0x380b3;
+  p.worldState.GetFormAt<MpObjectReference>(kAmbushTrigger);
+  p.worldState.npcEnabled = true;
+  auto& draugr = p.worldState.GetFormAt<MpActor>(kDraugr);
+  auto& guest = p.worldState.GetFormAt<MpActor>(kGuestActor);
+  // the guest loads the temple and claims the draugr (ADR-052, CellHostTest's
+  // claim): its game simulates the actor in the host's cell. The claim is the
+  // per-actor row this branch has; a thrall's commander (ADR-060, once its
+  // row lands) and the host of the next cell an exterior ambush's actor
+  // stands in are the same shape to this rule, another seat in HostOf's answer
+  {
+    RawMessageData raw;
+    raw.userId = 1;
+    CellLoadedMessage loaded;
+    loaded.cell = kTemple;
+    loaded.loaded = true;
+    p.GetActionListener().OnCellLoaded(raw, loaded);
+  }
+  guest.SetPos(draugr.GetPos() + NiPoint3{ 80.f, 0.f, 0.f });
+  {
+    static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
+    RawMessageData raw;
+    raw.userId = 1;
+    raw.unparsed = unparsed;
+    raw.unparsedLength = sizeof(unparsed);
+    ActorClaimMessage claim;
+    claim.idx = draugr.GetIdx();
+    claim.claim = true;
+    p.GetActionListener().OnActorClaim(raw, claim);
+  }
+  REQUIRE(p.worldState.HostOf(draugr) == &guest);
+  p.Messages().clear();
+  // the host's engine fired the trigger: the activation goes to the guest's
+  // game alone, whose engine runs the draugr, with the trigger as its caster
+  {
+    LogCapture log;
+    REQUIRE_NOTHROW(Linked(p, 0, kAmbushTrigger, kDraugr));
+    REQUIRE(log.Count("[verb:traps] ff000fe1 reports 38098 activating actor "
+                      "380b3: its simulator ff000fe2 is another seat's, "
+                      "relayed to it") == 1);
+    REQUIRE(log.Count("the actor's simulator's") == 0);
+    REQUIRE(log.Count("E_TRAP_") == 0);
+  }
+  REQUIRE(RelayedTo(p, 1).size() == 1);
+  REQUIRE(RelayedTo(p, 1)[0].target == kDraugr);
+  REQUIRE(RelayedTo(p, 1)[0].caster == kAmbushTrigger);
+  REQUIRE(RelayedTo(p, 0).empty());
+  Leave(p);
+}
+
 TEST_CASE("A player's activation of a scripted world object goes to the "
           "cell's other games with the player as the activator, and an "
           "echo of it is quiet (ADR-059 decision 2)",

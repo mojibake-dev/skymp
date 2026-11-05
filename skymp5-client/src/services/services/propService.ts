@@ -1,4 +1,4 @@
-import { ContainerChangedEvent, GrabReleaseEvent, MotionType, ObjectReference, PropContactEvent } from "skyrimPlatform";
+import { ContainerChangedEvent, GrabReleaseEvent, MotionType, ObjectReference, PropContactEvent, ScriptCall } from "skyrimPlatform";
 import { MsgType } from "../../messages";
 import { logError, logLab, logTrace } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
@@ -9,7 +9,7 @@ import { FormTypeEx } from "../../extensions/formTypeEx";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { NiPoint3 } from "../../sync/movement";
 import { FormModel } from "../../view/model";
-import { getViewFromStorage, localIdToRemoteId } from "../../view/worldViewMisc";
+import { getViewFromStorage, localIdToRemoteId, remoteIdToLocalId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { HostService } from "./hostService";
 import { RemoteServer } from "./remoteServer";
@@ -22,6 +22,10 @@ const TAG = "verb:prop-physics";
 const TOUCH_CONTACT = 0;
 const TOUCH_GRAB = 1;
 const TOUCH_DROP = 2;
+// a shout's or spell's impulse, and ADR-068 D-S3 point 4's: a trap body this
+// seat's own script set moving (the server admits a world object that is no
+// item for this touch alone)
+const TOUCH_IMPULSE = 3;
 
 // How often the tracked set is rebuilt from the view's references, ms
 const RESCAN_MS = 500;
@@ -85,6 +89,18 @@ const STREAM_LIVE_MS = 1000;
 const REST_DYNAMIC_MS = 300;
 // a jump's translate lands within this (the translate's speed is the distance over it), ms
 const JUMP_MS = 100;
+// ADR-068 D-S3 point 4 (a trap body by the seat whose firing moved it): the
+// trap verb's tag for the trap body lines; the firing's window, a body this
+// seat's script sets moving again within this long of its claim being the same
+// firing (PhysicsTrap.fireTrap's SetMotionType, then its ApplyHavokImpulse a
+// latent call later; UNMEASURED); how far a family reference's record must
+// rest from this engine's copy to be a body a firing moved before this
+// session (a settling hanging body moves a few units; UNMEASURED); the bodies
+// held at once (a dungeon's handful)
+const TRAP_TAG = "verb:traps";
+const TRAP_FIRING_MS = 2000;
+const TRAP_MOVED_UNITS = 16;
+const TRAP_BODIES_MAX = 256;
 
 type Sample = { pos: NiPoint3; rot: NiPoint3; asleep: boolean; at: number };
 
@@ -122,9 +138,18 @@ type Prop = {
     lastClaimAt: number;
     lastSampleAsleep: boolean;     // the newest sample in said asleep (the stream ended there)
     restAt: number;                // when the asleep sample came, for the Dynamic set after its apply (0 none)
+    trap: boolean;                 // ADR-068 D-S3: a trap body (no item; see trapBodies)
 };
 
 type Owner = { player: number; epoch: number; leaseUntil: number };
+
+// ADR-068 D-S3 point 4: a trap body this seat knows, by the server's id: a
+// family reference this seat's own script set moving (the scriptCalls batch),
+// one an owner word names (the firing seat's claim), or one whose record rests
+// away from this engine's copy (a restart, a late join). localId this engine's
+// (a game-file reference's own id); claimedAt this seat's last claim; followed
+// while another seat's firing streams it (setPropFollowed)
+type TrapBody = { localId: number; claimedAt: number; followed: boolean };
 
 // the shortest signed turn from heading b to heading a, in (-180, 180]
 // (sync/movementApply.ts's)
@@ -164,6 +189,24 @@ const angleDelta = (a: number, b: number): number => ((((a - b + 180) % 360) + 3
 // drop are the slice's sure touches, and the proximity stand-in
 // (propContactFallback) fires only where a body this seat does not simulate
 // moves locally, which a Keyframed body never does.
+//
+// ADR-068 D-S3 point 4 (a trap body by the seat whose firing moved it;
+// docs/research/trap-slice-d-s3-2026-11-05.md): every seat runs the trap
+// family itself, so a falling rock (PhysicsTrap: SetMotionType Dynamic, then
+// ApplyHavokImpulse) is set moving by each seat's own script. A seat whose
+// script did (the scriptCalls batch, through ScriptCallService) claims the
+// body by touch 3 once per firing; the server grants the first firing (a later
+// claim on the moving body reads E_PROP_MOVING), and the owner streams the
+// body as it streams an item. A seat whose word names another seat follows:
+// setPropFollowed (this seat's own script's motion calls on the body run
+// neutralized, Keyframed and a zero impulse) and the body Keyframed until that
+// seat's at-rest sample, then its own again. A family reference whose record
+// rests away from this engine's copy (a restart, a late join) is placed at its
+// record. Trap bodies are tracked at any distance in the player's world or
+// cell and past the item cap, take no grace, and are never claimed by a
+// contact, a grab or a drop (the server admits touch 3 alone for them).
+// HYPOTHESIS H-AW (the neutral arguments hold a followed body) and H-KF (a
+// Keyframed follower rock may never hurt its own seat's player), the design's.
 export class PropService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -181,6 +224,22 @@ export class PropService extends ClientListener {
     // is the login's place and the body is this seat's Havok or the stream's
     placesIt(localId: number): boolean {
         return this.byLocal.has(localId);
+    }
+
+    // ADR-068 D-S3 point 4: ScriptCallService hands over the scriptCalls
+    // batch's SetMotionType and ApplyHavokImpulse calls (the platform batches
+    // them for a trap family reference no other seat streams; a followed
+    // body's run neutralized and never reach the batch). JS state alone (the
+    // batch's context allows no game call); the claim goes from the update
+    noteTrapMotion(localId: number, fn: string, args: ScriptCall["args"]) {
+        if (localId === 0) {
+            return;
+        }
+        const motionType = fn === "SetMotionType" && typeof args[0] === "number" ? args[0] : undefined;
+        this.trapMotions.push({ localId, motionType, impulse: fn === "ApplyHavokImpulse" });
+        if (this.trapMotions.length > 64) {
+            this.trapMotions.shift();
+        }
     }
 
     // A sample from the prop's simulator, relayed (pure JavaScript here: the
@@ -201,6 +260,14 @@ export class PropService extends ClientListener {
         if (owner) {
             // the lease's mirror: a sleep starts it, a wake ends it
             owner.leaseUntil = m.asleep ? now + PROP_LEASE_MS : 0;
+        }
+        // ADR-068 D-S3: a followed trap body's at-rest sample ends its follow,
+        // after this update's apply (restTrapBodies), tracked or not
+        if (m.asleep && this.trapBodies.get(m.refr)?.followed === true) {
+            this.trapRests.push(m.refr);
+            if (this.trapRests.length > 64) {
+                this.trapRests.shift();
+            }
         }
         const prop = this.props.get(m.refr);
         if (!prop) {
@@ -235,6 +302,12 @@ export class PropService extends ClientListener {
         this.owners.set(m.refr, { player: m.player, epoch: m.epoch, leaseUntil: 0 });
         const mine = m.player !== 0 && m.player === this.myId();
         logLab(TAG, `prop ${m.refr.toString(16)} owner ${m.player.toString(16)} epoch ${m.epoch} (${mine ? "mine" : "theirs"})`);
+        // ADR-068 D-S3: a word on a trap body is read on the update (its family
+        // test is a game read, and a message handler may make none)
+        this.trapWords.push(m.refr);
+        if (this.trapWords.length > 64) {
+            this.trapWords.shift();
+        }
     }
 
     // The player's own actor is created: a fresh table on the server's side
@@ -283,6 +356,14 @@ export class PropService extends ClientListener {
         const pos: NiPoint3 = [t.pos[0], t.pos[1], t.pos[2]];
         const rot: NiPoint3 = [t.rot[0], t.rot[1], t.rot[2]];
         this.engineRefs.set(refrId, { baseId: msg.baseId || 0, pos, rot, worldOrCell: t.worldOrCell });
+        // ADR-068 D-S3 point 4: a trap body's create word brings the server's
+        // record (after a restart, at a re-subscription): placed at it on the
+        // next tick, unless this seat streams the body (its record is this
+        // seat's own samples)
+        const prop = this.props.get(refrId);
+        if (prop && prop.trap && !prop.simulating) {
+            prop.placed = false;
+        }
     }
 
     // The engine's grab (isGrabbed true) and its release of a reference. The
@@ -365,9 +446,21 @@ export class PropService extends ClientListener {
             if (this.props.size > 0) {
                 this.untrackAll();
             }
+            this.trapMotions = [];
+            this.trapWords = [];
+            this.trapRests = [];
             return;
         }
         const now = Date.now();
+        // ADR-068 D-S3's trap bodies first: a firing's claim, and a word's
+        // follow made Keyframed, before the rescan keeps them and the ticks
+        // stream or follow them
+        if (this.trapMotions.length > 0) {
+            this.claimTrapMotions(now);
+        }
+        if (this.trapWords.length > 0) {
+            this.followTrapWords(now);
+        }
         if (now - this.lastRescan >= RESCAN_MS) {
             this.lastRescan = now;
             this.rescan(now);
@@ -378,18 +471,18 @@ export class PropService extends ClientListener {
         if (this.contacts.length > 0) {
             this.claimContacts(now);
         }
-        if (this.props.size === 0) {
-            return;
+        const player = this.props.size > 0 ? this.sp.Game.getPlayer() : null;
+        if (player) {
+            const playerPos = ObjectReferenceEx.getPos(player);
+            const myId = this.myId();
+            const fallback = this.contactFallback();
+            for (const prop of Array.from(this.props.values())) {
+                this.tick(prop, now, myId, playerPos, fallback);
+            }
         }
-        const player = this.sp.Game.getPlayer();
-        if (!player) {
-            return;
-        }
-        const playerPos = ObjectReferenceEx.getPos(player);
-        const myId = this.myId();
-        const fallback = this.contactFallback();
-        for (const prop of Array.from(this.props.values())) {
-            this.tick(prop, now, myId, playerPos, fallback);
+        // a followed trap body's at-rest sample, applied by the ticks above
+        if (this.trapRests.length > 0) {
+            this.restTrapBodies();
         }
     }
 
@@ -398,7 +491,9 @@ export class PropService extends ClientListener {
     // then the stream out or the stream's apply and, under the fallback, the
     // proximity read
     private tick(prop: Prop, now: number, myId: number, playerPos: NiPoint3, fallback: boolean) {
-        if (now - prop.trackedAt < TRACK_GRACE_MS) {
+        // a trap body is a game-file reference in place, no copy being
+        // spawned, and a firing's first second is its fall: no grace
+        if (!prop.trap && now - prop.trackedAt < TRACK_GRACE_MS) {
             return;
         }
         const owner = this.ownerOf(prop, now, myId);
@@ -415,7 +510,7 @@ export class PropService extends ClientListener {
         }
         const simulate = myId !== 0 && owner === myId;
         const near = prop.distance <= TOUCH_RADIUS + 512;
-        const touchReadDue = fallback && !simulate && near && now - prop.lastTouchReadAt >= TOUCH_READ_MS;
+        const touchReadDue = fallback && !prop.trap && !simulate && near && now - prop.lastTouchReadAt >= TOUCH_READ_MS;
         // D73's rest: a follower's Keyframed body goes Dynamic REST_DYNAMIC_MS after
         // the asleep sample or STREAM_LIVE_MS after the last awake one, so a kick
         // or a grab acts on it at once; the check below needs the reference, so
@@ -423,9 +518,11 @@ export class PropService extends ClientListener {
         // and the touch fallback off the tick returned here every time, no seat
         // ever logged "at rest: Dynamic", and c2's E on the still-Keyframed basket
         // picked it up instead of grabbing it)
+        // (a followed trap body is held Keyframed until its owner's at-rest
+        // sample, not let go when the stream goes quiet: D-S3)
         const restDue = !simulate && prop.placed && prop.motionAsked === MotionType.Keyframed
             && ((prop.restAt !== 0 && now - prop.restAt >= REST_DYNAMIC_MS)
-                || (!prop.lastSampleAsleep && now - prop.lastSampleAt >= STREAM_LIVE_MS));
+                || (!this.followedTrap(prop) && !prop.lastSampleAsleep && now - prop.lastSampleAt >= STREAM_LIVE_MS));
         const wantsRef = simulate || !prop.placed || prop.simulating !== simulate || prop.motionAsked === undefined
             || prop.pending !== undefined || touchReadDue || restDue;
         if (!wantsRef) {
@@ -503,11 +600,14 @@ export class PropService extends ClientListener {
         prop.placing = true;
         const [x, y, z] = pose.pos;
         const [ax, ay, az] = pose.rot;
-        const done = (why: string) => {
+        const done = (why: string, placed = true) => {
             prop.placing = false;
             prop.placed = true;
             prop.placedAt = Date.now();
             logTrace(this, `prop ${prop.refr.toString(16)} placed at its record${why}`);
+            if (prop.trap && placed) {
+                logLab(TRAP_TAG, `trap body ${prop.refr.toString(16)} placed at its recorded rest`);
+            }
         };
         if (prop.loaded3D) {
             // H-P4: the placement by the engine's keyframed translate, the
@@ -530,7 +630,7 @@ export class PropService extends ClientListener {
             .then(() => done(""))
             .catch((err) => {
                 logError(this, `placing prop ${prop.refr.toString(16)} at its record failed`, err);
-                done(" (the placement failed)");
+                done(" (the placement failed)", false);
             });
     }
 
@@ -542,6 +642,11 @@ export class PropService extends ClientListener {
             return; // the motion type is the 3D's; set when it loads
         }
         if (simulate) {
+            // a trap body this seat now simulates is its own again before its
+            // Dynamic set (D-S3: a followed body's motion calls run neutralized)
+            if (prop.trap) {
+                this.releaseTrapFollow(prop.refr, "this seat simulates it");
+            }
             refr.stopTranslation();
             prop.pending = undefined;
             // D73: a body already Dynamic (a resting follower kicked or grabbed
@@ -579,6 +684,9 @@ export class PropService extends ClientListener {
     private restMotion(prop: Prop, simulate: boolean, now: number): MotionType {
         if (simulate) {
             return MotionType.Dynamic;
+        }
+        if (this.followedTrap(prop)) {
+            return MotionType.Keyframed;
         }
         const live = prop.lastSampleAt !== 0 && !prop.lastSampleAsleep && now - prop.lastSampleAt < STREAM_LIVE_MS;
         return live ? MotionType.Keyframed : MotionType.Dynamic;
@@ -689,6 +797,12 @@ export class PropService extends ClientListener {
             if (!pending.asleep && prop.loaded3D && prop.motionAsked !== MotionType.Keyframed) {
                 this.setMotion(prop, refr, MotionType.Keyframed, true);
             }
+            // D-S3: a trap body another seat streams awake again (its owner's
+            // word unchanged since the rest that ended the follow) is followed
+            // again
+            if (!pending.asleep && prop.trap) {
+                this.holdTrapBody(prop.refr, now);
+            }
             this.apply(prop, refr, pending, now);
             // the stream moved it: the touch read starts over after the glide
             prop.lastTouchRead = undefined;
@@ -700,7 +814,7 @@ export class PropService extends ClientListener {
         // awake sample), so the resting body takes a kick or a grab at once
         if (prop.loaded3D && prop.motionAsked === MotionType.Keyframed) {
             const rested = prop.restAt !== 0 && now - prop.restAt >= REST_DYNAMIC_MS;
-            const quiet = !prop.lastSampleAsleep && now - prop.lastSampleAt >= STREAM_LIVE_MS;
+            const quiet = !this.followedTrap(prop) && !prop.lastSampleAsleep && now - prop.lastSampleAt >= STREAM_LIVE_MS;
             if (rested || quiet) {
                 prop.restAt = 0;
                 this.setMotion(prop, refr, MotionType.Dynamic, true);
@@ -798,6 +912,10 @@ export class PropService extends ClientListener {
                 logTrace(this, `touch ${t.touch} on ${t.localId.toString(16)}: not a tracked prop, no claim`);
                 continue;
             }
+            if (prop.trap) {
+                logTrace(this, `touch ${t.touch} on ${prop.refr.toString(16)}: a trap body moves by a firing alone, no claim`);
+                continue;
+            }
             this.claim(prop, t.touch, now);
         }
     }
@@ -819,6 +937,10 @@ export class PropService extends ClientListener {
                 continue;
             }
             const head = `contact ${prop.refr.toString(16)} layer ${c.layer} motion ${c.motionType}`;
+            if (prop.trap) {
+                logTrace(this, `${head}: a trap body moves by a firing alone, no claim`);
+                continue;
+            }
             const owned = prop.simulating || (myId !== 0 && prop.effective === myId);
             if (owned) {
                 logLab(TAG, `${head}: owned, no claim`);
@@ -864,6 +986,7 @@ export class PropService extends ClientListener {
         if (myId) {
             this.present.add(myId);
         }
+        this.releaseLapsedTrapFollows(now, myId);
         const playerPos = ObjectReferenceEx.getPos(player);
         const playerWorldOrCell = ObjectReferenceEx.getWorldOrCell(player);
         const views = view.getFormViews();
@@ -917,6 +1040,10 @@ export class PropService extends ClientListener {
                 return;
             }
             if (!this.isItem(refrId, refrId)) {
+                // ADR-068 D-S3 point 4: no item, but perhaps a trap body a
+                // firing moved before this session (the trap bodies' loop
+                // below takes it)
+                this.judgeTrapRecord(refrId, rec);
                 return;
             }
             const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(refrId));
@@ -931,11 +1058,35 @@ export class PropService extends ClientListener {
             found.push({ refr: refrId, localId: refrId, formIdx: -1, distance, cell: cell ? cell.getFormID() : 0, baseId: rec.baseId });
         });
         found.sort((a, b) => a.distance - b.distance);
+        const chosen = found.slice(0, TRACK_MAX);
+        // ADR-068 D-S3 point 4: the trap bodies, past the item cap and at any
+        // distance in the player's world or cell (a follower far from the
+        // firing still holds the stream's rocks)
+        this.trapBodies.forEach((body, refrId) => {
+            if (chosen.some((c) => c.refr === refrId)) {
+                return;
+            }
+            const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(body.localId));
+            if (!refr || (playerWorldOrCell !== 0 && ObjectReferenceEx.getWorldOrCell(refr) !== playerWorldOrCell)) {
+                return;
+            }
+            const cell = refr.getParentCell();
+            const distance = ObjectReferenceEx.getDistance(playerPos, ObjectReferenceEx.getPos(refr));
+            chosen.push({ refr: refrId, localId: body.localId, formIdx: -1, distance, cell: cell ? cell.getFormID() : 0, baseId: 0 });
+        });
         const keep = new Set<number>();
-        for (const c of found.slice(0, TRACK_MAX)) {
+        for (const c of chosen) {
             keep.add(c.refr);
             let prop = this.props.get(c.refr);
-            if (!prop) {
+            const body = this.trapBodies.get(c.refr);
+            if (!prop && body) {
+                // taken again, or first, by the rescan: placed at its record
+                // (nothing moves when it stands there already)
+                prop = this.trackTrapBody(c.refr, body, now, true);
+                if (!prop) {
+                    keep.delete(c.refr);
+                }
+            } else if (!prop) {
                 prop = PropService.newProp(c.refr, c.localId, c.formIdx, c.cell, c.distance, now);
                 // a follower's new prop was silent (placed within two units, Keyframed from the start): one line per track
                 logTrace(this, `prop ${c.refr.toString(16)} tracked, ${Math.round(c.distance)} units off`);
@@ -1144,7 +1295,239 @@ export class PropService extends ClientListener {
             lastClaimAt: 0,
             lastSampleAsleep: false,
             restAt: 0,
+            trap: false,
         };
+    }
+
+    // ADR-068 D-S3 point 4: the batch's motion calls since the last update. A
+    // family reference this seat's own script set moving (SetMotionType
+    // Dynamic, or an impulse) is a trap body, tracked at once and claimed by
+    // touch 3 once per firing: not while a live word names this seat, nor
+    // again within TRAP_FIRING_MS of this seat's last claim. A motion type the
+    // script set is the body's from here (a Dynamic body takes no motion set
+    // from this service, so its fall carries on)
+    private claimTrapMotions(now: number) {
+        const motions = this.trapMotions;
+        this.trapMotions = [];
+        const myId = this.myId();
+        for (const m of motions) {
+            const refr = localIdToRemoteId(m.localId);
+            if (!refr) {
+                continue;
+            }
+            const moving = m.impulse || m.motionType === MotionType.Dynamic;
+            let body = this.trapBodies.get(refr);
+            if (!body) {
+                // a script parking its reference (a Keyframed set) makes no
+                // body; the batch carries a family reference's calls alone,
+                // read again here
+                if (!moving || !ObjectReferenceEx.isTrapFamily(m.localId)) {
+                    continue;
+                }
+                body = this.addTrapBody(refr, m.localId);
+                if (!body) {
+                    continue;
+                }
+            }
+            const prop = this.trackTrapBody(refr, body, now, false);
+            if (!prop) {
+                continue;
+            }
+            if (m.motionType !== undefined) {
+                prop.motionAsked = m.motionType as MotionType;
+            }
+            if (!moving) {
+                continue;
+            }
+            const word = this.owners.get(refr);
+            const named = myId !== 0 && word !== undefined && word.player === myId
+                && (word.leaseUntil === 0 || now < word.leaseUntil);
+            if (named || now - body.claimedAt < TRAP_FIRING_MS) {
+                continue;
+            }
+            body.claimedAt = now;
+            logLab(TRAP_TAG, `trap body ${refr.toString(16)} set moving by this seat's script: claimed by impulse`);
+            this.claim(prop, TOUCH_IMPULSE, now);
+        }
+    }
+
+    // ADR-068 D-S3 point 4: the owner words since the last update, read
+    // against the trap family (an owner word on a family reference is a trap
+    // body's: the server grants touch 3 alone on a world object). A word that
+    // names another seat puts this seat behind that seat's firing: the body is
+    // followed and Keyframed at once where this seat's copy stands (in the
+    // race, a round trip into its own fall) and the stream takes it from
+    // there. A word that names this seat or nobody ends a follow
+    private followTrapWords(now: number) {
+        const words = this.trapWords;
+        this.trapWords = [];
+        const myId = this.myId();
+        for (const refr of words) {
+            const word = this.owners.get(refr);
+            if (!word) {
+                continue;
+            }
+            let body = this.trapBodies.get(refr);
+            if (!body) {
+                const tracked = this.props.get(refr);
+                if (tracked && !tracked.trap) {
+                    continue; // an item's word
+                }
+                const localId = remoteIdToLocalId(refr);
+                if (!localId || !ObjectReferenceEx.isTrapFamily(localId)) {
+                    continue;
+                }
+                body = this.addTrapBody(refr, localId);
+                if (!body) {
+                    continue;
+                }
+            }
+            if (word.player === 0 || word.player === myId) {
+                this.releaseTrapFollow(refr, word.player === 0 ? "the word names nobody" : "the word names this seat");
+                continue;
+            }
+            const prop = this.trackTrapBody(refr, body, now, false);
+            this.holdTrapBody(refr, now);
+            const ref = prop ? this.refOf(prop) : null;
+            if (body.followed && prop && ref && ref.is3DLoaded() && prop.motionAsked !== MotionType.Keyframed) {
+                prop.loaded3D = true;
+                this.setMotion(prop, ref, MotionType.Keyframed, true);
+            }
+        }
+    }
+
+    // a followed trap body's owner sent its at-rest sample: this seat's own
+    // motion calls on it run again (D73's rest then makes it Dynamic)
+    private restTrapBodies() {
+        const rests = this.trapRests;
+        this.trapRests = [];
+        for (const refr of rests) {
+            this.releaseTrapFollow(refr, "its owner's at-rest sample");
+        }
+    }
+
+    // a follow whose word is gone (a reconnect's fresh table), lapsed after
+    // its sleep, or names a player no longer in this seat's world ends here
+    private releaseLapsedTrapFollows(now: number, myId: number) {
+        this.trapBodies.forEach((body, refr) => {
+            if (body.followed && !this.theirsLive(refr, now, myId)) {
+                this.releaseTrapFollow(refr, "its owner's word lapsed");
+            }
+        });
+    }
+
+    // whether another seat's live word names the prop, as ownerOf reads a word
+    private theirsLive(refr: number, now: number, myId: number): boolean {
+        const word = this.owners.get(refr);
+        return word !== undefined && word.player !== 0 && word.player !== myId
+            && (word.leaseUntil === 0 || now < word.leaseUntil) && this.present.has(word.player);
+    }
+
+    // a trap body another seat's live word names is followed, once
+    private holdTrapBody(refr: number, now: number) {
+        const body = this.trapBodies.get(refr);
+        const word = this.owners.get(refr);
+        if (!body || body.followed || !word || !this.theirsLive(refr, now, this.myId())) {
+            return;
+        }
+        this.setFollowed(refr, body, true);
+        logLab(TRAP_TAG, `trap body ${refr.toString(16)} followed: ${word.player.toString(16)}'s firing streams it, Keyframed until its rest`);
+    }
+
+    private releaseTrapFollow(refr: number, why: string) {
+        const body = this.trapBodies.get(refr);
+        if (!body || !body.followed) {
+            return;
+        }
+        this.setFollowed(refr, body, false);
+        logLab(TRAP_TAG, `trap body ${refr.toString(16)} followed no more: ${why}`);
+    }
+
+    // the platform's word (setPropFollowed): while true this seat's own
+    // SetMotionType and ApplyHavokImpulse on the body run neutralized
+    // (Keyframed, a zero impulse) and are never batched
+    private setFollowed(refr: number, body: TrapBody, followed: boolean) {
+        body.followed = followed;
+        try {
+            if (!this.sp.setPropFollowed(body.localId, followed)) {
+                logError(this, `setPropFollowed(${body.localId.toString(16)}, ${followed}) refused for trap body ${refr.toString(16)}`);
+            }
+        } catch (e) {
+            logError(this, `setPropFollowed unavailable on this platform: ${e}`);
+        }
+    }
+
+    private followedTrap(prop: Prop): boolean {
+        return prop.trap && this.trapBodies.get(prop.refr)?.followed === true;
+    }
+
+    private addTrapBody(refr: number, localId: number): TrapBody | undefined {
+        if (this.trapBodies.size >= TRAP_BODIES_MAX) {
+            if (!this.trapBodiesFullSaid) {
+                this.trapBodiesFullSaid = true;
+                logError(this, `${TRAP_BODIES_MAX} trap bodies held: ${refr.toString(16)} and later ones not taken`);
+            }
+            return undefined;
+        }
+        const body: TrapBody = { localId, claimedAt: 0, followed: false };
+        this.trapBodies.set(refr, body);
+        return body;
+    }
+
+    // a trap body's prop, tracked now if it is not (its reference loaded);
+    // atRecord, the rescan's, places it at its record first (placeAtRecord),
+    // while a body a firing set moving or a word put behind another seat's
+    // stream is its firing's from here, never its record's
+    private trackTrapBody(refr: number, body: TrapBody, now: number, atRecord: boolean): Prop | undefined {
+        const known = this.props.get(refr);
+        if (known) {
+            known.trap = true;
+            return known;
+        }
+        const ref = this.sp.ObjectReference.from(this.sp.Game.getFormEx(body.localId));
+        if (!ref) {
+            return undefined;
+        }
+        const player = this.sp.Game.getPlayer();
+        const distance = player ? ObjectReferenceEx.getDistance(ObjectReferenceEx.getPos(player), ObjectReferenceEx.getPos(ref)) : 0;
+        const cell = ref.getParentCell();
+        const prop = PropService.newProp(refr, body.localId, -1, cell ? cell.getFormID() : 0, distance, now);
+        prop.trap = true;
+        prop.placed = !atRecord;
+        prop.placedAt = now;
+        // the 3D as found, so the first tick takes no load of it for a reload
+        // and sets no motion type over the script's
+        prop.loaded3D = ref.is3DLoaded();
+        this.props.set(refr, prop);
+        this.byLocal.set(body.localId, refr);
+        logTrace(this, `prop ${refr.toString(16)} tracked, a trap body, ${Math.round(distance)} units off`);
+        return prop;
+    }
+
+    // ADR-068 D-S3 point 4: a family reference whose record (its CreateActor's
+    // pose, or the last sample recorded here) rests more than TRAP_MOVED_UNITS
+    // from this engine's copy is a trap body a firing moved before this
+    // session (a restart, a late join): taken, and placed at its record when
+    // tracked ("placed at its recorded rest"). Judged once per binding, as
+    // isItem's verdict is; a body this seat already knows is its firing's
+    private judgeTrapRecord(refrId: number, rec: { pos: NiPoint3 }) {
+        if (this.trapBodies.has(refrId)) {
+            return;
+        }
+        const known = this.kinds.get(refrId);
+        if (known && known.refr === refrId && known.trap !== undefined) {
+            return;
+        }
+        const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(refrId));
+        if (!refr) {
+            return; // not loaded in this game yet: judged when it is
+        }
+        const off = ObjectReferenceEx.getDistance(ObjectReferenceEx.getPos(refr), rec.pos);
+        const moved = off > TRAP_MOVED_UNITS && ObjectReferenceEx.isTrapFamily(refrId);
+        this.kinds.set(refrId, { refr: refrId, item: false, trap: moved });
+        if (moved && this.addTrapBody(refrId, refrId)) {
+            logTrace(this, `trap body ${refrId.toString(16)}: its record rests ${Math.round(off)} units from this engine's copy`);
+        }
     }
 
     // the tracked props by the server's id, and the same by this engine's id
@@ -1154,8 +1537,9 @@ export class PropService extends ClientListener {
     private readonly owners = new Map<number, Owner>();
     // the records' ids present in this seat's world at the last rescan
     private readonly present = new Set<number>();
-    // each local id's base verdict, by the record it is bound to
-    private readonly kinds = new Map<number, { refr: number; item: boolean }>();
+    // each local id's base verdict, by the record it is bound to (trap: D-S3's
+    // verdict on a family reference's record, for a reference no item)
+    private readonly kinds = new Map<number, { refr: number; item: boolean; trap?: boolean }>();
     private readonly echoSaid = new Set<number>();
     // the grabs and releases since the last update, by local id
     private touches: Array<{ localId: number; touch: number }> = [];
@@ -1164,4 +1548,12 @@ export class PropService extends ClientListener {
     // the player's drops awaiting the server's reference
     private drops: Array<{ baseId: number; at: number }> = [];
     private lastRescan = 0;
+    // ADR-068 D-S3 point 4: the trap bodies by the server's id; the batch's
+    // motion calls, the owner words and the followed bodies' at-rest samples
+    // since the last update (JS state from their handlers)
+    private readonly trapBodies = new Map<number, TrapBody>();
+    private trapMotions: Array<{ localId: number; motionType: number | undefined; impulse: boolean }> = [];
+    private trapWords: number[] = [];
+    private trapRests: number[] = [];
+    private trapBodiesFullSaid = false;
 }

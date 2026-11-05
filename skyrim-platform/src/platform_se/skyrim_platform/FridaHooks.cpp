@@ -13,6 +13,7 @@
 #include "ScriptNatives.h"
 #include "SkyrimPlatform.h"
 #include "StringHolder.h"
+#include "TrapFamily.h"
 
 #include <RE/A/AIProcess.h>
 #include <RE/A/Actor.h>
@@ -151,6 +152,10 @@ void LoadAdmittedScripts()
 // initial face (OnCellLoad's StartState02 and StartState03). What a lifecycle
 // handler does beyond state (a mid-firing trap's fireTrap at onCellAttach)
 // plays as a visual on a guest; the harm, OnTrapHitStart, stays the host's.
+// Since ADR-068's D-S3 a trap family reference's every event runs on every
+// seat (OnSendEventEnter's family rule, TrapFamily.h), and its harm counts on
+// the hit actor's own seat alone (the seam's owner test on ProcessTrapHit,
+// ScriptNatives.cpp).
 bool IsLifecycleEvent(const std::string& lowerName)
 {
   static const char* const kLifecycle[] = {
@@ -207,6 +212,27 @@ bool NeverAdmittedByChain(const RE::BSScript::ObjectTypeInfo* info)
   }
   return false;
 }
+
+// the form id an event's handle names, resolved as OnSendEventEnter resolves
+// its self (the actor, then the reference, through the VM's handle policy);
+// 0 for a handle that names neither (a quest's, an effect's)
+uint32_t SelfIdOfHandle(RE::VMHandle handle)
+{
+  auto* vm = VM::GetSingleton();
+  auto* policy = vm ? vm->GetObjectHandlePolicy() : nullptr;
+  if (!policy) {
+    return 0;
+  }
+  if (auto* actor =
+        policy->GetObjectForHandle(RE::FormType::ActorCharacter, handle)) {
+    return actor->GetFormID();
+  }
+  if (auto* refr =
+        policy->GetObjectForHandle(RE::FormType::Reference, handle)) {
+    return refr->GetFormID();
+  }
+  return 0;
+}
 }
 
 void Frida::SetCellHosted(uint32_t cellFormId, bool hosted)
@@ -255,6 +281,34 @@ void OnSendEventEnter(GumInvocationContext* ic)
     gum_invocation_context_replace_nth_argument(ic, 2, fsEmptyRecordDeath);
     return;
   }
+  // thuum docs/DECISIONS.md ADR-068 D-S3 point 3 (traps follow the
+  // interaction; TrapFamily.h): every event raised to a reference whose
+  // server record skymp5-client is applying (setRecordApplying) runs no script
+  // either, whatever its name and inside the platform's own calls too, so the
+  // test comes before the Override check: the record is the world's past, its
+  // consequences ran where they happened, and a late joiner's oil lamp must
+  // not replay its fall. Like the record-death blank it comes before the
+  // sendPapyrusEvent hook below, so JS hears none of these events. The set is
+  // empty outside an apply, so the cost is one atomic read; the event's self
+  // is resolved only while a record is being applied
+  if (TrapFamily::RecordApplying::Any()) {
+    const auto applyingId = SelfIdOfHandle(
+      (RE::VMHandle)gum_invocation_context_get_nth_argument(ic, 1));
+    if (applyingId != 0 && TrapFamily::RecordApplying::Is(applyingId)) {
+      static std::atomic<uint64_t> s_recordApplyBlanked{ 0 };
+      const auto n = ++s_recordApplyBlanked;
+      if (n <= 3 || n % 100 == 0) {
+        auto name = (char**)gum_invocation_context_get_nth_argument(ic, 2);
+        logger::info("[verb:traps] {} to {:x} blanked: raised while the "
+                     "server's record is applied to it, not a world event "
+                     "({} so far)",
+                     (name && *name) ? *name : "", applyingId, n);
+      }
+      static const auto fsEmptyRecordApply = new FixedString("");
+      gum_invocation_context_replace_nth_argument(ic, 2, fsEmptyRecordApply);
+      return;
+    }
+  }
   if (Override::IsOverriden()) {
     return;
   }
@@ -272,6 +326,8 @@ void OnSendEventEnter(GumInvocationContext* ic)
   // blanked; before ADR-062 an actor's event never saw the cell rule, the
   // spider's masterAmbushScript among them, playtest 41)
   bool selfIsActor = false;
+  // the self's reference, for the trap family's destroyed test (D-S3)
+  RE::TESObjectREFR* selfRef = nullptr;
 
   auto policy = vm->GetObjectHandlePolicy();
   if (policy) {
@@ -289,6 +345,7 @@ void OnSendEventEnter(GumInvocationContext* ic)
           policy->GetObjectForHandle(RE::FormType::Reference, handle)) {
       selfId = refr->GetFormID();
       if (auto ref = static_cast<RE::TESObjectREFR*>(refr)) {
+        selfRef = ref;
         if (auto cell = ref->GetParentCell()) {
           selfCell = cell->GetFormID();
         }
@@ -320,10 +377,27 @@ void OnSendEventEnter(GumInvocationContext* ic)
   const bool worldObject = !selfIsActor && selfCell != 0 && !ownedByAPlayer;
   const bool simulatedActor = selfIsActor && !ownedByAPlayer &&
     Hosted::Is(selfId) && !Puppets::Is(selfId);
-  const bool hostedWorldScript =
-    (worldObject && (inHostedCell || lifecycle)) || simulatedActor;
 
   auto blockEvents = TESModPlatform::GetPapyrusEventsBlocked();
+  // thuum docs/DECISIONS.md ADR-068 D-S3 point 1 (TrapFamily.h): a world
+  // object whose every attached script is in the trap family runs its events
+  // in every game, in any cell, as a hosted cell's world objects do: each
+  // seat fires its own copy where its trigger is met (D-S2 B's cosmetic
+  // copies, R3 per seat for the firing; HYPOTHESIS H-T2, the design's: an
+  // unblocked plate on a seat that does not host its cell fires its children
+  // there, x-trap-dodge v1), and the seam counts the reference as every
+  // seat's own (ScriptNatives.cpp). Asked under the block alone, and
+  // only where the answer decides something (rule 9: a hosted cell's live
+  // objects cost what they did): outside a hosted cell, where it passes the
+  // event, and on a destroyed reference anywhere, the spent trap below; a
+  // lifecycle event passes a world object either way, so it is never asked
+  // for one. The family's verdict is cached per class
+  const bool trapFamily = blockEvents && worldObject && !lifecycle &&
+    (!inHostedCell || TrapFamily::Destroyed(selfRef)) &&
+    TrapFamily::IsFamily(handle);
+  const bool hostedWorldScript =
+    (worldObject && (inHostedCell || lifecycle || trapFamily)) ||
+    simulatedActor;
 
   // thuum docs/verbs/shadowbond.md: a script on the never-admitted list keeps
   // its events blanked before any rule below could admit them
@@ -347,6 +421,34 @@ void OnSendEventEnter(GumInvocationContext* ic)
       gum_invocation_context_replace_nth_argument(ic, 2, fsEmptyNever);
       return;
     }
+  }
+
+  // thuum docs/DECISIONS.md ADR-068 D-S3 point 3: a spent trap goes deaf. A
+  // destroyed family reference (TrapFamily::Destroyed: its script's own
+  // SetDestroyed, the tripwire's, or the server's record applied) hears its
+  // lifecycle events alone, so a copy whose script never fired here (a late
+  // joiner's, one the record reached first) cannot fire a single-use trap
+  // again; its script's state is no guide on such a copy. Its
+  // OnDestructionStageChanged passes too: the engine telling it the world's
+  // state, and possibly the destroying stage's own event (HYPOTHESIS H-DS1:
+  // whether the engine sets the destroyed flag before it raises that stage's
+  // event is unread; passed either way, the stage's handler keeps its
+  // consequence, the oil pool's explosion should D-T1 bring TrapExplosiveGas
+  // into the family). JS still hears the event (the hook above); trapFamily
+  // is never asked for a lifecycle event
+  if (trapFamily && TrapFamily::Destroyed(selfRef) &&
+      _stricmp(eventNameStr.c_str(), "OnDestructionStageChanged") != 0) {
+    static std::atomic<uint64_t> s_spentBlanked{ 0 };
+    const auto n = ++s_spentBlanked;
+    if (n <= 3 || n % 100 == 0) {
+      logger::info("[verb:traps] {} to {:x} blanked: a destroyed trap family "
+                   "reference, a spent trap, hears its lifecycle alone ({} "
+                   "so far)",
+                   eventNameStr, selfId, n);
+    }
+    static const auto fsEmptySpent = new FixedString("");
+    gum_invocation_context_replace_nth_argument(ic, 2, fsEmptySpent);
+    return;
   }
 
   // thuum docs/verbs/push.md (ADR-031; ADR-029's A1, test 1): an event on

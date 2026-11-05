@@ -12,10 +12,12 @@ class IFunction;
 // 0x0F; Address Library 104651, game/Offsets.h NativeFunctionCall), hooked
 // once for every tabled native (NativeRows.inc, thuum docs/NATIVES.md's
 // rows): the call judged from its typed frame, the subject's owner tested
-// (a world object's cell host, an actor's simulator, the player's own seat),
-// an owned action row's call (and a script's Kill) queued into this frame's
-// batch and raised to JS once a frame as the event "scriptCalls", every
-// other tabled call counted and raised every 30 s as "scriptCensus"; the
+// (a world object's cell host, an actor's simulator, the player's own seat;
+// a trap family reference every seat's own, ADR-068 D-S3, TrapFamily.h),
+// an owned action row's call (and a script's Kill, and a family reference's
+// SetDestroyed, SetMotionType and ApplyHavokImpulse) queued into this
+// frame's batch and raised to JS once a frame as the event "scriptCalls",
+// every other tabled call counted and raised every 30 s as "scriptCensus"; the
 // hook is a replacement, so a lever (scriptNonOwnerSkip, default none) can
 // skip a non-owned state row's body. The rows' functions are resolved at
 // kDataLoaded from the VM's own bindings (Hooks.cpp BindNativeMethod's

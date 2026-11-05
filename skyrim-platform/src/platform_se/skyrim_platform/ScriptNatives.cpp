@@ -125,6 +125,35 @@ constexpr std::pair<const char*, const char*> kBatchedStateRows[] = {
   { "Actor", "KillSilent" }
 };
 
+// thuum docs/DECISIONS.md ADR-068 D-S3 (traps follow the interaction;
+// TrapFamily.h): the three state rows whose call on a trap family reference
+// crosses in the batch as kind "state" (the slice's interface of
+// 2026-11-05): SetDestroyed, a single-use result skymp5-client reports as
+// DestructionStage (point 3), and SetMotionType and ApplyHavokImpulse, the
+// firing that sets a trap body moving, which the client's prop stream claims
+// (point 4). On a body another seat streams (TrapFamily::Followed) the two
+// motion rows run with a neutral argument instead and are not queued
+enum class TrapRow : std::uint8_t
+{
+  None,
+  Destroyed,
+  Motion,
+  Impulse
+};
+
+struct TrapRowName
+{
+  const char* cls;
+  const char* fn;
+  TrapRow trap;
+};
+
+constexpr TrapRowName kTrapRows[] = {
+  { "ObjectReference", "SetDestroyed", TrapRow::Destroyed },
+  { "ObjectReference", "SetMotionType", TrapRow::Motion },
+  { "ObjectReference", "ApplyHavokImpulse", TrapRow::Impulse }
+};
+
 // at most 11 arguments (CommonLibSSE-NG src/RE/N/NativeFunctionBase.cpp:15,
 // "native supports max 11")
 constexpr std::uint32_t kMaxArgs = 11;
@@ -145,6 +174,8 @@ struct RowInfo
   // carries a bool, a number, a string or an object, never an array
   bool relayable = false;
   bool batchedState = false;
+  // the row's place among kTrapRows (D-S3), None for every other row
+  TrapRow trap = TrapRow::None;
   // the declared return's kind (TypeInfo::GetUnmangledRawType)
   RE::BSScript::TypeInfo::RawType result =
     RE::BSScript::TypeInfo::RawType::kNone;
@@ -164,10 +195,15 @@ std::unordered_map<const RE::BSScript::IFunction*, std::size_t> g_rowOf;
 // an animation row on an actor); " (unrelayable)" an owned action row with
 // an array parameter; " (unresolved)" a subject that names no reference;
 // " (frame mismatch)" a dispatch whose top frame is not the native's own, or
-// whose arguments' page cannot be found (H-S1 failing); " (skipped)" a
-// non-owned state row whose body the lever skipped (scriptNonOwnerSkip
-// nonLatent); no suffix, an owned self's state row, run here and counted
-// (rung 4 adds its record trigger).
+// whose arguments' page cannot be found (H-S1 failing), or a followed body's
+// motion call whose frame does not hold the row's declared shape; " (skipped)"
+// a non-owned state row whose body the lever skipped (scriptNonOwnerSkip
+// nonLatent); " (trap)" a trap family reference's call, every seat's own
+// (ADR-068 D-S3 point 1: a state row run here, an action row run under the
+// script action's mark, neither queued); " (followed)" a script's
+// SetMotionType or ApplyHavokImpulse on a trap body another seat streams,
+// run neutralized (D-S3 point 4); no suffix, an owned self's state row, run
+// here and counted (rung 4 adds its record trigger).
 // An everyone row's calls are counted by self instead (g_rowSelves, the
 // flip's "Class.Name on <id>"); a batched call is the batch's, never counted
 enum CountKind : std::size_t
@@ -180,6 +216,8 @@ enum CountKind : std::size_t
   kCountUnresolved,
   kCountFrameMismatch,
   kCountSkipped,
+  kCountTrap,
+  kCountFollowed,
   kCountKinds
 };
 
@@ -190,7 +228,9 @@ constexpr const char* kCountSuffix[kCountKinds] = { "",
                                                     " (unrelayable)",
                                                     " (unresolved)",
                                                     " (frame mismatch)",
-                                                    " (skipped)" };
+                                                    " (skipped)",
+                                                    " (trap)",
+                                                    " (followed)" };
 
 std::array<std::array<std::atomic<std::uint32_t>, kCountKinds>, kRowCount>
   g_counts{};
@@ -573,6 +613,135 @@ struct Marks
     RE::BSScript::TypeInfo::RawType::kNone;
 };
 
+// one call queued from its frame into this frame's batch (the shared shape's
+// Call): its self, its arguments read through the engine's accessor with the
+// frame's page (found here when the subject's read did not need it) and its
+// caller; false, counted " (frame mismatch)", when the arguments' page
+// cannot be found
+bool QueueFromFrame(std::size_t row, const RowInfo& info,
+                    const RE::BSScript::Stack* stack,
+                    const RE::BSScript::StackFrame* top, std::uint32_t page,
+                    std::uint32_t self)
+{
+  QueuedCall call;
+  call.row = row;
+  call.self = self;
+  call.latent = info.latent;
+  call.stackId = stack->stackID;
+  call.argCount = info.params;
+  if (info.params > 0) {
+    if (page == kNoPage) {
+      page = top->GetPageForFrame();
+    }
+    if (page == kNoPage) {
+      Count(row, kCountFrameMismatch);
+      return false;
+    }
+    for (std::uint32_t i = 0; i < info.params; ++i) {
+      call.args[i] =
+        ReadArg(top->GetStackFrameVariable(i, page), info.types[i]);
+    }
+  }
+  NameCaller(top->previousFrame, call.caller, call.handler);
+  QueueCall(std::move(call));
+  return true;
+}
+
+// a followed body's motion call neutralized in the native's own frame, before
+// the original marshals it (MarshallAndDispatch unpacks every argument from
+// the frame at the call, CommonLibSSE-NG include/RE/N/NativeFunction.h:91-92):
+// SetMotionType's motion type (its first parameter, an Int, FunctionsDump.txt)
+// becomes 4, Keyframed (TESObjectREFR::MotionType::kKeyframed,
+// include/RE/T/TESObjectREFR.h:126-135), and ApplyHavokImpulse's magnitude
+// (its fourth, a Float) becomes 0, so the body runs and ends the script's
+// latent wait as the engine ends it, while the body stays where the prop
+// stream holds it. Run, not skipped: both rows are latent, and what a skipped
+// latent must leave is unread (H-F1), a skipped one perhaps never resuming
+// its script. HYPOTHESIS H-AW: the value written here is the one the body
+// reads, and the engine's Keyframed and a zero impulse leave a followed body
+// still under the stream (x-trap-boulders v1: the seven rocks agree within
+// 32 units on both seats and the server after 6 s). False, nothing written,
+// when the frame does not hold the row's declared shape; `what` names the
+// write for the log
+bool Neutralize(const RowInfo& info, const RE::BSScript::StackFrame* top,
+                std::uint32_t page, std::string& what)
+{
+  const bool motion = info.trap == TrapRow::Motion;
+  const std::uint32_t index = motion ? 0 : 3;
+  if (info.params != (motion ? 2u : 4u) ||
+      !(motion ? info.types[index].IsInt() : info.types[index].IsFloat())) {
+    return false;
+  }
+  if (page == kNoPage) {
+    page = top->GetPageForFrame();
+  }
+  if (page == kNoPage) {
+    return false;
+  }
+  RE::BSScript::Variable& arg = top->GetStackFrameVariable(index, page);
+  if (motion && arg.IsInt()) {
+    what = fmt::format("motion type 4 (Keyframed) for the script's {}",
+                       arg.GetSInt());
+    arg.SetSInt(
+      static_cast<std::int32_t>(RE::TESObjectREFR::MotionType::kKeyframed));
+    return true;
+  }
+  if (!motion && arg.IsFloat()) {
+    what = fmt::format("magnitude 0 for the script's {}", arg.GetFloat());
+    arg.SetFloat(0.f);
+    return true;
+  }
+  return false;
+}
+
+// a trap family reference's call (ADR-068 D-S3 point 1), every seat's own:
+// every seat fires its own copy, so the call runs here and is counted
+// " (trap)". An action row runs under the script action's mark for its
+// extent, so the engine-level animation hooks leave it too, and is never
+// queued (every seat plays it from its own firing: no ScriptCall, no mirror,
+// no lastAnimation). A state row is the copy's own state, except the three
+// kTrapRows, which cross in the batch as kind "state"; a followed body's two
+// motion rows run neutralized instead, counted " (followed)"
+Marks OnFamilyCall(std::size_t row, const RowInfo& info,
+                   const RE::BSScript::Stack* stack,
+                   const RE::BSScript::StackFrame* top, std::uint32_t page,
+                   std::uint32_t self)
+{
+  Marks marks;
+  const NativeRow& native = kRows[row];
+  if (native.kind == NativeKind::Action) {
+    marks.action = true;
+    Count(row, kCountTrap);
+    return marks;
+  }
+  if (info.trap == TrapRow::None) {
+    Count(row, kCountTrap);
+    return marks;
+  }
+  if (info.trap != TrapRow::Destroyed && TrapFamily::Followed::Is(self)) {
+    std::string what;
+    if (!Neutralize(info, top, page, what)) {
+      Count(row, kCountFrameMismatch);
+      return marks;
+    }
+    Count(row, kCountFollowed);
+    static std::atomic<uint64_t> s_neutralized{ 0 };
+    const auto n = ++s_neutralized;
+    if (n <= 3 || n % 100 == 0) {
+      logger::info("[verb:traps] {}.{} on {:x}, a trap body another seat "
+                   "streams: run with {}, counted (followed) ({} so far)",
+                   native.cls, native.fn, self, what, n);
+    }
+    return marks;
+  }
+  if (!info.relayable) {
+    Count(row, kCountUnrelayable);
+    return marks;
+  }
+  QueueFromFrame(row, info, stack, top, page, self);
+  return marks;
+}
+
 // the seam's judgment of one dispatch, 6.2's order (rule 9: the cheapest
 // test first). The body runs unless the lever skips it (marks.skip)
 Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
@@ -679,6 +848,21 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     Count(row, kCountLocal);
     return marks;
   }
+  // the trap family, before the owner (ADR-068 D-S3 point 1; TrapFamily.h):
+  // a world object whose every attached script is in the family, by the
+  // gate's own test on the gate's own world objects (no actor, a parent
+  // cell, an id below 0xff000000, where the players' figures and what they
+  // place begin; FridaHooks.cpp OnSendEventEnter), is every seat's own,
+  // whoever hosts its cell (OnFamilyCall). An actor never is:
+  // ProcessTrapHit's self is the hit actor, judged by (d) below, so the hit
+  // counts on that actor's own seat alone and a non-owner's copy is counted,
+  // or skipped by the lever
+  if (!isActor && ref->formID < 0xff000000 && ref->GetParentCell()) {
+    const RE::BSScript::Object* object = ObjectOf(*subject);
+    if (object && TrapFamily::IsFamily(object->GetHandle())) {
+      return OnFamilyCall(row, info, stack, top, page, ref->formID);
+    }
+  }
   // (d) the owner. Not owned: counted, and the body runs (an action row's
   // jump, the pillar's StartState0N from a guest's OnCellLoad, is wanted
   // everywhere), unless the lever skips a state row's non-latent body (6.11
@@ -710,27 +894,9 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     Count(row, kCountUnrelayable);
     return marks;
   }
-  QueuedCall call;
-  call.row = row;
-  call.self = ref->formID;
-  call.latent = info.latent;
-  call.stackId = stack->stackID;
-  call.argCount = info.params;
-  if (info.params > 0) {
-    if (page == kNoPage) {
-      page = top->GetPageForFrame();
-    }
-    if (page == kNoPage) {
-      Count(row, kCountFrameMismatch);
-      return marks;
-    }
-    for (std::uint32_t i = 0; i < info.params; ++i) {
-      call.args[i] =
-        ReadArg(top->GetStackFrameVariable(i, page), info.types[i]);
-    }
+  if (!QueueFromFrame(row, info, stack, top, page, ref->formID)) {
+    return marks;
   }
-  NameCaller(top->previousFrame, call.caller, call.handler);
-  QueueCall(std::move(call));
   marks.action = native.kind == NativeKind::Action;
   return marks;
 }
@@ -762,6 +928,12 @@ void ReadRow(std::size_t row, const RE::BSScript::IFunction* function)
     if (_stricmp(kRows[row].cls, cls) == 0 &&
         _stricmp(kRows[row].fn, name) == 0) {
       info.batchedState = true;
+    }
+  }
+  for (const auto& trapRow : kTrapRows) {
+    if (_stricmp(kRows[row].cls, trapRow.cls) == 0 &&
+        _stricmp(kRows[row].fn, trapRow.fn) == 0) {
+      info.trap = trapRow.trap;
     }
   }
 }

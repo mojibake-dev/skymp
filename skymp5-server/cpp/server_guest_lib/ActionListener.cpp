@@ -3427,13 +3427,14 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
   if (!myActor) {
     return;
   }
-  // thuum D-S3 point 4: an impulse may name a trap's world body, which the
-  // claim loads (LookupFormById) where the chunks around the players have
-  // not; every other touch names an item the server holds already
+  // every touch names a reference the server holds already (NoLoad: a
+  // claim never loads the id a seat chose, the review of 9ff1895e's finding
+  // 4): an item, or under an impulse (thuum D-S3 point 4) a trap's world
+  // body, which stands loaded with the chunks the claimant's own grid pass
+  // loads around it (GetNeighborsByPosition, the 3x3 squares of 4096 units,
+  // so every body within kPropImpulseReach of the claimant)
   const bool impulse = msg.touch == 3;
-  const auto& form = impulse
-    ? partOne.worldState.LookupFormById(msg.refr)
-    : partOne.worldState.LookupFormByIdNoLoad(msg.refr);
+  const auto& form = partOne.worldState.LookupFormByIdNoLoad(msg.refr);
   MpObjectReference* prop = form ? form->AsObjectReference() : nullptr;
   const auto refuse = [&](const char* code, const char* why) {
     spdlog::warn(
@@ -4327,28 +4328,21 @@ void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
   // for a player's own body alone, so the game that fires it is the player's
   // who walked in, whichever seat hosts the cell: such a trigger's pair is
   // taken from any game that has the cell loaded (PartOne::GetCellLoaders),
-  // its host's or a guest's; every other pair still the host's alone
-  bool playerOnlyFromLoader = false;
-  if (!host.hosted || host.player != reporter.GetFormId()) {
+  // its host's or a guest's; every other pair still the host's alone. A game
+  // that neither hosts the cell nor has it loaded is refused first; the
+  // trigger's record (its VMAD) is read after the link check, for a linked
+  // pair alone (the review of 9ff1895e, finding 4)
+  const bool fromHost = host.hosted && host.player == reporter.GetFormId();
+  const auto refuseNotHost = [&] {
+    spdlog::info("[verb:traps] E_TRAP_NOT_HOST: {:x} reports {:x} "
+                 "activating {:x} in cell {:x}, which it does not host",
+                 reporter.GetFormId(), casterId, targetId, *cell);
+  };
+  if (!fromHost) {
     const auto loaders = partOne.GetCellLoaders(*cell);
-    const bool loaded = std::find(loaders.begin(), loaders.end(),
-                                  reporter.GetFormId()) != loaders.end();
-    if (loaded) {
-      auto known = playerOnlyTriggers.find(casterId);
-      if (known == playerOnlyTriggers.end()) {
-        known =
-          playerOnlyTriggers
-            .emplace(casterId,
-                     RecordSetsPlayerOnlyTrigger(partOne.worldState, casterId))
-            .first;
-      }
-      playerOnlyFromLoader = known->second;
-    }
-    if (!playerOnlyFromLoader) {
-      spdlog::info("[verb:traps] E_TRAP_NOT_HOST: {:x} reports {:x} "
-                   "activating {:x} in cell {:x}, which it does not host",
-                   reporter.GetFormId(), casterId, targetId, *cell);
-      return;
+    if (std::find(loaders.begin(), loaders.end(), reporter.GetFormId()) ==
+        loaders.end()) {
+      return refuseNotHost();
     }
   }
   const auto children =
@@ -4361,6 +4355,21 @@ void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
                  "{:x}, whose activation parents do not name it",
                  reporter.GetFormId(), casterId, targetId);
     return;
+  }
+  bool playerOnlyFromLoader = false;
+  if (!fromHost) {
+    auto known = playerOnlyTriggers.find(casterId);
+    if (known == playerOnlyTriggers.end()) {
+      known =
+        playerOnlyTriggers
+          .emplace(casterId,
+                   RecordSetsPlayerOnlyTrigger(partOne.worldState, casterId))
+          .first;
+    }
+    playerOnlyFromLoader = known->second;
+    if (!playerOnlyFromLoader) {
+      return refuseNotHost();
+    }
   }
   if (!withinBudget()) {
     return;
@@ -4508,7 +4517,8 @@ void ActionListener::OnLockReport(const RawMessageData& rawMsgData,
 // true) and an equal or a lower report changes nothing. Its checks first: a
 // game-file reference the server holds or loads (LookupFormById: a trap's
 // lamp may stand outside the chunks loaded around the players), no actor
-// (an actor's death is the NPC fate's), a world body (IsWorldBodyKind: the
+// (an actor's death is the NPC fate's; an ACHR is refused by its record
+// before the lookup could load it), a world body (IsWorldBodyKind: the
 // lamp and the tripwire are ACTIs; a door, a container, furniture or an item
 // is no trap's result, whatever a seat reports, the review of 9ff1895e's
 // finding 1), and the reference's cell loaded in the reporter's game
@@ -4536,6 +4546,17 @@ void ActionListener::OnDestructionStage(const RawMessageData& rawMsgData,
     // a server-made reference's destruction is the server's own (the edge
     // refuses the id first, E_VAL_RANGE)
     return refuse("E_DESTRUCTION_NO_REF", "not a game-file reference");
+  }
+  // an actor's record is refused by its type before any load (the review of
+  // 9ff1895e, finding 4): the lookup below would load the NPC the id names,
+  // one the server never held, for a report it then refuses
+  // (OnLinkedActivation's targetIsActor reads the same type)
+  if (partOne.HasEspm()) {
+    const auto record = partOne.GetEspm().GetBrowser().LookupById(msg.refr);
+    if (record.rec && record.rec->GetType() == espm::ACHR::kType) {
+      return refuse("E_DESTRUCTION_ACTOR",
+                    "an actor, whose death is the NPC fate's");
+    }
   }
   auto refrPtr = std::dynamic_pointer_cast<MpObjectReference>(
     partOne.worldState.LookupFormById(msg.refr));
@@ -4660,7 +4681,7 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
   }
   // thuum D-S3 point 4: a trap's world body is on the stream once an impulse
   // claimed it (its epoch above 0: OnPropClaim admits no other touch on it,
-  // and that claim loaded it), its samples then judged as an item's
+  // and found it loaded), its samples then judged as an item's
   if (worldBody && partOne.PropEpochOf(*prop) == 0) {
     return refuse("E_PROP_KIND", "a world body no impulse claimed");
   }

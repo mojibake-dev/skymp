@@ -316,8 +316,22 @@ TEST_CASE("A destruction report on no reference, on an actor or from a game "
   REQUIRE(SentTo(p, 0).empty());
   REQUIRE(SentTo(p, 1).empty());
 
-  // an actor: the temple's draugr, loaded with NPCs on
+  // an actor the server never loaded: the temple's draugr, with NPCs on,
+  // refused by its record's type and left unloaded (the review of
+  // 9ff1895e, finding 4: the lookup loaded it for the report it refused)
   p.worldState.npcEnabled = true;
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kDraugr) == nullptr);
+  {
+    LogCapture log;
+    Report(p, 0, kDraugr, 1, true);
+    REQUIRE(log.Count("[verb:traps] E_DESTRUCTION_ACTOR: ff000fe5 reports "
+                      "380b3 at stage 1, destroyed true: an actor, whose "
+                      "death is the NPC fate's") == 1);
+  }
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kDraugr) == nullptr);
+  REQUIRE(SentTo(p, 0).empty());
+
+  // an actor: the temple's draugr, loaded with NPCs on
   auto& draugr = p.worldState.GetFormAt<MpActor>(kDraugr);
   {
     LogCapture log;

@@ -485,6 +485,20 @@ TEST_CASE("A player-only trigger's linked activation is taken from a guest "
   }
   REQUIRE(RelayedTo(p, 0).empty());
 
+  // an unlinked pair from the guest with the cell loaded is refused by the
+  // link before its trigger's record is read (the review of 9ff1895e,
+  // finding 4: the read is a linked pair's alone); the plate is no
+  // activation parent of the portcullis
+  {
+    LogCapture log;
+    Linked(p, 1, kPlate, kPortcullis);
+    REQUIRE(log.Count("[verb:traps] E_TRAP_UNLINKED: ff000fe2 reports 567f2 "
+                      "activating 3b9f1, whose activation parents do not "
+                      "name it") == 1);
+    REQUIRE(log.Count("E_TRAP_NOT_HOST") == 0);
+  }
+  REQUIRE(RelayedTo(p, 0).empty());
+
   // the host's own report of the box's pair is the cell path's, its line
   // unchanged
   Stand(p, kByTheBlade);

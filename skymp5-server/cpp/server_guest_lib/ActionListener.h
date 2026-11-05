@@ -453,7 +453,8 @@ private:
   // base form id to whether its record carries a script (the VMAD read once)
   std::unordered_map<uint32_t, bool> scriptedBases;
   // thuum D-S3 phase 2: trigger reference to whether its record sets
-  // playerOnlyTrigger (the base's VMAD and its own, read once)
+  // playerOnlyTrigger (the base's VMAD and its own, read once, and for a
+  // linked pair's trigger alone, so only the game files' links fill it)
   std::unordered_map<uint32_t, bool> playerOnlyTriggers;
   // thuum docs/verbs/spell-cast.md (train-27): a cast delivered to its
   // target (touch, target actor) whose relay waits for its first hit, by

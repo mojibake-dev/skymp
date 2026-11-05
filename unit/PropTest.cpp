@@ -401,7 +401,7 @@ TEST_CASE("A trap's world body joins the stream by the impulse touch alone: "
   CellLoaded(p, 0, kEmbershard);
   REQUIRE(p.GetCellHost(kEmbershard).player == kC1);
   // the rock stands loaded with the chunks around the players (an impulse's
-  // own lookup loads one they have not reached)
+  // own lookup loads nothing, the next case's)
   auto& rock = p.worldState.GetFormAt<MpObjectReference>(kRock);
   REQUIRE(rock.GetBaseType() == "ACTI");
   REQUIRE(p.worldState.CellOf(rock) == std::optional<uint32_t>(kEmbershard));
@@ -468,6 +468,46 @@ TEST_CASE("A trap's world body joins the stream by the impulse touch alone: "
   Sample(p, 0, kSiblingRock, siblingAt + NiPoint3{ 0.f, 0.f, -50.f }, false);
   REQUIRE(sibling.GetPos() == siblingAt);
   REQUIRE(RelaysTo(p, 1).empty());
+  Leave(p);
+}
+
+// the review of 9ff1895e (finding 4): an impulse's claim looked its reference
+// up with a load, so the id a seat chose was loaded for a claim the server
+// then refused. Bleak Falls Temple 0x371de's oil lamp 0x9b0fb (an ACTI,
+// unit/DestructionStageTest's) stands in another cell than the mine
+TEST_CASE("An impulse's claim loads nothing: a world body the chunks around "
+          "the claimant have not loaded is refused E_PROP_UNKNOWN and stays "
+          "unloaded, and one they have is granted",
+          "[Prop][Traps][espm]")
+{
+  constexpr uint32_t kTempleLamp = 0x9b0fb;
+  auto& p = GetPartOne();
+  Player(p, 0, kC1, kByTheRocks, kEmbershard);
+  Player(p, 1, kC2, kByTheRocks + NiPoint3{ 20.f, 0.f, 0.f }, kEmbershard);
+  CellLoaded(p, 0, kEmbershard);
+  REQUIRE(p.GetCellHost(kEmbershard).player == kC1);
+  p.Messages().clear();
+
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kTempleLamp) == nullptr);
+  {
+    LogCapture log;
+    Claim(p, 1, kTempleLamp, 3);
+    REQUIRE(log.Count("[verb:prop-physics] E_PROP_UNKNOWN: ff000d02 claims "
+                      "prop 9b0fb by touch 3; no such reference, or an "
+                      "actor") == 1);
+  }
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kTempleLamp) == nullptr);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 0).empty());
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
+
+  // the mine's rock stands within the impulse's reach of the claimant, so
+  // the claimant's own grid pass (the 3x3 squares around it) loaded it: the
+  // impulse finds it without a load and is granted
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kRock) != nullptr);
+  Claim(p, 1, kRock, 3);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).size() == 1);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1)[0].refr == kRock);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1)[0].player == kC2);
   Leave(p);
 }
 

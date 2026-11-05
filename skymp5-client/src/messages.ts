@@ -76,5 +76,6 @@ export enum MsgType {
   ObjectAnimation = 71, // thuum docs/verbs/traps.md (ADR-059 decision 3): a world object's animation event the cell's host reported, recorded and relayed
   ChangeForm = 72, // thuum docs/verbs/change-form.md (ADR-065): an owner's engine's own change form of a reference, serialized at the corpse's rest (ADR-067); the server validates, records, acks
   ChangeFormAck = 73, // the same verb: the server's hash of the record it holds, the owner's compare baseline
-  ChangeFormApply = 74 // the same verb: a recorded change form served to a seat with the reference, applied through its engine's own load
+  ChangeFormApply = 74, // the same verb: a recorded change form served to a seat with the reference, applied through its engine's own load
+  ScriptCall = 75 // thuum docs/DECISIONS.md ADR-068 (rung 2, the one seam): a script's call of a tabled action native on a subject this game owns, as the platform's boundary read it; the server checks its shape and mirrors it to the subject's other listeners as SpSnippet 30 with the object's seq
 }

@@ -581,6 +581,25 @@ struct HostedGazeRead
 std::mutex g_gazeMutex;
 std::unordered_map<uint32_t, HostedGazeRead> g_gaze;
 
+// thuum docs/verbs/traps.md "The pillar's side" (x-puzzle-guest-view v1
+// 20261104-220217): a named node's rotation on any loaded reference, read on
+// the game thread as the gaze is (NetImmerse's Euler natives take out-arrays
+// the platform cannot pass, and a BSTriShape on its node's origin moves no
+// position when the node turns). pollNodeRotation(refrId, nodeNames) queues
+// the read of the reference's 3D (TESObjectREFR::Get3D, NiAVObject::
+// GetObjectByName, NiAVObject.h:106; the world and local transforms at :157
+// and :158; NiMatrix3::ToEulerAnglesXYZ, NiMatrix3.h:28, radians);
+// nodeRotation(refrId) answers the last poll, one row per name
+struct NodeRotationRead
+{
+  std::string node;
+  bool has = false;
+  float world[3] = { 0.f, 0.f, 0.f };
+  float local[3] = { 0.f, 0.f, 0.f };
+};
+std::mutex g_nodeRotationMutex;
+std::unordered_map<uint32_t, std::vector<NodeRotationRead>> g_nodeRotation;
+
 // thuum playtest 37 (Eli: "do the probe first before any more head builds"):
 // the face as FaceGen animates it, every keyframe value, for the lab's read
 // of a puppet's mouth against the live NPC's on the host
@@ -823,6 +842,75 @@ Napi::Value PuppetApi::PollHostedGaze(const Napi::CallbackInfo& info)
     g_gaze.swap(reads);
   });
   return info.Env().Undefined();
+}
+
+Napi::Value PuppetApi::PollNodeRotation(const Napi::CallbackInfo& info)
+{
+  const auto refrId = NapiHelper::ExtractUInt32(info[0], "refrId");
+  const auto names = NapiHelper::ExtractArray(info[1], "nodeNames");
+  std::vector<std::string> nodeNames;
+  const uint32_t n = names.Length();
+  nodeNames.reserve(n);
+  for (uint32_t i = 0; i < n; ++i) {
+    const std::string name = "nodeNames[" + std::to_string(i) + "]";
+    nodeNames.push_back(NapiHelper::ExtractString(names.Get(i), name.c_str()));
+  }
+  g_nativeCallRequirements.gameThrQ->AddTask([refrId, nodeNames](Viet::Void) {
+    std::vector<NodeRotationRead> reads;
+    reads.reserve(nodeNames.size());
+    auto* refr = RE::TESForm::LookupByID<RE::TESObjectREFR>(refrId);
+    RE::NiAVObject* root = refr ? refr->Get3D() : nullptr;
+    for (const auto& name : nodeNames) {
+      NodeRotationRead read;
+      read.node = name;
+      RE::NiAVObject* node = nullptr;
+      if (root) {
+        node = name.empty() ? root : root->GetObjectByName(name.c_str());
+      }
+      if (node) {
+        read.has = true;
+        node->world.rotate.ToEulerAnglesXYZ(read.world[0], read.world[1],
+                                            read.world[2]);
+        node->local.rotate.ToEulerAnglesXYZ(read.local[0], read.local[1],
+                                            read.local[2]);
+      }
+      reads.push_back(std::move(read));
+    }
+    std::lock_guard<std::mutex> lock(g_nodeRotationMutex);
+    g_nodeRotation[refrId] = std::move(reads);
+  });
+  return info.Env().Undefined();
+}
+
+Napi::Value PuppetApi::NodeRotation(const Napi::CallbackInfo& info)
+{
+  const auto refrId = NapiHelper::ExtractUInt32(info[0], "refrId");
+  std::vector<NodeRotationRead> reads;
+  {
+    std::lock_guard<std::mutex> lock(g_nodeRotationMutex);
+    const auto it = g_nodeRotation.find(refrId);
+    if (it == g_nodeRotation.end()) {
+      return info.Env().Null();
+    }
+    reads = it->second;
+  }
+  auto res = Napi::Array::New(info.Env(), reads.size());
+  for (uint32_t i = 0; i < reads.size(); ++i) {
+    const auto& read = reads[i];
+    auto row = Napi::Object::New(info.Env());
+    row.Set("node", Napi::String::New(info.Env(), read.node));
+    row.Set("has", Napi::Boolean::New(info.Env(), read.has));
+    auto world = Napi::Array::New(info.Env(), 3);
+    auto local = Napi::Array::New(info.Env(), 3);
+    for (uint32_t k = 0; k < 3; ++k) {
+      world.Set(k, Napi::Number::New(info.Env(), read.world[k]));
+      local.Set(k, Napi::Number::New(info.Env(), read.local[k]));
+    }
+    row.Set("world", world);
+    row.Set("local", local);
+    res.Set(i, row);
+  }
+  return res;
 }
 
 Napi::Value PuppetApi::HostedGaze(const Napi::CallbackInfo& info)

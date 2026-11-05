@@ -1,24 +1,48 @@
 #pragma once
 #include <cstdint>
 
-// thuum docs/DECISIONS.md ADR-062 decision 2 (slice 1b): the Papyrus natives
-// through which a script changes server-owned state, hooked once each at
-// their own entry and raised to JS as the event "scriptNative" for the
-// reports the server records and relays (R2 by default, Eli: "trust should
-// LARGELY be the default"). The entries are resolved at kDataLoaded from the
-// VM's own bindings (Hooks.cpp BindNativeMethod's record, by class and name),
-// never from a pinned offset (rule 1); the offsets found are logged for the
-// reader to hold against docs/research/adr062/papyrus-native-entries.md.
+namespace RE::BSScript {
+class IFunction;
+}
+
+// thuum docs/DECISIONS.md ADR-068 (scripts as one system; rung 2, the one
+// seam, docs/research/scripts-one-system-2026-11-05.md 6.2): the VM's one
+// native dispatch, BSScript::NF_util::NativeFunctionBase::Call
+// (CommonLibSSE-NG include/RE/N/NativeFunctionBase.h:47, IFunction's slot
+// 0x0F; Address Library 104651, game/Offsets.h NativeFunctionCall), hooked
+// once for every tabled native (NativeRows.inc, thuum docs/NATIVES.md's
+// rows): the call judged from its typed frame, the subject's owner tested
+// (a world object's cell host, an actor's simulator, the player's own seat),
+// an owned action row's call (and a script's Kill) queued into this frame's
+// batch and raised to JS once a frame as the event "scriptCalls", every
+// other tabled call counted and raised every 30 s as "scriptCensus"; the
+// hook is a replacement, so a lever (scriptNonOwnerSkip, default none) can
+// skip a non-owned state row's body. The rows' functions are resolved at
+// kDataLoaded from the VM's own bindings (Hooks.cpp BindNativeMethod's
+// record, by class and name), never from a pinned offset (rule 1). This
+// replaced the flip's 24 entry hooks (ADR-062 decision 2) and their per-call
+// "scriptNative" event.
 namespace ScriptNatives {
-// at plugin load: the hooks' callbacks registered with the handler (the
-// entries' and the dispatch's; no address yet, so the map the live hooks
-// read is never touched later)
-void Register();
-// at kDataLoaded: each native's entry attached (Hooks::GetBoundNatives), then
-// the VM's one dispatch (NativeFunctionBase::Call) once the bound set is
-// known, where the platform's latent calls are marked (PlatformCall.h)
+// at kDataLoaded: the table's rows bound from the VM's bindings
+// (Hooks::GetBoundNatives) and the lever read, then the VM's one dispatch
+// replaced once both are complete, where every tabled call is judged from
+// its frame and the platform's latent calls are marked (PlatformCall.h)
 void InstallHooks();
 // every frame from the platform's OnUpdate: the census flushed on time (a
 // quiet seat emits its last window; the review's medium finding)
 void Tick();
+// inside a script action: true on this thread for the extent of an owned
+// action row's call (a script's PlayAnimation on a world object in a cell
+// this game hosts), the mark PlatformCall's bracket keeps, so the
+// engine-level animation hooks (FridaHooks.cpp: SendAnimationEvent 38048,
+// PlayAnimation_Impl 14297) leave the animation the boundary reports
+// (thuum ADR-068 decision 7, docs/research/scripts-one-system-2026-11-05.md
+// 6.7): a script's animation is reported once
+bool InScriptAction();
+// the platform's direct call of a native (SkyrimPlatform.cpp's worker, under
+// PlatformCall::Scope), counted in the census as "(platform)" when the
+// native is tabled: made inside the OnUpdate native's own Call, it never
+// reaches the replacement (Gum runs a call nested in a replaced call's
+// original straight to the original)
+void CountPlatformCall(const RE::BSScript::IFunction* fn);
 }

@@ -166,25 +166,41 @@ declare module "skyrimPlatform" {
     }
     function on(eventName: 'skillUse', callback: (event: SkillUseEvent) => void): EventHandle;
     function once(eventName: 'skillUse', callback: (event: SkillUseEvent) => void): EventHandle;
-    // thuum docs/DECISIONS.md ADR-062 decision 2: a script's call of a native that
-    // changes server-owned state, on this seat, for a world object in a hosted cell,
-    // an actor this game simulates, a quest, a global or an alias (ScriptNatives.cpp).
-    // No game call in its handler.
-    interface ScriptNativeEvent {
-        native: string;
-        self: number;
-        arg: number;
-        value: number;
-        cell: number;
-        actor: boolean;
-        stackId: number;
-        // 1 for a live call; a census event (self 0) folds this many calls
-        // (the quest, global and alias rows, " (not hosted)", " (platform)",
-        // " (over budget)" suffixes), every 30 s
-        count: number;
+    // thuum docs/DECISIONS.md ADR-068 (rung 2, the one seam): the calls this seat's
+    // scripts made in one frame on what this seat owns, at most once a frame (the
+    // platform's hook on NativeFunctionBase::Call, ScriptNatives.cpp): an action row on
+    // a world object in a cell this game hosts (kind "action"), Actor.Kill and
+    // KillSilent on an actor it simulates or the player's own (kind "state"). self is
+    // the subject's form id (a static row's first argument); an argument is a boolean,
+    // a number, a string, { formId } (0 for None) or null (unread); caller and handler
+    // name the calling script's type and function ("" when the native began its
+    // stack). Definitions.txt carries the same. No game call in its handler.
+    interface ScriptCallsEvent {
+        calls: {
+            cls: string;
+            fn: string;
+            kind: "action" | "state" | "everyone";
+            self: number;
+            args: (boolean | number | string | { formId: number } | null)[];
+            caller: string;
+            handler: string;
+            latent: boolean;
+            stackId: number;
+        }[];
     }
-    function on(eventName: 'scriptNative', callback: (event: ScriptNativeEvent) => void): EventHandle;
-    function once(eventName: 'scriptNative', callback: (event: ScriptNativeEvent) => void): EventHandle;
+    function on(eventName: 'scriptCalls', callback: (event: ScriptCallsEvent) => void): EventHandle;
+    function once(eventName: 'scriptCalls', callback: (event: ScriptCallsEvent) => void): EventHandle;
+    // the seam's census every 30 s, one row per counted kind of call: "Class.Name
+    // (platform)", " (not hosted)", " (local)", " (unrelayable)", " (unresolved)",
+    // " (frame mismatch)", " (skipped)" (the scriptNonOwnerSkip lever, off by default),
+    // the bare "Class.Name" (an owned self's state row, run here) and "Class.Name on
+    // <hex id>" or " on others" (an everyone row's selves); a call in scriptCalls is
+    // never counted here. No game call in its handler.
+    interface ScriptCensusEvent {
+        rows: { row: string; count: number }[];
+    }
+    function on(eventName: 'scriptCensus', callback: (event: ScriptCensusEvent) => void): EventHandle;
+    function once(eventName: 'scriptCensus', callback: (event: ScriptCensusEvent) => void): EventHandle;
     // thuum docs/verbs/npc-stream.md (the voice slice): a spoken line begins
     // on an actor this game hosts; ids alone, no game call in its handler
     interface TopicInfoEvent {

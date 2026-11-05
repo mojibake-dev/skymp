@@ -44,13 +44,14 @@ enum HookID
   // thuum docs/verbs/spell-cast.md (the rune's glyph): the engine's decal
   // placement after a target-location launch (Address Library 44186)
   HOOK_RUNE_DECAL,
-  // thuum docs/DECISIONS.md ADR-062 decision 2: the Papyrus natives that
-  // change server-owned state, one listener for every entry
-  // (ScriptNatives.cpp; the entries resolved at kDataLoaded)
+  // reserved: the flip's 24 Papyrus native entry hooks (thuum ADR-062
+  // decision 2), retired by ADR-068's one seam (rung 2) on the dispatch
+  // below; the value is never reused and the ids after it keep theirs
   HOOK_SCRIPT_NATIVE,
-  // and the VM's one native dispatch, NativeFunctionBase::Call (Address
-  // Library 104651), where the platform's latent calls are told from a
-  // script's on the VM's own thread (ScriptNatives.cpp, PlatformCall.h)
+  // reserved: the attach on the VM's one native dispatch,
+  // NativeFunctionBase::Call (Address Library 104651), until rung 2's last
+  // commit replaced the function through HookHandler::Replace, which takes
+  // no id (ScriptNatives.cpp); the value is never reused
   HOOK_NATIVE_CALL
 };
 

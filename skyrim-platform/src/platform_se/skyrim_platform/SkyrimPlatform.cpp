@@ -21,6 +21,7 @@
 #include "ObjectReferenceApi.h"
 #include "PlatformCall.h"
 #include "PuppetApi.h"
+#include "ScriptNatives.h"
 #include "Sp3Api.h"
 #include "TextApi.h"
 #include "ThreadPoolWrapper.h"
@@ -387,8 +388,11 @@ struct SkyrimPlatform::Impl
                       RE::BSScript::IFunction::CallResult* ret)
   {
     {
-      // the platform's own call, marked for the script hooks
-      // (ScriptNatives.cpp; thuum ADR-062 decision 2)
+      // the platform's own call, marked for the seam (ScriptNatives.cpp;
+      // thuum ADR-062 decision 2, ADR-068) and counted in its census here:
+      // made inside the OnUpdate native's own Call, it never reaches the
+      // seam's replacement (Gum runs a nested call straight to the original)
+      ScriptNatives::CountPlatformCall(fPtr.get());
       PlatformCall::Scope platformCall;
       *ret = fPtr->Call(stack, logger, vm, false);
     }

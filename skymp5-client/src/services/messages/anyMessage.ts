@@ -73,6 +73,7 @@ import { SkillUseMessage } from "./skillUseMessage";
 import { ChangeFormMessage } from "./changeFormMessage";
 import { ChangeFormAckMessage } from "./changeFormAckMessage";
 import { ChangeFormApplyMessage } from "./changeFormApplyMessage";
+import { ScriptCallMessage } from "./scriptCallMessage";
 
 export type AnyMessage = ActivateMessage
     | ConsoleCommandMessage
@@ -142,6 +143,7 @@ export type AnyMessage = ActivateMessage
     | ChangeFormMessage
     | ChangeFormAckMessage
     | ChangeFormApplyMessage
+    | ScriptCallMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage
     | UpdatePropertyMessage

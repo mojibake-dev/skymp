@@ -3,6 +3,7 @@ import { ConnectionMessage } from "../events/connectionMessage";
 import { FinishSpSnippetMessage } from "../messages/finishSpSnippetMessage";
 import { SpSnippetMessage } from "../messages/spSnippetMessage";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
+import { ObjectAnimationService } from "./objectAnimationService";
 
 // TODO: refactor worldViewMisc into service
 import { remoteIdToLocalId } from '../../view/worldViewMisc';
@@ -13,14 +14,23 @@ export class SpSnippetService extends ClientListener {
   constructor(private sp: Sp, private controller: CombinedController) {
     super();
     this.controller.emitter.on("spSnippetMessage", (e) => this.onSpSnippetMessage(e));
+    // the server's sequences are this connection's: a login, a reconnect or a
+    // restarted server starts them over (HostService clears its epochs at the
+    // same message)
+    this.controller.emitter.on("createActorMessage", (e) => {
+      if (e.message.isMe) {
+        this.lastSeq.clear();
+      }
+    });
     this.spAny = sp as Record<string, any>;
   }
 
   private onSpSnippetMessage(event: ConnectionMessage<SpSnippetMessage>): void {
     const msg = event.message;
+    const inOrder = this.takeSeq(msg);
 
     this.controller.once('update', async () => {
-      this.run(msg)
+      (inOrder ? this.apply(msg) : Promise.resolve(undefined))
         .then((res) => {
           const isNoResultSnippet = msg.snippetIdx === 0xffffffff;
           if (isNoResultSnippet) {
@@ -58,6 +68,65 @@ export class SpSnippetService extends ClientListener {
           logError(this, 'SpSnippet ' + msg.class + ' ' + msg.function + ' failed ' + e);
         });
     });
+  }
+
+  // thuum docs/DECISIONS.md ADR-068 decision 4 (rung 2, the one seam): a
+  // snippet with a seq is a script call the subject's owner made, relayed by
+  // the server (ScriptCall 75 mirrored as SpSnippet 30). Its PlayAnimation on
+  // a game-file reference (a self below 0xff000000; the server's own copies
+  // and its actors' long ids sit above) plays through ObjectAnimationService
+  // as a relayed ObjectAnimation does, with its mark and its "object
+  // animation <refr> <event> played" line (b-puzzle-relay's claim). At the
+  // merge with the pillar heads (843fed95 through 73ed0c52, not yet on canon)
+  // that play is their playRelayed(refr, event, "relayed", remoteRefr): the
+  // side jump first and the "played (relayed, ...)" line, with nothing to
+  // change here. Every other snippet runs as it always has
+  private apply(snippet: SpSnippetMessage): Promise<unknown> {
+    const event = snippet.arguments[0];
+    if (typeof snippet.seq === "number"
+      && snippet.class.toLowerCase() === "objectreference"
+      && snippet.function.toLowerCase() === "playanimation"
+      && snippet.selfId > 0 && snippet.selfId < 0xff000000
+      && typeof event === "string") {
+      this.controller.lookupListener(ObjectAnimationService).play(snippet.selfId, event);
+      return Promise.resolve(undefined);
+    }
+    return this.run(snippet);
+  }
+
+  // the order of one subject's relayed script calls (ADR-068 decision 4; the
+  // research's 6.11 finding 1: a record and an action for one object can land
+  // in either order): the server numbers each object's relays, so one at or
+  // below the last taken for its subject is stale and is dropped. The subject
+  // is the self, or for a static row (selfId 0, as the server sends a static
+  // native) its first argument's form, the table's subject arg0
+  // (Debug.SendAnimationEvent's target). A snippet without a seq is the server
+  // VM's own and always passes. JS state alone, so it runs in the messages'
+  // own order, ahead of the update that applies them
+  private takeSeq(snippet: SpSnippetMessage): boolean {
+    const seq = snippet.seq;
+    if (typeof seq !== "number") {
+      return true;
+    }
+    const subject = SpSnippetService.subjectOf(snippet);
+    if (subject === 0) {
+      return true;
+    }
+    const last = this.lastSeq.get(subject);
+    if (last !== undefined && seq <= last) {
+      logTrace(this, `script call ${subject.toString(16)} ${snippet.class}.${snippet.function} seq ${seq} dropped: at or below ${last}`);
+      return false;
+    }
+    this.lastSeq.set(subject, seq);
+    return true;
+  }
+
+  private static subjectOf(snippet: SpSnippetMessage): number {
+    if (snippet.selfId) {
+      return snippet.selfId;
+    }
+    const first = snippet.arguments[0];
+    return first !== null && typeof first === "object" && typeof first.formId === "number" ? first.formId : 0;
   }
 
   private async run(snippet: SpSnippetMessage): Promise<unknown> {
@@ -147,6 +216,11 @@ export class SpSnippetService extends ClientListener {
   };
 
   private deserializeArg(arg: any) {
+    // a None (null on the wire, SnippetArg's Option: a relayed script call's
+    // None form) passes as null, never as a form to look up
+    if (arg === null) {
+      return null;
+    }
     if (typeof arg === "object") {
       const formId = remoteIdToLocalId(arg.formId);
       const form = this.sp.Game.getFormEx(formId);
@@ -216,4 +290,6 @@ export class SpSnippetService extends ClientListener {
   };
 
   private spAny: Record<string, any>;
+  // the last seq taken per subject (takeSeq), this connection's
+  private readonly lastSeq = new Map<number, number>();
 };

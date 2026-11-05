@@ -49,8 +49,9 @@ const SETTLE_MS = 500;
 // the figure it saw, fires its children first (D-S3 point 1: every seat fires
 // the family itself; Eli's D-T2 outcome, the trap fires in both games). In
 // Embershard's three rockfall runs (20261105-153200, -154408, -210948) the
-// record of tripwire 0xb6d3f reached the non-tripping seat 70 to 140 ms before
-// its own Tripwire.onBeginState reached its Activate(self), and that seat's
+// record of tripwire 0xb6d3f was applied on the non-tripping seat 133, 150 and
+// 140 ms before that seat's own SetDestroyed (Tripwire.onBeginState's, whose
+// Activate(self) comes earlier in the same state, unlogged), and that seat's
 // wire forwarded nothing to its linker 0xb6d3e: no "fired here" line there in
 // any run against 9 or 10 on the tripper, the rigged platform 0xb6d47 never
 // broken and its dust never raised. HYPOTHESIS: a destroyed reference's
@@ -60,7 +61,10 @@ const SETTLE_MS = 500;
 // SetDestroyed (Tripwire's DoNothing state) ends a firing here, so the wait
 // lets the copy fire at most once and the record deafens it after the wait
 // when it never fired (UNMEASURED: the runs needed about 150 ms). A served
-// record (a late joiner, a restart) is applied at once, as before
+// record (a late joiner, a restart) is applied at once, as before, and so are
+// a record that waited for its reference's 3D (a copy with no 3D saw no
+// figure: the spent blank's own case) and one that climbed a stage here (the
+// climb's own stage handler is that copy's firing)
 const FIRE_GRACE_MS = 3000;
 const KNOWN_MAX = 4096;
 
@@ -69,6 +73,8 @@ type PendingRecord = {
   stage: number;
   destroyed: boolean;
   served: boolean;
+  // it waited for its reference (no reference, or no 3D, on an update)
+  late: boolean;
   since: number;
 };
 
@@ -168,6 +174,7 @@ export class TrapResultService extends ClientListener {
       stage: Math.max(m.stage, queued ? queued.stage : 0),
       destroyed: m.destroyed || (queued ? queued.destroyed : false),
       served: m.served || (queued ? queued.served : false),
+      late: queued ? queued.late : false,
       since: queued ? queued.since : Date.now(),
     });
   }
@@ -289,9 +296,11 @@ export class TrapResultService extends ClientListener {
             `trap result ${rec.remote.toString(16)}: no reference here for the record (stage ${rec.stage}, destroyed ${rec.destroyed}) in ${APPLY_WAIT_MS} ms`,
           );
         }
+        rec.late = true;
         continue;
       }
       if (!refr.is3DLoaded() && waited < APPLY_WAIT_MS) {
+        rec.late = true;
         continue;
       }
       this.records.delete(localId);
@@ -341,16 +350,23 @@ export class TrapResultService extends ClientListener {
         step = now > stage ? DAMAGE_FIRST : Math.min(step * 2, DAMAGE_MAX);
         stage = Math.max(stage, now);
       }
-      if (rec.destroyed && !hereDestroyed) {
-        if (rec.served) {
+      // read after the climb: a climb into a destroying stage raises the flag
+      // itself (lamp 20261105-205402's c1, a stage 2 destroyed report with no
+      // SetDestroyed native)
+      const destroyedNow =
+        ObjectReferenceEx.trapRole(localId)?.destroyed === true;
+      if (rec.destroyed && !destroyedNow) {
+        if (rec.served || rec.late || here < rec.stage) {
           const ref = ObjectReference.from(this.sp.Game.getFormEx(localId));
           if (ref) {
             ref.setDestroyed(true);
           }
         } else {
+          // a later record keeps the first record's due
           this.destroyLater.set(localId, {
             remote: rec.remote,
-            due: Date.now() + FIRE_GRACE_MS,
+            due:
+              this.destroyLater.get(localId)?.due ?? Date.now() + FIRE_GRACE_MS,
           });
           logLab(
             TAG,
@@ -383,18 +399,25 @@ export class TrapResultService extends ClientListener {
   // this seat's own copy fired meanwhile (its script's SetDestroyed)
   private destroyDue(now: number) {
     for (const [localId, wait] of Array.from(this.destroyLater.entries())) {
-      if (now < wait.due) {
+      if (now < wait.due || this.applying.has(localId)) {
         continue;
       }
       this.destroyLater.delete(localId);
       const id = wait.remote.toString(16);
       const role = ObjectReferenceEx.trapRole(localId);
       if (role !== null && role.destroyed) {
-        logLab(TAG, `trap result ${id}: destroyed here before the record's wait ended`);
+        logLab(
+          TAG,
+          `trap result ${id}: destroyed here before the record's wait ended`,
+        );
         continue;
       }
       const ref = ObjectReference.from(this.sp.Game.getFormEx(localId));
       if (!ref) {
+        logError(
+          this,
+          `trap result ${id}: no reference here for the record's destroyed at the end of its wait`,
+        );
         continue;
       }
       ref.setDestroyed(true);

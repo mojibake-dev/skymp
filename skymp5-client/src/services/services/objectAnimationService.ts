@@ -107,6 +107,17 @@ export class ObjectAnimationService extends ClientListener {
     return true;
   }
 
+  // ADR-068 (rung 2, the one seam): a script's animation of a world object
+  // this seat owns is reported at the boundary now, as ScriptCall
+  // (ScriptCallService, with this path's "reported" line): the platform's two
+  // animation hooks return early inside a tabled action native's extent (the
+  // Call hook's "inside a script action" depth), as they do under Override,
+  // so that note never reaches the handlers above. What still reaches this
+  // path and goes out as ObjectAnimation: an event the engine drives itself
+  // (no script native on the stack), an untabled native's (no row in
+  // docs/NATIVES.md), and a script's call the platform judged not this seat's
+  // while HostService already hosts the cell (the update before SetCellHosted
+  // lands). H-D1 counts what is left; rung 7 retires this path if it is none
   private onUpdate() {
     if (this.noted.length === 0) {
       return;
@@ -141,7 +152,10 @@ export class ObjectAnimationService extends ClientListener {
     this.controller.once('update', () => this.play(refr, event));
   }
 
-  private play(remoteRefr: number, event: string) {
+  // also SpSnippetService's, for a relayed script call's PlayAnimation on a
+  // game-file reference (ADR-068 rung 2): the same play, mark and line as a
+  // relayed ObjectAnimation
+  play(remoteRefr: number, event: string) {
     const localId = remoteIdToLocalId(remoteRefr);
     const refr = ObjectReference.from(this.sp.Game.getFormEx(localId));
     if (!refr) {

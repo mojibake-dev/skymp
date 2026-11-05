@@ -15,8 +15,11 @@
 //! subject is one the reporter may name (`E_SCRIPTCALL_ARGS`); the reporter is
 //! within its budget, [`BURST`] then [`PER_SECOND`] a second
 //! (`E_SCRIPTCALL_RATE`); the subject is a world object whose cell the
-//! reporter hosts at the reported epoch (`E_SCRIPTCALL_OWNER`). A door's or a
-//! container's call is dropped quietly (its open is Activate's isOpen, as
+//! reporter hosts at the reported epoch (`E_SCRIPTCALL_OWNER`), a reference
+//! the server holds or a game-file placement it holds none for, placed by its
+//! record ([`SubjectKind::Record`]: the loader attaches no moving static, so
+//! Bleak Falls Sanctum's door FX is no reference of the server's). A door's
+//! or a container's call is dropped quietly (its open is Activate's isOpen, as
 //! ObjectAnimation's handler drops it) and an actor's is refused as the
 //! streams' (`E_SCRIPTCALL_ROW`: the row is local for an actor). A value is
 //! never judged (ADR-062's amendment). An accepted call takes its subject's
@@ -166,6 +169,10 @@ const EVERY_ARG: [u8; 11] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 /// names neither (the server does).
 const SERVER_NAMED: u32 = 0xff00_0000;
 
+/// What a refusal of a [`SubjectKind::Record`] subject adds to its words:
+/// the server holds no reference for it and placed it by its record.
+const BY_RECORD: &str = " (a reference the server does not load, placed by its game-file record)";
+
 /// The row of `cls`.`func`, its place in [`TABLE`]; Papyrus names compare
 /// without case.
 #[must_use]
@@ -279,10 +286,19 @@ pub fn subject_of(row: &Row, self_id: u32, args: &[Arg]) -> Option<u32> {
 /// What the server holds at a reported call's subject.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubjectKind {
-    /// No reference the server holds.
+    /// No reference the server holds, and no game-file placement it can
+    /// place by its record.
     Unknown,
     /// A world object: no actor, no door, no container.
     WorldObject,
+    /// A world object the server holds no reference for: a game-file
+    /// placement (a REFR, never an actor's ACHR) whose base the loader never
+    /// attaches (a moving static: Bleak Falls Sanctum's door FX 0x5256c,
+    /// which HallofStoriesKeyholeScript.openDoor plays FXDoorOpen on), placed
+    /// by its record's cell. Judged as a world object; its listeners are the
+    /// games with that cell loaded, since no reference of the server's has
+    /// any, and the server keeps nothing of it.
+    Record,
     /// A door or a container, whose open is Activate's isOpen.
     DoorOrContainer,
     /// An actor (the reporter's own player among them).
@@ -303,8 +319,9 @@ pub struct Facts {
     /// The subject's cell, 0 when the server cannot place it.
     pub cell: u32,
     /// The subject's owner by its kind: the host of its cell for a world
-    /// object, 0 while nobody hosts it (and for every other kind: no action
-    /// row is an actor's, the streams carry those).
+    /// object, held or placed by its record, 0 while nobody hosts it (and
+    /// for every other kind: no action row is an actor's, the streams carry
+    /// those).
     pub owner: u32,
     /// That owner's standing epoch.
     pub owner_epoch: u32,
@@ -475,22 +492,25 @@ impl ScriptCalls {
             return refuse(Code::Rate, format!("past the reporter's {BURST} at once and {PER_SECOND} a second"));
         }
         match facts.kind {
-            SubjectKind::WorldObject => {}
+            SubjectKind::WorldObject | SubjectKind::Record => {}
             SubjectKind::DoorOrContainer => return Verdict::Skip,
             SubjectKind::Actor => return refuse(Code::Row, "the subject is an actor: its animations are the action and animation streams' (the row is local for an actor)".to_owned()),
             SubjectKind::Unknown => return refuse(Code::Owner, "the server holds no such reference".to_owned()),
         }
+        // a placement the server holds no reference for says so in each
+        // refusal, so a reader asks its record's cell, not the loader
+        let placed = if facts.kind == SubjectKind::Record { BY_RECORD } else { "" };
         if facts.cell == 0 {
-            return refuse(Code::Owner, "the subject's cell is unknown to the server".to_owned());
+            return refuse(Code::Owner, format!("the subject's cell is unknown to the server{placed}"));
         }
         if facts.owner == 0 {
-            return refuse(Code::Owner, format!("nobody hosts cell {:x}", facts.cell));
+            return refuse(Code::Owner, format!("nobody hosts cell {:x}{placed}", facts.cell));
         }
         if facts.owner != facts.sender {
-            return refuse(Code::Owner, format!("{:x} hosts cell {:x}, not the reporter", facts.owner, facts.cell));
+            return refuse(Code::Owner, format!("{:x} hosts cell {:x}, not the reporter{placed}", facts.owner, facts.cell));
         }
         if facts.owner_epoch != facts.epoch {
-            return refuse(Code::Owner, format!("cell {:x} stands at epoch {}, the report names {}", facts.cell, facts.owner_epoch, facts.epoch));
+            return refuse(Code::Owner, format!("cell {:x} stands at epoch {}, the report names {}{placed}", facts.cell, facts.owner_epoch, facts.epoch));
         }
         let seq = self.seqs.entry(subject).or_insert(0);
         *seq = seq.saturating_add(1);
@@ -696,6 +716,45 @@ mod tests {
             Verdict::Refuse(r) => assert_eq!(r.why, "ff000000 hosts cell 371de, not the reporter"),
             other => panic!("a guest's report is refused: {other:?}"),
         }
+    }
+
+    // Bleak Falls Sanctum 0x371dd's door FX 0x5256c (base RuinsPuzzleDoorFX
+    // 0x52172, an MSTT the loader never attaches; lab/esm.py, 2026-11-05),
+    // which HallofStoriesKeyholeScript.openDoor plays FXDoorOpen on (rung 2's
+    // merged-head review, the hall door's FX)
+    const DOOR_FX: u32 = 0x5256c;
+    const SANCTUM: u32 = 0x371dd;
+
+    #[test]
+    fn a_placement_the_server_does_not_load_is_judged_by_its_records_cell() {
+        let mut s = ScriptCalls::default();
+        let row = row("ObjectReference", "PlayAnimation");
+        let f = Facts { kind: SubjectKind::Record, cell: SANCTUM, ..hosted(DOOR_FX) };
+        let refused = |v: Verdict| match v {
+            Verdict::Refuse(r) => (r.code, r.why),
+            other => panic!("not refused: {other:?}"),
+        };
+        // its cell's host at the epoch: relayed as a held world object is
+        let a = accepted(&s.judge(row, &[Arg::String], &f, 0));
+        assert_eq!((a.subject, a.seq, a.relay_self), (DOOR_FX, 1, DOOR_FX));
+        assert_eq!((a.relay_cls, a.relay_fn, a.relay_args), ("ObjectReference", "PlayAnimation", &[0u8][..]));
+        assert_eq!((a.audience, a.keep, a.graph_event_arg), (Audience::Listeners, Keep::Last, Some(0)));
+        // a reporter that does not host the record's cell at the epoch is
+        // refused, the words naming the case
+        assert_eq!(refused(s.judge(row, &[Arg::String], &Facts { sender: GUEST, ..f }, 0)), (Code::Owner, format!("ff000000 hosts cell 371dd, not the reporter{BY_RECORD}")));
+        assert_eq!(refused(s.judge(row, &[Arg::String], &Facts { owner: 0, ..f }, 0)), (Code::Owner, format!("nobody hosts cell 371dd{BY_RECORD}")));
+        assert_eq!(refused(s.judge(row, &[Arg::String], &Facts { epoch: 2, ..f }, 0)), (Code::Owner, format!("cell 371dd stands at epoch 3, the report names 2{BY_RECORD}")));
+        assert_eq!(refused(s.judge(row, &[Arg::String], &Facts { cell: 0, owner: 0, ..f }, 0)), (Code::Owner, format!("the subject's cell is unknown to the server{BY_RECORD}")));
+        // no placement by a record (another record type, an actor's ACHR, no
+        // record): today's refusal, its words unchanged
+        assert_eq!(refused(s.judge(row, &[Arg::String], &Facts { kind: SubjectKind::Unknown, ..f }, 0)), (Code::Owner, "the server holds no such reference".to_owned()));
+        // no refusal took a sequence, and the object's one sequence runs on
+        // across its rows (the static row names it as its target)
+        assert_eq!(accepted(&s.judge(row, &[Arg::String], &f, 0)).seq, 2);
+        let send = super::row("Debug", "SendAnimationEvent");
+        let target = accepted(&s.judge(send, &[Arg::Object(u64::from(DOOR_FX)), Arg::String], &f, 0));
+        assert_eq!((target.subject, target.relay_self, target.seq), (DOOR_FX, 0, 3));
+        assert_eq!(s.seq_of(DOOR_FX), 3);
     }
 
     #[test]

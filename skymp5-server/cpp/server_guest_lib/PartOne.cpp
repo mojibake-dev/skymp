@@ -2608,6 +2608,15 @@ skymp::rules::CellHost PartOne::GetCellHost(uint32_t cell) const
   return pImpl->cells->host_of(cell);
 }
 
+std::vector<uint32_t> PartOne::GetCellLoaders(uint32_t cell) const
+{
+  std::vector<uint32_t> out;
+  for (const uint32_t player : pImpl->cells->loaders_of(cell)) {
+    out.push_back(player);
+  }
+  return out;
+}
+
 std::vector<PartOne::CellHostEntry> PartOne::GetCellHosts() const
 {
   std::vector<CellHostEntry> out;

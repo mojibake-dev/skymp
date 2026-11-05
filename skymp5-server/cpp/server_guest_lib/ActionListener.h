@@ -158,9 +158,11 @@ public:
   // GetScriptCalls) judges the row, the arguments, the reporter's budget and
   // the subject's owner at the epoch over the facts gathered here; an
   // accepted action takes the subject's next sequence and is relayed at
-  // once to the subject's other listeners as SpSnippet with it; a door's or
-  // a container's is dropped quietly, each refusal logged once a minute per
-  // reporter and code
+  // once to the subject's other listeners as SpSnippet with it (for a
+  // game-file placement the server holds no reference for, judged by its
+  // record's cell, the other games that report that cell loaded); a door's
+  // or a container's is dropped quietly, each refusal logged once a minute
+  // per reporter and code
   virtual void OnScriptCall(const RawMessageData& rawMsgData,
                             const ScriptCallMessage& msg);
 

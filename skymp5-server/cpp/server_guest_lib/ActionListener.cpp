@@ -6,6 +6,7 @@
 #include "Exceptions.h"
 #include "GetBaseActorValues.h"
 #include "HitData.h"
+#include "LocationalDataUtils.h"
 #include "MathUtils.h"
 #include "MovementValidation.h"
 #include "MpObjectReference.h"
@@ -3532,6 +3533,50 @@ skymp::rules::ScriptArg ScriptArgOf(
   }
   return out;
 }
+
+// thuum ADR-068 (the hall door's FX, rung 2's merged-head review): a
+// game-file placement the server holds no reference for, read from its
+// record as AttachEspmRecord reads one it attaches: a REFR alone (an ACHR is
+// an actor's, the streams'), whether its base is a door or a container, the
+// world or cell its group names (the load order's id) and its position; none
+// for another record, for no record, or for one with no base or no place.
+// The loader attaches no moving static (MSTT), so Bleak Falls Sanctum
+// 0x371dd's door FX 0x5256c, which HallofStoriesKeyholeScript.openDoor
+// plays FXDoorOpen on, is no reference of the server's (lab/esm.py,
+// 2026-11-05: base 0x52172 RuinsPuzzleDoorFX, at (128, -320, -256))
+struct RecordPlacement
+{
+  bool doorOrContainer = false;
+  uint32_t worldOrCell = 0;
+  NiPoint3 pos;
+};
+
+std::optional<RecordPlacement> PlacementOfRecord(WorldState& worldState,
+                                                 uint32_t formId)
+{
+  if (!worldState.HasEspm()) {
+    return std::nullopt;
+  }
+  const auto& browser = worldState.GetEspm().GetBrowser();
+  const auto lookup = browser.LookupById(formId);
+  const auto* refr = espm::Convert<espm::REFR>(lookup.rec);
+  if (!refr) {
+    return std::nullopt;
+  }
+  const auto data = refr->GetData(worldState.GetEspmCache());
+  const auto base = browser.LookupById(lookup.ToGlobalId(data.baseId));
+  const uint32_t worldOrCell =
+    LocationalDataUtils::GetWorldOrCell(browser, lookup);
+  if (!base.rec || !data.loc || worldOrCell == 0) {
+    return std::nullopt;
+  }
+  const auto baseType = base.rec->GetType();
+  RecordPlacement out;
+  out.doorOrContainer = baseType == "DOOR" || baseType == "CONT";
+  out.worldOrCell = worldOrCell;
+  out.pos = LocationalDataUtils::GetPos(data.loc);
+  return out;
+}
 }
 
 // thuum docs/verbs/perks.md (M5): a player's perk pick
@@ -3729,6 +3774,10 @@ void ActionListener::OnObjectAnimation(const RawMessageData& rawMsgData,
 // server loads references by chunk around players, so a far gate a lever
 // turns may not be loaded yet; rung 2's review, finding 3), its kind, the
 // host of its cell and that host's epoch, and the rule judges the shape alone.
+// A game-file placement the loader never attaches (a moving static: the hall
+// door's FX, rung 2's merged-head review) is judged by its record instead:
+// its record's cell, its listeners the games that report that cell loaded,
+// and nothing kept, since no reference of the server's carries it.
 // An accepted action goes at once (SpSnippet::Relay, never the deferred queue)
 // to the subject's listeners but the reporter as the row's relay native
 // (PlayAnimationAndWait as PlayAnimation), with the subject's sequence; the
@@ -3753,12 +3802,17 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
     skymp::rules::script_call_subject(msg.cls, msg.fn, msg.selfId, argSlice);
 
   // the facts: subject_kind 0 no reference, 1 a world object, 2 a door or a
-  // container, 3 an actor; the owner and its epoch are the cell's host's
+  // container, 3 an actor, 4 a world object the server holds no reference
+  // for, placed by its game-file record; the owner and its epoch are the
+  // host's of the cell the subject stands in
   skymp::rules::ScriptCallFacts facts{};
   facts.sender = reporter->GetFormId();
   facts.self_id = msg.selfId;
   facts.epoch = msg.epoch;
   MpObjectReference* subject = nullptr;
+  // a world object's world or cell and position, the reference's or its
+  // record's
+  std::optional<std::pair<uint32_t, NiPoint3>> place;
   if (at.subject == 0x14) {
     // the reporter's own player, an actor: its animations are the streams'
     facts.subject_kind = 3;
@@ -3766,7 +3820,18 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
     const auto& form = partOne.worldState.LookupFormById(at.subject);
     subject = form ? form->AsObjectReference() : nullptr;
     if (!subject) {
-      facts.subject_kind = 0;
+      // no reference of the server's: a game-file placement the loader
+      // never attaches is judged by its record (its base's kind as a held
+      // reference's, its record's cell), anything else stays unknown
+      const auto record = PlacementOfRecord(partOne.worldState, at.subject);
+      if (!record) {
+        facts.subject_kind = 0;
+      } else if (record->doorOrContainer) {
+        facts.subject_kind = 2;
+      } else {
+        facts.subject_kind = 4;
+        place.emplace(record->worldOrCell, record->pos);
+      }
     } else if (subject->AsActor()) {
       facts.subject_kind = 3;
     } else if (subject->GetBaseType() == "DOOR" ||
@@ -3774,16 +3839,19 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
       facts.subject_kind = 2;
     } else {
       facts.subject_kind = 1;
-      const auto cell = partOne.worldState.CellOf(
+      place.emplace(
         subject->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles),
         subject->GetPos());
-      if (cell) {
-        facts.cell = *cell;
-        const auto host = partOne.GetCellHost(*cell);
-        if (host.hosted) {
-          facts.owner = host.player;
-          facts.owner_epoch = host.epoch;
-        }
+    }
+  }
+  if (place) {
+    const auto cell = partOne.worldState.CellOf(place->first, place->second);
+    if (cell) {
+      facts.cell = *cell;
+      const auto host = partOne.GetCellHost(*cell);
+      if (host.hosted) {
+        facts.owner = host.player;
+        facts.owner_epoch = host.epoch;
       }
     }
   }
@@ -3815,8 +3883,8 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
     count = 0;
     return;
   }
-  if (!subject) {
-    // the rule accepts a world object the server holds alone
+  if (!subject && facts.subject_kind != 4) {
+    // the rule accepts a world object alone, held or placed by its record
     return;
   }
 
@@ -3831,7 +3899,10 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
       }
     }
   }
-  if (verdict.keep_last && !event.empty()) {
+  // a placement by its record keeps nothing: no reference of the server's
+  // carries a lastAnimation to a late joiner (the hall door's FX is a
+  // one-shot; the door it dresses, 0x4e2b8, is an ACTI the server holds)
+  if (subject && verdict.keep_last && !event.empty()) {
     subject->SetLastAnimation(event);
   }
 
@@ -3849,28 +3920,38 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
   SpSnippet relay(relayCls.c_str(), relayFn.c_str(), relayArgs,
                   verdict.relay_self);
   size_t relayed = 0;
-  // audience 0: the subject's listeners (every action row's at rung 2)
-  if (verdict.audience == 0) {
+  const auto relayTo = [&](MpActor* listener) {
+    if (!listener || listener == reporter ||
+        partOne.serverState.UserByActor(listener) ==
+          Networking::InvalidUserId) {
+      return;
+    }
+    relay.Relay(listener, verdict.seq);
+    ++relayed;
+  };
+  // audience 0: the subject's listeners (every action row's at rung 2); a
+  // placement by its record has no reference of the server's to listen to,
+  // so its listeners are the games that report its cell loaded
+  if (verdict.audience == 0 && subject) {
     for (auto listener : subject->GetActorListeners()) {
-      if (listener == reporter ||
-          partOne.serverState.UserByActor(listener) ==
-            Networking::InvalidUserId) {
-        continue;
-      }
-      relay.Relay(listener, verdict.seq);
-      ++relayed;
+      relayTo(listener);
+    }
+  } else if (verdict.audience == 0) {
+    for (const uint32_t loader : partOne.GetCellLoaders(facts.cell)) {
+      const auto& form = partOne.worldState.LookupFormByIdNoLoad(loader);
+      relayTo(form ? form->AsActor() : nullptr);
     }
   }
   if (verdict.event_arg >= 0) {
     spdlog::info("[verb:traps] {:x} animates {:x} '{}' in cell {:x} (its host "
                  "{:x} reports): recorded, relayed to {} game(s)",
-                 subject->GetFormId(), subject->GetFormId(), event, facts.cell,
+                 verdict.subject, verdict.subject, event, facts.cell,
                  reporter->GetFormId(), relayed);
   }
   spdlog::info("[verb:scripts] {:x} reports {}.{} on {:x} in cell {:x} "
                "(epoch {}, from {}.{}): seq {}, relayed to {} game(s) as "
                "{}.{}",
-               reporter->GetFormId(), msg.cls, msg.fn, subject->GetFormId(),
+               reporter->GetFormId(), msg.cls, msg.fn, verdict.subject,
                facts.cell, msg.epoch, msg.caller, msg.handler, verdict.seq,
                relayed, relayCls, relayFn);
 }

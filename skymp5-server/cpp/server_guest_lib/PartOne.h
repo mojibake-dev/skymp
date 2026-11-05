@@ -731,6 +731,11 @@ public:
   static constexpr int64_t kStaleHostMs = 4'000;
   // Who hosts `cell` (hosted false while nobody; the epoch kept).
   skymp::rules::CellHost GetCellHost(uint32_t cell) const;
+  // Every player actor whose game reports `cell` loaded (its CellLoaded
+  // reports, OnCellLoaded), lowest id first: the games that show what
+  // stands in it, the listeners of a script call's subject the server holds
+  // no reference for (thuum ADR-068, ActionListener::OnScriptCall)
+  std::vector<uint32_t> GetCellLoaders(uint32_t cell) const;
   // thuum docs/verbs/npc-fate.md (ADR-049 decision 3): the fates of the
   // game-file actors in the grid squares around `player`'s own, kFateRing
   // out (the engine attaches a 5x5 of cells; the grid's squares truncate

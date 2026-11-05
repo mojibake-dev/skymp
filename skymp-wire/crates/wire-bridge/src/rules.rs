@@ -1419,12 +1419,15 @@ mod ffi {
         /// The message's epoch.
         epoch: u32,
         /// What the server holds at the subject: 0 no reference, 1 a world
-        /// object, 2 a door or a container, 3 an actor.
+        /// object, 2 a door or a container, 3 an actor, 4 a world object it
+        /// holds no reference for, a game-file placement (REFR) placed by its
+        /// record (wire-rules natives::SubjectKind::Record); any other value
+        /// reads as 0.
         subject_kind: u8,
         /// The subject's cell, 0 when the server cannot place it.
         cell: u32,
         /// The host of that cell, 0 while nobody hosts it (0 for every kind
-        /// but a world object).
+        /// but a world object, held or placed by its record).
         owner: u32,
         /// That host's standing epoch.
         owner_epoch: u32,
@@ -2053,6 +2056,10 @@ mod ffi {
         fn accepts(self: &Cells, cell: u32, player: u32, epoch: u32) -> bool;
         /// The cell's epoch, kept while unhosted; 0 before any grant.
         fn epoch_of(self: &Cells, cell: u32) -> u32;
+        /// Every player whose game reports `cell` loaded, lowest id first
+        /// (thuum ADR-068: the listeners of a script call's subject the
+        /// server holds no reference for, placed by its record).
+        fn loaders_of(self: &Cells, cell: u32) -> Vec<u32>;
         /// Every cell the table knows, by cell id (the lab's reading).
         fn hosts(self: &Cells) -> Vec<CellHostRow>;
         /// `reach` with each cell's ring (0 the player's own square, 1 a
@@ -3125,6 +3132,10 @@ impl Cells {
         self.0.epoch_of(cell)
     }
 
+    fn loaders_of(&self, cell: u32) -> Vec<u32> {
+        self.0.loaders_of(cell)
+    }
+
     fn reach_ranked(&mut self, player: u32, cells: &[u32], rings: &[u8], now_ms: u64) -> Vec<HostDecision> {
         let decisions = self.0.reach_ranked(player, cells, rings, now_ms);
         host_decisions(&self.0, decisions)
@@ -3839,6 +3850,7 @@ impl ScriptCalls {
             1 => natives::SubjectKind::WorldObject,
             2 => natives::SubjectKind::DoorOrContainer,
             3 => natives::SubjectKind::Actor,
+            4 => natives::SubjectKind::Record,
             _ => natives::SubjectKind::Unknown,
         };
         let facts = natives::Facts { sender: f.sender, self_id: f.self_id, epoch: f.epoch, kind, cell: f.cell, owner: f.owner, owner_epoch: f.owner_epoch };
@@ -3923,8 +3935,14 @@ mod tests {
         );
         assert_eq!(c.host_of(0x9732), CellHost { hosted: true, player: 0xff00_0000, epoch: 1 });
         assert!(c.accepts(0x9732, 0xff00_0000, 1));
+        // the games with the cell loaded (ADR-068's mirror of a placement the server holds no reference for)
+        assert!(c.loaded(0xff00_0001, 0x9732, 1_100).is_empty());
+        assert_eq!(c.loaders_of(0x9732), vec![0xff00_0000, 0xff00_0001]);
+        assert!(c.unloaded(0xff00_0001, 0x9732, 1_200).is_empty());
+        assert_eq!(c.loaders_of(0x9732), vec![0xff00_0000]);
         // the host leaves, nobody else has the cell loaded: released, unhosted at the kept epoch
         assert!(c.gone(0xff00_0000, 2_000).is_empty());
+        assert!(c.loaders_of(0x9732).is_empty());
         assert!(c.tick(2_000 + host_grace_ms() - 1).is_empty());
         assert_eq!(
             c.tick(2_000 + host_grace_ms()),
@@ -4523,6 +4541,17 @@ mod tests {
         assert_eq!(s.judge(-1, &[text], &facts, 0).name, "E_SCRIPTCALL_ROW");
         assert_eq!(s.judge(at.row, &[text], &facts, 0).name, "E_SCRIPTCALL_ARGS");
         assert_eq!(s.judge(at.row, &[text, text], &ScriptCallFacts { subject_kind: 2, ..facts }, 0).code, ScriptCallCode::Skipped);
+        // kind 4, a placement the server holds no reference for (Bleak Falls Sanctum 0x371dd's door FX 0x5256c,
+        // an MSTT): judged by its record's cell, the refusal's words naming it; an unknown kind reads as no reference
+        let fx = ScriptCallFacts { self_id: 0x5256c, subject_kind: 4, cell: 0x371dd, ..facts };
+        let fx_at = script_call_subject("ObjectReference", "PlayAnimation", 0x5256c, &[text]);
+        let placed = s.judge(fx_at.row, &[text], &fx, 0);
+        assert_eq!((placed.code, placed.subject, placed.seq, placed.audience, placed.keep_last), (ScriptCallCode::Accepted, 0x5256c, 1, 0, true));
+        let unhosted = s.judge(fx_at.row, &[text], &ScriptCallFacts { sender: 0xff00_0001, ..fx }, 0);
+        assert_eq!((unhosted.code, unhosted.name.as_str()), (ScriptCallCode::Owner, "E_SCRIPTCALL_OWNER"));
+        assert!(unhosted.why.starts_with("ff000000 hosts cell 371dd, not the reporter (") && unhosted.why.contains("record"), "{}", unhosted.why);
+        let unknown = s.judge(fx_at.row, &[text], &ScriptCallFacts { subject_kind: 5, ..fx }, 0);
+        assert_eq!((unknown.code, unknown.why.as_str()), (ScriptCallCode::Owner, "the server holds no such reference"));
         // the budget, wire-rules natives' burst (the bridge names it, never a literal)
         let mut b = new_script_calls();
         for _ in 0..natives::BURST {

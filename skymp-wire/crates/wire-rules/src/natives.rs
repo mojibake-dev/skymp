@@ -526,6 +526,44 @@ mod tests {
     const HOST: u32 = 0xff00_0000;
     const GUEST: u32 = 0xff00_0001;
 
+    // the platform's copy of the table (skyrim-platform's NativeRows.inc,
+    // hand-written until thuum's ledger generates both) holds the same rows in
+    // the same order with the same kind, subject and relay: a cheap guard
+    // until one generator writes both files (rung 2's review, finding 9)
+    #[test]
+    fn the_platform_table_matches_this_one() {
+        let inc = include_str!("../../../../skyrim-platform/src/platform_se/skyrim_platform/NativeRows.inc");
+        let rows: Vec<&str> = inc.lines().map(str::trim).filter(|l| l.starts_with('{')).collect();
+        assert_eq!(rows.len(), TABLE.len(), "row count");
+        for (line, row) in rows.iter().zip(TABLE.iter()) {
+            let fields: Vec<&str> = line.trim_start_matches('{').trim_end_matches(['}', ',', ' ']).split(',').map(str::trim).collect();
+            let [cls, func, kind_field, subject_field, relay_field] = fields.as_slice() else {
+                panic!("five fields: {line}");
+            };
+            assert_eq!(*cls, format!("\"{}\"", row.cls), "{line}");
+            assert_eq!(*func, format!("\"{}\"", row.func), "{line}");
+            let kind = match row.kind {
+                Kind::Action => "NativeKind::Action",
+                Kind::State => "NativeKind::State",
+                Kind::Everyone => "NativeKind::Everyone",
+                Kind::Local => "NativeKind::Local",
+            };
+            assert_eq!(*kind_field, kind, "{line}");
+            let subject = match row.subject {
+                Subject::SelfRef => "NativeSubject::Self",
+                Subject::Arg0 => "NativeSubject::Arg0",
+                Subject::Nothing => "NativeSubject::None",
+            };
+            assert_eq!(*subject_field, subject, "{line}");
+            let relay = match row.relay {
+                Relay::Same => "\"same\"".to_string(),
+                Relay::Twin { cls, func, .. } => format!("\"twin:{cls}.{func}\""),
+                Relay::Never => "\"none\"".to_string(),
+            };
+            assert_eq!(*relay_field, relay, "{line}");
+        }
+    }
+
     fn hosted(self_id: u32) -> Facts {
         Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::WorldObject, cell: TEMPLE, owner: HOST, owner_epoch: 3 }
     }

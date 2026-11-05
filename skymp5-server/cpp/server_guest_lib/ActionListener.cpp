@@ -3725,15 +3725,16 @@ void ActionListener::OnObjectAnimation(const RawMessageData& rawMsgData,
 
 // thuum ADR-068 (the one seam; docs/research/scripts-one-system-2026-11-05.md
 // 6.4 and 6.11 items 1, 8 and 13): the core gathers the subject's facts (the
-// reference the server holds, its kind, the host of its cell and that host's
-// epoch; no load: a reference the server never loaded stands in no cell a
-// player hosts), and the rule judges the shape alone. An accepted action
-// goes at once (SpSnippet::Relay, never the deferred queue) to the subject's
-// listeners but the reporter as the row's relay native (PlayAnimationAndWait
-// as PlayAnimation), with the subject's sequence; the PlayAnimation pair's
-// event stays the reference's lastAnimation until rung 7, and a call relayed
-// as a graph event writes ObjectAnimation's "animates" line byte for byte
-// (b-puzzle-relay claims it) before the call's own line.
+// reference the server holds, loaded as OnObjectAnimation loads it: the
+// server loads references by chunk around players, so a far gate a lever
+// turns may not be loaded yet; rung 2's review, finding 3), its kind, the
+// host of its cell and that host's epoch, and the rule judges the shape alone.
+// An accepted action goes at once (SpSnippet::Relay, never the deferred queue)
+// to the subject's listeners but the reporter as the row's relay native
+// (PlayAnimationAndWait as PlayAnimation), with the subject's sequence; the
+// PlayAnimation pair's event stays the reference's lastAnimation until rung 7,
+// and a call relayed as a graph event writes ObjectAnimation's "animates" line
+// byte for byte (b-puzzle-relay claims it) before the call's own line.
 void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
                                   const ScriptCallMessage& msg)
 {
@@ -3762,7 +3763,7 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
     // the reporter's own player, an actor: its animations are the streams'
     facts.subject_kind = 3;
   } else if (at.subject != 0) {
-    const auto& form = partOne.worldState.LookupFormByIdNoLoad(at.subject);
+    const auto& form = partOne.worldState.LookupFormById(at.subject);
     subject = form ? form->AsObjectReference() : nullptr;
     if (!subject) {
       facts.subject_kind = 0;

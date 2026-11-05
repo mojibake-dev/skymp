@@ -701,9 +701,10 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     Count(row, kCountOwned);
     return marks;
   }
-  // an owned action row's extent is the script action's (6.7), whether it
-  // crosses or not: the boundary is its one observe point
-  marks.action = native.kind == NativeKind::Action;
+  // an owned action row's extent is the script action's (6.7) once its call
+  // is queued below: a path that drops the call (unrelayable, a frame
+  // mismatch) leaves the mark down, so the engine-level hooks still report the
+  // animation and nothing goes silent (rung 2's review, finding 5)
   if (!info.relayable) {
     Count(row, kCountUnrelayable);
     return marks;
@@ -729,6 +730,7 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
   }
   NameCaller(top->previousFrame, call.caller, call.handler);
   QueueCall(std::move(call));
+  marks.action = native.kind == NativeKind::Action;
   return marks;
 }
 

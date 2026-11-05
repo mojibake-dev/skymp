@@ -32,16 +32,22 @@ pub const PROP_SILENCE_MS: u64 = 3_000;
 /// (a held object stands still in the hand).
 pub const PROP_GRAB_MAX_MS: u64 = 120_000;
 
-/// The step budget of one sample against the record: `PROP_MAX_SPEED_UNITS_PER_S`
-/// for the time since the last accepted sample, never less than
-/// `PROP_STEP_FLOOR_UNITS` (the first sample after a grant, jitter). A sample
-/// over the budget is refused and leaves the record where it stood: a seat
-/// cannot carry a prop across the world in one message, and no owner moves
-/// it faster than a kicked body flies. UNMEASURED: x-prop-push sizes both.
+/// The step budget's pace: the rate a row's distance allowance refills at
+/// (`PropRow::allowance`, a token bucket on distance). A sample farther from
+/// the record than the allowance holds is refused and leaves the record
+/// where it stood; an accepted one spends the units it moved the record. So
+/// a seat cannot carry a prop across the world in one message, and over any
+/// window no owner moves the record faster than a kicked body flies, at any
+/// sample rate. UNMEASURED: x-prop-push sizes it.
 pub const PROP_MAX_SPEED_UNITS_PER_S: f32 = 6_000.0;
-/// The least a sample may move the record without a time base (see
-/// `PROP_MAX_SPEED_UNITS_PER_S`).
-pub const PROP_STEP_FLOOR_UNITS: f32 = 128.0;
+/// The most a row's allowance holds: one honest 100 ms step at
+/// `PROP_MAX_SPEED_UNITS_PER_S` (the client's cadence), which a new row
+/// starts with (the first sample after a grant, jitter). It replaces a
+/// per-sample floor of 128 units, which the review of 9ff1895e (finding 3)
+/// found was the limit at the prop budget's 96 samples a second: 12,288
+/// units a second, twice the cap. The allowance bounds the record's travel
+/// over any window to the cap's plus this one step. UNMEASURED.
+pub const PROP_STEP_ALLOWANCE_UNITS: f32 = PROP_MAX_SPEED_UNITS_PER_S / 10.0;
 
 /// What the core knows about a simulator's sample of a prop.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -76,7 +82,7 @@ pub mod touch {
 }
 
 /// One prop's row: who simulates it and on what terms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PropRow {
     /// The simulating player's actor form id; 0 once it left (the cell's
     /// host simulates, `owner_of`).
@@ -101,8 +107,19 @@ pub struct PropRow {
     /// lapsed row): a grab's clock.
     pub since_ms: u64,
     /// The last accepted sample's time (the grant's before any): the
-    /// silence clock and the step budget's base.
+    /// silence clock.
     pub last_sample_ms: u64,
+    /// The step budget: a token bucket on distance, in units, as it stood at
+    /// `allowance_ms`. An accepted sample spends the units it moved the
+    /// record; time refills it at `PROP_MAX_SPEED_UNITS_PER_S` up to
+    /// `PROP_STEP_ALLOWANCE_UNITS`; a refused sample spends nothing and moves
+    /// no clock. It is the prop's, not its owner's: a grant, a host's
+    /// takeover or a departure leaves it as it stands, so seats trading a
+    /// prop by claims cannot each start with a full one.
+    pub allowance: f32,
+    /// When `allowance` was last brought up to date: the last accepted
+    /// sample's time, or the row's first (a new row starts full).
+    pub allowance_ms: u64,
 }
 
 /// The answer to a claim (ADR-058 decision 1).
@@ -134,7 +151,8 @@ pub enum TransformVerdict {
     /// nobody holds a live lease on it: it freezes at the record.
     WrongCell,
     /// The sample is farther from the record than the step budget allows
-    /// (or not a number): refused, the record stands.
+    /// (the row's allowance, `PropRow::allowance`), or not a number:
+    /// refused, the record stands.
     TooFast,
 }
 
@@ -160,6 +178,16 @@ impl PropRow {
             return self.lease_until_ms.is_some_and(|until| now_ms < until);
         }
         now_ms < self.last_sample_ms.saturating_add(PROP_SILENCE_MS)
+    }
+
+    /// The allowance at `now_ms`: the stored units refilled at
+    /// `PROP_MAX_SPEED_UNITS_PER_S` since `allowance_ms`, at most
+    /// `PROP_STEP_ALLOWANCE_UNITS`.
+    fn allowance_at(&self, now_ms: u64) -> f32 {
+        // the time base, clamped to ten seconds (a tenth of one refills the
+        // whole allowance)
+        let elapsed_ms = u16::try_from(now_ms.saturating_sub(self.allowance_ms).min(10_000)).unwrap_or(10_000);
+        (self.allowance + PROP_MAX_SPEED_UNITS_PER_S * f32::from(elapsed_ms) / 1_000.0).min(PROP_STEP_ALLOWANCE_UNITS)
     }
 }
 
@@ -216,6 +244,12 @@ impl Props {
         }
         let epoch = self.epoch_of(refr).saturating_add(1);
         self.epochs.insert(refr, epoch);
+        // the allowance is the prop's: a grant keeps it as it stands, a new
+        // row starts with one full step
+        let (allowance, allowance_ms) = self
+            .rows
+            .get(&refr)
+            .map_or((PROP_STEP_ALLOWANCE_UNITS, now_ms), |row| (row.allowance, row.allowance_ms));
         self.rows.insert(
             refr,
             PropRow {
@@ -227,6 +261,8 @@ impl Props {
                 grabbed: touch == touch::GRAB,
                 since_ms: now_ms,
                 last_sample_ms: now_ms,
+                allowance,
+                allowance_ms,
             },
         );
         ClaimVerdict::Granted(epoch)
@@ -255,10 +291,11 @@ impl Props {
     /// whose record's cell is hosted by `cell_host` (0 while nobody), the
     /// body `asleep` or not, `moved` units from the record, at `now_ms`:
     /// taken from the prop's owner alone (`owner_of`) and inside the step
-    /// budget; a sleep starts the lease (a grabbed row's does not), a wake
-    /// ends it; a host's first sample of an unclaimed prop writes its row at
-    /// the kept epoch, and a host's sample of a lapsed row takes it over,
-    /// ending a grab its holder never released.
+    /// budget (the row's allowance, which the step then spends); a sleep
+    /// starts the lease (a grabbed row's does not), a wake ends it; a host's
+    /// first sample of an unclaimed prop writes its row at the kept epoch,
+    /// and a host's sample of a lapsed row takes it over, ending a grab its
+    /// holder never released.
     pub fn transform(&mut self, f: &SampleFacts) -> TransformVerdict {
         let SampleFacts { refr, player, cell, cell_host, asleep, moved, now_ms } = *f;
         if cell == 0 {
@@ -271,15 +308,10 @@ impl Props {
         if owner != player {
             return TransformVerdict::NotOwner;
         }
-        let allowed = match self.rows.get(&refr) {
-            Some(row) if row.live(now_ms) && row.owner == player => {
-                // the time base, clamped to ten seconds: a long silence has
-                // lapsed the row already, a short one buys a short step
-                let elapsed_ms = u16::try_from(now_ms.saturating_sub(row.last_sample_ms).min(10_000)).unwrap_or(10_000);
-                (PROP_MAX_SPEED_UNITS_PER_S * f32::from(elapsed_ms) / 1_000.0).max(PROP_STEP_FLOOR_UNITS)
-            }
-            _ => PROP_STEP_FLOOR_UNITS,
-        };
+        // the step budget: whatever the sample rate, the record travels at
+        // most the cap's pace over any window plus one full step (a prop
+        // with no row yet holds that step)
+        let allowed = self.rows.get(&refr).map_or(PROP_STEP_ALLOWANCE_UNITS, |row| row.allowance_at(now_ms));
         if !moved.is_finite() || moved > allowed {
             return TransformVerdict::TooFast;
         }
@@ -293,6 +325,8 @@ impl Props {
             grabbed: false,
             since_ms: now_ms,
             last_sample_ms: now_ms,
+            allowance: PROP_STEP_ALLOWANCE_UNITS,
+            allowance_ms: now_ms,
         });
         if row.owner != owner {
             row.owner = owner;
@@ -303,6 +337,9 @@ impl Props {
         row.asleep = asleep;
         row.last_sample_ms = now_ms;
         row.lease_until_ms = (asleep && !row.grabbed).then(|| now_ms.saturating_add(PROP_LEASE_MS));
+        // the step spends what it moved the record (a distance, never below 0)
+        row.allowance = (allowed - moved.max(0.0)).max(0.0);
+        row.allowance_ms = now_ms;
         TransformVerdict::Accepted
     }
 
@@ -343,6 +380,7 @@ impl Props {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     const CELL: u32 = 0x9732;
     const BASKET: u32 = 0x2ad9c;
@@ -552,20 +590,137 @@ mod tests {
     fn a_sample_farther_than_the_step_budget_is_refused_and_leaves_the_record() {
         let mut p = Props::default();
         assert_eq!(p.claim(BASKET, C2, CELL, touch::CONTACT, 1_000), ClaimVerdict::Granted(1));
-        // the first sample after the grant: the floor
-        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, PROP_STEP_FLOOR_UNITS + 1.0, 1_010)), TransformVerdict::TooFast);
-        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, PROP_STEP_FLOOR_UNITS, 1_010)), TransformVerdict::Accepted);
-        // 100 ms later: 600 units at 6000 a second
-        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 601.0, 1_110)), TransformVerdict::TooFast);
-        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 600.0, 1_110)), TransformVerdict::Accepted);
-        // a refused sample moves no clock: the next is judged from the last accepted
-        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 5_000.0, 1_200)), TransformVerdict::TooFast);
-        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 539.0, 1_200)), TransformVerdict::Accepted);
+        // the first sample after the grant: a new row's full allowance, one
+        // 100 ms step at the cap
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, PROP_STEP_ALLOWANCE_UNITS + 1.0, 1_010)), TransformVerdict::TooFast);
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 500.0, 1_010)), TransformVerdict::Accepted);
+        // 100 units left, and 50 ms later 300 more at 6000 a second
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 401.0, 1_060)), TransformVerdict::TooFast);
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 400.0, 1_060)), TransformVerdict::Accepted);
+        // a refused sample spends nothing and moves no clock: the next is
+        // judged from the last accepted, 40 ms of refill
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 5_000.0, 1_100)), TransformVerdict::TooFast);
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 241.0, 1_100)), TransformVerdict::TooFast);
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, 240.0, 1_100)), TransformVerdict::Accepted);
+        // a long pause refills one full step and never more: no banked
+        // teleport after a silence
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, PROP_STEP_ALLOWANCE_UNITS + 1.0, 2_900)), TransformVerdict::TooFast);
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, PROP_STEP_ALLOWANCE_UNITS, 2_900)), TransformVerdict::Accepted);
         // not a number: refused
-        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, f32::NAN, 1_300)), TransformVerdict::TooFast);
-        // the host's first sample of an unclaimed prop: the floor
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, f32::NAN, 3_000)), TransformVerdict::TooFast);
+        // the host's first sample of an unclaimed prop: a new row's full
+        // allowance, which the step spends
         let mut q = Props::default();
-        assert_eq!(q.transform(&facts(0x54a44, C1, CELL, C1, false, 200.0, 0)), TransformVerdict::TooFast);
-        assert_eq!(q.transform(&facts(0x54a44, C1, CELL, C1, false, 50.0, 0)), TransformVerdict::Accepted);
+        assert_eq!(q.transform(&facts(0x54a44, C1, CELL, C1, false, PROP_STEP_ALLOWANCE_UNITS + 1.0, 0)), TransformVerdict::TooFast);
+        assert_eq!(q.transform(&facts(0x54a44, C1, CELL, C1, false, 200.0, 0)), TransformVerdict::Accepted);
+        assert_eq!(q.transform(&facts(0x54a44, C1, CELL, C1, false, 401.0, 0)), TransformVerdict::TooFast);
+        assert_eq!(q.transform(&facts(0x54a44, C1, CELL, C1, false, 400.0, 0)), TransformVerdict::Accepted);
+    }
+
+    #[test]
+    #[allow(clippy::arithmetic_side_effects)] // a test's clock, never a packet's path
+    fn a_crafted_96_hz_stream_is_held_to_the_speed_cap() {
+        // the review of 9ff1895e (finding 3): at the prop budget's 96 samples
+        // a second, a per-sample floor of 128 units let one crafted owner
+        // carry a prop 12,288 units a second, twice the cap. The allowance
+        // holds the record to the cap over any window, plus its one step
+        let mut p = Props::default();
+        assert_eq!(p.claim(BASKET, C2, CELL, touch::CONTACT, 1_000), ClaimVerdict::Granted(1));
+        let mut carried = 0.0_f32;
+        let mut refused = 0_u32;
+        // ten seconds of 128-unit steps, 96 a second
+        for i in 1..=960_u64 {
+            let verdict = p.transform(&facts(BASKET, C2, CELL, C1, false, 128.0, 1_000 + i * 1_000 / 96));
+            assert!(verdict == TransformVerdict::Accepted || verdict == TransformVerdict::TooFast, "{verdict:?}");
+            if verdict == TransformVerdict::Accepted {
+                carried += 128.0;
+            } else {
+                refused += 1;
+            }
+        }
+        // refused past the cap: ten seconds of it and the one step at most
+        assert!(carried <= PROP_MAX_SPEED_UNITS_PER_S * 10.0 + PROP_STEP_ALLOWANCE_UNITS, "carried {carried}");
+        assert!(refused > 0);
+        // and the cap, no floor, is the limit: the stream still gets the
+        // cap's worth, less one sample's step
+        assert!(carried >= PROP_MAX_SPEED_UNITS_PER_S * 10.0 - 128.0, "carried {carried}");
+    }
+
+    #[test]
+    #[allow(clippy::arithmetic_side_effects)] // a test's clock, never a packet's path
+    fn an_honest_stream_under_the_cap_is_taken_whole() {
+        // the client's cadence, one sample per awake body per 100 ms: a body
+        // at the speed cap (600 units a step) for ten seconds, every step
+        // taken
+        let mut p = Props::default();
+        assert_eq!(p.claim(BASKET, C2, CELL, touch::CONTACT, 1_000), ClaimVerdict::Granted(1));
+        for i in 1..=100_u64 {
+            assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, PROP_STEP_ALLOWANCE_UNITS, 1_000 + i * 100)), TransformVerdict::Accepted);
+        }
+        // a kick at the engine's 7 m/s (476 units a second, thuum docs/verbs/
+        // prop-physics.md's x-prop-launch v3 read): 47.6 a step at 10 Hz, and
+        // 5 a step at the prop budget's 96 a second
+        let mut q = Props::default();
+        assert_eq!(q.claim(BASKET, C2, CELL, touch::CONTACT, 1_000), ClaimVerdict::Granted(1));
+        for i in 1..=100_u64 {
+            assert_eq!(q.transform(&facts(BASKET, C2, CELL, C1, false, 47.6, 1_000 + i * 100)), TransformVerdict::Accepted);
+        }
+        for i in 1..=960_u64 {
+            assert_eq!(q.transform(&facts(BASKET, C2, CELL, C1, false, 5.0, 11_000 + i * 1_000 / 96)), TransformVerdict::Accepted);
+        }
+        // the prop budget's whole 96 samples a second spent on one trap body
+        // falling at 4,800 units a second (50 a step): taken whole, since
+        // the allowance judges distance, never the rate
+        let mut r = Props::default();
+        assert_eq!(r.claim_world_body(ROCK, C2, MINE, 1_000), ClaimVerdict::Granted(1));
+        for i in 1..=960_u64 {
+            assert_eq!(r.transform(&facts(ROCK, C2, MINE, C1, false, 50.0, 1_000 + i * 1_000 / 96)), TransformVerdict::Accepted);
+        }
+    }
+
+    #[test]
+    fn a_grant_leaves_the_rows_allowance_as_it_stands() {
+        // the allowance is the prop's, refilled by time alone: seats trading
+        // a prop by claims cannot each start with a full one
+        let mut p = Props::default();
+        assert_eq!(p.claim(BASKET, C2, CELL, touch::CONTACT, 1_000), ClaimVerdict::Granted(1));
+        assert_eq!(p.transform(&facts(BASKET, C2, CELL, C1, false, PROP_STEP_ALLOWANCE_UNITS, 1_000)), TransformVerdict::Accepted);
+        assert_eq!(p.claim(BASKET, C3, CELL, touch::CONTACT, 1_000), ClaimVerdict::Granted(2));
+        assert_eq!(p.transform(&facts(BASKET, C3, CELL, C1, false, 1.0, 1_000)), TransformVerdict::TooFast);
+        // 50 ms later, 300 units refilled at 6000 a second
+        assert_eq!(p.transform(&facts(BASKET, C3, CELL, C1, false, 301.0, 1_050)), TransformVerdict::TooFast);
+        assert_eq!(p.transform(&facts(BASKET, C3, CELL, C1, false, 300.0, 1_050)), TransformVerdict::Accepted);
+    }
+
+    proptest! {
+        #[test]
+        fn no_owners_stream_carries_a_prop_past_the_cap(
+            steps in prop_oneof![
+                // a crafted stream: gaps far under the client's 100 ms, each
+                // step past the cap's pace for its gap
+                prop::collection::vec((0_u64..10, 64.0_f32..160.0), 1..300),
+                // anything: long gaps, steps past the allowance
+                prop::collection::vec((0_u64..250, 0.0_f32..900.0), 1..300),
+                // the two mixed, sample by sample
+                prop::collection::vec(prop_oneof![(0_u64..10, 64.0_f32..160.0), (0_u64..250, 0.0_f32..900.0)], 1..300),
+            ],
+        ) {
+            // whatever one owner streams, at any pace and with any step, the
+            // record moves no farther than the cap allows over the stream's
+            // length, plus the one step the allowance holds at most
+            let mut p = Props::default();
+            prop_assert_eq!(p.claim(BASKET, C2, CELL, touch::CONTACT, 1_000), ClaimVerdict::Granted(1));
+            let mut now = 1_000_u64;
+            let mut carried = 0.0_f64;
+            for (gap, moved) in steps {
+                now = now.saturating_add(gap);
+                if p.transform(&facts(BASKET, C2, CELL, C1, false, moved, now)) == TransformVerdict::Accepted {
+                    carried += f64::from(moved);
+                    let elapsed_s = f64::from(u32::try_from(now.saturating_sub(1_000)).unwrap_or(u32::MAX)) / 1_000.0;
+                    let bound = f64::from(PROP_MAX_SPEED_UNITS_PER_S) * elapsed_s + f64::from(PROP_STEP_ALLOWANCE_UNITS);
+                    prop_assert!(carried <= bound + 0.5, "carried {} past {} at {} ms", carried, bound, now);
+                }
+            }
+        }
     }
 }

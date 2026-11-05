@@ -1587,13 +1587,28 @@ bool DamageActorReplacement(RE::Actor* victim, float damage,
   if (IsFigureVictim(victim)) {
     return false;
   }
+  // thuum docs/DECISIONS.md ADR-028 and D-T4 (docs/research/
+  // trap-slice-d-s3-2026-11-05.md): the damage another actor deals the
+  // player is the server's (R0: its ChangeValues carry the number), so this
+  // game applies none of it, whoever the attacker (a figure's hand or spell,
+  // an NPC this game simulates or not). The world's damage, a hit with no
+  // attacker (a trap, a fall, lava) or the player's own, stays the engine's,
+  // scaled by the client's world multiplier (the six fDiffMultHPToPC*,
+  // skymp5-client RagdollService). Until D-T4 the cut was that multiplier
+  // at 0, which zeroed the world's damage too (x-trap-hit-premise
+  // 20261105-154820: a spike wall's hit cost the player nothing, 60 at 1.0).
+  // Not under the NPC rules' lever below: the player's cut always held
+  if (victim && victim->formID == 0x14 && attacker && attacker != victim) {
+    return false;
+  }
   // thuum docs/verbs/npc-fate.md (ADR-050 decision 2, deaths by the engine):
   // a puppet here takes no engine damage (the record's values come as
   // ChangeValues); an NPC this game simulates takes none from the player's
   // or a figure's hand (the server's number arrives as a cause through
   // Frida::DamageActorOriginal, the one number); an NPC's hand on an NPC
   // stays the engine's (the host reports the hit and the absolute cause
-  // corrects it). The player's own actor is never cut here.
+  // corrects it). The player's own actor is cut above, for another actor's
+  // damage alone.
   if (g_engineDamageCut.load(std::memory_order_relaxed) && victim &&
       victim->formID != 0x14) {
     if (Puppets::Is(victim->formID)) {

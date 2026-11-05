@@ -42,7 +42,7 @@ export class RagdollService extends ClientListener {
             }
             done = true;
             this.controller.once("update", () => {
-                this.setLocalDamageMult(this.defaultLocalDamageMult);
+                this.setLocalDamageMult(this.defaultLocalDamageMult());
                 const callbacks = this.pending.get(id) ?? [];
                 this.pending.delete(id);
                 if (how !== "answered") {
@@ -67,7 +67,7 @@ export class RagdollService extends ClientListener {
     private static readonly deadlineMs = 1000;
 
     private onceUpdate() {
-        this.setLocalDamageMult(this.defaultLocalDamageMult);
+        this.setLocalDamageMult(this.defaultLocalDamageMult());
     }
 
     private setLocalDamageMult(damageMult: number) {
@@ -79,13 +79,22 @@ export class RagdollService extends ClientListener {
         this.sp.Game.setGameSettingFloat("fDiffMultHPToPCVH", damageMult);
     }
 
-    // thuum ADR-028: the server computes all damage one actor deals another,
-    // so a hit from any actor counts nothing to the player here; the
-    // server's ChangeValues carry it. At 1, a figure's spell that landed in
-    // this game hurt the player locally on top of the server's count: a
-    // relayed Fire Breath took test 2's own game to 0.34 while the server
-    // counted half (x-shout-relay 20261013-082608; docs/verbs/shouts.md).
-    // The world's damage (a fall) goes through no actor's multiplier and
-    // stays the game's own
-    private readonly defaultLocalDamageMult = 0;
+    // thuum ADR-028 and D-T4 (docs/research/trap-slice-d-s3-2026-11-05.md):
+    // the server computes all damage one actor deals another, and the
+    // platform's DamageActor replacement cuts it on this engine whoever the
+    // attacker (FridaHooks.cpp), so these six multipliers scale the WORLD's
+    // damage to the player alone: a hit with no attacker (a trap, a fall,
+    // lava) or the player's own. They were 0, the old way of keeping an
+    // actor's hit off the player's own engine (a relayed Fire Breath took
+    // test 2's own game to 0.34 while the server counted half, x-shout-relay
+    // 20261013-082608; docs/verbs/shouts.md), which zeroed the world's damage
+    // too: a spike wall's hit cost the player nothing (x-trap-hit-premise
+    // 20261105-154820; 60 at 1.0). The client setting worldDamageMult sets
+    // them, 1 by default (D-T4's recommendation, the game's own base); the
+    // ragdoll removal still writes 0 for its window and this value after it
+    private defaultLocalDamageMult(): number {
+        const s = this.sp.settings["skymp5-client"] as Record<string, unknown> | undefined;
+        const v = s ? s["worldDamageMult"] : undefined;
+        return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 1;
+    }
 }

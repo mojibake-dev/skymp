@@ -28,4 +28,12 @@ void InstallHooks();
 // every frame from the platform's OnUpdate: the census flushed on time (a
 // quiet seat emits its last window; the review's medium finding)
 void Tick();
+// inside a script action: true on this thread for the extent of an owned
+// action row's call (a script's PlayAnimation on a world object in a cell
+// this game hosts), the mark PlatformCall's bracket keeps, so the
+// engine-level animation hooks (FridaHooks.cpp: SendAnimationEvent 38048,
+// PlayAnimation_Impl 14297) leave the animation the boundary reports
+// (thuum ADR-068 decision 7, docs/research/scripts-one-system-2026-11-05.md
+// 6.7): a script's animation is reported once
+bool InScriptAction();
 }

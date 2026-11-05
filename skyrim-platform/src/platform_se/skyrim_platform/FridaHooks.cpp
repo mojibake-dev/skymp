@@ -10,6 +10,7 @@
 #include "Override.h"
 #include "PapyrusTESModPlatform.h"
 #include "Puppets.h"
+#include "ScriptNatives.h"
 #include "SkyrimPlatform.h"
 #include "StringHolder.h"
 
@@ -505,7 +506,17 @@ void InstallDrawSheatheWeaponActorHook()
  */
 void OnSendAnimationEventEnter(GumInvocationContext* ic)
 {
-  if (Override::IsOverriden()) {
+  // inside a script action (thuum docs/DECISIONS.md ADR-068 decision 7,
+  // docs/research/scripts-one-system-2026-11-05.md 6.7): an owned action
+  // row's call (a script's PlayAnimation on a world object in a cell this
+  // game hosts) is reported once, by the boundary (ScriptNatives.cpp's
+  // scriptCalls), so the event its body sends is left alone here, as an
+  // Override window's is; the leave below stands down on the same mark, so
+  // the hook's enter and leave stay paired (Hook.cpp). HYPOTHESIS (6.7,
+  // H-D1): the native's body reaches this entry synchronously on its own
+  // thread, inside the mark's extent; a body that queued the event would
+  // send it outside the mark, and the animation would be reported twice
+  if (Override::IsOverriden() || ScriptNatives::InScriptAction()) {
     return;
   }
   auto refr = ic->cpu_context->rcx
@@ -535,7 +546,7 @@ void OnSendAnimationEventEnter(GumInvocationContext* ic)
 
 void OnSendAnimationEventLeave(GumInvocationContext* ic)
 {
-  if (Override::IsOverriden()) {
+  if (Override::IsOverriden() || ScriptNatives::InScriptAction()) {
     return;
   }
   bool res = !!gum_invocation_context_get_return_value(ic);
@@ -569,7 +580,12 @@ void InstallSendAnimationEventHook()
  */
 void OnPlayAnimationEnter(GumInvocationContext* ic)
 {
-  if (Override::IsOverriden()) {
+  // inside a script action the sequence is the boundary's to report
+  // (OnSendAnimationEventEnter's note, 6.7): a script's PlayAnimation and
+  // PlayAnimationAndWait reach PlayAnimation_Impl from their bodies (the
+  // note above; synchronously on their thread, the same HYPOTHESIS), so the
+  // pillar's Trigger02 crosses once, as the call
+  if (Override::IsOverriden() || ScriptNatives::InScriptAction()) {
     return;
   }
   auto refr = reinterpret_cast<RE::TESObjectREFR*>(ic->cpu_context->rcx);
@@ -588,7 +604,7 @@ void OnPlayAnimationEnter(GumInvocationContext* ic)
 
 void OnPlayAnimationLeave(GumInvocationContext* ic)
 {
-  if (Override::IsOverriden()) {
+  if (Override::IsOverriden() || ScriptNatives::InScriptAction()) {
     return;
   }
   EventsApi::SendAnimationEventLeave(true);

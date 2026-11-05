@@ -863,6 +863,11 @@ void ScriptNatives::Tick()
   FlushCensus(NowMs());
 }
 
+bool ScriptNatives::InScriptAction()
+{
+  return PlatformCall::InAction();
+}
+
 void ScriptNatives::InstallHooks()
 {
   // the VM's bindings as Hooks.cpp recorded them (class, name, IFunction*,

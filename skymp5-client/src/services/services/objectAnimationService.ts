@@ -140,18 +140,19 @@ export class ObjectAnimationService extends ClientListener {
     if (typeof event === 'string' && msg.refrId !== undefined && msg.refrId < 0xff000000) {
       this.noteRecord(remoteIdToLocalId(msg.refrId), event);
     }
-    if (typeof event !== 'string' || msg.refrId === undefined || msg.refrId >= 0xff000000) {
-      return;
-    }
-    this.markSelfPlayed(msg.refrId, event);
+    // no self-played mark here (the review of 066cce4e, finding 1): the replay this message announces comes two seconds or more
+    // later and a hosting seat never replays, so a mark set now could be used up by the seat's own genuine event (its
+    // OnCellLoad jump) and drop it; playRelayed marks each play at play time
   }
 
+  // the marks key on the event's lower case: the engine's strings are case-blind, so a seat may intern another casing than the
+  // relay's (the review of 066cce4e, finding 6)
   private markSelfPlayed(localId: number, event: string) {
-    this.selfPlayed.set(`${localId}:${event}`, Date.now() + SELF_PLAYED_MS);
+    this.selfPlayed.set(`${localId}:${event.toLowerCase()}`, Date.now() + SELF_PLAYED_MS);
   }
 
   private wasSelfPlayed(localId: number, event: string): boolean {
-    const key = `${localId}:${event}`;
+    const key = `${localId}:${event.toLowerCase()}`;
     const until = this.selfPlayed.get(key);
     if (until === undefined) {
       return false;

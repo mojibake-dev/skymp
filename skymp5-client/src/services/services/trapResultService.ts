@@ -44,6 +44,24 @@ const DAMAGE_CALLS = 64;
 // (a destructible's stage explosion placed by its stage data, script or
 // not) are no Papyrus event, so no blank covers them: a declared limit
 const SETTLE_MS = 500;
+// a LIVE record's destroyed flag (a relay, not a served record) waits this
+// long before this seat sets it, so this seat's own copy, already firing for
+// the figure it saw, fires its children first (D-S3 point 1: every seat fires
+// the family itself; Eli's D-T2 outcome, the trap fires in both games). In
+// Embershard's three rockfall runs (20261105-153200, -154408, -210948) the
+// record of tripwire 0xb6d3f reached the non-tripping seat 70 to 140 ms before
+// its own Tripwire.onBeginState reached its Activate(self), and that seat's
+// wire forwarded nothing to its linker 0xb6d3e: no "fired here" line there in
+// any run against 9 or 10 on the tripper, the rigged platform 0xb6d47 never
+// broken and its dust never raised. HYPOTHESIS: a destroyed reference's
+// activation forwards nothing to its activate children (the tripper's own
+// forward came 450 ms after its script's SetDestroyed, which follows the
+// Activate call, so the flag is read before that). Its own script's
+// SetDestroyed (Tripwire's DoNothing state) ends a firing here, so the wait
+// lets the copy fire at most once and the record deafens it after the wait
+// when it never fired (UNMEASURED: the runs needed about 150 ms). A served
+// record (a late joiner, a restart) is applied at once, as before
+const FIRE_GRACE_MS = 3000;
 const KNOWN_MAX = 4096;
 
 type PendingRecord = {
@@ -73,12 +91,17 @@ type PendingRecord = {
 // subscriber, a restart) under the platform's apply blank (setRecordApplying:
 // the gate blanks every Papyrus event to the reference meanwhile), so a late
 // joiner's oil lamp never replays its fall, a live relay without it, so the
-// reference's own scripts answer the step as the reporter's did. Every form is
+// reference's own scripts answer the step as the reporter's did, its destroyed
+// flag after FIRE_GRACE_MS so this seat's own copy fires first. Every form is
 // taken again by id after a wait (a wrapper lives one Papyrus update).
 //
 // Lines for the lab: "trap result <refr>: stage <n>, destroyed <b> reported",
 // "trap result <refr> applied from the record: stage <n>, destroyed <b> (here
-// stage <m>)", "trap result <refr> from the record: here already".
+// stage <m>)", "trap result <refr> from the record: here already", "trap result
+// <refr>: the record's destroyed waits <ms> ms for this seat's own copy",
+// "trap result <refr>: destroyed here before the record's wait ended", "trap
+// result <refr>: the record's destroyed applied after <ms> ms, this seat's own
+// copy unfired".
 export class TrapResultService extends ClientListener {
   constructor(
     private sp: Sp,
@@ -175,6 +198,9 @@ export class TrapResultService extends ClientListener {
     }
     if (this.records.size > 0) {
       this.applyRecords(now);
+    }
+    if (this.destroyLater.size > 0) {
+      this.destroyDue(now);
     }
   }
 
@@ -316,9 +342,20 @@ export class TrapResultService extends ClientListener {
         stage = Math.max(stage, now);
       }
       if (rec.destroyed && !hereDestroyed) {
-        const ref = ObjectReference.from(this.sp.Game.getFormEx(localId));
-        if (ref) {
-          ref.setDestroyed(true);
+        if (rec.served) {
+          const ref = ObjectReference.from(this.sp.Game.getFormEx(localId));
+          if (ref) {
+            ref.setDestroyed(true);
+          }
+        } else {
+          this.destroyLater.set(localId, {
+            remote: rec.remote,
+            due: Date.now() + FIRE_GRACE_MS,
+          });
+          logLab(
+            TAG,
+            `trap result ${id}: the record's destroyed waits ${FIRE_GRACE_MS} ms for this seat's own copy`,
+          );
         }
       }
       logLab(
@@ -339,6 +376,32 @@ export class TrapResultService extends ClientListener {
       }
       this.applying.delete(localId);
       this.settling.set(localId, Date.now() + SETTLE_MS);
+    }
+  }
+
+  // a live record's destroyed flag at the end of its wait: set here unless
+  // this seat's own copy fired meanwhile (its script's SetDestroyed)
+  private destroyDue(now: number) {
+    for (const [localId, wait] of Array.from(this.destroyLater.entries())) {
+      if (now < wait.due) {
+        continue;
+      }
+      this.destroyLater.delete(localId);
+      const id = wait.remote.toString(16);
+      const role = ObjectReferenceEx.trapRole(localId);
+      if (role !== null && role.destroyed) {
+        logLab(TAG, `trap result ${id}: destroyed here before the record's wait ended`);
+        continue;
+      }
+      const ref = ObjectReference.from(this.sp.Game.getFormEx(localId));
+      if (!ref) {
+        continue;
+      }
+      ref.setDestroyed(true);
+      logLab(
+        TAG,
+        `trap result ${id}: the record's destroyed applied after ${FIRE_GRACE_MS} ms, this seat's own copy unfired`,
+      );
     }
   }
 
@@ -404,6 +467,12 @@ export class TrapResultService extends ClientListener {
   private readonly applying = new Set<number>();
   // the applies' tails, until when (Date.now())
   private readonly settling = new Map<number, number>();
+  // live records' destroyed flags waiting for this seat's own copy, by local
+  // id, until when (Date.now())
+  private readonly destroyLater = new Map<
+    number,
+    { remote: number; due: number }
+  >();
   private tokens = REPORT_BURST;
   private refilledAt = Date.now();
   private applyingMissingSaid = false;

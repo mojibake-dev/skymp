@@ -1199,6 +1199,11 @@ Napi::Value PuppetApi::SetEngineDamageCut(const Napi::CallbackInfo& info)
   return info.Env().Undefined();
 }
 
+Napi::Value PuppetApi::IsDamageActorReplaced(const Napi::CallbackInfo& info)
+{
+  return Napi::Boolean::New(info.Env(), Frida::IsDamageActorReplaced());
+}
+
 Napi::Value PuppetApi::SayTopicInfoResult(const Napi::CallbackInfo& info)
 {
   const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");

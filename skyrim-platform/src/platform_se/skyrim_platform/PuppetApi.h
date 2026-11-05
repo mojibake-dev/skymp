@@ -123,6 +123,10 @@ Napi::Value DamageActor(const Napi::CallbackInfo& info);
 // setEngineDamageCut(on): the replacement's cut (FridaHooks.cpp), the client
 // setting npcEngineDamage's mirror
 Napi::Value SetEngineDamageCut(const Napi::CallbackInfo& info);
+// isDamageActorReplaced(): whether DamageActor's replacement went in, the
+// player's cut of another actor's damage with it (thuum D-T4); the client
+// keeps its world multiplier at 0 without it
+Napi::Value IsDamageActorReplaced(const Napi::CallbackInfo& info);
 
 inline void Register(Napi::Env env, Napi::Object& exports)
 {
@@ -198,5 +202,8 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set("setEngineDamageCut",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(SetEngineDamageCut)));
+  exports.Set("isDamageActorReplaced",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(IsDamageActorReplaced)));
 }
 }

@@ -1,7 +1,7 @@
-import { Actor } from "skyrimPlatform";
+import { Actor, isDamageActorReplaced } from "skyrimPlatform";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { TimersService } from "./timersService";
-import { logLab } from "../../logging";
+import { logError, logLab } from "../../logging";
 
 export class RagdollService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
@@ -34,7 +34,14 @@ export class RagdollService extends ClientListener {
             return;
         }
         this.pending.set(id, [afterRemoveCallback]);
-        this.setLocalDamageMult(0);
+        // the player's own multipliers, so the player's own removal alone
+        // zeroes them for its window: every teleport of an NPC runs this too
+        // (remoteServer's Teleport), and must not cut the player's world
+        // damage meanwhile (D-T4's review, gap 2)
+        const isPlayer = id === 0x14;
+        if (isPlayer) {
+            this.setLocalDamageMult(0);
+        }
         let done = false;
         const finish = (how: string) => {
             if (done) {
@@ -42,7 +49,9 @@ export class RagdollService extends ClientListener {
             }
             done = true;
             this.controller.once("update", () => {
-                this.setLocalDamageMult(this.defaultLocalDamageMult());
+                if (isPlayer) {
+                    this.setLocalDamageMult(this.defaultLocalDamageMult());
+                }
                 const callbacks = this.pending.get(id) ?? [];
                 this.pending.delete(id);
                 if (how !== "answered") {
@@ -83,18 +92,53 @@ export class RagdollService extends ClientListener {
     // the server computes all damage one actor deals another, and the
     // platform's DamageActor replacement cuts it on this engine whoever the
     // attacker (FridaHooks.cpp), so these six multipliers scale the WORLD's
-    // damage to the player alone: a hit with no attacker (a trap, a fall,
-    // lava) or the player's own. They were 0, the old way of keeping an
+    // damage to the player alone: a hit with no attacker (a trap's) or the
+    // player's own. They were 0, the old way of keeping an
     // actor's hit off the player's own engine (a relayed Fire Breath took
     // test 2's own game to 0.34 while the server counted half, x-shout-relay
     // 20261013-082608; docs/verbs/shouts.md), which zeroed the world's damage
     // too: a spike wall's hit cost the player nothing (x-trap-hit-premise
-    // 20261105-154820; 60 at 1.0). The client setting worldDamageMult sets
-    // them, 1 by default (D-T4's recommendation, the game's own base); the
-    // ragdoll removal still writes 0 for its window and this value after it
+    // 20261105-154820; 60 at 1.0). A fall read unzeroed under that 0 (b-push),
+    // so whether a fall passes through these at all is HYPOTHESIS, and the
+    // static read of DamageActor (re-37335 (a)) skips them for a fall at 1.0
+    // or more: a worldDamageMult above 1 would scale a trap's hit and not a
+    // fall's. The client setting worldDamageMult sets them, 1 by default
+    // (D-T4's recommendation, the game's own base), a per-seat lever (R3, as
+    // every client setting is; traps.md); the player's own ragdoll removal
+    // writes 0 for its window and this value after it. Without the platform's
+    // DamageActor replacement (an older platform, or a replace that failed)
+    // nothing cuts another actor's damage to the player, so they stay 0 then
     private defaultLocalDamageMult(): number {
+        if (!RagdollService.cutInstalled()) {
+            if (!this.cutMissingSaid) {
+                this.cutMissingSaid = true;
+                logError(this, "DamageActor's replacement is not in: the world multiplier stays 0 (D-T4)");
+            }
+            return 0;
+        }
         const s = this.sp.settings["skymp5-client"] as Record<string, unknown> | undefined;
         const v = s ? s["worldDamageMult"] : undefined;
-        return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 1;
+        if (v === undefined) {
+            return 1;
+        }
+        if (typeof v === "number" && Number.isFinite(v) && v >= 0) {
+            return v;
+        }
+        if (!this.multRefusedSaid) {
+            this.multRefusedSaid = true;
+            logError(this, `worldDamageMult ${JSON.stringify(v)} refused (a number of 0 or more); 1 instead`);
+        }
+        return 1;
     }
+
+    private static cutInstalled(): boolean {
+        try {
+            return isDamageActorReplaced() === true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    private cutMissingSaid = false;
+    private multRefusedSaid = false;
 }

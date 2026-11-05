@@ -1835,6 +1835,8 @@ export declare function consumeActivatePress(): boolean;
 export declare function damageActor(actorFormId: number, health: number, attackerFormId: number, killMove: boolean): boolean;
 // the replacement's cut of this game's own engine damage to a puppet and, from a player's or a figure's hand, to an NPC this game simulates (the server's number is the one number); the client setting npcEngineDamage's mirror, default on
 export declare function setEngineDamageCut(on: boolean): void;
+// thuum D-T4 (ADR-028): whether DamageActor's replacement went in at install, the player's cut of another actor's damage with it; the client keeps its world multiplier at 0 without it
+export declare function isDamageActorReplaced(): boolean;
 // thuum docs/verbs/npc-talk.md (ADR-052): the player's own activation of its crosshair pick (PlayerCharacter::ActivatePickRef) on the game thread, the E a claim's word made meaningful; true when queued
 export declare function activatePickRef(): boolean;
 // thuum docs/verbs/npc-fate.md (ADR-046 decision 1, ADR-049): the server's one roll for a leveled placement, held by this game ahead of the engine's own roll: baseId is the NPC_ the server named (0: no actor there, the engine deletes the placement), worn the items it rolled, each added as an inventory entry tagged for the actor's default outfit by the outfit detour (an empty list dresses nothing). Stored on the JS thread, no game call; false for an invalid reference id

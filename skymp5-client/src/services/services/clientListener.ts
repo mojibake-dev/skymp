@@ -252,6 +252,8 @@ declare module "skyrimPlatform" {
     function pollNodeRotation(refrId: number, nodeNames: string[]): void;
     function nodeRotation(refrId: number): Array<{ node: string; has: boolean; world: number[]; local: number[] }> | null;
     function setEngineDamageCut(on: boolean): void;
+    // thuum D-T4 (ADR-028): whether DamageActor's replacement went in, the player's cut of another actor's damage with it
+    function isDamageActorReplaced(): boolean;
     // thuum docs/verbs/npc-talk.md (ADR-052): the player's activation of its crosshair pick on the game thread
     function activatePickRef(): boolean;
 

@@ -21,6 +21,9 @@ bool DamageActorOriginal(RE::Actor* victim, float damage, RE::Actor* attacker,
 // server's number is the one number); default on, skymp5-client's
 // npcEngineDamage switches it
 void SetEngineDamageCut(bool on);
+// whether DamageActor's replacement went in at install: the player's cut of
+// another actor's damage rests on it (thuum D-T4)
+bool IsDamageActorReplaced();
 
 // thuum docs/DECISIONS.md ADR-059 decision 1 and ADR-062 decision 1: the
 // cells this game hosts, so a Papyrus event to a world object standing in one

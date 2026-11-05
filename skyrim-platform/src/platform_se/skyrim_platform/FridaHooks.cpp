@@ -1580,6 +1580,10 @@ using DamageActorFn = bool (*)(RE::Actor* victim, float damage,
                                RE::Actor* attacker, bool killMove);
 DamageActorFn g_damageActorOriginal = nullptr;
 std::atomic<bool> g_engineDamageCut{ true };
+// whether the replacement is in: the player's cut of another actor's damage
+// rests on it, so the client keeps its multipliers at 0 without it (D-T4's
+// review, gap 1)
+std::atomic<bool> g_damageActorReplaced{ false };
 
 bool DamageActorReplacement(RE::Actor* victim, float damage,
                             RE::Actor* attacker, bool killMove)
@@ -1592,11 +1596,14 @@ bool DamageActorReplacement(RE::Actor* victim, float damage,
   // player is the server's (R0: its ChangeValues carry the number), so this
   // game applies none of it, whoever the attacker (a figure's hand or spell,
   // an NPC this game simulates or not). The world's damage, a hit with no
-  // attacker (a trap, a fall, lava) or the player's own, stays the engine's,
-  // scaled by the client's world multiplier (the six fDiffMultHPToPC*,
-  // skymp5-client RagdollService). Until D-T4 the cut was that multiplier
-  // at 0, which zeroed the world's damage too (x-trap-hit-premise
-  // 20261105-154820: a spike wall's hit cost the player nothing, 60 at 1.0).
+  // attacker (a trap's) or the player's own, stays the engine's, scaled by
+  // the client's world multiplier (the six fDiffMultHPToPC*, skymp5-client
+  // RagdollService). Until D-T4 the cut was that multiplier at 0, which
+  // zeroed a trap's damage too (x-trap-hit-premise 20261105-154820: a spike
+  // wall's hit cost the player nothing, 60 at 1.0). A fall read unzeroed
+  // under that 0 (b-push), so its path is HYPOTHESIS, as are the other
+  // attacker-less paths (37336's environmental damage, a hazard a figure's
+  // spell placed, an owner that no longer resolves; docs/verbs/traps.md).
   // Not under the NPC rules' lever below: the player's cut always held
   if (victim && victim->formID == 0x14 && attacker && attacker != victim) {
     return false;
@@ -1622,6 +1629,11 @@ bool DamageActorReplacement(RE::Actor* victim, float damage,
 }
 }
 
+bool Frida::IsDamageActorReplaced()
+{
+  return g_damageActorReplaced.load(std::memory_order_relaxed);
+}
+
 bool Frida::DamageActorOriginal(RE::Actor* victim, float damage,
                                 RE::Actor* attacker, bool killMove)
 {
@@ -1641,10 +1653,11 @@ void InstallDamageActorHook()
   if (!REL::Module::IsAE()) {
     return;
   }
-  Frida::HookHandler::GetSingleton()->Replace(
+  const bool replaced = Frida::HookHandler::GetSingleton()->Replace(
     Offsets::Hooks::DamageActor.address(),
     reinterpret_cast<void*>(&DamageActorReplacement),
     reinterpret_cast<void**>(&g_damageActorOriginal));
+  g_damageActorReplaced.store(replaced, std::memory_order_relaxed);
 }
 
 /**

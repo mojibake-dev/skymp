@@ -4290,6 +4290,12 @@ void PartOne::ConcealBond(const skymp::rules::BondBreak& bond)
     });
 }
 
+// thuum D-T4 (ADR-028; the review of fork e4c78077, its finding 2d): the proc
+// relayed below as a seat's own self-cast passes both the client's refusal of
+// an actor caster's Health, Magicka and Stamina effects (the caster is the
+// seat's own player) and the platform's cut of another actor's damage (the
+// attacker is the victim itself), so it must never carry a Health, Magicka or
+// Stamina damage effect: concealment alone, today
 void PartOne::CastBondProc(const skymp::rules::BondBreak& bond,
                            uint32_t procId)
 {

@@ -760,9 +760,11 @@ TEST_CASE("A hazard report is checked against an activation beside the body",
   Leave(p, 0, kHost);
 }
 
-TEST_CASE("A script's kill, an unnamed cause and a body far from the record "
-          "are refused, a dead actor's report is nothing, and the setting "
-          "off refuses everything",
+// (a script's kill, cause 3, was refused here until ADR-062 decision 2 made
+// it the host's word; its case is the last in this file)
+TEST_CASE("An unnamed cause and a body far from the record are refused, a "
+          "dead actor's report is nothing, and the setting off refuses "
+          "everything",
           "[ActorDeath][espm]")
 {
   auto& p = GetPartOne();
@@ -779,8 +781,6 @@ TEST_CASE("A script's kill, an unnamed cause and a body far from the record "
   actor.RecordHeight(body.z + 500.f, now - std::chrono::seconds(2));
   actor.RecordHeight(body.z, now);
 
-  Report(p, 0, kPredator, 3, 0, body);
-  REQUIRE_FALSE(actor.IsDead());
   Report(p, 0, kPredator, 7, 0, body);
   REQUIRE_FALSE(actor.IsDead());
   // the drop would pass, but the body lies 3000 units away
@@ -1424,5 +1424,81 @@ TEST_CASE("The body's rest: a host change mid-ragdoll leaves the body with "
 
   StandUp(p, actor);
   Leave(p, 1, kOther);
+  Leave(p, 0, kHost);
+}
+// thuum docs/DECISIONS.md ADR-062 decision 2 (Eli, playtest 41: "trust
+// should LARGELY be the default"): a host-run script's kill, reported by the
+// host whose engine ran it, is the host's word (R2, declared unvalidated);
+// before ADR-062 cause 3 was refused as the server's to run
+TEST_CASE("A host's report of a script's kill (cause 3) is taken as the "
+          "host's word; another game's is not the host's to make",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  p.worldState.npcDeathReports = true;
+  constexpr uint32_t kForestCell = 0x9810;
+  auto& host = Arrive(p, 0, kHost);
+  Arrive(p, 1, kOther);
+  auto& actor = Standing(p, kPredator);
+  actor.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
+  Host(p, 0, kForestCell);
+  REQUIRE(p.worldState.HostOf(actor) == &host);
+
+  // the other game does not simulate the actor: its report is nobody's
+  Report(p, 1, kPredator, 3, 0, actor.GetPos());
+  REQUIRE_FALSE(actor.IsDead());
+
+  // the host's: taken, the killer the script named credited; the body's
+  // distance to the record is no gate for a script's kill (ADR-063 decision
+  // 4: the host streams the record itself; KillEssential's flag the same)
+  Report(p, 0, kPredator, 3, kHost,
+         actor.GetPos() + NiPoint3{ 3000.f, 0.f, 0.f });
+  REQUIRE(actor.IsDead());
+
+  StandUp(p, actor);
+  Leave(p, 1, kOther);
+  Leave(p, 0, kHost);
+}
+
+// thuum docs/DECISIONS.md ADR-062 decision 2 and ADR-063 decision 4 (slice
+// 1b's review, finding 7): the engine's essential rule is a check on the
+// owner's engine, not on consistency (KillEssential clears the flag and
+// kills; the server's base still reads essential), so a host-run script's
+// kill (cause 3) passes MayDie where an actor's hit (cause 4) is refused
+TEST_CASE("A host's report of a script's kill on an essential base is taken "
+          "where an actor's hit on it is refused as immortal",
+          "[ActorDeath][espm]")
+{
+  // Delphine 0x13485 in the Sleeping Giant 0x133c6 (lab/esm.py refs-of
+  // 0x13478: her base's ACBS flags carry Essential); the host stands inside
+  // the inn so its loaded report is granted the interior
+  constexpr uint32_t kInn = 0x133c6;
+  constexpr uint32_t kDelphine = 0x13485;
+  const NiPoint3 kInside{ -250.f, -360.f, 0.f };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  p.worldState.npcDeathReports = true;
+  DoConnect(p, 0);
+  p.CreateActor(kHost, kInside, 0, kInn);
+  p.SetUserActor(0, kHost);
+  p.TickCellHosts(NowMs());
+  auto& host = p.worldState.GetFormAt<MpActor>(kHost);
+  auto& actor = Standing(p, kDelphine);
+  Host(p, 0, kInn);
+  REQUIRE(p.worldState.HostOf(actor) == &host);
+  REQUIRE_FALSE(actor.MayDie(nullptr));
+
+  // an actor's hit on her, the hit the server numbered a moment before so
+  // that only the essential rule can refuse it: refused
+  actor.NoteHitBy(kHost, std::chrono::steady_clock::now());
+  Report(p, 0, kDelphine, 4, kHost, actor.GetPos());
+  REQUIRE_FALSE(actor.IsDead());
+
+  // a script's kill on her: the host's word, taken
+  Report(p, 0, kDelphine, 3, 0, actor.GetPos());
+  REQUIRE(actor.IsDead());
+
+  StandUp(p, actor);
   Leave(p, 0, kHost);
 }

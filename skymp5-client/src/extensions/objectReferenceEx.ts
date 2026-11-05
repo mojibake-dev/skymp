@@ -1,4 +1,6 @@
-import { Flora, Form, FormType, MotionType, ObjectReference, settings } from "skyrimPlatform";
+import { Flora, Form, FormType, MotionType, ObjectReference } from "skyrimPlatform";
+import { SpApiInteractor } from "../services/spApiInteractor";
+import { HostService } from "../services/services/hostService";
 import { NiPoint3 } from "../sync/movement";
 import { FormTypeEx } from "./formTypeEx";
 import { logTrace } from "../logging";
@@ -35,34 +37,31 @@ export class ObjectReferenceEx {
     return Math.sqrt(deltaX * deltaX + deltaY * deltaY);
   };
 
-  // the base form ids the client settings name (activationUnblockedBases: a list
-  // of numbers or hex strings, or one string of hex ids split on spaces and
-  // commas, the shape the lab's relaunch step can write), read once; a missing
-  // or malformed key unblocks nothing
-  private static activationUnblocked(baseId: number): boolean {
-    if (ObjectReferenceEx.unblockedBases === undefined) {
-      const ids = new Set<number>();
-      try {
-        const s = settings["skymp5-client"] as Record<string, unknown> | undefined;
-        const raw = s?.["activationUnblockedBases"];
-        const items: unknown[] = Array.isArray(raw) ? raw : typeof raw === "string" ? raw.split(/[\s,]+/) : [];
-        for (const v of items) {
-          const n = typeof v === "number" ? v : typeof v === "string" && v !== "" ? parseInt(v, 16) : NaN;
-          if (Number.isFinite(n) && n > 0) {
-            ids.add(n >>> 0);
-          }
-        }
-      } catch (e) {
-        logTrace("ObjectReferenceEx", `activationUnblockedBases unreadable: ${e}`);
-      }
-      ObjectReferenceEx.unblockedBases = ids;
-      if (ids.size > 0) {
-        logTrace("ObjectReferenceEx", `activation kept on ${ids.size} base(s): ${Array.from(ids).map((x) => x.toString(16)).join(" ")}`);
-      }
-    }
-    return ObjectReferenceEx.unblockedBases.has(baseId >>> 0);
+  // thuum docs/DECISIONS.md ADR-062 decision 1 (Eli, playtest 41: "shouldn't
+  // 'scripts work' be a holistic fix?"): a world object in a cell this game
+  // HOSTS keeps the engine's own activation processing, so its script hears
+  // OnActivate and its activation parents fire (the plate's spike wall, the
+  // lever's portcullis); every other seat keeps the block and renders the
+  // relays. The lifted kinds are the activators and the movable statics,
+  // the world's scripted objects; doors, containers, furniture and items keep
+  // the server's own flows (their activations travel to the server as
+  // before). Read through HostService at the reference's creation and at
+  // every grant and release (HostService.liftCellActivation).
+  static liftsInHostedCell(t: number): boolean {
+    return t === FormType.Activator || t === FormType.MovableStatic;
   }
-  private static unblockedBases: Set<number> | undefined;
+
+  static hostedHere(self: ObjectReference): boolean {
+    try {
+      const cell = self.getParentCell();
+      if (!cell) {
+        return false;
+      }
+      return SpApiInteractor.getControllerInstance().lookupListener(HostService).hostsCell(cell.getFormID());
+    } catch (e) {
+      return false;
+    }
+  }
 
   static dealWithRef(self: ObjectReference, base: Form, lock?: { level: number; key: number; locked: boolean }): void {
     const t = base.getType();
@@ -74,19 +73,27 @@ export class ObjectReferenceEx {
     const caveGSecretDoor01 = 0x6f703;
 
     // You can also block for t === FormType.Flora || t === FormType.Tree, but I don't think it's necessary.
-    // thuum docs/DECISIONS.md ADR-059 (traps, puzzles): a scripted world object
-    // whose base the client settings name in activationUnblockedBases keeps the
-    // engine's own activation processing, so its Papyrus script (admitted by
-    // name through the layer's papyrus-scripts.txt) hears OnActivate and runs
-    // the trap, the lever or the pillar on this game; the read x-bleak-traps v4
-    // is its first use, the hosted-cell gate its next shape. Default: none.
+    // thuum docs/DECISIONS.md ADR-062 decision 1 (the flip of ADR-059's first
+    // read, x-bleak-traps v4): a scripted world object keeps the engine's own
+    // activation processing in a cell this game hosts and nowhere else, so its
+    // Papyrus script hears OnActivate and its activation parents fire on the
+    // hosting seat; no list of bases chooses (the settings list that was the
+    // lab's lever is gone: rules, not rows).
+    // a movable static joins the blocked kinds (ADR-062 slice 1b's review: the
+    // host's release re-blocks ACTI and MSTT alike, hostService.liftCellActivation,
+    // so a seat that never hosted and a former host must agree)
     if (t === FormType.Furniture
       || t === FormType.Activator
+      || t === FormType.MovableStatic
       || t === FormType.Container
       || isItem
       || t === FormType.NPC
       || (t === FormType.Door && self.getBaseObject()?.getFormID() !== caveGSecretDoor01)) {
-      self.blockActivation(!ObjectReferenceEx.activationUnblocked(base.getFormID()));
+      // ADR-062: lifted in a cell this game hosts for the scripted world
+      // kinds (liftsInHostedCell), blocked everywhere else; the cell's host
+      // state alone chooses
+      const lifted = ObjectReferenceEx.liftsInHostedCell(t) && ObjectReferenceEx.hostedHere(self);
+      self.blockActivation(!lifted);
     } else {
       self.blockActivation(false);
     }

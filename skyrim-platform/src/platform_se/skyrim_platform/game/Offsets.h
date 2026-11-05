@@ -25,6 +25,17 @@ inline REL::Relocation<std::uintptr_t> QuitShutdownCall{ REL::ID(36544),
                                                          0x1ae };
 inline REL::Relocation<std::uintptr_t> SendEvent{ RELOCATION_ID(98077,
                                                                 104800) };
+// thuum docs/DECISIONS.md ADR-062 decision 2 (docs/verbs/papyrus-events.md,
+// the latent path): BSScript::NF_util::NativeFunctionBase::Call, the one
+// dispatch every Papyrus native runs through (CommonLibSSE-NG
+// include/RE/N/NativeFunctionBase.h:47, IFunction's slot 0x0F; the id is
+// include/RE/Offsets.h:130, Offset::BSScript::NF_util::NativeFunctionBase::
+// Call), `CallResult (NativeFunctionBase* this, const BSTSmartPointer<Stack>&
+// stack, ErrorLogger*, Internal::VirtualMachine*, bool)`; 1.6.1170's
+// address 0x143dc00 by `just addr 104651` (2026-11-03). Both runtimes' ids
+// are CommonLib's, as SendEvent's.
+inline REL::Relocation<std::uintptr_t> NativeFunctionCall{ RELOCATION_ID(
+  97923, 104651) };
 inline REL::Relocation<std::uintptr_t> DrawSheatheWeaponPC{ RELOCATION_ID(
   40232, 41235) };
 inline REL::Relocation<std::uintptr_t> DrawSheatheWeaponActor{ RELOCATION_ID(

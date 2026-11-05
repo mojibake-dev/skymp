@@ -33,6 +33,9 @@ void EventManager::InitCustom()
   manager->EmplaceEvent("propContact");
   // thuum docs/verbs/leveling.md: the player's UseSkill (FridaHooks' skillUse)
   manager->EmplaceEvent("skillUse");
+  // thuum docs/DECISIONS.md ADR-062 decision 2: a script's call of a native
+  // that changes server-owned state (ScriptNatives.cpp)
+  manager->EmplaceEvent("scriptNative");
   manager->EmplaceEvent("ipcMessage");
 
   // skse messages

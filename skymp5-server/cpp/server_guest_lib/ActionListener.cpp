@@ -4419,14 +4419,21 @@ void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
     auto& killerForm = partOne.worldState.LookupFormByIdNoLoad(msg.killer);
     killer = killerForm ? killerForm->AsActor() : nullptr;
   }
-  if (!actor->MayDie(killer)) {
+  // thuum docs/DECISIONS.md ADR-062 decision 2 and ADR-063 decision 4: a
+  // host-run script's kill (cause 3) is the host's word, R2; the engine's
+  // essential rule (KillEssential clears the flag before its Kill, the
+  // server's base still reads it) and the body's distance to a record the
+  // host itself streams are checks on the owner, not on consistency, so
+  // they do not apply to it (npc-fate.md's Authority row)
+  const bool scripted = msg.cause == 3;
+  if (!scripted && !actor->MayDie(killer)) {
     refuse("E_DEATH_IMMORTAL",
            "an essential or protected base (the engine's rule, "
            "MpActor::MayDie)");
     return;
   }
   const float away = (pos - actor->GetPos()).Length();
-  if (!(away <= kDeathBodyUnits)) {
+  if (!scripted && !(away <= kDeathBodyUnits)) {
     refuse("E_DEATH_FAR",
            fmt::format("the body {:.0f} units from the record (bound {:.0f})",
                        away, kDeathBodyUnits));
@@ -4525,10 +4532,20 @@ void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
       }
       break;
     case 3:
-      refuse("E_DEATH_SCRIPT",
-             "a script's kill is the server's to run (scripted-effects.md), "
-             "not a host's to report");
-      return;
+      // thuum docs/DECISIONS.md ADR-062 decision 2 (Eli: "trust should
+      // LARGELY be the default"): a host-run script's Kill, reported by the
+      // host whose engine ran it (the platform's hook on Actor.Kill marks
+      // the actor, DeathReportService names cause 3 within its window), is
+      // the host's word, R2 in npc-fate.md's Authority table (recorded, not
+      // validated); before ADR-062 it was refused as the server's to run,
+      // and the server's own scripted kills (scripted-effects.md) stay its
+      // own
+      evidence = "a host-run script's kill (ADR-062, R2, unvalidated)";
+      if (killer) {
+        evidence += fmt::format(", the killer {:x} the script named",
+                                killer->GetFormId());
+      }
+      break;
     default:
       refuse("E_DEATH_CAUSE", "a cause the contract does not name");
       return;

@@ -60,9 +60,8 @@
 // the behavior before train-29. Names compare without case (Papyrus's rule).
 namespace {
 std::unordered_set<std::string> g_admittedScripts;
-// ADR-059 decision 1: the host-scoped rows' names, admitted only for an
-// event on a reference in a cell this game hosts, and that set of cells
-std::unordered_set<std::string> g_hostAdmittedScripts;
+// ADR-059 decision 1, ADR-062 decision 1: the cells this game hosts
+// (SetCellHosted), where every world script runs
 std::mutex g_hostedCellsMutex;
 std::unordered_set<uint32_t> g_hostedCells;
 
@@ -78,7 +77,6 @@ std::string LowerAscii(const char* s)
 void LoadAdmittedScripts()
 {
   g_admittedScripts.clear();
-  g_hostAdmittedScripts.clear();
   std::ifstream file("Data/Platform/papyrus-scripts.txt");
   if (!file.is_open()) {
     logger::info("[verb:papyrus-events] no Data/Platform/papyrus-scripts.txt: "
@@ -87,6 +85,7 @@ void LoadAdmittedScripts()
   }
   std::string line;
   size_t plugins = 0;
+  size_t hostRows = 0;
   while (std::getline(file, line)) {
     if (line.empty() || line[0] == '#') {
       continue;
@@ -95,16 +94,21 @@ void LoadAdmittedScripts()
     if (colon == std::string::npos) {
       continue;
     }
-    ++plugins;
-    // "<plugin> host: ..." scopes the row to cells this game hosts (ADR-059)
     std::string plugin = LowerAscii(line.substr(0, colon).c_str());
     while (!plugin.empty() &&
            (plugin.back() == ' ' || plugin.back() == '\t')) {
       plugin.pop_back();
     }
-    const bool hostScope =
-      plugin.size() > 5 && plugin.compare(plugin.size() - 5, 5, " host") == 0;
-    auto& target = hostScope ? g_hostAdmittedScripts : g_admittedScripts;
+    // "<plugin> host: ..." was ADR-059's host-scoped row, retired by ADR-062
+    // decision 1 (in a cell this game hosts every world script runs, named
+    // or not): an older layer file's row is skipped, its names admitted
+    // nowhere
+    if (plugin.size() > 5 &&
+        plugin.compare(plugin.size() - 5, 5, " host") == 0) {
+      ++hostRows;
+      continue;
+    }
+    ++plugins;
     std::string rest = line.substr(colon + 2);
     size_t pos = 0;
     while (pos < rest.size()) {
@@ -118,7 +122,7 @@ void LoadAdmittedScripts()
           name.pop_back();
         }
         if (!name.empty()) {
-          target.insert(LowerAscii(name.c_str()));
+          g_admittedScripts.insert(LowerAscii(name.c_str()));
         }
       }
       pos = end + 1;
@@ -126,10 +130,9 @@ void LoadAdmittedScripts()
   }
   logger::info(
     "[verb:papyrus-events] {} script class name(s) admitted from {} "
-    "plugin line(s) in Data/Platform/papyrus-scripts.txt, {} of them on the "
-    "hosting seat alone",
-    g_admittedScripts.size() + g_hostAdmittedScripts.size(), plugins,
-    g_hostAdmittedScripts.size());
+    "plugin line(s) in Data/Platform/papyrus-scripts.txt, {} host-scoped "
+    "row(s) skipped (ADR-062 decision 1)",
+    g_admittedScripts.size(), plugins, hostRows);
 }
 
 // A script passes if it, or any class it extends, is SkyUI's (SKI_*) or is
@@ -138,15 +141,15 @@ void LoadAdmittedScripts()
 // :178); it ends at a null parent, and the walk stops at 16 either way.
 // ADR-059 decision 1's lifecycle events: the engine telling a script the
 // world's state (its reference loaded, its cell attached, a reset), not a
-// player's act. A host-scoped script takes these on every seat, because they
-// come before any seat hosts the cell (x-object-anim v3 20261102-051618: the
-// temple loaded at c1's teleport and c1 hosted it 3.5 s later, so the puzzle
-// pillars' defaultPuzzlePillarScript never got its OnCellLoad, stayed in its
-// empty state with no onActivate, and c1's turn did nothing) and because a
-// guest's pillar should stand on its initial face (OnCellLoad's StartState02
-// and StartState03). What a lifecycle handler does beyond state (a
-// mid-firing trap's fireTrap at onCellAttach) plays as a visual on a guest;
-// the harm, OnTrapHitStart, stays the host's.
+// player's act. A world object's script takes these on every seat
+// (OnSendEventEnter's rule), because they come before any seat hosts the cell
+// (x-object-anim v3 20261102-051618: the temple loaded at c1's teleport and c1
+// hosted it 3.5 s later, so the puzzle pillars' defaultPuzzlePillarScript
+// never got its OnCellLoad, stayed in its empty state with no onActivate, and
+// c1's turn did nothing) and because a guest's pillar should stand on its
+// initial face (OnCellLoad's StartState02 and StartState03). What a lifecycle
+// handler does beyond state (a mid-firing trap's fireTrap at onCellAttach)
+// plays as a visual on a guest; the harm, OnTrapHitStart, stays the host's.
 bool IsLifecycleEvent(const std::string& lowerName)
 {
   static const char* const kLifecycle[] = {
@@ -162,8 +165,7 @@ bool IsLifecycleEvent(const std::string& lowerName)
   return false;
 }
 
-bool AdmittedByChain(const RE::BSScript::ObjectTypeInfo* info,
-                     bool inHostedCell, bool lifecycle)
+bool AdmittedByChain(const RE::BSScript::ObjectTypeInfo* info)
 {
   for (int depth = 0; info && depth < 16; ++depth, info = info->GetParent()) {
     auto name = LowerAscii(info->GetName());
@@ -171,13 +173,6 @@ bool AdmittedByChain(const RE::BSScript::ObjectTypeInfo* info,
       return true;
     }
     if (!g_admittedScripts.empty() && g_admittedScripts.count(name)) {
-      return true;
-    }
-    // ADR-059 decision 1: a host-scoped name passes for a reference in a
-    // cell this game hosts (the world's traps, levers and pillars run on
-    // the cell's host, nowhere else), and for a lifecycle event anywhere
-    if ((inHostedCell || lifecycle) && !g_hostAdmittedScripts.empty() &&
-        g_hostAdmittedScripts.count(name)) {
       return true;
     }
   }
@@ -223,6 +218,12 @@ void Frida::SetCellHosted(uint32_t cellFormId, bool hosted)
   }
 }
 
+bool Frida::IsCellHosted(uint32_t cellFormId)
+{
+  std::lock_guard<std::mutex> lock(g_hostedCellsMutex);
+  return g_hostedCells.count(cellFormId) > 0;
+}
+
 /**
  * Send Event hook
  */
@@ -239,15 +240,26 @@ void OnSendEventEnter(GumInvocationContext* ic)
   auto vm = VM::GetSingleton();
 
   uint32_t selfId = 0;
-  // the cell the event's reference stands in (ADR-059 decision 1's gate);
-  // an actor's, a quest's or an effect's event has none
+  // the cell the event's reference stands in (ADR-059 decision 1's gate,
+  // ADR-062 decision 1's rule); a quest's or an effect's event has none
   uint32_t selfCell = 0;
+  // the self is an actor (ADR-062: an actor's script runs where the actor
+  // is simulated, so a hosted live actor's passes and a puppet's stays
+  // blanked; before ADR-062 an actor's event never saw the cell rule, the
+  // spider's masterAmbushScript among them, playtest 41)
+  bool selfIsActor = false;
 
   auto policy = vm->GetObjectHandlePolicy();
   if (policy) {
     if (auto actor =
           policy->GetObjectForHandle(RE::FormType::ActorCharacter, handle)) {
       selfId = actor->GetFormID();
+      selfIsActor = true;
+      if (auto ref = static_cast<RE::TESObjectREFR*>(actor)) {
+        if (auto cell = ref->GetParentCell()) {
+          selfCell = cell->GetFormID();
+        }
+      }
     }
     if (auto refr =
           policy->GetObjectForHandle(RE::FormType::Reference, handle)) {
@@ -264,10 +276,28 @@ void OnSendEventEnter(GumInvocationContext* ic)
     std::lock_guard<std::mutex> lock(g_hostedCellsMutex);
     inHostedCell = g_hostedCells.count(selfCell) > 0;
   }
+  // thuum docs/DECISIONS.md ADR-062 decision 1 (Eli, playtest 41: "shouldn't
+  // 'scripts work' be a holistic fix?"): in a cell this game hosts every
+  // WORLD OBJECT's script runs, whatever its name, and a live ACTOR's runs
+  // when this game simulates the actor (Hosted.h, not a puppet); a player's
+  // own actor (0x14) and the figures (0xff000000 and up) keep ADR-044's
+  // rules, their scripts being a player's effects. Outside a hosted cell
+  // nothing changes. The names of the layer's host rows retire with this.
 
   auto eventNameStr = std::string(*eventName);
   EventsApi::SendPapyrusEventEnter(selfId, eventNameStr);
   const bool lifecycle = IsLifecycleEvent(LowerAscii(eventNameStr.c_str()));
+  // A world object's script: in a hosted cell every event, elsewhere the
+  // lifecycle events alone (ADR-059 decision 1's reason: they come before
+  // any seat hosts the cell, and a guest's pillar must stand on its initial
+  // face). A live actor's script: wherever this game simulates the actor
+  // (a follow's actor outside the hosted cell included); a puppet's never.
+  const bool ownedByAPlayer = selfId == 0x14 || selfId >= 0xff000000;
+  const bool worldObject = !selfIsActor && selfCell != 0 && !ownedByAPlayer;
+  const bool simulatedActor = selfIsActor && !ownedByAPlayer &&
+    Hosted::Is(selfId) && !Puppets::Is(selfId);
+  const bool hostedWorldScript =
+    (worldObject && (inHostedCell || lifecycle)) || simulatedActor;
 
   auto blockEvents = TESModPlatform::GetPapyrusEventsBlocked();
 
@@ -339,7 +369,7 @@ void OnSendEventEnter(GumInvocationContext* ic)
         auto info = script->GetTypeInfo();
         auto name = info->GetName();
 
-        if (AdmittedByChain(info, inHostedCell, lifecycle)) {
+        if (hostedWorldScript || AdmittedByChain(info)) {
           blockEvents = false;
           break;
         } else if (!strnicmp(name, "RaceMenu", 8)) {

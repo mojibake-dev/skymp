@@ -22,13 +22,16 @@ bool DamageActorOriginal(RE::Actor* victim, float damage, RE::Actor* attacker,
 // npcEngineDamage switches it
 void SetEngineDamageCut(bool on);
 
-// thuum docs/DECISIONS.md ADR-059 decision 1: the cells this game hosts, so a
-// Papyrus event to a reference standing in one of them passes the event block
-// when its script is on a host-scoped row of the admitted list ("<plugin>
-// host: <class> ..." in Data/Platform/papyrus-scripts.txt). skymp5-client's
-// hostService tells it at every grant and release (TESModPlatform's
-// SetCellHosted). Threadsafe.
+// thuum docs/DECISIONS.md ADR-059 decision 1 and ADR-062 decision 1: the
+// cells this game hosts, so a Papyrus event to a world object standing in one
+// of them passes the event block whatever its script's name (OnSendEventEnter)
+// and a hooked native's call on such an object counts as the host's
+// (ScriptNatives.cpp). skymp5-client's hostService tells it at every grant
+// and release (TESModPlatform's SetCellHosted). Threadsafe.
 void SetCellHosted(uint32_t cellFormId, bool hosted);
+// whether this game hosts the cell (ADR-059 decision 1's set), for the hooks
+// outside this file (ScriptNatives.cpp)
+bool IsCellHosted(uint32_t cellFormId);
 
 // thuum docs/verbs/quest-stage.md, slice two: a (quest, stage) pair
 // skymp5-client's questStageService is applying from the server's relay,

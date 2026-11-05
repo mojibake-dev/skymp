@@ -359,6 +359,20 @@ export interface SkillUseEvent {
   points: number;
   source: number;
 }
+// thuum docs/DECISIONS.md ADR-062 decision 2: a Papyrus native that changes server-owned state, called by a script on this seat for a world object in a cell this game hosts, an actor it simulates, a quest, a global or an alias (the platform's hook on the native's own entry, resolved by class and name from the VM's bindings; ScriptNatives.cpp), raised on the next tick: the native as "Class.Name", the self's form id (an alias's owning quest), the acting or target form id or 0, the numeric argument (a bool as 0 or 1, an int, an alias's id) or 0, the self's cell or 0, whether the self is an actor, the Papyrus stack id, and count: 1 for a live call, or the calls folded into a census event (self 0; every 30 s: the quest, global and alias rows, the calls filtered as not hosted here (suffix " (not hosted)"), the platform's own (" (platform)"), the budget's drops (" (over budget)")). The platform's own calls (callNative, SpSnippets) are never a script's. No game call in its handler
+export interface ScriptNativeEvent {
+  // the row's key: "<Class.Name>" for a live call, with " (platform)", " (not hosted)" or " (over budget)" for a tallied
+  // one, and for a quest's, global's or alias's call (no cell, every seat runs the script, tallied not raised)
+  // " on <self form id, hex>" or " on others" past eight selves a window
+  native: string;
+  self: number;
+  arg: number;
+  value: number;
+  cell: number;
+  actor: boolean;
+  stackId: number;
+  count: number;
+}
 
 export interface OpenCloseEvent {
   target: ObjectReference
@@ -764,6 +778,8 @@ export declare function on(eventName: 'propContact', callback: (event: PropConta
 export declare function once(eventName: 'propContact', callback: (event: PropContactEvent) => void): EventHandle
 export declare function on(eventName: 'skillUse', callback: (event: SkillUseEvent) => void): EventHandle
 export declare function once(eventName: 'skillUse', callback: (event: SkillUseEvent) => void): EventHandle
+export declare function on(eventName: 'scriptNative', callback: (event: ScriptNativeEvent) => void): EventHandle
+export declare function once(eventName: 'scriptNative', callback: (event: ScriptNativeEvent) => void): EventHandle
 
 export declare function on(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle
 export declare function once(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle

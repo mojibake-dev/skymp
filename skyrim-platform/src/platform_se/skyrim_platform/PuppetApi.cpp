@@ -4,6 +4,7 @@
 #include "Hosted.h"
 #include "ItemMenuRefresh.h"
 #include "Puppets.h"
+#include "TrapFamily.h"
 #include "game/Offsets.h"
 #include <RE/A/ActivateHandler.h>
 #include <RE/C/Calendar.h>
@@ -369,6 +370,57 @@ Napi::Value PuppetApi::IsPerformingAction(const Napi::CallbackInfo& info)
 {
   const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
   return Napi::Boolean::New(info.Env(), Hosted::IsPerforming(actorFormId));
+}
+
+// thuum docs/DECISIONS.md ADR-068 D-S3 (TrapFamily.h): the role from the
+// reads the gate and the seam make, here on the JS thread, as MagicApi's
+// setActorAimPitch reads its actor (TESForm::LookupByID under the form
+// table's own lock), with the attached scripts read under the VM's lock; no
+// task queued, no Papyrus native called
+Napi::Value PuppetApi::GetTrapRole(const Napi::CallbackInfo& info)
+{
+  const auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
+  const auto role = TrapFamily::RoleOf(formId);
+  if (!role) {
+    return info.Env().Null();
+  }
+  auto res = Napi::Object::New(info.Env());
+  res.Set("family", Napi::Boolean::New(info.Env(), role->family));
+  res.Set("playerOnly", Napi::Boolean::New(info.Env(), role->playerOnly));
+  res.Set("destroyed", Napi::Boolean::New(info.Env(), role->destroyed));
+  return res;
+}
+
+// thuum ADR-068 D-S3 point 4: the followed set the seam reads (TrapFamily.h),
+// fed by skymp5-client's prop stream at a trap body's owner word and at the
+// owner's at-rest sample; setHosted's shape. The count is logged for the lab
+Napi::Value PuppetApi::SetPropFollowed(const Napi::CallbackInfo& info)
+{
+  const auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
+  const auto followed = NapiHelper::ExtractBoolean(info[1], "followed");
+  if (formId == 0 || formId == 0x14) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  TrapFamily::Followed::Set(formId, followed);
+  logger::info("[verb:traps] setPropFollowed({:x}, {}): followed set {}",
+               formId, followed, TrapFamily::Followed::Count());
+  return Napi::Boolean::New(info.Env(), true);
+}
+
+// thuum ADR-068 D-S3 point 3: the applying set the gate reads (TrapFamily.h),
+// raised by skymp5-client's trap results around a served record's apply and
+// lowered after it; setHosted's shape. The count is logged for the lab
+Napi::Value PuppetApi::SetRecordApplying(const Napi::CallbackInfo& info)
+{
+  const auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
+  const auto applying = NapiHelper::ExtractBoolean(info[1], "applying");
+  if (formId == 0 || formId == 0x14) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  TrapFamily::RecordApplying::Set(formId, applying);
+  logger::info("[verb:traps] setRecordApplying({:x}, {}): applying set {}",
+               formId, applying, TrapFamily::RecordApplying::Count());
+  return Napi::Boolean::New(info.Env(), true);
 }
 
 Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)

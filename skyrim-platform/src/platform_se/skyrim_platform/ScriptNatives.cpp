@@ -11,6 +11,7 @@
 #include "Puppets.h"
 #include "Settings.h"
 #include "SkyrimPlatform.h"
+#include "TrapFamily.h"
 #include <RE/A/Actor.h>
 #include <RE/F/FormTypes.h>
 #include <RE/I/IFunction.h>
@@ -1079,6 +1080,9 @@ void ScriptNatives::InstallHooks()
   logger::info("[verb:scripts] {} of {} table rows bound (NativeRows.inc, "
                "thuum docs/NATIVES.md)",
                boundRows, kRowCount);
+  // thuum ADR-068 D-S3: the trap family the gate and this seam read, named
+  // once per process beside the table it extends (TrapFamily.h)
+  TrapFamily::LogReady();
   // the lever, read before the replacement can ask it
   g_nonOwnerSkip = ReadNonOwnerSkip();
   const bool skipping = g_nonOwnerSkip == NonOwnerSkip::NonLatent;

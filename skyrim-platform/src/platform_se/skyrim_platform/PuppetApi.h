@@ -41,6 +41,23 @@ Napi::Value IsHosted(const Napi::CallbackInfo& info);
 // inside a sendAnimationEvent hook handler, where the game thread waits, it
 // says the event being sent is the action's own
 Napi::Value IsPerformingAction(const Napi::CallbackInfo& info);
+// thuum docs/DECISIONS.md ADR-068 D-S3 (traps follow the interaction;
+// TrapFamily.h): getTrapRole(formId) answers { family, playerOnly, destroyed }
+// for a reference with an attached script, from the gate's own reads on the
+// JS thread (the VM's attached scripts under its lock, the reference's
+// destroyed flag, its trigger's playerOnlyTrigger property), and null for an
+// id that names no reference or one with no attached script
+Napi::Value GetTrapRole(const Napi::CallbackInfo& info);
+// setPropFollowed(formId, followed): a trap body another seat streams (true)
+// or no longer (false), kept in the set the native seam reads, where this
+// seat's script SetMotionType and ApplyHavokImpulse on the body run
+// neutralized; setRecordApplying(formId, applying): a reference whose server
+// record skymp5-client is applying, every Papyrus event to it blanked
+// meanwhile (the gate's blank precedes the sendPapyrusEvent hook, so JS
+// hears none of them either). Both store on the JS thread alone, no game
+// call: true when stored, false for 0 and for the player's own id
+Napi::Value SetPropFollowed(const Napi::CallbackInfo& info);
+Napi::Value SetRecordApplying(const Napi::CallbackInfo& info);
 // thuum docs/verbs/npc-stream.md (the voice slice): sayTopicInfo(actorFormId,
 // topicInfoFormId) makes a puppet say the host's line through the engine's
 // own say (Offsets::Voice::SayTopic with the info given, so the engine's
@@ -133,6 +150,15 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set("isPerformingAction",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(IsPerformingAction)));
+  exports.Set(
+    "getTrapRole",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(GetTrapRole)));
+  exports.Set(
+    "setPropFollowed",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetPropFollowed)));
+  exports.Set("setRecordApplying",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(SetRecordApplying)));
   exports.Set(
     "sayTopicInfo",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(SayTopicInfo)));

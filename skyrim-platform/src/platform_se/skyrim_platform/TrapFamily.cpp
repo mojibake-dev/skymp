@@ -186,7 +186,11 @@ size_t SizeOf(FlagSet& set)
 // owner, whatever script rides it: the 52 soul gems whose
 // trapSoulGemController hands the presser the gem and disables it (base SLGM
 // DummySoulGem 0x6a0c2, Skyrim.esm) stay the cell host's, while the trap
-// that guards one, MagicTrap under TrapBase, fires on every seat
+// that guards one, MagicTrap under TrapBase, fires on every seat. The test
+// counts every light (LIGH) as an inventory object, carryable or not
+// (TESForm.cpp:199), so a light-based trap would need
+// TESObjectLIGH::CanBeCarried (include/RE/T/TESObjectLIGH.h:101) beside it;
+// the census found none (docs/research/trap-prefix-census-2026-11-05.md)
 bool IsPickup(const RE::TESObjectREFR* ref)
 {
   const RE::TESBoundObject* base = ref ? ref->GetBaseObject() : nullptr;

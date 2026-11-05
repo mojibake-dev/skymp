@@ -21,8 +21,12 @@ export class DisableDifficultySelectionService extends ClientListener {
     // difficulty, an integer from 0 (Novice) to 5 (Legendary), so the pin
     // moves with a settings line instead of a build; upstream's 5 when the
     // setting is absent or refused (logged once, read once here). Since D-T4 B
-    // the world's damage to the player follows it (RagdollService: the
-    // engine's own fDiffMultHPToPC* for the difficulty in force), while the
+    // the world's damage to the player is meant to follow it (RagdollService:
+    // the engine's own fDiffMultHPToPC* for the difficulty in force); HYPOTHESIS:
+    // this writes the INI setting, while the static read has DamageActor index
+    // the player's own difficulty field (docs/research/re-37335-and-rune-
+    // landing.md:30; CommonLib PlayerCharacter.h:399), and whether the write
+    // reaches that field is x-trap-hit-difficulty's two legs (5 and 2). The
     // damage one actor deals another is the server's and takes no difficulty
     // yet (TES5DamageFormula.cpp's TODO(#461))
     private readDifficulty(): number {

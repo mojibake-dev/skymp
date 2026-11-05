@@ -80,6 +80,11 @@ export class RagdollService extends ClientListener {
         const override = this.localDamageMultOverride();
         if (override === null) {
             logLab("verb:traps", `world damage multipliers: the engine's own for the difficulty in force (D-T4 B): ${this.describeEngineDamageMults()}`);
+            // a reload inside the player's own removal window left 0 written:
+            // the engine's own go back unless this instance opened a window
+            if (!this.pending.has(0x14)) {
+                this.restoreLocalDamageMults();
+            }
             return;
         }
         logLab("verb:traps", `world damage multipliers: ${override} on all six, the engine's own being ${this.describeEngineDamageMults()} (D-T4 B)`);
@@ -97,14 +102,26 @@ export class RagdollService extends ClientListener {
     // D-T4 B: the engine's own six, read once, before this client's first
     // write of them (skymp5-client writes them at its first update and in the
     // player's own removal window alone; the platform never does), whichever
-    // comes first
+    // comes first. The first capture is kept in the platform's storage, which
+    // survives a plugin reload (client-hot, or any write under Plugins), so a
+    // reloaded instance takes it back instead of reading what the instance
+    // before it left (0 inside a removal window)
     private captureEngineDamageMults() {
         if (this.engineDamageMults !== null) {
             return;
         }
+        const kept = this.sp.storage[RagdollService.engineDamageMultsKey];
+        if (Array.isArray(kept) && kept.length === RagdollService.damageMultSettings.length
+            && kept.every((v) => typeof v === "number")) {
+            this.engineDamageMults = kept as number[];
+            return;
+        }
         this.engineDamageMults = RagdollService.damageMultSettings.map(
             (name) => this.sp.Game.getGameSettingFloat(name));
+        this.sp.storage[RagdollService.engineDamageMultsKey] = this.engineDamageMults;
     }
+
+    private static readonly engineDamageMultsKey = "ragdollService.engineDamageMults";
 
     private setLocalDamageMults(damageMult: number) {
         this.captureEngineDamageMults();
@@ -162,8 +179,8 @@ export class RagdollService extends ClientListener {
     // writes 0 for its window and the same choice after it. Without the
     // platform's DamageActor replacement (an older platform, or a replace
     // that failed) nothing cuts another actor's damage to the player, so they
-    // stay 0 then. A plugin reloaded in a running game (client-hot) reads
-    // what the instance before it left
+    // stay 0 then. A plugin reloaded in a running game (client-hot) takes the
+    // first instance's capture back from the platform's storage
     private localDamageMultOverride(): number | null {
         if (!RagdollService.cutInstalled()) {
             if (!this.cutMissingSaid) {

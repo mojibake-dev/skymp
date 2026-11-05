@@ -67,9 +67,9 @@ export class ObjectReferenceEx {
   // docs/research/trap-slice-d-s3-2026-11-05.md): a reference's trap role as
   // the fork's Skyrim Platform reads it (getTrapRole, through the gate's own
   // walk of the attached scripts): family when every script attached to the
-  // reference is in the trap family (the class chain of TrapBase,
-  // TrapTriggerBase and TrapHitBase, its roots in the platform's
-  // TrapFamily.cpp), playerOnly a trigger's playerOnlyTrigger (HYPOTHESIS
+  // reference is a trap class (TrapFamily.cpp's roots, or the class's own
+  // trap prefix) and its base no inventory object, playerOnly a trigger's
+  // playerOnlyTrigger (HYPOTHESIS
   // H-PO1), destroyed its destroyed flag; null with no form or no attached
   // script. The client's one read of it, so every rule that asks (the
   // activation block, the linked relay, the record's replay, the trap bodies,

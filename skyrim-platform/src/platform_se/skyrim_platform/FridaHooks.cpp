@@ -231,6 +231,29 @@ bool Frida::IsCellHosted(uint32_t cellFormId)
 // (VMHandle handle, const BSFixedString& eventName, IFunctionArguments* args)
 void OnSendEventEnter(GumInvocationContext* ic)
 {
+  // Every event a death completed from the server's record raises runs no
+  // script, whatever its name (ChangeForm::CompletingRecordDeath,
+  // ChangeForm.h; rung 1's review, finding 2, and its own review): the actor
+  // died once, where it happened, and its scripts ran there; the completion's
+  // OnDeath, the relays to its aliases and effects (SkyrimVM::RelayEvent), and
+  // the events its side effects raise (OnCombatStateChanged from StopCombat,
+  // OnGetUp from a furniture exit) are the replay's, not the world's. The
+  // re-analyst's static read: KillImmediate's death event reaches this hook on
+  // its own thread, inside the call (HYPOTHESIS until x-corpse-record's leg
+  // R).
+  if (ChangeForm::CompletingRecordDeath()) {
+    static std::atomic<uint64_t> s_recordDeathBlanked{ 0 };
+    const auto n = ++s_recordDeathBlanked;
+    if (n <= 3 || n % 100 == 0) {
+      auto name = (char**)gum_invocation_context_get_nth_argument(ic, 2);
+      logger::info("[verb:scripts] {} blanked: raised by a death completed "
+                   "from the record, not a world death ({} so far)",
+                   (name && *name) ? *name : "", n);
+    }
+    static const auto fsEmptyRecordDeath = new FixedString("");
+    gum_invocation_context_replace_nth_argument(ic, 2, fsEmptyRecordDeath);
+    return;
+  }
   if (Override::IsOverriden()) {
     return;
   }
@@ -286,24 +309,6 @@ void OnSendEventEnter(GumInvocationContext* ic)
 
   auto eventNameStr = std::string(*eventName);
   EventsApi::SendPapyrusEventEnter(selfId, eventNameStr);
-  // A death the platform completes from the server's record runs no script
-  // (ChangeForm::CompletingRecordDeath, ChangeForm.h; rung 1's review,
-  // finding 2): the actor's death was the world's once, where it happened.
-  if (ChangeForm::CompletingRecordDeath()) {
-    const auto lowerName = LowerAscii(eventNameStr.c_str());
-    if (lowerName == "ondying" || lowerName == "ondeath") {
-      static std::atomic<uint64_t> s_recordDeathBlanked{ 0 };
-      const auto n = ++s_recordDeathBlanked;
-      if (n <= 3 || n % 100 == 0) {
-        logger::info("[verb:scripts] {} to {:x} blanked: a death completed "
-                     "from the record, not a world death ({} so far)",
-                     eventNameStr, selfId, n);
-      }
-      static const auto fsEmptyRecordDeath = new FixedString("");
-      gum_invocation_context_replace_nth_argument(ic, 2, fsEmptyRecordDeath);
-      return;
-    }
-  }
   const bool lifecycle = IsLifecycleEvent(LowerAscii(eventNameStr.c_str()));
   // A world object's script: in a hosted cell every event, elsewhere the
   // lifecycle events alone (ADR-059 decision 1's reason: they come before

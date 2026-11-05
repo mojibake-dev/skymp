@@ -67,6 +67,14 @@ Napi::Value PollHostedGaze(const Napi::CallbackInfo& info);
 // the E the claim's word made meaningful; true when queued
 Napi::Value ActivatePickRef(const Napi::CallbackInfo& info);
 Napi::Value HostedGaze(const Napi::CallbackInfo& info);
+// pollNodeRotation(refrId, nodeNames) reads, on the game thread, the world
+// and local rotation (Euler XYZ, radians) of each named node of a loaded
+// reference's 3D ("" for the root); nodeRotation(refrId) answers the last
+// poll as [{node, has, world: [x, y, z], local: [x, y, z]}], null before one
+// (docs/verbs/traps.md "The pillar's side": the lab's view read of a turned
+// puzzle pillar, which no Papyrus native can give without an out-array)
+Napi::Value PollNodeRotation(const Napi::CallbackInfo& info);
+Napi::Value NodeRotation(const Napi::CallbackInfo& info);
 // thuum playtest 37 (the probe before any head build): pollFaceKeyframes
 // (actorFormId) copies, on the game thread, the actor's FaceGen keyframes
 // (BSFaceGenAnimationData's expression, modifier and phoneme keyframes,
@@ -140,6 +148,12 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "hostedGaze",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(HostedGaze)));
+  exports.Set(
+    "pollNodeRotation",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(PollNodeRotation)));
+  exports.Set(
+    "nodeRotation",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(NodeRotation)));
   exports.Set("pollFaceKeyframes",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(PollFaceKeyframes)));

@@ -66,7 +66,7 @@ import {
 import { TimeService } from './timeService';
 import { HostService } from './hostService';
 import { PuppetService } from "./puppetService";
-import { logTrace, logError } from '../../logging';
+import { logTrace, logError, logLab } from '../../logging';
 
 import { SpellCastMessage } from '../messages/spellCastMessage';
 import { ActorJumpMessage } from '../messages/actorJumpMessage';
@@ -250,26 +250,24 @@ export class RemoteServer extends ClientListener {
       // docs/private/container-hold-scope.md D-C2 A): a dead body is
       // activation-blocked like a CONT on every seat (PuppetService.
       // blockDeadBody), so this handler is the one way its loot menu opens,
-      // for the one looter the server admitted. Every dead NPC_ takes
-      // openBodyOnTimers (the hold's fresh review, note 4: one body path; the
-      // AI switch inside it is a released body's alone, and the host's own
-      // engine-killed body, AI on, keeps the retry and the closing
-      // activation, where the plain activate below took one try and the
-      // corpse checker waited its 15 s on a refusal). openBodyOnTimers'
-      // activate runs with default processing only (TESObjectREFR::
-      // ActivateRef's a_defaultProcessingOnly, CommonLibSSE-NG
+      // for the one looter the server admitted. The activate(player, true)
+      // below and openBodyOnTimers' run with default processing only
+      // (TESObjectREFR::ActivateRef's a_defaultProcessingOnly, CommonLibSSE-NG
       // include/RE/T/TESObjectREFR.h:367; the block is ExtraFlags
       // kBlockActivate, src/RE/T/TESObjectREFR.cpp:843), the call that opens
       // a blocked chest in every container scenario. That it opens the loot
       // ContainerMenu on a blocked dead actor too (the NPC base's Activate
       // and OpenContainer(kLoot), engine model E25) is a HYPOTHESIS until
-      // x-container-hold's corpse leg reads it; each attempt's line carries
-      // the block's state for that read.
+      // x-container-hold's corpse leg reads it; the block's state is logged
+      // at each open for that read.
       if (baseType === FormType.NPC) {
         const ac = Actor.from(refr);
         if (ac && ac.isDead()) {
-          this.openBodyOnTimers(localId, event.message.target, ac);
-          return;
+          if (!ac.isAIEnabled()) {
+            this.openBodyOnTimers(localId, event.message.target, ac);
+            return;
+          }
+          logLab("verb:containers", `body ${localId.toString(16)}: the server's open on ${refr.isActivationBlocked() ? "a blocked" : "an unblocked"} body with its AI on (D-C2 A)`);
         }
       }
 
@@ -301,11 +299,12 @@ export class RemoteServer extends ClientListener {
         // A chair's path is unchanged: its menu never opens.
         // RE::SleepWaitMenu::MENU_NAME (CommonLibSSE-NG include/RE/S/SleepWaitMenu.h:16).
         openedAsBed = () => Ui.isMenuOpen("Sleep/Wait Menu");
+      } else if (baseType === FormType.NPC && Actor.from(refr)?.isDead()) {
+        // thuum docs/verbs/npc-fate.md (the deaths): a corpse is a container
+        functionChecker = () => Ui.isMenuOpen("ContainerMenu");
+        factName = "'ContainerMenu open' (a corpse)";
+        delaySeconds = 0.0;
       }
-      // a dead NPC_ never reaches here: openBodyOnTimers above is its one
-      // path (review note 4), and it logs this path's three counted lines for
-      // a body ("waiting for 'ContainerMenu open' (a corpse) to be true",
-      // "menu closed ...", "sent ActivateMessage") in their text and order
 
       if (functionChecker === null) {
         logTrace(this, "onOpenContainerMesage - not a container or furniture", baseType);
@@ -377,25 +376,17 @@ export class RemoteServer extends ClientListener {
     });
   }
 
-  // D71: a body's open, step by step on the timers service (the handler's
-  // awaits after the AI switch never resumed in four lab runs). Since the
-  // hold's fresh review (note 4) this is every dead NPC_'s path: a released
-  // body (AI off, the promote's dead branch) gets the AI on now and off again
-  // at the first sight of the menu (the game pauses in the menu, so nothing
-  // walks); a body with its AI on (the host's own engine death) skips the
-  // switch and keeps the rest. 150 ms later the activate, its return logged
-  // and retried; then a poll every 100 ms: at the open the poll waits for
-  // the close to send the closing activation; with no open within 3 s the
-  // closing activation releases the occupant as the give-up does. The three
-  // lines the corpse scenarios count on the host's seat (c-dungeon-enemies,
-  // b-npc-body-release: "waiting for 'ContainerMenu open' (a corpse) to be
-  // true", "menu closed ...", "sent ActivateMessage") are logged here in the
-  // main path's text and order. Every callback runs inside the game's update.
+  // D71: a released body's open, step by step on the timers service (the
+  // handler's awaits after the AI switch never resumed in four lab runs):
+  // the AI on now; 150 ms later the activate, its return logged; then a poll
+  // every 100 ms: at the open the AI goes off (the game pauses in the menu,
+  // so nothing walks) and the poll waits for the close to send the closing
+  // activation; with no open within 3 s the AI goes off and the closing
+  // activation releases the occupant as the give-up does. Every callback
+  // runs inside the game's update.
   private openBodyOnTimers(localId: number, remoteTarget: number, body: Actor): void {
     const timers = this.controller.lookupListener(TimersService);
     const tag = `body ${localId.toString(16)}`;
-    // the main path's fact name for a body: the counted lines' text
-    const factName = "'ContainerMenu open' (a corpse)";
     const refOf = () => ObjectReference.from(Game.getFormEx(localId));
     const actorOf = () => Actor.from(Game.getFormEx(localId));
     let aiOn = false;
@@ -418,16 +409,10 @@ export class RemoteServer extends ClientListener {
       };
       this.controller.emitter.emit("sendMessage", { message, reliability: "reliable" });
       logTrace(this, `${tag}: closing activation sent, ${why}`);
-      logTrace(this, "onOpenContainerMesage - sent ActivateMessage", message);
     };
-    if (!body.isAIEnabled()) {
-      body.enableAI(true);
-      aiOn = true;
-      logTrace(this, `${tag}: AI on for the server's open (D71); reads ${body.isAIEnabled()} at the switch`);
-    } else {
-      logTrace(this, `${tag}: AI already on, no switch (a body this seat's engine killed); the retry and the closing activation as for a released body (review note 4)`);
-    }
-    logTrace(this, "onOpenContainerMesage - waiting for", factName, "to be true");
+    body.enableAI(true);
+    aiOn = true;
+    logTrace(this, `${tag}: AI on for the server's open (D71); reads ${body.isAIEnabled()} at the switch`);
     // v6 (D71's fifth read, x-body-open-guest-fix v2 065444 and 065821): one
     // activate 150 ms after the switch returned false with the AI reading
     // true, while the green read (x-body-open-guest v2 215922, leg 4) had the
@@ -454,7 +439,6 @@ export class RemoteServer extends ClientListener {
             timers.setTimeout(pollClose, kPollMs);
             return;
           }
-          logTrace(this, "onOpenContainerMesage - menu closed", factName);
           sendClosing("the menu closed");
         };
         timers.setTimeout(pollClose, kPollMs);
@@ -1289,20 +1273,6 @@ export class RemoteServer extends ClientListener {
 
   private onChangeValuesMessage(event: ConnectionMessage<ChangeValuesMessage>): void {
     const msg = event.message;
-
-    // thuum ADR-067 decision 2 (x-corpse-record v2 20261104-001821): the
-    // server's health for the actor is kept on its model for formView's dead
-    // check (a zero with the record alive is the death word in flight, so
-    // the check waits instead of standing the body up); the engine apply
-    // below is as it was. HYPOTHESIS, that run's reading: this apply at zero
-    // reached the watcher's puppet a second before the isDead property and
-    // killed it (an AI-off actor under the deferred kill dies of a zero,
-    // x-npc-death 20261023-054215, the reason movementApply floors the
-    // relayed sample at 0.01), which the dead check then undid
-    const form = this.worldModel.forms[msg.idx];
-    if (form && typeof msg.data.health === "number") {
-      form.serverHealthPercentage = msg.data.health;
-    }
 
     once('update', () => {
       const id = this.getIdManager().getId(msg.idx);

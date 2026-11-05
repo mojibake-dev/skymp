@@ -9,7 +9,6 @@ import { ChangeFormMessage, ChangeFormRemapRow } from "../messages/changeFormMes
 import { ChangeFormAckMessage } from "../messages/changeFormAckMessage";
 import { ChangeFormApplyMessage } from "../messages/changeFormApplyMessage";
 import { HostService } from "./hostService";
-import { PuppetService } from "./puppetService";
 
 // thuum docs/verbs/change-form.md (ADR-065 for system 1: the save is the
 // state), the TypeScript of the pipeline over the natives of
@@ -72,13 +71,6 @@ import { PuppetService } from "./puppetService";
 // the record then the death point's); that the record applied as the kill
 // lands lays the body with no fall (read 2 of the Dynamic plan); that a
 // record whose cell is not the copy's moves it (read 3).
-//
-// ADR-067 decision 4, the settle (x-corpse-record v2 20261104-005702): a
-// watcher's record applied while the copy's own ragdoll still ran drifted 44
-// units with it, so for a live death here the apply waits for PuppetService's
-// release of the body from the puppet state (its ragdoll settled, the
-// bodyReleased event) and lays the record on the still body; the bind's kill
-// applies at once as before (tryApply's wait, onBodyReleased).
 export const CORPSE_REST_UNITS = 2;
 export const CORPSE_REST_DEGREES = 2;
 export const CORPSE_SETTLE_MS = 15_000;
@@ -205,8 +197,6 @@ type HeldRecord = {
     bindKill: boolean;     // that kill was the bind's (applies on the owner's own seat too)
     queuedAt: number;      // the apply queued to the main thread's task (ApplyChangeForm answered {queued}); 0 when none
     queuedWhen: string;    // that attempt's "when", for the answer's line
-    settleWaitSince: number; // the first pass that waited for the body's settle (0: none yet)
-    settleLogged: boolean;   // the wait's lab line, once
 };
 
 // the owner's message waiting for an epoch or an ack
@@ -217,7 +207,6 @@ export class ChangeFormService extends ClientListener {
         super();
         this.controller.emitter.on("changeFormAckMessage", (e) => this.onAck(e));
         this.controller.emitter.on("changeFormApplyMessage", (e) => this.onApply(e));
-        this.controller.emitter.on("bodyReleased", (e) => this.onBodyReleased(e.localId, e.settledMs));
         // a grant: a held or unacked record goes out with the fresh epoch on
         // the next update (the grant's handler runs in the message context,
         // where the epoch's reads are refused)
@@ -351,12 +340,6 @@ export class ChangeFormService extends ClientListener {
     // held record over its own engine's death (its sender serializes the new
     // one)
     onKilledHere(localId: number, bind: boolean): void {
-        // the kill remembered for a record that arrives after it (the bind's
-        // kill of a copy loaded dead, then the record served at the cell's
-        // load): the arrival reads the kill's kind, so a bind kill's apply is
-        // immediate in either order; a new death ends any earlier settle
-        this.killsHere.set(localId, { at: Date.now(), bind });
-        this.settledBodies.delete(localId);
         const rec = this.records.get(localId);
         if (!rec || rec.applied) {
             return;
@@ -378,29 +361,6 @@ export class ChangeFormService extends ClientListener {
             logTrace(this, `changeform ${localId.toString(16)}: the record dropped, the live word stands the body up`);
         }
         this.pending.delete(localId);
-        this.killsHere.delete(localId);
-        this.settledBodies.delete(localId);
-    }
-
-    // PuppetService's release of a dead body from the puppet state (its
-    // ragdoll settled, ragdollSettleMs after it was first seen dead there):
-    // the body is laid from its held record now, on the next update (the
-    // event fires inside reconcile's pass; the apply's natives want the
-    // update's context either way). A record that comes later finds the body
-    // settled (settledBodies) and applies at its arrival
-    private onBodyReleased(localId: number, settledMs: number): void {
-        this.settledBodies.add(localId);
-        const rec = this.records.get(localId);
-        if (!rec || rec.applied) {
-            return;
-        }
-        logTrace(this, `changeform ${localId.toString(16)}: the body settled (${settledMs} ms flagged dead), the record applies`);
-        this.controller.once("update", () => {
-            const again = this.records.get(localId);
-            if (again && !again.applied) {
-                this.tryApply(again, "at the ragdoll's settle", false);
-            }
-        });
     }
 
     // a record stands for the form here: held for the kill, or laid on the
@@ -476,11 +436,7 @@ export class ChangeFormService extends ClientListener {
                 }
             }
         }
-        // a kill that landed before the record came (killsHere): its moment
-        // and kind, so the bind's record applies at once and a live death's
-        // waits for the settle
-        const kill = this.killsHere.get(m.formId);
-        this.records.set(m.formId, { formId: m.formId, formType: m.formType, flags: m.flags, version: m.version, body: m.body, remap: m.remap, fnv, receivedAt: Date.now(), applied: false, laid: false, queuedAt: 0, queuedWhen: "", attempts: 0, lastAttemptAt: 0, heldLogged: false, killedHereAt: kill ? kill.at : 0, bindKill: kill ? kill.bind : false, settleWaitSince: 0, settleLogged: false });
+        this.records.set(m.formId, { formId: m.formId, formType: m.formType, flags: m.flags, version: m.version, body: m.body, remap: m.remap, fnv, receivedAt: Date.now(), applied: false, laid: false, queuedAt: 0, queuedWhen: "", attempts: 0, lastAttemptAt: 0, heldLogged: false, killedHereAt: 0, bindKill: false });
         this.controller.once("update", () => {
             const rec = this.records.get(m.formId);
             if (rec && !rec.applied && rec.fnv === fnv) {
@@ -539,42 +495,6 @@ export class ChangeFormService extends ClientListener {
             return;
         }
         const now = Date.now();
-        // ADR-067 decision 4 (x-corpse-record v2 20261104-005702, 17 of 18:
-        // c2's record applied "at its arrival" about a second after the
-        // copy's death, while the copy's own ragdoll still ran (the native's
-        // premise takes a dying copy since 7845bb22), then "released from the
-        // puppet state after the ragdoll's 4.0 s" 3.6 s later; 25 s on the
-        // copy lay 44 units from the record on y: the live ragdoll carried the
-        // laid pose down the slope). A live death here (the kill not the
-        // bind's: the copy fell with a running ragdoll) waits for the body's
-        // settle, the moment PuppetService releases it from the puppet state
-        // (ragdollSettleMs after it was first seen dead there; the bodyReleased
-        // event, which onBodyReleased takes to the apply), and lays the record
-        // on the settled body. The bind's kill (bindKill: a body dead at its
-        // creation, no ragdoll) applies at once as before. HYPOTHESIS: a
-        // settled dead ragdoll takes the record's Havok block within a stride
-        // (read 1's GREEN 20261103-210713 laid a settled dead copy within 5
-        // units of the owner's; 005702's live ragdoll drifted 44 units after
-        // an apply mid-fall). The backstop: a body this seat never flagged
-        // dead (its own hosted actor's death before a host flip, a body
-        // released for no 3D) gets no release, so ragdollSettleMs and
-        // settleBackstopMs after the first wait the record applies on the
-        // body as it lies
-        if (!rec.bindKill && !this.settledBodies.has(rec.formId)) {
-            if (rec.settleWaitSince === 0) {
-                rec.settleWaitSince = now;
-            }
-            const waited = now - rec.settleWaitSince;
-            if (waited < PuppetService.ragdollSettleMs + ChangeFormService.settleBackstopMs) {
-                if (!rec.settleLogged) {
-                    rec.settleLogged = true;
-                    const left = this.controller.lookupListener(PuppetService).ragdollSettleLeftMs(rec.formId);
-                    logLab("verb:npc-fate", `corpse ${hex}: the record waits for the ragdoll's settle (${left === undefined ? `about ${PuppetService.ragdollSettleMs}` : left} ms left), a live death here`);
-                }
-                return;
-            }
-            logTrace(this, `changeform ${hex}: no release from the puppet state within ${waited} ms of the first wait, applied on the body as it lies`);
-        }
         rec.attempts += 1;
         rec.lastAttemptAt = now;
         let raw: unknown;
@@ -707,9 +627,7 @@ export class ChangeFormService extends ClientListener {
                 }
             });
             this.records.forEach((rec) => {
-                // a record waiting for the body's settle is the release event's
-                // or the poll's, never a per-frame try
-                if (!rec.applied && rec.attempts === 0 && rec.settleWaitSince === 0 && rec.killedHereAt > 0 && now - rec.killedHereAt < ChangeFormService.killLandsMs) {
+                if (!rec.applied && rec.attempts === 0 && rec.killedHereAt > 0 && now - rec.killedHereAt < ChangeFormService.killLandsMs) {
                     this.tryApply(rec, "as the kill landed", rec.bindKill);
                 }
             });
@@ -743,14 +661,6 @@ export class ChangeFormService extends ClientListener {
     // the served records by form id (a game-file actor's id is the same on
     // every seat)
     private readonly records = new Map<number, HeldRecord>();
-    // the kills deathService asked here, by form id: the moment and whether
-    // it was the bind's (a record arriving after its kill reads them)
-    private readonly killsHere = new Map<number, { at: number; bind: boolean }>();
-    // the bodies PuppetService let go from the puppet state (their ragdoll
-    // settled), by form id; a stand-up or a new kill forgets the body
-    private readonly settledBodies = new Set<number>();
-    // the wait's backstop past ragdollSettleMs for a body no release reaches
-    private static readonly settleBackstopMs = 1000;
     private lastPoll = 0;
     private lastResend = 0;
     private static readonly pollMs = 2000;

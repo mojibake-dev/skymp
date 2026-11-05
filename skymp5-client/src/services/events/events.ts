@@ -129,11 +129,6 @@ type EventTypes = {
     'actorFateMessage': [ConnectionMessage<ActorFateMessage>],
     // thuum docs/verbs/npc-puppet.md: HostService's grant or release of a cell, for PuppetService
     'cellHostChanged': [{ cell: number; hosted: boolean }],
-    // PuppetService's release of a dead body from the puppet state once its
-    // ragdoll has settled (ragdollSettleMs after it was first seen dead
-    // there); ChangeFormService lays a held record on the settled body
-    // (ADR-067 decision 4, x-corpse-record v2 20261104-005702)
-    'bodyReleased': [{ localId: number; settledMs: number }],
     'hostReleaseMessage': [ConnectionMessage<HostReleaseMessage>],
     // thuum docs/verbs/change-form.md (ADR-065): the server's ack of this seat's record, and a record served for a reference here
     'changeFormAckMessage': [ConnectionMessage<ChangeFormAckMessage>],

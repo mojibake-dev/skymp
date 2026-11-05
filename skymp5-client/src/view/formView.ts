@@ -571,58 +571,6 @@ export class FormView {
     return `moved ${apart.toFixed(0)} units to the record's spot (${m.pos.map((v) => v.toFixed(0)).join(", ")}, heading ${m.rot[2].toFixed(0)})`;
   }
 
-  // thuum ADR-067 decision 2 ("none rises again"; x-corpse-record v2
-  // 20261104-001821, c2 the watcher of Sven 0x13491 killed on the host c1):
-  // c2's engine copy died at 00:21:09.661 (its own deathStart) a second
-  // before the server's death word reached it at 00:21:10.692, and this
-  // check in between (00:21:10.186: the engine dead, the record alive) stood
-  // the body up ("resurrect 13491 (puppet true) queued"), which the word
-  // then killed again: a corpse rising for half a second on every watcher's
-  // screen, the probe's c2.log_count("resurrect 13491") == 0 red. HYPOTHESIS
-  // for the engine's early death: the server's ChangeValues with health 0
-  // (the host's HostedActorState relayed) reached the puppet before the
-  // isDead property did, and remoteServer.onChangeValuesMessage applies it
-  // with no floor, where the relayed movement sample is floored at 0.01 for
-  // this very reason (movementApply.ts kHealthFloor: an AI-off actor under
-  // the deferred kill dies of a zero, x-npc-death 20261023-054215). The rule:
-  // a resurrect waits for the word while the server's last health for the
-  // actor is zero (model.serverHealthPercentage: the word is in flight), or
-  // within deathWordGraceMs of this check's first sight of the engine's
-  // death (the sight is at most one check period, 2 s, after the death);
-  // after the grace, with the record alive and the server's health above
-  // zero, the resurrect runs as before (an engine death of a puppet the
-  // server never confirms is still undone). On the host's own actor
-  // (ADR-050 decision 2: its engine's death is the truth, reported) the
-  // same wait only delays the correction this check makes when the server
-  // refuses the report. True while the resurrect is held; logs the hold.
-  private holdResurrectForWord(model: FormModel): boolean {
-    const now = Date.now();
-    if (this.engineDeadSince === 0) {
-      this.engineDeadSince = now;
-    }
-    const sinceMs = now - this.engineDeadSince;
-    const health = model.serverHealthPercentage;
-    const zero = typeof health === "number" && health <= 0;
-    if (!zero && sinceMs >= FormView.deathWordGraceMs) {
-      return false;
-    }
-    // "resurrect held for <id>", not "resurrect <id> held": x-corpse-record
-    // and x-npc-death-reentry-v4 count c2.log_count("resurrect <id>") == 0,
-    // which the hold's own line must not match
-    logLab("verb:npc-fate", `resurrect held for ${this.refrId.toString(16)}: the engine's death precedes the server's word (health ${typeof health === "number" ? `${(health * 100).toFixed(0)}%` : "unknown"}), ${sinceMs} ms`);
-    return true;
-  }
-  // the hold's clock: this check's first sight of the engine's death with the
-  // record alive; 0 while the record reads dead or the engine alive
-  private engineDeadSince = 0;
-  // the death word's grace after the engine's death: the finding's gap was
-  // 1.0 s (the word 1,031 ms after the engine's death), three times that, so
-  // with the check's 2 s period the check after the first sight is held and
-  // the one after it is free (3 to 5 s from the death). PuppetService's
-  // ragdollSettleMs (4 s) measures the body's physics, a different quantity,
-  // and is that service's own
-  private static readonly deathWordGraceMs = 3000;
-
   private lastHarvestedApply = 0;
   private lastOpenApply = 0;
   private deadCheckAt = 0;
@@ -807,18 +755,12 @@ export class FormView {
       this.deadCheckAt = Date.now() + 2000;
       const body = Actor.from(refr);
       const want = !!model.isDead;
-      const engineDead = body ? body.isDead() : false;
       const simulatedHere = SpApiInteractor.getControllerInstance().lookupListener(HostService).isMine(model, refr);
       const bind = loaded3D && !this.deadWordBound;
       if (loaded3D) {
         this.deadWordBound = true;
       }
-      // the hold's clock (holdResurrectForWord) runs while the engine reads
-      // dead and the record alive; the word's arrival or a live engine resets it
-      if (!engineDead || want) {
-        this.engineDeadSince = 0;
-      }
-      if (body && engineDead !== want && (!(simulatedHere && want) || (bind && want))) {
+      if (body && body.isDead() !== want && (!(simulatedHere && want) || (bind && want))) {
         if (bind && want) {
           // playtest 37 (3i lay, Eli: "they stay down but i hear a death
           // sound and they are in different places if killed when someone
@@ -847,9 +789,6 @@ export class FormView {
           const placed = this.placeAtDeadRecord(body, model);
           logLab("verb:npc-fate", `dead record ${this.refrId.toString(16)} loaded alive on ${simulatedHere ? "this host's" : "a watcher's"} seat: ${placed}, killed silently at the bind`);
           SpApiInteractor.getControllerInstance().emitter.emit("applyDeathStateEvent", { actor: body, isDead: true, silent: true });
-        } else if (!want && this.holdResurrectForWord(model)) {
-          // the engine's death ahead of the server's word: no stand-up (the
-          // hold logs itself); the word's kill finds the body dead already
         } else {
           SpApiInteractor.getControllerInstance().emitter.emit("applyDeathStateEvent", { actor: body, isDead: want });
         }

@@ -166,6 +166,14 @@ public:
   std::optional<MpChangeFormREFR::Lock> GetLock() const;
   void SetLock(const MpChangeFormREFR::Lock& lock);
   void SendLockPrompt(MpActor& to);
+  // thuum D-S3 (traps follow the interaction; ADR-068's DestructionStage
+  // row): the reference's destruction as the server recorded it (the stage
+  // the engine reached, the destroyed flag), none while nobody reported one
+  // (the game files' state); the write is the record's alone (saved), the
+  // relay and the late subscriber's serve are ActionListener's and
+  // PartOne's
+  std::optional<MpChangeFormREFR::Destruction> GetDestruction() const;
+  void SetDestruction(const MpChangeFormREFR::Destruction& destruction);
   void PutItem(MpActor& actor, const Inventory::Entry& entry);
   void TakeItem(MpActor& actor, const Inventory::Entry& entry);
   // thuum docs/verbs/containers.md: a mover whose put or take the server

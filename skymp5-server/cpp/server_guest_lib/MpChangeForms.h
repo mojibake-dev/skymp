@@ -262,6 +262,28 @@ public:
   };
   std::optional<Lock> lock;
 
+  // thuum D-S3 (traps follow the interaction; ADR-068's DestructionStage
+  // row): the reference's destruction as the server recorded it from the
+  // first seat to report each step (wire-rules destruction: the stage only
+  // rises, destroyed only goes true); absent in older records and on
+  // references nobody reported, read as the game files' state (stage 0, not
+  // destroyed)
+  struct Destruction
+  {
+    uint8_t stage = 0;
+    bool destroyed = false;
+    auto ToTuple() const { return std::make_tuple(stage, destroyed); }
+    friend bool operator==(const Destruction& lhs, const Destruction& rhs)
+    {
+      return lhs.ToTuple() == rhs.ToTuple();
+    }
+    friend bool operator<(const Destruction& lhs, const Destruction& rhs)
+    {
+      return lhs.ToTuple() < rhs.ToTuple();
+    }
+  };
+  std::optional<Destruction> destruction;
+
   // thuum docs/verbs/change-form.md (ADR-065 system 1): the latest change
   // form the actor's owner reported, as the engine packed it, with its hash,
   // the sender's remap rows, the epoch, the sender and the time
@@ -298,7 +320,8 @@ public:
       fateLevel, fateDiedAt, lastAnimation, setNodeTextureSet, setNodeScale,
       displayName, mapMarkers, ingredientEffects, favorites, raceMenuPreset,
       actorValueRecord, staffRank, runningEffects, shoutRecord, playerGlobals,
-      questStages, placedBySpell, lock, changeFormRecord, unresolved);
+      questStages, placedBySpell, lock, destruction, changeFormRecord,
+      unresolved);
   }
 
   // The record boundary (thuum docs/DECISIONS.md ADR-043; the map

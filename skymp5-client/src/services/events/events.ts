@@ -64,6 +64,7 @@ import { ActorFateMessage } from "../messages/actorFateMessage";
 import { HostReleaseMessage } from "../messages/hostReleaseMessage";
 import { ChangeFormAckMessage } from "../messages/changeFormAckMessage";
 import { ChangeFormApplyMessage } from "../messages/changeFormApplyMessage";
+import { DestructionStageMessage } from "../messages/destructionStageMessage";
 
 import { AnyRawMessageEvent } from "./anyRawMessageEvent";
 import { NicknameCreateEvent } from "./nicknameCreateEvent";
@@ -133,6 +134,8 @@ type EventTypes = {
     // thuum docs/verbs/change-form.md (ADR-065): the server's ack of this seat's record, and a record served for a reference here
     'changeFormAckMessage': [ConnectionMessage<ChangeFormAckMessage>],
     'changeFormApplyMessage': [ConnectionMessage<ChangeFormApplyMessage>],
+    // thuum docs/DECISIONS.md ADR-068 D-S3 point 3: a trap result's record, relayed or served (TrapResultService)
+    'destructionStageMessage': [ConnectionMessage<DestructionStageMessage>],
     'customPacketMessage': [ConnectionMessage<CustomPacketMessage>]
 
     'browserWindowLoaded': [BrowserWindowLoadedEvent],

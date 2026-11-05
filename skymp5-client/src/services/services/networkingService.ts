@@ -314,6 +314,10 @@ export class NetworkingService extends ClientListener {
             const event = { message: msgAny };
             this.controller.emitter.emit("actorFateMessage", event);
             this.controller.emitter.emit("anyMessage", event);
+          } else if (msgAny.t === MsgType.DestructionStage) {
+            const event = { message: msgAny };
+            this.controller.emitter.emit("destructionStageMessage", event);
+            this.controller.emitter.emit("anyMessage", event);
           } else {
             // throw new NeverError(msgAny);
             throw new Error("Unhandled MsgType " + msgAny.t);

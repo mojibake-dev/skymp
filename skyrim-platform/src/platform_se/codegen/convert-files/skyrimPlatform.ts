@@ -373,7 +373,7 @@ export interface ScriptCallsEvent {
     stackId: number;
   }[];
 }
-// thuum docs/DECISIONS.md ADR-068 (rung 2): the seam's census every 30 s, one row per counted kind of call: "Class.Name (platform)" (the platform's own call), "Class.Name (not hosted)" (a self this seat does not own), "Class.Name (local)" (a row that never crosses, an animation row on an actor), "Class.Name (unrelayable)", "Class.Name (unresolved)", "Class.Name (frame mismatch)", the bare "Class.Name" (an owned self's state row, run here) and "Class.Name on <hex id>" or "Class.Name on others" for an everyone row's selves (a quest, a global, an alias's quest). A call in scriptCalls is never counted here. No game call in its handler
+// thuum docs/DECISIONS.md ADR-068 (rung 2): the seam's census every 30 s, one row per counted kind of call: "Class.Name (platform)" (the platform's own call), "Class.Name (not hosted)" (a self this seat does not own), "Class.Name (local)" (a row that never crosses, an animation row on an actor), "Class.Name (unrelayable)", "Class.Name (unresolved)", "Class.Name (frame mismatch)", "Class.Name (skipped)" (a non-owned state row's body skipped by the platform's scriptNonOwnerSkip lever, off by default), the bare "Class.Name" (an owned self's state row, run here) and "Class.Name on <hex id>" or "Class.Name on others" for an everyone row's selves (a quest, a global, an alias's quest). A call in scriptCalls is never counted here. No game call in its handler
 export interface ScriptCensusEvent {
   rows: { row: string; count: number }[];
 }

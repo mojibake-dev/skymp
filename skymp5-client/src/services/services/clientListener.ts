@@ -192,9 +192,10 @@ declare module "skyrimPlatform" {
     function once(eventName: 'scriptCalls', callback: (event: ScriptCallsEvent) => void): EventHandle;
     // the seam's census every 30 s, one row per counted kind of call: "Class.Name
     // (platform)", " (not hosted)", " (local)", " (unrelayable)", " (unresolved)",
-    // " (frame mismatch)", the bare "Class.Name" (an owned self's state row, run here)
-    // and "Class.Name on <hex id>" or " on others" (an everyone row's selves); a call
-    // in scriptCalls is never counted here. No game call in its handler.
+    // " (frame mismatch)", " (skipped)" (the scriptNonOwnerSkip lever, off by default),
+    // the bare "Class.Name" (an owned self's state row, run here) and "Class.Name on
+    // <hex id>" or " on others" (an everyone row's selves); a call in scriptCalls is
+    // never counted here. No game call in its handler.
     interface ScriptCensusEvent {
         rows: { row: string; count: number }[];
     }

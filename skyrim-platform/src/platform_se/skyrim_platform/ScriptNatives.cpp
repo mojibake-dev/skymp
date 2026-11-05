@@ -1,6 +1,7 @@
 #include "ScriptNatives.h"
 #include "CallNativeApi.h"
 #include "EventsApi.h"
+#include "FileUtils.h"
 #include "FridaHookHandler.h"
 #include "FridaHooks.h"
 #include "Hooks.h"
@@ -8,6 +9,7 @@
 #include "JsUtils.h"
 #include "PlatformCall.h"
 #include "Puppets.h"
+#include "Settings.h"
 #include "SkyrimPlatform.h"
 #include <RE/A/Actor.h>
 #include <RE/F/FormTypes.h>
@@ -28,10 +30,13 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 #include <fmt/format.h>
+#include <intrin.h>
 #include <iterator>
 #include <map>
 #include <mutex>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -158,8 +163,10 @@ std::unordered_map<const RE::BSScript::IFunction*, std::size_t> g_rowOf;
 // an animation row on an actor); " (unrelayable)" an owned action row with
 // an array parameter; " (unresolved)" a subject that names no reference;
 // " (frame mismatch)" a dispatch whose top frame is not the native's own, or
-// whose arguments' page cannot be found (H-S1 failing); no suffix, an owned
-// self's state row, run here and counted (rung 4 adds its record trigger).
+// whose arguments' page cannot be found (H-S1 failing); " (skipped)" a
+// non-owned state row whose body the lever skipped (scriptNonOwnerSkip
+// nonLatent); no suffix, an owned self's state row, run here and counted
+// (rung 4 adds its record trigger).
 // An everyone row's calls are counted by self instead (g_rowSelves, the
 // flip's "Class.Name on <id>"); a batched call is the batch's, never counted
 enum CountKind : std::size_t
@@ -171,6 +178,7 @@ enum CountKind : std::size_t
   kCountUnrelayable,
   kCountUnresolved,
   kCountFrameMismatch,
+  kCountSkipped,
   kCountKinds
 };
 
@@ -180,7 +188,8 @@ constexpr const char* kCountSuffix[kCountKinds] = { "",
                                                     " (local)",
                                                     " (unrelayable)",
                                                     " (unresolved)",
-                                                    " (frame mismatch)" };
+                                                    " (frame mismatch)",
+                                                    " (skipped)" };
 
 std::array<std::array<std::atomic<std::uint32_t>, kCountKinds>, kRowCount>
   g_counts{};
@@ -530,6 +539,23 @@ void QueueCall(QueuedCall&& call)
 // (CommonLibSSE-NG src/RE/S/Stack.cpp:16-26)
 constexpr std::uint32_t kNoPage = static_cast<std::uint32_t>(-1);
 
+// the table's map and RowInfo complete (InstallHooks): the platform's
+// direct-call count reads them from the worker, which no hook orders
+std::atomic<bool> g_tableReady{ false };
+
+// the non-owner skip lever (6.11 item 3, rung 2's last commit), read once at
+// kDataLoaded before the replacement is installed and never written after.
+// None (the default): every body runs, as the attach's did. NonLatent: a
+// non-owned state row whose native is not latent skips its body. A latent
+// row always runs in this rung (H-F1: what a skipped latent must return is
+// unread; x-native-frame's trace settles it)
+enum class NonOwnerSkip
+{
+  None,
+  NonLatent
+};
+NonOwnerSkip g_nonOwnerSkip = NonOwnerSkip::None;
+
 // what the dispatch hook raises for one call's extent (PlatformCall.h's
 // bracket)
 struct Marks
@@ -539,10 +565,15 @@ struct Marks
   bool platform = false;
   // the script action's: an owned action row's call (6.7)
   bool action = false;
+  // the body skipped (the lever), and the declared return's kind for the
+  // result left in its place
+  bool skip = false;
+  RE::BSScript::TypeInfo::RawType result =
+    RE::BSScript::TypeInfo::RawType::kNone;
 };
 
 // the seam's judgment of one dispatch, 6.2's order (rule 9: the cheapest
-// test first). The body runs in every case (the hook is an attach)
+// test first). The body runs unless the lever skips it (marks.skip)
 Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
 {
   Marks marks;
@@ -581,7 +612,13 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
                      native.cls, native.fn, stack->stackID, n);
       }
     }
-    Count(row, kCountPlatform);
+    // a call under the direct path's Scope is counted where the platform
+    // makes it (ScriptNatives::CountPlatformCall: nested in the OnUpdate
+    // native's own Call, it never reaches the replacement), every other one
+    // of the platform's here
+    if (!PlatformCall::Active()) {
+      Count(row, kCountPlatform);
+    }
     return marks;
   }
   // (c) the frame: at the dispatch the top frame is the native's own (H-S1,
@@ -641,9 +678,20 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     Count(row, kCountLocal);
     return marks;
   }
-  // (d) the owner. Not owned: counted, and the body runs (an attach cannot
-  // skip it)
+  // (d) the owner. Not owned: counted, and the body runs (an action row's
+  // jump, the pillar's StartState0N from a guest's OnCellLoad, is wanted
+  // everywhere), unless the lever skips a state row's non-latent body (6.11
+  // item 3: a guest's lifecycle handler performs the host's PlaceAtMe or
+  // Lock on its own copy; its RemoveItem, MoveTo and Disable are latent,
+  // FunctionsDump.txt, and wait for H-F1's read)
   if (!OwnedHere(ref, isActor)) {
+    if (native.kind == NativeKind::State && !info.latent &&
+        g_nonOwnerSkip == NonOwnerSkip::NonLatent) {
+      marks.skip = true;
+      marks.result = info.result;
+      Count(row, kCountSkipped);
+      return marks;
+    }
     Count(row, kCountNotHosted);
     return marks;
   }
@@ -713,6 +761,55 @@ void ReadRow(std::size_t row, const RE::BSScript::IFunction* function)
       info.batchedState = true;
     }
   }
+}
+
+// the lever's value: "scriptNonOwnerSkip" in skymp5-client-settings.txt,
+// found in the platform's plugin folders (SkyrimPlatform.ini's
+// PluginFolders, Settings::GetPluginFolders: the folders SkyrimPlatform.cpp
+// loads every "-settings.txt" from, a later folder's file winning as it
+// does there) and read with the same reader (Viet::ReadFileIntoString), so
+// the lab sets it as it sets cellHost and npcPuppet (relaunch {files: [{json:
+// Data/Platform/Plugins/skymp5-client-settings.txt, key: scriptNonOwnerSkip,
+// value: nonLatent}]}). "nonLatent" turns the skip on; "none", an absent key
+// or file, an unreadable file or any other value leaves it off
+NonOwnerSkip ReadNonOwnerSkip()
+{
+  NonOwnerSkip skip = NonOwnerSkip::None;
+  try {
+    const auto folders = Settings::GetPlatformSettings()->GetPluginFolders();
+    for (const auto& folder : *folders) {
+      const auto path = folder / "skymp5-client-settings.txt";
+      if (!std::filesystem::exists(path)) {
+        continue;
+      }
+      skip = NonOwnerSkip::None;
+      const auto settings =
+        nlohmann::json::parse(Viet::ReadFileIntoString(path), nullptr, false);
+      if (!settings.is_object()) {
+        logger::warn("[verb:scripts] {} is no JSON object; "
+                     "scriptNonOwnerSkip read as none",
+                     path.string());
+        continue;
+      }
+      const auto it = settings.find("scriptNonOwnerSkip");
+      if (it == settings.end()) {
+        continue;
+      }
+      const std::string value = it->is_string() ? it->get<std::string>() : "";
+      if (value == "nonLatent") {
+        skip = NonOwnerSkip::NonLatent;
+      } else if (value != "none") {
+        logger::warn("[verb:scripts] scriptNonOwnerSkip in {} is neither "
+                     "none nor nonLatent; read as none",
+                     path.string());
+      }
+    }
+  } catch (const std::exception& e) {
+    logger::warn("[verb:scripts] scriptNonOwnerSkip unread ({}); none",
+                 e.what());
+    return NonOwnerSkip::None;
+  }
+  return skip;
 }
 
 // the census, every kFlushMs from the update's Tick: each row's counts read
@@ -805,11 +902,12 @@ void FlushCensus(uint64_t now)
 // platform handed the dispatch; when it is a live one
 // (PlatformCall::IsLiveCallback) the call is the platform's and the
 // platform's depth is raised here for its extent, as Scope raises it on the
-// direct path. The cost on every native call in the game: Gum's bracket,
-// the bracket's level (PlatformCall.h) and one hash lookup of `this`
-// against the table; a call outside it does nothing more. This replaced
-// the flip's 24 entry hooks and their register conventions (each row's
-// layout a HYPOTHESIS, the float arguments unreadable).
+// direct path. The cost on every native call in the game: Gum's
+// replacement thunk, the bracket's level (PlatformCall.h) and one hash
+// lookup of `this` against the table; a call outside it does nothing more.
+// This replaced the flip's 24 entry hooks and their register conventions
+// (each row's layout a HYPOTHESIS, the float arguments unreadable), and the
+// attach of rung 2's first commits, which could not skip a body.
 // HYPOTHESIS H-S2: a native queued as a FunctionMessage (one not callable
 // from tasklets, run by VirtualMachine::Update) still enters through this
 // slot, so the seam sees it; the guest's GlobalVariable.SetValue census row
@@ -821,41 +919,94 @@ void FlushCensus(uint64_t now)
 // NativeFunction.h:81). H-L3: Stack's stackID at +0x80 and callback at
 // +0x90 (Stack.h:80 and :83) hold on 1.6.1170 (the header's static layout,
 // unmeasured). The trace that settles them: Frida on 104651 (this, the
-// Stack's +0x80 and +0x90, the thread) beside the 24 entries and
-// DispatchMethodCall2 on a guest applying a relayed stage, expecting
-// Dispatch(F) then Call(S, S.callback == F, S.id == N) then the entry with N
-// on the same thread.
-void OnNativeCallEnter(GumInvocationContext* ic)
+// Stack's +0x80 and +0x90, the thread) and DispatchMethodCall2 on a guest
+// applying a relayed stage, expecting Dispatch(F) then Call(S, S.callback
+// == F, S.id == N) on a Papyrus thread, the census's "(platform)" row for
+// the stage's native.
+using NativeCallFn = RE::BSScript::IFunction::CallResult (*)(
+  RE::BSScript::NF_util::NativeFunctionBase* self,
+  const RE::BSTSmartPointer<RE::BSScript::Stack>& stack,
+  RE::BSScript::ErrorLogger* logger,
+  RE::BSScript::Internal::VirtualMachine* vm, bool arg4);
+NativeCallFn g_nativeCallOriginal = nullptr;
+
+// the result a skipped body leaves (H-F1, HYPOTHESIS until x-native-frame's
+// trace reads a skipped row): the VM takes a native's result from the
+// Stack's returnValue once Call answers kCompleted (Stack.h:79; the
+// platform's own direct path reads it there after its Call, CallNative.cpp,
+// on the OnUpdate native's own frame, which Call therefore neither pops nor
+// replaces), and the result is the declared type's empty value, what a body
+// that does nothing writes: None for a void or an object return
+// (MarshallAndDispatch's SetNone, NativeFunction.h:96-99; PackHandle's null,
+// PackUnpack.cpp:48-55), false, 0, 0.0 and "" for the literals
+void SetEmptyResult(RE::BSScript::Variable& result,
+                    RE::BSScript::TypeInfo::RawType type)
 {
-  // the entry stack pointer, the stranded-level guard's key (PlatformCall.h);
-  // the house reads Gum's registers this way (FridaHooks.cpp's rcx). The
-  // stranded levels go first, so the platform's depth OnCall reads is live
-  const auto sp = static_cast<std::uintptr_t>(ic->cpu_context->rsp);
+  using RawType = RE::BSScript::TypeInfo::RawType;
+  switch (type) {
+    case RawType::kBool:
+      result.SetBool(false);
+      return;
+    case RawType::kInt:
+      result.SetSInt(0);
+      return;
+    case RawType::kFloat:
+      result.SetFloat(0.f);
+      return;
+    case RawType::kString:
+      result.SetString("");
+      return;
+    default:
+      result.SetNone();
+      return;
+  }
+}
+
+// The replacement (the QuestStageSink 53987 shape, through
+// HookHandler::Replace): what the attach did at the call's entry, then the
+// body through Gum's trampoline in every case the judgment says run, the
+// level (and its marks) held for the call's extent. What each path returns:
+// the original's own CallResult whenever the body runs; kCompleted, with
+// the row's empty result in returnValue, when the lever skips it. A call of
+// this function nested in a replaced call's original on one thread never
+// reaches here: Gum runs it straight to the original (frida-gum
+// 698b356fef0e, frida 16.0.19's, gum/guminterceptor.c:1503-1513: the top
+// invocation entry is this function's, its calling_replacement set at
+// :1606 for the replacement's whole extent), so the
+// platform's direct calls, made inside the OnUpdate native's own Call, are
+// counted where they are made (CountPlatformCall) and run untouched, as the
+// platform's own would anyway; a script's call is never so nested
+// (HYPOTHESIS: a native's body runs no other native through the VM's
+// dispatch on its own thread; a Frida trace on 104651 would show a nested
+// Call on a Papyrus thread if one does). The calling convention is the
+// member function's (Windows x64: this in RCX, the stack's smart pointer by
+// reference in RDX, the logger in R8, the VM in R9, the bool on the stack),
+// the DamageActor note's HYPOTHESIS, read by the first stage's census (the
+// table's rows judged, the game's natives running)
+RE::BSScript::IFunction::CallResult NativeCallReplacement(
+  RE::BSScript::NF_util::NativeFunctionBase* self,
+  const RE::BSTSmartPointer<RE::BSScript::Stack>& stack,
+  RE::BSScript::ErrorLogger* logger,
+  RE::BSScript::Internal::VirtualMachine* vm, bool arg4)
+{
+  // the entry stack pointer (the slot of this call's return address, the
+  // rsp the attach read from Gum's context), the stranded-level guard's key
+  // (PlatformCall.h); the stranded levels go first, so the platform's depth
+  // OnCall reads is live
+  const auto sp = reinterpret_cast<std::uintptr_t>(_AddressOfReturnAddress());
   PlatformCall::PopStrandedCalls(sp);
-  const auto* fn = static_cast<const RE::BSScript::IFunction*>(
-    gum_invocation_context_get_nth_argument(ic, 0));
-  // the second argument is a const BSTSmartPointer<Stack>&: a pointer to
-  // the smart pointer
-  const auto* stackRef =
-    static_cast<const RE::BSTSmartPointer<RE::BSScript::Stack>*>(
-      gum_invocation_context_get_nth_argument(ic, 1));
-  const Marks marks = OnCall(fn, stackRef ? stackRef->get() : nullptr);
-  PlatformCall::EnterCall(marks.platform, marks.action, sp);
+  const Marks marks = OnCall(self, stack.get());
+  if (marks.skip) {
+    // the body never runs: the call completes with the row's empty result
+    SetEmptyResult(stack->returnValue, marks.result);
+    return RE::BSScript::IFunction::CallResult::kCompleted;
+  }
+  // the level is left when the call returns or a C++ exception unwinds
+  // through this frame; an unwind that skips it (SEH, longjmp) is the
+  // stranded-level guard's
+  const PlatformCall::CallLevel level(marks.platform, marks.action, sp);
+  return g_nativeCallOriginal(self, stack, logger, vm, arg4);
 }
-
-void OnNativeCallLeave(GumInvocationContext*)
-{
-  PlatformCall::LeaveCall();
-}
-}
-
-void ScriptNatives::Register()
-{
-  // the dispatch hook's callbacks, attached at kDataLoaded once the table is
-  // bound (InstallHooks)
-  Frida::HookHandler::GetSingleton()->Register(
-    Frida::HookID::HOOK_NATIVE_CALL,
-    std::make_shared<Frida::Hook>(OnNativeCallEnter, OnNativeCallLeave));
 }
 
 void ScriptNatives::Tick()
@@ -868,6 +1019,17 @@ bool ScriptNatives::InScriptAction()
   return PlatformCall::InAction();
 }
 
+void ScriptNatives::CountPlatformCall(const RE::BSScript::IFunction* fn)
+{
+  if (!g_tableReady.load(std::memory_order_acquire)) {
+    return;
+  }
+  const auto it = g_rowOf.find(fn);
+  if (it != g_rowOf.end()) {
+    Count(it->second, kCountPlatform);
+  }
+}
+
 void ScriptNatives::InstallHooks()
 {
   // the VM's bindings as Hooks.cpp recorded them (class, name, IFunction*,
@@ -878,7 +1040,7 @@ void ScriptNatives::InstallHooks()
   // the table (NativeRows.inc): each row's IFunction, the `this` of its
   // every dispatch, found by class and name without case (Papyrus's rule;
   // the platform's dump spells Game.GetPlayer "getplayer") and read once,
-  // all of it before the dispatch hook attaches below
+  // all of it before the dispatch is replaced below
   size_t boundRows = 0;
   for (size_t row = 0; row < kRowCount; ++row) {
     const NativeRow& native = kRows[row];
@@ -915,20 +1077,30 @@ void ScriptNatives::InstallHooks()
   logger::info("[verb:scripts] {} of {} table rows bound (NativeRows.inc, "
                "thuum docs/NATIVES.md)",
                boundRows, kRowCount);
-  // the dispatch hook (OnNativeCallEnter), attached once the table's map is
-  // complete, so it never reads a map being written
+  // the lever, read before the replacement can ask it
+  g_nonOwnerSkip = ReadNonOwnerSkip();
+  const bool skipping = g_nonOwnerSkip == NonOwnerSkip::NonLatent;
+  logger::info("[verb:scripts] scriptNonOwnerSkip {}: {}",
+               skipping ? "nonLatent" : "none",
+               skipping ? "a non-owned state row's non-latent body is "
+                          "skipped, its row's empty result returned"
+                        : "every body runs");
+  g_tableReady.store(true, std::memory_order_release);
+  // the dispatch replaced, once the table's map and the lever are complete,
+  // so it never reads either being written
   const auto callAddress = Offsets::Hooks::NativeFunctionCall.address();
-  if (Frida::HookHandler::GetSingleton()->Attach(
-        Frida::HookID::HOOK_NATIVE_CALL, callAddress)) {
-    logger::info("[verb:scripts] native dispatch hook on "
-                 "NativeFunctionBase::Call at +{:x} (Address Library 104651): "
+  if (Frida::HookHandler::GetSingleton()->Replace(
+        callAddress, reinterpret_cast<void*>(&NativeCallReplacement),
+        reinterpret_cast<void**>(&g_nativeCallOriginal))) {
+    logger::info("[verb:scripts] native dispatch replaced: "
+                 "NativeFunctionBase::Call at +{:x} (Address Library 104651), "
                  "{} table row(s) judged from the frame, the platform's "
                  "latent calls marked on the VM's thread",
                  callAddress - gameBase, g_rowOf.size());
   } else {
-    logger::warn("[verb:scripts] NativeFunctionBase::Call at +{:x}: Gum "
-                 "refused the attach; no table row is judged and the "
-                 "platform's latent calls count as a script's",
-                 callAddress - gameBase);
+    logger::error("[verb:scripts] NativeFunctionBase::Call at +{:x}: Gum "
+                  "refused the replacement; no table row is judged and "
+                  "every body runs",
+                  callAddress - gameBase);
   }
 }

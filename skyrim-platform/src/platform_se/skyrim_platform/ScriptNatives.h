@@ -1,6 +1,10 @@
 #pragma once
 #include <cstdint>
 
+namespace RE::BSScript {
+class IFunction;
+}
+
 // thuum docs/DECISIONS.md ADR-068 (scripts as one system; rung 2, the one
 // seam, docs/research/scripts-one-system-2026-11-05.md 6.2): the VM's one
 // native dispatch, BSScript::NF_util::NativeFunctionBase::Call
@@ -11,19 +15,18 @@
 // (a world object's cell host, an actor's simulator, the player's own seat),
 // an owned action row's call (and a script's Kill) queued into this frame's
 // batch and raised to JS once a frame as the event "scriptCalls", every
-// other tabled call counted and raised every 30 s as "scriptCensus". The
-// rows' functions are resolved at kDataLoaded from the VM's own bindings
-// (Hooks.cpp BindNativeMethod's record, by class and name), never from a
-// pinned offset (rule 1). This replaced the flip's 24 entry hooks (ADR-062
-// decision 2) and their per-call "scriptNative" event.
+// other tabled call counted and raised every 30 s as "scriptCensus"; the
+// hook is a replacement, so a lever (scriptNonOwnerSkip, default none) can
+// skip a non-owned state row's body. The rows' functions are resolved at
+// kDataLoaded from the VM's own bindings (Hooks.cpp BindNativeMethod's
+// record, by class and name), never from a pinned offset (rule 1). This
+// replaced the flip's 24 entry hooks (ADR-062 decision 2) and their per-call
+// "scriptNative" event.
 namespace ScriptNatives {
-// at plugin load: the dispatch hook's callbacks registered with the handler
-// (no address yet, so the map the live hooks read is never touched later)
-void Register();
 // at kDataLoaded: the table's rows bound from the VM's bindings
-// (Hooks::GetBoundNatives), then the VM's one dispatch hooked once the
-// table's map is complete, where every tabled call is judged from its frame
-// and the platform's latent calls are marked (PlatformCall.h)
+// (Hooks::GetBoundNatives) and the lever read, then the VM's one dispatch
+// replaced once both are complete, where every tabled call is judged from
+// its frame and the platform's latent calls are marked (PlatformCall.h)
 void InstallHooks();
 // every frame from the platform's OnUpdate: the census flushed on time (a
 // quiet seat emits its last window; the review's medium finding)
@@ -36,4 +39,10 @@ void Tick();
 // (thuum ADR-068 decision 7, docs/research/scripts-one-system-2026-11-05.md
 // 6.7): a script's animation is reported once
 bool InScriptAction();
+// the platform's direct call of a native (SkyrimPlatform.cpp's worker, under
+// PlatformCall::Scope), counted in the census as "(platform)" when the
+// native is tabled: made inside the OnUpdate native's own Call, it never
+// reaches the replacement (Gum runs a call nested in a replaced call's
+// original straight to the original)
+void CountPlatformCall(const RE::BSScript::IFunction* fn);
 }

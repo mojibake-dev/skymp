@@ -48,10 +48,10 @@ enum HookID
   // decision 2), retired by ADR-068's one seam (rung 2) on the dispatch
   // below; the value is never reused and the ids after it keep theirs
   HOOK_SCRIPT_NATIVE,
-  // the VM's one native dispatch, NativeFunctionBase::Call (Address Library
-  // 104651), where every tabled native's call is judged from its frame and
-  // the platform's latent calls are told from a script's on the VM's own
-  // thread (ScriptNatives.cpp, PlatformCall.h)
+  // reserved: the attach on the VM's one native dispatch,
+  // NativeFunctionBase::Call (Address Library 104651), until rung 2's last
+  // commit replaced the function through HookHandler::Replace, which takes
+  // no id (ScriptNatives.cpp); the value is never reused
   HOOK_NATIVE_CALL
 };
 

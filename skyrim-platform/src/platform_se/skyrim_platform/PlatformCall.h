@@ -101,14 +101,17 @@ inline bool InAction()
   return t_actionDepth > 0;
 }
 
-// the Call hook's bracket on the running thread: Gum's onEnter and onLeave
-// nest strictly on one thread (a call returns where it began), so two bits
-// per nesting level say which marks that level raised (the platform's depth,
+// the Call hook's bracket on the running thread: a level per hooked Call,
+// entered at the call's entry and left at its return (the replacement's
+// CallLevel; the attach's onEnter and onLeave before it), so levels nest
+// strictly on one thread (a call returns where it began), two bits per
+// nesting level say which marks that level raised (the platform's depth,
 // the script action's), and the matching leave lowers them, never another
-// level's. Call nests on the OnUpdate thread already (the platform's direct
-// natives run inside the OnUpdate native's own Call), hence stacks of bits
-// and not one flag; a level past the stacks' width is never raised, so no
-// raise is ever lost. A throw or longjmp through a hooked Call skips its
+// level's. Call can nest on one thread (the platform's direct natives run
+// inside the OnUpdate native's own Call, though Gum runs those straight to
+// the original, past the replacement), hence stacks of bits and not one
+// flag; a level past the stacks' width is never raised, so no raise is
+// ever lost. A throw or longjmp through a hooked Call skips its
 // leave and would strand the level (a stale raised level keeps a depth at 1
 // on that thread for the process's life, a stale unraised one drifts the
 // nesting), so every level records its entry stack pointer and the next
@@ -174,4 +177,18 @@ inline void LeaveCall()
     t_callAction >>= 1;
   }
 }
+
+// the bracket as a scope, the replacement's (ScriptNatives.cpp): the level
+// entered at construction and left at destruction, so a C++ exception
+// unwinding through the replaced Call lowers its marks too
+struct CallLevel
+{
+  CallLevel(bool raise, bool action, std::uintptr_t sp)
+  {
+    EnterCall(raise, action, sp);
+  }
+  ~CallLevel() { LeaveCall(); }
+  CallLevel(const CallLevel&) = delete;
+  CallLevel& operator=(const CallLevel&) = delete;
+};
 }

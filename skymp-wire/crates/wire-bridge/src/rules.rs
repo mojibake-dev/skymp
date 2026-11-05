@@ -2134,6 +2134,13 @@ mod ffi {
         /// `prop_epoch_of`), 1 held by another's grab, 2 the claimant
         /// simulates it already.
         fn claim_prop(self: &mut Props, refr: u32, player: u32, cell: u32, touch: u8, now_ms: u64) -> u8;
+        /// thuum D-S3 point 4: `player`'s seat claims `refr`, a trap's world
+        /// body in `cell` (a world object its own script set moving; the core
+        /// admits it by the impulse touch alone), at `now_ms`: the codes of
+        /// `claim_prop`, and 3 Moving, another seat's firing set the body
+        /// moving and it is awake under that seat's live row (the first firing
+        /// wins).
+        fn claim_prop_world_body(self: &mut Props, refr: u32, player: u32, cell: u32, now_ms: u64) -> u8;
         /// The prop's owner epoch, up at every grant; 0 before any.
         fn prop_epoch_of(self: &Props, refr: u32) -> u32;
         /// `player`'s transform of `refr`, landing in `cell` (0 for none)
@@ -3280,6 +3287,17 @@ const fn host_grace_ms() -> u64 {
     cells::GRACE_MS
 }
 
+/// A claim's verdict as the core's code: 0 granted, 1 held, 2 the same
+/// simulator, 3 a world body another seat's firing moves (thuum D-S3).
+fn claim_code(verdict: props::ClaimVerdict) -> u8 {
+    match verdict {
+        props::ClaimVerdict::Granted(_) => 0,
+        props::ClaimVerdict::Held => 1,
+        props::ClaimVerdict::Same => 2,
+        props::ClaimVerdict::Moving => 3,
+    }
+}
+
 /// The prop owner table (wire-rules props, thuum docs/verbs/prop-physics.md).
 #[derive(Debug, Default)]
 pub struct Props(props::Props);
@@ -3290,11 +3308,11 @@ fn new_props() -> Box<Props> {
 
 impl Props {
     fn claim_prop(&mut self, refr: u32, player: u32, cell: u32, touch: u8, now_ms: u64) -> u8 {
-        match self.0.claim(refr, player, cell, touch, now_ms) {
-            props::ClaimVerdict::Granted(_) => 0,
-            props::ClaimVerdict::Held => 1,
-            props::ClaimVerdict::Same => 2,
-        }
+        claim_code(self.0.claim(refr, player, cell, touch, now_ms))
+    }
+
+    fn claim_prop_world_body(&mut self, refr: u32, player: u32, cell: u32, now_ms: u64) -> u8 {
+        claim_code(self.0.claim_world_body(refr, player, cell, now_ms))
     }
 
     fn prop_epoch_of(&self, refr: u32) -> u32 {
@@ -4097,6 +4115,22 @@ mod tests {
         p.props_gone(0xff00_0004);
         assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002, 9_100), 0xff00_0002);
         assert_eq!(p.prop_epoch_of(0x2ad9c), 1);
+    }
+
+    #[test]
+    fn a_trap_bodys_claim_crosses_as_codes() {
+        // thuum D-S3 point 4: Embershard's rock 0xb6d45 in the mine 0xb6be6;
+        // the firing seat's grant, the second firing's Moving (3), the
+        // firing seat's own Same (2); an item's impulse keeps its grant
+        let mut p = new_props();
+        assert_eq!(p.claim_prop_world_body(0xb6d45, 0xff00_0003, 0xb6be6, 1_000), 0);
+        assert_eq!(p.prop_epoch_of(0xb6d45), 1);
+        assert_eq!(p.claim_prop_world_body(0xb6d45, 0xff00_0002, 0xb6be6, 1_050), 3);
+        assert_eq!(p.claim_prop_world_body(0xb6d45, 0xff00_0003, 0xb6be6, 1_100), 2);
+        assert_eq!(p.prop_epoch_of(0xb6d45), 1);
+        assert_eq!(p.prop_live_owner(0xb6d45, 1_100), 0xff00_0003);
+        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 0, 1_000), 0);
+        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0002, 0x9732, 3, 1_050), 0);
     }
 
     #[test]

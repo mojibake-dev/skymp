@@ -3375,6 +3375,22 @@ bool IsPropKind(MpObjectReference& refr)
     espm::utils::IsItem(espm::Type(refr.GetBaseType().c_str()));
 }
 
+// thuum D-S3 (traps follow the interaction, point 4): a trap's world body,
+// a world object a seat's own script sets moving (Embershard's falling
+// rocks and its tripwire, ACTIs: thuum docs/research/trap-census-2026-11-05.md
+// rows 18 and the tripwire's), joins the prop stream by the impulse touch
+// alone; an actor, a door, a container or furniture never does, and an item
+// is a prop by IsPropKind
+bool IsWorldBodyKind(MpObjectReference& refr)
+{
+  if (refr.AsActor() || IsPropKind(refr)) {
+    return false;
+  }
+  const auto& baseType = refr.GetBaseType();
+  return baseType != "DOOR" && baseType != "CONT" && baseType != "FURN" &&
+    baseType != "NPC_";
+}
+
 // how far a touch reaches, in units from the claimant's record to the prop's:
 // the controller's contact and the grab at arm's length, a drop at the
 // player's feet with the client's drop match slack, an impulse (a shout, a
@@ -3400,7 +3416,13 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
   if (!myActor) {
     return;
   }
-  const auto& form = partOne.worldState.LookupFormByIdNoLoad(msg.refr);
+  // thuum D-S3 point 4: an impulse may name a trap's world body, which the
+  // claim loads (LookupFormById) where the chunks around the players have
+  // not; every other touch names an item the server holds already
+  const bool impulse = msg.touch == 3;
+  const auto& form = impulse
+    ? partOne.worldState.LookupFormById(msg.refr)
+    : partOne.worldState.LookupFormByIdNoLoad(msg.refr);
   MpObjectReference* prop = form ? form->AsObjectReference() : nullptr;
   const auto refuse = [&](const char* code, const char* why) {
     spdlog::warn(
@@ -3410,8 +3432,12 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
   if (!prop || prop->AsActor()) {
     return refuse("E_PROP_UNKNOWN", "no such reference, or an actor");
   }
-  if (!IsPropKind(*prop)) {
+  const bool worldBody = IsWorldBodyKind(*prop);
+  if (!IsPropKind(*prop) && !worldBody) {
     return refuse("E_PROP_KIND", "not an item reference");
+  }
+  if (worldBody && !impulse) {
+    return refuse("E_PROP_KIND", "a world body, which only an impulse claims");
   }
   if (msg.touch > 3) {
     return refuse("E_PROP_RANGE", "a touch the contract does not name");
@@ -3426,8 +3452,8 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
   if ((myActor->GetPos() - prop->GetPos()).Length() > reach) {
     return refuse("E_PROP_REACH", "the claimant is too far from the prop");
   }
-  const auto verdict =
-    partOne.ClaimProp(*myActor, *prop, *cell, static_cast<uint8_t>(msg.touch));
+  const auto verdict = partOne.ClaimProp(
+    *myActor, *prop, *cell, static_cast<uint8_t>(msg.touch), worldBody);
   switch (verdict) {
     case PartOne::PropClaimVerdict::Granted: {
       PropOwnerMessage word;
@@ -3455,6 +3481,13 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
       spdlog::debug("[verb:prop-physics] {:x} claims prop {:x} by touch {}: "
                     "it simulates it already",
                     myActor->GetFormId(), prop->GetFormId(), msg.touch);
+      break;
+    case PartOne::PropClaimVerdict::Moving:
+      // thuum D-S3 point 4: the claimant heard the first firing's owner word
+      // at its grant, so its seat follows the body until the owner's rest
+      refuse("E_PROP_MOVING",
+             "another seat's firing set the body moving, the first firing "
+             "wins");
       break;
   }
 }
@@ -4521,8 +4554,15 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
   if (!prop || prop->AsActor()) {
     return refuse("E_PROP_UNKNOWN", "no such reference, or an actor");
   }
-  if (!IsPropKind(*prop)) {
+  const bool worldBody = IsWorldBodyKind(*prop);
+  if (!IsPropKind(*prop) && !worldBody) {
     return refuse("E_PROP_KIND", "not an item reference");
+  }
+  // thuum D-S3 point 4: a trap's world body is on the stream once an impulse
+  // claimed it (its epoch above 0: OnPropClaim admits no other touch on it,
+  // and that claim loaded it), its samples then judged as an item's
+  if (worldBody && partOne.PropEpochOf(*prop) == 0) {
+    return refuse("E_PROP_KIND", "a world body no impulse claimed");
   }
   // the Rust edge refuses a non-finite transform (wire-validate); the legacy
   // path parses JSON, where 1e999 reads as infinity, so the check stands

@@ -2824,10 +2824,14 @@ void PartOne::SendActorKeyframe(MpActor& actor, MpActor& to)
 
 PartOne::PropClaimVerdict PartOne::ClaimProp(const MpActor& claimant,
                                              const MpObjectReference& prop,
-                                             uint32_t cell, uint8_t touch)
+                                             uint32_t cell, uint8_t touch,
+                                             bool worldBody)
 {
-  const auto code = pImpl->props->claim_prop(
-    prop.GetFormId(), claimant.GetFormId(), cell, touch, SteadyNowMs());
+  const auto code = worldBody
+    ? pImpl->props->claim_prop_world_body(
+        prop.GetFormId(), claimant.GetFormId(), cell, SteadyNowMs())
+    : pImpl->props->claim_prop(prop.GetFormId(), claimant.GetFormId(), cell,
+                               touch, SteadyNowMs());
   return static_cast<PropClaimVerdict>(code);
 }
 

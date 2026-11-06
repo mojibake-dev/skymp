@@ -26,7 +26,7 @@ import { IdManager } from '../../lib/idManager';
 import { nameof } from '../../lib/nameof';
 import { setActorValuePercentage } from '../../sync/actorvalues';
 import { applyAppearanceToPlayer } from '../../sync/appearance';
-import { applyEquipment, isBadMenuShown, applyPlayerHands, Equipment } from '../../sync/equipment';
+import { applyEquipment, isBadMenuShown, applyPlayerHands, Equipment, equippedAmmoAmong, handsTouchedBy } from '../../sync/equipment';
 import { Inventory, applyInventory, ApplyInventoryReport } from '../../sync/inventory';
 import { ContainerApplyQueue } from '../../view/containerApplyQueue';
 import { Movement } from '../../sync/movement';
@@ -89,32 +89,54 @@ const setPcInventory = (inv: Inventory): void => {
 };
 
 let pcInvLastApply = 0;
+// thuum playtest 48 ("Rotfern had to re-equip her bow again", as in playtest
+// 34 and 38's finding 68): the equipment a login's wipe dressed the player
+// from (applyPcInv below), left for the hands pass after this loop's next
+// apply, the one that lands the record's plain rows after that wipe. Kept
+// until `until`, the loop's period twice past the wipe: a menu held open
+// longer at the login holds the apply back (isBadMenuShown), and a weapon
+// the player swapped in it then stays the player's
+let loginHands: { eq: Equipment; until: number } | undefined;
+const loginHandsMs = 10000;
 on('update', () => {
   if (isBadMenuShown()) {
     return;
   }
   if (Date.now() - pcInvLastApply > 5000) {
-    const firstApplyAfterSet = pcInvLastApply === 0;
     pcInvLastApply = Date.now();
     const pcInv = getPcInventory();
     if (pcInv) {
-      const report: ApplyInventoryReport = { wornAdded: false };
-      applyInventory(Game.getPlayer()!, pcInv, false, true, true, report);
-      // thuum playtest 38's finding 68 ("after rotfern came back her bow
-      // wouldn't draw arrows"; c1's console: the login's hands pass equipped
-      // the ammo at +0.1 s, and this loop's first apply re-added the whole
-      // inventory at +5 s with nothing equipping after it): the first apply
-      // after a setInventory resets the base and lands every entry anew, and
-      // any later apply that re-adds a worn entry (an arrow count drift from
-      // shooting re-adds the ammo and un-equips it, the finding's read)
-      // leaves the hands the same way, so the hands pass runs once more when
-      // such adds have landed. The apply's own report is the one check this
-      // loop pays per five seconds
-      if (firstApplyAfterSet || report.wornAdded) {
+      const player = Game.getPlayer()!;
+      const report: ApplyInventoryReport = { changed: new Set<number>() };
+      applyInventory(player, pcInv, false, true, true, report);
+      // thuum playtest 38's finding 68 and playtest 48 (the first draw after
+      // a relaunch's login nocked no arrow): a login wipes the player's
+      // inventory and lays the equipment's worn rows (applyEquipment, twice:
+      // applyPcInv below), and this loop's next apply lands the record's
+      // plain rows after each wipe (the 40 arrows of a quiver the record
+      // splits into one worn arrow and the rest, 38's console; the bow
+      // itself, x-hands-relaunch v1's), the last word on the hands. The pass
+      // after it read the worn flags of the server's rows, which a player's
+      // rows never carry (inventory.ts ApplyInventoryReport), so it equipped
+      // nothing. Now the apply's report names every base id it added or
+      // removed, and the hands pass runs when one of them is a hand's item:
+      // after the first apply that follows a login's wipe, with that login's
+      // equipment (consumed here) and the fresh equip a wipe needs
+      // (sync/equipment.ts applyPlayerHands); after any other apply, with
+      // the ammo this engine had equipped among the changed ids (an arrow
+      // count drift from shooting re-adds the ammo, finding 68's read), read
+      // in this tick before the apply's adds land, its isEquipped check
+      // kept. Never with the login's equipment in play: the player may have
+      // put that bow away since. The apply's own report is the one check
+      // this loop pays per five seconds
+      const login = loginHands !== undefined && Date.now() <= loginHands.until ? loginHands.eq : undefined;
+      loginHands = undefined;
+      const hands = login ?? equippedAmmoAmong(player, report.changed);
+      if (hands && handsTouchedBy(hands, report.changed)) {
         Utility.wait(0.1).then(() => {
-          const player = Game.getPlayer();
-          if (player) {
-            applyPlayerHands(player, { inv: pcInv } as Equipment);
+          const again = Game.getPlayer();
+          if (again) {
+            applyPlayerHands(again, hands, login !== undefined);
           }
         });
       }
@@ -766,6 +788,9 @@ export class RemoteServer extends ClientListener {
     const applyPcInv = () => {
       if (msg.equipment) {
         applyEquipment(Game.getPlayer()!, msg.equipment)
+        // playtest 48: the loop's next apply lands the plain rows this wipe
+        // removed, and its hands pass takes this equipment (loginHands)
+        loginHands = { eq: msg.equipment, until: Date.now() + loginHandsMs };
       }
 
       if (numSetInventory !== this.numSetInventory) {

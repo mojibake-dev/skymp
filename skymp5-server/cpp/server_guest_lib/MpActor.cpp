@@ -465,6 +465,38 @@ void MpActor::SetEquipment(const Equipment& newEquipment)
     [&](MpChangeForm& changeForm) { changeForm.equipment = newEquipment; });
 }
 
+void MpActor::DropWornBeyondInventory(uint32_t baseId)
+{
+  const uint32_t held = GetInventory().GetItemCount(baseId);
+  Equipment kept = GetEquipment();
+  uint32_t left = held;
+  uint32_t dropped = 0;
+  for (auto& entry : kept.inv.entries) {
+    if (entry.baseId != baseId || entry.GetWorn() == Inventory::Worn::None) {
+      continue;
+    }
+    const uint32_t keep = std::min(entry.count, left);
+    dropped += entry.count - keep;
+    entry.count = keep;
+    left -= keep;
+  }
+  if (dropped == 0) {
+    return;
+  }
+  auto& entries = kept.inv.entries;
+  entries.erase(std::remove_if(entries.begin(), entries.end(),
+                               [&](const Inventory::Entry& entry) {
+                                 return entry.baseId == baseId &&
+                                   entry.GetWorn() != Inventory::Worn::None &&
+                                   entry.count == 0;
+                               }),
+                entries.end());
+  SetEquipment(kept);
+  spdlog::info("[verb:npc-fate] {:x}'s worn {:x} off its record's equipment: "
+               "{} worn beyond the {} its inventory holds",
+               GetFormId(), baseId, dropped, held);
+}
+
 void MpActor::SetHealthRespawnPercentage(float percentage)
 {
   EditChangeForm([&](MpChangeForm& changeForm) {

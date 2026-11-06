@@ -1,6 +1,7 @@
 #include "FateApi.h"
 #include "CallNativeApi.h"
 #include "Fates.h"
+#include "ItemMenuRefresh.h"
 #include "Puppets.h"
 #include "game/Offsets.h"
 #include <RE/M/Main.h>
@@ -168,6 +169,74 @@ std::string FateThreadNote()
 }
 
 namespace {
+// a stack the engine wears: its list carries ExtraWorn or ExtraWornLeft
+// (ExtraDataList::HasType, include/RE/E/ExtraDataList.h:163; InventoryEntry
+// Data::IsWorn reads the same two, src/RE/I/InventoryEntryData.cpp:223-234)
+bool IsWornList(const RE::ExtraDataList& list)
+{
+  return list.HasType(RE::ExtraDataType::kWorn) ||
+    list.HasType(RE::ExtraDataType::kWornLeft);
+}
+
+// thuum docs/verbs/npc-fate.md (playtest 48, the loot strip; Eli: "when i
+// activate the person their armor is unequipped in their inventory stripping
+// them naked"): the record's worn armor a dead copy holds but does not wear
+// is equipped again, never left loose in its inventory; run after the
+// reconcile's removals and adds, and after the client's apply of the
+// record's list (dressBody below). Armor alone (TESForm::IsArmor, include/RE/
+// T/TESForm.h:323; a shield is ARMO): a weapon, the ammo and a torch are the
+// hands', which the engine keeps on a corpse as it found them, and
+// WornOutfitEquals leaves the weapons out the same way. ActorEquipManager::
+// EquipObject (include/RE/A/ActorEquipManager.h:19) with the queue off, no
+// sound and applied now, the reconcile's own unequip shape, so nothing is
+// queued across the removals before it (the 18531 crash read below); the
+// stack equipped is an unworn list of the piece when it has one, else the
+// count no list carries (nullptr). HYPOTHESIS until x-body-open-worn reads
+// the worn list kept on both seats: that EquipObject dresses a dead actor,
+// its AI off, in place, and that a queued equip would wait on a process a
+// corpse never runs. Returns the pieces equipped.
+size_t DressBodyOnGameThread(RE::Actor* actor,
+                             const std::vector<uint32_t>& worn)
+{
+  auto* equipManager = RE::ActorEquipManager::GetSingleton();
+  if (!equipManager || worn.empty()) {
+    return 0;
+  }
+  const std::set<uint32_t> wanted(worn.begin(), worn.end());
+  size_t dressed = 0;
+  auto inventory = actor->GetInventory(
+    [](RE::TESBoundObject& o) { return !o.Is(RE::FormType::LeveledItem); });
+  for (auto& [object, entry] : inventory) {
+    if (!object || entry.first <= 0 || !object->IsArmor() ||
+        wanted.count(object->formID) == 0) {
+      continue;
+    }
+    bool wornHere = false;
+    RE::ExtraDataList* unworn = nullptr;
+    if (entry.second && entry.second->extraLists) {
+      for (auto* list : *entry.second->extraLists) {
+        if (!list) {
+          continue;
+        }
+        if (IsWornList(*list)) {
+          wornHere = true;
+        } else if (!unworn) {
+          unworn = list;
+        }
+      }
+    }
+    if (wornHere) {
+      continue;
+    }
+    equipManager->EquipObject(actor, object, unworn, 1, nullptr, false, false,
+                              false, true);
+    ++dressed;
+  }
+  return dressed;
+}
+}
+
+namespace {
 // re-npc-roll.md 8.4's late path on the game thread: the actor looked up
 // here (setPuppet's shape, the 2026-10-21 hang), the outfit stripped, the
 // server's worn list added tagged as the detour adds it, worn again
@@ -224,32 +293,70 @@ void ReconcileInventoryOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
       // GetCount and HasType, include/RE/E/ExtraDataList.h) so the purge
       // matches; the listless remainder goes with nullptr as before. The
       // lists are copied out first: a removal frees the list it is given.
+      // thuum docs/verbs/npc-fate.md (playtest 48, the loot strip, read from
+      // the code alone since no seat's log covers 20:24 to 20:32Z:
+      // Embershard's b6fe4 and b6dbb wore 13911 and 10594f on their host's
+      // engine, items the record lacked, E_EQUIP_REFUSED at 20:19:23Z; their
+      // change forms were served to the seat that hosted next, and after its
+      // lay this loop takes such a worn piece and adds the record's own
+      // unworn: a naked body, its armor loose, as Ariadne's loot found one).
+      // One rule for a body's inventory, which the client's apply of the
+      // record's list keeps too (sync/inventory.ts applyBodyInventory): a
+      // worn stack counts toward its item's row and the unworn stacks leave
+      // first, by their own lists, then the count no list carries; a worn
+      // stack leaves only when the record holds fewer of the item than the
+      // copy wears, and the record's worn armor left unworn is dressed again
+      // after the loop. HYPOTHESIS: RemoveItem with no list takes the count
+      // no list carries; a worn piece it takes instead is dressed again too
       int32_t toRemove = have - target;
-      std::vector<RE::ExtraDataList*> lists;
+      std::vector<RE::ExtraDataList*> unwornLists;
+      std::vector<RE::ExtraDataList*> wornLists;
+      int32_t inLists = 0;
       if (entry.second && entry.second->extraLists) {
         for (auto* list : *entry.second->extraLists) {
-          if (list) {
-            lists.push_back(list);
+          if (!list) {
+            continue;
+          }
+          inLists += std::max<int32_t>(1, list->GetCount());
+          if (IsWornList(*list)) {
+            wornLists.push_back(list);
+          } else {
+            unwornLists.push_back(list);
           }
         }
       }
-      auto* equipManager = RE::ActorEquipManager::GetSingleton();
-      for (auto* list : lists) {
+      for (auto* list : unwornLists) {
         if (toRemove <= 0) {
           break;
         }
-        const int32_t inList = std::max<int32_t>(1, list->GetCount());
-        const int32_t n = std::min(inList, toRemove);
-        if (equipManager &&
-            (list->HasType(RE::ExtraDataType::kWorn) ||
-             list->HasType(RE::ExtraDataType::kWornLeft))) {
+        const int32_t n =
+          std::min(std::max<int32_t>(1, list->GetCount()), toRemove);
+        // TESObjectREFR::RemoveItem (include/RE/T/TESObjectREFR.h:282),
+        // the handle it answers unread
+        (void)actor->RemoveItem(object, n, RE::ITEM_REMOVE_REASON::kRemove,
+                                list, nullptr);
+        toRemove -= n;
+      }
+      const int32_t loose = std::max<int32_t>(0, have - inLists);
+      if (toRemove > 0 && loose > 0) {
+        const int32_t n = std::min(loose, toRemove);
+        (void)actor->RemoveItem(object, n, RE::ITEM_REMOVE_REASON::kRemove,
+                                nullptr, nullptr);
+        toRemove -= n;
+      }
+      auto* equipManager = RE::ActorEquipManager::GetSingleton();
+      for (auto* list : wornLists) {
+        if (toRemove <= 0) {
+          break;
+        }
+        const int32_t n =
+          std::min(std::max<int32_t>(1, list->GetCount()), toRemove);
+        if (equipManager) {
           equipManager->UnequipObject(actor, object, list,
                                       static_cast<std::uint32_t>(n), nullptr,
                                       false, false, false, true);
           ++unequipped;
         }
-        // TESObjectREFR::RemoveItem (include/RE/T/TESObjectREFR.h:282),
-        // the handle it answers unread
         (void)actor->RemoveItem(object, n, RE::ITEM_REMOVE_REASON::kRemove,
                                 list, nullptr);
         toRemove -= n;
@@ -280,11 +387,17 @@ void ReconcileInventoryOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
     actor->AddObjectToContainer(bound, nullptr, missing, nullptr);
     added += static_cast<size_t>(missing);
   }
+  // a corpse's worn armor is the record's (the loot strip, above); a living
+  // copy's is its outfit's, which the redress dresses after this reconcile
+  // (Actor::IsDead, include/RE/A/Actor.h)
+  const size_t dressed =
+    actor->IsDead() ? DressBodyOnGameThread(actor, fate.worn) : 0;
   logger::info("[verb:npc-fate] inventory of {:x} reconciled to the record: "
                "{} row(s) and {} worn, {} removed ({} worn stack(s) "
-               "unequipped first), {} added, {} kept",
+               "unequipped first), {} added, {} kept, {} worn piece(s) "
+               "dressed again",
                refrId, fate.inv.size(), fate.worn.size(), removed, unequipped,
-               added, kept);
+               added, kept, dressed);
 }
 
 // The copy's worn OUTFIT set against the fate's, as sets of base ids: the
@@ -566,6 +679,56 @@ Napi::Value FateApi::RedressActor(const Napi::CallbackInfo& info)
     RedressOnGameThread(refrId, fate);
   });
   return Napi::Boolean::New(info.Env(), queued);
+}
+
+Napi::Value FateApi::DressBody(const Napi::CallbackInfo& info)
+{
+  const auto refrId = NapiHelper::ExtractUInt32(info[0], "refrId");
+  const auto wornArg = NapiHelper::ExtractArray(info[1], "worn");
+  if (refrId == 0 || refrId == 0x14) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  std::vector<uint32_t> worn;
+  const uint32_t n = wornArg.Length();
+  worn.reserve(n);
+  for (uint32_t i = 0; i < n; ++i) {
+    const std::string subArgName = "worn[" + std::to_string(i) + "]";
+    worn.push_back(
+      NapiHelper::ExtractUInt32(wornArg.Get(i), subArgName.c_str()));
+  }
+  // thuum docs/verbs/npc-fate.md (playtest 48, the loot strip): after the
+  // inventory changes the client's apply queued in this tick, then on the
+  // main thread as the fate's other engine work. The apply's addItemEx tasks
+  // sit on the game thread's queue, drained in order right after the tick
+  // (main.cpp's OnUpdate; Viet::TaskQueue runs its tasks first in, first
+  // out), so this task, queued behind them, hands the dress to SKSE's UI
+  // queue only once they have landed; a UI task queued from the tick itself
+  // could run on the main thread before them
+  g_nativeCallRequirements.gameThrQ->AddTask([refrId, worn](Viet::Void) {
+    (void)QueueFateTask("dressBody", refrId, [refrId, worn]() {
+      auto* actor = RE::TESForm::LookupByID<RE::Actor>(refrId);
+      if (!actor) {
+        logger::warn("[verb:npc-fate] dressBody({:x}): no such actor", refrId);
+        return;
+      }
+      // a living copy's worn set is its outfit's (redressActor), never this
+      if (!actor->IsDead()) {
+        logger::info("[verb:npc-fate] dressBody({:x}): the copy is alive "
+                     "here, nothing dressed",
+                     refrId);
+        return;
+      }
+      const size_t dressed = DressBodyOnGameThread(actor, worn);
+      // an open item menu on the body hears it as AddItemEx's changes do
+      if (dressed > 0) {
+        (void)ItemMenuRefresh::TryPost(*actor);
+      }
+      logger::info("[verb:npc-fate] body {:x}: {} worn piece(s) of the "
+                   "record's {} dressed again after the client's apply, on {}",
+                   refrId, dressed, worn.size(), FateThreadNote());
+    });
+  });
+  return Napi::Boolean::New(info.Env(), true);
 }
 
 Napi::Value FateApi::ResurrectActor(const Napi::CallbackInfo& info)

@@ -105,6 +105,17 @@ public:
   void SetRaceMenuOpen(bool isOpen);
   void SetAppearance(const Appearance* newAppearance);
   void SetEquipment(const Equipment& newEquipment);
+  // thuum docs/verbs/npc-fate.md (playtest 48, the loot strip): the record's
+  // worn set never names more of an item than its inventory holds. A take
+  // from a body (TakeItemEvent) removed the inventory's row and left the
+  // equipment's worn entry, so the fate's worn list (PartOne's FateOf) kept
+  // naming the taken item and every seat's reconcile added it back. Called
+  // after `baseId` left this actor's inventory: its worn entries shrink to
+  // what the inventory still holds, an unworn copy leaving first. The
+  // equipment's numChanges stays: a copy's view re-applies a changed one whole
+  // (sync/equipment.ts applyEquipment: removeAllItems, then the worn alone),
+  // which on a body would empty its loot
+  void DropWornBeyondInventory(uint32_t baseId);
 
   void SetHealthRespawnPercentage(float percentage);
   void SetMagickaRespawnPercentage(float percentage);

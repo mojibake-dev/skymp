@@ -1853,6 +1853,8 @@ export declare function rerollActor(refrId: number): boolean;
 export declare function resurrectActor(refrId: number): boolean;
 // for a fate that arrives after an unleveled actor was dressed (re-npc-roll.md section 8.4's late path): on the game thread, the engine's RemoveOutfitItems with the base's default outfit, the server's worn list added tagged exactly as the outfit detour adds it, then AddWornOutfit: one pop; false when the id is invalid, the reference holds no fate or the switch is off (a reference the game cannot find, or a base with no default outfit, is a warn on the game thread)
 export declare function redressActor(refrId: number): boolean;
+// thuum docs/verbs/npc-fate.md (playtest 48, the loot strip): after the client laid the record's list into a dead body, the armor of worn (the record's equipment) that the body holds but does not wear is equipped again, the fate reconcile's own dress, queued behind the tick's addItemEx tasks and run on the main thread; false for an invalid id
+export declare function dressBody(refrId: number, worn: number[]): boolean;
 export declare function actorFateCount(): number;
 export declare function getAnimationVariablesFromActor(actorFormId: number): ActorAnimationVariables;
 export declare function applyAnimationVariablesToActor(actorFormId: number, animationVariables: ActorAnimationVariables): boolean;

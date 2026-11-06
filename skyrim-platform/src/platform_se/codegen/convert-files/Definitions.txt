@@ -1803,8 +1803,8 @@ export declare function getHighProcessActors(): number[];
 // thuum docs/verbs/npc-stream.md (ADR-050): the server's word that this game simulates the actor, kept in the hosted set the hook on the engine's action entry reads: a hosted actor's actions are reported (actionPerformed, actorId) and travel as UpdateAction under its own id; false for 0 and for the player's own id. Stored on the JS thread, no game call
 export declare function setHosted(actorFormId: number, hosted: boolean): boolean;
 export declare function isHosted(actorFormId: number): boolean;
-// thuum ADR-068 D-S3 (traps follow the interaction; docs/research/trap-slice-d-s3-2026-11-05.md): a reference's trap role from the platform's own reads: family (every script attached to it is in the trap family's class chain), playerOnly (its trigger's playerOnlyTrigger property), destroyed (its destroyed flag); null when the reference has no form or no attached script
-export declare function getTrapRole(formId: number): { family: boolean; playerOnly: boolean; destroyed: boolean } | null;
+// thuum ADR-068 D-S3 (traps follow the interaction; docs/research/trap-slice-d-s3-2026-11-05.md): a reference's trap role from the platform's own reads: family (every script attached to it is in the trap family's class chain), playerOnly (its trigger's playerOnlyTrigger property), destroyed (its destroyed flag), trigger (a script attached to it reaches TrapTriggerBase in its parent chain: a trap's trigger, never a trap body, so each seat's own copy moves its own; playtest 48); null when the reference has no form or no attached script
+export declare function getTrapRole(formId: number): { family: boolean; playerOnly: boolean; destroyed: boolean; trigger: boolean } | null;
 // thuum ADR-068 D-S3 point 4: a trap body another seat streams, so this seat's motion calls on it run neutralized (Keyframed, no impulse); stored on the JS thread, no game call
 export declare function setPropFollowed(formId: number, followed: boolean): boolean;
 // thuum ADR-068 D-S3 point 3: a reference whose server record is being applied, its Papyrus events blanked while the apply runs; stored on the JS thread, no game call

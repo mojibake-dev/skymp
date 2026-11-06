@@ -70,7 +70,10 @@ export class ObjectReferenceEx {
   // reference is a trap class (TrapFamily.cpp's roots, or the class's own
   // trap prefix) and its base no inventory object, playerOnly a trigger's
   // playerOnlyTrigger (HYPOTHESIS
-  // H-PO1), destroyed its destroyed flag; null with no form or no attached
+  // H-PO1), destroyed its destroyed flag, trigger whether a script on it
+  // reaches TrapTriggerBase (a trap's trigger, never a trap body:
+  // PropService.trapBodyRole; playtest 48), undefined from a platform older
+  // than the field; null with no form or no attached
   // script. The client's one read of it, so every rule that asks (the
   // activation block, the linked relay, the record's replay, the trap bodies,
   // the trap results) asks the same way. A game read: an update's or a game

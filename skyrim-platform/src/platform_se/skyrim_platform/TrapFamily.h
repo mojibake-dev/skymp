@@ -25,14 +25,20 @@ class ObjectTypeInfo;
 // and the seam counts it as every seat's own, so a trap fires wherever its
 // trigger is met, and what crosses is its single-use result (DestructionStage,
 // from the batch's SetDestroyed) and its bodies' motion (the prop stream, from
-// the batch's SetMotionType and ApplyHavokImpulse). Beside the test, two sets
+// the batch's SetMotionType and ApplyHavokImpulse). A trap's trigger is
+// never such a body (playtest 48, 2026-11-06): getTrapRole's trigger names a
+// reference whose script reaches TrapTriggerBase (the plates, the tripwire,
+// the bone alarms, the linkers), and skymp5-client claims and follows none,
+// so each seat's own copy moves its own (Embershard's wire 0xb6d3f drops its
+// rope by its own Tripwire state's SetMotionType). Beside the test, two sets
 // in Hosted.h's idiom, written by skymp5-client on the JS thread with no game
 // call: the trap bodies another seat streams, and the references whose
 // server record is being applied.
 namespace TrapFamily {
 // a script class is in the family: its own name begins with the prefix, or
 // it, or a class it extends, is one of the roots; the parent chain is walked
-// once per class and the verdict kept, so the gate's cost stays flat (rule 9)
+// once per class and the verdict kept, with the class's trigger verdict
+// beside it (RoleOf's), so the gate's cost stays flat (rule 9)
 bool IsFamilyType(const RE::BSScript::ObjectTypeInfo* info);
 // the reference is in the family: its base is no inventory object and every
 // script attached to its VM handle is in the family; false for a null
@@ -46,12 +52,15 @@ bool Destroyed(const RE::TESObjectREFR* ref);
 // getTrapRole's answer for a reference with an attached script; no answer
 // (std::nullopt) for an id that names no reference or one with no attached
 // script. Read on the calling thread: the form table under its own lock, the
-// attached scripts under the VM's
+// attached scripts under the VM's. trigger: any attached script reaches
+// TrapTriggerBase in its parent chain (the per-class verdict IsFamilyType
+// keeps), read whether or not the reference is in the family
 struct Role
 {
   bool family = false;
   bool playerOnly = false;
   bool destroyed = false;
+  bool trigger = false;
 };
 std::optional<Role> RoleOf(uint32_t formId);
 

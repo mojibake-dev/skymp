@@ -67,6 +67,7 @@ import { TimeService } from './timeService';
 import { HostService } from './hostService';
 import { ObjectAnimationService } from './objectAnimationService';
 import { PuppetService } from "./puppetService";
+import { RaceMenuService } from "./raceMenuService";
 import { logTrace, logError, logLab } from '../../logging';
 
 import { SpellCastMessage } from '../messages/spellCastMessage';
@@ -743,8 +744,21 @@ export class RemoteServer extends ClientListener {
       this.controller.lookupListener(HostService).holdUntilPlaced(msg.refrId, movement, msg.isDead === true);
     }
 
-    if (msg.props && msg.props.isRaceMenuOpen && msg.isMe) {
-      this.onSetRaceMenuOpenMessage({ message: { t: MsgType.SetRaceMenuOpen, open: true } });
+    // thuum playtest 48 (2026-11-06): the race menu the record keeps open
+    // opens on the recorded look for a recorded character (a CreateActor
+    // with an appearance): RaceMenuService opens it once its passes have put
+    // the server's look on the player (openRaceMenuAfterOwnLook); opened
+    // here at once, before them, it showed the race's defaults, and its
+    // close would have recorded them over the record. A new character's (no
+    // appearance) opens here at once, on the race's defaults, as before.
+    // Every own CreateActor sets or drops the wait
+    if (msg.isMe) {
+      const menuOpen = !!(msg.props && msg.props.isRaceMenuOpen);
+      const open = () => this.onSetRaceMenuOpenMessage({ message: { t: MsgType.SetRaceMenuOpen, open: true } });
+      this.controller.lookupListener(RaceMenuService).openRaceMenuAfterOwnLook(menuOpen && msg.appearance ? open : null);
+      if (menuOpen && !msg.appearance) {
+        open();
+      }
     }
 
     const numSetInventory = this.numSetInventory;

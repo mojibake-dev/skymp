@@ -366,8 +366,18 @@ export class ObjectAnimationService extends ClientListener {
         logLab('verb:traps', `pillar ${id.toString(16)} at the grant of ${cell.toString(16)}: no re-sync, its script record was applied there`);
         return;
       }
-      const initial = this.scriptSide.get(id) ?? 1;
-      const record = this.recordEvent.get(id);
+      // a record applied there whose view could not play (no 3D before the
+      // gate opened): its script stands on the view's side already, so the
+      // graph alone goes there and no turn is fed (fed turns would carry the
+      // script past its record); a view naming no side leaves the pillar be
+      const unplayed = scripts.unplayedViewAtGrant(id);
+      const unplayedSide = unplayed !== undefined ? sideOfRecord(unplayed) : undefined;
+      if (unplayed !== undefined && unplayedSide === undefined) {
+        logLab('verb:traps', `pillar ${id.toString(16)} at the grant of ${cell.toString(16)}: no re-sync, its script record's view ${unplayed} names no side`);
+        return;
+      }
+      const initial = unplayedSide ?? this.scriptSide.get(id) ?? 1;
+      const record = unplayed ?? this.recordEvent.get(id);
       const recordSide = record !== undefined ? sideOfRecord(record) : undefined;
       if (record !== undefined && recordSide === undefined) {
         logLab('verb:traps', `pillar ${id.toString(16)} at the grant of ${cell.toString(16)}: the record's event ${record} names no side, the script's side ${initial} stands`);

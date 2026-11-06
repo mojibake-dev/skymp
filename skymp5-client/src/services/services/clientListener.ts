@@ -247,6 +247,12 @@ declare module "skyrimPlatform" {
     // (and notes which it held) until ApplyScriptState clears the mark; a plain
     // table write, safe from a message handler (the platform's PuppetApi idiom)
     function setScriptRecordPending(formId: number, pending: boolean): boolean;
+    // the mark lowered without an apply (a record given up), answering the
+    // load events the gate held for the reference as a JSON array of names
+    // ("[]" for none), so the client re-sends them; and the scriptRecord switch
+    // told to the platform's touch hook (the "touch" rows of scriptCalls)
+    function releaseScriptRecordPending(formId: number): string;
+    function setScriptRecordTouches(enabled: boolean): boolean;
     // the voice slice: a puppet says the host's line through the engine's
     // own say with the info given; the result -1 pending, 0 none, 1 started,
     // 2 refused, 3 played by the sound descriptor path (no state byte), 4 deferred

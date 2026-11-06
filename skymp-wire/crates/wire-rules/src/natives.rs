@@ -32,6 +32,15 @@
 //! next sequence (6.11 item 1: one per object, owned by the server, so a
 //! receiver applies one object's relays in order and drops a stale one) and
 //! goes to the row's audience but the reporter as the row's relay native.
+//!
+//! One state row passes too: a row the table keeps as evidence
+//! ([`Keep::Evidence`], ProcessTrapHit's), which the core notes for its
+//! subject and relays to no seat (thuum docs/verbs/npc-fate.md, playtest 48:
+//! a trap's hit on an NPC its host simulates is that NPC's death evidence for
+//! the trap window, whenever the trap was set off). Its owner step judges the
+//! subject as an actor the reporter simulates (its simulator, the death
+//! report's own rule), never the reporter's own player; it reads no epoch and
+//! takes no sequence ([`Verdict::Kept`]).
 
 use std::collections::HashMap;
 
@@ -121,6 +130,14 @@ pub enum Keep {
     /// (CreateActor's prop, so a late joiner replays it); rung 7 retires it
     /// when the record carries the script's own state.
     Last,
+    /// The call itself as evidence the core notes for its subject, relayed to
+    /// no seat: a state row's call the subject's owner reports, which the
+    /// rule passes though no action is relayed (ProcessTrapHit's: the
+    /// simulator's word that a trap, its first argument, hit an actor it
+    /// simulates, that actor's death evidence for the trap window; thuum
+    /// docs/verbs/npc-fate.md, playtest 48). R2: recorded, the value never
+    /// judged.
+    Evidence,
 }
 
 /// A parameter's Papyrus type, as the platform reads the frame's variable.
@@ -177,6 +194,10 @@ const EVERY_ARG: [u8; 11] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 /// Where the players' figures and the server's own forms begin: a client
 /// names neither (the server does).
 const SERVER_NAMED: u32 = 0xff00_0000;
+
+/// The reporter's own player as its engine names it (the player character's
+/// form id): the subject a reporter names for its own actor.
+const OWN_PLAYER: u32 = 0x14;
 
 /// What a refusal of a [`SubjectKind::Record`] subject adds to its words:
 /// the server holds no reference for it and placed it by its record.
@@ -328,11 +349,13 @@ pub struct Facts {
     /// The subject's cell, 0 when the server cannot place it.
     pub cell: u32,
     /// The subject's owner by its kind: the host of its cell for a world
-    /// object, held or placed by its record, 0 while nobody hosts it (and
-    /// for every other kind: no action row is an actor's, the streams carry
-    /// those).
+    /// object, held or placed by its record, 0 while nobody hosts it; an
+    /// actor's simulator for an actor (0 for none), which only a row kept as
+    /// evidence reads (no action row is an actor's, the streams carry those);
+    /// 0 for every other kind.
     pub owner: u32,
-    /// That owner's standing epoch.
+    /// That owner's standing epoch (a world object's host's; unread for an
+    /// actor).
     pub owner_epoch: u32,
 }
 
@@ -401,6 +424,13 @@ pub struct Accept {
 pub enum Verdict {
     /// Relayed: the row's relay native to the audience but the reporter.
     Accept(Accept),
+    /// Kept as the subject's evidence and relayed to no seat: the owner's
+    /// call of a row the table keeps as evidence ([`Keep::Evidence`]), which
+    /// the core notes for the subject; no sequence is taken.
+    Kept {
+        /// The subject's form id.
+        subject: u32,
+    },
     /// Dropped quietly: a door's or a container's call.
     Skip,
     /// Refused, logged by the code's name.
@@ -415,18 +445,79 @@ fn refuse(code: Code, why: String) -> Verdict {
     Verdict::Refuse(refusal(code, why))
 }
 
+/// How a shaped call leaves the rule: as the native a receiver runs for it,
+/// or kept as its subject's evidence and relayed to no seat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Channel {
+    /// An action row's relay native, to the row's audience.
+    Relay {
+        /// The relay native's class.
+        cls: &'static str,
+        /// The relay native's name.
+        func: &'static str,
+    },
+    /// A state row the table keeps as evidence ([`Keep::Evidence`]).
+    Evidence,
+}
+
+/// The channel a call of `row` leaves by: an action row the table relays to
+/// the subject's listeners, or a state row it keeps as evidence; any other
+/// row is refused by its row (`E_SCRIPTCALL_ROW`).
+fn channel_of(row: &Row) -> Result<Channel, Refusal> {
+    match row.kind {
+        Kind::Action => {}
+        Kind::State if row.keep == Keep::Evidence => return Ok(Channel::Evidence),
+        Kind::State => return Err(refusal(Code::Row, "a state row: its consequence travels as the object's record (rung 4), never as an action".to_owned())),
+        Kind::Everyone => return Err(refusal(Code::Row, "an everyone row: every seat runs it (rung 5), never relayed as an action".to_owned())),
+        Kind::Local => return Err(refusal(Code::Row, "a local row: its consequence stays on its seat".to_owned())),
+    }
+    let Some((cls, func)) = row.relay_target() else {
+        return Err(refusal(Code::Row, "an action row the table never relays".to_owned()));
+    };
+    if row.owner != Owner::CellHost || row.audience != Audience::Listeners {
+        return Err(refusal(Code::Row, format!("an action row owned by the {:?} for the {:?}: no relay before its rung", row.owner, row.audience)));
+    }
+    Ok(Channel::Relay { cls, func })
+}
+
+/// The owner step on the call of a row kept as evidence ([`Keep::Evidence`]):
+/// its subject an actor the reporter simulates now (`facts.owner`, the core's
+/// simulator of the actor, the death report's own E_DEATH_NOT_HOST rule),
+/// never the reporter's own player (a player's trap hit is its own seat's:
+/// the hit counts on that seat alone, ADR-068 D-S3 point 2, and the player's
+/// health is its own report). An actor's owner is its simulator, so the epoch
+/// is not read; nothing is relayed, so no sequence is taken.
+fn keep_evidence(subject: u32, facts: &Facts) -> Verdict {
+    match facts.kind {
+        SubjectKind::Actor => {}
+        SubjectKind::Unknown => return refuse(Code::Owner, "the server holds no such reference".to_owned()),
+        SubjectKind::WorldObject | SubjectKind::Record | SubjectKind::DoorOrContainer => {
+            return refuse(Code::Row, "the subject is no actor: the row is an actor's death evidence".to_owned());
+        }
+    }
+    if subject == OWN_PLAYER {
+        return refuse(Code::Row, "the reporter's own player: a player's trap hit is its own seat's (the row is local for a player)".to_owned());
+    }
+    if facts.owner == 0 {
+        return refuse(Code::Owner, format!("nobody simulates {subject:x}"));
+    }
+    if facts.owner != facts.sender {
+        return refuse(Code::Owner, format!("{:x} simulates {subject:x}, not the reporter", facts.owner));
+    }
+    Verdict::Kept { subject }
+}
+
 /// A reported call the shape step passed: its row, the subject it names and
-/// the native a receiver runs for it, for the core to gather the subject's
-/// facts and ask the owner step. Only [`ScriptCalls::shape`] makes one, after
-/// it took the reporter's token, and [`ScriptCalls::owner`] takes it by
-/// value, so the owner step judges each shaped call once and never a call
-/// the shape step refused.
+/// how it leaves (the native a receiver runs for it, or the subject's
+/// evidence), for the core to gather the subject's facts and ask the owner
+/// step. Only [`ScriptCalls::shape`] makes one, after it took the reporter's
+/// token, and [`ScriptCalls::owner`] takes it by value, so the owner step
+/// judges each shaped call once and never a call the shape step refused.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Shaped {
     row: Row,
     subject: u32,
-    relay_cls: &'static str,
-    relay_fn: &'static str,
+    channel: Channel,
 }
 
 impl Shaped {
@@ -505,18 +596,7 @@ impl ScriptCalls {
         let Some(row) = row else {
             return Err(refusal(Code::Row, "the pair has no row in the table".to_owned()));
         };
-        match row.kind {
-            Kind::Action => {}
-            Kind::State => return Err(refusal(Code::Row, "a state row: its consequence travels as the object's record (rung 4), never as an action".to_owned())),
-            Kind::Everyone => return Err(refusal(Code::Row, "an everyone row: every seat runs it (rung 5), never relayed as an action".to_owned())),
-            Kind::Local => return Err(refusal(Code::Row, "a local row: its consequence stays on its seat".to_owned())),
-        }
-        let Some((relay_cls, relay_fn)) = row.relay_target() else {
-            return Err(refusal(Code::Row, "an action row the table never relays".to_owned()));
-        };
-        if row.owner != Owner::CellHost || row.audience != Audience::Listeners {
-            return Err(refusal(Code::Row, format!("an action row owned by the {:?} for the {:?}: no relay before its rung", row.owner, row.audience)));
-        }
+        let channel = channel_of(row)?;
         if args.len() != row.params.len() {
             return Err(refusal(Code::Args, format!("{} argument(s), the row's {}", args.len(), row.params.len())));
         }
@@ -531,15 +611,22 @@ impl ScriptCalls {
         if subject != self_id {
             return Err(refusal(Code::Args, format!("selfId {self_id:x} is not the call's subject {subject:x}")));
         }
-        Ok(Shaped { row: *row, subject, relay_cls, relay_fn })
+        Ok(Shaped { row: *row, subject, channel })
     }
 
     /// The owner step on a call the shape step passed, over the `facts` the
     /// core gathered for its subject: the subject's kind, its cell, that
     /// cell's host and the host's epoch, against `facts.sender` and
-    /// `facts.epoch`. An accepted call takes its subject's next sequence.
+    /// `facts.epoch`. An accepted call takes its subject's next sequence. A
+    /// call of a row kept as evidence is judged by its actor's simulator
+    /// alone (`facts.owner`), never the reporter's own player, and is kept
+    /// ([`Verdict::Kept`]) with no sequence.
     pub fn owner(&mut self, shaped: Shaped, facts: &Facts) -> Verdict {
-        let Shaped { row, subject, relay_cls, relay_fn } = shaped;
+        let Shaped { row, subject, channel } = shaped;
+        let (relay_cls, relay_fn) = match channel {
+            Channel::Relay { cls, func } => (cls, func),
+            Channel::Evidence => return keep_evidence(subject, facts),
+        };
         match facts.kind {
             SubjectKind::WorldObject | SubjectKind::Record => {}
             SubjectKind::DoorOrContainer => return Verdict::Skip,
@@ -963,6 +1050,12 @@ mod tests {
             if r.kind == Kind::Action {
                 assert!(r.relay_target().is_some() && r.audience == Audience::Listeners && r.owner == Owner::CellHost, "{name}");
                 assert!(r.relay_args().iter().all(|&a| usize::from(a) < r.params.len()), "{name}");
+            } else if r.keep == Keep::Evidence {
+                // a row kept as evidence is an actor's state row, its
+                // simulator's, heard by nobody, its subject its self and its
+                // first parameter the object the evidence names
+                assert_eq!((r.kind, r.subject, r.owner, r.audience, r.relay), (Kind::State, Subject::SelfRef, Owner::Simulator, Audience::Nobody, Relay::Never), "{name}");
+                assert_eq!(r.params.first(), Some(&Param::Object), "{name}");
             } else {
                 assert_eq!((r.relay, r.keep), (Relay::Never, Keep::Nothing), "{name}");
             }
@@ -980,5 +1073,86 @@ mod tests {
         // the flip's nineteen state rows and D-S3's three
         assert_eq!(TABLE.iter().filter(|r| r.kind == Kind::State).count(), 22);
         assert_eq!(row("Game", "GetPlayer").map(|r| r.kind), Some(Kind::Local));
+        // one row kept as evidence: a trap's hit on an actor (playtest 48)
+        let evidence: Vec<String> = TABLE.iter().filter(|r| r.keep == Keep::Evidence).map(|r| format!("{}.{}", r.cls, r.func)).collect();
+        assert_eq!(evidence, ["ObjectReference.ProcessTrapHit"]);
+    }
+
+    // Bleak Falls Temple's ambush draugr 0x800a6, which the hanging blades
+    // killed on its host after their trigger box 0x86018's notes had lapsed
+    // (playtest 48, 22:00:54Z: E_DEATH_UNCHECKED), and the middle blade
+    // 0x3ac35 (docs/research/trap-census-2026-11-05.md, row 4)
+    const DRAUGR: u32 = 0x800a6;
+    const BLADE: u32 = 0x3ac35;
+
+    // TrapHitBase's `akTarget.ProcessTrapHit(self, damage, ...)` as the
+    // boundary reads it: the trap, then the native's ten numbers
+    // (FunctionsDump.txt: eight Floats, an Int, a Float)
+    fn trap_hit(trap: Arg) -> [Arg; 11] {
+        [trap, Arg::Number, Arg::Number, Arg::Number, Arg::Number, Arg::Number, Arg::Number, Arg::Number, Arg::Number, Arg::Number, Arg::Number]
+    }
+
+    // the draugr in the temple, simulated by the host (its cell's), the
+    // reporter
+    fn simulated(self_id: u32) -> Facts {
+        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: HOST, owner_epoch: 0 }
+    }
+
+    #[test]
+    fn a_trap_hit_is_kept_as_its_actors_evidence_from_its_simulator_alone() {
+        let mut s = ScriptCalls::default();
+        let row = row("ObjectReference", "ProcessTrapHit");
+        let blade = trap_hit(Arg::Object(u64::from(BLADE)));
+        // its simulator's report: kept, relayed to nobody, no sequence taken
+        assert_eq!(s.judge(row, &blade, &simulated(DRAUGR), 0), Verdict::Kept { subject: DRAUGR });
+        assert_eq!(s.seq_of(DRAUGR), 0);
+        // an actor's owner is its simulator: the epoch is not read
+        assert_eq!(s.judge(row, &blade, &Facts { epoch: 0, ..simulated(DRAUGR) }, 0), Verdict::Kept { subject: DRAUGR });
+        // a None trap fits the row's object parameter (a value is never judged)
+        assert_eq!(s.judge(row, &trap_hit(Arg::Absent), &simulated(DRAUGR), 0), Verdict::Kept { subject: DRAUGR });
+        let refused = |v: Verdict| match v {
+            Verdict::Refuse(r) => (r.code, r.why),
+            other => panic!("not refused: {other:?}"),
+        };
+        // a guest's report: another seat simulates the actor
+        assert_eq!(refused(s.judge(row, &blade, &Facts { sender: GUEST, ..simulated(DRAUGR) }, 0)), (Code::Owner, "ff000000 simulates 800a6, not the reporter".to_owned()));
+        // nobody simulates it
+        assert_eq!(refused(s.judge(row, &blade, &Facts { owner: 0, ..simulated(DRAUGR) }, 0)), (Code::Owner, "nobody simulates 800a6".to_owned()));
+        // the reporter's own player: a player's trap hit is its own seat's
+        assert_eq!(code(&s.judge(row, &blade, &simulated(0x14), 0)), Some(Code::Row));
+        // no actor: a world object, a placement by its record, a door; and
+        // nothing the server holds
+        for kind in [SubjectKind::WorldObject, SubjectKind::Record, SubjectKind::DoorOrContainer] {
+            assert_eq!(code(&s.judge(row, &blade, &Facts { kind, ..simulated(PILLAR) }, 0)), Some(Code::Row), "{kind:?}");
+        }
+        assert_eq!(code(&s.judge(row, &blade, &Facts { kind: SubjectKind::Unknown, ..simulated(DRAUGR) }, 0)), Some(Code::Owner));
+        // the row's count and kinds: ten arguments, a string for the trap
+        let ten: Vec<Arg> = blade.iter().copied().take(10).collect();
+        assert_eq!(code(&s.judge(row, &ten, &simulated(DRAUGR), 0)), Some(Code::Args));
+        let mut texted = blade.to_vec();
+        if let Some(first) = texted.first_mut() {
+            *first = Arg::String;
+        }
+        assert_eq!(code(&s.judge(row, &texted, &simulated(DRAUGR), 0)), Some(Code::Args));
+        // a figure the server names is no subject a reporter may name
+        assert_eq!(code(&s.judge(row, &blade, &simulated(0xff00_0002), 0)), Some(Code::Args));
+        assert_eq!(s.seq_of(DRAUGR), 0, "nothing kept took a sequence");
+    }
+
+    #[test]
+    fn a_trap_hit_spends_the_reporters_budget_as_any_call_does() {
+        // the shape step's token comes first for an evidence row too, so the
+        // hits are rate-limited with the reporter's every other call
+        let mut s = ScriptCalls::default();
+        let hit = row("ObjectReference", "ProcessTrapHit");
+        let blade = trap_hit(Arg::Object(u64::from(BLADE)));
+        for _ in 0..BURST {
+            assert_eq!(s.judge(hit, &blade, &simulated(DRAUGR), 1_000), Verdict::Kept { subject: DRAUGR });
+        }
+        assert_eq!(code(&s.judge(hit, &blade, &simulated(DRAUGR), 1_000)), Some(Code::Rate));
+        // the spent budget is the reporter's whole: its animation waits too
+        assert_eq!(code(&s.judge(row("ObjectReference", "PlayAnimation"), &[Arg::String], &hosted(PILLAR), 1_000)), Some(Code::Rate));
+        // a token every 125 ms
+        assert_eq!(s.judge(hit, &blade, &simulated(DRAUGR), 1_125), Verdict::Kept { subject: DRAUGR });
     }
 }

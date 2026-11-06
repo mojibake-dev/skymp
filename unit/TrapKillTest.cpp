@@ -7,6 +7,7 @@
 #include <spdlog/sinks/ostream_sink.h>
 #include <spdlog/spdlog.h>
 #include <sstream>
+#include <string>
 
 PartOne& GetPartOne();
 
@@ -24,6 +25,14 @@ PartOne& GetPartOne();
 // 0x54b15 (its XAPR names the plate) at (8428.4, -5421.5); the draugr
 // 0x380b3 (an ACHR) at (8657, -5215, -2055); the oil lamp 0x9b0fb, a
 // destructible ACTI, at (5779, -7656, -2131).
+// Playtest 48 (2026-11-06): the blades kept swinging long after their
+// trigger box's notes lapsed, and the host's report of draugr 800a6's death
+// at 22:00:54Z, 106 s after the box fired, was refused (E_DEATH_UNCHECKED:
+// "no hit, drop or activation the server saw"). The host's own engine sees
+// every trap hit on an NPC it simulates (ProcessTrapHit's seam row), so it
+// reports the hit as a ScriptCall, which the server keeps as that NPC's
+// death evidence for the trap window (wire-rules natives Keep::Evidence),
+// whenever the trap was set off.
 namespace {
 constexpr uint32_t kHostActor = 0xff000fd1;
 constexpr uint32_t kGuestActor = 0xff000fd2;
@@ -44,6 +53,9 @@ constexpr uint32_t kBlade = 0x3ac33;
 constexpr uint32_t kWire = 0xb6d3f;
 constexpr uint32_t kLinker = 0xb6d3e;
 constexpr uint32_t kPlatform = 0xb6d47;
+// another of the Temple's ambush draugr, an ACHR (x-trap-npc-kill's second,
+// the wall's kill in playtest 48)
+constexpr uint32_t kOtherDraugr = 0x380b5;
 
 uint64_t NowMs()
 {
@@ -139,6 +151,33 @@ void ReportDeath(PartOne& p, uint32_t refrId, const NiPoint3& pos)
   RawMessageData raw;
   raw.userId = 0;
   p.GetActionListener().OnActorDeath(raw, msg);
+}
+
+using Arg = std::optional<
+  std::variant<bool, double, std::string, SpSnippetObjectArgument>>;
+
+// TrapHitBase.OnTrapHitStart's `akTarget.ProcessTrapHit(self, damage, ...)`
+// on `target` with `trap` first, as `user`'s game reports it through the seam
+// (ScriptCall, the platform's batch: a blade's numbers, never judged)
+void TrapHit(PartOne& p, Networking::UserId user, uint32_t target,
+             uint32_t trap)
+{
+  SpSnippetObjectArgument trapArg;
+  trapArg.formId = trap;
+  trapArg.type = "ObjectReference";
+  ScriptCallMessage msg;
+  msg.epoch = p.GetCellHost(kTemple).epoch;
+  msg.selfId = target;
+  msg.cls = "ObjectReference";
+  msg.fn = "ProcessTrapHit";
+  msg.args = { Arg(trapArg), Arg(60.0), Arg(0.0),    Arg(0.0),
+               Arg(0.0),     Arg(0.0),  Arg(6131.0), Arg(-7143.0),
+               Arg(-2305.0), Arg(0.0),  Arg(0.0) };
+  msg.caller = "TrapHitBase";
+  msg.handler = "OnTrapHitStart";
+  RawMessageData raw;
+  raw.userId = user;
+  p.GetActionListener().OnScriptCall(raw, msg);
 }
 
 // the host's report of a trigger's own firing (activationService: caster
@@ -348,4 +387,168 @@ TEST_CASE("A trigger's firing notes its activation children two levels down",
   REQUIRE(seen.has_value());
   REQUIRE(seen->trap);
   REQUIRE(children.at(kLinker).count(seen->refId) == 1);
+}
+
+TEST_CASE("A trap's hit its host reports backs the NPC's death after its "
+          "trigger's notes lapse (playtest 48's blades)",
+          "[TrapKill][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& draugr = Enter(p);
+  auto& box = p.worldState.GetFormAt<MpObjectReference>(kBoxTrigger);
+  auto& blade = p.worldState.GetFormAt<MpObjectReference>(kBlade);
+  const auto& children = p.worldState.activationChildsByActivationParent;
+  REQUIRE(children.count(kBoxTrigger) == 1);
+  REQUIRE(children.at(kBoxTrigger).count(kBlade) == 1);
+  const NiPoint3 body = blade.GetPos() + NiPoint3{ 100.f, 0.f, 0.f };
+  draugr.SetPos(body);
+  // the box fired 40 s before the death, past the trap window: its notes
+  // and its blades' have lapsed while the blades swing on
+  p.GetActionListener().NoteTrapFiring(
+    box, std::chrono::steady_clock::now() - std::chrono::seconds(40));
+
+  // no hit: refused as before (the refusal's line is rate-limited per actor
+  // across the process, so its count is not read)
+  ReportDeath(p, kDraugr, body);
+  REQUIRE_FALSE(draugr.IsDead());
+
+  // the blade hits the draugr on its host's engine, which reports the hit
+  p.Messages().clear();
+  {
+    LogCapture log;
+    TrapHit(p, 0, kDraugr, kBlade);
+    REQUIRE(log.Count("[verb:npc-fate] ff000fd1 reports "
+                      "ObjectReference.ProcessTrapHit on 380b3 in cell 371de "
+                      "(from TrapHitBase.OnTrapHitStart): the trap 3ac33 hit "
+                      "it, noted as its death's evidence") == 1);
+    REQUIRE(log.Count("E_SCRIPTCALL_") == 0);
+  }
+  // kept, relayed to nobody
+  REQUIRE(p.Messages().empty());
+  {
+    LogCapture log;
+    ReportDeath(p, kDraugr, body);
+    REQUIRE(log.Count("a trap's evidence beside the body (3ac33 hit it ") ==
+            1);
+    REQUIRE(log.Count("ms before, its host's word); the server records the "
+                      "death") == 1);
+  }
+  REQUIRE(draugr.IsDead());
+  Leave(p);
+}
+
+TEST_CASE("A trap's hit backs its own NPC's death alone, within the trap "
+          "window",
+          "[TrapKill][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& draugr = Enter(p);
+  auto& box = p.worldState.GetFormAt<MpObjectReference>(kBoxTrigger);
+  auto& blade = p.worldState.GetFormAt<MpObjectReference>(kBlade);
+  auto& other = p.worldState.GetFormAt<MpActor>(kOtherDraugr);
+  const NiPoint3 body = blade.GetPos() + NiPoint3{ 100.f, 0.f, 0.f };
+  draugr.SetPos(body);
+  const auto now = std::chrono::steady_clock::now();
+  // the box's last firing 40 s before the death
+  p.GetActionListener().NoteTrapFiring(box, now - std::chrono::seconds(40));
+  auto& listener = p.GetActionListener();
+
+  // the blade hit another draugr a second ago: no evidence for this one
+  listener.NoteTrapHit(other, kBlade, now - std::chrono::seconds(1));
+  REQUIRE(listener.TrapHitOn(other, now).has_value());
+  REQUIRE_FALSE(listener.TrapHitOn(draugr, now).has_value());
+  ReportDeath(p, kDraugr, body);
+  REQUIRE_FALSE(draugr.IsDead());
+  // its hit 40 s before the death: past the trap window, refused
+  listener.NoteTrapHit(draugr, kBlade, now - std::chrono::seconds(40));
+  REQUIRE_FALSE(listener.TrapHitOn(draugr, now).has_value());
+  ReportDeath(p, kDraugr, body);
+  REQUIRE_FALSE(draugr.IsDead());
+  // its hit 10 s before the death, 30 s after the box fired: taken
+  listener.NoteTrapHit(draugr, kBlade, now - std::chrono::seconds(10));
+  const auto hit = listener.TrapHitOn(draugr, now);
+  REQUIRE(hit.has_value());
+  REQUIRE(hit->trapId == kBlade);
+  {
+    LogCapture log;
+    ReportDeath(p, kDraugr, body);
+    REQUIRE(log.Count("a trap's evidence beside the body (3ac33 hit it ") ==
+            1);
+  }
+  REQUIRE(draugr.IsDead());
+  Leave(p);
+}
+
+TEST_CASE("A death the trap's own notes explain keeps their line beside a "
+          "hit",
+          "[TrapKill][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& draugr = Enter(p);
+  p.worldState.GetFormAt<MpObjectReference>(kBoxTrigger);
+  auto& blade = p.worldState.GetFormAt<MpObjectReference>(kBlade);
+  const NiPoint3 body = blade.GetPos() + NiPoint3{ 100.f, 0.f, 0.f };
+  draugr.SetPos(body);
+  // the box's linked report of the blade now (playtest 47's shape), and the
+  // blade's hit on the draugr: the place's note is read first, so the line
+  // the x-trap-npc-kill probes claim stays as it was
+  {
+    ActivateMessage msg;
+    msg.data.caster = kBoxTrigger;
+    msg.data.target = kBlade;
+    msg.data.isSecondActivation = false;
+    RawMessageData raw;
+    raw.userId = 0;
+    p.GetActionListener().OnActivate(raw, msg);
+  }
+  TrapHit(p, 0, kDraugr, kBlade);
+  REQUIRE(p.GetActionListener()
+            .TrapHitOn(draugr, std::chrono::steady_clock::now())
+            .has_value());
+  {
+    LogCapture log;
+    ReportDeath(p, kDraugr, body);
+    REQUIRE(log.Count("a trap's evidence beside the body (3ac33, ") == 1);
+    REQUIRE(log.Count(" hit it ") == 0);
+  }
+  REQUIRE(draugr.IsDead());
+  Leave(p);
+}
+
+TEST_CASE("A guest's report of a trap's hit and a hit on the reporter's own "
+          "player are refused and note nothing",
+          "[TrapKill][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& draugr = Enter(p);
+  p.worldState.GetFormAt<MpObjectReference>(kBlade);
+  const uint32_t epoch = p.GetCellHost(kTemple).epoch;
+  p.Messages().clear();
+  {
+    LogCapture log;
+    // the guest does not simulate the draugr: E_SCRIPTCALL_OWNER
+    TrapHit(p, 1, kDraugr, kBlade);
+    // the host's own player: its trap hit is its own seat's
+    TrapHit(p, 0, 0x14, kBlade);
+    REQUIRE(log.Count("[verb:scripts] E_SCRIPTCALL_OWNER: ff000fd2 reports "
+                      "ObjectReference.ProcessTrapHit on 380b3 (epoch " +
+                      std::to_string(epoch) +
+                      ", from TrapHitBase.OnTrapHitStart): ff000fd1 "
+                      "simulates 380b3, not the reporter; refused, 1 since "
+                      "the last line") == 1);
+    REQUIRE(log.Count("[verb:scripts] E_SCRIPTCALL_ROW: ff000fd1 reports "
+                      "ObjectReference.ProcessTrapHit on 14 (epoch " +
+                      std::to_string(epoch) +
+                      ", from TrapHitBase.OnTrapHitStart): the reporter's "
+                      "own player: a player's trap hit is its own seat's (the "
+                      "row is local for a player); refused, 1 since the last "
+                      "line") == 1);
+    REQUIRE(log.Count("noted as its death's evidence") == 0);
+  }
+  const auto now = std::chrono::steady_clock::now();
+  REQUIRE_FALSE(p.GetActionListener().TrapHitOn(draugr, now).has_value());
+  const auto& host = p.worldState.GetFormAt<MpActor>(kHostActor);
+  REQUIRE_FALSE(p.GetActionListener().TrapHitOn(host, now).has_value());
+  REQUIRE(p.Messages().empty());
+  Leave(p);
 }

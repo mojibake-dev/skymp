@@ -2223,21 +2223,26 @@ wire_struct! {
     /// boundary (NativeFunctionBase::Call) from the call's typed frame and
     /// reported as it ran. Client to server, reliable, R2: the server judges
     /// the shape alone (wire-rules natives: the pair an action row of the
-    /// table, the arguments the row's count and kinds, the sender within its
-    /// budget and the subject's owner at the epoch) and relays an accepted
-    /// call to the subject's other listeners as SpSnippet 30 with the
-    /// subject's sequence (`seq`); a value is never judged (ADR-062's
-    /// amendment). Reason codes: `E_VAL_RANGE` (an empty class or function,
-    /// a subject or an object argument the server names, 0xff000000 and
-    /// up, or an object id past 32 bits), `E_VAL_NONFINITE`; the server's
-    /// rule logs `E_SCRIPTCALL_ROW`, `E_SCRIPTCALL_ARGS`,
-    /// `E_SCRIPTCALL_OWNER` and `E_SCRIPTCALL_RATE` by name.
+    /// table or a state row it keeps as evidence, the arguments the row's
+    /// count and kinds, the sender within its budget and the subject's owner
+    /// at the epoch) and relays an accepted action to the subject's other
+    /// listeners as SpSnippet 30 with the subject's sequence (`seq`), or
+    /// keeps an evidence row's call for its subject and relays it to no seat
+    /// (ProcessTrapHit's: a trap's hit on an actor the sender simulates, that
+    /// actor's death evidence; thuum docs/verbs/npc-fate.md, playtest 48); a
+    /// value is never judged (ADR-062's amendment). Reason codes:
+    /// `E_VAL_RANGE` (an empty class or function, a subject or an object
+    /// argument the server names, 0xff000000 and up, or an object id past 32
+    /// bits), `E_VAL_NONFINITE`; the server's rule logs `E_SCRIPTCALL_ROW`,
+    /// `E_SCRIPTCALL_ARGS`, `E_SCRIPTCALL_OWNER` and `E_SCRIPTCALL_RATE` by
+    /// name.
     pub struct ScriptCall {
         /// `"t": 75`.
         #[serde(default)]
         pub t: MsgT<75>,
         /// The subject's owner epoch the sender holds: the cell's host epoch
-        /// of HostGrant for a world object (ADR-066 decision 3).
+        /// of HostGrant for a world object (ADR-066 decision 3); for an
+        /// actor its cell's, unread (an actor's owner is its simulator).
         pub epoch: u32,
         /// The call's subject as the sender's engine numbers it: the self of
         /// a method native, the target argument (the first) of a static one;

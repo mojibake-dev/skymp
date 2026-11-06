@@ -13,12 +13,15 @@
 // 6.4): a tabled native a script ran on the engine that owns the call's
 // subject, read at the native boundary (NativeFunctionBase::Call) from the
 // call's typed frame and reported as it ran. The server judges the shape
-// alone (wire-rules natives: the pair an action row, the arguments the
-// row's count and kinds, the sender's budget, the subject's owner at the
-// epoch; ActionListener::OnScriptCall) and relays an accepted call to the
-// subject's other listeners as SpSnippet with the subject's sequence; a value
-// is never judged. Client to server, reliable. The contract is
-// skymp-wire's (wire-schema skymp.rs, ScriptCall, MsgType 75, wire id 83).
+// alone (wire-rules natives: the pair an action row or a state row kept as
+// evidence, the arguments the row's count and kinds, the sender's budget,
+// the subject's owner at the epoch; ActionListener::OnScriptCall) and relays
+// an accepted action to the subject's other listeners as SpSnippet with the
+// subject's sequence, or notes an evidence row's call for its subject
+// (ProcessTrapHit's, a trap's hit on an NPC the sender simulates: the NPC's
+// death evidence, thuum docs/verbs/npc-fate.md); a value is never judged.
+// Client to server, reliable. The contract is skymp-wire's (wire-schema
+// skymp.rs, ScriptCall, MsgType 75, wire id 83).
 struct ScriptCallMessage : public MessageBase<ScriptCallMessage>
 {
   static constexpr auto kMsgType =
@@ -38,7 +41,8 @@ struct ScriptCallMessage : public MessageBase<ScriptCallMessage>
       .Serialize("latent", latent);
   }
 
-  // the subject's owner epoch the sender holds (the cell's host epoch)
+  // the subject's owner epoch the sender holds (the cell's host epoch;
+  // unread for an actor, whose owner is its simulator)
   uint32_t epoch = 0;
   // the call's subject: a method native's self, a static one's target (its
   // first argument); a load-order form, or 0x14 for the sender's own player

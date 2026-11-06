@@ -277,6 +277,27 @@ public:
     const MpObjectReference& where, const NiPoint3& pos,
     std::chrono::steady_clock::time_point now) const;
 
+  // thuum docs/verbs/npc-fate.md (playtest 48): a trap's hit on an actor,
+  // its simulator's word through the seam (ProcessTrapHit's row, which
+  // wire-rules natives keeps as evidence: OnScriptCall), noted beside the
+  // trap notes above and kept as long, kDeathTrapWindow. It names the actor
+  // it hit, not a place: a death of that actor within the window is taken on
+  // it whenever its trap was set off (Bleak Falls Temple's blades swing on
+  // long after their trigger's notes lapse; 48 refused 800a6 so, 106 s
+  // after the box 0x86018 fired). The newest hit on `actor` within the
+  // window, or nothing: a copy, as ActivationSeenNear's
+  struct RecentTrapHit
+  {
+    std::chrono::steady_clock::time_point at;
+    uint32_t actorId = 0;
+    // the trap the hit names (ProcessTrapHit's akTrap), 0 for None
+    uint32_t trapId = 0;
+  };
+  void NoteTrapHit(const MpActor& actor, uint32_t trapId,
+                   std::chrono::steady_clock::time_point now);
+  std::optional<RecentTrapHit> TrapHitOn(
+    const MpActor& actor, std::chrono::steady_clock::time_point now) const;
+
   virtual void OnFinishSpSnippet(const RawMessageData& rawMsgData,
                                  const FinishSpSnippetMessage& msg);
 
@@ -416,6 +437,7 @@ private:
                             MsgType msgType = MsgType::Invalid);
 
   std::deque<RecentActivation> recentActivations;
+  std::deque<RecentTrapHit> recentTrapHits;
 
   // The message, as received, to every user listening to the actor. A
   // hosted actor's report is not echoed to the game that sent it (thuum

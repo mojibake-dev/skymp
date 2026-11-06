@@ -150,7 +150,8 @@ type Owner = { player: number; epoch: number; leaseUntil: number; grantedAt: num
 // ADR-068 D-S3 point 4: a trap body this seat knows, by the server's id: a
 // family reference this seat's own script set moving (the scriptCalls batch),
 // one an owner word names (the firing seat's claim), or one whose record rests
-// away from this engine's copy (a restart, a late join). localId this engine's
+// away from this engine's copy (a restart, a late join); never a trap's
+// trigger (trapBodyRole). localId this engine's
 // (a game-file reference's own id); claimedAt this seat's last claim; followed
 // while another seat's firing streams it (setPropFollowed)
 type TrapBody = { localId: number; claimedAt: number; followed: boolean };
@@ -208,7 +209,11 @@ const angleDelta = (a: number, b: number): number => ((((a - b + 180) % 360) + 3
 // rests away from this engine's copy (a restart, a late join) is placed at its
 // record. Trap bodies are tracked at any distance in the player's world or
 // cell and past the item cap, take no grace, and are never claimed by a
-// contact, a grab or a drop (the server admits touch 3 alone for them).
+// contact, a grab or a drop (the server admits touch 3 alone for them). A
+// trap's trigger is never a trap body (trapBodyRole; playtest 48): its own
+// script's motion calls claim nothing and a word on it is never followed, so
+// each seat's own copy moves its own (a tripwire's rope, a bone alarm's
+// bones), while the rocks it fires stay the firing seat's streamed bodies.
 // HYPOTHESIS H-AW (the neutral arguments hold a followed body) and H-KF (a
 // Keyframed follower rock may never hurt its own seat's player), the design's.
 export class PropService extends ClientListener {
@@ -1341,7 +1346,9 @@ export class PropService extends ClientListener {
     // touch 3 once per firing: not while a live word names this seat, nor
     // again within TRAP_FIRING_MS of this seat's last claim. A motion type the
     // script set is the body's from here (a Dynamic body takes no motion set
-    // from this service, so its fall carries on)
+    // from this service, so its fall carries on). A trap's trigger set moving
+    // by its own script (the Tripwire's [Active] SetMotionType(self, 1, true))
+    // is left to it: no body, no claim (trapBodyRole)
     private claimTrapMotions(now: number) {
         const motions = this.trapMotions;
         this.trapMotions = [];
@@ -1356,8 +1363,8 @@ export class PropService extends ClientListener {
             if (!body) {
                 // a script parking its reference (a Keyframed set) makes no
                 // body; the batch carries a family reference's calls alone,
-                // read again here
-                if (!moving || !ObjectReferenceEx.isTrapFamily(m.localId)) {
+                // read again here, and a trap's trigger makes none
+                if (!moving || this.trapBodyRole(refr, m.localId, "moved by its own script") !== "body") {
                     continue;
                 }
                 body = this.addTrapBody(refr, m.localId);
@@ -1393,7 +1400,9 @@ export class PropService extends ClientListener {
     // names another seat puts this seat behind that seat's firing: the body is
     // followed and Keyframed at once where this seat's copy stands (in the
     // race, a round trip into its own fall) and the stream takes it from
-    // there. A word that names this seat or nobody ends a follow
+    // there. A word that names this seat or nobody ends a follow. A word on a
+    // trap's trigger (another seat's claim of one, from a build before
+    // playtest 48's fix) is never followed (trapBodyRole)
     private followTrapWords(now: number) {
         const words = this.trapWords;
         this.trapWords = [];
@@ -1403,6 +1412,7 @@ export class PropService extends ClientListener {
             if (!word) {
                 continue;
             }
+            const named = `named by ${word.player.toString(16)}'s owner word`;
             let body = this.trapBodies.get(refr);
             if (!body) {
                 const tracked = this.props.get(refr);
@@ -1410,13 +1420,19 @@ export class PropService extends ClientListener {
                     continue; // an item's word
                 }
                 const localId = remoteIdToLocalId(refr);
-                if (!localId || !ObjectReferenceEx.isTrapFamily(localId)) {
+                if (!localId || this.trapBodyRole(refr, localId, named) !== "body") {
                     continue;
                 }
                 body = this.addTrapBody(refr, localId);
                 if (!body) {
                     continue;
                 }
+            } else if (this.trapBodyRole(refr, body.localId, named) === "trigger") {
+                // whatever made the body (no path here makes one of a
+                // trigger), a trigger is never followed: a follow already up
+                // on it ends as a word naming this seat ends one
+                this.releaseTrapFollow(refr, "a trap trigger is its own seat's");
+                continue;
             }
             if (word.player === 0 || word.player === myId) {
                 this.releaseTrapFollow(refr, word.player === 0 ? "the word names nobody" : "the word names this seat");
@@ -1497,6 +1513,39 @@ export class PropService extends ClientListener {
         return prop.trap && this.trapBodies.get(prop.refr)?.followed === true;
     }
 
+    // ADR-068 D-S3 point 4 (playtest 48, 2026-11-06): what a reference is to
+    // the trap bodies, read where a body would be made or followed. A family
+    // reference is a body ("body") unless it is a trap's trigger ("trigger":
+    // getTrapRole's trigger, a script on it reaching TrapTriggerBase; the
+    // plates, the tripwire, the bone alarms, the linkers: TrapFamily.cpp),
+    // which never is: its own script's motion calls claim nothing, another
+    // seat's word on it is never followed and its record never places it, so
+    // each seat's own copy moves its own. Embershard's wire 0xb6d3f is why:
+    // its Tripwire state's [Active] onBeginState opens with SetMotionType(self,
+    // 1, true), so the host claimed it by touch 3 and the guest followed it,
+    // its own SetMotionType run Keyframed ("a trap body another seat
+    // streams"), and nothing the host's stream carries moves a rope:
+    // TrapTripwire01.nif is a Havok rope (13 rigid bodies in two ball-socket
+    // constraint chains and a phantom, thuum-cf's read of the mesh) and the
+    // stream carries one transform per reference, so the guest's rope hung
+    // taut. "none" is no role or no family; a trigger is said once per
+    // reference; an older platform answers no trigger, so its rule is the one
+    // before
+    private trapBodyRole(refr: number, localId: number, how: string): "body" | "trigger" | "none" {
+        const role = ObjectReferenceEx.trapRole(localId);
+        if (role === null || !role.family) {
+            return "none";
+        }
+        if (role.trigger !== true) {
+            return "body";
+        }
+        if (!this.trapTriggersSaid.has(refr)) {
+            this.trapTriggersSaid.add(refr);
+            logLab(TRAP_TAG, `trap trigger ${refr.toString(16)} ${how}: its own seat's, never a trap body`);
+        }
+        return "trigger";
+    }
+
     private addTrapBody(refr: number, localId: number): TrapBody | undefined {
         if (this.trapBodies.size >= TRAP_BODIES_MAX) {
             if (!this.trapBodiesFullSaid) {
@@ -1545,7 +1594,9 @@ export class PropService extends ClientListener {
     // from this engine's copy is a trap body a firing moved before this
     // session (a restart, a late join): taken, and placed at its record when
     // tracked ("placed at its recorded rest"). Judged once per binding, as
-    // isItem's verdict is; a body this seat already knows is its firing's
+    // isItem's verdict is; a body this seat already knows is its firing's. A
+    // trap's trigger is none (trapBodyRole), whatever its record says (a world
+    // saved while a build before playtest 48's fix streamed one)
     private judgeTrapRecord(refrId: number, rec: { pos: NiPoint3 }) {
         if (this.trapBodies.has(refrId)) {
             return;
@@ -1559,7 +1610,8 @@ export class PropService extends ClientListener {
             return; // not loaded in this game yet: judged when it is
         }
         const off = ObjectReferenceEx.getDistance(ObjectReferenceEx.getPos(refr), rec.pos);
-        const moved = off > TRAP_MOVED_UNITS && ObjectReferenceEx.isTrapFamily(refrId);
+        const moved = off > TRAP_MOVED_UNITS
+            && this.trapBodyRole(refrId, refrId, `${Math.round(off)} units from its record`) === "body";
         this.kinds.set(refrId, { refr: refrId, item: false, trap: moved });
         if (moved && this.addTrapBody(refrId, refrId)) {
             logTrace(this, `trap body ${refrId.toString(16)}: its record rests ${Math.round(off)} units from this engine's copy`);
@@ -1592,4 +1644,7 @@ export class PropService extends ClientListener {
     private trapWords: number[] = [];
     private trapRests: number[] = [];
     private trapBodiesFullSaid = false;
+    // the trap triggers trapBodyRole has said, by the server's id (a dungeon's
+    // handful)
+    private readonly trapTriggersSaid = new Set<number>();
 }

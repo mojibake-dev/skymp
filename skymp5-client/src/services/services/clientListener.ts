@@ -232,8 +232,10 @@ declare module "skyrimPlatform" {
     // thuum ADR-068 D-S3 (traps follow the interaction): a reference's trap
     // role from the platform's own reads (null with no form or no script),
     // the trap bodies another seat streams, and the references whose server
-    // record is being applied (their Papyrus events blanked meanwhile)
-    function getTrapRole(formId: number): { family: boolean; playerOnly: boolean; destroyed: boolean } | null;
+    // record is being applied (their Papyrus events blanked meanwhile). The
+    // role's trigger (a script on the reference reaching TrapTriggerBase,
+    // never a trap body; playtest 48) is absent from an older platform's
+    function getTrapRole(formId: number): { family: boolean; playerOnly: boolean; destroyed: boolean; trigger?: boolean } | null;
     function setPropFollowed(formId: number, followed: boolean): boolean;
     function setRecordApplying(formId: number, applying: boolean): boolean;
     // the voice slice: a puppet says the host's line through the engine's

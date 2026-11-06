@@ -74,6 +74,8 @@ import { ChangeFormMessage } from "./changeFormMessage";
 import { ChangeFormAckMessage } from "./changeFormAckMessage";
 import { ChangeFormApplyMessage } from "./changeFormApplyMessage";
 import { ScriptCallMessage } from "./scriptCallMessage";
+import { ScriptStateMessage } from "./scriptStateMessage";
+import { ScriptStateApplyMessage } from "./scriptStateApplyMessage";
 import { DestructionStageMessage } from "./destructionStageMessage";
 
 export type AnyMessage = ActivateMessage
@@ -145,6 +147,8 @@ export type AnyMessage = ActivateMessage
     | ChangeFormAckMessage
     | ChangeFormApplyMessage
     | ScriptCallMessage
+    | ScriptStateMessage
+    | ScriptStateApplyMessage
     | DestructionStageMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage

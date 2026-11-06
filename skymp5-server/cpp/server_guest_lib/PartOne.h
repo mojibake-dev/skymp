@@ -737,6 +737,21 @@ public:
   static constexpr int64_t kStaleHostMs = 4'000;
   // Who hosts `cell` (hosted false while nobody; the epoch kept).
   skymp::rules::CellHost GetCellHost(uint32_t cell) const;
+  // thuum docs/verbs/console-commands.md, `mp host`: how `cell`'s current
+  // grant came, by the rule the lab reads the cell-host lines with
+  // (lab/tools/playtest_setup.py last_grant): "fresh" when it came with
+  // nobody hosting (the first since the server started, or after the cell
+  // went unhosted), "inherited" when another host's stop came before it
+  // (that seat loaded the cell as a guest first), "none" before any grant.
+  // ApplyHostDecisions notes each grant, stop and unhosting of a cell here.
+  enum class CellHostNote
+  {
+    Grant,
+    Release,
+    Unhosted
+  };
+  const char* GetCellGrantKind(uint32_t cell) const;
+  void NoteCellHostDecision(CellHostNote note, uint32_t cell);
   // Every player actor whose game reports `cell` loaded (its CellLoaded
   // reports, OnCellLoaded), lowest id first: the games that show what
   // stands in it, the listeners of a script call's subject the server holds

@@ -339,6 +339,15 @@ struct PartOne::Impl
   // player's last grid square (worldOrCell, floor x, floor y), so its reach
   // is recomputed only when the square moves
   rust::Box<skymp::rules::Cells> cells = skymp::rules::new_cells();
+  // `mp host`'s note of how each cell's grant came (GetCellGrantKind): held
+  // from a grant or a stop until the cell goes unhosted, so a grant while it
+  // is held is a hand-off
+  struct CellGrantNote
+  {
+    bool held = false;
+    const char* kind = "none";
+  };
+  std::unordered_map<uint32_t, CellGrantNote> cellGrantNotes;
   // the prop owner table (thuum docs/verbs/prop-physics.md, ADR-058): which
   // seat simulates each physics prop, the cell's host by default
   rust::Box<skymp::rules::Props> props = skymp::rules::new_props();
@@ -1833,6 +1842,7 @@ void ApplyHostDecisions(PartOne& partOne,
       case skymp::rules::HostKind::Grant: {
         spdlog::info("PartOne - cell-host: {:x} hosts cell {:x} at epoch {}",
                      d.player, d.cell, d.epoch);
+        partOne.NoteCellHostDecision(PartOne::CellHostNote::Grant, d.cell);
         // the cell's props nobody holds live are the new host's (thuum
         // docs/verbs/prop-physics.md, ADR-058 decision 1)
         partOne.PropsHostChanged(d.cell, d.player);
@@ -1853,6 +1863,7 @@ void ApplyHostDecisions(PartOne& partOne,
         spdlog::info(
           "PartOne - cell-host: {:x} stops hosting cell {:x} (epoch {})",
           d.player, d.cell, d.epoch);
+        partOne.NoteCellHostDecision(PartOne::CellHostNote::Release, d.cell);
         MpActor* old = PlayerActor(partOne, d.player);
         if (!old) {
           break;
@@ -1869,6 +1880,7 @@ void ApplyHostDecisions(PartOne& partOne,
         spdlog::info("PartOne - cell-host: cell {:x} is unhosted, frozen at "
                      "its record (epoch {} kept)",
                      d.cell, d.epoch);
+        partOne.NoteCellHostDecision(PartOne::CellHostNote::Unhosted, d.cell);
         break;
       case skymp::rules::HostKind::ClaimEnded: {
         // thuum docs/verbs/npc-talk.md (ADR-052): a claim's lease ran out;
@@ -2628,6 +2640,30 @@ void PartOne::TickCellHosts(uint64_t nowMs)
 skymp::rules::CellHost PartOne::GetCellHost(uint32_t cell) const
 {
   return pImpl->cells->host_of(cell);
+}
+
+const char* PartOne::GetCellGrantKind(uint32_t cell) const
+{
+  const auto it = pImpl->cellGrantNotes.find(cell);
+  return it == pImpl->cellGrantNotes.end() ? "none" : it->second.kind;
+}
+
+void PartOne::NoteCellHostDecision(CellHostNote note, uint32_t cell)
+{
+  auto& kept = pImpl->cellGrantNotes[cell];
+  switch (note) {
+    case CellHostNote::Grant:
+      kept.kind = kept.held ? "inherited" : "fresh";
+      kept.held = true;
+      break;
+    case CellHostNote::Release:
+      // until the cell goes unhosted, the next grant is a hand-off
+      kept.held = true;
+      break;
+    case CellHostNote::Unhosted:
+      kept.held = false;
+      break;
+  }
 }
 
 std::vector<uint32_t> PartOne::GetCellLoaders(uint32_t cell) const

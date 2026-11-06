@@ -91,9 +91,31 @@ ActorFateMessage::Fate FateOf(const WorldState& worldState,
   fate.refrId = actor.GetFormId();
   fate.baseId = actor.GetFateBaseId();
   fate.level = actor.GetFateLevel().value_or(0);
+  // thuum docs/verbs/npc-fate.md (playtest 48, the loot strip): a worn piece
+  // is named only while the inventory still holds it. Since playtest 48 a
+  // take drops the worn entry it empties (MpActor::DropWornBeyondInventory);
+  // a record saved before keeps one (Embershard's bandit b6fdb in 48's world:
+  // the shield 12eb6 worn in its record by the host's report accepted at
+  // 20:23:28Z, gone from its inventory after its opens at 20:27Z, the next
+  // host's report of it refused at 20:40:43Z as "inventory does not
+  // contain"), and a seat's reconcile would add it back and dress it
+  std::map<uint32_t, uint32_t> unnamed;
+  for (const auto& entry : actor.GetInventory().entries) {
+    if (entry.baseId != 0) {
+      unnamed[entry.baseId] += entry.count;
+    }
+  }
   for (const auto& entry : actor.GetEquipment().inv.entries) {
     if (entry.GetWorn() != Inventory::Worn::None &&
         fate.worn.size() < kFateWornMax) {
+      auto& left = unnamed[entry.baseId];
+      if (left == 0) {
+        spdlog::debug("PartOne - npc-fate: {:x}'s worn {:x} left out of its "
+                      "fate, its inventory holds none",
+                      actor.GetFormId(), entry.baseId);
+        continue;
+      }
+      --left;
       fate.worn.push_back(entry.baseId);
     }
   }

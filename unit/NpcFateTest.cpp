@@ -495,6 +495,127 @@ TEST_CASE("A dead game-file actor is a container to the player beside it",
   p.DestroyActor(kLooter);
 }
 
+// thuum docs/verbs/npc-fate.md (playtest 48, the loot strip; H2 of its
+// read): a take from a body removed the record's row and left the worn entry,
+// so the body's fate kept naming the taken piece and a seat's reconcile added
+// it back. The take now drops the worn entry it empties, an unworn copy
+// leaving first, and the fate names a worn piece only while the inventory
+// holds it (a record saved before the drop keeps such an entry). The predator
+// stands for a looted bandit with a roll of its own: the hide boots worn, two
+// hide helmets with one worn (Skyrim.esm ArmorHideBoots and ArmorHideHelmet,
+// the hosted swing case's ids)
+TEST_CASE("A take from a body drops the record's worn entry it empties, an "
+          "unworn copy leaving first, and the body's fate names no worn piece "
+          "its inventory lacks",
+          "[NpcFate][espm]")
+{
+  enum : uint32_t
+  {
+    kLooter = 0xff000d42,
+    kLater = 0xff000d43,
+    kHideBoots = 0x13910,
+    kHideHelmet = 0x13913
+  };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  DoConnect(p, 0);
+  p.CreateActor(kLooter, kForest, 0, kTamriel);
+  p.SetUserActor(0, kLooter);
+  p.TickCellHosts(FateNowMs());
+  auto& form = p.worldState.LookupFormByIdNoLoad(kPredator);
+  REQUIRE(form);
+  MpActor* actor = form->AsActor();
+  REQUIRE(actor);
+  if (actor->IsDead()) {
+    actor->Respawn(false);
+  }
+  p.worldState.fateRespawnDue.erase(kPredator);
+  auto& looter = p.worldState.GetFormAt<MpActor>(kLooter);
+  looter.SetPos(actor->GetPos());
+
+  // the body opens to the looter, its occupant, so the takes are the
+  // looter's (ContainerMoveByOccupant)
+  actor->Kill(nullptr);
+  REQUIRE(actor->IsDead());
+  actor->Activate(looter);
+  REQUIRE(actor->IsContainerOccupant(&looter));
+
+  // the roll, laid after the open's own (EnsureBaseContainerAdded); a fresh
+  // actor is never assumed empty, so the counts are read back
+  actor->AddItem(kHideBoots, 1);
+  actor->AddItem(kHideHelmet, 2);
+  Equipment rolled;
+  rolled.numChanges = 7;
+  rolled.inv.entries.push_back(Inventory::Entry(kHideBoots, 1, kWornRight));
+  rolled.inv.entries.push_back(Inventory::Entry(kHideHelmet, 1, kWornRight));
+  actor->SetEquipment(rolled);
+  const auto boots = actor->GetInventory().GetItemCount(kHideBoots);
+  const auto helmets = actor->GetInventory().GetItemCount(kHideHelmet);
+  REQUIRE(boots >= 1);
+  REQUIRE(helmets >= 2);
+  const auto take = [&](uint32_t baseId, uint32_t count) {
+    Inventory::Entry entry;
+    entry.baseId = baseId;
+    entry.count = count;
+    actor->TakeItem(looter, entry);
+  };
+
+  // a helmet of the two: the record still holds one, the worn one stays
+  take(kHideHelmet, 1);
+  REQUIRE(actor->GetInventory().GetItemCount(kHideHelmet) == helmets - 1);
+  REQUIRE(Wearing(*actor, kHideHelmet));
+  REQUIRE(Wearing(*actor, kHideBoots));
+
+  // the worn boots: their worn entry leaves with them
+  take(kHideBoots, boots);
+  REQUIRE(actor->GetInventory().GetItemCount(kHideBoots) == 0);
+  REQUIRE_FALSE(Wearing(*actor, kHideBoots));
+  REQUIRE(Wearing(*actor, kHideHelmet));
+
+  // the helmets left: the worn one goes too
+  take(kHideHelmet, helmets - 1);
+  REQUIRE(actor->GetInventory().GetItemCount(kHideHelmet) == 0);
+  REQUIRE_FALSE(Wearing(*actor, kHideHelmet));
+  REQUIRE(looter.GetInventory().GetItemCount(kHideHelmet) >= helmets);
+  // the counter stays: a copy's view re-applies a changed one whole
+  REQUIRE(actor->GetEquipment().numChanges == 7);
+
+  // a record saved before the take's drop: the boots worn, none held. A
+  // later player's arrival hears the body's fate, which names no boots
+  Equipment stale = actor->GetEquipment();
+  stale.inv.entries.push_back(Inventory::Entry(kHideBoots, 1, kWornRight));
+  actor->SetEquipment(stale);
+  REQUIRE(Wearing(*actor, kHideBoots));
+  DoConnect(p, 1);
+  p.CreateActor(kLater, kForest, 0, kTamriel);
+  p.SetUserActor(1, kLater);
+  p.Messages().clear();
+  p.TickCellHosts(FateNowMs());
+  const auto fates = SentTo<ActorFateMessage>(p, 1);
+  const ActorFateMessage::Fate* sent = nullptr;
+  for (const auto& msg : fates) {
+    for (const auto& f : msg.fates) {
+      if (f.refrId == kPredator) {
+        sent = &f;
+      }
+    }
+  }
+  REQUIRE(sent != nullptr);
+  REQUIRE(std::find(sent->worn.begin(), sent->worn.end(), kHideBoots) ==
+          sent->worn.end());
+  REQUIRE(std::find(sent->worn.begin(), sent->worn.end(), kHideHelmet) ==
+          sent->worn.end());
+
+  // the shared world: the body's equipment as found, the predator standing
+  actor->SetEquipment(Equipment{});
+  actor->Respawn(false);
+  p.worldState.fateRespawnDue.erase(kPredator);
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kLooter);
+  p.DestroyActor(kLater);
+}
+
 // thuum docs/verbs/npc-fate.md (playtest 37, findings 58 and 62): a
 // server-made NPC's body is a corpse to the server as a game-file actor's
 // is. IsCorpse read the id's range, so rotfern's E on the dead necromancer

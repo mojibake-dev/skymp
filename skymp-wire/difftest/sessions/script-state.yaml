@@ -1,0 +1,65 @@
+# difftest script-state (thuum ADR-068 rung 3, the script record; docs/WIRE.md's
+# ScriptState, MsgType 76, wire id 84, and ScriptStateApply, MsgType 77, wire
+# id 85): c1 and c2 are new characters (profiles 9 and 10, actors 0xff000002
+# and 0xff000003, see melee-reach), both at the spawn in Tamriel's exterior
+# cell (32, -15), form 0xbbb1 (cell-host's read); c2 starts 1.5 s after c1,
+# and each client's times below are its own, counted from its login. At
+# 0.5 s c1 reports the cell loaded and is granted it, HostGrant {cell 0xbbb1,
+# epoch 1}, as in cell-host. The subject is script-call's ore vein 0x10e6c5
+# (ACTI MineOreIron01_LFallForestDirt at (134931, -58398, 10752), a world
+# object the server loads with the spawn's chunk, no actor). At 0.8 s, before
+# c2 logs in, c1 reports the vein's script record at its epoch: one
+# MineOreScript (docs/research/trap-prefix-census-2026-11-05.md counts the
+# script on 1,739 references; the server stores a record's scripts unread, so
+# the values are this session's own) in the empty state, constructed and
+# initialized, an int and a bool. The server records it (wire-rules
+# script_state: c1 hosts the vein's cell at epoch 1) with the vein's sequence
+# 0 and no view (no script call reached the vein, so no lastAnimation: a call
+# would put lastAnimation on the vein's create word on the wire stack alone),
+# and relays it to nobody, a record never travelling live. c2 logs in beside
+# the vein and does not host its cell: the vein's create word, then the
+# record served behind it, ScriptStateApply {formId 0x10e6c5, seq 0, the
+# scripts}, the one message c2 hears that legacy never sends. Four records
+# send nothing, each said in the wire server's log: at 0.4 s of its own
+# script c2 reports the vein at epoch 0, which it holds for a cell it does
+# not host (E_SCRIPTSTATE_EPOCH: the cell stands at 1, the epoch judged
+# first, ADR-066 decision 4), and at 0.6 s at epoch 1 (E_SCRIPTSTATE_OWNER:
+# c1 hosts the cell); at 2.6 s c1 reports a record whose object variable
+# names a handle of kind 3 (E_VAL_RANGE at the edge: 0 to 2 only); at 2.8 s
+# c1 reports at epoch 2, ahead of the cell's (E_SCRIPTSTATE_EPOCH). The legacy
+# server knows no MsgType 76 and drops all five. The sequence and the view of
+# a record taken after a script call, the grant's serve ahead of HostGrant
+# and the release read are T0's (unit/ScriptStateTest.cpp); a restart is
+# not: difftest has no restart step (a step is a move or a send), so the
+# record's persistence is T0's ChangeFormTest and T3's
+# b-script-state-restart. c2 never reports the cell loaded, so c1's departure
+# leaves it unhosted after the grace with nothing to c2; c2 steps aside at
+# 6 s so it outlives c1, as in every session.
+id: script-state
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 500, send: {t: 47, cell: 0xbbb1, loaded: true}, reliable: true}
+  - {client: c1, at_ms: 800, send: {t: 76, epoch: 1, formId: 0x10e6c5, fnv1a: 0x9e3779b9, scripts: [{type: MineOreScript, state: "", flags: 11, vars: [{k: 3, i: 3}, {k: 5, b: false}]}]}, reliable: true}
+  - {client: c2, at_ms: 400, send: {t: 76, epoch: 0, formId: 0x10e6c5, fnv1a: 0x9e3779b9, scripts: [{type: MineOreScript, state: "", flags: 11, vars: [{k: 3, i: 2}, {k: 5, b: false}]}]}, reliable: true}
+  - {client: c2, at_ms: 600, send: {t: 76, epoch: 1, formId: 0x10e6c5, fnv1a: 0x9e3779b9, scripts: [{type: MineOreScript, state: "", flags: 11, vars: [{k: 3, i: 2}, {k: 5, b: false}]}]}, reliable: true}
+  - {client: c1, at_ms: 2600, send: {t: 76, epoch: 1, formId: 0x10e6c5, fnv1a: 0x9e3779b9, scripts: [{type: MineOreScript, state: "", flags: 11, vars: [{k: 1, o: {kind: 3, mid: 0xffff, form: 0x10e6c6, type: ObjectReference}}]}]}, reliable: true}
+  - {client: c1, at_ms: 2800, send: {t: 76, epoch: 2, formId: 0x10e6c5, fnv1a: 0x9e3779b9, scripts: [{type: MineOreScript, state: "", flags: 11, vars: [{k: 3, i: 1}, {k: 5, b: true}]}]}, reliable: true}
+  - {client: c2, at_ms: 6000, move: {dx: 1, dy: 0}}
+divergences:
+  - client: c1
+    msg: {t: 48, cell: 0xbbb1, epoch: 1}
+    legacy: 0
+    wire: 1
+    reason: the first loader in reach hosts the cell (HostGrant, thuum docs/verbs/cell-host.md); the legacy server has no cell hosts
+  - client: c2
+    msg: {t: 77, formId: 0x10e6c5, fnv1a: 0x9e3779b9, seq: 0, scripts: [{type: MineOreScript, state: "", flags: 11, vars: [{k: 3, i: 3}, {k: 5, b: false}]}]}
+    legacy: 0
+    wire: 1
+    reason: the host's script record of the vein served behind its create word to a seat that does not host the cell (ScriptStateApply, thuum ADR-068 rung 3); the legacy server knows no MsgType 76
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

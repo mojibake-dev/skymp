@@ -3992,6 +3992,16 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
     }
   }
 
+  // thuum ADR-068 rung 3: a subject with a stored record seeds its sequence
+  // first (a record saved before a restart, which started every sequence at
+  // 0; ScriptCalls::seed, a max), so a relay never takes a number at or
+  // below the one the record was served with
+  if (subject) {
+    if (const auto& record = subject->GetScriptState()) {
+      scriptCalls.seed(shape.subject, record->seq);
+    }
+  }
+
   // the owner step on the shaped call, over its subject's facts
   const auto verdict = scriptCalls.owner(facts);
   if (verdict.code == skymp::rules::ScriptCallCode::Skipped) {
@@ -4074,6 +4084,155 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
                reporter->GetFormId(), msg.cls, msg.fn, verdict.subject,
                facts.cell, msg.epoch, msg.caller, msg.handler, verdict.seq,
                relayed, relayCls, relayFn);
+}
+
+namespace {
+// the longest behavior graph event the wire carries (wire-schema
+// cap::ANIM_EVENT): a record's view past it would make its apply
+// unrenderable, so such a view is not kept
+constexpr size_t kAnimEventBytes = 128;
+}
+
+// thuum ADR-068 rung 3 (the script record, decision 5 and its amendment A;
+// docs/research/rung3-script-record-2026-11-06.md section 1(c)): a
+// reference's owner reports the scripts attached to it as its engine read
+// them at a quiescent point (no running or waiting stack on the object). The
+// wire validated the shape (wire-validate check_script_state); here the
+// reference is looked up as OnDestructionStage looks up a trap's lamp
+// (LookupFormById, which loads it with its chunk; an actor's record is
+// refused by its type before any load, that handler's idiom), its cell,
+// that cell's host and its standing epoch gathered, and the rule (wire-rules
+// script_state) judges them: the epoch first (ADR-066 decision 4), then the
+// owner, and while nobody hosts the cell the release read of the host that
+// just released it (ApplyHostDecisions noted the release). An accepted
+// record is kept on the reference (saved, rule 6), stamped with the
+// object's sequence (ScriptCalls' seq_of, the record it replaces seeding it
+// first, so the sequence never steps back after a restart) and its view, the
+// reference's lastAnimation now (amendment A: the Temple pillar's OnCellLoad
+// turns the graph only once, so a late seat cannot render the record from
+// the script). A record is never relayed live: PartOne serves it ahead of a
+// grant and behind a create word, every send at once, never the deferred
+// queue (OnChangeForm's shape, less its ack and its live serve).
+void ActionListener::OnScriptState(const RawMessageData& rawMsgData,
+                                   const ScriptStateMessage& msg)
+{
+  MpActor* sender = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!sender) {
+    spdlog::warn("ActionListener::OnScriptState - user {} has no actor; its "
+                 "record of {:x} ignored",
+                 rawMsgData.userId, msg.formId);
+    return;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  // one line a minute per sender, form and code, the rest counted
+  // (OnChangeForm's shape): an owner whose premise is wrong repeats its
+  // record at every stack's end and every sweep
+  const auto refuse = [&](const std::string& code, const std::string& why) {
+    auto& [since, count] = scriptStateRefusals[std::make_tuple(
+      sender->GetFormId(), msg.formId, code)];
+    ++count;
+    if (since.time_since_epoch().count() != 0 &&
+        now - since < std::chrono::minutes(1)) {
+      return;
+    }
+    spdlog::info("[verb:scripts] {}: {:x} reports the script state of {:x} "
+                 "({} script(s), fnv {:08x}, epoch {}): {}; refused, {} since "
+                 "the last line",
+                 code, sender->GetFormId(), msg.formId, msg.scripts.size(),
+                 msg.fnv1a, msg.epoch, why, count);
+    since = now;
+    count = 0;
+  };
+  if (msg.formId == 0 || msg.formId >= 0xff000000) {
+    // a server-made reference's scripts are the server's own (the edge
+    // refuses the id first, E_VAL_RANGE)
+    return refuse("E_SCRIPTSTATE_NO_REF", "not a game-file reference");
+  }
+
+  // the reference's facts: ref_kind 0 no reference, 1 a reference that is
+  // no actor, 2 an actor; the owner and its epoch are the host's of the
+  // cell the reference stands in, the kept epoch while nobody hosts it
+  skymp::rules::ScriptStateFacts facts{};
+  facts.sender = sender->GetFormId();
+  facts.epoch = msg.epoch;
+  MpObjectReference* refr = nullptr;
+  bool actorRecord = false;
+  if (partOne.HasEspm()) {
+    const auto record = partOne.GetEspm().GetBrowser().LookupById(msg.formId);
+    actorRecord = record.rec && record.rec->GetType() == espm::ACHR::kType;
+  }
+  if (actorRecord) {
+    facts.ref_kind = 2;
+  } else {
+    const auto& form = partOne.worldState.LookupFormById(msg.formId);
+    refr = form ? form->AsObjectReference() : nullptr;
+    if (refr) {
+      facts.ref_kind = refr->AsActor() ? 2 : 1;
+    }
+  }
+  if (refr && facts.ref_kind == 1) {
+    if (const auto cell = partOne.worldState.CellOf(*refr)) {
+      facts.cell = *cell;
+      const auto host = partOne.GetCellHost(*cell);
+      facts.owner = host.hosted ? host.player : 0;
+      facts.owner_epoch = host.epoch;
+    }
+  }
+  const auto verdict = partOne.GetScriptStates().judge(facts);
+  const bool releaseRead =
+    verdict.code == skymp::rules::ScriptStateCode::ReleaseRead;
+  if (verdict.code != skymp::rules::ScriptStateCode::Accepted &&
+      !releaseRead) {
+    return refuse(std::string(verdict.name), std::string(verdict.why));
+  }
+  if (!refr) {
+    // the rule records a reference that is no actor alone
+    return;
+  }
+
+  // the record it replaces seeds the object's sequence first (a record saved
+  // before a restart), so the record taken now never names a sequence below
+  // the one the last record was served with
+  auto& scriptCalls = partOne.GetScriptCalls();
+  if (const auto& before = refr->GetScriptState()) {
+    scriptCalls.seed(msg.formId, before->seq);
+  }
+  ScriptStateRecord record;
+  record.epoch = msg.epoch;
+  record.fnv1a = msg.fnv1a;
+  record.sender = sender->GetFormId();
+  record.atMs = static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch())
+      .count());
+  record.seq = scriptCalls.seq_of(msg.formId);
+  // the view, within the wire's bound for an event, or none
+  if (auto event = refr->GetLastAnimation();
+      event && event->size() <= kAnimEventBytes) {
+    record.event = std::move(event);
+  }
+  record.scripts = msg.scripts;
+  const uint32_t seq = record.seq;
+  const std::string view = record.event.value_or("");
+  refr->SetScriptState(std::move(record));
+
+  // one info line a minute per form, the rest at debug: an owner reports at
+  // every stack's end that moved the hash; a release read is said every
+  // time (one per reference at a release)
+  auto& said = scriptStateLines[msg.formId];
+  if (releaseRead || said.time_since_epoch().count() == 0 ||
+      now - said >= std::chrono::minutes(1)) {
+    spdlog::info("[verb:scripts] script state {:x} recorded from {:x}: {} "
+                 "script(s), fnv {:08x}, epoch {}, seq {}, view '{}'{}",
+                 msg.formId, sender->GetFormId(), msg.scripts.size(),
+                 msg.fnv1a, msg.epoch, seq, view,
+                 releaseRead ? " (its release read)" : "");
+    said = now;
+  } else {
+    spdlog::debug("[verb:scripts] script state {:x} recorded from {:x}: fnv "
+                  "{:08x}, seq {}",
+                  msg.formId, sender->GetFormId(), msg.fnv1a, seq);
+  }
 }
 
 // thuum docs/DECISIONS.md ADR-059 decision 2: whether a reference's own

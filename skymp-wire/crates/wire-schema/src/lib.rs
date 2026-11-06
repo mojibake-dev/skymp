@@ -85,7 +85,13 @@ use bounded::{String, Vec};
 /// seat; and the two reserved rows at ids 84 and 85 (ADR-068's ScriptState
 /// 76 and ScriptStateApply 77, rung 3's, numbered ahead of their shapes), so
 /// MsgType 78 keeps `wire id = MsgType + 8` (ADR-019 decision 1).
-pub const SCHEMA_VERSION: u16 = 37;
+/// 38: ScriptState and ScriptStateApply (thuum ADR-068 rung 3, the script
+/// record, m4-scripts-3-record) in place of the two reserved rows, at the
+/// same ids 84 and 85: the scripts attached to a reference as its owner's
+/// engine read them at a quiescent point, recorded by the server with the
+/// object's sequence and its view, and served ahead of a grant and behind a
+/// create word.
+pub const SCHEMA_VERSION: u16 = 38;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -205,6 +211,22 @@ pub mod cap {
     pub const SCRIPT_CALL_ARGS: usize = 11;
     /// A Papyrus string argument or return value.
     pub const SNIPPET_STRING: usize = 16 * 1024;
+    /// Scripts one script record carries (thuum ADR-068 rung 3): the scripts
+    /// attached to one reference (the Temple's puzzle lever 0xaa8c3 carries
+    /// two, docs/research/trap-census-2026-11-05.md). UNMEASURED beyond the
+    /// census.
+    pub const SCRIPT_OBJECTS: usize = 16;
+    /// Variables of one attached script, its chain's total
+    /// (GetTotalNumVariables, H-R1): the largest the save read met,
+    /// TrapSwingingWall over MovingTrap over TrapBase, has 52 (thuum
+    /// docs/research/adr065-papyrus-state-2026-11-03.md Q1).
+    pub const SCRIPT_VARS: usize = 512;
+    /// A string variable's value in a script record. UNMEASURED: a save
+    /// read's string histogram (rung 3's script-save-trace.js v2.1) sets it.
+    pub const SCRIPT_STRING: usize = 1024;
+    /// Elements of one array variable: the VM's own bound (CommonLibSSE-NG
+    /// include/RE/A/Array.h:69, MAX_SIZE 128).
+    pub const SCRIPT_ARRAY: usize = 128;
     /// Entries in one gamemode code list.
     pub const GAMEMODE_ENTRIES: usize = 256;
     /// One gamemode function's JavaScript source.
@@ -557,24 +579,18 @@ pub enum Message {
     ChangeFormApply(skymp::ChangeFormApply),
     /// 83, MsgType 75 (thuum). See [`skymp::ScriptCall`].
     ScriptCall(skymp::ScriptCall),
-    /// Id 84: MsgType 76's place, ADR-068's ScriptState (rung 3, the script
-    /// record), reserved: ADR-068 numbered its rows by rung and D-S3 builds
-    /// DestructionStage (78) first, so this row stands where 76 lands and
-    /// 78's wire id stays MsgType plus 8 (ADR-019 decision 1). Never sent;
-    /// no MsgType and no JSON form until rung 3 gives it its shape; server
-    /// to client in the table, so the transport refuses it from a client by
-    /// direction.
-    ReservedScriptState,
-    /// Id 85: MsgType 77's place, ADR-068's ScriptStateApply (rung 3),
-    /// reserved the same way.
-    ReservedScriptStateApply,
+    /// 84, MsgType 76 (thuum ADR-068 rung 3; the id D-S3 held for it while
+    /// DestructionStage, 78, was built first). See [`skymp::ScriptState`].
+    ScriptState(skymp::ScriptState),
+    /// 85, MsgType 77 (thuum ADR-068 rung 3, held the same way). See
+    /// [`skymp::ScriptStateApply`].
+    ScriptStateApply(skymp::ScriptStateApply),
     /// 86, MsgType 78 (thuum). See [`skymp::DestructionStage`].
     DestructionStage(skymp::DestructionStage),
 }
 
-/// One row per wire id: name, SkyMP MsgType (0 for the M0 family and the
-/// reserved rows), the byte cap the codec enforces before decoding, and the
-/// direction.
+/// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
+/// cap the codec enforces before decoding, and the direction.
 struct Row {
     name: &'static str,
     msg_type: u8,
@@ -688,10 +704,12 @@ const TABLE: [Row; 87] = [
     // eleven arguments at SNIPPET_STRING's 16 KiB each and the four names at
     // PAPYRUS_NAME, with room (180,812 bytes at the fullest; thuum ADR-068)
     row("ScriptCall", 75, 180 * KIB, C2S),
-    // ADR-068's ScriptState (76) and ScriptStateApply (77), rung 3's, held by
-    // id until their shapes land: a unit variant each, sent by nobody
-    row("ReservedScriptState", 0, 8, S2C),
-    row("ReservedScriptStateApply", 0, 8, S2C),
+    // a reference's script record (thuum ADR-068 rung 3): under the 256 KiB
+    // the transport takes from a client, with room over the 160 KiB answer
+    // the owner's native refuses past (its JSON, which postcard spells
+    // shorter); the apply adds the sequence and the view
+    row("ScriptState", 76, 192 * KIB, C2S),
+    row("ScriptStateApply", 77, 256 * KIB, S2C),
     // a reference, a stage byte and two flags (thuum D-S3; 9 bytes at the
     // longest, pinned by wire_id_matches_postcard_variant_index)
     row("DestructionStage", 78, 16, Both),
@@ -811,8 +829,8 @@ impl Message {
             Message::ChangeFormAck(_) => 81,
             Message::ChangeFormApply(_) => 82,
             Message::ScriptCall(_) => 83,
-            Message::ReservedScriptState => 84,
-            Message::ReservedScriptStateApply => 85,
+            Message::ScriptState(_) => 84,
+            Message::ScriptStateApply(_) => 85,
             Message::DestructionStage(_) => 86,
         }
     }
@@ -857,8 +875,8 @@ mod tests {
         assert_eq!(Message::Refuse { reason: 0 }.name(), "Refuse");
         assert_eq!(Message::HostGrant(skymp::HostGrant::default()).name(), "HostGrant");
         assert_eq!(Message::ReservedHostGrant { cell: FormId(1) }.name(), "ReservedHostGrant");
-        assert_eq!(Message::ReservedScriptState.name(), "ReservedScriptState");
-        assert_eq!(Message::ReservedScriptStateApply.name(), "ReservedScriptStateApply");
+        assert_eq!(Message::ScriptState(skymp::ScriptState::default()).name(), "ScriptState");
+        assert_eq!(Message::ScriptStateApply(skymp::ScriptStateApply::default()).name(), "ScriptStateApply");
         assert_eq!(Message::DestructionStage(skymp::DestructionStage::default()).name(), "DestructionStage");
         assert_eq!(
             Message::CreateActor(skymp::CreateActor::default()).name(),
@@ -923,16 +941,68 @@ mod tests {
         assert_eq!(name_of_msg_type(73), Some("ChangeFormAck"));
         assert_eq!(name_of_msg_type(74), Some("ChangeFormApply"));
         assert_eq!(name_of_msg_type(75), Some("ScriptCall"));
-        // ADR-068's 76 and 77 are reserved by id, no MsgType yet (thuum D-S3)
-        assert_eq!(name_of_msg_type(76), None);
-        assert_eq!(name_of_msg_type(77), None);
+        // ADR-068's 76 and 77 at the ids D-S3 held for them (thuum rung 3)
+        assert_eq!(name_of_msg_type(76), Some("ScriptState"));
+        assert_eq!(name_of_msg_type(77), Some("ScriptStateApply"));
         assert_eq!(name_of_msg_type(78), Some("DestructionStage"));
         assert_eq!(name_of_msg_type(79), None);
-        assert_eq!(Message::ReservedScriptState.msg_type(), None);
-        assert_eq!(Message::ReservedScriptStateApply.msg_type(), None);
-        assert_eq!(Message::ReservedScriptState.direction(), Direction::ServerToClient);
-        assert_eq!(Message::ReservedScriptStateApply.direction(), Direction::ServerToClient);
+        assert_eq!(Message::ScriptState(skymp::ScriptState::default()).msg_type(), Some(76));
+        assert_eq!(Message::ScriptStateApply(skymp::ScriptStateApply::default()).msg_type(), Some(77));
+        assert_eq!(Message::ScriptState(skymp::ScriptState::default()).wire_id(), 84);
+        assert_eq!(Message::ScriptStateApply(skymp::ScriptStateApply::default()).wire_id(), 85);
+        assert_eq!(Message::ScriptState(skymp::ScriptState::default()).direction(), Direction::ClientToServer);
+        assert_eq!(Message::ScriptStateApply(skymp::ScriptStateApply::default()).direction(), Direction::ServerToClient);
         assert_eq!(Message::DestructionStage(skymp::DestructionStage::default()).direction(), Direction::Both);
+    }
+
+    /// A script record near the owner's native's answer cap (thuum ADR-068
+    /// rung 3: the native refuses an answer past 160 KiB of JSON): sixteen
+    /// scripts with their names at the cap, each with twenty-four strings of
+    /// 384 bytes, the first one also with an object array of 128 handles at
+    /// their caps.
+    fn script_record_at_its_answer_cap() -> bounded::Vec<skymp::ScriptObjectState, { cap::SCRIPT_OBJECTS }> {
+        let name = || -> String<{ cap::PAPYRUS_NAME }> { "x".repeat(cap::PAPYRUS_NAME).try_into().unwrap_or_default() };
+        let handle = skymp::ScriptHandle { kind: 2, mid: u16::MAX, form: 0xfeff_ffff, cls: name() };
+        let strings: alloc::vec::Vec<skymp::ScriptVar> = (0..24).map(|_| skymp::ScriptVar { k: 2, s: Some("x".repeat(384).try_into().unwrap_or_default()), ..Default::default() }).collect();
+        let handles = skymp::ScriptVar {
+            k: 11,
+            elem: Some(name()),
+            a: Some((0..cap::SCRIPT_ARRAY).map(|_| skymp::ScriptValue { k: 1, o: Some(handle.clone()), ..Default::default() }).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default()),
+            ..Default::default()
+        };
+        (0..cap::SCRIPT_OBJECTS)
+            .map(|n| {
+                let mut vars = strings.clone();
+                if n == 0 {
+                    vars.push(handles.clone());
+                }
+                skymp::ScriptObjectState { cls: name(), state: name(), flags: u8::MAX, vars: vars.try_into().unwrap_or_default() }
+            })
+            .collect::<alloc::vec::Vec<_>>()
+            .try_into()
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_script_record_at_the_natives_answer_cap_fits_its_byte_cap() {
+        let scripts = script_record_at_its_answer_cap();
+        // the sample is whole, not a default left by a refused conversion
+        assert_eq!(scripts.len(), cap::SCRIPT_OBJECTS);
+        assert!(scripts.iter().all(|s| s.vars.len() >= 24));
+        assert_eq!(scripts.first().and_then(|s| s.vars.last()).and_then(|v| v.a.as_ref()).map(|a| a.len()), Some(cap::SCRIPT_ARRAY));
+        let state = Message::ScriptState(skymp::ScriptState { epoch: u32::MAX, form_id: 0xfeff_ffff, fnv1a: u32::MAX, scripts: scripts.clone(), ..Default::default() });
+        let bytes = postcard::to_allocvec(&state).unwrap_or_default();
+        assert!(bytes.len() > 150 * KIB && bytes.len() <= 192 * KIB, "{}", bytes.len());
+        let apply = Message::ScriptStateApply(skymp::ScriptStateApply {
+            form_id: 0xfeff_ffff,
+            fnv1a: u32::MAX,
+            seq: u32::MAX,
+            event: Some("x".repeat(cap::ANIM_EVENT).try_into().unwrap_or_default()),
+            scripts,
+            ..Default::default()
+        });
+        let served = postcard::to_allocvec(&apply).unwrap_or_default();
+        assert!(served.len() > bytes.len() && served.len() <= 256 * KIB, "{}", served.len());
     }
 
     #[test]
@@ -1091,11 +1161,19 @@ mod tests {
                 latent: true,
                 ..Default::default()
             }),
-            // the two reserved rows, and a destruction report at its longest:
-            // the reference a five-byte varint, the stage and both flags
-            // (thuum D-S3)
-            Message::ReservedScriptState,
-            Message::ReservedScriptStateApply,
+            // a script record and its apply near the native's answer cap
+            // (thuum ADR-068 rung 3), and a destruction report at its
+            // longest: the reference a five-byte varint, the stage and both
+            // flags (thuum D-S3)
+            Message::ScriptState(skymp::ScriptState { epoch: u32::MAX, form_id: 0xfeff_ffff, fnv1a: u32::MAX, scripts: script_record_at_its_answer_cap(), ..Default::default() }),
+            Message::ScriptStateApply(skymp::ScriptStateApply {
+                form_id: 0xfeff_ffff,
+                fnv1a: u32::MAX,
+                seq: u32::MAX,
+                event: Some("x".repeat(cap::ANIM_EVENT).try_into().unwrap_or_default()),
+                scripts: script_record_at_its_answer_cap(),
+                ..Default::default()
+            }),
             Message::DestructionStage(skymp::DestructionStage { refr: u32::MAX, stage: u8::MAX, destroyed: true, served: true, ..Default::default() }),
             // and its relay, the sequence carried (thuum ADR-068)
             Message::SpSnippet(skymp::SpSnippet {

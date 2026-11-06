@@ -430,6 +430,151 @@ TEST_CASE("A destruction record survives a save and a load of the "
   REQUIRE(!MpChangeForm::JsonToChangeForm(olderElement).destruction);
 }
 
+// thuum ADR-068 rung 3 (the script record): a reference's script record (the
+// scripts its owner read at a quiescent point, with the object's sequence
+// and the view the server stamped then) survives a save and a load of the
+// reference's change form and travels with it as a whole; a record written
+// before the field (no key) reads as none (rule 6's migration). The scripts
+// are the Temple pillar 0xaa8cb's defaultPuzzlePillarScript as the census
+// read it (docs/verbs/papyrus-events.md: five variables, raw types 3, 3, 5,
+// a class, 5, in its turned state position02; the class one the puzzle
+// lever 0xaa8c3's plain form handle, kind 0, mid 0xFFFF), and one value of
+// each other kind the record carries: a typed None, a float, a string and
+// three arrays (an int array, an object array with its element type, a None
+// string array)
+TEST_CASE("A script record survives a save and a load of the reference's "
+          "change form, and an older record without one reads as none",
+          "[ChangeForm][ScriptState]")
+{
+  const auto value = [](uint32_t k) {
+    ScriptStateVar v;
+    v.k = k;
+    return v;
+  };
+  ScriptStateHandle lever;
+  lever.kind = 0;
+  lever.mid = 0xffff;
+  lever.form = 0xaa8c3;
+  lever.type = "defaultPillarPuzzleLever";
+
+  ScriptStateObject pillar;
+  pillar.type = "defaultPuzzlePillarScript";
+  pillar.state = "position02";
+  pillar.flags = 0x0b;
+  pillar.vars.push_back(value(3));
+  pillar.vars.back().i = 1;
+  pillar.vars.push_back(value(3));
+  pillar.vars.back().i = 2;
+  pillar.vars.push_back(value(5));
+  pillar.vars.back().b = true;
+  pillar.vars.push_back(value(1));
+  pillar.vars.back().o = lever;
+  pillar.vars.push_back(value(5));
+  pillar.vars.back().b = false;
+  // a typed None, a float, a string
+  pillar.vars.push_back(value(1));
+  pillar.vars.push_back(value(4));
+  pillar.vars.back().f = 1.5f;
+  pillar.vars.push_back(value(2));
+  pillar.vars.back().s = "Turned02";
+  // an int array, an object array of a handle and a None, a None array
+  ScriptStateValue one;
+  one.k = 3;
+  one.i = 1;
+  ScriptStateValue three;
+  three.k = 3;
+  three.i = 3;
+  pillar.vars.push_back(value(13));
+  pillar.vars.back().a = std::vector<ScriptStateValue>{ one, three };
+  ScriptStateValue handle;
+  handle.k = 1;
+  handle.o = lever;
+  ScriptStateValue none;
+  none.k = 1;
+  pillar.vars.push_back(value(11));
+  pillar.vars.back().elem = "ObjectReference";
+  pillar.vars.back().a = std::vector<ScriptStateValue>{ handle, none };
+  pillar.vars.push_back(value(12));
+
+  ScriptStateRecord record;
+  record.epoch = 3;
+  record.fnv1a = 0x5c1a7e01;
+  record.sender = 0xff000fe5;
+  record.atMs = 1762440000123ull;
+  record.seq = 2;
+  record.event = "Trigger02";
+  record.scripts.push_back(pillar);
+
+  MpChangeForm changeForm;
+  changeForm.recType = MpChangeForm::REFR;
+  changeForm.scriptState = record;
+
+  simdjson::dom::parser parser;
+  const nlohmann::json saved = MpChangeForm::ToJson(changeForm);
+  REQUIRE(saved.contains("scriptState"));
+  const nlohmann::json& kept = saved["scriptState"];
+  REQUIRE(kept["epoch"] == 3);
+  REQUIRE(kept["fnv1a"] == 0x5c1a7e01);
+  REQUIRE(kept["sender"] == 0xff000fe5);
+  REQUIRE(kept["at"] == 1762440000123ull);
+  REQUIRE(kept["seq"] == 2);
+  REQUIRE(kept["event"] == "Trigger02");
+  REQUIRE(kept["scripts"].size() == 1);
+  REQUIRE(kept["scripts"][0]["type"] == "defaultPuzzlePillarScript");
+  REQUIRE(kept["scripts"][0]["state"] == "position02");
+  REQUIRE(kept["scripts"][0]["flags"] == 0x0b);
+  REQUIRE(kept["scripts"][0]["vars"].size() == 11);
+  // an absent field writes no key, as the wire's JSON spells a variable
+  REQUIRE(kept["scripts"][0]["vars"][0] ==
+          nlohmann::json{ { "k", 3 }, { "i", 1 } });
+  REQUIRE(kept["scripts"][0]["vars"][5] == nlohmann::json{ { "k", 1 } });
+  REQUIRE(kept["scripts"][0]["vars"][3]["o"] ==
+          nlohmann::json{ { "kind", 0 },
+                          { "mid", 0xffff },
+                          { "form", 0xaa8c3 },
+                          { "type", "defaultPillarPuzzleLever" } });
+  REQUIRE(kept["scripts"][0]["vars"][9]["elem"] == "ObjectReference");
+  REQUIRE(kept["scripts"][0]["vars"][9]["a"].size() == 2);
+  REQUIRE(kept["scripts"][0]["vars"][10] == nlohmann::json{ { "k", 12 } });
+
+  const std::string dump = saved.dump();
+  auto element = parser.parse(dump).value();
+  const auto loaded = MpChangeForm::JsonToChangeForm(element);
+  REQUIRE(loaded.scriptState.has_value());
+  REQUIRE(*loaded.scriptState == record);
+
+  // the record travels with the reference's change form as a whole
+  MpObjectReference refr(LocationalData(), FormCallbacks::DoNothing(), 0,
+                         "ACTI");
+  REQUIRE(!refr.GetScriptState().has_value());
+  refr.ApplyChangeForm(loaded);
+  REQUIRE(refr.GetScriptState().has_value());
+  REQUIRE(*refr.GetScriptState() == record);
+
+  // a record taken before any animation reached the reference has no view,
+  // and keeps none through the save
+  MpChangeForm viewless;
+  viewless.recType = MpChangeForm::REFR;
+  ScriptStateRecord noView = record;
+  noView.event.reset();
+  viewless.scriptState = noView;
+  const nlohmann::json savedViewless = MpChangeForm::ToJson(viewless);
+  REQUIRE(!savedViewless["scriptState"].contains("event"));
+  const std::string viewlessDump = savedViewless.dump();
+  auto viewlessElement = parser.parse(viewlessDump).value();
+  const auto viewlessLoaded = MpChangeForm::JsonToChangeForm(viewlessElement);
+  REQUIRE(viewlessLoaded.scriptState ==
+          std::optional<ScriptStateRecord>(noView));
+  REQUIRE(!viewlessLoaded.scriptState->event.has_value());
+
+  // a record written before the field: no key, read as none
+  nlohmann::json older = MpChangeForm::ToJson(MpChangeForm());
+  REQUIRE(!older.contains("scriptState"));
+  const std::string olderDump = older.dump();
+  auto olderElement = parser.parse(olderDump).value();
+  REQUIRE(!MpChangeForm::JsonToChangeForm(olderElement).scriptState);
+}
+
 // thuum docs/verbs/npc-fate.md ("canon-4's merge review", finding 2): the
 // record a host serialized for a body is that body's; the server's stand-up
 // (RespawnFated) ends the body, so the record goes with it and no later

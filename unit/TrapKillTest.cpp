@@ -330,8 +330,9 @@ TEST_CASE("A trigger's firing notes its activation children two levels down",
 {
   PartOne& p = GetPartOne();
   // the platform registers under the linker and the linker under the wire as
-  // each loads (its XAPR); nothing else of the mine is loaded, so the
-  // platform is the one level-two child
+  // each loads (its XAPR); the rocks are the linker's children too and may be
+  // loaded by the binary's other cases (CI's whole run, 5531), so the newest
+  // note near the platform is any of the wire's level-two children
   auto& wire = p.worldState.GetFormAt<MpObjectReference>(kWire);
   p.worldState.GetFormAt<MpObjectReference>(kLinker);
   auto& platform = p.worldState.GetFormAt<MpObjectReference>(kPlatform);
@@ -346,5 +347,5 @@ TEST_CASE("A trigger's firing notes its activation children two levels down",
     p.GetActionListener().ActivationSeenNear(platform, platform.GetPos(), now);
   REQUIRE(seen.has_value());
   REQUIRE(seen->trap);
-  REQUIRE(seen->refId == kPlatform);
+  REQUIRE(children.at(kLinker).count(seen->refId) == 1);
 }

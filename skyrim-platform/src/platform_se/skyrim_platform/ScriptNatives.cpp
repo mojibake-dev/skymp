@@ -116,13 +116,20 @@ constexpr NativeRow kRows[] = {
 };
 constexpr std::size_t kRowCount = std::size(kRows);
 
-// rung 2's two state rows whose owned call crosses in the batch, as kind
-// "state": the client's death report reads a script's kill there (cause 3,
+// the state rows whose owned call crosses in the batch, as kind "state":
+// rung 2's two, whose kill the client's death report reads there (cause 3,
 // skymp5-client's DeathReportService), the flip's never-dropped kill rows;
-// every other state row is counted until rung 4's record trigger
+// and ProcessTrapHit, a trap's hit on an actor this seat simulates (its self
+// the hit actor, ADR-068 D-S3 point 2), which the client reports as that
+// actor's death evidence (thuum docs/verbs/npc-fate.md, playtest 48: the
+// blades' kill of draugr 800a6 came after their trigger's notes lapsed and
+// was refused). The player's own hits cross too and the client drops them:
+// a handful an encounter, and the batch crosses once a frame whatever it
+// holds. Every other state row is counted until rung 4's record trigger
 constexpr std::pair<const char*, const char*> kBatchedStateRows[] = {
   { "Actor", "Kill" },
-  { "Actor", "KillSilent" }
+  { "Actor", "KillSilent" },
+  { "ObjectReference", "ProcessTrapHit" }
 };
 
 // thuum docs/DECISIONS.md ADR-068 D-S3 (traps follow the interaction;
@@ -1187,6 +1194,22 @@ RE::BSScript::IFunction::CallResult NativeCallReplacement(
 void ScriptNatives::Tick()
 {
   FlushCensus(NowMs());
+}
+
+void ScriptNatives::FlushAheadOnUpdate()
+{
+  {
+    std::lock_guard<std::mutex> lock(g_batchMutex);
+    if (g_batch.empty()) {
+      return;
+    }
+  }
+  // the batch's flush on the update's queue, ahead of the task the caller
+  // adds next; the tick's flush already scheduled finds the batch empty (or
+  // carries a call queued after this one) and FlushBatch lowers the flag, so
+  // the next call schedules its own as before
+  SkyrimPlatform::GetSingleton()->AddUpdateTask(
+    [](Napi::Env env) { FlushBatch(env); });
 }
 
 bool ScriptNatives::InScriptAction()

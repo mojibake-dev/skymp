@@ -4,6 +4,7 @@
 #include "FridaHooks.h"
 #include "Hosted.h"
 #include "JsUtils.h"
+#include "ScriptNatives.h"
 #include "SkyrimPlatform.h"
 #include "TickHandler.h"
 
@@ -443,6 +444,12 @@ EventResult EventHandler::ProcessEvent(const RE::TESDeathEvent* event,
     event->actorKiller.get() ? event->actorKiller.get()->GetFormID() : 0;
 
   bool dead = event->dead;
+
+  // thuum docs/verbs/npc-fate.md (playtest 48): the seam's batch goes ahead
+  // of the death's event on the update's queue, so a trap's hit or a
+  // script's kill behind the death reaches JS first and its evidence leaves
+  // before the client's death report (ScriptNatives::FlushAheadOnUpdate)
+  ScriptNatives::FlushAheadOnUpdate();
 
   SkyrimPlatform::GetSingleton()->AddUpdateTask(
     [actorDyingId, actorKillerId, dead](Napi::Env env) {

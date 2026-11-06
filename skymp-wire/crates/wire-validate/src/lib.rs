@@ -4056,7 +4056,9 @@ mod script_state_tests {
         ) {
             let (k, carried, handle) = scalar;
             let mut v = value_of(k, carried, handle);
-            let mut var_ok = payload_ok(k, carried, handle);
+            // a scalar draw of an array kind with no payload is a None array, the same
+            // variable as the array branch's draw with no elements, so it is valid too
+            let mut var_ok = payload_ok(k, carried, handle) || ((10..=15).contains(&k) && carried == [false; 4] && handle.is_none());
             let mut as_var = ScriptVar { k: v.k, i: v.i, f: v.f, b: v.b, s: v.s.take(), o: v.o.take(), ..Default::default() };
             if let Some((ak, elements, elem)) = array {
                 // an array instead: no value fields, its elements each of kind ak - 10

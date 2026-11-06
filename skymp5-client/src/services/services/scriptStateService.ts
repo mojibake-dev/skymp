@@ -3,7 +3,6 @@ import { logError, logLab, logTrace } from "../../logging";
 import { MsgType } from "../../messages";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { ConnectionMessage } from "../events/connectionMessage";
-import { CreateActorMessage } from "../messages/createActorMessage";
 import { ScriptStateApplyMessage } from "../messages/scriptStateApplyMessage";
 import { ScriptStateMessage } from "../messages/scriptStateMessage";
 import { ScriptHandle, ScriptObjectState, ScriptValue, ScriptVar } from "../messages/scriptStateTypes";
@@ -48,27 +47,41 @@ import { SpSnippetService } from "./spSnippetService";
 // record not applied 3 s after the grant is given up and the gate opens
 // anyway, said. A record for a cell this seat does not host is a guest's,
 // applied when this seat has no seq for the form or one not above the
-// record's; a record for a cell this seat already hosts with no grant of it
-// pending is dropped. The apply: ApplyScriptState (the platform clears the
-// mark and answers the load events the gate held), each held event re-sent
-// once through SendScriptEvent, the record's view replayed through
+// record's, and given up 10 s after a try first found its reference (a
+// login's save load outlasts a window counted from the arrival); a record for
+// a cell this seat already hosts with no grant of it pending is dropped. The
+// apply: ApplyScriptState (the platform clears the mark and answers the load
+// events the gate held; a refusal with retry false is final), each held event
+// re-sent once through SendScriptEvent, the record's view replayed through
 // ObjectAnimationService.playRelayed where this seat's seq for the form is
-// another than the record's (a new owner's graph pulled to its script's state,
-// a guest's caught up), then the seq raised to the record's. remoteServer
-// leaves its lastAnimation replay to a record with a view, and
-// ObjectAnimationService's re-sync at a grant (d1f23444) to a pillar whose
-// record was not applied there (F6 deletes the re-sync).
+// another than the record's (a new owner's always, past a newer relay too, so
+// its graph comes back to its script's side: the plan's mid-turn hand-off; a
+// guest's unless a newer relay played), then the seq raised to the record's.
+// A record given up or dropped lowers its mark through
+// releaseScriptRecordPending, which answers the load events the gate held, and
+// each is re-sent once while the reference stands in a loaded cell (its next
+// load raises them anew otherwise). remoteServer leaves its lastAnimation
+// replay to a record with a view, and ObjectAnimationService's re-sync at a
+// grant (d1f23444) to a pillar whose record was not applied there with its view
+// played (F6 deletes the re-sync). A new connection (connectionAccepted, ahead
+// of all its messages) starts it all over: a login's create words come in the
+// server's own order, so a record can come before the player's own
+// CreateActor (the rung's review).
 //
 // Known limits: a persistent exterior reference's parent cell is its
 // worldspace's persistent cell (hostService's isMine note), so a grant's pass
 // does not take its record (it is applied as a guest's) and the release read
-// does not find it; the load events the gate held for a record that is given
-// up are not re-sent (the platform names them only in an apply's answer).
+// does not find it; a gate that opens with a view unplayed (no 3D) leaves the
+// pillar's graph to the re-sync, which puts it on the record's side and feeds
+// its script no turn (the script is there already).
 //
 // The natives are TESModPlatform Papyrus statics called by name through
 // callNative in the update's context (changeFormService's shape), answering
-// JSON strings; an older platform without them throws: said once, and this
-// seat goes on as before (a grant's gate opens on the next update). The
+// JSON strings; the platform's exports setScriptRecordPending,
+// releaseScriptRecordPending and setScriptRecordTouches (the switch told to
+// the platform's touch hook at construction) are table writes, safe from a
+// message handler. An older platform without them throws: said once, and
+// this seat goes on as before (a grant's gate opens on the next update). The
 // setting scriptRecord false in skymp5-client-settings.txt turns all of it
 // off.
 //
@@ -82,10 +95,11 @@ import { SpSnippetService } from "./spSnippetService";
 // "script state <id>: blanked <event> re-sent; view <event> to play (...),
 // +<ms> ms", "script records applied at the grant of <cell>: <n> of <n> in
 // <ms> ms, the gate open" (once a grant whose records all applied; the
-// per-reference line above names its id before the same words), "the gate of <cell> opened after
-// <ms> ms: <n> of <m> script record(s) applied, left: ..." (the timeout),
-// "script state <id> from the record: dropped, ..." or ": not applied in <ms>
-// ms ...", and the 30 s summary "script state in 30 s: ...".
+// per-reference line above names its id before the same words), "the gate of
+// <cell> opened after <ms> ms: <n> of <m> script record(s) applied, left:
+// ..." (the timeout), "script state <id> from the record: dropped, ..." or
+// ": not applied, ..." (with "; blanked <event> re-sent" when the gate held
+// one), and the 30 s summary "script state in 30 s: ...".
 const TAG = "verb:scripts";
 const PLAYER_ID = 0x14;
 // game-file references end where the server's copies begin (the validator
@@ -121,13 +135,16 @@ const KNOWN_MAX = 1024;
 const DUE_MAX = 1024;
 const LAST_SENT_MAX = 4096;
 // the receiver: an apply the platform refused (busy, not initialized) is
-// tried again every 250 ms; a grant's gate opens GATE_TIMEOUT_MS after the
-// grant whatever is left (the plan's 3 s); a guest's record is given up
-// GUEST_WINDOW_MS after its arrival, its mark lifted (UNMEASURED: a late
-// joiner's cell load)
+// tried again every 250 ms, unless the refusal says retry false; a grant's
+// gate opens GATE_TIMEOUT_MS after the grant whatever is left (the plan's 3
+// s); a guest's record is given up GUEST_WINDOW_MS after a try first found its
+// reference (UNMEASURED: a late joiner's cell load; counted from the arrival
+// it ran out inside a login's save load, the rung's review), or HOLD_MAX_MS
+// after its arrival when no try ever found it (changeFormService's holdMs)
 const APPLY_RETRY_MS = 250;
 const GATE_TIMEOUT_MS = 3000;
 const GUEST_WINDOW_MS = 10_000;
+const HOLD_MAX_MS = 120_000;
 // a guest's first try waits this long after its record came, so a HostGrant
 // that follows its records in a later tick (the server sends a grant's
 // records right before it; a big record's fragments can straddle a tick)
@@ -163,7 +180,9 @@ type Held = {
     scripts: string;    // the record's scripts as ApplyScriptState takes them: the wire's keys, an absent optional for None
     view: string;       // the record's view, its last animation event; "" for none
     receivedAt: number;
+    foundAt: number;    // the first try that found its reference, 0 before (a guest's window counts from it)
     marked: boolean;    // the platform's pending mark is up for it
+    carried: string[];  // load events a replaced record's lowered mark had held, re-sent with this one's apply or give-up
     claim: number;      // the cell of the grant's pass that applies it, 0 for none (a guest's look decides)
     phase: "apply" | "view";
     nextTryAt: number;
@@ -179,6 +198,7 @@ type Pass = {
     after: Array<() => void>;   // what waits for the gate (ObjectAnimationService's re-sync)
     applied: number;
     taken: Set<number>;
+    failed: string[];           // the records it gave up before the gate (a final refusal, a throw), for the gate's line
 };
 
 type ReadAnswer =
@@ -192,6 +212,7 @@ type ReadAnswer =
 type ApplyAnswer = {
     applied: boolean;
     reason: string;
+    retry: boolean;     // a refusal worth another try (busy, not initialized); false when the platform will never take it
     scripts: number;
     refusedScripts: number;
     resolved: number | undefined;
@@ -204,6 +225,8 @@ type ApplyAnswer = {
 };
 
 const asNumber = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+// names once each, in their first order
+const unique = (names: string[]): string[] => names.filter((name, i) => names.indexOf(name) === i);
 const show = (n: number | undefined): string => (n === undefined ? "?" : String(n));
 
 // the platform's JSON into the wire's shapes, the wire's keys alone (the
@@ -357,7 +380,8 @@ const parseRead = (raw: string): ReadAnswer => {
 };
 
 // ApplyScriptState's answer: {applied, scripts[], resolved, none, seatLocal,
-// stacksOnObject, holdUs, blanked[], fnvAfter}, or {applied: false, reason}
+// stacksOnObject, holdUs, blanked[], fnvAfter}, or {applied: false, reason,
+// retry} (retry absent reads true)
 const parseApply = (raw: string): ApplyAnswer | undefined => {
     let o: unknown;
     try {
@@ -376,6 +400,7 @@ const parseApply = (raw: string): ApplyAnswer | undefined => {
     return {
         applied: r["applied"] === true,
         reason: typeof reason === "string" ? reason : "",
+        retry: r["retry"] !== false,
         scripts: scripts.length,
         refusedScripts: scripts.filter((s) => !!s && typeof s === "object" && (s as Record<string, unknown>)["applied"] === false).length,
         resolved: asNumber(r["resolved"]),
@@ -418,8 +443,11 @@ export class ScriptStateService extends ClientListener {
             logTrace(this, "scriptRecord is off in settings: no script record is read, sent or applied; a grant opens its gate as before");
         }
         this.liftStaleMarks();
+        // the switch told to the platform's touch hook too, so off stops the
+        // "touch" rows where they are made
+        this.setTouches(this.enabled);
         this.controller.emitter.on("scriptStateApplyMessage", (e) => this.onRecord(e));
-        this.controller.emitter.on("createActorMessage", (e) => this.onCreateActor(e));
+        this.controller.emitter.on("connectionAccepted", () => this.onConnectionAccepted());
         this.controller.on("update", () => this.onUpdate());
     }
 
@@ -485,8 +513,13 @@ export class ScriptStateService extends ClientListener {
                 this.grantApplied.delete(id);
             }
         });
+        this.unplayed.forEach((u, id) => {
+            if (u.cell === cell) {
+                this.unplayed.delete(id);
+            }
+        });
         const live = this.passes.get(cell);
-        this.passes.set(cell, { since: Date.now(), open, after: live ? live.after : [], applied: 0, taken: new Set<number>() });
+        this.passes.set(cell, { since: Date.now(), open, after: live ? live.after : [], applied: 0, taken: new Set<number>(), failed: [] });
     }
 
     // ObjectAnimationService's: `run` after the cell's gate opened (in the
@@ -501,8 +534,19 @@ export class ScriptStateService extends ClientListener {
     }
 
     // a record of the reference was applied by the cell's last grant's pass
+    // with its view played, current here, or none to play (the rung's review:
+    // a view the gate gave up leaves the graph unset)
     appliedAtGrant(localId: number): boolean {
         return this.grantApplied.has(localId);
+    }
+
+    // the view of a record the cell's last grant's pass applied without
+    // playing it (no 3D before the gate opened): its script stands on that
+    // view's side already, so ObjectAnimationService's re-sync puts the graph
+    // there and feeds the script no turn
+    unplayedViewAtGrant(localId: number): string | undefined {
+        const u = this.unplayed.get(localId);
+        return u !== undefined ? u.view : undefined;
     }
 
     // remoteServer's: whether a record with a view stands for the reference,
@@ -573,18 +617,24 @@ export class ScriptStateService extends ClientListener {
         const last = this.controller.lookupListener(SpSnippetService).seqOf(m.formId);
         const mark = view !== "" && (last === undefined || last <= m.seq);
         const old = this.held.get(m.formId);
+        // a kept mark keeps the events its gate held at the platform (the
+        // apply answers them); a lowered one hands them to this record, re-sent
+        // after its apply or its give-up
+        let carried = old !== undefined ? old.carried : [];
         let marked = false;
         if (mark) {
             marked = (old !== undefined && old.marked) || this.setPending(m.formId, true);
         } else if (old !== undefined && old.marked) {
-            this.setPending(m.formId, false);
+            carried = carried.concat(this.release(m.formId));
         }
         this.held.set(m.formId, {
             m,
             scripts: JSON.stringify(scripts),
             view,
             receivedAt: Date.now(),
+            foundAt: 0,
             marked,
+            carried,
             claim: old !== undefined ? old.claim : 0,
             phase: "apply",
             nextTryAt: 0,
@@ -600,22 +650,24 @@ export class ScriptStateService extends ClientListener {
         this.persistMarks();
     }
 
-    // the player's own actor is created: a fresh table on the server's side of
-    // this connection (a login, a reconnect, a restart), which serves its
-    // records again; HostService clears its grants at the same message
-    private onCreateActor(e: ConnectionMessage<CreateActorMessage>): void {
-        if (!e.message.isMe) {
-            return;
-        }
+    // a new connection (NetworkingService's connectionAccepted, ahead of all
+    // its messages; questStageService's and magicEffectsService's reset): a
+    // fresh table on the server's side (a login, a reconnect, a restart), which
+    // serves its records again. Not the player's own CreateActor: the login's
+    // subscription pass sends the create words in the order of its set of
+    // emitters (MpObjectReference.cpp, a std::set of pointers), so a record can
+    // come before it and was wiped (the rung's review). A message handler: the
+    // marks are lowered here (a table write), the load events they held are
+    // re-sent on the next update
+    private onConnectionAccepted(): void {
         this.held.forEach((h, id) => {
-            if (h.marked) {
-                this.setPending(id, false);
-            }
+            this.queueResend(id, h.marked ? h.carried.concat(this.release(id)) : h.carried);
         });
         this.held.clear();
         this.views.clear();
         this.passes.clear();
         this.grantApplied.clear();
+        this.unplayed.clear();
         this.due.clear();
         this.lastSent.clear();
         this.known.clear();
@@ -625,6 +677,11 @@ export class ScriptStateService extends ClientListener {
     }
 
     private onUpdate(): void {
+        // a reload's stale marks are lowered whatever the switch says, and
+        // their held events go back to the engine's scripts
+        if (this.resends.size > 0) {
+            this.resendQueued();
+        }
         if (!this.enabled) {
             return;
         }
@@ -646,7 +703,9 @@ export class ScriptStateService extends ClientListener {
 
     // the grants' passes: each takes the held records whose reference stands
     // in its cell and applies them as the new owner's, then opens the gate,
-    // or opens it GATE_TIMEOUT_MS after the grant whatever is left
+    // or opens it GATE_TIMEOUT_MS after the grant whatever is left. A record
+    // whose step throws is given up there and the pass goes on (the rung's
+    // review: one throw kept a gate shut past its timeout)
     private runPasses(now: number): void {
         const host = this.controller.lookupListener(HostService);
         for (const [cell, pass] of Array.from(this.passes.entries())) {
@@ -663,17 +722,23 @@ export class ScriptStateService extends ClientListener {
                 if (h.claim !== 0 && h.claim !== cell) {
                     return;
                 }
-                const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(id));
-                if (h.claim === 0) {
-                    const parent = refr ? refr.getParentCell() : null;
-                    if (!parent || parent.getFormID() !== cell) {
-                        return;
+                try {
+                    const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(id));
+                    if (h.claim === 0) {
+                        const parent = refr ? refr.getParentCell() : null;
+                        if (!parent || parent.getFormID() !== cell) {
+                            return;
+                        }
+                        h.claim = cell;
                     }
-                    h.claim = cell;
-                }
-                pass.taken.add(id);
-                if (!this.step(id, h, refr, now, cell, pass)) {
-                    waiting++;
+                    pass.taken.add(id);
+                    if (!this.step(id, h, refr, now, cell, pass)) {
+                        waiting++;
+                    }
+                } catch (e) {
+                    logError(this, `script state ${id.toString(16)} at the grant of ${cell.toString(16)} threw, given up`, e);
+                    pass.failed.push(`${id.toString(16)} (threw)`);
+                    this.safeGiveUp(id, h);
                 }
             });
             if (this.passes.get(cell) !== pass) {
@@ -692,14 +757,19 @@ export class ScriptStateService extends ClientListener {
     private closePass(cell: number, pass: Pass, now: number): void {
         const cellHex = cell.toString(16);
         this.passes.delete(cell);
-        const left: string[] = [];
+        const left: string[] = pass.failed.slice();
         this.held.forEach((h, id) => {
             if (h.claim !== cell) {
                 return;
             }
             const hex = id.toString(16);
             left.push(h.phase === "apply" ? `${hex} (${h.reason !== "" ? h.reason : "not tried"})` : `${hex} (view ${h.view}: no 3D)`);
-            this.giveUp(id, h, "");
+            if (h.phase === "view") {
+                // applied, its view not played: the graph is the re-sync's
+                // (appliedAtGrant stays false), from the record's side
+                this.unplayed.set(id, { cell, view: h.view });
+            }
+            this.safeGiveUp(id, h);
         });
         try {
             pass.open();
@@ -739,51 +809,70 @@ export class ScriptStateService extends ClientListener {
             if (now < h.nextTryAt || now - h.receivedAt < GRANT_GRACE_MS) {
                 return;
             }
-            if (h.phase === "apply" && now - h.receivedAt >= GUEST_WINDOW_MS) {
-                this.giveUp(id, h, `not applied in ${now - h.receivedAt} ms (${h.reason !== "" ? h.reason : "no reference here"}); its load events pass from now`);
-                return;
+            try {
+                this.lookOne(id, h, now, host, snippets);
+            } catch (e) {
+                logError(this, `script state ${id.toString(16)} from the record threw, given up`, e);
+                this.safeGiveUp(id, h);
             }
-            if (h.phase === "view" && now - h.appliedAt >= GUEST_WINDOW_MS) {
-                this.giveUp(id, h, `its view ${h.view} not played, no 3D in ${now - h.appliedAt} ms`);
-                return;
-            }
-            const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(id));
-            if (!refr) {
-                h.reason = "no reference here";
-                h.nextTryAt = now + APPLY_RETRY_MS;
-                return;
-            }
-            const parent = refr.getParentCell();
-            const cellId = parent ? parent.getFormID() : 0;
-            if (cellId !== 0 && host.hostsCell(cellId)) {
-                if (this.passes.has(cellId)) {
-                    h.claim = cellId;
-                    return;
-                }
-                if (h.phase === "view") {
-                    // a guest's view not played before this seat took the cell:
-                    // the graph is this seat's script's now, a late play would
-                    // move it off a script that may have turned since
-                    logTrace(this, `script state ${id.toString(16)}: the record's view ${h.view} not played, cell ${cellId.toString(16)} is hosted here now`);
-                    this.finish(id, h);
-                    return;
-                }
-                this.giveUp(id, h, `dropped, cell ${cellId.toString(16)} is hosted here and no grant of it is pending`);
-                return;
-            }
-            if (h.phase === "apply") {
-                if (this.sp.Actor.from(refr)) {
-                    this.giveUp(id, h, "dropped, an actor's record (its simulator's state is a later rung)");
-                    return;
-                }
-                const last = snippets.seqOf(id);
-                if (last !== undefined && last > h.m.seq) {
-                    this.giveUp(id, h, `dropped, this seat's view is newer (seq ${last} above the record's ${h.m.seq})`);
-                    return;
-                }
-            }
-            this.step(id, h, refr, now, 0, undefined);
         });
+    }
+
+    // one held record's look: its window counts from the first try that
+    // found its reference (the rung's review: from the arrival it ran out
+    // inside a login's save load), a backstop from the arrival when none did
+    private lookOne(id: number, h: Held, now: number, host: HostService, snippets: SpSnippetService): void {
+        const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(id));
+        if (!refr) {
+            if (now - h.receivedAt >= HOLD_MAX_MS) {
+                this.giveUp(id, h, `not applied, no reference here in ${now - h.receivedAt} ms`);
+                return;
+            }
+            h.reason = "no reference here";
+            h.nextTryAt = now + APPLY_RETRY_MS;
+            return;
+        }
+        if (h.foundAt === 0) {
+            h.foundAt = now;
+        }
+        if (h.phase === "apply" && now - h.foundAt >= GUEST_WINDOW_MS) {
+            this.giveUp(id, h, `not applied in ${now - h.foundAt} ms from its reference (${h.reason !== "" ? h.reason : "not tried"})`);
+            return;
+        }
+        if (h.phase === "view" && now - h.appliedAt >= GUEST_WINDOW_MS) {
+            this.giveUp(id, h, `its view ${h.view} not played, no 3D in ${now - h.appliedAt} ms`);
+            return;
+        }
+        const parent = refr.getParentCell();
+        const cellId = parent ? parent.getFormID() : 0;
+        if (cellId !== 0 && host.hostsCell(cellId)) {
+            if (this.passes.has(cellId)) {
+                h.claim = cellId;
+                return;
+            }
+            if (h.phase === "view") {
+                // a guest's view not played before this seat took the cell:
+                // the graph is this seat's script's now, a late play would
+                // move it off a script that may have turned since
+                logTrace(this, `script state ${id.toString(16)}: the record's view ${h.view} not played, cell ${cellId.toString(16)} is hosted here now`);
+                this.finish(id, h);
+                return;
+            }
+            this.giveUp(id, h, `dropped, cell ${cellId.toString(16)} is hosted here and no grant of it is pending`);
+            return;
+        }
+        if (h.phase === "apply") {
+            if (this.sp.Actor.from(refr)) {
+                this.giveUp(id, h, "dropped, an actor's record (its simulator's state is a later rung)");
+                return;
+            }
+            const last = snippets.seqOf(id);
+            if (last !== undefined && last > h.m.seq) {
+                this.giveUp(id, h, `dropped, this seat's view is newer (seq ${last} above the record's ${h.m.seq})`);
+                return;
+            }
+        }
+        this.step(id, h, refr, now, 0, undefined);
     }
 
     // one record's next step on this update; true when it is over (applied
@@ -825,6 +914,15 @@ export class ScriptStateService extends ClientListener {
         }
         if (!answer.applied) {
             h.reason = answer.reason !== "" ? answer.reason : "refused";
+            if (!answer.retry) {
+                // the platform will never take it (a type or count that does
+                // not match): given up now, no 250 ms retries (the rung's review)
+                if (pass) {
+                    pass.failed.push(`${hex} (${h.reason})`);
+                }
+                this.giveUp(id, h, `not applied, final: ${h.reason}`);
+                return "over";
+            }
             h.nextTryAt = now + APPLY_RETRY_MS;
             return "retry";
         }
@@ -838,14 +936,19 @@ export class ScriptStateService extends ClientListener {
         }
         const parent = refr.getParentCell();
         this.rememberKnown(id, parent ? parent.getFormID() : 0);
-        const resent = this.resend(refr, answer.blanked);
+        const resent = this.resend(refr, unique(answer.blanked.concat(h.carried)));
+        h.carried = [];
         const snippets = this.controller.lookupListener(SpSnippetService);
         const last = snippets.seqOf(id);
         const replay = h.view !== "" && last !== h.m.seq;
         snippets.raiseSeq(id, h.m.seq);
         if (pass) {
             pass.applied++;
-            this.grantApplied.set(id, cell);
+            // the re-sync steps aside once the graph is settled too: here when
+            // there is no view to play, else when it plays (playView)
+            if (!replay) {
+                this.grantApplied.set(id, cell);
+            }
         }
         // two lines, the fields a probe reads first: the console tee cuts a
         // line near 128 bytes (InGameConsolePrinter.cpp, ScriptCallService's
@@ -864,12 +967,15 @@ export class ScriptStateService extends ClientListener {
     }
 
     // the record's view through the relay's own play (the side jump first,
-    // ObjectAnimationService.playRelayed): once the reference's 3D is here,
-    // unless a relay past the record's seq was taken meanwhile (its play is
-    // the newer view). A new owner plays once, a guest up to VIEW_TRIES times
+    // ObjectAnimationService.playRelayed), once the reference's 3D is here. A
+    // new owner plays it once, whatever relay came meanwhile: its script holds
+    // the record's state, so its graph comes back to that state's side (the
+    // plan's mid-turn hand-off; the rung's review). A guest skips it when a
+    // relay past the record's seq was taken meanwhile (its play is the newer
+    // view), and plays up to VIEW_TRIES times
     private playView(id: number, h: Held, refr: ObjectReference, now: number, cell: number): boolean {
         const last = this.controller.lookupListener(SpSnippetService).seqOf(id);
-        if (last !== undefined && last > h.m.seq) {
+        if (cell === 0 && last !== undefined && last > h.m.seq) {
             logTrace(this, `script state ${id.toString(16)}: the record's view ${h.view} not played, a relay past its seq ${h.m.seq} came (seq ${last})`);
             this.finish(id, h);
             return true;
@@ -880,6 +986,9 @@ export class ScriptStateService extends ClientListener {
         }
         h.viewTries++;
         const taken = this.controller.lookupListener(ObjectAnimationService).playRelayed(refr, h.view, "the script record");
+        if (cell !== 0) {
+            this.grantApplied.set(id, cell);
+        }
         if (taken || cell !== 0 || h.viewTries >= VIEW_TRIES) {
             this.finish(id, h);
             return true;
@@ -909,7 +1018,58 @@ export class ScriptStateService extends ClientListener {
                 break;
             }
         }
+        if (out.length === names.length && out.every((o, i) => o === `${names[i]} re-sent`)) {
+            return `blanked ${names.join(" and ")} re-sent`;
+        }
         return `blanked ${out.join(", ")}`;
+    }
+
+    // the held load events of a lowered mark (a give-up), re-sent once each
+    // while the reference stands in a loaded cell (the gate held them from that
+    // load; a reference gone or out of the loaded cells has its next load
+    // raise them anew, with the mark down); "" when there were none
+    private resendLoaded(id: number, names: string[]): string {
+        const once = unique(names);
+        if (once.length === 0) {
+            return "";
+        }
+        const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(id));
+        const parent = refr ? refr.getParentCell() : null;
+        if (!refr || !parent || !parent.isAttached()) {
+            return `blanked ${once.join(" and ")} not re-sent, not loaded here (its next load raises them)`;
+        }
+        return this.resend(refr, once);
+    }
+
+    // a message handler's give-ups (a new connection): the held events wait
+    // for the update, where a record held for the form by then takes them to
+    // its own apply or give-up
+    private queueResend(id: number, names: string[]): void {
+        if (names.length === 0) {
+            return;
+        }
+        const queued = this.resends.get(id) ?? [];
+        this.resends.set(id, queued.concat(names));
+    }
+
+    private resendQueued(): void {
+        const queued = Array.from(this.resends.entries());
+        this.resends.clear();
+        for (const [id, names] of queued) {
+            const h = this.held.get(id);
+            if (h) {
+                h.carried = h.carried.concat(names);
+                continue;
+            }
+            try {
+                const resent = this.resendLoaded(id, names);
+                if (resent !== "") {
+                    logLab(TAG, `script state ${id.toString(16)} given up: ${resent}`);
+                }
+            } catch (e) {
+                logError(this, `script state ${id.toString(16)}: a re-send threw`, e);
+            }
+        }
     }
 
     private finish(id: number, h: Held): void {
@@ -919,21 +1079,38 @@ export class ScriptStateService extends ClientListener {
         }
     }
 
-    // a record given up or dropped: its mark lifted (the reference's load
-    // events pass from now; the ones the gate held are not re-sent, the
-    // platform names them only in an apply's answer), its view no longer
-    // stands for remoteServer's replay; `what` its line ("" for none: the
-    // gate's own line names it)
+    // a record given up or dropped (an update's context): its mark lowered
+    // through releaseScriptRecordPending, the load events the gate held re-sent
+    // once each while the reference stands in a loaded cell (the rung's
+    // review: lowered with setScriptRecordPending they were lost), its view no
+    // longer standing for remoteServer's replay; `what` its line ("" for none:
+    // the gate's own line names it, a re-send is said apart)
     private giveUp(id: number, h: Held, what: string): void {
         this.held.delete(id);
         this.views.delete(id);
+        let names = h.carried;
         if (h.marked) {
             h.marked = false;
-            this.setPending(id, false);
+            names = names.concat(this.release(id));
         }
         this.persistMarks();
+        const resent = this.resendLoaded(id, names);
         if (what !== "") {
             logLab(TAG, `script state ${id.toString(16)} from the record: ${what}`);
+        }
+        if (resent !== "") {
+            logLab(TAG, `script state ${id.toString(16)} given up: ${resent}`);
+        }
+    }
+
+    // a give-up inside a guard: the record leaves the table whatever throws
+    private safeGiveUp(id: number, h: Held): void {
+        try {
+            this.giveUp(id, h, "");
+        } catch (e) {
+            this.held.delete(id);
+            this.views.delete(id);
+            logError(this, `script state ${id.toString(16)}: its give-up threw`, e);
         }
     }
 
@@ -943,13 +1120,12 @@ export class ScriptStateService extends ClientListener {
     private applyGone(e: unknown): void {
         this.applyMissing = true;
         logLab(TAG, `ApplyScriptState unavailable on this platform (${e}); grants open their gates as before`);
-        this.held.forEach((h, id) => {
-            if (h.marked) {
-                this.setPending(id, false);
-            }
-        });
+        const held = Array.from(this.held.entries());
         this.held.clear();
         this.views.clear();
+        for (const [id, h] of held) {
+            this.safeGiveUp(id, h);
+        }
         this.persistMarks();
         const now = Date.now();
         for (const [cell, pass] of Array.from(this.passes.entries())) {
@@ -969,8 +1145,13 @@ export class ScriptStateService extends ClientListener {
                 continue;
             }
             checks++;
-            if (this.read(id, d, now)) {
-                reads++;
+            try {
+                if (this.read(id, d, now)) {
+                    reads++;
+                }
+            } catch (e) {
+                this.due.delete(id);
+                logError(this, `script state ${id.toString(16)}: its read threw`, e);
             }
         }
     }
@@ -1021,6 +1202,7 @@ export class ScriptStateService extends ClientListener {
         } catch (e) {
             this.serializeMissing = true;
             this.due.clear();
+            this.setTouches(false);
             logLab(TAG, `SerializeScriptState unavailable on this platform (${e}); no record is read here`);
             return true;
         }
@@ -1218,6 +1400,52 @@ export class ScriptStateService extends ClientListener {
         return false;
     }
 
+    // the mark lowered without an apply, answering the load events its gate
+    // held for the reference (releaseScriptRecordPending: a table write, a
+    // JSON array of names, "[]" for none); an older platform without it lowers
+    // the mark through setScriptRecordPending, the held events lost as before
+    // (said once)
+    private release(id: number): string[] {
+        if (!this.releaseMissing) {
+            let raw: unknown;
+            try {
+                raw = this.sp.releaseScriptRecordPending(id);
+            } catch (e) {
+                this.releaseMissing = true;
+                logLab(TAG, `releaseScriptRecordPending unavailable on this platform (${e}); given-up records' held events are lost`);
+            }
+            if (!this.releaseMissing) {
+                try {
+                    const names: unknown = JSON.parse(typeof raw === "string" && raw !== "" ? raw : "[]");
+                    if (Array.isArray(names)) {
+                        return names.filter((x): x is string => typeof x === "string" && x !== "").slice(0, 8);
+                    }
+                } catch (e) {
+                    // the line below
+                }
+                if (this.say(id, "release", Date.now())) {
+                    logError(this, `releaseScriptRecordPending(${id.toString(16)}) answered no array of names: ${String(raw).slice(0, 60)}`);
+                }
+                return [];
+            }
+        }
+        this.setPending(id, false);
+        return [];
+    }
+
+    // the scriptRecord switch told to the platform's touch hook (an owned
+    // state row batched as "touch" only while it is on); an older platform
+    // without the export batches none: said, nothing else changes
+    private setTouches(enabled: boolean): void {
+        try {
+            if (!this.sp.setScriptRecordTouches(enabled)) {
+                logError(this, `setScriptRecordTouches(${enabled}) refused`);
+            }
+        } catch (e) {
+            logTrace(this, `setScriptRecordTouches unavailable on this platform: ${e}`);
+        }
+    }
+
     private persistMarks(): void {
         const ids: number[] = [];
         this.held.forEach((h, id) => {
@@ -1228,14 +1456,15 @@ export class ScriptStateService extends ClientListener {
         this.sp.storage[MARKS_STORAGE_KEY] = ids;
     }
 
-    // a reloaded plugin (lab client-hot, ADR-054) lifts the marks the last
-    // one left set, whose records died with it
+    // a reloaded plugin (lab client-hot, ADR-054) lowers the marks the last
+    // one left set, whose records died with it; the load events they held are
+    // re-sent on the first update (the constructor's tick allows no native)
     private liftStaleMarks(): void {
         const stored: unknown = this.sp.storage[MARKS_STORAGE_KEY];
         if (Array.isArray(stored)) {
             const ids = stored.filter((x): x is number => typeof x === "number");
             for (const id of ids) {
-                this.setPending(id, false);
+                this.queueResend(id, this.release(id));
             }
             if (ids.length > 0) {
                 logTrace(this, `resumed after a reload: ${ids.length} script record mark(s) the last plugin left set, lifted`);
@@ -1260,6 +1489,10 @@ export class ScriptStateService extends ClientListener {
     private readonly views = new Map<number, "pending" | "applied">();
     private readonly passes = new Map<number, Pass>();
     private readonly grantApplied = new Map<number, number>();
+    // the records the last pass of their cell applied with the view unplayed
+    private readonly unplayed = new Map<number, { cell: number; view: string }>();
+    // load events a message handler's give-ups left for the next update
+    private readonly resends = new Map<number, string[]>();
     private readonly saidAt = new Map<string, number>();
     private lastSweep = Date.now();
     private tokens = SEND_BURST;
@@ -1274,5 +1507,6 @@ export class ScriptStateService extends ClientListener {
     private applyMissing = false;
     private sendEventMissing = false;
     private pendingMissing = false;
+    private releaseMissing = false;
     private recordsIgnoredSaid = false;
 }

@@ -359,16 +359,17 @@ export interface SkillUseEvent {
   points: number;
   source: number;
 }
-// thuum docs/DECISIONS.md ADR-068 (rung 2, the one seam): the calls this seat's scripts made in one frame on what this seat owns, raised at most once a frame (the platform's hook on NativeFunctionBase::Call judges every row of its table, NativeRows.inc, from the call's typed frame; ScriptNatives.cpp): an action row on a world object in a cell this game hosts (kind "action"), Actor.Kill and KillSilent on an actor it simulates or the player's own (kind "state"). cls and fn are the table's spelling; self the subject's form id (a static row's first argument: Debug.SendAnimationEvent's reference); args the call's arguments in order, each a boolean, a number, a string, { formId } (0 for None) or null (unread); caller and handler the calling script's type and function, "" when the native began its stack; latent whether the native is latent; stackId the Papyrus stack. The platform's own calls (callNative, SpSnippets) never appear. No game call in its handler
+// thuum docs/DECISIONS.md ADR-068 (rung 2, the one seam): the calls this seat's scripts made in one frame on what this seat owns, raised at most once a frame (the platform's hook on NativeFunctionBase::Call judges every row of its table, NativeRows.inc, from the call's typed frame; ScriptNatives.cpp): an action row on a world object in a cell this game hosts (kind "action"), Actor.Kill and KillSilent on an actor it simulates or the player's own (kind "state"), and since rung 3 (the script record) any other owned state row's call as kind "touch", its args empty, once a frame per self and caller's self, only when one of the two is a world object (no actor, below 0xff000000): the owner's mark that their scripts' state may have changed (the census counts the same call, so a touch is no count). cls and fn are the table's spelling; self the subject's form id (a static row's first argument: Debug.SendAnimationEvent's reference); args the call's arguments in order, each a boolean, a number, a string, { formId } (0 for None) or null (unread); caller and handler the calling script's type and function, "" when the native began its stack; callerSelf the calling script's reference's form id (the frame below the native's, its self), 0 for none; latent whether the native is latent; stackId the Papyrus stack. The platform's own calls (callNative, SpSnippets) never appear. No game call in its handler
 export interface ScriptCallsEvent {
   calls: {
     cls: string;
     fn: string;
-    kind: 'action' | 'state' | 'everyone';
+    kind: 'action' | 'state' | 'everyone' | 'touch';
     self: number;
     args: (boolean | number | string | { formId: number } | null)[];
     caller: string;
     handler: string;
+    callerSelf: number;
     latent: boolean;
     stackId: number;
   }[];

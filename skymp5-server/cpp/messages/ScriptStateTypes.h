@@ -14,10 +14,11 @@
 // scriptStateTypes.ts is (linter-config.json's message pairs). The contract
 // is skymp-wire's (wire-schema skymp.rs: ScriptHandle, ScriptValue,
 // ScriptVar, ScriptObjectState; wire-validate check_script_state holds the
-// kinds and the caps); a u8 or a u16 on the wire is a uint32_t here, the
-// messages' idiom (ChangeFormRemapRow's). The server stores the values and
-// never reads them: the owner's engine wrote them and a receiver's applies
-// them (ApplyScriptState, the platform's).
+// kinds, the caps and every string's form: no NUL anywhere, since the
+// receiver's BSFixedString reads a C string); a u8 or a u16 on the wire is a
+// uint32_t here, the messages' idiom (ChangeFormRemapRow's). The server stores
+// the values and never reads them: the owner's engine wrote them and a
+// receiver's applies them (ApplyScriptState, the platform's).
 
 // An object value's handle as the owner's read splits the VM's 64-bit
 // handle (thuum docs/research/adr065-papyrus-state-2026-11-03.md Q1: a
@@ -47,7 +48,7 @@ struct ScriptStateHandle
   uint32_t kind = 0; // 0, 1 or 2 (a u8 on the wire); 1 and 2 read as None
   uint32_t mid = 0;  // the handle's mid (a u16 on the wire)
   uint32_t form = 0; // the form id, never 0x14 nor 0xff000000 and up
-  std::string type;  // the script type bound at the handle
+  std::string type;  // the script type bound at the handle, never empty
 };
 
 // One value as the VM's Variable holds it: `k` its folded raw type (CL
@@ -86,9 +87,10 @@ struct ScriptStateValue
 };
 
 // One variable of a script, positional and parent-first: a value as
-// ScriptStateValue holds one, or (`k` 10 to 15, the array raw types) an array
-// of values of kind k - 10 in `a`, `elem` naming an object array's element
-// type (k 11 alone); no `a` is a None array
+// ScriptStateValue holds one, or (`k` 11 to 15, the typed array raw types) an
+// array of values of kind k - 10 in `a`, `elem` naming an object array's
+// element type (k 11 alone); no `a` is a None array, and k 10, the None
+// array's own kind, carries none
 struct ScriptStateVar
 {
   template <class Archive>

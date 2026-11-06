@@ -2282,7 +2282,8 @@ wire_struct! {
         /// The form id: never 0x14 (a seat's own player) nor 0xff000000 and
         /// up (the server's forms), which the owner encodes as None.
         pub form: u32,
-        /// The script type bound at the handle.
+        /// The script type bound at the handle; never empty, no NUL (the
+        /// receiver's FindBoundObject takes it as a C string).
         #[serde(rename = "type")]
         pub cls: String<{ cap::PAPYRUS_NAME }>,
     }
@@ -2303,7 +2304,8 @@ wire_struct! {
         pub f: Option<f32>,
         /// A bool's value (k 5).
         pub b: Option<bool>,
-        /// A string's value (k 2).
+        /// A string's value (k 2); no NUL (the receiver's BSFixedString reads
+        /// a C string).
         pub s: Option<String<{ cap::SCRIPT_STRING }>>,
         /// An object's handle (k 1); none for a typed None.
         pub o: Option<ScriptHandle>,
@@ -2313,10 +2315,11 @@ wire_struct! {
 wire_struct! {
     /// One variable of a script in a script record (thuum ADR-068 rung 3),
     /// positional and parent-first (the chain's GetTotalNumVariables, H-R1):
-    /// a value as [`ScriptValue`] carries one, or for `k` 10 to 15 (the
+    /// a value as [`ScriptValue`] carries one, or for `k` 11 to 15 (the typed
     /// array raw types) an array in `a` whose elements are of kind `k - 10`,
     /// `elem` naming an object array's element type (k 11 alone); no `a` is
-    /// a None array. Not recursive: an array holds values, never arrays.
+    /// a None array, and `k` 10, the None array's own kind, carries no `a`
+    /// at all. Not recursive: an array holds values, never arrays.
     pub struct ScriptVar {
         /// The raw type, 0 to 5, or 10 to 15 for an array.
         pub k: u8,
@@ -2326,14 +2329,14 @@ wire_struct! {
         pub f: Option<f32>,
         /// A bool's value (k 5).
         pub b: Option<bool>,
-        /// A string's value (k 2).
+        /// A string's value (k 2); no NUL.
         pub s: Option<String<{ cap::SCRIPT_STRING }>>,
         /// An object's handle (k 1); none for a typed None.
         pub o: Option<ScriptHandle>,
-        /// An object array's element type (k 11 alone).
+        /// An object array's element type (k 11 alone); no NUL.
         pub elem: Option<String<{ cap::PAPYRUS_NAME }>>,
-        /// An array's elements (k 10 to 15), each of kind `k - 10`; none for
-        /// a None array.
+        /// An array's elements (k 11 to 15), each of kind `k - 10`; none for
+        /// a None array, and never on k 10.
         pub a: Option<Vec<ScriptValue, { cap::SCRIPT_ARRAY }>>,
     }
 }
@@ -2345,10 +2348,10 @@ wire_struct! {
     /// lock held, 0x08 initialized) and every variable its chain declares,
     /// in order.
     pub struct ScriptObjectState {
-        /// The script type; never empty.
+        /// The script type; never empty, no NUL.
         #[serde(rename = "type")]
         pub cls: String<{ cap::PAPYRUS_NAME }>,
-        /// The current state; "" for the empty state.
+        /// The current state; "" for the empty state; no NUL.
         pub state: String<{ cap::PAPYRUS_NAME }>,
         /// Object::Save's flags byte: constructed and initialized, the lock
         /// not held (a quiescent read).
@@ -2377,9 +2380,11 @@ wire_struct! {
     /// without constructed 0x01 or initialized 0x08, or with the lock 0x04; a
     /// kind outside 0 to 5 and 10 to 15; a payload that does not match its
     /// kind, an element of another kind than its array's `k - 10`, an `elem`
-    /// off an object array; a handle's kind past 2, its form 0x14 or
-    /// 0xff000000 and up), `E_VAL_NONFINITE`, `E_VAL_RATE` (the sender's
-    /// budget); the server logs `E_SCRIPTSTATE_NO_REF`, `E_SCRIPTSTATE_KIND`,
+    /// off an object array, elements on the None array, k 10; a handle's kind
+    /// past 2, its form 0x14 or 0xff000000 and up, its type empty; a NUL in
+    /// any string or name, which the receiver's apply would refuse the whole
+    /// record for), `E_VAL_NONFINITE`, `E_VAL_RATE` (the sender's budget);
+    /// the server logs `E_SCRIPTSTATE_NO_REF`, `E_SCRIPTSTATE_KIND`,
     /// `E_SCRIPTSTATE_OWNER` and `E_SCRIPTSTATE_EPOCH` by name.
     pub struct ScriptState {
         /// `"t": 76`.

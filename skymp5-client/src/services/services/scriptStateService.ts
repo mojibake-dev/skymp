@@ -3,6 +3,7 @@ import { logError, logLab, logTrace } from "../../logging";
 import { MsgType } from "../../messages";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { ConnectionMessage } from "../events/connectionMessage";
+import { CreateActorMessage } from "../messages/createActorMessage";
 import { ScriptStateApplyMessage } from "../messages/scriptStateApplyMessage";
 import { ScriptStateMessage } from "../messages/scriptStateMessage";
 import { ScriptHandle, ScriptObjectState, ScriptValue, ScriptVar } from "../messages/scriptStateTypes";
@@ -54,9 +55,12 @@ import { SpSnippetService } from "./spSnippetService";
 // events the gate held; a refusal with retry false is final), each held event
 // re-sent once through SendScriptEvent, the record's view replayed through
 // ObjectAnimationService.playRelayed where this seat's seq for the form is
-// another than the record's (a new owner's always, past a newer relay too, so
-// its graph comes back to its script's side: the plan's mid-turn hand-off; a
-// guest's unless a newer relay played), then the seq raised to the record's.
+// another than the record's (a new owner's always, past a newer relay too, the
+// plan's mid-turn hand-off: a Trigger02 or Trigger03 view jumps to its side
+// first and brings the graph to its script's; a Trigger01 view has no jump, no
+// StartState01 exists, and a graph off Side01 refuses it, the plan's declared
+// risk until H-V1 at rung 4; a guest's unless a newer relay played), then the
+// seq raised to the record's.
 // A record given up or dropped lowers its mark through
 // releaseScriptRecordPending, which answers the load events the gate held, and
 // each is re-sent once while the reference stands in a loaded cell (its next
@@ -66,14 +70,16 @@ import { SpSnippetService } from "./spSnippetService";
 // played (F6 deletes the re-sync). A new connection (connectionAccepted, ahead
 // of all its messages) starts it all over: a login's create words come in the
 // server's own order, so a record can come before the player's own
-// CreateActor (the rung's review).
+// CreateActor (the rung's review); that CreateActor clears the send baselines
+// and the due reads once more, where HostService drops its old epochs.
 //
 // Known limits: a persistent exterior reference's parent cell is its
 // worldspace's persistent cell (hostService's isMine note), so a grant's pass
 // does not take its record (it is applied as a guest's) and the release read
-// does not find it; a gate that opens with a view unplayed (no 3D) leaves the
-// pillar's graph to the re-sync, which puts it on the record's side and feeds
-// its script no turn (the script is there already).
+// does not find it; a gate that opens with a view unplayed (no 3D) hands the
+// pillar's graph to ObjectAnimationService, which puts it on the record's
+// side once its 3D comes (10 s at most) and feeds its script no turn (the
+// script is there already).
 //
 // The natives are TESModPlatform Papyrus statics called by name through
 // callNative in the update's context (changeFormService's shape), answering
@@ -448,6 +454,7 @@ export class ScriptStateService extends ClientListener {
         this.setTouches(this.enabled);
         this.controller.emitter.on("scriptStateApplyMessage", (e) => this.onRecord(e));
         this.controller.emitter.on("connectionAccepted", () => this.onConnectionAccepted());
+        this.controller.emitter.on("createActorMessage", (e) => this.onOwnActor(e));
         this.controller.on("update", () => this.onUpdate());
     }
 
@@ -542,8 +549,8 @@ export class ScriptStateService extends ClientListener {
 
     // the view of a record the cell's last grant's pass applied without
     // playing it (no 3D before the gate opened): its script stands on that
-    // view's side already, so ObjectAnimationService's re-sync puts the graph
-    // there and feeds the script no turn
+    // view's side already, so ObjectAnimationService puts the graph there once
+    // its 3D comes (placeOnSide) and feeds the script no turn
     unplayedViewAtGrant(localId: number): string | undefined {
         const u = this.unplayed.get(localId);
         return u !== undefined ? u.view : undefined;
@@ -676,6 +683,20 @@ export class ScriptStateService extends ClientListener {
         this.persistMarks();
     }
 
+    // the player's own actor: HostService drops the last connection's grants
+    // and epochs only here (hostService.ts's onCreateActor), so a read between
+    // the new connection and this word went out under an old epoch, refused,
+    // while its FNV stood here as sent (the rung's delta review, N4): the send
+    // baselines and the due reads start over again; the held records are this
+    // connection's and stay
+    private onOwnActor(e: ConnectionMessage<CreateActorMessage>): void {
+        if (!e.message.isMe) {
+            return;
+        }
+        this.lastSent.clear();
+        this.due.clear();
+    }
+
     private onUpdate(): void {
         // a reload's stale marks are lowered whatever the switch says, and
         // their held events go back to the engine's scripts
@@ -738,6 +759,17 @@ export class ScriptStateService extends ClientListener {
                 } catch (e) {
                     logError(this, `script state ${id.toString(16)} at the grant of ${cell.toString(16)} threw, given up`, e);
                     pass.failed.push(`${id.toString(16)} (threw)`);
+                    // thrown after its apply: the script holds the record's
+                    // state, so its graph goes on the record's side (its view
+                    // unplayed) or the re-sync stands aside (no view), never
+                    // fed from this seat's stale side (the delta review, N3)
+                    if (h.phase === "view") {
+                        if (h.view !== "") {
+                            this.unplayed.set(id, { cell, view: h.view });
+                        } else {
+                            this.grantApplied.set(id, cell);
+                        }
+                    }
                     this.safeGiveUp(id, h);
                 }
             });
@@ -765,8 +797,9 @@ export class ScriptStateService extends ClientListener {
             const hex = id.toString(16);
             left.push(h.phase === "apply" ? `${hex} (${h.reason !== "" ? h.reason : "not tried"})` : `${hex} (view ${h.view}: no 3D)`);
             if (h.phase === "view") {
-                // applied, its view not played: the graph is the re-sync's
-                // (appliedAtGrant stays false), from the record's side
+                // applied, its view not played: ObjectAnimationService puts
+                // the graph on the record's side once its 3D comes
+                // (appliedAtGrant stays false)
                 this.unplayed.set(id, { cell, view: h.view });
             }
             this.safeGiveUp(id, h);
@@ -969,10 +1002,12 @@ export class ScriptStateService extends ClientListener {
     // the record's view through the relay's own play (the side jump first,
     // ObjectAnimationService.playRelayed), once the reference's 3D is here. A
     // new owner plays it once, whatever relay came meanwhile: its script holds
-    // the record's state, so its graph comes back to that state's side (the
-    // plan's mid-turn hand-off; the rung's review). A guest skips it when a
-    // relay past the record's seq was taken meanwhile (its play is the newer
-    // view), and plays up to VIEW_TRIES times
+    // the record's state, and a Trigger02 or Trigger03 view's jump brings the
+    // graph to that state's side (the plan's mid-turn hand-off; the rung's
+    // review); a Trigger01 view has no jump (no StartState01) and a graph off
+    // Side01 refuses it, the plan's declared risk until H-V1 (rung 4). A guest
+    // skips the view when a relay past the record's seq was taken meanwhile
+    // (its play is the newer view), and plays up to VIEW_TRIES times
     private playView(id: number, h: Held, refr: ObjectReference, now: number, cell: number): boolean {
         const last = this.controller.lookupListener(SpSnippetService).seqOf(id);
         if (cell === 0 && last !== undefined && last > h.m.seq) {

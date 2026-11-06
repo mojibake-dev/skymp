@@ -343,15 +343,19 @@ const resetBase = (refr: ObjectReference): void => {
   }
 };
 
-// thuum playtest 38's finding 68: what an apply did to the hands. `wornAdded`
-// is set when the diff added (or re-added) an entry the server's inventory
-// holds worn or wornLeft, so the engine's equip state for it is suspect (an
-// arrow count drift from shooting re-adds the ammo and un-equips it) and a
-// hands pass is due (sync/equipment.ts applyPlayerHands). A second signal
-// beside the boolean applyInventory returns, which is crash protection's
-// "every entry landed in one apply", not "something changed"
+// thuum playtest 38's finding 68 and playtest 48 ("Rotfern had to re-equip
+// her bow again"): what an apply did, for the hands pass that may follow it
+// (sync/equipment.ts applyPlayerHands). `changed` gathers the base id of
+// every entry the apply added or removed, and the caller compares it with
+// the items the hands hold, by id: a player's rows carry no worn flag (the
+// server strips it at every put and take, ActionListener.cpp OnPutItem and
+// OnTakeItem; the worn list is the equipment's, not the inventory's), so
+// the worn-row test this report made before never rose and its hands pass
+// never ran. A second signal beside the boolean applyInventory returns,
+// which is crash protection's "every entry landed in one apply", not
+// "something changed"
 export interface ApplyInventoryReport {
-  wornAdded: boolean;
+  changed: Set<number>;
 }
 
 export const applyInventory = (
@@ -386,9 +390,6 @@ export const applyInventory = (
 
     const worn = !!e.worn;
     const wornLeft = !!e.wornLeft;
-    if (report && e.count > 0 && (worn || wornLeft)) {
-      report.wornAdded = true;
-    }
 
     let oneStepCount = e.count / absCount;
 
@@ -425,6 +426,12 @@ export const applyInventory = (
           e.count = 1;
         }
       }
+    }
+
+    // an entry this apply lands (not one crash protection held back above,
+    // nor the strange-count arrows it skips)
+    if (report && absCount > 0) {
+      report.changed.add(e.baseId);
     }
 
     for (let i = 0; i < absCount; ++i) {

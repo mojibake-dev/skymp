@@ -246,17 +246,105 @@ export const keepOnlyServerSpells = (ac: Actor, eq: Equipment): number => {
 // main.cpp OnUpdate), so a count read in applyEquipment's own tick sees the
 // inventory removeAllItems just emptied; this runs a tenth of a second
 // later, as sync/appearance.ts defers its own.
-export const applyPlayerHands = (ac: Actor, eq: Equipment): void => {
+//
+// Playtest 48 (2026-11-06, "Rotfern had to re-equip her bow again", as in
+// playtest 34 and 38's finding 68): after a relaunch her first draw ended in
+// attackStop with no arrow (results/playtest-48 trace-c1-1: bowAttackStart
+// at 281.7 s, about 20:21:00Z, and bBowDrawn never rose), and her own
+// unequip and re-equip of the bow (iRightHandType 7, 0, 7 at 290.6 s) made
+// the next shot launch. A login's wipe leaves both reads this pass trusts
+// unreliable: the platform's SetInventory equips every worn entry, the ammo
+// too, into the RightHand slot, unforced for the player (InventoryApi.cpp
+// SetInventory), where AddItemEx's ammo takes no slot
+// (PapyrusTESModPlatform.cpp AddItemEx), so isEquipped can read true for a
+// quiver the bow cannot nock from (HYPOTHESIS, 38's read); and in
+// x-hands-relaunch v1 (20261029-092719, c1's console) the login's first pass
+// equipped the ammo alone, the right hand reading the bow, while the apply
+// 5 s later re-added the bow 0x3b562 as a plain item (HYPOTHESIS: the hand
+// read a bow the inventory no longer held as worn). So a pass after a
+// login's wipe (afterLoginWipe) does what her re-equip did: the right
+// hand's weapon, read as held, is taken off and equipped again a tenth of a
+// second later, and the ammo is equipped after it without asking isEquipped
+// (equipPlayerHands below); any other pass keeps both checks, so a pass in
+// play never takes a held weapon off.
+// HYPOTHESIS until x-hands-relaunch v2: a fresh equip of the bow and the
+// ammo through the engine's own paths nocks the first draw after a
+// relaunch. LATER: SetInventory's ammo through the ammo path with no slot,
+// a platform change that every figure's quiver goes through as well
+export const applyPlayerHands = (ac: Actor, eq: Equipment, afterLoginWipe = false): void => {
   if (ac.isDeleted()) {
     return;
   }
+  const right = playerHandsOf(eq).right;
+  if (afterLoginWipe && right !== 0 && (ac.getEquippedObject(1)?.getFormID() ?? 0) === right) {
+    const form = Game.getFormEx(right);
+    if (form && ac.getItemCount(form) >= 1) {
+      // the equip waits for the unequip to land: the two are separate
+      // natives (Papyrus UnequipItem, SKSE's EquipItemEx), and their order
+      // inside the engine's equip queue is not read
+      ac.unequipItem(form, false, true);
+      logTrace('Equipment', `player hands: right ${right.toString(16)} taken off after a login's wipe, equipped again in 0.1 s`);
+      Utility.wait(0.1).then(() => {
+        const again = Game.getPlayer();
+        if (again) {
+          equipPlayerHands(again, eq, true);
+        }
+      });
+      return;
+    }
+  }
+  equipPlayerHands(ac, eq, afterLoginWipe);
+};
+
+// the hands an equipment names for the player: the right hand the worn
+// weapon (FormType.Weapon, 41), the left the wornLeft entry, the quiver the
+// worn ammo (inventory.ts flags the equipped ammo worn); 0 for none
+export const playerHandsOf = (eq: Equipment): { right: number; left: number; ammo: number } => {
   const typeOf = (baseId: number): number => Game.getFormEx(baseId)?.getType() ?? 0;
-  // the right hand is the worn weapon (FormType.Weapon, 41), the left the
-  // wornLeft entry, the quiver the worn ammo (inventory.ts flags the
-  // equipped ammo worn)
-  const right = eq.inv.entries.find((e) => e.worn && typeOf(e.baseId) === 41)?.baseId ?? 0;
-  const left = eq.inv.entries.find((e) => e.wornLeft)?.baseId ?? 0;
-  const ammo = eq.inv.entries.find((e) => e.worn && Ammo.from(Game.getFormEx(e.baseId)))?.baseId ?? 0;
+  return {
+    right: eq.inv.entries.find((e) => e.worn && typeOf(e.baseId) === 41)?.baseId ?? 0,
+    left: eq.inv.entries.find((e) => e.wornLeft)?.baseId ?? 0,
+    ammo: eq.inv.entries.find((e) => e.worn && Ammo.from(Game.getFormEx(e.baseId)))?.baseId ?? 0,
+  };
+};
+
+// whether an inventory apply that changed these base ids touched a hand the
+// equipment names (remoteServer.ts's test before a hands pass, playtest 48)
+export const handsTouchedBy = (eq: Equipment, changed: Set<number>): boolean => {
+  const hands = playerHandsOf(eq);
+  return [hands.right, hands.left, hands.ammo].some((baseId) => baseId !== 0 && changed.has(baseId));
+};
+
+// thuum playtest 38's finding 68 (its read: an arrow count drift from
+// shooting re-adds the ammo and un-equips it): the ammo this player's engine
+// has equipped among the base ids an inventory apply changed, as an
+// equipment applyPlayerHands takes (the quiver alone, its isEquipped check
+// kept), or undefined. Read in the apply's own tick: its adds and removes
+// queue on gameThrQ and land after the tick (PapyrusTESModPlatform.cpp
+// AddItemEx), so isEquipped reads the quiver as it stood before the apply;
+// the first apply of a session resets the base at once (inventory.ts
+// resetBase), and that apply is a login's, whose pass takes the login's
+// equipment instead
+export const equippedAmmoAmong = (ac: Actor, changed: Set<number>): Equipment | undefined => {
+  const entries: Entry[] = [];
+  changed.forEach((baseId) => {
+    const form = Game.getFormEx(baseId);
+    if (form && Ammo.from(form) && ac.isEquipped(form)) {
+      entries.push({ baseId, count: 1, worn: true });
+    }
+  });
+  return entries.length > 0 ? { inv: { entries }, numChanges: 0 } : undefined;
+};
+
+// applyPlayerHands' equips: each hand only when it does not hold its item,
+// the ammo only when isEquipped reads false, unless the pass follows a
+// login's wipe (afterLoginWipe), whose ammo is equipped whatever isEquipped
+// reads (playtest 48 above)
+const equipPlayerHands = (ac: Actor, eq: Equipment, afterLoginWipe: boolean): void => {
+  if (ac.isDeleted()) {
+    return;
+  }
+  const { right, left, ammo } = playerHandsOf(eq);
   const done: string[] = [];
   // equipItemEx's slots: 1 the right hand, 2 the left; getEquippedObject's:
   // 1 the right hand, 0 the left (as applyHands)
@@ -280,13 +368,13 @@ export const applyPlayerHands = (ac: Actor, eq: Equipment): void => {
   }
   if (ammo !== 0) {
     const form = Game.getFormEx(ammo);
-    if (form && !ac.isEquipped(form) && ac.getItemCount(form) >= 1) {
+    if (form && (afterLoginWipe || !ac.isEquipped(form)) && ac.getItemCount(form) >= 1) {
       ac.equipItem(form, false, true);
       done.push(`ammo ${ammo.toString(16)}`);
     }
   }
   if (done.length > 0) {
-    logTrace('Equipment', `player hands re-equipped after setInventory: ${done.join(', ')}`);
+    logTrace('Equipment', `player hands re-equipped after ${afterLoginWipe ? "a login's wipe" : 'an inventory apply'}: ${done.join(', ')}`);
   }
 };
 
@@ -307,13 +395,14 @@ export const applyEquipment = (ac: Actor, eq: Equipment): boolean => {
 
   setInventory(ac.getFormID(), newInventory);
 
-  // finding 45: the player's hands, once setInventory's adds have landed
-  // (applyPlayerHands above)
+  // finding 45: the player's hands, once setInventory's adds have landed,
+  // as a pass after a login's wipe (applyPlayerHands above, playtest 48):
+  // this apply is the player's only at a login (remoteServer.ts applyPcInv)
   if (ac.getFormID() === 0x14) {
     Utility.wait(0.1).then(() => {
       const player = Game.getPlayer();
       if (player) {
-        applyPlayerHands(player, eq);
+        applyPlayerHands(player, eq, true);
       }
     });
   }

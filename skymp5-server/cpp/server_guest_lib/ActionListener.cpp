@@ -2184,7 +2184,7 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
                     trigger->GetFormId(), ac->GetFormId(), *cell);
       return;
     }
-    NoteActivation(*trigger, std::chrono::steady_clock::now());
+    NoteTrapFiring(*trigger, std::chrono::steady_clock::now());
     spdlog::info("[verb:npc-fate] trigger {:x} fired itself in cell {:x} (its "
                  "host {:x} reports): noted as a hazard death's evidence",
                  trigger->GetFormId(), *cell, ac->GetFormId());
@@ -4374,7 +4374,7 @@ void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
   if (!withinBudget()) {
     return;
   }
-  NoteActivation(*targetPtr, std::chrono::steady_clock::now());
+  NoteActivation(*targetPtr, std::chrono::steady_clock::now(), true);
   try {
     constexpr bool kDefaultProcessingOnlyFalse = false;
     constexpr bool kNotASecondActivation = false;
@@ -4611,6 +4611,10 @@ void ActionListener::OnDestructionStage(const RawMessageData& rawMsgData,
   after.stage = verdict.record.stage;
   after.destroyed = verdict.record.destroyed;
   refrPtr->SetDestruction(after);
+  // thuum docs/verbs/traps.md (playtest 47): a recorded step of a trap or a
+  // destructible (a lamp's fall, a pool's burn) is a hazard death's evidence
+  // beside it, the trap's own record now that its pair is never reported
+  NoteActivation(*refrPtr, std::chrono::steady_clock::now(), true);
   DestructionStageMessage relay;
   relay.refr = msg.refr;
   relay.stage = after.stage;
@@ -4976,6 +4980,14 @@ namespace {
 // kills at.
 constexpr auto kDeathHitWindow = std::chrono::milliseconds(3000);
 constexpr auto kDeathHazardWindow = std::chrono::milliseconds(5000);
+// thuum docs/verbs/traps.md (playtest 47, 2026-11-06): a trap stays deadly
+// after its report (a swinging blade's loop, a pool's burn over its stages),
+// and since ADR-068 D-S3 a family pair is fired on every seat and never
+// reported, so a trap's evidence is its trigger's own firing, the trigger's
+// activation children, a host's linked report or a destruction record, kept
+// this long (UNMEASURED; 47's blade kill came 17.8 s after its trigger's
+// report, E_DEATH_UNCHECKED on 9bcb9)
+constexpr auto kDeathTrapWindow = std::chrono::milliseconds(30000);
 constexpr float kDeathFallUnits = 200.f;
 constexpr float kDeathHazardUnits = 512.f;
 constexpr float kDeathBodyUnits = 2048.f;
@@ -5000,34 +5012,75 @@ const char* DeathCauseName(uint32_t cause)
 }
 
 void ActionListener::NoteActivation(const MpObjectReference& target,
-                                    std::chrono::steady_clock::time_point now)
+                                    std::chrono::steady_clock::time_point now,
+                                    bool trap)
 {
-  constexpr size_t kActivationsKept = 64;
-  recentActivations.push_back(
-    RecentActivation{ now, target.GetCellOrWorld(), target.GetPos() });
+  constexpr size_t kActivationsKept = 256;
+  recentActivations.push_back(RecentActivation{
+    now, target.GetCellOrWorld(), target.GetPos(), target.GetFormId(), trap });
   while (recentActivations.size() > kActivationsKept ||
          (!recentActivations.empty() &&
-          now - recentActivations.front().at > kDeathHazardWindow)) {
+          now - recentActivations.front().at > kDeathTrapWindow)) {
     recentActivations.pop_front();
   }
 }
 
-bool ActionListener::ActivationSeenNear(
+// a trigger's own firing, and where it lands: the trigger's activation
+// children and theirs (a plate's wall, a box's blades, a wire's linker and
+// its rocks), the references the game files name with the trigger as their
+// activate parent (WorldState::activationChildsByActivationParent, filled
+// as the server loads them); two levels, bounded
+void ActionListener::NoteTrapFiring(const MpObjectReference& trigger,
+                                    std::chrono::steady_clock::time_point now)
+{
+  constexpr size_t kChildrenNoted = 32;
+  NoteActivation(trigger, now, true);
+  auto& children = partOne.worldState.activationChildsByActivationParent;
+  std::vector<uint32_t> level{ trigger.GetFormId() };
+  size_t noted = 0;
+  for (int depth = 0; depth < 2 && noted < kChildrenNoted; ++depth) {
+    std::vector<uint32_t> next;
+    for (const uint32_t parent : level) {
+      const auto it = children.find(parent);
+      if (it == children.end()) {
+        continue;
+      }
+      for (const auto& entry : it->second) {
+        const uint32_t childId = entry.first;
+        auto& childForm = partOne.worldState.LookupFormByIdNoLoad(childId);
+        MpObjectReference* child =
+          childForm ? childForm->AsObjectReference() : nullptr;
+        if (!child || noted >= kChildrenNoted) {
+          continue;
+        }
+        NoteActivation(*child, now, true);
+        next.push_back(childId);
+        ++noted;
+      }
+    }
+    level = std::move(next);
+  }
+}
+
+const ActionListener::RecentActivation* ActionListener::ActivationSeenNear(
   const MpObjectReference& where, const NiPoint3& pos,
   std::chrono::steady_clock::time_point now) const
 {
+  const RecentActivation* newest = nullptr;
   for (const auto& activation : recentActivations) {
-    if (now - activation.at > kDeathHazardWindow) {
+    const auto window =
+      activation.trap ? kDeathTrapWindow : kDeathHazardWindow;
+    if (now - activation.at > window) {
       continue;
     }
     if (activation.cellOrWorld != where.GetCellOrWorld()) {
       continue;
     }
     if ((activation.pos - pos).Length() <= kDeathHazardUnits) {
-      return true;
+      newest = &activation;
     }
   }
-  return false;
+  return newest;
 }
 
 void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
@@ -5132,7 +5185,20 @@ void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
   const bool hitSeen = hitAgo && *hitAgo <= kDeathHitWindow;
   const auto drop = actor->DropTo(std::min(pos.z, actor->GetPos().z), now);
   const bool fallSeen = drop && *drop >= kDeathFallUnits;
-  const bool hazardSeen = ActivationSeenNear(*actor, pos, now);
+  const RecentActivation* hazard = ActivationSeenNear(*actor, pos, now);
+  const bool hazardSeen = hazard != nullptr;
+  const auto hazardEvidence = [&]() {
+    const auto ago =
+      std::chrono::duration_cast<std::chrono::milliseconds>(now - hazard->at)
+        .count();
+    if (hazard->trap) {
+      return fmt::format("a trap's evidence beside the body ({:x}, {} ms "
+                         "before)",
+                         hazard->refId, ago);
+    }
+    return fmt::format("an activation beside the body ({:x}, {} ms before)",
+                       hazard->refId, ago);
+  };
   std::string evidence;
   switch (msg.cause) {
     case 4:
@@ -5167,11 +5233,13 @@ void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
     case 2:
       if (!hazardSeen) {
         refuse("E_DEATH_UNCHECKED",
-               fmt::format("no activation within {:.0f} units in {} ms",
-                           kDeathHazardUnits, kDeathHazardWindow.count()));
+               fmt::format("no activation within {:.0f} units in {} ms, nor "
+                           "a trap's evidence in {} ms",
+                           kDeathHazardUnits, kDeathHazardWindow.count(),
+                           kDeathTrapWindow.count()));
         return;
       }
-      evidence = "an activation beside the body";
+      evidence = hazardEvidence();
       break;
     case 0:
       if (hitSeen) {
@@ -5198,7 +5266,7 @@ void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
         evidence =
           fmt::format("a drop of {:.0f} units in the host's samples", *drop);
       } else if (hazardSeen) {
-        evidence = "an activation beside the body";
+        evidence = hazardEvidence();
       } else if (const auto stoodUp = actor->HostStoodUpAgo(now); stoodUp &&
                  actor->ReanimateAcceptedAgo(now) &&
                  stoodUp->count() <=

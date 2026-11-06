@@ -252,12 +252,28 @@ public:
                              const ActorSpeechMessage& msg);
 
   // the activations the server accepted lately, by place: a hazard death's
-  // evidence (ADR-048's B; that a trap's trigger reaches the server as an
-  // activation is a HYPOTHESIS until the lab's trap run)
+  // evidence (ADR-048's B). A trap's evidence (`trap`: a trigger's own
+  // firing, its activation children, a host's linked report, a destruction
+  // record) is kept for kDeathTrapWindow, since a swinging blade or a
+  // burning pool stays deadly after its report; a player's activation for
+  // kDeathHazardWindow. The newest note beside `pos` in `where`'s cell, or
+  // nullptr
+  struct RecentActivation
+  {
+    std::chrono::steady_clock::time_point at;
+    FormDesc cellOrWorld;
+    NiPoint3 pos;
+    uint32_t refId = 0;
+    bool trap = false;
+  };
   void NoteActivation(const MpObjectReference& target,
+                      std::chrono::steady_clock::time_point now,
+                      bool trap = false);
+  void NoteTrapFiring(const MpObjectReference& trigger,
                       std::chrono::steady_clock::time_point now);
-  bool ActivationSeenNear(const MpObjectReference& where, const NiPoint3& pos,
-                          std::chrono::steady_clock::time_point now) const;
+  const RecentActivation* ActivationSeenNear(
+    const MpObjectReference& where, const NiPoint3& pos,
+    std::chrono::steady_clock::time_point now) const;
 
   virtual void OnFinishSpSnippet(const RawMessageData& rawMsgData,
                                  const FinishSpSnippetMessage& msg);
@@ -397,12 +413,6 @@ private:
   MpActor* ActorUpdatableBy(uint32_t idx, Networking::UserId userId,
                             MsgType msgType = MsgType::Invalid);
 
-  struct RecentActivation
-  {
-    std::chrono::steady_clock::time_point at;
-    FormDesc cellOrWorld;
-    NiPoint3 pos;
-  };
   std::deque<RecentActivation> recentActivations;
 
   // The message, as received, to every user listening to the actor. A

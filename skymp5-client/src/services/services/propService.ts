@@ -75,6 +75,10 @@ const CLAIM_EVERY_MS = 2000;
 // cell's host after this long (wire-rules props.rs PROP_LEASE_MS, UNMEASURED
 // there too)
 const PROP_LEASE_MS = 3000;
+// A word this seat was granted is not lapsed by a relayed sample within this
+// long of its arrival: a sample the server relayed before the grant may still
+// be in flight (UNMEASURED; see onTransform)
+const GRANT_GRACE_MS = 500;
 // A drop's claim: the server's reference for an item this player dropped is
 // matched by its base within this window and this distance of the player
 const DROP_MATCH_MS = 3000;
@@ -141,7 +145,7 @@ type Prop = {
     trap: boolean;                 // ADR-068 D-S3: a trap body (no item; see trapBodies)
 };
 
-type Owner = { player: number; epoch: number; leaseUntil: number };
+type Owner = { player: number; epoch: number; leaseUntil: number; grantedAt: number };
 
 // ADR-068 D-S3 point 4: a trap body this seat knows, by the server's id: a
 // family reference this seat's own script set moving (the scriptCalls batch),
@@ -257,7 +261,27 @@ export class PropService extends ClientListener {
         };
         this.recordSample(m.refr, sample);
         const owner = this.owners.get(m.refr);
-        if (owner) {
+        const myId = this.myId();
+        // the relay never sends a sample back to its sender (ActionListener.cpp
+        // OnPropTransform skips the sending actor), so a sample reaching the
+        // seat its owner word names comes from another seat: that word has
+        // lapsed on the server (its lease ran out and the cell's host took the
+        // row, wire-rules props.rs's lapse) and lapses here too, the seat
+        // following the sample, where the lease's mirror alone would reopen it
+        // on an awake sample (x-trap-boulders-rest 20261105-231500: c2's stale
+        // epoch-1 word reopened by the host's first awake sample, c2 claimed
+        // the simulation back and dropped every sample after, its rock hung
+        // while c1 and the server had it fallen). A word granted within
+        // GRANT_GRACE_MS is kept: a sample relayed before the grant may still
+        // be in flight
+        const lapsedHere = owner !== undefined && myId !== 0 && owner.player === myId
+            && now - owner.grantedAt >= GRANT_GRACE_MS;
+        if (owner && lapsedHere) {
+            if (owner.leaseUntil === 0 || owner.leaseUntil > now) {
+                logLab(TAG, `prop ${m.refr.toString(16)} owner word ${myId.toString(16)} epoch ${owner.epoch} lapsed: another seat's sample arrived`);
+            }
+            owner.leaseUntil = now;
+        } else if (owner) {
             // the lease's mirror: a sleep starts it, a wake ends it
             owner.leaseUntil = m.asleep ? now + PROP_LEASE_MS : 0;
         }
@@ -273,9 +297,12 @@ export class PropService extends ClientListener {
         if (!prop) {
             return;
         }
-        if (prop.simulating) {
+        if (prop.simulating && !lapsedHere) {
             // the server relays to the other listeners alone (ActionListener
-            // OnPropTransform skips the sender); said once per prop
+            // OnPropTransform skips the sender); said once per prop. A word
+            // lapsed just above keeps its sample pending instead: the next
+            // update's tick finds another simulator, flips this body to follow
+            // (the flip to following keeps a pending sample) and applies it
             if (!this.echoSaid.has(m.refr)) {
                 this.echoSaid.add(m.refr);
                 logError(this, `a sample for prop ${m.refr.toString(16)} this seat simulates arrived from the server; ignored`);
@@ -299,7 +326,7 @@ export class PropService extends ClientListener {
             logTrace(this, `owner word for prop ${m.refr.toString(16)} at epoch ${m.epoch} ignored: epoch ${known.epoch} known`);
             return;
         }
-        this.owners.set(m.refr, { player: m.player, epoch: m.epoch, leaseUntil: 0 });
+        this.owners.set(m.refr, { player: m.player, epoch: m.epoch, leaseUntil: 0, grantedAt: Date.now() });
         const mine = m.player !== 0 && m.player === this.myId();
         logLab(TAG, `prop ${m.refr.toString(16)} owner ${m.player.toString(16)} epoch ${m.epoch} (${mine ? "mine" : "theirs"})`);
         // ADR-068 D-S3: a word on a trap body is read on the update (its family

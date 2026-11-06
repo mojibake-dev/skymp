@@ -2199,6 +2199,26 @@ bool MpObjectReference::ProcessActivateSecond(
   return false;
 }
 
+namespace {
+// a game-file reference whose base is a STAT (a marker): nothing for the
+// server to activate
+bool IsStaticMarker(WorldState& worldState, uint32_t refrId)
+{
+  if (!worldState.HasEspm()) {
+    return false;
+  }
+  const auto& browser = worldState.GetEspm().GetBrowser();
+  const auto lookup = browser.LookupById(refrId);
+  const auto* refr = espm::Convert<espm::REFR>(lookup.rec);
+  if (!refr) {
+    return false;
+  }
+  const auto data = refr->GetData(worldState.GetEspmCache());
+  const auto base = browser.LookupById(lookup.ToGlobalId(data.baseId));
+  return base.rec && base.rec->GetType() == "STAT";
+}
+}
+
 void MpObjectReference::ActivateChilds()
 {
   auto worldState = GetParent();
@@ -2219,6 +2239,16 @@ void MpObjectReference::ActivateChilds()
       MpObjectReference* childRefr =
         childForm ? childForm->AsObjectReference() : nullptr;
       if (!childRefr) {
+        // thuum playtest 47: a static marker child (an XMarker, a scene's
+        // spot) is no object the server models and has nothing to activate,
+        // so its absence is told at info; any other missing child stays a
+        // warning (the puzzle lever 0xaa8c3's 0x3e728 logged one per pull)
+        if (IsStaticMarker(*worldState, childRefrId)) {
+          spdlog::info("MpObjectReference::ActivateChilds {:x} - activation "
+                       "child {:x} is a static marker, nothing to activate",
+                       myFormId, childRefrId);
+          return;
+        }
         spdlog::warn("MpObjectReference::ActivateChilds {:x} - Bad/missing "
                      "activation child {:x}",
                      myFormId, childRefrId);
@@ -2245,6 +2275,20 @@ bool MpObjectReference::CheckIfObjectCanStartOccupyThis(
   if (this->occupant->IsDisabled()) {
     spdlog::info("MpObjectReference::ProcessActivate {:x} - occupant is "
                  "disabled (activationSource = {:x})",
+                 GetFormId(), activationSource.GetFormId());
+    return true;
+  }
+
+  // thuum playtest 47 (2026-11-06): a dead or deleted occupant uses nothing.
+  // A host's NPC takes a furniture by its reported activation, and nothing
+  // reports its leaving (an NPC's furniture exit is no activation), so Bleak
+  // Falls Temple's puzzle lever 0xaa8c3 stayed its scene's bandit 0x39fe1's
+  // after the darts killed him beside it: every player's pull was refused
+  // here ("occupant is another object and is nearby"), the OpenContainer
+  // reply never came, and the lever never animated though its script ran
+  if (this->occupant->IsDead() || this->occupant->IsDeleted()) {
+    spdlog::info("MpObjectReference::ProcessActivate {:x} - occupant is "
+                 "dead or deleted (activationSource = {:x})",
                  GetFormId(), activationSource.GetFormId());
     return true;
   }

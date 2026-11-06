@@ -42,11 +42,13 @@ Napi::Value IsHosted(const Napi::CallbackInfo& info);
 // says the event being sent is the action's own
 Napi::Value IsPerformingAction(const Napi::CallbackInfo& info);
 // thuum docs/DECISIONS.md ADR-068 D-S3 (traps follow the interaction;
-// TrapFamily.h): getTrapRole(formId) answers { family, playerOnly, destroyed }
-// for a reference with an attached script, from the gate's own reads on the
-// JS thread (the VM's attached scripts under its lock, the reference's
-// destroyed flag, its trigger's playerOnlyTrigger property), and null for an
-// id that names no reference or one with no attached script
+// TrapFamily.h): getTrapRole(formId) answers { family, playerOnly, destroyed,
+// trigger } for a reference with an attached script, from the gate's own
+// reads on the JS thread (the VM's attached scripts under its lock, the
+// reference's destroyed flag, its trigger's playerOnlyTrigger property, and
+// whether a script on it reaches TrapTriggerBase: a trap's trigger, never a
+// trap body; playtest 48), and null for an id that names no reference or one
+// with no attached script
 Napi::Value GetTrapRole(const Napi::CallbackInfo& info);
 // setPropFollowed(formId, followed): a trap body another seat streams (true)
 // or no longer (false), kept in the set the native seam reads, where this

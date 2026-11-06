@@ -388,6 +388,7 @@ Napi::Value PuppetApi::GetTrapRole(const Napi::CallbackInfo& info)
   res.Set("family", Napi::Boolean::New(info.Env(), role->family));
   res.Set("playerOnly", Napi::Boolean::New(info.Env(), role->playerOnly));
   res.Set("destroyed", Napi::Boolean::New(info.Env(), role->destroyed));
+  res.Set("trigger", Napi::Boolean::New(info.Env(), role->trigger));
   return res;
 }
 

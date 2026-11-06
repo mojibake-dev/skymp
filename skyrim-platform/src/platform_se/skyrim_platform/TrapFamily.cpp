@@ -52,7 +52,20 @@ namespace {
 // the 52 soul gems carrying trapSoulGemController stay out as pickups, and
 // 950 references with a trap class beside another script stay mixed (the
 // design's F2: the levers and pull chains, five DLC1VC_EmbersToggleable)
-constexpr const char* kFamilyRoots[] = { "TrapBase", "TrapTriggerBase",
+// - The trigger. TrapTriggerBase, one of the roots, marks a trap's trigger
+//   (Role::trigger, getTrapRole's; playtest 48, 2026-11-06). PressurePlate,
+//   Tripwire and SoundTrap extend it in the census's cells, five trap-named
+//   classes across the load order (TrapLever, TrapFirePlate,
+//   TrapRiggedBeam, TrapTriggerHinge, TrapTriggerTimeInterval: the prefix
+//   census), and the linkers and trigger boxes attach it bare (the census's
+//   row 16 and its trigger boxes). skymp5-client never makes a trigger a
+//   trap body (propService.ts trapBodyRole), though the Tripwire's
+//   [Active] onBeginState opens with SetMotionType(self, 1, true) and
+//   SoundTrap's sets itself Dynamic and pushes itself (ApplyHavokImpulse):
+//   the winning copies' disassembly (lab/pex.py), each run by the seat
+//   whose copy fired
+constexpr const char kTriggerRoot[] = "TrapTriggerBase";
+constexpr const char* kFamilyRoots[] = { "TrapBase", kTriggerRoot,
                                          "TrapHitBase", "HazardBase" };
 constexpr const char kFamilyPrefix[] = "trap";
 
@@ -76,20 +89,66 @@ bool HasFamilyPrefix(const char* name)
   return name &&
     _strnicmp(name, kFamilyPrefix, sizeof(kFamilyPrefix) - 1) == 0;
 }
+
+// one class's own name is the trigger's root, without case
+bool IsTriggerRootName(const char* name)
+{
+  return name && _stricmp(name, kTriggerRoot) == 0;
+}
 // ==== END OF THE ONE PLACE ====
 
-// the family's verdict per class, the chain walked at a class's first sight
-// (rule 9: a hash lookup per attached script after that). The key is the
-// class's ObjectTypeInfo, which the cache pins with a reference of its own,
-// taken once and never released (ObjectTypeInfo is BSIntrusiveRefCounted,
+// a class's two verdicts: in the family, and a trigger (its chain reaches
+// kTriggerRoot)
+struct ClassVerdict
+{
+  bool family = false;
+  bool trigger = false;
+};
+
+// the verdicts per class, the chain walked at a class's first sight (rule 9:
+// a hash lookup per attached script after that). The key is the class's
+// ObjectTypeInfo, which the cache pins with a reference of its own, taken
+// once and never released (ObjectTypeInfo is BSIntrusiveRefCounted,
 // CommonLibSSE-NG include/RE/O/ObjectTypeInfo.h:16; IncRef at
 // include/RE/B/BSIntrusiveRefCounted.h:13): a class the VM drops is then
 // never freed, so its address can never come to name another class
 struct
 {
-  std::unordered_map<const RE::BSScript::ObjectTypeInfo*, bool> family;
+  std::unordered_map<const RE::BSScript::ObjectTypeInfo*, ClassVerdict>
+    verdicts;
   std::mutex m;
 } g_classes;
+
+// the prefix on the class's own name alone; then AdmittedByChain's walk
+// (FridaHooks.cpp) for a root and for the trigger's: ObjectTypeInfo's parent
+// chain (CommonLibSSE-NG include/RE/O/ObjectTypeInfo.h:127-128, :178) to a
+// null parent, 16 classes at most. The walk goes past a root that is not the
+// trigger's, so a class the prefix admits (TrapLever) or one under another
+// root still learns whether TrapTriggerBase sits above it; it stops at the
+// trigger's root, itself a root
+ClassVerdict VerdictOf(const RE::BSScript::ObjectTypeInfo* info)
+{
+  if (!info) {
+    return {};
+  }
+  std::lock_guard l(g_classes.m);
+  const auto it = g_classes.verdicts.find(info);
+  if (it != g_classes.verdicts.end()) {
+    return it->second;
+  }
+  ClassVerdict verdict;
+  verdict.family = HasFamilyPrefix(info->GetName());
+  const RE::BSScript::ObjectTypeInfo* cls = info;
+  for (int depth = 0; cls && depth < 16 && !verdict.trigger;
+       ++depth, cls = cls->GetParent()) {
+    const char* name = cls->GetName();
+    verdict.family = verdict.family || IsRootName(name);
+    verdict.trigger = IsTriggerRootName(name);
+  }
+  info->IncRef();
+  g_classes.verdicts.emplace(info, verdict);
+  return verdict;
+}
 
 // the VM's attached scripts of a handle, walked under the VM's own lock: the
 // gate's walk (FridaHooks.cpp OnSendEventEnter), attachedScriptsLock and
@@ -200,27 +259,7 @@ bool IsPickup(const RE::TESObjectREFR* ref)
 
 bool TrapFamily::IsFamilyType(const RE::BSScript::ObjectTypeInfo* info)
 {
-  if (!info) {
-    return false;
-  }
-  std::lock_guard l(g_classes.m);
-  const auto it = g_classes.family.find(info);
-  if (it != g_classes.family.end()) {
-    return it->second;
-  }
-  // the prefix on the class's own name alone; then AdmittedByChain's walk
-  // (FridaHooks.cpp) for a root: ObjectTypeInfo's parent chain
-  // (CommonLibSSE-NG include/RE/O/ObjectTypeInfo.h:127-128, :178) to a null
-  // parent, 16 classes at most
-  bool family = HasFamilyPrefix(info->GetName());
-  const RE::BSScript::ObjectTypeInfo* cls = info;
-  for (int depth = 0; cls && depth < 16 && !family;
-       ++depth, cls = cls->GetParent()) {
-    family = IsRootName(cls->GetName());
-  }
-  info->IncRef();
-  g_classes.family.emplace(info, family);
-  return family;
+  return VerdictOf(info).family;
 }
 
 bool TrapFamily::IsFamily(const RE::TESObjectREFR* ref, RE::VMHandle handle)
@@ -253,7 +292,8 @@ bool TrapFamily::Destroyed(const RE::TESObjectREFR* ref)
 // the reference by its id (TESForm::LookupByID, under the form table's own
 // lock), its handle through the VM's handle policy as CommonLib's
 // TESForm::HasVMAD asks it (src/RE/T/TESForm.cpp:122-136), then one walk of
-// its attached scripts for the family and the trigger's property
+// its attached scripts for the family, the trigger and the trigger's
+// property
 std::optional<TrapFamily::Role> TrapFamily::RoleOf(uint32_t formId)
 {
   RE::TESForm* form = formId != 0 ? RE::TESForm::LookupByID(formId) : nullptr;
@@ -272,7 +312,10 @@ std::optional<TrapFamily::Role> TrapFamily::RoleOf(uint32_t formId)
   Role role;
   bool every = true;
   const bool any = ForEachAttached(handle, [&](RE::BSScript::Object* script) {
-    every = every && script && IsFamilyType(script->GetTypeInfo());
+    const ClassVerdict verdict =
+      VerdictOf(script ? script->GetTypeInfo() : nullptr);
+    every = every && script && verdict.family;
+    role.trigger = role.trigger || verdict.trigger;
     role.playerOnly = role.playerOnly || PlayerOnlyScript(script, name);
   });
   if (!any) {
@@ -330,8 +373,9 @@ void TrapFamily::LogReady()
   }
   logger::info("[verb:traps] trap family ready: {} root(s) by class chain "
                "({}) and the class's own name's prefix '{}', a pickup never "
-               "(TrapFamily.cpp, D-T1), read by the event gate and the "
-               "native seam; 3 export(s): getTrapRole, setPropFollowed, "
-               "setRecordApplying",
-               std::size(kFamilyRoots), roots, kFamilyPrefix);
+               "(TrapFamily.cpp, D-T1), a trigger by its chain to {} "
+               "(getTrapRole's trigger, never a trap body), read by the "
+               "event gate and the native seam; 3 export(s): getTrapRole, "
+               "setPropFollowed, setRecordApplying",
+               std::size(kFamilyRoots), roots, kFamilyPrefix, kTriggerRoot);
 }

@@ -76,12 +76,13 @@ import { SpSnippetService } from "./spSnippetService";
 // bytes, so what a probe reads comes first): "script state <id> sent: <n>
 // script(s), <v> variable(s), fnv <x>, epoch <e>[ (the release read)]",
 // "script state <id>: the last record stands, busy for <ms> ms (<what>)",
-// "script state <id> applied (grant <cell>): stacks <n>, hold <us> us; <n>
-// resolved, <n> none, <n> seat-local" ("(guest)" for a guest's) and after it
+// "script state <id> applied at the grant of <cell>: stacks <n>, hold <us> us;
+// <n> resolved, <n> none, <n> seat-local" ("applied as a guest" for a guest's;
+// the probes count "<id> applied at the grant of <cell>") and after it
 // "script state <id>: blanked <event> re-sent; view <event> to play (...),
 // +<ms> ms", "script records applied at the grant of <cell>: <n> of <n> in
-// <ms> ms, the gate open" (once a grant whose records all applied: no other
-// line holds "applied at the grant of"), "the gate of <cell> opened after
+// <ms> ms, the gate open" (once a grant whose records all applied; the
+// per-reference line above names its id before the same words), "the gate of <cell> opened after
 // <ms> ms: <n> of <m> script record(s) applied, left: ..." (the timeout),
 // "script state <id> from the record: dropped, ..." or ": not applied in <ms>
 // ms ...", and the 30 s summary "script state in 30 s: ...".
@@ -852,7 +853,7 @@ export class ScriptStateService extends ClientListener {
         // seat-local counts
         const here = last === undefined ? "none here" : `${last} here`;
         const viewText = h.view === "" ? "no view" : replay ? `view ${h.view} to play (seq ${h.m.seq}, ${here})` : `view ${h.view} current (seq ${h.m.seq})`;
-        logLab(TAG, `script state ${hex} applied (${pass ? `grant ${cell.toString(16)}` : "guest"}): stacks ${show(answer.stacksOnObject)}, hold ${show(answer.holdUs)} us; ${show(answer.resolved)} resolved, ${show(answer.none)} none, ${show(answer.seatLocal)} seat-local`);
+        logLab(TAG, `script state ${hex} applied ${pass ? `at the grant of ${cell.toString(16)}` : "as a guest"}: stacks ${show(answer.stacksOnObject)}, hold ${show(answer.holdUs)} us; ${show(answer.resolved)} resolved, ${show(answer.none)} none, ${show(answer.seatLocal)} seat-local`);
         logLab(TAG, `script state ${hex}: ${resent}; ${viewText}${answer.refusedScripts > 0 ? `; ${answer.refusedScripts} of ${answer.scripts} script(s) refused` : ""}, +${now - h.receivedAt} ms`);
         if (!replay) {
             this.finish(id, h);

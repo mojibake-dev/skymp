@@ -101,16 +101,22 @@ std::string Send(RE::TESObjectREFR* refr, std::string_view name,
 
 // the references whose served script record waits for its apply, by form id
 // (setScriptRecordPending: skymp5-client's ScriptStateService raises it for
-// a record that carries its view and lowers it when it gives the record up;
-// an applied record lowers it too). Hosted.h's idiom: mutex-guarded,
+// a record that carries its view and lowers it when it gives the record up,
+// through releaseScriptRecordPending, which hands back the names blanked; an
+// applied record lowers it too). Hosted.h's idiom: mutex-guarded,
 // the size kept for a read with no lock. The gate blanks OnLoad and
 // OnCellLoad to a pending reference and keeps the names it blanked for the
 // apply's answer
 namespace Pending {
 bool Is(std::uint32_t formId);
 // a raise keeps the names a pending mark already holds; a fresh mark starts
-// with none; a lowering drops the mark and its names
+// with none; a lowering drops the mark and its names (Release hands them
+// back)
 void Set(std::uint32_t formId, bool pending);
+// releaseScriptRecordPending's table operation: the mark lowered and the
+// names the gate blanked while it was up answered as a JSON array of
+// strings, "[]" when none or when no mark was up; no game or VM call
+std::string Release(std::uint32_t formId);
 std::size_t Count();
 // any reference in the set, one atomic read: the gate asks it first
 bool Any();

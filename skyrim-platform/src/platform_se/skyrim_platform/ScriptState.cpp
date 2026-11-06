@@ -104,9 +104,11 @@ constexpr std::size_t kMaxArray = 128;
 constexpr std::size_t kMaxName = 128;
 constexpr std::size_t kMaxAnswer = 160 * 1024;
 // a class chain and a stack's frames walked at most (cuts, not measures;
-// AdmittedByChain's 16 in FridaHooks.cpp)
+// AdmittedByChain's 16 in FridaHooks.cpp), and the stacks a busy text names
+// (the rest counted)
 constexpr std::size_t kMaxChain = 16;
 constexpr int kMaxFrames = 1024;
+constexpr std::size_t kBusyStacksNamed = 8;
 // the seen set's handles at most, then cleared once with a line (a cut, not
 // a measure: OnCellDetach drops a handle, so the set holds about the
 // attached references)
@@ -418,10 +420,11 @@ bool AttachedObjects(VM* vm, RE::VMHandle handle,
 // caller holding runningStacksLock, :210) one of whose frames, walked from
 // its top (Stack.h:76) down previousFrame (StackFrame.h:22), has one of the
 // objects as self (StackFrame.h:27); the platform's borrowed stack skipped.
-// The first one is named into `busy` when asked: "stack <id> state <state>
-// in <type>.<function>" (Stack.h:32's states, 3 waiting on a latent)
+// Each one counted, and named into `named` when asked, the first
+// kBusyStacksNamed of them: "stack <id> state <state> in <type>.<function>"
+// (Stack.h:32's states, 3 waiting on a latent; H-R2's reading)
 std::uint32_t StacksOn(VM* vm, const std::vector<ScriptObject*>& objects,
-                       std::string* busy)
+                       std::vector<std::string>* named)
 {
   const RE::VMStackID borrowed = g_nativeCallRequirements.stackId;
   std::uint32_t n = 0;
@@ -439,12 +442,12 @@ std::uint32_t StacksOn(VM* vm, const std::vector<ScriptObject*>& objects,
           continue;
         }
         ++n;
-        if (busy && busy->empty()) {
+        if (named && named->size() < kBusyStacksNamed) {
           const RE::BSScript::IFunction* fn = frame->owningFunction.get();
-          *busy = fmt::format("stack {} state {} in {}.{}", stack->stackID,
-                              stack->state.underlying(),
-                              NameOf(frame->owningObjectType.get()),
-                              fn ? fn->GetName().c_str() : "");
+          named->push_back(fmt::format(
+            "stack {} state {} in {}.{}", stack->stackID,
+            stack->state.underlying(), NameOf(frame->owningObjectType.get()),
+            fn ? fn->GetName().c_str() : ""));
         }
         break;
       }
@@ -458,24 +461,42 @@ std::uint32_t StacksOn(VM* vm, const std::vector<ScriptObject*>& objects,
 // the objects' quiescence (the plan's finding 2; H-R2): "" when each is
 // initialized (Object.h:23, :40), holds no lock (lockStructure, :45, the
 // Stack holding the object's lock with a flag bit, adr065 Q1) and no stack
-// is on it, else what keeps it busy; the caller holds both locks
+// is on it; else every reason joined with "; ": each object's own word (a
+// null script, its lock held, not initialized), then each stack on the
+// objects as StacksOn names it, the stacks walked whatever the words, so a
+// locked object's text still names its stack and that stack's state (the
+// review's FIX FIRST 3: x-script-state-read's claim reads "state 3"); the
+// caller holds both locks
 std::string BusyText(VM* vm, const std::vector<ScriptObject*>& objects)
 {
+  std::vector<std::string> parts;
   for (const ScriptObject* object : objects) {
     if (!object) {
-      return "a null attached script";
+      parts.push_back("a null attached script");
+      continue;
     }
     const char* name = NameOf(object->GetTypeInfo());
     if (object->lockStructure) {
-      return fmt::format("{} locked by a stack", name);
+      parts.push_back(fmt::format("{} locked by a stack", name));
     }
     if (!object->IsInitialized()) {
-      return fmt::format("{} not initialized", name);
+      parts.push_back(fmt::format("{} not initialized", name));
     }
   }
-  std::string busy;
-  StacksOn(vm, objects, &busy);
-  return busy;
+  std::vector<std::string> stacks;
+  const std::uint32_t n = StacksOn(vm, objects, &stacks);
+  parts.insert(parts.end(), stacks.begin(), stacks.end());
+  if (n > stacks.size()) {
+    parts.push_back(fmt::format("{} more stack(s) on it", n - stacks.size()));
+  }
+  std::string text;
+  for (const std::string& part : parts) {
+    if (!text.empty()) {
+      text += "; ";
+    }
+    text += part;
+  }
+  return text;
 }
 
 // one value as the record carries it, into `out` (which holds its k): i, f, b
@@ -1522,6 +1543,13 @@ bool ScriptState::Pending::Is(std::uint32_t formId)
 {
   std::lock_guard l(g_pending.m);
   return g_pending.marks.count(formId) != 0;
+}
+
+// the mark and its names taken together under the set's lock (Blanked),
+// the names answered as the JSON array releaseScriptRecordPending returns
+std::string ScriptState::Pending::Release(std::uint32_t formId)
+{
+  return DumpText(nlohmann::json(Blanked(formId, true)));
 }
 
 void ScriptState::Pending::Set(std::uint32_t formId, bool pending)

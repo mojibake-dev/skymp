@@ -443,22 +443,12 @@ CallArg ReadArg(const RE::BSScript::Variable& v,
 // caller rows read defaultPuzzlePillarScript), its owningObjectType's name
 // (ObjectTypeInfo::GetName) and its owningFunction's (IFunction::GetName);
 // both empty when the native's frame is its stack's first (a stack the VM
-// or the platform started on the native itself). Since rung 3 (thuum
-// ADR-068, the script record; the plan's 1(a)) also the calling script's
-// self: that frame's self (CommonLibSSE-NG include/RE/S/StackFrame.h:27)
-// through RefOfObject, its reference's form id, 0 for a global function's
-// frame or a script that stands for no reference (a quest's, an alias's, an
-// effect's); the reference is returned for the touch's test (QueueTouch).
-// HYPOTHESIS H-R9: previousFrame's self is the calling script's object (a
-// touch on the portcullis's Activate names the lever, x-script-state-read's
-// pull)
-const RE::TESObjectREFR* NameCaller(const RE::BSScript::StackFrame* below,
-                                    std::string& caller, std::string& handler,
-                                    std::uint32_t& callerSelf)
+// or the platform started on the native itself)
+void NameCaller(const RE::BSScript::StackFrame* below, std::string& caller,
+                std::string& handler)
 {
-  callerSelf = 0;
   if (!below) {
-    return nullptr;
+    return;
   }
   if (const RE::BSScript::ObjectTypeInfo* type =
         below->owningObjectType.get()) {
@@ -467,13 +457,24 @@ const RE::TESObjectREFR* NameCaller(const RE::BSScript::StackFrame* below,
   if (const RE::BSScript::IFunction* function = below->owningFunction.get()) {
     handler = function->GetName().c_str();
   }
-  auto* vm = VM::GetSingleton();
-  const RE::TESObjectREFR* ref = RefOfObject(
-    vm ? vm->GetObjectHandlePolicy() : nullptr, ObjectOf(below->self));
-  if (ref) {
-    callerSelf = ref->formID;
+}
+
+// rung 3 (thuum ADR-068, the script record; the plan's 1(a)): the calling
+// script's reference, the frame below the native's own, its self
+// (CommonLibSSE-NG include/RE/S/StackFrame.h:27) through RefOfObject; null
+// for no such frame, a global function's frame, or a script that stands for
+// no reference (a quest's, an alias's, an effect's). Every batched call
+// carries its form id as callerSelf, 0 for none. HYPOTHESIS H-R9:
+// previousFrame's self is the calling script's object (a touch on the
+// portcullis's Activate names the lever, x-script-state-read's pull)
+const RE::TESObjectREFR* CallerRefOf(const RE::BSScript::StackFrame* below)
+{
+  if (!below) {
+    return nullptr;
   }
-  return ref;
+  auto* vm = VM::GetSingleton();
+  return RefOfObject(vm ? vm->GetObjectHandlePolicy() : nullptr,
+                     ObjectOf(below->self));
 }
 
 // one captured call of an owned self, the shared shape's Call; since rung 3
@@ -486,7 +487,7 @@ struct QueuedCall
   std::array<CallArg, kMaxArgs> args{};
   std::string caller;
   std::string handler;
-  // the calling script's self (NameCaller), 0 for none
+  // the calling script's self (CallerRefOf), 0 for none
   std::uint32_t callerSelf = 0;
   bool latent = false;
   std::uint32_t stackId = 0;
@@ -506,6 +507,10 @@ std::atomic<bool> g_batchScheduled{ false };
 // self (QueueTouch's key), under g_batchMutex and cleared with the batch at
 // the flush
 std::unordered_set<std::uint64_t> g_touched;
+// rung 3's switch on the touch (setScriptRecordTouches, PuppetApi.cpp; thuum
+// .claude/rules/native.md's kill switch), on by default so a client that
+// never sets it keeps the batch it has; read first in QueueTouch
+std::atomic<bool> g_touchesEnabled{ true };
 
 const char* KindName(NativeKind kind)
 {
@@ -674,49 +679,57 @@ bool QueueFromFrame(std::size_t row, const RowInfo& info,
         ReadArg(top->GetStackFrameVariable(i, page), info.types[i]);
     }
   }
-  NameCaller(top->previousFrame, call.caller, call.handler, call.callerSelf);
+  NameCaller(top->previousFrame, call.caller, call.handler);
+  const RE::TESObjectREFR* callerRef = CallerRefOf(top->previousFrame);
+  call.callerSelf = callerRef ? callerRef->formID : 0;
   QueueCall(std::move(call));
   return true;
 }
 
 // rung 3's touch (thuum ADR-068, the script record; OnCall's (e)): an owned
-// state row's call queued as kind "touch", no arguments, its caller and the
-// caller's self read as every batched call's (NameCaller), so
-// skymp5-client's ScriptStateService takes the self and the caller's self
-// as due for SerializeScriptState. Filtered here (rule 9): dropped when
+// state row's call queued as kind "touch", no arguments, with its caller and
+// the caller's self as every batched call carries them, so skymp5-client's
+// ScriptStateService takes the self and the caller's self as due for
+// SerializeScriptState. Filtered here (rule 9), cheapest first: nothing at
+// all while the switch is off (setScriptRecordTouches), then dropped when
 // neither is a world object a record can carry (the self an actor or at or
 // above 0xff000000; the caller's self no reference, an actor, or at or
 // above it: SerializeScriptState refuses those) and when this frame's batch
 // already holds the pair, so a script's loop of state calls crosses once a
-// frame
+// frame; the caller's names are read last, for a touch that is queued
 void QueueTouch(std::size_t row, const RowInfo& info,
                 const RE::BSScript::Stack* stack,
                 const RE::BSScript::StackFrame* top,
                 const RE::TESObjectREFR* ref, bool isActor)
 {
-  QueuedCall call;
-  call.row = row;
-  call.self = ref->formID;
-  call.latent = info.latent;
-  call.stackId = stack->stackID;
-  call.touch = true;
-  const RE::TESObjectREFR* callerRef =
-    NameCaller(top->previousFrame, call.caller, call.handler, call.callerSelf);
+  if (!g_touchesEnabled.load(std::memory_order_relaxed)) {
+    return;
+  }
+  const RE::TESObjectREFR* callerRef = CallerRefOf(top->previousFrame);
+  const std::uint32_t callerSelf = callerRef ? callerRef->formID : 0;
   const bool selfCarries = !isActor && ref->formID < 0xff000000;
   const bool callerCarries = callerRef &&
     callerRef->GetFormType() != RE::FormType::ActorCharacter &&
-    callerRef->formID < 0xff000000;
+    callerSelf < 0xff000000;
   if (!selfCarries && !callerCarries) {
     return;
   }
   const std::uint64_t key =
-    (static_cast<std::uint64_t>(call.self) << 32) | call.callerSelf;
+    (static_cast<std::uint64_t>(ref->formID) << 32) | callerSelf;
   {
     std::lock_guard<std::mutex> lock(g_batchMutex);
     if (!g_touched.insert(key).second) {
       return;
     }
   }
+  QueuedCall call;
+  call.row = row;
+  call.self = ref->formID;
+  call.callerSelf = callerSelf;
+  call.latent = info.latent;
+  call.stackId = stack->stackID;
+  call.touch = true;
+  NameCaller(top->previousFrame, call.caller, call.handler);
   QueueCall(std::move(call));
 }
 
@@ -1269,6 +1282,16 @@ void ScriptNatives::Tick()
 bool ScriptNatives::InScriptAction()
 {
   return PlatformCall::InAction();
+}
+
+void ScriptNatives::SetTouchesEnabled(bool enabled)
+{
+  g_touchesEnabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool ScriptNatives::TouchesEnabled()
+{
+  return g_touchesEnabled.load(std::memory_order_relaxed);
 }
 
 void ScriptNatives::CountPlatformCall(const RE::BSScript::IFunction* fn)

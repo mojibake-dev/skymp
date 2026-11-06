@@ -65,6 +65,7 @@ import { HostReleaseMessage } from "../messages/hostReleaseMessage";
 import { ChangeFormAckMessage } from "../messages/changeFormAckMessage";
 import { ChangeFormApplyMessage } from "../messages/changeFormApplyMessage";
 import { DestructionStageMessage } from "../messages/destructionStageMessage";
+import { ScriptStateApplyMessage } from "../messages/scriptStateApplyMessage";
 
 import { AnyRawMessageEvent } from "./anyRawMessageEvent";
 import { NicknameCreateEvent } from "./nicknameCreateEvent";
@@ -136,6 +137,8 @@ type EventTypes = {
     'changeFormApplyMessage': [ConnectionMessage<ChangeFormApplyMessage>],
     // thuum docs/DECISIONS.md ADR-068 D-S3 point 3: a trap result's record, relayed or served (TrapResultService)
     'destructionStageMessage': [ConnectionMessage<DestructionStageMessage>],
+    // thuum docs/DECISIONS.md ADR-068 amendment A (rung 3): a script record served ahead of a grant or behind a create word (ScriptStateService)
+    'scriptStateApplyMessage': [ConnectionMessage<ScriptStateApplyMessage>],
     'customPacketMessage': [ConnectionMessage<CustomPacketMessage>]
 
     'browserWindowLoaded': [BrowserWindowLoadedEvent],

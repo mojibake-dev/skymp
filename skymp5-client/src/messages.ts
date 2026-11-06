@@ -78,6 +78,7 @@ export enum MsgType {
   ChangeFormAck = 73, // the same verb: the server's hash of the record it holds, the owner's compare baseline
   ChangeFormApply = 74, // the same verb: a recorded change form served to a seat with the reference, applied through its engine's own load
   ScriptCall = 75, // thuum docs/DECISIONS.md ADR-068 (rung 2, the one seam): a script's call of a tabled action native on a subject this game owns, as the platform's boundary read it; the server checks its shape and mirrors it to the subject's other listeners as SpSnippet 30 with the object's seq
-  // 76 ScriptState and 77 ScriptStateApply are ADR-068's own (docs/DECISIONS.md, the system's wire list), not on the wire yet
+  ScriptState = 76, // thuum docs/DECISIONS.md ADR-068 decision 5 and amendment A (rung 3, the script record): a world object's Papyrus state as its owner's engine holds it (each attached script's type, state, flags and positional variables), read by the platform's SerializeScriptState; the server records it and never relays it live
+  ScriptStateApply = 77, // the same rung: a recorded script state served to a new host ahead of its HostGrant and to a late subscriber behind the reference's create word, with the record's view (the last animation event and the object's seq at the read)
   DestructionStage = 78 // thuum docs/DECISIONS.md ADR-068 D-S3 point 3 (traps follow the interaction): a world object's single-use result, its destruction stage's rise or its destruction, reported by the seat that caused or saw it first and recorded once by the server; relayed to the reference's other listeners and served to a late subscriber after its create word and after a restart
 }

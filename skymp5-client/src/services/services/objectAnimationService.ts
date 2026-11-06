@@ -5,6 +5,7 @@ import { ObjectAnimationMessage } from '../messages/objectAnimationMessage';
 import { CreateActorMessage } from '../messages/createActorMessage';
 import { MsgType } from '../../messages';
 import { HostService } from './hostService';
+import { ScriptStateService } from './scriptStateService';
 import { localIdToRemoteId, remoteIdToLocalId } from '../../view/worldViewMisc';
 import { logError, logLab, logTrace } from '../../logging';
 
@@ -109,10 +110,15 @@ export class ObjectAnimationService extends ClientListener {
     // first press
     // a message handler may call no native (hostService's rule, the
     // platform's gameThrQ is the update's): the grant's work waits for the
-    // next update (the review of 30839d4b, F1)
+    // next update (the review of 30839d4b, F1). ADR-068 rung 3 (the script
+    // record): it waits for the cell's gate instead, which opens once the
+    // cell's script records are applied (ScriptStateService.afterHosting runs
+    // it in that update, or on the next one with no pass), and a pillar whose
+    // record was applied there is left alone (onCellHosted); F6 deletes the
+    // re-sync once x-puzzle-handoff v3 and b-script-state-restart read it idle
     this.controller.emitter.on('cellHostChanged', (e) => {
       if (e.hosted) {
-        this.controller.once('update', () => this.onCellHosted(e.cell));
+        this.controller.lookupListener(ScriptStateService).afterHosting(e.cell, () => this.onCellHosted(e.cell));
       }
     });
     for (const pattern of EVENT_PATTERNS) {
@@ -339,6 +345,7 @@ export class ObjectAnimationService extends ClientListener {
   }
 
   private onCellHosted(cell: number) {
+    const scripts = this.controller.lookupListener(ScriptStateService);
     const ids = new Set<number>(this.pillars);
     this.recordEvent.forEach((_e, id) => ids.add(id));
     ids.forEach((id) => {
@@ -351,6 +358,12 @@ export class ObjectAnimationService extends ClientListener {
       }
       const parent = refr.getParentCell();
       if (!parent || parent.getFormID() !== cell) {
+        return;
+      }
+      // the record put the script on its owner's state and the graph on the
+      // record's view before the gate opened: nothing to feed
+      if (scripts.appliedAtGrant(id)) {
+        logLab('verb:traps', `pillar ${id.toString(16)} at the grant of ${cell.toString(16)}: no re-sync, its script record was applied there`);
         return;
       }
       const initial = this.scriptSide.get(id) ?? 1;

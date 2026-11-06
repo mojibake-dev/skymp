@@ -178,11 +178,17 @@ declare module "skyrimPlatform" {
     // parameter never reaches the batch), caller and handler the calling script
     // and function (the frame below the native's), latent the native's flag,
     // stackId the Papyrus stack. No game call in its handler.
+    // Rung 3 (the script record; docs/research/rung3-script-record-2026-11-06.md
+    // 1(a), the seam's changes): kind "touch" is an owned self's state row,
+    // batched with no arguments and once a frame per self, for its record's read
+    // alone; callerSelf is the calling frame's self (previousFrame's, through the
+    // handle policy as self is read), 0 for none, absent on an older platform
     interface ScriptCall {
         cls: string;
         fn: string;
-        kind: "action" | "state" | "everyone";
+        kind: "action" | "state" | "everyone" | "touch";
         self: number;
+        callerSelf?: number;
         args: (boolean | number | string | { formId: number } | null)[];
         caller: string;
         handler: string;
@@ -236,6 +242,11 @@ declare module "skyrimPlatform" {
     function getTrapRole(formId: number): { family: boolean; playerOnly: boolean; destroyed: boolean } | null;
     function setPropFollowed(formId: number, followed: boolean): boolean;
     function setRecordApplying(formId: number, applying: boolean): boolean;
+    // thuum ADR-068 amendment A (rung 3, the script record): a reference whose
+    // served record carries a view, so the gate holds its OnLoad and OnCellLoad
+    // (and notes which it held) until ApplyScriptState clears the mark; a plain
+    // table write, safe from a message handler (the platform's PuppetApi idiom)
+    function setScriptRecordPending(formId: number, pending: boolean): boolean;
     // the voice slice: a puppet says the host's line through the engine's
     // own say with the info given; the result -1 pending, 0 none, 1 started,
     // 2 refused, 3 played by the sound descriptor path (no state byte), 4 deferred

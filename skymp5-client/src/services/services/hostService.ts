@@ -12,6 +12,7 @@ import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { localIdToRemoteId, remoteIdToLocalId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { RemoteServer } from "./remoteServer";
+import { ScriptStateService } from "./scriptStateService";
 
 // one actor's hold: the record to stand at, the word's arrival, the asks made
 // (the gate's move counts as the first), the checks run and the reports
@@ -170,9 +171,9 @@ export class HostService extends ClientListener {
     // game hosts; the hosted set is told to it at every grant, release, clear
     // and restore, on the next update (a message handler may call no native).
     // A platform without the native (an older dist) throws: harmless, logged
-    // once.
-    private tellPlatform(cell: number, hosted: boolean) {
-        this.controller.once("update", () => {
+    // once. `now` from an update's own context (a grant's gate, openGate)
+    private tellPlatform(cell: number, hosted: boolean, now = false) {
+        const tell = () => {
             try {
                 this.sp.callNative("TESModPlatform", "SetCellHosted", undefined, cell, hosted);
             } catch (e) {
@@ -181,7 +182,12 @@ export class HostService extends ClientListener {
                     logTrace(this, `SetCellHosted unavailable on this platform: ${e}`);
                 }
             }
-        });
+        };
+        if (now) {
+            tell();
+        } else {
+            this.controller.once("update", tell);
+        }
     }
     private platformToldOnce = false;
 
@@ -195,9 +201,10 @@ export class HostService extends ClientListener {
     // own), on the next update (natives need the game thread). A trap family
     // reference is passed over both ways (ADR-068 D-S3 point 1: every seat
     // fires the family itself, so its activation is never lifted here nor
-    // blocked again; objectReferenceEx.dealWithRef keeps the same rule)
-    private liftCellActivation(cell: number, hosted: boolean) {
-        this.controller.once("update", () => {
+    // blocked again; objectReferenceEx.dealWithRef keeps the same rule).
+    // `now` from an update's own context, as tellPlatform's
+    private liftCellActivation(cell: number, hosted: boolean, now = false) {
+        const lift = () => {
             const form = this.sp.Game.getFormEx(cell);
             const cellForm = form ? this.sp.Cell.from(form) : null;
             if (!cellForm) {
@@ -221,7 +228,26 @@ export class HostService extends ClientListener {
                 }
             }
             logTrace(this, `cell ${cell.toString(16)}: the engine's activation ${hosted ? "lifted" : "blocked"} on ${touched} scripted world object(s) (ADR-062)${traps > 0 ? `, ${traps} trap reference(s) left to the engine (D-S3)` : ""}`);
-        });
+        };
+        if (now) {
+            lift();
+        } else {
+            this.controller.once("update", lift);
+        }
+    }
+
+    // a grant's gate, from ScriptStateService's pass in an update's context
+    // (thuum ADR-068 rung 3, the script record): the platform's hosted set
+    // and the activation lift at once, after the cell's script records are
+    // applied; a grant released or replaced meanwhile opens nothing (its
+    // release told the platform already)
+    private openGate(cell: number, epoch: number) {
+        if (this.hosted.get(cell) !== epoch) {
+            logTrace(this, `cell ${cell.toString(16)}: the gate of the grant at epoch ${epoch} stays shut, the grant is gone`);
+            return;
+        }
+        this.tellPlatform(cell, true, true);
+        this.liftCellActivation(cell, true, true);
     }
 
     // The cells this game hosts, with their epochs.
@@ -625,8 +651,16 @@ export class HostService extends ClientListener {
         }
         this.lastEpoch.set(cell, epoch);
         this.hosted.set(cell, epoch);
-        this.tellPlatform(cell, true);
-        this.liftCellActivation(cell, true);
+        // thuum docs/DECISIONS.md ADR-068 decision 5 and amendment A (rung 3,
+        // the script record; docs/research/rung3-script-record-2026-11-06.md
+        // 1(d)): the gate (the platform's hosted set, the activation lift)
+        // opens once the cell's script records are applied, ScriptStateService's
+        // pass on the next update, so this seat's scripts start from the
+        // record and its graphs from the record's view before an event or an
+        // activation of the cell reaches them; with no record held, the switch
+        // scriptRecord off or an older platform, the pass opens it on the next
+        // update, as tellPlatform and liftCellActivation did here
+        this.controller.lookupListener(ScriptStateService).beforeHosting(cell, () => this.openGate(cell, epoch));
         this.persist();
         logTrace(this, `hosting cell ${cell.toString(16)} at epoch ${epoch}`);
         // thuum playtest 38's finding 66: the roster that raced this grant was
@@ -648,6 +682,10 @@ export class HostService extends ClientListener {
         this.hosted.delete(cell);
         this.tellPlatform(cell, false);
         this.liftCellActivation(cell, false);
+        // the cell's known references read once more under the released
+        // epoch, the server's release read while the cell is unhosted
+        // (ScriptStateService, rung 3)
+        this.controller.lookupListener(ScriptStateService).onRelease(cell, epoch);
         if (epoch > (this.lastEpoch.get(cell) ?? 0)) {
             this.lastEpoch.set(cell, epoch);
         }

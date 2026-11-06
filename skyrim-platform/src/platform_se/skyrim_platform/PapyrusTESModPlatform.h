@@ -206,6 +206,30 @@ RE::BSFixedString ApplyChangeForm(IVM* vm, StackID stackId,
                                   std::string_view bodyHex, int32_t flags,
                                   int32_t version, std::string_view remapRows);
 
+// thuum docs/DECISIONS.md ADR-068 rung 3 (the script record, amendment A;
+// docs/research/rung3-script-record-2026-11-06.md 1(a)): the reference's
+// attached scripts read as the record carries them (a JSON string: formId,
+// quiescent, fnv1a, seatLocal, scripts; or quiescent false and busy; "" when
+// refused, the reason in skyrim-platform.log), a served record's scripts
+// written over this seat's copies (a JSON string: applied, retry, reason,
+// scripts, resolved, none, unresolved, seatLocal, stacksOnObject, holdUs,
+// blanked, fnvAfter), and a lifecycle event (OnCellAttach, OnLoad,
+// OnCellLoad) sent to its scripts and relayed as the engine's sinks raise it
+// (a JSON string: sent, seen, scripts, reason). The shapes and the premises
+// are ScriptState.h's. scriptsJson is the record's scripts as a JSON array
+// since callNative takes no array
+RE::BSFixedString SerializeScriptState(IVM* vm, StackID stackId,
+                                       RE::StaticFunctionTag*,
+                                       RE::TESObjectREFR* refr);
+RE::BSFixedString ApplyScriptState(IVM* vm, StackID stackId,
+                                   RE::StaticFunctionTag*,
+                                   RE::TESObjectREFR* refr,
+                                   std::string_view scriptsJson);
+RE::BSFixedString SendScriptEvent(IVM* vm, StackID stackId,
+                                  RE::StaticFunctionTag*,
+                                  RE::TESObjectREFR* refr,
+                                  std::string_view name, bool unseenOnly);
+
 void BlockPapyrusEvents(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                         bool blocked);
 

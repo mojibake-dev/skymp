@@ -174,6 +174,13 @@ public:
   // PartOne's
   std::optional<MpChangeFormREFR::Destruction> GetDestruction() const;
   void SetDestruction(const MpChangeFormREFR::Destruction& destruction);
+  // thuum ADR-068 rung 3 (the script record): the last record the
+  // reference's owner reported of the scripts attached to it, with the
+  // sequence and the view the server stamped (ScriptStateRecord.h), none
+  // while nobody reported one; the write is the record's alone (saved). The
+  // read is the record in place, valid until the reference's next edit
+  const std::optional<ScriptStateRecord>& GetScriptState() const;
+  void SetScriptState(std::optional<ScriptStateRecord> record);
   void PutItem(MpActor& actor, const Inventory::Entry& entry);
   void TakeItem(MpActor& actor, const Inventory::Entry& entry);
   // thuum docs/verbs/containers.md: a mover whose put or take the server

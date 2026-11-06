@@ -807,6 +807,19 @@ void MpObjectReference::SetDestruction(
   });
 }
 
+const std::optional<ScriptStateRecord>& MpObjectReference::GetScriptState()
+  const
+{
+  return ChangeForm().scriptState;
+}
+
+void MpObjectReference::SetScriptState(std::optional<ScriptStateRecord> record)
+{
+  EditChangeForm([&](MpChangeFormREFR& changeForm) {
+    changeForm.scriptState = std::move(record);
+  });
+}
+
 namespace {
 // thuum docs/verbs/containers.md (ADR-067 decision 6): a move in or out of a
 // container is its holder's alone. A mover not in it (its hold released by

@@ -195,8 +195,9 @@ export class RaceMenuService extends ClientListener {
     // after that login on the server's clock). The menu puts RaceMenu's own
     // copy of the tints and the hair color back as it opens (onMenuOpen),
     // and that copy is the one a look's load takes (load's
-    // RSM_RequestTintSave), so it was no copy of hers. HYPOTHESIS until
-    // x-racemenu-login-look reads it: the passes then ran inside the menu
+    // RSM_RequestTintSave). HYPOTHESIS until x-racemenu-login-look reads
+    // it: no load had taken a copy of hers in that game, so the menu put
+    // the race's defaults back, and the passes then ran inside the menu
     // (update fires there: the lab driver's close-menu runs on update with
     // the menu open, a-racemenu) and took the copy from the defaults it
     // showed. The menu stays reachable at a login on purpose (a new

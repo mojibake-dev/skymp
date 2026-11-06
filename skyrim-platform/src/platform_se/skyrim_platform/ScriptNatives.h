@@ -43,6 +43,14 @@ void Tick();
 // (thuum ADR-068 decision 7, docs/research/scripts-one-system-2026-11-05.md
 // 6.7): a script's animation is reported once
 bool InScriptAction();
+// rung 3's switch on the touch (thuum ADR-068, the script record; thuum
+// .claude/rules/native.md's kill switch): setScriptRecordTouches(enabled)
+// (PuppetApi.cpp) stores one atomic flag, on by default so a client that
+// never calls it keeps the batch it has; QueueTouch reads it first, so with
+// it off no owned state row's call is read for its caller or queued as a
+// touch (the census still counts the call)
+void SetTouchesEnabled(bool enabled);
+bool TouchesEnabled();
 // the platform's direct call of a native (SkyrimPlatform.cpp's worker, under
 // PlatformCall::Scope), counted in the census as "(platform)" when the
 // native is tabled: made inside the OnUpdate native's own Call, it never

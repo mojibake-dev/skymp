@@ -21,7 +21,9 @@ import {
   ActorBase,
   FormType,
   Form,
+  dressBody,
 } from "skyrimPlatform";
+import { logLab } from "../logging";
 
 export interface Extra {
   health?: number;
@@ -496,4 +498,67 @@ export const applyInventory = (
   });
 
   return res;
+};
+
+// thuum docs/verbs/npc-fate.md (playtest 48, the loot strip; Eli: "when i
+// activate the person their armor is unequipped in their inventory stripping
+// them naked"): a dead body's inventory is the record's, laid in as a diff
+// alone (no base reset: resetBaseFirst false) with the worn flag left out of
+// the match, so a worn stack counts toward its item's row and only the
+// surplus over the record moves. A removal still goes by count alone
+// (addItemEx with no extra list, TESModPlatform's RemoveItem with none), and
+// which stack the engine takes is its own (HYPOTHESIS, H1 of the read: the
+// worn one beside a loose copy), so after the diff the record's worn armor
+// that the body holds but does not wear is equipped again by the platform
+// (dressBody, FateApi.cpp: the one dress the fate's reconcile runs after a
+// change-form lay too), never left loose. `worn` is the record's equipment
+// as this seat holds it (the view's model); a piece the inventory no longer
+// covers dresses nothing. Each removal of an item this body wears here is
+// said, the lab's read of the rule (x-body-open-worn)
+let bodyDressMissingSaid = false;
+export const applyBodyInventory = (
+  refr: ObjectReference,
+  newInventory: Inventory,
+  worn: number[]
+): boolean => {
+  const refrId = refr.getFormID();
+  const hex = refrId.toString(16);
+  const record = new Map<number, number>();
+  newInventory.entries.forEach((e) => {
+    record.set(e.baseId, (record.get(e.baseId) || 0) + e.count);
+  });
+  const here = new Map<number, { worn: number; loose: number }>();
+  getInventory(refr).entries.forEach((e) => {
+    const row = here.get(e.baseId) || { worn: 0, loose: 0 };
+    if (e.worn || e.wornLeft) {
+      row.worn += e.count;
+    } else {
+      row.loose += e.count;
+    }
+    here.set(e.baseId, row);
+  });
+  here.forEach((row, baseId) => {
+    const holds = record.get(baseId) || 0;
+    const leaving = row.worn + row.loose - holds;
+    if (row.worn > 0 && leaving > 0) {
+      logLab("verb:npc-fate", `body ${hex}: ${leaving} of ${baseId.toString(16)} leave, worn here ${row.worn}; the record holds ${holds}${holds < row.worn ? ", fewer than this body wears" : ""}`);
+    }
+  });
+
+  const landed = applyInventory(refr, newInventory, false, true, false);
+
+  // the platform's export, absent on an older dist
+  if (typeof dressBody !== "function") {
+    if (!bodyDressMissingSaid) {
+      bodyDressMissingSaid = true;
+      logLab("verb:npc-fate", `body ${hex}: this platform has no dressBody (an older dist); the record's worn armor is not dressed again after an apply`);
+    }
+    return landed;
+  }
+  try {
+    dressBody(refrId, worn);
+  } catch (e) {
+    logLab("verb:npc-fate", `body ${hex}: dressBody threw: ${e}`);
+  }
+  return landed;
 };

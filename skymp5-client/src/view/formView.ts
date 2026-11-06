@@ -7,6 +7,7 @@ import { figureAimHeading } from "../sync/figureAim";
 import { Appearance, applyAppearance } from "../sync/appearance";
 import { isBadMenuShown, applyEquipment, isFigureBase, keepOnlyServerSpells, applyHands } from "../sync/equipment";
 import { RespawnNeededError } from "../lib/errors";
+import { applyBodyInventory } from "../sync/inventory";
 import * as sp from "skyrimPlatform";
 import { logLab, logTrace } from "../logging";
 import { FormModel } from "./model";
@@ -842,8 +843,18 @@ export class FormView {
         // thuum docs/verbs/npc-fate.md (playtest 34, section 5): a body keeps
         // the engine's dressing (the pin made the worn sets equal); the
         // server's list is the loot rows, laid in as a diff alone, never
-        // through resetBase's removeAllItems and resetContainer
-        ModelApplyUtils.applyModelInventory(refr, model.inventory, !deadBody);
+        // through resetBase's removeAllItems and resetContainer. Playtest 48
+        // (the loot strip): and the record's worn armor it then holds unworn
+        // is dressed again (applyBodyInventory), from the record's equipment
+        // this view holds
+        if (deadBody) {
+          const worn = (model.equipment?.inv.entries || [])
+            .filter((e) => e.worn || e.wornLeft)
+            .map((e) => e.baseId);
+          applyBodyInventory(refr, model.inventory, worn);
+        } else {
+          ModelApplyUtils.applyModelInventory(refr, model.inventory, true);
+        }
         model.inventory = undefined;
         if (liveChest) {
           const api = sp as unknown as Record<string, unknown>;

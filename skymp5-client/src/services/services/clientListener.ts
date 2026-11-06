@@ -268,6 +268,9 @@ declare module "skyrimPlatform" {
     function rerollActor(refrId: number): boolean;
     function resurrectActor(refrId: number): boolean;
     function redressActor(refrId: number): boolean;
+    // thuum docs/verbs/npc-fate.md (playtest 48, the loot strip): a dead body's
+    // record-worn armor that it holds unworn, equipped again after an apply
+    function dressBody(refrId: number, worn: number[]): boolean;
     function actorFateCount(): number;
 }
 

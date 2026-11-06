@@ -1451,17 +1451,20 @@ mod ffi {
         subject_kind: u8,
         /// The subject's cell, 0 when the server cannot place it.
         cell: u32,
-        /// The host of that cell, 0 while nobody hosts it (0 for every kind
-        /// but a world object, held or placed by its record).
+        /// The host of that cell, 0 while nobody hosts it, for a world
+        /// object, held or placed by its record; an actor's simulator for an
+        /// actor (0 for none), which a row kept as evidence reads; 0 for
+        /// every other kind.
         owner: u32,
-        /// That host's standing epoch.
+        /// That host's standing epoch (unread for an actor).
         owner_epoch: u32,
     }
 
     /// The rule's word on a reported script call.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum ScriptCallCode {
-        /// Relayed to the audience but the reporter (the owner step); from
+        /// Relayed to the audience but the reporter, or kept as the
+        /// subject's evidence (`keep_evidence`), from the owner step; from
         /// the shape step, the shape holds and the core gathers the
         /// subject's facts for the owner step.
         Accepted,
@@ -1507,6 +1510,11 @@ mod ffi {
         audience: u8,
         /// The call's graph event becomes the subject's lastAnimation.
         keep_last: bool,
+        /// The call is kept as its subject's evidence and relayed to no seat
+        /// (wire-rules natives Keep::Evidence: ProcessTrapHit's, a trap's hit
+        /// on an actor the reporter simulates, its death evidence), with no
+        /// sequence (accepted).
+        keep_evidence: bool,
         /// The argument naming the call's behavior graph event, for the
         /// "animates" line; -1 for none.
         event_arg: i8,
@@ -2185,9 +2193,10 @@ mod ffi {
         fn shape(self: &mut ScriptCalls, row: i32, args: &[ScriptArg], sender: u32, self_id: u32, now_ms: u64) -> ScriptCallVerdict;
         /// The owner step on the call the last `shape` accepted, over the
         /// facts the core gathered for its subject (its kind, its cell, that
-        /// cell's host and the host's epoch); an accepted call takes its
-        /// subject's next sequence. Skipped, nothing relayed, when no shaped
-        /// call waits, so each shaped call is judged once.
+        /// cell's host and the host's epoch, or an actor's simulator); an
+        /// accepted relay takes its subject's next sequence, a call kept as
+        /// evidence none. Skipped, nothing relayed, when no shaped call
+        /// waits, so each shaped call is judged once.
         fn owner(self: &mut ScriptCalls, facts: &ScriptCallFacts) -> ScriptCallVerdict;
     }
 }
@@ -3946,6 +3955,7 @@ fn quiet_script_call() -> ScriptCallVerdict {
         relay_self: 0,
         audience: 2,
         keep_last: false,
+        keep_evidence: false,
         event_arg: -1,
     }
 }
@@ -4010,6 +4020,11 @@ impl ScriptCalls {
                 };
                 out.keep_last = a.keep == natives::Keep::Last;
                 out.event_arg = a.graph_event_arg.and_then(|i| i8::try_from(i).ok()).unwrap_or(-1);
+            }
+            natives::Verdict::Kept { subject } => {
+                out.code = ScriptCallCode::Accepted;
+                out.subject = subject;
+                out.keep_evidence = true;
             }
             natives::Verdict::Skip => {}
             natives::Verdict::Refuse(r) => out = refused_script_call(r),
@@ -4725,6 +4740,36 @@ mod tests {
         }
         let spent = b.judge(at.row, &[text, text], &facts, 0);
         assert_eq!((spent.code, spent.name.as_str()), (ScriptCallCode::Rate, "E_SCRIPTCALL_RATE"));
+    }
+
+    #[test]
+    fn the_bridge_keeps_a_trap_hit_as_its_actors_evidence() {
+        // thuum docs/verbs/npc-fate.md (playtest 48): Bleak Falls Temple's
+        // draugr 0x800a6 hit by the middle blade 0x3ac35 on its host
+        // 0xff000000, which simulates it; kind 3, an actor, its simulator
+        // the facts' owner
+        let number = ScriptArg { kind: 2, form_id: 0 };
+        let blade = ScriptArg { kind: 4, form_id: 0x3ac35 };
+        let args = [blade, number, number, number, number, number, number, number, number, number, number];
+        let at = script_call_subject("ObjectReference", "ProcessTrapHit", 0x800a6, &args);
+        assert!(at.row >= 0);
+        assert_eq!(at.subject, 0x800a6);
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0x800a6, epoch: 3, subject_kind: 3, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 0 };
+        let mut s = new_script_calls();
+        let v = s.judge(at.row, &args, &facts, 0);
+        assert_eq!((v.code, v.subject, v.seq, v.keep_evidence, v.keep_last, v.audience), (ScriptCallCode::Accepted, 0x800a6, 0, true, false, 2));
+        assert_eq!((v.relay_cls.as_str(), v.relay_fn.as_str(), v.relay_args.len(), v.event_arg, v.name.as_str()), ("", "", 0, -1, ""));
+        // a guest's report and the reporter's own player cross with their names
+        let guest = s.judge(at.row, &args, &ScriptCallFacts { sender: 0xff00_0001, ..facts }, 0);
+        assert_eq!((guest.code, guest.name.as_str(), guest.keep_evidence), (ScriptCallCode::Owner, "E_SCRIPTCALL_OWNER", false));
+        let own = s.judge(at.row, &args, &ScriptCallFacts { self_id: 0x14, ..facts }, 0);
+        assert_eq!((own.code, own.name.as_str()), (ScriptCallCode::Row, "E_SCRIPTCALL_ROW"));
+        // an action row's relay keeps no evidence
+        let text = ScriptArg { kind: 3, form_id: 0 };
+        let play = script_call_subject("ObjectReference", "PlayAnimation", 0xaa8cb, &[text]);
+        let pillar = ScriptCallFacts { self_id: 0xaa8cb, subject_kind: 1, owner_epoch: 3, ..facts };
+        let relayed = s.judge(play.row, &[text], &pillar, 0);
+        assert_eq!((relayed.code, relayed.keep_evidence, relayed.seq), (ScriptCallCode::Accepted, false, 1));
     }
 
     #[test]

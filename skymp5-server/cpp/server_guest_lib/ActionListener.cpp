@@ -3968,8 +3968,16 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
         facts.subject_kind = 4;
         place.emplace(record->worldOrCell, record->pos);
       }
-    } else if (subject->AsActor()) {
+    } else if (MpActor* actor = subject->AsActor()) {
+      // an actor's owner is its simulator (ADR-063 decision 1; the death
+      // report's own E_DEATH_NOT_HOST rule), which a row kept as evidence
+      // reads (wire-rules natives Keep::Evidence: ProcessTrapHit's); an
+      // action row on an actor is the streams' and refused by its kind
       facts.subject_kind = 3;
+      facts.owner = partOne.SimulatorOf(*actor);
+      if (const auto cell = partOne.worldState.CellOf(*actor)) {
+        facts.cell = *cell;
+      }
     } else if (subject->GetBaseType() == "DOOR" ||
                subject->GetBaseType() == "CONT") {
       facts.subject_kind = 2;
@@ -4001,6 +4009,36 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
   }
   if (verdict.code != skymp::rules::ScriptCallCode::Accepted) {
     refused(verdict);
+    return;
+  }
+  // thuum docs/verbs/npc-fate.md (playtest 48): a call the table keeps as
+  // evidence, relayed to no seat and taking no sequence: ProcessTrapHit's,
+  // the simulator's word that a trap (its first argument, TrapHitBase's
+  // `akTarget.ProcessTrapHit(self, ...)`) hit an actor it simulates, noted
+  // as that actor's death evidence (NoteTrapHit; R2, recorded, the numbers
+  // never judged)
+  if (verdict.keep_evidence) {
+    MpActor* hit = subject ? subject->AsActor() : nullptr;
+    if (!hit) {
+      // the rule keeps an actor's alone (the reporter's own player is
+      // refused before)
+      return;
+    }
+    uint32_t trapId = 0;
+    if (!msg.args.empty() && msg.args.front()) {
+      if (auto trap =
+            std::get_if<SpSnippetObjectArgument>(&*msg.args.front())) {
+        // below 0xff000000 by the wire's own check (wire-validate
+        // check_script_call)
+        trapId = static_cast<uint32_t>(trap->formId);
+      }
+    }
+    NoteTrapHit(*hit, trapId, std::chrono::steady_clock::now());
+    spdlog::info("[verb:npc-fate] {:x} reports {}.{} on {:x} in cell {:x} "
+                 "(from {}.{}): the trap {:x} hit it, noted as its death's "
+                 "evidence",
+                 reporter->GetFormId(), msg.cls, msg.fn, verdict.subject,
+                 facts.cell, msg.caller, msg.handler, trapId);
     return;
   }
   if (!subject && facts.subject_kind != 4) {
@@ -5025,6 +5063,36 @@ void ActionListener::NoteActivation(const MpObjectReference& target,
   }
 }
 
+// a trap's hit on an actor its simulator reports (OnScriptCall's kept
+// ProcessTrapHit), kept beside the trap notes for the same kDeathTrapWindow
+// and bounded as they are
+void ActionListener::NoteTrapHit(const MpActor& actor, uint32_t trapId,
+                                 std::chrono::steady_clock::time_point now)
+{
+  constexpr size_t kTrapHitsKept = 256;
+  recentTrapHits.push_back(RecentTrapHit{ now, actor.GetFormId(), trapId });
+  while (recentTrapHits.size() > kTrapHitsKept ||
+         (!recentTrapHits.empty() &&
+          now - recentTrapHits.front().at > kDeathTrapWindow)) {
+    recentTrapHits.pop_front();
+  }
+}
+
+std::optional<ActionListener::RecentTrapHit> ActionListener::TrapHitOn(
+  const MpActor& actor, std::chrono::steady_clock::time_point now) const
+{
+  std::optional<RecentTrapHit> newest;
+  for (const auto& hit : recentTrapHits) {
+    if (hit.actorId != actor.GetFormId() || now - hit.at > kDeathTrapWindow) {
+      continue;
+    }
+    if (!newest || hit.at > newest->at) {
+      newest = hit;
+    }
+  }
+  return newest;
+}
+
 // a trigger's own firing, and where it lands: the trigger's activation
 // children and theirs (a plate's wall, a box's blades, a wire's linker and
 // its rocks), the references the game files name with the trigger as their
@@ -5189,6 +5257,19 @@ void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
   const std::optional<RecentActivation> hazard =
     ActivationSeenNear(*actor, pos, now);
   const bool hazardSeen = hazard.has_value();
+  // thuum docs/verbs/npc-fate.md (playtest 48): its host's word that a trap
+  // hit this very actor within the trap window, whenever the trap was set
+  // off (NoteTrapHit); read after the place's notes, so a death those
+  // explain keeps their line
+  const std::optional<RecentTrapHit> trapHit = TrapHitOn(*actor, now);
+  const auto trapHitEvidence = [&]() {
+    const auto ago =
+      std::chrono::duration_cast<std::chrono::milliseconds>(now - trapHit->at)
+        .count();
+    return fmt::format("a trap's evidence beside the body ({:x} hit it {} ms "
+                       "before, its host's word)",
+                       trapHit->trapId, ago);
+  };
   const auto hazardEvidence = [&]() {
     const auto ago =
       std::chrono::duration_cast<std::chrono::milliseconds>(now - hazard->at)
@@ -5233,7 +5314,7 @@ void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
         fmt::format("a drop of {:.0f} units in the host's samples", *drop);
       break;
     case 2:
-      if (!hazardSeen) {
+      if (!hazardSeen && !trapHit) {
         refuse("E_DEATH_UNCHECKED",
                fmt::format("no activation within {:.0f} units in {} ms, nor "
                            "a trap's evidence in {} ms",
@@ -5241,7 +5322,7 @@ void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
                            kDeathTrapWindow.count()));
         return;
       }
-      evidence = hazardEvidence();
+      evidence = hazardSeen ? hazardEvidence() : trapHitEvidence();
       break;
     case 0:
       if (hitSeen) {
@@ -5269,6 +5350,8 @@ void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
           fmt::format("a drop of {:.0f} units in the host's samples", *drop);
       } else if (hazardSeen) {
         evidence = hazardEvidence();
+      } else if (trapHit) {
+        evidence = trapHitEvidence();
       } else if (const auto stoodUp = actor->HostStoodUpAgo(now); stoodUp &&
                  actor->ReanimateAcceptedAgo(now) &&
                  stoodUp->count() <=
@@ -5284,7 +5367,7 @@ void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
                                stoodUp->count() / 1000);
       } else {
         refuse("E_DEATH_UNCHECKED",
-               "no hit, drop or activation the server saw");
+               "no hit, drop, activation or trap hit the server saw");
         return;
       }
       break;

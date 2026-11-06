@@ -97,6 +97,11 @@ export class DeathReportService extends ClientListener {
         if (refrId === 0) {
             return;
         }
+        // thuum docs/verbs/npc-fate.md (playtest 48): the trap hits this
+        // game's engine dealt go first, so the server reads the hit that
+        // killed the actor before the report it explains (both reliable, in
+        // order); the platform raised the batch ahead of the death's event
+        this.controller.lookupListener(ScriptCallService).sendTrapHits();
         const message: ActorDeathMessage = {
             t: MsgType.ActorDeath,
             refrId,

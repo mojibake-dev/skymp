@@ -36,6 +36,18 @@ import { TrapResultService } from "./trapResultService";
 // SetMotionType and ApplyHavokImpulse to PropService (the trap body's claim);
 // a body another seat streams runs its two motion calls neutralized and never
 // reaches the batch.
+// thuum docs/verbs/npc-fate.md (playtest 48): a trap's hit on an actor this
+// seat simulates crosses in the batch too (ProcessTrapHit, kind "state": its
+// self the hit actor, its first argument the trap, ADR-068 D-S3 point 2), and
+// this service sends it to the server as a ScriptCall, which the server keeps
+// as that NPC's death evidence (wire-rules natives' Keep::Evidence, R2) and
+// relays to nobody: so a trap's kill of a hosted NPC is taken however long
+// after its trigger's notes (Bleak Falls Temple's blades swing on for
+// minutes; 48 refused draugr 800a6's death 106 s after the box fired). One
+// report per actor a second at most (the server's budget is the reporter's
+// 8 a second over every call); the player's own hits are its own seat's and
+// never sent. DeathReportService asks for the queued hits before its report,
+// so the server reads a hit before the death it explains.
 export class ScriptCallService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -90,6 +102,9 @@ export class ScriptCallService extends ClientListener {
             if (call.cls === "ObjectReference" && (call.fn === "SetMotionType" || call.fn === "ApplyHavokImpulse")) {
                 this.controller.lookupListener(PropService).noteTrapMotion(call.self, call.fn, call.args);
             }
+            if (call.cls === "ObjectReference" && call.fn === "ProcessTrapHit") {
+                this.noteTrapHit(call);
+            }
             if (call.kind === "action") {
                 this.pending.push(call);
                 // the hooks never see an owned call's animation (the seam's
@@ -117,7 +132,55 @@ export class ScriptCallService extends ClientListener {
                 this.send(call, host);
             }
         }
+        this.sendTrapHits();
         this.summarize();
+    }
+
+    // a trap's hit on an actor, queued for the next send (the event's context
+    // allows no game call): never the player's own (its hit is its seat's,
+    // its health its own report), one an actor a second at most, the queue
+    // bounded
+    private noteTrapHit(call: ScriptCall) {
+        if (call.self === 0x14) {
+            return;
+        }
+        const now = Date.now();
+        const last = this.lastHitAt.get(call.self);
+        if (last !== undefined && now - last < ScriptCallService.trapHitEveryMs) {
+            this.hitsThrottled++;
+            return;
+        }
+        if (this.lastHitAt.size >= 256) {
+            this.lastHitAt.clear();
+        }
+        this.lastHitAt.set(call.self, now);
+        if (this.hits.length >= 64) {
+            this.hits.shift();
+        }
+        this.hits.push(call);
+    }
+
+    // the queued trap hits sent now, each a ScriptCall as the platform read
+    // it, for an actor this seat still simulates (another's is no hit of this
+    // seat's to report); at every update and, from DeathReportService, right
+    // before a death report, so the server notes the hit ahead of the death
+    // it explains (the platform raises the batch ahead of a death's event,
+    // ScriptNatives::FlushAheadOnUpdate). A game-call context only
+    sendTrapHits(): void {
+        if (this.hits.length === 0) {
+            return;
+        }
+        const hits = this.hits;
+        this.hits = [];
+        const host = this.controller.lookupListener(HostService);
+        for (const call of hits) {
+            if (!host.isMineLocal(call.self)) {
+                this.hitsNotMine++;
+                continue;
+            }
+            this.send(call, host);
+            this.hitsSent++;
+        }
     }
 
     // one action row's call, reliable, as the platform read it: the subject
@@ -201,6 +264,15 @@ export class ScriptCallService extends ClientListener {
             logTrace(this, `${this.unsent} action call(s) in ${ScriptCallService.summaryMs / 1000} s not sent: no server id for the subject`);
             this.unsent = 0;
         }
+        // short of printConsole's 128-byte cut: throttled is within a second
+        // of the actor's last report, not this seat's an actor it no longer
+        // simulates
+        if (this.hitsSent + this.hitsThrottled + this.hitsNotMine > 0) {
+            logLab("verb:npc-fate", `trap hits in ${ScriptCallService.summaryMs / 1000} s: ${this.hitsSent} sent as evidence, ${this.hitsThrottled} throttled, ${this.hitsNotMine} not this seat's`);
+            this.hitsSent = 0;
+            this.hitsThrottled = 0;
+            this.hitsNotMine = 0;
+        }
         if (this.counts.size === 0) {
             return;
         }
@@ -223,11 +295,19 @@ export class ScriptCallService extends ClientListener {
 
     private pending: ScriptCall[] = [];
     private unsent = 0;
+    private hits: ScriptCall[] = [];
+    private readonly lastHitAt = new Map<number, number>();
+    private hitsSent = 0;
+    private hitsThrottled = 0;
+    private hitsNotMine = 0;
     private readonly counts = new Map<string, number>();
     private readonly logged = new Map<string, number>();
     private readonly kills = new Map<number, { at: number; killer: number }>();
     private lastSummary = Date.now();
     private static readonly summaryMs = 30_000;
     private static readonly killWindowMs = 10_000;
+    // UNMEASURED: well inside the server's trap window (30 s), so the death's
+    // own hit, when throttled, leaves a note at most a second older
+    private static readonly trapHitEveryMs = 1_000;
     private static readonly logPerWindow = 5;
 }

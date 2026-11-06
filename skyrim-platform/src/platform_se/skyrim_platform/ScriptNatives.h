@@ -14,9 +14,10 @@ class IFunction;
 // rows): the call judged from its typed frame, the subject's owner tested
 // (a world object's cell host, an actor's simulator, the player's own seat;
 // a trap family reference every seat's own, ADR-068 D-S3, TrapFamily.h),
-// an owned action row's call (and a script's Kill, and a family reference's
-// SetDestroyed, SetMotionType and ApplyHavokImpulse) queued into this
-// frame's batch and raised to JS once a frame as the event "scriptCalls",
+// an owned action row's call (and a script's Kill, a trap's ProcessTrapHit
+// on an actor this seat simulates, and a family reference's SetDestroyed,
+// SetMotionType and ApplyHavokImpulse) queued into this frame's batch and
+// raised to JS once a frame as the event "scriptCalls",
 // every other tabled call counted and raised every 30 s as "scriptCensus"; the
 // hook is a replacement, so a lever (scriptNonOwnerSkip, default none) can
 // skip a non-owned state row's body. The rows' functions are resolved at
@@ -33,6 +34,16 @@ void InstallHooks();
 // every frame from the platform's OnUpdate: the census flushed on time (a
 // quiet seat emits its last window; the review's medium finding)
 void Tick();
+// thuum docs/verbs/npc-fate.md (playtest 48): this frame's batch, when it
+// holds a call, raised on the update's task queue now, ahead of the task the
+// caller adds next: a death event's (EventHandler.cpp), so the script's call
+// behind the death (a trap's ProcessTrapHit on the body, a script's Kill)
+// reaches JS before deathStart does, in the same update (Viet::TaskQueue
+// runs its tasks in the order they were added), and the client sends the
+// hit's evidence ahead of its death report. Without it the batch rides the
+// tick's queue, and whether a tick runs between the hit and the update that
+// carries deathStart is the frame's order, unread (HYPOTHESIS either way)
+void FlushAheadOnUpdate();
 // inside a script action: true on this thread for the extent of an owned
 // action row's call (a script's PlayAnimation on a world object in a cell
 // this game hosts), the mark PlatformCall's bracket keeps, so the

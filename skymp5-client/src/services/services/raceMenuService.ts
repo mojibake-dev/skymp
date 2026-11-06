@@ -181,6 +181,74 @@ export class RaceMenuService extends ClientListener {
         this.persist();
     }
 
+    // The race menu a login finds open in the record (thuum playtest 48,
+    // 2026-11-06; numidium's finding, thuum-cf's fix, agreed by numidium).
+    // A game that crashes with the menu open leaves isRaceMenuOpen true in
+    // the record, since only the appearance its close sends clears it
+    // (MpActor::SetRaceMenuOpen), so the next login opens the menu again:
+    // c2 crashed in RaceMenu at 20:38:26Z, and the 20:40Z relaunch logged
+    // Ariadne in to the race's default face, her appearanceDump intact on
+    // the server (d8a9225f98); closing that menu would have recorded the
+    // default over it. remoteServer opened the menu 0.3 s after the first
+    // update, before these passes had taken RaceMenu's additions off and put
+    // the server's look on, which comes after the first movement (2.4 s
+    // after that login on the server's clock). The menu puts RaceMenu's own
+    // copy of the tints and the hair color back as it opens (onMenuOpen),
+    // and that copy is the one a look's load takes (load's
+    // RSM_RequestTintSave). HYPOTHESIS until x-racemenu-login-look reads
+    // it: no load had taken a copy of hers in that game, so the menu put
+    // the race's defaults back, and the passes then ran inside the menu
+    // (update fires there: the lab driver's close-menu runs on update with
+    // the menu open, a-racemenu) and took the copy from the defaults it
+    // showed. The menu stays reachable at a login on purpose (a new
+    // character's creation, the lab's open-race-menu), so a recorded
+    // character's (its CreateActor carries an appearance) opens here, on the
+    // pass after the one that put the server's look on, when RaceMenu's
+    // scripts have taken the copy in, or once the player's world has been
+    // up sameLookWaitMs with no look on it (a record without one, a load
+    // RaceMenu refused); without RaceMenu, at the first pass. A new
+    // character (no appearance) still opens on the race's defaults at once,
+    // in remoteServer. Every own CreateActor sets or drops it, so a menu
+    // waiting from an earlier login never opens over a later one.
+    openRaceMenuAfterOwnLook(open: (() => void) | null) {
+        this.menuAfterLook = open ? { open, since: 0 } : null;
+    }
+
+    // The waiting race menu opens once the passes before this one put the
+    // server's look on the player (the reset through, the look applied), or
+    // once the player's world has been up sameLookWaitMs without it: the
+    // server sends the look at the player's first movement, and the wait
+    // starts with the world, since a fresh launch's CreateActor comes
+    // before its load (the bound UNMEASURED beyond playtest 48's 2.4 s)
+    private openRaceMenuIfLookOn() {
+        const due = this.menuAfterLook;
+        if (!due) {
+            return;
+        }
+        const me = this.myId();
+        let why = "RaceMenu is not here, the appearance alone is the record";
+        if (this.available()) {
+            if (!this.resetPending && this.applied.has(me)) {
+                why = "the recorded look is on the player";
+            } else {
+                if (!this.sp.Game.getPlayer() || this.sp.Ui.isMenuOpen("Loading Menu")) {
+                    return; // the wait starts with the player's world
+                }
+                if (due.since === 0) {
+                    due.since = Date.now();
+                }
+                if (Date.now() - due.since < RaceMenuService.sameLookWaitMs) {
+                    return;
+                }
+                why = (this.wanted.has(me) ? "the server's look did not go on the player" : "no RaceMenu look came for the player")
+                    + ` in ${RaceMenuService.sameLookWaitMs} ms`;
+            }
+        }
+        this.menuAfterLook = null;
+        logTrace(this, `the race menu the record kept open opens: ${why}`);
+        due.open();
+    }
+
     private onUpdate() {
         if (Date.now() - this.lastCheck < 2000) {
             return;
@@ -192,6 +260,9 @@ export class RaceMenuService extends ClientListener {
         if (!this.resetPending && !this.sp.Ui.isMenuOpen("Loading Menu")) {
             this.alignRace();
         }
+        // the race menu a login found open waits for the look the passes
+        // before this one put on (openRaceMenuAfterOwnLook)
+        this.openRaceMenuIfLookOn();
         if (!this.available() || (this.wanted.size === 0 && !this.resetPending)) {
             return;
         }
@@ -526,5 +597,9 @@ export class RaceMenuService extends ClientListener {
     private resetFor = 0;
     private ownLook: { refrId: number; preset: string } | null = null;
     private static readonly sameLookWaitMs = 10000;
+    // the race menu a login found open in a recorded character's record,
+    // waiting for the player's look (openRaceMenuAfterOwnLook), and when its
+    // wait saw the player's world up first
+    private menuAfterLook: { open: () => void; since: number } | null = null;
     private raceMenu: boolean | undefined = undefined;
 }

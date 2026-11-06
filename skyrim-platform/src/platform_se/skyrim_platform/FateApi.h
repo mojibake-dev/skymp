@@ -40,6 +40,14 @@ Napi::Value RerollActor(const Napi::CallbackInfo& info);
 // off; a reference the game cannot find, or a base with no default outfit,
 // is a warn on the main thread (the lookup runs there).
 Napi::Value RedressActor(const Napi::CallbackInfo& info);
+// dressBody(refrId, worn): thuum docs/verbs/npc-fate.md (playtest 48, the
+// loot strip), after the client laid the record's list into a dead body: the
+// worn armor of `worn` (the record's equipment as the client holds it) that
+// the body holds but does not wear is equipped again, the reconcile's own
+// dress (FateApi.cpp DressBodyOnGameThread), queued behind the tick's
+// addItemEx tasks and run on the main thread. False for an invalid id; a
+// reference the game cannot find, or one alive, is a line on the main thread.
+Napi::Value DressBody(const Napi::CallbackInfo& info);
 // resurrectActor(refrId): a game-file actor's respawn, the engine's own
 // Resurrect (A/Actor.h:369: the inventory reset, the 3D attached) run with
 // its AI on, in one main-thread task (SKSE's UI task queue): a puppet is
@@ -76,6 +84,9 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "redressActor",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(RedressActor)));
+  exports.Set(
+    "dressBody",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(DressBody)));
   exports.Set(
     "resurrectActor",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(ResurrectActor)));

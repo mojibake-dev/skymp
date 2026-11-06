@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "CreateActorMessage.h"
+#include "ScriptStateApplyMessage.h"
 #include "UpdatePropertyMessage.h"
 
 struct GridPosInfo
@@ -181,6 +182,10 @@ public:
   // read is the record in place, valid until the reference's next edit
   const std::optional<ScriptStateRecord>& GetScriptState() const;
   void SetScriptState(std::optional<ScriptStateRecord> record);
+  // the apply built from the record, stamped with the sequence and the view
+  // the record was taken at (false without a record); served ahead of a
+  // grant (ApplyHostDecisions) and behind the create word (onSubscribe)
+  bool BuildScriptStateApply(ScriptStateApplyMessage& out) const;
   void PutItem(MpActor& actor, const Inventory::Entry& entry);
   void TakeItem(MpActor& actor, const Inventory::Entry& entry);
   // thuum docs/verbs/containers.md: a mover whose put or take the server
@@ -238,6 +243,10 @@ public:
                           MpObjectReference* listener);
 
   void SetLastAnimation(const std::string& lastAnimation);
+  // the reference's last behavior graph event as the record holds it (an
+  // accepted script call's or ObjectAnimation's), none before any: the view
+  // a script record is stamped with (thuum ADR-068 rung 3, amendment A)
+  std::optional<std::string> GetLastAnimation() const;
   void SetNodeTextureSet(const std::string& node,
                          const espm::LookupResult& textureSet,
                          bool firstPerson);

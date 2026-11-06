@@ -321,6 +321,12 @@ void PacketParser::TransformPacketIntoAction(Networking::UserId userId,
         actionListener.OnDestructionStage(rawMsgData, *message);
         return;
       }
+      case MsgType::ScriptState: {
+        auto message =
+          reinterpret_cast<ScriptStateMessage*>(result->message.get());
+        actionListener.OnScriptState(rawMsgData, *message);
+        return;
+      }
       default: {
         spdlog::error("PacketParser.cpp doesn't implement MsgType {}",
                       static_cast<int64_t>(result->msgType));

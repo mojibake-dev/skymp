@@ -76,7 +76,7 @@ macro_rules! skymp_family {
             51 ActorFate, 52 ActorDeath, 53 HostedActorState, 54 ActorSpeech, 55 DamageCause, 56 ActorClaim, 57 QuestStage,
             58 PropTransform, 59 PropClaim, 60 PropOwner, 61 PlacedRequest, 62 PlacedReport, 63 SkillUse, 64 LockReport, 65 LockPrompt, 66 SetWeather, 67 PerkPick, 68 PerkState, 69 WordWall, 70 RelayedActivation, 71 ObjectAnimation,
             72 ChangeForm, 73 ChangeFormAck, 74 ChangeFormApply, 75 ScriptCall,
-            78 DestructionStage
+            76 ScriptState, 77 ScriptStateApply, 78 DestructionStage
         }
     };
 }
@@ -353,7 +353,7 @@ mod tests {
             n += 1;
         }
         assert!(n >= 90, "{n} fixtures");
-        assert_eq!(types.len(), 76, "every SkyMP type has fixtures");
+        assert_eq!(types.len(), 78, "every SkyMP type has fixtures");
     }
 
     /// Writes the fixtures: two per SkyMP type, from arbitrary values with
@@ -482,6 +482,69 @@ mod tests {
                 other => panic!("{name}: {other:?}"),
             }
         }
+    }
+
+    /// thuum ADR-068 rung 3 (the script record): the ScriptState and
+    /// ScriptStateApply fixtures are the contract's shapes and one refusal,
+    /// as the ChangeForm ones are. 76-0 is the Temple pillar 0xaa8cb's
+    /// record as its host reads it after a turn to position02, its
+    /// defaultPuzzlePillarScript with the census's five variables (raw
+    /// types 3, 3, 5, a class, 5; docs/verbs/papyrus-events.md), the class
+    /// one the puzzle lever 0xaa8c3's plain form handle (kind 0, mid
+    /// 0xFFFF); 76-1 the same record with the handle's kind 3, which no
+    /// handle has (E_VAL_RANGE); 77-0 the pillar's record served with its
+    /// view, Trigger01, at the object's sequence 2, in position01; 77-1 the
+    /// lever's own defaultPillarPuzzleLever (state Waiting) served with no
+    /// view and sequence 0, since no animation native runs on the lever
+    /// (docs/research/trap-census-2026-11-05.md), its handles the puzzle
+    /// door's marker 0x3e728, the portcullis 0x3b9f1 and a failure dart
+    /// 0x3720f (docs/verbs/traps.md's read of its properties).
+    #[test]
+    fn script_state_fixtures_validate_as_named() {
+        use wire_validate::{validate_server, Reject};
+        let read = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+        let verdicts: [(&str, Result<(), Reject>); 4] = [
+            ("76-ScriptState-0.json", Ok(())),
+            ("76-ScriptState-1.json", Err(Reject::Range)),
+            ("77-ScriptStateApply-0.json", Ok(())),
+            ("77-ScriptStateApply-1.json", Ok(())),
+        ];
+        for (name, want) in verdicts {
+            let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(matches!(m, Message::ScriptState(_) | Message::ScriptStateApply(_)), "{name}");
+            assert_eq!(validate_server(&m), want, "{name}");
+        }
+        // the record's names as the wire spells them: formId, type, k, o
+        match recognize(&read("76-ScriptState-0.json")) {
+            Ok(Message::ScriptState(r)) => {
+                assert_eq!((r.epoch, r.form_id, r.scripts.len()), (1, 0xaa8cb, 1));
+                let pillar = r.scripts.first();
+                assert_eq!(pillar.map(|p| (p.cls.as_str(), p.state.as_str(), p.flags, p.vars.len())), Some(("defaultPuzzlePillarScript", "position02", 11, 5)));
+                let handle = pillar.and_then(|p| p.vars.get(3)).and_then(|v| v.o.as_ref());
+                assert_eq!(handle.map(|h| (h.kind, h.mid, h.form, h.cls.as_str())), Some((0, 0xffff, 0xaa8c3, "defaultPillarPuzzleLever")));
+            }
+            other => panic!("{other:?}"),
+        }
+        // the served pillar's sequence and view; the lever's no view, which
+        // renders no key
+        match recognize(&read("77-ScriptStateApply-0.json")) {
+            Ok(Message::ScriptStateApply(a)) => {
+                assert_eq!((a.form_id, a.seq, a.event.as_ref().map(|e| e.as_str())), (0xaa8cb, 2, Some("Trigger01")));
+            }
+            other => panic!("{other:?}"),
+        }
+        let lever = recognize(&read("77-ScriptStateApply-1.json"));
+        match &lever {
+            Ok(Message::ScriptStateApply(a)) => {
+                assert_eq!((a.form_id, a.seq, a.event.is_none(), a.scripts.first().map(|s| s.vars.len())), (0xaa8c3, 0, true, Some(6)));
+            }
+            other => panic!("{other:?}"),
+        }
+        let rendered = lever.as_ref().map(render).ok().and_then(Result::ok).unwrap_or_default();
+        assert!(!rendered.is_empty() && !rendered.contains("\"event\""), "{rendered}");
+        // a null view reads as none, the client's spelling of no view
+        let null = read("77-ScriptStateApply-1.json").replacen("\"fnv1a\"", "\"event\": null, \"fnv1a\"", 1);
+        assert!(matches!(recognize(&null), Ok(Message::ScriptStateApply(a)) if a.event.is_none()));
     }
 
     #[test]

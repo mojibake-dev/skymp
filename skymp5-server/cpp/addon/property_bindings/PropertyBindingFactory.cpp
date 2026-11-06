@@ -29,6 +29,7 @@
 #include "RespawnFatedBinding.h"
 #include "RespawnPercentagesBinding.h"
 #include "RunningEffectsBinding.h"
+#include "ScriptStateBinding.h"
 #include "ShoutsBinding.h"
 #include "SpawnDelayBinding.h"
 #include "SpawnPointBinding.h"
@@ -53,6 +54,7 @@ PropertyBindingFactory::CreateStandardPropertyBindings()
   result["actorFate"] = std::make_shared<ActorFateBinding>();
   result["bodyRest"] = std::make_shared<BodyRestBinding>();
   result["changeFormRecord"] = std::make_shared<ChangeFormRecordBinding>();
+  result["scriptState"] = std::make_shared<ScriptStateBinding>();
   result["gameTime"] = std::make_shared<GameTimeBinding>();
   result["inventory"] = std::make_shared<InventoryBinding>();
   result["isDead"] = std::make_shared<IsDeadBinding>();

@@ -1,5 +1,5 @@
 #pragma once
-#include "ScriptStateMessage.h" // ScriptStateObject
+#include "ScriptStateTypes.h"
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -11,7 +11,7 @@
 // record a reference's owner reported of the scripts attached to it, as the
 // server keeps it on the reference's own change form
 // (MpChangeForm::scriptState, rule 6): the scripts as the owner's engine read
-// them at a quiescent point (ScriptStateMessage.h), their FNV-1a 32 as the
+// them at a quiescent point (ScriptStateTypes.h), their FNV-1a 32 as the
 // owner computed it (its compare baseline; the server never recomputes it),
 // who sent it at which host epoch and when (wall-clock ms), and what the
 // server stamped at that moment: the object's sequence (wire-rules natives'

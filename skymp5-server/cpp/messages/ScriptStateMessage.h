@@ -1,155 +1,41 @@
 #pragma once
+#include "MessageBase.h"
+#include "MsgType.h"
+#include "ScriptStateTypes.h"
 #include <cstdint>
-#include <optional>
-#include <string>
-#include <tuple>
+#include <type_traits>
 #include <vector>
 
-// thuum ADR-068 rung 3 (the script record; docs/research/
-// rung3-script-record-2026-11-06.md section 1(b)): one attached script's
-// state as the owner's engine holds it, the shape ScriptState (MsgType 76)
-// carries from the owner, ScriptStateApply (MsgType 77) carries to a seat,
-// and the server keeps on the reference's record (ScriptStateRecord.h). The
-// payload lives in the message's own header, as ChangeFormRemapRow lives in
-// ChangeFormMessage.h (every header here pairs with a client message file,
-// linter-config.json's message pairs). The contract is skymp-wire's
-// (wire-schema skymp.rs: ScriptHandle, ScriptValue, ScriptVar,
-// ScriptObjectState; wire-validate check_script_state holds the kinds and
-// the caps); a u8 or a u16 on the wire is a uint32_t here, the messages'
-// idiom. The server stores the values and never reads them: the owner's
-// engine wrote them and a receiver's applies them (ApplyScriptState, the
-// platform's).
-
-// An object value's handle as the owner's read splits the VM's 64-bit
-// handle (thuum docs/research/adr065-papyrus-state-2026-11-03.md Q1: a
-// (kind, mid, form id) triple; a plain form's is kind 0, mid 0xFFFF), and the
-// script type bound there, which a receiver's FindBoundObject takes
-struct ScriptStateHandle
+// thuum ADR-068 rung 3 (the script record, decision 5 and its amendment A;
+// docs/research/rung3-script-record-2026-11-06.md section 1(b)): the scripts
+// attached to one reference as its owner's engine holds them, read at a
+// quiescent point of the object (the platform's SerializeScriptState).
+// Client to server, reliable, R2: the reference's owner, the host of its
+// cell, reports a record when its hash moved, and at its release of the cell
+// at the epoch it released; the wire validated the shape (wire-validate
+// check_script_state: 1 to 16 scripts, each read at a quiescent point, every
+// variable's kind and payload), the server judges the epoch and the owner
+// (wire-rules script_state, ActionListener::OnScriptState) and keeps the
+// last record on the reference, never relayed live: it is served as
+// ScriptStateApply. The contract is skymp-wire's (wire-schema skymp.rs,
+// ScriptState, MsgType 76, wire id 84).
+struct ScriptStateMessage : public MessageBase<ScriptStateMessage>
 {
+  static constexpr auto kMsgType =
+    std::integral_constant<char, static_cast<char>(MsgType::ScriptState)>{};
+
   template <class Archive>
   void Serialize(Archive& archive)
   {
-    archive.Serialize("kind", kind)
-      .Serialize("mid", mid)
-      .Serialize("form", form)
-      .Serialize("type", type);
+    archive.Serialize("t", kMsgType)
+      .Serialize("epoch", epoch)
+      .Serialize("formId", formId)
+      .Serialize("fnv1a", fnv1a)
+      .Serialize("scripts", scripts);
   }
-  auto ToTuple() const { return std::make_tuple(kind, mid, form, type); }
-  friend bool operator==(const ScriptStateHandle& lhs,
-                         const ScriptStateHandle& rhs)
-  {
-    return lhs.ToTuple() == rhs.ToTuple();
-  }
-  friend bool operator<(const ScriptStateHandle& lhs,
-                        const ScriptStateHandle& rhs)
-  {
-    return lhs.ToTuple() < rhs.ToTuple();
-  }
-  uint32_t kind = 0; // 0, 1 or 2 (a u8 on the wire); 1 and 2 read as None
-  uint32_t mid = 0;  // the handle's mid (a u16 on the wire)
-  uint32_t form = 0; // the form id, never 0x14 nor 0xff000000 and up
-  std::string type;  // the script type bound at the handle
-};
 
-// One value as the VM's Variable holds it: `k` its folded raw type (CL
-// include/RE/T/TypeInfo.h: 0 None, 1 object, 2 string, 3 int, 4 float, 5
-// bool) and the one field that kind carries (an object with no handle is a
-// typed None)
-struct ScriptStateValue
-{
-  template <class Archive>
-  void Serialize(Archive& archive)
-  {
-    archive.Serialize("k", k)
-      .Serialize("i", i)
-      .Serialize("f", f)
-      .Serialize("b", b)
-      .Serialize("s", s)
-      .Serialize("o", o);
-  }
-  auto ToTuple() const { return std::make_tuple(k, i, f, b, s, o); }
-  friend bool operator==(const ScriptStateValue& lhs,
-                         const ScriptStateValue& rhs)
-  {
-    return lhs.ToTuple() == rhs.ToTuple();
-  }
-  friend bool operator<(const ScriptStateValue& lhs,
-                        const ScriptStateValue& rhs)
-  {
-    return lhs.ToTuple() < rhs.ToTuple();
-  }
-  uint32_t k = 0; // the raw type, 0 to 5 (a u8 on the wire)
-  std::optional<int32_t> i;
-  std::optional<float> f;
-  std::optional<bool> b;
-  std::optional<std::string> s;
-  std::optional<ScriptStateHandle> o;
-};
-
-// One variable of a script, positional and parent-first: a value as
-// ScriptStateValue holds one, or (`k` 10 to 15, the array raw types) an array
-// of values of kind k - 10 in `a`, `elem` naming an object array's element
-// type (k 11 alone); no `a` is a None array
-struct ScriptStateVar
-{
-  template <class Archive>
-  void Serialize(Archive& archive)
-  {
-    archive.Serialize("k", k)
-      .Serialize("i", i)
-      .Serialize("f", f)
-      .Serialize("b", b)
-      .Serialize("s", s)
-      .Serialize("o", o)
-      .Serialize("elem", elem)
-      .Serialize("a", a);
-  }
-  auto ToTuple() const { return std::make_tuple(k, i, f, b, s, o, elem, a); }
-  friend bool operator==(const ScriptStateVar& lhs, const ScriptStateVar& rhs)
-  {
-    return lhs.ToTuple() == rhs.ToTuple();
-  }
-  friend bool operator<(const ScriptStateVar& lhs, const ScriptStateVar& rhs)
-  {
-    return lhs.ToTuple() < rhs.ToTuple();
-  }
-  uint32_t k = 0; // 0 to 5, or 10 to 15 for an array (a u8 on the wire)
-  std::optional<int32_t> i;
-  std::optional<float> f;
-  std::optional<bool> b;
-  std::optional<std::string> s;
-  std::optional<ScriptStateHandle> o;
-  std::optional<std::string> elem; // an object array's element type
-  std::optional<std::vector<ScriptStateValue>> a; // at most 128 elements
-};
-
-// One attached script of the reference: its type (the loader's exact match on
-// the receiver), its current state, Object::Save's flags byte (0x01
-// constructed, 0x02 valid, 0x04 lock held, 0x08 initialized) and every
-// variable the type's chain declares, in order
-struct ScriptStateObject
-{
-  template <class Archive>
-  void Serialize(Archive& archive)
-  {
-    archive.Serialize("type", type)
-      .Serialize("state", state)
-      .Serialize("flags", flags)
-      .Serialize("vars", vars);
-  }
-  auto ToTuple() const { return std::make_tuple(type, state, flags, vars); }
-  friend bool operator==(const ScriptStateObject& lhs,
-                         const ScriptStateObject& rhs)
-  {
-    return lhs.ToTuple() == rhs.ToTuple();
-  }
-  friend bool operator<(const ScriptStateObject& lhs,
-                        const ScriptStateObject& rhs)
-  {
-    return lhs.ToTuple() < rhs.ToTuple();
-  }
-  std::string type;                 // the script type, never empty
-  std::string state;                // its current state, "" the empty state
-  uint32_t flags = 0;               // Object::Save's byte (a u8 on the wire)
-  std::vector<ScriptStateVar> vars; // at most 512
+  uint32_t epoch = 0;  // the cell's host epoch the owner holds
+  uint32_t formId = 0; // the reference, a game-file placement
+  uint32_t fnv1a = 0;  // the owner's FNV-1a 32 over the record's dump
+  std::vector<ScriptStateObject> scripts; // 1 to 16, as the owner read them
 };

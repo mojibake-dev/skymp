@@ -41,6 +41,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -203,7 +204,8 @@ std::unordered_map<const RE::BSScript::IFunction*, std::size_t> g_rowOf;
 // script action's mark, neither queued); " (followed)" a script's
 // SetMotionType or ApplyHavokImpulse on a trap body another seat streams,
 // run neutralized (D-S3 point 4); no suffix, an owned self's state row, run
-// here and counted (rung 4 adds its record trigger).
+// here and counted, and since rung 3 touched (QueueTouch: the script
+// record's trigger).
 // An everyone row's calls are counted by self instead (g_rowSelves, the
 // flip's "Class.Name on <id>"); a batched call is the batch's, never counted
 enum CountKind : std::size_t
@@ -441,12 +443,22 @@ CallArg ReadArg(const RE::BSScript::Variable& v,
 // caller rows read defaultPuzzlePillarScript), its owningObjectType's name
 // (ObjectTypeInfo::GetName) and its owningFunction's (IFunction::GetName);
 // both empty when the native's frame is its stack's first (a stack the VM
-// or the platform started on the native itself)
-void NameCaller(const RE::BSScript::StackFrame* below, std::string& caller,
-                std::string& handler)
+// or the platform started on the native itself). Since rung 3 (thuum
+// ADR-068, the script record; the plan's 1(a)) also the calling script's
+// self: that frame's self (CommonLibSSE-NG include/RE/S/StackFrame.h:27)
+// through RefOfObject, its reference's form id, 0 for a global function's
+// frame or a script that stands for no reference (a quest's, an alias's, an
+// effect's); the reference is returned for the touch's test (QueueTouch).
+// HYPOTHESIS H-R9: previousFrame's self is the calling script's object (a
+// touch on the portcullis's Activate names the lever, x-script-state-read's
+// pull)
+const RE::TESObjectREFR* NameCaller(const RE::BSScript::StackFrame* below,
+                                    std::string& caller, std::string& handler,
+                                    std::uint32_t& callerSelf)
 {
+  callerSelf = 0;
   if (!below) {
-    return;
+    return nullptr;
   }
   if (const RE::BSScript::ObjectTypeInfo* type =
         below->owningObjectType.get()) {
@@ -455,9 +467,17 @@ void NameCaller(const RE::BSScript::StackFrame* below, std::string& caller,
   if (const RE::BSScript::IFunction* function = below->owningFunction.get()) {
     handler = function->GetName().c_str();
   }
+  auto* vm = VM::GetSingleton();
+  const RE::TESObjectREFR* ref = RefOfObject(
+    vm ? vm->GetObjectHandlePolicy() : nullptr, ObjectOf(below->self));
+  if (ref) {
+    callerSelf = ref->formID;
+  }
+  return ref;
 }
 
-// one captured call of an owned self, the shared shape's Call
+// one captured call of an owned self, the shared shape's Call; since rung 3
+// also the calling script's self and the touch mark
 struct QueuedCall
 {
   std::size_t row = 0;
@@ -466,8 +486,13 @@ struct QueuedCall
   std::array<CallArg, kMaxArgs> args{};
   std::string caller;
   std::string handler;
+  // the calling script's self (NameCaller), 0 for none
+  std::uint32_t callerSelf = 0;
   bool latent = false;
   std::uint32_t stackId = 0;
+  // rung 3's touch: an owned state row's call, no arguments (QueueTouch),
+  // raised as kind "touch"
+  bool touch = false;
 };
 
 // this frame's batch: appended on the dispatching thread for a batched row
@@ -477,6 +502,10 @@ struct QueuedCall
 std::mutex g_batchMutex;
 std::vector<QueuedCall> g_batch;
 std::atomic<bool> g_batchScheduled{ false };
+// rung 3's touches already in this frame's batch, by self and the caller's
+// self (QueueTouch's key), under g_batchMutex and cleared with the batch at
+// the flush
+std::unordered_set<std::uint64_t> g_touched;
 
 const char* KindName(NativeKind kind)
 {
@@ -514,15 +543,16 @@ Napi::Value ArgToJs(Napi::Env env, const CallArg& arg)
 }
 
 // one Call of the shared shape (thuum's rung 2 spec, the platform's JS
-// event): { cls, fn, kind, self, args, caller, handler, latent, stackId },
-// cls and fn the table's spelling
+// event): { cls, fn, kind, self, args, caller, handler, callerSelf, latent,
+// stackId }, cls and fn the table's spelling; kind "touch" for rung 3's
+// touch (an owned state row's call, its args empty)
 Napi::Object CallToJs(Napi::Env env, const QueuedCall& call)
 {
   const NativeRow& native = kRows[call.row];
   auto obj = Napi::Object::New(env);
   AddObjProperty(&obj, "cls", native.cls);
   AddObjProperty(&obj, "fn", native.fn);
-  AddObjProperty(&obj, "kind", KindName(native.kind));
+  AddObjProperty(&obj, "kind", call.touch ? "touch" : KindName(native.kind));
   AddObjProperty(&obj, "self", call.self);
   auto args = Napi::Array::New(env, call.argCount);
   for (uint32_t i = 0; i < call.argCount; ++i) {
@@ -531,6 +561,7 @@ Napi::Object CallToJs(Napi::Env env, const QueuedCall& call)
   obj.Set("args", args);
   AddObjProperty(&obj, "caller", call.caller);
   AddObjProperty(&obj, "handler", call.handler);
+  AddObjProperty(&obj, "callerSelf", call.callerSelf);
   AddObjProperty(&obj, "latent", call.latent);
   AddObjProperty(&obj, "stackId", call.stackId);
   return obj;
@@ -545,6 +576,7 @@ void FlushBatch(Napi::Env env)
   {
     std::lock_guard<std::mutex> lock(g_batchMutex);
     calls.swap(g_batch);
+    g_touched.clear();
     // lowered under the lock: a call queued after the swap finds the flag
     // down and schedules the next flush, one queued before rides this one
     g_batchScheduled.store(false);
@@ -642,9 +674,50 @@ bool QueueFromFrame(std::size_t row, const RowInfo& info,
         ReadArg(top->GetStackFrameVariable(i, page), info.types[i]);
     }
   }
-  NameCaller(top->previousFrame, call.caller, call.handler);
+  NameCaller(top->previousFrame, call.caller, call.handler, call.callerSelf);
   QueueCall(std::move(call));
   return true;
+}
+
+// rung 3's touch (thuum ADR-068, the script record; OnCall's (e)): an owned
+// state row's call queued as kind "touch", no arguments, its caller and the
+// caller's self read as every batched call's (NameCaller), so
+// skymp5-client's ScriptStateService takes the self and the caller's self
+// as due for SerializeScriptState. Filtered here (rule 9): dropped when
+// neither is a world object a record can carry (the self an actor or at or
+// above 0xff000000; the caller's self no reference, an actor, or at or
+// above it: SerializeScriptState refuses those) and when this frame's batch
+// already holds the pair, so a script's loop of state calls crosses once a
+// frame
+void QueueTouch(std::size_t row, const RowInfo& info,
+                const RE::BSScript::Stack* stack,
+                const RE::BSScript::StackFrame* top,
+                const RE::TESObjectREFR* ref, bool isActor)
+{
+  QueuedCall call;
+  call.row = row;
+  call.self = ref->formID;
+  call.latent = info.latent;
+  call.stackId = stack->stackID;
+  call.touch = true;
+  const RE::TESObjectREFR* callerRef =
+    NameCaller(top->previousFrame, call.caller, call.handler, call.callerSelf);
+  const bool selfCarries = !isActor && ref->formID < 0xff000000;
+  const bool callerCarries = callerRef &&
+    callerRef->GetFormType() != RE::FormType::ActorCharacter &&
+    callerRef->formID < 0xff000000;
+  if (!selfCarries && !callerCarries) {
+    return;
+  }
+  const std::uint64_t key =
+    (static_cast<std::uint64_t>(call.self) << 32) | call.callerSelf;
+  {
+    std::lock_guard<std::mutex> lock(g_batchMutex);
+    if (!g_touched.insert(key).second) {
+      return;
+    }
+  }
+  QueueCall(std::move(call));
 }
 
 // a followed body's motion call neutralized in the native's own frame, before
@@ -881,9 +954,13 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     return marks;
   }
   // (e) owned. A state row is the record's (ADR-065: the change form carries
-  // it), counted; Kill and KillSilent cross in the batch too
+  // it), counted; Kill and KillSilent cross in the batch too. Since rung 3
+  // (thuum ADR-068, the script record) the row's call also crosses as a
+  // touch (QueueTouch): the owner's mark that the self's or the calling
+  // script's state may have changed
   if (native.kind == NativeKind::State && !info.batchedState) {
     Count(row, kCountOwned);
+    QueueTouch(row, info, stack, top, ref, isActor);
     return marks;
   }
   // an owned action row's extent is the script action's (6.7) once its call

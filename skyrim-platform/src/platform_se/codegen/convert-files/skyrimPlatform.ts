@@ -359,16 +359,17 @@ export interface SkillUseEvent {
   points: number;
   source: number;
 }
-// thuum docs/DECISIONS.md ADR-068 (rung 2, the one seam): the calls this seat's scripts made in one frame on what this seat owns, raised at most once a frame (the platform's hook on NativeFunctionBase::Call judges every row of its table, NativeRows.inc, from the call's typed frame; ScriptNatives.cpp): an action row on a world object in a cell this game hosts (kind "action"), Actor.Kill and KillSilent on an actor it simulates or the player's own (kind "state"). cls and fn are the table's spelling; self the subject's form id (a static row's first argument: Debug.SendAnimationEvent's reference); args the call's arguments in order, each a boolean, a number, a string, { formId } (0 for None) or null (unread); caller and handler the calling script's type and function, "" when the native began its stack; latent whether the native is latent; stackId the Papyrus stack. The platform's own calls (callNative, SpSnippets) never appear. No game call in its handler
+// thuum docs/DECISIONS.md ADR-068 (rung 2, the one seam): the calls this seat's scripts made in one frame on what this seat owns, raised at most once a frame (the platform's hook on NativeFunctionBase::Call judges every row of its table, NativeRows.inc, from the call's typed frame; ScriptNatives.cpp): an action row on a world object in a cell this game hosts (kind "action"), Actor.Kill and KillSilent on an actor it simulates or the player's own (kind "state"), and since rung 3 (the script record) any other owned state row's call as kind "touch", its args empty, once a frame per self and caller's self, only when one of the two is a world object (no actor, below 0xff000000): the owner's mark that their scripts' state may have changed (the census counts the same call, so a touch is no count). cls and fn are the table's spelling; self the subject's form id (a static row's first argument: Debug.SendAnimationEvent's reference); args the call's arguments in order, each a boolean, a number, a string, { formId } (0 for None) or null (unread); caller and handler the calling script's type and function, "" when the native began its stack; callerSelf the calling script's reference's form id (the frame below the native's, its self), 0 for none; latent whether the native is latent; stackId the Papyrus stack. The platform's own calls (callNative, SpSnippets) never appear. No game call in its handler
 export interface ScriptCallsEvent {
   calls: {
     cls: string;
     fn: string;
-    kind: 'action' | 'state' | 'everyone';
+    kind: 'action' | 'state' | 'everyone' | 'touch';
     self: number;
     args: (boolean | number | string | { formId: number } | null)[];
     caller: string;
     handler: string;
+    callerSelf: number;
     latent: boolean;
     stackId: number;
   }[];
@@ -1814,6 +1815,8 @@ export declare function getTrapRole(formId: number): { family: boolean; playerOn
 export declare function setPropFollowed(formId: number, followed: boolean): boolean;
 // thuum ADR-068 D-S3 point 3: a reference whose server record is being applied, its Papyrus events blanked while the apply runs; stored on the JS thread, no game call
 export declare function setRecordApplying(formId: number, applying: boolean): boolean;
+// thuum ADR-068 rung 3 (the script record, amendment A): a reference whose served script record waits for its apply, so this seat's OnLoad and OnCellLoad to it are blanked (their names kept for ApplyScriptState's answer, blanked) until TESModPlatform.ApplyScriptState applies the record or this is called with false; set it only for a record that carries its view; stored on the JS thread, no game call; false for 0 and for the player's own id
+export declare function setScriptRecordPending(formId: number, pending: boolean): boolean;
 // thuum docs/verbs/npc-stream.md: whether the engine's action entry is open on the actor right now (the hook's mark from its entry to its leave); read inside a sendAnimationEvent hook handler, where the game thread waits, it says the event being sent is the action's own
 export declare function isPerformingAction(actorFormId: number): boolean;
 // thuum docs/verbs/npc-stream.md (the voice slice): a puppet says the host's line through the engine's own say with the topic info given (the engine's pick skipped); queued to the game thread; sayTopicInfoResult answers -1 while it waits, 0 for no actor, info or process, 1 when the line started, 2 when the engine refused it, 3 when a line plays without the state byte (a live sound handle or a running timer), 4 when the engine deferred it for an AI replay a puppet never runs Voice v4 adds 5: the engine judged the line inaudible on this seat (no 3D, or the speaker outside the dialogue output model's range of the listener) before the lip load; the item is cleared and nothing plays

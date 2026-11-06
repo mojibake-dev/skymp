@@ -266,7 +266,9 @@ export const keepOnlyServerSpells = (ac: Actor, eq: Equipment): number => {
 // hand's weapon, read as held, is taken off and equipped again a tenth of a
 // second later, and the ammo is equipped after it without asking isEquipped
 // (equipPlayerHands below); any other pass keeps both checks, so a pass in
-// play never takes a held weapon off.
+// play never takes a held weapon off, and a weapon already drawn stays in
+// the hand (the loop's pass comes about 5 s after the login, and taking a
+// drawn bow off would end the draw).
 // HYPOTHESIS until x-hands-relaunch v2: a fresh equip of the bow and the
 // ammo through the engine's own paths nocks the first draw after a
 // relaunch. LATER: SetInventory's ammo through the ammo path with no slot,
@@ -276,7 +278,7 @@ export const applyPlayerHands = (ac: Actor, eq: Equipment, afterLoginWipe = fals
     return;
   }
   const right = playerHandsOf(eq).right;
-  if (afterLoginWipe && right !== 0 && (ac.getEquippedObject(1)?.getFormID() ?? 0) === right) {
+  if (afterLoginWipe && right !== 0 && !ac.isWeaponDrawn() && (ac.getEquippedObject(1)?.getFormID() ?? 0) === right) {
     const form = Game.getFormEx(right);
     if (form && ac.getItemCount(form) >= 1) {
       // the equip waits for the unequip to land: the two are separate

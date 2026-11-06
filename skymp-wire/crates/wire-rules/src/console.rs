@@ -83,7 +83,7 @@ const fn cmd(name: &'static str, short: &'static str, class: Class, rank: Rank, 
 /// /teleportto, moderators'): `mp list` names the players online by number,
 /// `mp tp <n>` brings that player to the caller, `mp tpto <n>` takes the
 /// caller to it, through the server's teleport wherever the two are.
-pub const TABLE: [Command; 40] = [
+pub const TABLE: [Command; 41] = [
     cmd("additem", "", Class::Server, Rank::Admin, true),
     cmd("removeitem", "", Class::Server, Rank::Admin, true),
     cmd("equipitem", "", Class::Server, Rank::Admin, true),
@@ -92,6 +92,8 @@ pub const TABLE: [Command; 40] = [
     cmd("enable", "", Class::Server, Rank::Admin, true),
     cmd("mp", "", Class::Server, Rank::Admin, true),
     cmd("mp list", "", Class::Server, Rank::Player, true),
+    // `mp host`: who hosts the caller's cell (Eli in playtest 48, 2026-11-06)
+    cmd("mp host", "", Class::Server, Rank::Player, true),
     cmd("mp tp", "", Class::Server, Rank::Moderator, true),
     cmd("mp tpto", "", Class::Server, Rank::Moderator, true),
     cmd("centeroncell", "coc", Class::Server, Rank::Admin, true),
@@ -211,6 +213,8 @@ mod tests {
         // TES3MP's player commands on `mp`: the list for everyone, the
         // teleports a moderator's; any other `mp` an admin's
         assert_eq!(decide("mp list", Rank::Player), Decision::Run);
+        assert_eq!(decide("mp host", Rank::Player), Decision::Run);
+        assert_eq!(decide("MP HOST", Rank::Player), Decision::Run);
         assert_eq!(decide("mp tp", Rank::Moderator), Decision::Run);
         assert_eq!(decide("MP TPTO", Rank::Moderator), Decision::Run);
         assert_eq!(decide("mp tp", Rank::Player), Decision::RankTooLow);

@@ -2,6 +2,7 @@
 #include "ActorClaimMessage.h"
 #include "ActorSpeechMessage.h"
 #include "ChangeValuesMessage.h"
+#include "ConsoleCommandMessage.h"
 #include "CreateActorMessage.h"
 #include "HitMessage.h"
 #include "HostGrantMessage.h"
@@ -2358,6 +2359,88 @@ TEST_CASE("A host swap (a nearer seat takes the cell) sends the new host each "
   DoDisconnect(p, 0);
   DoDisconnect(p, 1);
   p.DestroyActor(kWolf);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+}
+
+// thuum docs/verbs/console-commands.md, `mp host` (Eli in playtest 48,
+// 2026-11-06: "who's hosting? (you should make a console command i can ask
+// that with instead of you)"): any player asks who hosts the cell it stands
+// in, the grant's epoch and how the grant came, fresh with nobody hosting
+// before it or inherited from a host that stopped (the lab's last_grant
+// rule), and its own part
+TEST_CASE("mp host names the host of the caller's cell, its epoch and how "
+          "its grant came",
+          "[CellHost][ConsoleCommand]")
+{
+  auto& p = GetPartOne();
+  auto& c1 = Player(p, 0, kC1, kHere);
+  auto& c2 = Player(p, 1, kC2, kHere + NiPoint3{ 100.f, 0.f, 0.f });
+  const auto cell = p.worldState.CellOf(kTamriel, kHere);
+  REQUIRE(cell.has_value());
+  REQUIRE(p.worldState.CellOf(c2) == cell);
+  // the console lines `user` gets for its `mp host`
+  const auto ask = [&](Networking::UserId user) {
+    p.Messages().clear();
+    RawMessageData raw;
+    raw.userId = user;
+    ConsoleCommandMessage msg;
+    msg.data.commandName = "mp";
+    msg.data.args = { int64_t(0), std::string("host") };
+    p.GetActionListener().OnConsoleCommand(raw, msg);
+    std::vector<std::string> lines;
+    for (auto& m : p.Messages()) {
+      if (m.userId == user && m.j["t"] == MsgType::ConsoleOutput) {
+        lines.push_back(m.j["text"].get<std::string>());
+      }
+    }
+    return lines;
+  };
+  using Catch::Matchers::ContainsSubstring;
+  const std::string c1Name =
+    "(no name) (" + std::to_string(c1.GetProfileId()) + ")";
+  const std::string c2Name =
+    "(no name) (" + std::to_string(c2.GetProfileId()) + ")";
+
+  // nobody loads it yet: nobody hosts it
+  auto lines = ask(0);
+  REQUIRE(lines.size() == 2);
+  REQUIRE_THAT(lines[0],
+               ContainsSubstring(
+                 ": nobody hosts it (frozen at its record, epoch 0 kept)"));
+  REQUIRE(lines[1] == "mp host done");
+
+  // c1 loads it first: a fresh grant at epoch 1, c1 its host, c2 its guest
+  CellLoaded(p, 0, *cell);
+  CellLoaded(p, 1, *cell);
+  REQUIRE(p.GetCellHost(*cell).player == kC1);
+  lines = ask(0);
+  REQUIRE(lines.size() == 2);
+  REQUIRE_THAT(lines[0],
+               ContainsSubstring(": host " + c1Name +
+                                 ", epoch 1, its grant fresh; you host it"));
+  lines = ask(1);
+  REQUIRE(lines.size() == 2);
+  REQUIRE_THAT(
+    lines[0],
+    ContainsSubstring(": host " + c1Name +
+                      ", epoch 1, its grant fresh; you are its guest"));
+
+  // c1 leaves: at the grace's end c2 takes the cell, an inherited grant
+  const auto now = NowMs();
+  DoDisconnect(p, 0);
+  p.TickCellHosts(now + skymp::rules::host_grace_ms() + kPastMs);
+  REQUIRE(p.GetCellHost(*cell).player == kC2);
+  REQUIRE(p.GetCellHost(*cell).epoch == 2);
+  lines = ask(1);
+  REQUIRE(lines.size() == 2);
+  REQUIRE_THAT(
+    lines[0],
+    ContainsSubstring(": host " + c2Name +
+                      ", epoch 2, its grant inherited; you host it"));
+  REQUIRE(lines[1] == "mp host done");
+
+  DoDisconnect(p, 1);
   p.DestroyActor(kC1);
   p.DestroyActor(kC2);
 }

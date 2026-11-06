@@ -145,7 +145,7 @@ type Prop = {
     trap: boolean;                 // ADR-068 D-S3: a trap body (no item; see trapBodies)
 };
 
-type Owner = { player: number; epoch: number; leaseUntil: number; grantedAt: number };
+type Owner = { player: number; epoch: number; leaseUntil: number; grantedAt: number; lapseSaid: boolean };
 
 // ADR-068 D-S3 point 4: a trap body this seat knows, by the server's id: a
 // family reference this seat's own script set moving (the scriptCalls batch),
@@ -277,7 +277,11 @@ export class PropService extends ClientListener {
         const lapsedHere = owner !== undefined && myId !== 0 && owner.player === myId
             && now - owner.grantedAt >= GRANT_GRACE_MS;
         if (owner && lapsedHere) {
-            if (owner.leaseUntil === 0 || owner.leaseUntil > now) {
+            // logged once per word (lapseSaid, cleared by onOwner): the lease's
+            // mirror may already read lapsed when the other seat's sample
+            // arrives (231500: c2's at 12.201, the host's sample at 12.369)
+            if (!owner.lapseSaid) {
+                owner.lapseSaid = true;
                 logLab(TAG, `prop ${m.refr.toString(16)} owner word ${myId.toString(16)} epoch ${owner.epoch} lapsed: another seat's sample arrived`);
             }
             owner.leaseUntil = now;
@@ -326,7 +330,7 @@ export class PropService extends ClientListener {
             logTrace(this, `owner word for prop ${m.refr.toString(16)} at epoch ${m.epoch} ignored: epoch ${known.epoch} known`);
             return;
         }
-        this.owners.set(m.refr, { player: m.player, epoch: m.epoch, leaseUntil: 0, grantedAt: Date.now() });
+        this.owners.set(m.refr, { player: m.player, epoch: m.epoch, leaseUntil: 0, grantedAt: Date.now(), lapseSaid: false });
         const mine = m.player !== 0 && m.player === this.myId();
         logLab(TAG, `prop ${m.refr.toString(16)} owner ${m.player.toString(16)} epoch ${m.epoch} (${mine ? "mine" : "theirs"})`);
         // ADR-068 D-S3: a word on a trap body is read on the update (its family

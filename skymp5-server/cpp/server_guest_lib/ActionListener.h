@@ -12,6 +12,7 @@
 #include <deque>
 #include <map>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <utility>
 
@@ -257,7 +258,8 @@ public:
   // record) is kept for kDeathTrapWindow, since a swinging blade or a
   // burning pool stays deadly after its report; a player's activation for
   // kDeathHazardWindow. The newest note beside `pos` in `where`'s cell, or
-  // nullptr
+  // nothing: a copy, since a later pop_front would leave a pointer into the
+  // deque dangling
   struct RecentActivation
   {
     std::chrono::steady_clock::time_point at;
@@ -271,7 +273,7 @@ public:
                       bool trap = false);
   void NoteTrapFiring(const MpObjectReference& trigger,
                       std::chrono::steady_clock::time_point now);
-  const RecentActivation* ActivationSeenNear(
+  std::optional<RecentActivation> ActivationSeenNear(
     const MpObjectReference& where, const NiPoint3& pos,
     std::chrono::steady_clock::time_point now) const;
 

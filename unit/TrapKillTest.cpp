@@ -32,6 +32,18 @@ constexpr uint32_t kPlate = 0x567f2;
 constexpr uint32_t kWall = 0x54b15;
 constexpr uint32_t kDraugr = 0x380b3;
 constexpr uint32_t kLamp = 0x9b0fb;
+// the review's three: the oil pool 0x9b0ea burning in Bleak Falls Sanctum
+// 0x371dd (playtest 47's fire); the Temple's trigger box 0x86018 and the
+// hanging blade 0x3ac33 its linked report names (47's "86018 activates
+// 3ac33 ...: relayed"); Embershard Mine's rockfall, the wire 0xb6d3f, its
+// linker 0xb6d3e and the rigged platform 0xb6d47, the wire's child's child
+constexpr uint32_t kSanctum = 0x371dd;
+constexpr uint32_t kPool = 0x9b0ea;
+constexpr uint32_t kBoxTrigger = 0x86018;
+constexpr uint32_t kBlade = 0x3ac33;
+constexpr uint32_t kWire = 0xb6d3f;
+constexpr uint32_t kLinker = 0xb6d3e;
+constexpr uint32_t kPlatform = 0xb6d47;
 
 uint64_t NowMs()
 {
@@ -242,4 +254,97 @@ TEST_CASE("A trap's kill of a hosted NPC is taken on a destruction record "
   }
   REQUIRE(draugr.IsDead());
   Leave(p);
+}
+
+TEST_CASE("A trap's note backs a death in its own cell alone",
+          "[TrapKill][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& draugr = Enter(p);
+  // the pool's note in the Sanctum, a Temple body at the same coordinates:
+  // another cell, refused
+  auto& pool = p.worldState.GetFormAt<MpObjectReference>(kPool);
+  REQUIRE(p.worldState.CellOf(pool) == std::optional<uint32_t>(kSanctum));
+  const auto now = std::chrono::steady_clock::now();
+  p.GetActionListener().NoteActivation(pool, now, true);
+  REQUIRE(p.GetActionListener()
+            .ActivationSeenNear(pool, pool.GetPos(), now)
+            .has_value());
+  draugr.SetPos(pool.GetPos());
+  REQUIRE(p.worldState.CellOf(draugr) == std::optional<uint32_t>(kTemple));
+  REQUIRE_FALSE(p.GetActionListener()
+                  .ActivationSeenNear(draugr, pool.GetPos(), now)
+                  .has_value());
+  ReportDeath(p, kDraugr, pool.GetPos());
+  REQUIRE_FALSE(draugr.IsDead());
+  Leave(p);
+}
+
+TEST_CASE("A host's linked report notes its target as a trap, kept the trap "
+          "window (playtest 47's blades)",
+          "[TrapKill][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& draugr = Enter(p);
+  p.worldState.GetFormAt<MpObjectReference>(kBoxTrigger);
+  auto& blade = p.worldState.GetFormAt<MpObjectReference>(kBlade);
+  const auto& children = p.worldState.activationChildsByActivationParent;
+  REQUIRE(children.count(kBoxTrigger) == 1);
+  REQUIRE(children.at(kBoxTrigger).count(kBlade) == 1);
+  {
+    ActivateMessage msg;
+    msg.data.caster = kBoxTrigger;
+    msg.data.target = kBlade;
+    msg.data.isSecondActivation = false;
+    RawMessageData raw;
+    raw.userId = 0;
+    p.GetActionListener().OnActivate(raw, msg);
+  }
+  const NiPoint3 body = blade.GetPos() + NiPoint3{ 100.f, 0.f, 0.f };
+  draugr.SetPos(body);
+  const auto now = std::chrono::steady_clock::now();
+  // 15 s on (47's blade kill came 17.8 s after its trigger's report): still
+  // within the trap window, where a player's activation would have lapsed
+  const auto at15 = p.GetActionListener().ActivationSeenNear(
+    draugr, body, now + std::chrono::seconds(15));
+  REQUIRE(at15.has_value());
+  REQUIRE(at15->trap);
+  REQUIRE(at15->refId == kBlade);
+  // past the trap window: gone
+  REQUIRE_FALSE(
+    p.GetActionListener()
+      .ActivationSeenNear(draugr, body, now + std::chrono::seconds(35))
+      .has_value());
+  // the kill itself: taken on the blade's note
+  {
+    LogCapture log;
+    ReportDeath(p, kDraugr, body);
+    REQUIRE(log.Count("a trap's evidence beside the body (3ac33, ") == 1);
+  }
+  REQUIRE(draugr.IsDead());
+  Leave(p);
+}
+
+TEST_CASE("A trigger's firing notes its activation children two levels down",
+          "[TrapKill][espm]")
+{
+  PartOne& p = GetPartOne();
+  // the platform registers under the linker and the linker under the wire as
+  // each loads (its XAPR); nothing else of the mine is loaded, so the
+  // platform is the one level-two child
+  auto& wire = p.worldState.GetFormAt<MpObjectReference>(kWire);
+  p.worldState.GetFormAt<MpObjectReference>(kLinker);
+  auto& platform = p.worldState.GetFormAt<MpObjectReference>(kPlatform);
+  const auto& children = p.worldState.activationChildsByActivationParent;
+  REQUIRE(children.count(kWire) == 1);
+  REQUIRE(children.at(kWire).count(kLinker) == 1);
+  REQUIRE(children.count(kLinker) == 1);
+  REQUIRE(children.at(kLinker).count(kPlatform) == 1);
+  const auto now = std::chrono::steady_clock::now();
+  p.GetActionListener().NoteTrapFiring(wire, now);
+  const auto seen =
+    p.GetActionListener().ActivationSeenNear(platform, platform.GetPos(), now);
+  REQUIRE(seen.has_value());
+  REQUIRE(seen->trap);
+  REQUIRE(seen->refId == kPlatform);
 }

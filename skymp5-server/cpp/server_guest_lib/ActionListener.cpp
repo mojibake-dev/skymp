@@ -5062,11 +5062,12 @@ void ActionListener::NoteTrapFiring(const MpObjectReference& trigger,
   }
 }
 
-const ActionListener::RecentActivation* ActionListener::ActivationSeenNear(
+std::optional<ActionListener::RecentActivation>
+ActionListener::ActivationSeenNear(
   const MpObjectReference& where, const NiPoint3& pos,
   std::chrono::steady_clock::time_point now) const
 {
-  const RecentActivation* newest = nullptr;
+  std::optional<RecentActivation> newest;
   for (const auto& activation : recentActivations) {
     const auto window =
       activation.trap ? kDeathTrapWindow : kDeathHazardWindow;
@@ -5077,7 +5078,7 @@ const ActionListener::RecentActivation* ActionListener::ActivationSeenNear(
       continue;
     }
     if ((activation.pos - pos).Length() <= kDeathHazardUnits) {
-      newest = &activation;
+      newest = activation;
     }
   }
   return newest;
@@ -5185,8 +5186,9 @@ void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
   const bool hitSeen = hitAgo && *hitAgo <= kDeathHitWindow;
   const auto drop = actor->DropTo(std::min(pos.z, actor->GetPos().z), now);
   const bool fallSeen = drop && *drop >= kDeathFallUnits;
-  const RecentActivation* hazard = ActivationSeenNear(*actor, pos, now);
-  const bool hazardSeen = hazard != nullptr;
+  const std::optional<RecentActivation> hazard =
+    ActivationSeenNear(*actor, pos, now);
+  const bool hazardSeen = hazard.has_value();
   const auto hazardEvidence = [&]() {
     const auto ago =
       std::chrono::duration_cast<std::chrono::milliseconds>(now - hazard->at)

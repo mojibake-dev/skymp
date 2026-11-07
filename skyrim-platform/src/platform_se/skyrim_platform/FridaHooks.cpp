@@ -428,6 +428,11 @@ bool HasAttachedScript(VM* vm, RE::VMHandle handle)
 }
 }
 
+bool Frida::TriggerPresserRuleOn()
+{
+  return g_triggerPresserRule.load(std::memory_order_relaxed);
+}
+
 void Frida::SetTriggerPresserRule(bool on)
 {
   g_triggerPresserRule.store(on, std::memory_order_relaxed);
@@ -655,18 +660,41 @@ void OnSendEventEnter(GumInvocationContext* ic)
                        eventNameStr, selfId, PresserReadText(how), n);
         }
       } else if (!OwnsPresser(presser)) {
-        static std::atomic<uint64_t> s_presserIgnored{ 0 };
-        const auto n = ++s_presserIgnored;
-        if (n <= 3 || n % 100 == 0) {
-          logger::info("[verb:traps] {} to {:x} by {:x}: not this seat's "
-                       "presser, ignored (D-W1) ({} so far)",
-                       eventNameStr, selfId, presser->formID, n);
+        // D-W2 A's fallback lever: a family reference of an exempt class
+        // keeps D-S3, its non-owned press passed on to the gate's rules below
+        // (every seat fires its own copy)
+        if (TrapFamily::Exempt::Any() && isFamily() &&
+            TrapFamily::Exempt::Is(handle)) {
+          static std::atomic<uint64_t> s_presserExempted{ 0 };
+          const auto n = ++s_presserExempted;
+          if (n <= 3 || n % 100 == 0) {
+            logger::info("[verb:traps] {} to {:x} by {:x}: not this seat's "
+                         "presser, passed: an exempt class keeps D-S3 ({} so "
+                         "far)",
+                         eventNameStr, selfId, presser->formID, n);
+          }
+        } else {
+          static std::atomic<uint64_t> s_presserIgnored{ 0 };
+          const auto n = ++s_presserIgnored;
+          if (n <= 3 || n % 100 == 0) {
+            logger::info("[verb:traps] {} to {:x} by {:x}: not this seat's "
+                         "presser, ignored (D-W1) ({} so far)",
+                         eventNameStr, selfId, presser->formID, n);
+          }
+          static const auto fsEmptyPresser = new FixedString("");
+          gum_invocation_context_replace_nth_argument(ic, 2, fsEmptyPresser);
+          return;
         }
-        static const auto fsEmptyPresser = new FixedString("");
-        gum_invocation_context_replace_nth_argument(ic, 2, fsEmptyPresser);
-        return;
       } else {
         const bool family = isFamily();
+        // ADR-068 D-W2 A (section 7.2(a)): an owned entry to a family
+        // trigger, an enter or a leave, opens its firing window, in which the
+        // trigger's own calls on itself are this seat's look
+        // (ScriptNatives.cpp OnFamilyCall); an exempt class's opens none (D-S3
+        // kept)
+        if (family && !TrapFamily::Exempt::Is(handle)) {
+          TrapFamily::Firing::Note(selfId, NowMs());
+        }
         if (family || (!inHostedCell && HasAttachedScript(vm, handle))) {
           const uint32_t refrId = selfId;
           const uint32_t presserId = presser->formID;

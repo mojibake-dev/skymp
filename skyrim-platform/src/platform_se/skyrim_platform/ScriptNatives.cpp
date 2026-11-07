@@ -95,11 +95,16 @@ enum class NativeKind : std::uint8_t
   Local
 };
 
+// Arg0Method (thuum ADR-068 D-W2 A, the plan's section 7.2(a)): a method
+// row whose subject is its first argument and whose call's self is the
+// frame's own, Sound.Play's shape (the subject the source reference, the self
+// the Sound)
 enum class NativeSubject : std::uint8_t
 {
   Self,
   Arg0,
-  None
+  None,
+  Arg0Method
 };
 
 struct NativeRow
@@ -214,6 +219,25 @@ constexpr std::pair<const char*, const char*> kAliasRows[] = {
   { "ReferenceAlias", "Clear" }
 };
 
+// thuum ADR-068 D-W2 A (the trigger's own calls from its firing seat; the
+// plan's section 7.2(a)): the look-only rows, which cross only as a trap
+// family trigger's look (OnFamilyCall) and are counted " (local)" and never
+// queued anywhere else, so a hosted world script's sound or noise stays
+// local as today. Sound.Play (FunctionsDump.txt: `Int Play(ObjectReference
+// akSource)`, not latent; NativeSubject::Arg0Method, its subject the source,
+// its call's self the Sound), and ObjectReference.CreateDetectionEvent
+// (`CreateDetectionEvent(Actor akOwner, Int aiSoundLevel)`, not latent; its
+// subject and self the reference it is called on, the trigger: SoundTrap's
+// [active] onBeginState calls it on self with lastTriggerRef as akOwner, op
+// 23 of USSEP's copy by lab/pex.py), carried so a guest's bone alarm still
+// wakes the NPCs its cell's host simulates. Every other look row is a row of
+// its own kind: the action rows, and kTrapRows' SetMotionType and
+// ApplyHavokImpulse
+constexpr std::pair<const char*, const char*> kLookOnlyRows[] = {
+  { "Sound", "Play" },
+  { "ObjectReference", "CreateDetectionEvent" }
+};
+
 // at most 11 arguments (CommonLibSSE-NG src/RE/N/NativeFunctionBase.cpp:15,
 // "native supports max 11")
 constexpr std::uint32_t kMaxArgs = 11;
@@ -243,6 +267,10 @@ struct RowInfo
   bool alias = false;
   // the row's place among kTrapRows (D-S3), None for every other row
   TrapRow trap = TrapRow::None;
+  // D-W2 A: a look row (an action row, SetMotionType, ApplyHavokImpulse, a
+  // look-only row), and one of kLookOnlyRows
+  bool look = false;
+  bool lookOnly = false;
   // the declared return's kind (TypeInfo::GetUnmangledRawType)
   RE::BSScript::TypeInfo::RawType result =
     RE::BSScript::TypeInfo::RawType::kNone;
@@ -271,9 +299,10 @@ std::unordered_map<const RE::BSScript::IFunction*, std::size_t> g_rowOf;
 // state row run here, an action row run under the script action's mark,
 // neither queued); " (followed)" a script's SetMotionType or
 // ApplyHavokImpulse on a trap body another seat streams, run neutralized
-// (D-S3 point 4); no suffix, an owned self's state row, run here and
-// counted, and since rung 3 touched (QueueTouch: the script record's
-// trigger).
+// (D-S3 point 4); " (look)" a trap family trigger's own call on itself in
+// its firing window, queued as kind "look" and run here (D-W2 A); no suffix,
+// an owned self's state row, run here and counted, and since rung 3 touched
+// (QueueTouch: the script record's trigger).
 // An everyone row's calls are counted by self instead (g_rowSelves, the
 // flip's "Class.Name on <id>"), except an alias row's, batched on every seat
 // since rung 4; a batched call is the batch's, never counted
@@ -289,6 +318,7 @@ enum CountKind : std::size_t
   kCountSkipped,
   kCountTrap,
   kCountFollowed,
+  kCountLook,
   kCountKinds
 };
 
@@ -301,7 +331,8 @@ constexpr const char* kCountSuffix[kCountKinds] = { "",
                                                     " (frame mismatch)",
                                                     " (skipped)",
                                                     " (trap)",
-                                                    " (followed)" };
+                                                    " (followed)",
+                                                    " (look)" };
 
 std::array<std::array<std::atomic<std::uint32_t>, kCountKinds>, kRowCount>
   g_counts{};
@@ -604,6 +635,8 @@ struct QueuedCall
   // rung 4's alias row (OnAliasCall): the alias's id within the quest that
   // `self` names, raised as `alias`; none on every other call
   std::optional<std::uint16_t> alias;
+  // D-W2 A's look (OnFamilyCall), raised as kind "look"
+  bool look = false;
 };
 
 // this frame's batch: appended on the dispatching thread for a batched row
@@ -621,6 +654,9 @@ std::unordered_set<std::uint64_t> g_touched;
 // .claude/rules/native.md's kill switch), on by default so a client that
 // never sets it keeps the batch it has; read first in QueueTouch
 std::atomic<bool> g_touchesEnabled{ true };
+// D-W2 A's switch (setTriggerLook, PuppetApi.cpp; ScriptNatives.h), off by
+// default
+std::atomic<bool> g_triggerLook{ false };
 
 const char* KindName(NativeKind kind)
 {
@@ -660,15 +696,19 @@ Napi::Value ArgToJs(Napi::Env env, const CallArg& arg)
 // one Call of the shared shape (thuum's rung 2 spec, the platform's JS
 // event): { cls, fn, kind, self, args, caller, handler, callerSelf, latent,
 // stackId, alias? }, cls and fn the table's spelling; kind "touch" for rung
-// 3's touch (an owned state row's call, its args empty); alias on rung 4's
-// alias rows alone (ForceRefTo, Clear), absent from every other call
+// 3's touch (an owned state row's call, its args empty), "look" for D-W2's
+// look (a trap family trigger's own call on itself from its firing seat);
+// alias on rung 4's alias rows alone (ForceRefTo, Clear), absent from every
+// other call
 Napi::Object CallToJs(Napi::Env env, const QueuedCall& call)
 {
   const NativeRow& native = kRows[call.row];
   auto obj = Napi::Object::New(env);
   AddObjProperty(&obj, "cls", native.cls);
   AddObjProperty(&obj, "fn", native.fn);
-  AddObjProperty(&obj, "kind", call.touch ? "touch" : KindName(native.kind));
+  AddObjProperty(&obj, "kind",
+                 call.touch ? "touch"
+                            : (call.look ? "look" : KindName(native.kind)));
   AddObjProperty(&obj, "self", call.self);
   auto args = Napi::Array::New(env, call.argCount);
   for (uint32_t i = 0; i < call.argCount; ++i) {
@@ -841,12 +881,14 @@ bool QueueFromFrame(std::size_t row, const RowInfo& info,
                     const RE::BSScript::Stack* stack,
                     const RE::BSScript::StackFrame* top, std::uint32_t page,
                     std::uint32_t self,
-                    std::optional<std::uint16_t> alias = std::nullopt)
+                    std::optional<std::uint16_t> alias = std::nullopt,
+                    bool look = false)
 {
   QueuedCall call;
   call.row = row;
   call.self = self;
   call.alias = alias;
+  call.look = look;
   call.latent = info.latent;
   call.stackId = stack->stackID;
   call.argCount = info.params;
@@ -971,7 +1013,26 @@ bool Neutralize(const RowInfo& info, const RE::BSScript::StackFrame* top,
 // queued (every seat plays it from its own firing: no ScriptCall, no mirror,
 // no lastAnimation). A state row is the copy's own state, except the three
 // kTrapRows, which cross in the batch as kind "state"; a followed body's two
-// motion rows run neutralized instead, counted " (followed)"
+// motion rows run neutralized instead, counted " (followed)".
+//
+// First, D-W2's look (thuum docs/DECISIONS.md ADR-068, "D-W2 A and D-C3 A",
+// Eli 2026-11-07; docs/research/fifty-fixes-2026-11-07.md section 7.2(a)):
+// under D-W1 a family trigger fires on its presser's owner alone, and that
+// seat owns the trigger's own calls on itself during the firing (a Tripwire's
+// SetMotionType on its rope, a plate's 'Down' and 'Up', its sound, a bone
+// alarm's impulse and its noise), which cross from it and play on every
+// other seat. With the switch on (setTriggerLook, the presser rule on too),
+// a look row's call is a look when the subject's firing window is open
+// (TrapFamily::Firing, noted by the presser rule's owned branch) and the
+// calling script's self (CallerRefOf, the frame below the native's) is the
+// subject, so a linked trap's own calls and another reference's never are:
+// it is queued as kind "look" (its self the subject's form id, or the
+// frame's own for an Arg0Method row, Sound.Play's Sound), counted " (look)",
+// and still runs here as the script wrote it: an animation row under the
+// script action's mark, a motion row unneutralized (a trigger is never
+// Followed). A look that cannot be queued (an array parameter, a self that
+// names no form, a frame mismatch: each counted) still runs here. A
+// look-only row outside a look is counted " (local)" and never queued
 Marks OnFamilyCall(std::size_t row, const RowInfo& info,
                    const RE::BSScript::Stack* stack,
                    const RE::BSScript::StackFrame* top, std::uint32_t page,
@@ -979,6 +1040,44 @@ Marks OnFamilyCall(std::size_t row, const RowInfo& info,
 {
   Marks marks;
   const NativeRow& native = kRows[row];
+  if (info.look && g_triggerLook.load(std::memory_order_relaxed) &&
+      Frida::TriggerPresserRuleOn() &&
+      TrapFamily::Firing::Open(self, NowMs())) {
+    const RE::TESObjectREFR* callerRef = CallerRefOf(top->previousFrame);
+    if (callerRef && callerRef->formID == self) {
+      // the Sound's own form id for Sound.Play (EveryoneSelfId's read: a
+      // form's id from its kind-0 handle, kept when the form table knows it)
+      const std::uint32_t callSelf =
+        native.subject == NativeSubject::Arg0Method ? EveryoneSelfId(top->self)
+                                                    : self;
+      marks.action = native.kind == NativeKind::Action && !info.lookOnly;
+      if (!info.relayable) {
+        Count(row, kCountUnrelayable);
+        return marks;
+      }
+      if (callSelf == 0) {
+        Count(row, kCountUnresolved);
+        return marks;
+      }
+      if (!QueueFromFrame(row, info, stack, top, page, callSelf, std::nullopt,
+                          true)) {
+        return marks;
+      }
+      Count(row, kCountLook);
+      static std::atomic<uint64_t> s_looks{ 0 };
+      const auto n = ++s_looks;
+      if (n <= 3 || n % 100 == 0) {
+        logger::info("[verb:traps] {}.{} on {:x}: its firing seat's look, "
+                     "queued (D-W2) ({} so far)",
+                     native.cls, native.fn, self, n);
+      }
+      return marks;
+    }
+  }
+  if (info.lookOnly) {
+    Count(row, kCountLocal);
+    return marks;
+  }
   if (native.kind == NativeKind::Action) {
     marks.action = true;
     Count(row, kCountTrap);
@@ -1138,7 +1237,9 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
   const RE::BSScript::Variable* subject = nullptr;
   if (native.subject == NativeSubject::Self) {
     subject = &top->self;
-  } else if (native.subject == NativeSubject::Arg0 && info.params > 0) {
+  } else if ((native.subject == NativeSubject::Arg0 ||
+              native.subject == NativeSubject::Arg0Method) &&
+             info.params > 0) {
     page = top->GetPageForFrame();
     if (page == kNoPage) {
       Count(row, kCountFrameMismatch);
@@ -1176,6 +1277,13 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     if (object && TrapFamily::IsFamily(ref, object->GetHandle())) {
       return OnFamilyCall(row, info, stack, top, page, ref->formID);
     }
+  }
+  // D-W2 A's look-only rows cross as a trap family trigger's look alone
+  // (OnFamilyCall): anywhere else counted local and never queued, so a hosted
+  // world script's sound or noise stays local as before
+  if (info.lookOnly) {
+    Count(row, kCountLocal);
+    return marks;
   }
   // (d) the owner, a record row's by OwnedForRecord (rung 4). Not owned:
   // counted, and the body runs (an action row's jump, the pillar's
@@ -1270,6 +1378,17 @@ void ReadRow(std::size_t row, const RE::BSScript::IFunction* function)
       info.alias = true;
     }
   }
+  for (const auto& [cls, name] : kLookOnlyRows) {
+    if (_stricmp(kRows[row].cls, cls) == 0 &&
+        _stricmp(kRows[row].fn, name) == 0) {
+      info.lookOnly = true;
+    }
+  }
+  // D-W2 A's look rows (the plan's section 7.2(a)): the action rows, the two
+  // motion rows among kTrapRows, and the look-only rows
+  info.look = kRows[row].kind == NativeKind::Action ||
+    info.trap == TrapRow::Motion || info.trap == TrapRow::Impulse ||
+    info.lookOnly;
 }
 
 // a name among the seam's lists (kBatchedStateRows, kTrapRows, kAliasRows)
@@ -1292,6 +1411,10 @@ void WarnUnbound(const char* list, const char* cls, const char* fn)
 // how InstallHooks names a row's crossing beside its latency
 const char* CrossingNote(const RowInfo& info)
 {
+  if (info.lookOnly) {
+    return ", look only (D-W2: a family trigger's own call from its firing "
+           "seat)";
+  }
   if (info.alias) {
     return ", batched on every seat (an alias fill)";
   }
@@ -1605,6 +1728,16 @@ bool ScriptNatives::TouchesEnabled()
   return g_touchesEnabled.load(std::memory_order_relaxed);
 }
 
+void ScriptNatives::SetTriggerLook(bool on)
+{
+  g_triggerLook.store(on, std::memory_order_relaxed);
+}
+
+bool ScriptNatives::TriggerLook()
+{
+  return g_triggerLook.load(std::memory_order_relaxed);
+}
+
 void ScriptNatives::CountPlatformCall(const RE::BSScript::IFunction* fn)
 {
   if (!g_tableReady.load(std::memory_order_acquire)) {
@@ -1672,6 +1805,9 @@ void ScriptNatives::InstallHooks()
   }
   for (const auto& [cls, name] : kAliasRows) {
     WarnUnbound("alias", cls, name);
+  }
+  for (const auto& [cls, name] : kLookOnlyRows) {
+    WarnUnbound("look-only", cls, name);
   }
   // thuum ADR-068 D-S3: the trap family the gate and this seam read, named
   // once per process beside the table it extends (TrapFamily.h)

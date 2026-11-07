@@ -391,6 +391,7 @@ Napi::Value PuppetApi::GetTrapRole(const Napi::CallbackInfo& info)
   res.Set("playerOnly", Napi::Boolean::New(info.Env(), role->playerOnly));
   res.Set("destroyed", Napi::Boolean::New(info.Env(), role->destroyed));
   res.Set("trigger", Napi::Boolean::New(info.Env(), role->trigger));
+  res.Set("exempt", Napi::Boolean::New(info.Env(), role->exempt));
   return res;
 }
 
@@ -419,6 +420,44 @@ Napi::Value PuppetApi::SetFurnitureAnimation(const Napi::CallbackInfo& info)
 {
   const auto on = NapiHelper::ExtractBoolean(info[0], "on");
   Frida::SetFurnitureAnimation(on);
+  return Napi::Boolean::New(info.Env(), true);
+}
+
+// thuum docs/DECISIONS.md ADR-068 D-W2 A (docs/research/
+// fifty-fixes-2026-11-07.md section 7.2(a); thuum .claude/rules/native.md's
+// kill switch): the look's switch (ScriptNatives.h), one atomic flag, off by
+// default, acting only with the presser rule on; skymp5-client's setting
+// triggerLook (default true) turns it on. No game call; logged for the lab
+Napi::Value PuppetApi::SetTriggerLook(const Napi::CallbackInfo& info)
+{
+  const auto on = NapiHelper::ExtractBoolean(info[0], "on");
+  ScriptNatives::SetTriggerLook(on);
+  logger::info("[verb:traps] setTriggerLook({}): {}", on,
+               on ? "a family trigger's own calls on itself in its firing "
+                    "window cross as its firing seat's look (D-W2), with "
+                    "the presser rule on"
+                  : "a family trigger's own calls stay on each seat");
+  return Napi::Boolean::New(info.Env(), true);
+}
+
+// D-W2 A's fallback lever (TrapFamily.h, Exempt): the class names, replacing
+// the list whole ([] clears it); no game call; logged for the lab
+Napi::Value PuppetApi::SetTriggerPresserExempt(const Napi::CallbackInfo& info)
+{
+  const auto classes = NapiHelper::ExtractArray(info[0], "classes");
+  std::vector<std::string> names;
+  const uint32_t n = classes.Length();
+  names.reserve(n);
+  for (uint32_t i = 0; i < n; ++i) {
+    const std::string name = "classes[" + std::to_string(i) + "]";
+    names.push_back(NapiHelper::ExtractString(classes.Get(i), name.c_str()));
+  }
+  TrapFamily::Exempt::Set(names);
+  const std::string stored = TrapFamily::Exempt::Names();
+  logger::info("[verb:traps] setTriggerPresserExempt: {}",
+               stored.empty()
+                 ? std::string("no class exempt, the presser rule whole")
+                 : "these keep D-S3's per-seat firing: " + stored);
   return Napi::Boolean::New(info.Env(), true);
 }
 

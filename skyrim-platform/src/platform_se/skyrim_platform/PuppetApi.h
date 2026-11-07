@@ -43,12 +43,14 @@ Napi::Value IsHosted(const Napi::CallbackInfo& info);
 Napi::Value IsPerformingAction(const Napi::CallbackInfo& info);
 // thuum docs/DECISIONS.md ADR-068 D-S3 (traps follow the interaction;
 // TrapFamily.h): getTrapRole(formId) answers { family, playerOnly, destroyed,
-// trigger } for a reference with an attached script, from the gate's own
-// reads on the JS thread (the VM's attached scripts under its lock, the
-// reference's destroyed flag, its trigger's playerOnlyTrigger property, and
+// trigger, exempt } for a reference with an attached script, from the gate's
+// own reads on the JS thread (the VM's attached scripts under its lock, the
+// reference's destroyed flag, its trigger's playerOnlyTrigger property,
 // whether a script on it reaches TrapTriggerBase: a trap's trigger, never a
-// trap body; playtest 48), and null for an id that names no reference or one
-// with no attached script
+// trap body, playtest 48; and since ADR-068 D-W2 A whether a script on it is
+// of a class setTriggerPresserExempt names, TrapFamily::Exempt, so the
+// client skips its root report for a trigger every seat fires itself), and
+// null for an id that names no reference or one with no attached script
 Napi::Value GetTrapRole(const Napi::CallbackInfo& info);
 // thuum docs/DECISIONS.md ADR-068 D-W1 A and D-C2 A (the presser rule,
 // FridaHooks.h): setTriggerPresserRule(on), the Papyrus event gate's rule over
@@ -65,6 +67,16 @@ Napi::Value SetTriggerPresserRule(const Napi::CallbackInfo& info);
 // sendAnimationEvent handlers and raises furnitureAnimation on the next tick.
 // Stored with no game call; true when stored
 Napi::Value SetFurnitureAnimation(const Napi::CallbackInfo& info);
+// thuum docs/DECISIONS.md ADR-068 D-W2 A (ScriptNatives.h, TrapFamily.h):
+// setTriggerLook(on), the look's switch, off by default, acting only with the
+// presser rule on: on, a trap family trigger's own call on itself in its
+// firing window is queued in scriptCalls as kind "look" and still runs here;
+// setTriggerPresserExempt(classes), the fallback lever, the script classes
+// whose family references keep D-S3 under the presser rule (a non-owned
+// press passes, an owned one opens no look), replaced whole, empty by
+// default. Both stored with no game call; true when stored
+Napi::Value SetTriggerLook(const Napi::CallbackInfo& info);
+Napi::Value SetTriggerPresserExempt(const Napi::CallbackInfo& info);
 // setPropFollowed(formId, followed): a trap body another seat streams (true)
 // or no longer (false), kept in the set the native seam reads, where this
 // seat's script SetMotionType and ApplyHavokImpulse on the body run
@@ -200,6 +212,12 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set("setFurnitureAnimation",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(SetFurnitureAnimation)));
+  exports.Set(
+    "setTriggerLook",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetTriggerLook)));
+  exports.Set("setTriggerPresserExempt",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(SetTriggerPresserExempt)));
   exports.Set(
     "setPropFollowed",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetPropFollowed)));

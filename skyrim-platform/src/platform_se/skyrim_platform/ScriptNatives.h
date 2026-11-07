@@ -65,6 +65,16 @@ bool InScriptAction();
 // touch (the census still counts the call)
 void SetTouchesEnabled(bool enabled);
 bool TouchesEnabled();
+// thuum docs/DECISIONS.md ADR-068 D-W2 A (Eli 2026-11-07; docs/research/
+// fifty-fixes-2026-11-07.md section 7.2(a)): the look's switch,
+// setTriggerLook(on) (PuppetApi.cpp), one atomic flag, off by default, so a
+// client that never sets it keeps D-W1's trigger calls on its own seat; it
+// acts only with the presser rule on (Frida::TriggerPresserRuleOn). With both
+// on, a trap family trigger's own call on itself inside its firing window
+// (TrapFamily::Firing, the presser rule's note) is queued as kind "look" and
+// still runs here (OnFamilyCall)
+void SetTriggerLook(bool on);
+bool TriggerLook();
 // the platform's direct call of a native (SkyrimPlatform.cpp's worker, under
 // PlatformCall::Scope), counted in the census as "(platform)" when the
 // native is tabled: made inside the OnUpdate native's own Call, it never

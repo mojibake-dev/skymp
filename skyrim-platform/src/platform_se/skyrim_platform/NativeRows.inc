@@ -6,11 +6,16 @@
 // { class, name, kind, subject, relay }, included by ScriptNatives.cpp inside
 // its table's braces; the generated table holds exactly these: rung 2's,
 // D-S3's three trap rows and rung 4's seven (the standing's six and
-// ReferenceAlias.Clear, docs/research/rung4-state-rows-2026-11-07.md 1(a)).
+// ReferenceAlias.Clear, docs/research/rung4-state-rows-2026-11-07.md 1(a)),
+// then D-W2 A's Sound.Play and CreateDetectionEvent, a firing's looks alone
+// (docs/research/fifty-fixes-2026-11-07.md section 7.2: Sound.Play's
+// Arg0Method, its subject the first argument and its self the frame's own,
+// the Sound; CreateDetectionEvent on the trigger itself).
 // kind: Action (the call itself is the message), State (the owner's record
 // carries it), Everyone (no owner, D-F1 C: every seat runs it), Local (never
 // crosses). subject: Self (the frame's self), Arg0 (a static native's first
-// argument), None. relay: "same", "twin:<Class.Name>" (a latent row's
+// argument), Arg0Method (a method's first argument, its self the frame's
+// own), None. relay: "same", "twin:<Class.Name>" (a latent row's
 // non-latent twin the receiver runs) or "none".
 { "ObjectReference", "PlayAnimation", NativeKind::Action, NativeSubject::Self, "same" },
 { "ObjectReference", "PlayAnimationAndWait", NativeKind::Action, NativeSubject::Self, "twin:ObjectReference.PlayAnimation" },
@@ -53,3 +58,5 @@
 { "Actor", "SetCrimeFaction", NativeKind::State, NativeSubject::Self, "none" },
 { "Actor", "SetRelationshipRank", NativeKind::State, NativeSubject::Self, "none" },
 { "ReferenceAlias", "Clear", NativeKind::Everyone, NativeSubject::Self, "none" },
+{ "Sound", "Play", NativeKind::Action, NativeSubject::Arg0Method, "same" },
+{ "ObjectReference", "CreateDetectionEvent", NativeKind::Action, NativeSubject::Self, "same" },

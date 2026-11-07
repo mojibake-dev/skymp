@@ -1424,6 +1424,10 @@ mod ffi {
         /// facts (thuum ADR-068 rung 4): 0 none, 1 the ref state, 2 the
         /// standing, 3 a placement.
         record: u8,
+        /// The row's look channel, so the core gathers the subject's firing
+        /// facts (thuum ADR-068 D-W2 A, wire-rules natives::Look): 0 never,
+        /// 1 its own channel first and then the look, 2 the look alone.
+        look: u8,
     }
 
     /// One argument of a reported script call as the core parsed it: its
@@ -1439,7 +1443,7 @@ mod ffi {
 
     /// What the core knows of a reported script call (wire-rules
     /// natives::Facts).
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Debug, Clone, Copy, PartialEq)]
     struct ScriptCallFacts {
         /// The reporter's actor.
         sender: u32,
@@ -1470,6 +1474,13 @@ mod ffi {
         host: u32,
         /// That host's standing epoch.
         host_epoch: u32,
+        /// The subject's firing facts for a row with a look channel (thuum
+        /// ADR-068 D-W2 A; `look` in ScriptCallSubject), as the core
+        /// gathers a trigger's firing (GatherFiringFacts over the subject it
+        /// holds, none for one it places by its record): read only when its
+        /// reporter and cell are the call's, so one never gathered (all
+        /// zero) reads as a game without the cell loaded.
+        firing: TriggerFiringFacts,
     }
 
     /// The rule's word on a reported script call.
@@ -1493,6 +1504,12 @@ mod ffi {
         Owner,
         /// E_SCRIPTCALL_RATE: the reporter's budget is spent.
         Rate,
+        /// E_SCRIPTCALL_FAR: a look from a game with the subject's cell
+        /// loaded, none of whose actors stands within the subject's firing
+        /// reach (thuum ADR-068 D-W2 A).
+        Far,
+        /// E_SCRIPTCALL_LOOK_RATE: a look past the subject's look cap.
+        LookRate,
     }
 
     /// The verdict on one reported script call.
@@ -1519,7 +1536,9 @@ mod ffi {
         /// The relay's self: the subject for a method native, 0 for a static
         /// one.
         relay_self: u32,
-        /// Who hears it: 0 the subject's listeners, 1 every seat, 2 none.
+        /// Who hears it: 0 the subject's listeners, 1 every seat, 2 none, 3
+        /// the subject's cell's host alone (a look's CreateDetectionEvent,
+        /// thuum ADR-068 D-W2 A).
         audience: u8,
         /// The call's graph event becomes the subject's lastAnimation.
         keep_last: bool,
@@ -1545,6 +1564,15 @@ mod ffi {
         /// Keep::Variable, the fifty fixes' D-C3 A, PENDING ELI); 0 for
         /// none.
         keep_var: u8,
+        /// Taken as a firing's look (thuum ADR-068 D-W2 A, wire-rules
+        /// natives' look channel): relayed to the subject's listeners as
+        /// `relay_cls`.`relay_fn`, kept nowhere, `seq` 0 for a relay with no
+        /// sequence (Sound.Play's, its self the Sound).
+        look: bool,
+        /// The relay names the reporter's own player (0x14 among the call's
+        /// object arguments) as its figure, the reporter's actor (a look's:
+        /// CreateDetectionEvent's akOwner).
+        figure_args: bool,
     }
 
     /// One graph variable a subject's record keeps, as the core reads it
@@ -4617,7 +4645,7 @@ fn native_args(args: &[ScriptArg]) -> Vec<natives::Arg> {
 
 fn script_call_subject(cls: &str, func: &str, self_id: u32, args: &[ScriptArg]) -> ScriptCallSubject {
     let Some(index) = natives::row_index(cls, func) else {
-        return ScriptCallSubject { row: -1, subject: 0, record: 0 };
+        return ScriptCallSubject { row: -1, subject: 0, record: 0, look: 0 };
     };
     let row = natives::TABLE.get(index);
     let subject = row.and_then(|row| natives::subject_of(row, self_id, &native_args(args))).unwrap_or(0);
@@ -4625,7 +4653,12 @@ fn script_call_subject(cls: &str, func: &str, self_id: u32, args: &[ScriptArg]) 
         Some(natives::Keep::Record(kind)) => kind.code(),
         _ => 0,
     };
-    ScriptCallSubject { row: i32::try_from(index).unwrap_or(-1), subject, record }
+    let look = match row.map(|r| r.look) {
+        Some(natives::Look::Also) => 1,
+        Some(natives::Look::Only) => 2,
+        _ => 0,
+    };
+    ScriptCallSubject { row: i32::try_from(index).unwrap_or(-1), subject, record, look }
 }
 
 /// Every reporter's budget and every subject's sequence (wire-rules natives),
@@ -4656,6 +4689,8 @@ fn quiet_script_call() -> ScriptCallVerdict {
         record: 0,
         event_arg: -1,
         keep_var: 0,
+        look: false,
+        figure_args: false,
     }
 }
 
@@ -4667,6 +4702,8 @@ fn refused_script_call(r: natives::Refusal) -> ScriptCallVerdict {
         natives::Code::Args => ScriptCallCode::Args,
         natives::Code::Owner => ScriptCallCode::Owner,
         natives::Code::Rate => ScriptCallCode::Rate,
+        natives::Code::Far => ScriptCallCode::Far,
+        natives::Code::LookRate => ScriptCallCode::LookRate,
     };
     out.name = r.code.name().to_owned();
     out.why = r.why;
@@ -4701,6 +4738,8 @@ impl ScriptCalls {
             4 => natives::SubjectKind::Record,
             _ => natives::SubjectKind::Unknown,
         };
+        // the firing facts count where the core gathered them for this call
+        let gathered = f.firing.reporter != 0 && f.firing.reporter == f.sender && f.firing.cell == f.cell;
         let facts = natives::Facts {
             sender: f.sender,
             self_id: f.self_id,
@@ -4711,6 +4750,9 @@ impl ScriptCalls {
             owner_epoch: f.owner_epoch,
             host: f.host,
             host_epoch: f.host_epoch,
+            loader: gathered && f.firing.loader,
+            nearest: if gathered { distance_of(f.firing.nearest) } else { None },
+            subject_size: if gathered { f.firing.trigger_size } else { 0.0 },
         };
         let mut out = quiet_script_call();
         match self.0.owner(shaped, &facts) {
@@ -4726,9 +4768,12 @@ impl ScriptCalls {
                     natives::Audience::Listeners => 0,
                     natives::Audience::Everyone => 1,
                     natives::Audience::Nobody => 2,
+                    natives::Audience::Host => 3,
                 };
                 out.keep_last = a.keep == natives::Keep::Last;
                 out.keep_var = a.variable_kind.unwrap_or(0);
+                out.look = a.look;
+                out.figure_args = a.figure_args;
                 out.event_arg = a.graph_event_arg.and_then(|i| i8::try_from(i).ok()).unwrap_or(-1);
             }
             natives::Verdict::Kept { subject } => {
@@ -5084,6 +5129,9 @@ fn alias_created_due(marks: &[AliasMarkRow], quest: u32, alias: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The firing facts of a call the core gathered none for (all zero).
+    const NO_FIRING: TriggerFiringFacts = TriggerFiringFacts { reporter: 0, cell: 0, host: 0, loader: false, nearest: 0.0, trigger_size: 0.0 };
 
     #[test]
     fn a_hosted_state_crosses_value_by_value() {
@@ -5742,9 +5790,9 @@ mod tests {
         assert_eq!(at.subject, 0xaa8cb);
         let send = script_call_subject("Debug", "SendAnimationEvent", 0xaa8cb, &[pillar, text]);
         assert_eq!(send.subject, 0xaa8cb);
-        assert_eq!(script_call_subject("Debug", "Notification", 0, &[text]), ScriptCallSubject { row: -1, subject: 0, record: 0 });
+        assert_eq!(script_call_subject("Debug", "Notification", 0, &[text]), ScriptCallSubject { row: -1, subject: 0, record: 0, look: 0 });
         assert_eq!(at.record, 0, "an action row keeps no record");
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0 };
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0, firing: NO_FIRING };
         let mut s = new_script_calls();
         let v = s.judge(at.row, &[text, text], &facts, 0);
         assert_eq!((v.code, v.subject, v.seq, v.relay_self), (ScriptCallCode::Accepted, 0xaa8cb, 1, 0xaa8cb));
@@ -5791,7 +5839,7 @@ mod tests {
         let at = script_call_subject("ObjectReference", "ProcessTrapHit", 0x800a6, &args);
         assert!(at.row >= 0);
         assert_eq!(at.subject, 0x800a6);
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0x800a6, epoch: 3, subject_kind: 3, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 0, host: 0xff00_0000, host_epoch: 3 };
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0x800a6, epoch: 3, subject_kind: 3, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 0, host: 0xff00_0000, host_epoch: 3, firing: NO_FIRING };
         let mut s = new_script_calls();
         let v = s.judge(at.row, &args, &facts, 0);
         assert_eq!((v.code, v.subject, v.seq, v.keep_evidence, v.keep_last, v.audience), (ScriptCallCode::Accepted, 0x800a6, 0, true, false, 2));
@@ -5818,7 +5866,7 @@ mod tests {
         let at = script_call_subject("ObjectReference", "Disable", 0x1fc43, &[flag]);
         assert!(at.row >= 0);
         assert_eq!(at.subject, 0x1fc43);
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0x1fc43, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0 };
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0x1fc43, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0, firing: NO_FIRING };
         let mut s = new_script_calls();
         let v = s.judge(at.row, &[flag], &facts, 0);
         assert_eq!((v.code, v.subject, v.seq, v.record, v.keep_evidence, v.keep_last, v.audience), (ScriptCallCode::Accepted, 0x1fc43, 1, 1, false, false, 2));
@@ -5961,7 +6009,7 @@ mod tests {
         // of malformed calls is cut off by the rate
         let text = ScriptArg { kind: 3, form_id: 0 };
         let at = script_call_subject("ObjectReference", "PlayAnimation", 0xaa8cb, &[text]);
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0 };
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0, firing: NO_FIRING };
         let mut s = new_script_calls();
         // a shape that holds names the subject whose facts the core gathers
         let shaped = s.shape(at.row, &[text], facts.sender, facts.self_id, 0);
@@ -6024,7 +6072,7 @@ mod tests {
         // the next relay runs on from there
         let text = ScriptArg { kind: 3, form_id: 0 };
         let at = script_call_subject("ObjectReference", "PlayAnimation", 0xaa8cb, &[text]);
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0 };
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0, firing: NO_FIRING };
         let mut calls = new_script_calls();
         assert_eq!(calls.seq_of(0xaa8cb), 0);
         calls.seed(0xaa8cb, 5);
@@ -6100,7 +6148,7 @@ mod tests {
         let float = ScriptArg { kind: 2, form_id: 0 };
         let text = ScriptArg { kind: 3, form_id: 0 };
         let at = script_call_subject("ObjectReference", "SetAnimationVariableFloat", 0x3758c, &[text, float]);
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0x3758c, epoch: 1, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 1, host: 0, host_epoch: 0 };
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0x3758c, epoch: 1, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 1, host: 0, host_epoch: 0, firing: NO_FIRING };
         let mut calls = new_script_calls();
         let v = calls.judge(at.row, &[text, float], &facts, 0);
         assert_eq!((v.code, v.seq, v.keep_var, v.keep_last, v.relay_fn.as_str()), (ScriptCallCode::Accepted, 1, 4, false, "SetAnimationVariableFloat"));
@@ -6114,5 +6162,55 @@ mod tests {
         assert_eq!(graph_variable_slot(&[kept(true, 4)], 3), GraphVariableSlot { code: 2, index: 0 });
         let full: Vec<GraphVariableKept> = (1..=16u32).map(|seq| kept(false, seq)).collect();
         assert_eq!(graph_variable_slot(&full, 17), GraphVariableSlot { code: 0, index: 0 });
+    }
+
+    #[test]
+    fn the_bridge_takes_a_firings_look_from_the_facts_the_core_gathered() {
+        // thuum ADR-068 D-W2 A: Embershard's tripwire 0xb6d3f in the host's
+        // cell, the guest 0xff000001 with the cell loaded 40 units off it
+        let number = ScriptArg { kind: 2, form_id: 0 };
+        let flag = ScriptArg { kind: 1, form_id: 0 };
+        let motion = script_call_subject("ObjectReference", "SetMotionType", 0xb6d3f, &[number, flag]);
+        assert_eq!((motion.subject, motion.look), (0xb6d3f, 2));
+        let text = ScriptArg { kind: 3, form_id: 0 };
+        assert_eq!(script_call_subject("ObjectReference", "PlayAnimation", 0xb6d3f, &[text]).look, 1);
+        assert_eq!(script_call_subject("ObjectReference", "SetOpen", 0xb6d3f, &[flag]).look, 0);
+        let firing = TriggerFiringFacts { reporter: 0xff00_0001, cell: 0x371de, host: 0xff00_0000, loader: true, nearest: 40.0, trigger_size: 64.0 };
+        let facts = ScriptCallFacts { sender: 0xff00_0001, self_id: 0xb6d3f, epoch: 0, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0, firing };
+        let mut calls = new_script_calls();
+        let v = calls.judge(motion.row, &[number, flag], &facts, 0);
+        assert_eq!((v.code, v.look, v.seq, v.relay_self, v.relay_fn.as_str(), v.relay_args.as_slice()), (ScriptCallCode::Accepted, true, 1, 0xb6d3f, "SetMotionType", &[0u8, 1][..]));
+        assert_eq!((v.keep_last, v.keep_var, v.event_arg, v.audience), (false, 0, -1, 0));
+        // no firing facts gathered for this call: a game without the cell
+        let unmeasured = calls.judge(motion.row, &[number, flag], &ScriptCallFacts { firing: NO_FIRING, ..facts }, 0);
+        assert_eq!((unmeasured.code, unmeasured.name.as_str()), (ScriptCallCode::Owner, "E_SCRIPTCALL_OWNER"));
+        let other = TriggerFiringFacts { reporter: 0xff00_0002, ..firing };
+        assert_eq!(calls.judge(motion.row, &[number, flag], &ScriptCallFacts { firing: other, ..facts }, 0).code, ScriptCallCode::Owner);
+        // far, by name; the core's -1 is none measured
+        let far = calls.judge(motion.row, &[number, flag], &ScriptCallFacts { firing: TriggerFiringFacts { nearest: 3000.0, ..firing }, ..facts }, 0);
+        assert_eq!((far.code, far.name.as_str()), (ScriptCallCode::Far, "E_SCRIPTCALL_FAR"));
+        assert_eq!(calls.judge(motion.row, &[number, flag], &ScriptCallFacts { firing: TriggerFiringFacts { nearest: -1.0, ..firing }, ..facts }, 0).code, ScriptCallCode::Far);
+        // TriggerSound.Play(self): its self the Sound 0x1d492, relayed on it
+        // with no sequence
+        let source = ScriptArg { kind: 4, form_id: 0xb6d3f };
+        let sound = script_call_subject("Sound", "Play", 0x1d492, &[source]);
+        assert_eq!((sound.subject, sound.look), (0xb6d3f, 2));
+        let played = calls.judge(sound.row, &[source], &ScriptCallFacts { self_id: 0x1d492, ..facts }, 0);
+        assert_eq!((played.code, played.look, played.seq, played.subject, played.relay_self, played.relay_cls.as_str()), (ScriptCallCode::Accepted, true, 0, 0xb6d3f, 0x1d492, "Sound"));
+        // the subject's look cap: eight at once, the first taken above, the
+        // sound's among them
+        for _ in 0..6 {
+            assert_eq!(calls.judge(motion.row, &[number, flag], &facts, 0).code, ScriptCallCode::Accepted);
+        }
+        let capped = calls.judge(motion.row, &[number, flag], &facts, 0);
+        assert_eq!((capped.code, capped.name.as_str()), (ScriptCallCode::LookRate, "E_SCRIPTCALL_LOOK_RATE"));
+        // the bone alarm's CreateDetectionEvent: the cell's host alone, the
+        // reporter's own player named as its figure
+        let owner = ScriptArg { kind: 4, form_id: 0x14 };
+        let detect = script_call_subject("ObjectReference", "CreateDetectionEvent", 0x10481e, &[owner, number]);
+        assert_eq!((detect.subject, detect.look), (0x10481e, 2));
+        let alarm = ScriptCallFacts { self_id: 0x10481e, ..facts };
+        let woke = calls.judge(detect.row, &[owner, number], &alarm, 0);
+        assert_eq!((woke.code, woke.look, woke.audience, woke.figure_args, woke.relay_self), (ScriptCallCode::Accepted, true, 3, true, 0x10481e));
     }
 }

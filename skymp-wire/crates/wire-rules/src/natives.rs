@@ -61,8 +61,41 @@
 //! so no state row is lost to an action burst. R2: the value is the owner's
 //! engine's word, recorded; the record's own rule (wire-rules ref_state,
 //! standing, placements) judges what it must.
+//!
+//! The look channel (thuum ADR-068 D-W2 A, Eli 2026-11-07; docs/research/
+//! fifty-fixes-2026-11-07.md section 7.2(b)): during a firing its presser's
+//! owner started, that seat owns the trap family trigger's own calls on
+//! itself (a Tripwire's SetMotionType on its rope, a PressurePlate's 'Down'
+//! and 'Up', the trigger's sound), which cross from the firing seat and play
+//! on every other seat. A row the table marks [`Look::Also`] (the six action
+//! rows) takes its own channel first and, from a seat that does not host the
+//! subject's cell, the look channel; a row marked [`Look::Only`]
+//! (SetMotionType, ApplyHavokImpulse, Sound.Play and CreateDetectionEvent)
+//! has the look channel alone, CreateDetectionEvent's relayed to the cell's
+//! host alone ([`Audience::Host`]) with its owner named as the reporter's
+//! figure, so a guest's bone alarm still wakes the NPCs the host simulates. Its owner rule is wire-rules trigger_entry's firing_source over the
+//! call's own facts ([`look_owner`]): the cell's host at the epoch, or a game
+//! with the cell loaded one of whose actors stands within the subject's
+//! firing reach, judged per call and never by a window anchored on the
+//! firing's report (a Tripwire's and a bone alarm's motion calls come before
+//! their own Activate: the window is the platform's). A look is relayed to
+//! the subject's other listeners as the row's relay native, or as the call
+//! itself for a row never relayed as an action, with the subject's next
+//! sequence (none for a [`Subject::Arg0Method`] row, whose relay's self is
+//! the method's own and shared by many triggers), kept nowhere (a firing's
+//! look is a one-shot), and spends the subject's look cap ([`LOOK_BURST`]
+//! then [`LOOK_PER_SECOND`] a second) beside the reporter's action budget.
+//! Its refusals: `E_SCRIPTCALL_OWNER` (no host at the epoch and no game with
+//! the cell loaded: the own channel's refusal stands), `E_SCRIPTCALL_FAR` (a
+//! game with the cell loaded, none of whose actors stands within the reach),
+//! `E_SCRIPTCALL_LOOK_RATE` and `E_SCRIPTCALL_ROW` (a look-only row on an
+//! actor, a door or a container, the reporter's own player among them). R2:
+//! that the reporter's press fired the trigger is its word, as D-W1's firing
+//! is.
 
 use std::collections::HashMap;
+
+use crate::trigger_entry;
 
 /// What a call of a native is (6.3's kind column).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +123,11 @@ pub enum Subject {
     /// The call's first argument: a static native's target
     /// (Debug.SendAnimationEvent's reference).
     Arg0,
+    /// The call's first argument, of a method native whose own self is
+    /// another form: Sound.Play's source, the Sound its self (the fifty
+    /// fixes' D-W2 A). The message's selfId is the method's self, carried to
+    /// the relay as its self; the subject is the first argument.
+    Arg0Method,
     /// None: a static native on no object.
     Nothing,
 }
@@ -119,6 +157,10 @@ pub enum Audience {
     Everyone,
     /// No seat.
     Nobody,
+    /// The subject's cell's host alone, the engine that simulates its NPCs
+    /// (thuum ADR-068 D-W2 A: a trigger's CreateDetectionEvent during its
+    /// firing, so a guest's bone alarm wakes the NPCs the host simulates).
+    Host,
 }
 
 /// What a receiver runs for an accepted call.
@@ -210,6 +252,21 @@ impl RecordKind {
     }
 }
 
+/// Whether a call of a row may cross as a firing's look (thuum ADR-068 D-W2
+/// A; docs/research/fifty-fixes-2026-11-07.md section 7.2(b)): a trap family
+/// trigger's own call on itself during a firing its presser's owner
+/// started, reported from that seat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Look {
+    /// Never a look.
+    Never,
+    /// Its own channel first, then, from a seat that does not host the
+    /// subject's cell, the look channel (the six action rows).
+    Also,
+    /// The look channel alone (SetMotionType, ApplyHavokImpulse, Sound.Play).
+    Only,
+}
+
 /// A parameter's Papyrus type, as the platform reads the frame's variable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Param {
@@ -244,6 +301,8 @@ pub struct Row {
     pub relay: Relay,
     /// What the server keeps of one.
     pub keep: Keep,
+    /// Whether a call of it may cross as a firing's look.
+    pub look: Look,
     /// Its parameters in order (FunctionsDump.txt's types for the native).
     pub params: &'static [Param],
 }
@@ -441,7 +500,7 @@ fn nameable(id: u64) -> Option<u32> {
 pub fn subject_of(row: &Row, self_id: u32, args: &[Arg]) -> Option<u32> {
     match row.subject {
         Subject::SelfRef => nameable(u64::from(self_id)),
-        Subject::Arg0 => match args.first() {
+        Subject::Arg0 | Subject::Arg0Method => match args.first() {
             Some(Arg::Object(id)) => nameable(*id),
             _ => None,
         },
@@ -472,7 +531,7 @@ pub enum SubjectKind {
 }
 
 /// What the core knows of a reported call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Facts {
     /// The reporter's actor.
     pub sender: u32,
@@ -501,6 +560,18 @@ pub struct Facts {
     pub host: u32,
     /// That host's standing epoch.
     pub host_epoch: u32,
+    /// The reporter's game reports the subject's cell loaded (a look's
+    /// facts, gathered for a row with a look channel; false otherwise).
+    pub loader: bool,
+    /// How far the nearest of the reporter's actors (its player, or an
+    /// actor it simulates) stands from the subject, units (a look's facts,
+    /// wire-rules trigger_entry's firing reach); none when none stands in
+    /// the subject's cell or world, the server holds no reference of it, or
+    /// nothing was gathered.
+    pub nearest: Option<f32>,
+    /// The subject's size: the farthest point of its bounds, times its
+    /// scale (a look's facts).
+    pub subject_size: f32,
 }
 
 /// Why a reported call is refused.
@@ -515,6 +586,11 @@ pub enum Code {
     Owner,
     /// The reporter's budget is spent.
     Rate,
+    /// A look from a game with the subject's cell loaded, none of whose
+    /// actors stands within the subject's firing reach.
+    Far,
+    /// A look past the subject's look cap.
+    LookRate,
 }
 
 impl Code {
@@ -526,6 +602,8 @@ impl Code {
             Code::Args => "E_SCRIPTCALL_ARGS",
             Code::Owner => "E_SCRIPTCALL_OWNER",
             Code::Rate => "E_SCRIPTCALL_RATE",
+            Code::Far => "E_SCRIPTCALL_FAR",
+            Code::LookRate => "E_SCRIPTCALL_LOOK_RATE",
         }
     }
 }
@@ -565,6 +643,17 @@ pub struct Accept {
     /// a row kept as its subject's variable ([`Keep::Variable`]): the core
     /// keeps the call's name and value with `seq`; none for every other.
     pub variable_kind: Option<u8>,
+    /// Taken as a firing's look (thuum ADR-068 D-W2 A): relayed to the
+    /// subject's other listeners, or its cell's host alone, and kept
+    /// nowhere, `seq` 0 for a relay with no sequence
+    /// ([`Subject::Arg0Method`]'s).
+    pub look: bool,
+    /// The relay names the reporter's own player (0x14 among the call's
+    /// object arguments) as its figure, the reporter's actor, which each
+    /// receiving seat holds as the reporter's copy: a look's (D-W2 A,
+    /// CreateDetectionEvent's akOwner), since the relay never goes back to
+    /// the reporter.
+    pub figure_args: bool,
 }
 
 /// The rule's word on a reported call.
@@ -621,6 +710,14 @@ enum Channel {
     /// A state row the table keeps as its subject's record
     /// ([`Keep::Record`]).
     Record(RecordKind),
+    /// A row with the look channel alone ([`Look::Only`]), relayed as this
+    /// native.
+    Look {
+        /// The relay native's class.
+        cls: &'static str,
+        /// The relay native's name.
+        func: &'static str,
+    },
 }
 
 /// The channel a call of `row` leaves by: an action row the table relays to
@@ -628,6 +725,11 @@ enum Channel {
 /// subject's record; any other row is refused by its row
 /// (`E_SCRIPTCALL_ROW`).
 fn channel_of(row: &Row) -> Result<Channel, Refusal> {
+    if row.look == Look::Only {
+        // a row never relayed as an action crosses a look as the call itself
+        let (cls, func) = row.relay_target().unwrap_or((row.cls, row.func));
+        return Ok(Channel::Look { cls, func });
+    }
     match row.kind {
         Kind::Action => {}
         Kind::State => {
@@ -756,6 +858,11 @@ pub struct Shaped {
     row: Row,
     subject: u32,
     channel: Channel,
+    /// The method's own self for a [`Subject::Arg0Method`] row (the
+    /// message's selfId), carried to the relay; 0 for every other.
+    method_self: u32,
+    /// The shape step's clock, which a look's cap reads at the owner step.
+    now_ms: u64,
 }
 
 impl Shaped {
@@ -785,6 +892,82 @@ pub const BURST_RECORD: u32 = 128;
 /// How many record rows a second after their burst. UNMEASURED, as
 /// [`BURST_RECORD`].
 pub const PER_SECOND_RECORD: u32 = 32;
+
+/// How many looks one subject may take at once (thuum ADR-068 D-W2 A),
+/// beside the reporter's action budget. UNMEASURED: a firing read makes
+/// three or four (a Tripwire's motion, sound and animation; a bone alarm's
+/// motion, impulse, sound and animation; a plate's sound, 'Down' and 'Up').
+pub const LOOK_BURST: u32 = 8;
+
+/// How many looks a second one subject takes after its burst. UNMEASURED,
+/// as [`LOOK_BURST`].
+pub const LOOK_PER_SECOND: u32 = 2;
+
+/// The words a refusal adds for a placement the server holds no reference
+/// for.
+fn placed_of(facts: &Facts) -> &'static str {
+    if facts.kind == SubjectKind::Record {
+        BY_RECORD
+    } else {
+        ""
+    }
+}
+
+/// Whose word a call taken by [`look_owner`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LookSource {
+    /// The subject's cell's host at the epoch: an action row's own channel.
+    Host,
+    /// A game with the cell loaded one of whose actors stands by the
+    /// subject: a firing's look.
+    Firing,
+}
+
+/// The look channel's owner rule (thuum ADR-068 D-W2 A; wire-rules
+/// trigger_entry's firing_source over the call's own facts, as D-W1 judges a
+/// firing): the subject's cell's host at the epoch, judged at the epoch alone
+/// (ADR-066 decision 4: the host's report under another grant stays the
+/// own channel's refusal, never a look); any other seat with the cell loaded
+/// one of whose actors stands within the subject's firing reach. A seat with
+/// the cell unloaded keeps the own channel's refusal (`E_SCRIPTCALL_OWNER`);
+/// a loader with no actor by the subject is `E_SCRIPTCALL_FAR`, and a
+/// placement the server holds no reference for measures no reach, so only
+/// its host's word is taken.
+fn look_owner(facts: &Facts, placed: &str) -> Result<LookSource, Refusal> {
+    let host_refusal = match hosts_at_epoch(facts, facts.owner, facts.owner_epoch, placed) {
+        Ok(()) => return Ok(LookSource::Host),
+        Err(refused) => refused,
+    };
+    if facts.cell == 0 || (facts.owner != 0 && facts.owner == facts.sender) {
+        return Err(host_refusal);
+    }
+    let firing = trigger_entry::FiringFacts {
+        reporter: facts.sender,
+        cell: facts.cell,
+        host: facts.owner,
+        loader: facts.loader,
+        nearest: facts.nearest,
+        trigger_size: facts.subject_size,
+    };
+    match trigger_entry::firing_source(&firing) {
+        trigger_entry::FiringVerdict::Taken(_) => Ok(LookSource::Firing),
+        trigger_entry::FiringVerdict::Refuse(r) if r.code == trigger_entry::FiringCode::Far => {
+            let why = match facts.nearest.filter(|d| d.is_finite() && *d >= 0.0) {
+                Some(d) => format!(
+                    "a game with cell {:x} loaded whose nearest actor stands {d:.0} units off the subject, the firing reach {:.0}{placed}",
+                    facts.cell,
+                    trigger_entry::firing_reach(d, facts.subject_size).bound
+                ),
+                None if facts.kind == SubjectKind::Record => {
+                    format!("a game with cell {:x} loaded, and no reference of the server's to measure its reach from, so only the host's word is taken{placed}", facts.cell)
+                }
+                None => format!("a game with cell {:x} loaded none of whose actors stands where the subject does{placed}", facts.cell),
+            };
+            Err(refusal(Code::Far, why))
+        }
+        trigger_entry::FiringVerdict::Refuse(_) => Err(host_refusal),
+    }
+}
 
 /// One reporter's budget: a token bucket on the caller's monotonic clock,
 /// `burst` at once and `per_second` after (the actions' [`BURST`] and
@@ -834,6 +1017,8 @@ impl Bucket {
 pub struct ScriptCalls {
     budgets: HashMap<u32, Bucket>,
     record_budgets: HashMap<u32, Bucket>,
+    /// Each subject's look cap (thuum ADR-068 D-W2 A), by its form id.
+    look_budgets: HashMap<u32, Bucket>,
     seqs: HashMap<u32, u32>,
 }
 
@@ -869,10 +1054,21 @@ impl ScriptCalls {
         let Some(subject) = subject_of(row, self_id, args) else {
             return Err(refusal(Code::Args, format!("no subject the reporter may name (selfId {self_id:x})")));
         };
-        if subject != self_id {
-            return Err(refusal(Code::Args, format!("selfId {self_id:x} is not the call's subject {subject:x}")));
-        }
-        Ok(Shaped { row: *row, subject, channel })
+        // a method whose subject is its first argument names its own self
+        // apart (Sound.Play: the Sound), a form the reporter may name and
+        // never its own player
+        let method_self = if row.subject == Subject::Arg0Method {
+            match nameable(u64::from(self_id)) {
+                Some(own) if own != OWN_PLAYER => own,
+                _ => return Err(refusal(Code::Args, format!("no method self the reporter may name (selfId {self_id:x})"))),
+            }
+        } else {
+            if subject != self_id {
+                return Err(refusal(Code::Args, format!("selfId {self_id:x} is not the call's subject {subject:x}")));
+            }
+            0
+        };
+        Ok(Shaped { row: *row, subject, channel, method_self, now_ms })
     }
 
     /// The owner step on a call the shape step passed, over the `facts` the
@@ -885,13 +1081,30 @@ impl ScriptCalls {
     /// subject's record is judged by [`record_owner`] and recorded
     /// ([`Verdict::Record`]) with the subject's next sequence.
     pub fn owner(&mut self, shaped: Shaped, facts: &Facts) -> Verdict {
-        let Shaped { row, subject, channel } = shaped;
+        let Shaped { row, subject, channel, method_self, now_ms } = shaped;
         let (relay_cls, relay_fn) = match channel {
             Channel::Relay { cls, func } => (cls, func),
             Channel::Evidence => return keep_evidence(subject, facts),
             Channel::Record(kind) => {
                 return match record_owner(subject, kind, facts) {
                     Ok(()) => Verdict::Record { subject, seq: self.next_seq(subject), kind },
+                    Err(refused) => Verdict::Refuse(refused),
+                };
+            }
+            Channel::Look { cls, func } => {
+                // a look-only row: a trigger's own call on a world object
+                match facts.kind {
+                    SubjectKind::WorldObject | SubjectKind::Record => {}
+                    SubjectKind::Actor if subject == OWN_PLAYER => {
+                        return refuse(Code::Row, "the subject is the reporter's own player: a look is a trigger's own call on a world object".to_owned());
+                    }
+                    SubjectKind::Actor | SubjectKind::DoorOrContainer => {
+                        return refuse(Code::Row, "the subject is an actor, a door or a container: a look is a trigger's own call on a world object".to_owned());
+                    }
+                    SubjectKind::Unknown => return refuse(Code::Owner, "the server holds no such reference".to_owned()),
+                }
+                return match look_owner(facts, placed_of(facts)) {
+                    Ok(_) => self.look(row, subject, method_self, cls, func, now_ms),
                     Err(refused) => Verdict::Refuse(refused),
                 };
             }
@@ -904,8 +1117,16 @@ impl ScriptCalls {
         }
         // a placement the server holds no reference for says so in each
         // refusal, so a reader asks its record's cell, not the loader
-        let placed = if facts.kind == SubjectKind::Record { BY_RECORD } else { "" };
-        if let Err(refused) = hosts_at_epoch(facts, facts.owner, facts.owner_epoch, placed) {
+        let placed = placed_of(facts);
+        if row.look == Look::Also {
+            // the action's own channel first (the cell's host at the epoch),
+            // then the look channel from a seat that does not host the cell
+            match look_owner(facts, placed) {
+                Ok(LookSource::Host) => {}
+                Ok(LookSource::Firing) => return self.look(row, subject, method_self, relay_cls, relay_fn, now_ms),
+                Err(refused) => return Verdict::Refuse(refused),
+            }
+        } else if let Err(refused) = hosts_at_epoch(facts, facts.owner, facts.owner_epoch, placed) {
             return Verdict::Refuse(refused);
         }
         let seq = self.next_seq(subject);
@@ -920,6 +1141,47 @@ impl ScriptCalls {
             keep: row.keep,
             graph_event_arg: row.graph_event_arg(),
             variable_kind: row.variable_kind(),
+            look: false,
+            figure_args: false,
+        })
+    }
+
+    /// A call taken as a firing's look (thuum ADR-068 D-W2 A) after its
+    /// owner rule: the subject's look cap spent, then relayed as
+    /// `cls`.`func` (the row's twin's arguments, or every argument) to the
+    /// subject's other listeners, or to its cell's host alone for a row whose
+    /// audience is the host (CreateDetectionEvent's: the NPCs' simulator),
+    /// the reporter's own player among its object arguments named as its
+    /// figure, with the subject's next sequence, or none for a
+    /// [`Subject::Arg0Method`] row (its self is the method's own, shared by
+    /// many triggers), and kept nowhere.
+    fn look(&mut self, row: Row, subject: u32, method_self: u32, cls: &'static str, func: &'static str, now_ms: u64) -> Verdict {
+        if !self.look_budgets.entry(subject).or_insert_with(|| Bucket::full(LOOK_BURST, now_ms)).take(LOOK_BURST, LOOK_PER_SECOND, now_ms) {
+            return refuse(Code::LookRate, format!("past the subject's look cap, {LOOK_BURST} at once and {LOOK_PER_SECOND} a second"));
+        }
+        let relay_args = match row.relay {
+            Relay::Twin { args, .. } => args,
+            Relay::Same | Relay::Never => EVERY_ARG.get(..row.params.len()).unwrap_or(&[]),
+        };
+        let (seq, relay_self) = match row.subject {
+            Subject::SelfRef => (self.next_seq(subject), subject),
+            Subject::Arg0 => (self.next_seq(subject), 0),
+            Subject::Arg0Method => (0, method_self),
+            Subject::Nothing => (self.next_seq(subject), 0),
+        };
+        Verdict::Accept(Accept {
+            subject,
+            seq,
+            relay_cls: cls,
+            relay_fn: func,
+            relay_args,
+            relay_self,
+            audience: if row.audience == Audience::Host { Audience::Host } else { Audience::Listeners },
+            keep: Keep::Nothing,
+            graph_event_arg: None,
+            variable_kind: None,
+            look: true,
+            figure_args: true,
         })
     }
 
@@ -1002,6 +1264,7 @@ mod tests {
             let subject = match row.subject {
                 Subject::SelfRef => "NativeSubject::Self",
                 Subject::Arg0 => "NativeSubject::Arg0",
+                Subject::Arg0Method => "NativeSubject::Arg0Method",
                 Subject::Nothing => "NativeSubject::None",
             };
             assert_eq!(*subject_field, subject, "{line}");
@@ -1015,7 +1278,7 @@ mod tests {
     }
 
     fn hosted(self_id: u32) -> Facts {
-        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::WorldObject, cell: TEMPLE, owner: HOST, owner_epoch: 3, host: 0, host_epoch: 0 }
+        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::WorldObject, cell: TEMPLE, owner: HOST, owner_epoch: 3, host: 0, host_epoch: 0, loader: false, nearest: None, subject_size: 0.0 }
     }
 
     fn accepted(v: &Verdict) -> Accept {
@@ -1403,6 +1666,8 @@ mod tests {
         assert_eq!(Code::Args.name(), "E_SCRIPTCALL_ARGS");
         assert_eq!(Code::Owner.name(), "E_SCRIPTCALL_OWNER");
         assert_eq!(Code::Rate.name(), "E_SCRIPTCALL_RATE");
+        assert_eq!(Code::Far.name(), "E_SCRIPTCALL_FAR");
+        assert_eq!(Code::LookRate.name(), "E_SCRIPTCALL_LOOK_RATE");
     }
 
     #[test]
@@ -1415,16 +1680,32 @@ mod tests {
         assert_eq!(send.and_then(|r| subject_of(r, 0, &[Arg::Object(u64::from(PILLAR)), Arg::String])), Some(PILLAR));
         assert_eq!(send.and_then(|r| subject_of(r, 0, &[Arg::Object(0x1_0000_0000), Arg::String])), None);
         assert_eq!(send.and_then(|r| subject_of(r, 0, &[Arg::String, Arg::String])), None);
+        // a method whose subject is its first argument (Sound.Play's source),
+        // whatever its own self
+        let sound = row("Sound", "Play");
+        assert_eq!(sound.and_then(|r| subject_of(r, 0x1d492, &[Arg::Object(u64::from(PILLAR))])), Some(PILLAR));
+        assert_eq!(sound.and_then(|r| subject_of(r, 0x1d492, &[Arg::Absent])), None);
     }
 
     #[test]
     fn the_table_is_rung_fours_and_holds_together() {
         // the six action rows, the flip's twenty-four, Game.GetPlayer, D-S3's
-        // three trap rows, and rung 4's seven (the standing's six and
-        // ReferenceAlias.Clear): "41 of 41 table rows bound"
-        assert_eq!(TABLE.len(), 41);
+        // three trap rows, rung 4's seven (the standing's six and
+        // ReferenceAlias.Clear) and D-W2's Sound.Play and
+        // CreateDetectionEvent: "43 of 43 table rows bound"
+        assert_eq!(TABLE.len(), 43);
         let actions: Vec<&str> = TABLE.iter().filter(|r| r.kind == Kind::Action).map(|r| r.func).collect();
-        assert_eq!(actions, ["PlayAnimation", "PlayAnimationAndWait", "SendAnimationEvent", "SetAnimationVariableBool", "SetAnimationVariableInt", "SetAnimationVariableFloat"]);
+        assert_eq!(actions, ["PlayAnimation", "PlayAnimationAndWait", "SendAnimationEvent", "SetAnimationVariableBool", "SetAnimationVariableInt", "SetAnimationVariableFloat", "Play", "CreateDetectionEvent"]);
+        // D-W2 A's look column: the six action rows also, the two motion rows
+        // and the sound alone, every other row never
+        let looks = |look: Look| -> Vec<String> { TABLE.iter().filter(|r| r.look == look).map(|r| format!("{}.{}", r.cls, r.func)).collect() };
+        assert_eq!(looks(Look::Also), ["ObjectReference.PlayAnimation", "ObjectReference.PlayAnimationAndWait", "Debug.SendAnimationEvent", "ObjectReference.SetAnimationVariableBool", "ObjectReference.SetAnimationVariableInt", "ObjectReference.SetAnimationVariableFloat"]);
+        assert_eq!(looks(Look::Only), ["ObjectReference.SetMotionType", "ObjectReference.ApplyHavokImpulse", "Sound.Play", "ObjectReference.CreateDetectionEvent"]);
+        assert_eq!(row_index("Sound", "Play"), Some(41));
+        assert_eq!(row_index("ObjectReference", "CreateDetectionEvent"), Some(42));
+        // one row goes to the cell's host alone: the detection event
+        let to_host: Vec<&str> = TABLE.iter().filter(|r| r.audience == Audience::Host).map(|r| r.func).collect();
+        assert_eq!(to_host, ["CreateDetectionEvent"]);
         for (i, r) in TABLE.iter().enumerate() {
             let name = format!("{}.{}", r.cls, r.func);
             // one row per pair, names compared without case
@@ -1433,7 +1714,8 @@ mod tests {
             // an action row relays to the subject's listeners, its twin's
             // arguments among the call's; every other row is never relayed
             if r.kind == Kind::Action {
-                assert!(r.relay_target().is_some() && r.audience == Audience::Listeners && r.owner == Owner::CellHost, "{name}");
+                let audience = r.audience == Audience::Listeners || (r.look == Look::Only && r.audience == Audience::Host);
+                assert!(r.relay_target().is_some() && audience && r.owner == Owner::CellHost, "{name}");
                 assert!(r.relay_args().iter().all(|&a| usize::from(a) < r.params.len()), "{name}");
             } else if r.keep == Keep::Evidence {
                 // a row kept as evidence is an actor's state row, its
@@ -1452,9 +1734,15 @@ mod tests {
             } else {
                 assert_eq!((r.relay, r.keep), (Relay::Never, Keep::Nothing), "{name}");
             }
-            // a static native's subject is its first argument, an object
-            if r.subject == Subject::Arg0 {
+            // a static native's subject is its first argument, an object, and
+            // so is a method's whose self is another form (Sound.Play's source)
+            if matches!(r.subject, Subject::Arg0 | Subject::Arg0Method) {
                 assert_eq!(r.params.first(), Some(&Param::Object), "{name}");
+            }
+            // a look-only row is on a world object's own call: an action row's
+            // shape or a trap row's state, never kept
+            if r.look == Look::Only {
+                assert_eq!((r.keep, r.owner == Owner::Simulator), (Keep::Nothing, false), "{name}");
             }
             // a kept row keeps a graph event
             if r.keep == Keep::Last {
@@ -1511,7 +1799,7 @@ mod tests {
     // the draugr in the temple, simulated by the host (its cell's), the
     // reporter
     fn simulated(self_id: u32) -> Facts {
-        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: HOST, owner_epoch: 0, host: HOST, host_epoch: 3 }
+        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: HOST, owner_epoch: 0, host: HOST, host_epoch: 3, loader: false, nearest: None, subject_size: 0.0 }
     }
 
     #[test]
@@ -1590,7 +1878,7 @@ mod tests {
 
     // an actor nobody simulates, its cell's host at epoch 3 the reporter
     fn unsimulated(self_id: u32) -> Facts {
-        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: 0, owner_epoch: 0, host: HOST, host_epoch: 3 }
+        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: 0, owner_epoch: 0, host: HOST, host_epoch: 3, loader: false, nearest: None, subject_size: 0.0 }
     }
 
     #[test]
@@ -1746,5 +2034,240 @@ mod tests {
         // each reporter's own
         let other = Facts { sender: GUEST, owner: GUEST, ..f };
         assert!(matches!(s.judge(disable, &[Arg::Bool], &other, 1_063), Verdict::Record { .. }));
+    }
+
+    // thuum ADR-068 D-W2 A (the look channel; docs/research/
+    // fifty-fixes-2026-11-07.md section 7.2(b)): Bleak Falls Temple's plate
+    // 0x567f2 (PressurePlate: TriggerSound.Play(self), then 'Down') and
+    // Embershard's tripwire 0xb6d3f (Tripwire: SetMotionType(self, 1, true)
+    // before its own Activate) with its sound TRPTripwire 0x1d492 (the census,
+    // docs/research/trap-census-2026-11-05.md); the guest's game has the cell
+    // loaded, its player 40 units off the trigger (a stand-in size of 64:
+    // the firing reach is 452 + 64 + 512)
+    mod look {
+        use super::super::*;
+        use super::{accepted, code, hosted, row, GUEST, HOST, TEMPLE};
+        use proptest::prelude::*;
+
+        const PLATE: u32 = 0x567f2;
+        const TRIPWIRE: u32 = 0xb6d3f;
+        const TRIP_SOUND: u32 = 0x1d492;
+
+        /// The guest's game, the cell loaded, its player by `subject`.
+        fn guest_by(subject: u32) -> Facts {
+            Facts { sender: GUEST, loader: true, nearest: Some(40.0), subject_size: 64.0, ..hosted(subject) }
+        }
+
+        fn refused(v: Verdict) -> (Code, String) {
+            match v {
+                Verdict::Refuse(r) => (r.code, r.why),
+                other => panic!("not refused: {other:?}"),
+            }
+        }
+
+        #[test]
+        fn a_guests_action_row_by_the_trigger_is_its_firings_look_kept_nowhere() {
+            let mut s = ScriptCalls::default();
+            let play = row("ObjectReference", "PlayAnimation");
+            let a = accepted(&s.judge(play, &[Arg::String], &guest_by(PLATE), 0));
+            assert!(a.look);
+            assert_eq!((a.subject, a.seq, a.relay_self), (PLATE, 1, PLATE));
+            assert_eq!((a.relay_cls, a.relay_fn, a.relay_args), ("ObjectReference", "PlayAnimation", &[0u8][..]));
+            // kept nowhere: no lastAnimation, no variable, no "animates" line
+            assert_eq!((a.audience, a.keep, a.graph_event_arg, a.variable_kind), (Audience::Listeners, Keep::Nothing, None, None));
+            // the twin's relay and its arguments, as the action's own channel
+            let wait = row("ObjectReference", "PlayAnimationAndWait");
+            let w = accepted(&s.judge(wait, &[Arg::String, Arg::String], &guest_by(PLATE), 0));
+            assert_eq!((w.look, w.relay_fn, w.relay_args, w.seq), (true, "PlayAnimation", &[0u8][..], 2));
+            // a variable row's look keeps no variable either
+            let blend = row("ObjectReference", "SetAnimationVariableFloat");
+            let v = accepted(&s.judge(blend, &[Arg::String, Arg::Number], &guest_by(PLATE), 0));
+            assert_eq!((v.look, v.keep, v.variable_kind, v.seq), (true, Keep::Nothing, None, 3));
+            // nobody hosting the cell: the presser's owner fired it all the same
+            let unhosted = Facts { owner: 0, owner_epoch: 3, ..guest_by(PLATE) };
+            assert!(accepted(&s.judge(play, &[Arg::String], &unhosted, 0)).look);
+        }
+
+        #[test]
+        fn the_cells_host_at_the_epoch_keeps_its_own_channel_and_another_epoch_is_refused() {
+            let mut s = ScriptCalls::default();
+            let play = row("ObjectReference", "PlayAnimation");
+            // the host's action: its own channel, kept as before
+            let a = accepted(&s.judge(play, &[Arg::String], &hosted(PLATE), 0));
+            assert_eq!((a.look, a.keep, a.graph_event_arg, a.seq), (false, Keep::Last, Some(0), 1));
+            // under another grant: the own channel's refusal, never a look,
+            // though its game has the cell loaded and its player stands there
+            let stale = Facts { epoch: 2, loader: true, nearest: Some(10.0), ..hosted(PLATE) };
+            assert_eq!(refused(s.judge(play, &[Arg::String], &stale, 0)), (Code::Owner, "cell 371de stands at epoch 3, the report names 2".to_owned()));
+            // a look takes the object's next sequence, one per object
+            assert_eq!(accepted(&s.judge(play, &[Arg::String], &guest_by(PLATE), 0)).seq, 2);
+        }
+
+        #[test]
+        fn a_guest_without_the_cell_or_far_from_the_trigger_is_refused_by_name() {
+            let mut s = ScriptCalls::default();
+            let play = row("ObjectReference", "PlayAnimation");
+            // the cell unloaded: the own channel's refusal stands
+            let unloaded = Facts { loader: false, ..guest_by(PLATE) };
+            assert_eq!(refused(s.judge(play, &[Arg::String], &unloaded, 0)), (Code::Owner, "ff000000 hosts cell 371de, not the reporter".to_owned()));
+            // loaded, its nearest actor across the temple
+            let far = Facts { nearest: Some(5281.4), ..guest_by(PLATE) };
+            assert_eq!(
+                refused(s.judge(play, &[Arg::String], &far, 0)),
+                (Code::Far, "a game with cell 371de loaded whose nearest actor stands 5281 units off the subject, the firing reach 1028".to_owned())
+            );
+            let nowhere = Facts { nearest: None, ..guest_by(PLATE) };
+            assert_eq!(refused(s.judge(play, &[Arg::String], &nowhere, 0)), (Code::Far, "a game with cell 371de loaded none of whose actors stands where the subject does".to_owned()));
+            // a placement the server holds no reference for measures no reach
+            let placed = Facts { kind: SubjectKind::Record, nearest: None, ..guest_by(PLATE) };
+            assert_eq!(
+                refused(s.judge(play, &[Arg::String], &placed, 0)),
+                (Code::Far, format!("a game with cell 371de loaded, and no reference of the server's to measure its reach from, so only the host's word is taken{BY_RECORD}"))
+            );
+            // a door's action is still dropped quietly, before any look
+            let door = Facts { kind: SubjectKind::DoorOrContainer, ..guest_by(0x371e9) };
+            assert_eq!(s.judge(play, &[Arg::String], &door, 0), Verdict::Skip);
+            // and no refusal took a sequence
+            assert_eq!(s.seq_of(PLATE), 0);
+        }
+
+        #[test]
+        fn a_look_only_row_crosses_as_itself_from_the_host_or_the_firings_seat() {
+            let mut s = ScriptCalls::default();
+            let motion = row("ObjectReference", "SetMotionType");
+            let args = [Arg::Number, Arg::Bool];
+            // the tripwire's rope from the guest that tripped it
+            let a = accepted(&s.judge(motion, &args, &guest_by(TRIPWIRE), 0));
+            assert_eq!((a.look, a.subject, a.seq, a.relay_self), (true, TRIPWIRE, 1, TRIPWIRE));
+            assert_eq!((a.relay_cls, a.relay_fn, a.relay_args, a.keep), ("ObjectReference", "SetMotionType", &[0u8, 1][..], Keep::Nothing));
+            // the host's own at the epoch is a look as well (no own channel)
+            assert!(accepted(&s.judge(motion, &args, &hosted(TRIPWIRE), 0)).look);
+            let impulse = row("ObjectReference", "ApplyHavokImpulse");
+            let i = accepted(&s.judge(impulse, &[Arg::Number, Arg::Number, Arg::Number, Arg::Number], &guest_by(TRIPWIRE), 0));
+            assert_eq!((i.look, i.relay_fn, i.relay_args), (true, "ApplyHavokImpulse", &[0u8, 1, 2, 3][..]));
+            // a look-only row on an actor, a door or a container, the
+            // reporter's own player among them, is refused by its row
+            for kind in [SubjectKind::Actor, SubjectKind::DoorOrContainer] {
+                assert_eq!(code(&s.judge(motion, &args, &Facts { kind, ..guest_by(TRIPWIRE) }, 0)), Some(Code::Row), "{kind:?}");
+            }
+            let own = Facts { self_id: OWN_PLAYER, kind: SubjectKind::Actor, ..guest_by(OWN_PLAYER) };
+            assert_eq!(refused(s.judge(motion, &args, &own, 0)).0, Code::Row);
+            assert_eq!(code(&s.judge(motion, &args, &Facts { kind: SubjectKind::Unknown, ..guest_by(TRIPWIRE) }, 0)), Some(Code::Owner));
+            // the guest's game without the cell, and the host under another
+            // grant, keep the owner's refusal
+            assert_eq!(code(&s.judge(motion, &args, &Facts { loader: false, ..guest_by(TRIPWIRE) }, 0)), Some(Code::Owner));
+            assert_eq!(code(&s.judge(motion, &args, &Facts { epoch: 2, loader: true, nearest: Some(0.0), ..hosted(TRIPWIRE) }, 0)), Some(Code::Owner));
+            // SetOpen has no look: a state row with no channel, as before
+            assert_eq!(code(&s.judge(row("ObjectReference", "SetOpen"), &[Arg::Bool], &guest_by(TRIPWIRE), 0)), Some(Code::Row));
+        }
+
+        #[test]
+        fn the_sound_is_its_sources_look_relayed_on_the_sound_with_no_sequence() {
+            let mut s = ScriptCalls::default();
+            let play = row("Sound", "Play");
+            // TriggerSound.Play(self): the selfId is the Sound, the subject the
+            // source, the tripwire
+            let source = [Arg::Object(u64::from(TRIPWIRE))];
+            let facts = Facts { self_id: TRIP_SOUND, ..guest_by(TRIPWIRE) };
+            let a = accepted(&s.judge(play, &source, &facts, 0));
+            assert_eq!((a.look, a.subject, a.relay_self, a.seq), (true, TRIPWIRE, TRIP_SOUND, 0));
+            assert_eq!((a.relay_cls, a.relay_fn, a.relay_args, a.keep), ("Sound", "Play", &[0u8][..], Keep::Nothing));
+            // no sequence taken: the Sound is shared by many triggers
+            assert_eq!(s.seq_of(TRIPWIRE), 0);
+            assert_eq!(s.seq_of(TRIP_SOUND), 0);
+            // the method's self must be a form the reporter may name, never
+            // its own player; the source an object it may name
+            assert_eq!(code(&s.judge(play, &source, &Facts { self_id: 0, ..facts }, 0)), Some(Code::Args));
+            assert_eq!(code(&s.judge(play, &source, &Facts { self_id: OWN_PLAYER, ..facts }, 0)), Some(Code::Args));
+            assert_eq!(code(&s.judge(play, &[Arg::Absent], &facts, 0)), Some(Code::Args));
+            // the reporter's own player as the source: an actor, refused by
+            // the row
+            let own = Facts { kind: SubjectKind::Actor, ..facts };
+            assert_eq!(code(&s.judge(play, &[Arg::Object(u64::from(OWN_PLAYER))], &own, 0)), Some(Code::Row));
+        }
+
+        #[test]
+        fn a_subjects_looks_are_capped_eight_at_once_then_two_a_second() {
+            let mut s = ScriptCalls::default();
+            let play = row("ObjectReference", "PlayAnimation");
+            for i in 0..LOOK_BURST {
+                assert!(accepted(&s.judge(play, &[Arg::String], &guest_by(PLATE), 0)).look, "look {i}");
+            }
+            assert_eq!(
+                refused(s.judge(play, &[Arg::String], &guest_by(PLATE), 0)),
+                (Code::LookRate, "past the subject's look cap, 8 at once and 2 a second".to_owned())
+            );
+            // another trigger's cap is its own
+            assert!(accepted(&s.judge(play, &[Arg::String], &guest_by(TRIPWIRE), 0)).look);
+            // the host's own action spends no look cap
+            assert!(!accepted(&s.judge(play, &[Arg::String], &hosted(PLATE), 0)).look);
+            // a refused look spends none: half a second on, one token back
+            assert_eq!(code(&s.judge(play, &[Arg::String], &Facts { nearest: Some(9000.0), ..guest_by(PLATE) }, 500)), Some(Code::Far));
+            assert!(accepted(&s.judge(play, &[Arg::String], &guest_by(PLATE), 500)).look);
+            assert_eq!(code(&s.judge(play, &[Arg::String], &guest_by(PLATE), 500)), Some(Code::LookRate));
+            assert_eq!((LOOK_BURST, LOOK_PER_SECOND), (8, 2));
+        }
+
+        #[test]
+        fn a_detection_event_is_the_firings_look_for_the_cells_host_alone() {
+            // SoundTrap's CreateDetectionEvent(lastTriggerRef, soundLevel) on
+            // the bone alarm 0x10481e, the guest's own player its owner
+            const BONE_ALARM: u32 = 0x10481e;
+            let mut s = ScriptCalls::default();
+            let detect = row("ObjectReference", "CreateDetectionEvent");
+            let args = [Arg::Object(u64::from(OWN_PLAYER)), Arg::Number];
+            let a = accepted(&s.judge(detect, &args, &guest_by(BONE_ALARM), 0));
+            assert_eq!((a.look, a.subject, a.relay_self, a.seq), (true, BONE_ALARM, BONE_ALARM, 1));
+            assert_eq!((a.relay_cls, a.relay_fn, a.relay_args), ("ObjectReference", "CreateDetectionEvent", &[0u8, 1][..]));
+            // the host alone, the reporter's own player named as its figure
+            assert_eq!((a.audience, a.figure_args, a.keep), (Audience::Host, true, Keep::Nothing));
+            // every other look goes to the listeners, its own player mapped too
+            let play = accepted(&s.judge(row("ObjectReference", "PlayAnimation"), &[Arg::String], &guest_by(BONE_ALARM), 0));
+            assert_eq!((play.audience, play.figure_args), (Audience::Listeners, true));
+            // the action's own channel maps nothing, as before
+            let own = accepted(&s.judge(row("ObjectReference", "PlayAnimation"), &[Arg::String], &hosted(BONE_ALARM), 0));
+            assert_eq!((own.look, own.figure_args), (false, false));
+            // the firing's rule judges it: far, or the cell unloaded, refused
+            assert_eq!(code(&s.judge(detect, &args, &Facts { nearest: Some(4000.0), ..guest_by(BONE_ALARM) }, 0)), Some(Code::Far));
+            assert_eq!(code(&s.judge(detect, &args, &Facts { loader: false, ..guest_by(BONE_ALARM) }, 0)), Some(Code::Owner));
+            // its owner argument is an actor or None, of the row's kinds
+            assert!(code(&s.judge(detect, &[Arg::Absent, Arg::Number], &guest_by(BONE_ALARM), 0)).is_none());
+            assert_eq!(code(&s.judge(detect, &[Arg::String, Arg::Number], &guest_by(BONE_ALARM), 0)), Some(Code::Args));
+        }
+
+        proptest! {
+            #[test]
+            fn a_look_is_the_hosts_at_the_epoch_or_a_near_loaders_and_nothing_else(
+                sender in prop_oneof![Just(HOST), Just(GUEST)],
+                owner in prop_oneof![Just(0u32), Just(HOST), Just(GUEST)],
+                epoch in 2u32..5,
+                cell in prop_oneof![Just(0u32), Just(TEMPLE)],
+                loader in any::<bool>(),
+                nearest in prop_oneof![Just(None), (0.0f32..3000.0).prop_map(Some), Just(Some(f32::NAN))],
+                record in any::<bool>(),
+            ) {
+                let mut s = ScriptCalls::default();
+                let kind = if record { SubjectKind::Record } else { SubjectKind::WorldObject };
+                let facts = Facts { sender, epoch, kind, cell, owner, owner_epoch: 3, loader, nearest, subject_size: 64.0, ..hosted(TRIPWIRE) };
+                let host_at_epoch = cell != 0 && owner != 0 && owner == sender && epoch == 3;
+                let near = nearest.is_some_and(|d| crate::trigger_entry::firing_reach(d, 64.0).allowed);
+                let firing = cell != 0 && !(owner != 0 && owner == sender) && loader && near;
+                match s.judge(row("ObjectReference", "SetMotionType"), &[Arg::Number, Arg::Bool], &facts, 0) {
+                    Verdict::Accept(a) => {
+                        prop_assert!(a.look && a.keep == Keep::Nothing);
+                        prop_assert!(host_at_epoch || firing);
+                    }
+                    Verdict::Refuse(r) => {
+                        prop_assert!(!host_at_epoch && !firing);
+                        match r.code {
+                            Code::Far => prop_assert!(cell != 0 && owner != sender && loader && !near),
+                            Code::Owner => prop_assert!(cell == 0 || (owner != 0 && owner == sender) || !loader),
+                            other => prop_assert!(false, "unexpected {:?}", other),
+                        }
+                    }
+                    other => prop_assert!(false, "unexpected {:?}", other),
+                }
+            }
+        }
     }
 }

@@ -515,6 +515,33 @@ TEST_CASE("A death the trap's own notes explain keeps their line beside a "
   Leave(p);
 }
 
+TEST_CASE("A reanimated body's death beside a trap's hit keeps the "
+          "reanimation's end",
+          "[TrapKill][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& draugr = Enter(p);
+  p.worldState.GetFormAt<MpObjectReference>(kBlade);
+  // no place note (the box never fired here); the blade's hit 5 s ago and a
+  // reanimate accepted 45 s ago, its body stood up by its host 40 s ago
+  // (ActorDeathTest's reanimation case): the reanimation's end is read
+  // before the trap's hit, so its line stays as it was
+  const auto now = std::chrono::steady_clock::now();
+  p.GetActionListener().NoteTrapHit(draugr, kBlade,
+                                    now - std::chrono::seconds(5));
+  draugr.NoteReanimateAccepted(now - std::chrono::seconds(45));
+  draugr.NoteHostStoodUp(now - std::chrono::seconds(40));
+  {
+    LogCapture log;
+    ReportDeath(p, kDraugr, draugr.GetPos());
+    REQUIRE(
+      log.Count("the reanimation's end: its host's engine stood it up ") == 1);
+    REQUIRE(log.Count(" hit it ") == 0);
+  }
+  REQUIRE(draugr.IsDead());
+  Leave(p);
+}
+
 TEST_CASE("A guest's report of a trap's hit and a hit on the reporter's own "
           "player are refused and note nothing",
           "[TrapKill][espm]")

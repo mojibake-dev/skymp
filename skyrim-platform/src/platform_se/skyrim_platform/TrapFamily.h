@@ -47,6 +47,12 @@ bool IsFamilyType(const RE::BSScript::ObjectTypeInfo* info);
 // reference or a handle with no attached script. The VM's attached scripts
 // are read under the VM's own lock, the gate's walk
 bool IsFamily(const RE::TESObjectREFR* ref, RE::VMHandle handle);
+// a trap's trigger: a script attached to the handle reaches TrapTriggerBase
+// in its parent chain (the per-class verdict IsFamilyType keeps, getTrapRole's
+// trigger); false for a handle with no attached script. Read under the VM's
+// own lock, the gate's walk. D-W2 A's firing window opens for a trigger alone
+// (D-W2's fresh review, note 1)
+bool IsTrigger(RE::VMHandle handle);
 // the reference's destroyed flag (TESForm's kDestroyed, the bit
 // ObjectReference.SetDestroyed sets and clears)
 bool Destroyed(const RE::TESObjectREFR* ref);

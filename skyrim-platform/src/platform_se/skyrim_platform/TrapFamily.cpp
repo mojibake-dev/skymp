@@ -334,6 +334,15 @@ bool TrapFamily::IsFamily(const RE::TESObjectREFR* ref, RE::VMHandle handle)
   return any && every;
 }
 
+bool TrapFamily::IsTrigger(RE::VMHandle handle)
+{
+  bool trigger = false;
+  ForEachAttached(handle, [&](RE::BSScript::Object* script) {
+    trigger = trigger || (script && VerdictOf(script->GetTypeInfo()).trigger);
+  });
+  return trigger;
+}
+
 // TESForm::RecordFlags::kDestroyed on formFlags (CommonLibSSE-NG
 // include/RE/T/TESForm.h:91, the accessor at :287). ObjectReference's
 // SetDestroyed native sets and clears that bit and nothing else of the

@@ -247,6 +247,25 @@ public:
   std::vector<QuestStageDone> GetQuestStages();
   bool SetQuestStages(std::vector<QuestStageDone> stages);
 
+  // thuum ADR-068 rung 4 (amendment B, read 8; docs/research/
+  // rung4-state-rows-2026-11-07.md section 1(c), the created half): an alias
+  // that creates its reference in another alias's inventory (QUST ALCO, ALCA
+  // "in") puts one item in that container when its quest fills, which no
+  // seat reports, so the server adds it, R0 from the game files: the
+  // container resolved by the target alias's forced reference (ALFR) or
+  // unique actor (ALUA), each item added once (the journal's aliasFills
+  // marks), so a take, a second load or a restart never adds it again
+  // (MS13's GoldenClaw 0x39647 and ArvelsJournal 0x39654 in Arvel 0x39655).
+  // AddCreatedItems: a game-file reference just attached (WorldState's
+  // onAttach), for a start-game-enabled quest's creation, or one whose quest
+  // has a recorded stage. AddCreatedItemsOfQuest: a quest's first recorded
+  // stage, for its creations' containers already attached. Each returns the
+  // items added.
+  size_t AddCreatedItems(MpObjectReference& container);
+  size_t AddCreatedItemsOfQuest(uint32_t questId);
+  std::vector<MpChangeFormREFR::AliasFill> GetAliasFills();
+  bool SetAliasFills(std::vector<MpChangeFormREFR::AliasFill> fills);
+
   // thuum docs/verbs/spell-placed-object.md (ADR-057): the objects the
   // server places at an accepted cast of a listed spell,
   // server-settings.json's `spellPlacedObjects` (a JSON list, "[]" for

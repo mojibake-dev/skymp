@@ -1684,6 +1684,42 @@ bool MpObjectReference::SetQuestStages(std::vector<QuestStageDone> stages)
   return true;
 }
 
+std::vector<MpChangeFormREFR::AliasFill> MpObjectReference::GetAliasFills()
+  const
+{
+  const auto& fills = ChangeForm().aliasFills;
+  return fills ? *fills : std::vector<MpChangeFormREFR::AliasFill>();
+}
+
+bool MpObjectReference::SetAliasFills(
+  std::vector<MpChangeFormREFR::AliasFill> fills)
+{
+  if (fills == GetAliasFills()) {
+    return false;
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    changeForm.aliasFills = std::move(fills);
+  });
+  return true;
+}
+
+std::vector<PlayerGlobal> MpObjectReference::GetWorldGlobals() const
+{
+  const auto& globals = ChangeForm().worldGlobals;
+  return globals ? *globals : std::vector<PlayerGlobal>();
+}
+
+bool MpObjectReference::SetWorldGlobals(std::vector<PlayerGlobal> globals)
+{
+  if (globals == GetWorldGlobals()) {
+    return false;
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    changeForm.worldGlobals = std::move(globals);
+  });
+  return true;
+}
+
 std::optional<FormDesc> MpObjectReference::GetPlacedBySpell() const
 {
   return ChangeForm().placedBySpell;

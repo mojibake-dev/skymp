@@ -48,6 +48,7 @@
 #include "libespm/CELL.h"
 #include "libespm/MGEF.h"
 #include "libespm/PROJ.h"
+#include "libespm/QUST.h"
 #include "libespm/SPEL.h"
 #include "libespm/ScriptData.h"
 #include "papyrus-vm/Utils.h"
@@ -339,6 +340,12 @@ struct PartOne::Impl
     skymp::rules::new_placements("[]");
   std::unordered_map<uint64_t, std::vector<uint32_t>> placedSets;
   std::unordered_map<uint32_t, uint32_t> placedCasterByForm;
+
+  // thuum ADR-068 rung 4 (the created half): a unique actor's attached
+  // reference by its base (an ALUA container, noted at its attach), and the
+  // created aliases whose unresolved container this world logged, once each
+  std::unordered_map<uint32_t, uint32_t> uniqueActorRefs;
+  std::set<std::pair<uint32_t, uint32_t>> unresolvedCreationsLogged;
   // thuum docs/verbs/leveling.md
   rust::Box<skymp::rules::LevelingTable> leveling =
     skymp::rules::new_leveling_table();
@@ -1226,6 +1233,11 @@ void PartOne::Init()
     return host &&
       WouldMoveActor(*host, actor, destWorldOrCell, destPos) !=
       MoveVerdict::Refuse;
+  };
+  // thuum ADR-068 rung 4 (amendment B, read 8): the quest aliases' created
+  // items a reference holds, put in at its attach, before its create word
+  worldState.onAttach = [this](MpObjectReference& refr) {
+    AddCreatedItems(refr);
   };
   // thuum docs/verbs/npc-fate.md (ADR-049 decision 2): a fate rolled anew
   // at a respawn goes to every user and the fate pass at a player's square
@@ -3473,6 +3485,288 @@ std::vector<QuestStageDone> PartOne::GetQuestStages()
 bool PartOne::SetQuestStages(std::vector<QuestStageDone> stages)
 {
   return WorldJournal().SetQuestStages(std::move(stages));
+}
+
+std::vector<MpChangeFormREFR::AliasFill> PartOne::GetAliasFills()
+{
+  return WorldJournal().GetAliasFills();
+}
+
+bool PartOne::SetAliasFills(std::vector<MpChangeFormREFR::AliasFill> fills)
+{
+  return WorldJournal().SetAliasFills(std::move(fills));
+}
+
+namespace {
+// thuum ADR-068 rung 4 (amendment B, read 8): one created alias's item as
+// the game files give it, the forms in the load order; containerKind is the
+// rules' (0 unresolved, 1 a forced reference, 2 a unique actor's base)
+struct AliasCreation
+{
+  uint32_t quest = 0;
+  uint32_t alias = 0;
+  uint32_t base = 0;
+  uint32_t target = 0;
+  uint8_t containerKind = 0;
+  uint32_t container = 0;
+  bool startGameEnabled = false;
+  std::string why;
+};
+
+// every quest's created aliases, read once per set of game files: a scan of
+// the QUST records (their aliases, libespm QUST::GetQuestAliases; a quest's
+// DNAM read only where an alias creates), the creation and its container
+// the rule's (wire-rules alias_fills::creations). The index is the files',
+// so the process keeps one per loader, which the tests' many PartOnes share
+struct AliasCreationIndex
+{
+  std::unordered_multimap<uint32_t, AliasCreation> byForcedRef;
+  std::unordered_multimap<uint32_t, AliasCreation> byUniqueActor;
+  std::unordered_map<uint32_t, std::vector<AliasCreation>> byQuest;
+};
+
+const AliasCreationIndex& AliasCreationsOf(WorldState& worldState)
+{
+  static std::map<const espm::Loader*, std::unique_ptr<AliasCreationIndex>>
+    g_indices;
+  auto& slot = g_indices[&worldState.GetEspm()];
+  if (slot) {
+    return *slot;
+  }
+  slot = std::make_unique<AliasCreationIndex>();
+  auto& index = *slot;
+  auto& cache = worldState.GetEspmCache();
+  size_t resolved = 0;
+  size_t unresolved = 0;
+  for (const auto& lookup :
+       worldState.GetEspm().GetBrowser().GetDistinctRecordsByType("QUST")) {
+    const auto* qust = espm::Convert<espm::QUST>(lookup.rec);
+    if (!qust) {
+      continue;
+    }
+    std::vector<skymp::rules::QuestAliasRow> rows;
+    bool creates = false;
+    for (const auto& alias : qust->GetQuestAliases(cache)) {
+      if (alias.locationAlias) {
+        continue;
+      }
+      skymp::rules::QuestAliasRow row{};
+      row.id = alias.aliasID;
+      row.created = alias.aliasCreatedObject
+        ? lookup.ToGlobalId(alias.aliasCreatedObject)
+        : 0;
+      row.create_at = alias.createAt;
+      row.forced = alias.aliasForcedReference
+        ? lookup.ToGlobalId(alias.aliasForcedReference)
+        : 0;
+      row.unique_actor =
+        alias.aliasUniqueActor ? lookup.ToGlobalId(alias.aliasUniqueActor) : 0;
+      creates = creates || row.created != 0;
+      rows.push_back(row);
+    }
+    if (!creates) {
+      continue;
+    }
+    const auto made = skymp::rules::alias_creations(
+      rust::Slice<const skymp::rules::QuestAliasRow>(rows.data(),
+                                                     rows.size()));
+    const uint32_t questId = lookup.ToGlobalId(lookup.rec->GetId());
+    const auto data = qust->GetData(cache);
+    const bool startGameEnabled = data.questData &&
+      (data.questData->mainFlags & espm::QUST::QuestData::StartGameEnabled);
+    for (const auto& row : made) {
+      AliasCreation creation;
+      creation.quest = questId;
+      creation.alias = row.alias;
+      creation.base = row.base;
+      creation.target = row.target;
+      creation.containerKind = row.container_kind;
+      creation.container = row.container;
+      creation.startGameEnabled = startGameEnabled;
+      creation.why = std::string(row.why);
+      if (creation.containerKind == 1) {
+        index.byForcedRef.emplace(creation.container, creation);
+        ++resolved;
+      } else if (creation.containerKind == 2) {
+        index.byUniqueActor.emplace(creation.container, creation);
+        ++resolved;
+      } else {
+        ++unresolved;
+      }
+      index.byQuest[questId].push_back(std::move(creation));
+    }
+  }
+  spdlog::info("[verb:quest-stage] the quests' created aliases: {} resolved "
+               "to a container, {} unresolved (E_ALIASFILL_UNRESOLVED, each "
+               "logged once when its quest fills)",
+               resolved, unresolved);
+  return index;
+}
+
+// the journal's marks as the rule reads them: an entry whose created item
+// names a quest the running order resolves
+std::vector<skymp::rules::AliasMarkRow> CreatedMarks(
+  const std::vector<MpChangeFormREFR::AliasFill>& fills,
+  const EspmFileList& files)
+{
+  std::vector<skymp::rules::AliasMarkRow> marks;
+  for (const auto& fill : fills) {
+    if (!fill.created) {
+      continue;
+    }
+    try {
+      marks.push_back({ fill.quest.ToFormId(files), fill.alias, fill.added });
+    } catch (const std::exception&) {
+      // a plugin the order lacks: its mark names no quest of this world
+    }
+  }
+  return marks;
+}
+}
+
+namespace {
+bool AddCreatedItem(PartOne& partOne, MpObjectReference& container,
+                    const AliasCreation& creation)
+{
+  auto fills = partOne.GetAliasFills();
+  const auto marks = CreatedMarks(fills, partOne.worldState.espmFiles);
+  if (!skymp::rules::alias_created_due(
+        rust::Slice<const skymp::rules::AliasMarkRow>(marks.data(),
+                                                      marks.size()),
+        creation.quest, creation.alias)) {
+    return false;
+  }
+  const auto& files = partOne.worldState.espmFiles;
+  FormDesc quest;
+  FormDesc created;
+  FormDesc where;
+  try {
+    quest = FormDesc::FromFormId(creation.quest, files);
+    created = FormDesc::FromFormId(creation.base, files);
+    where = FormDesc::FromFormId(container.GetFormId(), files);
+  } catch (const std::exception& e) {
+    spdlog::warn("[verb:quest-stage] alias {:x}/{} creates {:x} in {:x}: {}; "
+                 "not added",
+                 creation.quest, creation.alias, creation.base,
+                 container.GetFormId(), e.what());
+    return false;
+  }
+  container.AddItem(creation.base, 1);
+  auto entry = std::find_if(fills.begin(), fills.end(), [&](const auto& fill) {
+    return fill.quest == quest && fill.alias == creation.alias;
+  });
+  if (entry == fills.end()) {
+    MpChangeFormREFR::AliasFill mark;
+    mark.quest = quest;
+    mark.alias = creation.alias;
+    fills.push_back(std::move(mark));
+    entry = std::prev(fills.end());
+  }
+  entry->created = created;
+  entry->container = where;
+  entry->added = true;
+  partOne.SetAliasFills(std::move(fills));
+  spdlog::info("[verb:quest-stage] alias {:x}/{} creates {:x} in {:x}: "
+               "added once",
+               creation.quest, creation.alias, creation.base,
+               container.GetFormId());
+  return true;
+}
+}
+
+size_t PartOne::AddCreatedItems(MpObjectReference& container)
+{
+  if (!HasEspm() || container.GetFormId() >= 0xff000000) {
+    return 0;
+  }
+  const auto& index = AliasCreationsOf(worldState);
+  std::vector<const AliasCreation*> found;
+  const auto collect =
+    [&](const std::unordered_multimap<uint32_t, AliasCreation>& map,
+        uint32_t key) {
+      const auto [begin, end] = map.equal_range(key);
+      for (auto it = begin; it != end; ++it) {
+        found.push_back(&it->second);
+      }
+    };
+  collect(index.byForcedRef, container.GetFormId());
+  if (container.AsActor()) {
+    const size_t before = found.size();
+    collect(index.byUniqueActor, container.GetBaseId());
+    if (found.size() != before) {
+      pImpl->uniqueActorRefs[container.GetBaseId()] = container.GetFormId();
+    }
+  }
+  if (found.empty()) {
+    return 0;
+  }
+  // a start-game-enabled quest fills from the game's start; any other once
+  // the world records a stage of it (its start, as near as the record knows)
+  const auto stages = GetQuestStages();
+  size_t added = 0;
+  for (const AliasCreation* creation : found) {
+    if (!creation->startGameEnabled) {
+      const bool started =
+        std::any_of(stages.begin(), stages.end(), [&](const auto& stage) {
+          try {
+            return stage.quest.ToFormId(worldState.espmFiles) ==
+              creation->quest;
+          } catch (const std::exception&) {
+            return false;
+          }
+        });
+      if (!started) {
+        continue;
+      }
+    }
+    if (AddCreatedItem(*this, container, *creation)) {
+      ++added;
+    }
+  }
+  return added;
+}
+
+size_t PartOne::AddCreatedItemsOfQuest(uint32_t questId)
+{
+  if (!HasEspm()) {
+    return 0;
+  }
+  const auto& index = AliasCreationsOf(worldState);
+  const auto it = index.byQuest.find(questId);
+  if (it == index.byQuest.end()) {
+    return 0;
+  }
+  size_t added = 0;
+  for (const auto& creation : it->second) {
+    if (creation.containerKind == 0) {
+      if (pImpl->unresolvedCreationsLogged
+            .insert({ creation.quest, creation.alias })
+            .second) {
+        spdlog::info("[verb:quest-stage] E_ALIASFILL_UNRESOLVED: alias "
+                     "{:x}/{} creates {:x} in alias {}: {}; the item stays "
+                     "each seat's own",
+                     creation.quest, creation.alias, creation.base,
+                     creation.target, creation.why);
+      }
+      continue;
+    }
+    // the container already attached; one attached later takes its item at
+    // its own attach (AddCreatedItems), the quest now recorded
+    uint32_t containerId = creation.container;
+    if (creation.containerKind == 2) {
+      const auto ref = pImpl->uniqueActorRefs.find(creation.container);
+      if (ref == pImpl->uniqueActorRefs.end()) {
+        continue;
+      }
+      containerId = ref->second;
+    }
+    const auto& form = worldState.LookupFormByIdNoLoad(containerId);
+    MpObjectReference* container = form ? form->AsObjectReference() : nullptr;
+    if (container && AddCreatedItem(*this, *container, creation)) {
+      ++added;
+    }
+  }
+  return added;
 }
 
 namespace {

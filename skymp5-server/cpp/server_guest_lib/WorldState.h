@@ -379,6 +379,11 @@ public:
   // runs here for a player, so the ring is rolled at that player's level
   // before any of it is loaded or subscribed
   std::function<void(MpActor&)> onSquareChange;
+  // thuum ADR-068 rung 4 (amendment B, read 8): a game-file reference just
+  // attached (LoadForm, its saved record applied, before its first
+  // subscription), installed by PartOne for the quest aliases' created items
+  // the reference holds (PartOne::AddCreatedItems)
+  std::function<void(MpObjectReference&)> onAttach;
   // thuum ADR-050 decision 3 (train 51): the roll's level for a server-made
   // NPC placed at a reference (PlaceAtMe), by the same rule as the ring's
   // (PartOne::FateRollLevel with the placer as the loader)

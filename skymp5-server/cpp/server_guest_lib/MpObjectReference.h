@@ -283,6 +283,14 @@ public:
   std::vector<QuestStageDone> GetQuestStages() const;
   bool SetQuestStages(std::vector<QuestStageDone> stages);
 
+  // thuum ADR-068 rung 4: the world's alias fills and created items' marks
+  // and its world globals, on the same journal; empty when none; false when
+  // unchanged
+  std::vector<MpChangeFormREFR::AliasFill> GetAliasFills() const;
+  bool SetAliasFills(std::vector<MpChangeFormREFR::AliasFill> fills);
+  std::vector<PlayerGlobal> GetWorldGlobals() const;
+  bool SetWorldGlobals(std::vector<PlayerGlobal> globals);
+
   // thuum docs/verbs/spell-placed-object.md (ADR-057): the spell whose
   // accepted cast made the server place this reference, none for every
   // other form; the record's mark for the sweep at load

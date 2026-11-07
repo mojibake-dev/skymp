@@ -3346,7 +3346,17 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
     }
     return;
   }
+  const auto before = partOne.GetQuestStages();
+  const bool firstStage =
+    std::none_of(before.begin(), before.end(),
+                 [&](const auto& stage) { return stage.quest == quest; });
   partOne.SetQuestStages(partOne.MergeQuestStage(done));
+  // thuum ADR-068 rung 4 (amendment B, read 8): a quest the world records
+  // for the first time has filled its aliases, so the items its aliases
+  // create go into their containers already attached, once each
+  if (firstStage) {
+    partOne.AddCreatedItemsOfQuest(msg.quest);
+  }
 
   QuestStageMessage relay;
   relay.quest = msg.quest;

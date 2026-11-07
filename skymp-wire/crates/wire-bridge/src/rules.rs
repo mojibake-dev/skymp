@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, destruction, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, placements, player_globals, props, quest_stages, racemenu, ranged, rest, perks, script_state, scripted_effects, shouts, stagger, teleports, weather};
+use wire_rules::{activation, actor_values, alias_fills, appearance, attributes, block, bonds, casts, cells, clock, console, damage, destruction, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, placements, player_globals, props, quest_stages, racemenu, ranged, rest, perks, script_state, scripted_effects, shouts, stagger, teleports, weather};
 
 // the perk table's effect calls carry a CTDA's five parts flat, as add_condition does
 #[allow(clippy::too_many_arguments)]
@@ -1588,6 +1588,55 @@ mod ffi {
         why: String,
     }
 
+    /// One reference alias of a quest as the game files hold it (thuum
+    /// ADR-068 rung 4, amendment B read 8; wire-rules alias_fills::Alias),
+    /// the form ids in the load order.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct QuestAliasRow {
+        /// The alias's id (ALST).
+        id: u32,
+        /// The base it creates (ALCO), 0 for none.
+        created: u32,
+        /// Where it is created (ALCA): the top bit "in", the target alias's
+        /// id in the low half.
+        create_at: u32,
+        /// The forced reference (ALFR), 0 for none.
+        forced: u32,
+        /// The unique actor's base (ALUA), 0 for none.
+        unique_actor: u32,
+    }
+
+    /// A created alias's item and where it goes (wire-rules
+    /// alias_fills::Creation).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct AliasCreationRow {
+        /// The created alias's id.
+        alias: u32,
+        /// The base it creates.
+        base: u32,
+        /// The target alias's id.
+        target: u32,
+        /// 0 unresolved (E_ALIASFILL_UNRESOLVED, `why`), 1 a forced
+        /// reference (`container` the reference), 2 a unique actor
+        /// (`container` the actor's base).
+        container_kind: u8,
+        /// The reference or the base, per `container_kind`; 0 unresolved.
+        container: u32,
+        /// Why the container is unresolved, empty otherwise.
+        why: String,
+    }
+
+    /// A created alias's mark on the journal (wire-rules alias_fills::Mark).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct AliasMarkRow {
+        /// The QUST.
+        quest: u32,
+        /// The created alias's id.
+        alias: u32,
+        /// The item was added.
+        added: bool,
+    }
+
     extern "Rust" {
         /// A client's first activation of a target `distance` units away,
         /// `target_size` being its bounds' farthest point times its scale.
@@ -2292,10 +2341,18 @@ mod ffi {
         fn released(self: &mut ScriptStates, cell: u32, player: u32, epoch: u32);
         /// `cell` was granted, to any seat: the release read ends.
         fn granted(self: &mut ScriptStates, cell: u32);
+
+        /// thuum ADR-068 rung 4 (amendment B, read 8): every created alias
+        /// of one quest's reference aliases and where its item goes
+        /// (wire-rules alias_fills::creations).
+        fn alias_creations(aliases: &[QuestAliasRow]) -> Vec<AliasCreationRow>;
+        /// Whether the created alias `alias` of `quest` still owes its item:
+        /// no mark of the journal's says it was added.
+        fn alias_created_due(marks: &[AliasMarkRow], quest: u32, alias: u32) -> bool;
     }
 }
 
-pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
+pub use ffi::{AliasCreationRow, AliasMarkRow, QuestAliasRow, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -4208,6 +4265,27 @@ impl ScriptStates {
     }
 }
 
+fn alias_creations(aliases: &[QuestAliasRow]) -> Vec<AliasCreationRow> {
+    let parsed: Vec<alias_fills::Alias> =
+        aliases.iter().map(|a| alias_fills::Alias { id: a.id, created: a.created, create_at: a.create_at, forced: a.forced, unique_actor: a.unique_actor }).collect();
+    alias_fills::creations(&parsed)
+        .into_iter()
+        .map(|c| {
+            let (container_kind, container, why) = match c.container {
+                alias_fills::Container::Unresolved(why) => (0, 0, why.to_owned()),
+                alias_fills::Container::Forced(refr) => (1, refr, String::new()),
+                alias_fills::Container::UniqueActor(base) => (2, base, String::new()),
+            };
+            AliasCreationRow { alias: c.alias, base: c.base, target: c.target, container_kind, container, why }
+        })
+        .collect()
+}
+
+fn alias_created_due(marks: &[AliasMarkRow], quest: u32, alias: u32) -> bool {
+    let parsed: Vec<alias_fills::Mark> = marks.iter().map(|m| alias_fills::Mark { quest: m.quest, alias: m.alias, added: m.added }).collect();
+    alias_fills::due(&parsed, quest, alias)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4977,6 +5055,23 @@ mod tests {
             assert_eq!(b.judge(at.row, &[flag], &facts, 0).code, ScriptCallCode::Accepted);
         }
         assert_eq!(b.judge(at.row, &[flag], &facts, 0).name, "E_SCRIPTCALL_RATE");
+    }
+
+    #[test]
+    fn the_bridge_derives_a_quests_created_items() {
+        // thuum ADR-068 rung 4: MS13 0x39645's aliases as Skyrim.esm holds
+        // them (lab/esm.py, 2026-11-06), the claw 0x39647 and the journal
+        // 0x39654 created in Arvel, the unique actor 0x39646's alias 1
+        let row = |id, created, create_at, forced, unique_actor| QuestAliasRow { id, created, create_at, forced, unique_actor };
+        let aliases = [row(1, 0, 0, 0, 0x39646), row(11, 0x39647, 0x8000_0001, 0, 0), row(10, 0, 0, 0x1fc43, 0), row(12, 0x39654, 0x8000_0007, 0, 0)];
+        let made = alias_creations(&aliases);
+        assert_eq!(made.len(), 2);
+        assert_eq!(made.first(), Some(&AliasCreationRow { alias: 11, base: 0x39647, target: 1, container_kind: 2, container: 0x39646, why: String::new() }));
+        let unresolved = made.get(1).map(|c| (c.container_kind, c.container, c.why.as_str()));
+        assert_eq!(unresolved, Some((0, 0, "the quest has no alias of the target's id")));
+        let marks = [AliasMarkRow { quest: 0x39645, alias: 11, added: true }];
+        assert!(!alias_created_due(&marks, 0x39645, 11));
+        assert!(alias_created_due(&marks, 0x39645, 16));
     }
 
     #[test]

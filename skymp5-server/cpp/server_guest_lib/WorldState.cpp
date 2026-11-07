@@ -798,6 +798,12 @@ bool WorldState::LoadForm(uint32_t formId, std::stringstream* optionalOutTrace,
       refr.ApplyChangeForm(copy);
     }
 
+    // thuum ADR-068 rung 4: the created items it holds go in before its
+    // first create word (PartOne::AddCreatedItems)
+    if (onAttach) {
+      onAttach(refr);
+    }
+
     refr.ForceSubscriptionsUpdate();
   }
 

@@ -119,6 +119,11 @@ const LEGACY_ABSENT: &[(&str, &str)] = &[
     ("SpellCastData", "decal"),
     // thuum ADR-068: a relayed script call's sequence (2026-11-05)
     ("SpSnippet", "seq"),
+    // thuum D-C2: an activation's trigger entry (SCHEMA_VERSION 40,
+    // 2026-11-07); RelayedActivation's entry and ScriptStateApply's
+    // graphVars sit on thuum's own MsgTypes 70 and 77, which the legacy
+    // format never carried (decode_packet reads SkyMP's 33 alone)
+    ("ActivateData", "entry"),
 ];
 
 /// The deserializer for a field in LEGACY_ABSENT: an optional reads as none,
@@ -431,6 +436,27 @@ mod tests {
                 assert_eq!((s.class.as_str(), s.function.as_str(), s.self_id, s.snippet_idx), ("A", "B", 0x14, 7));
                 assert!(s.arguments.is_empty());
                 assert_eq!(s.seq, None);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_activation_from_the_legacy_format_reads_without_an_entry() {
+        // thuum D-C2: ActivateData's entry came after the format froze. The
+        // old C++ wrote the two type bytes, the caster and the target as
+        // eight big-endian bytes each and the second activation's bit (here
+        // set), and nothing more; the last byte's seven padding bits are set
+        // too, so a reader that spent a presence bit on the entry would read
+        // one and run out of bits for its value
+        let mut p = vec![0x86u8, 0x06, 0x06];
+        p.extend(0x14u64.to_be_bytes());
+        p.extend(0x37281u64.to_be_bytes());
+        p.push(0xff);
+        match decode_packet(&p) {
+            Ok(Message::Activate(a)) => {
+                assert_eq!((a.data.caster, a.data.target, a.data.is_second_activation), (0x14, 0x37281, true));
+                assert_eq!(a.data.entry, None);
             }
             other => panic!("{other:?}"),
         }

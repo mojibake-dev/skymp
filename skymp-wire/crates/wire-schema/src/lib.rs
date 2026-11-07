@@ -100,7 +100,15 @@ use bounded::{String, Vec};
 /// every seat's scripts write, streamed by one seat at an epoch), and
 /// CreateActor's `placedBy` on a script's placement (STAT, NPC_ and items
 /// beside MSTT and ACTI).
-pub const SCHEMA_VERSION: u16 = 39;
+/// 40: the trigger entry channel (thuum D-W1 and D-C2, playtest 50,
+/// docs/research/fifty-fixes-2026-11-07.md 1(a), m4-fifty-wire): Activate's
+/// and RelayedActivation's optional `entry` (1 OnTriggerEnter, 2
+/// OnTriggerLeave), a guest's entry into a trigger whose world script runs
+/// on the cell's host, relayed to the host alone; no new message, so the
+/// next free MsgType stays 81. And ScriptStateApply's `graph_vars` (D-C3 A,
+/// PENDING Eli): a world object's behavior graph variables served beside
+/// the record's view, each with its own sequence.
+pub const SCHEMA_VERSION: u16 = 40;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -236,6 +244,11 @@ pub mod cap {
     /// Elements of one array variable: the VM's own bound (CommonLibSSE-NG
     /// include/RE/A/Array.h:69, MAX_SIZE 128).
     pub const SCRIPT_ARRAY: usize = 128;
+    /// Behavior graph variables one ScriptStateApply serves for its
+    /// reference (thuum D-C3 A, PENDING Eli): the server keeps at most this
+    /// many per reference, a new name past them replacing the oldest; the
+    /// cobweb's script sets one (fToggleBlend). UNMEASURED.
+    pub const GRAPH_VARS: usize = 16;
     /// World globals in one WorldGlobal (thuum ADR-068 rung 4): Skyrim.esm's
     /// GLOB records number in the hundreds and a second's diff moves a
     /// handful (UNMEASURED: x-world-globals-rate v1 reads the rate).
@@ -711,7 +724,9 @@ const TABLE: [Row; 89] = [
     row("PerkPick", 67, 8, C2S),
     row("PerkState", 68, 4 * KIB, S2C),
     row("WordWall", 69, 8, C2S),
-    row("RelayedActivation", 70, 16, S2C),
+    // a target, a caster and the entry byte (thuum D-C2, SCHEMA_VERSION 40;
+    // 13 bytes at the longest, pinned by wire_id_matches_postcard_variant_index)
+    row("RelayedActivation", 70, 24, S2C),
     row("ObjectAnimation", 71, 160, Both),
     // a record's hex body at its cap (128 KiB) plus every remap row at
     // five-byte varints and the scalars, with room (docs/verbs/change-form.md)
@@ -1018,6 +1033,21 @@ mod tests {
             .unwrap_or_default()
     }
 
+    /// A serve's graph variables at their longest (thuum D-C3 A): sixteen,
+    /// each name at its cap, every payload carried, every number a
+    /// five-byte varint.
+    fn graph_vars_at_their_cap() -> Option<bounded::Vec<skymp::GraphVar, { cap::GRAPH_VARS }>> {
+        let var = || skymp::GraphVar {
+            name: "x".repeat(cap::ANIM_EVENT).try_into().unwrap_or_default(),
+            k: u8::MAX,
+            i: Some(i32::MIN),
+            f: Some(f32::MAX),
+            b: Some(true),
+            seq: u32::MAX,
+        };
+        (0..cap::GRAPH_VARS).map(|_| var()).collect::<alloc::vec::Vec<_>>().try_into().ok()
+    }
+
     #[test]
     fn a_script_record_at_the_natives_answer_cap_fits_its_byte_cap() {
         let scripts = script_record_at_its_answer_cap();
@@ -1028,12 +1058,16 @@ mod tests {
         let state = Message::ScriptState(skymp::ScriptState { epoch: u32::MAX, form_id: 0xfeff_ffff, fnv1a: u32::MAX, scripts: scripts.clone(), ..Default::default() });
         let bytes = postcard::to_allocvec(&state).unwrap_or_default();
         assert!(bytes.len() > 150 * KIB && bytes.len() <= 192 * KIB, "{}", bytes.len());
+        // the serve with its graph variables at their cap too (thuum D-C3 A)
+        let graph_vars = graph_vars_at_their_cap();
+        assert_eq!(graph_vars.as_ref().map(|v| v.len()), Some(cap::GRAPH_VARS));
         let apply = Message::ScriptStateApply(skymp::ScriptStateApply {
             form_id: 0xfeff_ffff,
             fnv1a: u32::MAX,
             seq: u32::MAX,
             event: Some("x".repeat(cap::ANIM_EVENT).try_into().unwrap_or_default()),
             scripts,
+            graph_vars,
             ..Default::default()
         });
         let served = postcard::to_allocvec(&apply).unwrap_or_default();
@@ -1139,8 +1173,15 @@ mod tests {
             Message::PerkPick(skymp::PerkPick { perk: u32::MAX, ..Default::default() }),
             // a word wall report (thuum docs/verbs/word-wall.md)
             Message::WordWall(skymp::WordWall { wall: u32::MAX, ..Default::default() }),
-            // a linked activation relayed (thuum docs/verbs/traps.md)
+            // a linked activation relayed (thuum docs/verbs/traps.md), and
+            // since SCHEMA_VERSION 40 an activation and its relay with the
+            // entry byte at their longest (thuum D-C2: 24 and 13 bytes)
             Message::RelayedActivation(skymp::RelayedActivation { target: u32::MAX, caster: u32::MAX, ..Default::default() }),
+            Message::RelayedActivation(skymp::RelayedActivation { target: u32::MAX, caster: u32::MAX, entry: Some(u8::MAX), ..Default::default() }),
+            Message::Activate(skymp::Activate {
+                data: skymp::ActivateData { caster: u64::MAX, target: u64::MAX, is_second_activation: true, entry: Some(u8::MAX), ..Default::default() },
+                ..Default::default()
+            }),
             Message::ObjectAnimation(skymp::ObjectAnimation {
                 refr: u32::MAX,
                 event: "x".repeat(cap::ANIM_EVENT).try_into().unwrap_or_default(),
@@ -1207,6 +1248,7 @@ mod tests {
                 seq: u32::MAX,
                 event: Some("x".repeat(cap::ANIM_EVENT).try_into().unwrap_or_default()),
                 scripts: script_record_at_its_answer_cap(),
+                graph_vars: graph_vars_at_their_cap(),
                 ..Default::default()
             }),
             Message::DestructionStage(skymp::DestructionStage {
@@ -1345,6 +1387,25 @@ mod tests {
             assert_eq!(bytes.first().copied().map(u32::from), Some(m.wire_id()), "{}", m.name());
             assert!(bytes.len() <= Message::max_len(m.wire_id()).unwrap_or(0), "{}", m.name());
         }
+    }
+
+    #[test]
+    fn an_entry_rides_inside_its_messages_byte_caps() {
+        // thuum D-C2 (SCHEMA_VERSION 40): the relay's longest is its wire
+        // id, two five-byte varints and the entry's presence and byte; the
+        // report's two ten-byte varints, the flag and the same two
+        let relay = Message::RelayedActivation(skymp::RelayedActivation { target: u32::MAX, caster: u32::MAX, entry: Some(skymp::ENTRY_LEAVE), ..Default::default() });
+        assert_eq!(postcard::to_allocvec(&relay).map(|b| b.len()), Ok(13));
+        assert_eq!(Message::max_len(relay.wire_id()), Some(24));
+        let report = Message::Activate(skymp::Activate {
+            data: skymp::ActivateData { caster: u64::MAX, target: u64::MAX, entry: Some(skymp::ENTRY_ENTER), ..Default::default() },
+            ..Default::default()
+        });
+        assert_eq!(postcard::to_allocvec(&report).map(|b| b.len()), Ok(24));
+        assert_eq!(Message::max_len(report.wire_id()), Some(64));
+        // an absent entry costs its presence byte alone
+        let plain = Message::RelayedActivation(skymp::RelayedActivation { target: u32::MAX, caster: u32::MAX, ..Default::default() });
+        assert_eq!(postcard::to_allocvec(&plain).map(|b| b.len()), Ok(12));
     }
 
     #[test]

@@ -245,6 +245,16 @@ public:
   // admits the scripts everywhere
   void RelayActivationToHost(MpActor& player, MpObjectReference& target);
   bool IsScriptedWorldObject(const MpObjectReference& target);
+  // thuum D-W1 and D-C2 (playtest 50): an Activate carrying `entry`, a
+  // seat's report of its own presser's entry into a trigger whose world
+  // script runs on the cell's host. The facts are gathered here and judged
+  // by wire-rules trigger_entry (the bridge's trigger_entry); an
+  // accepted entry goes to the host's game alone as RelayedActivation with
+  // the presser as the caster and the same entry, and nothing is recorded
+  // (R2); every refusal is logged by name, once a minute per reporter and
+  // code. The edge spends the sender's entry budget (wire-validate
+  // ClientGuard::entry_budget), so no window is kept here
+  void OnTriggerEntry(MpActor& reporter, const ActivateMessage& msg);
 
   // thuum docs/verbs/change-form.md (ADR-065 system 1): an actor's change
   // form as the owner's engine serialized it. The wire validated the shape
@@ -542,6 +552,11 @@ private:
   std::map<std::pair<uint32_t, std::string>,
            std::pair<std::chrono::steady_clock::time_point, uint32_t>>
     stateRowRefusals;
+  // thuum D-C2: when each reporter's trigger entry refusal of each code was
+  // last said (one a minute, the rest counted)
+  std::map<std::pair<uint32_t, std::string>,
+           std::pair<std::chrono::steady_clock::time_point, uint32_t>>
+    triggerEntryRefusals;
   // thuum ADR-068 rung 3: when each form's record line was last said (one a
   // minute, the rest at debug), and each refusal's, by sender, form and code
   // (one a minute, the rest counted)

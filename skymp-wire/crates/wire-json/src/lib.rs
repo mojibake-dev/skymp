@@ -226,11 +226,14 @@ mod tests {
                 caster: 0x14,
                 target: 0xff00_0001,
                 is_second_activation: false,
+                entry: None,
             },
         });
         let v = render_value(&m).unwrap_or(Value::Null);
         assert_eq!(v["t"], 6);
         assert_eq!(v["data"]["t"], 6);
+        // an absent entry is no key (thuum D-C2)
+        assert!(v["data"].get("entry").is_none());
         let d = Message::DeathStateContainer(skymp::DeathStateContainer {
             t: skymp::MsgT,
             t_teleport: Some(skymp::Teleport::default()),
@@ -612,6 +615,87 @@ mod tests {
         // a null view reads as none, the client's spelling of no view
         let null = read("77-ScriptStateApply-1.json").replacen("\"fnv1a\"", "\"event\": null, \"fnv1a\"", 1);
         assert!(matches!(recognize(&null), Ok(Message::ScriptStateApply(a)) if a.event.is_none()));
+    }
+
+    /// thuum D-W1 and D-C2 (SCHEMA_VERSION 40): the trigger entry's
+    /// fixtures, shapes and refusals. 06-2 is c2's own player (0x14)
+    /// entering Bleak Falls Temple's web 0x37281 (FXtriggerAmbFX on
+    /// FXcobwebRoundWall01ACT, lab/.cache/drafts/fifty/
+    /// trigger-entry-static.md section 6), its report to the server; 06-3
+    /// the same entry flagged a second activation, refused; 70-2 that entry
+    /// relayed to the cell's host with the guest's figure 0xff000001 as the
+    /// presser; 70-3 a relay naming event 3, which is none, refused. The
+    /// activation fixtures 06-0, 06-1, 70-0 and 70-1 carry no entry and
+    /// render none.
+    #[test]
+    fn trigger_entry_fixtures_validate_as_named() {
+        use wire_validate::{validate, validate_server, ClientGuard, Reject};
+        let read = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+        // the shape's verdict, and a client's (the relay is the server's,
+        // which the transport refuses from a client by direction)
+        type Verdict = (&'static str, Result<(), Reject>, Option<Result<(), Reject>>);
+        let verdicts: [Verdict; 4] = [
+            ("06-Activate-2.json", Ok(()), Some(Ok(()))),
+            ("06-Activate-3.json", Err(Reject::Range), Some(Err(Reject::Range))),
+            ("70-RelayedActivation-2.json", Ok(()), None),
+            ("70-RelayedActivation-3.json", Err(Reject::Range), None),
+        ];
+        for (name, shape, from_client) in verdicts {
+            let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(validate_server(&m), shape, "{name}");
+            if let Some(want) = from_client {
+                assert_eq!(validate(&m, &mut ClientGuard::default(), 0), want, "{name}");
+            }
+        }
+        match recognize(&read("06-Activate-2.json")) {
+            Ok(Message::Activate(a)) => {
+                assert_eq!((a.data.caster, a.data.target, a.data.is_second_activation, a.data.entry), (0x14, 0x37281, false, Some(skymp::ENTRY_ENTER)));
+            }
+            other => panic!("{other:?}"),
+        }
+        match recognize(&read("70-RelayedActivation-2.json")) {
+            Ok(Message::RelayedActivation(r)) => assert_eq!((r.target, r.caster, r.entry), (0x37281, 0xff00_0001, Some(skymp::ENTRY_ENTER))),
+            other => panic!("{other:?}"),
+        }
+        for name in ["06-Activate-0.json", "06-Activate-1.json", "70-RelayedActivation-0.json", "70-RelayedActivation-1.json"] {
+            let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(matches!(&m, Message::Activate(a) if a.data.entry.is_none()) || matches!(&m, Message::RelayedActivation(r) if r.entry.is_none()), "{name}");
+            assert!(!render(&m).unwrap_or_default().contains("\"entry\""), "{name}: an absent entry is no key");
+        }
+    }
+
+    /// thuum D-C3 A (PENDING Eli; SCHEMA_VERSION 40): the serve's graph
+    /// variables. 77-2 is Bleak Falls Temple's web 0x3758c served after its
+    /// tear (its record at the web's first sequence, no view: the tear sets
+    /// a variable and plays no event), its FXtriggerAmbFX with the two
+    /// variables the pex declares (broken 2, myFX None; the properties'
+    /// backing variables left out and the hash illustrative, since the
+    /// server stores a record's values unread) and fToggleBlend 1.0 at
+    /// sequence 1, the call's (49's server.log read, trigger-entry-static.md
+    /// section 6); 77-3 the same serve naming fToggleBlend twice, refused.
+    /// The record fixtures 77-0 and 77-1 carry no variables and render none.
+    #[test]
+    fn graph_var_fixtures_validate_as_named() {
+        use wire_validate::{validate_server, Reject};
+        let read = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+        let verdicts: [(&str, Result<(), Reject>); 2] = [("77-ScriptStateApply-2.json", Ok(())), ("77-ScriptStateApply-3.json", Err(Reject::Range))];
+        for (name, want) in verdicts {
+            let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(validate_server(&m), want, "{name}");
+        }
+        match recognize(&read("77-ScriptStateApply-2.json")) {
+            Ok(Message::ScriptStateApply(a)) => {
+                assert_eq!((a.form_id, a.seq, a.event.is_none(), a.scripts.len()), (0x3758c, 1, true, 1));
+                let vars = a.graph_vars.as_deref().unwrap_or_default();
+                assert_eq!(vars.iter().map(|v| (v.name.as_str(), v.k, v.i, v.f, v.b, v.seq)).collect::<Vec<_>>(), vec![("fToggleBlend", 4, None, Some(1.0), None, 1)]);
+            }
+            other => panic!("{other:?}"),
+        }
+        for name in ["77-ScriptStateApply-0.json", "77-ScriptStateApply-1.json"] {
+            let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(matches!(&m, Message::ScriptStateApply(a) if a.graph_vars.is_none()), "{name}");
+            assert!(!render(&m).unwrap_or_default().contains("\"graphVars\""), "{name}: no variables, no key");
+        }
     }
 
     #[test]

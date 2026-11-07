@@ -1,0 +1,61 @@
+# difftest graph-vars (thuum D-C3 A, PENDING Eli; docs/research/
+# fifty-fixes-2026-11-07.md 1(a) and 1(c), read 7; ScriptStateApply MsgType
+# 77, wire id 85, and its graphVars, SCHEMA_VERSION 40): a world object's
+# behavior graph variable, set by its owner's script, is kept on the
+# reference with the call's sequence and served behind its create word, so
+# a seat that missed the call sees the object as the owner's engine left it
+# (Bleak Falls Temple's torn web, whose FXtriggerAmbFX sets fToggleBlend
+# and plays no event). c1 and c2 are new characters (profiles 9 and 10,
+# actors 0xff000002 and 0xff000003, see melee-reach), both at the spawn in
+# Tamriel's exterior cell (32, -15), form 0xbbb1 (cell-host's read); c2
+# starts 1.5 s after c1, and each client's times below are its own, counted
+# from its login. At 0.4 s c1 reports the cell loaded and is granted it,
+# HostGrant {cell 0xbbb1, epoch 1}, as in cell-host. The subject is
+# script-call's ore vein 0x10e6c5 (ACTI MineOreIron01_LFallForestDirt at
+# (134931, -58398, 10752), a world object the server loads with the spawn's
+# chunk, no actor); a value is never judged, so the web's variable on the
+# vein stands for the web's, which T2's spawn does not load. At 0.7 s, before
+# c2 logs in, c1 reports the vein's script record at its epoch
+# (script-state's: one MineOreScript in the empty state, an int and a bool),
+# recorded at the vein's sequence 0 with no view; at 0.9 s its game reports
+# ObjectReference.SetAnimationVariableFloat("fToggleBlend", 1.0) on the vein
+# (ScriptCall 75), an action row kept as the vein's graph variable
+# (wire-rules natives Keep::Variable) at the vein's sequence 1 and relayed to
+# its other listeners, none yet. The record is not taken again (a stack
+# whose only act sets a variable moves no record), so a view stamped at the
+# take would miss it: the serve carries it as kept now. c2 logs in beside the
+# vein and does not host its cell: the vein's create word, then the record
+# served behind it, ScriptStateApply {formId 0x10e6c5, seq 0, the scripts,
+# graphVars [{fToggleBlend, k 4, f 1.0, seq 1}]}, the record's sequence the
+# one it was taken at and the variable's its call's. 1.0 is an f32 exactly,
+# so the declaration matches to the digit. The legacy server knows no
+# MsgType 75 or 76 and drops both. The keep's sixteen names, the newest
+# value per name and a restart are T0's (ScriptCallTest, ChangeFormTest) and
+# T3's (b-cobweb-view). c2 never reports the cell loaded, so c1's departure
+# leaves it unhosted after the grace with nothing to c2; c2 steps aside at
+# 6 s so it outlives c1, as in every session.
+id: graph-vars
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 400, send: {t: 47, cell: 0xbbb1, loaded: true}, reliable: true}
+  - {client: c1, at_ms: 700, send: {t: 76, epoch: 1, formId: 0x10e6c5, fnv1a: 0x9e3779b9, scripts: [{type: MineOreScript, state: "", flags: 11, vars: [{k: 3, i: 3}, {k: 5, b: false}]}]}, reliable: true}
+  - {client: c1, at_ms: 900, send: {t: 75, epoch: 1, selfId: 0x10e6c5, cls: ObjectReference, fn: SetAnimationVariableFloat, args: [fToggleBlend, 1.0], caller: "", handler: "", latent: false}, reliable: true}
+  - {client: c2, at_ms: 6000, move: {dx: 1, dy: 0}}
+divergences:
+  - client: c1
+    msg: {t: 48, cell: 0xbbb1, epoch: 1}
+    legacy: 0
+    wire: 1
+    reason: the first loader in reach hosts the cell (HostGrant, thuum docs/verbs/cell-host.md); the legacy server has no cell hosts
+  - client: c2
+    msg: {t: 77, formId: 0x10e6c5, fnv1a: 0x9e3779b9, seq: 0, scripts: [{type: MineOreScript, state: "", flags: 11, vars: [{k: 3, i: 3}, {k: 5, b: false}]}], graphVars: [{name: fToggleBlend, k: 4, f: 1.0, seq: 1}]}
+    legacy: 0
+    wire: 1
+    reason: the host's script record served behind the vein's create word with the graph variable its script set after the record's take, at the call's sequence (ScriptStateApply's graphVars, thuum D-C3 A); the legacy server knows no MsgType 75 or 76
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

@@ -409,24 +409,56 @@ wire_struct! {
     }
 }
 
+/// A trigger entry's event (thuum D-W1 and D-C2, SCHEMA_VERSION 40): the
+/// presser entered the trigger, its scripts hear OnTriggerEnter.
+pub const ENTRY_ENTER: u8 = 1;
+/// A trigger entry's event: the presser left the trigger, its scripts hear
+/// OnTriggerLeave.
+pub const ENTRY_LEAVE: u8 = 2;
+
 wire_struct! {
     /// ActivateMessage's `data`, which repeats `"t"`.
     pub struct ActivateData {
         /// `"t": 6` again.
         #[serde(default)]
         pub t: MsgT<6>,
-        /// Who activates.
+        /// Who activates; for an entry, the presser: 0x14 for the sender's
+        /// own player, or an actor its game simulates.
         pub caster: u64,
-        /// What is activated.
+        /// What is activated; for an entry, the trigger, a reference of the
+        /// shared load order.
         pub target: u64,
-        /// The engine's second activation of the same reference.
+        /// The engine's second activation of the same reference; false on
+        /// an entry.
         pub is_second_activation: bool,
+        /// Since SCHEMA_VERSION 40 (thuum D-C2): the presser's owner's
+        /// report of an entry into a trigger whose world script runs on the
+        /// cell's host, [`ENTRY_ENTER`] or [`ENTRY_LEAVE`]; absent on every
+        /// activation.
+        pub entry: Option<u8>,
     }
 }
 
 wire_struct! {
     /// MsgType 6. Client to server, reliable: activate a reference (R1
     /// intent, the server decides). Not idempotent.
+    ///
+    /// Since SCHEMA_VERSION 40 (thuum D-W1 and D-C2; docs/research/
+    /// fifty-fixes-2026-11-07.md 1(a)) the same message carries a trigger
+    /// entry: a trigger volume's entry counts once, on its presser's owner,
+    /// and a world trigger's script runs on the cell's host, so a seat that
+    /// does not host the cell reports its own presser's entry (`entry` set,
+    /// `caster` the presser, `target` the trigger) and the server relays it
+    /// to the host alone as [`RelayedActivation`] with the same `entry`. R2:
+    /// the presser's owner's engine saw the entry; the server checks the
+    /// shape it can (the trigger, the presser, the cell, the reach) and
+    /// records nothing. Not idempotent: each report is one event on the
+    /// host. Reason codes for an entry: `E_VAL_RANGE` (an entry other than 1
+    /// or 2, a second activation, a caster of 0, a target of 0 or
+    /// 0xff000000 and up), `E_VAL_RATE` (the sender's entry budget); the
+    /// server logs `E_ENTRY_NO_REF`, `E_ENTRY_ACTOR`, `E_ENTRY_PRESSER`,
+    /// `E_ENTRY_NOT_LOADER`, `E_ENTRY_HOST`, `E_ENTRY_NO_HOST` and
+    /// `E_ENTRY_REACH` by name (wire-rules trigger_entry).
     pub struct Activate {
         /// `"t": 6`.
         #[serde(default)]
@@ -2066,15 +2098,24 @@ wire_struct! {
     /// opening its portcullis: the target's activation parents name the
     /// caster in the game files), told to the cell's other games so each
     /// engine plays it with the caster the host's did. Server to client,
-    /// reliable. Reason codes: `E_VAL_RANGE` (a target or caster of 0).
+    /// reliable. Reason codes: `E_VAL_RANGE` (a target or caster of 0, an
+    /// entry other than 1 or 2).
+    ///
+    /// Since SCHEMA_VERSION 40 (thuum D-C2): with `entry` it is a guest's
+    /// trigger entry ([`Activate`]'s), sent to the cell's host alone, whose
+    /// engine sends that event (OnTriggerEnter for [`ENTRY_ENTER`],
+    /// OnTriggerLeave for [`ENTRY_LEAVE`]) to the target's scripts with the
+    /// caster, the presser, as akActionRef, instead of activating.
     pub struct RelayedActivation {
         /// `"t": 70`.
         #[serde(default)]
         pub t: MsgT<70>,
-        /// The activated reference; never 0.
+        /// The activated reference, or the entered trigger; never 0.
         pub target: u32,
-        /// The reference that activated it; never 0.
+        /// The reference that activated it, or the presser; never 0.
         pub caster: u32,
+        /// The trigger entry's event, 1 or 2; absent on an activation.
+        pub entry: Option<u8>,
     }
 }
 
@@ -2410,6 +2451,31 @@ wire_struct! {
 }
 
 wire_struct! {
+    /// One behavior graph variable of a world object (thuum D-C3 A, PENDING
+    /// Eli; docs/research/fifty-fixes-2026-11-07.md 1(a)): the last value
+    /// its owner's script set through ObjectReference.SetAnimationVariableInt,
+    /// Float or Bool, which the server keeps on the reference with the call's
+    /// sequence. `k` takes [`ScriptVar`]'s folded kinds, 3 an int, 4 a float,
+    /// 5 a bool, so a typed value has one encoding in the schema, and the one
+    /// field that kind names carries the value.
+    pub struct GraphVar {
+        /// The graph variable's name; never empty, no NUL (the receiver's
+        /// BSFixedString reads a C string), each name once per serve.
+        pub name: String<{ cap::ANIM_EVENT }>,
+        /// The raw type, 3 to 5.
+        pub k: u8,
+        /// An int's value (k 3).
+        pub i: Option<i32>,
+        /// A float's value (k 4); finite.
+        pub f: Option<f32>,
+        /// A bool's value (k 5).
+        pub b: Option<bool>,
+        /// The object's sequence at the call that set it; never 0.
+        pub seq: u32,
+    }
+}
+
+wire_struct! {
     /// MsgType 77, thuum's (ADR-068 rung 3): a reference's script record
     /// served to a seat, to the seat about to host the reference's cell
     /// right ahead of its HostGrant, and to a seat that does not host the
@@ -2421,6 +2487,17 @@ wire_struct! {
     /// replays the view where its own sequence for the object differs. Safe
     /// to receive twice. Reason codes: the shape rules ScriptState's scripts
     /// obey (`E_VAL_RANGE`, `E_VAL_NONFINITE`).
+    ///
+    /// Since SCHEMA_VERSION 40 (thuum D-C3 A, PENDING Eli): `graph_vars`, the
+    /// reference's behavior graph variables as the server keeps them at the
+    /// serve, not stamped at the record's take (a stack whose only act sets
+    /// a variable takes no new record), each with its own sequence: the
+    /// receiver sets each one whose sequence is above the one it holds for
+    /// that name, and again at each 3D load (a variable lives on the 3D's
+    /// graph). Absent when none is kept. Reason codes beside the record's:
+    /// `E_VAL_RANGE` (a name empty, with a NUL or named twice; a kind
+    /// outside 3 to 5 or a payload not its kind's; a seq of 0),
+    /// `E_VAL_NONFINITE` (a float that is not finite).
     pub struct ScriptStateApply {
         /// `"t": 77`.
         #[serde(default)]
@@ -2435,6 +2512,9 @@ wire_struct! {
         pub event: Option<String<{ cap::ANIM_EVENT }>>,
         /// The scripts, 1 to 16, as the owner read them.
         pub scripts: Vec<ScriptObjectState, { cap::SCRIPT_OBJECTS }>,
+        /// The reference's graph variables at the serve, at most 16 (thuum
+        /// D-C3 A, PENDING Eli); absent when none is kept.
+        pub graph_vars: Option<Vec<GraphVar, { cap::GRAPH_VARS }>>,
     }
 }
 

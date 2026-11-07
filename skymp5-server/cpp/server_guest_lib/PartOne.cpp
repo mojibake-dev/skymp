@@ -1645,11 +1645,13 @@ void PartOne::Init()
           emitter->BuildScriptStateApply(apply)) {
         GetScriptCalls().seed(apply.formId, apply.seq);
         sendTarget->Send(listenerUserId, apply, true);
+        // thuum D-C3 A (PENDING Eli): the graph variables served with it
         spdlog::info("[verb:scripts] script state {:x} served to {:x} after "
-                     "its create word: {} script(s), seq {}, view '{}'",
+                     "its create word: {} script(s), seq {}, view '{}', {} "
+                     "graph variable(s)",
                      apply.formId, listenerAsActor->GetFormId(),
-                     apply.scripts.size(), apply.seq,
-                     apply.event.value_or(""));
+                     apply.scripts.size(), apply.seq, apply.event.value_or(""),
+                     apply.graphVars ? apply.graphVars->size() : 0);
       }
     }
 
@@ -2076,12 +2078,14 @@ void ApplyHostDecisions(PartOne& partOne,
           partOne.GetScriptCalls().seed(apply.formId, apply.seq);
           partOne.GetSendTarget().Send(partOne.serverState.UserByActor(host),
                                        apply, true);
+          // thuum D-C3 A (PENDING Eli): the graph variables served with it
           spdlog::info("[verb:scripts] script state {:x} served to {:x} "
                        "ahead of its grant of cell {:x}: {} script(s), seq "
-                       "{}, view '{}'",
+                       "{}, view '{}', {} graph variable(s)",
                        apply.formId, host->GetFormId(), d.cell,
                        apply.scripts.size(), apply.seq,
-                       apply.event.value_or(""));
+                       apply.event.value_or(""),
+                       apply.graphVars ? apply.graphVars->size() : 0);
         }
         HostGrantMessage grant;
         grant.cell = d.cell;

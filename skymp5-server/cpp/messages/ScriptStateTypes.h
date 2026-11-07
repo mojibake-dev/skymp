@@ -154,3 +154,44 @@ struct ScriptStateObject
   uint32_t flags = 0;               // Object::Save's byte (a u8 on the wire)
   std::vector<ScriptStateVar> vars; // at most 512
 };
+
+// thuum D-C3 A (PENDING Eli; docs/research/fifty-fixes-2026-11-07.md 1(a)):
+// one behavior graph variable of a world object as its owner's script last
+// set it (ObjectReference.SetAnimationVariableBool, Int or Float, kept on the
+// reference with the call's sequence), served in ScriptStateApply beside the
+// record's view: `k` takes ScriptStateValue's folded kinds, 3 int, 4 float,
+// 5 bool, and the one field that kind carries; `seq` is the object's sequence
+// at the call, so a receiver applies a variable above the one it holds
+// (wire-schema skymp.rs, GraphVar; wire-validate refuses an empty name, a
+// NUL, a name twice, a kind outside 3 to 5, a payload not its kind's and a
+// seq of 0)
+struct ScriptStateGraphVar
+{
+  template <class Archive>
+  void Serialize(Archive& archive)
+  {
+    archive.Serialize("name", name)
+      .Serialize("k", k)
+      .Serialize("i", i)
+      .Serialize("f", f)
+      .Serialize("b", b)
+      .Serialize("seq", seq);
+  }
+  auto ToTuple() const { return std::make_tuple(name, k, i, f, b, seq); }
+  friend bool operator==(const ScriptStateGraphVar& lhs,
+                         const ScriptStateGraphVar& rhs)
+  {
+    return lhs.ToTuple() == rhs.ToTuple();
+  }
+  friend bool operator<(const ScriptStateGraphVar& lhs,
+                        const ScriptStateGraphVar& rhs)
+  {
+    return lhs.ToTuple() < rhs.ToTuple();
+  }
+  std::string name; // the graph variable, never empty, at most 128 bytes
+  uint32_t k = 0;   // 3 int, 4 float, 5 bool (a u8 on the wire)
+  std::optional<int32_t> i;
+  std::optional<float> f;
+  std::optional<bool> b;
+  uint32_t seq = 0; // the object's sequence at the call, never 0
+};

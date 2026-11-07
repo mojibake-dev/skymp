@@ -1,0 +1,78 @@
+# difftest trigger-entry (thuum D-W1 and D-C2, playtest 50; docs/research/
+# fifty-fixes-2026-11-07.md 1(a) and 1(c); Activate MsgType 6 and
+# RelayedActivation MsgType 70 with their `entry`, SCHEMA_VERSION 40): a
+# trigger volume's entry counts once, on its presser's owner, and a world
+# trigger's script runs on the cell's host, so a guest reports its own
+# presser's entry and the server relays it to the host alone. c1 and c2 are
+# new characters (profiles 9 and 10, actors 0xff000002 and 0xff000003, see
+# melee-reach), both at the spawn (133857, -61130, 14662) in Tamriel's
+# exterior cell (32, -15), form 0xbbb1 (cell-host's read); c2 starts 1.5 s
+# after c1, and each client's times below are its own. At 1 s c1 reports
+# the cell loaded and is granted it, HostGrant {cell 0xbbb1, epoch 1}, as in
+# cell-host. The trigger is script-call's ore vein 0x10e6c5 (ACTI
+# MineOreIron01_LFallForestDirt at (134931, -58398, 10752), in the same
+# cell, a world object the server loads with the spawn's chunk, no actor):
+# the rule judges a world object, not its kind, and the spawn is a summit
+# with no trigger in reach that a session could name (docs/LAB.md's summit
+# note). c2 walks onto the vein's origin in two moves within its ground
+# budget (2048 units, then 660 a second; height is free, wire-rules
+# movement): at 0.5 s half the way, at 2.5 s the rest, 1468 units over the
+# ground each, the vein's cell all along, so no view changes. At 3 s c2
+# reports the cell loaded (nothing: c1 hosts it). At 3.5 s c2 reports its
+# own player (0x14) entering the vein (entry 1): the wire server relays it
+# to c1 alone, RelayedActivation {target 0x10e6c5, caster 0xff000003, entry
+# 1}. Two entries send nothing, each said by its name in the wire server's
+# log: at 3.7 s c2 reports c1's actor 0xff000002 entering (E_ENTRY_PRESSER:
+# neither its own nor one its game simulates), and at 6 s c1, the host,
+# reports its own player entering (E_ENTRY_HOST: its own engine ran the
+# script). The legacy server knows no entry and reads each Activate as an
+# activation: c2's own as c2 activating the vein where it stands, c1's as
+# c1 activating it from the spawn (the legacy server has no reach), each
+# answered with the vein's OpenContainer to its activator (an ACTI's
+# activation, MpObjectReference::ProcessActivateNormal); c2's naming c1's
+# actor is refused on both (the hosted caster rule's throw there, the
+# entry's rule here). At 4 s c2 reports the cell gone from its loaded set,
+# so c1's departure leaves it unhosted after the grace with nothing to c2;
+# c2 steps aside at 8 s, one unit, so it outlives c1, as in every session.
+# The rule's other refusals (E_ENTRY_NO_REF, _ACTOR, _NOT_LOADER, _NO_HOST,
+# _REACH) are T0's (unit/TriggerEntryTest.cpp and the wire-rules crate's).
+id: trigger-entry
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 1000, send: {t: 47, cell: 0xbbb1, loaded: true}, reliable: true}
+  - {client: c2, at_ms: 500, move: {dx: 537, dy: 1366, dz: -1955}}
+  - {client: c2, at_ms: 2500, move: {dx: 1074, dy: 2732, dz: -3910}}
+  - {client: c2, at_ms: 3000, send: {t: 47, cell: 0xbbb1, loaded: true}, reliable: true}
+  - {client: c2, at_ms: 3500, send: {t: 6, data: {caster: 0x14, target: 0x10e6c5, isSecondActivation: false, entry: 1}}, reliable: true}
+  - {client: c2, at_ms: 3700, send: {t: 6, data: {caster: 0xff000002, target: 0x10e6c5, isSecondActivation: false, entry: 1}}, reliable: true}
+  - {client: c2, at_ms: 4000, send: {t: 47, cell: 0xbbb1, loaded: false}, reliable: true}
+  - {client: c1, at_ms: 6000, send: {t: 6, data: {caster: 0x14, target: 0x10e6c5, isSecondActivation: false, entry: 1}}, reliable: true}
+  - {client: c2, at_ms: 8000, move: {dx: 1075, dy: 2732, dz: -3910}}
+divergences:
+  - client: c1
+    msg: {t: 48, cell: 0xbbb1, epoch: 1}
+    legacy: 0
+    wire: 1
+    reason: the first loader in reach hosts the cell (HostGrant, thuum docs/verbs/cell-host.md); the legacy server has no cell hosts
+  - client: c1
+    msg: {t: 70, target: 0x10e6c5, caster: 0xff000003, entry: 1}
+    legacy: 0
+    wire: 1
+    reason: the guest's entry into a world trigger relayed to the cell's host alone with the guest's figure as the presser (RelayedActivation's entry, thuum D-C2); the legacy server knows no entry
+  - client: c2
+    msg: {t: 21, target: 0x10e6c5}
+    legacy: 1
+    wire: 0
+    reason: the legacy server reads the guest's entry as its activation of the vein and opens it; the wire server relays the entry and activates nothing
+  - client: c1
+    msg: {t: 21, target: 0x10e6c5}
+    legacy: 1
+    wire: 0
+    reason: the legacy server reads the host's entry as its activation of the vein from the spawn, without a reach; the wire server refuses the entry (E_ENTRY_HOST) and activates nothing
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

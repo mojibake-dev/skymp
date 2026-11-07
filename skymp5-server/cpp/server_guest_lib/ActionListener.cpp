@@ -4753,8 +4753,8 @@ void ActionListener::OnTriggerEntry(MpActor& reporter,
   const auto triggerId = static_cast<uint32_t>(msg.data.target);
 
   // the presser: the reporter's own player for 0x14, else the actor it
-  // names; a caster past 32 bits names no form (the edge bounds it away
-  // from 0 alone), so it reads as no presser
+  // names; a caster past 32 bits names no form (the edge refuses it,
+  // wire-validate check_activate), so it reads as no presser here too
   MpActor* presser = nullptr;
   uint32_t presserId = 0;
   if (msg.data.caster == 0x14) {
@@ -4801,19 +4801,22 @@ void ActionListener::OnTriggerEntry(MpActor& reporter,
     const auto record = partOne.GetEspm().GetBrowser().LookupById(triggerId);
     actorRecord = record.rec && record.rec->GetType() == espm::ACHR::kType;
   }
+  // the trigger the server holds, if it holds one: its primitive, when it
+  // has one, is the engine's own volume for the entry (the reach below)
+  MpObjectReference* held = nullptr;
   if (actorRecord) {
     facts.trigger_kind = 2;
   } else {
     const auto& form = partOne.worldState.LookupFormById(triggerId);
-    MpObjectReference* trigger = form ? form->AsObjectReference() : nullptr;
-    if (trigger && trigger->AsActor()) {
+    held = form ? form->AsObjectReference() : nullptr;
+    if (held && held->AsActor()) {
       facts.trigger_kind = 2;
-    } else if (trigger) {
+    } else if (held) {
       facts.trigger_kind = 1;
       place.emplace(
-        trigger->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles),
-        trigger->GetPos());
-      triggerSize = ActivationTargetSize(*trigger);
+        held->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles),
+        held->GetPos());
+      triggerSize = ActivationTargetSize(*held);
     } else if (const auto record =
                  PlacementOfRecord(partOne.worldState, triggerId)) {
       facts.trigger_kind = 1;
@@ -4844,7 +4847,13 @@ void ActionListener::OnTriggerEntry(MpActor& reporter,
     if (place &&
         presser->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles) ==
           place->first) {
-      facts.distance = (presser->GetPos() - place->second).Length();
+      // a presser inside the trigger's primitive (the box or sphere the
+      // loader keeps for it) is on the trigger however far from its origin,
+      // as the firing's measure and the word wall's condition take it
+      facts.distance = held && held->HasPrimitive() &&
+          held->IsPointInsidePrimitive(presser->GetPos())
+        ? 0.f
+        : (presser->GetPos() - place->second).Length();
     }
   }
   facts.trigger_size = triggerSize;

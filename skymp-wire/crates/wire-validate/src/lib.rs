@@ -867,8 +867,9 @@ fn is_entry_event(entry: u8) -> bool {
 /// A seat's activation report (SkyMP's MsgType 6) and, since SCHEMA_VERSION
 /// 40, its trigger entry (thuum D-W1 and D-C2): an Activate with `entry`
 /// names OnTriggerEnter (1) or OnTriggerLeave (2), is no second activation,
-/// names a presser (`caster`, never 0: the sender's own player 0x14 or an
-/// actor its game simulates) and a trigger of the shared load order
+/// names a presser (`caster`, never 0 nor past 32 bits, a form id's width:
+/// the sender's own player 0x14 or an actor its game simulates) and a
+/// trigger of the shared load order
 /// (`target`, never 0 nor 0xff000000 and up). An Activate without `entry`
 /// keeps the checks every message shares (it carries no float). Whether the
 /// trigger is a world object the server holds, the presser the sender's,
@@ -879,7 +880,7 @@ fn check_activate(m: &skymp::Activate) -> Result<(), Reject> {
     let Some(entry) = m.data.entry else {
         return Ok(());
     };
-    if !is_entry_event(entry) || m.data.is_second_activation || m.data.caster == 0 || m.data.target == 0 || m.data.target >= u64::from(PLAYER_FORMS) {
+    if !is_entry_event(entry) || m.data.is_second_activation || m.data.caster == 0 || m.data.target == 0 || m.data.target >= u64::from(PLAYER_FORMS) || m.data.caster > u64::from(u32::MAX) {
         return Err(Reject::Range);
     }
     Ok(())
@@ -3433,7 +3434,7 @@ mod tests {
             let m = Message::Activate(Activate { data: ActivateData { caster, target, is_second_activation: second, entry, ..Default::default() }, ..Default::default() });
             let want = match entry {
                 None => Ok(()),
-                Some(e) if (e == 1 || e == 2) && !second && caster != 0 && target != 0 && target < 0xff00_0000 => Ok(()),
+                Some(e) if (e == 1 || e == 2) && !second && caster != 0 && target != 0 && target < 0xff00_0000 && caster <= u64::from(u32::MAX) => Ok(()),
                 Some(_) => Err(Reject::Range),
             };
             prop_assert_eq!(validate_server(&m), want);

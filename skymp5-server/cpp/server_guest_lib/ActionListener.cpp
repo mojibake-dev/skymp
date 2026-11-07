@@ -4276,6 +4276,12 @@ void RecordStanding(
                reporter.GetFormId(), msg.cls, msg.fn, npc->GetFormId(),
                msg.caller, msg.handler, applier, verdict.seq, relayed);
 }
+
+// the fifty fixes' D-C3 A (PENDING ELI): a SetAnimationVariable call's
+// variable kept on its subject; defined with the view's bound below
+void KeepScriptVariable(MpObjectReference& subject,
+                        const ScriptCallMessage& msg, uint8_t kind,
+                        uint32_t seq);
 }
 
 // A game-file placement the loader never attaches (a moving static: the hall
@@ -4286,8 +4292,10 @@ void RecordStanding(
 // to the subject's listeners but the reporter as the row's relay native
 // (PlayAnimationAndWait as PlayAnimation), with the subject's sequence; the
 // PlayAnimation pair's event stays the reference's lastAnimation until rung 7,
-// and a call relayed as a graph event writes ObjectAnimation's "animates" line
-// byte for byte (b-puzzle-relay claims it) before the call's own line.
+// a SetAnimationVariable call's variable is kept on the reference with the
+// call's sequence (the fifty fixes' D-C3 A, PENDING ELI), and a call relayed
+// as a graph event writes ObjectAnimation's "animates" line byte for byte
+// (b-puzzle-relay claims it) before the call's own line.
 void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
                                   const ScriptCallMessage& msg)
 {
@@ -4447,13 +4455,17 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
   // first (a record saved before a restart, which started every sequence at
   // 0; ScriptCalls::seed, a max), so a relay never takes a number at or
   // below the one the record was served with; rung 4: so does its recorded
-  // ref state's
+  // ref state's; the fifty fixes' D-C3 A: and each kept graph variable's, so
+  // a later call's variable is never taken as older than a kept one's
   if (subject) {
     if (const auto& record = subject->GetScriptState()) {
       scriptCalls.seed(shape.subject, record->seq);
     }
     if (const auto refStateSeq = subject->GetRefStateSeq()) {
       scriptCalls.seed(shape.subject, *refStateSeq);
+    }
+    for (const auto& variable : subject->GetGraphVariables()) {
+      scriptCalls.seed(shape.subject, variable.seq);
     }
   }
 
@@ -4555,6 +4567,13 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
   if (subject && verdict.keep_last && !event.empty()) {
     subject->SetLastAnimation(event);
   }
+  // the fifty fixes' D-C3 A (PENDING ELI; wire-rules natives Keep::Variable):
+  // the variable a SetAnimationVariable call set is kept on the reference
+  // with the call's sequence and served with its script record; a placement
+  // by its record keeps nothing, as lastAnimation's rule above
+  if (subject && verdict.keep_var != 0) {
+    KeepScriptVariable(*subject, msg, verdict.keep_var, verdict.seq);
+  }
 
   std::vector<std::optional<
     std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
@@ -4611,6 +4630,61 @@ namespace {
 // cap::ANIM_EVENT): a record's view past it would make its apply
 // unrenderable, so such a view is not kept
 constexpr size_t kAnimEventBytes = 128;
+
+// the fifty fixes' D-C3 A (PENDING ELI): the variable a SetAnimationVariable
+// call names (its first argument) and the value it sets (its second), of
+// the row's folded `kind` (3 an int, 4 a float, 5 a bool), kept on `subject`
+// with the call's `seq` where the record's slot rule puts it
+// (MpObjectReference::KeepGraphVariable). R2: recorded as reported, its
+// shape bounded: a name empty, carrying a NUL or past the wire's bound for
+// an event (a served apply carrying it would be refused), or a value that
+// is no finite number of its kind, is kept nowhere
+void KeepScriptVariable(MpObjectReference& subject,
+                        const ScriptCallMessage& msg, uint8_t kind,
+                        uint32_t seq)
+{
+  if (msg.args.size() < 2 || !msg.args[0] || !msg.args[1]) {
+    return;
+  }
+  const auto* name = std::get_if<std::string>(&*msg.args[0]);
+  if (!name || name->empty() || name->size() > kAnimEventBytes ||
+      name->find('\0') != std::string::npos) {
+    return;
+  }
+  MpChangeFormREFR::GraphVariable variable;
+  variable.name = *name;
+  variable.k = kind;
+  variable.seq = seq;
+  const auto& value = *msg.args[1];
+  if (kind == 5) {
+    const auto* flag = std::get_if<bool>(&value);
+    if (!flag) {
+      return;
+    }
+    variable.b = *flag;
+  } else {
+    const auto* number = std::get_if<double>(&value);
+    if (!number || !std::isfinite(*number)) {
+      return;
+    }
+    if (kind == 3) {
+      if (*number < static_cast<double>(std::numeric_limits<int32_t>::min()) ||
+          *number > static_cast<double>(std::numeric_limits<int32_t>::max())) {
+        return;
+      }
+      variable.i = static_cast<int32_t>(*number);
+    } else if (kind == 4) {
+      if (std::fabs(*number) >
+          static_cast<double>(std::numeric_limits<float>::max())) {
+        return;
+      }
+      variable.f = static_cast<float>(*number);
+    } else {
+      return;
+    }
+  }
+  subject.KeepGraphVariable(std::move(variable));
+}
 }
 
 // thuum ADR-068 rung 3 (the script record, decision 5 and its amendment A;

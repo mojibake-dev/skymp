@@ -11,7 +11,12 @@
 // rung4-state-rows-2026-11-07.md section 1(a)) gives the ref state's five and
 // the placements' two their record (Keep::Record) and appends the standing's
 // six and ReferenceAlias.Clear; an actor's or a player's self on the rest
-// lands with rung 5. Included by natives.rs, whose types it names.
+// lands with rung 5. The fifty fixes' D-C3 A (PENDING ELI; thuum
+// docs/research/fifty-fixes-2026-11-07.md section 1(c)) keeps the three
+// SetAnimationVariable rows' variables on their subject (Keep::Variable),
+// still relayed as actions; the platform's NativeRows.inc has no keep
+// column, so the change is this table's alone. Included by natives.rs, whose
+// types it names.
 
 /// Every tabled native (thuum ADR-068 decision 3): rung 2's set, the six
 /// action rows, the flip's twenty-four state and everyone rows and
@@ -21,13 +26,14 @@
 /// and ReferenceAlias.Clear beside ForceRefTo. A native with no row has no
 /// channel. Forty-one rows.
 pub const TABLE: &[Row] = &[
-    // the actions: relayed to the subject's listeners as the row's relay native
+    // the actions: relayed to the subject's listeners as the row's relay
+    // native, the graph variables' kept on the subject as well
     Row { cls: "ObjectReference", func: "PlayAnimation", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Last, params: &[Param::String] },
     Row { cls: "ObjectReference", func: "PlayAnimationAndWait", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Listeners, relay: Relay::Twin { cls: "ObjectReference", func: "PlayAnimation", args: &[0] }, keep: Keep::Last, params: &[Param::String, Param::String] },
     Row { cls: "Debug", func: "SendAnimationEvent", kind: Kind::Action, subject: Subject::Arg0, owner: Owner::CellHost, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Nothing, params: &[Param::Object, Param::String] },
-    Row { cls: "ObjectReference", func: "SetAnimationVariableBool", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Nothing, params: &[Param::String, Param::Bool] },
-    Row { cls: "ObjectReference", func: "SetAnimationVariableInt", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Nothing, params: &[Param::String, Param::Int] },
-    Row { cls: "ObjectReference", func: "SetAnimationVariableFloat", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Nothing, params: &[Param::String, Param::Float] },
+    Row { cls: "ObjectReference", func: "SetAnimationVariableBool", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Variable, params: &[Param::String, Param::Bool] },
+    Row { cls: "ObjectReference", func: "SetAnimationVariableInt", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Variable, params: &[Param::String, Param::Int] },
+    Row { cls: "ObjectReference", func: "SetAnimationVariableFloat", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Variable, params: &[Param::String, Param::Float] },
     // the flip's state rows: the object's record carries them (rung 4: the
     // ref state's five and the placements' two kept as their subject's
     // record, the rest still carried by the change form or a typed verb)

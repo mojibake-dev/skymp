@@ -30,6 +30,7 @@
 #include "wire_bridge_cxx/rules.h"
 #include <ScopedTask.h>
 #include <TimeUtils.h>
+#include <algorithm>
 #include <antigo/Context.h>
 #include <antigo/ResolvedContext.h>
 #include <cctype>
@@ -1473,6 +1474,56 @@ void MpObjectReference::SetLastAnimation(const std::string& lastAnimation)
 std::optional<std::string> MpObjectReference::GetLastAnimation() const
 {
   return ChangeForm().lastAnimation;
+}
+
+std::vector<MpChangeFormREFR::GraphVariable>
+MpObjectReference::GetGraphVariables() const
+{
+  const auto& variables = ChangeForm().graphVariables;
+  return variables ? *variables
+                   : std::vector<MpChangeFormREFR::GraphVariable>();
+}
+
+namespace {
+// one graph variable's name against another's without case, as the engine's
+// BSFixedString compares a string (CommonLibSSE-NG
+// include/RE/B/BSFixedString.h: its strncmp over _strnicmp), so the engine's
+// one variable is kept once whatever case each call spelled it in
+bool SameVariableName(const std::string& lhs, const std::string& rhs)
+{
+  return lhs.size() == rhs.size() &&
+    std::equal(lhs.begin(), lhs.end(), rhs.begin(), [](char a, char b) {
+           return std::tolower(static_cast<unsigned char>(a)) ==
+             std::tolower(static_cast<unsigned char>(b));
+         });
+}
+}
+
+bool MpObjectReference::KeepGraphVariable(
+  MpChangeFormREFR::GraphVariable variable)
+{
+  auto kept = GetGraphVariables();
+  std::vector<skymp::rules::GraphVariableKept> slots;
+  slots.reserve(kept.size());
+  for (const auto& entry : kept) {
+    slots.push_back(
+      { SameVariableName(entry.name, variable.name), entry.seq });
+  }
+  const auto slot = skymp::rules::graph_variable_slot(
+    rust::Slice<const skymp::rules::GraphVariableKept>(slots.data(),
+                                                       slots.size()),
+    variable.seq);
+  if (slot.code == 0 && slot.index < kept.size()) {
+    kept[slot.index] = std::move(variable);
+  } else if (slot.code == 1) {
+    kept.push_back(std::move(variable));
+  } else {
+    return false;
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    changeForm.graphVariables = std::move(kept);
+  });
+  return true;
 }
 
 void MpObjectReference::SetNodeTextureSet(const std::string& node,

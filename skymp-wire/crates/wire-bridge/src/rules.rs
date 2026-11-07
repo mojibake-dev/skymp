@@ -1539,6 +1539,36 @@ mod ffi {
         /// The argument naming the call's behavior graph event, for the
         /// "animates" line; -1 for none.
         event_arg: i8,
+        /// The call's graph variable (its first argument's name, its
+        /// second's value) is kept on its subject with `seq`, by its folded
+        /// kind: 3 an int, 4 a float, 5 a bool (wire-rules natives
+        /// Keep::Variable, the fifty fixes' D-C3 A, PENDING ELI); 0 for
+        /// none.
+        keep_var: u8,
+    }
+
+    /// One graph variable a subject's record keeps, as the core reads it
+    /// for the slot rule (wire-rules natives::KeptVariable): whether it names
+    /// the reported call's variable, the names compared without case, and
+    /// the sequence it was kept at.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct GraphVariableKept {
+        /// It names the reported call's variable.
+        same_name: bool,
+        /// The sequence it was kept at.
+        seq: u32,
+    }
+
+    /// Where a reported call's variable goes in its subject's record
+    /// (wire-rules natives::variable_slot): `code` 0 in place of the kept
+    /// entry at `index`, 1 a new entry at the end, 2 nowhere (the record
+    /// keeps the same variable at a later sequence).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct GraphVariableSlot {
+        /// 0 replace, 1 append, 2 stale.
+        code: u8,
+        /// The entry replaced (code 0), else 0.
+        index: u32,
     }
 
     /// What the core knows of a reported script record (thuum ADR-068 rung
@@ -2730,6 +2760,10 @@ mod ffi {
         /// as the reference's lastAnimation (never for a furniture)
         /// (wire-rules object_animation::judge).
         fn object_animation_owner(facts: &ObjectAnimationFacts) -> ObjectAnimationVerdict;
+        /// The fifty fixes' D-C3 A (PENDING ELI): where a reported call's
+        /// graph variable at `seq` goes in its subject's kept variables, at
+        /// most sixteen (wire-rules natives::variable_slot).
+        fn graph_variable_slot(kept: &[GraphVariableKept], seq: u32) -> GraphVariableSlot;
 
         /// thuum ADR-068 rung 4 (amendment B, read 8): every created alias
         /// of one quest's reference aliases and where its item goes
@@ -2804,7 +2838,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
+pub use ffi::{RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -4621,6 +4655,7 @@ fn quiet_script_call() -> ScriptCallVerdict {
         keep_evidence: false,
         record: 0,
         event_arg: -1,
+        keep_var: 0,
     }
 }
 
@@ -4693,6 +4728,7 @@ impl ScriptCalls {
                     natives::Audience::Nobody => 2,
                 };
                 out.keep_last = a.keep == natives::Keep::Last;
+                out.keep_var = a.variable_kind.unwrap_or(0);
                 out.event_arg = a.graph_event_arg.and_then(|i| i8::try_from(i).ok()).unwrap_or(-1);
             }
             natives::Verdict::Kept { subject } => {
@@ -4833,6 +4869,16 @@ fn trigger_entry(f: &TriggerEntryFacts) -> TriggerEntryVerdict {
             why: r.why,
             host: 0,
         },
+    }
+}
+
+fn graph_variable_slot(kept: &[GraphVariableKept], seq: u32) -> GraphVariableSlot {
+    let parsed: Vec<natives::KeptVariable> = kept.iter().map(|k| natives::KeptVariable { same_name: k.same_name, seq: k.seq }).collect();
+    match natives::variable_slot(&parsed, seq) {
+        // the index is below the slice's length, at most a u32 the core sent
+        natives::VariableSlot::Replace(i) => u32::try_from(i).map_or(GraphVariableSlot { code: 2, index: 0 }, |index| GraphVariableSlot { code: 0, index }),
+        natives::VariableSlot::Append => GraphVariableSlot { code: 1, index: 0 },
+        natives::VariableSlot::Stale => GraphVariableSlot { code: 2, index: 0 },
     }
 }
 
@@ -6045,5 +6091,28 @@ mod tests {
         // the lever nobody uses: the host's, kept nowhere
         let unused = object_animation_owner(&ObjectAnimationFacts { reporter: 0xff00_0000, occupant: 0, occupant_owner: 0, ..pull });
         assert_eq!((unused.code, unused.keep), (ObjectAnimationCode::Host, false));
+    }
+
+    #[test]
+    fn the_bridge_keeps_a_graph_variable_with_its_kind_and_slot() {
+        // the fifty fixes' D-C3 A: the host's SetAnimationVariableFloat on
+        // the web 0x3758c, relayed as an action and kept by its kind
+        let float = ScriptArg { kind: 2, form_id: 0 };
+        let text = ScriptArg { kind: 3, form_id: 0 };
+        let at = script_call_subject("ObjectReference", "SetAnimationVariableFloat", 0x3758c, &[text, float]);
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0x3758c, epoch: 1, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 1, host: 0, host_epoch: 0 };
+        let mut calls = new_script_calls();
+        let v = calls.judge(at.row, &[text, float], &facts, 0);
+        assert_eq!((v.code, v.seq, v.keep_var, v.keep_last, v.relay_fn.as_str()), (ScriptCallCode::Accepted, 1, 4, false, "SetAnimationVariableFloat"));
+        let play = script_call_subject("ObjectReference", "PlayAnimation", 0x3758c, &[text]);
+        assert_eq!(calls.judge(play.row, &[text], &facts, 0).keep_var, 0);
+        // the slot rule: the same name in place, a new one appended, a stale
+        // call nowhere, the oldest out of a full record
+        let kept = |same_name, seq| GraphVariableKept { same_name, seq };
+        assert_eq!(graph_variable_slot(&[], 1), GraphVariableSlot { code: 1, index: 0 });
+        assert_eq!(graph_variable_slot(&[kept(false, 1), kept(true, 2)], 3), GraphVariableSlot { code: 0, index: 1 });
+        assert_eq!(graph_variable_slot(&[kept(true, 4)], 3), GraphVariableSlot { code: 2, index: 0 });
+        let full: Vec<GraphVariableKept> = (1..=16u32).map(|seq| kept(false, seq)).collect();
+        assert_eq!(graph_variable_slot(&full, 17), GraphVariableSlot { code: 0, index: 0 });
     }
 }

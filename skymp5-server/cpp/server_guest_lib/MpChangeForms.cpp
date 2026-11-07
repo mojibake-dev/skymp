@@ -654,6 +654,30 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
     res["worldGlobals"] = { { "entries", std::move(entries) } };
   }
 
+  // the fifty fixes' D-C3 A (PENDING ELI): the graph variables a script set,
+  // each with its kind, its one value and its sequence; absent in older
+  // records and where no script set one, read as none
+  if (changeForm.graphVariables.has_value() &&
+      !changeForm.graphVariables->empty()) {
+    auto entries = nlohmann::json::array();
+    for (const auto& entry : *changeForm.graphVariables) {
+      nlohmann::json j = { { "name", entry.name },
+                           { "k", entry.k },
+                           { "seq", entry.seq } };
+      if (entry.i) {
+        j["i"] = *entry.i;
+      }
+      if (entry.f) {
+        j["f"] = *entry.f;
+      }
+      if (entry.b) {
+        j["b"] = *entry.b;
+      }
+      entries.push_back(std::move(j));
+    }
+    res["graphVariables"] = { { "entries", std::move(entries) } };
+  }
+
   // thuum docs/verbs/shouts.md; absent in older records, read as none
   if (changeForm.shoutRecord.has_value() && !changeForm.shoutRecord->Empty()) {
     res["shoutRecord"] = {
@@ -816,6 +840,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
   static const JsonPointer placedByScript("placedByScript");
   static const JsonPointer aliasFills("aliasFills");
   static const JsonPointer worldGlobals("worldGlobals");
+  static const JsonPointer graphVariables("graphVariables");
   static const JsonPointer favorites("favorites");
   static const JsonPointer raceMenuPreset("raceMenuPreset");
   static const JsonPointer staffRank("staffRank");
@@ -1399,6 +1424,47 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
       ReadEx(parsedEntries[i], value, &globals[i].value);
     }
     res.worldGlobals = std::move(globals);
+  }
+
+  // the fifty fixes' D-C3 A (PENDING ELI): the key as ToJson writes it, read
+  // only where present (rule 6's migration: an older record reads as none
+  // and keeps its formVersion)
+  if (element.at_pointer(graphVariables.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, graphVariables, &jTmp);
+    static const JsonPointer entries("entries"), name("name"), k("k"), i("i"),
+      f("f"), b("b"), seq("seq");
+    std::vector<simdjson::dom::element> parsedEntries;
+    ReadVector(jTmp, entries, &parsedEntries);
+    std::vector<MpChangeFormREFR::GraphVariable> parsed;
+    for (auto& entry : parsedEntries) {
+      MpChangeFormREFR::GraphVariable variable;
+      const char* nameTmp = "";
+      ReadEx(entry, name, &nameTmp);
+      variable.name = nameTmp;
+      ReadEx(entry, k, &variable.k);
+      ReadEx(entry, seq, &variable.seq);
+      if (entry.at_pointer(i.GetData()).error() ==
+          simdjson::error_code::SUCCESS) {
+        int32_t iTmp = 0;
+        ReadEx(entry, i, &iTmp);
+        variable.i = iTmp;
+      }
+      if (entry.at_pointer(f.GetData()).error() ==
+          simdjson::error_code::SUCCESS) {
+        float fTmp = 0.f;
+        ReadEx(entry, f, &fTmp);
+        variable.f = fTmp;
+      }
+      if (entry.at_pointer(b.GetData()).error() ==
+          simdjson::error_code::SUCCESS) {
+        bool bTmp = false;
+        ReadEx(entry, b, &bTmp);
+        variable.b = bTmp;
+      }
+      parsed.push_back(std::move(variable));
+    }
+    res.graphVariables = std::move(parsed);
   }
 
   if (element.at_pointer(shoutRecord.GetData()).error() ==

@@ -24,9 +24,9 @@ const GRAPH_VAR_KINDS: Record<string, number> = {
 // case): the six action rows (PlayAnimationAndWait comes as its twin
 // PlayAnimation), the two motion rows and Sound.Play. Sound.Play and a static
 // row (selfId 0) name their subject in their first argument; every look but
-// Sound.Play's carries its subject's seq. D-W2's detection row
-// (CreateDetectionEvent during a firing, the host's alone; its shape the
-// platform layer's, coming) joins this table when it lands
+// Sound.Play's carries its subject's seq. D-W2's detection row,
+// CreateDetectionEvent during a firing, comes to the cell's host alone
+// (playDetection); its seq is not asked for
 const LOOK_ROWS = new Set<string>([
   "objectreference.playanimation",
   "debug.sendanimationevent",
@@ -36,6 +36,7 @@ const LOOK_ROWS = new Set<string>([
   "objectreference.setmotiontype",
   "objectreference.applyhavokimpulse",
   "sound.play",
+  "objectreference.createdetectionevent",
 ]);
 
 export class SpSnippetService extends ClientListener {
@@ -120,6 +121,10 @@ export class SpSnippetService extends ClientListener {
   private apply(snippet: SpSnippetMessage): Promise<unknown> {
     const event = snippet.arguments[0];
     const look = this.lookSubject(snippet);
+    if (look !== undefined && snippet.function.toLowerCase() === "createdetectionevent") {
+      this.playDetection(snippet, look);
+      return Promise.resolve(undefined);
+    }
     if (typeof snippet.seq === "number"
       && snippet.class.toLowerCase() === "objectreference"
       && snippet.function.toLowerCase() === "playanimation"
@@ -170,7 +175,7 @@ export class SpSnippetService extends ClientListener {
       return undefined;
     }
     const sound = row === "sound.play";
-    if (!sound && typeof snippet.seq !== "number") {
+    if (!sound && row !== "objectreference.createdetectionevent" && typeof snippet.seq !== "number") {
       return undefined;
     }
     const first = snippet.arguments[0];
@@ -182,6 +187,28 @@ export class SpSnippetService extends ClientListener {
     }
     const role = ObjectReferenceEx.trapRole(remoteIdToLocalId(subject));
     return role !== null && role.family && role.trigger === true ? subject : undefined;
+  }
+
+  // D-W2's detection row on the cell's host (the server relays it here alone,
+  // akOwner the reporter's actor by its server id): the trigger script's
+  // ObjectReference.CreateDetectionEvent run on this seat's copy of the
+  // trigger with akOwner the presser's figure here, its local reference, so
+  // a guest's bone alarm wakes the NPCs this seat simulates. A TypeScript
+  // call, under the platform's mark: the seam counts it "(platform)" and
+  // never reports it again. The update's context
+  private playDetection(snippet: SpSnippetMessage, subject: number): void {
+    const head = `trigger look ${subject.toString(16)} ObjectReference.CreateDetectionEvent`;
+    const ownerArg = snippet.arguments[0];
+    const level = snippet.arguments[1];
+    const ownerId = ownerArg !== null && typeof ownerArg === "object" && typeof ownerArg.formId === "number" ? ownerArg.formId : 0;
+    const trigger = this.sp.ObjectReference.from(this.sp.Game.getFormEx(remoteIdToLocalId(subject)));
+    const owner = ownerId !== 0 ? this.sp.Actor.from(this.sp.Game.getFormEx(remoteIdToLocalId(ownerId))) : null;
+    if (!trigger || !owner || typeof level !== "number" || !Number.isInteger(level)) {
+      logLab("verb:traps", `${head} skipped, no ${!trigger ? "reference" : !owner ? `owner ${ownerId.toString(16)} here` : "sound level"} (D-W2)`);
+      return;
+    }
+    trigger.createDetectionEvent(owner, level);
+    logLab("verb:traps", `${head} played here (owner ${ownerId.toString(16)}, level ${level}) (D-W2)`);
   }
 
   // the watcher's line, once its play ran (a snippet that threw says so in

@@ -181,10 +181,12 @@ export class ScriptCallService extends ClientListener {
     // nowhere. The motion rows reached PropService above by their names, whose
     // trigger rule makes no body and no claim of a trigger (the 48 rule,
     // unchanged); a trigger is no pillar, so no side is noted. JS state alone.
-    // D-W2's detection row comes here when its shape lands (the platform
-    // layer's): the trigger script's CreateDetectionEvent during its firing,
-    // relayed to the cell's host alone so a guest's bone alarm wakes the
-    // host's NPCs
+    // D-W2's detection row (the platform's P3): the trigger script's
+    // ObjectReference.CreateDetectionEvent during its firing, kind "look"
+    // with the trigger its self and akOwner its first argument (0x14 for this
+    // seat's own player, which toSnippetArgument sends as its actor's server
+    // id), goes the same way; the server relays it to the cell's host alone,
+    // so a guest's bone alarm wakes the NPCs the host simulates
     private noteLook(call: ScriptCall) {
         this.queue({ call, record: false, key: undefined, dropped: false });
     }

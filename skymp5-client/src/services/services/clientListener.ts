@@ -245,8 +245,11 @@ declare module "skyrimPlatform" {
     // the trap bodies another seat streams, and the references whose server
     // record is being applied (their Papyrus events blanked meanwhile). The
     // role's trigger (a script on the reference reaching TrapTriggerBase,
-    // never a trap body; playtest 48) is absent from an older platform's
-    function getTrapRole(formId: number): { family: boolean; playerOnly: boolean; destroyed: boolean; trigger?: boolean } | null;
+    // never a trap body; playtest 48) is absent from an older platform's, as is
+    // exempt (D-W2's fallback: one of its classes named in
+    // setTriggerPresserExempt, so the presser rule passes its non-owned
+    // presses and every seat fires it, D-S3)
+    function getTrapRole(formId: number): { family: boolean; playerOnly: boolean; destroyed: boolean; trigger?: boolean; exempt?: boolean } | null;
     function setPropFollowed(formId: number, followed: boolean): boolean;
     function setRecordApplying(formId: number, applying: boolean): boolean;
     // thuum docs/DECISIONS.md D-W1 A and D-C2 A (a trigger volume's entry is

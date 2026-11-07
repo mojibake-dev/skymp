@@ -227,7 +227,11 @@ export class ActivationService extends ClientListener {
   // later links); (4) anything else is the cell's host's, as before, a
   // mechanism activating a family target among them (the puzzle lever
   // 0xaa8c3's darts, the pull chains 0xfda45 and 0xfda43's blades: no family
-  // trigger, so its pair is the host's to report). HYPOTHESIS H-W1 until
+  // trigger, so its pair is the host's to report). An exempt trigger (D-W2's
+  // fallback, getTrapRole's exempt: every seat's engine fires it, D-S3) is
+  // never a root and its own activation is the cell host's report, so its
+  // pairs take steps (3) and (4) as D-S3's point 5 did and no seat fires it
+  // twice. HYPOTHESIS H-W1 until
   // x-trigger-owner: the press mark or the trigger's own activation reaches
   // this service before the pair it causes (the lines' order reads it). An
   // activate event's context: the game reads are legal here
@@ -236,7 +240,7 @@ export class ActivationService extends ClientListener {
     const relays = this.controller.lookupListener(RelayedActivationService);
     if (caster === target) {
       const own = ObjectReferenceEx.trapRole(caster);
-      if (own !== null && own.family && own.trigger === true) {
+      if (own !== null && own.family && own.trigger === true && own.exempt !== true) {
         this.markFired(caster, now);
         logLab(TAG, `trap ${idOf(target)} fired here by ${idOf(caster)}: its own activation, reported (D-W1)`);
         this.sendOwnActivation(target);
@@ -252,13 +256,15 @@ export class ActivationService extends ClientListener {
       return;
     }
     const role = ObjectReferenceEx.trapRole(caster);
-    if (role !== null && role.family && role.trigger === true && this.firedHere(caster, now) && !relays.wasRelayPlayed(caster, now)) {
+    if (role !== null && role.family && role.trigger === true && role.exempt !== true && this.firedHere(caster, now) && !relays.wasRelayPlayed(caster, now)) {
       logLab(TAG, `trap ${idOf(target)} fired here by ${idOf(caster)}: the presser's owner's firing, reported (D-W1)`);
       this.reportLinked(caster, target);
       return;
     }
     if (role !== null && role.family && ObjectReferenceEx.isTrapFamily(target)) {
-      logLab(TAG, `trap ${idOf(target)} fired here by ${idOf(caster)}: a later link of a firing, each seat's own (D-W1)`);
+      logLab(TAG, role.exempt === true
+        ? `trap ${idOf(target)} fired here by ${idOf(caster)}: every seat fires the trap family itself, not reported (D-S3)`
+        : `trap ${idOf(target)} fired here by ${idOf(caster)}: a later link of a firing, each seat's own (D-W1)`);
       return;
     }
     if (this.controller.lookupListener(HostService).isHostedHere(e.target)) {

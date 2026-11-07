@@ -1,8 +1,10 @@
-import { FormType, ObjectReference, Utility } from 'skyrimPlatform';
+import { FormType, FurnitureAnimationEvent, ObjectReference, Utility } from 'skyrimPlatform';
 import { ClientListener, CombinedController, Sp } from './clientListener';
 import { ConnectionMessage } from '../events/connectionMessage';
 import { ObjectAnimationMessage } from '../messages/objectAnimationMessage';
 import { CreateActorMessage } from '../messages/createActorMessage';
+import { ActivateMessage } from '../messages/activateMessage';
+import { AnyMessage } from '../messages/anyMessage';
 import { MsgType } from '../../messages';
 import { HostService } from './hostService';
 import { ScriptStateService } from './scriptStateService';
@@ -38,6 +40,26 @@ import { logError, logLab, logTrace } from '../../logging';
 // exact set is HYPOTHESIS until x-object-anim reads it. Lines for the lab:
 // "object animation <refr> <event> reported" on the host, "object animation
 // <refr> <event> played" on a guest.
+// The furniture (thuum docs/DECISIONS.md D-W1 and D-C2's lever item, H-P1;
+// docs/research/fifty-fixes-2026-11-07.md 1(d)): a FURN's own graph event
+// (the puzzle lever's Lever_PlayerPush, which the engine's NoPlayer branch
+// sends inside remoteServer's activate(player, true), under Override, where
+// the hook above never crosses) comes from the platform's furniture branch as
+// furnitureAnimation, whatever its name (the idle data picks it, so no
+// pattern), and is noted beside the hook's events. Its owner is its user
+// (ADR-063, a container's opener's rule): this seat while the server's
+// OpenContainer named it here (until this seat's closing activation or
+// USE_MS, or while the player's furniture is it), else the seat that hosts
+// its cell (an NPC's use); the server checks the recorded occupant's owner.
+// A relay's play here re-enters through the furniture branch (it notes under
+// Override too, unlike the hook above), and its self-played mark drops it.
+// A furniture's event is kept nowhere (a lever back at rest would push again
+// at every late join and every 3D load). The client setting
+// furnitureAnimation (on unless false) turns on the platform's branch
+// (setFurnitureAnimation) and this path; off, or a platform without them
+// (said once), the cell's host reports as before. The report keeps "object
+// animation <refr> <event> reported", then "(furniture, this seat's use)" or
+// "(furniture, cell hosted here)".
 // The platform's native filter matches an event name's case exactly (Handler::Matches compares bytes), while the
 // engine matches a graph event without case; a script may name its event in either: defaultPuzzlePillarScript turns
 // the whale with PlayAnimationAndWait("trigger02", "Turned02") (x-native-frame 20261105-033116, the script's own call
@@ -125,6 +147,11 @@ const REAPPLY_LINE_MS = 10_000;
 // (past it the set starts over: a relay is kept again after its reference's
 // next create word)
 const SUBSCRIBED_MAX = 16384;
+// the furniture: a use this seat's OpenContainer opened counts as this seat's
+// for this long at most (UNMEASURED: remoteServer's furniture wait gives up
+// at 15 s and then sends the closing activation), and the uses kept at most
+const USE_MS = 20_000;
+const USES_MAX = 64;
 
 // a world object's last animation as this seat keeps it: the record's view
 // or the newest relay, whichever has the higher seq (SpSnippetService's
@@ -151,6 +178,7 @@ export class ObjectAnimationService extends ClientListener {
     // and re-applies nothing, as ScriptStateService then applies nothing
     const settings = this.sp.settings["skymp5-client"] as Record<string, unknown> | undefined;
     this.keepEnabled = !settings || settings["scriptRecord"] !== false;
+    this.furnitureEnabled = this.startFurniture(settings);
     this.controller.emitter.on('objectAnimationMessage', (e) =>
       this.onRelayed(e),
     );
@@ -214,7 +242,7 @@ export class ObjectAnimationService extends ClientListener {
           // the engine's return flag (NotifyAnimationGraph's) is kept on the
           // note: a pillar's Trigger0N is reported whatever it says (below),
           // every other event only when it took
-          this.noted.push({ selfId: ctx.selfId, event: ctx.animEventName, took: ctx.animationSucceeded });
+          this.noted.push({ selfId: ctx.selfId, event: ctx.animEventName, took: ctx.animationSucceeded, furniture: false });
         },
       };
       // two native ranges around the player's id
@@ -290,7 +318,8 @@ export class ObjectAnimationService extends ClientListener {
     const noted = this.noted;
     this.noted = [];
     const host = this.controller.lookupListener(HostService);
-    for (const { selfId, event, took } of noted) {
+    const now = Date.now();
+    for (const { selfId, event, took, furniture } of noted) {
       // playtest 46 (2026-11-04 23:36Z), and 45's and the green relay run's
       // server logs before it: the host never reported a pillar's Trigger02,
       // only Trigger01 and Trigger03, so a guest sat one side behind until
@@ -311,8 +340,10 @@ export class ObjectAnimationService extends ClientListener {
       // load puts the script on side N, its own Trigger0N moves it to N+1,
       // so the LAST side-naming event is the script's side, which a seat
       // that hosted, turned and walked out keeps in its Papyrus state (the
-      // review of 30839d4b, F3)
-      this.noteScriptSide(selfId, event);
+      // review of 30839d4b, F3); a furniture's use event is no script's act
+      if (!furniture) {
+        this.noteScriptSide(selfId, event);
+      }
       if (this.wasSelfPlayed(selfId, event)) {
         // rule 8: the mark's hit is logged so a run says whether a replay
         // ever re-enters the hook (zero lines with a record present means
@@ -324,18 +355,124 @@ export class ObjectAnimationService extends ClientListener {
       if (!refr || this.sp.Actor.from(refr)) {
         continue;
       }
-      if (refr.getBaseObject()?.getType() === FormType.Door) {
+      const kind = refr.getBaseObject()?.getType();
+      if (kind === FormType.Door) {
         continue;
       }
-      if (!host.isHostedHere(refr)) {
+      // a furniture's event is its user's (the header's furniture paragraph):
+      // this seat's use, else its cell's host's (an NPC's use)
+      let owner = "";
+      if (this.furnitureEnabled && kind === FormType.Furniture) {
+        if (this.usedHere(selfId, now)) {
+          owner = " (furniture, this seat's use)";
+        } else if (host.isHostedHere(refr)) {
+          owner = " (furniture, cell hosted here)";
+        } else {
+          logTrace(this, `object animation ${selfId.toString(16)} ${event} dropped: furniture not used or hosted here`);
+          continue;
+        }
+      } else if (!host.isHostedHere(refr)) {
         continue;
       }
       this.controller.emitter.emit('sendMessage', {
         message: { t: MsgType.ObjectAnimation, refr: localIdToRemoteId(selfId), event },
         reliability: 'reliable',
       });
-      logTrace(this, `object animation ${selfId.toString(16)} ${event} reported${took ? "" : " (the graph's flag said refused)"}`);
+      logTrace(this, `object animation ${selfId.toString(16)} ${event} reported${took ? "" : " (the graph's flag said refused)"}${owner}`);
     }
+  }
+
+  // the furniture path's switch (.claude/rules/native.md's A/B): the client
+  // setting furnitureAnimation, on unless false (scriptRecord's read), told to
+  // the platform through setFurnitureAnimation (off by default there, so an
+  // older client keeps the old path); on only when the platform takes it and
+  // raises furnitureAnimation, said once otherwise
+  private startFurniture(settings: Record<string, unknown> | undefined): boolean {
+    if (settings && settings["furnitureAnimation"] === false) {
+      logTrace(this, "furnitureAnimation is off in settings: a furniture's events stay its cell host's to report");
+      try {
+        this.sp.setFurnitureAnimation(false);
+      } catch (e) {
+        // an older platform: it has no furniture branch to turn off
+      }
+      return false;
+    }
+    try {
+      this.controller.on('furnitureAnimation', (e) => this.onFurnitureAnimation(e));
+    } catch (e) {
+      logLab('verb:furniture', `furnitureAnimation unavailable on this platform (${e}); the old path stands`);
+      return false;
+    }
+    try {
+      if (this.sp.setFurnitureAnimation(true) === false) {
+        logError(this, "setFurnitureAnimation(true) refused; the old path stands");
+        return false;
+      }
+    } catch (e) {
+      logLab('verb:furniture', `setFurnitureAnimation unavailable on this platform (${e}); the old path stands`);
+      return false;
+    }
+    this.controller.emitter.on('openContainerMessage', (e) => this.noteUse(e.message.target));
+    this.controller.emitter.on('sendMessage', (e) => this.noteClose(e.message));
+    return true;
+  }
+
+  // the platform's furnitureAnimation (a tick task at the hook's leave; no
+  // game call in its handler, JS state alone): noted for the update with the
+  // furniture mark, as the hook's events are
+  private onFurnitureAnimation(e: FurnitureAnimationEvent) {
+    if (!this.furnitureEnabled) {
+      return;
+    }
+    const { refrId, event } = e;
+    if (typeof refrId !== 'number' || refrId <= 0 || refrId === PLAYER_ID || refrId > LAST_GAME_FILE_ID || typeof event !== 'string' || event === '') {
+      return;
+    }
+    this.noted.push({ selfId: refrId, event, took: e.took === true, furniture: true });
+  }
+
+  // this seat's use of a furniture: the server's OpenContainer names it to the
+  // one user it admitted, ahead of remoteServer's activate(player, true), the
+  // call that runs the engine's furniture code (lever-furn-static.md step 4),
+  // so the mark is up before the event it lets through. A message handler: JS
+  // state alone, the target by id (a container's or a body's mark is never
+  // asked: only a FURN's graph raises a furniture event)
+  private noteUse(remoteTarget: number) {
+    const localId = remoteIdToLocalId(remoteTarget);
+    if (localId === 0) {
+      return;
+    }
+    if (this.uses.size >= USES_MAX && !this.uses.has(localId)) {
+      this.uses.clear();
+    }
+    this.uses.set(localId, Date.now() + USE_MS);
+  }
+
+  // the use ends at this seat's closing activation of it (remoteServer's
+  // second Activate, isSecondActivation true). JS state alone
+  private noteClose(message: AnyMessage) {
+    if (message.t !== MsgType.Activate) {
+      return;
+    }
+    const data = (message as ActivateMessage).data;
+    if (data && data.isSecondActivation === true && data.caster === PLAYER_ID) {
+      this.uses.delete(remoteIdToLocalId(data.target));
+    }
+  }
+
+  // whether the furniture's use is this seat's now: its use mark, or the
+  // player's own furniture (a seat held longer than USE_MS). The update's
+  // context
+  private usedHere(localId: number, now: number): boolean {
+    const until = this.uses.get(localId);
+    if (until !== undefined) {
+      if (now <= until) {
+        return true;
+      }
+      this.uses.delete(localId);
+    }
+    const seat = this.sp.Game.getPlayer()?.getFurnitureReference();
+    return !!seat && seat.getFormID() === localId;
   }
 
   private onRelayed(e: ConnectionMessage<ObjectAnimationMessage>) {
@@ -689,9 +826,15 @@ export class ObjectAnimationService extends ClientListener {
 
   // a world object whose last animation is kept and re-applied here: never an
   // actor (the stream's) nor a trap family reference (every seat fires the
-  // family itself, D-S3; remoteServer's replay skips it the same way)
+  // family itself, D-S3; remoteServer's replay skips it the same way), nor,
+  // with the furniture path on, a furniture: its use event is relayed and
+  // kept nowhere (a lever back at rest would push again at every late join
+  // and every 3D load; the server keeps none either)
   private keepsFor(refr: ObjectReference, localId: number): boolean {
-    return !this.sp.Actor.from(refr) && !ObjectReferenceEx.isTrapFamily(localId);
+    if (this.sp.Actor.from(refr) || ObjectReferenceEx.isTrapFamily(localId)) {
+      return false;
+    }
+    return !(this.furnitureEnabled && refr.getBaseObject()?.getType() === FormType.Furniture);
   }
 
   // ScriptStateService's "current" test beside the seq, in an update's
@@ -808,7 +951,7 @@ export class ObjectAnimationService extends ClientListener {
     return true;
   }
 
-  private noted: { selfId: number; event: string; took: boolean }[] = [];
+  private noted: { selfId: number; event: string; took: boolean; furniture: boolean }[] = [];
   private selfPlayed = new Map<string, number>();
   private scriptSide = new Map<number, number>();
   private recordEvent = new Map<number, string>();
@@ -828,4 +971,8 @@ export class ObjectAnimationService extends ClientListener {
   // DestroyActor (which names the idx alone) ends it (note 1)
   private subscribedIdx = new Map<number, number>();
   private keepEnabled: boolean;
+  // the furniture path (startFurniture), and this seat's uses by local id,
+  // until when (noteUse, noteClose)
+  private furnitureEnabled: boolean;
+  private uses = new Map<number, number>();
 }

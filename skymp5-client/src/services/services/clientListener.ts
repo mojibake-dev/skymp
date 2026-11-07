@@ -263,6 +263,23 @@ declare module "skyrimPlatform" {
     function on(eventName: 'triggerEntry', callback: (event: TriggerEntryEvent) => void): EventHandle;
     function once(eventName: 'triggerEntry', callback: (event: TriggerEntryEvent) => void): EventHandle;
     function setTriggerPresserRule(enabled: boolean): boolean;
+    // thuum docs/verbs/traps.md H-P1 (the puzzle lever, a NoPlayer FURN;
+    // docs/research/fifty-fixes-2026-11-07.md 1(b), the furniture branch): a
+    // FURN's own graph event outside a script action, under Override or not,
+    // raised on a tick task at the animation hook's leave with the graph's
+    // answer (took), never through the hook's handlers; off by default in
+    // the platform, turned on by ObjectAnimationService from the client
+    // setting furnitureAnimation. No game call in its handler. The platform
+    // layer writes the bodies on its own branch; an older platform has
+    // neither, and every use is guarded (said once)
+    interface FurnitureAnimationEvent {
+        refrId: number;
+        event: string;
+        took: boolean;
+    }
+    function on(eventName: 'furnitureAnimation', callback: (event: FurnitureAnimationEvent) => void): EventHandle;
+    function once(eventName: 'furnitureAnimation', callback: (event: FurnitureAnimationEvent) => void): EventHandle;
+    function setFurnitureAnimation(enabled: boolean): boolean;
     // thuum ADR-068 amendment A (rung 3, the script record): a reference whose
     // served record carries a view, so the gate holds its OnLoad and OnCellLoad
     // (and notes which it held) until ApplyScriptState clears the mark; a plain

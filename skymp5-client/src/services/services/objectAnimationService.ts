@@ -168,8 +168,12 @@ const USES_MAX = 64;
 // sets them again at each 3D load, before it plays the kept event. An entry
 // may hold variables and no event ("", seq 0, never shown). Known limit: the
 // host's own variables are kept nowhere here (its script's calls are never
-// relayed back to it), so its own 3D reload does not set them again
+// relayed back to it), so its own 3D reload does not set them again. The
+// names are keyed by their lower case (the engine's strings are case-blind,
+// markSelfPlayed's rule; the server keeps one variable per name ignoring
+// case), each kept with the spelling of its newest call, which setOne passes
 type KeptVar = {
+  name: string;            // the newest call's own spelling
   k: number;               // 3 int, 4 float, 5 bool (ScriptVar's folded kinds)
   value: number | boolean;
   seq: number;             // the object's seq of the call that set it
@@ -181,7 +185,7 @@ type LastAnimation = {
   shown: boolean;   // played on the 3D now loaded; false again once that 3D goes
   tries: number;    // re-applies on this 3D the graph refused
   lookAt: number;   // the next look, at the earliest (0: every update)
-  vars: Map<string, KeptVar>;  // the graph variables by name, at most GRAPH_VARS_MAX
+  vars: Map<string, KeptVar>;  // the graph variables by lower-case name, at most GRAPH_VARS_MAX
   varsShown: boolean;          // all of them set on the 3D now loaded
 };
 // the wire's cap on a record's graph variables (cap::GRAPH_VARS, UNMEASURED):
@@ -853,12 +857,13 @@ export class ObjectAnimationService extends ClientListener {
   // D-C3 A: one graph variable kept for the object, the newest seq per name;
   // `set` whether it stands on the 3D now loaded (else the next poll that
   // finds the 3D here sets it). An update's context
-  private keepVariable(refr: ObjectReference, localId: number, name: string, v: KeptVar, set: boolean): void {
+  private keepVariable(refr: ObjectReference, localId: number, v: KeptVar, set: boolean): void {
     if (!this.keepEnabled || !this.keepsFor(refr, localId)) {
       return;
     }
+    const key = v.name.toLowerCase();
     let kept = this.lastAnimations.get(localId);
-    const old = kept?.vars.get(name);
+    const old = kept?.vars.get(key);
     if (old !== undefined && v.seq < old.seq) {
       return;
     }
@@ -872,8 +877,8 @@ export class ObjectAnimationService extends ClientListener {
         kept.vars.delete(oldest);
       }
     }
-    kept.vars.delete(name);
-    kept.vars.set(name, v);
+    kept.vars.delete(key);
+    kept.vars.set(key, v);
     kept.varsShown = kept.varsShown && set;
     this.lastAnimations.delete(localId);
     this.lastAnimations.set(localId, kept);
@@ -883,13 +888,13 @@ export class ObjectAnimationService extends ClientListener {
   // one variable on the reference's graph through the platform's own calls
   // (CallNativeApi's Override: the seam tallies them "(platform)" and batches
   // none, so nothing set here is reported back)
-  private setOne(refr: ObjectReference, name: string, v: KeptVar): void {
+  private setOne(refr: ObjectReference, v: KeptVar): void {
     if (v.k === 5) {
-      refr.setAnimationVariableBool(name, v.value === true);
+      refr.setAnimationVariableBool(v.name, v.value === true);
     } else if (v.k === 3) {
-      refr.setAnimationVariableInt(name, Number(v.value));
+      refr.setAnimationVariableInt(v.name, Number(v.value));
     } else {
-      refr.setAnimationVariableFloat(name, Number(v.value));
+      refr.setAnimationVariableFloat(v.name, Number(v.value));
     }
   }
 
@@ -902,7 +907,7 @@ export class ObjectAnimationService extends ClientListener {
       return 0;
     }
     kept.varsShown = true;
-    kept.vars.forEach((v, name) => this.setOne(refr, name, v));
+    kept.vars.forEach((v) => this.setOne(refr, v));
     return kept.vars.size;
   }
 
@@ -917,12 +922,12 @@ export class ObjectAnimationService extends ClientListener {
     if (!refr) {
       return;
     }
-    const v: KeptVar = { k, value, seq };
+    const v: KeptVar = { name, k, value, seq };
     const loaded = refr.is3DLoaded();
-    this.setOne(refr, name, v);
+    this.setOne(refr, v);
     logTrace(this, `graph variable ${remoteRefr.toString(16)} ${name} ${varText(v)} set (relayed, seq ${seq}${loaded ? '' : ', no 3D here'})`);
     if (this.subscribed.has(localId)) {
-      this.keepVariable(refr, localId, name, v, loaded);
+      this.keepVariable(refr, localId, v, loaded);
     }
   }
 
@@ -937,20 +942,20 @@ export class ObjectAnimationService extends ClientListener {
     const loaded = refr.is3DLoaded();
     const out = { set: 0, waiting: 0, current: 0 };
     for (const g of vars) {
-      const v: KeptVar = { k: g.k, value: g.k === 5 ? g.b === true : Number(g.k === 3 ? g.i : g.f), seq: g.seq };
+      const v: KeptVar = { name: g.name, k: g.k, value: g.k === 5 ? g.b === true : Number(g.k === 3 ? g.i : g.f), seq: g.seq };
       const kept = this.lastAnimations.get(localId);
-      const old = kept?.vars.get(g.name);
+      const old = kept?.vars.get(g.name.toLowerCase());
       if (kept !== undefined && old !== undefined && (g.seq < old.seq || (g.seq === old.seq && kept.varsShown && loaded))) {
         out.current++;
         continue;
       }
       if (loaded) {
-        this.setOne(refr, g.name, v);
+        this.setOne(refr, v);
         out.set++;
       } else {
         out.waiting++;
       }
-      this.keepVariable(refr, localId, g.name, v, loaded);
+      this.keepVariable(refr, localId, v, loaded);
     }
     return out;
   }
@@ -1070,13 +1075,13 @@ export class ObjectAnimationService extends ClientListener {
     }
     if (varsDue) {
       const n = this.showVariables(refr);
-      const first = kept.vars.entries().next().value;
+      const first = kept.vars.values().next().value;
       if (n > 0 && first !== undefined && this.sayReapplied(id, now, this.varsSaidAt)) {
         let seq = 0;
         kept.vars.forEach((v) => {
           seq = Math.max(seq, v.seq);
         });
-        logLab('verb:scripts', `object animation ${id.toString(16)} ${first[0]} ${varText(first[1])}${n > 1 ? ` +${n - 1}` : ''} re-applied at a 3D load (graph variable, seq ${seq})`);
+        logLab('verb:scripts', `object animation ${id.toString(16)} ${first.name} ${varText(first)}${n > 1 ? ` +${n - 1}` : ''} re-applied at a 3D load (graph variable, seq ${seq})`);
       }
     }
     if (!eventDue) {

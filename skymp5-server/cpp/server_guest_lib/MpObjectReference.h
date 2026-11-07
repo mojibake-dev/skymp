@@ -218,6 +218,11 @@ public:
   // (PartOne; docs/verbs/containers.md)
   bool IsContainerOccupant(const MpActor* actor) const;
   void RemoveContainerOccupant(MpActor& actor);
+  // a furniture's recorded user, or nullptr: set at a use's activation
+  // (ProcessActivateNormal's FURN branch), cleared by its closing
+  // activation and by the occupant's destroy or disable; read by the owner
+  // of the furniture's graph events (wire-rules object_animation)
+  MpActor* GetOccupant() const noexcept { return occupant; }
   void SetRelootTime(std::chrono::system_clock::duration newRelootTime);
   void SetChanceNoneOverride(uint8_t chanceNone);
   void SetCellOrWorld(const FormDesc& worldOrCell);
@@ -268,6 +273,14 @@ public:
   // accepted script call's or ObjectAnimation's), none before any: the view
   // a script record is stamped with (thuum ADR-068 rung 3, amendment A)
   std::optional<std::string> GetLastAnimation() const;
+  // the fifty fixes' D-C3 A (PENDING ELI): the graph variables a script set
+  // on this world object as the record keeps them (MpChangeForm's
+  // graphVariables), empty when none; and one more kept where the record's
+  // slot rule puts it (wire-rules natives::variable_slot, the names
+  // compared without case), false when nothing changed (a call older than
+  // the one kept)
+  std::vector<MpChangeFormREFR::GraphVariable> GetGraphVariables() const;
+  bool KeepGraphVariable(MpChangeFormREFR::GraphVariable variable);
   void SetNodeTextureSet(const std::string& node,
                          const espm::LookupResult& textureSet,
                          bool firstPerson);

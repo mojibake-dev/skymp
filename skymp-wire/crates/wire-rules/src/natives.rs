@@ -164,6 +164,17 @@ pub enum Keep {
     /// never as an action (thuum ADR-068 rung 4, the state rows). R2:
     /// recorded; the record's own rule judges what it must.
     Record(RecordKind),
+    /// The call's behavior graph variable, its name and its value, kept on
+    /// its subject with the call's sequence ([`variable_slot`] places it)
+    /// and served with the subject's script record; the call is still
+    /// relayed as an action (the fifty fixes' D-C3 A, PENDING ELI; thuum
+    /// docs/research/fifty-fixes-2026-11-07.md section 1(c) and read 7: an
+    /// owner reports a record only at a stack's end that moved its scripts'
+    /// hash, so a stack whose only act is a SetAnimationVariable takes no
+    /// new record, and a view stamped at the record's take would miss it).
+    /// The three SetAnimationVariable rows. R2: recorded as reported, the
+    /// value never judged.
+    Variable,
 }
 
 /// Which record a row kept as its subject's record moves (thuum ADR-068 rung
@@ -308,6 +319,72 @@ impl Row {
         }
         self.params.iter().position(|p| *p == Param::String).and_then(|i| u8::try_from(i).ok())
     }
+
+    /// The kept variable's folded kind for a row kept as its subject's
+    /// variable ([`Keep::Variable`]), its value parameter's (the second):
+    /// ScriptVar's kinds, 3 an int, 4 a float, 5 a bool; none for every
+    /// other row.
+    #[must_use]
+    pub fn variable_kind(&self) -> Option<u8> {
+        if self.keep != Keep::Variable {
+            return None;
+        }
+        match self.params.get(1) {
+            Some(Param::Int) => Some(3),
+            Some(Param::Float) => Some(4),
+            Some(Param::Bool) => Some(5),
+            _ => None,
+        }
+    }
+}
+
+/// How many graph variables a subject's record keeps (the fifty fixes' D-C3
+/// A, UNMEASURED): a new name past them takes the oldest's place. A served
+/// record's variables are bounded by the same number on the wire
+/// (ScriptStateApply's graph_vars, cap::GRAPH_VARS in the plan's section
+/// 1(a)).
+pub const VARIABLES_KEPT: usize = 16;
+
+/// One variable a subject's record keeps, as the core reads it for
+/// [`variable_slot`]: whether it names the reported call's variable (the
+/// core compares the names without case, as the engine's BSFixedString
+/// compares a string: CommonLibSSE-NG include/RE/B/BSFixedString.h, its
+/// strncmp over `_strnicmp`) and the sequence it was kept at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeptVariable {
+    /// It names the reported call's variable.
+    pub same_name: bool,
+    /// The sequence it was kept at.
+    pub seq: u32,
+}
+
+/// Where a reported call's variable goes in its subject's record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VariableSlot {
+    /// In place of the kept entry at this index: the same variable, or, with
+    /// the record full, the oldest (the lowest sequence, the first of
+    /// equals).
+    Replace(usize),
+    /// A new entry at the record's end.
+    Append,
+    /// Nowhere: the record keeps the same variable at a later sequence.
+    Stale,
+}
+
+/// The slot rule of a subject's kept variables (the fifty fixes' D-C3 A,
+/// PENDING ELI): a variable the record keeps is replaced by a call at its
+/// sequence or after it and left by an earlier one; a new variable is
+/// appended while fewer than [`VARIABLES_KEPT`] are kept, and takes the
+/// oldest's place after that, so the record never grows past the bound.
+#[must_use]
+pub fn variable_slot(kept: &[KeptVariable], seq: u32) -> VariableSlot {
+    if let Some((i, same)) = kept.iter().enumerate().find(|(_, k)| k.same_name) {
+        return if same.seq > seq { VariableSlot::Stale } else { VariableSlot::Replace(i) };
+    }
+    if kept.len() < VARIABLES_KEPT {
+        return VariableSlot::Append;
+    }
+    kept.iter().enumerate().min_by_key(|&(i, k)| (k.seq, i)).map_or(VariableSlot::Append, |(i, _)| VariableSlot::Replace(i))
 }
 
 /// One argument of a reported call as the server read it: its kind, and an
@@ -484,6 +561,10 @@ pub struct Accept {
     pub keep: Keep,
     /// The argument naming its behavior graph event, for the "animates" line.
     pub graph_event_arg: Option<u8>,
+    /// The kept variable's folded kind (3 an int, 4 a float, 5 a bool) for
+    /// a row kept as its subject's variable ([`Keep::Variable`]): the core
+    /// keeps the call's name and value with `seq`; none for every other.
+    pub variable_kind: Option<u8>,
 }
 
 /// The rule's word on a reported call.
@@ -553,7 +634,7 @@ fn channel_of(row: &Row) -> Result<Channel, Refusal> {
             return match row.keep {
                 Keep::Evidence => Ok(Channel::Evidence),
                 Keep::Record(kind) => Ok(Channel::Record(kind)),
-                Keep::Nothing | Keep::Last => Err(refusal(
+                Keep::Nothing | Keep::Last | Keep::Variable => Err(refusal(
                     Code::Row,
                     "a state row with no record channel: its consequence travels as the object's change form or a typed verb, never as an action".to_owned(),
                 )),
@@ -838,6 +919,7 @@ impl ScriptCalls {
             audience: row.audience,
             keep: row.keep,
             graph_event_arg: row.graph_event_arg(),
+            variable_kind: row.variable_kind(),
         })
     }
 
@@ -1003,13 +1085,85 @@ mod tests {
     }
 
     #[test]
-    fn a_graph_variable_row_relays_as_itself_and_keeps_nothing() {
+    fn a_graph_variable_row_relays_as_itself_and_keeps_its_variable() {
+        // the fifty fixes' D-C3 A: still relayed as an action, and kept on its
+        // subject with the call's sequence and its value's kind
         let mut s = ScriptCalls::default();
-        for (func, value) in [("SetAnimationVariableBool", Arg::Bool), ("SetAnimationVariableInt", Arg::Number), ("SetAnimationVariableFloat", Arg::Number)] {
+        for (i, (func, value, kind)) in [("SetAnimationVariableBool", Arg::Bool, 5), ("SetAnimationVariableInt", Arg::Number, 3), ("SetAnimationVariableFloat", Arg::Number, 4)].into_iter().enumerate() {
             let a = accepted(&s.judge(row("ObjectReference", func), &[Arg::String, value], &hosted(PILLAR), 0));
-            assert_eq!((a.relay_fn, a.relay_args, a.keep, a.graph_event_arg), (func, &[0u8, 1][..], Keep::Nothing, None), "{func}");
+            assert_eq!((a.relay_fn, a.relay_args, a.keep, a.graph_event_arg), (func, &[0u8, 1][..], Keep::Variable, None), "{func}");
+            assert_eq!((a.variable_kind, a.seq), (Some(kind), u32::try_from(i).unwrap_or(0).saturating_add(1)), "{func}");
         }
         assert_eq!(code(&s.judge(row("ObjectReference", "SetAnimationVariableBool"), &[Arg::String, Arg::Number], &hosted(PILLAR), 0)), Some(Code::Args));
+        // every other accepted call keeps no variable
+        let a = accepted(&s.judge(row("ObjectReference", "PlayAnimation"), &[Arg::String], &hosted(PILLAR), 0));
+        assert_eq!(a.variable_kind, None);
+    }
+
+    fn kept(entries: &[(bool, u32)]) -> Vec<KeptVariable> {
+        entries.iter().map(|&(same_name, seq)| KeptVariable { same_name, seq }).collect()
+    }
+
+    #[test]
+    fn a_kept_variable_is_replaced_by_its_own_name_and_the_record_holds_sixteen() {
+        // the web's fToggleBlend first, then again at a later sequence
+        assert_eq!(variable_slot(&[], 1), VariableSlot::Append);
+        assert_eq!(variable_slot(&kept(&[(true, 1)]), 2), VariableSlot::Replace(0));
+        // the same call again is the same entry; an earlier one is stale
+        assert_eq!(variable_slot(&kept(&[(true, 2)]), 2), VariableSlot::Replace(0));
+        assert_eq!(variable_slot(&kept(&[(true, 3)]), 2), VariableSlot::Stale);
+        // another name is appended while the record holds fewer than sixteen
+        assert_eq!(variable_slot(&kept(&[(false, 1), (true, 2), (false, 3)]), 4), VariableSlot::Replace(1));
+        assert_eq!(variable_slot(&kept(&[(false, 1), (false, 2)]), 3), VariableSlot::Append);
+        // full, a new name takes the oldest's place, the first of equals
+        let full: Vec<(bool, u32)> = (0..16u32).map(|i| (false, 20u32.saturating_sub(i))).collect();
+        assert_eq!(variable_slot(&kept(&full), 30), VariableSlot::Replace(15));
+        let ties = vec![(false, 7u32); 16];
+        assert_eq!(variable_slot(&kept(&ties), 30), VariableSlot::Replace(0));
+        // a record past the bound (a hand-edited save) never grows
+        let over = vec![(false, 5u32); 17];
+        assert_eq!(variable_slot(&kept(&over), 30), VariableSlot::Replace(0));
+        assert_eq!(VARIABLES_KEPT, 16);
+    }
+
+    // the slot rule's property, in its own module for proptest's prelude
+    mod variable_slot_property {
+        use super::super::{variable_slot, KeptVariable, VariableSlot, VARIABLES_KEPT};
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn the_slot_rule_never_grows_the_record_past_the_bound_and_keeps_the_newest(
+                entries in proptest::collection::vec((any::<bool>(), any::<u32>()), 0..24),
+                seq in any::<u32>(),
+            ) {
+                let record: Vec<KeptVariable> = entries.iter().map(|&(same_name, at)| KeptVariable { same_name, seq: at }).collect();
+                let same = record.iter().position(|k| k.same_name);
+                match variable_slot(&record, seq) {
+                    VariableSlot::Append => {
+                        prop_assert!(same.is_none());
+                        prop_assert!(record.len() < VARIABLES_KEPT);
+                    }
+                    VariableSlot::Replace(i) => {
+                        prop_assert!(i < record.len());
+                        match same {
+                            Some(first) => {
+                                prop_assert_eq!(i, first);
+                                prop_assert!(record.get(i).is_some_and(|k| k.seq <= seq));
+                            }
+                            None => {
+                                prop_assert!(record.len() >= VARIABLES_KEPT);
+                                let oldest = record.iter().map(|k| k.seq).min();
+                                prop_assert_eq!(record.get(i).map(|k| k.seq), oldest);
+                            }
+                        }
+                    }
+                    VariableSlot::Stale => {
+                        prop_assert!(same.is_some_and(|first| record.get(first).is_some_and(|k| k.seq > seq)));
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -1306,12 +1460,24 @@ mod tests {
             if r.keep == Keep::Last {
                 assert!(r.graph_event_arg().is_some(), "{name}");
             }
+            // a variable row is an action on its self, a name and a value
+            if r.keep == Keep::Variable {
+                assert_eq!((r.kind, r.subject, r.relay), (Kind::Action, Subject::SelfRef, Relay::Same), "{name}");
+                assert_eq!(r.params.first(), Some(&Param::String), "{name}");
+                assert!(r.variable_kind().is_some(), "{name}");
+            } else {
+                assert_eq!(r.variable_kind(), None, "{name}");
+            }
         }
         let everyone: Vec<String> = TABLE.iter().filter(|r| r.kind == Kind::Everyone).map(|r| format!("{}.{}", r.cls, r.func)).collect();
         assert_eq!(everyone, ["Quest.SetCurrentStageID", "Quest.Start", "Quest.Stop", "GlobalVariable.SetValue", "ReferenceAlias.ForceRefTo", "ReferenceAlias.Clear"]);
         // the flip's nineteen state rows, D-S3's three and the standing's six
         assert_eq!(TABLE.iter().filter(|r| r.kind == Kind::State).count(), 28);
         assert_eq!(row("Game", "GetPlayer").map(|r| r.kind), Some(Kind::Local));
+        // the three rows kept as their subject's variable (the fifty fixes'
+        // D-C3 A)
+        let variables: Vec<&str> = TABLE.iter().filter(|r| r.keep == Keep::Variable).map(|r| r.func).collect();
+        assert_eq!(variables, ["SetAnimationVariableBool", "SetAnimationVariableInt", "SetAnimationVariableFloat"]);
         // one row kept as evidence: a trap's hit on an actor (playtest 48)
         let evidence: Vec<String> = TABLE.iter().filter(|r| r.keep == Keep::Evidence).map(|r| format!("{}.{}", r.cls, r.func)).collect();
         assert_eq!(evidence, ["ObjectReference.ProcessTrapHit"]);

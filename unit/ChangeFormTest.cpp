@@ -430,6 +430,114 @@ TEST_CASE("A destruction record survives a save and a load of the "
   REQUIRE(!MpChangeForm::JsonToChangeForm(olderElement).destruction);
 }
 
+// the fifty fixes' D-C3 A (PENDING ELI; thuum docs/research/
+// fifty-fixes-2026-11-07.md section 1(c), the record): a world object's graph
+// variables survive a save and a load of its change form, each with its kind,
+// its one value and its sequence, an optional key (rule 6's migration: a
+// record written before it reads as none). fToggleBlend is the cobweb
+// 0x3758c's (FXtriggerAmbFX's tear, playtest 49); the int and the bool are
+// illustrative
+TEST_CASE("A world object's graph variables survive a save and a load of its "
+          "change form, and an older record without them reads as none",
+          "[ChangeForm][ScriptCall]")
+{
+  MpChangeForm changeForm;
+  changeForm.recType = MpChangeForm::REFR;
+  MpChangeFormREFR::GraphVariable blend;
+  blend.name = "fToggleBlend";
+  blend.k = 4;
+  blend.f = 1.f;
+  blend.seq = 1;
+  MpChangeFormREFR::GraphVariable state;
+  state.name = "iState";
+  state.k = 3;
+  state.i = -2;
+  state.seq = 3;
+  MpChangeFormREFR::GraphVariable open;
+  open.name = "bOpen";
+  open.k = 5;
+  open.b = true;
+  open.seq = 2;
+  changeForm.graphVariables =
+    std::vector<MpChangeFormREFR::GraphVariable>{ blend, state, open };
+
+  simdjson::dom::parser parser;
+  const nlohmann::json saved = MpChangeForm::ToJson(changeForm);
+  REQUIRE(saved.contains("graphVariables"));
+  const auto& entries = saved["graphVariables"]["entries"];
+  REQUIRE(entries.size() == 3);
+  REQUIRE(entries[0]["name"] == "fToggleBlend");
+  REQUIRE(entries[0]["k"] == 4);
+  REQUIRE(entries[0]["f"] == 1.0);
+  REQUIRE(entries[0]["seq"] == 1);
+  // the one value its kind carries, no other
+  REQUIRE(!entries[0].contains("i"));
+  REQUIRE(!entries[0].contains("b"));
+  REQUIRE(entries[1]["i"] == -2);
+  REQUIRE(entries[2]["b"] == true);
+  const std::string dump = saved.dump();
+  auto element = parser.parse(dump).value();
+  const auto loaded = MpChangeForm::JsonToChangeForm(element);
+  REQUIRE(loaded.graphVariables == changeForm.graphVariables);
+
+  // the record travels with the reference's change form as a whole
+  MpObjectReference refr(LocationalData(), FormCallbacks::DoNothing(), 0,
+                         "ACTI");
+  REQUIRE(refr.GetGraphVariables().empty());
+  refr.ApplyChangeForm(loaded);
+  REQUIRE(refr.GetGraphVariables() == *changeForm.graphVariables);
+
+  // a record written before the field: no key, read as none
+  nlohmann::json older = MpChangeForm::ToJson(MpChangeForm());
+  REQUIRE(!older.contains("graphVariables"));
+  const std::string olderDump = older.dump();
+  auto olderElement = parser.parse(olderDump).value();
+  REQUIRE(!MpChangeForm::JsonToChangeForm(olderElement).graphVariables);
+}
+
+// the record's slot rule (wire-rules natives::variable_slot) as the
+// reference keeps a variable: its own name in place (without case, the
+// engine's BSFixedString compare), an older call left, a new name appended
+// up to sixteen and in the oldest's place after
+TEST_CASE("A reference keeps one entry per graph variable and at most "
+          "sixteen, a new name past them in the oldest's place",
+          "[ChangeForm][ScriptCall]")
+{
+  MpObjectReference refr(LocationalData(), FormCallbacks::DoNothing(), 0,
+                         "ACTI");
+  const auto variable = [](const std::string& name, float value,
+                           uint32_t seq) {
+    MpChangeFormREFR::GraphVariable out;
+    out.name = name;
+    out.k = 4;
+    out.f = value;
+    out.seq = seq;
+    return out;
+  };
+  REQUIRE(refr.KeepGraphVariable(variable("fToggleBlend", 1.f, 1)));
+  // the same variable in another case, later: in its place
+  REQUIRE(refr.KeepGraphVariable(variable("FTOGGLEBLEND", 0.5f, 2)));
+  REQUIRE(refr.GetGraphVariables().size() == 1);
+  REQUIRE(refr.GetGraphVariables()[0].name == "FTOGGLEBLEND");
+  REQUIRE(refr.GetGraphVariables()[0].f == std::optional<float>(0.5f));
+  // an older call of it changes nothing
+  REQUIRE_FALSE(refr.KeepGraphVariable(variable("fToggleBlend", 0.f, 1)));
+  REQUIRE(refr.GetGraphVariables()[0].seq == 2);
+  // fifteen more names fill the record, the seventeenth takes the oldest's
+  // place, the first entry's (sequence 2)
+  for (uint32_t n = 0; n < 15; ++n) {
+    REQUIRE(refr.KeepGraphVariable(
+      variable("fVar" + std::to_string(n), 1.f, 3 + n)));
+  }
+  REQUIRE(refr.GetGraphVariables().size() == 16);
+  REQUIRE(refr.KeepGraphVariable(variable("fLast", 1.f, 40)));
+  const auto kept = refr.GetGraphVariables();
+  REQUIRE(kept.size() == 16);
+  REQUIRE(kept[0].name == "fLast");
+  REQUIRE(kept[0].seq == 40);
+  REQUIRE(kept[1].name == "fVar0");
+}
+
 // thuum ADR-068 rung 4 (the state rows; docs/research/
 // rung4-state-rows-2026-11-07.md section 1(c), Records): the ref state's
 // recorded mark, the standing's crime faction and relationships, a script

@@ -647,3 +647,98 @@ TEST_CASE("The host's script call on an exterior placement the server never "
   REQUIRE(relayed[0]["seq"] == 2);
   Leave(p);
 }
+
+// the fifty fixes' D-C3 A (PENDING ELI; thuum docs/research/
+// fifty-fixes-2026-11-07.md section 1(c)): the host's SetAnimationVariable
+// call on a world object is relayed as an action as before, and its
+// variable is kept on the reference with the call's sequence (wire-rules
+// natives Keep::Variable), the record a seat that missed it is served with
+// the script record. The portcullis stands in for the cobweb 0x3758c, whose
+// fToggleBlend the host's FXtriggerAmbFX set in playtest 49
+TEST_CASE("The host's graph variable call is relayed and kept on the "
+          "reference with its sequence",
+          "[ScriptCall][espm]")
+{
+  PartOne& p = GetPartOne();
+  const uint32_t epoch = Enter(p);
+  auto& portcullis = p.worldState.GetFormAt<MpObjectReference>(kPortcullis);
+  const auto set = [&](Networking::UserId user, const char* fn, Arg name,
+                       Arg value) {
+    Call(p, user, epoch, kPortcullis, "ObjectReference", fn,
+         { std::move(name), std::move(value) }, "FXtriggerAmbFX",
+         "OnTriggerEnter");
+  };
+  set(0, "SetAnimationVariableFloat", Text("fToggleBlend"), Arg(1.0));
+  auto relayed = SnippetsTo(p, 1);
+  REQUIRE(relayed.size() == 1);
+  REQUIRE(relayed[0]["function"] == "SetAnimationVariableFloat");
+  REQUIRE(relayed[0]["arguments"] ==
+          nlohmann::json::array({ "fToggleBlend", 1.0 }));
+  REQUIRE(relayed[0]["seq"] == 1);
+  auto kept = portcullis.GetGraphVariables();
+  REQUIRE(kept.size() == 1);
+  REQUIRE(kept[0].name == "fToggleBlend");
+  REQUIRE(kept[0].k == 4);
+  REQUIRE(kept[0].f == std::optional<float>(1.f));
+  REQUIRE(!kept[0].i.has_value());
+  REQUIRE(!kept[0].b.has_value());
+  REQUIRE(kept[0].seq == 1);
+  // a variable is no graph event: no lastAnimation from it
+  REQUIRE(!LastAnimation(p, kPortcullis).has_value());
+
+  // the same variable spelled in another case is the engine's one variable,
+  // in its place at the next sequence; an int and a bool beside it
+  p.Messages().clear();
+  set(0, "SetAnimationVariableFloat", Text("ftoggleblend"), Arg(0.5));
+  set(0, "SetAnimationVariableInt", Text("iState"), Arg(2.0));
+  set(0, "SetAnimationVariableBool", Text("bOpen"), Arg(true));
+  REQUIRE(SnippetsTo(p, 1).size() == 3);
+  kept = portcullis.GetGraphVariables();
+  REQUIRE(kept.size() == 3);
+  REQUIRE(kept[0].name == "ftoggleblend");
+  REQUIRE(kept[0].f == std::optional<float>(0.5f));
+  REQUIRE(kept[0].seq == 2);
+  REQUIRE(kept[1].name == "iState");
+  REQUIRE(kept[1].k == 3);
+  REQUIRE(kept[1].i == std::optional<int32_t>(2));
+  REQUIRE(kept[1].seq == 3);
+  REQUIRE(kept[2].name == "bOpen");
+  REQUIRE(kept[2].k == 5);
+  REQUIRE(kept[2].b == std::optional<bool>(true));
+  REQUIRE(kept[2].seq == 4);
+
+  // a guest's call is refused by its owner and keeps nothing
+  set(1, "SetAnimationVariableFloat", Text("fToggleBlend"), Arg(0.0));
+  REQUIRE(portcullis.GetGraphVariables() == kept);
+  // a name past the wire's bound for an event is relayed and kept nowhere,
+  // so no served record carries what a seat would refuse
+  p.Messages().clear();
+  set(0, "SetAnimationVariableFloat", Arg(std::string(129, 'x')), Arg(1.0));
+  REQUIRE(SnippetsTo(p, 1).size() == 1);
+  REQUIRE(portcullis.GetGraphVariables() == kept);
+  Leave(p);
+}
+
+// after a restart every sequence starts at 0 and the stored record seeds the
+// object's (ScriptCalls::seed, a max): a kept variable's sequence seeds it
+// too, so the next call is never taken as older than the variable kept
+TEST_CASE("A kept graph variable's sequence seeds its object's next call",
+          "[ScriptCall][espm]")
+{
+  PartOne& p = GetPartOne();
+  const uint32_t epoch = Enter(p);
+  auto& portcullis = p.worldState.GetFormAt<MpObjectReference>(kPortcullis);
+  MpChangeFormREFR::GraphVariable blend;
+  blend.name = "fToggleBlend";
+  blend.k = 4;
+  blend.f = 1.f;
+  blend.seq = 9;
+  REQUIRE(portcullis.KeepGraphVariable(blend));
+  REQUIRE(p.GetScriptCalls().seq_of(kPortcullis) == 0);
+  Call(p, 0, epoch, kPortcullis, "ObjectReference", "PlayAnimation",
+       { Text("Open") });
+  const auto relayed = SnippetsTo(p, 1);
+  REQUIRE(relayed.size() == 1);
+  REQUIRE(relayed[0]["seq"] == 10);
+  Leave(p);
+}

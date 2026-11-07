@@ -173,6 +173,38 @@ public:
   // Used for PlayAnimation (object reference)
   std::optional<std::string> lastAnimation;
 
+  // the fifty fixes' D-C3 A (PENDING ELI; thuum docs/research/
+  // fifty-fixes-2026-11-07.md section 1(c), the record): the behavior graph
+  // variables a world object's owner's script set through the seam
+  // (SetAnimationVariableBool, Int and Float, wire-rules natives
+  // Keep::Variable), each with the call's sequence and placed by the
+  // record's slot rule (natives::variable_slot: at most sixteen, a new name
+  // past them in the oldest's place), served beside the view in the script
+  // record's apply, since a stack whose only act is a variable takes no new
+  // record. `k` is ScriptVar's folded kind and the one value it carries: 3
+  // `i`, 4 `f`, 5 `b` (ScriptStateTypes.h's ScriptStateValue idiom). Saved
+  // under "graphVariables"; absent in older records and on references no
+  // script set one, read as none (an optional key, formVersion kept)
+  struct GraphVariable
+  {
+    std::string name;
+    uint32_t k = 0;
+    std::optional<int32_t> i;
+    std::optional<float> f;
+    std::optional<bool> b;
+    uint32_t seq = 0;
+    auto ToTuple() const { return std::make_tuple(name, k, i, f, b, seq); }
+    friend bool operator==(const GraphVariable& lhs, const GraphVariable& rhs)
+    {
+      return lhs.ToTuple() == rhs.ToTuple();
+    }
+    friend bool operator<(const GraphVariable& lhs, const GraphVariable& rhs)
+    {
+      return lhs.ToTuple() < rhs.ToTuple();
+    }
+  };
+  std::optional<std::vector<GraphVariable>> graphVariables;
+
   // Used for SetNodeTextureSet (node, texture set desc)
   std::optional<std::map<std::string, std::string>> setNodeTextureSet;
 
@@ -424,12 +456,12 @@ public:
       equipment.ToJson(), actorValues.ToTuple(), healthRespawnPercentage,
       magickaRespawnPercentage, staminaRespawnPercentage, spawnPoint,
       dynamicFields, spawnDelay, learnedSpells, readBooks, templateChain,
-      fateLevel, fateDiedAt, lastAnimation, setNodeTextureSet, setNodeScale,
-      displayName, mapMarkers, ingredientEffects, favorites, raceMenuPreset,
-      actorValueRecord, staffRank, runningEffects, shoutRecord, playerGlobals,
-      questStages, placedBySpell, lock, destruction, changeFormRecord,
-      scriptState, refStateSeq, crimeFaction, relationships, placedByScript,
-      aliasFills, worldGlobals, unresolved);
+      fateLevel, fateDiedAt, lastAnimation, graphVariables, setNodeTextureSet,
+      setNodeScale, displayName, mapMarkers, ingredientEffects, favorites,
+      raceMenuPreset, actorValueRecord, staffRank, runningEffects, shoutRecord,
+      playerGlobals, questStages, placedBySpell, lock, destruction,
+      changeFormRecord, scriptState, refStateSeq, crimeFaction, relationships,
+      placedByScript, aliasFills, worldGlobals, unresolved);
   }
 
   // The record boundary (thuum docs/DECISIONS.md ADR-043; the map

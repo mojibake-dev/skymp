@@ -150,10 +150,13 @@ public:
                           const WordWallMessage& msg);
 
   // thuum docs/verbs/traps.md (ADR-059 decision 3): a world object's
-  // animation event the cell's host reports (a game-file reference that is
-  // no actor and no door, in a cell the reporter hosts): recorded as the
-  // reference's lastAnimation and relayed to the cell's other games as the
-  // same message, at most 8 a second per reference (UNMEASURED)
+  // animation event its owner reports (a game-file reference that is no
+  // actor, no door and no container): a furniture's recorded occupant's
+  // owner while it is used, else the cell's host (wire-rules
+  // object_animation, the fifty fixes' furniture rule); recorded as the
+  // reference's lastAnimation, a furniture's never, and relayed to the
+  // cell's other games as the same message, at most 8 a second per
+  // reference (UNMEASURED)
   virtual void OnObjectAnimation(const RawMessageData& rawMsgData,
                                  const ObjectAnimationMessage& msg);
 
@@ -549,10 +552,6 @@ private:
     scriptStateRefusals;
   // base form id to whether its record carries a script (the VMAD read once)
   std::unordered_map<uint32_t, bool> scriptedBases;
-  // thuum D-S3 phase 2: trigger reference to whether its record sets
-  // playerOnlyTrigger (the base's VMAD and its own, read once, and for a
-  // linked pair's trigger alone, so only the game files' links fill it)
-  std::unordered_map<uint32_t, bool> playerOnlyTriggers;
   // thuum docs/verbs/spell-cast.md (train-27): a cast delivered to its
   // target (touch, target actor) whose relay waits for its first hit, by
   // the caster's form id and hand; the hit's claim (CastClaim::relay)

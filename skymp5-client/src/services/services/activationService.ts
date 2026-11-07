@@ -1,4 +1,4 @@
-import { ActivateEvent, Actor } from "skyrimPlatform";
+import { ActivateEvent, Actor, TriggerEntryEvent } from "skyrimPlatform";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { MsgType } from "../../messages";
@@ -9,17 +9,35 @@ import { isSyncedActorId, localIdToRemoteId } from "../../view/worldViewMisc";
 
 import { LastInvService } from "./lastInvService";
 import { HostService } from "./hostService";
-import { RelayedActivationService } from "./relayedActivationService";
+import { FIRED_MS, RelayedActivationService } from "./relayedActivationService";
 import { logError, logLab, logTrace } from "../../logging";
 
 // a reference as the lab's lines name it: its server id (a game-file
 // reference's own), else this engine's
 const idOf = (localId: number): string => (localIdToRemoteId(localId) || localId).toString(16);
 
+const TAG = "verb:traps";
+const PLAYER_ID = 0x14;
+// game-file references end where the server's copies begin; the validator
+// refuses an entry whose trigger is at 0xff000000 or up
+const LAST_GAME_FILE_ID = 0xfeffffff;
+// D-W1's marks, at most (past it they start over)
+const FIRED_MAX = 256;
+// D-C2's entries waiting for the update, at most, and the ones relayed a
+// second (the plan's 1(d): a window of their own beside the linked one,
+// inside the validator's entry_budget of 8 at once then 4 a second,
+// UNMEASURED)
+const ENTRIES_MAX = 64;
+const ENTRIES_PER_S = 4;
+
 export class ActivationService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
         this.controller.on("activate", (e) => this.onActivate(e));
+        this.presserRule = this.startPresserRule();
+        if (this.presserRule) {
+            this.controller.on("update", () => this.sendEntries());
+        }
     }
 
     private onActivate(e: ActivateEvent) {
@@ -51,6 +69,14 @@ export class ActivationService extends ClientListener {
         // from the game files the server sent: docs/verbs/npc-puppet.md);
         // any other engine actor's activation is nobody's
         if (caster !== 0x14 && !isSyncedActorId(caster)) {
+          // thuum docs/DECISIONS.md D-W1 A: with the presser rule on, the
+          // root rule (judgeByPresser); the branches below are its A/B's off
+          // arm (triggerPresser false, or a platform without the rule) as D-S3
+          // left them, retired with the switch after playtest 50's T4 close
+          if (this.presserRule) {
+            this.judgeByPresser(e, caster, target);
+            return;
+          }
           // thuum docs/verbs/npc-fate.md (ADR-048's B, the hazard evidence): a
           // reference's activation of itself is a trap trigger's firing
           // (TrapTriggerBase, PressurePlate and Tripwire all activate(self),
@@ -104,18 +130,7 @@ export class ActivationService extends ClientListener {
           if (!hostedHere) {
             return;
           }
-          const remoteTrigger = localIdToRemoteId(target);
-          if (!remoteTrigger) {
-            return;
-          }
-          this.controller.emitter.emit("sendMessage", {
-              message: {
-                  t: MsgType.Activate,
-                  data: { caster: remoteTrigger, target: remoteTrigger, isSecondActivation: false }
-              },
-              reliability: "reliable"
-          });
-          logTrace(this, `Sent a trigger's own activation for `, remoteTrigger.toString(16));
+          this.sendOwnActivation(target);
           return;
         }
 
@@ -186,6 +201,202 @@ export class ActivationService extends ClientListener {
         logTrace(this, `Sent activation for caster=`, caster.toString(16), `and target=`, target.toString(16));
     }
 
+  // thuum docs/DECISIONS.md D-W1 A (a trigger volume's entry is its presser's
+  // owner's; docs/research/fifty-fixes-2026-11-07.md 1(d), the root rule).
+  // With the presser rule on, the platform's gate passes a trigger's
+  // OnTriggerEnter only on the seat that owns its presser (its own player, an
+  // NPC it simulates, a body in a cell it hosts), so a trap family trigger
+  // fires on that seat alone. That seat reports the firing's first links (the
+  // root), the server relays them to the cell's other games, and each of
+  // their engines plays the root (RelayedActivationService) and propagates
+  // the rest itself (a linker's nine children, the rocks): the cause crosses,
+  // each engine computes the consequences (the plan's read 5). The marks: the
+  // gate's triggerEntry on a family trigger (pressed here) and the trigger's
+  // own activation (fired here), each for FIRED_MS. A trigger's own
+  // activation (caster the target): a family trigger's is marked and
+  // reported from this seat, whichever seat it is (the server admits a seat
+  // with the cell loaded and an actor in reach); any other trigger's by the
+  // cell's host, as before. A linked pair, in order: (1) the relay's own play
+  // is not reported again; (2) a pair whose caster is a family trigger
+  // pressed or fired here within FIRED_MS, and not itself played here by a
+  // relay in that window, is the root, reported whatever its target; (3) a
+  // pair whose target is in the family is a later link, each seat's own; (4)
+  // anything else is the cell's host's, as before. HYPOTHESIS H-W1 until
+  // x-trigger-owner: the press mark or the trigger's own activation reaches
+  // this service before the pair it causes (the lines' order reads it). An
+  // activate event's context: the game reads are legal here
+  private judgeByPresser(e: ActivateEvent, caster: number, target: number): void {
+    const now = Date.now();
+    const relays = this.controller.lookupListener(RelayedActivationService);
+    if (caster === target) {
+      const own = ObjectReferenceEx.trapRole(caster);
+      if (own !== null && own.family && own.trigger === true) {
+        this.markFired(caster, now);
+        logLab(TAG, `trap ${idOf(target)} fired here by ${idOf(caster)}: its own activation, reported (D-W1)`);
+        this.sendOwnActivation(target);
+        return;
+      }
+      if (this.controller.lookupListener(HostService).isHostedHere(e.target)) {
+        this.sendOwnActivation(target);
+      }
+      return;
+    }
+    if (relays.wasPlayedHere(target, caster)) {
+      logLab(TAG, `trap ${idOf(target)} fired here by ${idOf(caster)}: the relay's own play, not reported again (D-W1)`);
+      return;
+    }
+    const role = ObjectReferenceEx.trapRole(caster);
+    if (role !== null && role.family && role.trigger === true && this.firedHere(caster, now) && !relays.wasRelayPlayed(caster, now)) {
+      logLab(TAG, `trap ${idOf(target)} fired here by ${idOf(caster)}: the presser's owner's firing, reported (D-W1)`);
+      this.reportLinked(caster, target);
+      return;
+    }
+    if (ObjectReferenceEx.isTrapFamily(target)) {
+      logLab(TAG, `trap ${idOf(target)} fired here by ${idOf(caster)}: a later link of a firing, each seat's own (D-W1)`);
+      return;
+    }
+    if (this.controller.lookupListener(HostService).isHostedHere(e.target)) {
+      this.reportLinked(caster, target);
+    }
+  }
+
+  // a trigger's own activation (a reference activating itself: TrapTriggerBase,
+  // PressurePlate and Tripwire all activate(self)) as a record for the server,
+  // which notes where and when, activates nothing and checks a hazard death
+  // against it (thuum docs/verbs/npc-fate.md, ADR-048's B)
+  private sendOwnActivation(target: number) {
+    const remoteTrigger = localIdToRemoteId(target);
+    if (!remoteTrigger) {
+      return;
+    }
+    this.controller.emitter.emit("sendMessage", {
+        message: {
+            t: MsgType.Activate,
+            data: { caster: remoteTrigger, target: remoteTrigger, isSecondActivation: false }
+        },
+        reliability: "reliable"
+    });
+    logTrace(this, `Sent a trigger's own activation for `, remoteTrigger.toString(16));
+  }
+
+  // a family trigger pressed (the gate's triggerEntry) or fired (its own
+  // activation) here, rule 2's mark for FIRED_MS; JS state alone
+  private markFired(localId: number, now: number) {
+    if (this.firedAt.size >= FIRED_MAX && !this.firedAt.has(localId)) {
+      this.firedAt.clear();
+    }
+    this.firedAt.set(localId, now);
+  }
+
+  private firedHere(localId: number, now: number): boolean {
+    const at = this.firedAt.get(localId);
+    return at !== undefined && now - at <= FIRED_MS;
+  }
+
+  // the platform's triggerEntry (a tick task from the gate's presser rule; no
+  // game call in its handler, JS state alone): an owned presser's entry into
+  // a family trigger marks it pressed here; one into a world trigger in a
+  // cell this seat does not host (family false) waits for the update, which
+  // relays it to the cell's host (D-C2 A). A leave of a family trigger marks
+  // nothing
+  private onTriggerEntry(e: TriggerEntryEvent) {
+    if (!this.presserRule) {
+      return;
+    }
+    const { refrId, presserId } = e;
+    if (typeof refrId !== "number" || typeof presserId !== "number" || refrId === 0 || presserId === 0) {
+      return;
+    }
+    const enter = e.enter === true;
+    if (e.family === true) {
+      if (enter) {
+        this.markFired(refrId, Date.now());
+        logLab(TAG, `trigger entry ${idOf(refrId)} by ${idOf(presserId)} (enter): a family trigger, pressed here (D-W1)`);
+      }
+      return;
+    }
+    if (this.entries.length >= ENTRIES_MAX) {
+      logTrace(this, `trigger entry ${idOf(refrId)} by ${idOf(presserId)} dropped: ${ENTRIES_MAX} entries already wait for the update`);
+      return;
+    }
+    this.entries.push({ refrId, presserId, enter });
+  }
+
+  // D-C2 A, the update's half: each entry into a world trigger in a cell this
+  // seat does not host goes to the server as an Activate with its entry (1
+  // OnTriggerEnter, 2 OnTriggerLeave), the trigger as its target and the
+  // presser as the caster the wire names (the plan's 1(a): 0x14 for this
+  // seat's own player, else an actor it simulates, by its server id; any
+  // other presser is none of this seat's to report), at most ENTRIES_PER_S a
+  // second. The server relays it to the cell's host alone, whose engine runs
+  // the script with the presser's figure as akActionRef
+  // (RelayedActivationService.playEntry)
+  private sendEntries() {
+    if (this.entries.length === 0) {
+      return;
+    }
+    const entries = this.entries;
+    this.entries = [];
+    const host = this.controller.lookupListener(HostService);
+    for (const { refrId, presserId, enter } of entries) {
+      const head = `trigger entry ${idOf(refrId)} by ${idOf(presserId)} (${enter ? "enter" : "leave"})`;
+      const caster = presserId === PLAYER_ID ? PLAYER_ID : host.isMineLocal(presserId) ? localIdToRemoteId(presserId) : 0;
+      const target = localIdToRemoteId(refrId);
+      if (!caster || !target || target > LAST_GAME_FILE_ID) {
+        logTrace(this, `${head}: not relayed, ${!caster ? "the presser is none of this seat's" : "the trigger has no game-file id"}`);
+        continue;
+      }
+      if (!this.entryBudget.take()) {
+        logTrace(this, `${head}: not relayed, past ${ENTRIES_PER_S} entries a second`);
+        continue;
+      }
+      this.controller.emitter.emit("sendMessage", {
+          message: {
+              t: MsgType.Activate,
+              data: { caster, target, isSecondActivation: false, entry: enter ? 1 : 2 }
+          },
+          reliability: "reliable"
+      });
+      logLab(TAG, `${head}: relayed to the cell's host (D-C2)`);
+    }
+  }
+
+  // the presser rule's A/B switch (.claude/rules/native.md): the client
+  // setting triggerPresser, on unless false (ScriptStateService's read of
+  // scriptRecord), told to the platform's gate through setTriggerPresserRule
+  // (off by default in the platform, so an older client keeps D-S3). The rule
+  // is on here only when the platform took it: a platform without the event
+  // or the export keeps D-S3's branches on both sides, said once
+  private startPresserRule(): boolean {
+    const settings = this.sp.settings["skymp5-client"] as Record<string, unknown> | undefined;
+    if (settings && settings["triggerPresser"] === false) {
+      logTrace(this, "triggerPresser is off in settings: D-S3's branches stand, no trigger entry is relayed");
+      try {
+        this.sp.setTriggerPresserRule(false);
+      } catch (e) {
+        // an older platform: its gate has no presser rule to turn off
+      }
+      return false;
+    }
+    try {
+      this.controller.on("triggerEntry", (e) => this.onTriggerEntry(e));
+    } catch (e) {
+      logLab(TAG, `triggerEntry unavailable on this platform (${e}); D-S3's branches stand`);
+      return false;
+    }
+    try {
+      if (this.sp.setTriggerPresserRule(true) === false) {
+        logError(this, "setTriggerPresserRule(true) refused; D-S3's branches stand");
+        return false;
+      }
+    } catch (e) {
+      logLab(TAG, `setTriggerPresserRule unavailable on this platform (${e}); D-S3's branches stand`);
+      return false;
+    }
+    logTrace(this, "the presser rule is on (D-W1): a trigger's entry is its presser's owner's");
+    return true;
+  }
+
   // thuum docs/verbs/traps.md (M4): a linked activation this game's engine
   // ran (a plate firing its spike wall, a lever opening its portcullis)
   // reported for the server to judge against the game files' activation
@@ -214,6 +425,14 @@ export class ActivationService extends ClientListener {
 
   // eight linked activations a second from this game (thuum docs/verbs/traps.md)
   private readonly linkedBudget = new SecondWindow(8);
+
+  // D-W1 and D-C2: whether the presser rule is on here (the setting and the
+  // platform's answer), the family triggers pressed or fired here by when,
+  // the entries waiting for the update, and their own window
+  private readonly presserRule: boolean;
+  private readonly firedAt = new Map<number, number>();
+  private entries: { refrId: number; presserId: number; enter: boolean }[] = [];
+  private readonly entryBudget = new SecondWindow(ENTRIES_PER_S);
 
 };
 

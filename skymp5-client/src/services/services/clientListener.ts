@@ -244,6 +244,25 @@ declare module "skyrimPlatform" {
     function getTrapRole(formId: number): { family: boolean; playerOnly: boolean; destroyed: boolean; trigger?: boolean } | null;
     function setPropFollowed(formId: number, followed: boolean): boolean;
     function setRecordApplying(formId: number, applying: boolean): boolean;
+    // thuum docs/DECISIONS.md D-W1 A and D-C2 A (a trigger volume's entry is
+    // its presser's owner's; docs/research/fifty-fixes-2026-11-07.md 1(b)):
+    // the gate's presser rule, off by default in the platform so an older
+    // client keeps D-S3, turned on by ActivationService from the client
+    // setting triggerPresser. An owned presser's OnTriggerEnter or
+    // OnTriggerLeave on a family trigger, or on a world trigger in a cell this
+    // seat does not host, is raised on a tick task as triggerEntry: the
+    // trigger, the presser, enter or leave, the trigger's family. No game call
+    // in its handler. The platform layer writes the bodies on its own branch;
+    // an older platform has neither, and every use is guarded (said once)
+    interface TriggerEntryEvent {
+        refrId: number;
+        presserId: number;
+        enter: boolean;
+        family: boolean;
+    }
+    function on(eventName: 'triggerEntry', callback: (event: TriggerEntryEvent) => void): EventHandle;
+    function once(eventName: 'triggerEntry', callback: (event: TriggerEntryEvent) => void): EventHandle;
+    function setTriggerPresserRule(enabled: boolean): boolean;
     // thuum ADR-068 amendment A (rung 3, the script record): a reference whose
     // served record carries a view, so the gate holds its OnLoad and OnCellLoad
     // (and notes which it held) until ApplyScriptState clears the mark; a plain

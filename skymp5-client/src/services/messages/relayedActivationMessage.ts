@@ -8,4 +8,10 @@ export interface RelayedActivationMessage {
     t: MsgType.RelayedActivation;
     target: number; // the activated reference's form id, never 0
     caster: number; // the reference that activated it, never 0
+    // thuum docs/DECISIONS.md D-C2 A (docs/research/fifty-fixes-2026-11-07.md
+    // 1(a)): 1 OnTriggerEnter, 2 OnTriggerLeave: a guest's entry into a world
+    // trigger, sent to the cell's host alone, whose engine sends that event to
+    // the target's scripts with the caster (the presser) as akActionRef
+    // instead of activating; absent or null for an activation
+    entry?: number | null;
 }

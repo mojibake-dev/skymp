@@ -116,8 +116,9 @@ export class RelayedActivationService extends ClientListener {
   // twin with the argument), on the update where natives are legal (the
   // relay waits for it, as play does); the platform's own call passes the
   // gate, and the script's consequences cross as any host script's do
-  // (ScriptCall 75). A platform without the native throws: said once, and no
-  // relayed entry is sent from then
+  // (ScriptCall 75). A platform without the native throws "Native function
+  // not found" (CallNative.cpp): said once, and no relayed entry is sent from
+  // then; any other throw is that entry's alone (LoginCellService's idiom)
   private playEntry(remoteTarget: number, remoteCaster: number, entry: number) {
     const event = entry === 1 ? 'OnTriggerEnter' : 'OnTriggerLeave';
     if (this.sendTriggerMissing) {
@@ -139,8 +140,13 @@ export class RelayedActivationService extends ClientListener {
     try {
       raw = this.sp.callNative('TESModPlatform', 'SendTriggerEvent', undefined, target, event, caster);
     } catch (e) {
-      this.sendTriggerMissing = true;
-      logLab(TAG, `SendTriggerEvent unavailable on this platform (${e}); relayed entries are not sent`);
+      const text = String(e);
+      if (text.indexOf('Native function not found') !== -1) {
+        this.sendTriggerMissing = true;
+        logLab(TAG, `SendTriggerEvent unavailable on this platform (${text}); relayed entries are not sent`);
+        return;
+      }
+      logLab(TAG, `${head}: ${event} not sent, the native threw (${text.slice(0, 32)})`);
       return;
     }
     logLab(TAG, `${head}: ${describeTriggerSend(raw, event)}`);

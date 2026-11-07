@@ -220,8 +220,13 @@ export class ActivationService extends ClientListener {
   // is not reported again; (2) a pair whose caster is a family trigger
   // pressed or fired here within FIRED_MS, and not itself played here by a
   // relay in that window, is the root, reported whatever its target; (3) a
-  // pair whose target is in the family is a later link, each seat's own; (4)
-  // anything else is the cell's host's, as before. HYPOTHESIS H-W1 until
+  // pair whose caster and target are both in the family (D-S3 point 5's
+  // test) is a later link, each seat's own: a family caster's script runs on
+  // every seat (the linker 0xb6d3e is TrapTriggerBase, so the rocks stay
+  // later links); (4) anything else is the cell's host's, as before, a
+  // mechanism activating a family target among them (the puzzle lever
+  // 0xaa8c3's darts, the pull chains 0xfda45 and 0xfda43's blades: no family
+  // trigger, so its pair is the host's to report). HYPOTHESIS H-W1 until
   // x-trigger-owner: the press mark or the trigger's own activation reaches
   // this service before the pair it causes (the lines' order reads it). An
   // activate event's context: the game reads are legal here
@@ -251,7 +256,7 @@ export class ActivationService extends ClientListener {
       this.reportLinked(caster, target);
       return;
     }
-    if (ObjectReferenceEx.isTrapFamily(target)) {
+    if (role !== null && role.family && ObjectReferenceEx.isTrapFamily(target)) {
       logLab(TAG, `trap ${idOf(target)} fired here by ${idOf(caster)}: a later link of a firing, each seat's own (D-W1)`);
       return;
     }

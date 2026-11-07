@@ -250,10 +250,17 @@ TEST_CASE("A trigger entry from the host, for another's presser, from a "
 // the train's review, note 2: an entry counts where the engine counts it,
 // anywhere inside the trigger's primitive. Bleak Falls Sanctum 0x371dd's
 // word wall trigger 0x709d2 (ACTI 0x5095e WordWallTrigger at (-7601, -154,
-// 674)), whose primitive is a sphere of radius 2,065 around it (XPRM type 2,
-// WordWallTest's): 1,500 units south of it a presser stands inside the
-// sphere and far past the activation reach of its origin; 2,400 units north
-// it stands outside the sphere and as far past the reach
+// 674)) keeps its sphere of radius 2,065 (XPRM type 2, WordWallTest's), but
+// its own reach is past it: WordWallTrigger's bounds are the chamber, a box
+// of about 4,000 units a side (docs/LOG.md, 2026-11-01's word wall read), so
+// the reach (452 plus the bounds' farthest corner times the scale, wire-rules
+// activation) holds 1,500 units off (pipeline 5622's red) and the whole
+// sphere, and no recorded primitive of the unit world reaches past its own
+// reach. So the case gives the held trigger a sphere the engine's own kind
+// (type 2) a thousand units past its reach, read from its own bounds: 500
+// units past the reach to the south a presser stands inside it, so the
+// relay comes from the primitive alone; 500 past the sphere to the north it
+// stands outside both, and the origin's reach refuses it
 TEST_CASE("A presser inside a trigger's primitive, far from its origin, is "
           "within its reach, and one outside it is not (D-C2)",
           "[TriggerEntry][espm]")
@@ -261,33 +268,42 @@ TEST_CASE("A presser inside a trigger's primitive, far from its origin, is "
   constexpr uint32_t kSanctum = 0x371dd;
   constexpr uint32_t kWallTrigger = 0x709d2;
   const NiPoint3 kAtTheTrigger{ -7601.f, -154.f, 674.f };
-  const NiPoint3 kInsideTheSphere{ -7601.f, -154.f - 1500.f, 674.f };
-  const NiPoint3 kOutsideTheSphere{ -7601.f, -154.f + 2400.f, 674.f };
   PartOne& p = GetPartOne();
   DoConnect(p, 0);
   p.CreateActor(kHostActor, kAtTheTrigger, 0, kSanctum);
   p.SetUserActor(0, kHostActor);
   DoConnect(p, 1);
-  p.CreateActor(kGuestActor, kInsideTheSphere, 0, kSanctum);
+  p.CreateActor(kGuestActor, kAtTheTrigger, 0, kSanctum);
   p.SetUserActor(1, kGuestActor);
   auto& trigger = p.worldState.GetFormAt<MpObjectReference>(kWallTrigger);
   REQUIRE(trigger.HasPrimitive());
-  REQUIRE(trigger.IsPointInsidePrimitive(kInsideTheSphere));
-  REQUIRE_FALSE(trigger.IsPointInsidePrimitive(kOutsideTheSphere));
-  // a sphere is radial, so the case proves the rule only if 1,500 units is
-  // past the origin's reach by the trigger's own bounds (the handler's
+  // the trigger's own reach by its bounds (the handler's
   // ActivationTargetSize: its base's bounds radius times its scale)
+  float size = 0.f;
   {
     auto& browser = p.worldState.GetEspm().GetBrowser();
     const auto* base = browser.LookupById(trigger.GetBaseId()).rec;
     const auto bounds = base
       ? espm::GetObjectBounds(base, p.worldState.GetEspmCache())
       : std::nullopt;
-    const float size = bounds ? espm::BoundsRadius(*bounds) *
+    size = bounds ? espm::BoundsRadius(*bounds) *
         espm::GetData<espm::REFR>(kWallTrigger, &p.worldState).scale
-                              : 0.f;
-    REQUIRE_FALSE(skymp::rules::activation_within_reach(1500.f, size).allowed);
+                  : 0.f;
   }
+  const float reach = skymp::rules::activation_within_reach(0.f, size).bound;
+  const float radius = reach + 1000.f;
+  trigger.SetPrimitive({ radius, radius, radius }, 2);
+  const float inside = reach + 500.f;
+  const float outside = radius + 500.f;
+  const NiPoint3 kInsideTheSphere{ -7601.f, -154.f - inside, 674.f };
+  const NiPoint3 kOutsideTheSphere{ -7601.f, -154.f + outside, 674.f };
+  REQUIRE(trigger.HasPrimitive());
+  REQUIRE(trigger.IsPointInsidePrimitive(kInsideTheSphere));
+  REQUIRE_FALSE(trigger.IsPointInsidePrimitive(kOutsideTheSphere));
+  // a sphere is radial, so the case proves the rule only if the presser
+  // inside it is past the origin's reach by the trigger's own bounds
+  REQUIRE_FALSE(skymp::rules::activation_within_reach(inside, size).allowed);
+  REQUIRE_FALSE(skymp::rules::activation_within_reach(outside, size).allowed);
   Stand(p, kHostActor, kAtTheTrigger);
   Stand(p, kGuestActor, kInsideTheSphere);
   Host(p, 0, kSanctum);

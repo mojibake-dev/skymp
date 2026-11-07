@@ -230,6 +230,21 @@ RE::BSFixedString SendScriptEvent(IVM* vm, StackID stackId,
                                   RE::TESObjectREFR* refr,
                                   std::string_view name, bool unseenOnly);
 
+// thuum docs/DECISIONS.md ADR-068 rung 4 (the state rows, amendment B;
+// docs/research/rung4-state-rows-2026-11-07.md 1(a)): the world globals this
+// seat's engine changed since its last answer, the world streamer's
+// WorldGlobal 80. A JSON array as a string, [[formId, value], ...] (the
+// form id a number, the value the global's float), "[]" for none: at most
+// 512 entries (skymp-wire's WORLD_GLOBALS), any past them answered by a
+// later call, each answered value the baseline from then on; a constant, a
+// non-finite value and the comma-separated hex ids in `exclude` ("0x"
+// optional) never answered. With `reset`, the baseline is every other
+// global's value now and the answer "[]"; a call before any reset diffs
+// against an empty baseline, so it answers every such global
+RE::BSFixedString DiffWorldGlobals(IVM* vm, StackID stackId,
+                                   RE::StaticFunctionTag*, bool reset,
+                                   std::string_view exclude);
+
 void BlockPapyrusEvents(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                         bool blocked);
 

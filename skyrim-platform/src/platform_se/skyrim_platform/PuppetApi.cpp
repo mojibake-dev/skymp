@@ -394,6 +394,20 @@ Napi::Value PuppetApi::GetTrapRole(const Napi::CallbackInfo& info)
   return res;
 }
 
+// thuum docs/DECISIONS.md ADR-068 D-W1 A and D-C2 A (the presser rule; thuum
+// .claude/rules/native.md's kill switch): the Papyrus event gate's rule over
+// a world object's OnTriggerEnter and OnTriggerLeave on or off
+// (FridaHooks.cpp OnSendEventEnter), one atomic flag, off by default so a
+// client that never sets it keeps D-S3; skymp5-client's setting
+// triggerPresser (default true) turns it on. No game call; the setter logs
+// the switch for the lab
+Napi::Value PuppetApi::SetTriggerPresserRule(const Napi::CallbackInfo& info)
+{
+  const auto on = NapiHelper::ExtractBoolean(info[0], "on");
+  Frida::SetTriggerPresserRule(on);
+  return Napi::Boolean::New(info.Env(), true);
+}
+
 // thuum ADR-068 D-S3 point 4: the followed set the seam reads (TrapFamily.h),
 // fed by skymp5-client's prop stream at a trap body's owner word and at the
 // owner's at-rest sample; setHosted's shape. The count is logged for the lab

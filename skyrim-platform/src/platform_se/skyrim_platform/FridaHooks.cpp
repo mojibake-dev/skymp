@@ -39,6 +39,7 @@
 #include <fmt/format.h>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -253,6 +254,173 @@ bool Frida::IsCellHosted(uint32_t cellFormId)
   return g_hostedCells.count(cellFormId) > 0;
 }
 
+// the steady clock in milliseconds, defined below beside the cast starts
+uint64_t NowMs();
+
+/**
+ * The presser rule (thuum docs/DECISIONS.md ADR-068 D-W1 A and D-C2 A as one
+ * rule, Eli 2026-11-06; docs/research/fifty-fixes-2026-11-07.md 1(b)): a
+ * trigger volume's entry counts once, on its presser's owner, and travels to
+ * the trigger script's owner. Every seat's engine raises OnTriggerEnter and
+ * OnTriggerLeave for whatever collidable enters its copy of a volume: the
+ * engine's admission tests the collidable's collision layer and nothing of
+ * the seat (TESTrapListener's overlap callback, no player, AI, puppet or
+ * life-state test: lab/.cache/drafts/fifty/trigger-entry-static.md section
+ * 4, HYPOTHESIS), so another seat's figure or a puppet presses this seat's
+ * copy (H-TE2) and one press fired a trap family trigger on every seat.
+ *
+ * The presser is the event's one argument, akActionRef. SkyrimVM's two
+ * trigger sinks (BSTEventSink<TESTriggerEnterEvent> and
+ * <TESTriggerLeaveEvent>, CommonLibSSE-NG include/RE/S/SkyrimVM.h:130-131)
+ * pass it to SendEvent, the gate's hook below, inside their own argument
+ * object, `anonymous namespace'::SingleObjectRefrHandleArgument, whose
+ * vtable CommonLib names VTABLE___SingleObjectRefrHandleArgument
+ * (include/RE/Offsets_VTABLE.h:4309; Address Library 217161, `just addr`
+ * 2026-11-07, addrlib: 0x1912b00 on 1.6.1170; CONFIRMED-STATIC): SendEvent's
+ * arg 3, its first word that vtable. The gate compares that word before it
+ * reads anything else, so an argument of another class (a mod's own) is
+ * never dereferenced: it passes as before, counted, with a line a minute.
+ *
+ * HYPOTHESIS H-TE1 (trigger-entry-static.md 2.6 and 2.10): the object holds
+ * the actionRef as a plain TESObjectREFR* at +0x08, where the sink stores it
+ * with its reference count raised, its packer (slot 01) reads it and its
+ * destructor (slot 00) releases it. Confirmed only by x-trigger-entry v1 on
+ * both seats (lab/frida/trigger-entry-trace.js: the ready row's argOk,
+ * enterSinkOk and leaveSinkOk true, and every pack row's agree true); this
+ * rule does not merge before that read.
+ */
+namespace {
+// the rule's switch (Frida::SetTriggerPresserRule), off by default
+std::atomic<bool> g_triggerPresserRule{ false };
+
+// H-TE1's member: the actionRef's place in the engine's trigger argument
+constexpr std::ptrdiff_t kTriggerArgumentActionRef = 0x08;
+
+// the entry an event name is, without case (Papyrus's rule): 1 for
+// OnTriggerEnter, 2 for OnTriggerLeave (the wire's entry values), 0 for any
+// other name; OnTrigger, the continuous event, is none of them (the word
+// wall's sendPapyrusEvent read of it is untouched)
+int TriggerEntryOf(const char* name)
+{
+  if (!name) {
+    return 0;
+  }
+  if (_stricmp(name, "OnTriggerEnter") == 0) {
+    return 1;
+  }
+  if (_stricmp(name, "OnTriggerLeave") == 0) {
+    return 2;
+  }
+  return 0;
+}
+
+// the engine's trigger argument's vtable, resolved once through CommonLib's
+// Relocation (Hooks.cpp's vtable idiom), first at the hook's install
+// (InstallSendEventHook); 0 if the Address Library names no such id, and
+// then no argument ever matches and every trigger event passes as before
+std::uintptr_t TriggerArgumentVtable()
+{
+  static const REL::Relocation<std::uintptr_t> vtable{
+    RE::VTABLE___SingleObjectRefrHandleArgument[0]
+  };
+  return vtable.address();
+}
+
+// how the gate read a trigger event's argument
+enum class PresserRead
+{
+  kPresser,
+  kNoArgument,
+  kOtherClass,
+  kNoPresser
+};
+
+const char* PresserReadText(PresserRead how)
+{
+  switch (how) {
+    case PresserRead::kNoArgument:
+      return "no argument";
+    case PresserRead::kOtherClass:
+      return "its argument is not the engine's trigger argument "
+             "(SingleObjectRefrHandleArgument)";
+    case PresserRead::kNoPresser:
+      return "the engine's trigger argument names no presser";
+    default:
+      return "its presser read";
+  }
+}
+
+// the presser the engine's trigger argument names, or null: the vtable
+// compared first, the member (H-TE1) read only on a match; one compare and
+// one load (rule 9)
+RE::TESObjectREFR* ReadPresser(const void* args, PresserRead& how)
+{
+  if (!args) {
+    how = PresserRead::kNoArgument;
+    return nullptr;
+  }
+  const std::uintptr_t vtable = TriggerArgumentVtable();
+  if (vtable == 0 || *static_cast<const std::uintptr_t*>(args) != vtable) {
+    how = PresserRead::kOtherClass;
+    return nullptr;
+  }
+  auto* presser = *reinterpret_cast<RE::TESObjectREFR* const*>(
+    static_cast<const std::uint8_t*>(args) + kTriggerArgumentActionRef);
+  how = presser ? PresserRead::kPresser : PresserRead::kNoPresser;
+  return presser;
+}
+
+// whether this seat owns the presser (the plan's rule table, "A trigger
+// volume's entry"): its own player; a body (TESObjectREFR::IsDead,
+// include/RE/T/TESObjectREFR.h:353) in a cell this seat hosts, a body being
+// its cell host's until M4; a live actor this seat simulates (Hosted.h)
+// that is no puppet (Puppets.h), the gate's own simulatedActor test, false
+// for a figure and for a puppet; a non-actor (a prop, a thrown item: D-W1
+// names actors) unless it is a trap body another seat streams
+// (TrapFamily::Followed). Reads alone: the form type byte
+// (include/RE/T/TESForm.h:289), the life state behind IsDead and the parent
+// cell (TESObjectREFR.h:413)
+bool OwnsPresser(const RE::TESObjectREFR* presser)
+{
+  const uint32_t id = presser->formID;
+  if (id == 0x14) {
+    return true;
+  }
+  if (presser->GetFormType() != RE::FormType::ActorCharacter) {
+    return !TrapFamily::Followed::Is(id);
+  }
+  if (presser->IsDead()) {
+    const RE::TESObjectCELL* cell = presser->GetParentCell();
+    return cell && Frida::IsCellHosted(cell->GetFormID());
+  }
+  return Hosted::Is(id) && !Puppets::Is(id);
+}
+
+// whether the handle has an attached script (the VM's attachedScripts under
+// its own lock, CommonLibSSE-NG include/RE/V/VirtualMachine.h:219-220, the
+// size read and never empty(): include/RE/B/BSTArray.h:749 answers
+// inverted): a trigger with none has no script for its entry to reach, and
+// the host's SendTriggerEvent would refuse it
+bool HasAttachedScript(VM* vm, RE::VMHandle handle)
+{
+  if (!vm) {
+    return false;
+  }
+  RE::BSSpinLockGuard guard{ vm->attachedScriptsLock };
+  const auto it = vm->attachedScripts.find(handle);
+  return it != vm->attachedScripts.end() && it->second.size() != 0;
+}
+}
+
+void Frida::SetTriggerPresserRule(bool on)
+{
+  g_triggerPresserRule.store(on, std::memory_order_relaxed);
+  logger::info("[verb:traps] setTriggerPresserRule({}): {}", on,
+               on ? "a trigger entry counts on its presser's owner alone "
+                    "(D-W1)"
+                  : "every presser's entry counts on every seat (D-S3)");
+}
+
 /**
  * Send Event hook
  */
@@ -419,6 +587,99 @@ void OnSendEventEnter(GumInvocationContext* ic)
     Hosted::Is(selfId) && !Puppets::Is(selfId);
 
   auto blockEvents = TESModPlatform::GetPapyrusEventsBlocked();
+  // the trap family's verdict, asked at most once for this event: the
+  // presser rule and the family rule below both read it (TrapFamily caches
+  // the verdict per class; the walk of the attached scripts under the VM's
+  // lock is per call)
+  std::optional<bool> familyVerdict;
+  const auto isFamily = [&]() {
+    if (!familyVerdict) {
+      familyVerdict = TrapFamily::IsFamily(selfRef, handle);
+    }
+    return *familyVerdict;
+  };
+
+  // thuum docs/DECISIONS.md ADR-068 D-W1 A and D-C2 A, the presser rule
+  // (above; setTriggerPresserRule, off by default): an OnTriggerEnter or an
+  // OnTriggerLeave to a world object, under the block, counts on its
+  // presser's owner alone. A presser this seat does not own (another seat's
+  // figure, a puppet, a body in a cell this seat does not host, a trap body
+  // another seat streams) is blanked here, before any rule below could pass
+  // it: its owner's engine counts that entry, and what it causes crosses
+  // from there (a trap family trigger's firing as its first link,
+  // RelayedActivation 70; a world script's entry to the cell's host as
+  // Activate's entry, played there by TESModPlatform.SendTriggerEvent, which
+  // this gate passes under the platform's Override above). An owned entry on
+  // a trap family trigger, or on a scripted trigger in a cell this seat does
+  // not host, is told to skymp5-client as triggerEntry on the next tick (a
+  // tick task, never a handler's PushAndWait: the plan's read 1) and then
+  // goes on through the gate as before, so a family trigger's runs here and
+  // a guest's world script stays blanked; an owned entry on a hosted cell's
+  // world trigger runs here and tells nobody. The family is asked in a
+  // hosted cell too, its verdict cached per class. Trigger events alone pay
+  // for this (rule 9)
+  if (blockEvents && worldObject &&
+      g_triggerPresserRule.load(std::memory_order_relaxed)) {
+    const int entry = TriggerEntryOf(eventNameStr.c_str());
+    if (entry != 0) {
+      PresserRead how = PresserRead::kNoArgument;
+      RE::TESObjectREFR* presser =
+        ReadPresser(gum_invocation_context_get_nth_argument(ic, 3), how);
+      if (!presser) {
+        static std::atomic<uint64_t> s_presserUnread{ 0 };
+        static std::atomic<uint64_t> s_presserUnreadLineMs{ 0 };
+        const auto n = ++s_presserUnread;
+        const uint64_t now = NowMs();
+        uint64_t last = s_presserUnreadLineMs.load(std::memory_order_relaxed);
+        if ((last == 0 || now >= last + 60000) &&
+            s_presserUnreadLineMs.compare_exchange_strong(last, now)) {
+          logger::info("[verb:traps] {} to {:x}: {}, passed as before (the "
+                       "presser rule's argument unread; {} so far, a line a "
+                       "minute)",
+                       eventNameStr, selfId, PresserReadText(how), n);
+        }
+      } else if (!OwnsPresser(presser)) {
+        static std::atomic<uint64_t> s_presserIgnored{ 0 };
+        const auto n = ++s_presserIgnored;
+        if (n <= 3 || n % 100 == 0) {
+          logger::info("[verb:traps] {} to {:x} by {:x}: not this seat's "
+                       "presser, ignored (D-W1) ({} so far)",
+                       eventNameStr, selfId, presser->formID, n);
+        }
+        static const auto fsEmptyPresser = new FixedString("");
+        gum_invocation_context_replace_nth_argument(ic, 2, fsEmptyPresser);
+        return;
+      } else {
+        const bool family = isFamily();
+        if (family || (!inHostedCell && HasAttachedScript(vm, handle))) {
+          const uint32_t refrId = selfId;
+          const uint32_t presserId = presser->formID;
+          const bool enter = entry == 1;
+          static std::atomic<uint64_t> s_presserTold{ 0 };
+          const auto n = ++s_presserTold;
+          if (n <= 3 || n % 100 == 0) {
+            logger::info("[verb:traps] {} to {:x} by {:x}: this seat's "
+                         "presser, told as triggerEntry ({}) ({} so far)",
+                         eventNameStr, refrId, presserId,
+                         family ? "a trap family trigger"
+                                : "a world trigger in a cell this seat "
+                                  "does not host",
+                         n);
+          }
+          SkyrimPlatform::GetSingleton()->AddTickTask(
+            [refrId, presserId, enter, family](Napi::Env env) {
+              auto obj = Napi::Object::New(env);
+              AddObjProperty(&obj, "refrId", refrId);
+              AddObjProperty(&obj, "presserId", presserId);
+              AddObjProperty(&obj, "enter", enter);
+              AddObjProperty(&obj, "family", family);
+              EventsApi::SendEvent("triggerEntry", { obj });
+            });
+        }
+      }
+    }
+  }
+
   // thuum docs/DECISIONS.md ADR-068 D-S3 point 1 (TrapFamily.h): a world
   // object whose every attached script is in the trap family runs its events
   // in every game, in any cell, as a hosted cell's world objects do: each
@@ -433,8 +694,7 @@ void OnSendEventEnter(GumInvocationContext* ic)
   // lifecycle event passes a world object either way, so it is never asked
   // for one. The family's verdict is cached per class
   const bool trapFamily = blockEvents && worldObject && !lifecycle &&
-    (!inHostedCell || TrapFamily::Destroyed(selfRef)) &&
-    TrapFamily::IsFamily(selfRef, handle);
+    (!inHostedCell || TrapFamily::Destroyed(selfRef)) && isFamily();
   const bool hostedWorldScript =
     (worldObject && (inHostedCell || lifecycle || trapFamily)) ||
     simulatedActor;
@@ -602,9 +862,23 @@ void OnSendEventLeave(GumInvocationContext* ic)
 
 void InstallSendEventHook()
 {
+  // the presser rule's argument class resolved here, at the install, not on
+  // a VM thread at the first trigger event
+  const std::uintptr_t triggerArgument = TriggerArgumentVtable();
   Frida::HookHandler::GetSingleton()->Install(
     Frida::HookID::SEND_EVENT, Offsets::Hooks::SendEvent.address(),
     std::make_shared<Frida::Hook>(OnSendEventEnter, OnSendEventLeave));
+  // the lab tells one platform build from another by such install lines
+  logger::info(
+    "[verb:traps] the presser rule (D-W1) installed on the "
+    "Papyrus event gate, off until setTriggerPresserRule(true): "
+    "the engine's trigger argument by its vtable, "
+    "VTABLE___SingleObjectRefrHandleArgument (Address Library "
+    "217161), {}",
+    triggerArgument
+      ? fmt::format("at +{:x}", triggerArgument - REL::Module::get().base())
+      : std::string("not resolved: every trigger event passes as "
+                    "before"));
 }
 
 /**

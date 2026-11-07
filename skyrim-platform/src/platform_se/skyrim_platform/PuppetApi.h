@@ -50,6 +50,14 @@ Napi::Value IsPerformingAction(const Napi::CallbackInfo& info);
 // trap body; playtest 48), and null for an id that names no reference or one
 // with no attached script
 Napi::Value GetTrapRole(const Napi::CallbackInfo& info);
+// thuum docs/DECISIONS.md ADR-068 D-W1 A and D-C2 A (the presser rule,
+// FridaHooks.h): setTriggerPresserRule(on), the Papyrus event gate's rule over
+// a world object's OnTriggerEnter and OnTriggerLeave on or off, off by
+// default (D-S3's every-seat firing): on, an entry whose presser this seat
+// does not own is blanked, and an owned one on a trap family trigger, or on
+// a scripted trigger in a cell this seat does not host, raises triggerEntry
+// on the next tick. Stored with no game call; true when stored
+Napi::Value SetTriggerPresserRule(const Napi::CallbackInfo& info);
 // setPropFollowed(formId, followed): a trap body another seat streams (true)
 // or no longer (false), kept in the set the native seam reads, where this
 // seat's script SetMotionType and ApplyHavokImpulse on the body run
@@ -179,6 +187,9 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "getTrapRole",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(GetTrapRole)));
+  exports.Set("setTriggerPresserRule",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(SetTriggerPresserRule)));
   exports.Set(
     "setPropFollowed",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetPropFollowed)));

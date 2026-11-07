@@ -1,6 +1,8 @@
 #include "ActionListener.h"
 #include "Messages.h"
 #include "TestUtils.hpp"
+#include "libespm/ObjectBounds.h"
+#include "libespm/REFR.h"
 #include "wire_bridge_cxx/rules.h"
 #include <catch2/catch_all.hpp>
 #include <chrono>
@@ -241,6 +243,77 @@ TEST_CASE("A trigger entry from the host, for another's presser, from a "
   refused(1, 0x14, kWeb,
           "[verb:traps] E_ENTRY_REACH: ff000fe2 reports "
           "ff000fe2 entering 37281");
+  Leave(p);
+}
+
+// the train's review, note 2: an entry counts where the engine counts it,
+// anywhere inside the trigger's primitive. Bleak Falls Sanctum 0x371dd's
+// word wall trigger 0x709d2 (ACTI 0x5095e WordWallTrigger at (-7601, -154,
+// 674)), whose primitive is a sphere of radius 2,065 around it (XPRM type 2,
+// WordWallTest's): 1,500 units south of it a presser stands inside the
+// sphere and far past the activation reach of its origin; 2,400 units north
+// it stands outside the sphere and as far past the reach
+TEST_CASE("A presser inside a trigger's primitive, far from its origin, is "
+          "within its reach, and one outside it is not (D-C2)",
+          "[TriggerEntry][espm]")
+{
+  constexpr uint32_t kSanctum = 0x371dd;
+  constexpr uint32_t kWallTrigger = 0x709d2;
+  const NiPoint3 kAtTheTrigger{ -7601.f, -154.f, 674.f };
+  const NiPoint3 kInsideTheSphere{ -7601.f, -154.f - 1500.f, 674.f };
+  const NiPoint3 kOutsideTheSphere{ -7601.f, -154.f + 2400.f, 674.f };
+  PartOne& p = GetPartOne();
+  DoConnect(p, 0);
+  p.CreateActor(kHostActor, kAtTheTrigger, 0, kSanctum);
+  p.SetUserActor(0, kHostActor);
+  DoConnect(p, 1);
+  p.CreateActor(kGuestActor, kInsideTheSphere, 0, kSanctum);
+  p.SetUserActor(1, kGuestActor);
+  auto& trigger = p.worldState.GetFormAt<MpObjectReference>(kWallTrigger);
+  REQUIRE(trigger.HasPrimitive());
+  REQUIRE(trigger.IsPointInsidePrimitive(kInsideTheSphere));
+  REQUIRE_FALSE(trigger.IsPointInsidePrimitive(kOutsideTheSphere));
+  // a sphere is radial, so the case proves the rule only if 1,500 units is
+  // past the origin's reach by the trigger's own bounds (the handler's
+  // ActivationTargetSize: its base's bounds radius times its scale)
+  {
+    auto& browser = p.worldState.GetEspm().GetBrowser();
+    const auto* base = browser.LookupById(trigger.GetBaseId()).rec;
+    const auto bounds = base
+      ? espm::GetObjectBounds(base, p.worldState.GetEspmCache())
+      : std::nullopt;
+    const float size = bounds ? espm::BoundsRadius(*bounds) *
+        espm::GetData<espm::REFR>(kWallTrigger, &p.worldState).scale
+                              : 0.f;
+    REQUIRE_FALSE(skymp::rules::activation_within_reach(1500.f, size).allowed);
+  }
+  Stand(p, kHostActor, kAtTheTrigger);
+  Stand(p, kGuestActor, kInsideTheSphere);
+  Host(p, 0, kSanctum);
+  Loaded(p, 1, kSanctum);
+  p.Messages().clear();
+  {
+    LogCapture log;
+    Entry(p, 1, 0x14, kWallTrigger, 1);
+    REQUIRE(log.Count("[verb:traps] ff000fe2 reports ff000fe2 entering "
+                      "709d2 in cell 371dd (its host ff000fe1): relayed to "
+                      "the host") == 1);
+    REQUIRE(log.Count("E_ENTRY_") == 0);
+  }
+  REQUIRE(RelayedTo(p, 0).size() == 1);
+  REQUIRE(RelayedTo(p, 0)[0].target == kWallTrigger);
+  REQUIRE(RelayedTo(p, 0)[0].caster == kGuestActor);
+  // outside the sphere the origin's reach is the rule
+  Stand(p, kGuestActor, kOutsideTheSphere);
+  p.Messages().clear();
+  {
+    LogCapture log;
+    REQUIRE_NOTHROW(Entry(p, 1, 0x14, kWallTrigger, 1));
+    REQUIRE(log.Count("[verb:traps] E_ENTRY_REACH: ff000fe2 reports "
+                      "ff000fe2 entering 709d2") == 1);
+    REQUIRE(log.Count("relayed to the host") == 0);
+  }
+  REQUIRE(RelayedTo(p, 0).empty());
   Leave(p);
 }
 

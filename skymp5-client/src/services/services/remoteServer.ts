@@ -66,6 +66,7 @@ import {
 import { TimeService } from './timeService';
 import { HostService } from './hostService';
 import { ObjectAnimationService } from './objectAnimationService';
+import { ScriptStateService } from './scriptStateService';
 import { PuppetService } from "./puppetService";
 import { RaceMenuService } from "./raceMenuService";
 import { logTrace, logError, logLab } from '../../logging';
@@ -616,6 +617,19 @@ export class RemoteServer extends ClientListener {
                   if (cell && host.hostsCell(cell.getFormID())) {
                     logTrace(this, `object animation ${refrid.toString(16)} ${animation} not replayed: hosted here`);
                     break;
+                  }
+                  // thuum docs/DECISIONS.md ADR-068 amendment A (rung 3): a reference
+                  // whose script record carries a view takes that view
+                  // (ScriptStateService) and not this replay; a record still being
+                  // applied is waited for, one with no view or given up leaves the
+                  // replay as it was
+                  const view = this.controller.lookupListener(ScriptStateService).viewOf(refrid);
+                  if (view === "applied") {
+                    logTrace(this, `object animation ${refrid.toString(16)} ${animation} not replayed: its script record carries the view`);
+                    break;
+                  }
+                  if (view === "pending") {
+                    continue;
                   }
                   // a guest's replay carries the jump to the trigger's side (the record's
                   // side is then this seat's); the host never gets here

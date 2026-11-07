@@ -572,9 +572,11 @@ impl Bucket {
 
 /// The server's script-call state: every reporter's budget and every
 /// subject's sequence, by form id. Runtime only: a restart starts every
-/// budget full and every sequence at 0 (rung 3 serves the sequence with the
-/// record). A budget outlives its reporter's disconnect, as a voice's
-/// recovery does, so a reconnect does not refill it.
+/// budget full and every sequence at 0, and an object's stored record (rung
+/// 3, wire-rules script_state: the record keeps the sequence it was taken
+/// at) seeds its sequence back ([`ScriptCalls::seed`]) before the sequence is
+/// read or moved again. A budget outlives its reporter's disconnect, as a
+/// voice's recovery does, so a reconnect does not refill it.
 #[derive(Debug, Default)]
 pub struct ScriptCalls {
     budgets: HashMap<u32, Bucket>,
@@ -674,10 +676,25 @@ impl ScriptCalls {
         }
     }
 
-    /// The subject's sequence: its accepted calls so far.
+    /// The subject's sequence: its accepted calls so far, or the stored
+    /// record's it was seeded with.
     #[must_use]
     pub fn seq_of(&self, subject: u32) -> u32 {
         self.seqs.get(&subject).copied().unwrap_or(0)
+    }
+
+    /// Raise the subject's sequence to `seq` where it stands below, never
+    /// lower it (thuum ADR-068 rung 3): `seq` is the object's stored record's,
+    /// the sequence it was taken at, read back after a restart started every
+    /// sequence at 0, so the next accepted call on the object takes a number
+    /// above every one a seat applied and a record taken now never names one
+    /// below the record served before it. A seed of 0 changes nothing.
+    pub fn seed(&mut self, subject: u32, seq: u32) {
+        if seq == 0 {
+            return;
+        }
+        let at = self.seqs.entry(subject).or_insert(0);
+        *at = (*at).max(seq);
     }
 }
 
@@ -1011,6 +1028,33 @@ mod tests {
             assert!(s.shape(play, &[Arg::String], HOST, PILLAR, 0).is_ok());
         }
         assert_eq!(refused_by(s.shape(play, &[Arg::String], HOST, PILLAR, 0)), Some(Code::Rate));
+    }
+
+    #[test]
+    fn a_seed_raises_a_sequence_and_never_lowers_it() {
+        // thuum ADR-068 rung 3: the pillar's stored record was taken at
+        // sequence 5 before a restart, which started every sequence at 0
+        let mut s = ScriptCalls::default();
+        let row = row("ObjectReference", "PlayAnimation");
+        s.seed(PILLAR, 5);
+        assert_eq!(s.seq_of(PILLAR), 5);
+        // the next accepted call takes the number after the record's
+        assert_eq!(accepted(&s.judge(row, &[Arg::String], &hosted(PILLAR), 0)).seq, 6);
+        // a lower or an equal seed changes nothing (a second serve of the
+        // same record, an older record)
+        s.seed(PILLAR, 3);
+        s.seed(PILLAR, 6);
+        assert_eq!(s.seq_of(PILLAR), 6);
+        // a higher one raises it, and the calls run on from there
+        s.seed(PILLAR, 9);
+        assert_eq!(s.seq_of(PILLAR), 9);
+        assert_eq!(accepted(&s.judge(row, &[Arg::String], &hosted(PILLAR), 0)).seq, 10);
+        // a seed of 0 is no record's: nothing changes; and the sequence is
+        // per object
+        s.seed(0xaa8cc, 0);
+        assert_eq!(s.seq_of(0xaa8cc), 0);
+        assert_eq!(accepted(&s.judge(row, &[Arg::String], &hosted(0xaa8cc), 0)).seq, 1);
+        assert_eq!(s.seq_of(PILLAR), 10);
     }
 
     #[test]

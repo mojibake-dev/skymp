@@ -232,6 +232,12 @@ pub struct ClientGuard {
     /// D-S3): one per stage rise or destruction its engine caused or saw
     /// first, a trap's result once; 8 at once, 2 a second after (UNMEASURED).
     pub destruction_budget: TokenBucket,
+    /// Budget for an owner's script records (ScriptState, thuum ADR-068 rung
+    /// 3): one per reference whose record's hash moved, at the end of a
+    /// stack that touched it or at the 30 s sweep, and the cell's known
+    /// references at once at a release; 64 at once, 8 a second after
+    /// (UNMEASURED). The transport's byte budget bounds the bytes.
+    pub script_state_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -277,6 +283,7 @@ impl Default for ClientGuard {
             object_animation_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 8, last_refill_ms: 0 },
             change_form_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 8, last_refill_ms: 0 },
             destruction_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
+            script_state_budget: TokenBucket { tokens: 64, capacity: 64, refill_per_s: 8, last_refill_ms: 0 },
         }
     }
 }
@@ -1210,6 +1217,144 @@ fn check_script_call(m: &skymp::ScriptCall) -> Result<(), Reject> {
     Ok(())
 }
 
+/// Object::Save's flags byte in a script record (thuum ADR-068 rung 3):
+/// constructed, which a read requires.
+const SCRIPT_CONSTRUCTED: u8 = 0x01;
+/// The lock held: a read taken while a stack held the object, never a
+/// quiescent one.
+const SCRIPT_LOCKED: u8 = 0x04;
+/// Initialized, which a read requires (an apply waits for it on the
+/// receiver).
+const SCRIPT_INITIALIZED: u8 = 0x08;
+/// The kinds a script record's handle may name: 0 a form's, 1 and 2 the
+/// others the save read met (thuum docs/research/
+/// adr065-papyrus-state-2026-11-03.md Q1).
+const SCRIPT_HANDLE_KINDS: u8 = 2;
+/// A seat's own player, which a record never names (the owner encodes it as
+/// None).
+const OWN_PLAYER: u32 = 0x14;
+
+/// Whether a script record's string or name holds a NUL. The receiver's
+/// BSFixedString reads a C string, so a NUL would cut a type, a state, an
+/// element type or a value short, and the platform's apply refuses the whole
+/// record for one (its ReadString, skyrim-platform ScriptState.cpp): a
+/// record every receiver refuses is refused here first.
+fn has_nul(s: &str) -> bool {
+    s.contains('\0')
+}
+
+/// A script value's payload against its kind (thuum ADR-068 rung 3): `k` 0
+/// (None) carries nothing, 1 (an object) at most its handle (none is a typed
+/// None), 2 its string, 3 its int, 4 its float, 5 its bool, and no other
+/// field; `numbers` is which of the int, float and bool fields are present
+/// and `s` the string. A string holds no NUL. A handle names a kind of 0 to
+/// 2, the script type bound at it (never empty, no NUL: the receiver's
+/// FindBoundObject takes it, and the platform's apply refuses an empty one)
+/// and a form every seat shares: never a seat's own player (0x14) nor a form
+/// the server names (0xff000000 and up), which the owner encodes as None.
+fn check_script_payload(k: u8, numbers: [bool; 3], s: Option<&str>, o: Option<&skymp::ScriptHandle>) -> Result<(), Reject> {
+    let [i, f, b] = numbers;
+    let carried = [i, f, b, s.is_some()];
+    let fits = match k {
+        0 => carried == [false, false, false, false] && o.is_none(),
+        1 => carried == [false, false, false, false],
+        2 => carried == [false, false, false, true] && o.is_none(),
+        3 => carried == [true, false, false, false] && o.is_none(),
+        4 => carried == [false, true, false, false] && o.is_none(),
+        5 => carried == [false, false, true, false] && o.is_none(),
+        _ => false,
+    };
+    if !fits || s.is_some_and(has_nul) {
+        return Err(Reject::Range);
+    }
+    match o {
+        Some(h) if h.kind > SCRIPT_HANDLE_KINDS || h.form == OWN_PLAYER || h.form >= PLAYER_FORMS || h.cls.is_empty() || has_nul(&h.cls) => Err(Reject::Range),
+        _ => Ok(()),
+    }
+}
+
+/// The None array's kind (CommonLibSSE-NG include/RE/T/TypeInfo.h,
+/// kNoneArray): a None array value, which carries no elements (the
+/// platform's apply refuses any, its ParseVar); 11 to 15 are the typed
+/// arrays.
+const SCRIPT_NONE_ARRAY: u8 = 10;
+
+/// One variable of a script record (thuum ADR-068 rung 3): a value of kind 0
+/// to 5 ([`check_script_payload`]) with no array fields; an array of kind 11
+/// to 15 with no value fields, its elements (none for a None array) each a
+/// value of kind `k - 10`, and `elem` on an object array (11) alone, with no
+/// NUL; or kind 10, the None array, with no field at all.
+fn check_script_var(v: &skymp::ScriptVar) -> Result<(), Reject> {
+    let numbers = [v.i.is_some(), v.f.is_some(), v.b.is_some()];
+    match v.k {
+        0..=5 => {
+            if v.elem.is_some() || v.a.is_some() {
+                return Err(Reject::Range);
+            }
+            check_script_payload(v.k, numbers, v.s.as_deref(), v.o.as_ref())
+        }
+        10..=15 => {
+            let elem_fits = v.elem.as_deref().is_none_or(|elem| v.k == 11 && !has_nul(elem));
+            if numbers.contains(&true) || v.s.is_some() || v.o.is_some() || !elem_fits || (v.k == SCRIPT_NONE_ARRAY && v.a.is_some()) {
+                return Err(Reject::Range);
+            }
+            let element = v.k.checked_sub(SCRIPT_NONE_ARRAY).ok_or(Reject::Range)?;
+            for e in v.a.iter().flat_map(|a| a.iter()) {
+                if e.k != element {
+                    return Err(Reject::Range);
+                }
+                check_script_payload(e.k, [e.i.is_some(), e.f.is_some(), e.b.is_some()], e.s.as_deref(), e.o.as_ref())?;
+            }
+            Ok(())
+        }
+        _ => Err(Reject::Range),
+    }
+}
+
+/// A script record's reference and scripts (thuum ADR-068 rung 3, the shape
+/// ScriptState and ScriptStateApply share): a game-file reference, never 0
+/// nor one the server names (0xff000000 and up); 1 to 16 scripts (the
+/// count's cap holds at decode), each with a type, its type and its state
+/// holding no NUL ([`has_nul`]), its flags read at a quiescent point
+/// (constructed and initialized, the lock not held) and every variable of a
+/// kind the VM has with its payload. So whatever passes here the platform's apply parses
+/// (ScriptState.cpp's ParseRecord): a record it would refuse whole is never
+/// stored to be served. Whether the sender owns the reference at the epoch
+/// is the server's rule (wire-rules script_state); no value is judged.
+fn check_script_objects(form_id: u32, scripts: &[skymp::ScriptObjectState]) -> Result<(), Reject> {
+    if form_id == 0 || form_id >= PLAYER_FORMS || scripts.is_empty() {
+        return Err(Reject::Range);
+    }
+    for script in scripts {
+        let quiescent = script.flags & SCRIPT_CONSTRUCTED != 0 && script.flags & SCRIPT_INITIALIZED != 0 && script.flags & SCRIPT_LOCKED == 0;
+        if script.cls.is_empty() || has_nul(&script.cls) || has_nul(&script.state) || !quiescent {
+            return Err(Reject::Range);
+        }
+        for v in script.vars.iter() {
+            check_script_var(v)?;
+        }
+    }
+    Ok(())
+}
+
+/// An owner's script record (thuum ADR-068 rung 3): every float finite, then
+/// the shape [`check_script_objects`] holds.
+fn check_script_state(m: &skymp::ScriptState) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    check_script_objects(m.form_id, m.scripts.as_slice())
+}
+
+/// The server's serve of a script record (thuum ADR-068 rung 3): the
+/// record's shape; the transport refuses it from a client by direction.
+fn check_script_state_apply(m: &skymp::ScriptStateApply) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    check_script_objects(m.form_id, m.scripts.as_slice())
+}
+
 /// Validate one inbound message from a client against its guard state: the
 /// message's shape ([`validate_server`]'s rules) and then what only a
 /// server's view of a client adds, replay order and rate budgets.
@@ -1285,6 +1430,7 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::ObjectAnimation(_) => take(&mut guard.object_animation_budget, now_ms),
         Message::ChangeForm(_) => take(&mut guard.change_form_budget, now_ms),
         Message::DestructionStage(_) => take(&mut guard.destruction_budget, now_ms),
+        Message::ScriptState(_) => take(&mut guard.script_state_budget, now_ms),
         _ => Ok(()),
     }
 }
@@ -1478,6 +1624,8 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::ChangeFormAck(m) => check_change_form_ack(m),
         Message::ChangeFormApply(m) => check_change_form_apply(m),
         Message::ScriptCall(m) => check_script_call(m),
+        Message::ScriptState(m) => check_script_state(m),
+        Message::ScriptStateApply(m) => check_script_state_apply(m),
         Message::DestructionStage(m) => check_destruction_stage(m),
         Message::CreateActor(m) => check_create_actor(m),
         // Everything else: the checks all messages share. A server-to-client
@@ -3666,6 +3814,385 @@ mod script_call_tests {
         let mut guard = ClientGuard::default();
         for _ in 0..100 {
             assert_eq!(validate(&call(0xaa8cb, "ObjectReference", "PlayAnimation", vec![text("Open")]), &mut guard, 0), Ok(()));
+        }
+    }
+}
+
+#[cfg(test)]
+mod script_state_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use wire_schema::cap;
+    use wire_schema::skymp::{ScriptHandle, ScriptObjectState, ScriptState, ScriptStateApply, ScriptValue, ScriptVar};
+
+    // thuum ADR-068 rung 3: Bleak Falls Temple's pillar 0xaa8cb, its
+    // defaultPuzzlePillarScript in its turned state (the census's five
+    // variables: raw types 3, 3, 5, a class, 5), the class one the puzzle
+    // lever 0xaa8c3's plain form handle (kind 0, mid 0xFFFF)
+    const PILLAR: u32 = 0xaa8cb;
+
+    fn lever() -> ScriptHandle {
+        ScriptHandle { kind: 0, mid: 0xffff, form: 0xaa8c3, cls: "defaultPillarPuzzleLever".try_into().unwrap_or_default() }
+    }
+
+    fn var(k: u8) -> ScriptVar {
+        ScriptVar { k, ..Default::default() }
+    }
+
+    fn pillar_vars() -> Vec<ScriptVar> {
+        vec![
+            ScriptVar { i: Some(1), ..var(3) },
+            ScriptVar { i: Some(3), ..var(3) },
+            ScriptVar { b: Some(true), ..var(5) },
+            ScriptVar { o: Some(lever()), ..var(1) },
+            ScriptVar { b: Some(false), ..var(5) },
+        ]
+    }
+
+    fn script(vars: Vec<ScriptVar>) -> ScriptObjectState {
+        ScriptObjectState {
+            cls: "defaultPuzzlePillarScript".try_into().unwrap_or_default(),
+            state: "position02".try_into().unwrap_or_default(),
+            flags: 0x0b,
+            vars: vars.try_into().unwrap_or_default(),
+        }
+    }
+
+    fn record(form_id: u32, scripts: Vec<ScriptObjectState>) -> Message {
+        Message::ScriptState(ScriptState { epoch: 1, form_id, fnv1a: 0x5c1a_7e01, scripts: scripts.try_into().unwrap_or_default(), ..Default::default() })
+    }
+
+    fn with_var(v: ScriptVar) -> Message {
+        let mut vars = pillar_vars();
+        vars.push(v);
+        record(PILLAR, vec![script(vars)])
+    }
+
+    #[test]
+    fn the_pillars_record_is_a_record() {
+        assert_eq!(validate_server(&record(PILLAR, vec![script(pillar_vars())])), Ok(()));
+        // the empty state, a script with no variables, every kind of value
+        let empty = ScriptObjectState { state: "".try_into().unwrap_or_default(), ..script(vec![]) };
+        assert_eq!(validate_server(&record(PILLAR, vec![empty])), Ok(()));
+        let every = vec![
+            var(0),
+            var(1),
+            ScriptVar { s: Some("Turned02".try_into().unwrap_or_default()), ..var(2) },
+            ScriptVar { f: Some(1.5), ..var(4) },
+        ];
+        assert_eq!(validate_server(&record(PILLAR, vec![script(every)])), Ok(()));
+    }
+
+    #[test]
+    fn a_record_names_a_game_file_reference_and_one_to_sixteen_scripts() {
+        let one = || vec![script(pillar_vars())];
+        assert_eq!(validate_server(&record(0, one())), Err(Reject::Range));
+        assert_eq!(validate_server(&record(0xff00_0000, one())), Err(Reject::Range));
+        assert_eq!(validate_server(&record(u32::MAX, one())), Err(Reject::Range));
+        assert_eq!(validate_server(&record(0xfeff_ffff, one())), Ok(()));
+        assert_eq!(validate_server(&record(PILLAR, vec![])), Err(Reject::Range));
+        let sixteen: Vec<ScriptObjectState> = (0..cap::SCRIPT_OBJECTS).map(|_| script(pillar_vars())).collect();
+        assert_eq!(validate_server(&record(PILLAR, sixteen.clone())), Ok(()));
+        // a seventeenth fails at decode, before any check
+        let mut seventeen = sixteen;
+        seventeen.push(script(pillar_vars()));
+        let over: Result<wire_schema::bounded::Vec<ScriptObjectState, { cap::SCRIPT_OBJECTS }>, _> = seventeen.try_into();
+        assert!(over.is_err());
+        // a script with no type
+        let untyped = ScriptObjectState { cls: "".try_into().unwrap_or_default(), ..script(pillar_vars()) };
+        assert_eq!(validate_server(&record(PILLAR, vec![untyped])), Err(Reject::Range));
+    }
+
+    #[test]
+    fn a_record_is_read_at_a_quiescent_point() {
+        // Object::Save's byte: 0x01 constructed, 0x02 valid, 0x04 lock held,
+        // 0x08 initialized
+        let flagged = |flags| record(PILLAR, vec![ScriptObjectState { flags, ..script(pillar_vars()) }]);
+        assert_eq!(validate_server(&flagged(0x09)), Ok(()));
+        assert_eq!(validate_server(&flagged(0x0b)), Ok(()));
+        assert_eq!(validate_server(&flagged(0x08)), Err(Reject::Range), "not constructed");
+        assert_eq!(validate_server(&flagged(0x03)), Err(Reject::Range), "not initialized");
+        assert_eq!(validate_server(&flagged(0x0f)), Err(Reject::Range), "the lock held");
+    }
+
+    #[test]
+    fn a_value_carries_the_one_field_its_kind_names() {
+        let text = || Some("x".try_into().unwrap_or_default());
+        assert_eq!(validate_server(&with_var(var(0))), Ok(()));
+        assert_eq!(validate_server(&with_var(ScriptVar { i: Some(1), ..var(0) })), Err(Reject::Range), "a None carries nothing");
+        assert_eq!(validate_server(&with_var(ScriptVar { o: Some(lever()), ..var(0) })), Err(Reject::Range));
+        assert_eq!(validate_server(&with_var(ScriptVar { i: Some(1), ..var(1) })), Err(Reject::Range), "an object carries its handle alone");
+        assert_eq!(validate_server(&with_var(var(2))), Err(Reject::Range), "a string carries its string");
+        assert_eq!(validate_server(&with_var(ScriptVar { s: text(), ..var(2) })), Ok(()));
+        assert_eq!(validate_server(&with_var(ScriptVar { s: text(), i: Some(1), ..var(2) })), Err(Reject::Range));
+        assert_eq!(validate_server(&with_var(var(3))), Err(Reject::Range), "an int carries its int");
+        assert_eq!(validate_server(&with_var(ScriptVar { f: Some(1.0), ..var(3) })), Err(Reject::Range));
+        assert_eq!(validate_server(&with_var(ScriptVar { f: Some(-0.5), ..var(4) })), Ok(()));
+        assert_eq!(validate_server(&with_var(ScriptVar { b: Some(true), ..var(4) })), Err(Reject::Range));
+        assert_eq!(validate_server(&with_var(ScriptVar { b: Some(false), o: Some(lever()), ..var(5) })), Err(Reject::Range));
+        // the kinds the VM has: 0 to 5 and the arrays 10 to 15
+        for k in [6, 7, 8, 9, 16, 255] {
+            assert_eq!(validate_server(&with_var(var(k))), Err(Reject::Range), "kind {k}");
+        }
+    }
+
+    #[test]
+    fn an_array_holds_values_of_its_element_kind() {
+        let ints = |values: &[i32]| Some(values.iter().map(|i| ScriptValue { k: 3, i: Some(*i), ..Default::default() }).collect::<Vec<_>>().try_into().unwrap_or_default());
+        assert_eq!(validate_server(&with_var(ScriptVar { a: ints(&[1, 3]), ..var(13) })), Ok(()));
+        // a None array, and an empty one
+        assert_eq!(validate_server(&with_var(var(12))), Ok(()));
+        assert_eq!(validate_server(&with_var(ScriptVar { a: ints(&[]), ..var(13) })), Ok(()));
+        // an element of another kind
+        assert_eq!(validate_server(&with_var(ScriptVar { a: ints(&[1]), ..var(14) })), Err(Reject::Range));
+        // an object array names its element type, and only an object array
+        let objects = Some(vec![ScriptValue { k: 1, o: Some(lever()), ..Default::default() }, ScriptValue { k: 1, ..Default::default() }].try_into().unwrap_or_default());
+        assert_eq!(validate_server(&with_var(ScriptVar { elem: Some("ObjectReference".try_into().unwrap_or_default()), a: objects.clone(), ..var(11) })), Ok(()));
+        assert_eq!(validate_server(&with_var(ScriptVar { a: objects, ..var(11) })), Ok(()), "its element type may be the declared one's");
+        assert_eq!(validate_server(&with_var(ScriptVar { elem: Some("Int".try_into().unwrap_or_default()), a: ints(&[1]), ..var(13) })), Err(Reject::Range));
+        assert_eq!(validate_server(&with_var(ScriptVar { elem: Some("Int".try_into().unwrap_or_default()), i: Some(1), ..var(3) })), Err(Reject::Range));
+        // an array carries no value of its own, a value no array
+        assert_eq!(validate_server(&with_var(ScriptVar { i: Some(1), a: ints(&[1]), ..var(13) })), Err(Reject::Range));
+        assert_eq!(validate_server(&with_var(ScriptVar { i: Some(1), a: ints(&[1]), ..var(3) })), Err(Reject::Range));
+        // the None array (kind 10) is a value with no elements: no `a` at all,
+        // not even an empty one, and no element type (the platform's apply
+        // refuses any, ScriptState.cpp's ParseVar)
+        assert_eq!(validate_server(&with_var(var(10))), Ok(()));
+        let nones = Some(vec![ScriptValue::default()].try_into().unwrap_or_default());
+        assert_eq!(validate_server(&with_var(ScriptVar { a: nones, ..var(10) })), Err(Reject::Range));
+        assert_eq!(validate_server(&with_var(ScriptVar { a: Some(Default::default()), ..var(10) })), Err(Reject::Range));
+        assert_eq!(validate_server(&with_var(ScriptVar { elem: Some("ObjectReference".try_into().unwrap_or_default()), ..var(10) })), Err(Reject::Range));
+        // the VM's 128 elements hold at decode (CommonLibSSE-NG
+        // include/RE/A/Array.h:69)
+        let full: Vec<ScriptValue> = (0..cap::SCRIPT_ARRAY).map(|_| ScriptValue { k: 5, b: Some(true), ..Default::default() }).collect();
+        let held: Result<wire_schema::bounded::Vec<ScriptValue, { cap::SCRIPT_ARRAY }>, _> = full.clone().try_into();
+        assert!(held.is_ok());
+        let mut over = full;
+        over.push(ScriptValue { k: 5, b: Some(true), ..Default::default() });
+        let refused: Result<wire_schema::bounded::Vec<ScriptValue, { cap::SCRIPT_ARRAY }>, _> = over.try_into();
+        assert!(refused.is_err());
+    }
+
+    #[test]
+    fn a_handle_names_a_form_every_seat_shares() {
+        let handle = |kind, form| with_var(ScriptVar { o: Some(ScriptHandle { kind, form, ..lever() }), ..var(1) });
+        assert_eq!(validate_server(&handle(1, 0xaa8c3)), Ok(()), "a kind a receiver reads as None");
+        assert_eq!(validate_server(&handle(2, 0xaa8c3)), Ok(()));
+        assert_eq!(validate_server(&handle(3, 0xaa8c3)), Err(Reject::Range));
+        assert_eq!(validate_server(&handle(0, 0x14)), Err(Reject::Range), "a seat's own player");
+        assert_eq!(validate_server(&handle(0, 0xff00_0002)), Err(Reject::Range), "a form the server names");
+        // inside an object array too
+        let element = |form| Some(vec![ScriptValue { k: 1, o: Some(ScriptHandle { form, ..lever() }), ..Default::default() }].try_into().unwrap_or_default());
+        assert_eq!(validate_server(&with_var(ScriptVar { a: element(0xaa8c3), ..var(11) })), Ok(()));
+        assert_eq!(validate_server(&with_var(ScriptVar { a: element(0xff00_0002), ..var(11) })), Err(Reject::Range));
+        // and the script type bound at it, which the receiver's
+        // FindBoundObject takes: never empty (the platform's apply refuses
+        // an object with no class, ScriptState.cpp's ParseValue)
+        let typed = |cls: &str| ScriptHandle { cls: cls.try_into().unwrap_or_default(), ..lever() };
+        assert_eq!(validate_server(&with_var(ScriptVar { o: Some(typed("defaultPillarPuzzleLever")), ..var(1) })), Ok(()));
+        assert_eq!(validate_server(&with_var(ScriptVar { o: Some(typed("")), ..var(1) })), Err(Reject::Range));
+        let untyped = Some(vec![ScriptValue { k: 1, o: Some(typed("")), ..Default::default() }].try_into().unwrap_or_default());
+        assert_eq!(validate_server(&with_var(ScriptVar { a: untyped, ..var(11) })), Err(Reject::Range));
+    }
+
+    #[test]
+    fn no_string_or_name_holds_a_nul() {
+        // the receiver's BSFixedString reads a C string, and the platform's
+        // apply refuses the whole record for a NUL anywhere it reads one
+        // (ScriptState.cpp's ReadString): a string value, alone or in an
+        // array, a script's type and state, an object array's element type,
+        // a handle's type
+        let text = |s: &str| -> Option<wire_schema::bounded::String<{ cap::SCRIPT_STRING }>> { Some(s.try_into().unwrap_or_default()) };
+        assert_eq!(validate_server(&with_var(ScriptVar { s: text("Turned02"), ..var(2) })), Ok(()));
+        assert_eq!(validate_server(&with_var(ScriptVar { s: text("Turned02\0"), ..var(2) })), Err(Reject::Range));
+        assert_eq!(validate_server(&with_var(ScriptVar { s: text("\0"), ..var(2) })), Err(Reject::Range));
+        let strings = |s: &str| Some(vec![ScriptValue { k: 2, s: text(s), ..Default::default() }].try_into().unwrap_or_default());
+        assert_eq!(validate_server(&with_var(ScriptVar { a: strings("Turned02"), ..var(12) })), Ok(()));
+        assert_eq!(validate_server(&with_var(ScriptVar { a: strings("Turned\0Two"), ..var(12) })), Err(Reject::Range));
+        let named = |cls: &str, state: &str| {
+            record(PILLAR, vec![ScriptObjectState { cls: cls.try_into().unwrap_or_default(), state: state.try_into().unwrap_or_default(), ..script(pillar_vars()) }])
+        };
+        assert_eq!(validate_server(&named("defaultPuzzlePillarScript", "position02")), Ok(()));
+        assert_eq!(validate_server(&named("defaultPuzzle\0PillarScript", "position02")), Err(Reject::Range));
+        assert_eq!(validate_server(&named("defaultPuzzlePillarScript", "position02\0")), Err(Reject::Range));
+        // an empty state is the empty state, not a cut one
+        assert_eq!(validate_server(&named("defaultPuzzlePillarScript", "")), Ok(()));
+        let elem = |e: &str| with_var(ScriptVar { elem: Some(e.try_into().unwrap_or_default()), ..var(11) });
+        assert_eq!(validate_server(&elem("ObjectReference")), Ok(()));
+        assert_eq!(validate_server(&elem("Object\0Reference")), Err(Reject::Range));
+        // an empty element type cuts nothing: the declared one's stands
+        assert_eq!(validate_server(&elem("")), Ok(()));
+        let handle = |cls: &str| ScriptHandle { cls: cls.try_into().unwrap_or_default(), ..lever() };
+        assert_eq!(validate_server(&with_var(ScriptVar { o: Some(handle("defaultPillar\0PuzzleLever")), ..var(1) })), Err(Reject::Range));
+        let element = Some(vec![ScriptValue { k: 1, o: Some(handle("\0")), ..Default::default() }].try_into().unwrap_or_default());
+        assert_eq!(validate_server(&with_var(ScriptVar { a: element, ..var(11) })), Err(Reject::Range));
+    }
+
+    #[test]
+    fn a_float_is_finite() {
+        assert_eq!(validate_server(&with_var(ScriptVar { f: Some(f32::NAN), ..var(4) })), Err(Reject::NonFinite));
+        assert_eq!(validate_server(&with_var(ScriptVar { f: Some(f32::INFINITY), ..var(4) })), Err(Reject::NonFinite));
+        let array = Some(vec![ScriptValue { k: 4, f: Some(f32::NEG_INFINITY), ..Default::default() }].try_into().unwrap_or_default());
+        assert_eq!(validate_server(&with_var(ScriptVar { a: array, ..var(14) })), Err(Reject::NonFinite));
+    }
+
+    #[test]
+    fn the_apply_obeys_the_records_shape() {
+        let apply = |form_id, event: Option<&str>, scripts: Vec<ScriptObjectState>| {
+            Message::ScriptStateApply(ScriptStateApply {
+                form_id,
+                fnv1a: 0x5c1a_7e01,
+                seq: 2,
+                event: event.map(|e| e.try_into().unwrap_or_default()),
+                scripts: scripts.try_into().unwrap_or_default(),
+                ..Default::default()
+            })
+        };
+        assert_eq!(validate_server(&apply(PILLAR, Some("Trigger01"), vec![script(pillar_vars())])), Ok(()));
+        assert_eq!(validate_server(&apply(PILLAR, None, vec![script(pillar_vars())])), Ok(()), "a record with no view");
+        assert_eq!(validate_server(&apply(0, None, vec![script(pillar_vars())])), Err(Reject::Range));
+        assert_eq!(validate_server(&apply(PILLAR, None, vec![])), Err(Reject::Range));
+        let mut bad = pillar_vars();
+        bad.push(var(6));
+        assert_eq!(validate_server(&apply(PILLAR, None, vec![script(bad)])), Err(Reject::Range));
+        // a NUL in a served name, as in a reported one
+        let cut = ScriptObjectState { state: "position\0One".try_into().unwrap_or_default(), ..script(pillar_vars()) };
+        assert_eq!(validate_server(&apply(PILLAR, Some("Trigger01"), vec![cut])), Err(Reject::Range));
+    }
+
+    #[test]
+    fn an_owners_records_are_rate_limited() {
+        let mut guard = ClientGuard::default();
+        let ok = record(PILLAR, vec![script(pillar_vars())]);
+        for _ in 0..64 {
+            assert_eq!(validate(&ok, &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&ok, &mut guard, 1_000), Err(Reject::Rate));
+        // one token every 125 ms
+        assert_eq!(validate(&ok, &mut guard, 1_124), Err(Reject::Rate));
+        assert_eq!(validate(&ok, &mut guard, 1_125), Ok(()));
+        // a refused shape spends no token: the shape is judged first
+        let mut fresh = ClientGuard::default();
+        for _ in 0..100 {
+            assert_eq!(validate(&record(0, vec![script(pillar_vars())]), &mut fresh, 1_000), Err(Reject::Range));
+        }
+        assert_eq!(validate(&ok, &mut fresh, 1_000), Ok(()));
+        // the server's apply takes no client budget
+        let served = Message::ScriptStateApply(ScriptStateApply { form_id: PILLAR, scripts: vec![script(pillar_vars())].try_into().unwrap_or_default(), ..Default::default() });
+        let mut other = ClientGuard::default();
+        for _ in 0..100 {
+            assert_eq!(validate(&served, &mut other, 1_000), Ok(()));
+        }
+    }
+
+    // a value as the generator drew it: its kind; which of the int, float,
+    // bool and string fields are present; whether its string holds a NUL;
+    // and its handle when there is one (its kind, its form, and its type as a
+    // name code)
+    type Draw = (u8, [bool; 4], bool, Option<(u8, u32, u8)>);
+
+    // a name as a code: mostly the stage's own (0), else empty (1) or the
+    // stage's own with a NUL (2)
+    fn name_strategy() -> impl Strategy<Value = u8> {
+        prop_oneof![4 => Just(0u8), 1 => Just(1u8), 1 => Just(2u8)]
+    }
+
+    fn name_of<const N: usize>(code: u8, own: &str) -> wire_schema::bounded::String<N> {
+        let text = match code {
+            0 => own.to_owned(),
+            1 => String::new(),
+            _ => format!("{own}\0"),
+        };
+        text.as_str().try_into().unwrap_or_default()
+    }
+
+    fn value_strategy() -> impl Strategy<Value = Draw> {
+        (
+            0u8..17,
+            any::<[bool; 4]>(),
+            proptest::bool::weighted(0.25),
+            proptest::option::of((0u8..4, prop_oneof![Just(0x14u32), Just(0xaa8c3u32), Just(0xff00_0002u32), any::<u32>()], name_strategy())),
+        )
+    }
+
+    // a value's payload as the rules judge it: the one field its kind names, a
+    // string with no NUL, a handle on an object alone with a kind of 0 to 2, a
+    // form every seat shares and a type neither empty nor cut by a NUL
+    fn payload_ok((k, carried, s_nul, handle): Draw) -> bool {
+        let expected = match k {
+            0 | 1 => [false; 4],
+            2 => [false, false, false, true],
+            3 => [true, false, false, false],
+            4 => [false, true, false, false],
+            5 => [false, false, true, false],
+            _ => return false,
+        };
+        let [_, _, _, s] = carried;
+        carried == expected
+            && !(s && s_nul)
+            && (k == 1 || handle.is_none())
+            && handle.is_none_or(|(kind, form, name)| kind <= 2 && form != 0x14 && form < 0xff00_0000 && name == 0)
+    }
+
+    fn value_of((k, carried, s_nul, handle): Draw) -> ScriptValue {
+        let [i, f, b, s] = carried;
+        ScriptValue {
+            k,
+            i: i.then_some(7),
+            f: f.then_some(0.25),
+            b: b.then_some(true),
+            s: s.then(|| (if s_nul { "x\0" } else { "x" }).try_into().unwrap_or_default()),
+            o: handle.map(|(kind, form, name)| ScriptHandle { kind, form, cls: name_of(name, "defaultPillarPuzzleLever"), ..lever() }),
+        }
+    }
+
+    proptest! {
+        // any kinds, payloads, handles, names, flags and forms: a verdict,
+        // never a panic, and the verdict the record's rules give
+        #[test]
+        fn script_records_never_panic_and_judge_their_shapes(
+            form_id in prop_oneof![Just(0u32), Just(PILLAR), Just(0xff00_0000u32), any::<u32>()],
+            flags in any::<u8>(), names in (name_strategy(), name_strategy()), scalar in value_strategy(),
+            array in proptest::option::of((10u8..17, proptest::option::of(proptest::collection::vec(value_strategy(), 0..4)), proptest::option::of(name_strategy()))),
+            now in any::<u64>(),
+        ) {
+            let (k, carried, _, handle) = scalar;
+            let v = value_of(scalar);
+            // a scalar draw of an array kind with no payload is a None array, the
+            // same variable as the array branch's draw with no elements, so it is
+            // valid too (4f525bad's oracle fix on the integrated rung)
+            let mut var_ok = payload_ok(scalar) || ((10..=15).contains(&k) && carried == [false; 4] && handle.is_none());
+            let mut as_var = ScriptVar { k: v.k, i: v.i, f: v.f, b: v.b, s: v.s, o: v.o, ..Default::default() };
+            if let Some((ak, elements, elem)) = array {
+                // an array instead: no value fields; `elem` (a name code) on an
+                // object array alone and with no NUL; no elements at all on the
+                // None array (kind 10); a typed one's elements each of kind ak - 10
+                as_var = ScriptVar { k: ak, ..Default::default() };
+                as_var.elem = elem.map(|code| name_of(code, "ObjectReference"));
+                var_ok = (10..=15).contains(&ak) && elem.is_none_or(|code| ak == 11 && code != 2) && (ak != 10 || elements.is_none());
+                if let Some(elements) = elements {
+                    for e in &elements {
+                        var_ok = var_ok && ak.checked_sub(10) == Some(e.0) && payload_ok(*e);
+                    }
+                    as_var.a = Some(elements.into_iter().map(value_of).collect::<Vec<_>>().try_into().unwrap_or_default());
+                }
+            }
+            // the script's type (never empty) and its state (empty is the empty
+            // state) as name codes, neither with a NUL
+            let (type_code, state_code) = names;
+            let named = ScriptObjectState {
+                cls: name_of(type_code, "defaultPuzzlePillarScript"),
+                state: name_of(state_code, "position02"),
+                flags,
+                ..script(vec![as_var])
+            };
+            let m = record(form_id, vec![named]);
+            let names_ok = type_code == 0 && state_code != 2;
+            let shape_ok = form_id != 0 && form_id < 0xff00_0000 && flags & 0x01 != 0 && flags & 0x08 != 0 && flags & 0x04 == 0 && names_ok;
+            let want = if shape_ok && var_ok { Ok(()) } else { Err(Reject::Range) };
+            prop_assert_eq!(validate_server(&m), want);
+            let mut g = ClientGuard::default();
+            let _ = validate(&m, &mut g, now);
         }
     }
 }

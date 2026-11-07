@@ -29,6 +29,7 @@
 #include "PlacedRequestMessage.h"
 #include "PropOwnerMessage.h"
 #include "RaceMenuPresetMessage.h"
+#include "ScriptStateApplyMessage.h"
 #include "SetGameTimeMessage.h"
 #include "SetRaceMenuOpenMessage.h"
 #include "SetWeatherMessage.h"
@@ -377,6 +378,10 @@ struct PartOne::Impl
   // natives): runtime only, every budget full and every sequence 0 at a start
   rust::Box<skymp::rules::ScriptCalls> scriptCalls =
     skymp::rules::new_script_calls();
+  // the script records' release reads (thuum ADR-068 rung 3, wire-rules
+  // script_state): runtime only, no release open at a start
+  rust::Box<skymp::rules::ScriptStates> scriptStates =
+    skymp::rules::new_script_states();
   std::chrono::steady_clock::time_point lastCellsTick;
   using Square = std::tuple<uint32_t, int32_t, int32_t>;
   // one serial per login across the process: a dead-sample stamp's witness
@@ -1478,6 +1483,29 @@ void PartOne::Init()
       }
     }
 
+    // thuum ADR-068 rung 3 (the script record): a reference's recorded
+    // scripts ride behind its create word on the same ordered channel, at
+    // once, with the sequence and the view they were taken at, to a game
+    // that does not host the reference's cell (the host's engine runs the
+    // scripts; a new host hears the record ahead of its grant instead,
+    // ApplyHostDecisions); after a restart the record is the saved one, and
+    // its sequence seeds the object's first (ScriptCalls::seed, a max)
+    if (!emitterAsActor && emitter->GetScriptState()) {
+      const auto cell = worldState.CellOf(*emitter);
+      const auto host = cell ? GetCellHost(*cell) : skymp::rules::CellHost{};
+      ScriptStateApplyMessage apply;
+      if ((!host.hosted || host.player != listenerAsActor->GetFormId()) &&
+          emitter->BuildScriptStateApply(apply)) {
+        GetScriptCalls().seed(apply.formId, apply.seq);
+        sendTarget->Send(listenerUserId, apply, true);
+        spdlog::info("[verb:scripts] script state {:x} served to {:x} after "
+                     "its create word: {} script(s), seq {}, view '{}'",
+                     apply.formId, listenerAsActor->GetFormId(),
+                     apply.scripts.size(), apply.seq,
+                     apply.event.value_or(""));
+      }
+    }
+
     // thuum docs/verbs/racemenu-sync.md: a player's RaceMenu look comes
     // with its figure, after CreateActor on the same ordered channel; its
     // own client gets it after its login instead (ActionListener)
@@ -1707,6 +1735,11 @@ skymp::rules::ScriptCalls& PartOne::GetScriptCalls()
   return *pImpl->scriptCalls;
 }
 
+skymp::rules::ScriptStates& PartOne::GetScriptStates()
+{
+  return *pImpl->scriptStates;
+}
+
 void PartOne::TickFightsEverySecond()
 {
   const auto now = std::chrono::steady_clock::now();
@@ -1868,9 +1901,40 @@ void ApplyHostDecisions(PartOne& partOne,
         // the cell's props nobody holds live are the new host's (thuum
         // docs/verbs/prop-physics.md, ADR-058 decision 1)
         partOne.PropsHostChanged(d.cell, d.player);
+        // thuum ADR-068 rung 3: the grant ends the release read the cell's
+        // last release left open; from here the old host's epoch stands
+        // behind the cell's (wire-rules script_state)
+        partOne.GetScriptStates().granted(d.cell);
         MpActor* host = PlayerActor(partOne, d.player);
         if (!host) {
           break;
+        }
+        // thuum ADR-068 rung 3 (the script record): the cell's recorded
+        // references the new host's game sees (FlipHostedFlags' walk of its
+        // emitters; an actor's scripts are its simulator's, a later rung's)
+        // go to it right ahead of the grant on the same ordered channel, at
+        // once, so its engine applies each record before its gate opens for
+        // the cell; each record's sequence seeds the object's first
+        // (ScriptCalls::seed, a max), so after a restart the next relay
+        // takes a number above the one the record is stamped with
+        for (MpObjectReference* emitter : host->GetEmitters()) {
+          if (!emitter || emitter->AsActor() || !emitter->GetScriptState() ||
+              partOne.worldState.CellOf(*emitter) != d.cell) {
+            continue;
+          }
+          ScriptStateApplyMessage apply;
+          if (!emitter->BuildScriptStateApply(apply)) {
+            continue;
+          }
+          partOne.GetScriptCalls().seed(apply.formId, apply.seq);
+          partOne.GetSendTarget().Send(partOne.serverState.UserByActor(host),
+                                       apply, true);
+          spdlog::info("[verb:scripts] script state {:x} served to {:x} "
+                       "ahead of its grant of cell {:x}: {} script(s), seq "
+                       "{}, view '{}'",
+                       apply.formId, host->GetFormId(), d.cell,
+                       apply.scripts.size(), apply.seq,
+                       apply.event.value_or(""));
         }
         HostGrantMessage grant;
         grant.cell = d.cell;
@@ -1886,6 +1950,10 @@ void ApplyHostDecisions(PartOne& partOne,
           "PartOne - cell-host: {:x} stops hosting cell {:x} (epoch {})",
           d.player, d.cell, d.epoch);
         partOne.NoteCellHostDecision(PartOne::CellHostNote::Release, d.cell);
+        // thuum ADR-068 rung 3: the old host's release read of the cell's
+        // references, at the epoch it released, is taken while nobody hosts
+        // the cell (wire-rules script_state; the next grant ends it)
+        partOne.GetScriptStates().released(d.cell, d.player, d.epoch);
         MpActor* old = PlayerActor(partOne, d.player);
         if (!old) {
           break;

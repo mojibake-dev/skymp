@@ -37,6 +37,7 @@ pub mod quest_stages;
 pub mod racemenu;
 pub mod ranged;
 pub mod rest;
+pub mod script_state;
 pub mod scripted_effects;
 pub mod shouts;
 pub mod stagger;

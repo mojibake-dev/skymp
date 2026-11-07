@@ -1,0 +1,40 @@
+{
+  "epoch": 1,
+  "fnv1a": 1545240065,
+  "formId": 698571,
+  "scripts": [
+    {
+      "flags": 11,
+      "state": "position02",
+      "type": "defaultPuzzlePillarScript",
+      "vars": [
+        {
+          "i": 1,
+          "k": 3
+        },
+        {
+          "i": 3,
+          "k": 3
+        },
+        {
+          "b": true,
+          "k": 5
+        },
+        {
+          "k": 1,
+          "o": {
+            "form": 698563,
+            "kind": 3,
+            "mid": 65535,
+            "type": "defaultPillarPuzzleLever"
+          }
+        },
+        {
+          "b": false,
+          "k": 5
+        }
+      ]
+    }
+  ],
+  "t": 76
+}

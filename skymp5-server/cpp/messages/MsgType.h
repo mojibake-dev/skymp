@@ -116,13 +116,17 @@ enum class MsgType : uint8_t
                       // hash the owner compares against
   ChangeFormApply = 74, // the same verb: a recorded change form served to a
                         // seat before the actor's first frame there
-  ScriptCall = 75, // thuum ADR-068 (the one seam): a tabled native a script
-                   // ran on the engine that owns its subject, reported at the
-                   // native boundary and relayed as SpSnippet with the
-                   // subject's sequence
-  // 76 and 77 are ADR-068's ScriptState and ScriptStateApply (rung 3), held
-  // by id in skymp-wire (wire-schema's reserved rows 84 and 85) until their
-  // shapes land
+  ScriptCall = 75,  // thuum ADR-068 (the one seam): a tabled native a script
+                    // ran on the engine that owns its subject, reported at the
+                    // native boundary and relayed as SpSnippet with the
+                    // subject's sequence
+  ScriptState = 76, // thuum ADR-068 rung 3 (the script record): the
+                    // scripts attached to a reference as its owner's
+                    // engine read them, recorded with the object's
+                    // sequence and its view, never relayed live
+  ScriptStateApply = 77, // the same rung: a reference's record served ahead
+                         // of a grant to the cell's new host and behind the
+                         // create word to every other seat
   DestructionStage = 78, // thuum D-S3 (traps follow the interaction): a
                          // reference's destruction stage or destroyed flag,
                          // reported by the seat that reached it first,

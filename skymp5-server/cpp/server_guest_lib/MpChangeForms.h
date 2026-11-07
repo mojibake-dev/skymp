@@ -18,6 +18,7 @@
 #include "Quest.h"
 #include "QuestStageDone.h"
 #include "RunningEffect.h"
+#include "ScriptStateRecord.h"
 #include "ShoutRecord.h"
 #include "UnresolvedForm.h"
 #include <cstdint>
@@ -291,6 +292,13 @@ public:
   // reported, read as none
   std::optional<ChangeFormRecord> changeFormRecord;
 
+  // thuum ADR-068 rung 3 (the script record): the last record the
+  // reference's owner reported of the scripts attached to it, with the
+  // object's sequence and the reference's view the server stamped then
+  // (ScriptStateRecord.h); absent in older records and on references nobody
+  // reported, read as none
+  std::optional<ScriptStateRecord> scriptState;
+
   // Please update 'ActorTest.cpp' when adding new Actor-related rows
 
   DynamicFields dynamicFields;
@@ -321,7 +329,7 @@ public:
       displayName, mapMarkers, ingredientEffects, favorites, raceMenuPreset,
       actorValueRecord, staffRank, runningEffects, shoutRecord, playerGlobals,
       questStages, placedBySpell, lock, destruction, changeFormRecord,
-      unresolved);
+      scriptState, unresolved);
   }
 
   // The record boundary (thuum docs/DECISIONS.md ADR-043; the map

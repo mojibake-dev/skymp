@@ -121,6 +121,23 @@ export class SpSnippetService extends ClientListener {
     return true;
   }
 
+  // thuum docs/DECISIONS.md ADR-068 amendment A (rung 3, the script record):
+  // the record's view carries the object's seq at the read, and
+  // ScriptStateService replays the view where this seat's last seq for the
+  // form is another (seqOf), then raises the last seq to the record's (never
+  // lowers it), so a relay at or below the record's view is stale here as one
+  // below the last relay is. JS state alone, any context
+  seqOf(subject: number): number | undefined {
+    return this.lastSeq.get(subject);
+  }
+
+  raiseSeq(subject: number, seq: number): void {
+    const last = this.lastSeq.get(subject);
+    if (last === undefined || seq > last) {
+      this.lastSeq.set(subject, seq);
+    }
+  }
+
   private static subjectOf(snippet: SpSnippetMessage): number {
     if (snippet.selfId) {
       return snippet.selfId;

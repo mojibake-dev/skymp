@@ -5,6 +5,7 @@ import { ObjectAnimationMessage } from '../messages/objectAnimationMessage';
 import { CreateActorMessage } from '../messages/createActorMessage';
 import { MsgType } from '../../messages';
 import { HostService } from './hostService';
+import { ScriptStateService } from './scriptStateService';
 import { localIdToRemoteId, remoteIdToLocalId } from '../../view/worldViewMisc';
 import { logError, logLab, logTrace } from '../../logging';
 
@@ -59,6 +60,11 @@ const PILLAR_CYCLE = 3;
 // in x-puzzle-handoff; 46's server log puts a report 66 ms after the press
 // and the next accepted press about two seconds on)
 const PILLAR_TURN_S = 2.5;
+// rung 3: a pillar whose script record was applied at a grant without its
+// view (no 3D before the gate opened) waits this long for its 3D, asked every
+// step, before its graph goes on the record's side (UNMEASURED)
+const GRAPH_3D_WAIT_S = 10;
+const GRAPH_WAIT_STEP_S = 0.25;
 // the side a pillar's record puts it on: StartState0M is M (a jump at a load,
 // no turn since), Trigger0N turns from N to the next
 const sideOfRecord = (event: string): number | undefined => {
@@ -109,10 +115,15 @@ export class ObjectAnimationService extends ClientListener {
     // first press
     // a message handler may call no native (hostService's rule, the
     // platform's gameThrQ is the update's): the grant's work waits for the
-    // next update (the review of 30839d4b, F1)
+    // next update (the review of 30839d4b, F1). ADR-068 rung 3 (the script
+    // record): it waits for the cell's gate instead, which opens once the
+    // cell's script records are applied (ScriptStateService.afterHosting runs
+    // it in that update, or on the next one with no pass), and a pillar whose
+    // record was applied there is left alone (onCellHosted); F6 deletes the
+    // re-sync once x-puzzle-handoff v3 and b-script-state-restart read it idle
     this.controller.emitter.on('cellHostChanged', (e) => {
       if (e.hosted) {
-        this.controller.once('update', () => this.onCellHosted(e.cell));
+        this.controller.lookupListener(ScriptStateService).afterHosting(e.cell, () => this.onCellHosted(e.cell));
       }
     });
     for (const pattern of EVENT_PATTERNS) {
@@ -317,6 +328,7 @@ export class ObjectAnimationService extends ClientListener {
   // side-naming act (until rung 3's record retires the re-sync). JS state
   // alone: safe in the scriptCalls event's context, where no native runs
   noteScriptSide(localId: number, event: string) {
+    this.scriptActs.set(localId, (this.scriptActs.get(localId) ?? 0) + 1);
     this.notePillar(localId, event);
     const side = sideOfRecord(event);
     if (side !== undefined) {
@@ -339,6 +351,7 @@ export class ObjectAnimationService extends ClientListener {
   }
 
   private onCellHosted(cell: number) {
+    const scripts = this.controller.lookupListener(ScriptStateService);
     const ids = new Set<number>(this.pillars);
     this.recordEvent.forEach((_e, id) => ids.add(id));
     ids.forEach((id) => {
@@ -351,6 +364,27 @@ export class ObjectAnimationService extends ClientListener {
       }
       const parent = refr.getParentCell();
       if (!parent || parent.getFormID() !== cell) {
+        return;
+      }
+      // the record put the script on its owner's state and the graph on the
+      // record's view before the gate opened: nothing to feed
+      if (scripts.appliedAtGrant(id)) {
+        logLab('verb:traps', `pillar ${id.toString(16)} at the grant of ${cell.toString(16)}: no re-sync, its script record was applied there`);
+        return;
+      }
+      // a record applied there whose view could not play (no 3D before the
+      // gate opened): its script stands on the view's side already, so the
+      // graph alone goes there once its 3D comes and no turn is fed (fed turns
+      // would carry the script past its record); a view naming no side leaves
+      // the pillar be
+      const unplayed = scripts.unplayedViewAtGrant(id);
+      if (unplayed !== undefined) {
+        const side = sideOfRecord(unplayed);
+        if (side === undefined) {
+          logLab('verb:traps', `pillar ${id.toString(16)} at the grant of ${cell.toString(16)}: no re-sync, its script record's view ${unplayed} names no side`);
+          return;
+        }
+        void this.placeOnSide(id, cell, side);
         return;
       }
       const initial = this.scriptSide.get(id) ?? 1;
@@ -434,10 +468,77 @@ export class ObjectAnimationService extends ClientListener {
     }
   }
 
+  // rung 3 (the script record): a record applied at the grant without its
+  // view puts the graph on the record's side once the pillar's 3D comes (a
+  // play on a reference with no 3D does nothing: CommonLibSSE-NG
+  // src/RE/T/TESObjectREFR.cpp:814-817, PlayAnimation returns when Get3D is
+  // null; the rung's delta review, N1), with the re-sync's own jump
+  // (StartState0N; for Side01, which has no jump, StartState03 then Trigger03)
+  // and no turn fed: its script stands on that side already. It stops when
+  // this seat no longer hosts the cell, when the pillar's own script acted on
+  // it first (the graph is the script's then), or after GRAPH_3D_WAIT_S with
+  // no 3D; its line names each jump's answer and is not the re-sync's
+  // "re-synced" (that path is d1f23444's, which F6 deletes). The pillar is
+  // taken again by id after every wait (a wrapper lives one Papyrus update)
+  private async placeOnSide(id: number, cell: number, side: number): Promise<void> {
+    const host = this.controller.lookupListener(HostService);
+    const head = `pillar ${id.toString(16)} at the grant of ${cell.toString(16)}`;
+    const acts = this.scriptActs.get(id) ?? 0;
+    let step = 'the wait for its 3D';
+    try {
+      this.resyncing.add(id);
+      let refr = ObjectReference.from(this.sp.Game.getFormEx(id));
+      for (let waited = 0; ; waited += GRAPH_WAIT_STEP_S) {
+        if (!refr || !host.hostsCell(cell)) {
+          logLab('verb:traps', `${head}: graph not on the record's side ${side}, ${refr ? 'this seat no longer hosts the cell' : 'the pillar is gone'}`);
+          return;
+        }
+        if ((this.scriptActs.get(id) ?? 0) !== acts) {
+          logLab('verb:traps', `${head}: graph not on the record's side ${side}, its own script acted on it first`);
+          return;
+        }
+        if (refr.is3DLoaded()) {
+          break;
+        }
+        if (waited >= GRAPH_3D_WAIT_S) {
+          logLab('verb:traps', `${head}: graph not on the record's side ${side}, no 3D in ${GRAPH_3D_WAIT_S} s`);
+          return;
+        }
+        await Utility.wait(GRAPH_WAIT_STEP_S);
+        refr = ObjectReference.from(this.sp.Game.getFormEx(id));
+      }
+      let jumps: string;
+      if (side === 1) {
+        step = 'StartState03';
+        const first = refr.playAnimation('StartState03');
+        await Utility.wait(0.5);
+        const again = ObjectReference.from(this.sp.Game.getFormEx(id));
+        if (!again || !host.hostsCell(cell)) {
+          logLab('verb:traps', `${head}: graph not on the record's side 1 (StartState03 ${first ? 'taken' : 'refused'}), then ${again ? 'unhosted' : 'the pillar gone'}`);
+          return;
+        }
+        step = 'Trigger03';
+        const second = again.playAnimation('Trigger03');
+        jumps = first === second ? `StartState03, Trigger03 ${first ? 'taken' : 'refused'}` : `StartState03 ${first ? 'taken' : 'refused'}, Trigger03 ${second ? 'taken' : 'refused'}`;
+      } else {
+        step = `StartState0${side}`;
+        jumps = `StartState0${side} ${refr.playAnimation(`StartState0${side}`) ? 'taken' : 'refused'}`;
+      }
+      logLab('verb:traps', `${head}: graph on the record's side ${side} (${jumps}), no turn fed`);
+    } catch (e) {
+      logError(this, `${head}: the record's side failed at ${step}: ${e}`);
+    } finally {
+      this.resyncing.delete(id);
+    }
+  }
+
   private noted: { selfId: number; event: string; took: boolean }[] = [];
   private selfPlayed = new Map<string, number>();
   private scriptSide = new Map<number, number>();
   private recordEvent = new Map<number, string>();
   private pillars = new Set<number>();
   private resyncing = new Set<number>();
+  // this seat's script's animation acts per pillar (noteScriptSide), read by
+  // placeOnSide's guard
+  private scriptActs = new Map<number, number>();
 }

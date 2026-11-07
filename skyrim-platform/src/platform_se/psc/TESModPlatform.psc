@@ -121,3 +121,19 @@ String Function ApplyChangeForm(ObjectReference refr, String bodyHex, Int flags,
 ; the queued apply's answer (the apply runs as an SKSE task on the main thread
 ; since playtest 44): the JSON object above once, "" while the task has not run
 String Function ApplyChangeFormResult(ObjectReference refr) global native
+
+; thuum ADR-068 rung 3 (the script record, amendment A;
+; docs/research/rung3-script-record-2026-11-06.md 1(a)): the reference's
+; attached scripts read as the record carries them (a JSON string: formId,
+; quiescent, fnv1a, seatLocal, scripts; or quiescent false and busy; "" when
+; refused, the reason in skyrim-platform.log); a served record's scripts
+; written over this seat's copies (a JSON string: applied, retry, reason,
+; scripts, resolved, none, unresolved, seatLocal, stacksOnObject, holdUs,
+; blanked, fnvAfter); and OnCellAttach, OnLoad or OnCellLoad sent to the
+; reference's scripts and relayed as the engine's sinks raise it, with
+; unseenOnly not when the engine served it since the last load (a JSON
+; string: sent, seen, scripts, reason). scriptsJson is the record's scripts
+; as a JSON array, since callNative takes no array
+String Function SerializeScriptState(ObjectReference refr) global native
+String Function ApplyScriptState(ObjectReference refr, String scriptsJson) global native
+String Function SendScriptEvent(ObjectReference refr, String name, Bool unseenOnly) global native

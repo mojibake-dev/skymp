@@ -9,10 +9,13 @@
 #include "SpellCastData.h"
 #include "SweetHidePlayerNamesService.h"
 #include "libespm/Loader.h"
+#include <chrono>
 #include <deque>
 #include <map>
 #include <memory>
 #include <optional>
+#include <string>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 
@@ -168,6 +171,22 @@ public:
   // per reporter and code
   virtual void OnScriptCall(const RawMessageData& rawMsgData,
                             const ScriptCallMessage& msg);
+
+  // thuum ADR-068 rung 3 (the script record): a reference's owner reports
+  // the scripts attached to it as its engine read them at a quiescent point.
+  // The wire validated the shape; here the reference (a game-file one the
+  // server holds or loads, no actor: an actor's record is refused by its
+  // type before any load) and its cell's host and standing epoch are
+  // gathered, and the rule (wire-rules script_state, PartOne::
+  // GetScriptStates) judges them, the epoch first, then the owner, and while
+  // nobody hosts the cell the release read of the host that released it. An
+  // accepted record is kept on the reference (saved), stamped with the
+  // object's sequence and its view (the reference's lastAnimation now), and
+  // never relayed live: PartOne serves it ahead of a grant and behind a
+  // create word. Each refusal is logged once a minute per sender, form and
+  // code (E_SCRIPTSTATE_NO_REF, _KIND, _OWNER, _EPOCH)
+  virtual void OnScriptState(const RawMessageData& rawMsgData,
+                             const ScriptStateMessage& msg);
 
   // thuum D-S3 (traps follow the interaction; ADR-068's DestructionStage
   // row): a seat's report of a reference's destruction stage rise or its
@@ -484,6 +503,14 @@ private:
   std::map<std::pair<uint32_t, uint8_t>,
            std::pair<std::chrono::steady_clock::time_point, uint32_t>>
     scriptCallRefusals;
+  // thuum ADR-068 rung 3: when each form's record line was last said (one a
+  // minute, the rest at debug), and each refusal's, by sender, form and code
+  // (one a minute, the rest counted)
+  std::unordered_map<uint32_t, std::chrono::steady_clock::time_point>
+    scriptStateLines;
+  std::map<std::tuple<uint32_t, uint32_t, std::string>,
+           std::pair<std::chrono::steady_clock::time_point, uint32_t>>
+    scriptStateRefusals;
   // base form id to whether its record carries a script (the VMAD read once)
   std::unordered_map<uint32_t, bool> scriptedBases;
   // thuum D-S3 phase 2: trigger reference to whether its record sets

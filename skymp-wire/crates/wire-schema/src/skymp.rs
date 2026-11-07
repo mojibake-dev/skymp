@@ -2273,6 +2273,172 @@ wire_struct! {
 }
 
 wire_struct! {
+    /// An object value's handle in a script record (thuum ADR-068 rung 3):
+    /// the VM's 64-bit handle as the owner's read splits it (thuum
+    /// docs/research/adr065-papyrus-state-2026-11-03.md Q1, a (kind, mid,
+    /// form id) triple; a plain form's is kind 0, mid 0xFFFF), and the script
+    /// type bound at it, which the receiver's FindBoundObject takes.
+    pub struct ScriptHandle {
+        /// The handle's kind: 0 a form's; 1 and 2 the others the save read
+        /// met, which a receiver reads as None (H-R6).
+        pub kind: u8,
+        /// The handle's mid.
+        pub mid: u16,
+        /// The form id: never 0x14 (a seat's own player) nor 0xff000000 and
+        /// up (the server's forms), which the owner encodes as None.
+        pub form: u32,
+        /// The script type bound at the handle; never empty, no NUL (the
+        /// receiver's FindBoundObject takes it as a C string).
+        #[serde(rename = "type")]
+        pub cls: String<{ cap::PAPYRUS_NAME }>,
+    }
+}
+
+wire_struct! {
+    /// One value in a script record (thuum ADR-068 rung 3), an array
+    /// variable's element: `k`, the Variable's folded raw type
+    /// (CommonLibSSE-NG include/RE/T/TypeInfo.h: 0 None, 1 object, 2 string,
+    /// 3 int, 4 float, 5 bool), and the one field that kind carries; an
+    /// object with no handle is a typed None.
+    pub struct ScriptValue {
+        /// The raw type, 0 to 5.
+        pub k: u8,
+        /// An int's value (k 3).
+        pub i: Option<i32>,
+        /// A float's value (k 4).
+        pub f: Option<f32>,
+        /// A bool's value (k 5).
+        pub b: Option<bool>,
+        /// A string's value (k 2); no NUL (the receiver's BSFixedString reads
+        /// a C string).
+        pub s: Option<String<{ cap::SCRIPT_STRING }>>,
+        /// An object's handle (k 1); none for a typed None.
+        pub o: Option<ScriptHandle>,
+    }
+}
+
+wire_struct! {
+    /// One variable of a script in a script record (thuum ADR-068 rung 3),
+    /// positional and parent-first (the chain's GetTotalNumVariables, H-R1):
+    /// a value as [`ScriptValue`] carries one, or for `k` 11 to 15 (the typed
+    /// array raw types) an array in `a` whose elements are of kind `k - 10`,
+    /// `elem` naming an object array's element type (k 11 alone); no `a` is
+    /// a None array, and `k` 10, the None array's own kind, carries no `a`
+    /// at all. Not recursive: an array holds values, never arrays.
+    pub struct ScriptVar {
+        /// The raw type, 0 to 5, or 10 to 15 for an array.
+        pub k: u8,
+        /// An int's value (k 3).
+        pub i: Option<i32>,
+        /// A float's value (k 4).
+        pub f: Option<f32>,
+        /// A bool's value (k 5).
+        pub b: Option<bool>,
+        /// A string's value (k 2); no NUL.
+        pub s: Option<String<{ cap::SCRIPT_STRING }>>,
+        /// An object's handle (k 1); none for a typed None.
+        pub o: Option<ScriptHandle>,
+        /// An object array's element type (k 11 alone); no NUL.
+        pub elem: Option<String<{ cap::PAPYRUS_NAME }>>,
+        /// An array's elements (k 11 to 15), each of kind `k - 10`; none for
+        /// a None array, and never on k 10.
+        pub a: Option<Vec<ScriptValue, { cap::SCRIPT_ARRAY }>>,
+    }
+}
+
+wire_struct! {
+    /// One script attached to the reference of a script record (thuum
+    /// ADR-068 rung 3): its type (the receiver's exact match), its current
+    /// state, Object::Save's flags byte (0x01 constructed, 0x02 valid, 0x04
+    /// lock held, 0x08 initialized) and every variable its chain declares,
+    /// in order.
+    pub struct ScriptObjectState {
+        /// The script type; never empty, no NUL.
+        #[serde(rename = "type")]
+        pub cls: String<{ cap::PAPYRUS_NAME }>,
+        /// The current state; "" for the empty state; no NUL.
+        pub state: String<{ cap::PAPYRUS_NAME }>,
+        /// Object::Save's flags byte: constructed and initialized, the lock
+        /// not held (a quiescent read).
+        pub flags: u8,
+        /// The variables, positional and parent-first.
+        pub vars: Vec<ScriptVar, { cap::SCRIPT_VARS }>,
+    }
+}
+
+wire_struct! {
+    /// MsgType 76, thuum's (ADR-068 rung 3, the script record, decision 5
+    /// and its amendment A; docs/research/rung3-script-record-2026-11-06.md
+    /// section 1(b)): the scripts attached to one reference as its owner's
+    /// engine holds them, read at a quiescent point of the object (no running
+    /// or waiting stack whose self is it; the platform's
+    /// SerializeScriptState). Client to server, reliable, R2: the reference's
+    /// owner, the host of its cell, reports a record when its hash moved (at
+    /// the end of a stack that touched the object, at its sweep, and at its
+    /// release of the cell, at the epoch it released); the server judges the
+    /// epoch and the owner (wire-rules script_state) and keeps the last
+    /// record beside the reference's change form, stamping the object's
+    /// sequence and the reference's last animation event, and never relays it
+    /// live: it serves it as [`ScriptStateApply`]. Safe to receive twice: a
+    /// record replaces the last. Reason codes: `E_VAL_RANGE` (a form id of 0
+    /// or 0xff000000 and up; not 1 to 16 scripts; an empty type; flags
+    /// without constructed 0x01 or initialized 0x08, or with the lock 0x04; a
+    /// kind outside 0 to 5 and 10 to 15; a payload that does not match its
+    /// kind, an element of another kind than its array's `k - 10`, an `elem`
+    /// off an object array, elements on the None array, k 10; a handle's kind
+    /// past 2, its form 0x14 or 0xff000000 and up, its type empty; a NUL in
+    /// any string or name, which the receiver's apply would refuse the whole
+    /// record for), `E_VAL_NONFINITE`, `E_VAL_RATE` (the sender's budget);
+    /// the server logs `E_SCRIPTSTATE_NO_REF`, `E_SCRIPTSTATE_KIND`,
+    /// `E_SCRIPTSTATE_OWNER` and `E_SCRIPTSTATE_EPOCH` by name.
+    pub struct ScriptState {
+        /// `"t": 76`.
+        #[serde(default)]
+        pub t: MsgT<76>,
+        /// The cell's host epoch the owner holds (HostGrant's; at its release
+        /// read, the epoch it released).
+        pub epoch: u32,
+        /// The reference, a game-file placement; never 0, never 0xff000000
+        /// and up.
+        pub form_id: u32,
+        /// The owner's FNV-1a 32 over the record's dump, its compare
+        /// baseline; the server keeps it and never recomputes it.
+        pub fnv1a: u32,
+        /// The scripts attached to the reference, 1 to 16.
+        pub scripts: Vec<ScriptObjectState, { cap::SCRIPT_OBJECTS }>,
+    }
+}
+
+wire_struct! {
+    /// MsgType 77, thuum's (ADR-068 rung 3): a reference's script record
+    /// served to a seat, to the seat about to host the reference's cell
+    /// right ahead of its HostGrant, and to a seat that does not host the
+    /// cell right behind the reference's create word (a late joiner, a
+    /// restart). Server to client, reliable, R0 output; never relayed live.
+    /// `seq` is the object's sequence when the record was taken and `event`
+    /// the reference's last animation event then, its view (amendment A),
+    /// absent when none had reached it: the receiver applies the scripts and
+    /// replays the view where its own sequence for the object differs. Safe
+    /// to receive twice. Reason codes: the shape rules ScriptState's scripts
+    /// obey (`E_VAL_RANGE`, `E_VAL_NONFINITE`).
+    pub struct ScriptStateApply {
+        /// `"t": 77`.
+        #[serde(default)]
+        pub t: MsgT<77>,
+        /// The reference; never 0, never 0xff000000 and up.
+        pub form_id: u32,
+        /// The record's FNV-1a 32, the owner's.
+        pub fnv1a: u32,
+        /// The object's sequence when the record was taken.
+        pub seq: u32,
+        /// The reference's last animation event when the record was taken.
+        pub event: Option<String<{ cap::ANIM_EVENT }>>,
+        /// The scripts, 1 to 16, as the owner read them.
+        pub scripts: Vec<ScriptObjectState, { cap::SCRIPT_OBJECTS }>,
+    }
+}
+
+wire_struct! {
     /// MsgType 78, thuum's (D-S3, traps follow the interaction; ADR-068's
     /// DestructionStage row; docs/research/trap-slice-d-s3-2026-11-05.md
     /// point 3): a single-use result recorded once. Every seat runs the trap

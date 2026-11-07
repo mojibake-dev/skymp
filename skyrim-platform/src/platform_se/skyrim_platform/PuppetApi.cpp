@@ -4,6 +4,8 @@
 #include "Hosted.h"
 #include "ItemMenuRefresh.h"
 #include "Puppets.h"
+#include "ScriptNatives.h"
+#include "ScriptState.h"
 #include "TrapFamily.h"
 #include "game/Offsets.h"
 #include <RE/A/ActivateHandler.h>
@@ -421,6 +423,57 @@ Napi::Value PuppetApi::SetRecordApplying(const Napi::CallbackInfo& info)
   TrapFamily::RecordApplying::Set(formId, applying);
   logger::info("[verb:traps] setRecordApplying({:x}, {}): applying set {}",
                formId, applying, TrapFamily::RecordApplying::Count());
+  return Napi::Boolean::New(info.Env(), true);
+}
+
+// thuum ADR-068 rung 3 (the script record, amendment A): the pending set the
+// gate reads (ScriptState.h), raised by skymp5-client's ScriptStateService
+// for a served record that carries its view and lowered when it gives the
+// record up (an applied record lowers it in the native); setHosted's shape.
+// The count is logged for the lab
+Napi::Value PuppetApi::SetScriptRecordPending(const Napi::CallbackInfo& info)
+{
+  const auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
+  const auto pending = NapiHelper::ExtractBoolean(info[1], "pending");
+  if (formId == 0 || formId == 0x14) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  ScriptState::Pending::Set(formId, pending);
+  logger::info("[verb:scripts] setScriptRecordPending({:x}, {}): pending set "
+               "{}",
+               formId, pending, ScriptState::Pending::Count());
+  return Napi::Boolean::New(info.Env(), true);
+}
+
+// thuum ADR-068 rung 3 (the review's FIX FIRST 2): the mark lowered with the
+// names the gate blanked while it was up handed back (ScriptState.h's
+// Pending::Release, under the set's own lock), where setScriptRecordPending's
+// lowering drops them; the JS thread alone, no game call. The answer is
+// logged for the lab
+Napi::Value PuppetApi::ReleaseScriptRecordPending(
+  const Napi::CallbackInfo& info)
+{
+  const auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
+  if (formId == 0 || formId == 0x14) {
+    return Napi::String::New(info.Env(), "[]");
+  }
+  const std::string blanked = ScriptState::Pending::Release(formId);
+  logger::info("[verb:scripts] releaseScriptRecordPending({:x}): blanked {}, "
+               "pending set {}",
+               formId, blanked, ScriptState::Pending::Count());
+  return Napi::String::New(info.Env(), blanked);
+}
+
+// thuum ADR-068 rung 3 (the review's NOTE 10, thuum .claude/rules/native.md's
+// kill switch): the seam's touch on or off (ScriptNatives.h), one atomic
+// flag the seam reads first; logged for the lab
+Napi::Value PuppetApi::SetScriptRecordTouches(const Napi::CallbackInfo& info)
+{
+  const auto enabled = NapiHelper::ExtractBoolean(info[0], "enabled");
+  ScriptNatives::SetTouchesEnabled(enabled);
+  logger::info("[verb:scripts] setScriptRecordTouches({}): {}", enabled,
+               enabled ? "an owned state row's call crosses as a touch"
+                       : "no touch is read or queued");
   return Napi::Boolean::New(info.Env(), true);
 }
 

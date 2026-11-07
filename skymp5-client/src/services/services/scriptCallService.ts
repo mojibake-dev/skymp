@@ -8,6 +8,7 @@ import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { HostService } from "./hostService";
 import { ObjectAnimationService } from "./objectAnimationService";
 import { PropService } from "./propService";
+import { ScriptStateService } from "./scriptStateService";
 import { TrapResultService } from "./trapResultService";
 
 // thuum docs/DECISIONS.md ADR-068 (rung 2, the one seam; docs/research/
@@ -76,7 +77,17 @@ export class ScriptCallService extends ClientListener {
     // so a mark is set here, as the flip's was); a send needs the subject's
     // cell and waits for the update
     private onCalls(e: ScriptCallsEvent) {
+        const scripts = this.controller.lookupListener(ScriptStateService);
         for (const call of e.calls) {
+            // ADR-068 rung 3 (the script record): every call in the batch makes
+            // its self and its caller's self due for a record read
+            // (ScriptStateService, JS state alone); a "touch" is an owned
+            // self's state row the platform batches for that read alone (no
+            // arguments, once a frame per self), never counted or sent here
+            scripts.noteCall(call.self, call.callerSelf ?? 0);
+            if (call.kind === "touch") {
+                continue;
+            }
             const name = `${call.cls}.${call.fn}`;
             this.counts.set(name, (this.counts.get(name) ?? 0) + 1);
             const logged = this.logged.get(name) ?? 0;

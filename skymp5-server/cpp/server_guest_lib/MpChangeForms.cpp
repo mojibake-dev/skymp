@@ -1,5 +1,7 @@
 #include "MpChangeForms.h"
 #include "JsonUtils.h"
+#include "archives/JsonOutputArchive.h"
+#include "archives/SimdJsonInputArchive.h"
 #include <algorithm>
 #include <limits>
 #include <spdlog/spdlog.h>
@@ -585,6 +587,17 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
                       { "at", record.atMs } };
   }
 
+  // thuum ADR-068 rung 3 (the script record): the owner's last record of the
+  // reference's scripts, with the sequence and the view the server stamped,
+  // by the record's own field list (ScriptStateRecord.h says why its forms
+  // stay raw); absent in older records and on references nobody reported,
+  // read as none
+  if (changeForm.scriptState.has_value()) {
+    JsonOutputArchive archive;
+    archive.Serialize("scriptState", *changeForm.scriptState);
+    res["scriptState"] = std::move(archive.j["scriptState"]);
+  }
+
   // thuum docs/verbs/shouts.md; absent in older records, read as none
   if (changeForm.shoutRecord.has_value() && !changeForm.shoutRecord->Empty()) {
     res["shoutRecord"] = {
@@ -740,6 +753,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
   static const JsonPointer destructionStage("destruction/stage");
   static const JsonPointer destructionDestroyed("destruction/destroyed");
   static const JsonPointer changeFormRecord("changeFormRecord");
+  static const JsonPointer scriptState("scriptState");
   static const JsonPointer favorites("favorites");
   static const JsonPointer raceMenuPreset("raceMenuPreset");
   static const JsonPointer staffRank("staffRank");
@@ -1209,6 +1223,17 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
     }
     record.bodyHex = bodyTmp;
     res.changeFormRecord = std::move(record);
+  }
+
+  // thuum ADR-068 rung 3 (the script record): the record as ToJson writes
+  // it, read by the same field list (ScriptStateRecord::Serialize)
+  if (element.at_pointer(scriptState.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, scriptState, &jTmp);
+    SimdJsonInputArchive archive(jTmp);
+    ScriptStateRecord record;
+    record.Serialize(archive);
+    res.scriptState = std::move(record);
   }
 
   if (element.at_pointer(shoutRecord.GetData()).error() ==

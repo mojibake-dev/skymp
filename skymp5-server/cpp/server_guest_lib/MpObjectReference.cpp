@@ -807,6 +807,34 @@ void MpObjectReference::SetDestruction(
   });
 }
 
+const std::optional<ScriptStateRecord>& MpObjectReference::GetScriptState()
+  const
+{
+  return ChangeForm().scriptState;
+}
+
+void MpObjectReference::SetScriptState(std::optional<ScriptStateRecord> record)
+{
+  EditChangeForm([&](MpChangeFormREFR& changeForm) {
+    changeForm.scriptState = std::move(record);
+  });
+}
+
+bool MpObjectReference::BuildScriptStateApply(
+  ScriptStateApplyMessage& out) const
+{
+  const auto& record = ChangeForm().scriptState;
+  if (!record) {
+    return false;
+  }
+  out.formId = GetFormId();
+  out.fnv1a = record->fnv1a;
+  out.seq = record->seq;
+  out.event = record->event;
+  out.scripts = record->scripts;
+  return true;
+}
+
 namespace {
 // thuum docs/verbs/containers.md (ADR-067 decision 6): a move in or out of a
 // container is its holder's alone. A mover not in it (its hold released by
@@ -1418,6 +1446,11 @@ void MpObjectReference::SetLastAnimation(const std::string& lastAnimation)
   EditChangeForm([&](MpChangeForm& changeForm) {
     changeForm.lastAnimation = lastAnimation;
   });
+}
+
+std::optional<std::string> MpObjectReference::GetLastAnimation() const
+{
+  return ChangeForm().lastAnimation;
 }
 
 void MpObjectReference::SetNodeTextureSet(const std::string& node,

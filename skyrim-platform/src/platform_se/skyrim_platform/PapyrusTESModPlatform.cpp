@@ -6,6 +6,7 @@
 #include "FridaHooks.h"
 #include "ItemMenuRefresh.h"
 #include "NullPointerException.h"
+#include "ScriptState.h"
 
 #include <RE/B/BGSLocation.h>
 #include <RE/B/BGSStoryEventManager.h>
@@ -112,6 +113,9 @@ private:
     RE::BSTEventSource<RE::TESLoadGameEvent>* eventSource) override
   {
     vmCallAllowed = true;
+    // thuum ADR-068 rung 3: the lifecycle events served before a load name
+    // the old world's references (ScriptState.h's seen set; H-R12)
+    ScriptState::Seen::Clear();
     return RE::BSEventNotifyControl::kContinue;
   }
 };
@@ -1638,6 +1642,39 @@ RE::BSFixedString TESModPlatform::ApplyChangeFormResult(
   return RE::BSFixedString(ChangeForm::ApplyResult(refr));
 }
 
+// thuum ADR-068 rung 3 (the script record): the reference's script state on
+// demand, under the VM's own locks on this thread (ScriptState.cpp holds the
+// read, the write, the premises and the HYPOTHESIS list). String returns,
+// since callNative returns no object: "" is the refused read's null, the
+// reason logged
+RE::BSFixedString TESModPlatform::SerializeScriptState(IVM* vm,
+                                                       StackID stackId,
+                                                       RE::StaticFunctionTag*,
+                                                       RE::TESObjectREFR* refr)
+{
+  return RE::BSFixedString(ScriptState::Serialize(refr));
+}
+
+// a served record's scripts written over this seat's copies, its pending
+// mark lifted when the record applies (ScriptState.cpp)
+RE::BSFixedString TESModPlatform::ApplyScriptState(
+  IVM* vm, StackID stackId, RE::StaticFunctionTag*, RE::TESObjectREFR* refr,
+  std::string_view scriptsJson)
+{
+  return RE::BSFixedString(ScriptState::Apply(refr, scriptsJson));
+}
+
+// a lifecycle event sent to the reference's scripts and relayed to its
+// aliases, under the platform's mark (ScriptState.cpp)
+RE::BSFixedString TESModPlatform::SendScriptEvent(IVM* vm, StackID stackId,
+                                                  RE::StaticFunctionTag*,
+                                                  RE::TESObjectREFR* refr,
+                                                  std::string_view name,
+                                                  bool unseenOnly)
+{
+  return RE::BSFixedString(ScriptState::Send(refr, name, unseenOnly));
+}
+
 bool TESModPlatform::Register(IVM* vm)
 {
   TESModPlatform::onPapyrusUpdate = onPapyrusUpdate;
@@ -1895,6 +1932,24 @@ bool TESModPlatform::Register(IVM* vm)
                                      RE::BSFixedString, RE::StaticFunctionTag*,
                                      RE::TESObjectREFR*>(
       "ApplyChangeFormResult", "TESModPlatform", ApplyChangeFormResult));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SerializeScriptState),
+                                     RE::BSFixedString, RE::StaticFunctionTag*,
+                                     RE::TESObjectREFR*>(
+      "SerializeScriptState", "TESModPlatform", SerializeScriptState));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(ApplyScriptState),
+                                     RE::BSFixedString, RE::StaticFunctionTag*,
+                                     RE::TESObjectREFR*, std::string_view>(
+      "ApplyScriptState", "TESModPlatform", ApplyScriptState));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<
+      true, decltype(SendScriptEvent), RE::BSFixedString,
+      RE::StaticFunctionTag*, RE::TESObjectREFR*, std::string_view, bool>(
+      "SendScriptEvent", "TESModPlatform", SendScriptEvent));
 
   static LoadGameEvent loadGameEvent;
 

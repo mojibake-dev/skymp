@@ -9,8 +9,10 @@
 #include "MagicApi.h"
 #include "Override.h"
 #include "PapyrusTESModPlatform.h"
+#include "PlatformCall.h"
 #include "Puppets.h"
 #include "ScriptNatives.h"
+#include "ScriptState.h"
 #include "SkyrimPlatform.h"
 #include "StringHolder.h"
 #include "TrapFamily.h"
@@ -310,10 +312,48 @@ void OnSendEventEnter(GumInvocationContext* ic)
     }
   }
   if (Override::IsOverriden()) {
+    // the platform's own window passes every event, as before; a lifecycle
+    // event passed in it was served all the same (thuum ADR-068 rung 3's
+    // seen set, ScriptState.h)
+    auto overridenName =
+      (char**)gum_invocation_context_get_nth_argument(ic, 2);
+    ScriptState::Seen::OnEvent(
+      (RE::VMHandle)gum_invocation_context_get_nth_argument(ic, 1),
+      overridenName ? *overridenName : nullptr, true);
     return;
   }
   auto handle = (RE::VMHandle)gum_invocation_context_get_nth_argument(ic, 1);
   auto eventName = (char**)gum_invocation_context_get_nth_argument(ic, 2);
+
+  // thuum docs/DECISIONS.md ADR-068 amendment A (rung 3, the script record;
+  // ScriptState.h): an OnLoad or an OnCellLoad raised to a reference whose
+  // served script record waits for its apply (setScriptRecordPending,
+  // raised by skymp5-client only for a record that carries its view) runs
+  // no script, so the copy's own load handler does not run before the
+  // record's state lands (defaultPuzzlePillarScript's OnCellLoad turns the
+  // graph from the script's first side, then sets doOnce: the plan's first
+  // read). The name is kept for the apply's answer (blanked) and
+  // skymp5-client sends it again through SendScriptEvent once the record is
+  // written. After the Override return and never inside a platform call
+  // (PlatformCall.h), so the platform's own resend passes. The client's
+  // setting scriptRecord false sets no mark, so the blank is off with it;
+  // the set is empty outside a pending apply, so the cost is one atomic
+  // read. Like the record-apply blank above, it comes before the
+  // sendPapyrusEvent hook, so JS hears none of these events
+  if (ScriptState::Pending::Any() && eventName && *eventName &&
+      ScriptState::Pending::IsBlankedName(*eventName) &&
+      !PlatformCall::Active()) {
+    const auto pendingId = SelfIdOfHandle(handle);
+    if (pendingId != 0 && ScriptState::Pending::Is(pendingId)) {
+      ScriptState::Pending::NoteBlanked(pendingId, *eventName);
+      logger::info("[verb:scripts] {} to {:x} blanked: its script record "
+                   "pending",
+                   *eventName, pendingId);
+      static const auto fsEmptyPending = new FixedString("");
+      gum_invocation_context_replace_nth_argument(ic, 2, fsEmptyPending);
+      return;
+    }
+  }
 
   auto vm = VM::GetSingleton();
 
@@ -546,6 +586,10 @@ void OnSendEventEnter(GumInvocationContext* ic)
     static const auto fsEmpty = new FixedString("");
     gum_invocation_context_replace_nth_argument(ic, 2, fsEmpty);
   }
+  // rung 3's seen set (ScriptState.h): a lifecycle event this gate passed
+  // was served to the handle's scripts; an OnCellDetach drops the handle's
+  // entry either way
+  ScriptState::Seen::OnEvent(handle, eventNameStr.c_str(), !blockEvents);
 }
 
 void OnSendEventLeave(GumInvocationContext* ic)

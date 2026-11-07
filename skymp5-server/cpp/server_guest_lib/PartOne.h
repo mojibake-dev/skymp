@@ -30,6 +30,7 @@ struct HostDecision; // wire-bridge's (thuum cell-host.md), opaque here
 struct PlacementRow; // wire-bridge's (thuum spell-placed-object.md), opaque
                      // here
 struct ScriptCalls;  // wire-bridge's (thuum ADR-068), opaque here
+struct ScriptStates; // wire-bridge's (thuum ADR-068 rung 3), opaque here
 }
 
 using ProfileId = int32_t;
@@ -586,6 +587,12 @@ public:
   // every subject's sequence (the rule and its state are Rust's, wire-rules
   // natives); ActionListener::OnScriptCall asks it for each reported call
   skymp::rules::ScriptCalls& GetScriptCalls();
+
+  // thuum ADR-068 rung 3 (the script record): the release each cell last saw
+  // until its next grant (wire-rules script_state; ApplyHostDecisions notes
+  // the release and the grant); ActionListener::OnScriptState asks it for
+  // each reported record
+  skymp::rules::ScriptStates& GetScriptStates();
 
   // thuum docs/verbs/cell-host.md (ADR-035): the cell host table (wire-rules
   // cells, through the bridge). The facts: a game's CellLoaded report

@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, destruction, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, placements, player_globals, props, quest_stages, racemenu, ranged, rest, perks, scripted_effects, shouts, stagger, teleports, weather};
+use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, destruction, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, placements, player_globals, props, quest_stages, racemenu, ranged, rest, perks, script_state, scripted_effects, shouts, stagger, teleports, weather};
 
 // the perk table's effect calls carry a CTDA's five parts flat, as add_condition does
 #[allow(clippy::too_many_arguments)]
@@ -1520,6 +1520,57 @@ mod ffi {
         event_arg: i8,
     }
 
+    /// What the core knows of a reported script record (thuum ADR-068 rung
+    /// 3, wire-rules script_state::Facts).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct ScriptStateFacts {
+        /// The reporter's actor.
+        sender: u32,
+        /// The record's epoch: the cell's host epoch the reporter holds.
+        epoch: u32,
+        /// What the server holds at the reference: 0 no reference, 1 a
+        /// reference that is no actor, 2 an actor; any other value reads as
+        /// 0.
+        ref_kind: u8,
+        /// The reference's cell, 0 when the server cannot place it.
+        cell: u32,
+        /// The host of that cell, 0 while nobody hosts it.
+        owner: u32,
+        /// The cell's standing epoch (the kept one while nobody hosts it).
+        owner_epoch: u32,
+    }
+
+    /// The rule's word on a reported script record.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ScriptStateCode {
+        /// Recorded: the reporter hosts the reference's cell at the epoch.
+        Accepted,
+        /// Recorded: the release read, a read of the host that just
+        /// released the cell, at the epoch it released, while nobody hosts
+        /// the cell.
+        ReleaseRead,
+        /// E_SCRIPTSTATE_NO_REF: no reference the server holds or loads.
+        NoRef,
+        /// E_SCRIPTSTATE_KIND: an actor's record.
+        Kind,
+        /// E_SCRIPTSTATE_OWNER: the reporter does not host the cell, nor is
+        /// its read the release read.
+        Owner,
+        /// E_SCRIPTSTATE_EPOCH: the record's epoch is not the cell's.
+        Epoch,
+    }
+
+    /// The verdict on one reported script record.
+    #[derive(Debug)]
+    struct ScriptStateVerdict {
+        /// Which word.
+        code: ScriptStateCode,
+        /// The refusal's stable name for the log, empty when recorded.
+        name: String,
+        /// Why, for the log; empty when recorded.
+        why: String,
+    }
+
     extern "Rust" {
         /// A client's first activation of a target `distance` units away,
         /// `target_size` being its bounds' farthest point times its scale.
@@ -2198,10 +2249,35 @@ mod ffi {
         /// evidence none. Skipped, nothing relayed, when no shaped call
         /// waits, so each shaped call is judged once.
         fn owner(self: &mut ScriptCalls, facts: &ScriptCallFacts) -> ScriptCallVerdict;
+        /// The subject's sequence: its accepted calls so far, or the stored
+        /// record's it was seeded with (thuum ADR-068 rung 3).
+        fn seq_of(self: &ScriptCalls, subject: u32) -> u32;
+        /// Raise the subject's sequence to `seq` where it stands below, never
+        /// lower it: `seq` is the object's stored record's, so after a
+        /// restart the next accepted call on the object takes a number above
+        /// the record's (wire-rules natives' seed).
+        fn seed(self: &mut ScriptCalls, subject: u32, seq: u32);
+
+        /// thuum ADR-068 rung 3 (the script record): the release each cell
+        /// last saw, until its next grant (wire-rules script_state).
+        type ScriptStates;
+        /// No release noted.
+        fn new_script_states() -> Box<ScriptStates>;
+        /// The rule on one reported record over the facts the core gathered
+        /// for its reference (its kind, its cell, that cell's host and its
+        /// standing epoch): the reference first, then the epoch, then the
+        /// owner; while nobody hosts the cell, the release read of the host
+        /// that released it, at the epoch it released.
+        fn judge(self: &ScriptStates, facts: &ScriptStateFacts) -> ScriptStateVerdict;
+        /// `player` released `cell` at `epoch` (the cells table's Release):
+        /// its release read at that epoch is taken while nobody hosts it.
+        fn released(self: &mut ScriptStates, cell: u32, player: u32, epoch: u32);
+        /// `cell` was granted, to any seat: the release read ends.
+        fn granted(self: &mut ScriptStates, cell: u32);
     }
 }
 
-pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
+pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -4043,6 +4119,58 @@ impl ScriptCalls {
         }
         self.owner(facts)
     }
+
+    fn seq_of(&self, subject: u32) -> u32 {
+        self.0.seq_of(subject)
+    }
+
+    fn seed(&mut self, subject: u32, seq: u32) {
+        self.0.seed(subject, seq);
+    }
+}
+
+/// thuum ADR-068 rung 3 (the script record): the release each cell last saw
+/// until its next grant (wire-rules script_state), for the core's judgment
+/// of each reported record.
+#[derive(Debug, Default)]
+pub struct ScriptStates(script_state::ScriptStates);
+
+fn new_script_states() -> Box<ScriptStates> {
+    Box::default()
+}
+
+impl ScriptStates {
+    fn judge(&self, f: &ScriptStateFacts) -> ScriptStateVerdict {
+        let kind = match f.ref_kind {
+            1 => script_state::RefKind::WorldObject,
+            2 => script_state::RefKind::Actor,
+            _ => script_state::RefKind::Unknown,
+        };
+        let facts = script_state::Facts { sender: f.sender, epoch: f.epoch, kind, cell: f.cell, owner: f.owner, owner_epoch: f.owner_epoch };
+        let recorded = |code| ScriptStateVerdict { code, name: String::new(), why: String::new() };
+        match self.0.judge(&facts) {
+            script_state::Verdict::Accepted => recorded(ScriptStateCode::Accepted),
+            script_state::Verdict::ReleaseRead => recorded(ScriptStateCode::ReleaseRead),
+            script_state::Verdict::Refuse(r) => ScriptStateVerdict {
+                code: match r.code {
+                    script_state::Code::NoRef => ScriptStateCode::NoRef,
+                    script_state::Code::Kind => ScriptStateCode::Kind,
+                    script_state::Code::Owner => ScriptStateCode::Owner,
+                    script_state::Code::Epoch => ScriptStateCode::Epoch,
+                },
+                name: r.code.name().to_owned(),
+                why: r.why,
+            },
+        }
+    }
+
+    fn released(&mut self, cell: u32, player: u32, epoch: u32) {
+        self.0.released(cell, player, epoch);
+    }
+
+    fn granted(&mut self, cell: u32) {
+        self.0.granted(cell);
+    }
 }
 
 #[cfg(test)]
@@ -4809,5 +4937,47 @@ mod tests {
         assert_eq!(s.shape(at.row, &[text], facts.sender, facts.self_id, 250).code, ScriptCallCode::Accepted);
         assert_eq!(s.shape(-1, &[text], facts.sender, facts.self_id, 375).code, ScriptCallCode::Row);
         assert_eq!(s.owner(&facts).code, ScriptCallCode::Skipped);
+    }
+
+    #[test]
+    fn the_bridge_judges_a_script_record() {
+        // thuum ADR-068 rung 3: Bleak Falls Temple 0x371de hosted by
+        // 0xff000000 at epoch 3, a guest 0xff000001 beside it
+        let host = ScriptStateFacts { sender: 0xff00_0000, epoch: 3, ref_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3 };
+        let mut s = new_script_states();
+        let v = s.judge(&host);
+        assert_eq!((v.code, v.name.as_str(), v.why.as_str()), (ScriptStateCode::Accepted, "", ""));
+        // the refusals cross with their names and their words
+        let guest = s.judge(&ScriptStateFacts { sender: 0xff00_0001, ..host });
+        assert_eq!((guest.code, guest.name.as_str(), guest.why.as_str()), (ScriptStateCode::Owner, "E_SCRIPTSTATE_OWNER", "ff000000 hosts cell 371de, not the reporter"));
+        let stale = s.judge(&ScriptStateFacts { epoch: 2, ..host });
+        assert_eq!((stale.code, stale.name.as_str(), stale.why.as_str()), (ScriptStateCode::Epoch, "E_SCRIPTSTATE_EPOCH", "cell 371de stands at epoch 3, the record names 2"));
+        assert_eq!(s.judge(&ScriptStateFacts { ref_kind: 2, ..host }).name, "E_SCRIPTSTATE_KIND");
+        assert_eq!(s.judge(&ScriptStateFacts { ref_kind: 0, ..host }).name, "E_SCRIPTSTATE_NO_REF");
+        assert_eq!(s.judge(&ScriptStateFacts { ref_kind: 9, ..host }).code, ScriptStateCode::NoRef, "a kind the core never sends reads as no reference");
+        // the release read: the host released the temple at its epoch and
+        // nobody took it, the kept epoch 3
+        let unhosted = ScriptStateFacts { owner: 0, ..host };
+        assert_eq!(s.judge(&unhosted).code, ScriptStateCode::Owner);
+        s.released(0x371de, 0xff00_0000, 3);
+        let read = s.judge(&unhosted);
+        assert_eq!((read.code, read.name.as_str()), (ScriptStateCode::ReleaseRead, ""));
+        // a grant ends it: the guest's at epoch 4, the old host's read behind
+        s.granted(0x371de);
+        let regranted = ScriptStateFacts { owner: 0xff00_0001, owner_epoch: 4, ..host };
+        assert_eq!(s.judge(&regranted).code, ScriptStateCode::Epoch);
+        assert_eq!(s.judge(&ScriptStateFacts { sender: 0xff00_0001, epoch: 4, ..regranted }).code, ScriptStateCode::Accepted);
+        // the script calls' sequence: a stored record's seeds it, a max, and
+        // the next relay runs on from there
+        let text = ScriptArg { kind: 3, form_id: 0 };
+        let at = script_call_subject("ObjectReference", "PlayAnimation", 0xaa8cb, &[text]);
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3 };
+        let mut calls = new_script_calls();
+        assert_eq!(calls.seq_of(0xaa8cb), 0);
+        calls.seed(0xaa8cb, 5);
+        calls.seed(0xaa8cb, 2);
+        assert_eq!(calls.seq_of(0xaa8cb), 5);
+        assert_eq!(calls.judge(at.row, &[text], &facts, 0).seq, 6);
+        assert_eq!(calls.seq_of(0xaa8cb), 6);
     }
 }

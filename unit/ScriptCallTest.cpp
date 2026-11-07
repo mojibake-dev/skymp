@@ -506,17 +506,21 @@ TEST_CASE("A script call on a placement by its record from a game that does "
                                "placed by its game-file record)";
   {
     LogCapture log;
-    // E_SCRIPTCALL_OWNER: the guest has the Sanctum loaded but does not
-    // host it
+    // E_SCRIPTCALL_FAR: the guest has the Sanctum loaded but does not host
+    // it, and a firing's look (thuum ADR-068 D-W2 A) measures no reach from
+    // a placement the server holds no reference for: only its host's word
+    // is taken
     OpenDoorFx(p, 1, epoch);
     // E_SCRIPTCALL_OWNER: the host's report names an epoch the cell is not
     // at
     OpenDoorFx(p, 0, epoch + 1);
-    REQUIRE(log.Count("[verb:scripts] E_SCRIPTCALL_OWNER: ff000fe4 reports "
+    REQUIRE(log.Count("[verb:scripts] E_SCRIPTCALL_FAR: ff000fe4 reports "
                       "ObjectReference.PlayAnimation on 5256c (epoch " +
                       std::to_string(epoch) +
-                      ", from HallofStoriesKeyholeScript.openDoor): "
-                      "ff000fe3 hosts cell 371dd, not the reporter" +
+                      ", from HallofStoriesKeyholeScript.openDoor): a game "
+                      "with cell 371dd loaded, and no reference of the "
+                      "server's to measure its reach from, so only the "
+                      "host's word is taken" +
                       byRecord + "; refused, 1 since the last line") == 1);
     REQUIRE(log.Count("[verb:scripts] E_SCRIPTCALL_OWNER: ff000fe3 reports "
                       "ObjectReference.PlayAnimation on 5256c (epoch " +
@@ -621,20 +625,24 @@ TEST_CASE("The host's script call on an exterior placement the server never "
   // never back to the reporter
   REQUIRE(SnippetsTo(p, 0).empty());
 
-  // E_SCRIPTCALL_OWNER: the guest has the cell loaded but does not host it
+  // E_SCRIPTCALL_FAR: the guest has the cell loaded but does not host it,
+  // and a firing's look (thuum ADR-068 D-W2 A) measures no reach from a
+  // placement the server holds no reference for
   p.Messages().clear();
   {
     LogCapture log;
     play(1);
-    REQUIRE(log.Count("[verb:scripts] E_SCRIPTCALL_OWNER: ff000fe4 reports "
+    REQUIRE(log.Count("[verb:scripts] E_SCRIPTCALL_FAR: ff000fe4 reports "
                       "ObjectReference.PlayAnimation on b15e6 (epoch " +
                       std::to_string(epoch) +
-                      ", from default2StateActivator.onActivate): ff000fe3 "
-                      "hosts cell " +
+                      ", from default2StateActivator.onActivate): a game "
+                      "with cell " +
                       cellHex +
-                      ", not the reporter (a reference the server does not "
-                      "load, placed by its game-file record); refused, 1 "
-                      "since the last line") == 1);
+                      " loaded, and no reference of the server's to measure "
+                      "its reach from, so only the host's word is taken (a "
+                      "reference the server does not load, placed by its "
+                      "game-file record); refused, 1 since the last line") ==
+            1);
     REQUIRE(log.Count(" animates ") == 0);
   }
   REQUIRE(SnippetsTo(p, 0).empty());

@@ -4295,7 +4295,12 @@ void KeepScriptVariable(MpObjectReference& subject,
 // a SetAnimationVariable call's variable is kept on the reference with the
 // call's sequence (the fifty fixes' D-C3 A, PENDING ELI), and a call relayed
 // as a graph event writes ObjectAnimation's "animates" line byte for byte
-// (b-puzzle-relay claims it) before the call's own line.
+// (b-puzzle-relay claims it) before the call's own line. A trap family
+// trigger's own call during a firing is its firing seat's look (thuum
+// ADR-068 D-W2 A, wire-rules natives' look channel): the cell's host at the
+// epoch, or a game with the cell loaded one of whose actors stands by the
+// trigger (the firing's own rule over the subject's gathered facts), relayed
+// to the subject's other listeners and kept nowhere, with its own line.
 void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
                                   const ScriptCallMessage& msg)
 {
@@ -4451,6 +4456,17 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
     }
   }
 
+  // thuum ADR-068 D-W2 A (wire-rules natives' look channel): a row with a
+  // look channel on a world object gathers its subject's firing facts as
+  // D-W1 gathers a trigger's (GatherFiringFacts: the cell's host, then
+  // whether the reporter's game has the cell loaded and how far its nearest
+  // actor stands from the subject); a placement by its record has no
+  // reference to measure from, so only its host's word is taken
+  if (at.look != 0 && facts.cell != 0 &&
+      (facts.subject_kind == 1 || facts.subject_kind == 4)) {
+    facts.firing = GatherFiringFacts(partOne, *reporter, subject, facts.cell);
+  }
+
   // thuum ADR-068 rung 3: a subject with a stored record seeds its sequence
   // first (a record saved before a restart, which started every sequence at
   // 0; ScriptCalls::seed, a max), so a relay never takes a number at or
@@ -4584,6 +4600,20 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
       relayArgs.push_back(msg.args[i]);
     }
   }
+  // a look names the reporter's own player as its figure, the reporter's
+  // actor, which the receiving seat holds as the reporter's copy (thuum
+  // ADR-068 D-W2 A: CreateDetectionEvent's akOwner, the bone alarm's walker)
+  if (verdict.figure_args) {
+    for (auto& arg : relayArgs) {
+      if (!arg) {
+        continue;
+      }
+      if (auto object = std::get_if<SpSnippetObjectArgument>(&*arg);
+          object && object->formId == 0x14) {
+        object->formId = reporter->GetFormId();
+      }
+    }
+  }
   const std::string relayCls(verdict.relay_cls);
   const std::string relayFn(verdict.relay_fn);
   SpSnippet relay(relayCls.c_str(), relayFn.c_str(), relayArgs,
@@ -4595,7 +4625,13 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
           Networking::InvalidUserId) {
       return;
     }
-    relay.Relay(listener, verdict.seq);
+    // a look relayed with no sequence (Sound.Play's: its self the Sound,
+    // shared by many triggers) is the same snippet without one
+    if (verdict.look && verdict.seq == 0) {
+      relay.Serve(listener);
+    } else {
+      relay.Relay(listener, verdict.seq);
+    }
     ++relayed;
   };
   // audience 0: the subject's listeners (every action row's at rung 2); a
@@ -4610,6 +4646,27 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
       const auto& form = partOne.worldState.LookupFormByIdNoLoad(loader);
       relayTo(form ? form->AsActor() : nullptr);
     }
+  } else if (verdict.audience == 3 && facts.owner != 0) {
+    // the subject's cell's host alone (a look's CreateDetectionEvent: the
+    // engine that simulates the cell's NPCs), never the reporter
+    const auto& form = partOne.worldState.LookupFormByIdNoLoad(facts.owner);
+    relayTo(form ? form->AsActor() : nullptr);
+  }
+  // thuum ADR-068 D-W2 A: a firing's look, its seat's word (the cell's
+  // host's or a loader's by the trigger), relayed and kept nowhere, the
+  // detection event to the cell's host alone
+  if (verdict.look) {
+    const std::string seqWord =
+      verdict.seq ? fmt::format("seq {}", verdict.seq) : std::string("no seq");
+    const char* whose =
+      verdict.audience == 3 ? " (the cell's host alone)" : "";
+    spdlog::info("[verb:traps] {:x} reports {}.{} on {:x} in cell {:x} "
+                 "(epoch {}, from {}.{}): its firing seat's look, {}, relayed "
+                 "to {} game(s){} as {}.{}, kept nowhere (D-W2)",
+                 reporter->GetFormId(), msg.cls, msg.fn, verdict.subject,
+                 facts.cell, msg.epoch, msg.caller, msg.handler, seqWord,
+                 relayed, whose, relayCls, relayFn);
+    return;
   }
   if (verdict.event_arg >= 0) {
     spdlog::info("[verb:traps] {:x} animates {:x} '{}' in cell {:x} (its host "

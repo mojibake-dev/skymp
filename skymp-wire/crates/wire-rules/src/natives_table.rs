@@ -15,55 +15,60 @@
 // docs/research/fifty-fixes-2026-11-07.md section 1(c)) keeps the three
 // SetAnimationVariable rows' variables on their subject (Keep::Variable),
 // still relayed as actions; the platform's NativeRows.inc has no keep
-// column, so the change is this table's alone. Included by natives.rs, whose
-// types it names.
+// column, so the change is this table's alone. D-W2 A (the same plan's
+// section 7.2(b)) gives every row its look column, Look::Also on the six
+// action rows and Look::Only on SetMotionType and ApplyHavokImpulse, and
+// appends Sound.Play and CreateDetectionEvent, look-only (forty-three rows;
+// their NativeRows.inc lines in the same commit). Included by natives.rs,
+// whose types it names.
 
 /// Every tabled native (thuum ADR-068 decision 3): rung 2's set, the six
 /// action rows, the flip's twenty-four state and everyone rows and
 /// Game.GetPlayer, local; then D-S3's three trap rows (ProcessTrapHit,
 /// SetMotionType, ApplyHavokImpulse), the first kept as its actor's death
 /// evidence; then rung 4's seven, the standing's six kept as the NPC's record
-/// and ReferenceAlias.Clear beside ForceRefTo. A native with no row has no
-/// channel. Forty-one rows.
+/// and ReferenceAlias.Clear beside ForceRefTo; then D-W2's Sound.Play and
+/// CreateDetectionEvent, a firing's looks alone. A native with no row has no
+/// channel. Forty-three rows.
 pub const TABLE: &[Row] = &[
     // the actions: relayed to the subject's listeners as the row's relay
     // native, the graph variables' kept on the subject as well
-    Row { cls: "ObjectReference", func: "PlayAnimation", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Last, params: &[Param::String] },
-    Row { cls: "ObjectReference", func: "PlayAnimationAndWait", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Listeners, relay: Relay::Twin { cls: "ObjectReference", func: "PlayAnimation", args: &[0] }, keep: Keep::Last, params: &[Param::String, Param::String] },
-    Row { cls: "Debug", func: "SendAnimationEvent", kind: Kind::Action, subject: Subject::Arg0, owner: Owner::CellHost, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Nothing, params: &[Param::Object, Param::String] },
-    Row { cls: "ObjectReference", func: "SetAnimationVariableBool", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Variable, params: &[Param::String, Param::Bool] },
-    Row { cls: "ObjectReference", func: "SetAnimationVariableInt", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Variable, params: &[Param::String, Param::Int] },
-    Row { cls: "ObjectReference", func: "SetAnimationVariableFloat", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Variable, params: &[Param::String, Param::Float] },
+    Row { cls: "ObjectReference", func: "PlayAnimation", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Last, look: Look::Also, params: &[Param::String] },
+    Row { cls: "ObjectReference", func: "PlayAnimationAndWait", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Listeners, relay: Relay::Twin { cls: "ObjectReference", func: "PlayAnimation", args: &[0] }, keep: Keep::Last, look: Look::Also, params: &[Param::String, Param::String] },
+    Row { cls: "Debug", func: "SendAnimationEvent", kind: Kind::Action, subject: Subject::Arg0, owner: Owner::CellHost, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Nothing, look: Look::Also, params: &[Param::Object, Param::String] },
+    Row { cls: "ObjectReference", func: "SetAnimationVariableBool", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Variable, look: Look::Also, params: &[Param::String, Param::Bool] },
+    Row { cls: "ObjectReference", func: "SetAnimationVariableInt", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Variable, look: Look::Also, params: &[Param::String, Param::Int] },
+    Row { cls: "ObjectReference", func: "SetAnimationVariableFloat", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Variable, look: Look::Also, params: &[Param::String, Param::Float] },
     // the flip's state rows: the object's record carries them (rung 4: the
     // ref state's five and the placements' two kept as their subject's
     // record, the rest still carried by the change form or a typed verb)
-    Row { cls: "ObjectReference", func: "AddItem", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, params: &[Param::Object, Param::Int, Param::Bool] },
-    Row { cls: "ObjectReference", func: "RemoveItem", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, params: &[Param::Object, Param::Int, Param::Bool, Param::Object] },
-    Row { cls: "ObjectReference", func: "Enable", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::RefState), params: &[Param::Bool] },
-    Row { cls: "ObjectReference", func: "EnableNoWait", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::RefState), params: &[Param::Bool] },
-    Row { cls: "ObjectReference", func: "Disable", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::RefState), params: &[Param::Bool] },
-    Row { cls: "ObjectReference", func: "DisableNoWait", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::RefState), params: &[Param::Bool] },
-    Row { cls: "ObjectReference", func: "Delete", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::RefState), params: &[] },
-    Row { cls: "ObjectReference", func: "PlaceAtMe", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::Placement), params: &[Param::Object, Param::Int, Param::Bool, Param::Bool] },
-    Row { cls: "ObjectReference", func: "PlaceActorAtMe", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::Placement), params: &[Param::Object, Param::Int, Param::Object] },
-    Row { cls: "ObjectReference", func: "MoveTo", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, params: &[Param::Object, Param::Float, Param::Float, Param::Float, Param::Bool] },
-    Row { cls: "ObjectReference", func: "SetOpen", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, params: &[Param::Bool] },
-    Row { cls: "ObjectReference", func: "Lock", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, params: &[Param::Bool, Param::Bool] },
-    Row { cls: "ObjectReference", func: "SetLockLevel", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, params: &[Param::Int] },
-    Row { cls: "ObjectReference", func: "Activate", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, params: &[Param::Object, Param::Bool] },
-    Row { cls: "ObjectReference", func: "SetDestroyed", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, params: &[Param::Bool] },
-    Row { cls: "ObjectReference", func: "DamageObject", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, params: &[Param::Float] },
-    Row { cls: "Actor", func: "Kill", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, params: &[Param::Object] },
-    Row { cls: "Actor", func: "KillSilent", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, params: &[Param::Object] },
-    Row { cls: "Actor", func: "Resurrect", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, params: &[] },
+    Row { cls: "ObjectReference", func: "AddItem", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, look: Look::Never, params: &[Param::Object, Param::Int, Param::Bool] },
+    Row { cls: "ObjectReference", func: "RemoveItem", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, look: Look::Never, params: &[Param::Object, Param::Int, Param::Bool, Param::Object] },
+    Row { cls: "ObjectReference", func: "Enable", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::RefState), look: Look::Never, params: &[Param::Bool] },
+    Row { cls: "ObjectReference", func: "EnableNoWait", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::RefState), look: Look::Never, params: &[Param::Bool] },
+    Row { cls: "ObjectReference", func: "Disable", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::RefState), look: Look::Never, params: &[Param::Bool] },
+    Row { cls: "ObjectReference", func: "DisableNoWait", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::RefState), look: Look::Never, params: &[Param::Bool] },
+    Row { cls: "ObjectReference", func: "Delete", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::RefState), look: Look::Never, params: &[] },
+    Row { cls: "ObjectReference", func: "PlaceAtMe", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::Placement), look: Look::Never, params: &[Param::Object, Param::Int, Param::Bool, Param::Bool] },
+    Row { cls: "ObjectReference", func: "PlaceActorAtMe", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::Placement), look: Look::Never, params: &[Param::Object, Param::Int, Param::Object] },
+    Row { cls: "ObjectReference", func: "MoveTo", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, look: Look::Never, params: &[Param::Object, Param::Float, Param::Float, Param::Float, Param::Bool] },
+    Row { cls: "ObjectReference", func: "SetOpen", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, look: Look::Never, params: &[Param::Bool] },
+    Row { cls: "ObjectReference", func: "Lock", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, look: Look::Never, params: &[Param::Bool, Param::Bool] },
+    Row { cls: "ObjectReference", func: "SetLockLevel", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, look: Look::Never, params: &[Param::Int] },
+    Row { cls: "ObjectReference", func: "Activate", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, look: Look::Never, params: &[Param::Object, Param::Bool] },
+    Row { cls: "ObjectReference", func: "SetDestroyed", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, look: Look::Never, params: &[Param::Bool] },
+    Row { cls: "ObjectReference", func: "DamageObject", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, look: Look::Never, params: &[Param::Float] },
+    Row { cls: "Actor", func: "Kill", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, look: Look::Never, params: &[Param::Object] },
+    Row { cls: "Actor", func: "KillSilent", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, look: Look::Never, params: &[Param::Object] },
+    Row { cls: "Actor", func: "Resurrect", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, look: Look::Never, params: &[] },
     // the flip's everyone rows: nobody owns them, every seat runs them (rung 5)
-    Row { cls: "Quest", func: "SetCurrentStageID", kind: Kind::Everyone, subject: Subject::SelfRef, owner: Owner::Nobody, audience: Audience::Everyone, relay: Relay::Never, keep: Keep::Nothing, params: &[Param::Int] },
-    Row { cls: "Quest", func: "Start", kind: Kind::Everyone, subject: Subject::SelfRef, owner: Owner::Nobody, audience: Audience::Everyone, relay: Relay::Never, keep: Keep::Nothing, params: &[] },
-    Row { cls: "Quest", func: "Stop", kind: Kind::Everyone, subject: Subject::SelfRef, owner: Owner::Nobody, audience: Audience::Everyone, relay: Relay::Never, keep: Keep::Nothing, params: &[] },
-    Row { cls: "GlobalVariable", func: "SetValue", kind: Kind::Everyone, subject: Subject::SelfRef, owner: Owner::Nobody, audience: Audience::Everyone, relay: Relay::Never, keep: Keep::Nothing, params: &[Param::Float] },
-    Row { cls: "ReferenceAlias", func: "ForceRefTo", kind: Kind::Everyone, subject: Subject::SelfRef, owner: Owner::Nobody, audience: Audience::Everyone, relay: Relay::Never, keep: Keep::Nothing, params: &[Param::Object] },
+    Row { cls: "Quest", func: "SetCurrentStageID", kind: Kind::Everyone, subject: Subject::SelfRef, owner: Owner::Nobody, audience: Audience::Everyone, relay: Relay::Never, keep: Keep::Nothing, look: Look::Never, params: &[Param::Int] },
+    Row { cls: "Quest", func: "Start", kind: Kind::Everyone, subject: Subject::SelfRef, owner: Owner::Nobody, audience: Audience::Everyone, relay: Relay::Never, keep: Keep::Nothing, look: Look::Never, params: &[] },
+    Row { cls: "Quest", func: "Stop", kind: Kind::Everyone, subject: Subject::SelfRef, owner: Owner::Nobody, audience: Audience::Everyone, relay: Relay::Never, keep: Keep::Nothing, look: Look::Never, params: &[] },
+    Row { cls: "GlobalVariable", func: "SetValue", kind: Kind::Everyone, subject: Subject::SelfRef, owner: Owner::Nobody, audience: Audience::Everyone, relay: Relay::Never, keep: Keep::Nothing, look: Look::Never, params: &[Param::Float] },
+    Row { cls: "ReferenceAlias", func: "ForceRefTo", kind: Kind::Everyone, subject: Subject::SelfRef, owner: Owner::Nobody, audience: Audience::Everyone, relay: Relay::Never, keep: Keep::Nothing, look: Look::Never, params: &[Param::Object] },
     // local: the seat's own (rung 5 adds the acting player's scope)
-    Row { cls: "Game", func: "GetPlayer", kind: Kind::Local, subject: Subject::Nothing, owner: Owner::Player, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, params: &[] },
+    Row { cls: "Game", func: "GetPlayer", kind: Kind::Local, subject: Subject::Nothing, owner: Owner::Player, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, look: Look::Never, params: &[] },
     // ADR-068 D-S3 (traps follow the interaction): a trap's hit is the hit
     // actor's own seat's (its self, the hit actor, owned there alone, so a
     // non-owner's copy skips it), and a trap body's motion is the seat whose
@@ -71,9 +76,9 @@ pub const TABLE: &[Row] = &[
     // owner reports it, kept as the actor's death evidence (Keep::Evidence;
     // thuum docs/verbs/npc-fate.md, playtest 48: a blade kill after its
     // trigger's 30 s was refused)
-    Row { cls: "ObjectReference", func: "ProcessTrapHit", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Evidence, params: &[Param::Object, Param::Float, Param::Float, Param::Float, Param::Float, Param::Float, Param::Float, Param::Float, Param::Float, Param::Int, Param::Float] },
-    Row { cls: "ObjectReference", func: "SetMotionType", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Toucher, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, params: &[Param::Int, Param::Bool] },
-    Row { cls: "ObjectReference", func: "ApplyHavokImpulse", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Toucher, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, params: &[Param::Float, Param::Float, Param::Float, Param::Float] },
+    Row { cls: "ObjectReference", func: "ProcessTrapHit", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Evidence, look: Look::Never, params: &[Param::Object, Param::Float, Param::Float, Param::Float, Param::Float, Param::Float, Param::Float, Param::Float, Param::Float, Param::Int, Param::Float] },
+    Row { cls: "ObjectReference", func: "SetMotionType", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Toucher, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, look: Look::Only, params: &[Param::Int, Param::Bool] },
+    Row { cls: "ObjectReference", func: "ApplyHavokImpulse", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Toucher, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, look: Look::Only, params: &[Param::Float, Param::Float, Param::Float, Param::Float] },
     // ADR-068 rung 4 (the state rows, amendment B): an NPC's standing, its
     // simulator's, kept as its record (W3: the server's half and T2 this
     // rung, no observe point on a seat; the player's own 0x14 refused until
@@ -81,11 +86,27 @@ pub const TABLE: &[Row] = &[
     // AddToFaction is Papyrus over SetFactionRank, no native of its own. Then
     // the alias's clear, nobody's like ForceRefTo (D-F1 C), which every seat
     // runs and AliasFill 79 carries. Appended so no earlier row's place moves
-    Row { cls: "Actor", func: "SetFactionRank", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::Standing), params: &[Param::Object, Param::Int] },
-    Row { cls: "Actor", func: "ModFactionRank", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::Standing), params: &[Param::Object, Param::Int] },
-    Row { cls: "Actor", func: "RemoveFromFaction", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::Standing), params: &[Param::Object] },
-    Row { cls: "Actor", func: "RemoveFromAllFactions", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::Standing), params: &[] },
-    Row { cls: "Actor", func: "SetCrimeFaction", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::Standing), params: &[Param::Object] },
-    Row { cls: "Actor", func: "SetRelationshipRank", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::Standing), params: &[Param::Object, Param::Int] },
-    Row { cls: "ReferenceAlias", func: "Clear", kind: Kind::Everyone, subject: Subject::SelfRef, owner: Owner::Nobody, audience: Audience::Everyone, relay: Relay::Never, keep: Keep::Nothing, params: &[] },
+    Row { cls: "Actor", func: "SetFactionRank", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::Standing), look: Look::Never, params: &[Param::Object, Param::Int] },
+    Row { cls: "Actor", func: "ModFactionRank", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::Standing), look: Look::Never, params: &[Param::Object, Param::Int] },
+    Row { cls: "Actor", func: "RemoveFromFaction", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::Standing), look: Look::Never, params: &[Param::Object] },
+    Row { cls: "Actor", func: "RemoveFromAllFactions", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::Standing), look: Look::Never, params: &[] },
+    Row { cls: "Actor", func: "SetCrimeFaction", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::Standing), look: Look::Never, params: &[Param::Object] },
+    Row { cls: "Actor", func: "SetRelationshipRank", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::Standing), look: Look::Never, params: &[Param::Object, Param::Int] },
+    Row { cls: "ReferenceAlias", func: "Clear", kind: Kind::Everyone, subject: Subject::SelfRef, owner: Owner::Nobody, audience: Audience::Everyone, relay: Relay::Never, keep: Keep::Nothing, look: Look::Never, params: &[] },
+    // ADR-068 D-W2 A (Eli 2026-11-07; docs/research/fifty-fixes-2026-11-07.md
+    // section 7.2): a trap family trigger's sound during its firing, a look
+    // alone, never an action on its own (outside a look the platform counts
+    // it local and queues nothing); its subject is its source, the first
+    // argument, and its self the Sound (Subject::Arg0Method); FunctionsDump's
+    // Play(ObjectReference akSource), a member native returning the instance.
+    // Appended so no earlier row's place moves
+    Row { cls: "Sound", func: "Play", kind: Kind::Action, subject: Subject::Arg0Method, owner: Owner::CellHost, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Nothing, look: Look::Only, params: &[Param::Object] },
+    // the trigger script's CreateDetectionEvent during its firing (SoundTrap's
+    // op 23 on itself; the same plan's section 7.6, the coordinator's call
+    // under Eli's condition): a look alone, relayed to the cell's host alone
+    // (the NPCs' simulator), its akOwner the reporter's figure where the call
+    // named the reporter's own player, so a guest's bone alarm still wakes
+    // the NPCs the host simulates; FunctionsDump's CreateDetectionEvent(Actor
+    // akOwner, Int aiSoundLevel). Appended so no earlier row's place moves
+    Row { cls: "ObjectReference", func: "CreateDetectionEvent", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Host, relay: Relay::Same, keep: Keep::Nothing, look: Look::Only, params: &[Param::Object, Param::Int] },
 ];

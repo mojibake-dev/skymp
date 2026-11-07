@@ -12,6 +12,10 @@ const gameDayId = 0x37;
 const gameHourId = 0x38;
 const gameDaysPassedId = 0x39;
 const timeScaleId = 0x3a;
+// the six above: the clock is this service's (the server's word, ADR-021),
+// so the world's stream of globals never carries them (WorldGlobalService;
+// thuum docs/research/rung4-state-rows-2026-11-07.md (d))
+export const clockGlobalIds: readonly number[] = [gameYearId, gameMonthId, gameDayId, gameHourId, gameDaysPassedId, timeScaleId];
 
 // RE::SleepWaitMenu::MENU_NAME (CommonLibSSE-NG include/RE/S/SleepWaitMenu.h)
 const sleepWaitMenu = "Sleep/Wait Menu";

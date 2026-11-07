@@ -67,6 +67,7 @@ import { ChangeFormApplyMessage } from "../messages/changeFormApplyMessage";
 import { DestructionStageMessage } from "../messages/destructionStageMessage";
 import { ScriptStateApplyMessage } from "../messages/scriptStateApplyMessage";
 import { AliasFillMessage } from "../messages/aliasFillMessage";
+import { WorldGlobalMessage } from "../messages/worldGlobalMessage";
 
 import { AnyRawMessageEvent } from "./anyRawMessageEvent";
 import { NicknameCreateEvent } from "./nicknameCreateEvent";
@@ -142,6 +143,8 @@ type EventTypes = {
     'scriptStateApplyMessage': [ConnectionMessage<ScriptStateApplyMessage>],
     // thuum docs/DECISIONS.md ADR-068 rung 4 (the state rows): an alias's fill relayed or served (AliasFillService)
     'aliasFillMessage': [ConnectionMessage<AliasFillMessage>],
+    // the same rung: the world's globals, a stream word, a relay or a login's serve (WorldGlobalService)
+    'worldGlobalMessage': [ConnectionMessage<WorldGlobalMessage>],
     'customPacketMessage': [ConnectionMessage<CustomPacketMessage>]
 
     'browserWindowLoaded': [BrowserWindowLoadedEvent],

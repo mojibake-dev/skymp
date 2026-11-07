@@ -575,7 +575,12 @@ export class RemoteServer extends ClientListener {
 
             ModelApplyUtils.applyModelNodeTextureSet(refr, msg.props.setNodeTextureSet);
 
-            ModelApplyUtils.applyModelIsDisabled(refr, !!msg.props['disabled']);
+            // thuum docs/DECISIONS.md ADR-068 amendment B (rung 4): no
+            // disabled apply here. This one read `disabled` where the server
+            // sends isDisabled, so it enabled every game-file reference the
+            // engine held disabled at each create word, a host's scripted
+            // Disable undone on every seat; the reference's engine state is
+            // the server's DestructionStage word, applied by RefStateService
 
             // TODO: move to a separate module
             const animation = msg.props.lastAnimation;
@@ -1198,8 +1203,6 @@ export class RemoteServer extends ClientListener {
           ModelApplyUtils.applyModelLock(refr, msgData as { level: number; key: number; locked: boolean } | undefined);
         } else if (msg.propName === 'isHarvested') {
           ModelApplyUtils.applyModelIsHarvested(refr, !!msgData);
-        } else if (msg.propName === 'disabled') {
-          ModelApplyUtils.applyModelIsDisabled(refr, !!msgData);
         }
       });
       return;

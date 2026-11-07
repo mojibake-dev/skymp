@@ -1468,6 +1468,17 @@ void MpObjectReference::Subscribe(MpObjectReference* emitter,
         new std::map<MpObjectReference*, bool>);
     }
     listener->emittersWithPrimitives->insert({ emitter, false });
+    // thuum ADR-068 rung 4 (b-ref-state-restart 20261107-211516, step 53): a
+    // primitive gets no create word, so the records a create word carries
+    // (its ref state, its destruction, its scripts' record) are served at
+    // its new subscription instead (PartOne, WorldState's
+    // onPrimitiveSubscribe): the Temple's setStage trigger 0x3ac73, disabled
+    // with refStateSeq 1, reached no late joiner
+    if (auto* worldState = emitter->GetParent(); worldState &&
+        worldState->onPrimitiveSubscribe && inserted && actorListener &&
+        !actorEmitter) {
+      worldState->onPrimitiveSubscribe(*emitter, *actorListener);
+    }
   }
 }
 

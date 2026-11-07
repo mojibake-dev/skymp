@@ -1268,6 +1268,83 @@ std::vector<PartOne::Message>& PartOne::Messages()
   return pImpl->fakeSendTarget.messages;
 }
 
+namespace {
+// thuum D-S3 and ADR-068 rungs 3 and 4: a reference's records served to one
+// listener's game on the ordered channel, at once, behind the reference's
+// create word and, for a primitive (a trigger the loader keeps as one, which
+// gets no create word), at its new subscription (b-ref-state-restart
+// 20261107-211516, step 53: the Temple's setStage trigger 0x3ac73, disabled
+// with refStateSeq 1, reached no late joiner); `when` ends each line.
+// - Its recorded destruction (a spent tripwire, an oil lamp's fallen stage)
+//   and its recorded ref state (its owner's Enable, Disable or Delete, or the
+//   server's own: disabled and deleted with the object's sequence, an
+//   actor's too), served, in one word, so the late seat applies the record
+//   without replaying the firing; the word goes before ScriptStateApply,
+//   whose sequence can be older (the receiver's served word raises nothing).
+// - Its scripts' record, with the sequence and the view they were taken at,
+//   to a game that does not host its cell (the host's engine runs the
+//   scripts; a new host hears the record ahead of its grant instead,
+//   ApplyHostDecisions), its sequence seeding the object's first
+//   (ScriptCalls::seed, a max). After a restart each record is the saved one
+void ServeReferenceRecords(PartOne& partOne,
+                           PartOneSendTargetWrapper* sendTarget,
+                           Networking::UserId listenerUserId,
+                           MpObjectReference& emitter, MpActor& listener,
+                           const char* when)
+{
+  MpActor* emitterAsActor = emitter.AsActor();
+  const auto destruction = emitterAsActor
+    ? std::optional<MpChangeFormREFR::Destruction>()
+    : emitter.GetDestruction();
+  const auto refStateSeq = emitter.GetRefStateSeq();
+  if (destruction || refStateSeq) {
+    DestructionStageMessage served;
+    served.refr = emitter.GetFormId();
+    if (destruction) {
+      served.stage = destruction->stage;
+      served.destroyed = destruction->destroyed;
+    }
+    if (refStateSeq) {
+      served.disabled = emitter.IsDisabled();
+      served.deleted = emitter.IsDeleted();
+      served.seq = *refStateSeq;
+    }
+    served.served = true;
+    sendTarget->Send(listenerUserId, served, true);
+    if (destruction) {
+      spdlog::info("[verb:traps] {:x}'s record (stage {}, destroyed {}) "
+                   "served to {:x} {}",
+                   emitter.GetFormId(), static_cast<int>(destruction->stage),
+                   destruction->destroyed, listener.GetFormId(), when);
+    }
+    if (refStateSeq) {
+      spdlog::info("[verb:scripts] ref state {:x} (disabled {}, deleted {}, "
+                   "seq {}) served to {:x} {}",
+                   emitter.GetFormId(), emitter.IsDisabled(),
+                   emitter.IsDeleted(), *refStateSeq, listener.GetFormId(),
+                   when);
+    }
+  }
+  if (!emitterAsActor && emitter.GetScriptState()) {
+    const auto cell = partOne.worldState.CellOf(emitter);
+    const auto host =
+      cell ? partOne.GetCellHost(*cell) : skymp::rules::CellHost{};
+    ScriptStateApplyMessage apply;
+    if ((!host.hosted || host.player != listener.GetFormId()) &&
+        emitter.BuildScriptStateApply(apply)) {
+      partOne.GetScriptCalls().seed(apply.formId, apply.seq);
+      sendTarget->Send(listenerUserId, apply, true);
+      // thuum D-C3 A: the graph variables served with it
+      spdlog::info("[verb:scripts] script state {:x} served to {:x} {}: {} "
+                   "script(s), seq {}, view '{}', {} graph variable(s)",
+                   apply.formId, listener.GetFormId(), when,
+                   apply.scripts.size(), apply.seq, apply.event.value_or(""),
+                   apply.graphVars ? apply.graphVars->size() : 0);
+    }
+  }
+}
+}
+
 void PartOne::Init()
 {
   pImpl.reset(new Impl);
@@ -1327,6 +1404,18 @@ void PartOne::Init()
     }
     SendFates(actor, actor.GetCellOrWorld().ToFormId(worldState.espmFiles),
               actor.GetPos());
+  };
+  // thuum ADR-068 rung 4 (b-ref-state-restart 20261107-211516, step 53): a
+  // primitive's new subscription, which sends no create word, serves the
+  // reference's records as a create word carries them
+  worldState.onPrimitiveSubscribe = [this](MpObjectReference& primitive,
+                                           MpActor& listener) {
+    const auto userId = serverState.UserByActor(&listener);
+    if (userId == Networking::InvalidUserId) {
+      return;
+    }
+    ServeReferenceRecords(*this, pImpl->sendTarget.get(), userId, primitive,
+                          listener, "at its subscribe (a primitive)");
   };
   worldState.onDeathState = [this](MpActor& actor, bool isDead) {
     OnDeathState(actor, isDead);
@@ -1552,49 +1641,11 @@ void PartOne::Init()
       }
     }
 
-    // thuum D-S3 (traps follow the interaction; ADR-068's DestructionStage
-    // row): a reference's recorded destruction (a spent tripwire, an oil
-    // lamp's fallen stage) rides behind its create word on the same ordered
-    // channel, served, so the late seat applies the record without replaying
-    // the firing; after a restart the record is the saved one
-    // thuum ADR-068 rung 4 (amendment B, read 7): the same word carries a
-    // reference's recorded ref state (its owner's Enable, Disable or Delete,
-    // or the server's own), disabled and deleted with the object's sequence,
-    // an actor's too; the word goes before ScriptStateApply, whose sequence
-    // can be older (the receiver's served word raises nothing)
-    const auto destruction = emitterAsActor
-      ? std::optional<MpChangeFormREFR::Destruction>()
-      : emitter->GetDestruction();
-    const auto refStateSeq = emitter->GetRefStateSeq();
-    if (destruction || refStateSeq) {
-      DestructionStageMessage served;
-      served.refr = emitter->GetFormId();
-      if (destruction) {
-        served.stage = destruction->stage;
-        served.destroyed = destruction->destroyed;
-      }
-      if (refStateSeq) {
-        served.disabled = emitter->IsDisabled();
-        served.deleted = emitter->IsDeleted();
-        served.seq = *refStateSeq;
-      }
-      served.served = true;
-      sendTarget->Send(listenerUserId, served, true);
-      if (destruction) {
-        spdlog::info("[verb:traps] {:x}'s record (stage {}, destroyed {}) "
-                     "served to {:x} after its create word",
-                     emitter->GetFormId(),
-                     static_cast<int>(destruction->stage),
-                     destruction->destroyed, listenerAsActor->GetFormId());
-      }
-      if (refStateSeq) {
-        spdlog::info("[verb:scripts] ref state {:x} (disabled {}, deleted {}, "
-                     "seq {}) served to {:x} after its create word",
-                     emitter->GetFormId(), emitter->IsDisabled(),
-                     emitter->IsDeleted(), *refStateSeq,
-                     listenerAsActor->GetFormId());
-      }
-    }
+    // the reference's records ride behind its create word on the same
+    // ordered channel (ServeReferenceRecords: its destruction and ref state,
+    // then its scripts' record for a game that does not host its cell)
+    ServeReferenceRecords(*this, sendTarget, listenerUserId, *emitter,
+                          *listenerAsActor, "after its create word");
 
     // thuum ADR-068 rung 4 (the standing, W3): an NPC's recorded standing
     // rides behind its create word as the appliers that bring a late
@@ -1636,31 +1687,6 @@ void PartOne::Init()
                      "its create word: {} applier(s)",
                      emitter->GetFormId(), listenerAsActor->GetFormId(),
                      appliers);
-      }
-    }
-
-    // thuum ADR-068 rung 3 (the script record): a reference's recorded
-    // scripts ride behind its create word on the same ordered channel, at
-    // once, with the sequence and the view they were taken at, to a game
-    // that does not host the reference's cell (the host's engine runs the
-    // scripts; a new host hears the record ahead of its grant instead,
-    // ApplyHostDecisions); after a restart the record is the saved one, and
-    // its sequence seeds the object's first (ScriptCalls::seed, a max)
-    if (!emitterAsActor && emitter->GetScriptState()) {
-      const auto cell = worldState.CellOf(*emitter);
-      const auto host = cell ? GetCellHost(*cell) : skymp::rules::CellHost{};
-      ScriptStateApplyMessage apply;
-      if ((!host.hosted || host.player != listenerAsActor->GetFormId()) &&
-          emitter->BuildScriptStateApply(apply)) {
-        GetScriptCalls().seed(apply.formId, apply.seq);
-        sendTarget->Send(listenerUserId, apply, true);
-        // thuum D-C3 A (PENDING Eli): the graph variables served with it
-        spdlog::info("[verb:scripts] script state {:x} served to {:x} after "
-                     "its create word: {} script(s), seq {}, view '{}', {} "
-                     "graph variable(s)",
-                     apply.formId, listenerAsActor->GetFormId(),
-                     apply.scripts.size(), apply.seq, apply.event.value_or(""),
-                     apply.graphVars ? apply.graphVars->size() : 0);
       }
     }
 

@@ -398,3 +398,70 @@ TEST_CASE("A trigger's own activation is noted from its firing's owner, the "
   REQUIRE(RelayedTo(p, 1).empty());
   Leave(p);
 }
+
+// the ambush trigger defaultActivateSelfTRIG 0x38098 at (7921, -4613, -1795)
+// and its ACHR child 0x380b3, whose XAPR names it (TrapRelayTest's): the
+// review of m4-train-50, note 4. A guest's press of a trigger whose first
+// link is an actor the host simulates goes to the host's game, whose engine
+// wakes the actor, when the guest's game has the cell loaded and its player
+// stands by the trigger; one across the temple is refused E_TRAP_FAR
+TEST_CASE("A guest's firing whose first link is an actor the host simulates "
+          "is relayed to the host from a loader by the trigger (D-W1)",
+          "[Traps][espm]")
+{
+  constexpr uint32_t kAmbushTrigger = 0x38098;
+  const NiPoint3 kByTheAmbush{ 7921.f, -4713.f, -1795.f };
+  PartOne& p = GetPartOne();
+  Enter(p);
+  p.worldState.GetFormAt<MpObjectReference>(kAmbushTrigger);
+  p.worldState.npcEnabled = true;
+  auto& draugr = p.worldState.GetFormAt<MpActor>(kDraugr);
+  REQUIRE(p.worldState.HostOf(draugr) ==
+          &p.worldState.GetFormAt<MpActor>(kHostActor));
+  Loaded(p, 1, kTemple);
+
+  // the guest's player across the temple: far, nothing relayed
+  Place(p, kGuestActor, kByThePortcullis);
+  p.Messages().clear();
+  {
+    LogCapture log;
+    REQUIRE_NOTHROW(Activation(p, 1, kAmbushTrigger, kDraugr));
+    REQUIRE(log.Count("[verb:traps] E_TRAP_FAR: ff000ff2 reports 38098 "
+                      "activating actor 380b3, its trigger in cell 371de, its "
+                      "nearest actor ") == 1);
+    REQUIRE(log.Count("relayed to it") == 0);
+  }
+  REQUIRE(RelayedTo(p, 0).empty());
+  REQUIRE(RelayedTo(p, 1).empty());
+
+  // by the trigger: its press is the presser's owner's, the waking goes to
+  // the draugr's simulator, the host, alone
+  Place(p, kGuestActor, kByTheAmbush);
+  p.Messages().clear();
+  {
+    LogCapture log;
+    REQUIRE_NOTHROW(Activation(p, 1, kAmbushTrigger, kDraugr));
+    REQUIRE(log.Count("[verb:traps] ff000ff2 reports 38098 activating actor "
+                      "380b3: its simulator ff000ff1 is another seat's, "
+                      "relayed to it") == 1);
+    REQUIRE(log.Count("E_TRAP_") == 0);
+  }
+  REQUIRE(RelayedTo(p, 0).size() == 1);
+  REQUIRE(RelayedTo(p, 0)[0].target == kDraugr);
+  REQUIRE(RelayedTo(p, 0)[0].caster == kAmbushTrigger);
+  REQUIRE(RelayedTo(p, 1).empty());
+
+  // the plate is no activation parent of the draugr: the XAPR check still
+  // refuses a loader's pair by the plate
+  Place(p, kGuestActor, kByThePlate);
+  p.Messages().clear();
+  {
+    LogCapture log;
+    REQUIRE_NOTHROW(Activation(p, 1, kPlate, kDraugr));
+    REQUIRE(log.Count("[verb:traps] E_TRAP_UNLINKED: ff000ff2 reports 567f2 "
+                      "activating actor 380b3, whose activation parents do "
+                      "not name it") == 1);
+  }
+  REQUIRE(RelayedTo(p, 0).empty());
+  Leave(p);
+}

@@ -4942,12 +4942,20 @@ bool ActionListener::IsScriptedWorldObject(const MpObjectReference& target)
 // (E_ENTRY_PRESSER); the reporter a loader of the trigger's cell
 // (E_ENTRY_NOT_LOADER) that does not host it (E_ENTRY_HOST: its own engine
 // ran the script); a host there (E_ENTRY_NO_HOST: nothing runs the script);
-// the presser within the trigger's activation reach (E_ENTRY_REACH). An
+// the presser within the trigger's activation reach (E_ENTRY_REACH). A leave
+// pairs with its enter (wire-rules trigger_entry::Entries, PartOne's; the
+// builder's call on the probe review of D-C2): one ending none is
+// E_ENTRY_UNPAIRED before any other check; one ending an accepted enter of
+// its presser's into its trigger is taken without the reach or the loader
+// (a guest leaving by a teleport or a door reports it after the move, far
+// off the trigger, its game perhaps with the cell unloaded), every other
+// check kept. An
 // accepted entry goes to the host's game alone as RelayedActivation {target:
 // the trigger, caster: the presser, entry}, whose engine sends that event to
 // the trigger's scripts with the presser as akActionRef; nothing is recorded
-// (R2: the presser's owner's engine saw the entry, rule 5). A refusal sends
-// nothing and is said by name, once a minute per reporter and code.
+// but the pairing (R2: the presser's owner's engine saw the entry; rule 5,
+// a leave validated by its pairing). A refusal sends nothing and is said by
+// name, once a minute per reporter and code.
 void ActionListener::OnTriggerEntry(MpActor& reporter,
                                     const ActivateMessage& msg)
 {
@@ -5038,6 +5046,18 @@ void ActionListener::OnTriggerEntry(MpActor& reporter,
                              reporter.GetFormId()) != loaders.end();
     const auto host = partOne.GetCellHost(*cell);
     facts.host = host.hosted ? host.player : 0;
+    // a host whose game is gone (its grace) runs no script: nobody, so the
+    // rule refuses the entry before the pairing keeps an enter it never
+    // relayed
+    if (facts.host != 0) {
+      const auto& hostForm = partOne.worldState.LookupFormById(facts.host);
+      MpActor* hostActor = hostForm ? hostForm->AsActor() : nullptr;
+      if (!hostActor ||
+          partOne.serverState.UserByActor(hostActor) ==
+            Networking::InvalidUserId) {
+        facts.host = 0;
+      }
+    }
   }
   // the presser's owner: a played actor is its own player's, any other
   // actor its simulator's (WorldState::HostOf, OnActivate's hosted caster
@@ -5061,9 +5081,12 @@ void ActionListener::OnTriggerEntry(MpActor& reporter,
     }
   }
   facts.trigger_size = triggerSize;
+  facts.trigger_id = triggerId;
+  facts.leave = entry == 2;
 
-  // relayed, the verdict names the one game to send it to, the host's
-  const auto verdict = skymp::rules::trigger_entry(facts);
+  // relayed, the verdict names the one game to send it to, the host's; a
+  // leave pairs with its presser's accepted enter
+  const auto verdict = partOne.GetTriggerEntries().judge(facts);
   if (verdict.code != skymp::rules::TriggerEntryCode::Relay) {
     return refuse(std::string(verdict.name), std::string(verdict.why));
   }

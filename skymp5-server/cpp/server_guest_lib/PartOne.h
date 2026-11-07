@@ -22,15 +22,16 @@
 #include <spdlog/logger.h>
 
 namespace skymp::rules {
-struct RestSettings; // wire-bridge's (thuum ADR-020), opaque here
-struct Fights;       // wire-bridge's (thuum ADR-023), opaque here
-struct BondBreak;    // wire-bridge's (thuum shadowbond.md), opaque here
-struct CellHost;     // wire-bridge's (thuum cell-host.md), opaque here
-struct HostDecision; // wire-bridge's (thuum cell-host.md), opaque here
-struct PlacementRow; // wire-bridge's (thuum spell-placed-object.md), opaque
-                     // here
-struct ScriptCalls;  // wire-bridge's (thuum ADR-068), opaque here
-struct ScriptStates; // wire-bridge's (thuum ADR-068 rung 3), opaque here
+struct RestSettings;   // wire-bridge's (thuum ADR-020), opaque here
+struct Fights;         // wire-bridge's (thuum ADR-023), opaque here
+struct BondBreak;      // wire-bridge's (thuum shadowbond.md), opaque here
+struct CellHost;       // wire-bridge's (thuum cell-host.md), opaque here
+struct HostDecision;   // wire-bridge's (thuum cell-host.md), opaque here
+struct PlacementRow;   // wire-bridge's (thuum spell-placed-object.md), opaque
+                       // here
+struct ScriptCalls;    // wire-bridge's (thuum ADR-068), opaque here
+struct ScriptStates;   // wire-bridge's (thuum ADR-068 rung 3), opaque here
+struct TriggerEntries; // wire-bridge's (thuum ADR-068 D-C2), opaque here
 }
 
 using ProfileId = int32_t;
@@ -643,6 +644,12 @@ public:
   // the release and the grant); ActionListener::OnScriptState asks it for
   // each reported record
   skymp::rules::ScriptStates& GetScriptStates();
+
+  // thuum ADR-068 D-C2 (the trigger entry channel): each presser's accepted
+  // enters it has not left, by trigger (wire-rules trigger_entry::Entries;
+  // the disconnect forgets a player's); ActionListener::OnTriggerEntry asks
+  // it for each reported entry, so a leave pairs with its enter
+  skymp::rules::TriggerEntries& GetTriggerEntries();
 
   // thuum docs/verbs/cell-host.md (ADR-035): the cell host table (wire-rules
   // cells, through the bridge). The facts: a game's CellLoaded report

@@ -403,6 +403,11 @@ struct PartOne::Impl
   // script_state): runtime only, no release open at a start
   rust::Box<skymp::rules::ScriptStates> scriptStates =
     skymp::rules::new_script_states();
+  // each presser's accepted trigger enters it has not left (thuum ADR-068
+  // D-C2, wire-rules trigger_entry::Entries): runtime only, none open at a
+  // start
+  rust::Box<skymp::rules::TriggerEntries> triggerEntries =
+    skymp::rules::new_trigger_entries();
   std::chrono::steady_clock::time_point lastCellsTick;
   using Square = std::tuple<uint32_t, int32_t, int32_t>;
   // one serial per login across the process: a dead-sample stamp's witness
@@ -944,6 +949,10 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           // and a teleport's look waiting for its landing
           // (docs/verbs/cast-teleport.md)
           this_->pImpl->teleportLooks.erase(actor->GetFormId());
+          // and the trigger enters it has not left (thuum ADR-068 D-C2: a
+          // leave pairs with its enter; its presence on the host's copy
+          // goes with the figure)
+          this_->pImpl->triggerEntries->forget(actor->GetFormId());
           // TGM and TIM are the session's (thuum docs/verbs/god-mode.md)
           actor->SetGodMode(false);
           actor->SetImmortal(false);
@@ -1887,6 +1896,11 @@ skymp::rules::ScriptCalls& PartOne::GetScriptCalls()
 skymp::rules::ScriptStates& PartOne::GetScriptStates()
 {
   return *pImpl->scriptStates;
+}
+
+skymp::rules::TriggerEntries& PartOne::GetTriggerEntries()
+{
+  return *pImpl->triggerEntries;
 }
 
 void PartOne::TickFightsEverySecond()

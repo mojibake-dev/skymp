@@ -1732,6 +1732,10 @@ mod ffi {
         /// The trigger's size: the farthest point of its bounds, times its
         /// scale.
         trigger_size: f32,
+        /// The trigger's form id, the pairing's key beside the presser's.
+        trigger_id: u32,
+        /// The report is a leave (the wire's entry 2), an enter otherwise.
+        leave: bool,
     }
 
     /// The rule's word on a reported entry.
@@ -1757,6 +1761,9 @@ mod ffi {
         /// E_ENTRY_REACH: the presser stands outside the trigger's
         /// activation reach.
         Reach,
+        /// E_ENTRY_UNPAIRED: a leave with no accepted enter of the same
+        /// presser into the same trigger to end.
+        Unpaired,
     }
 
     /// The verdict on one reported entry.
@@ -2776,12 +2783,22 @@ mod ffi {
         /// (wire-rules trigger_entry::firing_source); the link and the budget
         /// stay the core's.
         fn trigger_firing_source(facts: &TriggerFiringFacts) -> TriggerFiringVerdict;
-        /// thuum ADR-068 D-C2: a presser's owner's report of an entry into a
-        /// world trigger whose script runs on the cell's host: the trigger,
-        /// the presser, the loader, the host and the reach, in that order
-        /// (wire-rules trigger_entry::entry); relayed, `host` names the one
-        /// game to send it to.
-        fn trigger_entry(facts: &TriggerEntryFacts) -> TriggerEntryVerdict;
+        /// thuum ADR-068 D-C2: each presser's accepted enters it has not
+        /// left, by trigger (wire-rules trigger_entry::Entries).
+        type TriggerEntries;
+        /// No enter open.
+        fn new_trigger_entries() -> Box<TriggerEntries>;
+        /// A presser's owner's report of an entry into a world trigger whose
+        /// script runs on the cell's host: an enter judged by the trigger,
+        /// the presser, the loader, the host and the reach, in that order,
+        /// and kept open when relayed; a leave first by its pairing
+        /// (E_ENTRY_UNPAIRED when it ends no open enter of its presser's
+        /// into its trigger), then by the same checks but the loader and the
+        /// reach (wire-rules trigger_entry::Entries::judge); relayed, `host`
+        /// names the one game to send it to.
+        fn judge(self: &mut TriggerEntries, facts: &TriggerEntryFacts) -> TriggerEntryVerdict;
+        /// The presser's game left: its open enters go.
+        fn forget(self: &mut TriggerEntries, presser: u32);
         /// The fifty fixes' furniture rule: who owns a world object's
         /// reported graph event, a furniture's recorded occupant's owner for
         /// a furniture in use, else the cell's host, and whether it is kept
@@ -4881,24 +4898,46 @@ fn trigger_firing_source(f: &TriggerFiringFacts) -> TriggerFiringVerdict {
     }
 }
 
-fn trigger_entry(f: &TriggerEntryFacts) -> TriggerEntryVerdict {
-    let trigger = match f.trigger_kind {
-        1 => script_state::RefKind::WorldObject,
-        2 => script_state::RefKind::Actor,
-        _ => script_state::RefKind::Unknown,
-    };
-    let facts = trigger_entry::EntryFacts {
-        reporter: f.reporter,
-        trigger,
-        presser: f.presser,
-        presser_owner: f.presser_owner,
-        cell: f.cell,
-        host: f.host,
-        loader: f.loader,
-        distance: distance_of(f.distance),
-        trigger_size: f.trigger_size,
-    };
-    match trigger_entry::entry(&facts) {
+/// thuum ADR-068 D-C2: each presser's accepted enters it has not left
+/// (wire-rules trigger_entry::Entries), for the core's judgment of each
+/// reported entry.
+#[derive(Debug, Default)]
+pub struct TriggerEntries(trigger_entry::Entries);
+
+fn new_trigger_entries() -> Box<TriggerEntries> {
+    Box::default()
+}
+
+impl TriggerEntries {
+    fn judge(&mut self, f: &TriggerEntryFacts) -> TriggerEntryVerdict {
+        let trigger = match f.trigger_kind {
+            1 => script_state::RefKind::WorldObject,
+            2 => script_state::RefKind::Actor,
+            _ => script_state::RefKind::Unknown,
+        };
+        let facts = trigger_entry::EntryFacts {
+            reporter: f.reporter,
+            trigger,
+            presser: f.presser,
+            presser_owner: f.presser_owner,
+            cell: f.cell,
+            host: f.host,
+            loader: f.loader,
+            distance: distance_of(f.distance),
+            trigger_size: f.trigger_size,
+            trigger_id: f.trigger_id,
+            leave: f.leave,
+        };
+        entry_verdict(self.0.judge(&facts))
+    }
+
+    fn forget(&mut self, presser: u32) {
+        self.0.forget(presser);
+    }
+}
+
+fn entry_verdict(verdict: trigger_entry::EntryVerdict) -> TriggerEntryVerdict {
+    match verdict {
         trigger_entry::EntryVerdict::Relay { host } => TriggerEntryVerdict { code: TriggerEntryCode::Relay, name: String::new(), why: String::new(), host },
         trigger_entry::EntryVerdict::Refuse(r) => TriggerEntryVerdict {
             code: match r.code {
@@ -4909,6 +4948,7 @@ fn trigger_entry(f: &TriggerEntryFacts) -> TriggerEntryVerdict {
                 trigger_entry::EntryCode::Host => TriggerEntryCode::Host,
                 trigger_entry::EntryCode::NoHost => TriggerEntryCode::NoHost,
                 trigger_entry::EntryCode::Reach => TriggerEntryCode::Reach,
+                trigger_entry::EntryCode::Unpaired => TriggerEntryCode::Unpaired,
             },
             name: r.code.name().to_owned(),
             why: r.why,
@@ -6102,11 +6142,26 @@ mod tests {
         }
         // D-C2: the guest's own player walks into the web 0x3758c (a
         // stand-in size of 100), relayed to the host alone
-        let entry = TriggerEntryFacts { reporter: 0xff00_0001, trigger_kind: 1, presser: 0xff00_0001, presser_owner: 0xff00_0001, cell: 0x371de, host: 0xff00_0000, loader: true, distance: 30.0, trigger_size: 100.0 };
-        let relayed = trigger_entry(&entry);
+        let entry = TriggerEntryFacts { reporter: 0xff00_0001, trigger_kind: 1, presser: 0xff00_0001, presser_owner: 0xff00_0001, cell: 0x371de, host: 0xff00_0000, loader: true, distance: 30.0, trigger_size: 100.0, trigger_id: 0x3758c, leave: false };
+        let mut entries = new_trigger_entries();
+        let relayed = entries.judge(&entry);
         assert_eq!((relayed.code, relayed.name.as_str(), relayed.why.as_str(), relayed.host), (TriggerEntryCode::Relay, "", "", 0xff00_0000));
+        // its leave from 1,800 units off, after a door: paired, relayed; a
+        // second leave ends nothing
+        let leave = TriggerEntryFacts { leave: true, distance: 1800.0, ..entry };
+        assert_eq!(entries.judge(&leave).code, TriggerEntryCode::Relay);
+        let unpaired = entries.judge(&leave);
+        assert_eq!((unpaired.code, unpaired.name.as_str(), unpaired.host), (TriggerEntryCode::Unpaired, "E_ENTRY_UNPAIRED", 0));
+        // through a door into another cell, its game with the cell
+        // unloaded: still paired, relayed
+        assert_eq!(entries.judge(&entry).code, TriggerEntryCode::Relay);
+        assert_eq!(entries.judge(&TriggerEntryFacts { loader: false, distance: -1.0, ..leave }).code, TriggerEntryCode::Relay);
+        // the presser's disconnect drops its open enters
+        assert_eq!(entries.judge(&entry).code, TriggerEntryCode::Relay);
+        entries.forget(0xff00_0001);
+        assert_eq!(entries.judge(&leave).code, TriggerEntryCode::Unpaired);
         let refused = |f: TriggerEntryFacts| {
-            let v = trigger_entry(&f);
+            let v = new_trigger_entries().judge(&f);
             (v.code, v.name, v.host)
         };
         assert_eq!(refused(TriggerEntryFacts { trigger_kind: 0, ..entry }), (TriggerEntryCode::NoRef, "E_ENTRY_NO_REF".to_owned(), 0));

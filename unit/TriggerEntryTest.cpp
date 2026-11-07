@@ -4,6 +4,7 @@
 #include "libespm/ObjectBounds.h"
 #include "libespm/REFR.h"
 #include "wire_bridge_cxx/rules.h"
+#include <algorithm>
 #include <catch2/catch_all.hpp>
 #include <chrono>
 #include <spdlog/sinks/ostream_sink.h>
@@ -249,10 +250,17 @@ TEST_CASE("A trigger entry from the host, for another's presser, from a "
 // the train's review, note 2: an entry counts where the engine counts it,
 // anywhere inside the trigger's primitive. Bleak Falls Sanctum 0x371dd's
 // word wall trigger 0x709d2 (ACTI 0x5095e WordWallTrigger at (-7601, -154,
-// 674)), whose primitive is a sphere of radius 2,065 around it (XPRM type 2,
-// WordWallTest's): 1,500 units south of it a presser stands inside the
-// sphere and far past the activation reach of its origin; 2,400 units north
-// it stands outside the sphere and as far past the reach
+// 674)) keeps its sphere of radius 2,065 (XPRM type 2, WordWallTest's), but
+// its own reach is past it: WordWallTrigger's bounds are the chamber, a box
+// of about 4,000 units a side (docs/LOG.md, 2026-11-01's word wall read), so
+// the reach (452 plus the bounds' farthest corner times the scale, wire-rules
+// activation) holds 1,500 units off (pipeline 5622's red) and the whole
+// sphere, and no recorded primitive of the unit world reaches past its own
+// reach. So the case gives the held trigger a sphere the engine's own kind
+// (type 2) a thousand units past its reach, read from its own bounds: 500
+// units past the reach to the south a presser stands inside it, so the
+// relay comes from the primitive alone; 500 past the sphere to the north it
+// stands outside both, and the origin's reach refuses it
 TEST_CASE("A presser inside a trigger's primitive, far from its origin, is "
           "within its reach, and one outside it is not (D-C2)",
           "[TriggerEntry][espm]")
@@ -260,33 +268,42 @@ TEST_CASE("A presser inside a trigger's primitive, far from its origin, is "
   constexpr uint32_t kSanctum = 0x371dd;
   constexpr uint32_t kWallTrigger = 0x709d2;
   const NiPoint3 kAtTheTrigger{ -7601.f, -154.f, 674.f };
-  const NiPoint3 kInsideTheSphere{ -7601.f, -154.f - 1500.f, 674.f };
-  const NiPoint3 kOutsideTheSphere{ -7601.f, -154.f + 2400.f, 674.f };
   PartOne& p = GetPartOne();
   DoConnect(p, 0);
   p.CreateActor(kHostActor, kAtTheTrigger, 0, kSanctum);
   p.SetUserActor(0, kHostActor);
   DoConnect(p, 1);
-  p.CreateActor(kGuestActor, kInsideTheSphere, 0, kSanctum);
+  p.CreateActor(kGuestActor, kAtTheTrigger, 0, kSanctum);
   p.SetUserActor(1, kGuestActor);
   auto& trigger = p.worldState.GetFormAt<MpObjectReference>(kWallTrigger);
   REQUIRE(trigger.HasPrimitive());
-  REQUIRE(trigger.IsPointInsidePrimitive(kInsideTheSphere));
-  REQUIRE_FALSE(trigger.IsPointInsidePrimitive(kOutsideTheSphere));
-  // a sphere is radial, so the case proves the rule only if 1,500 units is
-  // past the origin's reach by the trigger's own bounds (the handler's
+  // the trigger's own reach by its bounds (the handler's
   // ActivationTargetSize: its base's bounds radius times its scale)
+  float size = 0.f;
   {
     auto& browser = p.worldState.GetEspm().GetBrowser();
     const auto* base = browser.LookupById(trigger.GetBaseId()).rec;
     const auto bounds = base
       ? espm::GetObjectBounds(base, p.worldState.GetEspmCache())
       : std::nullopt;
-    const float size = bounds ? espm::BoundsRadius(*bounds) *
+    size = bounds ? espm::BoundsRadius(*bounds) *
         espm::GetData<espm::REFR>(kWallTrigger, &p.worldState).scale
-                              : 0.f;
-    REQUIRE_FALSE(skymp::rules::activation_within_reach(1500.f, size).allowed);
+                  : 0.f;
   }
+  const float reach = skymp::rules::activation_within_reach(0.f, size).bound;
+  const float radius = reach + 1000.f;
+  trigger.SetPrimitive({ radius, radius, radius }, 2);
+  const float inside = reach + 500.f;
+  const float outside = radius + 500.f;
+  const NiPoint3 kInsideTheSphere{ -7601.f, -154.f - inside, 674.f };
+  const NiPoint3 kOutsideTheSphere{ -7601.f, -154.f + outside, 674.f };
+  REQUIRE(trigger.HasPrimitive());
+  REQUIRE(trigger.IsPointInsidePrimitive(kInsideTheSphere));
+  REQUIRE_FALSE(trigger.IsPointInsidePrimitive(kOutsideTheSphere));
+  // a sphere is radial, so the case proves the rule only if the presser
+  // inside it is past the origin's reach by the trigger's own bounds
+  REQUIRE_FALSE(skymp::rules::activation_within_reach(inside, size).allowed);
+  REQUIRE_FALSE(skymp::rules::activation_within_reach(outside, size).allowed);
   Stand(p, kHostActor, kAtTheTrigger);
   Stand(p, kGuestActor, kInsideTheSphere);
   Host(p, 0, kSanctum);
@@ -312,6 +329,137 @@ TEST_CASE("A presser inside a trigger's primitive, far from its origin, is "
     REQUIRE(log.Count("[verb:traps] E_ENTRY_REACH: ff000fe2 reports "
                       "ff000fe2 entering 709d2") == 1);
     REQUIRE(log.Count("relayed to the host") == 0);
+  }
+  REQUIRE(RelayedTo(p, 0).empty());
+  Leave(p);
+}
+
+// the builder's call on the probe review of D-C2: a guest who leaves a world
+// trigger by a teleport or a door reports its OnTriggerLeave after the move,
+// far off the trigger. A leave pairs with its presser's accepted enter
+// (wire-rules trigger_entry::Entries) and is taken without the reach; a
+// leave with none to end, a second one among them, is E_ENTRY_UNPAIRED
+TEST_CASE("A guest's leave after its accepted enter is relayed from far off "
+          "the trigger, and a leave with no enter to end is refused "
+          "E_ENTRY_UNPAIRED (D-C2)",
+          "[TriggerEntry][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  Loaded(p, 1, kTemple);
+  p.Messages().clear();
+  // a leave in the web with no enter before it: refused, nothing sent
+  {
+    LogCapture log;
+    REQUIRE_NOTHROW(Entry(p, 1, 0x14, kWeb, 2));
+    REQUIRE(log.Count("[verb:traps] E_ENTRY_UNPAIRED: ff000fe2 reports "
+                      "ff000fe2 leaving 37281: no accepted entry of ff000fe2 "
+                      "into 37281 to end; refused, 1 since the last line") ==
+            1);
+    REQUIRE(log.Count("relayed to the host") == 0);
+  }
+  REQUIRE(RelayedTo(p, 0).empty());
+  // the enter in the web, relayed
+  Entry(p, 1, 0x14, kWeb, 1);
+  REQUIRE(RelayedTo(p, 0).size() == 1);
+  REQUIRE(RelayedTo(p, 0)[0].entry == std::optional<uint32_t>(1));
+  // the guest is moved 2000 units off (a teleport, a door) and reports its
+  // leave there: beyond the enter's reach, paired, relayed to the host
+  Stand(p, kGuestActor, kFarFromTheWeb);
+  p.Messages().clear();
+  {
+    LogCapture log;
+    Entry(p, 1, 0x14, kWeb, 2);
+    REQUIRE(log.Count("[verb:traps] ff000fe2 reports ff000fe2 leaving 37281 "
+                      "in cell 371de (its host ff000fe1): relayed to the "
+                      "host") == 1);
+    REQUIRE(log.Count("E_ENTRY_") == 0);
+  }
+  REQUIRE(RelayedTo(p, 0).size() == 1);
+  REQUIRE(RelayedTo(p, 0)[0].target == kWeb);
+  REQUIRE(RelayedTo(p, 0)[0].caster == kGuestActor);
+  REQUIRE(RelayedTo(p, 0)[0].entry == std::optional<uint32_t>(2));
+  REQUIRE(RelayedTo(p, 1).empty());
+  // a second leave ends nothing: refused (its line counted, the first said
+  // within the minute), nothing sent
+  p.Messages().clear();
+  {
+    LogCapture log;
+    REQUIRE_NOTHROW(Entry(p, 1, 0x14, kWeb, 2));
+    REQUIRE(log.Count("relayed to the host") == 0);
+  }
+  REQUIRE(RelayedTo(p, 0).empty());
+  // an enter from far off is still the reach's refusal, and opens nothing
+  p.Messages().clear();
+  {
+    LogCapture log;
+    REQUIRE_NOTHROW(Entry(p, 1, 0x14, kWeb, 1));
+    REQUIRE(log.Count("[verb:traps] E_ENTRY_REACH: ff000fe2 reports "
+                      "ff000fe2 entering 37281") == 1);
+  }
+  REQUIRE(RelayedTo(p, 0).empty());
+  // so its leave has nothing to end either
+  p.Messages().clear();
+  REQUIRE_NOTHROW(Entry(p, 1, 0x14, kWeb, 2));
+  REQUIRE(RelayedTo(p, 0).empty());
+  Leave(p);
+}
+
+// the builder's call, the gap closed: a guest who leaves by a door into
+// another cell has its game report the trigger's cell unloaded, its actor
+// in another world, before the leave arrives. The pairing proves the
+// presser was inside (its accepted enter passed the loader and the reach),
+// so the leave skips both and still ends the presence on the host
+TEST_CASE("A guest's leave after its accepted enter is relayed to the host "
+          "after its game unloaded the trigger's cell and its actor left "
+          "it (D-C2)",
+          "[TriggerEntry][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  Loaded(p, 1, kTemple);
+  Entry(p, 1, 0x14, kWeb, 1);
+  REQUIRE(RelayedTo(p, 0).size() == 1);
+  // the door: the guest's game unloads the Temple, its actor out in Tamriel
+  {
+    RawMessageData raw;
+    raw.userId = 1;
+    CellLoadedMessage unloaded;
+    unloaded.cell = kTemple;
+    unloaded.loaded = false;
+    p.GetActionListener().OnCellLoaded(raw, unloaded);
+  }
+  auto& guest = p.worldState.GetFormAt<MpActor>(kGuestActor);
+  guest.SetCellOrWorld(FormDesc::Tamriel());
+  guest.SetPos({ 4096.f, -4096.f, 0.f });
+  // its game is no loader of the Temple any more
+  const auto loaders = p.GetCellLoaders(kTemple);
+  REQUIRE(std::find(loaders.begin(), loaders.end(), kGuestActor) ==
+          loaders.end());
+  p.Messages().clear();
+  {
+    LogCapture log;
+    Entry(p, 1, 0x14, kWeb, 2);
+    REQUIRE(log.Count("[verb:traps] ff000fe2 reports ff000fe2 leaving 37281 "
+                      "in cell 371de (its host ff000fe1): relayed to the "
+                      "host") == 1);
+    REQUIRE(log.Count("E_ENTRY_") == 0);
+  }
+  REQUIRE(RelayedTo(p, 0).size() == 1);
+  REQUIRE(RelayedTo(p, 0)[0].target == kWeb);
+  REQUIRE(RelayedTo(p, 0)[0].caster == kGuestActor);
+  REQUIRE(RelayedTo(p, 0)[0].entry == std::optional<uint32_t>(2));
+  // an enter keeps the loader: from out here, refused, and its leave has
+  // nothing to end
+  p.Messages().clear();
+  {
+    LogCapture log;
+    REQUIRE_NOTHROW(Entry(p, 1, 0x14, kWeb, 1));
+    REQUIRE(log.Count("[verb:traps] E_ENTRY_NOT_LOADER: ff000fe2 reports "
+                      "ff000fe2 entering 37281") == 1);
+    REQUIRE_NOTHROW(Entry(p, 1, 0x14, kWeb, 2));
+    REQUIRE(log.Count("[verb:traps] E_ENTRY_UNPAIRED: ff000fe2 reports "
+                      "ff000fe2 leaving 37281") == 1);
   }
   REQUIRE(RelayedTo(p, 0).empty());
   Leave(p);

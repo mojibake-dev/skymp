@@ -11,6 +11,7 @@ import { Movement } from "../../sync/movement";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { localIdToRemoteId, remoteIdToLocalId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
+import { LoginCellService } from "./loginCellService";
 import { RefStateService } from "./refStateService";
 import { RemoteServer } from "./remoteServer";
 import { ScriptStateService } from "./scriptStateService";
@@ -612,6 +613,10 @@ export class HostService extends ClientListener {
             this.loaded.add(id);
             this.report(id, true);
             logTrace(this, `own cell ${id.toString(16)} reported without its load event`);
+            // thuum docs/DECISIONS.md D-L1 B: a login inside a cell (a save
+            // load) gets no load event for it, so its entry events are sent
+            // once after the grant and the records' apply (LoginCellService)
+            this.controller.lookupListener(LoginCellService).noteWithoutLoadEvent(id);
         }
         // a cell the engine re-attaches from its buffer fires no cellFullyLoaded
         // either (thuum b-npc-handoff-door-hosts 20261103-134832: c1's warm exit

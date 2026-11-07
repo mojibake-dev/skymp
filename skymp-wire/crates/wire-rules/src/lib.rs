@@ -30,6 +30,7 @@ pub mod markers;
 pub mod melee;
 pub mod movement;
 pub mod natives;
+pub mod object_animation;
 pub mod perks;
 pub mod placements;
 pub mod player_globals;

@@ -218,6 +218,11 @@ public:
   // (PartOne; docs/verbs/containers.md)
   bool IsContainerOccupant(const MpActor* actor) const;
   void RemoveContainerOccupant(MpActor& actor);
+  // a furniture's recorded user, or nullptr: set at a use's activation
+  // (ProcessActivateNormal's FURN branch), cleared by its closing
+  // activation and by the occupant's destroy or disable; read by the owner
+  // of the furniture's graph events (wire-rules object_animation)
+  MpActor* GetOccupant() const noexcept { return occupant; }
   void SetRelootTime(std::chrono::system_clock::duration newRelootTime);
   void SetChanceNoneOverride(uint8_t chanceNone);
   void SetCellOrWorld(const FormDesc& worldOrCell);

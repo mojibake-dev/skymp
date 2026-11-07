@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, alias_fills, appearance, attributes, block, bonds, casts, cells, clock, console, damage, destruction, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, placements, player_globals, props, quest_stages, racemenu, ranged, rest, perks, ref_state, script_state, scripted_effects, shouts, stagger, standing, teleports, trigger_entry, weather, world_globals, world_streamer};
+use wire_rules::{activation, actor_values, alias_fills, appearance, attributes, block, bonds, casts, cells, clock, console, damage, destruction, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, object_animation, placements, player_globals, props, quest_stages, racemenu, ranged, rest, perks, ref_state, script_state, scripted_effects, shouts, stagger, standing, teleports, trigger_entry, weather, world_globals, world_streamer};
 
 // the perk table's effect calls carry a CTDA's five parts flat, as add_condition does
 #[allow(clippy::too_many_arguments)]
@@ -1714,6 +1714,55 @@ mod ffi {
         host: u32,
     }
 
+    /// What the core knows of a reported world object's graph event's
+    /// reference (ObjectAnimation 71; the fifty fixes' furniture rule,
+    /// wire-rules object_animation::Facts).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct ObjectAnimationFacts {
+        /// The reporter's actor.
+        reporter: u32,
+        /// The reference's base is a furniture (FURN).
+        furniture: bool,
+        /// The furniture's recorded occupant, 0 for none.
+        occupant: u32,
+        /// The occupant's owner: the occupant itself for a player's actor,
+        /// an NPC's simulator, 0 for nobody.
+        occupant_owner: u32,
+        /// The reference's cell.
+        cell: u32,
+        /// That cell's host, 0 while nobody hosts it.
+        host: u32,
+    }
+
+    /// The rule's word on a reported graph event.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ObjectAnimationCode {
+        /// Relayed: the cell's host's.
+        Host,
+        /// Relayed: a furniture's user's (its occupant's seat or simulator).
+        User,
+        /// E_OBJANIM_NOT_HOST: a reference nobody uses, and the reporter does
+        /// not host its cell.
+        NotHost,
+        /// E_OBJANIM_NOT_USER: a furniture in use, and the reporter is not
+        /// its user's owner.
+        NotUser,
+    }
+
+    /// The verdict on one reported graph event.
+    #[derive(Debug)]
+    struct ObjectAnimationVerdict {
+        /// Which word.
+        code: ObjectAnimationCode,
+        /// The refusal's stable name for the log, empty when relayed.
+        name: String,
+        /// Why, for the log; empty when relayed.
+        why: String,
+        /// Relayed and kept as the reference's lastAnimation: false for a
+        /// furniture and for a refusal.
+        keep: bool,
+    }
+
     /// One reference alias of a quest as the game files hold it (thuum
     /// ADR-068 rung 4, amendment B read 8; wire-rules alias_fills::Alias),
     /// the form ids in the load order.
@@ -2675,6 +2724,12 @@ mod ffi {
         /// (wire-rules trigger_entry::entry); relayed, `host` names the one
         /// game to send it to.
         fn trigger_entry(facts: &TriggerEntryFacts) -> TriggerEntryVerdict;
+        /// The fifty fixes' furniture rule: who owns a world object's
+        /// reported graph event, a furniture's recorded occupant's owner for
+        /// a furniture in use, else the cell's host, and whether it is kept
+        /// as the reference's lastAnimation (never for a furniture)
+        /// (wire-rules object_animation::judge).
+        fn object_animation_owner(facts: &ObjectAnimationFacts) -> ObjectAnimationVerdict;
 
         /// thuum ADR-068 rung 4 (amendment B, read 8): every created alias
         /// of one quest's reference aliases and where its item goes
@@ -2749,7 +2804,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
+pub use ffi::{RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -4781,6 +4836,30 @@ fn trigger_entry(f: &TriggerEntryFacts) -> TriggerEntryVerdict {
     }
 }
 
+fn object_animation_owner(f: &ObjectAnimationFacts) -> ObjectAnimationVerdict {
+    let facts = object_animation::Facts { reporter: f.reporter, furniture: f.furniture, occupant: f.occupant, occupant_owner: f.occupant_owner, cell: f.cell, host: f.host };
+    match object_animation::judge(&facts) {
+        object_animation::Verdict::Relay { owner, keep } => ObjectAnimationVerdict {
+            code: match owner {
+                object_animation::Owner::Host => ObjectAnimationCode::Host,
+                object_animation::Owner::User => ObjectAnimationCode::User,
+            },
+            name: String::new(),
+            why: String::new(),
+            keep,
+        },
+        object_animation::Verdict::Refuse(r) => ObjectAnimationVerdict {
+            code: match r.code {
+                object_animation::Code::NotHost => ObjectAnimationCode::NotHost,
+                object_animation::Code::NotUser => ObjectAnimationCode::NotUser,
+            },
+            name: r.code.name().to_owned(),
+            why: r.why,
+            keep: false,
+        },
+    }
+}
+
 fn alias_creations(aliases: &[QuestAliasRow]) -> Vec<AliasCreationRow> {
     let parsed: Vec<alias_fills::Alias> =
         aliases.iter().map(|a| alias_fills::Alias { id: a.id, created: a.created, create_at: a.create_at, forced: a.forced, unique_actor: a.unique_actor }).collect();
@@ -5946,5 +6025,25 @@ mod tests {
         assert_eq!(refused(TriggerEntryFacts { host: 0, ..entry }), (TriggerEntryCode::NoHost, "E_ENTRY_NO_HOST".to_owned(), 0));
         assert_eq!(refused(TriggerEntryFacts { distance: 553.0, ..entry }), (TriggerEntryCode::Reach, "E_ENTRY_REACH".to_owned(), 0));
         assert_eq!(refused(TriggerEntryFacts { distance: -1.0, ..entry }), (TriggerEntryCode::Reach, "E_ENTRY_REACH".to_owned(), 0));
+    }
+
+    #[test]
+    fn the_bridge_judges_a_world_objects_graph_event_by_its_owner() {
+        // the fifty fixes' furniture rule: Bleak Falls Temple 0x371de hosted
+        // by 0xff000000; the guest 0xff000001 pulls the puzzle lever 0xaa8c3
+        let pull = ObjectAnimationFacts { reporter: 0xff00_0001, furniture: true, occupant: 0xff00_0001, occupant_owner: 0xff00_0001, cell: 0x371de, host: 0xff00_0000 };
+        let v = object_animation_owner(&pull);
+        assert_eq!((v.code, v.name.as_str(), v.why.as_str(), v.keep), (ObjectAnimationCode::User, "", "", false));
+        let echo = object_animation_owner(&ObjectAnimationFacts { reporter: 0xff00_0000, ..pull });
+        assert_eq!((echo.code, echo.name.as_str(), echo.why.as_str(), echo.keep), (ObjectAnimationCode::NotUser, "E_OBJANIM_NOT_USER", "used by ff000001, whose owner is ff000001", false));
+        // the portcullis 0x3b9f1: the host's, kept; a guest's, refused
+        let portcullis = ObjectAnimationFacts { reporter: 0xff00_0000, furniture: false, occupant: 0, occupant_owner: 0, cell: 0x371de, host: 0xff00_0000 };
+        let kept = object_animation_owner(&portcullis);
+        assert_eq!((kept.code, kept.keep), (ObjectAnimationCode::Host, true));
+        let guest = object_animation_owner(&ObjectAnimationFacts { reporter: 0xff00_0001, ..portcullis });
+        assert_eq!((guest.code, guest.name.as_str(), guest.why.as_str(), guest.keep), (ObjectAnimationCode::NotHost, "E_OBJANIM_NOT_HOST", "which it does not host", false));
+        // the lever nobody uses: the host's, kept nowhere
+        let unused = object_animation_owner(&ObjectAnimationFacts { reporter: 0xff00_0000, occupant: 0, occupant_owner: 0, ..pull });
+        assert_eq!((unused.code, unused.keep), (ObjectAnimationCode::Host, false));
     }
 }

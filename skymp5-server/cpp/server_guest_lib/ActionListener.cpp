@@ -3875,11 +3875,35 @@ void ActionListener::OnObjectAnimation(const RawMessageData& rawMsgData,
                  reporter->GetFormId(), msg.event, msg.refr);
     return;
   }
+  // the fifty fixes' furniture rule (wire-rules object_animation; thuum
+  // docs/research/fifty-fixes-2026-11-07.md section 1(c)): the owner of a
+  // world object's graph event is the engine that drives its graph, a
+  // furniture's recorded occupant's owner while it is used (a player's own
+  // seat, an NPC's simulator), else the cell's host as before; a
+  // furniture's event is relayed and kept nowhere, every other kept as the
+  // reference's lastAnimation (R2: the owner's engine computed it)
+  skymp::rules::ObjectAnimationFacts facts{};
+  facts.reporter = reporter->GetFormId();
+  facts.furniture = refrPtr->GetBaseType() == "FURN";
+  MpActor* occupant = facts.furniture ? refrPtr->GetOccupant() : nullptr;
+  if (occupant) {
+    facts.occupant = occupant->GetFormId();
+    if (partOne.serverState.UserByActor(occupant) !=
+        Networking::InvalidUserId) {
+      facts.occupant_owner = occupant->GetFormId();
+    } else if (MpActor* simulator = partOne.worldState.HostOf(*occupant)) {
+      facts.occupant_owner = simulator->GetFormId();
+    }
+  }
+  facts.cell = *cell;
   const auto host = partOne.GetCellHost(*cell);
-  if (!host.hosted || host.player != reporter->GetFormId()) {
-    spdlog::info("[verb:traps] E_OBJANIM_NOT_HOST: {:x} reports '{}' on {:x} "
-                 "in cell {:x}, which it does not host",
-                 reporter->GetFormId(), msg.event, msg.refr, *cell);
+  facts.host = host.hosted ? host.player : 0;
+  const auto verdict = skymp::rules::object_animation_owner(facts);
+  const bool byUser = verdict.code == skymp::rules::ObjectAnimationCode::User;
+  if (!byUser && verdict.code != skymp::rules::ObjectAnimationCode::Host) {
+    spdlog::info("[verb:traps] {}: {:x} reports '{}' on {:x} in cell {:x}, {}",
+                 std::string(verdict.name), reporter->GetFormId(), msg.event,
+                 msg.refr, *cell, std::string(verdict.why));
     return;
   }
   const uint64_t nowMs = MonotonicMs();
@@ -3895,7 +3919,9 @@ void ActionListener::OnObjectAnimation(const RawMessageData& rawMsgData,
     return;
   }
   ++window.count;
-  refrPtr->SetLastAnimation(msg.event);
+  if (verdict.keep) {
+    refrPtr->SetLastAnimation(msg.event);
+  }
   ObjectAnimationMessage relay;
   relay.refr = msg.refr;
   relay.event = msg.event;
@@ -3908,6 +3934,30 @@ void ActionListener::OnObjectAnimation(const RawMessageData& rawMsgData,
     }
     listener->SendToUser(relay, true);
     ++relayed;
+  }
+  // every line keeps today's "<refr> animates <refr>" head, which
+  // x-lever-furn's claim 5 counts
+  if (byUser && occupant && occupant != reporter) {
+    spdlog::info("[verb:traps] {:x} animates {:x} '{}' in cell {:x} (its user "
+                 "{:x}'s simulator {:x} reports): relayed to {} game(s), not "
+                 "kept",
+                 msg.refr, msg.refr, msg.event, *cell, occupant->GetFormId(),
+                 reporter->GetFormId(), relayed);
+    return;
+  }
+  if (byUser) {
+    spdlog::info("[verb:traps] {:x} animates {:x} '{}' in cell {:x} (its user "
+                 "{:x} reports): relayed to {} game(s), not kept",
+                 msg.refr, msg.refr, msg.event, *cell, reporter->GetFormId(),
+                 relayed);
+    return;
+  }
+  if (!verdict.keep) {
+    spdlog::info("[verb:traps] {:x} animates {:x} '{}' in cell {:x} (its host "
+                 "{:x} reports): relayed to {} game(s), not kept",
+                 msg.refr, msg.refr, msg.event, *cell, reporter->GetFormId(),
+                 relayed);
+    return;
   }
   spdlog::info("[verb:traps] {:x} animates {:x} '{}' in cell {:x} (its host "
                "{:x} reports): recorded, relayed to {} game(s)",

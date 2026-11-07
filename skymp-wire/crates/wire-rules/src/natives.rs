@@ -894,10 +894,12 @@ pub const BURST_RECORD: u32 = 128;
 pub const PER_SECOND_RECORD: u32 = 32;
 
 /// How many looks one subject may take at once (thuum ADR-068 D-W2 A),
-/// beside the reporter's action budget. UNMEASURED: a firing read makes
-/// three or four (a Tripwire's motion, sound and animation; a bone alarm's
-/// motion, impulse, sound and animation; a plate's sound, 'Down' and 'Up').
-pub const LOOK_BURST: u32 = 8;
+/// beside the reporter's action budget. UNMEASURED: the most a firing makes
+/// is SoundTrap's, ten a pass, since it fires on the enter and again on the
+/// leave, five looks each (its motion, sound, detection event, impulse and
+/// animation; m4-train-50's D-W2 review, note 2); a Tripwire makes three, a
+/// plate its sound, 'Down' and 'Up'.
+pub const LOOK_BURST: u32 = 12;
 
 /// How many looks a second one subject takes after its burst. UNMEASURED,
 /// as [`LOOK_BURST`].
@@ -2187,7 +2189,7 @@ mod tests {
         }
 
         #[test]
-        fn a_subjects_looks_are_capped_eight_at_once_then_two_a_second() {
+        fn a_subjects_looks_are_capped_twelve_at_once_then_two_a_second() {
             let mut s = ScriptCalls::default();
             let play = row("ObjectReference", "PlayAnimation");
             for i in 0..LOOK_BURST {
@@ -2195,7 +2197,7 @@ mod tests {
             }
             assert_eq!(
                 refused(s.judge(play, &[Arg::String], &guest_by(PLATE), 0)),
-                (Code::LookRate, "past the subject's look cap, 8 at once and 2 a second".to_owned())
+                (Code::LookRate, "past the subject's look cap, 12 at once and 2 a second".to_owned())
             );
             // another trigger's cap is its own
             assert!(accepted(&s.judge(play, &[Arg::String], &guest_by(TRIPWIRE), 0)).look);
@@ -2205,7 +2207,9 @@ mod tests {
             assert_eq!(code(&s.judge(play, &[Arg::String], &Facts { nearest: Some(9000.0), ..guest_by(PLATE) }, 500)), Some(Code::Far));
             assert!(accepted(&s.judge(play, &[Arg::String], &guest_by(PLATE), 500)).look);
             assert_eq!(code(&s.judge(play, &[Arg::String], &guest_by(PLATE), 500)), Some(Code::LookRate));
-            assert_eq!((LOOK_BURST, LOOK_PER_SECOND), (8, 2));
+            // a bone alarm's pass, its enter's five looks and its leave's,
+            // fits with room
+            assert_eq!((LOOK_BURST, LOOK_PER_SECOND), (12, 2));
         }
 
         #[test]

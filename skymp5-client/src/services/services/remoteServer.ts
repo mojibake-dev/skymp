@@ -569,6 +569,7 @@ export class RemoteServer extends ClientListener {
             ModelApplyUtils.applyModelIsHarvested(
               refr,
               !!msg.props['isHarvested'],
+              !!msg.props.isDisabled,
             );
 
             ModelApplyUtils.applyModelNodeScale(refr, msg.props.setNodeScale);

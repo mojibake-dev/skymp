@@ -134,12 +134,13 @@ constexpr std::size_t kRowCount = std::size(kRows);
 // reference enabled, disabled or deleted, the state DestructionStage 78
 // serves) and the standing's six (an NPC's faction ranks, crime faction and
 // relationship ranks; AddToFaction is Papyrus over SetFactionRank, no
-// native of its own), each named as FunctionsDump.txt has it. A record
+// native of its own), each named as FunctionsDump.txt has it. A RefState
 // row's owner is OwnedForRecord's, and the lever's `recorded` skips its
-// latent body on a seat that does not own it. The player's own hits and
-// standing cross too and the client drops them: a handful an encounter, and
-// the batch crosses once a frame whatever it holds. Every other state row
-// is counted and, since rung 3, touched (QueueTouch)
+// latent body on a seat that does not own it; a standing row's owner is
+// OwnedHere's and no lever skips its body (rung 4's fresh review, note 1). The
+// player's own hits and standing cross too and the client drops them: a
+// handful an encounter, and the batch crosses once a frame whatever it holds.
+// Every other state row is counted and, since rung 3, touched (QueueTouch)
 enum class RecordRow : std::uint8_t
 {
   None,
@@ -234,8 +235,9 @@ struct RowInfo
   bool relayable = false;
   bool batchedState = false;
   // the row's record kind among kBatchedStateRows (rung 4), None for every
-  // other row: a record row's owner is OwnedForRecord's, and the lever's
-  // `recorded` skips its latent body on a non-owner
+  // other row: a RefState row's owner is OwnedForRecord's, and the lever's
+  // `recorded` skips its latent body on a non-owner; a standing row's owner
+  // is OwnedHere's and its body is never skipped (the fresh review, note 1)
   RecordRow record = RecordRow::None;
   // one of kAliasRows (rung 4): batched on every seat (OnAliasCall)
   bool alias = false;
@@ -765,9 +767,16 @@ const char* LeverName(NonOwnerSkip skip)
 }
 
 // the lever's judgment of a non-owned state row: true when its body is
-// skipped
+// skipped. A standing row's body is never skipped until x-standing v1 decides
+// W3 (rung 4's fresh review, note 1): a guest's dialogue or stage fragment on
+// an NPC another seat simulates runs on the guest alone (the relayed stage's
+// fragment is suppressed on the owner), so the guest's own copy is the only
+// one, and the owner's record overwrites it where one exists
 bool SkipsBody(const RowInfo& info)
 {
+  if (info.record == RecordRow::Standing) {
+    return false;
+  }
   switch (g_nonOwnerSkip) {
     case NonOwnerSkip::NonLatent:
       return !info.latent;
@@ -1176,7 +1185,10 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
   // by nonLatent; its RemoveItem and MoveTo are latent, FunctionsDump.txt,
   // and wait for H-F1's read; its Disable, a latent record row, is skipped
   // by recorded, H-F2), the first skipped selves logged (LogSkipped)
-  const bool owned = info.record != RecordRow::None
+  // a standing row's owner is the plain test, its NPC's simulator (rung 4's
+  // fresh review, note 1: an NPC nobody simulates is nobody's to report, and
+  // the cell host's report of one would be refused)
+  const bool owned = info.record == RecordRow::RefState
     ? OwnedForRecord(ref, isActor)
     : OwnedHere(ref, isActor);
   if (!owned) {

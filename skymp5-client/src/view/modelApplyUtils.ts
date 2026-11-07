@@ -82,7 +82,7 @@ export class ModelApplyUtils {
   private static lidState = new Map<number, boolean>();
   private static readonly lidStateMax = 4096;
 
-  static applyModelIsHarvested(refr: ObjectReference, isHarvested: boolean) {
+  static applyModelIsHarvested(refr: ObjectReference, isHarvested: boolean, isDisabled = false) {
     const base = refr.getBaseObject();
     if (base) {
       const t = base.getType();
@@ -136,7 +136,11 @@ export class ModelApplyUtils {
                 // Deletion takes time, so in practice this would be called a lot of times
               }
             });
-          } else {
+          } else if (!isDisabled) {
+            // a host's scripted Disable recorded for this item (the record's
+            // isDisabled) is never undone here: RefStateService holds its
+            // word, and this enable could land after it (rung 4's fresh
+            // review, note 3)
             refr.enable(true);
           }
         }

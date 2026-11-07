@@ -21,6 +21,7 @@ type Fill = {
     refr: number;     // 0 for a cleared alias
     served: boolean;
     why: string;      // the reason it waits, for the summary's trace
+    parkedAt?: number; // when it was first parked, for PARKED_HOLD_MS
 };
 
 const TAG = "verb:quest-stage";
@@ -43,6 +44,10 @@ const APPLIES_PER_UPDATE = 16;
 // try them on the next update
 const PARKED_RETRY_MS = 2000;
 const PARKED_MAX = 256;
+// a parked word is let go after this long, as RefStateService's HOLD_MS: a
+// stale fill for a quest that starts much later must not apply then (rung 4's
+// fresh review, note 4)
+const PARKED_HOLD_MS = 120_000;
 const KNOWN_MAX = 4096;
 const SUMMARY_MS = 30_000;
 const LINES_PER_WINDOW = 5;
@@ -174,8 +179,20 @@ export class AliasFillService extends ClientListener {
         }
         if (this.parked.size > 0 && now >= this.parkedRetryAt) {
             this.parkedRetryAt = now + PARKED_RETRY_MS;
+            // at most APPLIES_PER_UPDATE retried an update; the rest go on the
+            // next update (the fresh review, note 4)
+            let retried = 0;
             for (const [key, fill] of Array.from(this.parked.entries())) {
+                if (retried >= APPLIES_PER_UPDATE) {
+                    this.parkedRetryAt = 0;
+                    break;
+                }
                 this.parked.delete(key);
+                if (fill.parkedAt !== undefined && now - fill.parkedAt >= PARKED_HOLD_MS) {
+                    this.parkedDropped++;
+                    continue;
+                }
+                retried++;
                 this.applyOne(key, fill);
             }
         }
@@ -281,6 +298,9 @@ export class AliasFillService extends ClientListener {
             this.parkings++;
         }
         fill.why = why;
+        if (fill.parkedAt === undefined) {
+            fill.parkedAt = Date.now();
+        }
         this.parked.set(key, fill);
     }
 

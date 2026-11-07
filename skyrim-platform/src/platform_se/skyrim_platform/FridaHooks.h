@@ -46,6 +46,9 @@ bool IsCellHosted(uint32_t cellFormId);
 // never sets it changes nothing. skymp5-client's setting triggerPresser
 // turns it on through setTriggerPresserRule (PuppetApi.cpp). Threadsafe
 void SetTriggerPresserRule(bool on);
+// the presser rule's switch as last set: ADR-068 D-W2 A's look acts only
+// with it on (ScriptNatives.cpp OnFamilyCall)
+bool TriggerPresserRuleOn();
 
 // thuum docs/research/fifty-fixes-2026-11-07.md 1(b), the furniture branch:
 // the animation hook's rule over a furniture's own graph event on or off

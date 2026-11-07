@@ -7,6 +7,7 @@
 #include "ItemMenuRefresh.h"
 #include "NullPointerException.h"
 #include "ScriptState.h"
+#include "TrapFamily.h"
 
 #include <RE/B/BGSLocation.h>
 #include <RE/B/BGSStoryEventManager.h>
@@ -124,6 +125,12 @@ private:
     // thuum ADR-068 rung 3: the lifecycle events served before a load name
     // the old world's references (ScriptState.h's seen set; H-R12)
     ScriptState::Seen::Clear();
+    // D-W2 A: a firing window names the old world's triggers too
+    // (TrapFamily.h, Firing); no exception leaves this sink
+    try {
+      TrapFamily::Firing::Clear();
+    } catch (...) {
+    }
     return RE::BSEventNotifyControl::kContinue;
   }
 };

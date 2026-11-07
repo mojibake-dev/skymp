@@ -9,11 +9,14 @@
 #include <RE/V/Variable.h>
 #include <RE/V/VirtualMachine.h>
 #include <atomic>
+#include <cctype>
 #include <iterator>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace {
 // ==== THE ONE PLACE THE FAMILY IS NAMED ====
@@ -215,6 +218,63 @@ struct FlagSet
 FlagSet g_followed;
 FlagSet g_recordApplying;
 
+// D-W2's firing window (TrapFamily.h, Firing): each noted reference's last
+// owned trigger event, steady-clock milliseconds; the size kept beside it for
+// a read with no lock. Notes past 256 references drop the expired ones first
+// (a cut, not a measure: a seat presses a few triggers a minute)
+struct
+{
+  std::unordered_map<uint32_t, uint64_t> lastMs;
+  std::mutex m;
+  std::atomic<size_t> size{ 0 };
+} g_firing;
+constexpr size_t kFiringCap = 256;
+
+// D-W2 A's exempt classes (TrapFamily.h, Exempt), lowercased (Papyrus's rule
+// on names): one immutable snapshot, replaced whole under the mutex and read
+// by copying the pointer, the size kept for a read with no lock
+using ExemptSet = std::unordered_set<std::string>;
+struct
+{
+  std::shared_ptr<const ExemptSet> names;
+  std::mutex m;
+  std::atomic<size_t> size{ 0 };
+} g_exempt;
+
+std::string LowerName(const char* s)
+{
+  std::string out = s ? s : "";
+  for (auto& c : out) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  return out;
+}
+
+// the current snapshot, null when no class is named; taken before any walk,
+// so the walk under the VM's lock never takes this mutex
+std::shared_ptr<const ExemptSet> ExemptNames()
+{
+  if (g_exempt.size.load(std::memory_order_relaxed) == 0) {
+    return nullptr;
+  }
+  std::lock_guard l(g_exempt.m);
+  return g_exempt.names;
+}
+
+// a class whose chain names an exempt class: AdmittedByChain's walk
+// (FridaHooks.cpp), ObjectTypeInfo's parent chain to a null parent, 16
+// classes at most
+bool ExemptType(const RE::BSScript::ObjectTypeInfo* info,
+                const ExemptSet& names)
+{
+  for (int depth = 0; info && depth < 16; ++depth, info = info->GetParent()) {
+    if (names.count(LowerName(info->GetName())) != 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool Has(FlagSet& set, uint32_t formId)
 {
   std::lock_guard l(set.m);
@@ -309,6 +369,7 @@ std::optional<TrapFamily::Role> TrapFamily::RoleOf(uint32_t formId)
   const RE::VMHandle handle =
     policy->GetHandleForObject(ref->GetFormType(), ref);
   const FixedString& name = PlayerOnlyName();
+  const auto exempt = ExemptNames();
   Role role;
   bool every = true;
   const bool any = ForEachAttached(handle, [&](RE::BSScript::Object* script) {
@@ -317,6 +378,8 @@ std::optional<TrapFamily::Role> TrapFamily::RoleOf(uint32_t formId)
     every = every && script && verdict.family;
     role.trigger = role.trigger || verdict.trigger;
     role.playerOnly = role.playerOnly || PlayerOnlyScript(script, name);
+    role.exempt = role.exempt ||
+      (exempt && script && ExemptType(script->GetTypeInfo(), *exempt));
   });
   if (!any) {
     return std::nullopt;
@@ -362,6 +425,105 @@ bool TrapFamily::RecordApplying::Any()
   return g_recordApplying.size.load(std::memory_order_relaxed) != 0;
 }
 
+void TrapFamily::Exempt::Set(const std::vector<std::string>& classes)
+{
+  auto names = std::make_shared<ExemptSet>();
+  for (const auto& name : classes) {
+    if (!name.empty()) {
+      names->insert(LowerName(name.c_str()));
+    }
+  }
+  std::lock_guard l(g_exempt.m);
+  g_exempt.size.store(names->size());
+  if (names->empty()) {
+    g_exempt.names.reset();
+  } else {
+    g_exempt.names = std::move(names);
+  }
+}
+
+bool TrapFamily::Exempt::Any()
+{
+  return g_exempt.size.load(std::memory_order_relaxed) != 0;
+}
+
+bool TrapFamily::Exempt::Is(RE::VMHandle handle)
+{
+  const auto names = ExemptNames();
+  if (!names) {
+    return false;
+  }
+  bool exempt = false;
+  ForEachAttached(handle, [&](RE::BSScript::Object* script) {
+    exempt = exempt || (script && ExemptType(script->GetTypeInfo(), *names));
+  });
+  return exempt;
+}
+
+std::string TrapFamily::Exempt::Names()
+{
+  const auto names = ExemptNames();
+  std::string out;
+  if (names) {
+    for (const auto& name : *names) {
+      if (!out.empty()) {
+        out += ", ";
+      }
+      out += name;
+    }
+  }
+  return out;
+}
+
+void TrapFamily::Firing::Note(uint32_t formId, uint64_t nowMs)
+{
+  if (formId == 0) {
+    return;
+  }
+  std::lock_guard l(g_firing.m);
+  if (g_firing.lastMs.size() >= kFiringCap &&
+      g_firing.lastMs.count(formId) == 0) {
+    for (auto it = g_firing.lastMs.begin(); it != g_firing.lastMs.end();) {
+      if (nowMs >= it->second + kLookMs) {
+        it = g_firing.lastMs.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+  g_firing.lastMs[formId] = nowMs;
+  g_firing.size.store(g_firing.lastMs.size());
+}
+
+bool TrapFamily::Firing::Open(uint32_t formId, uint64_t nowMs)
+{
+  if (!Any()) {
+    return false;
+  }
+  std::lock_guard l(g_firing.m);
+  const auto it = g_firing.lastMs.find(formId);
+  return it != g_firing.lastMs.end() && nowMs >= it->second &&
+    nowMs - it->second <= kLookMs;
+}
+
+bool TrapFamily::Firing::Any()
+{
+  return g_firing.size.load(std::memory_order_relaxed) != 0;
+}
+
+void TrapFamily::Firing::Clear()
+{
+  std::lock_guard l(g_firing.m);
+  g_firing.lastMs.clear();
+  g_firing.size.store(0);
+}
+
+size_t TrapFamily::Firing::Count()
+{
+  std::lock_guard l(g_firing.m);
+  return g_firing.lastMs.size();
+}
+
 void TrapFamily::LogReady()
 {
   std::string roots;
@@ -375,7 +537,7 @@ void TrapFamily::LogReady()
                "({}) and the class's own name's prefix '{}', a pickup never "
                "(TrapFamily.cpp, D-T1), a trigger by its chain to {} "
                "(getTrapRole's trigger, never a trap body), read by the "
-               "event gate and the native seam; 3 export(s): getTrapRole, "
-               "setPropFollowed, setRecordApplying",
+               "event gate and the native seam; 4 export(s): getTrapRole, "
+               "setPropFollowed, setRecordApplying, setTriggerPresserExempt",
                std::size(kFamilyRoots), roots, kFamilyPrefix, kTriggerRoot);
 }

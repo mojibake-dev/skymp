@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, alias_fills, appearance, attributes, block, bonds, casts, cells, clock, console, damage, destruction, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, placements, player_globals, props, quest_stages, racemenu, ranged, rest, perks, ref_state, script_state, scripted_effects, shouts, stagger, standing, teleports, weather, world_globals, world_streamer};
+use wire_rules::{activation, actor_values, alias_fills, appearance, attributes, block, bonds, casts, cells, clock, console, damage, destruction, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, placements, player_globals, props, quest_stages, racemenu, ranged, rest, perks, ref_state, script_state, scripted_effects, shouts, stagger, standing, teleports, trigger_entry, weather, world_globals, world_streamer};
 
 // the perk table's effect calls carry a CTDA's five parts flat, as add_condition does
 #[allow(clippy::too_many_arguments)]
@@ -1592,6 +1592,128 @@ mod ffi {
         why: String,
     }
 
+    /// What the core knows of a trap trigger's reported firing, its own
+    /// activation or its first link (thuum ADR-068 D-W1; wire-rules
+    /// trigger_entry::FiringFacts).
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    struct TriggerFiringFacts {
+        /// The reporter's actor.
+        reporter: u32,
+        /// The cell the firing is judged in (a linked pair's target's, a
+        /// trigger's own for its own activation), 0 when the server cannot
+        /// place it.
+        cell: u32,
+        /// That cell's host, 0 while nobody hosts it.
+        host: u32,
+        /// The reporter's game reports the cell loaded.
+        loader: bool,
+        /// How far the nearest of the reporter's actors (its player, or an
+        /// actor it simulates) stands from the trigger, units; -1 (any
+        /// negative or non-finite value) when none stands in the trigger's
+        /// cell or world, or the server places no trigger.
+        nearest: f32,
+        /// The trigger's size: the farthest point of its bounds, times its
+        /// scale.
+        trigger_size: f32,
+    }
+
+    /// The rule's word on a reported firing.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum TriggerFiringCode {
+        /// Taken: the cell's host's, as before.
+        Host,
+        /// Taken: a game with the cell loaded, one of whose actors stands by
+        /// the trigger (D-W1, the presser's owner).
+        Loader,
+        /// E_TRAP_NOT_HOST: neither the cell's host nor a game with the cell
+        /// loaded.
+        NotHost,
+        /// E_TRAP_FAR: a game with the cell loaded, none of whose actors
+        /// stands by the trigger.
+        Far,
+    }
+
+    /// The verdict on one reported firing.
+    #[derive(Debug)]
+    struct TriggerFiringVerdict {
+        /// Which word.
+        code: TriggerFiringCode,
+        /// The refusal's stable name for the log, empty when taken.
+        name: String,
+        /// Why, for the log; empty when taken.
+        why: String,
+    }
+
+    /// What the core knows of a presser's owner's report that its actor
+    /// entered or left a trigger whose world script runs on the cell's host
+    /// (thuum ADR-068 D-C2; wire-rules trigger_entry::EntryFacts).
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    struct TriggerEntryFacts {
+        /// The reporter's actor.
+        reporter: u32,
+        /// What the server holds or places by its record at the trigger: 0
+        /// no reference, 1 a reference that is no actor, 2 an actor; any
+        /// other value reads as 0.
+        trigger_kind: u8,
+        /// The presser: the reporter's own actor for its player, or another
+        /// actor.
+        presser: u32,
+        /// The presser's owner: its seat's actor for a player's actor, an
+        /// NPC's simulator, 0 for nobody.
+        presser_owner: u32,
+        /// The trigger's cell, 0 when the server cannot place it.
+        cell: u32,
+        /// That cell's host, 0 while nobody hosts it.
+        host: u32,
+        /// The reporter's game reports the cell loaded.
+        loader: bool,
+        /// How far the presser stands from the trigger, units; -1 (any
+        /// negative or non-finite value) when it stands in another cell or
+        /// world.
+        distance: f32,
+        /// The trigger's size: the farthest point of its bounds, times its
+        /// scale.
+        trigger_size: f32,
+    }
+
+    /// The rule's word on a reported entry.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum TriggerEntryCode {
+        /// Relayed to the cell's host alone (`host`).
+        Relay,
+        /// E_ENTRY_NO_REF: no world object the server holds or places, or
+        /// one it cannot place in a cell.
+        NoRef,
+        /// E_ENTRY_ACTOR: the trigger is an actor.
+        Actor,
+        /// E_ENTRY_PRESSER: the presser is not the reporter's own actor nor
+        /// one it simulates.
+        Presser,
+        /// E_ENTRY_NOT_LOADER: the reporter has not loaded the cell.
+        NotLoader,
+        /// E_ENTRY_HOST: the reporter hosts the cell, its own engine ran the
+        /// script.
+        Host,
+        /// E_ENTRY_NO_HOST: nobody hosts the cell, no engine runs the script.
+        NoHost,
+        /// E_ENTRY_REACH: the presser stands outside the trigger's
+        /// activation reach.
+        Reach,
+    }
+
+    /// The verdict on one reported entry.
+    #[derive(Debug)]
+    struct TriggerEntryVerdict {
+        /// Which word.
+        code: TriggerEntryCode,
+        /// The refusal's stable name for the log, empty when relayed.
+        name: String,
+        /// Why, for the log; empty when relayed.
+        why: String,
+        /// The host's actor to relay to (relayed), 0 otherwise.
+        host: u32,
+    }
+
     /// One reference alias of a quest as the game files hold it (thuum
     /// ADR-068 rung 4, amendment B read 8; wire-rules alias_fills::Alias),
     /// the form ids in the load order.
@@ -2540,6 +2662,20 @@ mod ffi {
         /// `cell` was granted, to any seat: the release read ends.
         fn granted(self: &mut ScriptStates, cell: u32);
 
+        /// thuum ADR-068 D-W1 (the trigger entry channel): a trap trigger's
+        /// reported firing over the facts the core gathered, the cell's host
+        /// first, then a game with the cell loaded one of whose actors stands
+        /// within the trigger's activation reach plus the firing's slack
+        /// (wire-rules trigger_entry::firing_source); the link and the budget
+        /// stay the core's.
+        fn trigger_firing_source(facts: &TriggerFiringFacts) -> TriggerFiringVerdict;
+        /// thuum ADR-068 D-C2: a presser's owner's report of an entry into a
+        /// world trigger whose script runs on the cell's host: the trigger,
+        /// the presser, the loader, the host and the reach, in that order
+        /// (wire-rules trigger_entry::entry); relayed, `host` names the one
+        /// game to send it to.
+        fn trigger_entry(facts: &TriggerEntryFacts) -> TriggerEntryVerdict;
+
         /// thuum ADR-068 rung 4 (amendment B, read 8): every created alias
         /// of one quest's reference aliases and where its item goes
         /// (wire-rules alias_fills::creations).
@@ -2613,7 +2749,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
+pub use ffi::{RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -4586,6 +4722,65 @@ impl ScriptStates {
     }
 }
 
+/// The core's distance, or none: -1 (any negative or non-finite value) is
+/// none.
+fn distance_of(d: f32) -> Option<f32> {
+    (d.is_finite() && d >= 0.0).then_some(d)
+}
+
+fn trigger_firing_source(f: &TriggerFiringFacts) -> TriggerFiringVerdict {
+    let facts = trigger_entry::FiringFacts { reporter: f.reporter, cell: f.cell, host: f.host, loader: f.loader, nearest: distance_of(f.nearest), trigger_size: f.trigger_size };
+    let taken = |code| TriggerFiringVerdict { code, name: String::new(), why: String::new() };
+    match trigger_entry::firing_source(&facts) {
+        trigger_entry::FiringVerdict::Taken(trigger_entry::FiringSource::Host) => taken(TriggerFiringCode::Host),
+        trigger_entry::FiringVerdict::Taken(trigger_entry::FiringSource::Loader) => taken(TriggerFiringCode::Loader),
+        trigger_entry::FiringVerdict::Refuse(r) => TriggerFiringVerdict {
+            code: match r.code {
+                trigger_entry::FiringCode::NotHost => TriggerFiringCode::NotHost,
+                trigger_entry::FiringCode::Far => TriggerFiringCode::Far,
+            },
+            name: r.code.name().to_owned(),
+            why: r.why,
+        },
+    }
+}
+
+fn trigger_entry(f: &TriggerEntryFacts) -> TriggerEntryVerdict {
+    let trigger = match f.trigger_kind {
+        1 => script_state::RefKind::WorldObject,
+        2 => script_state::RefKind::Actor,
+        _ => script_state::RefKind::Unknown,
+    };
+    let facts = trigger_entry::EntryFacts {
+        reporter: f.reporter,
+        trigger,
+        presser: f.presser,
+        presser_owner: f.presser_owner,
+        cell: f.cell,
+        host: f.host,
+        loader: f.loader,
+        distance: distance_of(f.distance),
+        trigger_size: f.trigger_size,
+    };
+    match trigger_entry::entry(&facts) {
+        trigger_entry::EntryVerdict::Relay { host } => TriggerEntryVerdict { code: TriggerEntryCode::Relay, name: String::new(), why: String::new(), host },
+        trigger_entry::EntryVerdict::Refuse(r) => TriggerEntryVerdict {
+            code: match r.code {
+                trigger_entry::EntryCode::NoRef => TriggerEntryCode::NoRef,
+                trigger_entry::EntryCode::Actor => TriggerEntryCode::Actor,
+                trigger_entry::EntryCode::Presser => TriggerEntryCode::Presser,
+                trigger_entry::EntryCode::NotLoader => TriggerEntryCode::NotLoader,
+                trigger_entry::EntryCode::Host => TriggerEntryCode::Host,
+                trigger_entry::EntryCode::NoHost => TriggerEntryCode::NoHost,
+                trigger_entry::EntryCode::Reach => TriggerEntryCode::Reach,
+            },
+            name: r.code.name().to_owned(),
+            why: r.why,
+            host: 0,
+        },
+    }
+}
+
 fn alias_creations(aliases: &[QuestAliasRow]) -> Vec<AliasCreationRow> {
     let parsed: Vec<alias_fills::Alias> =
         aliases.iter().map(|a| alias_fills::Alias { id: a.id, created: a.created, create_at: a.create_at, forced: a.forced, unique_actor: a.unique_actor }).collect();
@@ -5712,5 +5907,44 @@ mod tests {
         assert_eq!(calls.seq_of(0xaa8cb), 5);
         assert_eq!(calls.judge(at.row, &[text], &facts, 0).seq, 6);
         assert_eq!(calls.seq_of(0xaa8cb), 6);
+    }
+
+    #[test]
+    fn the_bridge_judges_a_trigger_firing_and_an_entry() {
+        // thuum ADR-068 D-W1: Bleak Falls Temple 0x371de hosted by
+        // 0xff000000; the guest 0xff000001 has it loaded and stands 40 units
+        // off the plate 0x567f2 (a stand-in size of 64)
+        let guest = TriggerFiringFacts { reporter: 0xff00_0001, cell: 0x371de, host: 0xff00_0000, loader: true, nearest: 40.0, trigger_size: 64.0 };
+        let v = trigger_firing_source(&guest);
+        assert_eq!((v.code, v.name.as_str(), v.why.as_str()), (TriggerFiringCode::Loader, "", ""));
+        assert_eq!(trigger_firing_source(&TriggerFiringFacts { reporter: 0xff00_0000, ..guest }).code, TriggerFiringCode::Host);
+        let unloaded = trigger_firing_source(&TriggerFiringFacts { loader: false, ..guest });
+        assert_eq!((unloaded.code, unloaded.name.as_str(), unloaded.why.as_str()), (TriggerFiringCode::NotHost, "E_TRAP_NOT_HOST", "which it neither hosts nor has loaded"));
+        let far = trigger_firing_source(&TriggerFiringFacts { nearest: 2000.0, ..guest });
+        assert_eq!((far.code, far.name.as_str(), far.why.as_str()), (TriggerFiringCode::Far, "E_TRAP_FAR", "its nearest actor 2000 units off the trigger, the bound 1028"));
+        // the core's -1, and a value that means nothing, are none measured
+        for nearest in [-1.0, f32::NAN, f32::INFINITY] {
+            let none = trigger_firing_source(&TriggerFiringFacts { nearest, ..guest });
+            assert_eq!((none.code, none.why.as_str()), (TriggerFiringCode::Far, "none of its actors stands where the trigger does"));
+        }
+        // D-C2: the guest's own player walks into the web 0x3758c (a
+        // stand-in size of 100), relayed to the host alone
+        let entry = TriggerEntryFacts { reporter: 0xff00_0001, trigger_kind: 1, presser: 0xff00_0001, presser_owner: 0xff00_0001, cell: 0x371de, host: 0xff00_0000, loader: true, distance: 30.0, trigger_size: 100.0 };
+        let relayed = trigger_entry(&entry);
+        assert_eq!((relayed.code, relayed.name.as_str(), relayed.why.as_str(), relayed.host), (TriggerEntryCode::Relay, "", "", 0xff00_0000));
+        let refused = |f: TriggerEntryFacts| {
+            let v = trigger_entry(&f);
+            (v.code, v.name, v.host)
+        };
+        assert_eq!(refused(TriggerEntryFacts { trigger_kind: 0, ..entry }), (TriggerEntryCode::NoRef, "E_ENTRY_NO_REF".to_owned(), 0));
+        assert_eq!(refused(TriggerEntryFacts { trigger_kind: 7, ..entry }).0, TriggerEntryCode::NoRef, "a kind the core never sends reads as no reference");
+        assert_eq!(refused(TriggerEntryFacts { trigger_kind: 2, ..entry }), (TriggerEntryCode::Actor, "E_ENTRY_ACTOR".to_owned(), 0));
+        assert_eq!(refused(TriggerEntryFacts { presser_owner: 0xff00_0000, ..entry }), (TriggerEntryCode::Presser, "E_ENTRY_PRESSER".to_owned(), 0));
+        assert_eq!(refused(TriggerEntryFacts { loader: false, ..entry }), (TriggerEntryCode::NotLoader, "E_ENTRY_NOT_LOADER".to_owned(), 0));
+        let host = TriggerEntryFacts { reporter: 0xff00_0000, presser: 0xff00_0000, presser_owner: 0xff00_0000, ..entry };
+        assert_eq!(refused(host), (TriggerEntryCode::Host, "E_ENTRY_HOST".to_owned(), 0));
+        assert_eq!(refused(TriggerEntryFacts { host: 0, ..entry }), (TriggerEntryCode::NoHost, "E_ENTRY_NO_HOST".to_owned(), 0));
+        assert_eq!(refused(TriggerEntryFacts { distance: 553.0, ..entry }), (TriggerEntryCode::Reach, "E_ENTRY_REACH".to_owned(), 0));
+        assert_eq!(refused(TriggerEntryFacts { distance: -1.0, ..entry }), (TriggerEntryCode::Reach, "E_ENTRY_REACH".to_owned(), 0));
     }
 }

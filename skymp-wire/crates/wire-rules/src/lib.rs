@@ -45,6 +45,7 @@ pub mod shouts;
 pub mod stagger;
 pub mod standing;
 pub mod teleports;
+pub mod trigger_entry;
 pub mod weather;
 pub mod world_globals;
 pub mod world_streamer;

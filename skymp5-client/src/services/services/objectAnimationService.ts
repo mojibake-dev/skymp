@@ -5,6 +5,7 @@ import { ObjectAnimationMessage } from '../messages/objectAnimationMessage';
 import { CreateActorMessage } from '../messages/createActorMessage';
 import { ActivateMessage } from '../messages/activateMessage';
 import { AnyMessage } from '../messages/anyMessage';
+import { GraphVar } from '../messages/scriptStateApplyMessage';
 import { MsgType } from '../../messages';
 import { HostService } from './hostService';
 import { ScriptStateService } from './scriptStateService';
@@ -157,14 +158,36 @@ const USES_MAX = 64;
 // or the newest relay, whichever has the higher seq (SpSnippetService's
 // per-object seq; a relayed ObjectAnimation carries none and is the newest
 // word here, so it takes the newest seq known for the object)
+//
+// D-C3 A (PENDING ELI; docs/research/fifty-fixes-2026-11-07.md 1(d)): the
+// entry carries the object's graph variables too (the cobweb's fToggleBlend,
+// set by FXtriggerAmbFX's SetAnimationVariableFloat on its owner), each with
+// its own seq, the newest per name kept: a relayed call's (setVariable) or
+// the record's (applyRecordVariables). A graph variable lives on the 3D's
+// graph (H-C3b until x-cobweb-view), so a seat that does not host the cell
+// sets them again at each 3D load, before it plays the kept event. An entry
+// may hold variables and no event ("", seq 0, never shown). Known limit: the
+// host's own variables are kept nowhere here (its script's calls are never
+// relayed back to it), so its own 3D reload does not set them again
+type KeptVar = {
+  k: number;               // 3 int, 4 float, 5 bool (ScriptVar's folded kinds)
+  value: number | boolean;
+  seq: number;             // the object's seq of the call that set it
+};
 type LastAnimation = {
-  event: string;
+  event: string;    // "" when the entry holds graph variables alone
   seq: number;
   cell: number;     // its parent cell at the keep: a release of that cell drops it
   shown: boolean;   // played on the 3D now loaded; false again once that 3D goes
   tries: number;    // re-applies on this 3D the graph refused
   lookAt: number;   // the next look, at the earliest (0: every update)
+  vars: Map<string, KeptVar>;  // the graph variables by name, at most GRAPH_VARS_MAX
+  varsShown: boolean;          // all of them set on the 3D now loaded
 };
+// the wire's cap on a record's graph variables (cap::GRAPH_VARS, UNMEASURED):
+// past it the longest unset name goes
+const GRAPH_VARS_MAX = 16;
+const varText = (v: KeptVar): string => (typeof v.value === 'number' ? String(Math.round(v.value * 1000) / 1000) : String(v.value));
 
 export class ObjectAnimationService extends ClientListener {
   constructor(
@@ -808,13 +831,128 @@ export class ObjectAnimationService extends ClientListener {
     // Map iteration is insertion order: a keep moves the entry last, so the
     // longest unkept goes past KEPT_MAX
     this.lastAnimations.delete(localId);
-    this.lastAnimations.set(localId, { event, seq, cell: parent ? parent.getFormID() : 0, shown, tries: 0, lookAt: 0 });
+    // D-C3 A: the graph variables kept for the object stay with it
+    this.lastAnimations.set(localId, {
+      event, seq, cell: parent ? parent.getFormID() : 0, shown, tries: 0, lookAt: 0,
+      vars: old !== undefined ? old.vars : new Map<string, KeptVar>(), varsShown: old !== undefined ? old.varsShown : true,
+    });
+    this.capKept();
+  }
+
+  // the kept set's bound: Map iteration is insertion order, so the longest
+  // unkept goes past KEPT_MAX
+  private capKept(): void {
     if (this.lastAnimations.size > KEPT_MAX) {
       const oldest = this.lastAnimations.keys().next().value;
       if (oldest !== undefined) {
         this.lastAnimations.delete(oldest);
       }
     }
+  }
+
+  // D-C3 A: one graph variable kept for the object, the newest seq per name;
+  // `set` whether it stands on the 3D now loaded (else the next poll that
+  // finds the 3D here sets it). An update's context
+  private keepVariable(refr: ObjectReference, localId: number, name: string, v: KeptVar, set: boolean): void {
+    if (!this.keepEnabled || !this.keepsFor(refr, localId)) {
+      return;
+    }
+    let kept = this.lastAnimations.get(localId);
+    const old = kept?.vars.get(name);
+    if (old !== undefined && v.seq < old.seq) {
+      return;
+    }
+    if (kept === undefined) {
+      const parent = refr.getParentCell();
+      kept = { event: '', seq: 0, cell: parent ? parent.getFormID() : 0, shown: false, tries: 0, lookAt: 0, vars: new Map<string, KeptVar>(), varsShown: true };
+    }
+    if (old === undefined && kept.vars.size >= GRAPH_VARS_MAX) {
+      const oldest = kept.vars.keys().next().value;
+      if (oldest !== undefined) {
+        kept.vars.delete(oldest);
+      }
+    }
+    kept.vars.delete(name);
+    kept.vars.set(name, v);
+    kept.varsShown = kept.varsShown && set;
+    this.lastAnimations.delete(localId);
+    this.lastAnimations.set(localId, kept);
+    this.capKept();
+  }
+
+  // one variable on the reference's graph through the platform's own calls
+  // (CallNativeApi's Override: the seam tallies them "(platform)" and batches
+  // none, so nothing set here is reported back)
+  private setOne(refr: ObjectReference, name: string, v: KeptVar): void {
+    if (v.k === 5) {
+      refr.setAnimationVariableBool(name, v.value === true);
+    } else if (v.k === 3) {
+      refr.setAnimationVariableInt(name, Number(v.value));
+    } else {
+      refr.setAnimationVariableFloat(name, Number(v.value));
+    }
+  }
+
+  // every kept variable the 3D now loaded has not had, set; how many. Also
+  // ScriptStateService's playView, right before a record's view plays on a 3D
+  // that came after the apply (the variables go first, as at a 3D load)
+  showVariables(refr: ObjectReference): number {
+    const kept = this.lastAnimations.get(refr.getFormID());
+    if (kept === undefined || kept.varsShown || kept.vars.size === 0 || !refr.is3DLoaded()) {
+      return 0;
+    }
+    kept.varsShown = true;
+    kept.vars.forEach((v, name) => this.setOne(refr, name, v));
+    return kept.vars.size;
+  }
+
+  // SpSnippetService's, for a relayed script call's SetAnimationVariableBool,
+  // Int or Float with a seq on a game-file reference (ADR-068 rung 2): run
+  // here as such a relay always ran, then kept with the call's seq where a
+  // create word named the reference, as play keeps a relayed animation. An
+  // update's context
+  setVariable(remoteRefr: number, name: string, k: number, value: number | boolean, seq: number): void {
+    const localId = remoteIdToLocalId(remoteRefr);
+    const refr = ObjectReference.from(this.sp.Game.getFormEx(localId));
+    if (!refr) {
+      return;
+    }
+    const v: KeptVar = { k, value, seq };
+    const loaded = refr.is3DLoaded();
+    this.setOne(refr, name, v);
+    logTrace(this, `graph variable ${remoteRefr.toString(16)} ${name} ${varText(v)} set (relayed, seq ${seq}${loaded ? '' : ', no 3D here'})`);
+    if (this.subscribed.has(localId)) {
+      this.keepVariable(refr, localId, name, v, loaded);
+    }
+  }
+
+  // ScriptStateService's, at a record's apply, before its view plays (D-C3
+  // A): each served variable whose seq is above the one kept here for its
+  // name (or equal while the 3D now loaded has not had it, the view's
+  // "current" rule after playtest 49) is set where the 3D is here and kept;
+  // one with no 3D here waits for its load. The counts for the apply's line.
+  // An update's context
+  applyRecordVariables(refr: ObjectReference, vars: GraphVar[]): { set: number; waiting: number; current: number } {
+    const localId = refr.getFormID();
+    const loaded = refr.is3DLoaded();
+    const out = { set: 0, waiting: 0, current: 0 };
+    for (const g of vars) {
+      const v: KeptVar = { k: g.k, value: g.k === 5 ? g.b === true : Number(g.k === 3 ? g.i : g.f), seq: g.seq };
+      const kept = this.lastAnimations.get(localId);
+      const old = kept?.vars.get(g.name);
+      if (kept !== undefined && old !== undefined && (g.seq < old.seq || (g.seq === old.seq && kept.varsShown && loaded))) {
+        out.current++;
+        continue;
+      }
+      if (loaded) {
+        this.setOne(refr, g.name, v);
+        out.set++;
+      } else {
+        out.waiting++;
+      }
+      this.keepVariable(refr, localId, g.name, v, loaded);
+    }
+    return out;
   }
 
   // ScriptStateService's, at a record's apply whose view is to play here: the
@@ -909,12 +1047,16 @@ export class ObjectAnimationService extends ClientListener {
     const refr = ObjectReference.from(this.sp.Game.getFormEx(id));
     if (!refr || !refr.is3DLoaded()) {
       kept.shown = false;
+      kept.varsShown = false;
       kept.tries = 0;
       kept.lookAt = now + REAPPLY_WAIT_MS;
       return;
     }
     kept.lookAt = 0;
-    if (kept.shown) {
+    // D-C3 A: the graph variables this 3D has not had, then the event
+    const varsDue = kept.vars.size > 0 && !kept.varsShown;
+    const eventDue = kept.event !== '' && !kept.shown;
+    if (!varsDue && !eventDue) {
       return;
     }
     if (this.controller.lookupListener(HostService).epochForActor(refr) !== 0
@@ -924,6 +1066,20 @@ export class ObjectAnimationService extends ClientListener {
     }
     if (!this.keepsFor(refr, id)) {
       this.lastAnimations.delete(id);
+      return;
+    }
+    if (varsDue) {
+      const n = this.showVariables(refr);
+      const first = kept.vars.entries().next().value;
+      if (n > 0 && first !== undefined && this.sayReapplied(id, now, this.varsSaidAt)) {
+        let seq = 0;
+        kept.vars.forEach((v) => {
+          seq = Math.max(seq, v.seq);
+        });
+        logLab('verb:scripts', `object animation ${id.toString(16)} ${first[0]} ${varText(first[1])}${n > 1 ? ` +${n - 1}` : ''} re-applied at a 3D load (graph variable, seq ${seq})`);
+      }
+    }
+    if (!eventDue) {
       return;
     }
     const { played, jump } = this.playOn(refr, id, kept.event, true);
@@ -938,16 +1094,17 @@ export class ObjectAnimationService extends ClientListener {
     }
   }
 
-  // a re-apply's line at most once in REAPPLY_LINE_MS per reference
-  private sayReapplied(id: number, now: number): boolean {
-    const at = this.reappliedSaidAt.get(id);
+  // a re-apply's line at most once in REAPPLY_LINE_MS per reference (the
+  // event's, or the graph variables' in their own table)
+  private sayReapplied(id: number, now: number, said: Map<number, number> = this.reappliedSaidAt): boolean {
+    const at = said.get(id);
     if (at !== undefined && now - at < REAPPLY_LINE_MS) {
       return false;
     }
-    if (this.reappliedSaidAt.size >= 4096) {
-      this.reappliedSaidAt.clear();
+    if (said.size >= 4096) {
+      said.clear();
     }
-    this.reappliedSaidAt.set(id, now);
+    said.set(id, now);
     return true;
   }
 
@@ -966,6 +1123,7 @@ export class ObjectAnimationService extends ClientListener {
   private lastAnimations = new Map<number, LastAnimation>();
   private pollAt = 0;
   private reappliedSaidAt = new Map<number, number>();
+  private varsSaidAt = new Map<number, number>();
   private subscribed = new Set<number>();
   // the create word's emitter idx for each subscribed reference, so its
   // DestroyActor (which names the idx alone) ends it (note 1)

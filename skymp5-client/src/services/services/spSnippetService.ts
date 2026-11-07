@@ -10,6 +10,14 @@ import { remoteIdToLocalId } from '../../view/worldViewMisc';
 import { logError, logTrace } from "../../logging";
 import { WorldView } from "../../view/worldView";
 
+// D-C3 A (PENDING ELI): the graph variable setters a relayed script call
+// carries, by ScriptVar's folded kinds (3 int, 4 float, 5 bool)
+const GRAPH_VAR_KINDS: Record<string, number> = {
+  setanimationvariableint: 3,
+  setanimationvariablefloat: 4,
+  setanimationvariablebool: 5,
+};
+
 export class SpSnippetService extends ClientListener {
   constructor(private sp: Sp, private controller: CombinedController) {
     super();
@@ -82,7 +90,13 @@ export class SpSnippetService extends ClientListener {
   // side jump first and the "played (relayed, ...)" line, with nothing to
   // change here. The play carries the call's seq, the kept last animation's
   // (rung 3: ObjectAnimationService plays it again at each 3D load on a seat
-  // that does not host the cell). Every other snippet runs as it always has
+  // that does not host the cell). D-C3 A (PENDING ELI;
+  // docs/research/fifty-fixes-2026-11-07.md 1(d)): its SetAnimationVariableBool,
+  // Int or Float on a game-file reference, with a name and a value of the
+  // setter's type, goes through ObjectAnimationService.setVariable the same
+  // way (run, then kept with the call's seq, so a seat that does not host the
+  // cell sets it again at each 3D load). Every other snippet runs as it
+  // always has
   private apply(snippet: SpSnippetMessage): Promise<unknown> {
     const event = snippet.arguments[0];
     if (typeof snippet.seq === "number"
@@ -91,6 +105,16 @@ export class SpSnippetService extends ClientListener {
       && snippet.selfId > 0 && snippet.selfId < 0xff000000
       && typeof event === "string") {
       this.controller.lookupListener(ObjectAnimationService).play(snippet.selfId, event, snippet.seq);
+      return Promise.resolve(undefined);
+    }
+    const kind = GRAPH_VAR_KINDS[snippet.function.toLowerCase()];
+    const value = snippet.arguments[1];
+    if (typeof snippet.seq === "number" && kind !== undefined
+      && snippet.class.toLowerCase() === "objectreference"
+      && snippet.selfId > 0 && snippet.selfId < 0xff000000
+      && typeof event === "string" && event !== ""
+      && (kind === 5 ? typeof value === "boolean" : typeof value === "number" && (kind === 3 ? Number.isInteger(value) : Number.isFinite(value)))) {
+      this.controller.lookupListener(ObjectAnimationService).setVariable(snippet.selfId, event, kind, value, snippet.seq);
       return Promise.resolve(undefined);
     }
     return this.run(snippet);

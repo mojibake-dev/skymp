@@ -294,6 +294,12 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     MpActor* myActor = partOne.serverState.ActorByUser(rawMsgData.userId);
     MpForm* form = partOne.worldState.LookupFormByIdx(msg.idx);
     MpActor* moved = form ? form->AsActor() : nullptr;
+    // thuum ADR-068 rung 4 (WorldGlobal 80): a player's own movement report
+    // (its first, past the login's load block) makes its seat eligible to
+    // stream the world's globals
+    if (myActor && moved == myActor) {
+      partOne.WorldStreamerMoved(*myActor);
+    }
     if (myActor && moved && moved != myActor &&
         partOne.serverState.UserByActor(moved) == Networking::InvalidUserId) {
       const NiPoint3 destPos{ msg.data.pos[0], msg.data.pos[1],
@@ -4862,6 +4868,355 @@ void ActionListener::OnDestructionStage(const RawMessageData& rawMsgData,
                "recorded (the first report), relayed to {} game(s)",
                reporter->GetFormId(), msg.refr, msg.stage, msg.destroyed,
                relayed);
+}
+
+namespace {
+// thuum ADR-068 rung 4: a refusal's line, once a minute per reporter and
+// code, the rest counted (OnScriptCall's shape)
+void RefuseStateRow(
+  std::map<std::pair<uint32_t, std::string>,
+           std::pair<std::chrono::steady_clock::time_point, uint32_t>>&
+    refusals,
+  uint32_t reporter, const std::string& name, const std::string& line)
+{
+  const auto now = std::chrono::steady_clock::now();
+  auto& [since, count] = refusals[{ reporter, name }];
+  ++count;
+  if (since.time_since_epoch().count() != 0 &&
+      now - since < std::chrono::minutes(1)) {
+    return;
+  }
+  spdlog::info("{}; refused, {} since the last line", line, count);
+  since = now;
+  count = 0;
+}
+
+// a journal fill's clear: the empty desc, which names no plugin's form (a
+// fill never names a server form: wire-validate refuses one)
+bool IsClearedFill(const FormDesc& refr)
+{
+  return refr.shortFormId == 0 && refr.file.empty();
+}
+
+// kConstant, a GLOB record's flag (CommonLibSSE-NG include/RE/T/
+// TESGlobal.h:28, 1 << 6): its value is the game files' on every seat
+constexpr uint32_t kGlobalConstantFlag = 0x40;
+
+// the messages a WorldGlobal holds at most (wire-schema cap::WORLD_GLOBALS)
+constexpr size_t kWorldGlobalsPerMessage = 512;
+}
+
+// thuum ADR-068 rung 4 (AliasFill 79; amendment B, read 8; docs/research/
+// rung4-state-rows-2026-11-07.md section 1(c)): a seat's own ForceRefTo or
+// Clear of a quest's reference alias. The quest's record is read here (a
+// QUST, a reference alias of that id among its ALST entries, libespm
+// QUST::GetQuestAliases with ALLS set apart), the fill's form a REFR or an
+// ACHR of the game files (or the clear), and the rule (wire-rules
+// alias_fills) judges it against the journal's fills: the latest fill per
+// (quest, alias) recorded, an equal one folded. A recorded fill goes at once
+// to every other seat (served false), never the deferred queue.
+void ActionListener::OnAliasFill(const RawMessageData& rawMsgData,
+                                 const AliasFillMessage& msg)
+{
+  MpActor* reporter = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!reporter) {
+    return;
+  }
+  if (!partOne.HasEspm()) {
+    return spdlog::warn("OnAliasFill - no master files");
+  }
+  const auto& files = partOne.worldState.espmFiles;
+  const auto& browser = partOne.GetEspm().GetBrowser();
+  skymp::rules::AliasFillFacts facts{};
+  const auto* qust =
+    espm::Convert<espm::QUST>(browser.LookupById(msg.quest).rec);
+  facts.is_quest = qust != nullptr;
+  if (qust) {
+    for (const auto& alias :
+         qust->GetQuestAliases(partOne.worldState.GetEspmCache())) {
+      if (!alias.locationAlias && alias.aliasID == msg.alias) {
+        facts.has_alias = true;
+        break;
+      }
+    }
+  }
+  if (msg.refr == 0) {
+    facts.refr_is_ref = true;
+  } else {
+    const auto* refrRec = browser.LookupById(msg.refr).rec;
+    facts.refr_is_ref = refrRec &&
+      (refrRec->GetType() == "REFR" || refrRec->GetType() == "ACHR");
+  }
+
+  // the journal's fills as the rule reads them (the ref half's entries)
+  auto fills = partOne.GetAliasFills();
+  std::vector<skymp::rules::AliasFillEntry> record;
+  for (const auto& fill : fills) {
+    if (!fill.refr) {
+      continue;
+    }
+    try {
+      skymp::rules::AliasFillEntry entry{};
+      entry.quest = fill.quest.ToFormId(files);
+      entry.alias = fill.alias;
+      entry.refr = IsClearedFill(*fill.refr) ? 0 : fill.refr->ToFormId(files);
+      record.push_back(entry);
+    } catch (const std::exception&) {
+      // a fill whose plugin this load order lacks names nothing here
+    }
+  }
+  skymp::rules::AliasFillEntry reported{};
+  reported.quest = msg.quest;
+  reported.alias = msg.alias;
+  reported.refr = msg.refr;
+  const auto verdict = skymp::rules::alias_fill_judge(
+    rust::Slice<const skymp::rules::AliasFillEntry>(record.data(),
+                                                    record.size()),
+    reported, facts);
+  if (verdict.code == 2) {
+    RefuseStateRow(
+      stateRowRefusals, reporter->GetFormId(), std::string(verdict.name),
+      fmt::format("[verb:quest-stage] {}: {:x} fills alias "
+                  "{:x}/{} with {:x}: {}",
+                  std::string(verdict.name), reporter->GetFormId(), msg.quest,
+                  msg.alias, msg.refr, std::string(verdict.why)));
+    return;
+  }
+  if (verdict.code == 1) {
+    return spdlog::debug("[verb:quest-stage] {:x} fills alias {:x}/{} with "
+                         "{:x}: the record holds it already",
+                         reporter->GetFormId(), msg.quest, msg.alias,
+                         msg.refr);
+  }
+
+  // the journal's entry for (quest, alias) takes the fill, beside any
+  // created item's mark it carries
+  FormDesc questDesc;
+  FormDesc refrDesc;
+  try {
+    questDesc = FormDesc::FromFormId(msg.quest, files);
+    refrDesc = msg.refr ? FormDesc::FromFormId(msg.refr, files) : FormDesc();
+  } catch (const std::exception& e) {
+    return spdlog::warn("[verb:quest-stage] {:x} fills alias {:x}/{} with "
+                        "{:x}: {}; not recorded",
+                        reporter->GetFormId(), msg.quest, msg.alias, msg.refr,
+                        e.what());
+  }
+  auto entry = std::find_if(fills.begin(), fills.end(), [&](const auto& f) {
+    return f.quest == questDesc && f.alias == msg.alias;
+  });
+  if (entry == fills.end()) {
+    MpChangeFormREFR::AliasFill fill;
+    fill.quest = questDesc;
+    fill.alias = msg.alias;
+    fills.push_back(std::move(fill));
+    entry = std::prev(fills.end());
+  }
+  entry->refr = refrDesc;
+  partOne.SetAliasFills(std::move(fills));
+
+  AliasFillMessage relay;
+  relay.quest = msg.quest;
+  relay.alias = msg.alias;
+  relay.refr = msg.refr;
+  relay.served = false;
+  size_t relayed = 0;
+  for (size_t i = 0, n = partOne.serverState.maxConnectedId; i <= n; ++i) {
+    const auto userId = static_cast<Networking::UserId>(i);
+    if (userId == rawMsgData.userId ||
+        !partOne.serverState.ActorByUser(userId)) {
+      continue;
+    }
+    partOne.GetSendTarget().Send(userId, relay, true);
+    ++relayed;
+  }
+  spdlog::info("[verb:quest-stage] {:x} fills alias {:x}/{} with {:x}: "
+               "recorded, relayed to {} game(s)",
+               reporter->GetFormId(), msg.quest, msg.alias, msg.refr, relayed);
+}
+
+void ActionListener::SendAliasFills(MpActor& actor)
+{
+  const auto& files = partOne.worldState.espmFiles;
+  size_t sent = 0;
+  for (const auto& fill : partOne.GetAliasFills()) {
+    if (!fill.refr) {
+      continue;
+    }
+    AliasFillMessage message;
+    try {
+      message.quest = fill.quest.ToFormId(files);
+      message.refr =
+        IsClearedFill(*fill.refr) ? 0 : fill.refr->ToFormId(files);
+    } catch (const std::exception&) {
+      continue; // a fill whose plugin this load order lacks
+    }
+    message.alias = fill.alias;
+    message.served = true;
+    actor.SendToUser(message, true);
+    ++sent;
+  }
+  if (sent > 0) {
+    spdlog::info("[verb:quest-stage] {} alias fill(s) served to {:x} after "
+                 "its login",
+                 sent, actor.GetFormId());
+  }
+}
+
+// thuum ADR-068 rung 4 (WorldGlobal 80; amendment B; docs/research/
+// rung4-state-rows-2026-11-07.md section 1(c)): the world streamer's report.
+// The whole message is the streamer's at its epoch or nothing (ADR-066
+// decision 4, the epoch first); each entry is then judged alone against the
+// game files (a GLOB, not constant) and the settings (not on the
+// playerGlobals list), the clock's six by number (wire-rules world_globals),
+// and the accepted entries merge into the journal's record, the latest value
+// winning and an equal one folded; what moved goes at once to every other
+// seat (served false).
+void ActionListener::OnWorldGlobal(const RawMessageData& rawMsgData,
+                                   const WorldGlobalMessage& msg)
+{
+  MpActor* reporter = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!reporter) {
+    return;
+  }
+  const uint8_t judgement =
+    partOne.JudgeWorldGlobalReport(reporter->GetFormId(), msg.epoch);
+  if (judgement != 0) {
+    const auto [streamer, epoch] = partOne.WorldStreamer();
+    const uint8_t code = judgement == 3 ? 5 : 6;
+    const std::string name(skymp::rules::world_global_code_name(code));
+    std::string why;
+    if (judgement == 1) {
+      why = fmt::format("the stream stands at epoch {}, the report's is "
+                        "behind it",
+                        epoch);
+    } else if (judgement == 2) {
+      why = fmt::format("the stream stands at epoch {}, the report's is "
+                        "ahead of it",
+                        epoch);
+    } else if (streamer == 0) {
+      why = "nobody streams";
+    } else {
+      why = fmt::format("{:x} streams at epoch {}, not the reporter", streamer,
+                        epoch);
+    }
+    RefuseStateRow(stateRowRefusals, reporter->GetFormId(), name,
+                   fmt::format("[verb:world-globals] {}: {:x} reports {} "
+                               "global(s) at epoch {}: {}",
+                               name, reporter->GetFormId(), msg.entries.size(),
+                               msg.epoch, why));
+    return;
+  }
+
+  const auto watch = partOne.PlayerGlobalsWatch();
+  std::vector<skymp::rules::WorldGlobalValue> accepted;
+  std::map<std::string, size_t> refused;
+  for (const auto& entry : msg.entries) {
+    skymp::rules::WorldGlobalFacts facts{};
+    facts.global = entry.global;
+    if (partOne.HasEspm()) {
+      const auto* rec =
+        partOne.GetEspm().GetBrowser().LookupById(entry.global).rec;
+      facts.is_glob = rec && rec->GetType() == "GLOB";
+      facts.constant = rec && (rec->GetFlags() & kGlobalConstantFlag) != 0;
+    }
+    facts.player_listed =
+      std::find(watch.begin(), watch.end(), entry.global) != watch.end();
+    const uint8_t code = skymp::rules::world_global_entry(facts);
+    if (code != 0) {
+      ++refused[std::string(skymp::rules::world_global_code_name(code))];
+      continue;
+    }
+    accepted.push_back({ entry.global, entry.value });
+  }
+
+  // the journal's record by form id; an entry whose plugin this load order
+  // lacks stays as it is
+  const auto& files = partOne.worldState.espmFiles;
+  auto globals = partOne.GetWorldGlobals();
+  std::vector<skymp::rules::WorldGlobalValue> record;
+  for (const auto& global : globals) {
+    try {
+      record.push_back({ global.global.ToFormId(files), global.value });
+    } catch (const std::exception&) {
+    }
+  }
+  const auto merged = skymp::rules::world_globals_merge(
+    rust::Slice<const skymp::rules::WorldGlobalValue>(record.data(),
+                                                      record.size()),
+    rust::Slice<const skymp::rules::WorldGlobalValue>(accepted.data(),
+                                                      accepted.size()));
+  WorldGlobalMessage relay;
+  relay.epoch = msg.epoch;
+  relay.served = false;
+  for (const auto& moved : merged.changed) {
+    FormDesc desc;
+    try {
+      desc = FormDesc::FromFormId(moved.global, files);
+    } catch (const std::exception&) {
+      continue;
+    }
+    auto it = std::find_if(globals.begin(), globals.end(),
+                           [&](const auto& g) { return g.global == desc; });
+    if (it == globals.end()) {
+      globals.push_back({ desc, moved.value });
+    } else {
+      it->value = moved.value;
+    }
+    relay.entries.push_back({ moved.global, moved.value });
+  }
+  size_t relayed = 0;
+  if (!relay.entries.empty()) {
+    partOne.SetWorldGlobals(std::move(globals));
+    for (size_t i = 0, n = partOne.serverState.maxConnectedId; i <= n; ++i) {
+      const auto userId = static_cast<Networking::UserId>(i);
+      if (userId == rawMsgData.userId ||
+          !partOne.serverState.ActorByUser(userId)) {
+        continue;
+      }
+      partOne.GetSendTarget().Send(userId, relay, true);
+      ++relayed;
+    }
+  }
+  std::string refusals;
+  for (const auto& [name, count] : refused) {
+    refusals += fmt::format(", {} x{}", name, count);
+  }
+  spdlog::info("[verb:world-globals] {:x} reports {} global(s) at epoch {}: "
+               "{} recorded, relayed to {} game(s){}",
+               reporter->GetFormId(), msg.entries.size(), msg.epoch,
+               relay.entries.size(), relayed, refusals);
+}
+
+void ActionListener::SendWorldGlobals(MpActor& actor)
+{
+  if (!partOne.WorldGlobalsEnabled()) {
+    return;
+  }
+  const auto& files = partOne.worldState.espmFiles;
+  std::vector<WorldGlobalMessage::Entry> entries;
+  for (const auto& global : partOne.GetWorldGlobals()) {
+    try {
+      entries.push_back({ global.global.ToFormId(files), global.value });
+    } catch (const std::exception&) {
+      // a recorded global whose plugin this load order lacks
+    }
+  }
+  if (entries.empty()) {
+    return;
+  }
+  const uint32_t epoch = partOne.WorldStreamer().second;
+  for (size_t at = 0; at < entries.size(); at += kWorldGlobalsPerMessage) {
+    WorldGlobalMessage message;
+    message.epoch = epoch;
+    message.served = true;
+    const size_t end = std::min(entries.size(), at + kWorldGlobalsPerMessage);
+    message.entries.assign(entries.begin() + at, entries.begin() + end);
+    actor.SendToUser(message, true);
+  }
+  spdlog::info("[verb:world-globals] {} world global(s) served to {:x} after "
+               "its login, epoch {}",
+               entries.size(), actor.GetFormId(), epoch);
 }
 
 // thuum docs/verbs/prop-physics.md (ADR-058 decision 2): a simulator's

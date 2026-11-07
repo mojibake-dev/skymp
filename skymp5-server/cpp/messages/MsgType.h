@@ -130,6 +130,11 @@ enum class MsgType : uint8_t
   DestructionStage = 78, // thuum D-S3 (traps follow the interaction): a
                          // reference's destruction stage or destroyed flag,
                          // reported by the seat that reached it first,
-                         // recorded once and served behind a create word
+                         // recorded once and served behind a create word;
+                         // since rung 4 also its ref state, the server's
+  AliasFill = 79,   // thuum ADR-068 rung 4: a quest's reference alias filled
+                    // or cleared, every seat's report, the latest recorded
+  WorldGlobal = 80, // the same rung: the GLOBs every seat's scripts write,
+                    // streamed by one seat at an epoch
   Max
 };

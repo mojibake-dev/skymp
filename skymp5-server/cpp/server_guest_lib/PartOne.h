@@ -266,6 +266,27 @@ public:
   std::vector<MpChangeFormREFR::AliasFill> GetAliasFills();
   bool SetAliasFills(std::vector<MpChangeFormREFR::AliasFill> fills);
 
+  // thuum ADR-068 rung 4 (WorldGlobal 80; amendment B): the world's globals
+  // the world streamer's game reports, on the journal; the streamer elected
+  // from what ADR-066 decision 6 has built (wire-rules world_streamer: past
+  // a player's first movement report, not stale, not dead, the lowest id at
+  // each election) and told by its stream word (WorldGlobal with `stream`
+  // true; false to the seat whose stream ends), every send at once.
+  // WorldStreamerMoved: a player's movement report (its first makes it
+  // eligible). JudgeWorldGlobalReport: the streamer's epoch first, 0
+  // Current, 1 StaleEpoch, 2 FutureEpoch, 3 NotOwner. WorldStreamer: the
+  // streamer now and the epoch.
+  // The switch is server-settings.json's `worldGlobals` (false, the
+  // default: nobody is elected, no stream word goes out and no record is
+  // served, the games' globals stay each seat's own as before).
+  void SetWorldGlobalsEnabled(bool on);
+  bool WorldGlobalsEnabled() const;
+  void WorldStreamerMoved(MpActor& actor);
+  uint8_t JudgeWorldGlobalReport(uint32_t sender, uint32_t epoch) const;
+  std::pair<uint32_t, uint32_t> WorldStreamer() const;
+  std::vector<PlayerGlobal> GetWorldGlobals();
+  bool SetWorldGlobals(std::vector<PlayerGlobal> globals);
+
   // thuum docs/verbs/spell-placed-object.md (ADR-057): the objects the
   // server places at an accepted cast of a listed spell,
   // server-settings.json's `spellPlacedObjects` (a JSON list, "[]" for

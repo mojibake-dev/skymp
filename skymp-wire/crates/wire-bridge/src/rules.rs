@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, alias_fills, appearance, attributes, block, bonds, casts, cells, clock, console, damage, destruction, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, placements, player_globals, props, quest_stages, racemenu, ranged, rest, perks, script_state, scripted_effects, shouts, stagger, teleports, weather};
+use wire_rules::{activation, actor_values, alias_fills, appearance, attributes, block, bonds, casts, cells, clock, console, damage, destruction, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, placements, player_globals, props, quest_stages, racemenu, ranged, rest, perks, script_state, scripted_effects, shouts, stagger, teleports, weather, world_globals, world_streamer};
 
 // the perk table's effect calls carry a CTDA's five parts flat, as add_condition does
 #[allow(clippy::too_many_arguments)]
@@ -1637,6 +1637,87 @@ mod ffi {
         added: bool,
     }
 
+    /// One quest alias's fill on the journal (thuum ADR-068 rung 4,
+    /// wire-rules alias_fills::Fill), the forms in the load order.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct AliasFillEntry {
+        /// The QUST.
+        quest: u32,
+        /// The alias's id.
+        alias: u32,
+        /// The reference filling it, 0 when cleared.
+        refr: u32,
+    }
+
+    /// What the core knows of a reported alias fill (wire-rules
+    /// alias_fills::Facts).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct AliasFillFacts {
+        /// The quest is a QUST record.
+        is_quest: bool,
+        /// The quest's record has a reference alias of that id.
+        has_alias: bool,
+        /// The fill's form is a reference (true for a clear).
+        refr_is_ref: bool,
+    }
+
+    /// The rule's word on a reported alias fill.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct AliasFillVerdict {
+        /// 0 recorded (merge and relay), 1 folded (nothing), 2 refused.
+        code: u8,
+        /// The refusal's stable name, empty otherwise.
+        name: String,
+        /// Why, for the log; empty otherwise.
+        why: String,
+    }
+
+    /// One world global's value (wire-rules world_globals::Value).
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    struct WorldGlobalValue {
+        /// The GLOB's form id.
+        global: u32,
+        /// Its value.
+        value: f32,
+    }
+
+    /// What the core knows of one reported world global (wire-rules
+    /// world_globals::EntryFacts).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct WorldGlobalFacts {
+        /// The GLOB's form id.
+        global: u32,
+        /// The form is a GLOB record.
+        is_glob: bool,
+        /// The record flags it constant.
+        constant: bool,
+        /// It is on the playerGlobals list.
+        player_listed: bool,
+    }
+
+    /// The record after a report's accepted entries, and what moved.
+    #[derive(Debug, Clone, PartialEq)]
+    struct WorldGlobalsMerge {
+        /// The record after.
+        record: Vec<WorldGlobalValue>,
+        /// The entries that moved it, to relay.
+        changed: Vec<WorldGlobalValue>,
+    }
+
+    /// The world streamer after an event (thuum ADR-068 rung 4, wire-rules
+    /// world_streamer).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct StreamerElection {
+        /// An election ran: send the stream words.
+        changed: bool,
+        /// The streaming seat's player, 0 for none.
+        streamer: u32,
+        /// The epoch.
+        epoch: u32,
+        /// The seat that streamed before the election, 0 for none.
+        previous: u32,
+    }
+
     extern "Rust" {
         /// A client's first activation of a target `distance` units away,
         /// `target_size` being its bounds' farthest point times its scale.
@@ -2349,10 +2430,43 @@ mod ffi {
         /// Whether the created alias `alias` of `quest` still owes its item:
         /// no mark of the journal's says it was added.
         fn alias_created_due(marks: &[AliasMarkRow], quest: u32, alias: u32) -> bool;
+        /// thuum ADR-068 rung 4 (AliasFill 79): one reported fill against
+        /// the journal's fills, over the facts the core gathered (wire-rules
+        /// alias_fills::judge).
+        fn alias_fill_judge(record: &[AliasFillEntry], fill: &AliasFillEntry, facts: &AliasFillFacts) -> AliasFillVerdict;
+        /// thuum ADR-068 rung 4 (WorldGlobal 80): one reported entry, 0
+        /// accepted, else its code: 1 E_WORLDGLOBAL_CLOCK, 2 _PLAYER, 3
+        /// _CONSTANT, 4 _NO_GLOB (wire-rules world_globals::entry).
+        fn world_global_entry(facts: &WorldGlobalFacts) -> u8;
+        /// The stable name of a world global's code: an entry's (1 to 4),
+        /// 5 E_WORLDGLOBAL_OWNER, 6 E_WORLDGLOBAL_EPOCH; empty for any other.
+        fn world_global_code_name(code: u8) -> String;
+        /// The record after a report's accepted entries: the latest value
+        /// wins, an equal one is folded, the moved ones listed to relay.
+        fn world_globals_merge(record: &[WorldGlobalValue], accepted: &[WorldGlobalValue]) -> WorldGlobalsMerge;
+
+        /// thuum ADR-068 rung 4: the one seat that streams what nobody owns
+        /// (wire-rules world_streamer).
+        type WorldStreamer;
+        /// Nobody streams, epoch 0.
+        fn new_world_streamer() -> Box<WorldStreamer>;
+        /// `player`'s movement report: the first makes the seat eligible.
+        fn moved(self: &mut WorldStreamer, player: u32) -> StreamerElection;
+        /// `player`'s connection went stale, or came back.
+        fn stale(self: &mut WorldStreamer, player: u32, stale: bool) -> StreamerElection;
+        /// `player` died, or stands again.
+        fn dead(self: &mut WorldStreamer, player: u32, dead: bool) -> StreamerElection;
+        /// `player` left.
+        fn gone(self: &mut WorldStreamer, player: u32) -> StreamerElection;
+        /// The streamer now and the epoch (`changed` false).
+        fn streamer_now(self: &WorldStreamer) -> StreamerElection;
+        /// A report from `sender` at `epoch`: 0 Current, 1 StaleEpoch, 2
+        /// FutureEpoch, 3 NotOwner, the epoch first.
+        fn judge(self: &WorldStreamer, sender: u32, epoch: u32) -> u8;
     }
 }
 
-pub use ffi::{AliasCreationRow, AliasMarkRow, QuestAliasRow, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
+pub use ffi::{AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -4281,6 +4395,108 @@ fn alias_creations(aliases: &[QuestAliasRow]) -> Vec<AliasCreationRow> {
         .collect()
 }
 
+fn alias_fill_of(e: &AliasFillEntry) -> alias_fills::Fill {
+    alias_fills::Fill { quest: e.quest, alias: e.alias, refr: e.refr }
+}
+
+fn alias_fill_judge(record: &[AliasFillEntry], fill: &AliasFillEntry, facts: &AliasFillFacts) -> AliasFillVerdict {
+    let parsed: Vec<alias_fills::Fill> = record.iter().map(alias_fill_of).collect();
+    let f = alias_fills::Facts { is_quest: facts.is_quest, has_alias: facts.has_alias, refr_is_ref: facts.refr_is_ref };
+    match alias_fills::judge(&parsed, alias_fill_of(fill), f) {
+        alias_fills::Verdict::Recorded => AliasFillVerdict { code: 0, name: String::new(), why: String::new() },
+        alias_fills::Verdict::Folded => AliasFillVerdict { code: 1, name: String::new(), why: String::new() },
+        alias_fills::Verdict::Refuse(code, why) => AliasFillVerdict { code: 2, name: code.name().to_owned(), why },
+    }
+}
+
+fn world_global_entry(facts: &WorldGlobalFacts) -> u8 {
+    let f = world_globals::EntryFacts { is_glob: facts.is_glob, constant: facts.constant, player_listed: facts.player_listed };
+    match world_globals::entry(facts.global, f) {
+        Ok(()) => 0,
+        Err(world_globals::Code::Clock) => 1,
+        Err(world_globals::Code::Player) => 2,
+        Err(world_globals::Code::Constant) => 3,
+        Err(world_globals::Code::NoGlob) => 4,
+        Err(world_globals::Code::Owner) => 5,
+        Err(world_globals::Code::Epoch) => 6,
+    }
+}
+
+fn world_global_code_name(code: u8) -> String {
+    let code = match code {
+        1 => world_globals::Code::Clock,
+        2 => world_globals::Code::Player,
+        3 => world_globals::Code::Constant,
+        4 => world_globals::Code::NoGlob,
+        5 => world_globals::Code::Owner,
+        6 => world_globals::Code::Epoch,
+        _ => return String::new(),
+    };
+    code.name().to_owned()
+}
+
+fn world_globals_merge(record: &[WorldGlobalValue], accepted: &[WorldGlobalValue]) -> WorldGlobalsMerge {
+    let to_value = |v: &WorldGlobalValue| world_globals::Value { global: v.global, value: v.value };
+    let from_value = |v: world_globals::Value| WorldGlobalValue { global: v.global, value: v.value };
+    let record: Vec<world_globals::Value> = record.iter().map(to_value).collect();
+    let accepted: Vec<world_globals::Value> = accepted.iter().map(to_value).collect();
+    let (after, changed) = world_globals::merge(&record, &accepted);
+    WorldGlobalsMerge { record: after.into_iter().map(from_value).collect(), changed: changed.into_iter().map(from_value).collect() }
+}
+
+/// thuum ADR-068 rung 4: the world streamer (wire-rules world_streamer).
+#[derive(Debug, Default)]
+pub struct WorldStreamer(world_streamer::WorldStreamer);
+
+fn new_world_streamer() -> Box<WorldStreamer> {
+    Box::default()
+}
+
+impl WorldStreamer {
+    fn election(&self, e: Option<world_streamer::Election>) -> StreamerElection {
+        match e {
+            Some(e) => StreamerElection { changed: true, streamer: e.streamer, epoch: e.epoch, previous: e.previous },
+            None => {
+                let (streamer, epoch) = self.0.streamer();
+                StreamerElection { changed: false, streamer, epoch, previous: 0 }
+            }
+        }
+    }
+
+    fn moved(&mut self, player: u32) -> StreamerElection {
+        let e = self.0.moved(player);
+        self.election(e)
+    }
+
+    fn stale(&mut self, player: u32, stale: bool) -> StreamerElection {
+        let e = self.0.stale(player, stale);
+        self.election(e)
+    }
+
+    fn dead(&mut self, player: u32, dead: bool) -> StreamerElection {
+        let e = self.0.dead(player, dead);
+        self.election(e)
+    }
+
+    fn gone(&mut self, player: u32) -> StreamerElection {
+        let e = self.0.gone(player);
+        self.election(e)
+    }
+
+    fn streamer_now(&self) -> StreamerElection {
+        self.election(None)
+    }
+
+    fn judge(&self, sender: u32, epoch: u32) -> u8 {
+        match self.0.judge(sender, epoch) {
+            world_streamer::Judgement::Current => 0,
+            world_streamer::Judgement::StaleEpoch => 1,
+            world_streamer::Judgement::FutureEpoch => 2,
+            world_streamer::Judgement::NotOwner => 3,
+        }
+    }
+}
+
 fn alias_created_due(marks: &[AliasMarkRow], quest: u32, alias: u32) -> bool {
     let parsed: Vec<alias_fills::Mark> = marks.iter().map(|m| alias_fills::Mark { quest: m.quest, alias: m.alias, added: m.added }).collect();
     alias_fills::due(&parsed, quest, alias)
@@ -5072,6 +5288,43 @@ mod tests {
         let marks = [AliasMarkRow { quest: 0x39645, alias: 11, added: true }];
         assert!(!alias_created_due(&marks, 0x39645, 11));
         assert!(alias_created_due(&marks, 0x39645, 16));
+    }
+
+    #[test]
+    fn the_bridge_judges_alias_fills_and_world_globals_and_elects_a_streamer() {
+        // thuum ADR-068 rung 4: MS13 0x39645's ArvelWeb alias 10 and the web
+        // 0x1fc43; an illustrative GLOB 0x1000; two players
+        let ok = AliasFillFacts { is_quest: true, has_alias: true, refr_is_ref: true };
+        let web = AliasFillEntry { quest: 0x39645, alias: 10, refr: 0x1fc43 };
+        assert_eq!(alias_fill_judge(&[], &web, &ok).code, 0);
+        let record = [web];
+        assert_eq!(alias_fill_judge(&record, &web, &ok).code, 1);
+        let refused = alias_fill_judge(&record, &web, &AliasFillFacts { has_alias: false, ..ok });
+        assert_eq!((refused.code, refused.name.as_str()), (2, "E_ALIASFILL_NO_ALIAS"));
+        // a clear moves the record (the core keeps it as refr 0)
+        assert_eq!(alias_fill_judge(&record, &AliasFillEntry { refr: 0, ..web }, &ok).code, 0);
+
+        let facts = |global| WorldGlobalFacts { global, is_glob: true, constant: false, player_listed: false };
+        assert_eq!(world_global_entry(&facts(0x1000)), 0);
+        assert_eq!(world_global_entry(&facts(0x38)), 1);
+        assert_eq!(world_global_entry(&WorldGlobalFacts { player_listed: true, ..facts(0x1000) }), 2);
+        assert_eq!(world_global_entry(&WorldGlobalFacts { constant: true, ..facts(0x1000) }), 3);
+        assert_eq!(world_global_entry(&WorldGlobalFacts { is_glob: false, ..facts(0x1000) }), 4);
+        let names: Vec<String> = (0..=7).map(world_global_code_name).collect();
+        assert_eq!(names, ["", "E_WORLDGLOBAL_CLOCK", "E_WORLDGLOBAL_PLAYER", "E_WORLDGLOBAL_CONSTANT", "E_WORLDGLOBAL_NO_GLOB", "E_WORLDGLOBAL_OWNER", "E_WORLDGLOBAL_EPOCH", ""]);
+        let merged = world_globals_merge(&[WorldGlobalValue { global: 0x1000, value: 1.0 }], &[WorldGlobalValue { global: 0x1000, value: 7.0 }, WorldGlobalValue { global: 0x2000, value: 0.5 }]);
+        assert_eq!(merged.record.len(), 2);
+        assert_eq!(merged.changed.len(), 2);
+
+        let mut w = new_world_streamer();
+        assert_eq!(w.streamer_now(), StreamerElection { changed: false, streamer: 0, epoch: 0, previous: 0 });
+        assert_eq!(w.moved(0xff00_0002), StreamerElection { changed: true, streamer: 0xff00_0002, epoch: 1, previous: 0 });
+        assert!(!w.moved(0xff00_0001).changed);
+        assert_eq!((w.judge(0xff00_0002, 1), w.judge(0xff00_0001, 1), w.judge(0xff00_0002, 0), w.judge(0xff00_0002, 2)), (0, 3, 1, 2));
+        assert_eq!(w.stale(0xff00_0002, true), StreamerElection { changed: true, streamer: 0xff00_0001, epoch: 2, previous: 0xff00_0002 });
+        assert_eq!(w.dead(0xff00_0001, true), StreamerElection { changed: true, streamer: 0, epoch: 3, previous: 0xff00_0001 });
+        assert!(w.stale(0xff00_0002, false).changed);
+        assert!(w.gone(0xff00_0002).changed);
     }
 
     #[test]

@@ -36,6 +36,7 @@
 #include "SpellCastMessage.h"
 #include "UpdateGameModeDataMessage.h"
 #include "UpdateMovementMessage.h"
+#include "WorldGlobalMessage.h"
 
 #include "ActionListener.h"
 #include "FormCallbacks.h"
@@ -346,6 +347,14 @@ struct PartOne::Impl
   // created aliases whose unresolved container this world logged, once each
   std::unordered_map<uint32_t, uint32_t> uniqueActorRefs;
   std::set<std::pair<uint32_t, uint32_t>> unresolvedCreationsLogged;
+
+  // thuum ADR-068 rung 4 (WorldGlobal 80): the world streamer, and the users
+  // it marked stale for their silence (apart from the cell hosts' marks,
+  // which only a host takes)
+  rust::Box<skymp::rules::WorldStreamer> worldStreamer =
+    skymp::rules::new_world_streamer();
+  std::unordered_set<Networking::UserId> streamerStaleUsers;
+  bool worldGlobalsEnabled = false;
   // thuum docs/verbs/leveling.md
   rust::Box<skymp::rules::LevelingTable> leveling =
     skymp::rules::new_leveling_table();
@@ -432,6 +441,39 @@ struct PartOne::Impl
 
   PartOne::OnActorStreamIn onActorStreamIn;
 };
+
+namespace {
+// thuum ADR-068 rung 4: the stream words of one election, at once, never
+// the deferred queue: false to the seat whose stream ends, true to the new
+// streamer, each naming the election's epoch
+void SendStreamWords(PartOne& partOne,
+                     const skymp::rules::StreamerElection& election)
+{
+  if (!election.changed) {
+    return;
+  }
+  const auto tell = [&](uint32_t actorId, bool streams) {
+    if (actorId == 0) {
+      return;
+    }
+    const auto& form = partOne.worldState.LookupFormByIdNoLoad(actorId);
+    MpActor* actor = form ? form->AsActor() : nullptr;
+    if (!actor ||
+        partOne.serverState.UserByActor(actor) == Networking::InvalidUserId) {
+      return;
+    }
+    WorldGlobalMessage word;
+    word.epoch = election.epoch;
+    word.stream = streams;
+    actor->SendToUser(word, true);
+  };
+  tell(election.previous, false);
+  tell(election.streamer, true);
+  spdlog::info("[verb:world-globals] the world streamer is {:x} from epoch "
+               "{} ({:x} before)",
+               election.streamer, election.epoch, election.previous);
+}
+}
 
 PartOne::PartOne(Networking::ISendTarget* sendTarget)
 {
@@ -581,6 +623,12 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
     // quest stages follow the globals, the shared list first, then every
     // recorded stage ascending per quest
     GetActionListener().SendQuestStages(actor);
+
+    // thuum ADR-068 rung 4: the world's alias fills after its quest stages,
+    // and its world globals after the player's own (the streamer applies
+    // the serve before it re-baselines its diff)
+    GetActionListener().SendAliasFills(actor);
+    GetActionListener().SendWorldGlobals(actor);
 
     // thuum memo D56 A: the listed cure spells leave the player's game at the
     // login and every minute after (the engine's own RemoveSpell)
@@ -903,6 +951,11 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           // every cell it hosts starts its grace (thuum
           // docs/verbs/cell-host.md); the clock passes them on
           this_->pImpl->cells->gone(actor->GetFormId(), SteadyNowMs());
+          // and the world streamer hands its stream on (thuum ADR-068 rung
+          // 4)
+          SendStreamWords(
+            *this_, this_->pImpl->worldStreamer->gone(actor->GetFormId()));
+          this_->pImpl->streamerStaleUsers.erase(userId);
           // and its props fall back to their cells' hosts (thuum
           // docs/verbs/prop-physics.md)
           this_->pImpl->props->props_gone(actor->GetFormId());
@@ -2224,12 +2277,16 @@ void PartOne::OnDeathState(MpActor& actor, bool isDead)
                  "grace, no candidate until it stands (D18)",
                  actor.GetFormId());
     ApplyHostDecisions(*this, pImpl->cells->died(actor.GetFormId(), nowMs));
+    SendStreamWords(*this,
+                    pImpl->worldStreamer->dead(actor.GetFormId(), true));
   } else {
     spdlog::info("PartOne - cell-host: {:x} stands again: a candidate again "
                  "(D18)",
                  actor.GetFormId());
     ApplyHostDecisions(*this,
                        pImpl->cells->respawned(actor.GetFormId(), nowMs));
+    SendStreamWords(*this,
+                    pImpl->worldStreamer->dead(actor.GetFormId(), false));
   }
 }
 
@@ -2719,6 +2776,19 @@ void PartOne::TickCellHosts(uint64_t nowMs)
         }
         return false;
       }();
+      // thuum ADR-068 rung 4: the world streamer reads the same silence for
+      // every seat (its own eligibility wants a movement report first, so a
+      // login's load block is no election)
+      const bool streamerStale = pImpl->streamerStaleUsers.count(userId) > 0;
+      if (silenceMs >= kStaleHostMs && !streamerStale) {
+        pImpl->streamerStaleUsers.insert(userId);
+        SendStreamWords(*this,
+                        pImpl->worldStreamer->stale(actor->GetFormId(), true));
+      } else if (silenceMs >= 0 && silenceMs < kStaleHostMs && streamerStale) {
+        pImpl->streamerStaleUsers.erase(userId);
+        SendStreamWords(
+          *this, pImpl->worldStreamer->stale(actor->GetFormId(), false));
+      }
       if (silenceMs >= kStaleHostMs && !wasStale && hostsSomething) {
         pImpl->staleUsers.insert(userId);
         spdlog::info("PartOne - cell-host: {:x} (user {}) silent {} ms, "
@@ -3485,6 +3555,47 @@ std::vector<QuestStageDone> PartOne::GetQuestStages()
 bool PartOne::SetQuestStages(std::vector<QuestStageDone> stages)
 {
   return WorldJournal().SetQuestStages(std::move(stages));
+}
+
+void PartOne::SetWorldGlobalsEnabled(bool on)
+{
+  pImpl->worldGlobalsEnabled = on;
+  spdlog::info("[verb:world-globals] world globals {}", on ? "on" : "off");
+}
+
+bool PartOne::WorldGlobalsEnabled() const
+{
+  return pImpl->worldGlobalsEnabled;
+}
+
+void PartOne::WorldStreamerMoved(MpActor& actor)
+{
+  // off, nobody is ever eligible, so the seats' later events elect nobody
+  if (!pImpl->worldGlobalsEnabled) {
+    return;
+  }
+  SendStreamWords(*this, pImpl->worldStreamer->moved(actor.GetFormId()));
+}
+
+uint8_t PartOne::JudgeWorldGlobalReport(uint32_t sender, uint32_t epoch) const
+{
+  return pImpl->worldStreamer->judge(sender, epoch);
+}
+
+std::pair<uint32_t, uint32_t> PartOne::WorldStreamer() const
+{
+  const auto now = pImpl->worldStreamer->streamer_now();
+  return { now.streamer, now.epoch };
+}
+
+std::vector<PlayerGlobal> PartOne::GetWorldGlobals()
+{
+  return WorldJournal().GetWorldGlobals();
+}
+
+bool PartOne::SetWorldGlobals(std::vector<PlayerGlobal> globals)
+{
+  return WorldJournal().SetWorldGlobals(std::move(globals));
 }
 
 std::vector<MpChangeFormREFR::AliasFill> PartOne::GetAliasFills()

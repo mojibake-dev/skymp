@@ -1,0 +1,49 @@
+# difftest alias-fill (thuum ADR-068 rung 4, AliasFill MsgType 79, wire id 87;
+# docs/research/rung4-state-rows-2026-11-07.md): a quest's reference alias is
+# nobody's (D-F1 C), so every seat reports its own ForceRefTo or Clear and the
+# server keeps the latest fill per (quest, alias) on the world's journal. c1
+# and c2 are new characters (profiles 9 and 10, see melee-reach), both at the
+# spawn; c2 starts 1.5 s after c1, each client's times its own. The quest is
+# Skyrim.esm's MS13 0x39645 (lab/esm.py on sky-srv, 2026-11-06): its
+# reference alias ArvelWeb 10 is forced to the web 0x1fc43, a REFR of Bleak
+# Falls Temple. At 3 s c1 reports alias 10 filled with the web: recorded and
+# relayed at once to c2 (the first divergence). At 2 s of its own c2 reports
+# the same fill, its engine's copy of the same script: folded, nothing sent.
+# At 2.2 s c2 reports the alias cleared (refr 0): recorded and relayed to c1
+# (the second divergence). Four reports send nothing: at 3.8 s c1 names alias
+# 99, which MS13 lacks (E_ALIASFILL_NO_ALIAS, in the wire server's log); at
+# 3.9 s c1 names the STAT 0x3b XMarker as the quest (E_ALIASFILL_NO_QUEST);
+# at 4 s c1 names a server form 0xff000002 as the fill (E_VAL_RANGE at the
+# edge); at 4.1 s c1 sends a served record (E_VAL_RANGE: the serve is the
+# server's). Each session starts from the clean world, so no fill outlives
+# it. The legacy server knows no MsgType 79 and drops all eight. c2 steps
+# aside at 4.5 s so it outlives c1, as in every session.
+id: alias-fill
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 3000, send: {t: 79, quest: 0x39645, alias: 10, refr: 0x1fc43, served: false}, reliable: true}
+  - {client: c2, at_ms: 2000, send: {t: 79, quest: 0x39645, alias: 10, refr: 0x1fc43, served: false}, reliable: true}
+  - {client: c2, at_ms: 2200, send: {t: 79, quest: 0x39645, alias: 10, refr: 0, served: false}, reliable: true}
+  - {client: c1, at_ms: 3800, send: {t: 79, quest: 0x39645, alias: 99, refr: 0x1fc43, served: false}, reliable: true}
+  - {client: c1, at_ms: 3900, send: {t: 79, quest: 0x3b, alias: 10, refr: 0x1fc43, served: false}, reliable: true}
+  - {client: c1, at_ms: 4000, send: {t: 79, quest: 0x39645, alias: 10, refr: 0xff000002, served: false}, reliable: true}
+  - {client: c1, at_ms: 4100, send: {t: 79, quest: 0x39645, alias: 10, refr: 0x1fc43, served: true}, reliable: true}
+  - {client: c2, at_ms: 4500, move: {dx: 1, dy: 0}}
+divergences:
+  - client: c2
+    msg: {t: 79, quest: 0x39645, alias: 10, refr: 0x1fc43, served: false}
+    legacy: 0
+    wire: 1
+    reason: a seat's alias fill recorded on the journal and relayed to the other seat (AliasFill, thuum ADR-068 rung 4); the legacy server knows no MsgType 79
+  - client: c1
+    msg: {t: 79, quest: 0x39645, alias: 10, refr: 0, served: false}
+    legacy: 0
+    wire: 1
+    reason: the other seat's clear recorded and relayed (AliasFill, thuum ADR-068 rung 4); the legacy server knows no MsgType 79
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

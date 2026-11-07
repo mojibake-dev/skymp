@@ -1,0 +1,36 @@
+# difftest world-global (thuum ADR-068 rung 4, WorldGlobal MsgType 80, wire id
+# 88; docs/research/rung4-state-rows-2026-11-07.md): one seat streams the
+# GLOBs every seat's scripts write, elected at its first movement report
+# while the server setting `worldGlobals` is on. No client here moves, so
+# nobody is elected whatever the deployed settings (which T2 copies, and which
+# carry no worldGlobals while the rung's client half has not shipped): the
+# stream word, the streamer's record, its relay and the login's serve are
+# T0's (unit/WorldGlobalTest.cpp), and this session holds the edge's rules and
+# the epoch rule's refusal of a report nobody streams. c1 and c2 are new
+# characters (profiles 9 and 10, see melee-reach). At 2 s c1 reports GLOB
+# 0x17424 DA16ErandurCheckpoint (Skyrim.esm, lab/esm.py on sky-srv,
+# 2026-11-06) at epoch 1: nobody streams, so the wire server refuses it by
+# name (E_WORLDGLOBAL_OWNER) and sends nothing. Four reports are refused at
+# the edge (E_VAL_RANGE): at 2.2 s one carrying the stream word (the server's
+# alone), at 2.4 s one at epoch 0 (ADR-066's epoch-0 rule), at 2.6 s a served
+# record (the server's), at 2.8 s one naming the global twice. The legacy
+# server knows no MsgType 80 and drops all five. c2 reports at 4 s of its own
+# a cell unloaded that it never loaded (nothing to anyone: no move, so no
+# election) and so outlives c1, as in every session.
+id: world-global
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 2000, send: {t: 80, epoch: 1, entries: [{global: 0x17424, value: 2.0}], served: false}, reliable: true}
+  - {client: c1, at_ms: 2200, send: {t: 80, epoch: 1, stream: true, entries: [], served: false}, reliable: true}
+  - {client: c1, at_ms: 2400, send: {t: 80, epoch: 0, entries: [{global: 0x17424, value: 2.0}], served: false}, reliable: true}
+  - {client: c1, at_ms: 2600, send: {t: 80, epoch: 1, entries: [{global: 0x17424, value: 2.0}], served: true}, reliable: true}
+  - {client: c1, at_ms: 2800, send: {t: 80, epoch: 1, entries: [{global: 0x17424, value: 2.0}, {global: 0x17424, value: 3.0}], served: false}, reliable: true}
+  - {client: c2, at_ms: 4000, send: {t: 47, cell: 0xbbb1, loaded: false}, reliable: true}
+divergences:
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

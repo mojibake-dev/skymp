@@ -34,12 +34,12 @@ clients:
 steps:
   - {client: c1, at_ms: 1000, send: {t: 47, cell: 0xbbb1, loaded: true}, reliable: true}
   - {client: c2, at_ms: 500, send: {t: 47, cell: 0xbbb1, loaded: true}, reliable: true}
-  - {client: c1, at_ms: 3000, send: {t: 78, refr: 0x10e6c5, stage: 1, destroyed: false, served: false}, reliable: true}
-  - {client: c2, at_ms: 2000, send: {t: 78, refr: 0x10e6c5, stage: 1, destroyed: false, served: false}, reliable: true}
-  - {client: c2, at_ms: 2200, send: {t: 78, refr: 0x10e6c5, stage: 2, destroyed: true, served: false}, reliable: true}
-  - {client: c1, at_ms: 3800, send: {t: 78, refr: 0x10e6c6, stage: 1, destroyed: false, served: false}, reliable: true}
-  - {client: c1, at_ms: 4000, send: {t: 78, refr: 0x10e6c5, stage: 1, destroyed: false, served: false}, reliable: true}
-  - {client: c1, at_ms: 4200, send: {t: 78, refr: 0x10e6c5, stage: 200, destroyed: false, served: false}, reliable: true}
+  - {client: c1, at_ms: 3000, send: {t: 78, refr: 0x10e6c5, stage: 1, destroyed: false, served: false, seq: 0}, reliable: true}
+  - {client: c2, at_ms: 2000, send: {t: 78, refr: 0x10e6c5, stage: 1, destroyed: false, served: false, seq: 0}, reliable: true}
+  - {client: c2, at_ms: 2200, send: {t: 78, refr: 0x10e6c5, stage: 2, destroyed: true, served: false, seq: 0}, reliable: true}
+  - {client: c1, at_ms: 3800, send: {t: 78, refr: 0x10e6c6, stage: 1, destroyed: false, served: false, seq: 0}, reliable: true}
+  - {client: c1, at_ms: 4000, send: {t: 78, refr: 0x10e6c5, stage: 1, destroyed: false, served: false, seq: 0}, reliable: true}
+  - {client: c1, at_ms: 4200, send: {t: 78, refr: 0x10e6c5, stage: 200, destroyed: false, served: false, seq: 0}, reliable: true}
   - {client: c2, at_ms: 3000, send: {t: 47, cell: 0xbbb1, loaded: false}, reliable: true}
   - {client: c2, at_ms: 6000, move: {dx: 1, dy: 0}}
 divergences:

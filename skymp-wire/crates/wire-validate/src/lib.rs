@@ -238,6 +238,16 @@ pub struct ClientGuard {
     /// references at once at a release; 64 at once, 8 a second after
     /// (UNMEASURED). The transport's byte budget bounds the bytes.
     pub script_state_budget: TokenBucket,
+    /// Budget for a seat's alias fills (AliasFill, thuum ADR-068 rung 4):
+    /// every seat runs a quest's scripts, so each reports its ForceRefTo and
+    /// Clear; 16 at once, 4 a second after (UNMEASURED: 57 ForceRefTo were
+    /// counted at one guest's arrival, thuum docs/DECISIONS.md ADR-068's
+    /// measurements).
+    pub alias_fill_budget: TokenBucket,
+    /// Budget for the world streamer's reports (WorldGlobal, thuum ADR-068
+    /// rung 4): one a second by design, its entries batched; 4 at once, 1 a
+    /// second after (UNMEASURED).
+    pub world_global_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -284,6 +294,8 @@ impl Default for ClientGuard {
             change_form_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 8, last_refill_ms: 0 },
             destruction_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             script_state_budget: TokenBucket { tokens: 64, capacity: 64, refill_per_s: 8, last_refill_ms: 0 },
+            alias_fill_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 4, last_refill_ms: 0 },
+            world_global_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
         }
     }
 }
@@ -597,20 +609,25 @@ fn check_host(cell: u32, epoch: u32) -> Result<(), Reject> {
     Ok(())
 }
 
+/// The record types a placed form may be (`placed_by`'s pairing): Raise
+/// Wall's MSTT and ACTI (ADR-057), and since thuum ADR-068 rung 4 a script
+/// set's placement, a STAT, an NPC_ or an item (libespm's utils::IsItem
+/// types; wire-rules placements' script set places nothing else).
+const PLACED_KINDS: [&str; 15] = ["MSTT", "ACTI", "STAT", "NPC_", "AMMO", "ARMO", "BOOK", "INGR", "ALCH", "SCRL", "SLGM", "WEAP", "MISC", "KEYM", "LIGH"];
+
 /// A form the server introduces (thuum docs/verbs/spell-placed-object.md,
 /// ADR-057): one its table placed at a caster's accepted cast names the
 /// caster in `placed_by`, a server id above 0, and is an MSTT or an ACTI,
-/// which its `base_record_type` says; any other `placed_by` is out of
-/// range. The transport refuses the message from a client by direction.
+/// which its `base_record_type` says; since rung 4 a script set's
+/// placement names its reporter the same way and is any of
+/// [`PLACED_KINDS`]; any other `placed_by` is out of range. The transport
+/// refuses the message from a client by direction.
 fn check_create_actor(m: &skymp::CreateActor) -> Result<(), Reject> {
     if !all_finite(m) {
         return Err(Reject::NonFinite);
     }
     if let Some(caster) = m.props.placed_by {
-        let placed_kind = m
-            .base_record_type
-            .as_ref()
-            .is_some_and(|t| t.as_str() == "MSTT" || t.as_str() == "ACTI");
+        let placed_kind = m.base_record_type.as_ref().is_some_and(|t| PLACED_KINDS.contains(&t.as_str()));
         if caster == 0 || !placed_kind {
             return Err(Reject::Range);
         }
@@ -869,6 +886,45 @@ pub const DESTRUCTION_MAX_STAGE: u8 = 127;
 fn check_destruction_stage(m: &skymp::DestructionStage) -> Result<(), Reject> {
     if m.refr == 0 || m.refr >= PLAYER_FORMS || m.stage > DESTRUCTION_MAX_STAGE {
         return Err(Reject::Range);
+    }
+    Ok(())
+}
+
+/// A quest alias's fill (thuum ADR-068 rung 4, AliasFill): a quest of the
+/// shared load order (never 0 nor one the server names, 0xff000000 and up),
+/// an alias id of at most 0xFFFF (ALST's ids are an alias count's; the
+/// handle's middle word, the platform's read, is 16 bits), a reference of
+/// the load order or 0 for a clear; the same shape both ways (a seat's
+/// report, the server's relay and its served record). Whether the quest has
+/// that reference alias, and whether the fill moves the record, is the
+/// server's rule (wire-rules alias_fills).
+fn check_alias_fill(m: &skymp::AliasFill) -> Result<(), Reject> {
+    if m.quest == 0 || m.quest >= PLAYER_FORMS || m.alias > 0xFFFF || m.refr >= PLAYER_FORMS {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
+/// World globals (thuum ADR-068 rung 4, WorldGlobal): every value finite, at
+/// most [`cap::WORLD_GLOBALS`](wire_schema::cap::WORLD_GLOBALS) entries, each
+/// a GLOB of the shared load order (never 0 nor 0xff000000 and up) named
+/// once, and a stream word naming its epoch (never 0); the same shape both
+/// ways. Which globals the world keeps, and whose report counts, is the
+/// server's rule (wire-rules world_globals and world_streamer).
+fn check_world_global(m: &skymp::WorldGlobal) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    if m.entries.len() > wire_schema::cap::WORLD_GLOBALS || (m.stream.is_some() && m.epoch == 0) {
+        return Err(Reject::Range);
+    }
+    for (i, entry) in m.entries.iter().enumerate() {
+        if entry.global == 0 || entry.global >= PLAYER_FORMS {
+            return Err(Reject::Range);
+        }
+        if m.entries.iter().take(i).any(|e| e.global == entry.global) {
+            return Err(Reject::Range);
+        }
     }
     Ok(())
 }
@@ -1429,8 +1485,32 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::WordWall(_) => take(&mut guard.word_wall_budget, now_ms),
         Message::ObjectAnimation(_) => take(&mut guard.object_animation_budget, now_ms),
         Message::ChangeForm(_) => take(&mut guard.change_form_budget, now_ms),
-        Message::DestructionStage(_) => take(&mut guard.destruction_budget, now_ms),
+        Message::DestructionStage(m) => {
+            // a seat reports a destruction step alone: the ref state's words
+            // and the object's sequence are the server's (thuum ADR-068 rung
+            // 4; its report is ScriptCall 75)
+            if m.disabled.is_some() || m.deleted.is_some() || m.seq != 0 {
+                return Err(Reject::Range);
+            }
+            take(&mut guard.destruction_budget, now_ms)
+        }
         Message::ScriptState(_) => take(&mut guard.script_state_budget, now_ms),
+        Message::AliasFill(m) => {
+            // a seat reports its own fill; a served record is the server's
+            if m.served {
+                return Err(Reject::Range);
+            }
+            take(&mut guard.alias_fill_budget, now_ms)
+        }
+        Message::WorldGlobal(m) => {
+            // the streamer reports under the epoch its word named (ADR-066's
+            // epoch-0 rule); the stream word and a served record are the
+            // server's
+            if m.stream.is_some() || m.served || m.epoch == 0 {
+                return Err(Reject::Range);
+            }
+            take(&mut guard.world_global_budget, now_ms)
+        }
         _ => Ok(()),
     }
 }
@@ -1627,6 +1707,8 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::ScriptState(m) => check_script_state(m),
         Message::ScriptStateApply(m) => check_script_state_apply(m),
         Message::DestructionStage(m) => check_destruction_stage(m),
+        Message::AliasFill(m) => check_alias_fill(m),
+        Message::WorldGlobal(m) => check_world_global(m),
         Message::CreateActor(m) => check_create_actor(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
@@ -2948,6 +3030,81 @@ mod tests {
     }
 
     #[test]
+    fn a_ref_state_word_is_the_servers_alone() {
+        // thuum ADR-068 rung 4: the widened DestructionStage, the cobweb
+        // 0x1fc43 disabled at the object's sequence 3 and served; a seat's
+        // report carries no ref state word and a sequence of 0
+        use wire_schema::skymp::DestructionStage;
+        let word = |disabled: Option<bool>, deleted: Option<bool>, seq: u32| Message::DestructionStage(DestructionStage { refr: 0x1fc43, disabled, deleted, seq, served: true, ..Default::default() });
+        assert_eq!(validate_server(&word(Some(true), None, 3)), Ok(()));
+        assert_eq!(validate_server(&word(Some(true), Some(true), u32::MAX)), Ok(()));
+        let mut guard = ClientGuard::default();
+        assert_eq!(validate(&word(Some(true), None, 3), &mut guard, 0), Err(Reject::Range));
+        assert_eq!(validate(&word(None, Some(false), 0), &mut guard, 0), Err(Reject::Range));
+        let report = |seq: u32| Message::DestructionStage(DestructionStage { refr: 0x9b0fb, stage: 1, seq, ..Default::default() });
+        assert_eq!(validate(&report(1), &mut guard, 0), Err(Reject::Range));
+        assert_eq!(validate(&report(0), &mut guard, 0), Ok(()));
+        // the refusals spent no token: eight in all
+        for _ in 1..8 {
+            assert_eq!(validate(&report(0), &mut guard, 0), Ok(()));
+        }
+        assert_eq!(validate(&report(0), &mut guard, 0), Err(Reject::Rate));
+    }
+
+    #[test]
+    fn alias_fills_name_a_quest_an_alias_and_a_reference() {
+        // thuum ADR-068 rung 4: MS13 0x39645's ArvelWeb alias 10 forced to
+        // the web 0x1fc43, a clear, the edges
+        use wire_schema::skymp::AliasFill;
+        let fill = |quest, alias, refr, served| Message::AliasFill(AliasFill { quest, alias, refr, served, ..Default::default() });
+        assert_eq!(validate_server(&fill(0x39645, 10, 0x1fc43, false)), Ok(()));
+        assert_eq!(validate_server(&fill(0x39645, 10, 0, true)), Ok(()));
+        assert_eq!(validate_server(&fill(0x39645, 0xFFFF, 0xfeff_ffff, false)), Ok(()));
+        assert_eq!(validate_server(&fill(0, 10, 0x1fc43, false)), Err(Reject::Range));
+        assert_eq!(validate_server(&fill(0xff00_0000, 10, 0x1fc43, false)), Err(Reject::Range));
+        assert_eq!(validate_server(&fill(0x39645, 0x1_0000, 0x1fc43, false)), Err(Reject::Range));
+        assert_eq!(validate_server(&fill(0x39645, 10, 0xff00_0002, false)), Err(Reject::Range));
+        let mut guard = ClientGuard::default();
+        // a seat never sends a served record
+        assert_eq!(validate(&fill(0x39645, 10, 0, true), &mut guard, 0), Err(Reject::Range));
+        for _ in 0..16 {
+            assert_eq!(validate(&fill(0x39645, 10, 0x1fc43, false), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&fill(0x39645, 10, 0x1fc43, false), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&fill(0x39645, 10, 0x1fc43, false), &mut guard, 1_250), Ok(()));
+    }
+
+    #[test]
+    fn world_globals_name_glob_forms_once_and_finite() {
+        // thuum ADR-068 rung 4: a streamer's report at epoch 2, the stream
+        // word, a served record (illustrative GLOB ids)
+        use wire_schema::skymp::{WorldGlobal, WorldGlobalEntry};
+        let entry = |global, value| WorldGlobalEntry { global, value };
+        let globals = |epoch, stream, entries: &[WorldGlobalEntry], served| {
+            Message::WorldGlobal(WorldGlobal { epoch, stream, entries: entries.to_vec().try_into().unwrap_or_default(), served, ..Default::default() })
+        };
+        assert_eq!(validate_server(&globals(2, None, &[entry(0x5e3bd, 7.0), entry(0x1000, -1.5)], false)), Ok(()));
+        assert_eq!(validate_server(&globals(3, Some(true), &[], false)), Ok(()));
+        assert_eq!(validate_server(&globals(0, None, &[entry(0x5e3bd, 7.0)], true)), Ok(()), "a record served before any election");
+        assert_eq!(validate_server(&globals(0, Some(true), &[], false)), Err(Reject::Range), "a stream word names its epoch");
+        assert_eq!(validate_server(&globals(2, None, &[entry(0, 1.0)], false)), Err(Reject::Range));
+        assert_eq!(validate_server(&globals(2, None, &[entry(0xff00_0001, 1.0)], false)), Err(Reject::Range));
+        assert_eq!(validate_server(&globals(2, None, &[entry(0x5e3bd, 1.0), entry(0x5e3bd, 2.0)], false)), Err(Reject::Range));
+        assert_eq!(validate_server(&globals(2, None, &[entry(0x5e3bd, f32::NAN)], false)), Err(Reject::NonFinite));
+        assert_eq!(validate_server(&globals(2, None, &[entry(0x5e3bd, f32::INFINITY)], false)), Err(Reject::NonFinite));
+        let mut guard = ClientGuard::default();
+        // a report never carries the word, a served flag or epoch 0
+        assert_eq!(validate(&globals(2, Some(true), &[], false), &mut guard, 0), Err(Reject::Range));
+        assert_eq!(validate(&globals(2, None, &[entry(0x5e3bd, 1.0)], true), &mut guard, 0), Err(Reject::Range));
+        assert_eq!(validate(&globals(0, None, &[entry(0x5e3bd, 1.0)], false), &mut guard, 0), Err(Reject::Range));
+        for _ in 0..4 {
+            assert_eq!(validate(&globals(2, None, &[entry(0x5e3bd, 1.0)], false), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&globals(2, None, &[entry(0x5e3bd, 1.0)], false), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&globals(2, None, &[entry(0x5e3bd, 1.0)], false), &mut guard, 2_000), Ok(()));
+    }
+
+    #[test]
     fn relayed_activations_name_both_references() {
         use wire_schema::skymp::RelayedActivation;
         let relay = |target, caster| Message::RelayedActivation(RelayedActivation { target, caster, ..Default::default() });
@@ -3407,7 +3564,15 @@ mod spell_placed_tests {
         assert_eq!(validate_server(&placed(Some(0), Some("MSTT"))), Err(Reject::Range));
         assert_eq!(validate_server(&placed(Some(0xff00_0000), None)), Err(Reject::Range));
         assert_eq!(validate_server(&placed(Some(0xff00_0000), Some("DOOR"))), Err(Reject::Range));
-        assert_eq!(validate_server(&placed(Some(0xff00_0000), Some("NPC_"))), Err(Reject::Range));
+        // thuum ADR-068 rung 4: a script set's placement, a static, an NPC
+        // or an item, names its reporter too; an explosion never travels
+        // placed
+        for kind in ["STAT", "NPC_", "MISC", "WEAP", "LIGH"] {
+            assert_eq!(validate_server(&placed(Some(0xff00_0000), Some(kind))), Ok(()), "{kind}");
+        }
+        for kind in ["EXPL", "HAZD", "PROJ", "CONT", "FURN"] {
+            assert_eq!(validate_server(&placed(Some(0xff00_0000), Some(kind))), Err(Reject::Range), "{kind}");
+        }
         // every other CreateActor is as it was: no placer, any base type
         assert_eq!(validate_server(&placed(None, None)), Ok(()));
         assert_eq!(validate_server(&placed(None, Some("DOOR"))), Ok(()));

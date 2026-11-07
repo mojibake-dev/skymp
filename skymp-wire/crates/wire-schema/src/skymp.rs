@@ -2458,6 +2458,16 @@ wire_struct! {
     /// `E_VAL_RATE` (the sender's budget); the server logs
     /// `E_DESTRUCTION_NO_REF`, `E_DESTRUCTION_ACTOR` and
     /// `E_DESTRUCTION_CELL` by name.
+    ///
+    /// Since SCHEMA_VERSION 39 (thuum ADR-068 rung 4 and its amendment B,
+    /// read 7) the same word is a reference's engine state from the server:
+    /// `disabled` and `deleted`, the record a host's scripted Enable,
+    /// Disable or Delete moved (its report is ScriptCall 75, never this
+    /// message), with the object's sequence `seq`; relayed to the
+    /// reference's other listeners at once and served behind its create word
+    /// (`served` true). A word carrying neither is a destruction word alone.
+    /// A seat's report carries neither and a `seq` of 0 (`E_VAL_RANGE`
+    /// otherwise).
     pub struct DestructionStage {
         /// `"t": 78`.
         #[serde(default)]
@@ -2471,6 +2481,99 @@ wire_struct! {
         /// The server's record served behind the reference's create word
         /// (a late joiner, a restart) rather than a step just recorded; false
         /// on every report.
+        pub served: bool,
+        /// The server's word that the reference is disabled (true) or
+        /// enabled (false), the ref state's record (thuum ADR-068 rung 4);
+        /// absent on a destruction word and on every report.
+        pub disabled: Option<bool>,
+        /// The server's word that the reference is deleted (a deleted
+        /// game-file reference stays disabled on every seat); absent on a
+        /// destruction word and on every report.
+        pub deleted: Option<bool>,
+        /// The object's sequence at the ref state's record (one per object,
+        /// owned by the server, shared with its relayed script calls); 0 on
+        /// a destruction word and on every report.
+        pub seq: u32,
+    }
+}
+
+wire_struct! {
+    /// MsgType 79, thuum's (ADR-068 rung 4, AliasFill; amendment B, read 8):
+    /// a quest's reference alias filled or cleared. A quest is nobody's (D-F1
+    /// C): every seat runs its scripts, so each seat reports its own
+    /// ReferenceAlias.ForceRefTo or Clear (`served` false). Client to server,
+    /// reliable, R2: the server records one fill per (quest, alias), the
+    /// latest report winning and an equal one folded (wire-rules
+    /// alias_fills), for a QUST with a reference alias of that id. Server to
+    /// client, reliable: a fill that moved the record relayed to every other
+    /// seat (`served` false), and the record served at login (`served`
+    /// true). The items an alias creates are the server's own from the game
+    /// files and never travel here. Reason codes: `E_VAL_RANGE` (a quest of
+    /// 0 or 0xff000000 and up, an alias past 0xFFFF, a refr 0xff000000 and
+    /// up; a report served), `E_VAL_RATE`; the server logs
+    /// `E_ALIASFILL_NO_QUEST`, `E_ALIASFILL_NO_ALIAS` and `E_ALIASFILL_REF`
+    /// by name.
+    pub struct AliasFill {
+        /// `"t": 79`.
+        #[serde(default)]
+        pub t: MsgT<79>,
+        /// The QUST, a form of the load order both ends share; never 0.
+        pub quest: u32,
+        /// The alias's id in its quest (ALST), at most 0xFFFF.
+        pub alias: u32,
+        /// The reference filling it, a game-file form; 0 when cleared.
+        pub refr: u32,
+        /// The record served at login rather than a fill just recorded;
+        /// false on every report.
+        pub served: bool,
+    }
+}
+
+wire_struct! {
+    /// One world global's value (thuum ADR-068 rung 4, WorldGlobal).
+    pub struct WorldGlobalEntry {
+        /// The GLOB, a form of the load order both ends share; never 0.
+        pub global: u32,
+        /// Its value (a TESGlobal holds a float whatever its type,
+        /// CommonLibSSE-NG include/RE/T/TESGlobal.h:45); finite.
+        pub value: f32,
+    }
+}
+
+wire_struct! {
+    /// MsgType 80, thuum's (ADR-068 rung 4, WorldGlobal; amendment B): the
+    /// GLOBs every seat's scripts write, streamed by one seat. Client to
+    /// server, reliable, R2: the world streamer's game reports the values
+    /// its once-a-second diff of the GLOB array found moved, under the
+    /// streamer's epoch (no `stream`, `served` false); the server judges the
+    /// epoch first (wire-rules world_streamer, ADR-066 decision 4) and each
+    /// entry (wire-rules world_globals: not the clock's, not a per-player
+    /// global, a non-constant GLOB), keeps the latest value per global on the
+    /// world's journal and relays what moved to every other seat. Server to
+    /// client, reliable: the relay (`served` false), the record at login
+    /// (`served` true), and the stream word at each election (`stream` true
+    /// to the new streamer, false to the old one; `entries` empty). Reason
+    /// codes: `E_VAL_RANGE` (more than 512 entries, a global of 0 or
+    /// 0xff000000 and up, one twice; a stream word at epoch 0; a report with
+    /// `stream`, `served`, or epoch 0), `E_VAL_NONFINITE`, `E_VAL_RATE`; the
+    /// server logs `E_WORLDGLOBAL_EPOCH`, `E_WORLDGLOBAL_OWNER` and the
+    /// entries' `E_WORLDGLOBAL_CLOCK`, `E_WORLDGLOBAL_PLAYER`,
+    /// `E_WORLDGLOBAL_CONSTANT` and `E_WORLDGLOBAL_NO_GLOB` by name.
+    pub struct WorldGlobal {
+        /// `"t": 80`.
+        #[serde(default)]
+        pub t: MsgT<80>,
+        /// The streamer's epoch: a report's the one its stream word named,
+        /// never 0; the server's the election's at the word, the current one
+        /// otherwise.
+        pub epoch: u32,
+        /// The stream word: true, this seat streams from `epoch`; false, its
+        /// stream ends. Absent on every report, relay and serve.
+        pub stream: Option<bool>,
+        /// The values, each global once; at most 512.
+        pub entries: Vec<WorldGlobalEntry, { cap::WORLD_GLOBALS }>,
+        /// The record served at login rather than a relay; false on every
+        /// report.
         pub served: bool,
     }
 }

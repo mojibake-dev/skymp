@@ -91,7 +91,16 @@ use bounded::{String, Vec};
 /// engine read them at a quiescent point, recorded by the server with the
 /// object's sequence and its view, and served ahead of a grant and behind a
 /// create word.
-pub const SCHEMA_VERSION: u16 = 38;
+/// 39: the state rows (thuum ADR-068 rung 4 and its amendment B,
+/// m4-scripts-4-rows): DestructionStage widened to a reference's engine
+/// state (`disabled`, `deleted` and the object's `seq` beside the stage and
+/// destroyed, the server's word alone), AliasFill (MsgType 79, wire id 87: a
+/// quest's reference alias filled or cleared, nobody's, the latest report
+/// recorded and relayed) and WorldGlobal (MsgType 80, wire id 88: the GLOBs
+/// every seat's scripts write, streamed by one seat at an epoch), and
+/// CreateActor's `placedBy` on a script's placement (STAT, NPC_ and items
+/// beside MSTT and ACTI).
+pub const SCHEMA_VERSION: u16 = 39;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -227,6 +236,10 @@ pub mod cap {
     /// Elements of one array variable: the VM's own bound (CommonLibSSE-NG
     /// include/RE/A/Array.h:69, MAX_SIZE 128).
     pub const SCRIPT_ARRAY: usize = 128;
+    /// World globals in one WorldGlobal (thuum ADR-068 rung 4): Skyrim.esm's
+    /// GLOB records number in the hundreds and a second's diff moves a
+    /// handful (UNMEASURED: x-world-globals-rate v1 reads the rate).
+    pub const WORLD_GLOBALS: usize = 512;
     /// Entries in one gamemode code list.
     pub const GAMEMODE_ENTRIES: usize = 256;
     /// One gamemode function's JavaScript source.
@@ -587,6 +600,10 @@ pub enum Message {
     ScriptStateApply(skymp::ScriptStateApply),
     /// 86, MsgType 78 (thuum). See [`skymp::DestructionStage`].
     DestructionStage(skymp::DestructionStage),
+    /// 87, MsgType 79 (thuum ADR-068 rung 4). See [`skymp::AliasFill`].
+    AliasFill(skymp::AliasFill),
+    /// 88, MsgType 80 (thuum ADR-068 rung 4). See [`skymp::WorldGlobal`].
+    WorldGlobal(skymp::WorldGlobal),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -615,7 +632,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 87] = [
+const TABLE: [Row; 89] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -710,17 +727,24 @@ const TABLE: [Row; 87] = [
     // shorter); the apply adds the sequence and the view
     row("ScriptState", 76, 192 * KIB, C2S),
     row("ScriptStateApply", 77, 256 * KIB, S2C),
-    // a reference, a stage byte and two flags (thuum D-S3; 9 bytes at the
+    // a reference, a stage byte, two flags, the ref state's two words and
+    // the object's sequence (thuum D-S3, ADR-068 rung 4; 16 bytes at the
     // longest, pinned by wire_id_matches_postcard_variant_index)
-    row("DestructionStage", 78, 16, Both),
+    row("DestructionStage", 78, 32, Both),
+    // a quest, an alias, a reference and a flag (thuum ADR-068 rung 4; 17
+    // bytes at the longest)
+    row("AliasFill", 79, 32, Both),
+    // 512 entries at nine bytes and the scalars (thuum ADR-068 rung 4;
+    // 4,617 bytes at the longest)
+    row("WorldGlobal", 80, 8 * KIB, Both),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 87;
-const _: () = assert!(TABLE.len() == 87, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 89;
+const _: () = assert!(TABLE.len() == 89, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -832,6 +856,8 @@ impl Message {
             Message::ScriptState(_) => 84,
             Message::ScriptStateApply(_) => 85,
             Message::DestructionStage(_) => 86,
+            Message::AliasFill(_) => 87,
+            Message::WorldGlobal(_) => 88,
         }
     }
 
@@ -878,6 +904,8 @@ mod tests {
         assert_eq!(Message::ScriptState(skymp::ScriptState::default()).name(), "ScriptState");
         assert_eq!(Message::ScriptStateApply(skymp::ScriptStateApply::default()).name(), "ScriptStateApply");
         assert_eq!(Message::DestructionStage(skymp::DestructionStage::default()).name(), "DestructionStage");
+        assert_eq!(Message::AliasFill(skymp::AliasFill::default()).name(), "AliasFill");
+        assert_eq!(Message::WorldGlobal(skymp::WorldGlobal::default()).name(), "WorldGlobal");
         assert_eq!(
             Message::CreateActor(skymp::CreateActor::default()).name(),
             "CreateActor"
@@ -945,7 +973,14 @@ mod tests {
         assert_eq!(name_of_msg_type(76), Some("ScriptState"));
         assert_eq!(name_of_msg_type(77), Some("ScriptStateApply"));
         assert_eq!(name_of_msg_type(78), Some("DestructionStage"));
-        assert_eq!(name_of_msg_type(79), None);
+        // ADR-068 rung 4's two, after 78: wire ids 87 and 88
+        assert_eq!(name_of_msg_type(79), Some("AliasFill"));
+        assert_eq!(name_of_msg_type(80), Some("WorldGlobal"));
+        assert_eq!(name_of_msg_type(81), None);
+        assert_eq!(Message::AliasFill(skymp::AliasFill::default()).wire_id(), 87);
+        assert_eq!(Message::WorldGlobal(skymp::WorldGlobal::default()).wire_id(), 88);
+        assert_eq!(Message::AliasFill(skymp::AliasFill::default()).direction(), Direction::Both);
+        assert_eq!(Message::WorldGlobal(skymp::WorldGlobal::default()).direction(), Direction::Both);
         assert_eq!(Message::ScriptState(skymp::ScriptState::default()).msg_type(), Some(76));
         assert_eq!(Message::ScriptStateApply(skymp::ScriptStateApply::default()).msg_type(), Some(77));
         assert_eq!(Message::ScriptState(skymp::ScriptState::default()).wire_id(), 84);
@@ -1174,7 +1209,30 @@ mod tests {
                 scripts: script_record_at_its_answer_cap(),
                 ..Default::default()
             }),
-            Message::DestructionStage(skymp::DestructionStage { refr: u32::MAX, stage: u8::MAX, destroyed: true, served: true, ..Default::default() }),
+            Message::DestructionStage(skymp::DestructionStage {
+                refr: u32::MAX,
+                stage: u8::MAX,
+                destroyed: true,
+                served: true,
+                disabled: Some(true),
+                deleted: Some(true),
+                seq: u32::MAX,
+                ..Default::default()
+            }),
+            // an alias fill and a world global report at their longest
+            // (thuum ADR-068 rung 4)
+            Message::AliasFill(skymp::AliasFill { quest: u32::MAX, alias: u32::MAX, refr: u32::MAX, served: true, ..Default::default() }),
+            Message::WorldGlobal(skymp::WorldGlobal {
+                epoch: u32::MAX,
+                stream: Some(true),
+                entries: (0..cap::WORLD_GLOBALS)
+                    .map(|_| skymp::WorldGlobalEntry { global: u32::MAX, value: f32::MAX })
+                    .collect::<alloc::vec::Vec<_>>()
+                    .try_into()
+                    .unwrap_or_default(),
+                served: true,
+                ..Default::default()
+            }),
             // and its relay, the sequence carried (thuum ADR-068)
             Message::SpSnippet(skymp::SpSnippet {
                 class: "ObjectReference".try_into().unwrap_or_default(),

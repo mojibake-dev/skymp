@@ -76,7 +76,8 @@ macro_rules! skymp_family {
             51 ActorFate, 52 ActorDeath, 53 HostedActorState, 54 ActorSpeech, 55 DamageCause, 56 ActorClaim, 57 QuestStage,
             58 PropTransform, 59 PropClaim, 60 PropOwner, 61 PlacedRequest, 62 PlacedReport, 63 SkillUse, 64 LockReport, 65 LockPrompt, 66 SetWeather, 67 PerkPick, 68 PerkState, 69 WordWall, 70 RelayedActivation, 71 ObjectAnimation,
             72 ChangeForm, 73 ChangeFormAck, 74 ChangeFormApply, 75 ScriptCall,
-            76 ScriptState, 77 ScriptStateApply, 78 DestructionStage
+            76 ScriptState, 77 ScriptStateApply, 78 DestructionStage, 79 AliasFill,
+            80 WorldGlobal
         }
     };
 }
@@ -353,7 +354,7 @@ mod tests {
             n += 1;
         }
         assert!(n >= 90, "{n} fixtures");
-        assert_eq!(types.len(), 78, "every SkyMP type has fixtures");
+        assert_eq!(types.len(), 80, "every SkyMP type has fixtures");
     }
 
     /// Writes the fixtures: two per SkyMP type, from arbitrary values with
@@ -465,22 +466,88 @@ mod tests {
     /// 78, as every fixture is.
     #[test]
     fn destruction_stage_fixtures_validate_as_named() {
-        use wire_validate::validate_server;
-        let wants: [(&str, u32, u8, bool, bool); 2] = [
-            ("78-DestructionStage-0.json", 0x9b0fb, 1, false, false),
-            ("78-DestructionStage-1.json", 0xb6d3f, 0, true, true),
+        // thuum D-S3's two (a seat's report, a served destruction) with
+        // rung 4's sequence of 0, then the ref state's: 78-2 the server's
+        // served word for Bleak Falls Temple's cobweb 0x1fc43, disabled at
+        // the object's sequence 3, and 78-3 a seat's report carrying the
+        // server's words: shapes either side may hold, the ref state's words
+        // refused from a client at the edge
+        use wire_validate::{validate, validate_server, ClientGuard, Reject};
+        type Want = (&'static str, u32, u8, bool, bool, Option<bool>, Option<bool>, u32, Result<(), Reject>);
+        let wants: [Want; 4] = [
+            ("78-DestructionStage-0.json", 0x9b0fb, 1, false, false, None, None, 0, Ok(())),
+            ("78-DestructionStage-1.json", 0xb6d3f, 0, true, true, None, None, 0, Ok(())),
+            ("78-DestructionStage-2.json", 0x1fc43, 0, false, true, Some(true), None, 3, Err(Reject::Range)),
+            ("78-DestructionStage-3.json", 0x1fc43, 0, false, false, Some(true), Some(false), 1, Err(Reject::Range)),
         ];
-        for (name, refr, stage, destroyed, served) in wants {
+        for (name, refr, stage, destroyed, served, disabled, deleted, seq, from_client) in wants {
             let text = std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
             match recognize(&text) {
                 Ok(m @ Message::DestructionStage(_)) => {
                     assert_eq!(validate_server(&m), Ok(()), "{name}");
+                    assert_eq!(validate(&m, &mut ClientGuard::default(), 0), from_client, "{name}");
                     if let Message::DestructionStage(d) = m {
-                        assert_eq!((d.refr, d.stage, d.destroyed, d.served), (refr, stage, destroyed, served), "{name}");
+                        assert_eq!((d.refr, d.stage, d.destroyed, d.served, d.disabled, d.deleted, d.seq), (refr, stage, destroyed, served, disabled, deleted, seq), "{name}");
                     }
                 }
                 other => panic!("{name}: {other:?}"),
             }
+        }
+    }
+
+    /// thuum ADR-068 rung 4: the AliasFill and WorldGlobal fixtures, shapes
+    /// and refusals. 79-0 a relay of MS13 0x39645's ArvelWeb alias 10, forced
+    /// to the web 0x1fc43 (Skyrim.esm, lab/esm.py 2026-11-06); 79-1 its alias
+    /// 3 served cleared; 79-2 a fill naming a server form, refused. 80-0 the
+    /// streamer's report at epoch 2 of DA04MinLevel 0xe316c (a Skyrim.esm
+    /// GLOB, lab/esm.py), 80-1 the stream word at epoch 3 with its empty
+    /// entries, 80-2 a global named twice, refused (JSON cannot spell the
+    /// NaN the plan named; the unit tests carry it).
+    #[test]
+    fn alias_fill_and_world_global_fixtures_validate_as_named() {
+        use wire_validate::{validate, validate_server, ClientGuard, Reject};
+        type Verdict = (&'static str, Result<(), Reject>, Result<(), Reject>);
+        let verdicts: [Verdict; 6] = [
+            ("79-AliasFill-0.json", Ok(()), Ok(())),
+            ("79-AliasFill-1.json", Ok(()), Err(Reject::Range)),
+            ("79-AliasFill-2.json", Err(Reject::Range), Err(Reject::Range)),
+            ("80-WorldGlobal-0.json", Ok(()), Ok(())),
+            ("80-WorldGlobal-1.json", Ok(()), Err(Reject::Range)),
+            ("80-WorldGlobal-2.json", Err(Reject::Range), Err(Reject::Range)),
+        ];
+        for (name, shape, from_client) in verdicts {
+            let text = std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+            let m = recognize(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(validate_server(&m), shape, "{name}");
+            assert_eq!(validate(&m, &mut ClientGuard::default(), 0), from_client, "{name}");
+        }
+        // the stream word's entries are present though empty
+        let text = std::fs::read_to_string(fixtures_dir().join("80-WorldGlobal-1.json")).unwrap_or_default();
+        let m = recognize(&text).unwrap_or_else(|e| panic!("80-WorldGlobal-1.json: {e}"));
+        let rendered: Value = serde_json::from_str(&render(&m).unwrap_or_default()).unwrap_or(Value::Null);
+        assert_eq!(rendered.get("entries"), Some(&Value::Array(Vec::new())));
+        assert_eq!(rendered.get("stream"), Some(&Value::Bool(true)));
+        // a report carries no stream key
+        let text = std::fs::read_to_string(fixtures_dir().join("80-WorldGlobal-0.json")).unwrap_or_default();
+        let m = recognize(&text).unwrap_or_else(|e| panic!("80-WorldGlobal-0.json: {e}"));
+        let rendered: Value = serde_json::from_str(&render(&m).unwrap_or_default()).unwrap_or(Value::Null);
+        assert_eq!(rendered.get("stream"), None);
+    }
+
+    /// thuum ADR-068 rung 4: a script set's placement names its reporter on
+    /// a STAT (33-CreateActor-3: an XMarker 0x3b placed at Bleak Falls
+    /// Temple's cobweb, the reporter 0xff000000), a pairing the server sends
+    #[test]
+    fn a_script_placements_create_word_validates() {
+        use wire_validate::validate_server;
+        let text = std::fs::read_to_string(fixtures_dir().join("33-CreateActor-3.json")).unwrap_or_default();
+        let m = recognize(&text).unwrap_or_else(|e| panic!("33-CreateActor-3.json: {e}"));
+        assert_eq!(validate_server(&m), Ok(()));
+        match m {
+            Message::CreateActor(c) => {
+                assert_eq!((c.props.placed_by, c.base_record_type.as_ref().map(|t| t.as_str())), (Some(0xff00_0000), Some("STAT")));
+            }
+            other => panic!("not a CreateActor: {other:?}"),
         }
     }
 

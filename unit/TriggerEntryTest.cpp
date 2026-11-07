@@ -317,6 +317,77 @@ TEST_CASE("A presser inside a trigger's primitive, far from its origin, is "
   Leave(p);
 }
 
+// the builder's call on the probe review of D-C2: a guest who leaves a world
+// trigger by a teleport or a door reports its OnTriggerLeave after the move,
+// far off the trigger. A leave pairs with its presser's accepted enter
+// (wire-rules trigger_entry::Entries) and is taken without the reach; a
+// leave with none to end, a second one among them, is E_ENTRY_UNPAIRED
+TEST_CASE("A guest's leave after its accepted enter is relayed from far off "
+          "the trigger, and a leave with no enter to end is refused "
+          "E_ENTRY_UNPAIRED (D-C2)",
+          "[TriggerEntry][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  Loaded(p, 1, kTemple);
+  p.Messages().clear();
+  // a leave in the web with no enter before it: refused, nothing sent
+  {
+    LogCapture log;
+    REQUIRE_NOTHROW(Entry(p, 1, 0x14, kWeb, 2));
+    REQUIRE(log.Count("[verb:traps] E_ENTRY_UNPAIRED: ff000fe2 reports "
+                      "ff000fe2 leaving 37281: no accepted entry of ff000fe2 "
+                      "into 37281 to end; refused, 1 since the last line") ==
+            1);
+    REQUIRE(log.Count("relayed to the host") == 0);
+  }
+  REQUIRE(RelayedTo(p, 0).empty());
+  // the enter in the web, relayed
+  Entry(p, 1, 0x14, kWeb, 1);
+  REQUIRE(RelayedTo(p, 0).size() == 1);
+  REQUIRE(RelayedTo(p, 0)[0].entry == std::optional<uint32_t>(1));
+  // the guest is moved 2000 units off (a teleport, a door) and reports its
+  // leave there: beyond the enter's reach, paired, relayed to the host
+  Stand(p, kGuestActor, kFarFromTheWeb);
+  p.Messages().clear();
+  {
+    LogCapture log;
+    Entry(p, 1, 0x14, kWeb, 2);
+    REQUIRE(log.Count("[verb:traps] ff000fe2 reports ff000fe2 leaving 37281 "
+                      "in cell 371de (its host ff000fe1): relayed to the "
+                      "host") == 1);
+    REQUIRE(log.Count("E_ENTRY_") == 0);
+  }
+  REQUIRE(RelayedTo(p, 0).size() == 1);
+  REQUIRE(RelayedTo(p, 0)[0].target == kWeb);
+  REQUIRE(RelayedTo(p, 0)[0].caster == kGuestActor);
+  REQUIRE(RelayedTo(p, 0)[0].entry == std::optional<uint32_t>(2));
+  REQUIRE(RelayedTo(p, 1).empty());
+  // a second leave ends nothing: refused (its line counted, the first said
+  // within the minute), nothing sent
+  p.Messages().clear();
+  {
+    LogCapture log;
+    REQUIRE_NOTHROW(Entry(p, 1, 0x14, kWeb, 2));
+    REQUIRE(log.Count("relayed to the host") == 0);
+  }
+  REQUIRE(RelayedTo(p, 0).empty());
+  // an enter from far off is still the reach's refusal, and opens nothing
+  p.Messages().clear();
+  {
+    LogCapture log;
+    REQUIRE_NOTHROW(Entry(p, 1, 0x14, kWeb, 1));
+    REQUIRE(log.Count("[verb:traps] E_ENTRY_REACH: ff000fe2 reports "
+                      "ff000fe2 entering 37281") == 1);
+  }
+  REQUIRE(RelayedTo(p, 0).empty());
+  // so its leave has nothing to end either
+  p.Messages().clear();
+  REQUIRE_NOTHROW(Entry(p, 1, 0x14, kWeb, 2));
+  REQUIRE(RelayedTo(p, 0).empty());
+  Leave(p);
+}
+
 TEST_CASE("An Activate without an entry keeps the activation's own path "
           "(D-C2)",
           "[TriggerEntry][espm]")

@@ -35,6 +35,7 @@ export class ActivationService extends ClientListener {
         super();
         this.controller.on("activate", (e) => this.onActivate(e));
         this.presserRule = this.startPresserRule();
+        this.startTriggerLook(this.presserRule);
         if (this.presserRule) {
             this.controller.on("update", () => this.sendEntries());
         }
@@ -226,7 +227,11 @@ export class ActivationService extends ClientListener {
   // later links); (4) anything else is the cell's host's, as before, a
   // mechanism activating a family target among them (the puzzle lever
   // 0xaa8c3's darts, the pull chains 0xfda45 and 0xfda43's blades: no family
-  // trigger, so its pair is the host's to report). HYPOTHESIS H-W1 until
+  // trigger, so its pair is the host's to report). An exempt trigger (D-W2's
+  // fallback, getTrapRole's exempt: every seat's engine fires it, D-S3) is
+  // never a root and its own activation is the cell host's report, so its
+  // pairs take steps (3) and (4) as D-S3's point 5 did and no seat fires it
+  // twice. HYPOTHESIS H-W1 until
   // x-trigger-owner: the press mark or the trigger's own activation reaches
   // this service before the pair it causes (the lines' order reads it). An
   // activate event's context: the game reads are legal here
@@ -235,7 +240,7 @@ export class ActivationService extends ClientListener {
     const relays = this.controller.lookupListener(RelayedActivationService);
     if (caster === target) {
       const own = ObjectReferenceEx.trapRole(caster);
-      if (own !== null && own.family && own.trigger === true) {
+      if (own !== null && own.family && own.trigger === true && own.exempt !== true) {
         this.markFired(caster, now);
         logLab(TAG, `trap ${idOf(target)} fired here by ${idOf(caster)}: its own activation, reported (D-W1)`);
         this.sendOwnActivation(target);
@@ -251,13 +256,15 @@ export class ActivationService extends ClientListener {
       return;
     }
     const role = ObjectReferenceEx.trapRole(caster);
-    if (role !== null && role.family && role.trigger === true && this.firedHere(caster, now) && !relays.wasRelayPlayed(caster, now)) {
+    if (role !== null && role.family && role.trigger === true && role.exempt !== true && this.firedHere(caster, now) && !relays.wasRelayPlayed(caster, now)) {
       logLab(TAG, `trap ${idOf(target)} fired here by ${idOf(caster)}: the presser's owner's firing, reported (D-W1)`);
       this.reportLinked(caster, target);
       return;
     }
     if (role !== null && role.family && ObjectReferenceEx.isTrapFamily(target)) {
-      logLab(TAG, `trap ${idOf(target)} fired here by ${idOf(caster)}: a later link of a firing, each seat's own (D-W1)`);
+      logLab(TAG, role.exempt === true
+        ? `trap ${idOf(target)} fired here by ${idOf(caster)}: every seat fires the trap family itself, not reported (D-S3)`
+        : `trap ${idOf(target)} fired here by ${idOf(caster)}: a later link of a firing, each seat's own (D-W1)`);
       return;
     }
     if (this.controller.lookupListener(HostService).isHostedHere(e.target)) {
@@ -400,6 +407,55 @@ export class ActivationService extends ClientListener {
     }
     logTrace(this, "the presser rule is on (D-W1): a trigger's entry is its presser's owner's");
     return true;
+  }
+
+  // thuum docs/DECISIONS.md D-W2 A (the trigger's own calls from its firing
+  // seat; docs/research/fifty-fixes-2026-11-07.md 7.2(a) and (c)): the look's
+  // A/B switch, the client setting triggerLook (on unless false), told to the
+  // platform's gate through setTriggerLook the way the presser rule is (off
+  // by default there); the look acts only with the presser rule on, so it is
+  // told off whenever that rule is off here. Beside it the fallback lever,
+  // triggerPresserExempt (the script classes whose non-owned presses the
+  // presser rule passes, D-S3's per-seat firing for them; empty by default,
+  // a list the lab fills only on a red), told through
+  // setTriggerPresserExempt. A platform without an export says so once
+  private startTriggerLook(presserOn: boolean): void {
+    const settings = this.sp.settings["skymp5-client"] as Record<string, unknown> | undefined;
+    const off = settings !== undefined && settings["triggerLook"] === false;
+    const look = presserOn && !off;
+    if (off) {
+      logTrace(this, "triggerLook is off in settings: a trigger's own calls stay each seat's (D-S3)");
+    }
+    try {
+      if (this.sp.setTriggerLook(look) === false && look) {
+        logError(this, "setTriggerLook(true) refused; a trigger's own calls stay each seat's");
+      } else if (look) {
+        logTrace(this, "the trigger look is on (D-W2): a firing's own calls cross from its firing seat");
+      }
+    } catch (e) {
+      if (look) {
+        logLab(TAG, `setTriggerLook unavailable on this platform (${e}); a trigger's own calls stay each seat's`);
+      }
+    }
+    if (!presserOn) {
+      return;
+    }
+    const listed: unknown = settings !== undefined ? settings["triggerPresserExempt"] : undefined;
+    const exempt = Array.isArray(listed) ? listed.filter((x): x is string => typeof x === "string" && x !== "") : [];
+    if (listed !== undefined && (!Array.isArray(listed) || exempt.length !== listed.length)) {
+      logError(this, "triggerPresserExempt is not a list of script class names; its other entries are ignored");
+    }
+    try {
+      if (this.sp.setTriggerPresserExempt(exempt) === false) {
+        logError(this, `setTriggerPresserExempt refused ${exempt.length} class(es)`);
+      } else if (exempt.length > 0) {
+        logLab(TAG, `presser rule exempt (D-W2's fallback, D-S3 for them): ${exempt.join(", ")}`);
+      }
+    } catch (e) {
+      if (exempt.length > 0) {
+        logLab(TAG, `setTriggerPresserExempt unavailable on this platform (${e}); no class is exempt`);
+      }
+    }
   }
 
   // thuum docs/verbs/traps.md (M4): a linked activation this game's engine

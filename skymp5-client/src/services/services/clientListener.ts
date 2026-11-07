@@ -182,11 +182,16 @@ declare module "skyrimPlatform" {
     // 1(a), the seam's changes): kind "touch" is an owned self's state row,
     // batched with no arguments and once a frame per self, for its record's read
     // alone; callerSelf is the calling frame's self (previousFrame's, through the
-    // handle policy as self is read), 0 for none, absent on an older platform
+    // handle policy as self is read), 0 for none, absent on an older platform.
+    // D-W2 A (docs/research/fifty-fixes-2026-11-07.md 7.2(a)): kind "look" is
+    // a trap family trigger's own call on itself during a firing this seat's
+    // presser started (its action rows, SetMotionType, ApplyHavokImpulse, and
+    // Sound.Play, whose self is the Sound and whose subject is the source in
+    // its first argument), run here and reported from here
     interface ScriptCall {
         cls: string;
         fn: string;
-        kind: "action" | "state" | "everyone" | "touch";
+        kind: "action" | "state" | "everyone" | "touch" | "look";
         self: number;
         callerSelf?: number;
         args: (boolean | number | string | { formId: number } | null)[];
@@ -240,8 +245,11 @@ declare module "skyrimPlatform" {
     // the trap bodies another seat streams, and the references whose server
     // record is being applied (their Papyrus events blanked meanwhile). The
     // role's trigger (a script on the reference reaching TrapTriggerBase,
-    // never a trap body; playtest 48) is absent from an older platform's
-    function getTrapRole(formId: number): { family: boolean; playerOnly: boolean; destroyed: boolean; trigger?: boolean } | null;
+    // never a trap body; playtest 48) is absent from an older platform's, as is
+    // exempt (D-W2's fallback: one of its classes named in
+    // setTriggerPresserExempt, so the presser rule passes its non-owned
+    // presses and every seat fires it, D-S3)
+    function getTrapRole(formId: number): { family: boolean; playerOnly: boolean; destroyed: boolean; trigger?: boolean; exempt?: boolean } | null;
     function setPropFollowed(formId: number, followed: boolean): boolean;
     function setRecordApplying(formId: number, applying: boolean): boolean;
     // thuum docs/DECISIONS.md D-W1 A and D-C2 A (a trigger volume's entry is
@@ -263,6 +271,14 @@ declare module "skyrimPlatform" {
     function on(eventName: 'triggerEntry', callback: (event: TriggerEntryEvent) => void): EventHandle;
     function once(eventName: 'triggerEntry', callback: (event: TriggerEntryEvent) => void): EventHandle;
     function setTriggerPresserRule(enabled: boolean): boolean;
+    // D-W2 A (the plan's 7.2(a)): the gate's look switch, off by default in
+    // the platform and acting only with the presser rule on, turned on by
+    // ActivationService from the client setting triggerLook; and the fallback
+    // lever, the script classes whose non-owned presses the presser rule
+    // passes (D-S3's per-seat firing for them, chain-matched without case),
+    // empty by default, from the client setting triggerPresserExempt
+    function setTriggerLook(enabled: boolean): boolean;
+    function setTriggerPresserExempt(classes: string[]): boolean;
     // thuum docs/verbs/traps.md H-P1 (the puzzle lever, a NoPlayer FURN;
     // docs/research/fifty-fixes-2026-11-07.md 1(b), the furniture branch): a
     // FURN's own graph event outside a script action, under Override or not,

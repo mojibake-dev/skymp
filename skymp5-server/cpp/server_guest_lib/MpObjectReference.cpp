@@ -224,7 +224,7 @@ ChangeFormGuard::Mode MakeMode(bool isLocationSaveNeeded,
 
   switch (setPosMode) {
     case SetPosMode::CalledByUpdateMovement:
-      return ChangeFormGuard::Mode::NoRequestSave;
+      return ChangeFormGuard::Mode::Deferred;
     case SetPosMode::Other:
       return ChangeFormGuard::Mode::RequestSave;
     default:

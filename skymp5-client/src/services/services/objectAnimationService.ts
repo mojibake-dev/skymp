@@ -145,6 +145,12 @@ export class ObjectAnimationService extends ClientListener {
     private controller: CombinedController,
   ) {
     super();
+    // the kept last animations and their re-apply follow the script record's
+    // switch (the review of b86884a5, note 4; .claude/rules/native.md's A/B
+    // switch): scriptRecord false in skymp5-client-settings.txt keeps nothing
+    // and re-applies nothing, as ScriptStateService then applies nothing
+    const settings = this.sp.settings["skymp5-client"] as Record<string, unknown> | undefined;
+    this.keepEnabled = !settings || settings["scriptRecord"] !== false;
     this.controller.emitter.on('objectAnimationMessage', (e) =>
       this.onRelayed(e),
     );
@@ -183,6 +189,23 @@ export class ObjectAnimationService extends ClientListener {
     this.controller.emitter.on('connectionAccepted', () => {
       this.lastAnimations.clear();
       this.subscribed.clear();
+      this.subscribedIdx.clear();
+    });
+    // the server's unsubscribe (DestroyActor, the create word's emitter idx,
+    // PartOne.cpp's onSubscribe and onUnsubscribe) ends the reference's
+    // subscription here and takes its kept animation with it: a re-entry's 3D
+    // can load before the next create word (the lab's teleport is the
+    // client's), and a word kept from before the seat left must not replay
+    // over what changed while it was away (the review of b86884a5, note 1).
+    // A message handler: JS state alone
+    this.controller.emitter.on('destroyActorMessage', (e) => {
+      const localId = this.subscribedIdx.get(e.message.idx);
+      if (localId === undefined) {
+        return;
+      }
+      this.subscribedIdx.delete(e.message.idx);
+      this.subscribed.delete(localId);
+      this.lastAnimations.delete(localId);
     });
     for (const pattern of EVENT_PATTERNS) {
       const handler = {
@@ -223,8 +246,10 @@ export class ObjectAnimationService extends ClientListener {
       this.lastAnimations.delete(localId);
       if (this.subscribed.size >= SUBSCRIBED_MAX) {
         this.subscribed.clear();
+        this.subscribedIdx.clear();
       }
       this.subscribed.add(localId);
+      this.subscribedIdx.set(msg.idx, localId);
     }
     // no self-played mark here (the review of 066cce4e, finding 1): the replay this message announces comes two seconds or more
     // later and a hosting seat never replays, so a mark set now could be used up by the seat's own genuine event (its
@@ -632,6 +657,9 @@ export class ObjectAnimationService extends ClientListener {
   // the higher seq; at an equal seq the later word stands, as a guest applies
   // a record whose seq is not below its own. An update's context
   private keep(refr: ObjectReference, localId: number, event: string, seq: number, shown: boolean): void {
+    if (!this.keepEnabled) {
+      return;
+    }
     const old = this.lastAnimations.get(localId);
     if (old !== undefined && seq < old.seq) {
       return;
@@ -698,6 +726,9 @@ export class ObjectAnimationService extends ClientListener {
 
   // the kept references' 3D, POLLS_PER_UPDATE of them an update in turn
   private pollLastAnimations(): void {
+    if (!this.keepEnabled) {
+      return;
+    }
     const size = this.lastAnimations.size;
     if (size === 0) {
       return;
@@ -723,9 +754,10 @@ export class ObjectAnimationService extends ClientListener {
   // cell (its script drives the graph, and rung 3's new owner plays the
   // record's view once before its gate opens, ScriptStateService's pass, so
   // nothing is marked here) or a record of the reference is still being
-  // applied (its own play shows the view). The hosted test is the report's,
-  // isHostedHere (a persistent exterior reference's parent cell is its
-  // worldspace's persistent cell, hostService's isMine note: the known limit).
+  // applied (its own play shows the view). The hosted test is
+  // epochForActor's, which also finds a persistent exterior reference's host
+  // through its worldspace (its parent cell is the worldspace's persistent
+  // cell, where isHostedHere misses it: the review of b86884a5, note 2).
   // A 3D here and shown is looked at every update, so its unload is seen
   private pollOne(id: number, kept: LastAnimation, now: number): void {
     if (now < kept.lookAt) {
@@ -742,9 +774,13 @@ export class ObjectAnimationService extends ClientListener {
     if (kept.shown) {
       return;
     }
-    if (this.controller.lookupListener(HostService).isHostedHere(refr)
+    if (this.controller.lookupListener(HostService).epochForActor(refr) !== 0
       || this.controller.lookupListener(ScriptStateService).viewOf(id) === 'pending') {
       kept.lookAt = now + REAPPLY_WAIT_MS;
+      return;
+    }
+    if (!this.keepsFor(refr, id)) {
+      this.lastAnimations.delete(id);
       return;
     }
     const { played, jump } = this.playOn(refr, id, kept.event, true);
@@ -788,4 +824,8 @@ export class ObjectAnimationService extends ClientListener {
   private pollAt = 0;
   private reappliedSaidAt = new Map<number, number>();
   private subscribed = new Set<number>();
+  // the create word's emitter idx for each subscribed reference, so its
+  // DestroyActor (which names the idx alone) ends it (note 1)
+  private subscribedIdx = new Map<number, number>();
+  private keepEnabled: boolean;
 }

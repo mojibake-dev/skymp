@@ -1,9 +1,10 @@
 import { ScriptCall, ScriptCallsEvent, ScriptCensusEvent } from "skyrimPlatform";
-import { logLab, logTrace } from "../../logging";
+import { logError, logLab, logTrace } from "../../logging";
 import { MsgType } from "../../messages";
 import { ScriptCallMessage } from "../messages/scriptCallMessage";
 import { SpSnippetArgument } from "../messages/spSnippetMessage";
 import { localIdToRemoteId } from "../../view/worldViewMisc";
+import { AliasFillService } from "./aliasFillService";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { HostService } from "./hostService";
 import { ObjectAnimationService } from "./objectAnimationService";
@@ -49,6 +50,32 @@ import { TrapResultService } from "./trapResultService";
 // 8 a second over every call); the player's own hits are its own seat's and
 // never sent. DeathReportService asks for the queued hits before its report,
 // so the server reads a hit before the death it explains.
+// thuum docs/DECISIONS.md ADR-068 amendment B (rung 4, the state rows;
+// docs/research/rung4-state-rows-2026-11-07.md (d)): the platform batches the
+// owned calls of the record rows too, kind "state" with their arguments:
+// RefState's five (Enable, EnableNoWait, Disable, DisableNoWait and Delete, a
+// reference's enabled and deleted state) and the standing's six
+// (SetFactionRank, ModFactionRank, RemoveFromFaction, RemoveFromAllFactions,
+// SetCrimeFaction and SetRelationshipRank, an NPC's). Each goes to the server
+// as one ScriptCall through the record queue (noteRecord): coalesced per self
+// and piece of state in the frame, the last call winning, sent on the update
+// with the epoch HostService holds for the subject's cell, through a bucket
+// mirroring the server's record budget, each object's calls (actions among
+// them) in the engine's order. The server records them (wire-rules
+// ref_state.rs and standing.rs) and says them back as DestructionStage 78
+// (RefStateService) and as applier snippets with the object's seq
+// (SpSnippetService). Neither is sent for the player's own actor. The
+// batch's everyone rows ReferenceAlias.ForceRefTo and Clear are
+// AliasFillService's. PlaceAtMe and PlaceActorAtMe (Record(Placement)) are
+// never sent: W3, the script placement waits (the fake client alone, T2).
+// Every batched call keeps rung 3's read trigger (noteCall below).
+type Outgoing = {
+    call: ScriptCall;
+    record: boolean;          // a record row's call, which spends the record bucket
+    key: string | undefined;  // its piece of state (recordSlot) with its self; undefined for an action or a step
+    dropped: boolean;         // a later call of the same piece superseded it before its send
+};
+
 export class ScriptCallService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -116,8 +143,17 @@ export class ScriptCallService extends ClientListener {
             if (call.cls === "ObjectReference" && call.fn === "ProcessTrapHit") {
                 this.noteTrapHit(call);
             }
+            if (call.kind === "state") {
+                const family = ScriptCallService.recordFamily(call);
+                if (family !== undefined) {
+                    this.noteRecord(call, family);
+                }
+            }
+            if (call.kind === "everyone" && call.cls === "ReferenceAlias" && (call.fn === "ForceRefTo" || call.fn === "Clear")) {
+                this.controller.lookupListener(AliasFillService).noteFill(call);
+            }
             if (call.kind === "action") {
-                this.pending.push(call);
+                this.queue({ call, record: false, key: undefined, dropped: false });
                 // the hooks never see an owned call's animation (the seam's
                 // mark), so a pillar's side is noted from the call itself
                 const event = call.args[0];
@@ -135,16 +171,144 @@ export class ScriptCallService extends ClientListener {
     }
 
     private onUpdate() {
-        if (this.pending.length > 0) {
-            const pending = this.pending;
-            this.pending = [];
-            const host = this.controller.lookupListener(HostService);
-            for (const call of pending) {
-                this.send(call, host);
-            }
+        if (this.outgoing.length > 0) {
+            this.flush(Date.now());
         }
         this.sendTrapHits();
         this.summarize();
+    }
+
+    // a record row's call (JS state alone), queued with the piece of state it
+    // sets: the last call of a piece wins and is queued after the calls
+    // between them, so what is sent keeps the engine's order. A reference's
+    // Enable, Disable and Delete are one piece, and a queued Delete stays (a
+    // deleted reference never comes back: ref_state.rs's rule); a faction's
+    // SetFactionRank and RemoveFromFaction are one, the crime faction one, a
+    // relationship one per other actor, RemoveFromAllFactions one;
+    // ModFactionRank is a step and every call of it goes. The player's own
+    // actor sends neither: its standing waits for rung 5 (the server refuses
+    // it, E_SCRIPTCALL_ROW), and its ref state is its seat's own (ADR-068
+    // decision 6; a recorded disable of a player's actor would end its next
+    // login, PartOne::SetUserActor)
+    private noteRecord(call: ScriptCall, family: "ref" | "standing") {
+        if (call.self === 0x14) {
+            this.recordsOwn++;
+            return;
+        }
+        const slot = ScriptCallService.recordSlot(call, family);
+        const key = slot === undefined ? undefined : `${call.self.toString(16)} ${slot}`;
+        if (key !== undefined) {
+            const queued = this.recordKeys.get(key);
+            if (queued !== undefined) {
+                this.recordsFolded++;
+                if (family === "ref" && queued.call.fn === "Delete") {
+                    return;
+                }
+                queued.dropped = true;
+            }
+        }
+        const entry: Outgoing = { call, record: true, key, dropped: false };
+        if (key !== undefined) {
+            this.recordKeys.set(key, entry);
+        }
+        this.queue(entry);
+    }
+
+    // the outgoing queue, bounded: past its cap the oldest call goes, counted
+    private queue(entry: Outgoing) {
+        if (this.outgoing.length >= ScriptCallService.outgoingMax) {
+            const oldest = this.outgoing.shift();
+            if (oldest !== undefined && !oldest.dropped) {
+                this.outgoingDropped++;
+                if (oldest.key !== undefined && this.recordKeys.get(oldest.key) === oldest) {
+                    this.recordKeys.delete(oldest.key);
+                }
+            }
+        }
+        this.outgoing.push(entry);
+    }
+
+    // the queued calls in order: an action as before, a record row's while the
+    // record bucket holds a token (the server's own record budget, BURST_RECORD
+    // 128 then 32 a second, the plan's (c), UNMEASURED), so a burst waits here
+    // instead of being refused there and lost (E_SCRIPTCALL_RATE). A self whose
+    // record waits holds its later calls back, so one object's calls reach the
+    // server in the engine's order (its per-object seq); other selves go on
+    private flush(now: number) {
+        this.recordTokens = Math.min(ScriptCallService.recordBurst, this.recordTokens + ((now - this.recordRefilledAt) / 1000) * ScriptCallService.recordPerS);
+        this.recordRefilledAt = now;
+        const host = this.controller.lookupListener(HostService);
+        const queued = this.outgoing;
+        this.outgoing = [];
+        const held = new Set<number>();
+        for (const entry of queued) {
+            if (entry.dropped) {
+                continue;
+            }
+            if (held.has(entry.call.self)) {
+                this.outgoing.push(entry);
+                continue;
+            }
+            if (!entry.record) {
+                this.send(entry.call, host);
+                continue;
+            }
+            if (localIdToRemoteId(entry.call.self) === 0) {
+                this.recordsUnsent++;
+                this.forget(entry);
+                continue;
+            }
+            if (this.recordTokens < 1) {
+                held.add(entry.call.self);
+                this.outgoing.push(entry);
+                continue;
+            }
+            this.recordTokens -= 1;
+            this.forget(entry);
+            this.send(entry.call, host);
+            this.recordsSent++;
+        }
+    }
+
+    private forget(entry: Outgoing) {
+        if (entry.key !== undefined && this.recordKeys.get(entry.key) === entry) {
+            this.recordKeys.delete(entry.key);
+        }
+    }
+
+    // the record rows (docs/NATIVES.md's keep column, Record(RefState) and
+    // Record(Standing)), by the table's spelling
+    private static recordFamily(call: ScriptCall): "ref" | "standing" | undefined {
+        if (call.cls === "ObjectReference" && ScriptCallService.refStateRows.has(call.fn)) {
+            return "ref";
+        }
+        if (call.cls === "Actor" && ScriptCallService.standingRows.has(call.fn)) {
+            return "standing";
+        }
+        return undefined;
+    }
+
+    // the piece of state a record row's call sets (noteRecord's key with its
+    // self); undefined for ModFactionRank, a step that is never folded
+    private static recordSlot(call: ScriptCall, family: "ref" | "standing"): string | undefined {
+        if (family === "ref") {
+            return "ref";
+        }
+        const first = call.args[0];
+        const form = first !== null && typeof first === "object" ? first.formId.toString(16) : "none";
+        switch (call.fn) {
+            case "SetFactionRank":
+            case "RemoveFromFaction":
+                return `rank ${form}`;
+            case "RemoveFromAllFactions":
+                return "factions";
+            case "SetCrimeFaction":
+                return "crime";
+            case "SetRelationshipRank":
+                return `relationship ${form}`;
+            default:
+                return undefined;
+        }
     }
 
     // a trap's hit on an actor, queued for the next send (the event's context
@@ -230,14 +394,15 @@ export class ScriptCallService extends ClientListener {
 
     // a form travels by its server id (the player's own actor as its figure's,
     // which the receiver's deserializeArg maps back) and the Papyrus type the
-    // receiver casts it to: Actor, ObjectReference, else Form (no rung 2 row
-    // passes another kind of form)
+    // receiver casts it to: Actor, ObjectReference, Faction (the standing's
+    // rows, rung 4), else Form (no other row passes another kind of form)
     private toSnippetArgument(arg: ScriptCall["args"][number]): SpSnippetArgument {
         if (arg === null || typeof arg !== "object") {
             return arg;
         }
         const form = this.sp.Game.getFormEx(arg.formId);
-        const type = form && this.sp.Actor.from(form) ? "Actor" : form && this.sp.ObjectReference.from(form) ? "ObjectReference" : "Form";
+        const type = form && this.sp.Actor.from(form) ? "Actor" : form && this.sp.ObjectReference.from(form) ? "ObjectReference"
+            : form && this.sp.Faction.from(form) ? "Faction" : "Form";
         return { formId: localIdToRemoteId(arg.formId, true), type };
     }
 
@@ -263,7 +428,8 @@ export class ScriptCallService extends ClientListener {
     // call, " (not hosted)" for a call on a subject this seat does not own,
     // " on <id>" for a quest's, global's or alias's call with its self (up to
     // the platform's cap of selves a row a window, then " on others"); no
-    // suffix is a call on a subject this seat owns, from the frames' batches
+    // suffix is a call on a subject this seat owns, from the frames' batches,
+    // or an alias's fill or clear the batch carries since rung 4
     private summarize() {
         const now = Date.now();
         if (now - this.lastSummary < ScriptCallService.summaryMs) {
@@ -283,6 +449,20 @@ export class ScriptCallService extends ClientListener {
             this.hitsSent = 0;
             this.hitsThrottled = 0;
             this.hitsNotMine = 0;
+        }
+        // the record queue's window (rung 4): sent, folded into a later call of
+        // the same piece, with no server id, the player's own; still waiting
+        const waiting = this.outgoing.filter((o) => o.record && !o.dropped).length;
+        if (this.recordsSent + this.recordsFolded + this.recordsUnsent + this.recordsOwn + this.outgoingDropped > 0 || waiting > 0) {
+            logLab("verb:scripts", `record rows in ${ScriptCallService.summaryMs / 1000} s: ${this.recordsSent} sent, ${this.recordsFolded} folded, ${this.recordsUnsent} without a server id, ${this.recordsOwn} the player's own; ${waiting} waiting`);
+            if (this.outgoingDropped > 0) {
+                logError(this, `${this.outgoingDropped} queued call(s) dropped past ${ScriptCallService.outgoingMax} in ${ScriptCallService.summaryMs / 1000} s`);
+            }
+            this.recordsSent = 0;
+            this.recordsFolded = 0;
+            this.recordsUnsent = 0;
+            this.recordsOwn = 0;
+            this.outgoingDropped = 0;
         }
         if (this.counts.size === 0) {
             return;
@@ -304,7 +484,17 @@ export class ScriptCallService extends ClientListener {
         logTrace(this, `${this.kills.size} script kill mark(s) held`);
     }
 
-    private pending: ScriptCall[] = [];
+    // the calls to send in the engine's order: actions and record rows
+    private outgoing: Outgoing[] = [];
+    // the queued record row for each piece of state (noteRecord's key)
+    private readonly recordKeys = new Map<string, Outgoing>();
+    private recordTokens = ScriptCallService.recordBurst;
+    private recordRefilledAt = Date.now();
+    private recordsSent = 0;
+    private recordsFolded = 0;
+    private recordsUnsent = 0;
+    private recordsOwn = 0;
+    private outgoingDropped = 0;
     private unsent = 0;
     private hits: ScriptCall[] = [];
     private readonly lastHitAt = new Map<number, number>();
@@ -321,4 +511,10 @@ export class ScriptCallService extends ClientListener {
     // own hit, when throttled, leaves a note at most a second older
     private static readonly trapHitEveryMs = 1_000;
     private static readonly logPerWindow = 5;
+    private static readonly recordBurst = 128;
+    private static readonly recordPerS = 32;
+    // UNMEASURED: four thousand calls are over two minutes of the record budget
+    private static readonly outgoingMax = 4096;
+    private static readonly refStateRows = new Set<string>(["Enable", "EnableNoWait", "Disable", "DisableNoWait", "Delete"]);
+    private static readonly standingRows = new Set<string>(["SetFactionRank", "ModFactionRank", "RemoveFromFaction", "RemoveFromAllFactions", "SetCrimeFaction", "SetRelationshipRank"]);
 }

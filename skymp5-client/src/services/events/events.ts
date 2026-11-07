@@ -66,6 +66,7 @@ import { ChangeFormAckMessage } from "../messages/changeFormAckMessage";
 import { ChangeFormApplyMessage } from "../messages/changeFormApplyMessage";
 import { DestructionStageMessage } from "../messages/destructionStageMessage";
 import { ScriptStateApplyMessage } from "../messages/scriptStateApplyMessage";
+import { AliasFillMessage } from "../messages/aliasFillMessage";
 
 import { AnyRawMessageEvent } from "./anyRawMessageEvent";
 import { NicknameCreateEvent } from "./nicknameCreateEvent";
@@ -139,6 +140,8 @@ type EventTypes = {
     'destructionStageMessage': [ConnectionMessage<DestructionStageMessage>],
     // thuum docs/DECISIONS.md ADR-068 amendment A (rung 3): a script record served ahead of a grant or behind a create word (ScriptStateService)
     'scriptStateApplyMessage': [ConnectionMessage<ScriptStateApplyMessage>],
+    // thuum docs/DECISIONS.md ADR-068 rung 4 (the state rows): an alias's fill relayed or served (AliasFillService)
+    'aliasFillMessage': [ConnectionMessage<AliasFillMessage>],
     'customPacketMessage': [ConnectionMessage<CustomPacketMessage>]
 
     'browserWindowLoaded': [BrowserWindowLoadedEvent],

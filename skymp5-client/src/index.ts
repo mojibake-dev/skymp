@@ -34,6 +34,7 @@ import { RelayedActivationService } from "./services/services/relayedActivationS
 import { ObjectAnimationService } from "./services/services/objectAnimationService";
 import { TrapResultService } from "./services/services/trapResultService";
 import { RefStateService } from "./services/services/refStateService";
+import { AliasFillService } from "./services/services/aliasFillService";
 import { SkillUseService } from "./services/services/skillUseService";
 import { ArrowSyncService } from "./services/services/arrowSyncService";
 import { SpVersionCheckService } from "./services/services/spVersionCheckService";
@@ -132,6 +133,7 @@ const main = () => {
       new ObjectAnimationService(sp, controller),
       new TrapResultService(sp, controller),
       new RefStateService(sp, controller),
+      new AliasFillService(sp, controller),
       new SkillUseService(sp, controller),
       new ArrowSyncService(sp, controller),
       new SpVersionCheckService(sp, controller),

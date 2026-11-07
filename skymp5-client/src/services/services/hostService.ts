@@ -11,6 +11,7 @@ import { Movement } from "../../sync/movement";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { localIdToRemoteId, remoteIdToLocalId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
+import { RefStateService } from "./refStateService";
 import { RemoteServer } from "./remoteServer";
 import { ScriptStateService } from "./scriptStateService";
 
@@ -240,12 +241,15 @@ export class HostService extends ClientListener {
     // (thuum ADR-068 rung 3, the script record): the platform's hosted set
     // and the activation lift at once, after the cell's script records are
     // applied; a grant released or replaced meanwhile opens nothing (its
-    // release told the platform already)
+    // release told the platform already). Rung 4 (amendment B): the cell's
+    // held ref state words go on first, inside the same pass, so the new
+    // host's engine starts from the record (RefStateService)
     private openGate(cell: number, epoch: number) {
         if (this.hosted.get(cell) !== epoch) {
             logTrace(this, `cell ${cell.toString(16)}: the gate of the grant at epoch ${epoch} stays shut, the grant is gone`);
             return;
         }
+        this.controller.lookupListener(RefStateService).applyAtGrant(cell);
         this.tellPlatform(cell, true, true);
         this.liftCellActivation(cell, true, true);
     }
@@ -659,7 +663,9 @@ export class HostService extends ClientListener {
         // record and its graphs from the record's view before an event or an
         // activation of the cell reaches them; with no record held, the switch
         // scriptRecord off or an older platform, the pass opens it on the next
-        // update, as tellPlatform and liftCellActivation did here
+        // update, as tellPlatform and liftCellActivation did here. The cell's
+        // ref state words wait for the same gate (rung 4, RefStateService)
+        this.controller.lookupListener(RefStateService).holdForGrant(cell);
         this.controller.lookupListener(ScriptStateService).beforeHosting(cell, () => this.openGate(cell, epoch));
         this.persist();
         logTrace(this, `hosting cell ${cell.toString(16)} at epoch ${epoch}`);

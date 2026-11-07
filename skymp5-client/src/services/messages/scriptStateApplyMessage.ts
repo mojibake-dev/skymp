@@ -17,6 +17,21 @@ import { ScriptObjectState } from "./scriptStateTypes";
 // this seat's seq for the form is another. Safe to receive twice: the newer
 // record replaces a held one. JSON field names as wire-schema's
 // ScriptStateApply reads them
+
+// thuum docs/research/fifty-fixes-2026-11-07.md 1(a), D-C3 A (PENDING ELI):
+// one graph variable of the reference as the server keeps it from its owner's
+// SetAnimationVariableBool, Int or Float, with the object's seq of that call
+// (each variable its own, the newest per name wins): k by ScriptVar's folded
+// kinds, 3 int (i), 4 float (f, finite), 5 bool (b), and that payload alone
+export interface GraphVar {
+    name: string;
+    k: number;
+    i?: number | null;
+    f?: number | null;
+    b?: boolean | null;
+    seq: number;
+}
+
 export interface ScriptStateApplyMessage {
     t: MsgType.ScriptStateApply;
     formId: number;          // the reference's form id, a game-file reference's
@@ -24,4 +39,7 @@ export interface ScriptStateApplyMessage {
     seq: number;             // the object's seq when the record was taken
     event?: string | null;   // the record's view, the reference's last animation event then; absent or null for none
     scripts: ScriptObjectState[];
+    // D-C3 A (PENDING ELI): the reference's graph variables as kept at the
+    // serve, at most 16; absent or null for none
+    graphVars?: GraphVar[] | null;
 }

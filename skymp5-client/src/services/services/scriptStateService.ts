@@ -4,7 +4,7 @@ import { MsgType } from "../../messages";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { ConnectionMessage } from "../events/connectionMessage";
 import { CreateActorMessage } from "../messages/createActorMessage";
-import { ScriptStateApplyMessage } from "../messages/scriptStateApplyMessage";
+import { GraphVar, ScriptStateApplyMessage } from "../messages/scriptStateApplyMessage";
 import { ScriptStateMessage } from "../messages/scriptStateMessage";
 import { ScriptHandle, ScriptObjectState, ScriptValue, ScriptVar } from "../messages/scriptStateTypes";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
@@ -198,6 +198,7 @@ type Held = {
     appliedAt: number;
     reason: string;     // the platform's last refusal, for the give-up line
     viewTries: number;
+    vars: GraphVar[];   // D-C3 A (PENDING ELI): the record's graph variables, each by its own seq
 };
 
 // a grant waiting for its cell's records
@@ -423,6 +424,38 @@ const parseApply = (raw: string): ApplyAnswer | undefined => {
     };
 };
 
+// D-C3 A (PENDING ELI; docs/research/fifty-fixes-2026-11-07.md 1(a)): a
+// served record's graph variables, the ones whose fields are the wire's (a
+// name without NUL, k 3 int, 4 float or 5 bool with that payload alone and
+// finite, a seq of 1 or more), at most the wire's 16; and how many did not fit
+const GRAPH_VARS = 16;
+const pickGraphVars = (v: unknown): { vars: GraphVar[]; bad: number } => {
+    const out: { vars: GraphVar[]; bad: number } = { vars: [], bad: 0 };
+    if (!Array.isArray(v)) {
+        return out;
+    }
+    for (const x of v) {
+        const r = (x && typeof x === "object" ? x : {}) as Record<string, unknown>;
+        const name = r["name"];
+        const k = r["k"];
+        const seq = r["seq"];
+        const i = r["i"];
+        const f = r["f"];
+        const b = r["b"];
+        const shaped = typeof name === "string" && name !== "" && name.indexOf("\u0000") < 0
+            && typeof seq === "number" && Number.isInteger(seq) && seq >= 1
+            && ((k === 3 && typeof i === "number" && Number.isInteger(i))
+                || (k === 4 && typeof f === "number" && Number.isFinite(f))
+                || (k === 5 && typeof b === "boolean"));
+        if (!shaped || out.vars.length >= GRAPH_VARS || out.vars.some((g) => g.name === name)) {
+            out.bad++;
+            continue;
+        }
+        out.vars.push({ name: name as string, k: k as number, i: k === 3 ? (i as number) : undefined, f: k === 4 ? (f as number) : undefined, b: k === 5 ? (b as boolean) : undefined, seq: seq as number });
+    }
+    return out;
+};
+
 // SendScriptEvent's answer, for the line: {sent: true}, or {sent: false,
 // reason}; anything else is shown as it came
 const describeSend = (raw: unknown): string => {
@@ -624,6 +657,10 @@ export class ScriptStateService extends ClientListener {
             return;
         }
         const view = typeof m.event === "string" ? m.event : "";
+        const graph = pickGraphVars(m.graphVars);
+        if (graph.bad > 0) {
+            logError(this, `script state ${hex} from the record: ${graph.bad} graph variable(s) dropped, not the wire's shape`);
+        }
         const last = this.controller.lookupListener(SpSnippetService).seqOf(m.formId);
         const mark = view !== "" && (last === undefined || last <= m.seq);
         const old = this.held.get(m.formId);
@@ -651,6 +688,7 @@ export class ScriptStateService extends ClientListener {
             appliedAt: 0,
             reason: "",
             viewTries: 0,
+            vars: graph.vars,
         });
         if (view !== "") {
             this.views.set(m.formId, "pending");
@@ -985,6 +1023,11 @@ export class ScriptStateService extends ClientListener {
         // back, the pillars at their default faces)
         const replay = h.view !== "" && (last !== h.m.seq || !animations.shownHere(refr));
         snippets.raiseSeq(id, h.m.seq);
+        // D-C3 A (PENDING ELI): the record's graph variables, each by its own
+        // seq against the one kept here, set before the view plays (one with
+        // no 3D here is kept and set at its load: a graph variable lives on
+        // the 3D's graph)
+        const graph = h.vars.length > 0 ? animations.applyRecordVariables(refr, h.vars) : undefined;
         if (replay) {
             // kept before it plays: a view that finds no 3D in its window
             // still plays at the reference's next 3D load
@@ -1006,6 +1049,9 @@ export class ScriptStateService extends ClientListener {
         const viewText = h.view === "" ? "no view" : replay ? `view ${h.view} to play (seq ${h.m.seq}, ${here})` : `view ${h.view} current (seq ${h.m.seq})`;
         logLab(TAG, `script state ${hex} applied ${pass ? `at the grant of ${cell.toString(16)}` : "as a guest"}: stacks ${show(answer.stacksOnObject)}, hold ${show(answer.holdUs)} us; ${show(answer.resolved)} resolved, ${show(answer.none)} none, ${show(answer.seatLocal)} seat-local`);
         logLab(TAG, `script state ${hex}: ${resent}; ${viewText}${answer.refusedScripts > 0 ? `; ${answer.refusedScripts} of ${answer.scripts} script(s) refused` : ""}, +${now - h.receivedAt} ms`);
+        if (graph !== undefined) {
+            logLab(TAG, `script state ${hex}: ${h.vars.length} graph variable(s), ${graph.set} set, ${graph.waiting} kept for its 3D, ${graph.current} current`);
+        }
         if (!replay) {
             this.finish(id, h);
             return "over";
@@ -1035,6 +1081,8 @@ export class ScriptStateService extends ClientListener {
             return false;
         }
         h.viewTries++;
+        // D-C3 A: the kept graph variables this 3D has not had go first
+        this.controller.lookupListener(ObjectAnimationService).showVariables(refr);
         const taken = this.controller.lookupListener(ObjectAnimationService).playRelayed(refr, h.view, "the script record", undefined, true, h.m.seq);
         if (cell !== 0) {
             this.grantApplied.set(id, cell);

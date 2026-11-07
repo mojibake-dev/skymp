@@ -427,7 +427,9 @@ const parseApply = (raw: string): ApplyAnswer | undefined => {
 // D-C3 A (PENDING ELI; docs/research/fifty-fixes-2026-11-07.md 1(a)): a
 // served record's graph variables, the ones whose fields are the wire's (a
 // name without NUL, k 3 int, 4 float or 5 bool with that payload alone and
-// finite, a seq of 1 or more), at most the wire's 16; and how many did not fit
+// finite, a seq of 1 or more), at most the wire's 16, one name once ignoring
+// case (the server's and ObjectAnimationService's key); and how many did not
+// fit
 const GRAPH_VARS = 16;
 const pickGraphVars = (v: unknown): { vars: GraphVar[]; bad: number } => {
     const out: { vars: GraphVar[]; bad: number } = { vars: [], bad: 0 };
@@ -447,7 +449,7 @@ const pickGraphVars = (v: unknown): { vars: GraphVar[]; bad: number } => {
             && ((k === 3 && typeof i === "number" && Number.isInteger(i))
                 || (k === 4 && typeof f === "number" && Number.isFinite(f))
                 || (k === 5 && typeof b === "boolean"));
-        if (!shaped || out.vars.length >= GRAPH_VARS || out.vars.some((g) => g.name === name)) {
+        if (!shaped || out.vars.length >= GRAPH_VARS || out.vars.some((g) => g.name.toLowerCase() === (name as string).toLowerCase())) {
             out.bad++;
             continue;
         }

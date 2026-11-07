@@ -5147,13 +5147,17 @@ void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
         partOne.serverState.UserByActor(simulator) !=
           Networking::InvalidUserId) {
       // the relay runs another seat's engine, so the report meets the cell
-      // path's two consistency checks first (rule 5): the reporter hosts
-      // the cell its trigger stands in (a guest's report would otherwise
-      // wake the host's own actor), and the actor's own activation parents,
-      // read from its game-file record as MpObjectReference::Init reads a
-      // non-actor's (its XAPR, which the table skips for actors), name the
-      // trigger. A trigger the server never loads (a marker, OnActivate's
-      // record path) has no cell the server knows: refused by that name
+      // path's two consistency checks first (rule 5): the reporter is its
+      // firing's owner in the cell its trigger stands in (thuum ADR-068
+      // D-W1, wire-rules trigger_entry's firing_source: that cell's host, or
+      // a game with it loaded one of whose actors stands by the trigger, so
+      // a guest's press of a family trigger wakes the host's own actor and
+      // any other guest's report is refused), and the actor's own
+      // activation parents, read from its game-file record as
+      // MpObjectReference::Init reads a non-actor's (its XAPR, which the
+      // table skips for actors), name the trigger. A trigger the server
+      // never loads (a marker, OnActivate's record path) has no cell the
+      // server knows: refused by that name
       std::optional<uint32_t> casterCell;
       if (casterRef) {
         casterCell = partOne.worldState.CellOf(
@@ -5166,12 +5170,14 @@ void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
                      reporter.GetFormId(), casterId, targetId);
         return;
       }
-      const auto casterHost = partOne.GetCellHost(*casterCell);
-      if (!casterHost.hosted || casterHost.player != reporter.GetFormId()) {
-        spdlog::info("[verb:traps] E_TRAP_NOT_HOST: {:x} reports {:x} "
-                     "activating actor {:x}, its trigger in a cell it does "
-                     "not host",
-                     reporter.GetFormId(), casterId, targetId);
+      const auto firing = skymp::rules::trigger_firing_source(
+        GatherFiringFacts(partOne, reporter, casterRef, *casterCell));
+      if (firing.code != skymp::rules::TriggerFiringCode::Host &&
+          firing.code != skymp::rules::TriggerFiringCode::Loader) {
+        spdlog::info("[verb:traps] {}: {:x} reports {:x} activating actor "
+                     "{:x}, its trigger in cell {:x}, {}",
+                     std::string(firing.name), reporter.GetFormId(), casterId,
+                     targetId, *casterCell, std::string(firing.why));
         return;
       }
       bool linked = false;

@@ -305,15 +305,16 @@ TEST_CASE("A host's linked activation of an actor another seat simulates "
   auto& guest = p.worldState.GetFormAt<MpActor>(kGuestActor);
   // before any claim the cell's host simulates the draugr, so a guest's
   // report of the pair would wake the host's own actor: refused, since the
-  // guest does not host the cell the trigger stands in
+  // guest neither hosts the cell the trigger stands in nor has it loaded
+  // (thuum ADR-068 D-W1: LinkedActivationTest has a loader's press taken)
   REQUIRE(p.worldState.HostOf(draugr) ==
           &p.worldState.GetFormAt<MpActor>(kHostActor));
   {
     LogCapture log;
     REQUIRE_NOTHROW(Linked(p, 1, kAmbushTrigger, kDraugr));
     REQUIRE(log.Count("[verb:traps] E_TRAP_NOT_HOST: ff000fe2 reports 38098 "
-                      "activating actor 380b3, its trigger in a cell it does "
-                      "not host") == 1);
+                      "activating actor 380b3, its trigger in cell 371de, "
+                      "which it neither hosts nor has loaded") == 1);
     REQUIRE(log.Count("relayed to it") == 0);
   }
   REQUIRE(RelayedTo(p, 0).empty());

@@ -366,7 +366,7 @@ constexpr std::uint32_t FormIdOfHandle(RE::VMHandle handle)
 // a kind-0 handle that is no plain form's (BGSBaseAlias::aliasID,
 // CommonLibSSE-NG include/RE/B/BGSBaseAlias.h:77, its quest's form id in the
 // low 32 bits; adr065 Q1: 53508 builds such a handle for VM types 139 to
-// 141, BGSBaseAlias.h:14, and 53512 resolves it through the quest's alias by
+// 141, BGSBaseAlias.h:15, and 53512 resolves it through the quest's alias by
 // id). HYPOTHESIS H-AF3 (the rung 4 plan's section 4): x-alias-premise v1
 // reads the batch's quest and alias for a ForceRefTo against the alias
 // step's. None for any other handle
@@ -467,10 +467,10 @@ bool OwnedHere(const RE::TESObjectREFR* ref, bool isActor)
 // table's "Subject's owner"): OwnedHere's, except a game-file actor the
 // server has given this seat no word on (neither hosted here nor a puppet,
 // Hosted.h and Puppets.h), which is judged as a world object is, by its
-// cell's host: an actor the server never loads has no simulator (an
-// initially disabled ambush draugr, 0x380ba, which trigger 0x4e421 enables;
-// thuum docs/research/trap-census-2026-11-05.md:162), and its cell's host
-// enables it. An actor at or above 0xff000000 never is (the players'
+// cell's host: an actor the server never loaded has no simulator (the
+// ambush draugr 0x380ba, which trigger 0x4e421 enables; thuum
+// docs/research/trap-census-2026-11-05.md:162), and its cell's host enables
+// it. An actor at or above 0xff000000 never is (the players'
 // figures and what they place begin there, the gate's line in OnCall): its
 // owner is the server's word alone
 bool OwnedForRecord(const RE::TESObjectREFR* ref, bool isActor)

@@ -691,8 +691,12 @@ void OnSendEventEnter(GumInvocationContext* ic)
         // trigger, an enter or a leave, opens its firing window, in which the
         // trigger's own calls on itself are this seat's look
         // (ScriptNatives.cpp OnFamilyCall); an exempt class's opens none (D-S3
-        // kept)
-        if (family && !TrapFamily::Exempt::Is(handle)) {
+        // kept), and neither does a family reference that is no trigger
+        // (TrapFamily::IsTrigger; D-W2's fresh review, note 1: the swinging
+        // wall, TrapSwingingWall, counts the actors in its own volume, and its
+        // PlayAnimationAndWait on itself must stay each seat's own swing)
+        if (family && TrapFamily::IsTrigger(handle) &&
+            !TrapFamily::Exempt::Is(handle)) {
           TrapFamily::Firing::Note(selfId, NowMs());
         }
         if (family || (!inHostedCell && HasAttachedScript(vm, handle))) {

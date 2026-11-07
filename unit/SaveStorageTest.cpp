@@ -307,11 +307,11 @@ TEST_CASE("A game-file reference the session only loads carries no unsaved "
           "[save][espm]")
 {
   PartOne& p = GetPartOne();
-  // a flower in Tamriel (a TREE reference with an ingredient, which the loader
-  // attaches): the sample numidium named from playtest 49's world
-  constexpr uint32_t kFlower = 0x1066c3;
-  const auto& form = p.worldState.LookupFormById(kFlower);
-  auto* refr = form ? form->AsObjectReference() : nullptr;
-  REQUIRE(refr != nullptr);
-  REQUIRE_FALSE(refr->HasUnsavedEdit());
+  // the PurpleMountainFlower in Whiterun PartOne_ActivateTest harvests, a
+  // flora reference the loader attaches (for Tamriel's 0x1066c3, a sample
+  // from playtest 49's world, LookupFormById answered none here: pipeline
+  // 5610)
+  constexpr uint32_t kFlower = 0x0100122a;
+  auto& flower = p.worldState.GetFormAt<MpObjectReference>(kFlower);
+  REQUIRE_FALSE(flower.HasUnsavedEdit());
 }

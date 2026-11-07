@@ -5259,8 +5259,10 @@ void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
   const bool hazardSeen = hazard.has_value();
   // thuum docs/verbs/npc-fate.md (playtest 48): its host's word that a trap
   // hit this very actor within the trap window, whenever the trap was set
-  // off (NoteTrapHit); read after the place's notes, so a death those
-  // explain keeps their line
+  // off (NoteTrapHit); read last of an unnamed cause's evidence (after the
+  // place's notes and the reanimation's end), so a death today's rules
+  // explain keeps their line. The trap it names is recorded as reported,
+  // never checked against the body's place (R2, unvalidated)
   const std::optional<RecentTrapHit> trapHit = TrapHitOn(*actor, now);
   const auto trapHitEvidence = [&]() {
     const auto ago =
@@ -5350,8 +5352,6 @@ void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
           fmt::format("a drop of {:.0f} units in the host's samples", *drop);
       } else if (hazardSeen) {
         evidence = hazardEvidence();
-      } else if (trapHit) {
-        evidence = trapHitEvidence();
       } else if (const auto stoodUp = actor->HostStoodUpAgo(now); stoodUp &&
                  actor->ReanimateAcceptedAgo(now) &&
                  stoodUp->count() <=
@@ -5365,6 +5365,10 @@ void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
                                "stood it up {} s ago after an accepted "
                                "reanimate",
                                stoodUp->count() / 1000);
+      } else if (trapHit) {
+        // the last evidence read (playtest 48): a death every earlier rule
+        // explains keeps its line, the reanimation's end among them
+        evidence = trapHitEvidence();
       } else {
         refuse("E_DEATH_UNCHECKED",
                "no hit, drop, activation or trap hit the server saw");

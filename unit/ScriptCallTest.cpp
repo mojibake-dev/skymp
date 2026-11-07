@@ -336,8 +336,10 @@ TEST_CASE("A guest's script call, an untabled pair, a wrong argument, a stale "
   Call(p, 0, epoch + 1, kPortcullis, "ObjectReference", "PlayAnimation",
        { Text("Open") });
   // E_SCRIPTCALL_ROW: a pair the table lacks, and a state row of the flip
+  // with no record channel (Enable is rung 4's record row, its own case in
+  // RefStateTest.cpp)
   Call(p, 0, epoch, kPortcullis, "Debug", "Notification", { Text("hi") });
-  Call(p, 0, epoch, kPortcullis, "ObjectReference", "Enable", { Arg(false) });
+  Call(p, 0, epoch, kPortcullis, "ObjectReference", "SetOpen", { Arg(false) });
   // E_SCRIPTCALL_ARGS: the row's count and kinds, a static call's selfId
   // other than its target
   Call(p, 0, epoch, kPortcullis, "ObjectReference", "PlayAnimation", {});

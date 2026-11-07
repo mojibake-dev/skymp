@@ -1458,19 +1458,28 @@ mod ffi {
         owner: u32,
         /// That host's standing epoch (unread for an actor).
         owner_epoch: u32,
+        /// The host of an actor's cell, 0 while nobody hosts it (the cell
+        /// the server holds it in, or its ACHR's for one it holds no
+        /// reference for): the owner of a ref state's or a placement's
+        /// record row on an actor nobody simulates (thuum ADR-068 rung 4);
+        /// unread for every other kind and row.
+        host: u32,
+        /// That host's standing epoch.
+        host_epoch: u32,
     }
 
     /// The rule's word on a reported script call.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum ScriptCallCode {
-        /// Relayed to the audience but the reporter, or kept as the
-        /// subject's evidence (`keep_evidence`), from the owner step; from
-        /// the shape step, the shape holds and the core gathers the
-        /// subject's facts for the owner step.
+        /// Relayed to the audience but the reporter, kept as the subject's
+        /// evidence (`keep_evidence`) or recorded as its record (`record`),
+        /// from the owner step; from the shape step, the shape holds and the
+        /// core gathers the subject's facts for the owner step.
         Accepted,
         /// Dropped quietly: a door's or a container's.
         Skipped,
-        /// E_SCRIPTCALL_ROW: no tabled action row the server relays.
+        /// E_SCRIPTCALL_ROW: no tabled action row the server relays, nor a
+        /// state row it keeps.
         Row,
         /// E_SCRIPTCALL_ARGS: not the row's count and kinds, or no subject
         /// the reporter may name.
@@ -1515,6 +1524,14 @@ mod ffi {
         /// on an actor the reporter simulates, its death evidence), with no
         /// sequence (accepted).
         keep_evidence: bool,
+        /// The record the call moves, recorded with the subject's next
+        /// sequence (`seq`) and relayed as the record's own word, never as
+        /// an action (wire-rules natives Keep::Record, thuum ADR-068 rung
+        /// 4): 1 the ref state (Enable, EnableNoWait, Disable,
+        /// DisableNoWait, Delete), 2 the standing (an NPC's factions, crime
+        /// faction and relationships), 3 a placement (PlaceAtMe,
+        /// PlaceActorAtMe); 0 for every other verdict.
+        record: u8,
         /// The argument naming the call's behavior graph event, for the
         /// "animates" line; -1 for none.
         event_arg: i8,
@@ -2244,10 +2261,11 @@ mod ffi {
         fn shape(self: &mut ScriptCalls, row: i32, args: &[ScriptArg], sender: u32, self_id: u32, now_ms: u64) -> ScriptCallVerdict;
         /// The owner step on the call the last `shape` accepted, over the
         /// facts the core gathered for its subject (its kind, its cell, that
-        /// cell's host and the host's epoch, or an actor's simulator); an
-        /// accepted relay takes its subject's next sequence, a call kept as
-        /// evidence none. Skipped, nothing relayed, when no shaped call
-        /// waits, so each shaped call is judged once.
+        /// cell's host and the host's epoch, or an actor's simulator and its
+        /// cell's host); an accepted relay or record takes its subject's
+        /// next sequence, a call kept as evidence none. Skipped, nothing
+        /// relayed, when no shaped call waits, so each shaped call is judged
+        /// once.
         fn owner(self: &mut ScriptCalls, facts: &ScriptCallFacts) -> ScriptCallVerdict;
         /// The subject's sequence: its accepted calls so far, or the stored
         /// record's it was seeded with (thuum ADR-068 rung 3).
@@ -4032,6 +4050,7 @@ fn quiet_script_call() -> ScriptCallVerdict {
         audience: 2,
         keep_last: false,
         keep_evidence: false,
+        record: 0,
         event_arg: -1,
     }
 }
@@ -4078,7 +4097,17 @@ impl ScriptCalls {
             4 => natives::SubjectKind::Record,
             _ => natives::SubjectKind::Unknown,
         };
-        let facts = natives::Facts { sender: f.sender, self_id: f.self_id, epoch: f.epoch, kind, cell: f.cell, owner: f.owner, owner_epoch: f.owner_epoch };
+        let facts = natives::Facts {
+            sender: f.sender,
+            self_id: f.self_id,
+            epoch: f.epoch,
+            kind,
+            cell: f.cell,
+            owner: f.owner,
+            owner_epoch: f.owner_epoch,
+            host: f.host,
+            host_epoch: f.host_epoch,
+        };
         let mut out = quiet_script_call();
         match self.0.owner(shaped, &facts) {
             natives::Verdict::Accept(a) => {
@@ -4101,6 +4130,12 @@ impl ScriptCalls {
                 out.code = ScriptCallCode::Accepted;
                 out.subject = subject;
                 out.keep_evidence = true;
+            }
+            natives::Verdict::Record { subject, seq, kind } => {
+                out.code = ScriptCallCode::Accepted;
+                out.subject = subject;
+                out.seq = seq;
+                out.record = kind.code();
             }
             natives::Verdict::Skip => {}
             natives::Verdict::Refuse(r) => out = refused_script_call(r),
@@ -4835,7 +4870,7 @@ mod tests {
         let send = script_call_subject("Debug", "SendAnimationEvent", 0xaa8cb, &[pillar, text]);
         assert_eq!(send.subject, 0xaa8cb);
         assert_eq!(script_call_subject("Debug", "Notification", 0, &[text]), ScriptCallSubject { row: -1, subject: 0 });
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3 };
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0 };
         let mut s = new_script_calls();
         let v = s.judge(at.row, &[text, text], &facts, 0);
         assert_eq!((v.code, v.subject, v.seq, v.relay_self), (ScriptCallCode::Accepted, 0xaa8cb, 1, 0xaa8cb));
@@ -4882,7 +4917,7 @@ mod tests {
         let at = script_call_subject("ObjectReference", "ProcessTrapHit", 0x800a6, &args);
         assert!(at.row >= 0);
         assert_eq!(at.subject, 0x800a6);
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0x800a6, epoch: 3, subject_kind: 3, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 0 };
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0x800a6, epoch: 3, subject_kind: 3, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 0, host: 0xff00_0000, host_epoch: 3 };
         let mut s = new_script_calls();
         let v = s.judge(at.row, &args, &facts, 0);
         assert_eq!((v.code, v.subject, v.seq, v.keep_evidence, v.keep_last, v.audience), (ScriptCallCode::Accepted, 0x800a6, 0, true, false, 2));
@@ -4901,6 +4936,50 @@ mod tests {
     }
 
     #[test]
+    fn the_bridge_records_a_state_row_with_its_kind_and_sequence() {
+        // thuum ADR-068 rung 4: Bleak Falls Temple's cobweb 0x1fc43 disabled
+        // by its host 0xff000000 at epoch 3; Embershard's ambush draugr
+        // 0x380ba, an actor nobody simulates, enabled by its cell's host
+        let flag = ScriptArg { kind: 1, form_id: 0 };
+        let at = script_call_subject("ObjectReference", "Disable", 0x1fc43, &[flag]);
+        assert!(at.row >= 0);
+        assert_eq!(at.subject, 0x1fc43);
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0x1fc43, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0 };
+        let mut s = new_script_calls();
+        let v = s.judge(at.row, &[flag], &facts, 0);
+        assert_eq!((v.code, v.subject, v.seq, v.record, v.keep_evidence, v.keep_last, v.audience), (ScriptCallCode::Accepted, 0x1fc43, 1, 1, false, false, 2));
+        assert_eq!((v.relay_cls.as_str(), v.relay_fn.as_str(), v.relay_args.len(), v.event_arg), ("", "", 0, -1));
+        // a door's: recorded, never the action rows' quiet drop
+        let door = s.judge(at.row, &[flag], &ScriptCallFacts { subject_kind: 2, ..facts }, 0);
+        assert_eq!((door.code, door.record, door.seq), (ScriptCallCode::Accepted, 1, 2));
+        // a guest's report, by name
+        let guest = s.judge(at.row, &[flag], &ScriptCallFacts { sender: 0xff00_0001, ..facts }, 0);
+        assert_eq!((guest.code, guest.name.as_str(), guest.record), (ScriptCallCode::Owner, "E_SCRIPTCALL_OWNER", 0));
+        // the actor nobody simulates: its cell's host at the epoch
+        let enable = script_call_subject("ObjectReference", "Enable", 0x380ba, &[flag]);
+        let ambush = ScriptCallFacts { self_id: 0x380ba, subject_kind: 3, cell: 0xb6be6, owner: 0, owner_epoch: 0, host: 0xff00_0000, host_epoch: 3, ..facts };
+        let woke = s.judge(enable.row, &[flag], &ambush, 0);
+        assert_eq!((woke.code, woke.subject, woke.seq, woke.record), (ScriptCallCode::Accepted, 0x380ba, 1, 1));
+        assert_eq!(s.judge(enable.row, &[flag], &ScriptCallFacts { host_epoch: 4, ..ambush }, 0).name, "E_SCRIPTCALL_OWNER");
+        // a standing row (2) and a placement (3)
+        let faction = ScriptArg { kind: 4, form_id: 0x5c84e };
+        let rank = ScriptArg { kind: 2, form_id: 0 };
+        let set_rank = script_call_subject("Actor", "SetFactionRank", 0x800a6, &[faction, rank]);
+        let npc = ScriptCallFacts { self_id: 0x800a6, subject_kind: 3, owner: 0xff00_0000, owner_epoch: 0, ..facts };
+        assert_eq!(s.judge(set_rank.row, &[faction, rank], &npc, 0).record, 2);
+        assert_eq!(s.judge(set_rank.row, &[faction, rank], &ScriptCallFacts { self_id: 0x14, ..npc }, 0).name, "E_SCRIPTCALL_ROW");
+        let base = ScriptArg { kind: 4, form_id: 0x4e2b8 };
+        let place = script_call_subject("ObjectReference", "PlaceAtMe", 0x1fc43, &[base, rank, flag, flag]);
+        assert_eq!(s.judge(place.row, &[base, rank, flag, flag], &facts, 0).record, 3);
+        // the record rows' own budget (wire-rules natives' burst, named)
+        let mut b = new_script_calls();
+        for _ in 0..natives::BURST_RECORD {
+            assert_eq!(b.judge(at.row, &[flag], &facts, 0).code, ScriptCallCode::Accepted);
+        }
+        assert_eq!(b.judge(at.row, &[flag], &facts, 0).name, "E_SCRIPTCALL_RATE");
+    }
+
+    #[test]
     fn the_bridge_runs_the_shape_step_before_the_owner_step() {
         // the hall door's FX review, finding 1: the core asks `shape` before
         // it reads anything of the subject; a call it refuses spends the
@@ -4908,7 +4987,7 @@ mod tests {
         // of malformed calls is cut off by the rate
         let text = ScriptArg { kind: 3, form_id: 0 };
         let at = script_call_subject("ObjectReference", "PlayAnimation", 0xaa8cb, &[text]);
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3 };
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0 };
         let mut s = new_script_calls();
         // a shape that holds names the subject whose facts the core gathers
         let shaped = s.shape(at.row, &[text], facts.sender, facts.self_id, 0);
@@ -4971,7 +5050,7 @@ mod tests {
         // the next relay runs on from there
         let text = ScriptArg { kind: 3, form_id: 0 };
         let at = script_call_subject("ObjectReference", "PlayAnimation", 0xaa8cb, &[text]);
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3 };
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0 };
         let mut calls = new_script_calls();
         assert_eq!(calls.seq_of(0xaa8cb), 0);
         calls.seed(0xaa8cb, 5);

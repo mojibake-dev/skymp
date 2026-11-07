@@ -4,7 +4,9 @@
 // ADR-068 decision 3; rung 2's set, docs/research/
 // scripts-one-system-2026-11-05.md 6.3): one initializer per row,
 // { class, name, kind, subject, relay }, included by ScriptNatives.cpp inside
-// its table's braces; the generated table holds exactly these until rung 4.
+// its table's braces; the generated table holds exactly these: rung 2's,
+// D-S3's three trap rows and rung 4's seven (the standing's six and
+// ReferenceAlias.Clear, docs/research/rung4-state-rows-2026-11-07.md 1(a)).
 // kind: Action (the call itself is the message), State (the owner's record
 // carries it), Everyone (no owner, D-F1 C: every seat runs it), Local (never
 // crosses). subject: Self (the frame's self), Arg0 (a static native's first
@@ -44,3 +46,10 @@
 { "ObjectReference", "ProcessTrapHit", NativeKind::State, NativeSubject::Self, "none" },
 { "ObjectReference", "SetMotionType", NativeKind::State, NativeSubject::Self, "none" },
 { "ObjectReference", "ApplyHavokImpulse", NativeKind::State, NativeSubject::Self, "none" },
+{ "Actor", "SetFactionRank", NativeKind::State, NativeSubject::Self, "none" },
+{ "Actor", "ModFactionRank", NativeKind::State, NativeSubject::Self, "none" },
+{ "Actor", "RemoveFromFaction", NativeKind::State, NativeSubject::Self, "none" },
+{ "Actor", "RemoveFromAllFactions", NativeKind::State, NativeSubject::Self, "none" },
+{ "Actor", "SetCrimeFaction", NativeKind::State, NativeSubject::Self, "none" },
+{ "Actor", "SetRelationshipRank", NativeKind::State, NativeSubject::Self, "none" },
+{ "ReferenceAlias", "Clear", NativeKind::Everyone, NativeSubject::Self, "none" },

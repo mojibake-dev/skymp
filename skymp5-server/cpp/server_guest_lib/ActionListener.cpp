@@ -4052,6 +4052,14 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
                  facts.cell, msg.caller, msg.handler, trapId);
     return;
   }
+  // thuum ADR-068 rung 4 (the state rows): a call the table keeps as its
+  // subject's record (wire-rules natives Keep::Record: the ref state, the
+  // standing, a placement) is never relayed as an action; its record's
+  // branch lands with the rung's server half (docs/research/
+  // rung4-state-rows-2026-11-07.md section 2, A6), until then it is dropped
+  if (verdict.record != 0) {
+    return;
+  }
   if (!subject && facts.subject_kind != 4) {
     // the rule accepts a world object alone, held or placed by its record
     return;

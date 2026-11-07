@@ -6197,9 +6197,9 @@ mod tests {
         assert_eq!((sound.subject, sound.look), (0xb6d3f, 2));
         let played = calls.judge(sound.row, &[source], &ScriptCallFacts { self_id: 0x1d492, ..facts }, 0);
         assert_eq!((played.code, played.look, played.seq, played.subject, played.relay_self, played.relay_cls.as_str()), (ScriptCallCode::Accepted, true, 0, 0xb6d3f, 0x1d492, "Sound"));
-        // the subject's look cap: eight at once, the first taken above, the
+        // the subject's look cap: twelve at once, the first taken above, the
         // sound's among them
-        for _ in 0..6 {
+        for _ in 0..10 {
             assert_eq!(calls.judge(motion.row, &[number, flag], &facts, 0).code, ScriptCallCode::Accepted);
         }
         let capped = calls.judge(motion.row, &[number, flag], &facts, 0);

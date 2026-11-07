@@ -184,9 +184,10 @@ export class ScriptCallService extends ClientListener {
     // D-W2's detection row (the platform's P3): the trigger script's
     // ObjectReference.CreateDetectionEvent during its firing, kind "look"
     // with the trigger its self and akOwner its first argument (0x14 for this
-    // seat's own player, which toSnippetArgument sends as its actor's server
-    // id), goes the same way; the server relays it to the cell's host alone,
-    // so a guest's bone alarm wakes the NPCs the host simulates
+    // seat's own player, which a look sends as 0x14: toSnippetArgument's
+    // newCast is off for a look, and the server maps it to the reporter's
+    // actor), goes the same way; the server relays it to the cell's host
+    // alone, so a guest's bone alarm wakes the NPCs the host simulates
     private noteLook(call: ScriptCall) {
         this.queue({ call, record: false, key: undefined, dropped: false });
     }
@@ -407,7 +408,7 @@ export class ScriptCallService extends ClientListener {
             selfId,
             cls: call.cls,
             fn: call.fn,
-            args: call.args.map((arg) => this.toSnippetArgument(arg)),
+            args: call.args.map((arg) => this.toSnippetArgument(arg, call.kind !== "look")),
             caller: call.caller,
             handler: call.handler,
             latent: call.latent,
@@ -429,15 +430,20 @@ export class ScriptCallService extends ClientListener {
     // a form travels by its server id (the player's own actor as its figure's,
     // which the receiver's deserializeArg maps back) and the Papyrus type the
     // receiver casts it to: Actor, ObjectReference, Faction (the standing's
-    // rows, rung 4), else Form (no other row passes another kind of form)
-    private toSnippetArgument(arg: ScriptCall["args"][number]): SpSnippetArgument {
+    // rows, rung 4), else Form (no other row passes another kind of form).
+    // newCast off (a D-W2 look: m4-train-50's D-W2 review, note 2) keeps this
+    // seat's own player as 0x14, which the server maps to the reporter's
+    // actor: wire-validate refuses an object argument at 0xff000000 and up
+    // (E_VAL_RANGE), so a look naming the player by its server id never
+    // reached the server's look rule
+    private toSnippetArgument(arg: ScriptCall["args"][number], newCast: boolean): SpSnippetArgument {
         if (arg === null || typeof arg !== "object") {
             return arg;
         }
         const form = this.sp.Game.getFormEx(arg.formId);
         const type = form && this.sp.Actor.from(form) ? "Actor" : form && this.sp.ObjectReference.from(form) ? "ObjectReference"
             : form && this.sp.Faction.from(form) ? "Faction" : "Form";
-        return { formId: localIdToRemoteId(arg.formId, true), type };
+        return { formId: localIdToRemoteId(arg.formId, newCast), type };
     }
 
     // a call's subject: its self, but Sound.Play's source in its first

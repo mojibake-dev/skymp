@@ -38,6 +38,11 @@ const LOOK_ROWS = new Set<string>([
   "sound.play",
   "objectreference.createdetectionevent",
 ]);
+// m4-train-50's D-W2 review, note 3 (rule 5): the rows relayed with a seq only
+// as a look, so a seq-carrying one whose subject is no trap family trigger
+// here is dropped; and the detection's sound level at most SoundTrap's (100)
+const LOOK_ONLY_FNS = new Set<string>(["setmotiontype", "applyhavokimpulse", "createdetectionevent"]);
+const DETECTION_LEVEL_MAX = 100;
 
 export class SpSnippetService extends ClientListener {
   constructor(private sp: Sp, private controller: CombinedController) {
@@ -121,6 +126,13 @@ export class SpSnippetService extends ClientListener {
   private apply(snippet: SpSnippetMessage): Promise<unknown> {
     const event = snippet.arguments[0];
     const look = this.lookSubject(snippet);
+    // nothing else checks that a look's subject is a trigger: a modified guest
+    // within reach of any held world object could move, push or alarm it on
+    // every other seat through these rows (note 3)
+    if (look === undefined && typeof snippet.seq === "number" && LOOK_ONLY_FNS.has(snippet.function.toLowerCase())) {
+      logLab("verb:traps", `trigger look ${snippet.selfId.toString(16)} ${snippet.class}.${snippet.function} dropped: no trap trigger here (seq ${snippet.seq}) (D-W2)`);
+      return Promise.resolve(undefined);
+    }
     if (look !== undefined && snippet.function.toLowerCase() === "createdetectionevent") {
       this.playDetection(snippet, look);
       return Promise.resolve(undefined);
@@ -203,8 +215,8 @@ export class SpSnippetService extends ClientListener {
     const ownerId = ownerArg !== null && typeof ownerArg === "object" && typeof ownerArg.formId === "number" ? ownerArg.formId : 0;
     const trigger = this.sp.ObjectReference.from(this.sp.Game.getFormEx(remoteIdToLocalId(subject)));
     const owner = ownerId !== 0 ? this.sp.Actor.from(this.sp.Game.getFormEx(remoteIdToLocalId(ownerId))) : null;
-    if (!trigger || !owner || typeof level !== "number" || !Number.isInteger(level)) {
-      logLab("verb:traps", `${head} skipped, no ${!trigger ? "reference" : !owner ? `owner ${ownerId.toString(16)} here` : "sound level"} (D-W2)`);
+    if (!trigger || !owner || typeof level !== "number" || !Number.isInteger(level) || level < 0 || level > DETECTION_LEVEL_MAX) {
+      logLab("verb:traps", `${head} skipped, ${!trigger ? "no reference" : !owner ? `no owner ${ownerId.toString(16)} here` : `sound level ${String(level).slice(0, 12)} past 0 to ${DETECTION_LEVEL_MAX}`} (D-W2)`);
       return;
     }
     trigger.createDetectionEvent(owner, level);

@@ -608,6 +608,81 @@ void MpActor::RemoveFromFaction(FormDesc factionForm, bool lazyLoad)
   });
 }
 
+std::vector<Faction> MpActor::GetFactionRanks()
+{
+  if (!factionsLoaded) {
+    LoadFactions();
+  }
+  const auto& factions = ChangeForm().factions;
+  return factions ? *factions : std::vector<Faction>();
+}
+
+void MpActor::SetFactionRank(const FormDesc& factionForm, int8_t rank)
+{
+  if (!factionsLoaded) {
+    LoadFactions();
+  }
+  EditChangeForm([&](MpChangeFormREFR& changeForm) {
+    if (!changeForm.factions.has_value()) {
+      changeForm.factions = std::vector<Faction>();
+    }
+    for (auto& faction : *changeForm.factions) {
+      if (faction.formDesc == factionForm) {
+        faction.rank = rank;
+        return;
+      }
+    }
+    Faction added;
+    added.formDesc = factionForm;
+    added.rank = rank;
+    changeForm.factions->push_back(added);
+  });
+}
+
+void MpActor::RemoveFromAllFactions()
+{
+  if (!factionsLoaded) {
+    LoadFactions();
+  }
+  EditChangeForm([&](MpChangeFormREFR& changeForm) {
+    changeForm.factions = std::vector<Faction>();
+  });
+}
+
+std::optional<FormDesc> MpActor::GetCrimeFactionRecord() const
+{
+  return ChangeForm().crimeFaction;
+}
+
+void MpActor::SetCrimeFactionRecord(const FormDesc& faction)
+{
+  EditChangeForm(
+    [&](MpChangeFormREFR& changeForm) { changeForm.crimeFaction = faction; });
+}
+
+std::vector<MpChangeFormREFR::Relationship> MpActor::GetRelationships() const
+{
+  const auto& relationships = ChangeForm().relationships;
+  return relationships ? *relationships
+                       : std::vector<MpChangeFormREFR::Relationship>();
+}
+
+void MpActor::SetRelationshipRank(const FormDesc& other, int8_t rank)
+{
+  EditChangeForm([&](MpChangeFormREFR& changeForm) {
+    if (!changeForm.relationships.has_value()) {
+      changeForm.relationships = std::vector<MpChangeFormREFR::Relationship>();
+    }
+    for (auto& relationship : *changeForm.relationships) {
+      if (relationship.other == other) {
+        relationship.rank = rank;
+        return;
+      }
+    }
+    changeForm.relationships->push_back({ other, rank });
+  });
+}
+
 void MpActor::VisitProperties(CreateActorMessage& message,
                               VisitPropertiesMode mode)
 {
@@ -2424,13 +2499,70 @@ void MpActor::AddDeathItem()
   }
 }
 
+std::vector<MpActor::StandingApplier> MpActor::StandingAppliers()
+{
+  std::vector<StandingApplier> out;
+  const auto& record = ChangeForm();
+  if (record.factions.has_value() && GetParent() && GetParent()->HasEspm()) {
+    const auto recorded = *record.factions;
+    const auto base = BaseFactions();
+    for (const auto& faction : recorded) {
+      const bool asBase =
+        std::any_of(base.begin(), base.end(), [&](const Faction& b) {
+          return b.formDesc == faction.formDesc && b.rank == faction.rank;
+        });
+      if (!asBase) {
+        out.push_back({ "SetFactionRank", faction.formDesc,
+                        static_cast<int32_t>(faction.rank) });
+      }
+    }
+    for (const auto& faction : base) {
+      const bool kept =
+        std::any_of(recorded.begin(), recorded.end(), [&](const Faction& r) {
+          return r.formDesc == faction.formDesc;
+        });
+      if (!kept) {
+        out.push_back({ "RemoveFromFaction", faction.formDesc, std::nullopt });
+      }
+    }
+  }
+  if (record.crimeFaction.has_value()) {
+    out.push_back({ "SetCrimeFaction", *record.crimeFaction, std::nullopt });
+  }
+  if (record.relationships.has_value()) {
+    for (const auto& relationship : *record.relationships) {
+      out.push_back({ "SetRelationshipRank", relationship.other,
+                      static_cast<int32_t>(relationship.rank) });
+    }
+  }
+  return out;
+}
+
+std::vector<Faction> MpActor::BaseFactions()
+{
+  return EvaluateTemplate<espm::NPC_::UseFactions>(
+    GetParent(), GetBaseId(), GetTemplateChain(),
+    [&](const auto& npcLookupResult, const auto& npcData) {
+      std::vector<Faction> factions = std::vector<Faction>();
+      for (auto npcFaction : npcData.factions) {
+        Faction faction = Faction();
+        faction.formDesc =
+          FormDesc::FromFormId(npcLookupResult.ToGlobalId(npcFaction.formId),
+                               GetParent()->espmFiles);
+        faction.rank = npcFaction.rank;
+        factions.push_back(faction);
+      }
+      return factions;
+    });
+}
+
 void MpActor::LoadFactions()
 {
   // thuum ADR-068 rung 4 (the standing): a record that holds a list was
   // loaded from the base before and edited since (every edit loads first),
   // so the base's SNAM rows are read into a record that holds none; read
   // again, they would bring back every faction a script removed
-  if (GetChangeForm().factions.has_value()) {
+  if (ChangeForm().factions.has_value()) {
     factionsLoaded = true;
     return;
   }

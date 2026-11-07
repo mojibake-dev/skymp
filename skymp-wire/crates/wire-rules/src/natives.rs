@@ -1408,12 +1408,12 @@ mod tests {
 
     // thuum ADR-068 rung 4 (the state rows): Bleak Falls Temple's cobweb
     // 0x1fc43 a world object its host disables, the Temple's puzzle door
-    // 0x371e9 a door, and Embershard's ambush draugr 0x380ba an actor the
-    // loader never held (initially disabled), placed by its ACHR's cell
+    // 0x371e9 a door, and the Temple's ambush draugr 0x380ba (an ACHR of the
+    // NPC_ 0x38922 in 0x371de, initially disabled; lab/esm.py, 2026-11-06)
+    // an actor the loader never held, placed by its ACHR's cell
     // (docs/research/trap-census-2026-11-05.md :162)
     const COBWEB: u32 = 0x1fc43;
     const AMBUSH: u32 = 0x380ba;
-    const EMBERSHARD: u32 = 0xb6be6;
 
     fn recorded(v: &Verdict) -> (u32, u32, RecordKind) {
         match v {
@@ -1424,7 +1424,7 @@ mod tests {
 
     // an actor nobody simulates, its cell's host at epoch 3 the reporter
     fn unsimulated(self_id: u32) -> Facts {
-        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: EMBERSHARD, owner: 0, owner_epoch: 0, host: HOST, host_epoch: 3 }
+        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: 0, owner_epoch: 0, host: HOST, host_epoch: 3 }
     }
 
     #[test]
@@ -1502,9 +1502,9 @@ mod tests {
         // at the epoch owns its Enable (the host's own, before its 3D)
         assert_eq!(recorded(&s.judge(enable, &[Arg::Bool], &unsimulated(AMBUSH), 0)), (AMBUSH, 1, RecordKind::RefState));
         let f = unsimulated(AMBUSH);
-        assert_eq!(refused(s.judge(enable, &[Arg::Bool], &Facts { sender: GUEST, ..f }, 0)), (Code::Owner, format!("ff000000 hosts cell b6be6, not the reporter{UNSIMULATED}")));
-        assert_eq!(refused(s.judge(enable, &[Arg::Bool], &Facts { epoch: 4, ..f }, 0)), (Code::Owner, format!("cell b6be6 stands at epoch 3, the report names 4{UNSIMULATED}")));
-        assert_eq!(refused(s.judge(enable, &[Arg::Bool], &Facts { host: 0, ..f }, 0)), (Code::Owner, format!("nobody hosts cell b6be6{UNSIMULATED}")));
+        assert_eq!(refused(s.judge(enable, &[Arg::Bool], &Facts { sender: GUEST, ..f }, 0)), (Code::Owner, format!("ff000000 hosts cell 371de, not the reporter{UNSIMULATED}")));
+        assert_eq!(refused(s.judge(enable, &[Arg::Bool], &Facts { epoch: 4, ..f }, 0)), (Code::Owner, format!("cell 371de stands at epoch 3, the report names 4{UNSIMULATED}")));
+        assert_eq!(refused(s.judge(enable, &[Arg::Bool], &Facts { host: 0, ..f }, 0)), (Code::Owner, format!("nobody hosts cell 371de{UNSIMULATED}")));
         assert_eq!(refused(s.judge(enable, &[Arg::Bool], &Facts { cell: 0, host: 0, ..f }, 0)).0, Code::Owner);
         // a placement anchored at an actor follows the same rule
         let place = [Arg::Object(0x2a), Arg::Number, Arg::Object(0)];

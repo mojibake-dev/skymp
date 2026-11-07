@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, alias_fills, appearance, attributes, block, bonds, casts, cells, clock, console, damage, destruction, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, placements, player_globals, props, quest_stages, racemenu, ranged, rest, perks, script_state, scripted_effects, shouts, stagger, teleports, weather, world_globals, world_streamer};
+use wire_rules::{activation, actor_values, alias_fills, appearance, attributes, block, bonds, casts, cells, clock, console, damage, destruction, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, placements, player_globals, props, quest_stages, racemenu, ranged, rest, perks, ref_state, script_state, scripted_effects, shouts, stagger, standing, teleports, weather, world_globals, world_streamer};
 
 // the perk table's effect calls carry a CTDA's five parts flat, as add_condition does
 #[allow(clippy::too_many_arguments)]
@@ -1420,6 +1420,10 @@ mod ffi {
         /// The subject's form id as the reporter named it (0x14 for its own
         /// player), 0 when the call names none the reporter may name.
         subject: u32,
+        /// The record the row keeps, so the core gathers a record row's
+        /// facts (thuum ADR-068 rung 4): 0 none, 1 the ref state, 2 the
+        /// standing, 3 a placement.
+        record: u8,
     }
 
     /// One argument of a reported script call as the core parsed it: its
@@ -1702,6 +1706,119 @@ mod ffi {
         record: Vec<WorldGlobalValue>,
         /// The entries that moved it, to relay.
         changed: Vec<WorldGlobalValue>,
+    }
+
+    /// The ref state's rule on one call (thuum ADR-068 rung 4, wire-rules
+    /// ref_state).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct RefStateVerdict {
+        /// 0 recorded (write, stamp and relay), 1 folded (nothing), 2 the
+        /// native is none of the five.
+        code: u8,
+        /// The reference is disabled after the call.
+        disabled: bool,
+        /// The reference is deleted after the call.
+        deleted: bool,
+    }
+
+    /// One faction's rank on an NPC's record (wire-rules
+    /// standing::FactionRank).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct StandingFaction {
+        /// The FACT.
+        faction: u32,
+        /// Its rank.
+        rank: i8,
+    }
+
+    /// One relationship rank on an NPC's record (wire-rules
+    /// standing::Relationship).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct StandingRelation {
+        /// The other actor.
+        other: u32,
+        /// The rank.
+        rank: i8,
+    }
+
+    /// The standing's rule on one call (wire-rules standing::judge).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct StandingVerdict {
+        /// 0 recorded, 1 folded, 2 refused (`name`, `why`), 3 the native is
+        /// none of the six.
+        code: u8,
+        /// The refusal's stable name, empty otherwise.
+        name: String,
+        /// Why, for the log; empty otherwise.
+        why: String,
+        /// The change a recorded call makes, the applier the receivers run:
+        /// 1 SetFactionRank(form, rank), 2 RemoveFromFaction(form), 3
+        /// RemoveFromAllFactions(), 4 SetCrimeFaction(form, 0 for None), 5
+        /// SetRelationshipRank(form, rank).
+        change: u8,
+        /// The faction, or the relationship's other actor.
+        form: u32,
+        /// The rank.
+        rank: i8,
+    }
+
+    /// A script set opened, or why not (thuum ADR-068 rung 4, wire-rules
+    /// placements' script set).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct ScriptSetOpen {
+        /// The set's id when opened.
+        set: u64,
+        /// 0 opened, 1 E_PLACED_KIND (no base a script set places), 2 the
+        /// world's script sets are at their cap, 3 the anchor is not a
+        /// number.
+        refusal: u8,
+    }
+
+    /// A script set's request to its reporter (the PlacedRequest).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct ScriptRequestRow {
+        /// The set's id.
+        set: u64,
+        /// The reporter asked.
+        caster: u32,
+        /// The call's self, the anchor.
+        self_id: u32,
+        /// The base's form id within its plugin.
+        short_id: u32,
+        /// The base's plugin.
+        file: String,
+        /// The base's record type.
+        record_type: String,
+        /// How long the report is taken, milliseconds.
+        window_ms: u64,
+    }
+
+    /// What a script set came to (wire-rules placements::ScriptOutcome).
+    #[derive(Debug, Clone, PartialEq)]
+    struct ScriptPlacementRow {
+        /// The report came in (place the object); false, the window closed
+        /// with none (nothing placed).
+        placed: bool,
+        /// The set's id.
+        set: u64,
+        /// The reporter.
+        caster: u32,
+        /// The call's self.
+        self_id: u32,
+        /// The base's form id within its plugin.
+        short_id: u32,
+        /// The base's plugin.
+        file: String,
+        /// The base's record type.
+        record_type: String,
+        /// Position, as reported.
+        x: f32,
+        /// Position.
+        y: f32,
+        /// Position.
+        z: f32,
+        /// The Z angle, degrees.
+        yaw: f32,
     }
 
     /// The world streamer after an event (thuum ADR-068 rung 4, wire-rules
@@ -2445,6 +2562,36 @@ mod ffi {
         /// wins, an equal one is folded, the moved ones listed to relay.
         fn world_globals_merge(record: &[WorldGlobalValue], accepted: &[WorldGlobalValue]) -> WorldGlobalsMerge;
 
+        /// thuum ADR-068 rung 4 (the ref state): one call of `func` (Enable,
+        /// EnableNoWait, Disable, DisableNoWait, Delete) against the record
+        /// (wire-rules ref_state::apply).
+        fn ref_state_apply(disabled: bool, deleted: bool, func: &str) -> RefStateVerdict;
+        /// thuum ADR-068 rung 4 (the standing, W3): one call of `func` with
+        /// its object argument (0 for None) and its number against the
+        /// NPC's record (wire-rules standing::judge); `crime_faction` the
+        /// record's (0 for none), or one no FACT holds while the record
+        /// keeps none and the base's is unread.
+        fn standing_judge(
+            func: &str,
+            object: u32,
+            number: i64,
+            faction_is_fact: bool,
+            other_is_actor: bool,
+            factions: &[StandingFaction],
+            crime_faction: u32,
+            relationships: &[StandingRelation],
+        ) -> StandingVerdict;
+
+        /// thuum ADR-068 rung 4 (the script set, W3): a script's PlaceAtMe or
+        /// PlaceActorAtMe by `caster` on `self_id`, which stood at (x, y,
+        /// z), of the base (short id, file) of `record_type`.
+        #[allow(clippy::too_many_arguments)]
+        fn open_script_set(self: &mut Placements, caster: u32, self_id: u32, x: f32, y: f32, z: f32, short_id: u32, file: &str, record_type: &str, now_ms: u64) -> ScriptSetOpen;
+        /// The script sets' requests to send since the last call, each once.
+        fn take_script_requests(self: &mut Placements) -> Vec<ScriptRequestRow>;
+        /// The script sets' outcomes at `now_ms`: placed or expired.
+        fn due_script_placements(self: &mut Placements, now_ms: u64) -> Vec<ScriptPlacementRow>;
+
         /// thuum ADR-068 rung 4: the one seat that streams what nobody owns
         /// (wire-rules world_streamer).
         type WorldStreamer;
@@ -2466,7 +2613,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
+pub use ffi::{RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -3367,6 +3514,61 @@ impl Placements {
             .collect()
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn open_script_set(&mut self, caster: u32, self_id: u32, x: f32, y: f32, z: f32, short_id: u32, file: &str, record_type: &str, now_ms: u64) -> ScriptSetOpen {
+        let anchor = placements::CasterPose { x, y, z, yaw: 0.0 };
+        let base = forms::FormDesc { short_id, file: file.to_owned() };
+        match self.0.open_script_set(caster, self_id, anchor, base, record_type, now_ms) {
+            Ok(set) => ScriptSetOpen { set, refusal: 0 },
+            Err(placements::ScriptRefusal::Kind) => ScriptSetOpen { set: 0, refusal: 1 },
+            Err(placements::ScriptRefusal::ServerWide) => ScriptSetOpen { set: 0, refusal: 2 },
+            Err(placements::ScriptRefusal::NonFinite) => ScriptSetOpen { set: 0, refusal: 3 },
+        }
+    }
+
+    fn take_script_requests(&mut self) -> Vec<ScriptRequestRow> {
+        self.0
+            .take_script_requests()
+            .into_iter()
+            .map(|r| ScriptRequestRow { set: r.set, caster: r.caster, self_id: r.self_id, short_id: r.base.short_id, file: r.base.file, record_type: r.record_type, window_ms: r.window_ms })
+            .collect()
+    }
+
+    fn due_script_placements(&mut self, now_ms: u64) -> Vec<ScriptPlacementRow> {
+        self.0
+            .due_script_placements(now_ms)
+            .into_iter()
+            .map(|o| match o {
+                placements::ScriptOutcome::Placed(p) => ScriptPlacementRow {
+                    placed: true,
+                    set: p.set,
+                    caster: p.caster,
+                    self_id: p.self_id,
+                    short_id: p.base.short_id,
+                    file: p.base.file,
+                    record_type: p.record_type,
+                    x: p.x,
+                    y: p.y,
+                    z: p.z,
+                    yaw: p.yaw,
+                },
+                placements::ScriptOutcome::NoReport(r) => ScriptPlacementRow {
+                    placed: false,
+                    set: r.set,
+                    caster: r.caster,
+                    self_id: r.self_id,
+                    short_id: r.base.short_id,
+                    file: r.base.file,
+                    record_type: r.record_type,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                    yaw: 0.0,
+                },
+            })
+            .collect()
+    }
+
     fn report_placed(&mut self, report: PlacementReport, now_ms: u64) -> PlacementReportVerdict {
         let PlacementReport { caster, set, short_id, file, x, y, z, yaw } = report;
         let report = placements::Report { caster, set, base: forms::FormDesc { short_id, file }, x, y, z, yaw };
@@ -4190,10 +4392,15 @@ fn native_args(args: &[ScriptArg]) -> Vec<natives::Arg> {
 
 fn script_call_subject(cls: &str, func: &str, self_id: u32, args: &[ScriptArg]) -> ScriptCallSubject {
     let Some(index) = natives::row_index(cls, func) else {
-        return ScriptCallSubject { row: -1, subject: 0 };
+        return ScriptCallSubject { row: -1, subject: 0, record: 0 };
     };
-    let subject = natives::TABLE.get(index).and_then(|row| natives::subject_of(row, self_id, &native_args(args))).unwrap_or(0);
-    ScriptCallSubject { row: i32::try_from(index).unwrap_or(-1), subject }
+    let row = natives::TABLE.get(index);
+    let subject = row.and_then(|row| natives::subject_of(row, self_id, &native_args(args))).unwrap_or(0);
+    let record = match row.map(|r| r.keep) {
+        Some(natives::Keep::Record(kind)) => kind.code(),
+        _ => 0,
+    };
+    ScriptCallSubject { row: i32::try_from(index).unwrap_or(-1), subject, record }
 }
 
 /// Every reporter's budget and every subject's sequence (wire-rules natives),
@@ -4442,6 +4649,58 @@ fn world_globals_merge(record: &[WorldGlobalValue], accepted: &[WorldGlobalValue
     let accepted: Vec<world_globals::Value> = accepted.iter().map(to_value).collect();
     let (after, changed) = world_globals::merge(&record, &accepted);
     WorldGlobalsMerge { record: after.into_iter().map(from_value).collect(), changed: changed.into_iter().map(from_value).collect() }
+}
+
+fn ref_state_apply(disabled: bool, deleted: bool, func: &str) -> RefStateVerdict {
+    let Some(call) = ref_state::Call::of(func) else {
+        return RefStateVerdict { code: 2, disabled, deleted };
+    };
+    match ref_state::apply(ref_state::RefState { disabled, deleted }, call) {
+        ref_state::Verdict::Recorded(after) => RefStateVerdict { code: 0, disabled: after.disabled, deleted: after.deleted },
+        ref_state::Verdict::Folded(kept) => RefStateVerdict { code: 1, disabled: kept.disabled, deleted: kept.deleted },
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn standing_judge(
+    func: &str,
+    object: u32,
+    number: i64,
+    faction_is_fact: bool,
+    other_is_actor: bool,
+    factions: &[StandingFaction],
+    crime_faction: u32,
+    relationships: &[StandingRelation],
+) -> StandingVerdict {
+    let is = |name: &str| func.eq_ignore_ascii_case(name);
+    let call = if is("SetFactionRank") {
+        standing::Call::SetFactionRank { faction: object, rank: number }
+    } else if is("ModFactionRank") {
+        standing::Call::ModFactionRank { faction: object, by: number }
+    } else if is("RemoveFromFaction") {
+        standing::Call::RemoveFromFaction { faction: object }
+    } else if is("RemoveFromAllFactions") {
+        standing::Call::RemoveFromAllFactions
+    } else if is("SetCrimeFaction") {
+        standing::Call::SetCrimeFaction { faction: object }
+    } else if is("SetRelationshipRank") {
+        standing::Call::SetRelationshipRank { other: object, rank: number }
+    } else {
+        return StandingVerdict { code: 3, name: String::new(), why: String::new(), change: 0, form: 0, rank: 0 };
+    };
+    let factions: Vec<standing::FactionRank> = factions.iter().map(|f| standing::FactionRank { faction: f.faction, rank: f.rank }).collect();
+    let relationships: Vec<standing::Relationship> = relationships.iter().map(|r| standing::Relationship { other: r.other, rank: r.rank }).collect();
+    let record = standing::Record { factions: &factions, crime_faction, relationships: &relationships };
+    let out = |code, change, form, rank| StandingVerdict { code, name: String::new(), why: String::new(), change, form, rank };
+    match standing::judge(&record, call, standing::Facts { faction_is_fact, other_is_actor }) {
+        standing::Verdict::Recorded(standing::Change::Rank { faction, rank }) => out(0, 1, faction, rank),
+        standing::Verdict::Recorded(standing::Change::Removed { faction }) => out(0, 2, faction, 0),
+        standing::Verdict::Recorded(standing::Change::RemovedAll) => out(0, 3, 0, 0),
+        standing::Verdict::Recorded(standing::Change::Crime { faction }) => out(0, 4, faction, 0),
+        standing::Verdict::Recorded(standing::Change::Relationship { other, rank }) => out(0, 5, other, rank),
+        standing::Verdict::Folded => out(1, 0, 0, 0),
+        standing::Verdict::Refuse(code, why) => StandingVerdict { code: 2, name: code.name().to_owned(), why, change: 0, form: 0, rank: 0 },
+    }
 }
 
 /// thuum ADR-068 rung 4: the world streamer (wire-rules world_streamer).
@@ -5163,7 +5422,8 @@ mod tests {
         assert_eq!(at.subject, 0xaa8cb);
         let send = script_call_subject("Debug", "SendAnimationEvent", 0xaa8cb, &[pillar, text]);
         assert_eq!(send.subject, 0xaa8cb);
-        assert_eq!(script_call_subject("Debug", "Notification", 0, &[text]), ScriptCallSubject { row: -1, subject: 0 });
+        assert_eq!(script_call_subject("Debug", "Notification", 0, &[text]), ScriptCallSubject { row: -1, subject: 0, record: 0 });
+        assert_eq!(at.record, 0, "an action row keeps no record");
         let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0 };
         let mut s = new_script_calls();
         let v = s.judge(at.row, &[text, text], &facts, 0);
@@ -5232,7 +5492,7 @@ mod tests {
     #[test]
     fn the_bridge_records_a_state_row_with_its_kind_and_sequence() {
         // thuum ADR-068 rung 4: Bleak Falls Temple's cobweb 0x1fc43 disabled
-        // by its host 0xff000000 at epoch 3; Embershard's ambush draugr
+        // by its host 0xff000000 at epoch 3; the Temple's ambush draugr
         // 0x380ba, an actor nobody simulates, enabled by its cell's host
         let flag = ScriptArg { kind: 1, form_id: 0 };
         let at = script_call_subject("ObjectReference", "Disable", 0x1fc43, &[flag]);
@@ -5251,7 +5511,7 @@ mod tests {
         assert_eq!((guest.code, guest.name.as_str(), guest.record), (ScriptCallCode::Owner, "E_SCRIPTCALL_OWNER", 0));
         // the actor nobody simulates: its cell's host at the epoch
         let enable = script_call_subject("ObjectReference", "Enable", 0x380ba, &[flag]);
-        let ambush = ScriptCallFacts { self_id: 0x380ba, subject_kind: 3, cell: 0xb6be6, owner: 0, owner_epoch: 0, host: 0xff00_0000, host_epoch: 3, ..facts };
+        let ambush = ScriptCallFacts { self_id: 0x380ba, subject_kind: 3, cell: 0x371de, owner: 0, owner_epoch: 0, host: 0xff00_0000, host_epoch: 3, ..facts };
         let woke = s.judge(enable.row, &[flag], &ambush, 0);
         assert_eq!((woke.code, woke.subject, woke.seq, woke.record), (ScriptCallCode::Accepted, 0x380ba, 1, 1));
         assert_eq!(s.judge(enable.row, &[flag], &ScriptCallFacts { host_epoch: 4, ..ambush }, 0).name, "E_SCRIPTCALL_OWNER");
@@ -5325,6 +5585,52 @@ mod tests {
         assert_eq!(w.dead(0xff00_0001, true), StreamerElection { changed: true, streamer: 0, epoch: 3, previous: 0xff00_0001 });
         assert!(w.stale(0xff00_0002, false).changed);
         assert!(w.gone(0xff00_0002).changed);
+    }
+
+    #[test]
+    fn the_bridge_moves_a_ref_state_and_a_standing_and_opens_a_script_set() {
+        // thuum ADR-068 rung 4: the five natives against the record
+        assert_eq!(ref_state_apply(false, false, "Disable"), RefStateVerdict { code: 0, disabled: true, deleted: false });
+        assert_eq!(ref_state_apply(true, false, "DisableNoWait"), RefStateVerdict { code: 1, disabled: true, deleted: false });
+        assert_eq!(ref_state_apply(true, false, "EnableNoWait"), RefStateVerdict { code: 0, disabled: false, deleted: false });
+        assert_eq!(ref_state_apply(false, false, "Delete"), RefStateVerdict { code: 0, disabled: true, deleted: true });
+        assert_eq!(ref_state_apply(true, true, "Enable").code, 1);
+        assert_eq!(ref_state_apply(false, false, "PlayAnimation").code, 2);
+        // the subject's record kind crosses with the row
+        let flag = ScriptArg { kind: 1, form_id: 0 };
+        assert_eq!(script_call_subject("ObjectReference", "Disable", 0x1fc43, &[flag]).record, 1);
+        let faction = ScriptArg { kind: 4, form_id: 0x5c84e };
+        assert_eq!(script_call_subject("Actor", "RemoveFromFaction", 0x800a6, &[faction]).record, 2);
+        // the standing: an illustrative faction 0x5c84e on an NPC that holds it at 0
+        let held = [StandingFaction { faction: 0x5c84e, rank: 0 }];
+        let set = standing_judge("SetFactionRank", 0x5c84e, 2, true, false, &held, 0, &[]);
+        assert_eq!((set.code, set.change, set.form, set.rank), (0, 1, 0x5c84e, 2));
+        assert_eq!(standing_judge("setfactionrank", 0x5c84e, 0, true, false, &held, 0, &[]).code, 1);
+        let refused = standing_judge("SetFactionRank", 0x12eb7, 0, false, false, &held, 0, &[]);
+        assert_eq!((refused.code, refused.name.as_str()), (2, "E_STANDING_FACTION"));
+        assert_eq!(standing_judge("RemoveFromAllFactions", 0, 0, false, false, &held, 0, &[]).change, 3);
+        // a crime faction the record keeps none of, the base's unread: nothing folds
+        assert_eq!(standing_judge("SetCrimeFaction", 0, 0, false, false, &[], u32::MAX, &[]).change, 4);
+        let other = standing_judge("SetRelationshipRank", 0x1347b, 3, false, true, &[], 0, &[StandingRelation { other: 0x1347b, rank: 1 }]);
+        assert_eq!((other.change, other.form, other.rank), (5, 0x1347b, 3));
+        assert_eq!(standing_judge("AddToFaction", 0x5c84e, 0, true, false, &[], 0, &[]).code, 3);
+        // the script set through the Placements box
+        let Ok(mut p) = new_placements("[]") else {
+            return;
+        };
+        let opened = p.open_script_set(0xff00_0000, 0x1fc43, 100.0, 200.0, -50.0, 0x3b, "Skyrim.esm", "STAT", 0);
+        assert_eq!(opened, ScriptSetOpen { set: 0, refusal: 0 });
+        assert_eq!(p.open_script_set(0xff00_0000, 0x1fc43, 0.0, 0.0, 0.0, 0x3b, "Skyrim.esm", "EXPL", 0).refusal, 1);
+        let asks = p.take_script_requests();
+        assert_eq!(asks.len(), 1);
+        let ask = asks.first().map(|a| (a.set, a.self_id, a.short_id, a.record_type.as_str()));
+        assert_eq!(ask, Some((0, 0x1fc43, 0x3b, "STAT")));
+        let report = PlacementReport { caster: 0xff00_0000, set: 0, short_id: 0x3b, file: "Skyrim.esm".to_owned(), x: 110.0, y: 200.0, z: -50.0, yaw: 45.0 };
+        assert!(p.report_placed(report, 100).accepted);
+        let rows = p.due_script_placements(100);
+        assert_eq!(rows.len(), 1);
+        let placed = rows.first().map(|r| (r.placed, r.x, r.yaw, r.self_id));
+        assert_eq!(placed, Some((true, 110.0, 45.0, 0x1fc43)));
     }
 
     #[test]

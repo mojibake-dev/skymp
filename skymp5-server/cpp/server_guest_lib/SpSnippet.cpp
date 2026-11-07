@@ -57,6 +57,16 @@ void SpSnippet::Relay(MpActor* listener, uint32_t seq)
   listener->SendToUser(message, true);
 }
 
+void SpSnippet::Serve(MpActor* listener)
+{
+  if (!listener->IsCreatedAsPlayer()) {
+    return;
+  }
+  SpSnippetMessage message =
+    MakeMessage(listener, std::numeric_limits<uint32_t>::max());
+  listener->SendToUser(message, true);
+}
+
 SpSnippetMessage SpSnippet::MakeMessage(MpActor* actorExecutor,
                                         uint32_t snippetIdx) const
 {

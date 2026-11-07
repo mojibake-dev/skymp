@@ -568,6 +568,26 @@ void MpObjectReference::Activate(MpObjectReference& activationSource,
   }
 }
 
+namespace {
+// thuum ADR-068 rung 4: a game-file world object's Enable or Disable stamps
+// its ref state recorded, whatever the cause (the server's own VM, the
+// console, labState), at the object's sequence now (WorldState's
+// objectSeqOf, the script calls' one sequence), so the state is attached,
+// saved and served like a script's; an actor's grid is its own
+void StampRefState(MpObjectReference& refr, ChangeFormGuard& guard)
+{
+  auto* worldState = refr.GetParent();
+  if (!refr.IsEspmForm() || refr.AsActor() || !worldState) {
+    return;
+  }
+  const uint32_t seq =
+    worldState->objectSeqOf ? worldState->objectSeqOf(refr.GetFormId()) : 0;
+  guard.EditChangeForm([&](MpChangeFormREFR& changeForm) {
+    changeForm.refStateSeq = std::max(changeForm.refStateSeq.value_or(0), seq);
+  });
+}
+}
+
 void MpObjectReference::Disable()
 {
   if (ChangeForm().isDisabled) {
@@ -576,6 +596,7 @@ void MpObjectReference::Disable()
 
   EditChangeForm(
     [&](MpChangeFormREFR& changeForm) { changeForm.isDisabled = true; });
+  StampRefState(*this, *this);
 
   if (!IsEspmForm() || AsActor()) {
     RemoveFromGridAndUnsubscribeAll();
@@ -590,6 +611,7 @@ void MpObjectReference::Enable()
 
   EditChangeForm(
     [&](MpChangeFormREFR& changeForm) { changeForm.isDisabled = false; });
+  StampRefState(*this, *this);
 
   if (!IsEspmForm() || AsActor()) {
     ForceSubscriptionsUpdate();
@@ -1026,7 +1048,7 @@ void MpObjectReference::SetActivationBlocked(bool blocked)
 void MpObjectReference::ForceSubscriptionsUpdate()
 {
   auto worldState = GetParent();
-  if (!worldState || IsDisabled()) {
+  if (!worldState || (IsDisabled() && !KeepsGridWhileDisabled())) {
     return;
   }
   InitListenersAndEmitters();
@@ -1728,6 +1750,44 @@ std::optional<FormDesc> MpObjectReference::GetPlacedBySpell() const
 std::optional<uint32_t> MpObjectReference::GetRefStateSeq() const
 {
   return ChangeForm().refStateSeq;
+}
+
+void MpObjectReference::SetRefState(bool disabled, bool deleted, uint32_t seq)
+{
+  EditChangeForm([&](MpChangeFormREFR& changeForm) {
+    changeForm.isDeleted = deleted;
+    changeForm.refStateSeq = seq;
+  });
+  if (disabled) {
+    Disable();
+  } else {
+    Enable();
+  }
+  // the stamp above may name the sequence now; the record's is the call's
+  EditChangeForm(
+    [&](MpChangeFormREFR& changeForm) { changeForm.refStateSeq = seq; });
+  if (!AsActor()) {
+    ForceSubscriptionsUpdate();
+  }
+}
+
+bool MpObjectReference::KeepsGridWhileDisabled() const
+{
+  return IsEspmForm() && !AsActor() && ChangeForm().refStateSeq.has_value();
+}
+
+std::optional<MpChangeFormREFR::PlacedByScript>
+MpObjectReference::GetPlacedByScript() const
+{
+  return ChangeForm().placedByScript;
+}
+
+void MpObjectReference::SetPlacedByScript(const FormDesc& self,
+                                          const FormDesc& base)
+{
+  EditChangeForm([&](MpChangeFormREFR& changeForm) {
+    changeForm.placedByScript = MpChangeFormREFR::PlacedByScript{ self, base };
+  });
 }
 
 void MpObjectReference::MarkDisabledByFiles()

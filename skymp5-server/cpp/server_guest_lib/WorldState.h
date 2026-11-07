@@ -384,6 +384,11 @@ public:
   // subscription), installed by PartOne for the quest aliases' created items
   // the reference holds (PartOne::AddCreatedItems)
   std::function<void(MpObjectReference&)> onAttach;
+  // thuum ADR-068 rung 4: the object's sequence now (the script calls' one
+  // sequence per object, PartOne's ScriptCalls), installed by PartOne, which
+  // a game-file world object's Enable or Disable stamps as its recorded ref
+  // state whatever the cause (MpObjectReference)
+  std::function<uint32_t(uint32_t refrId)> objectSeqOf;
   // thuum ADR-050 decision 3 (train 51): the roll's level for a server-made
   // NPC placed at a reference (PlaceAtMe), by the same rule as the ring's
   // (PartOne::FateRollLevel with the placer as the loader)

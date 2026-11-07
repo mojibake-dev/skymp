@@ -186,6 +186,17 @@ public:
   // state's last record (MpChangeFormREFR::refStateSeq), none while no
   // script moved its enabled or deleted state
   std::optional<uint32_t> GetRefStateSeq() const;
+  // the ref state's record as its owner's call moved it (ActionListener's
+  // record branch; wire-rules ref_state): the deleted flag and the object's
+  // sequence written, then Enable or Disable as the record now says (an
+  // actor's grid changes are MpActor's), and a world object put on the grid
+  // (an attach by record, a re-enable), where a recorded one stays while
+  // disabled so every seat that loads its cell is served its state
+  void SetRefState(bool disabled, bool deleted, uint32_t seq);
+  // a game-file world object whose ref state is recorded keeps its place on
+  // the grid while disabled (ForceSubscriptionsUpdate): its create word and
+  // its served state reach every seat that loads its cell
+  bool KeepsGridWhileDisabled() const;
   // the reference starts disabled as the game files place it (initially
   // disabled, or under an enable parent that disables it), written when the
   // loader attaches it by its record (WorldState::AttachEspmRecord's
@@ -296,6 +307,11 @@ public:
   // other form; the record's mark for the sweep at load
   std::optional<FormDesc> GetPlacedBySpell() const;
   void SetPlacedBySpell(const FormDesc& spell);
+  // thuum ADR-068 rung 4 (the script set, W3): the script's self and the base
+  // whose placement made the server place this reference, none for every
+  // other form
+  std::optional<MpChangeFormREFR::PlacedByScript> GetPlacedByScript() const;
+  void SetPlacedByScript(const FormDesc& self, const FormDesc& base);
 
   // This method removes ObjectReference from a current grid and doesn't attach
   // to another grid

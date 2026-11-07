@@ -34,6 +34,12 @@ public:
   // relay must not land behind the object's later record or relay)
   void Relay(MpActor* listener, uint32_t seq);
 
+  // thuum ADR-068 rung 4 (the standing's serve): a recorded state's applier
+  // to one listener's game behind a create word, at once, no answer and no
+  // sequence (several appliers serve one subject, and a receiver drops a
+  // seq at or below the last it took)
+  void Serve(MpActor* listener);
+
   static VarValue VarValueFromSpSnippetReturnValue(
     const std::optional<std::variant<bool, double, std::string>>& returnValue);
 

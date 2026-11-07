@@ -21,9 +21,13 @@ public:
   // on the clients where the create word said (thuum docs/verbs/
   // prop-physics.md, x-prop-launch v3 190643: the copy spawned inside the
   // dropper's capsule and was ejected at the first Havok step).
+  // `subscribe` false (thuum ADR-068 rung 4's script set): the caller marks
+  // the form (its placer, its record) and subscribes it itself, so its first
+  // create word already names its placer.
   static MpObjectReference& PlaceAt(MpObjectReference& anchor,
                                     const espm::LookupResult& form,
-                                    const LocationalData& where);
+                                    const LocationalData& where,
+                                    bool subscribe = true);
 
   VarValue IsHarvested(VarValue self, const std::vector<VarValue>& arguments);
   VarValue IsDisabled(VarValue self, const std::vector<VarValue>& arguments);

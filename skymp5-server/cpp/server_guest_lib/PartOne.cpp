@@ -53,6 +53,7 @@
 #include "libespm/SPEL.h"
 #include "libespm/ScriptData.h"
 #include "papyrus-vm/Utils.h"
+#include "script_classes/PapyrusObjectReference.h"
 #include <spdlog/fmt/fmt.h>
 #include <spdlog/spdlog.h>
 
@@ -355,6 +356,10 @@ struct PartOne::Impl
     skymp::rules::new_world_streamer();
   std::unordered_set<Networking::UserId> streamerStaleUsers;
   bool worldGlobalsEnabled = false;
+
+  // thuum ADR-068 rung 4 (the script set): each open set's world or cell,
+  // where its object is placed at its report
+  std::unordered_map<uint64_t, uint32_t> scriptSetWorldOrCell;
   // thuum docs/verbs/leveling.md
   rust::Box<skymp::rules::LevelingTable> leveling =
     skymp::rules::new_leveling_table();
@@ -800,14 +805,20 @@ void PartOne::AttachSaveStorage(
       changeForm.isDisabled = true;
     }
 
-    if (changeForm.isDeleted) {
+    bool isFF = changeForm.formDesc.file.empty();
+
+    // thuum ADR-068 rung 4 (amendment B, read 7): a game-file reference a
+    // script deleted keeps its record, deleted and disabled at its ref
+    // state's sequence, so the loader attaches it by that record and every
+    // seat that loads its cell is served the deletion (skipped here, the
+    // files' standing copy came back after every restart); a server form's
+    // deleted record is still dropped (upstream's skip: its id is reused)
+    if (changeForm.isDeleted && isFF) {
       pImpl->logger->info(
         "Skipping deleted form {}, will likely overwrite at some point",
         changeForm.formDesc.ToString());
       return;
     }
-
-    bool isFF = changeForm.formDesc.file.empty();
 
     // thuum docs/verbs/prop-physics.md (ADR-058): a dropped item's copy is a
     // prop the record keeps across a restart, so the skip below (upstream's,
@@ -1292,6 +1303,11 @@ void PartOne::Init()
   worldState.onAttach = [this](MpObjectReference& refr) {
     AddCreatedItems(refr);
   };
+  // thuum ADR-068 rung 4: the object's sequence now, which a game-file world
+  // object's Enable or Disable stamps as its recorded ref state
+  worldState.objectSeqOf = [this](uint32_t refrId) {
+    return GetScriptCalls().seq_of(refrId);
+  };
   // thuum docs/verbs/npc-fate.md (ADR-049 decision 2): a fate rolled anew
   // at a respawn goes to every user and the fate pass at a player's square
   // change, ahead of the grid's own loader (decision 3's "ahead of the
@@ -1532,19 +1548,85 @@ void PartOne::Init()
     // lamp's fallen stage) rides behind its create word on the same ordered
     // channel, served, so the late seat applies the record without replaying
     // the firing; after a restart the record is the saved one
-    if (!emitterAsActor) {
-      if (const auto destruction = emitter->GetDestruction()) {
-        DestructionStageMessage served;
-        served.refr = emitter->GetFormId();
+    // thuum ADR-068 rung 4 (amendment B, read 7): the same word carries a
+    // reference's recorded ref state (its owner's Enable, Disable or Delete,
+    // or the server's own), disabled and deleted with the object's sequence,
+    // an actor's too; the word goes before ScriptStateApply, whose sequence
+    // can be older (the receiver's served word raises nothing)
+    const auto destruction = emitterAsActor
+      ? std::optional<MpChangeFormREFR::Destruction>()
+      : emitter->GetDestruction();
+    const auto refStateSeq = emitter->GetRefStateSeq();
+    if (destruction || refStateSeq) {
+      DestructionStageMessage served;
+      served.refr = emitter->GetFormId();
+      if (destruction) {
         served.stage = destruction->stage;
         served.destroyed = destruction->destroyed;
-        served.served = true;
-        sendTarget->Send(listenerUserId, served, true);
+      }
+      if (refStateSeq) {
+        served.disabled = emitter->IsDisabled();
+        served.deleted = emitter->IsDeleted();
+        served.seq = *refStateSeq;
+      }
+      served.served = true;
+      sendTarget->Send(listenerUserId, served, true);
+      if (destruction) {
         spdlog::info("[verb:traps] {:x}'s record (stage {}, destroyed {}) "
                      "served to {:x} after its create word",
                      emitter->GetFormId(),
                      static_cast<int>(destruction->stage),
                      destruction->destroyed, listenerAsActor->GetFormId());
+      }
+      if (refStateSeq) {
+        spdlog::info("[verb:scripts] ref state {:x} (disabled {}, deleted {}, "
+                     "seq {}) served to {:x} after its create word",
+                     emitter->GetFormId(), emitter->IsDisabled(),
+                     emitter->IsDeleted(), *refStateSeq,
+                     listenerAsActor->GetFormId());
+      }
+    }
+
+    // thuum ADR-068 rung 4 (the standing, W3): an NPC's recorded standing
+    // rides behind its create word as the appliers that bring a late
+    // engine's copy to the record (the record's against its base's rows),
+    // at once and with no sequence: several serve one subject
+    if (emitterAsActor && !isMe && !hasUser &&
+        emitter->GetFormId() < 0xff000000) {
+      size_t appliers = 0;
+      for (const auto& applier : emitterAsActor->StandingAppliers()) {
+        uint32_t formId = 0;
+        if (applier.form.shortFormId != 0 || !applier.form.file.empty()) {
+          try {
+            formId = applier.form.ToFormId(worldState.espmFiles);
+          } catch (const std::exception&) {
+            continue;
+          }
+        }
+        std::vector<std::optional<
+          std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+          args;
+        const bool other =
+          std::string(applier.function) == "SetRelationshipRank";
+        if (formId != 0) {
+          args.push_back(SpSnippetObjectArgument{
+            SpSnippet::MakeLongFormId(&worldState, formId),
+            other ? std::string("Actor") : std::string("Faction") });
+        } else {
+          args.push_back(std::nullopt);
+        }
+        if (applier.rank) {
+          args.push_back(static_cast<double>(*applier.rank));
+        }
+        SpSnippet("Actor", applier.function, args, emitter->GetFormId())
+          .Serve(listenerAsActor);
+        ++appliers;
+      }
+      if (appliers > 0) {
+        spdlog::info("[verb:scripts] standing of {:x} served to {:x} after "
+                     "its create word: {} applier(s)",
+                     emitter->GetFormId(), listenerAsActor->GetFormId(),
+                     appliers);
       }
     }
 
@@ -4246,6 +4328,105 @@ void PartOne::RemoveSpellPlacedSet(uint64_t set, const char* why)
   pImpl->placedSets.erase(it);
 }
 
+bool PartOne::OpenScriptSet(MpActor& reporter, uint32_t selfId,
+                            uint32_t worldOrCell, const NiPoint3& anchor,
+                            uint32_t baseId)
+{
+  FormDesc baseDesc;
+  try {
+    baseDesc = FormDesc::FromFormId(baseId, worldState.espmFiles);
+  } catch (const std::exception& e) {
+    spdlog::info("[verb:spell-placed] E_PLACED_BASE: {:x}'s script placed "
+                 "{:x} at {:x}: {}; nothing placed",
+                 reporter.GetFormId(), baseId, selfId, e.what());
+    return false;
+  }
+  std::string baseType;
+  if (HasEspm()) {
+    if (const auto* rec = GetEspm().GetBrowser().LookupById(baseId).rec) {
+      baseType = rec->GetType().ToString();
+    }
+  }
+  const auto opened = pImpl->placements->open_script_set(
+    reporter.GetFormId(), selfId, anchor.x, anchor.y, anchor.z,
+    baseDesc.shortFormId, baseDesc.file, baseType, SteadyNowMs());
+  if (opened.refusal != 0) {
+    const char* code = opened.refusal == 1 ? "E_PLACED_KIND"
+      : opened.refusal == 2                ? "E_PLACED_FULL"
+                                           : "E_PLACED_NAN";
+    spdlog::info("[verb:spell-placed] {}: {:x}'s script placed {} ({}) at "
+                 "{:x}; nothing placed",
+                 code, reporter.GetFormId(), baseDesc.ToString(), baseType,
+                 selfId);
+    return false;
+  }
+  pImpl->scriptSetWorldOrCell[opened.set] = worldOrCell;
+  for (const auto& row : pImpl->placements->take_script_requests()) {
+    PlacedRequestMessage ask;
+    ask.set = row.set;
+    ask.windowMs =
+      static_cast<uint32_t>(std::min<uint64_t>(row.window_ms, 10'000));
+    const FormDesc base(row.short_id, std::string(row.file));
+    try {
+      ask.bases.push_back(base.ToFormId(worldState.espmFiles));
+    } catch (const std::exception&) {
+      continue;
+    }
+    const auto userId = serverState.UserByActor(&reporter);
+    if (userId == Networking::InvalidUserId) {
+      continue;
+    }
+    GetSendTarget().Send(userId, ask, true);
+    spdlog::info("[verb:spell-placed] {:x}'s script placed {} ({}) at {:x}: "
+                 "set {} requested within {} ms",
+                 row.caster, base.ToString(), std::string(row.record_type),
+                 row.self_id, row.set, ask.windowMs);
+  }
+  return true;
+}
+
+namespace {
+// thuum ADR-068 rung 4 (the script set): the server's copy of a script's
+// placement at its reporter's pose, through PlaceAt (an NPC fated before its
+// create word), marked with its placer and its record before its first
+// subscription so its create word names the reporter
+uint32_t PlaceScriptObject(PartOne& partOne,
+                           const skymp::rules::ScriptPlacementRow& row,
+                           uint32_t worldOrCell,
+                           std::unordered_map<uint32_t, uint32_t>& placers)
+{
+  auto& worldState = partOne.worldState;
+  const auto& reporterForm = worldState.LookupFormByIdNoLoad(row.caster);
+  MpActor* reporter = reporterForm ? reporterForm->AsActor() : nullptr;
+  if (!reporter || !partOne.HasEspm() || worldOrCell == 0) {
+    return 0;
+  }
+  const FormDesc baseDesc(row.short_id, std::string(row.file));
+  uint32_t baseId = 0;
+  FormDesc where;
+  FormDesc self;
+  try {
+    baseId = baseDesc.ToFormId(worldState.espmFiles);
+    where = FormDesc::FromFormId(worldOrCell, worldState.espmFiles);
+    self = FormDesc::FromFormId(row.self_id, worldState.espmFiles);
+  } catch (const std::exception&) {
+    return 0;
+  }
+  const auto lookup = partOne.GetEspm().GetBrowser().LookupById(baseId);
+  if (!lookup.rec) {
+    return 0;
+  }
+  auto& refr = PapyrusObjectReference::PlaceAt(
+    *reporter, lookup,
+    LocationalData{ { row.x, row.y, row.z }, { 0.f, 0.f, row.yaw }, where },
+    false);
+  placers[refr.GetFormId()] = row.caster;
+  refr.SetPlacedByScript(self, baseDesc);
+  refr.ForceSubscriptionsUpdate();
+  return refr.GetFormId();
+}
+}
+
 void PartOne::SendPlacementRequests()
 {
   const auto rows = pImpl->placements->take_requests();
@@ -4355,6 +4536,28 @@ void PartOne::TickPlacements(uint64_t nowMs)
   }
   for (const auto& removal : pImpl->placements->due_removals(nowMs)) {
     RemoveSpellPlacedSet(removal.set, PlacementRemovalWhy(removal.why));
+  }
+  // thuum ADR-068 rung 4 (the script set): a report placed, or a window
+  // closed with none
+  for (const auto& row : pImpl->placements->due_script_placements(nowMs)) {
+    const auto where = pImpl->scriptSetWorldOrCell.find(row.set);
+    const uint32_t worldOrCell =
+      where != pImpl->scriptSetWorldOrCell.end() ? where->second : 0;
+    pImpl->scriptSetWorldOrCell.erase(row.set);
+    const FormDesc base(row.short_id, std::string(row.file));
+    if (!row.placed) {
+      spdlog::info("[verb:spell-placed] {:x}'s script placed {} at {:x}: "
+                   "nothing placed, its game reported no base within the "
+                   "window",
+                   row.caster, base.ToString(), row.self_id);
+      continue;
+    }
+    const uint32_t formId =
+      PlaceScriptObject(*this, row, worldOrCell, pImpl->placedCasterByForm);
+    spdlog::info("[verb:spell-placed] {:x}'s script placed {} ({}) at {:x}: "
+                 "{:x} at ({:.0f}, {:.0f}, {:.0f}) yaw {:.0f}, as reported",
+                 row.caster, base.ToString(), std::string(row.record_type),
+                 row.self_id, formId, row.x, row.y, row.z, row.yaw);
   }
 }
 

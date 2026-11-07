@@ -370,6 +370,16 @@ public:
                           const NiPoint3& pos, float yaw);
   bool SweepSpellPlacedAtLoad(const MpChangeForm& record);
   size_t SpellPlacedSets() const;
+  // thuum ADR-068 rung 4 (the script set, W3; wire-rules placements): a
+  // script's PlaceAtMe or PlaceActorAtMe on `selfId`, which stands at
+  // `anchor` in `worldOrCell`, of `baseId`, its owner `reporter`: a set
+  // opened for the one base (a placeable kind, else E_PLACED_KIND) and the
+  // PlacedRequest sent to the reporter at once; its report (OnPlacedReport,
+  // judged through the set) places the server's copy at the reported pose,
+  // naming the reporter (placedBy) and recording placedByScript. False when
+  // the set was refused.
+  bool OpenScriptSet(MpActor& reporter, uint32_t selfId, uint32_t worldOrCell,
+                     const NiPoint3& anchor, uint32_t baseId);
   // thuum docs/verbs/player-globals.md, the needs (playtest 37, 2026-10-28,
   // Eli: "food doesnt replenish hunger"): server-settings.json's
   // `survivalFood`, as data: the effects a food record carries whose

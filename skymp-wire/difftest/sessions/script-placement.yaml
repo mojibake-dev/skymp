@@ -1,0 +1,73 @@
+# difftest script-placement (thuum ADR-068 rung 4, the script set, W3;
+# docs/research/rung4-state-rows-2026-11-07.md section 1(c), placements;
+# docs/verbs/spell-placed-object.md's PlacedRequest 61 and PlacedReport 62):
+# c1 and c2 are new characters (profiles 9 and 10, actors 0xff000002 and
+# 0xff000003, see melee-reach), both at the spawn in Tamriel's exterior cell
+# (32, -15), form 0xbbb1 (cell-host's read); c2 starts 1.5 s after c1, and
+# each client's times below are its own. At 1 s c1 reports the cell loaded
+# and is granted it, HostGrant {cell 0xbbb1, epoch 1}, as in cell-host. At 3
+# s its game reports a script's ObjectReference.PlaceAtMe on the ore vein
+# 0x10e6c5 (script-call's subject, ACTI MineOreIron01_LFallForestDirt at
+# (134931, -58398, 10752)) of the STAT 0x3b XMarker (Skyrim.esm by
+# lab/esm.py, 2026-11-06), a state row kept as a placement (wire-rules
+# natives Keep::Record): the server opens a script set anchored at the vein,
+# the first set of a fresh server (0), and asks c1 alone, PlacedRequest {set
+# 0, bases [0x3b], windowMs 6000}. At 3.5 s c1 reports where its engine
+# stood it, 100 units east of the vein at its height, yaw 90: inside the
+# band's farthest reach (320 on the ground plane, 256 in height, no floor),
+# so the server places its own copy there, a server form whose create word
+# names c1's actor as its placer, to both games in reach. Three calls place
+# nothing, each said by its name in the wire server's log: at 2.4 s of its
+# own script c2 reports the same PlaceAtMe (E_SCRIPTCALL_OWNER: c1 hosts the
+# cell); at 3.7 s c1 places the EXPL 0x10e4ae
+# dunCGTrapFireTriggerExplosion01 (E_PLACED_KIND: an explosion is the
+# engine's own, no set's kind); at 3.9 s c1 places the XMarker again, set 1,
+# asked as before, and at 4.1 s reports it 400 units east (E_PLACED_RANGE),
+# so its window closes with nothing placed. The legacy server knows neither
+# MsgType 75 nor 62 and drops all six. c2 never reports the cell loaded, so
+# c1's departure leaves it unhosted after the grace with nothing to c2; c2
+# steps aside at 6 s so it outlives c1, as in every session.
+id: script-placement
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 1000, send: {t: 47, cell: 0xbbb1, loaded: true}, reliable: true}
+  - {client: c1, at_ms: 3000, send: {t: 75, epoch: 1, selfId: 0x10e6c5, cls: ObjectReference, fn: PlaceAtMe, args: [{formId: 0x3b, type: Static}, 1, false, false], caller: "", handler: "", latent: false}, reliable: true}
+  - {client: c1, at_ms: 3500, send: {t: 62, set: 0, base: 0x3b, pos: [135031, -58398, 10752], yaw: 90}, reliable: true}
+  - {client: c2, at_ms: 2400, send: {t: 75, epoch: 1, selfId: 0x10e6c5, cls: ObjectReference, fn: PlaceAtMe, args: [{formId: 0x3b, type: Static}, 1, false, false], caller: "", handler: "", latent: false}, reliable: true}
+  - {client: c1, at_ms: 3700, send: {t: 75, epoch: 1, selfId: 0x10e6c5, cls: ObjectReference, fn: PlaceAtMe, args: [{formId: 0x10e4ae, type: Explosion}, 1, false, false], caller: "", handler: "", latent: false}, reliable: true}
+  - {client: c1, at_ms: 3900, send: {t: 75, epoch: 1, selfId: 0x10e6c5, cls: ObjectReference, fn: PlaceAtMe, args: [{formId: 0x3b, type: Static}, 1, false, false], caller: "", handler: "", latent: false}, reliable: true}
+  - {client: c1, at_ms: 4100, send: {t: 62, set: 1, base: 0x3b, pos: [135331, -58398, 10752], yaw: 0}, reliable: true}
+  - {client: c2, at_ms: 6000, move: {dx: 1, dy: 0}}
+divergences:
+  - client: c1
+    msg: {t: 48, cell: 0xbbb1, epoch: 1}
+    legacy: 0
+    wire: 1
+    reason: the first loader in reach hosts the cell (HostGrant, thuum docs/verbs/cell-host.md); the legacy server has no cell hosts
+  - client: c1
+    msg: {t: 61, set: 0, bases: [0x3b], windowMs: 6000}
+    legacy: 0
+    wire: 1
+    reason: the host's scripted PlaceAtMe opens a script set and asks the reporter alone where its engine stood the base (thuum ADR-068 rung 4, W3); the legacy server knows no MsgType 75
+  - client: c1
+    msg: {t: 61, set: 1, bases: [0x3b], windowMs: 6000}
+    legacy: 0
+    wire: 1
+    reason: the host's second PlaceAtMe opens the next set (the explosion opened none, E_PLACED_KIND); the legacy server knows no MsgType 75
+  - client: c1
+    msg: {t: 33, baseId: 0x3b, baseRecordType: STAT, props: {placedBy: 0xff000002}}
+    legacy: 0
+    wire: 1
+    reason: the report inside the band places the server's copy where the engine stood it, named to the reporter's own game with its placer (thuum ADR-068 rung 4, W3); the legacy server knows no MsgType 62
+  - client: c2
+    msg: {t: 33, baseId: 0x3b, baseRecordType: STAT, props: {placedBy: 0xff000002}}
+    legacy: 0
+    wire: 1
+    reason: the report inside the band places the server's copy where the engine stood it, named to every game in reach with its placer (thuum ADR-068 rung 4, W3); the legacy server knows no MsgType 62
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

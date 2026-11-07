@@ -430,6 +430,117 @@ TEST_CASE("A destruction record survives a save and a load of the "
   REQUIRE(!MpChangeForm::JsonToChangeForm(olderElement).destruction);
 }
 
+// thuum ADR-068 rung 4 (the state rows; docs/research/
+// rung4-state-rows-2026-11-07.md section 1(c), Records): the ref state's
+// recorded mark, the standing's crime faction and relationships, a script
+// set's placement and the journal's alias fills and world globals survive a
+// save and a load of the change form, each an optional key (rule 6's
+// migration: a record written before them reads as none). The forms are
+// FormDescs already, so they are written as "<hex>:<plugin>" with or without
+// the running order. The ids are MS13 0x39645's as Skyrim.esm holds them
+// (lab/esm.py, 2026-11-06: the web 0x1fc43 its ArvelWeb alias 10, the claw
+// 0x39647 its GoldenClaw alias 11, created in Arvel 0x39655) and the
+// census's cobweb explosion 0xc0c55; the faction, the other actor and the
+// global are illustrative ids
+TEST_CASE("Rung 4's records survive a save and a load of the change form, "
+          "and a record written before them reads as none",
+          "[ChangeForm][RefState]")
+{
+  const std::string kEsm = "Skyrim.esm";
+  MpChangeForm changeForm;
+  changeForm.recType = MpChangeForm::REFR;
+  changeForm.isDisabled = true;
+  changeForm.refStateSeq = 7;
+  changeForm.crimeFaction = FormDesc(0x28170, kEsm);
+  changeForm.relationships = std::vector<MpChangeFormREFR::Relationship>{
+    { FormDesc(0x1347b, kEsm), -2 }, { FormDesc(0x39655, kEsm), 3 }
+  };
+  changeForm.placedByScript =
+    MpChangeFormREFR::PlacedByScript{ FormDesc(0x1fc43, kEsm),
+                                      FormDesc(0xc0c55, kEsm) };
+  MpChangeFormREFR::AliasFill web;
+  web.quest = FormDesc(0x39645, kEsm);
+  web.alias = 10;
+  web.refr = FormDesc(0x1fc43, kEsm);
+  MpChangeFormREFR::AliasFill cleared;
+  cleared.quest = FormDesc(0x39645, kEsm);
+  cleared.alias = 3;
+  cleared.refr = FormDesc();
+  MpChangeFormREFR::AliasFill claw;
+  claw.quest = FormDesc(0x39645, kEsm);
+  claw.alias = 11;
+  claw.created = FormDesc(0x39647, kEsm);
+  claw.container = FormDesc(0x39655, kEsm);
+  claw.added = true;
+  changeForm.aliasFills =
+    std::vector<MpChangeFormREFR::AliasFill>{ web, cleared, claw };
+  changeForm.worldGlobals =
+    std::vector<PlayerGlobal>{ { FormDesc(0x5e3bd, kEsm), 7.f } };
+  // an emptied faction list is kept as empty, so a removal survives
+  changeForm.factions = std::vector<Faction>();
+
+  simdjson::dom::parser parser;
+  const nlohmann::json saved = MpChangeForm::ToJson(changeForm);
+  REQUIRE(saved["refStateSeq"] == 7);
+  REQUIRE(saved["crimeFaction"] == "28170:Skyrim.esm");
+  REQUIRE(saved["relationships"]["entries"].size() == 2);
+  REQUIRE(saved["relationships"]["entries"][0]["rank"] == -2);
+  REQUIRE(saved["placedByScript"]["self"] == "1fc43:Skyrim.esm");
+  REQUIRE(saved["placedByScript"]["base"] == "c0c55:Skyrim.esm");
+  REQUIRE(saved["aliasFills"]["entries"].size() == 3);
+  REQUIRE(saved["aliasFills"]["entries"][0]["refr"] == "1fc43:Skyrim.esm");
+  REQUIRE(saved["aliasFills"]["entries"][1]["refr"] == "0");
+  REQUIRE(!saved["aliasFills"]["entries"][0].contains("created"));
+  REQUIRE(saved["aliasFills"]["entries"][2]["created"] == "39647:Skyrim.esm");
+  REQUIRE(saved["aliasFills"]["entries"][2]["added"] == true);
+  REQUIRE(!saved["aliasFills"]["entries"][2].contains("refr"));
+  REQUIRE(saved["worldGlobals"]["entries"][0]["formDesc"] ==
+          "5e3bd:Skyrim.esm");
+  REQUIRE(saved["factions"]["entries"].empty());
+  const std::string dump = saved.dump();
+  auto element = parser.parse(dump).value();
+  const auto loaded = MpChangeForm::JsonToChangeForm(element);
+  REQUIRE(loaded.isDisabled);
+  REQUIRE(loaded.refStateSeq == 7u);
+  REQUIRE(loaded.crimeFaction == changeForm.crimeFaction);
+  REQUIRE(loaded.relationships == changeForm.relationships);
+  REQUIRE(loaded.placedByScript == changeForm.placedByScript);
+  REQUIRE(loaded.aliasFills == changeForm.aliasFills);
+  REQUIRE(loaded.worldGlobals == changeForm.worldGlobals);
+  REQUIRE(loaded.factions.has_value());
+  REQUIRE(loaded.factions->empty());
+  // a clear's empty desc reads back as the empty desc it was, no plugin's
+  REQUIRE(loaded.aliasFills->at(1).refr->shortFormId == 0);
+  REQUIRE(loaded.aliasFills->at(1).refr->file.empty());
+
+  // the crime faction's removal: the empty desc, kept apart from none
+  MpChangeForm removed;
+  removed.recType = MpChangeForm::ACHR;
+  removed.crimeFaction = FormDesc();
+  const std::string removedDump = MpChangeForm::ToJson(removed).dump();
+  auto removedElement = parser.parse(removedDump).value();
+  const auto removedLoaded = MpChangeForm::JsonToChangeForm(removedElement);
+  REQUIRE(removedLoaded.crimeFaction == FormDesc());
+
+  // a record written before the fields: no key, each read as none
+  nlohmann::json older = MpChangeForm::ToJson(MpChangeForm());
+  for (const char* key :
+       { "refStateSeq", "crimeFaction", "relationships", "placedByScript",
+         "aliasFills", "worldGlobals", "factions" }) {
+    REQUIRE(!older.contains(key));
+  }
+  const std::string olderDump = older.dump();
+  auto olderElement = parser.parse(olderDump).value();
+  const auto olderLoaded = MpChangeForm::JsonToChangeForm(olderElement);
+  REQUIRE(!olderLoaded.refStateSeq);
+  REQUIRE(!olderLoaded.crimeFaction);
+  REQUIRE(!olderLoaded.relationships);
+  REQUIRE(!olderLoaded.placedByScript);
+  REQUIRE(!olderLoaded.aliasFills);
+  REQUIRE(!olderLoaded.worldGlobals);
+  REQUIRE(!olderLoaded.factions);
+}
+
 // thuum ADR-068 rung 3 (the script record): a reference's script record (the
 // scripts its owner read at a quiescent point, with the object's sequence
 // and the view the server stamped then) survives a save and a load of the

@@ -2426,6 +2426,14 @@ void MpActor::AddDeathItem()
 
 void MpActor::LoadFactions()
 {
+  // thuum ADR-068 rung 4 (the standing): a record that holds a list was
+  // loaded from the base before and edited since (every edit loads first),
+  // so the base's SNAM rows are read into a record that holds none; read
+  // again, they would bring back every faction a script removed
+  if (GetChangeForm().factions.has_value()) {
+    factionsLoaded = true;
+    return;
+  }
   std::vector<Faction> factions = EvaluateTemplate<espm::NPC_::UseFactions>(
     GetParent(), GetBaseId(), GetTemplateChain(),
     [&](const auto& npcLookupResult, const auto& npcData) {

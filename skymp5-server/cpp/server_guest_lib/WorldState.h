@@ -156,6 +156,17 @@ public:
   // No loading version of LookupFormById
   const std::shared_ptr<MpForm>& LookupFormByIdNoLoad(uint32_t formId);
 
+  // thuum ADR-068 rung 4 (the state rows, amendment B read 2): attaches a
+  // game-file reference for its first recorded ref state, the loader's type
+  // and disabled filters yielding as for a reference whose saved record
+  // carries refStateSeq (LoadForm), so a marker, a collision box or an
+  // initially disabled activator a host's script enables or disables is the
+  // server's to record and serve; true when the reference stands attached
+  // (already, or now). An ACHR's actor attaches as an actor; a deleted
+  // record, a leveled actor's placement and an NPC under npcEnabled false
+  // stay skipped
+  bool AttachForRecord(uint32_t formId);
+
   void SendPapyrusEvent(MpForm* form, const char* eventName,
                         const VarValue* arguments, size_t argumentsCount);
 
@@ -467,14 +478,17 @@ public:
   std::vector<GameModeEvent*> currentGameModeEventsStack;
 
 private:
+  // `recorded` (thuum ADR-068 rung 4): the reference has a recorded ref
+  // state, so the type filter (a REFR of a base the server does not load)
+  // and the two disabled filters yield to it
   bool AttachEspmRecord(const espm::CombineBrowser& br,
                         const espm::RecordHeader* record,
                         const espm::IdMapping& mapping,
                         std::stringstream* optionalOutTrace = nullptr,
-                        bool sighted = false);
+                        bool sighted = false, bool recorded = false);
 
   bool LoadForm(uint32_t formId, std::stringstream* optionalOutTrace = nullptr,
-                bool sighted = false);
+                bool sighted = false, bool recorded = false);
   void TickSaveStorage(const std::chrono::system_clock::time_point& now);
   void TickTimers(const std::chrono::system_clock::time_point& now);
   void TickEffects(const std::chrono::system_clock::time_point& now);

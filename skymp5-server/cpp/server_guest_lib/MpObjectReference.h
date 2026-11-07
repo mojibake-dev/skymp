@@ -182,6 +182,16 @@ public:
   // read is the record in place, valid until the reference's next edit
   const std::optional<ScriptStateRecord>& GetScriptState() const;
   void SetScriptState(std::optional<ScriptStateRecord> record);
+  // thuum ADR-068 rung 4 (the state rows): the object's sequence at the ref
+  // state's last record (MpChangeFormREFR::refStateSeq), none while no
+  // script moved its enabled or deleted state
+  std::optional<uint32_t> GetRefStateSeq() const;
+  // the reference starts disabled as the game files place it (initially
+  // disabled, or under an enable parent that disables it), written when the
+  // loader attaches it by its record (WorldState::AttachEspmRecord's
+  // `recorded`), so its first recorded call applies to the engine's own
+  // start; no save request, no grid change, no sequence
+  void MarkDisabledByFiles();
   // the apply built from the record, stamped with the sequence and the view
   // the record was taken at (false without a record); served ahead of a
   // grant (ApplyHostDecisions) and behind the create word (onSubscribe)

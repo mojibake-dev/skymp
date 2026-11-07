@@ -1689,6 +1689,18 @@ std::optional<FormDesc> MpObjectReference::GetPlacedBySpell() const
   return ChangeForm().placedBySpell;
 }
 
+std::optional<uint32_t> MpObjectReference::GetRefStateSeq() const
+{
+  return ChangeForm().refStateSeq;
+}
+
+void MpObjectReference::MarkDisabledByFiles()
+{
+  EditChangeForm(
+    [&](MpChangeFormREFR& changeForm) { changeForm.isDisabled = true; },
+    Mode::NoRequestSave);
+}
+
 void MpObjectReference::SetPlacedBySpell(const FormDesc& spell)
 {
   if (ChangeForm().placedBySpell == spell) {

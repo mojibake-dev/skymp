@@ -3589,27 +3589,37 @@ skymp::rules::ScriptArg ScriptArgOf(
 // The loader attaches no moving static (MSTT), so Bleak Falls Sanctum
 // 0x371dd's door FX 0x5256c, which HallofStoriesKeyholeScript.openDoor
 // plays FXDoorOpen on, is no reference of the server's (lab/esm.py,
-// 2026-11-05: base 0x52172 RuinsPuzzleDoorFX, at (128, -320, -256))
+// 2026-11-05: base 0x52172 RuinsPuzzleDoorFX, at (128, -320, -256)).
+// `actors` (thuum ADR-068 rung 4, a record row's subject): an ACHR is
+// placed too, by its record's cell, so an actor the loader never held (an
+// initially disabled ambush draugr, Bleak Falls Temple 0x371de's 0x380ba,
+// which the trigger 0x4e421's script enables) is judged by that cell's host
 struct RecordPlacement
 {
   bool doorOrContainer = false;
+  bool actor = false;
   uint32_t worldOrCell = 0;
   NiPoint3 pos;
 };
 
 std::optional<RecordPlacement> PlacementOfRecord(WorldState& worldState,
-                                                 uint32_t formId)
+                                                 uint32_t formId,
+                                                 bool actors = false)
 {
   if (!worldState.HasEspm()) {
     return std::nullopt;
   }
   const auto& browser = worldState.GetEspm().GetBrowser();
   const auto lookup = browser.LookupById(formId);
+  const auto* achr = actors ? espm::Convert<espm::ACHR>(lookup.rec) : nullptr;
   const auto* refr = espm::Convert<espm::REFR>(lookup.rec);
-  if (!refr) {
+  if (!refr && !achr) {
     return std::nullopt;
   }
-  const auto data = refr->GetData(worldState.GetEspmCache());
+  // an ACHR's data is a REFR's (libespm ACHR::Data derives from it)
+  const espm::REFR::Data data = achr
+    ? static_cast<espm::REFR::Data>(achr->GetData(worldState.GetEspmCache()))
+    : refr->GetData(worldState.GetEspmCache());
   const auto base = browser.LookupById(lookup.ToGlobalId(data.baseId));
   const uint32_t worldOrCell =
     LocationalDataUtils::GetWorldOrCell(browser, lookup);
@@ -3618,7 +3628,9 @@ std::optional<RecordPlacement> PlacementOfRecord(WorldState& worldState,
   }
   const auto baseType = base.rec->GetType();
   RecordPlacement out;
-  out.doorOrContainer = baseType == "DOOR" || baseType == "CONT";
+  out.actor = achr != nullptr;
+  out.doorOrContainer =
+    !out.actor && (baseType == "DOOR" || baseType == "CONT");
   out.worldOrCell = worldOrCell;
   out.pos = LocationalDataUtils::GetPos(data.loc);
   return out;

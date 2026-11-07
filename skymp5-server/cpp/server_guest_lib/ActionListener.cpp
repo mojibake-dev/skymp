@@ -33,7 +33,6 @@
 #include "libespm/ScriptData.h"
 #include "libespm/Utils.h"
 #include "libespm/WEAP.h"
-#include "papyrus-vm/Utils.h" // stricmp
 #include "script_objects/EspmGameObject.h"
 #include "wire_bridge_cxx/rules.h"
 #include <algorithm>
@@ -2121,6 +2120,67 @@ float ActivationTargetSize(MpObjectReference& target)
   return size;
 }
 
+// thuum ADR-068 D-W1 (docs/research/fifty-fixes-2026-11-07.md section 1(c),
+// wire-rules trigger_entry's firing_source): the facts of a trap trigger's
+// firing `reporter`'s game reports, judged in `cell`: its host, then, for a
+// reporter that is not the host, whether its game has the cell loaded and
+// how far the nearest of its actors stands from `trigger` (-1 for none, and
+// for a trigger the server never loads). Its actors are its own player and
+// the actors the world names it the simulator of (WorldState::HostOf) among
+// the trigger's listeners (the actors of the grid squares around it). One
+// inside the trigger's primitive stands at it, the engine's own condition
+// for a trigger volume as OnWordWall reads it (a trigger box's bounds are
+// its primitive, which its base's bounds do not give); any other is measured
+// from the trigger's position.
+skymp::rules::TriggerFiringFacts GatherFiringFacts(PartOne& partOne,
+                                                   MpActor& reporter,
+                                                   MpObjectReference* trigger,
+                                                   uint32_t cell)
+{
+  skymp::rules::TriggerFiringFacts facts{};
+  facts.reporter = reporter.GetFormId();
+  facts.cell = cell;
+  const auto host = partOne.GetCellHost(cell);
+  facts.host = host.hosted ? host.player : 0;
+  facts.nearest = -1.f;
+  if (facts.host != 0 && facts.host == facts.reporter) {
+    // the host's word is taken first: nothing more to gather
+    return facts;
+  }
+  const auto loaders = partOne.GetCellLoaders(cell);
+  facts.loader = std::find(loaders.begin(), loaders.end(),
+                           reporter.GetFormId()) != loaders.end();
+  if (!trigger) {
+    return facts;
+  }
+  facts.trigger_size = ActivationTargetSize(*trigger);
+  const auto measure = [&](const MpActor& actor) {
+    if (actor.GetCellOrWorld() != trigger->GetCellOrWorld()) {
+      return;
+    }
+    const float distance = trigger->HasPrimitive() &&
+        trigger->IsPointInsidePrimitive(actor.GetPos())
+      ? 0.f
+      : (actor.GetPos() - trigger->GetPos()).Length();
+    if (facts.nearest < 0.f || distance < facts.nearest) {
+      facts.nearest = distance;
+    }
+  };
+  measure(reporter);
+  for (MpActor* listener : trigger->GetActorListeners()) {
+    if (!listener || listener == &reporter ||
+        partOne.serverState.UserByActor(listener) !=
+          Networking::InvalidUserId) {
+      // another seat's player is that seat's
+      continue;
+    }
+    if (partOne.worldState.HostOf(*listener) == &reporter) {
+      measure(*listener);
+    }
+  }
+  return facts;
+}
+
 // thuum docs/verbs/containers.md (M4's row, "a distance check on PutItem and
 // TakeItem"): a move in or out of a container is taken from a player in the
 // container's cell or world and within the activation reach of it (the rule
@@ -2168,9 +2228,12 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
   // reference's activation of itself is a trap trigger's firing (every
   // vanilla trigger script activates itself, and the engine forwards it to
   // the trap with the plate as the activator; the stepping actor is never
-  // the action reference, so no activation names the victim). The game
-  // hosting the trigger's cell reports it; it is noted where and when as a
-  // hazard death's evidence (R2) and nothing is activated here.
+  // the action reference, so no activation names the victim). The firing's
+  // owner reports it (thuum ADR-068 D-W1: the seat that owns the trigger's
+  // presser, judged by wire-rules trigger_entry's firing_source: the cell's
+  // host, or a game with the cell loaded one of whose actors stands by the
+  // trigger); it is noted where and when as a hazard death's evidence (R2)
+  // and nothing is activated here.
   if (msg.data.caster == msg.data.target && msg.data.caster != 0x14) {
     auto trigger = std::dynamic_pointer_cast<MpObjectReference>(
       partOne.worldState.LookupFormById(
@@ -2184,14 +2247,24 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
     if (!cell) {
       return;
     }
-    const auto host = partOne.GetCellHost(*cell);
-    if (!host.hosted || host.player != ac->GetFormId()) {
-      spdlog::debug("ActionListener::OnActivate - trigger {:x} fired itself, "
-                    "reported by {:x}, which does not host cell {:x}; dropped",
-                    trigger->GetFormId(), ac->GetFormId(), *cell);
+    const auto firing = skymp::rules::trigger_firing_source(
+      GatherFiringFacts(partOne, *ac, trigger.get(), *cell));
+    if (firing.code != skymp::rules::TriggerFiringCode::Host &&
+        firing.code != skymp::rules::TriggerFiringCode::Loader) {
+      spdlog::info("[verb:npc-fate] {}: {:x} reports trigger {:x} firing "
+                   "itself in cell {:x}, {}; dropped",
+                   std::string(firing.name), ac->GetFormId(),
+                   trigger->GetFormId(), *cell, std::string(firing.why));
       return;
     }
     NoteTrapFiring(*trigger, std::chrono::steady_clock::now());
+    if (firing.code == skymp::rules::TriggerFiringCode::Loader) {
+      spdlog::info("[verb:npc-fate] trigger {:x} fired itself in cell {:x} "
+                   "({:x} reports with the cell loaded, its firing): noted as "
+                   "a hazard death's evidence",
+                   trigger->GetFormId(), *cell, ac->GetFormId());
+      return;
+    }
     spdlog::info("[verb:npc-fate] trigger {:x} fired itself in cell {:x} (its "
                  "host {:x} reports): noted as a hazard death's evidence",
                  trigger->GetFormId(), *cell, ac->GetFormId());
@@ -3651,56 +3724,6 @@ std::optional<RecordPlacement> PlacementOfRecord(WorldState& worldState,
   out.pos = LocationalDataUtils::GetPos(data.loc);
   return out;
 }
-
-// thuum D-S3 phase 2 (the player-only boxes, Bleak Falls Temple's 0x86018 and
-// the Sanctum's 0x4e42b, TrapTriggerBox 0x7617a): whether a trigger's record
-// sets TrapTriggerBase's playerOnlyTrigger, so its engine fires it for a
-// player's own body alone. Read from the base's VMAD and then the
-// reference's own, the reference's value over its base's (PartOne::
-// WordOfWall's order); any script of the record may carry the property
-// (TrapTriggerBase's, inherited by PressurePlate and the family's other
-// triggers), a removed script or property (status 3) is none. 0x86018's own
-// VMAD carries TrapTriggerBase {TriggerType 3, playerOnlyTrigger true}, its
-// base's no playerOnlyTrigger (lab/esm.py on Skyrim.esm, 2026-11-05). False
-// for an id with no REFR record.
-bool RecordSetsPlayerOnlyTrigger(WorldState& worldState, uint32_t refrId)
-{
-  if (!worldState.HasEspm()) {
-    return false;
-  }
-  const auto& browser = worldState.GetEspm().GetBrowser();
-  auto& cache = worldState.GetEspmCache();
-  const auto lookup = browser.LookupById(refrId);
-  const auto* refr = espm::Convert<espm::REFR>(lookup.rec);
-  if (!refr) {
-    return false;
-  }
-  std::optional<bool> playerOnly;
-  const auto read = [&](const espm::LookupResult& record) {
-    if (!record.rec) {
-      return;
-    }
-    espm::ScriptData scriptData;
-    record.rec->GetScriptData(&scriptData, cache);
-    for (const auto& script : scriptData.scripts) {
-      if (script.status == 3) {
-        continue;
-      }
-      for (const auto& property : script.properties) {
-        if (property.type != espm::Property::Type::Bool ||
-            property.status == 3 ||
-            Utils::stricmp(property.name.data(), "playerOnlyTrigger") != 0) {
-          continue;
-        }
-        playerOnly = property.value.boolean != 0;
-      }
-    }
-  };
-  const auto data = refr->GetData(cache);
-  read(browser.LookupById(lookup.ToGlobalId(data.baseId)));
-  read(lookup);
-  return playerOnly.value_or(false);
-}
 }
 
 // thuum docs/verbs/perks.md (M5): a player's perk pick
@@ -4763,16 +4786,19 @@ void ActionListener::RelayActivationToHost(MpActor& player,
     player.GetFormId(), target.GetFormId(), *cell, host.player, sent);
 }
 
-// thuum docs/verbs/traps.md (M4): the cell's host reports its engine's
-// linked activation. The pair must be the game files' (the target's
-// activation parents name the caster: WorldState's table, filled as the
-// target loaded; Bleak Falls' spike wall names its plate and its portcullis
-// names the lever, lab/esm.py 2026-11-01), the reporter must host the
-// target's cell, and a game sends at most eight a second. The server records
-// it through Activate's own path with the caster the engine named (a door's
-// open, the hazard note, the target's own children) and relays it to the
-// cell's other games, which play it with that caster (R2: the host's engine
-// computed it). Every refusal is logged by name. An actor target is its
+// thuum docs/verbs/traps.md (M4): a game reports its engine's linked
+// activation. The pair must be the game files' (the target's activation
+// parents name the caster: WorldState's table, filled as the target loaded;
+// Bleak Falls' spike wall names its plate and its portcullis names the
+// lever, lab/esm.py 2026-11-01), the reporter must be its firing's owner
+// (thuum ADR-068 D-W1, wire-rules trigger_entry's firing_source: the
+// target's cell's host, or a game with the cell loaded one of whose actors
+// stands by the trigger), and a game sends at most eight a second. The
+// server records it through Activate's own path with the caster the engine
+// named (a door's open, the hazard note, the target's own children) and
+// relays it to the cell's other games, the host's among them, which play it
+// with that caster (R2: the reporter's engine computed it). Every refusal is
+// logged by name. An actor target is its
 // simulator's (ADR-068, the rule below): dropped, or relayed to the one seat
 // that simulates it when that seat is not the reporter.
 void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
@@ -4929,27 +4955,29 @@ void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
                  reporter.GetFormId(), casterId, targetId);
     return;
   }
-  const auto host = partOne.GetCellHost(*cell);
-  // thuum D-S3 phase 2: a trigger whose record sets playerOnlyTrigger fires
-  // for a player's own body alone, so the game that fires it is the player's
-  // who walked in, whichever seat hosts the cell: such a trigger's pair is
-  // taken from any game that has the cell loaded (PartOne::GetCellLoaders),
-  // its host's or a guest's; every other pair still the host's alone. A game
-  // that neither hosts the cell nor has it loaded is refused first; the
-  // trigger's record (its VMAD) is read after the link check, for a linked
-  // pair alone (the review of 9ff1895e, finding 4)
-  const bool fromHost = host.hosted && host.player == reporter.GetFormId();
-  const auto refuseNotHost = [&] {
-    spdlog::info("[verb:traps] E_TRAP_NOT_HOST: {:x} reports {:x} "
-                 "activating {:x} in cell {:x}, which it does not host",
-                 reporter.GetFormId(), casterId, targetId, *cell);
-  };
-  if (!fromHost) {
-    const auto loaders = partOne.GetCellLoaders(*cell);
-    if (std::find(loaders.begin(), loaders.end(), reporter.GetFormId()) ==
-        loaders.end()) {
-      return refuseNotHost();
-    }
+  // thuum ADR-068 D-W1 (wire-rules trigger_entry's firing_source): the pair
+  // is its firing's owner's, the seat that owns the trigger's presser: the
+  // cell's host as before, or a game with the cell loaded one of whose
+  // actors (its player, or an actor it simulates) stands within the
+  // trigger's activation reach plus the firing's slack. The server cannot
+  // tell a trap family trigger's pair from a mechanism's (the family is the
+  // platform's walk of the VM's class chain, and the server reads no script
+  // archive in the lab), so a loader's pair is R2, the reporter's word that
+  // its engine fired the trigger, bounded by the link below, the budget and
+  // the reach, and every one taken is logged with its reporter. D-S3 phase
+  // 2's player-only read of the trigger's VMAD retires into it: a
+  // player-only trigger is a family trigger fired on its player's own seat.
+  // A caster the server never loads (a marker) stands nowhere it can
+  // measure, so only the host's word on it is taken
+  const auto firing = skymp::rules::trigger_firing_source(
+    GatherFiringFacts(partOne, reporter, casterRef, *cell));
+  if (firing.code != skymp::rules::TriggerFiringCode::Host &&
+      firing.code != skymp::rules::TriggerFiringCode::Loader) {
+    spdlog::info("[verb:traps] {}: {:x} reports {:x} activating {:x} in cell "
+                 "{:x}, {}",
+                 std::string(firing.name), reporter.GetFormId(), casterId,
+                 targetId, *cell, std::string(firing.why));
+    return;
   }
   const auto children =
     partOne.worldState.activationChildsByActivationParent.find(casterId);
@@ -4961,21 +4989,6 @@ void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
                  "{:x}, whose activation parents do not name it",
                  reporter.GetFormId(), casterId, targetId);
     return;
-  }
-  bool playerOnlyFromLoader = false;
-  if (!fromHost) {
-    auto known = playerOnlyTriggers.find(casterId);
-    if (known == playerOnlyTriggers.end()) {
-      known =
-        playerOnlyTriggers
-          .emplace(casterId,
-                   RecordSetsPlayerOnlyTrigger(partOne.worldState, casterId))
-          .first;
-    }
-    playerOnlyFromLoader = known->second;
-    if (!playerOnlyFromLoader) {
-      return refuseNotHost();
-    }
   }
   if (!withinBudget()) {
     return;
@@ -5009,10 +5022,9 @@ void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
       ++sent;
     }
   }
-  if (playerOnlyFromLoader) {
-    spdlog::info("[verb:traps] {:x} activates {:x} in cell {:x} (a "
-                 "player-only trigger, {:x} reports with the cell loaded): "
-                 "relayed to {} game(s)",
+  if (firing.code == skymp::rules::TriggerFiringCode::Loader) {
+    spdlog::info("[verb:traps] {:x} activates {:x} in cell {:x} ({:x} reports "
+                 "with the cell loaded, its firing): relayed to {} game(s)",
                  casterId, targetPtr->GetFormId(), *cell, reporter.GetFormId(),
                  sent);
     return;

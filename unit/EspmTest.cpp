@@ -388,7 +388,10 @@ TEST_CASE("Loads NPC factions", "[espm]")
   espm::CompressedFieldsCache compressedFieldsCache;
   REQUIRE(npc->GetData(compressedFieldsCache).factions.size() == 8);
   REQUIRE(npc->GetData(compressedFieldsCache).factions[0].formId == 0x28848);
-  REQUIRE(npc->GetData(compressedFieldsCache).factions[0].rank == 72);
+  // the rank byte at SNAM's offset 4 (lab/esm.py on Skyrim.esm, 2026-11-06:
+  // SNAM 4888020000000000, CrimeFactionImperial at rank 0); 72 was the form
+  // id's low byte, read as the rank before thuum ADR-068 rung 4's fix
+  REQUIRE(npc->GetData(compressedFieldsCache).factions[0].rank == 0);
 }
 
 TEST_CASE("Loads NPC flags", "[espm]")

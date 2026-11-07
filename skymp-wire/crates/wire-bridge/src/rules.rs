@@ -2791,11 +2791,11 @@ mod ffi {
         /// A presser's owner's report of an entry into a world trigger whose
         /// script runs on the cell's host: an enter judged by the trigger,
         /// the presser, the loader, the host and the reach, in that order,
-        /// and kept open when relayed; a leave by the same checks but the
-        /// reach, relayed when it ends an open enter of its presser's into
-        /// its trigger, else E_ENTRY_UNPAIRED (wire-rules
-        /// trigger_entry::Entries::judge); relayed, `host` names the one game
-        /// to send it to.
+        /// and kept open when relayed; a leave first by its pairing
+        /// (E_ENTRY_UNPAIRED when it ends no open enter of its presser's
+        /// into its trigger), then by the same checks but the loader and the
+        /// reach (wire-rules trigger_entry::Entries::judge); relayed, `host`
+        /// names the one game to send it to.
         fn judge(self: &mut TriggerEntries, facts: &TriggerEntryFacts) -> TriggerEntryVerdict;
         /// The presser's game left: its open enters go.
         fn forget(self: &mut TriggerEntries, presser: u32);
@@ -6152,6 +6152,10 @@ mod tests {
         assert_eq!(entries.judge(&leave).code, TriggerEntryCode::Relay);
         let unpaired = entries.judge(&leave);
         assert_eq!((unpaired.code, unpaired.name.as_str(), unpaired.host), (TriggerEntryCode::Unpaired, "E_ENTRY_UNPAIRED", 0));
+        // through a door into another cell, its game with the cell
+        // unloaded: still paired, relayed
+        assert_eq!(entries.judge(&entry).code, TriggerEntryCode::Relay);
+        assert_eq!(entries.judge(&TriggerEntryFacts { loader: false, distance: -1.0, ..leave }).code, TriggerEntryCode::Relay);
         // the presser's disconnect drops its open enters
         assert_eq!(entries.judge(&entry).code, TriggerEntryCode::Relay);
         entries.forget(0xff00_0001);

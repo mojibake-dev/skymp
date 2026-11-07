@@ -4944,10 +4944,12 @@ bool ActionListener::IsScriptedWorldObject(const MpObjectReference& target)
 // ran the script); a host there (E_ENTRY_NO_HOST: nothing runs the script);
 // the presser within the trigger's activation reach (E_ENTRY_REACH). A leave
 // pairs with its enter (wire-rules trigger_entry::Entries, PartOne's; the
-// builder's call on the probe review of D-C2): one ending an accepted enter
-// of its presser's into its trigger is taken without the reach (a guest
-// leaving by a teleport or a door reports it after the move, far off the
-// trigger), every other check kept; one ending none is E_ENTRY_UNPAIRED. An
+// builder's call on the probe review of D-C2): one ending none is
+// E_ENTRY_UNPAIRED before any other check; one ending an accepted enter of
+// its presser's into its trigger is taken without the reach or the loader
+// (a guest leaving by a teleport or a door reports it after the move, far
+// off the trigger, its game perhaps with the cell unloaded), every other
+// check kept. An
 // accepted entry goes to the host's game alone as RelayedActivation {target:
 // the trigger, caster: the presser, entry}, whose engine sends that event to
 // the trigger's scripts with the presser as akActionRef; nothing is recorded

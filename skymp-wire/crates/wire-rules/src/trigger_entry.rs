@@ -38,10 +38,12 @@
 //! be refused and the host's copy would keep the presence for good (every
 //! occupancy-tracking world trigger stuck). So the server keeps each
 //! presser's accepted enters it has not seen left, per trigger, and a leave
-//! of one of them is taken without the reach, every other check kept; a
-//! leave of none is `E_ENTRY_UNPAIRED`. Rule 5: the leave is validated by its
-//! pairing (only a presser's own accepted entry can be ended), R2 beyond
-//! that. An enter keeps every check.
+//! of one of them is taken without the reach or the loader (its accepted
+//! enter passed both, and a door into another cell may unload the trigger's
+//! for the presser before its leave arrives), every other check kept; a
+//! leave of none is `E_ENTRY_UNPAIRED`, before any other judgment. Rule 5:
+//! the leave is validated by its pairing (only a presser's own accepted
+//! entry can be ended), R2 beyond that. An enter keeps every check.
 
 use std::collections::HashMap;
 
@@ -268,9 +270,11 @@ pub fn entry(facts: &EntryFacts) -> EntryVerdict {
     }
 }
 
-/// The entry's checks in their order, the reach last when `reach` asks it:
-/// the cell's host to relay to, or the first refusal.
-fn admit(facts: &EntryFacts, reach: bool) -> Result<u32, Refusal<EntryCode>> {
+/// The entry's checks in their order: the cell's host to relay to, or the
+/// first refusal. An enter's are every check; a paired leave's skip the
+/// loader and the reach (`enter` false), since its pairing proves the
+/// presser was inside: its accepted enter passed both.
+fn admit(facts: &EntryFacts, enter: bool) -> Result<u32, Refusal<EntryCode>> {
     let refuse = |code, why: String| Err(Refusal { code, why });
     match facts.trigger {
         RefKind::WorldObject => {}
@@ -284,7 +288,7 @@ fn admit(facts: &EntryFacts, reach: bool) -> Result<u32, Refusal<EntryCode>> {
         let owner = if facts.presser_owner == 0 { "nobody's".to_owned() } else { format!("{:x}'s", facts.presser_owner) };
         return refuse(EntryCode::Presser, format!("the presser {:x} is {owner}, not the reporter's", facts.presser));
     }
-    if !facts.loader {
+    if enter && !facts.loader {
         return refuse(EntryCode::NotLoader, format!("its game has not loaded cell {:x}", facts.cell));
     }
     if facts.host == facts.reporter {
@@ -293,7 +297,7 @@ fn admit(facts: &EntryFacts, reach: bool) -> Result<u32, Refusal<EntryCode>> {
     if facts.host == 0 {
         return refuse(EntryCode::NoHost, format!("nobody hosts cell {:x}: no engine runs the trigger's script", facts.cell));
     }
-    if !reach {
+    if !enter {
         return Ok(facts.host);
     }
     let Some(distance) = measured(facts.distance) else {
@@ -321,9 +325,12 @@ pub struct Entries {
 impl Entries {
     /// The rule on one reported entry with its pairing: an enter judged by
     /// [`entry`], and kept open when relayed (a second enter of the same
-    /// trigger keeps one, the newest); a leave judged by every check but the
-    /// reach, then relayed and closed when it ends an open enter of its
-    /// presser's into its trigger, else `E_ENTRY_UNPAIRED`.
+    /// trigger keeps one, the newest); a leave first by its pairing,
+    /// `E_ENTRY_UNPAIRED` before any other judgment when it ends no open
+    /// enter of its presser's into its trigger, then by every check but the
+    /// loader and the reach (a presser that left by a door into another
+    /// cell, whose unload the server heard first, still ends its presence
+    /// on the host), relayed and closed.
     pub fn judge(&mut self, facts: &EntryFacts) -> EntryVerdict {
         if !facts.leave {
             let verdict = entry(facts);
@@ -332,17 +339,19 @@ impl Entries {
             }
             return verdict;
         }
-        let host = match admit(facts, false) {
-            Ok(host) => host,
-            Err(refused) => return EntryVerdict::Refuse(refused),
-        };
-        if self.closed(facts.presser, facts.trigger_id) {
-            return EntryVerdict::Relay { host };
+        if !self.is_open(facts.presser, facts.trigger_id) {
+            return EntryVerdict::Refuse(Refusal {
+                code: EntryCode::Unpaired,
+                why: format!("no accepted entry of {:x} into {:x} to end", facts.presser, facts.trigger_id),
+            });
         }
-        EntryVerdict::Refuse(Refusal {
-            code: EntryCode::Unpaired,
-            why: format!("no accepted entry of {:x} into {:x} to end", facts.presser, facts.trigger_id),
-        })
+        match admit(facts, false) {
+            Ok(host) => {
+                self.closed(facts.presser, facts.trigger_id);
+                EntryVerdict::Relay { host }
+            }
+            Err(refused) => EntryVerdict::Refuse(refused),
+        }
     }
 
     /// The presser's game left (its disconnect): its open enters go.
@@ -547,6 +556,11 @@ mod tests {
         // in reach, but never entered
         assert_eq!(e.judge(&leave), entry_refusal(EntryCode::Unpaired, "no accepted entry of ff000001 into 37281 to end"));
         assert_eq!(EntryCode::Unpaired.name(), "E_ENTRY_UNPAIRED");
+        // before any other judgment: another's presser, a game without the
+        // cell, an actor for a trigger
+        for unpaired in [EntryFacts { presser_owner: HOST, ..leave }, EntryFacts { loader: false, ..leave }, EntryFacts { trigger: RefKind::Actor, ..leave }] {
+            assert_eq!(e.judge(&unpaired), entry_refusal(EntryCode::Unpaired, "no accepted entry of ff000001 into 37281 to end"));
+        }
         // entered and left once: the second leave ends nothing
         assert_eq!(e.judge(&guest_entry()), EntryVerdict::Relay { host: HOST });
         assert_eq!(e.judge(&leave), EntryVerdict::Relay { host: HOST });
@@ -562,19 +576,38 @@ mod tests {
     }
 
     #[test]
-    fn a_paired_leave_keeps_every_check_but_the_reach() {
+    fn a_paired_leave_keeps_every_check_but_the_loader_and_the_reach() {
         let mut e = Entries::default();
         assert_eq!(e.judge(&guest_entry()), EntryVerdict::Relay { host: HOST });
         let leave = EntryFacts { distance: Some(1800.0), ..leave_of(guest_entry()) };
         // another's presser is refused by the presser, its enter kept open
         assert_eq!(e.judge(&EntryFacts { presser_owner: HOST, ..leave }), entry_refusal(EntryCode::Presser, "the presser ff000001 is ff000000's, not the reporter's"));
         assert_eq!(e.judge(&EntryFacts { host: 0, ..leave }), entry_refusal(EntryCode::NoHost, "nobody hosts cell 371de: no engine runs the trigger's script"));
-        assert_eq!(e.judge(&EntryFacts { loader: false, ..leave }), entry_refusal(EntryCode::NotLoader, "its game has not loaded cell 371de"));
+        assert_eq!(e.judge(&EntryFacts { trigger: RefKind::Actor, ..leave }), entry_refusal(EntryCode::Actor, "the trigger is an actor"));
         assert!(e.is_open(GUEST, WEB));
         // the guest became the host: its own engine runs the script now
         let hosting = EntryFacts { host: GUEST, ..leave };
         assert_eq!(e.judge(&hosting), entry_refusal(EntryCode::Host, "it hosts cell 371de: its own engine ran the trigger's script"));
         assert_eq!(e.judge(&leave), EntryVerdict::Relay { host: HOST });
+    }
+
+    #[test]
+    fn a_leave_after_the_presser_left_the_cell_ends_its_presence_on_the_host() {
+        // the guest's player enters the web, its game with the Temple
+        // loaded; it goes through a door into another cell, whose game
+        // reports the Temple unloaded before its leave arrives, the presser
+        // in another world or cell by then: the leave still ends the
+        // presence on the host
+        let mut e = Entries::default();
+        assert_eq!(e.judge(&guest_entry()), EntryVerdict::Relay { host: HOST });
+        let gone = EntryFacts { loader: false, distance: None, ..leave_of(guest_entry()) };
+        assert_eq!(e.judge(&gone), EntryVerdict::Relay { host: HOST });
+        assert!(!e.is_open(GUEST, WEB));
+        // an enter keeps the loader: from a game without the cell, refused,
+        // nothing opened, so its leave is unpaired
+        let unloaded_enter = EntryFacts { loader: false, ..guest_entry() };
+        assert_eq!(e.judge(&unloaded_enter), entry_refusal(EntryCode::NotLoader, "its game has not loaded cell 371de"));
+        assert_eq!(e.judge(&gone), entry_refusal(EntryCode::Unpaired, "no accepted entry of ff000001 into 37281 to end"));
     }
 
     #[test]
@@ -688,19 +721,20 @@ mod tests {
 
         #[test]
         fn a_leave_is_relayed_only_after_its_own_accepted_enter(
-            steps in proptest::collection::vec((any::<bool>(), 0u32..3, 0u32..3, any::<bool>(), any::<bool>()), 0..64),
+            steps in proptest::collection::vec((any::<bool>(), 0u32..3, 0u32..3, any::<bool>(), any::<bool>(), any::<bool>()), 0..64),
         ) {
             // the model: the open (presser, trigger) pairs; the pressers are
             // the guest's own player and two NPCs it simulates
             let pressers = [GUEST, DRAUGR, 0x380b4];
             let mut e = Entries::default();
             let mut open: Vec<(u32, u32)> = Vec::new();
-            for (leave, p, t, near, owned) in steps {
+            for (leave, p, t, near, owned, loaded) in steps {
                 let presser = pressers.get(usize::try_from(p).unwrap_or(0)).copied().unwrap_or(GUEST);
                 let trigger = WEB.saturating_add(t);
                 let facts = EntryFacts {
                     presser,
                     presser_owner: if owned { GUEST } else { HOST },
+                    loader: loaded,
                     distance: Some(if near { 30.0 } else { 1800.0 }),
                     trigger_id: trigger,
                     leave,
@@ -712,20 +746,25 @@ mod tests {
                         prop_assert_eq!(host, HOST);
                         prop_assert!(owned);
                         if leave {
+                            // the loader and the reach unread for a leave
                             prop_assert!(was_open);
                             open.retain(|&o| o != (presser, trigger));
                         } else {
-                            prop_assert!(near);
+                            prop_assert!(near && loaded);
                             if !was_open {
                                 open.push((presser, trigger));
                             }
                         }
                     }
                     EntryVerdict::Refuse(r) => {
-                        let expected = if !owned {
-                            EntryCode::Presser
-                        } else if leave {
+                        // a leave's pairing before any other judgment; an
+                        // enter's presser, loader, then reach
+                        let expected = if leave && !was_open {
                             EntryCode::Unpaired
+                        } else if !owned {
+                            EntryCode::Presser
+                        } else if !loaded {
+                            EntryCode::NotLoader
                         } else {
                             EntryCode::Reach
                         };

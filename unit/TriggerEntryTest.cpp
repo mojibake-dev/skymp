@@ -4,6 +4,7 @@
 #include "libespm/ObjectBounds.h"
 #include "libespm/REFR.h"
 #include "wire_bridge_cxx/rules.h"
+#include <algorithm>
 #include <catch2/catch_all.hpp>
 #include <chrono>
 #include <spdlog/sinks/ostream_sink.h>
@@ -384,6 +385,66 @@ TEST_CASE("A guest's leave after its accepted enter is relayed from far off "
   // so its leave has nothing to end either
   p.Messages().clear();
   REQUIRE_NOTHROW(Entry(p, 1, 0x14, kWeb, 2));
+  REQUIRE(RelayedTo(p, 0).empty());
+  Leave(p);
+}
+
+// the builder's call, the gap closed: a guest who leaves by a door into
+// another cell has its game report the trigger's cell unloaded, its actor
+// in another world, before the leave arrives. The pairing proves the
+// presser was inside (its accepted enter passed the loader and the reach),
+// so the leave skips both and still ends the presence on the host
+TEST_CASE("A guest's leave after its accepted enter is relayed to the host "
+          "after its game unloaded the trigger's cell and its actor left "
+          "it (D-C2)",
+          "[TriggerEntry][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  Loaded(p, 1, kTemple);
+  Entry(p, 1, 0x14, kWeb, 1);
+  REQUIRE(RelayedTo(p, 0).size() == 1);
+  // the door: the guest's game unloads the Temple, its actor out in Tamriel
+  {
+    RawMessageData raw;
+    raw.userId = 1;
+    CellLoadedMessage unloaded;
+    unloaded.cell = kTemple;
+    unloaded.loaded = false;
+    p.GetActionListener().OnCellLoaded(raw, unloaded);
+  }
+  auto& guest = p.worldState.GetFormAt<MpActor>(kGuestActor);
+  guest.SetCellOrWorld(FormDesc::Tamriel());
+  guest.SetPos({ 4096.f, -4096.f, 0.f });
+  // its game is no loader of the Temple any more
+  const auto loaders = p.GetCellLoaders(kTemple);
+  REQUIRE(std::find(loaders.begin(), loaders.end(), kGuestActor) ==
+          loaders.end());
+  p.Messages().clear();
+  {
+    LogCapture log;
+    Entry(p, 1, 0x14, kWeb, 2);
+    REQUIRE(log.Count("[verb:traps] ff000fe2 reports ff000fe2 leaving 37281 "
+                      "in cell 371de (its host ff000fe1): relayed to the "
+                      "host") == 1);
+    REQUIRE(log.Count("E_ENTRY_") == 0);
+  }
+  REQUIRE(RelayedTo(p, 0).size() == 1);
+  REQUIRE(RelayedTo(p, 0)[0].target == kWeb);
+  REQUIRE(RelayedTo(p, 0)[0].caster == kGuestActor);
+  REQUIRE(RelayedTo(p, 0)[0].entry == std::optional<uint32_t>(2));
+  // an enter keeps the loader: from out here, refused, and its leave has
+  // nothing to end
+  p.Messages().clear();
+  {
+    LogCapture log;
+    REQUIRE_NOTHROW(Entry(p, 1, 0x14, kWeb, 1));
+    REQUIRE(log.Count("[verb:traps] E_ENTRY_NOT_LOADER: ff000fe2 reports "
+                      "ff000fe2 entering 37281") == 1);
+    REQUIRE_NOTHROW(Entry(p, 1, 0x14, kWeb, 2));
+    REQUIRE(log.Count("[verb:traps] E_ENTRY_UNPAIRED: ff000fe2 reports "
+                      "ff000fe2 leaving 37281") == 1);
+  }
   REQUIRE(RelayedTo(p, 0).empty());
   Leave(p);
 }

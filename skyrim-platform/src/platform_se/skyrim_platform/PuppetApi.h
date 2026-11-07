@@ -58,6 +58,13 @@ Napi::Value GetTrapRole(const Napi::CallbackInfo& info);
 // a scripted trigger in a cell this seat does not host, raises triggerEntry
 // on the next tick. Stored with no game call; true when stored
 Napi::Value SetTriggerPresserRule(const Napi::CallbackInfo& info);
+// thuum docs/research/fifty-fixes-2026-11-07.md 1(b) (the furniture branch,
+// FridaHooks.h): setFurnitureAnimation(on), the animation hook's rule over a
+// furniture's own graph event on or off, off by default: on, an event the
+// engine sends to a plain reference whose base is a FURN never reaches the
+// sendAnimationEvent handlers and raises furnitureAnimation on the next tick.
+// Stored with no game call; true when stored
+Napi::Value SetFurnitureAnimation(const Napi::CallbackInfo& info);
 // setPropFollowed(formId, followed): a trap body another seat streams (true)
 // or no longer (false), kept in the set the native seam reads, where this
 // seat's script SetMotionType and ApplyHavokImpulse on the body run
@@ -190,6 +197,9 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set("setTriggerPresserRule",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(SetTriggerPresserRule)));
+  exports.Set("setFurnitureAnimation",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(SetFurnitureAnimation)));
   exports.Set(
     "setPropFollowed",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetPropFollowed)));

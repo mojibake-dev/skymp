@@ -47,6 +47,16 @@ bool IsCellHosted(uint32_t cellFormId);
 // turns it on through setTriggerPresserRule (PuppetApi.cpp). Threadsafe
 void SetTriggerPresserRule(bool on);
 
+// thuum docs/research/fifty-fixes-2026-11-07.md 1(b), the furniture branch:
+// the animation hook's rule over a furniture's own graph event on or off
+// (OnSendAnimationEventEnter). On, an event the engine sends to a plain
+// reference whose base is a FURN never reaches the sendAnimationEvent
+// handlers and crosses after the call as furnitureAnimation; off, the
+// default, keeps every graph event on the handlers as before.
+// skymp5-client's setting furnitureAnimation turns it on through
+// setFurnitureAnimation (PuppetApi.cpp). Threadsafe
+void SetFurnitureAnimation(bool on);
+
 // thuum docs/verbs/quest-stage.md, slice two: a (quest, stage) pair
 // skymp5-client's questStageService is applying from the server's relay,
 // whose Papyrus fragment the VM's quest stage sink skips at the pair's next

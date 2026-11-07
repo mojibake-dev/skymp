@@ -43,6 +43,10 @@ void EventManager::InitCustom()
   // scripted trigger in a cell this seat does not host (FridaHooks'
   // triggerEntry, the Papyrus event gate's)
   manager->EmplaceEvent("triggerEntry");
+  // thuum docs/research/fifty-fixes-2026-11-07.md 1(b), the furniture branch:
+  // an engine event to a furniture's own graph (FridaHooks'
+  // furnitureAnimation, the animation hook's)
+  manager->EmplaceEvent("furnitureAnimation");
   manager->EmplaceEvent("ipcMessage");
 
   // skse messages

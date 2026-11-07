@@ -947,8 +947,130 @@ void InstallDrawSheatheWeaponActorHook()
 /**
  * Send Animation Event hook
  */
+
+/**
+ * The furniture branch (thuum docs/research/fifty-fixes-2026-11-07.md 1(b)
+ * and read 1; the static read lab/.cache/drafts/fifty/lever-furn-static.md):
+ * a furniture's own graph event during a use is its user's engine's (the
+ * plan's rule table: R2, the user's engine computes, the server checks the
+ * user and relays, and keeps it nowhere). Bleak Falls Temple's puzzle lever
+ * 0xaa8c3 (FURN 0xb7db4 LeverPushAnimatingNoPlayer) moves by the engine's
+ * furniture code alone: TESFurniture::Activate's NoPlayer branch (17420)
+ * sends one 'Lever_PlayerPush' to the lever's own graph (HYPOTHESIS H-LF2),
+ * on the puller's seat alone, synchronously inside the client's own
+ * `activate(player, true)` (remoteServer.ts), a non-latent callNative under
+ * the process-wide Override (CallNativeApi.cpp; H-LF4). The handlers cannot
+ * take it there: the hook reaches them through Hook.cpp's PushAndWait to the
+ * JavaScript pool thread, the very thread that waits on that call
+ * (SkyrimPlatform.cpp's PushToWorkerAndWait), so it would never return, the
+ * reason the Override test stood first. So a furniture holder's event is
+ * noted here, filtered in native (rule 9: a plain reference whose base is a
+ * FURN, and no name pattern, the names being the engine's idle data's),
+ * never reaches the handlers, and crosses after the call's leave as
+ * furnitureAnimation on the next tick (a tick task, propContact's shape).
+ *
+ * The enter and leave contract: every enter pushes one note on its thread
+ * and every leave pops one, so the two pair under nesting whatever branch
+ * returns early; a furniture note's leave reads the graph's answer and calls
+ * no handler, and any other note's leave runs the hook's leave as before.
+ * Suppressed while setFurnitureAnimation(true) holds: every graph event a
+ * FURN's plain reference is sent reaching the sendAnimationEvent handlers
+ * (they see none of them). Inside a script action the event stays the
+ * seam's (a script's own call on a FURN is reported once, by the boundary),
+ * so that test stays first; then the furniture note, under Override or not;
+ * then the Override return for every other holder.
+ *
+ * HYPOTHESIS H-LF6: frida-gum's attach on 38048 (the actor holders' slot 1,
+ * a thunk whose one instruction is a JMP to 32901) follows the jump, so this
+ * hook sits on 32901 and sees every holder's events, a world object's
+ * included; read by x-lever-furn v1's ready row (lever-furn-trace.js:
+ * resolved.notifyGraph.bytes begins e9), H-LF2 by its notify row inside
+ * furnitureActivate. If H-LF6 falls, the same pair goes in a second time on
+ * VTABLE_TESObjectREFR[3]'s slot 1 (CommonLibSSE-NG
+ * include/RE/Offsets_VTABLE.h:649, 190265), through CommonLib's vtable.
+ */
+namespace {
+// the branch's switch (Frida::SetFurnitureAnimation), off by default
+std::atomic<bool> g_furnitureAnimation{ false };
+
+// one per enter on its thread, popped by that call's leave (the contract
+// above); furniture false for every enter but a furniture holder's
+struct FurnitureNote
+{
+  bool furniture = false;
+  uint32_t refrId = 0;
+  std::string event;
+};
+thread_local std::vector<FurnitureNote> g_furnitureNotes;
+
+// a plain reference's own holder vtable, TESObjectREFR's
+// IAnimationGraphManagerHolder base at +0x38 (CommonLibSSE-NG
+// include/RE/T/TESObjectREFR.h:112) being its fourth (VTABLE_TESObjectREFR[3],
+// include/RE/Offsets_VTABLE.h:649, Address Library 190265, whose slot 1 is
+// 32901: lever-furn-static.md step 9), resolved once through CommonLib's
+// Relocation, first at the hook's install (InstallSendAnimationEventHook)
+std::uintptr_t RefrHolderVtable()
+{
+  static const REL::Relocation<std::uintptr_t> vtable{
+    RE::VTABLE_TESObjectREFR[3]
+  };
+  return vtable.address();
+}
+
+// the furniture whose holder the hook's rcx is, or null. The holder's first
+// word is compared with a plain reference's holder vtable before any member
+// is read: 32901 serves holders that are no reference too (a weapon's graph,
+// SimpleAnimationGraphManagerHolder), and a placed FURN is a plain
+// TESObjectREFR. Then the reference through the header's base cast and its
+// base's form type (TESObjectREFR::GetBaseObject, TESObjectREFR.h:383;
+// TESForm::GetFormType, include/RE/T/TESForm.h:289; FormType::Furniture,
+// include/RE/F/FormTypes.h:180): reads alone
+RE::TESObjectREFR* FurnitureOf(std::uintptr_t holder)
+{
+  const std::uintptr_t vtable = RefrHolderVtable();
+  if (!holder || vtable == 0 ||
+      *reinterpret_cast<const std::uintptr_t*>(holder) != vtable) {
+    return nullptr;
+  }
+  auto* refr = static_cast<RE::TESObjectREFR*>(
+    reinterpret_cast<RE::IAnimationGraphManagerHolder*>(holder));
+  const RE::TESBoundObject* base = refr->GetBaseObject();
+  return base && base->GetFormType() == RE::FormType::Furniture ? refr
+                                                                : nullptr;
+}
+
+// a line per furniture for its first three events and every hundredth, the
+// counts kept under a mutex (the hook runs on any thread; propContact's
+// map, cleared past 1024 references)
+std::mutex g_furnitureLinesMutex;
+std::unordered_map<uint32_t, uint64_t> g_furnitureLines;
+
+bool FurnitureLineDue(uint32_t refrId)
+{
+  std::lock_guard<std::mutex> lock(g_furnitureLinesMutex);
+  if (g_furnitureLines.size() > 1024 && g_furnitureLines.count(refrId) == 0) {
+    g_furnitureLines.clear();
+  }
+  const uint64_t n = ++g_furnitureLines[refrId];
+  return n <= 3 || n % 100 == 0;
+}
+}
+
+void Frida::SetFurnitureAnimation(bool on)
+{
+  g_furnitureAnimation.store(on, std::memory_order_relaxed);
+  logger::info("[verb:furniture] setFurnitureAnimation({}): {}", on,
+               on ? "a furniture's own graph event crosses as "
+                    "furnitureAnimation, never to the sendAnimationEvent "
+                    "handlers"
+                  : "every graph event goes to the sendAnimationEvent "
+                    "handlers as before");
+}
+
 void OnSendAnimationEventEnter(GumInvocationContext* ic)
 {
+  // this call's note, pushed before any return (its leave pops it)
+  g_furnitureNotes.emplace_back();
   // inside a script action (thuum docs/DECISIONS.md ADR-068 decision 7,
   // docs/research/scripts-one-system-2026-11-05.md 6.7): an owned action
   // row's call (a script's PlayAnimation on a world object in a cell this
@@ -959,7 +1081,28 @@ void OnSendAnimationEventEnter(GumInvocationContext* ic)
   // H-D1): the native's body reaches this entry synchronously on its own
   // thread, inside the mark's extent; a body that queued the event would
   // send it outside the mark, and the animation would be reported twice
-  if (Override::IsOverriden() || ScriptNatives::InScriptAction()) {
+  if (ScriptNatives::InScriptAction()) {
+    return;
+  }
+  // the furniture branch (above), under Override or not: noted, never sent
+  // to the handlers
+  if (g_furnitureAnimation.load(std::memory_order_relaxed)) {
+    if (auto* furniture = FurnitureOf(ic->cpu_context->rcx)) {
+      auto furnitureEvent =
+        (char**)gum_invocation_context_get_nth_argument(ic, 1);
+      if (furnitureEvent && *furnitureEvent && **furnitureEvent) {
+        auto& note = g_furnitureNotes.back();
+        note.furniture = true;
+        note.refrId = furniture->formID;
+        note.event = *furnitureEvent;
+        return;
+      }
+    }
+  }
+  // the platform's own window: no handler is called (Hook.cpp's
+  // PushAndWait would wait on the waiting thread, the furniture branch's
+  // read 1)
+  if (Override::IsOverriden()) {
     return;
   }
   auto refr = ic->cpu_context->rcx
@@ -989,6 +1132,36 @@ void OnSendAnimationEventEnter(GumInvocationContext* ic)
 
 void OnSendAnimationEventLeave(GumInvocationContext* ic)
 {
+  // this call's note (its enter pushed one, whatever it did)
+  FurnitureNote note;
+  if (!g_furnitureNotes.empty()) {
+    note = std::move(g_furnitureNotes.back());
+    g_furnitureNotes.pop_back();
+  }
+  if (note.furniture) {
+    // the graph's answer, NotifyAnimationGraph's bool
+    // (IAnimationGraphManagerHolder.h:25), returned in AL (the Windows x64
+    // convention): the return register's low byte alone
+    const bool took = (reinterpret_cast<std::uintptr_t>(
+                         gum_invocation_context_get_return_value(ic)) &
+                       0xff) != 0;
+    if (FurnitureLineDue(note.refrId)) {
+      logger::info("[verb:furniture] {:x} '{}' to its own graph ({}, thread "
+                   "{})",
+                   note.refrId, note.event, took ? "taken" : "refused",
+                   GetCurrentThreadId());
+    }
+    SkyrimPlatform::GetSingleton()->AddTickTask([refrId = note.refrId,
+                                                 event = std::move(note.event),
+                                                 took](Napi::Env env) {
+      auto obj = Napi::Object::New(env);
+      AddObjProperty(&obj, "refrId", refrId);
+      AddObjProperty(&obj, "event", event);
+      AddObjProperty(&obj, "took", took);
+      EventsApi::SendEvent("furnitureAnimation", { obj });
+    });
+    return;
+  }
   if (Override::IsOverriden() || ScriptNatives::InScriptAction()) {
     return;
   }
@@ -998,11 +1171,22 @@ void OnSendAnimationEventLeave(GumInvocationContext* ic)
 
 void InstallSendAnimationEventHook()
 {
+  // the furniture branch's class test resolved here, at the install, not on
+  // a game thread at the first graph event
+  const std::uintptr_t refrHolder = RefrHolderVtable();
   Frida::HookHandler::GetSingleton()->Install(
     Frida::HookID::HOOK_SEND_ANIMATION_EVENT,
     Offsets::Hooks::SendAnimation.address(),
     std::make_shared<Frida::Hook>(OnSendAnimationEventEnter,
                                   OnSendAnimationEventLeave));
+  // the lab tells one platform build from another by such install lines
+  logger::info(
+    "[verb:furniture] the furniture branch installed on the animation hook, "
+    "off until setFurnitureAnimation(true): a plain reference's holder by its "
+    "vtable, VTABLE_TESObjectREFR[3] (Address Library 190265), {}",
+    refrHolder
+      ? fmt::format("at +{:x}", refrHolder - REL::Module::get().base())
+      : std::string("not resolved: no furniture note is taken"));
 }
 
 /**

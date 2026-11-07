@@ -7,6 +7,7 @@
 #include "ActorSightingsMessage.h"
 #include "ActorSpeechMessage.h"
 #include "ActorValuesMessage.h"
+#include "AliasFillMessage.h"
 #include "ArrowShotMessage.h"
 #include "CellLoadedMessage.h"
 #include "ChangeFormAckMessage.h"
@@ -77,6 +78,7 @@
 #include "UpdateMovementMessage.h"
 #include "UpdatePropertyMessage.h"
 #include "WordWallMessage.h"
+#include "WorldGlobalMessage.h"
 
 #define REGISTER_MESSAGES                                                     \
   REGISTER_MESSAGE(ActivateMessage)                                           \
@@ -156,4 +158,6 @@
   REGISTER_MESSAGE(ScriptCallMessage)                                         \
   REGISTER_MESSAGE(DestructionStageMessage)                                   \
   REGISTER_MESSAGE(ScriptStateMessage)                                        \
-  REGISTER_MESSAGE(ScriptStateApplyMessage)
+  REGISTER_MESSAGE(ScriptStateApplyMessage)                                   \
+  REGISTER_MESSAGE(AliasFillMessage)                                          \
+  REGISTER_MESSAGE(WorldGlobalMessage)

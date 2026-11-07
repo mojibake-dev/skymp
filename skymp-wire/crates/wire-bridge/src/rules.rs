@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, appearance, attributes, block, bonds, casts, cells, clock, console, damage, destruction, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, placements, player_globals, props, quest_stages, racemenu, ranged, rest, perks, script_state, scripted_effects, shouts, stagger, teleports, weather};
+use wire_rules::{activation, actor_values, alias_fills, appearance, attributes, block, bonds, casts, cells, clock, console, damage, destruction, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, placements, player_globals, props, quest_stages, racemenu, ranged, rest, perks, ref_state, script_state, scripted_effects, shouts, stagger, standing, teleports, weather, world_globals, world_streamer};
 
 // the perk table's effect calls carry a CTDA's five parts flat, as add_condition does
 #[allow(clippy::too_many_arguments)]
@@ -1420,6 +1420,10 @@ mod ffi {
         /// The subject's form id as the reporter named it (0x14 for its own
         /// player), 0 when the call names none the reporter may name.
         subject: u32,
+        /// The record the row keeps, so the core gathers a record row's
+        /// facts (thuum ADR-068 rung 4): 0 none, 1 the ref state, 2 the
+        /// standing, 3 a placement.
+        record: u8,
     }
 
     /// One argument of a reported script call as the core parsed it: its
@@ -1458,19 +1462,28 @@ mod ffi {
         owner: u32,
         /// That host's standing epoch (unread for an actor).
         owner_epoch: u32,
+        /// The host of an actor's cell, 0 while nobody hosts it (the cell
+        /// the server holds it in, or its ACHR's for one it holds no
+        /// reference for): the owner of a ref state's or a placement's
+        /// record row on an actor nobody simulates (thuum ADR-068 rung 4);
+        /// unread for every other kind and row.
+        host: u32,
+        /// That host's standing epoch.
+        host_epoch: u32,
     }
 
     /// The rule's word on a reported script call.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum ScriptCallCode {
-        /// Relayed to the audience but the reporter, or kept as the
-        /// subject's evidence (`keep_evidence`), from the owner step; from
-        /// the shape step, the shape holds and the core gathers the
-        /// subject's facts for the owner step.
+        /// Relayed to the audience but the reporter, kept as the subject's
+        /// evidence (`keep_evidence`) or recorded as its record (`record`),
+        /// from the owner step; from the shape step, the shape holds and the
+        /// core gathers the subject's facts for the owner step.
         Accepted,
         /// Dropped quietly: a door's or a container's.
         Skipped,
-        /// E_SCRIPTCALL_ROW: no tabled action row the server relays.
+        /// E_SCRIPTCALL_ROW: no tabled action row the server relays, nor a
+        /// state row it keeps.
         Row,
         /// E_SCRIPTCALL_ARGS: not the row's count and kinds, or no subject
         /// the reporter may name.
@@ -1515,6 +1528,14 @@ mod ffi {
         /// on an actor the reporter simulates, its death evidence), with no
         /// sequence (accepted).
         keep_evidence: bool,
+        /// The record the call moves, recorded with the subject's next
+        /// sequence (`seq`) and relayed as the record's own word, never as
+        /// an action (wire-rules natives Keep::Record, thuum ADR-068 rung
+        /// 4): 1 the ref state (Enable, EnableNoWait, Disable,
+        /// DisableNoWait, Delete), 2 the standing (an NPC's factions, crime
+        /// faction and relationships), 3 a placement (PlaceAtMe,
+        /// PlaceActorAtMe); 0 for every other verdict.
+        record: u8,
         /// The argument naming the call's behavior graph event, for the
         /// "animates" line; -1 for none.
         event_arg: i8,
@@ -1569,6 +1590,249 @@ mod ffi {
         name: String,
         /// Why, for the log; empty when recorded.
         why: String,
+    }
+
+    /// One reference alias of a quest as the game files hold it (thuum
+    /// ADR-068 rung 4, amendment B read 8; wire-rules alias_fills::Alias),
+    /// the form ids in the load order.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct QuestAliasRow {
+        /// The alias's id (ALST).
+        id: u32,
+        /// The base it creates (ALCO), 0 for none.
+        created: u32,
+        /// Where it is created (ALCA): the top bit "in", the target alias's
+        /// id in the low half.
+        create_at: u32,
+        /// The forced reference (ALFR), 0 for none.
+        forced: u32,
+        /// The unique actor's base (ALUA), 0 for none.
+        unique_actor: u32,
+    }
+
+    /// A created alias's item and where it goes (wire-rules
+    /// alias_fills::Creation).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct AliasCreationRow {
+        /// The created alias's id.
+        alias: u32,
+        /// The base it creates.
+        base: u32,
+        /// The target alias's id.
+        target: u32,
+        /// 0 unresolved (E_ALIASFILL_UNRESOLVED, `why`), 1 a forced
+        /// reference (`container` the reference), 2 a unique actor
+        /// (`container` the actor's base).
+        container_kind: u8,
+        /// The reference or the base, per `container_kind`; 0 unresolved.
+        container: u32,
+        /// Why the container is unresolved, empty otherwise.
+        why: String,
+    }
+
+    /// A created alias's mark on the journal (wire-rules alias_fills::Mark).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct AliasMarkRow {
+        /// The QUST.
+        quest: u32,
+        /// The created alias's id.
+        alias: u32,
+        /// The item was added.
+        added: bool,
+    }
+
+    /// One quest alias's fill on the journal (thuum ADR-068 rung 4,
+    /// wire-rules alias_fills::Fill), the forms in the load order.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct AliasFillEntry {
+        /// The QUST.
+        quest: u32,
+        /// The alias's id.
+        alias: u32,
+        /// The reference filling it, 0 when cleared.
+        refr: u32,
+    }
+
+    /// What the core knows of a reported alias fill (wire-rules
+    /// alias_fills::Facts).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct AliasFillFacts {
+        /// The quest is a QUST record.
+        is_quest: bool,
+        /// The quest's record has a reference alias of that id.
+        has_alias: bool,
+        /// The fill's form is a reference (true for a clear).
+        refr_is_ref: bool,
+    }
+
+    /// The rule's word on a reported alias fill.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct AliasFillVerdict {
+        /// 0 recorded (merge and relay), 1 folded (nothing), 2 refused.
+        code: u8,
+        /// The refusal's stable name, empty otherwise.
+        name: String,
+        /// Why, for the log; empty otherwise.
+        why: String,
+    }
+
+    /// One world global's value (wire-rules world_globals::Value).
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    struct WorldGlobalValue {
+        /// The GLOB's form id.
+        global: u32,
+        /// Its value.
+        value: f32,
+    }
+
+    /// What the core knows of one reported world global (wire-rules
+    /// world_globals::EntryFacts).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct WorldGlobalFacts {
+        /// The GLOB's form id.
+        global: u32,
+        /// The form is a GLOB record.
+        is_glob: bool,
+        /// The record flags it constant.
+        constant: bool,
+        /// It is on the playerGlobals list.
+        player_listed: bool,
+    }
+
+    /// The record after a report's accepted entries, and what moved.
+    #[derive(Debug, Clone, PartialEq)]
+    struct WorldGlobalsMerge {
+        /// The record after.
+        record: Vec<WorldGlobalValue>,
+        /// The entries that moved it, to relay.
+        changed: Vec<WorldGlobalValue>,
+    }
+
+    /// The ref state's rule on one call (thuum ADR-068 rung 4, wire-rules
+    /// ref_state).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct RefStateVerdict {
+        /// 0 recorded (write, stamp and relay), 1 folded (nothing), 2 the
+        /// native is none of the five.
+        code: u8,
+        /// The reference is disabled after the call.
+        disabled: bool,
+        /// The reference is deleted after the call.
+        deleted: bool,
+    }
+
+    /// One faction's rank on an NPC's record (wire-rules
+    /// standing::FactionRank).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct StandingFaction {
+        /// The FACT.
+        faction: u32,
+        /// Its rank.
+        rank: i8,
+    }
+
+    /// One relationship rank on an NPC's record (wire-rules
+    /// standing::Relationship).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct StandingRelation {
+        /// The other actor.
+        other: u32,
+        /// The rank.
+        rank: i8,
+    }
+
+    /// The standing's rule on one call (wire-rules standing::judge).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct StandingVerdict {
+        /// 0 recorded, 1 folded, 2 refused (`name`, `why`), 3 the native is
+        /// none of the six.
+        code: u8,
+        /// The refusal's stable name, empty otherwise.
+        name: String,
+        /// Why, for the log; empty otherwise.
+        why: String,
+        /// The change a recorded call makes, the applier the receivers run:
+        /// 1 SetFactionRank(form, rank), 2 RemoveFromFaction(form), 3
+        /// RemoveFromAllFactions(), 4 SetCrimeFaction(form, 0 for None), 5
+        /// SetRelationshipRank(form, rank).
+        change: u8,
+        /// The faction, or the relationship's other actor.
+        form: u32,
+        /// The rank.
+        rank: i8,
+    }
+
+    /// A script set opened, or why not (thuum ADR-068 rung 4, wire-rules
+    /// placements' script set).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct ScriptSetOpen {
+        /// The set's id when opened.
+        set: u64,
+        /// 0 opened, 1 E_PLACED_KIND (no base a script set places), 2 the
+        /// world's script sets are at their cap, 3 the anchor is not a
+        /// number.
+        refusal: u8,
+    }
+
+    /// A script set's request to its reporter (the PlacedRequest).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct ScriptRequestRow {
+        /// The set's id.
+        set: u64,
+        /// The reporter asked.
+        caster: u32,
+        /// The call's self, the anchor.
+        self_id: u32,
+        /// The base's form id within its plugin.
+        short_id: u32,
+        /// The base's plugin.
+        file: String,
+        /// The base's record type.
+        record_type: String,
+        /// How long the report is taken, milliseconds.
+        window_ms: u64,
+    }
+
+    /// What a script set came to (wire-rules placements::ScriptOutcome).
+    #[derive(Debug, Clone, PartialEq)]
+    struct ScriptPlacementRow {
+        /// The report came in (place the object); false, the window closed
+        /// with none (nothing placed).
+        placed: bool,
+        /// The set's id.
+        set: u64,
+        /// The reporter.
+        caster: u32,
+        /// The call's self.
+        self_id: u32,
+        /// The base's form id within its plugin.
+        short_id: u32,
+        /// The base's plugin.
+        file: String,
+        /// The base's record type.
+        record_type: String,
+        /// Position, as reported.
+        x: f32,
+        /// Position.
+        y: f32,
+        /// Position.
+        z: f32,
+        /// The Z angle, degrees.
+        yaw: f32,
+    }
+
+    /// The world streamer after an event (thuum ADR-068 rung 4, wire-rules
+    /// world_streamer).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct StreamerElection {
+        /// An election ran: send the stream words.
+        changed: bool,
+        /// The streaming seat's player, 0 for none.
+        streamer: u32,
+        /// The epoch.
+        epoch: u32,
+        /// The seat that streamed before the election, 0 for none.
+        previous: u32,
     }
 
     extern "Rust" {
@@ -2244,10 +2508,11 @@ mod ffi {
         fn shape(self: &mut ScriptCalls, row: i32, args: &[ScriptArg], sender: u32, self_id: u32, now_ms: u64) -> ScriptCallVerdict;
         /// The owner step on the call the last `shape` accepted, over the
         /// facts the core gathered for its subject (its kind, its cell, that
-        /// cell's host and the host's epoch, or an actor's simulator); an
-        /// accepted relay takes its subject's next sequence, a call kept as
-        /// evidence none. Skipped, nothing relayed, when no shaped call
-        /// waits, so each shaped call is judged once.
+        /// cell's host and the host's epoch, or an actor's simulator and its
+        /// cell's host); an accepted relay or record takes its subject's
+        /// next sequence, a call kept as evidence none. Skipped, nothing
+        /// relayed, when no shaped call waits, so each shaped call is judged
+        /// once.
         fn owner(self: &mut ScriptCalls, facts: &ScriptCallFacts) -> ScriptCallVerdict;
         /// The subject's sequence: its accepted calls so far, or the stored
         /// record's it was seeded with (thuum ADR-068 rung 3).
@@ -2274,10 +2539,81 @@ mod ffi {
         fn released(self: &mut ScriptStates, cell: u32, player: u32, epoch: u32);
         /// `cell` was granted, to any seat: the release read ends.
         fn granted(self: &mut ScriptStates, cell: u32);
+
+        /// thuum ADR-068 rung 4 (amendment B, read 8): every created alias
+        /// of one quest's reference aliases and where its item goes
+        /// (wire-rules alias_fills::creations).
+        fn alias_creations(aliases: &[QuestAliasRow]) -> Vec<AliasCreationRow>;
+        /// Whether the created alias `alias` of `quest` still owes its item:
+        /// no mark of the journal's says it was added.
+        fn alias_created_due(marks: &[AliasMarkRow], quest: u32, alias: u32) -> bool;
+        /// thuum ADR-068 rung 4 (AliasFill 79): one reported fill against
+        /// the journal's fills, over the facts the core gathered (wire-rules
+        /// alias_fills::judge).
+        fn alias_fill_judge(record: &[AliasFillEntry], fill: &AliasFillEntry, facts: &AliasFillFacts) -> AliasFillVerdict;
+        /// thuum ADR-068 rung 4 (WorldGlobal 80): one reported entry, 0
+        /// accepted, else its code: 1 E_WORLDGLOBAL_CLOCK, 2 _PLAYER, 3
+        /// _CONSTANT, 4 _NO_GLOB (wire-rules world_globals::entry).
+        fn world_global_entry(facts: &WorldGlobalFacts) -> u8;
+        /// The stable name of a world global's code: an entry's (1 to 4),
+        /// 5 E_WORLDGLOBAL_OWNER, 6 E_WORLDGLOBAL_EPOCH; empty for any other.
+        fn world_global_code_name(code: u8) -> String;
+        /// The record after a report's accepted entries: the latest value
+        /// wins, an equal one is folded, the moved ones listed to relay.
+        fn world_globals_merge(record: &[WorldGlobalValue], accepted: &[WorldGlobalValue]) -> WorldGlobalsMerge;
+
+        /// thuum ADR-068 rung 4 (the ref state): one call of `func` (Enable,
+        /// EnableNoWait, Disable, DisableNoWait, Delete) against the record
+        /// (wire-rules ref_state::apply).
+        fn ref_state_apply(disabled: bool, deleted: bool, func: &str) -> RefStateVerdict;
+        /// thuum ADR-068 rung 4 (the standing, W3): one call of `func` with
+        /// its object argument (0 for None) and its number against the
+        /// NPC's record (wire-rules standing::judge); `crime_faction` the
+        /// record's (0 for none), or one no FACT holds while the record
+        /// keeps none and the base's is unread.
+        fn standing_judge(
+            func: &str,
+            object: u32,
+            number: i64,
+            faction_is_fact: bool,
+            other_is_actor: bool,
+            factions: &[StandingFaction],
+            crime_faction: u32,
+            relationships: &[StandingRelation],
+        ) -> StandingVerdict;
+
+        /// thuum ADR-068 rung 4 (the script set, W3): a script's PlaceAtMe or
+        /// PlaceActorAtMe by `caster` on `self_id`, which stood at (x, y,
+        /// z), of the base (short id, file) of `record_type`.
+        #[allow(clippy::too_many_arguments)]
+        fn open_script_set(self: &mut Placements, caster: u32, self_id: u32, x: f32, y: f32, z: f32, short_id: u32, file: &str, record_type: &str, now_ms: u64) -> ScriptSetOpen;
+        /// The script sets' requests to send since the last call, each once.
+        fn take_script_requests(self: &mut Placements) -> Vec<ScriptRequestRow>;
+        /// The script sets' outcomes at `now_ms`: placed or expired.
+        fn due_script_placements(self: &mut Placements, now_ms: u64) -> Vec<ScriptPlacementRow>;
+
+        /// thuum ADR-068 rung 4: the one seat that streams what nobody owns
+        /// (wire-rules world_streamer).
+        type WorldStreamer;
+        /// Nobody streams, epoch 0.
+        fn new_world_streamer() -> Box<WorldStreamer>;
+        /// `player`'s movement report: the first makes the seat eligible.
+        fn moved(self: &mut WorldStreamer, player: u32) -> StreamerElection;
+        /// `player`'s connection went stale, or came back.
+        fn stale(self: &mut WorldStreamer, player: u32, stale: bool) -> StreamerElection;
+        /// `player` died, or stands again.
+        fn dead(self: &mut WorldStreamer, player: u32, dead: bool) -> StreamerElection;
+        /// `player` left.
+        fn gone(self: &mut WorldStreamer, player: u32) -> StreamerElection;
+        /// The streamer now and the epoch (`changed` false).
+        fn streamer_now(self: &WorldStreamer) -> StreamerElection;
+        /// A report from `sender` at `epoch`: 0 Current, 1 StaleEpoch, 2
+        /// FutureEpoch, 3 NotOwner, the epoch first.
+        fn judge(self: &WorldStreamer, sender: u32, epoch: u32) -> u8;
     }
 }
 
-pub use ffi::{AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
+pub use ffi::{RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -3178,6 +3514,61 @@ impl Placements {
             .collect()
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn open_script_set(&mut self, caster: u32, self_id: u32, x: f32, y: f32, z: f32, short_id: u32, file: &str, record_type: &str, now_ms: u64) -> ScriptSetOpen {
+        let anchor = placements::CasterPose { x, y, z, yaw: 0.0 };
+        let base = forms::FormDesc { short_id, file: file.to_owned() };
+        match self.0.open_script_set(caster, self_id, anchor, base, record_type, now_ms) {
+            Ok(set) => ScriptSetOpen { set, refusal: 0 },
+            Err(placements::ScriptRefusal::Kind) => ScriptSetOpen { set: 0, refusal: 1 },
+            Err(placements::ScriptRefusal::ServerWide) => ScriptSetOpen { set: 0, refusal: 2 },
+            Err(placements::ScriptRefusal::NonFinite) => ScriptSetOpen { set: 0, refusal: 3 },
+        }
+    }
+
+    fn take_script_requests(&mut self) -> Vec<ScriptRequestRow> {
+        self.0
+            .take_script_requests()
+            .into_iter()
+            .map(|r| ScriptRequestRow { set: r.set, caster: r.caster, self_id: r.self_id, short_id: r.base.short_id, file: r.base.file, record_type: r.record_type, window_ms: r.window_ms })
+            .collect()
+    }
+
+    fn due_script_placements(&mut self, now_ms: u64) -> Vec<ScriptPlacementRow> {
+        self.0
+            .due_script_placements(now_ms)
+            .into_iter()
+            .map(|o| match o {
+                placements::ScriptOutcome::Placed(p) => ScriptPlacementRow {
+                    placed: true,
+                    set: p.set,
+                    caster: p.caster,
+                    self_id: p.self_id,
+                    short_id: p.base.short_id,
+                    file: p.base.file,
+                    record_type: p.record_type,
+                    x: p.x,
+                    y: p.y,
+                    z: p.z,
+                    yaw: p.yaw,
+                },
+                placements::ScriptOutcome::NoReport(r) => ScriptPlacementRow {
+                    placed: false,
+                    set: r.set,
+                    caster: r.caster,
+                    self_id: r.self_id,
+                    short_id: r.base.short_id,
+                    file: r.base.file,
+                    record_type: r.record_type,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                    yaw: 0.0,
+                },
+            })
+            .collect()
+    }
+
     fn report_placed(&mut self, report: PlacementReport, now_ms: u64) -> PlacementReportVerdict {
         let PlacementReport { caster, set, short_id, file, x, y, z, yaw } = report;
         let report = placements::Report { caster, set, base: forms::FormDesc { short_id, file }, x, y, z, yaw };
@@ -4001,10 +4392,15 @@ fn native_args(args: &[ScriptArg]) -> Vec<natives::Arg> {
 
 fn script_call_subject(cls: &str, func: &str, self_id: u32, args: &[ScriptArg]) -> ScriptCallSubject {
     let Some(index) = natives::row_index(cls, func) else {
-        return ScriptCallSubject { row: -1, subject: 0 };
+        return ScriptCallSubject { row: -1, subject: 0, record: 0 };
     };
-    let subject = natives::TABLE.get(index).and_then(|row| natives::subject_of(row, self_id, &native_args(args))).unwrap_or(0);
-    ScriptCallSubject { row: i32::try_from(index).unwrap_or(-1), subject }
+    let row = natives::TABLE.get(index);
+    let subject = row.and_then(|row| natives::subject_of(row, self_id, &native_args(args))).unwrap_or(0);
+    let record = match row.map(|r| r.keep) {
+        Some(natives::Keep::Record(kind)) => kind.code(),
+        _ => 0,
+    };
+    ScriptCallSubject { row: i32::try_from(index).unwrap_or(-1), subject, record }
 }
 
 /// Every reporter's budget and every subject's sequence (wire-rules natives),
@@ -4032,6 +4428,7 @@ fn quiet_script_call() -> ScriptCallVerdict {
         audience: 2,
         keep_last: false,
         keep_evidence: false,
+        record: 0,
         event_arg: -1,
     }
 }
@@ -4078,7 +4475,17 @@ impl ScriptCalls {
             4 => natives::SubjectKind::Record,
             _ => natives::SubjectKind::Unknown,
         };
-        let facts = natives::Facts { sender: f.sender, self_id: f.self_id, epoch: f.epoch, kind, cell: f.cell, owner: f.owner, owner_epoch: f.owner_epoch };
+        let facts = natives::Facts {
+            sender: f.sender,
+            self_id: f.self_id,
+            epoch: f.epoch,
+            kind,
+            cell: f.cell,
+            owner: f.owner,
+            owner_epoch: f.owner_epoch,
+            host: f.host,
+            host_epoch: f.host_epoch,
+        };
         let mut out = quiet_script_call();
         match self.0.owner(shaped, &facts) {
             natives::Verdict::Accept(a) => {
@@ -4101,6 +4508,12 @@ impl ScriptCalls {
                 out.code = ScriptCallCode::Accepted;
                 out.subject = subject;
                 out.keep_evidence = true;
+            }
+            natives::Verdict::Record { subject, seq, kind } => {
+                out.code = ScriptCallCode::Accepted;
+                out.subject = subject;
+                out.seq = seq;
+                out.record = kind.code();
             }
             natives::Verdict::Skip => {}
             natives::Verdict::Refuse(r) => out = refused_script_call(r),
@@ -4171,6 +4584,181 @@ impl ScriptStates {
     fn granted(&mut self, cell: u32) {
         self.0.granted(cell);
     }
+}
+
+fn alias_creations(aliases: &[QuestAliasRow]) -> Vec<AliasCreationRow> {
+    let parsed: Vec<alias_fills::Alias> =
+        aliases.iter().map(|a| alias_fills::Alias { id: a.id, created: a.created, create_at: a.create_at, forced: a.forced, unique_actor: a.unique_actor }).collect();
+    alias_fills::creations(&parsed)
+        .into_iter()
+        .map(|c| {
+            let (container_kind, container, why) = match c.container {
+                alias_fills::Container::Unresolved(why) => (0, 0, why.to_owned()),
+                alias_fills::Container::Forced(refr) => (1, refr, String::new()),
+                alias_fills::Container::UniqueActor(base) => (2, base, String::new()),
+            };
+            AliasCreationRow { alias: c.alias, base: c.base, target: c.target, container_kind, container, why }
+        })
+        .collect()
+}
+
+fn alias_fill_of(e: &AliasFillEntry) -> alias_fills::Fill {
+    alias_fills::Fill { quest: e.quest, alias: e.alias, refr: e.refr }
+}
+
+fn alias_fill_judge(record: &[AliasFillEntry], fill: &AliasFillEntry, facts: &AliasFillFacts) -> AliasFillVerdict {
+    let parsed: Vec<alias_fills::Fill> = record.iter().map(alias_fill_of).collect();
+    let f = alias_fills::Facts { is_quest: facts.is_quest, has_alias: facts.has_alias, refr_is_ref: facts.refr_is_ref };
+    match alias_fills::judge(&parsed, alias_fill_of(fill), f) {
+        alias_fills::Verdict::Recorded => AliasFillVerdict { code: 0, name: String::new(), why: String::new() },
+        alias_fills::Verdict::Folded => AliasFillVerdict { code: 1, name: String::new(), why: String::new() },
+        alias_fills::Verdict::Refuse(code, why) => AliasFillVerdict { code: 2, name: code.name().to_owned(), why },
+    }
+}
+
+fn world_global_entry(facts: &WorldGlobalFacts) -> u8 {
+    let f = world_globals::EntryFacts { is_glob: facts.is_glob, constant: facts.constant, player_listed: facts.player_listed };
+    match world_globals::entry(facts.global, f) {
+        Ok(()) => 0,
+        Err(world_globals::Code::Clock) => 1,
+        Err(world_globals::Code::Player) => 2,
+        Err(world_globals::Code::Constant) => 3,
+        Err(world_globals::Code::NoGlob) => 4,
+        Err(world_globals::Code::Owner) => 5,
+        Err(world_globals::Code::Epoch) => 6,
+    }
+}
+
+fn world_global_code_name(code: u8) -> String {
+    let code = match code {
+        1 => world_globals::Code::Clock,
+        2 => world_globals::Code::Player,
+        3 => world_globals::Code::Constant,
+        4 => world_globals::Code::NoGlob,
+        5 => world_globals::Code::Owner,
+        6 => world_globals::Code::Epoch,
+        _ => return String::new(),
+    };
+    code.name().to_owned()
+}
+
+fn world_globals_merge(record: &[WorldGlobalValue], accepted: &[WorldGlobalValue]) -> WorldGlobalsMerge {
+    let to_value = |v: &WorldGlobalValue| world_globals::Value { global: v.global, value: v.value };
+    let from_value = |v: world_globals::Value| WorldGlobalValue { global: v.global, value: v.value };
+    let record: Vec<world_globals::Value> = record.iter().map(to_value).collect();
+    let accepted: Vec<world_globals::Value> = accepted.iter().map(to_value).collect();
+    let (after, changed) = world_globals::merge(&record, &accepted);
+    WorldGlobalsMerge { record: after.into_iter().map(from_value).collect(), changed: changed.into_iter().map(from_value).collect() }
+}
+
+fn ref_state_apply(disabled: bool, deleted: bool, func: &str) -> RefStateVerdict {
+    let Some(call) = ref_state::Call::of(func) else {
+        return RefStateVerdict { code: 2, disabled, deleted };
+    };
+    match ref_state::apply(ref_state::RefState { disabled, deleted }, call) {
+        ref_state::Verdict::Recorded(after) => RefStateVerdict { code: 0, disabled: after.disabled, deleted: after.deleted },
+        ref_state::Verdict::Folded(kept) => RefStateVerdict { code: 1, disabled: kept.disabled, deleted: kept.deleted },
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn standing_judge(
+    func: &str,
+    object: u32,
+    number: i64,
+    faction_is_fact: bool,
+    other_is_actor: bool,
+    factions: &[StandingFaction],
+    crime_faction: u32,
+    relationships: &[StandingRelation],
+) -> StandingVerdict {
+    let is = |name: &str| func.eq_ignore_ascii_case(name);
+    let call = if is("SetFactionRank") {
+        standing::Call::SetFactionRank { faction: object, rank: number }
+    } else if is("ModFactionRank") {
+        standing::Call::ModFactionRank { faction: object, by: number }
+    } else if is("RemoveFromFaction") {
+        standing::Call::RemoveFromFaction { faction: object }
+    } else if is("RemoveFromAllFactions") {
+        standing::Call::RemoveFromAllFactions
+    } else if is("SetCrimeFaction") {
+        standing::Call::SetCrimeFaction { faction: object }
+    } else if is("SetRelationshipRank") {
+        standing::Call::SetRelationshipRank { other: object, rank: number }
+    } else {
+        return StandingVerdict { code: 3, name: String::new(), why: String::new(), change: 0, form: 0, rank: 0 };
+    };
+    let factions: Vec<standing::FactionRank> = factions.iter().map(|f| standing::FactionRank { faction: f.faction, rank: f.rank }).collect();
+    let relationships: Vec<standing::Relationship> = relationships.iter().map(|r| standing::Relationship { other: r.other, rank: r.rank }).collect();
+    let record = standing::Record { factions: &factions, crime_faction, relationships: &relationships };
+    let out = |code, change, form, rank| StandingVerdict { code, name: String::new(), why: String::new(), change, form, rank };
+    match standing::judge(&record, call, standing::Facts { faction_is_fact, other_is_actor }) {
+        standing::Verdict::Recorded(standing::Change::Rank { faction, rank }) => out(0, 1, faction, rank),
+        standing::Verdict::Recorded(standing::Change::Removed { faction }) => out(0, 2, faction, 0),
+        standing::Verdict::Recorded(standing::Change::RemovedAll) => out(0, 3, 0, 0),
+        standing::Verdict::Recorded(standing::Change::Crime { faction }) => out(0, 4, faction, 0),
+        standing::Verdict::Recorded(standing::Change::Relationship { other, rank }) => out(0, 5, other, rank),
+        standing::Verdict::Folded => out(1, 0, 0, 0),
+        standing::Verdict::Refuse(code, why) => StandingVerdict { code: 2, name: code.name().to_owned(), why, change: 0, form: 0, rank: 0 },
+    }
+}
+
+/// thuum ADR-068 rung 4: the world streamer (wire-rules world_streamer).
+#[derive(Debug, Default)]
+pub struct WorldStreamer(world_streamer::WorldStreamer);
+
+fn new_world_streamer() -> Box<WorldStreamer> {
+    Box::default()
+}
+
+impl WorldStreamer {
+    fn election(&self, e: Option<world_streamer::Election>) -> StreamerElection {
+        match e {
+            Some(e) => StreamerElection { changed: true, streamer: e.streamer, epoch: e.epoch, previous: e.previous },
+            None => {
+                let (streamer, epoch) = self.0.streamer();
+                StreamerElection { changed: false, streamer, epoch, previous: 0 }
+            }
+        }
+    }
+
+    fn moved(&mut self, player: u32) -> StreamerElection {
+        let e = self.0.moved(player);
+        self.election(e)
+    }
+
+    fn stale(&mut self, player: u32, stale: bool) -> StreamerElection {
+        let e = self.0.stale(player, stale);
+        self.election(e)
+    }
+
+    fn dead(&mut self, player: u32, dead: bool) -> StreamerElection {
+        let e = self.0.dead(player, dead);
+        self.election(e)
+    }
+
+    fn gone(&mut self, player: u32) -> StreamerElection {
+        let e = self.0.gone(player);
+        self.election(e)
+    }
+
+    fn streamer_now(&self) -> StreamerElection {
+        self.election(None)
+    }
+
+    fn judge(&self, sender: u32, epoch: u32) -> u8 {
+        match self.0.judge(sender, epoch) {
+            world_streamer::Judgement::Current => 0,
+            world_streamer::Judgement::StaleEpoch => 1,
+            world_streamer::Judgement::FutureEpoch => 2,
+            world_streamer::Judgement::NotOwner => 3,
+        }
+    }
+}
+
+fn alias_created_due(marks: &[AliasMarkRow], quest: u32, alias: u32) -> bool {
+    let parsed: Vec<alias_fills::Mark> = marks.iter().map(|m| alias_fills::Mark { quest: m.quest, alias: m.alias, added: m.added }).collect();
+    alias_fills::due(&parsed, quest, alias)
 }
 
 #[cfg(test)]
@@ -4834,8 +5422,9 @@ mod tests {
         assert_eq!(at.subject, 0xaa8cb);
         let send = script_call_subject("Debug", "SendAnimationEvent", 0xaa8cb, &[pillar, text]);
         assert_eq!(send.subject, 0xaa8cb);
-        assert_eq!(script_call_subject("Debug", "Notification", 0, &[text]), ScriptCallSubject { row: -1, subject: 0 });
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3 };
+        assert_eq!(script_call_subject("Debug", "Notification", 0, &[text]), ScriptCallSubject { row: -1, subject: 0, record: 0 });
+        assert_eq!(at.record, 0, "an action row keeps no record");
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0 };
         let mut s = new_script_calls();
         let v = s.judge(at.row, &[text, text], &facts, 0);
         assert_eq!((v.code, v.subject, v.seq, v.relay_self), (ScriptCallCode::Accepted, 0xaa8cb, 1, 0xaa8cb));
@@ -4882,7 +5471,7 @@ mod tests {
         let at = script_call_subject("ObjectReference", "ProcessTrapHit", 0x800a6, &args);
         assert!(at.row >= 0);
         assert_eq!(at.subject, 0x800a6);
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0x800a6, epoch: 3, subject_kind: 3, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 0 };
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0x800a6, epoch: 3, subject_kind: 3, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 0, host: 0xff00_0000, host_epoch: 3 };
         let mut s = new_script_calls();
         let v = s.judge(at.row, &args, &facts, 0);
         assert_eq!((v.code, v.subject, v.seq, v.keep_evidence, v.keep_last, v.audience), (ScriptCallCode::Accepted, 0x800a6, 0, true, false, 2));
@@ -4901,6 +5490,150 @@ mod tests {
     }
 
     #[test]
+    fn the_bridge_records_a_state_row_with_its_kind_and_sequence() {
+        // thuum ADR-068 rung 4: Bleak Falls Temple's cobweb 0x1fc43 disabled
+        // by its host 0xff000000 at epoch 3; the Temple's ambush draugr
+        // 0x380ba, an actor nobody simulates, enabled by its cell's host
+        let flag = ScriptArg { kind: 1, form_id: 0 };
+        let at = script_call_subject("ObjectReference", "Disable", 0x1fc43, &[flag]);
+        assert!(at.row >= 0);
+        assert_eq!(at.subject, 0x1fc43);
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0x1fc43, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0 };
+        let mut s = new_script_calls();
+        let v = s.judge(at.row, &[flag], &facts, 0);
+        assert_eq!((v.code, v.subject, v.seq, v.record, v.keep_evidence, v.keep_last, v.audience), (ScriptCallCode::Accepted, 0x1fc43, 1, 1, false, false, 2));
+        assert_eq!((v.relay_cls.as_str(), v.relay_fn.as_str(), v.relay_args.len(), v.event_arg), ("", "", 0, -1));
+        // a door's: recorded, never the action rows' quiet drop
+        let door = s.judge(at.row, &[flag], &ScriptCallFacts { subject_kind: 2, ..facts }, 0);
+        assert_eq!((door.code, door.record, door.seq), (ScriptCallCode::Accepted, 1, 2));
+        // a guest's report, by name
+        let guest = s.judge(at.row, &[flag], &ScriptCallFacts { sender: 0xff00_0001, ..facts }, 0);
+        assert_eq!((guest.code, guest.name.as_str(), guest.record), (ScriptCallCode::Owner, "E_SCRIPTCALL_OWNER", 0));
+        // the actor nobody simulates: its cell's host at the epoch
+        let enable = script_call_subject("ObjectReference", "Enable", 0x380ba, &[flag]);
+        let ambush = ScriptCallFacts { self_id: 0x380ba, subject_kind: 3, cell: 0x371de, owner: 0, owner_epoch: 0, host: 0xff00_0000, host_epoch: 3, ..facts };
+        let woke = s.judge(enable.row, &[flag], &ambush, 0);
+        assert_eq!((woke.code, woke.subject, woke.seq, woke.record), (ScriptCallCode::Accepted, 0x380ba, 1, 1));
+        assert_eq!(s.judge(enable.row, &[flag], &ScriptCallFacts { host_epoch: 4, ..ambush }, 0).name, "E_SCRIPTCALL_OWNER");
+        // a standing row (2) and a placement (3)
+        let faction = ScriptArg { kind: 4, form_id: 0x5c84e };
+        let rank = ScriptArg { kind: 2, form_id: 0 };
+        let set_rank = script_call_subject("Actor", "SetFactionRank", 0x800a6, &[faction, rank]);
+        let npc = ScriptCallFacts { self_id: 0x800a6, subject_kind: 3, owner: 0xff00_0000, owner_epoch: 0, ..facts };
+        assert_eq!(s.judge(set_rank.row, &[faction, rank], &npc, 0).record, 2);
+        assert_eq!(s.judge(set_rank.row, &[faction, rank], &ScriptCallFacts { self_id: 0x14, ..npc }, 0).name, "E_SCRIPTCALL_ROW");
+        let base = ScriptArg { kind: 4, form_id: 0x4e2b8 };
+        let place = script_call_subject("ObjectReference", "PlaceAtMe", 0x1fc43, &[base, rank, flag, flag]);
+        assert_eq!(s.judge(place.row, &[base, rank, flag, flag], &facts, 0).record, 3);
+        // the record rows' own budget (wire-rules natives' burst, named)
+        let mut b = new_script_calls();
+        for _ in 0..natives::BURST_RECORD {
+            assert_eq!(b.judge(at.row, &[flag], &facts, 0).code, ScriptCallCode::Accepted);
+        }
+        assert_eq!(b.judge(at.row, &[flag], &facts, 0).name, "E_SCRIPTCALL_RATE");
+    }
+
+    #[test]
+    fn the_bridge_derives_a_quests_created_items() {
+        // thuum ADR-068 rung 4: MS13 0x39645's aliases as Skyrim.esm holds
+        // them (lab/esm.py, 2026-11-06), the claw 0x39647 and the journal
+        // 0x39654 created in Arvel, the unique actor 0x39646's alias 1
+        let row = |id, created, create_at, forced, unique_actor| QuestAliasRow { id, created, create_at, forced, unique_actor };
+        let aliases = [row(1, 0, 0, 0, 0x39646), row(11, 0x39647, 0x8000_0001, 0, 0), row(10, 0, 0, 0x1fc43, 0), row(12, 0x39654, 0x8000_0007, 0, 0)];
+        let made = alias_creations(&aliases);
+        assert_eq!(made.len(), 2);
+        assert_eq!(made.first(), Some(&AliasCreationRow { alias: 11, base: 0x39647, target: 1, container_kind: 2, container: 0x39646, why: String::new() }));
+        let unresolved = made.get(1).map(|c| (c.container_kind, c.container, c.why.as_str()));
+        assert_eq!(unresolved, Some((0, 0, "the quest has no alias of the target's id")));
+        let marks = [AliasMarkRow { quest: 0x39645, alias: 11, added: true }];
+        assert!(!alias_created_due(&marks, 0x39645, 11));
+        assert!(alias_created_due(&marks, 0x39645, 16));
+    }
+
+    #[test]
+    fn the_bridge_judges_alias_fills_and_world_globals_and_elects_a_streamer() {
+        // thuum ADR-068 rung 4: MS13 0x39645's ArvelWeb alias 10 and the web
+        // 0x1fc43; an illustrative GLOB 0x1000; two players
+        let ok = AliasFillFacts { is_quest: true, has_alias: true, refr_is_ref: true };
+        let web = AliasFillEntry { quest: 0x39645, alias: 10, refr: 0x1fc43 };
+        assert_eq!(alias_fill_judge(&[], &web, &ok).code, 0);
+        let record = [web];
+        assert_eq!(alias_fill_judge(&record, &web, &ok).code, 1);
+        let refused = alias_fill_judge(&record, &web, &AliasFillFacts { has_alias: false, ..ok });
+        assert_eq!((refused.code, refused.name.as_str()), (2, "E_ALIASFILL_NO_ALIAS"));
+        // a clear moves the record (the core keeps it as refr 0)
+        assert_eq!(alias_fill_judge(&record, &AliasFillEntry { refr: 0, ..web }, &ok).code, 0);
+
+        let facts = |global| WorldGlobalFacts { global, is_glob: true, constant: false, player_listed: false };
+        assert_eq!(world_global_entry(&facts(0x1000)), 0);
+        assert_eq!(world_global_entry(&facts(0x38)), 1);
+        assert_eq!(world_global_entry(&WorldGlobalFacts { player_listed: true, ..facts(0x1000) }), 2);
+        assert_eq!(world_global_entry(&WorldGlobalFacts { constant: true, ..facts(0x1000) }), 3);
+        assert_eq!(world_global_entry(&WorldGlobalFacts { is_glob: false, ..facts(0x1000) }), 4);
+        let names: Vec<String> = (0..=7).map(world_global_code_name).collect();
+        assert_eq!(names, ["", "E_WORLDGLOBAL_CLOCK", "E_WORLDGLOBAL_PLAYER", "E_WORLDGLOBAL_CONSTANT", "E_WORLDGLOBAL_NO_GLOB", "E_WORLDGLOBAL_OWNER", "E_WORLDGLOBAL_EPOCH", ""]);
+        let merged = world_globals_merge(&[WorldGlobalValue { global: 0x1000, value: 1.0 }], &[WorldGlobalValue { global: 0x1000, value: 7.0 }, WorldGlobalValue { global: 0x2000, value: 0.5 }]);
+        assert_eq!(merged.record.len(), 2);
+        assert_eq!(merged.changed.len(), 2);
+
+        let mut w = new_world_streamer();
+        assert_eq!(w.streamer_now(), StreamerElection { changed: false, streamer: 0, epoch: 0, previous: 0 });
+        assert_eq!(w.moved(0xff00_0002), StreamerElection { changed: true, streamer: 0xff00_0002, epoch: 1, previous: 0 });
+        assert!(!w.moved(0xff00_0001).changed);
+        assert_eq!((w.judge(0xff00_0002, 1), w.judge(0xff00_0001, 1), w.judge(0xff00_0002, 0), w.judge(0xff00_0002, 2)), (0, 3, 1, 2));
+        assert_eq!(w.stale(0xff00_0002, true), StreamerElection { changed: true, streamer: 0xff00_0001, epoch: 2, previous: 0xff00_0002 });
+        assert_eq!(w.dead(0xff00_0001, true), StreamerElection { changed: true, streamer: 0, epoch: 3, previous: 0xff00_0001 });
+        assert!(w.stale(0xff00_0002, false).changed);
+        assert!(w.gone(0xff00_0002).changed);
+    }
+
+    #[test]
+    fn the_bridge_moves_a_ref_state_and_a_standing_and_opens_a_script_set() {
+        // thuum ADR-068 rung 4: the five natives against the record
+        assert_eq!(ref_state_apply(false, false, "Disable"), RefStateVerdict { code: 0, disabled: true, deleted: false });
+        assert_eq!(ref_state_apply(true, false, "DisableNoWait"), RefStateVerdict { code: 1, disabled: true, deleted: false });
+        assert_eq!(ref_state_apply(true, false, "EnableNoWait"), RefStateVerdict { code: 0, disabled: false, deleted: false });
+        assert_eq!(ref_state_apply(false, false, "Delete"), RefStateVerdict { code: 0, disabled: true, deleted: true });
+        assert_eq!(ref_state_apply(true, true, "Enable").code, 1);
+        assert_eq!(ref_state_apply(false, false, "PlayAnimation").code, 2);
+        // the subject's record kind crosses with the row
+        let flag = ScriptArg { kind: 1, form_id: 0 };
+        assert_eq!(script_call_subject("ObjectReference", "Disable", 0x1fc43, &[flag]).record, 1);
+        let faction = ScriptArg { kind: 4, form_id: 0x5c84e };
+        assert_eq!(script_call_subject("Actor", "RemoveFromFaction", 0x800a6, &[faction]).record, 2);
+        // the standing: an illustrative faction 0x5c84e on an NPC that holds it at 0
+        let held = [StandingFaction { faction: 0x5c84e, rank: 0 }];
+        let set = standing_judge("SetFactionRank", 0x5c84e, 2, true, false, &held, 0, &[]);
+        assert_eq!((set.code, set.change, set.form, set.rank), (0, 1, 0x5c84e, 2));
+        assert_eq!(standing_judge("setfactionrank", 0x5c84e, 0, true, false, &held, 0, &[]).code, 1);
+        let refused = standing_judge("SetFactionRank", 0x12eb7, 0, false, false, &held, 0, &[]);
+        assert_eq!((refused.code, refused.name.as_str()), (2, "E_STANDING_FACTION"));
+        assert_eq!(standing_judge("RemoveFromAllFactions", 0, 0, false, false, &held, 0, &[]).change, 3);
+        // a crime faction the record keeps none of, the base's unread: nothing folds
+        assert_eq!(standing_judge("SetCrimeFaction", 0, 0, false, false, &[], u32::MAX, &[]).change, 4);
+        let other = standing_judge("SetRelationshipRank", 0x1347b, 3, false, true, &[], 0, &[StandingRelation { other: 0x1347b, rank: 1 }]);
+        assert_eq!((other.change, other.form, other.rank), (5, 0x1347b, 3));
+        assert_eq!(standing_judge("AddToFaction", 0x5c84e, 0, true, false, &[], 0, &[]).code, 3);
+        // the script set through the Placements box
+        let Ok(mut p) = new_placements("[]") else {
+            return;
+        };
+        let opened = p.open_script_set(0xff00_0000, 0x1fc43, 100.0, 200.0, -50.0, 0x3b, "Skyrim.esm", "STAT", 0);
+        assert_eq!(opened, ScriptSetOpen { set: 0, refusal: 0 });
+        assert_eq!(p.open_script_set(0xff00_0000, 0x1fc43, 0.0, 0.0, 0.0, 0x3b, "Skyrim.esm", "EXPL", 0).refusal, 1);
+        let asks = p.take_script_requests();
+        assert_eq!(asks.len(), 1);
+        let ask = asks.first().map(|a| (a.set, a.self_id, a.short_id, a.record_type.as_str()));
+        assert_eq!(ask, Some((0, 0x1fc43, 0x3b, "STAT")));
+        let report = PlacementReport { caster: 0xff00_0000, set: 0, short_id: 0x3b, file: "Skyrim.esm".to_owned(), x: 110.0, y: 200.0, z: -50.0, yaw: 45.0 };
+        assert!(p.report_placed(report, 100).accepted);
+        let rows = p.due_script_placements(100);
+        assert_eq!(rows.len(), 1);
+        let placed = rows.first().map(|r| (r.placed, r.x, r.yaw, r.self_id));
+        assert_eq!(placed, Some((true, 110.0, 45.0, 0x1fc43)));
+    }
+
+    #[test]
     fn the_bridge_runs_the_shape_step_before_the_owner_step() {
         // the hall door's FX review, finding 1: the core asks `shape` before
         // it reads anything of the subject; a call it refuses spends the
@@ -4908,7 +5641,7 @@ mod tests {
         // of malformed calls is cut off by the rate
         let text = ScriptArg { kind: 3, form_id: 0 };
         let at = script_call_subject("ObjectReference", "PlayAnimation", 0xaa8cb, &[text]);
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3 };
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0 };
         let mut s = new_script_calls();
         // a shape that holds names the subject whose facts the core gathers
         let shaped = s.shape(at.row, &[text], facts.sender, facts.self_id, 0);
@@ -4971,7 +5704,7 @@ mod tests {
         // the next relay runs on from there
         let text = ScriptArg { kind: 3, form_id: 0 };
         let at = script_call_subject("ObjectReference", "PlayAnimation", 0xaa8cb, &[text]);
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3 };
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0 };
         let mut calls = new_script_calls();
         assert_eq!(calls.seq_of(0xaa8cb), 0);
         calls.seed(0xaa8cb, 5);

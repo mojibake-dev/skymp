@@ -299,6 +299,105 @@ public:
   // reported, read as none
   std::optional<ScriptStateRecord> scriptState;
 
+  // thuum ADR-068 rung 4 (the state rows; docs/research/
+  // rung4-state-rows-2026-11-07.md section 1(c)): the object's sequence at
+  // the ref state's last record (an Enable, a Disable or a Delete its owner's
+  // script reported through the seam, or one of the server's own), which
+  // marks isDisabled and isDeleted as recorded: a reference whose record
+  // carries it is attached by its record (WorldState::LoadForm lets the
+  // loader's type and disabled filters yield), served behind its create word
+  // as DestructionStage's disabled and deleted words, and seeds the object's
+  // sequence after a restart; absent in older records and on references no
+  // script moved, read as none
+  std::optional<uint32_t> refStateSeq;
+
+  // thuum ADR-068 rung 4 (the standing, W3): the crime faction the NPC's
+  // simulator's script set (SetCrimeFaction), the empty FormDesc for its
+  // removal (SetCrimeFaction(None); an empty desc names no plugin's form, so
+  // it marks the removal and nothing else); absent while the base's (CRIF)
+  // stands, and in older records
+  std::optional<FormDesc> crimeFaction;
+
+  // thuum ADR-068 rung 4 (the standing, W3): the relationship ranks the NPC's
+  // simulator's scripts set toward other actors (SetRelationshipRank, the
+  // engine's int8); absent in older records and on NPCs no script moved,
+  // read as none
+  struct Relationship
+  {
+    FormDesc other;
+    int8_t rank = 0;
+    auto ToTuple() const { return std::make_tuple(other, rank); }
+    friend bool operator==(const Relationship& lhs, const Relationship& rhs)
+    {
+      return lhs.ToTuple() == rhs.ToTuple();
+    }
+    friend bool operator<(const Relationship& lhs, const Relationship& rhs)
+    {
+      return lhs.ToTuple() < rhs.ToTuple();
+    }
+  };
+  std::optional<std::vector<Relationship>> relationships;
+
+  // thuum ADR-068 rung 4 (the script set, W3): the script's self and the base
+  // whose PlaceAtMe or PlaceActorAtMe made the server place this reference
+  // (wire-rules placements' SelfRef anchor), its pose the reporter's; absent
+  // on every other form and in older records, read as none
+  struct PlacedByScript
+  {
+    FormDesc self;
+    FormDesc base;
+    auto ToTuple() const { return std::make_tuple(self, base); }
+    friend bool operator==(const PlacedByScript& lhs,
+                           const PlacedByScript& rhs)
+    {
+      return lhs.ToTuple() == rhs.ToTuple();
+    }
+    friend bool operator<(const PlacedByScript& lhs, const PlacedByScript& rhs)
+    {
+      return lhs.ToTuple() < rhs.ToTuple();
+    }
+  };
+  std::optional<PlacedByScript> placedByScript;
+
+  // thuum ADR-068 rung 4 (amendment B, read 8): the world's quest alias fills
+  // and the created items' marks, per (quest, alias), on the world's journal
+  // (PartOne::WorldJournal) beside questStages, never on a player. The ref
+  // half (AliasFill 79): `refr` the reference a seat's ForceRefTo named, the
+  // empty FormDesc for a Clear (an empty desc names no plugin's form, and a
+  // fill never names a server form: wire-validate refuses one). The created
+  // half (the server's, R0 from the game files): `created` the alias's ALCO
+  // base, `container` the reference it went into, `added` once it did, so a
+  // take, a second load or a restart never adds it again. Absent in older
+  // records, read as none
+  struct AliasFill
+  {
+    FormDesc quest;
+    uint32_t alias = 0;
+    std::optional<FormDesc> refr;
+    std::optional<FormDesc> created;
+    std::optional<FormDesc> container;
+    bool added = false;
+    auto ToTuple() const
+    {
+      return std::make_tuple(quest, alias, refr, created, container, added);
+    }
+    friend bool operator==(const AliasFill& lhs, const AliasFill& rhs)
+    {
+      return lhs.ToTuple() == rhs.ToTuple();
+    }
+    friend bool operator<(const AliasFill& lhs, const AliasFill& rhs)
+    {
+      return lhs.ToTuple() < rhs.ToTuple();
+    }
+  };
+  std::optional<std::vector<AliasFill>> aliasFills;
+
+  // thuum ADR-068 rung 4 (WorldGlobal 80): the world's globals the world
+  // streamer's game reported (wire-rules world_globals, the latest value
+  // winning), on the world's journal (PartOne::WorldJournal), never on a
+  // player; absent in older records, read as none
+  std::optional<std::vector<PlayerGlobal>> worldGlobals;
+
   // Please update 'ActorTest.cpp' when adding new Actor-related rows
 
   DynamicFields dynamicFields;
@@ -329,7 +428,8 @@ public:
       displayName, mapMarkers, ingredientEffects, favorites, raceMenuPreset,
       actorValueRecord, staffRank, runningEffects, shoutRecord, playerGlobals,
       questStages, placedBySpell, lock, destruction, changeFormRecord,
-      scriptState, unresolved);
+      scriptState, refStateSeq, crimeFaction, relationships, placedByScript,
+      aliasFills, worldGlobals, unresolved);
   }
 
   // The record boundary (thuum docs/DECISIONS.md ADR-043; the map

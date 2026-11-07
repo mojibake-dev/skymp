@@ -2,6 +2,7 @@
 
 #include "ActorFateBinding.h"
 #include "ActorNeighborsBinding.h"
+#include "AliasFillsBinding.h"
 #include "AngleBinding.h"
 #include "AppearanceBinding.h"
 #include "BaseDescBinding.h"
@@ -16,6 +17,7 @@
 #include "IdxBinding.h"
 #include "InventoryBinding.h"
 #include "IsDeadBinding.h"
+#include "IsDeletedBinding.h"
 #include "IsDisabledBinding.h"
 #include "IsOnlineBinding.h"
 #include "IsOpenBinding.h"
@@ -26,6 +28,7 @@
 #include "PercentagesBinding.h"
 #include "PosBinding.h"
 #include "ProfileIdBinding.h"
+#include "RefStateSeqBinding.h"
 #include "RespawnFatedBinding.h"
 #include "RespawnPercentagesBinding.h"
 #include "RunningEffectsBinding.h"
@@ -37,6 +40,7 @@
 #include "StreamCountersBinding.h"
 #include "TemplateChainBinding.h"
 #include "TypeBinding.h"
+#include "WorldGlobalsBinding.h"
 #include "WorldOrCellDescBinding.h"
 
 std::map<std::string, std::shared_ptr<PropertyBinding>>
@@ -81,6 +85,12 @@ PropertyBindingFactory::CreateStandardPropertyBindings()
   result["respawnPercentages"] = std::make_shared<RespawnPercentagesBinding>();
   result["runningEffects"] = std::make_shared<RunningEffectsBinding>();
   result["shouts"] = std::make_shared<ShoutsBinding>();
+  // thuum ADR-068 rung 4: the journal's world globals and alias fills
+  result["worldGlobals"] = std::make_shared<WorldGlobalsBinding>();
+  result["aliasFills"] = std::make_shared<AliasFillsBinding>();
+  // and a reference's recorded ref state
+  result["isDeleted"] = std::make_shared<IsDeletedBinding>();
+  result["refStateSeq"] = std::make_shared<RefStateSeqBinding>();
   return result;
 }
 

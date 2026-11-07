@@ -41,6 +41,26 @@
 //! subject as an actor the reporter simulates (its simulator, the death
 //! report's own rule), never the reporter's own player; it reads no epoch and
 //! takes no sequence ([`Verdict::Kept`]).
+//!
+//! Rung 4's state rows pass as records (thuum ADR-068 rung 4 and its
+//! amendment B; docs/research/rung4-state-rows-2026-11-07.md section 1(c)): a
+//! row the table keeps as its subject's record ([`Keep::Record`]: the ref
+//! state's five, the standing's six, the two placements) is the subject's
+//! owner's report of a state its engine changed, which the server records and
+//! carries to every other seat as the record's own word, never as an action.
+//! Its owner step ([`record_owner`]): a world object, held, placed by its
+//! record, a door or a container among them, is its cell's host's at the
+//! epoch; an actor is its simulator's (the epoch unread), and one nobody
+//! simulates is its cell's host's at the epoch (an ambush draugr the loader
+//! never held, placed by its ACHR's cell); a standing row is an NPC's alone,
+//! its simulator's; the reporter's own player is no record row's
+//! (`E_SCRIPTCALL_ROW`: rung 5's acting-player scope). An accepted record
+//! takes its subject's next sequence, the one sequence the object's actions
+//! and rung 3's script record share ([`Verdict::Record`]), and spends a
+//! budget of its own ([`BURST_RECORD`] then [`PER_SECOND_RECORD`] a second),
+//! so no state row is lost to an action burst. R2: the value is the owner's
+//! engine's word, recorded; the record's own rule (wire-rules ref_state,
+//! standing, placements) judges what it must.
 
 use std::collections::HashMap;
 
@@ -138,6 +158,45 @@ pub enum Keep {
     /// docs/verbs/npc-fate.md, playtest 48). R2: recorded, the value never
     /// judged.
     Evidence,
+    /// The call as its subject's record ([`RecordKind`]): a state row the
+    /// subject's owner reports as its engine ran it, which the server
+    /// records and carries to the other seats as the record's own word,
+    /// never as an action (thuum ADR-068 rung 4, the state rows). R2:
+    /// recorded; the record's own rule judges what it must.
+    Record(RecordKind),
+}
+
+/// Which record a row kept as its subject's record moves (thuum ADR-068 rung
+/// 4; docs/research/rung4-state-rows-2026-11-07.md section 1, the rows).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordKind {
+    /// A reference's engine state: Enable, EnableNoWait, Disable,
+    /// DisableNoWait and Delete set its disabled and deleted flags
+    /// (wire-rules ref_state), served and relayed as DestructionStage 78's
+    /// disabled and deleted words (amendment B, read 7).
+    RefState,
+    /// An NPC's standing: its factions' ranks, its crime faction and its
+    /// relationship ranks (wire-rules standing), relayed as applier
+    /// snippets (W3: the server's half and T2 this rung).
+    Standing,
+    /// A script's placement at its self: PlaceAtMe and PlaceActorAtMe open a
+    /// script set anchored at the self (wire-rules placements'
+    /// `Anchor::SelfRef`), its pose the reporter's through PlacedRequest and
+    /// PlacedReport (W3: no observe point on a seat this rung).
+    Placement,
+}
+
+impl RecordKind {
+    /// The bridge's number for the kind: 1 the ref state, 2 the standing, 3
+    /// a placement; 0 is no record.
+    #[must_use]
+    pub fn code(self) -> u8 {
+        match self {
+            RecordKind::RefState => 1,
+            RecordKind::Standing => 2,
+            RecordKind::Placement => 3,
+        }
+    }
 }
 
 /// A parameter's Papyrus type, as the platform reads the frame's variable.
@@ -357,6 +416,14 @@ pub struct Facts {
     /// That owner's standing epoch (a world object's host's; unread for an
     /// actor).
     pub owner_epoch: u32,
+    /// The host of an actor's cell, 0 while nobody hosts it (the cell the
+    /// server holds the actor in, or its ACHR's for one it holds no
+    /// reference for): the owner of a ref state's or a placement's record
+    /// row on an actor nobody simulates (thuum ADR-068 rung 4), checked at
+    /// [`Facts::host_epoch`]; unread for every other kind and row.
+    pub host: u32,
+    /// That host's standing epoch.
+    pub host_epoch: u32,
 }
 
 /// Why a reported call is refused.
@@ -431,6 +498,18 @@ pub enum Verdict {
         /// The subject's form id.
         subject: u32,
     },
+    /// Recorded: the owner's call of a row the table keeps as its subject's
+    /// record ([`Keep::Record`]), which the core writes and carries as the
+    /// record's own word; it takes the subject's next sequence, the one its
+    /// actions share (thuum ADR-068 rung 4).
+    Record {
+        /// The subject's form id.
+        subject: u32,
+        /// The subject's sequence after this call.
+        seq: u32,
+        /// Which record it moves.
+        kind: RecordKind,
+    },
     /// Dropped quietly: a door's or a container's call.
     Skip,
     /// Refused, logged by the code's name.
@@ -458,16 +537,28 @@ enum Channel {
     },
     /// A state row the table keeps as evidence ([`Keep::Evidence`]).
     Evidence,
+    /// A state row the table keeps as its subject's record
+    /// ([`Keep::Record`]).
+    Record(RecordKind),
 }
 
 /// The channel a call of `row` leaves by: an action row the table relays to
-/// the subject's listeners, or a state row it keeps as evidence; any other
-/// row is refused by its row (`E_SCRIPTCALL_ROW`).
+/// the subject's listeners, a state row it keeps as evidence or as its
+/// subject's record; any other row is refused by its row
+/// (`E_SCRIPTCALL_ROW`).
 fn channel_of(row: &Row) -> Result<Channel, Refusal> {
     match row.kind {
         Kind::Action => {}
-        Kind::State if row.keep == Keep::Evidence => return Ok(Channel::Evidence),
-        Kind::State => return Err(refusal(Code::Row, "a state row: its consequence travels as the object's record (rung 4), never as an action".to_owned())),
+        Kind::State => {
+            return match row.keep {
+                Keep::Evidence => Ok(Channel::Evidence),
+                Keep::Record(kind) => Ok(Channel::Record(kind)),
+                Keep::Nothing | Keep::Last => Err(refusal(
+                    Code::Row,
+                    "a state row with no record channel: its consequence travels as the object's change form or a typed verb, never as an action".to_owned(),
+                )),
+            };
+        }
         Kind::Everyone => return Err(refusal(Code::Row, "an everyone row: every seat runs it (rung 5), never relayed as an action".to_owned())),
         Kind::Local => return Err(refusal(Code::Row, "a local row: its consequence stays on its seat".to_owned())),
     }
@@ -507,6 +598,72 @@ fn keep_evidence(subject: u32, facts: &Facts) -> Verdict {
     Verdict::Kept { subject }
 }
 
+/// Whether the reporter hosts `cell` at the reported epoch: `host` the cell's
+/// host (0 while nobody hosts it) and `host_epoch` its standing epoch, the
+/// refusal's words ending in `placed` (what kind of subject the cell was
+/// read for). A world object's owner step, an action's or a record's, and a
+/// record row's on an actor nobody simulates.
+fn hosts_at_epoch(facts: &Facts, host: u32, host_epoch: u32, placed: &str) -> Result<(), Refusal> {
+    if facts.cell == 0 {
+        return Err(refusal(Code::Owner, format!("the subject's cell is unknown to the server{placed}")));
+    }
+    if host == 0 {
+        return Err(refusal(Code::Owner, format!("nobody hosts cell {:x}{placed}", facts.cell)));
+    }
+    if host != facts.sender {
+        return Err(refusal(Code::Owner, format!("{host:x} hosts cell {:x}, not the reporter{placed}", facts.cell)));
+    }
+    if host_epoch != facts.epoch {
+        return Err(refusal(Code::Owner, format!("cell {:x} stands at epoch {host_epoch}, the report names {}{placed}", facts.cell, facts.epoch)));
+    }
+    Ok(())
+}
+
+/// What a refusal of a record row on an actor nobody simulates adds to its
+/// words: the actor's cell's host was asked instead.
+const UNSIMULATED: &str = " (an actor nobody simulates, judged by its cell's host)";
+
+/// The owner step on the call of a row kept as its subject's record
+/// ([`Keep::Record`], thuum ADR-068 rung 4; docs/research/
+/// rung4-state-rows-2026-11-07.md section 1(c), `record_owner`). The
+/// reporter's own player is no record row's subject (`E_SCRIPTCALL_ROW`: the
+/// standing's 0x14 waits for rung 5, and a player's own ref state or
+/// placement is its seat's, never the world's). A standing row is an NPC's,
+/// its simulator's, the epoch unread (an actor's owner is its simulator);
+/// any other subject is refused by its row. A ref state's or a placement's
+/// subject: a world object, held, placed by its record, a door or a
+/// container (whose open is Activate's, but whose enabled state is this
+/// rung's), is its cell's host's at the epoch; an actor is its simulator's,
+/// and one nobody simulates (an ambush draugr the loader never held, placed
+/// by its ACHR's cell) is its cell's host's at the epoch ([`Facts::host`]).
+fn record_owner(subject: u32, kind: RecordKind, facts: &Facts) -> Result<(), Refusal> {
+    if subject == OWN_PLAYER {
+        return Err(refusal(
+            Code::Row,
+            "the reporter's own player: a record row on it is its own seat's (the standing waits for rung 5's acting-player scope)".to_owned(),
+        ));
+    }
+    let placed = if facts.kind == SubjectKind::Record { BY_RECORD } else { "" };
+    match (kind, facts.kind) {
+        (_, SubjectKind::Unknown) => Err(refusal(Code::Owner, "the server holds no such reference".to_owned())),
+        (RecordKind::Standing, SubjectKind::WorldObject | SubjectKind::Record | SubjectKind::DoorOrContainer) => {
+            Err(refusal(Code::Row, "the subject is no actor: a standing row is an NPC's".to_owned()))
+        }
+        (_, SubjectKind::Actor) if facts.owner != 0 => {
+            if facts.owner == facts.sender {
+                Ok(())
+            } else {
+                Err(refusal(Code::Owner, format!("{:x} simulates {subject:x}, not the reporter", facts.owner)))
+            }
+        }
+        (RecordKind::Standing, SubjectKind::Actor) => Err(refusal(Code::Owner, format!("nobody simulates {subject:x}"))),
+        (RecordKind::RefState | RecordKind::Placement, SubjectKind::Actor) => hosts_at_epoch(facts, facts.host, facts.host_epoch, UNSIMULATED),
+        (RecordKind::RefState | RecordKind::Placement, SubjectKind::WorldObject | SubjectKind::Record | SubjectKind::DoorOrContainer) => {
+            hosts_at_epoch(facts, facts.owner, facts.owner_epoch, placed)
+        }
+    }
+}
+
 /// A reported call the shape step passed: its row, the subject it names and
 /// how it leaves (the native a receiver runs for it, or the subject's
 /// evidence), for the core to gather the subject's facts and ask the owner
@@ -537,7 +694,20 @@ pub const BURST: u32 = 32;
 /// How many calls a second after the burst. UNMEASURED, as [`BURST`].
 pub const PER_SECOND: u32 = 8;
 
-/// One reporter's budget: a token bucket on the caller's monotonic clock.
+/// How many record rows a reporter may send at once, a budget of their own
+/// beside the actions' (thuum ADR-068 rung 4), so no state row is lost to an
+/// action burst: a stage that enables a chain, or a cell's lifecycle
+/// Disables at a guest's arrival. UNMEASURED: the census at x-bleak-scripts
+/// v4 sizes it (a refused state is lost state, E_SCRIPTCALL_RATE).
+pub const BURST_RECORD: u32 = 128;
+
+/// How many record rows a second after their burst. UNMEASURED, as
+/// [`BURST_RECORD`].
+pub const PER_SECOND_RECORD: u32 = 32;
+
+/// One reporter's budget: a token bucket on the caller's monotonic clock,
+/// `burst` at once and `per_second` after (the actions' [`BURST`] and
+/// [`PER_SECOND`], or the record rows' own).
 #[derive(Debug, Clone, Copy)]
 struct Bucket {
     tokens: u32,
@@ -545,19 +715,19 @@ struct Bucket {
 }
 
 impl Bucket {
-    fn full(now_ms: u64) -> Self {
-        Self { tokens: BURST, last_refill_ms: now_ms }
+    fn full(burst: u32, now_ms: u64) -> Self {
+        Self { tokens: burst, last_refill_ms: now_ms }
     }
 
     /// Credit the refill for the time since the last, then take a token.
-    fn take(&mut self, now_ms: u64) -> bool {
+    fn take(&mut self, burst: u32, per_second: u32, now_ms: u64) -> bool {
         let elapsed_ms = now_ms.saturating_sub(self.last_refill_ms);
-        let refill = elapsed_ms.saturating_mul(u64::from(PER_SECOND)).checked_div(1000).unwrap_or(0);
+        let refill = elapsed_ms.saturating_mul(u64::from(per_second)).checked_div(1000).unwrap_or(0);
         if refill > 0 {
             let refill_u32 = u32::try_from(refill).unwrap_or(u32::MAX);
-            self.tokens = self.tokens.saturating_add(refill_u32).min(BURST);
+            self.tokens = self.tokens.saturating_add(refill_u32).min(burst);
             // credit exactly the time those tokens took, so fractions carry
-            let credited_ms = refill.saturating_mul(1000).checked_div(u64::from(PER_SECOND)).unwrap_or(0);
+            let credited_ms = refill.saturating_mul(1000).checked_div(u64::from(per_second)).unwrap_or(0);
             self.last_refill_ms = self.last_refill_ms.saturating_add(credited_ms);
         }
         match self.tokens.checked_sub(1) {
@@ -576,10 +746,13 @@ impl Bucket {
 /// 3, wire-rules script_state: the record keeps the sequence it was taken
 /// at) seeds its sequence back ([`ScriptCalls::seed`]) before the sequence is
 /// read or moved again. A budget outlives its reporter's disconnect, as a
-/// voice's recovery does, so a reconnect does not refill it.
+/// voice's recovery does, so a reconnect does not refill it. A reporter has
+/// two: its actions' and other rows', and its record rows' (thuum ADR-068
+/// rung 4).
 #[derive(Debug, Default)]
 pub struct ScriptCalls {
     budgets: HashMap<u32, Bucket>,
+    record_budgets: HashMap<u32, Bucket>,
     seqs: HashMap<u32, u32>,
 }
 
@@ -589,11 +762,16 @@ impl ScriptCalls {
     /// on a monotonic clock: the core asks it before it reads anything of
     /// the subject. The reporter's token comes first, spent by every call
     /// that reaches the step, refused or not, so a flood of malformed calls
-    /// is cut off by the rate; then the row, the arguments and the subject's
-    /// form. A call refused here costs the core no lookup.
+    /// is cut off by the rate (a record row's from the record rows' own
+    /// budget, every other call's from the actions'); then the row, the
+    /// arguments and the subject's form. A call refused here costs the core
+    /// no lookup.
     pub fn shape(&mut self, row: Option<&Row>, args: &[Arg], sender: u32, self_id: u32, now_ms: u64) -> Result<Shaped, Refusal> {
-        if !self.budgets.entry(sender).or_insert_with(|| Bucket::full(now_ms)).take(now_ms) {
-            return Err(refusal(Code::Rate, format!("past the reporter's {BURST} at once and {PER_SECOND} a second")));
+        let record = row.is_some_and(|r| matches!(r.keep, Keep::Record(_)));
+        let (budgets, burst, per_second, whose) =
+            if record { (&mut self.record_budgets, BURST_RECORD, PER_SECOND_RECORD, " (its record rows' own budget)") } else { (&mut self.budgets, BURST, PER_SECOND, "") };
+        if !budgets.entry(sender).or_insert_with(|| Bucket::full(burst, now_ms)).take(burst, per_second, now_ms) {
+            return Err(refusal(Code::Rate, format!("past the reporter's {burst} at once and {per_second} a second{whose}")));
         }
         let Some(row) = row else {
             return Err(refusal(Code::Row, "the pair has no row in the table".to_owned()));
@@ -622,12 +800,20 @@ impl ScriptCalls {
     /// `facts.epoch`. An accepted call takes its subject's next sequence. A
     /// call of a row kept as evidence is judged by its actor's simulator
     /// alone (`facts.owner`), never the reporter's own player, and is kept
-    /// ([`Verdict::Kept`]) with no sequence.
+    /// ([`Verdict::Kept`]) with no sequence. A call of a row kept as its
+    /// subject's record is judged by [`record_owner`] and recorded
+    /// ([`Verdict::Record`]) with the subject's next sequence.
     pub fn owner(&mut self, shaped: Shaped, facts: &Facts) -> Verdict {
         let Shaped { row, subject, channel } = shaped;
         let (relay_cls, relay_fn) = match channel {
             Channel::Relay { cls, func } => (cls, func),
             Channel::Evidence => return keep_evidence(subject, facts),
+            Channel::Record(kind) => {
+                return match record_owner(subject, kind, facts) {
+                    Ok(()) => Verdict::Record { subject, seq: self.next_seq(subject), kind },
+                    Err(refused) => Verdict::Refuse(refused),
+                };
+            }
         };
         match facts.kind {
             SubjectKind::WorldObject | SubjectKind::Record => {}
@@ -638,23 +824,13 @@ impl ScriptCalls {
         // a placement the server holds no reference for says so in each
         // refusal, so a reader asks its record's cell, not the loader
         let placed = if facts.kind == SubjectKind::Record { BY_RECORD } else { "" };
-        if facts.cell == 0 {
-            return refuse(Code::Owner, format!("the subject's cell is unknown to the server{placed}"));
+        if let Err(refused) = hosts_at_epoch(facts, facts.owner, facts.owner_epoch, placed) {
+            return Verdict::Refuse(refused);
         }
-        if facts.owner == 0 {
-            return refuse(Code::Owner, format!("nobody hosts cell {:x}{placed}", facts.cell));
-        }
-        if facts.owner != facts.sender {
-            return refuse(Code::Owner, format!("{:x} hosts cell {:x}, not the reporter{placed}", facts.owner, facts.cell));
-        }
-        if facts.owner_epoch != facts.epoch {
-            return refuse(Code::Owner, format!("cell {:x} stands at epoch {}, the report names {}{placed}", facts.cell, facts.owner_epoch, facts.epoch));
-        }
-        let seq = self.seqs.entry(subject).or_insert(0);
-        *seq = seq.saturating_add(1);
+        let seq = self.next_seq(subject);
         Verdict::Accept(Accept {
             subject,
-            seq: *seq,
+            seq,
             relay_cls,
             relay_fn,
             relay_args: row.relay_args(),
@@ -674,6 +850,14 @@ impl ScriptCalls {
             Ok(shaped) => self.owner(shaped, facts),
             Err(refused) => Verdict::Refuse(refused),
         }
+    }
+
+    /// The subject's next sequence, taken: one per object across its
+    /// actions and its records (6.11 item 1).
+    fn next_seq(&mut self, subject: u32) -> u32 {
+        let seq = self.seqs.entry(subject).or_insert(0);
+        *seq = seq.saturating_add(1);
+        *seq
     }
 
     /// The subject's sequence: its accepted calls so far, or the stored
@@ -749,7 +933,7 @@ mod tests {
     }
 
     fn hosted(self_id: u32) -> Facts {
-        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::WorldObject, cell: TEMPLE, owner: HOST, owner_epoch: 3 }
+        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::WorldObject, cell: TEMPLE, owner: HOST, owner_epoch: 3, host: 0, host_epoch: 0 }
     }
 
     fn accepted(v: &Verdict) -> Accept {
@@ -834,8 +1018,9 @@ mod tests {
         let f = hosted(PILLAR);
         assert_eq!(code(&s.judge(row("Debug", "Notification"), &[Arg::String], &f, 0)), Some(Code::Row));
         assert_eq!(code(&s.judge(None, &[], &f, 0)), Some(Code::Row));
-        // the flip's rows: state and everyone, tallied at rung 2
-        assert_eq!(code(&s.judge(row("ObjectReference", "Enable"), &[Arg::Bool], &f, 0)), Some(Code::Row));
+        // the flip's rows: state with no record channel and everyone,
+        // tallied at rung 2 (Enable is rung 4's record row now)
+        assert_eq!(code(&s.judge(row("ObjectReference", "SetOpen"), &[Arg::Bool], &f, 0)), Some(Code::Row));
         assert_eq!(code(&s.judge(row("Quest", "SetCurrentStageID"), &[Arg::Number], &f, 0)), Some(Code::Row));
         assert_eq!(code(&s.judge(row("Game", "GetPlayer"), &[], &f, 0)), Some(Code::Row));
         // an actor's animation is the streams', the player's own among them
@@ -966,11 +1151,12 @@ mod tests {
         // anything
         let mut s = ScriptCalls::default();
         let play = row("ObjectReference", "PlayAnimation");
-        // E_SCRIPTCALL_ROW: a pair the table lacks, a state row;
-        // E_SCRIPTCALL_ARGS: the row's count, a figure the server names
+        // E_SCRIPTCALL_ROW: a pair the table lacks, a state row with no
+        // record channel; E_SCRIPTCALL_ARGS: the row's count, a figure the
+        // server names
         let malformed: [(Option<&Row>, &[Arg], u32, Code); 4] = [
             (None, &[], PILLAR, Code::Row),
-            (row("ObjectReference", "Enable"), &[Arg::Bool], PILLAR, Code::Row),
+            (row("ObjectReference", "SetOpen"), &[Arg::Bool], PILLAR, Code::Row),
             (play, &[], PILLAR, Code::Args),
             (play, &[Arg::String], 0xff00_0002, Code::Args),
         ];
@@ -1078,10 +1264,11 @@ mod tests {
     }
 
     #[test]
-    fn the_table_is_rung_twos_and_holds_together() {
-        // the six action rows, the flip's twenty-four, Game.GetPlayer, and
-        // D-S3's three trap rows
-        assert_eq!(TABLE.len(), 34);
+    fn the_table_is_rung_fours_and_holds_together() {
+        // the six action rows, the flip's twenty-four, Game.GetPlayer, D-S3's
+        // three trap rows, and rung 4's seven (the standing's six and
+        // ReferenceAlias.Clear): "41 of 41 table rows bound"
+        assert_eq!(TABLE.len(), 41);
         let actions: Vec<&str> = TABLE.iter().filter(|r| r.kind == Kind::Action).map(|r| r.func).collect();
         assert_eq!(actions, ["PlayAnimation", "PlayAnimationAndWait", "SendAnimationEvent", "SetAnimationVariableBool", "SetAnimationVariableInt", "SetAnimationVariableFloat"]);
         for (i, r) in TABLE.iter().enumerate() {
@@ -1100,6 +1287,14 @@ mod tests {
                 // first parameter the object the evidence names
                 assert_eq!((r.kind, r.subject, r.owner, r.audience, r.relay), (Kind::State, Subject::SelfRef, Owner::Simulator, Audience::Nobody, Relay::Never), "{name}");
                 assert_eq!(r.params.first(), Some(&Param::Object), "{name}");
+            } else if let Keep::Record(kind) = r.keep {
+                // a row kept as its subject's record is a state row on its
+                // self, heard by nobody as an action, never relayed: the
+                // ref state and the placements a world object's (the cell's
+                // host), the standing an NPC's (its simulator)
+                assert_eq!((r.kind, r.subject, r.audience, r.relay), (Kind::State, Subject::SelfRef, Audience::Nobody, Relay::Never), "{name}");
+                let owner = if kind == RecordKind::Standing { Owner::Simulator } else { Owner::CellHost };
+                assert_eq!(r.owner, owner, "{name}");
             } else {
                 assert_eq!((r.relay, r.keep), (Relay::Never, Keep::Nothing), "{name}");
             }
@@ -1113,13 +1308,24 @@ mod tests {
             }
         }
         let everyone: Vec<String> = TABLE.iter().filter(|r| r.kind == Kind::Everyone).map(|r| format!("{}.{}", r.cls, r.func)).collect();
-        assert_eq!(everyone, ["Quest.SetCurrentStageID", "Quest.Start", "Quest.Stop", "GlobalVariable.SetValue", "ReferenceAlias.ForceRefTo"]);
-        // the flip's nineteen state rows and D-S3's three
-        assert_eq!(TABLE.iter().filter(|r| r.kind == Kind::State).count(), 22);
+        assert_eq!(everyone, ["Quest.SetCurrentStageID", "Quest.Start", "Quest.Stop", "GlobalVariable.SetValue", "ReferenceAlias.ForceRefTo", "ReferenceAlias.Clear"]);
+        // the flip's nineteen state rows, D-S3's three and the standing's six
+        assert_eq!(TABLE.iter().filter(|r| r.kind == Kind::State).count(), 28);
         assert_eq!(row("Game", "GetPlayer").map(|r| r.kind), Some(Kind::Local));
         // one row kept as evidence: a trap's hit on an actor (playtest 48)
         let evidence: Vec<String> = TABLE.iter().filter(|r| r.keep == Keep::Evidence).map(|r| format!("{}.{}", r.cls, r.func)).collect();
         assert_eq!(evidence, ["ObjectReference.ProcessTrapHit"]);
+        // the thirteen rows kept as their subject's record, by kind
+        let records = |kind: RecordKind| -> Vec<&str> { TABLE.iter().filter(|r| r.keep == Keep::Record(kind)).map(|r| r.func).collect() };
+        assert_eq!(records(RecordKind::RefState), ["Enable", "EnableNoWait", "Disable", "DisableNoWait", "Delete"]);
+        assert_eq!(records(RecordKind::Placement), ["PlaceAtMe", "PlaceActorAtMe"]);
+        assert_eq!(records(RecordKind::Standing), ["SetFactionRank", "ModFactionRank", "RemoveFromFaction", "RemoveFromAllFactions", "SetCrimeFaction", "SetRelationshipRank"]);
+        assert!(TABLE.iter().filter(|r| matches!(r.keep, Keep::Record(RecordKind::Standing))).all(|r| r.cls == "Actor"));
+        // rung 4's seven are appended: every earlier row keeps its place
+        assert_eq!(row_index("ObjectReference", "ApplyHavokImpulse"), Some(33));
+        assert_eq!(row_index("Actor", "SetFactionRank"), Some(34));
+        assert_eq!(row_index("ReferenceAlias", "Clear"), Some(40));
+        assert_eq!((RecordKind::RefState.code(), RecordKind::Standing.code(), RecordKind::Placement.code()), (1, 2, 3));
     }
 
     // Bleak Falls Temple's ambush draugr 0x800a6, which the hanging blades
@@ -1139,7 +1345,7 @@ mod tests {
     // the draugr in the temple, simulated by the host (its cell's), the
     // reporter
     fn simulated(self_id: u32) -> Facts {
-        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: HOST, owner_epoch: 0 }
+        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: HOST, owner_epoch: 0, host: HOST, host_epoch: 3 }
     }
 
     #[test]
@@ -1198,5 +1404,181 @@ mod tests {
         assert_eq!(code(&s.judge(row("ObjectReference", "PlayAnimation"), &[Arg::String], &hosted(PILLAR), 1_000)), Some(Code::Rate));
         // a token every 125 ms
         assert_eq!(s.judge(hit, &blade, &simulated(DRAUGR), 1_125), Verdict::Kept { subject: DRAUGR });
+    }
+
+    // thuum ADR-068 rung 4 (the state rows): Bleak Falls Temple's cobweb
+    // 0x1fc43 a world object its host disables, the Temple's puzzle door
+    // 0x371e9 a door, and the Temple's ambush draugr 0x380ba (an ACHR of the
+    // NPC_ 0x38922 in 0x371de, initially disabled; lab/esm.py, 2026-11-06)
+    // an actor the loader never held, placed by its ACHR's cell
+    // (docs/research/trap-census-2026-11-05.md :162)
+    const COBWEB: u32 = 0x1fc43;
+    const AMBUSH: u32 = 0x380ba;
+
+    fn recorded(v: &Verdict) -> (u32, u32, RecordKind) {
+        match v {
+            Verdict::Record { subject, seq, kind } => (*subject, *seq, *kind),
+            other => panic!("not recorded: {other:?}"),
+        }
+    }
+
+    // an actor nobody simulates, its cell's host at epoch 3 the reporter
+    fn unsimulated(self_id: u32) -> Facts {
+        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: 0, owner_epoch: 0, host: HOST, host_epoch: 3 }
+    }
+
+    #[test]
+    fn the_hosts_disable_is_recorded_with_the_objects_next_sequence() {
+        let mut s = ScriptCalls::default();
+        let disable = row("ObjectReference", "Disable");
+        // its cell's host at the epoch: recorded, the object's first number
+        assert_eq!(recorded(&s.judge(disable, &[Arg::Bool], &hosted(COBWEB), 0)), (COBWEB, 1, RecordKind::RefState));
+        // the four other ref state rows, their own arguments
+        assert_eq!(recorded(&s.judge(row("ObjectReference", "DisableNoWait"), &[Arg::Bool], &hosted(COBWEB), 0)).1, 2);
+        assert_eq!(recorded(&s.judge(row("ObjectReference", "Enable"), &[Arg::Bool], &hosted(COBWEB), 0)).1, 3);
+        assert_eq!(recorded(&s.judge(row("ObjectReference", "EnableNoWait"), &[Arg::Bool], &hosted(COBWEB), 0)).1, 4);
+        assert_eq!(recorded(&s.judge(row("ObjectReference", "Delete"), &[], &hosted(COBWEB), 0)).1, 5);
+        // the one sequence an object's actions and records share
+        assert_eq!(accepted(&s.judge(row("ObjectReference", "PlayAnimation"), &[Arg::String], &hosted(COBWEB), 0)).seq, 6);
+        assert_eq!(recorded(&s.judge(disable, &[Arg::Bool], &hosted(COBWEB), 0)).1, 7);
+        // a stored record seeds it as it seeds an action (rung 3)
+        s.seed(COBWEB, 20);
+        assert_eq!(recorded(&s.judge(disable, &[Arg::Bool], &hosted(COBWEB), 0)).1, 21);
+        // the row's count and kinds hold for a record row too
+        assert_eq!(code(&s.judge(disable, &[], &hosted(COBWEB), 0)), Some(Code::Args));
+        assert_eq!(code(&s.judge(disable, &[Arg::Number], &hosted(COBWEB), 0)), Some(Code::Args));
+        // a placement by its record and a placement row: the cell's host's too
+        let fx = Facts { kind: SubjectKind::Record, cell: SANCTUM, ..hosted(DOOR_FX) };
+        assert_eq!(recorded(&s.judge(row("ObjectReference", "EnableNoWait"), &[Arg::Bool], &fx, 0)), (DOOR_FX, 1, RecordKind::RefState));
+        let place = [Arg::Object(0x4e2b8), Arg::Number, Arg::Bool, Arg::Bool];
+        assert_eq!(recorded(&s.judge(row("ObjectReference", "PlaceAtMe"), &place, &hosted(COBWEB), 0)), (COBWEB, 22, RecordKind::Placement));
+    }
+
+    #[test]
+    fn a_guests_disable_is_refused_by_its_owner() {
+        let mut s = ScriptCalls::default();
+        let disable = row("ObjectReference", "Disable");
+        let refused = |v: Verdict| match v {
+            Verdict::Refuse(r) => (r.code, r.why),
+            other => panic!("not refused: {other:?}"),
+        };
+        let f = hosted(COBWEB);
+        assert_eq!(refused(s.judge(disable, &[Arg::Bool], &Facts { sender: GUEST, ..f }, 0)), (Code::Owner, "ff000000 hosts cell 371de, not the reporter".to_owned()));
+        assert_eq!(refused(s.judge(disable, &[Arg::Bool], &Facts { owner: 0, ..f }, 0)), (Code::Owner, "nobody hosts cell 371de".to_owned()));
+        assert_eq!(refused(s.judge(disable, &[Arg::Bool], &Facts { epoch: 2, ..f }, 0)), (Code::Owner, "cell 371de stands at epoch 3, the report names 2".to_owned()));
+        assert_eq!(refused(s.judge(disable, &[Arg::Bool], &Facts { cell: 0, owner: 0, ..f }, 0)).0, Code::Owner);
+        assert_eq!(refused(s.judge(disable, &[Arg::Bool], &Facts { kind: SubjectKind::Unknown, ..f }, 0)), (Code::Owner, "the server holds no such reference".to_owned()));
+        // the hall door's FX by its record: the words name the case
+        let fx = Facts { kind: SubjectKind::Record, cell: SANCTUM, sender: GUEST, ..hosted(DOOR_FX) };
+        assert_eq!(refused(s.judge(disable, &[Arg::Bool], &fx, 0)), (Code::Owner, format!("ff000000 hosts cell 371dd, not the reporter{BY_RECORD}")));
+        // no refusal took a sequence
+        assert_eq!((s.seq_of(COBWEB), s.seq_of(DOOR_FX)), (0, 0));
+    }
+
+    #[test]
+    fn a_doors_enable_is_recorded_not_dropped() {
+        // a door's open is Activate's isOpen, so its animation is dropped
+        // quietly; its enabled state is this rung's, judged by its cell's host
+        let mut s = ScriptCalls::default();
+        let door = Facts { kind: SubjectKind::DoorOrContainer, ..hosted(0x371e9) };
+        assert_eq!(recorded(&s.judge(row("ObjectReference", "Enable"), &[Arg::Bool], &door, 0)), (0x371e9, 1, RecordKind::RefState));
+        assert_eq!(s.judge(row("ObjectReference", "PlayAnimation"), &[Arg::String], &door, 0), Verdict::Skip);
+        assert_eq!(code(&s.judge(row("ObjectReference", "Enable"), &[Arg::Bool], &Facts { sender: GUEST, ..door }, 0)), Some(Code::Owner));
+        assert_eq!(s.seq_of(0x371e9), 1);
+    }
+
+    #[test]
+    fn an_actor_is_its_simulators_and_one_nobody_simulates_its_cell_hosts() {
+        let mut s = ScriptCalls::default();
+        let enable = row("ObjectReference", "Enable");
+        let refused = |v: Verdict| match v {
+            Verdict::Refuse(r) => (r.code, r.why),
+            other => panic!("not refused: {other:?}"),
+        };
+        // a simulated actor: its simulator's, the epoch unread
+        assert_eq!(recorded(&s.judge(enable, &[Arg::Bool], &Facts { epoch: 0, ..simulated(DRAUGR) }, 0)), (DRAUGR, 1, RecordKind::RefState));
+        assert_eq!(refused(s.judge(enable, &[Arg::Bool], &Facts { sender: GUEST, ..simulated(DRAUGR) }, 0)), (Code::Owner, "ff000000 simulates 800a6, not the reporter".to_owned()));
+        // the unnamed ambush draugr: nobody simulates it, so its cell's host
+        // at the epoch owns its Enable (the host's own, before its 3D)
+        assert_eq!(recorded(&s.judge(enable, &[Arg::Bool], &unsimulated(AMBUSH), 0)), (AMBUSH, 1, RecordKind::RefState));
+        let f = unsimulated(AMBUSH);
+        assert_eq!(refused(s.judge(enable, &[Arg::Bool], &Facts { sender: GUEST, ..f }, 0)), (Code::Owner, format!("ff000000 hosts cell 371de, not the reporter{UNSIMULATED}")));
+        assert_eq!(refused(s.judge(enable, &[Arg::Bool], &Facts { epoch: 4, ..f }, 0)), (Code::Owner, format!("cell 371de stands at epoch 3, the report names 4{UNSIMULATED}")));
+        assert_eq!(refused(s.judge(enable, &[Arg::Bool], &Facts { host: 0, ..f }, 0)), (Code::Owner, format!("nobody hosts cell 371de{UNSIMULATED}")));
+        assert_eq!(refused(s.judge(enable, &[Arg::Bool], &Facts { cell: 0, host: 0, ..f }, 0)).0, Code::Owner);
+        // a placement anchored at an actor follows the same rule
+        let place = [Arg::Object(0x2a), Arg::Number, Arg::Object(0)];
+        assert_eq!(recorded(&s.judge(row("ObjectReference", "PlaceActorAtMe"), &place, &f, 0)), (AMBUSH, 2, RecordKind::Placement));
+        // the reporter's own player is no record row's subject
+        assert_eq!(code(&s.judge(enable, &[Arg::Bool], &simulated(0x14), 0)), Some(Code::Row));
+        assert_eq!(s.seq_of(DRAUGR), 1);
+    }
+
+    #[test]
+    fn a_standing_row_is_an_npcs_and_never_the_reporters_own_player() {
+        let mut s = ScriptCalls::default();
+        let set_rank = row("Actor", "SetFactionRank");
+        let faction = [Arg::Object(0x5c84e), Arg::Number];
+        // its simulator's: recorded, the epoch unread
+        assert_eq!(recorded(&s.judge(set_rank, &faction, &Facts { epoch: 0, ..simulated(DRAUGR) }, 0)), (DRAUGR, 1, RecordKind::Standing));
+        // the player's own standing waits for rung 5
+        let own = s.judge(set_rank, &faction, &simulated(0x14), 0);
+        assert_eq!(code(&own), Some(Code::Row));
+        // another seat's NPC, and one nobody simulates (no cell host's
+        // fallback for the standing)
+        assert_eq!(code(&s.judge(set_rank, &faction, &Facts { sender: GUEST, ..simulated(DRAUGR) }, 0)), Some(Code::Owner));
+        match s.judge(set_rank, &faction, &unsimulated(AMBUSH), 0) {
+            Verdict::Refuse(r) => assert_eq!((r.code, r.why), (Code::Owner, "nobody simulates 380ba".to_owned())),
+            other => panic!("not refused: {other:?}"),
+        }
+        // a world object has no standing
+        for kind in [SubjectKind::WorldObject, SubjectKind::Record, SubjectKind::DoorOrContainer] {
+            assert_eq!(code(&s.judge(set_rank, &faction, &Facts { kind, ..hosted(COBWEB) }, 0)), Some(Code::Row), "{kind:?}");
+        }
+        // the six rows' own arguments
+        assert_eq!(recorded(&s.judge(row("Actor", "ModFactionRank"), &faction, &simulated(DRAUGR), 0)).1, 2);
+        assert_eq!(recorded(&s.judge(row("Actor", "RemoveFromFaction"), &[Arg::Object(0x5c84e)], &simulated(DRAUGR), 0)).1, 3);
+        assert_eq!(recorded(&s.judge(row("Actor", "RemoveFromAllFactions"), &[], &simulated(DRAUGR), 0)).1, 4);
+        assert_eq!(recorded(&s.judge(row("Actor", "SetCrimeFaction"), &[Arg::Absent], &simulated(DRAUGR), 0)).1, 5);
+        assert_eq!(recorded(&s.judge(row("Actor", "SetRelationshipRank"), &[Arg::Object(0x14), Arg::Number], &simulated(DRAUGR), 0)).1, 6);
+        assert_eq!(code(&s.judge(row("Actor", "SetRelationshipRank"), &[Arg::Object(0x14)], &simulated(DRAUGR), 0)), Some(Code::Args));
+        // ReferenceAlias.Clear is an everyone row: AliasFill 79 carries it
+        assert_eq!(code(&s.judge(row("ReferenceAlias", "Clear"), &[], &hosted(COBWEB), 0)), Some(Code::Row));
+    }
+
+    #[test]
+    fn record_rows_spend_their_own_budget() {
+        let mut s = ScriptCalls::default();
+        let disable = row("ObjectReference", "Disable");
+        let play = row("ObjectReference", "PlayAnimation");
+        let f = hosted(COBWEB);
+        // an action burst spends the actions' budget alone: a record row
+        // still passes
+        for _ in 0..BURST {
+            assert!(matches!(s.judge(play, &[Arg::String], &f, 1_000), Verdict::Accept(_)));
+        }
+        assert_eq!(code(&s.judge(play, &[Arg::String], &f, 1_000)), Some(Code::Rate));
+        assert_eq!(recorded(&s.judge(disable, &[Arg::Bool], &f, 1_000)).2, RecordKind::RefState);
+        // the record rows' own burst, the one above already spent among it
+        for _ in 1..BURST_RECORD {
+            assert!(matches!(s.judge(disable, &[Arg::Bool], &f, 1_000), Verdict::Record { .. }));
+        }
+        let spent = s.judge(disable, &[Arg::Bool], &f, 1_000);
+        match &spent {
+            Verdict::Refuse(r) => assert_eq!((r.code, r.why.as_str()), (Code::Rate, "past the reporter's 128 at once and 32 a second (its record rows' own budget)")),
+            other => panic!("not refused: {other:?}"),
+        }
+        // one token every 31.25 ms, the fractions carried
+        assert_eq!(code(&s.judge(disable, &[Arg::Bool], &f, 1_031)), Some(Code::Rate));
+        assert!(matches!(s.judge(disable, &[Arg::Bool], &f, 1_032), Verdict::Record { .. }));
+        assert!(matches!(s.judge(disable, &[Arg::Bool], &f, 1_063), Verdict::Record { .. }));
+        assert_eq!(code(&s.judge(disable, &[Arg::Bool], &f, 1_063)), Some(Code::Rate));
+        // the actions' budget is unmoved by the record rows: its own 125 ms
+        assert!(matches!(s.judge(play, &[Arg::String], &f, 1_125), Verdict::Accept(_)));
+        // no refusal took a sequence: 33 actions and 130 records accepted
+        assert_eq!(s.seq_of(COBWEB), BURST + BURST_RECORD + 2 + 1);
+        // each reporter's own
+        let other = Facts { sender: GUEST, owner: GUEST, ..f };
+        assert!(matches!(s.judge(disable, &[Arg::Bool], &other, 1_063), Verdict::Record { .. }));
     }
 }

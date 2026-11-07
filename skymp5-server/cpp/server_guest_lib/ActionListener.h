@@ -201,6 +201,29 @@ public:
   virtual void OnDestructionStage(const RawMessageData& rawMsgData,
                                   const DestructionStageMessage& msg);
 
+  // thuum ADR-068 rung 4 (AliasFill 79; amendment B, read 8): a seat's own
+  // ReferenceAlias.ForceRefTo or Clear. A quest is nobody's (D-F1 C), so
+  // every seat reports its own; the rule (wire-rules alias_fills) takes a
+  // QUST with a reference alias of that id and a reference (or a clear),
+  // records the latest fill per (quest, alias) on the world's journal, folds
+  // an equal one, and the fill goes at once to every other seat (served
+  // false). R2, recorded as reported. Each refusal is logged once a minute
+  // per reporter and code (E_ALIASFILL_NO_QUEST, _NO_ALIAS, _REF)
+  virtual void OnAliasFill(const RawMessageData& rawMsgData,
+                           const AliasFillMessage& msg);
+
+  // thuum ADR-068 rung 4 (WorldGlobal 80; amendment B): the world
+  // streamer's report of the GLOBs its diff found moved. Judged whole by the
+  // streamer's epoch first (PartOne::JudgeWorldGlobalReport, ADR-066
+  // decision 4: E_WORLDGLOBAL_EPOCH, E_WORLDGLOBAL_OWNER, once a minute per
+  // reporter and code), then each entry (wire-rules world_globals: the
+  // clock's six, a playerGlobals entry, a constant or a form that is no GLOB
+  // refused alone), the latest value per global kept on the world's journal
+  // and what moved relayed at once to every other seat (served false). R2:
+  // the streamer's engine computed the values, recorded as reported
+  virtual void OnWorldGlobal(const RawMessageData& rawMsgData,
+                             const WorldGlobalMessage& msg);
+
   // thuum docs/verbs/traps.md (M4): a linked activation the cell's host
   // reports (a reference that is no actor activating the reference whose
   // activation parents name it): recorded through Activate's own path, and
@@ -369,6 +392,13 @@ public:
   // a recorded stage of a quest the game starts by itself stays unsent
   // unless the quest is allowed (memo D62).
   void SendQuestStages(MpActor& actor);
+  // thuum ADR-068 rung 4: the world's alias fills (served true, a clear as
+  // refr 0) after the quest stages, and its world globals (served true, at
+  // the streamer's epoch, 512 to a message) after the player's own, both at
+  // the login; nothing when the record holds none, and no globals while
+  // `worldGlobals` is off
+  void SendAliasFills(MpActor& actor);
+  void SendWorldGlobals(MpActor& actor);
   // thuum memo D56 A: the listed cure spells (PartOne::CureSpells) removed
   // from the player's game at its login and every minute after, by the
   // engine's own RemoveSpell; the minute chain stops when the actor has no
@@ -503,6 +533,12 @@ private:
   std::map<std::pair<uint32_t, uint8_t>,
            std::pair<std::chrono::steady_clock::time_point, uint32_t>>
     scriptCallRefusals;
+  // thuum ADR-068 rung 4: when each alias fill's and world global report's
+  // refusal line was last said, by reporter actor and code (one a minute,
+  // the rest counted)
+  std::map<std::pair<uint32_t, std::string>,
+           std::pair<std::chrono::steady_clock::time_point, uint32_t>>
+    stateRowRefusals;
   // thuum ADR-068 rung 3: when each form's record line was last said (one a
   // minute, the rest at debug), and each refusal's, by sender, form and code
   // (one a minute, the rest counted)

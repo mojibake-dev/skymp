@@ -295,6 +295,13 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
     if (serverSettings.find("perks") != serverSettings.end()) {
       partOne->SetPerksEnabled(serverSettings.at("perks").get<bool>());
     }
+    // thuum ADR-068 rung 4 (WorldGlobal 80): one seat streams the globals
+    // every seat's scripts write; `worldGlobals` false (the default) elects
+    // nobody and leaves every game's globals its own
+    if (serverSettings.find("worldGlobals") != serverSettings.end()) {
+      partOne->SetWorldGlobalsEnabled(
+        serverSettings.at("worldGlobals").get<bool>());
+    }
     // thuum docs/verbs/prop-physics.md (ADR-058): dropped items persist as
     // props (the default); false restores upstream's load skip and the
     // drop's timed deletion

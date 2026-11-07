@@ -1,0 +1,87 @@
+# difftest ref-state (thuum ADR-068 rung 4, the state rows, and its amendment
+# B; docs/research/rung4-state-rows-2026-11-07.md section 1(c), RefState):
+# c1 and c2 are new characters (profiles 9 and 10, actors 0xff000002 and
+# 0xff000003, see melee-reach), both at the spawn in Tamriel's exterior cell
+# (32, -15), form 0xbbb1 (cell-host's read); c2 starts 1.5 s after c1, and
+# each client's times below are its own. At 1 s c1 reports the cell loaded
+# and is granted it, HostGrant {cell 0xbbb1, epoch 1}, as in cell-host. Its
+# game then reports the ref state rows a script made, ScriptCall 75 kept as
+# the subject's record (wire-rules natives Keep::Record): on the ore vein
+# 0x10e6c5 (ACTI MineOreIron01_LFallForestDirt at (134931, -58398, 10752),
+# script-call's subject, a world object the server loads with the spawn's
+# chunk), at 3 s ObjectReference.Disable(false): recorded at the vein's
+# sequence 1 and relayed at once to its other listener, c2, as
+# DestructionStage {disabled true, deleted false, seq 1, served false}; at
+# 3.2 s DisableNoWait, the record standing as it was: folded, nothing sent
+# (its number spent); at 3.4 s Enable: recorded at seq 3 and relayed
+# {disabled false, seq 3}. Then on the rock 0x36230 (STAT
+# RockCliff07FallForestGrass01 at (135065, -58294, 9901), 170 units from the
+# vein in the same cell; Skyrim.esm by lab/esm.py `near`, 2026-11-06), which
+# the loader never attaches (a static): at 4 s Disable(false) attaches it by
+# its record first, so the server subscribes both games to it (its create
+# word to each, enabled as the files place it), then records the disable at
+# its own sequence 1 and relays it to c2 {disabled true, deleted false, seq
+# 1}; at 4.2 s Delete: recorded at seq 2 and relayed {disabled true, deleted
+# true, seq 2}. Two rows send nothing, each said by its name in the wire
+# server's log: at 2.4 s of its own script c2 reports the vein's Disable
+# (E_SCRIPTCALL_OWNER: c1 hosts the cell); at 3.6 s c1 reports Disable on
+# its own player 0x14 (E_SCRIPTCALL_ROW: a record row on the reporter's own
+# player is its own seat's). The legacy server knows no MsgType 75 and drops
+# all seven. c2 never reports the cell loaded, so c1's departure leaves it
+# unhosted after the grace with nothing to c2; c2 steps aside at 6 s so it
+# outlives c1, as in every session.
+id: ref-state
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 1000, send: {t: 47, cell: 0xbbb1, loaded: true}, reliable: true}
+  - {client: c1, at_ms: 3000, send: {t: 75, epoch: 1, selfId: 0x10e6c5, cls: ObjectReference, fn: Disable, args: [false], caller: "", handler: "", latent: true}, reliable: true}
+  - {client: c1, at_ms: 3200, send: {t: 75, epoch: 1, selfId: 0x10e6c5, cls: ObjectReference, fn: DisableNoWait, args: [false], caller: "", handler: "", latent: false}, reliable: true}
+  - {client: c1, at_ms: 3400, send: {t: 75, epoch: 1, selfId: 0x10e6c5, cls: ObjectReference, fn: Enable, args: [false], caller: "", handler: "", latent: true}, reliable: true}
+  - {client: c2, at_ms: 2400, send: {t: 75, epoch: 1, selfId: 0x10e6c5, cls: ObjectReference, fn: Disable, args: [false], caller: "", handler: "", latent: true}, reliable: true}
+  - {client: c1, at_ms: 3600, send: {t: 75, epoch: 1, selfId: 0x14, cls: ObjectReference, fn: Disable, args: [false], caller: "", handler: "", latent: true}, reliable: true}
+  - {client: c1, at_ms: 4000, send: {t: 75, epoch: 1, selfId: 0x36230, cls: ObjectReference, fn: Disable, args: [false], caller: "", handler: "", latent: true}, reliable: true}
+  - {client: c1, at_ms: 4200, send: {t: 75, epoch: 1, selfId: 0x36230, cls: ObjectReference, fn: Delete, args: [], caller: "", handler: "", latent: true}, reliable: true}
+  - {client: c2, at_ms: 6000, move: {dx: 1, dy: 0}}
+divergences:
+  - client: c1
+    msg: {t: 48, cell: 0xbbb1, epoch: 1}
+    legacy: 0
+    wire: 1
+    reason: the first loader in reach hosts the cell (HostGrant, thuum docs/verbs/cell-host.md); the legacy server has no cell hosts
+  - client: c2
+    msg: {t: 78, refr: 0x10e6c5, disabled: true, deleted: false, seq: 1, served: false}
+    legacy: 0
+    wire: 1
+    reason: the cell host's scripted Disable recorded as the vein's ref state and relayed to its other listener with the vein's sequence (DestructionStage's ref state, thuum ADR-068 rung 4); the legacy server knows no MsgType 75
+  - client: c2
+    msg: {t: 78, refr: 0x10e6c5, disabled: false, deleted: false, seq: 3, served: false}
+    legacy: 0
+    wire: 1
+    reason: the host's Enable recorded after the folded DisableNoWait spent the vein's second number (thuum ADR-068 rung 4); the legacy server knows no MsgType 75
+  - client: c1
+    msg: {t: 33, refrId: 0x36230}
+    legacy: 0
+    wire: 1
+    reason: a static the loader never attaches, attached by its record at the host's first ref state row and subscribed to the games in reach (thuum ADR-068 rung 4, amendment B read 2); the legacy server attaches no static
+  - client: c2
+    msg: {t: 33, refrId: 0x36230}
+    legacy: 0
+    wire: 1
+    reason: a static the loader never attaches, attached by its record at the host's first ref state row and subscribed to the games in reach (thuum ADR-068 rung 4, amendment B read 2); the legacy server attaches no static
+  - client: c2
+    msg: {t: 78, refr: 0x36230, disabled: true, deleted: false, seq: 1, served: false}
+    legacy: 0
+    wire: 1
+    reason: the host's Disable of the attached static recorded at its own first number and relayed (thuum ADR-068 rung 4); the legacy server knows no MsgType 75
+  - client: c2
+    msg: {t: 78, refr: 0x36230, disabled: true, deleted: true, seq: 2, served: false}
+    legacy: 0
+    wire: 1
+    reason: the host's Delete recorded, deleted and disabled, and relayed (thuum ADR-068 rung 4); the legacy server knows no MsgType 75
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

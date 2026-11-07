@@ -36,6 +36,25 @@
 //!
 //! The times are the server's monotonic milliseconds (PartOne's
 //! SteadyNowMs), as casts.rs takes them.
+//!
+//! The script set (thuum ADR-068 rung 4, the state rows; docs/research/
+//! rung4-state-rows-2026-11-07.md section 1(c); W3: the server's half and T2
+//! this rung, no observe point on a seat): a script's PlaceAtMe or
+//! PlaceActorAtMe on its self, the subject's owner's report through the seam
+//! (ScriptCall 75, wire-rules natives `Keep::Record(Placement)`), opens a set
+//! anchored at the self ([`Anchor::SelfRef`], [`Placements::open_script_set`])
+//! for the one base the call names, and the same request and report carry
+//! its pose: the reporter's game answers where its engine stood the new
+//! reference, and the server places its copy there for every other seat,
+//! naming the reporter (placedBy). The pose stands within the band's
+//! farthest reach of the self on the ground plane and its height
+//! (REPORT_MAX_UNITS, REPORT_MAX_DZ) with no floor: PlaceAtMe stands the new
+//! reference at its self, or an actor on the navmesh beside it, where the
+//! spell band's floor (a body's width, the wall's forgery bound) would refuse
+//! every true report. A placeable base is an activator, a moving static, a
+//! static, an NPC or an item; anything else (an explosion, a hazard, a
+//! projectile) is `E_PLACED_KIND`: its own simulation, never a placed record.
+//! A script set has no lifetime: its form stands until a Delete row.
 
 use crate::clock::SettingsError;
 use crate::forms::FormDesc;
@@ -85,6 +104,9 @@ pub enum Anchor {
     /// The explosion point of a target-location cast (Summoning Rune); no
     /// rule yet.
     Impact,
+    /// A script's self (thuum ADR-068 rung 4's script set: PlaceAtMe's and
+    /// PlaceActorAtMe's), never a spell entry's.
+    SelfRef,
 }
 
 /// The record type of a placed base: the two kinds the client's spawn path
@@ -366,6 +388,91 @@ struct Set {
     end_ms: Option<u64>,
 }
 
+/// A script's placement awaiting its pose (the script set).
+#[derive(Debug, Clone, PartialEq)]
+struct ScriptPending {
+    request: ScriptRequest,
+    anchor: CasterPose,
+    started_ms: u64,
+}
+
+/// What a script set asks the reporter's game: the set's id, the one base
+/// whose pose it wants, within the window.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScriptRequest {
+    /// The set's id, which the report names.
+    pub set: u64,
+    /// The reporter asked: the self's owner, whose engine ran the call.
+    pub caster: u32,
+    /// The call's self, the anchor.
+    pub self_id: u32,
+    /// The base the call placed.
+    pub base: FormDesc,
+    /// Its record type, as the wire's `baseRecordType` carries it.
+    pub record_type: String,
+    /// How long the report is taken from the call, milliseconds.
+    pub window_ms: u64,
+}
+
+/// A script set's object to create now, posed as reported.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScriptPlacement {
+    /// The set's id.
+    pub set: u64,
+    /// The reporter, whose id the object carries on the wire (`placed_by`).
+    pub caster: u32,
+    /// The call's self.
+    pub self_id: u32,
+    /// The base.
+    pub base: FormDesc,
+    /// Its record type.
+    pub record_type: String,
+    /// Position.
+    pub x: f32,
+    /// Position.
+    pub y: f32,
+    /// Position.
+    pub z: f32,
+    /// The Z angle, degrees.
+    pub yaw: f32,
+}
+
+/// What a script set came to.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScriptOutcome {
+    /// Its report came in: create the object.
+    Placed(ScriptPlacement),
+    /// The window closed with no report: nothing placed.
+    NoReport(ScriptRequest),
+}
+
+/// Why a script's placement opened no set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScriptRefusal {
+    /// The base is no kind a script set places (`E_PLACED_KIND`).
+    Kind,
+    /// The server holds MAX_SCRIPT_SETS script sets awaiting their reports.
+    ServerWide,
+    /// The self's pose is not a number.
+    NonFinite,
+}
+
+/// Script sets awaiting their reports at once, world-wide: a stage that
+/// places a dungeon's worth of props twice over.
+pub const MAX_SCRIPT_SETS: usize = 64;
+
+/// The record types a script set places (W3): an activator, a moving
+/// static, a static, an NPC (PlaceActorAtMe's ActorBase), and the items
+/// libespm's utils::IsItem names (AMMO, ARMO, BOOK, INGR, ALCH, SCRL, SLGM,
+/// WEAP, MISC, KEYM, LIGH).
+const SCRIPT_PLACEABLE: [&str; 15] = ["ACTI", "MSTT", "STAT", "NPC_", "AMMO", "ARMO", "BOOK", "INGR", "ALCH", "SCRL", "SLGM", "WEAP", "MISC", "KEYM", "LIGH"];
+
+/// Whether a script set places a base of `record_type`.
+#[must_use]
+pub fn script_placeable(record_type: &str) -> bool {
+    SCRIPT_PLACEABLE.contains(&record_type)
+}
+
 /// The table, the requests out and every set standing.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Placements {
@@ -376,6 +483,9 @@ pub struct Placements {
     requests: Vec<Request>,
     placed: Vec<Placement>,
     next_set: u64,
+    scripts: Vec<ScriptPending>,
+    script_requests: Vec<ScriptRequest>,
+    script_outcomes: Vec<ScriptOutcome>,
 }
 
 fn form(what: &str, text: &str) -> Result<FormDesc, SettingsError> {
@@ -611,6 +721,9 @@ impl Placements {
     /// the set stands (its first report creates it); when every base of the
     /// set is in, the request is complete.
     pub fn report_placed(&mut self, report: Report, now_ms: u64) -> Result<(), ReportRefusal> {
+        if let Some(index) = self.scripts.iter().position(|p| p.request.set == report.set) {
+            return self.report_script(index, &report, now_ms);
+        }
         let judged = self.judge(&report, now_ms)?;
         let Report { caster, set, x, y, z, yaw, .. } = report;
         if !self.sets.iter().any(|s| s.id == set) {
@@ -711,6 +824,98 @@ impl Placements {
             .collect()
     }
 
+    /// A script's placement accepted at `now_ms` (thuum ADR-068 rung 4's
+    /// script set): the owner `caster`'s call on `self_id`, which stood at
+    /// `anchor` (its yaw unread), placed `base` of `record_type`. A
+    /// placeable base opens a set awaiting the caster's one report, its
+    /// request queued for [`Self::take_script_requests`]; the set's id is
+    /// the answer. Refused: a base of no placeable kind, a world already
+    /// holding MAX_SCRIPT_SETS such sets, an anchor that is not a number.
+    pub fn open_script_set(&mut self, caster: u32, self_id: u32, anchor: CasterPose, base: FormDesc, record_type: &str, now_ms: u64) -> Result<u64, ScriptRefusal> {
+        if !script_placeable(record_type) {
+            return Err(ScriptRefusal::Kind);
+        }
+        if !(anchor.x.is_finite() && anchor.y.is_finite() && anchor.z.is_finite()) {
+            return Err(ScriptRefusal::NonFinite);
+        }
+        if self.scripts.len() >= MAX_SCRIPT_SETS {
+            return Err(ScriptRefusal::ServerWide);
+        }
+        let set = self.next_set;
+        self.next_set = self.next_set.saturating_add(1);
+        let request = ScriptRequest { set, caster, self_id, base, record_type: record_type.to_owned(), window_ms: REPORT_WINDOW_MS };
+        self.script_requests.push(request.clone());
+        self.scripts.push(ScriptPending { request, anchor, started_ms: now_ms });
+        Ok(set)
+    }
+
+    /// The script sets' requests to send since the last call, each once.
+    pub fn take_script_requests(&mut self) -> Vec<ScriptRequest> {
+        std::mem::take(&mut self.script_requests)
+    }
+
+    /// A script set's report: the set the reporter's own and inside its
+    /// window, the base the set's, the pose within the band's farthest reach
+    /// of the self on the ground plane and its height, no floor. Accepted,
+    /// the set is complete and its object queued for
+    /// [`Self::due_script_placements`].
+    fn report_script(&mut self, index: usize, report: &Report, now_ms: u64) -> Result<(), ReportRefusal> {
+        let Some(pending) = self.scripts.get(index) else {
+            return Err(ReportRefusal::NoSet);
+        };
+        if pending.request.caster != report.caster {
+            return Err(ReportRefusal::NoSet);
+        }
+        if now_ms.saturating_sub(pending.started_ms) > REPORT_WINDOW_MS {
+            return Err(ReportRefusal::Late);
+        }
+        if !(report.x.is_finite() && report.y.is_finite() && report.z.is_finite() && report.yaw.is_finite()) {
+            return Err(ReportRefusal::NonFinite);
+        }
+        if !pending.request.base.is(report.base.short_id, &report.base.file) {
+            return Err(ReportRefusal::Base);
+        }
+        let distance = (report.x - pending.anchor.x).hypot(report.y - pending.anchor.y);
+        let dz = (report.z - pending.anchor.z).abs();
+        if distance > REPORT_MAX_UNITS || dz > REPORT_MAX_DZ {
+            return Err(ReportRefusal::Range { distance, dz });
+        }
+        let request = self.scripts.remove(index).request;
+        self.script_outcomes.push(ScriptOutcome::Placed(ScriptPlacement {
+            set: request.set,
+            caster: request.caster,
+            self_id: request.self_id,
+            base: request.base,
+            record_type: request.record_type,
+            x: report.x,
+            y: report.y,
+            z: report.z,
+            yaw: report.yaw,
+        }));
+        Ok(())
+    }
+
+    /// The script sets' outcomes at `now_ms`, each once: every report
+    /// accepted since the last call, and every set whose window closed with
+    /// no report (nothing placed).
+    pub fn due_script_placements(&mut self, now_ms: u64) -> Vec<ScriptOutcome> {
+        let outcomes = &mut self.script_outcomes;
+        self.scripts.retain(|p| {
+            if now_ms.saturating_sub(p.started_ms) <= REPORT_WINDOW_MS {
+                return true;
+            }
+            outcomes.push(ScriptOutcome::NoReport(p.request.clone()));
+            false
+        });
+        std::mem::take(&mut self.script_outcomes)
+    }
+
+    /// Script sets awaiting their reports.
+    #[must_use]
+    pub fn script_sets_waiting(&self) -> usize {
+        self.scripts.len()
+    }
+
     /// The casts that placed nothing since the last call, for the log.
     pub fn take_refusals(&mut self) -> Vec<Refused> {
         std::mem::take(&mut self.refusals)
@@ -736,7 +941,7 @@ impl Placements {
 }
 
 #[cfg(test)]
-#[allow(clippy::arithmetic_side_effects)]
+#[allow(clippy::arithmetic_side_effects, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -803,6 +1008,89 @@ mod tests {
         assert_eq!(t.report_placed(halo_report(caster, set), at + after), Ok(()));
         assert_eq!(t.due_placements(at + after).len(), 2);
         set
+    }
+
+    // thuum ADR-068 rung 4's script set: Bleak Falls Temple's cobweb 0x1fc43
+    // the self, standing at (100, 200, -50), its host the reporter; a
+    // Skyrim.esm base (an illustrative id) placed beside it
+    const COBWEB: u32 = 0x1fc43;
+    const SKYRIM: &str = "Skyrim.esm";
+
+    fn skyrim(short_id: u32) -> FormDesc {
+        FormDesc { short_id, file: SKYRIM.to_owned() }
+    }
+
+    fn by_the_web() -> CasterPose {
+        standing(100.0, 200.0, -50.0, 0.0)
+    }
+
+    #[test]
+    fn a_scripts_placement_asks_its_reporter_and_places_where_reported() {
+        let mut t = Placements::default();
+        let set = t.open_script_set(CASTER, COBWEB, by_the_web(), skyrim(0x3c), "STAT", 1_000);
+        assert_eq!(set, Ok(0));
+        let requests = t.take_script_requests();
+        assert_eq!(requests, vec![ScriptRequest { set: 0, caster: CASTER, self_id: COBWEB, base: skyrim(0x3c), record_type: "STAT".to_owned(), window_ms: REPORT_WINDOW_MS }]);
+        assert!(t.take_script_requests().is_empty(), "each request once");
+        // PlaceAtMe stands it at its self: no floor
+        let at_self = Report { caster: CASTER, set: 0, base: skyrim(0x3c), x: 100.0, y: 200.0, z: -50.0, yaw: 12.0 };
+        assert_eq!(t.report_placed(at_self.clone(), 1_500), Ok(()));
+        let outcomes = t.due_script_placements(1_500);
+        assert_eq!(
+            outcomes,
+            vec![ScriptOutcome::Placed(ScriptPlacement { set: 0, caster: CASTER, self_id: COBWEB, base: skyrim(0x3c), record_type: "STAT".to_owned(), x: 100.0, y: 200.0, z: -50.0, yaw: 12.0 })]
+        );
+        // complete: a second report names no set; nothing left to expire
+        assert_eq!(t.report_placed(at_self, 1_600), Err(ReportRefusal::NoSet));
+        assert!(t.due_script_placements(1_000_000).is_empty());
+        assert_eq!(t.script_sets_waiting(), 0);
+        // no lifetime: no spell set stood and none falls
+        assert!(t.due_removals(10_000_000).is_empty());
+    }
+
+    #[test]
+    fn a_scripts_report_outside_its_set_is_refused_by_name() {
+        let mut t = Placements::default();
+        let Ok(set) = t.open_script_set(CASTER, COBWEB, by_the_web(), skyrim(0x3c), "NPC_", 0) else {
+            panic!("an NPC is placeable");
+        };
+        let report = |caster, x: f32, z: f32| Report { caster, set, base: skyrim(0x3c), x, y: 200.0, z, yaw: 0.0 };
+        assert_eq!(t.report_placed(report(0xff00_0001, 100.0, -50.0), 10), Err(ReportRefusal::NoSet), "another seat's");
+        assert_eq!(t.report_placed(Report { base: skyrim(0x3d), ..report(CASTER, 100.0, -50.0) }, 10), Err(ReportRefusal::Base));
+        assert_eq!(t.report_placed(report(CASTER, f32::NAN, -50.0), 10), Err(ReportRefusal::NonFinite));
+        match t.report_placed(report(CASTER, 100.0 + REPORT_MAX_UNITS + 1.0, -50.0), 10) {
+            Err(ReportRefusal::Range { distance, .. }) => assert!(near(distance, REPORT_MAX_UNITS + 1.0)),
+            other => panic!("not refused by range: {other:?}"),
+        }
+        assert!(matches!(t.report_placed(report(CASTER, 100.0, -50.0 + REPORT_MAX_DZ + 1.0), 10), Err(ReportRefusal::Range { .. })));
+        assert_eq!(t.report_placed(report(CASTER, 100.0, -50.0), REPORT_WINDOW_MS + 1), Err(ReportRefusal::Late));
+        // the window closes with no report: nothing placed, noted once
+        let outcomes = t.due_script_placements(REPORT_WINDOW_MS + 1);
+        assert!(matches!(outcomes.as_slice(), [ScriptOutcome::NoReport(r)] if r.set == set && r.self_id == COBWEB));
+        assert!(t.due_script_placements(REPORT_WINDOW_MS + 2).is_empty());
+    }
+
+    #[test]
+    fn a_script_set_places_its_kinds_alone_and_holds_its_cap() {
+        let mut t = Placements::default();
+        for kind in ["EXPL", "HAZD", "PROJ", "SPEL", "DOOR", "CONT", "LVLN"] {
+            assert_eq!(t.open_script_set(CASTER, COBWEB, by_the_web(), skyrim(0x3c), kind, 0), Err(ScriptRefusal::Kind), "{kind}");
+        }
+        for kind in ["ACTI", "MSTT", "STAT", "NPC_", "MISC", "WEAP", "LIGH"] {
+            assert!(script_placeable(kind), "{kind}");
+        }
+        assert_eq!(t.open_script_set(CASTER, COBWEB, standing(f32::INFINITY, 0.0, 0.0, 0.0), skyrim(0x3c), "STAT", 0), Err(ScriptRefusal::NonFinite));
+        for _ in 0..MAX_SCRIPT_SETS {
+            assert!(t.open_script_set(CASTER, COBWEB, by_the_web(), skyrim(0x3c), "MISC", 0).is_ok());
+        }
+        assert_eq!(t.open_script_set(CASTER, COBWEB, by_the_web(), skyrim(0x3c), "MISC", 0), Err(ScriptRefusal::ServerWide));
+        // the spell table is untouched: a script set is no spell set
+        assert_eq!((t.live_sets(), t.waiting()), (0, 0));
+        // the set ids are one sequence with the spells' sets
+        let mut both = table();
+        let script = both.open_script_set(CASTER, COBWEB, by_the_web(), skyrim(0x3c), "STAT", 0);
+        assert!(both.cast_started(RAISE_WALL, PLUGIN, cast(CASTER, 1, standing(0.0, 0.0, 0.0, 90.0), true), 0));
+        assert_eq!((script, both.take_requests().first().map(|r| r.set)), (Ok(0), Some(1)));
     }
 
     #[test]

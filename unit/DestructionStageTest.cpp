@@ -205,6 +205,12 @@ TEST_CASE("The first report of a reference's stage rise is recorded and "
   REQUIRE(toHost[0].stage == 1);
   REQUIRE(!toHost[0].destroyed);
   REQUIRE(!toHost[0].served);
+  // thuum ADR-068 rung 4 (SCHEMA_VERSION 39): a destruction word carries no
+  // ref state word and the sequence 0 (the ref state's are the server's own
+  // words, RefStateTest's)
+  REQUIRE(!toHost[0].disabled.has_value());
+  REQUIRE(!toHost[0].deleted.has_value());
+  REQUIRE(toHost[0].seq == 0);
   REQUIRE(SentTo(p, 1).empty());
 
   // the host's engine fired the same lamp: its equal report is dropped, and

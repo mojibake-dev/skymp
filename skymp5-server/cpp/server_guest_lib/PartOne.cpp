@@ -36,6 +36,7 @@
 #include "SpellCastMessage.h"
 #include "UpdateGameModeDataMessage.h"
 #include "UpdateMovementMessage.h"
+#include "WorldGlobalMessage.h"
 
 #include "ActionListener.h"
 #include "FormCallbacks.h"
@@ -48,9 +49,11 @@
 #include "libespm/CELL.h"
 #include "libespm/MGEF.h"
 #include "libespm/PROJ.h"
+#include "libespm/QUST.h"
 #include "libespm/SPEL.h"
 #include "libespm/ScriptData.h"
 #include "papyrus-vm/Utils.h"
+#include "script_classes/PapyrusObjectReference.h"
 #include <spdlog/fmt/fmt.h>
 #include <spdlog/spdlog.h>
 
@@ -339,6 +342,24 @@ struct PartOne::Impl
     skymp::rules::new_placements("[]");
   std::unordered_map<uint64_t, std::vector<uint32_t>> placedSets;
   std::unordered_map<uint32_t, uint32_t> placedCasterByForm;
+
+  // thuum ADR-068 rung 4 (the created half): a unique actor's attached
+  // reference by its base (an ALUA container, noted at its attach), and the
+  // created aliases whose unresolved container this world logged, once each
+  std::unordered_map<uint32_t, uint32_t> uniqueActorRefs;
+  std::set<std::pair<uint32_t, uint32_t>> unresolvedCreationsLogged;
+
+  // thuum ADR-068 rung 4 (WorldGlobal 80): the world streamer, and the users
+  // it marked stale for their silence (apart from the cell hosts' marks,
+  // which only a host takes)
+  rust::Box<skymp::rules::WorldStreamer> worldStreamer =
+    skymp::rules::new_world_streamer();
+  std::unordered_set<Networking::UserId> streamerStaleUsers;
+  bool worldGlobalsEnabled = false;
+
+  // thuum ADR-068 rung 4 (the script set): each open set's world or cell,
+  // where its object is placed at its report
+  std::unordered_map<uint64_t, uint32_t> scriptSetWorldOrCell;
   // thuum docs/verbs/leveling.md
   rust::Box<skymp::rules::LevelingTable> leveling =
     skymp::rules::new_leveling_table();
@@ -425,6 +446,39 @@ struct PartOne::Impl
 
   PartOne::OnActorStreamIn onActorStreamIn;
 };
+
+namespace {
+// thuum ADR-068 rung 4: the stream words of one election, at once, never
+// the deferred queue: false to the seat whose stream ends, true to the new
+// streamer, each naming the election's epoch
+void SendStreamWords(PartOne& partOne,
+                     const skymp::rules::StreamerElection& election)
+{
+  if (!election.changed) {
+    return;
+  }
+  const auto tell = [&](uint32_t actorId, bool streams) {
+    if (actorId == 0) {
+      return;
+    }
+    const auto& form = partOne.worldState.LookupFormByIdNoLoad(actorId);
+    MpActor* actor = form ? form->AsActor() : nullptr;
+    if (!actor ||
+        partOne.serverState.UserByActor(actor) == Networking::InvalidUserId) {
+      return;
+    }
+    WorldGlobalMessage word;
+    word.epoch = election.epoch;
+    word.stream = streams;
+    actor->SendToUser(word, true);
+  };
+  tell(election.previous, false);
+  tell(election.streamer, true);
+  spdlog::info("[verb:world-globals] the world streamer is {:x} from epoch "
+               "{} ({:x} before)",
+               election.streamer, election.epoch, election.previous);
+}
+}
 
 PartOne::PartOne(Networking::ISendTarget* sendTarget)
 {
@@ -574,6 +628,12 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
     // quest stages follow the globals, the shared list first, then every
     // recorded stage ascending per quest
     GetActionListener().SendQuestStages(actor);
+
+    // thuum ADR-068 rung 4: the world's alias fills after its quest stages,
+    // and its world globals after the player's own (the streamer applies
+    // the serve before it re-baselines its diff)
+    GetActionListener().SendAliasFills(actor);
+    GetActionListener().SendWorldGlobals(actor);
 
     // thuum memo D56 A: the listed cure spells leave the player's game at the
     // login and every minute after (the engine's own RemoveSpell)
@@ -745,14 +805,20 @@ void PartOne::AttachSaveStorage(
       changeForm.isDisabled = true;
     }
 
-    if (changeForm.isDeleted) {
+    bool isFF = changeForm.formDesc.file.empty();
+
+    // thuum ADR-068 rung 4 (amendment B, read 7): a game-file reference a
+    // script deleted keeps its record, deleted and disabled at its ref
+    // state's sequence, so the loader attaches it by that record and every
+    // seat that loads its cell is served the deletion (skipped here, the
+    // files' standing copy came back after every restart); a server form's
+    // deleted record is still dropped (upstream's skip: its id is reused)
+    if (changeForm.isDeleted && isFF) {
       pImpl->logger->info(
         "Skipping deleted form {}, will likely overwrite at some point",
         changeForm.formDesc.ToString());
       return;
     }
-
-    bool isFF = changeForm.formDesc.file.empty();
 
     // thuum docs/verbs/prop-physics.md (ADR-058): a dropped item's copy is a
     // prop the record keeps across a restart, so the skip below (upstream's,
@@ -896,6 +962,11 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           // every cell it hosts starts its grace (thuum
           // docs/verbs/cell-host.md); the clock passes them on
           this_->pImpl->cells->gone(actor->GetFormId(), SteadyNowMs());
+          // and the world streamer hands its stream on (thuum ADR-068 rung
+          // 4)
+          SendStreamWords(
+            *this_, this_->pImpl->worldStreamer->gone(actor->GetFormId()));
+          this_->pImpl->streamerStaleUsers.erase(userId);
           // and its props fall back to their cells' hosts (thuum
           // docs/verbs/prop-physics.md)
           this_->pImpl->props->props_gone(actor->GetFormId());
@@ -1227,6 +1298,16 @@ void PartOne::Init()
       WouldMoveActor(*host, actor, destWorldOrCell, destPos) !=
       MoveVerdict::Refuse;
   };
+  // thuum ADR-068 rung 4 (amendment B, read 8): the quest aliases' created
+  // items a reference holds, put in at its attach, before its create word
+  worldState.onAttach = [this](MpObjectReference& refr) {
+    AddCreatedItems(refr);
+  };
+  // thuum ADR-068 rung 4: the object's sequence now, which a game-file world
+  // object's Enable or Disable stamps as its recorded ref state
+  worldState.objectSeqOf = [this](uint32_t refrId) {
+    return GetScriptCalls().seq_of(refrId);
+  };
   // thuum docs/verbs/npc-fate.md (ADR-049 decision 2): a fate rolled anew
   // at a respawn goes to every user and the fate pass at a player's square
   // change, ahead of the grid's own loader (decision 3's "ahead of the
@@ -1467,19 +1548,85 @@ void PartOne::Init()
     // lamp's fallen stage) rides behind its create word on the same ordered
     // channel, served, so the late seat applies the record without replaying
     // the firing; after a restart the record is the saved one
-    if (!emitterAsActor) {
-      if (const auto destruction = emitter->GetDestruction()) {
-        DestructionStageMessage served;
-        served.refr = emitter->GetFormId();
+    // thuum ADR-068 rung 4 (amendment B, read 7): the same word carries a
+    // reference's recorded ref state (its owner's Enable, Disable or Delete,
+    // or the server's own), disabled and deleted with the object's sequence,
+    // an actor's too; the word goes before ScriptStateApply, whose sequence
+    // can be older (the receiver's served word raises nothing)
+    const auto destruction = emitterAsActor
+      ? std::optional<MpChangeFormREFR::Destruction>()
+      : emitter->GetDestruction();
+    const auto refStateSeq = emitter->GetRefStateSeq();
+    if (destruction || refStateSeq) {
+      DestructionStageMessage served;
+      served.refr = emitter->GetFormId();
+      if (destruction) {
         served.stage = destruction->stage;
         served.destroyed = destruction->destroyed;
-        served.served = true;
-        sendTarget->Send(listenerUserId, served, true);
+      }
+      if (refStateSeq) {
+        served.disabled = emitter->IsDisabled();
+        served.deleted = emitter->IsDeleted();
+        served.seq = *refStateSeq;
+      }
+      served.served = true;
+      sendTarget->Send(listenerUserId, served, true);
+      if (destruction) {
         spdlog::info("[verb:traps] {:x}'s record (stage {}, destroyed {}) "
                      "served to {:x} after its create word",
                      emitter->GetFormId(),
                      static_cast<int>(destruction->stage),
                      destruction->destroyed, listenerAsActor->GetFormId());
+      }
+      if (refStateSeq) {
+        spdlog::info("[verb:scripts] ref state {:x} (disabled {}, deleted {}, "
+                     "seq {}) served to {:x} after its create word",
+                     emitter->GetFormId(), emitter->IsDisabled(),
+                     emitter->IsDeleted(), *refStateSeq,
+                     listenerAsActor->GetFormId());
+      }
+    }
+
+    // thuum ADR-068 rung 4 (the standing, W3): an NPC's recorded standing
+    // rides behind its create word as the appliers that bring a late
+    // engine's copy to the record (the record's against its base's rows),
+    // at once and with no sequence: several serve one subject
+    if (emitterAsActor && !isMe && !hasUser &&
+        emitter->GetFormId() < 0xff000000) {
+      size_t appliers = 0;
+      for (const auto& applier : emitterAsActor->StandingAppliers()) {
+        uint32_t formId = 0;
+        if (applier.form.shortFormId != 0 || !applier.form.file.empty()) {
+          try {
+            formId = applier.form.ToFormId(worldState.espmFiles);
+          } catch (const std::exception&) {
+            continue;
+          }
+        }
+        std::vector<std::optional<
+          std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+          args;
+        const bool other =
+          std::string(applier.function) == "SetRelationshipRank";
+        if (formId != 0) {
+          args.push_back(SpSnippetObjectArgument{
+            SpSnippet::MakeLongFormId(&worldState, formId),
+            other ? std::string("Actor") : std::string("Faction") });
+        } else {
+          args.push_back(std::nullopt);
+        }
+        if (applier.rank) {
+          args.push_back(static_cast<double>(*applier.rank));
+        }
+        SpSnippet("Actor", applier.function, args, emitter->GetFormId())
+          .Serve(listenerAsActor);
+        ++appliers;
+      }
+      if (appliers > 0) {
+        spdlog::info("[verb:scripts] standing of {:x} served to {:x} after "
+                     "its create word: {} applier(s)",
+                     emitter->GetFormId(), listenerAsActor->GetFormId(),
+                     appliers);
       }
     }
 
@@ -2212,12 +2359,16 @@ void PartOne::OnDeathState(MpActor& actor, bool isDead)
                  "grace, no candidate until it stands (D18)",
                  actor.GetFormId());
     ApplyHostDecisions(*this, pImpl->cells->died(actor.GetFormId(), nowMs));
+    SendStreamWords(*this,
+                    pImpl->worldStreamer->dead(actor.GetFormId(), true));
   } else {
     spdlog::info("PartOne - cell-host: {:x} stands again: a candidate again "
                  "(D18)",
                  actor.GetFormId());
     ApplyHostDecisions(*this,
                        pImpl->cells->respawned(actor.GetFormId(), nowMs));
+    SendStreamWords(*this,
+                    pImpl->worldStreamer->dead(actor.GetFormId(), false));
   }
 }
 
@@ -2707,6 +2858,19 @@ void PartOne::TickCellHosts(uint64_t nowMs)
         }
         return false;
       }();
+      // thuum ADR-068 rung 4: the world streamer reads the same silence for
+      // every seat (its own eligibility wants a movement report first, so a
+      // login's load block is no election)
+      const bool streamerStale = pImpl->streamerStaleUsers.count(userId) > 0;
+      if (silenceMs >= kStaleHostMs && !streamerStale) {
+        pImpl->streamerStaleUsers.insert(userId);
+        SendStreamWords(*this,
+                        pImpl->worldStreamer->stale(actor->GetFormId(), true));
+      } else if (silenceMs >= 0 && silenceMs < kStaleHostMs && streamerStale) {
+        pImpl->streamerStaleUsers.erase(userId);
+        SendStreamWords(
+          *this, pImpl->worldStreamer->stale(actor->GetFormId(), false));
+      }
       if (silenceMs >= kStaleHostMs && !wasStale && hostsSomething) {
         pImpl->staleUsers.insert(userId);
         spdlog::info("PartOne - cell-host: {:x} (user {}) silent {} ms, "
@@ -3475,6 +3639,340 @@ bool PartOne::SetQuestStages(std::vector<QuestStageDone> stages)
   return WorldJournal().SetQuestStages(std::move(stages));
 }
 
+void PartOne::SetWorldGlobalsEnabled(bool on)
+{
+  pImpl->worldGlobalsEnabled = on;
+  spdlog::info("[verb:world-globals] world globals {}", on ? "on" : "off");
+}
+
+bool PartOne::WorldGlobalsEnabled() const
+{
+  return pImpl->worldGlobalsEnabled;
+}
+
+void PartOne::WorldStreamerMoved(MpActor& actor)
+{
+  // off, nobody is ever eligible, so the seats' later events elect nobody
+  if (!pImpl->worldGlobalsEnabled) {
+    return;
+  }
+  SendStreamWords(*this, pImpl->worldStreamer->moved(actor.GetFormId()));
+}
+
+uint8_t PartOne::JudgeWorldGlobalReport(uint32_t sender, uint32_t epoch) const
+{
+  return pImpl->worldStreamer->judge(sender, epoch);
+}
+
+std::pair<uint32_t, uint32_t> PartOne::WorldStreamer() const
+{
+  const auto now = pImpl->worldStreamer->streamer_now();
+  return { now.streamer, now.epoch };
+}
+
+std::vector<PlayerGlobal> PartOne::GetWorldGlobals()
+{
+  // a read makes no journal (GetAliasFills says why)
+  if (!worldState.LookupFormById(kWorldJournalRefId)) {
+    return {};
+  }
+  return WorldJournal().GetWorldGlobals();
+}
+
+bool PartOne::SetWorldGlobals(std::vector<PlayerGlobal> globals)
+{
+  return WorldJournal().SetWorldGlobals(std::move(globals));
+}
+
+std::vector<MpChangeFormREFR::AliasFill> PartOne::GetAliasFills()
+{
+  // a read makes no journal: the login's serve reads the fills on every
+  // server, and a journal made there would take the idx of the actor the
+  // next login creates (PartOne_MovementTest's idx 1, pipeline 5600); the
+  // first write makes it
+  if (!worldState.LookupFormById(kWorldJournalRefId)) {
+    return {};
+  }
+  return WorldJournal().GetAliasFills();
+}
+
+bool PartOne::SetAliasFills(std::vector<MpChangeFormREFR::AliasFill> fills)
+{
+  return WorldJournal().SetAliasFills(std::move(fills));
+}
+
+namespace {
+// thuum ADR-068 rung 4 (amendment B, read 8): one created alias's item as
+// the game files give it, the forms in the load order; containerKind is the
+// rules' (0 unresolved, 1 a forced reference, 2 a unique actor's base)
+struct AliasCreation
+{
+  uint32_t quest = 0;
+  uint32_t alias = 0;
+  uint32_t base = 0;
+  uint32_t target = 0;
+  uint8_t containerKind = 0;
+  uint32_t container = 0;
+  bool startGameEnabled = false;
+  std::string why;
+};
+
+// every quest's created aliases, read once per set of game files: a scan of
+// the QUST records (their aliases, libespm QUST::GetQuestAliases; a quest's
+// DNAM read only where an alias creates), the creation and its container
+// the rule's (wire-rules alias_fills::creations). The index is the files',
+// so the process keeps one per loader, which the tests' many PartOnes share
+struct AliasCreationIndex
+{
+  std::unordered_multimap<uint32_t, AliasCreation> byForcedRef;
+  std::unordered_multimap<uint32_t, AliasCreation> byUniqueActor;
+  std::unordered_map<uint32_t, std::vector<AliasCreation>> byQuest;
+};
+
+const AliasCreationIndex& AliasCreationsOf(WorldState& worldState)
+{
+  static std::map<const espm::Loader*, std::unique_ptr<AliasCreationIndex>>
+    g_indices;
+  auto& slot = g_indices[&worldState.GetEspm()];
+  if (slot) {
+    return *slot;
+  }
+  slot = std::make_unique<AliasCreationIndex>();
+  auto& index = *slot;
+  auto& cache = worldState.GetEspmCache();
+  size_t resolved = 0;
+  size_t unresolved = 0;
+  for (const auto& lookup :
+       worldState.GetEspm().GetBrowser().GetDistinctRecordsByType("QUST")) {
+    const auto* qust = espm::Convert<espm::QUST>(lookup.rec);
+    if (!qust) {
+      continue;
+    }
+    std::vector<skymp::rules::QuestAliasRow> rows;
+    bool creates = false;
+    for (const auto& alias : qust->GetQuestAliases(cache)) {
+      if (alias.locationAlias) {
+        continue;
+      }
+      skymp::rules::QuestAliasRow row{};
+      row.id = alias.aliasID;
+      row.created = alias.aliasCreatedObject
+        ? lookup.ToGlobalId(alias.aliasCreatedObject)
+        : 0;
+      row.create_at = alias.createAt;
+      row.forced = alias.aliasForcedReference
+        ? lookup.ToGlobalId(alias.aliasForcedReference)
+        : 0;
+      row.unique_actor =
+        alias.aliasUniqueActor ? lookup.ToGlobalId(alias.aliasUniqueActor) : 0;
+      creates = creates || row.created != 0;
+      rows.push_back(row);
+    }
+    if (!creates) {
+      continue;
+    }
+    const auto made = skymp::rules::alias_creations(
+      rust::Slice<const skymp::rules::QuestAliasRow>(rows.data(),
+                                                     rows.size()));
+    const uint32_t questId = lookup.ToGlobalId(lookup.rec->GetId());
+    const auto data = qust->GetData(cache);
+    const bool startGameEnabled = data.questData &&
+      (data.questData->mainFlags & espm::QUST::QuestData::StartGameEnabled);
+    for (const auto& row : made) {
+      AliasCreation creation;
+      creation.quest = questId;
+      creation.alias = row.alias;
+      creation.base = row.base;
+      creation.target = row.target;
+      creation.containerKind = row.container_kind;
+      creation.container = row.container;
+      creation.startGameEnabled = startGameEnabled;
+      creation.why = std::string(row.why);
+      if (creation.containerKind == 1) {
+        index.byForcedRef.emplace(creation.container, creation);
+        ++resolved;
+      } else if (creation.containerKind == 2) {
+        index.byUniqueActor.emplace(creation.container, creation);
+        ++resolved;
+      } else {
+        ++unresolved;
+      }
+      index.byQuest[questId].push_back(std::move(creation));
+    }
+  }
+  spdlog::info("[verb:quest-stage] the quests' created aliases: {} resolved "
+               "to a container, {} unresolved (E_ALIASFILL_UNRESOLVED, each "
+               "logged once when its quest fills)",
+               resolved, unresolved);
+  return index;
+}
+
+// the journal's marks as the rule reads them: an entry whose created item
+// names a quest the running order resolves
+std::vector<skymp::rules::AliasMarkRow> CreatedMarks(
+  const std::vector<MpChangeFormREFR::AliasFill>& fills,
+  const EspmFileList& files)
+{
+  std::vector<skymp::rules::AliasMarkRow> marks;
+  for (const auto& fill : fills) {
+    if (!fill.created) {
+      continue;
+    }
+    try {
+      marks.push_back({ fill.quest.ToFormId(files), fill.alias, fill.added });
+    } catch (const std::exception&) {
+      // a plugin the order lacks: its mark names no quest of this world
+    }
+  }
+  return marks;
+}
+}
+
+namespace {
+bool AddCreatedItem(PartOne& partOne, MpObjectReference& container,
+                    const AliasCreation& creation)
+{
+  auto fills = partOne.GetAliasFills();
+  const auto marks = CreatedMarks(fills, partOne.worldState.espmFiles);
+  if (!skymp::rules::alias_created_due(
+        rust::Slice<const skymp::rules::AliasMarkRow>(marks.data(),
+                                                      marks.size()),
+        creation.quest, creation.alias)) {
+    return false;
+  }
+  const auto& files = partOne.worldState.espmFiles;
+  FormDesc quest;
+  FormDesc created;
+  FormDesc where;
+  try {
+    quest = FormDesc::FromFormId(creation.quest, files);
+    created = FormDesc::FromFormId(creation.base, files);
+    where = FormDesc::FromFormId(container.GetFormId(), files);
+  } catch (const std::exception& e) {
+    spdlog::warn("[verb:quest-stage] alias {:x}/{} creates {:x} in {:x}: {}; "
+                 "not added",
+                 creation.quest, creation.alias, creation.base,
+                 container.GetFormId(), e.what());
+    return false;
+  }
+  container.AddItem(creation.base, 1);
+  auto entry = std::find_if(fills.begin(), fills.end(), [&](const auto& fill) {
+    return fill.quest == quest && fill.alias == creation.alias;
+  });
+  if (entry == fills.end()) {
+    MpChangeFormREFR::AliasFill mark;
+    mark.quest = quest;
+    mark.alias = creation.alias;
+    fills.push_back(std::move(mark));
+    entry = std::prev(fills.end());
+  }
+  entry->created = created;
+  entry->container = where;
+  entry->added = true;
+  partOne.SetAliasFills(std::move(fills));
+  spdlog::info("[verb:quest-stage] alias {:x}/{} creates {:x} in {:x}: "
+               "added once",
+               creation.quest, creation.alias, creation.base,
+               container.GetFormId());
+  return true;
+}
+}
+
+size_t PartOne::AddCreatedItems(MpObjectReference& container)
+{
+  if (!HasEspm() || container.GetFormId() >= 0xff000000) {
+    return 0;
+  }
+  const auto& index = AliasCreationsOf(worldState);
+  std::vector<const AliasCreation*> found;
+  const auto collect =
+    [&](const std::unordered_multimap<uint32_t, AliasCreation>& map,
+        uint32_t key) {
+      const auto [begin, end] = map.equal_range(key);
+      for (auto it = begin; it != end; ++it) {
+        found.push_back(&it->second);
+      }
+    };
+  collect(index.byForcedRef, container.GetFormId());
+  if (container.AsActor()) {
+    const size_t before = found.size();
+    collect(index.byUniqueActor, container.GetBaseId());
+    if (found.size() != before) {
+      pImpl->uniqueActorRefs[container.GetBaseId()] = container.GetFormId();
+    }
+  }
+  if (found.empty()) {
+    return 0;
+  }
+  // a start-game-enabled quest fills from the game's start; any other once
+  // the world records a stage of it (its start, as near as the record knows)
+  const auto stages = GetQuestStages();
+  size_t added = 0;
+  for (const AliasCreation* creation : found) {
+    if (!creation->startGameEnabled) {
+      const bool started =
+        std::any_of(stages.begin(), stages.end(), [&](const auto& stage) {
+          try {
+            return stage.quest.ToFormId(worldState.espmFiles) ==
+              creation->quest;
+          } catch (const std::exception&) {
+            return false;
+          }
+        });
+      if (!started) {
+        continue;
+      }
+    }
+    if (AddCreatedItem(*this, container, *creation)) {
+      ++added;
+    }
+  }
+  return added;
+}
+
+size_t PartOne::AddCreatedItemsOfQuest(uint32_t questId)
+{
+  if (!HasEspm()) {
+    return 0;
+  }
+  const auto& index = AliasCreationsOf(worldState);
+  const auto it = index.byQuest.find(questId);
+  if (it == index.byQuest.end()) {
+    return 0;
+  }
+  size_t added = 0;
+  for (const auto& creation : it->second) {
+    if (creation.containerKind == 0) {
+      if (pImpl->unresolvedCreationsLogged
+            .insert({ creation.quest, creation.alias })
+            .second) {
+        spdlog::info("[verb:quest-stage] E_ALIASFILL_UNRESOLVED: alias "
+                     "{:x}/{} creates {:x} in alias {}: {}; the item stays "
+                     "each seat's own",
+                     creation.quest, creation.alias, creation.base,
+                     creation.target, creation.why);
+      }
+      continue;
+    }
+    // the container already attached; one attached later takes its item at
+    // its own attach (AddCreatedItems), the quest now recorded
+    uint32_t containerId = creation.container;
+    if (creation.containerKind == 2) {
+      const auto ref = pImpl->uniqueActorRefs.find(creation.container);
+      if (ref == pImpl->uniqueActorRefs.end()) {
+        continue;
+      }
+      containerId = ref->second;
+    }
+    const auto& form = worldState.LookupFormByIdNoLoad(containerId);
+    MpObjectReference* container = form ? form->AsObjectReference() : nullptr;
+    if (container && AddCreatedItem(*this, *container, creation)) {
+      ++added;
+    }
+  }
+  return added;
+}
+
 namespace {
 // the eighteen skills' AVIF records, one per ActorValue 6 to 23 (Skyrim.esm as
 // lab/esm.py read it, 2026-10-31: AVOneHanded 0x44c through AVEnchanting
@@ -3830,6 +4328,105 @@ void PartOne::RemoveSpellPlacedSet(uint64_t set, const char* why)
   pImpl->placedSets.erase(it);
 }
 
+bool PartOne::OpenScriptSet(MpActor& reporter, uint32_t selfId,
+                            uint32_t worldOrCell, const NiPoint3& anchor,
+                            uint32_t baseId)
+{
+  FormDesc baseDesc;
+  try {
+    baseDesc = FormDesc::FromFormId(baseId, worldState.espmFiles);
+  } catch (const std::exception& e) {
+    spdlog::info("[verb:spell-placed] E_PLACED_BASE: {:x}'s script placed "
+                 "{:x} at {:x}: {}; nothing placed",
+                 reporter.GetFormId(), baseId, selfId, e.what());
+    return false;
+  }
+  std::string baseType;
+  if (HasEspm()) {
+    if (const auto* rec = GetEspm().GetBrowser().LookupById(baseId).rec) {
+      baseType = rec->GetType().ToString();
+    }
+  }
+  const auto opened = pImpl->placements->open_script_set(
+    reporter.GetFormId(), selfId, anchor.x, anchor.y, anchor.z,
+    baseDesc.shortFormId, baseDesc.file, baseType, SteadyNowMs());
+  if (opened.refusal != 0) {
+    const char* code = opened.refusal == 1 ? "E_PLACED_KIND"
+      : opened.refusal == 2                ? "E_PLACED_FULL"
+                                           : "E_PLACED_NAN";
+    spdlog::info("[verb:spell-placed] {}: {:x}'s script placed {} ({}) at "
+                 "{:x}; nothing placed",
+                 code, reporter.GetFormId(), baseDesc.ToString(), baseType,
+                 selfId);
+    return false;
+  }
+  pImpl->scriptSetWorldOrCell[opened.set] = worldOrCell;
+  for (const auto& row : pImpl->placements->take_script_requests()) {
+    PlacedRequestMessage ask;
+    ask.set = row.set;
+    ask.windowMs =
+      static_cast<uint32_t>(std::min<uint64_t>(row.window_ms, 10'000));
+    const FormDesc base(row.short_id, std::string(row.file));
+    try {
+      ask.bases.push_back(base.ToFormId(worldState.espmFiles));
+    } catch (const std::exception&) {
+      continue;
+    }
+    const auto userId = serverState.UserByActor(&reporter);
+    if (userId == Networking::InvalidUserId) {
+      continue;
+    }
+    GetSendTarget().Send(userId, ask, true);
+    spdlog::info("[verb:spell-placed] {:x}'s script placed {} ({}) at {:x}: "
+                 "set {} requested within {} ms",
+                 row.caster, base.ToString(), std::string(row.record_type),
+                 row.self_id, row.set, ask.windowMs);
+  }
+  return true;
+}
+
+namespace {
+// thuum ADR-068 rung 4 (the script set): the server's copy of a script's
+// placement at its reporter's pose, through PlaceAt (an NPC fated before its
+// create word), marked with its placer and its record before its first
+// subscription so its create word names the reporter
+uint32_t PlaceScriptObject(PartOne& partOne,
+                           const skymp::rules::ScriptPlacementRow& row,
+                           uint32_t worldOrCell,
+                           std::unordered_map<uint32_t, uint32_t>& placers)
+{
+  auto& worldState = partOne.worldState;
+  const auto& reporterForm = worldState.LookupFormByIdNoLoad(row.caster);
+  MpActor* reporter = reporterForm ? reporterForm->AsActor() : nullptr;
+  if (!reporter || !partOne.HasEspm() || worldOrCell == 0) {
+    return 0;
+  }
+  const FormDesc baseDesc(row.short_id, std::string(row.file));
+  uint32_t baseId = 0;
+  FormDesc where;
+  FormDesc self;
+  try {
+    baseId = baseDesc.ToFormId(worldState.espmFiles);
+    where = FormDesc::FromFormId(worldOrCell, worldState.espmFiles);
+    self = FormDesc::FromFormId(row.self_id, worldState.espmFiles);
+  } catch (const std::exception&) {
+    return 0;
+  }
+  const auto lookup = partOne.GetEspm().GetBrowser().LookupById(baseId);
+  if (!lookup.rec) {
+    return 0;
+  }
+  auto& refr = PapyrusObjectReference::PlaceAt(
+    *reporter, lookup,
+    LocationalData{ { row.x, row.y, row.z }, { 0.f, 0.f, row.yaw }, where },
+    false);
+  placers[refr.GetFormId()] = row.caster;
+  refr.SetPlacedByScript(self, baseDesc);
+  refr.ForceSubscriptionsUpdate();
+  return refr.GetFormId();
+}
+}
+
 void PartOne::SendPlacementRequests()
 {
   const auto rows = pImpl->placements->take_requests();
@@ -3939,6 +4536,28 @@ void PartOne::TickPlacements(uint64_t nowMs)
   }
   for (const auto& removal : pImpl->placements->due_removals(nowMs)) {
     RemoveSpellPlacedSet(removal.set, PlacementRemovalWhy(removal.why));
+  }
+  // thuum ADR-068 rung 4 (the script set): a report placed, or a window
+  // closed with none
+  for (const auto& row : pImpl->placements->due_script_placements(nowMs)) {
+    const auto where = pImpl->scriptSetWorldOrCell.find(row.set);
+    const uint32_t worldOrCell =
+      where != pImpl->scriptSetWorldOrCell.end() ? where->second : 0;
+    pImpl->scriptSetWorldOrCell.erase(row.set);
+    const FormDesc base(row.short_id, std::string(row.file));
+    if (!row.placed) {
+      spdlog::info("[verb:spell-placed] {:x}'s script placed {} at {:x}: "
+                   "nothing placed, its game reported no base within the "
+                   "window",
+                   row.caster, base.ToString(), row.self_id);
+      continue;
+    }
+    const uint32_t formId =
+      PlaceScriptObject(*this, row, worldOrCell, pImpl->placedCasterByForm);
+    spdlog::info("[verb:spell-placed] {:x}'s script placed {} ({}) at {:x}: "
+                 "{:x} at ({:.0f}, {:.0f}, {:.0f}) yaw {:.0f}, as reported",
+                 row.caster, base.ToString(), std::string(row.record_type),
+                 row.self_id, formId, row.x, row.y, row.z, row.yaw);
   }
 }
 

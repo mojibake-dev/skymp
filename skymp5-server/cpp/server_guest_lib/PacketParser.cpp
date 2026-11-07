@@ -327,6 +327,18 @@ void PacketParser::TransformPacketIntoAction(Networking::UserId userId,
         actionListener.OnScriptState(rawMsgData, *message);
         return;
       }
+      case MsgType::AliasFill: {
+        auto message =
+          reinterpret_cast<AliasFillMessage*>(result->message.get());
+        actionListener.OnAliasFill(rawMsgData, *message);
+        return;
+      }
+      case MsgType::WorldGlobal: {
+        auto message =
+          reinterpret_cast<WorldGlobalMessage*>(result->message.get());
+        actionListener.OnWorldGlobal(rawMsgData, *message);
+        return;
+      }
       default: {
         spdlog::error("PacketParser.cpp doesn't implement MsgType {}",
                       static_cast<int64_t>(result->msgType));

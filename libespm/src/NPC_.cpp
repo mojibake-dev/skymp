@@ -17,8 +17,14 @@ NPC_::Data NPC_::GetData(
       } else if (!std::memcmp(type, "SOFT", 4)) {
         result.sleepOutfitId = *reinterpret_cast<const uint32_t*>(data);
       } else if (!std::memcmp(type, "SNAM", 4)) {
+        // the FACT's form id, then its int8 rank at offset 4 and three
+        // unused bytes (UESP, "Skyrim Mod:Mod File Format/NPC_", SNAM); the
+        // rank was read at offset 0, the form id's low byte (thuum ADR-068
+        // rung 4, StandingTest: Arvel 0x39646's SpiderFaction 0x2997f read
+        // 127 for the record's 0, lab/esm.py's SNAM 7f99020000000000)
         uint32_t formId = *reinterpret_cast<const uint32_t*>(data);
-        int8_t rank = *reinterpret_cast<const int8_t*>(data);
+        int8_t rank =
+          dataSize > 4 ? *reinterpret_cast<const int8_t*>(data + 4) : 0;
 
         result.factions.push_back({ formId, rank });
       } else if (!std::memcmp(type, "ACBS", 4)) {

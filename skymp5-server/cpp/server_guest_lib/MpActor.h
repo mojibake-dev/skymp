@@ -126,6 +126,34 @@ public:
   std::vector<Faction> GetFactions(int minFactionID, int maxFactionID,
                                    bool lazyLoad = true);
   void RemoveFromFaction(FormDesc factionForm, bool lazyLoad = true);
+  // thuum ADR-068 rung 4 (the standing, W3): the NPC's factions and ranks
+  // (the base's SNAM rows loaded at the first read), a faction's rank set
+  // (added when the record lacks it), every faction dropped, the crime
+  // faction the record keeps (none: the base's; the empty desc: removed),
+  // the relationship ranks toward other actors; and the base's own rows, for
+  // the serve's difference
+  std::vector<Faction> GetFactionRanks();
+  void SetFactionRank(const FormDesc& factionForm, int8_t rank);
+  void RemoveFromAllFactions();
+  std::optional<FormDesc> GetCrimeFactionRecord() const;
+  void SetCrimeFactionRecord(const FormDesc& faction);
+  std::vector<MpChangeFormREFR::Relationship> GetRelationships() const;
+  void SetRelationshipRank(const FormDesc& other, int8_t rank);
+  std::vector<Faction> BaseFactions();
+  // the standing's appliers a late seat runs to stand where the record does
+  // (the serve behind the create word): SetFactionRank for each recorded
+  // rank the base's rows lack, RemoveFromFaction for each base faction the
+  // record dropped, SetCrimeFaction for a recorded crime faction (form 0 for
+  // its removal), SetRelationshipRank for each recorded relationship; none
+  // for an NPC whose factions the server never loaded and whose standing no
+  // script moved
+  struct StandingApplier
+  {
+    const char* function = "";
+    FormDesc form;
+    std::optional<int32_t> rank;
+  };
+  std::vector<StandingApplier> StandingAppliers();
 
   void VisitProperties(CreateActorMessage& message,
                        VisitPropertiesMode mode) override;

@@ -371,15 +371,22 @@ RE::TESObjectREFR* ReadPresser(const void* args, PresserRead& how)
 }
 
 // whether this seat owns the presser (the plan's rule table, "A trigger
-// volume's entry"): its own player; a body (TESObjectREFR::IsDead,
-// include/RE/T/TESObjectREFR.h:353) in a cell this seat hosts, a body being
-// its cell host's until M4; a live actor this seat simulates (Hosted.h)
-// that is no puppet (Puppets.h), the gate's own simulatedActor test, false
-// for a figure and for a puppet; a non-actor (a prop, a thrown item: D-W1
-// names actors) unless it is a trap body another seat streams
-// (TrapFamily::Followed). Reads alone: the form type byte
-// (include/RE/T/TESForm.h:289), the life state behind IsDead and the parent
-// cell (TESObjectREFR.h:413)
+// volume's entry"; the train's fresh review, note 2: the seam's owner,
+// ScriptNatives.cpp OwnedForRecord, so the gate and the seam name the same
+// one): its own player; a non-actor (a prop, a thrown item: D-W1 names
+// actors) unless it is a trap body another seat streams
+// (TrapFamily::Followed); an actor at or above 0xff000000 (a player's
+// figure, what the server or a seat places) by the server's word alone, its
+// simulator's (Hosted.h, no puppet, Puppets.h; a figure is never hosted, so
+// a dead player's figure counts on its own seat and not on the cell's host);
+// a body (TESObjectREFR::IsDead, include/RE/T/TESObjectREFR.h:353) in a cell
+// this seat hosts, a body being its cell host's until M4; a live game-file
+// actor its simulator's, hosted here and no puppet, the gate's own
+// simulatedActor test; and a game-file actor the server gave this seat no
+// word on, neither hosted nor a puppet (the ambush draugr 0x380ba, which no
+// seat simulates until its trigger enables it), its cell host's. Reads
+// alone: the form type byte (include/RE/T/TESForm.h:289), the life state
+// behind IsDead and the parent cell (TESObjectREFR.h:413)
 bool OwnsPresser(const RE::TESObjectREFR* presser)
 {
   const uint32_t id = presser->formID;
@@ -389,11 +396,20 @@ bool OwnsPresser(const RE::TESObjectREFR* presser)
   if (presser->GetFormType() != RE::FormType::ActorCharacter) {
     return !TrapFamily::Followed::Is(id);
   }
+  if (id >= 0xff000000) {
+    return Hosted::Is(id) && !Puppets::Is(id);
+  }
   if (presser->IsDead()) {
     const RE::TESObjectCELL* cell = presser->GetParentCell();
     return cell && Frida::IsCellHosted(cell->GetFormID());
   }
-  return Hosted::Is(id) && !Puppets::Is(id);
+  const bool hosted = Hosted::Is(id);
+  const bool puppet = Puppets::Is(id);
+  if (hosted || puppet) {
+    return hosted && !puppet;
+  }
+  const RE::TESObjectCELL* cell = presser->GetParentCell();
+  return cell && Frida::IsCellHosted(cell->GetFormID());
 }
 
 // whether the handle has an attached script (the VM's attachedScripts under
@@ -601,21 +617,21 @@ void OnSendEventEnter(GumInvocationContext* ic)
 
   // thuum docs/DECISIONS.md ADR-068 D-W1 A and D-C2 A, the presser rule
   // (above; setTriggerPresserRule, off by default): an OnTriggerEnter or an
-  // OnTriggerLeave to a world object, under the block, counts on its
-  // presser's owner alone. A presser this seat does not own (another seat's
-  // figure, a puppet, a body in a cell this seat does not host, a trap body
-  // another seat streams) is blanked here, before any rule below could pass
-  // it: its owner's engine counts that entry, and what it causes crosses
-  // from there (a trap family trigger's firing as its first link,
-  // RelayedActivation 70; a world script's entry to the cell's host as
-  // Activate's entry, played there by TESModPlatform.SendTriggerEvent, which
-  // this gate passes under the platform's Override above). An owned entry on
-  // a trap family trigger, or on a scripted trigger in a cell this seat does
-  // not host, is told to skymp5-client as triggerEntry on the next tick (a
-  // tick task, never a handler's PushAndWait: the plan's read 1) and then
-  // goes on through the gate as before, so a family trigger's runs here and
-  // a guest's world script stays blanked; an owned entry on a hosted cell's
-  // world trigger runs here and tells nobody. The family is asked in a
+  // OnTriggerLeave to a world object, under the block, counts on its presser's
+  // owner alone. A presser this seat does not own (OwnsPresser: another seat's
+  // figure, a puppet, a body or an actor no seat was given in a cell this seat
+  // does not host, a trap body another seat streams) is blanked here, before
+  // any rule below could pass it: its owner's engine counts that entry, and
+  // what it causes crosses from there (a trap family trigger's firing as its
+  // first link, RelayedActivation 70; a world script's entry to the cell's
+  // host as Activate's entry, played there by TESModPlatform.SendTriggerEvent,
+  // which this gate passes under the platform's Override above). An owned
+  // entry on a trap family trigger, or on a scripted trigger in a cell this
+  // seat does not host, is told to skymp5-client as triggerEntry on the next
+  // tick (a tick task, never a handler's PushAndWait: the plan's read 1) and
+  // then goes on through the gate as before, so a family trigger's runs here
+  // and a guest's world script stays blanked; an owned entry on a hosted
+  // cell's world trigger runs here and tells nobody. The family is asked in a
   // hosted cell too, its verdict cached per class. Trigger events alone pay
   // for this (rule 9)
   if (blockEvents && worldObject &&

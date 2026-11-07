@@ -677,6 +677,67 @@ TEST_CASE("mp list names the players online, mp tp brings one and mp tpto "
   DoDisconnect(p, 0);
 }
 
+// thuum docs/verbs/racemenu-sync.md, `mp racemenu` (Eli in playtest 49,
+// 2026-11-06: "at next playtest make sure the command is implemented so i
+// can"): any player opens its own race menu through the server, as the lab's
+// open-race-menu does; asked again while the menu is open, it is said and
+// nothing is sent
+TEST_CASE("mp racemenu opens the caller's own race menu by the server's word",
+          "[ConsoleCommand]")
+{
+  PartOne& p = GetPartOne();
+  const bool forAll = p.worldState.enableConsoleCommandsForAll;
+  p.worldState.enableConsoleCommandsForAll = false;
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c, 1);
+  p.SetUserActor(0, 0xff000000);
+  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
+  ac.SetStaffRank(0);
+  // a character with no look starts with the menu open (MpActor's
+  // ApplyChangeForm); this one has chosen
+  ac.SetRaceMenuOpen(false);
+  // the SetRaceMenuOpen words user 0's game got since the last clear
+  const auto opened = [&] {
+    size_t n = 0;
+    for (auto& m : p.Messages()) {
+      if (m.userId == 0 && m.j["t"] == MsgType::SetRaceMenuOpen &&
+          m.j["open"] == true) {
+        ++n;
+      }
+    }
+    return n;
+  };
+
+  p.Messages().clear();
+  Send(p, "mp", { int64_t(0), std::string("racemenu") });
+  p.Tick();
+  REQUIRE(ac.IsRaceMenuOpen());
+  REQUIRE(opened() == 1);
+  REQUIRE(Lines(p) ==
+          std::vector<std::pair<std::string, bool>>{
+            { "the race menu opens; closing it records your look (a race "
+              "change resets the face)",
+              false },
+            { "mp racemenu done", false } });
+
+  // again while it is open: said, and no second word
+  p.Messages().clear();
+  Send(p, "mp", { int64_t(0), std::string("racemenu") });
+  p.Tick();
+  REQUIRE(ac.IsRaceMenuOpen());
+  REQUIRE(opened() == 0);
+  REQUIRE(
+    Lines(p) ==
+    std::vector<std::pair<std::string, bool>>{
+      { "the race menu is open already; close it to keep your look", false },
+      { "mp racemenu done", false } });
+
+  ac.SetRaceMenuOpen(false);
+  p.worldState.enableConsoleCommandsForAll = forAll;
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
 // thuum docs/verbs/movement-speed.md, arrivals: a teleport the server makes
 // is not undone by the movement reports the player's game sent before it
 // (Eli's playtest twelve: MoveTo moved a player a little, or not at all)

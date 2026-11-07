@@ -802,6 +802,28 @@ void ExecuteMpHost(PartOne& partOne, MpActor& caller)
         false);
 }
 
+// `mp racemenu` (Eli in playtest 49, 2026-11-06: "at next playtest make sure
+// the command is implemented so i can"): the caller's own race menu, opened
+// by the server's word as the lab's open-race-menu opens it
+// (PartOne::SetRaceMenuOpen: the record's isRaceMenuOpen, then
+// SetRaceMenuOpen 29 to the caller's game). The menu's close records the look
+// as any race menu's close does (thuum docs/verbs/racemenu-sync.md); a race
+// change resets the face, and a race the permit does not give the caller's
+// profile is refused at the close (thuum docs/verbs/character-creation.md)
+void ExecuteMpRacemenu(PartOne& partOne, MpActor& caller)
+{
+  if (caller.IsRaceMenuOpen()) {
+    return Reply(caller,
+                 "the race menu is open already; close it to keep your look",
+                 false);
+  }
+  partOne.SetRaceMenuOpen(caller.GetFormId(), true);
+  Reply(caller,
+        "the race menu opens; closing it records your look (a race change "
+        "resets the face)",
+        false);
+}
+
 // SkyMP's own `mp`, with TES3MP's player commands (thuum
 // docs/verbs/console-commands.md; TES3MP CoreScripts commandHandler.lua
 // /teleport and /teleportto, logicHandler.lua TeleportToPlayer): `mp list`
@@ -809,7 +831,8 @@ void ExecuteMpHost(PartOne& partOne, MpActor& caller)
 // to the caller and `mp tpto <n>` takes the caller to it. The server makes
 // each teleport, wherever the two are: no figure in the caller's game is
 // needed, as the console's own MoveTo needs one. `mp host` says who hosts the
-// caller's cell (ExecuteMpHost).
+// caller's cell (ExecuteMpHost); `mp racemenu` opens the caller's own race
+// menu (ExecuteMpRacemenu).
 void ExecuteMp(PartOne& partOne, MpActor& caller,
                const std::vector<ConsoleCommands::Argument>& args)
 {
@@ -819,6 +842,9 @@ void ExecuteMp(PartOne& partOne, MpActor& caller,
   }
   if (!Utils::stricmp(sub.data(), "host")) {
     return ExecuteMpHost(partOne, caller);
+  }
+  if (!Utils::stricmp(sub.data(), "racemenu")) {
+    return ExecuteMpRacemenu(partOne, caller);
   }
   if (!Utils::stricmp(sub.data(), "list")) {
     for (size_t i = 0, n = partOne.serverState.maxConnectedId; i <= n; ++i) {

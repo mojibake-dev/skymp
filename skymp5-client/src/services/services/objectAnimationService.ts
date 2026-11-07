@@ -6,6 +6,8 @@ import { CreateActorMessage } from '../messages/createActorMessage';
 import { MsgType } from '../../messages';
 import { HostService } from './hostService';
 import { ScriptStateService } from './scriptStateService';
+import { SpSnippetService } from './spSnippetService';
+import { ObjectReferenceEx } from '../../extensions/objectReferenceEx';
 import { localIdToRemoteId, remoteIdToLocalId } from '../../view/worldViewMisc';
 import { logError, logLab, logTrace } from '../../logging';
 
@@ -90,6 +92,52 @@ const sideOfRecord = (event: string): number | undefined => {
 // so no replay re-enters the hook; the marks only ever hid genuine reports,
 // the host's first turn within 20 s of a pillar's CreateActor among them)
 const SELF_PLAYED_MS = 3_000;
+// thuum docs/DECISIONS.md ADR-068 rung 3 (the script record), its view past a
+// 3D unload (playtest 49, 2026-11-06, the guest's console): after a server
+// restart the guest played each pillar's view ("view Trigger01 to play (seq
+// 4, none here)", 06:13:30.739), was teleported out of the Temple and back,
+// and the apply at 06:14:25.802 judged "view Trigger01 current (seq 4)" from
+// that play while the pillars' 3D had come back at its default faces; the
+// cell's two loads after it applied nothing. So this service keeps each world
+// object's last animation (keep, below), and a seat that does not host the
+// reference's cell plays it again at every 3D load of the reference: the node
+// overrides' shape (formView puts its node scales on at each 3D load,
+// NodeOverridesService the player's), is3DLoaded polled on the update over
+// the kept set (the platform's objectLoaded, TESObjectLoadedEvent, has no
+// listener in this client and is unread for a reference that is no actor).
+// The kept set and the polls an update are bounded, and a reference whose 3D
+// is not here is looked at every REAPPLY_WAIT_MS, not every update; a
+// re-apply the graph refuses is tried again, REAPPLY_TRIES in all a second
+// apart, as ScriptStateService plays a guest's view (its VIEW_WAIT_MS,
+// VIEW_TRIES and VIEW_RETRY_MS).
+// Its line, "[verb:scripts] object animation <refr> <event> re-applied at a
+// 3D load (seq <n>)", is no "played" line: a relay claim (b-puzzle-relay)
+// counts relays alone. HYPOTHESIS until a probe reads a guest's pillar nodes
+// equal to the host's after a teleport out and back
+const KEPT_MAX = 128;
+const POLLS_PER_UPDATE = 32;
+const REAPPLY_WAIT_MS = 250;
+const REAPPLY_TRIES = 3;
+const REAPPLY_RETRY_MS = 1000;
+// the re-apply's line, at most this often per reference
+const REAPPLY_LINE_MS = 10_000;
+// the game-file references a create word named in this connection, at most
+// (past it the set starts over: a relay is kept again after its reference's
+// next create word)
+const SUBSCRIBED_MAX = 16384;
+
+// a world object's last animation as this seat keeps it: the record's view
+// or the newest relay, whichever has the higher seq (SpSnippetService's
+// per-object seq; a relayed ObjectAnimation carries none and is the newest
+// word here, so it takes the newest seq known for the object)
+type LastAnimation = {
+  event: string;
+  seq: number;
+  cell: number;     // its parent cell at the keep: a release of that cell drops it
+  shown: boolean;   // played on the 3D now loaded; false again once that 3D goes
+  tries: number;    // re-applies on this 3D the graph refused
+  lookAt: number;   // the next look, at the earliest (0: every update)
+};
 
 export class ObjectAnimationService extends ClientListener {
   constructor(
@@ -97,6 +145,12 @@ export class ObjectAnimationService extends ClientListener {
     private controller: CombinedController,
   ) {
     super();
+    // the kept last animations and their re-apply follow the script record's
+    // switch (the review of b86884a5, note 4; .claude/rules/native.md's A/B
+    // switch): scriptRecord false in skymp5-client-settings.txt keeps nothing
+    // and re-applies nothing, as ScriptStateService then applies nothing
+    const settings = this.sp.settings["skymp5-client"] as Record<string, unknown> | undefined;
+    this.keepEnabled = !settings || settings["scriptRecord"] !== false;
     this.controller.emitter.on('objectAnimationMessage', (e) =>
       this.onRelayed(e),
     );
@@ -124,7 +178,34 @@ export class ObjectAnimationService extends ClientListener {
     this.controller.emitter.on('cellHostChanged', (e) => {
       if (e.hosted) {
         this.controller.lookupListener(ScriptStateService).afterHosting(e.cell, () => this.onCellHosted(e.cell));
+      } else {
+        this.dropCell(e.cell);
       }
+    });
+    // a new connection (connectionAccepted, ahead of all its messages): the
+    // server's seqs and subscriptions are the connection's (SpSnippetService's
+    // seqs), so the kept last animations start over, as ScriptStateService's
+    // tables do
+    this.controller.emitter.on('connectionAccepted', () => {
+      this.lastAnimations.clear();
+      this.subscribed.clear();
+      this.subscribedIdx.clear();
+    });
+    // the server's unsubscribe (DestroyActor, the create word's emitter idx,
+    // PartOne.cpp's onSubscribe and onUnsubscribe) ends the reference's
+    // subscription here and takes its kept animation with it: a re-entry's 3D
+    // can load before the next create word (the lab's teleport is the
+    // client's), and a word kept from before the seat left must not replay
+    // over what changed while it was away (the review of b86884a5, note 1).
+    // A message handler: JS state alone
+    this.controller.emitter.on('destroyActorMessage', (e) => {
+      const localId = this.subscribedIdx.get(e.message.idx);
+      if (localId === undefined) {
+        return;
+      }
+      this.subscribedIdx.delete(e.message.idx);
+      this.subscribed.delete(localId);
+      this.lastAnimations.delete(localId);
     });
     for (const pattern of EVENT_PATTERNS) {
       const handler = {
@@ -141,6 +222,7 @@ export class ObjectAnimationService extends ClientListener {
       this.sp.hooks.sendAnimationEvent.add(handler, PLAYER_ID + 1, LAST_GAME_FILE_ID, pattern);
     }
     this.controller.on('update', () => this.onUpdate());
+    this.controller.on('update', () => this.pollLastAnimations());
   }
 
   // a recorded lastAnimation arriving with a game-file reference's CreateActor
@@ -150,6 +232,24 @@ export class ObjectAnimationService extends ClientListener {
     const event = msg.props?.lastAnimation;
     if (typeof event === 'string' && msg.refrId !== undefined && msg.refrId < 0xff000000) {
       this.noteRecord(remoteIdToLocalId(msg.refrId), event);
+    }
+    // the create word starts this seat's subscription to the reference over:
+    // what was kept for it before (from relays it may have missed since) goes,
+    // and the record served right behind the word, or the next relay, keeps
+    // its last animation again (rung 3). The word also names a reference the
+    // server holds (PartOne's onSubscribe sends one for every emitter): a
+    // relay is kept for such a reference alone, as the server keeps a
+    // lastAnimation (a placement it holds no reference for, the hall door's
+    // FX, is relayed to its cell's loaders with nothing kept, a one-shot)
+    if (!msg.isMe && msg.refrId !== undefined && msg.refrId < 0xff000000) {
+      const localId = remoteIdToLocalId(msg.refrId);
+      this.lastAnimations.delete(localId);
+      if (this.subscribed.size >= SUBSCRIBED_MAX) {
+        this.subscribed.clear();
+        this.subscribedIdx.clear();
+      }
+      this.subscribed.add(localId);
+      this.subscribedIdx.set(msg.idx, localId);
     }
     // no self-played mark here (the review of 066cce4e, finding 1): the replay this message announces comes two seconds or more
     // later and a hosting seat never replays, so a mark set now could be used up by the seat's own genuine event (its
@@ -245,14 +345,17 @@ export class ObjectAnimationService extends ClientListener {
 
   // also SpSnippetService's, for a relayed script call's PlayAnimation on a
   // game-file reference (ADR-068 rung 2): the same play, mark and line as a
-  // relayed ObjectAnimation
-  play(remoteRefr: number, event: string) {
+  // relayed ObjectAnimation, with the call's seq for the kept last animation
+  // (rung 3) where a create word named the reference; a relayed
+  // ObjectAnimation carries none and takes the newest seq known here
+  play(remoteRefr: number, event: string, seq?: number) {
     const localId = remoteIdToLocalId(remoteRefr);
     const refr = ObjectReference.from(this.sp.Game.getFormEx(localId));
     if (!refr) {
       return;
     }
-    this.playRelayed(refr, event, "relayed", remoteRefr);
+    const keepSeq = this.subscribed.has(localId) ? (seq ?? this.newestSeq(localId)) : undefined;
+    this.playRelayed(refr, event, "relayed", remoteRefr, true, keepSeq);
   }
 
   // Behavior00.hkx, the puzzle pillar's graph (RuinsPuzzlePillar01.hkx's
@@ -292,10 +395,30 @@ export class ObjectAnimationService extends ClientListener {
   // state is fed from the record. "after StartState0N refused" on a guest
   // already on Side0N is the expected word (a self-transition the graph may
   // refuse, HYPOTHESIS), not a fault.
-  playRelayed(refr: ObjectReference, event: string, how: string, remoteRefr?: number, jumpFirst = true): boolean {
+  // A seq (a relay's, the record's view's) keeps the play as the object's
+  // last animation (rung 3, keep); remoteServer's replay of a create word's
+  // lastAnimation passes none: it stands only where no record carries a view
+  playRelayed(refr: ObjectReference, event: string, how: string, remoteRefr?: number, jumpFirst = true, seq?: number): boolean {
     const localId = refr.getFormID();
     const id = (remoteRefr ?? localIdToRemoteId(localId)).toString(16);
     this.noteRecord(localId, event);
+    const { played, jump } = this.playOn(refr, localId, event, jumpFirst);
+    // "played" is the live relay's word (b-puzzle-relay's claim on a guest);
+    // the record's replay says "replayed", which that claim's " played" never
+    // matches, so a host's refused replays do not count as plays
+    logTrace(this, `object animation ${id} ${event} ${jumpFirst ? "played" : "replayed"} (${how}, ${played ? "taken" : "refused"}${jump})`);
+    if (seq !== undefined) {
+      // a play on a reference with no 3D does nothing (placeOnSide's note):
+      // shown only when its 3D is here, else played at its load
+      this.keep(refr, localId, event, seq, refr.is3DLoaded());
+    }
+    return played;
+  }
+
+  // the play itself, playRelayed's and the re-apply's: a pillar's Trigger02
+  // or Trigger03 after the jump to its side (StartState0N), each event marked
+  // self-played
+  private playOn(refr: ObjectReference, localId: number, event: string, jumpFirst: boolean): { played: boolean; jump: string } {
     const m = jumpFirst ? /^Trigger0([23])$/i.exec(event) : null;
     let jump = "";
     if (m) {
@@ -305,16 +428,13 @@ export class ObjectAnimationService extends ClientListener {
       jump = `, after ${jumpEvent} ${taken ? "taken" : "refused"}`;
     }
     this.markSelfPlayed(localId, event);
-    const played = refr.playAnimation(event);
-    // "played" is the live relay's word (b-puzzle-relay's claim on a guest);
-    // the record's replay says "replayed", which that claim's " played" never
-    // matches, so a host's refused replays do not count as plays
-    logTrace(this, `object animation ${id} ${event} ${jumpFirst ? "played" : "replayed"} (${how}, ${played ? "taken" : "refused"}${jump})`);
-    return played;
+    return { played: refr.playAnimation(event), jump };
   }
 
   // the server's last event for a reference as this seat knows it
-  // (CreateActor's lastAnimation, then every relayed or replayed event)
+  // (CreateActor's lastAnimation, then every relayed or replayed event), the
+  // grant's re-sync's (d1f23444, which F6 deletes); a 3D load's re-apply plays
+  // the kept last animation (keep) instead
   private noteRecord(localId: number, event: string) {
     this.recordEvent.set(localId, event);
     this.notePillar(localId, event);
@@ -532,6 +652,162 @@ export class ObjectAnimationService extends ClientListener {
     }
   }
 
+  // rung 3: the object's last animation kept, the record's view (keepView, at
+  // its apply) or a relay (playRelayed with the relay's seq), whichever has
+  // the higher seq; at an equal seq the later word stands, as a guest applies
+  // a record whose seq is not below its own. An update's context
+  private keep(refr: ObjectReference, localId: number, event: string, seq: number, shown: boolean): void {
+    if (!this.keepEnabled) {
+      return;
+    }
+    const old = this.lastAnimations.get(localId);
+    if (old !== undefined && seq < old.seq) {
+      return;
+    }
+    if (!this.keepsFor(refr, localId)) {
+      return;
+    }
+    const parent = refr.getParentCell();
+    // Map iteration is insertion order: a keep moves the entry last, so the
+    // longest unkept goes past KEPT_MAX
+    this.lastAnimations.delete(localId);
+    this.lastAnimations.set(localId, { event, seq, cell: parent ? parent.getFormID() : 0, shown, tries: 0, lookAt: 0 });
+    if (this.lastAnimations.size > KEPT_MAX) {
+      const oldest = this.lastAnimations.keys().next().value;
+      if (oldest !== undefined) {
+        this.lastAnimations.delete(oldest);
+      }
+    }
+  }
+
+  // ScriptStateService's, at a record's apply whose view is to play here: the
+  // view is kept before it plays, so one that finds no 3D in its window (given
+  // up) still plays at the reference's next 3D load. An update's context
+  keepView(refr: ObjectReference, view: string, seq: number): void {
+    this.keep(refr, refr.getFormID(), view, seq, false);
+  }
+
+  // a world object whose last animation is kept and re-applied here: never an
+  // actor (the stream's) nor a trap family reference (every seat fires the
+  // family itself, D-S3; remoteServer's replay skips it the same way)
+  private keepsFor(refr: ObjectReference, localId: number): boolean {
+    return !this.sp.Actor.from(refr) && !ObjectReferenceEx.isTrapFamily(localId);
+  }
+
+  // ScriptStateService's "current" test beside the seq, in an update's
+  // context: the kept last animation was played on the 3D now loaded (its
+  // unload dropped the mark); a reference this service never keeps (an actor,
+  // a trap family reference) is judged by the seq alone, as before
+  shownHere(refr: ObjectReference): boolean {
+    const localId = refr.getFormID();
+    if (!this.keepsFor(refr, localId)) {
+      return true;
+    }
+    return this.lastAnimations.get(localId)?.shown === true;
+  }
+
+  // the newest seq known here for the object: SpSnippetService's (its last
+  // relay's, or a record's raise) or the kept one's
+  private newestSeq(localId: number): number {
+    return Math.max(this.controller.lookupListener(SpSnippetService).seqOf(localId) ?? 0, this.lastAnimations.get(localId)?.seq ?? 0);
+  }
+
+  // a release of a cell this seat hosted (HostService's, a reconnect's too):
+  // its own script drove the cell's graphs past the words kept here, so they
+  // go, and the next relay or record keeps them again. A message handler: JS
+  // state alone
+  private dropCell(cell: number): void {
+    this.lastAnimations.forEach((kept, id) => {
+      if (kept.cell === cell) {
+        this.lastAnimations.delete(id);
+      }
+    });
+  }
+
+  // the kept references' 3D, POLLS_PER_UPDATE of them an update in turn
+  private pollLastAnimations(): void {
+    if (!this.keepEnabled) {
+      return;
+    }
+    const size = this.lastAnimations.size;
+    if (size === 0) {
+      return;
+    }
+    const entries = Array.from(this.lastAnimations.entries());
+    const n = Math.min(size, POLLS_PER_UPDATE);
+    const now = Date.now();
+    for (let i = 0; i < n; i++) {
+      const [id, kept] = entries[(this.pollAt + i) % size];
+      try {
+        this.pollOne(id, kept, now);
+      } catch (e) {
+        this.lastAnimations.delete(id);
+        logError(this, `object animation ${id.toString(16)}: its 3D poll threw, its last animation dropped: ${e}`);
+      }
+    }
+    this.pollAt = (this.pollAt + n) % size;
+  }
+
+  // one kept reference: a 3D gone takes its shown mark (and a re-apply in
+  // flight) with it, formView's nodeOverridesOn3D; a 3D here that has not
+  // shown the kept animation plays it, unless this seat hosts the reference's
+  // cell (its script drives the graph, and rung 3's new owner plays the
+  // record's view once before its gate opens, ScriptStateService's pass, so
+  // nothing is marked here) or a record of the reference is still being
+  // applied (its own play shows the view). The hosted test is
+  // epochForActor's, which also finds a persistent exterior reference's host
+  // through its worldspace (its parent cell is the worldspace's persistent
+  // cell, where isHostedHere misses it: the review of b86884a5, note 2).
+  // A 3D here and shown is looked at every update, so its unload is seen
+  private pollOne(id: number, kept: LastAnimation, now: number): void {
+    if (now < kept.lookAt) {
+      return;
+    }
+    const refr = ObjectReference.from(this.sp.Game.getFormEx(id));
+    if (!refr || !refr.is3DLoaded()) {
+      kept.shown = false;
+      kept.tries = 0;
+      kept.lookAt = now + REAPPLY_WAIT_MS;
+      return;
+    }
+    kept.lookAt = 0;
+    if (kept.shown) {
+      return;
+    }
+    if (this.controller.lookupListener(HostService).epochForActor(refr) !== 0
+      || this.controller.lookupListener(ScriptStateService).viewOf(id) === 'pending') {
+      kept.lookAt = now + REAPPLY_WAIT_MS;
+      return;
+    }
+    if (!this.keepsFor(refr, id)) {
+      this.lastAnimations.delete(id);
+      return;
+    }
+    const { played, jump } = this.playOn(refr, id, kept.event, true);
+    kept.tries++;
+    if (!played && kept.tries < REAPPLY_TRIES) {
+      kept.lookAt = now + REAPPLY_RETRY_MS;
+      return;
+    }
+    kept.shown = true;
+    if (this.sayReapplied(id, now)) {
+      logLab('verb:scripts', `object animation ${id.toString(16)} ${kept.event} re-applied at a 3D load (seq ${kept.seq}); ${played ? 'taken' : 'refused'}${kept.tries > 1 ? ` at try ${kept.tries}` : ''}${jump}`);
+    }
+  }
+
+  // a re-apply's line at most once in REAPPLY_LINE_MS per reference
+  private sayReapplied(id: number, now: number): boolean {
+    const at = this.reappliedSaidAt.get(id);
+    if (at !== undefined && now - at < REAPPLY_LINE_MS) {
+      return false;
+    }
+    if (this.reappliedSaidAt.size >= 4096) {
+      this.reappliedSaidAt.clear();
+    }
+    this.reappliedSaidAt.set(id, now);
+    return true;
+  }
+
   private noted: { selfId: number; event: string; took: boolean }[] = [];
   private selfPlayed = new Map<string, number>();
   private scriptSide = new Map<number, number>();
@@ -541,4 +817,15 @@ export class ObjectAnimationService extends ClientListener {
   // this seat's script's animation acts per pillar (noteScriptSide), read by
   // placeOnSide's guard
   private scriptActs = new Map<number, number>();
+  // rung 3: each world object's last animation as kept here (keep), the
+  // poll's place in the kept set, when each re-apply line was said, and the
+  // game-file references a create word named in this connection
+  private lastAnimations = new Map<number, LastAnimation>();
+  private pollAt = 0;
+  private reappliedSaidAt = new Map<number, number>();
+  private subscribed = new Set<number>();
+  // the create word's emitter idx for each subscribed reference, so its
+  // DestroyActor (which names the idx alone) ends it (note 1)
+  private subscribedIdx = new Map<number, number>();
+  private keepEnabled: boolean;
 }

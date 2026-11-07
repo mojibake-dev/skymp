@@ -11,8 +11,12 @@ import { SpSnippetArgument } from "./spSnippetMessage";
 // action row of the table, the args' count and kinds the row's, the sender the
 // subject's owner at the epoch, a per-sender budget (E_SCRIPTCALL_ROW, _ARGS,
 // _OWNER, _RATE); then it mirrors the same native (a latent row's twin) to the
-// subject's other listeners as SpSnippet 30 with the object's seq. JSON field
-// names as wire-schema's ScriptCall reads them
+// subject's other listeners as SpSnippet 30 with the object's seq. Since rung
+// 4 (amendment B, the state rows) the same shape carries an owned RECORD
+// row's call too, RefState's five and the standing's six, which the server
+// records (wire-rules ref_state.rs, standing.rs) and says back as
+// DestructionStage 78 or as applier snippets (ScriptCallService's record
+// queue). JSON field names as wire-schema's ScriptCall reads them
 export interface ScriptCallMessage {
     t: MsgType.ScriptCall;
     epoch: number;   // the cell's host epoch this client holds for the subject's cell (ADR-066's stamp, HostService.epochForActor), 0 for none

@@ -45,7 +45,13 @@ export interface CreateActorMessageAdditionalProps {
     isHarvested?: boolean;
     setNodeTextureSet?: SetNodeTextureSetEntry[];
     setNodeScale?: SetNodeScaleEntry[];
-    disabled?: boolean;
+    // the server's name for the reference's disabled flag (CreateActorMessage.h,
+    // wire-schema's CreateActor); the client read `disabled`, an upstream slip
+    // since 63ca3d82, and applied it over the engine's own state. Nothing
+    // applies it now: a reference's engine state is the server's
+    // DestructionStage word (thuum docs/DECISIONS.md ADR-068 amendment B,
+    // RefStateService)
+    isDisabled?: boolean;
     lastAnimation?: string;
     displayName?: string;
     isHostedByOther?: boolean;

@@ -36,6 +36,12 @@ export class PlayerGlobalsService extends ClientListener {
         this.resume();
     }
 
+    // WorldGlobalService's: the globals watched here are each player's own
+    // (ADR-029's A2), so the world's stream leaves them out. JS state alone
+    watched(): readonly number[] {
+        return this.watch;
+    }
+
     private onPlayerGlobalsMessage(e: ConnectionMessage<PlayerGlobalsMessage>) {
         this.pending = e.message;
     }

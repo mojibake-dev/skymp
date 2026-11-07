@@ -77,6 +77,8 @@ import { ScriptCallMessage } from "./scriptCallMessage";
 import { ScriptStateMessage } from "./scriptStateMessage";
 import { ScriptStateApplyMessage } from "./scriptStateApplyMessage";
 import { DestructionStageMessage } from "./destructionStageMessage";
+import { AliasFillMessage } from "./aliasFillMessage";
+import { WorldGlobalMessage } from "./worldGlobalMessage";
 
 export type AnyMessage = ActivateMessage
     | ConsoleCommandMessage
@@ -150,6 +152,8 @@ export type AnyMessage = ActivateMessage
     | ScriptStateMessage
     | ScriptStateApplyMessage
     | DestructionStageMessage
+    | AliasFillMessage
+    | WorldGlobalMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage
     | UpdatePropertyMessage

@@ -163,6 +163,17 @@ export class TrapResultService extends ClientListener {
   // seat knows rises to it at once, so a report of the same step is not sent
   private onRecord(e: ConnectionMessage<DestructionStageMessage>) {
     const m = e.message;
+    // thuum docs/DECISIONS.md ADR-068 amendment B (rung 4): the word also
+    // carries a reference's ref state now; one with no destruction step
+    // (stage 0, not destroyed) is RefStateService's alone, and every word
+    // with a step takes the path below as before
+    if (
+      (m.disabled !== undefined || m.deleted !== undefined) &&
+      m.stage === 0 &&
+      !m.destroyed
+    ) {
+      return;
+    }
     const localId = remoteIdToLocalId(m.refr);
     if (!localId) {
       return;
@@ -261,12 +272,15 @@ export class TrapResultService extends ClientListener {
       this.tokens -= 1;
       this.toReport.delete(localId);
       this.know(remote, stage, destroyed);
+      // seq 0: a report carries no object seq (the widened word's field,
+      // rung 4), and no ref state
       const message: DestructionStageMessage = {
         t: MsgType.DestructionStage,
         refr: remote,
         stage,
         destroyed,
         served: false,
+        seq: 0,
       };
       this.controller.emitter.emit('sendMessage', {
         message,

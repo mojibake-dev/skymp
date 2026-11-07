@@ -1,5 +1,6 @@
 import { ObjectReference, Actor, Game, FormType, TextureSet, NetImmerse } from "skyrimPlatform";
 import { Inventory, applyInventory } from "../sync/inventory";
+import { FormTypeEx } from "../extensions/formTypeEx";
 import { logError, logTrace } from "../logging";
 import { SetNodeScaleEntry, SetNodeTextureSetEntry } from "src/services/messages/createActorMessage";
 
@@ -81,19 +82,6 @@ export class ModelApplyUtils {
   private static lidState = new Map<number, boolean>();
   private static readonly lidStateMax = 4096;
 
-  static applyModelIsDisabled(refr: ObjectReference, disabled: boolean): void {
-    const wasDisabled: boolean = refr.isDisabled();
-    if (wasDisabled == disabled) {
-      return;
-    }
-
-    if (disabled) {
-      refr.disable(false);
-    } else {
-      refr.enable(true);
-    }
-  }
-
   static applyModelIsHarvested(refr: ObjectReference, isHarvested: boolean) {
     const base = refr.getBaseObject();
     if (base) {
@@ -128,7 +116,15 @@ export class ModelApplyUtils {
             });
           }
         }
-      } else {
+      } else if (FormTypeEx.isItem(t)) {
+        // an item's harvested flag is its pick-up: taken is disabled and
+        // deleted here, back (a respawn) enabled. Items alone (thuum
+        // docs/DECISIONS.md ADR-068 amendment B, rung 4): for any other kind
+        // this read isDisabled as "harvested" and called enable(true) on a
+        // reference the engine holds disabled, at every create word and every
+        // 666 ms on a form view (formView.ts), undoing a host's scripted
+        // Disable of a door or an activator; a reference's engine state is
+        // the server's DestructionStage word (RefStateService)
         const wasHarvested = refr.isDisabled();
         if (isHarvested != wasHarvested) {
           if (isHarvested) {

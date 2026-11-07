@@ -322,6 +322,14 @@ export class NetworkingService extends ClientListener {
             const event = { message: msgAny };
             this.controller.emitter.emit("scriptStateApplyMessage", event);
             this.controller.emitter.emit("anyMessage", event);
+          } else if (msgAny.t === MsgType.AliasFill) {
+            const event = { message: msgAny };
+            this.controller.emitter.emit("aliasFillMessage", event);
+            this.controller.emitter.emit("anyMessage", event);
+          } else if (msgAny.t === MsgType.WorldGlobal) {
+            const event = { message: msgAny };
+            this.controller.emitter.emit("worldGlobalMessage", event);
+            this.controller.emitter.emit("anyMessage", event);
           } else {
             // throw new NeverError(msgAny);
             throw new Error("Unhandled MsgType " + msgAny.t);

@@ -36,6 +36,27 @@ void SetCellHosted(uint32_t cellFormId, bool hosted);
 // outside this file (ScriptNatives.cpp)
 bool IsCellHosted(uint32_t cellFormId);
 
+// thuum docs/DECISIONS.md ADR-068 D-W1 A and D-C2 A (the presser rule;
+// docs/research/fifty-fixes-2026-11-07.md 1(b)): the Papyrus event gate's
+// rule over a world object's OnTriggerEnter and OnTriggerLeave on or off
+// (OnSendEventEnter). On, an entry whose presser this seat does not own is
+// blanked, and one it owns on a trap family trigger, or on a scripted
+// trigger in a cell it does not host, raises triggerEntry; off, the default,
+// keeps D-S3 (every seat's engine counts every presser), so a client that
+// never sets it changes nothing. skymp5-client's setting triggerPresser
+// turns it on through setTriggerPresserRule (PuppetApi.cpp). Threadsafe
+void SetTriggerPresserRule(bool on);
+
+// thuum docs/research/fifty-fixes-2026-11-07.md 1(b), the furniture branch:
+// the animation hook's rule over a furniture's own graph event on or off
+// (OnSendAnimationEventEnter). On, an event the engine sends to a plain
+// reference whose base is a FURN never reaches the sendAnimationEvent
+// handlers and crosses after the call as furnitureAnimation; off, the
+// default, keeps every graph event on the handlers as before.
+// skymp5-client's setting furnitureAnimation turns it on through
+// setFurnitureAnimation (PuppetApi.cpp). Threadsafe
+void SetFurnitureAnimation(bool on);
+
 // thuum docs/verbs/quest-stage.md, slice two: a (quest, stage) pair
 // skymp5-client's questStageService is applying from the server's relay,
 // whose Papyrus fragment the VM's quest stage sink skips at the pair's next

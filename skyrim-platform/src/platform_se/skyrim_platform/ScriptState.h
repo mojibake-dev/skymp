@@ -16,20 +16,23 @@ class TESObjectREFR;
 // written over a new owner's or a late joiner's copy, and the engine's
 // lifecycle events raised to it again once written. Three TESModPlatform
 // natives (PapyrusTESModPlatform.cpp; declared in TESModPlatform.psc and the
-// committed .pex) and two sets the Papyrus event gate reads (FridaHooks.cpp
-// OnSendEventEnter): the references whose served record waits for its apply
-// (setScriptRecordPending, PuppetApi.cpp) and the lifecycle events the engine
-// served per handle since the last load. The engine facts are
-// docs/research/adr065-papyrus-state-2026-11-03.md Q1 to Q4 (the VM's
-// per-object layout, FindBoundObject, the engine's own save and load, the
-// event gate) and H-R1 (CONFIRMED by trace, docs/verbs/papyrus-events.md: an
-// object's variables are positional, parent-first, their count its type
-// chain's total); every engine claim CommonLibSSE-NG does not state is a
-// HYPOTHESIS in ScriptState.cpp, named by the plan's section 5 (H-R2 to
-// H-R9). Each native runs inside TESModPlatform.Add's Call on the OnUpdate
-// thread (callNative's direct path, SkyrimPlatform.cpp RunInIOContext), and
-// no C++ exception leaves one: past Add, a throw would freeze the seat
-// (ChangeForm.cpp's note on the public natives).
+// committed .pex), a fourth over the third's mechanism for a relayed trigger
+// entry (SendTriggerEvent, ADR-068 D-C2 A), and two sets the Papyrus event
+// gate reads (FridaHooks.cpp OnSendEventEnter): the references whose served
+// record waits for its apply (setScriptRecordPending, PuppetApi.cpp) and the
+// lifecycle events the engine served per handle since the last load. The
+// engine facts are docs/research/adr065-papyrus-state-2026-11-03.md Q1 to Q4
+// (the VM's per-object layout, FindBoundObject, the engine's own save and
+// load, the event gate) and H-R1 (CONFIRMED by trace,
+// docs/verbs/papyrus-events.md: an object's variables are positional,
+// parent-first, their count its type chain's total); every engine claim
+// CommonLibSSE-NG does not state is a HYPOTHESIS in ScriptState.cpp, named by
+// the plan's section 5 (H-R2 to H-R9; SendTriggerEvent's H-W3 by
+// docs/research/fifty-fixes-2026-11-07.md section 4). Each native runs inside
+// TESModPlatform.Add's Call on the OnUpdate thread (callNative's direct path,
+// SkyrimPlatform.cpp RunInIOContext), and no C++ exception leaves one: past
+// Add, a throw would freeze the seat (ChangeForm.cpp's note on the public
+// natives).
 namespace ScriptState {
 
 // SerializeScriptState(refr): the reference's attached scripts as the record
@@ -98,6 +101,21 @@ std::string Apply(RE::TESObjectREFR* refr, std::string_view scriptsJson);
 // skipped it), reason }.
 std::string Send(RE::TESObjectREFR* refr, std::string_view name,
                  bool unseenOnly);
+
+// SendTriggerEvent(trigger, name, actionRef): thuum docs/DECISIONS.md ADR-068
+// D-C2 A (docs/research/fifty-fixes-2026-11-07.md 1(b) and read 2): a guest's
+// entry into a world trigger, relayed to the cell's host, played there.
+// OnTriggerEnter or OnTriggerLeave (without case) sent to the trigger's
+// scripts and relayed to its aliases with actionRef as the event's one
+// argument, akActionRef: Send's mechanism with CommonLibSSE-NG's
+// one-object FunctionArguments in place of the ZeroFunctionArguments, under
+// the platform's mark (callNative's Override passes it at the gate, before
+// the gate's presser rule reads any argument). A JSON object as a string:
+// { formId, event, sent, scripts (the attached scripts it was sent to),
+// reason }; refused for a name that is no trigger event, a None actionRef,
+// an actor trigger and a reference with no attached script.
+std::string SendTrigger(RE::TESObjectREFR* refr, std::string_view name,
+                        RE::TESObjectREFR* actionRef);
 
 // the references whose served script record waits for its apply, by form id
 // (setScriptRecordPending: skymp5-client's ScriptStateService raises it for

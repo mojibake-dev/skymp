@@ -138,6 +138,14 @@ String Function SerializeScriptState(ObjectReference refr) global native
 String Function ApplyScriptState(ObjectReference refr, String scriptsJson) global native
 String Function SendScriptEvent(ObjectReference refr, String name, Bool unseenOnly) global native
 
+; thuum ADR-068 D-C2 A (docs/research/fifty-fixes-2026-11-07.md 1(b)): a
+; relayed trigger entry, OnTriggerEnter or OnTriggerLeave sent to the
+; trigger's scripts and relayed to its aliases as the engine's trigger sinks
+; raise it, with actionRef as the event's akActionRef (a JSON string: formId,
+; event, sent, scripts, reason); refused for a name that is no trigger event,
+; a None actionRef, an actor trigger and a reference with no attached script
+String Function SendTriggerEvent(ObjectReference trigger, String name, ObjectReference actionRef) global native
+
 ; thuum ADR-068 rung 4 (the state rows, amendment B): the world globals this
 ; seat's engine changed since its last answer, for the world streamer's
 ; WorldGlobal 80 (a JSON string: [[formId, value], ...], at most 512

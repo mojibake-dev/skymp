@@ -229,6 +229,16 @@ RE::BSFixedString SendScriptEvent(IVM* vm, StackID stackId,
                                   RE::StaticFunctionTag*,
                                   RE::TESObjectREFR* refr,
                                   std::string_view name, bool unseenOnly);
+// thuum docs/DECISIONS.md ADR-068 D-C2 A (docs/research/
+// fifty-fixes-2026-11-07.md 1(b)): a relayed trigger entry, OnTriggerEnter
+// or OnTriggerLeave sent to the trigger's scripts and relayed to its aliases
+// with actionRef as akActionRef, SendScriptEvent's mechanism (a JSON string:
+// formId, event, sent, scripts, reason; ScriptState.h)
+RE::BSFixedString SendTriggerEvent(IVM* vm, StackID stackId,
+                                   RE::StaticFunctionTag*,
+                                   RE::TESObjectREFR* trigger,
+                                   std::string_view name,
+                                   RE::TESObjectREFR* actionRef);
 
 // thuum docs/DECISIONS.md ADR-068 rung 4 (the state rows, amendment B;
 // docs/research/rung4-state-rows-2026-11-07.md 1(a)): the world globals this

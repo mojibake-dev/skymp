@@ -380,6 +380,19 @@ export interface ScriptCallsEvent {
 export interface ScriptCensusEvent {
   rows: { row: string; count: number }[];
 }
+// thuum docs/DECISIONS.md ADR-068 D-W1 A and D-C2 A (the presser rule; docs/research/fifty-fixes-2026-11-07.md 1(b)): an OnTriggerEnter (enter true) or OnTriggerLeave (enter false) the engine raised to a world object's trigger with a presser this seat owns (its own player, 0x14; a live NPC it simulates that is no puppet; a body in a cell it hosts; a non-actor that is no trap body another seat streams), on a trap family trigger (family true) or on a scripted trigger in a cell this seat does not host, read by the Papyrus event gate from the engine's own argument while setTriggerPresserRule(true) holds, raised on the next tick: refrId the trigger's form id, presserId the presser's. The event itself goes on through the gate (a family trigger's runs here, a guest's world script stays blanked); an entry by a presser this seat does not own is blanked at the gate and raises nothing. No game call in its handler
+export interface TriggerEntryEvent {
+  refrId: number;
+  presserId: number;
+  enter: boolean;
+  family: boolean;
+}
+// thuum docs/research/fifty-fixes-2026-11-07.md 1(b) (the furniture branch): an event the engine sent to a furniture's own graph (a plain reference whose base is a FURN; the platform's hook on NotifyAnimationGraph), noted in native while setFurnitureAnimation(true) holds, under the platform's own call or not (Bleak Falls Temple's puzzle lever's 'Lever_PlayerPush' comes from TESFurniture::Activate's NoPlayer branch inside the client's own activate), and raised on the next tick, never through the sendAnimationEvent handlers: refrId the furniture's form id, event the graph event's name as the engine sent it, took the graph's answer. No game call in its handler
+export interface FurnitureAnimationEvent {
+  refrId: number;
+  event: string;
+  took: boolean;
+}
 
 export interface OpenCloseEvent {
   target: ObjectReference
@@ -789,6 +802,10 @@ export declare function on(eventName: 'scriptCalls', callback: (event: ScriptCal
 export declare function once(eventName: 'scriptCalls', callback: (event: ScriptCallsEvent) => void): EventHandle
 export declare function on(eventName: 'scriptCensus', callback: (event: ScriptCensusEvent) => void): EventHandle
 export declare function once(eventName: 'scriptCensus', callback: (event: ScriptCensusEvent) => void): EventHandle
+export declare function on(eventName: 'triggerEntry', callback: (event: TriggerEntryEvent) => void): EventHandle
+export declare function once(eventName: 'triggerEntry', callback: (event: TriggerEntryEvent) => void): EventHandle
+export declare function on(eventName: 'furnitureAnimation', callback: (event: FurnitureAnimationEvent) => void): EventHandle
+export declare function once(eventName: 'furnitureAnimation', callback: (event: FurnitureAnimationEvent) => void): EventHandle
 
 export declare function on(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle
 export declare function once(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle
@@ -1813,6 +1830,10 @@ export declare function setHosted(actorFormId: number, hosted: boolean): boolean
 export declare function isHosted(actorFormId: number): boolean;
 // thuum ADR-068 D-S3 (traps follow the interaction; docs/research/trap-slice-d-s3-2026-11-05.md): a reference's trap role from the platform's own reads: family (every script attached to it is in the trap family's class chain), playerOnly (its trigger's playerOnlyTrigger property), destroyed (its destroyed flag), trigger (a script attached to it reaches TrapTriggerBase in its parent chain: a trap's trigger, never a trap body, so each seat's own copy moves its own; playtest 48); null when the reference has no form or no attached script
 export declare function getTrapRole(formId: number): { family: boolean; playerOnly: boolean; destroyed: boolean; trigger: boolean } | null;
+// thuum ADR-068 D-W1 A and D-C2 A (the presser rule): the Papyrus event gate's rule over a world object's OnTriggerEnter and OnTriggerLeave on or off, off by default (D-S3: every seat's engine counts every presser); on, an entry whose presser this seat does not own is blanked, and an owned one on a trap family trigger, or on a scripted trigger in a cell this seat does not host, raises triggerEntry; the client setting triggerPresser's mirror; stored with no game call; true when stored
+export declare function setTriggerPresserRule(on: boolean): boolean;
+// thuum docs/research/fifty-fixes-2026-11-07.md 1(b) (the furniture branch): the animation hook's rule over a furniture's own graph event on or off, off by default (every graph event goes to the sendAnimationEvent handlers); on, an event the engine sends to a plain reference whose base is a FURN never reaches the handlers and raises furnitureAnimation; the client setting furnitureAnimation's mirror; stored with no game call; true when stored
+export declare function setFurnitureAnimation(on: boolean): boolean;
 // thuum ADR-068 D-S3 point 4: a trap body another seat streams, so this seat's motion calls on it run neutralized (Keyframed, no impulse); stored on the JS thread, no game call
 export declare function setPropFollowed(formId: number, followed: boolean): boolean;
 // thuum ADR-068 D-S3 point 3: a reference whose server record is being applied, its Papyrus events blanked while the apply runs; stored on the JS thread, no game call

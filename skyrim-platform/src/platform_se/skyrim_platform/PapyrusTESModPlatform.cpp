@@ -1683,6 +1683,16 @@ RE::BSFixedString TESModPlatform::SendScriptEvent(IVM* vm, StackID stackId,
   return RE::BSFixedString(ScriptState::Send(refr, name, unseenOnly));
 }
 
+// thuum ADR-068 D-C2 A: a guest's trigger entry the server relayed to this
+// seat, the cell's host, played on the trigger's scripts with the guest's
+// figure as akActionRef, under the platform's mark (ScriptState.cpp)
+RE::BSFixedString TESModPlatform::SendTriggerEvent(
+  IVM* vm, StackID stackId, RE::StaticFunctionTag*, RE::TESObjectREFR* trigger,
+  std::string_view name, RE::TESObjectREFR* actionRef)
+{
+  return RE::BSFixedString(ScriptState::SendTrigger(trigger, name, actionRef));
+}
+
 namespace {
 // thuum ADR-068 rung 4 (the state rows): DiffWorldGlobals' baseline, each
 // answered global's form id to its value at its last answer or the last
@@ -2091,6 +2101,13 @@ bool TESModPlatform::Register(IVM* vm)
       true, decltype(SendScriptEvent), RE::BSFixedString,
       RE::StaticFunctionTag*, RE::TESObjectREFR*, std::string_view, bool>(
       "SendScriptEvent", "TESModPlatform", SendScriptEvent));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SendTriggerEvent),
+                                     RE::BSFixedString, RE::StaticFunctionTag*,
+                                     RE::TESObjectREFR*, std::string_view,
+                                     RE::TESObjectREFR*>(
+      "SendTriggerEvent", "TESModPlatform", SendTriggerEvent));
 
   vm->BindNativeMethod(
     new RE::BSScript::NativeFunction<true, decltype(DiffWorldGlobals),

@@ -5,6 +5,7 @@
 
 #include <RE/A/Array.h>
 #include <RE/B/BSAtomic.h>
+#include <RE/F/FunctionArguments.h>
 #include <RE/I/IFunction.h>
 #include <RE/I/IObjectHandlePolicy.h>
 #include <RE/O/Object.h>
@@ -85,6 +86,16 @@ extern CallNativeApi::NativeCallRequirements g_nativeCallRequirements;
  *   H-R12 the TESLoadGameEvent sink runs before the load raises its first
  *         lifecycle event, so the seen set's clear there forgets the old
  *         world alone (H-L1's read, sendevent-rate.js at a login).
+ *   H-W3  (docs/research/fifty-fixes-2026-11-07.md section 4) SendTrigger's
+ *         argument, CommonLibSSE-NG's FunctionArguments<TESObjectREFR*>
+ *         (include/RE/F/FunctionArguments.h:27-73), packs as the engine's own
+ *         trigger argument does: one Variable, the actionRef's bound
+ *         ObjectReference object found, or created and bound, through the
+ *         handle policy (CommonLib's PackHandle, src/RE/P/PackUnpack.cpp:
+ *         48-80; the engine's packer, lab/.cache/drafts/fifty/
+ *         trigger-entry-static.md 2.10 and 3.1): the host's pack row under
+ *         a relay reads agree true with the figure's handle (x-cobweb-relay
+ *         v1 with lab/frida/trigger-entry-trace.js).
  */
 namespace {
 using ScriptObject = RE::BSScript::Object;
@@ -137,6 +148,23 @@ const Lifecycle* LifecycleOf(std::string_view name)
   return nullptr;
 }
 
+// the two trigger events SendTriggerEvent raises, each with its one argument
+// (akActionRef, the Creation Kit's OnTriggerEnter and OnTriggerLeave), in
+// their spelling
+constexpr const char* kTriggerEvents[] = { "OnTriggerEnter",
+                                           "OnTriggerLeave" };
+
+const char* TriggerEventOf(std::string_view name)
+{
+  for (const char* event : kTriggerEvents) {
+    if (name.size() == std::strlen(event) &&
+        _strnicmp(name.data(), event, name.size()) == 0) {
+      return event;
+    }
+  }
+  return nullptr;
+}
+
 // the pending references (ScriptState.h), each with the names the gate
 // blanked for it, in Hosted.h's idiom: mutex-guarded, the size kept for a
 // read with no lock
@@ -179,6 +207,7 @@ std::atomic<std::uint64_t> g_busyLines{ 0 };
 std::atomic<std::uint64_t> g_refusedLines{ 0 };
 std::atomic<std::uint64_t> g_retryLines{ 0 };
 std::atomic<std::uint64_t> g_sendLines{ 0 };
+std::atomic<std::uint64_t> g_triggerSendLines{ 0 };
 
 bool LogThis(std::atomic<std::uint64_t>& lines)
 {
@@ -1373,6 +1402,61 @@ std::string ApplyImpl(RE::TESObjectREFR* refr, std::string_view scriptsJson)
   return DumpText(answer);
 }
 
+// SendScriptEvent's and SendTriggerEvent's one mechanism (the plan's read 2:
+// one body, two entry points by the event's argument shape): the reference's
+// VM handle and its attached scripts, counted under attachedScriptsLock
+// (VirtualMachine.h:219-220)
+struct EventTarget
+{
+  RE::SkyrimVM* skyrimVM = nullptr;
+  RE::VMHandle handle = 0;
+  std::uint32_t scripts = 0;
+};
+
+// false, with the reason, when the event has nothing to reach
+bool TargetOf(RE::TESObjectREFR* refr, EventTarget& target, std::string& why)
+{
+  auto* skyrimVM = RE::SkyrimVM::GetSingleton();
+  auto* vm = VM::GetSingleton();
+  auto* policy = vm ? vm->GetObjectHandlePolicy() : nullptr;
+  if (!skyrimVM || !skyrimVM->GetImpl() || !policy) {
+    why = "no VM or no handle policy";
+    return false;
+  }
+  target.skyrimVM = skyrimVM;
+  target.handle = policy->GetHandleForObject(refr->GetFormType(), refr);
+  {
+    RE::BSSpinLockGuard guard{ vm->attachedScriptsLock };
+    const auto it = vm->attachedScripts.find(target.handle);
+    if (it != vm->attachedScripts.end()) {
+      target.scripts = it->second.size();
+    }
+  }
+  if (target.scripts == 0) {
+    why = "no attached script";
+    return false;
+  }
+  return true;
+}
+
+// SkyrimVM::SendAndRelayEvent's two calls (CommonLibSSE-NG
+// src/RE/S/SkyrimVM.cpp:26-33: impl->SendEvent, then RelayEvent to the
+// reference's aliases and effects), the VM taken through GetImpl as the
+// fork's overlay patch 07 asks every caller (the implementation pointer sits
+// at 0x210 on 1.7.x; SendAndRelayEvent reads `impl` at 0x200), with the
+// caller's arguments on its own stack as the engine's own sinks pass theirs
+// (adr065 Q4; H-R10). Under the platform's mark: callNative's Override
+// passes the event at the gate (FridaHooks.cpp), and the pending blank
+// stands down inside a platform call
+void SendAndRelay(const EventTarget& target, const char* name,
+                  RE::BSScript::IFunctionArguments* args)
+{
+  FixedString eventName(name);
+  PlatformCall::Scope platformCall;
+  target.skyrimVM->GetImpl()->SendEvent(target.handle, eventName, args);
+  target.skyrimVM->RelayEvent(target.handle, &eventName, args, nullptr);
+}
+
 std::string SendImpl(RE::TESObjectREFR* refr, std::string_view name,
                      bool unseenOnly)
 {
@@ -1400,53 +1484,93 @@ std::string SendImpl(RE::TESObjectREFR* refr, std::string_view name,
     return refuse("not OnCellAttach, OnLoad or OnCellLoad (the events this "
                   "native raises take no argument)");
   }
-  auto* skyrimVM = RE::SkyrimVM::GetSingleton();
-  auto* vm = VM::GetSingleton();
-  auto* policy = vm ? vm->GetObjectHandlePolicy() : nullptr;
-  if (!skyrimVM || !skyrimVM->GetImpl() || !policy) {
-    return refuse("no VM or no handle policy");
+  EventTarget target;
+  std::string why;
+  const bool reachable = TargetOf(refr, target, why);
+  answer["scripts"] = target.scripts;
+  if (!reachable) {
+    return refuse(why);
   }
-  const RE::VMHandle handle =
-    policy->GetHandleForObject(refr->GetFormType(), refr);
-  std::uint32_t scripts = 0;
-  {
-    RE::BSSpinLockGuard guard{ vm->attachedScriptsLock };
-    const auto it = vm->attachedScripts.find(handle);
-    if (it != vm->attachedScripts.end()) {
-      scripts = it->second.size();
-    }
-  }
-  answer["scripts"] = scripts;
-  if (scripts == 0) {
-    return refuse("no attached script");
-  }
-  if (unseenOnly && ScriptState::Seen::Has(handle, event->name)) {
+  if (unseenOnly && ScriptState::Seen::Has(target.handle, event->name)) {
     answer["seen"] = true;
     return refuse("the engine served it to this handle since the last load");
   }
-  // SkyrimVM::SendAndRelayEvent's two calls (CommonLibSSE-NG
-  // src/RE/S/SkyrimVM.cpp:26-33: impl->SendEvent, then RelayEvent to the
-  // reference's aliases and effects), the VM taken through GetImpl as the
-  // fork's overlay patch 07 asks every caller (the implementation pointer
-  // sits at 0x210 on 1.7.x; SendAndRelayEvent reads `impl` at 0x200), with a
-  // ZeroFunctionArguments on this stack as the engine's own lifecycle sinks
-  // pass one (adr065 Q4; H-R10). Under the platform's mark: callNative's
-  // Override passes the event at the gate (FridaHooks.cpp), and the pending
-  // blank stands down inside a platform call
-  FixedString eventName(event->name);
+  // a ZeroFunctionArguments, as the engine's own lifecycle sinks pass one
+  // (adr065 Q4)
   RE::BSScript::ZeroFunctionArguments args;
-  {
-    PlatformCall::Scope platformCall;
-    skyrimVM->GetImpl()->SendEvent(handle, eventName, &args);
-    skyrimVM->RelayEvent(handle, &eventName, &args, nullptr);
-  }
-  ScriptState::Seen::OnEvent(handle, event->name, true);
+  SendAndRelay(target, event->name, &args);
+  ScriptState::Seen::OnEvent(target.handle, event->name, true);
   answer["sent"] = true;
   answer["event"] = event->name;
   if (LogThis(g_sendLines)) {
     logger::info("[verb:scripts] SendScriptEvent {} to {:x}: sent to {} "
                  "script(s) and relayed",
-                 event->name, formId, scripts);
+                 event->name, formId, target.scripts);
+  }
+  return DumpText(answer);
+}
+
+// thuum ADR-068 D-C2 A (ScriptState.h): a relayed trigger entry
+std::string SendTriggerImpl(RE::TESObjectREFR* refr, std::string_view name,
+                            RE::TESObjectREFR* actionRef)
+{
+  const RE::FormID formId = refr ? refr->formID : 0;
+  const RE::FormID actionRefId = actionRef ? actionRef->formID : 0;
+  nlohmann::json answer = nlohmann::json::object();
+  answer["formId"] = formId;
+  answer["event"] = std::string(name);
+  answer["sent"] = false;
+  answer["scripts"] = 0;
+  answer["reason"] = "";
+  auto refuse = [&](const std::string& reason) {
+    answer["reason"] = reason;
+    if (LogThis(g_triggerSendLines)) {
+      logger::info("[verb:traps] SendTriggerEvent {} to {:x} by {:x} not "
+                   "sent: {}",
+                   std::string(name), formId, actionRefId, reason);
+    }
+    return DumpText(answer);
+  };
+  if (!refr) {
+    return refuse("no reference");
+  }
+  const char* event = TriggerEventOf(name);
+  if (!event) {
+    return refuse("not OnTriggerEnter or OnTriggerLeave (a lifecycle event "
+                  "goes through SendScriptEvent)");
+  }
+  if (!actionRef) {
+    return refuse("no actionRef (None)");
+  }
+  // an actor is no trigger volume, and its scripts run where it is simulated
+  // (ADR-062), never by a relay
+  if (refr->GetFormType() == RE::FormType::ActorCharacter) {
+    return refuse("an actor trigger");
+  }
+  EventTarget target;
+  std::string why;
+  const bool reachable = TargetOf(refr, target, why);
+  answer["scripts"] = target.scripts;
+  if (!reachable) {
+    return refuse(why);
+  }
+  // CommonLibSSE-NG's one-object argument, BSScript::FunctionArguments<void,
+  // TESObjectREFR*> (include/RE/F/FunctionArguments.h:27-73) through its
+  // alias RE::FunctionArguments (:77): its pack resizes the array to one and
+  // packs the pointer through Variable::Pack, PackHandle for a form (H-W3),
+  // as the engine's trigger sinks' own argument packs the actionRef. On this
+  // stack: SendEvent and RelayEvent consume it before they return (H-R10),
+  // as the sinks' own does on theirs. The constructor takes its arguments as
+  // rvalues, hence the copy moved in
+  RE::TESObjectREFR* akActionRef = actionRef;
+  RE::FunctionArguments<RE::TESObjectREFR*> args{ std::move(akActionRef) };
+  SendAndRelay(target, event, &args);
+  answer["sent"] = true;
+  answer["event"] = event;
+  if (LogThis(g_triggerSendLines)) {
+    logger::info("[verb:traps] SendTriggerEvent {} to {:x} by {:x}: sent to "
+                 "{} script(s) and relayed",
+                 event, formId, actionRefId, target.scripts);
   }
   return DumpText(answer);
 }
@@ -1533,6 +1657,27 @@ std::string ScriptState::Send(RE::TESObjectREFR* refr, std::string_view name,
   }
   try {
     logger::error("[verb:scripts] SendScriptEvent {:x} threw: {}", formId,
+                  what);
+  } catch (...) {
+  }
+  return ExceptionAnswer(formId, "sent", what.c_str());
+}
+
+std::string ScriptState::SendTrigger(RE::TESObjectREFR* refr,
+                                     std::string_view name,
+                                     RE::TESObjectREFR* actionRef)
+{
+  const std::uint32_t formId = refr ? refr->formID : 0u;
+  std::string what;
+  try {
+    return SendTriggerImpl(refr, name, actionRef);
+  } catch (const std::exception& e) {
+    what = e.what();
+  } catch (...) {
+    what = "a non-standard exception";
+  }
+  try {
+    logger::error("[verb:traps] SendTriggerEvent {:x} threw: {}", formId,
                   what);
   } catch (...) {
   }

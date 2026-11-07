@@ -3,6 +3,7 @@
 #include "SpSnippet.h"
 #include "TestUtils.hpp"
 #include "wire_bridge_cxx/rules.h"
+#include <algorithm>
 #include <catch2/catch_all.hpp>
 #include <chrono>
 #include <map>
@@ -89,8 +90,9 @@ MpActor& Enter(PartOne& p)
   REQUIRE(p.GetCellHost(kTemple).player == kHostActor);
   auto& arvel = p.worldState.GetFormAt<MpActor>(kArvel);
   REQUIRE(p.SimulatorOf(arvel) == kHostActor);
-  REQUIRE(arvel.GetActorListeners().count(
-            &p.worldState.GetFormAt<MpActor>(kGuestActor)) == 1);
+  const auto& listeners = arvel.GetActorListeners();
+  REQUIRE(std::count(listeners.begin(), listeners.end(),
+                     &p.worldState.GetFormAt<MpActor>(kGuestActor)) == 1);
   p.Messages().clear();
   return arvel;
 }
@@ -103,7 +105,7 @@ void Leave(PartOne& p)
   p.DestroyActor(kGuestActor);
 }
 
-Arg Object(uint32_t formId, const char* type)
+Arg ObjectArg(uint32_t formId, const char* type)
 {
   return Arg(SpSnippetObjectArgument{ formId, type });
 }
@@ -237,7 +239,7 @@ TEST_CASE("An NPC's simulator's SetFactionRank is recorded in its standing "
   {
     LogCapture log;
     Call(p, 0, "SetFactionRank",
-         { Object(kImperialCrime, "Faction"), Arg(2.0) });
+         { ObjectArg(kImperialCrime, "Faction"), Arg(2.0) });
     REQUIRE(log.Count("[verb:scripts] ff000c70 reports Actor.SetFactionRank "
                       "on 39655 (from StandingTest.onInit): its standing "
                       "recorded as Actor.SetFactionRank, seq 1, relayed to 1 "
@@ -262,14 +264,14 @@ TEST_CASE("An NPC's simulator's SetFactionRank is recorded in its standing "
   // the same rank again: folded, nothing relayed
   p.Messages().clear();
   Call(p, 0, "SetFactionRank",
-       { Object(kImperialCrime, "Faction"), Arg(2.0) });
+       { ObjectArg(kImperialCrime, "Faction"), Arg(2.0) });
   REQUIRE(AppliersTo(p, 1).empty());
 
   // the guest's engine does not simulate Arvel
   {
     LogCapture log;
     Call(p, 1, "SetFactionRank",
-         { Object(kImperialCrime, "Faction"), Arg(4.0) });
+         { ObjectArg(kImperialCrime, "Faction"), Arg(4.0) });
     REQUIRE(log.Count("[verb:scripts] E_SCRIPTCALL_OWNER: ff000c71 reports "
                       "Actor.SetFactionRank on 39655") == 1);
   }
@@ -287,7 +289,7 @@ TEST_CASE("ModFactionRank moves a held rank within the int8 and relays the "
   auto& p = GetPartOne();
   auto& arvel = Enter(p);
 
-  Call(p, 0, "ModFactionRank", { Object(kSpider, "Faction"), Arg(3.0) });
+  Call(p, 0, "ModFactionRank", { ObjectArg(kSpider, "Faction"), Arg(3.0) });
   auto relayed = AppliersTo(p, 1);
   REQUIRE(relayed.size() == 1);
   REQUIRE(relayed[0].function == "SetFactionRank");
@@ -297,7 +299,7 @@ TEST_CASE("ModFactionRank moves a held rank within the int8 and relays the "
 
   // a step past the int8 stops at its end
   p.Messages().clear();
-  Call(p, 0, "ModFactionRank", { Object(kSpider, "Faction"), Arg(127.0) });
+  Call(p, 0, "ModFactionRank", { ObjectArg(kSpider, "Faction"), Arg(127.0) });
   relayed = AppliersTo(p, 1);
   REQUIRE(relayed.size() == 1);
   REQUIRE(NumberOf(relayed[0], 1) == 127.0);
@@ -308,14 +310,16 @@ TEST_CASE("ModFactionRank moves a held rank within the int8 and relays the "
   // non-member out as the record does
   p.Messages().clear();
   Call(p, 0, "ModFactionRank",
-       { Object(kWhiterunCrime, "Faction"), Arg(1.0) });
+       { ObjectArg(kWhiterunCrime, "Faction"), Arg(1.0) });
   REQUIRE(AppliersTo(p, 1).empty());
   REQUIRE(Ranks(p, arvel).count(kWhiterunCrime) == 0);
 
   {
     LogCapture log;
-    Call(p, 0, "SetFactionRank", { Object(kSpider, "Faction"), Arg(200.0) });
-    Call(p, 0, "SetFactionRank", { Object(kPortcullis, "Faction"), Arg(1.0) });
+    Call(p, 0, "SetFactionRank",
+         { ObjectArg(kSpider, "Faction"), Arg(200.0) });
+    Call(p, 0, "SetFactionRank",
+         { ObjectArg(kPortcullis, "Faction"), Arg(1.0) });
     REQUIRE(log.Count("[verb:scripts] E_STANDING_RANK: ff000c70 reports "
                       "Actor.SetFactionRank on 39655 (from "
                       "StandingTest.onInit): the rank 200 is outside -128 to "
@@ -339,17 +343,17 @@ TEST_CASE("RemoveFromFaction drops a base faction, and a seat that arrives "
   auto& p = GetPartOne();
   auto& arvel = Enter(p);
 
-  Call(p, 0, "RemoveFromFaction", { Object(kBanditAlly, "Faction") });
+  Call(p, 0, "RemoveFromFaction", { ObjectArg(kBanditAlly, "Faction") });
   auto relayed = AppliersTo(p, 1);
   REQUIRE(relayed.size() == 1);
   REQUIRE(relayed[0].function == "RemoveFromFaction");
   REQUIRE(relayed[0].arguments.size() == 1);
   REQUIRE(ObjectOf(relayed[0], 0) == kBanditAlly);
   Call(p, 0, "SetFactionRank",
-       { Object(kImperialCrime, "Faction"), Arg(2.0) });
+       { ObjectArg(kImperialCrime, "Faction"), Arg(2.0) });
   // a faction the record does not hold: folded
   p.Messages().clear();
-  Call(p, 0, "RemoveFromFaction", { Object(kWhiterunCrime, "Faction") });
+  Call(p, 0, "RemoveFromFaction", { ObjectArg(kWhiterunCrime, "Faction") });
   REQUIRE(AppliersTo(p, 1).empty());
   REQUIRE(Ranks(p, arvel) ==
           std::map<uint32_t, int>{ { kSpider, 0 }, { kImperialCrime, 2 } });
@@ -396,7 +400,7 @@ TEST_CASE("SetCrimeFaction records a crime faction and its removal, and "
   auto& p = GetPartOne();
   auto& arvel = Enter(p);
 
-  Call(p, 0, "SetCrimeFaction", { Object(kWhiterunCrime, "Faction") });
+  Call(p, 0, "SetCrimeFaction", { ObjectArg(kWhiterunCrime, "Faction") });
   REQUIRE(arvel.GetCrimeFactionRecord() ==
           std::optional<FormDesc>(Desc(p, kWhiterunCrime)));
   auto relayed = AppliersTo(p, 1);
@@ -407,7 +411,7 @@ TEST_CASE("SetCrimeFaction records a crime faction and its removal, and "
   // None, as the seat sends it (an object of form id 0): the removal, kept
   // as the empty desc and relayed as None
   p.Messages().clear();
-  Call(p, 0, "SetCrimeFaction", { Object(0, "Faction") });
+  Call(p, 0, "SetCrimeFaction", { ObjectArg(0, "Faction") });
   REQUIRE(arvel.GetCrimeFactionRecord() ==
           std::optional<FormDesc>(FormDesc()));
   relayed = AppliersTo(p, 1);
@@ -417,10 +421,11 @@ TEST_CASE("SetCrimeFaction records a crime faction and its removal, and "
   REQUIRE(relayed[0].seq == std::optional<uint32_t>(2));
   // None again: folded
   p.Messages().clear();
-  Call(p, 0, "SetCrimeFaction", { Object(0, "Faction") });
+  Call(p, 0, "SetCrimeFaction", { ObjectArg(0, "Faction") });
   REQUIRE(AppliersTo(p, 1).empty());
 
-  Call(p, 0, "SetRelationshipRank", { Object(kDraugr, "Actor"), Arg(-2.0) });
+  Call(p, 0, "SetRelationshipRank",
+       { ObjectArg(kDraugr, "Actor"), Arg(-2.0) });
   relayed = AppliersTo(p, 1);
   REQUIRE(relayed.size() == 1);
   REQUIRE(relayed[0].function == "SetRelationshipRank");
@@ -437,9 +442,9 @@ TEST_CASE("SetCrimeFaction records a crime faction and its removal, and "
   {
     LogCapture log;
     p.Messages().clear();
-    Call(p, 0, "SetRelationshipRank", { Object(0x14, "Actor"), Arg(1.0) });
+    Call(p, 0, "SetRelationshipRank", { ObjectArg(0x14, "Actor"), Arg(1.0) });
     Call(p, 0, "SetRelationshipRank",
-         { Object(kPortcullis, "Actor"), Arg(1.0) });
+         { ObjectArg(kPortcullis, "Actor"), Arg(1.0) });
     REQUIRE(log.Count("[verb:scripts] E_STANDING_OTHER: ff000c70 reports "
                       "Actor.SetRelationshipRank on 39655 (from "
                       "StandingTest.onInit): the reporter's own player") == 1);

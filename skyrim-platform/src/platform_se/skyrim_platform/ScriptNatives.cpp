@@ -38,6 +38,7 @@
 #include <map>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -58,8 +59,9 @@ std::atomic<uint64_t> g_callRaises{ 0 };
 // last window too
 constexpr uint64_t kFlushMs = 30'000;
 std::atomic<uint64_t> g_lastFlushMs{ 0 };
-// the selves an everyone row (a quest's, a global's or an alias's call)
-// names in one window: at most kSelvesPerRow distinct ids per row
+// the selves an everyone row (a quest's or a global's call; an alias row's
+// is batched since rung 4) names in one window: at most kSelvesPerRow
+// distinct ids per row
 // ("Quest.Start on 30002859"), the rest under "on others", so a census line
 // per self never grows past the window's bound (the review of 2026-11-03:
 // unbounded selves were unbounded lines). 32, not 8: a rare row names every
@@ -117,20 +119,56 @@ constexpr NativeRow kRows[] = {
 };
 constexpr std::size_t kRowCount = std::size(kRows);
 
-// the state rows whose owned call crosses in the batch, as kind "state":
+// the state rows whose owned call crosses in the batch, as kind "state",
+// with its arguments, its caller and the caller's self (QueueFromFrame):
 // rung 2's two, whose kill the client's death report reads there (cause 3,
 // skymp5-client's DeathReportService), the flip's never-dropped kill rows;
-// and ProcessTrapHit, a trap's hit on an actor this seat simulates (its self
-// the hit actor, ADR-068 D-S3 point 2), which the client reports as that
-// actor's death evidence (thuum docs/verbs/npc-fate.md, playtest 48: the
-// blades' kill of draugr 800a6 came after their trigger's notes lapsed and
-// was refused). The player's own hits cross too and the client drops them:
-// a handful an encounter, and the batch crosses once a frame whatever it
-// holds. Every other state row is counted until rung 4's record trigger
-constexpr std::pair<const char*, const char*> kBatchedStateRows[] = {
-  { "Actor", "Kill" },
-  { "Actor", "KillSilent" },
-  { "ObjectReference", "ProcessTrapHit" }
+// ProcessTrapHit, a trap's hit on an actor this seat simulates (its self the
+// hit actor, ADR-068 D-S3 point 2), which the client reports as that actor's
+// death evidence (thuum docs/verbs/npc-fate.md, playtest 48: the blades'
+// kill of draugr 800a6 came after their trigger's notes lapsed and was
+// refused); and since rung 4 (the state rows, thuum ADR-068 amendment B;
+// docs/research/rung4-state-rows-2026-11-07.md 1(a)) the record rows, an
+// owner's change to a reference's engine state, which skymp5-client sends
+// as ScriptCall 75 for the server's record channel: RefState's five (a
+// reference enabled, disabled or deleted, the state DestructionStage 78
+// serves) and the standing's six (an NPC's faction ranks, crime faction and
+// relationship ranks; AddToFaction is Papyrus over SetFactionRank, no
+// native of its own), each named as FunctionsDump.txt has it. A record
+// row's owner is OwnedForRecord's, and the lever's `recorded` skips its
+// latent body on a seat that does not own it. The player's own hits and
+// standing cross too and the client drops them: a handful an encounter, and
+// the batch crosses once a frame whatever it holds. Every other state row
+// is counted and, since rung 3, touched (QueueTouch)
+enum class RecordRow : std::uint8_t
+{
+  None,
+  RefState,
+  Standing
+};
+
+struct BatchedRowName
+{
+  const char* cls;
+  const char* fn;
+  RecordRow record;
+};
+
+constexpr BatchedRowName kBatchedStateRows[] = {
+  { "Actor", "Kill", RecordRow::None },
+  { "Actor", "KillSilent", RecordRow::None },
+  { "ObjectReference", "ProcessTrapHit", RecordRow::None },
+  { "ObjectReference", "Enable", RecordRow::RefState },
+  { "ObjectReference", "EnableNoWait", RecordRow::RefState },
+  { "ObjectReference", "Disable", RecordRow::RefState },
+  { "ObjectReference", "DisableNoWait", RecordRow::RefState },
+  { "ObjectReference", "Delete", RecordRow::RefState },
+  { "Actor", "SetFactionRank", RecordRow::Standing },
+  { "Actor", "ModFactionRank", RecordRow::Standing },
+  { "Actor", "RemoveFromFaction", RecordRow::Standing },
+  { "Actor", "RemoveFromAllFactions", RecordRow::Standing },
+  { "Actor", "SetCrimeFaction", RecordRow::Standing },
+  { "Actor", "SetRelationshipRank", RecordRow::Standing }
 };
 
 // thuum docs/DECISIONS.md ADR-068 D-S3 (traps follow the interaction;
@@ -162,6 +200,19 @@ constexpr TrapRowName kTrapRows[] = {
   { "ObjectReference", "ApplyHavokImpulse", TrapRow::Impulse }
 };
 
+// thuum ADR-068 amendment B (rung 4, AliasFill's reference half; the plan's
+// 1(a)): the two everyone rows whose call crosses in the batch on every
+// seat, as kind "everyone" (OnAliasCall): ReferenceAlias.ForceRefTo (its
+// argument the reference) and Clear, which skymp5-client reports as
+// AliasFill 79. An alias has no owner (D-F1 C: every seat's quests run), so
+// every seat runs the call and reports it, and the server keeps the latest
+// fill per quest and alias; the call's self is the alias's quest and its
+// alias the alias's id (AliasIdOfHandle)
+constexpr std::pair<const char*, const char*> kAliasRows[] = {
+  { "ReferenceAlias", "ForceRefTo" },
+  { "ReferenceAlias", "Clear" }
+};
+
 // at most 11 arguments (CommonLibSSE-NG src/RE/N/NativeFunctionBase.cpp:15,
 // "native supports max 11")
 constexpr std::uint32_t kMaxArgs = 11;
@@ -182,6 +233,12 @@ struct RowInfo
   // carries a bool, a number, a string or an object, never an array
   bool relayable = false;
   bool batchedState = false;
+  // the row's record kind among kBatchedStateRows (rung 4), None for every
+  // other row: a record row's owner is OwnedForRecord's, and the lever's
+  // `recorded` skips its latent body on a non-owner
+  RecordRow record = RecordRow::None;
+  // one of kAliasRows (rung 4): batched on every seat (OnAliasCall)
+  bool alias = false;
   // the row's place among kTrapRows (D-S3), None for every other row
   TrapRow trap = TrapRow::None;
   // the declared return's kind (TypeInfo::GetUnmangledRawType)
@@ -201,20 +258,23 @@ std::unordered_map<const RE::BSScript::IFunction*, std::size_t> g_rowOf;
 // whose Stack's callback is a live VmCallback); " (not hosted)" a self this
 // seat does not own; " (local)" a row that never crosses (Game.GetPlayer,
 // an animation row on an actor); " (unrelayable)" an owned action row with
-// an array parameter; " (unresolved)" a subject that names no reference;
+// an array parameter; " (unresolved)" a subject that names no reference,
+// or an alias row's self that names no alias of a quest (rung 4);
 // " (frame mismatch)" a dispatch whose top frame is not the native's own, or
 // whose arguments' page cannot be found (H-S1 failing), or a followed body's
 // motion call whose frame does not hold the row's declared shape; " (skipped)"
 // a non-owned state row whose body the lever skipped (scriptNonOwnerSkip
-// nonLatent); " (trap)" a trap family reference's call, every seat's own
-// (ADR-068 D-S3 point 1: a state row run here, an action row run under the
-// script action's mark, neither queued); " (followed)" a script's
-// SetMotionType or ApplyHavokImpulse on a trap body another seat streams,
-// run neutralized (D-S3 point 4); no suffix, an owned self's state row, run
-// here and counted, and since rung 3 touched (QueueTouch: the script
-// record's trigger).
+// nonLatent, or recorded since rung 4: a latent record row's too); " (trap)"
+// a trap family reference's call, every seat's own (ADR-068 D-S3 point 1: a
+// state row run here, an action row run under the script action's mark,
+// neither queued); " (followed)" a script's SetMotionType or
+// ApplyHavokImpulse on a trap body another seat streams, run neutralized
+// (D-S3 point 4); no suffix, an owned self's state row, run here and
+// counted, and since rung 3 touched (QueueTouch: the script record's
+// trigger).
 // An everyone row's calls are counted by self instead (g_rowSelves, the
-// flip's "Class.Name on <id>"); a batched call is the batch's, never counted
+// flip's "Class.Name on <id>"), except an alias row's, batched on every seat
+// since rung 4; a batched call is the batch's, never counted
 enum CountKind : std::size_t
 {
   kCountOwned,
@@ -302,6 +362,22 @@ constexpr std::uint32_t FormIdOfHandle(RE::VMHandle handle)
   return static_cast<std::uint32_t>(handle & 0xFFFFFFFF);
 }
 
+// an alias's id within its quest, by the encoding above: the middle word of
+// a kind-0 handle that is no plain form's (BGSBaseAlias::aliasID,
+// CommonLibSSE-NG include/RE/B/BGSBaseAlias.h:77, its quest's form id in the
+// low 32 bits; adr065 Q1: 53508 builds such a handle for VM types 139 to
+// 141, BGSBaseAlias.h:15, and 53512 resolves it through the quest's alias by
+// id). HYPOTHESIS H-AF3 (the rung 4 plan's section 4): x-alias-premise v1
+// reads the batch's quest and alias for a ForceRefTo against the alias
+// step's. None for any other handle
+constexpr std::optional<std::uint16_t> AliasIdOfHandle(RE::VMHandle handle)
+{
+  if ((handle >> 48) != 0 || IsPlainFormHandle(handle)) {
+    return std::nullopt;
+  }
+  return static_cast<std::uint16_t>((handle >> 32) & 0xFFFF);
+}
+
 // the script object a Variable holds (null for None or a non-object): the
 // value read in place (the fork's port patch 02 makes Variable's members
 // public), no reference taken, since the frame's Variable keeps the object
@@ -382,6 +458,27 @@ bool OwnedHere(const RE::TESObjectREFR* ref, bool isActor)
   }
   if (isActor) {
     return Hosted::Is(id) && !Puppets::Is(id);
+  }
+  const RE::TESObjectCELL* cell = ref->GetParentCell();
+  return cell && Frida::IsCellHosted(cell->formID);
+}
+
+// rung 4's owner of a record row's subject (the plan's 1(a), the rows
+// table's "Subject's owner"): OwnedHere's, except a game-file actor the
+// server has given this seat no word on (neither hosted here nor a puppet,
+// Hosted.h and Puppets.h), which is judged as a world object is, by its
+// cell's host: an actor the server never loaded has no simulator (the
+// ambush draugr 0x380ba, which trigger 0x4e421 enables; thuum
+// docs/research/trap-census-2026-11-05.md:162), and its cell's host enables
+// it. An actor at or above 0xff000000 never is (the players'
+// figures and what they place begin there, the gate's line in OnCall): its
+// owner is the server's word alone
+bool OwnedForRecord(const RE::TESObjectREFR* ref, bool isActor)
+{
+  const std::uint32_t id = ref->formID;
+  if (!isActor || id == 0x14 || id >= 0xff000000 || Hosted::Is(id) ||
+      Puppets::Is(id)) {
+    return OwnedHere(ref, isActor);
   }
   const RE::TESObjectCELL* cell = ref->GetParentCell();
   return cell && Frida::IsCellHosted(cell->formID);
@@ -485,7 +582,8 @@ const RE::TESObjectREFR* CallerRefOf(const RE::BSScript::StackFrame* below)
 }
 
 // one captured call of an owned self, the shared shape's Call; since rung 3
-// also the calling script's self and the touch mark
+// also the calling script's self and the touch mark, since rung 4 an alias
+// row's alias
 struct QueuedCall
 {
   std::size_t row = 0;
@@ -501,6 +599,9 @@ struct QueuedCall
   // rung 3's touch: an owned state row's call, no arguments (QueueTouch),
   // raised as kind "touch"
   bool touch = false;
+  // rung 4's alias row (OnAliasCall): the alias's id within the quest that
+  // `self` names, raised as `alias`; none on every other call
+  std::optional<std::uint16_t> alias;
 };
 
 // this frame's batch: appended on the dispatching thread for a batched row
@@ -556,8 +657,9 @@ Napi::Value ArgToJs(Napi::Env env, const CallArg& arg)
 
 // one Call of the shared shape (thuum's rung 2 spec, the platform's JS
 // event): { cls, fn, kind, self, args, caller, handler, callerSelf, latent,
-// stackId }, cls and fn the table's spelling; kind "touch" for rung 3's
-// touch (an owned state row's call, its args empty)
+// stackId, alias? }, cls and fn the table's spelling; kind "touch" for rung
+// 3's touch (an owned state row's call, its args empty); alias on rung 4's
+// alias rows alone (ForceRefTo, Clear), absent from every other call
 Napi::Object CallToJs(Napi::Env env, const QueuedCall& call)
 {
   const NativeRow& native = kRows[call.row];
@@ -576,6 +678,9 @@ Napi::Object CallToJs(Napi::Env env, const QueuedCall& call)
   AddObjProperty(&obj, "callerSelf", call.callerSelf);
   AddObjProperty(&obj, "latent", call.latent);
   AddObjProperty(&obj, "stackId", call.stackId);
+  if (call.alias) {
+    AddObjProperty(&obj, "alias", *call.alias);
+  }
   return obj;
 }
 
@@ -628,18 +733,79 @@ constexpr std::uint32_t kNoPage = static_cast<std::uint32_t>(-1);
 // direct-call count reads them from the worker, which no hook orders
 std::atomic<bool> g_tableReady{ false };
 
-// the non-owner skip lever (6.11 item 3, rung 2's last commit), read once at
-// kDataLoaded before the replacement is installed and never written after.
-// None (the default): every body runs, as the attach's did. NonLatent: a
-// non-owned state row whose native is not latent skips its body. A latent
-// row always runs in this rung (H-F1: what a skipped latent must return is
-// unread; x-native-frame's trace settles it)
+// the non-owner skip lever (6.11 item 3, rung 2's last commit; rung 4's
+// recorded), read once at kDataLoaded before the replacement is installed
+// and never written after. None (the default): every body runs, as the
+// attach's did. NonLatent: a non-owned state row whose native is not latent
+// skips its body. Recorded (rung 4, the plan's 1(a)): NonLatent's, and a
+// non-owned record row's latent body too (Enable, Disable and Delete by
+// FunctionsDump.txt, read from the bound rows' own latency), so a guest's
+// lifecycle Disable leaves its copy to the served word (H-F2, at
+// SetEmptyResult). Every other latent row always runs (H-F1: what a
+// skipped latent must return is unread; x-native-frame's trace settles it)
 enum class NonOwnerSkip
 {
   None,
-  NonLatent
+  NonLatent,
+  Recorded
 };
 NonOwnerSkip g_nonOwnerSkip = NonOwnerSkip::None;
+
+const char* LeverName(NonOwnerSkip skip)
+{
+  switch (skip) {
+    case NonOwnerSkip::NonLatent:
+      return "nonLatent";
+    case NonOwnerSkip::Recorded:
+      return "recorded";
+    case NonOwnerSkip::None:
+      break;
+  }
+  return "none";
+}
+
+// the lever's judgment of a non-owned state row: true when its body is
+// skipped
+bool SkipsBody(const RowInfo& info)
+{
+  switch (g_nonOwnerSkip) {
+    case NonOwnerSkip::NonLatent:
+      return !info.latent;
+    case NonOwnerSkip::Recorded:
+      return !info.latent || info.record != RecordRow::None;
+    case NonOwnerSkip::None:
+      break;
+  }
+  return false;
+}
+
+// the lever's skipped selves, the first kSkipLinesPerRow distinct ones per
+// row in each census window logged (the rung 4 plan's line, which
+// x-skip-latent v1 reads beside the self's script record, H-F2), on fixed
+// slots as CountSelf keeps them: a slot's key is kSlotUsed | the self's form
+// id, 0 while free, every slot freed at the census's flush
+constexpr std::size_t kSkipLinesPerRow = 3;
+std::array<std::array<std::atomic<std::uint64_t>, kSkipLinesPerRow>, kRowCount>
+  g_skipLines{};
+
+void LogSkipped(std::size_t row, std::uint32_t selfId)
+{
+  const std::uint64_t key = kSlotUsed | selfId;
+  for (auto& slot : g_skipLines[row]) {
+    std::uint64_t seen = slot.load(std::memory_order_relaxed);
+    if (seen == 0 &&
+        slot.compare_exchange_strong(seen, key, std::memory_order_relaxed)) {
+      logger::info("[verb:scripts] {}.{} on {:x}: skipped, not hosted here "
+                   "({})",
+                   kRows[row].cls, kRows[row].fn, selfId,
+                   LeverName(g_nonOwnerSkip));
+      return;
+    }
+    if (seen == key) {
+      return;
+    }
+  }
+}
 
 // what the dispatch hook raises for one call's extent (PlatformCall.h's
 // bracket)
@@ -658,18 +824,20 @@ struct Marks
 };
 
 // one call queued from its frame into this frame's batch (the shared shape's
-// Call): its self, its arguments read through the engine's accessor with the
-// frame's page (found here when the subject's read did not need it) and its
-// caller; false, counted " (frame mismatch)", when the arguments' page
-// cannot be found
+// Call): its self (an alias row's quest, beside the alias's id), its
+// arguments read through the engine's accessor with the frame's page (found
+// here when the subject's read did not need it) and its caller; false,
+// counted " (frame mismatch)", when the arguments' page cannot be found
 bool QueueFromFrame(std::size_t row, const RowInfo& info,
                     const RE::BSScript::Stack* stack,
                     const RE::BSScript::StackFrame* top, std::uint32_t page,
-                    std::uint32_t self)
+                    std::uint32_t self,
+                    std::optional<std::uint16_t> alias = std::nullopt)
 {
   QueuedCall call;
   call.row = row;
   call.self = self;
+  call.alias = alias;
   call.latent = info.latent;
   call.stackId = stack->stackID;
   call.argCount = info.params;
@@ -835,6 +1003,46 @@ Marks OnFamilyCall(std::size_t row, const RowInfo& info,
   return marks;
 }
 
+// rung 4's AliasFill, the reference half (thuum ADR-068 amendment B; the
+// plan's 1(a)): an alias row's call (kAliasRows) queued on every seat, its
+// self the alias's quest (the handle's low 32 bits, EveryoneSelfId's id) and
+// beside it the alias's id (AliasIdOfHandle), its arguments, caller and
+// caller's self as every batched call carries them; never counted (a
+// batched call is the batch's). Filtered here (rule 9) as the engine's own
+// GetObjectForHandle filters an alias's handle (adr065 Q1: 53512 refuses a
+// form that is no Quest, FormTypes.h:217): a self whose handle is no
+// alias's, or whose low 32 bits name no quest the form table knows, is
+// counted " (unresolved)", its first three logged, and never crosses (H-AF3
+// failing reads there)
+void OnAliasCall(std::size_t row, const RowInfo& info,
+                 const RE::BSScript::Stack* stack,
+                 const RE::BSScript::StackFrame* top)
+{
+  const RE::BSScript::Object* object = ObjectOf(top->self);
+  const RE::VMHandle handle = object ? object->GetHandle() : 0;
+  const std::optional<std::uint16_t> alias = AliasIdOfHandle(handle);
+  const std::uint32_t quest = FormIdOfHandle(handle);
+  const RE::TESForm* form =
+    alias && quest != 0 ? RE::TESForm::LookupByID(quest) : nullptr;
+  if (!form || form->GetFormType() != RE::FormType::Quest) {
+    Count(row, kCountUnresolved);
+    static std::atomic<uint64_t> s_unresolved{ 0 };
+    if (++s_unresolved <= 3) {
+      logger::warn("[verb:scripts] {}.{}'s self, handle {:x}, names no "
+                   "alias of a quest the form table knows (H-AF3's encoding: "
+                   "kind 0, a middle word below 0xFFFF, the quest in the low "
+                   "32 bits); counted (unresolved), not batched",
+                   kRows[row].cls, kRows[row].fn, handle);
+    }
+    return;
+  }
+  if (!info.relayable) {
+    Count(row, kCountUnrelayable);
+    return;
+  }
+  QueueFromFrame(row, info, stack, top, kNoPage, quest, alias);
+}
+
 // the seam's judgment of one dispatch, 6.2's order (rule 9: the cheapest
 // test first). The body runs unless the lever skips it (marks.skip)
 Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
@@ -901,8 +1109,12 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     return marks;
   }
   // an everyone row has no owner (D-F1 C): every seat runs it, its self
-  // counted
+  // counted; an alias row's call is batched instead (rung 4, OnAliasCall)
   if (native.kind == NativeKind::Everyone) {
+    if (info.alias) {
+      OnAliasCall(row, info, stack, top);
+      return marks;
+    }
     CountSelf(row, EveryoneSelfId(top->self));
     return marks;
   }
@@ -956,28 +1168,34 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
       return OnFamilyCall(row, info, stack, top, page, ref->formID);
     }
   }
-  // (d) the owner. Not owned: counted, and the body runs (an action row's
-  // jump, the pillar's StartState0N from a guest's OnCellLoad, is wanted
-  // everywhere), unless the lever skips a state row's non-latent body (6.11
-  // item 3: a guest's lifecycle handler performs the host's PlaceAtMe or
-  // Lock on its own copy; its RemoveItem, MoveTo and Disable are latent,
-  // FunctionsDump.txt, and wait for H-F1's read)
-  if (!OwnedHere(ref, isActor)) {
-    if (native.kind == NativeKind::State && !info.latent &&
-        g_nonOwnerSkip == NonOwnerSkip::NonLatent) {
+  // (d) the owner, a record row's by OwnedForRecord (rung 4). Not owned:
+  // counted, and the body runs (an action row's jump, the pillar's
+  // StartState0N from a guest's OnCellLoad, is wanted everywhere), unless
+  // the lever skips a state row's body (6.11 item 3: a guest's lifecycle
+  // handler performs the host's PlaceAtMe or Lock on its own copy, skipped
+  // by nonLatent; its RemoveItem and MoveTo are latent, FunctionsDump.txt,
+  // and wait for H-F1's read; its Disable, a latent record row, is skipped
+  // by recorded, H-F2), the first skipped selves logged (LogSkipped)
+  const bool owned = info.record != RecordRow::None
+    ? OwnedForRecord(ref, isActor)
+    : OwnedHere(ref, isActor);
+  if (!owned) {
+    if (native.kind == NativeKind::State && SkipsBody(info)) {
       marks.skip = true;
       marks.result = info.result;
       Count(row, kCountSkipped);
+      LogSkipped(row, ref->formID);
       return marks;
     }
     Count(row, kCountNotHosted);
     return marks;
   }
   // (e) owned. A state row is the record's (ADR-065: the change form carries
-  // it), counted; Kill and KillSilent cross in the batch too. Since rung 3
-  // (thuum ADR-068, the script record) the row's call also crosses as a
-  // touch (QueueTouch): the owner's mark that the self's or the calling
-  // script's state may have changed
+  // it), counted; a batched one (Kill and KillSilent, ProcessTrapHit, and
+  // since rung 4 the record rows) crosses in the batch with its arguments
+  // instead. Since rung 3 (thuum ADR-068, the script record) every other
+  // state row's call also crosses as a touch (QueueTouch): the owner's mark
+  // that the self's or the calling script's state may have changed
   if (native.kind == NativeKind::State && !info.batchedState) {
     Count(row, kCountOwned);
     QueueTouch(row, info, stack, top, ref, isActor);
@@ -1021,10 +1239,11 @@ void ReadRow(std::size_t row, const RE::BSScript::IFunction* function)
     static_cast<const RE::BSScript::NF_util::NativeFunctionBase*>(function)
       ->GetIsLatent();
   info.result = function->GetReturnType().GetUnmangledRawType();
-  for (const auto& [cls, name] : kBatchedStateRows) {
-    if (_stricmp(kRows[row].cls, cls) == 0 &&
-        _stricmp(kRows[row].fn, name) == 0) {
+  for (const auto& batched : kBatchedStateRows) {
+    if (_stricmp(kRows[row].cls, batched.cls) == 0 &&
+        _stricmp(kRows[row].fn, batched.fn) == 0) {
       info.batchedState = true;
+      info.record = batched.record;
     }
   }
   for (const auto& trapRow : kTrapRows) {
@@ -1033,6 +1252,46 @@ void ReadRow(std::size_t row, const RE::BSScript::IFunction* function)
       info.trap = trapRow.trap;
     }
   }
+  for (const auto& [cls, name] : kAliasRows) {
+    if (_stricmp(kRows[row].cls, cls) == 0 &&
+        _stricmp(kRows[row].fn, name) == 0) {
+      info.alias = true;
+    }
+  }
+}
+
+// a name among the seam's lists (kBatchedStateRows, kTrapRows, kAliasRows)
+// that no bound table row carries, said once at kDataLoaded: the lists find
+// their rows by class and name, so a row the table lacks or spells
+// otherwise is never silent
+void WarnUnbound(const char* list, const char* cls, const char* fn)
+{
+  for (std::size_t row = 0; row < kRowCount; ++row) {
+    if (g_rows[row].fn && _stricmp(kRows[row].cls, cls) == 0 &&
+        _stricmp(kRows[row].fn, fn) == 0) {
+      return;
+    }
+  }
+  logger::warn("[verb:scripts] the {} row {}.{} is no bound table row; "
+               "never judged as one",
+               list, cls, fn);
+}
+
+// how InstallHooks names a row's crossing beside its latency
+const char* CrossingNote(const RowInfo& info)
+{
+  if (info.alias) {
+    return ", batched on every seat (an alias fill)";
+  }
+  switch (info.record) {
+    case RecordRow::RefState:
+      return ", batched (a ref state record row)";
+    case RecordRow::Standing:
+      return ", batched (a standing record row)";
+    case RecordRow::None:
+      break;
+  }
+  return info.batchedState ? ", batched" : "";
 }
 
 // the lever's value: "scriptNonOwnerSkip" in skymp5-client-settings.txt,
@@ -1042,8 +1301,9 @@ void ReadRow(std::size_t row, const RE::BSScript::IFunction* function)
 // does there) and read with the same reader (Viet::ReadFileIntoString), so
 // the lab sets it as it sets cellHost and npcPuppet (relaunch {files: [{json:
 // Data/Platform/Plugins/skymp5-client-settings.txt, key: scriptNonOwnerSkip,
-// value: nonLatent}]}). "nonLatent" turns the skip on; "none", an absent key
-// or file, an unreadable file or any other value leaves it off
+// value: nonLatent}]}). "nonLatent" skips a non-latent body, "recorded" a
+// latent record row's too (rung 4); "none", an absent key or file, an
+// unreadable file or any other value leaves the skip off
 NonOwnerSkip ReadNonOwnerSkip()
 {
   NonOwnerSkip skip = NonOwnerSkip::None;
@@ -1070,9 +1330,11 @@ NonOwnerSkip ReadNonOwnerSkip()
       const std::string value = it->is_string() ? it->get<std::string>() : "";
       if (value == "nonLatent") {
         skip = NonOwnerSkip::NonLatent;
+      } else if (value == "recorded") {
+        skip = NonOwnerSkip::Recorded;
       } else if (value != "none") {
-        logger::warn("[verb:scripts] scriptNonOwnerSkip in {} is neither "
-                     "none nor nonLatent; read as none",
+        logger::warn("[verb:scripts] scriptNonOwnerSkip in {} is not none, "
+                     "nonLatent or recorded; read as none",
                      path.string());
       }
     }
@@ -1133,6 +1395,10 @@ void FlushCensus(uint64_t now)
     if (others != 0) {
       rows.emplace_back(name + " on others", others);
       total += others;
+    }
+    // the next window logs its own first skipped selves (LogSkipped)
+    for (auto& slot : g_skipLines[row]) {
+      slot.store(0, std::memory_order_relaxed);
     }
   }
   const uint32_t misses = g_handleMisses.exchange(0);
@@ -1210,7 +1476,16 @@ NativeCallFn g_nativeCallOriginal = nullptr;
 // replaces), and the result is the declared type's empty value, what a body
 // that does nothing writes: None for a void or an object return
 // (MarshallAndDispatch's SetNone, NativeFunction.h:96-99; PackHandle's null,
-// PackUnpack.cpp:48-55), false, 0, 0.0 and "" for the literals
+// PackUnpack.cpp:48-55), false, 0, 0.0 and "" for the literals. A latent
+// record row skipped under recorded (rung 4) leaves the same and answers
+// kCompleted where its body would leave the stack waiting on a latent
+// result (IFunction::CallResult's kCompleted 0 against kInProgress 2,
+// CommonLibSSE-NG include/RE/I/IFunction.h:36-38; a latent native's own
+// answer is a LatentStatus, kFailed or kStarted, NativeLatentFunction.h:
+// 59-62): HYPOTHESIS H-F2, the VM resumes the stack as after a non-latent
+// call and no stack waits on a result that never comes (x-skip-latent v1:
+// c2's script_state(id).quiescent true within 1 s of its skipped line for
+// that id; if it fails, nonLatent stays the lab's lever)
 void SetEmptyResult(RE::BSScript::Variable& result,
                     RE::BSScript::TypeInfo::RawType type)
 {
@@ -1239,7 +1514,8 @@ void SetEmptyResult(RE::BSScript::Variable& result,
 // body through Gum's trampoline in every case the judgment says run, the
 // level (and its marks) held for the call's extent. What each path returns:
 // the original's own CallResult whenever the body runs; kCompleted, with
-// the row's empty result in returnValue, when the lever skips it. A call of
+// the row's empty result in returnValue, when the lever skips it (a latent
+// record row's too under recorded, H-F2). A call of
 // this function nested in a replaced call's original on one thread never
 // reaches here: Gum runs it straight to the original (frida-gum
 // 698b356fef0e, frida 16.0.19's, gum/guminterceptor.c:1503-1513: the top
@@ -1365,27 +1641,54 @@ void ScriptNatives::InstallHooks()
     ReadRow(row, function);
     ++boundRows;
     const RowInfo& info = g_rows[row];
-    logger::info("[verb:scripts] table row {}.{}: {} parameter(s), {}{}, "
+    logger::info("[verb:scripts] table row {}.{}: {} parameter(s), {}{}{}, "
                  "relay {}",
                  native.cls, native.fn, info.params,
                  info.latent ? "latent" : "not latent",
                  info.relayable ? "" : ", unrelayable (an array parameter)",
-                 native.relay);
+                 CrossingNote(info), native.relay);
   }
   logger::info("[verb:scripts] {} of {} table rows bound (NativeRows.inc, "
                "thuum docs/NATIVES.md)",
                boundRows, kRowCount);
+  // the seam's name lists, found by class and name as the rows are
+  for (const auto& batched : kBatchedStateRows) {
+    WarnUnbound("batched state", batched.cls, batched.fn);
+  }
+  for (const auto& trapRow : kTrapRows) {
+    WarnUnbound("trap", trapRow.cls, trapRow.fn);
+  }
+  for (const auto& [cls, name] : kAliasRows) {
+    WarnUnbound("alias", cls, name);
+  }
   // thuum ADR-068 D-S3: the trap family the gate and this seam read, named
   // once per process beside the table it extends (TrapFamily.h)
   TrapFamily::LogReady();
-  // the lever, read before the replacement can ask it
+  // the lever, read before the replacement can ask it; under recorded the
+  // line names the latent record rows it skips, by the bound rows' latency
   g_nonOwnerSkip = ReadNonOwnerSkip();
-  const bool skipping = g_nonOwnerSkip == NonOwnerSkip::NonLatent;
+  std::string skipping = "every body runs";
+  if (g_nonOwnerSkip == NonOwnerSkip::NonLatent) {
+    skipping = "a non-owned state row's non-latent body is skipped, its "
+               "row's empty result returned";
+  } else if (g_nonOwnerSkip == NonOwnerSkip::Recorded) {
+    std::string latentRecords;
+    for (size_t row = 0; row < kRowCount; ++row) {
+      if (g_rows[row].fn && g_rows[row].latent &&
+          g_rows[row].record != RecordRow::None) {
+        latentRecords +=
+          fmt::format("{}{}.{}", latentRecords.empty() ? "" : ", ",
+                      kRows[row].cls, kRows[row].fn);
+      }
+    }
+    skipping = fmt::format(
+      "a non-owned state row's non-latent body is skipped, and a non-owned "
+      "record row's latent one ({}), each answered completed with its row's "
+      "empty result (H-F2)",
+      latentRecords.empty() ? std::string("none bound") : latentRecords);
+  }
   logger::info("[verb:scripts] scriptNonOwnerSkip {}: {}",
-               skipping ? "nonLatent" : "none",
-               skipping ? "a non-owned state row's non-latent body is "
-                          "skipped, its row's empty result returned"
-                        : "every body runs");
+               LeverName(g_nonOwnerSkip), skipping);
   g_tableReady.store(true, std::memory_order_release);
   // the dispatch replaced, once the table's map and the lever are complete,
   // so it never reads either being written

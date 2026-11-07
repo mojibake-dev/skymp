@@ -137,3 +137,11 @@ String Function ApplyChangeFormResult(ObjectReference refr) global native
 String Function SerializeScriptState(ObjectReference refr) global native
 String Function ApplyScriptState(ObjectReference refr, String scriptsJson) global native
 String Function SendScriptEvent(ObjectReference refr, String name, Bool unseenOnly) global native
+
+; thuum ADR-068 rung 4 (the state rows, amendment B): the world globals this
+; seat's engine changed since its last answer, for the world streamer's
+; WorldGlobal 80 (a JSON string: [[formId, value], ...], at most 512
+; entries, "[]" for none); constants, non-finite values and the
+; comma-separated hex ids in exclude are never answered; with reset, every
+; other global's value now becomes the baseline and the answer is "[]"
+String Function DiffWorldGlobals(Bool reset, String exclude) global native

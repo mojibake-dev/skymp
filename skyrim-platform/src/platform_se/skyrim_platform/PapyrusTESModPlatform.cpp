@@ -18,10 +18,18 @@
 #include <RE/M/MagicFavorites.h>
 #include <RE/N/NiPoint3.h>
 #include <RE/P/Projectile.h>
+#include <RE/T/TESDataHandler.h>
 #include <RE/T/TESGlobal.h>
 #include <REL/Relocation.h>
 #include <algorithm>
+#include <charconv>
 #include <cmath>
+#include <fmt/format.h>
+#include <mutex>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 
 extern CallNativeApi::NativeCallRequirements g_nativeCallRequirements;
 
@@ -1675,6 +1683,139 @@ RE::BSFixedString TESModPlatform::SendScriptEvent(IVM* vm, StackID stackId,
   return RE::BSFixedString(ScriptState::Send(refr, name, unseenOnly));
 }
 
+namespace {
+// thuum ADR-068 rung 4 (the state rows): DiffWorldGlobals' baseline, each
+// answered global's form id to its value at its last answer or the last
+// reset, and one answer's bound, skymp-wire's WORLD_GLOBALS (the
+// WorldGlobal message's entries, the rung 4 plan's 1(b)). The native runs on
+// the OnUpdate thread alone; the lock is for any other caller
+constexpr size_t kWorldGlobalsPerAnswer = 512;
+std::mutex g_worldGlobalsMutex;
+std::unordered_map<uint32_t, float> g_worldGlobalsBaseline;
+
+// `exclude` read as comma-separated hex form ids, "0x" optional and spaces
+// allowed around each; a token that is no hex id is skipped
+std::unordered_set<uint32_t> ParseHexIds(std::string_view text)
+{
+  std::unordered_set<uint32_t> ids;
+  size_t start = 0;
+  while (start <= text.size()) {
+    size_t end = text.find(',', start);
+    if (end == std::string_view::npos) {
+      end = text.size();
+    }
+    std::string_view token = text.substr(start, end - start);
+    while (!token.empty() && (token.front() == ' ' || token.front() == '\t')) {
+      token.remove_prefix(1);
+    }
+    while (!token.empty() && (token.back() == ' ' || token.back() == '\t')) {
+      token.remove_suffix(1);
+    }
+    if (token.size() > 2 && token[0] == '0' &&
+        (token[1] == 'x' || token[1] == 'X')) {
+      token.remove_prefix(2);
+    }
+    if (!token.empty()) {
+      uint32_t id = 0;
+      const char* last = token.data() + token.size();
+      const auto [ptr, ec] = std::from_chars(token.data(), last, id, 16);
+      if (ec == std::errc() && ptr == last) {
+        ids.insert(id);
+      }
+    }
+    start = end + 1;
+  }
+  return ids;
+}
+
+// the walk itself, under the baseline's lock: every GLOB the data handler
+// holds, the skipped ones counted for the reset's line
+std::string DiffWorldGlobalsImpl(bool reset, std::string_view exclude)
+{
+  auto handler = RE::TESDataHandler::GetSingleton();
+  if (!handler) {
+    return "[]";
+  }
+  const std::unordered_set<uint32_t> excluded = ParseHexIds(exclude);
+  std::lock_guard<std::mutex> lock(g_worldGlobalsMutex);
+  if (reset) {
+    g_worldGlobalsBaseline.clear();
+  }
+  std::string answer = "[";
+  size_t entries = 0;
+  size_t constants = 0;
+  size_t skipped = 0;
+  for (RE::TESGlobal* global : handler->GetFormArray<RE::TESGlobal>()) {
+    if (!global) {
+      continue;
+    }
+    if ((global->GetFormFlags() & RE::TESGlobal::RecordFlags::kConstant) !=
+        0) {
+      ++constants;
+      continue;
+    }
+    const uint32_t id = global->GetFormID();
+    const float value = global->value;
+    if (excluded.count(id) != 0 || !std::isfinite(value)) {
+      ++skipped;
+      continue;
+    }
+    if (reset) {
+      g_worldGlobalsBaseline[id] = value;
+      continue;
+    }
+    const auto it = g_worldGlobalsBaseline.find(id);
+    if (it != g_worldGlobalsBaseline.end() && it->second == value) {
+      continue;
+    }
+    if (entries == kWorldGlobalsPerAnswer) {
+      // the rest keep their baseline, so a later call answers them
+      break;
+    }
+    answer += fmt::format("{}[{},{}]", entries == 0 ? "" : ",", id, value);
+    g_worldGlobalsBaseline[id] = value;
+    ++entries;
+  }
+  answer += "]";
+  if (reset) {
+    logger::info("[verb:world-globals] DiffWorldGlobals reset: {} global(s) "
+                 "baselined; {} constant(s), {} excluded or non-finite "
+                 "skipped",
+                 g_worldGlobalsBaseline.size(), constants, skipped);
+  }
+  return answer;
+}
+}
+
+// thuum ADR-068 rung 4 (the state rows, amendment B; docs/research/
+// rung4-state-rows-2026-11-07.md 1(a)): the world globals this seat's engine
+// changed since its last answer, for the world streamer's WorldGlobal 80
+// (skymp5-client's WorldGlobalService calls it with reset at the stream
+// word, then once a second without, on the seat the server elected). The
+// engine's GLOB array walked whole (TESDataHandler::GetFormArray,
+// CommonLibSSE-NG include/RE/T/TESDataHandler.h:68-70 and :222-224, over the
+// handler's formArrays, :170): a constant (TESGlobal::RecordFlags::kConstant,
+// TESGlobal.h:28, read on TESForm::GetFormFlags, TESForm.h:287), an id in
+// `exclude` and a non-finite value skipped, every other value
+// (TESGlobal::value, TESGlobal.h:45) held to the baseline. Runs inside
+// TESModPlatform.Add's Call on the OnUpdate thread (callNative's direct
+// path, ScriptState.h's note), and no C++ exception leaves it: a throw
+// answers "[]", the reason logged
+RE::BSFixedString TESModPlatform::DiffWorldGlobals(IVM* vm, StackID stackId,
+                                                   RE::StaticFunctionTag*,
+                                                   bool reset,
+                                                   std::string_view exclude)
+{
+  try {
+    return RE::BSFixedString(DiffWorldGlobalsImpl(reset, exclude));
+  } catch (const std::exception& e) {
+    logger::error("[verb:world-globals] DiffWorldGlobals threw: {}", e.what());
+  } catch (...) {
+    logger::error("[verb:world-globals] DiffWorldGlobals threw");
+  }
+  return RE::BSFixedString("[]");
+}
+
 bool TESModPlatform::Register(IVM* vm)
 {
   TESModPlatform::onPapyrusUpdate = onPapyrusUpdate;
@@ -1950,6 +2091,12 @@ bool TESModPlatform::Register(IVM* vm)
       true, decltype(SendScriptEvent), RE::BSFixedString,
       RE::StaticFunctionTag*, RE::TESObjectREFR*, std::string_view, bool>(
       "SendScriptEvent", "TESModPlatform", SendScriptEvent));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(DiffWorldGlobals),
+                                     RE::BSFixedString, RE::StaticFunctionTag*,
+                                     bool, std::string_view>(
+      "DiffWorldGlobals", "TESModPlatform", DiffWorldGlobals));
 
   static LoadGameEvent loadGameEvent;
 

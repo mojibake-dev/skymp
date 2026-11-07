@@ -16,13 +16,16 @@ class IFunction;
 // a trap family reference every seat's own, ADR-068 D-S3, TrapFamily.h),
 // an owned action row's call (and a script's Kill, a trap's ProcessTrapHit
 // on an actor this seat simulates, and a family reference's SetDestroyed,
-// SetMotionType and ApplyHavokImpulse, and since rung 3 an owned state row's
-// call as a touch, the script record's trigger) queued into this frame's
-// batch and raised to JS once a frame as the event "scriptCalls", each with
-// its caller's self, every other tabled call counted and raised every 30 s as
-// "scriptCensus"; the hook is a replacement, so a lever (scriptNonOwnerSkip,
-// default none) can skip a non-owned state row's body. The rows' functions
-// are resolved at
+// SetMotionType and ApplyHavokImpulse; since rung 3 an owned state row's
+// call as a touch, the script record's trigger; since rung 4, the state
+// rows, an owned record row's call with its arguments, RefState's and the
+// standing's, and on every seat an alias row's, ForceRefTo's and Clear's,
+// with the alias's quest and id) queued into this frame's batch and raised
+// to JS once a frame as the event "scriptCalls", each with its caller's
+// self, every other tabled call counted and raised every 30 s as
+// "scriptCensus"; the hook is a replacement, so a lever (scriptNonOwnerSkip:
+// none by default, nonLatent, or rung 4's recorded) can skip a non-owned
+// state row's body. The rows' functions are resolved at
 // kDataLoaded from the VM's own bindings (Hooks.cpp BindNativeMethod's
 // record, by class and name), never from a pinned offset (rule 1). This
 // replaced the flip's 24 entry hooks (ADR-062 decision 2) and their per-call

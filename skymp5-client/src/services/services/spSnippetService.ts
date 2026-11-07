@@ -80,7 +80,9 @@ export class SpSnippetService extends ClientListener {
   // merge with the pillar heads (843fed95 through 73ed0c52, not yet on canon)
   // that play is their playRelayed(refr, event, "relayed", remoteRefr): the
   // side jump first and the "played (relayed, ...)" line, with nothing to
-  // change here. Every other snippet runs as it always has
+  // change here. The play carries the call's seq, the kept last animation's
+  // (rung 3: ObjectAnimationService plays it again at each 3D load on a seat
+  // that does not host the cell). Every other snippet runs as it always has
   private apply(snippet: SpSnippetMessage): Promise<unknown> {
     const event = snippet.arguments[0];
     if (typeof snippet.seq === "number"
@@ -88,7 +90,7 @@ export class SpSnippetService extends ClientListener {
       && snippet.function.toLowerCase() === "playanimation"
       && snippet.selfId > 0 && snippet.selfId < 0xff000000
       && typeof event === "string") {
-      this.controller.lookupListener(ObjectAnimationService).play(snippet.selfId, event);
+      this.controller.lookupListener(ObjectAnimationService).play(snippet.selfId, event, snippet.seq);
       return Promise.resolve(undefined);
     }
     return this.run(snippet);

@@ -60,7 +60,10 @@ import { SpSnippetService } from "./spSnippetService";
 // first and brings the graph to its script's; a Trigger01 view has no jump, no
 // StartState01 exists, and a graph off Side01 refuses it, the plan's declared
 // risk until H-V1 at rung 4; a guest's unless a newer relay played), then the
-// seq raised to the record's.
+// seq raised to the record's. An equal seq is current only while the 3D now
+// loaded has shown the object's last animation: ObjectAnimationService keeps
+// it, drops that mark when the 3D unloads and plays it again at each 3D load
+// on a seat that does not host the cell (playtest 49's teleport out and back).
 // A record given up or dropped lowers its mark through
 // releaseScriptRecordPending, which answers the load events the gate held, and
 // each is re-sent once while the reference stands in a loaded cell (its next
@@ -873,6 +876,8 @@ export class ScriptStateService extends ClientListener {
             return;
         }
         if (h.phase === "view" && now - h.appliedAt >= GUEST_WINDOW_MS) {
+            // the view stays kept (ObjectAnimationService.keepView at the
+            // apply): it plays at the reference's next 3D load
             this.giveUp(id, h, `its view ${h.view} not played, no 3D in ${now - h.appliedAt} ms`);
             return;
         }
@@ -972,9 +977,19 @@ export class ScriptStateService extends ClientListener {
         const resent = this.resend(refr, unique(answer.blanked.concat(h.carried)));
         h.carried = [];
         const snippets = this.controller.lookupListener(SpSnippetService);
+        const animations = this.controller.lookupListener(ObjectAnimationService);
         const last = snippets.seqOf(id);
-        const replay = h.view !== "" && last !== h.m.seq;
+        // current: this seat's seq is the record's and the 3D now loaded has
+        // shown the object's last animation (playtest 49: "view Trigger01
+        // current (seq 4)" was judged from a play before a teleport out and
+        // back, the pillars at their default faces)
+        const replay = h.view !== "" && (last !== h.m.seq || !animations.shownHere(refr));
         snippets.raiseSeq(id, h.m.seq);
+        if (replay) {
+            // kept before it plays: a view that finds no 3D in its window
+            // still plays at the reference's next 3D load
+            animations.keepView(refr, h.view, h.m.seq);
+        }
         if (pass) {
             pass.applied++;
             // the re-sync steps aside once the graph is settled too: here when
@@ -987,7 +1002,7 @@ export class ScriptStateService extends ClientListener {
         // line near 128 bytes (InGameConsolePrinter.cpp, ScriptCallService's
         // census note); H-R4 reads stacks and hold, H-R6 the resolved and
         // seat-local counts
-        const here = last === undefined ? "none here" : `${last} here`;
+        const here = last === undefined ? "none here" : last === h.m.seq ? `${last} here, not on this 3D` : `${last} here`;
         const viewText = h.view === "" ? "no view" : replay ? `view ${h.view} to play (seq ${h.m.seq}, ${here})` : `view ${h.view} current (seq ${h.m.seq})`;
         logLab(TAG, `script state ${hex} applied ${pass ? `at the grant of ${cell.toString(16)}` : "as a guest"}: stacks ${show(answer.stacksOnObject)}, hold ${show(answer.holdUs)} us; ${show(answer.resolved)} resolved, ${show(answer.none)} none, ${show(answer.seatLocal)} seat-local`);
         logLab(TAG, `script state ${hex}: ${resent}; ${viewText}${answer.refusedScripts > 0 ? `; ${answer.refusedScripts} of ${answer.scripts} script(s) refused` : ""}, +${now - h.receivedAt} ms`);
@@ -1020,7 +1035,7 @@ export class ScriptStateService extends ClientListener {
             return false;
         }
         h.viewTries++;
-        const taken = this.controller.lookupListener(ObjectAnimationService).playRelayed(refr, h.view, "the script record");
+        const taken = this.controller.lookupListener(ObjectAnimationService).playRelayed(refr, h.view, "the script record", undefined, true, h.m.seq);
         if (cell !== 0) {
             this.grantApplied.set(id, cell);
         }

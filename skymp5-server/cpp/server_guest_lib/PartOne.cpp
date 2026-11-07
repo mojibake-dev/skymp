@@ -3590,6 +3590,10 @@ std::pair<uint32_t, uint32_t> PartOne::WorldStreamer() const
 
 std::vector<PlayerGlobal> PartOne::GetWorldGlobals()
 {
+  // a read makes no journal (GetAliasFills says why)
+  if (!worldState.LookupFormById(kWorldJournalRefId)) {
+    return {};
+  }
   return WorldJournal().GetWorldGlobals();
 }
 
@@ -3600,6 +3604,13 @@ bool PartOne::SetWorldGlobals(std::vector<PlayerGlobal> globals)
 
 std::vector<MpChangeFormREFR::AliasFill> PartOne::GetAliasFills()
 {
+  // a read makes no journal: the login's serve reads the fills on every
+  // server, and a journal made there would take the idx of the actor the
+  // next login creates (PartOne_MovementTest's idx 1, pipeline 5600); the
+  // first write makes it
+  if (!worldState.LookupFormById(kWorldJournalRefId)) {
+    return {};
+  }
   return WorldJournal().GetAliasFills();
 }
 

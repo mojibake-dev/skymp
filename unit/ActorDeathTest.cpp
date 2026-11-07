@@ -1074,8 +1074,9 @@ TEST_CASE("A hosted NPC at zero with no report dies by the server's word "
 // the NPC at its death owns its ragdoll: for WorldState::bodySettleMs its
 // movement reports for the dead actor move the record and reach the other
 // games (R2, recorded not judged); any other seat's are refused
-// (E_BODY_NOT_OWNER). Two accepted samples in a row that agree within
-// MpActor::kBodyRestUnits and kBodyRestDegrees, or the window's end
+// (E_BODY_NOT_OWNER). Accepted samples held within MpActor::kBodyRestUnits
+// and kBodyRestDegrees of the dwell's anchor for kBodyRestDwellMs, no sooner
+// than kBodyRestMinMs after the death, or the window's end
 // (PartOne::TickBodies), put the body at rest, and every later report is
 // refused (E_BODY_AT_REST) until a resurrection clears it. A dead actor's
 // movement report is a body sample and never a stand-up: the stand-up reads
@@ -1203,9 +1204,81 @@ TEST_CASE("The body's rest: a report from a game that does not own the body "
   Leave(p, 0, kHost);
 }
 
-TEST_CASE("The body's rest: two accepted samples in a row that agree within "
-          "2 units and 2 degrees put the body at rest, the resting sample "
-          "goes reliably, and the next report is refused (E_BODY_AT_REST)",
+TEST_CASE("The body's rest: samples held within 2 units and 2 degrees of the "
+          "dwell's anchor for the dwell, no sooner than its floor after the "
+          "death, put the body at rest; two agreeing samples at the death "
+          "point, a creep and a turn do not",
+          "[ActorDeath][BodyRest][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  actor.Kill(nullptr);
+  const NiPoint3 deathPoint = actor.GetPos();
+  // the samples against the record's own death stamp: no wall-clock slack
+  const uint64_t d = actor.BodyDiedAtMs();
+  REQUIRE(d != 0);
+  REQUIRE(MpActor::kBodyRestDwellMs == 750);
+  REQUIRE(MpActor::kBodyRestMinMs == 2'500);
+  const NiPoint3 lying{ 0.f, 0.f, 10.f };
+
+  // b-npc-death's red (rung 3's gate 20261107-005511): the engine's reference
+  // holds the death point while the ragdoll starts, so its first samples
+  // agree 133 ms apart; however long they agree, no rest before the floor
+  REQUIRE_FALSE(actor.NoteBodySample(deathPoint, lying, d + 50));
+  REQUIRE_FALSE(actor.NoteBodySample(deathPoint, lying, d + 183));
+  REQUIRE_FALSE(actor.NoteBodySample(deathPoint, lying, d + 1'500));
+  REQUIRE_FALSE(actor.IsBodyAtRest());
+  REQUIRE(actor.BodySampleCount() == 3);
+
+  // then the ragdoll slides: a sample past the anchor's bounds starts the
+  // dwell again there
+  const NiPoint3 slid = deathPoint + NiPoint3{ 400.f, 0.f, -150.f };
+  REQUIRE_FALSE(actor.NoteBodySample(slid, lying, d + 2'730));
+  // a creep: each step 1.5 units from the last, which two agreeing samples
+  // called a rest before; the second is 3 units from the anchor, so the
+  // dwell starts again at it
+  const NiPoint3 crept = slid + NiPoint3{ 3.f, 0.f, 0.f };
+  REQUIRE_FALSE(
+    actor.NoteBodySample(slid + NiPoint3{ 1.5f, 0.f, 0.f }, lying, d + 3'000));
+  REQUIRE_FALSE(actor.NoteBodySample(crept, lying, d + 3'130));
+  // a turn of 3 degrees in place: the angle starts it again
+  REQUIRE_FALSE(
+    actor.NoteBodySample(crept, NiPoint3{ 0.f, 0.f, 13.f }, d + 3'260));
+  // 359 is 14 degrees from 13 through the heading's wrap: again
+  REQUIRE_FALSE(
+    actor.NoteBodySample(crept, NiPoint3{ 0.f, 0.f, 359.f }, d + 3'390));
+  REQUIRE_FALSE(actor.IsBodyAtRest());
+  // 1 unit off the anchor and 1.5 degrees through the wrap (359 to 0.5):
+  // 510 ms into the dwell is short of it, 750 ms ends it
+  REQUIRE_FALSE(actor.NoteBodySample(crept + NiPoint3{ 1.f, 0.f, 0.f },
+                                     NiPoint3{ 0.f, 0.f, 0.5f }, d + 3'900));
+  REQUIRE(actor.NoteBodySample(crept + NiPoint3{ 1.f, 0.f, 0.f },
+                               NiPoint3{ 0.f, 0.f, 0.5f }, d + 4'140));
+  REQUIRE(actor.IsBodyAtRest());
+  REQUIRE_FALSE(actor.IsBodySettling());
+  REQUIRE(actor.BodyRestAtMs() == d + 4'140);
+  REQUIRE(actor.BodySampleCount() == 10);
+  REQUIRE(p.worldState.settlingBodies.count(kPredator) == 0);
+
+  // a body still from its first sample rests at the floor, not before
+  StandUp(p, actor);
+  actor.Kill(nullptr);
+  const uint64_t d2 = actor.BodyDiedAtMs();
+  REQUIRE_FALSE(actor.NoteBodySample(deathPoint, lying, d2 + 100));
+  REQUIRE_FALSE(actor.NoteBodySample(deathPoint, lying, d2 + 2'400));
+  REQUIRE(actor.NoteBodySample(deathPoint, lying, d2 + 2'530));
+  REQUIRE(actor.BodyRestAtMs() == d2 + 2'530);
+
+  StandUp(p, actor);
+  Leave(p, 1, kOther);
+  Leave(p, 0, kHost);
+}
+
+TEST_CASE("The body's rest: the owner's sample that ends the dwell puts the "
+          "body at rest through its report, goes reliably, and the next "
+          "report is refused (E_BODY_AT_REST)",
           "[ActorDeath][BodyRest][espm]")
 {
   auto& p = GetPartOne();
@@ -1215,38 +1288,35 @@ TEST_CASE("The body's rest: two accepted samples in a row that agree within "
   actor.Kill(nullptr);
   const NiPoint3 deathPoint = actor.GetPos();
 
-  // still rolling: 10 units and 30 degrees apart is no rest
-  const NiPoint3 a = deathPoint + NiPoint3{ 200.f, 0.f, -50.f };
-  MoveBody(p, 0, kPredator, a, NiPoint3{ 0.f, 0.f, 10.f });
-  MoveBody(p, 0, kPredator, a + NiPoint3{ 10.f, 0.f, 0.f },
-           NiPoint3{ 0.f, 0.f, 40.f });
+  // the death and the dwell's anchor behind the report's own clock (the
+  // movement path reads steady_clock, as NowMs does): the death 5 s ago, the
+  // body still at `rest` since 1 s ago
+  const uint64_t now = NowMs();
+  actor.BeginBodySettle(now - 5'000);
+  const NiPoint3 rest = deathPoint + NiPoint3{ 211.f, 0.f, -50.f };
+  REQUIRE_FALSE(
+    actor.NoteBodySample(rest, NiPoint3{ 0.f, 0.f, 359.f }, now - 1'000));
   REQUIRE_FALSE(actor.IsBodyAtRest());
-  REQUIRE(actor.BodySampleCount() == 2);
-  // the third keeps the place and turns 41 degrees: the place agrees, the
-  // angle does not, no rest
-  MoveBody(p, 0, kPredator, a + NiPoint3{ 10.f, 0.f, 0.f },
-           NiPoint3{ 0.f, 0.f, 359.f });
-  REQUIRE_FALSE(actor.IsBodyAtRest());
-  // the fourth moves 1 unit and turns 1.5 degrees through the wrap (359 to
-  // 0.5): both agree, the body is at rest at this sample
-  const NiPoint3 rest = a + NiPoint3{ 11.f, 0.f, 0.f };
+  // the owner's next report, 1 unit off and 1.5 degrees through the wrap:
+  // the dwell is over, the body at rest at this sample
   p.Messages().clear();
-  MoveBody(p, 0, kPredator, rest, NiPoint3{ 0.f, 0.f, 0.5f });
+  const NiPoint3 last = rest + NiPoint3{ 1.f, 0.f, 0.f };
+  MoveBody(p, 0, kPredator, last, NiPoint3{ 0.f, 0.f, 0.5f });
   REQUIRE(actor.IsBodyAtRest());
   REQUIRE_FALSE(actor.IsBodySettling());
   REQUIRE(actor.BodyRestAtMs() != 0);
-  REQUIRE(actor.BodySampleCount() == 4);
-  REQUIRE(actor.GetPos() == rest);
+  REQUIRE(actor.BodySampleCount() == 2);
+  REQUIRE(actor.GetPos() == last);
   REQUIRE(p.worldState.settlingBodies.count(kPredator) == 0);
   REQUIRE(RelaysTo(p, 1, true) == 1);
 
   // from then every report for the body is refused, the owner's included
   const auto restAt = actor.BodyRestAtMs();
   p.Messages().clear();
-  MoveBody(p, 0, kPredator, rest + NiPoint3{ 500.f, 0.f, 0.f });
-  MoveBody(p, 1, kPredator, rest + NiPoint3{ 500.f, 0.f, 0.f });
-  REQUIRE(actor.GetPos() == rest);
-  REQUIRE(actor.BodySampleCount() == 4);
+  MoveBody(p, 0, kPredator, last + NiPoint3{ 500.f, 0.f, 0.f });
+  MoveBody(p, 1, kPredator, last + NiPoint3{ 500.f, 0.f, 0.f });
+  REQUIRE(actor.GetPos() == last);
+  REQUIRE(actor.BodySampleCount() == 2);
   REQUIRE(actor.BodyRestAtMs() == restAt);
   REQUIRE(RelaysTo(p, 1) == 0);
   REQUIRE(RelaysTo(p, 0) == 0);
@@ -1312,8 +1382,10 @@ TEST_CASE("The body's rest: a respawn clears the rest, and the next death "
   actor.Kill(nullptr);
   const NiPoint3 deathPoint = actor.GetPos();
   const NiPoint3 rest = deathPoint + NiPoint3{ 150.f, 0.f, 0.f };
-  MoveBody(p, 0, kPredator, rest);
-  MoveBody(p, 0, kPredator, rest);
+  // at rest by the dwell, against the record's own death stamp
+  const uint64_t d = actor.BodyDiedAtMs();
+  actor.NoteBodySample(rest, NiPoint3{ 0.f, 0.f, 0.f }, d + 2'000);
+  actor.NoteBodySample(rest, NiPoint3{ 0.f, 0.f, 0.f }, d + 3'000);
   REQUIRE(actor.IsBodyAtRest());
 
   actor.Respawn(false);

@@ -439,8 +439,10 @@ public:
   // inside the window claims it); for WorldState::bodySettleMs from the
   // recorded death its movement samples move the record (R2: recorded, not
   // judged, inside the movement bounds), and every other seat's are refused
-  // (E_BODY_NOT_OWNER). The body is AT REST when two accepted samples in a
-  // row agree within kBodyRestUnits and kBodyRestDegrees, or when the window
+  // (E_BODY_NOT_OWNER). The body is AT REST when its accepted samples have
+  // stayed within kBodyRestUnits and kBodyRestDegrees of one sample (the
+  // dwell's anchor, the last one past those bounds) for kBodyRestDwellMs, no
+  // sooner than kBodyRestMinMs after the recorded death, or when the window
   // ends (PartOne::TickBodies); from then every sample is refused
   // (E_BODY_AT_REST) until a later claim (a drag or a push: the prop claim,
   // not this slice). A resurrection (Respawn, every stand-up's path) clears
@@ -460,11 +462,15 @@ public:
   uint32_t BodyOwnerId() const;
   void ClaimBodyOwner(uint32_t ownerId);
   uint32_t BodySampleCount() const;
-  // whether `pos` and `rot` agree with the last accepted sample (the rest's
-  // test, read before the relay so the resting sample goes reliably)
-  bool BodySampleRests(const NiPoint3& pos, const NiPoint3& rot) const;
-  // the owner's accepted sample, after the record took it: counted, kept
-  // as the last; true when it put the body at rest
+  // whether `pos` and `rot` at `nowMs` end the dwell: within the rest bounds
+  // of its anchor, the anchor kBodyRestDwellMs old and the death
+  // kBodyRestMinMs (the rest's test, read before the relay so the resting
+  // sample goes reliably)
+  bool BodySampleRests(const NiPoint3& pos, const NiPoint3& rot,
+                       uint64_t nowMs) const;
+  // the owner's accepted sample, after the record took it: counted, the
+  // dwell's anchor moved to it when it left the anchor's bounds; true when
+  // it put the body at rest
   bool NoteBodySample(const NiPoint3& pos, const NiPoint3& rot,
                       uint64_t nowMs);
   // the window's end: true when the body came to rest now
@@ -472,6 +478,17 @@ public:
   void ClearBodyRest();
   static constexpr float kBodyRestUnits = 2.f;
   static constexpr float kBodyRestDegrees = 2.f;
+  // the dwell and its floor (thuum docs/verbs/npc-fate.md, "The body's rest
+  // as a dwell"): the engine's reference holds the death point a moment
+  // before the ragdoll carries it, so two samples in a row agreed there and
+  // the record kept a place the body had slid 430 to 710 units from
+  // (b-npc-death, rung 3's gate 20261107-005511). The owner's rule
+  // (skymp5-client changeFormService.ts CORPSE_REST_DWELL_MS 1000 and
+  // CORPSE_REST_MIN_MS 3000) is the same with a margin above these, so the
+  // server rests at or before the owner's final sample, which the owner
+  // sends reliably and then sends no more
+  static constexpr uint64_t kBodyRestDwellMs = 750;
+  static constexpr uint64_t kBodyRestMinMs = 2500;
   void Teleport(const LocationalData& position);
   void SetSpawnPoint(const LocationalData& position);
   LocationalData GetSpawnPoint() const;

@@ -308,7 +308,7 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       // the prop rule: its owner, the engine that simulated the actor at
       // its death, moves the record with its ragdoll for the settle window
       // (WorldState::bodySettleMs) and the record keeps the pose the
-      // ragdoll rests at (two samples in a row that agree), so a watcher
+      // ragdoll rests at (its samples still for the dwell), so a watcher
       // places its corpse there and the loot reach measures from it
       // (playtest 42's F4 and F6: a watcher's body 1,700 units down Bleak
       // Falls' slope while the record kept the death point). Every other
@@ -555,7 +555,7 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     const NiPoint3 reportedRot{ msg.data.rot[0], msg.data.rot[1],
                                 msg.data.rot[2] };
     const bool bodyRests =
-      bodySample && actor->BodySampleRests(reportedPos, reportedRot);
+      bodySample && actor->BodySampleRests(reportedPos, reportedRot, nowMs);
     RelayToListeners(*actor, rawMsgData.unparsed, rawMsgData.unparsedLength,
                      bodyRests, rawMsgData.userId);
 
@@ -656,8 +656,9 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     actor->SetAngle(
       NiPoint3{ msg.data.rot[0], msg.data.rot[1], msg.data.rot[2] },
       SetAngleMode::CalledByUpdateMovement);
-    // the body's sample, after the record took it: the rest, when two in a
-    // row agree, saves the record at once and ends the window
+    // the body's sample, after the record took it: the rest, when the
+    // samples held still for the dwell, saves the record at once and ends
+    // the window
     if (bodySample) {
       actor->NoteBodySample(reportedPos, reportedRot, nowMs);
     }

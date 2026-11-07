@@ -23,7 +23,7 @@ import { RemoteServer } from "./remoteServer";
 import { HostService } from "./hostService";
 import { DeathService } from "./deathService";
 import { logError, logLab, logTrace } from "../../logging";
-import { ChangeFormService, CORPSE_SETTLE_MS, corpseSamplesAgree } from "./changeFormService";
+import { ChangeFormService, CORPSE_REST_DWELL_MS, CORPSE_REST_MIN_MS, CORPSE_SETTLE_MS, corpseSamplesAgree } from "./changeFormService";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { Movement, NiPoint3 } from "../../sync/movement";
 
@@ -201,19 +201,24 @@ export class SendInputsService extends ClientListener {
             // being sampled and sent, the body's fall as the engine's
             // reference reports it, which the server applies to the record
             // and relays through its settle window, until the body is at
-            // rest: two consecutive samples agreeing within CORPSE_REST_UNITS
-            // and CORPSE_REST_DEGREES (the server's own rule: it marks the
-            // record at rest on the same two and refuses later reports,
-            // E_BODY_AT_REST), the second of them reliable as the record's
-            // final sample, or CORPSE_SETTLE_MS after the first dead sample;
+            // rest: its samples held within CORPSE_REST_UNITS and
+            // CORPSE_REST_DEGREES of the dwell's anchor (the last sample past
+            // those bounds) for CORPSE_REST_DWELL_MS, no sooner than
+            // CORPSE_REST_MIN_MS after the first dead sample (the server's own
+            // rule with a margin above its numbers, so it marks the record at
+            // rest at or before this seat's final sample and refuses later
+            // reports, E_BODY_AT_REST), the final sample reliable as the
+            // record's, or CORPSE_SETTLE_MS after the first dead sample;
             // then nothing more for that body until the engine has it alive
             // again (the live word's Resurrect). The at-rest moment is the
             // TRIGGER of the body's change-form record (ChangeFormService:
             // the engine's own save of the corpse, serialized and sent once).
-            // HYPOTHESIS, the lab's first read: that the reference position
-            // follows the ragdoll's root as it settles; the line carries the
-            // distance from the first dead sample, so a reference that never
-            // moved reads 0 there and rests at the second sample
+            // the reference position follows the ragdoll's root, but held the
+            // death point for the first samples in b-npc-death's reds (rung 3's
+            // gate 20261107-005511: "after 133 ms ... 0 units from the first
+            // dead sample"), hence the dwell and its floor (HYPOTHESIS that
+            // the floor covers the hold); the line carries the distance from
+            // the first dead sample
             // the engine's own dead flag decides (the sample's isDead carries
             // the record's too, which a reanimate's stand-up clears a report
             // later than the engine does)
@@ -235,16 +240,22 @@ export class SendInputsService extends ClientListener {
                         this.bodies.delete(refrIdStr);
                     }
                 } else if (!body) {
-                    this.bodies.set(refrIdStr, { since: now, first: [data.pos[0], data.pos[1], data.pos[2]], last: data, atRest: false });
+                    this.bodies.set(refrIdStr, { since: now, first: [data.pos[0], data.pos[1], data.pos[2]], last: data, anchor: data, anchorAt: now, atRest: false });
                 } else {
-                    const agree = corpseSamplesAgree(body.last, data);
+                    // the dwell starts again at a sample past its anchor's bounds
+                    const still = corpseSamplesAgree(body.anchor, data);
+                    if (!still) {
+                        body.anchor = data;
+                        body.anchorAt = now;
+                    }
+                    const dwelt = still && now - body.anchorAt >= CORPSE_REST_DWELL_MS && now - body.since >= CORPSE_REST_MIN_MS;
                     const windowOver = now - body.since >= CORPSE_SETTLE_MS;
                     body.last = data;
-                    if (agree || windowOver) {
+                    if (dwelt || windowOver) {
                         body.atRest = true;
                         reliability = "reliable";
                         const moved = ObjectReferenceEx.getDistance(body.first, data.pos);
-                        logLab("verb:npc-fate", `body ${_refrId.toString(16)} at rest on this engine after ${now - body.since} ms: (${data.pos[0].toFixed(0)}, ${data.pos[1].toFixed(0)}, ${data.pos[2].toFixed(0)}); ${moved.toFixed(0)} units from the first dead sample, ${agree ? "two samples agree" : "the settle window ended"}`);
+                        logLab("verb:npc-fate", `body ${_refrId.toString(16)} at rest on this engine after ${now - body.since} ms: (${data.pos[0].toFixed(0)}, ${data.pos[1].toFixed(0)}, ${data.pos[2].toFixed(0)}); ${moved.toFixed(0)} units from the first dead sample, ${dwelt ? "still for the dwell" : "the settle window ended"}`);
                         this.controller.lookupListener(ChangeFormService).onBodyAtRest(_refrId, owner, data.pos);
                     }
                 }
@@ -476,7 +487,7 @@ export class SendInputsService extends ClientListener {
     // ADR-067: the hosted bodies dead on this engine, by the sender's key
     // (the remote id's string): the first dead sample's time and position,
     // the last sample sent, whether the rest was sent
-    private readonly bodies = new Map<string, { since: number; first: NiPoint3; last: Movement; atRest: boolean }>();
+    private readonly bodies = new Map<string, { since: number; first: NiPoint3; last: Movement; anchor: Movement; anchorAt: number; atRest: boolean }>();
     private playerAnimSource = new Map<string, AnimationSource>(); // TODO: make service
     private lastAnimationSent = new Map<string, Animation>();
     private actorValuesNeedUpdate = false;

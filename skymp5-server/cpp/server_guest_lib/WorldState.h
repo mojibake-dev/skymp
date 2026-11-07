@@ -416,7 +416,8 @@ public:
   // corpse is a physics object under the prop rule. After a death this
   // process records, the body's owner (the simulator at the death) moves the
   // record with its ragdoll's samples for bodySettleMs (server setting), or
-  // until two in a row agree (MpActor::kBodyRestUnits, kBodyRestDegrees);
+  // until they hold still for the dwell (MpActor::kBodyRestUnits,
+  // kBodyRestDegrees, kBodyRestDwellMs, no sooner than kBodyRestMinMs);
   // the body is then at rest and every later sample is refused until a
   // later claim. The ids whose window runs; PartOne::TickBodies ends the
   // ones past it

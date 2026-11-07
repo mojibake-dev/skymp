@@ -87,15 +87,17 @@ struct MpActor::Impl
   // npc-fate.md "The body's rest" (ADR-067): the corpse as a physics object.
   // The simulator at the death owns the ragdoll (0 none); the window runs
   // from the recorded death on the TickDeaths clock; the owner's accepted
-  // samples are counted and the last kept, so two in a row that agree are
-  // the rest; restAtMs is 0 until then
+  // samples are counted and the dwell's anchor kept (the last sample past
+  // the rest bounds, and when it came), so a dwell held long enough is the
+  // rest; restAtMs is 0 until then
   uint32_t bodyOwner = 0;
   uint64_t bodyDiedAtMs = 0;
   bool bodyAtRest = false;
   uint64_t bodyRestAtMs = 0;
   uint32_t bodySamples = 0;
-  NiPoint3 bodyLastPos;
-  NiPoint3 bodyLastRot;
+  NiPoint3 bodyDwellPos;
+  NiPoint3 bodyDwellRot;
+  uint64_t bodyDwellSinceMs = 0;
   // npc-fate.md H-52b: the killer credited at the last Kill (the read)
   std::optional<uint32_t> lastKillerId;
   std::optional<UpdateActionMessage> lastAction;
@@ -3004,6 +3006,7 @@ void MpActor::BeginBodySettle(uint64_t nowMs)
   pImpl->bodyAtRest = false;
   pImpl->bodyRestAtMs = 0;
   pImpl->bodySamples = 0;
+  pImpl->bodyDwellSinceMs = 0;
   if (auto worldState = GetParent()) {
     worldState->settlingBodies.insert(GetFormId());
   }
@@ -3067,13 +3070,25 @@ bool BodyAnglesAgree(const NiPoint3& a, const NiPoint3& b, float degrees)
 }
 }
 
-bool MpActor::BodySampleRests(const NiPoint3& pos, const NiPoint3& rot) const
+namespace {
+// within the rest bounds of the dwell's anchor
+bool BodyWithinDwell(const NiPoint3& pos, const NiPoint3& rot,
+                     const NiPoint3& anchorPos, const NiPoint3& anchorRot)
+{
+  return (pos - anchorPos).Length() <= MpActor::kBodyRestUnits &&
+    BodyAnglesAgree(rot, anchorRot, MpActor::kBodyRestDegrees);
+}
+}
+
+bool MpActor::BodySampleRests(const NiPoint3& pos, const NiPoint3& rot,
+                              uint64_t nowMs) const
 {
   if (!IsBodySettling() || pImpl->bodySamples == 0) {
     return false;
   }
-  return (pos - pImpl->bodyLastPos).Length() <= kBodyRestUnits &&
-    BodyAnglesAgree(rot, pImpl->bodyLastRot, kBodyRestDegrees);
+  return BodyWithinDwell(pos, rot, pImpl->bodyDwellPos, pImpl->bodyDwellRot) &&
+    nowMs >= pImpl->bodyDwellSinceMs + kBodyRestDwellMs &&
+    nowMs >= pImpl->bodyDiedAtMs + kBodyRestMinMs;
 }
 
 bool MpActor::NoteBodySample(const NiPoint3& pos, const NiPoint3& rot,
@@ -3082,11 +3097,17 @@ bool MpActor::NoteBodySample(const NiPoint3& pos, const NiPoint3& rot,
   if (!IsBodySettling()) {
     return false;
   }
-  const bool rests = BodySampleRests(pos, rot);
+  const bool rests = BodySampleRests(pos, rot, nowMs);
   const bool first = pImpl->bodySamples == 0;
-  pImpl->bodyLastPos = pos;
-  pImpl->bodyLastRot = rot;
   ++pImpl->bodySamples;
+  // the dwell starts again at a sample past its anchor's bounds (the first
+  // sample is the first anchor)
+  if (first ||
+      !BodyWithinDwell(pos, rot, pImpl->bodyDwellPos, pImpl->bodyDwellRot)) {
+    pImpl->bodyDwellPos = pos;
+    pImpl->bodyDwellRot = rot;
+    pImpl->bodyDwellSinceMs = nowMs;
+  }
   if (first) {
     spdlog::info("[verb:npc-fate] body {:x} settling under {:x}: ({:.0f}, "
                  "{:.0f}, {:.0f})",
@@ -3096,7 +3117,7 @@ bool MpActor::NoteBodySample(const NiPoint3& pos, const NiPoint3& rot,
   if (!rests) {
     return false;
   }
-  SettleBody(nowMs, "two samples in a row agree");
+  SettleBody(nowMs, "still for the dwell");
   return true;
 }
 
@@ -3142,6 +3163,7 @@ void MpActor::ClearBodyRest()
   pImpl->bodyAtRest = false;
   pImpl->bodyRestAtMs = 0;
   pImpl->bodySamples = 0;
+  pImpl->bodyDwellSinceMs = 0;
   if (auto worldState = GetParent()) {
     worldState->settlingBodies.erase(GetFormId());
   }

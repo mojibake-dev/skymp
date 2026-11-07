@@ -41,9 +41,11 @@ import { HostService } from "./hostService";
 // is signed: the u32 flags go in as `flags | 0` and come back `>>> 0`.
 //
 // The owner's half: sendInputsService keeps sampling a dead hosted actor at
-// its cadence until two consecutive samples agree within CORPSE_REST_UNITS
-// and CORPSE_REST_DEGREES or CORPSE_SETTLE_MS pass (the server's own rest
-// rule), then stops for that body and calls onBodyAtRest here, which
+// its cadence until its samples hold within CORPSE_REST_UNITS and
+// CORPSE_REST_DEGREES of the dwell's anchor for CORPSE_REST_DWELL_MS, no
+// sooner than CORPSE_REST_MIN_MS after the first dead sample, or
+// CORPSE_SETTLE_MS pass (the server's own rest rule, with a margin above
+// its numbers), then stops for that body and calls onBodyAtRest here, which
 // serializes and sends ONE reliable ChangeForm with the contract's fields
 // when its fnv1a differs from the last ChangeFormAck's for the form. The
 // epoch is the cell's host epoch this client holds (HostService.
@@ -64,15 +66,20 @@ import { HostService } from "./hostService";
 // at the spawn point). Game-file actors alone in this slice (a server-made
 // copy's id is seat-local; its record is read 4's).
 //
-// HYPOTHESIS until the lab (the acceptance scenario of the verb doc): that
-// the owner's reference position follows its ragdoll's root until the rest
-// (the owner's rest line carries the distance from the first dead sample, so
-// a reference that never moved reads 0 there and rests at its second sample,
-// the record then the death point's); that the record applied as the kill
+// Read on the lab (b-npc-death in rung 3's gate 20261107-005511, thuum
+// docs/verbs/npc-fate.md "The body's rest as a dwell"): the owner's
+// reference position follows its ragdoll's root, but not at once. It held
+// the death point for the first samples ("at rest on this engine after 133
+// ms ... 0 units from the first dead sample"), so two agreeing samples called
+// a rest there while the body slid 430 to 710 units on, hence the dwell and
+// its floor. HYPOTHESIS until the lab: that CORPSE_REST_MIN_MS covers that
+// hold (the next b-npc-death reads it); that the record applied as the kill
 // lands lays the body with no fall (read 2 of the Dynamic plan); that a
 // record whose cell is not the copy's moves it (read 3).
 export const CORPSE_REST_UNITS = 2;
 export const CORPSE_REST_DEGREES = 2;
+export const CORPSE_REST_DWELL_MS = 1_000;
+export const CORPSE_REST_MIN_MS = 3_000;
 export const CORPSE_SETTLE_MS = 15_000;
 
 // the shortest signed turn from heading b to heading a, in (-180, 180]

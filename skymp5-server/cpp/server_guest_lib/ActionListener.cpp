@@ -2164,6 +2164,14 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
   if (!ac)
     throw std::runtime_error("Can't do this without Actor attached");
 
+  // thuum D-C2 (SCHEMA_VERSION 40): an Activate carrying `entry` is a
+  // trigger entry, never an activation; its own path, before every branch
+  // below (the edge checked its shape, wire-validate check_activate)
+  if (msg.data.entry) {
+    OnTriggerEntry(*ac, msg);
+    return;
+  }
+
   // thuum docs/verbs/npc-fate.md (ADR-048's B, the hazard evidence): a
   // reference's activation of itself is a trap trigger's firing (every
   // vanilla trigger script activates itself, and the engine forwards it to
@@ -4716,6 +4724,153 @@ bool ActionListener::IsScriptedWorldObject(const MpObjectReference& target)
     return true;
   }
   return target.IsEspmForm() && scripted(target.GetFormId());
+}
+
+// thuum D-W1 and D-C2 (playtest 50; docs/research/fifty-fixes-2026-11-07.md
+// 1(c)): a trigger volume's entry counts once, on its presser's owner, and a
+// world trigger's script runs on the cell's host, so a seat that does not
+// host the trigger's cell reports its own presser's entry (an Activate
+// carrying `entry`, its shape the edge's: wire-validate check_activate). The
+// facts are gathered here and the rule is Rust's (wire-rules trigger_entry's
+// entry, through the bridge): the trigger a world object the server holds or
+// places by its record, no actor (E_ENTRY_NO_REF, E_ENTRY_ACTOR); the
+// presser the reporter's own actor or one its game simulates
+// (E_ENTRY_PRESSER); the reporter a loader of the trigger's cell
+// (E_ENTRY_NOT_LOADER) that does not host it (E_ENTRY_HOST: its own engine
+// ran the script); a host there (E_ENTRY_NO_HOST: nothing runs the script);
+// the presser within the trigger's activation reach (E_ENTRY_REACH). An
+// accepted entry goes to the host's game alone as RelayedActivation {target:
+// the trigger, caster: the presser, entry}, whose engine sends that event to
+// the trigger's scripts with the presser as akActionRef; nothing is recorded
+// (R2: the presser's owner's engine saw the entry, rule 5). A refusal sends
+// nothing and is said by name, once a minute per reporter and code.
+void ActionListener::OnTriggerEntry(MpActor& reporter,
+                                    const ActivateMessage& msg)
+{
+  const uint32_t entry = msg.data.entry.value_or(0);
+  const char* moving = entry == 2 ? "leaving" : "entering";
+  // below 0xff000000 by the edge's check
+  const auto triggerId = static_cast<uint32_t>(msg.data.target);
+
+  // the presser: the reporter's own player for 0x14, else the actor it
+  // names; a caster past 32 bits names no form (the edge bounds it away
+  // from 0 alone), so it reads as no presser
+  MpActor* presser = nullptr;
+  uint32_t presserId = 0;
+  if (msg.data.caster == 0x14) {
+    presser = &reporter;
+    presserId = reporter.GetFormId();
+  } else if (msg.data.caster <= std::numeric_limits<uint32_t>::max()) {
+    presserId = static_cast<uint32_t>(msg.data.caster);
+    const auto& form = partOne.worldState.LookupFormById(presserId);
+    presser = form ? form->AsActor() : nullptr;
+  }
+
+  const auto refuse = [&](const std::string& code, const std::string& why) {
+    const auto now = std::chrono::steady_clock::now();
+    auto& [since, count] =
+      triggerEntryRefusals[{ reporter.GetFormId(), code }];
+    ++count;
+    if (since.time_since_epoch().count() != 0 &&
+        now - since < std::chrono::minutes(1)) {
+      return;
+    }
+    spdlog::info("[verb:traps] {}: {:x} reports {:x} {} {:x}: {}; refused, "
+                 "{} since the last line",
+                 code, reporter.GetFormId(), presserId, moving, triggerId, why,
+                 count);
+    since = now;
+    count = 0;
+  };
+
+  // the trigger's facts: trigger_kind 0 no reference, 1 a world object the
+  // server holds or, holding no reference for it, places by its game-file
+  // record, 2 an actor (an ACHR's record is one before any load,
+  // OnScriptState's idiom); its cell, that cell's host and whether the
+  // reporter's game has the cell loaded; the reach, measured from the
+  // presser to the trigger in one world or cell (-1 across two, which no
+  // reach takes)
+  skymp::rules::TriggerEntryFacts facts{};
+  facts.reporter = reporter.GetFormId();
+  facts.presser = presserId;
+  facts.distance = -1.f;
+  std::optional<std::pair<uint32_t, NiPoint3>> place;
+  float triggerSize = 0.f;
+  bool actorRecord = false;
+  if (partOne.HasEspm()) {
+    const auto record = partOne.GetEspm().GetBrowser().LookupById(triggerId);
+    actorRecord = record.rec && record.rec->GetType() == espm::ACHR::kType;
+  }
+  if (actorRecord) {
+    facts.trigger_kind = 2;
+  } else {
+    const auto& form = partOne.worldState.LookupFormById(triggerId);
+    MpObjectReference* trigger = form ? form->AsObjectReference() : nullptr;
+    if (trigger && trigger->AsActor()) {
+      facts.trigger_kind = 2;
+    } else if (trigger) {
+      facts.trigger_kind = 1;
+      place.emplace(
+        trigger->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles),
+        trigger->GetPos());
+      triggerSize = ActivationTargetSize(*trigger);
+    } else if (const auto record =
+                 PlacementOfRecord(partOne.worldState, triggerId)) {
+      facts.trigger_kind = 1;
+      place.emplace(record->worldOrCell, record->pos);
+    }
+  }
+  std::optional<uint32_t> cell;
+  if (place) {
+    cell = partOne.worldState.CellOf(place->first, place->second);
+  }
+  if (cell) {
+    facts.cell = *cell;
+    const auto loaders = partOne.GetCellLoaders(*cell);
+    facts.loader = std::find(loaders.begin(), loaders.end(),
+                             reporter.GetFormId()) != loaders.end();
+    const auto host = partOne.GetCellHost(*cell);
+    facts.host = host.hosted ? host.player : 0;
+  }
+  // the presser's owner: a played actor is its own player's, any other
+  // actor its simulator's (WorldState::HostOf, OnActivate's hosted caster
+  // rule); a presser that is no actor is nobody's
+  if (presser) {
+    const bool played =
+      partOne.serverState.UserByActor(presser) != Networking::InvalidUserId;
+    MpActor* simulator =
+      played ? presser : partOne.worldState.HostOf(*presser);
+    facts.presser_owner = simulator ? simulator->GetFormId() : 0;
+    if (place &&
+        presser->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles) ==
+          place->first) {
+      facts.distance = (presser->GetPos() - place->second).Length();
+    }
+  }
+  facts.trigger_size = triggerSize;
+
+  // relayed, the verdict names the one game to send it to, the host's
+  const auto verdict = skymp::rules::trigger_entry(facts);
+  if (verdict.code != skymp::rules::TriggerEntryCode::Relay) {
+    return refuse(std::string(verdict.name), std::string(verdict.why));
+  }
+  const auto& hostForm = partOne.worldState.LookupFormById(verdict.host);
+  MpActor* host = hostForm ? hostForm->AsActor() : nullptr;
+  if (!host ||
+      partOne.serverState.UserByActor(host) == Networking::InvalidUserId) {
+    // the cell's host has no game connected: its engine cannot run the
+    // script either, as the rule's own E_ENTRY_NO_HOST
+    return refuse("E_ENTRY_NO_HOST", "the cell's host has no game connected");
+  }
+  RelayedActivationMessage relay;
+  relay.target = triggerId;
+  relay.caster = presserId;
+  relay.entry = entry;
+  host->SendToUser(relay, true);
+  spdlog::info("[verb:traps] {:x} reports {:x} {} {:x} in cell {:x} (its "
+               "host {:x}): relayed to the host",
+               reporter.GetFormId(), presserId, moving, triggerId, facts.cell,
+               verdict.host);
 }
 
 void ActionListener::RelayActivationToHost(MpActor& player,

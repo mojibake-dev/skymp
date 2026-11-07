@@ -842,6 +842,13 @@ void MpObjectReference::SetScriptState(std::optional<ScriptStateRecord> record)
   });
 }
 
+namespace {
+// thuum D-C3 A (PENDING Eli): the wire's bounds on a serve's graph variables
+// (wire-schema cap::GRAPH_VARS and a name's cap::ANIM_EVENT bytes)
+constexpr size_t kGraphVarsServed = 16;
+constexpr size_t kGraphVarNameBytes = 128;
+}
+
 bool MpObjectReference::BuildScriptStateApply(
   ScriptStateApplyMessage& out) const
 {
@@ -854,6 +861,38 @@ bool MpObjectReference::BuildScriptStateApply(
   out.seq = record->seq;
   out.event = record->event;
   out.scripts = record->scripts;
+  // thuum D-C3 A (PENDING Eli; docs/research/fifty-fixes-2026-11-07.md read
+  // 7): the reference's graph variables as kept now, at the serve, each with
+  // its own sequence, never stamped at the record's take (a stack whose only
+  // act sets a variable takes no new record). A name comes from a script
+  // call's string argument, which the wire lets run to 16 KiB where a graph
+  // variable's stops at 128 bytes, so a variable the serve could not carry
+  // (a name empty, past 128 bytes or cut by a NUL; past the sixteenth) is
+  // left out rather than make the whole apply unservable (OnScriptState's
+  // guard on the view)
+  out.graphVars.reset();
+  if (const auto& kept = ChangeForm().graphVariables) {
+    for (const auto& v : *kept) {
+      if (out.graphVars && out.graphVars->size() >= kGraphVarsServed) {
+        break;
+      }
+      if (v.name.empty() || v.name.size() > kGraphVarNameBytes ||
+          v.name.find('\0') != std::string::npos) {
+        continue;
+      }
+      ScriptStateGraphVar served;
+      served.name = v.name;
+      served.k = v.k;
+      served.i = v.i;
+      served.f = v.f;
+      served.b = v.b;
+      served.seq = v.seq;
+      if (!out.graphVars) {
+        out.graphVars.emplace();
+      }
+      out.graphVars->push_back(std::move(served));
+    }
+  }
   return true;
 }
 

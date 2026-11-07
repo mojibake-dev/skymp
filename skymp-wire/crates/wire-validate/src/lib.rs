@@ -248,6 +248,11 @@ pub struct ClientGuard {
     /// rung 4): one a second by design, its entries batched; 4 at once, 1 a
     /// second after (UNMEASURED).
     pub world_global_budget: TokenBucket,
+    /// Budget for a seat's trigger entries (an Activate with `entry`, thuum
+    /// D-C2): one per entry and leave of its own presser into a world
+    /// trigger in a cell it does not host; 8 at once, 4 a second after
+    /// (UNMEASURED). An Activate without `entry` takes none.
+    pub entry_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -296,6 +301,7 @@ impl Default for ClientGuard {
             script_state_budget: TokenBucket { tokens: 64, capacity: 64, refill_per_s: 8, last_refill_ms: 0 },
             alias_fill_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 4, last_refill_ms: 0 },
             world_global_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
+            entry_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 4, last_refill_ms: 0 },
         }
     }
 }
@@ -852,10 +858,39 @@ fn check_word_wall(m: &skymp::WordWall) -> Result<(), Reject> {
     Ok(())
 }
 
+/// Whether a trigger entry's event is one the schema names (thuum D-C2):
+/// [`skymp::ENTRY_ENTER`] or [`skymp::ENTRY_LEAVE`].
+fn is_entry_event(entry: u8) -> bool {
+    entry == skymp::ENTRY_ENTER || entry == skymp::ENTRY_LEAVE
+}
+
+/// A seat's activation report (SkyMP's MsgType 6) and, since SCHEMA_VERSION
+/// 40, its trigger entry (thuum D-W1 and D-C2): an Activate with `entry`
+/// names OnTriggerEnter (1) or OnTriggerLeave (2), is no second activation,
+/// names a presser (`caster`, never 0: the sender's own player 0x14 or an
+/// actor its game simulates) and a trigger of the shared load order
+/// (`target`, never 0 nor 0xff000000 and up). An Activate without `entry`
+/// keeps the checks every message shares (it carries no float). Whether the
+/// trigger is a world object the server holds, the presser the sender's,
+/// the sender a loader of the cell that does not host it, a host there and
+/// the presser within reach is the server's rule (wire-rules
+/// trigger_entry); the budget is [`ClientGuard::entry_budget`].
+fn check_activate(m: &skymp::Activate) -> Result<(), Reject> {
+    let Some(entry) = m.data.entry else {
+        return Ok(());
+    };
+    if !is_entry_event(entry) || m.data.is_second_activation || m.data.caster == 0 || m.data.target == 0 || m.data.target >= u64::from(PLAYER_FORMS) {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
 /// The server's relayed activation (docs/verbs/traps.md): a target and a
-/// caster, neither 0; the transport refuses it from a client by direction.
+/// caster, neither 0, and since SCHEMA_VERSION 40 (thuum D-C2) a trigger
+/// entry's event, absent or 1 or 2; the transport refuses it from a client
+/// by direction.
 fn check_relayed_activation(m: &skymp::RelayedActivation) -> Result<(), Reject> {
-    if m.target == 0 || m.caster == 0 {
+    if m.target == 0 || m.caster == 0 || m.entry.is_some_and(|e| !is_entry_event(e)) {
         return Err(Reject::Range);
     }
     Ok(())
@@ -1403,12 +1438,41 @@ fn check_script_state(m: &skymp::ScriptState) -> Result<(), Reject> {
 }
 
 /// The server's serve of a script record (thuum ADR-068 rung 3): the
-/// record's shape; the transport refuses it from a client by direction.
+/// record's shape, and since SCHEMA_VERSION 40 its graph variables'
+/// ([`check_graph_vars`]); the transport refuses it from a client by
+/// direction.
 fn check_script_state_apply(m: &skymp::ScriptStateApply) -> Result<(), Reject> {
     if !all_finite(m) {
         return Err(Reject::NonFinite);
     }
-    check_script_objects(m.form_id, m.scripts.as_slice())
+    check_script_objects(m.form_id, m.scripts.as_slice())?;
+    check_graph_vars(m.graph_vars.as_deref().unwrap_or_default())
+}
+
+/// A serve's graph variables (thuum D-C3 A, PENDING Eli): each with a name
+/// neither empty nor holding a NUL ([`has_nul`]: the receiver's
+/// SetAnimationVariable takes a C string), named once, a kind of 3 (an
+/// int), 4 (a float) or 5 (a bool) carrying that kind's one field and no
+/// other (ScriptVar's folded kinds), and a sequence above 0, the object's
+/// at the call that set it. The count (at most `cap::GRAPH_VARS`) and each
+/// name's length hold at decode, and every float's finiteness is the
+/// apply's own first check ([`check_script_state_apply`]). Which variables
+/// the server keeps is its rule (wire-rules natives, Keep::Variable).
+fn check_graph_vars(vars: &[skymp::GraphVar]) -> Result<(), Reject> {
+    for (n, v) in vars.iter().enumerate() {
+        let carried = [v.i.is_some(), v.f.is_some(), v.b.is_some()];
+        let fits = match v.k {
+            3 => carried == [true, false, false],
+            4 => carried == [false, true, false],
+            5 => carried == [false, false, true],
+            _ => false,
+        };
+        let twice = vars.iter().take(n).any(|w| w.name.as_str() == v.name.as_str());
+        if !fits || v.seq == 0 || v.name.is_empty() || has_nul(&v.name) || twice {
+            return Err(Reject::Range);
+        }
+    }
+    Ok(())
 }
 
 /// Validate one inbound message from a client against its guard state: the
@@ -1483,6 +1547,9 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::LockReport(_) => take(&mut guard.lock_report_budget, now_ms),
         Message::PerkPick(_) => take(&mut guard.perk_pick_budget, now_ms),
         Message::WordWall(_) => take(&mut guard.word_wall_budget, now_ms),
+        // thuum D-C2: a trigger entry spends the entry budget; any other
+        // activation spends none, as before
+        Message::Activate(m) if m.data.entry.is_some() => take(&mut guard.entry_budget, now_ms),
         Message::ObjectAnimation(_) => take(&mut guard.object_animation_budget, now_ms),
         Message::ChangeForm(_) => take(&mut guard.change_form_budget, now_ms),
         Message::DestructionStage(m) => {
@@ -1698,6 +1765,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::PerkPick(m) => check_perk_pick(m),
         Message::PerkState(m) => check_perk_state(m),
         Message::WordWall(m) => check_word_wall(m),
+        Message::Activate(m) => check_activate(m),
         Message::RelayedActivation(m) => check_relayed_activation(m),
         Message::ObjectAnimation(m) => check_object_animation(m),
         Message::ChangeForm(m) => check_change_form(m),
@@ -3111,6 +3179,59 @@ mod tests {
         assert_eq!(validate_server(&relay(0x54b15, 0x567f2)), Ok(()));
         assert_eq!(validate_server(&relay(0, 0x567f2)), Err(Reject::Range));
         assert_eq!(validate_server(&relay(0x54b15, 0)), Err(Reject::Range));
+        // thuum D-C2 (SCHEMA_VERSION 40): a guest's entry into the web
+        // 0x37281 relayed to the host with its figure 0xff000001, enter or
+        // leave; any other event byte is no event
+        let entry = |entry| Message::RelayedActivation(RelayedActivation { target: 0x37281, caster: 0xff00_0001, entry, ..Default::default() });
+        assert_eq!(validate_server(&entry(Some(1))), Ok(()));
+        assert_eq!(validate_server(&entry(Some(2))), Ok(()));
+        assert_eq!(validate_server(&entry(None)), Ok(()));
+        for bad in [0u8, 3, u8::MAX] {
+            assert_eq!(validate_server(&entry(Some(bad))), Err(Reject::Range), "{bad}");
+        }
+    }
+
+    #[test]
+    fn trigger_entries_name_an_event_a_presser_and_a_trigger_and_are_rate_limited() {
+        // thuum D-W1 and D-C2 (SCHEMA_VERSION 40): c2's own player entering
+        // and leaving Bleak Falls Temple's web 0x37281, an NPC it simulates
+        // (illustrative 0x380b3, a draugr of the Temple), the edges
+        use wire_schema::skymp::{Activate, ActivateData};
+        let activate = |caster: u64, target: u64, is_second_activation: bool, entry: Option<u8>| {
+            Message::Activate(Activate { data: ActivateData { caster, target, is_second_activation, entry, ..Default::default() }, ..Default::default() })
+        };
+        assert_eq!(validate_server(&activate(0x14, 0x37281, false, Some(1))), Ok(()));
+        assert_eq!(validate_server(&activate(0x14, 0x37281, false, Some(2))), Ok(()));
+        assert_eq!(validate_server(&activate(0x380b3, 0x37281, false, Some(1))), Ok(()));
+        assert_eq!(validate_server(&activate(0xff00_0005, 0xfeff_ffff, false, Some(1))), Ok(()), "a server-made NPC presses a trigger at the load order's top");
+        for bad in [0u8, 3, u8::MAX] {
+            assert_eq!(validate_server(&activate(0x14, 0x37281, false, Some(bad))), Err(Reject::Range), "{bad}");
+        }
+        assert_eq!(validate_server(&activate(0x14, 0x37281, true, Some(1))), Err(Reject::Range), "an entry is no second activation");
+        assert_eq!(validate_server(&activate(0, 0x37281, false, Some(1))), Err(Reject::Range));
+        assert_eq!(validate_server(&activate(0x14, 0, false, Some(1))), Err(Reject::Range));
+        assert_eq!(validate_server(&activate(0x14, 0xff00_0000, false, Some(1))), Err(Reject::Range));
+        assert_eq!(validate_server(&activate(0x14, u64::MAX, false, Some(2))), Err(Reject::Range));
+        // an activation without an entry keeps the shared checks alone: the
+        // legacy shapes, a second activation and a server form's target too
+        assert_eq!(validate_server(&activate(0x14, 0x37281, true, None)), Ok(()));
+        assert_eq!(validate_server(&activate(0, 0, false, None)), Ok(()));
+        assert_eq!(validate_server(&activate(0x14, 0xff00_0001, false, None)), Ok(()));
+        // eight entries at once, then four a second; a refused shape spends
+        // no token, and an activation without an entry spends none
+        let mut guard = ClientGuard::default();
+        for _ in 0..100 {
+            assert_eq!(validate(&activate(0x14, 0x37281, false, None), &mut guard, 1_000), Ok(()));
+            assert_eq!(validate(&activate(0x14, 0x37281, true, Some(1)), &mut guard, 1_000), Err(Reject::Range));
+        }
+        for _ in 0..8 {
+            assert_eq!(validate(&activate(0x14, 0x37281, false, Some(1)), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&activate(0x14, 0x37281, false, Some(2)), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&activate(0x14, 0x37281, false, None), &mut guard, 1_000), Ok(()), "the entry budget is the entries' alone");
+        // one token every 250 ms
+        assert_eq!(validate(&activate(0x14, 0x37281, false, Some(2)), &mut guard, 1_249), Err(Reject::Rate));
+        assert_eq!(validate(&activate(0x14, 0x37281, false, Some(2)), &mut guard, 1_250), Ok(()));
     }
 
     #[test]
@@ -3293,10 +3414,31 @@ mod tests {
         }
 
         #[test]
-        fn relayed_activations_never_panic(target in any::<u32>(), caster in any::<u32>()) {
+        fn relayed_activations_never_panic(target in any::<u32>(), caster in any::<u32>(), entry in proptest::option::of(prop_oneof![0u8..4, any::<u8>()])) {
             use wire_schema::skymp::RelayedActivation;
-            let m = Message::RelayedActivation(RelayedActivation { target, caster, ..Default::default() });
-            prop_assert_eq!(validate_server(&m), if target == 0 || caster == 0 { Err(Reject::Range) } else { Ok(()) });
+            let m = Message::RelayedActivation(RelayedActivation { target, caster, entry, ..Default::default() });
+            let entry_ok = entry.is_none_or(|e| e == 1 || e == 2);
+            prop_assert_eq!(validate_server(&m), if target == 0 || caster == 0 || !entry_ok { Err(Reject::Range) } else { Ok(()) });
+        }
+
+        // thuum D-C2: any presser, trigger, flag and event byte, any clock:
+        // a verdict, never a panic, and the shape's verdict the rule gives
+        #[test]
+        fn trigger_entries_never_panic(
+            caster in prop_oneof![Just(0u64), Just(0x14u64), any::<u64>()],
+            target in prop_oneof![Just(0u64), Just(0x37281u64), Just(0xff00_0000u64), any::<u64>()],
+            second in any::<bool>(), entry in proptest::option::of(prop_oneof![0u8..4, any::<u8>()]), now in any::<u64>(),
+        ) {
+            use wire_schema::skymp::{Activate, ActivateData};
+            let m = Message::Activate(Activate { data: ActivateData { caster, target, is_second_activation: second, entry, ..Default::default() }, ..Default::default() });
+            let want = match entry {
+                None => Ok(()),
+                Some(e) if (e == 1 || e == 2) && !second && caster != 0 && target != 0 && target < 0xff00_0000 => Ok(()),
+                Some(_) => Err(Reject::Range),
+            };
+            prop_assert_eq!(validate_server(&m), want);
+            let mut g = ClientGuard::default();
+            let _ = validate(&m, &mut g, now);
         }
 
         #[test]
@@ -4356,6 +4498,167 @@ mod script_state_tests {
             let shape_ok = form_id != 0 && form_id < 0xff00_0000 && flags & 0x01 != 0 && flags & 0x08 != 0 && flags & 0x04 == 0 && names_ok;
             let want = if shape_ok && var_ok { Ok(()) } else { Err(Reject::Range) };
             prop_assert_eq!(validate_server(&m), want);
+            let mut g = ClientGuard::default();
+            let _ = validate(&m, &mut g, now);
+        }
+    }
+}
+
+// thuum D-C3 A (PENDING Eli; docs/research/fifty-fixes-2026-11-07.md 1(a)):
+// a serve's graph variables
+#[cfg(test)]
+mod graph_var_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use wire_schema::cap;
+    use wire_schema::skymp::{GraphVar, ScriptObjectState, ScriptStateApply, ScriptVar};
+
+    // Bleak Falls Temple's web 0x3758c after its tear: its FXtriggerAmbFX
+    // with the two variables the pex declares (broken, here 2, spent; myFX,
+    // the placed explosion a seat's engine made, encoded None), its
+    // properties' backing variables left out (the record's values are the
+    // owner's and never judged), and the variable its OnTriggerEnter set
+    // through SetAnimationVariableFloat("fToggleBlend", 1.0) at the web's
+    // first sequence (lab/.cache/drafts/fifty/trigger-entry-static.md
+    // section 6)
+    const WEB: u32 = 0x3758c;
+
+    fn web_script() -> ScriptObjectState {
+        ScriptObjectState {
+            cls: "FXtriggerAmbFX".try_into().unwrap_or_default(),
+            state: "".try_into().unwrap_or_default(),
+            flags: 0x0b,
+            vars: vec![ScriptVar { k: 3, i: Some(2), ..Default::default() }, ScriptVar { k: 1, ..Default::default() }].try_into().unwrap_or_default(),
+        }
+    }
+
+    fn var(name: &str, k: u8, seq: u32) -> GraphVar {
+        GraphVar { name: name.try_into().unwrap_or_default(), k, seq, ..Default::default() }
+    }
+
+    fn torn() -> GraphVar {
+        GraphVar { f: Some(1.0), ..var("fToggleBlend", 4, 1) }
+    }
+
+    fn serve(graph_vars: Option<Vec<GraphVar>>) -> Message {
+        Message::ScriptStateApply(ScriptStateApply {
+            form_id: WEB,
+            fnv1a: 0x1f2e_3d4c,
+            seq: 1,
+            scripts: vec![web_script()].try_into().unwrap_or_default(),
+            graph_vars: graph_vars.map(|v| v.try_into().unwrap_or_default()),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn the_torn_webs_variable_is_served() {
+        assert_eq!(validate_server(&serve(Some(vec![torn()]))), Ok(()));
+        // no variable kept: absent, or (a shape nobody sends) present and empty
+        assert_eq!(validate_server(&serve(None)), Ok(()));
+        assert_eq!(validate_server(&serve(Some(vec![]))), Ok(()));
+        // each kind with its own field
+        let int = GraphVar { i: Some(-3), ..var("iState", 3, 2) };
+        let flag = GraphVar { b: Some(true), ..var("bOpen", 5, 3) };
+        assert_eq!(validate_server(&serve(Some(vec![torn(), int, flag]))), Ok(()));
+        // sixteen names at once, each at its cap's length
+        let full: Vec<GraphVar> = (0..cap::GRAPH_VARS)
+            .map(|n| GraphVar { f: Some(0.5), ..var(&format!("{n:x}{}", "x".repeat(cap::ANIM_EVENT.saturating_sub(1))), 4, 7) })
+            .collect();
+        assert_eq!(full.first().map(|v| v.name.len()), Some(cap::ANIM_EVENT));
+        assert_eq!(validate_server(&serve(Some(full))), Ok(()));
+    }
+
+    #[test]
+    fn a_variable_carries_its_kinds_one_field_a_name_once_and_a_sequence() {
+        let refused = |v: GraphVar| validate_server(&serve(Some(vec![v])));
+        // a kind outside 3 to 5, whatever it carries
+        for k in [0u8, 1, 2, 6, 10, u8::MAX] {
+            assert_eq!(refused(GraphVar { f: Some(1.0), ..var("fToggleBlend", k, 1) }), Err(Reject::Range), "{k}");
+        }
+        // a payload that is not exactly its kind's
+        assert_eq!(refused(var("fToggleBlend", 4, 1)), Err(Reject::Range), "a float with no value");
+        assert_eq!(refused(GraphVar { i: Some(1), ..var("fToggleBlend", 4, 1) }), Err(Reject::Range), "a float carrying an int");
+        assert_eq!(refused(GraphVar { b: Some(true), ..torn() }), Err(Reject::Range), "a float carrying a bool too");
+        assert_eq!(refused(GraphVar { f: Some(1.0), ..var("iState", 3, 1) }), Err(Reject::Range), "an int carrying a float");
+        assert_eq!(refused(GraphVar { i: Some(1), b: Some(false), ..var("bOpen", 5, 1) }), Err(Reject::Range), "a bool carrying an int too");
+        // a sequence of 0
+        assert_eq!(refused(GraphVar { seq: 0, ..torn() }), Err(Reject::Range));
+        // a name empty or cut by a NUL
+        assert_eq!(refused(GraphVar { name: "".try_into().unwrap_or_default(), ..torn() }), Err(Reject::Range));
+        assert_eq!(refused(GraphVar { name: "fToggle\0Blend".try_into().unwrap_or_default(), ..torn() }), Err(Reject::Range));
+        // a name twice, whatever the values and sequences
+        let again = GraphVar { f: Some(0.0), seq: 2, ..torn() };
+        assert_eq!(validate_server(&serve(Some(vec![torn(), again]))), Err(Reject::Range));
+        let int = GraphVar { i: Some(1), ..var("fToggleBlend", 3, 3) };
+        assert_eq!(validate_server(&serve(Some(vec![int, torn()]))), Err(Reject::Range));
+        // names compare exactly: another case is another name
+        let other = GraphVar { f: Some(0.0), seq: 2, ..var("ftoggleblend", 4, 2) };
+        assert_eq!(validate_server(&serve(Some(vec![torn(), other]))), Ok(()));
+    }
+
+    #[test]
+    fn a_variables_float_is_finite() {
+        for f in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(validate_server(&serve(Some(vec![GraphVar { f: Some(f), ..torn() }]))), Err(Reject::NonFinite));
+        }
+        // the record's own rules come first: a bad record is refused with
+        // whatever variables ride beside it
+        let mut bad = serve(Some(vec![torn()]));
+        if let Message::ScriptStateApply(a) = &mut bad {
+            a.form_id = 0;
+        }
+        assert_eq!(validate_server(&bad), Err(Reject::Range));
+        // the serve takes no client budget, as before
+        let mut g = ClientGuard::default();
+        for _ in 0..100 {
+            assert_eq!(validate(&serve(Some(vec![torn()])), &mut g, 1_000), Ok(()));
+        }
+    }
+
+    // a variable as the generator drew it: its kind, which of the int,
+    // float and bool fields are present, its name as a code (0 its own, 1
+    // empty, 2 with a NUL, 3 the first variable's) and its sequence
+    type Draw = (u8, [bool; 3], u8, u32);
+
+    fn draw() -> impl Strategy<Value = Draw> {
+        (
+            prop_oneof![3u8..6, any::<u8>()],
+            any::<[bool; 3]>(),
+            prop_oneof![4 => Just(0u8), 1 => Just(1u8), 1 => Just(2u8), 1 => Just(3u8)],
+            prop_oneof![Just(0u32), 1u32..8, any::<u32>()],
+        )
+    }
+
+    proptest! {
+        // any kinds, payloads, names and sequences, up to the cap: a
+        // verdict, never a panic, and the verdict the rules give
+        #[test]
+        fn graph_vars_never_panic_and_judge_their_shapes(draws in proptest::collection::vec(draw(), 0..=cap::GRAPH_VARS), now in any::<u64>()) {
+            let mut vars = Vec::new();
+            let mut names: Vec<String> = Vec::new();
+            let mut ok = true;
+            for (n, (k, [i, f, b], code, seq)) in draws.iter().copied().enumerate() {
+                let name = match code {
+                    0 => format!("v{n}"),
+                    1 => String::new(),
+                    2 => format!("v{n}\0"),
+                    _ => names.first().cloned().unwrap_or_else(|| format!("v{n}")),
+                };
+                let fits = matches!((k, [i, f, b]), (3, [true, false, false]) | (4, [false, true, false]) | (5, [false, false, true]));
+                ok = ok && fits && seq != 0 && !name.is_empty() && !name.contains('\0') && !names.contains(&name);
+                names.push(name.clone());
+                vars.push(GraphVar {
+                    name: name.as_str().try_into().unwrap_or_default(),
+                    k,
+                    i: i.then_some(7),
+                    f: f.then_some(0.25),
+                    b: b.then_some(false),
+                    seq,
+                });
+            }
+            let m = serve(Some(vars));
+            prop_assert_eq!(validate_server(&m), if ok { Ok(()) } else { Err(Reject::Range) });
             let mut g = ClientGuard::default();
             let _ = validate(&m, &mut g, now);
         }

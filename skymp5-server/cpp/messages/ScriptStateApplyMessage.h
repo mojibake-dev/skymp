@@ -34,7 +34,8 @@ struct ScriptStateApplyMessage : public MessageBase<ScriptStateApplyMessage>
       .Serialize("fnv1a", fnv1a)
       .Serialize("seq", seq)
       .Serialize("event", event)
-      .Serialize("scripts", scripts);
+      .Serialize("scripts", scripts)
+      .Serialize("graphVars", graphVars);
   }
 
   uint32_t formId = 0; // the reference
@@ -42,4 +43,8 @@ struct ScriptStateApplyMessage : public MessageBase<ScriptStateApplyMessage>
   uint32_t seq = 0;    // the object's sequence when the record was taken
   std::optional<std::string> event;       // the reference's view then
   std::vector<ScriptStateObject> scripts; // as the owner read them
+  // thuum D-C3 A (PENDING Eli; SCHEMA_VERSION 40): the reference's graph
+  // variables as kept at the serve, each with its own sequence, not stamped
+  // at the record's take (at most 16); absent when none is kept
+  std::optional<std::vector<ScriptStateGraphVar>> graphVars;
 };

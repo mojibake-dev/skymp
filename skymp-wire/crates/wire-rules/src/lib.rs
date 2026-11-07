@@ -5,6 +5,7 @@
 //! need no server. The verb docs under thuum docs/verbs/ hold the sources.
 
 pub mod activation;
+pub mod alias_fills;
 pub mod block;
 pub mod bonds;
 pub mod actor_values;
@@ -36,13 +37,17 @@ pub mod props;
 pub mod quest_stages;
 pub mod racemenu;
 pub mod ranged;
+pub mod ref_state;
 pub mod rest;
 pub mod script_state;
 pub mod scripted_effects;
 pub mod shouts;
 pub mod stagger;
+pub mod standing;
 pub mod teleports;
 pub mod weather;
+pub mod world_globals;
+pub mod world_streamer;
 
 /// A decision and the bound it was made against, for the server's log.
 #[derive(Debug, Clone, Copy, PartialEq)]

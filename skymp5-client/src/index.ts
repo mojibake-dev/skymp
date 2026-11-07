@@ -53,6 +53,7 @@ import { ContainersService } from "./services/services/containersService";
 import { NetworkingService } from "./services/services/networkingService";
 import { RemoteServer } from "./services/services/remoteServer";
 import { HostService } from "./services/services/hostService";
+import { LoginCellService } from "./services/services/loginCellService";
 import { PuppetService } from "./services/services/puppetService";
 import { ActorFateService } from "./services/services/actorFateService";
 import { DeathReportService } from "./services/services/deathReportService";
@@ -153,6 +154,7 @@ const main = () => {
       new NetworkingService(sp, controller),
       new RemoteServer(sp, controller),
       new HostService(sp, controller),
+      new LoginCellService(sp, controller),
       new PuppetService(sp, controller),
       new ActorFateService(sp, controller),
       new DeathReportService(sp, controller),

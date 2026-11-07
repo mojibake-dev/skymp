@@ -4,10 +4,11 @@ import { FinishSpSnippetMessage } from "../messages/finishSpSnippetMessage";
 import { SpSnippetMessage } from "../messages/spSnippetMessage";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { ObjectAnimationService } from "./objectAnimationService";
+import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 
 // TODO: refactor worldViewMisc into service
 import { remoteIdToLocalId } from '../../view/worldViewMisc';
-import { logError, logTrace } from "../../logging";
+import { logError, logLab, logTrace } from "../../logging";
 import { WorldView } from "../../view/worldView";
 
 // D-C3 A (PENDING ELI): the graph variable setters a relayed script call
@@ -17,6 +18,25 @@ const GRAPH_VAR_KINDS: Record<string, number> = {
   setanimationvariablefloat: 4,
   setanimationvariablebool: 5,
 };
+
+// thuum docs/DECISIONS.md D-W2 A (docs/research/fifty-fixes-2026-11-07.md
+// 7.2(c)): the look rows as a relay names them (class.function in lower
+// case): the six action rows (PlayAnimationAndWait comes as its twin
+// PlayAnimation), the two motion rows and Sound.Play. Sound.Play and a static
+// row (selfId 0) name their subject in their first argument; every look but
+// Sound.Play's carries its subject's seq. D-W2's detection row
+// (CreateDetectionEvent during a firing, the host's alone; its shape the
+// platform layer's, coming) joins this table when it lands
+const LOOK_ROWS = new Set<string>([
+  "objectreference.playanimation",
+  "debug.sendanimationevent",
+  "objectreference.setanimationvariablebool",
+  "objectreference.setanimationvariableint",
+  "objectreference.setanimationvariablefloat",
+  "objectreference.setmotiontype",
+  "objectreference.applyhavokimpulse",
+  "sound.play",
+]);
 
 export class SpSnippetService extends ClientListener {
   constructor(private sp: Sp, private controller: CombinedController) {
@@ -99,12 +119,16 @@ export class SpSnippetService extends ClientListener {
   // always has
   private apply(snippet: SpSnippetMessage): Promise<unknown> {
     const event = snippet.arguments[0];
+    const look = this.lookSubject(snippet);
     if (typeof snippet.seq === "number"
       && snippet.class.toLowerCase() === "objectreference"
       && snippet.function.toLowerCase() === "playanimation"
       && snippet.selfId > 0 && snippet.selfId < 0xff000000
       && typeof event === "string") {
       this.controller.lookupListener(ObjectAnimationService).play(snippet.selfId, event, snippet.seq);
+      if (look !== undefined) {
+        this.sayLook(snippet, look);
+      }
       return Promise.resolve(undefined);
     }
     const kind = GRAPH_VAR_KINDS[snippet.function.toLowerCase()];
@@ -115,9 +139,57 @@ export class SpSnippetService extends ClientListener {
       && typeof event === "string" && event !== ""
       && (kind === 5 ? typeof value === "boolean" : typeof value === "number" && (kind === 3 ? Number.isInteger(value) : Number.isFinite(value)))) {
       this.controller.lookupListener(ObjectAnimationService).setVariable(snippet.selfId, event, kind, value, snippet.seq);
+      if (look !== undefined) {
+        this.sayLook(snippet, look);
+      }
       return Promise.resolve(undefined);
     }
-    return this.run(snippet);
+    if (look === undefined) {
+      return this.run(snippet);
+    }
+    return this.run(snippet).then((res) => {
+      this.sayLook(snippet, look);
+      return res;
+    });
+  }
+
+  // D-W2 A: a relayed look's subject (the firing seat's trigger, by its server
+  // id), undefined for any other snippet: a look row (LOOK_ROWS) with its seq
+  // (Sound.Play's comes without one) whose subject is a trap family trigger
+  // here (getTrapRole's family and trigger). The watcher plays it as any
+  // snippet, under the platform's mark: PlayAnimation through
+  // ObjectAnimationService.play (never kept: keepsFor leaves a family
+  // reference out), the graph variables through setVariable, the motion rows
+  // and Sound.Play through runMethod. The seam counts that play "(platform)"
+  // and batches none, so it is never reported again, never reaches
+  // PropService and is never a prop claim (the 48 rule: a trap's trigger is
+  // never a trap body). A game read: the update's context
+  private lookSubject(snippet: SpSnippetMessage): number | undefined {
+    const row = `${snippet.class.toLowerCase()}.${snippet.function.toLowerCase()}`;
+    if (!LOOK_ROWS.has(row)) {
+      return undefined;
+    }
+    const sound = row === "sound.play";
+    if (!sound && typeof snippet.seq !== "number") {
+      return undefined;
+    }
+    const first = snippet.arguments[0];
+    const subject = sound || !snippet.selfId
+      ? (first !== null && typeof first === "object" && typeof first.formId === "number" ? first.formId : 0)
+      : snippet.selfId;
+    if (!subject || subject >= 0xff000000) {
+      return undefined;
+    }
+    const role = ObjectReferenceEx.trapRole(remoteIdToLocalId(subject));
+    return role !== null && role.family && role.trigger === true ? subject : undefined;
+  }
+
+  // the watcher's line, once its play ran (a snippet that threw says so in
+  // onSpSnippetMessage's catch instead)
+  private sayLook(snippet: SpSnippetMessage, subject: number): void {
+    const here = this.sp.Game.getFormEx(remoteIdToLocalId(subject)) !== null;
+    const seq = typeof snippet.seq === "number" ? `seq ${snippet.seq}` : "no seq";
+    logLab("verb:traps", `trigger look ${subject.toString(16)} ${snippet.class}.${snippet.function} ${here ? "played here" : "skipped, no reference"} (${seq}) (D-W2)`);
   }
 
   // the order of one subject's relayed script calls (ADR-068 decision 4; the

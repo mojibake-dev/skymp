@@ -161,7 +161,32 @@ export class ScriptCallService extends ClientListener {
                     this.controller.lookupListener(ObjectAnimationService).noteScriptSide(call.self, event);
                 }
             }
+            if (call.kind === "look") {
+                this.noteLook(call);
+            }
         }
+    }
+
+    // thuum docs/DECISIONS.md D-W2 A (the trigger's own calls from its firing
+    // seat; docs/research/fifty-fixes-2026-11-07.md 7.2(c)): the platform
+    // batches kind "look" for a trap family trigger's own call on itself
+    // while a firing its presser's owner started here is open (the presser
+    // rule's note, LOOK_MS): its action rows, SetMotionType and
+    // ApplyHavokImpulse, and Sound.Play (its self the Sound, its subject the
+    // source in its first argument). Each ran here already, and is sent
+    // exactly as an action (ScriptCall 75 through the queue, the epoch
+    // HostService holds for the subject's cell) for the server to judge by
+    // the firing's facts (the cell's host, or a game with the cell loaded and
+    // an actor in reach) and play on the subject's other listeners, kept
+    // nowhere. The motion rows reached PropService above by their names, whose
+    // trigger rule makes no body and no claim of a trigger (the 48 rule,
+    // unchanged); a trigger is no pillar, so no side is noted. JS state alone.
+    // D-W2's detection row comes here when its shape lands (the platform
+    // layer's): the trigger script's CreateDetectionEvent during its firing,
+    // relayed to the cell's host alone so a guest's bone alarm wakes the
+    // host's NPCs
+    private noteLook(call: ScriptCall) {
+        this.queue({ call, record: false, key: undefined, dropped: false });
     }
 
     private onCensus(e: ScriptCensusEvent) {
@@ -370,7 +395,10 @@ export class ScriptCallService extends ClientListener {
             this.unsent++;
             return;
         }
-        const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(call.self));
+        // the subject's cell names the epoch: the self, or Sound.Play's source
+        // (a look row whose self is the Sound, D-W2)
+        const subject = ScriptCallService.subjectOf(call);
+        const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(subject));
         const message: ScriptCallMessage = {
             t: MsgType.ScriptCall,
             epoch: refr ? host.epochForActor(refr) : 0,
@@ -383,6 +411,10 @@ export class ScriptCallService extends ClientListener {
             latent: call.latent,
         };
         this.controller.emitter.emit("sendMessage", { message, reliability: "reliable" });
+        if (call.kind === "look") {
+            logLab("verb:traps", `trigger look ${(localIdToRemoteId(subject) || subject).toString(16)} ${call.cls}.${call.fn} reported (D-W2)`);
+            return;
+        }
         // ObjectAnimationService's report line, byte for byte, for an
         // animation row on a world object (an actor's animation is the
         // stream's): its own report path stays for the engine-driven family
@@ -404,6 +436,16 @@ export class ScriptCallService extends ClientListener {
         const type = form && this.sp.Actor.from(form) ? "Actor" : form && this.sp.ObjectReference.from(form) ? "ObjectReference"
             : form && this.sp.Faction.from(form) ? "Faction" : "Form";
         return { formId: localIdToRemoteId(arg.formId, true), type };
+    }
+
+    // a call's subject: its self, but Sound.Play's source in its first
+    // argument (D-W2's look row whose self is the Sound)
+    private static subjectOf(call: ScriptCall): number {
+        if (call.cls === "Sound" && call.fn === "Play") {
+            const first = call.args[0];
+            return first !== null && typeof first === "object" ? first.formId : 0;
+        }
+        return call.self;
     }
 
     // the table's animation rows (docs/NATIVES.md): PlayAnimationAndWait is

@@ -35,6 +35,7 @@ export class ActivationService extends ClientListener {
         super();
         this.controller.on("activate", (e) => this.onActivate(e));
         this.presserRule = this.startPresserRule();
+        this.startTriggerLook(this.presserRule);
         if (this.presserRule) {
             this.controller.on("update", () => this.sendEntries());
         }
@@ -400,6 +401,55 @@ export class ActivationService extends ClientListener {
     }
     logTrace(this, "the presser rule is on (D-W1): a trigger's entry is its presser's owner's");
     return true;
+  }
+
+  // thuum docs/DECISIONS.md D-W2 A (the trigger's own calls from its firing
+  // seat; docs/research/fifty-fixes-2026-11-07.md 7.2(a) and (c)): the look's
+  // A/B switch, the client setting triggerLook (on unless false), told to the
+  // platform's gate through setTriggerLook the way the presser rule is (off
+  // by default there); the look acts only with the presser rule on, so it is
+  // told off whenever that rule is off here. Beside it the fallback lever,
+  // triggerPresserExempt (the script classes whose non-owned presses the
+  // presser rule passes, D-S3's per-seat firing for them; empty by default,
+  // a list the lab fills only on a red), told through
+  // setTriggerPresserExempt. A platform without an export says so once
+  private startTriggerLook(presserOn: boolean): void {
+    const settings = this.sp.settings["skymp5-client"] as Record<string, unknown> | undefined;
+    const off = settings !== undefined && settings["triggerLook"] === false;
+    const look = presserOn && !off;
+    if (off) {
+      logTrace(this, "triggerLook is off in settings: a trigger's own calls stay each seat's (D-S3)");
+    }
+    try {
+      if (this.sp.setTriggerLook(look) === false && look) {
+        logError(this, "setTriggerLook(true) refused; a trigger's own calls stay each seat's");
+      } else if (look) {
+        logTrace(this, "the trigger look is on (D-W2): a firing's own calls cross from its firing seat");
+      }
+    } catch (e) {
+      if (look) {
+        logLab(TAG, `setTriggerLook unavailable on this platform (${e}); a trigger's own calls stay each seat's`);
+      }
+    }
+    if (!presserOn) {
+      return;
+    }
+    const listed: unknown = settings !== undefined ? settings["triggerPresserExempt"] : undefined;
+    const exempt = Array.isArray(listed) ? listed.filter((x): x is string => typeof x === "string" && x !== "") : [];
+    if (listed !== undefined && (!Array.isArray(listed) || exempt.length !== listed.length)) {
+      logError(this, "triggerPresserExempt is not a list of script class names; its other entries are ignored");
+    }
+    try {
+      if (this.sp.setTriggerPresserExempt(exempt) === false) {
+        logError(this, `setTriggerPresserExempt refused ${exempt.length} class(es)`);
+      } else if (exempt.length > 0) {
+        logLab(TAG, `presser rule exempt (D-W2's fallback, D-S3 for them): ${exempt.join(", ")}`);
+      }
+    } catch (e) {
+      if (exempt.length > 0) {
+        logLab(TAG, `setTriggerPresserExempt unavailable on this platform (${e}); no class is exempt`);
+      }
+    }
   }
 
   // thuum docs/verbs/traps.md (M4): a linked activation this game's engine

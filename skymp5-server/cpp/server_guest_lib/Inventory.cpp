@@ -2,6 +2,7 @@
 #include "archives/JsonInputArchive.h"
 #include "archives/JsonOutputArchive.h"
 #include "archives/SimdJsonInputArchive.h"
+#include <algorithm>
 #include <fmt/format.h>
 #include <spdlog/spdlog.h>
 #include <tuple>
@@ -89,16 +90,23 @@ Inventory& Inventory::AddItem(uint32_t baseId, uint32_t count)
   return AddItems({ { baseId, count } });
 }
 
+// Each item joins the first stack it matches (its extra data included), and
+// only an item that matches none is appended, in the call's order. Upstream
+// returned at the first merge and dropped every later item of the call (thuum
+// playtest 50: a fate re-roll adds in form id order, so a bandit's held gold
+// or arrows merged first and the armor after them never reached the record)
 Inventory& Inventory::AddItems(const std::vector<Entry>& toAdd)
 {
   for (auto& entryToAdd : toAdd) {
-    for (auto& entry : entries) {
-      if (entry.EqualExceptCount(entryToAdd)) {
-        entry.count += entryToAdd.count;
-        return *this; // TODO: It seems there is a bug
-      }
+    auto stack =
+      std::find_if(entries.begin(), entries.end(), [&](const Entry& entry) {
+        return entry.EqualExceptCount(entryToAdd);
+      });
+    if (stack != entries.end()) {
+      stack->count += entryToAdd.count;
+    } else {
+      entries.push_back(entryToAdd);
     }
-    entries.push_back(entryToAdd);
   }
   return *this;
 }

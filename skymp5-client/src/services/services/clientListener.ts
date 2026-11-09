@@ -240,6 +240,18 @@ declare module "skyrimPlatform" {
     function setHosted(actorFormId: number, hosted: boolean): boolean;
     function isHosted(actorFormId: number): boolean;
     function isPerformingAction(actorFormId: number): boolean;
+    // thuum docs/DECISIONS.md ADR-068 rung 5 (the acting scope;
+    // docs/research/rung5-quests-2026-11-09.md 1(c)): the player a relayed
+    // quest request runs for on this seat, a native table written with no game
+    // call (Hosted.h's idiom, safe from any context). setActingPlayer names it
+    // for a stage (or -1 a start, -2 a stop) of a quest for ttlMs: the acting
+    // player's figure here (0 when this seat holds none) and its server id;
+    // inside that scope Game.GetPlayer answers the figure. getActingPlayer
+    // answers the server id of the scope that set the stage (or ran the start
+    // or stop) here, 0 for none. The platform layer writes the bodies on its
+    // own branch; an older platform has neither, and every use is guarded
+    function setActingPlayer(questId: number, stage: number, figureLocalId: number, serverId: number, ttlMs: number): boolean;
+    function getActingPlayer(questId: number, stage: number): number;
     // thuum ADR-068 D-S3 (traps follow the interaction): a reference's trap
     // role from the platform's own reads (null with no form or no script),
     // the trap bodies another seat streams, and the references whose server

@@ -379,6 +379,13 @@ public:
   // runs here for a player, so the ring is rolled at that player's level
   // before any of it is loaded or subscribed
   std::function<void(MpActor&)> onSquareChange;
+  // thuum ADR-068 rung 4 (b-ref-state-restart 20261107-211516, step 53): a
+  // player's actor's new subscription to a reference the loader keeps as a
+  // primitive (a trigger with an XPRM box, MpObjectReference::Subscribe),
+  // which gets no create word; installed by PartOne, which serves the
+  // reference's records there as it serves them behind a create word
+  std::function<void(MpObjectReference& primitive, MpActor& listener)>
+    onPrimitiveSubscribe;
   // thuum ADR-068 rung 4 (amendment B, read 8): a game-file reference just
   // attached (LoadForm, its saved record applied, before its first
   // subscription), installed by PartOne for the quest aliases' created items

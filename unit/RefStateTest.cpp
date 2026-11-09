@@ -47,6 +47,12 @@ constexpr uint32_t kTemple = 0x371de;
 constexpr uint32_t kPortcullis = 0x3b9f1;
 constexpr uint32_t kXMarker = 0x17037;
 constexpr uint32_t kAmbushDraugr = 0x380ba;
+// the Temple's setStage trigger 0x3ac73 (base 0x33f50 defaultSetStageTRIG, an
+// ACTI the server holds) at (1210.9, 1083.9, -211.7) with an XPRM box
+// (129.4, 335.4, 229.0), so the loader keeps it as a primitive (lab/esm.py,
+// 2026-11-06, b-ref-state-restart's subject); 100 units off it
+constexpr uint32_t kSetStage = 0x3ac73;
+const NiPoint3 kBySetStage{ 1210.9f, 983.9f, -211.7f };
 const NiPoint3 kByThePortcullis{ 4992.f, -1508.f, -768.f };
 const NiPoint3 kByTheXMarker{ 6867.f, -5774.f, -1687.f };
 const NiPoint3 kByTheDraugr{ 8080.f, -7344.f, -2312.f };
@@ -332,6 +338,65 @@ TEST_CASE("An actor the server never held is enabled by its cell's host's "
   REQUIRE(words[0].served);
   REQUIRE(words[0].disabled == false);
   Leave(p);
+}
+
+// b-ref-state-restart 20261107-211516, step 53: a reference the loader keeps
+// as a primitive gets no create word, so its records rode behind none and a
+// late seat never heard the trigger was disabled. Its new subscription serves
+// them instead (WorldState's onPrimitiveSubscribe, PartOne's
+// ServeReferenceRecords, the create word's own serve); a grant re-subscribes
+// nothing, and the new host holds the word its subscribe was served
+TEST_CASE("A primitive's recorded ref state is served at a late seat's "
+          "subscribe, which sends it no create word, and the seat needs no "
+          "second word at its grant",
+          "[RefState][espm]")
+{
+  auto& p = GetPartOne();
+  auto& trigger = p.worldState.GetFormAt<MpObjectReference>(kSetStage);
+  REQUIRE(trigger.HasPrimitive());
+  const uint32_t epoch = Enter(p, kBySetStage);
+  Call(p, 0, epoch, kSetStage, "Disable", { Arg(false) });
+  REQUIRE(trigger.IsDisabled());
+  REQUIRE(trigger.GetRefStateSeq() == 1u);
+  REQUIRE(trigger.KeepsGridWhileDisabled());
+
+  // a late seat arrives beside it: no create word for the primitive, its ref
+  // state served at the subscribe
+  p.Messages().clear();
+  {
+    LogCapture log;
+    DoConnect(p, 2);
+    p.CreateActor(kLateActor, kBySetStage, 0, kTemple);
+    p.SetUserActor(2, kLateActor);
+    REQUIRE(log.Count("[verb:scripts] ref state 3ac73 (disabled true, "
+                      "deleted false, seq 1) served to ff000c62 at its "
+                      "subscribe (a primitive)") == 1);
+  }
+  REQUIRE(IndexOf<CreateActorMessage>(p, 2, [](const CreateActorMessage& m) {
+            return m.refrId == kSetStage;
+          }) == -1);
+  const auto words = WordsTo(p, 2, kSetStage);
+  REQUIRE(words.size() == 1);
+  REQUIRE(words[0].served);
+  REQUIRE(words[0].disabled == true);
+  REQUIRE(words[0].deleted == false);
+  REQUIRE(words[0].seq == 1);
+
+  // the host leaves and the late seat is granted the Temple: the grant
+  // re-subscribes nothing and serves the cell's script records alone, so no
+  // second word comes
+  p.Messages().clear();
+  DoDisconnect(p, 0);
+  Host(p, 2, kTemple);
+  REQUIRE(p.GetCellHost(kTemple).hosted);
+  REQUIRE(p.GetCellHost(kTemple).player == kLateActor);
+  REQUIRE(WordsTo(p, 2, kSetStage).empty());
+
+  DoDisconnect(p, 1);
+  DoDisconnect(p, 2);
+  p.DestroyActor(kHostActor);
+  p.DestroyActor(kGuestActor);
+  p.DestroyActor(kLateActor);
 }
 
 TEST_CASE("A recorded ref state survives a restart: a reference the loader "

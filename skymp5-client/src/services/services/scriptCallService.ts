@@ -77,7 +77,10 @@ import { TrapResultService } from "./trapResultService";
 // SetRace moved past the spells added after it would change which of them
 // the server's overlay holds); the server judges them by the calling
 // script's attachment and records them on the player's change form or in
-// its race overlay (wire-rules player_own, D-T1 A).
+// its race overlay (wire-rules player_own, D-T1 A). Eli's D-E1 A adds a
+// seventh the same way, Actor.ChangeHeadPart (m4-scripts-5-server a403ddd4,
+// m4-scripts-5-platform cbb59343): its part an HDPT the player's recorded
+// race may wear, which the server records on the player's look.
 // Every batched call keeps rung 3's read trigger (noteCall below).
 type Outgoing = {
     call: ScriptCall;
@@ -323,8 +326,8 @@ export class ScriptCallService extends ClientListener {
     }
 
     // the record rows (docs/NATIVES.md's keep column, Record(RefState) and
-    // Record(Standing), and rung 5's six of the player's own), by the table's
-    // spelling
+    // Record(Standing), and rung 5's seven of the player's own), by the
+    // table's spelling
     private static recordFamily(call: ScriptCall): "ref" | "standing" | "own" | undefined {
         if (call.cls === "ObjectReference" && ScriptCallService.refStateRows.has(call.fn)) {
             return "ref";
@@ -619,5 +622,5 @@ export class ScriptCallService extends ClientListener {
     private static readonly outgoingMax = 4096;
     private static readonly refStateRows = new Set<string>(["Enable", "EnableNoWait", "Disable", "DisableNoWait", "Delete"]);
     private static readonly standingRows = new Set<string>(["SetFactionRank", "ModFactionRank", "RemoveFromFaction", "RemoveFromAllFactions", "SetCrimeFaction", "SetRelationshipRank"]);
-    private static readonly playerOwnRows = new Set<string>(["SetRace", "AddSpell", "RemoveSpell", "AddShout", "RemoveShout", "EquipItem"]);
+    private static readonly playerOwnRows = new Set<string>(["SetRace", "AddSpell", "RemoveSpell", "AddShout", "RemoveShout", "EquipItem", "ChangeHeadPart"]);
 }

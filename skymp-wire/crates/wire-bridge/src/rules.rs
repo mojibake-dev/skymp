@@ -2420,6 +2420,13 @@ mod ffi {
         fn racemenu_look_facts(preset: &str) -> LookAppearance;
         /// thuum ADR-026: the appearance's head parts a look implies.
         fn racemenu_derived_head_parts(parts: &[LookPartFacts]) -> DerivedParts;
+        /// Eli's D-E1 A (ADR-026's one authority): the stored look with the
+        /// head part `plugin`|`id` (its plugin's file name, its id within
+        /// the plugin) in place of its part of the same HDPT type, `same_type`
+        /// one byte per `headParts` entry in order, nonzero for a part of
+        /// that type (wire-rules racemenu::with_head_part); empty when
+        /// nothing changes or the look would pass the wire's preset cap.
+        fn racemenu_with_head_part(preset: &str, same_type: &[u8], plugin: &str, id: u32) -> String;
         /// Whether an actor values report is within bounds, given the
         /// values the server holds (thuum docs/verbs/actor-values.md).
         fn actor_values_report_ok(report: &AvSnapshot, held: &[AvBase]) -> bool;
@@ -3639,6 +3646,12 @@ fn racemenu_derived_head_parts(parts: &[LookPartFacts]) -> DerivedParts {
         Some(parts) => DerivedParts { ok: true, parts },
         None => DerivedParts { ok: false, parts: Vec::new() },
     }
+}
+
+fn racemenu_with_head_part(preset: &str, same_type: &[u8], plugin: &str, id: u32) -> String {
+    let same: Vec<bool> = same_type.iter().map(|&b| b != 0).collect();
+    let part = racemenu::FormRef { plugin: plugin.to_owned(), id };
+    racemenu::with_head_part(preset, &same, &part).filter(|look| look.len() <= wire_schema::cap::RACEMENU_PRESET).unwrap_or_default()
 }
 
 fn av_snapshot(s: &AvSnapshot) -> actor_values::Snapshot {
@@ -6776,6 +6789,21 @@ mod tests {
         assert_eq!(overlays.player_own_judge(0xff00_0000, "Actor", "SetRace", 0xcdd84, &werewolf, &nord).code, 1);
         assert_eq!(overlays.player_overlay_gone(0xff00_0000).race, 0xcdd84);
         assert!(!overlays.player_overlay_gone(0xff00_0000).open);
+    }
+
+    #[test]
+    fn a_stored_look_takes_a_swapped_head_part_of_its_type_within_the_wire_cap() {
+        // Eli's D-E1 A: rotfern's eyes, RotfernEyes 0x014C06 for
+        // RotfernEyesMora 0x023F0E (rotfern.esp's)
+        let look = r#"{"headParts": [{"formIdentifier": "rotfern.esp|02E117", "type": 0}, {"formIdentifier": "rotfern.esp|014C06", "type": 2}]}"#;
+        let out = racemenu_with_head_part(look, &[0, 1], "rotfern.esp", 0x023F0E);
+        let parts: Vec<(String, u32)> = racemenu_look_facts(&out).parts.into_iter().map(|p| (p.plugin, p.id)).collect();
+        assert_eq!(parts, vec![("rotfern.esp".to_owned(), 0x02E117), ("rotfern.esp".to_owned(), 0x023F0E)]);
+        // no part of the type, or a look past the preset cap once written: nothing
+        assert!(racemenu_with_head_part(look, &[0, 0], "rotfern.esp", 0x023F0E).is_empty());
+        let padding = "x".repeat(wire_schema::cap::RACEMENU_PRESET);
+        let big = format!(r#"{{"pad": "{padding}", "headParts": [{{"formIdentifier": "rotfern.esp|014C06", "type": 2}}]}}"#);
+        assert!(racemenu_with_head_part(&big, &[1], "rotfern.esp", 0x023F0E).is_empty());
     }
 
     #[test]

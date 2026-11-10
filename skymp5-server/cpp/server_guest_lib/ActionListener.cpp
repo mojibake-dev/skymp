@@ -1231,19 +1231,7 @@ enum class LookVerdict
 // 0 for a plugin the server does not load
 uint32_t LookFormId(const PartOne& partOne, const skymp::rules::LookRef& ref)
 {
-  const std::string plugin(ref.plugin);
-  const auto& files = partOne.worldState.espmFiles;
-  for (size_t i = 0; i < files.size(); ++i) {
-    if (files[i].size() == plugin.size() &&
-        std::equal(files[i].begin(), files[i].end(), plugin.begin(),
-                   [](char a, char b) {
-                     return std::tolower(static_cast<unsigned char>(a)) ==
-                       std::tolower(static_cast<unsigned char>(b));
-                   })) {
-      return FormDesc(ref.id & 0x00ffffff, files[i]).ToFormId(files);
-    }
-  }
-  return 0;
+  return partOne.LookFormIdOf(std::string(ref.plugin), ref.id);
 }
 
 skymp::rules::LookPartFacts HeadPartFacts(PartOne& partOne, uint32_t formId,
@@ -1344,6 +1332,27 @@ void SendAppearanceToOthers(PartOne& partOne, MpActor& actor,
     }
     listener->SendToUser(out, true);
   }
+}
+
+// the player's stored RaceMenu look to everyone who sees it but the player,
+// whose own game wears it already (its race menu's close sent it, or its
+// script's own ChangeHeadPart ran there); how many games heard it
+size_t SendRaceMenuPresetToOthers(PartOne& partOne, MpActor& actor)
+{
+  RaceMenuPresetMessage out;
+  out.actor = actor.GetFormId();
+  out.preset = actor.GetRaceMenuPreset();
+  size_t sent = 0;
+  for (auto listener : actor.GetActorListeners()) {
+    if (listener == &actor ||
+        partOne.serverState.UserByActor(listener) ==
+          Networking::InvalidUserId) {
+      continue;
+    }
+    listener->SendToUser(out, true);
+    ++sent;
+  }
+  return sent;
 }
 
 bool SameAppearanceParts(const Appearance& a, const Appearance& b)
@@ -3032,19 +3041,7 @@ void ActionListener::OnRaceMenuPreset(const RawMessageData& rawMsgData,
     return spdlog::info("RaceMenu: user {} actor {:x} preset unchanged",
                         rawMsgData.userId, actor->GetFormId());
   }
-  RaceMenuPresetMessage out;
-  out.actor = actor->GetFormId();
-  out.preset = msg.preset;
-  size_t sent = 0;
-  for (auto listener : actor->GetActorListeners()) {
-    if (listener == actor ||
-        partOne.serverState.UserByActor(listener) ==
-          Networking::InvalidUserId) {
-      continue;
-    }
-    listener->SendToUser(out, true);
-    ++sent;
-  }
+  const size_t sent = SendRaceMenuPresetToOthers(partOne, *actor);
   spdlog::info("RaceMenu: user {} actor {:x} recorded a preset of {} bytes, "
                "sent to {} other players",
                rawMsgData.userId, actor->GetFormId(), msg.preset.size(), sent);
@@ -4867,18 +4864,31 @@ void RecordPlayerOwn(
         return said("nothing written (EquipItem moves nothing into the "
                     "record)");
       } else if (headRow) {
-        // D-E1 A: the part of the same HDPT type swapped on the look, sent
-        // to every game that sees the player (its figure's head parts)
+        // D-E1 A: the part of the same HDPT type swapped on the look and on
+        // the stored RaceMenu look (PartOne::RecordHeadPart), the stored
+        // look sent first to every game that sees the player, then the
+        // look: the look's figure is built again at the appearance and
+        // takes the stored look its game holds then, whose head parts
+        // replace the base's by type (thuum docs/verbs/racemenu-sync.md)
         if (!look) {
           return said("no recorded look to wear the head part, nothing "
                       "written");
         }
-        Appearance appearance = *look;
-        if (!partOne.WearHeadPart(appearance, form)) {
-          return said("the look wears it already, nothing written");
+        const auto recorded = partOne.RecordHeadPart(reporter, form);
+        if (recorded.preset) {
+          what += fmt::format(", its RaceMenu look's part of that type "
+                              "rewritten and sent to {} game(s)",
+                              SendRaceMenuPresetToOthers(partOne, reporter));
         }
-        reporter.SetAppearance(&appearance);
-        SendAppearanceToOthers(partOne, reporter, appearance);
+        if (!recorded.look) {
+          return said(recorded.preset
+                        ? what
+                        : std::string("the look wears it already, nothing "
+                                      "written"));
+        }
+        if (const auto now = reporter.GetAppearance()) {
+          SendAppearanceToOthers(partOne, reporter, *now);
+        }
         what += fmt::format(", its look's head part {:x} sent to every game "
                             "that sees it",
                             form);
@@ -4904,6 +4914,16 @@ void RecordPlayerOwn(
         o.spells.size(), o.shouts.size(), o.items.size()));
     }
     case 3:
+      // a head part the look wears already: the stored RaceMenu look that
+      // still names another of its type is brought to it (ADR-026's one
+      // authority), and every game that sees the player hears it
+      if (headRow && partOne.RecordHeadPart(reporter, form).preset) {
+        return said(
+          fmt::format("folded on the look; its RaceMenu look's part "
+                      "of that type rewritten to it and sent to {} "
+                      "game(s)",
+                      SendRaceMenuPresetToOthers(partOne, reporter)));
+      }
       return spdlog::debug("[verb:quest-stage] {:x}'s own {}.{} {:x}: folded",
                            reporter.GetFormId(), msg.cls, msg.fn, form);
     default: {

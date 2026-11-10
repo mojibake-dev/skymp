@@ -106,6 +106,59 @@ pub fn look_facts(text: &str) -> Option<LookFacts> {
     Some(LookFacts { parts, hair_color, weight, head_texture })
 }
 
+/// The stored look with `part` in place of its part of the same head part
+/// type (thuum Eli's D-E1 A, ADR-026's one authority over a face): a
+/// script's recorded `Actor.ChangeHeadPart` swaps the appearance's part, and
+/// RaceMenu's load of this look on a figure, and on the player after a
+/// login, replaces the base's parts by type with the look's
+/// (docs/verbs/racemenu-sync.md, x-head-parts 20261007-133253), so the look
+/// must name the new part too or it puts the old one back. `same_type` says,
+/// for each `headParts` entry in order, whether its part is of `part`'s HDPT
+/// type (PNAM; the core reads each part's record). The first such entry
+/// names `part` instead (RaceMenu's `"<plugin>|<six hex digits>"`, every
+/// other field of the entry kept), and any later one goes. None when `text`
+/// is no look, `same_type` does not cover its entries one for one, no entry
+/// is of that type (the look then leaves that type to the appearance), the
+/// entry names `part` already with no later one of the type, or the result
+/// is no preset ([`preset_ok`]).
+#[must_use]
+pub fn with_head_part(text: &str, same_type: &[bool], part: &FormRef) -> Option<String> {
+    if !preset_ok(text) {
+        return None;
+    }
+    let mut look: Value = serde_json::from_str(text).ok()?;
+    let entries = look.get_mut("headParts")?.as_array_mut()?;
+    if entries.len() != same_type.len() {
+        return None;
+    }
+    let names_part = |entry: &Value| entry.get("formIdentifier").and_then(form_ref).is_some_and(|r| r.id == part.id && r.plugin.eq_ignore_ascii_case(&part.plugin));
+    let mut placed = false;
+    let mut changed = false;
+    let mut kept = Vec::with_capacity(entries.len());
+    for (mut entry, &same) in std::mem::take(entries).into_iter().zip(same_type) {
+        if !same {
+            kept.push(entry);
+            continue;
+        }
+        if placed {
+            changed = true;
+            continue;
+        }
+        placed = true;
+        if !names_part(&entry) {
+            entry.as_object_mut()?.insert("formIdentifier".to_owned(), Value::String(format!("{}|{:06X}", part.plugin, part.id)));
+            changed = true;
+        }
+        kept.push(entry);
+    }
+    *entries = kept;
+    if !placed || !changed {
+        return None;
+    }
+    let out = serde_json::to_string(&look).ok()?;
+    preset_ok(&out).then_some(out)
+}
+
 /// What the core knows of one head part a look names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PartFacts {
@@ -212,6 +265,57 @@ mod tests {
         let ok = PartFacts { form: 1, valid_for_race: true, extras: vec![] };
         assert_eq!(derived_head_parts(&[ok.clone(), PartFacts { form: 0, ..ok.clone() }]), None);
         assert_eq!(derived_head_parts(&[ok.clone(), PartFacts { form: 2, valid_for_race: false, extras: vec![] }]), None);
+    }
+
+    // rotfern's eyes (thuum D-E1 A): RotfernEyes 0x014C06 and RotfernEyesMora
+    // 0x023F0E, both rotfern.esp's; the look keeps her mouth and hair beside
+    // the eyes (type 2, PNAM's Eyes)
+    const EYES_LOOK: &str = r#"{"actor": {"weight": 50},
+        "headParts": [{"formIdentifier": "rotfern.esp|02E117", "type": 0},
+                      {"formIdentifier": "rotfern.esp|014C06", "type": 2},
+                      {"formIdentifier": "rotfern.esp|02E11A", "type": 3}]}"#;
+
+    fn mora() -> FormRef {
+        FormRef { plugin: "rotfern.esp".into(), id: 0x023F0E }
+    }
+
+    fn parts_of(look: Option<&str>) -> Vec<(String, u32)> {
+        look.and_then(look_facts).unwrap_or_default().parts.into_iter().map(|p| (p.plugin, p.id)).collect()
+    }
+
+    #[test]
+    fn a_swapped_part_takes_its_types_place_in_the_look() {
+        let out = with_head_part(EYES_LOOK, &[false, true, false], &mora());
+        assert_eq!(parts_of(out.as_deref()), vec![("rotfern.esp".to_owned(), 0x02E117), ("rotfern.esp".to_owned(), 0x023F0E), ("rotfern.esp".to_owned(), 0x02E11A)]);
+        // written as RaceMenu writes an identifier, the entry's type and the
+        // rest of the look kept
+        let text = out.unwrap_or_default();
+        assert!(text.contains("\"rotfern.esp|023F0E\""), "{text}");
+        let v: Value = serde_json::from_str(&text).unwrap_or_default();
+        let eyes = v.get("headParts").and_then(|h| h.get(1));
+        assert_eq!(eyes.and_then(|e| e.get("type")).and_then(Value::as_u64), Some(2));
+        assert_eq!(look_facts(&text).and_then(|f| f.weight), Some(50.0));
+    }
+
+    #[test]
+    fn a_look_without_the_type_or_naming_the_part_already_is_left_as_it_is() {
+        // no part of the type: the appearance keeps that type
+        assert_eq!(with_head_part(EYES_LOOK, &[false, false, false], &mora()), None);
+        // the core's facts must cover every entry
+        assert_eq!(with_head_part(EYES_LOOK, &[false, true], &mora()), None);
+        // the part already, its plugin named in another case
+        assert_eq!(with_head_part(EYES_LOOK, &[false, true, false], &FormRef { plugin: "ROTFERN.ESP".into(), id: 0x014C06 }), None);
+        assert_eq!(with_head_part("{}", &[], &mora()), None);
+        assert_eq!(with_head_part("[]", &[], &mora()), None);
+    }
+
+    #[test]
+    fn a_second_part_of_the_type_goes() {
+        let two = r#"{"headParts": [{"formIdentifier": "rotfern.esp|014C06", "type": 2}, {"formIdentifier": "Skyrim.esm|051632", "type": 2}]}"#;
+        assert_eq!(parts_of(with_head_part(two, &[true, true], &mora()).as_deref()), vec![("rotfern.esp".to_owned(), 0x023F0E)]);
+        // the first names it already: the later one still goes
+        let eyes = FormRef { plugin: "rotfern.esp".into(), id: 0x014C06 };
+        assert_eq!(parts_of(with_head_part(two, &[true, true], &eyes).as_deref()), vec![("rotfern.esp".to_owned(), 0x014C06)]);
     }
 
     #[test]

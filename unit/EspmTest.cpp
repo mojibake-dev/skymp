@@ -1,6 +1,8 @@
 #include "TestUtils.hpp"
 #include "libespm/GroupUtils.h"
 #include "libespm/Loader.h"
+#include "libespm/ScriptData.h"
+#include <algorithm>
 #include <catch2/catch_all.hpp>
 
 extern espm::Loader& GetEspmLoader();
@@ -898,4 +900,148 @@ TEST_CASE("PERK's sections carry its effects: the entry point, the function, "
   REQUIRE(j.conditions[1].second.comparisonValue == 1.f);
   REQUIRE(j.conditions[2].second.GetDefaultData().firstParameter == 0x965b2);
   REQUIRE(j.conditions[2].second.comparisonValue == 0.f);
+}
+
+// thuum ADR-068 rung 5 (a review of the rotfern-eyes slot): a QUST's VMAD
+// carries its alias scripts after its own (UESP, "Skyrim Mod:Mod File
+// Format/VMAD Field": the Fragments Section, then the Alias Scripts
+// Section), and GetScriptData reads them into ScriptData::aliases, apart
+// from `scripts`. The record below is RotfernEyes.esp's quest byte for byte
+// as thuum lab/rotfern-eyes/build_esp.py writes it (apocrypha/rotfern-eyes
+// 833b5452): version 5, objFormat 2, no quest script, the fragments block's
+// 2 with no fragment and an empty file name, one alias (alias 0 of the quest
+// 0x03000800) carrying RotfernEyesAlias and its seven Object properties in
+// the plugin's own numbering
+namespace {
+struct RecordBytes
+{
+  std::vector<uint8_t> bytes;
+
+  template <class T>
+  void Put(T value)
+  {
+    const auto* p = reinterpret_cast<const uint8_t*>(&value);
+    bytes.insert(bytes.end(), p, p + sizeof(T));
+  }
+  void PutString(const std::string& s)
+  {
+    Put(static_cast<uint16_t>(s.size()));
+    bytes.insert(bytes.end(), s.begin(), s.end());
+  }
+  void PutObject(uint32_t formId, int16_t alias)
+  {
+    Put(static_cast<uint16_t>(0));
+    Put(alias);
+    Put(formId);
+  }
+};
+
+const std::vector<std::pair<std::string, uint32_t>> kRotfernEyesProperties = {
+  { "RotfernRace", 0x0200aa00 },     { "RotfernRaceVampire", 0x02019d08 },
+  { "RotfernEyes", 0x02014c06 },     { "RotfernEyesVampire", 0x02019d09 },
+  { "RotfernEyesMora", 0x02023f0e }, { "RotfernEyesMoraVampire", 0x02023f0f },
+  { "DLC2MQ06", 0x010179d7 },
+};
+
+std::vector<uint8_t> RotfernEyesVmad()
+{
+  RecordBytes v;
+  v.Put(static_cast<int16_t>(5));
+  v.Put(static_cast<int16_t>(2));
+  v.Put(static_cast<uint16_t>(0)); // no script on the quest itself
+  v.Put(static_cast<uint8_t>(2));  // the fragments block: none, no file
+  v.Put(static_cast<uint16_t>(0));
+  v.PutString("");
+  v.Put(static_cast<uint16_t>(1)); // one alias with scripts
+  v.PutObject(0x03000800, 0);
+  v.Put(static_cast<int16_t>(5));
+  v.Put(static_cast<int16_t>(2));
+  v.Put(static_cast<uint16_t>(1));
+  v.PutString("RotfernEyesAlias");
+  v.Put(static_cast<uint8_t>(0));
+  v.Put(static_cast<uint16_t>(kRotfernEyesProperties.size()));
+  for (const auto& [name, formId] : kRotfernEyesProperties) {
+    v.PutString(name);
+    v.Put(static_cast<uint8_t>(1)); // Object
+    v.Put(static_cast<uint8_t>(1)); // edited
+    v.PutObject(formId, -1);
+  }
+  return v.bytes;
+}
+
+// a record of `type` with the one field VMAD, laid as a plugin lays it: its
+// 24-byte header (type, data size, flags, form id, revision, version,
+// unknown), then the field (type, uint16 size, data)
+std::vector<uint8_t> RecordWithVmad(const char* type,
+                                    const std::vector<uint8_t>& vmad)
+{
+  RecordBytes r;
+  r.bytes.insert(r.bytes.end(), type, type + 4);
+  r.Put(static_cast<uint32_t>(4 + 2 + vmad.size()));
+  r.Put(static_cast<uint32_t>(0));
+  r.Put(static_cast<uint32_t>(0x03000800));
+  r.Put(static_cast<uint32_t>(0));
+  r.Put(static_cast<uint16_t>(44));
+  r.Put(static_cast<uint16_t>(0));
+  r.bytes.insert(r.bytes.end(), { 'V', 'M', 'A', 'D' });
+  r.Put(static_cast<uint16_t>(vmad.size()));
+  r.bytes.insert(r.bytes.end(), vmad.begin(), vmad.end());
+  return r.bytes;
+}
+
+espm::ScriptData ScriptDataOf(const std::vector<uint8_t>& record)
+{
+  // a RecordHeader starts after the type and the data size
+  const auto* rec =
+    reinterpret_cast<const espm::RecordHeader*>(record.data() + 8);
+  espm::CompressedFieldsCache cache;
+  espm::ScriptData data;
+  rec->GetScriptData(&data, cache);
+  return data;
+}
+}
+
+TEST_CASE("A QUST's alias scripts read apart from its own, an alias-only "
+          "quest's among them",
+          "[espm]")
+{
+  const auto record = RecordWithVmad("QUST", RotfernEyesVmad());
+  const auto data = ScriptDataOf(record);
+  // the records are packed: each field copied out before it is compared
+  const int16_t version = data.version;
+  const int16_t objFormat = data.objFormat;
+  REQUIRE(version == 5);
+  REQUIRE(objFormat == 2);
+  REQUIRE(data.scripts.empty());
+  REQUIRE(data.aliases.size() == 1);
+  const int16_t aliasId = data.aliases[0].aliasId;
+  REQUIRE(aliasId == 0);
+  REQUIRE(data.aliases[0].scripts.size() == 1);
+  const auto& script = data.aliases[0].scripts[0];
+  REQUIRE(script.scriptName == "RotfernEyesAlias");
+  REQUIRE(script.properties.size() == kRotfernEyesProperties.size());
+  for (const auto& expected : kRotfernEyesProperties) {
+    const auto it = std::find_if(
+      script.properties.begin(), script.properties.end(),
+      [&](const espm::Property& p) { return p.name == expected.first; });
+    REQUIRE(it != script.properties.end());
+    const espm::Property::Type type = it->type;
+    const uint32_t value = it->value.formId;
+    REQUIRE(type == espm::Property::Type::Object);
+    REQUIRE(value == expected.second);
+  }
+
+  // another record type keeps no alias section; a QUST whose VMAD stops
+  // inside an alias keeps no alias, and one that ends after its scripts
+  // has none
+  REQUIRE(
+    ScriptDataOf(RecordWithVmad("ACTI", RotfernEyesVmad())).aliases.empty());
+  auto cut = RotfernEyesVmad();
+  cut.resize(cut.size() - 3);
+  const auto shortened = ScriptDataOf(RecordWithVmad("QUST", cut));
+  REQUIRE(shortened.scripts.empty());
+  REQUIRE(shortened.aliases.empty());
+  const auto full = RotfernEyesVmad();
+  const std::vector<uint8_t> bare(full.begin(), full.begin() + 6);
+  REQUIRE(ScriptDataOf(RecordWithVmad("QUST", bare)).aliases.empty());
 }

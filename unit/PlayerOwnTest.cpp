@@ -714,3 +714,141 @@ TEST_CASE("A removal into a container the player holds open is that "
   DoDisconnect(p, 0);
   p.DestroyActor(kTurned);
 }
+
+// A review of the rotfern-eyes slot, fix 1: the server indexes a QUST's alias
+// scripts as the quest's attachments (libespm ScriptData::aliases), so an own
+// row an alias script calls finds its bound, RotfernEyes.esp's (its script on
+// its player alias alone) among them. Dragonborn.esm's DLC2BloodskalBladeQST
+// 27282 has that shape (no quest script, no fragment, one alias), its alias
+// script DLC2BloodskalBladeScript naming DLC2BloodskalBladeSpellVert 33a27 and
+// DLC2BloodskalBladeSpellHoriz 1aeae; PlayerWerewolfQuest's alias 0 carries
+// PlayerWerewolfScript naming WerewolfBeastRace beside the quest's own scripts
+// (lab/esm.py's walk of the lab's cached Skyrim.esm, Dawnguard.esm and
+// Dragonborn.esm, 2026-11-10: 1,255 scripted QUSTs, 698 with alias scripts,
+// eight alias scripts alone). Each record's type is read here first
+TEST_CASE("A quest's alias script is that quest's attachment: an alias-only "
+          "quest's own row is accepted while the quest runs, and so is one "
+          "from an alias script beside the quest's own",
+          "[PlayerOwn][espm]")
+{
+  PartOne& p = GetPartOne();
+  const auto& files = p.worldState.espmFiles;
+  const uint32_t bladeQuest =
+    FormDesc::FromString("27282:Dragonborn.esm").ToFormId(files);
+  const uint32_t spellVert =
+    FormDesc::FromString("33a27:Dragonborn.esm").ToFormId(files);
+  const uint32_t spellHoriz =
+    FormDesc::FromString("1aeae:Dragonborn.esm").ToFormId(files);
+  REQUIRE(RecordType(p, bladeQuest) == "QUST");
+  REQUIRE(RecordType(p, spellVert) == "SPEL");
+  REQUIRE(RecordType(p, spellHoriz) == "SPEL");
+
+  // the index: each alias script the quest's attachment, live as it is
+  const auto names = [](const PartOne::ScriptAttachment& a, uint32_t form) {
+    return std::any_of(a.named.begin(), a.named.end(),
+                       [&](const auto& n) { return n.form == form; });
+  };
+  const auto& blade = p.ScriptAttachmentsOf("DLC2BloodskalBladeScript");
+  const auto at = std::find_if(blade.begin(), blade.end(), [&](const auto& a) {
+    return a.form == bladeQuest;
+  });
+  REQUIRE(at != blade.end());
+  REQUIRE(at->quest);
+  REQUIRE(names(*at, spellVert));
+  REQUIRE(names(*at, spellHoriz));
+  const auto& werewolf = p.ScriptAttachmentsOf("PlayerWerewolfScript");
+  REQUIRE(std::any_of(werewolf.begin(), werewolf.end(), [&](const auto& a) {
+    return a.form == kWerewolfQuest && a.quest && names(a, kWerewolfBeastRace);
+  }));
+
+  Enter(p, false);
+  OwnLog log;
+  auto& turned = p.worldState.GetFormAt<MpActor>(kTurned);
+  // the quest neither runs nor is staged: its attachment names nothing yet
+  Own(p, "AddSpell", { FormArg(spellVert, "Spell"), Arg(false) },
+      "DLC2BloodskalBladeScript", "OnEquipped");
+  REQUIRE(log.Count("E_SCRIPTCALL_UNNAMED") == 1);
+  REQUIRE(log.Count(", 0 live for this player") == 1);
+  REQUIRE(!turned.IsSpellLearned(spellVert));
+
+  // its run in the world's journal: the alias script's spell is recorded
+  REQUIRE(
+    p.SetQuestRuns({ { FormDesc::FromString("27282:Dragonborn.esm"), true, 1 },
+                     { FormDesc::FromString("2ba16:Skyrim.esm"), true, 1 } }));
+  Own(p, "AddSpell", { FormArg(spellVert, "Spell"), Arg(false) },
+      "DLC2BloodskalBladeScript", "OnEquipped");
+  REQUIRE(turned.IsSpellLearned(spellVert));
+
+  // the werewolf's alias script names the beast race: its overlay opens
+  SetRace(p, kWerewolfBeastRace, "PlayerWerewolfScript");
+  const auto overlay = p.PlayerOverlayOf(kTurned);
+  REQUIRE(overlay);
+  REQUIRE(overlay->race == kWerewolfBeastRace);
+  Leave(p);
+}
+
+// Fix 2: a recorded ChangeHeadPart writes the stored RaceMenu look's part of
+// that HDPT type too (PartOne::RecordHeadPart, the write RecordPlayerOwn
+// makes), since that look's load on a figure, and on the player after a
+// login, replaces the base's head parts by type with its own (thuum
+// docs/verbs/racemenu-sync.md, x-head-parts 20261007-133253) and would put
+// the old eyes back. No vanilla script names an HDPT (805 HDPTs and 1,745
+// scripted QUSTs and MGEFs read, their alias scripts and FormLists among
+// them), so the bound never takes a vanilla call this far; the write is the
+// core's and is read here over the head-part case's vanilla parts
+TEST_CASE("A recorded head part swap brings the stored RaceMenu look's part "
+          "of its type with it; a look that names it already or names no "
+          "part of its type is left as it is",
+          "[PlayerOwn][espm]")
+{
+  constexpr uint32_t kEyesBrown = 0x51632;
+  constexpr uint32_t kEyesIceBlue = 0x24244;
+  constexpr uint32_t kHairNord01 = 0x51507;
+  const std::string kLook =
+    R"({"actor": {"weight": 50},
+  "headParts": [{"formIdentifier": "Skyrim.esm|051632", "type": 2},
+                {"formIdentifier": "Skyrim.esm|051507", "type": 3}]})";
+  PartOne& p = GetPartOne();
+  Enter(p);
+  auto& turned = p.worldState.GetFormAt<MpActor>(kTurned);
+  Appearance worn = *turned.GetAppearance();
+  worn.headpartIds = { kEyesBrown, kHairNord01 };
+  turned.SetAppearance(&worn);
+  REQUIRE(turned.SetRaceMenuPreset(kLook));
+
+  const auto recorded = p.RecordHeadPart(turned, kEyesIceBlue);
+  REQUIRE(recorded.look);
+  REQUIRE(recorded.preset);
+  REQUIRE(turned.GetAppearance()->headpartIds ==
+          std::vector<uint32_t>{ kHairNord01, kEyesIceBlue });
+  // the stored look names the new eyes in the old ones' place, its type and
+  // the rest of the look kept
+  const auto stored = nlohmann::json::parse(turned.GetRaceMenuPreset());
+  REQUIRE(stored["headParts"].size() == 2);
+  REQUIRE(stored["headParts"][0]["formIdentifier"] == "Skyrim.esm|024244");
+  REQUIRE(stored["headParts"][0]["type"] == 2);
+  REQUIRE(stored["headParts"][1]["formIdentifier"] == "Skyrim.esm|051507");
+  REQUIRE(stored["actor"]["weight"] == 50);
+
+  // the same swap again: both records hold it already, nothing moves
+  const auto again = p.RecordHeadPart(turned, kEyesIceBlue);
+  REQUIRE(!again.look);
+  REQUIRE(!again.preset);
+  // a stored look that still names the old eyes (one written before this
+  // fix): the look folds, the stored look comes to it
+  REQUIRE(turned.SetRaceMenuPreset(kLook));
+  const auto healed = p.RecordHeadPart(turned, kEyesIceBlue);
+  REQUIRE(!healed.look);
+  REQUIRE(healed.preset);
+  REQUIRE(turned.GetRaceMenuPreset().find("Skyrim.esm|024244") !=
+          std::string::npos);
+
+  // a look with no eyes, a part that is no HDPT, no look at all
+  std::string noEyes =
+    R"({"headParts": [{"formIdentifier": "Skyrim.esm|051507", "type": 3}]})";
+  REQUIRE(!p.WearHeadPartInLook(noEyes, kEyesIceBlue));
+  REQUIRE(!p.WearHeadPartInLook(noEyes, kNordRace));
+  std::string none;
+  REQUIRE(!p.WearHeadPartInLook(none, kEyesIceBlue));
+  Leave(p);
+}

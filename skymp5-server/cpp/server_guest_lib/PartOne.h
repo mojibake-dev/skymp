@@ -347,6 +347,36 @@ public:
   // its record
   std::optional<RaceOverlay> PlayerOverlayOf(uint32_t actorId) const;
 
+  // thuum ADR-068 rung 5 (the R1 bound of a player's own rows, wire-rules
+  // player_own; the fresh review's note 3): one QUST or MGEF of the game
+  // files that attaches a script class (its VMAD, libespm's
+  // RecordHeader::GetScriptData, the winning record of each form), with what
+  // its properties name: an Object property's form, each element of an
+  // ObjectArray one's, and a FormList's entries in order beside it
+  // (FLST::GetData); and for an MGEF the SPELs whose effects carry it
+  // (SPEL::GetData). Indexed once per set of game files at AttachEspm, by
+  // the class's name without case
+  struct ScriptAttachment
+  {
+    struct Named
+    {
+      uint32_t form = 0;
+      std::vector<uint32_t> members;
+    };
+    uint32_t form = 0;            // the QUST's or MGEF's id in the load order
+    bool quest = false;           // a QUST's attachment, else an MGEF's
+    std::vector<uint32_t> spells; // an MGEF's: the SPELs carrying it
+    std::vector<Named> named;     // each form once, in the VMAD's order
+  };
+  // the attachments of `scriptClass`, none for a class no QUST or MGEF
+  // attaches or without the game files
+  const std::vector<ScriptAttachment>& ScriptAttachmentsOf(
+    const std::string& scriptClass) const;
+  // whether a QUST attachment counts for the bound: the quest scope classes
+  // the quest a player's (PlayerClassQuests, while the scope acts) or the
+  // world's journal records it running (questRuns) or staged (questStages)
+  bool QuestAttachmentLive(uint32_t questId);
+
   // thuum docs/verbs/spell-placed-object.md (ADR-057): the objects the
   // server places at an accepted cast of a listed spell,
   // server-settings.json's `spellPlacedObjects` (a JSON list, "[]" for

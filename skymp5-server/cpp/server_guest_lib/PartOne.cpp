@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <set>
@@ -47,6 +48,7 @@
 #include "libespm/ARMO.h"
 #include "libespm/AVIF.h"
 #include "libespm/CELL.h"
+#include "libespm/FLST.h"
 #include "libespm/MGEF.h"
 #include "libespm/PROJ.h"
 #include "libespm/QUST.h"
@@ -363,6 +365,11 @@ struct PartOne::Impl
   std::vector<FormDesc> questScopeMarked;
   std::vector<FormDesc> playerClassQuests;
   std::vector<std::pair<FormDesc, uint16_t>> servedStages;
+  // the R1 bound's script attachments, indexed at AttachEspm (the fresh
+  // review's note 3), by the class's name without case
+  const std::unordered_map<
+    std::string, std::vector<PartOne::ScriptAttachment>>* scriptAttachments =
+    nullptr;
 
   // the objects the server places at an accepted cast of a listed spell,
   // and every set standing (thuum docs/verbs/spell-placed-object.md,
@@ -805,6 +812,11 @@ void PartOne::SetOnActorStreamIn(OnActorStreamIn callback)
   pImpl->onActorStreamIn = callback;
 }
 
+namespace {
+const std::unordered_map<std::string, std::vector<PartOne::ScriptAttachment>>&
+ScriptAttachmentIndexOf(WorldState& worldState);
+}
+
 void PartOne::AttachEspm(espm::Loader* espm)
 {
   pImpl->espm = espm;
@@ -815,6 +827,9 @@ void PartOne::AttachEspm(espm::Loader* espm)
   // thuum ADR-068 rung 5: the quest scope's class needs every QUST's
   // aliases, read now that the game files are here (the settings came first)
   ComposeQuestScope();
+  // and the R1 bound's script attachments, read here and not at a seat's
+  // first call (the fresh review's note 3)
+  pImpl->scriptAttachments = &ScriptAttachmentIndexOf(worldState);
 }
 
 bool PartOne::FlushSaves(std::chrono::milliseconds budget)
@@ -3739,6 +3754,109 @@ const std::vector<QuestScopeFacts>& QuestScopeFactsOf(WorldState& worldState)
     .first->second;
 }
 
+std::string LowerScriptClass(std::string name)
+{
+  std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return name;
+}
+
+// thuum ADR-068 rung 5 (the fresh review's note 3): every QUST's and MGEF's
+// script attachments with what their properties name, and the SPELs that
+// carry each MGEF, read once per set of game files (QuestScopeFactsOf's
+// shape: built whole before it is kept, so a read that throws keeps
+// nothing). A script a record marks removed (status 3) and a property so
+// marked are skipped, as the core reads a VMAD elsewhere
+const std::unordered_map<std::string, std::vector<PartOne::ScriptAttachment>>&
+ScriptAttachmentIndexOf(WorldState& worldState)
+{
+  using Index =
+    std::unordered_map<std::string, std::vector<PartOne::ScriptAttachment>>;
+  static std::map<const espm::Loader*, Index> g_index;
+  auto it = g_index.find(&worldState.GetEspm());
+  if (it != g_index.end()) {
+    return it->second;
+  }
+  Index index;
+  auto& browser = worldState.GetEspm().GetBrowser();
+  auto& cache = worldState.GetEspmCache();
+  std::unordered_map<uint32_t, std::vector<uint32_t>> carriers;
+  for (const auto& lookup :
+       browser.GetDistinctRecordsByType(espm::SPEL::kType)) {
+    const auto* spel = espm::Convert<espm::SPEL>(lookup.rec);
+    if (!spel) {
+      continue;
+    }
+    const uint32_t spell = lookup.ToGlobalId(lookup.rec->GetId());
+    for (const auto& effect : spel->GetData(cache).effects) {
+      if (!effect.effectFormId) {
+        continue;
+      }
+      auto& spells = carriers[lookup.ToGlobalId(effect.effectFormId)];
+      if (std::find(spells.begin(), spells.end(), spell) == spells.end()) {
+        spells.push_back(spell);
+      }
+    }
+  }
+  for (const char* type : { espm::QUST::kType, espm::MGEF::kType }) {
+    const bool quest = !std::strcmp(type, espm::QUST::kType);
+    for (const auto& lookup : browser.GetDistinctRecordsByType(type)) {
+      espm::ScriptData scriptData;
+      lookup.rec->GetScriptData(&scriptData, cache);
+      const uint32_t form = lookup.ToGlobalId(lookup.rec->GetId());
+      for (const auto& script : scriptData.scripts) {
+        if (script.status == 3 || script.scriptName.empty()) {
+          continue;
+        }
+        PartOne::ScriptAttachment attachment;
+        attachment.form = form;
+        attachment.quest = quest;
+        if (!quest) {
+          if (const auto c = carriers.find(form); c != carriers.end()) {
+            attachment.spells = c->second;
+          }
+        }
+        const auto add = [&](uint32_t named) {
+          if (named == 0 ||
+              std::any_of(attachment.named.begin(), attachment.named.end(),
+                          [&](const auto& n) { return n.form == named; })) {
+            return;
+          }
+          PartOne::ScriptAttachment::Named n;
+          n.form = named;
+          const auto list = browser.LookupById(named);
+          if (const auto* flst = espm::Convert<espm::FLST>(list.rec)) {
+            for (uint32_t member : flst->GetData(cache).formIds) {
+              n.members.push_back(list.ToGlobalId(member));
+            }
+          }
+          attachment.named.push_back(std::move(n));
+        };
+        for (const auto& property : script.properties) {
+          if (property.status == 3) {
+            continue;
+          }
+          if (property.type == espm::Property::Type::Object &&
+              property.value.formId) {
+            add(lookup.ToGlobalId(property.value.formId));
+          } else if (property.type == espm::Property::Type::ObjectArray) {
+            for (const auto& element : property.array) {
+              if (element.formId) {
+                add(lookup.ToGlobalId(element.formId));
+              }
+            }
+          }
+        }
+        index[LowerScriptClass(script.scriptName)].push_back(
+          std::move(attachment));
+      }
+    }
+  }
+  return g_index.emplace(&worldState.GetEspm(), std::move(index))
+    .first->second;
+}
+
 std::vector<skymp::rules::QuestStageEntry> QuestEntries(
   const std::vector<FormDesc>& quests)
 {
@@ -4053,6 +4171,44 @@ std::optional<RaceOverlay> PartOne::PlayerOverlayOf(uint32_t actorId) const
   overlay.shouts.assign(row.shouts.begin(), row.shouts.end());
   overlay.items.assign(row.items.begin(), row.items.end());
   return overlay;
+}
+
+const std::vector<PartOne::ScriptAttachment>& PartOne::ScriptAttachmentsOf(
+  const std::string& scriptClass) const
+{
+  static const std::vector<ScriptAttachment> kNone;
+  if (!pImpl->scriptAttachments) {
+    return kNone;
+  }
+  const auto it =
+    pImpl->scriptAttachments->find(LowerScriptClass(scriptClass));
+  return it == pImpl->scriptAttachments->end() ? kNone : it->second;
+}
+
+bool PartOne::QuestAttachmentLive(uint32_t questId)
+{
+  if (!HasEspm()) {
+    return false;
+  }
+  FormDesc quest;
+  try {
+    quest = FormDesc::FromFormId(questId, worldState.espmFiles);
+  } catch (const std::exception&) {
+    return false;
+  }
+  if (HoldsForm(pImpl->playerClassQuests, quest)) {
+    return true;
+  }
+  const auto runs = GetQuestRuns();
+  if (std::any_of(runs.begin(), runs.end(), [&](const auto& run) {
+        return run.running && SameForm(run.quest, quest);
+      })) {
+    return true;
+  }
+  const auto stages = GetQuestStages();
+  return std::any_of(stages.begin(), stages.end(), [&](const auto& stage) {
+    return SameForm(stage.quest, quest);
+  });
 }
 
 void PartOne::SetRestrictedRacesSettings(

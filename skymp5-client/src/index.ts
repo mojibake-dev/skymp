@@ -36,6 +36,7 @@ import { TrapResultService } from "./services/services/trapResultService";
 import { RefStateService } from "./services/services/refStateService";
 import { AliasFillService } from "./services/services/aliasFillService";
 import { WorldGlobalService } from "./services/services/worldGlobalService";
+import { ScriptVariablesService } from "./services/services/scriptVariablesService";
 import { SkillUseService } from "./services/services/skillUseService";
 import { ArrowSyncService } from "./services/services/arrowSyncService";
 import { SpVersionCheckService } from "./services/services/spVersionCheckService";
@@ -137,6 +138,7 @@ const main = () => {
       new RefStateService(sp, controller),
       new AliasFillService(sp, controller),
       new WorldGlobalService(sp, controller),
+      new ScriptVariablesService(sp, controller),
       new SkillUseService(sp, controller),
       new ArrowSyncService(sp, controller),
       new SpVersionCheckService(sp, controller),

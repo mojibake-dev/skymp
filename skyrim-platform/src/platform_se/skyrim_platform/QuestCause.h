@@ -47,7 +47,12 @@
 // unverified list): a script-set stage's fragment runs on its own stack
 // rooted at the fragment (x-acting-frame showed it for a platform-applied
 // stage only); H-QC2: a word's event lands inside its mark's window
-// (x-quest-cause v1 reads both)
+// (x-quest-cause v1 reads both); H-QC3 (the review of edf64dee, note 3): a
+// fragment's first Quest row comes within kArmMs of its stage's event and
+// before the quest's next stage event, so the lazy join takes its own
+// stage's verdict (a Fragment_N names no stage; a fragment behind a long
+// wait, or racing a later stage of its quest, joins the arm then standing or
+// none, the seat's own)
 namespace QuestCause {
 
 // a pair's stage beside a quest stage's 0 to 65535 (ActingScope's spelling)

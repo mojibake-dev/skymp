@@ -403,18 +403,18 @@ export interface QuestInitEvent {
   quest: Quest
 }
 
-// thuum ADR-068 rung 5, D-Q4 C (QuestCause.h): a quest's start, stop or stage with its cause as the seam read it at the call that made it: cause 'world' when a script's call with a world cause made it (a dialogue, scene, package or perk fragment, an interaction event, or a stage fragment whose stage a world cause or a timer set), 'seat' for the seat's own (lifecycle, cell load, the Story Manager, a direct timer, a magic effect, the UI, an engine start's start-up fragment, a stage set inside such a chain, or no script call at all); root the root frame of the stack that made the call, "<Script>.<Function>", empty for none
+// thuum ADR-068 rung 5, D-Q4 C (QuestCause.h): a quest's start, stop or stage with its cause as the seam read it at the call that made it: cause 'world' when a script's call with a world cause made it (a dialogue, scene, package or perk fragment, an interaction event, or a stage fragment whose stage a world cause or a timer set), 'seat' for the seat's own (lifecycle, cell load, the Story Manager, a direct timer, a magic effect, the UI, an engine start's start-up fragment, a stage set inside such a chain, or no script call at all); root the root frame of the stack that made the call, "<Script>.<Function>", empty for none; both absent from an older platform
 export interface QuestStartStopEvent {
   quest: Quest
-  cause: 'world' | 'seat'
-  root: string
+  cause?: 'world' | 'seat'
+  root?: string
 }
 
 export interface QuestStageEvent {
   quest: Quest
   stage: number
-  cause: 'world' | 'seat'
-  root: string
+  cause?: 'world' | 'seat'
+  root?: string
 }
 
 export interface TriggerEvent {

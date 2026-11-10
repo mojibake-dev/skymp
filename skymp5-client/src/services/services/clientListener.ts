@@ -326,7 +326,8 @@ declare module "skyrimPlatform" {
     // made it ('world' or 'seat') and the root frame of that call's stack
     // ("<Script>.<Function>", empty when no script call made it). The published
     // 2.8.0 types name the quest alone; an older platform raises neither
-    // field, and QuestStageService reports as before when they are absent
+    // field, and QuestStageService reports as before when they are absent.
+    // Optional here as in Definitions.txt, so the two merge
     interface QuestStartStopEvent {
         cause?: 'world' | 'seat';
         root?: string;

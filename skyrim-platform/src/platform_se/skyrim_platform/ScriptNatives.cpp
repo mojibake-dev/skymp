@@ -1549,12 +1549,17 @@ QuestCause::Self SelfKindOf(std::uint32_t subject)
 // stays the seat's and a world one the world's. A start or a stop is marked
 // with the run word's verdict (a direct timer's the seat's own); a stage
 // with the verdict it carries to its fragment (a timer's stage is the
-// world's progress), and the quest's start beside it while the quest is not
-// running (TESQuest::IsEnabled, CommonLibSSE-NG src/RE/T/TESQuest.cpp:42-45),
-// since SetStage starts a stopped quest and the engine's start then rides the
-// stage. SetCurrentStageID's stage is its first argument, read as
-// PropagateScope reads it; one outside the engine's u16 marks nothing. Never
-// the platform's own call: OnCall's step (b) returns before
+// world's progress), and the quest's start beside it with the run word's
+// verdict while the quest is not running (TESQuest::IsEnabled,
+// CommonLibSSE-NG src/RE/T/TESQuest.cpp:42-45), since SetStage starts a
+// stopped quest and that start is a word the calling stack made (a timer's
+// the seat's own, the review of edf64dee's note 5). A Start on a running
+// quest and a Stop on a stopped one change nothing and raise no event, so
+// they mark nothing: an untaken mark would lend its cause to the quest's
+// next engine start or stop and the stages riding it (the review's note 4).
+// SetCurrentStageID's stage is its first argument, read as PropagateScope
+// reads it; one outside the engine's u16 marks nothing. Never the platform's
+// own call: OnCall's step (b) returns before
 void MarkQuestCause(std::size_t row, const RowInfo& info,
                     const RE::BSScript::Stack* stack,
                     const RE::BSScript::StackFrame* top, std::uint32_t quest)
@@ -1586,6 +1591,13 @@ void MarkQuestCause(std::size_t row, const RowInfo& info,
     case QuestRow::None:
       return;
   }
+  const auto* questForm = RE::TESForm::LookupByID<RE::TESQuest>(quest);
+  const bool running = questForm && questForm->IsEnabled();
+  if (questForm &&
+      ((info.quest == QuestRow::Start && running) ||
+       (info.quest == QuestRow::Stop && !running))) {
+    return;
+  }
   bool runWorld = false;
   bool carriedWorld = false;
   bool carried = false;
@@ -1613,7 +1625,7 @@ void MarkQuestCause(std::size_t row, const RowInfo& info,
       case QuestCause::Root::kStageFragment: {
         const auto joinedNow = QuestCause::Join(stack->stackID, subject, root);
         runWorld = carriedWorld = joinedNow && joinedNow->world;
-        carried = true;
+        carried = joinedNow.has_value();
         break;
       }
       case QuestCause::Root::kSeat:
@@ -1623,11 +1635,8 @@ void MarkQuestCause(std::size_t row, const RowInfo& info,
   }
   const bool world = stage < 0 ? runWorld : carriedWorld;
   QuestCause::Mark(quest, stage, { world, root });
-  if (info.quest == QuestRow::Stage) {
-    const auto* questForm = RE::TESForm::LookupByID<RE::TESQuest>(quest);
-    if (questForm && !questForm->IsEnabled()) {
-      QuestCause::Mark(quest, QuestCause::kStart, { carriedWorld, root });
-    }
+  if (info.quest == QuestRow::Stage && questForm && !running) {
+    QuestCause::Mark(quest, QuestCause::kStart, { runWorld, root });
   }
   QuestCause::Count(world, carried);
   logger::trace("[verb:quest-stage] {}.{} on {:x} ({}): cause {} (root {}), "

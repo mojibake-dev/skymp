@@ -894,8 +894,9 @@ export class QuestStageService extends ClientListener {
         if (acting !== undefined) {
             message.acting = acting;
         }
-        this.nameCause(message, cause);
-        this.causeSent++;
+        if (this.nameCause(message, cause)) {
+            this.causeSent++;
+        }
         this.send(message);
         logTrace(this, "this game", word === WORD_START ? "started" : "stopped", "shared quest", questId.toString(16) + "; reported" + QuestStageService.forActing(acting));
     }
@@ -1437,8 +1438,7 @@ export class QuestStageService extends ClientListener {
         if (acting !== undefined) {
             message.acting = acting;
         }
-        this.nameCause(message, cause);
-        if (stage === 0) {
+        if (this.nameCause(message, cause) && stage === 0) {
             this.causeSent++;
         }
         this.send(message);
@@ -1801,15 +1801,17 @@ export class QuestStageService extends ClientListener {
 
     // a report's cause and root on the wire (the server judges a start-up
     // stage's report by them), none while the rule is off or the platform
-    // names none; a root the wire would refuse is left off, the cause kept
-    private nameCause(message: QuestStageMessage, cause: Cause) {
+    // names none; a root the wire would refuse is left off, the cause kept.
+    // True when it named a world cause (the minute's "world sent")
+    private nameCause(message: QuestStageMessage, cause: Cause): boolean {
         if (cause.world === undefined || this.causeRuleOff()) {
-            return;
+            return false;
         }
         message.cause = cause.world ? CAUSE_WORLD : CAUSE_SEAT;
         if (cause.root.length > 0 && cause.root.length <= ROOT_MAX && ROOT_SHAPE.test(cause.root)) {
             message.root = cause.root;
         }
+        return cause.world;
     }
 
     // a report the rule held, counted for the minute's line

@@ -54,25 +54,29 @@ type Value = number | boolean;
 //
 // The watch. The login's serve (served true) names the keys to read, a
 // quest's or a reference's attached script variables by (form, script,
-// var); a key the server serves as this player's own is watched too.
+// var), a player-class quest's flagged own (the player cut, D-T2 B); a key
+// the server serves as this player's own is watched too.
 // TESModPlatform.ReadScriptVariables(keysJson) reads them once a second, by
 // name under the platform's attachedScriptsLock, and answers each key's
 // [{form, script, var, k, i|f|b}] or a refusal. A key's first read here is
 // its baseline, never a report, so the save's or the template's value is
 // never sent over the world's; after it, a change goes out as
 // ScriptVariables {epoch, watch [], entries, served false} through the
-// validator's bucket, at most 256 entries a message. A key whose served or
+// validator's bucket, at most 256 entries a message, an own key's entry
+// flagged own (unflagged it is E_SCRIPTVAR_PLAYER). A key whose served or
 // relayed value is still to be written is not compared, and a value written
 // here from the server is the key's baseline, so nothing applied is
 // reported back. The epoch is the last one the server named on this
 // connection (1 before any: the validator refuses 0 from a client).
 //
 // The receivers. A relay and the login's serve are held by key, the newest
-// winning, and written through TESModPlatform.WriteScriptVariables
-// (Variable's setters, refusing a kind other than the declared),
-// APPLIES_PER_UPDATE at most an update. D-T2 B: the serve's `own` entries,
-// this player's own quests' state (the marked quests' scalar variables:
-// PlayerVampireQuest's VampireStatus, LastFeedTime, FeedTimer), are written
+// winning (an entry whose server sequence is at or below the newest taken
+// for its key is stale), and written through
+// TESModPlatform.WriteScriptVariables (Variable's setters, refusing a kind
+// other than the declared), APPLIES_PER_UPDATE at most an update. D-T2 B:
+// the serve's entries flagged own, this player's own quests' state (the
+// marked quests' scalar variables: PlayerVampireQuest's VampireStatus,
+// LastFeedTime, FeedTimer), are written
 // first, before the watch's first read here (the gate: no report of this
 // seat's fresh values over its own record), and an own entry on
 // UPDATE_GAME_TIME_VAR re-issues that form's game-time registration
@@ -113,26 +117,9 @@ export class ScriptVariablesService extends ClientListener {
                 this.refused++;
                 continue;
             }
-            if (this.addWatch(key)) {
+            if (this.addWatch(key, key.own === true)) {
                 added++;
             }
-        }
-        const own = Array.isArray(m.own) ? m.own : [];
-        for (const entry of own) {
-            if (!ScriptVariablesService.isEntry(entry)) {
-                this.refused++;
-                continue;
-            }
-            const id = ScriptVariablesService.keyId(entry);
-            this.toApply.delete(id);
-            this.toApplyOwn.delete(id);
-            this.toApplyOwn.set(id, entry);
-            if (this.addWatch(entry)) {
-                added++;
-            }
-        }
-        if (own.length > 0) {
-            this.ownServed = true;
         }
         const entries = Array.isArray(m.entries) ? m.entries : [];
         for (const entry of entries) {
@@ -141,8 +128,23 @@ export class ScriptVariablesService extends ClientListener {
                 continue;
             }
             const id = ScriptVariablesService.keyId(entry);
+            if (this.isStale(id, entry.seq)) {
+                this.stale++;
+                continue;
+            }
+            if (entry.own === true) {
+                // this player's own state, written first
+                this.toApply.delete(id);
+                this.toApplyOwn.delete(id);
+                this.toApplyOwn.set(id, entry);
+                this.ownServed = true;
+                if (this.addWatch(entry, true)) {
+                    added++;
+                }
+                continue;
+            }
             if (this.toApplyOwn.has(id)) {
-                continue; // this player's own value wins at the login
+                continue; // this player's own value wins
             }
             this.toApply.delete(id);
             this.toApply.set(id, entry);
@@ -161,6 +163,7 @@ export class ScriptVariablesService extends ClientListener {
     private onConnectionAccepted() {
         this.watch.clear();
         this.last.clear();
+        this.lastSeq.clear();
         this.toApply.clear();
         this.toApplyOwn.clear();
         this.outgoing.clear();
@@ -247,7 +250,7 @@ export class ScriptVariablesService extends ClientListener {
     private write(batch: ScriptVariableEntry[], fromOwn: number) {
         let raw: unknown;
         try {
-            raw = this.sp.callNative("TESModPlatform", "WriteScriptVariables", undefined, JSON.stringify(batch.map(ScriptVariablesService.wireEntry)));
+            raw = this.sp.callNative("TESModPlatform", "WriteScriptVariables", undefined, JSON.stringify(batch.map((e) => ScriptVariablesService.wireEntry(e, false))));
         } catch (e) {
             this.writeMissing = true;
             this.toApply.clear();
@@ -362,7 +365,7 @@ export class ScriptVariablesService extends ClientListener {
             }
             this.changed++;
             this.outgoing.delete(id);
-            this.outgoing.set(id, ScriptVariablesService.wireEntry(entry));
+            this.outgoing.set(id, ScriptVariablesService.wireEntry(entry, this.watch.get(id)?.own === true));
         }
     }
 
@@ -385,18 +388,42 @@ export class ScriptVariablesService extends ClientListener {
         }
     }
 
-    // a key joins the watch (false when it is there already or the watch is full)
-    private addWatch(key: ScriptVariableKey): boolean {
+    // a key joins the watch, own or the world's (false when it is there
+    // already, an own flag then kept, or the watch is full)
+    private addWatch(key: ScriptVariableKey, own: boolean): boolean {
         const id = ScriptVariablesService.keyId(key);
-        if (this.watch.has(id)) {
+        const had = this.watch.get(id);
+        if (had) {
+            if (own && !had.own) {
+                had.own = true;
+            }
             return false;
         }
         if (this.watch.size >= WATCH_MAX) {
             this.refused++;
             return false;
         }
-        this.watch.set(id, { form: key.form, script: key.script, var: key.var });
+        const entry: ScriptVariableKey = { form: key.form, script: key.script, var: key.var };
+        if (own) {
+            entry.own = true;
+        }
+        this.watch.set(id, entry);
         return true;
+    }
+
+    // the server's sequence for a key (the record's, one a recorded write):
+    // an entry at or below the newest taken here is stale; an entry with
+    // none is in arrival order
+    private isStale(id: string, seq: unknown): boolean {
+        if (typeof seq !== "number" || !Number.isInteger(seq) || seq <= 0) {
+            return false;
+        }
+        const had = this.lastSeq.get(id);
+        if (had !== undefined && seq <= had) {
+            return true;
+        }
+        this.lastSeq.set(id, seq);
+        return false;
     }
 
     // the key's last value here equals the server's: nothing to write
@@ -410,8 +437,8 @@ export class ScriptVariablesService extends ClientListener {
             return;
         }
         this.lastSummary = now;
-        if (this.changed + this.sent + this.applied + this.hereAlready + this.refused + this.readRefused > 0) {
-            logLab(TAG, `script variables in ${SUMMARY_MS / 1000} s: ${this.reads} read, ${this.changed} changed, ${this.sent} sent, ${this.applied} written (${this.appliedOwn} own), ${this.hereAlready} here already, ${this.refused + this.readRefused} refused`);
+        if (this.changed + this.sent + this.applied + this.hereAlready + this.stale + this.refused + this.readRefused > 0) {
+            logLab(TAG, `script variables in ${SUMMARY_MS / 1000} s: ${this.reads} read, ${this.changed} changed, ${this.sent} sent, ${this.applied} written (${this.appliedOwn} own), ${this.hereAlready} here already, ${this.stale} stale, ${this.refused + this.readRefused} refused`);
         }
         if (this.badAnswers > 0) {
             logError(this, `ReadScriptVariables or WriteScriptVariables answered ${this.badAnswers} unusable value(s) in ${SUMMARY_MS / 1000} s`);
@@ -422,6 +449,7 @@ export class ScriptVariablesService extends ClientListener {
         this.applied = 0;
         this.appliedOwn = 0;
         this.hereAlready = 0;
+        this.stale = 0;
         this.refused = 0;
         this.readRefused = 0;
         this.badAnswers = 0;
@@ -445,7 +473,7 @@ export class ScriptVariablesService extends ClientListener {
         }
         for (const key of stored.keys) {
             if (ScriptVariablesService.isKey(key)) {
-                this.addWatch(key);
+                this.addWatch(key, key.own === true);
             }
         }
         if (typeof stored.epoch === "number" && Number.isInteger(stored.epoch) && stored.epoch > 0) {
@@ -456,14 +484,16 @@ export class ScriptVariablesService extends ClientListener {
         }
     }
 
-    // rule 5: a key names a load-order form and two non-empty names
+    // rule 5: a key names a load-order form and two non-empty names, its own
+    // flag a boolean when present
     private static isKey(x: unknown): x is ScriptVariableKey {
         if (!x || typeof x !== "object") {
             return false;
         }
         const k = x as Record<string, unknown>;
         return typeof k.form === "number" && Number.isInteger(k.form) && k.form > 0 && k.form <= LAST_GAME_FILE_ID
-            && ScriptVariablesService.isName(k.script) && ScriptVariablesService.isName(k.var);
+            && ScriptVariablesService.isName(k.script) && ScriptVariablesService.isName(k.var)
+            && (k.own === undefined || typeof k.own === "boolean");
     }
 
     private static isName(x: unknown): x is string {
@@ -513,9 +543,13 @@ export class ScriptVariablesService extends ClientListener {
         return a === b;
     }
 
-    // the wire's entry: the key and its kind's payload alone
-    private static wireEntry(e: ScriptVariableEntry): ScriptVariableEntry {
+    // the wire's entry: the key, its own flag when it is the player's, and
+    // its kind's payload alone (never a sequence: the server's)
+    private static wireEntry(e: ScriptVariableEntry, own: boolean): ScriptVariableEntry {
         const out: ScriptVariableEntry = { form: e.form, script: e.script, var: e.var, k: e.k };
+        if (own) {
+            out.own = true;
+        }
         if (e.k === KIND_INT) {
             out.i = e.i;
         } else if (e.k === KIND_FLOAT) {
@@ -531,6 +565,8 @@ export class ScriptVariablesService extends ClientListener {
     // each key's last value here: its baseline, its last read, or the
     // server's value written here
     private readonly last = new Map<string, Value>();
+    // the newest server sequence taken for each key
+    private readonly lastSeq = new Map<string, number>();
     // the server's values to write, by key, the newest winning; this
     // player's own first
     private readonly toApply = new Map<string, ScriptVariableEntry>();
@@ -559,6 +595,7 @@ export class ScriptVariablesService extends ClientListener {
     private applied = 0;
     private appliedOwn = 0;
     private hereAlready = 0;
+    private stale = 0;
     private refused = 0;
     private readRefused = 0;
     private badAnswers = 0;

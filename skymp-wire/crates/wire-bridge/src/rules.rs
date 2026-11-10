@@ -3151,10 +3151,14 @@ mod ffi {
 
         /// thuum ADR-068 rung 5 (QuestStage 57's word, read 5): what a report
         /// asks of the records, from its `word` (0 for none; the message's
-        /// std::optional) and its `stage`: 0 a stage (quest_stages), 1 a
-        /// start, 2 a stop (quest_runs), a stage-0 report with no word a
-        /// start; 3 nothing, for a word the wire refuses first.
-        fn quest_report_word(word: u32, stage: u16) -> u8;
+        /// std::optional), its `stage` and `start_up`, whether the stage is
+        /// one the quest's start runs (the core's WordStages for a start:
+        /// stage 0 and the record's start-up stages, QUST INDX): 0 a stage
+        /// (quest_stages), 1 a start, 2 a stop (quest_runs), a report with
+        /// no word of stage 0 or of a start-up stage a start (read 5,
+        /// generalized 2026-11-10 for b-quest-rumor's HeartwoodMill claim);
+        /// 3 nothing, for a word the wire refuses first.
+        fn quest_report_word(word: u32, stage: u16, start_up: bool) -> u8;
         /// thuum ADR-068 rung 5: the churn counter and the quests held out
         /// of the run record for the server's run (wire-rules quest_runs).
         type QuestRuns;
@@ -5576,9 +5580,9 @@ fn form_descs(entries: &[QuestStageEntry]) -> Vec<forms::FormDesc> {
     entries.iter().map(|e| forms::FormDesc { short_id: e.short_id, file: e.file.clone() }).collect()
 }
 
-fn quest_report_word(word: u32, stage: u16) -> u8 {
+fn quest_report_word(word: u32, stage: u16, start_up: bool) -> u8 {
     let word = if word == 0 { None } else { Some(u8::try_from(word).unwrap_or(u8::MAX)) };
-    match quest_runs::Report::of(word, stage) {
+    match quest_runs::Report::of(word, stage, start_up) {
         Some(quest_runs::Report::Stage(_)) => 0,
         Some(quest_runs::Report::Word(w)) => w.wire(),
         None => 3,
@@ -6560,9 +6564,12 @@ mod tests {
 
     #[test]
     fn the_bridge_reads_a_reports_word_and_records_the_runs() {
-        // thuum ADR-068 rung 5 (read 5): a stage-0 report is a start; the
-        // record, the fold, the churn and the login's two halves
-        assert_eq!((quest_report_word(0, 0), quest_report_word(1, 0), quest_report_word(2, 0), quest_report_word(0, 10), quest_report_word(3, 0), quest_report_word(0x101, 0)), (1, 1, 2, 0, 3, 3));
+        // thuum ADR-068 rung 5 (read 5): a stage-0 report is a start, and
+        // since 2026-11-10 a start-up stage's too (FreeformHeartwoodMill
+        // 0xe3ea5's flagged 10, its unflagged 20 a stage); the record, the
+        // fold, the churn and the login's two halves
+        assert_eq!((quest_report_word(0, 0, false), quest_report_word(1, 0, false), quest_report_word(2, 0, false), quest_report_word(0, 10, false), quest_report_word(3, 0, false), quest_report_word(0x101, 0, false)), (1, 1, 2, 0, 3, 3));
+        assert_eq!((quest_report_word(0, 10, true), quest_report_word(0, 20, false), quest_report_word(2, 0, true), quest_report_word(3, 10, true)), (1, 0, 2, 3));
         let row = |short_id: u32, running: bool, seq: u32| QuestRunRow { short_id, file: "Skyrim.esm".to_owned(), running, seq };
         let mut runs = new_quest_runs();
         let v = runs.quest_runs_judge(&[], 0x10d3bb, "Skyrim.esm", 1, 0xff00_0000, 0);

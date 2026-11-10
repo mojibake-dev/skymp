@@ -58,7 +58,8 @@ constexpr uint32_t kMs13 = 0x39645;
 constexpr uint32_t kMs13Intro = 0xb6031;
 constexpr uint32_t kMq102 = 0x4e50d;
 // FreeformHeartwoodMill: start-game-enabled, its INDX 10 a start-up stage and
-// its 20 a plain one (a misc objective's shape, the rumor's)
+// its 20 a plain one (a misc objective's shape, the rumor's), no stage 0
+// (lab/esm.py on sky-srv, 2026-11-10)
 constexpr uint32_t kHeartwoodMill = 0xe3ea5;
 constexpr uint32_t kXMarker = 0x3b;
 // a form of a sixth plugin, which the test's five-file load order lacks
@@ -338,12 +339,13 @@ TEST_CASE("In mode all a quest nobody declared is the world's: its stage is "
 
 // thuum ADR-068 rung 5 (docs/research/rung5-quests-2026-11-09.md sections
 // 1(b) and 8(a)): a quest's run state is the world's too. A start or a stop
-// (QuestStage's `word` 1 or 2; a stage-0 report with no word is a start,
-// read 5) is recorded on the journal's questRuns, folded when it equals the
-// record and relayed with the acting player; memos D62 and D69 retired with
-// the start word, so a start-game-enabled quest's own start is recorded once
-// instead of refused (E_QUEST_OWN_START is gone) and its start-up stage is a
-// stage like any other.
+// (QuestStage's `word` 1 or 2; a report with no word of stage 0 or of a
+// start-up stage is a start, read 5, generalized 2026-11-10) is recorded on
+// the journal's questRuns, folded when it equals the record and relayed with
+// the acting player; memos D62 and D69 retired with the start word, so a
+// start-game-enabled quest's own start is recorded once instead of refused
+// (E_QUEST_OWN_START is gone), and its start-up stage's report is that start
+// too, never a stage (b-quest-rumor's HeartwoodMill claim).
 namespace {
 // the plan's x-quest-words quest, a script-started one (Skyrim.esm)
 constexpr uint32_t kLetterQuest = 0x10d3bb;
@@ -458,7 +460,7 @@ TEST_CASE("The retired allowed list is read and ignored: a quest it names is "
 
 TEST_CASE("A start-game-enabled quest's stage 0 is the start word's: its run "
           "is recorded once and relayed, no stage and no E_QUEST_ line; its "
-          "start-up stage is recorded like any other",
+          "start-up stage is the start word's too, folded into the run",
           "[QuestStage][espm]")
 {
   PartOne& p = GetPartOne();
@@ -483,12 +485,60 @@ TEST_CASE("A start-game-enabled quest's stage 0 is the start word's: its run "
   REQUIRE(WordsTo(p, 0).empty());
   REQUIRE(WordsTo(p, 1).empty());
 
-  // its start-up stage 10: a stage like any other, recorded and relayed
+  // its start-up stage 10 from either seat (read 5, generalized 2026-11-10):
+  // the start word's, folded into the recorded run; no stage, no set line,
+  // nothing relayed
   Report(p, 0, kHeartwoodMill, 10);
-  const FormDesc mill = FormDesc::FromString("e3ea5:Skyrim.esm");
-  REQUIRE(p.GetQuestStages() == std::vector<QuestStageDone>{ { mill, 10 } });
+  Report(p, 1, kHeartwoodMill, 10);
+  REQUIRE(p.GetQuestStages().empty());
+  REQUIRE(p.GetQuestRuns() == Runs({ { "e3ea5:Skyrim.esm", true, 1 } }));
+  REQUIRE(WordsTo(p, 0).empty());
+  REQUIRE(WordsTo(p, 1).empty());
+  REQUIRE(log.Count("set e3ea5:Skyrim.esm stage 10") == 0);
+  REQUIRE(log.Count("E_QUEST_") == 0);
+  Leave(p);
+}
+
+// read 5, generalized (2026-11-10; b-quest-rumor's HeartwoodMill claim,
+// 'server.log_count("set e3ea5:Skyrim.esm stage 10") == 0', kept by its v2):
+// a seat whose first report of a quest is its start-up stage records the
+// quest's start, relayed as the start word with its engine stages and never
+// as a stage; the quest's unflagged stage after it crosses as before
+TEST_CASE("A start-up stage reported first records the quest's start, "
+          "relayed as the start word, no stage and no set line; an unflagged "
+          "stage after it is recorded and relayed like any other",
+          "[QuestStage][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p, kDeniedQuests);
+  QuestLog log;
+  Report(p, 0, kHeartwoodMill, 10);
+  REQUIRE(p.GetQuestStages().empty());
+  REQUIRE(p.GetQuestRuns() == Runs({ { "e3ea5:Skyrim.esm", true, 1 } }));
   REQUIRE(WordsTo(p, 1) ==
-          std::vector<Word>{ W(kHeartwoodMill, 10, 0, kReporter) });
+          std::vector<Word>{ W(kHeartwoodMill, 0, 1, kReporter) });
+  REQUIRE(WordsTo(p, 0).empty());
+  REQUIRE(log.Count("[verb:quest-stage] ff000bd0 starts e3ea5:Skyrim.esm: "
+                    "recorded, relayed to 1 with its engine stages "
+                    "10\n") == 1);
+  REQUIRE(log.Count("set e3ea5:Skyrim.esm stage 10") == 0);
+
+  // the other seat's start word folds into it, nothing relayed
+  p.Messages().clear();
+  ReportWord(p, 1, kHeartwoodMill, 1);
+  REQUIRE(p.GetQuestRuns() == Runs({ { "e3ea5:Skyrim.esm", true, 1 } }));
+  REQUIRE(WordsTo(p, 0).empty());
+  REQUIRE(WordsTo(p, 1).empty());
+
+  // stage 20 carries no flag: a stage like any other, recorded and relayed
+  Report(p, 0, kHeartwoodMill, 20);
+  const FormDesc mill = FormDesc::FromString("e3ea5:Skyrim.esm");
+  REQUIRE(p.GetQuestStages() == std::vector<QuestStageDone>{ { mill, 20 } });
+  REQUIRE(WordsTo(p, 1) ==
+          std::vector<Word>{ W(kHeartwoodMill, 20, 0, kReporter) });
+  REQUIRE(log.Count("[verb:quest-stage] ff000bd0 set e3ea5:Skyrim.esm stage "
+                    "20: recorded, relayed to 1") == 1);
+  REQUIRE(log.Count("set e3ea5:Skyrim.esm stage 10") == 0);
   REQUIRE(log.Count("E_QUEST_") == 0);
   Leave(p);
 }

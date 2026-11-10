@@ -8,8 +8,10 @@
 //! the stages and the stops behind them. A stage-0 report is the start
 //! word's, never a stage ([`Report::of`]): the engine's own start of a quest
 //! the game starts by itself arrives that way, and memo D62's rule for it is
-//! retired. A word equal to the record is folded (every seat that runs the
-//! quest reports the same start), so nothing is written or relayed for it.
+//! retired. Since 2026-11-10 so is a report of one of the quest's start-up
+//! stages (QUST INDX), which the engine sets as it starts the quest. A word
+//! equal to the record is folded (every seat that runs the quest reports the
+//! same start), so nothing is written or relayed for it.
 //!
 //! Two controllers restart themselves in bursts on every seat
 //! (DLC1VCController 0x0201a428 thirty-two times about a minute apart, a
@@ -52,7 +54,7 @@ pub const RUN_TRACK_CAP: usize = 4096;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Word {
     /// The quest started (Quest.Start, the engine's questStart event, or a
-    /// stage-0 report).
+    /// report of stage 0 or of a start-up stage).
     Start,
     /// The quest stopped (Quest.Stop, the questStop event).
     Stop,
@@ -80,23 +82,37 @@ impl Word {
 pub enum Report {
     /// A run word (this module's record).
     Word(Word),
-    /// A stage above 0 (wire-rules quest_stages' record).
+    /// A stage above 0 that is no start-up stage (wire-rules quest_stages'
+    /// record).
     Stage(u16),
 }
 
 impl Report {
-    /// A report's `word` (none for a stage report) and `stage`: word 1 a
-    /// start, word 2 a stop, no word and stage 0 a start (read 5: the stage-0
-    /// report is the start word's), no word and any other stage that stage;
-    /// none for a word of another value, which the wire refuses first
-    /// (wire-validate check_quest_stage).
+    /// A report's `word` (none for a stage report), `stage` and `start_up`,
+    /// whether the stage is one the quest's start runs (the core reads it
+    /// from the record, QUST INDX: stage 0 and the start-up stages, the
+    /// stages a start word's `wordStages` name): word 1 a start, word 2 a
+    /// stop, no word and stage 0 a start (read 5: the stage-0 report is the
+    /// start word's), no word and a start-up stage a start too, no word and
+    /// any other stage that stage; none for a word of another value, which
+    /// the wire refuses first (wire-validate check_quest_stage).
+    ///
+    /// Read 5 generalized (2026-11-10): the engine sets a quest's start-up
+    /// stages as it starts the quest (FreeformHeartwoodMill 0xe3ea5's
+    /// flagged stage 10 read done on both seats by the quest's own start,
+    /// x-quest-rumor v1), so a report of one is the start's, never a world
+    /// stage, as canon's retired QuestStageIsEngineStart held for stage 0
+    /// and the start-up stages alike. Judged a stage, a seat's report of
+    /// e3ea5's stage 10 would be recorded and relayed as the world's,
+    /// against b-quest-rumor's HeartwoodMill claim (no "set e3ea5:Skyrim.esm
+    /// stage 10", kept by its v2).
     #[must_use]
-    pub fn of(word: Option<u8>, stage: u16) -> Option<Self> {
+    pub fn of(word: Option<u8>, stage: u16, start_up: bool) -> Option<Self> {
         match word {
             Some(1) => Some(Report::Word(Word::Start)),
             Some(2) => Some(Report::Word(Word::Stop)),
             Some(_) => None,
-            None if stage == 0 => Some(Report::Word(Word::Start)),
+            None if stage == 0 || start_up => Some(Report::Word(Word::Start)),
             None => Some(Report::Stage(stage)),
         }
     }
@@ -300,14 +316,37 @@ mod tests {
 
     #[test]
     fn a_stage_0_report_is_a_start_and_the_words_read_as_the_wire_spells_them() {
-        assert_eq!(Report::of(None, 0), Some(Report::Word(Word::Start)));
-        assert_eq!(Report::of(Some(1), 0), Some(Report::Word(Word::Start)));
-        assert_eq!(Report::of(Some(2), 0), Some(Report::Word(Word::Stop)));
-        assert_eq!(Report::of(None, 10), Some(Report::Stage(10)));
-        assert_eq!(Report::of(Some(3), 0), None);
+        assert_eq!(Report::of(None, 0, false), Some(Report::Word(Word::Start)));
+        assert_eq!(Report::of(Some(1), 0, false), Some(Report::Word(Word::Start)));
+        assert_eq!(Report::of(Some(2), 0, false), Some(Report::Word(Word::Stop)));
+        assert_eq!(Report::of(None, 10, false), Some(Report::Stage(10)));
+        assert_eq!(Report::of(Some(3), 0, false), None);
         assert_eq!((Word::Start.wire(), Word::Stop.wire()), (1, 2));
         assert!(Word::Start.running() && !Word::Stop.running());
         assert_eq!((Code::Churn.name(), Code::Full.name()), ("E_QUEST_CHURN", "E_QUEST_RUNS_FULL"));
+    }
+
+    #[test]
+    fn a_start_up_stage_report_is_a_start_and_a_plain_stage_stays_a_stage() {
+        // FreeformHeartwoodMill 0xe3ea5, b-quest-rumor's claim (Skyrim.esm,
+        // lab/esm.py on sky-srv, 2026-11-10): INDX 10 flagged a start-up
+        // stage, 20 unflagged, no stage 0
+        const MILL: u32 = 0xe3ea5;
+        assert_eq!(Report::of(None, 10, true), Some(Report::Word(Word::Start)));
+        assert_eq!(Report::of(None, 20, false), Some(Report::Stage(20)));
+        // stage 0 keeps its rule either way, and a word is its own whatever
+        // the stage
+        assert_eq!((Report::of(None, 0, false), Report::of(None, 0, true)), (Some(Report::Word(Word::Start)), Some(Report::Word(Word::Start))));
+        assert_eq!((Report::of(Some(2), 0, true), Report::of(Some(3), 0, true)), (Some(Report::Word(Word::Stop)), None));
+        // as the core judges it: one seat's flagged stage records the start
+        // once, and the other seat's report of the same stage folds
+        let Some(Report::Word(word)) = Report::of(None, 10, true) else { panic!("a start-up stage report is no word") };
+        let mut runs = QuestRuns::default();
+        let mill = quest(MILL);
+        assert_eq!(runs.judge(&[], &mill, word, C1, 0), Verdict::Recorded);
+        let record = merge(&[], &mill, word);
+        assert_eq!(record, vec![QuestRun { quest: mill.clone(), running: true, seq: 1 }]);
+        assert_eq!(runs.judge(&record, &mill, word, C2, 10), Verdict::Folded);
     }
 
     #[test]

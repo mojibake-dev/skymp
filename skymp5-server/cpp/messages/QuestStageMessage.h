@@ -18,8 +18,9 @@
 // quests it never reports (empty when none is); `shared` is empty and
 // `mode` 0 in every other message, and a client naming either is refused.
 // Since SCHEMA_VERSION 41 (thuum ADR-068 rung 5): `word` 1 a start or 2 a
-// stop with stage 0 (a quest's run, wire-rules quest_runs; a stage-0 report
-// with no word is a start too), `acting` the acting player's actor (the
+// stop with stage 0 (a quest's run, wire-rules quest_runs; a report with no
+// word of stage 0 or of a start-up stage is a start too, read 5 generalized
+// 2026-11-10), `acting` the acting player's actor (the
 // server's stamp; a seat's scope's player, absent meaning the sender) and
 // `served` true on the login replay (applied as a load), each absent unless
 // set, so a stage alone reads and writes as before. The contract is

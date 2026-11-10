@@ -19,9 +19,10 @@
 //!
 //! Rung 5 (thuum ADR-068, docs/research/rung5-quests-2026-11-09.md section
 //! 1(b) and 8(a)) retires memo D62's start-game-enabled rule: a quest the
-//! game starts by itself crosses like any other, its stage 0 the start
-//! word's (wire-rules quest_runs), so mode all's `allowed` names nothing any
-//! more. It stays a recognized key of the mode block, read and ignored, and
+//! game starts by itself crosses like any other, its stage 0 and its
+//! start-up stages the start word's (wire-rules quest_runs), so mode all's
+//! `allowed` names nothing any more. It stays a recognized key of the mode
+//! block, read and ignored, and
 //! [`SharedQuests::retired`] gives the core the one line it logs at load
 //! (read 4: every image and T2's copy of the deployed settings carry it, and
 //! an unknown key would refuse the whole setting). What stays each seat's

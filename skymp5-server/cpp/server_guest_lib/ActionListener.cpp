@@ -3336,7 +3336,9 @@ constexpr size_t kWordStagesPerWord = 16;
 // (ShutDownStage); each once in the record's order, int16 in the record and
 // u16 on the wire as QuestHasStage compares them, at most the wire's cap.
 // Every start and stop word the server sends carries them (`wordStages`), so
-// the receiver of a served word suppresses the fragments its acting seat ran
+// the receiver of a served word suppresses the fragments its acting seat ran.
+// A start's list also judges a seat's report with no word (OnQuestStage):
+// one of its stages is the start word's (read 5, generalized 2026-11-10)
 std::vector<uint16_t> WordStages(PartOne& partOne,
                                  const espm::RecordHeader* record,
                                  uint32_t word)
@@ -3444,8 +3446,9 @@ std::vector<MpChangeFormREFR::QuestRun> QuestRunsOf(
 // thuum docs/verbs/quest-stage.md (ADR-056; memo D58 B; thuum ADR-068 rung
 // 5, docs/research/rung5-quests-2026-11-09.md sections 1(b) and 8(a)): a
 // player's game reports what its engine did to a quest: set a stage, or
-// started or stopped it (`word` 1 or 2; a stage-0 report with no word is the
-// start word's, read 5). The server checks the quest (a QUST of the load
+// started or stopped it (`word` 1 or 2; a report with no word of stage 0 or
+// of a start-up stage is the start word's, read 5, generalized 2026-11-10
+// for b-quest-rumor's claim). The server checks the quest (a QUST of the load
 // order, the world's by the sharing mode: listed in mode list, not denied in
 // mode all, and never a player-class quest while the quest scope acts,
 // E_QUEST_PLAYER; R1), stamps the acting player (the report's when it names
@@ -3482,9 +3485,18 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
   if (!partOne.HasEspm()) {
     return spdlog::warn("OnQuestStage - no master files");
   }
+  // whether the reported stage is one the quest's start runs (WordStages for
+  // a start: stage 0 and the record's start-up stages), the fact wire-rules
+  // quest_runs judges a report with no word by: a start-up stage's report is
+  // the start word's, as a stage-0 report is (read 5, generalized
+  // 2026-11-10); a form that is no quest names none and is refused below
+  const auto lookup = partOne.GetEspm().GetBrowser().LookupById(msg.quest);
+  const auto startStages = WordStages(partOne, lookup.rec, 1);
+  const bool startUp = std::find(startStages.begin(), startStages.end(),
+                                 msg.stage) != startStages.end();
   // 0 a stage, 1 a start, 2 a stop; 3 a word the wire refuses first
   const uint8_t what =
-    skymp::rules::quest_report_word(msg.word.value_or(0), msg.stage);
+    skymp::rules::quest_report_word(msg.word.value_or(0), msg.stage, startUp);
   if (what == 3) {
     return spdlog::info("QuestStage: user {} actor {:x} report refused (word "
                         "{} with stage {})",
@@ -3501,7 +3513,6 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
                         rawMsgData.userId, actor->GetFormId(), verb, msg.stage,
                         msg.quest);
   }
-  const auto lookup = partOne.GetEspm().GetBrowser().LookupById(msg.quest);
   if (!lookup.rec || lookup.rec->GetType() != "QUST") {
     return spdlog::info("E_QUEST_UNKNOWN: user {} actor {:x} reported {} {} "
                         "of {:x}, which is no quest",

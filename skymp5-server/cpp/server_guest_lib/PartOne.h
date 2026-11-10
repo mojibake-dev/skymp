@@ -376,6 +376,13 @@ public:
   // the quest a player's (PlayerClassQuests, while the scope acts) or the
   // world's journal records it running (questRuns) or staged (questStages)
   bool QuestAttachmentLive(uint32_t questId);
+  // Eli's D-E1 A (ChangeHeadPart, the seventh own row): whether `race` may
+  // wear head part `part`, its HDPT's valid-race FormList (RNAM, libespm
+  // HDPT::Data::validRaces) holding the race; and the look wearing `part` in
+  // place of every part of the same HDPT type (PNAM: eyes replace eyes),
+  // false when it wears it already or `part` is no HDPT
+  bool HeadPartFitsRace(uint32_t part, uint32_t race);
+  bool WearHeadPart(Appearance& look, uint32_t part);
 
   // thuum docs/verbs/spell-placed-object.md (ADR-057): the objects the
   // server places at an accepted cast of a listed spell,

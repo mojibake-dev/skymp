@@ -132,4 +132,11 @@ pub const TABLE: &[Row] = &[
     Row { cls: "Actor", func: "AddShout", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Player, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::PlayerOwn), look: Look::Never, params: &[Param::Object] },
     Row { cls: "Actor", func: "RemoveShout", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Player, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::PlayerOwn), look: Look::Never, params: &[Param::Object] },
     Row { cls: "Actor", func: "EquipItem", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Player, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::PlayerOwn), look: Look::Never, params: &[Param::Object, Param::Bool, Param::Bool] },
+    // thuum ADR-068 rung 5, Eli's D-E1 A: a seventh player's own row in the
+    // six's shape, a script's swap of its own player's head part (rotfern's
+    // eyes, RotfernEyes for RotfernEyesMora), judged by wire-rules player_own
+    // (the bound, the head part valid for the recorded race) and recorded on
+    // the look; FunctionsDump's ChangeHeadPart(HeadPart hPart). Appended so
+    // no earlier row's place moves
+    Row { cls: "Actor", func: "ChangeHeadPart", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Player, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::PlayerOwn), look: Look::Never, params: &[Param::Object] },
 ];

@@ -442,3 +442,58 @@ TEST_CASE("Outside an overlay EquipItem folds an item the record holds and "
   REQUIRE(LooksTo(p, 1).empty());
   Leave(p);
 }
+
+// Eli's D-E1 A: the seventh own row, Actor.ChangeHeadPart, rotfern's eyes in
+// the lab (rotfern.esp's RotfernEyes 0x014C06 and RotfernEyesMora 0x023F0E,
+// both valid for race rotfern 0xAA00). The unit world loads the five
+// masters, not rotfern.esp, and no vanilla QUST or MGEF script names an HDPT
+// (lab/esm.py on sky-srv, 2026-11-10, every script of the five read), so
+// the call is taken here to the bound's refusal, and the race list and the
+// swap are the core's own functions over vanilla eye parts: Skyrim.esm's
+// MaleEyesHumanBrown 0x51632 and MaleEyesHumanIceBlue 0x24244 (Eyes, their
+// RNAM HeadPartsHuman 0xa8026, NordRace among its races), MaleEyesArgonian
+// 0x5150a (HeadPartsArgonian 0xa8021, ArgonianRace 0x13740 alone) and
+// HairMaleNord01 0x51507 (Hair)
+TEST_CASE("A head part is one the recorded race may wear by its HDPT's "
+          "race list, swapped on the look for the part of its type; the "
+          "call is the bound's and the kind's like every own row",
+          "[PlayerOwn][espm]")
+{
+  constexpr uint32_t kEyesBrown = 0x51632;
+  constexpr uint32_t kEyesIceBlue = 0x24244;
+  constexpr uint32_t kEyesArgonian = 0x5150a;
+  constexpr uint32_t kHairNord01 = 0x51507;
+  constexpr uint32_t kArgonianRace = 0x13740;
+  PartOne& p = GetPartOne();
+  REQUIRE(p.HeadPartFitsRace(kEyesIceBlue, kNordRace));
+  REQUIRE(p.HeadPartFitsRace(kEyesArgonian, kArgonianRace));
+  REQUIRE(!p.HeadPartFitsRace(kEyesArgonian, kNordRace));
+  REQUIRE(!p.HeadPartFitsRace(kNordRace, kNordRace)); // no HDPT at all
+
+  // eyes replace eyes, the hair stays; a part worn already moves nothing
+  Appearance look;
+  look.raceId = kNordRace;
+  look.headpartIds = { kEyesBrown, kHairNord01 };
+  REQUIRE(p.WearHeadPart(look, kEyesIceBlue));
+  REQUIRE(look.headpartIds ==
+          std::vector<uint32_t>{ kHairNord01, kEyesIceBlue });
+  REQUIRE(!p.WearHeadPart(look, kEyesIceBlue));
+  REQUIRE(!p.WearHeadPart(look, kNordRace));
+  REQUIRE(look.headpartIds ==
+          std::vector<uint32_t>{ kHairNord01, kEyesIceBlue });
+
+  // the call from a live script no VMAD of which names a head part: the
+  // bound refuses it; a RACE named as the part: the kind refuses it
+  Enter(p);
+  OwnLog log;
+  auto& turned = p.worldState.GetFormAt<MpActor>(kTurned);
+  Own(p, "ChangeHeadPart", { FormArg(kEyesIceBlue, "HeadPart") },
+      "PlayerVampireQuestScript", "VampireChange");
+  REQUIRE(log.Count("E_SCRIPTCALL_UNNAMED") == 1);
+  Own(p, "ChangeHeadPart", { FormArg(kNordRace, "HeadPart") },
+      "PlayerVampireQuestScript", "VampireChange");
+  REQUIRE(log.Count("is no HDPT record") == 1);
+  REQUIRE(turned.GetAppearance()->headpartIds.empty());
+  REQUIRE(LooksTo(p, 1).empty());
+  Leave(p);
+}

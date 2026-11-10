@@ -2268,8 +2268,12 @@ mod ffi {
         held: bool,
         /// The form's record is the row's kind: a RACE (SetRace), a SPEL
         /// (AddSpell, RemoveSpell), a SHOU (AddShout, RemoveShout), an item
-        /// of libespm's item types (EquipItem).
+        /// of libespm's item types (EquipItem), an HDPT (ChangeHeadPart).
         kind: bool,
+        /// ChangeHeadPart's head part may be worn by the player's recorded
+        /// race: its HDPT's valid-race FormList (RNAM) holds the race (Eli's
+        /// D-E1 A).
+        race_valid: bool,
     }
 
     /// A player's overlay (thuum ADR-068 D-T1 A, wire-rules
@@ -2304,7 +2308,7 @@ mod ffi {
         code: u8,
         /// The refusal's stable name (E_SCRIPTCALL_ARGS, a form of another
         /// kind than the row's; E_SCRIPTCALL_UNNAMED; E_SCRIPTCALL_RACE; or
-        /// E_SCRIPTCALL_ROW for a native that is none of the six), empty
+        /// E_SCRIPTCALL_ROW for a native that is none of the seven), empty
         /// otherwise.
         name: String,
         /// Why, for the log; empty otherwise.
@@ -5789,13 +5793,13 @@ impl PlayerOverlays {
             return PlayerOwnVerdict {
                 code: 4,
                 name: natives::Code::Row.name().to_owned(),
-                why: format!("Actor.{func} is none of a player's own six rows"),
+                why: format!("Actor.{func} is none of a player's own seven rows"),
                 ended: overlay_row(None),
                 overlay: overlay_row(self.0.overlay(player)),
             };
         };
         let named: Vec<player_own::Named> = properties.iter().map(|p| player_own::Named { form: p.form, members: p.members.clone() }).collect();
-        let f = player_own::Facts { recorded_race: facts.recorded_race, playable: facts.playable, restricted: facts.restricted, permitted: facts.permitted, held: facts.held, kind: facts.kind };
+        let f = player_own::Facts { recorded_race: facts.recorded_race, playable: facts.playable, restricted: facts.restricted, permitted: facts.permitted, held: facts.held, kind: facts.kind, race_valid: facts.race_valid };
         let (code, name, why, ended) = match self.0.judge(player, row, form, &named, f) {
             player_own::Verdict::Record { ended } => (0, "", String::new(), ended),
             player_own::Verdict::Overlay => (1, "", String::new(), None),
@@ -6693,7 +6697,7 @@ mod tests {
         let npc = s.judge(at.row, &[race], &ScriptCallFacts { self_id: 0x800a6, ..facts }, 0);
         assert_eq!((npc.code, npc.name.as_str()), (ScriptCallCode::Row, "E_SCRIPTCALL_ROW"));
         let lists = [ScriptPropertyRow { form: 0x0d00_1000, members: vec![0x13746, 0x13745] }, ScriptPropertyRow { form: 0x0d00_1001, members: vec![0x88794, 0x88845] }];
-        let khajiit = PlayerOwnFacts { recorded_race: 0x13745, playable: false, restricted: false, permitted: false, held: false, kind: true };
+        let khajiit = PlayerOwnFacts { recorded_race: 0x13745, playable: false, restricted: false, permitted: false, held: false, kind: true, race_valid: false };
         let mut overlays = new_player_overlays();
         let v = overlays.player_own_judge(0xff00_0001, "SetRace", 0x88845, &lists, &khajiit);
         assert_eq!((v.code, v.name.as_str(), v.ended.open, v.overlay.open), (0, "", false, false));
@@ -6708,6 +6712,11 @@ mod tests {
         assert_eq!(overlays.player_own_judge(0xff00_0001, "SetRace", 0x88845, &lists, &PlayerOwnFacts { kind: false, ..khajiit }).name, "E_SCRIPTCALL_ARGS");
         assert_eq!(overlays.player_own_judge(0xff00_0001, "EquipItem", 0x88845, &lists, &khajiit).name, "E_SCRIPTCALL_UNNAMED");
         assert_eq!(overlays.player_own_judge(0xff00_0001, "EquipItem", 0x88845, &lists, &PlayerOwnFacts { held: true, ..khajiit }).code, 3);
+        // the seventh row (Eli's D-E1 A): a head part the recorded race may
+        // wear is recorded, one its list lacks refused
+        let eyes = [ScriptPropertyRow { form: 0x24244, members: Vec::new() }];
+        assert_eq!(overlays.player_own_judge(0xff00_0001, "ChangeHeadPart", 0x24244, &eyes, &PlayerOwnFacts { race_valid: true, ..khajiit }).code, 0);
+        assert_eq!(overlays.player_own_judge(0xff00_0001, "ChangeHeadPart", 0x24244, &eyes, &khajiit).name, "E_SCRIPTCALL_UNNAMED");
         // the beast form: an overlay, its howl held in it, its return ending it
         let werewolf = [ScriptPropertyRow { form: 0xcdd84, members: Vec::new() }, ScriptPropertyRow { form: 0x92c48, members: Vec::new() }];
         let nord = PlayerOwnFacts { recorded_race: 0x13746, ..khajiit };

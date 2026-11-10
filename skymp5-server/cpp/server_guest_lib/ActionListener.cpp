@@ -24,6 +24,7 @@
 #include "libespm/Convert.h"
 #include "libespm/GLOB.h"
 #include "libespm/GMST.h"
+#include "libespm/HDPT.h"
 #include "libespm/ObjectBounds.h"
 #include "libespm/QUST.h"
 #include "libespm/RACE.h"
@@ -4549,19 +4550,22 @@ bool NamesFunc(const std::string& fn, const char* name)
 
 // thuum ADR-068 rung 5 (the two transformations, D-T1 A; docs/research/
 // rung5-quests-2026-11-09.md section 8(b)): a per-player quest's script
-// changed its own player through one of the six rows (Actor.SetRace,
-// AddSpell, RemoveSpell, AddShout, RemoveShout, EquipItem on 0x14, the
-// owner step's record 4). wire-rules player_own judges it over the facts
-// gathered here (the form's record type, the bound over the VMAD properties
-// of the caller's attachments live for this player, the twin rule over
-// their FormLists, the recorded race, the RACE's Playable flag, the permit,
-// what the record holds): recorded on the change form (R1) and the look
-// sent to every game that sees the player (the twin, the base after a
-// cure), held in the player's race overlay instead (never on the change
-// form; its figure's CreateActor and UpdateAppearance carry it, the
-// equipment gate counts it), the overlay ended at the race's return, folded,
-// or refused by name (E_SCRIPTCALL_ARGS, E_SCRIPTCALL_UNNAMED,
-// E_SCRIPTCALL_RACE), one line a minute per seat and code. The calling
+// changed its own player through one of the seven rows (Actor.SetRace,
+// AddSpell, RemoveSpell, AddShout, RemoveShout, EquipItem and, Eli's D-E1 A,
+// ChangeHeadPart, on 0x14, the owner step's record 4; the head part valid
+// for the recorded race by its HDPT's RNAM list, swapped on the look in
+// place of the part of its HDPT type). wire-rules player_own judges it over
+// the facts gathered here (the form's record type, the bound over the VMAD
+// properties of the caller's attachments live for this player, the twin
+// rule over their FormLists, the recorded race, the RACE's Playable flag,
+// the permit, what the record holds): recorded on the change form (R1) and
+// the look sent to every game that sees the player (the twin, the base
+// after a cure, the swapped head part), held in the player's race overlay
+// instead (never on the change form; its figure's CreateActor and
+// UpdateAppearance carry it, the equipment gate counts it), the overlay
+// ended at the race's return, folded, or refused by name
+// (E_SCRIPTCALL_ARGS, E_SCRIPTCALL_UNNAMED, E_SCRIPTCALL_RACE), one line a
+// minute per seat and code. The calling
 // class is the seat's own word (`caller`), so an attachment counts only
 // while it is live for the reporter (the fresh review's note 3): a QUST's
 // while the quest scope classes the quest the player's or the world's
@@ -4637,13 +4641,22 @@ void RecordPlayerOwn(
     return rec ? rec->GetType().ToString() : std::string();
   };
   const std::string type = form != 0 ? typeOf() : std::string();
+  // Eli's D-E1 A: the seventh row, a head part swapped on the look
+  const bool headRow = NamesFunc(msg.fn, "ChangeHeadPart");
   facts.kind = setRace ? type == espm::RACE::kType
     : (NamesFunc(msg.fn, "AddSpell") || NamesFunc(msg.fn, "RemoveSpell"))
     ? type == espm::SPEL::kType
     : (NamesFunc(msg.fn, "AddShout") || NamesFunc(msg.fn, "RemoveShout"))
     ? type == espm::SHOU::kType
-    : NamesFunc(msg.fn, "EquipItem") && !type.empty() &&
+    : headRow ? type == espm::HDPT::kType
+              : NamesFunc(msg.fn, "EquipItem") && !type.empty() &&
       espm::utils::IsItem(espm::Type(type.c_str()));
+  if (headRow && form != 0) {
+    facts.race_valid = partOne.HeadPartFitsRace(form, facts.recorded_race);
+    facts.held = look &&
+      std::find(look->headpartIds.begin(), look->headpartIds.end(), form) !=
+        look->headpartIds.end();
+  }
   if (setRace && form != 0) {
     const auto race = espm::Convert<espm::RACE>(
       partOne.GetEspm().GetBrowser().LookupById(form).rec);
@@ -4720,6 +4733,22 @@ void RecordPlayerOwn(
         // it lacks, so nothing reaches here to write
         return said("nothing written (EquipItem moves nothing into the "
                     "record)");
+      } else if (headRow) {
+        // D-E1 A: the part of the same HDPT type swapped on the look, sent
+        // to every game that sees the player (its figure's head parts)
+        if (!look) {
+          return said("no recorded look to wear the head part, nothing "
+                      "written");
+        }
+        Appearance appearance = *look;
+        if (!partOne.WearHeadPart(appearance, form)) {
+          return said("the look wears it already, nothing written");
+        }
+        reporter.SetAppearance(&appearance);
+        SendAppearanceToOthers(partOne, reporter, appearance);
+        what += fmt::format(", its look's head part {:x} sent to every game "
+                            "that sees it",
+                            form);
       }
       if (verdict.ended.open) {
         what += fmt::format("; its race overlay {:x} ended with it",

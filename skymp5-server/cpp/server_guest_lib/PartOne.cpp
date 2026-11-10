@@ -49,6 +49,7 @@
 #include "libespm/AVIF.h"
 #include "libespm/CELL.h"
 #include "libespm/FLST.h"
+#include "libespm/HDPT.h"
 #include "libespm/MGEF.h"
 #include "libespm/PROJ.h"
 #include "libespm/QUST.h"
@@ -4209,6 +4210,62 @@ bool PartOne::QuestAttachmentLive(uint32_t questId)
   return std::any_of(stages.begin(), stages.end(), [&](const auto& stage) {
     return SameForm(stage.quest, quest);
   });
+}
+
+bool PartOne::HeadPartFitsRace(uint32_t part, uint32_t race)
+{
+  if (!HasEspm() || race == 0) {
+    return false;
+  }
+  auto& browser = GetEspm().GetBrowser();
+  auto& cache = worldState.GetEspmCache();
+  const auto lookup = browser.LookupById(part);
+  const auto* hdpt = espm::Convert<espm::HDPT>(lookup.rec);
+  if (!hdpt) {
+    return false;
+  }
+  const uint32_t validRaces = hdpt->GetData(cache).validRaces;
+  if (validRaces == 0) {
+    return false; // a part that lists no race is no race's
+  }
+  const auto list = browser.LookupById(lookup.ToGlobalId(validRaces));
+  const auto* flst = espm::Convert<espm::FLST>(list.rec);
+  if (!flst) {
+    return false;
+  }
+  for (uint32_t member : flst->GetData(cache).formIds) {
+    if (list.ToGlobalId(member) == race) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool PartOne::WearHeadPart(Appearance& look, uint32_t part)
+{
+  if (!HasEspm()) {
+    return false;
+  }
+  auto& browser = GetEspm().GetBrowser();
+  auto& cache = worldState.GetEspmCache();
+  const auto typeOf = [&](uint32_t id) -> std::optional<uint32_t> {
+    const auto* hdpt = espm::Convert<espm::HDPT>(browser.LookupById(id).rec);
+    return hdpt ? std::optional<uint32_t>(hdpt->GetData(cache).type)
+                : std::nullopt;
+  };
+  const auto type = typeOf(part);
+  if (!type ||
+      std::find(look.headpartIds.begin(), look.headpartIds.end(), part) !=
+        look.headpartIds.end()) {
+    return false;
+  }
+  auto& parts = look.headpartIds;
+  parts.erase(
+    std::remove_if(parts.begin(), parts.end(),
+                   [&](uint32_t worn) { return typeOf(worn) == type; }),
+    parts.end());
+  parts.push_back(part);
+  return true;
 }
 
 void PartOne::SetRestrictedRacesSettings(

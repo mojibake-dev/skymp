@@ -144,6 +144,22 @@ const LOAD_STAGES_MAX = 1024;
 // were 0.32 s (c2, 3a17d of 3a17c) and 3.1 s (c1, 954da of 954d9)
 const PUPPET_STOP_MS = 10000;
 
+// D-Q4 C (Eli, 2026-11-10, "Rung 5's stage-eve words"; the run-cause read's
+// rule): the cause on the wire (QuestStage `cause`, SCHEMA_VERSION 43); the
+// shape a root takes there (wire-schema cap::QUEST_ROOT, two PAPYRUS_NAMEs and
+// the dot, in the characters Papyrus names take: wire-validate refuses any
+// other, and the whole report with it); and how often the counts of the
+// reports the rule held are said, ms
+const CAUSE_WORLD = 1;
+const CAUSE_SEAT = 2;
+const ROOT_MAX = 257;
+const ROOT_SHAPE = /^[A-Za-z0-9_.]+$/;
+const CAUSE_SAY_MS = 60000;
+
+// a quest event's cause as the platform named it: world true or false, or
+// undefined from a platform that names none; its stack's root, "" for none
+type Cause = { world: boolean | undefined; root: string };
+
 // one of the server's quest words or stages waiting for the update pass
 type QuestItem = {
     quest: number;
@@ -364,6 +380,34 @@ const START_UP_MEMORY_MAX = 2048;
 // plugin(s) are this seat's own (<names>)", and the skipped reports are
 // counted, a line at most each SKIP_SAY_MS while the count moves and one at
 // the connection's end.
+//
+// D-Q4 C (Eli, 2026-11-10; thuum docs/DECISIONS.md, "Rung 5's stage-eve
+// words"; the run-cause read's rule): a quest's run word counts as the
+// world's only when a script's call with a WORLD cause makes it, not every
+// engine start and stop (the template save's load, start-game housekeeping,
+// the Story Manager's per-seat starts). The platform reads the root of the
+// stack that called Quest.Start, Quest.Stop or SetStage, carries its verdict
+// onto the stages and words the call sets, and names it on each event
+// (`cause` 'world' or 'seat', `root` "<Script>.<Function>"; QuestCause.h).
+// A quest command the player types (startquest, stopquest, setstage,
+// resetquest) runs no script, and is the player's own act:
+// ConsoleCommandsService marks it the world's before the engine runs it
+// (markQuestCause, root "console.<command>"), so its words and stages come
+// here with a world cause.
+// Every event says its cause in a trace, the login load's included: "quest
+// <q> <start|stop|stage s>: cause <world|seat> (root <Script.Function>)". A
+// run word goes only with a world cause, and so does a stage-0 report (the
+// server judges it a start, read 5); the login load's hold and the skips
+// stay ahead of the rule, the churn hold behind it. Every report names its
+// cause and root (QuestStage `cause` and `root`, R2), so the server records no
+// start-up stage's report with the seat's own cause (this seat cannot tell a
+// start-up stage, the record can) and refuses a Story Manager instance's run
+// word under questStoryInstances "seat" (E_QUEST_INSTANCE).
+// The reports the rule held are counted, one line a minute while the counts
+// move: "causes in 60 s: <w> world sent, <h> seat-own held (<a> word(s), <b>
+// stage-0; <r> script-rooted)". The client setting questRunCause "any" turns
+// the rule off (the lab's A/B: every report goes as before, naming no cause);
+// a platform that names no cause gets the same, said once.
 export class QuestStageService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -474,6 +518,7 @@ export class QuestStageService extends ClientListener {
             this.askPluginList();
         }
         this.saySkipped(now);
+        this.sayCauses(now);
         // slice two's safety: a fragment mark whose stage event never came
         // within its window is taken back (callNative runs here, in the
         // update pass's VM context); the list is in order of expiry, and it
@@ -699,6 +744,8 @@ export class QuestStageService extends ClientListener {
             return;
         }
         const questId = e.quest.getFormID();
+        const cause = this.causeOf(e);
+        this.sayCause(questId, "start", cause);
         // the puppet rule's scene stop (x-quest-runs' read): a start here ends
         // the quest's mark, whoever's start it is
         this.puppetScenes.delete(questId);
@@ -708,7 +755,7 @@ export class QuestStageService extends ClientListener {
         if (echo || parkedStart || parkedStage) {
             return;
         }
-        this.reportRun(questId, WORD_START);
+        this.reportRun(questId, WORD_START, cause);
     }
 
     // the stage parked for a quest the engine just started, applied; false
@@ -742,11 +789,13 @@ export class QuestStageService extends ClientListener {
             return;
         }
         const questId = e.quest.getFormID();
+        const cause = this.causeOf(e);
+        this.sayCause(questId, "stop", cause);
         if (this.applyingRuns.delete(QuestStageService.runKey(questId, WORD_STOP))) {
             this.busy.delete(questId);
             return;
         }
-        this.reportRun(questId, WORD_STOP);
+        this.reportRun(questId, WORD_STOP, cause);
     }
 
     // a world's start or stop (served at a login or relayed), applied through
@@ -818,9 +867,10 @@ export class QuestStageService extends ClientListener {
     // reported as the world's unless the login's load raised it (held and
     // counted for the arrival's line), the words are off, the quest is
     // listed, it is a stop after the puppet rule stopped the quest's scene
-    // here, or the quest is held for churn; sent through the server's budget
-    // (the class comment's x-quest-runs paragraph)
-    private reportRun(questId: number, word: number) {
+    // here, its cause is the seat's own (D-Q4 C, counted), or the quest is
+    // held for churn; sent through the server's budget with its cause (the
+    // class comment's x-quest-runs and D-Q4 C paragraphs)
+    private reportRun(questId: number, word: number, cause: Cause) {
         if (this.loginLoad) {
             this.loginLoadHeld++;
             return;
@@ -835,6 +885,12 @@ export class QuestStageService extends ClientListener {
             this.sayPuppetStop(questId);
             return;
         }
+        // D-Q4 C: the world's only when a script's call with a world cause
+        // made it
+        if (!this.worldCaused(cause)) {
+            this.holdByCause(cause, true);
+            return;
+        }
         if (this.churned(questId)) {
             return;
         }
@@ -842,6 +898,9 @@ export class QuestStageService extends ClientListener {
         const acting = this.reportedActing(questId, word === WORD_START ? SCOPE_START : SCOPE_STOP);
         if (acting !== undefined) {
             message.acting = acting;
+        }
+        if (this.nameCause(message, cause)) {
+            this.causeSent++;
         }
         this.send(message);
         logTrace(this, "this game", word === WORD_START ? "started" : "stopped", "shared quest", questId.toString(16) + "; reported" + QuestStageService.forActing(acting));
@@ -915,12 +974,12 @@ export class QuestStageService extends ClientListener {
 
     // one of the load's stage reports, kept for the hold's end in its order;
     // past LOAD_STAGES_MAX the oldest goes, counted
-    private holdLoadStage(questId: number, stage: number) {
+    private holdLoadStage(questId: number, stage: number, cause: Cause) {
         if (this.loadStages.length >= LOAD_STAGES_MAX) {
             this.loadStages.shift();
             this.loadStagesLost++;
         }
-        this.loadStages.push({ quest: questId, stage });
+        this.loadStages.push({ quest: questId, stage, cause });
     }
 
     // the hold's end (note 2): the load's stage reports go in their order,
@@ -960,7 +1019,7 @@ export class QuestStageService extends ClientListener {
                 continue;
             }
             released++;
-            this.reportStage(h.quest, h.stage);
+            this.reportStage(h.quest, h.stage, h.cause);
         }
         logLab(TAG, `${held.length + lost} stage report(s) of the login's load held: ${released} released for quests still running here, ${dropped} dropped (their quest stopped inside the hold${lost > 0 ? `, or past the hold's ${LOAD_STAGES_MAX}` : ""})`);
     }
@@ -1340,6 +1399,8 @@ export class QuestStageService extends ClientListener {
             return;
         }
         const questId = e.quest.getFormID();
+        const cause = this.causeOf(e);
+        this.sayCause(questId, `stage ${e.stage}`, cause);
         const key = QuestStageService.key(questId, e.stage);
         if (this.applying.has(key)) {
             this.applying.delete(key); // the world's stage landing here, not this game's own
@@ -1347,23 +1408,30 @@ export class QuestStageService extends ClientListener {
         }
         if (this.loginLoad) {
             // the login load's hold (note 2): released at its end while the
-            // quest still runs here
+            // quest still runs here, with its cause
             if (this.reports(questId)) {
-                this.holdLoadStage(questId, e.stage);
+                this.holdLoadStage(questId, e.stage, cause);
             }
             return;
         }
-        this.reportStage(questId, e.stage);
+        this.reportStage(questId, e.stage, cause);
     }
 
     // a stage this game set on the quest, reported as the world's unless the
-    // quest is not the world's to report, is a client-only plugin's, or
-    // repeats its last report inside the window; true when it went
-    private reportStage(questId: number, stage: number): boolean {
+    // quest is not the world's to report, is a client-only plugin's, is stage
+    // 0 with the seat's own cause (D-Q4 C: the server judges it a start,
+    // counted), or repeats its last report inside the window; any other stage
+    // goes whatever its cause, named on the report (the server judges a
+    // start-up stage's by it); true when it went
+    private reportStage(questId: number, stage: number, cause: Cause): boolean {
         if (!this.reports(questId)) {
             return false;
         }
         if (this.skipClientOnly(questId, false)) {
+            return false;
+        }
+        if (stage === 0 && !this.worldCaused(cause)) {
+            this.holdByCause(cause, false);
             return false;
         }
         if (this.repeated(questId, stage)) {
@@ -1374,6 +1442,9 @@ export class QuestStageService extends ClientListener {
         const acting = this.reportedActing(questId, stage);
         if (acting !== undefined) {
             message.acting = acting;
+        }
+        if (this.nameCause(message, cause) && stage === 0) {
+            this.causeSent++;
         }
         this.send(message);
         logTrace(this, "this game set stage", stage, "of shared quest", questId.toString(16) + "; reported" + QuestStageService.forActing(acting));
@@ -1692,6 +1763,91 @@ export class QuestStageService extends ClientListener {
         return quest;
     }
 
+    // D-Q4 C: an event's cause as the platform named it (the class comment);
+    // world undefined from a platform that names none
+    private causeOf(e: { cause?: unknown; root?: unknown }): Cause {
+        const world = e.cause === "world" ? true : e.cause === "seat" ? false : undefined;
+        return { world, root: typeof e.root === "string" ? e.root : "" };
+    }
+
+    // the per-event trace, every event; the claimed words first, under
+    // printConsole's 128-byte cut
+    private sayCause(questId: number, what: string, cause: Cause) {
+        const named = cause.world === undefined ? "unnamed" : cause.world ? "world" : "seat";
+        logTrace(this, `quest ${questId.toString(16)} ${what}: cause ${named} (root ${cause.root || "none"})`);
+    }
+
+    // whether the rule lets a run word or a stage-0 report go: a world cause;
+    // any while questRunCause is "any" or the platform names no cause
+    private worldCaused(cause: Cause): boolean {
+        if (this.causeRuleOff()) {
+            return true;
+        }
+        if (cause.world === undefined) {
+            if (!this.causeUnnamedSaid) {
+                this.causeUnnamedSaid = true;
+                logLab(TAG, "the platform names no quest event's cause: run words and stage-0 reports go as before (D-Q4 C off on this platform)");
+            }
+            return true;
+        }
+        return cause.world;
+    }
+
+    // the client setting questRunCause "any" (the lab's A/B), said once
+    private causeRuleOff(): boolean {
+        const s = this.sp.settings["skymp5-client"] as Record<string, unknown> | undefined;
+        const off = !!s && s["questRunCause"] === "any";
+        if (off && !this.causeOffSaid) {
+            this.causeOffSaid = true;
+            logLab(TAG, "questRunCause is any in settings: every run word and stage-0 report goes as before, naming no cause (D-Q4 C off)");
+        }
+        return off;
+    }
+
+    // a report's cause and root on the wire (the server judges a start-up
+    // stage's report by them), none while the rule is off or the platform
+    // names none; a root the wire would refuse is left off, the cause kept.
+    // True when it named a world cause (the minute's "world sent")
+    private nameCause(message: QuestStageMessage, cause: Cause): boolean {
+        if (cause.world === undefined || this.causeRuleOff()) {
+            return false;
+        }
+        message.cause = cause.world ? CAUSE_WORLD : CAUSE_SEAT;
+        if (cause.root.length > 0 && cause.root.length <= ROOT_MAX && ROOT_SHAPE.test(cause.root)) {
+            message.root = cause.root;
+        }
+        return cause.world;
+    }
+
+    // a report the rule held, counted for the minute's line
+    private holdByCause(cause: Cause, word: boolean) {
+        if (word) {
+            this.causeHeldWords++;
+        } else {
+            this.causeHeldStages++;
+        }
+        if (cause.root.length > 0) {
+            this.causeHeldRooted++;
+        }
+    }
+
+    // the minute's line while the counts move (the class comment)
+    private sayCauses(now: number) {
+        if (now < this.causeSayAt) {
+            return;
+        }
+        this.causeSayAt = now + CAUSE_SAY_MS;
+        const held = this.causeHeldWords + this.causeHeldStages;
+        if (held === 0 && this.causeSent === 0) {
+            return;
+        }
+        logLab(TAG, `causes in ${CAUSE_SAY_MS / 1000} s: ${this.causeSent} world sent, ${held} seat-own held (${this.causeHeldWords} word(s), ${this.causeHeldStages} stage-0; ${this.causeHeldRooted} script-rooted)`);
+        this.causeSent = 0;
+        this.causeHeldWords = 0;
+        this.causeHeldStages = 0;
+        this.causeHeldRooted = 0;
+    }
+
     private static key(questId: number, stage: number): string {
         return questId.toString(16) + ":" + stage;
     }
@@ -1763,7 +1919,7 @@ export class QuestStageService extends ClientListener {
     private loginLoadHeld = 0;
     private updateSeen = false;
     private loginLoadFirstUpdate = 0;
-    private loadStages: Array<{ quest: number; stage: number }> = [];
+    private loadStages: Array<{ quest: number; stage: number; cause: Cause }> = [];
     private loadStagesLost = 0;
     private loadStagesDue = false;
     // the pacing: the mirrored bucket's tokens and the time they were last
@@ -1803,4 +1959,15 @@ export class QuestStageService extends ClientListener {
     private skippedWords = 0;
     private skippedSaid = 0;
     private skipSayAt = 0;
+    // D-Q4 C: whether this seat said the rule's off-switch and the platform's
+    // silence once; the minute's counts (run words and stage-0 reports sent
+    // with a world cause, held as the seat's own, of them rooted in a script)
+    // and when the next line is due
+    private causeOffSaid = false;
+    private causeUnnamedSaid = false;
+    private causeSent = 0;
+    private causeHeldWords = 0;
+    private causeHeldStages = 0;
+    private causeHeldRooted = 0;
+    private causeSayAt = 0;
 }

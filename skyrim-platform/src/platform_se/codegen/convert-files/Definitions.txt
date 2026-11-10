@@ -398,13 +398,18 @@ export interface QuestInitEvent {
   quest: Quest
 }
 
+// thuum ADR-068 rung 5, D-Q4 C (QuestCause.h): a quest's start, stop or stage with its cause as the seam read it at the call that made it: cause 'world' when a script's call with a world cause made it (a dialogue, scene, package or perk fragment, an interaction event, or a stage fragment whose stage a world cause or a timer set), 'seat' for the seat's own (lifecycle, cell load, the Story Manager, a direct timer, a magic effect, the UI, an engine start's start-up fragment, a stage set inside such a chain, or no script call at all); root the root frame of the stack that made the call, "<Script>.<Function>", empty for none; both absent from an older platform
 export interface QuestStartStopEvent {
   quest: Quest
+  cause?: 'world' | 'seat'
+  root?: string
 }
 
 export interface QuestStageEvent {
   quest: Quest
   stage: number
+  cause?: 'world' | 'seat'
+  root?: string
 }
 
 export interface TriggerEvent {
@@ -1827,6 +1832,8 @@ export declare function isHosted(actorFormId: number): boolean;
 export declare function setActingPlayer(questId: number, stage: number, figureLocalId: number, serverId: number, ttlMs: number): boolean;
 // thuum ADR-068 rung 5: the server id of the acting player whose scope requested (questId, stage) on this seat (stage -1 a start, -2 a stop), a relayed request or a stage, start or stop a scoped stack set, until the request expires; 0 for none; the C2S QuestStage's acting for a stage this seat set inside a scope; a table read, no game call
 export declare function getActingPlayer(questId: number, stage: number): number;
+// thuum ADR-068 rung 5, D-Q4 C (QuestCause.h): a cause this seat's own act names for the quest's next start (stage -1), stop (-2) or stage (0 to 65535) before the engine makes it, for ttlMs (1 to 60000): the word's event takes it once, the stage's event and the quest stage sink read it (the fragment the stage runs carries it), as they read a script call's; skymp5-client's console service marks a quest command the player typed with cause 'world' and root "console.<command>" (a replaced command's execute runs before the engine's handler); false, nothing stored, for a quest 0, a stage outside -2 to 65535, a cause other than 'world' or 'seat', a root past 257 bytes or outside [A-Za-z0-9_.], or a ttl outside 1 to 60000; stored with no game call
+export declare function markQuestCause(questId: number, stage: number, cause: 'world' | 'seat', root: string, ttlMs: number): boolean;
 // thuum ADR-068 rung 5, PQ-3 (docs/research/rung5-quests-2026-11-09.md 8(a)): the globals each player keeps (the PlayerGlobals watch list, the marked quests' globals composed in), replaced whole at each call, [] clears it, empty by default; inside another player's acting scope a script's GlobalVariable.SetValue on one is skipped on this seat; stored with no game call; true when stored
 export declare function setPlayerGlobals(globalFormIds: number[]): boolean;
 // thuum ADR-068 rung 5's full build (docs/research/rung5-quests-2026-11-09.md 8(a)): the per-player quests (the server's derived playerQuests), replaced whole at each call, [] clears it, empty by default; the Papyrus event gate passes an event to such a quest's own scripts and to its aliases' scripts on this seat, its own player's, whatever their class; stored with no game call; true when stored

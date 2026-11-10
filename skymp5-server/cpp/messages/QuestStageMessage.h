@@ -3,6 +3,7 @@
 #include "MsgType.h"
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -42,7 +43,9 @@ struct QuestStageMessage : public MessageBase<QuestStageMessage>
       .Serialize("acting", acting)
       .Serialize("served", served)
       .Serialize("player", player)
-      .Serialize("wordStages", wordStages);
+      .Serialize("wordStages", wordStages)
+      .Serialize("cause", cause)
+      .Serialize("root", root);
   }
 
   uint32_t quest = 0; // the QUST's form id in the load order both ends share
@@ -68,4 +71,11 @@ struct QuestStageMessage : public MessageBase<QuestStageMessage>
   // which a served word's receiver suppresses; absent when the record flags
   // none
   std::optional<std::vector<uint16_t>> wordStages;
+  // since SCHEMA_VERSION 43 (thuum ADR-068 rung 5, D-Q4 C): on a seat's
+  // report alone, what made it, 1 a world cause, 2 the seat's own (a u8 on
+  // the wire), and the root frame of the script stack that made it,
+  // "<Script>.<Function>" (absent when no script call did); both the seat's
+  // own word (R2), judged by wire-rules quest_runs and logged
+  std::optional<uint32_t> cause;
+  std::optional<std::string> root;
 };

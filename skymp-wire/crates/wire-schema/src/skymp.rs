@@ -1005,6 +1005,16 @@ wire_struct! {
 pub const QUEST_START: u8 = 1;
 /// A quest's run word: the quest stopped (Quest.Stop, questStop).
 pub const QUEST_STOP: u8 = 2;
+/// A report's cause (thuum ADR-068 rung 5, D-Q4 C, QuestStage's `cause`): a
+/// world cause made it (a script's call from a dialogue, scene, package or
+/// perk fragment, an interaction event, or a stage fragment whose stage a
+/// world cause or a timer set).
+pub const QUEST_CAUSE_WORLD: u8 = 1;
+/// A report's cause: the seat's own (lifecycle, cell load, the Story
+/// Manager's events, a direct timer, a magic effect, the UI, an engine
+/// start's start-up fragment, a stage set inside such a chain, or no script
+/// call at all).
+pub const QUEST_CAUSE_SEAT: u8 = 2;
 
 wire_struct! {
     /// MsgType 57, thuum's (docs/verbs/quest-stage.md, ADR-056; memo D58 B):
@@ -1038,6 +1048,22 @@ wire_struct! {
     /// with quest 0; from a client, `served` true); the server logs
     /// `E_QUEST_PLAYER` (a player-class quest), `E_QUEST_CHURN`,
     /// `E_QUEST_RUNS_FULL` and `E_QUEST_ACTING` by name.
+    ///
+    /// Since SCHEMA_VERSION 43 (thuum ADR-068 rung 5, D-Q4 C) a seat's
+    /// report names what made it: `cause` [`QUEST_CAUSE_WORLD`] or
+    /// [`QUEST_CAUSE_SEAT`] and `root`, the root frame of the script stack
+    /// that called Quest.Start, Quest.Stop or SetStage (absent when no
+    /// script call made it). Both the seat's own word (R2): the server
+    /// refuses a run word whose cause is the seat's own (`E_QUEST_CAUSE`) and
+    /// a run word of a quest a Story Manager quest node names while
+    /// `questStoryInstances` is "seat" (`E_QUEST_INSTANCE`), logging both by
+    /// name with the reported cause and root, and records no stage report it
+    /// judges a start (a start-up stage, which only the record can tell)
+    /// whose cause is the seat's own, in one plain line a minute per seat.
+    /// Reason codes besides: `E_VAL_RANGE` (a cause other than 1
+    /// or 2, a cause or a root with quest 0, a root without a cause, an
+    /// empty root, a root outside `[A-Za-z0-9_.]`). A report received twice
+    /// is judged twice and folds (the record's rule), so a resend is safe.
     pub struct QuestStage {
         /// `"t": 57`.
         #[serde(default)]
@@ -1080,6 +1106,22 @@ wire_struct! {
         /// suppresses their fragments, which its acting seat ran. Absent
         /// when the record flags none.
         pub word_stages: Option<Vec<u16, { cap::WORD_STAGES }>>,
+        /// Since SCHEMA_VERSION 43 (thuum ADR-068 rung 5, D-Q4 C): on a
+        /// seat's report alone (client to server), what made it,
+        /// [`QUEST_CAUSE_WORLD`] or [`QUEST_CAUSE_SEAT`], as the seat's
+        /// platform read the root of the script stack that called
+        /// Quest.Start, Quest.Stop or SetStage and carried its verdict onto
+        /// the stages and words the call set; a quest command the player
+        /// typed in the console is [`QUEST_CAUSE_WORLD`] (the seat's client
+        /// marks it before the engine runs it). Absent from an older client
+        /// and from the server. Unvalidated (R2).
+        pub cause: Option<u8>,
+        /// Since SCHEMA_VERSION 43: beside `cause`, that stack's root frame
+        /// as "<Script>.<Function>" (its owningObjectType's name and its
+        /// owningFunction's), or "console.<command>" for a quest command the
+        /// player typed; absent when neither made the report. Logged, never
+        /// judged (R2).
+        pub root: Option<String<{ cap::QUEST_ROOT }>>,
     }
 }
 

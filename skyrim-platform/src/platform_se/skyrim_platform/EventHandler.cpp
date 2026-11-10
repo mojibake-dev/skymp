@@ -4,6 +4,7 @@
 #include "FridaHooks.h"
 #include "Hosted.h"
 #include "JsUtils.h"
+#include "QuestCause.h"
 #include "ScriptNatives.h"
 #include "SkyrimPlatform.h"
 #include "TickHandler.h"
@@ -1222,9 +1223,16 @@ EventResult EventHandler::ProcessEvent(
 
   auto questId = event->formID;
   auto stage = event->stage;
+  // thuum ADR-068 rung 5, D-Q4 C (QuestCause.h): the stage's cause, read on
+  // the setter's thread as the event is sent: its setter's mark, or the
+  // start or stop it rides (a start-up or shut-down stage), else the seat's
+  // own with no root (a stage the engine set by itself)
+  const auto verdict = QuestCause::OfStage(questId, stage);
+  const bool world = verdict && verdict->world;
+  std::string root = verdict ? verdict->root : std::string();
 
   SkyrimPlatform::GetSingleton()->AddUpdateTask(
-    [questId, stage](Napi::Env env) {
+    [questId, stage, world, root = std::move(root)](Napi::Env env) {
       auto obj = Napi::Object::New(env);
 
       auto quest = RE::TESForm::LookupByID<RE::TESQuest>(questId);
@@ -1234,6 +1242,8 @@ EventResult EventHandler::ProcessEvent(
 
       AddObjProperty(&obj, "quest", quest, "Quest");
       AddObjProperty(&obj, "stage", stage);
+      AddObjProperty(&obj, "cause", world ? "world" : "seat");
+      AddObjProperty(&obj, "root", root);
 
       SendEvent("questStage", obj);
     });
@@ -1250,9 +1260,19 @@ EventResult EventHandler::ProcessEvent(
 
   uint32_t formId = event->formID;
   bool started = event->started;
+  // thuum ADR-068 rung 5, D-Q4 C (QuestCause.h): the word's cause, its mark
+  // taken once on the sender's thread as the event is sent (H-QC2: inside
+  // the mark's window), else the seat's own with no root (a start or a stop
+  // no script's call made: the template save's load, the Story Manager, the
+  // platform's own apply); a quest command the player typed in the console
+  // is marked the world's by skymp5-client first (markQuestCause)
+  const auto verdict = QuestCause::TakeWord(
+    formId, started ? QuestCause::kStart : QuestCause::kStop);
+  const bool world = verdict && verdict->world;
+  std::string root = verdict ? verdict->root : std::string();
 
   SkyrimPlatform::GetSingleton()->AddUpdateTask(
-    [formId, started](Napi::Env env) {
+    [formId, started, world, root = std::move(root)](Napi::Env env) {
       auto obj = Napi::Object::New(env);
       auto quest = RE::TESForm::LookupByID(formId);
       if (!quest && formId != 0) {
@@ -1260,6 +1280,8 @@ EventResult EventHandler::ProcessEvent(
       }
 
       AddObjProperty(&obj, "quest", quest, "Quest");
+      AddObjProperty(&obj, "cause", world ? "world" : "seat");
+      AddObjProperty(&obj, "root", root);
 
       if (started) {
         SendEvent("questStart", obj);

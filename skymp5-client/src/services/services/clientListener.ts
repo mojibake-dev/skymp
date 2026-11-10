@@ -259,6 +259,15 @@ declare module "skyrimPlatform" {
     // every use is guarded
     function setActingPlayer(questId: number, stage: number, figureLocalId: number, serverId: number, ttlMs: number): boolean;
     function getActingPlayer(questId: number, stage: number): number;
+    // ADR-068 rung 5, D-Q4 C (the platform's QuestCause.h): a cause this
+    // seat's own act names for the quest's next start (-1), stop (-2) or
+    // stage before the engine makes it, for ttlMs, read as a script call's
+    // mark is; ConsoleCommandsService marks a quest command the player
+    // typed. False, nothing stored, for a quest 0, a stage outside -2 to
+    // 65535, a cause other than 'world' or 'seat', a root past 257 bytes or
+    // outside [A-Za-z0-9_.], or a ttl outside 1 to 60000; an older platform
+    // has none, and its use is guarded
+    function markQuestCause(questId: number, stage: number, cause: 'world' | 'seat', root: string, ttlMs: number): boolean;
     function setPlayerGlobals(globalFormIds: number[]): boolean;
     // rung 5, the ownership rule for the per-player quests (the server's
     // player-class quests, QuestStage 57's login `player`): this seat runs its
@@ -321,6 +330,21 @@ declare module "skyrimPlatform" {
     function on(eventName: 'furnitureAnimation', callback: (event: FurnitureAnimationEvent) => void): EventHandle;
     function once(eventName: 'furnitureAnimation', callback: (event: FurnitureAnimationEvent) => void): EventHandle;
     function setFurnitureAnimation(enabled: boolean): boolean;
+    // thuum ADR-068 rung 5, D-Q4 C (the platform's QuestCause.h): a quest's
+    // start, stop or stage with its cause as the seam read it at the call that
+    // made it ('world' or 'seat') and the root frame of that call's stack
+    // ("<Script>.<Function>", empty when no script call made it). The published
+    // 2.8.0 types name the quest alone; an older platform raises neither
+    // field, and QuestStageService reports as before when they are absent.
+    // Optional here as in Definitions.txt, so the two merge
+    interface QuestStartStopEvent {
+        cause?: 'world' | 'seat';
+        root?: string;
+    }
+    interface QuestStageEvent {
+        cause?: 'world' | 'seat';
+        root?: string;
+    }
     // thuum ADR-068 amendment A (rung 3, the script record): a reference whose
     // served record carries a view, so the gate holds its OnLoad and OnCellLoad
     // (and notes which it held) until ApplyScriptState clears the mark; a plain

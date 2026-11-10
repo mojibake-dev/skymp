@@ -811,6 +811,26 @@ TEST_CASE("REGN names its worldspace and its weather list", "[espm]")
   REQUIRE(sovngarde.weathers[0].global == 0);
 }
 
+TEST_CASE("SMQN names the quests a Story Manager quest node starts, and the "
+          "Browser indexes the type",
+          "[espm]")
+{
+  // thuum ADR-068 rung 5 (D-Q4 C): a node's quests are its NNAMs
+  // (CommonLibSSE-NG include/RE/B/BGSStoryManagerQuestNode.h:48), as thuum
+  // docs/research/m3/re-story-location.md read Skyrim.esm's 448 nodes:
+  // FreeformRiverwoodNode 0xb555d names A Lovely Letter 0x74a83 alone,
+  // CompanionsAelaNode 0xbfc77 CR01 0x1ceee, CR02 0x25185 and CR12 0xe3145
+  MyEspmProvider provider;
+  REQUIRE(espm::GetData<espm::SMQN>(0xb555d, &provider).quests ==
+          std::vector<uint32_t>{ 0x74a83 });
+  REQUIRE(espm::GetData<espm::SMQN>(0xbfc77, &provider).quests ==
+          std::vector<uint32_t>{ 0x1ceee, 0x25185, 0xe3145 });
+  REQUIRE(GetEspmLoader()
+            .GetBrowser()
+            .GetDistinctRecordsByType(espm::SMQN::kType)
+            .size() >= 448);
+}
+
 TEST_CASE("PERK carries its DATA, its next rank and the conditions before "
           "its sections",
           "[espm]")

@@ -7,6 +7,7 @@
 #include "FridaHooks.h"
 #include "ItemMenuRefresh.h"
 #include "NullPointerException.h"
+#include "QuestCause.h"
 #include "ScriptState.h"
 #include "TrapFamily.h"
 
@@ -136,6 +137,13 @@ private:
     // the old world's stacks and stages (ActingScope.h)
     try {
       ActingScope::Clear();
+    } catch (...) {
+    }
+    // and D-Q4 C's joined stacks (QuestCause.h); its marks and arms, keyed
+    // by form ids, expire on their own, so a load's own lifecycle calls
+    // keep the roots they marked whichever comes first
+    try {
+      QuestCause::ClearStacks();
     } catch (...) {
     }
     return RE::BSEventNotifyControl::kContinue;

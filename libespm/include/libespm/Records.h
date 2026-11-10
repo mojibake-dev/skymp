@@ -37,6 +37,7 @@
 #include "SCRL.h"
 #include "SHOU.h"
 #include "SLGM.h"
+#include "SMQN.h"
 #include "SPEL.h"
 #include "TES4.h"
 #include "TREE.h"

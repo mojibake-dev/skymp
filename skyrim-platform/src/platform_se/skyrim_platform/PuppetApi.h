@@ -48,6 +48,17 @@ Napi::Value SetActingPlayer(const Napi::CallbackInfo& info);
 // scope requested the pair here (relayed, or chained by a scoped stack), 0
 // for none; the C2S QuestStage's `acting`
 Napi::Value GetActingPlayer(const Napi::CallbackInfo& info);
+// thuum docs/DECISIONS.md ADR-068 rung 5, D-Q4 C (QuestCause.h):
+// markQuestCause(questId, stage, cause, root, ttlMs), a cause this seat's own
+// act names for the quest's next start (-1), stop (-2) or stage (0 to 65535)
+// before the engine makes it, for ttlMs: skymp5-client's console service
+// marks a quest command the player typed. QuestCause::Mark's table, so the
+// word's event takes it once and the stage's event and the quest stage sink
+// read it, as they read a script call's mark. The JS thread alone, no game
+// call. False, nothing stored, for a quest 0, a stage outside -2 to 65535, a
+// cause other than "world" or "seat", a root past QuestCause::kMaxRootBytes
+// or outside [A-Za-z0-9_.], or a ttl outside 1 to QuestCause::kMaxMarkMs
+Napi::Value MarkQuestCause(const Napi::CallbackInfo& info);
 // setPlayerGlobals(globalFormIds): PQ-3's set, the globals each player keeps
 // (the PlayerGlobals watch list), replaced whole; a scoped stack's
 // GlobalVariable.SetValue on one is skipped. The JS thread alone, no game
@@ -228,6 +239,9 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "getActingPlayer",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(GetActingPlayer)));
+  exports.Set(
+    "markQuestCause",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(MarkQuestCause)));
   exports.Set(
     "setPlayerGlobals",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetPlayerGlobals)));

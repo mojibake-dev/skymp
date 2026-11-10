@@ -596,6 +596,34 @@ mod tests {
         }
     }
 
+    /// thuum ADR-068 rung 5 (D-Q4 C, SCHEMA_VERSION 43): a seat's report
+    /// names its cause and its stack's root. 57-QuestStage-9 is c1's stop of
+    /// dunEmbershardQST 0xb6fef from its stage 40 fragment, a world cause
+    /// (x-quest-cause's world pair; the run-cause read of 2026-11-10, its
+    /// census of Skyrim.esm). The other QuestStage fixtures carry neither
+    /// and render neither.
+    #[test]
+    fn a_reports_cause_and_root_validate_and_render_only_when_present() {
+        use wire_validate::{validate, ClientGuard};
+        let read = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+        match recognize(&read("57-QuestStage-9.json")) {
+            Ok(m @ Message::QuestStage(_)) => {
+                assert_eq!(validate(&m, &mut ClientGuard::default(), 0), Ok(()));
+                let text = render(&m).unwrap_or_default();
+                assert!(text.contains("\"cause\"") && text.contains("\"root\""), "{text}");
+                if let Message::QuestStage(q) = m {
+                    assert_eq!((q.quest, q.word, q.cause, q.root.as_deref()), (0xb6fef, Some(2), Some(1), Some("QF_dunEmbershardQST_000B6FEF.Fragment_16")));
+                }
+            }
+            other => panic!("{other:?}"),
+        }
+        for n in 0..=8 {
+            let name = format!("57-QuestStage-{n}.json");
+            let text = render(&recognize(&read(&name)).unwrap_or_else(|e| panic!("{name}: {e}"))).unwrap_or_default();
+            assert!(!text.contains("\"cause\"") && !text.contains("\"root\""), "{name}: an absent cause and root are no keys");
+        }
+    }
+
     /// thuum ADR-068 rung 5 (D-T1 A): a player's race overlay on another
     /// player's figure. 33-CreateActor-4 is rotfern's figure (0xff000000)
     /// in Bleak Falls Barrow wearing WerewolfBeastRace 0xcdd84 over NordRace

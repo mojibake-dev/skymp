@@ -53,6 +53,7 @@
 #include "libespm/MGEF.h"
 #include "libespm/PROJ.h"
 #include "libespm/QUST.h"
+#include "libespm/SMQN.h"
 #include "libespm/SPEL.h"
 #include "libespm/ScriptData.h"
 #include "papyrus-vm/Utils.h"
@@ -345,6 +346,9 @@ struct PartOne::Impl
   // (conditionVariables) and every player's race overlay (player_own)
   rust::Box<skymp::rules::QuestRuns> questRuns =
     skymp::rules::new_quest_runs();
+  // D-Q4 C: `questStoryInstances` "world" (false: "seat", the default), the
+  // Story Manager's quests composed into questRuns at AttachEspm
+  bool questStoryWorld = false;
   rust::Box<skymp::rules::QuestScope> questScope =
     skymp::rules::new_quest_scope("\"off\"", "[]");
   rust::Box<skymp::rules::ScriptVariables> scriptVariables =
@@ -828,6 +832,8 @@ void PartOne::AttachEspm(espm::Loader* espm)
   // thuum ADR-068 rung 5: the quest scope's class needs every QUST's
   // aliases, read now that the game files are here (the settings came first)
   ComposeQuestScope();
+  // and D-Q4 C's Story Manager quests, every SMQN node's NNAMs
+  ComposeStoryQuests();
   // and the R1 bound's script attachments, read here and not at a seat's
   // first call (the fresh review's note 3)
   pImpl->scriptAttachments = &ScriptAttachmentIndexOf(worldState);
@@ -3979,6 +3985,76 @@ std::vector<skymp::rules::QuestStageEntry> QuestEntries(
   }
   return entries;
 }
+
+// thuum ADR-068 rung 5 (D-Q4 C): every quest a Story Manager quest node of
+// the game files names (libespm SMQN.h, its NNAMs: CommonLibSSE-NG
+// include/RE/B/BGSStoryManagerQuestNode.h:48), each with the first node that
+// names it ("<editor id> <hex id>") and how many do, and the nodes read,
+// once per set of game files (QuestScopeFactsOf's shape: built whole before
+// it is kept). A node is read in the last file's version
+// (GetDistinctRecordsByType), and one that file deletes or marks ignored
+// names nothing (the node's RecordFlags, kDeleted 1 << 5 and kIgnored
+// 1 << 12, BGSStoryManagerQuestNode.h:29-30)
+struct StoryQuest
+{
+  FormDesc quest;
+  std::string firstNode;
+  size_t nodes = 0;
+};
+
+struct StoryIndex
+{
+  std::vector<StoryQuest> quests;
+  size_t nodes = 0;
+};
+
+constexpr uint32_t kStoryNodeSkipped = (1u << 5) | (1u << 12);
+
+const StoryIndex& StoryIndexOf(WorldState& worldState)
+{
+  static std::map<const espm::Loader*, StoryIndex> g_story;
+  auto it = g_story.find(&worldState.GetEspm());
+  if (it != g_story.end()) {
+    return it->second;
+  }
+  StoryIndex index;
+  auto& browser = worldState.GetEspm().GetBrowser();
+  auto& cache = worldState.GetEspmCache();
+  for (const auto& lookup :
+       browser.GetDistinctRecordsByType(espm::SMQN::kType)) {
+    const auto* node = espm::Convert<espm::SMQN>(lookup.rec);
+    if (!node || (lookup.rec->GetFlags() & kStoryNodeSkipped) != 0) {
+      continue;
+    }
+    ++index.nodes;
+    const char* editorId = lookup.rec->GetEditorId(cache);
+    const std::string name =
+      fmt::format("{} {:x}", editorId ? editorId : "",
+                  lookup.ToGlobalId(lookup.rec->GetId()));
+    for (const uint32_t raw : node->GetData(cache).quests) {
+      if (raw == 0) {
+        continue;
+      }
+      FormDesc quest;
+      try {
+        quest =
+          FormDesc::FromFormId(lookup.ToGlobalId(raw), worldState.espmFiles);
+      } catch (const std::exception&) {
+        continue;
+      }
+      const auto at = std::find_if(
+        index.quests.begin(), index.quests.end(),
+        [&](const StoryQuest& q) { return SameForm(q.quest, quest); });
+      if (at == index.quests.end()) {
+        index.quests.push_back({ quest, name, 1 });
+      } else {
+        ++at->nodes;
+      }
+    }
+  }
+  return g_story.emplace(&worldState.GetEspm(), std::move(index))
+    .first->second;
+}
 }
 
 void PartOne::SetQuestScopeSettings(const std::string& modeJson,
@@ -4042,6 +4118,57 @@ void PartOne::SetPlayerQuestSettings(const std::string& globalsJson,
                pImpl->playerQuestVariables.size(),
                pImpl->playerQuestCallers.size());
   ComposeQuestScope();
+}
+
+void PartOne::SetQuestStoryInstancesSettings(const std::string& settingJson)
+{
+  pImpl->questStoryWorld =
+    skymp::rules::quest_story_instances_world(settingJson);
+  spdlog::info("PartOne::SetQuestStoryInstancesSettings - "
+               "questStoryInstances {}",
+               settingJson);
+  ComposeStoryQuests();
+}
+
+void PartOne::ComposeStoryQuests()
+{
+  if (!HasEspm()) {
+    return; // AttachEspm composes once the game files are here
+  }
+  const auto& index = StoryIndexOf(worldState);
+  std::vector<FormDesc> quests;
+  quests.reserve(index.quests.size());
+  for (const auto& q : index.quests) {
+    quests.push_back(q.quest);
+  }
+  const auto entries = QuestEntries(quests);
+  pImpl->questRuns->quest_runs_set_story(
+    rust::Slice<const skymp::rules::QuestStageEntry>(entries.data(),
+                                                     entries.size()),
+    pImpl->questStoryWorld);
+  spdlog::info("[verb:quest-stage] the Story Manager's {} quest node(s) "
+               "name {} quest(s) (SMQN NNAM): {} (questStoryInstances {}, "
+               "D-Q4 C)",
+               index.nodes, quests.size(),
+               pImpl->questStoryWorld
+                 ? "judged by their cause like any other quest"
+                 : "their runs are each seat's own, their stages cross",
+               pImpl->questStoryWorld ? "world" : "seat");
+}
+
+std::string PartOne::StoryNodesOf(const FormDesc& quest)
+{
+  if (!HasEspm()) {
+    return std::string();
+  }
+  for (const auto& q : StoryIndexOf(worldState).quests) {
+    if (SameForm(q.quest, quest)) {
+      return q.nodes > 1
+        ? fmt::format("{} and {} more", q.firstNode, q.nodes - 1)
+        : q.firstNode;
+    }
+  }
+  return std::string();
 }
 
 void PartOne::ComposeQuestScope()

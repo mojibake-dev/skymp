@@ -796,6 +796,11 @@ TEST_CASE("Every start and stop word carries its engine stages, relayed and "
 {
   PartOne& p = GetPartOne();
   Enter(p, kDeniedQuests);
+  // ClearSkiesQuest is a quest a Story Manager quest node names (WeatherChange
+  // 0x1e3c2, thuum docs/research/m3/re-story-location.md), whose runs D-Q4 C
+  // keeps per seat under questStoryInstances "seat": this case reads the word
+  // stages, so it runs under "world"
+  p.SetQuestStoryInstancesSettings("\"world\"");
   QuestLog log;
   ReportWord(p, 0, kEldergleam, 1);
   ReportWord(p, 0, kClearSkies, 1);
@@ -827,6 +832,198 @@ TEST_CASE("Every start and stop word carries its engine stages, relayed and "
       REQUIRE(m.j.value("served", false));
     }
   }
+  Leave(p);
+}
+
+// thuum ADR-068 rung 5, D-Q4 C (SCHEMA_VERSION 43): a seat's report names
+// its cause, 1 a world cause, 2 its own, and its stack's root (R2). A run
+// word, or a report the record judges a start (stage 0 or a start-up stage,
+// read 5), whose cause is the seat's own is refused (E_QUEST_CAUSE), nothing
+// written, relayed or counted; a stage crosses whatever its cause; a world
+// cause is judged as every report was, and the lines name the cause and the
+// root. dunEmbershardQST 0xb6fef, A Lovely Letter 0x74a83 and CR02 0x25185
+// are Skyrim.esm's (the run-cause read of 2026-11-10, its census)
+namespace {
+constexpr uint32_t kEmbershard = 0xb6fef;
+constexpr uint32_t kLovelyLetter = 0x74a83;
+constexpr uint32_t kCr02 = 0x25185;
+
+void ReportCaused(PartOne& p, Networking::UserId user, uint32_t quest,
+                  int stage, uint32_t word, uint32_t cause, const char* root)
+{
+  nlohmann::json j{ { "t", static_cast<int>(MsgType::QuestStage) },
+                    { "quest", quest },
+                    { "stage", stage },
+                    { "shared", nlohmann::json::array() },
+                    { "mode", 0 },
+                    { "cause", cause } };
+  if (word != 0) {
+    j["word"] = word;
+  }
+  if (root) {
+    j["root"] = root;
+  }
+  DoMessage(p, user, j);
+}
+}
+
+TEST_CASE("A run word or a start-up stage's report with the seat's own cause "
+          "is refused (E_QUEST_CAUSE), nothing written or relayed; a stage "
+          "crosses whatever its cause, and a world cause is recorded with "
+          "its cause and root named",
+          "[QuestStage][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p, kDeniedQuests);
+  QuestLog log;
+  // USSEP's housekeeping stop, rooted at its version tracker's OnInit, and
+  // an engine start's start-up stage with no script call: the seat's own
+  ReportCaused(p, 0, kLetterQuest, 0, 2, 2,
+               "USKP_VersionTrackingScript.OnInit");
+  ReportCaused(p, 0, kHeartwoodMill, 10, 0, 2, nullptr);
+  ReportCaused(p, 0, kHeartwoodMill, 0, 1, 2, nullptr);
+  REQUIRE(p.GetQuestRuns().empty());
+  REQUIRE(p.GetQuestStages().empty());
+  REQUIRE(WordsTo(p, 1).empty());
+  REQUIRE(log.Count("E_QUEST_CAUSE: user 0 actor ff000bd0 reported the stop "
+                    "of 10d3bb:Skyrim.esm (cause seat, root "
+                    "USKP_VersionTrackingScript.OnInit, R2): the stop of "
+                    "10d3bb:Skyrim.esm has the seat's own cause") == 1);
+  // the start-up stage's report is the start's, the seat's own: no E_QUEST_
+  // code (the designed path: the seat cannot tell a start-up stage), one
+  // plain line a minute per seat; the same start sent as a word is refused
+  // by its cause
+  REQUIRE(log.Count("QuestStage: user 0 actor ff000bd0 reported stage 10 of "
+                    "e3ea5:Skyrim.esm, which the record reads as its start "
+                    "(cause seat, root none, R2): the seat's own") == 1);
+  REQUIRE(log.Count("E_QUEST_CAUSE: user 0 actor ff000bd0 reported the start "
+                    "of e3ea5:Skyrim.esm (cause seat, root none, R2)") == 1);
+  REQUIRE(log.Count("E_QUEST_") == 2);
+  REQUIRE(log.Count(": recorded, relayed") == 0);
+
+  // HeartwoodMill's unflagged stage 20 with the seat's own cause and
+  // Embershard's stage 40 with a world cause: stages, each recorded and
+  // relayed, each line naming its cause
+  ReportCaused(p, 0, kHeartwoodMill, 20, 0, 2,
+               "FreeformHeartwoodMillScript.OnInit");
+  ReportCaused(p, 1, kEmbershard, 40, 0, 1,
+               "defaultSetStageTrigScript.OnTriggerEnter");
+  const auto stages = p.GetQuestStages();
+  REQUIRE(stages ==
+          std::vector<QuestStageDone>{
+            { FormDesc::FromString("e3ea5:Skyrim.esm"), 20 },
+            { FormDesc::FromString("b6fef:Skyrim.esm"), 40 } });
+  REQUIRE(log.Count("[verb:quest-stage] ff000bd0 set e3ea5:Skyrim.esm stage "
+                    "20: recorded, relayed to 1 (cause seat, root "
+                    "FreeformHeartwoodMillScript.OnInit, R2)") == 1);
+  REQUIRE(log.Count("[verb:quest-stage] ff000bd1 set b6fef:Skyrim.esm stage "
+                    "40: recorded, relayed to 1 (cause world, root "
+                    "defaultSetStageTrigScript.OnTriggerEnter, R2)") == 1);
+
+  // a world cause: the stop of the stage 40 fragment is recorded and
+  // relayed, its line naming the root; the same word again folds
+  p.Messages().clear();
+  ReportCaused(p, 0, kEmbershard, 0, 2, 1,
+               "QF_dunEmbershardQST_000B6FEF.Fragment_16");
+  ReportCaused(p, 1, kEmbershard, 0, 2, 1,
+               "QF_dunEmbershardQST_000B6FEF.Fragment_16");
+  REQUIRE(p.GetQuestRuns() == Runs({ { "b6fef:Skyrim.esm", false, 1 } }));
+  REQUIRE(WordsTo(p, 1) ==
+          std::vector<Word>{ W(kEmbershard, 0, 2, kReporter) });
+  REQUIRE(WordsTo(p, 0).empty());
+  REQUIRE(log.Count("[verb:quest-stage] ff000bd0 stops b6fef:Skyrim.esm: "
+                    "recorded, relayed to 1 (cause world, root "
+                    "QF_dunEmbershardQST_000B6FEF.Fragment_16, R2)") == 1);
+  // the refused words left the record alone: a world start of the letter
+  // quest is recorded, not folded
+  ReportCaused(p, 0, kLetterQuest, 0, 1, 1, "TIF__0010D3BC.Fragment_0");
+  REQUIRE(p.GetQuestRuns() ==
+          Runs({ { "b6fef:Skyrim.esm", false, 1 },
+                 { "10d3bb:Skyrim.esm", true, 1 } }));
+  Leave(p);
+}
+
+TEST_CASE("Under questStoryInstances seat a quest a Story Manager quest node "
+          "names keeps its runs per seat (E_QUEST_INSTANCE, the node named), "
+          "its stages cross and the login serves none of its runs; under "
+          "world it is judged by its cause",
+          "[QuestStage][espm]")
+{
+  PartOne& p = GetPartOne();
+  // the server's own read of the game files' SMQN nodes (thuum
+  // docs/research/m3/re-story-location.md's Skyrim.esm dump:
+  // FreeformRiverwoodNode 0xb555d's one NNAM 0x74a83, CompanionsAelaNode
+  // 0xbfc77's three, CR02 0x25185 among them); dunEmbershardQST no node names
+  REQUIRE(p.StoryNodesOf(FormDesc::FromString("74a83:Skyrim.esm")) ==
+          "FreeformRiverwoodNode b555d");
+  REQUIRE(p.StoryNodesOf(FormDesc::FromString("25185:Skyrim.esm")) ==
+          "CompanionsAelaNode bfc77");
+  REQUIRE(p.StoryNodesOf(FormDesc::FromString("b6fef:Skyrim.esm")).empty());
+  REQUIRE_THROWS(p.SetQuestStoryInstancesSettings("\"off\""));
+
+  Enter(p, kDeniedQuests);
+  QuestLog log;
+  // A Lovely Letter's start and stop with a world cause, and CR02's start
+  // from an older client (no cause): each seat's own instance
+  ReportCaused(p, 0, kLovelyLetter, 0, 1, 1,
+               "QF_FreeformRiverwood01_00074A83.Fragment_22");
+  ReportCaused(p, 0, kLovelyLetter, 0, 2, 1,
+               "QF_FreeformRiverwood01_00074A83.Fragment_22");
+  ReportWord(p, 1, kCr02, 1);
+  REQUIRE(p.GetQuestRuns().empty());
+  REQUIRE(WordsTo(p, 0).empty());
+  REQUIRE(WordsTo(p, 1).empty());
+  REQUIRE(log.Count("E_QUEST_INSTANCE: user 0 actor ff000bd0 reported the "
+                    "start of 74a83:Skyrim.esm (cause world, root "
+                    "QF_FreeformRiverwood01_00074A83.Fragment_22, R2), named "
+                    "by FreeformRiverwoodNode b555d: 74a83:Skyrim.esm is a "
+                    "quest a Story Manager quest node names") == 1);
+  REQUIRE(log.Count("E_QUEST_INSTANCE: user 0 actor ff000bd0 reported the "
+                    "stop of 74a83:Skyrim.esm") ==
+          0); // counted, its line due a minute on
+  REQUIRE(log.Count("E_QUEST_INSTANCE: user 1 actor ff000bd1 reported the "
+                    "start of 25185:Skyrim.esm, named by CompanionsAelaNode "
+                    "bfc77") == 1);
+  // its stage crosses: A Lovely Letter's stage 10, recorded and relayed
+  ReportCaused(p, 0, kLovelyLetter, 10, 0, 1,
+               "QF_FreeformRiverwood01_00074A83.Fragment_3");
+  REQUIRE(WordsTo(p, 1) ==
+          std::vector<Word>{ W(kLovelyLetter, 10, 0, kReporter) });
+
+  // a run recorded before (a world restarted from an older build): the login
+  // serves none of an instance's runs under "seat"
+  REQUIRE(
+    p.SetQuestRuns({ { FormDesc::FromString("74a83:Skyrim.esm"), true, 1 },
+                     { FormDesc::FromString("b6fef:Skyrim.esm"), true, 1 } }));
+  p.Messages().clear();
+  p.SetUserActor(1, kWatcher);
+  size_t embershardStarts = 0;
+  for (const auto& w : WordsTo(p, 1)) {
+    // a word (its third member), never the instance's; its stage 10 is
+    // served as any recorded stage is
+    if (std::get<2>(w) != 0) {
+      REQUIRE(std::get<0>(w) != kLovelyLetter);
+      embershardStarts += std::get<0>(w) == kEmbershard ? 1 : 0;
+    }
+  }
+  REQUIRE(embershardStarts == 1);
+  REQUIRE(log.Count("QuestStage: actor ff000bd1 sent 1 running and 0 stopped "
+                    "quest(s) around the stages after a login") == 1);
+
+  // "world": the instance is judged by its cause like any other quest
+  p.SetQuestStoryInstancesSettings("\"world\"");
+  REQUIRE(p.SetQuestRuns({}));
+  p.Messages().clear();
+  ReportCaused(p, 0, kLovelyLetter, 0, 1, 1,
+               "QF_FreeformRiverwood01_00074A83.Fragment_22");
+  REQUIRE(p.GetQuestRuns() == Runs({ { "74a83:Skyrim.esm", true, 1 } }));
+  REQUIRE(WordsTo(p, 1) ==
+          std::vector<Word>{ W(kLovelyLetter, 0, 1, kReporter) });
+  ReportCaused(p, 0, kLovelyLetter, 0, 2, 2,
+               "FreeformRiverwood01Script.OnInit");
+  REQUIRE(p.GetQuestRuns() == Runs({ { "74a83:Skyrim.esm", true, 1 } }));
+  REQUIRE(log.Count("E_QUEST_CAUSE: user 0 actor ff000bd0 reported the stop "
+                    "of 74a83:Skyrim.esm") == 1);
   Leave(p);
 }
 

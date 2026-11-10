@@ -783,6 +783,19 @@ fn check_quest_stage(m: &skymp::QuestStage) -> Result<(), Reject> {
             }
         }
     }
+    // SCHEMA_VERSION 43 (thuum ADR-068 rung 5, D-Q4 C): a report's cause is a
+    // world cause or the seat's own, on a report of a quest; its root a
+    // script's "<Script>.<Function>" in the characters Papyrus names take,
+    // and only beside a cause. Whether the cause holds is the server's rule
+    // (wire-rules quest_runs), and it is the seat's word either way (R2)
+    if m.cause.is_some_and(|c| (c != skymp::QUEST_CAUSE_WORLD && c != skymp::QUEST_CAUSE_SEAT) || m.quest == 0) {
+        return Err(Reject::Range);
+    }
+    if let Some(root) = &m.root {
+        if m.cause.is_none() || root.is_empty() || !root.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.') {
+            return Err(Reject::Range);
+        }
+    }
     Ok(())
 }
 
@@ -4891,6 +4904,38 @@ mod quest_word_and_script_variable_tests {
     }
 
     #[test]
+    fn a_seats_report_names_its_cause_and_root_in_their_shapes() {
+        // thuum ADR-068 rung 5, D-Q4 C (SCHEMA_VERSION 43): c1's stop of
+        // dunEmbershardQST 0xb6fef from its stage 40 fragment (a world cause,
+        // the probe's world pair), USSEP's housekeeping stop of
+        // USKPDrownedSorrowsFix (the seat's own, rooted at OnInit), and an
+        // engine start's stage 0 (the seat's own, no script call: no root)
+        let report = |quest: u32, stage: u16, word: Option<u8>, cause: Option<u8>, root: Option<&str>| {
+            Message::QuestStage(wire_schema::skymp::QuestStage { quest, stage, word, cause, root: root.map(|r| r.try_into().unwrap_or_default()), ..Default::default() })
+        };
+        let mut g = ClientGuard::default();
+        assert_eq!(validate(&report(0xb6fef, 0, Some(2), Some(1), Some("QF_dunEmbershardQST_000B6FEF.Fragment_16")), &mut g, 0), Ok(()));
+        assert_eq!(validate(&report(0x701e8bd, 0, Some(2), Some(2), Some("USKP_VersionTrackingScript.OnInit")), &mut g, 0), Ok(()));
+        assert_eq!(validate(&report(0x74a83, 0, None, Some(2), None), &mut g, 0), Ok(()));
+        // a stage with its cause, and an older client's report with none
+        assert_eq!(validate(&report(0xb6fef, 40, None, Some(1), Some("defaultSetStageTrigScript.OnTriggerEnter")), &mut g, 0), Ok(()));
+        assert_eq!(validate(&report(0xb6fef, 40, None, None, None), &mut g, 0), Ok(()));
+        // a cause other than 1 or 2, a cause or a root on the login's list, a
+        // root without a cause, an empty root, a root with a character no
+        // Papyrus name takes
+        for bad in [0u8, 3, u8::MAX] {
+            assert_eq!(validate(&report(0xb6fef, 0, Some(1), Some(bad), None), &mut g, 0), Err(Reject::Range), "{bad}");
+        }
+        assert_eq!(validate_server(&report(0, 0, None, Some(1), None)), Err(Reject::Range));
+        for root in ["QF_dunEmbershardQST_000B6FEF.Fragment_16", "", "Script.On Init", "Script.OnInit;", "Skrípt.OnInit"] {
+            assert_eq!(validate(&report(0xb6fef, 0, Some(1), None, Some(root)), &mut g, 0), Err(Reject::Range), "{root:?} without a cause");
+        }
+        for root in ["", "Script.On Init", "Script.OnInit;", "Skrípt.OnInit"] {
+            assert_eq!(validate(&report(0xb6fef, 0, Some(1), Some(1), Some(root)), &mut g, 0), Err(Reject::Range), "{root:?}");
+        }
+    }
+
+    #[test]
     fn quest_stages_carry_a_run_word_an_acting_player_and_the_replay_flag() {
         // a relayed start of 0x10d3bb with c1 0xff000000 acting, a stop, a
         // served stage of A Lovely Letter 0x74a83
@@ -5011,18 +5056,26 @@ mod quest_word_and_script_variable_tests {
             acting in proptest::option::of(prop_oneof![Just(0xff00_0000u32), Just(0x14u32), any::<u32>()]),
             served in proptest::option::of(any::<bool>()),
             stages in proptest::option::of(proptest::collection::vec(prop_oneof![Just(0u16), Just(10u16), any::<u16>()], 0..4)),
+            // SCHEMA_VERSION 43 (D-Q4 C): a cause in range or not, and a root
+            // a script's name, empty, or with a character no name takes
+            cause in proptest::option::of(prop_oneof![1u8..3, any::<u8>()]),
+            root in proptest::option::of(prop_oneof![Just("QF_dunEmbershardQST_000B6FEF.Fragment_16".to_owned()), Just(String::new()), "[A-Za-z0-9_. :-]{1,24}"]),
             now in any::<u64>(),
         ) {
             let mut m = quest_word(quest, stage, word, acting, served);
             if let Message::QuestStage(q) = &mut m {
                 q.word_stages = stages.clone().map(|s| s.try_into().unwrap_or_default());
+                q.cause = cause;
+                q.root = root.as_deref().map(|r| r.try_into().unwrap_or_default());
             }
             let word_ok = word.is_none_or(|w| (w == 1 || w == 2) && stage == 0 && quest != 0);
             let acting_ok = acting.is_none_or(|a| a >= 0xff00_0000 && quest != 0);
             // quest 0 in mode 0 without a list is the login's message shape alone
             let list_ok = quest != 0;
             let stages_ok = stages.as_ref().is_none_or(|s| word.is_some() && !s.is_empty() && s.iter().enumerate().all(|(i, x)| !s.iter().take(i).any(|y| y == x)));
-            let shape = if word_ok && acting_ok && list_ok && stages_ok { Ok(()) } else { Err(Reject::Range) };
+            let cause_ok = cause.is_none_or(|c| (c == 1 || c == 2) && quest != 0);
+            let root_ok = root.as_ref().is_none_or(|r| cause.is_some() && !r.is_empty() && r.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.'));
+            let shape = if word_ok && acting_ok && list_ok && stages_ok && cause_ok && root_ok { Ok(()) } else { Err(Reject::Range) };
             prop_assert_eq!(validate_server(&m), shape);
             let mut g = ClientGuard::default();
             let client = if shape.is_ok() && served != Some(true) && stages.is_none() { Ok(()) } else { Err(Reject::Range) };

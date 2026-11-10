@@ -311,8 +311,9 @@ public:
   // quest's "<hex id>:<plugin>": `playerQuestGlobals` (to the GLOBs its
   // scripts write, composed into the player globals, so WorldGlobal refuses
   // them), `playerQuestVariables` (to its scripts' scalar variables as
-  // "<script>::<var>", D-T2 B's own keys) and `playerQuestCallers` (to the
-  // stages whose fragment calls its scripts, PQ-3's: relayed served). A bad
+  // "<script>::<var>", D-T2 B's own keys) and `playerQuestCallers` (keyed by
+  // a world quest instead: to its stages whose fragment calls a player-class
+  // quest's script, PQ-3's, relayed served). A bad
   // value stops the server here, named. With the game files every QUST is
   // classed (wire-rules quest_scope over its aliases) and the measurement
   // logged; while the scope acts the class is composed into the shared

@@ -83,7 +83,9 @@ TEST_CASE("The change form keeps the world's quest runs and the script "
   const MpChangeForm loaded = RoundTrip(changeForm);
   REQUIRE(loaded.questRuns == changeForm.questRuns);
   REQUIRE(loaded.scriptVariables == changeForm.scriptVariables);
-  REQUIRE(loaded.formVersion == changeForm.formVersion);
+  // the keys move no formVersion: read without the load order, a record
+  // carrying them reads at the version an empty one reads at
+  REQUIRE(loaded.formVersion == RoundTrip(MpChangeForm()).formVersion);
 
   // rule 6's migration: a record from before the fields has neither key and
   // reads as none

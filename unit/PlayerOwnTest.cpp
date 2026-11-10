@@ -234,16 +234,17 @@ TEST_CASE("A race neither Playable nor a twin opens the player's overlay: "
   REQUIRE(looks.size() == 2);
   REQUIRE(looks[1]["overlay"]["items"] == nlohmann::json::array({ skin }));
 
-  // the equipment gate keeps the skin the overlay holds
+  // the equipment gate keeps the skin the overlay holds (the report as the
+  // seat sends it, so its relay's bytes are the message's)
   UpdateEquipmentMessage equip;
   equip.idx = turned.GetIdx();
   equip.data.numChanges = 3;
   Inventory::ExtraData worn;
   worn.worn_ = true;
   equip.data.inv.entries.push_back(Inventory::Entry(skin, 1, worn));
-  RawMessageData raw;
-  raw.userId = 0;
-  p.GetActionListener().OnUpdateEquipment(raw, equip);
+  nlohmann::json report;
+  equip.WriteJson(report);
+  DoMessage(p, 0, report);
   const auto& entries = turned.GetEquipment().inv.entries;
   REQUIRE(std::any_of(entries.begin(), entries.end(),
                       [&](const auto& e) { return e.baseId == skin; }));

@@ -4464,7 +4464,8 @@ const std::vector<NamedForm>& CallerProperties(WorldState& worldState,
   };
   auto found = g_index.find(&worldState.GetEspm());
   if (found == g_index.end()) {
-    auto& index = g_index[&worldState.GetEspm()];
+    // built whole before it is kept, so a read that throws keeps nothing
+    std::unordered_map<std::string, std::vector<NamedForm>> index;
     auto& browser = worldState.GetEspm().GetBrowser();
     auto& cache = worldState.GetEspmCache();
     const auto add = [&](std::vector<NamedForm>& into, uint32_t form) {
@@ -4510,7 +4511,7 @@ const std::vector<NamedForm>& CallerProperties(WorldState& worldState,
         }
       }
     }
-    found = g_index.find(&worldState.GetEspm());
+    found = g_index.emplace(&worldState.GetEspm(), std::move(index)).first;
   }
   const auto it = found->second.find(lower(caller));
   return it == found->second.end() ? kNone : it->second;

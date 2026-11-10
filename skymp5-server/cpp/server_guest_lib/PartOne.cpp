@@ -356,6 +356,7 @@ struct PartOne::Impl
   std::vector<
     std::pair<FormDesc, std::vector<std::pair<std::string, std::string>>>>
     playerQuestVariables;
+  // (playerQuestCallers is keyed by the world quest whose stages it names)
   std::vector<std::pair<FormDesc, std::vector<uint16_t>>> playerQuestCallers;
   // the class measured (either mode) and composed (acting only), and PQ-3's
   // stages relayed served (acting only)
@@ -3678,7 +3679,8 @@ const std::vector<QuestScopeFacts>& QuestScopeFactsOf(WorldState& worldState)
   if (it != g_facts.end()) {
     return it->second;
   }
-  auto& facts = g_facts[&worldState.GetEspm()];
+  // built whole before it is kept, so a read that throws keeps nothing
+  std::vector<QuestScopeFacts> facts;
   auto& browser = worldState.GetEspm().GetBrowser();
   auto& cache = worldState.GetEspmCache();
   const auto global = [](const espm::LookupResult& at, uint32_t raw) {
@@ -3733,7 +3735,8 @@ const std::vector<QuestScopeFacts>& QuestScopeFactsOf(WorldState& worldState)
     }
     facts.push_back(std::move(quest));
   }
-  return facts;
+  return g_facts.emplace(&worldState.GetEspm(), std::move(facts))
+    .first->second;
 }
 
 std::vector<skymp::rules::QuestStageEntry> QuestEntries(
@@ -4037,7 +4040,9 @@ PartOne::QuestRunsAtLogin()
 std::optional<RaceOverlay> PartOne::PlayerOverlayOf(uint32_t actorId) const
 {
   const auto row = pImpl->playerOverlays->player_overlay(actorId);
-  if (!row.open) {
+  // an overlay over no recorded race (a player with no look) is never sent:
+  // the wire's overlay names both races (wire-validate check_race_overlay)
+  if (!row.open || row.race == 0 || row.base == 0) {
     return std::nullopt;
   }
   RaceOverlay overlay;

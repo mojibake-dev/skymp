@@ -183,7 +183,10 @@ TEST_CASE("A player-class quest's keys are its player's own: the world's "
   Report(p, 0,
          { Entry(kVampire, "PlayerVampireQuestScript", "::VampireStatus_var",
                  false, 3, 2) });
-  REQUIRE(log.Count("E_SCRIPTVAR_PLAYER") == 1);
+  // the refusal's own line (the report's line counts it too)
+  REQUIRE(log.Count("E_SCRIPTVAR_PLAYER: ff000c61 reports script variable") ==
+          1);
+  REQUIRE(log.Count(", E_SCRIPTVAR_PLAYER x1") == 1);
   REQUIRE(p.GetScriptVariables().empty());
   Report(p, 0,
          { Entry(kVampire, "PlayerVampireQuestScript", "::VampireStatus_var",
@@ -286,6 +289,8 @@ TEST_CASE("The login's watch and record go after the world globals, at most "
   size_t firstVars = 0;
   std::vector<size_t> watches;
   std::vector<size_t> entries;
+  size_t reserved = 0;
+  bool vampirePair = false;
   size_t at = 0;
   for (auto& m : p.Messages()) {
     ++at;
@@ -299,6 +304,13 @@ TEST_CASE("The login's watch and record go after the world globals, at most "
       firstVars = firstVars ? firstVars : at;
       if (!m.j["watch"].empty()) {
         watches.push_back(m.j["watch"].size());
+        for (const auto& key : m.j["watch"]) {
+          if (key["var"].get<std::string>().rfind("<OnUpdateGameTime", 0) ==
+              0) {
+            ++reserved;
+            vampirePair = vampirePair || key["form"] == kVampire;
+          }
+        }
       }
       if (!m.j["entries"].empty()) {
         entries.push_back(m.j["entries"].size());
@@ -315,8 +327,21 @@ TEST_CASE("The login's watch and record go after the world globals, at most "
   }
   REQUIRE(lastGlobal > 0);
   REQUIRE(firstVars > lastGlobal);
-  // 300 listed and 257 own keys to watch: 256, 256, 45
-  REQUIRE(watches == std::vector<size_t>{ 256, 256, 45 });
+  // 300 listed keys and the own ones: the vampire quest's 255 variables and
+  // every player-class quest's registration pair (each marked quest with a
+  // script has one), in messages of 256 but the last
+  REQUIRE(vampirePair);
+  REQUIRE(reserved >= 2);
+  REQUIRE(reserved % 2 == 0);
+  size_t total = 0;
+  for (size_t i = 0; i < watches.size(); ++i) {
+    total += watches[i];
+    if (i + 1 < watches.size()) {
+      REQUIRE(watches[i] == 256);
+    }
+  }
+  REQUIRE(total == 300 + 255 + reserved);
+  REQUIRE(watches.size() == (total + 255) / 256);
   // the own record: 255 alone, the pair in the next message
   REQUIRE(entries == std::vector<size_t>{ 255, 2 });
 

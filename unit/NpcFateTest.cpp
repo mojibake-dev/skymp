@@ -1554,8 +1554,12 @@ TEST_CASE("The campfire bandit's own rows roll at its fate and a put made "
 // worn item is rolled beside what it holds, as before. The two entrance
 // bandits of Bleak Falls Temple 0x371de (lab/esm.py on sky-srv, 2026-11-06;
 // the campfire case's), each given a record from before the fate: 0x39fe2
-// wearing an iron dagger 0x1397e, 0x39fe4 holding 10 gold and wearing
-// nothing
+// wearing an iron dagger 0x1397e and holding 10 gold, 0x39fe4 holding 10
+// gold and wearing nothing. A roll draws from a generator std::random_device
+// seeds at every list it rolls (LeveledListUtils.cpp:43-44), so an exact
+// count is asserted only where nothing is rolled: the adopted record,
+// exactly as it was, which canon's re-roll beside it breaks (new outfit
+// entries)
 TEST_CASE("A recorded NPC with no fate level that wears an item adopts its "
           "record as its roll; one wearing nothing is rolled beside it",
           "[NpcFate][espm]")
@@ -1576,7 +1580,8 @@ TEST_CASE("A recorded NPC with no fate level that wears an item adopts its "
   // the records, as a save from before ADR-049 holds them: no fateLevel
   MpChangeForm wornRecord = worn.GetChangeForm();
   wornRecord.inv = Inventory();
-  wornRecord.inv.AddItems({ Inventory::Entry(kIronDagger, 1) });
+  wornRecord.inv.AddItems(
+    { Inventory::Entry(kIronDagger, 1), Inventory::Entry(kGold, 10) });
   wornRecord.equipment = Equipment();
   wornRecord.equipment.inv.entries.push_back(
     Inventory::Entry(kIronDagger, 1, kWornRight));
@@ -1601,16 +1606,21 @@ TEST_CASE("A recorded NPC with no fate level that wears an item adopts its "
   p.Messages().clear();
   p.TickCellHosts(FateNowMs());
 
-  // adopted: the level set, the record exactly as it was
+  // adopted: the level set and nothing rolled, the record exactly as it was:
+  // its two rows, the gold it held unchanged, the dagger its one worn entry
   REQUIRE(worn.GetFateLevel() == std::optional<uint16_t>{ 1 });
   REQUIRE_FALSE(worn.CanRollFate());
   REQUIRE(worn.GetInventory().GetItemCount(kIronDagger) == 1);
-  REQUIRE(worn.GetInventory().entries.size() == 1);
+  REQUIRE(worn.GetInventory().GetItemCount(kGold) == 10);
+  REQUIRE(worn.GetInventory().entries.size() == 2);
+  REQUIRE(worn.GetEquipment().inv.entries.size() == 1);
   REQUIRE(Wearing(worn, kIronDagger));
 
-  // rolled beside: the gold kept, the roll added
+  // rolled beside, as before D-N1 A: the level set, the record's rows kept
+  // and the roll's added (its own gold may join the record's: pipeline 5691
+  // read 17 and the mirror's Windows run 18, so the record's 10 is a floor)
   REQUIRE(bare.GetFateLevel() == std::optional<uint16_t>{ 1 });
-  REQUIRE(bare.GetInventory().GetItemCount(kGold) == 10);
+  REQUIRE(bare.GetInventory().GetItemCount(kGold) >= 10);
   REQUIRE(bare.GetInventory().entries.size() > 1);
 
   // the adopted outfit rides its fate

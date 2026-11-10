@@ -238,14 +238,25 @@ uint32_t SelfIdOfHandle(RE::VMHandle handle)
 }
 }
 
+// thuum docs/research/rung5-quests-2026-11-09.md 1(c): every grant and
+// release logged, so a grant and the gate's lines order in one platform log
+// (risk (c)'s read, H-TP1: an NPC's entry blanked at the host's own load
+// before its grant)
 void Frida::SetCellHosted(uint32_t cellFormId, bool hosted)
 {
-  std::lock_guard<std::mutex> lock(g_hostedCellsMutex);
-  if (hosted) {
-    g_hostedCells.insert(cellFormId);
-  } else {
-    g_hostedCells.erase(cellFormId);
+  size_t hostedCells = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_hostedCellsMutex);
+    if (hosted) {
+      g_hostedCells.insert(cellFormId);
+    } else {
+      g_hostedCells.erase(cellFormId);
+    }
+    hostedCells = g_hostedCells.size();
   }
+  logger::info("[verb:cell-host] SetCellHosted({:x}, {}): {} cell(s) hosted "
+               "here",
+               cellFormId, hosted, hostedCells);
 }
 
 bool Frida::IsCellHosted(uint32_t cellFormId)
@@ -425,6 +436,39 @@ bool HasAttachedScript(VM* vm, RE::VMHandle handle)
   RE::BSSpinLockGuard guard{ vm->attachedScriptsLock };
   const auto it = vm->attachedScripts.find(handle);
   return it != vm->attachedScripts.end() && it->second.size() != 0;
+}
+
+// thuum docs/research/rung5-quests-2026-11-09.md 1(c), fix (b): the rule's
+// three lines (a press passed for an exempt class, one ignored, one told) are
+// due per (kind, trigger), each kind's first three for a trigger and every
+// hundredth, so one trigger's burst no longer hides another's first line
+// (the plan's read 10: in the 50 stage's two reds the host-to-be's own Temple
+// load spent the process-wide first three ignored lines on ambush NPCs'
+// entries, so no probe could claim the web's or the plate's own line);
+// FurnitureLineDue's twin (below, beside the animation hook: a mutex map
+// cleared past 1024 keys). Each line's text is unchanged, its "(<n> so far)"
+// still the process-wide count, and the lock is taken on those three
+// branches alone (rule 9)
+enum class TriggerLine : uint32_t
+{
+  kExempted = 1,
+  kIgnored = 2,
+  kTold = 3
+};
+
+std::mutex g_triggerLinesMutex;
+std::unordered_map<uint64_t, uint64_t> g_triggerLines;
+
+bool TriggerLineDue(TriggerLine kind, uint32_t triggerId)
+{
+  const uint64_t key =
+    (static_cast<uint64_t>(static_cast<uint32_t>(kind)) << 32) | triggerId;
+  std::lock_guard<std::mutex> lock(g_triggerLinesMutex);
+  if (g_triggerLines.size() > 1024 && g_triggerLines.count(key) == 0) {
+    g_triggerLines.clear();
+  }
+  const uint64_t n = ++g_triggerLines[key];
+  return n <= 3 || n % 100 == 0;
 }
 }
 
@@ -667,7 +711,7 @@ void OnSendEventEnter(GumInvocationContext* ic)
             TrapFamily::Exempt::Is(handle)) {
           static std::atomic<uint64_t> s_presserExempted{ 0 };
           const auto n = ++s_presserExempted;
-          if (n <= 3 || n % 100 == 0) {
+          if (TriggerLineDue(TriggerLine::kExempted, selfId)) {
             logger::info("[verb:traps] {} to {:x} by {:x}: not this seat's "
                          "presser, passed: an exempt class keeps D-S3 ({} so "
                          "far)",
@@ -676,7 +720,7 @@ void OnSendEventEnter(GumInvocationContext* ic)
         } else {
           static std::atomic<uint64_t> s_presserIgnored{ 0 };
           const auto n = ++s_presserIgnored;
-          if (n <= 3 || n % 100 == 0) {
+          if (TriggerLineDue(TriggerLine::kIgnored, selfId)) {
             logger::info("[verb:traps] {} to {:x} by {:x}: not this seat's "
                          "presser, ignored (D-W1) ({} so far)",
                          eventNameStr, selfId, presser->formID, n);
@@ -705,7 +749,7 @@ void OnSendEventEnter(GumInvocationContext* ic)
           const bool enter = entry == 1;
           static std::atomic<uint64_t> s_presserTold{ 0 };
           const auto n = ++s_presserTold;
-          if (n <= 3 || n % 100 == 0) {
+          if (TriggerLineDue(TriggerLine::kTold, refrId)) {
             logger::info("[verb:traps] {} to {:x} by {:x}: this seat's "
                          "presser, told as triggerEntry ({}) ({} so far)",
                          eventNameStr, refrId, presserId,

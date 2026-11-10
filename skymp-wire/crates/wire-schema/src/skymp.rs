@@ -286,6 +286,34 @@ wire_struct! {
         pub restricted_races: Option<Vec<u32, { cap::RACES }>>,
         /// Of `restricted_races`, the ones this player's profile may wear.
         pub permitted_races: Option<Vec<u32, { cap::RACES }>>,
+        /// thuum ADR-068 rung 5 (D-T1 A): the race overlay another player's
+        /// figure wears beyond its record (WerewolfBeastRace and what its
+        /// scripts added), on that figure's CreateActor alone, never on a
+        /// player's own; absent while it wears its record.
+        pub overlay: Option<RaceOverlay>,
+    }
+}
+
+wire_struct! {
+    /// A player's race overlay (thuum ADR-068 rung 5, D-T1 A; wire-rules
+    /// player_own::Overlay, wire-bridge PlayerOverlayRow): a race neither
+    /// Playable nor a twin of its recorded one, worn while its scripts run,
+    /// and the spells, shouts and items they added meanwhile, none of it on
+    /// the player's change form. It ends at the race's return or at the
+    /// player's disconnect. The server's word, R1 by player_own's bound.
+    pub struct RaceOverlay {
+        /// An overlay is open; false names none (every list empty).
+        pub open: bool,
+        /// The race worn, a RACE of the load order.
+        pub race: u32,
+        /// The recorded race the overlay's end returns to.
+        pub base: u32,
+        /// Spells added while open, in order.
+        pub spells: Vec<u32, { cap::OVERLAY_FORMS }>,
+        /// Shouts added while open, in order.
+        pub shouts: Vec<u32, { cap::OVERLAY_FORMS }>,
+        /// Items equipped while open, in order.
+        pub items: Vec<u32, { cap::OVERLAY_FORMS }>,
     }
 }
 
@@ -391,6 +419,11 @@ wire_struct! {
         pub idx: u32,
         /// The look; absent clears it.
         pub data: Option<Appearance>,
+        /// thuum ADR-068 rung 5 (D-T1 A): the race overlay the figure wears
+        /// with this look (server to client, another player's figure
+        /// alone); absent while it wears its record, so the overlay's end is
+        /// an UpdateAppearance without it.
+        pub overlay: Option<RaceOverlay>,
     }
 }
 

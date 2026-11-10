@@ -2989,6 +2989,13 @@ mod ffi {
         /// the call then waiting for `owner`; Row, Args or Rate otherwise,
         /// and the core looks nothing up.
         fn shape(self: &mut ScriptCalls, row: i32, args: &[ScriptArg], sender: u32, self_id: u32, now_ms: u64) -> ScriptCallVerdict;
+        /// thuum ADR-068 rung 5: whether a shaped call's object arguments at
+        /// 0xff000000 and up each name a connected player's actor (`players`,
+        /// the core's list), the acting player's figure a scoped call names
+        /// where its script named the player (wire-rules natives::figures):
+        /// Accepted, or Args with its name and why. The core asks it after
+        /// `shape` and before `owner`.
+        fn script_call_figures(args: &[ScriptArg], players: &[u32]) -> ScriptCallVerdict;
         /// The owner step on the call the last `shape` accepted, over the
         /// facts the core gathered for its subject (its kind, its cell, that
         /// cell's host and the host's epoch, or an actor's simulator and its
@@ -5080,6 +5087,17 @@ fn quiet_script_call() -> ScriptCallVerdict {
 }
 
 /// A refused script call, by its code and its name, either step's.
+fn script_call_figures(args: &[ScriptArg], players: &[u32]) -> ScriptCallVerdict {
+    match natives::figures(&native_args(args), players) {
+        Ok(()) => {
+            let mut out = quiet_script_call();
+            out.code = ScriptCallCode::Accepted;
+            out
+        }
+        Err(r) => refused_script_call(r),
+    }
+}
+
 fn refused_script_call(r: natives::Refusal) -> ScriptCallVerdict {
     let mut out = quiet_script_call();
     out.code = match r.code {
@@ -6650,6 +6668,19 @@ mod tests {
         assert_eq!(overlays.player_own_judge(0xff00_0000, "SetRace", 0xcdd84, &werewolf, &nord).code, 1);
         assert_eq!(overlays.player_overlay_gone(0xff00_0000).race, 0xcdd84);
         assert!(!overlays.player_overlay_gone(0xff00_0000).open);
+    }
+
+    #[test]
+    fn the_bridge_takes_a_figure_argument_naming_a_connected_player_alone() {
+        // rung 5: a scoped SetRelationshipRank naming c1's figure 0xff000000
+        // on c2's seat; a server copy of an NPC 0xff000002 is no figure
+        let rank = ScriptArg { kind: 2, form_id: 0 };
+        let figure = ScriptArg { kind: 4, form_id: 0xff00_0000 };
+        let taken = script_call_figures(&[figure, rank], &[0xff00_0000, 0xff00_0001]);
+        assert_eq!((taken.code, taken.name.as_str()), (ScriptCallCode::Accepted, ""));
+        let copy = script_call_figures(&[ScriptArg { kind: 4, form_id: 0xff00_0002 }, rank], &[0xff00_0000, 0xff00_0001]);
+        assert_eq!((copy.code, copy.name.as_str()), (ScriptCallCode::Args, "E_SCRIPTCALL_ARGS"));
+        assert_eq!(script_call_figures(&[ScriptArg { kind: 4, form_id: 0x39655 }, rank], &[]).code, ScriptCallCode::Accepted);
     }
 
     #[test]

@@ -621,6 +621,38 @@ fn check_host(cell: u32, epoch: u32) -> Result<(), Reject> {
     Ok(())
 }
 
+/// A player's race overlay (thuum ADR-068 rung 5, D-T1 A; wire-rules
+/// player_own::Overlay): an open one wears a race of the load order (never 0
+/// nor a server form) over a recorded race of the same kind, its lists name
+/// load-order forms each once; a closed one names nothing (`open` false with
+/// every field empty: the receiver reads it as none). Anything else is out
+/// of range.
+fn check_race_overlay(o: &skymp::RaceOverlay) -> Result<(), Reject> {
+    let form = |id: u32| id != 0 && id < PLAYER_FORMS;
+    let distinct = |ids: &[u32]| ids.iter().enumerate().all(|(i, id)| form(*id) && !ids.iter().take(i).any(|p| p == id));
+    if !o.open {
+        let empty = o.race == 0 && o.base == 0 && o.spells.is_empty() && o.shouts.is_empty() && o.items.is_empty();
+        return if empty { Ok(()) } else { Err(Reject::Range) };
+    }
+    if !form(o.race) || !form(o.base) || o.race == o.base || !distinct(&o.spells) || !distinct(&o.shouts) || !distinct(&o.items) {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
+/// UpdateAppearance (MsgType 4): its optional overlay is the server's word
+/// on another player's figure ([`check_race_overlay`]); a client's own look
+/// carries none ([`validate`]).
+fn check_update_appearance(m: &skymp::UpdateAppearance) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    match &m.overlay {
+        Some(overlay) => check_race_overlay(overlay),
+        None => Ok(()),
+    }
+}
+
 /// The record types a placed form may be (`placed_by`'s pairing): Raise
 /// Wall's MSTT and ACTI (ADR-057), and since thuum ADR-068 rung 4 a script
 /// set's placement, a STAT, an NPC_ or an item (libespm's utils::IsItem
@@ -637,6 +669,14 @@ const PLACED_KINDS: [&str; 15] = ["MSTT", "ACTI", "STAT", "NPC_", "AMMO", "ARMO"
 fn check_create_actor(m: &skymp::CreateActor) -> Result<(), Reject> {
     if !all_finite(m) {
         return Err(Reject::NonFinite);
+    }
+    // thuum ADR-068 rung 5 (D-T1 A): another player's figure wears its
+    // overlay; a player's own CreateActor never carries one
+    if let Some(overlay) = &m.props.overlay {
+        if m.is_me {
+            return Err(Reject::Range);
+        }
+        check_race_overlay(overlay)?;
     }
     if let Some(caster) = m.props.placed_by {
         let placed_kind = m.base_record_type.as_ref().is_some_and(|t| PLACED_KINDS.contains(&t.as_str()));
@@ -1358,12 +1398,18 @@ fn check_change_form_ack(m: &skymp::ChangeFormAck) -> Result<(), Reject> {
 /// is the gate"): a class and a function, neither empty; a subject the
 /// client may name (a load-order form or its own 0x14; the server names
 /// 0xff000000 and up, its own forms and the players' figures), and every
-/// object argument the same, its id a form's 32 bits; every number finite.
-/// The count (at most `cap::SCRIPT_CALL_ARGS`) and every string's length
-/// hold at decode. Whether the pair is a tabled action row, the arguments
-/// its count and kinds, the subject the sender's at the epoch and the
-/// sender within its budget is the server's rule (wire-rules natives); a
-/// value is never judged.
+/// object argument's id a form's 32 bits; every number finite. Since thuum
+/// ADR-068 rung 5 an object argument may name a server id (0xff000000 to
+/// 0xffffffff): inside an acting scope the platform puts the acting player's
+/// figure where the script named the player (a relayed fragment's
+/// ForceRefTo, an owned NPC's SetRelationshipRank), and the seat sends it by
+/// the player's actor id; the server takes it only when it names a connected
+/// player's actor (wire-rules natives::figures, E_SCRIPTCALL_ARGS), never
+/// any other server form. The count (at most `cap::SCRIPT_CALL_ARGS`) and
+/// every string's length hold at decode. Whether the pair is a tabled action
+/// row, the arguments its count and kinds, the subject the sender's at the
+/// epoch and the sender within its budget is the server's rule (wire-rules
+/// natives); a value is never judged.
 fn check_script_call(m: &skymp::ScriptCall) -> Result<(), Reject> {
     if !all_finite(m) {
         return Err(Reject::NonFinite);
@@ -1371,10 +1417,10 @@ fn check_script_call(m: &skymp::ScriptCall) -> Result<(), Reject> {
     if m.cls.as_str().is_empty() || m.func.as_str().is_empty() || m.self_id >= PLAYER_FORMS {
         return Err(Reject::Range);
     }
-    let server_named = |a: &Option<skymp::SnippetArg>| {
-        matches!(a, Some(skymp::SnippetArg::Object(o)) if o.form_id >= u64::from(PLAYER_FORMS))
+    let past_a_form = |a: &Option<skymp::SnippetArg>| {
+        matches!(a, Some(skymp::SnippetArg::Object(o)) if o.form_id > u64::from(u32::MAX))
     };
-    if m.args.iter().any(server_named) {
+    if m.args.iter().any(past_a_form) {
         return Err(Reject::Range);
     }
     Ok(())
@@ -1661,6 +1707,9 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
             }
             take(&mut guard.script_variables_budget, now_ms)
         }
+        // thuum ADR-068 rung 5 (D-T1 A): a seat sends its own look; a
+        // figure's overlay is the server's word
+        Message::UpdateAppearance(m) if m.overlay.is_some() => Err(Reject::Range),
         _ => Ok(()),
     }
 }
@@ -1862,6 +1911,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::WorldGlobal(m) => check_world_global(m),
         Message::ScriptVariables(m) => check_script_variables(m),
         Message::CreateActor(m) => check_create_actor(m),
+        Message::UpdateAppearance(m) => check_update_appearance(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
         // rejects it by direction before it gets this far.
@@ -4174,11 +4224,17 @@ mod script_call_tests {
         assert_eq!(validate_server(&call(0xaa8cb, "", "PlayAnimation", vec![text("Open")])), Err(Reject::Range));
         assert_eq!(validate_server(&call(0xaa8cb, "ObjectReference", "", vec![text("Open")])), Err(Reject::Range));
         // what the server names: its own forms and the players' figures, as
-        // the subject or as an object argument, and no form past 32 bits
+        // the subject, and no form past 32 bits
         assert_eq!(validate_server(&call(0xff00_0002, "ObjectReference", "PlayAnimation", vec![text("Open")])), Err(Reject::Range));
         assert_eq!(validate_server(&call(0xfeff_ffff, "ObjectReference", "PlayAnimation", vec![text("Open")])), Ok(()));
-        assert_eq!(validate_server(&call(0x10e6c5, "Debug", "SendAnimationEvent", vec![object(0xff00_0002, "Actor"), text("Open")])), Err(Reject::Range));
         assert_eq!(validate_server(&call(0x10e6c5, "Debug", "SendAnimationEvent", vec![object(0x1_0010_e6c5, "ObjectReference"), text("Open")])), Err(Reject::Range));
+        // thuum ADR-068 rung 5: a scoped call's figure, an object argument
+        // naming a player's actor by its server id, passes the edge to the
+        // server's rule (wire-rules natives::figures takes a connected
+        // player's alone); the top of the 32 bits too, nothing past them
+        assert_eq!(validate_server(&call(0x10e6c5, "Debug", "SendAnimationEvent", vec![object(0xff00_0002, "Actor"), text("Open")])), Ok(()));
+        assert_eq!(validate_server(&call(0x39655, "Actor", "SetRelationshipRank", vec![object(0xffff_ffff, "Actor"), Some(SnippetArg::Number(1.0))])), Ok(()));
+        assert_eq!(validate_server(&call(0x39655, "Actor", "SetRelationshipRank", vec![object(0x1_0000_0000, "Actor"), Some(SnippetArg::Number(1.0))])), Err(Reject::Range));
         // every number a number
         assert_eq!(validate_server(&call(0xaa8cb, "ObjectReference", "SetAnimationVariableFloat", vec![text("fSpeed"), Some(SnippetArg::Number(f64::NAN))])), Err(Reject::NonFinite));
         assert_eq!(validate_server(&call(0xaa8cb, "ObjectReference", "SetAnimationVariableFloat", vec![text("fSpeed"), Some(SnippetArg::Number(1.5))])), Ok(()));
@@ -4949,6 +5005,100 @@ mod quest_word_and_script_variable_tests {
             let mut g = ClientGuard::default();
             let client = if ok && !served && entries.iter().all(|e| e.seq == 0) { Ok(()) } else { Err(Reject::Range) };
             prop_assert_eq!(validate(&m, &mut g, now), client);
+        }
+    }
+}
+
+#[cfg(test)]
+mod race_overlay_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use wire_schema::cap;
+    use wire_schema::skymp::{CreateActor, CreateActorProps, RaceOverlay, UpdateAppearance};
+
+    // thuum ADR-068 rung 5 (D-T1 A): rotfern's beast form, WerewolfBeastRace
+    // 0xcdd84 over its recorded race (NordRace 0x13746), the howl 0x92c48
+    // and WolfSkinFXArmor's id illustrative
+    fn beast() -> RaceOverlay {
+        RaceOverlay {
+            open: true,
+            race: 0xcdd84,
+            base: 0x13746,
+            spells: vec![0x92c48].try_into().unwrap_or_default(),
+            shouts: vec![0x6f6da].try_into().unwrap_or_default(),
+            items: vec![0x10d4f9].try_into().unwrap_or_default(),
+        }
+    }
+
+    fn appearance(overlay: Option<RaceOverlay>) -> Message {
+        Message::UpdateAppearance(UpdateAppearance { idx: 7, overlay, ..Default::default() })
+    }
+
+    fn figure(overlay: Option<RaceOverlay>, is_me: bool) -> Message {
+        Message::CreateActor(CreateActor { idx: 7, is_me, props: CreateActorProps { overlay, ..Default::default() }, ..Default::default() })
+    }
+
+    #[test]
+    fn a_figures_overlay_wears_a_race_of_the_load_order_and_a_seat_sends_none() {
+        assert_eq!(validate_server(&appearance(Some(beast()))), Ok(()));
+        assert_eq!(validate_server(&appearance(None)), Ok(()));
+        assert_eq!(validate_server(&figure(Some(beast()), false)), Ok(()));
+        // a player's own CreateActor never carries one
+        assert_eq!(validate_server(&figure(Some(beast()), true)), Err(Reject::Range));
+        // a closed overlay names nothing
+        assert_eq!(validate_server(&appearance(Some(RaceOverlay::default()))), Ok(()));
+        assert_eq!(validate_server(&appearance(Some(RaceOverlay { open: false, ..beast() }))), Err(Reject::Range));
+        // an open one wears a load-order race over another, each form once
+        let refused = [
+            RaceOverlay { race: 0, ..beast() },
+            RaceOverlay { race: 0xff00_0001, ..beast() },
+            RaceOverlay { base: 0, ..beast() },
+            RaceOverlay { base: 0xcdd84, ..beast() },
+            RaceOverlay { spells: vec![0x92c48, 0x92c48].try_into().unwrap_or_default(), ..beast() },
+            RaceOverlay { shouts: vec![0].try_into().unwrap_or_default(), ..beast() },
+            RaceOverlay { items: vec![0xff00_0002].try_into().unwrap_or_default(), ..beast() },
+        ];
+        for o in refused {
+            assert_eq!(validate_server(&appearance(Some(o.clone()))), Err(Reject::Range), "{o:?}");
+        }
+        // a seat's own look carries no overlay
+        let mut g = ClientGuard::default();
+        assert_eq!(validate(&appearance(None), &mut g, 0), Ok(()));
+        assert_eq!(validate(&appearance(Some(beast())), &mut g, 0), Err(Reject::Range));
+        assert_eq!(validate(&appearance(Some(RaceOverlay::default())), &mut g, 0), Err(Reject::Range));
+    }
+
+    proptest! {
+        // any overlay up to the caps, on either carrier: a verdict, never a
+        // panic, and the verdict the rule gives
+        #[test]
+        fn overlays_never_panic_and_judge_their_shapes(
+            open in any::<bool>(),
+            race in prop_oneof![Just(0u32), Just(0xcdd84u32), Just(0xff00_0000u32), any::<u32>()],
+            base in prop_oneof![Just(0u32), Just(0x13746u32), any::<u32>()],
+            spells in proptest::collection::vec(prop_oneof![Just(0u32), 1u32..0x200, any::<u32>()], 0..=cap::OVERLAY_FORMS),
+            shouts in proptest::collection::vec(1u32..0x200, 0..=4),
+            items in proptest::collection::vec(any::<u32>(), 0..=4),
+            is_me in any::<bool>(),
+        ) {
+            let o = RaceOverlay {
+                open,
+                race,
+                base,
+                spells: spells.clone().try_into().unwrap_or_default(),
+                shouts: shouts.clone().try_into().unwrap_or_default(),
+                items: items.clone().try_into().unwrap_or_default(),
+            };
+            let form = |id: u32| id != 0 && id < 0xff00_0000;
+            let distinct = |ids: &[u32]| ids.iter().enumerate().all(|(i, id)| form(*id) && !ids.iter().take(i).any(|p| p == id));
+            let shape_ok = if open {
+                form(race) && form(base) && race != base && distinct(&spells) && distinct(&shouts) && distinct(&items)
+            } else {
+                race == 0 && base == 0 && spells.is_empty() && shouts.is_empty() && items.is_empty()
+            };
+            let want = if shape_ok { Ok(()) } else { Err(Reject::Range) };
+            prop_assert_eq!(validate_server(&appearance(Some(o.clone()))), want);
+            prop_assert_eq!(validate_server(&figure(Some(o), is_me)), if is_me { Err(Reject::Range) } else { want });
         }
     }
 }

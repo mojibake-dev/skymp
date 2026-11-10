@@ -4358,6 +4358,31 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
     return;
   }
 
+  // thuum ADR-068 rung 5: inside an acting scope a seat's call names the
+  // acting player's figure where its script named the player, by the
+  // player's actor id; such an argument is taken only when it names a
+  // connected player's actor (wire-rules natives::figures), never any other
+  // server form. The list is gathered only for a call that names one
+  const bool namesServerForm =
+    std::any_of(args.begin(), args.end(), [](const auto& arg) {
+      return arg.kind == 4 && arg.form_id >= 0xff000000;
+    });
+  if (namesServerForm) {
+    std::vector<uint32_t> players;
+    for (size_t i = 0, n = partOne.serverState.maxConnectedId; i <= n; ++i) {
+      if (MpActor* player = partOne.serverState.ActorByUser(
+            static_cast<Networking::UserId>(i))) {
+        players.push_back(player->GetFormId());
+      }
+    }
+    const auto figures = skymp::rules::script_call_figures(
+      argSlice, rust::Slice<const uint32_t>(players.data(), players.size()));
+    if (figures.code != skymp::rules::ScriptCallCode::Accepted) {
+      refused(figures);
+      return;
+    }
+  }
+
   // the shaped subject's facts: subject_kind 0 no reference, 1 a world
   // object, 2 a door or a container, 3 an actor, 4 a world object the server
   // holds no reference for, placed by its game-file record; the owner and

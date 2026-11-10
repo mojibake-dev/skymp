@@ -114,7 +114,12 @@ use bounded::{String, Vec};
 /// player's actor) and `served` (the login replay), and ScriptVariables
 /// (MsgType 81, wire id 89: the condition-read script variables any seat
 /// reports, the latest write recorded per key with the server's sequence,
-/// a player-class quest's keys its player's own).
+/// a player-class quest's keys its player's own). The rung's server half
+/// (m4-scripts-5-server) adds, inside 41 before any build of it shipped:
+/// CreateActorProps' and UpdateAppearance's optional `overlay` (D-T1 A, a
+/// player's race overlay on its figure), and a ScriptCall object argument at
+/// 0xff000000 and up (a scoped call's figure, its player's actor by its
+/// server id), which the core takes only when it names a connected player.
 pub const SCHEMA_VERSION: u16 = 41;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
@@ -163,6 +168,11 @@ pub mod cap {
     /// Races a server restricts to listed profiles (Skyrim.esm has 99 RACE
     /// records, ten of them playable; a mod list's custom races are a few).
     pub const RACES: usize = 128;
+    /// Forms in one list of a player's race overlay (thuum ADR-068 D-T1 A:
+    /// the spells, shouts or items a worn race's scripts added; the
+    /// werewolf's level abilities, its howl and WolfSkinFXArmor are a few),
+    /// the client's own bound (sync/raceOverlay.ts).
+    pub const OVERLAY_FORMS: usize = 64;
     /// Node overrides on one reference.
     pub const NODES: usize = 256;
     /// A node name in a model.

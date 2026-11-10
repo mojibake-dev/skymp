@@ -1,0 +1,17 @@
+{
+  "args": [
+    {
+      "formId": 4294967296,
+      "type": "Actor"
+    },
+    1.0
+  ],
+  "caller": "PlayerVampireQuestScript",
+  "cls": "Actor",
+  "epoch": 0,
+  "fn": "SetRelationshipRank",
+  "handler": "VampireChange",
+  "latent": false,
+  "selfId": 235093,
+  "t": 75
+}

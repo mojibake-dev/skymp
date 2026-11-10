@@ -750,3 +750,39 @@ TEST_CASE("A kept graph variable's sequence seeds its object's next call",
   REQUIRE(relayed[0]["seq"] == 10);
   Leave(p);
 }
+
+// thuum ADR-068 rung 5: inside an acting scope the seat names the acting
+// player's figure by the player's actor id where its script named the
+// player; the edge passes an object argument at 0xff000000 and up, and the
+// core takes it only when it names a connected player's actor
+// (wire-rules natives::figures), any other server form refused by name
+TEST_CASE("A script call's figure argument is taken when it names a "
+          "connected player's actor, and refused for any other server form",
+          "[ScriptCall][espm]")
+{
+  PartOne& p = GetPartOne();
+  const uint32_t epoch = Enter(p);
+  LogCapture log;
+  const std::string refusal = "a server form that is no connected player's "
+                              "actor";
+  // the guest's actor, connected: past the figure check (the six own rows'
+  // rule judges the rest)
+  Call(p, 0, epoch, 0x14, "Actor", "EquipItem",
+       { FormArg(kGuestActor, "Actor"), Arg(false), Arg(true) },
+       "PlayerWerewolfChangeScript", "StartTracking");
+  REQUIRE(log.Count(refusal) == 0);
+  // a load-order form and None: no figure at all
+  Call(p, 0, epoch, 0x14, "Actor", "EquipItem",
+       { FormArg(0x12eb7, "Weapon"), Arg(false), Arg(true) },
+       "PlayerWerewolfChangeScript", "StartTracking");
+  REQUIRE(log.Count(refusal) == 0);
+  // a server id no player holds: refused by name, relayed to nobody
+  Call(p, 0, epoch, 0x14, "Actor", "EquipItem",
+       { FormArg(0xff000abc, "Actor"), Arg(false), Arg(true) },
+       "PlayerWerewolfChangeScript", "StartTracking");
+  REQUIRE(log.Count("E_SCRIPTCALL_ARGS") == 1);
+  REQUIRE(log.Count(refusal) == 1);
+  REQUIRE(SnippetsTo(p, 1).empty());
+  REQUIRE(SnippetsTo(p, 0).empty());
+  Leave(p);
+}

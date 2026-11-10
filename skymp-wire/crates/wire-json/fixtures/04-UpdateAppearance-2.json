@@ -1,0 +1,31 @@
+{
+  "data": {
+    "hairColor": -1,
+    "headTextureSetId": 0,
+    "headpartIds": [],
+    "isFemale": false,
+    "name": "rotfern",
+    "options": [],
+    "presets": [],
+    "raceId": 79686,
+    "skinColor": -1,
+    "tints": [],
+    "weight": 50.0
+  },
+  "idx": 513,
+  "overlay": {
+    "base": 79686,
+    "items": [
+      1103097
+    ],
+    "open": true,
+    "race": 843140,
+    "shouts": [
+      456410
+    ],
+    "spells": [
+      601160
+    ]
+  },
+  "t": 4
+}

@@ -124,6 +124,10 @@ const LEGACY_ABSENT: &[(&str, &str)] = &[
     // graphVars sit on thuum's own MsgTypes 70 and 77, which the legacy
     // format never carried (decode_packet reads SkyMP's 33 alone)
     ("ActivateData", "entry"),
+    // thuum ADR-068 rung 5 (D-T1 A): a player figure's race overlay
+    // (SCHEMA_VERSION 41, 2026-11-09)
+    ("CreateActorProps", "overlay"),
+    ("UpdateAppearance", "overlay"),
 ];
 
 /// The deserializer for a field in LEGACY_ABSENT: an optional reads as none,
@@ -416,6 +420,8 @@ mod tests {
                 // (2026-11-01)
                 assert_eq!(m.props.restricted_races, None);
                 assert_eq!(m.props.permitted_races, None);
+                // thuum ADR-068 rung 5: the race overlay (2026-11-09)
+                assert_eq!(m.props.overlay, None);
             }
             other => panic!("{other:?}"),
         }

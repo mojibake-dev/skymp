@@ -516,6 +516,30 @@ pub fn subject_of(row: &Row, self_id: u32, args: &[Arg]) -> Option<u32> {
     }
 }
 
+/// Whether a call's object arguments name only what the reporter may name
+/// (thuum ADR-068 rung 5): a load-order form, its own 0x14 or None, or a
+/// server form that is a connected player's actor (`players`, the core's
+/// list): the acting player's figure, which a scoped call names where its
+/// script named the player (a relayed fragment's ForceRefTo, an owned NPC's
+/// SetRelationshipRank) and the seat sends by the player's actor id. Any
+/// other server form (a server copy of an NPC, the journal, an id nobody
+/// holds) is `E_SCRIPTCALL_ARGS`. The call's subject is [`subject_of`]'s
+/// alone: a figure is never one.
+pub fn figures(args: &[Arg], players: &[u32]) -> Result<(), Refusal> {
+    for (i, arg) in args.iter().enumerate() {
+        let Arg::Object(id) = *arg else {
+            continue;
+        };
+        if id < u64::from(SERVER_NAMED) {
+            continue;
+        }
+        if !u32::try_from(id).is_ok_and(|id| players.contains(&id)) {
+            return Err(refusal(Code::Args, format!("argument {i} names {id:x}, a server form that is no connected player's actor")));
+        }
+    }
+    Ok(())
+}
+
 /// What the server holds at a reported call's subject.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubjectKind {
@@ -2030,6 +2054,23 @@ mod tests {
         assert_eq!(code(&s.judge(row("Actor", "AddSpell"), &[Arg::Object(0x92c48)], &own, 0)), Some(Code::Args));
         assert_eq!(code(&s.judge(set_race, &[Arg::Number], &own, 0)), Some(Code::Args));
         assert_eq!(RecordKind::PlayerOwn.code(), 4);
+    }
+
+    #[test]
+    fn a_scoped_calls_figure_is_a_connected_players_actor_and_no_other_server_form() {
+        // rung 5: c1's figure on c2's seat (c1 0xff000000 and c2 0xff000001
+        // connected) where a relayed fragment's SetRelationshipRank named
+        // the player; a load-order form, 0x14 and None pass as before
+        let players = [0xff00_0000, 0xff00_0001];
+        assert_eq!(figures(&[Arg::Object(0xff00_0000), Arg::Number], &players), Ok(()));
+        assert_eq!(figures(&[Arg::Object(0x39655), Arg::Object(0x14), Arg::Absent, Arg::Bool], &players), Ok(()));
+        // a server copy of an NPC, the journal, a free id, past 32 bits
+        for id in [0xff00_0002_u64, 0xffff_ff00, 0xffff_ffff, 0x1_0000_0000] {
+            let refused = figures(&[Arg::Object(0x39655), Arg::Object(id)], &players);
+            assert_eq!(refused.as_ref().map_err(|r| r.code), Err(Code::Args), "{id:x}");
+            assert!(refused.is_err_and(|r| r.why.starts_with("argument 1 names")), "{id:x}");
+        }
+        assert_eq!(figures(&[Arg::Object(0xff00_0000)], &[]).map_err(|r| r.code), Err(Code::Args));
     }
 
     #[test]

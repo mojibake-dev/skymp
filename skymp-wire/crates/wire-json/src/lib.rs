@@ -427,19 +427,23 @@ mod tests {
     /// the puzzle pillar's turn on Bleak Falls Temple's 0xaa8cb (a method
     /// native, latent, two strings; docs/verbs/traps.md's census of
     /// defaultPuzzlePillarScript), 1 a static native on a world object (the
-    /// subject first among the arguments and named again as `selfId`); 2 and
-    /// 3 each name a form the server names (an object argument, a subject at
-    /// 0xff000000 and up) and are refused by the shape. The SpSnippet
+    /// subject first among the arguments and named again as `selfId`); 2
+    /// names a player's actor as an object argument (since thuum ADR-068
+    /// rung 5 a scoped call's figure, which the edge passes and the server's
+    /// rule takes for a connected player alone, wire-rules natives::figures);
+    /// 3 names a subject at 0xff000000 and up and 4 an object argument past
+    /// 32 bits, both refused by the shape. The SpSnippet
     /// fixture 2 is the pillar's relay with the subject's sequence; 0 and 1,
     /// the snippets without one, render no `seq`.
     #[test]
     fn script_call_fixtures_validate_as_named() {
         use wire_validate::{validate_server, Reject};
-        let verdicts: [(&str, Result<(), Reject>); 4] = [
+        let verdicts: [(&str, Result<(), Reject>); 5] = [
             ("75-ScriptCall-0.json", Ok(())),
             ("75-ScriptCall-1.json", Ok(())),
-            ("75-ScriptCall-2.json", Err(Reject::Range)),
+            ("75-ScriptCall-2.json", Ok(())),
             ("75-ScriptCall-3.json", Err(Reject::Range)),
+            ("75-ScriptCall-4.json", Err(Reject::Range)),
         ];
         for (name, want) in verdicts {
             let text = std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
@@ -535,6 +539,36 @@ mod tests {
         let m = recognize(&text).unwrap_or_else(|e| panic!("80-WorldGlobal-0.json: {e}"));
         let rendered: Value = serde_json::from_str(&render(&m).unwrap_or_default()).unwrap_or(Value::Null);
         assert_eq!(rendered.get("stream"), None);
+    }
+
+    /// thuum ADR-068 rung 5 (D-T1 A): a player's race overlay on another
+    /// player's figure. 33-CreateActor-4 is rotfern's figure (0xff000000)
+    /// in Bleak Falls Barrow wearing WerewolfBeastRace 0xcdd84 over NordRace
+    /// 0x13746, 04-UpdateAppearance-2 its look with the same overlay (the
+    /// spell, shout and item ids illustrative); the other CreateActor and
+    /// UpdateAppearance fixtures carry none and render none.
+    #[test]
+    fn overlay_fixtures_validate_and_render_only_when_present() {
+        use wire_validate::{validate, validate_server, ClientGuard, Reject};
+        let read = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+        for name in ["33-CreateActor-4.json", "04-UpdateAppearance-2.json"] {
+            let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(validate_server(&m), Ok(()), "{name}");
+        }
+        match recognize(&read("33-CreateActor-4.json")) {
+            Ok(Message::CreateActor(c)) => {
+                let o = c.props.overlay.unwrap_or_default();
+                assert_eq!((o.open, o.race, o.base, o.spells.len(), o.shouts.len(), o.items.len()), (true, 0xcdd84, 0x13746, 1, 1, 1));
+            }
+            other => panic!("{other:?}"),
+        }
+        // a seat's own look never carries one
+        let own = recognize(&read("04-UpdateAppearance-2.json")).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(validate(&own, &mut ClientGuard::default(), 0), Err(Reject::Range));
+        for name in ["33-CreateActor-0.json", "33-CreateActor-1.json", "33-CreateActor-2.json", "33-CreateActor-3.json", "04-UpdateAppearance-0.json", "04-UpdateAppearance-1.json"] {
+            let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(!render(&m).unwrap_or_default().contains("\"overlay\""), "{name}: an absent overlay is no key");
+        }
     }
 
     /// thuum ADR-068 rung 5 (SCHEMA_VERSION 41): QuestStage's run word,

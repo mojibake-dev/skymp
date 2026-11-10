@@ -6462,8 +6462,9 @@ std::vector<skymp::rules::ScriptVarRow> ScriptVarRows(
   return rows;
 }
 
+template <class Rows>
 std::vector<MpChangeFormREFR::ScriptVariable> ScriptVariablesOf(
-  const std::vector<skymp::rules::ScriptVarRow>& rows)
+  const Rows& rows)
 {
   std::vector<MpChangeFormREFR::ScriptVariable> record;
   record.reserve(rows.size());
@@ -6601,14 +6602,20 @@ void ActionListener::OnScriptVariables(const RawMessageData& rawMsgData,
   }
   auto& rules = partOne.GetScriptVariableRules();
   const auto& files = partOne.worldState.espmFiles;
-  auto world = ScriptVarRows(partOne.GetScriptVariables(), false);
-  auto own = ScriptVarRows(reporter->GetScriptVariables(), true);
   ScriptVariablesMessage relay;
   relay.served = false;
   size_t ownRecorded = 0;
   size_t folded = 0;
   std::map<std::string, size_t> refused;
-  for (const auto& entry : msg.entries) {
+  // the entries whose forms this load order names, judged whole in one
+  // bridge call (the fresh review's note 13), each against its record as
+  // the entries before it left it
+  std::vector<skymp::rules::ScriptVarRow> rows;
+  std::vector<size_t> rowEntry;
+  rows.reserve(msg.entries.size());
+  rowEntry.reserve(msg.entries.size());
+  for (size_t i = 0; i < msg.entries.size(); ++i) {
+    const auto& entry = msg.entries[i];
     skymp::rules::ScriptVarRow row{};
     try {
       const FormDesc form = FormDesc::FromFormId(entry.form, files);
@@ -6626,10 +6633,18 @@ void ActionListener::OnScriptVariables(const RawMessageData& rawMsgData,
     row.f = entry.f.value_or(0.f);
     row.b = entry.b.value_or(false);
     row.seq = 0;
-    auto& record = entry.own ? own : world;
-    const rust::Slice<const skymp::rules::ScriptVarRow> recordSlice(
-      record.data(), record.size());
-    const auto verdict = rules.script_variable_judge(recordSlice, row);
+    rows.push_back(std::move(row));
+    rowEntry.push_back(i);
+  }
+  const auto world = ScriptVarRows(partOne.GetScriptVariables(), false);
+  const auto own = ScriptVarRows(reporter->GetScriptVariables(), true);
+  const auto report = rules.script_variables_report(
+    rust::Slice<const skymp::rules::ScriptVarRow>(world.data(), world.size()),
+    rust::Slice<const skymp::rules::ScriptVarRow>(own.data(), own.size()),
+    rust::Slice<const skymp::rules::ScriptVarRow>(rows.data(), rows.size()));
+  for (size_t r = 0; r < rows.size() && r < report.verdicts.size(); ++r) {
+    const auto& verdict = report.verdicts[r];
+    const auto& entry = msg.entries[rowEntry[r]];
     if (verdict.code == 1) {
       ++folded;
       continue;
@@ -6646,22 +6661,20 @@ void ActionListener::OnScriptVariables(const RawMessageData& rawMsgData,
       }
       continue;
     }
-    const auto merged = skymp::rules::script_variables_merge(recordSlice, row);
-    record.assign(merged.record.begin(), merged.record.end());
     if (entry.own) {
       ++ownRecorded;
       continue;
     }
     auto out = entry;
-    out.seq = merged.seq;
+    out.seq = r < report.seqs.size() ? report.seqs[r] : 0;
     relay.entries.push_back(std::move(out));
   }
   if (ownRecorded > 0) {
-    reporter->SetScriptVariables(ScriptVariablesOf(own));
+    reporter->SetScriptVariables(ScriptVariablesOf(report.own));
   }
   size_t relayed = 0;
   if (!relay.entries.empty()) {
-    partOne.SetScriptVariables(ScriptVariablesOf(world));
+    partOne.SetScriptVariables(ScriptVariablesOf(report.world));
     for (size_t i = 0, n = partOne.serverState.maxConnectedId; i <= n; ++i) {
       const auto userId = static_cast<Networking::UserId>(i);
       if (userId == rawMsgData.userId ||
